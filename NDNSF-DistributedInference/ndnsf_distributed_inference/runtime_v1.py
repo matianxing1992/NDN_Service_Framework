@@ -14,6 +14,9 @@ import csv
 import hashlib
 import itertools
 import json
+import os
+import subprocess
+import sys
 import time
 import zlib
 from dataclasses import asdict, dataclass, field, is_dataclass, replace
@@ -3155,6 +3158,7 @@ def load_provider_profiles(path: str | Path) -> list[ProviderProfileV1]:
 
 def _cmd_schema_sample(args: argparse.Namespace) -> int:
     payload = runtime_v1_smoke()
+    payload["status"] = "contract-smoke"
     if args.out:
         write_json(args.out, payload)
     else:
@@ -3323,14 +3327,137 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
     return 0
 
 
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _resolve_command(value: Any, default: list[str]) -> list[str]:
+    if value is None:
+        return default
+    if not isinstance(value, list) or not value or not all(isinstance(v, str) for v in value):
+        raise ValueError("deployment adapter command must be a non-empty string array")
+    return list(value)
+
+
+def _emit_or_execute(command: list[str], args: argparse.Namespace,
+                     *, identities: dict[str, str] | None = None) -> int:
+    payload = {
+        "schema": "ndnsf-di-production-adapter-v1",
+        "mode": "production-adapter",
+        "command": command,
+        "identities": identities or {},
+    }
+    if getattr(args, "dry_run", False):
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+    return subprocess.run(command, cwd=_repo_root(), check=False).returncode
+
+
+def _deployment_payload(path: str | Path) -> tuple[dict[str, Any], dict[str, Any]]:
+    payload = read_json(path)
+    deployment = payload.get("deployment", payload)
+    if not isinstance(deployment, dict):
+        raise ValueError("deployment profile must contain an object")
+    return payload, deployment
+
+
+def _cmd_production_provider(args: argparse.Namespace) -> int:
+    payload, deployment = _deployment_payload(args.profile)
+    default = [str(_repo_root() / "build/examples/di-native-provider"), "--check-only"]
+    command = _resolve_command(deployment.get("provider_command"), default)
+    return _emit_or_execute(command, args, identities={
+        "profile": str(Path(args.profile).resolve()),
+        "release": str(deployment.get("release_dir", "")),
+        "provider": str(deployment.get("identity", payload.get("provider", {}).get("identity", ""))),
+    })
+
+
+def _deprecated_simulation(command: str) -> int:
+    print(
+        f"ndnsf-di {command}: the simulated Runtime v1 entrypoint moved to "
+        f"'ndnsf-di contract-smoke {command}'; production {command} requires a profile/campaign",
+        file=sys.stderr,
+    )
+    return 2
+
+
+def _cmd_production_run(args: argparse.Namespace) -> int:
+    if not args.profile or not args.request or not args.out:
+        return _deprecated_simulation("run")
+    _payload, deployment = _deployment_payload(args.profile)
+    harness = str(deployment.get(
+        "harness", "Experiments/NDNSF_DI_LlmPipeline_Minindn.py"))
+    command = _resolve_command(deployment.get("run_command"), [
+        sys.executable, harness, "--output-dir", str(Path(args.out).parent),
+    ])
+    return _emit_or_execute(command, args, identities={
+        "profile": str(Path(args.profile).resolve()),
+        "plan": str(Path(args.plan).resolve()),
+        "request": str(Path(args.request).resolve()),
+        "result": str(Path(args.out).resolve()),
+    })
+
+
+def _cmd_production_bench(args: argparse.Namespace) -> int:
+    if not args.campaign or not args.out:
+        return _deprecated_simulation("bench")
+    campaign = read_json(args.campaign)
+    runner = str(campaign.get("runner", "Experiments/NDNSF_DI_LlmPipeline_Minindn.py"))
+    perf = campaign.get("performance", {})
+    command = _resolve_command(campaign.get("command"), [
+        sys.executable, runner,
+        "--output-dir", str(args.out),
+        "--measured-duration-s", str(perf.get("measurementSeconds", 60)),
+        "--request-interval-ms", str(1000.0 / float(perf.get("offeredRps", 1.0))),
+        "--max-new-tokens", str(campaign.get("maxNewTokens", 32)),
+        "--campaign-id", str(campaign.get("campaignId", "operator-bench")),
+        "--runner-mode", "qwen-onnx-native",
+    ])
+    return _emit_or_execute(command, args, identities={
+        "campaign": str(Path(args.campaign).resolve()),
+        "output": str(Path(args.out).resolve()),
+    })
+
+
+def _cmd_production_doctor(args: argparse.Namespace) -> int:
+    command = [sys.executable, str(_repo_root() / "tools/ndnsf_runtime.py"),
+               "doctor", "--profile", args.profile]
+    if args.json:
+        pass
+    return _emit_or_execute(command, args, identities={
+        "profile": str(Path(args.profile).resolve()),
+    })
+
+
+def _cmd_status(args: argparse.Namespace) -> int:
+    _payload, deployment = _deployment_payload(args.profile)
+    status_path = Path(str(deployment.get("status_file", "/run/ndnsf-di/status.json")))
+    status = read_json(status_path) if status_path.is_file() else {
+        "schema": "ndnsf-di-status-v1", "ready": False,
+        "reason": "STATUS_FILE_MISSING", "statusFile": str(status_path),
+    }
+    status["profile"] = str(Path(args.profile).resolve())
+    print(json.dumps(status, indent=2, sort_keys=True))
+    return 0 if status.get("ready") else 1
+
+
+def _cmd_metrics(args: argparse.Namespace) -> int:
+    from .operations import MetricsSnapshot, atomic_export_metrics
+    _payload, deployment = _deployment_payload(args.profile)
+    source = Path(str(deployment.get("metrics_file", "/run/ndnsf-di/metrics.json")))
+    snapshot = MetricsSnapshot.from_dict(read_json(source) if source.is_file() else {})
+    atomic_export_metrics(snapshot, args.out, args.format)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="NDNSF-DI Runtime v1 utilities")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    provider = sub.add_parser("provider", help="emit provider Runtime v1 ACK metadata")
+    provider = sub.add_parser("provider", help="run the native provider adapter")
     provider.add_argument("--profile", required=True)
-    provider.add_argument("--out", default="")
-    provider.set_defaults(func=_cmd_provider)
+    provider.add_argument("--dry-run", action="store_true")
+    provider.set_defaults(func=_cmd_production_provider)
 
     plan = sub.add_parser("plan", help="build a local Runtime v1 plan lease")
     plan.add_argument("--model", required=True)
@@ -3342,22 +3469,56 @@ def main(argv: list[str] | None = None) -> int:
     plan.add_argument("--session-id", default="")
     plan.set_defaults(func=_cmd_plan)
 
-    run = sub.add_parser("run", help="run a local Runtime v1 contract smoke")
+    run = sub.add_parser("run", help="run a real deployment request adapter")
     run.add_argument("--plan", required=True)
-    run.add_argument("--requests", type=int, default=1)
-    run.add_argument("--prompt-tokens", type=int, default=1024)
-    run.add_argument("--generated-tokens", type=int, default=32)
-    run.add_argument("--microbatch", type=int, default=1)
-    run.add_argument("--provider-flops-tflops", type=float, default=8.0)
+    run.add_argument("--profile", default="")
+    run.add_argument("--request", default="")
     run.add_argument("--out", default="")
-    run.set_defaults(func=_cmd_run)
+    run.add_argument("--dry-run", action="store_true")
+    run.set_defaults(func=_cmd_production_run)
 
-    bench = sub.add_parser("bench", help="run a local Runtime v1 smoke benchmark")
-    bench.add_argument("--out-dir", type=Path, required=True)
-    bench.add_argument("--runs", type=int, default=1)
-    bench.set_defaults(func=_cmd_bench)
+    bench = sub.add_parser("bench", help="run a real MiniNDN campaign adapter")
+    bench.add_argument("--campaign", default="")
+    bench.add_argument("--out", type=Path)
+    bench.add_argument("--dry-run", action="store_true")
+    bench.set_defaults(func=_cmd_production_bench)
 
-    sweep = sub.add_parser("context-sweep", help="run local RPS/context-length sweep")
+    status = sub.add_parser("status", help="read the deployment status snapshot")
+    status.add_argument("--profile", required=True)
+    status.add_argument("--json", action="store_true")
+    status.set_defaults(func=_cmd_status)
+
+    metrics = sub.add_parser("metrics", help="export a deployment metrics snapshot")
+    metrics.add_argument("--profile", required=True)
+    metrics.add_argument("--format", choices=("json", "prometheus-textfile"), default="json")
+    metrics.add_argument("--out", required=True)
+    metrics.set_defaults(func=_cmd_metrics)
+
+    doctor = sub.add_parser("doctor", help="run production deployment preflight")
+    doctor.add_argument("--profile", required=True)
+    doctor.add_argument("--json", action="store_true")
+    doctor.add_argument("--dry-run", action="store_true")
+    doctor.set_defaults(func=_cmd_production_doctor)
+
+    smoke = sub.add_parser("contract-smoke", help="explicit simulated Runtime v1 utilities")
+    smoke_sub = smoke.add_subparsers(dest="smoke_command", required=True)
+
+    smoke_run = smoke_sub.add_parser("run")
+    smoke_run.add_argument("--plan", required=True)
+    smoke_run.add_argument("--requests", type=int, default=1)
+    smoke_run.add_argument("--prompt-tokens", type=int, default=1024)
+    smoke_run.add_argument("--generated-tokens", type=int, default=32)
+    smoke_run.add_argument("--microbatch", type=int, default=1)
+    smoke_run.add_argument("--provider-flops-tflops", type=float, default=8.0)
+    smoke_run.add_argument("--out", default="")
+    smoke_run.set_defaults(func=_cmd_run)
+
+    smoke_bench = smoke_sub.add_parser("bench")
+    smoke_bench.add_argument("--out-dir", type=Path, required=True)
+    smoke_bench.add_argument("--runs", type=int, default=1)
+    smoke_bench.set_defaults(func=_cmd_bench)
+
+    sweep = smoke_sub.add_parser("context-sweep")
     sweep.add_argument("--model", required=True)
     sweep.add_argument("--providers", required=True)
     sweep.add_argument("--out-dir", type=Path, required=True)
@@ -3367,6 +3528,10 @@ def main(argv: list[str] | None = None) -> int:
     sweep.add_argument("--microbatch", type=int, default=1)
     sweep.add_argument("--cache-aware", action="store_true")
     sweep.set_defaults(func=_cmd_context_sweep)
+
+    smoke_sample = smoke_sub.add_parser("schema-sample")
+    smoke_sample.add_argument("--out", default="")
+    smoke_sample.set_defaults(func=_cmd_schema_sample)
 
     sample = sub.add_parser("schema-sample", help="write a Runtime v1 smoke payload")
     sample.add_argument("--out", default="")

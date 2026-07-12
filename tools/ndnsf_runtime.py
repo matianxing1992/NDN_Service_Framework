@@ -37,7 +37,7 @@ DI_REQUIRED_BINARIES = [
     "di-native-plan-manifest-smoke",
     "di-native-provider-session-smoke",
 ]
-ROOT_PROFILE_KEYS = {"name", "controller", "provider", "user", "service_name", "env", "distributed_inference"}
+ROOT_PROFILE_KEYS = {"name", "controller", "provider", "user", "service_name", "env", "distributed_inference", "deployment"}
 CONTROLLER_KEYS = {"prefix", "policy_file", "trust_schema", "bootstrap_token_file"}
 IDENTITY_KEYS = {"identity"}
 DI_KEYS = {"native_tracer"}
@@ -108,6 +108,13 @@ NATIVE_TRACER_FLOAT_FIELDS = {
     "target_rps",
     "open_loop_duration_s",
     "provider_admission_min_free_memory_mb",
+}
+DEPLOYMENT_KEYS = {
+    "role", "identity", "nfd_endpoint", "certificate", "trust_schema",
+    "release_dir", "model_manifest", "backend", "device", "writable_dirs",
+    "startup_timeout_s", "shutdown_timeout_s", "telemetry_max_age_ms",
+    "secret_files", "status_file", "metrics_file", "harness",
+    "provider_command", "run_command",
 }
 
 
@@ -332,12 +339,14 @@ def validate_profile_payload(payload: dict[str, Any], require_di: bool = False) 
     provider = require_object(payload, "provider", errors)
     user = require_object(payload, "user", errors)
     distributed = require_object(payload, "distributed_inference", errors)
+    deployment = require_object(payload, "deployment", errors)
     env = payload.get("env", {})
 
     errors.extend(unknown_keys(controller, CONTROLLER_KEYS, "controller"))
     errors.extend(unknown_keys(provider, IDENTITY_KEYS, "provider"))
     errors.extend(unknown_keys(user, IDENTITY_KEYS, "user"))
     errors.extend(unknown_keys(distributed, DI_KEYS, "distributed_inference"))
+    errors.extend(unknown_keys(deployment, DEPLOYMENT_KEYS, "deployment"))
     if "env" in payload and not isinstance(env, dict):
         errors.append("env must be an object")
     elif isinstance(env, dict):
@@ -351,6 +360,20 @@ def validate_profile_payload(payload: dict[str, Any], require_di: bool = False) 
         validate_string(controller, key, "controller", errors)
     validate_string(provider, "identity", "provider", errors)
     validate_string(user, "identity", "user", errors)
+    for key in (
+        "role", "identity", "nfd_endpoint", "certificate", "trust_schema",
+        "release_dir", "model_manifest", "backend", "device", "status_file",
+        "metrics_file", "harness",
+    ):
+        validate_string(deployment, key, "deployment", errors)
+    for key in ("startup_timeout_s", "shutdown_timeout_s", "telemetry_max_age_ms"):
+        validate_int(deployment, key, "deployment", errors)
+    for key in ("writable_dirs", "secret_files", "provider_command", "run_command"):
+        if key in deployment and (
+            not isinstance(deployment[key], list) or
+            not all(isinstance(value, str) for value in deployment[key])
+        ):
+            errors.append(f"deployment.{key} must be a string array")
 
     native = distributed.get("native_tracer", {})
     if native in ({}, None):
@@ -386,6 +409,89 @@ def validate_profile_payload(payload: dict[str, Any], require_di: bool = False) 
     if require_di and native and native.get("enabled") is not True:
         warnings.append("distributed_inference.native_tracer.enabled is not true")
     return {"valid": not errors, "errors": errors, "warnings": warnings}
+
+
+def deployment_preflight(payload: dict[str, Any]) -> dict[str, Any]:
+    deployment = payload.get("deployment")
+    if not isinstance(deployment, dict):
+        return {}
+
+    def path_status(key: str, *, directory: bool = False) -> dict[str, Any]:
+        raw = deployment.get(key, "")
+        path = Path(str(raw)) if raw else None
+        exists = bool(path and (path.is_dir() if directory else path.is_file()))
+        return {"ok": exists, "path": str(path) if path else ""}
+
+    role = str(deployment.get("role", ""))
+    identity = str(deployment.get("identity", ""))
+    role_identity = {
+        "ok": role in {"controller", "provider", "repo", "user", "bench"}
+              and identity.startswith("/") and len(identity) > 1,
+        "role": role,
+        "identity": identity,
+    }
+    nfd_path = Path(str(deployment.get("nfd_endpoint", "")))
+    nfd = {"ok": nfd_path.exists() and nfd_path.is_socket(), "endpoint": str(nfd_path)}
+    backend = str(deployment.get("backend", ""))
+    backend_device = {
+        "ok": backend == "onnxruntime-cpu",
+        "backend": backend,
+        "physicalGpuEvidence": False,
+    }
+    writable = [Path(str(value)) for value in deployment.get("writable_dirs", [])]
+    writable_status = {
+        "ok": bool(writable) and all(path.is_dir() and os.access(path, os.W_OK) for path in writable),
+        "paths": [str(path) for path in writable],
+    }
+    startup = deployment.get("startup_timeout_s", 0)
+    shutdown = deployment.get("shutdown_timeout_s", 0)
+    lifecycle = {
+        "ok": isinstance(startup, int) and isinstance(shutdown, int)
+              and 0 < startup <= 300 and 0 < shutdown <= 120,
+        "startupTimeoutS": startup,
+        "shutdownTimeoutS": shutdown,
+    }
+    telemetry_age = deployment.get("telemetry_max_age_ms", 0)
+    telemetry = {
+        "ok": isinstance(telemetry_age, int) and 0 < telemetry_age <= 2000,
+        "source": "linux-proc",
+        "maximumAgeMs": telemetry_age,
+    }
+    secret_paths = [Path(str(value)) for value in deployment.get("secret_files", [])]
+    secrets_secure = bool(secret_paths)
+    for path in secret_paths:
+        if not path.is_file() or path.stat().st_mode & 0o077:
+            secrets_secure = False
+    release_path = Path(str(deployment.get("release_dir", ".")))
+    disk_base = release_path if release_path.exists() else release_path.parent
+    try:
+        disk_free = shutil.disk_usage(disk_base).free
+    except OSError:
+        disk_free = 0
+    disk_permissions = {
+        "ok": secrets_secure and disk_free >= 512 * 1024 * 1024,
+        "secretFileCount": len(secret_paths),
+        "freeBytes": disk_free,
+    }
+    checks = {
+        "role_identity": role_identity,
+        "nfd": nfd,
+        "identity_certificate": path_status("certificate"),
+        "trust_schema": path_status("trust_schema"),
+        "release": path_status("release_dir", directory=True),
+        "backend_device": backend_device,
+        "model_artifact": path_status("model_manifest"),
+        "writable_dirs": writable_status,
+        "lifecycle_bounds": lifecycle,
+        "telemetry_probe": telemetry,
+        "disk_permissions": disk_permissions,
+    }
+    return {
+        "ready": all(value["ok"] for value in checks.values()),
+        "checks": checks,
+        "device": "<redacted>",
+        "secret_files": ["<redacted>" for _ in secret_paths],
+    }
 
 
 def parse_policy_identities(policy_file: Path) -> list[tuple[str, str]]:
@@ -647,6 +753,7 @@ def summarize_log_markers(log_dir: Path) -> dict[str, list[str]]:
 
 def run_doctor(args: argparse.Namespace) -> int:
     repo_root = repo_root_from(Path.cwd())
+    raw_profile = load_profile_json(args.profile)
     profile = RuntimeProfile.from_json(args.profile)
     resolved = profile.resolved(repo_root)
     with EventWriter(args.event_log) as events:
@@ -669,6 +776,9 @@ def run_doctor(args: argparse.Namespace) -> int:
                 events,
             )
         }
+        deployment = deployment_preflight(raw_profile)
+        if deployment:
+            checks["deployment"] = deployment
 
         ready = True
         ready = ready and Path(resolved["controller"]["policy_file"]).exists()
@@ -676,6 +786,8 @@ def run_doctor(args: argparse.Namespace) -> int:
         ready = ready and checks["token_file"].get("exists", False)
         ready = ready and all(checks["binaries"].values())
         ready = ready and checks["distributed_inference"]["native_tracer"].get("ready", False)
+        if deployment:
+            ready = ready and deployment.get("ready", False)
         checks["ready"] = bool(ready)
         events.emit(
             "DOCTOR_RESULT",

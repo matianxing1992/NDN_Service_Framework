@@ -93,8 +93,21 @@ class DeploymentReadinessContractsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             profile = root / "deployment.json"
+            status_file = root / "status.json"
+            metrics_file = root / "metrics.json"
+            status_file.write_text(json.dumps({"ready": True}), encoding="utf-8")
+            metrics_file.write_text(json.dumps({
+                "sampledAtMs": 1,
+                "counters": {"requests_completed_total": 3},
+                "gauges": {"queue_depth": 0},
+                "labels": {"provider": "local"},
+            }), encoding="utf-8")
             profile.write_text(json.dumps({
-                "deployment": {"harness": "Experiments/NDNSF_DI_LlmPipeline_Minindn.py"},
+                "deployment": {
+                    "harness": "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
+                    "status_file": str(status_file),
+                    "metrics_file": str(metrics_file),
+                },
             }), encoding="utf-8")
             request = root / "request.json"
             request.write_text("{}", encoding="utf-8")
@@ -122,6 +135,22 @@ class DeploymentReadinessContractsTest(unittest.TestCase):
                     payload = json.loads(proc.stdout)
                     self.assertEqual(payload["mode"], "production-adapter")
                     self.assertIn(adapter, " ".join(payload["command"]))
+
+            status = subprocess.run(
+                cli + ["status", "--profile", str(profile), "--json"],
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            self.assertEqual(status.returncode, 0, status.stderr)
+            self.assertTrue(json.loads(status.stdout)["ready"])
+            metrics_out = root / "metrics.prom"
+            metrics = subprocess.run(
+                cli + ["metrics", "--profile", str(profile),
+                       "--format", "prometheus-textfile", "--out", str(metrics_out)],
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            self.assertEqual(metrics.returncode, 0, metrics.stderr)
+            rendered = metrics_out.read_text(encoding="utf-8")
+            self.assertIn("ndnsf_di_requests_completed_total", rendered)
+            self.assertIn('provider="local"', rendered)
+            self.assertFalse(list(root.glob(".metrics.prom.*")))
 
     def test_systemd_package_contract_is_hardened_and_reversible(self) -> None:
         root = Path(__file__).resolve().parents[2] / "packaging" / "ndnsf-di-systemd"
