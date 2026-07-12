@@ -1,5 +1,8 @@
 {
   "schema": "ndnsf-di-qwen-pilot-campaign-v1",
+  "campaignId": "spec105-r1-qwen-scheduler-v1",
+  "revision": "R1",
+  "predecessorCampaignVerdict": "BLOCK_RETAINED_SEPARATELY",
   "scope": "local-minindn-candidate",
   "modelManifest": "examples/ndnsf-di-qwen-pilot.model.json",
   "topology": "Experiments/Topology/AI_Lab.conf",
@@ -17,7 +20,11 @@
     "logging": "INFO",
     "trace": false,
     "automaticRetry": false,
-    "replacementRun": false
+    "replacementRun": false,
+    "generationWorkers": 4,
+    "generationQueueBound": 60,
+    "generationOwnership": "one-worker-per-complete-generation",
+    "tokenProgressRequired": true
   },
   "acceptance": {
     "minimumCompletionRate": 0.99,

@@ -148,6 +148,12 @@ def _run_native_open_loop(client, args, qwen_summary: dict, manifest: dict,
     if len(expected_tokens) != args.max_new_tokens:
         raise RuntimeError(
             "open-loop expected token count must equal --max-new-tokens")
+    if not args.campaign_id or any(
+        character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
+        for character in args.campaign_id
+    ):
+        raise RuntimeError(
+            "open-loop native campaign requires a safe immutable --campaign-id")
     interval_s = args.request_interval_ms / 1000.0
     offered = max(1, int(args.measured_duration_s / interval_s))
     generation_workers = 4
@@ -277,6 +283,7 @@ def _run_native_open_loop(client, args, qwen_summary: dict, manifest: dict,
         f"p50_ms={_percentile(latencies, 0.50):.2f}",
         f"p95_ms={_percentile(latencies, 0.95):.2f}",
         f"p99_ms={_percentile(latencies, 0.99):.2f}",
+        f"campaignId={args.campaign_id}",
         f"generationWorkers={generation_workers}",
         f"activeAtCutoff={scheduler_snapshot.active}",
         f"queuedAtCutoff={scheduler_snapshot.queued}",
@@ -361,6 +368,7 @@ def main() -> int:
     parser.add_argument("--measured-duration-s", type=float, default=0.0)
     parser.add_argument("--request-interval-ms", type=float, default=0.0)
     parser.add_argument("--metrics-csv", default="")
+    parser.add_argument("--campaign-id", default="")
     args = parser.parse_args()
     if args.max_new_tokens < 1 or args.max_new_tokens > 32:
         raise SystemExit("--max-new-tokens must be between 1 and 32")

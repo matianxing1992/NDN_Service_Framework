@@ -3,7 +3,14 @@
 
 from __future__ import annotations
 
+import contextlib
+from concurrent.futures import Future
+import importlib.util
+import io
+from pathlib import Path
+import sys
 import threading
+from types import SimpleNamespace
 import unittest
 
 from ndnsf_distributed_inference.runtime_v1 import (
@@ -62,6 +69,96 @@ def evidence_payload(value: ExecutionEvidenceV1) -> dict[str, object]:
 
 
 class DeploymentReadinessContractsTest(unittest.TestCase):
+    def test_native_open_loop_driver_reports_generation_level_progress(self) -> None:
+        pipeline_dir = (
+            Path(__file__).resolve().parents[2] /
+            "examples/python/NDNSF-DistributedInference/llm_pipeline"
+        )
+        sys.path.insert(0, str(pipeline_dir))
+        try:
+            spec = importlib.util.spec_from_file_location(
+                "spec105_qwen_user_fixture", pipeline_dir / "user.py")
+            self.assertIsNotNone(spec)
+            self.assertIsNotNone(spec.loader)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+        finally:
+            sys.path.pop(0)
+
+        calls: list[tuple[str, int, dict]] = []
+        module._native_step_payload = (
+            lambda _context, _manifest, token_index, _mode:
+            str(token_index).encode("ascii")
+        )
+
+        def requirements(_manifest, session_id, token_index, _mode):
+            calls.append((session_id, token_index, {}))
+            return {}
+
+        module._native_role_requirements = requirements
+
+        class Result:
+            status = True
+            error = ""
+            payload = b"logits"
+
+        module._decode_native_tensor_bundle = (
+            lambda _payload: {"logits": [[[0.0, 1.0]]]}
+        )
+
+        class Client:
+            shutdown_wait = None
+
+            def async_distributed_inference(self, *_args, **kwargs):
+                self_outer.assertNotIn("on_result", kwargs)
+                self_outer.assertNotIn("on_error", kwargs)
+                future = Future()
+                future.set_result(Result())
+                return future
+
+            def shutdown(self, wait=True):
+                self.shutdown_wait = wait
+
+        self_outer = self
+        client = Client()
+        args = SimpleNamespace(
+            request_interval_ms=1.0,
+            measured_duration_s=0.002,
+            max_new_tokens=2,
+            native_first_kv_mode="full-context",
+            request_id="scheduler-fixture",
+            ack_timeout_ms=1500,
+            timeout_ms=120000,
+            campaign_id="spec105-r1-scheduler-fixture",
+        )
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            result = module._run_native_open_loop(
+                client,
+                args,
+                {"inputIds": [[7]], "attentionMask": [[1]]},
+                {"stages": []},
+                [1, 1],
+                None,
+            )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(client.shutdown_wait, False)
+        per_session: dict[str, list[int]] = {}
+        for session_id, token_index, _ in calls:
+            per_session.setdefault(session_id, []).append(token_index)
+        self.assertEqual(per_session, {
+            "scheduler-fixture-open-0": [0, 1],
+            "scheduler-fixture-open-1": [0, 1],
+        })
+        rendered = output.getvalue()
+        self.assertIn("offered=2 completed=2 failed=0 unfinished=0", rendered)
+        self.assertIn("generationWorkers=4", rendered)
+        self.assertIn("campaignId=spec105-r1-scheduler-fixture", rendered)
+        self.assertIn(
+            'tokenProgress={"scheduler-fixture-open-0":2,'
+            '"scheduler-fixture-open-1":2}', rendered)
+
     def test_generation_scheduler_owns_full_generation_before_next_job(self) -> None:
         observed: list[tuple[str, int]] = []
         scheduler = BoundedGenerationScheduler(max_workers=1, max_queued=1)

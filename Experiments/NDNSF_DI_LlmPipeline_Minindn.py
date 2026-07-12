@@ -122,6 +122,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--measured-duration-s", type=float, default=0.0)
     parser.add_argument("--request-interval-ms", type=float, default=0.0)
+    parser.add_argument("--campaign-id", default="")
     parser.add_argument(
         "--publish-input-reference",
         action="store_true",
@@ -992,7 +993,7 @@ def main() -> int:
             "--max-new-tokens {} "
             "--native-first-kv-mode {} "
             "--expected-token-ids {} "
-            "--measured-duration-s {} --request-interval-ms {} "
+            "--measured-duration-s {} --request-interval-ms {} --campaign-id {} "
             "--metrics-csv {} {} {}".format(
                 perf.shell_quote(args.prompt),
                 args.stages,
@@ -1011,6 +1012,7 @@ def main() -> int:
                 perf.shell_quote(args.expected_token_ids),
                 args.measured_duration_s,
                 args.request_interval_ms,
+                perf.shell_quote(args.campaign_id),
                 perf.shell_quote(metrics_csv),
                 "--publish-input-reference" if args.publish_input_reference else "",
                 native_user_args,
