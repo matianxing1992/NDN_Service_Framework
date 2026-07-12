@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import json
+import os
 import statistics
+import threading
 import time
 from pathlib import Path
 
@@ -93,6 +95,178 @@ class _LocalQwenOnnxRunner:
         return decode_payload(payload)
 
 
+def _native_step_payload(context_doc: dict, manifest: dict, token_index: int,
+                         first_kv_mode: str):
+    import numpy as np
+
+    full_ids = np.asarray(context_doc["inputIds"], dtype=np.int64)
+    full_mask = np.asarray(context_doc["attentionMask"], dtype=np.int64)
+    if token_index == 0:
+        ids = full_ids
+        positions = np.arange(full_ids.shape[1], dtype=np.int64)[None, :]
+    else:
+        ids = full_ids[:, -1:]
+        positions = np.asarray([[full_ids.shape[1] - 1]], dtype=np.int64)
+    tensors = {
+        "input_ids": ids,
+        "attention_mask": full_mask,
+        "position_ids": positions,
+    }
+    if token_index == 0 and first_kv_mode == "full-context":
+        for stage in manifest["stages"]:
+            for name in stage["cacheInputs"]:
+                shape = stage["tensorContracts"][name]["shape"]
+                tensors[name] = np.empty(
+                    (ids.shape[0], int(shape[1]), 0, int(shape[3])),
+                    dtype=np.float32,
+                )
+    return _native_tensor_bundle_payload(tensors)
+
+
+def _native_role_requirements(manifest: dict, logical_session: str,
+                              token_index: int, first_kv_mode: str) -> dict[str, bytes]:
+    kv_mode = first_kv_mode if token_index == 0 else "cache-hit"
+    requirement = (
+        f"kvMode={kv_mode};kvSessionId={logical_session};"
+        f"kvContextEpoch={token_index};kvNextContextEpoch={token_index + 1};"
+        "kvSecurityEpoch=0;"
+    ).encode("utf-8")
+    return {str(stage["role"]): requirement for stage in manifest["stages"]}
+
+
+def _run_native_open_loop(client, args, qwen_summary: dict, manifest: dict,
+                          expected_tokens: list[int], metrics_file) -> int:
+    """Submit bounded generations at a fixed open-loop rate without retries."""
+    import numpy as np
+
+    if args.request_interval_ms <= 0:
+        raise RuntimeError("open-loop native campaign requires --request-interval-ms")
+    if len(expected_tokens) != args.max_new_tokens:
+        raise RuntimeError(
+            "open-loop expected token count must equal --max-new-tokens")
+    interval_s = args.request_interval_ms / 1000.0
+    offered = max(1, int(args.measured_duration_s / interval_s))
+    condition = threading.Condition()
+    completed: list[dict] = []
+    live_futures = []
+
+    def finish(state: dict, status: str, error: str = "") -> None:
+        state["status"] = status
+        state["error"] = error
+        state["elapsed_ms"] = (time.perf_counter() - state["started"]) * 1000.0
+        with condition:
+            completed.append(state)
+            if metrics_file:
+                metrics_file.write(
+                    f"measured,{state['index']},{state['elapsed_ms']:.3f},"
+                    f"{status},{json.dumps(error)}\n")
+                metrics_file.flush()
+            condition.notify_all()
+
+    def submit_step(state: dict) -> None:
+        token_index = len(state["generated"])
+        payload = _native_step_payload(
+            state["context"], manifest, token_index, args.native_first_kv_mode)
+        requirements = _native_role_requirements(
+            manifest, state["logical_session"], token_index,
+            args.native_first_kv_mode)
+
+        def on_result(result) -> None:
+            if not result.status:
+                finish(state, "failed", str(result.error))
+                return
+            try:
+                response = _decode_native_tensor_bundle(result.payload)
+                logits = np.asarray(response["logits"])
+                token = int(np.argmax(logits[:, -1, :], axis=-1)[0])
+                expected = expected_tokens[token_index]
+                if token != expected:
+                    finish(
+                        state, "failed",
+                        f"TOKEN_MISMATCH index={token_index} expected={expected} actual={token}")
+                    return
+                state["generated"].append(token)
+                state["context"]["inputIds"] = [
+                    [*row, token] for row in state["context"]["inputIds"]
+                ]
+                state["context"]["attentionMask"] = [
+                    [*row, 1] for row in state["context"]["attentionMask"]
+                ]
+                if len(state["generated"]) == args.max_new_tokens:
+                    finish(state, "ok")
+                else:
+                    submit_step(state)
+            except Exception as exc:
+                finish(state, "failed", str(exc))
+
+        future = client.async_distributed_inference(
+            SERVICE,
+            payload,
+            dynamic_provisioning=False,
+            ack_timeout_ms=args.ack_timeout_ms,
+            timeout_ms=args.timeout_ms,
+            role_app_requirements=requirements,
+            on_result=on_result,
+            on_error=lambda exc: finish(state, "failed", str(exc)),
+        )
+        live_futures.append(future)
+
+    campaign_started = time.perf_counter()
+    for index in range(offered):
+        target = campaign_started + index * interval_s
+        delay = target - time.perf_counter()
+        if delay > 0:
+            time.sleep(delay)
+        state = {
+            "index": index,
+            "logical_session": f"{args.request_id}-open-{index}",
+            "context": {
+                "inputIds": [list(row) for row in qwen_summary["inputIds"]],
+                "attentionMask": [
+                    list(row) for row in qwen_summary.get(
+                        "attentionMask",
+                        [[1] * len(qwen_summary["inputIds"][0])],
+                    )
+                ],
+            },
+            "generated": [],
+            "started": time.perf_counter(),
+        }
+        submit_step(state)
+    completion_deadline = (
+        campaign_started + args.measured_duration_s + args.timeout_ms / 1000.0 + 5.0)
+    with condition:
+        while len(completed) < offered:
+            remaining = completion_deadline - time.perf_counter()
+            if remaining <= 0:
+                break
+            condition.wait(timeout=min(1.0, remaining))
+    ok = [state for state in completed if state["status"] == "ok"]
+    failed = [state for state in completed if state["status"] != "ok"]
+    unfinished = offered - len(completed)
+    latencies = [float(state["elapsed_ms"]) for state in ok]
+    print(
+        "LLM_PIPELINE_OPEN_LOOP_SUMMARY",
+        f"offered={offered}", f"completed={len(ok)}", f"failed={len(failed)}",
+        f"unfinished={unfinished}",
+        f"completionRate={len(ok) / offered:.6f}",
+        f"offeredRps={1.0 / interval_s:.6f}",
+        f"p50_ms={_percentile(latencies, 0.50):.2f}",
+        f"p95_ms={_percentile(latencies, 0.95):.2f}",
+        f"p99_ms={_percentile(latencies, 0.99):.2f}",
+        f"expectedTokens={json.dumps(expected_tokens, separators=(',', ':'))}",
+        flush=True,
+    )
+    for future in live_futures:
+        future.cancel()
+    client.shutdown(wait=False)
+    if len(ok) != offered:
+        if metrics_file:
+            metrics_file.flush()
+        os._exit(2)
+    return 0
+
+
 def main() -> int:
     parser = parse_common_args("Run validation LLM pipeline user")
     parser.add_argument("--prompt", default="Explain NDNSF-DI pipeline inference.")
@@ -109,6 +283,7 @@ def main() -> int:
     parser.add_argument("--native-cpu-provider", action="store_true")
     parser.add_argument("--qwen-service-manifest", default="")
     parser.add_argument("--max-new-tokens", type=int, default=1)
+    parser.add_argument("--expected-token-ids", default="")
     parser.add_argument(
         "--native-first-kv-mode",
         choices=("full-context", "delta-only"),
@@ -213,7 +388,7 @@ def main() -> int:
     local_qwen_onnx = None
     if (
         args.runtime == QWEN_ONNX_RUNTIME and
-        (args.native_cpu_provider or
+        ((args.native_cpu_provider and args.measured_duration_s <= 0) or
          args.context_input_mode == "append-token-delta-after-first")
     ):
         local_qwen_onnx = _LocalQwenOnnxRunner(
@@ -226,6 +401,17 @@ def main() -> int:
         metrics_path.parent.mkdir(parents=True, exist_ok=True)
         metrics_file = metrics_path.open("w", encoding="utf-8")
         metrics_file.write("phase,index,distributed_ms,status,error\n")
+
+    if args.native_cpu_provider and args.measured_duration_s > 0:
+        try:
+            manifest = json.loads(
+                Path(args.qwen_service_manifest).read_text(encoding="utf-8"))
+            expected_tokens = _parse_delta_token_ids(args.expected_token_ids)
+            return _run_native_open_loop(
+                client, args, qwen_summary, manifest, expected_tokens, metrics_file)
+        finally:
+            if metrics_file:
+                metrics_file.close()
 
     measured_latencies: list[float] = []
     measured_count = 0

@@ -114,6 +114,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--warmup-requests", type=int, default=0)
     parser.add_argument("--measured-requests", type=int, default=1)
     parser.add_argument("--max-new-tokens", type=int, default=1)
+    parser.add_argument("--expected-token-ids", default="")
     parser.add_argument(
         "--native-first-kv-mode",
         choices=("full-context", "delta-only"),
@@ -990,6 +991,7 @@ def main() -> int:
             "--warmup-requests {} --measured-requests {} "
             "--max-new-tokens {} "
             "--native-first-kv-mode {} "
+            "--expected-token-ids {} "
             "--measured-duration-s {} --request-interval-ms {} "
             "--metrics-csv {} {} {}".format(
                 perf.shell_quote(args.prompt),
@@ -1006,6 +1008,7 @@ def main() -> int:
                 args.measured_requests,
                 args.max_new_tokens,
                 args.native_first_kv_mode,
+                perf.shell_quote(args.expected_token_ids),
                 args.measured_duration_s,
                 args.request_interval_ms,
                 perf.shell_quote(metrics_csv),
@@ -1018,11 +1021,20 @@ def main() -> int:
             stderr=subprocess.STDOUT,
         )
         processes.append((user_proc, user_out, user_log))
-        user_proc.wait(timeout=180)
+        user_proc.wait(timeout=max(
+            180.0,
+            args.measured_duration_s + args.timeout_ms / 1000.0 + 30.0,
+        ))
         user_text = user_log.read_text(errors="replace")
         print(user_text)
-        if user_proc.returncode != 0 or "LLM_PIPELINE_USER_RESPONSE" not in user_text:
+        expected_user_marker = (
+            "LLM_PIPELINE_OPEN_LOOP_SUMMARY"
+            if args.runtime == "qwen-onnx-cpu-native" and args.measured_duration_s > 0 else
+            "LLM_PIPELINE_USER_RESPONSE"
+        )
+        if expected_user_marker not in user_text:
             raise RuntimeError(f"LLM pipeline user failed; log={user_log}")
+        user_failed = user_proc.returncode != 0
         for stage_index, log_path in enumerate(provider_logs):
             text = log_path.read_text(errors="replace")
             expected = (
@@ -1071,6 +1083,13 @@ def main() -> int:
         if args.runtime in ("qwen-transformers", "qwen-onnx", "qwen-onnx-cpu-native"):
             write_qwen_stage_profile(provider_logs, metrics_csv, OUT)
             write_collab_large_fetch_profile(provider_logs, OUT)
+        if user_failed:
+            print(
+                "LLM_PIPELINE_MININDN_FAILED "
+                f"returncode={user_proc.returncode} stages={args.stages} "
+                f"runtime={args.runtime} user_log={user_log}"
+            )
+            return int(user_proc.returncode or 2)
         print(
             "LLM_PIPELINE_MININDN_OK "
             f"local_ms={local_ms} distributed_ms={distributed_ms} "

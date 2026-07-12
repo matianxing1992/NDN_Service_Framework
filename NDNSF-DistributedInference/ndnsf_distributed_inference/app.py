@@ -693,6 +693,7 @@ class APPClient:
         dynamic_provisioning: bool | None = None,
         runtime: RuntimeSpec | None = None,
         artifact_references: dict | str | Path | None = None,
+        role_app_requirements: Mapping[str, bytes] | None = None,
         on_result: Callable[[InferenceResult], None] | None = None,
         on_error: Callable[[BaseException], None] | None = None,
     ) -> Future:
@@ -742,6 +743,7 @@ class APPClient:
                     role=role,
                     service=service,
                     allow_dynamic_provisioning=False,
+                    app_requirement=bytes((role_app_requirements or {}).get(role, b"")),
                 )
                 for role in role_names
             ],
