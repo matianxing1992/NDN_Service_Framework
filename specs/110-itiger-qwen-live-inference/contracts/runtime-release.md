@@ -3,7 +3,9 @@
 ## Build boundary
 
 The release source is an OCI image referenced by digest. Its primary builder is
-rootless Podman/Buildah inside a bounded iTiger Slurm CPU allocation, using a
+rootless Podman/Buildah inside a bounded iTiger Slurm CPU allocation, supplied
+either by an administrator-supported compute installation or a separately
+digest-qualified builder SIF, using a
 sealed source snapshot from project storage and explicit graphroot/runroot/cache/
 temporary paths below selected compute scratch. The verified OCI archive is
 atomically promoted to project storage before Apptainer materializes the SIF.
@@ -14,6 +16,12 @@ Login-node builds and the default `/home/$USER/.local/share/containers/storage`
 graphroot are forbidden. Login-node tool discovery is provisional until one
 compute-node diagnostic proves scratch write/fsync, rootless build/export,
 OCI-to-SIF conversion, execution, teardown, and durable promotion.
+
+Job `147712` is the preserved first diagnostic and failed after allocation start
+with `ROOTLESS_BUILD_TOOL_MISSING:podman`. It cannot be retried. Any builder-SIF
+replacement must bind the original submission ID, a new identity, explicit human
+authorization, the builder OCI/SIF digests, observed Apptainer fakeroot/user-
+namespace mode, VFS/chroot settings, and all original output/promotion checks.
 
 ## Sealed source and scratch selection
 

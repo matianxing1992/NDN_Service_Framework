@@ -238,6 +238,8 @@ processes terminate when the Slurm allocation ends.
   inside the allocated compute node.
 - Slurm advertises `/scratch` but `SLURM_TMPDIR` is unset or a selected scratch
   path is not writable.
+- A pinned builder SIF starts but nested Buildah cannot create the required user
+  namespace or execute `RUN` steps with VFS/chroot isolation.
 - NFD selects a management address unreachable from another compute node.
 - NFD TCP works but UDP is filtered, or vice versa.
 - One provider starts late, dies, or publishes a stale boot/lease identity.
@@ -261,8 +263,9 @@ processes terminate when the Slurm allocation ends.
   checksum-bound SIF and MUST include NFD, ndn-cxx, ndn-svs, NAC-ABE, NDNSF
   Core/Python, NDNSF-DI, Qwen tooling, PyTorch, Transformers, and ONNX Runtime
   GPU. The primary builder MUST be rootless Podman/Buildah in a bounded Slurm
-  CPU allocation; an external OCI builder is an optional digest-equivalent
-  publication path, not a prerequisite.
+  CPU allocation, either as administrator-supported compute commands or inside
+  a separately digest-qualified builder SIF; an external OCI builder is an
+  optional digest-equivalent publication path, not a prerequisite.
 - **FR-003**: The host supplies only the NVIDIA driver, Slurm, and Apptainer;
   user-space CUDA/runtime libraries MUST be versioned in the release and invoked
   with `apptainer exec --nv`.

@@ -50,6 +50,13 @@ first prove the same operations with a tiny local build context on a compute
 node. The repository GitHub Actions workflow may later mirror the same digest to
 GHCR, but it is not the primary completion path and iTiger needs no Docker daemon.
 
+Do not assume login-node Podman is available in a compute allocation. The first
+diagnostic job `147712` disproved that assumption. Until administrators provide
+compute builder commands, the replacement renderer must select the separately
+pinned builder-SIF mode, bind its OCI/SIF digests, and record explicit replacement
+authorization before one new submission. A direct Apptainer definition-file
+rewrite is not equivalent to the required OCI release.
+
 ## 4. Discover iTiger and validate the materialized SIF
 
 ```bash

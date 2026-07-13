@@ -29,6 +29,17 @@ storing a mutable Conda environment as release authority; making an unavailable
 public dependency commit or GitHub registry credential a mandatory gate; building
 the multi-gigabyte image on the disk-constrained workstation.
 
+**Measured correction (job 147712)**: login Podman/Buildah was not installed on
+the allocated `itiger01` compute environment. The host-tool route is therefore
+invalid unless administrators expose it on compute nodes. The next admissible
+fallback keeps the same Dockerfile/locks but materializes a pinned builder OCI
+as a SIF and tests nested Buildah with VFS/chroot exactly once under a replacement
+identity. Official Apptainer guidance confirms that unprivileged definition
+builds imply fakeroot but the available modes depend on user namespaces,
+subuid/subgid mappings, and host helpers; official Buildah guidance likewise
+requires qualifying isolation/user-namespace behavior. Directly rewriting the
+runtime as a second Apptainer definition build remains rejected.
+
 ## Decision 2: Make the SIF self-complete for user-space software
 
 **Decision**: Package NFD, NDN libraries/tools, NDNSF Core/Python, NDNSF-DI,

@@ -121,7 +121,17 @@ commits in project storage, then starts one bounded Slurm CPU build allocation.
 Rootless Podman/Buildah uses explicit graphroot, runroot, cache, and temporary
 paths below the selected compute scratch; it exports a digest-bound OCI archive
 to a partial project path, verifies it, atomically promotes it, and materializes
-the SIF under `/project`. The default Podman graphroot under `/home` is forbidden.
+the runtime SIF under `/project`. It may be supplied by an administrator on the
+compute node or by a separately pinned builder OCI materialized as a SIF, but the
+same GPU Dockerfile/locks remain the only stack build graph. The default Podman
+graphroot under `/home` is forbidden.
+
+Measured boundary: exact-once diagnostic job `147712` started on `itiger01` and
+failed because host Podman was absent; Buildah was therefore not attempted. It
+selected `/tmp` rather than the configured `TmpFS=/scratch`. This is an executed
+negative, not a pre-start blocker. The full build remains disabled until a new,
+human-authorized replacement proves a pinned builder SIF (or administrator-
+provided compute builder) and all scratch/OCI/SIF gates.
 
 The existing GitHub Actions/GHCR workflow is retained as an optional publication
 mirror. It cannot be the completion gate while pinned NFD and ndn-svs commits are

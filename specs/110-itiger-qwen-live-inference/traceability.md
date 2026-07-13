@@ -18,11 +18,11 @@
 | Requirement | Design/contract | Implementation tasks | Test/evidence tasks |
 |---|---|---|---|
 | FR-001 | plan: allocation lifecycle | T022, T040, T053 | T047-T048, T061-T062, T127-T128 |
-| FR-002 | `contracts/runtime-release.md` | T031-T044 | T042, T046-T049 |
+| FR-002 | `contracts/runtime-release.md` | T031-T044, T148 | T042, T046, T149-T151, T047-T049 |
 | FR-003 | runtime release host/runtime split | T031-T041 | T037, T048 |
-| FR-004 | plan: storage layout | T018-T020, T039-T040, T044 | T045-T049, T130-T132 |
+| FR-004 | plan: storage layout | T018-T020, T039-T040, T044, T148 | T045-T049, T149-T151, T130-T132 |
 | FR-005 | runtime forbidden content | T028, T035, T040, T057 | T042, T130 |
-| FR-006 | LiveClusterSnapshot | T008-T009, T022, T044 | T045-T049, T098, T101 |
+| FR-006 | LiveClusterSnapshot | T008-T009, T022, T044, T148 | T045-T049, T151, T098, T101 |
 | FR-007 | selected-transport multi-node gate | T050-T056, T063 | T060-T064, T088-T089 |
 | FR-008 | `contracts/allocation-topology.md` | T051, T053-T054 | T055, T062, T127 |
 | FR-009 | security architecture | T057-T058, T067, T069 | T059, T062, T073, T079-T083 |
@@ -44,7 +44,7 @@
 | FR-025 | workload thresholds | T024-T025, T106 | T108, T118 |
 | FR-026 | variables/confounders | T107-T108 | T118-T120 |
 | FR-027 | operator CLI and crash-safe journal | T016-T017, T022 | every submit task, T125-T126 |
-| FR-028 | replacement identity | T006-T007, T017 | T121-T122 |
+| FR-028 | replacement identity | T006-T007, T017 | T046, T150-T151, T121-T122 |
 | FR-029 | EvidenceBundle/schema | T013-T015, T026 | T079-T132 |
 | FR-030 | storage/promotion | T019-T020 | T129, T132 |
 | FR-031 | cleanup policy | T018-T020 | T131 |
