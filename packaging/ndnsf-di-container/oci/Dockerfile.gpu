@@ -5,6 +5,7 @@ ARG GPU_RUNTIME_BASE_IMAGE
 
 FROM ${GPU_BUILD_BASE_IMAGE} AS stack-builder
 ARG SOURCE_REVISION
+ARG DEPENDENCY_SOURCE_MODE=remote
 ARG DEBIAN_FRONTEND=noninteractive
 ENV PREFIX=/opt/ndnsf-di/current \
     PATH=/opt/venv/bin:/opt/ndnsf-di/current/bin:${PATH} \
@@ -42,13 +43,27 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     /opt/venv/bin/pip install --no-deps --requirement /tmp/python-requirements && \
     /opt/venv/bin/pip install --no-deps --index-url https://download.pytorch.org/whl/cu124 \
       torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0
-RUN python3 - <<'PY' >/tmp/clone-stack.sh
-import json,shlex
+RUN python3 - "$DEPENDENCY_SOURCE_MODE" <<'PY' >/tmp/clone-stack.sh
+import json,shlex,sys
 v=json.load(open('packaging/ndnsf-di-container/oci/locks/gpu.lock'))['sourceRepositories']
 print('set -eu')
-for name,row in v.items():
- print('git clone --filter=blob:none '+shlex.quote(row['url'])+' /src/dependencies/'+shlex.quote(name))
- print('git -C /src/dependencies/'+shlex.quote(name)+' checkout --detach '+shlex.quote(row['revision']))
+mode=sys.argv[1]
+if mode=='sealed':
+ seal=json.load(open('/src/ndnsf/.spec110-build/source-seal.json'))
+ assert seal['schemaVersion']=='spec110-rootless-source-seal-v1'
+ assert set(seal['dependencies'])==set(v)
+ for name,row in v.items():
+  assert seal['dependencies'][name]['revision']==row['revision']
+  source='/src/ndnsf/.spec110-build/sources/'+name
+  target='/src/dependencies/'+name
+  print('test -d '+shlex.quote(source))
+  print('cp -a '+shlex.quote(source)+' '+shlex.quote(target))
+elif mode=='remote':
+ for name,row in v.items():
+  print('git clone --filter=blob:none '+shlex.quote(row['url'])+' /src/dependencies/'+shlex.quote(name))
+  print('git -C /src/dependencies/'+shlex.quote(name)+' checkout --detach '+shlex.quote(row['revision']))
+else:
+ raise SystemExit('DEPENDENCY_SOURCE_MODE_INVALID')
 PY
 RUN sh /tmp/clone-stack.sh
 RUN set -eu; for project in ndn-cxx NDNSD ndn-svs; do \
