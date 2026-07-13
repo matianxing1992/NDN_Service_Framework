@@ -15,7 +15,6 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
 from spec110_candidate import IdentityError, freeze_candidate
-from spec110_evidence import EvidenceValidationError, validate_evidence
 from spec110_operator import OperatorSafetyError, load_safe_json, validate_safe_document
 from spec110_rootless_build import RootlessBuildError, render_rootless_build_job
 from spec110_storage import StorageError, evaluate_admission, plan_cleanup
@@ -173,11 +172,16 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "evidence":
             if args.evidence_command == "collect":
                 return _blocked("LIVE_EVIDENCE_COLLECTION_REQUIRES_JOB")
+            import spec110_evidence
             bundle = Path(args.bundle)
             path = bundle / "evidence.json" if bundle.is_dir() else bundle
-            result = validate_evidence(
-                load_safe_json(path), expected_sif_sha256=args.expected_sif_sha256
-            )
+            try:
+                result = spec110_evidence.validate_evidence(
+                    load_safe_json(path), expected_sif_sha256=args.expected_sif_sha256
+                )
+            except spec110_evidence.EvidenceValidationError as error:
+                _write({"status": "INVALID", "reasonCode": str(error)})
+                return EXIT_EVIDENCE_INVALID
             _write(result)
             return 0
         if args.command == "aggregate":
@@ -202,9 +206,6 @@ def main(argv: list[str] | None = None) -> int:
     except (IdentityError, RootlessBuildError, StorageError) as error:
         _write({"status": "INVALID", "reasonCode": str(error)})
         return EXIT_MISUSE
-    except EvidenceValidationError as error:
-        _write({"status": "INVALID", "reasonCode": str(error)})
-        return EXIT_EVIDENCE_INVALID
 
 
 if __name__ == "__main__":
