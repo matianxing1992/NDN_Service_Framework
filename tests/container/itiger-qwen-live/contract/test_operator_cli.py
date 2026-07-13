@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -10,6 +11,14 @@ import unittest
 
 REPO = Path(__file__).resolve().parents[4]
 CLI = REPO / "tools" / "ndnsf-di" / "ndnsf-di-itiger-qwen"
+
+
+def prepare_build_source(source: Path) -> None:
+    target = source / "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts"
+    target.mkdir(parents=True)
+    owner = REPO / "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts"
+    for name in ("rootless-build.sh", "inspect-oci-archive.py"):
+        shutil.copy2(owner / name, target / name)
 
 
 class OperatorCliTests(unittest.TestCase):
@@ -42,7 +51,7 @@ class OperatorCliTests(unittest.TestCase):
             source = root / "source"
             project = root / "project"
             output = project / "campaigns/spec110/rendered/build.sbatch"
-            source.mkdir()
+            prepare_build_source(source)
             env = dict(os.environ, NDNSF_SPEC110_ALLOW_TEST_ROOT="1")
             result = subprocess.run(
                 [str(CLI), "release", "build-render", "--source", str(source),
@@ -62,7 +71,7 @@ class OperatorCliTests(unittest.TestCase):
             source = root / "source"
             project = root / "project"
             output = project / "campaigns/spec110/rendered/build.sbatch"
-            source.mkdir()
+            prepare_build_source(source)
             env = dict(os.environ, NDNSF_SPEC110_ALLOW_TEST_ROOT="1")
             result = subprocess.run(
                 ["python3", "-S", str(CLI), "release", "build-render",
