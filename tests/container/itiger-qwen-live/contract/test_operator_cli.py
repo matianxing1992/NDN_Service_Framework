@@ -56,6 +56,23 @@ class OperatorCliTests(unittest.TestCase):
             self.assertTrue(output.is_file())
             self.assertNotIn("sbatch ", output.read_text())
 
+    def test_release_build_render_does_not_require_evidence_dependencies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source"
+            project = root / "project"
+            output = project / "campaigns/spec110/rendered/build.sbatch"
+            source.mkdir()
+            env = dict(os.environ, NDNSF_SPEC110_ALLOW_TEST_ROOT="1")
+            result = subprocess.run(
+                ["python3", "-S", str(CLI), "release", "build-render",
+                 "--source", str(source), "--project", str(project),
+                 "--release-id", "no-site-probe", "--output", str(output)],
+                text=True, capture_output=True, check=False, env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(json.loads(result.stdout)["status"], "RENDERED_NOT_SUBMITTED")
+
     def test_candidate_freeze_and_misuse_exit_codes(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
