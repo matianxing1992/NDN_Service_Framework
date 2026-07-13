@@ -42,6 +42,8 @@ docs/NDNSF-UAV/**/*.toc
 docs/reports/*
 !docs/reports/negative_ack_early_stop_minindn_20260702.md
 results/
+# Spec 109 evidence is local/durable-cluster output; only curated docs/contracts are tracked.
+/results/spec109-itiger-qwen/
 third_party/
 RELEASE/*
 !RELEASE/README.md

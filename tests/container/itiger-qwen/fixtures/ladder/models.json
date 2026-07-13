@@ -1,0 +1,10 @@
+{
+  "schemaVersion": "1.0-test-fixture",
+  "models": [
+    {"size":"1.5B","repository":"Qwen/Qwen2.5-1.5B-Instruct","revision":"1111111111111111111111111111111111111111","license":"apache-2.0","parametersBillions":1.54,"layers":28,"minimumGpuBytes":6000000000},
+    {"size":"3B","repository":"Qwen/Qwen2.5-3B-Instruct","revision":"2222222222222222222222222222222222222222","license":"qwen-research","parametersBillions":3.09,"layers":36,"minimumGpuBytes":10000000000},
+    {"size":"7B","repository":"Qwen/Qwen2.5-7B-Instruct","revision":"3333333333333333333333333333333333333333","license":"apache-2.0","parametersBillions":7.61,"layers":28,"minimumGpuBytes":22000000000},
+    {"size":"14B","repository":"Qwen/Qwen2.5-14B-Instruct","revision":"4444444444444444444444444444444444444444","license":"apache-2.0","parametersBillions":14.7,"layers":48,"minimumGpuBytes":40000000000}
+  ],
+  "note": "Revisions are non-production fixture identities; live transfer must resolve official immutable commits."
+}

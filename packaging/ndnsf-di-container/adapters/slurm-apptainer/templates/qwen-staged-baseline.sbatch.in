@@ -1,0 +1,12 @@
+#!/bin/bash
+#SBATCH --job-name=@@JOB_NAME@@
+#SBATCH --partition=@@PARTITION@@
+#SBATCH --account=@@ACCOUNT@@
+#SBATCH --qos=@@QOS@@
+#SBATCH --time=@@WALL_TIME@@
+#SBATCH --cpus-per-task=@@CPUS@@
+#SBATCH --mem=@@MEMORY@@
+#SBATCH --gres=gpu:@@GPU_TYPE@@:@@GPU_COUNT@@
+set -euo pipefail
+scratch="/tmp/$USER/ndnsf-di/$SLURM_JOB_ID"; mkdir -p "$scratch"; trap 'rc=$?; rm -rf "$scratch"; exit $rc' EXIT
+apptainer exec --nv --bind "@@ARTIFACT_PATH@@:@@ARTIFACT_PATH@@:ro" "@@SIF_PATH@@" @@RUN_COMMAND@@

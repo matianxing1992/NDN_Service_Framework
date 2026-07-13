@@ -1,0 +1,9 @@
+ARG NDNSF_GPU_BASE
+FROM ${NDNSF_GPU_BASE}
+COPY oci/locks/qwen-reference.lock /tmp/qwen-reference.lock
+RUN python3 -m pip install --no-cache-dir --requirement /tmp/qwen-reference.lock \
+ && rm -f /tmp/qwen-reference.lock
+COPY adapters/slurm-apptainer/scripts/run-qwen-reference.py /opt/ndnsf/bin/
+COPY adapters/slurm-apptainer/scripts/sample-qwen-resources.py /opt/ndnsf/bin/
+COPY adapters/slurm-apptainer/scripts/run-ndnsf-qwen.sh /opt/ndnsf/bin/
+USER 65532:65532

@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+"""Repository-local Spec 109 operator CLI; all mutation is explicit."""
+from __future__ import annotations
+import argparse,json,subprocess,sys,time
+from pathlib import Path
+
+HERE=Path(__file__).resolve().parent
+sys.path.insert(0,str(HERE))
+from spec109_job import JobError,render_sbatch,reserve_run
+from spec109_predecessors import PredecessorError,observe_predecessor_lock,verify_predecessor_gate
+from spec109_source import SourceSnapshotError,capture_source_snapshot
+from spec109_storage import StorageError,parse_discovery_output,plan_cleanup
+from validate_spec109 import ValidationError,validate_document
+
+SCHEMAS={"source":"source-snapshot.schema.json","predecessor":"predecessor-gate.schema.json","profile":"qwen-experiment-profile.schema.json","matrix":"scale-matrix.schema.json","evidence":"qwen-experiment-evidence.schema.json"}
+class CliError(RuntimeError):pass
+def _json(path):
+    try:return json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception as exc:raise CliError("INPUT_INVALID:"+str(exc))
+def _write(path,value):
+    target=Path(path);target.parent.mkdir(parents=True,exist_ok=True);temporary=target.with_suffix(target.suffix+".tmp");temporary.write_text(json.dumps(value,indent=2,sort_keys=True)+"\n",encoding="utf-8");temporary.replace(target)
+def _run(command):
+    result=subprocess.run(command,text=True,capture_output=True,check=False)
+    if result.returncode:raise CliError("COMMAND_FAILED:"+command[0]+":"+(result.stderr or result.stdout).strip())
+    return result.stdout.strip()
+def _job_id(value):
+    text=str(value)
+    if not text.isdigit():raise CliError("JOB_ID_INVALID")
+    return text
+def parser():
+    p=argparse.ArgumentParser(prog="ndnsf-di-qwen");sub=p.add_subparsers(dest="command",required=True)
+    x=sub.add_parser("snapshot-source");x.add_argument("--repo",required=True);x.add_argument("--output",required=True);x.add_argument("--untracked-archive")
+    x=sub.add_parser("discover");x.add_argument("--host",default="itiger");x.add_argument("--output",required=True)
+    x=sub.add_parser("validate-predecessors");x.add_argument("--manifest",required=True);x.add_argument("--repo",default=".")
+    x=sub.add_parser("observe-predecessors");x.add_argument("--lock",required=True);x.add_argument("--output",required=True)
+    x=sub.add_parser("validate");x.add_argument("--schema",choices=sorted(SCHEMAS),required=True);x.add_argument("--input",required=True);x.add_argument("--semantic",action="store_true")
+    x=sub.add_parser("render");x.add_argument("--job-profile",required=True);x.add_argument("--output",required=True);x.add_argument("--ledger",required=True);x.add_argument("--submit",action="store_true")
+    x=sub.add_parser("transfer");x.add_argument("--model-entry",required=True);x.add_argument("--run-id",required=True);x.add_argument("--output",required=True);x.add_argument("--ledger",required=True);x.add_argument("--submit",action="store_true")
+    for name in ("oracle","staged-baseline","candidate"):
+        x=sub.add_parser(name);x.add_argument("--job-profile",required=True);x.add_argument("--output",required=True);x.add_argument("--ledger",required=True);x.add_argument("--submit",action="store_true")
+    x=sub.add_parser("cleanup");x.add_argument("--candidates",required=True);x.add_argument("--protected",required=True);x.add_argument("--output",required=True);x.add_argument("--dry-run",action="store_true",required=True)
+    for name in ("status","wait","cancel"):
+        x=sub.add_parser(name);x.add_argument("--job-id",required=True)
+        if name=="wait":x.add_argument("--timeout",type=int,default=600);x.add_argument("--poll",type=int,default=5)
+    x=sub.add_parser("evidence");x.add_argument("--ledger",required=True);x.add_argument("--output",required=True)
+    return p
+def main(argv=None):
+    args=parser().parse_args(argv)
+    if args.command=="snapshot-source":
+        archive=args.untracked_archive or str(Path(args.output).with_suffix(".untracked.tar"));value=capture_source_snapshot(args.repo,untracked_archive=archive);_write(args.output,value);print(json.dumps(value,sort_keys=True));return 0
+    if args.command=="discover":
+        script=Path(__file__).resolve().parents[2]/"packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/discover-itiger-qwen.sh"
+        result=subprocess.run(["ssh","-o","BatchMode=yes",args.host,"bash -s"],input=script.read_text(encoding="utf-8"),text=True,capture_output=True,check=False)
+        root=Path(args.output);root.mkdir(parents=True,exist_ok=True);(root/"raw.stdout").write_text(result.stdout,encoding="utf-8");(root/"raw.stderr").write_text(result.stderr,encoding="utf-8")
+        if result.returncode:raise CliError("DISCOVERY_SSH_FAILED:"+str(result.returncode))
+        value=parse_discovery_output(result.stdout);_write(root/"parsed.json",value);print(json.dumps(value,sort_keys=True));return 0
+    if args.command=="validate-predecessors":print(json.dumps(verify_predecessor_gate(args.manifest,repo_root=args.repo),sort_keys=True));return 0
+    if args.command=="observe-predecessors":value=observe_predecessor_lock(args.lock);_write(args.output,value);print(json.dumps(value,sort_keys=True));return 0
+    if args.command=="validate":print(json.dumps(validate_document(SCHEMAS[args.schema],_json(args.input),semantic=args.semantic),sort_keys=True));return 0
+    if args.command=="render":
+        profile=_json(args.job_profile);text=render_sbatch(profile);Path(args.output).parent.mkdir(parents=True,exist_ok=True);Path(args.output).write_text(text,encoding="utf-8")
+        result={"status":"RENDERED","submitted":False,"script":str(args.output)}
+        if args.submit:
+            reservation=reserve_run(args.ledger,str(profile["runId"]),"sha256:"+__import__("hashlib").sha256(text.encode()).hexdigest());out=_run(["sbatch","--parsable",str(args.output)]);job=_job_id(out.split(";",1)[0]);result.update(status="SUBMITTED",submitted=True,jobId=job,reservation=reservation)
+        print(json.dumps(result,sort_keys=True));return 0
+    if args.command=="transfer":
+        value=_json(args.model_entry); required={"repository","revision","licenseClass","projectRoot","partialPath","transferManifest","slurm"}
+        if required-set(value):raise CliError("TRANSFER_ENTRY_INCOMPLETE")
+        slurm=value["slurm"]; profile={"jobName":"qwen-transfer","partition":slurm["partition"],"account":slurm["account"],"qos":slurm["qos"],"wallTime":slurm["wallTime"],"cpus":slurm["cpus"],"memory":slurm["memory"],"gpuType":"none","gpuCount":0,"runId":args.run_id,"command":"/bin/true"}
+        text=render_sbatch(profile).replace("#SBATCH --gres=gpu:none:0\n","")
+        command=[str(Path(__file__).resolve().parents[2]/"packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/stage-qwen-model.py"),"--repository",value["repository"],"--revision",value["revision"],"--destination",value["partialPath"],"--manifest",value["transferManifest"],"--license-class",value["licenseClass"]]
+        import shlex,hashlib
+        text=text.replace("/bin/true"," ".join(shlex.quote(str(x)) for x in command));Path(args.output).parent.mkdir(parents=True,exist_ok=True);Path(args.output).write_text(text)
+        result={"status":"RENDERED","submitted":False,"runId":args.run_id,"script":args.output}
+        if args.submit:
+            reservation=reserve_run(args.ledger,args.run_id,"sha256:"+hashlib.sha256(text.encode()).hexdigest());job=_job_id(_run(["sbatch","--parsable",args.output]).split(";",1)[0]);result.update(status="SUBMITTED",submitted=True,jobId=job,reservation=reservation)
+        print(json.dumps(result,sort_keys=True));return 0
+    if args.command in {"oracle","staged-baseline","candidate"}:
+        profile=_json(args.job_profile);text=render_sbatch(profile);Path(args.output).parent.mkdir(parents=True,exist_ok=True);Path(args.output).write_text(text)
+        result={"status":"RENDERED","operation":args.command,"submitted":False,"script":args.output}
+        if args.submit:
+            import hashlib
+            reservation=reserve_run(args.ledger,str(profile["runId"]),"sha256:"+hashlib.sha256(text.encode()).hexdigest());job=_job_id(_run(["sbatch","--parsable",args.output]).split(";",1)[0]);result.update(status="SUBMITTED",submitted=True,jobId=job,reservation=reservation)
+        print(json.dumps(result,sort_keys=True));return 0
+    if args.command=="cleanup":
+        candidates=_json(args.candidates);protected=_json(args.protected);plan=plan_cleanup(candidates,protected=protected);_write(args.output,{"status":"DRY_RUN","plan":plan});print(json.dumps({"status":"DRY_RUN","plan":plan},sort_keys=True));return 0
+    if args.command=="status":
+        job=_job_id(args.job_id);print(_run(["sacct","-n","-P","-j",job,"-o","JobIDRaw,State,ExitCode,Elapsed,NodeList,ReqTRES,AllocTRES"]));return 0
+    if args.command=="wait":
+        job=_job_id(args.job_id);deadline=time.monotonic()+args.timeout;terminal={"COMPLETED","FAILED","TIMEOUT","CANCELLED","PREEMPTED","OUT_OF_MEMORY","NODE_FAIL"}
+        while time.monotonic()<deadline:
+            output=_run(["sacct","-n","-P","-j",job,"-o","JobIDRaw,State,ExitCode"]);state=next((line.split("|")[1].split("+")[0] for line in output.splitlines() if line.split("|")[0]==job),"")
+            if state in terminal:print(output);return 0
+            time.sleep(max(1,args.poll))
+        raise CliError("WAIT_TIMEOUT")
+    if args.command=="cancel":job=_job_id(args.job_id);_run(["scancel",job]);print(json.dumps({"status":"CANCEL_REQUESTED","jobId":job}));return 0
+    if args.command=="evidence":value=_json(args.ledger);_write(args.output,value);print(json.dumps({"status":"COPIED","output":args.output},sort_keys=True));return 0
+    raise CliError("COMMAND_UNSUPPORTED")
+if __name__=="__main__":
+    try:raise SystemExit(main())
+    except (CliError,JobError,PredecessorError,SourceSnapshotError,StorageError,ValidationError) as exc:print(str(exc),file=sys.stderr);raise SystemExit(2)

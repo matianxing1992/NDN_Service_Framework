@@ -26,6 +26,14 @@ RunnerKind runnerKindFromString(const std::string& value);
 
 struct ExecutionEvidence
 {
+  struct NodeProviderAssignment
+  {
+    std::string role;
+    std::string nodeName;
+    std::string provider;
+    bool modelNode = true;
+  };
+
   std::string schema = "ndnsf-di-execution-evidence-v1";
   std::string providerName;
   std::string providerBootId;
@@ -39,10 +47,20 @@ struct ExecutionEvidence
   std::string planDigest;
   std::map<std::string, std::string> artifactDigests;
   std::vector<std::string> roles;
+  std::vector<NodeProviderAssignment> nodeProviderAssignments;
+  bool cpuFallbackUsed = false;
+  std::string gpuUuid;
+  std::string providerProfilePath;
   std::uint64_t createdAtMs = 0;
 
   void validate() const;
 };
+
+void applyOnnxRuntimeProviderProfile(ExecutionEvidence& evidence,
+                                     const std::string& profilePath,
+                                     const std::string& role,
+                                     bool cpuFallbackUsed,
+                                     const std::string& gpuUuid = "");
 
 std::string executionEvidenceToJson(const ExecutionEvidence& evidence);
 ExecutionEvidence executionEvidenceFromJson(const std::string& json);

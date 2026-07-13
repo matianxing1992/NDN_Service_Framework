@@ -1,0 +1,10 @@
+{
+  "complete": {"terminal": "PASS", "promotionComplete": true, "redactionFindings": 0, "fallbackUsed": false},
+  "missing": {"omit": "backend"},
+  "mixed": {"candidateId": "candidate-b", "cellCandidateId": "candidate-a"},
+  "fallback": {"requested": "cuda", "fallbackUsed": true, "candidateCorrectness": "PASS"},
+  "tampered": {"manifestDigestMatches": false},
+  "duplicate": {"runIds": ["r1", "r1"]},
+  "partial": {"bundleStates": ["PASS", "NOT_STARTED"]},
+  "falseAuthority": {"physicalProduction": "PASS"}
+}

@@ -31,6 +31,9 @@ public:
   const std::optional<ExecutionEvidence>&
   executionEvidence() const final;
 
+  std::optional<ExecutionEvidence>
+  executionEvidenceSnapshot() const final;
+
 private:
 #ifdef NDNSF_DI_ENABLE_ONNXRUNTIME_CPP
   class Impl;

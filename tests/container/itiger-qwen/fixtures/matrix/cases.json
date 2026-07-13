@@ -1,0 +1,10 @@
+{
+  "modes": ["diagnostic", "full-model-oracle", "artifact", "staged-onnx-baseline", "ndnsf-di-correctness", "ndnsf-di-performance"],
+  "terminalStates": ["PASS", "FAIL", "BLOCKED", "DEFERRED", "CANCELLED"],
+  "gateScopes": ["systemic", "model-local", "placement-local"],
+  "bundles": {
+    "correctness": ["token-1", "token-2", "token-32"],
+    "performance": ["perf-1", "perf-2", "perf-3"]
+  },
+  "partialBundle": {"token-1": "PASS", "token-2": "FAIL", "token-32": "NOT_STARTED"}
+}

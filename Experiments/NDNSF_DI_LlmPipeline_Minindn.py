@@ -117,8 +117,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--transformer-layers", type=int, default=4)
     parser.add_argument("--qwen-model", default="Qwen/Qwen2.5-0.5B-Instruct")
+    parser.add_argument("--qwen-revision", default="main")
     parser.add_argument("--qwen-allow-download", action="store_true")
-    parser.add_argument("--qwen-dtype", choices=("float32", "auto"), default="float32")
+    parser.add_argument("--qwen-dtype", choices=("float32", "float16", "auto"), default="float32")
+    parser.add_argument("--qwen-execution-provider", choices=("cpu", "cuda"), default="cpu")
+    parser.add_argument("--qwen-device-ids", default="0", help="Comma-separated logical GPU IDs mapped round-robin to stages")
     parser.add_argument(
         "--reuse-existing-policy",
         action="store_true",
@@ -746,6 +749,7 @@ def prepare_policy(stages: int, layers: int, *,
                    runtime: str = "fake",
                    transformer_layers: int = 4,
                    qwen_model: str = "Qwen/Qwen2.5-0.5B-Instruct",
+                   qwen_revision: str = "main",
                    qwen_prompt: str = "",
                    qwen_allow_download: bool = False,
                    qwen_dtype: str = "float32",
@@ -783,6 +787,7 @@ def prepare_policy(stages: int, layers: int, *,
         "--runtime", runtime,
         "--transformer-layers", str(transformer_layers),
         "--qwen-model", qwen_model,
+        "--qwen-revision", qwen_revision,
         "--qwen-prompt", qwen_prompt,
         "--qwen-dtype", qwen_dtype,
         *(["--qwen-artifact-store", qwen_artifact_store]
@@ -807,13 +812,22 @@ def generate_policy_bundle(env: dict[str, str]) -> None:
     ], cwd=str(REPO), env=env, check=True)
 
 
-def write_native_qwen_bundle(out_dir: Path) -> tuple[Path, Path]:
+def write_native_qwen_bundle(out_dir: Path, *, execution_provider: str = "cpu",
+                             device_ids: list[str] | None = None) -> tuple[Path, Path]:
     manifest_source = json.loads(
         (out_dir / "qwen-onnx-service-manifest.json").read_text(encoding="utf-8"))
     roles = [str(stage["role"]) for stage in manifest_source["stages"]]
     dependencies = []
     manifest_dependencies = []
-    for index in range(2):
+    stage_count = len(manifest_source["stages"])
+    if stage_count < 2:
+        raise ValueError("Qwen native bundle requires at least two stages")
+    if execution_provider not in {"cpu", "cuda"}:
+        raise ValueError("Qwen execution provider must be cpu or cuda")
+    device_ids = device_ids or (["cpu0"] if execution_provider == "cpu" else ["0"])
+    if not device_ids or any(not value for value in device_ids):
+        raise ValueError("Qwen device mapping must not be empty")
+    for index in range(stage_count - 1):
         next_stage = manifest_source["stages"][index + 1]
         tensors = [
             "hidden_states", "attention_mask", "position_ids",
@@ -845,8 +859,10 @@ def write_native_qwen_bundle(out_dir: Path) -> tuple[Path, Path]:
             "inputNames": ",".join(stage["inputNames"]),
             "outputNames": ",".join(stage["outputNames"]),
             "forceOutputBundle": "true",
-            "executionProvider": "cpu",
+            "executionProvider": execution_provider,
             "allowCpuFallback": "false",
+            "deviceId": device_ids[index % len(device_ids)],
+            "dtype": str(manifest_source.get("dtype", "float16")),
             "passthroughTensors": ",".join(passthrough),
             "kvTensorMap": ",".join(
                 f"{input_name}={output_name}"
@@ -856,7 +872,7 @@ def write_native_qwen_bundle(out_dir: Path) -> tuple[Path, Path]:
             "kvOutputTensors": ",".join(stage["cacheOutputs"]),
             "kvOutputScope": "kv-state",
             "outputBundleScope": (
-                "final-response" if index == 2 else f"pipeline-stage-{index}-to-{index + 1}"),
+                "final-response" if index == stage_count - 1 else f"pipeline-stage-{index}-to-{index + 1}"),
         }
         if index < 2:
             metadata["outputAlias.hidden_states_out"] = "hidden_states"
@@ -869,15 +885,21 @@ def write_native_qwen_bundle(out_dir: Path) -> tuple[Path, Path]:
             "filename": Path(stage["path"]).name, "kind": "model",
             "backend": "onnxruntime", "metadata": metadata,
         })
+    model_name = str(manifest_source["model"])
+    model_revision = str(manifest_source.get("modelRevision", ""))
+    model_uri = "/Model/Qwen2.5/" + model_name.rsplit("-", 1)[-1].replace("Instruct", "").strip("-")
     plan = {"version": 2, "services": [{
         "schemaVersion": 2, "service": SERVICE,
-        "model": "/Model/Qwen2.5-0.5B-Instruct", "modelFamily": "llm",
+        "model": model_uri, "modelRepository": model_name,
+        "modelRevision": model_revision, "dtype": manifest_source.get("dtype", "float16"),
+        "modelFamily": "llm",
         "modelFormat": "onnx", "plannerKind": "llm-pipeline",
         "runtimeBackend": "onnxruntime", "roles": roles,
         "dependencies": dependencies,
     }]}
     service_manifest = {"services": [{
-        "name": SERVICE, "model": "/Model/Qwen2.5-0.5B-Instruct",
+        "name": SERVICE, "model": model_uri, "modelRepository": model_name,
+        "modelRevision": model_revision, "dtype": manifest_source.get("dtype", "float16"),
         "roles": roles, "dependencies": manifest_dependencies,
         "artifacts": artifacts, "modelFamily": "llm", "modelFormat": "onnx",
         "plannerKind": "llm-pipeline", "runtimeBackend": "onnxruntime",
@@ -1345,6 +1367,7 @@ def main() -> int:
             runtime=policy_runtime,
             transformer_layers=args.transformer_layers,
             qwen_model=args.qwen_model,
+            qwen_revision=args.qwen_revision,
             qwen_prompt=args.prompt,
             qwen_allow_download=args.qwen_allow_download,
             qwen_dtype=args.qwen_dtype,
@@ -1372,7 +1395,11 @@ def main() -> int:
     generate_policy_bundle(base_env)
     native_plan = native_manifest = None
     if args.runtime == "qwen-onnx-cpu-native":
-        native_plan, native_manifest = write_native_qwen_bundle(OUT)
+        native_plan, native_manifest = write_native_qwen_bundle(
+            OUT,
+            execution_provider=args.qwen_execution_provider,
+            device_ids=[value.strip() for value in args.qwen_device_ids.split(",") if value.strip()],
+        )
     if spec107_candidate_payload is not None:
         if native_plan is None:
             raise SystemExit("Spec 107 execution binding requires native plan")

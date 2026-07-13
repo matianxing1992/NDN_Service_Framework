@@ -5,7 +5,9 @@
 #include <utility>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
+#include <mutex>
 
 namespace ndnsf::di {
 namespace {
@@ -124,11 +126,17 @@ ortEnv()
 }
 
 Ort::SessionOptions
-makeSessionOptions(const OnnxRuntimeProviderSelection& selection)
+makeSessionOptions(const OnnxRuntimeProviderSelection& selection,
+                   const NativeModelRunnerSpec& spec)
 {
   Ort::SessionOptions options;
   options.SetIntraOpNumThreads(1);
   options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_BASIC);
+  const auto profilePrefix = runnerMetadataValue(
+    spec, {"providerProfilePrefix", "provider_profile_prefix"});
+  if (!profilePrefix.empty()) {
+    options.EnableProfiling(profilePrefix.c_str());
+  }
   if (selection.selectedProvider == "cuda") {
     OrtCUDAProviderOptions cudaOptions{};
     try {
@@ -439,14 +447,19 @@ class OnnxRuntimeModelRunner::Impl
 public:
   explicit Impl(const NativeModelRunnerSpec& spec)
     : selection(resolveOnnxRuntimeProviderSelection(spec, Ort::GetAvailableProviders()))
-    , sessionOptions(makeSessionOptions(selection))
+    , sessionOptions(makeSessionOptions(selection, spec))
     , session(ortEnv(), spec.path.c_str(), sessionOptions)
+    , profilingEnabled(!runnerMetadataValue(
+        spec, {"providerProfilePrefix", "provider_profile_prefix"}).empty())
   {
   }
 
   OnnxRuntimeProviderSelection selection;
   Ort::SessionOptions sessionOptions;
   Ort::Session session;
+  bool profilingEnabled = false;
+  std::atomic<bool> profilingCaptured{false};
+  mutable std::mutex profileMutex;
 };
 
 OnnxRuntimeModelRunner::OnnxRuntimeModelRunner(NativeModelRunnerSpec spec)
@@ -472,6 +485,14 @@ OnnxRuntimeModelRunner::~OnnxRuntimeModelRunner() = default;
 std::map<std::string, TensorBundle>
 OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
 {
+  std::unique_lock<std::mutex> firstProfileRunLock;
+  if (m_impl->profilingEnabled &&
+      !m_impl->profilingCaptured.load(std::memory_order_acquire)) {
+    firstProfileRunLock = std::unique_lock<std::mutex>(m_impl->profileMutex);
+    if (m_impl->profilingCaptured.load(std::memory_order_acquire)) {
+      firstProfileRunLock.unlock();
+    }
+  }
   const auto collectStart = std::chrono::steady_clock::now();
   Ort::AllocatorWithDefaultOptions allocator;
   Ort::MemoryInfo memoryInfo = Ort::MemoryInfo::CreateCpu(
@@ -556,6 +577,18 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
     outputNamePtrs.data(),
     outputNamePtrs.size());
   const auto runDone = std::chrono::steady_clock::now();
+  if (m_impl->profilingEnabled &&
+      !m_impl->profilingCaptured.load(std::memory_order_relaxed) && m_evidence) {
+    auto profile = m_impl->session.EndProfilingAllocated(allocator);
+    const std::string profilePath(profile.get());
+    applyOnnxRuntimeProviderProfile(
+      *m_evidence,
+      profilePath,
+      m_spec.role,
+      m_impl->selection.usedCpuFallback,
+      metadataValue(m_spec, {"evidence.gpuUuid", "gpuUuid", "gpu_uuid"}));
+    m_impl->profilingCaptured.store(true, std::memory_order_release);
+  }
   const auto executionDelayMs = metadataDoubleValue(
     m_spec,
     {"executionDelayMs", "execution_delay_ms", "roleExecutionDelayMs",
@@ -684,6 +717,13 @@ OnnxRuntimeModelRunner::executionEvidence() const
   return m_evidence;
 }
 
+std::optional<ExecutionEvidence>
+OnnxRuntimeModelRunner::executionEvidenceSnapshot() const
+{
+  std::lock_guard<std::mutex> lock(m_impl->profileMutex);
+  return m_evidence;
+}
+
 } // namespace ndnsf::di
 
 #else
@@ -702,6 +742,12 @@ OnnxRuntimeModelRunner::~OnnxRuntimeModelRunner() = default;
 
 const std::optional<ExecutionEvidence>&
 OnnxRuntimeModelRunner::executionEvidence() const
+{
+  return m_evidence;
+}
+
+std::optional<ExecutionEvidence>
+OnnxRuntimeModelRunner::executionEvidenceSnapshot() const
 {
   return m_evidence;
 }

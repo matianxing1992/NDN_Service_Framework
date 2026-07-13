@@ -918,6 +918,38 @@ BOOST_AUTO_TEST_CASE(NativeModelRunnerFactoryCreatesRuntimeRunnerFromSpec)
     std::out_of_range);
 }
 
+BOOST_AUTO_TEST_CASE(ProviderRoleResultCarriesPostRunExecutionEvidence)
+{
+  ExecutionEvidence evidence;
+  evidence.providerName = "/provider/A";
+  evidence.providerBootId = "boot-a";
+  evidence.runnerKind = RunnerKind::OnnxRuntimeCpu;
+  evidence.realCompute = true;
+  evidence.deviceKind = "cpu";
+  evidence.deviceId = "cpu0";
+  evidence.runtimeVersion = "test-runtime";
+  evidence.modelDigest = "sha256:model";
+  evidence.planDigest = "sha256:plan";
+  evidence.artifactDigests["/EvidenceRole"] = "sha256:artifact";
+  evidence.roles = {"/EvidenceRole"};
+  evidence.createdAtMs = 1;
+
+  auto runner = makeNativeModelRunner(
+    [] (const RoleExecutionContext&) {
+      return std::map<std::string, TensorBundle>{
+        {"final-response", bundle("final-response", "done")},
+      };
+    },
+    evidence);
+  ProviderRoleWorker worker(1);
+  RoleSpec role{"/EvidenceRole", {}, {}};
+  const auto result = worker.executeAsync(
+    "evidence-run", role, std::make_shared<FakeDependencyIo>(), runner).get();
+  BOOST_REQUIRE(result.executionEvidence);
+  BOOST_CHECK_EQUAL(result.executionEvidence->roles.front(), "/EvidenceRole");
+  BOOST_CHECK(result.executionEvidence->runnerKind == RunnerKind::OnnxRuntimeCpu);
+}
+
 BOOST_AUTO_TEST_CASE(OnnxRuntimeBackendRegistersAndReportsBuildState)
 {
   RegistryNativeModelRunnerFactory factory;

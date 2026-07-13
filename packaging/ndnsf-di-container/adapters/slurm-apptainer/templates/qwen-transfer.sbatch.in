@@ -1,0 +1,17 @@
+#!/bin/bash
+#SBATCH --job-name=@@JOB_NAME@@
+#SBATCH --partition=@@PARTITION@@
+#SBATCH --account=@@ACCOUNT@@
+#SBATCH --qos=@@QOS@@
+#SBATCH --time=@@WALL_TIME@@
+#SBATCH --cpus-per-task=@@CPUS@@
+#SBATCH --mem=@@MEMORY@@
+#SBATCH --output=@@LOG_PATH@@
+set -euo pipefail
+umask 027
+export HF_HOME="@@PROJECT_ROOT@@/cache/huggingface"
+export HUGGINGFACE_HUB_CACHE="$HF_HOME/hub"
+export TMPDIR="/tmp/$USER/ndnsf-di/$SLURM_JOB_ID"
+mkdir -p "$TMPDIR"
+trap 'rc=$?; rm -rf "$TMPDIR"; exit $rc' EXIT
+python3 "@@STAGE_SCRIPT@@" --repository "@@REPOSITORY@@" --revision "@@REVISION@@" --destination "@@PARTIAL_PATH@@" --manifest "@@TRANSFER_MANIFEST@@" --license-class "@@LICENSE_CLASS@@"

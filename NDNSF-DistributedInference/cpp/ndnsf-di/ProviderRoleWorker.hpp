@@ -50,6 +50,7 @@ struct OutputPublishTiming
 struct ProviderRoleResult
 {
   std::map<std::string, TensorBundle> outputsByScope;
+  std::optional<ExecutionEvidence> executionEvidence;
   RoleTiming timing;
   std::vector<InputFetchTiming> inputTimings;
   std::vector<OutputPublishTiming> outputTimings;

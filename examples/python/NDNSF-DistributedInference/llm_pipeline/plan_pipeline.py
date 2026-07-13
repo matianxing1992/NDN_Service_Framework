@@ -38,9 +38,10 @@ def main() -> int:
     )
     parser.add_argument("--transformer-layers", type=int, default=4)
     parser.add_argument("--qwen-model", default="Qwen/Qwen2.5-0.5B-Instruct")
+    parser.add_argument("--qwen-revision", default="main")
     parser.add_argument("--qwen-prompt", default="")
     parser.add_argument("--qwen-allow-download", action="store_true")
-    parser.add_argument("--qwen-dtype", choices=("float32", "auto"), default="float32")
+    parser.add_argument("--qwen-dtype", choices=("float32", "float16", "auto"), default="float32")
     parser.add_argument("--qwen-artifact-store", default="")
     parser.add_argument("--qwen-service-manifest", default="")
     parser.add_argument("--qwen-runtime-manifest", default="")
@@ -60,6 +61,7 @@ def main() -> int:
         runtime=args.runtime,
         transformer_layers=args.transformer_layers,
         qwen_model=args.qwen_model,
+        qwen_revision=args.qwen_revision,
         qwen_prompt=args.qwen_prompt,
         qwen_allow_download=args.qwen_allow_download,
         qwen_dtype=args.qwen_dtype,

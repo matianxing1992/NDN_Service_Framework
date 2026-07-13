@@ -1,0 +1,16 @@
+#!/usr/bin/env python3
+"""Container-package entry point for the repository-local Spec 109 CLI."""
+from pathlib import Path
+import runpy
+
+HERE = Path(__file__).resolve()
+CANDIDATES = (
+    Path("/opt/ndnsf/bin/ndnsf-di-qwen"),
+    HERE.parents[3] / "tools" / "ndnsf-di" / "ndnsf-di-qwen",
+)
+for candidate in CANDIDATES:
+    if candidate.is_file() and candidate.resolve() != HERE:
+        runpy.run_path(str(candidate), run_name="__main__")
+        break
+else:
+    raise SystemExit("NDNSF_SPEC109_CLI_NOT_INSTALLED")

@@ -1,0 +1,17 @@
+{
+  "modelId": "qwen25-0.5b-instruct",
+  "family": "Qwen2.5-Instruct",
+  "sizeClass": "0.5B",
+  "repository": "Qwen/Qwen2.5-0.5B-Instruct",
+  "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "tokenizerDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "licenseClass": "apache-2.0",
+  "licenseDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+  "files": [
+    {"path": "config.json", "bytes": 100, "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333", "lfsPointer": false},
+    {"path": "model.safetensors", "bytes": 200, "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444", "lfsPointer": false}
+  ],
+  "sourceBytes": 300,
+  "state": "VERIFIED",
+  "projectPath": "/project/tma1/ndnsf-di/models/source/qwen25-0.5b/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}

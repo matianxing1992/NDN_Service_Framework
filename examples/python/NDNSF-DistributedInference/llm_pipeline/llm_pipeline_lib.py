@@ -598,6 +598,7 @@ def write_qwen_transformer_stage_artifacts(
     roles: list[str],
     stages: int,
     model_name: str,
+    model_revision: str = "main",
     prompt: str = "",
     allow_download: bool = False,
     dtype: str = "float32",
@@ -608,14 +609,17 @@ def write_qwen_transformer_stage_artifacts(
     root = Path(output_dir) / "qwen-transformers-stage-artifacts"
     root.mkdir(parents=True, exist_ok=True)
     local_files_only = not allow_download
-    torch_dtype = torch.float32 if dtype == "float32" else "auto"
+    torch_dtype = (torch.float32 if dtype == "float32" else
+                   torch.float16 if dtype == "float16" else "auto")
     tokenizer = AutoTokenizer.from_pretrained(
         model_name,
+        revision=model_revision,
         local_files_only=local_files_only,
         trust_remote_code=True,
     )
     full_model = AutoModelForCausalLM.from_pretrained(
         model_name,
+        revision=model_revision,
         local_files_only=local_files_only,
         trust_remote_code=True,
         torch_dtype=torch_dtype,
@@ -696,6 +700,7 @@ def with_qwen_transformer_artifacts(
     output_dir: str | Path,
     stages: int,
     model_name: str,
+    model_revision: str = "main",
     prompt: str = "",
     allow_download: bool = False,
     dtype: str = "float32",
@@ -715,6 +720,7 @@ def with_qwen_transformer_artifacts(
                 roles=list(service.roles),
                 stages=stages,
                 model_name=model_name,
+                model_revision=model_revision,
                 prompt=prompt,
                 allow_download=allow_download,
                 dtype=dtype,
@@ -728,6 +734,8 @@ def with_qwen_transformer_artifacts(
                 "execution_implemented": True,
                 "runtime": QWEN_TRANSFORMERS_RUNTIME,
                 "model": model_name,
+                "modelRevision": model_revision,
+                "dtype": dtype,
             },
         ))
     return SplitterOutput(
@@ -1082,6 +1090,7 @@ def write_qwen_onnx_stage_artifacts(
     roles: list[str],
     stages: int,
     model_name: str,
+    model_revision: str = "main",
     prompt: str = "",
     allow_download: bool = False,
     dtype: str = "float32",
@@ -1092,14 +1101,17 @@ def write_qwen_onnx_stage_artifacts(
     root = Path(output_dir) / "qwen-onnx-stage-artifacts"
     root.mkdir(parents=True, exist_ok=True)
     local_files_only = not allow_download
-    torch_dtype = torch.float32 if dtype == "float32" else "auto"
+    torch_dtype = (torch.float32 if dtype == "float32" else
+                   torch.float16 if dtype == "float16" else "auto")
     tokenizer = AutoTokenizer.from_pretrained(
         model_name,
+        revision=model_revision,
         local_files_only=local_files_only,
         trust_remote_code=True,
     )
     full_model = AutoModelForCausalLM.from_pretrained(
         model_name,
+        revision=model_revision,
         local_files_only=local_files_only,
         trust_remote_code=True,
         torch_dtype=torch_dtype,
@@ -1193,6 +1205,8 @@ def write_qwen_onnx_stage_artifacts(
         runtime_summary = {
             "schema": "ndnsf-di-qwen-onnx-pipeline-runtime-v1",
             "model": model_name,
+            "modelRevision": model_revision,
+            "dtype": dtype,
             "prompt": prompt,
             "runtime": QWEN_ONNX_RUNTIME,
             "stages": stages,
@@ -1211,7 +1225,8 @@ def write_qwen_onnx_stage_artifacts(
     manifest = {
         "schema": "ndnsf-di-qwen-onnx-service-manifest-v1",
         "model": model_name,
-        "modelRevision": str(getattr(full_model.config, "_commit_hash", "") or ""),
+        "modelRevision": str(getattr(full_model.config, "_commit_hash", "") or model_revision),
+        "dtype": dtype,
         "tokenizer": str(getattr(tokenizer, "name_or_path", model_name)),
         "stageCount": stages,
         "layerCount": layer_count,
@@ -1245,6 +1260,7 @@ def with_qwen_onnx_artifacts(
     output_dir: str | Path,
     stages: int,
     model_name: str,
+    model_revision: str = "main",
     prompt: str = "",
     allow_download: bool = False,
     dtype: str = "float32",
@@ -1264,6 +1280,7 @@ def with_qwen_onnx_artifacts(
                 roles=list(service.roles),
                 stages=stages,
                 model_name=model_name,
+                model_revision=model_revision,
                 prompt=prompt,
                 allow_download=allow_download,
                 dtype=dtype,
@@ -1277,6 +1294,8 @@ def with_qwen_onnx_artifacts(
                 "execution_implemented": True,
                 "runtime": QWEN_ONNX_RUNTIME,
                 "model": model_name,
+                "modelRevision": model_revision,
+                "dtype": dtype,
             },
         ))
     return SplitterOutput(
@@ -2265,6 +2284,7 @@ def write_policy(
     runtime: str = "fake",
     transformer_layers: int = 4,
     qwen_model: str = "Qwen/Qwen2.5-0.5B-Instruct",
+    qwen_revision: str = "main",
     qwen_prompt: str = "",
     qwen_allow_download: bool = False,
     qwen_dtype: str = "float32",
@@ -2305,6 +2325,7 @@ def write_policy(
             output_dir=output_dir,
             stages=stages,
             model_name=qwen_model,
+            model_revision=qwen_revision,
             prompt=qwen_prompt,
             allow_download=qwen_allow_download,
             dtype=qwen_dtype,
@@ -2329,6 +2350,7 @@ def write_policy(
                 output_dir=output_dir,
                 stages=stages,
                 model_name=qwen_model,
+                model_revision=qwen_revision,
                 prompt=qwen_prompt,
                 allow_download=qwen_allow_download,
                 dtype=qwen_dtype,

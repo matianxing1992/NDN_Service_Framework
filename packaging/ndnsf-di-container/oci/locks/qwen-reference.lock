@@ -1,0 +1,6 @@
+torch==2.5.1
+transformers==4.46.3
+huggingface-hub==0.26.2
+safetensors==0.4.5
+numpy==1.26.4
+pynvml==11.5.3

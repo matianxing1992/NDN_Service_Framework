@@ -1,0 +1,36 @@
+#!/bin/bash
+#SBATCH --job-name=@@JOB_NAME@@
+#SBATCH --partition=@@PARTITION@@
+#SBATCH --account=@@ACCOUNT@@
+#SBATCH --qos=@@QOS@@
+#SBATCH --time=@@WALL_TIME@@
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=@@CPUS@@
+#SBATCH --mem=@@MEMORY@@
+#SBATCH --gres=gpu:@@GPU_TYPE@@:@@GPU_COUNT@@
+#SBATCH --output=@@LOG_ROOT@@/slurm-%j.out
+#SBATCH --error=@@LOG_ROOT@@/slurm-%j.err
+set -euo pipefail
+scratch="/tmp/$USER/ndnsf-di/$SLURM_JOB_ID-@@RUN_ID@@"
+staging="$scratch/evidence"
+mkdir -p "$staging" "@@LOG_ROOT@@"
+finish() {
+  rc=$?
+  trap - EXIT INT TERM
+  state=COMPLETED; [[ $rc -eq 0 ]] || state=FAILED
+  @@FINALIZER@@ --staging "$staging" --destination "@@EVIDENCE_ROOT@@" \
+    --run-id "@@RUN_ID@@" --state "$state" --exit-code "$rc"
+  rm -rf "$scratch"
+  exit "$rc"
+}
+trap finish EXIT INT TERM
+@@COMPUTE_PREFLIGHT@@ --scratch "$scratch" --gpu-type "@@GPU_TYPE@@" --gpu-count "@@GPU_COUNT@@"
+apptainer exec --cleanenv --nv \
+  --bind "@@PROJECT_ROOT@@:/project:rw" \
+  --bind "$scratch:/scratch:rw" \
+  --bind "@@MODEL_PATH@@:@@MODEL_PATH@@:ro" \
+  "@@SIF_PATH@@" \
+  /opt/ndnsf/bin/run-ndnsf-qwen.sh --scratch /scratch --evidence /scratch/evidence \
+    --nfd-config "@@NFD_CONFIG@@" --controller-args "@@CONTROLLER_ARGS@@" \
+    --provider-args-dir "@@PROVIDER_ARGS_DIR@@" --user-args "@@USER_ARGS@@"

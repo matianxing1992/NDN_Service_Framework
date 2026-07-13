@@ -1,0 +1,18 @@
+{
+  "base": {
+    "targetPath": "/project/tma1/ndnsf-di",
+    "quotaSource": "lfs-quota",
+    "quotaVerified": true,
+    "limitBytes": 200000000000,
+    "usedBytes": 20000000000,
+    "sharedFreeBytes": 900000000000000,
+    "projected": {"source": 1000000000, "export": 2000000000, "cache": 1000000000, "evidence": 1000000000},
+    "reserveBytes": 10000000000,
+    "protectedPaths": ["/project/tma1/ndnsf-di/models/source/qwen25-0.5b", "/project/tma1/ndnsf-di/evidence"]
+  },
+  "quotaFull": {"limitBytes": 200000000000, "usedBytes": 195000000000},
+  "sharedCapacityOnly": {"quotaVerified": false, "quotaSource": "df-shared-only"},
+  "scratch": {"targetPath": "/tmp/tma1/ndnsf-di/145855", "kind": "scratch", "durable": false},
+  "projectedPeak": {"source": 100, "export": 200, "cache": 50, "evidence": 25, "expectedPeak": 375},
+  "protectedCleanup": ["models/source/qwen25-0.5b", "images/current.sif", "evidence/run-1"]
+}

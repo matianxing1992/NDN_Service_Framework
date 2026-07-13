@@ -504,6 +504,7 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
        {"attemptEpoch", std::to_string(item.role.attemptEpoch)}});
     putCachedOutputs(result.exactForwardCacheKey, result.outputsByScope);
   }
+  result.executionEvidence = item.runner->executionEvidenceSnapshot();
 
   const auto outputReadyAt = std::chrono::steady_clock::now();
   result.outputTimings.reserve(item.role.outputs.size());

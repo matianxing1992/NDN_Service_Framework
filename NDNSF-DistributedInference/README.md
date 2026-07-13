@@ -3301,3 +3301,32 @@ NDNSF-facing deployment, artifact, and security mechanics stay the same.
 `Experiments/NDNSF_DI_Yolo2x2_Repo_Minindn.py` is still useful, but it is a
 DistributedRepo storage smoke test. Use `Experiments/NDNSF_DI_Yolo2x2_Minindn.py`
 when you want to verify end-to-end split inference and result consistency.
+
+## iTiger Qwen2.5 scaling (Spec 109)
+
+The current controlled scope is Qwen2.5-Instruct 0.5B, 1.5B, 3B, 7B, 14B,
+32B, and 72B through Slurm and Apptainer. Repository-local commands are
+canonical:
+
+```bash
+tools/ndnsf-di/ndnsf-di-qwen discover --host itiger \
+  --output results/spec109-itiger-qwen/discovery
+python3 -m unittest discover -s tests/container/itiger-qwen/unit -p 'test_*.py'
+python3 tools/ndnsf-di/run_spec109_analysis.py \
+  --matrix results/spec109-itiger-qwen/scale-matrix.json \
+  --output-dir results/spec109-itiger-qwen/analysis
+```
+
+Current measured scope is deliberately narrow: only the immutable 0.5B source
+model was transferred and sealed on iTiger (jobs 146050 and 146123). No Qwen
+GPU inference cell ran. All 105 planned scaling cells are `BLOCKED` by exact
+incomplete Spec 107/108 predecessors; the MiniNDN fake LLM pipeline preflight
+also retained a `local deadline` failure. Therefore there is no standalone GPU
+oracle, candidate correctness/performance, overhead, scaling, or reproduction
+PASS. 72B additionally exceeds the 200 GB project allocation planning gate,
+and multi-node execution is deferred pending Spec 108 T134 network evidence.
+
+See `packaging/ndnsf-di-container/docs/itiger-qwen-models.md` for transfer,
+license, quota, and cleanup operations, and `itiger-qwen-evidence.md` for the
+standalone/artifact/staged-baseline/candidate authority boundary. Physical
+production remains owned by Spec 106.

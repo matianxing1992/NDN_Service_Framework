@@ -1,0 +1,12 @@
+{
+  "schemaVersion":"1.0-test-fixture",
+  "32B":[
+    {"path":"model-00001-of-00002.safetensors","bytes":32500000000,"sha256":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+    {"path":"model-00002-of-00002.safetensors","bytes":32500000000,"sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+  ],
+  "72B":[
+    {"path":"model-00001-of-00002.safetensors","bytes":72700000000,"sha256":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},
+    {"path":"model-00002-of-00002.safetensors","bytes":72700000000,"sha256":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}
+  ],
+  "amplification":{"exportMultiplierMilli":1100,"cacheMultiplierMilli":250,"evidenceBytes":4000000000}
+}

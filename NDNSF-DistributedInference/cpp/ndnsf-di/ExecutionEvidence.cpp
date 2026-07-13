@@ -5,6 +5,7 @@
 #include <boost/property_tree/ptree.hpp>
 
 #include <set>
+#include <fstream>
 #include <sstream>
 #include <stdexcept>
 
@@ -145,6 +146,19 @@ std::string executionEvidenceToJson(const ExecutionEvidence& evidence)
   for (const auto& item : evidence.artifactDigests) artifacts.put(item.first, item.second);
   root.add_child("artifactDigests", artifacts);
   root.add_child("roles", stringArray(evidence.roles));
+  ptree assignments;
+  for (const auto& value : evidence.nodeProviderAssignments) {
+    ptree item;
+    item.put("role", value.role);
+    item.put("nodeName", value.nodeName);
+    item.put("provider", value.provider);
+    item.put("modelNode", value.modelNode);
+    assignments.push_back({"", item});
+  }
+  root.add_child("nodeProviderAssignments", assignments);
+  root.put("cpuFallbackUsed", evidence.cpuFallbackUsed);
+  root.put("gpuUuid", evidence.gpuUuid);
+  root.put("providerProfilePath", evidence.providerProfilePath);
   root.put("createdAtMs", evidence.createdAtMs);
   return writeJson(root);
 }
@@ -172,9 +186,56 @@ ExecutionEvidence executionEvidenceFromJson(const std::string& json)
     }
   }
   evidence.roles = readStringArray(root, "roles");
+  if (const auto assignments = root.get_child_optional("nodeProviderAssignments")) {
+    for (const auto& item : assignments.get()) {
+      evidence.nodeProviderAssignments.push_back({
+        item.second.get<std::string>("role", ""),
+        item.second.get<std::string>("nodeName", ""),
+        item.second.get<std::string>("provider", ""),
+        item.second.get<bool>("modelNode", true),
+      });
+    }
+  }
+  evidence.cpuFallbackUsed = root.get<bool>("cpuFallbackUsed", false);
+  evidence.gpuUuid = root.get<std::string>("gpuUuid", "");
+  evidence.providerProfilePath = root.get<std::string>("providerProfilePath", "");
   evidence.createdAtMs = root.get<std::uint64_t>("createdAtMs", 0);
   evidence.validate();
   return evidence;
+}
+
+void
+applyOnnxRuntimeProviderProfile(ExecutionEvidence& evidence,
+                                const std::string& profilePath,
+                                const std::string& role,
+                                bool cpuFallbackUsed,
+                                const std::string& gpuUuid)
+{
+  std::ifstream input(profilePath);
+  if (!input) {
+    throw std::runtime_error("cannot open ONNX Runtime provider profile: " + profilePath);
+  }
+  ptree root;
+  boost::property_tree::read_json(input, root);
+  std::vector<ExecutionEvidence::NodeProviderAssignment> assignments;
+  for (const auto& event : root) {
+    const auto& value = event.second;
+    if (value.get<std::string>("cat", "") != "Node") {
+      continue;
+    }
+    const auto provider = value.get<std::string>("args.provider", "");
+    if (provider.empty()) {
+      continue;
+    }
+    assignments.push_back({role, value.get<std::string>("name", ""), provider, true});
+  }
+  if (assignments.empty()) {
+    throw std::runtime_error("ONNX Runtime provider profile contains no model-node assignments");
+  }
+  evidence.nodeProviderAssignments = std::move(assignments);
+  evidence.cpuFallbackUsed = cpuFallbackUsed;
+  evidence.gpuUuid = gpuUuid;
+  evidence.providerProfilePath = profilePath;
 }
 
 ExecutionEvidence executionEvidenceFromRunnerSpec(const NativeModelRunnerSpec& spec,

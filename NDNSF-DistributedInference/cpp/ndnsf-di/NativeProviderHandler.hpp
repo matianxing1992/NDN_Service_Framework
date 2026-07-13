@@ -41,6 +41,8 @@ struct NativeProviderHandlerConfig
   std::uint64_t kvSecurityEpoch = 0;
   std::shared_ptr<std::function<void(std::chrono::milliseconds)>>
     stageServiceTimeObserver;
+  std::shared_ptr<std::function<void(const ExecutionEvidence&)>>
+    executionEvidenceObserver;
 };
 
 struct NativeProviderExecutionBindingResult

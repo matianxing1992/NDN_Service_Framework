@@ -2964,3 +2964,30 @@ if ctx.role == "/Stage/0/Shard/0":
 `Experiments/NDNSF_DI_Yolo2x2_Repo_Minindn.py` 仍然有用，但它是
 DistributedRepo storage smoke test。需要验证 end-to-end split inference
 和结果一致性时，应运行 `Experiments/NDNSF_DI_Yolo2x2_Minindn.py`。
+
+## iTiger Qwen2.5 尺寸扩展（Spec 109）
+
+当前受控范围是通过 Slurm 和 Apptainer 运行 Qwen2.5-Instruct 0.5B、1.5B、
+3B、7B、14B、32B 和 72B。仓库内命令是唯一规范入口：
+
+```bash
+tools/ndnsf-di/ndnsf-di-qwen discover --host itiger \
+  --output results/spec109-itiger-qwen/discovery
+python3 -m unittest discover -s tests/container/itiger-qwen/unit -p 'test_*.py'
+python3 tools/ndnsf-di/run_spec109_analysis.py \
+  --matrix results/spec109-itiger-qwen/scale-matrix.json \
+  --output-dir results/spec109-itiger-qwen/analysis
+```
+
+当前实测范围被有意限制：只有不可变 0.5B source model 已经在 iTiger 上传输
+并密封（作业 146050 和 146123）。没有运行任何 Qwen GPU inference cell。全部
+105 个计划 scaling cells 因 Spec 107/108 的精确前置任务未完成而 `BLOCKED`；
+MiniNDN fake LLM pipeline 预检还保留了一个 `local deadline` 失败。因此目前没有
+standalone GPU oracle、candidate correctness/performance、overhead、scaling 或
+reproduction PASS。72B 还因为 200 GB project allocation 的容量门禁而阻塞，
+multi-node 则等待 Spec 108 T134 network evidence。
+
+模型传输、license、quota 和 cleanup 操作见
+`packaging/ndnsf-di-container/docs/itiger-qwen-models.md`；standalone、artifact、
+staged-baseline 和 candidate 的权威边界见 `itiger-qwen-evidence.md`。物理生产验证
+仍由 Spec 106 负责。

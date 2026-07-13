@@ -30,6 +30,7 @@
 #include <atomic>
 #include <cctype>
 #include <cstdint>
+#include <cstdlib>
 #include <fstream>
 #include <future>
 #include <iostream>
@@ -611,6 +612,8 @@ withExecutionEvidenceContext(std::map<std::string, NativeModelRunnerSpec> specs,
 {
   const auto planDigest = sha256File(options.planPath);
   const auto manifestDigest = sha256File(options.manifestPath);
+  const auto* profileRoot = std::getenv("NDNSF_DI_ORT_PROFILE_PREFIX");
+  const auto* gpuUuid = std::getenv("NDNSF_DI_GPU_UUID");
   for (auto& item : specs) {
     auto& spec = item.second;
     spec.metadata["evidence.providerName"] = options.providerName;
@@ -622,6 +625,16 @@ withExecutionEvidenceContext(std::map<std::string, NativeModelRunnerSpec> specs,
     std::ifstream artifact(spec.path, std::ios::binary);
     spec.metadata["evidence.artifactDigest"] =
       spec.path.empty() || !artifact.good() ? manifestDigest : sha256File(spec.path);
+    if (gpuUuid != nullptr && *gpuUuid != '\0') {
+      spec.metadata["evidence.gpuUuid"] = gpuUuid;
+    }
+    if (profileRoot != nullptr && *profileRoot != '\0') {
+      auto role = spec.role;
+      std::replace_if(role.begin(), role.end(), [] (unsigned char ch) {
+        return !(std::isalnum(ch) || ch == '-' || ch == '_');
+      }, '_');
+      spec.metadata["providerProfilePrefix"] = std::string(profileRoot) + "-" + role;
+    }
   }
   return specs;
 }
@@ -643,11 +656,21 @@ aggregateExecutionEvidence(const std::vector<ExecutionEvidence>& items)
         item.planDigest != aggregate.planDigest ||
         item.runtimeVersion != aggregate.runtimeVersion ||
         item.deviceKind != aggregate.deviceKind ||
-        item.deviceId != aggregate.deviceId) {
+        item.deviceId != aggregate.deviceId ||
+        item.cpuFallbackUsed != aggregate.cpuFallbackUsed ||
+        (!item.gpuUuid.empty() && !aggregate.gpuUuid.empty() &&
+         item.gpuUuid != aggregate.gpuUuid)) {
       throw std::runtime_error("provider runner execution evidence is internally inconsistent");
     }
     aggregate.roles.insert(aggregate.roles.end(), item.roles.begin(), item.roles.end());
     aggregate.artifactDigests.insert(item.artifactDigests.begin(), item.artifactDigests.end());
+    aggregate.nodeProviderAssignments.insert(
+      aggregate.nodeProviderAssignments.end(),
+      item.nodeProviderAssignments.begin(), item.nodeProviderAssignments.end());
+    if (aggregate.gpuUuid.empty()) aggregate.gpuUuid = item.gpuUuid;
+    if (aggregate.providerProfilePath.empty()) {
+      aggregate.providerProfilePath = item.providerProfilePath;
+    }
   }
   std::sort(aggregate.roles.begin(), aggregate.roles.end());
   aggregate.roles.erase(std::unique(aggregate.roles.begin(), aggregate.roles.end()),
@@ -957,6 +980,8 @@ main(int argc, char** argv)
         });
       auto stageServiceTimeObserver = std::make_shared<
         std::function<void(std::chrono::milliseconds)>>();
+      auto executionEvidenceObserver = std::make_shared<
+        std::function<void(const ExecutionEvidence&)>>();
       telemetryCollector->start();
       provisioningState->setTelemetrySnapshotProvider(
         [telemetryCollector] { return telemetryCollector->snapshot(); });
@@ -1172,6 +1197,7 @@ main(int argc, char** argv)
          capacitySnapshotMutex,
          telemetryCollector,
          stageServiceTimeObserver,
+         executionEvidenceObserver,
          executionLeaseService,
          &provider] () mutable {
           try {
@@ -1276,6 +1302,7 @@ main(int argc, char** argv)
               64ULL * 1024ULL * 1024ULL, 128);
             config.kvStateStore->setProviderBootId(providerBootId);
             config.stageServiceTimeObserver = stageServiceTimeObserver;
+            config.executionEvidenceObserver = executionEvidenceObserver;
             if (options.requireExecutionLease) {
               config.executionLeaseTable = &executionLeaseService->table();
               config.executionLeaseTargetService = options.serviceName;
@@ -1298,6 +1325,32 @@ main(int argc, char** argv)
             std::cout << "NDNSF_DI_EXECUTION_EVIDENCE "
                       << executionEvidenceToJson(executionEvidence)
                       << std::endl;
+            auto executionEvidenceByRole = std::make_shared<
+              std::map<std::string, ExecutionEvidence>>();
+            for (const auto& item : runtime.executionEvidence) {
+              for (const auto& role : item.roles) {
+                (*executionEvidenceByRole)[role] = item;
+              }
+            }
+            auto executionEvidenceMutex = std::make_shared<std::mutex>();
+            *executionEvidenceObserver =
+              [executionEvidenceByRole, executionEvidenceMutex, provisioningState]
+              (const ExecutionEvidence& observed) {
+                std::lock_guard<std::mutex> lock(*executionEvidenceMutex);
+                for (const auto& role : observed.roles) {
+                  (*executionEvidenceByRole)[role] = observed;
+                }
+                std::vector<ExecutionEvidence> current;
+                current.reserve(executionEvidenceByRole->size());
+                for (const auto& item : *executionEvidenceByRole) {
+                  current.push_back(item.second);
+                }
+                const auto aggregate = aggregateExecutionEvidence(current);
+                provisioningState->setExecutionEvidence(aggregate);
+                std::cout << "NDNSF_DI_EXECUTION_EVIDENCE_UPDATE "
+                          << executionEvidenceToJson(aggregate)
+                          << std::endl;
+              };
             {
               std::lock_guard<std::mutex> lock(*readyHandlerMutex);
               *readyHandler = std::move(runtime.handler);
@@ -1314,6 +1367,10 @@ main(int argc, char** argv)
             std::cout << "NDNSF_DI_NATIVE_PROVIDER_PROVISION_READY"
                       << " activeRoles=" << allowedRoles.size()
                       << " workers=" << options.workers
+                      << std::endl;
+            std::cout << "NDNSF_DI_NATIVE_PROVIDER_READY"
+                      << " provider=" << options.providerName
+                      << " activeRoles=" << allowedRoles.size()
                       << std::endl;
           }
           catch (const std::exception& exc) {

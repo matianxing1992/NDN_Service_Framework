@@ -282,8 +282,8 @@ public:
     for (const auto& spec : runnerSpecs) {
       logFragmentInventoryEvent("DISK_RESIDENT", spec, localProviderName);
       auto runner = runnerFactory->create(spec);
-      if (runner->executionEvidence()) {
-        executionEvidence.push_back(*runner->executionEvidence());
+      if (auto evidence = runner->executionEvidenceSnapshot()) {
+        executionEvidence.push_back(std::move(*evidence));
       }
       runtime.registerRunner(spec.role, std::move(runner));
       logFragmentInventoryEvent(loadedResidencyFor(spec).c_str(), spec, localProviderName);
@@ -697,6 +697,10 @@ executeLocalPlanAndFinalPayload(NativeProviderHandlerState& state,
                                 assignment,
                                 localProvider);
     auto result = item.second.get();
+    if (result.executionEvidence && config.executionEvidenceObserver &&
+        *config.executionEvidenceObserver) {
+      (*config.executionEvidenceObserver)(*result.executionEvidence);
+    }
     logProviderTiming(sessionId,
                       item.first,
                       result,
@@ -1001,6 +1005,10 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           roleSpec,
           std::move(io),
           std::move(initialInputs)).get();
+        if (result.executionEvidence && config.executionEvidenceObserver &&
+            *config.executionEvidenceObserver) {
+          (*config.executionEvidenceObserver)(*result.executionEvidence);
+        }
         if (kvBinding && config.kvStateStore) {
           auto kvOutput = result.outputsByScope.find(config.kvOutputScope);
           if (kvOutput == result.outputsByScope.end()) {

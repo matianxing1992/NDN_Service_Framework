@@ -12,6 +12,12 @@ NativeModelRunner::executionEvidence() const
   return none;
 }
 
+std::optional<ExecutionEvidence>
+NativeModelRunner::executionEvidenceSnapshot() const
+{
+  return executionEvidence();
+}
+
 LambdaModelRunner::LambdaModelRunner(RoleRunner runner,
                                      std::optional<ExecutionEvidence> evidence)
   : m_runner(std::move(runner))

@@ -1,0 +1,11 @@
+{
+  "allocations": [
+    {"gpus": 1, "tasks": 1, "map": [0]},
+    {"gpus": 2, "tasks": 2, "map": [0, 1]},
+    {"gpus": 3, "tasks": 3, "map": [0, 1, 2]},
+    {"gpus": 4, "tasks": 4, "map": [0, 1, 2, 3]},
+    {"gpus": 8, "tasks": 8, "map": [0, 1, 2, 3, 4, 5, 6, 7]}
+  ],
+  "lifecycle": ["NOT_SUBMITTED", "SUBMITTED", "PENDING", "RUNNING", "COMPLETED"],
+  "terminal": ["COMPLETED", "FAILED", "TIMEOUT", "CANCELLED", "PREEMPTED", "OUT_OF_MEMORY", "NODE_FAIL"]
+}

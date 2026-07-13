@@ -31,6 +31,9 @@ public:
 
   virtual const std::optional<ExecutionEvidence>&
   executionEvidence() const;
+
+  virtual std::optional<ExecutionEvidence>
+  executionEvidenceSnapshot() const;
 };
 
 class LambdaModelRunner final : public NativeModelRunner
