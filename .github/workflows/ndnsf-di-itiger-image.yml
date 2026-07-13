@@ -1,8 +1,7 @@
 name: NDNSF-DI iTiger GPU image
 
-# Push activation exists so a newly registered workflow can publish the first
-# runtime release without storing a long-lived personal GitHub token locally;
-# checkout intentionally leaves the unrelated gRPC experiment submodule lazy.
+# Deliberately dispatch-only: a source push must never start an unreviewed cloud
+# build. The required foundation digest is produced and tested locally first.
 
 on:
   workflow_dispatch:
@@ -11,21 +10,10 @@ on:
         description: Immutable release ID
         required: true
         type: string
-      gpu_build_base:
-        description: CUDA devel base as repository@sha256:digest
+      foundation_image:
+        description: Locally built NDNSF foundation as repository@sha256:digest
         required: true
         type: string
-      gpu_runtime_base:
-        description: CUDA runtime base as repository@sha256:digest
-        required: true
-        type: string
-  push:
-    branches: [Experimental]
-    paths:
-      - .github/workflows/ndnsf-di-itiger-image.yml
-      - packaging/ndnsf-di-container/oci/**
-      - packaging/ndnsf-di-container/lib/release.py
-      - packaging/ndnsf-di-container/schemas/oci-release.schema.json
 
 permissions:
   contents: read
@@ -40,8 +28,10 @@ env:
   IMAGE_REPOSITORY: ghcr.io/matianxing1992/ndnsf-di
   RESULT_ROOT: results/spec110-itiger-qwen-live/release-build
   RELEASE_ID: ${{ inputs.release_id || format('spec110-runtime-{0}', github.sha) }}
-  GPU_BUILD_BASE: ${{ inputs.gpu_build_base || 'nvidia/cuda@sha256:0a1cb6e7bd047a1067efe14efdf0276352d5ca643dfd77963dab1a4f05a003a4' }}
-  GPU_RUNTIME_BASE: ${{ inputs.gpu_runtime_base || 'nvidia/cuda@sha256:0bb88834d973ca1b450fcc2a05333c6fe45510bee289912a5391274c351c4a4d' }}
+  GPU_BUILD_BASE: nvidia/cuda@sha256:f18cf1a9ac2842e59f13b0d0729594da8cbd68cadd2379308cdd98c0374dbd80
+  GPU_RUNTIME_BASE: nvidia/cuda@sha256:a6a8417cb56c9a5d30c4d8c78ad18bc9b75ffe4453fe1c04b3149b3741518b06
+  PYTHON_BASE: python@sha256:b3061b93c8df9809c3783a4f17bbf2520425ec6b40bd3e5e7538870e21ba7209
+  FOUNDATION_IMAGE: ${{ inputs.foundation_image }}
 
 jobs:
   build-sign-record:
@@ -58,11 +48,17 @@ jobs:
         env:
           BUILD_BASE: ${{ env.GPU_BUILD_BASE }}
           RUNTIME_BASE: ${{ env.GPU_RUNTIME_BASE }}
+          FOUNDATION: ${{ env.FOUNDATION_IMAGE }}
+          PYTHON_BASE: ${{ env.PYTHON_BASE }}
         run: |
           set -euo pipefail
           digest_ref='^[^[:space:]]+@sha256:[a-f0-9]{64}$'
+          release_id='^spec110-runtime-[a-f0-9]{40}$'
           [[ "$BUILD_BASE" =~ $digest_ref ]]
           [[ "$RUNTIME_BASE" =~ $digest_ref ]]
+          [[ "$FOUNDATION" =~ $digest_ref ]]
+          [[ "$PYTHON_BASE" =~ $digest_ref ]]
+          [[ "$RELEASE_ID" =~ $release_id ]]
 
       - name: Prepare release evidence directory
         shell: bash
@@ -79,20 +75,13 @@ jobs:
           df -h >"$RESULT_ROOT/runner-disk-before.txt"
           docker system df >>"$RESULT_ROOT/runner-disk-before.txt" 2>&1 || true
 
-      - name: Prepare and verify sealed dependency archives
+      - name: Preflight the local-foundation GPU assembly graph
         shell: bash
         run: |
           set -euo pipefail
-          python3 packaging/ndnsf-di-container/oci/scripts/prepare-sealed-context.py create \
+          python3 packaging/ndnsf-di-container/oci/scripts/preflight-gpu-build.py \
             --workspace . \
-            --lock packaging/ndnsf-di-container/oci/locks/gpu.lock \
-            --output .spec110-build \
-            --work-root "$RUNNER_TEMP/spec110-source-fetch"
-          python3 packaging/ndnsf-di-container/oci/scripts/prepare-sealed-context.py verify \
-            --workspace . \
-            --lock packaging/ndnsf-di-container/oci/locks/gpu.lock \
-            --output .spec110-build
-          cp .spec110-build/source-seal.json "$RESULT_ROOT/source-seal.json"
+            --output "$RESULT_ROOT/build-preflight.json"
 
       - name: Scan source context for secrets
         shell: bash
@@ -100,7 +89,6 @@ jobs:
           set -euo pipefail
           python3 packaging/ndnsf-di-container/oci/scripts/scan-secrets.py \
             --path packaging/ndnsf-di-container \
-            --path .spec110-build \
             --scope source \
             --output "$RESULT_ROOT/source-secret-scan.json"
 
@@ -122,17 +110,27 @@ jobs:
           push: true
           tags: ${{ env.IMAGE_REPOSITORY }}:${{ env.RELEASE_ID }}
           build-args: |
+            FOUNDATION_IMAGE=${{ env.FOUNDATION_IMAGE }}
+            PYTHON_BASE_IMAGE=${{ env.PYTHON_BASE }}
             GPU_BUILD_BASE_IMAGE=${{ env.GPU_BUILD_BASE }}
             GPU_RUNTIME_BASE_IMAGE=${{ env.GPU_RUNTIME_BASE }}
             SOURCE_REVISION=${{ github.sha }}
             RELEASE_ID=${{ env.RELEASE_ID }}
-            DEPENDENCY_SOURCE_MODE=sealed
+            ONNXRUNTIME_CPP_URL=https://github.com/microsoft/onnxruntime/releases/download/v1.20.1/onnxruntime-linux-x64-gpu-1.20.1.tgz
+            ONNXRUNTIME_CPP_SHA256=6bfb87c6ebe55367a94509b8ef062239e188dccf8d5caac8d6909b2344893bf0
           cache-from: type=gha,scope=spec110-gpu
           cache-to: type=gha,mode=min,scope=spec110-gpu
           provenance: mode=max
           sbom: true
 
-      - name: Record Buildx metadata and runner disk
+      - name: Record runner disk after build
+        if: always()
+        shell: bash
+        run: |
+          df -h >"$RESULT_ROOT/runner-disk-after.txt"
+          docker system df >>"$RESULT_ROOT/runner-disk-after.txt" 2>&1 || true
+
+      - name: Record Buildx metadata
         shell: bash
         env:
           BUILD_METADATA: ${{ steps.build.outputs.metadata }}
@@ -145,19 +143,8 @@ jobs:
           Path(os.environ['RESULT_ROOT'], 'buildx-metadata.json').write_text(
               json.dumps(value, indent=2, sort_keys=True) + '\n', encoding='utf-8')
           PY
-          df -h >"$RESULT_ROOT/runner-disk-after.txt"
-          docker system df >>"$RESULT_ROOT/runner-disk-after.txt" 2>&1 || true
 
       - uses: sigstore/cosign-installer@v3.8.2
-
-      - name: Make research runtime image publicly pullable
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          gh api --method PATCH /user/packages/container/ndnsf-di \
-            -f visibility=public
 
       - name: Sign and verify digest with GitHub OIDC identity
         shell: bash
@@ -178,12 +165,26 @@ jobs:
           format: spdx-json
           output-file: ${{ env.RESULT_ROOT }}/sbom.spdx.json
 
+      - name: Verify anonymous digest access
+        shell: bash
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          anonymous_config="$RUNNER_TEMP/spec110-anonymous-docker"
+          mkdir -p "$anonymous_config"
+          DOCKER_CONFIG="$anonymous_config" docker manifest inspect \
+            "${IMAGE_REPOSITORY}@${IMAGE_DIGEST}" \
+            >"$RESULT_ROOT/anonymous-manifest-inspect.json"
+
       - name: Record immutable release manifest and signature identity
         shell: bash
         env:
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
           BUILD_BASE: ${{ env.GPU_BUILD_BASE }}
           RUNTIME_BASE: ${{ env.GPU_RUNTIME_BASE }}
+          FOUNDATION: ${{ env.FOUNDATION_IMAGE }}
+          PYTHON_BASE: ${{ env.PYTHON_BASE }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -208,11 +209,12 @@ jobs:
                   "backend": "onnxruntime-cuda",
               }},
               "buildInputs": [
+                  {"path": "foundationImage", "digest": os.environ["FOUNDATION"].rsplit("@", 1)[1]},
+                  {"path": "pythonBase", "digest": os.environ["PYTHON_BASE"].rsplit("@", 1)[1]},
                   {"path": "gpuBuildBase", "digest": os.environ["BUILD_BASE"].rsplit("@", 1)[1]},
                   {"path": "gpuRuntimeBase", "digest": os.environ["RUNTIME_BASE"].rsplit("@", 1)[1]},
                   {"path": "gpu.lock", "digest": sha("packaging/ndnsf-di-container/oci/locks/gpu.lock")},
                   {"path": "Dockerfile.gpu", "digest": sha("packaging/ndnsf-di-container/oci/Dockerfile.gpu")},
-                  {"path": "source-seal.json", "digest": sha(root / "source-seal.json")},
               ],
               "sbom": {"location": "sbom.spdx.json", "digest": sha(root / "sbom.spdx.json")},
               "provenance": {"builder": "github-actions/buildx", "digest": digest},

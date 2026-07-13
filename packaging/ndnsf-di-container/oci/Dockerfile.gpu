@@ -1,144 +1,156 @@
 # syntax=docker/dockerfile:1.7
 
+# GitHub assembles only the GPU delta.  The expensive NDN/security stack comes
+# from an immutable foundation image that was built and tested locally.
+ARG FOUNDATION_IMAGE
+ARG PYTHON_BASE_IMAGE
 ARG GPU_BUILD_BASE_IMAGE
 ARG GPU_RUNTIME_BASE_IMAGE
 
-FROM ${GPU_BUILD_BASE_IMAGE} AS stack-builder
+FROM ${FOUNDATION_IMAGE} AS local-foundation
+FROM ${PYTHON_BASE_IMAGE} AS python-runtime
+RUN rm -f \
+      /usr/local/lib/python3.10/lib-dynload/nis.*.so \
+      /usr/local/lib/python3.10/lib-dynload/_tkinter.*.so
+
+FROM ${GPU_BUILD_BASE_IMAGE} AS gpu-assembler
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG SOURCE_REVISION
-ARG DEPENDENCY_SOURCE_MODE=sealed
+ARG ONNXRUNTIME_CPP_URL
+ARG ONNXRUNTIME_CPP_SHA256
 ARG DEBIAN_FRONTEND=noninteractive
 ENV PREFIX=/opt/ndnsf-di/current \
     PATH=/opt/venv/bin:/opt/ndnsf-di/current/bin:${PATH} \
-    PKG_CONFIG_PATH=/opt/ndnsf-di/current/lib/pkgconfig \
-    LD_LIBRARY_PATH=/opt/ndnsf-di/current/lib
-WORKDIR /src/ndnsf
-COPY . /src/ndnsf
+    PKG_CONFIG_PATH=/opt/ndnsf-di/current/lib/pkgconfig:/opt/onnxruntime/lib/pkgconfig \
+    LD_LIBRARY_PATH=/opt/ndnsf-di/current/lib:/opt/onnxruntime/lib
+
+COPY --from=local-foundation /opt/ndnsf-di /opt/ndnsf-di
+COPY --from=python-runtime /usr/local /usr/local
+COPY packaging/ndnsf-di-container/oci/locks/gpu.lock /build-contract/gpu.lock
+COPY packaging/ndnsf-di-container/oci/scripts/derive-runtime-packages.py /build-contract/derive-runtime-packages.py
+COPY packaging/ndnsf-di-container/oci/scripts/verify-python-environment.py /build-contract/verify-python-environment.py
+
+# These are package/header inputs for the small NDNSF ONNX adapter build only;
+# no third-party NDN or cryptographic source is built in GitHub Actions.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update && apt-get install -y --no-install-recommends python3 ca-certificates
-RUN python3 - <<'PY'
-import json,re
-v=json.load(open('packaging/ndnsf-di-container/oci/locks/gpu.lock'))
-assert v['schemaVersion']=='ndnsf-di-gpu-lock-v1'
-assert v['cuda']=='12.4.1' and v['cudnnMajor']==9
-assert all(re.fullmatch(r'[0-9a-f]{40}',x['revision']) for x in v['sourceRepositories'].values())
-PY
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update && python3 - <<'PY' >/tmp/system-packages
-import json
-print(' '.join(json.load(open('packaging/ndnsf-di-container/oci/locks/gpu.lock'))['systemPackages']))
-PY
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get install -y --no-install-recommends $(cat /tmp/system-packages)
-RUN python3 -m venv /opt/venv && /opt/venv/bin/pip install --no-cache-dir --upgrade pip==25.0.1 setuptools==75.8.0 wheel==0.45.1
+    apt-get update && apt-get install -y --no-install-recommends \
+      build-essential ca-certificates curl libboost-all-dev libgtkmm-3.0-dev \
+      libgdbm6 libprotobuf-dev libreadline8 libsqlite3-0 libsqlite3-dev \
+      libssl1.1 libssl-dev pkg-config protobuf-compiler \
+      python3 python3-dev python3-pip python3-venv zlib1g
+
+RUN set -eu; \
+    test -n "$ONNXRUNTIME_CPP_URL"; \
+    test "$ONNXRUNTIME_CPP_SHA256" = "6bfb87c6ebe55367a94509b8ef062239e188dccf8d5caac8d6909b2344893bf0"; \
+    curl -fL --retry 3 --retry-delay 2 -o /tmp/onnxruntime.tgz "$ONNXRUNTIME_CPP_URL"; \
+    echo "$ONNXRUNTIME_CPP_SHA256  /tmp/onnxruntime.tgz" | sha256sum -c -; \
+    mkdir -p /opt/onnxruntime; \
+    tar -xzf /tmp/onnxruntime.tgz --strip-components=1 -C /opt/onnxruntime; \
+    rm /tmp/onnxruntime.tgz; \
+    test -f /opt/onnxruntime/include/onnxruntime_cxx_api.h; \
+    test -f /opt/onnxruntime/lib/libonnxruntime.so
+RUN printf '%s\n' \
+      'prefix=/opt/onnxruntime' \
+      'exec_prefix=${prefix}' \
+      'libdir=${prefix}/lib' \
+      'includedir=${prefix}/include' \
+      '' \
+      'Name: onnxruntime' \
+      'Description: ONNX Runtime GPU C++ API' \
+      'Version: 1.20.1' \
+      'Libs: -L${libdir} -lonnxruntime' \
+      'Cflags: -I${includedir}' \
+      >/opt/onnxruntime/lib/pkgconfig/onnxruntime.pc
+
+RUN python3.10 -m venv /opt/venv && \
+    /opt/venv/bin/pip install --no-cache-dir --upgrade \
+      pip==25.0.1 setuptools==75.8.0 wheel==0.45.1
 RUN python3 - <<'PY' >/tmp/python-requirements
 import json
-v=json.load(open('packaging/ndnsf-di-container/oci/locks/gpu.lock'))
+lock=json.load(open('/build-contract/gpu.lock'))
 skip={'torch','torchvision','torchaudio'}
-print('\n'.join(f'{k}=={v}' for k,v in sorted(v['pythonPackages'].items()) if k not in skip))
+print('\n'.join(f'{name}=={version}' for name,version in sorted(lock['pythonPackages'].items()) if name not in skip))
 PY
 RUN --mount=type=cache,target=/root/.cache/pip \
     /opt/venv/bin/pip install --no-deps --requirement /tmp/python-requirements && \
-    /opt/venv/bin/pip install --no-deps --index-url https://download.pytorch.org/whl/cu124 \
+    /opt/venv/bin/pip install --no-deps \
+      --index-url https://download.pytorch.org/whl/cu124 \
       torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0
-RUN python3 - "$DEPENDENCY_SOURCE_MODE" "$SOURCE_REVISION" <<'PY' >/tmp/extract-stack.sh
-import hashlib,json,pathlib,shlex,sys,tarfile
-v=json.load(open('packaging/ndnsf-di-container/oci/locks/gpu.lock'))['sourceRepositories']
-print('set -eu')
-mode=sys.argv[1]
-if mode!='sealed':
- raise SystemExit('DEPENDENCY_SOURCE_MODE_INVALID')
-seal=json.load(open('/src/ndnsf/.spec110-build/source-seal.json'))
-if seal.get('schemaVersion')!='spec110-oci-source-seal-v1':
- raise SystemExit('SOURCE_SEAL_SCHEMA_INVALID')
-body=dict(seal)
-recorded_digest=body.pop('sealDigest',None)
-measured_digest='sha256:'+hashlib.sha256(json.dumps(body,sort_keys=True,separators=(',',':')).encode()).hexdigest()
-if recorded_digest!=measured_digest:
- raise SystemExit('SOURCE_SEAL_MANIFEST_TAMPERED')
-if seal.get('workspace',{}).get('revision')!=sys.argv[2]:
- raise SystemExit('SOURCE_SEAL_WORKSPACE_MISMATCH')
-if set(seal.get('dependencies',{}))!=set(v):
- raise SystemExit('SOURCE_SEAL_DEPENDENCIES_MISMATCH')
-lock=pathlib.Path('/src/ndnsf/packaging/ndnsf-di-container/oci/locks/gpu.lock')
-if seal.get('lockDigest')!='sha256:'+hashlib.sha256(lock.read_bytes()).hexdigest():
- raise SystemExit('SOURCE_SEAL_LOCK_MISMATCH')
-for name,row in sorted(v.items()):
- measured=seal['dependencies'][name]
- archive=pathlib.Path('/src/ndnsf/.spec110-build/archives')/(name+'.tar')
- if measured.get('revision')!=row['revision']:
-  raise SystemExit('SOURCE_SEAL_REVISION_MISMATCH:'+name)
- if measured.get('archivePath')!='archives/'+name+'.tar':
-  raise SystemExit('SOURCE_SEAL_ARCHIVE_PATH_MISMATCH:'+name)
- if measured.get('archiveDigest')!='sha256:'+hashlib.sha256(archive.read_bytes()).hexdigest():
-  raise SystemExit('SOURCE_SEAL_ARCHIVE_MISMATCH:'+name)
- if measured.get('archiveBytes')!=archive.stat().st_size:
-  raise SystemExit('SOURCE_SEAL_ARCHIVE_SIZE_MISMATCH:'+name)
- with tarfile.open(archive,'r:') as source:
-  for member in source.getmembers():
-   path=pathlib.PurePosixPath(member.name)
-   if path.is_absolute() or '..' in path.parts or not (member.isfile() or member.isdir() or member.issym() or member.islnk()):
-    raise SystemExit('SOURCE_SEAL_ARCHIVE_UNSAFE:'+name)
-   if (member.issym() or member.islnk()) and (pathlib.PurePosixPath(member.linkname).is_absolute() or '..' in pathlib.PurePosixPath(member.linkname).parts):
-    raise SystemExit('SOURCE_SEAL_ARCHIVE_UNSAFE:'+name)
- target='/src/dependencies/'+name
- print('mkdir -p '+shlex.quote(target))
- print('tar -xf '+shlex.quote(str(archive))+' -C '+shlex.quote(target))
-PY
-RUN sh /tmp/extract-stack.sh
-RUN set -eu; \
-    rm -rf /src/dependencies/NFD/websocketpp; \
-    mv /src/dependencies/websocketpp /src/dependencies/NFD/websocketpp; \
-    test -f /src/dependencies/NFD/websocketpp/websocketpp/version.hpp
-RUN set -eu; cd /src/dependencies/ndn-cxx; \
-    ./waf configure --prefix=$PREFIX; ./waf -j"$(nproc)"; ./waf install
-RUN set -eu; cd /src/dependencies/ndn-svs; \
-    ./waf configure --prefix=$PREFIX; ./waf -j"$(nproc)"; ./waf install
-RUN set -eu; cd /src/dependencies/NDNSD; \
-    ./waf configure --prefix=$PREFIX; ./waf -j"$(nproc)"; ./waf install
-RUN set -eu; cd /src/dependencies/NFD; ./waf configure --prefix=$PREFIX; ./waf -j"$(nproc)"; ./waf install
-RUN set -eu; cd /src/dependencies/openabe; \
-    cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$PREFIX; \
-    cmake --build build --parallel; cmake --install build
-RUN set -eu; cd /src/dependencies/NAC-ABE; \
-    cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$PREFIX -DCMAKE_PREFIX_PATH=$PREFIX; \
-    cmake --build build --parallel; cmake --install build
-RUN ./waf configure --prefix=$PREFIX --with-examples && ./waf -j"$(nproc)" && ./waf install
-RUN /opt/venv/bin/pip install --no-deps ./pythonWrapper ./NDNSF-DistributedRepo/pythonWrapper ./NDNSF-DistributedInference
-RUN test -x $PREFIX/bin/nfd && test -x $PREFIX/bin/nfdc && \
-    test -x $PREFIX/bin/App_ServiceController && test -x $PREFIX/bin/di-native-provider && \
+RUN /opt/venv/bin/python /build-contract/verify-python-environment.py \
+      --lock /build-contract/gpu.lock
+
+# Reconfigure only the current workspace against the locally built foundation
+# and the verified ONNX Runtime GPU SDK.  Explicitly install examples whose waf
+# declarations use install_path=None.
+RUN --mount=type=bind,source=.,target=/src/ndnsf,rw \
+    set -eu; cd /src/ndnsf; \
+    test "$(cat /opt/ndnsf-di/manifest/source-revision)" = "$SOURCE_REVISION"; \
+    ./waf configure --prefix=$PREFIX --with-examples; \
+    ./waf -j"$(nproc)"; ./waf install; \
+    install -m 0755 build/examples/App_ServiceController $PREFIX/bin/App_ServiceController; \
+    install -m 0755 build/examples/di-native-provider $PREFIX/bin/di-native-provider; \
+    /opt/venv/bin/pip install --no-deps \
+      ./pythonWrapper ./NDNSF-DistributedRepo/pythonWrapper ./NDNSF-DistributedInference
+
+RUN install -D -m 0644 /opt/ndnsf-di/manifest/nfd.conf /etc/ndn/nfd.conf && \
+    python3 /build-contract/derive-runtime-packages.py \
+      --root $PREFIX --root /opt/venv --root /opt/onnxruntime \
+      --root /usr/local/bin --root /usr/local/lib/python3.10 \
+      --output /opt/ndnsf-di/manifest/runtime-system-packages && \
+    test -x $PREFIX/bin/App_ServiceController && \
+    test -x $PREFIX/bin/di-native-provider && \
+    ldd $PREFIX/bin/di-native-provider | grep -F '/opt/onnxruntime/lib/libonnxruntime.so' && \
     /opt/venv/bin/python -c 'import ndnsf,ndnsf_distributed_inference,torch,onnxruntime,transformers'
 
 FROM ${GPU_RUNTIME_BASE_IMAGE} AS runtime
 ARG SOURCE_REVISION
 ARG RELEASE_ID
+ARG FOUNDATION_IMAGE
 ARG DEBIAN_FRONTEND=noninteractive
 LABEL org.opencontainers.image.title="NDNSF-DI iTiger GPU runtime" \
       org.opencontainers.image.revision="${SOURCE_REVISION}" \
       org.opencontainers.image.version="${RELEASE_ID}" \
+      org.ndnsf.di.foundation="${FOUNDATION_IMAGE}" \
       org.ndnsf.di.backend="onnxruntime-cuda" \
       org.ndnsf.di.rootfs="read-only" \
       org.ndnsf.di.daemon-policy="allocation-scoped-only"
+COPY --from=gpu-assembler /opt/ndnsf-di/manifest/runtime-system-packages /tmp/runtime-system-packages
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update && apt-get install -y --no-install-recommends ca-certificates libgomp1 python3 zlib1g && \
-    rm -rf /var/lib/apt/lists/*
-COPY --from=stack-builder /opt/ndnsf-di /opt/ndnsf-di
-COPY --from=stack-builder /opt/venv /opt/venv
+    apt-get update && apt-get install -y --no-install-recommends $(cat /tmp/runtime-system-packages) && \
+    rm -rf /var/lib/apt/lists/* /tmp/runtime-system-packages
+COPY --from=gpu-assembler /opt/ndnsf-di /opt/ndnsf-di
+COPY --from=gpu-assembler /opt/onnxruntime /opt/onnxruntime
+COPY --from=gpu-assembler /opt/venv /opt/venv
+COPY --from=python-runtime /usr/local /usr/local
 COPY packaging/ndnsf-di-container/oci/locks/gpu.lock /opt/ndnsf-di/manifest/gpu.lock
 COPY packaging/ndnsf-di-container/oci/compatibility/gpu-matrix.yaml /opt/ndnsf-di/manifest/gpu-matrix.yaml
 COPY packaging/ndnsf-di-container/oci/scripts/entrypoint.sh /usr/local/bin/ndnsf-di-container-entrypoint
 COPY packaging/ndnsf-di-container/oci/scripts/healthcheck.sh /usr/local/bin/ndnsf-di-container-healthcheck
 COPY packaging/ndnsf-di-container/oci/scripts/probe-runtime.py /usr/local/bin/ndnsf-di-probe-runtime
+COPY packaging/ndnsf-di-container/oci/scripts/verify-runtime-closure.py /usr/local/bin/verify-runtime-closure.py
+COPY packaging/ndnsf-di-container/oci/scripts/verify-python-environment.py /usr/local/bin/verify-python-environment.py
 COPY packaging/ndnsf-di-container/lib/gpu_compatibility.py /usr/local/lib/ndnsf-di/gpu_compatibility.py
-RUN chmod 0755 /usr/local/bin/ndnsf-di-container-entrypoint /usr/local/bin/ndnsf-di-container-healthcheck /usr/local/bin/ndnsf-di-probe-runtime && \
-    install -d -m 0750 -o 65532 -g 65532 /run/ndn /run/ndnsf-di /var/lib/ndnsf-di /tmp/ndnsf-di && \
+RUN chmod 0755 /usr/local/bin/ndnsf-di-container-entrypoint \
+      /usr/local/bin/ndnsf-di-container-healthcheck \
+      /usr/local/bin/ndnsf-di-probe-runtime \
+      /usr/local/bin/verify-runtime-closure.py && \
+    ldconfig && \
+    install -d -m 0755 /etc/ndn && \
+    install -m 0644 /opt/ndnsf-di/manifest/nfd.conf /etc/ndn/nfd.conf && \
+    install -d -m 0750 -o 65532 -g 65532 \
+      /run/nfd /run/ndnsf-di /var/lib/ndnsf-di /tmp/ndnsf-di && \
+    LD_LIBRARY_PATH=/opt/ndnsf-di/current/lib:/opt/onnxruntime/lib \
+      python3 /usr/local/bin/verify-runtime-closure.py \
+      --root /opt/ndnsf-di --root /opt/onnxruntime --root /opt/venv \
+      --root /usr/local/bin --root /usr/local/lib/python3.10 && \
+    /opt/venv/bin/python /usr/local/bin/verify-python-environment.py \
+      --lock /opt/ndnsf-di/manifest/gpu.lock && \
     test ! -e /root/.ssh && test ! -e /root/.cache/huggingface
 ENV PATH=/opt/venv/bin:/opt/ndnsf-di/current/bin:${PATH} \
-    LD_LIBRARY_PATH=/opt/ndnsf-di/current/lib \
-    PKG_CONFIG_PATH=/opt/ndnsf-di/current/lib/pkgconfig \
+    LD_LIBRARY_PATH=/opt/ndnsf-di/current/lib:/opt/onnxruntime/lib \
+    PKG_CONFIG_PATH=/opt/ndnsf-di/current/lib/pkgconfig:/opt/onnxruntime/lib/pkgconfig \
     PYTHONNOUSERSITE=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     HOME=/run/ndnsf-di \
@@ -147,6 +159,8 @@ ENV PATH=/opt/venv/bin:/opt/ndnsf-di/current/bin:${PATH} \
     NDNSF_ALLOW_CPU_FALLBACK=0
 USER 65532:65532
 WORKDIR /run/ndnsf-di
+RUN nfd --version && nfdc --version && \
+    /usr/local/bin/ndnsf-di-probe-runtime --mode static
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 CMD ["/usr/local/bin/ndnsf-di-probe-runtime", "--mode", "static"]
 ENTRYPOINT ["/usr/local/bin/ndnsf-di-container-entrypoint"]
 CMD ["exec", "/usr/local/bin/ndnsf-di-probe-runtime", "--mode", "static"]

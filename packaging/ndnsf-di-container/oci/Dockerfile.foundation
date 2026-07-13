@@ -1,0 +1,126 @@
+# syntax=docker/dockerfile:1.7
+
+# This image is built and tested locally.  It contains the expensive, stable
+# NDN/security stack and the GPU-independent NDNSF core, but no CUDA, Qwen
+# weights, PyTorch, or ONNX Runtime payloads.
+ARG FOUNDATION_BASE_IMAGE
+FROM ${FOUNDATION_BASE_IMAGE} AS foundation-builder
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+ARG SOURCE_REVISION
+ARG DEPENDENCY_SOURCE_MODE=sealed
+ARG DEBIAN_FRONTEND=noninteractive
+ENV PREFIX=/opt/ndnsf-di/current \
+    PATH=/opt/ndnsf-di/current/bin:${PATH} \
+    PKG_CONFIG_PATH=/opt/ndnsf-di/current/lib/pkgconfig \
+    LD_LIBRARY_PATH=/opt/ndnsf-di/current/lib
+
+WORKDIR /build-contract
+COPY packaging/ndnsf-di-container/oci/locks/gpu.lock /build-contract/gpu.lock
+COPY packaging/ndnsf-di-container/oci/scripts/prepare-openabe-relic.py /build-contract/prepare-openabe-relic.py
+COPY packaging/ndnsf-di-container/oci/scripts/derive-runtime-packages.py /build-contract/derive-runtime-packages.py
+COPY .spec110-build /build-contract/.spec110-build
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends python3 ca-certificates
+RUN python3 - <<'PY' >/tmp/system-packages
+import json
+print(' '.join(json.load(open('/build-contract/gpu.lock'))['systemPackages']))
+PY
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends $(cat /tmp/system-packages)
+
+RUN python3 - "$DEPENDENCY_SOURCE_MODE" "$SOURCE_REVISION" <<'PY' >/tmp/extract-stack.sh
+import hashlib,json,pathlib,shlex,sys,tarfile
+sources=json.load(open('/build-contract/gpu.lock'))['sourceRepositories']
+if sys.argv[1] != 'sealed':
+ raise SystemExit('DEPENDENCY_SOURCE_MODE_INVALID')
+seal=json.load(open('/build-contract/.spec110-build/source-seal.json'))
+body=dict(seal); recorded=body.pop('sealDigest',None)
+measured='sha256:'+hashlib.sha256(json.dumps(body,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+if recorded != measured:
+ raise SystemExit('SOURCE_SEAL_MANIFEST_TAMPERED')
+if seal.get('workspace',{}).get('revision') != sys.argv[2]:
+ raise SystemExit('SOURCE_SEAL_WORKSPACE_MISMATCH')
+if set(seal.get('dependencies',{})) != set(sources):
+ raise SystemExit('SOURCE_SEAL_DEPENDENCIES_MISMATCH')
+lock=pathlib.Path('/build-contract/gpu.lock')
+if seal.get('lockDigest') != 'sha256:'+hashlib.sha256(lock.read_bytes()).hexdigest():
+ raise SystemExit('SOURCE_SEAL_LOCK_MISMATCH')
+for name,row in sorted(sources.items()):
+ measured=seal['dependencies'][name]
+ archive=pathlib.Path('/build-contract/.spec110-build/archives')/(name+'.tar')
+ if measured.get('revision') != row['revision']:
+  raise SystemExit('SOURCE_SEAL_REVISION_MISMATCH:'+name)
+ if measured.get('archivePath') != 'archives/'+name+'.tar':
+  raise SystemExit('SOURCE_SEAL_ARCHIVE_PATH_MISMATCH:'+name)
+ if measured.get('archiveDigest') != 'sha256:'+hashlib.sha256(archive.read_bytes()).hexdigest():
+  raise SystemExit('SOURCE_SEAL_ARCHIVE_MISMATCH:'+name)
+ if measured.get('archiveBytes') != archive.stat().st_size:
+  raise SystemExit('SOURCE_SEAL_ARCHIVE_SIZE_MISMATCH:'+name)
+ with tarfile.open(archive,'r:') as source:
+  for member in source.getmembers():
+   path=pathlib.PurePosixPath(member.name)
+   link=pathlib.PurePosixPath(member.linkname)
+   if path.is_absolute() or '..' in path.parts or not (member.isfile() or member.isdir() or member.issym() or member.islnk()):
+    raise SystemExit('SOURCE_SEAL_ARCHIVE_UNSAFE:'+name)
+   if (member.issym() or member.islnk()) and (link.is_absolute() or '..' in link.parts):
+    raise SystemExit('SOURCE_SEAL_ARCHIVE_UNSAFE:'+name)
+ target='/src/dependencies/'+name
+ print('mkdir -p '+shlex.quote(target))
+ print('tar -xf '+shlex.quote(str(archive))+' -C '+shlex.quote(target))
+PY
+RUN sh /tmp/extract-stack.sh
+RUN set -eu; \
+    rm -rf /src/dependencies/NFD/websocketpp; \
+    mv /src/dependencies/websocketpp /src/dependencies/NFD/websocketpp; \
+    test -f /src/dependencies/NFD/websocketpp/websocketpp/version.hpp
+RUN python3 /build-contract/prepare-openabe-relic.py \
+      --source /src/dependencies/relic --openabe /src/dependencies/openabe
+
+RUN set -eu; cd /src/dependencies/ndn-cxx; \
+    ./waf configure --prefix=$PREFIX; ./waf -j"$(nproc)"; ./waf install
+RUN set -eu; cd /src/dependencies/ndn-svs; \
+    ./waf configure --prefix=$PREFIX; ./waf -j"$(nproc)"; ./waf install
+RUN set -eu; cd /src/dependencies/NDNSD; \
+    ./waf configure --prefix=$PREFIX; ./waf -j"$(nproc)"; ./waf install
+RUN set -eu; cd /src/dependencies/NFD; \
+    ./waf configure --prefix=$PREFIX; ./waf -j"$(nproc)"; ./waf install; \
+    test -f $PREFIX/etc/ndn/nfd.conf.sample
+RUN set -eu; cd /src/dependencies/openabe; \
+    export LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}; . ./env; \
+    make -C deps/relic relic-toolkit-0.5.0/.built; \
+    NO_DEPS=1 BISON="$(command -v bison)" make; \
+    make test; make INSTALL_PREFIX=$PREFIX install
+RUN set -eu; cd /src/dependencies/NAC-ABE; \
+    cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+      -DHAVE_TESTS=TRUE \
+      -DCMAKE_INSTALL_PREFIX=$PREFIX -DCMAKE_PREFIX_PATH=$PREFIX; \
+    cmake --build build --parallel; \
+    cd /src/dependencies/NAC-ABE/tests/unit-tests; \
+    /src/dependencies/NAC-ABE/build/tests/unit-tests -l test_suite -x; \
+    cmake --install /src/dependencies/NAC-ABE/build
+
+# Build the GPU-independent framework core locally.  Native ONNX providers are
+# intentionally deferred to Dockerfile.gpu.
+RUN --mount=type=bind,source=.,target=/src/ndnsf,rw \
+    set -eu; cd /src/ndnsf; \
+    ./waf configure --prefix=$PREFIX; ./waf -j"$(nproc)"; ./waf install
+RUN install -d /opt/ndnsf-di/manifest && \
+    python3 /build-contract/derive-runtime-packages.py \
+      --root $PREFIX --output /opt/ndnsf-di/manifest/runtime-system-packages && \
+    install -D -m 0644 $PREFIX/etc/ndn/nfd.conf.sample /opt/ndnsf-di/manifest/nfd.conf && \
+    printf '%s\n' "$SOURCE_REVISION" >/opt/ndnsf-di/manifest/source-revision && \
+    test -x $PREFIX/bin/nfd && test -x $PREFIX/bin/nfdc && \
+    test -n "$(find $PREFIX/lib -maxdepth 1 -name 'libndn-service-framework.so*' -print -quit)"
+
+# Export only the locally compiled prefix and its immutable manifest.  Build
+# tools and apt caches never enter GHCR or the final GPU image.
+FROM scratch AS foundation
+ARG SOURCE_REVISION
+LABEL org.opencontainers.image.title="NDNSF-DI local foundation" \
+      org.opencontainers.image.revision="${SOURCE_REVISION}" \
+      org.ndnsf.di.layer="local-foundation" \
+      org.ndnsf.di.contains-gpu-runtime="false"
+COPY --from=foundation-builder /opt/ndnsf-di /opt/ndnsf-di
