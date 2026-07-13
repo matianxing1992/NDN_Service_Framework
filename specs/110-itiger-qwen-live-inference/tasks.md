@@ -235,9 +235,14 @@ blocker into experimental completion.
 - [X] T157 [US1] Repair `.github/workflows/ndnsf-di-itiger-image.yml` to prepare/verify sealed sources, pass `DEPENDENCY_SOURCE_MODE=sealed`, push only to GHCR, retain only manifest/SBOM/signature/log/checksum evidence, record runner disk, and exclude Qwen weights (depends on T155-T156)
 - [X] T158 [US1] Run the full offline/container/workflow static suite, source-secret scan, local six-repository seal creation/verification, YAML parse, and strict Spec Kit audit; recorded 86/86 tests, byte-identical local/remote dependency archives, zero scan findings, and no cloud claim in `evidence/github-sealed-route-gate.md` (depends on T157)
 - [X] T159 [US1] After local PASS, commit and push the workflow/packaging revision once so its existing Experimental-path trigger starts one GitHub build; preserved run `29283330479` as `EXECUTED_FAIL` at the combined dependency-build step with no rerun and no GHCR digest in `evidence/github-run-29283330479-verdict.md` (depends on T158)
-- [ ] T160 [US1] After the replacement GitHub release in T162 PASSes, render/review and submit exactly one bounded iTiger CPU materialization job through the crash-safe journal, build `runtime.sif` from the exact GHCR digest, verify checksum/static runtime, atomically promote evidence, and never auto-resubmit (depends on T162)
+- [ ] T160 [US1] After the replacement GitHub release in T164 PASSes, render/review and submit exactly one bounded iTiger CPU materialization job through the crash-safe journal, build `runtime.sif` from the exact GHCR digest, verify checksum/static runtime, atomically promote evidence, and never auto-resubmit (depends on T164)
 
 ## Phase 12: GitHub dependency-order replacement
 
 - [X] T161 [US1] Diagnose run `29283330479` without rerunning it, prove from the locked NDNSD contract that ndn-svs must be installed first, add a RED build-order regression, split the Dockerfile dependency layers in `ndn-cxx -> ndn-svs -> NDNSD` order, pass 87/87 offline tests, and reproduce the corrected sequence in a disposable Ubuntu 22.04 container
-- [ ] T162 [US1] Commit and push the reviewed T161 fix once under a new source/release identity, monitor exactly one replacement GitHub OCI run to terminal state, and preserve its immutable GHCR digest or exact failure without automatic rerun (depends on T161)
+- [X] T162 [US1] Commit and push the reviewed T161 fix once under a new source/release identity; preserved run `29285142648` as `EXECUTED_FAIL` at the isolated NFD layer with no rerun and no GHCR digest in `evidence/github-run-29285142648-verdict.md` (depends on T161)
+
+## Phase 13: NFD sealed-input replacement
+
+- [ ] T163 [US1] Diagnose run `29285142648` without rerunning it, reproduce the missing `libpcap` failure from exact locked sources in disposable Ubuntu 22.04, add a RED regression, lock and seal NFD's exact websocketpp gitlink revision, install `libpcap-dev`, prove NFD 24.07 configure/build/install locally, and pass the full offline gate
+- [ ] T164 [US1] Commit and push the reviewed T163 fix once under a new source/release identity, monitor exactly one replacement GitHub OCI run to terminal state, and preserve its immutable GHCR digest or exact failure without automatic rerun (depends on T163)

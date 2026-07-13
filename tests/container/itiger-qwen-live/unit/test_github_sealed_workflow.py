@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import unittest
 
@@ -23,6 +24,26 @@ class GithubSealedWorkflowTests(unittest.TestCase):
         ndnsd = text.index("cd /src/dependencies/NDNSD")
         self.assertLess(ndn_cxx, ndn_svs)
         self.assertLess(ndn_svs, ndnsd)
+
+    def test_nfd_build_inputs_include_pcap_and_locked_websocketpp(self) -> None:
+        lock = json.loads(
+            (REPO / "packaging/ndnsf-di-container/oci/locks/gpu.lock").read_text()
+        )
+        self.assertIn("libpcap-dev", lock["systemPackages"])
+        self.assertEqual(
+            lock["sourceRepositories"]["websocketpp"],
+            {
+                "url": "https://github.com/cawka/websocketpp.git",
+                "revision": "ac4e021333675fc80b96eb7be45d218581c897e2",
+            },
+        )
+        dockerfile = (
+            REPO / "packaging/ndnsf-di-container/oci/Dockerfile.gpu"
+        ).read_text()
+        materialize = dockerfile.index("/src/dependencies/NFD/websocketpp")
+        nfd_build = dockerfile.index("cd /src/dependencies/NFD")
+        self.assertLess(materialize, nfd_build)
+        self.assertIn("websocketpp/version.hpp", dockerfile)
 
     def test_qwen_weights_are_excluded_from_build_context(self) -> None:
         patterns = set((REPO / ".dockerignore").read_text().splitlines())

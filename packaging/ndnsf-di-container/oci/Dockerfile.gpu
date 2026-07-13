@@ -88,6 +88,10 @@ for name,row in sorted(v.items()):
  print('tar -xf '+shlex.quote(str(archive))+' -C '+shlex.quote(target))
 PY
 RUN sh /tmp/extract-stack.sh
+RUN set -eu; \
+    rm -rf /src/dependencies/NFD/websocketpp; \
+    mv /src/dependencies/websocketpp /src/dependencies/NFD/websocketpp; \
+    test -f /src/dependencies/NFD/websocketpp/websocketpp/version.hpp
 RUN set -eu; cd /src/dependencies/ndn-cxx; \
     ./waf configure --prefix=$PREFIX; ./waf -j"$(nproc)"; ./waf install
 RUN set -eu; cd /src/dependencies/ndn-svs; \
