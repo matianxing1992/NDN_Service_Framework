@@ -12,6 +12,7 @@ import tarfile
 
 RELIC_REVISION = "b984e901ba78c83ea4093ea96addd13628c8c2d0"
 WEBSOCKETPP_REVISION = "ac4e021333675fc80b96eb7be45d218581c897e2"
+NDN_SVS_REVISION = "19ec38ec77d26c13125b292863e607da51a3d9de"
 FOUNDATION_BASE = "ubuntu@sha256:8feb4d8ca5354def3d8fce243717141ce31e2c428701f6682bd2fafe15388214"
 PYTHON_BASE = "python@sha256:b3061b93c8df9809c3783a4f17bbf2520425ec6b40bd3e5e7538870e21ba7209"
 GPU_BUILD_BASE = "nvidia/cuda@sha256:f18cf1a9ac2842e59f13b0d0729594da8cbd68cadd2379308cdd98c0374dbd80"
@@ -96,6 +97,7 @@ def run(workspace: Path, seal_root: Path | None) -> dict[str, object]:
     }, "PREFLIGHT_BASE_IMAGE_CONTRACT_INVALID")
     require(sources.get("relic", {}).get("revision") == RELIC_REVISION, "PREFLIGHT_RELIC_NOT_LOCKED")
     require(sources.get("websocketpp", {}).get("revision") == WEBSOCKETPP_REVISION, "PREFLIGHT_WEBSOCKETPP_NOT_LOCKED")
+    require(sources.get("ndn-svs", {}).get("revision") == NDN_SVS_REVISION, "PREFLIGHT_NDN_SVS_COMPATIBILITY_NOT_LOCKED")
     relations = lock.get("sourceRelationships", {})
     require(relations.get("NFD.websocketpp") == WEBSOCKETPP_REVISION, "PREFLIGHT_NFD_GITLINK_MISMATCH")
     require(relations.get("openabe.relic") == RELIC_REVISION, "PREFLIGHT_OPENABE_RELIC_MISMATCH")

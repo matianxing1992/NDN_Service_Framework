@@ -42,6 +42,20 @@ class GithubSealedWorkflowTests(unittest.TestCase):
         self.assertLess(ndn_cxx, ndn_svs)
         self.assertLess(ndn_svs, ndnsd)
 
+    def test_ndn_svs_retains_project_boost_171_compatibility(self) -> None:
+        lock = json.loads(
+            (REPO / "packaging/ndnsf-di-container/oci/locks/gpu.lock").read_text()
+        )
+        self.assertEqual(
+            lock["sourceRepositories"]["ndn-svs"],
+            {
+                "url": "https://github.com/matianxing1992/ndn-svs.git",
+                "revision": "19ec38ec77d26c13125b292863e607da51a3d9de",
+            },
+        )
+        self.assertIn("libboost-all-dev", lock["systemPackages"])
+        self.assertNotIn("sourceArchives", lock)
+
     def test_nfd_build_inputs_include_pcap_and_locked_websocketpp(self) -> None:
         lock = json.loads(
             (REPO / "packaging/ndnsf-di-container/oci/locks/gpu.lock").read_text()
