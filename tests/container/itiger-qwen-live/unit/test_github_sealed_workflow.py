@@ -81,6 +81,10 @@ class GithubSealedWorkflowTests(unittest.TestCase):
             (REPO / "packaging/ndnsf-di-container/oci/locks/gpu.lock").read_text()
         )
         self.assertEqual(
+            lock["sourceRepositories"]["NAC-ABE"]["revision"],
+            "390e9001a8611e04c90f3a5866d09c3136c885d0",
+        )
+        self.assertEqual(
             lock["sourceRepositories"]["relic"]["revision"],
             "b984e901ba78c83ea4093ea96addd13628c8c2d0",
         )

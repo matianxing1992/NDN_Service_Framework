@@ -86,7 +86,7 @@ Ubuntu 22.04/OpenSSL 3 had first produced a compile incompatibility and then nin
 cryptographic/DRBG test failures; that route is rejected rather than patched or
 explained away.
 
-NAC-ABE commit `1cc17d9d21f4dfc0921cc77315d0c57d46291880` discovers system
+NAC-ABE derives from commit `1cc17d9d21f4dfc0921cc77315d0c57d46291880`, which discovers system
 OpenSSL and `libopenabe` through CMake and has no independent bundled OpenSSL.
 Its upstream CMake registers tests only below the `tests/` subdirectory, so a
 root-level `ctest` can misleadingly report no tests. The foundation gate instead
@@ -94,14 +94,15 @@ builds with `-DHAVE_TESTS=TRUE` and executes the unit-test binary from the
 directory containing `trust-schema.conf`; missing test configuration is a hard
 failure, not an accepted crypto result.
 
-The corrected local command executed all 29 NAC-ABE cases in 63.44 seconds and
-ended with `*** No errors detected`. This includes CP/KP setup, key generation,
-encryption/decryption, concurrent OpenABE state serialization, integrated
-producer/consumer flows, retries, 1000-operation encryption/decryption
-benchmarks, and 1000/1000 successful cached decryptions. An earlier invocation
-from the wrong directory produced 18 missing-`trust-schema.conf` failures; it
-is retained as a test-launch error and was not counted as cryptographic
-evidence.
+The user's modified NAC-ABE worktree executed 29 cases in 63.44 seconds and
+ended with `*** No errors detected`, but one concurrency case is an uncommitted
+local research change and is not counted as candidate evidence. The exact
+locked source has 28 cases covering CP/KP setup, key generation,
+encryption/decryption, integrated producer/consumer flows, retries,
+1000-operation encryption/decryption benchmarks, and 1000/1000 successful
+cached decryptions. An earlier invocation from the wrong directory produced 18
+missing-`trust-schema.conf` failures; it is retained as a test-launch error and
+was not counted as cryptographic evidence.
 
 ## First complete-build attempt and ndn-svs compatibility correction
 
@@ -141,6 +142,20 @@ The isolated passing OpenABE fixture had explicitly installed
 `libgtest-dev`, so the correction adds that Focal package to the locked system
 closure and makes preflight/unit tests reject any future omission. No OpenABE,
 RELIC, OpenSSL, or test source is bypassed.
+
+Candidate `fce4c3a73c674df161e560978969cac9b6146f65`, sealed as
+`sha256:3dac110945d38e8c133e0ce5be16451dd6b8d8545ec3215f243a3eaddd7d443d`,
+then completed ndn-cxx, ndn-svs, NDNSD, NFD, and all 46 OpenABE tests. Its
+NAC-ABE test executable failed to link because the locked CMake target used
+`boost::filesystem` without declaring the filesystem/system DSOs. The negative
+log is retained at
+`results/spec110-itiger-qwen-live/foundation-build-fce4c3a/build.log`.
+The dependency-only fix explicitly links `Boost::unit_test_framework`,
+`Boost::filesystem`, and `Boost::system`; with CMake forced to the system Boost
+1.71 configuration, all 28 locked tests passed in 67.03 seconds. That exact fix
+is commit `390e9001a8611e04c90f3a5866d09c3136c885d0` on fork branch
+`spec110-explicit-boost-test-link`, and preflight now rejects another NAC-ABE
+revision.
 
 ## Audit verdict
 
