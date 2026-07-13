@@ -104,6 +104,7 @@ class GithubSealedWorkflowTests(unittest.TestCase):
         ).read_text()
         openabe = dockerfile[dockerfile.index("cd /src/dependencies/openabe") :]
         self.assertIn('SHELL ["/bin/bash", "-o", "pipefail", "-c"]', dockerfile)
+        self.assertIn("libgtest-dev", lock["systemPackages"])
         self.assertIn("NO_DEPS=1", openabe)
         self.assertIn("make INSTALL_PREFIX=$PREFIX install", openabe)
         self.assertNotIn("cmake -S . -B build", openabe.split("NAC-ABE", 1)[0])

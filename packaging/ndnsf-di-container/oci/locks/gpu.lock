@@ -25,7 +25,7 @@
   },
   "systemPackages": [
     "bison", "build-essential", "ca-certificates", "cmake", "curl", "flex", "git", "libboost-all-dev",
-    "libfl-dev", "libgmp-dev", "libgtkmm-3.0-dev", "libpcap-dev", "libprotobuf-dev",
+    "libfl-dev", "libgmp-dev", "libgtest-dev", "libgtkmm-3.0-dev", "libpcap-dev", "libprotobuf-dev",
     "libsqlite3-dev", "libssl-dev", "ninja-build", "pkg-config", "protobuf-compiler", "python3",
     "python3-dev", "python3-pip", "python3-venv", "zlib1g"
   ],

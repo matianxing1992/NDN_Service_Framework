@@ -17,7 +17,7 @@ FOUNDATION_BASE = "ubuntu@sha256:8feb4d8ca5354def3d8fce243717141ce31e2c428701f66
 PYTHON_BASE = "python@sha256:b3061b93c8df9809c3783a4f17bbf2520425ec6b40bd3e5e7538870e21ba7209"
 GPU_BUILD_BASE = "nvidia/cuda@sha256:f18cf1a9ac2842e59f13b0d0729594da8cbd68cadd2379308cdd98c0374dbd80"
 GPU_RUNTIME_BASE = "nvidia/cuda@sha256:a6a8417cb56c9a5d30c4d8c78ad18bc9b75ffe4453fe1c04b3149b3741518b06"
-REQUIRED_SYSTEM = {"bison", "flex", "libfl-dev", "libpcap-dev"}
+REQUIRED_SYSTEM = {"bison", "flex", "libfl-dev", "libgtest-dev", "libpcap-dev"}
 REQUIRED_PYTHON_RUNTIME = {
     "libgdbm6", "libreadline8", "libsqlite3-0", "libssl1.1",
 }
