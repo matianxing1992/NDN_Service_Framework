@@ -45,6 +45,10 @@ class RootlessBuildRenderTests(unittest.TestCase):
             self.assertNotIn("--gres", text)
             self.assertNotIn("sbatch ", text)
             self.assertIn("--mode diagnostic", text)
+            self.assertIn("--builder-mode auto", text)
+            self.assertIn("quay.io/buildah/stable@sha256:", text)
+            self.assertEqual(record["builder"]["requestedMode"], "auto")
+            self.assertRegex(record["builder"]["ociDigest"], r"^sha256:[a-f0-9]{64}$")
             asset_root = output.with_suffix(".sbatch.assets")
             self.assertIn(str(asset_root / "rootless-build.sh"), text)
             self.assertEqual(set(record["assets"]), {"rootless-build.sh", "inspect-oci-archive.py"})
@@ -84,6 +88,28 @@ class RootlessBuildRenderTests(unittest.TestCase):
                 render_rootless_build_job(
                     **{**kwargs, "output_path": Path(str(output) + ";touch-pwned")}
                 )
+            with self.assertRaisesRegex(RootlessBuildError, "BUILDER_OCI_NOT_PINNED"):
+                render_rootless_build_job(
+                    **{**kwargs, "output_path": output.parent / "builder.sbatch", "builder_oci": "quay.io/buildah/stable:latest"}
+                )
+
+    def test_apptainer_sif_backend_is_explicitly_rendered(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source"
+            project = root / "project"
+            output = project / "campaigns/spec110/rendered/fallback.sbatch"
+            self.prepare_source(source)
+            record = render_rootless_build_job(
+                source_root=source,
+                project_root=project,
+                output_path=output,
+                release_id="fallback-001",
+                builder_mode="apptainer-sif",
+                allow_test_root=True,
+            )
+            self.assertEqual(record["builder"]["requestedMode"], "apptainer-sif")
+            self.assertIn("--builder-mode apptainer-sif", output.read_text())
 
 
 if __name__ == "__main__":

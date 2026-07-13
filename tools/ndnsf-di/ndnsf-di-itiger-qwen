@@ -62,6 +62,8 @@ def parser() -> argparse.ArgumentParser:
     release_build.add_argument("--account", default="")
     release_build.add_argument("--qos", default="normal")
     release_build.add_argument("--wall-time", default="00:05:00")
+    release_build.add_argument("--builder-mode", choices=("auto", "host", "apptainer-sif"), default="auto")
+    release_build.add_argument("--builder-oci", default=None)
     release_materialize = release.add_parser("materialize")
     release_materialize.add_argument("--oci", required=True)
     release_materialize.add_argument("--project", required=True)
@@ -130,7 +132,7 @@ def main(argv: list[str] | None = None) -> int:
                 _write({"status": "PASS", "manifestSafe": True, "schemaVersion": value.get("schemaVersion")})
                 return 0
             if args.release_command == "build-render":
-                value = render_rootless_build_job(
+                build_options = dict(
                     source_root=args.source,
                     project_root=args.project,
                     output_path=args.output,
@@ -140,7 +142,11 @@ def main(argv: list[str] | None = None) -> int:
                     account=args.account,
                     qos=args.qos,
                     wall_time=args.wall_time,
+                    builder_mode=args.builder_mode,
                 )
+                if args.builder_oci is not None:
+                    build_options["builder_oci"] = args.builder_oci
+                value = render_rootless_build_job(**build_options)
                 _write(value)
                 return 0
             return _blocked("LIVE_SIF_MATERIALIZATION_REQUIRED")

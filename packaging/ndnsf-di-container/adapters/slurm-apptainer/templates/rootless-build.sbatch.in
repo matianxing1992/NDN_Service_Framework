@@ -18,6 +18,8 @@ exec @@BUILDER@@ \
   --project-root @@PROJECT_ROOT@@ \
   --release-id @@RELEASE_ID@@ \
   --evidence-dir @@EVIDENCE_DIR@@ \
+  --builder-mode @@BUILDER_MODE@@ \
+  --builder-oci @@BUILDER_OCI@@ \
   --probe-base @@PROBE_BASE@@ \
   --gpu-build-base @@GPU_BUILD_BASE@@ \
   --gpu-runtime-base @@GPU_RUNTIME_BASE@@

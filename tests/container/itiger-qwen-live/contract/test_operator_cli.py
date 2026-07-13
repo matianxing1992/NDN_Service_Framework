@@ -56,13 +56,14 @@ class OperatorCliTests(unittest.TestCase):
             result = subprocess.run(
                 [str(CLI), "release", "build-render", "--source", str(source),
                  "--project", str(project), "--release-id", "probe-001",
-                 "--output", str(output)],
+                 "--output", str(output), "--builder-mode", "apptainer-sif"],
                 text=True, capture_output=True, check=False, env=env,
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             value = json.loads(result.stdout)
             self.assertEqual(value["status"], "RENDERED_NOT_SUBMITTED")
             self.assertTrue(output.is_file())
+            self.assertEqual(value["builder"]["requestedMode"], "apptainer-sif")
             self.assertNotIn("sbatch ", output.read_text())
 
     def test_release_build_render_does_not_require_evidence_dependencies(self):
