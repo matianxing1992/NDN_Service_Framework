@@ -252,12 +252,11 @@ else
   seal_tool="$workspace/packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/seal-rootless-source.py"
   source_seal_digest=$(python3 "$seal_tool" verify --source-root "$source_root" --lock "$lock")
   git -C "$workspace" archive --format=tar HEAD | tar -xf - -C "$context"
-  mkdir -p "$context/.spec110-build/sources"
+  mkdir -p "$context/.spec110-build/archives"
   for dependency in "$source_root"/dependencies/*; do
     dependency_name=$(basename "$dependency")
-    mkdir -p "$context/.spec110-build/sources/$dependency_name"
-    git -C "$dependency" archive --format=tar HEAD | \
-      tar -xf - -C "$context/.spec110-build/sources/$dependency_name"
+    git -C "$dependency" archive --format=tar HEAD \
+      >"$context/.spec110-build/archives/$dependency_name.tar"
   done
   cp "$source_root/source-seal.json" "$context/.spec110-build/source-seal.json"
   dockerfile="$context/packaging/ndnsf-di-container/oci/Dockerfile.gpu"

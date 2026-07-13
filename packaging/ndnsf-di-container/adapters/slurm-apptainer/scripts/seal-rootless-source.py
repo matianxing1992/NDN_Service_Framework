@@ -16,6 +16,9 @@ class SealError(RuntimeError):
     pass
 
 
+SCHEMA = "spec110-oci-source-seal-v1"
+
+
 def run(repo: Path, *args: str) -> str:
     result = subprocess.run(
         ["git", "-C", str(repo), *args], text=True, capture_output=True, check=False
@@ -25,7 +28,7 @@ def run(repo: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
-def archive_digest(repo: Path, revision: str) -> str:
+def archive_measure(repo: Path, revision: str) -> dict[str, object]:
     process = subprocess.Popen(
         ["git", "-C", str(repo), "archive", "--format=tar", revision],
         stdout=subprocess.PIPE,
@@ -33,21 +36,23 @@ def archive_digest(repo: Path, revision: str) -> str:
     )
     assert process.stdout is not None
     digest = hashlib.sha256()
+    count = 0
     for chunk in iter(lambda: process.stdout.read(1024 * 1024), b""):
         digest.update(chunk)
+        count += len(chunk)
     stderr = process.stderr.read() if process.stderr is not None else b""
     if process.wait() != 0:
         raise SealError(f"SOURCE_SEAL_ARCHIVE_FAILED:{repo.name}:{stderr.decode(errors='replace')}")
-    return "sha256:" + digest.hexdigest()
+    return {"archiveDigest": "sha256:" + digest.hexdigest(), "archiveBytes": count}
 
 
-def repo_record(repo: Path, expected: str | None = None) -> dict[str, str]:
+def repo_record(repo: Path, expected: str | None = None) -> dict[str, object]:
     revision = run(repo, "rev-parse", "HEAD")
     if expected is not None and revision != expected:
         raise SealError(f"SOURCE_SEAL_REVISION_MISMATCH:{repo.name}")
     if run(repo, "status", "--porcelain", "--untracked-files=no"):
         raise SealError(f"SOURCE_SEAL_TRACKED_DIRTY:{repo.name}")
-    return {"revision": revision, "archiveDigest": archive_digest(repo, revision)}
+    return {"revision": revision, **archive_measure(repo, revision)}
 
 
 def body_digest(value: dict) -> str:
@@ -65,7 +70,10 @@ def evaluate(source_root: Path, lock_path: Path) -> dict:
     return {
         "workspace": repo_record(workspace),
         "dependencies": {
-            name: repo_record(dependencies / name, row["revision"])
+            name: {
+                **repo_record(dependencies / name, row["revision"]),
+                "archivePath": f"archives/{name}.tar",
+            }
             for name, row in sorted(sources.items())
         },
         "lockDigest": "sha256:" + hashlib.sha256(lock_path.read_bytes()).hexdigest(),
@@ -85,7 +93,7 @@ def main() -> int:
     measured = evaluate(source_root, lock)
     if args.action == "create":
         body = {
-            "schemaVersion": "spec110-rootless-source-seal-v1",
+            "schemaVersion": SCHEMA,
             "createdAt": dt.datetime.now(dt.timezone.utc).isoformat(),
             **measured,
         }
@@ -105,7 +113,7 @@ def main() -> int:
     value = json.loads(manifest.read_text(encoding="utf-8"))
     actual = dict(value)
     digest = actual.pop("sealDigest", None)
-    if value.get("schemaVersion") != "spec110-rootless-source-seal-v1" or body_digest(actual) != digest:
+    if value.get("schemaVersion") != SCHEMA or body_digest(actual) != digest:
         raise SealError("SOURCE_SEAL_MANIFEST_TAMPERED")
     for field in ("workspace", "dependencies", "lockDigest"):
         if value.get(field) != measured[field]:

@@ -26,6 +26,11 @@ Dockerfile*
 *.p12
 *.sif
 *.onnx
+*.onnx_data
 *.pt
+*.safetensors
+*.gguf
+*.ckpt
+pytorch_model*.bin
 **/identities
 **/secrets
