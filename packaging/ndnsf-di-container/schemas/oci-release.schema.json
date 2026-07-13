@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ndnsf.example/spec108/oci-release.schema.json",
+  "title": "NDNSF-DI OCI Release Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "releaseId", "candidateId", "sourceRevision", "createdAt", "images", "buildInputs", "sbom", "provenance", "compatibility"],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "digestReference": {"type": "string", "pattern": "^\\S+@sha256:[a-f0-9]{64}$"}
+  },
+  "properties": {
+    "schemaVersion": {"const": "1.0"},
+    "releaseId": {"type": "string", "minLength": 1},
+    "candidateId": {"type": "string", "minLength": 1},
+    "sourceRevision": {"type": "string", "minLength": 7},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "images": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["reference", "digest", "platform", "backend"],
+        "properties": {
+          "reference": {"$ref": "#/$defs/digestReference"},
+          "digest": {"$ref": "#/$defs/sha256"},
+          "platform": {"type": "string", "pattern": "^linux/[a-z0-9_]+$"},
+          "backend": {"enum": ["cpu", "cuda", "onnxruntime-cuda"]}
+        }
+      }
+    },
+    "buildInputs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "digest"],
+        "properties": {"path": {"type": "string", "minLength": 1}, "digest": {"$ref": "#/$defs/sha256"}}
+      }
+    },
+    "sbom": {
+      "type": "object", "additionalProperties": false, "required": ["location", "digest"],
+      "properties": {"location": {"type": "string", "minLength": 1}, "digest": {"$ref": "#/$defs/sha256"}}
+    },
+    "provenance": {
+      "type": "object", "additionalProperties": false, "required": ["builder", "digest"],
+      "properties": {"builder": {"type": "string", "minLength": 1}, "digest": {"$ref": "#/$defs/sha256"}}
+    },
+    "compatibility": {"type": "object", "required": ["architecture"], "properties": {"architecture": {"type": "string", "minLength": 1}}}
+  }
+}

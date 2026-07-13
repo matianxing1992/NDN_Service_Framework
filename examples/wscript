@@ -167,6 +167,7 @@ def build(bld):
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeServiceManifest.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/QwenGenerationSession.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.cpp',
     ])
 
@@ -296,6 +297,37 @@ def build(bld):
                 includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
                 use='BOOST ONNXRUNTIME NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD OPENSSL',
                 cxxflags=['-fPIC', '-pthread'],
+                linkflags=['-pthread'],
+                install_path=None)
+
+    bld.program(name='di-native-fault-provider',
+                target='di-native-fault-provider',
+                source=(["DI_NativeFaultProviderExecutable.cpp"] +
+                        di_native_session_sources +
+                        di_native_collaboration_sources +
+                        bld.path.parent.ant_glob([
+                            'NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactMaterializer.cpp',
+                            'NDNSF-DistributedInference/cpp/ndnsf-di/NativeFaultInjection.cpp',
+                            'NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.cpp',
+                            'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderReadiness.cpp',
+                            'NDNSF-DistributedInference/cpp/ndnsf-di/ProviderResourceProbe.cpp',
+                            'NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionLeaseService.cpp',
+                            'ndn-service-framework/NDNSFMessages.cpp',
+                            'ndn-service-framework/ConfigManager.cpp',
+                            'ndn-service-framework/ServiceProvider.cpp',
+                            'ndn-service-framework/ServiceUser.cpp',
+                            'ndn-service-framework/HybridMessageCrypto.cpp',
+                            'ndn-service-framework/ExecutionLease.cpp',
+                            'ndn-service-framework/NetworkTelemetry.cpp',
+                            'ndn-service-framework/Stream.cpp',
+                            'ndn-service-framework/TimelineTrace.cpp',
+                            'ndn-service-framework/common.cpp',
+                            'ndn-service-framework/utils.cpp',
+                            'ndn-service-framework/CertificatePublisher.cpp',
+                        ])),
+                includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
+                use='BOOST ONNXRUNTIME NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD OPENSSL',
+                cxxflags=['-fPIC', '-pthread', '-DNDNSF_DI_EXPERIMENT_FAULTS=1'],
                 linkflags=['-pthread'],
                 install_path=None)
 

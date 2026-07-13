@@ -1,0 +1,30 @@
+schemaVersion: "1.0"
+profileId: cloud-cpu
+runId: "${NDNSF_RUN_ID}"
+releaseManifest: /etc/ndnsf-di/releases/current.json
+runtime:
+  kind: docker-compose
+backend:
+  requested: cpu
+  allowCpuFallback: false
+identity:
+  reference: /etc/ndnsf-di/identities/cloud-node
+  readOnly: true
+  expectedIdentity: /ndnsf/cloud/node
+storage:
+  projectRoot: /var/lib/ndnsf-di
+  scratchRoot: /var/cache/ndnsf-di/${NDNSF_RUN_ID}
+  identityRoot: /etc/ndnsf-di/identities
+  imageRoot: /var/lib/ndnsf-di/images
+  modelRoot: /var/lib/ndnsf-di/models
+  evidenceRoot: /var/lib/ndnsf-di/evidence/${NDNSF_RUN_ID}
+  minimumFreeBytes: 1073741824
+network:
+  topology: single-node
+  nfdMode: host-scoped
+  localEndpoint: unix:///run/ndnsf-di/cloud-cpu/nfd.sock
+compose:
+  projectName: ndnsf-cloud-cpu
+  composeFile: packaging/ndnsf-di-container/adapters/docker-compose/compose.yaml
+  nfdSocket: /run/ndnsf-di/cloud-cpu/nfd.sock
+  restartPolicy: unless-stopped

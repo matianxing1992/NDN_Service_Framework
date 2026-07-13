@@ -1,0 +1,17 @@
+schemaVersion: "1.0"
+profileId: no-gres
+runId: no-gres-001
+releaseManifest: release.json
+runtime: {kind: slurm-apptainer}
+backend: {requested: onnxruntime-cuda, allowCpuFallback: false}
+identity: {reference: /project/tma1/ndnsf-di/identities/a, readOnly: true}
+storage: {projectRoot: /project/tma1/ndnsf-di, scratchRoot: /tmp/ndnsf-di-no-gres, evidenceRoot: /project/tma1/ndnsf-di/evidence/no-gres}
+network: {topology: single-node, nfdMode: job-scoped}
+slurm:
+  partition: bigTiger
+  wallTime: "00:05:00"
+  nodes: 1
+  tasksPerNode: 1
+  cpusPerTask: 1
+  memory: 1G
+  gpu: {type: rtx_5000, count: 0}

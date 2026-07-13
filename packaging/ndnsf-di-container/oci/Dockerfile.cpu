@@ -1,0 +1,39 @@
+# syntax=docker/dockerfile:1.7
+
+ARG BUILD_BASE_IMAGE
+ARG RUNTIME_BASE_IMAGE
+
+FROM ${BUILD_BASE_IMAGE} AS release-validator
+ARG RELEASE_ROOT=dist/ndnsf-di-container/rootfs
+COPY ${RELEASE_ROOT}/ /release-rootfs/
+RUN test -f /release-rootfs/manifest/SHA256SUMS \
+    && cd /release-rootfs \
+    && sha256sum --check manifest/SHA256SUMS \
+    && test -x opt/ndnsf-di/current/bin/nfd \
+    && test -x opt/ndnsf-di/current/bin/nfdc \
+    && test -x opt/ndnsf-di/current/bin/di-native-provider
+
+FROM ${RUNTIME_BASE_IMAGE} AS runtime
+ARG SOURCE_REVISION=unknown
+ARG RELEASE_ID=unknown
+LABEL org.opencontainers.image.title="NDNSF-DI CPU runtime" \
+      org.opencontainers.image.revision="${SOURCE_REVISION}" \
+      org.opencontainers.image.version="${RELEASE_ID}" \
+      org.opencontainers.image.vendor="NDNSF" \
+      org.opencontainers.image.source="ndn-service-framework" \
+      org.ndnsf.di.backend="onnxruntime-cpu"
+COPY --from=release-validator /release-rootfs/ /
+COPY packaging/ndnsf-di-container/oci/scripts/entrypoint.sh /usr/local/bin/ndnsf-di-container-entrypoint
+COPY packaging/ndnsf-di-container/oci/scripts/healthcheck.sh /usr/local/bin/ndnsf-di-container-healthcheck
+RUN chmod 0755 /usr/local/bin/ndnsf-di-container-entrypoint /usr/local/bin/ndnsf-di-container-healthcheck \
+    && mkdir -p /run/nfd /var/lib/ndnsf-di /var/cache/ndnsf-di \
+    && chown -R 65532:65532 /run/nfd /var/lib/ndnsf-di /var/cache/ndnsf-di \
+    && chmod 0770 /run/nfd
+ENV NDNSF_RELEASE_ROOT=/opt/ndnsf-di/current \
+    NDN_CLIENT_TRANSPORT=unix:///run/nfd/nfd.sock \
+    NDNSF_NFD_SOCKET=/run/nfd/nfd.sock \
+    NDNSF_BACKEND=onnxruntime-cpu \
+    NDNSF_ALLOW_CPU_FALLBACK=0
+USER 65532:65532
+ENTRYPOINT ["/usr/local/bin/ndnsf-di-container-entrypoint"]
+CMD ["provider"]

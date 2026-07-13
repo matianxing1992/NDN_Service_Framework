@@ -181,6 +181,7 @@ struct PyServiceResponse
   bool status = false;
   py::bytes payload;
   std::string error;
+  std::string requestId;
 };
 
 struct PyAckDecision
@@ -2779,10 +2780,11 @@ public:
     std::mutex mutex;
     std::condition_variable cv;
     bool done = false;
+    bool submitted = false;
     auto payload = toBuffer(initialPayload);
 
     auto submit = [&, payload, plan = std::move(plan)]() mutable {
-      m_user->RequestCollaboration(
+      const auto requestId = m_user->RequestCollaboration(
         ndn::Name(serviceName),
         payload,
         std::move(plan),
@@ -2802,6 +2804,12 @@ public:
           done = true;
           cv.notify_one();
         });
+      {
+        std::lock_guard<std::mutex> lock(mutex);
+        output.requestId = requestId.toUri();
+        submitted = true;
+      }
+      cv.notify_one();
     };
 
     if (m_running.load()) {
@@ -2810,8 +2818,8 @@ public:
                             std::chrono::milliseconds(timeoutMs + 3000);
       py::gil_scoped_release release;
       std::unique_lock<std::mutex> lock(mutex);
-      cv.wait_until(lock, deadline, [&done] { return done; });
-      if (done) {
+      cv.wait_until(lock, deadline, [&done, &submitted] { return done && submitted; });
+      if (done && submitted) {
         return output;
       }
       output.status = false;
@@ -2826,7 +2834,7 @@ public:
     while (std::chrono::steady_clock::now() < deadline) {
       {
         std::lock_guard<std::mutex> lock(mutex);
-        if (done) {
+        if (done && submitted) {
           return output;
         }
       }
@@ -3464,7 +3472,8 @@ PYBIND11_MODULE(_ndnsf, m)
     .def(py::init<>())
     .def_readwrite("status", &PyServiceResponse::status)
     .def_readwrite("payload", &PyServiceResponse::payload)
-    .def_readwrite("error", &PyServiceResponse::error);
+    .def_readwrite("error", &PyServiceResponse::error)
+    .def_readwrite("request_id", &PyServiceResponse::requestId);
 
   py::class_<PyAckDecision>(m, "AckDecision")
     .def(py::init<>())

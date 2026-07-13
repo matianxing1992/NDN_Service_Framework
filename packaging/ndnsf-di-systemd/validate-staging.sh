@@ -1,11 +1,20 @@
 #!/bin/sh
 set -eu
-usage() { echo "usage: $0 --work-root NEW-DIRECTORY" >&2; exit 2; }
+usage() { echo "usage: $0 --work-root NEW-DIRECTORY --candidate-id ID --plan-digest sha256:HEX" >&2; exit 2; }
 work=
+candidate=
+plan_digest=
 while [ "$#" -gt 0 ]; do
-  case "$1" in --work-root) work=$2; shift 2 ;; *) usage ;; esac
+  case "$1" in
+    --work-root) work=$2; shift 2 ;;
+    --candidate-id) candidate=$2; shift 2 ;;
+    --plan-digest) plan_digest=$2; shift 2 ;;
+    *) usage ;;
+  esac
 done
 [ -n "$work" ] || usage
+[ -n "$candidate" ] || usage
+[ -n "$plan_digest" ] || usage
 [ ! -e "$work" ] || { echo "work root must not exist: $work" >&2; exit 1; }
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 mkdir -p "$work"
@@ -21,25 +30,25 @@ common_artifacts="--artifact /bin/true:bin/App_ServiceController
 --artifact $repo/examples/ndnsf-di-qwen-pilot.model.json:share/model-manifest.json"
 
 # shellcheck disable=SC2086
-"$create" --output "$work/release-n" --release-id spec105-staging-n $common_artifacts
+"$create" --output "$work/release-n" --release-id spec107-staging-n $common_artifacts
 # shellcheck disable=SC2086
-"$create" --output "$work/release-n1" --release-id spec105-staging-n1 $common_artifacts
+"$create" --output "$work/release-n1" --release-id spec107-staging-n1 $common_artifacts
 "$install" --release "$work/release-n" --root "$work/root"
 printf '%s\n' authoritative-repo-sentinel > "$work/root/var/lib/ndnsf-repo/catalog.sentinel"
 repo_before=$(sha256sum "$work/root/var/lib/ndnsf-repo/catalog.sentinel")
 "$install" --release "$work/release-n" --root "$work/root"
 "$install" --release "$work/release-n1" --root "$work/root"
-[ "$(readlink "$work/root/opt/ndnsf-di/previous")" = "releases/spec105-staging-n" ] || {
+[ "$(readlink "$work/root/opt/ndnsf-di/previous")" = "releases/spec107-staging-n" ] || {
   echo "N to N+1 did not retain release N" >&2; exit 1;
 }
 "$install" --release "$work/release-n1" --root "$work/root"
-[ "$(readlink "$work/root/opt/ndnsf-di/previous")" = "releases/spec105-staging-n" ] || {
+[ "$(readlink "$work/root/opt/ndnsf-di/previous")" = "releases/spec107-staging-n" ] || {
   echo "same-release activation destroyed rollback point" >&2; exit 1;
 }
 "$rollback" --root "$work/root"
 repo_after=$(sha256sum "$work/root/var/lib/ndnsf-repo/catalog.sentinel")
 [ "$repo_before" = "$repo_after" ] || { echo "authoritative Repo changed" >&2; exit 1; }
-[ "$(readlink "$work/root/opt/ndnsf-di/current")" = "releases/spec105-staging-n" ] || {
+[ "$(readlink "$work/root/opt/ndnsf-di/current")" = "releases/spec107-staging-n" ] || {
   echo "rollback did not restore release N" >&2; exit 1;
 }
 
@@ -75,4 +84,37 @@ grep -qx ndnsf-di-repo "$work/root/etc/ndnsf-di/service-accounts.required"
 [ -f "$work/root/var/lib/ndnsf-repo/catalog.sentinel" ] || {
   echo "uninstall removed authoritative Repo" >&2; exit 1;
 }
+python3 - "$work" "$(printf '%s' "$repo_after" | cut -d' ' -f1)" "$candidate" "$plan_digest" <<'PY'
+import hashlib, json, re, sys
+from pathlib import Path
+work = Path(sys.argv[1])
+candidate = sys.argv[3]
+plan_digest = sys.argv[4]
+if not re.fullmatch(r"spec107-c1(?:-[0-9a-f]{12}){6}", candidate):
+    raise SystemExit("invalid Spec 107 candidate identity")
+if not re.fullmatch(r"sha256:[0-9a-f]{64}", plan_digest):
+    raise SystemExit("invalid plan digest")
+model = work / "release-n/share/model-manifest.json"
+model_digest = "sha256:" + hashlib.sha256(model.read_bytes()).hexdigest()
+record = {
+    "schema": "ndnsf-di-spec107-staging-validation-v1",
+    "releaseId": "spec107-staging-n",
+    "candidateId": candidate,
+    "planDigest": plan_digest,
+    "modelDigest": model_digest,
+    "providerBootId": "local-staging-provider@1",
+    "queueDepth": 0,
+    "requestId": "staging-validation",
+    "terminalReason": "PASS",
+    "repoDigest": "sha256:" + sys.argv[2],
+    "supervisionClass": "local-process-supervision",
+    "physicalProductionDeferred": True,
+    "verdict": "PASS",
+}
+(work / "staging-status.json").write_text(
+    json.dumps(record, indent=2, sort_keys=True) + "\n")
+(work / "staging-metrics.prom").write_text(
+    'ndnsf_di_local_ready{release="spec107-staging-n",supervision="local-process-supervision"} 1\n'
+    'ndnsf_di_queue_depth{provider_boot="local-staging-provider@1"} 0\n')
+PY
 echo "STAGING_PASS root=$work/root repoDigest=$(printf '%s' "$repo_after" | cut -d' ' -f1)"

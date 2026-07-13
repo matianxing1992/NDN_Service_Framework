@@ -1,0 +1,14 @@
+{
+  "paths": {
+    "accountRoot": "/home/tma1",
+    "projectRoot": "/project/tma1/ndnsf-di",
+    "scratchRoot": "/tmp/ndnsf-di-145855-run",
+    "evidenceRoot": "/project/tma1/ndnsf-di/evidence/run"
+  },
+  "filesystems": {
+    "/home/tma1": {"freeBytes": 10000000000, "sharedCapacityBytes": 20000000000},
+    "/project/tma1/ndnsf-di": {"freeBytes": 150000000000, "sharedCapacityBytes": 900000000000000},
+    "/tmp/ndnsf-di-145855-run": {"freeBytes": 14000000000000, "sharedCapacityBytes": 14000000000000}
+  },
+  "quota": {"source": "cluster-guidance", "projectLimitBytes": 200000000000, "verifiedByCommand": false}
+}

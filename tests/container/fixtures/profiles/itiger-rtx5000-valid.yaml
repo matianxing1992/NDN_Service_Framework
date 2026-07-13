@@ -1,0 +1,40 @@
+schemaVersion: "1.0"
+profileId: itiger-rtx5000
+runId: itiger-rtx5000-001
+releaseManifest: tests/container/fixtures/releases/release-valid.json
+runtime:
+  kind: slurm-apptainer
+backend:
+  requested: onnxruntime-cuda
+  allowCpuFallback: false
+identity:
+  reference: /project/tma1/ndnsf-di/identities/provider-a
+  readOnly: true
+  expectedIdentity: /ndnsf/itiger/provider-a
+storage:
+  accountRoot: /home/tma1
+  projectRoot: /project/tma1/ndnsf-di
+  scratchRoot: /tmp/ndnsf-di-145855-itiger-rtx5000-001
+  identityRoot: /project/tma1/ndnsf-di/identities
+  imageRoot: /project/tma1/ndnsf-di/sif
+  modelRoot: /project/tma1/ndnsf-di/models
+  evidenceRoot: /project/tma1/ndnsf-di/evidence/itiger-rtx5000-001
+  minimumFreeBytes: 1048576
+network:
+  topology: single-node
+  nfdMode: job-scoped
+  localEndpoint: unix:///tmp/ndnsf-di-145855-itiger-rtx5000-001/nfd.sock
+slurm:
+  partition: bigTiger
+  account: devs
+  qos: normal
+  wallTime: "00:05:00"
+  nodes: 1
+  tasksPerNode: 1
+  cpusPerTask: 2
+  memory: 8G
+  jobName: ndnsf-spec108-r5k
+  gpu:
+    type: rtx_5000
+    count: 1
+  networkProbeRequired: false

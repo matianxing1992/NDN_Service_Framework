@@ -1,0 +1,3 @@
+bigTiger|itiger01|gpu:h100_80gb:8|idle|64|768000
+bigTiger|itiger[02-06]|gpu:rtx_6000:8|idle|64|512000
+bigTiger|itiger[07-11]|gpu:rtx_5000:8|mix|64|512000

@@ -7,6 +7,8 @@ import hashlib
 import json
 from pathlib import Path
 
+import yaml  # type: ignore
+
 from llm_pipeline_lib import (
     QWEN_ONNX_RUNTIME,
     QWEN_TRANSFORMERS_RUNTIME,
@@ -39,6 +41,10 @@ def main() -> int:
     parser.add_argument("--qwen-prompt", default="")
     parser.add_argument("--qwen-allow-download", action="store_true")
     parser.add_argument("--qwen-dtype", choices=("float32", "auto"), default="float32")
+    parser.add_argument("--qwen-artifact-store", default="")
+    parser.add_argument("--qwen-service-manifest", default="")
+    parser.add_argument("--qwen-runtime-manifest", default="")
+    parser.add_argument("--trust-app-root", action="append", default=[])
     args = parser.parse_args()
 
     policy = write_policy(
@@ -57,7 +63,15 @@ def main() -> int:
         qwen_prompt=args.qwen_prompt,
         qwen_allow_download=args.qwen_allow_download,
         qwen_dtype=args.qwen_dtype,
+        qwen_artifact_store=args.qwen_artifact_store,
+        qwen_service_manifest=args.qwen_service_manifest,
+        qwen_runtime_manifest=args.qwen_runtime_manifest,
     )
+    if args.trust_app_root:
+        config = yaml.safe_load(policy.read_text(encoding="utf-8"))
+        config.setdefault("trust", {})["app_roots"] = list(args.trust_app_root)
+        policy.write_text(
+            yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
     manifest_path = Path(args.policy).parent / "qwen-onnx-service-manifest.json"
     if args.runtime == QWEN_ONNX_RUNTIME:
         if not manifest_path.exists():

@@ -26,10 +26,39 @@ the providers execute dependency-driven inference through native C++ workers.
 
 Deployment status, operator commands and evidence boundaries are maintained in
 [`docs/NDNSF-DI-deployment-candidate.md`](../docs/NDNSF-DI-deployment-candidate.md).
-Spec 105 currently closes as `minindnCandidateOverall=BLOCK`; physical
-production stays `DEFERRED` to Spec 106. Simulated Runtime v1 behavior is only
-available under `ndnsf-di contract-smoke`; production adapters must consume the
-bound profile/plan/request/output command-template fields and fail closed.
+Spec 105 remains frozen as `minindnCandidateOverall=BLOCK`. Spec 107 is the
+current MiniNDN-only recovery candidate and is not frozen or release-eligible
+until the committed source tree, artifact set, and all candidate digests pass
+the following entry gate. Set the nine `SPEC107_*_INPUT` variables to reviewed
+files for the named candidate dimensions. The CLI derives their full SHA-256
+values and the committed HEAD source digest mechanically. Candidate creation is
+exclusive; do not delete or replace an output after any campaign has been
+preregistered.
+
+```bash
+test -z "$(git status --porcelain=v1 --untracked-files=no)"
+python3 tools/ndnsf-di/spec107_candidate.py lineage verify \
+  --lock specs/107-ndnsf-di-minindn-gate-recovery/lineage-lock.json
+python3 tools/ndnsf-di/spec107_candidate.py candidate inputs \
+  --profile "$SPEC107_PROFILE_INPUT" --model "$SPEC107_MODEL_INPUT" \
+  --plan "$SPEC107_PLAN_INPUT" --artifact "$SPEC107_ARTIFACT_INPUT" \
+  --lineage "$SPEC107_LINEAGE_INPUT" --workload "$SPEC107_WORKLOAD_INPUT" \
+  --tokenizer "$SPEC107_TOKENIZER_INPUT" \
+  --trust-policy "$SPEC107_TRUST_POLICY_INPUT" \
+  --command "$SPEC107_COMMAND_INPUT" \
+  --output results/spec107-candidate-inputs.json
+python3 tools/ndnsf-di/spec107_candidate.py candidate create \
+  --digests results/spec107-candidate-inputs.json \
+  --output results/spec107-candidate.json
+```
+
+Continue only with the once-only commands in
+[`specs/107-ndnsf-di-minindn-gate-recovery/quickstart.md`](../specs/107-ndnsf-di-minindn-gate-recovery/quickstart.md).
+Every started success, failure, or invalid preflight is retained. Spec 107 can
+authorize only a local MiniNDN candidate; physical production remains
+`DEFERRED` to Spec 106. Simulated Runtime v1 behavior is only available under
+`ndnsf-di contract-smoke`; production adapters must consume the bound
+profile/plan/request/output command-template fields and fail closed.
 
 Layering:
 

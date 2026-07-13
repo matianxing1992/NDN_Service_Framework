@@ -5,7 +5,7 @@ top = '..'
 def build(bld):
     bld.program(target='../unit-tests',
                 name='unit-tests',
-                source=(bld.path.ant_glob('**/*.cpp') +
+                source=(bld.path.ant_glob('**/*.cpp', excl=['sanitizer/**']) +
                         bld.path.parent.ant_glob([
                             'ndn-service-framework/NDNSFMessages.cpp',
                             'ndn-service-framework/CertificatePublisher.cpp',

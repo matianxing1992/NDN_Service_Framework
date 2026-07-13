@@ -52,6 +52,63 @@ def _percentile(values: list[float], percentile: float) -> float:
     return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
 
 
+def _stable_timeline_sample_allows(request_id: str, sample_rate: int) -> bool:
+    value = 1469598103934665603
+    for byte in request_id.encode("utf-8"):
+        value ^= byte
+        value = (value * 1099511628211) & 0xffffffffffffffff
+    return sample_rate <= 1 or value % sample_rate == 0
+
+
+class _Spec107ClientTimingWriter:
+    """Thread-safe diagnostic event writer; never records model data."""
+
+    def __init__(self, path: Path, *, candidate_id: str, campaign_id: str,
+                 sample_rate: int):
+        if not candidate_id.startswith("spec107-c1-") or "spec105" in candidate_id.lower():
+            raise ValueError("invalid Spec 107 timing candidate identity")
+        if not campaign_id.startswith("spec107-c1-diagnostic-"):
+            raise ValueError("Spec 107 timing output requires diagnostic campaign")
+        if sample_rate < 1:
+            raise ValueError("Spec 107 timing sample rate must be >= 1")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._stream = path.open("x", encoding="utf-8")
+        self._candidate_id = candidate_id
+        self._campaign_id = campaign_id
+        self._sample_rate = sample_rate
+        self._lock = threading.Lock()
+
+    def event(self, *, generation_id: str, token_epoch: int, request_id: str,
+              component: str, event: str, started_ms: float,
+              ended_ms: float, status: str = "COMPLETED") -> None:
+        if not _stable_timeline_sample_allows(request_id, self._sample_rate):
+            return
+        record = {
+            "schema": "ndnsf-di-spec107-client-timing-event-v1",
+            "candidateId": self._candidate_id,
+            "campaignId": self._campaign_id,
+            "generationId": generation_id,
+            "tokenEpoch": int(token_epoch),
+            "requestId": request_id,
+            "attemptEpoch": 0,
+            "component": component,
+            "event": event,
+            "startMs": float(started_ms),
+            "endMs": float(ended_ms),
+            "status": status,
+            "sampled": True,
+        }
+        encoded = json.dumps(record, sort_keys=True, separators=(",", ":"))
+        with self._lock:
+            self._stream.write(encoded + "\n")
+            self._stream.flush()
+
+    def close(self) -> None:
+        with self._lock:
+            if not self._stream.closed:
+                self._stream.close()
+
+
 def _parse_delta_token_ids(raw: str) -> list[int]:
     values = [part.strip() for part in raw.split(",") if part.strip()]
     if not values:
@@ -140,7 +197,8 @@ def _native_role_requirements(manifest: dict, logical_session: str,
 
 
 def _run_native_open_loop(client, args, qwen_summary: dict, manifest: dict,
-                          expected_tokens: list[int], metrics_file) -> int:
+                          expected_tokens: list[int], metrics_file,
+                          timing_writer=None) -> int:
     """Submit fixed-rate generations while workers own complete token loops."""
     import numpy as np
 
@@ -188,12 +246,18 @@ def _run_native_open_loop(client, args, qwen_summary: dict, manifest: dict,
         try:
             while len(state["generated"]) < args.max_new_tokens:
                 token_index = len(state["generated"])
+                request_id = f"{state['logical_session']}-token-{token_index}"
+                token_started_ms = time.perf_counter() * 1000.0
+                previous_done = state.get("last_token_done_ms")
+                encode_started_ms = time.perf_counter() * 1000.0
                 payload = _native_step_payload(
                     state["context"], manifest, token_index,
                     args.native_first_kv_mode)
                 requirements = _native_role_requirements(
                     manifest, state["logical_session"], token_index,
                     args.native_first_kv_mode)
+                encode_done_ms = time.perf_counter() * 1000.0
+                request_started_ms = time.perf_counter() * 1000.0
                 future = client.async_distributed_inference(
                     SERVICE,
                     payload,
@@ -205,8 +269,44 @@ def _run_native_open_loop(client, args, qwen_summary: dict, manifest: dict,
                 with condition:
                     live_network_futures.append(future)
                 result = future.result()
+                request_done_ms = time.perf_counter() * 1000.0
+                if timing_writer:
+                    request_id = result.request_id
+                    if not request_id:
+                        raise RuntimeError(
+                            "Spec 107 diagnostic requires the NDNSF wire request ID")
+                    timing_writer.event(
+                        generation_id=state["logical_session"],
+                        token_epoch=token_index,
+                        request_id=request_id,
+                        component="inter-token",
+                        event="inter_token",
+                        started_ms=(previous_done if previous_done is not None
+                                    else token_started_ms),
+                        ended_ms=token_started_ms,
+                    )
+                    timing_writer.event(
+                        generation_id=state["logical_session"],
+                        token_epoch=token_index,
+                        request_id=request_id,
+                        component="encode-decode",
+                        event="request_encode",
+                        started_ms=encode_started_ms,
+                        ended_ms=encode_done_ms,
+                    )
+                    timing_writer.event(
+                        generation_id=state["logical_session"],
+                        token_epoch=token_index,
+                        request_id=request_id,
+                        component="observed-network",
+                        event="network_request",
+                        started_ms=request_started_ms,
+                        ended_ms=request_done_ms,
+                        status="COMPLETED" if result.status else "FAILED",
+                    )
                 if not result.status:
                     raise RuntimeError(str(result.error))
+                decode_started_ms = time.perf_counter() * 1000.0
                 response = _decode_native_tensor_bundle(result.payload)
                 logits = np.asarray(response["logits"])
                 token = int(np.argmax(logits[:, -1, :], axis=-1)[0])
@@ -220,6 +320,27 @@ def _run_native_open_loop(client, args, qwen_summary: dict, manifest: dict,
                 state["context"]["attentionMask"] = [
                     [*row, 1] for row in state["context"]["attentionMask"]
                 ]
+                decode_done_ms = time.perf_counter() * 1000.0
+                if timing_writer:
+                    timing_writer.event(
+                        generation_id=state["logical_session"],
+                        token_epoch=token_index,
+                        request_id=request_id,
+                        component="encode-decode",
+                        event="response_decode",
+                        started_ms=decode_started_ms,
+                        ended_ms=decode_done_ms,
+                    )
+                    timing_writer.event(
+                        generation_id=state["logical_session"],
+                        token_epoch=token_index,
+                        request_id=request_id,
+                        component="observed-step",
+                        event="token_step",
+                        started_ms=token_started_ms,
+                        ended_ms=decode_done_ms,
+                    )
+                state["last_token_done_ms"] = decode_done_ms
                 report_progress(len(state["generated"]))
             finish(state, "ok")
             return state
@@ -371,6 +492,8 @@ def main() -> int:
     parser.add_argument("--request-interval-ms", type=float, default=0.0)
     parser.add_argument("--metrics-csv", default="")
     parser.add_argument("--campaign-id", default="")
+    parser.add_argument("--spec107-candidate-id", default="")
+    parser.add_argument("--spec107-diagnostic-timing-jsonl", default="")
     args = parser.parse_args()
     if args.max_new_tokens < 1 or args.max_new_tokens > 32:
         raise SystemExit("--max-new-tokens must be between 1 and 32")
@@ -451,6 +574,15 @@ def main() -> int:
         metrics_path.parent.mkdir(parents=True, exist_ok=True)
         metrics_file = metrics_path.open("w", encoding="utf-8")
         metrics_file.write("phase,index,distributed_ms,status,error\n")
+    timing_writer = None
+    if args.spec107_diagnostic_timing_jsonl:
+        timing_writer = _Spec107ClientTimingWriter(
+            Path(args.spec107_diagnostic_timing_jsonl),
+            candidate_id=args.spec107_candidate_id,
+            campaign_id=args.campaign_id,
+            sample_rate=max(1, int(os.environ.get(
+                "NDNSF_TIMELINE_TRACE_SAMPLE_RATE", "100"))),
+        )
 
     if args.native_cpu_provider and args.measured_duration_s > 0:
         try:
@@ -458,10 +590,13 @@ def main() -> int:
                 Path(args.qwen_service_manifest).read_text(encoding="utf-8"))
             expected_tokens = _parse_delta_token_ids(args.expected_token_ids)
             return _run_native_open_loop(
-                client, args, qwen_summary, manifest, expected_tokens, metrics_file)
+                client, args, qwen_summary, manifest, expected_tokens,
+                metrics_file, timing_writer)
         finally:
             if metrics_file:
                 metrics_file.close()
+            if timing_writer:
+                timing_writer.close()
 
     measured_latencies: list[float] = []
     measured_count = 0
@@ -716,6 +851,8 @@ def main() -> int:
     finally:
         if metrics_file:
             metrics_file.close()
+        if timing_writer:
+            timing_writer.close()
     if measured_latencies:
         print(
             "LLM_PIPELINE_USER_SUMMARY",

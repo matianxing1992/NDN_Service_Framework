@@ -15,6 +15,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderResourceProbe.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/QwenGenerationSession.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include "ndn-service-framework/NegativeAckReason.hpp"
 
@@ -3188,6 +3189,53 @@ BOOST_AUTO_TEST_CASE(NativeRunnerFactoryPreservesObservedExecutionEvidence)
   BOOST_CHECK(wiring->executionEvidence()->runnerKind == RunnerKind::WiringOnly);
   BOOST_CHECK(cpu->executionEvidence()->runnerKind == RunnerKind::OnnxRuntimeCpu);
   BOOST_CHECK(cuda->executionEvidence()->runnerKind == RunnerKind::OnnxRuntimeCuda);
+}
+
+BOOST_AUTO_TEST_CASE(QwenGenerationResourceQueuesAreBoundedAndObservable)
+{
+  QwenGenerationResourceLimits limits;
+  limits.generationCapacity = 1;
+  limits.requestCapacity = 1;
+  limits.waitCapacity = 1;
+  limits.callbackCapacity = 1;
+  limits.tokenPairCapacity = 1;
+  limits.assignmentCapacity = 1;
+  limits.tensorCapacity = 1;
+  limits.metricsCapacity = 1;
+  QwenGenerationResourceLedger ledger(limits);
+
+  for (const auto kind : {
+         QwenResourceKind::Generation,
+         QwenResourceKind::Request,
+         QwenResourceKind::Wait,
+         QwenResourceKind::Callback,
+         QwenResourceKind::TokenPair,
+         QwenResourceKind::Assignment,
+         QwenResourceKind::Tensor,
+         QwenResourceKind::Metrics,
+       }) {
+    const auto accepted = ledger.tryAcquire(kind);
+    BOOST_CHECK(accepted.accepted);
+    BOOST_CHECK_EQUAL(accepted.reason, "ACCEPTED");
+    const auto rejected = ledger.tryAcquire(kind);
+    BOOST_CHECK(!rejected.accepted);
+    BOOST_CHECK_EQUAL(rejected.reason, "QUEUE_FULL");
+    const auto snapshot = ledger.snapshot(kind);
+    BOOST_CHECK_EQUAL(snapshot.occupancy, 1);
+    BOOST_CHECK_EQUAL(snapshot.capacity, 1);
+    BOOST_CHECK_EQUAL(snapshot.rejected, 1);
+    ledger.release(kind);
+    BOOST_CHECK_EQUAL(ledger.snapshot(kind).occupancy, 0);
+    BOOST_CHECK_THROW(ledger.release(kind), std::logic_error);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(QwenGenerationResourceLimitsRejectZeroOrUnboundedCapacity)
+{
+  QwenGenerationResourceLimits limits;
+  limits.tensorCapacity = 0;
+  BOOST_CHECK_THROW(QwenGenerationResourceLedger invalid(limits),
+                    std::invalid_argument);
 }
 
 } // namespace ndnsf::di::test

@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/DiTimelineTrace.hpp"
 
 #include <stdexcept>
 #include <utility>
@@ -43,7 +44,20 @@ NativeProviderRuntime::executeRoleAsync(std::string sessionId,
                                         std::shared_ptr<DependencyIo> io,
                                         std::map<std::string, TensorBundle> initialInputsByScope)
 {
+  const auto timelineRequestId = role.requestId.empty()
+    ? "/ndnsf-di/session/" + sessionId
+    : role.requestId;
+  logDiTimelineTrace(
+    "di-provider", "role_validation_start", timelineRequestId,
+    {{"sessionId", sessionId},
+     {"role", role.role},
+     {"attemptEpoch", std::to_string(role.attemptEpoch)}});
   auto runner = findRunner(role.role);
+  logDiTimelineTrace(
+    "di-provider", "role_validation_done", timelineRequestId,
+    {{"sessionId", sessionId},
+     {"role", role.role},
+     {"attemptEpoch", std::to_string(role.attemptEpoch)}});
   return m_worker.executeAsync(std::move(sessionId),
                                std::move(role),
                                std::move(io),

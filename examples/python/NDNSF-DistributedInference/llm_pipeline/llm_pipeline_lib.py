@@ -1295,6 +1295,167 @@ def with_qwen_onnx_artifacts(
     )
 
 
+def reuse_qwen_onnx_stage_artifacts(
+    output_dir: str | Path,
+    *,
+    roles: list[str],
+    artifact_store: str | Path,
+    service_manifest_path: str | Path,
+    runtime_manifest_path: str | Path,
+) -> list[SplitArtifact]:
+    """Bind reviewed Qwen metadata to a verified read-only Spec 107 store."""
+
+    store = Path(artifact_store).resolve()
+    store_manifest_path = store / "artifact-set.json"
+    try:
+        store_manifest = json.loads(store_manifest_path.read_text(encoding="utf-8"))
+        service_manifest = json.loads(
+            Path(service_manifest_path).read_text(encoding="utf-8"))
+        runtime_manifest = json.loads(
+            Path(runtime_manifest_path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"invalid reusable Qwen manifest: {exc}") from exc
+    if (
+        store_manifest.get("schema") != "ndnsf-di-spec107-artifact-set-v1"
+        or store_manifest.get("retention") != "content-addressed-read-only"
+        or not store.is_dir()
+        or store.stat().st_mode & 0o222
+    ):
+        raise RuntimeError("Qwen artifact store is not a sealed Spec 107 store")
+    expected_digest = str(store_manifest.get("artifactSetDigest", ""))
+    if not expected_digest.startswith("sha256:") or store.name != expected_digest[7:]:
+        raise RuntimeError("Qwen artifact store content address mismatch")
+    store_rows = store_manifest.get("artifacts")
+    service_rows = service_manifest.get("stages")
+    if (
+        not isinstance(store_rows, list) or len(store_rows) != 3
+        or not isinstance(service_rows, list) or len(service_rows) != 3
+        or service_manifest.get("schema") != "ndnsf-di-qwen-onnx-service-manifest-v1"
+        or int(service_manifest.get("stageCount", 0)) != 3
+    ):
+        raise RuntimeError("Qwen reusable manifests require exactly three stages")
+    store_by_role = {str(row.get("role", "")): row for row in store_rows}
+    service_by_role = {str(row.get("role", "")): row for row in service_rows}
+    if set(store_by_role) != set(roles) or set(service_by_role) != set(roles):
+        raise RuntimeError("Qwen reusable manifest role set mismatch")
+
+    artifacts: list[SplitArtifact] = []
+    rebound_rows = []
+    for role in roles:
+        store_row = store_by_role[role]
+        metadata_row = service_by_role[role]
+        artifact_path = (store / str(store_row.get("path", ""))).resolve()
+        try:
+            artifact_path.relative_to(store)
+        except ValueError as exc:
+            raise RuntimeError("Qwen artifact escaped the sealed store") from exc
+        expected_sha = str(store_row.get("sha256", ""))
+        metadata_sha = str(metadata_row.get("sha256", ""))
+        if metadata_sha.startswith("sha256:"):
+            metadata_sha = metadata_sha[7:]
+        actual_sha = _sha256_file(artifact_path) if artifact_path.is_file() else ""
+        if (
+            not artifact_path.is_file()
+            or artifact_path.stat().st_mode & 0o222
+            or artifact_path.stat().st_size != int(store_row.get("bytes", -1))
+            or artifact_path.stat().st_size != int(metadata_row.get("bytes", -2))
+            or "sha256:" + actual_sha != expected_sha
+            or actual_sha != metadata_sha
+        ):
+            raise RuntimeError(f"Qwen artifact verification failed for {role}")
+        rebound = dict(metadata_row)
+        rebound["path"] = str(artifact_path)
+        rebound["bytes"] = artifact_path.stat().st_size
+        rebound["sha256"] = expected_sha[7:]
+        rebound_rows.append(rebound)
+        artifacts.append(SplitArtifact(
+            role=role,
+            path=str(artifact_path),
+            artifact_name=f"/Model/LLM/Pipeline/QwenOnnx/{role.strip('/')}",
+            filename=artifact_path.name,
+            kind="onnx-model",
+            backend="onnxruntime",
+            metadata={
+                "runtime": QWEN_ONNX_RUNTIME,
+                "stageIndex": int(metadata_row["stageIndex"]),
+                "stageCount": 3,
+                "layerCount": int(service_manifest.get("layerCount", 0)),
+                "layerRange": dict(metadata_row["layerRange"]),
+                "modelFamily": "llm",
+                "modelFormat": "onnx",
+                "runtimeBackend": "onnxruntime",
+                "inputNames": list(metadata_row["inputNames"]),
+                "outputNames": list(metadata_row["outputNames"]),
+                "cacheInputs": list(metadata_row["cacheInputs"]),
+                "cacheOutputs": list(metadata_row["cacheOutputs"]),
+                "tensorContracts": dict(metadata_row["tensorContracts"]),
+            },
+        ))
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    rebound_manifest = dict(service_manifest)
+    rebound_manifest["stages"] = rebound_rows
+    (output / "qwen-onnx-service-manifest.json").write_text(
+        json.dumps(rebound_manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8")
+    (output / "qwen-pipeline-runtime.json").write_text(
+        json.dumps(runtime_manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8")
+    return artifacts
+
+
+def with_reused_qwen_onnx_artifacts(
+    splitter: SplitterOutput,
+    *,
+    output_dir: str | Path,
+    artifact_store: str | Path,
+    service_manifest_path: str | Path,
+    runtime_manifest_path: str | Path,
+) -> SplitterOutput:
+    services: list[SplitServiceSpec] = []
+    for service in splitter.services:
+        if service.name != SERVICE:
+            services.append(service)
+            continue
+        services.append(SplitServiceSpec(
+            name=service.name,
+            model_name=service.model_name,
+            roles=list(service.roles),
+            dependencies=list(service.dependencies),
+            artifacts=reuse_qwen_onnx_stage_artifacts(
+                output_dir,
+                roles=list(service.roles),
+                artifact_store=artifact_store,
+                service_manifest_path=service_manifest_path,
+                runtime_manifest_path=runtime_manifest_path,
+            ),
+            input_schema=dict(service.input_schema),
+            output_schema=dict(service.output_schema),
+            users=list(service.users),
+            providers=list(service.providers),
+            metadata={
+                **dict(service.metadata),
+                "execution_implemented": True,
+                "runtime": QWEN_ONNX_RUNTIME,
+                "artifactRetention": "content-addressed-read-only",
+            },
+        ))
+    return SplitterOutput(
+        application=splitter.application,
+        controller=splitter.controller,
+        group=splitter.group,
+        user=splitter.user,
+        provider_prefix=splitter.provider_prefix,
+        services=services,
+        provider_identities=list(splitter.provider_identities),
+        trust_app_roots=list(splitter.trust_app_roots),
+        trust_anchor_file=splitter.trust_anchor_file,
+        artifact_allowlist=list(splitter.artifact_allowlist),
+        artifact_sandbox=dict(splitter.artifact_sandbox),
+        metadata=dict(splitter.metadata),
+    )
+
+
 def tiny_transformer_stage_spec_from_execution(
     execution: Any,
     *,
@@ -2107,6 +2268,9 @@ def write_policy(
     qwen_prompt: str = "",
     qwen_allow_download: bool = False,
     qwen_dtype: str = "float32",
+    qwen_artifact_store: str = "",
+    qwen_service_manifest: str = "",
+    qwen_runtime_manifest: str = "",
 ) -> Path:
     output_dir = Path(path).parent
     request = llm_planner_request(
@@ -2146,15 +2310,29 @@ def write_policy(
             dtype=qwen_dtype,
         )
     elif runtime == QWEN_ONNX_RUNTIME:
-        splitter = with_qwen_onnx_artifacts(
-            splitter,
-            output_dir=output_dir,
-            stages=stages,
-            model_name=qwen_model,
-            prompt=qwen_prompt,
-            allow_download=qwen_allow_download,
-            dtype=qwen_dtype,
-        )
+        reuse_inputs = (
+            qwen_artifact_store, qwen_service_manifest, qwen_runtime_manifest)
+        if any(reuse_inputs) and not all(reuse_inputs):
+            raise ValueError(
+                "Qwen artifact reuse requires store, service manifest, and runtime manifest")
+        if all(reuse_inputs):
+            splitter = with_reused_qwen_onnx_artifacts(
+                splitter,
+                output_dir=output_dir,
+                artifact_store=qwen_artifact_store,
+                service_manifest_path=qwen_service_manifest,
+                runtime_manifest_path=qwen_runtime_manifest,
+            )
+        else:
+            splitter = with_qwen_onnx_artifacts(
+                splitter,
+                output_dir=output_dir,
+                stages=stages,
+                model_name=qwen_model,
+                prompt=qwen_prompt,
+                allow_download=qwen_allow_download,
+                dtype=qwen_dtype,
+            )
     policy = Path(path)
     splitter.write_policy_config(policy)
     _pin_stage_providers(

@@ -1,0 +1,7 @@
+{
+  "runId": "partial-run",
+  "stagingFiles": ["evidence.json", "stdout.log", "stderr.log"],
+  "durableFiles": ["evidence.json"],
+  "promotionManifestPresent": false,
+  "expected": "FAIL"
+}

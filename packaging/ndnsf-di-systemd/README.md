@@ -1,6 +1,6 @@
 # NDNSF-DI Local MiniNDN Operator Runbook
 
-This package operates the Spec 105 local CPU/ONNX MiniNDN candidate. It is not
+This package operates a digest-bound Spec 107 local CPU/ONNX MiniNDN candidate. It is not
 a physical-production release: GPU hosts, physical networking, real production
 identities, and cross-host acceptance are exclusively owned by Spec 106.
 
@@ -25,13 +25,22 @@ execution-evidence digests, CPU ONNX backend, writable directories, lifecycle
 bounds, disk/permission state, and a measured fresh Linux telemetry file.
 Configured freshness is not a probe. A failure is a stop condition.
 
+Validate the isolated staging tree with the exact frozen identities:
+
+```bash
+packaging/ndnsf-di-systemd/validate-staging.sh \
+  --work-root /tmp/spec107-staging-validation \
+  --candidate-id "$SPEC107_CANDIDATE_ID" \
+  --plan-digest "$SPEC107_PLAN_DIGEST"
+```
+
 ## 2. Build and release
 
 Create an immutable release with only allowlisted artifacts:
 
 ```bash
 packaging/ndnsf-di-systemd/create-release.sh \
-  --output /tmp/ndnsf-di-r1 --release-id spec105-r1 \
+  --output /tmp/ndnsf-di-r1 --release-id spec107-r1 \
   --artifact build/examples/di-native-provider:bin/di-native-provider \
   --artifact build/examples/App_ServiceController:bin/App_ServiceController \
   --artifact examples/ndnsf-di-qwen-pilot.model.json:share/model-manifest.json
@@ -54,10 +63,31 @@ ndnsf-di metrics --profile /etc/ndnsf-di/deployment.json \
 sudo systemctl start ndnsf-di-bench.service
 ```
 
-Run the canary twice from different empty `results/spec105-local-canary-*`
+Run the canary twice from different empty `results/spec107-local-canary-*`
 directories. Each run records source commit, release/profile/plan/evidence
 digests, host facts, CPU backend, MiniNDN topology, exact command, and every
 failure. Do not retry or reuse an output directory.
+
+For the Spec 107 local-process gate, use a JSON config with `candidateId`,
+`planDigest`, `releaseRoot`, and packaged relative commands. Never point it at
+an executable outside the immutable release:
+
+```bash
+packaging/ndnsf-di-systemd/run-local-supervised.sh canary \
+  --config /tmp/spec107-supervisor.json \
+  --staging-root /tmp/spec107-canary-1/staging \
+  --output /tmp/spec107-canary-1/canary.json --restart
+
+packaging/ndnsf-di-systemd/run-local-supervised.sh operations \
+  --root /tmp/spec107-operations/root \
+  --release-n /tmp/spec107-release-n \
+  --release-n1 /tmp/spec107-release-n1 \
+  --output /tmp/spec107-operations/operations.json
+```
+
+Each output is exclusive. `supervisionClass=local-process-supervision` and
+`physicalProductionDeferred=true` are mandatory: these commands do not test a
+real systemd manager or physical hosts.
 
 ## 4. Restart, upgrade, and rollback drill
 
@@ -85,7 +115,7 @@ release manifest/digests, canary summaries, lifecycle CSV, and sampled timeline
 traces. Redact and negative-scan all bundles for keys, tokens, payloads, and
 private paths. INFO is the operational level; TRACE is not acceptance evidence.
 
-The frozen 24-hour, 1 RPS soak runs only if the immutable T062 performance gate
+The frozen 24-hour, 1 RPS soak runs only if the immutable T063 eligibility gate
 is PASS. If it is BLOCK, record `NOT RUN / BLOCK` and the controlling evidence;
 do not reduce the rate, shorten the window, or create a replacement run.
 

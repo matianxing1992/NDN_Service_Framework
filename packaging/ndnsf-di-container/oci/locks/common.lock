@@ -1,0 +1,10 @@
+schema=ndnsf-di-oci-common-lock-v1
+targetPlatform=linux/amd64
+releaseLayout=ndnsf-di-rootfs-v1
+requiredArtifact=opt/ndnsf-di/current/bin/App_ServiceController
+requiredArtifact=opt/ndnsf-di/current/bin/di-native-provider
+requiredArtifact=opt/ndnsf-di/current/bin/ndn-repo-ng
+requiredArtifact=opt/ndnsf-di/current/bin/nfd
+requiredArtifact=opt/ndnsf-di/current/bin/nfdc
+runtimeBasePolicy=digest-reference-required
+buildBasePolicy=digest-reference-required

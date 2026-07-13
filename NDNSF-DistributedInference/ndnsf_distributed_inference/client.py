@@ -23,6 +23,7 @@ class InferenceResult:
     status: bool
     payload: bytes = b""
     error: str = ""
+    request_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -296,6 +297,7 @@ class DistributedInferenceClient:
             status=response.status,
             payload=response.payload,
             error=response.error,
+            request_id=response.request_id,
         )
 
     def deploy_plan(
@@ -358,6 +360,7 @@ class DistributedInferenceClient:
             status=response.status,
             payload=response.payload,
             error=response.error,
+            request_id=response.request_id,
         )
 
     def preflight_plan(
@@ -401,6 +404,7 @@ class DistributedInferenceClient:
             status=response.status,
             payload=response.payload,
             error=response.error,
+            request_id=response.request_id,
         )
 
     def invoke_plan_async(
@@ -553,6 +557,7 @@ class DistributedInferenceClient:
             status=response.status,
             payload=response.payload,
             error=response.error,
+            request_id=response.request_id,
         )
 
     def infer_simple_service(
@@ -592,6 +597,7 @@ class DistributedInferenceClient:
             status=response.status,
             payload=response.payload,
             error=response.error,
+            request_id=response.request_id,
         )
 
     def infer_simple_service_async(

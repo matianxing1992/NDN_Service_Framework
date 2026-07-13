@@ -58,6 +58,7 @@ class ServiceResponse:
     status: bool
     payload: bytes = b""
     error: str = ""
+    request_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -700,6 +701,7 @@ def _to_native_response(response: ServiceResponse) -> _ndnsf.ServiceResponse:
     native.status = response.status
     native.payload = response.payload
     native.error = response.error
+    native.request_id = response.request_id
     return native
 
 
@@ -708,6 +710,7 @@ def _from_native_response(response: _ndnsf.ServiceResponse) -> ServiceResponse:
         status=bool(response.status),
         payload=bytes(response.payload),
         error=str(response.error),
+        request_id=str(response.request_id),
     )
 
 

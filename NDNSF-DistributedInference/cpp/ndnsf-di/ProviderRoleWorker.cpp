@@ -1,6 +1,10 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/DiTimelineTrace.hpp"
+#ifdef NDNSF_DI_EXPERIMENT_FAULTS
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeFaultInjection.hpp"
+#endif
 
 #include <algorithm>
 #include <cstdint>
@@ -50,6 +54,12 @@ fnv1a64Hex(const std::string& value)
   std::ostringstream out;
   out << std::hex << std::setw(16) << std::setfill('0') << hash;
   return out.str();
+}
+
+std::string
+timelineRequestId(const std::string& requestId, const std::string& sessionId)
+{
+  return requestId.empty() ? "/ndnsf-di/session/" + sessionId : requestId;
 }
 
 } // namespace
@@ -142,6 +152,13 @@ ProviderRoleWorker::executeAsync(std::string sessionId,
       timing.expectedSegments = edge.expectedSegments;
       timing.expectedBytes = edge.expectedBytes;
       timing.prefetchStartedAt = std::chrono::steady_clock::now();
+      logDiTimelineTrace(
+        "di-provider", "dependency_fetch_start",
+        timelineRequestId(item.role.requestId, item.sessionId),
+        {{"sessionId", item.sessionId},
+         {"role", item.role.role},
+         {"scope", edge.scope},
+         {"attemptEpoch", std::to_string(item.role.attemptEpoch)}});
       pendingInputs.push_back(PendingInput{
         edge,
         item.io->prefetchInput(item.sessionId, edge),
@@ -165,10 +182,21 @@ ProviderRoleWorker::executeAsync(std::string sessionId,
     try {
       for (auto& pending : pendingInputs) {
         auto bundle = pending.future.get();
+#ifdef NDNSF_DI_EXPERIMENT_FAULTS
+        NativeFaultInjection::instance().checkpoint(
+          NativeFaultPoint::DependencyFetched, item.role.role, item.sessionId);
+#endif
         pending.timing.fetchCompletedAt = std::chrono::steady_clock::now();
         pending.timing.bytes = bundle.payload.size();
         item.initialInputsByScope[pending.edge.scope] = std::move(bundle);
         item.inputTimings.push_back(std::move(pending.timing));
+        logDiTimelineTrace(
+          "di-provider", "dependency_fetch_done",
+          timelineRequestId(item.role.requestId, item.sessionId),
+          {{"sessionId", item.sessionId},
+           {"role", item.role.role},
+           {"scope", pending.edge.scope},
+           {"attemptEpoch", std::to_string(item.role.attemptEpoch)}});
       }
       enqueueReady(std::move(item));
     }
@@ -213,10 +241,24 @@ ProviderRoleWorker::scheduleWhenInputsReady(WorkItem item,
             }
           }
           auto bundle = pending.future.get();
+#ifdef NDNSF_DI_EXPERIMENT_FAULTS
+          NativeFaultInjection::instance().checkpoint(
+            NativeFaultPoint::DependencyFetched,
+            state->item.role.role, state->item.sessionId);
+#endif
           pending.timing.fetchCompletedAt = std::chrono::steady_clock::now();
           pending.timing.bytes = bundle.payload.size();
           state->item.initialInputsByScope[pending.edge.scope] = std::move(bundle);
           state->item.inputTimings.push_back(std::move(pending.timing));
+          logDiTimelineTrace(
+            "di-provider", "dependency_fetch_done",
+            timelineRequestId(state->item.role.requestId,
+                              state->item.sessionId),
+            {{"sessionId", state->item.sessionId},
+             {"role", state->item.role.role},
+             {"scope", pending.edge.scope},
+             {"attemptEpoch", std::to_string(
+                state->item.role.attemptEpoch)}});
         }
         return DependencyWaitStatus::Completed;
       }
@@ -255,6 +297,12 @@ void
 ProviderRoleWorker::enqueueReady(WorkItem item)
 {
   item.queuedAt = std::chrono::steady_clock::now();
+  logDiTimelineTrace(
+    "di-provider", "role_queue_enter",
+    timelineRequestId(item.role.requestId, item.sessionId),
+    {{"sessionId", item.sessionId},
+     {"role", item.role.role},
+     {"attemptEpoch", std::to_string(item.role.attemptEpoch)}});
   {
     std::lock_guard<std::mutex> lock(m_mutex);
     if (m_stopping) {
@@ -415,6 +463,12 @@ ProviderRoleResult
 ProviderRoleWorker::runReadyRole(const WorkItem& item)
 {
   const auto workerStartedAt = std::chrono::steady_clock::now();
+  const auto requestId = timelineRequestId(item.role.requestId, item.sessionId);
+  logDiTimelineTrace(
+    "di-provider", "role_queue_exit", requestId,
+    {{"sessionId", item.sessionId},
+     {"role", item.role.role},
+     {"attemptEpoch", std::to_string(item.role.attemptEpoch)}});
   std::map<std::string, TensorBundle> inputsByScope = item.initialInputsByScope;
 
   ProviderRoleResult result;
@@ -433,16 +487,46 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
   result.outputsByScope = getCachedOutputs(result.exactForwardCacheKey);
   result.exactForwardCacheHit = !result.outputsByScope.empty();
   if (!result.exactForwardCacheHit) {
+#ifdef NDNSF_DI_EXPERIMENT_FAULTS
+    NativeFaultInjection::instance().checkpoint(
+      NativeFaultPoint::BeforeCompute, item.role.role, item.sessionId);
+#endif
+    logDiTimelineTrace(
+      "di-provider", "role_compute_start", requestId,
+      {{"sessionId", item.sessionId},
+       {"role", item.role.role},
+       {"attemptEpoch", std::to_string(item.role.attemptEpoch)}});
     result.outputsByScope = item.runner->run(ctx);
+    logDiTimelineTrace(
+      "di-provider", "role_compute_done", requestId,
+      {{"sessionId", item.sessionId},
+       {"role", item.role.role},
+       {"attemptEpoch", std::to_string(item.role.attemptEpoch)}});
     putCachedOutputs(result.exactForwardCacheKey, result.outputsByScope);
   }
 
   const auto outputReadyAt = std::chrono::steady_clock::now();
   result.outputTimings.reserve(item.role.outputs.size());
   for (const auto& edge : item.role.outputs) {
+#ifdef NDNSF_DI_EXPERIMENT_FAULTS
+    NativeFaultInjection::instance().checkpoint(
+      NativeFaultPoint::BeforePublish, item.role.role, item.sessionId);
+#endif
     auto bundle = outputForEdge(result.outputsByScope, edge);
     result.outputsByScope[edge.scope] = bundle;
+    logDiTimelineTrace(
+      "di-provider", "dependency_publish_start", requestId,
+      {{"sessionId", item.sessionId},
+       {"role", item.role.role},
+       {"scope", edge.scope},
+       {"attemptEpoch", std::to_string(item.role.attemptEpoch)}});
     item.io->publishOutput(item.sessionId, edge, bundle);
+    logDiTimelineTrace(
+      "di-provider", "dependency_publish_done", requestId,
+      {{"sessionId", item.sessionId},
+       {"role", item.role.role},
+       {"scope", edge.scope},
+       {"attemptEpoch", std::to_string(item.role.attemptEpoch)}});
 
     OutputPublishTiming timing;
     timing.producerRole = edge.producerRole;

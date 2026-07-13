@@ -1,0 +1,23 @@
+{
+  "schema": "ndnsf-di-spec108-backend-baseline-v1",
+  "source": "NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.cpp",
+  "requestedBackends": ["cpu", "cuda"],
+  "selection": {
+    "cpuProvider": "CPUExecutionProvider",
+    "cudaProvider": "CUDAExecutionProvider",
+    "fallbackMetadataKeys": ["allowCpuFallback", "allow_cpu_fallback"],
+    "fallbackDefault": false,
+    "fallbackDisabledError": "required ONNX Runtime CUDAExecutionProvider is unavailable; CPU fallback is disabled"
+  },
+  "observedEvidence": [
+    "runnerKind",
+    "runtimeVersion",
+    "selectedProvider",
+    "deviceId"
+  ],
+  "invariants": {
+    "gpuWithoutProviderAndFallbackDisabled": "FAIL",
+    "explicitCpuFallback": "DEGRADED",
+    "physicalProduction": "DEFERRED"
+  }
+}

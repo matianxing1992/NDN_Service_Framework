@@ -1,0 +1,18 @@
+schemaVersion: "1.0"
+profileId: mixed
+runId: mixed-001
+releaseManifest: release.json
+runtime: {kind: docker-compose}
+backend: {requested: cpu, allowCpuFallback: false}
+identity: {reference: /identity, readOnly: true}
+storage: {projectRoot: /var/lib/ndnsf-di, scratchRoot: /tmp/ndnsf-di-mixed, evidenceRoot: /var/lib/ndnsf-di/evidence/mixed}
+network: {topology: single-node, nfdMode: host-scoped}
+compose: {projectName: mixed}
+slurm:
+  partition: bigTiger
+  wallTime: "00:05:00"
+  nodes: 1
+  tasksPerNode: 1
+  cpusPerTask: 1
+  memory: 1G
+  gpu: {type: rtx_5000, count: 0}

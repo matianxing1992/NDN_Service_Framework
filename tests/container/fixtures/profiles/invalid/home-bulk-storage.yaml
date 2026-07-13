@@ -1,0 +1,17 @@
+schemaVersion: "1.0"
+profileId: home-bulk
+runId: home-bulk-001
+releaseManifest: release.json
+runtime: {kind: slurm-apptainer}
+backend: {requested: cpu, allowCpuFallback: false}
+identity: {reference: /home/tma1/identity, readOnly: true}
+storage: {projectRoot: /home/tma1/ndnsf-di, scratchRoot: /tmp/ndnsf-di-home-bulk, evidenceRoot: /home/tma1/ndnsf-di/evidence/home-bulk}
+network: {topology: single-node, nfdMode: job-scoped}
+slurm:
+  partition: bigTiger
+  wallTime: "00:05:00"
+  nodes: 1
+  tasksPerNode: 1
+  cpusPerTask: 1
+  memory: 1G
+  gpu: {type: rtx_5000, count: 0}

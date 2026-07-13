@@ -1,0 +1,26 @@
+{
+  "schema": "ndnsf-di-spec108-systemd-baseline-v1",
+  "packageRoot": "packaging/ndnsf-di-systemd",
+  "release": {
+    "create": "create-release.sh",
+    "install": "install.sh",
+    "activation": "/opt/ndnsf-di/current",
+    "previous": "/opt/ndnsf-di/previous",
+    "digestManifest": "SHA256SUMS"
+  },
+  "operations": {
+    "rollback": "rollback.sh",
+    "uninstall": "uninstall.sh",
+    "stagingValidation": "validate-staging.sh",
+    "localSupervisor": "run-local-supervised.sh"
+  },
+  "preservedState": [
+    "/var/lib/ndnsf-repo",
+    "/etc/ndnsf-di"
+  ],
+  "authority": {
+    "supervisionClass": "local-process-supervision",
+    "physicalProductionDeferred": true,
+    "physicalProductionOwner": "Spec 106"
+  }
+}

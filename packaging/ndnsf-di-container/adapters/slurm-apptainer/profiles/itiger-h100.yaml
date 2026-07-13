@@ -1,0 +1,32 @@
+schemaVersion: "1.0"
+profileId: itiger-h100
+runId: "${NDNSF_RUN_ID}"
+releaseManifest: /project/${USER}/ndnsf-di/releases/current.json
+runtime: {kind: slurm-apptainer}
+backend: {requested: onnxruntime-cuda, allowCpuFallback: false}
+identity:
+  reference: /project/${USER}/ndnsf-di/identities/provider-a
+  readOnly: true
+  expectedIdentity: /ndnsf/itiger/provider-a
+storage:
+  accountRoot: /home/${USER}
+  projectRoot: /project/${USER}/ndnsf-di
+  scratchRoot: /tmp/ndnsf-di-${NDNSF_RUN_ID}
+  identityRoot: /project/${USER}/ndnsf-di/identities
+  imageRoot: /project/${USER}/ndnsf-di/sif
+  modelRoot: /project/${USER}/ndnsf-di/models
+  evidenceRoot: /project/${USER}/ndnsf-di/evidence/${NDNSF_RUN_ID}
+  minimumFreeBytes: 1073741824
+network: {topology: single-node, nfdMode: job-scoped}
+slurm:
+  partition: bigTiger
+  account: devs
+  qos: normal
+  wallTime: "00:05:00"
+  nodes: 1
+  tasksPerNode: 1
+  cpusPerTask: 2
+  memory: 8G
+  jobName: ndnsf-spec108-h100
+  gpu: {type: h100_80gb, count: 1}
+  networkProbeRequired: false

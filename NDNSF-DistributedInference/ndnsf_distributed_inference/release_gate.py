@@ -9,6 +9,10 @@ from pathlib import Path
 from typing import Any
 
 from .runtime_v1 import ExecutionEvidenceV1, classify_execution_evidence
+from .runtime_v1_evidence import (
+    SPEC107_RELEASE_DIMENSIONS,
+    evaluate_spec107_release_input,
+)
 
 
 DIMENSIONS = (
@@ -97,6 +101,48 @@ def build_release_gate(*, release_id: str, source_commit: str,
         "physicalAcceptanceSpec": "specs/106-ndnsf-di-physical-pilot",
         "limitations": list(limitations or []),
         "generatedAtMs": int(generated_at_ms),
+    }
+
+
+def build_spec107_release_gate(payload: dict[str, Any], *,
+                               evidence_root: str | Path) -> dict[str, Any]:
+    """Build the successor gate while retaining the frozen predecessor decision."""
+
+    evaluation = evaluate_spec107_release_input(
+        payload, evidence_root=evidence_root)
+    raw_dimensions = payload.get("dimensions")
+    raw_dimensions = raw_dimensions if isinstance(raw_dimensions, dict) else {}
+    dimensions: dict[str, dict[str, Any]] = {}
+    for name in SPEC107_RELEASE_DIMENSIONS:
+        value = raw_dimensions.get(name)
+        value = dict(value) if isinstance(value, dict) else {}
+        status = "PASS" if value.get("status") == "PASS" else "BLOCK"
+        dimensions[name] = {
+            **value,
+            "status": status,
+            "artifacts": list(value.get("artifacts", []))
+            if isinstance(value.get("artifacts"), list) else [],
+        }
+    predecessor = {
+        "releaseId": "spec105-local-minindn-candidate-r2",
+        "minindnCandidateOverall": "BLOCK",
+        "physicalProductionOverall": "DEFERRED",
+    }
+    overall = "PASS" if evaluation["eligible"] else "BLOCK"
+    return {
+        "schema": "ndnsf-di-spec107-release-gate-v1",
+        "candidateId": evaluation["candidateId"],
+        "predecessor": predecessor,
+        "predecessorObserved": payload.get("predecessor"),
+        "dimensions": dimensions,
+        "evidenceManifest": list(payload.get("evidenceManifest", []))
+        if isinstance(payload.get("evidenceManifest"), list) else [],
+        "errors": evaluation["errors"],
+        "minindnCandidateOverall": overall,
+        "physicalProductionOverall": "DEFERRED",
+        "physicalAcceptanceSpec": "specs/106-ndnsf-di-physical-pilot",
+        "limitations": list(payload.get("limitations", []))
+        if isinstance(payload.get("limitations"), list) else [],
     }
 
 

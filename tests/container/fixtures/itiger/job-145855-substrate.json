@@ -1,0 +1,43 @@
+{
+  "schema": "ndnsf-di-spec108-itiger-substrate-fixture-v1",
+  "measuredAt": "2026-07-13T00:06:08Z",
+  "jobId": "145855",
+  "classification": "substrate-only",
+  "candidateBound": false,
+  "physicalProduction": "DEFERRED",
+  "request": {
+    "partition": "bigTiger",
+    "gres": "gpu:rtx_5000:1",
+    "cpusPerTask": 2,
+    "memory": "8G",
+    "wallTime": "00:05:00"
+  },
+  "observation": {
+    "node": "itiger07",
+    "state": "COMPLETED",
+    "exitCode": "0:0",
+    "gpuModel": "NVIDIA RTX 5000 Ada Generation",
+    "gpuMemoryMiB": 32760,
+    "driverVersion": "560.28.03",
+    "driverReportedCuda": "12.6",
+    "slurmJobGpus": "4",
+    "cudaVisibleDevices": "0",
+    "slurmGpusOnNode": "1",
+    "apptainerLoginVersion": "1.3.4",
+    "apptainerComputeVersion": "1.3.3",
+    "scratchWriteMiB": 64,
+    "scratchWriteFsync": "PASS"
+  },
+  "materialization": {
+    "ociReference": "docker://nvidia/cuda:12.4.1-base-ubuntu22.04",
+    "sifSha256": "35603df78f9be6e167e0d4cb5221b40952c9726129cef00d146ccce4f0afaffb"
+  },
+  "durableEvidence": "/project/tma1/ndnsf-di/probes/rtx5000-20260713T000608Z",
+  "doesNotProve": [
+    "NDNSF-DI candidate inference",
+    "candidate performance",
+    "production security",
+    "multi-node NFD networking",
+    "physical deployment readiness"
+  ]
+}

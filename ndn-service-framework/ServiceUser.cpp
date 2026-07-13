@@ -3045,6 +3045,11 @@ namespace ndn_service_framework
                   << nowMicroseconds()
                   << " requestId=" << requestId.toUri()
                   << " serviceName=" << serviceName.toUri());
+        if (m_timelineTrace) {
+            logTimelineTrace("user", "request_publish_done", requestId,
+                             {{"serviceName", serviceName.toUri()},
+                              {"strategy", std::to_string(strategy)}});
+        }
 
         m_strategyMap.emplace(requestId, strategy);
 
@@ -5034,6 +5039,13 @@ namespace ndn_service_framework
                   << static_cast<bool>(pendingCall->second.isCollaboration ||
                                        pendingCall->second.acksHandler ||
                                        pendingCall->second.ackCandidatesHandler));
+        if (m_timelineTrace) {
+            logTimelineTrace("user", "ack_selection_start", requestId,
+                             {{"ackCount", std::to_string(
+                                  pendingCall->second.requestAcks.size())},
+                              {"successfulAckCount", std::to_string(
+                                  successfulAckCount)}});
+        }
 
         bool selected = false;
         if (pendingCall->second.isCollaboration ||
@@ -5064,6 +5076,12 @@ namespace ndn_service_framework
                   << pendingCall->second.customSelectedAcks.size()
                   << " successfulProviderCount="
                   << pendingCall->second.successfulAckProviders.size());
+        if (m_timelineTrace) {
+            logTimelineTrace("user", "ack_selection_done", requestId,
+                             {{"selected", selected ? "true" : "false"},
+                              {"successfulProviderCount", std::to_string(
+                                  pendingCall->second.successfulAckProviders.size())}});
+        }
         if (selected && hasSelectedCandidate) {
             pendingCall->second.providerSelected = true;
             updateRequestLifecycleState(requestId, RequestLifecycleState::PROVIDER_SELECTED);

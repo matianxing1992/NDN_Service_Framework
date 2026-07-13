@@ -1,0 +1,1 @@
+devs|normal|cpu=120,gres/gpu=24,node=3|6

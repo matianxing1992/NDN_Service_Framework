@@ -1,0 +1,16 @@
+{
+  "partition": "bigTiger",
+  "types": {
+    "h100_80gb": {"nodes": "itiger01", "countPerNode": 8},
+    "rtx_6000": {"nodes": "itiger02-06", "countPerNode": 8},
+    "rtx_5000": {"nodes": "itiger07-11", "countPerNode": 8}
+  },
+  "observedAllocation": {
+    "jobId": "145855",
+    "requested": "gpu:rtx_5000:1",
+    "slurmJobGpus": "4",
+    "cudaVisibleDevices": "0",
+    "physicalUuid": "GPU-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+    "rule": "container index is not physical index"
+  }
+}

@@ -45,7 +45,14 @@ timelineTraceSampleAllows(const ndn::Name& requestId)
     if (sampleRate <= 1 || requestId.empty()) {
         return true;
     }
-    return (std::hash<std::string>{}(requestId.toUri()) % sampleRate) == 0;
+    // FNV-1a is deliberately shared with Spec 107 Python diagnostics. Unlike
+    // std::hash, it is stable across processes, binaries, and language runtimes.
+    uint64_t hash = 1469598103934665603ULL;
+    for (const unsigned char ch : requestId.toUri()) {
+        hash ^= ch;
+        hash *= 1099511628211ULL;
+    }
+    return (hash % sampleRate) == 0;
 }
 
 uint64_t

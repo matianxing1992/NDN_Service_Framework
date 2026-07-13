@@ -1,0 +1,1 @@
+145855|COMPLETED|0:0|00:00:22|itiger07|billing=2,cpu=2,gres/gpu=1,gres/gpu:rtx_5000=1,mem=8G,node=1|billing=2,cpu=2,gres/gpu=1,gres/gpu:rtx_5000=1,mem=8G,node=1

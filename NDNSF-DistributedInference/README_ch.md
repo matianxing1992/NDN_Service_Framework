@@ -23,6 +23,39 @@ Native hot-path 迁移层
 service 并提交 inference jobs，而 providers 通过 native C++ workers 执行
 dependency-driven inference。
 
+部署状态、operator 命令和证据边界统一维护在
+[`docs/NDNSF-DI-deployment-candidate.md`](../docs/NDNSF-DI-deployment-candidate.md)。
+Spec 105 继续冻结为 `minindnCandidateOverall=BLOCK`。Spec 107 是当前仅限
+MiniNDN 的恢复候选；在已提交 source tree、artifact set 和全部候选摘要通过以下
+入口门禁之前，它既未冻结，也不具备 release 资格。把九个
+`SPEC107_*_INPUT` 变量分别设置为对应候选维度的已审核文件。CLI 会机械生成
+它们的完整 SHA-256，并从已提交 HEAD 自动生成 source digest。候选输出只能创建
+一次；任何 campaign preregister 后都不得删除或替换该输出。
+
+```bash
+test -z "$(git status --porcelain=v1 --untracked-files=no)"
+python3 tools/ndnsf-di/spec107_candidate.py lineage verify \
+  --lock specs/107-ndnsf-di-minindn-gate-recovery/lineage-lock.json
+python3 tools/ndnsf-di/spec107_candidate.py candidate inputs \
+  --profile "$SPEC107_PROFILE_INPUT" --model "$SPEC107_MODEL_INPUT" \
+  --plan "$SPEC107_PLAN_INPUT" --artifact "$SPEC107_ARTIFACT_INPUT" \
+  --lineage "$SPEC107_LINEAGE_INPUT" --workload "$SPEC107_WORKLOAD_INPUT" \
+  --tokenizer "$SPEC107_TOKENIZER_INPUT" \
+  --trust-policy "$SPEC107_TRUST_POLICY_INPUT" \
+  --command "$SPEC107_COMMAND_INPUT" \
+  --output results/spec107-candidate-inputs.json
+python3 tools/ndnsf-di/spec107_candidate.py candidate create \
+  --digests results/spec107-candidate-inputs.json \
+  --output results/spec107-candidate.json
+```
+
+随后只能继续执行
+[`specs/107-ndnsf-di-minindn-gate-recovery/quickstart.md`](../specs/107-ndnsf-di-minindn-gate-recovery/quickstart.md)
+中的 once-only 命令。已经开始的成功、失败或 invalid preflight 都必须保留。
+Spec 107 最多只能授权本地 MiniNDN 候选；物理生产部署继续 `DEFERRED` 到
+Spec 106。模拟 Runtime v1 仅能通过 `ndnsf-di contract-smoke` 使用；生产 adapter
+必须消费绑定的 profile/plan/request/output command-template 字段并 fail closed。
+
 分层结构：
 
 ```text

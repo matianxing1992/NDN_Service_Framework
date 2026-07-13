@@ -1,0 +1,1 @@
+PartitionName=bigTiger MaxTime=28-00:00:00 DefaultTime=NONE State=UP TotalNodes=11

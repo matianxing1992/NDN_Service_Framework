@@ -76,3 +76,14 @@ deepseek_usage*.jsonl
 .planning/
 .codegraph/
 .specify/integrations/codex.manifest.json
+
+# Spec 108 local container artifacts and credentials
+dist/ndnsf-di-container/
+*.sif
+*.sif.tmp
+packaging/ndnsf-di-container/.cache/
+packaging/ndnsf-di-container/generated/
+tests/container/.tmp/
+tests/container/**/actual/
+**/identity-private/
+**/container-secrets/

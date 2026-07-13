@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import os
 import pwd
@@ -15,7 +16,7 @@ import site
 import subprocess
 import sys
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import yaml  # type: ignore
 
@@ -23,11 +24,31 @@ REPO = Path(__file__).resolve().parents[1]
 MININDN_ROOT = Path("/tmp/minindn")
 sys.path.insert(0, str(REPO / "Experiments"))
 sys.path.insert(0, str(REPO / "NDNSF-DistributedInference"))
+sys.path.insert(0, str(REPO / "tools/ndnsf-di"))
 
 import NDNSF_NewAPI_Minindn_Perf as perf  # noqa: E402
 from ndnsf_distributed_inference.deployment import (  # noqa: E402
     BoundedRecoveryController,
     RecoveryReason,
+)
+from spec107_fault_controller import OwnedProcessRegistry  # noqa: E402
+from run_spec107_live_faults import (  # noqa: E402
+    FAULT_CELLS,
+    derive_fault_provider_control,
+    validate_cell_claim,
+)
+from spec107_identity import (  # noqa: E402
+    committed_source_digest,
+    digest_object,
+    validate_campaign_set,
+    validate_candidate_identity,
+)
+from spec107_artifacts import verify_artifact_set  # noqa: E402
+from spec107_preflight import (  # noqa: E402
+    PreflightError,
+    claim_campaign_writer,
+    run_campaign_preflight,
+    write_invalid_preflight_record,
 )
 from mininet.log import info, setLogLevel  # noqa: E402
 from minindn.apps.app_manager import AppManager  # noqa: E402
@@ -128,6 +149,48 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--measured-duration-s", type=float, default=0.0)
     parser.add_argument("--request-interval-ms", type=float, default=0.0)
     parser.add_argument("--campaign-id", default="")
+    parser.add_argument(
+        "--spec107-diagnostic",
+        choices=("", "generation-session-attribution"),
+        default="",
+        help="Run a diagnostic-only Spec 107 attribution cell.",
+    )
+    parser.add_argument(
+        "--candidate-manifest", default="",
+        help="Digest-bound Spec 107 candidate manifest for diagnostic identity.",
+    )
+    parser.add_argument(
+        "--campaign-manifest", default="",
+        help="Locked Spec 107 campaign manifest for live-cell identity.",
+    )
+    parser.add_argument(
+        "--spec107-timing-sample-rate", type=int, default=1,
+        help="Stable request sampling denominator for diagnostic timelines.",
+    )
+    parser.add_argument(
+        "--spec107-artifact-store", default="",
+        help="Verified content-addressed Spec 107 Qwen artifact-set directory.",
+    )
+    parser.add_argument(
+        "--spec107-qwen-service-manifest", default="",
+        help="Reviewed Qwen ONNX stage metadata manifest for artifact reuse.",
+    )
+    parser.add_argument(
+        "--spec107-qwen-runtime-manifest", default="",
+        help="Reviewed Qwen prompt/token runtime manifest for artifact reuse.",
+    )
+    parser.add_argument(
+        "--spec107-command-profile", default="",
+        help="Digest-bound exact diagnostic command profile.",
+    )
+    parser.add_argument(
+        "--spec107-live-fault-cell",
+        choices=("", "positive-control", "provider-kill-restart", "straggler",
+                 "missing-segment", "dependency-digest-mismatch", "stale-telemetry",
+                 "kv-eviction", "provider-boot-change", "late-old-output"),
+        default="",
+        help="Execute one preregistered Spec 107 live-fault cell.",
+    )
     parser.add_argument(
         "--publish-input-reference",
         action="store_true",
@@ -685,7 +748,10 @@ def prepare_policy(stages: int, layers: int, *,
                    qwen_model: str = "Qwen/Qwen2.5-0.5B-Instruct",
                    qwen_prompt: str = "",
                    qwen_allow_download: bool = False,
-                   qwen_dtype: str = "float32") -> None:
+                   qwen_dtype: str = "float32",
+                   qwen_artifact_store: str = "",
+                   qwen_service_manifest: str = "",
+                   qwen_runtime_manifest: str = "") -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     hf_home = os.environ.get("HF_HOME")
     sudo_user = os.environ.get("SUDO_USER")
@@ -719,11 +785,15 @@ def prepare_policy(stages: int, layers: int, *,
         "--qwen-model", qwen_model,
         "--qwen-prompt", qwen_prompt,
         "--qwen-dtype", qwen_dtype,
+        *(["--qwen-artifact-store", qwen_artifact_store]
+          if qwen_artifact_store else []),
+        *(["--qwen-service-manifest", qwen_service_manifest]
+          if qwen_service_manifest else []),
+        *(["--qwen-runtime-manifest", qwen_runtime_manifest]
+          if qwen_runtime_manifest else []),
+        "--trust-app-root", APP_ROOT,
         *(["--qwen-allow-download"] if qwen_allow_download else []),
     ], cwd=str(REPO), env=policy_env, check=True)
-    config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
-    config.setdefault("trust", {})["app_roots"] = [APP_ROOT]
-    CONFIG.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
 
 
 def generate_policy_bundle(env: dict[str, str]) -> None:
@@ -820,6 +890,254 @@ def write_native_qwen_bundle(out_dir: Path) -> tuple[Path, Path]:
     return plan_path, manifest_path
 
 
+def validate_spec107_artifact_binding(
+    candidate: dict[str, object], artifact_store: str | Path,
+    qwen_service_manifest: str | Path,
+    qwen_runtime_manifest: str | Path,
+) -> dict[str, object]:
+    store = Path(artifact_store).expanduser().resolve()
+    manifest = verify_artifact_set(store)
+    manifest_path = store / "artifact-set.json"
+    manifest_digest = "sha256:" + hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    digests = candidate.get("digests")
+    if not isinstance(digests, dict) or digests.get("artifact") != manifest_digest:
+        raise ValueError("SPEC107_ARTIFACT_CANDIDATE_DIGEST_MISMATCH")
+    service_digest = "sha256:" + hashlib.sha256(
+        Path(qwen_service_manifest).read_bytes()).hexdigest()
+    if digests.get("model") != service_digest:
+        raise ValueError("SPEC107_MODEL_CANDIDATE_DIGEST_MISMATCH")
+    runtime_digest = "sha256:" + hashlib.sha256(
+        Path(qwen_runtime_manifest).read_bytes()).hexdigest()
+    if digests.get("tokenizer") != runtime_digest:
+        raise ValueError("SPEC107_TOKENIZER_CANDIDATE_DIGEST_MISMATCH")
+    return manifest
+
+
+def validate_spec107_source_binding(
+    candidate: dict[str, object], repo_root: str | Path,
+) -> None:
+    """Require the execution checkout to remain the frozen clean Git source."""
+
+    root = Path(repo_root).resolve()
+    try:
+        status = subprocess.run(
+            ["git", "status", "--porcelain=v1", "--untracked-files=no"],
+            cwd=root, text=True, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, check=False)
+    except OSError as exc:
+        raise ValueError(f"SPEC107_SOURCE_GIT_UNAVAILABLE:{exc}") from exc
+    if status.returncode != 0:
+        raise ValueError(
+            "SPEC107_SOURCE_GIT_INVALID:" + status.stderr.strip())
+    if status.stdout.strip():
+        raise ValueError("SPEC107_SOURCE_TREE_DIRTY")
+    digests = candidate.get("digests")
+    if not isinstance(digests, dict):
+        raise ValueError("SPEC107_CANDIDATE_DIGESTS_INVALID")
+    if digests.get("source") != committed_source_digest(root):
+        raise ValueError("SPEC107_SOURCE_CANDIDATE_DIGEST_MISMATCH")
+
+
+def validate_spec107_execution_binding(
+    candidate: dict[str, object], plan: str | Path, trust_policy: str | Path,
+) -> None:
+    digests = candidate.get("digests")
+    if not isinstance(digests, dict):
+        raise ValueError("SPEC107_CANDIDATE_DIGESTS_INVALID")
+    plan_digest = "sha256:" + hashlib.sha256(Path(plan).read_bytes()).hexdigest()
+    if digests.get("plan") != plan_digest:
+        raise ValueError("SPEC107_PLAN_CANDIDATE_DIGEST_MISMATCH")
+    policy_digest = "sha256:" + hashlib.sha256(
+        Path(trust_policy).read_bytes()).hexdigest()
+    if digests.get("trustPolicy") != policy_digest:
+        raise ValueError("SPEC107_TRUST_POLICY_CANDIDATE_DIGEST_MISMATCH")
+
+
+def validate_spec107_profile_workload_binding(
+    candidate: dict[str, object], args: argparse.Namespace,
+    command_cell: dict[str, object], campaign_profile: str | Path,
+    workload_manifest: str | Path,
+) -> None:
+    """Bind reviewed diagnostic profile/workload bytes to actual CLI behavior."""
+
+    digests = candidate.get("digests")
+    if not isinstance(digests, dict):
+        raise ValueError("SPEC107_CANDIDATE_DIGESTS_INVALID")
+    profile_path = Path(campaign_profile)
+    workload_path = Path(workload_manifest)
+    profile_digest = "sha256:" + hashlib.sha256(profile_path.read_bytes()).hexdigest()
+    if digests.get("profile") != profile_digest:
+        raise ValueError("SPEC107_PROFILE_CANDIDATE_DIGEST_MISMATCH")
+    workload_digest = "sha256:" + hashlib.sha256(workload_path.read_bytes()).hexdigest()
+    if digests.get("workload") != workload_digest:
+        raise ValueError("SPEC107_WORKLOAD_CANDIDATE_DIGEST_MISMATCH")
+    profile = json.loads(profile_path.read_text(encoding="utf-8"))
+    workload = json.loads(workload_path.read_text(encoding="utf-8"))
+    if (
+        not isinstance(profile, dict)
+        or profile.get("schema") != "ndnsf-di-spec107-diagnostic-profile-v1"
+        or profile.get("physicalProductionOverall") != "DEFERRED"
+        or profile.get("roles") != [f"/LLM/Pipeline/Stage/{index}" for index in range(3)]
+    ):
+        raise ValueError("SPEC107_PROFILE_INVALID")
+    topology_value = profile.get("topology")
+    if not isinstance(topology_value, str) or not topology_value:
+        raise ValueError("SPEC107_PROFILE_INVALID")
+    expected_topology = Path(topology_value)
+    if not expected_topology.is_absolute():
+        expected_topology = REPO / expected_topology
+    if (
+        Path(args.topology_file).expanduser().resolve() != expected_topology.resolve()
+        or args.stages != profile.get("stageCount")
+        or args.runtime != profile.get("runtime")
+    ):
+        raise ValueError("SPEC107_PROFILE_ARGUMENT_MISMATCH")
+    cells = workload.get("cells") if isinstance(workload, dict) else None
+    matches = [
+        cell for cell in cells or []
+        if isinstance(cell, dict) and cell.get("ordinal") == command_cell.get("ordinal")]
+    if (
+        not isinstance(workload, dict)
+        or workload.get("schema") != "ndnsf-di-spec107-diagnostic-workload-v1"
+        or workload.get("automaticRetry") is not False
+        or len(matches) != 1
+    ):
+        raise ValueError("SPEC107_WORKLOAD_INVALID")
+    expected_tokens = workload.get("expectedTokenIds")
+    actual_tokens = [
+        int(value) for value in str(args.expected_token_ids).split(",") if value]
+    cell = matches[0]
+    comparisons = (
+        (args.prompt, workload.get("prompt")),
+        (actual_tokens, expected_tokens),
+        (args.warmup_requests, cell.get("warmupRequests")),
+        (args.measured_requests, cell.get("measuredRequests")),
+        (args.max_new_tokens, cell.get("maxNewTokens")),
+        (float(args.measured_duration_s), float(cell.get("measuredDurationSeconds", -1))),
+        (float(args.request_interval_ms), float(cell.get("requestIntervalMs", -1))),
+    )
+    if any(actual != expected for actual, expected in comparisons):
+        raise ValueError("SPEC107_WORKLOAD_ARGUMENT_MISMATCH")
+
+
+def enforce_spec107_harness_preflight(
+    *, candidate: dict[str, object], campaign: dict[str, object],
+    artifact_store: str | Path, artifact_manifest: dict[str, object],
+    plan: str | Path, repo_root: str | Path, projected_new_bytes: int,
+    free_bytes: int | None = None,
+) -> dict[str, object]:
+    """Retain an invalid diagnostic preflight before any output or role starts."""
+
+    root = Path(repo_root).resolve()
+    plan_path = Path(plan)
+    if not plan_path.is_absolute():
+        plan_path = root / plan_path
+    plan_path = plan_path.resolve()
+    candidate_digests = candidate.get("digests")
+    plan_digest = "sha256:" + hashlib.sha256(plan_path.read_bytes()).hexdigest()
+    if not isinstance(candidate_digests, dict) or candidate_digests.get("plan") != plan_digest:
+        raise ValueError("SPEC107_PLAN_CANDIDATE_DIGEST_MISMATCH")
+    plan_value = json.loads(plan_path.read_text(encoding="utf-8"))
+    services = plan_value.get("services") if isinstance(plan_value, dict) else None
+    if not isinstance(services, list) or len(services) != 1:
+        raise ValueError("SPEC107_PREFLIGHT_PLAN_INVALID")
+    service = services[0]
+    if not isinstance(service, dict):
+        raise ValueError("SPEC107_PREFLIGHT_PLAN_INVALID")
+    roles = service.get("roles")
+    backend = service.get("runtimeBackend")
+    if (
+        not isinstance(roles, list) or len(roles) != 3
+        or any(not isinstance(role, str) or not role for role in roles)
+        or not isinstance(backend, str) or not backend
+    ):
+        raise ValueError("SPEC107_PREFLIGHT_PLAN_INVALID")
+    record = run_campaign_preflight(
+        candidate=candidate,
+        campaign=campaign,
+        artifact_root=artifact_store,
+        artifact_manifest=artifact_manifest,
+        repo_root=root,
+        projected_new_bytes=projected_new_bytes,
+        free_bytes=free_bytes,
+        provider_capabilities={role: [backend] for role in roles},
+        required_capability=backend,
+    )
+    if record["verdict"] != "PASS":
+        try:
+            retained = write_invalid_preflight_record(record, repo_root=root)
+        except PreflightError as exc:
+            raise SystemExit(f"INVALID_PREFLIGHT_UNRETAINED:{exc}") from exc
+        raise SystemExit(f"INVALID_PREFLIGHT:{retained}")
+    claim_campaign_writer(record, repo_root=root)
+    return record
+
+
+def validate_spec107_command_binding(
+    candidate: dict[str, object], campaign: dict[str, object],
+    args: argparse.Namespace, command_profile: str | Path,
+) -> dict[str, object]:
+    path = Path(command_profile)
+    digest = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+    candidate_digests = candidate.get("digests")
+    if not isinstance(candidate_digests, dict) or candidate_digests.get("command") != digest:
+        raise ValueError("SPEC107_COMMAND_CANDIDATE_DIGEST_MISMATCH")
+    if campaign.get("commandDigest") != digest:
+        raise ValueError("SPEC107_COMMAND_CAMPAIGN_DIGEST_MISMATCH")
+    profile = json.loads(path.read_text(encoding="utf-8"))
+    if profile.get("schema") != "ndnsf-di-spec107-diagnostic-command-profile-v1":
+        raise ValueError("SPEC107_COMMAND_PROFILE_INVALID")
+    cells = profile.get("cells")
+    execution = profile.get("execution")
+    if not isinstance(cells, list) or not isinstance(execution, dict):
+        raise ValueError("SPEC107_COMMAND_PROFILE_INVALID")
+    matches = [
+        cell for cell in cells
+        if isinstance(cell, dict)
+        and cell.get("ordinal") == campaign.get("ordinal")
+        and cell.get("outputRoot") == campaign.get("outputRoot")
+    ]
+    if len(matches) != 1:
+        raise ValueError("SPEC107_COMMAND_CELL_MISMATCH")
+    cell = matches[0]
+    output_root = cell.get("outputRoot")
+    cell_name = cell.get("name")
+    if (
+        not isinstance(output_root, str) or "\\" in output_root
+        or not isinstance(cell_name, str) or not cell_name
+    ):
+        raise ValueError("SPEC107_COMMAND_OUTPUT_ROOT_INVALID")
+    output_parts = PurePosixPath(output_root).parts
+    if (
+        len(output_parts) != 3
+        or output_parts[0] != "results"
+        or not output_parts[1].startswith("spec107-attribution-")
+        or output_parts[1] == "spec107-attribution-"
+        or output_parts[2] != cell_name
+    ):
+        raise ValueError("SPEC107_COMMAND_OUTPUT_ROOT_INVALID")
+    comparisons = (
+        (args.runtime, execution.get("runtime")),
+        (args.prompt, execution.get("prompt")),
+        (args.ndn_log, execution.get("ndnLog")),
+        (args.spec107_timing_sample_rate, execution.get("timingSampleRate")),
+        (args.warmup_requests, cell.get("warmupRequests")),
+        (args.measured_requests, cell.get("measuredRequests")),
+        (args.max_new_tokens, cell.get("maxNewTokens")),
+        (float(args.measured_duration_s), float(cell.get("measuredDurationSeconds", -1))),
+        (float(args.request_interval_ms), float(cell.get("requestIntervalMs", -1))),
+    )
+    if any(actual != expected for actual, expected in comparisons):
+        raise ValueError("SPEC107_COMMAND_ARGUMENT_MISMATCH")
+    expected_tokens = execution.get("expectedTokenIds")
+    if expected_tokens is not None:
+        actual_tokens = [
+            int(value) for value in str(args.expected_token_ids).split(",") if value]
+        if actual_tokens != expected_tokens:
+            raise ValueError("SPEC107_COMMAND_ARGUMENT_MISMATCH")
+    return cell
+
+
 def main() -> int:
     global OUT, CONFIG
     args = build_parser().parse_args()
@@ -830,6 +1148,173 @@ def main() -> int:
     sys.argv = [sys.argv[0]]
     setLogLevel("info")
     OUT = Path(args.output_dir).expanduser().resolve()
+    spec107_candidate_id = ""
+    spec107_artifact_store = ""
+    spec107_qwen_service_manifest = ""
+    spec107_qwen_runtime_manifest = ""
+    spec107_candidate_payload = None
+    spec107_campaign_payload = None
+    spec107_command_cell = None
+    spec107_command_profile_payload = None
+    if args.spec107_diagnostic:
+        if args.runtime != "qwen-onnx-cpu-native":
+            raise SystemExit("Spec 107 attribution requires qwen-onnx-cpu-native")
+        if not args.candidate_manifest:
+            raise SystemExit("Spec 107 attribution requires --candidate-manifest")
+        if not args.campaign_manifest:
+            raise SystemExit("Spec 107 attribution requires --campaign-manifest")
+        candidate_path = Path(args.candidate_manifest).expanduser().resolve()
+        candidate_payload = validate_candidate_identity(json.loads(
+            candidate_path.read_text(encoding="utf-8")))
+        try:
+            validate_spec107_source_binding(candidate_payload, REPO)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+        spec107_candidate_payload = candidate_payload
+        spec107_candidate_id = str(candidate_payload.get("candidateId", ""))
+        if (
+            not spec107_candidate_id.startswith("spec107-c1-")
+            or "spec105" in spec107_candidate_id.lower()
+        ):
+            raise SystemExit("Spec 107 attribution candidate identity is invalid")
+        if not args.campaign_id.startswith("spec107-c1-diagnostic-"):
+            raise SystemExit("Spec 107 attribution requires a diagnostic campaign ID")
+        campaign_payload = validate_campaign_set(
+            [json.loads(Path(args.campaign_manifest).read_text(encoding="utf-8"))],
+            candidate_id=spec107_candidate_id,
+            candidate_digest=digest_object(candidate_payload))[0]
+        spec107_campaign_payload = campaign_payload
+        if (campaign_payload["kind"] != "diagnostic" or
+                campaign_payload["campaignId"] != args.campaign_id or
+                campaign_payload["releaseEligible"] is not False):
+            raise SystemExit("Spec 107 attribution campaign identity mismatch")
+        expected_output = (REPO / str(campaign_payload["outputRoot"])).resolve()
+        if OUT != expected_output:
+            raise SystemExit(
+                f"Spec 107 attribution output identity mismatch: expected {expected_output}")
+        if args.spec107_timing_sample_rate < 1:
+            raise SystemExit("Spec 107 timing sample rate must be >= 1")
+        if not args.spec107_command_profile:
+            raise SystemExit("Spec 107 attribution requires --spec107-command-profile")
+        try:
+            spec107_command_cell = validate_spec107_command_binding(
+                candidate_payload, campaign_payload, args,
+                args.spec107_command_profile)
+            spec107_command_profile_payload = json.loads(Path(
+                args.spec107_command_profile).read_text(encoding="utf-8"))
+        except (ValueError, OSError, json.JSONDecodeError) as exc:
+            raise SystemExit(str(exc)) from exc
+        reuse_inputs = (
+            args.spec107_artifact_store,
+            args.spec107_qwen_service_manifest,
+            args.spec107_qwen_runtime_manifest,
+        )
+        if not all(reuse_inputs):
+            raise SystemExit(
+                "Spec 107 attribution requires artifact store and Qwen manifests")
+        try:
+            validate_spec107_artifact_binding(
+                candidate_payload, args.spec107_artifact_store,
+                args.spec107_qwen_service_manifest,
+                args.spec107_qwen_runtime_manifest)
+        except (ValueError, OSError) as exc:
+            raise SystemExit(str(exc)) from exc
+        spec107_artifact_store = str(
+            Path(args.spec107_artifact_store).expanduser().resolve())
+        spec107_qwen_service_manifest = str(
+            Path(args.spec107_qwen_service_manifest).expanduser().resolve())
+        spec107_qwen_runtime_manifest = str(
+            Path(args.spec107_qwen_runtime_manifest).expanduser().resolve())
+        artifact_inputs = spec107_command_profile_payload.get("artifactInputs")
+        projected_new_bytes = spec107_command_cell.get("projectedNewBytes")
+        if not isinstance(artifact_inputs, dict) or not isinstance(
+                projected_new_bytes, int) or isinstance(projected_new_bytes, bool):
+            raise SystemExit("SPEC107_COMMAND_PREFLIGHT_INVALID")
+        plan_input = artifact_inputs.get("nativePlan")
+        profile_input = artifact_inputs.get("campaignProfile")
+        workload_input = artifact_inputs.get("workloadManifest")
+        if (
+            not isinstance(plan_input, str) or not plan_input
+            or not isinstance(profile_input, str) or not profile_input
+            or not isinstance(workload_input, str) or not workload_input
+        ):
+            raise SystemExit("SPEC107_COMMAND_PREFLIGHT_INVALID")
+        try:
+            validate_spec107_profile_workload_binding(
+                candidate_payload, args, spec107_command_cell,
+                REPO / profile_input, REPO / workload_input)
+            enforce_spec107_harness_preflight(
+                candidate=candidate_payload,
+                campaign=campaign_payload,
+                artifact_store=spec107_artifact_store,
+                artifact_manifest=validate_spec107_artifact_binding(
+                    candidate_payload, spec107_artifact_store,
+                    spec107_qwen_service_manifest,
+                    spec107_qwen_runtime_manifest),
+                plan=plan_input,
+                repo_root=REPO,
+                projected_new_bytes=projected_new_bytes,
+            )
+        except (ValueError, OSError, json.JSONDecodeError) as exc:
+            raise SystemExit(str(exc)) from exc
+    if args.spec107_live_fault_cell:
+        if args.runtime != "qwen-onnx-cpu-native":
+            raise SystemExit("Spec 107 live faults require qwen-onnx-cpu-native")
+        if not args.campaign_id.startswith("spec107-c1-fault-"):
+            raise SystemExit("Spec 107 live faults require a fault campaign ID")
+        if not args.candidate_manifest:
+            raise SystemExit("Spec 107 live faults require --candidate-manifest")
+        if not args.campaign_manifest:
+            raise SystemExit("Spec 107 live faults require --campaign-manifest")
+        candidate_payload = validate_candidate_identity(json.loads(
+            Path(args.candidate_manifest).read_text(encoding="utf-8")))
+        try:
+            validate_spec107_source_binding(candidate_payload, REPO)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+        spec107_candidate_payload = candidate_payload
+        reuse_inputs = (
+            args.spec107_artifact_store,
+            args.spec107_qwen_service_manifest,
+            args.spec107_qwen_runtime_manifest,
+        )
+        if not all(reuse_inputs):
+            raise SystemExit(
+                "Spec 107 live faults require artifact store and Qwen manifests")
+        try:
+            validate_spec107_artifact_binding(
+                candidate_payload, args.spec107_artifact_store,
+                args.spec107_qwen_service_manifest,
+                args.spec107_qwen_runtime_manifest)
+        except (ValueError, OSError) as exc:
+            raise SystemExit(str(exc)) from exc
+        spec107_artifact_store = str(
+            Path(args.spec107_artifact_store).expanduser().resolve())
+        spec107_qwen_service_manifest = str(
+            Path(args.spec107_qwen_service_manifest).expanduser().resolve())
+        spec107_qwen_runtime_manifest = str(
+            Path(args.spec107_qwen_runtime_manifest).expanduser().resolve())
+        campaign_payload = validate_campaign_set(
+            [json.loads(Path(args.campaign_manifest).read_text(encoding="utf-8"))],
+            candidate_id=str(candidate_payload["candidateId"]),
+            candidate_digest=digest_object(candidate_payload))[0]
+        if (campaign_payload["kind"] != "fault" or
+                campaign_payload["campaignId"] != args.campaign_id):
+            raise SystemExit("Spec 107 live-fault campaign identity mismatch")
+        expected_cell = (
+            REPO / str(campaign_payload["outputRoot"]) /
+            f"{FAULT_CELLS.index(args.spec107_live_fault_cell) + 1:02d}-"
+            f"{args.spec107_live_fault_cell}").resolve()
+        if OUT != expected_cell:
+            raise SystemExit(
+                f"Spec 107 live-fault output identity mismatch: expected {expected_cell}")
+        validate_cell_claim(
+            cell_id=args.spec107_live_fault_cell,
+            candidate_id=str(candidate_payload["candidateId"]),
+            campaign_id=str(campaign_payload["campaignId"]),
+            output_root=OUT)
+        if OUT.exists():
+            raise SystemExit(f"Spec 107 live-fault output must be unique: {OUT}")
     CONFIG = OUT / "llm_pipeline_policy.yaml"
     if args.fault_matrix_contract:
         OUT.mkdir(parents=True, exist_ok=True)
@@ -863,6 +1348,9 @@ def main() -> int:
             qwen_prompt=args.prompt,
             qwen_allow_download=args.qwen_allow_download,
             qwen_dtype=args.qwen_dtype,
+            qwen_artifact_store=spec107_artifact_store,
+            qwen_service_manifest=spec107_qwen_service_manifest,
+            qwen_runtime_manifest=spec107_qwen_runtime_manifest,
         )
     base_env = {
         **os.environ,
@@ -876,11 +1364,23 @@ def main() -> int:
         base_env["NDNSF_COLLAB_LARGE_FETCH_TIMING"] = "1"
     if args.runtime == "qwen-onnx-cpu-native":
         base_env["NDNSF_DI_RUNTIME_TIMING"] = "1"
+    if args.spec107_diagnostic:
+        base_env["NDNSF_TIMELINE_TRACE"] = "1"
+        base_env["NDNSF_TIMELINE_TRACE_SAMPLE_RATE"] = str(
+            args.spec107_timing_sample_rate)
     base_env.pop("NDN_CLIENT_TRANSPORT", None)
     generate_policy_bundle(base_env)
     native_plan = native_manifest = None
     if args.runtime == "qwen-onnx-cpu-native":
         native_plan, native_manifest = write_native_qwen_bundle(OUT)
+    if spec107_candidate_payload is not None:
+        if native_plan is None:
+            raise SystemExit("Spec 107 execution binding requires native plan")
+        try:
+            validate_spec107_execution_binding(
+                spec107_candidate_payload, native_plan, CONFIG)
+        except (ValueError, OSError) as exc:
+            raise SystemExit(str(exc)) from exc
 
     subprocess.run(["pkill", "-f", "llm_pipeline/(provider|user)\\.py"],
                    check=False)
@@ -888,6 +1388,14 @@ def main() -> int:
     Minindn.verifyDependencies()
     ndn = Minindn(topoFile=args.topology_file)
     processes: list[tuple[object, object, Path]] = []
+    fault_registry = (
+        OwnedProcessRegistry(
+            campaign_id=args.campaign_id,
+            registry_path=OUT / "owned-processes.json")
+        if args.spec107_live_fault_cell else None)
+    fault_owned_by_stage = {}
+    fault_provider_specs = {}
+    fault_control = None
     try:
         ndn.start()
         normalize_nlsr_link_costs(ndn)
@@ -1023,9 +1531,26 @@ def main() -> int:
             if args.runtime == "qwen-onnx-cpu-native":
                 if native_plan is None or native_manifest is None:
                     raise RuntimeError("native Qwen plan/manifest were not generated")
+                fault_provider_cells = {
+                    "straggler", "missing-segment", "dependency-digest-mismatch",
+                    "stale-telemetry", "kv-eviction", "late-old-output",
+                }
+                use_fault_provider = (
+                    args.spec107_live_fault_cell in fault_provider_cells and
+                    stage_index == 1)
+                provider_executable = (
+                    REPO / "build/examples/di-native-fault-provider"
+                    if use_fault_provider else
+                    REPO / "build/examples/di-native-provider")
+                fault_args = (
+                    f"--fault-type {perf.shell_quote(args.spec107_live_fault_cell)} "
+                    f"--fault-role {perf.shell_quote('/LLM/Pipeline/Stage/1')} "
+                    f"--fault-delay-ms 250 "
+                    if use_fault_provider else "")
                 provider_command = (
                     f"cd {perf.shell_quote(REPO)} && exec "
-                    f"{perf.shell_quote(REPO / 'build/examples/di-native-provider')} "
+                    f"{'setsid ' if args.spec107_live_fault_cell else ''}"
+                    f"{perf.shell_quote(provider_executable)} {fault_args}"
                     f"--plan {perf.shell_quote(native_plan)} "
                     f"--manifest {perf.shell_quote(native_manifest)} "
                     f"--service {perf.shell_quote(SERVICE)} "
@@ -1055,6 +1580,20 @@ def main() -> int:
             provider_logs.append(log_path)
             if not wait_log(log_path, ready_marker, args.provider_start_timeout_s, proc):
                 raise RuntimeError(f"stage provider did not start; log={log_path}")
+            if fault_registry is not None:
+                boot_match = re.search(
+                    r"providerBootId=([^\s]+)", log_path.read_text(errors="replace"))
+                if not boot_match:
+                    raise RuntimeError(
+                        f"Spec 107 live-fault provider boot identity missing: {log_path}")
+                fault_owned_by_stage[stage_index] = fault_registry.adopt(
+                    proc,
+                    role=f"/LLM/Pipeline/Stage/{stage_index}",
+                    provider_name=STAGE_IDENTITIES[stage_index],
+                    provider_boot_id=boot_match.group(1),
+                )
+                fault_provider_specs[stage_index] = (
+                    node_name, provider_command, node_env[node_name], ready_marker)
         log(f"Waiting {args.provider_wait_s:.1f}s for providers")
         time.sleep(args.provider_wait_s)
 
@@ -1066,6 +1605,13 @@ def main() -> int:
             "--native-cpu-provider --qwen-service-manifest {}".format(
                 perf.shell_quote(OUT / "qwen-onnx-service-manifest.json"))
             if args.runtime == "qwen-onnx-cpu-native" else ""
+        )
+        spec107_user_args = (
+            "--spec107-candidate-id {} --spec107-diagnostic-timing-jsonl {}".format(
+                perf.shell_quote(spec107_candidate_id),
+                perf.shell_quote(OUT / "spec107-client-timing.jsonl"),
+            )
+            if args.spec107_diagnostic else ""
         )
         user_proc = getPopen(
             ndn.net[USER_NODE],
@@ -1080,7 +1626,7 @@ def main() -> int:
             "--native-first-kv-mode {} "
             "--expected-token-ids {} "
             "--measured-duration-s {} --request-interval-ms {} --campaign-id {} "
-            "--metrics-csv {} {} {}".format(
+            "--metrics-csv {} {} {} {}".format(
                 perf.shell_quote(args.prompt),
                 args.stages,
                 args.compute_delay_ms,
@@ -1102,6 +1648,7 @@ def main() -> int:
                 perf.shell_quote(metrics_csv),
                 "--publish-input-reference" if args.publish_input_reference else "",
                 native_user_args,
+                spec107_user_args,
             ),
             envDict=node_env[USER_NODE],
             shell=True,
@@ -1109,6 +1656,51 @@ def main() -> int:
             stderr=subprocess.STDOUT,
         )
         processes.append((user_proc, user_out, user_log))
+        if args.spec107_live_fault_cell in {
+            "provider-kill-restart", "provider-boot-change"
+        }:
+            if fault_registry is None:
+                raise RuntimeError("Spec 107 live-fault registry is unavailable")
+            target = fault_owned_by_stage[1]
+            stage_log = provider_logs[1]
+            trigger_us = fault_registry.wait_for_log_trigger(
+                target, log_path=stage_log, marker="role_compute_start",
+                timeout_seconds=max(1.0, args.timeout_ms / 1000.0))
+            injection_us = time.monotonic_ns() // 1000
+            fault_registry.guarded_signal(target, signal.SIGTERM)
+            effect = fault_registry.observe_process_exit(
+                target, timeout_seconds=5.0)
+            node_name, provider_command, provider_env, ready_marker = fault_provider_specs[1]
+            replacement_proc, replacement_log = start_process(
+                ndn, node_name, "stage1-provider-replacement",
+                provider_command, provider_env, processes)
+            if not wait_log(
+                replacement_log, ready_marker, args.provider_start_timeout_s,
+                replacement_proc):
+                raise RuntimeError(
+                    f"Spec 107 replacement provider did not start: {replacement_log}")
+            boot_match = re.search(
+                r"providerBootId=([^\s]+)",
+                replacement_log.read_text(errors="replace"))
+            if not boot_match:
+                raise RuntimeError("Spec 107 replacement boot identity missing")
+            replacement = fault_registry.adopt(
+                replacement_proc, role=target.role,
+                provider_name=target.provider_name,
+                provider_boot_id=boot_match.group(1))
+            fault_owned_by_stage[1] = replacement
+            fault_control = {
+                "schema": "ndnsf-di-spec107-live-fault-control-v1",
+                "campaignId": args.campaign_id,
+                "cellId": args.spec107_live_fault_cell,
+                "triggerMonotonicUs": trigger_us,
+                "injectionMonotonicUs": injection_us,
+                "injectionApplied": True,
+                "networkInjection": True,
+                "target": target.to_dict(),
+                "replacement": replacement.to_dict(),
+                "observedEffect": effect,
+            }
         user_proc.wait(timeout=max(
             180.0,
             args.measured_duration_s + args.timeout_ms / 1000.0 + 30.0,
@@ -1171,6 +1763,53 @@ def main() -> int:
         if args.runtime in ("qwen-transformers", "qwen-onnx", "qwen-onnx-cpu-native"):
             write_qwen_stage_profile(provider_logs, metrics_csv, OUT)
             write_collab_large_fetch_profile(provider_logs, OUT)
+        if args.spec107_diagnostic:
+            evidence_paths = [user_log, OUT / "spec107-client-timing.jsonl", *provider_logs]
+            manifest_rows = []
+            for path in evidence_paths:
+                if not path.is_file():
+                    raise RuntimeError(
+                        f"Spec 107 diagnostic evidence missing: {path}")
+                manifest_rows.append({
+                    "path": path.name,
+                    "bytes": path.stat().st_size,
+                    "sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
+                })
+            diagnostic_manifest = {
+                "schema": "ndnsf-di-spec107-attribution-raw-v1",
+                "candidateId": spec107_candidate_id,
+                "campaignId": args.campaign_id,
+                "eligibility": "DIAGNOSTIC_INELIGIBLE",
+                "releaseEligible": False,
+                "sampleRate": args.spec107_timing_sample_rate,
+                "artifacts": manifest_rows,
+            }
+            (OUT / "spec107-attribution-raw-manifest.json").write_text(
+                json.dumps(diagnostic_manifest, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            print(
+                "LLM_PIPELINE_SPEC107_DIAGNOSTIC " +
+                json.dumps(diagnostic_manifest, sort_keys=True,
+                           separators=(",", ":")))
+        if args.spec107_live_fault_cell:
+            if fault_control is None:
+                marker_observed = any(
+                    "NDNSF_DI_EXPERIMENT_FAULT_INJECTED" in
+                    path.read_text(errors="replace")
+                    for path in provider_logs)
+                derived_control = derive_fault_provider_control(
+                    cell_id=args.spec107_live_fault_cell,
+                    marker_observed=marker_observed)
+                fault_control = {
+                    "schema": "ndnsf-di-spec107-live-fault-control-v1",
+                    "campaignId": args.campaign_id,
+                    "cellId": args.spec107_live_fault_cell,
+                    **derived_control,
+                }
+            (OUT / "spec107-live-fault-control.json").write_text(
+                json.dumps(fault_control, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8")
         if user_failed:
             print(
                 "LLM_PIPELINE_MININDN_FAILED "
@@ -1185,6 +1824,11 @@ def main() -> int:
         )
         return 0
     finally:
+        if fault_registry is not None:
+            cleanup = fault_registry.cleanup()
+            if not cleanup["proven"]:
+                print("SPEC107_LIVE_FAULT_CLEANUP_FAILED " + json.dumps(
+                    cleanup, sort_keys=True), file=sys.stderr)
         stop_processes(processes)
         try:
             ndn.stop()

@@ -1,0 +1,29 @@
+#!/bin/bash
+#SBATCH --job-name=@@JOB_NAME@@
+#SBATCH --partition=@@PARTITION@@
+#SBATCH --account=@@ACCOUNT@@
+#SBATCH --qos=@@QOS@@
+#SBATCH --time=@@WALL_TIME@@
+#SBATCH --nodes=@@NODES@@
+#SBATCH --ntasks-per-node=@@TASKS_PER_NODE@@
+#SBATCH --cpus-per-task=@@CPUS_PER_TASK@@
+#SBATCH --mem=@@MEMORY@@
+#SBATCH --gres=gpu:@@GPU_TYPE@@:@@GPU_COUNT@@
+#SBATCH --output=@@LOG_ROOT@@/slurm-%j.out
+#SBATCH --error=@@LOG_ROOT@@/slurm-%j.err
+set -euo pipefail
+RUN_ID=@@RUN_ID@@
+PROJECT_ROOT=@@PROJECT_ROOT@@
+SCRATCH_ROOT="/tmp/ndnsf-di-${SLURM_JOB_ID}-${RUN_ID}"
+EVIDENCE_ROOT=@@EVIDENCE_ROOT@@
+FINALIZER=@@FINALIZER@@
+mkdir -p "$SCRATCH_ROOT/evidence" "@@LOG_ROOT@@"
+finish() {
+  rc=$?
+  trap - EXIT TERM INT
+  state=COMPLETED; [ "$rc" -eq 0 ] || state=FAILED
+  "$FINALIZER" --staging "$SCRATCH_ROOT/evidence" --destination "$EVIDENCE_ROOT" --run-id "$RUN_ID" --state "$state" --exit-code "$rc"
+}
+trap finish EXIT TERM INT
+@@COMPUTE_PREFLIGHT@@ --scratch "$SCRATCH_ROOT" --gpu-type @@GPU_TYPE@@ --gpu-count @@GPU_COUNT@@
+@@RUN_CONTAINER@@ --sif @@SIF_PATH@@ --sif-sha256 @@SIF_SHA256@@ --project "$PROJECT_ROOT" --scratch "$SCRATCH_ROOT" --identity @@IDENTITY_ROOT@@ -- @@WORKLOAD@@

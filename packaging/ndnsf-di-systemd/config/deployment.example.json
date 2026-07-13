@@ -1,5 +1,5 @@
 {
-  "name": "spec105-local-minindn",
+  "name": "spec107-local-minindn",
   "deployment": {
     "role": "provider",
     "identity": "/ndnsf/di/provider/0",
