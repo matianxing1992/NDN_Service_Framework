@@ -36,7 +36,7 @@
     "ndn-svs": {"url": "https://github.com/matianxing1992/ndn-svs.git", "revision": "19ec38ec77d26c13125b292863e607da51a3d9de"},
     "openabe": {"url": "https://github.com/zeutro/openabe.git", "revision": "b8f9d3c8a2620c1185ca972248f7af39c1eae68c"},
     "relic": {"url": "https://github.com/relic-toolkit/relic.git", "revision": "b984e901ba78c83ea4093ea96addd13628c8c2d0"},
-    "NAC-ABE": {"url": "https://github.com/matianxing1992/NAC-ABE.git", "revision": "1cc17d9d21f4dfc0921cc77315d0c57d46291880"},
+    "NAC-ABE": {"url": "https://github.com/matianxing1992/NAC-ABE.git", "revision": "390e9001a8611e04c90f3a5866d09c3136c885d0"},
     "websocketpp": {"url": "https://github.com/cawka/websocketpp.git", "revision": "ac4e021333675fc80b96eb7be45d218581c897e2"}
   },
   "pythonPackages": {
