@@ -12,6 +12,9 @@ ENV PREFIX=/opt/ndnsf-di/current \
     LD_LIBRARY_PATH=/opt/ndnsf-di/current/lib
 WORKDIR /src/ndnsf
 COPY . /src/ndnsf
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends python3 ca-certificates
 RUN python3 - <<'PY'
 import json,re
 v=json.load(open('packaging/ndnsf-di-container/oci/locks/gpu.lock'))
