@@ -128,6 +128,20 @@ then passed with Boost 1.71.0 and ndn-cxx 0.9.0. The exact dependency commit is
 Because the dependency lock and workspace changed, the failed candidate's seal
 is retired and the next full build requires a new commit-bound seal.
 
+Committed candidate `5dd91c2584d78b2bc516a5babc2b8d340f2c0446` was sealed as
+`sha256:27b59bae5134c87eefc9d9c27db9e46530ca0f352c942d5f49722f2eccfada01`.
+Its full build confirmed Boost 1.71 across ndn-cxx, ndn-svs, NDNSD, and NFD;
+NFD also compiled with the locked libpcap and WebSocket++ inputs. The next
+stable failure occurred when OpenABE compiled its upstream test binary:
+`gtest/gtest.h` was absent because `NO_DEPS=1` intentionally disables
+OpenABE's dependency installer but the Foundation system-package closure had
+omitted `libgtest-dev`. The complete negative log is retained at
+`results/spec110-itiger-qwen-live/foundation-build-5dd91c2/build.log`.
+The isolated passing OpenABE fixture had explicitly installed
+`libgtest-dev`, so the correction adds that Focal package to the locked system
+closure and makes preflight/unit tests reject any future omission. No OpenABE,
+RELIC, OpenSSL, or test source is bypassed.
+
 ## Audit verdict
 
 **PASS for the reviewed build graph; T166 remains open.** No unresolved
