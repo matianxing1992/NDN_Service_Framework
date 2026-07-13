@@ -16,6 +16,11 @@ import tarfile
 
 
 SCHEMA = "spec110-oci-source-seal-v1"
+ARCHIVE_CONFIG = (
+    "-c", "filter.lfs.process=",
+    "-c", "filter.lfs.smudge=",
+    "-c", "filter.lfs.required=false",
+)
 
 
 class SealError(RuntimeError):
@@ -80,7 +85,7 @@ def _archive(repo: Path, revision: str, output: Path) -> dict[str, object]:
     try:
         with os.fdopen(descriptor, "wb") as stream:
             process = subprocess.run(
-                ["git", "-C", str(repo), "archive", "--format=tar", revision],
+                ["git", "-C", str(repo), *ARCHIVE_CONFIG, "archive", "--format=tar", revision],
                 stdout=stream,
                 stderr=subprocess.PIPE,
                 check=False,
@@ -101,7 +106,7 @@ def _workspace_record(workspace: Path) -> dict[str, object]:
     if _run(workspace, "status", "--porcelain", "--untracked-files=no"):
         raise SealError("SOURCE_SEAL_TRACKED_DIRTY:workspace")
     process = subprocess.Popen(
-        ["git", "-C", str(workspace), "archive", "--format=tar", revision],
+        ["git", "-C", str(workspace), *ARCHIVE_CONFIG, "archive", "--format=tar", revision],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )

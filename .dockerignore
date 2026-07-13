@@ -9,6 +9,7 @@
 build
 build-*
 results
+RELEASE
 Experiments/pythonEnv
 third_party
 node_modules

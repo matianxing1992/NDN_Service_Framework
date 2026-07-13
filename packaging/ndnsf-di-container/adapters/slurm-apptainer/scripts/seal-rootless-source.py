@@ -17,6 +17,11 @@ class SealError(RuntimeError):
 
 
 SCHEMA = "spec110-oci-source-seal-v1"
+ARCHIVE_CONFIG = (
+    "-c", "filter.lfs.process=",
+    "-c", "filter.lfs.smudge=",
+    "-c", "filter.lfs.required=false",
+)
 
 
 def run(repo: Path, *args: str) -> str:
@@ -30,7 +35,7 @@ def run(repo: Path, *args: str) -> str:
 
 def archive_measure(repo: Path, revision: str) -> dict[str, object]:
     process = subprocess.Popen(
-        ["git", "-C", str(repo), "archive", "--format=tar", revision],
+        ["git", "-C", str(repo), *ARCHIVE_CONFIG, "archive", "--format=tar", revision],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
