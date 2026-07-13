@@ -60,13 +60,17 @@ procedure](https://docs.github.com/en/packages/learn-github-packages/configuring
 
 ## Static evidence
 
-The revised unit suite passes 13/13 cases. It verifies local-only sealed source
+The revised unit suite passes 14/14 cases. It verifies local-only sealed source
 consumption, dependency order, NFD inputs, OpenABE adapter, ONNX asset identity,
 Python closure, explicit installation of `App_ServiceController` and
 `di-native-provider`, runtime closure, Qwen exclusions, dispatch-only workflow,
 transient-seal Git hygiene, and failure evidence retention. The release pipeline shell integration passes,
 the lock parses as JSON, Python scripts compile, shellcheck passes, and Docker
 successfully parses/builds the external-foundation stage.
+
+After the Boost 1.71 compatibility correction, the complete Spec 110 offline
+suite passes 97/97, release-pipeline integration passes, and the four changed
+source/document files scan with zero secret findings across 35039 bytes.
 
 These checks do not close T166. The next admissible state transition is a new
 committed source identity, matching seal, complete local foundation build, and
@@ -99,6 +103,31 @@ from the wrong directory produced 18 missing-`trust-schema.conf` failures; it
 is retained as a test-launch error and was not counted as cryptographic
 evidence.
 
+## First complete-build attempt and ndn-svs compatibility correction
+
+Committed candidate `001b48b4f7d2fded1480c0d59c6482a51ea2edbd` was sealed as
+`sha256:e8e181eb251ef1fee36c909715263a4d9f4dfa2895aca5255e29e1950594d78d`
+and started the first complete Foundation build. Ubuntu 20.04 installed the
+expected Boost 1.71 closure, ndn-cxx configured against OpenSSL 1.1.1f and
+compiled all 181 build actions, but the locked ndn-svs revision stopped at a
+Boost 1.74 version check. The complete negative log is retained at
+`results/spec110-itiger-qwen-live/foundation-build/build.log`.
+
+Repository history proves that check came from upstream-oriented commit
+`e0c436e` and replaced the project's earlier Boost 1.71 gate; no corresponding
+Boost-1.74-only code dependency was introduced. The rejected correction that
+would have embedded a separate 109 MB Boost 1.74 source build was committed as
+`baa000d` and explicitly reverted by `5f1e794` before any new seal or Foundation
+publication. It was never pushed as an NDNSF release candidate.
+
+The project-compatible ndn-svs correction changes only the configure threshold
+back to 1.71 while retaining the ndn-cxx 0.9 requirement. Host configuration
+then passed with Boost 1.71.0 and ndn-cxx 0.9.0. The exact dependency commit is
+`19ec38ec77d26c13125b292863e607da51a3d9de`, published on the fork branch
+`spec110-boost171` and locked in `gpu.lock`; preflight rejects substitution.
+Because the dependency lock and workspace changed, the failed candidate's seal
+is retired and the next full build requires a new commit-bound seal.
+
 ## Audit verdict
 
 **PASS for the reviewed build graph; T166 remains open.** No unresolved
@@ -107,5 +136,7 @@ NAC-ABE test-launch, Python/Focal closure, NCCL base-image, GHCR anonymous-pull,
 runtime-library, and sealed-source gates above. This is not a foundation release
 claim: the complete committed/sealed `Dockerfile.foundation` build, in-container
 probe, source-bound push, and immutable digest record still belong to T166.
-The host currently has 23 GB free; useful OpenABE/Python build cache was retained
-and no full foundation build was started during this audit.
+The first full build was started and preserved as the ndn-svs configure failure
+above. Useful Docker build cache was retained for the corrected candidate;
+T166 remains open until that candidate passes every in-container gate and is
+published by immutable digest.
