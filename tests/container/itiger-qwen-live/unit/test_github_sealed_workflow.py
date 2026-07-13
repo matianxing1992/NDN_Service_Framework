@@ -42,6 +42,26 @@ class GithubSealedWorkflowTests(unittest.TestCase):
         self.assertLess(ndn_cxx, ndn_svs)
         self.assertLess(ndn_svs, ndnsd)
 
+    def test_foundation_uses_sealed_boost_174_before_ndn_cxx(self) -> None:
+        lock = json.loads(
+            (REPO / "packaging/ndnsf-di-container/oci/locks/gpu.lock").read_text()
+        )
+        boost = lock["sourceArchives"]["boost"]
+        self.assertEqual(boost["version"], "1.74.0")
+        self.assertEqual(
+            boost["sha256"],
+            "83bfc1507731a0906e387fc28b7ef5417d591429e51e788417fe9ff025e116b1",
+        )
+        self.assertEqual(boost["bytes"], 109600630)
+        foundation = (
+            REPO / "packaging/ndnsf-di-container/oci/Dockerfile.foundation"
+        ).read_text()
+        boost_build = foundation.index("cd /src/source-archives/boost_1_74_0")
+        ndn_cxx = foundation.index("cd /src/dependencies/ndn-cxx")
+        self.assertLess(boost_build, ndn_cxx)
+        self.assertIn("--boost-includes=$PREFIX/include", foundation)
+        self.assertIn("--boost-libs=$PREFIX/lib", foundation)
+
     def test_nfd_build_inputs_include_pcap_and_locked_websocketpp(self) -> None:
         lock = json.loads(
             (REPO / "packaging/ndnsf-di-container/oci/locks/gpu.lock").read_text()

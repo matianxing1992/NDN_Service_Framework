@@ -12,6 +12,7 @@ import tarfile
 
 RELIC_REVISION = "b984e901ba78c83ea4093ea96addd13628c8c2d0"
 WEBSOCKETPP_REVISION = "ac4e021333675fc80b96eb7be45d218581c897e2"
+BOOST_SHA256 = "83bfc1507731a0906e387fc28b7ef5417d591429e51e788417fe9ff025e116b1"
 FOUNDATION_BASE = "ubuntu@sha256:8feb4d8ca5354def3d8fce243717141ce31e2c428701f6682bd2fafe15388214"
 PYTHON_BASE = "python@sha256:b3061b93c8df9809c3783a4f17bbf2520425ec6b40bd3e5e7538870e21ba7209"
 GPU_BUILD_BASE = "nvidia/cuda@sha256:f18cf1a9ac2842e59f13b0d0729594da8cbd68cadd2379308cdd98c0374dbd80"
@@ -65,6 +66,13 @@ def validate_archives(seal_root: Path, sources: set[str]) -> int:
             names = set(archive.getnames())
         require(marker in names, f"PREFLIGHT_ARCHIVE_ENTRY_MISSING:{name}:{marker}")
         checked += 1
+    source_archives = seal.get("sourceArchives", {})
+    require(set(source_archives) == {"boost"}, "PREFLIGHT_SEAL_SOURCE_ARCHIVE_SET_MISMATCH")
+    boost_path = seal_root / source_archives["boost"]["archivePath"]
+    with tarfile.open(boost_path, "r:*") as archive:
+        names = set(archive.getnames())
+    require("boost_1_74_0/bootstrap.sh" in names, "PREFLIGHT_BOOST_ARCHIVE_INVALID")
+    checked += 1
     return checked
 
 
@@ -76,6 +84,7 @@ def run(workspace: Path, seal_root: Path | None) -> dict[str, object]:
     workflow = (workspace / ".github/workflows/ndnsf-di-itiger-image.yml").read_text()
     gitignore = (workspace / ".gitignore").read_text().splitlines()
     sources = lock.get("sourceRepositories", {})
+    source_archives = lock.get("sourceArchives", {})
     require(lock.get("schemaVersion") == "ndnsf-di-gpu-lock-v1", "PREFLIGHT_LOCK_SCHEMA_INVALID")
     require(".spec110-build/" in gitignore, "PREFLIGHT_TRANSIENT_SEAL_NOT_IGNORED")
     require(REQUIRED_SYSTEM <= set(lock.get("systemPackages", [])), "PREFLIGHT_SYSTEM_CLOSURE_INCOMPLETE")
@@ -96,6 +105,10 @@ def run(workspace: Path, seal_root: Path | None) -> dict[str, object]:
     }, "PREFLIGHT_BASE_IMAGE_CONTRACT_INVALID")
     require(sources.get("relic", {}).get("revision") == RELIC_REVISION, "PREFLIGHT_RELIC_NOT_LOCKED")
     require(sources.get("websocketpp", {}).get("revision") == WEBSOCKETPP_REVISION, "PREFLIGHT_WEBSOCKETPP_NOT_LOCKED")
+    boost = source_archives.get("boost", {})
+    require(boost.get("version") == "1.74.0", "PREFLIGHT_BOOST_VERSION_INVALID")
+    require(boost.get("sha256") == BOOST_SHA256, "PREFLIGHT_BOOST_DIGEST_INVALID")
+    require(boost.get("bytes") == 109600630, "PREFLIGHT_BOOST_SIZE_INVALID")
     relations = lock.get("sourceRelationships", {})
     require(relations.get("NFD.websocketpp") == WEBSOCKETPP_REVISION, "PREFLIGHT_NFD_GITLINK_MISMATCH")
     require(relations.get("openabe.relic") == RELIC_REVISION, "PREFLIGHT_OPENABE_RELIC_MISMATCH")
@@ -109,6 +122,7 @@ def run(workspace: Path, seal_root: Path | None) -> dict[str, object]:
     require(REQUIRED_SYSTEM_PYTHON == system_python, "PREFLIGHT_SYSTEM_CUDA_CONTRACT_INCOMPLETE")
     foundation_markers = (
         "ARG DEPENDENCY_SOURCE_MODE=sealed", ".spec110-build/archives",
+        ".spec110-build/source-archives", "cd /src/source-archives/boost_1_74_0",
         "SOURCE_SEAL_MANIFEST_TAMPERED", "cd /src/dependencies/ndn-cxx",
         "cd /src/dependencies/ndn-svs", "cd /src/dependencies/NDNSD",
         "cd /src/dependencies/NFD", "prepare-openabe-relic.py",
@@ -121,6 +135,7 @@ def run(workspace: Path, seal_root: Path | None) -> dict[str, object]:
     for marker in foundation_markers:
         require(marker in foundation, f"PREFLIGHT_FOUNDATION_MARKER_MISSING:{marker}")
     require(foundation.index("cd /src/dependencies/ndn-cxx") < foundation.index("cd /src/dependencies/ndn-svs") < foundation.index("cd /src/dependencies/NDNSD"), "PREFLIGHT_FOUNDATION_BUILD_ORDER_INVALID")
+    require(foundation.index("cd /src/source-archives/boost_1_74_0") < foundation.index("cd /src/dependencies/ndn-cxx"), "PREFLIGHT_BOOST_BUILD_ORDER_INVALID")
     openabe_block = foundation.split("cd /src/dependencies/openabe", 1)[1].split("NAC-ABE", 1)[0]
     require("cmake -S . -B build" not in openabe_block, "PREFLIGHT_OPENABE_ADAPTER_INVALID")
     markers = (
@@ -152,6 +167,7 @@ def run(workspace: Path, seal_root: Path | None) -> dict[str, object]:
         "status": "PASS",
         "schemaVersion": "spec110-gpu-build-preflight-v1",
         "sourceCount": len(sources),
+        "sourceArchiveCount": len(source_archives),
         "archiveCount": archive_count,
         "pythonPackageCount": len(python),
         "systemCudaRequirementCount": len(system_python),

@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import urllib.request
 
 
 SCHEMA = "spec110-oci-source-seal-v1"
@@ -60,7 +61,7 @@ def _safe_member_path(value: str) -> bool:
 def validate_archive(path: Path) -> None:
     """Reject traversal and special-file members before any tar extraction."""
     try:
-        with tarfile.open(path, "r:") as archive:
+        with tarfile.open(path, "r:*") as archive:
             members = archive.getmembers()
             if not members:
                 raise SealError("SOURCE_SEAL_ARCHIVE_EMPTY")
@@ -126,7 +127,9 @@ def _workspace_record(workspace: Path) -> dict[str, object]:
     }
 
 
-def _load_lock(lock_path: Path) -> dict[str, dict[str, str]]:
+def _load_lock(
+    lock_path: Path,
+) -> tuple[dict[str, dict[str, str]], dict[str, dict[str, object]]]:
     value = json.loads(lock_path.read_text(encoding="utf-8"))
     sources = value.get("sourceRepositories")
     if value.get("schemaVersion") != "ndnsf-di-gpu-lock-v1" or not isinstance(sources, dict):
@@ -144,7 +147,71 @@ def _load_lock(lock_path: Path) -> dict[str, dict[str, str]]:
             or any(character not in "0123456789abcdef" for character in row["revision"])
         ):
             raise SealError(f"SOURCE_SEAL_LOCK_INVALID:{name}")
-    return sources
+    source_archives = value.get("sourceArchives", {})
+    if not isinstance(source_archives, dict):
+        raise SealError("SOURCE_SEAL_LOCK_INVALID:sourceArchives")
+    for name, row in source_archives.items():
+        if (
+            not isinstance(name, str)
+            or not name
+            or "/" in name
+            or not isinstance(row, dict)
+            or set(row) != {"version", "url", "sha256", "bytes", "archivePath"}
+            or not isinstance(row["version"], str)
+            or not row["version"]
+            or not isinstance(row["url"], str)
+            or not row["url"].startswith("https://")
+            or not isinstance(row["sha256"], str)
+            or len(row["sha256"]) != 64
+            or any(character not in "0123456789abcdef" for character in row["sha256"])
+            or not isinstance(row["bytes"], int)
+            or row["bytes"] <= 0
+            or not isinstance(row["archivePath"], str)
+            or not row["archivePath"].startswith("source-archives/")
+            or not _safe_member_path(row["archivePath"])
+        ):
+            raise SealError(f"SOURCE_SEAL_LOCK_INVALID:{name}")
+    return sources, source_archives
+
+
+def _copy_source_archive(
+    name: str,
+    row: dict[str, object],
+    staging: Path,
+    source_archive_root: Path | None,
+) -> dict[str, object]:
+    relative = Path(str(row["archivePath"]))
+    target = staging / relative
+    target.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
+    try:
+        descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o640)
+    except FileExistsError as error:
+        raise SealError(f"SOURCE_SEAL_SOURCE_ARCHIVE_EXISTS:{name}") from error
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            if source_archive_root is not None:
+                source = source_archive_root / relative.name
+                with source.open("rb") as stream:
+                    shutil.copyfileobj(stream, output, 1024 * 1024)
+            else:
+                with urllib.request.urlopen(str(row["url"]), timeout=120) as stream:
+                    shutil.copyfileobj(stream, output, 1024 * 1024)
+            output.flush()
+            os.fsync(output.fileno())
+        measured = _sha256(target)
+        if measured != "sha256:" + str(row["sha256"]) or target.stat().st_size != row["bytes"]:
+            raise SealError(f"SOURCE_SEAL_SOURCE_ARCHIVE_MISMATCH:{name}")
+        validate_archive(target)
+        return {
+            "version": row["version"],
+            "url": row["url"],
+            "archivePath": row["archivePath"],
+            "archiveDigest": measured,
+            "archiveBytes": target.stat().st_size,
+        }
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
 
 
 def _dependency_repo(
@@ -187,6 +254,7 @@ def create(
     lock_path: Path,
     output: Path,
     dependency_root: Path | None,
+    source_archive_root: Path | None,
     work_root: Path,
 ) -> str:
     if os.path.lexists(output):
@@ -196,7 +264,7 @@ def create(
     staging = output.with_name(output.name + f".partial.{os.getpid()}")
     if os.path.lexists(staging):
         raise SealError("SOURCE_SEAL_PARTIAL_EXISTS")
-    sources = _load_lock(lock_path)
+    sources, source_archives = _load_lock(lock_path)
     staging_archives = staging / "archives"
     staging_archives.mkdir(parents=True, mode=0o750)
     work_root.mkdir(parents=True, mode=0o700)
@@ -211,11 +279,18 @@ def create(
                 "archivePath": f"archives/{name}.tar",
                 **archive,
             }
+        sealed_source_archives = {
+            name: _copy_source_archive(
+                name, row, staging, source_archive_root
+            )
+            for name, row in sorted(source_archives.items())
+        }
         body = {
             "schemaVersion": SCHEMA,
             "createdAt": dt.datetime.now(dt.timezone.utc).isoformat(),
             "workspace": _workspace_record(workspace),
             "dependencies": dependencies,
+            "sourceArchives": sealed_source_archives,
             "lockDigest": _sha256(lock_path),
         }
         body["sealDigest"] = _body_digest(body)
@@ -235,7 +310,7 @@ def create(
 
 
 def verify(workspace: Path, lock_path: Path, output: Path) -> str:
-    sources = _load_lock(lock_path)
+    sources, source_archives = _load_lock(lock_path)
     manifest = output / "source-seal.json"
     value = json.loads(manifest.read_text(encoding="utf-8"))
     actual = dict(value)
@@ -263,6 +338,25 @@ def verify(workspace: Path, lock_path: Path, output: Path) -> str:
             or measured.get("archiveBytes") != archive.stat().st_size
         ):
             raise SealError(f"SOURCE_SEAL_ARCHIVE_MISMATCH:{name}")
+    measured_source_archives = value.get("sourceArchives")
+    if not isinstance(measured_source_archives, dict) or set(measured_source_archives) != set(source_archives):
+        raise SealError("SOURCE_SEAL_SOURCE_ARCHIVES_MISMATCH")
+    for name, row in sorted(source_archives.items()):
+        measured = measured_source_archives[name]
+        if not isinstance(measured, dict):
+            raise SealError(f"SOURCE_SEAL_SOURCE_ARCHIVE_INVALID:{name}")
+        archive = output / str(row["archivePath"])
+        validate_archive(archive)
+        if (
+            measured.get("version") != row["version"]
+            or measured.get("url") != row["url"]
+            or measured.get("archivePath") != row["archivePath"]
+            or measured.get("archiveDigest") != "sha256:" + str(row["sha256"])
+            or measured.get("archiveBytes") != row["bytes"]
+            or _sha256(archive) != measured.get("archiveDigest")
+            or archive.stat().st_size != measured.get("archiveBytes")
+        ):
+            raise SealError(f"SOURCE_SEAL_SOURCE_ARCHIVE_MISMATCH:{name}")
     return str(seal_digest)
 
 
@@ -273,6 +367,7 @@ def main() -> int:
     parser.add_argument("--lock", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--dependency-root")
+    parser.add_argument("--source-archive-root")
     parser.add_argument("--work-root")
     args = parser.parse_args()
     workspace = Path(args.workspace).resolve()
@@ -280,12 +375,19 @@ def main() -> int:
     output = Path(args.output).resolve()
     if args.action == "create":
         dependency_root = Path(args.dependency_root).resolve() if args.dependency_root else None
+        source_archive_root = (
+            Path(args.source_archive_root).resolve()
+            if args.source_archive_root else None
+        )
         work_root = (
             Path(args.work_root).resolve()
             if args.work_root
             else output.with_name(output.name + f".fetch.{os.getpid()}")
         )
-        print(create(workspace, lock_path, output, dependency_root, work_root))
+        print(create(
+            workspace, lock_path, output, dependency_root,
+            source_archive_root, work_root,
+        ))
     else:
         print(verify(workspace, lock_path, output))
     return 0
