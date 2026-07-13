@@ -19,7 +19,6 @@ COPY packaging/ndnsf-di-container/oci/locks/gpu.lock /build-contract/gpu.lock
 COPY packaging/ndnsf-di-container/oci/scripts/prepare-openabe-relic.py /build-contract/prepare-openabe-relic.py
 COPY packaging/ndnsf-di-container/oci/scripts/derive-runtime-packages.py /build-contract/derive-runtime-packages.py
 COPY .spec110-build /build-contract/.spec110-build
-# Sealed non-Git source inputs live under .spec110-build/source-archives.
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
@@ -34,9 +33,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 RUN python3 - "$DEPENDENCY_SOURCE_MODE" "$SOURCE_REVISION" <<'PY' >/tmp/extract-stack.sh
 import hashlib,json,pathlib,shlex,sys,tarfile
-lock_value=json.load(open('/build-contract/gpu.lock'))
-sources=lock_value['sourceRepositories']
-source_archives=lock_value.get('sourceArchives',{})
+sources=json.load(open('/build-contract/gpu.lock'))['sourceRepositories']
 if sys.argv[1] != 'sealed':
  raise SystemExit('DEPENDENCY_SOURCE_MODE_INVALID')
 seal=json.load(open('/build-contract/.spec110-build/source-seal.json'))
@@ -48,8 +45,6 @@ if seal.get('workspace',{}).get('revision') != sys.argv[2]:
  raise SystemExit('SOURCE_SEAL_WORKSPACE_MISMATCH')
 if set(seal.get('dependencies',{})) != set(sources):
  raise SystemExit('SOURCE_SEAL_DEPENDENCIES_MISMATCH')
-if set(seal.get('sourceArchives',{})) != set(source_archives):
- raise SystemExit('SOURCE_SEAL_SOURCE_ARCHIVES_MISMATCH')
 lock=pathlib.Path('/build-contract/gpu.lock')
 if seal.get('lockDigest') != 'sha256:'+hashlib.sha256(lock.read_bytes()).hexdigest():
  raise SystemExit('SOURCE_SEAL_LOCK_MISMATCH')
@@ -75,27 +70,6 @@ for name,row in sorted(sources.items()):
  target='/src/dependencies/'+name
  print('mkdir -p '+shlex.quote(target))
  print('tar -xf '+shlex.quote(str(archive))+' -C '+shlex.quote(target))
-for name,row in sorted(source_archives.items()):
- measured=seal['sourceArchives'][name]
- archive=pathlib.Path('/build-contract/.spec110-build')/row['archivePath']
- if measured.get('version') != row['version'] or measured.get('url') != row['url']:
-  raise SystemExit('SOURCE_SEAL_SOURCE_ARCHIVE_IDENTITY_MISMATCH:'+name)
- if measured.get('archivePath') != row['archivePath']:
-  raise SystemExit('SOURCE_SEAL_SOURCE_ARCHIVE_PATH_MISMATCH:'+name)
- if measured.get('archiveDigest') != 'sha256:'+hashlib.sha256(archive.read_bytes()).hexdigest():
-  raise SystemExit('SOURCE_SEAL_SOURCE_ARCHIVE_MISMATCH:'+name)
- if measured.get('archiveDigest') != 'sha256:'+row['sha256'] or measured.get('archiveBytes') != archive.stat().st_size or measured.get('archiveBytes') != row['bytes']:
-  raise SystemExit('SOURCE_SEAL_SOURCE_ARCHIVE_LOCK_MISMATCH:'+name)
- with tarfile.open(archive,'r:*') as source:
-  for member in source.getmembers():
-   path=pathlib.PurePosixPath(member.name)
-   link=pathlib.PurePosixPath(member.linkname)
-   if path.is_absolute() or '..' in path.parts or not (member.isfile() or member.isdir() or member.issym() or member.islnk()):
-    raise SystemExit('SOURCE_SEAL_SOURCE_ARCHIVE_UNSAFE:'+name)
-   if (member.issym() or member.islnk()) and (link.is_absolute() or '..' in link.parts):
-    raise SystemExit('SOURCE_SEAL_SOURCE_ARCHIVE_UNSAFE:'+name)
- print('mkdir -p /src/source-archives')
- print('tar -xf '+shlex.quote(str(archive))+' -C /src/source-archives')
 PY
 RUN sh /tmp/extract-stack.sh
 RUN set -eu; \
@@ -105,22 +79,14 @@ RUN set -eu; \
 RUN python3 /build-contract/prepare-openabe-relic.py \
       --source /src/dependencies/relic --openabe /src/dependencies/openabe
 
-RUN set -eu; cd /src/source-archives/boost_1_74_0; \
-    ./bootstrap.sh --prefix=$PREFIX \
-      --with-libraries=chrono,date_time,filesystem,log,program_options,stacktrace,system,thread,test; \
-    ./b2 -j"$(nproc)" variant=release link=shared runtime-link=shared threading=multi install
 RUN set -eu; cd /src/dependencies/ndn-cxx; \
-    ./waf configure --prefix=$PREFIX --boost-includes=$PREFIX/include --boost-libs=$PREFIX/lib; \
-    ./waf -j"$(nproc)"; ./waf install
+    ./waf configure --prefix=$PREFIX; ./waf -j"$(nproc)"; ./waf install
 RUN set -eu; cd /src/dependencies/ndn-svs; \
-    ./waf configure --prefix=$PREFIX --boost-includes=$PREFIX/include --boost-libs=$PREFIX/lib; \
-    ./waf -j"$(nproc)"; ./waf install
+    ./waf configure --prefix=$PREFIX; ./waf -j"$(nproc)"; ./waf install
 RUN set -eu; cd /src/dependencies/NDNSD; \
-    ./waf configure --prefix=$PREFIX --boost-includes=$PREFIX/include --boost-libs=$PREFIX/lib; \
-    ./waf -j"$(nproc)"; ./waf install
+    ./waf configure --prefix=$PREFIX; ./waf -j"$(nproc)"; ./waf install
 RUN set -eu; cd /src/dependencies/NFD; \
-    ./waf configure --prefix=$PREFIX --boost-includes=$PREFIX/include --boost-libs=$PREFIX/lib; \
-    ./waf -j"$(nproc)"; ./waf install; \
+    ./waf configure --prefix=$PREFIX; ./waf -j"$(nproc)"; ./waf install; \
     test -f $PREFIX/etc/ndn/nfd.conf.sample
 RUN set -eu; cd /src/dependencies/openabe; \
     export LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}; . ./env; \
@@ -140,8 +106,7 @@ RUN set -eu; cd /src/dependencies/NAC-ABE; \
 # intentionally deferred to Dockerfile.gpu.
 RUN --mount=type=bind,source=.,target=/src/ndnsf,rw \
     set -eu; cd /src/ndnsf; \
-    ./waf configure --prefix=$PREFIX --boost-includes=$PREFIX/include --boost-libs=$PREFIX/lib; \
-    ./waf -j"$(nproc)"; ./waf install
+    ./waf configure --prefix=$PREFIX; ./waf -j"$(nproc)"; ./waf install
 RUN install -d /opt/ndnsf-di/manifest && \
     python3 /build-contract/derive-runtime-packages.py \
       --root $PREFIX --output /opt/ndnsf-di/manifest/runtime-system-packages && \

@@ -48,14 +48,6 @@ class SealedContextTests(unittest.TestCase):
             for name in ("NFD", "ndn-svs")
         }
         self.lock = self.workspace / "gpu.lock"
-        self.source_archives = self.root / "source-archives"
-        self.source_archives.mkdir()
-        boost = self.source_archives / "boost.tar.bz2"
-        with tarfile.open(boost, "w:bz2") as archive:
-            info = tarfile.TarInfo("boost_1_74_0/bootstrap.sh")
-            payload = b"#!/bin/sh\n"
-            info.size = len(payload)
-            archive.addfile(info, io.BytesIO(payload))
         self.lock.write_text(
             json.dumps(
                 {
@@ -63,15 +55,6 @@ class SealedContextTests(unittest.TestCase):
                     "sourceRepositories": {
                         name: {"url": str(self.dependencies / name), "revision": revision}
                         for name, revision in revisions.items()
-                    },
-                    "sourceArchives": {
-                        "boost": {
-                            "version": "1.74.0",
-                            "url": "https://example.invalid/boost.tar.bz2",
-                            "sha256": hashlib.sha256(boost.read_bytes()).hexdigest(),
-                            "bytes": boost.stat().st_size,
-                            "archivePath": "source-archives/boost.tar.bz2",
-                        }
                     },
                 }
             ),
@@ -98,20 +81,12 @@ class SealedContextTests(unittest.TestCase):
     def test_create_and_verify_exact_dependency_archives(self) -> None:
         created = self.run_tool(
             "create", "--dependency-root", str(self.dependencies),
-            "--source-archive-root", str(self.source_archives),
             "--work-root", str(self.root / "fetch"),
         )
         self.assertEqual(created.returncode, 0, created.stderr)
         value = json.loads((self.output / "source-seal.json").read_text())
         self.assertEqual(value["schemaVersion"], "spec110-oci-source-seal-v1")
         self.assertEqual(set(value["dependencies"]), {"NFD", "ndn-svs"})
-        self.assertEqual(set(value["sourceArchives"]), {"boost"})
-        self.assertEqual(
-            value["sourceArchives"]["boost"]["archiveDigest"],
-            "sha256:" + hashlib.sha256(
-                (self.output / "source-archives/boost.tar.bz2").read_bytes()
-            ).hexdigest(),
-        )
         for name, row in value["dependencies"].items():
             archive = self.output / "archives" / f"{name}.tar"
             self.assertEqual(row["archiveBytes"], archive.stat().st_size)
@@ -127,19 +102,13 @@ class SealedContextTests(unittest.TestCase):
         value = json.loads(self.lock.read_text())
         value["sourceRepositories"]["NFD"]["revision"] = "0" * 40
         self.lock.write_text(json.dumps(value), encoding="utf-8")
-        result = self.run_tool(
-            "create", "--dependency-root", str(self.dependencies),
-            "--source-archive-root", str(self.source_archives),
-        )
+        result = self.run_tool("create", "--dependency-root", str(self.dependencies))
         self.assertEqual(result.returncode, 4)
         self.assertIn("SOURCE_SEAL_REVISION_MISMATCH:NFD", result.stderr)
 
     def test_archive_and_lock_tamper_fail_closed(self) -> None:
         self.assertEqual(
-            self.run_tool(
-                "create", "--dependency-root", str(self.dependencies),
-                "--source-archive-root", str(self.source_archives),
-            ).returncode,
+            self.run_tool("create", "--dependency-root", str(self.dependencies)).returncode,
             0,
         )
         archive = self.output / "archives/NFD.tar"
@@ -156,10 +125,7 @@ class SealedContextTests(unittest.TestCase):
 
     def test_manifest_shape_tamper_fails_closed(self) -> None:
         self.assertEqual(
-            self.run_tool(
-                "create", "--dependency-root", str(self.dependencies),
-                "--source-archive-root", str(self.source_archives),
-            ).returncode,
+            self.run_tool("create", "--dependency-root", str(self.dependencies)).returncode,
             0,
         )
         manifest = self.output / "source-seal.json"
@@ -189,10 +155,7 @@ class SealedContextTests(unittest.TestCase):
         self.lock.write_text(json.dumps(value), encoding="utf-8")
         git(self.workspace, "add", "gpu.lock")
         git(self.workspace, "commit", "-qm", "update lock")
-        result = self.run_tool(
-            "create", "--dependency-root", str(self.dependencies),
-            "--source-archive-root", str(self.source_archives),
-        )
+        result = self.run_tool("create", "--dependency-root", str(self.dependencies))
         self.assertEqual(result.returncode, 0, result.stderr)
         committed = subprocess.check_output(
             ["git", "-C", str(dependency), "show", "HEAD:artifact.bin"]
@@ -217,20 +180,6 @@ class SealedContextTests(unittest.TestCase):
             stream.addfile(info, io.BytesIO(payload))
         with self.assertRaisesRegex(module.SealError, "SOURCE_SEAL_ARCHIVE_UNSAFE"):
             module.validate_archive(archive)
-
-    def test_source_archive_tamper_fails_closed(self) -> None:
-        self.assertEqual(
-            self.run_tool(
-                "create", "--dependency-root", str(self.dependencies),
-                "--source-archive-root", str(self.source_archives),
-            ).returncode,
-            0,
-        )
-        archive = self.output / "source-archives/boost.tar.bz2"
-        archive.write_bytes(archive.read_bytes() + b"tamper")
-        result = self.run_tool("verify")
-        self.assertEqual(result.returncode, 4)
-        self.assertIn("SOURCE_SEAL_SOURCE_ARCHIVE_MISMATCH:boost", result.stderr)
 
 
 if __name__ == "__main__":
