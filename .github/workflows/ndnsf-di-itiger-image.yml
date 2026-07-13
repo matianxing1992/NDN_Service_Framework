@@ -1,5 +1,8 @@
 name: NDNSF-DI iTiger GPU image
 
+# Push activation exists so a newly registered workflow can publish the first
+# runtime release without storing a long-lived personal GitHub token locally.
+
 on:
   workflow_dispatch:
     inputs:
