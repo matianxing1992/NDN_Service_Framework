@@ -16,6 +16,14 @@ class GithubSealedWorkflowTests(unittest.TestCase):
         self.assertIn("SOURCE_SEAL_MANIFEST_TAMPERED", text)
         self.assertNotIn("git clone", text)
 
+    def test_dependency_build_order_installs_svs_before_ndnsd(self) -> None:
+        text = (REPO / "packaging/ndnsf-di-container/oci/Dockerfile.gpu").read_text()
+        ndn_cxx = text.index("cd /src/dependencies/ndn-cxx")
+        ndn_svs = text.index("cd /src/dependencies/ndn-svs")
+        ndnsd = text.index("cd /src/dependencies/NDNSD")
+        self.assertLess(ndn_cxx, ndn_svs)
+        self.assertLess(ndn_svs, ndnsd)
+
     def test_qwen_weights_are_excluded_from_build_context(self) -> None:
         patterns = set((REPO / ".dockerignore").read_text().splitlines())
         for required in (

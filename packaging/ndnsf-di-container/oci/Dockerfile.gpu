@@ -88,9 +88,12 @@ for name,row in sorted(v.items()):
  print('tar -xf '+shlex.quote(str(archive))+' -C '+shlex.quote(target))
 PY
 RUN sh /tmp/extract-stack.sh
-RUN set -eu; for project in ndn-cxx NDNSD ndn-svs; do \
-      cd /src/dependencies/$project; ./waf configure --prefix=$PREFIX; ./waf -j"$(nproc)"; ./waf install; \
-    done
+RUN set -eu; cd /src/dependencies/ndn-cxx; \
+    ./waf configure --prefix=$PREFIX; ./waf -j"$(nproc)"; ./waf install
+RUN set -eu; cd /src/dependencies/ndn-svs; \
+    ./waf configure --prefix=$PREFIX; ./waf -j"$(nproc)"; ./waf install
+RUN set -eu; cd /src/dependencies/NDNSD; \
+    ./waf configure --prefix=$PREFIX; ./waf -j"$(nproc)"; ./waf install
 RUN set -eu; cd /src/dependencies/NFD; ./waf configure --prefix=$PREFIX; ./waf -j"$(nproc)"; ./waf install
 RUN set -eu; cd /src/dependencies/openabe; \
     cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$PREFIX; \
