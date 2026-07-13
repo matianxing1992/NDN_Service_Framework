@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import shutil
 from typing import Any
 
 
@@ -105,15 +106,44 @@ def render_rootless_build_job(
         raise RootlessBuildError("ROOTLESS_BUILD_SOURCE_OUTSIDE_PROJECT")
     if not test_allowed and not _under(output, project / "campaigns" / "spec110"):
         raise RootlessBuildError("ROOTLESS_BUILD_OUTPUT_OUTSIDE_CAMPAIGN")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    record_path = output.with_suffix(output.suffix + ".render.json")
+    asset_root = output.with_suffix(output.suffix + ".assets")
+    if output.exists() or record_path.exists():
+        raise RootlessBuildError("ROOTLESS_BUILD_RENDER_EXISTS")
     template = (
         Path(__file__).resolve().parents[2]
         / "packaging/ndnsf-di-container/adapters/slurm-apptainer/templates/rootless-build.sbatch.in"
     )
-    builder = (
+    builder_source = (
         source / "workspace/packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/rootless-build.sh"
         if mode == "full"
         else source / "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/rootless-build.sh"
     )
+    inspector_source = builder_source.parent / "inspect-oci-archive.py"
+    for asset in (builder_source, inspector_source):
+        if not asset.is_file():
+            raise RootlessBuildError(f"ROOTLESS_BUILD_ASSET_MISSING:{asset.name}")
+    try:
+        asset_root.mkdir(parents=False, exist_ok=False, mode=0o750)
+    except FileExistsError as exc:
+        raise RootlessBuildError("ROOTLESS_BUILD_ASSETS_EXIST") from exc
+    assets: dict[str, dict[str, str]] = {}
+    try:
+        for source_asset in (builder_source, inspector_source):
+            target_asset = asset_root / source_asset.name
+            with target_asset.open("xb") as stream:
+                stream.write(source_asset.read_bytes())
+                stream.flush()
+                os.fsync(stream.fileno())
+            target_asset.chmod(0o750)
+            assets[source_asset.name] = {
+                "path": str(target_asset), "sha256": _digest(target_asset)
+            }
+    except Exception:
+        shutil.rmtree(asset_root, ignore_errors=True)
+        raise
+    builder = asset_root / "rootless-build.sh"
     evidence = project / "campaigns/spec110/rootless-build" / release_id
     values = {
         "JOB_NAME": f"s110-build-{release_id}"[:64],
@@ -139,16 +169,19 @@ def render_rootless_build_job(
         text = text.replace(f"@@{key}@@", value)
     if "@@" in text:
         raise RootlessBuildError("ROOTLESS_BUILD_TEMPLATE_UNRESOLVED")
-    output.parent.mkdir(parents=True, exist_ok=True)
     evidence.mkdir(parents=True, exist_ok=True)
     try:
-        descriptor = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o750)
-    except FileExistsError as exc:
-        raise RootlessBuildError("ROOTLESS_BUILD_RENDER_EXISTS") from exc
-    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-        stream.write(text)
-        stream.flush()
-        os.fsync(stream.fileno())
+        try:
+            descriptor = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o750)
+        except FileExistsError as exc:
+            raise RootlessBuildError("ROOTLESS_BUILD_RENDER_EXISTS") from exc
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except Exception:
+        shutil.rmtree(asset_root, ignore_errors=True)
+        raise
     record = {
         "schemaVersion": "spec110-rootless-build-render-v1",
         "status": "RENDERED_NOT_SUBMITTED",
@@ -159,6 +192,7 @@ def render_rootless_build_job(
         "projectRoot": str(project),
         "scriptPath": str(output),
         "scriptSha256": _digest(output),
+        "assets": assets,
         "resources": {
             "partition": partition,
             "account": account or None,
@@ -169,12 +203,16 @@ def render_rootless_build_job(
             "gres": None,
         },
     }
-    record_path = output.with_suffix(output.suffix + ".render.json")
-    with record_path.open("x", encoding="utf-8") as stream:
-        json.dump(record, stream, indent=2, sort_keys=True)
-        stream.write("\n")
-        stream.flush()
-        os.fsync(stream.fileno())
+    try:
+        with record_path.open("x", encoding="utf-8") as stream:
+            json.dump(record, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+    except Exception:
+        output.unlink(missing_ok=True)
+        shutil.rmtree(asset_root, ignore_errors=True)
+        raise
     return record
 
 
