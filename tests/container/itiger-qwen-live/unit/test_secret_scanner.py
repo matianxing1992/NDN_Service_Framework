@@ -38,6 +38,22 @@ class SecretScannerTests(unittest.TestCase):
             self.assertEqual(report["status"], "FAIL")
             self.assertEqual(report["findings"][0]["kind"], "private-key")
 
+    def test_source_passphrase_expression_is_not_a_secret(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "source.cpp"
+            path.write_text("keyParams.passphrase = passphrase.get();\n")
+            report = scanner.scan([path], scope="source")
+            self.assertEqual(report["status"], "PASS")
+
+    def test_quoted_password_literal_is_redacted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text('{"password": "synthetic-value"}\n')
+            report = scanner.scan([path], scope="source")
+            self.assertEqual(report["status"], "FAIL")
+            self.assertEqual(report["findings"][0]["kind"], "password-field")
+            self.assertNotIn("synthetic-value", str(report))
+
 
 if __name__ == "__main__":
     unittest.main()

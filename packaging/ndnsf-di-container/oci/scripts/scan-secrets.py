@@ -17,7 +17,14 @@ PATTERNS = {
     "bearer-token": re.compile(br"authorization\s*[:=]\s*bearer\s+[^\s]+", re.I),
     "huggingface-token": re.compile(br"\bhf_[A-Za-z0-9]{20,}\b"),
     "aws-secret": re.compile(br"AWS_SECRET_ACCESS_KEY\s*[:=]\s*[^\s,}]+", re.I),
-    "password-field": re.compile(br"(?:password|passwd|passphrase|mfa)\s*[\"']?\s*[:=]\s*[\"']?[^\s,}\"']{4,}", re.I),
+    # Source code commonly assigns an expression to fields named passphrase
+    # (for example, ``keyParams.passphrase = passphrase.get()``). Treat only a
+    # quoted literal or an uppercase environment-style assignment as embedded
+    # credential material; filename rules separately reject .env files.
+    "password-field": re.compile(
+        br"(?:[\"']?(?:password|passwd|passphrase|mfa)[\"']?\s*[:=]\s*[\"'][^\"'\r\n]{4,}[\"'])"
+        br"|(?:\b(?:PASSWORD|PASSWD|PASSPHRASE|MFA)\s*=\s*[^\s\"']{4,})"
+    ),
     "ndnsf-token-material": re.compile(br"(?:userToken|providerToken)\s*[\"']?\s*[:=]\s*[\"'][^\"']+", re.I),
 }
 PAYLOAD_PATTERNS = {
