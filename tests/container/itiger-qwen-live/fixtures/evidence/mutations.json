@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "spec110-evidence-mutations-v1",
+  "cases": [
+    {"name": "duplicate-provider", "base": "single-node-pass.json", "path": "stages.1.provider", "value": "/ndnsf/provider/0", "expectedCode": "EVIDENCE_PROVIDER_DISTINCTNESS"},
+    {"name": "single-node-cross-edge", "base": "single-node-pass.json", "path": "topology.crossNodeEdges", "value": [{"fromProvider": "/ndnsf/provider/0", "toProvider": "/ndnsf/provider/1", "fromNode": "itiger07", "toNode": "itiger08", "faceId": 10, "dependencyDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}], "expectedCode": "SCHEMA_INVALID"},
+    {"name": "multi-node-missing-edge", "base": "multi-node-pass.json", "path": "topology.crossNodeEdges", "value": [], "expectedCode": "SCHEMA_INVALID"},
+    {"name": "cpu-fallback", "base": "single-node-pass.json", "path": "stages.0.backend", "value": "onnxruntime-cpu", "expectedCode": "SCHEMA_INVALID"},
+    {"name": "duplicate-terminal", "base": "single-node-pass.json", "path": "generation.terminalResponseCount", "value": 2, "expectedCode": "SCHEMA_INVALID"},
+    {"name": "wrong-sif", "base": "single-node-pass.json", "path": "release.sifSha256", "value": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "expectedCode": "EVIDENCE_SIF_MISMATCH"},
+    {"name": "stale-identity", "base": "single-node-pass.json", "path": "stages.2.provider", "value": "/ndnsf/provider/stale", "expectedCode": "EVIDENCE_PROVIDER_IDENTITY_STALE"},
+    {"name": "false-physical-pass", "base": "single-node-pass.json", "path": "authority.physicalProduction", "value": "PASS", "expectedCode": "SCHEMA_INVALID"},
+    {"name": "invalid-failure-narration", "base": "single-node-pass.json", "path": "state", "value": "EXECUTED_FAIL", "extra": [{"path": "failureBoundary", "value": "stage-execution"}, {"path": "authority.distributedCandidate", "value": "FAIL"}], "expectedCode": "EVIDENCE_FAILURE_NARRATION_CONTRADICTORY"}
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "schemaVersion": "spec110-storage-fixtures-v1",
+  "admissionPass": {
+    "projectRoot": "/project/tester/ndnsf-di",
+    "homeBulkPaths": [],
+    "scratchRoot": "/tmp/tester/ndnsf-di/200001",
+    "quota": {"source": "quota", "verified": true, "limitBytes": 200000000000, "usedBytes": 10000000000},
+    "projected": {"sif": 10000000000, "models": 100000000000, "exports": 30000000000, "evidence": 5000000000},
+    "reserve": {"minimumBytes": 20000000000, "fractionBasisPoints": 1000}
+  },
+  "homeBulkInvalid": {
+    "projectRoot": "/project/tester/ndnsf-di",
+    "homeBulkPaths": ["/home/tester/models/qwen"],
+    "scratchRoot": "/tmp/tester/ndnsf-di/200001",
+    "quota": {"source": "quota", "verified": true, "limitBytes": 200000000000, "usedBytes": 10000000000},
+    "projected": {"sif": 1, "models": 1, "exports": 1, "evidence": 1},
+    "reserve": {"minimumBytes": 1, "fractionBasisPoints": 1000}
+  },
+  "quotaFull": {
+    "projectRoot": "/project/tester/ndnsf-di",
+    "homeBulkPaths": [],
+    "scratchRoot": "/tmp/tester/ndnsf-di/200001",
+    "quota": {"source": "quota", "verified": true, "limitBytes": 200000000000, "usedBytes": 199000000000},
+    "projected": {"sif": 10000000000, "models": 100000000000, "exports": 30000000000, "evidence": 5000000000},
+    "reserve": {"minimumBytes": 20000000000, "fractionBasisPoints": 1000}
+  },
+  "partialCopy": {
+    "manifest": {"stdout.log": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "evidence.json": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+    "present": ["stdout.log"]
+  },
+  "protectedCleanup": {
+    "activeJobs": ["evidence/active-run"],
+    "identities": ["identities/controller"],
+    "acceptedEvidence": ["evidence/accepted-run"],
+    "sealedModels": ["models/source/qwen-0.5b"],
+    "referencedArtifacts": ["models/onnx/qwen-0.5b"],
+    "currentPriorReleases": ["releases/current", "releases/prior"]
+  }
+}

@@ -1,0 +1,50 @@
+{
+  "schemaVersion": "spec110-distributed-candidate-v2",
+  "runId": "spec110-run-bbbbbbbbbbbbbbbbbbbb",
+  "cellId": "spec110-cell-bbbbbbbbbbbbbbbbbbbb",
+  "candidateId": "spec110-c1-bbbbbbbbbbbb-bbbbbbbbbbbb-bbbbbbbbbbbb-bbbbbbbbbbbb-bbbbbbbbbbbb-bbbbbbbbbbbb",
+  "placementClass": "multi-node",
+  "state": "EXECUTED_PASS",
+  "failureBoundary": null,
+  "submission": {"submissionId": "spec110-submission-bbbbbbbbbbbbbbbbbbbb", "journalState": "SUBMITTED", "jobName": "spec110-bbbbbbbbbbbb", "jobId": "200002", "scriptSha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "journalSha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+  "release": {"ociDigest": "registry.example/ndnsf-di@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "sifSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "sourceRevision": "8b9a4fe709d35b9e4d4961eaa25cefad45cfc0b2"},
+  "allocation": {
+    "jobId": "200002", "nodes": ["itiger07", "itiger08"], "requestedGres": "gpu:rtx5000:3",
+    "allocatedGpus": [
+      {"node": "itiger07", "uuid": "GPU-100", "model": "RTX 5000 Ada", "containerDevice": 0},
+      {"node": "itiger08", "uuid": "GPU-101", "model": "RTX 5000 Ada", "containerDevice": 0},
+      {"node": "itiger08", "uuid": "GPU-102", "model": "RTX 5000 Ada", "containerDevice": 1}
+    ], "terminalState": "COMPLETED"
+  },
+  "topology": {
+    "selectedTransport": "tcp",
+    "nfds": [
+      {"node": "itiger07", "pid": 200, "configDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "stateDir": "/tmp/tester/ndnsf-di/200002/nfd-0", "socket": "/tmp/tester/ndnsf-di/200002/nfd-0.sock", "ready": true, "exitCode": 0},
+      {"node": "itiger08", "pid": 201, "configDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "stateDir": "/tmp/tester/ndnsf-di/200002/nfd-1", "socket": "/tmp/tester/ndnsf-di/200002/nfd-1.sock", "ready": true, "exitCode": 0}
+    ],
+    "faces": [{"localNode": "itiger07", "remoteNode": "itiger08", "transport": "tcp", "uri": "tcp4://10.0.0.8:6363", "faceId": 10, "state": "UP"}],
+    "routes": [{"node": "itiger07", "prefix": "/ndnsf/provider/1", "faceId": 10, "state": "INSTALLED"}],
+    "processes": [
+      {"processId": "supervisor-0", "kind": "node-supervisor", "role": null, "identityRef": null, "node": "itiger07", "nodeRank": 0, "taskRank": 0, "gpuRank": null, "gpuUuid": null, "nfdSocket": "/tmp/tester/ndnsf-di/200002/nfd-0.sock", "commandDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "readinessInputs": [], "readinessOutput": "node-0-ready", "shutdownOrder": 7, "pid": 2000, "exitCode": 0},
+      {"processId": "supervisor-1", "kind": "node-supervisor", "role": null, "identityRef": null, "node": "itiger08", "nodeRank": 1, "taskRank": 1, "gpuRank": null, "gpuUuid": null, "nfdSocket": "/tmp/tester/ndnsf-di/200002/nfd-1.sock", "commandDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "readinessInputs": [], "readinessOutput": "node-1-ready", "shutdownOrder": 6, "pid": 2001, "exitCode": 0},
+      {"processId": "controller", "kind": "controller", "role": null, "identityRef": "/ndnsf/controller", "node": "itiger07", "nodeRank": 0, "taskRank": 2, "gpuRank": null, "gpuUuid": null, "nfdSocket": "/tmp/tester/ndnsf-di/200002/nfd-0.sock", "commandDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "readinessInputs": ["node-0-ready", "node-1-ready"], "readinessOutput": "controller-ready", "shutdownOrder": 5, "pid": 2002, "exitCode": 0},
+      {"processId": "user", "kind": "user", "role": null, "identityRef": "/ndnsf/user", "node": "itiger07", "nodeRank": 0, "taskRank": 3, "gpuRank": null, "gpuUuid": null, "nfdSocket": "/tmp/tester/ndnsf-di/200002/nfd-0.sock", "commandDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "readinessInputs": ["controller-ready", "providers-ready"], "readinessOutput": "user-ready", "shutdownOrder": 4, "pid": 2003, "exitCode": 0},
+      {"processId": "provider-0", "kind": "provider", "role": "/LLM/Stage/0", "identityRef": "/ndnsf/provider/0", "node": "itiger07", "nodeRank": 0, "taskRank": 4, "gpuRank": 0, "gpuUuid": "GPU-100", "nfdSocket": "/tmp/tester/ndnsf-di/200002/nfd-0.sock", "commandDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "readinessInputs": ["controller-ready"], "readinessOutput": "provider-0-ready", "shutdownOrder": 3, "pid": 2004, "exitCode": 0},
+      {"processId": "provider-1", "kind": "provider", "role": "/LLM/Stage/1", "identityRef": "/ndnsf/provider/1", "node": "itiger08", "nodeRank": 1, "taskRank": 5, "gpuRank": 0, "gpuUuid": "GPU-101", "nfdSocket": "/tmp/tester/ndnsf-di/200002/nfd-1.sock", "commandDigest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "readinessInputs": ["controller-ready"], "readinessOutput": "provider-1-ready", "shutdownOrder": 2, "pid": 2005, "exitCode": 0},
+      {"processId": "provider-2", "kind": "provider", "role": "/LLM/Stage/2", "identityRef": "/ndnsf/provider/2", "node": "itiger08", "nodeRank": 1, "taskRank": 6, "gpuRank": 1, "gpuUuid": "GPU-102", "nfdSocket": "/tmp/tester/ndnsf-di/200002/nfd-1.sock", "commandDigest": "sha256:9999999999999999999999999999999999999999999999999999999999999999", "readinessInputs": ["controller-ready"], "readinessOutput": "provider-2-ready", "shutdownOrder": 1, "pid": 2006, "exitCode": 0}
+    ],
+    "crossNodeEdges": [{"fromProvider": "/ndnsf/provider/0", "toProvider": "/ndnsf/provider/1", "fromNode": "itiger07", "toNode": "itiger08", "faceId": 10, "dependencyDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],
+    "teardown": {"complete": true, "survivingProcesses": 0}
+  },
+  "security": {"permissionEncrypted": true, "nacAbeVerified": true, "userTokenVerified": true, "providerTokenVerified": true, "replayRejected": true, "providerPermissionVerified": true},
+  "model": {"modelId": "Qwen/Qwen2.5-0.5B-Instruct", "revision": "7ae557604adf67be50417f59c2c2f167def9a775", "tokenizerDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "artifactSetDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "dtype": "float16"},
+  "stages": [
+    {"role": "/LLM/Stage/0", "provider": "/ndnsf/provider/0", "providerPid": 2004, "node": "itiger07", "gpuUuid": "GPU-100", "backend": "onnxruntime-cuda", "artifactDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "executionStarted": true, "outcome": "PASS"},
+    {"role": "/LLM/Stage/1", "provider": "/ndnsf/provider/1", "providerPid": 2005, "node": "itiger08", "gpuUuid": "GPU-101", "backend": "onnxruntime-cuda", "artifactDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "executionStarted": true, "outcome": "PASS"},
+    {"role": "/LLM/Stage/2", "provider": "/ndnsf/provider/2", "providerPid": 2006, "node": "itiger08", "gpuUuid": "GPU-102", "backend": "onnxruntime-cuda", "artifactDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "executionStarted": true, "outcome": "PASS"}
+  ],
+  "generation": {"requestId": "request-2", "sessionId": "session-2", "executionStarted": true, "terminalResponseCount": 1, "inputTokenIds": [1, 2], "oracleTokenIds": [3, 4], "outputTokenIds": [3, 4]},
+  "metrics": {},
+  "promotion": {"complete": true, "manifestSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+  "authority": {"substrate": "PASS", "standaloneOracle": "PASS", "distributedCandidate": "PASS", "physicalProduction": "DEFERRED"}
+}

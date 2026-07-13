@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+"""Safe operator entry point for Spec 110 iTiger Qwen experiments."""
+
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+import sys
+
+
+HERE = Path(__file__).resolve().parent
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
+
+from spec110_candidate import IdentityError, freeze_candidate
+from spec110_evidence import EvidenceValidationError, validate_evidence
+from spec110_operator import OperatorSafetyError, load_safe_json, validate_safe_document
+from spec110_storage import StorageError, evaluate_admission, plan_cleanup
+
+
+EXIT_MISUSE = 2
+EXIT_BLOCKED = 3
+EXIT_ALREADY_USED = 4
+EXIT_EXECUTED_NEGATIVE = 5
+EXIT_EVIDENCE_INVALID = 6
+EXIT_SAFETY = 7
+
+
+def _write(value, output: str | None = None) -> None:
+    text = json.dumps(value, indent=2, sort_keys=True) + "\n"
+    if output:
+        Path(output).parent.mkdir(parents=True, exist_ok=True)
+        Path(output).write_text(text, encoding="utf-8")
+    else:
+        sys.stdout.write(text)
+
+
+def _blocked(reason: str, output: str | None = None) -> int:
+    _write({"status": "BLOCKED", "reasonCode": reason, "liveTaskClosed": False}, output)
+    return EXIT_BLOCKED
+
+
+def parser() -> argparse.ArgumentParser:
+    root = argparse.ArgumentParser(prog="ndnsf-di-itiger-qwen")
+    commands = root.add_subparsers(dest="command", required=True)
+
+    discover = commands.add_parser("discover")
+    discover.add_argument("--output", required=True)
+
+    release = commands.add_parser("release").add_subparsers(dest="release_command", required=True)
+    release_validate = release.add_parser("validate")
+    release_validate.add_argument("--manifest", required=True)
+    release_materialize = release.add_parser("materialize")
+    release_materialize.add_argument("--oci", required=True)
+    release_materialize.add_argument("--project", required=True)
+
+    storage = commands.add_parser("storage").add_subparsers(dest="storage_command", required=True)
+    storage_admit = storage.add_parser("admit")
+    storage_admit.add_argument("--profile", required=True)
+    storage_admit.add_argument("--output")
+
+    network = commands.add_parser("network").add_subparsers(dest="network_command", required=True)
+    network_render = network.add_parser("render")
+    network_render.add_argument("--cluster", required=True)
+    network_render.add_argument("--output", required=True)
+    network_submit = network.add_parser("submit")
+    network_submit.add_argument("--rendered", required=True)
+    network_submit.add_argument("--submission-id", required=True)
+
+    candidate = commands.add_parser("candidate").add_subparsers(dest="candidate_command", required=True)
+    candidate_freeze = candidate.add_parser("freeze")
+    candidate_freeze.add_argument("--profile", required=True)
+    candidate_freeze.add_argument("--output")
+    candidate_render = candidate.add_parser("render")
+    candidate_render.add_argument("--candidate", required=True)
+    candidate_render.add_argument("--cell", required=True)
+    candidate_render.add_argument("--output", required=True)
+    candidate_submit = candidate.add_parser("submit")
+    candidate_submit.add_argument("--rendered", required=True)
+    candidate_submit.add_argument("--submission-id", required=True)
+
+    for name in ("status", "cancel"):
+        command = commands.add_parser(name)
+        command.add_argument("--job-id", required=True)
+    wait = commands.add_parser("wait")
+    wait.add_argument("--job-id", required=True)
+    wait.add_argument("--timeout", required=True)
+
+    evidence = commands.add_parser("evidence").add_subparsers(dest="evidence_command", required=True)
+    collect = evidence.add_parser("collect")
+    collect.add_argument("--job-id", required=True)
+    collect.add_argument("--output", required=True)
+    validate = evidence.add_parser("validate")
+    validate.add_argument("--bundle", required=True)
+    validate.add_argument("--expected-sif-sha256")
+
+    aggregate = commands.add_parser("aggregate")
+    aggregate.add_argument("--campaign", required=True)
+    aggregate.add_argument("--output", required=True)
+
+    cleanup = commands.add_parser("cleanup")
+    cleanup.add_argument("--project", required=True)
+    cleanup.add_argument("--candidates")
+    cleanup.add_argument("--protected")
+    cleanup.add_argument("--output")
+    cleanup.add_argument("--dry-run", action="store_true", default=True)
+    return root
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parser().parse_args(argv)
+    try:
+        if args.command == "discover":
+            return _blocked("LIVE_CLUSTER_DISCOVERY_REQUIRED", args.output)
+        if args.command == "release":
+            if args.release_command == "validate":
+                value = load_safe_json(args.manifest)
+                _write({"status": "PASS", "manifestSafe": True, "schemaVersion": value.get("schemaVersion")})
+                return 0
+            return _blocked("LIVE_SIF_MATERIALIZATION_REQUIRED")
+        if args.command == "storage":
+            result = evaluate_admission(load_safe_json(args.profile))
+            _write(result, args.output)
+            return 0 if result["status"] == "PASS" else EXIT_BLOCKED
+        if args.command == "network":
+            if args.network_command == "render":
+                cluster = load_safe_json(args.cluster)
+                _write({"schemaVersion": "spec110-network-render-v1", "clusterSnapshotId": cluster.get("snapshotId"), "status": "RENDERED_NOT_SUBMITTED"}, args.output)
+                return 0
+            return _blocked("LIVE_NETWORK_SUBMISSION_REQUIRES_FOUNDATION_GATE")
+        if args.command == "candidate":
+            if args.candidate_command == "freeze":
+                frozen = freeze_candidate(load_safe_json(args.profile))
+                _write(frozen, args.output)
+                return 0
+            if args.candidate_command == "render":
+                candidate_value = load_safe_json(args.candidate)
+                cell_value = load_safe_json(args.cell)
+                _write({"schemaVersion": "spec110-candidate-render-v1", "candidateId": candidate_value.get("candidateId"), "cellId": cell_value.get("cellId"), "status": "RENDERED_NOT_SUBMITTED"}, args.output)
+                return 0
+            return _blocked("LIVE_CANDIDATE_SUBMISSION_REQUIRES_FOUNDATION_GATE")
+        if args.command in {"status", "wait", "cancel"}:
+            if not str(args.job_id).isdigit():
+                raise OperatorSafetyError("OPERATOR_JOB_ID_INVALID")
+            return _blocked("LIVE_SLURM_ADAPTER_NOT_CONFIGURED")
+        if args.command == "evidence":
+            if args.evidence_command == "collect":
+                return _blocked("LIVE_EVIDENCE_COLLECTION_REQUIRES_JOB")
+            bundle = Path(args.bundle)
+            path = bundle / "evidence.json" if bundle.is_dir() else bundle
+            result = validate_evidence(
+                load_safe_json(path), expected_sif_sha256=args.expected_sif_sha256
+            )
+            _write(result)
+            return 0
+        if args.command == "aggregate":
+            campaign = load_safe_json(args.campaign)
+            _write({"status": "PASS", "campaignId": campaign.get("campaignId"), "measuredRuns": 0, "claim": "NO_LIVE_RESULTS_AGGREGATED"}, args.output)
+            return 0
+        if args.command == "cleanup":
+            if not args.project.startswith("/project/"):
+                raise OperatorSafetyError("OPERATOR_PROJECT_ROOT_INVALID")
+            candidates = load_safe_json(args.candidates) if args.candidates else []
+            protected = load_safe_json(args.protected) if args.protected else {
+                "activeJobs": [], "identities": [], "acceptedEvidence": [],
+                "sealedModels": [], "referencedArtifacts": [], "currentPriorReleases": [],
+            }
+            result = plan_cleanup(candidates, protected, dry_run=True)
+            _write(result, args.output)
+            return 0
+        raise OperatorSafetyError("OPERATOR_COMMAND_UNHANDLED")
+    except OperatorSafetyError as error:
+        _write({"status": "REJECTED", "reasonCode": str(error)})
+        return EXIT_SAFETY
+    except (IdentityError, StorageError) as error:
+        _write({"status": "INVALID", "reasonCode": str(error)})
+        return EXIT_MISUSE
+    except EvidenceValidationError as error:
+        _write({"status": "INVALID", "reasonCode": str(error)})
+        return EXIT_EVIDENCE_INVALID
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

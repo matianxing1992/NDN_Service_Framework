@@ -1,0 +1,45 @@
+{
+  "schemaVersion": "ndnsf-di-gpu-lock-v1",
+  "platform": "linux/amd64",
+  "cuda": "12.4.1",
+  "cudnnMajor": 9,
+  "minimumLinuxDriver": "550.54.14",
+  "baseImagePolicy": "caller-must-supply-digest-reference",
+  "systemPackages": [
+    "build-essential", "ca-certificates", "cmake", "curl", "git", "libboost-all-dev",
+    "libgmp-dev", "libgtkmm-3.0-dev", "libprotobuf-dev", "libsqlite3-dev",
+    "libssl-dev", "ninja-build", "pkg-config", "protobuf-compiler", "python3",
+    "python3-dev", "python3-pip", "python3-venv", "zlib1g"
+  ],
+  "sourceRepositories": {
+    "ndn-cxx": {"url": "https://github.com/matianxing1992/ndn-cxx.git", "revision": "8296fc9462c7ef9635b7c45468c067fd39514e31"},
+    "NFD": {"url": "https://github.com/matianxing1992/NFD.git", "revision": "2b43d675e3fba37b5362fab0001ba542bb07b43b"},
+    "NDNSD": {"url": "https://github.com/matianxing1992/NDNSD.git", "revision": "25f7ad9d2f8848c10025e71358e3dafd62c348c0"},
+    "ndn-svs": {"url": "https://github.com/matianxing1992/ndn-svs.git", "revision": "5b5461a728012e9d0959e99ef0acbc5f32fc9d25"},
+    "openabe": {"url": "https://github.com/zeutro/openabe.git", "revision": "b8f9d3c8a2620c1185ca972248f7af39c1eae68c"},
+    "NAC-ABE": {"url": "https://github.com/matianxing1992/NAC-ABE.git", "revision": "1cc17d9d21f4dfc0921cc77315d0c57d46291880"}
+  },
+  "pythonPackages": {
+    "accelerate": "1.3.0",
+    "huggingface-hub": "0.28.1",
+    "numpy": "1.26.4",
+    "onnx": "1.17.0",
+    "onnxruntime-gpu": "1.20.1",
+    "optimum": "1.24.0",
+    "protobuf": "5.29.3",
+    "psutil": "6.1.1",
+    "pynvml": "12.0.0",
+    "safetensors": "0.5.2",
+    "tokenizers": "0.21.0",
+    "torch": "2.6.0",
+    "torchaudio": "2.6.0",
+    "torchvision": "0.21.0",
+    "transformers": "4.48.2"
+  },
+  "pythonIndexes": {
+    "default": "https://pypi.org/simple",
+    "torch": "https://download.pytorch.org/whl/cu124"
+  },
+  "distributionPolicy": "exact-version-plus-release-sbom-and-provenance",
+  "cpuFallbackAllowed": false
+}

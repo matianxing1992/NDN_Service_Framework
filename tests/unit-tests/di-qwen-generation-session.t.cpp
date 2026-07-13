@@ -111,6 +111,29 @@ BOOST_AUTO_TEST_CASE(SpecValidationRejectsUnboundOrUnboundedValues)
   checkInvalid(spec);
 }
 
+BOOST_AUTO_TEST_CASE(CandidateIdentityAcceptsOnlyVersionedSpec107AndSpec110)
+{
+  auto spec107 = validSpec();
+  BOOST_CHECK_NO_THROW(spec107.validate());
+
+  auto spec110 = validSpec();
+  spec110.candidateId =
+    "spec110-c1-111111111111-222222222222-333333333333-"
+    "444444444444-555555555555-666666666666";
+  BOOST_CHECK_NO_THROW(spec110.validate());
+
+  for (const auto& forbidden : {
+         "spec105-c1-111111111111-222222222222-333333333333-"
+         "444444444444-555555555555-666666666666",
+         "spec109-c1-111111111111-222222222222-333333333333-"
+         "444444444444-555555555555-666666666666",
+       }) {
+    auto invalid = validSpec();
+    invalid.candidateId = forbidden;
+    BOOST_CHECK_THROW(invalid.validate(), std::invalid_argument);
+  }
+}
+
 BOOST_AUTO_TEST_CASE(CodecRejectsUnknownSchemaSecretsAndMalformedJson)
 {
   BOOST_CHECK_THROW(qwenGenerationSessionSpecFromJson("{}"), std::invalid_argument);
@@ -180,6 +203,45 @@ BOOST_AUTO_TEST_CASE(CompletionRequiresExactBoundAndCancellationIsTerminal)
   overflow.completeTokenEpoch();
   overflow.completeTokenEpoch();
   BOOST_CHECK_THROW(overflow.completeTokenEpoch(), std::logic_error);
+}
+
+BOOST_AUTO_TEST_CASE(DeadlineExpiresSessionExactlyAtBound)
+{
+  auto spec = validSpec();
+  spec.deadlineEpochMs = 10'000;
+  QwenGenerationSessionStateMachine state(spec);
+  BOOST_CHECK(!state.expireIfDeadlineReached(9'999));
+  BOOST_CHECK(state.state() == QwenGenerationState::Created);
+  BOOST_CHECK(state.expireIfDeadlineReached(10'000));
+  BOOST_CHECK(state.state() == QwenGenerationState::Terminal);
+  BOOST_CHECK(state.terminalReason() == QwenGenerationTerminal::RequestDeadline);
+  BOOST_CHECK(!state.expireIfDeadlineReached(10'001));
+}
+
+BOOST_AUTO_TEST_CASE(StaleAttemptCannotAdvanceTokenEpochAfterReplacement)
+{
+  QwenGenerationSessionStateMachine state(validSpec());
+  state.beginSelection();
+  state.activate();
+  BOOST_CHECK_EQUAL(state.completeTokenEpoch(0), 1);
+  state.beginReplacement();
+  state.activate();
+  BOOST_CHECK_THROW(state.completeTokenEpoch(0), std::logic_error);
+  BOOST_CHECK_EQUAL(state.generatedTokenCount(), 1);
+  BOOST_CHECK_EQUAL(state.completeTokenEpoch(1), 2);
+}
+
+BOOST_AUTO_TEST_CASE(TerminalResponseCanBeClaimedExactlyOnce)
+{
+  QwenGenerationSessionStateMachine state(validSpec());
+  BOOST_CHECK_THROW(state.claimTerminalResponse(), std::logic_error);
+  state.beginSelection();
+  state.activate();
+  state.completeTokenEpoch();
+  state.completeTokenEpoch();
+  state.complete();
+  BOOST_CHECK(state.claimTerminalResponse());
+  BOOST_CHECK(!state.claimTerminalResponse());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

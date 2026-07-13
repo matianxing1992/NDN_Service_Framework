@@ -85,10 +85,13 @@ public:
   void beginSelection();
   void activate();
   std::uint32_t completeTokenEpoch();
+  std::uint32_t completeTokenEpoch(std::uint64_t attemptEpoch);
   void beginReplacement();
   void complete();
   void terminate(QwenGenerationTerminal reason);
   void cancel();
+  bool expireIfDeadlineReached(std::uint64_t nowEpochMs);
+  bool claimTerminalResponse();
 
 private:
   void requireState(QwenGenerationState expected, const char* operation) const;
@@ -99,6 +102,7 @@ private:
   QwenGenerationTerminal m_terminalReason = QwenGenerationTerminal::None;
   std::uint64_t m_attemptEpoch = 0;
   std::uint32_t m_generatedTokenCount = 0;
+  bool m_terminalResponseClaimed = false;
 };
 
 enum class QwenResourceKind : std::size_t

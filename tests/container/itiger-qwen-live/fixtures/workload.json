@@ -1,0 +1,76 @@
+{
+  "schemaVersion": "spec110-workload-v1",
+  "identity": "spec110-qwen-fixed-workload-v1",
+  "prompt": {
+    "id": "ndnsf-di-explain-v1",
+    "text": "Explain NDNSF-DI pipeline inference.",
+    "sha256": "a06b0b0add405be2f5b53e45597ce9c6fec158ff7a6781bf0a17d7251ae27ee4",
+    "order": "single-fixed"
+  },
+  "tokenization": {
+    "tokenizerRepositoryMustMatchModel": true,
+    "tokenizerRevisionMustMatchModel": true,
+    "applyChatTemplate": true,
+    "addGenerationPrompt": true,
+    "addSpecialTokens": true,
+    "padding": false,
+    "truncation": false,
+    "maximumContextTokens": 512,
+    "retainExactInputTokenIds": true
+  },
+  "decode": {
+    "strategy": "greedy",
+    "doSample": false,
+    "temperature": 0.0,
+    "topP": null,
+    "topK": null,
+    "beamCount": 1,
+    "correctnessOutputTokenCounts": [1, 2, 32],
+    "retainExactOutputTokenIds": true
+  },
+  "performance": {
+    "arrivalMode": "closed-loop",
+    "maximumInflight": 1,
+    "requestTimeoutSeconds": 120,
+    "warmupRequests": 3,
+    "warmupExcluded": true,
+    "measuredWindowSeconds": 60,
+    "candidateRepetitions": 3,
+    "matchedBaselineRepetitions": 3,
+    "loggingProfile": "warning-and-evidence-only",
+    "cacheState": "cold-model-load-warm-tokenizer"
+  },
+  "metrics": {
+    "required": [
+      "completion",
+      "failure",
+      "coldLoadMs",
+      "ttftMs",
+      "interTokenLatencyMs",
+      "outputTokensPerSecond",
+      "requestThroughputPerSecond",
+      "stageComputeMs",
+      "dependencyBytes",
+      "dependencyMs",
+      "ndnMs",
+      "securityMs",
+      "orchestrationMs",
+      "cpuRssBytes",
+      "gpuMemoryBytes",
+      "gpuUtilizationPercent",
+      "schedulerWaitMs"
+    ],
+    "percentileMinimumObservations": {
+      "p50": 20,
+      "p95": 100,
+      "p99": 1000
+    },
+    "belowMinimumStatus": "UNAVAILABLE_INSUFFICIENT_SAMPLES",
+    "rawRequestAndStageSamplesRequired": true
+  },
+  "comparison": {
+    "singleNodeFrameworkOverheadReference": "matched-staged-onnx-baseline",
+    "multiNodePlacementOverheadReference": "matched-single-node-ndnsf-di",
+    "fullModelOracleTimingIsOverheadDenominator": false
+  }
+}

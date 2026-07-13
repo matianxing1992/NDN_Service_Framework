@@ -16,6 +16,25 @@ class SlurmAdapterError(RuntimeError): pass
 SAFE=re.compile(r'^[A-Za-z0-9._/:@+-]+$')
 TERMINAL={'COMPLETED','FAILED','TIMEOUT','CANCELLED','PREEMPTED','OUT_OF_MEMORY','NODE_FAIL'}
 
+def _version(value,label):
+    if not isinstance(value,str) or re.fullmatch(r'[0-9]+(?:\.[0-9]+)+',value) is None:raise SlurmAdapterError('RUNTIME_VERSION_INVALID:'+label)
+    return tuple(int(x) for x in value.split('.'))
+
+def validate_runtime_release(release_record:Mapping[str,Any],materialization:Mapping[str,Any],cluster_snapshot:Mapping[str,Any])->dict[str,Any]:
+    try:_release.validate_immutable_gpu_release_record(dict(release_record))
+    except _release.ReleaseError as exc:raise SlurmAdapterError('RUNTIME_RELEASE_INVALID:'+str(exc)) from exc
+    if materialization.get('verified') is not True:raise SlurmAdapterError('RUNTIME_SIF_NOT_VERIFIED')
+    if materialization.get('ociReference')!=release_record.get('imageReference'):raise SlurmAdapterError('RUNTIME_OCI_REFERENCE_MISMATCH')
+    if materialization.get('ociDigest')!=release_record.get('imageDigest'):raise SlurmAdapterError('RUNTIME_OCI_DIGEST_MISMATCH')
+    path=Path(str(materialization.get('sifPath','')))
+    if not path.is_file():raise SlurmAdapterError('RUNTIME_SIF_MISSING')
+    if _release.sha256_file(path)!=materialization.get('sifSha256'):raise SlurmAdapterError('RUNTIME_SIF_TAMPERED')
+    driver=cluster_snapshot.get('driverCuda')
+    versions=cluster_snapshot.get('apptainerVersions')
+    if not isinstance(driver,Mapping) or _version(driver.get('driver'),'driver') < (550,54,14):raise SlurmAdapterError('RUNTIME_DRIVER_TOO_OLD')
+    if not isinstance(versions,Mapping) or not versions.get('compute'):raise SlurmAdapterError('RUNTIME_COMPUTE_APPTAINER_MISSING')
+    return {'status':'PASS','releaseId':release_record['releaseId'],'imageDigest':release_record['imageDigest'],'sifSha256':materialization['sifSha256'],'driverVersion':driver['driver'],'computeApptainerVersion':versions['compute'],'physicalProduction':'DEFERRED'}
+
 def _safe(value,label):
     text=str(value)
     if not SAFE.fullmatch(text):raise SlurmAdapterError('SLURM_UNSAFE_'+label)
@@ -47,6 +66,7 @@ class SlurmApptainerAdapter(Adapter):
         _profile.validate_profile(profile);r=self._run(['sinfo','-h','-p',profile['slurm']['partition'],'-o','%P|%N|%G|%T']);return {'status':'PASS','sinfo':r.stdout}
     def materialize(self,profile):
         release=_release.load_release_manifest(profile['releaseManifest']);image=next(iter(release['images'].values()));sif=profile['storage']['imageRoot']+'/'+release['releaseId']+'.sif';record=sif+'.json';script=Path(__file__).resolve().parents[2]/'adapters/slurm-apptainer/scripts/materialize-sif.sh';self._run([str(script),'--oci-reference',image['reference'],'--sif',sif,'--record',record]);return json.load(open(record))
+    def validate_release(self,release_record,materialization,cluster_snapshot):return validate_runtime_release(release_record,materialization,cluster_snapshot)
     def submit(self,profile,*,preflight=True,materialize=True):
         _profile.validate_profile(profile)
         if preflight:self.preflight(profile)

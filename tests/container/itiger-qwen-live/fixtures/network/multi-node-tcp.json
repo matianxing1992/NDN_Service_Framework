@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "spec110-process-map-v1",
+  "placementClass": "multi-node",
+  "selectedTransport": "tcp",
+  "nodes": [
+    {"nodeRank": 0, "name": "allocation-node-0", "address": "10.10.0.10", "nfdSocket": "/tmp/ndnsf-di-job/nfd/0/nfd.sock", "tcpPort": 16363, "udpPort": 16363},
+    {"nodeRank": 1, "name": "allocation-node-1", "address": "10.10.0.11", "nfdSocket": "/tmp/ndnsf-di-job/nfd/1/nfd.sock", "tcpPort": 16364, "udpPort": 16364}
+  ],
+  "processes": [
+    {"processId": "nfd-0", "kind": "nfd", "role": "node-forwarder", "identityRef": null, "identityReadOnly": true, "nodeRank": 0, "taskRank": 0, "gpuRank": null, "gpuUuid": null, "nfdSocket": "/tmp/ndnsf-di-job/nfd/0/nfd.sock", "command": ["nfd", "--config", "/tmp/spec110/nfd-0.conf"], "commandDigest": "sha256:c34c5941613d0a671bc2400e1313ba4a8662205198972812aa6917c4c660b63c", "readinessInputs": ["scratch-binds-gpu-ready"], "readinessOutput": "nfd-0-ready", "shutdownOrder": 7},
+    {"processId": "nfd-1", "kind": "nfd", "role": "node-forwarder", "identityRef": null, "identityReadOnly": true, "nodeRank": 1, "taskRank": 1, "gpuRank": null, "gpuUuid": null, "nfdSocket": "/tmp/ndnsf-di-job/nfd/1/nfd.sock", "command": ["nfd", "--config", "/tmp/spec110/nfd-1.conf"], "commandDigest": "sha256:b1213b6f7de65e9e13da5435d5e833dbed1d73e31ca2c796cbec21b90173e792", "readinessInputs": ["scratch-binds-gpu-ready"], "readinessOutput": "nfd-1-ready", "shutdownOrder": 6},
+    {"processId": "controller", "kind": "controller", "role": "controller", "identityRef": "/project/tma1/ndnsf-di/identities/c1/controller", "identityReadOnly": true, "nodeRank": 0, "taskRank": 2, "gpuRank": null, "gpuUuid": null, "nfdSocket": "/tmp/ndnsf-di-job/nfd/0/nfd.sock", "command": ["App_ServiceController", "--identity", "/project/tma1/ndnsf-di/identities/c1/controller"], "commandDigest": "sha256:2744f25fce03548a9957f0335d1ed8fc3636d1d2b9d22b1ee07b991071c475da", "readinessInputs": ["nfd-0-ready", "nfd-1-ready"], "readinessOutput": "controller-ready", "shutdownOrder": 5},
+    {"processId": "provider-0", "kind": "provider", "role": "stage-0", "identityRef": "/project/tma1/ndnsf-di/identities/c1/provider-0", "identityReadOnly": true, "nodeRank": 0, "taskRank": 3, "gpuRank": 0, "gpuUuid": "GPU-00000000-0000-0000-0000-000000000000", "nfdSocket": "/tmp/ndnsf-di-job/nfd/0/nfd.sock", "command": ["di-native-provider", "--stage", "0"], "commandDigest": "sha256:90e276ae7e6ac2a1fcb31ef6085b207a5e24276ade653363efef01adc53cac1e", "readinessInputs": ["controller-ready"], "readinessOutput": "provider-0-ready", "shutdownOrder": 2},
+    {"processId": "provider-1", "kind": "provider", "role": "stage-1", "identityRef": "/project/tma1/ndnsf-di/identities/c1/provider-1", "identityReadOnly": true, "nodeRank": 1, "taskRank": 4, "gpuRank": 0, "gpuUuid": "GPU-11111111-1111-1111-1111-111111111111", "nfdSocket": "/tmp/ndnsf-di-job/nfd/1/nfd.sock", "command": ["di-native-provider", "--stage", "1"], "commandDigest": "sha256:11e530fb04149ddcda0bf3fbabc477bf51c0a91e4a45a681c34681370778339c", "readinessInputs": ["controller-ready"], "readinessOutput": "provider-1-ready", "shutdownOrder": 3},
+    {"processId": "provider-2", "kind": "provider", "role": "stage-2", "identityRef": "/project/tma1/ndnsf-di/identities/c1/provider-2", "identityReadOnly": true, "nodeRank": 1, "taskRank": 5, "gpuRank": 1, "gpuUuid": "GPU-22222222-2222-2222-2222-222222222222", "nfdSocket": "/tmp/ndnsf-di-job/nfd/1/nfd.sock", "command": ["di-native-provider", "--stage", "2"], "commandDigest": "sha256:ede2eba56a1b5f06f4d2e5e905b2cf68a07f0fdf5d16aa9753b66d306b57fe64", "readinessInputs": ["controller-ready"], "readinessOutput": "provider-2-ready", "shutdownOrder": 4},
+    {"processId": "user", "kind": "user", "role": "requester", "identityRef": "/project/tma1/ndnsf-di/identities/c1/user", "identityReadOnly": true, "nodeRank": 0, "taskRank": 6, "gpuRank": null, "gpuUuid": null, "nfdSocket": "/tmp/ndnsf-di-job/nfd/0/nfd.sock", "command": ["python3", "user.py", "--tokens", "32"], "commandDigest": "sha256:f256be0c7604b54a5ac603af01d58dfa85ac2ae53d54c4967771a894922761ba", "readinessInputs": ["provider-0-ready", "provider-1-ready", "provider-2-ready"], "readinessOutput": "candidate-terminal", "shutdownOrder": 1}
+  ],
+  "routes": [
+    {"fromNodeRank": 0, "toNodeRank": 1, "prefix": "/spec110/node/1", "transport": "tcp", "remoteAddress": "10.10.0.11", "port": 16364},
+    {"fromNodeRank": 1, "toNodeRank": 0, "prefix": "/spec110/node/0", "transport": "tcp", "remoteAddress": "10.10.0.10", "port": 16363}
+  ],
+  "readinessPhases": ["scratch-binds-gpu", "nfd", "routes", "controller", "providers", "user", "candidate"],
+  "signals": ["TERM", "INT"],
+  "zeroSurvivorAudit": true
+}

@@ -44,7 +44,22 @@
       "properties": {
         "reference": { "type": "string", "minLength": 1 },
         "readOnly": { "const": true },
-        "expectedIdentity": { "type": "string", "minLength": 1 }
+        "expectedIdentity": { "type": "string", "minLength": 1 },
+        "roleReferences": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["controller", "user", "providers"],
+          "properties": {
+            "controller": { "type": "string", "pattern": "^/project/[^/]+/ndnsf-di/identities/.+" },
+            "user": { "type": "string", "pattern": "^/project/[^/]+/ndnsf-di/identities/.+" },
+            "providers": {
+              "type": "array",
+              "minItems": 3,
+              "maxItems": 3,
+              "items": { "type": "string", "pattern": "^/project/[^/]+/ndnsf-di/identities/.+" }
+            }
+          }
+        }
       }
     },
     "storage": {

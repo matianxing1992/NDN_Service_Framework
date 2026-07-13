@@ -57,6 +57,17 @@ def _cross_validate(profile: dict[str, Any]) -> None:
             network = profile["network"]
             if network["topology"] != "multi-node-allocation" or not network.get("preflightEvidence"):
                 raise ProfileError("PROFILE_MULTINODE_NETWORK_EVIDENCE_REQUIRED")
+        identity = profile["identity"]
+        roles = identity.get("roleReferences")
+        if profile["profileId"].startswith("spec110") and roles is None:
+            raise ProfileError("PROFILE_SPEC110_ROLE_IDENTITIES_REQUIRED")
+        if roles is not None:
+            references = [roles["controller"], roles["user"], *roles["providers"]]
+            if len(set(references)) != 5:
+                raise ProfileError("PROFILE_ROLE_IDENTITIES_NOT_DISTINCT")
+            root = identity["reference"].rstrip("/") + "/"
+            if any(not reference.startswith(root) for reference in references):
+                raise ProfileError("PROFILE_ROLE_IDENTITY_OUTSIDE_READONLY_SET")
 
 
 def validate_profile(profile: dict[str, Any]) -> dict[str, Any]:

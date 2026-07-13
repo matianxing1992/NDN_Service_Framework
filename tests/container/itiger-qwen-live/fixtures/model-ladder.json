@@ -1,0 +1,86 @@
+{
+  "schemaVersion": "spec110-model-ladder-v1",
+  "family": "Qwen2.5-Instruct",
+  "resolvedAt": "2026-07-13",
+  "sourcePolicy": {
+    "registry": "https://huggingface.co",
+    "organization": "Qwen",
+    "revisionFormat": "full-40-character-git-commit",
+    "floatingRevisionAllowed": false,
+    "verifyRevisionAndLicenseBeforeTransfer": true,
+    "quantization": "none",
+    "dtype": "float16"
+  },
+  "models": [
+    {
+      "size": "0.5B",
+      "repository": "Qwen/Qwen2.5-0.5B-Instruct",
+      "revision": "7ae557604adf67be50417f59c2c2f167def9a775",
+      "license": "apache-2.0",
+      "parametersBillions": 0.49,
+      "nonEmbeddingParametersBillions": 0.36,
+      "layers": 24,
+      "modelCard": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct"
+    },
+    {
+      "size": "1.5B",
+      "repository": "Qwen/Qwen2.5-1.5B-Instruct",
+      "revision": "989aa7980e4cf806f80c7fef2b1adb7bc71aa306",
+      "license": "apache-2.0",
+      "parametersBillions": 1.54,
+      "nonEmbeddingParametersBillions": 1.31,
+      "layers": 28,
+      "modelCard": "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct"
+    },
+    {
+      "size": "3B",
+      "repository": "Qwen/Qwen2.5-3B-Instruct",
+      "revision": "aa8e72537993ba99e69dfaafa59ed015b17504d1",
+      "license": "qwen-research",
+      "parametersBillions": 3.09,
+      "nonEmbeddingParametersBillions": 2.77,
+      "layers": 36,
+      "modelCard": "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct"
+    },
+    {
+      "size": "7B",
+      "repository": "Qwen/Qwen2.5-7B-Instruct",
+      "revision": "a09a35458c702b33eeacc393d103063234e8bc28",
+      "license": "apache-2.0",
+      "parametersBillions": 7.61,
+      "nonEmbeddingParametersBillions": 6.53,
+      "layers": 28,
+      "modelCard": "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct"
+    },
+    {
+      "size": "14B",
+      "repository": "Qwen/Qwen2.5-14B-Instruct",
+      "revision": "cf98f3b3bbb457ad9e2bb7baf9a0125b6b88caa8",
+      "license": "apache-2.0",
+      "parametersBillions": 14.7,
+      "nonEmbeddingParametersBillions": 13.1,
+      "layers": 48,
+      "modelCard": "https://huggingface.co/Qwen/Qwen2.5-14B-Instruct"
+    },
+    {
+      "size": "32B",
+      "repository": "Qwen/Qwen2.5-32B-Instruct",
+      "revision": "5ede1c97bbab6ce5cda5812749b4c0bdf79b18dd",
+      "license": "apache-2.0",
+      "parametersBillions": 32.5,
+      "nonEmbeddingParametersBillions": 31.0,
+      "layers": 64,
+      "modelCard": "https://huggingface.co/Qwen/Qwen2.5-32B-Instruct"
+    },
+    {
+      "size": "72B",
+      "repository": "Qwen/Qwen2.5-72B-Instruct",
+      "revision": "495f39366efef23836d0cfae4fbe635880d2be31",
+      "license": "qwen",
+      "parametersBillions": 72.7,
+      "nonEmbeddingParametersBillions": 70.0,
+      "layers": 80,
+      "modelCard": "https://huggingface.co/Qwen/Qwen2.5-72B-Instruct"
+    }
+  ]
+}

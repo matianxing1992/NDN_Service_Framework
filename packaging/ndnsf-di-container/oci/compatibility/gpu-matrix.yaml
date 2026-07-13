@@ -1,0 +1,46 @@
+schemaVersion: ndnsf-di-gpu-compatibility-v1
+releaseClass: cuda12.4-cudnn9-torch2.6-ort1.20
+sources:
+  pytorch: https://docs.pytorch.org/get-started/previous-versions/
+  onnxRuntime: https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html
+  nvidia: https://docs.nvidia.com/cuda/archive/12.4.0/cuda-toolkit-release-notes/
+runtime:
+  cudaToolkit: 12.4.1
+  cudaMajor: 12
+  cudnnMajor: 9
+  minimumLinuxDriver: 550.54.14
+  pytorch: 2.6.0+cu124
+  torchvision: 0.21.0+cu124
+  torchaudio: 2.6.0+cu124
+  onnxRuntimeGpu: 1.20.1
+  onnxRuntimeCudaMajor: 12
+  onnxRuntimeCudnnMajor: 9
+  requiredProviders:
+    - CUDAExecutionProvider
+    - CPUExecutionProvider
+  acceptedModelProvider: CUDAExecutionProvider
+hardwarePlanningRecords:
+  - class: rtx5000
+    slurmLabel: discover-live
+    expectedMemoryGiB: 32
+    admission: live-gres-and-memory-required
+  - class: rtx6000
+    slurmLabel: discover-live
+    expectedMemoryGiB: 48
+    admission: live-gres-and-memory-required
+  - class: h100
+    slurmLabel: discover-live
+    expectedMemoryGiB: 80
+    admission: live-gres-and-memory-required
+failurePolicy:
+  driverBelowMinimum: FAIL_DRIVER_TOO_OLD
+  cudaMajorMismatch: FAIL_CUDA_MAJOR_MISMATCH
+  cudnnMajorMismatch: FAIL_CUDNN_MAJOR_MISMATCH
+  missingCudaProvider: FAIL_ORT_CUDA_PROVIDER_MISSING
+  modelNodeOnCpu: FAIL_ORT_CPU_FALLBACK
+  pytorchCudaUnavailable: FAIL_PYTORCH_CUDA_UNAVAILABLE
+  pytorchOrtCudaMismatch: FAIL_PYTORCH_ORT_CUDA_MISMATCH
+notes:
+  - Host provides only NVIDIA driver and allocated devices; SIF provides CUDA user-space libraries.
+  - CUDA visibility alone is not GPU PASS; one PyTorch CUDA operation and one profiled ORT CUDA kernel are required.
+  - Live iTiger discovery overrides planning GPU labels and memory without rewriting this runtime compatibility record.

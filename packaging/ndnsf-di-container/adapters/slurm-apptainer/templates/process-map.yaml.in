@@ -1,0 +1,16 @@
+schemaVersion: spec110-process-map-v1
+placementClass: @@PLACEMENT_CLASS@@
+selectedTransport: @@SELECTED_TRANSPORT@@
+nodes: @@NODES_JSON@@
+processes: @@PROCESSES_JSON@@
+routes: @@ROUTES_JSON@@
+readinessPhases:
+  - scratch-binds-gpu
+  - nfd
+  - routes
+  - controller
+  - providers
+  - user
+  - candidate
+signals: [TERM, INT]
+zeroSurvivorAudit: true

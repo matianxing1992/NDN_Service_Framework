@@ -1,0 +1,30 @@
+{
+  "udp": {
+    "selectedTransport": "udp",
+    "routes": [
+      {"fromNodeRank": 0, "toNodeRank": 1, "prefix": "/spec110/node/1", "transport": "udp", "remoteAddress": "10.10.0.11", "port": 16364},
+      {"fromNodeRank": 1, "toNodeRank": 0, "prefix": "/spec110/node/0", "transport": "udp", "remoteAddress": "10.10.0.10", "port": 16363}
+    ]
+  },
+  "failureMutations": [
+    {"name": "duplicate-identity", "reasonCode": "TOPOLOGY_DUPLICATE_IDENTITY"},
+    {"name": "closed-selected-port", "reasonCode": "TOPOLOGY_SELECTED_TRANSPORT_FAILED"},
+    {"name": "partial-readiness", "reasonCode": "TOPOLOGY_READINESS_DEPENDENCY_INVALID"},
+    {"name": "unsafe-command", "reasonCode": "TOPOLOGY_COMMAND_UNSAFE"},
+    {"name": "duplicate-nfd", "reasonCode": "TOPOLOGY_DUPLICATE_NFD"},
+    {"name": "missing-signal", "reasonCode": "TOPOLOGY_TEARDOWN_POLICY_INVALID"},
+    {"name": "no-zero-survivor-audit", "reasonCode": "TOPOLOGY_TEARDOWN_POLICY_INVALID"}
+  ],
+  "probeObservations": {
+    "tcp-pass-udp-diagnostic-fail": {
+      "allocationAddresses": ["10.10.0.10", "10.10.0.11"],
+      "tcp": {"status": "PASS", "closedPorts": [], "reachableRoutes": 2},
+      "udp": {"status": "FAIL", "closedPorts": [16363, 16364], "reachableRoutes": 0}
+    },
+    "tcp-closed": {
+      "allocationAddresses": ["10.10.0.10", "10.10.0.11"],
+      "tcp": {"status": "FAIL", "closedPorts": [16364], "reachableRoutes": 1},
+      "udp": {"status": "PASS", "closedPorts": [], "reachableRoutes": 2}
+    }
+  }
+}

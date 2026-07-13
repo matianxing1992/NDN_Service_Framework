@@ -14,8 +14,10 @@ namespace {
 
 using boost::property_tree::ptree;
 
-const std::regex CANDIDATE_RE(
+const std::regex SPEC107_CANDIDATE_RE(
   R"(^spec107-c1(-[0-9a-f]{12}){6}$)");
+const std::regex SPEC110_CANDIDATE_RE(
+  R"(^spec110-c1(-[0-9a-f]{12}){6}$)");
 const std::regex DIGEST_RE(R"(^sha256:[0-9a-f]{64}$)");
 
 void
@@ -80,8 +82,8 @@ QwenGenerationSessionSpec::validate() const
 {
   require(schema == "ndnsf-di-qwen-generation-session-v1",
           "unsupported qwen generation session schema");
-  require(std::regex_match(candidateId, CANDIDATE_RE) &&
-            candidateId.find("spec105") == std::string::npos,
+  require(std::regex_match(candidateId, SPEC107_CANDIDATE_RE) ||
+            std::regex_match(candidateId, SPEC110_CANDIDATE_RE),
           "invalid qwen generation candidate id");
   require(std::regex_match(planDigest, DIGEST_RE), "invalid qwen generation plan digest");
   require(std::regex_match(modelDigest, DIGEST_RE), "invalid qwen generation model digest");
@@ -286,7 +288,16 @@ QwenGenerationSessionStateMachine::activate()
 std::uint32_t
 QwenGenerationSessionStateMachine::completeTokenEpoch()
 {
+  return completeTokenEpoch(m_attemptEpoch);
+}
+
+std::uint32_t
+QwenGenerationSessionStateMachine::completeTokenEpoch(std::uint64_t attemptEpoch)
+{
   requireState(QwenGenerationState::Active, "completeTokenEpoch");
+  if (attemptEpoch != m_attemptEpoch) {
+    throw std::logic_error("stale qwen generation attempt epoch");
+  }
   if (m_generatedTokenCount >= m_spec.maxGeneratedTokens) {
     throw std::logic_error("qwen generation token bound exceeded");
   }
@@ -332,6 +343,29 @@ QwenGenerationSessionStateMachine::cancel()
   }
   m_terminalReason = QwenGenerationTerminal::AttemptCancelled;
   m_state = QwenGenerationState::Cancelled;
+}
+
+bool
+QwenGenerationSessionStateMachine::expireIfDeadlineReached(std::uint64_t nowEpochMs)
+{
+  if (isTerminal() || nowEpochMs < m_spec.deadlineEpochMs) {
+    return false;
+  }
+  terminate(QwenGenerationTerminal::RequestDeadline);
+  return true;
+}
+
+bool
+QwenGenerationSessionStateMachine::claimTerminalResponse()
+{
+  if (!isTerminal()) {
+    throw std::logic_error("qwen generation terminal response before terminal state");
+  }
+  if (m_terminalResponseClaimed) {
+    return false;
+  }
+  m_terminalResponseClaimed = true;
+  return true;
 }
 
 const char*

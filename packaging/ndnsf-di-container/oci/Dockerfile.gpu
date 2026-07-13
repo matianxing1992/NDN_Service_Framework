@@ -1,0 +1,105 @@
+# syntax=docker/dockerfile:1.7
+
+ARG GPU_BUILD_BASE_IMAGE
+ARG GPU_RUNTIME_BASE_IMAGE
+
+FROM ${GPU_BUILD_BASE_IMAGE} AS stack-builder
+ARG SOURCE_REVISION
+ARG DEBIAN_FRONTEND=noninteractive
+ENV PREFIX=/opt/ndnsf-di/current \
+    PATH=/opt/venv/bin:/opt/ndnsf-di/current/bin:${PATH} \
+    PKG_CONFIG_PATH=/opt/ndnsf-di/current/lib/pkgconfig \
+    LD_LIBRARY_PATH=/opt/ndnsf-di/current/lib
+WORKDIR /src/ndnsf
+COPY . /src/ndnsf
+RUN python3 - <<'PY'
+import json,re
+v=json.load(open('packaging/ndnsf-di-container/oci/locks/gpu.lock'))
+assert v['schemaVersion']=='ndnsf-di-gpu-lock-v1'
+assert v['cuda']=='12.4.1' and v['cudnnMajor']==9
+assert all(re.fullmatch(r'[0-9a-f]{40}',x['revision']) for x in v['sourceRepositories'].values())
+PY
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && python3 - <<'PY' >/tmp/system-packages
+import json
+print(' '.join(json.load(open('packaging/ndnsf-di-container/oci/locks/gpu.lock'))['systemPackages']))
+PY
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get install -y --no-install-recommends $(cat /tmp/system-packages)
+RUN python3 -m venv /opt/venv && /opt/venv/bin/pip install --no-cache-dir --upgrade pip==25.0.1 setuptools==75.8.0 wheel==0.45.1
+RUN python3 - <<'PY' >/tmp/python-requirements
+import json
+v=json.load(open('packaging/ndnsf-di-container/oci/locks/gpu.lock'))
+skip={'torch','torchvision','torchaudio'}
+print('\n'.join(f'{k}=={v}' for k,v in sorted(v['pythonPackages'].items()) if k not in skip))
+PY
+RUN --mount=type=cache,target=/root/.cache/pip \
+    /opt/venv/bin/pip install --no-deps --requirement /tmp/python-requirements && \
+    /opt/venv/bin/pip install --no-deps --index-url https://download.pytorch.org/whl/cu124 \
+      torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0
+RUN python3 - <<'PY' >/tmp/clone-stack.sh
+import json,shlex
+v=json.load(open('packaging/ndnsf-di-container/oci/locks/gpu.lock'))['sourceRepositories']
+print('set -eu')
+for name,row in v.items():
+ print('git clone --filter=blob:none '+shlex.quote(row['url'])+' /src/dependencies/'+shlex.quote(name))
+ print('git -C /src/dependencies/'+shlex.quote(name)+' checkout --detach '+shlex.quote(row['revision']))
+PY
+RUN sh /tmp/clone-stack.sh
+RUN set -eu; for project in ndn-cxx NDNSD ndn-svs; do \
+      cd /src/dependencies/$project; ./waf configure --prefix=$PREFIX; ./waf -j"$(nproc)"; ./waf install; \
+    done
+RUN set -eu; cd /src/dependencies/NFD; ./waf configure --prefix=$PREFIX; ./waf -j"$(nproc)"; ./waf install
+RUN set -eu; cd /src/dependencies/openabe; \
+    cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$PREFIX; \
+    cmake --build build --parallel; cmake --install build
+RUN set -eu; cd /src/dependencies/NAC-ABE; \
+    cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$PREFIX -DCMAKE_PREFIX_PATH=$PREFIX; \
+    cmake --build build --parallel; cmake --install build
+RUN ./waf configure --prefix=$PREFIX --with-examples && ./waf -j"$(nproc)" && ./waf install
+RUN /opt/venv/bin/pip install --no-deps ./pythonWrapper ./NDNSF-DistributedRepo/pythonWrapper ./NDNSF-DistributedInference
+RUN test -x $PREFIX/bin/nfd && test -x $PREFIX/bin/nfdc && \
+    test -x $PREFIX/bin/App_ServiceController && test -x $PREFIX/bin/di-native-provider && \
+    /opt/venv/bin/python -c 'import ndnsf,ndnsf_distributed_inference,torch,onnxruntime,transformers'
+
+FROM ${GPU_RUNTIME_BASE_IMAGE} AS runtime
+ARG SOURCE_REVISION
+ARG RELEASE_ID
+ARG DEBIAN_FRONTEND=noninteractive
+LABEL org.opencontainers.image.title="NDNSF-DI iTiger GPU runtime" \
+      org.opencontainers.image.revision="${SOURCE_REVISION}" \
+      org.opencontainers.image.version="${RELEASE_ID}" \
+      org.ndnsf.di.backend="onnxruntime-cuda" \
+      org.ndnsf.di.rootfs="read-only" \
+      org.ndnsf.di.daemon-policy="allocation-scoped-only"
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends ca-certificates libgomp1 python3 zlib1g && \
+    rm -rf /var/lib/apt/lists/*
+COPY --from=stack-builder /opt/ndnsf-di /opt/ndnsf-di
+COPY --from=stack-builder /opt/venv /opt/venv
+COPY packaging/ndnsf-di-container/oci/locks/gpu.lock /opt/ndnsf-di/manifest/gpu.lock
+COPY packaging/ndnsf-di-container/oci/compatibility/gpu-matrix.yaml /opt/ndnsf-di/manifest/gpu-matrix.yaml
+COPY packaging/ndnsf-di-container/oci/scripts/entrypoint.sh /usr/local/bin/ndnsf-di-container-entrypoint
+COPY packaging/ndnsf-di-container/oci/scripts/healthcheck.sh /usr/local/bin/ndnsf-di-container-healthcheck
+COPY packaging/ndnsf-di-container/oci/scripts/probe-runtime.py /usr/local/bin/ndnsf-di-probe-runtime
+COPY packaging/ndnsf-di-container/lib/gpu_compatibility.py /usr/local/lib/ndnsf-di/gpu_compatibility.py
+RUN chmod 0755 /usr/local/bin/ndnsf-di-container-entrypoint /usr/local/bin/ndnsf-di-container-healthcheck /usr/local/bin/ndnsf-di-probe-runtime && \
+    install -d -m 0750 -o 65532 -g 65532 /run/ndn /run/ndnsf-di /var/lib/ndnsf-di /tmp/ndnsf-di && \
+    test ! -e /root/.ssh && test ! -e /root/.cache/huggingface
+ENV PATH=/opt/venv/bin:/opt/ndnsf-di/current/bin:${PATH} \
+    LD_LIBRARY_PATH=/opt/ndnsf-di/current/lib \
+    PKG_CONFIG_PATH=/opt/ndnsf-di/current/lib/pkgconfig \
+    PYTHONNOUSERSITE=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    HOME=/run/ndnsf-di \
+    NDNSF_RELEASE_ROOT=/opt/ndnsf-di/current \
+    NDNSF_BACKEND=onnxruntime-cuda \
+    NDNSF_ALLOW_CPU_FALLBACK=0
+USER 65532:65532
+WORKDIR /run/ndnsf-di
+HEALTHCHECK --interval=30s --timeout=10s --retries=3 CMD ["/usr/local/bin/ndnsf-di-probe-runtime", "--mode", "static"]
+ENTRYPOINT ["/usr/local/bin/ndnsf-di-container-entrypoint"]
+CMD ["exec", "/usr/local/bin/ndnsf-di-probe-runtime", "--mode", "static"]
