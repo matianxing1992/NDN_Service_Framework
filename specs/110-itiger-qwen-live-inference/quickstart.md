@@ -25,37 +25,26 @@ Bulk content belongs under `/project`. `/home` is small config only. Compute
 scratch is selected and created by the job; on the currently observed Slurm
 configuration the advertised `TmpFS` is `/scratch`.
 
-## 3. Build the OCI release in an iTiger CPU allocation
+## 3. Build and publish the OCI release with GitHub Actions
 
-Seal the source/dependency snapshot in project storage, then render and inspect
-the bounded rootless-build job. The job must set explicit Podman/Buildah
-graphroot, runroot, cache, and temporary paths below its selected compute
-scratch; it must not use the default home graphroot.
+Publish every locked dependency revision, then let the workflow prepare and
+verify sealed Git archives before Buildx runs the existing GPU Dockerfile with
+`DEPENDENCY_SOURCE_MODE=sealed`. The successful workflow publishes
+`ghcr.io/matianxing1992/ndnsf-di@sha256:<digest>` and retains only the source
+seal, release manifest, SBOM, signature, checksums, and logs.
 
-```bash
-ssh itiger.memphis.edu '
-  cd /project/$USER/ndnsf-di/source/current &&
-  tools/ndnsf-di/ndnsf-di-itiger-qwen release build-render \
-    --mode full \
-    --source /project/$USER/ndnsf-di/source/spec110-sealed-runtime \
-    --release-id spec110-runtime-<source-prefix> \
-    --output /project/$USER/ndnsf-di/campaigns/spec110/rendered/rootless-build.sbatch
-'
-```
+Qwen `.safetensors`, `.onnx`, `.gguf`, and related weights are excluded from the
+context and remain under `/project/$USER/ndnsf-di/models` or `artifacts`.
 
-After review, submit through the crash-safe journal exactly once. The build
-exports a digest-bound OCI archive to project storage, verifies it, promotes it
-atomically, and creates the SIF with Apptainer. A short diagnostic probe must
-first prove the same operations with a tiny local build context on a compute
-node. The repository GitHub Actions workflow may later mirror the same digest to
-GHCR, but it is not the primary completion path and iTiger needs no Docker daemon.
+After the workflow records a verified digest, render and review one bounded CPU
+Slurm job that runs `apptainer build runtime.sif.partial
+docker://ghcr.io/...@sha256:<digest>`, verifies the SIF, and atomically promotes
+it below `/project/$USER/ndnsf-di/releases/<release-id>`.
 
-Do not assume login-node Podman is available in a compute allocation. The first
-diagnostic job `147712` disproved that assumption. Until administrators provide
-compute builder commands, the replacement renderer must select the separately
-pinned builder-SIF mode, bind its OCI/SIF digests, and record explicit replacement
-authorization before one new submission. A direct Apptainer definition-file
-rewrite is not equivalent to the required OCI release.
+If GitHub's standard runner exhausts its measured disk, stop and preserve that
+failure; use a paid larger or self-hosted GitHub runner under a new build
+identity. The builder-SIF route remains an iTiger fallback. Job `147712` and its
+replacement candidate are not retried merely because the primary route changed.
 
 ## 4. Discover iTiger and validate the materialized SIF
 

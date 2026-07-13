@@ -116,30 +116,25 @@ pooled into the size-effect subset.
 ### Runtime release
 
 The OCI build source is the single dependency source of truth. The primary
-delivery path seals the repository plus otherwise-unpublished pinned dependency
-commits in project storage, then starts one bounded Slurm CPU build allocation.
-Rootless Podman/Buildah uses explicit graphroot, runroot, cache, and temporary
-paths below the selected compute scratch; it exports a digest-bound OCI archive
-to a partial project path, verifies it, atomically promotes it, and materializes
-the runtime SIF under `/project`. It may be supplied by an administrator on the
-compute node or by a separately pinned builder OCI materialized as a SIF, but the
-same GPU Dockerfile/locks remain the only stack build graph. The default Podman
-graphroot under `/home` is forbidden.
+delivery path makes every locked dependency commit reachable through its public
+repository, creates checksum-bound Git archives in GitHub Actions, verifies the
+shared source seal, and builds the existing GPU Dockerfile with
+`DEPENDENCY_SOURCE_MODE=sealed`. Buildx pushes the immutable OCI result directly
+to GHCR; Actions retains only evidence, SBOM, signatures, checksums, and logs.
+Qwen weights never enter the build context or image. A bounded iTiger CPU
+allocation pulls the exact GHCR digest and materializes the runtime SIF under
+`/project` before the GPU probe.
 
 Measured boundary: exact-once diagnostic job `147712` started on `itiger01` and
 failed because host Podman was absent; Buildah was therefore not attempted. It
 selected `/tmp` rather than the configured `TmpFS=/scratch`. This is an executed
-negative, not a pre-start blocker. The full build remains disabled until a new,
-human-authorized replacement proves a pinned builder SIF (or administrator-
-provided compute builder) and all scratch/OCI/SIF gates.
+negative, not a pre-start blocker. It does not block the GitHub primary route.
 
-The existing GitHub Actions/GHCR workflow is retained as an optional publication
-mirror. It cannot be the completion gate while pinned NFD and ndn-svs commits are
-not fetchable from their public remotes. If publication is later enabled, the
-published image must be digest-equivalent and any short-lived registry credential
-must remain in process environment only and be excluded from evidence. Neither
-route installs packages with root or needs a Docker daemon/NVIDIA Container
-Toolkit on iTiger.
+Rootless Podman/Buildah on iTiger remains a fallback that consumes the same
+Dockerfile, lock, and seal. It may use administrator-provided commands or the
+separately pinned builder SIF, with all graph/run/cache/temp paths in compute
+scratch. Neither route needs a Docker daemon or NVIDIA Container Toolkit on
+iTiger.
 
 The SIF contains:
 

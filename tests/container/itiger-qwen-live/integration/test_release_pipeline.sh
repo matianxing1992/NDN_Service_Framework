@@ -1,6 +1,6 @@
 #!/bin/sh
 set -eu
-repo=$(CDPATH= cd -- "$(dirname -- "$0")/../../../.." && pwd)
+repo=$(CDPATH='' cd -- "$(dirname -- "$0")/../../../.." && pwd)
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/spec110-release.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT INT TERM
 

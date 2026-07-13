@@ -8,28 +8,26 @@
 - **Verification Status**: `MEASURED` for login-node builder discovery;
   `UNVERIFIED` for compute-node rootless build and GPU runtime
 
-## Decision 1: Use Apptainer on iTiger, not Docker
+## Decision 1: Build OCI on GitHub and execute SIF on iTiger
 
-**Decision**: Build one OCI release rootlessly with Podman/Buildah inside a
-bounded iTiger Slurm CPU allocation, export it by digest to project storage,
-convert it to a SIF, and execute through Slurm using `apptainer exec --nv`.
-Retain GitHub Actions/GHCR only as an optional publication mirror.
+**Decision**: Build one OCI release with GitHub Actions Buildx from
+checksum-bound sealed dependency archives, publish its immutable GHCR digest,
+materialize that digest as SIF in a bounded iTiger CPU allocation, and execute
+through Slurm using `apptainer exec --nv`. Retain rootless Podman/Buildah on
+iTiger as a separately qualified fallback.
 
-**Rationale**: Live discovery found rootless Podman 5.2.2, Buildah 1.33.7,
-Apptainer 1.3.4, and Slurm `TmpFS=/scratch`; the Docker command is a Podman shim,
-not a daemon. This moves the large build off the disk-constrained workstation
-while preserving a daemonless OCI-to-SIF route. GitHub Actions attempts reached
-the build but could not clone pinned NFD and ndn-svs commits that currently exist
-only in the local source history. Apptainer uses the cluster driver through
-`--nv`; NVIDIA Container Toolkit is not a user prerequisite.
+**Rationale**: The compute-node host-tool probe failed, while GitHub already
+provides Buildx, GHCR write authority, OIDC signing, SBOM support, and an
+ephemeral builder. Publishing the two missing commits and sealing all six
+dependencies removes the measured clone blocker. iTiger then needs only Slurm,
+Apptainer, project storage, and the NVIDIA driver for execution.
 
 **Rejected**: installing packages separately on every compute node; running a
-Docker daemon; building on the login node or in the default home graphroot;
-storing a mutable Conda environment as release authority; making an unavailable
-public dependency commit or GitHub registry credential a mandatory gate; building
-the multi-gigabyte image on the disk-constrained workstation.
+Docker daemon; building on the login node, default home graphroot, or local
+disk-constrained workstation; cloning dependencies inside the Dockerfile;
+embedding Qwen weights; uploading the OCI image as an Actions artifact.
 
-**Measured correction (job 147712)**: login Podman/Buildah was not installed on
+**Measured fallback boundary (job 147712)**: login Podman/Buildah was not installed on
 the allocated `itiger01` compute environment. The host-tool route is therefore
 invalid unless administrators expose it on compute nodes. The next admissible
 fallback keeps the same Dockerfile/locks but materializes a pinned builder OCI

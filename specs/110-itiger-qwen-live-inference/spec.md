@@ -42,11 +42,12 @@ layout containing every user-space dependency required to run NFD, NDNSF,
 NDNSF-DI, Qwen export/reference code, ONNX Runtime GPU, PyTorch, and CUDA-bound
 inference inside Slurm allocations.
 
-The primary build path runs rootless Podman/Buildah only inside a bounded Slurm
-CPU allocation. Its container graph/run roots and temporary files use the
-allocation-selected compute scratch, the immutable OCI archive and SIF are
-promoted to project storage, and no large build state is written to `/home`.
-GitHub Actions/GHCR remains an optional publication mirror, not a prerequisite.
+The primary build path prepares checksum-bound sealed dependency archives in
+GitHub Actions, builds the existing GPU Dockerfile with Buildx, and publishes
+the immutable OCI digest to GHCR. An iTiger CPU allocation then materializes
+that exact digest as SIF under project storage. Rootless Podman/Buildah inside
+iTiger remains a separately qualified fallback; no large build state is written
+to `/home` on either route.
 
 **Why this priority**: The cluster supplies Slurm, Apptainer, and the NVIDIA
 driver, but not the project runtime. A GPU-visible shell is not an NDNSF-DI
@@ -60,9 +61,10 @@ container CUDA, library, and command evidence.
 **Acceptance Scenarios**:
 
 1. **Given** a clean iTiger account, **When** bootstrap runs, **Then** sealed
-   source, OCI archives, SIFs, models, identities, and evidence are placed under
-   `/project/$USER/ndnsf-di`; rootless build storage uses compute scratch and
-   never the default `/home/$USER/.local/share/containers` graphroot.
+   release records, SIFs, models, identities, and evidence are placed under
+   `/project/$USER/ndnsf-di`; the OCI is fetched only by immutable GHCR digest,
+   and any fallback rootless build storage uses compute scratch rather than the
+   default `/home/$USER/.local/share/containers` graphroot.
 2. **Given** a compute allocation, **When** the SIF starts with `--nv`, **Then**
    NFD, ndn-cxx tools, NDNSF bindings, NDNSF-DI, PyTorch, Transformers, ONNX
    Runtime, and the allocated CUDA devices all pass pinned probes.
@@ -262,10 +264,11 @@ processes terminate when the Slurm allocation ends.
 - **FR-002**: The runtime release MUST be a pinned OCI source materialized as a
   checksum-bound SIF and MUST include NFD, ndn-cxx, ndn-svs, NAC-ABE, NDNSF
   Core/Python, NDNSF-DI, Qwen tooling, PyTorch, Transformers, and ONNX Runtime
-  GPU. The primary builder MUST be rootless Podman/Buildah in a bounded Slurm
-  CPU allocation, either as administrator-supported compute commands or inside
-  a separately digest-qualified builder SIF; an external OCI builder is an
-  optional digest-equivalent publication path, not a prerequisite.
+  GPU. The primary builder MUST be GitHub Actions Buildx using checksum-bound
+  sealed dependency archives and `DEPENDENCY_SOURCE_MODE=sealed`, publishing an
+  immutable GHCR digest. Rootless Podman/Buildah in a bounded Slurm CPU
+  allocation is a separately qualified fallback and MUST consume the same
+  Dockerfile, locks, and sealed-source contract.
 - **FR-003**: The host supplies only the NVIDIA driver, Slurm, and Apptainer;
   user-space CUDA/runtime libraries MUST be versioned in the release and invoked
   with `apptainer exec --nv`.
@@ -275,6 +278,10 @@ processes terminate when the Slurm allocation ends.
   configured Slurm `TmpFS` (currently `/scratch`), or a validated `/tmp`
   fallback. `/home` is small-config only and MUST NOT be the rootless container
   graphroot, runroot, cache, or build context.
+- **FR-037**: Qwen weights and exports MUST remain outside the OCI build context
+  and image under `/project/$USER/ndnsf-di`; Actions artifacts MUST retain only
+  manifests, SBOM, signatures, checksums, and logs, never the OCI image or model
+  weights.
 - **FR-005**: Secrets and private identity material MUST be excluded from OCI/SIF
   and bound read-only at runtime with minimal scope and redacted evidence.
 - **FR-006**: Live partition, account, QOS, GRES, node, quota, Apptainer,

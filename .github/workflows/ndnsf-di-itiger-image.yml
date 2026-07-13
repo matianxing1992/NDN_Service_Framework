@@ -76,6 +76,23 @@ jobs:
             "sourceRevision=${GITHUB_SHA}" \
             "runUrl=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
             >"$RESULT_ROOT/build-context.txt"
+          df -h >"$RESULT_ROOT/runner-disk-before.txt"
+          docker system df >>"$RESULT_ROOT/runner-disk-before.txt" 2>&1 || true
+
+      - name: Prepare and verify sealed dependency archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 packaging/ndnsf-di-container/oci/scripts/prepare-sealed-context.py create \
+            --workspace . \
+            --lock packaging/ndnsf-di-container/oci/locks/gpu.lock \
+            --output .spec110-build \
+            --work-root "$RUNNER_TEMP/spec110-source-fetch"
+          python3 packaging/ndnsf-di-container/oci/scripts/prepare-sealed-context.py verify \
+            --workspace . \
+            --lock packaging/ndnsf-di-container/oci/locks/gpu.lock \
+            --output .spec110-build
+          cp .spec110-build/source-seal.json "$RESULT_ROOT/source-seal.json"
 
       - name: Scan source context for secrets
         shell: bash
@@ -83,6 +100,7 @@ jobs:
           set -euo pipefail
           python3 packaging/ndnsf-di-container/oci/scripts/scan-secrets.py \
             --path packaging/ndnsf-di-container \
+            --path .spec110-build \
             --scope source \
             --output "$RESULT_ROOT/source-secret-scan.json"
 
@@ -108,10 +126,27 @@ jobs:
             GPU_RUNTIME_BASE_IMAGE=${{ env.GPU_RUNTIME_BASE }}
             SOURCE_REVISION=${{ github.sha }}
             RELEASE_ID=${{ env.RELEASE_ID }}
+            DEPENDENCY_SOURCE_MODE=sealed
           cache-from: type=gha,scope=spec110-gpu
-          cache-to: type=gha,mode=max,scope=spec110-gpu
+          cache-to: type=gha,mode=min,scope=spec110-gpu
           provenance: mode=max
           sbom: true
+
+      - name: Record Buildx metadata and runner disk
+        shell: bash
+        env:
+          BUILD_METADATA: ${{ steps.build.outputs.metadata }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          value=json.loads(os.environ['BUILD_METADATA'])
+          Path(os.environ['RESULT_ROOT'], 'buildx-metadata.json').write_text(
+              json.dumps(value, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+          PY
+          df -h >"$RESULT_ROOT/runner-disk-after.txt"
+          docker system df >>"$RESULT_ROOT/runner-disk-after.txt" 2>&1 || true
 
       - uses: sigstore/cosign-installer@v3.8.2
 
@@ -177,6 +212,7 @@ jobs:
                   {"path": "gpuRuntimeBase", "digest": os.environ["RUNTIME_BASE"].rsplit("@", 1)[1]},
                   {"path": "gpu.lock", "digest": sha("packaging/ndnsf-di-container/oci/locks/gpu.lock")},
                   {"path": "Dockerfile.gpu", "digest": sha("packaging/ndnsf-di-container/oci/Dockerfile.gpu")},
+                  {"path": "source-seal.json", "digest": sha(root / "source-seal.json")},
               ],
               "sbom": {"location": "sbom.spdx.json", "digest": sha(root / "sbom.spdx.json")},
               "provenance": {"builder": "github-actions/buildx", "digest": digest},
