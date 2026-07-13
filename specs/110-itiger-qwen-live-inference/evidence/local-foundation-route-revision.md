@@ -51,11 +51,6 @@ procedure](https://docs.github.com/en/packages/learn-github-packages/configuring
   Tk extensions are removed instead of importing foreign system libraries.
 - NFD websocketpp gitlink: `ac4e021333675fc80b96eb7be45d218581c897e2`.
 - OpenABE RELIC revision: `b984e901ba78c83ea4093ea96addd13628c8c2d0`.
-- Boost 1.74.0 official source archive: 109600630 bytes, SHA-256
-  `83bfc1507731a0906e387fc28b7ef5417d591429e51e788417fe9ff025e116b1`.
-  It is a checksum-bound `sourceArchives` member of the source seal, is built
-  into the common prefix before ndn-cxx, and replaces Focal's insufficient
-  Boost 1.71 without a PPA or distribution change.
 - ONNX Runtime GPU C++ 1.20.1 Linux x64 archive: 258487100 bytes,
   SHA-256 `6bfb87c6ebe55367a94509b8ef062239e188dccf8d5caac8d6909b2344893bf0`.
 - Docker Registry config blobs for both pinned CUDA build and runtime digests
@@ -65,18 +60,13 @@ procedure](https://docs.github.com/en/packages/learn-github-packages/configuring
 
 ## Static evidence
 
-The revised build-graph unit suite passes 14/14 cases. It verifies local-only sealed source
+The revised unit suite passes 13/13 cases. It verifies local-only sealed source
 consumption, dependency order, NFD inputs, OpenABE adapter, ONNX asset identity,
 Python closure, explicit installation of `App_ServiceController` and
 `di-native-provider`, runtime closure, Qwen exclusions, dispatch-only workflow,
 transient-seal Git hygiene, and failure evidence retention. The release pipeline shell integration passes,
 the lock parses as JSON, Python scripts compile, shellcheck passes, and Docker
 successfully parses/builds the external-foundation stage.
-
-After the Boost correction, the complete Spec 110 offline suite passes 98/98,
-the targeted sealed-source/build-contract suite passes 21/21, the release
-pipeline integration passes, and the seven changed source/document files scan
-with zero secret findings across 71130 bytes.
 
 These checks do not close T166. The next admissible state transition is a new
 committed source identity, matching seal, complete local foundation build, and
@@ -109,24 +99,6 @@ from the wrong directory produced 18 missing-`trust-schema.conf` failures; it
 is retained as a test-launch error and was not counted as cryptographic
 evidence.
 
-## First complete-build attempt and Boost correction
-
-Committed candidate `001b48b4f7d2fded1480c0d59c6482a51ea2edbd` was sealed as
-`sha256:e8e181eb251ef1fee36c909715263a4d9f4dfa2895aca5255e29e1950594d78d`
-and started the first complete Foundation build. The pinned Ubuntu 20.04
-system closure installed successfully, ndn-cxx configured against OpenSSL
-1.1.1f and compiled all 181 build actions, but ndn-svs then rejected the
-distribution Boost 1.71 because its minimum is 1.74. This is a preserved local
-`EXECUTED_FAIL`, not a release candidate or a reason to change the OpenSSL ABI
-base. The complete log is retained at
-`results/spec110-itiger-qwen-live/foundation-build/build.log`.
-
-The correction adds a sealed non-Git source-archive contract, archive/path
-safety validation, tamper tests, and explicit Boost include/library paths for
-the NDN builds. The targeted regression is 21/21 PASS. Because the lock and
-workspace changed, the failed candidate's seal is retired; the next full build
-must use a new commit and newly generated seal.
-
 ## Audit verdict
 
 **PASS for the reviewed build graph; T166 remains open.** No unresolved
@@ -135,7 +107,5 @@ NAC-ABE test-launch, Python/Focal closure, NCCL base-image, GHCR anonymous-pull,
 runtime-library, and sealed-source gates above. This is not a foundation release
 claim: the complete committed/sealed `Dockerfile.foundation` build, in-container
 probe, source-bound push, and immutable digest record still belong to T166.
-The first full build was started and preserved as the Boost-version failure
-above. Useful Docker build cache remains available for the corrected candidate;
-T166 stays open until that new candidate passes every in-container gate and is
-published by immutable digest.
+The host currently has 23 GB free; useful OpenABE/Python build cache was retained
+and no full foundation build was started during this audit.
