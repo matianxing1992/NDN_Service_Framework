@@ -8,23 +8,24 @@
 - **Verification Status**: `MEASURED` for login-node builder discovery;
   `UNVERIFIED` for compute-node rootless build and GPU runtime
 
-## Decision 1: Build OCI on GitHub and execute SIF on iTiger
+## Decision 1: Build the foundation locally, assemble GPU OCI on GitHub, and execute on iTiger
 
-**Decision**: Build one OCI release with GitHub Actions Buildx from
-checksum-bound sealed dependency archives, publish its immutable GHCR digest,
-materialize that digest as SIF in a bounded iTiger CPU allocation, and execute
-through Slurm using `apptainer exec --nv`. Retain rootless Podman/Buildah on
-iTiger as a separately qualified fallback.
+**Decision**: Build and test the sealed NDN/security/NDNSF foundation locally,
+publish that foundation by immutable GHCR digest, and use a dispatch-only GitHub
+Buildx job only for the pinned ONNX Runtime/CUDA/Python delta. Materialize the
+final digest as SIF in a bounded iTiger CPU allocation and execute through Slurm
+using `apptainer exec --nv`. Retain rootless Podman/Buildah on iTiger as a
+separately qualified fallback.
 
-**Rationale**: The compute-node host-tool probe failed, while GitHub already
-provides Buildx, GHCR write authority, OIDC signing, SBOM support, and an
-ephemeral builder. Publishing the two missing commits and sealing all six
-dependencies removes the measured clone blocker. iTiger then needs only Slurm,
-Apptainer, project storage, and the NVIDIA driver for execution.
+**Rationale**: Two GitHub runs failed successively in NDNSD/NFD construction,
+and local preflight exposed independent OpenABE/RELIC adapter defects. The stable
+C/C++ dependency graph is cheaper to diagnose and cache locally. GitHub still
+supplies the useful ephemeral CUDA assembler, GHCR authority, OIDC signing,
+SBOM, and provenance. iTiger remains the only valid GPU evidence source.
 
-**Rejected**: installing packages separately on every compute node; running a
-Docker daemon; building on the login node, default home graphroot, or local
-disk-constrained workstation; cloning dependencies inside the Dockerfile;
+**Rejected**: rebuilding all sealed C/C++ dependencies in every GitHub run;
+installing packages separately on every compute node; running a Docker daemon;
+building on the login node or default home graphroot; cloning dependencies inside the Dockerfile;
 embedding Qwen weights; uploading the OCI image as an Actions artifact.
 
 **Measured fallback boundary (job 147712)**: login Podman/Buildah was not installed on

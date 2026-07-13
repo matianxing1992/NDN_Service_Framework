@@ -16,8 +16,9 @@ multi-node, GPU-backed Qwen distributed inference across seven sizes.
 
 ## Summary
 
-Build one digest-bound OCI GPU runtime containing the full NDN/NDNSF/NDNSF-DI
-and Qwen software stack, convert it to a SIF stored in iTiger project storage,
+Build and test the stable NDN/security/NDNSF foundation locally, publish it by
+immutable digest, let a dispatch-only GitHub job add only the pinned ONNX/CUDA
+GPU delta, then convert the final digest to a SIF in iTiger project storage,
 then launch it only through Slurm. The first vertical slice uses one GPU node,
 one unprivileged NFD, three distinct GPU-backed Qwen stage-provider processes,
 a ServiceController, and a User. It proves the secured NDNSF request, stage
@@ -105,7 +106,7 @@ pooled into the size-effect subset.
 |---|---|---|
 | Scheduler/allocation | Slurm | Discover, render, submit once, observe, terminate |
 | Container lifecycle | Apptainer adapter | Materialize SIF, bind, `--nv`, run, collect |
-| OCI content/build | Spec 108 packaging + Slurm/Apptainer adapter | Keep one Dockerfile/lock graph; build rootlessly in compute scratch and promote by digest |
+| OCI content/build | Spec 110 split packaging | Build sealed foundation locally; GitHub assembles GPU delta; iTiger validates SIF/GPU |
 | Inter-node forwarding | one job-scoped NFD per node | Explicit addresses, faces, routes, teardown |
 | Permission/security | NDNSF Core and ServiceController | Reuse unchanged mechanisms; run negative tests |
 | Model orchestration | NDNSF-DI | Finish generation session, stage placement, dependency I/O |
@@ -115,15 +116,15 @@ pooled into the size-effect subset.
 
 ### Runtime release
 
-The OCI build source is the single dependency source of truth. The primary
-delivery path makes every locked dependency commit reachable through its public
-repository, creates checksum-bound Git archives in GitHub Actions, verifies the
-shared source seal, and builds the existing GPU Dockerfile with
-`DEPENDENCY_SOURCE_MODE=sealed`. Buildx pushes the immutable OCI result directly
-to GHCR; Actions retains only evidence, SBOM, signatures, checksums, and logs.
-Qwen weights never enter the build context or image. A bounded iTiger CPU
-allocation pulls the exact GHCR digest and materializes the runtime SIF under
-`/project` before the GPU probe.
+The lock and local source seal remain the dependency source of truth. The
+primary path builds `Dockerfile.foundation` locally and proves NFD, ndn-cxx,
+ndn-svs, NDNSD, OpenABE/RELIC, NAC-ABE, and GPU-independent NDNSF before its
+immutable foundation digest is published. GitHub is dispatch-only and consumes
+that digest; `Dockerfile.gpu` verifies the official ONNX Runtime GPU SDK digest,
+installs the locked Python/CUDA closure, compiles the small native ONNX adapter,
+and pushes the final runtime digest. It cannot rebuild the foundation. Actions
+retains only evidence, SBOM, signatures, checksums, and logs. Qwen weights never
+enter either build context. iTiger alone validates CUDA devices and inference.
 
 Measured boundary: exact-once diagnostic job `147712` started on `itiger01` and
 failed because host Podman was absent; Buildah was therefore not attempted. It
@@ -131,7 +132,7 @@ selected `/tmp` rather than the configured `TmpFS=/scratch`. This is an executed
 negative, not a pre-start blocker. It does not block the GitHub primary route.
 
 Rootless Podman/Buildah on iTiger remains a fallback that consumes the same
-Dockerfile, lock, and seal. It may use administrator-provided commands or the
+foundation digest, GPU Dockerfile, and lock. It may use administrator-provided commands or the
 separately pinned builder SIF, with all graph/run/cache/temp paths in compute
 scratch. Neither route needs a Docker daemon or NVIDIA Container Toolkit on
 iTiger.

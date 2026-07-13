@@ -42,12 +42,13 @@ layout containing every user-space dependency required to run NFD, NDNSF,
 NDNSF-DI, Qwen export/reference code, ONNX Runtime GPU, PyTorch, and CUDA-bound
 inference inside Slurm allocations.
 
-The primary build path prepares checksum-bound sealed dependency archives in
-GitHub Actions, builds the existing GPU Dockerfile with Buildx, and publishes
-the immutable OCI digest to GHCR. An iTiger CPU allocation then materializes
-that exact digest as SIF under project storage. Rootless Podman/Buildah inside
-iTiger remains a separately qualified fallback; no large build state is written
-to `/home` on either route.
+The primary build path compiles and tests the expensive NFD, NDN, security, and
+GPU-independent NDNSF foundation locally from checksum-bound sealed archives.
+Only that foundation's immutable GHCR digest may enter the dispatch-only GitHub
+workflow. Buildx then adds the pinned ONNX Runtime GPU SDK, CUDA/PyTorch Python
+closure, and the small native ONNX provider adapter; it does not rebuild NFD or
+OpenABE. An iTiger CPU allocation materializes the resulting immutable digest as
+SIF, and iTiger GPU allocations provide the only GPU acceptance evidence.
 
 **Why this priority**: The cluster supplies Slurm, Apptainer, and the NVIDIA
 driver, but not the project runtime. A GPU-visible shell is not an NDNSF-DI
@@ -264,11 +265,16 @@ processes terminate when the Slurm allocation ends.
 - **FR-002**: The runtime release MUST be a pinned OCI source materialized as a
   checksum-bound SIF and MUST include NFD, ndn-cxx, ndn-svs, NAC-ABE, NDNSF
   Core/Python, NDNSF-DI, Qwen tooling, PyTorch, Transformers, and ONNX Runtime
-  GPU. The primary builder MUST be GitHub Actions Buildx using checksum-bound
-  sealed dependency archives and `DEPENDENCY_SOURCE_MODE=sealed`, publishing an
-  immutable GHCR digest. Rootless Podman/Buildah in a bounded Slurm CPU
-  allocation is a separately qualified fallback and MUST consume the same
-  Dockerfile, locks, and sealed-source contract.
+  GPU. The stable NFD/NDN/OpenABE/NAC-ABE/NDNSF foundation MUST be built and
+  tested locally from checksum-bound sealed archives and published by immutable
+  digest. The dispatch-only GitHub Buildx stage MUST consume that digest and MAY
+  build only the pinned ONNX/CUDA/Python GPU delta and native ONNX adapter before
+  publishing the final immutable GHCR digest. The operator MUST configure the
+  GHCR package public before dispatch, and the workflow MUST prove anonymous
+  digest access without registry credentials before accepting the release. It
+  MUST NOT clone or rebuild the sealed foundation dependencies. Rootless
+  Podman/Buildah in a bounded Slurm CPU allocation is a separately qualified
+  fallback under the same locks.
 - **FR-003**: The host supplies only the NVIDIA driver, Slurm, and Apptainer;
   user-space CUDA/runtime libraries MUST be versioned in the release and invoked
   with `apptainer exec --nv`.

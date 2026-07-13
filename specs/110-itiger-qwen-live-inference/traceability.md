@@ -6,7 +6,7 @@
 |---|---|---|---|---|
 | Use NDNSF-DI, not standalone Qwen | US2-US5 | FR-009-FR-026 | T065-T123 | SC-003-SC-009 |
 | Install the complete environment on iTiger | US1 | FR-001-FR-006 | T031-T049 | SC-001 |
-| Build sealed OCI in GitHub, publish GHCR digest, and materialize Apptainer/SIF on iTiger | US1 | FR-002-FR-006 | T031-T049, T153-T164 | runtime release verdict |
+| Build sealed foundation locally, assemble GPU OCI in GitHub, publish GHCR digest, and materialize SIF on iTiger | US1 | FR-002-FR-006 | T031-T049, T153-T167 | runtime release verdict |
 | Prove a controlled single-node three-provider/three-GPU candidate first | US2 | FR-009-FR-011, FR-018-FR-021 | T065-T084 | SC-003, SC-008 |
 | Add multi-node NDN as an independently keyed extension | US3 | FR-007-FR-010 | T050-T064, T088-T089 | SC-002, SC-004 |
 | Test every requested Qwen size under the controlled placement | US4 | FR-012-FR-017, FR-033 | T085-T105 | SC-005 |
@@ -18,10 +18,10 @@
 | Requirement | Design/contract | Implementation tasks | Test/evidence tasks |
 |---|---|---|---|
 | FR-001 | plan: allocation lifecycle | T022, T040, T053 | T047-T048, T061-T062, T127-T128 |
-| FR-002 | `contracts/runtime-release.md` | T031-T044, T148, T153-T157, T161, T163 | T042, T046, T149-T151, T158-T164, T047-T049 |
+| FR-002 | `contracts/runtime-release.md` | T031-T044, T148, T153-T157, T161, T163, T165 | T042, T046, T149-T151, T158-T167, T047-T049 |
 | FR-003 | runtime release host/runtime split | T031-T041 | T037, T048 |
-| FR-004 | plan: storage layout | T018-T020, T039-T040, T044, T148, T153-T157 | T045-T049, T149-T151, T158-T164, T130-T132 |
-| FR-037 | runtime forbidden content | T035, T153, T155, T157 | T154, T158-T164 |
+| FR-004 | plan: storage layout | T018-T020, T039-T040, T044, T148, T153-T157, T165 | T045-T049, T149-T151, T158-T167, T130-T132 |
+| FR-037 | runtime forbidden content | T035, T153, T155, T157, T165 | T154, T158-T167 |
 | FR-005 | runtime forbidden content | T028, T035, T040, T057 | T042, T130 |
 | FR-006 | LiveClusterSnapshot | T008-T009, T022, T044, T148 | T045-T049, T151, T098, T101 |
 | FR-007 | selected-transport multi-node gate | T050-T056, T063 | T060-T064, T088-T089 |

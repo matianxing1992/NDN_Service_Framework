@@ -25,13 +25,26 @@ Bulk content belongs under `/project`. `/home` is small config only. Compute
 scratch is selected and created by the job; on the currently observed Slurm
 configuration the advertised `TmpFS` is `/scratch`.
 
-## 3. Build and publish the OCI release with GitHub Actions
+## 3. Build the foundation locally, then dispatch GPU assembly
 
-Publish every locked dependency revision, then let the workflow prepare and
-verify sealed Git archives before Buildx runs the existing GPU Dockerfile with
-`DEPENDENCY_SOURCE_MODE=sealed`. The successful workflow publishes
-`ghcr.io/matianxing1992/ndnsf-di@sha256:<digest>` and retains only the source
-seal, release manifest, SBOM, signature, checksums, and logs.
+Prepare and verify `.spec110-build`, then build the stable foundation locally:
+
+```bash
+packaging/ndnsf-di-container/oci/scripts/build-foundation-local.sh
+```
+
+The command compiles and tests the sealed NFD/NDN/security/NDNSF core and emits
+`local-foundation.json`. After review and registry login, repeat with `--push`;
+the immutable `RepoDigest` is the required `foundation_image` workflow input.
+Before the one allowed dispatch, use the GitHub package settings page to make
+`ghcr.io/matianxing1992/ndnsf-di` public. The workflow does not attempt an
+unsupported REST visibility mutation; it accepts the release only after an
+empty-credential `docker manifest inspect` proves anonymous digest access.
+Dispatch `.github/workflows/ndnsf-di-itiger-image.yml` exactly once with the
+source-bound release ID, foundation digest, and digest-pinned CUDA bases. A
+source push alone cannot start the workflow. Buildx adds only the verified ONNX
+Runtime GPU SDK, CUDA/Python closure, and native ONNX adapter, then publishes
+`ghcr.io/matianxing1992/ndnsf-di@sha256:<digest>`.
 
 Qwen `.safetensors`, `.onnx`, `.gguf`, and related weights are excluded from the
 context and remain under `/project/$USER/ndnsf-di/models` or `artifacts`.
@@ -41,10 +54,11 @@ Slurm job that runs `apptainer build runtime.sif.partial
 docker://ghcr.io/...@sha256:<digest>`, verifies the SIF, and atomically promotes
 it below `/project/$USER/ndnsf-di/releases/<release-id>`.
 
-If GitHub's standard runner exhausts its measured disk, stop and preserve that
-failure; use a paid larger or self-hosted GitHub runner under a new build
-identity. The builder-SIF route remains an iTiger fallback. Job `147712` and its
-replacement candidate are not retried merely because the primary route changed.
+If GitHub's standard runner exhausts its measured disk during the much smaller
+GPU assembly, stop and preserve that failure; use a larger/self-hosted runner
+under a new identity. Never move foundation compilation back into that run.
+If anonymous digest inspection fails, preserve that candidate and correct the
+package setting before creating a new identity; do not rerun the same dispatch.
 
 ## 4. Discover iTiger and validate the materialized SIF
 
