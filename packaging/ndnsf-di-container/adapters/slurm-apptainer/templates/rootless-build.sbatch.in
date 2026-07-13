@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+#SBATCH --job-name=@@JOB_NAME@@
+#SBATCH --partition=@@PARTITION@@
+@@ACCOUNT_DIRECTIVE@@
+#SBATCH --qos=@@QOS@@
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=@@CPUS@@
+#SBATCH --mem=@@MEMORY@@
+#SBATCH --time=@@WALL_TIME@@
+#SBATCH --output=@@OUTPUT_LOG@@
+
+set -euo pipefail
+
+exec @@BUILDER@@ \
+  --mode @@MODE@@ \
+  --source-root @@SOURCE_ROOT@@ \
+  --project-root @@PROJECT_ROOT@@ \
+  --release-id @@RELEASE_ID@@ \
+  --evidence-dir @@EVIDENCE_DIR@@ \
+  --probe-base @@PROBE_BASE@@ \
+  --gpu-build-base @@GPU_BUILD_BASE@@ \
+  --gpu-runtime-base @@GPU_RUNTIME_BASE@@

@@ -13,6 +13,7 @@
 ```text
 ndnsf-di-itiger-qwen discover --output <cluster.json>
 ndnsf-di-itiger-qwen release validate --manifest <release.json>
+ndnsf-di-itiger-qwen release build-render --source <sealed-source> --output <job.sbatch>
 ndnsf-di-itiger-qwen release materialize --oci <digest-ref> --project <root>
 ndnsf-di-itiger-qwen storage admit --profile <candidate.json>
 ndnsf-di-itiger-qwen network render --cluster <cluster.json> --output <job.sh>

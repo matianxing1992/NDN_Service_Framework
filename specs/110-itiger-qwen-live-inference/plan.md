@@ -9,8 +9,9 @@ multi-node, GPU-backed Qwen distributed inference across seven sizes.
 
 - **Origin Skill**: Academic Research Suite `experiment-agent`, plan mode
 - **Created**: 2026-07-13
-- **Artifact Version**: `spec110-plan-v1`
-- **Verification Status**: `PROPOSED`; current code inspected, live iTiger facts unverified this turn
+- **Artifact Version**: `spec110-plan-v2-rootless-itiger-build`
+- **Verification Status**: `IN_PROGRESS`; live login-node build facts measured,
+  compute-node rootless build and GPU runtime still unverified
 - **Human-read sources**: repository source and Specs 107–109 only
 
 ## Summary
@@ -33,7 +34,8 @@ not substitutes.
 bindings, NDNSF-DI, ONNX Runtime GPU, PyTorch, Transformers, CUDA user-space
 runtime, Slurm, Apptainer
 **Storage**: immutable files/manifests under `/project/$USER/ndnsf-di`; job-unique
-scratch under `/tmp/$USER/ndnsf-di/$SLURM_JOB_ID`; `/home` small config only
+scratch selected from `SLURM_TMPDIR`, Slurm `TmpFS` (`/scratch` observed), or a
+validated `/tmp` fallback; `/home` small config only
 **Testing**: Boost.Test, pytest, shell integration tests, MiniNDN security/network
 regressions, offline adapter fixtures, bounded live Slurm probes and experiments
 **Target platform**: iTiger `bigTiger` compute nodes selected by live GRES
@@ -43,9 +45,10 @@ operator CLI, experiment harness, and evidence schemas
 **Performance protocol**: deterministic correctness first; then three original
 60-second candidate repetitions and three matched staged repetitions per passing
 size; warmup outside measurement
-**Constraints**: no Docker daemon or persistent processes on iTiger; no local
-bulk models; no automatic rerun; no CPU fallback under GPU identity; no physical
-production authority
+**Constraints**: no Docker daemon or persistent processes on iTiger; rootless
+builds only in bounded CPU allocations with explicit scratch graph/run roots;
+no local bulk models; no automatic rerun; no CPU fallback under GPU identity;
+no physical production authority
 **Scale**: seven model sizes on one-node/three-GPU placements, one separately
 identified multi-node 0.5B extension, three correctness token lengths, and six
 performance repetitions per passing size
@@ -102,7 +105,7 @@ pooled into the size-effect subset.
 |---|---|---|
 | Scheduler/allocation | Slurm | Discover, render, submit once, observe, terminate |
 | Container lifecycle | Apptainer adapter | Materialize SIF, bind, `--nv`, run, collect |
-| OCI content | Spec 108 packaging | Finish GPU image/locks/scans; no second build graph |
+| OCI content/build | Spec 108 packaging + Slurm/Apptainer adapter | Keep one Dockerfile/lock graph; build rootlessly in compute scratch and promote by digest |
 | Inter-node forwarding | one job-scoped NFD per node | Explicit addresses, faces, routes, teardown |
 | Permission/security | NDNSF Core and ServiceController | Reuse unchanged mechanisms; run negative tests |
 | Model orchestration | NDNSF-DI | Finish generation session, stage placement, dependency I/O |
@@ -112,16 +115,21 @@ pooled into the size-effect subset.
 
 ### Runtime release
 
-The OCI build source is the single dependency source of truth. The default
-delivery path is a GitHub Actions build from this repository to
-`ghcr.io/matianxing1992/ndnsf-di`, because the workstation has limited disk.
-The workflow records the immutable digest in a release manifest; a public GHCR
-research image avoids placing registry credentials on iTiger. If publication
-cannot be public, Apptainer receives a short-lived registry credential only via
-the job/login environment and the evidence redactor must prove it was not
-persisted. On iTiger,
-the adapter performs OCI-to-SIF materialization under `/project`; it does not
-install packages with root and does not need Docker or NVIDIA Container Toolkit.
+The OCI build source is the single dependency source of truth. The primary
+delivery path seals the repository plus otherwise-unpublished pinned dependency
+commits in project storage, then starts one bounded Slurm CPU build allocation.
+Rootless Podman/Buildah uses explicit graphroot, runroot, cache, and temporary
+paths below the selected compute scratch; it exports a digest-bound OCI archive
+to a partial project path, verifies it, atomically promotes it, and materializes
+the SIF under `/project`. The default Podman graphroot under `/home` is forbidden.
+
+The existing GitHub Actions/GHCR workflow is retained as an optional publication
+mirror. It cannot be the completion gate while pinned NFD and ndn-svs commits are
+not fetchable from their public remotes. If publication is later enabled, the
+published image must be digest-equivalent and any short-lived registry credential
+must remain in process environment only and be excluded from evidence. Neither
+route installs packages with root or needs a Docker daemon/NVIDIA Container
+Toolkit on iTiger.
 
 The SIF contains:
 
@@ -147,7 +155,8 @@ provisioned separately and bound read-only at job runtime.
 ├── campaigns/<campaign-id>/
 └── evidence/<run-id>/
 
-/tmp/$USER/ndnsf-di/$SLURM_JOB_ID/
+<selected-compute-scratch>/ndnsf-di/$SLURM_JOB_ID/
+├── container/{graphroot,runroot,cache,tmp}/
 ├── nfd/<node>/
 ├── work/<role>/
 ├── logs/
@@ -241,7 +250,8 @@ contract and is not a job retry.
 1. Seal source, runtime requirements, workload, and new Spec 110 identity rules.
 2. Finish/verify the Spec 107 generation-session capability and the Spec 108
    GPU OCI/Apptainer capability in their owning source paths.
-3. Build the OCI remotely, scan it, and materialize/verify the SIF on iTiger.
+3. Run the compute-node rootless diagnostic, then build/scan/promote the OCI and
+   materialize/verify the SIF in bounded iTiger allocations.
 4. Run one compute-node runtime/GPU probe.
 5. Stage/seal 0.5B; run full-model oracle and stage interface validation.
 6. Execute the single-node/three-GPU 0.5B 1/2/32-token cells.

@@ -4,22 +4,30 @@
 
 - **Origin Skill**: Academic Research Suite `experiment-agent`, plan mode
 - **Created**: 2026-07-13
-- **Artifact Version**: `spec110-research-v1`
-- **Verification Status**: `ANALYZED` for repository code; `UNVERIFIED` for current iTiger facts
+- **Artifact Version**: `spec110-research-v2-rootless-itiger-build`
+- **Verification Status**: `MEASURED` for login-node builder discovery;
+  `UNVERIFIED` for compute-node rootless build and GPU runtime
 
 ## Decision 1: Use Apptainer on iTiger, not Docker
 
-**Decision**: Build one OCI release with GitHub Actions, publish it by digest as
-`ghcr.io/matianxing1992/ndnsf-di`, and pull/convert it as a SIF in project
-storage. Execute through Slurm using `apptainer exec --nv`.
+**Decision**: Build one OCI release rootlessly with Podman/Buildah inside a
+bounded iTiger Slurm CPU allocation, export it by digest to project storage,
+convert it to a SIF, and execute through Slurm using `apptainer exec --nv`.
+Retain GitHub Actions/GHCR only as an optional publication mirror.
 
-**Rationale**: iTiger exposes Slurm and Apptainer, not a user-owned Docker
-daemon. Apptainer uses the cluster driver through `--nv`; NVIDIA Container
-Toolkit is a Docker-host prerequisite and is not installed by the user here.
+**Rationale**: Live discovery found rootless Podman 5.2.2, Buildah 1.33.7,
+Apptainer 1.3.4, and Slurm `TmpFS=/scratch`; the Docker command is a Podman shim,
+not a daemon. This moves the large build off the disk-constrained workstation
+while preserving a daemonless OCI-to-SIF route. GitHub Actions attempts reached
+the build but could not clone pinned NFD and ndn-svs commits that currently exist
+only in the local source history. Apptainer uses the cluster driver through
+`--nv`; NVIDIA Container Toolkit is not a user prerequisite.
 
 **Rejected**: installing packages separately on every compute node; running a
-Docker daemon; storing a mutable Conda environment as the release authority;
-building the multi-gigabyte image on the disk-constrained workstation.
+Docker daemon; building on the login node or in the default home graphroot;
+storing a mutable Conda environment as release authority; making an unavailable
+public dependency commit or GitHub registry credential a mandatory gate; building
+the multi-gigabyte image on the disk-constrained workstation.
 
 ## Decision 2: Make the SIF self-complete for user-space software
 
@@ -131,10 +139,13 @@ operational defects.
 
 ## Decision 11: Stage storage and capacity deliberately
 
-**Decision**: Bulk assets use project storage, execution scratch uses compute
-`/tmp`, and durable evidence is promoted before teardown. Admission includes
-actual-path capacity, quota signals, model/export size, SIF, reserve, and partial
-copy cleanup. 32B/72B remain open until real capacity exists.
+**Decision**: Bulk assets use project storage. Build/execution jobs select and
+record job-unique compute scratch from `SLURM_TMPDIR`, configured Slurm `TmpFS`
+(`/scratch` observed), or a validated `/tmp` fallback. Rootless container
+graph/run roots must stay on that scratch. Durable OCI/SIF/evidence is promoted
+atomically before teardown. Admission includes actual-path capacity, quota
+signals, model/export size, SIF, reserve, and partial-copy cleanup. 32B/72B
+remain open until real capacity exists.
 
 **Rationale**: Recorded initial project guidance may not accommodate 72B source,
 exports, and reserve. Shared `df` is not a user quota measurement.

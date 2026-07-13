@@ -2,7 +2,8 @@
 
 **Feature Branch**: `110-itiger-qwen-live-inference`
 **Created**: 2026-07-13
-**Status**: Draft — implementation and live execution not started
+**Status**: In progress — offline foundation and MiniNDN packaged-path work are
+implemented; live iTiger runtime release and inference remain open
 **Input**: Install the complete NDNSF-DI environment on iTiger and use it to
 perform genuine distributed Qwen inference across model sizes.
 
@@ -41,6 +42,12 @@ layout containing every user-space dependency required to run NFD, NDNSF,
 NDNSF-DI, Qwen export/reference code, ONNX Runtime GPU, PyTorch, and CUDA-bound
 inference inside Slurm allocations.
 
+The primary build path runs rootless Podman/Buildah only inside a bounded Slurm
+CPU allocation. Its container graph/run roots and temporary files use the
+allocation-selected compute scratch, the immutable OCI archive and SIF are
+promoted to project storage, and no large build state is written to `/home`.
+GitHub Actions/GHCR remains an optional publication mirror, not a prerequisite.
+
 **Why this priority**: The cluster supplies Slurm, Apptainer, and the NVIDIA
 driver, but not the project runtime. A GPU-visible shell is not an NDNSF-DI
 deployment.
@@ -52,9 +59,10 @@ container CUDA, library, and command evidence.
 
 **Acceptance Scenarios**:
 
-1. **Given** a clean iTiger account, **When** bootstrap runs, **Then** bulk
-   source, SIFs, models, identities, and evidence are placed under
-   `/project/$USER/ndnsf-di`, never `/home` or the workstation.
+1. **Given** a clean iTiger account, **When** bootstrap runs, **Then** sealed
+   source, OCI archives, SIFs, models, identities, and evidence are placed under
+   `/project/$USER/ndnsf-di`; rootless build storage uses compute scratch and
+   never the default `/home/$USER/.local/share/containers` graphroot.
 2. **Given** a compute allocation, **When** the SIF starts with `--nv`, **Then**
    NFD, ndn-cxx tools, NDNSF bindings, NDNSF-DI, PyTorch, Transformers, ONNX
    Runtime, and the allocated CUDA devices all pass pinned probes.
@@ -211,7 +219,8 @@ processes terminate when the Slurm allocation ends.
    is reconciled, **Then** the original Slurm state, exit, nodes, logs, and
    partial evidence remain visible.
 2. **Given** scratch teardown, **When** a job ends, **Then** durable evidence is
-   promoted atomically before `/tmp/$USER/ndnsf-di/$SLURM_JOB_ID` is disposable.
+   promoted atomically before the recorded job-unique selected scratch path is
+   disposable.
 3. **Given** cleanup, **When** dry-run executes, **Then** active jobs, identities,
    sealed models, current/prior SIFs, candidate manifests, and accepted evidence
    are protected.
@@ -225,6 +234,10 @@ processes terminate when the Slurm allocation ends.
 - Slurm account, QOS, partition, node, or GRES labels change.
 - Compute nodes have different Apptainer versions or driver visibility.
 - Shared `/project` is visible but a per-user quota command is unavailable.
+- Rootless Podman/Buildah exists on the login node but differs or is unavailable
+  inside the allocated compute node.
+- Slurm advertises `/scratch` but `SLURM_TMPDIR` is unset or a selected scratch
+  path is not writable.
 - NFD selects a management address unreachable from another compute node.
 - NFD TCP works but UDP is filtered, or vice versa.
 - One provider starts late, dies, or publishes a stale boot/lease identity.
@@ -246,17 +259,25 @@ processes terminate when the Slurm allocation ends.
   model, export, or inference daemon may run persistently on the login node.
 - **FR-002**: The runtime release MUST be a pinned OCI source materialized as a
   checksum-bound SIF and MUST include NFD, ndn-cxx, ndn-svs, NAC-ABE, NDNSF
-  Core/Python, NDNSF-DI, Qwen tooling, PyTorch, Transformers, and ONNX Runtime GPU.
+  Core/Python, NDNSF-DI, Qwen tooling, PyTorch, Transformers, and ONNX Runtime
+  GPU. The primary builder MUST be rootless Podman/Buildah in a bounded Slurm
+  CPU allocation; an external OCI builder is an optional digest-equivalent
+  publication path, not a prerequisite.
 - **FR-003**: The host supplies only the NVIDIA driver, Slurm, and Apptainer;
   user-space CUDA/runtime libraries MUST be versioned in the release and invoked
   with `apptainer exec --nv`.
-- **FR-004**: Bulk code, SIF, models, stage artifacts, identities, and evidence
-  MUST use `/project/$USER/ndnsf-di`; compute scratch MUST use a job-unique
-  `/tmp/$USER/ndnsf-di/$SLURM_JOB_ID`; `/home` is small-config only.
+- **FR-004**: Bulk code, OCI archives, SIF, models, stage artifacts, identities,
+  and evidence MUST use `/project/$USER/ndnsf-di`; build and execution scratch
+  MUST use a recorded job-unique compute path selected from `SLURM_TMPDIR`, the
+  configured Slurm `TmpFS` (currently `/scratch`), or a validated `/tmp`
+  fallback. `/home` is small-config only and MUST NOT be the rootless container
+  graphroot, runroot, cache, or build context.
 - **FR-005**: Secrets and private identity material MUST be excluded from OCI/SIF
   and bound read-only at runtime with minimal scope and redacted evidence.
-- **FR-006**: Live partition, account, QOS, GRES, node, quota, Apptainer, driver,
-  and address facts MUST be rediscovered before each submission wave.
+- **FR-006**: Live partition, account, QOS, GRES, node, quota, Apptainer,
+  rootless Podman/Buildah, compute-scratch, driver, and address facts MUST be
+  rediscovered before the submission wave that consumes them; login-node tool
+  presence alone MUST NOT prove compute-node build capability.
 - **FR-007**: Multi-node mode MUST remain disabled until an allocation-scoped
   probe passes the candidate-selected NFD transport (TCP by default), NFD
   face/route state, and secured generic invocation on at least two compute

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -16,6 +17,7 @@ if str(HERE) not in sys.path:
 from spec110_candidate import IdentityError, freeze_candidate
 from spec110_evidence import EvidenceValidationError, validate_evidence
 from spec110_operator import OperatorSafetyError, load_safe_json, validate_safe_document
+from spec110_rootless_build import RootlessBuildError, render_rootless_build_job
 from spec110_storage import StorageError, evaluate_admission, plan_cleanup
 
 
@@ -51,6 +53,16 @@ def parser() -> argparse.ArgumentParser:
     release = commands.add_parser("release").add_subparsers(dest="release_command", required=True)
     release_validate = release.add_parser("validate")
     release_validate.add_argument("--manifest", required=True)
+    release_build = release.add_parser("build-render")
+    release_build.add_argument("--source", required=True)
+    release_build.add_argument("--output", required=True)
+    release_build.add_argument("--release-id", required=True)
+    release_build.add_argument("--mode", choices=("diagnostic", "full"), default="diagnostic")
+    release_build.add_argument("--project", default=f"/project/{os.environ.get('USER', '')}/ndnsf-di")
+    release_build.add_argument("--partition", default="bigTiger")
+    release_build.add_argument("--account", default="")
+    release_build.add_argument("--qos", default="normal")
+    release_build.add_argument("--wall-time", default="00:05:00")
     release_materialize = release.add_parser("materialize")
     release_materialize.add_argument("--oci", required=True)
     release_materialize.add_argument("--project", required=True)
@@ -118,6 +130,20 @@ def main(argv: list[str] | None = None) -> int:
                 value = load_safe_json(args.manifest)
                 _write({"status": "PASS", "manifestSafe": True, "schemaVersion": value.get("schemaVersion")})
                 return 0
+            if args.release_command == "build-render":
+                value = render_rootless_build_job(
+                    source_root=args.source,
+                    project_root=args.project,
+                    output_path=args.output,
+                    release_id=args.release_id,
+                    mode=args.mode,
+                    partition=args.partition,
+                    account=args.account,
+                    qos=args.qos,
+                    wall_time=args.wall_time,
+                )
+                _write(value)
+                return 0
             return _blocked("LIVE_SIF_MATERIALIZATION_REQUIRED")
         if args.command == "storage":
             result = evaluate_admission(load_safe_json(args.profile))
@@ -173,7 +199,7 @@ def main(argv: list[str] | None = None) -> int:
     except OperatorSafetyError as error:
         _write({"status": "REJECTED", "reasonCode": str(error)})
         return EXIT_SAFETY
-    except (IdentityError, StorageError) as error:
+    except (IdentityError, RootlessBuildError, StorageError) as error:
         _write({"status": "INVALID", "reasonCode": str(error)})
         return EXIT_MISUSE
     except EvidenceValidationError as error:

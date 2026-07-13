@@ -6,7 +6,7 @@
 |---|---|---|---|---|
 | Use NDNSF-DI, not standalone Qwen | US2-US5 | FR-009-FR-026 | T065-T123 | SC-003-SC-009 |
 | Install the complete environment on iTiger | US1 | FR-001-FR-006 | T031-T049 | SC-001 |
-| Use OCI as build source and Apptainer/SIF on iTiger | US1 | FR-002-FR-005 | T031-T045 | runtime release verdict |
+| Build OCI rootlessly in Slurm scratch and materialize Apptainer/SIF | US1 | FR-002-FR-006 | T031-T049 | runtime release verdict |
 | Prove a controlled single-node three-provider/three-GPU candidate first | US2 | FR-009-FR-011, FR-018-FR-021 | T065-T084 | SC-003, SC-008 |
 | Add multi-node NDN as an independently keyed extension | US3 | FR-007-FR-010 | T050-T064, T088-T089 | SC-002, SC-004 |
 | Test every requested Qwen size under the controlled placement | US4 | FR-012-FR-017, FR-033 | T085-T105 | SC-005 |
@@ -18,11 +18,11 @@
 | Requirement | Design/contract | Implementation tasks | Test/evidence tasks |
 |---|---|---|---|
 | FR-001 | plan: allocation lifecycle | T022, T040, T053 | T047-T048, T061-T062, T127-T128 |
-| FR-002 | `contracts/runtime-release.md` | T031-T041 | T042-T049 |
+| FR-002 | `contracts/runtime-release.md` | T031-T044 | T042, T046-T049 |
 | FR-003 | runtime release host/runtime split | T031-T041 | T037, T048 |
-| FR-004 | plan: storage layout | T018-T020, T039-T040 | T044-T045, T130-T132 |
+| FR-004 | plan: storage layout | T018-T020, T039-T040, T044 | T045-T049, T130-T132 |
 | FR-005 | runtime forbidden content | T028, T035, T040, T057 | T042, T130 |
-| FR-006 | LiveClusterSnapshot | T008-T009, T022 | T044, T098, T101 |
+| FR-006 | LiveClusterSnapshot | T008-T009, T022, T044 | T045-T049, T098, T101 |
 | FR-007 | selected-transport multi-node gate | T050-T056, T063 | T060-T064, T088-T089 |
 | FR-008 | `contracts/allocation-topology.md` | T051, T053-T054 | T055, T062, T127 |
 | FR-009 | security architecture | T057-T058, T067, T069 | T059, T062, T073, T079-T083 |
@@ -52,7 +52,7 @@
 | FR-033 | matrix completion | T011-T017 | T105, T132, T139, T146 |
 | FR-034 | ownership table | T002-T003, T031-T073 | T073, T134-T142 |
 | FR-035 | authority boundary | T014-T015 | T133, T144, T146 |
-| FR-036 | operator CLI safety | T021-T023 | T044-T047, T060-T061, T125, T130 |
+| FR-036 | operator CLI safety | T021-T023, T044 | T045-T048, T060-T061, T125, T130 |
 
 ## Success criteria evidence
 
