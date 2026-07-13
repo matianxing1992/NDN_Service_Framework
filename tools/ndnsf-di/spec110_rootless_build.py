@@ -33,6 +33,10 @@ DEFAULT_GPU_RUNTIME_BASE = (
     "nvidia/cuda@sha256:"
     "0bb88834d973ca1b450fcc2a05333c6fe45510bee289912a5391274c351c4a4d"
 )
+DEFAULT_BUILDER_OCI = (
+    "quay.io/buildah/stable@sha256:"
+    "8570703f0feb3f39d180e932a2ec8e350ee860790062a5ecd5a3b3ac51f337c5"
+)
 
 
 def _digest(path: Path) -> str:
@@ -76,6 +80,8 @@ def render_rootless_build_job(
     probe_base: str = DEFAULT_PROBE_BASE,
     gpu_build_base: str = DEFAULT_GPU_BUILD_BASE,
     gpu_runtime_base: str = DEFAULT_GPU_RUNTIME_BASE,
+    builder_mode: str = "auto",
+    builder_oci: str = DEFAULT_BUILDER_OCI,
     allow_test_root: bool = False,
 ) -> dict[str, Any]:
     """Render one immutable CPU build job and a checksum-bound review record."""
@@ -84,6 +90,8 @@ def render_rootless_build_job(
     output = _absolute(output_path, "OUTPUT")
     if mode not in {"diagnostic", "full"}:
         raise RootlessBuildError("ROOTLESS_BUILD_MODE_INVALID")
+    if builder_mode not in {"auto", "host", "apptainer-sif"}:
+        raise RootlessBuildError("ROOTLESS_BUILD_BUILDER_MODE_INVALID")
     _safe_token(release_id, "RELEASE_ID")
     for label, value in (("PARTITION", partition), ("QOS", qos), ("MEMORY", memory)):
         _safe_token(value, label)
@@ -95,6 +103,7 @@ def render_rootless_build_job(
         ("PROBE_BASE", probe_base),
         ("GPU_BUILD_BASE", gpu_build_base),
         ("GPU_RUNTIME_BASE", gpu_runtime_base),
+        ("BUILDER_OCI", builder_oci),
     ):
         if DIGEST_REF.fullmatch(value) is None:
             raise RootlessBuildError(f"ROOTLESS_BUILD_{label}_NOT_PINNED")
@@ -163,6 +172,8 @@ def render_rootless_build_job(
         "PROBE_BASE": shlex.quote(probe_base),
         "GPU_BUILD_BASE": shlex.quote(gpu_build_base),
         "GPU_RUNTIME_BASE": shlex.quote(gpu_runtime_base),
+        "BUILDER_MODE": builder_mode,
+        "BUILDER_OCI": shlex.quote(builder_oci),
     }
     text = template.read_text(encoding="utf-8")
     for key, value in values.items():
@@ -188,6 +199,11 @@ def render_rootless_build_job(
         "diagnosticOnly": mode == "diagnostic",
         "releaseId": release_id,
         "mode": mode,
+        "builder": {
+            "requestedMode": builder_mode,
+            "ociRef": builder_oci,
+            "ociDigest": "sha256:" + builder_oci.rsplit("@sha256:", 1)[1],
+        },
         "sourceRoot": str(source),
         "projectRoot": str(project),
         "scriptPath": str(output),
@@ -217,6 +233,7 @@ def render_rootless_build_job(
 
 
 __all__ = [
+    "DEFAULT_BUILDER_OCI",
     "DEFAULT_GPU_BUILD_BASE",
     "DEFAULT_GPU_RUNTIME_BASE",
     "DEFAULT_PROBE_BASE",
