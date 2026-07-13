@@ -20,7 +20,7 @@ class GithubSealedWorkflowTests(unittest.TestCase):
         patterns = set((REPO / ".dockerignore").read_text().splitlines())
         for required in (
             "*.safetensors", "*.gguf", "*.ckpt", "pytorch_model*.bin",
-            "*.onnx", "*.onnx_data",
+            "*.onnx", "*.onnx_data", "RELEASE",
         ):
             self.assertIn(required, patterns)
 

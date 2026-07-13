@@ -141,6 +141,32 @@ class SealedContextTests(unittest.TestCase):
         self.assertEqual(result.returncode, 4)
         self.assertIn("SOURCE_SEAL_DEPENDENCY_INVALID:NFD", result.stderr)
 
+    def test_dependency_archive_does_not_hydrate_lfs_content(self) -> None:
+        dependency = self.dependencies / "NFD"
+        (dependency / ".gitattributes").write_text("*.bin filter=lfs\n", encoding="utf-8")
+        (dependency / "artifact.bin").write_text("pointer-content\n", encoding="utf-8")
+        git(dependency, "add", ".gitattributes", "artifact.bin")
+        git(dependency, "commit", "-qm", "add lfs pointer")
+        git(dependency, "config", "filter.lfs.smudge", "sed s/pointer/hydrated/")
+        value = json.loads(self.lock.read_text())
+        value["sourceRepositories"]["NFD"]["revision"] = git(
+            dependency, "rev-parse", "HEAD"
+        )
+        self.lock.write_text(json.dumps(value), encoding="utf-8")
+        git(self.workspace, "add", "gpu.lock")
+        git(self.workspace, "commit", "-qm", "update lock")
+        result = self.run_tool("create", "--dependency-root", str(self.dependencies))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        committed = subprocess.check_output(
+            ["git", "-C", str(dependency), "show", "HEAD:artifact.bin"]
+        )
+        with tarfile.open(self.output / "archives/NFD.tar", "r:") as archive:
+            stream = archive.extractfile("artifact.bin")
+            self.assertIsNotNone(stream)
+            archived = stream.read()
+            self.assertEqual(archived, committed)
+            self.assertNotIn(b"hydrated-content", archived)
+
     def test_unsafe_tar_member_is_rejected(self) -> None:
         spec = importlib.util.spec_from_file_location("prepare_sealed_context", SCRIPT)
         module = importlib.util.module_from_spec(spec)
