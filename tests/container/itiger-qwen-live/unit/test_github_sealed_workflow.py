@@ -315,8 +315,8 @@ class GithubSealedWorkflowTests(unittest.TestCase):
         ).read_text()
         runtime = dockerfile.split("AS runtime", 1)[1]
         self.assertIn("missing_packages", runtime)
-        self.assertIn("dpkg-query -W -f='${Status}'", runtime)
-        self.assertIn("install ok installed", runtime)
+        self.assertIn("dpkg-query -W -f='${db:Status-Abbrev}'", runtime)
+        self.assertIn("grep -qx '.i '", runtime)
         self.assertNotIn(
             "apt-get install -y --no-install-recommends "
             "$(cat /tmp/runtime-system-packages)",
