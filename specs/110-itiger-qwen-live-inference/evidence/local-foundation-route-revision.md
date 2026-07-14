@@ -323,3 +323,54 @@ archives and manifest retained in its `source-seal/` subdirectory.
 Runtime GPU, final OCI, SIF, Slurm, and Qwen inference remain gated by a newly
 authorized T174 dispatch and terminal T175 evidence; no GPU workflow was
 dispatched during T173.
+
+## Vendored-ELF-closure replacement Foundation candidate (T180)
+
+The audited T179 repair was committed and pushed as
+`01f730d122a4408737443d75a65dc0d5ff99af5b`. Its independently created and
+verified source seal is
+`sha256:dd55acbc8fc5af5a3f2b2a8b0eda7c9457d13356e35350629dba47bd870be298`;
+the seal binds workspace archive
+`sha256:e409698a1c9c684523054c49898ac31ed78ee24901f73b70619630f70ed20582`,
+eight locked dependency archives, and lock digest
+`sha256:e112ef00cfd0aec3efb4b0fb8140782b1a6973ed4e95ce56fbfed1c1fa3638a5`.
+Creation and independent verification returned the same seal digest.
+
+The source-bound tag was proved absent before the build. The exact sealed
+Foundation rebuild then completed ndn-cxx 181/181, ndn-svs 10/10, NDNSD 5/5,
+NFD 147/147, OpenABE's upstream suites and CLI positive/negative probes,
+NAC-ABE 28/28 with no errors, and NDNSF 70/70. The repaired fail-closed runtime
+closure derivation also completed inside the real build. The same-source
+Builder reported NFD/NFDC `24.07` and NDNSF `0.1.0`.
+
+The resulting scratch image has local ID
+`sha256:244427577b722d5f18d1f7c39bf1ee8584dc6bd7942804a670ba00319fb763b0`,
+uncompressed size 360566424 bytes, the exact source-revision label, 16 measured
+runtime-system-package entries, and the NDNSF shared library. Because this is
+an intentional scratch image, it contains no shell; filesystem inspection used
+`docker create` plus `docker cp`, while executable version probes ran against
+the same-source Builder before that disposable image was removed.
+
+The tag
+`ghcr.io/matianxing1992/ndnsf-di-foundation:spec110-foundation-01f730d122a4408737443d75a65dc0d5ff99af5b`
+was pushed exactly once. GHCR returned immutable digest
+`sha256:71711601004a6f032fda032037691409324d2adb867efcd94be48b2d879227aa`.
+An inspection with a fresh empty Docker configuration proved anonymous digest
+access and bound config
+`sha256:244427577b722d5f18d1f7c39bf1ee8584dc6bd7942804a670ba00319fb763b0`
+plus one compressed layer with digest
+`sha256:eccbd670b7f79d9cbfe4fc8d2288a74d314151e3718f4e324fa417fb5854684e`
+and size 92973900 bytes. The anonymous manifest hash equals the published
+manifest digest. Build log, local result, anonymous manifest, and complete
+source seal are retained under
+`results/spec110-itiger-qwen-live/foundation-build-01f730d/`. After
+verification, only the disposable Builder tag and 5.916 GB of fully
+reclaimable BuildKit cache were removed; the final image and evidence remain.
+
+**T180 verdict: PASS.** This accepts only the repaired Foundation boundary.
+Run `29309152207`, its source/Foundation/release identities, and every earlier
+failed candidate remain frozen. CUDA, ONNX Runtime GPU, final OCI, SIF, Slurm,
+and Qwen inference are still unproven. A new GPU assembly requires a fresh,
+candidate-specific explicit human authorization and a new exactly-once source
+and release identity; T180 itself dispatched no workflow and submitted no
+iTiger job.

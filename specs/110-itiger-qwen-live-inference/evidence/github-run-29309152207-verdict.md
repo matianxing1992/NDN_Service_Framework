@@ -118,3 +118,18 @@ The repaired local gates passed:
 The post-implementation audit verdict is `PASS` for this local repair. These
 results prove only the scanner behavior and build contract; they do not upgrade
 run 9 or claim that a final OCI, SIF, CUDA runtime, or Qwen inference exists.
+
+## T180 replacement Foundation disposition
+
+The audited repair was committed and pushed under new source revision
+`01f730d122a4408737443d75a65dc0d5ff99af5b`, sealed as
+`sha256:dd55acbc8fc5af5a3f2b2a8b0eda7c9457d13356e35350629dba47bd870be298`,
+and rebuilt through the complete Foundation graph. All dependency builds and
+tests passed, including the real repaired runtime-closure step. The
+source-bound Foundation was pushed exactly once and is anonymously readable at
+`ghcr.io/matianxing1992/ndnsf-di-foundation@sha256:71711601004a6f032fda032037691409324d2adb867efcd94be48b2d879227aa`.
+
+This T180 PASS does not alter this run's `EXECUTED_FAIL` verdict and does not
+unlock T160: no replacement GPU OCI exists yet. Any next GPU assembly must use
+new source/release identities and requires fresh explicit human authorization;
+no workflow dispatch or iTiger job occurred during T180.
