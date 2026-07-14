@@ -278,3 +278,48 @@ are preserved in the same evidence directory. No second push occurred.
 **T169 verdict: PASS.** This accepts only the replacement Foundation and its
 anonymous immutable digest. CUDA, ONNX Runtime GPU, final OCI, SIF, Slurm, and
 Qwen claims remain gated by T170, T171, and the later live tasks.
+
+## Qwen-minimal replacement Foundation candidate (T173)
+
+The audited T172 repair was committed and pushed as
+`94fc25062aa7fced301b1f9db983de3e9a8910e3`. Its independently created and
+verified source seal is
+`sha256:39cdd27ea73c94ed2ff6801f20f3bef2dbac247e74f55fc3ad67394a87595712`;
+the seal binds workspace archive
+`sha256:2b7f2947792103c45fdbf3830a93fe7cc0ee5784f37985e0322f6b748549a685`,
+the eight locked dependency archives, and lock digest
+`sha256:e112ef00cfd0aec3efb4b0fb8140782b1a6973ed4e95ce56fbfed1c1fa3638a5`.
+
+The source-bound tag was proved absent before the build. The exact sealed
+Foundation rebuild then completed ndn-cxx 181/181, NFD 147/147, OpenABE's
+upstream and positive/negative CLI probes, NAC-ABE 28/28 with no errors, and
+NDNSF 70/70. The same-source Builder reported NFD/NFDC `24.07`. The resulting
+scratch image has local ID
+`sha256:68f63934fd7cf92439ec423b76a39b2fc01e1b41380793bc581e718c6bcdb6fe`,
+size 360566424 bytes, the exact source-revision label, 16 measured runtime
+system packages, and the NDNSF pkg-config record.
+
+The tag
+`ghcr.io/matianxing1992/ndnsf-di-foundation:spec110-foundation-94fc25062aa7fced301b1f9db983de3e9a8910e3`
+was pushed exactly once. GHCR returned immutable digest
+`sha256:d2aaca7b18aa56b9e24ac6b9c6c9c6a98a26117c32d70966845ae1589ea62d15`.
+An anonymous digest inspection passed and bound the same local image ID as its
+config plus one layer with digest
+`sha256:c9ba3c66c7266eeaebc64d0b42c4ef0017589a182b54347a2384dccfabe98898`
+and size 92973874 bytes.
+
+At NDNSF action 67/70 the local filesystem reached capacity and `tee` could no
+longer extend `build-and-push.log`. The build process itself continued to the
+successful gates and single push, and `local-foundation.json`, the local image
+inspection, copied scratch contents, and the anonymous remote manifest all
+independently verify the accepted result. This logging failure is retained
+rather than hidden. After verification, only disposable Builder images and
+24.02 GB of fully reclaimable BuildKit cache were removed; the final images,
+seal, and evidence remain. Evidence is under
+`results/spec110-itiger-qwen-live/foundation-build-94fc250/`, with the sealed
+archives and manifest retained in its `source-seal/` subdirectory.
+
+**T173 verdict: PASS.** The Foundation boundary is accepted. CUDA, ONNX
+Runtime GPU, final OCI, SIF, Slurm, and Qwen inference remain gated by a newly
+authorized T174 dispatch and terminal T175 evidence; no GPU workflow was
+dispatched during T173.
