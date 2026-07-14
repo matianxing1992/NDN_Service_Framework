@@ -245,6 +245,45 @@ class GithubSealedWorkflowTests(unittest.TestCase):
             "Foundation runtime DSOs must be installed before ldd closure scanning",
         )
 
+    def test_cuda_only_runtime_removes_locked_optional_tensorrt_provider(self) -> None:
+        lock = json.loads(
+            (REPO / "packaging/ndnsf-di-container/oci/locks/gpu.lock").read_text()
+        )
+        self.assertEqual(
+            lock["onnxRuntimeExcludedOptionalProviders"],
+            ["TensorrtExecutionProvider"],
+        )
+        dockerfile = (
+            REPO / "packaging/ndnsf-di-container/oci/Dockerfile.gpu"
+        ).read_text()
+        optional_dso = (
+            "/opt/venv/lib/python3.10/site-packages/onnxruntime/capi/"
+            "libonnxruntime_providers_tensorrt.so"
+        )
+        self.assertIn(f"rm -f {optional_dso}", dockerfile)
+        self.assertIn(f"test ! -e {optional_dso}", dockerfile)
+
+    def test_final_source_and_immutable_foundation_source_are_bound_separately(self) -> None:
+        dockerfile = (
+            REPO / "packaging/ndnsf-di-container/oci/Dockerfile.gpu"
+        ).read_text()
+        workflow = (REPO / ".github/workflows/ndnsf-di-itiger-image.yml").read_text()
+        self.assertIn("ARG FOUNDATION_SOURCE_REVISION", dockerfile)
+        self.assertIn(
+            'test "$(cat /opt/ndnsf-di/manifest/source-revision)" = '
+            '"$FOUNDATION_SOURCE_REVISION"',
+            dockerfile,
+        )
+        self.assertIn(
+            'org.ndnsf.di.foundation.revision="${FOUNDATION_SOURCE_REVISION}"',
+            dockerfile,
+        )
+        self.assertIn("foundation_source_revision:", workflow)
+        self.assertIn(
+            "FOUNDATION_SOURCE_REVISION=${{ inputs.foundation_source_revision }}",
+            workflow,
+        )
+
     def test_runtime_image_has_dynamic_link_and_nfd_config_gates(self) -> None:
         dockerfile = (
             REPO / "packaging/ndnsf-di-container/oci/Dockerfile.gpu"

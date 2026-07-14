@@ -93,3 +93,35 @@ test remains fail closed. Focused closure tests passed 3/3, sealed-workflow
 tests passed 18/18, the complete Spec 110 offline suite passed 104/104, the
 official build-context secret scan remained clean, and the strict structural
 audit passed with 37/37 requirements traced and 194 tasks parsed.
+
+## Second complete local GPU build outcome
+
+Source `228341e0ea1f28956015fbaa30d2bf58a56b7789` and local Foundation
+`sha256:a07c4470ed89b1d7da8fd626f94c4dc9062a2125dc969242a4588d5d87cf7158`
+completed the same build stages and passed the `libcuda.so.1` boundary. After
+20 minutes 10.79 seconds the next fail-closed scan found:
+
+```text
+RUNTIME_LIBRARY_MISSING:/opt/venv/lib/python3.10/site-packages/onnxruntime/capi/libonnxruntime_providers_tensorrt.so
+```
+
+The accepted backend is `CUDAExecutionProvider`, not TensorRT. The
+`onnxruntime-gpu` wheel includes an optional TensorRT provider DSO whose
+TensorRT userspace libraries are intentionally absent. Treating those
+libraries as host-driver injections would be unsafe. The replacement must
+lock and remove that optional provider before closure scanning. This attempt is
+`EXECUTED_FAIL`; no final image tag or external publication exists.
+
+The replacement contract now records
+`onnxRuntimeExcludedOptionalProviders=["TensorrtExecutionProvider"]`, removes
+only `libonnxruntime_providers_tensorrt.so`, and leaves every CUDA provider and
+closure gate intact. `FOUNDATION_SOURCE_REVISION` is validated independently
+from the final `SOURCE_REVISION` and is retained as an OCI label and release
+manifest field alongside the immutable Foundation image digest. The focused
+workflow suite passed 20/20, the complete Spec 110 offline suite passed
+106/106, all five shell integrations passed, the official source scan reported
+zero findings, YAML/preflight/diff checks passed, and the strict Spec Kit
+structure audit passed with 37/37 requirements traced and 198 tasks parsed.
+The post-implementation audit verdict for this bounded repair is `PASS`; the
+overall Spec 110 live-experiment feature remains incomplete until the final OCI
+image and later iTiger execution evidence exist.

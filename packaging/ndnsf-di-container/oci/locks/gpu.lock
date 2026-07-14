@@ -23,6 +23,7 @@
     "sha256": "6bfb87c6ebe55367a94509b8ef062239e188dccf8d5caac8d6909b2344893bf0",
     "bytes": 258487100
   },
+  "onnxRuntimeExcludedOptionalProviders": ["TensorrtExecutionProvider"],
   "systemPackages": [
     "bison", "build-essential", "ca-certificates", "cmake", "curl", "flex", "git", "libboost-all-dev",
     "libfl-dev", "libgmp-dev", "libgtest-dev", "libgtkmm-3.0-dev", "libpcap-dev", "libprotobuf-dev",

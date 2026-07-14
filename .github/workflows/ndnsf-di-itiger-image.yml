@@ -14,6 +14,10 @@ on:
         description: Locally built NDNSF foundation as repository@sha256:digest
         required: true
         type: string
+      foundation_source_revision:
+        description: Exact 40-hex source revision embedded in the immutable Foundation
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -32,6 +36,7 @@ env:
   GPU_RUNTIME_BASE: nvidia/cuda@sha256:a6a8417cb56c9a5d30c4d8c78ad18bc9b75ffe4453fe1c04b3149b3741518b06
   PYTHON_BASE: python@sha256:b3061b93c8df9809c3783a4f17bbf2520425ec6b40bd3e5e7538870e21ba7209
   FOUNDATION_IMAGE: ${{ inputs.foundation_image }}
+  FOUNDATION_SOURCE_REVISION: ${{ inputs.foundation_source_revision }}
 
 jobs:
   build-sign-record:
@@ -49,6 +54,7 @@ jobs:
           BUILD_BASE: ${{ env.GPU_BUILD_BASE }}
           RUNTIME_BASE: ${{ env.GPU_RUNTIME_BASE }}
           FOUNDATION: ${{ env.FOUNDATION_IMAGE }}
+          FOUNDATION_REVISION: ${{ env.FOUNDATION_SOURCE_REVISION }}
           PYTHON_BASE: ${{ env.PYTHON_BASE }}
         run: |
           set -euo pipefail
@@ -58,6 +64,7 @@ jobs:
           [[ "$RUNTIME_BASE" =~ $digest_ref ]]
           [[ "$FOUNDATION" =~ $digest_ref ]]
           [[ "$PYTHON_BASE" =~ $digest_ref ]]
+          [[ "$FOUNDATION_REVISION" =~ ^[a-f0-9]{40}$ ]]
           [[ "$RELEASE_ID" =~ $release_id ]]
 
       - name: Prepare release evidence directory
@@ -111,6 +118,7 @@ jobs:
           tags: ${{ env.IMAGE_REPOSITORY }}:${{ env.RELEASE_ID }}
           build-args: |
             FOUNDATION_IMAGE=${{ env.FOUNDATION_IMAGE }}
+            FOUNDATION_SOURCE_REVISION=${{ inputs.foundation_source_revision }}
             PYTHON_BASE_IMAGE=${{ env.PYTHON_BASE }}
             GPU_BUILD_BASE_IMAGE=${{ env.GPU_BUILD_BASE }}
             GPU_RUNTIME_BASE_IMAGE=${{ env.GPU_RUNTIME_BASE }}
@@ -184,6 +192,7 @@ jobs:
           BUILD_BASE: ${{ env.GPU_BUILD_BASE }}
           RUNTIME_BASE: ${{ env.GPU_RUNTIME_BASE }}
           FOUNDATION: ${{ env.FOUNDATION_IMAGE }}
+          FOUNDATION_REVISION: ${{ env.FOUNDATION_SOURCE_REVISION }}
           PYTHON_BASE: ${{ env.PYTHON_BASE }}
         run: |
           set -euo pipefail
@@ -201,6 +210,7 @@ jobs:
               "schemaVersion": "1.0",
               "releaseId": os.environ["RELEASE_ID"],
               "sourceRevision": os.environ["GITHUB_SHA"],
+              "foundationSourceRevision": os.environ["FOUNDATION_REVISION"],
               "createdAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
               "images": {"linux-amd64-gpu": {
                   "reference": os.environ["IMAGE_REPOSITORY"] + "@" + digest,
