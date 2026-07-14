@@ -146,8 +146,23 @@ The SIF contains:
 5. ONNX Runtime GPU/CUDA user-space dependencies for the candidate;
 6. provider/user/controller launchers and evidence collectors.
 
+The official `Dockerfile.gpu` is the only final image recipe. It installs the
+NDNSF-DI Qwen allocation launcher, full-model oracle, and GPU resource sampler
+directly under `/opt/ndnsf/bin`; no second Qwen overlay image or second Python
+dependency lock is allowed. `gpu.lock` remains the single CUDA/PyTorch/ONNX
+Runtime/Transformers version contract. Qwen weights and stage artifacts remain
+external and therefore the same immutable image is used for every admitted
+model size.
+
 Secrets and private identities are never image layers. They are generated or
 provisioned separately and bound read-only at job runtime.
+
+The canonical Apptainer runner exposes only `/release:ro`, `/models:ro`,
+`/artifacts:ro`, `/identity:ro`, `/evidence:rw`, and job-unique `/scratch:rw`.
+The NDNSF-DI Qwen artifact root contains `nfd.conf`, `controller.args`,
+`providers/*.args`, and `user.args`; argument files refer to model and stage
+data through `/models` and `/artifacts`, never through a writable project-root
+bind.
 
 ### iTiger storage layout
 

@@ -153,6 +153,48 @@ class GithubSealedWorkflowTests(unittest.TestCase):
         self.assertNotIn("torchvision:", matrix)
         self.assertIn("derive-runtime-packages.py", dockerfile)
 
+    def test_official_gpu_image_packages_qwen_entrypoints_without_overlay_lock(self) -> None:
+        dockerfile = (
+            REPO / "packaging/ndnsf-di-container/oci/Dockerfile.gpu"
+        ).read_text()
+        script_root = (
+            "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/"
+        )
+        for script in (
+            "run-ndnsf-qwen.sh",
+            "run-qwen-reference.py",
+            "sample-qwen-resources.py",
+        ):
+            self.assertIn(
+                f"COPY {script_root}{script} /opt/ndnsf/bin/{script}",
+                dockerfile,
+            )
+            self.assertIn(f"test -x /opt/ndnsf/bin/{script}", dockerfile)
+        self.assertFalse(
+            (REPO / "packaging/ndnsf-di-container/oci/experiments/Dockerfile.qwen").exists(),
+            "The official GPU image must not require a second overlay image",
+        )
+        self.assertFalse(
+            (REPO / "packaging/ndnsf-di-container/oci/locks/qwen-reference.lock").exists(),
+            "gpu.lock must remain the single Python/CUDA version contract",
+        )
+
+    def test_qwen_slurm_uses_canonical_least_privilege_runner(self) -> None:
+        template = (
+            REPO
+            / "packaging/ndnsf-di-container/adapters/slurm-apptainer/templates/ndnsf-qwen.sbatch.in"
+        ).read_text()
+        self.assertIn("@@RUN_CONTAINER@@", template)
+        self.assertIn('--release-bind "@@PROJECT_ROOT@@/releases"', template)
+        self.assertIn('--models "@@MODEL_PATH@@"', template)
+        self.assertIn('--artifacts "@@ARTIFACT_ROOT@@"', template)
+        self.assertIn('--identity "@@IDENTITY_ROOT@@"', template)
+        self.assertIn('--evidence "@@EVIDENCE_ROOT@@"', template)
+        self.assertIn("--nfd-config /artifacts/nfd.conf", template)
+        self.assertIn("--provider-args-dir /artifacts/providers", template)
+        self.assertNotIn("apptainer exec", template)
+        self.assertNotIn("@@PROJECT_ROOT@@:/project:rw", template)
+
     def test_python_focal_fixture_rejects_foreign_optional_abis(self) -> None:
         fixture = (
             REPO

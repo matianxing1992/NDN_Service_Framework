@@ -48,6 +48,10 @@ Runtime GPU SDK, CUDA/Python closure, and native ONNX adapter, then publishes
 
 Qwen `.safetensors`, `.onnx`, `.gguf`, and related weights are excluded from the
 context and remain under `/project/$USER/ndnsf-di/models` or `artifacts`.
+The resulting image is size-neutral and already contains NFD, NDNSF-DI,
+CUDA/PyTorch/ONNX Runtime GPU userspace, the Qwen oracle, the allocation
+launcher, and the GPU evidence sampler. It must not install dependencies or
+download weights when a Slurm experiment starts.
 
 After the workflow records a verified digest, render and review one bounded CPU
 Slurm job that runs `apptainer build runtime.sif.partial
@@ -126,6 +130,22 @@ The first candidate uses one compute node, three distinct Provider processes,
 three allocated GPUs, and one job-scoped NFD. Its frozen process map binds every
 Controller/User/Provider process to a Slurm task rank, GPU rank, identity, NFD
 socket, command, readiness condition, and shutdown order.
+
+Before rendering, seal one candidate-specific artifact directory containing:
+
+```text
+artifacts/<candidate-id>/<stage-id>/
+├── nfd.conf
+├── controller.args
+├── providers/*.args
+└── user.args
+```
+
+The canonical runner mounts that directory at `/artifacts:ro`, the selected
+model at `/models:ro`, the selected identity set at `/identity:ro`, evidence at
+`/evidence:rw`, and job scratch at `/scratch:rw`. It never mounts the whole
+project directory writable. Commands inside argument files must use the
+container paths `/models/...` and `/artifacts/...`.
 
 For each 1-, 2-, and 32-token cell:
 
