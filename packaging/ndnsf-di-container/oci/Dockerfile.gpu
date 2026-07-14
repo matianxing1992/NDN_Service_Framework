@@ -131,7 +131,15 @@ LABEL org.opencontainers.image.title="NDNSF-DI iTiger GPU runtime" \
 COPY --from=gpu-assembler /opt/ndnsf-di/manifest/runtime-system-packages /tmp/runtime-system-packages
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update && apt-get install -y --no-install-recommends $(cat /tmp/runtime-system-packages) && \
+    missing_packages="$(while IFS= read -r package; do \
+      [ -n "$package" ] || continue; \
+      if ! dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -qx 'install ok installed'; then \
+        printf '%s\n' "$package"; \
+      fi; \
+    done < /tmp/runtime-system-packages)" && \
+    if [ -n "$missing_packages" ]; then \
+      apt-get update && apt-get install -y --no-install-recommends $missing_packages; \
+    fi && \
     rm -rf /var/lib/apt/lists/* /tmp/runtime-system-packages
 COPY --from=gpu-assembler /opt/ndnsf-di /opt/ndnsf-di
 COPY --from=gpu-assembler /opt/onnxruntime /opt/onnxruntime

@@ -309,6 +309,20 @@ class GithubSealedWorkflowTests(unittest.TestCase):
         self.assertIn("verify-runtime-closure.py", dockerfile)
         self.assertIn("verify-python-environment.py", dockerfile)
 
+    def test_runtime_image_does_not_upgrade_cuda_base_packages(self) -> None:
+        dockerfile = (
+            REPO / "packaging/ndnsf-di-container/oci/Dockerfile.gpu"
+        ).read_text()
+        runtime = dockerfile.split("AS runtime", 1)[1]
+        self.assertIn("missing_packages", runtime)
+        self.assertIn("dpkg-query -W -f='${Status}'", runtime)
+        self.assertIn("install ok installed", runtime)
+        self.assertNotIn(
+            "apt-get install -y --no-install-recommends "
+            "$(cat /tmp/runtime-system-packages)",
+            runtime,
+        )
+
     def test_preflight_accepts_the_repository_build_contract(self) -> None:
         result = subprocess.run(
             [
