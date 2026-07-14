@@ -134,10 +134,19 @@ COPY packaging/ndnsf-di-container/oci/scripts/probe-runtime.py /usr/local/bin/nd
 COPY packaging/ndnsf-di-container/oci/scripts/verify-runtime-closure.py /usr/local/bin/verify-runtime-closure.py
 COPY packaging/ndnsf-di-container/oci/scripts/verify-python-environment.py /usr/local/bin/verify-python-environment.py
 COPY packaging/ndnsf-di-container/lib/gpu_compatibility.py /usr/local/lib/ndnsf-di/gpu_compatibility.py
+COPY packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/run-ndnsf-qwen.sh /opt/ndnsf/bin/run-ndnsf-qwen.sh
+COPY packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/run-qwen-reference.py /opt/ndnsf/bin/run-qwen-reference.py
+COPY packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/sample-qwen-resources.py /opt/ndnsf/bin/sample-qwen-resources.py
 RUN chmod 0755 /usr/local/bin/ndnsf-di-container-entrypoint \
       /usr/local/bin/ndnsf-di-container-healthcheck \
       /usr/local/bin/ndnsf-di-probe-runtime \
-      /usr/local/bin/verify-runtime-closure.py && \
+      /usr/local/bin/verify-runtime-closure.py \
+      /opt/ndnsf/bin/run-ndnsf-qwen.sh \
+      /opt/ndnsf/bin/run-qwen-reference.py \
+      /opt/ndnsf/bin/sample-qwen-resources.py && \
+    test -x /opt/ndnsf/bin/run-ndnsf-qwen.sh && \
+    test -x /opt/ndnsf/bin/run-qwen-reference.py && \
+    test -x /opt/ndnsf/bin/sample-qwen-resources.py && \
     ldconfig && \
     install -d -m 0755 /etc/ndn && \
     install -m 0644 /opt/ndnsf-di/manifest/nfd.conf /etc/ndn/nfd.conf && \

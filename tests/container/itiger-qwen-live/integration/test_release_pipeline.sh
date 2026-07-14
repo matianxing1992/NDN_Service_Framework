@@ -105,7 +105,8 @@ if PATH="$tmp/bin:$PATH" "$materialize" --oci-reference "$oci" --sif "$tmp/tampe
 fi
 
 project="$tmp/project/ndnsf-di"; scratch="$tmp/scratch/77"
-mkdir -p "$project/releases" "$project/models" "$project/identities/provider" "$project/evidence" "$scratch"
+mkdir -p "$project/releases" "$project/models" "$project/artifacts" \
+  "$project/identities/provider" "$project/evidence" "$scratch"
 sif_sha=sha256:$(sha256sum "$tmp/runtime.sif" | cut -d' ' -f1)
 CAPTURE="$tmp/apptainer-args" NDNSF_SPEC110_ALLOW_TEST_ROOT=1 SLURM_JOB_ID=77 PATH="$tmp/bin:$PATH" \
   "$repo/packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/run-container.sh" \
@@ -115,6 +116,7 @@ grep -q '^--containall$' "$tmp/apptainer-args"
 grep -q '^--no-home$' "$tmp/apptainer-args"
 grep -q "$project/releases:/release:ro" "$tmp/apptainer-args"
 grep -q "$project/models:/models:ro" "$tmp/apptainer-args"
+grep -q "$project/artifacts:/artifacts:ro" "$tmp/apptainer-args"
 grep -q "$project/identities/provider:/identity:ro" "$tmp/apptainer-args"
 grep -q "$project/evidence:/evidence:rw" "$tmp/apptainer-args"
 if grep -q "$project:/project:rw" "$tmp/apptainer-args"; then
