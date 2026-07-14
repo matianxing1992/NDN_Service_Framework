@@ -214,20 +214,31 @@ is not a standalone shell-bearing runtime. Executable probes therefore run in
 the same-source `foundation-builder`; the reviewed GitHub GPU-delta stage must
 copy this Foundation into its CUDA runtime before runtime/GPU probes.
 
-This closes the local build and in-Builder validation portion of T166. It does
-not close T166 because `publishedDigest` is still null: no GHCR credential was
-available, and the source-bound tag has not been pushed. The next state change
-is exactly one push of this existing tag followed by recording its immutable
-digest. No rebuild, reseal, or T167 GPU dispatch is authorized by this result.
+The source-bound tag was pushed exactly once. GHCR returned immutable manifest
+digest
+`sha256:801e8cabc5e084347cb835f107bd9e4c36f07543827c078f8b4720cbf1b48df8`;
+the authenticated manifest binds config digest
+`sha256:94f1c5722e0eb1393c31af76cddecedc5cf30fdc636eac842e506ba14d4cdee6`
+and one 92973858-byte compressed layer. The push log is retained at
+`results/spec110-itiger-qwen-live/foundation-build-edeeff1/push.log`.
+
+The first anonymous digest inspection was then executed exactly once and
+returned `unauthorized`, because the newly created GHCR package retained its
+default private visibility. This is a visibility gate, not a build or push
+failure, and another push cannot change it. T166 remains open until the package
+is made public in GitHub Package settings and the same immutable digest passes
+anonymous inspection. No rebuild, reseal, repeat push, or T167 GPU dispatch is
+authorized by this result.
 
 ## Audit verdict
 
-**PASS for the reviewed build graph and local Foundation candidate; T166
-remains open only at the registry-publication boundary.** No unresolved
-BLOCK/HIGH issue remains in the static/local route after the OpenSSL ABI,
+**PASS for the reviewed build graph, local Foundation candidate, and immutable
+publication; T166 remains open only at the package-visibility boundary.** No
+unresolved BLOCK/HIGH issue remains in the static/local route after the OpenSSL ABI,
 NAC-ABE test-launch, Python/Focal closure, NCCL base-image, GHCR anonymous-pull,
 runtime-library, and sealed-source gates above. This is not a foundation release
-claim: source-bound push and immutable digest recording still belong to T166.
-The complete committed/sealed `Dockerfile.foundation` build and same-source
-Builder probe have now passed. T167 remains blocked until T166 has an immutable
-GHCR digest and its final Foundation/CUDA/ONNX inputs receive manual review.
+claim: anonymous digest access still belongs to T166. The complete
+committed/sealed `Dockerfile.foundation` build, same-source Builder probe, and
+one source-bound push have now passed. T167 remains blocked until this exact
+GHCR digest is anonymously readable and its final Foundation/CUDA/ONNX inputs
+receive manual review.
