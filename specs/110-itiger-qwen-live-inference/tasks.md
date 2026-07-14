@@ -250,5 +250,5 @@ blocker into experimental completion.
 ## Phase 14: Local foundation and GPU-delta assembly revision
 
 - [X] T165 [US1] Re-audit the complete build graph, reproduce the local Ubuntu 20.04/OpenSSL 1.1 OpenABE/NAC-ABE ABI and tests, preserve `libpcap-dev`, lock OpenABE's exact RELIC source, Python 3.10/Focal runtime closure, and official ONNX Runtime GPU C++ asset, add regressions for dependency closure/runtime configuration/uninstalled waf examples, and replace the monolithic cloud build with `Dockerfile.foundation` plus a dispatch-only `Dockerfile.gpu`
-- [ ] T166 [US1] Commit the reviewed revision, create and verify a new source seal, run `build-foundation-local.sh` to completion, validate NFD/NDN/OpenABE/NAC-ABE/NDNSF core inside the builder, push the source-bound foundation tag once, and record its immutable GHCR digest
+- [X] T166 [US1] Commit the reviewed revision, create and verify a new source seal, run `build-foundation-local.sh` to completion, validate NFD/NDN/OpenABE/NAC-ABE/NDNSF core inside the builder, push the source-bound foundation tag once, and record its immutable GHCR digest
 - [ ] T167 [US1] Review the final foundation/CUDA/ONNX inputs and manually dispatch `.github/workflows/ndnsf-di-itiger-image.yml` exactly once; GitHub may assemble only the GPU delta and must retain failure evidence with no automatic rerun
