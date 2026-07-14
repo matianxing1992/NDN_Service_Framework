@@ -1,7 +1,7 @@
 # Spec 110 experiment-ready image contract convergence
 
-**State**: implementation in progress; no cloud build or Slurm submission was
-authorized by this convergence task.
+**State**: local complete-image contract accepted; no cloud publication or
+Slurm submission was authorized by this convergence task.
 
 ## Superseded pre-start candidate
 
@@ -247,3 +247,67 @@ passes. Preflight locks all three policy markers.
 The failed attempt recorded 259 disk samples, peak root usage of
 162382110720 bytes, and minimum available capacity of 18149265408 bytes. No
 final image, GHCR publication, or iTiger job exists for this source identity.
+
+## Seventh complete local GPU build outcome: accepted
+
+Source `1a320e5d9e42f4f76e78aac62d9bb647e3b159f0`, exact source seal
+`sha256:48b6832b59c128353f42c8c50027ba9c8b46a14beb8ee6c8a92c3d1095a4f58b`,
+immutable Foundation source `228341e0ea1f28956015fbaa30d2bf58a56b7789`,
+and Foundation image
+`sha256:a07c4470ed89b1d7da8fd626f94c4dc9062a2125dc969242a4588d5d87cf7158`
+produced the locally accepted image:
+
+```text
+tag=ndnsf-di:spec110-local-1a320e5d9e42f4f76e78aac62d9bb647e3b159f0
+imageId=sha256:57f3804cf787bec41d69f4dadcf286d030419b3cbd247678c92e0d2313829b6a
+sizeBytes=8688519721
+elapsedSeconds=1327
+```
+
+The build completed all 244 C++ targets in 12 minutes 52 seconds, linked the
+native ONNX and fault-injection providers, built the NDNSF, distributed Repo,
+and distributed-inference wheels, and installed only the runtime packages
+absent from the digest-pinned CUDA base. It then passed:
+
+```text
+RUNTIME_LIBRARY_CLOSURE_PASS:217
+PYTHON_ENVIRONMENT_PASS:locked=38:systemProvided=11
+```
+
+The default non-root static probe passed as UID/GID `65532:65532` with NFD and
+NFDC 24.07, PyTorch `2.6.0+cu124`, CUDA build `12.4`, ONNX Runtime `1.20.1`,
+Transformers `4.48.2`, `ndnsf`, and `ndnsf_distributed_inference`. Both the
+Python wheel and independent C++ SDK retain their required CUDA provider DSO;
+both unused TensorRT provider DSOs are absent. The image contains no
+`*.safetensors`, `*.gguf`, or `pytorch_model*.bin` model weights.
+
+Runtime acceptance launched NFD inside the image on
+`unix:///run/nfd/nfd.sock`, and `nfdc status report` controlled NFD 24.07 while
+the complete container remained non-root and the root filesystem remained
+read-only. Separate sentinels proved `/models:ro` and `/artifacts:ro` are
+readable but not writable, while allocation scratch tmpfs paths remain
+writable. All three Qwen entrypoints are installed and executable under
+`/opt/ndnsf/bin`; the native provider binary loads and emits its complete
+plan/manifest/service/role CLI contract.
+
+The local VM has no NVIDIA device, so `torch.cuda.is_available()` correctly
+returned false. This is not counted as live GPU inference. The accepted image
+contains the complete CUDA userspace, while the only permitted unresolved
+driver ABI is `libcuda.so.1`, which must be injected by iTiger through
+`apptainer exec --nv`. Real Qwen GPU execution remains a later iTiger
+acceptance step.
+
+The build recorded 266 disk samples, peak root usage of `157872439296` bytes,
+and minimum available capacity of `22658936832` bytes. Full build and
+acceptance evidence is retained under
+`results/spec110-itiger-qwen-live/image-contract-convergence/final-1a320e5d9e42f4f76e78aac62d9bb647e3b159f0/`.
+No GHCR publication, iTiger SIF materialization, or Slurm job was performed.
+
+Post-acceptance verification passed 107/107 Spec 110 offline tests, all five
+container integration launchers, the GPU-build preflight, workflow YAML parse,
+and `git diff --check`. CodeGraph reports its index up to date, GSD health is
+healthy, and the strict Spec Kit structural audit passes with 37/37 functional
+requirements traced, 211 tasks parsed, and 114 tasks complete. The remaining
+tasks are the intentionally unexecuted publication, iTiger materialization,
+live GPU experiment, Qwen-size matrix, performance analysis, and operational
+closeout phases; this local image acceptance does not claim those results.
