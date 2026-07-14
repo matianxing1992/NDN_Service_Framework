@@ -140,6 +140,16 @@ def run(workspace: Path, seal_root: Path | None) -> dict[str, object]:
     )
     for marker in markers:
         require(marker in dockerfile, f"PREFLIGHT_DOCKER_MARKER_MISSING:{marker}")
+    foundation_runtime_install = "$(cat /opt/ndnsf-di/manifest/runtime-system-packages)"
+    closure_derivation = "python3 /build-contract/derive-runtime-packages.py"
+    require(
+        foundation_runtime_install in dockerfile,
+        "PREFLIGHT_GPU_ASSEMBLER_FOUNDATION_RUNTIME_MISSING",
+    )
+    require(
+        dockerfile.index(foundation_runtime_install) < dockerfile.index(closure_derivation),
+        "PREFLIGHT_GPU_ASSEMBLER_RUNTIME_INSTALL_LATE",
+    )
     require(".spec110-build" not in dockerfile, "PREFLIGHT_GPU_REBUILDS_SEALED_STACK")
     require("/src/dependencies/NFD" not in dockerfile, "PREFLIGHT_GPU_REBUILDS_NFD")
     require("preflight-gpu-build.py" in workflow, "PREFLIGHT_WORKFLOW_GATE_MISSING")

@@ -168,6 +168,19 @@ class GithubSealedWorkflowTests(unittest.TestCase):
             "install -m 0755 build/examples/di-native-provider", dockerfile
         )
 
+    def test_gpu_assembler_installs_foundation_runtime_before_closure_scan(self) -> None:
+        dockerfile = (
+            REPO / "packaging/ndnsf-di-container/oci/Dockerfile.gpu"
+        ).read_text()
+        install = "$(cat /opt/ndnsf-di/manifest/runtime-system-packages)"
+        derive = "python3 /build-contract/derive-runtime-packages.py"
+        self.assertIn(install, dockerfile)
+        self.assertLess(
+            dockerfile.index(install),
+            dockerfile.index(derive),
+            "Foundation runtime DSOs must be installed before ldd closure scanning",
+        )
+
     def test_runtime_image_has_dynamic_link_and_nfd_config_gates(self) -> None:
         dockerfile = (
             REPO / "packaging/ndnsf-di-container/oci/Dockerfile.gpu"
