@@ -179,10 +179,40 @@ repository candidate made a plain `apt-get install` attempt to upgrade that
 base-owned package. Allowing held-package changes would silently mutate the
 locked CUDA/cuDNN stack, so it is not an acceptable repair. The replacement
 filters the derived manifest through `dpkg-query` and installs only packages
-whose status is not `install ok installed`.
+whose current-state abbreviation does not report installed.
 
 This attempt is retained as `EXECUTED_FAIL`; 254 disk samples recorded a peak
 root usage of 151829037056 bytes and a minimum available capacity of
 28702339072 bytes. No final image, GHCR publication, or iTiger job exists for
 this identity. The missing-package-only policy has a focused RED/GREEN
 regression and is enforced by the static GPU-build preflight.
+
+## Fifth complete local GPU build outcome
+
+Source `a36d8de06ac4c392a4f75a2fb891937a4b06f57d`, seal
+`sha256:ab5f8b7264ba69743008066d7d4a32b3ed4c5f6577da1d1f830d666a291c50dc`,
+and the same immutable Foundation source completed the CUDA/Python/ONNX
+assembly, both TensorRT removals, 244/244 C++ targets in 12 minutes 41 seconds,
+native ONNX linkage, all three Python wheels, and final runtime package
+derivation. After 21 minutes 7 seconds the runtime install again rejected a
+held-package upgrade.
+
+The filter itself executed, but `dpkg-query -W -f='${Status}'` reports the
+digest-pinned cuDNN package as `hold ok installed`. The initial regression
+incorrectly required the desired action to be `install`, so it classified the
+already-installed held package as missing. A direct probe of the exact CUDA
+runtime base confirmed:
+
+```text
+libcublas-12-4      hold ok installed  12.4.5.8-1
+libcudnn9-cuda-12  hold ok installed  9.1.0.70-1
+```
+
+The replacement uses `${db:Status-Abbrev}` and tests the current-state column:
+both ordinary `ii ` and held `hi ` packages match `.i `, while a nonexistent
+package remains missing. This preserves the pinned CUDA stack without allowing
+held-package upgrades.
+
+The failed attempt recorded 253 disk samples, peak root usage of
+158200406016 bytes, and minimum available capacity of 22330970112 bytes. No
+final image, GHCR publication, or iTiger job exists for this source identity.

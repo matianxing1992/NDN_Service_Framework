@@ -160,8 +160,8 @@ def run(workspace: Path, seal_root: Path | None) -> dict[str, object]:
         "/opt/onnxruntime/lib/libonnxruntime_providers_cuda.so",
         "/opt/venv/lib/python3.10/site-packages/onnxruntime/capi/libonnxruntime_providers_cuda.so",
         'org.ndnsf.di.foundation.revision="${FOUNDATION_SOURCE_REVISION}"',
-        "missing_packages", "dpkg-query -W -f='${Status}'",
-        "install ok installed",
+        "missing_packages", "dpkg-query -W -f='${db:Status-Abbrev}'",
+        "grep -qx '.i '",
     )
     for marker in markers:
         require(marker in dockerfile, f"PREFLIGHT_DOCKER_MARKER_MISSING:{marker}")

@@ -133,7 +133,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     missing_packages="$(while IFS= read -r package; do \
       [ -n "$package" ] || continue; \
-      if ! dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -qx 'install ok installed'; then \
+      if ! dpkg-query -W -f='${db:Status-Abbrev}' "$package" 2>/dev/null | grep -qx '.i '; then \
         printf '%s\n' "$package"; \
       fi; \
     done < /tmp/runtime-system-packages)" && \

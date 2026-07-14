@@ -317,3 +317,9 @@ blocker into experimental completion.
 - [X] T203 [US1] Preserve source `40cd15f30886b065aa204be77d5d0784a48edc3f` as `EXECUTED_FAIL` after 21m15s when the final runtime install attempted to upgrade the CUDA-base-held `libcudnn9-cuda-12`; retain the successful dual TensorRT removal, 244-target build, native linkage, Python wheels, disk samples, and no-publication boundary (contradicts, HIGH; depends on T202 attempt)
 - [X] T204 [US1] Add a RED regression proving the final runtime installs only packages absent from the immutable CUDA runtime base and never upgrades already-installed held CUDA/cuDNN packages (missing, HIGH; depends on T203)
 - [ ] T205 [US1] Implement missing-package-only runtime installation, enforce it in preflight, pass focused/full offline, integration, secret, workflow, and strict audit gates, commit and seal a new source identity, then execute T190 without GHCR publication or iTiger submission (missing, HIGH; depends on T204)
+
+## Phase 24: Held-package status semantics
+
+- [X] T206 [US1] Preserve source `a36d8de06ac4c392a4f75a2fb891937a4b06f57d` as `EXECUTED_FAIL` after 21m07s because Debian reports an installed held package as `hold ok installed`, not `install ok installed`; retain the successful 244-target build, native linkage, Python wheels, seal, disk samples, and no-publication boundary (contradicts, HIGH; depends on T205 attempt)
+- [X] T207 [US1] Add a RED/GREEN regression and a real digest-pinned CUDA-base probe proving `${db:Status-Abbrev}` recognizes both normal (`ii `) and held (`hi `) installed packages while a missing package remains absent (missing, HIGH; depends on T206)
+- [ ] T208 [US1] Enforce current-state installed-package filtering with `${db:Status-Abbrev}`, pass all local gates, commit and seal a new source identity, then execute T190 once without GHCR publication or iTiger submission (missing, HIGH; depends on T207)
