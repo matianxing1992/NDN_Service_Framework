@@ -235,7 +235,7 @@ blocker into experimental completion.
 - [X] T157 [US1] Repair `.github/workflows/ndnsf-di-itiger-image.yml` to prepare/verify sealed sources, pass `DEPENDENCY_SOURCE_MODE=sealed`, push only to GHCR, retain only manifest/SBOM/signature/log/checksum evidence, record runner disk, and exclude Qwen weights (depends on T155-T156)
 - [X] T158 [US1] Run the full offline/container/workflow static suite, source-secret scan, local six-repository seal creation/verification, YAML parse, and strict Spec Kit audit; recorded 86/86 tests, byte-identical local/remote dependency archives, zero scan findings, and no cloud claim in `evidence/github-sealed-route-gate.md` (depends on T157)
 - [X] T159 [US1] After local PASS, commit and push the workflow/packaging revision once so its existing Experimental-path trigger starts one GitHub build; preserved run `29283330479` as `EXECUTED_FAIL` at the combined dependency-build step with no rerun and no GHCR digest in `evidence/github-run-29283330479-verdict.md` (depends on T158)
-- [ ] T160 [US1] After the replacement GitHub release in T164 PASSes, render/review and submit exactly one bounded iTiger CPU materialization job through the crash-safe journal, build `runtime.sif` from the exact GHCR digest, verify checksum/static runtime, atomically promote evidence, and never auto-resubmit (depends on T164)
+- [ ] T160 [US1] After the replacement GitHub release in T171 PASSes, render/review and submit exactly one bounded iTiger CPU materialization job through the crash-safe journal, build `runtime.sif` from the exact GHCR digest, verify checksum/static runtime, atomically promote evidence, and never auto-resubmit (depends on T171)
 
 ## Phase 12: GitHub dependency-order replacement
 
@@ -245,10 +245,17 @@ blocker into experimental completion.
 ## Phase 13: NFD sealed-input replacement
 
 - [X] T163 [US1] Diagnose run `29285142648` without rerunning it, reproduce the missing `libpcap` failure from exact locked sources in disposable Ubuntu 22.04, add a RED regression, lock and seal NFD's exact websocketpp gitlink revision, install `libpcap-dev`, prove NFD 24.07 configure/build/install locally, and pass the full offline gate
-- [ ] T164 [US1] Monitor the exactly-once T167 GPU assembly to terminal state and preserve its immutable GHCR digest or exact failure without automatic rerun (depends on T167)
+- [X] T164 [US1] Monitor the exactly-once T167 GPU assembly to terminal state and preserve its immutable GHCR digest or exact failure without automatic rerun; run `29297628957` is frozen as `EXECUTED_FAIL` in `evidence/github-run-29297628957-verdict.md` (depends on T167)
 
 ## Phase 14: Local foundation and GPU-delta assembly revision
 
 - [X] T165 [US1] Re-audit the complete build graph, reproduce the local Ubuntu 20.04/OpenSSL 1.1 OpenABE/NAC-ABE ABI and tests, preserve `libpcap-dev`, lock OpenABE's exact RELIC source, Python 3.10/Focal runtime closure, and official ONNX Runtime GPU C++ asset, add regressions for dependency closure/runtime configuration/uninstalled waf examples, and replace the monolithic cloud build with `Dockerfile.foundation` plus a dispatch-only `Dockerfile.gpu`
 - [X] T166 [US1] Commit the reviewed revision, create and verify a new source seal, run `build-foundation-local.sh` to completion, validate NFD/NDN/OpenABE/NAC-ABE/NDNSF core inside the builder, push the source-bound foundation tag once, and record its immutable GHCR digest
-- [ ] T167 [US1] Review the final foundation/CUDA/ONNX inputs and manually dispatch `.github/workflows/ndnsf-di-itiger-image.yml` exactly once; GitHub may assemble only the GPU delta and must retain failure evidence with no automatic rerun
+- [X] T167 [US1] Review the final foundation/CUDA/ONNX inputs and manually dispatch `.github/workflows/ndnsf-di-itiger-image.yml` exactly once; run `29297628957` was dispatched once, assembled only the GPU delta, and retained its terminal failure without automatic rerun
+
+## Phase 15: GPU assembler runtime-closure replacement
+
+- [X] T168 [US1] Diagnose run `29297628957` without rerunning it, preserve its logs/artifacts/disk evidence, add a RED regression for the Foundation runtime-package ordering defect, install the Foundation-measured DSO closure before the GPU assembler's `ldd` scan, and pass focused, full offline, source-secret, and strict Spec Kit gates
+- [ ] T169 [US1] Commit and push the reviewed T168 repair under a new source identity, create and verify a matching source seal, rebuild the local Foundation from that exact commit, and publish its new source-bound tag exactly once with an anonymously readable immutable digest (depends on T168)
+- [ ] T170 [US1] Review the new source/Foundation/CUDA/ONNX inputs, prove the prior release identity cannot be reused, create an exact source tag, and manually dispatch one replacement GPU assembly under a new release identity exactly once (depends on T169 and explicit human authorization)
+- [ ] T171 [US1] Monitor the T170 replacement to terminal state and preserve its immutable GHCR digest or exact failure without automatic rerun; only PASS may unlock T160 (depends on T170)

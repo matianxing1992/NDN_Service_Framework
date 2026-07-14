@@ -30,11 +30,13 @@ COPY packaging/ndnsf-di-container/oci/locks/gpu.lock /build-contract/gpu.lock
 COPY packaging/ndnsf-di-container/oci/scripts/derive-runtime-packages.py /build-contract/derive-runtime-packages.py
 COPY packaging/ndnsf-di-container/oci/scripts/verify-python-environment.py /build-contract/verify-python-environment.py
 
-# These are package/header inputs for the small NDNSF ONNX adapter build only;
-# no third-party NDN or cryptographic source is built in GitHub Actions.
+# Install the Foundation's measured runtime DSO closure before any ldd-based
+# scan, plus package/header inputs for the small NDNSF ONNX adapter build.
+# No third-party NDN or cryptographic source is built in GitHub Actions.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
+      $(cat /opt/ndnsf-di/manifest/runtime-system-packages) \
       build-essential ca-certificates curl libboost-all-dev libgtkmm-3.0-dev \
       libgdbm6 libprotobuf-dev libreadline8 libsqlite3-0 libsqlite3-dev \
       libssl1.1 libssl-dev pkg-config protobuf-compiler \
