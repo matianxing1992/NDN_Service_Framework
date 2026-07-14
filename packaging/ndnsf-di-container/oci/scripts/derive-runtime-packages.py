@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -24,7 +25,21 @@ def elf_files(roots: list[Path]):
 
 
 def linked_paths(path: Path) -> list[Path]:
-    result = subprocess.run(["ldd", str(path)], text=True, capture_output=True, check=False)
+    environment = dict(os.environ)
+    sibling_directory = str(path.parent.resolve())
+    inherited_library_path = environment.get("LD_LIBRARY_PATH")
+    environment["LD_LIBRARY_PATH"] = (
+        sibling_directory
+        if not inherited_library_path
+        else os.pathsep.join((sibling_directory, inherited_library_path))
+    )
+    result = subprocess.run(
+        ["ldd", str(path)],
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
     if result.returncode and "not a dynamic executable" not in result.stderr:
         raise RuntimeError(f"RUNTIME_LDD_FAILED:{path}")
     if "not found" in result.stdout:
