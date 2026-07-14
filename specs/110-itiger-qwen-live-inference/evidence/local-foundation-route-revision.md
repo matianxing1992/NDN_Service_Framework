@@ -123,9 +123,9 @@ publication. It was never pushed as an NDNSF release candidate.
 
 The project-compatible ndn-svs correction changes only the configure threshold
 back to 1.71 while retaining the ndn-cxx 0.9 requirement. Host configuration
-then passed with Boost 1.71.0 and ndn-cxx 0.9.0. The exact dependency commit is
-`19ec38ec77d26c13125b292863e607da51a3d9de`, published on the fork branch
-`spec110-boost171` and locked in `gpu.lock`; preflight rejects substitution.
+then passed with Boost 1.71.0 and ndn-cxx 0.9.0. The first dependency correction
+was `19ec38ec77d26c13125b292863e607da51a3d9de`, published on the fork branch
+`spec110-boost171`.
 Because the dependency lock and workspace changed, the failed candidate's seal
 is retired and the next full build requires a new commit-bound seal.
 
@@ -156,6 +156,26 @@ The dependency-only fix explicitly links `Boost::unit_test_framework`,
 is commit `390e9001a8611e04c90f3a5866d09c3136c885d0` on fork branch
 `spec110-explicit-boost-test-link`, and preflight now rejects another NAC-ABE
 revision.
+
+Candidate `a69799c2b257469d3deb0105bcab70dfcdb91414`, sealed as
+`sha256:69a2c1eea94021f5a59bb4082286c83f3eae456b9ab536a127e8132251d69a42`,
+passed the complete NDN, OpenABE, and NAC-ABE layers. NDNSF core compilation
+then proved that the dependency seal still omitted 838 lines of local ndn-svs
+publication-fetch, parallel-fetch, repair, and retry work on which
+`ServiceUser` and `ServiceProvider` already depend. The complete negative log
+is retained at
+`results/spec110-itiger-qwen-live/foundation-build-a69799c/build.log`.
+
+The original dirty ndn-svs worktree was left untouched. Its exact runtime diff
+was applied to an isolated worktree on top of the Boost 1.71 correction. Three
+test-only compatibility defects were repaired: a complete Asio include,
+explicit conversion from ndn/Boost milliseconds to `std::chrono`, and
+asynchronous Interest isolation including disabling inner retries in the
+outer-backoff test. The library and all 29 ndn-svs tests then passed under Boost
+1.71. The sealed dependency is now
+`7b616b08624a79617bb05f2d3553bbbacdc4c482`, published on branch
+`spec110-runtime-publication-fetch`; `gpu.lock` and preflight reject any other
+ndn-svs revision.
 
 ## Audit verdict
 

@@ -33,7 +33,7 @@
     "ndn-cxx": {"url": "https://github.com/matianxing1992/ndn-cxx.git", "revision": "8296fc9462c7ef9635b7c45468c067fd39514e31"},
     "NFD": {"url": "https://github.com/matianxing1992/NFD.git", "revision": "2b43d675e3fba37b5362fab0001ba542bb07b43b"},
     "NDNSD": {"url": "https://github.com/matianxing1992/NDNSD.git", "revision": "25f7ad9d2f8848c10025e71358e3dafd62c348c0"},
-    "ndn-svs": {"url": "https://github.com/matianxing1992/ndn-svs.git", "revision": "19ec38ec77d26c13125b292863e607da51a3d9de"},
+    "ndn-svs": {"url": "https://github.com/matianxing1992/ndn-svs.git", "revision": "7b616b08624a79617bb05f2d3553bbbacdc4c482"},
     "openabe": {"url": "https://github.com/zeutro/openabe.git", "revision": "b8f9d3c8a2620c1185ca972248f7af39c1eae68c"},
     "relic": {"url": "https://github.com/relic-toolkit/relic.git", "revision": "b984e901ba78c83ea4093ea96addd13628c8c2d0"},
     "NAC-ABE": {"url": "https://github.com/matianxing1992/NAC-ABE.git", "revision": "390e9001a8611e04c90f3a5866d09c3136c885d0"},
