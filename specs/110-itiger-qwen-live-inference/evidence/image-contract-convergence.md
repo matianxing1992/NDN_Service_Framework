@@ -125,3 +125,35 @@ structure audit passed with 37/37 requirements traced and 198 tasks parsed.
 The post-implementation audit verdict for this bounded repair is `PASS`; the
 overall Spec 110 live-experiment feature remains incomplete until the final OCI
 image and later iTiger execution evidence exist.
+
+## Third complete local GPU build outcome
+
+Source `9ea1d9a252b9a60e535ca77ee5f073b59f59de72`, seal
+`sha256:a13f86c044449c7b8ea80e3c7d09e0d2e7a87c4d4a4aa7dca654dab82a796e57`,
+and immutable Foundation source `228341e0ea1f28956015fbaa30d2bf58a56b7789`
+passed the independent component binding, Python package closure, removal of
+the Python-wheel TensorRT provider, all 244 C++ targets, ONNX Runtime C++
+backend linkage, `di-native-provider` linkage, and all three Python wheel
+builds. After 20 minutes 29 seconds the fail-closed scan found the second copy:
+
+```text
+RUNTIME_LIBRARY_MISSING:/opt/onnxruntime/lib/libonnxruntime_providers_tensorrt.so
+```
+
+The independently downloaded ONNX Runtime C++ GPU SDK ships the same unused
+optional provider alongside the required CUDA provider. This is not a new
+dependency requirement and must not be allowed as a host injection. The next
+candidate must lock and remove both the SDK and Python-wheel TensorRT provider
+DSOs before scanning while retaining the CUDA provider DSOs. This attempt is
+`EXECUTED_FAIL`; 246 disk samples recorded a peak root usage of 144582164480
+bytes and a minimum available capacity of 35949211648 bytes. No final image,
+GHCR publication, or iTiger job exists for this identity.
+
+The replacement now asserts both required CUDA provider DSOs exist, removes
+both TensorRT provider DSOs in one lock-gated step, and then asserts both are
+absent before package and runtime closure derivation. The focused workflow
+suite passed 20/20 and the complete Spec 110 offline suite passed 106/106.
+Preflight, workflow YAML, diff, source secret scan with zero findings, and the
+strict structural audit all passed; the latter traced 37/37 requirements and
+parsed 202 tasks. The bounded post-implementation audit verdict remains
+`PASS`, while final OCI and iTiger execution claims remain unproven.

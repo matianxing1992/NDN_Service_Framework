@@ -155,7 +155,10 @@ def run(workspace: Path, seal_root: Path | None) -> dict[str, object]:
         "/run/nfd", "verify-runtime-closure.py", "verify-python-environment.py",
         "ARG FOUNDATION_SOURCE_REVISION",
         "onnxRuntimeExcludedOptionalProviders",
-        "libonnxruntime_providers_tensorrt.so",
+        "/opt/onnxruntime/lib/libonnxruntime_providers_tensorrt.so",
+        "/opt/venv/lib/python3.10/site-packages/onnxruntime/capi/libonnxruntime_providers_tensorrt.so",
+        "/opt/onnxruntime/lib/libonnxruntime_providers_cuda.so",
+        "/opt/venv/lib/python3.10/site-packages/onnxruntime/capi/libonnxruntime_providers_cuda.so",
         'org.ndnsf.di.foundation.revision="${FOUNDATION_SOURCE_REVISION}"',
     )
     for marker in markers:

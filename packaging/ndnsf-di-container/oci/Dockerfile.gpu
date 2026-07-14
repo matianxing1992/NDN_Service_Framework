@@ -52,7 +52,8 @@ RUN set -eu; \
     tar -xzf /tmp/onnxruntime.tgz --strip-components=1 -C /opt/onnxruntime; \
     rm /tmp/onnxruntime.tgz; \
     test -f /opt/onnxruntime/include/onnxruntime_cxx_api.h; \
-    test -f /opt/onnxruntime/lib/libonnxruntime.so
+    test -f /opt/onnxruntime/lib/libonnxruntime.so; \
+    test -f /opt/onnxruntime/lib/libonnxruntime_providers_cuda.so
 RUN printf '%s\n' \
       'prefix=/opt/onnxruntime' \
       'exec_prefix=${prefix}' \
@@ -81,7 +82,10 @@ RUN --mount=type=cache,target=/root/.cache/pip \
       --index-url https://download.pytorch.org/whl/cu124 \
       torch==2.6.0
 RUN test "$(/opt/venv/bin/python -c 'import json; print(",".join(json.load(open("/build-contract/gpu.lock"))["onnxRuntimeExcludedOptionalProviders"]))')" = "TensorrtExecutionProvider" && \
-    rm -f /opt/venv/lib/python3.10/site-packages/onnxruntime/capi/libonnxruntime_providers_tensorrt.so && \
+    test -f /opt/onnxruntime/lib/libonnxruntime_providers_cuda.so && \
+    test -f /opt/venv/lib/python3.10/site-packages/onnxruntime/capi/libonnxruntime_providers_cuda.so && \
+    rm -f /opt/onnxruntime/lib/libonnxruntime_providers_tensorrt.so /opt/venv/lib/python3.10/site-packages/onnxruntime/capi/libonnxruntime_providers_tensorrt.so && \
+    test ! -e /opt/onnxruntime/lib/libonnxruntime_providers_tensorrt.so && \
     test ! -e /opt/venv/lib/python3.10/site-packages/onnxruntime/capi/libonnxruntime_providers_tensorrt.so
 RUN /opt/venv/bin/python /build-contract/verify-python-environment.py \
       --lock /build-contract/gpu.lock

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import unittest
@@ -256,12 +257,26 @@ class GithubSealedWorkflowTests(unittest.TestCase):
         dockerfile = (
             REPO / "packaging/ndnsf-di-container/oci/Dockerfile.gpu"
         ).read_text()
-        optional_dso = (
-            "/opt/venv/lib/python3.10/site-packages/onnxruntime/capi/"
-            "libonnxruntime_providers_tensorrt.so"
+        optional_dsos = (
+            "/opt/onnxruntime/lib/libonnxruntime_providers_tensorrt.so",
+            (
+                "/opt/venv/lib/python3.10/site-packages/onnxruntime/capi/"
+                "libonnxruntime_providers_tensorrt.so"
+            ),
         )
-        self.assertIn(f"rm -f {optional_dso}", dockerfile)
-        self.assertIn(f"test ! -e {optional_dso}", dockerfile)
+        for optional_dso in optional_dsos:
+            self.assertIn(optional_dso, dockerfile)
+            self.assertRegex(dockerfile, rf"rm -f[^\n]*{re.escape(optional_dso)}")
+            self.assertIn(f"test ! -e {optional_dso}", dockerfile)
+        required_cuda_dsos = (
+            "/opt/onnxruntime/lib/libonnxruntime_providers_cuda.so",
+            (
+                "/opt/venv/lib/python3.10/site-packages/onnxruntime/capi/"
+                "libonnxruntime_providers_cuda.so"
+            ),
+        )
+        for required_cuda_dso in required_cuda_dsos:
+            self.assertIn(f"test -f {required_cuda_dso}", dockerfile)
 
     def test_final_source_and_immutable_foundation_source_are_bound_separately(self) -> None:
         dockerfile = (
