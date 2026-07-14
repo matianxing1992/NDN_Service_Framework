@@ -85,3 +85,35 @@ authorization, and one new dispatch. It must first prove which Python native
 extensions are required by the Qwen runtime and must not silence unresolved
 libraries in required extensions. T160 remains locked because T171 did not
 PASS.
+
+## T172 audited local repair
+
+CodeGraph and exact-source searches found no NDNSF-DI, Qwen runner, runtime
+probe, or acceptance import of `torchaudio` or `torchvision`; the required
+runtime import contract is `ndnsf`, `ndnsf_distributed_inference`, `torch`,
+`transformers`, and `onnxruntime`. The first focused RED run failed 1 of 16
+tests because both unused media packages were still locked.
+
+The repair removes the two media wheels from the Python lock, PyTorch-index
+installation, and compatibility matrix. It retains PyTorch 2.6.0+cu124 and
+does not add an ignore path to `derive-runtime-packages.py`. Preflight now
+requires `torch`, `transformers`, and `onnxruntime-gpu`, rejects either unused
+media package or declaration, and continues to fail on unresolved libraries in
+every installed required ELF.
+
+The repaired gates passed:
+
+- 16/16 focused sealed-workflow tests and 99/99 complete Spec 110 offline tests;
+- GPU preflight with eight sources, 38 Python packages, and 11 system CUDA
+  requirements;
+- release/materialization integration including its intended negative identity
+  mutation;
+- YAML parse, Python compilation, and diff checks;
+- source scan of 371829 bytes with zero findings; and
+- strict Spec Kit structure with 37 FRs, 13 SCs, six stories, and 176 tasks.
+
+The pre/post-implementation audit verdict is `PASS` for the T172 local change:
+it removes unconsumed scope in the OCI owner, preserves security and required
+ELF fail-closed behavior, and has an explicit immutable rollback boundary.
+This is not cloud-build PASS; T173-T175 own the new sealed identity,
+publication, dispatch, and executed closure evidence.

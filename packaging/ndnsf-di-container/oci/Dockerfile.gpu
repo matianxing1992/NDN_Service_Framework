@@ -71,14 +71,14 @@ RUN python3.10 -m venv /opt/venv && \
 RUN python3 - <<'PY' >/tmp/python-requirements
 import json
 lock=json.load(open('/build-contract/gpu.lock'))
-skip={'torch','torchvision','torchaudio'}
+skip={'torch'}
 print('\n'.join(f'{name}=={version}' for name,version in sorted(lock['pythonPackages'].items()) if name not in skip))
 PY
 RUN --mount=type=cache,target=/root/.cache/pip \
     /opt/venv/bin/pip install --no-deps --requirement /tmp/python-requirements && \
     /opt/venv/bin/pip install --no-deps \
       --index-url https://download.pytorch.org/whl/cu124 \
-      torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0
+      torch==2.6.0
 RUN /opt/venv/bin/python /build-contract/verify-python-environment.py \
       --lock /build-contract/gpu.lock
 
