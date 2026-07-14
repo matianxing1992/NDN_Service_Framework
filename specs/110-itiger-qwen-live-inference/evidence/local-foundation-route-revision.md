@@ -1,7 +1,7 @@
 # Local foundation route revision
 
-**Status**: implementation/static gate PASS; full local foundation build and
-registry publication remain open under T166.
+**Status**: implementation/static gate and full local Foundation build PASS;
+source-bound registry publication remains open under T166.
 
 ## Why the route changed
 
@@ -177,15 +177,57 @@ outer-backoff test. The library and all 29 ndn-svs tests then passed under Boost
 `spec110-runtime-publication-fetch`; `gpu.lock` and preflight reject any other
 ndn-svs revision.
 
+## Accepted local Foundation candidate
+
+Committed workspace revision
+`edeeff1e3041e941b48ba18784348fc9505d7418` was sealed as
+`sha256:8472d030a337b6b978588038086db4ebdb57baee37827f0fcdc8b932d97eef0d`.
+The seal binds lock digest
+`sha256:0b617bb8a463734c837422786178e455abc327150d6cdbd0eccff16b6460312a`,
+workspace archive digest
+`sha256:6a550642ab70cdd6bf9eaa3a71ec379a7e2cfe1588819c17720947c0740400e2`,
+and ndn-svs archive digest
+`sha256:bc91a91fc4654eda6be3acd1cdb4ed5e62701a2a391a26e6d5535767e1ca8201`.
+
+`build-foundation-local.sh` completed successfully against that exact committed
+tree. The complete log is retained at
+`results/spec110-itiger-qwen-live/foundation-build-edeeff1/build.log`, and the
+machine-readable result is
+`results/spec110-itiger-qwen-live/foundation-build-edeeff1/local-foundation.json`.
+The build evidence includes:
+
+- ndn-cxx 181 actions, NFD 147 actions, and NDNSF 70 actions completed;
+- OpenABE's upstream suites passed, including 46, 36, 106, 1, and 11-test
+  groups plus the CLI encryption/decryption regressions;
+- the exact sealed NAC-ABE source ran 28 cases and ended with
+  `*** No errors detected`;
+- the Builder probe reported NFD/NFDC `24.07`, NDNSF pkg-config `0.1.0`, the
+  exact source revision, and no unresolved NDNSF shared-library dependency.
+
+The accepted local Foundation image is
+`ghcr.io/matianxing1992/ndnsf-di-foundation:spec110-foundation-edeeff1e3041e941b48ba18784348fc9505d7418`
+with local image ID
+`sha256:94f1c5722e0eb1393c31af76cddecedc5cf30fdc636eac842e506ba14d4cdee6`
+and size 360566424 bytes. It is intentionally a `FROM scratch` transfer layer:
+it contains only `/opt/ndnsf-di`, is labeled `contains-gpu-runtime=false`, and
+is not a standalone shell-bearing runtime. Executable probes therefore run in
+the same-source `foundation-builder`; the reviewed GitHub GPU-delta stage must
+copy this Foundation into its CUDA runtime before runtime/GPU probes.
+
+This closes the local build and in-Builder validation portion of T166. It does
+not close T166 because `publishedDigest` is still null: no GHCR credential was
+available, and the source-bound tag has not been pushed. The next state change
+is exactly one push of this existing tag followed by recording its immutable
+digest. No rebuild, reseal, or T167 GPU dispatch is authorized by this result.
+
 ## Audit verdict
 
-**PASS for the reviewed build graph; T166 remains open.** No unresolved
+**PASS for the reviewed build graph and local Foundation candidate; T166
+remains open only at the registry-publication boundary.** No unresolved
 BLOCK/HIGH issue remains in the static/local route after the OpenSSL ABI,
 NAC-ABE test-launch, Python/Focal closure, NCCL base-image, GHCR anonymous-pull,
 runtime-library, and sealed-source gates above. This is not a foundation release
-claim: the complete committed/sealed `Dockerfile.foundation` build, in-container
-probe, source-bound push, and immutable digest record still belong to T166.
-The first full build was started and preserved as the ndn-svs configure failure
-above. Useful Docker build cache was retained for the corrected candidate;
-T166 remains open until that candidate passes every in-container gate and is
-published by immutable digest.
+claim: source-bound push and immutable digest recording still belong to T166.
+The complete committed/sealed `Dockerfile.foundation` build and same-source
+Builder probe have now passed. T167 remains blocked until T166 has an immutable
+GHCR digest and its final Foundation/CUDA/ONNX inputs receive manual review.
