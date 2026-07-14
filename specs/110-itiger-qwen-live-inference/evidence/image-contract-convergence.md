@@ -157,3 +157,32 @@ Preflight, workflow YAML, diff, source secret scan with zero findings, and the
 strict structural audit all passed; the latter traced 37/37 requirements and
 parsed 202 tasks. The bounded post-implementation audit verdict remains
 `PASS`, while final OCI and iTiger execution claims remain unproven.
+
+## Fourth complete local GPU build outcome
+
+Source `40cd15f30886b065aa204be77d5d0784a48edc3f`, seal
+`sha256:8c985b14cc44807016520f9114ba752d2fc9edb4583fddc69d28988e37c3ba36`,
+and immutable Foundation source `228341e0ea1f28956015fbaa30d2bf58a56b7789`
+passed both required CUDA-provider assertions, removed both optional TensorRT
+provider DSOs, completed all 244 C++ targets, linked the native ONNX provider,
+built all three Python wheels, and derived the final runtime package closure.
+After 21 minutes 15 seconds the final CUDA runtime layer rejected this APT
+operation:
+
+```text
+E: Held packages were changed and -y was used without --allow-change-held-packages.
+```
+
+The derived closure included `libcudnn9-cuda-12`, which was already installed
+and intentionally held in the digest-pinned NVIDIA CUDA runtime base. A newer
+repository candidate made a plain `apt-get install` attempt to upgrade that
+base-owned package. Allowing held-package changes would silently mutate the
+locked CUDA/cuDNN stack, so it is not an acceptable repair. The replacement
+filters the derived manifest through `dpkg-query` and installs only packages
+whose status is not `install ok installed`.
+
+This attempt is retained as `EXECUTED_FAIL`; 254 disk samples recorded a peak
+root usage of 151829037056 bytes and a minimum available capacity of
+28702339072 bytes. No final image, GHCR publication, or iTiger job exists for
+this identity. The missing-package-only policy has a focused RED/GREEN
+regression and is enforced by the static GPU-build preflight.

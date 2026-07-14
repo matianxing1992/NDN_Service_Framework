@@ -311,3 +311,9 @@ blocker into experimental completion.
 - [X] T200 [US1] Extend the CUDA-only RED contract to require removal of both SDK and Python-wheel TensorRT provider DSOs while retaining the required CUDA provider DSOs and fail-closed closure scanning (missing, HIGH; depends on T199)
 - [X] T201 [US1] Remove both locked optional TensorRT provider DSOs before closure derivation, run focused/full offline, preflight, secret, workflow, and strict audit gates, and preserve CUDA provider acceptance (missing, HIGH; depends on T200)
 - [ ] T202 [US1] Commit and seal the dual-location repair under a new source identity, reuse the explicitly source-bound `228341e` Foundation, and execute T190 as one new local candidate without GHCR publication or iTiger submission (missing, HIGH; depends on T201)
+
+## Phase 23: Runtime-base package preservation
+
+- [X] T203 [US1] Preserve source `40cd15f30886b065aa204be77d5d0784a48edc3f` as `EXECUTED_FAIL` after 21m15s when the final runtime install attempted to upgrade the CUDA-base-held `libcudnn9-cuda-12`; retain the successful dual TensorRT removal, 244-target build, native linkage, Python wheels, disk samples, and no-publication boundary (contradicts, HIGH; depends on T202 attempt)
+- [X] T204 [US1] Add a RED regression proving the final runtime installs only packages absent from the immutable CUDA runtime base and never upgrades already-installed held CUDA/cuDNN packages (missing, HIGH; depends on T203)
+- [ ] T205 [US1] Implement missing-package-only runtime installation, enforce it in preflight, pass focused/full offline, integration, secret, workflow, and strict audit gates, commit and seal a new source identity, then execute T190 without GHCR publication or iTiger submission (missing, HIGH; depends on T204)
