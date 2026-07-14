@@ -50,7 +50,7 @@ class GithubSealedWorkflowTests(unittest.TestCase):
             lock["sourceRepositories"]["ndn-svs"],
             {
                 "url": "https://github.com/matianxing1992/ndn-svs.git",
-                "revision": "19ec38ec77d26c13125b292863e607da51a3d9de",
+                "revision": "7b616b08624a79617bb05f2d3553bbbacdc4c482",
             },
         )
         self.assertIn("libboost-all-dev", lock["systemPackages"])
