@@ -14,12 +14,16 @@ SCRIPT = (
     REPO
     / "packaging/ndnsf-di-container/oci/scripts/derive-runtime-packages.py"
 )
+VERIFY_SCRIPT = (
+    REPO
+    / "packaging/ndnsf-di-container/oci/scripts/verify-runtime-closure.py"
+)
 
 
-def load_runtime_package_module():
-    spec = importlib.util.spec_from_file_location("derive_runtime_packages", SCRIPT)
+def load_script_module(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
-        raise RuntimeError(f"cannot load {SCRIPT}")
+        raise RuntimeError(f"cannot load {path}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -30,7 +34,8 @@ class RuntimePackageClosureTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         if shutil.which("gcc") is None or shutil.which("ldd") is None:
             raise RuntimeError("gcc and ldd are required for the real-ELF closure test")
-        cls.module = load_runtime_package_module()
+        cls.module = load_script_module("derive_runtime_packages", SCRIPT)
+        cls.verify_module = load_script_module("verify_runtime_closure", VERIFY_SCRIPT)
 
     def build_sibling_bundle(self, root: Path) -> tuple[Path, Path]:
         bundle = root / "pillow.libs"
@@ -98,6 +103,7 @@ class RuntimePackageClosureTests(unittest.TestCase):
             linked = self.module.linked_paths(consumer)
 
             self.assertIn(dependency.resolve(), linked)
+            self.verify_module.verify_elf(consumer)
 
     def test_missing_sibling_vendored_dso_still_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -109,6 +115,11 @@ class RuntimePackageClosureTests(unittest.TestCase):
                 rf"^RUNTIME_LIBRARY_MISSING:{consumer}$",
             ):
                 self.module.linked_paths(consumer)
+            with self.assertRaisesRegex(
+                RuntimeError,
+                rf"^RUNTIME_LIBRARY_MISSING:{consumer}$",
+            ):
+                self.verify_module.verify_elf(consumer)
 
     def test_host_driver_libcuda_is_the_only_allowed_missing_dso(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -167,6 +178,7 @@ class RuntimePackageClosureTests(unittest.TestCase):
             self.assertIn("libcuda.so.1 => not found", direct.stdout)
 
             self.module.linked_paths(consumer)
+            self.verify_module.verify_elf(consumer)
 
 
 if __name__ == "__main__":
