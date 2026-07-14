@@ -131,6 +131,28 @@ class GithubSealedWorkflowTests(unittest.TestCase):
         ):
             self.assertIn(required, packages)
 
+    def test_qwen_runtime_excludes_unused_torch_media_packages(self) -> None:
+        lock = json.loads(
+            (REPO / "packaging/ndnsf-di-container/oci/locks/gpu.lock").read_text()
+        )
+        packages = {name.lower() for name in lock["pythonPackages"]}
+        self.assertIn("torch", packages)
+        self.assertTrue(
+            {"torchaudio", "torchvision"}.isdisjoint(packages),
+            "Qwen text inference must not ship unused native media plugins",
+        )
+        dockerfile = (
+            REPO / "packaging/ndnsf-di-container/oci/Dockerfile.gpu"
+        ).read_text()
+        matrix = (
+            REPO / "packaging/ndnsf-di-container/oci/compatibility/gpu-matrix.yaml"
+        ).read_text()
+        self.assertNotIn("torchaudio", dockerfile)
+        self.assertNotIn("torchvision", dockerfile)
+        self.assertNotIn("torchaudio:", matrix)
+        self.assertNotIn("torchvision:", matrix)
+        self.assertIn("derive-runtime-packages.py", dockerfile)
+
     def test_python_focal_fixture_rejects_foreign_optional_abis(self) -> None:
         fixture = (
             REPO

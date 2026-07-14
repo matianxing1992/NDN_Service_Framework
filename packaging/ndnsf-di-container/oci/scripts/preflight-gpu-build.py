@@ -29,6 +29,8 @@ REQUIRED_PYTHON = {
     "packaging", "pillow", "pyyaml", "regex", "requests", "sympy", "tqdm",
     "triton", "typing-extensions", "urllib3",
 }
+REQUIRED_QWEN_PYTHON = {"onnxruntime-gpu", "torch", "transformers"}
+UNUSED_TORCH_MEDIA = {"torchaudio", "torchvision"}
 REQUIRED_SYSTEM_PYTHON = {
     "nvidia-cublas-cu12", "nvidia-cuda-cupti-cu12", "nvidia-cuda-nvrtc-cu12",
     "nvidia-cuda-runtime-cu12", "nvidia-cudnn-cu12", "nvidia-cufft-cu12",
@@ -75,6 +77,7 @@ def run(workspace: Path, seal_root: Path | None) -> dict[str, object]:
     lock = json.loads((oci / "locks/gpu.lock").read_text())
     foundation = (oci / "Dockerfile.foundation").read_text()
     dockerfile = (oci / "Dockerfile.gpu").read_text()
+    matrix = (oci / "compatibility/gpu-matrix.yaml").read_text()
     workflow = (workspace / ".github/workflows/ndnsf-di-itiger-image.yml").read_text()
     gitignore = (workspace / ".gitignore").read_text().splitlines()
     sources = lock.get("sourceRepositories", {})
@@ -109,6 +112,15 @@ def run(workspace: Path, seal_root: Path | None) -> dict[str, object]:
     require(onnx_cpp.get("bytes") == 258487100, "PREFLIGHT_ONNX_CPP_SIZE_INVALID")
     python = {name.lower() for name in lock.get("pythonPackages", {})}
     require(REQUIRED_PYTHON <= python, "PREFLIGHT_PYTHON_CLOSURE_INCOMPLETE")
+    require(REQUIRED_QWEN_PYTHON <= python, "PREFLIGHT_QWEN_RUNTIME_INCOMPLETE")
+    require(
+        UNUSED_TORCH_MEDIA.isdisjoint(python),
+        "PREFLIGHT_UNUSED_TORCH_MEDIA_PRESENT",
+    )
+    require(
+        all(name not in dockerfile and f"{name}:" not in matrix for name in UNUSED_TORCH_MEDIA),
+        "PREFLIGHT_UNUSED_TORCH_MEDIA_DECLARED",
+    )
     system_python = {name.lower() for name in lock.get("pythonSystemProvidedPackages", {})}
     require(REQUIRED_SYSTEM_PYTHON == system_python, "PREFLIGHT_SYSTEM_CUDA_CONTRACT_INCOMPLETE")
     foundation_markers = (

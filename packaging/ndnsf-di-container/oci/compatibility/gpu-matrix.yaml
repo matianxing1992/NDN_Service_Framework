@@ -10,8 +10,6 @@ runtime:
   cudnnMajor: 9
   minimumLinuxDriver: 550.54.14
   pytorch: 2.6.0+cu124
-  torchvision: 0.21.0+cu124
-  torchaudio: 2.6.0+cu124
   onnxRuntimeGpu: 1.20.1
   onnxRuntimeCudaMajor: 12
   onnxRuntimeCudnnMajor: 9
