@@ -243,3 +243,38 @@ runtime-library, and sealed-source gates above. The complete committed/sealed
 immutable digest record, and anonymous access have passed. This is a Foundation
 release claim only; it is not a CUDA, ONNX Runtime GPU, SIF, or Qwen inference
 claim. T167 remains a separate manually reviewed, exactly-once dispatch.
+
+## Replacement Foundation candidate (T169)
+
+The reviewed T168 repair was committed and pushed as
+`8f6332ce800a1a5130f457fa54454ad968dff638`. Its verified source seal is
+`sha256:a8a846bbd6b40ae5e138ecc72eaac39ebd484e52cfe6b92ffa532a30400cc2c3`;
+the seal binds workspace archive
+`sha256:c7c0eca51d3a27b84cd49f60cc219348e06b7d21d6cabab7dd2bf6312d409171`
+and the unchanged lock
+`sha256:0b617bb8a463734c837422786178e455abc327150d6cdbd0eccff16b6460312a`.
+
+`build-foundation-local.sh` rebuilt the Foundation from that exact commit and
+seal. ndn-cxx completed 181 actions, NFD completed 147 actions, OpenABE's
+upstream suites and CLI positive/negative probes passed, the exact NAC-ABE
+source completed all 28 cases with no errors, and NDNSF completed all 70 build
+actions. The same-source Builder reported NFD/NFDC `24.07`; the resulting
+scratch Foundation has local image ID
+`sha256:9596a6d9405730ac02c76a64c5398212f91040baf8ddba244d6d5d85f0751dca`,
+size 360566424 bytes, the exact source-revision label, executable NFD/NFDC, 16
+measured runtime-system-package entries, and the NDNSF shared library. The
+complete build evidence is under
+`results/spec110-itiger-qwen-live/foundation-build-8f6332c/`.
+
+The source-bound tag
+`ghcr.io/matianxing1992/ndnsf-di-foundation:spec110-foundation-8f6332ce800a1a5130f457fa54454ad968dff638`
+was proved absent and pushed exactly once. GHCR returned immutable digest
+`sha256:a9ed75a9fa09acd6e795007e5d58a69fb9f9b349222faab9aeb852c70fbed820`.
+An anonymous digest inspection passed and bound config
+`sha256:9596a6d9405730ac02c76a64c5398212f91040baf8ddba244d6d5d85f0751dca`
+plus one 92973852-byte compressed layer. The push log and anonymous manifest
+are preserved in the same evidence directory. No second push occurred.
+
+**T169 verdict: PASS.** This accepts only the replacement Foundation and its
+anonymous immutable digest. CUDA, ONNX Runtime GPU, final OCI, SIF, Slurm, and
+Qwen claims remain gated by T170, T171, and the later live tasks.

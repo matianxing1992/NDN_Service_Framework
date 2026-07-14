@@ -256,6 +256,6 @@ blocker into experimental completion.
 ## Phase 15: GPU assembler runtime-closure replacement
 
 - [X] T168 [US1] Diagnose run `29297628957` without rerunning it, preserve its logs/artifacts/disk evidence, add a RED regression for the Foundation runtime-package ordering defect, install the Foundation-measured DSO closure before the GPU assembler's `ldd` scan, and pass focused, full offline, source-secret, and strict Spec Kit gates
-- [ ] T169 [US1] Commit and push the reviewed T168 repair under a new source identity, create and verify a matching source seal, rebuild the local Foundation from that exact commit, and publish its new source-bound tag exactly once with an anonymously readable immutable digest (depends on T168)
+- [X] T169 [US1] Commit and push the reviewed T168 repair as `8f6332ce800a1a5130f457fa54454ad968dff638`, create and verify its matching source seal, rebuild the local Foundation, and publish its source-bound tag exactly once as anonymously readable digest `sha256:a9ed75a9fa09acd6e795007e5d58a69fb9f9b349222faab9aeb852c70fbed820` (depends on T168)
 - [ ] T170 [US1] Review the new source/Foundation/CUDA/ONNX inputs, prove the prior release identity cannot be reused, create an exact source tag, and manually dispatch one replacement GPU assembly under a new release identity exactly once (depends on T169 and explicit human authorization)
 - [ ] T171 [US1] Monitor the T170 replacement to terminal state and preserve its immutable GHCR digest or exact failure without automatic rerun; only PASS may unlock T160 (depends on T170)
