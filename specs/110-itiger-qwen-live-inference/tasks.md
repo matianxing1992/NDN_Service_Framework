@@ -323,3 +323,9 @@ blocker into experimental completion.
 - [X] T206 [US1] Preserve source `a36d8de06ac4c392a4f75a2fb891937a4b06f57d` as `EXECUTED_FAIL` after 21m07s because Debian reports an installed held package as `hold ok installed`, not `install ok installed`; retain the successful 244-target build, native linkage, Python wheels, seal, disk samples, and no-publication boundary (contradicts, HIGH; depends on T205 attempt)
 - [X] T207 [US1] Add a RED/GREEN regression and a real digest-pinned CUDA-base probe proving `${db:Status-Abbrev}` recognizes both normal (`ii `) and held (`hi `) installed packages while a missing package remains absent (missing, HIGH; depends on T206)
 - [ ] T208 [US1] Enforce current-state installed-package filtering with `${db:Status-Abbrev}`, pass all local gates, commit and seal a new source identity, then execute T190 once without GHCR publication or iTiger submission (missing, HIGH; depends on T207)
+
+## Phase 25: Final runtime closure parity
+
+- [X] T209 [US1] Preserve source `43648aada42fa051ebc09b86727055631aa5f9fa` as `EXECUTED_FAIL` after 21m35s at the final runtime closure verifier, while retaining proof that the held-package repair produced `0 upgraded`, all 244 targets and wheels completed, and no image/publication/job exists (contradicts, HIGH; depends on T208 attempt)
+- [X] T210 [US1] Add real-ELF RED/GREEN regressions proving the final verifier resolves each wheel's sibling vendored DSO directory, rejects a missing sibling userspace DSO, and accepts only unresolved `libcuda.so.1` as the Apptainer `--nv` host-driver boundary (missing, HIGH; depends on T209)
+- [ ] T211 [US1] Bring final runtime verification into parity with the audited derivation policy, enforce sibling and host-driver markers in preflight, pass all local gates, commit and seal a new source identity, then execute T190 once without GHCR publication or iTiger submission (missing, HIGH; depends on T210)

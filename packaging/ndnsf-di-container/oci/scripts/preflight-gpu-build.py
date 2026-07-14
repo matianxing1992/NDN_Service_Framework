@@ -77,6 +77,7 @@ def run(workspace: Path, seal_root: Path | None) -> dict[str, object]:
     lock = json.loads((oci / "locks/gpu.lock").read_text())
     foundation = (oci / "Dockerfile.foundation").read_text()
     dockerfile = (oci / "Dockerfile.gpu").read_text()
+    runtime_closure = (oci / "scripts/verify-runtime-closure.py").read_text()
     matrix = (oci / "compatibility/gpu-matrix.yaml").read_text()
     workflow = (workspace / ".github/workflows/ndnsf-di-itiger-image.yml").read_text()
     gitignore = (workspace / ".gitignore").read_text().splitlines()
@@ -165,6 +166,15 @@ def run(workspace: Path, seal_root: Path | None) -> dict[str, object]:
     )
     for marker in markers:
         require(marker in dockerfile, f"PREFLIGHT_DOCKER_MARKER_MISSING:{marker}")
+    for marker in (
+        'HOST_DRIVER_LIBRARIES = {"libcuda.so.1"}',
+        "path.parent.resolve()",
+        "unresolved - HOST_DRIVER_LIBRARIES",
+    ):
+        require(
+            marker in runtime_closure,
+            f"PREFLIGHT_RUNTIME_CLOSURE_MARKER_MISSING:{marker}",
+        )
     foundation_runtime_install = "$(cat /opt/ndnsf-di/manifest/runtime-system-packages)"
     closure_derivation = "python3 /build-contract/derive-runtime-packages.py"
     require(

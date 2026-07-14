@@ -4,8 +4,43 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
+import re
 import subprocess
+
+
+ELF = b"\x7fELF"
+# The NVIDIA driver ABI is supplied by ``apptainer exec --nv`` on iTiger.
+# Every CUDA userspace DSO remains image-owned and fail closed.
+HOST_DRIVER_LIBRARIES = {"libcuda.so.1"}
+
+
+def verify_elf(path: Path) -> None:
+    environment = dict(os.environ)
+    sibling_directory = str(path.parent.resolve())
+    inherited_library_path = environment.get("LD_LIBRARY_PATH")
+    environment["LD_LIBRARY_PATH"] = (
+        sibling_directory
+        if not inherited_library_path
+        else os.pathsep.join((sibling_directory, inherited_library_path))
+    )
+    result = subprocess.run(
+        ["ldd", str(path)],
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode and "not a dynamic executable" not in (
+        result.stdout + result.stderr
+    ):
+        raise RuntimeError(f"RUNTIME_LDD_FAILED:{path}")
+    unresolved = set(
+        re.findall(r"^\s*(\S+)\s+=>\s+not found\s*$", result.stdout, re.MULTILINE)
+    )
+    if unresolved - HOST_DRIVER_LIBRARIES:
+        raise RuntimeError(f"RUNTIME_LIBRARY_MISSING:{path}")
 
 
 def main() -> int:
@@ -13,18 +48,19 @@ def main() -> int:
     parser.add_argument("--root", action="append", required=True)
     args = parser.parse_args()
     checked = 0
-    missing = []
+    missing: list[str] = []
     for root in map(Path, args.root):
         for path in root.rglob("*"):
             try:
-                is_elf = path.is_file() and path.open("rb").read(4) == b"\x7fELF"
+                is_elf = path.is_file() and path.open("rb").read(4) == ELF
             except OSError:
                 continue
             if not is_elf:
                 continue
-            result = subprocess.run(["ldd", str(path)], text=True, capture_output=True, check=False)
-            if "not found" in result.stdout:
-                missing.extend(f"{path}:{line.strip()}" for line in result.stdout.splitlines() if "not found" in line)
+            try:
+                verify_elf(path)
+            except RuntimeError as error:
+                missing.append(str(error))
             checked += 1
     if missing:
         raise SystemExit("RUNTIME_LIBRARY_CLOSURE_INCOMPLETE\n" + "\n".join(missing))

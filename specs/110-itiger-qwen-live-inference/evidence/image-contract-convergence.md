@@ -216,3 +216,34 @@ held-package upgrades.
 The failed attempt recorded 253 disk samples, peak root usage of
 158200406016 bytes, and minimum available capacity of 22330970112 bytes. No
 final image, GHCR publication, or iTiger job exists for this source identity.
+
+## Sixth complete local GPU build outcome
+
+Source `43648aada42fa051ebc09b86727055631aa5f9fa`, seal
+`sha256:1eb82a049de6a0cd92f0a911672061570c1d8fdb932eed5d884559e423262b32`,
+and the immutable Foundation source completed CUDA/Python/ONNX assembly,
+244/244 C++ targets in 12 minutes 34 seconds, native and fault-provider links,
+all Python wheels, and runtime package derivation. The held-package repair was
+validated by APT itself:
+
+```text
+0 upgraded, 24 newly installed, 0 to remove and 34 not upgraded.
+```
+
+The run then copied the complete NDN, ONNX Runtime GPU, Python, and Qwen
+runtime into the final stage. After 21 minutes 35 seconds the independent
+`verify-runtime-closure.py` rejected Pillow and NumPy wheel-private DSOs plus
+the PyTorch driver dependency. The package derivation had already handled
+these correctly; the final verifier had not inherited its per-ELF sibling
+directory lookup or its exact `libcuda.so.1` host-driver exception.
+
+The replacement verifier now applies a temporary `LD_LIBRARY_PATH` containing
+only the ELF's own parent plus the inherited image paths, rejects every
+unresolved userspace SONAME, and permits only `libcuda.so.1` for later
+`apptainer exec --nv` injection. Real ELF tests prove a sibling bundle passes,
+deleting its sibling DSO fails closed, and a synthetic missing `libcuda.so.1`
+passes. Preflight locks all three policy markers.
+
+The failed attempt recorded 259 disk samples, peak root usage of
+162382110720 bytes, and minimum available capacity of 18149265408 bytes. No
+final image, GHCR publication, or iTiger job exists for this source identity.
