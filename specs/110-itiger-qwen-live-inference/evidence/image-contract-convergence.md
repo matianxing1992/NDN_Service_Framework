@@ -66,3 +66,30 @@ seal/build-context scan remains the controlling publication gate. Similarly, a
 naive `bash -n` over every tracked `*.sh` found the existing
 `Experiments/start_ucla.sh`, whose content is MiniNDN Python despite its suffix.
 The four changed container/Slurm scripts and templates passed `bash -n`.
+
+## First complete local GPU build outcome
+
+The exact `de849b88c25337cc9acf55f6572b081b2f00ab9e` worktree completed
+all CUDA base pulls, Python/CUDA package installation, ONNX Runtime SDK
+verification, NDNSF-DI C++/ONNX compilation, and all three local Python wheels.
+After 31 minutes 4.50 seconds it failed closed during the final ELF scan:
+
+```text
+RUNTIME_LIBRARY_MISSING:/opt/venv/lib/python3.10/site-packages/torch/lib/libcaffe2_nvrtc.so
+```
+
+Independent `readelf -d` inspection of the exact PyTorch 2.6.0+cu124 wheel
+showed `libcaffe2_nvrtc.so` needs `libnvrtc.so.12` and `libcuda.so.1`.
+The former is supplied by the locked CUDA/Python userspace closure. The latter
+is the NVIDIA driver ABI and must be injected by the iTiger host through
+`apptainer exec --nv`; embedding a host driver in the image would violate
+FR-003. This attempt is retained as `EXECUTED_FAIL`, and no image tag was
+created.
+
+The host-driver regression was RED against the original scanner and failed only
+because `libcuda.so.1` was unresolved. The repaired scanner parses unresolved
+SONAMEs and permits exactly `libcuda.so.1`; the missing sibling DSO negative
+test remains fail closed. Focused closure tests passed 3/3, sealed-workflow
+tests passed 18/18, the complete Spec 110 offline suite passed 104/104, the
+official build-context secret scan remained clean, and the strict structural
+audit passed with 37/37 requirements traced and 194 tasks parsed.
