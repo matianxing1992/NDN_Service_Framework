@@ -12,6 +12,10 @@ import subprocess
 
 ELF = b"\x7fELF"
 BASE_PACKAGES = {"ca-certificates", "libgomp1", "python3", "zlib1g"}
+# ``apptainer exec --nv`` injects the host NVIDIA driver ABI. CUDA userspace
+# libraries remain image-owned; only this driver SONAME may be unresolved while
+# deriving the image's Debian package closure on a GPU-less builder.
+HOST_DRIVER_LIBRARIES = {"libcuda.so.1"}
 
 
 def elf_files(roots: list[Path]):
@@ -42,7 +46,10 @@ def linked_paths(path: Path) -> list[Path]:
     )
     if result.returncode and "not a dynamic executable" not in result.stderr:
         raise RuntimeError(f"RUNTIME_LDD_FAILED:{path}")
-    if "not found" in result.stdout:
+    unresolved = set(
+        re.findall(r"^\s*(\S+)\s+=>\s+not found\s*$", result.stdout, re.MULTILINE)
+    )
+    if unresolved - HOST_DRIVER_LIBRARIES:
         raise RuntimeError(f"RUNTIME_LIBRARY_MISSING:{path}")
     values = []
     for line in result.stdout.splitlines():

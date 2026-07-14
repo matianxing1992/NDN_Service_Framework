@@ -110,6 +110,64 @@ class RuntimePackageClosureTests(unittest.TestCase):
             ):
                 self.module.linked_paths(consumer)
 
+    def test_host_driver_libcuda_is_the_only_allowed_missing_dso(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            driver_source = root / "driver.c"
+            consumer_source = root / "consumer.c"
+            driver_source.write_text(
+                "int spec110_cuda_driver_value(void) { return 110; }\n",
+                encoding="utf-8",
+            )
+            consumer_source.write_text(
+                "extern int spec110_cuda_driver_value(void);\n"
+                "int main(void) { return spec110_cuda_driver_value() == 110 ? 0 : 1; }\n",
+                encoding="utf-8",
+            )
+            driver = root / "libcuda.so.1"
+            subprocess.run(
+                [
+                    "gcc",
+                    "-fPIC",
+                    "-shared",
+                    str(driver_source),
+                    "-Wl,-soname,libcuda.so.1",
+                    "-o",
+                    str(driver),
+                ],
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+            (root / "libcuda.so").symlink_to(driver.name)
+            consumer = root / "driver-consumer"
+            subprocess.run(
+                [
+                    "gcc",
+                    str(consumer_source),
+                    f"-L{root}",
+                    "-Wl,--no-as-needed",
+                    "-lcuda",
+                    "-o",
+                    str(consumer),
+                ],
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+            driver.unlink()
+            (root / "libcuda.so").unlink()
+
+            direct = subprocess.run(
+                ["ldd", str(consumer)],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertIn("libcuda.so.1 => not found", direct.stdout)
+
+            self.module.linked_paths(consumer)
+
 
 if __name__ == "__main__":
     unittest.main()
