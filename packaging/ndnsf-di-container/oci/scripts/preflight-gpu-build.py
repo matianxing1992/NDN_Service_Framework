@@ -110,6 +110,10 @@ def run(workspace: Path, seal_root: Path | None) -> dict[str, object]:
     require(onnx_cpp.get("version") == "1.20.1", "PREFLIGHT_ONNX_CPP_VERSION_INVALID")
     require(onnx_cpp.get("sha256") == "6bfb87c6ebe55367a94509b8ef062239e188dccf8d5caac8d6909b2344893bf0", "PREFLIGHT_ONNX_CPP_DIGEST_INVALID")
     require(onnx_cpp.get("bytes") == 258487100, "PREFLIGHT_ONNX_CPP_SIZE_INVALID")
+    require(
+        lock.get("onnxRuntimeExcludedOptionalProviders") == ["TensorrtExecutionProvider"],
+        "PREFLIGHT_ONNX_OPTIONAL_PROVIDER_POLICY_INVALID",
+    )
     python = {name.lower() for name in lock.get("pythonPackages", {})}
     require(REQUIRED_PYTHON <= python, "PREFLIGHT_PYTHON_CLOSURE_INCOMPLETE")
     require(REQUIRED_QWEN_PYTHON <= python, "PREFLIGHT_QWEN_RUNTIME_INCOMPLETE")
@@ -149,6 +153,10 @@ def run(workspace: Path, seal_root: Path | None) -> dict[str, object]:
         "install -m 0755 build/examples/di-native-provider",
         "derive-runtime-packages.py", "runtime-system-packages", "/etc/ndn/nfd.conf",
         "/run/nfd", "verify-runtime-closure.py", "verify-python-environment.py",
+        "ARG FOUNDATION_SOURCE_REVISION",
+        "onnxRuntimeExcludedOptionalProviders",
+        "libonnxruntime_providers_tensorrt.so",
+        'org.ndnsf.di.foundation.revision="${FOUNDATION_SOURCE_REVISION}"',
     )
     for marker in markers:
         require(marker in dockerfile, f"PREFLIGHT_DOCKER_MARKER_MISSING:{marker}")
@@ -167,6 +175,11 @@ def run(workspace: Path, seal_root: Path | None) -> dict[str, object]:
     require("preflight-gpu-build.py" in workflow, "PREFLIGHT_WORKFLOW_GATE_MISSING")
     require(workflow.index("preflight-gpu-build.py") < workflow.index("docker/setup-buildx-action"), "PREFLIGHT_WORKFLOW_GATE_LATE")
     require("foundation_image:" in workflow and "FOUNDATION_IMAGE=" in workflow, "PREFLIGHT_FOUNDATION_INPUT_MISSING")
+    require(
+        "foundation_source_revision:" in workflow
+        and "FOUNDATION_SOURCE_REVISION=${{ inputs.foundation_source_revision }}" in workflow,
+        "PREFLIGHT_FOUNDATION_SOURCE_INPUT_MISSING",
+    )
     require(PYTHON_BASE in workflow and GPU_BUILD_BASE in workflow and GPU_RUNTIME_BASE in workflow, "PREFLIGHT_WORKFLOW_BASE_IMAGE_DRIFT")
     require(re.search(r"(?m)^  push:", workflow) is None, "PREFLIGHT_UNREVIEWED_PUSH_TRIGGER_PRESENT")
     require("prepare-sealed-context.py" not in workflow, "PREFLIGHT_CLOUD_REBUILDS_FOUNDATION")

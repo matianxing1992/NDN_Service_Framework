@@ -16,6 +16,7 @@ RUN rm -f \
 FROM ${GPU_BUILD_BASE_IMAGE} AS gpu-assembler
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG SOURCE_REVISION
+ARG FOUNDATION_SOURCE_REVISION
 ARG ONNXRUNTIME_CPP_URL
 ARG ONNXRUNTIME_CPP_SHA256
 ARG DEBIAN_FRONTEND=noninteractive
@@ -79,6 +80,9 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     /opt/venv/bin/pip install --no-deps \
       --index-url https://download.pytorch.org/whl/cu124 \
       torch==2.6.0
+RUN test "$(/opt/venv/bin/python -c 'import json; print(",".join(json.load(open("/build-contract/gpu.lock"))["onnxRuntimeExcludedOptionalProviders"]))')" = "TensorrtExecutionProvider" && \
+    rm -f /opt/venv/lib/python3.10/site-packages/onnxruntime/capi/libonnxruntime_providers_tensorrt.so && \
+    test ! -e /opt/venv/lib/python3.10/site-packages/onnxruntime/capi/libonnxruntime_providers_tensorrt.so
 RUN /opt/venv/bin/python /build-contract/verify-python-environment.py \
       --lock /build-contract/gpu.lock
 
@@ -87,7 +91,8 @@ RUN /opt/venv/bin/python /build-contract/verify-python-environment.py \
 # declarations use install_path=None.
 RUN --mount=type=bind,source=.,target=/src/ndnsf,rw \
     set -eu; cd /src/ndnsf; \
-    test "$(cat /opt/ndnsf-di/manifest/source-revision)" = "$SOURCE_REVISION"; \
+    [[ "$FOUNDATION_SOURCE_REVISION" =~ ^[a-f0-9]{40}$ ]]; \
+    test "$(cat /opt/ndnsf-di/manifest/source-revision)" = "$FOUNDATION_SOURCE_REVISION"; \
     ./waf configure --prefix=$PREFIX --with-examples; \
     ./waf -j"$(nproc)"; ./waf install; \
     install -m 0755 build/examples/App_ServiceController $PREFIX/bin/App_ServiceController; \
@@ -107,6 +112,7 @@ RUN install -D -m 0644 /opt/ndnsf-di/manifest/nfd.conf /etc/ndn/nfd.conf && \
 
 FROM ${GPU_RUNTIME_BASE_IMAGE} AS runtime
 ARG SOURCE_REVISION
+ARG FOUNDATION_SOURCE_REVISION
 ARG RELEASE_ID
 ARG FOUNDATION_IMAGE
 ARG DEBIAN_FRONTEND=noninteractive
@@ -114,6 +120,7 @@ LABEL org.opencontainers.image.title="NDNSF-DI iTiger GPU runtime" \
       org.opencontainers.image.revision="${SOURCE_REVISION}" \
       org.opencontainers.image.version="${RELEASE_ID}" \
       org.ndnsf.di.foundation="${FOUNDATION_IMAGE}" \
+      org.ndnsf.di.foundation.revision="${FOUNDATION_SOURCE_REVISION}" \
       org.ndnsf.di.backend="onnxruntime-cuda" \
       org.ndnsf.di.rootfs="read-only" \
       org.ndnsf.di.daemon-policy="allocation-scoped-only"
