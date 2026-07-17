@@ -1,9 +1,6 @@
 .git
 .codegraph
 .planning
-.agents
-.codex
-.deepseek
 .specify
 .vscode
 build

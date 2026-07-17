@@ -33,7 +33,7 @@ Use Spec Kit for new features, protocol/API changes, architecture changes,
 evaluation-plan changes, and multi-file work that needs durable requirements.
 The normal path is specify, clarify when needed, plan, tasks, analyze when
 useful, implement, and converge. Small one-line fixes, direct command-output
-requests, and narrow slide/text edits may use the direct Codex workflow.
+requests, and narrow slide/text edits may use the direct development workflow.
 
 ### V. Verify With The Right Scope
 
@@ -46,11 +46,10 @@ tests should keep a 60-second measured window unless explicitly changed.
 
 ## Project Constraints
 
-GSD Core is installed for Codex and should be used for long-running,
-multi-phase, unclear, or stateful work: VM setup, benchmark campaigns, major
-protocol changes, distributed-inference work, and proposal-wide slide
-revisions. Use GSD's discuss, plan, execute, verify, progress, and resume skills
-to keep work scoped and recoverable across context windows.
+Use resumable workflow tooling for long-running, multi-phase, unclear, or
+stateful work: VM setup, benchmark campaigns, major protocol changes,
+distributed-inference work, and proposal-wide slide revisions. Preserve enough
+state to keep work scoped and recoverable across interrupted sessions.
 
 Keep `results/` as local experiment output, not source of truth. Preserve only
 canonical reproduction runs or the latest result for a distinct diagnostic
@@ -74,10 +73,9 @@ when both exist.
 
 ## Governance
 
-This constitution supplements `AGENTS.md`. If the two disagree, the more
-specific NDNSF rule in `AGENTS.md` wins. Amend this constitution when project
-workflow, security invariants, or required validation gates change. Spec Kit
-artifacts must not override NDNSF runtime/security rules unless the user
-explicitly approves the change.
+This constitution is the tracked project authority for development workflow,
+security invariants, and required validation gates. Local development
+instructions must not override NDNSF runtime/security rules. Amend this
+constitution when those project rules change.
 
 **Version**: 1.0.0 | **Ratified**: 2026-06-24 | **Last Amended**: 2026-06-24
