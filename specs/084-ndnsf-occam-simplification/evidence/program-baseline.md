@@ -12,7 +12,7 @@
 
 Treat every path present before Phase 1 as user-owned/pre-existing:
 
-- repository configuration: `.gitignore`, `.specify/feature.json`, `CLAUDE.md`;
+- repository configuration: `.gitignore`, `.specify/feature.json`;
 - current Repo/Core work: `Experiments/NDNSF_DistributedRepo_Generic_Minindn.py`,
   `NDNSF-DistributedInference/ndnsf_distributed_inference/repo.py`, the
   `NDNSF-DistributedRepo/` C++/Python/config/docs paths reported by Git,

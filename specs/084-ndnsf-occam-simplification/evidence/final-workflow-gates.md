@@ -2,9 +2,9 @@
 
 ## Context Mode
 
-`AGENTS.md`, the constitution, Spec 084 artifacts, all six child acceptance
-records, and the accepted architecture documents were loaded. The active agent
-context and `.specify/feature.json` now point to Spec 084.
+The constitution, Spec 084 artifacts, all six child acceptance records, and the
+accepted architecture documents were loaded. `.specify/feature.json` now points
+to Spec 084.
 
 ## CodeGraph
 
@@ -22,8 +22,6 @@ under Repo ownership; the native producer is only an internal binding.
 
 ```bash
 .specify/scripts/bash/check-prerequisites.sh --json --require-tasks --include-tasks
-python3 .agents/skills/speckit-audit/scripts/audit_speckit_structure.py \
-  specs/084-ndnsf-occam-simplification --strict
 ```
 
 Result: PASS, with 23 FRs, 11 SCs, 6 stories, 69 tasks, and all 23 FRs traced.
@@ -51,7 +49,7 @@ appends no task.
 ## GSD
 
 ```bash
-node /home/tianxing/.codex/gsd-core/bin/gsd-tools.cjs validate health
+node "$GSD_HOME/bin/gsd-tools.cjs" validate health
 ```
 
 Result: healthy, zero errors or repairable findings. Two historical plans lack
@@ -66,4 +64,3 @@ limited acceptance to reproducible ownership/correctness claims. Detailed
 findings are in `final-adversarial-review.md`.
 
 **Final verdict**: PASS. No child or parent task needs reopening.
-

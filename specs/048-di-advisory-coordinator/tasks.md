@@ -6,8 +6,8 @@
   planner default, provider lease authority preserved.
 - [x] T002 Record requirements, non-goals, validation plan, and future MiniNDN
   integration boundary in Spec Kit artifacts.
-- [x] T003 Ask DeepSeek for a second-pass checklist and keep Codex responsible
-  for final architecture and verification.
+- [x] T003 Perform a second-pass checklist while retaining maintainer
+  responsibility for final architecture and verification.
 
 ## Phase 2: Runtime Contract
 

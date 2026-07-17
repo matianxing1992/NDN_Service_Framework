@@ -2,7 +2,7 @@
 
 Date: 2026-07-13
 
-Scope: T050-T058. T059 remains open because the managed Codex user namespace
+Scope: T050-T058. T059 remains open because the restricted execution namespace
 cannot obtain the root network-namespace authority required by MiniNDN.
 
 ## Verified behavior

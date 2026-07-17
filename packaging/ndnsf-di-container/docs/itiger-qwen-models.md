@@ -1,7 +1,7 @@
 # iTiger Qwen model operations
 
-Use repository commands as the canonical interface. The optional Codex skill
-may remind an operator of these commands but never owns model or evidence state.
+Use repository commands as the canonical interface. Personal helper wrappers
+never own model or evidence state.
 
 ## Storage policy
 

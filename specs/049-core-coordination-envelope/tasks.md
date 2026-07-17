@@ -4,7 +4,7 @@
 
 - [x] T001 Define which coordination fields belong in NDNSF core in `specs/049-core-coordination-envelope/spec.md`.
 - [x] T002 Define which DI planning fields remain in NDNSF-DI in `specs/049-core-coordination-envelope/plan.md`.
-- [x] T003 Use DeepSeek for a second-pass boundary checklist and keep Codex responsible for final code review.
+- [x] T003 Perform a second-pass boundary checklist and retain maintainer responsibility for final code review.
 
 ## Phase 2: Core Contract
 

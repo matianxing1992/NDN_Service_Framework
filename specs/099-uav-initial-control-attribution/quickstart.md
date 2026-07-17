@@ -24,7 +24,7 @@ duplicate command, unterminated state, lifecycle abort, or unsupported claim.
 
 ## Continuity Under Transient Service Capacity
 
-If the Codex host reports transient capacity, rate-limit, transport, stream, or
+If the execution host reports transient capacity, rate-limit, transport, stream, or
 service-unavailable failure, preserve the current build/experiment checkpoint
 and resume with bounded retry. Do not restart a completed build or replace an
 experiment repetition. During Spec 099, a capacity notice arrived while the Waf

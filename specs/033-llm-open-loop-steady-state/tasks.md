@@ -26,13 +26,13 @@
 
 ## Evidence
 
-- Context gate: `AGENTS.md`, `.specify/memory/constitution.md`,
+- Context gate: `.specify/memory/constitution.md`,
   `.specify/feature.json`, and this feature plan/tasks were read or updated.
 - CodeGraph gate: `codegraph status .` reported an up-to-date index; CodeGraph
   was used to inspect `user_driver.py`,
   `Experiments/NDNSF_DI_NativeTracer_Minindn.py`,
   `run_llm_full_network_campaign.py`, and the Python async collaboration path.
-- GSD gate: `node /home/tianxing/.codex/gsd-core/bin/gsd-tools.cjs validate health`
+- GSD gate: `node "$GSD_HOME/bin/gsd-tools.cjs" validate health`
   reported healthy.
 - Python compile passed:
   `PYTHONPYCACHEPREFIX=/tmp/ndnsf_pycache python3 -m py_compile examples/python/NDNSF-DistributedInference/native_di_tracer/user_driver.py Experiments/NDNSF_DI_NativeTracer_Minindn.py examples/python/NDNSF-DistributedInference/native_di_tracer/run_llm_full_network_campaign.py`.

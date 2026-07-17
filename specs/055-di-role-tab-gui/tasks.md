@@ -143,4 +143,4 @@
 - `PYTHONPATH=NDNSF-DistributedInference:pythonWrapper PYTHONPYCACHEPREFIX=/tmp/ndnsf_pycache python3 tests/python/test_ndnsf_di_tk_gui.py`: 12 tests passed.
 - `git diff --check`: passed.
 - `codegraph sync . && codegraph status .`: index is up to date.
-- DeepSeek delegation: used once for second-pass implementation checklist; Codex reviewed and implemented the final patch manually.
+- A second-pass implementation checklist was reviewed before the final patch was implemented manually.

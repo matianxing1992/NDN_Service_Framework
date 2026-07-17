@@ -15,7 +15,7 @@ used.
 | `ab61fbc` | Core Targeted Python API, authenticated invocation context, exact-Data and Repo producer bindings | Core build; 14 Targeted C++ tests; 2 Python Targeted tests |
 | `f919b61` | Distributed Repo cache, exact packet storage, quorum/failover, repair, campaigns, and tests | 80 Repo Python tests; 3 Repo C++ contract binaries |
 | `91cedb0` | Specs 071-083 and Repo/UAV design slides | Repo PDF 20 pages; UAV PDF 22 pages; both built twice |
-| `f67434e` | Removal of the obsolete DeepSeek delegate helper and its tests | deletion-only workflow cleanup; Claude direct backend documentation retained |
+| `f67434e` | Removal of the obsolete delegate helper and its tests | deletion-only workflow cleanup |
 
 ## Target Ownership
 

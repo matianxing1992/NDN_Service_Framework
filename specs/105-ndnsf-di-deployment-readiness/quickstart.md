@@ -6,8 +6,7 @@ executable as the corresponding tasks land.
 ## 1. Static and Focused Gates
 
 ```bash
-python3 .agents/skills/speckit-audit/scripts/audit_speckit_structure.py \
-  specs/105-ndnsf-di-deployment-readiness --strict
+.specify/scripts/bash/check-prerequisites.sh --json --require-tasks --include-tasks
 python3 tests/python/test_ndnsf_di_deployment_readiness.py
 ./build/unit-tests \
   '--run_test=ExecutionEvidence*,ProviderResourceProbe*,DependencyWaitScheduler*,ProviderRoleWorker*,OnnxRuntime*' \

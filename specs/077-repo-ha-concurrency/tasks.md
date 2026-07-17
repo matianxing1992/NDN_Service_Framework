@@ -8,7 +8,7 @@
 
 ## Phase 1: Context and Baseline
 
-- [x] T001 Read AGENTS.md, constitution, active Repo Specs 073-076, and current dirty-worktree state.
+- [x] T001 Read the constitution, active Repo Specs 073-076, and current dirty-worktree state.
 - [x] T002 Run CodeGraph status/exploration for RepoCore, RepoNodeApp, clients, producers, catalog, repair, and placement paths.
 - [x] T003 Use the ARS experiment workflow to define variables, controls, metrics, duration, and failure injection in `experiment-plan.md`.
 - [x] T004 Validate GSD health and create Phase 9 resumable planning artifacts under `.planning/phases/09-repo-ha-concurrency/`.

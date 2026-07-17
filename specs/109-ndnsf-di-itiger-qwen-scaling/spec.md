@@ -193,7 +193,7 @@ An investigator reconstructs every attempted cell, compares only matched cells, 
 - **FR-049**: Name exact predecessor task IDs, accepted statuses, artifact paths, schema versions, and digests; vague spec-level or task-range references must fail closed.
 - **FR-050**: Consume the Spec 108 deployment profile and release by digest; Spec 109 may add experiment bindings but must not maintain a duplicate Slurm resource source of truth.
 - **FR-051**: Enforce cross-field, uniqueness, terminal-state, authority, source, predecessor, and comparison invariants through both JSON Schema and one canonical semantic validator.
-- **FR-052**: Keep repository-local scripts/contracts as canonical automation; a personal `~/.codex/skills` wrapper is optional and cannot be an execution dependency.
+- **FR-052**: Keep repository-local scripts/contracts as canonical automation; personal wrappers cannot be execution dependencies.
 - **FR-053**: Represent every generated experiment cell in an immutable keyed ledger; a bundled Slurm job may contain multiple cells, but each cell closes independently and the task remains open while any member lacks a terminal record.
 - **FR-054**: Separate pre-implementation design audit from post-implementation code/evidence audit; neither document may satisfy the other's gate.
 

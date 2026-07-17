@@ -11,7 +11,7 @@ callbacks on the Face thread with `setHandlerThreads(0)`.
 Generic Targeted and UAV command diagnostics expose correlated terminal stages
 without logging payloads, tokens, certificates, credentials, or key material.
 The parser independently rejects both known abort signatures and a clean exit
-with a nonterminal command attempt. After concurrent Codex sessions collided
+with a nonterminal command attempt. After concurrent automation sessions collided
 on output paths, the campaign also gained an exclusive directory lock and a
 fresh-output guard.
 

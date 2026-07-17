@@ -120,7 +120,7 @@ python3 Experiments/NDNSF_UAV_Stream_Control_Isolation_Campaign.py \
 ```
 
 The 5% matrix was launched through a unique temporary output path because stale
-cross-session Codex tool calls repeatedly renamed and cleaned the frozen path
+concurrent automation sessions repeatedly renamed and cleaned the frozen path
 while MiniNDN was active. After the exclusive run completed, its intact result
 directory was promoted to the canonical final path. The summary therefore
 retains the original unique `runDirectory` strings while the artifact is now at

@@ -22,12 +22,12 @@
 
 ## Evidence
 
-- Context gate: `AGENTS.md`, `.specify/feature.json`,
+- Context gate: `.specify/feature.json`,
   `.specify/memory/constitution.md`, and feature 033 artifacts were read before
   starting this continuation.
 - CodeGraph gate: `codegraph status .` reported a fresh index, and CodeGraph
   was used to inspect `run_llm_full_network_campaign.py` before edits.
-- GSD gate: `node /home/tianxing/.codex/gsd-core/bin/gsd-tools.cjs validate health`
+- GSD gate: `node "$GSD_HOME/bin/gsd-tools.cjs" validate health`
   reported healthy.
 - Python compile passed:
   `PYTHONPYCACHEPREFIX=/tmp/ndnsf_pycache python3 -m py_compile examples/python/NDNSF-DistributedInference/native_di_tracer/run_llm_full_network_campaign.py Experiments/NDNSF_DI_NativeTracer_Minindn.py examples/python/NDNSF-DistributedInference/native_di_tracer/user_driver.py`.

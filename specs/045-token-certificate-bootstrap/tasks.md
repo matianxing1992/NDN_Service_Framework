@@ -3,7 +3,7 @@
 ## Phase 1: Setup
 
 - [x] T001 Set `.specify/feature.json` to `specs/045-token-certificate-bootstrap`
-- [x] T002 Update `AGENTS.md` Spec Kit pointer to `specs/045-token-certificate-bootstrap/plan.md`
+- [x] T002 Update the active Spec Kit pointer to `specs/045-token-certificate-bootstrap/plan.md`
 
 ## Phase 2: Foundational
 

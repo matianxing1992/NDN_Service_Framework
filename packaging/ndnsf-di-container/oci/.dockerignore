@@ -1,7 +1,5 @@
 .git
 .codegraph
-.codex
-.claude
 .venv
 __pycache__
 *.pyc

@@ -248,7 +248,7 @@
 
 **Purpose**: Make the campaign runnable by another operator and close ownership boundaries.
 
-- [X] T156 [P] Update optional measured-fact wrappers in `/home/tianxing/.codex/skills/itiger-ndnsf-ops/` only after repository-local commands/docs are complete; no Skill path may become canonical
+- [X] T156 [P] Verify repository-local commands/docs remain canonical and no personal wrapper path becomes an execution dependency
 - [X] T157 [P] Document model transfer, license, quota, and cleanup operations in `packaging/ndnsf-di-container/docs/itiger-qwen-models.md`
 - [X] T158 [P] Document standalone/reference/artifact/candidate authority in `packaging/ndnsf-di-container/docs/itiger-qwen-evidence.md`
 - [X] T159 Update `NDNSF-DistributedInference/README.md` with the measured Qwen size scope and exact commands

@@ -39,7 +39,7 @@ Make every deployed Repo node use SQLite as the sole source of truth and a singl
 - **Verify With The Right Scope**: C++ and Python unit/smoke tests precede a real MiniNDN request/response test.
 - **GSD**: Phase 5 records resumable implementation and acceptance state in `.planning/`.
 - **ARS**: The experiment-agent workflow defines deterministic variables, controls, and pass/fail evidence in `experiment-plan.md`.
-- **DeepSeek**: A minimal-context second-pass checklist was reviewed; architecture authority remains with Codex.
+- **Second-pass review**: A minimal-context checklist was reviewed; architecture authority remains with the maintainers.
 
 ## Architecture
 

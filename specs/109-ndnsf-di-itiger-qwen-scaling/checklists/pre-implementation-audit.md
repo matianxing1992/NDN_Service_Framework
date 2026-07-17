@@ -60,8 +60,7 @@ Executed on 2026-07-13 against source snapshot
 `sha256:8dce660b3f8d568952650006fc026b9f5449b41add1cd9beea94a5960fc946cc`:
 
 ```text
-python3 .agents/skills/speckit-audit/scripts/audit_speckit_structure.py \
-  specs/109-ndnsf-di-itiger-qwen-scaling --strict
+.specify/scripts/bash/check-prerequisites.sh --json --require-tasks --include-tasks
 
 Structural verdict: PASS
 functional_requirements: 54

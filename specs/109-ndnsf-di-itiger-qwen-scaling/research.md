@@ -80,7 +80,7 @@
 ## Decision 16: Compose Spec 108 instead of copying deployment resources
 
 **Rationale**: Account, QOS, CPU, memory, walltime, GRES, image, and release behavior are deployment concerns already owned by Spec 108. Spec 109 references the deployment profile/release digest and adds only model/workload/stage bindings. Repository-local automation is canonical; the personal iTiger Skill is an optional operator wrapper.
-**Alternatives**: A second Spec 109 resource profile rejected as configuration drift; absolute `~/.codex/skills` commands rejected as nonportable execution dependencies.
+**Alternatives**: A second Spec 109 resource profile was rejected as configuration drift; absolute personal-tool paths were rejected as nonportable execution dependencies.
 
 ## Current verified code facts
 

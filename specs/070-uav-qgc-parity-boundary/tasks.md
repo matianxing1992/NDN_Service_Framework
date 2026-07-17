@@ -4,8 +4,8 @@
 
 - [x] T001 Review existing UAV operational state contracts and QGC-parity gaps.
 - [x] T002 Use CodeGraph before broad code edits.
-- [x] T003 Use DeepSeek as a second-pass checklist and keep Codex as final
-  architecture authority.
+- [x] T003 Perform a second-pass checklist and retain maintainer authority over
+  the final architecture.
 - [x] T004 Update `docs/ndnsf-core-app-boundary.md` with the QGC-parity split.
 
 ## Phase 2: Protocol Contracts

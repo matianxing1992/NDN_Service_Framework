@@ -157,7 +157,7 @@ tests/python/test_ndnsf_di_spec109_*.py
 results/spec109-itiger-qwen/  # ignored execution evidence/pointers
 ```
 
-Spec 108 remains the sole owner of deployment resources. Spec 109 adds experiment bindings only. Repository-local scripts are canonical; a personal `~/.codex/skills/itiger-ndnsf-ops` wrapper is optional.
+Spec 108 remains the sole owner of deployment resources. Spec 109 adds experiment bindings only. Repository-local scripts are canonical; personal wrappers are non-authoritative.
 
 ## Validation strategy
 

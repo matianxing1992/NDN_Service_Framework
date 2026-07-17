@@ -69,17 +69,9 @@ README_ch.md
 NDNSF-UAV-APP/ROADMAP.md
 NDNSF-UAV-APP/ROADMAP_ch.md
 
-# Local agent/Codex tooling state
-AGENTS.md
-.agents/
-.codex/
-.deepseek/
-deepseek_delegate*.txt
-deepseek_delegate*.patch
-deepseek_usage*.jsonl
+# Local analysis state
 .planning/
 .codegraph/
-.specify/integrations/codex.manifest.json
 
 # Spec 108 local container artifacts and credentials
 dist/ndnsf-di-container/

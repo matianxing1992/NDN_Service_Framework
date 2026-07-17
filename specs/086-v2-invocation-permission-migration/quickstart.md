@@ -1,9 +1,7 @@
 # Quickstart
 
 ```bash
-python3 .agents/skills/speckit-audit/scripts/audit_speckit_structure.py \
-  specs/086-v2-invocation-permission-migration --strict
-
+.specify/scripts/bash/check-prerequisites.sh --json --require-tasks --include-tasks
 ./waf build -j$(nproc)
 ./build/unit-tests --log_level=message
 python3 -m unittest discover -s tests/python -p 'test_ndnsf_core*.py' -q

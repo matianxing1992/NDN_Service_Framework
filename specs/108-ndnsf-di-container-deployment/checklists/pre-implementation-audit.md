@@ -76,9 +76,8 @@ Implementation evidence is intentionally absent and must be produced by the unch
 ## Validation commands completed for this revision
 
 ```text
-python3 .agents/skills/speckit-audit/scripts/audit_speckit_structure.py \
-  specs/108-ndnsf-di-container-deployment --strict
-  -> PASS: 36 FR, 12 SC, 6 stories, 160 tasks, 36 traced requirements
+.specify/scripts/bash/check-prerequisites.sh --json --require-tasks --include-tasks
+  -> PASS: required Spec Kit artifacts resolved
 
 .specify/scripts/bash/check-prerequisites.sh --json --require-tasks --include-tasks
   -> PASS: research, data model, contracts, quickstart, and tasks present

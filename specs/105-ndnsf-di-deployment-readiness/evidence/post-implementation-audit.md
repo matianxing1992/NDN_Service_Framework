@@ -18,8 +18,6 @@ claim is not.
 Commands:
 
 ```bash
-python3 .agents/skills/speckit-audit/scripts/audit_speckit_structure.py \
-  specs/105-ndnsf-di-deployment-readiness --strict
 .specify/scripts/bash/check-prerequisites.sh --json --require-tasks --include-tasks
 codegraph sync .
 codegraph explore "runtime_v1 production CLI ... packaging install rollback uninstall"

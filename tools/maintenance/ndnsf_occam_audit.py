@@ -84,7 +84,7 @@ def classify_path(relative: Path) -> str:
 def iter_files(root: Path) -> Iterable[Path]:
     ignored = {
         ".git", ".codegraph", ".venv", "__pycache__", "node_modules",
-        "third_party", ".planning", ".agents", ".claude", "results",
+        "third_party", ".planning", "results",
     }
     for path in root.rglob("*"):
         relative = path.relative_to(root)
@@ -96,7 +96,7 @@ def iter_files(root: Path) -> Iterable[Path]:
             or relative.as_posix() == "tools/maintenance/ndnsf_occam_audit.py"
         ):
             continue
-        if path.suffix.lower() in TEXT_SUFFIXES or path.name in {"wscript", "README", "AGENTS.md", "CLAUDE.md"}:
+        if path.suffix.lower() in TEXT_SUFFIXES or path.name in {"wscript", "README"}:
             yield path
 
 

@@ -6,7 +6,7 @@
 
 ## Phase 1: Setup
 
-- [x] T001 Record the feature plan and active Spec Kit pointer in `.specify/feature.json` and `AGENTS.md`
+- [x] T001 Record the feature plan and active Spec Kit pointer in `.specify/feature.json`
 - [x] T002 [P] Add runtime-envelope contract documentation in `specs/058-core-runtime-contract-completion/contracts/runtime-envelope-contract.md`
 
 ---
@@ -69,4 +69,3 @@
 Deliver the smallest safe core increment first: typed helper structs and tests.
 Then add discovery/drain classification and documentation. Avoid changing Repo,
 UAV, or DI domain policy.
-
