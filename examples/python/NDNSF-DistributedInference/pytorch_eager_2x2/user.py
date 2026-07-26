@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from ndnsf_distributed_inference import APPClient
+from ndnsf_distributed_inference.app_sdk import APPClient
 
 from pytorch_2x2_lib import (
     SERVICE,

@@ -50,6 +50,15 @@ namespace ndn_service_framework
         ndn::Name requestId;
     };
 
+    struct ServiceSelectionDecisionNameV2
+    {
+        ndn::Name requesterName;
+        ndn::Name providerName;
+        ndn::Name serviceName;
+        ndn::Name requestId;
+        uint64_t attempt = 0;
+    };
+
     struct CompactServiceSelectionNameV2
     {
         ndn::Name requesterName;
@@ -62,6 +71,27 @@ namespace ndn_service_framework
         ndn::Name providerName;
         ndn::Name serviceName;
         std::string selectionDigest;
+    };
+
+    struct SecureSelectionStatusName
+    {
+        ndn::Name providerName;
+        uint64_t version = 0;
+        std::string statusHandle;
+    };
+
+    struct ProviderReadyName
+    {
+        ndn::Name requesterName;
+        uint64_t version = 0;
+        std::string controlHandle;
+    };
+
+    struct ExecutionActivateName
+    {
+        ndn::Name providerName;
+        uint64_t version = 0;
+        std::string controlHandle;
     };
 
     struct CollaborationDataName
@@ -132,6 +162,18 @@ namespace ndn_service_framework
                                                          const ndn::Name& requestId);
     std::optional<ServiceSelectionNameV2>
     parseServiceSelectionNameV2(const ndn::Name& serviceSelectionName);
+    ndn::Name makeServiceSelectionDecisionNameV2(const ndn::Name& requesterName,
+                                                 const ndn::Name& providerName,
+                                                 const ndn::Name& serviceName,
+                                                 const ndn::Name& requestId,
+                                                 uint64_t attempt);
+    ndn::Name makeServiceSelectionDecisionNameWithoutPrefixV2(
+                                                 const ndn::Name& providerName,
+                                                 const ndn::Name& serviceName,
+                                                 const ndn::Name& requestId,
+                                                 uint64_t attempt);
+    std::optional<ServiceSelectionDecisionNameV2>
+    parseServiceSelectionDecisionNameV2(const ndn::Name& name);
     ndn::Name makeCompactServiceSelectionNameV2(const ndn::Name& requesterName,
                                                 const ndn::Name& serviceName,
                                                 const ndn::Name& requestId);
@@ -150,6 +192,22 @@ namespace ndn_service_framework
     std::optional<SelectionStatusQueryName>
     parseSelectionStatusQueryName(const ndn::Name& statusQueryName);
     std::string computeSelectionDigest(const ServiceSelectionMessage& message);
+
+    std::string makeOpaqueControlHandle(size_t bytes = 24);
+    bool isValidOpaqueControlHandle(const std::string& handle);
+    ndn::Name makeSecureSelectionStatusName(const ndn::Name& providerName,
+                                            uint64_t version,
+                                            const std::string& statusHandle);
+    std::optional<SecureSelectionStatusName>
+    parseSecureSelectionStatusName(const ndn::Name& name);
+    ndn::Name makeProviderReadyName(const ndn::Name& requesterName,
+                                    uint64_t version,
+                                    const std::string& controlHandle);
+    std::optional<ProviderReadyName> parseProviderReadyName(const ndn::Name& name);
+    ndn::Name makeExecutionActivateName(const ndn::Name& providerName,
+                                        uint64_t version,
+                                        const std::string& controlHandle);
+    std::optional<ExecutionActivateName> parseExecutionActivateName(const ndn::Name& name);
 
     ndn::Name makeCollaborationDataName(const ndn::Name& producerName,
                                         const ndn::Name& requesterName,

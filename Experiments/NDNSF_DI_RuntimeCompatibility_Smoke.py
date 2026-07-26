@@ -53,12 +53,12 @@ def policy_command(*args: str) -> list[str]:
 
 
 def test_registry_contract() -> None:
-    from ndnsf_distributed_inference import (
-        PlannerKind,
+    from ndnsf_distributed_inference.plan import PlannerKind
+    from ndnsf_distributed_inference.llm_stub_planner import (
         llm_planner_registry,
         llm_planner_request,
-        validate_runtime_compatibility,
     )
+    from ndnsf_distributed_inference.runtime_compatibility import validate_runtime_compatibility
 
     assert validate_runtime_compatibility("llm", "safetensors", "vllm") == "vllm"
     assert validate_runtime_compatibility("llm", "gguf", "") == "llama.cpp"

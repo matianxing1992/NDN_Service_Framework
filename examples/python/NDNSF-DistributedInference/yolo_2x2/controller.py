@@ -10,8 +10,8 @@ import time
 from pathlib import Path
 
 from ndnsf import ServiceUser
-from ndnsf_distributed_inference import (
-    APPController,
+from ndnsf_distributed_inference.app_sdk.controller import APPController
+from ndnsf_distributed_inference.app_sdk import (
     APPDeployment,
 )
 from ndnsf_distributed_inference.repo_reference import repo_artifact_reference

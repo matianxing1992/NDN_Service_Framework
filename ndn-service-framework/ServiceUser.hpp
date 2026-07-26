@@ -11,6 +11,8 @@
 #include "NetworkTelemetry.hpp"
 #include "NegativeAckReason.hpp"
 #include "TimelineTrace.hpp"
+#include "Stream.hpp"
+#include "StreamFacade.hpp"
 
 #include <functional>
 #include <cstdint>
@@ -305,6 +307,16 @@ namespace ndn_service_framework{
 
             ndn::Name getName();
 
+            /** Open a validated semantic-name live stream on this user's Face. */
+            std::shared_ptr<LiveStreamConsumerHandle>
+            openLiveStream(const LiveStreamDescriptor& descriptor,
+                           LiveStreamOpenOptions options);
+
+            /** Open and start the predictive high-level stream subscription. */
+            std::shared_ptr<PredictiveStreamSubscriber>
+            subscribeStream(const PredictiveStreamDescriptor& descriptor,
+                            StreamSubscriptionOptions options);
+
             void fetchPermissionsFromController(const ndn::Name& controllerPrefix);
             void applyPermissionResponse(const PermissionResponse& response);
             size_t getCurrentPolicyEpoch() const;
@@ -411,6 +423,34 @@ namespace ndn_service_framework{
                 const std::string& objectLabel = "",
                 const ndn::time::milliseconds& freshness = ndn::DEFAULT_FRESHNESS_PERIOD);
 
+            using SignedAppDataHandler = std::function<void(const ndn::Data&)>;
+            using SignedAppDataFailureHandler =
+                std::function<void(const ndn::Name&, const std::string&)>;
+
+            /** Publish exact-name APP data signed by this ServiceUser identity.
+             *
+             * This is a small transport primitive for versioned APP records.
+             * It does not define a new NDNSF message or invocation mode. The
+             * name must remain below /<identity>/NDNSF/DI so another
+             * application cannot use this user as an arbitrary Data signer.
+             */
+            ndn::Name publishSignedAppData(
+                const ndn::Name& dataName,
+                const ndn::Buffer& payload,
+                const ndn::time::milliseconds& freshness = ndn::DEFAULT_FRESHNESS_PERIOD);
+
+            /** Fetch and validate one exact-name APP record.
+             *
+             * Validation uses the configured trust schema and additionally
+             * requires the Data KeyLocator to belong to expectedSigner.
+             */
+            void fetchSignedAppData(
+                const ndn::Name& dataName,
+                const ndn::Name& expectedSigner,
+                int timeoutMs,
+                SignedAppDataHandler onData,
+                SignedAppDataFailureHandler onFailure);
+
             LargeDataReferenceRequestResult makeRequestWithLargeDataOptimization(
                 const PreparedServiceRequest& ctx,
                 const std::vector<uint8_t>& payload,
@@ -459,6 +499,9 @@ namespace ndn_service_framework{
                                       TimeoutHandler onTimeout,
                                       int timeoutMs = 500);
 
+            std::vector<SelectionExecutionStatus>
+            GetCollaborationStatusSnapshot(const ndn::Name& requestId) const;
+
             ndn::Name RequestServiceTargeted(const ndn::Name& provider,
                                  const ndn::Name& serviceName,
                                  ndn_service_framework::RequestMessage requestMessage,
@@ -497,7 +540,8 @@ namespace ndn_service_framework{
                                  int timeoutMs,
                                  TimeoutHandler onTimeout,
                                  ResponseHandler onResponseHandler,
-                                 size_t requestStrategy = ndn_service_framework::tlv::FirstResponding);
+                                 size_t requestStrategy = ndn_service_framework::tlv::FirstResponding,
+                                 const RequestId& requestId = RequestId());
 
             ndn::Name RequestService(const std::vector<ndn::Name>& providers,
                                  const ndn::Name& serviceName,
@@ -506,7 +550,8 @@ namespace ndn_service_framework{
                                  AckSelectionStrategy selectionStrategy,
                                  int timeoutMs,
                                  TimeoutHandler onTimeout,
-                                 ResponseHandler onResponseHandler);
+                                 ResponseHandler onResponseHandler,
+                                 const RequestId& requestId = RequestId());
 
             ndn::Name RequestService(const ServiceName& service,
                                      const RequestPayload& request,
@@ -514,13 +559,15 @@ namespace ndn_service_framework{
                                      std::shared_ptr<const AckSelectionPolicy> selectionPolicy,
                                      int timeoutMs,
                                      ResponseHandler onResponse,
-                                     TimeoutHandler onTimeout);
+                                     TimeoutHandler onTimeout,
+                                     const RequestId& requestId = RequestId());
 
             ndn::Name RequestCollaboration(const ServiceName& service,
                                            const RequestPayload& initialRequest,
                                            CollaborationPlan plan,
                                            ResponseHandler onFinalResponse,
-                                           TimeoutHandler onTimeout);
+                                           TimeoutHandler onTimeout,
+                                           const RequestId& requestId = RequestId());
 
             template<typename RequestT, typename ResponseT>
             ndn::Name RequestService(const ServiceName& service,
@@ -684,7 +731,10 @@ namespace ndn_service_framework{
                                         const ndn::Block& ackBlock);
             void dispatchDecryptedResponseByName(const ndn::Name& responseName,
                                                  const ndn::Name& requestId,
-                                                 const ndn::Buffer& buffer);
+                                                 const ndn::Buffer& buffer,
+                                                 const std::string& dataName = {},
+                                                 const std::string& signerCertificate = {},
+                                                 const std::string& wireDigest = {});
             void finishDecryptedResponseByName(const ndn::Name& responseName,
                                                const ndn::Name& requestId,
                                                ndn_service_framework::ResponseMessage responseMessage);
@@ -773,12 +823,34 @@ namespace ndn_service_framework{
                 ndn_service_framework::RequestAckMessage message;
             };
 
+            struct PendingCall;
+
             void PublishCompactServiceSelectionMessageV2(const std::vector<StoredAck>& selectedAcks);
+            bool usesR1ReservationSelection(const PendingCall& pendingCall) const;
+            void PublishR1SelectionDecision(const StoredAck& ack, bool selected);
+            void closeR1ReservationDecisions(PendingCall& pendingCall);
+            void pollR1DecisionReceipt(const ndn::Name& requestId,
+                                       const std::string& reservationId);
+            void retryR1Decision(const ndn::Name& requestId,
+                                 const std::string& reservationId);
             ndn_service_framework::AckSelectionCandidate
             makeAckSelectionCandidate(const StoredAck& storedAck) const;
 
             struct PendingCall
             {
+                struct R1DecisionDelivery
+                {
+                    ndn::Name providerName;
+                    ndn::Name serviceName;
+                    ndn::Name messageName;
+                    ndn::Name messageSuffix;
+                    ServiceSelectionMessage message;
+                    std::string selectionDigest;
+                    std::string decisionDigest;
+                    uint64_t expiresAtMs = 0;
+                    size_t transmissions = 0;
+                    bool receiptAccepted = false;
+                };
                 std::vector<ndn::Name> providers;
                 ndn::Name serviceName;
                 ndn::Name requestName;
@@ -798,6 +870,7 @@ namespace ndn_service_framework{
                 uint64_t responseObservedAtUs = 0;
                 uint64_t responseDecryptedAtUs = 0;
                 uint64_t responseValidatedAtUs = 0;
+                uint64_t requestDeadlineUs = 0;
                 AcksHandler acksHandler;
                 AckCandidatesHandler ackCandidatesHandler;
                 TimeoutHandler timeoutHandler;
@@ -814,6 +887,7 @@ namespace ndn_service_framework{
                 bool targetedMode = false;
                 bool timedOut = false;
                 bool timeoutGraceActive = false;
+                ndn::scheduler::EventId requestTimeoutEvent;
                 size_t ackDecryptsInFlight = 0;
                 size_t ackSelectionDeferrals = 0;
                 size_t learnedAckProviderCountAtPublish = 0;
@@ -828,6 +902,7 @@ namespace ndn_service_framework{
                 std::vector<ndn::Name> largeResponseReferenceProvidersInFlight;
                 ndn::Name selectedProvider;
                 std::map<std::string, std::string> providerTokens;
+                ndn::Buffer selectionGatedInputKey;
                 std::map<std::string, std::string> negativeAckReasons;
                 bool isCollaboration = false;
                 CollaborationPlan collaborationPlan;
@@ -838,6 +913,10 @@ namespace ndn_service_framework{
                 SelectionStatusTimeoutHandler statusTimeoutHandler;
                 std::map<std::string, std::string> selectionDigestsByProvider;
                 std::map<std::string, SelectionExecutionStatus> selectionStatusesByProvider;
+                std::map<std::string, R1DecisionDelivery> r1DecisionDeliveries;
+                std::optional<DeploymentPlan> deploymentPlan;
+                std::map<std::string, ProviderReadyMessage> deploymentReadyByMember;
+                bool deploymentActivationSent = false;
             };
 
             struct TargetedTokenPair
@@ -960,8 +1039,19 @@ namespace ndn_service_framework{
                                                   bool trackSelectionStatus = false,
                                                   SelectionStatusTimeoutHandler statusTimeoutHandler = {},
                                                   SelectionStatusOptions statusOptions = SelectionStatusOptions());
+            ndn::Buffer prepareSelectionGatedInput(
+                ndn_service_framework::RequestMessage& requestMessage,
+                const ndn::Name& serviceName,
+                const ndn::Name& requestId);
 
             void cleanupPendingCallState(const ndn::Name& requestId);
+            bool handleProviderReadyInterest(const ndn::Interest& interest);
+            void maybeActivateReadyDeployment(const ndn::Name& requestId,
+                                              PendingCall& pendingCall);
+            void publishExecutionActivate(const ndn::Name& provider,
+                                          const std::string& controlHandle,
+                                          const ExecutionActivateMessage& activation,
+                                          int attempt = 0);
             void logRequestPendingCreated(const ndn::Name& requestId,
                                           const PendingCall& pendingCall);
             void erasePendingCallWithTrace(const ndn::Name& requestId,

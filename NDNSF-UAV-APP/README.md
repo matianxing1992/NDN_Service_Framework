@@ -80,11 +80,12 @@ with several real deployment-facing pieces already wired in:
   tracks adaptive RTT/timeout/backlog pressure, packet sequence, stream id, and
   stream session metadata so stale packets from an older live session can be
   dropped instead of being displayed as current video.
-- **Repo.** Drone-side recording to an embedded `NDNSF-DistributedRepo` is
-  optional and configured on the drone, not by the GS Start Video button. The
-  current concrete repo-backed UAV data product is encrypted camera recording:
-  GS discovers it through a recording manifest service, then fetches/decrypts
-  the named chunks for playback. Mission images, telemetry logs, detection
+- **Repo.** Drone-side retention to an embedded `NDNSF-DistributedRepo` is
+  optional and configured independently from the GS viewer. Live delivery and
+  recording use one canonical set of semantically named, encrypted and
+  Provider-signed Data packets. Repo retains those exact immutable wires; GS
+  discovers their manifest and replays them through the normal LiveStream
+  validation/decryption/decoder path. Mission images, telemetry logs, detection
   events, and reports are planned extensions of the same data-product model.
 
 The drone does not interpret MAVLink command semantics. The ground station owns
@@ -794,13 +795,13 @@ different paths:
 Ground station -> /example/uav/drone/A/UAV/Camera/Video/start/<nonce>
   Start live downlink for this drone.
 
-Drone -> drone-owned frame Data names
-  Publishes signed video packets:
-    /example/uav/drone/A/video/<stream-start-ms>/<packetSeq>
+Drone -> drone-owned semantic frame/segment Data names
+  Publishes one encrypted and signed canonical packet set. A signed Mapping
+  resolves an internal cursor to each original application Data name.
 
-Ground station -> frame Data names
-  Prefetches monotonically increasing packetSeq values. Data content carries
-  frame metadata, so names stay sequential even when frame sizes vary.
+Ground station -> mapped semantic Data names
+  Uses the cursor only for bounded prefetch, then validates and consumes the
+  original meaningful Data names.
 
 Ground station -> /example/uav/drone/A/UAV/Camera/Video/stop/<nonce>
   Drone stops the live downlink and serving new stream packets.
@@ -813,44 +814,48 @@ camera-control service globally unique. High-rate video packets are still
 fetched as signed NDN Data under the drone namespace, so the generic
 request/response path carries control only, not the video byte stream.
 
-NDNSF core now provides a reusable streaming substrate in
-`ndn-service-framework/Stream.hpp`: stream identity, session epoch, chunk
-metadata, codec-neutral FEC metadata, producer buffering, consumer reordering,
-and adaptive fetch state. The UAV app still owns camera capture, H264 encoding,
-XOR recovery, decoder queues, and bitrate policy. Future cleanup should map the
-existing `VideoPacket` fields onto the core `StreamInfo`/`StreamChunk` helpers
-without changing the control/data split described here.
-The first compatibility layer is `videoPacketToStreamChunk(...)` and
-`streamChunkToVideoPacket(...)` in `shared/UavProtocol.*`; these helpers do not
-change the existing `encodeVideoPacket(...)` wire format.
+NDNSF Core provides the reusable substrate in `Stream.hpp`: signed names-only
+Mapping, cursor resolution, bounded future exact-name Interests, immutable
+published-packet evidence, consumer reordering, optional transport FEC, and
+adaptive fetch state. The UAV app owns capture, H264 encode, AES-GCM protection,
+key grants, retention policy and decoding. It performs one encode, one media
+encryption and one Data signature; the live Face and retention worker consume
+the same packet wire.
 
-Transfer API boundary: live downlink uses the NDNSF stream substrate because it
-is an ongoing sequence with packet sequence, freshness, reordering, stale
-session filtering, and optional FEC metadata. Local camera recording is not a
-live stream. It is a repo-backed media object discovered through a manifest and
-then fetched by exact object/chunk names through the large-data/repo path.
-Start/Stop Video controls the live stream only; it does not define the
-recorded-object transfer path.
+Spec 122 added the APP-owned, timestamp-preserving GStreamer boundary and exact
+source-frame identity. Spec 123 then repaired the mapped future pipeline:
+Interest-to-Data DRD is measured by Core, replacement Interests are expressed
+before APP processing, phase windows control actual issuance, and segmented
+samples receive one complete-group reserve. The accepted original-load
+60-second MiniNDN run decoded 1830 frames, satisfied 7153/7153 Provider-observed
+future Interests, used 13.435 Mapping-plus-payload Interests per decoded frame,
+and measured capture-to-decode p50/p95/p99 of
+142.654/205.946/269.402 ms. The workload remained 3600-byte, 12-source plus
+one-repair at 8 Mbps. Enable GStreamer explicitly with
+`NDNSF_UAV_VIDEO_PIPELINE=gstreamer`; `legacy-pipe` remains the default until a
+broader paired promotion matrix is requested. Physical scan-out was not
+measured. See
+`specs/123-stream-prefetch-retention-recovery/completion-summary.md`.
 
-Camera capture, local recording, and live downlink are intentionally separate:
+Capture, retention, and viewing have independent lifecycles but not different
+media representations:
 
 ```text
 camera capture
   Drone-local camera acquisition. It may be enabled at DroneAPP startup.
 
-local recording
-  Drone-local storage of raw H264 chunks in an embedded NDNSF-DistributedRepo.
-  This is controlled by the drone config, not by the ground station's video
-  button.
+retention
+  An application worker drains Core's immutable published-packet feed into
+  NDNSF-DistributedRepo and finalizes a manifest/catalog. It never re-encodes,
+  re-encrypts, renames, or re-signs the packets.
 
-live streaming
-  Low-latency NDN Data publication requested by the ground station through the
-  provider-specific video-control service.
+live viewing
+  A Ground Station consumes the same canonical packets through LiveStream.
 ```
 
-This means a drone can keep its camera running and record to its local repo even
-when no ground station is watching. Conversely, the ground station can request a
-temporary live downlink without changing the drone's recording policy. The
+This means a drone can retain the canonical stream while nobody is watching,
+and viewers may attach/detach without changing retention. A late viewer waits
+for the next Mapping-covered SPS/PPS/IDR boundary. The
 drone video-control response reports the effective `capture`, `recording`,
 `recording_session_id`, `recording_object_prefix`, `recording_chunks`, and
 `recording_bytes` values.
@@ -889,13 +894,13 @@ received shards of a frame, and when at most one data shard is missing, it
 recovers it by XOR before feeding the decoder. This keeps packet naming fully
 predictable while still tolerating one loss or reordering hole.
 
-This naming keeps prefetch simple: the ground station can fetch
-`/<stream>/0`, `/1`, `/2`, ... without handling second boundaries. Reassembly is
-driven by the per-packet metadata, not by NDN FinalBlockId. Once all packets for
-a frame arrive, the GUI displays that frame. Missing or late old non-key-frame
-packets are skipped so later frames can remain live. A future H264/H265
-implementation can use the same name layout, waiting for key frames when needed
-and dropping stale delta frames until the next usable key frame.
+The original application Data names remain meaningful. Core assigns only an
+internal sequential cursor and publishes a signed names-only Mapping ahead of
+production, allowing the ground station to pipeline exact-name Interests before
+the corresponding Data exists. Reassembly is driven by authenticated per-packet
+metadata, not by replacing application names with `/<stream>/<seq>` names.
+Missing or late obsolete packets are bounded so later usable frames can remain
+live.
 
 The ground station includes requested video bitrate and frame width in the same
 `/<drone>/UAV/Camera/Video` control service request. The drone clamps both
@@ -1072,7 +1077,8 @@ For file-based local debugging without a camera, pass a video file to
 fallback after trying a real or virtual camera.
 
 Drone camera policy is configured on the drone side. To keep capture running
-from startup and persist raw H264 chunks to a local SQLite-backed embedded repo:
+from startup and retain canonical signed stream Data in a local SQLite-backed
+embedded repo:
 
 ```bash
 ./build/examples/UavDroneApp \
@@ -1094,20 +1100,18 @@ service:
 ```
 
 For example, `/example/uav/drone/A/UAV/Camera/Recording/Manifest` returns the
-current recording session id, object prefix, object naming pattern, chunk count,
-byte count, and first/last chunk object names. This lets GS or a post-mission
-report discover the local repo objects without guessing file paths or scanning
-the SQLite store. The manifest intentionally exposes service object names, not
-the drone's local SQLite file path.
+retention interval, stream/session identity, packet catalog and durable
+checkpoint/gap state. This lets GS discover the original canonical packets
+without guessing file paths or scanning SQLite. The manifest contains no
+plaintext media key and exposes no local database path.
 
 The ground station has `Find Recordings` and `Play Recording` buttons for the
-selected drone. `Find Recordings` calls the manifest service above. `Play
-Recording` then uses a recording helper to fetch the encrypted repo Data named
-by that manifest. The GS stores the manifest as a typed
-`RecordingDataProductState` with availability, encryption, playable-state, and
-predictable chunk-name helpers; this is the first concrete repo-backed UAV data
-product model and will be reused for mission images, telemetry logs, detection
-events, and reports. The chunk path is intentionally not an NDNSF service:
+selected drone. `Find Recordings` obtains the manifest and protected key grant.
+`Play Recording` retrieves the exact retained Data wires, verifies their
+original name/digest/signer evidence, and admits them through the same
+LiveStream consumer and H264 decoder used for live viewing. The typed
+`RecordingDataProductState` represents discovery and retention state; it is not
+a second media format.
 
 The repo control-plane prototype also treats UAV recordings, telemetry logs,
 and mission logs as named data products with object-class metadata. In MiniNDN,
@@ -1116,16 +1120,11 @@ propagate them, performs lookup from a Persistent repo, and fetches the original
 payload. This validates the future recording/log browsing path at the repo
 layer; it is not yet a full GS catalog browser UI.
 
-```text
-/<drone>/repo/camera/recording/<session-id>/chunk/<index>
-```
-
-The manifest service is the authorization point. Its NDNSF-protected response
-includes the recording encryption metadata and content key for authorized
-viewers. The repo stores only hybrid AES-GCM encrypted H264 chunks; the drone
-serves those encrypted chunks as ordinary signed NDN Data, and the ground
-station decrypts them locally before feeding the live-video decoder. Fetching
-the Data without the manifest key is not enough to view the recording.
+The NDNSF-protected response transports the authorized epoch-key grant. Repo,
+manifest, catalog, status and logs never contain plaintext media keys. Fetching
+retained Data without that grant is insufficient to view it. Certificate
+rotation does not re-sign old packets: replay validates their original signer,
+chain and time evidence.
 
 For a local recording smoke test that does not start the GUI or require GS
 interaction:
@@ -1137,11 +1136,11 @@ rm -f /tmp/ndnsf-uav-camera-record-smoke.sqlite3
   --video-source NDNSF-UAV-APP/videos/drone.mp4 \
   --camera-record-to-local-repo \
   --camera-record-repo-path /tmp/ndnsf-uav-camera-record-smoke.sqlite3 \
-  --camera-record-chunk-limit 3
+  --camera-retention-packet-limit 3
 ```
 
-Success prints `DRONE_CAMERA_RECORD_SMOKE_OK` with the last chunk object name
-after raw H264 chunks have been stored in the local repo.
+Success prints `DRONE_CAMERA_RECORD_SMOKE_OK` after canonical Data packets and
+a complete manifest have been stored in the local repo.
 
 Click `Arm`, `Takeoff`, or `Land` in the ground-station window to send Targeted
 MAVLink commands to the drone. For manual flight, click `Start Control` and

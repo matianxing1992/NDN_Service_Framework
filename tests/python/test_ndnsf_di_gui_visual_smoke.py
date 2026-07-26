@@ -13,7 +13,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ndnsf_distributed_inference.gui import DistributedInferenceGui, FakeRuntimeFactory
+from ndnsf_distributed_inference.app_sdk.gui import DistributedInferenceGui, FakeRuntimeFactory
 
 
 @unittest.skipUnless(os.environ.get("DISPLAY"), "visual GUI smoke requires DISPLAY/Xvfb")

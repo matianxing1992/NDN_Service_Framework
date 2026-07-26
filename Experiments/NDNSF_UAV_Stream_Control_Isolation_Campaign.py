@@ -170,6 +170,14 @@ def parse_mode_run(run_dir: Path, returncode: int, command: list[str], *,
         include_video=video_required,
         elapsed_seconds=elapsed_seconds,
     )
+    if not video_required:
+        # A control-only cell has no LiveStream handle or stream-policy status
+        # to observe.  Keep the video policy gate explicitly not applicable
+        # instead of rejecting an otherwise valid control run because the
+        # inherited observed policy is empty.
+        result["prefetchPolicy"] = "not-applicable"
+        result["observedPrefetchPolicy"] = "not-applicable"
+        result["policyAccepted"] = True
     log_text = (
         (run_dir / "ground-station.log").read_text(encoding="utf-8", errors="replace")
         if (run_dir / "ground-station.log").exists() else ""

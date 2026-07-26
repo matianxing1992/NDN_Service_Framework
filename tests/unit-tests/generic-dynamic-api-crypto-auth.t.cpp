@@ -357,6 +357,92 @@ BOOST_AUTO_TEST_CASE(LegacySplitNameFailsClosed)
   BOOST_CHECK(!handlerCalled);
 }
 
+BOOST_AUTO_TEST_CASE(SelectionGatedInputUsesFreshRecipientWrappedKeyAndBoundAad)
+{
+  ndn::security::KeyChain keyChain("pib-memory:selection-input",
+                                   "tpm-memory:selection-input");
+  const ndn::Name requester("/test/user/input");
+  const ndn::Name service("/Inference/Generic");
+  const ndn::Name requestId("request-input-1");
+  auto recipient = makeRsaIdentity(keyChain, ndn::Name("/test/provider/input"));
+  auto wrongRecipient = makeRsaIdentity(keyChain, ndn::Name("/test/provider/wrong"));
+  const std::string input = "private-input-before-selection";
+  auto encrypted = encryptSelectionGatedInput(
+    requester, service, requestId,
+    ndn::span<const uint8_t>(reinterpret_cast<const uint8_t*>(input.data()),
+                             input.size()));
+  BOOST_CHECK(encrypted.first.getField("ciphertext").find(input) == std::string::npos);
+  RequestMessage wireRequest;
+  wireRequest.setEncryptedRequestInput(encrypted.first);
+  ndn::Buffer empty;
+  wireRequest.setPayload(empty, 0);
+  const auto requestWire = wireRequest.WireEncode();
+  const std::string wireText(reinterpret_cast<const char*>(requestWire.data()),
+                             requestWire.size());
+  BOOST_CHECK(wireText.find(input) == std::string::npos);
+  const auto publicKey = recipient.getPublicKey();
+  const auto wrapped = wrapSelectionGatedInputKey(
+    encrypted.second, ndn::span<const uint8_t>(publicKey.data(), publicKey.size()));
+  const auto unwrapped = unwrapSelectionGatedInputKey(
+    wrapped, recipient.getName(), keyChain);
+  ndn::Buffer plaintext;
+  BOOST_REQUIRE(decryptSelectionGatedInput(
+    encrypted.first, unwrapped, requester, service, requestId, plaintext));
+  BOOST_CHECK_EQUAL(std::string(reinterpret_cast<const char*>(plaintext.data()),
+                                plaintext.size()), input);
+
+  ndn::Buffer wrongPlaintext;
+  BOOST_CHECK(!decryptSelectionGatedInput(
+    encrypted.first, unwrapped, requester, service,
+    ndn::Name("different-request"), wrongPlaintext));
+  BOOST_CHECK_THROW(unwrapSelectionGatedInputKey(
+    wrapped, wrongRecipient.getName(), keyChain), std::exception);
+
+  auto tampered = encrypted.first;
+  auto tag = tampered.getField("authTag");
+  tag[0] = tag[0] == '0' ? '1' : '0';
+  tampered.setField("authTag", tag);
+  BOOST_CHECK(!decryptSelectionGatedInput(
+    tampered, unwrapped, requester, service, requestId, wrongPlaintext));
+}
+
+BOOST_AUTO_TEST_CASE(RecipientAssignmentIsFreshPlanBoundAndNotCrossDecryptable)
+{
+  ndn::security::KeyChain keyChain("pib-memory:recipient-assignment",
+                                   "tpm-memory:recipient-assignment");
+  const ndn::Name requester("/test/user/assignment");
+  const ndn::Name provider("/test/provider/assignment");
+  const ndn::Name service("/Inference/Generic");
+  const ndn::Name requestId("request-assignment-1");
+  auto recipient = makeRsaIdentity(keyChain, provider);
+  auto wrong = makeRsaIdentity(keyChain, ndn::Name("/test/provider/other"));
+  const std::string payload = "role=merge;privateModelFragment=layer-7;";
+  const auto aad = recipientAssignmentAssociatedData(
+    requester, provider, service, requestId, "reservation-1", "sha256:plan");
+  const auto publicKey = recipient.getPublicKey();
+  const auto first = encryptRecipientAssignment(
+    ndn::span<const uint8_t>(reinterpret_cast<const uint8_t*>(payload.data()), payload.size()),
+    publicKey, provider, recipient.getName(), aad);
+  const auto second = encryptRecipientAssignment(
+    ndn::span<const uint8_t>(reinterpret_cast<const uint8_t*>(payload.data()), payload.size()),
+    publicKey, provider, recipient.getName(), aad);
+  BOOST_CHECK_NE(first.getField("nonce"), second.getField("nonce"));
+  BOOST_CHECK_NE(first.getField("wrappedAssignmentKey"),
+                 second.getField("wrappedAssignmentKey"));
+  BOOST_CHECK(first.getField("ciphertext").find("layer-7") == std::string::npos);
+  ndn::Buffer plaintext;
+  BOOST_REQUIRE(decryptRecipientAssignment(
+    first, provider, recipient.getName(), keyChain, aad, plaintext));
+  BOOST_CHECK_EQUAL(std::string(reinterpret_cast<const char*>(plaintext.data()),
+                                plaintext.size()), payload);
+  const auto wrongAad = recipientAssignmentAssociatedData(
+    requester, provider, service, requestId, "reservation-1", "sha256:other");
+  BOOST_CHECK(!decryptRecipientAssignment(
+    first, provider, recipient.getName(), keyChain, wrongAad, plaintext));
+  BOOST_CHECK(!decryptRecipientAssignment(
+    first, ndn::Name("/test/provider/other"), wrong.getName(), keyChain, aad, plaintext));
+}
+
 
 BOOST_AUTO_TEST_SUITE_END()
 BOOST_AUTO_TEST_SUITE_END()

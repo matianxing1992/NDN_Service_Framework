@@ -31,7 +31,7 @@ from ndnsf_distributed_inference.release_gate import (
     build_release_gate,
     verify_evidence_manifest,
 )
-from ndnsf_distributed_inference.qwen_pilot import (
+from ndnsf_distributed_inference.adapters.qwen.pilot import (
     BoundedGenerationScheduler,
     CacheResolution,
     GenerationQueueFull,
@@ -330,7 +330,10 @@ class DeploymentReadinessContractsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             proc = subprocess.run(
                 [str(root / "validate-staging.sh"), "--work-root",
-                 str(Path(tmp) / "stage")],
+                 str(Path(tmp) / "stage"),
+                 "--candidate-id",
+                 "spec107-c1-aaaaaaaaaaaa-bbbbbbbbbbbb-cccccccccccc-dddddddddddd-eeeeeeeeeeee-ffffffffffff",
+                 "--plan-digest", "sha256:" + "a" * 64],
                 text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
             self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
             self.assertIn("STAGING_PASS", proc.stdout)
@@ -468,6 +471,7 @@ class DeploymentReadinessContractsTest(unittest.TestCase):
             max_new_tokens=2,
             native_first_kv_mode="full-context",
             request_id="scheduler-fixture",
+            deployment_revision="sha256:" + "1" * 64,
             ack_timeout_ms=1500,
             timeout_ms=120000,
             campaign_id="spec105-r1-scheduler-fixture",

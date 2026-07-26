@@ -11,6 +11,8 @@
 #include "HybridMessageCrypto.hpp"
 #include "NetworkTelemetry.hpp"
 #include "TimelineTrace.hpp"
+#include "Stream.hpp"
+#include "StreamFacade.hpp"
 
 #include <functional>
 #include <cstdint>
@@ -73,6 +75,8 @@ namespace ndn_service_framework{
                 bool suppressAck = false;
                 std::string message;
                 ndn::Buffer payload;
+                std::optional<SelectionInputKeyOffer> selectionInputKeyOffer;
+                std::optional<ReservationLease> reservationLease;
             };
 
             struct PeerNetworkMetric
@@ -145,15 +149,22 @@ namespace ndn_service_framework{
                 ndn::Name serviceName;
                 ndn::Name providerName;
                 ndn::Name requestId;
+                std::string role;
+                uint64_t attempt = 1;
+                uint64_t epoch = 1;
+                uint64_t sequence = 1;
                 std::string state = "QUEUED";
                 std::string reasonCode;
                 std::string message;
+                bool progressKnown = false;
                 double progress = 0.0;
                 std::optional<DataProductReference> resultReference;
                 uint64_t retryAfterMs = 0;
                 uint64_t createdAtMs = 0;
                 uint64_t updatedAtMs = 0;
                 uint64_t expiresAtMs = 0;
+                std::string detailsSchema;
+                ndn::Buffer detailsPayload;
             };
 
             struct ProviderCapabilityHint
@@ -246,6 +257,40 @@ namespace ndn_service_framework{
                                               const ndn::Name& requestId,
                                               const RequestMessage& requestMessage)>;
 
+            /** Application-owned model preparation hook for the generic
+             * selection-gated deployment protocol. The Core invokes it only
+             * after a valid Selection carrying DeploymentPlan. Returning a
+             * ProviderReadyMessage does not authorize handler execution. */
+            using DeploymentPrepareHandler = std::function<ProviderReadyMessage(
+                const ndn::Name& requesterIdentity,
+                const ndn::Name& providerIdentity,
+                const ndn::Name& serviceName,
+                const ndn::Name& requestId,
+                const RequestMessage& request,
+                const DeploymentPlan& plan,
+                const std::string& selectionDigest)>;
+            using ProviderReadyPublisher = std::function<void(
+                const ndn::Name& requesterIdentity,
+                const ProviderReadyMessage& ready)>;
+            /** Application-owned reservation transition. Core authenticates
+             * and fences the exact-target decision before invoking it. */
+            using R1SelectionDecisionHandler =
+                std::function<SelectionDecisionReceipt(const SelectionDecision&)>;
+            using R1ReservationTerminalHandler =
+                std::function<void(const std::string& reservationId,
+                                   const std::string& cause)>;
+
+            void setDeploymentPrepareHandler(DeploymentPrepareHandler handler);
+            void setProviderReadyPublisher(ProviderReadyPublisher publisher);
+            void setR1SelectionDecisionHandler(
+                const ndn::Name& serviceName,
+                R1SelectionDecisionHandler handler);
+            void setR1ReservationTerminalHandler(
+                const ndn::Name& serviceName,
+                R1ReservationTerminalHandler handler);
+            bool acceptExecutionActivate(const ExecutionActivateMessage& activation,
+                                         std::string* rejectionReason = nullptr);
+
             using SimpleRequestHandler =
                 std::function<ResponseMessage(const RequestMessage& requestMessage)>;
 
@@ -277,6 +322,7 @@ namespace ndn_service_framework{
                 std::map<KeyScope, ndn::Name> scopeKeyDataNames;
                 std::map<CollaborationRole, ndn::Name> roleProviders;
                 ndn::Buffer artifactPayload;
+                std::string selectionDigest;
             };
 
             struct CollaborationData
@@ -372,6 +418,7 @@ namespace ndn_service_framework{
                                                        Topic topicPrefix,
                                                        size_t minCount,
                                                        int timeoutMs);
+                void reportOperationStatus(ServiceOperationStatus status);
                 void publishFinalResponse(const ndn::Buffer& payload);
 
             private:
@@ -452,6 +499,14 @@ namespace ndn_service_framework{
             void init();
 
             ndn::Name getName();
+
+            /** Create the sole Core-owned semantic-name live-stream publisher. */
+            std::shared_ptr<LiveStreamPublisher>
+            createLiveStream(const LiveStreamDefinition& definition);
+
+            /** Create the additive high-level stream facade. */
+            std::shared_ptr<StreamPublisher>
+            createStream(const StreamConfig& config);
 
             void fetchPermissionsFromController(const ndn::Name& controllerPrefix);
             void applyPermissionResponse(const PermissionResponse& response);
@@ -589,7 +644,14 @@ namespace ndn_service_framework{
                                              LegacyAckStrategyHandler ackHandler);
 
             void setSelectionStatusQueryable(const ndn::Name& serviceName,
-                                             bool enabled = true);
+                                              bool enabled = true);
+
+            /** Attach the latest bounded member snapshot before a
+             * CollaborationContext exists. The selection digest is the
+             * responsibility binding; it is not readiness authority. */
+            void reportSelectionOperationStatus(
+                const std::string& selectionDigest,
+                ServiceOperationStatus status);
             void setGenericAdmissionLeaseValidator(
                 const ndn::Name& serviceName,
                 GenericAdmissionLeaseValidator validator,
@@ -708,6 +770,11 @@ namespace ndn_service_framework{
             void onPrefixRegisterFailure(const ndn::Name& prefix, const std::string& reason);
 
             void onInterest(const ndn::InterestFilter &, const ndn::Interest &interest);
+            bool handleExecutionActivateInterest(const ndn::Interest& interest);
+            void publishProviderReady(const ndn::Name& requesterIdentity,
+                                      const ProviderReadyMessage& ready,
+                                      const std::string& statusHandle,
+                                      int attempt = 0);
 
             void serveDataWithIMS(ndn::nacabe::SPtrVector<ndn::Data>& contentData, ndn::nacabe::SPtrVector<ndn::Data>& ckData);
 
@@ -718,7 +785,9 @@ namespace ndn_service_framework{
                                             const std::string& msg,
                                             const ndn::Buffer& payload = ndn::Buffer(),
                                             const std::string& userToken = "",
-                                            const std::string& providerToken = "");
+                                            const std::string& providerToken = "",
+                                            const RequestMessage* sourceRequest = nullptr,
+                                            const AckDecision* ackDecision = nullptr);
     
             void onServiceSelectionMessage(const ndn::svs::SVSPubSub::SubscriptionData &subscription);
             void handleServiceSelectionMessage(const ndn::svs::SVSPubSub::SubscriptionData& subscription,
@@ -1005,6 +1074,11 @@ namespace ndn_service_framework{
             ndn::security::SigningInfo m_signingInfo;
             bool m_timelineTrace = false;
             size_t m_currentPolicyEpoch = 0;
+            // Process-incarnation fence used by deployment capability and
+            // readiness contracts. It is never an authorization secret.
+            const uint64_t m_processStartedAtUs = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count());
             size_t m_requiredKeyEpoch = 0;
             uint64_t m_policyGracePeriodMs = 0;
             HybridMessageCrypto m_hybridMessageCrypto;
@@ -1026,13 +1100,48 @@ namespace ndn_service_framework{
             */
             std::map<ndn::Name,std::shared_ptr<RequestMessage>> pendingRequests;
             std::map<ndn::Name,std::string> pendingProviderTokens;
+            std::map<ndn::Name, ReservationLease> pendingReservationLeases;
             std::set<ndn::Name> m_recentProviderRequests;
             std::set<ndn::Name> m_selectedProviderRequests;
             std::set<ndn::Name> m_selectionDecryptsInFlight;
+            struct R1AcceptedSelectionDecision
+            {
+                std::string decisionDigest;
+                std::string providerTokenHash;
+                std::string decision;
+                ndn::Buffer receiptWire;
+                uint64_t retainUntilMs = 0;
+            };
+            // First authenticated decision for a reservation is immutable.
+            // Retaining the token proof permits exact duplicate decisions to
+            // be acknowledged after their pending request has been consumed.
+            std::map<std::string, R1AcceptedSelectionDecision>
+                m_r1AcceptedSelectionDecisions;
             std::map<ndn::Name, std::string> m_pendingRequestTokenHashes;
             std::map<ndn::Name, std::string> m_selectedProviderTokenHashes;
             std::set<std::string> m_recentProviderRequestTokenHashes;
             std::set<std::string> m_consumedProviderTokenHashes;
+            struct PreparedDeploymentExecution
+            {
+                ndn::Name requesterName;
+                ndn::Name providerName;
+                ndn::Name serviceName;
+                ndn::Name requestId;
+                RequestMessage request;
+                DeploymentPlan plan;
+                ProviderReadyMessage ready;
+                std::string selectionDigest;
+                std::string activationDigest;
+                bool activated = false;
+            };
+            DeploymentPrepareHandler m_deploymentPrepareHandler;
+            ProviderReadyPublisher m_providerReadyPublisher;
+            std::map<ndn::Name, R1SelectionDecisionHandler>
+                m_r1SelectionDecisionHandlers;
+            std::map<ndn::Name, R1ReservationTerminalHandler>
+                m_r1ReservationTerminalHandlers;
+            std::map<ndn::Name, std::string> m_r1ReservationByRequest;
+            std::map<std::string, PreparedDeploymentExecution> m_preparedDeployments;
             mutable std::map<std::string, TargetedProviderTokenState>
                 m_targetedProviderTokens;
             mutable std::set<std::string> m_consumedTargetedProviderTokenHashes;
@@ -1041,6 +1150,7 @@ namespace ndn_service_framework{
             std::map<ndn::Name, std::vector<CollaborationData>> m_collaborationDataByRequest;
             std::map<ndn::Name, std::map<KeyScope, ndn::Buffer>> m_collaborationScopeKeysByRequest;
             std::map<ndn::Name, std::map<KeyScope, ndn::Name>> m_collaborationScopeKeyDataNamesByRequest;
+            std::map<ndn::Name, ndn::Name> m_collaborationServiceNamesByRequest;
             std::set<std::string> m_collaborationScopeKeyFetchesInFlight;
             std::map<ndn::Name, std::vector<PendingEncryptedCollaborationData>> m_pendingEncryptedCollaborationData;
             std::map<std::string, ndn::Buffer> m_collaborationArtifacts;

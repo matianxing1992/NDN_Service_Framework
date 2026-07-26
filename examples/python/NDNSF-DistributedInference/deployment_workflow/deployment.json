@@ -1,0 +1,14 @@
+{
+  "deploymentId": "qwen-demo",
+  "modelId": "Qwen2.5-7B",
+  "artifacts": [
+    {
+      "uri": "file:///project/tma1/models/Qwen2.5-7B",
+      "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "size_bytes": 0,
+      "mount_path": "/models/Qwen2.5-7B"
+    }
+  ],
+  "roles": ["prefill", "decode"],
+  "configuration": {"precision": "fp16", "weightsEmbedded": false}
+}

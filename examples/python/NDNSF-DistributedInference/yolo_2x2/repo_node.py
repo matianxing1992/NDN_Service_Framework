@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import argparse
 
-from ndnsf_distributed_inference import APPDeployment
+from ndnsf_distributed_inference.app_sdk import APPDeployment
 from py_repoclient.orchestration import RepoNodeApp
 
 

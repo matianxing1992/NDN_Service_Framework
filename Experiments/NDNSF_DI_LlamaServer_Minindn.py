@@ -745,7 +745,7 @@ def main() -> int:
         start_process(
             ndn, CONTROLLER_NODE, "controller",
             base + "-c " + perf.shell_quote(
-                "from ndnsf_distributed_inference import APPController; "
+                "from ndnsf_distributed_inference.app_sdk.controller import APPController; "
                 "import sys; "
                 "c=APPController.from_config(sys.argv[1], generated_policy_dir=sys.argv[2]); "
                 "print('controller ready', flush=True); c.run()"

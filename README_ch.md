@@ -147,6 +147,12 @@ sudo ./install_ndnsf_stack.sh --force-dependencies
 sudo ./waf install
 ```
 
+对于 8 GB 开发 VM，应保留 4 GB swap 作为防 OOM 保险（把原有 2 GB swap
+增加到 4 GB），日常编译使用 `./waf build -j2`。大型依赖编译或高内存链接阶段
+如果仍然内存不足，应降为 `./waf build -j1`；不建议在该 VM 配置下使用默认的
+`-j4` 并发。完整安装脚本目前通过 `nproc` 决定并发数，可用
+`sudo taskset -c 0,1 ./install_ndnsf_stack.sh` 将其限制为两个并发任务。
+
 如果手动安装，并且需要 Python API，请在 C++ 编译后安装这些 Python 包：
 
 ```bash
@@ -285,16 +291,55 @@ authorization 和 replay resistance。缓存 token pool 用完后，下一次
 
 NDNSF 把连续发布和按名字精确获取对象分开：
 
-- **Streaming substrate**（`StreamInfo`、`StreamChunk`、stream buffer 和 stream
-  fetch state）适合 video、telemetry、log 等 live 或 near-live 序列，因为这些数据
-  关心 freshness、sequence gap、duplicate suppression、reordering，以及可选的
-  FEC metadata。
+- **LiveStream API**（`ServiceProvider::createLiveStream` 和
+  `ServiceUser::openLiveStream`）适合 video、telemetry、log 等 live 或 near-live
+  序列。应用在生产前预留有语义且不可变的 Data name；带签名的连续 Mapping Data
+  让 Core 把内部 cursor 解析为原始 name，并维持有界的未来 exact-name Interest。
+  payload Content 对 Core 是 opaque bytes，不再包成嵌套 Data；可选的一丢失 XOR
+  恢复也只作用于这些 opaque bytes。
 - **large-data / segmented object path** 适合大文件、model artifact、catalog
-  snapshot、recording 和 DI tensor bundle。这类对象本来就有精确的 NDN name，
+  snapshot、导出的完整录像文件和 DI tensor bundle。这类对象本来就有精确的 NDN name，
   应该用 large-data helper 或 `CollaborationContext::publishLargeNamed(...)`
   发布，并用 `fetchLarge(...)` / SegmentFetcher-style retrieval 按名字获取。
 
-简单说：stream 是持续发布的序列；large object 是按 exact name 获取的对象。
+UAV 直播和它的持久化包历史使用同一组 canonical LiveStream Data：应用把完全相同的
+已签名 wire 保存到 Repo，并通过 manifest/catalog 让历史回放重新进入普通 stream
+consumer。只有另行导出的完整 MP4 才走 large-data path。
+
+简单说：stream 是持续发布的序列；large object 是按 exact name 获取的完整对象。
+
+最小生命周期：
+
+```cpp
+auto publisher = provider.createLiveStream(definition);
+auto reservation = publisher->reserveAhead(semanticDataName);
+publisher->publish(reservation, opaqueBytes);
+auto descriptor = publisher->activate(readiness);
+
+auto consumer = user.openLiveStream(descriptor, options);
+consumer->start();
+// onItem 收到经过 Provider 验证、保留语义名称的 opaque bytes。
+consumer->stop();
+```
+
+加密仍由应用负责：先加密再调用 `publish`，在 `onItem` 中解密并决定是否接受。
+Core 不接触密钥或明文。`Latest`/`Beginning` 起点、status/stop、有界重试、预取策略
+回退以及可选 FEC 都属于共享 C++/Python API。详见
+[`docs/streaming-substrate.md`](docs/streaming-substrate.md)。
+
+配对的 30-cell MiniNDN campaign 最终保留 `mapped-pressure` 作为默认策略。
+future-on 虽然降低了 5% 丢包下的中位 p95 live lag，但 timeout/Nack 负载增加
+137.5%，Mapping Interest 占比达到 98.85%；因此它只保留为显式实验选项，不能
+宣称为已经成立的性能优化。
+
+Spec 123 修复了 Spec 122 负面结果暴露出的 exact-name future pipeline：Core 直接测量
+Interest 到 Data 的 DRD，在有界 APP 处理前先补满网络 Interest 管线，让 Chasing 和
+Adjusting 的窗口真正控制 cursor 发出范围，并把一个分段 sample 转换为一个完整组的
+安全余量。UAV 保留原始 3600 字节、12 个源包加 1 个修复包的工作量，并使用 32-name
+Mapping block。通过验收的 60 秒 MiniNDN UAV 实验共解码 1830 帧，Provider future
+Interest 命中 7153/7153，capture-to-decode p50/p95/p99 为
+142.654/205.946/269.402 ms。在执行更广泛的配对晋升矩阵前，默认仍保留
+`legacy-pipe`；也不宣称已经测量物理屏幕扫描输出时间。
 
 对于超过 inline/single-segment 阈值的 service payload，NDNSF 使用统一的
 large-data reference abstraction。小 request/response payload 仍然内联放在
@@ -775,6 +820,7 @@ summary/aggregate 结果。
 ```text
 NDN_LOG=ndn_service_framework.*=INFO
 NFD log level: WARN
+NDNSF_SVS_PROTOCOL_VERSION=v3
 NDNSF_SVS_MAX_SUPPRESSION_MS=1
 NDNSF_SVS_ASYNC_PUBLISH=1
 NDNSF_SVS_PARALLEL_SYNC=1
@@ -789,6 +835,18 @@ provider ACK worker threads: 2
 strategy: first-responding
 workload: open-loop, latency floor 验证使用 60 s warmup + 60 s measured duration
 ```
+
+`NDNSF_SVS_PROTOCOL_VERSION` 只接受 `v3`（默认）或显式回滚值 `v2`；其它值会使
+runtime 构造失败。未设置 `NDNSF_SVS_MAX_SUPPRESSION_MS` 时，由所选 profile
+保留自己的默认值：V3 为 200 ms，V2 为 500 ms。上面的 `1` 是低延迟实验的显式
+覆盖值，不是正常的 V3 默认值。NDNSF-DI GUI 遵循同一规则：默认输出 `v3`，只有
+操作员填写覆盖值时才输出 suppression 环境变量。NDN-SVS protocol options 保证
+源码兼容但不保证 C++ ABI 兼容，因此更新后必须重新编译所有相关消费者。
+
+V3 会签名共享的状态向量 Data 名称 `/<group>/v=3`。参与者身份并不是该共享名称
+的前缀，因此信任模式必须明确允许已准入参与者证书签名这个组对象。NDNSF 只把
+非层级名称例外绑定到配置的组，并继续验证 Data 签名；其它名称的验证不会放宽。
+示例信任模式已包含对应的 `/example/.../group/...` 规则。
 
 100 RPS latency-floor run 已验证的软件栈：
 
@@ -886,3 +944,9 @@ harness 悄悄关闭 parallel SVS production，benchmark 也会显得很慢。�
 latency floor 时应保持 `--performance-mode` 与上面的 runtime profile 一致；
 只有在实验明确研究单线程 production 行为时，才设置
 `--svs-disable-parallel-production`。
+# Spec 111 Python 优化与部署 API
+
+新应用通过 `ndnsf_distributed_inference.sdk` 构造进程内策略套件，并从
+`ndnsf_distributed_inference.app_sdk` 使用部署和持久请求 API。精确模型请求
+只暴露语义一致候选；替代模型必须由应用明确授权。模型始终是外部制品。
+Spec 111 只用 MiniNDN；OCI/SIF 与 iTiger 执行留给 Spec 110 的新候选身份。

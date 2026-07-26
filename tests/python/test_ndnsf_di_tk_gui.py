@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from ndnsf_distributed_inference.gui import (
+from ndnsf_distributed_inference.app_sdk.gui import (
     ControllerTabConfig,
     FakeRuntimeFactory,
     NdnsfSvsEnvConfig,
@@ -34,6 +34,19 @@ from ndnsf_distributed_inference.gui import (
 
 
 class TkGuiHelperTests(unittest.TestCase):
+    def test_svs_protocol_defaults_and_explicit_rollback(self) -> None:
+        default_env = NdnsfSvsEnvConfig().to_env()
+        self.assertEqual(default_env["NDNSF_SVS_PROTOCOL_VERSION"], "v3")
+        self.assertNotIn("NDNSF_SVS_MAX_SUPPRESSION_MS", default_env)
+
+        rollback = NdnsfSvsEnvConfig(
+            protocol_version="V2", max_suppression_ms="1"
+        ).to_env()
+        self.assertEqual(rollback["NDNSF_SVS_PROTOCOL_VERSION"], "v2")
+        self.assertEqual(rollback["NDNSF_SVS_MAX_SUPPRESSION_MS"], "1")
+        with self.assertRaisesRegex(ValueError, "v2 or v3"):
+            NdnsfSvsEnvConfig(protocol_version="auto").to_env()
+
     def test_split_extra_args_preserves_quoted_value(self) -> None:
         self.assertEqual(split_extra_args('--payload "hello world"'), [
             "--payload",

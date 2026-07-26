@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 
 from ndnsf import to_plain
-from ndnsf_distributed_inference.runtime_v1 import (
+from ndnsf_distributed_inference.core.runtime_contracts import (
     MeasuredTelemetrySnapshotV1,
     PlanFeasibilityRequirementsV1,
     evaluate_plan_feasibility,

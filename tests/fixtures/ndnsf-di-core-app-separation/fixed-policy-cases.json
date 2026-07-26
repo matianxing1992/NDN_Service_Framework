@@ -1,0 +1,7 @@
+{
+  "schema": "ndnsf-di-spec111-fixed-policy-v1",
+  "cases": [
+    {"name": "one-role", "roles": ["prefill"], "providersByRole": {"prefill": "/provider/a"}},
+    {"name": "multi-role", "roles": ["prefill", "decode"], "providersByRole": {"prefill": "/provider/a", "decode": "/provider/b"}}
+  ]
+}

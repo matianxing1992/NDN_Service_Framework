@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+from importlib import metadata
 import json
 import os
 from pathlib import Path
@@ -41,9 +42,21 @@ def static_probe() -> dict[str, object]:
     for module in ("ndnsf", "ndnsf_distributed_inference", "torch", "transformers", "onnxruntime"):
         loaded = importlib.import_module(module)
         imports[module] = str(getattr(loaded, "__version__", "present"))
+    profile_names = (
+        "ndnsf-di-core", "ndnsf-di-sdk", "ndnsf-di-app", "ndnsf-di-planner",
+        "ndnsf-di-adapter-onnx", "ndnsf-di-adapter-qwen",
+        "ndnsf-di-adapter-llama", "ndnsf-di-ops",
+        "ndnsf-distributed-inference",
+    )
+    profiles = {}
+    for profile in profile_names:
+        try: profiles[profile] = metadata.version(profile)
+        except metadata.PackageNotFoundError: fail("RUNTIME_OWNER_PROFILE_MISSING", profile)
     if os.geteuid() == 0:
         fail("RUNTIME_ROOT_USER_FORBIDDEN")
-    return {"status": "PASS", "mode": "static", "binaries": found, "imports": imports, "uid": os.geteuid()}
+    return {"status": "PASS", "mode": "static", "binaries": found,
+            "imports": imports, "ownerProfiles": profiles,
+            "modelWeightsIncluded": False, "uid": os.geteuid()}
 
 
 def allocated_gpu_probe() -> dict[str, object]:

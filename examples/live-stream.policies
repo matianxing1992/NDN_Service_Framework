@@ -1,0 +1,25 @@
+name /example/live/controller/NDNSF/ControllerPolicy/v1
+
+provider-policies
+{
+    provider-policy
+    {
+        for /example/live/provider
+        allow
+        {
+            /LiveStream/Dummy
+        }
+    }
+}
+
+user-policies
+{
+    user-policy
+    {
+        for /example/live/user
+        allow
+        {
+            /LiveStream/Dummy
+        }
+    }
+}

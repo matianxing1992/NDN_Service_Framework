@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "mappedLive": {
+    "sessionEpoch": 41,
+    "nextCursor": 100,
+    "samplePeriodMs": 40,
+    "latestProducedCursor": 103,
+    "mappingCommittedThroughCursor": 111,
+    "nextReservedCursor": 120,
+    "mappingBlockCapacity": 4,
+    "aggregateInFlightLimit": 12,
+    "mappingReserve": 2,
+    "retransmissionReserve": 1,
+    "detectorProfile": "ndnsf-balanced-seed",
+    "sampleIds": [1, 2, 3, 4, 5, 6, 7],
+    "arrivalMs": [100, 140, 180, 220, 260, 300, 340],
+    "retrievalDelayMs": 95,
+    "segmentsPerSample": 3
+  },
+  "paperLiteral": {
+    "detectorProfile": "paper-eq3-literal-high",
+    "samplePeriodMs": 40,
+    "sampleIds": [1, 2, 3, 4, 5, 6, 7],
+    "arrivalMs": [100, 140, 180, 220, 260, 300, 340],
+    "expectedPhase": "CHASING"
+  }
+}

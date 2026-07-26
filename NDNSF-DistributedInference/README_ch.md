@@ -1,5 +1,67 @@
 # NDNSF-DistributedInference
 
+## 推荐用户 API（Spec 116）
+
+新应用只从 `ndnsf_distributed_inference.api` 导入。主流程是直接对
+Application 签名的意图发出请求；单独调用部署只是可选预热，不是正确性前提。
+
+```python
+from datetime import timedelta
+from ndnsf_distributed_inference.api import InferenceApplication
+
+application = InferenceApplication.from_config(
+    "ndnsf-di.yaml",
+    state_root="/var/lib/ndnsf-di/application",
+    envelope_key_file="/run/secrets/ndnsf-di-envelope-key",
+)
+definition = application.define(...)  # 类型化意图，由 Application 签名
+request = application.request(
+    definition, input={"prompt": "Hello"}, timeout=timedelta(minutes=5))
+print(request.deployment_status())
+result = request.result()
+```
+
+请求可自行选择 Provider 并准备冷模型。ACK 中的可用性只是建议；Selection 提交
+职责和租约；签名的通用状态报告用于观察进度；只有精确、签名且覆盖全部角色的
+DI readiness 才允许模型执行。远程调用者通过 `InferenceClient.deployments`
+发现类型化的 `ON_DEMAND` 或 `ACTIVE` 部署引用。`deploy(definition)` 调用同一个
+ensure 操作，只改变延迟。下文旧的 `APPClient`/`APPProvider`/`APPDeployment`
+示例是保留的兼容入口；适配器会给出迁移提示。
+
+### API 迁移表
+
+| 保留的旧调用 | 规范所有者/调用 |
+|---|---|
+| `APPClient.submit(...)` / `distributed_inference(...)` | `InferenceClient.request(deployment, ...)` |
+| `APPClient.infer(...)` | `InferenceClient.run(deployment, ...)` |
+| `APPProvider.serve_service(...)` | `InferenceProvider.serve(...)` |
+| Provider 的 `stage/activate/drain/delete` | 使用独立凭据的 `ProviderAdminPort` |
+| 原始部署发现字典 | `client.deployments.discover(...)` 类型化摘要 |
+
+`InferenceApplication.request` 与 `InferenceClient.request` 的签名和耐久句柄
+完全相同。创建者本地调用时，`request.deployment_status()` 投影已验证的 Provider
+签名快照；远程调用时，绑定的 deployment-owner coordinator 通过签名的
+Collaboration 状态投影同一聚合结果，而其内部请求仍逐一验证 Provider。如果通用
+`DONE` 缺少精确 revision、adapter、artifact 或任一必需角色，状态仍保持
+`PREPARING`。即使自签名在密码学上有效，未知 Application 密钥签出的 definition
+也会被拒绝。
+
+远程发现以记录而不是元数据为权威。Application 发布精确名称、带签名的 definition
+Data；生命周期所有者可以发布精确名称、带签名的 activation 或 revocation Data。
+NDNSD 只携带由 `application.deployments.discovery_hint(...)` 或
+`application.deployments.advertise(...)` 生成的有界定位器/摘要提示。请求者必须获取并
+验证精确记录，之后才能得到类型化引用。activation 被撤销后，该不可变 revision 会被
+栅栏阻断，不能静默地重新作为 ON_DEMAND 出现。签名的后继 definition 通过
+`previous_revision` 指向旧版本；后继 activation 会提高 lifecycle epoch、连接两条
+activation 记录并封锁旧 ACTIVE revision。
+
+deployment-owner 进程把高级
+`app_sdk.coordinator.InferenceCoordinator` 注册为单角色 NDNSF Collaboration 服务。远程请求者把已签名
+definition 引用和输入发送到该绑定服务，不会在本地执行 Application 的优化策略。
+coordinator 与 `deploy(definition)` 绑定同一个一次性 ensure owner，因此请求触发的准备
+和可选预热不会分裂为两个生命周期状态机。已有的签名 `SELECTION-STATUS` 快照把
+coordinator 进度提供给远程请求句柄，不增加 DI 专用状态协议。
+
 NDNSF-DistributedInference 是构建在 NDNSF 之上的应用层分布式推理运行时。
 当前用户可见 API 和示例仍然以 Python 为主，但性能方向必须转向 C++：hot-path
 调度、dependency dataflow、prefetch、worker dispatch，以及后续 ONNX Runtime
@@ -10,7 +72,7 @@ deployment、GUI 和实验层。
 
 ```text
 稳定的 APP-facing layer
-  Python APPClient / APPProvider / APPController / APPDeployment
+  Python InferenceApplication / InferenceClient / InferenceProvider
   policy 生成、MiniNDN 实验、GUI 和示例脚本
 
 Native hot-path 迁移层
@@ -104,7 +166,8 @@ python3 -m pip install -e ./NDNSF-DistributedInference
 
 ### 2. 理解主要对象
 
-公开的 APP API 有四个主要入口：
+下面四个对象属于旧 APP 兼容层；新代码应使用上文的
+`InferenceApplication`、`InferenceClient` 和 `InferenceProvider`：
 
 ```text
 APPDeployment   读取 policy 并生成部署文件
@@ -791,7 +854,7 @@ artifact path、repo manifest 或模型切分方式时，才需要传入自定�
 Client 侧：
 
 ```python
-from ndnsf_distributed_inference import APPClient
+from ndnsf_distributed_inference.app_sdk import APPClient
 
 client = APPClient.from_config("yolo_policy.yaml")
 service = "/AI/YOLO/SplitInference"
@@ -873,7 +936,7 @@ planner 直接审查 source、Data name、hash 和 size。Runtime execution spec
 Provider 侧：
 
 ```python
-from ndnsf_distributed_inference import APPProvider
+from ndnsf_distributed_inference.app_sdk import APPProvider
 
 provider = APPProvider.from_config("yolo_policy.yaml", provider_id="A")
 provider.serve_service(
@@ -909,7 +972,7 @@ NDNSF callback 会等待 worker result，以保证 collaboration context 仍然�
 Controller 侧：
 
 ```python
-from ndnsf_distributed_inference import APPController
+from ndnsf_distributed_inference.app_sdk.controller import APPController
 
 controller = APPController.from_config("yolo_policy.yaml")
 controller.run()
@@ -918,7 +981,7 @@ controller.run()
 Deployment-only utilities：
 
 ```python
-from ndnsf_distributed_inference import APPDeployment
+from ndnsf_distributed_inference.app_sdk import APPDeployment
 
 deployment = APPDeployment.from_config("yolo_policy.yaml")
 print(deployment.trust_schema)
@@ -2991,3 +3054,60 @@ multi-node 则等待 Spec 108 T134 network evidence。
 `packaging/ndnsf-di-container/docs/itiger-qwen-models.md`；standalone、artifact、
 staged-baseline 和 candidate 的权威边界见 `itiger-qwen-evidence.md`。物理生产验证
 仍由 Spec 106 负责。
+# 所有者安装配置与外部优化器
+
+只安装 `packaging/python/` 下需要的发行包。外部优化器实现十个公开 SDK
+协议，缺失接口显式解析到具名默认实现；`RunnerAdapterRegistry` 独立。
+`APPDeployment` 使用外部制品引用，`APPClient` 提供可持久重开的请求句柄。
+旧聚合包仅用于兼容。
+
+精确模型请求只提供一个 `exact_semantics=True` 候选；模型替代请求向
+`ModelVariantPolicy` 提供由 operator 明确授权且有界的候选集合。APP 可以构造
+进程内 `DistributedInferenceEngine(DefaultOptimizationSuite())`，也可以通过授权
+deployment coordinator 的 `InferenceClient.from_config(..., optimization=suite)`
+显式注入外部 `OptimizationSuite`；远程请求者不执行该套件。模型执行通过独立
+`RunnerAdapterRegistry` 注册，因此
+注册 ONNX/Qwen/llama Runner 不等于选择该 Runner，也不能绕过 Core eligibility。
+模型和 tokenizer 权重始终是外部挂载制品，不进入 Python wheel 或容器镜像。
+
+### APP 持久状态与请求包络密钥
+
+生产环境中的 `APPClient.from_config()` 和 `APPDeployment.from_config()` 必须
+接收 operator 指定的持久化 `state_root`（或 `NDNSF_DI_STATE_ROOT`），不得回退到
+`/tmp`。持久请求提交还必须注入 owner 控制的
+`RequestEnvelopeKeyProvider`、权限仅限 owner 的原始 32 字节
+`envelope_key_file`，或 `NDNSF_DI_ENVELOPE_KEY_FILE`。密钥字节始终位于
+`RuntimeJournal` 之外；加密包络只记录非敏感 key identity。轮换 provider 可在
+有界窗口内保留旧 key，以读取尚未过期的包络。MiniNDN 和单元测试必须明确使用
+`RuntimeJournal.for_test()` 或 `test_only_allow_ephemeral_state_root=True`。
+
+## 选择门控部署（Spec 129 R1）
+
+R1 独立协商两个能力。`DIReservationSelectionV1` 只改变 NDNSF-DI：Provider
+先完成身份授权和原子、有限期的本地资源预留，才发送 positive ACK。普通 NDNSF
+应用仍保留非独占 ACK 语义。`SelectionGatedInputV1` 是通用 NDNSF 可选能力：
+REQUEST 携带 AEAD 密文且不携带 input key，与是否启用 DI reservation 无关。
+
+到唯一 ACK deadline 时，Requester 原子关闭一次不可变候选快照。每个有效且携带
+reservation 的 ACK 都会收到精确目标的 `SELECTED` 或 `NOT_SELECTED`；迟到的
+positive ACK 直接收到 `NOT_SELECTED`，不会重开窗口。被选消息使用彼此独立的
+key 和 nonce，分别封装 request input key 与最小化的 Provider assignment。
+REQUEST、ACK 和 `NOT_SELECTED` 都不泄露 input key 或 exact assignment。决定丢失
+时最多重发两次完全相同的签名字节；收到签名 receipt 或 lease 到期后立即停止。
+Requester 消失时，Provider 本地 lease expiry 是最终清理权威。
+
+被选 role 必须先 commit，再开始准备，并把资源固定到本地完成、失败、取消或有限
+committed lease 到期。R1 不存在全局 ReadySet 或 ExecutionActivate barrier。source
+role 在 selected 且 local ready 后即可运行；其他 role 还必须取得每个直接前驱的、
+绑定 attempt/plan 且已认证的数据证据。只有声明的 terminal role 能使最终结果生效。
+旧 ReadySet API 仅是 R0 compatibility surface，不能授权 R1。
+
+多 Provider 部分获取失败时，必须先向本次已取得的每个 reservation 发送
+`NOT_SELECTED`，并等待各自 receipt 或 lease expiry；之后才执行有界 full-jitter
+exponential backoff。attempt 数量和总 deadline 都有限。该机制只提供概率性进展，
+不承诺无饥饿或公平性。
+
+状态仍是 Requester 主动发起的 pull-only 查询，状态变化不产生 push。exact-name
+查询需要认证；回复先签名、再按接收者加密，并使用唯一 nonce/AAD，只返回严格大于
+cursor 的 sequence。轮询使用有界自适应间隔，并在 terminal state 停止。上述逻辑
+不包含 UAV、codec、model-family 或 workload 特判。

@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import copy
+import json
+from pathlib import Path
 import unittest
 
 from ndnsf_distributed_inference.deployment import ProviderTelemetryRegistry
@@ -90,6 +92,11 @@ def candidate(provider: str,
 
 
 class RuntimeAwarePlannerTest(unittest.TestCase):
+    GOLDEN = (
+        Path(__file__).resolve().parents[2]
+        / "tests/fixtures/ndnsf-di-core-app-separation/runtime-v1-score-golden.json"
+    )
+
     @staticmethod
     def measured_payload(*, boot: str = "boot-a", sequence: int = 7,
                          evidence_epoch: int = 4) -> dict:
@@ -268,6 +275,84 @@ class RuntimeAwarePlannerTest(unittest.TestCase):
             residency_ready_cost_ms(FragmentResidency.MISSING),
         ]
         self.assertEqual(ordered, sorted(ordered))
+
+    def test_runtime_v1_score_golden_preserves_current_decisions(self) -> None:
+        golden = json.loads(self.GOLDEN.read_text(encoding="utf-8"))
+        key = ModelFragmentKey(model_id="golden", fragment_digest=golden["role"]["fragmentDigest"])
+        role = PlanRole(
+            golden["role"]["roleId"], key,
+            estimated_compute_ms=golden["role"]["estimatedComputeMs"],
+        )
+        for case in golden["scores"]:
+            scored = score_runtime_candidate(
+                role,
+                candidate(
+                    case["provider"], key, FragmentResidency(case["residency"]),
+                    queue=case["queue"], ready_ms=case["estimatedReadyMs"],
+                    compute_ms=golden["role"]["estimatedComputeMs"],
+                ),
+                runtime_required=True,
+                now_ms_value=1000,
+            )
+            # The helper's default confidence is 1.0; rebuild only cases that
+            # freeze a non-default confidence/queue-wait combination.
+            if case["confidence"] != 1.0 or case["queueWaitMs"] != case["queue"] * 10:
+                metadata = scored = None
+                hint = GenericProviderRuntimeHint(
+                    provider_name=case["provider"], queue_length=case["queue"],
+                    estimated_queue_wait_ms=case["queueWaitMs"], confidence=case["confidence"],
+                )
+                metadata = GenericAckMetadata(
+                    provider_runtime_hint=hint,
+                    service_payload_schema="ndnsf-di-runtime-ack-v1",
+                    service_payload={
+                        "providerName": case["provider"],
+                        "fragmentStates": [{
+                            "fragmentKey": key, "residency": case["residency"],
+                            "estimatedReadyMs": case["estimatedReadyMs"],
+                        }],
+                        "estimatedComputeMs": golden["role"]["estimatedComputeMs"],
+                    },
+                )
+                scored = score_runtime_candidate(
+                    role, {"providerName": case["provider"], "genericAckMetadata": metadata},
+                    runtime_required=True, now_ms_value=1000,
+                )
+            with self.subTest(case=case["id"]):
+                self.assertEqual(scored["valid"], case["valid"])
+                self.assertEqual(scored["reason"], case["reason"])
+                expected = case["scoreMs"]
+                if expected == "Infinity":
+                    self.assertEqual(scored["scoreMs"], float("inf"))
+                else:
+                    self.assertEqual(scored["scoreMs"], expected)
+
+        for case in golden["fallbacks"]:
+            scored = score_runtime_candidate(
+                role, {"providerName": "/legacy"},
+                runtime_required=case["runtimeRequired"], now_ms_value=1000,
+            )
+            self.assertEqual(scored["valid"], case["valid"])
+            self.assertEqual(scored["reason"], case["reason"])
+            self.assertEqual(
+                scored["scoreMs"],
+                float("inf") if case["scoreMs"] == "Infinity" else case["scoreMs"],
+            )
+
+        network = golden["network"]
+        matrix = ProviderNetworkMatrix.from_dict({
+            "staleAfterMs": network["staleAfterMs"],
+            "stalePenaltyMs": network["stalePenaltyMs"],
+            "unknownPenaltyMs": network["unknownPenaltyMs"],
+            "metrics": [network["metric"]],
+        })
+        stale, stale_detail = matrix.transfer_cost_ms(
+            "/A", "/B", network["bytes"], now_ms_value=network["nowMs"])
+        unknown, unknown_detail = matrix.transfer_cost_ms(
+            "/B", "/A", network["bytes"], now_ms_value=network["nowMs"])
+        self.assertEqual(stale_detail["stale"], network["expect"]["knownStale"])
+        self.assertEqual(unknown_detail["unknown"], network["expect"]["unknown"])
+        self.assertEqual(unknown > stale, network["expect"]["unknownCostsMore"])
 
     def test_runtime_assignment_prefers_gpu_loaded_fragment(self) -> None:
         key = fragment()

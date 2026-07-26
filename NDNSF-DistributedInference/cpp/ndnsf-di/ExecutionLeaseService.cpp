@@ -148,21 +148,39 @@ std::string
 encodeLeaseOperationRequest(const LeaseOperationRequest& request)
 {
   std::ostringstream output;
-  output << "{\"expiresAtMs\":" << request.expiresAtMs
-         << ",\"idempotencyKey\":" << quote(request.idempotencyKey)
-         << ",\"leaseId\":" << quote(request.leaseId)
-         << ",\"operation\":" << quote(operationName(request.operation))
-         << ",\"planDigest\":" << quote(request.planDigest)
-         << ",\"providerEpoch\":" << quote(request.providerEpoch)
-         << ",\"requestId\":" << quote(request.requestId)
-         << ",\"resourceBindingProof\":" << quote(base64Encode(request.resourceBindingProof))
-         << ",\"resourceBindingSchema\":" << quote(request.resourceBindingSchema)
-         << ",\"roles\":" << encodeStringArray(request.roles)
-         << ",\"schema\":" << quote(EXECUTION_LEASE_CODEC_SCHEMA) << '}';
-  auto encoded = output.str();
-  encoded.insert(encoded.size() - 1,
-                 ",\"targetServiceName\":" + quote(request.targetServiceName));
-  return encoded;
+  output << '{';
+  bool hasField = false;
+  auto append = [&] (const std::string& key, const std::string& value) {
+    if (hasField) output << ',';
+    output << quote(key) << ':' << value;
+    hasField = true;
+  };
+  if (request.expiresAtMs != 0) {
+    append("expiresAtMs", std::to_string(request.expiresAtMs));
+  }
+  append("idempotencyKey", quote(request.idempotencyKey));
+  if (!request.leaseId.empty()) {
+    append("leaseId", quote(request.leaseId));
+  }
+  append("operation", quote(operationName(request.operation)));
+  append("planDigest", quote(request.planDigest));
+  if (!request.providerEpoch.empty()) {
+    append("providerEpoch", quote(request.providerEpoch));
+  }
+  append("requestId", quote(request.requestId));
+  if (!request.resourceBindingProof.empty()) {
+    append("resourceBindingProof", quote(base64Encode(request.resourceBindingProof)));
+  }
+  if (request.resourceBindingSchema != "ndnsf-di-binding-v1") {
+    append("resourceBindingSchema", quote(request.resourceBindingSchema));
+  }
+  if (!request.roles.empty()) {
+    append("roles", encodeStringArray(request.roles));
+  }
+  append("schema", quote(EXECUTION_LEASE_CODEC_SCHEMA));
+  append("targetServiceName", quote(request.targetServiceName));
+  output << '}';
+  return output.str();
 }
 
 LeaseOperationRequest

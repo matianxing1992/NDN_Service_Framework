@@ -300,6 +300,27 @@ def check_serial_device(reporter: Reporter, device_text: str, baud_text: str) ->
         reporter.fail(f"MAVLink serial baud is unsupported by DroneAPP: {baud}")
 
 
+def check_recording_config(reporter: Reporter, fields: dict[str, str]) -> None:
+    retired = {
+        "camera-record-packet-limit",
+        "camera-recording-encryption",
+        "camera-recording-content-key",
+        "camera-recording-key-file",
+    }
+    present = sorted(retired.intersection(fields))
+    if present:
+        reporter.fail("retired recording-only configuration is present: " +
+                      ", ".join(present))
+    if "camera-retention-packet-limit" in fields:
+        try:
+            value = int(fields["camera-retention-packet-limit"])
+            if value < 0:
+                raise ValueError
+            reporter.ok("canonical packet-retention bound is valid")
+        except ValueError:
+            reporter.fail("camera-retention-packet-limit must be a non-negative integer")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--role", choices=["controller", "ground-station", "drone"], required=True)
@@ -385,6 +406,7 @@ def main() -> int:
 
     check_binary(reporter, "ffmpeg")
     if args.role == "drone":
+        check_recording_config(reporter, app_fields)
         video_source = app_fields.get("video-source", args.video_source)
         if video_source == "auto":
             reporter.ok("video source is auto; runtime will select a V4L2 camera or fallback file")

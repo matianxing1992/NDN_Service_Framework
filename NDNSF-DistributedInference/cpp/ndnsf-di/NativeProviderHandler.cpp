@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/DistributedExecutionConsistency.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 
 #include "ndn-service-framework/utils.hpp"
@@ -15,6 +16,7 @@
 #include <mutex>
 #include <set>
 #include <stdexcept>
+#include <thread>
 #include <utility>
 
 namespace ndnsf::di {
@@ -75,11 +77,16 @@ applyNativeProviderExecutionControl(
   ExecutionAttemptAuthority& authority)
 {
   NativeProviderExecutionControlResult result;
-  if (nativeProviderFieldValue(fields, {"schema"}) !=
-      "ndnsf-di-execution-control-v1") {
+  const auto schema = nativeProviderFieldValue(fields, {"schema"});
+  if (schema != "ndnsf-di-execution-control-v2" &&
+      schema != "ndnsf-di-execution-control-v1") {
     return result;
   }
   result.recognized = true;
+  if (schema == "ndnsf-di-execution-control-v1") {
+    std::clog << "NDNSF_DI_LEGACY_IMPORT kind=execution-control-v1 count=1"
+              << std::endl;
+  }
   const auto operation = nativeProviderFieldValue(fields, {"operation"});
   result.attempt.requestId = nativeProviderFieldValue(fields, {"requestId"});
   try {
@@ -274,6 +281,8 @@ public:
     , runnerFactory(config.runnerFactory)
     , localProviderName(config.localProviderName)
     , runtime(config.workerCount)
+    , executionLeaseTable(config.executionLeaseTable)
+    , executionLeaseCleanupIntervalMs(config.executionLeaseCleanupIntervalMs)
   {
     if (!runnerFactory) {
       throw std::invalid_argument(
@@ -288,10 +297,41 @@ public:
       runtime.registerRunner(spec.role, std::move(runner));
       logFragmentInventoryEvent(loadedResidencyFor(spec).c_str(), spec, localProviderName);
     }
+    if (executionLeaseTable != nullptr && executionLeaseCleanupIntervalMs > 0) {
+      executionLeaseCleanupThread = std::thread([this] {
+        std::unique_lock<std::mutex> lock(executionLeaseCleanupMutex);
+        const auto interval = std::chrono::milliseconds(
+          executionLeaseCleanupIntervalMs);
+        while (!executionLeaseCleanupStop) {
+          if (executionLeaseCleanupCondition.wait_for(
+                lock, interval, [this] { return executionLeaseCleanupStop; })) {
+            break;
+          }
+          lock.unlock();
+          const auto now = static_cast<uint64_t>(
+            std::max<long long>(0, epochMs()));
+          executionLeaseTable->cleanupExpired(now);
+          lock.lock();
+        }
+      });
+    }
   }
 
   ~NativeProviderHandlerState()
   {
+    {
+      std::lock_guard<std::mutex> lock(executionLeaseCleanupMutex);
+      executionLeaseCleanupStop = true;
+    }
+    executionLeaseCleanupCondition.notify_all();
+    if (executionLeaseCleanupThread.joinable()) {
+      executionLeaseCleanupThread.join();
+    }
+    if (executionLeaseTable != nullptr) {
+      const auto now = static_cast<uint64_t>(
+        std::max<long long>(0, epochMs()));
+      executionLeaseTable->cleanupExpired(now);
+    }
     for (const auto& spec : runnerSpecs) {
       logFragmentInventoryEvent("EVICTED", spec, localProviderName);
     }
@@ -337,6 +377,12 @@ public:
   std::shared_ptr<NativeModelRunnerFactory> runnerFactory;
   std::string localProviderName;
   NativeProviderRuntime runtime;
+  ndn_service_framework::ProviderExecutionLeaseTable* executionLeaseTable = nullptr;
+  uint64_t executionLeaseCleanupIntervalMs = 0;
+  std::mutex executionLeaseCleanupMutex;
+  std::condition_variable executionLeaseCleanupCondition;
+  bool executionLeaseCleanupStop = false;
+  std::thread executionLeaseCleanupThread;
   std::vector<ExecutionEvidence> executionEvidence;
   std::mutex executionLeaseMutex;
   std::map<std::string, std::set<std::string>> completedRolesByLease;
@@ -779,7 +825,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                   << " requestId=" << control.attempt.requestId
                   << " attemptEpoch=" << control.attempt.attemptEpoch
                   << std::endl;
-        const auto response = std::string("schema=ndnsf-di-execution-control-v1;") +
+        const auto response = std::string("schema=ndnsf-di-execution-control-v2;") +
           "status=" + (control.status ? "1;" : "0;") +
           "reason=" + control.reason + ";";
         ctx.publishFinalResponse(ndn::Buffer(
@@ -826,7 +872,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         const auto providerEpoch = nativeProviderFieldValue(
           fields, {"executionLeaseEpoch"});
         const auto transactionId = nativeProviderFieldValue(
-          fields, {"executionLeaseTransactionId"});
+          fields, {"executionLeaseTransactionId", "executionRequestId"});
         const auto planDigest = nativeProviderFieldValue(
           fields, {"executionLeasePlanDigest"});
         const auto bindingProofText = nativeProviderFieldValue(
@@ -849,6 +895,20 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           reinterpret_cast<const uint8_t*>(bindingProofText.data()),
           bindingProofText.size());
         const auto now = static_cast<uint64_t>(std::max<long long>(0, epochMs()));
+        if (config.requireExecutionActivation) {
+          const auto activationDigest = nativeProviderFieldValue(
+            fields, {"executionActivationDigest"});
+          const auto activationMembers = nativeProviderFieldValue(
+            fields, {"executionActivationMembers"});
+          const auto activationLocalMember = nativeProviderFieldValue(
+            fields, {"executionActivationLocalMember"});
+          if (activationDigest.empty() || activationMembers.empty() ||
+              activationLocalMember.empty() ||
+              activationMembers.find(activationLocalMember) == std::string::npos) {
+            ctx.fail("DI_EXECUTION_ACTIVATION_BINDING_MISMATCH");
+            return;
+          }
+        }
         const auto activated = config.executionLeaseTable->validateAndActivate(
           leaseId,
           providerEpoch,
@@ -906,6 +966,252 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                       executionSessionId,
                       assignment,
                       ctx.localProvider().toUri());
+      const auto* readinessRunnerSpec = runnerSpecForRole(state->runnerSpecs, role);
+      const auto deploymentRevision = nativeProviderFieldValue(
+        assignmentFields, {"deploymentRevision", "revision", "planRevision"});
+      const auto adapterIdentity = readinessRunnerSpec == nullptr
+        ? std::string("native")
+        : (!readinessRunnerSpec->backend.empty()
+             ? readinessRunnerSpec->backend
+             : readinessRunnerSpec->kind);
+      const auto reportStatus = [&] (const std::string& operationId,
+                                     const std::string& operation,
+                                     const std::string& stateName,
+                                     std::uint64_t sequence,
+                                     double progress,
+                                     const std::string& phase) {
+        ndn_service_framework::ServiceProvider::ServiceOperationStatus status;
+        status.operationId = operationId;
+        status.operation = operation;
+        status.role = role;
+        status.attempt = executionAttempt ? executionAttempt->attemptEpoch : 1;
+        status.epoch = 1;
+        status.sequence = sequence;
+        status.state = stateName;
+        status.progressKnown = true;
+        status.progress = progress;
+        status.createdAtMs = static_cast<std::uint64_t>(
+          std::max<long long>(0, epochMs()));
+        status.updatedAtMs = status.createdAtMs;
+        status.expiresAtMs = status.createdAtMs + 120000;
+        status.detailsSchema = "ndnsf-di-preparation-progress-v1";
+        const auto details = std::string("{\"phase\":\"") + phase +
+          "\",\"deploymentRevision\":\"" +
+          (deploymentRevision.empty() ? config.planDigest : deploymentRevision) +
+          "\",\"adapter\":\"" + adapterIdentity + "\"}";
+        status.detailsPayload = ndn::Buffer(
+          reinterpret_cast<const std::uint8_t*>(details.data()), details.size());
+        ctx.reportOperationStatus(std::move(status));
+      };
+      const auto readinessOperationId =
+        ctx.assignment().selectionDigest + ":" + role + ":readiness";
+      const auto executionOperationId =
+        ctx.assignment().selectionDigest + ":" + role + ":execution";
+      // This provider was prepared by its bounded install task before it could
+      // return an affirmative ACK.  Preserve that exact warm-readiness fact as
+      // a separate operation; generic execution DONE must never imply READY.
+      reportStatus(readinessOperationId, "ensure-deployment", "DONE", 1, 1.0,
+                   "READY");
+
+      // Readiness status is observational.  Before entering any runner, every
+      // selected role rendezvous over one request-scoped encrypted
+      // Collaboration channel and validates exact selection/revision/plan
+      // membership.  This is a DI payload above NDNSF Core, not a new base
+      // protocol message.
+      if (config.allowLegacyPeerReadinessBarrier) {
+        constexpr const char* readinessScope = "ndnsf-di-readiness-v1";
+        const ndn::Name readinessTopic("/ndnsf-di/readiness");
+        auto expected = ctx.assignment().roleProviders;
+        expected[role] = ctx.localProvider();
+        const auto activationDigest = nativeProviderFieldValue(
+          assignmentFields, {"executionActivationDigest"});
+        const auto activationMembersText = nativeProviderFieldValue(
+          assignmentFields, {"executionActivationMembers"});
+        const auto localMember = nativeProviderFieldValue(
+          assignmentFields, {"executionActivationLocalMember"});
+        const auto declaredBindingDigest = nativeProviderFieldValue(
+          assignmentFields, {"readinessBindingDigest"});
+        const auto declaredRolesText = nativeProviderFieldValue(
+          assignmentFields, {"readinessRoles"});
+        const auto declaredRoleCountText = nativeProviderFieldValue(
+          assignmentFields, {"readinessRoleCount"});
+        std::set<std::string> activationMembers;
+        std::size_t memberStart = 0;
+        while (memberStart <= activationMembersText.size()) {
+          const auto comma = activationMembersText.find(',', memberStart);
+          const auto member = activationMembersText.substr(
+            memberStart,
+            comma == std::string::npos ? std::string::npos : comma - memberStart);
+          if (!member.empty()) {
+            activationMembers.insert(member);
+          }
+          if (comma == std::string::npos) {
+            break;
+          }
+          memberStart = comma + 1;
+        }
+        const bool activationBound = !activationDigest.empty() &&
+          !localMember.empty() && !activationMembers.empty();
+        if (activationBound && activationMembers.count(localMember) == 0) {
+          completeExecutionLease();
+          ctx.fail("DI_READINESS_ACTIVATION_MEMBER_MISMATCH");
+          return;
+        }
+        std::set<std::string> declaredRoles;
+        memberStart = 0;
+        while (memberStart <= declaredRolesText.size()) {
+          const auto comma = declaredRolesText.find(',', memberStart);
+          const auto declaredRole = declaredRolesText.substr(
+            memberStart,
+            comma == std::string::npos ? std::string::npos : comma - memberStart);
+          if (!declaredRole.empty()) {
+            declaredRoles.insert(declaredRole);
+          }
+          if (comma == std::string::npos) {
+            break;
+          }
+          memberStart = comma + 1;
+        }
+        std::size_t declaredRoleCount = 0;
+        try {
+          declaredRoleCount = declaredRoleCountText.empty()
+            ? 0 : static_cast<std::size_t>(std::stoull(declaredRoleCountText));
+        }
+        catch (const std::exception&) {
+          declaredRoleCount = 0;
+        }
+        const bool declaredBound = !activationBound &&
+          !declaredBindingDigest.empty() && !declaredRoles.empty() &&
+          declaredRoleCount == declaredRoles.size() &&
+          declaredRoles.count(role) != 0;
+        const auto expectedReadinessCount = activationBound
+          ? activationMembers.size()
+          : (declaredBound ? declaredRoles.size() : expected.size());
+        const auto readinessBindingDigest = activationBound
+          ? activationDigest
+          : (declaredBound ? declaredBindingDigest
+                           : ctx.assignment().selectionDigest);
+        const auto effectiveRevision = deploymentRevision.empty()
+          ? config.planDigest : deploymentRevision;
+        const auto effectivePlanDigest = config.planDigest.empty()
+          ? effectiveRevision : config.planDigest;
+        const auto attemptEpoch = executionAttempt
+          ? executionAttempt->attemptEpoch : 1;
+        const auto artifactDigest = readinessRunnerSpec == nullptr
+          ? std::string("role:") + role
+          : fragmentDigestFor(*readinessRunnerSpec);
+        const auto localPayload = std::string("schema=ndnsf-di-readiness-v1;") +
+          "revision=" + effectiveRevision + ";" +
+          "planDigest=" + effectivePlanDigest + ";" +
+          "bindingDigest=" + readinessBindingDigest + ";" +
+          "memberId=" + (activationBound ? localMember : role) + ";" +
+          "role=" + role + ";" +
+          "provider=" + ctx.localProvider().toUri() + ";" +
+          "attempt=" + std::to_string(attemptEpoch) + ";" +
+          "adapter=" + adapterIdentity + ";" +
+          "artifactDigest=" + artifactDigest + ";";
+        const auto publishReadiness = [&] {
+          ctx.publish(
+            readinessScope,
+            readinessTopic,
+            ndn::Buffer(reinterpret_cast<const std::uint8_t*>(localPayload.data()),
+                        localPayload.size()));
+        };
+        publishReadiness();
+
+        std::map<std::string, std::string> observed;
+        observed.emplace(activationBound ? localMember : role, localPayload);
+        std::map<std::string, std::string> observedRoleProviders;
+        observedRoleProviders.emplace(role, ctx.localProvider().toUri());
+        const auto barrierDeadline = std::chrono::steady_clock::now() +
+          std::chrono::milliseconds(collaborationFetchTimeoutMs(config.fetchTimeoutMs));
+        auto nextReadinessPublish = std::chrono::steady_clock::now() +
+          std::chrono::milliseconds(250);
+        while (observed.size() < expectedReadinessCount &&
+               std::chrono::steady_clock::now() < barrierDeadline) {
+          if (std::chrono::steady_clock::now() >= nextReadinessPublish) {
+            // Collaboration notifications may race assignment/scope-key
+            // installation.  Re-publish the same idempotent snapshot at a
+            // bounded rate so late peers recover without an event log.
+            publishReadiness();
+            nextReadinessPublish = std::chrono::steady_clock::now() +
+              std::chrono::milliseconds(250);
+          }
+          const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+            barrierDeadline - std::chrono::steady_clock::now()).count();
+          const auto items = ctx.waitFor(
+            readinessScope, readinessTopic, 1,
+            static_cast<int>(std::max<long long>(1, std::min<long long>(100, remaining))));
+          for (const auto& item : items) {
+            const std::string payload(item.payload.begin(), item.payload.end());
+            const auto fields = parseNativeProviderAssignmentFields(item.payload);
+            const auto itemRole = nativeProviderFieldValue(fields, {"role"});
+            const auto providerText = nativeProviderFieldValue(fields, {"provider"});
+            const auto memberId = nativeProviderFieldValue(fields, {"memberId"});
+            const auto expectedProvider = expected.find(itemRole);
+            const bool exactMember = activationBound
+              ? activationMembers.count(memberId) != 0
+              : (declaredBound ? declaredRoles.count(itemRole) != 0
+                               : expectedProvider != expected.end());
+            const bool exactProvider = activationBound
+              ? !providerText.empty() && item.producer.toUri() == providerText
+              : (expectedProvider != expected.end()
+                   ? item.producer.equals(expectedProvider->second) &&
+                     providerText == expectedProvider->second.toUri()
+                   : declaredBound && !providerText.empty() &&
+                     item.producer.toUri() == providerText);
+            if (nativeProviderFieldValue(fields, {"schema"}) !=
+                  "ndnsf-di-readiness-v1" ||
+                !exactMember || !exactProvider || itemRole.empty() ||
+                item.producerRole != itemRole ||
+                nativeProviderFieldValue(fields, {"revision"}) != effectiveRevision ||
+                nativeProviderFieldValue(fields, {"planDigest"}) != effectivePlanDigest ||
+                nativeProviderFieldValue(fields, {"bindingDigest"}) !=
+                  readinessBindingDigest ||
+                nativeProviderFieldValue(fields, {"attempt"}) !=
+                  std::to_string(attemptEpoch) ||
+                nativeProviderFieldValue(fields, {"adapter"}).empty() ||
+                nativeProviderFieldValue(fields, {"artifactDigest"}).empty()) {
+              completeExecutionLease();
+              ctx.fail("DI_READINESS_BINDING_MISMATCH");
+              return;
+            }
+            const auto roleOwner = observedRoleProviders.find(itemRole);
+            if (roleOwner != observedRoleProviders.end() &&
+                roleOwner->second != providerText) {
+              completeExecutionLease();
+              ctx.fail("DI_READINESS_ROLE_CONFLICT");
+              return;
+            }
+            const auto previous = observed.find(memberId);
+            if (previous != observed.end() && previous->second != payload) {
+              completeExecutionLease();
+              ctx.fail("DI_READINESS_REPLAY_CONFLICT");
+              return;
+            }
+            observedRoleProviders[itemRole] = providerText;
+            observed[memberId] = payload;
+          }
+          if (observed.size() < expectedReadinessCount) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+          }
+        }
+        if (observed.size() != expectedReadinessCount) {
+          completeExecutionLease();
+          ctx.fail("DI_READINESS_BARRIER_TIMEOUT");
+          return;
+        }
+        std::cout << "\nNDNSF_DI_READINESS_BARRIER"
+                  << " status=ready"
+                  << " session=" << ctx.sessionId()
+                  << " role=" << role
+                  << " observed_roles=" << observed.size()
+                  << " revision=" << effectiveRevision
+                  << " binding_digest=" << readinessBindingDigest
+                  << std::endl;
+      }
+      reportStatus(executionOperationId, "distributed-inference", "RUNNING", 1,
+                   0.0, "EXECUTING");
       if (const auto* spec = runnerSpecForRole(state->runnerSpecs, role)) {
         logFragmentInventoryEvent("EXECUTION_OBSERVED",
                                   *spec,
@@ -1081,6 +1387,8 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         return;
       }
       completeExecutionLease();
+      reportStatus(executionOperationId, "distributed-inference", "DONE", 2,
+                   1.0, "EXECUTED");
       if (nativeTraceEnabled()) {
         std::cout << "\nNDNSF_DI_NATIVE_FINAL_RESPONSE_DECISION"
                   << " session=" << ctx.sessionId()

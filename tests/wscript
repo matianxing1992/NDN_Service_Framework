@@ -14,6 +14,7 @@ def build(bld):
                             'ndn-service-framework/ServiceProvider.cpp',
                             'ndn-service-framework/ServiceUser.cpp',
                             'ndn-service-framework/Stream.cpp',
+                            'ndn-service-framework/StreamFacade.cpp',
                             'ndn-service-framework/HybridMessageCrypto.cpp',
                             'ndn-service-framework/ExecutionLease.cpp',
                             'ndn-service-framework/NetworkTelemetry.cpp',
@@ -21,11 +22,15 @@ def build(bld):
                             'ndn-service-framework/common.cpp',
                             'ndn-service-framework/utils.cpp',
                             'NDNSF-UAV-APP/shared/UavProtocol.cpp',
+                            'NDNSF-UAV-APP/shared/UavVideoPipeline.cpp',
+                            'NDNSF-UAV-APP/shared/UavSensorStreams.cpp',
                         ]) +
                         bld.path.parent.ant_glob([
                             'NDNSF-DistributedInference/cpp/ndnsf-di/*.cpp',
+                            'NDNSF-DistributedInference/cpp/adapters/onnx/*.cpp',
+                            'NDNSF-DistributedInference/cpp/adapters/qwen/*.cpp',
                         ])),
                 includes=['..', '../ndn-service-framework'],
-                use='NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL ONNXRUNTIME',
+                use='NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL ONNXRUNTIME GSTREAMER',
                 cxxflags=['-fPIC'],
                 install_path=None)

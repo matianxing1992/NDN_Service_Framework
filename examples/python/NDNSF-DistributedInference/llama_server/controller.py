@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import argparse
 
-from ndnsf_distributed_inference import APPController
+from ndnsf_distributed_inference.app_sdk.controller import APPController
 
 
 def main() -> int:

@@ -3,6 +3,8 @@
 
 #include <iostream>
 #include <map>
+#include <optional>
+#include <set>
 #include <string>
 #include <vector>
 #include "common.hpp"
@@ -61,6 +63,28 @@ namespace tlv {
         RequestModeType = 189,
         AllowedServiceListType = 0xF501,
         AllowedServiceType = 0xF502,
+        DeploymentIntentType = 0xF610,
+        ProviderCapabilityOfferType = 0xF611,
+        DeploymentPlanType = 0xF612,
+        ProviderReadyMessageType = 0xF613,
+        ReadyAcknowledgementType = 0xF614,
+        ExecutionActivateMessageType = 0xF615,
+        SecureStatusQueryType = 0xF616,
+        SecureStatusSnapshotType = 0xF617,
+        DeploymentControlFieldType = 0xF618,
+        DeploymentControlFieldNameType = 0xF619,
+        DeploymentControlFieldValueType = 0xF61A,
+        RequestCapabilitiesType = 0xF61B,
+        EncryptedRequestInputType = 0xF61C,
+        SelectionInputKeyOfferType = 0xF61D,
+        SelectionInputKeyGrantType = 0xF61E,
+        ReservationLeaseType = 0xF61F,
+        SelectionDecisionType = 0xF620,
+        SelectionDecisionReceiptType = 0xF621,
+        RecipientEncryptedAssignmentType = 0xF622,
+        StageInputEvidenceType = 0xF623,
+        StageAbortType = 0xF624,
+        SelectionDecisionTombstoneType = 0xF625,
     };
 
     // Selection strategies.
@@ -94,6 +118,81 @@ public:
     virtual void Clear() = 0;
 };
 
+/** Canonical bounded container shared by Spec 129 deployment-control messages.
+ *
+ * Values are opaque UTF-8/byte strings at Core level. DI interprets model and
+ * runtime fields; Core owns version, bounds, canonical wire, and digest.
+ */
+class DeploymentControlMessage : public AbstractMessage
+{
+public:
+    static constexpr uint64_t VERSION = 1;
+    static constexpr size_t MAX_FIELDS = 64;
+    static constexpr size_t MAX_FIELD_NAME = 64;
+    static constexpr size_t MAX_FIELD_VALUE = 4096;
+    static constexpr size_t MAX_WIRE_SIZE = 65536;
+
+    explicit DeploymentControlMessage(uint32_t messageType = tlv::DeploymentIntentType);
+    void setVersion(uint64_t version);
+    uint64_t getVersion() const;
+    void setField(const std::string& name, const std::string& value);
+    bool hasField(const std::string& name) const;
+    const std::string& getField(const std::string& name) const;
+    const std::map<std::string, std::string>& getFields() const;
+    std::string computeDigest() const;
+    void Clear() override;
+    ndn::Block WireEncode() const override;
+    bool WireDecode(const ndn::Block& block) override;
+
+protected:
+    uint32_t getMessageType() const;
+
+private:
+    uint32_t messageType_;
+    uint64_t version_ = VERSION;
+    std::map<std::string, std::string> fields_;
+    mutable ndn::Block wire_;
+};
+
+class DeploymentIntent : public DeploymentControlMessage
+{ public: DeploymentIntent(); };
+class ProviderCapabilityOffer : public DeploymentControlMessage
+{ public: ProviderCapabilityOffer(); };
+class DeploymentPlan : public DeploymentControlMessage
+{ public: DeploymentPlan(); };
+class ProviderReadyMessage : public DeploymentControlMessage
+{ public: ProviderReadyMessage(); };
+class ReadyAcknowledgement : public DeploymentControlMessage
+{ public: ReadyAcknowledgement(); };
+class ExecutionActivateMessage : public DeploymentControlMessage
+{ public: ExecutionActivateMessage(); };
+class SecureStatusQuery : public DeploymentControlMessage
+{ public: SecureStatusQuery(); };
+class SecureStatusSnapshot : public DeploymentControlMessage
+{ public: SecureStatusSnapshot(); };
+class RequestCapabilities : public DeploymentControlMessage
+{ public: RequestCapabilities(); };
+class EncryptedRequestInput : public DeploymentControlMessage
+{ public: EncryptedRequestInput(); };
+class SelectionInputKeyOffer : public DeploymentControlMessage
+{ public: SelectionInputKeyOffer(); };
+class SelectionInputKeyGrant : public DeploymentControlMessage
+{ public: SelectionInputKeyGrant(); };
+class ReservationLease : public DeploymentControlMessage
+{ public: ReservationLease(); };
+class SelectionDecision : public DeploymentControlMessage
+{ public: SelectionDecision(); };
+class SelectionDecisionReceipt : public DeploymentControlMessage
+{ public: SelectionDecisionReceipt(); };
+class RecipientEncryptedAssignment : public DeploymentControlMessage
+{ public: RecipientEncryptedAssignment(); };
+class StageInputEvidence : public DeploymentControlMessage
+{ public: StageInputEvidence(); };
+class StageAbort : public DeploymentControlMessage
+{ public: StageAbort(); };
+class SelectionDecisionTombstone : public DeploymentControlMessage
+{ public: SelectionDecisionTombstone(); };
+
 class RequestMessage : public AbstractMessage {
 public:
     RequestMessage();
@@ -110,6 +209,15 @@ public:
     void setRequestMode(size_t requestMode);
     void setTargetProvider(const ndn::Name& targetProvider);
     void setPolicyEpoch(size_t policyEpoch);
+    void setDeploymentIntent(const DeploymentIntent& intent);
+    void setRequestCapabilities(const RequestCapabilities& capabilities);
+    void setEncryptedRequestInput(const EncryptedRequestInput& input);
+    bool hasDeploymentIntent() const;
+    bool hasRequestCapabilities() const;
+    bool hasEncryptedRequestInput() const;
+    const DeploymentIntent& getDeploymentIntent() const;
+    const RequestCapabilities& getRequestCapabilities() const;
+    const EncryptedRequestInput& getEncryptedRequestInput() const;
     const std::map<std::string, std::string>& getTokens() const;
     const std::string& getUserToken() const;
     const std::string& getProviderToken() const;
@@ -134,6 +242,9 @@ private:
     size_t requestMode_ = tlv::NormalRequest;
     ndn::Name targetProvider_;
     size_t policyEpoch_ = 0;
+    std::optional<DeploymentIntent> deploymentIntent_;
+    std::optional<RequestCapabilities> requestCapabilities_;
+    std::optional<EncryptedRequestInput> encryptedRequestInput_;
     mutable std::shared_ptr<const ndn::Block> m_wire;
 };
 
@@ -150,6 +261,9 @@ public:
     void setPayload(ndn::Buffer& payload, size_t size);
     void setPayloadBlock(const ndn::Block& payloadBlock);
     void setPolicyEpoch(size_t policyEpoch);
+    void setAuthenticatedTransportEvidence(const std::string& dataName,
+                                           const std::string& signerCertificate,
+                                           const std::string& wireDigest);
     bool getStatus() const;
     const std::string& getErrorInfo() const;
     const std::map<std::string, std::string>& getTokens() const;
@@ -158,6 +272,9 @@ public:
     const ndn::Block& getPayloadBlock() const;
     size_t getPayloadSize() const;
     size_t getPolicyEpoch() const;
+    const std::string& getDataName() const;
+    const std::string& getSignerCertificate() const;
+    const std::string& getWireDigest() const;
     void Clear() override;
     ndn::Block WireEncode() const override;
     bool WireDecode(const ndn::Block& block) override;
@@ -170,6 +287,11 @@ private:
     std::shared_ptr<const ndn::Block> payloadBlock_;
     size_t payloadSize_ = 0;
     size_t policyEpoch_ = 0;
+    // Local metadata from the authenticated SVS Data packet. These fields are
+    // deliberately excluded from ResponseMessage wire encoding.
+    std::string dataName_;
+    std::string signerCertificate_;
+    std::string wireDigest_;
     mutable std::shared_ptr<const ndn::Block> m_wire;
 };
 
@@ -186,6 +308,15 @@ public:
     void setPayload(ndn::Buffer& payload, size_t size);
     void setPayloadBlock(const ndn::Block& payloadBlock);
     void setPolicyEpoch(size_t policyEpoch);
+    void setProviderCapabilityOffer(const ProviderCapabilityOffer& offer);
+    void setSelectionInputKeyOffer(const SelectionInputKeyOffer& offer);
+    void setReservationLease(const ReservationLease& lease);
+    bool hasProviderCapabilityOffer() const;
+    bool hasSelectionInputKeyOffer() const;
+    bool hasReservationLease() const;
+    const ProviderCapabilityOffer& getProviderCapabilityOffer() const;
+    const SelectionInputKeyOffer& getSelectionInputKeyOffer() const;
+    const ReservationLease& getReservationLease() const;
     bool getStatus() const;
     const std::string& getMessage() const;
     const std::string& getUserToken() const;
@@ -206,6 +337,9 @@ private:
     std::shared_ptr<const ndn::Block> payloadBlock_;
     size_t payloadSize_ = 0;
     size_t policyEpoch_ = 0;
+    std::optional<ProviderCapabilityOffer> providerCapabilityOffer_;
+    std::optional<SelectionInputKeyOffer> selectionInputKeyOffer_;
+    std::optional<ReservationLease> reservationLease_;
     mutable std::shared_ptr<const ndn::Block> m_wire;
 };
 
@@ -227,6 +361,18 @@ public:
     void setAssignmentPayload(const ndn::Buffer& payload);
     void setPolicyEpoch(size_t policyEpoch);
     void addProviderEntry(const SelectionProviderEntry& entry);
+    void setDeploymentPlan(const DeploymentPlan& plan);
+    void setSelectionDecision(const SelectionDecision& decision);
+    void setSelectionInputKeyGrant(const SelectionInputKeyGrant& grant);
+    void setRecipientEncryptedAssignment(const RecipientEncryptedAssignment& assignment);
+    bool hasDeploymentPlan() const;
+    bool hasSelectionDecision() const;
+    bool hasSelectionInputKeyGrant() const;
+    bool hasRecipientEncryptedAssignment() const;
+    const DeploymentPlan& getDeploymentPlan() const;
+    const SelectionDecision& getSelectionDecision() const;
+    const SelectionInputKeyGrant& getSelectionInputKeyGrant() const;
+    const RecipientEncryptedAssignment& getRecipientEncryptedAssignment() const;
     const std::vector<std::string>& getRequestIDs() const;
     const std::string& getProviderToken() const;
     const ndn::Buffer& getAssignmentPayload() const;
@@ -242,6 +388,10 @@ private:
     ndn::Buffer assignmentPayload_;
     size_t policyEpoch_ = 0;
     std::vector<SelectionProviderEntry> providerEntries_;
+    std::optional<DeploymentPlan> deploymentPlan_;
+    std::optional<SelectionDecision> selectionDecision_;
+    std::optional<SelectionInputKeyGrant> selectionInputKeyGrant_;
+    std::optional<RecipientEncryptedAssignment> recipientEncryptedAssignment_;
     mutable ndn::Block m_wire;
 };
 

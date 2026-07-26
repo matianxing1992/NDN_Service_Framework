@@ -3,7 +3,9 @@
 
 #include <cstdint>
 #include <map>
+#include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -14,14 +16,236 @@ namespace ndnsf::examples::uav {
 
 using Fields = std::map<std::string, std::string>;
 
+inline constexpr size_t UAV_VIDEO_MAX_NAME_RESERVATIONS = 65536;
+inline constexpr uint64_t UAV_VIDEO_LIVE_RETENTION_MS = 10000;
+inline constexpr size_t UAV_VIDEO_MAX_RETAINED_ITEMS = 16384;
+
+/** Convert a live-duration target into a bounded signed-Data item budget. */
+size_t
+computeLiveVideoRetentionItems(uint64_t fps,
+                               uint64_t dataShards,
+                               uint64_t parityShards,
+                               uint64_t retentionMs = UAV_VIDEO_LIVE_RETENTION_MS);
+
+/**
+ * Canonical camera-start descriptor accepted only after the surrounding
+ * NDNSF Response has bound the expected Provider and service.
+ *
+ * Provider identity and service name are security context supplied by the
+ * caller. They are deliberately not copied from the application payload.
+ */
+struct VideoStreamDescriptor
+{
+  uint64_t contractVersion = 2;
+  std::string streamId;
+  uint64_t sessionEpoch = 0;
+  ndn::Name providerIdentity;
+  ndn::Name serviceName;
+  ndn::Name dataPrefix;
+  ndn::Name mappingRoot;
+  uint64_t mappingVersion = 0;
+  uint64_t mappingBlockCapacity = 0;
+  size_t maxNameReservations = UAV_VIDEO_MAX_NAME_RESERVATIONS;
+  uint64_t mappingAnchorBlock = 0;
+  ndn_service_framework::StreamContentDigest mappingAnchorContentDigest{};
+  std::string sampleUnit;
+  uint64_t samplePeriodMs = 0;
+  ndn_service_framework::StreamCursorFrontiers frontiers;
+  std::string prefetchEligibility;
+  std::string cipher;
+  uint64_t keyEpoch = 0;
+  ndn::Buffer streamKey;
+  ndn::Buffer nonceSalt;
+  Fields extensions;
+};
+
+/** Project the protected UAV descriptor onto the app-neutral Core transport. */
+ndn_service_framework::LiveStreamDescriptor
+toCoreLiveStreamDescriptor(const VideoStreamDescriptor& descriptor);
+
+/** Project a live protected UAV descriptor onto the predictive Core transport. */
+ndn_service_framework::PredictiveStreamDescriptor
+toCorePredictiveStreamDescriptor(const VideoStreamDescriptor& descriptor);
+
+/** Copy Core readiness/frontier evidence into the key-bearing UAV descriptor. */
+void
+applyCoreLiveStreamDescriptor(VideoStreamDescriptor& descriptor,
+                              const ndn_service_framework::LiveStreamDescriptor& core);
+
+/** Copy predictive Core readiness/frontier evidence into the UAV descriptor. */
+void
+applyCorePredictiveStreamDescriptor(
+  VideoStreamDescriptor& descriptor,
+  const ndn_service_framework::PredictiveStreamDescriptor& core);
+
+/** Refresh provisional publication frontiers after ahead Mapping reservations. */
+void
+applyCoreLiveStreamStatus(VideoStreamDescriptor& descriptor,
+                          const ndn_service_framework::LiveStreamStatus& status,
+                          ndn_service_framework::StreamCursor latestProduced);
+
+/**
+ * Provider-local readiness evidence for one H264 publication session.
+ *
+ * The tracker deliberately understands only Annex-B NAL boundaries needed to
+ * identify a decoder reset point. It does not parse frames, choose a codec, or
+ * own network I/O. One observation corresponds to one completed publication/
+ * FEC group, which is also the sample unit advertised by the UAV descriptor.
+ */
+class UavH264ReadinessTracker
+{
+public:
+  explicit UavH264ReadinessTracker(uint64_t minimumGroups = 3);
+
+  void reset();
+  void observePublicationGroup(uint64_t firstCursor,
+                               uint64_t lastCursor,
+                               uint64_t publishedMonotonicMs,
+                               const std::vector<uint8_t>& annexBBytes);
+
+  bool ready() const;
+  uint64_t completedGroups() const;
+  uint64_t samplePeriodMs() const;
+  uint64_t latestJoinCursor() const;
+  uint64_t latestProducedCursor() const;
+  std::string reason() const;
+
+private:
+  uint64_t m_minimumGroups = 3;
+  uint64_t m_completedGroups = 0;
+  uint64_t m_previousPublishedMs = 0;
+  uint64_t m_periodSumMs = 0;
+  uint64_t m_periodSamples = 0;
+  uint64_t m_latestProducedCursor = 0;
+  uint64_t m_lastSpsCursor = 0;
+  uint64_t m_lastPpsCursor = 0;
+  uint64_t m_latestJoinCursor = 0;
+  bool m_hasProduced = false;
+  bool m_hasSps = false;
+  bool m_hasPps = false;
+  bool m_hasIdrJoin = false;
+  std::vector<uint8_t> m_annexBTail;
+};
+
+struct UavVideoDataName
+{
+  ndn::Name name;
+  ndn::name::Component finalBlockId;
+  ndn_service_framework::StreamCursor cursor = 0;
+  bool parity = false;
+};
+
+/** Translate a publication join cursor (sources plus repairs) to the first
+ * source-only media sequence that may enter the decoder. */
+uint64_t
+sourceMediaSequenceForJoinCursor(ndn_service_framework::StreamCursor cursor,
+                                 uint32_t dataShards,
+                                 uint32_t parityShards);
+
+struct VideoPacket;
+
+// ── Predictive Stream Helpers (Spec 148) ──
+
+/** Construct the predictive stream session prefix.
+ *  /example/uav/drone/<droneId>/video/v=<epoch> */
+ndn::Name
+makeUavPredictiveSessionPrefix(const std::string& droneId, uint64_t epoch);
+
+/** Construct a Mapping name for a given cursor.
+ *  <sessionPrefix>/v=<version>/SequenceNum=<cursor> */
+ndn::Name
+makeUavPredictiveMappingName(const ndn::Name& sessionPrefix,
+                              uint64_t mappingVersion,
+                              uint64_t cursor);
+
+/** Convert a VideoPacket to a signed NDN Data packet for push().
+ *  The packet is named under the session prefix and signed by the drone KeyChain. */
+std::shared_ptr<ndn::Data>
+uavVideoPacketToSignedData(const VideoPacket& packet,
+                            const ndn::Name& sessionPrefix,
+                            uint64_t mappingVersion,
+                            ndn::KeyChain& keyChain,
+                            const ndn::security::SigningInfo& signingInfo);
+
+namespace uav_stream_tlv {
+enum : uint32_t {
+  UavVideoAadType = 0xF700,
+  UavVideoAadVersionType = 0xF701,
+  UavVideoAadExactDataNameType = 0xF702,
+  UavVideoAadProviderIdentityType = 0xF703,
+  UavVideoAadServiceNameType = 0xF704,
+  UavVideoAadStreamIdType = 0xF705,
+  UavVideoAadSessionEpochType = 0xF706,
+  UavVideoAadMappingVersionType = 0xF707,
+  UavVideoAadKeyEpochType = 0xF708,
+  UavVideoAadCursorType = 0xF709,
+};
+} // namespace uav_stream_tlv
+
+struct UavVideoAad
+{
+  uint64_t version = 1;
+  ndn::Name exactDataName;
+  ndn::Name providerIdentity;
+  ndn::Name serviceName;
+  std::string streamId;
+  uint64_t sessionEpoch = 0;
+  uint64_t mappingVersion = 0;
+  uint64_t keyEpoch = 0;
+  ndn_service_framework::StreamCursor cursor = 0;
+
+  ndn::Block wireEncode() const;
+  static UavVideoAad wireDecodeStrict(const ndn::Block& block);
+};
+
+class UavVideoNonceUseGuard
+{
+public:
+  explicit UavVideoNonceUseGuard(const VideoStreamDescriptor& descriptor);
+
+  void reserve(const VideoStreamDescriptor& descriptor,
+               const UavVideoDataName& binding);
+  void closeForUncertainUse();
+  bool isClosed() const;
+
+private:
+  uint64_t m_contractVersion = 0;
+  std::string m_streamId;
+  uint64_t m_sessionEpoch = 0;
+  uint64_t m_keyEpoch = 0;
+  ndn::Name m_providerIdentity;
+  ndn::Name m_serviceName;
+  ndn::Name m_dataPrefix;
+  ndn::Name m_mappingRoot;
+  uint64_t m_mappingVersion = 0;
+  uint64_t m_mappingBlockCapacity = 0;
+  std::string m_cipher;
+  ndn::Buffer m_streamKey;
+  ndn::Buffer m_nonceSalt;
+  std::set<ndn_service_framework::StreamCursor> m_reservedCursors;
+  std::map<ndn::Name, ndn_service_framework::StreamCursor> m_reservedNames;
+  size_t m_maxNameReservations = 0;
+  bool m_closed = false;
+  mutable std::mutex m_mutex;
+};
+
 struct VideoPacket
 {
   std::string streamId;
   uint64_t streamSessionEpoch = 0;
   uint64_t second = 0;
   uint64_t packetSeq = 0;
+  uint64_t mediaSequence = 0;
   uint64_t frameSeq = 0;
   uint64_t captureMs = 0;
+  uint64_t frameBindingVersion = 0;
+  uint64_t sourceFrameId = 0;
+  uint64_t captureOriginNs = 0;
+  std::string captureClockId;
+  int64_t codecPts = 0;
+  uint32_t codecTimeBaseNum = 0;
+  uint32_t codecTimeBaseDen = 0;
+  uint64_t codecConfigEpoch = 0;
   uint64_t frameFirstPacketSeq = 0;
   uint64_t frameLastPacketSeq = 0;
   uint64_t bucketPacketCount = 0;
@@ -36,6 +260,13 @@ struct VideoPacket
   std::string fecDataLengths;
   std::vector<uint8_t> payload;
 };
+
+bool
+hasExactVideoFrameBinding(const VideoPacket& packet);
+
+void
+validateVideoFrameBinding(const VideoPacket& packet,
+                          uint64_t expectedSessionEpoch);
 
 struct TelemetryState
 {
@@ -309,9 +540,18 @@ struct VideoAdaptiveState
   uint64_t suggestedBitrateKbps = 0;
   std::string bitrateAction = "hold";
   std::string bitrateReason = "unknown";
+  bool coreFetchDecisionAvailable = false;
+  std::string coreFetchDecisionSource = "unavailable";
+  uint64_t coreFetchDecisionGeneration = 0;
+  uint64_t coreFetchDecisionObservedAtMs = 0;
+  std::string coreFetchPhase = "INACTIVE";
+  std::string coreFetchPolicyMode = "none";
+  std::string coreFetchCapacityReason = "unavailable";
+  std::string coreFetchReason = "unavailable";
   uint64_t window = 0;
   uint64_t lookahead = 0;
   uint64_t futureProbeLimit = 0;
+  std::string futureProbeLimitSource = "uav-app-policy";
   uint64_t interestLifetimeMs = 0;
   uint64_t missingTimeoutMs = 0;
   uint64_t timeoutPressure = 0;
@@ -322,6 +562,7 @@ struct VideoAdaptiveState
   std::string primaryPressure = "none";
   std::string policyReason = "stable";
   uint64_t pendingChunks = 0;
+  uint64_t maxReorderDepth = 0;
   uint64_t pendingBytes = 0;
   uint64_t receivedChunks = 0;
   uint64_t fecRecoveredChunks = 0;
@@ -348,6 +589,26 @@ struct VideoAdaptiveState
                                   uint64_t nowMs = 0) const;
   std::string compactSummary() const;
   std::string statusLine() const;
+};
+
+/**
+ * APP-side, generation-fenced copy of the last Core LiveStream fetch decision.
+ *
+ * This type deliberately copies only Core status callbacks. It never derives
+ * transport values from the UAV bitrate/adaptation policy.
+ */
+struct VideoCoreFetchDecisionSnapshot
+{
+  uint64_t generation = 0;
+  uint64_t observedAtMs = 0;
+  std::optional<ndn_service_framework::StreamFetchDecision> decision;
+
+  void reset(uint64_t newGeneration);
+  bool observe(uint64_t activeGeneration,
+               uint64_t callbackGeneration,
+               const ndn_service_framework::LiveStreamStatus& status,
+               uint64_t nowMs);
+  void applyTo(VideoAdaptiveState& state) const;
 };
 
 struct VideoAdaptivePolicyInput
@@ -401,24 +662,92 @@ struct RecordingDataProductState
   std::string productType = "camera-recording";
   std::string sessionId;
   std::string objectPrefix;
-  std::string encryption = "none";
-  std::string keyId;
-  std::vector<uint8_t> contentKey;
   uint64_t chunks = 0;
   uint64_t bytes = 0;
   uint64_t updatedMs = 0;
 
   static RecordingDataProductState fromFields(const Fields& fields,
                                               const std::string& fallbackDroneId = "unknown");
-  Fields toFields(bool includeContentKey = true) const;
+  Fields toFields() const;
   bool isAvailable() const;
-  bool isEncrypted() const;
   bool isPlayable() const;
-  std::string chunkObjectName(uint64_t index) const;
   ndn_service_framework::ServiceProvider::DataProductReference
   toDataProductReference(const ndn::Name& serviceName = ndn::Name(),
                          const ndn::Name& producerName = ndn::Name()) const;
   std::string statusLine() const;
+};
+
+struct RetainedVideoPacketReference
+{
+  std::string kind;
+  std::optional<uint64_t> cursor;
+  ndn::Name dataName;
+  ndn_service_framework::StreamContentDigest wireDigest{};
+};
+
+struct RetentionGap
+{
+  uint64_t firstCursor = 0;
+  uint64_t lastCursor = 0;
+  std::string reason;
+};
+
+/** Durable metadata only; it never contains media or plaintext key bytes. */
+struct CanonicalVideoRecordingManifest
+{
+  uint64_t contractVersion = 1;
+  uint64_t manifestVersion = 1;
+  std::string recordingId;
+  std::string streamId;
+  uint64_t sessionEpoch = 0;
+  uint64_t mappingVersion = 0;
+  uint64_t keyEpoch = 0;
+  ndn::Name providerIdentity;
+  ndn::Name serviceName;
+  uint64_t firstCommittedCursor = 0;
+  uint64_t lastCommittedCursor = 0;
+  uint64_t safeJoinCursor = 0;
+  uint64_t startedMs = 0;
+  uint64_t endedMs = 0;
+  bool complete = false;
+  std::string signerCertificateName;
+  ndn_service_framework::StreamContentDigest signerCertificateDigest{};
+  std::string trustPolicyVersion;
+  Fields redactedStreamDescriptor;
+  std::vector<ndn::Name> archivedCertificateObjects;
+  /** Signed Repo object containing the epoch key wrapped to the Provider's
+   * persistent RSA encryption certificate. It is never a plaintext key. */
+  ndn::Name keyAuthorizationObject;
+  ndn::Name packetCatalogPrefix;
+  uint64_t packetCatalogEntries = 0;
+  ndn_service_framework::StreamContentDigest packetCatalogHeadDigest{};
+  std::vector<RetainedVideoPacketReference> packets;
+  std::vector<RetentionGap> gaps;
+
+  std::optional<std::string> validate() const;
+  Fields toFields() const;
+  static CanonicalVideoRecordingManifest fromFields(const Fields& fields);
+};
+
+/** Authorization returned only inside an already protected NDNSF response. */
+struct UavVideoContentKeyGrant
+{
+  uint64_t contractVersion = 1;
+  std::string recipientIdentity;
+  ndn::Name providerIdentity;
+  ndn::Name serviceName;
+  std::string permission;
+  std::string streamId;
+  uint64_t sessionEpoch = 0;
+  uint64_t keyEpoch = 0;
+  std::string cipher = "aes-256-gcm";
+  ndn::Buffer protectedKeyMaterial;
+  ndn::Buffer protectedNonceSalt;
+  uint64_t issuedMs = 0;
+  uint64_t expiresMs = 0;
+
+  std::optional<std::string> validate() const;
+  Fields toProtectedFields() const;
 };
 
 struct MissionState
@@ -1051,6 +1380,51 @@ encodeFields(const Fields& fields);
 
 Fields
 decodeFields(const std::string& payload);
+
+std::string
+encodeVideoStreamDescriptor(const VideoStreamDescriptor& descriptor);
+
+VideoStreamDescriptor
+decodeVideoStreamDescriptorStrict(const std::string& payload,
+                                  const ndn::Name& expectedProvider,
+                                  const ndn::Name& verifiedProvider,
+                                  const ndn::Name& expectedService,
+                                  const ndn::Name& responseService);
+
+UavVideoDataName
+makeUavVideoDataName(const VideoStreamDescriptor& descriptor,
+                     const VideoPacket& packet);
+
+ndn_service_framework::StreamNameMapResolverConfig
+makeUavStreamNameMapResolverConfig(const VideoStreamDescriptor& descriptor);
+
+ndn_service_framework::StreamNameMapCheckpoint
+makeUavStreamNameMapCheckpoint(const VideoStreamDescriptor& descriptor);
+
+ndn::Buffer
+deriveUavVideoNonce(const ndn::Buffer& nonceSalt,
+                    ndn_service_framework::StreamCursor cursor);
+
+UavVideoAad
+makeUavVideoAad(const VideoStreamDescriptor& descriptor,
+                const UavVideoDataName& binding);
+
+ndn_service_framework::HybridMessageEnvelope
+decodeUavVideoEnvelopeStrict(const ndn::Buffer& wire,
+                             const VideoStreamDescriptor& descriptor,
+                             const UavVideoDataName& binding);
+
+ndn::Buffer
+protectUavVideoPacket(const VideoStreamDescriptor& descriptor,
+                      const UavVideoDataName& binding,
+                      const VideoPacket& packet,
+                      UavVideoNonceUseGuard& nonceGuard);
+
+VideoPacket
+unprotectUavVideoPacket(const VideoStreamDescriptor& descriptor,
+                        const UavVideoDataName& binding,
+                        const ndn::Name& verifiedProvider,
+                        const ndn::Buffer& wire);
 
 Fields
 loadKeyValueConfig(const std::string& path);

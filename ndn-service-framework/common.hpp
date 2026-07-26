@@ -98,6 +98,30 @@ namespace ndn_service_framework{
         Cancelled,
     };
 
+    struct CollaborationMemberStatus
+    {
+        ndn::Name providerName;
+        ndn::Name serviceName;
+        ndn::Name requestId;
+        std::string selectionDigest;
+        std::string role;
+        std::string operationId;
+        std::string operation;
+        std::string state = "QUEUED";
+        std::string reasonCode;
+        std::string message;
+        uint64_t attempt = 1;
+        uint64_t epoch = 1;
+        uint64_t sequence = 1;
+        bool progressKnown = false;
+        double progress = 0.0;
+        uint64_t createdAtMs = 0;
+        uint64_t updatedAtMs = 0;
+        uint64_t expiresAtMs = 0;
+        std::string detailsSchema;
+        ndn::Buffer detailsPayload;
+    };
+
     struct SelectionExecutionStatus
     {
         ndn::Name providerName;
@@ -112,6 +136,11 @@ namespace ndn_service_framework{
         uint64_t runningAtUs = 0;
         uint64_t completedAtUs = 0;
         uint64_t updatedAtUs = 0;
+        // Canonical SelectionDecisionReceipt wire bytes. The enclosing exact-
+        // name status Data is Provider-signed, so the receipt is authenticated
+        // without introducing unsolicited push traffic.
+        ndn::Buffer decisionReceipt;
+        std::vector<CollaborationMemberStatus> memberStatuses;
     };
 
     const char*
@@ -420,12 +449,27 @@ namespace ndn_service_framework{
         std::unique_ptr<ndnsd::discovery::ServiceDiscovery> m_discovery;
     };
 
-    class MessageValidator : public ndn::svs::BaseValidator
+    class MessageValidator : public ndn::svs::BaseValidator,
+                             public std::enable_shared_from_this<MessageValidator>
     {
     public:
-        MessageValidator(std::string trustSchemaPath)
-            : m_validator(m_face, makeCommandInterestOptions(), makeSignedInterestOptions())
+        MessageValidator(std::string trustSchemaPath,
+                         std::optional<ndn::Name> svsGroupPrefix = std::nullopt,
+                         ndn::Face* callbackFace = nullptr)
+            : m_validator(m_face, makeCommandInterestOptions(), makeSignedInterestOptions()),
+              m_callbackIo(callbackFace == nullptr
+                             ? nullptr
+                             : &callbackFace->getIoContext()),
+              m_validationPool(callbackFace == nullptr
+                                 ? nullptr
+                                 : std::make_unique<boost::asio::thread_pool>(
+                                     std::thread::hardware_concurrency() >= 4
+                                       ? 2
+                                       : 1))
         {
+            if (svsGroupPrefix) {
+                m_svsStateVectorDataName = ndn::Name(*svsGroupPrefix).appendVersion(3);
+            }
             m_validator.load(trustSchemaPath);
         }
 
@@ -433,6 +477,13 @@ namespace ndn_service_framework{
         getFailureCountForTesting() const
         {
             return m_failureCount.load();
+        }
+
+        size_t
+        getLocalCertificateCacheSizeForTesting() const
+        {
+            std::lock_guard<std::mutex> guard(m_localCertificateCacheMutex);
+            return m_localCertificateCache.size();
         }
 
         /**
@@ -444,6 +495,15 @@ namespace ndn_service_framework{
         validate(const ndn::Data &data,
                  const ndn::security::DataValidationSuccessCallback &successCb,
                  const ndn::security::DataValidationFailureCallback &failureCb) override
+        {
+            validateData(data, successCb, failureCb);
+        }
+
+        void
+        validateData(
+          const ndn::Data& data,
+          const ndn::security::DataValidationSuccessCallback& successCb,
+          const ndn::security::DataValidationFailureCallback& failureCb)
         {
             const auto sigType = data.getSignatureType();
             if ((sigType != ndn::tlv::SignatureSha256WithRsa &&
@@ -491,6 +551,10 @@ namespace ndn_service_framework{
                             successCb(data);
                             return;
                         }
+                    }
+                    if (dispatchLocalCertificateValidation(
+                          data, klName, successCb, failureCb)) {
+                        return;
                     }
                     if (validateWithLocalCertificate(data, klName)) {
                         successCb(data);
@@ -555,35 +619,125 @@ namespace ndn_service_framework{
         }
 
     private:
-        bool
-        validateWithLocalCertificate(const ndn::Data& data,
-                                     const ndn::Name& certName)
+        std::optional<ndn::security::Certificate>
+        findLocalCertificate(const ndn::Data& data,
+                             const ndn::Name& certName)
         {
             if (!ndn::security::Certificate::isValidName(certName)) {
-                return false;
+                return std::nullopt;
             }
 
             const auto signerIdentity =
                 ndn::security::extractIdentityFromCertName(certName);
-            if (!signerIdentity.isPrefixOf(data.getName())) {
-                NDN_LOG_ERROR("MessageValidator Data validation failed name="
-                              << data.getName()
-                              << " reason=signer identity is not a prefix of Data name"
-                              << " signer=" << signerIdentity);
-                ++m_failureCount;
-                return false;
+            const bool isBoundSvsStateVector = m_svsStateVectorDataName &&
+                                               data.getName() == *m_svsStateVectorDataName;
+            if (!signerIdentity.isPrefixOf(data.getName()) && !isBoundSvsStateVector) {
+                return std::nullopt;
             }
 
             try {
+                {
+                    std::lock_guard<std::mutex> guard(
+                        m_localCertificateCacheMutex);
+                    const auto cached = m_localCertificateCache.find(certName);
+                    if (cached != m_localCertificateCache.end()) {
+                        return cached->second;
+                    }
+                }
+
                 const auto keyName =
                     ndn::security::extractKeyNameFromCertName(certName);
                 const auto identity =
                     m_keyChain.getPib().getIdentity(signerIdentity);
                 const auto key = identity.getKey(keyName);
                 const auto cert = key.getCertificate(certName);
+                std::lock_guard<std::mutex> guard(
+                    m_localCertificateCacheMutex);
+                m_localCertificateCache.emplace(certName, cert);
+                return cert;
+            }
+            catch (const std::exception& e) {
+                NDN_LOG_DEBUG("MessageValidator local PIB certificate lookup "
+                              "miss name=" << data.getName()
+                              << " cert=" << certName
+                              << " reason=" << e.what());
+                return std::nullopt;
+            }
+        }
+
+        bool
+        dispatchLocalCertificateValidation(
+          const ndn::Data& data,
+          const ndn::Name& certName,
+          const ndn::security::DataValidationSuccessCallback& successCb,
+          const ndn::security::DataValidationFailureCallback& failureCb)
+        {
+            if (m_callbackIo == nullptr || m_validationPool == nullptr) {
+                return false;
+            }
+
+            auto cert = findLocalCertificate(data, certName);
+            if (!cert) {
+                return false;
+            }
+
+            auto self = shared_from_this();
+            boost::asio::post(
+              *m_validationPool,
+              [self, data, cert = std::move(*cert), successCb, failureCb] {
+                bool verified = false;
+                try {
+                    verified = ndn::security::verifySignature(
+                      data,
+                      std::optional<ndn::security::Certificate>{cert});
+                }
+                catch (const std::exception&) {
+                    verified = false;
+                }
+                boost::asio::post(
+                  *self->m_callbackIo,
+                  [self, data, certName = cert.getName(), verified,
+                   successCb, failureCb] {
+                    if (verified) {
+                        NDN_LOG_DEBUG(
+                          "MessageValidator Data validated on ordered worker "
+                          "name=" << data.getName()
+                          << " cert=" << certName);
+                        successCb(data);
+                        return;
+                    }
+
+                    ndn::security::ValidationError error(
+                      ndn::security::ValidationError::INVALID_SIGNATURE,
+                      "signature mismatch for cached local certificate " +
+                        certName.toUri());
+                    NDN_LOG_ERROR("MessageValidator Data validation failed name="
+                                  << data.getName()
+                                  << " reason=" << error);
+                    ++self->m_failureCount;
+                    if (failureCb) {
+                      failureCb(data, error);
+                    }
+                  });
+              });
+            return true;
+        }
+
+        bool
+        validateWithLocalCertificate(const ndn::Data& data,
+                                     const ndn::Name& certName)
+        {
+            const auto cert = findLocalCertificate(data, certName);
+            if (!cert) {
+                return false;
+            }
+            const bool isBoundSvsStateVector = m_svsStateVectorDataName &&
+                                               data.getName() == *m_svsStateVectorDataName;
+
+            try {
                 if (!ndn::security::verifySignature(
                         data,
-                        std::optional<ndn::security::Certificate>{cert})) {
+                        cert)) {
                     NDN_LOG_ERROR("MessageValidator Data validation failed name="
                                   << data.getName()
                                   << " reason=signature mismatch cert="
@@ -593,7 +747,8 @@ namespace ndn_service_framework{
                 }
                 NDN_LOG_DEBUG("MessageValidator Data validated with local PIB "
                               "certificate name=" << data.getName()
-                              << " cert=" << certName);
+                              << " cert=" << certName
+                              << " svsStateVector=" << isBoundSvsStateVector);
                 return true;
             }
             catch (const std::exception& e) {
@@ -640,6 +795,11 @@ namespace ndn_service_framework{
         ndn::KeyChain m_keyChain;
         ndn::Face m_face;
         ndn::ValidatorConfig m_validator;
+        std::optional<ndn::Name> m_svsStateVectorDataName;
+        mutable std::mutex m_localCertificateCacheMutex;
+        std::map<ndn::Name, ndn::security::Certificate> m_localCertificateCache;
+        boost::asio::io_context* m_callbackIo = nullptr;
+        std::unique_ptr<boost::asio::thread_pool> m_validationPool;
         std::atomic<size_t> m_failureCount{0};
     };
 

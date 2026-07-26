@@ -231,6 +231,21 @@ BOOST_AUTO_TEST_CASE(StaleAttemptCannotAdvanceTokenEpochAfterReplacement)
   BOOST_CHECK_EQUAL(state.completeTokenEpoch(1), 2);
 }
 
+BOOST_AUTO_TEST_CASE(Spec111GenerationSessionRestoresEpochAndFencesStaleAttempts)
+{
+  auto nonInitial = validSpec();
+  nonInitial.attemptEpoch = 1;
+  BOOST_CHECK_NO_THROW(nonInitial.validate());
+
+  QwenGenerationSessionStateMachine state(nonInitial);
+  BOOST_CHECK_EQUAL(state.attemptEpoch(), 1);
+  state.beginSelection();
+  state.activate();
+  BOOST_CHECK_THROW(state.completeTokenEpoch(0), std::logic_error);
+  BOOST_CHECK_EQUAL(state.completeTokenEpoch(1), 1);
+  BOOST_CHECK_THROW(state.beginReplacement(), std::logic_error);
+}
+
 BOOST_AUTO_TEST_CASE(TerminalResponseCanBeClaimedExactlyOnce)
 {
   QwenGenerationSessionStateMachine state(validSpec());

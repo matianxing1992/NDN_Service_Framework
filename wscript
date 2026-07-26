@@ -119,6 +119,13 @@ def configure(conf):
         conf.env.LIB_ONNXRUNTIME or
         conf.env.LIBPATH_ONNXRUNTIME)
 
+    conf.check_cfg(package='gstreamer-1.0 gstreamer-app-1.0 gstreamer-video-1.0',
+                   args=['--cflags', '--libs'], uselib_store='GSTREAMER',
+                   mandatory=False, pkg_config_path=pkg_config_path)
+    conf.env.HAVE_GSTREAMER = bool(
+        conf.env.CXXFLAGS_GSTREAMER or conf.env.INCLUDES_GSTREAMER or
+        conf.env.LIB_GSTREAMER or conf.env.LIBPATH_GSTREAMER)
+
     boost_libs = ['system']
     if conf.env.WITH_TESTS:
         boost_libs.append('unit_test_framework')
@@ -138,6 +145,7 @@ def configure(conf):
 
     conf.define_cond('HAVE_TESTS', conf.env.WITH_TESTS)
     conf.define_cond('HAVE_ONNXRUNTIME_CPP', conf.env.HAVE_ONNXRUNTIME_CPP)
+    conf.define_cond('HAVE_GSTREAMER', conf.env.HAVE_GSTREAMER)
     if conf.env.HAVE_ONNXRUNTIME_CPP:
         conf.env.append_value('DEFINES', ['NDNSF_DI_ENABLE_ONNXRUNTIME_CPP'])
     # The config header will contain all defines that were added using conf.define()
@@ -147,6 +155,12 @@ def configure(conf):
     conf.write_config_header('config.hpp')
 
 def build(bld):
+    if bld.env.HAVE_GSTREAMER:
+        bld.program(
+            target='uav-video-pipeline-probe',
+            source='NDNSF-UAV-APP/tools/uav_video_pipeline_probe.cpp',
+            use='GSTREAMER', install_path=None)
+
     libndn_service_framework = dict(
         target='ndn-service-framework',
         vnum=VERSION,
@@ -168,6 +182,32 @@ def build(bld):
     if bld.env.WITH_TESTS:
         bld.recurse('tests')
 
+    # Spec 111 ownership targets. These object groups keep the mechanism Core
+    # and optional model adapters physically distinct without changing the
+    # existing executable/link ABI during the compatibility window.
+    di_core_sources = bld.path.ant_glob(
+        'NDNSF-DistributedInference/cpp/ndnsf-di/*.cpp',
+        excl=[
+            'NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.cpp',
+            'NDNSF-DistributedInference/cpp/ndnsf-di/QwenGenerationSession.cpp',
+        ])
+    bld.objects(target='ndnsf-di-core-objects', source=di_core_sources,
+                includes=['.', 'ndn-service-framework'],
+                use='NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL',
+                cxxflags=['-fPIC'])
+    bld.objects(
+        target='ndnsf-di-adapter-onnx-objects',
+        source=bld.path.ant_glob(
+            'NDNSF-DistributedInference/cpp/adapters/onnx/*.cpp'),
+        includes=['.', 'ndn-service-framework'],
+        use='NDN_CXX BOOST ONNXRUNTIME', cxxflags=['-fPIC'])
+    bld.objects(
+        target='ndnsf-di-adapter-qwen-objects',
+        source=bld.path.ant_glob(
+            'NDNSF-DistributedInference/cpp/adapters/qwen/*.cpp'),
+        includes=['.', 'ndn-service-framework'],
+        use='BOOST', cxxflags=['-fPIC'])
+
     bld.recurse('NDNSF-DistributedRepo')
 
     bld.recurse('examples')
@@ -177,6 +217,16 @@ def build(bld):
 
     bld.install_files('${INCLUDEDIR}/ndn-service-framework',
                       bld.path.find_resource('config.hpp'))
+
+    bld.install_files(
+        '${INCLUDEDIR}/NDNSF-DistributedInference/cpp/ndnsf-di',
+        bld.path.ant_glob('NDNSF-DistributedInference/cpp/ndnsf-di/*.hpp'))
+    bld.install_files(
+        '${INCLUDEDIR}/NDNSF-DistributedInference/cpp/adapters/onnx',
+        bld.path.ant_glob('NDNSF-DistributedInference/cpp/adapters/onnx/*.hpp'))
+    bld.install_files(
+        '${INCLUDEDIR}/NDNSF-DistributedInference/cpp/adapters/qwen',
+        bld.path.ant_glob('NDNSF-DistributedInference/cpp/adapters/qwen/*.hpp'))
 
     bld(features='subst',
         source='libndn-service-framework.pc.in',

@@ -7,6 +7,26 @@ namespace ndn_service_framework::test {
 BOOST_AUTO_TEST_SUITE(GenericDynamicApi)
 BOOST_AUTO_TEST_SUITE(TargetedInvocation)
 
+BOOST_AUTO_TEST_CASE(SelectionGatedInputFailsBeforeTargetedPublication)
+{
+  ndn::security::KeyChain keyChain("pib-memory:targeted-gated",
+                                   "tpm-memory:targeted-gated");
+  ndn::DummyClientFace face(keyChain);
+  auto userCert = makeRsaIdentity(keyChain, ndn::Name("/user/a"));
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/aa"));
+  LocalServiceUser user(face, ndn::Name("/group"), userCert, aaCert,
+                        "examples/trust-any.conf");
+  RequestCapabilities capabilities;
+  capabilities.setField("SelectionGatedInputV1", "required");
+  RequestMessage request;
+  request.setRequestCapabilities(capabilities);
+  const auto requestId = user.RequestServiceTargeted(
+    ndn::Name("/provider/a"), ndn::Name("/service/a"), request, 100,
+    [](const ndn::Name&) {}, [](const ResponseMessage&) {});
+  BOOST_CHECK(requestId.empty());
+  BOOST_CHECK(face.sentData.empty());
+}
+
 BOOST_AUTO_TEST_CASE(TargetedRequestFieldsRoundTrip)
 {
   RequestMessage request;
@@ -794,6 +814,278 @@ BOOST_AUTO_TEST_CASE(ReplayedTargetedRuntimeRequestExecutesOnce)
                                                 encoded);
 
   BOOST_CHECK_EQUAL(handlerCalls, 1);
+}
+
+BOOST_AUTO_TEST_CASE(TargetedTokenFailuresNeverInvokeRegisteredHandler)
+{
+  ndn::security::KeyChain keyChain("pib-memory:targeted-token-negative",
+                                   "tpm-memory:targeted-token-negative");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name providerName("/test/provider/token-negative");
+  const ndn::Name requesterName("/test/user/token-negative");
+  const ndn::Name serviceName("/Token/Negative");
+  auto providerCert = makeRsaIdentity(keyChain, providerName);
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-token-negative"));
+  LocalServiceProvider provider(face,
+                                ndn::Name("/test/group-token-negative"),
+                                providerCert,
+                                aaCert,
+                                "examples/trust-any.conf");
+  provider.applyPermissionResponse(
+    makePermissionResponse(providerName,
+                           tlv::ProviderPermission,
+                           providerName,
+                           serviceName));
+
+  size_t handlerCalls = 0;
+  provider.addService(
+    serviceName,
+    ServiceProvider::AckStrategyHandler{},
+    ServiceProvider::SimpleRequestHandler([&](const RequestMessage&) {
+      ++handlerCalls;
+      ResponseMessage response;
+      response.setStatus(true);
+      return response;
+    }),
+    ServiceProvider::ServiceInvocationMode::NormalAndTargeted);
+
+  auto invoke = [&](const std::string& requestSuffix,
+                    const std::string& userToken,
+                    const std::string& providerToken) {
+    auto request = makeRequestMessageWithUserToken("payload", userToken);
+    request.setRequestMode(tlv::TargetedRequest);
+    request.setTargetProvider(providerName);
+    request.setProviderToken(providerToken);
+    return provider.handleDecryptedRequestByName(
+      makeRequestNameV2(requesterName, serviceName, ndn::Name(requestSuffix)), request);
+  };
+
+  BOOST_CHECK(!invoke("/missing-user", "", "provider-token").getStatus());
+  BOOST_CHECK(!invoke("/missing-provider", "user-token", "").getStatus());
+  BOOST_CHECK(!invoke("/unknown-provider", "user-token", "unknown-token").getStatus());
+  BOOST_CHECK_EQUAL(handlerCalls, 0);
+
+  provider.addTargetedProviderTokenForTest(requesterName,
+                                           serviceName,
+                                           "provider-token",
+                                           "expected-user-token");
+  BOOST_CHECK(!invoke("/mismatched-user", "wrong-user-token", "provider-token").getStatus());
+  BOOST_CHECK_EQUAL(handlerCalls, 0);
+
+  const auto accepted = invoke("/accepted", "expected-user-token", "provider-token");
+  BOOST_CHECK(accepted.getStatus());
+  BOOST_CHECK_EQUAL(handlerCalls, 1);
+  BOOST_CHECK(!invoke("/consumed-replay", "expected-user-token", "provider-token").getStatus());
+  BOOST_CHECK_EQUAL(handlerCalls, 1);
+}
+
+BOOST_AUTO_TEST_CASE(TargetedDeadlineStartsBeforePublicationReturns)
+{
+  ndn::security::KeyChain keyChain("pib-memory:targeted-deadline-publish",
+                                   "tpm-memory:targeted-deadline-publish");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name requesterName("/test/user/deadline-publish");
+  const ndn::Name providerName("/test/provider/deadline-publish");
+  const ndn::Name serviceName("/Inference/TargetedDeadline");
+  auto userCert = makeRsaIdentity(keyChain, requesterName);
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-deadline-publish"));
+  LocalServiceUser user(face,
+                        ndn::Name("/test/group-deadline-publish"),
+                        userCert,
+                        aaCert,
+                        "examples/trust-any.conf");
+  user.applyPermissionResponse(
+    makePermissionResponse(requesterName,
+                           tlv::UserPermission,
+                           providerName,
+                           serviceName));
+  user.addTargetedTokenPairForTest(providerName,
+                                   serviceName,
+                                   "provider-token-deadline",
+                                   "user-token-deadline");
+
+  user.setRequestPublisher(
+    [] (const ndn::Name&,
+        const ndn::Name&,
+        const std::vector<ndn::Name>&,
+        const ndn::Name&,
+        const RequestMessage&,
+        size_t) {
+      throw std::runtime_error("injected targeted publication failure");
+    });
+
+  size_t timeoutCallbacks = 0;
+  size_t responseCallbacks = 0;
+  RequestMessage request;
+  BOOST_CHECK_THROW(
+    user.RequestServiceTargeted(
+      providerName,
+      serviceName,
+      std::move(request),
+      20,
+      [&] (const ndn::Name&) { ++timeoutCallbacks; },
+      [&] (const ResponseMessage&) { ++responseCallbacks; }),
+    std::runtime_error);
+
+  face.processEvents(ndn::time::milliseconds(40));
+  BOOST_CHECK_EQUAL(timeoutCallbacks, 1);
+  BOOST_CHECK_EQUAL(responseCallbacks, 0);
+}
+
+BOOST_AUTO_TEST_CASE(TargetedDeadlineIncludesAdmissionQueueDelay)
+{
+  ndn::security::KeyChain keyChain("pib-memory:targeted-deadline-admission",
+                                   "tpm-memory:targeted-deadline-admission");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name requesterName("/test/user/deadline-admission");
+  const ndn::Name providerName("/test/provider/deadline-admission");
+  const ndn::Name serviceName("/Inference/TargetedAdmissionDeadline");
+  auto userCert = makeRsaIdentity(keyChain, requesterName);
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-deadline-admission"));
+  LocalServiceUser user(face,
+                        ndn::Name("/test/group-deadline-admission"),
+                        userCert,
+                        aaCert,
+                        "examples/trust-any.conf");
+  user.applyPermissionResponse(
+    makePermissionResponse(requesterName,
+                           tlv::UserPermission,
+                           providerName,
+                           serviceName));
+
+  ServiceUser::AdaptiveAdmissionOptions options;
+  options.enabled = true;
+  options.minWindow = 1;
+  options.maxWindow = 1;
+  options.initialWindow = 1;
+  options.hardInflightLimit = 1;
+  options.softQueueLimit = 2;
+  options.hardQueueLimit = 2;
+  user.setAdaptiveAdmissionControl(options);
+
+  size_t published = 0;
+  user.setRequestPublisher(
+    [&] (const ndn::Name&,
+         const ndn::Name&,
+         const std::vector<ndn::Name>&,
+         const ndn::Name&,
+         const RequestMessage&,
+         size_t) {
+      ++published;
+    });
+
+  user.addTargetedTokenPairForTest(providerName, serviceName,
+                                   "provider-token-admission-1",
+                                   "user-token-admission-1");
+  user.addTargetedTokenPairForTest(providerName, serviceName,
+                                   "provider-token-admission-2",
+                                   "user-token-admission-2");
+  size_t firstTimeouts = 0;
+  size_t queuedTimeouts = 0;
+  const auto first = user.RequestServiceTargeted(
+    providerName, serviceName, RequestMessage(), 1000,
+    [&] (const ndn::Name&) { ++firstTimeouts; },
+    [] (const ResponseMessage&) {});
+  const auto queued = user.RequestServiceTargeted(
+    providerName, serviceName, RequestMessage(), 20,
+    [&] (const ndn::Name&) { ++queuedTimeouts; },
+    [] (const ResponseMessage&) {});
+
+  BOOST_REQUIRE(!first.empty());
+  BOOST_REQUIRE(!queued.empty());
+  BOOST_CHECK_EQUAL(published, 1);
+  BOOST_CHECK_EQUAL(user.getAdaptiveAdmissionQueueDepth(), 1);
+  face.processEvents(ndn::time::milliseconds(40));
+  BOOST_CHECK_EQUAL(queuedTimeouts, 1);
+  BOOST_CHECK_EQUAL(firstTimeouts, 0);
+  BOOST_CHECK(!user.hasPendingCall(queued));
+  BOOST_CHECK(user.hasPendingCall(first));
+  BOOST_CHECK_EQUAL(user.getAdaptiveAdmissionQueueDepth(), 0);
+  BOOST_CHECK_EQUAL(published, 1);
+}
+
+BOOST_AUTO_TEST_CASE(TargetedResponseAndTimeoutHaveExactlyOneTerminalCallback)
+{
+  ndn::security::KeyChain keyChain("pib-memory:targeted-deadline-race",
+                                   "tpm-memory:targeted-deadline-race");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name requesterName("/test/user/deadline-race");
+  const ndn::Name providerName("/test/provider/deadline-race");
+  const ndn::Name serviceName("/Inference/TargetedRace");
+  auto userCert = makeRsaIdentity(keyChain, requesterName);
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-deadline-race"));
+  LocalServiceUser user(face,
+                        ndn::Name("/test/group-deadline-race"),
+                        userCert,
+                        aaCert,
+                        "examples/trust-any.conf");
+  user.applyPermissionResponse(
+    makePermissionResponse(requesterName,
+                           tlv::UserPermission,
+                           providerName,
+                           serviceName));
+  user.setRequestPublisher(
+    [] (const ndn::Name&,
+        const ndn::Name&,
+        const std::vector<ndn::Name>&,
+        const ndn::Name&,
+        const RequestMessage&,
+        size_t) {});
+
+  size_t timeoutCallbacks = 0;
+  size_t responseCallbacks = 0;
+  user.addTargetedTokenPairForTest(providerName,
+                                   serviceName,
+                                   "provider-token-response-first",
+                                   "user-token-response-first");
+  const auto responseFirstId = user.RequestServiceTargeted(
+    providerName,
+    serviceName,
+    RequestMessage(),
+    30,
+    [&] (const ndn::Name&) { ++timeoutCallbacks; },
+    [&] (const ResponseMessage&) { ++responseCallbacks; });
+  BOOST_REQUIRE(!responseFirstId.empty());
+
+  ResponseMessage responseFirst;
+  responseFirst.setStatus(true);
+  responseFirst.setUserToken("user-token-response-first");
+  BOOST_CHECK(user.handleDecryptedResponse(responseFirstId,
+                                           providerName,
+                                           responseFirst));
+  BOOST_CHECK(!user.handleDecryptedResponse(responseFirstId,
+                                            providerName,
+                                            responseFirst));
+  face.processEvents(ndn::time::milliseconds(50));
+  BOOST_CHECK_EQUAL(responseCallbacks, 1);
+  BOOST_CHECK_EQUAL(timeoutCallbacks, 0);
+  BOOST_CHECK(!user.hasPendingCall(responseFirstId));
+
+  user.addTargetedTokenPairForTest(providerName,
+                                   serviceName,
+                                   "provider-token-timeout-first",
+                                   "user-token-timeout-first");
+  const auto timeoutFirstId = user.RequestServiceTargeted(
+    providerName,
+    serviceName,
+    RequestMessage(),
+    20,
+    [&] (const ndn::Name&) { ++timeoutCallbacks; },
+    [&] (const ResponseMessage&) { ++responseCallbacks; });
+  BOOST_REQUIRE(!timeoutFirstId.empty());
+  face.processEvents(ndn::time::milliseconds(40));
+  BOOST_CHECK_EQUAL(timeoutCallbacks, 1);
+  BOOST_CHECK_EQUAL(responseCallbacks, 1);
+  BOOST_CHECK(!user.hasPendingCall(timeoutFirstId));
+
+  ResponseMessage timeoutFirst;
+  timeoutFirst.setStatus(true);
+  timeoutFirst.setUserToken("user-token-timeout-first");
+  BOOST_CHECK(!user.handleDecryptedResponse(timeoutFirstId,
+                                            providerName,
+                                            timeoutFirst));
+  BOOST_CHECK_EQUAL(timeoutCallbacks, 1);
+  BOOST_CHECK_EQUAL(responseCallbacks, 1);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

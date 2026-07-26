@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import base64
 import concurrent.futures
-import contextlib
 import csv
 import hashlib
 import json
@@ -46,14 +45,19 @@ from ndnsf_distributed_inference.deployment import (
     ProviderLeaseAssignment,
     wait_deployment,
 )
+from ndnsf_distributed_inference.core import (
+    AssignmentContext,
+    ExecutionActivateMessage,
+    ProviderAssignment,
+    ReadySetMember,
+    canonical_digest,
+)
 
 
 SERVICE = "/Inference/NativeTracer"
 GROUP = "/NDNSF-DI/Tracer/group"
 CONTROLLER = "/NDNSF-DI/Tracer/controller"
 USER = "/NDNSF-DI/Tracer/user"
-ROLE_PROVIDER_PREFERENCE_ENV = "NDNSF_COLLAB_ROLE_PROVIDER_PREFERENCE"
-ROLE_PROVIDER_PREFERENCE_LOCK = threading.Lock()
 ACK_COMPATIBILITY_COUNTERS = AckCompatibilityCounters()
 
 
@@ -95,21 +99,19 @@ def load_role_assignment_candidates(path: str) -> dict[str, list[dict[str, Any]]
     return candidates
 
 
-@contextlib.contextmanager
-def role_provider_preference_env(preference: str):
-    if not preference:
-        yield
-        return
-    with ROLE_PROVIDER_PREFERENCE_LOCK:
-        previous = os.environ.get(ROLE_PROVIDER_PREFERENCE_ENV)
-        os.environ[ROLE_PROVIDER_PREFERENCE_ENV] = preference
-        try:
-            yield
-        finally:
-            if previous is None:
-                os.environ.pop(ROLE_PROVIDER_PREFERENCE_ENV, None)
-            else:
-                os.environ[ROLE_PROVIDER_PREFERENCE_ENV] = previous
+def assignment_context_from_preference(preference: str, *, request_id: str,
+                                       deadline_ms: int) -> AssignmentContext | None:
+    pairs = []
+    for item in preference.split(";"):
+        if "=>" in item:
+            role, provider = item.split("=>", 1)
+            if role and provider:
+                pairs.append((role, provider))
+    if not pairs:
+        return None
+    return AssignmentContext(
+        request_id, 1, canonical_digest({"roleProviders": pairs}),
+        "native-tracer-exact", tuple(pairs), deadline_ms)
 
 
 def sample_service_plan(service: str) -> dict:
@@ -150,14 +152,26 @@ def sample_service_plan(service: str) -> dict:
 
 
 def collaboration_roles(service_plan: dict, service: str) -> list[dict]:
+    role_names = list(service_plan["roles"])
+    binding = canonical_digest({
+        "service": service,
+        "roles": role_names,
+        "dependencies": service_plan.get("dependencies", []),
+    })
+    common = (
+        f"readinessRoleCount={len(role_names)};"
+        f"readinessRoles={','.join(role_names)};"
+        f"readinessBindingDigest={binding};"
+    ).encode()
     return [
         {
             "role": role,
             "service": service,
             "min_providers": 1,
             "max_providers": 1,
+            "app_requirement": common,
         }
-        for role in service_plan["roles"]
+        for role in role_names
     ]
 
 
@@ -175,8 +189,12 @@ def collaboration_dependencies(service_plan: dict) -> list[dict]:
 
 
 def key_scopes_and_role_scopes(service_plan: dict) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
-    key_scopes: dict[str, list[str]] = {}
-    role_scopes: dict[str, list[str]] = {role: [] for role in service_plan["roles"]}
+    readiness_scope = "ndnsf-di-readiness-v1"
+    all_roles = list(service_plan["roles"])
+    key_scopes: dict[str, list[str]] = {readiness_scope: all_roles}
+    role_scopes: dict[str, list[str]] = {
+        role: [readiness_scope] for role in all_roles
+    }
     for dep in service_plan.get("dependencies", []):
         scope = str(dep["keyScope"])
         roles = list(dep.get("producers", [])) + list(dep.get("consumers", []))
@@ -360,8 +378,14 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Comma-separated diagnostic reasons to record in replan metrics")
     parser.add_argument("--execution-leases", action="store_true",
                         help="Acquire fail-closed provider execution leases before collaboration")
+    parser.add_argument("--execution-cancellation-gate", action="store_true",
+                        help="Run one focused post-certificate cancellation fault gate")
+    parser.add_argument("--cancellation-delay-ms", type=int, default=0,
+                        help="Delay after dispatch before CANCEL (0 = ACK window plus 1s)")
     parser.add_argument("--assignment-csv", default="",
                         help="Role/provider candidate CSV used for local lease acquisition")
+    parser.add_argument("--role-provider-preference", default="",
+                        help=argparse.SUPPRESS)
     parser.add_argument("--max-rps", type=float, default=0.0,
                         help="Per-user token-bucket rate limit (0 = unlimited)")
     parser.add_argument("--retry-max-attempts", type=int, default=0,
@@ -394,9 +418,64 @@ def parse_semicolon_fields(payload: bytes | str) -> dict[str, str]:
     return fields
 
 
-def execution_lease_plan_digest(service_plan: dict) -> str:
-    wire = json.dumps(service_plan, sort_keys=True, separators=(",", ":")).encode()
-    return hashlib.sha256(wire).hexdigest()
+def execution_lease_plan_digest(plan_path: str) -> str:
+    """Use the exact native-plan file identity advertised by Providers."""
+    return "sha256:" + hashlib.sha256(Path(plan_path).read_bytes()).hexdigest().upper()
+
+
+def execution_activation_fields(
+    *,
+    requester: str,
+    transaction_id: str,
+    plan_digest: str,
+    lease_set,
+) -> tuple[dict[tuple[str, str], bytes], ExecutionActivateMessage]:
+    """Build the exact requester activation binding for all selected roles."""
+    attempt_epoch = 1
+    ready_members: list[ReadySetMember] = []
+    member_text: dict[tuple[str, str], str] = {}
+    for lease in lease_set.leases:
+        proof_digest = "sha256:" + hashlib.sha256(
+            lease.assignment.resource_binding_proof).hexdigest()
+        if (not lease.commit_data_name or not lease.commit_signer_certificate
+                or not lease.commit_wire_digest.startswith("sha256:")):
+            raise RuntimeError(
+                "commit receipt lacks authenticated Data evidence for "
+                + lease.assignment.provider)
+        for role in lease.assignment.roles:
+            assignment = ProviderAssignment(
+                role=role,
+                provider=lease.assignment.provider,
+                provider_boot_epoch=lease.provider_epoch,
+                lease_id=lease.lease_id,
+                resource_binding_digest=proof_digest,
+            )
+            ready_members.append(ReadySetMember(
+                lease.assignment.provider, role, lease.provider_epoch,
+                lease.commit_wire_digest))
+            # Assignment payload shares the 8,800-byte NDN packet ceiling with
+            # the native plan. The activation digest covers the exact READY
+            # membership tuple; its envelope uses a 128-bit deterministic
+            # member identifier to keep Selection wire size bounded.
+            member_text[(lease.assignment.provider, role)] = canonical_digest(
+                assignment.membership_key())[7:39]
+    activation = ExecutionActivateMessage(
+        requester, transaction_id, attempt_epoch,
+        canonical_digest({"selection": transaction_id}), plan_digest,
+        tuple(ready_members),
+        min(lease.expires_at_ms for lease in lease_set.leases),
+        1, "requester-authorized-native-tracer")
+    members = ",".join(sorted(member_text.values()))
+    common = (
+        "executionActivationRequired=true;"
+        f"executionActivationSchema={ExecutionActivateMessage.SCHEMA};"
+        f"executionActivationDigest={activation.digest()};"
+        f"executionActivationMembers={members};"
+    )
+    return ({
+        key: (common + f"executionActivationLocalMember={value};").encode()
+        for key, value in member_text.items()
+    }, activation)
 
 
 def execution_lease_provider_map(args, roles: list[dict]) -> dict[str, str]:
@@ -420,7 +499,8 @@ def acquire_execution_leases(user: ServiceUser, args, service_plan: dict,
                              roles: list[dict], index: int):
     provider_by_role = execution_lease_provider_map(args, roles)
     transaction_id = f"{args.user}:native-tracer:{index}"
-    plan_digest = execution_lease_plan_digest(service_plan)
+    del service_plan
+    plan_digest = execution_lease_plan_digest(args.plan)
     roles_by_provider: dict[str, list[str]] = {}
     for role, provider in provider_by_role.items():
         roles_by_provider.setdefault(provider, []).append(role)
@@ -473,19 +553,27 @@ def acquire_execution_leases(user: ServiceUser, args, service_plan: dict,
     leases_by_provider = {
         lease.assignment.provider: lease for lease in lease_set.leases
     }
+    activation_fields, activation = execution_activation_fields(
+        requester=args.user,
+        transaction_id=transaction_id,
+        plan_digest=plan_digest,
+        lease_set=lease_set,
+    )
     leased_roles = []
     for role in roles:
         role_copy = dict(role)
         provider = provider_by_role[str(role_copy["role"])]
         lease = leases_by_provider[provider]
         fields = (
+            f"executionRequestId={transaction_id};"
+            "executionAttemptEpoch=1;"
+            f"executionProviderBootId={lease.provider_epoch};"
             f"executionLeaseId={lease.lease_id};"
             f"executionLeaseEpoch={lease.provider_epoch};"
-            f"executionLeaseTransactionId={transaction_id};"
             f"executionLeasePlanDigest={plan_digest};"
             f"executionLeaseBindingProof={proofs[provider].decode()};"
             f"executionLeaseProviderRoleCount={len(lease.assignment.roles)};"
-        ).encode()
+        ).encode() + activation_fields[(provider, str(role_copy["role"]))]
         existing = bytes(role_copy.get("app_requirement", b""))
         if existing and not existing.endswith(b";"):
             existing += b";"
@@ -494,7 +582,7 @@ def acquire_execution_leases(user: ServiceUser, args, service_plan: dict,
     preference = ";".join(
         f"{role}=>{provider}" for role, provider in sorted(provider_by_role.items())
     ) + ";"
-    return transaction, lease_set, leased_roles, preference
+    return transaction, lease_set, leased_roles, preference, activation
 
 
 def int_field(fields: dict[str, Any], key: str, default: int = 0) -> int:
@@ -593,13 +681,15 @@ def run_one_request(user: ServiceUser,
                     index: int,
                     observed_ack_runtime: dict[str, dict[str, Any]] | None = None) -> dict:
     start = time.perf_counter()
+    request_id = f"{args.user}:native-tracer:{index}"
     try:
-        preference = ""
+        preference = str(getattr(args, "role_provider_preference", ""))
         lease_transaction = None
         lease_set = None
+        execution_activation = None
         request_roles = roles
         if args.execution_leases:
-            lease_transaction, lease_set, request_roles, lease_preference = (
+            lease_transaction, lease_set, request_roles, lease_preference, execution_activation = (
                 acquire_execution_leases(
                     user, args, service_plan, roles, index
                 )
@@ -611,19 +701,22 @@ def run_one_request(user: ServiceUser,
             ack_snapshots.extend(ack_candidates_snapshot(candidates))
 
         try:
-            with role_provider_preference_env(preference):
-                response = user.request_collaboration(
-                    args.service,
-                    encode_tensor_bundle(),
-                    roles=request_roles,
-                    key_scopes=key_scopes,
-                    dependencies=dependencies,
-                    scope_key_data_names=scope_key_data_names,
-                    role_scopes=role_scopes,
-                    ack_timeout_ms=args.ack_timeout_ms,
-                    timeout_ms=effective_timeout_ms(args),
-                    ack_observer=observe_ack_candidates,
-                )
+            assignment_context = assignment_context_from_preference(
+                preference, request_id=request_id,
+                deadline_ms=int(time.time() * 1000) + effective_timeout_ms(args))
+            response = user.request_collaboration(
+                args.service,
+                encode_tensor_bundle(),
+                roles=request_roles,
+                key_scopes=key_scopes,
+                dependencies=dependencies,
+                scope_key_data_names=scope_key_data_names,
+                role_scopes=role_scopes,
+                ack_timeout_ms=args.ack_timeout_ms,
+                timeout_ms=effective_timeout_ms(args),
+                ack_observer=observe_ack_candidates,
+                assignment_context=assignment_context,
+            )
         except Exception:
             if lease_transaction is not None and lease_set is not None:
                 lease_transaction.release(lease_set)
@@ -647,6 +740,44 @@ def run_one_request(user: ServiceUser,
             "elapsedMs": elapsed_ms,
             "ackCandidateSnapshot": ack_snapshots,
         }
+        status_request_id = next(
+            (str(item.get("requestId", "")) for item in ack_snapshots
+             if item.get("requestId")),
+            request_id,
+        )
+        try:
+            snapshots = user.collaboration_status(
+                status_request_id, timeout_ms=500)
+            result["collaborationStatus"] = [
+                {
+                    "provider": snapshot.provider_name,
+                    "selectionDigest": snapshot.selection_digest,
+                    "state": snapshot.state,
+                    "members": [
+                        {
+                            "role": member.role,
+                            "operationId": member.operation_id,
+                            "state": member.state.value,
+                            "attempt": member.attempt,
+                            "epoch": member.epoch,
+                            "sequence": member.sequence,
+                            "progressKnown": member.progress_known,
+                            "progress": member.progress,
+                            "detailsSchema": member.details_schema,
+                        }
+                        for member in snapshot.member_statuses
+                    ],
+                }
+                for snapshot in snapshots
+            ]
+        except Exception as exc:
+            result["collaborationStatusError"] = str(exc)
+        if execution_activation is not None:
+            result["activationDigest"] = execution_activation.digest()
+            result["activatedProviders"] = sorted({
+                member.provider
+                for member in execution_activation.members
+            })
         if is_overload_fast_fail_error(args, str(response.error), elapsed_ms):
             result["overloadFastFail"] = True
         return result
@@ -667,6 +798,249 @@ def run_one_request(user: ServiceUser,
         if is_overload_fast_fail_error(args, error, elapsed_ms):
             result["overloadFastFail"] = True
         return result
+
+
+def _execution_control(
+    user: ServiceUser,
+    *,
+    provider: str,
+    role: str,
+    service: str,
+    request_id: str,
+    attempt_epoch: int,
+    operation: str,
+    timeout_ms: int,
+    requester_identity: str,
+    activation_digest: str,
+    superseded_by_attempt_epoch: int = 0,
+) -> dict[str, Any]:
+    cancellation_id = "sha256:" + hashlib.sha256(
+        (f"{operation}:{request_id}:{attempt_epoch}:{provider}:"
+         f"{activation_digest}:{superseded_by_attempt_epoch}").encode()
+    ).hexdigest()
+    fields = {
+        "schema": "ndnsf-di-execution-control-v2",
+        "operation": operation,
+        "requestId": request_id,
+        "attemptEpoch": str(attempt_epoch),
+        "providerName": provider,
+        "providerRole": role,
+        "requesterIdentity": requester_identity,
+        "activationDigest": activation_digest,
+        "cancellationId": cancellation_id,
+    }
+    if superseded_by_attempt_epoch:
+        fields["supersededByAttemptEpoch"] = str(superseded_by_attempt_epoch)
+    payload = "".join(f"{key}={value};" for key, value in fields.items()).encode()
+    assignment_context = assignment_context_from_preference(
+        f"{role}=>{provider};",
+        request_id=f"control:{operation}:{request_id}:{attempt_epoch}:{role}",
+        deadline_ms=int(time.time() * 1000) + timeout_ms,
+    )
+    response = user.request_collaboration(
+        service,
+        payload,
+        roles=[{
+            "role": role,
+            "service": service,
+            "min_providers": 1,
+            "max_providers": 1,
+        }],
+        key_scopes={},
+        dependencies=[],
+        role_scopes={role: []},
+        ack_timeout_ms=min(1000, max(100, timeout_ms // 3)),
+        timeout_ms=timeout_ms,
+        assignment_context=assignment_context,
+    )
+    response_fields = parse_semicolon_fields(response.payload)
+    return {
+        "provider": provider,
+        "operation": operation,
+        "requestId": request_id,
+        "attemptEpoch": attempt_epoch,
+        "accepted": bool(response.status) and response_fields.get("status") == "1",
+        "reason": response_fields.get("reason", response.error),
+        "dataName": response.data_name,
+        "signerCertificate": response.signer_certificate,
+        "wireDigest": response.wire_digest,
+    }
+
+
+def _validate_control_delivery(
+    evidence: list[dict[str, Any]], expected_providers: list[str]
+) -> None:
+    if {item.get("provider") for item in evidence} != set(expected_providers):
+        raise RuntimeError(f"execution control missed certified members: {evidence}")
+    for item in evidence:
+        provider = str(item["provider"]).rstrip("/")
+        data_name = str(item.get("dataName", ""))
+        signer = str(item.get("signerCertificate", ""))
+        wire_digest = str(item.get("wireDigest", ""))
+        if (
+            not data_name.startswith(provider + "/")
+            or not signer.startswith(provider + "/KEY/")
+            or not wire_digest.startswith("sha256:")
+        ):
+            raise RuntimeError(
+                "execution control lacks exact authenticated Provider evidence: "
+                f"{item}"
+            )
+
+
+def run_execution_cancellation_gate(
+    user: ServiceUser,
+    args,
+    service_plan: dict,
+    roles: list[dict],
+    key_scopes: dict[str, list[str]],
+    dependencies: list[dict],
+    scope_key_data_names: dict[str, str],
+    role_scopes: dict[str, list[str]],
+) -> dict[str, Any]:
+    if not args.execution_leases:
+        raise RuntimeError("execution cancellation gate requires execution leases")
+    transaction, lease_set, request_roles, preference, activation = (
+        acquire_execution_leases(user, args, service_plan, roles, 1))
+    request_id = activation.request_id
+    providers = sorted({item.provider for item in activation.members})
+    role_by_provider = {}
+    for member in activation.members:
+        role_by_provider.setdefault(member.provider, member.role)
+
+    def control_all(operation: str, attempt_epoch: int, *, next_epoch: int = 0):
+        def send(provider: str):
+            return _execution_control(
+                user,
+                provider=provider,
+                role=role_by_provider[provider],
+                service=args.service,
+                request_id=request_id,
+                attempt_epoch=attempt_epoch,
+                operation=operation,
+                superseded_by_attempt_epoch=next_epoch,
+                timeout_ms=args.lease_timeout_ms,
+                requester_identity=args.user,
+                activation_digest=activation.digest(),
+            )
+        with concurrent.futures.ThreadPoolExecutor(
+                max_workers=max(1, len(providers))) as executor:
+            return list(executor.map(send, providers))
+    assignment_context = assignment_context_from_preference(
+        preference,
+        request_id=request_id,
+        deadline_ms=int(time.time() * 1000) + effective_timeout_ms(args),
+    )
+    finished = threading.Event()
+    terminal = {"accepted": False, "error": ""}
+
+    def on_response(response) -> None:
+        terminal["accepted"] = bool(response.status)
+        terminal["error"] = str(response.error)
+        finished.set()
+
+    def on_timeout(wire_request_id: str) -> None:
+        terminal["error"] = "timeout:" + str(wire_request_id)
+        finished.set()
+
+    try:
+        user.request_collaboration_async(
+            args.service,
+            encode_tensor_bundle(),
+            roles=request_roles,
+            key_scopes=key_scopes,
+            dependencies=dependencies,
+            scope_key_data_names=scope_key_data_names,
+            role_scopes=role_scopes,
+            on_response=on_response,
+            on_timeout=on_timeout,
+            ack_timeout_ms=args.ack_timeout_ms,
+            timeout_ms=effective_timeout_ms(args),
+            assignment_context=assignment_context,
+        )
+        cancellation_delay_ms = (
+            args.cancellation_delay_ms
+            if args.cancellation_delay_ms > 0
+            else args.ack_timeout_ms + 1000
+        )
+        time.sleep(cancellation_delay_ms / 1000.0)
+        cancel = control_all("CANCEL", 1)
+        _validate_control_delivery(cancel, providers)
+        if not any(item["accepted"] for item in cancel):
+            raise RuntimeError(f"no active certified Provider applied CANCEL: {cancel}")
+        if any(item["reason"] not in {"CANCELLED", "CANCEL_REJECTED"}
+               for item in cancel):
+            raise RuntimeError(f"unexpected certified Provider CANCEL result: {cancel}")
+        finished.wait(timeout=max(1.0, effective_timeout_ms(args) / 1000.0 + 2.0))
+        if terminal["accepted"]:
+            raise RuntimeError("cancelled attempt published an accepted terminal result")
+
+        supersede = control_all("SUPERSEDE", 1, next_epoch=2)
+        _validate_control_delivery(supersede, providers)
+        if not all(item["accepted"] for item in supersede):
+            raise RuntimeError(f"replacement attempt was not admitted: {supersede}")
+        stale = control_all("CANCEL", 1)
+        _validate_control_delivery(stale, providers)
+        if any(item["accepted"] for item in stale):
+            raise RuntimeError(f"stale cancellation affected replacement: {stale}")
+        replacement_cleanup = control_all("CANCEL", 2)
+        _validate_control_delivery(replacement_cleanup, providers)
+        if not all(item["accepted"] for item in replacement_cleanup):
+            raise RuntimeError(
+                f"replacement attempt cleanup was incomplete: {replacement_cleanup}")
+    finally:
+        try:
+            transaction.release(lease_set)
+        except Exception:
+            pass
+
+    completed = run_one_request(
+        user,
+        args,
+        service_plan,
+        roles,
+        key_scopes,
+        dependencies,
+        scope_key_data_names,
+        role_scopes,
+        2,
+    )
+    if completed.get("status") != "executed":
+        raise RuntimeError(f"terminal preservation request failed: {completed}")
+    completed_request_id = f"{args.user}:native-tracer:2"
+    late_cancel = [
+        _execution_control(
+            user,
+            provider=provider,
+            role=role_by_provider[provider],
+            service=args.service,
+            request_id=completed_request_id,
+            attempt_epoch=1,
+            operation="CANCEL",
+            timeout_ms=args.lease_timeout_ms,
+            requester_identity=args.user,
+            activation_digest=str(completed.get("activationDigest", "")),
+        )
+        for provider in providers
+    ]
+    _validate_control_delivery(late_cancel, providers)
+    if any(item["accepted"] for item in late_cancel):
+        raise RuntimeError(f"late cancel revoked an accepted terminal attempt: {late_cancel}")
+    return {
+        "schema": "ndnsf-di-spec111-cancellation-fault-gate-v1",
+        "status": "PASS",
+        "requestId": request_id,
+        "attemptEpoch": 1,
+        "activationDigest": activation.digest(),
+        "activatedProviders": providers,
+        "cancelEvidence": cancel,
+        "staleCancelEvidence": stale,
+        "replacementCleanupEvidence": replacement_cleanup,
+        "acceptedTerminalRequestId": completed_request_id,
+        "acceptedTerminalPreserved": True,
+        "lateCancelEvidence": late_cancel,
+        "survivors": [],
+    }
 
 
 def run_async_requests(user: ServiceUser,
@@ -1209,8 +1583,6 @@ def run_child_process_requests(args,
         if admission_bias:
             child_env["NDNSF_COLLAB_ADMISSION_BIAS"] = admission_bias
         role_provider_preference = role_provider_preference_for_index(index)
-        if role_provider_preference:
-            child_env["NDNSF_COLLAB_ROLE_PROVIDER_PREFERENCE"] = role_provider_preference
 
         def cleanup_child_home() -> None:
             try:
@@ -1241,6 +1613,8 @@ def run_child_process_requests(args,
         ]
         if args.assignment_csv:
             command.extend(["--assignment-csv", args.assignment_csv])
+        if role_provider_preference:
+            command.extend(["--role-provider-preference", role_provider_preference])
         command.extend(["--lease-timeout-ms", str(args.lease_timeout_ms)])
         if args.execution_leases:
             command.append("--execution-leases")
@@ -1408,6 +1782,8 @@ def main() -> int:
         raise SystemExit("--open-loop-duration-s must be non-negative")
     if args.overload_fast_fail_timeout_ms < 0:
         raise SystemExit("--overload-fast-fail-timeout-ms must be non-negative")
+    if args.cancellation_delay_ms < 0:
+        raise SystemExit("--cancellation-delay-ms must be non-negative")
     open_loop = args.target_rps > 0.0 or args.open_loop_duration_s > 0.0
     if open_loop and (args.target_rps <= 0.0 or args.open_loop_duration_s <= 0.0):
         raise SystemExit("--target-rps and --open-loop-duration-s must be set together")
@@ -1491,6 +1867,33 @@ def main() -> int:
         + json.dumps(scope_key_data_names, sort_keys=True),
         flush=True,
     )
+    if args.execution_cancellation_gate:
+        gate = run_execution_cancellation_gate(
+            user, args, service_plan, roles, key_scopes, dependencies,
+            scope_key_data_names, role_scopes)
+        print(
+            "NDNSF_DI_SPEC111_CANCELLATION_GATE " +
+            json.dumps(gate, sort_keys=True),
+            flush=True,
+        )
+        execution = {
+            "status": "executed",
+            "service": args.service,
+            "requestCount": 2,
+            "concurrency": 1,
+            "successCount": 1,
+            "failureCount": 1,
+            "payloadBytes": 0,
+            "elapsedMs": 0.0,
+            "cancellationGate": gate,
+            "requests": [],
+        }
+        print(
+            "NDNSF_DI_NATIVE_TRACER_USER_EXECUTION " +
+            json.dumps(execution, sort_keys=True),
+            flush=True,
+        )
+        return 0
     if args.wait_for_deployment:
         dep = wait_deployment(
             user, args.wait_for_deployment, timeout_ms=30000

@@ -1,10 +1,15 @@
 #include "../shared/UavNames.hpp"
+#include <ndn-cxx/security/transform/public-key.hpp>
+#include <ndn-cxx/security/verification-helpers.hpp>
 #include "../shared/UavProtocol.hpp"
+#include "../shared/UavVideoPipeline.hpp"
+#include "../shared/UavSensorStreams.hpp"
 #include "ndnsf-distributed-repo/RepoCore.hpp"
 #include "ndn-service-framework/CertificatePublisher.hpp"
 #include "ndn-service-framework/ServiceContainer.hpp"
 #include "ndn-service-framework/ServiceProvider.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
+#include "ndn-service-framework/StreamFacade.hpp"
 #include "ndn-service-framework/NDNSFMessages.hpp"
 
 #include <ndn-cxx/face.hpp>
@@ -23,6 +28,7 @@
 #include <array>
 #include <cerrno>
 #include <chrono>
+#include <condition_variable>
 #include <csignal>
 #include <cmath>
 #include <cstdio>
@@ -38,6 +44,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <limits>
 #include <poll.h>
 #include <sstream>
 #include <stdexcept>
@@ -376,9 +383,9 @@ main(int argc, char** argv)
     cameraOptions.recordObjectPrefix = getConfigOption(
       argc, argv, appConfig, "--camera-record-object-prefix",
       "camera-record-object-prefix", "");
-    cameraOptions.recordChunkLimit = std::stoull(getConfigOption(
-      argc, argv, appConfig, "--camera-record-chunk-limit",
-      "camera-record-chunk-limit", "0"));
+    cameraOptions.recordPacketLimit = std::stoull(getConfigOption(
+      argc, argv, appConfig, "--camera-retention-packet-limit",
+      "camera-retention-packet-limit", "0"));
     cameraOptions.v4l2InputFormat = getConfigOption(
       argc, argv, appConfig, "--camera-v4l2-input-format",
       "camera-v4l2-input-format", cameraOptions.v4l2InputFormat);
@@ -424,8 +431,8 @@ main(int argc, char** argv)
     if (autoCameraRecordSmoke) {
       cameraOptions.captureOnStart = true;
       cameraOptions.recordToLocalRepo = true;
-      if (cameraOptions.recordChunkLimit < autoCameraRecordExpectedChunks + 100) {
-        cameraOptions.recordChunkLimit = autoCameraRecordExpectedChunks + 100;
+      if (cameraOptions.recordPacketLimit < autoCameraRecordExpectedChunks + 100) {
+        cameraOptions.recordPacketLimit = autoCameraRecordExpectedChunks + 100;
       }
       if (cameraOptions.recordRepoPath.empty()) {
         cameraOptions.recordRepoPath = "/tmp/ndnsf-uav-camera-record-smoke.sqlite3";
@@ -434,11 +441,34 @@ main(int argc, char** argv)
       ndn::Face smokeFace;
       ndn::KeyChain smokeKeyChain;
       ndn_service_framework::LocalServiceRegistry smokeLocalRegistry;
+      const auto smokeProviderCert = getOrCreateIdentity(
+        smokeKeyChain, droneIdentity(config, droneId));
+      const auto smokeControllerCert = getOrCreateIdentity(
+        smokeKeyChain, config.controllerPrefix);
+      ndn_service_framework::ServiceProvider smokeProvider(
+        ndn_service_framework::ServiceProvider::LocalMockTag{},
+        smokeFace, config.groupPrefix, smokeProviderCert, smokeControllerCert,
+        config.trustSchema);
       const auto smokeLocalRecordingChunkService =
         droneIdentity(config, droneId).append("Local").append("Recording").append("Chunk");
       VideoPublisher smokePublisher(
-        smokeFace, smokeKeyChain, smokeLocalRegistry, smokeLocalRecordingChunkService,
+        smokeProvider, smokeFace, smokeKeyChain, smokeLocalRegistry,
+        smokeLocalRecordingChunkService,
         config, droneId, videoPath, cameraOptions);
+      std::thread smokeFaceThread([&smokeFace] {
+        try {
+          smokeFace.processEvents();
+        }
+        catch (const std::exception&) {
+        }
+      });
+      auto smokeFaceGuard = std::unique_ptr<ndn::Face, std::function<void(ndn::Face*)>>(
+        &smokeFace, [&smokeFaceThread] (ndn::Face* face) {
+          face->shutdown();
+          if (smokeFaceThread.joinable()) {
+            smokeFaceThread.join();
+          }
+        });
 
       const auto deadline = std::chrono::steady_clock::now() +
         std::chrono::seconds(autoCameraRecordTimeoutSeconds);
@@ -465,6 +495,7 @@ main(int argc, char** argv)
         std::this_thread::sleep_for(100ms);
       }
       smokePublisher.shutdown();
+      smokeFaceGuard.reset();
       if (smokePublisher.recordingChunks() < targetChunks ||
           smokePublisher.recordingBytes() == 0 ||
           smokePublisher.recordingChunks() <= chunksAfterStop) {
@@ -473,7 +504,7 @@ main(int argc, char** argv)
                   << smokePublisher.recordingChunks()
                   << " bytes=" << smokePublisher.recordingBytes()
                   << " chunks_after_stop=" << chunksAfterStop
-                  << " last_chunk=" << fieldOr(manifest, "last_chunk_object", "none")
+                  << " catalog_entries=" << fieldOr(manifest, "packet_catalog_entries", "0")
                   << " repo=" << cameraOptions.recordRepoPath << std::endl;
         return 1;
       }
@@ -482,9 +513,7 @@ main(int argc, char** argv)
                 << smokePublisher.recordingChunks()
                 << " bytes=" << smokePublisher.recordingBytes()
                 << " chunks_after_stop=" << chunksAfterStop
-                << " last_chunk=" << fieldOr(manifest, "last_chunk_object", "none")
-                << " last_chunk_bytes="
-                << smokePublisher.recordingChunk(fieldOr(manifest, "last_chunk_object", "")).size()
+                << " catalog_entries=" << fieldOr(manifest, "packet_catalog_entries", "0")
                 << " repo=" << cameraOptions.recordRepoPath
                 << " prefix=" << smokePublisher.recordingPrefix()
                 << std::endl;

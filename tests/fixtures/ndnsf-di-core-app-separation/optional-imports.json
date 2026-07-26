@@ -1,0 +1,30 @@
+{
+  "schema": "ndnsf-di-spec111-optional-imports-v1",
+  "cases": [
+    {
+      "id": "root-without-onnx",
+      "target": "ndnsf_distributed_inference",
+      "blocked": ["onnx", "onnxruntime"]
+    },
+    {
+      "id": "root-without-qwen",
+      "target": "ndnsf_distributed_inference",
+      "blocked": ["transformers", "tokenizers", "huggingface_hub"]
+    },
+    {
+      "id": "root-without-llama",
+      "target": "ndnsf_distributed_inference",
+      "blocked": ["llama_cpp"]
+    },
+    {
+      "id": "root-without-gui",
+      "target": "ndnsf_distributed_inference",
+      "blocked": ["tkinter", "matplotlib"]
+    },
+    {
+      "id": "root-without-operations",
+      "target": "ndnsf_distributed_inference",
+      "blocked": ["docker", "apptainer", "slurm"]
+    }
+  ]
+}

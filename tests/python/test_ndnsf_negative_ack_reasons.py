@@ -81,6 +81,22 @@ class NegativeAckReasonContractTest(unittest.TestCase):
         self.assertEqual(decoded.hint.reason_code, NEGATIVE_ACK_REASON_MODEL_UNAVAILABLE)
         self.assertEqual(decoded.hint.service_payload["status"], "model-unavailable")
 
+    def test_non_model_control_capability_requires_explicit_ready_contract(self) -> None:
+        fake = _FakeProvider()
+        provider = DistributedInferenceProvider(fake)
+        provider.add_capability_handler(
+            "/APP/Deployment/Control",
+            ["/Stage/0"],
+            lambda _ctx: None,
+            has_model=False,
+            can_provision=False,
+            ready_without_model=True,
+        )
+        decision = fake.ack(b"request")
+        decoded = decode_provider_capability_ack(decision.payload)
+        self.assertTrue(decision.status)
+        self.assertTrue(decoded.hint.service_payload["readyWithoutModel"])
+
     def test_di_capability_admission_policy_is_opt_in(self) -> None:
         fake = _FakeProvider()
         provider = DistributedInferenceProvider(fake)

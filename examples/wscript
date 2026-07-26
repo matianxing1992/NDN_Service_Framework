@@ -25,6 +25,38 @@ def build(bld):
                 linkflags=['-Wl,-rpath,$ORIGIN/..'],
                 install_path=None)
 
+    bld.program(name='LiveStreamProvider',
+                target='LiveStreamProvider',
+                source=['LiveStreamProvider.cpp'],
+                includes=['..'],
+                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
+                linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                install_path=None)
+
+    bld.program(name='LiveStreamConsumer',
+                target='LiveStreamConsumer',
+                source=['LiveStreamConsumer.cpp'],
+                includes=['..'],
+                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
+                linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                install_path=None)
+
+    bld.program(name='StreamFacadeProvider',
+                target='StreamFacadeProvider',
+                source=['StreamFacadeProvider.cpp'],
+                includes=['..'],
+                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
+                linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                install_path=None)
+
+    bld.program(name='StreamFacadeConsumer',
+                target='StreamFacadeConsumer',
+                source=['StreamFacadeConsumer.cpp'],
+                includes=['..'],
+                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
+                linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                install_path=None)
+
     bld.program(name='App_CertificateBootstrapTamper',
                 target='App_CertificateBootstrapTamper',
                 source=['App_CertificateBootstrapTamper.cpp'],
@@ -113,15 +145,25 @@ def build(bld):
                 linkflags=['-Wl,-rpath,$ORIGIN/..'],
                 install_path=None)
 
+    # GCC 9 intermittently ICEs in the rtl-cmpelim pass on these intentionally
+    # large application translation units.  This pass is not needed for
+    # correctness; disable only that pass, only for GCC, and retain all other
+    # configured optimization and warning flags.
+    uav_cxxflags = ['-Wno-error=extra-semi', '-g0']
+    if bld.env.CXX_NAME == 'gcc':
+        uav_cxxflags.append('-fdisable-rtl-cmpelim')
+
     bld.program(name='UavDroneApp',
                 target='UavDroneApp',
                 source=[
                     '../NDNSF-UAV-APP/drone/UavDroneApp.cpp',
                     '../NDNSF-UAV-APP/shared/UavProtocol.cpp',
+                    '../NDNSF-UAV-APP/shared/UavVideoPipeline.cpp',
+                    '../NDNSF-UAV-APP/shared/UavSensorStreams.cpp',
                 ],
                 includes=['..', '../NDNSF-UAV-APP/shared', '../NDNSF-DistributedRepo/include'],
-                use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD gtkmm sqlite3',
-                cxxflags=['-Wno-error=extra-semi'],
+                use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD gtkmm sqlite3 GSTREAMER',
+                cxxflags=uav_cxxflags,
                 linkflags=['-Wl,-rpath,$ORIGIN/..'],
                 install_path=None)
 
@@ -130,10 +172,23 @@ def build(bld):
                 source=[
                     '../NDNSF-UAV-APP/ground-station/UavGroundStationApp.cpp',
                     '../NDNSF-UAV-APP/shared/UavProtocol.cpp',
+                    '../NDNSF-UAV-APP/shared/UavVideoPipeline.cpp',
+                    '../NDNSF-UAV-APP/shared/UavSensorStreams.cpp',
                 ],
                 includes=['..', '../NDNSF-UAV-APP/shared'],
-                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD gtkmm',
-                cxxflags=['-Wno-error=extra-semi'],
+                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD gtkmm GSTREAMER',
+                cxxflags=uav_cxxflags,
+                linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                install_path=None)
+
+    bld.program(name='UavSensorStreamNode',
+                target='UavSensorStreamNode',
+                source=[
+                    '../NDNSF-UAV-APP/tools/uav_sensor_stream_node.cpp',
+                    '../NDNSF-UAV-APP/shared/UavSensorStreams.cpp',
+                ],
+                includes=['..', '../NDNSF-UAV-APP/shared'],
+                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
                 linkflags=['-Wl,-rpath,$ORIGIN/..'],
                 install_path=None)
 
@@ -167,11 +222,12 @@ def build(bld):
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeServiceManifest.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.cpp',
-        'NDNSF-DistributedInference/cpp/ndnsf-di/QwenGenerationSession.cpp',
+        'NDNSF-DistributedInference/cpp/adapters/qwen/QwenGenerationSession.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.cpp',
     ])
 
     di_native_collaboration_sources = bld.path.parent.ant_glob([
+        'NDNSF-DistributedInference/cpp/ndnsf-di/DistributedExecutionConsistency.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.cpp',
     ])
@@ -184,6 +240,8 @@ def build(bld):
                             'ndn-service-framework/ConfigManager.cpp',
                             'ndn-service-framework/ServiceProvider.cpp',
                             'ndn-service-framework/ServiceUser.cpp',
+                            'ndn-service-framework/Stream.cpp',
+                            'ndn-service-framework/StreamFacade.cpp',
                             'ndn-service-framework/HybridMessageCrypto.cpp',
                             'ndn-service-framework/NetworkTelemetry.cpp',
                             'ndn-service-framework/TimelineTrace.cpp',
@@ -203,6 +261,8 @@ def build(bld):
                             'ndn-service-framework/ConfigManager.cpp',
                             'ndn-service-framework/ServiceProvider.cpp',
                             'ndn-service-framework/ServiceUser.cpp',
+                            'ndn-service-framework/Stream.cpp',
+                            'ndn-service-framework/StreamFacade.cpp',
                             'ndn-service-framework/HybridMessageCrypto.cpp',
                             'ndn-service-framework/NetworkTelemetry.cpp',
                             'ndn-service-framework/TimelineTrace.cpp',
@@ -228,6 +288,7 @@ def build(bld):
                             'ndn-service-framework/ExecutionLease.cpp',
                             'ndn-service-framework/NetworkTelemetry.cpp',
                             'ndn-service-framework/Stream.cpp',
+                            'ndn-service-framework/StreamFacade.cpp',
                             'ndn-service-framework/TimelineTrace.cpp',
                             'ndn-service-framework/common.cpp',
                             'ndn-service-framework/utils.cpp',
@@ -262,7 +323,7 @@ def build(bld):
                 source=(["DI_NativePlanOnnxSmoke.cpp"] +
                         di_native_session_sources +
                         bld.path.parent.ant_glob([
-                            'NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.cpp',
+                            'NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.cpp',
                         ])),
                 includes=['..', '../ndn-service-framework'],
                 use='BOOST ONNXRUNTIME',
@@ -277,7 +338,7 @@ def build(bld):
                         di_native_collaboration_sources +
                         bld.path.parent.ant_glob([
                             'NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactMaterializer.cpp',
-                            'NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.cpp',
+                            'NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.cpp',
                             'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderReadiness.cpp',
                             'NDNSF-DistributedInference/cpp/ndnsf-di/ProviderResourceProbe.cpp',
                             'NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionLeaseService.cpp',
@@ -289,6 +350,7 @@ def build(bld):
                             'ndn-service-framework/ExecutionLease.cpp',
                             'ndn-service-framework/NetworkTelemetry.cpp',
                             'ndn-service-framework/Stream.cpp',
+                            'ndn-service-framework/StreamFacade.cpp',
                             'ndn-service-framework/TimelineTrace.cpp',
                             'ndn-service-framework/common.cpp',
                             'ndn-service-framework/utils.cpp',
@@ -308,7 +370,7 @@ def build(bld):
                         bld.path.parent.ant_glob([
                             'NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactMaterializer.cpp',
                             'NDNSF-DistributedInference/cpp/ndnsf-di/NativeFaultInjection.cpp',
-                            'NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.cpp',
+                            'NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.cpp',
                             'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderReadiness.cpp',
                             'NDNSF-DistributedInference/cpp/ndnsf-di/ProviderResourceProbe.cpp',
                             'NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionLeaseService.cpp',
@@ -320,6 +382,7 @@ def build(bld):
                             'ndn-service-framework/ExecutionLease.cpp',
                             'ndn-service-framework/NetworkTelemetry.cpp',
                             'ndn-service-framework/Stream.cpp',
+                            'ndn-service-framework/StreamFacade.cpp',
                             'ndn-service-framework/TimelineTrace.cpp',
                             'ndn-service-framework/common.cpp',
                             'ndn-service-framework/utils.cpp',
@@ -336,7 +399,7 @@ def build(bld):
                 source=(["DI_NativeOnnxRuntimeSmoke.cpp"] +
                         di_native_session_sources +
                         bld.path.parent.ant_glob([
-                            'NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.cpp',
+                            'NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.cpp',
                         ])),
                 includes=['..', '../ndn-service-framework'],
                 use='ONNXRUNTIME',

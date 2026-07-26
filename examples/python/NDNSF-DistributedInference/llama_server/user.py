@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 import time
 
-from ndnsf_distributed_inference import APPClient
+from ndnsf_distributed_inference.app_sdk import APPClient
 
 from llama_server_lib import (
     SERVICE,

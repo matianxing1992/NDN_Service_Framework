@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import argparse
 
-from ndnsf_distributed_inference import (
+from ndnsf_distributed_inference.app_sdk import (
     APPClient,
 )
 

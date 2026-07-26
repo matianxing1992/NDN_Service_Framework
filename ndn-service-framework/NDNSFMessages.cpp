@@ -1,6 +1,9 @@
 #include "NDNSFMessages.hpp"
 
 #include <algorithm>
+#include <iomanip>
+#include <openssl/sha.h>
+#include <sstream>
 
 namespace ndn_service_framework {
 
@@ -68,6 +71,155 @@ payloadValueAsBuffer(const std::shared_ptr<const ndn::Block>& payloadBlock)
 
 } // namespace
 
+DeploymentControlMessage::DeploymentControlMessage(uint32_t messageType)
+  : messageType_(messageType)
+{
+}
+
+void DeploymentControlMessage::setVersion(uint64_t version)
+{
+    version_ = version;
+    wire_.reset();
+}
+
+uint64_t DeploymentControlMessage::getVersion() const { return version_; }
+
+void DeploymentControlMessage::setField(const std::string& name, const std::string& value)
+{
+    if (name.empty() || name.size() > MAX_FIELD_NAME || value.size() > MAX_FIELD_VALUE) {
+        throw std::invalid_argument("deployment control field exceeds bounds");
+    }
+    if (!hasField(name) && fields_.size() >= MAX_FIELDS) {
+        throw std::invalid_argument("too many deployment control fields");
+    }
+    fields_[name] = value;
+    wire_.reset();
+}
+
+bool DeploymentControlMessage::hasField(const std::string& name) const
+{
+    return fields_.find(name) != fields_.end();
+}
+
+const std::string& DeploymentControlMessage::getField(const std::string& name) const
+{
+    const auto it = fields_.find(name);
+    if (it == fields_.end()) {
+        throw std::out_of_range("missing deployment control field: " + name);
+    }
+    return it->second;
+}
+
+const std::map<std::string, std::string>& DeploymentControlMessage::getFields() const
+{
+    return fields_;
+}
+
+uint32_t DeploymentControlMessage::getMessageType() const { return messageType_; }
+
+void DeploymentControlMessage::Clear()
+{
+    version_ = VERSION;
+    fields_.clear();
+    wire_.reset();
+}
+
+ndn::Block DeploymentControlMessage::WireEncode() const
+{
+    if (version_ != VERSION) {
+        throw std::invalid_argument("unsupported deployment control version");
+    }
+    ndn::Block block(messageType_);
+    block.push_back(ndn::makeNonNegativeIntegerBlock(tlv::VersionType, version_));
+    for (const auto& [name, value] : fields_) {
+        ndn::Block field(tlv::DeploymentControlFieldType);
+        field.push_back(ndn::makeStringBlock(tlv::DeploymentControlFieldNameType, name));
+        field.push_back(ndn::makeBinaryBlock(tlv::DeploymentControlFieldValueType,
+                                             reinterpret_cast<const uint8_t*>(value.data()),
+                                             reinterpret_cast<const uint8_t*>(value.data()) + value.size()));
+        field.encode();
+        block.push_back(field);
+    }
+    block.encode();
+    if (block.size() > MAX_WIRE_SIZE) {
+        throw std::invalid_argument("deployment control message exceeds wire bound");
+    }
+    wire_ = block;
+    return wire_;
+}
+
+bool DeploymentControlMessage::WireDecode(const ndn::Block& block)
+{
+    try {
+        if (block.type() != messageType_ || block.size() > MAX_WIRE_SIZE) return false;
+        block.parse();
+        const auto& elements = block.elements();
+        if (elements.empty() || elements.front().type() != tlv::VersionType ||
+            elements.size() - 1 > MAX_FIELDS) return false;
+        DeploymentControlMessage decoded(messageType_);
+        decoded.version_ = ndn::readNonNegativeInteger(elements.front());
+        if (decoded.version_ != VERSION) return false;
+        std::string previousName;
+        for (size_t i = 1; i < elements.size(); ++i) {
+            const auto& item = elements[i];
+            if (item.type() != tlv::DeploymentControlFieldType) return false;
+            item.parse();
+            if (item.elements().size() != 2 ||
+                item.elements()[0].type() != tlv::DeploymentControlFieldNameType ||
+                item.elements()[1].type() != tlv::DeploymentControlFieldValueType) return false;
+            const auto name = ndn::readString(item.elements()[0]);
+            const auto& valueBlock = item.elements()[1];
+            if (name.empty() || name.size() > MAX_FIELD_NAME ||
+                valueBlock.value_size() > MAX_FIELD_VALUE ||
+                (!previousName.empty() && name <= previousName)) return false;
+            decoded.fields_.emplace(name, std::string(
+                reinterpret_cast<const char*>(valueBlock.value()), valueBlock.value_size()));
+            previousName = name;
+        }
+        const auto canonical = decoded.WireEncode();
+        if (canonical.size() != block.size() ||
+            !std::equal(canonical.begin(), canonical.end(), block.begin())) return false;
+        version_ = decoded.version_;
+        fields_ = std::move(decoded.fields_);
+        wire_ = canonical;
+        return true;
+    }
+    catch (const std::exception&) {
+        return false;
+    }
+}
+
+std::string DeploymentControlMessage::computeDigest() const
+{
+    const auto wire = WireEncode();
+    unsigned char digest[SHA256_DIGEST_LENGTH];
+    SHA256(&*wire.begin(), wire.size(), digest);
+    std::ostringstream os;
+    os << std::hex << std::setfill('0');
+    for (unsigned char byte : digest) os << std::setw(2) << unsigned(byte);
+    return os.str();
+}
+
+DeploymentIntent::DeploymentIntent() : DeploymentControlMessage(tlv::DeploymentIntentType) {}
+ProviderCapabilityOffer::ProviderCapabilityOffer() : DeploymentControlMessage(tlv::ProviderCapabilityOfferType) {}
+DeploymentPlan::DeploymentPlan() : DeploymentControlMessage(tlv::DeploymentPlanType) {}
+ProviderReadyMessage::ProviderReadyMessage() : DeploymentControlMessage(tlv::ProviderReadyMessageType) {}
+ReadyAcknowledgement::ReadyAcknowledgement() : DeploymentControlMessage(tlv::ReadyAcknowledgementType) {}
+ExecutionActivateMessage::ExecutionActivateMessage() : DeploymentControlMessage(tlv::ExecutionActivateMessageType) {}
+SecureStatusQuery::SecureStatusQuery() : DeploymentControlMessage(tlv::SecureStatusQueryType) {}
+SecureStatusSnapshot::SecureStatusSnapshot() : DeploymentControlMessage(tlv::SecureStatusSnapshotType) {}
+RequestCapabilities::RequestCapabilities() : DeploymentControlMessage(tlv::RequestCapabilitiesType) {}
+EncryptedRequestInput::EncryptedRequestInput() : DeploymentControlMessage(tlv::EncryptedRequestInputType) {}
+SelectionInputKeyOffer::SelectionInputKeyOffer() : DeploymentControlMessage(tlv::SelectionInputKeyOfferType) {}
+SelectionInputKeyGrant::SelectionInputKeyGrant() : DeploymentControlMessage(tlv::SelectionInputKeyGrantType) {}
+ReservationLease::ReservationLease() : DeploymentControlMessage(tlv::ReservationLeaseType) {}
+SelectionDecision::SelectionDecision() : DeploymentControlMessage(tlv::SelectionDecisionType) {}
+SelectionDecisionReceipt::SelectionDecisionReceipt() : DeploymentControlMessage(tlv::SelectionDecisionReceiptType) {}
+RecipientEncryptedAssignment::RecipientEncryptedAssignment() : DeploymentControlMessage(tlv::RecipientEncryptedAssignmentType) {}
+StageInputEvidence::StageInputEvidence() : DeploymentControlMessage(tlv::StageInputEvidenceType) {}
+StageAbort::StageAbort() : DeploymentControlMessage(tlv::StageAbortType) {}
+SelectionDecisionTombstone::SelectionDecisionTombstone() : DeploymentControlMessage(tlv::SelectionDecisionTombstoneType) {}
+
 RequestMessage::RequestMessage() {}
 
 RequestMessage::RequestMessage(const RequestMessage& other)
@@ -88,6 +240,9 @@ RequestMessage::operator=(const RequestMessage& other)
         requestMode_ = other.requestMode_;
         targetProvider_ = other.targetProvider_;
         policyEpoch_ = other.policyEpoch_;
+        deploymentIntent_ = other.deploymentIntent_;
+        requestCapabilities_ = other.requestCapabilities_;
+        encryptedRequestInput_ = other.encryptedRequestInput_;
         m_wire.reset();
     }
     return *this;
@@ -129,6 +284,37 @@ void RequestMessage::setTargetProvider(const ndn::Name& targetProvider) {
 
 void RequestMessage::setPolicyEpoch(size_t policyEpoch) {
     policyEpoch_ = policyEpoch;
+}
+
+void RequestMessage::setDeploymentIntent(const DeploymentIntent& intent) {
+    if (intent.getVersion() != DeploymentControlMessage::VERSION) {
+        throw std::invalid_argument("unsupported deployment intent version");
+    }
+    deploymentIntent_ = intent;
+    m_wire.reset();
+}
+void RequestMessage::setRequestCapabilities(const RequestCapabilities& capabilities) {
+    requestCapabilities_ = capabilities;
+    m_wire.reset();
+}
+void RequestMessage::setEncryptedRequestInput(const EncryptedRequestInput& input) {
+    encryptedRequestInput_ = input;
+    m_wire.reset();
+}
+bool RequestMessage::hasDeploymentIntent() const { return deploymentIntent_.has_value(); }
+bool RequestMessage::hasRequestCapabilities() const { return requestCapabilities_.has_value(); }
+bool RequestMessage::hasEncryptedRequestInput() const { return encryptedRequestInput_.has_value(); }
+const DeploymentIntent& RequestMessage::getDeploymentIntent() const {
+    if (!deploymentIntent_) throw std::logic_error("request has no deployment intent");
+    return *deploymentIntent_;
+}
+const RequestCapabilities& RequestMessage::getRequestCapabilities() const {
+    if (!requestCapabilities_) throw std::logic_error("request has no capabilities");
+    return *requestCapabilities_;
+}
+const EncryptedRequestInput& RequestMessage::getEncryptedRequestInput() const {
+    if (!encryptedRequestInput_) throw std::logic_error("request has no encrypted input");
+    return *encryptedRequestInput_;
 }
 
 const std::map<std::string, std::string>& RequestMessage::getTokens() const {
@@ -182,6 +368,9 @@ void RequestMessage::Clear() {
     targetProvider_.clear();
     m_wire.reset();
     policyEpoch_ = 0;
+    deploymentIntent_.reset();
+    requestCapabilities_.reset();
+    encryptedRequestInput_.reset();
 }
 
 ndn::Block RequestMessage::WireEncode() const {
@@ -212,6 +401,9 @@ ndn::Block RequestMessage::WireEncode() const {
     if (policyEpoch_ > 0) {
         block.push_back(ndn::makeNonNegativeIntegerBlock(tlv::VersionType, policyEpoch_));
     }
+    if (deploymentIntent_) block.push_back(deploymentIntent_->WireEncode());
+    if (requestCapabilities_) block.push_back(requestCapabilities_->WireEncode());
+    if (encryptedRequestInput_) block.push_back(encryptedRequestInput_->WireEncode());
     block.encode();
     m_wire = std::make_shared<const ndn::Block>(block);
     return *m_wire;
@@ -257,6 +449,21 @@ bool RequestMessage::WireDecode(const ndn::Block& block) {
         else if (b.type() == tlv::VersionType) {
             policyEpoch_ = ndn::readNonNegativeInteger(b);
         }
+        else if (b.type() == tlv::DeploymentIntentType) {
+            DeploymentIntent intent;
+            if (!intent.WireDecode(b)) return false;
+            deploymentIntent_ = std::move(intent);
+        }
+        else if (b.type() == tlv::RequestCapabilitiesType) {
+            RequestCapabilities capabilities;
+            if (!capabilities.WireDecode(b)) return false;
+            requestCapabilities_ = std::move(capabilities);
+        }
+        else if (b.type() == tlv::EncryptedRequestInputType) {
+            EncryptedRequestInput input;
+            if (!input.WireDecode(b)) return false;
+            encryptedRequestInput_ = std::move(input);
+        }
     }
 
     return true;
@@ -280,6 +487,9 @@ ResponseMessage::operator=(const ResponseMessage& other)
         payloadBlock_ = clonePayloadBlock(other.getPayloadBlock());
         payloadSize_ = other.payloadSize_;
         policyEpoch_ = other.policyEpoch_;
+        dataName_ = other.dataName_;
+        signerCertificate_ = other.signerCertificate_;
+        wireDigest_ = other.wireDigest_;
         m_wire.reset();
     }
     return *this;
@@ -315,6 +525,15 @@ void ResponseMessage::setPolicyEpoch(size_t policyEpoch) {
     policyEpoch_ = policyEpoch;
 }
 
+void ResponseMessage::setAuthenticatedTransportEvidence(
+    const std::string& dataName,
+    const std::string& signerCertificate,
+    const std::string& wireDigest) {
+    dataName_ = dataName;
+    signerCertificate_ = signerCertificate;
+    wireDigest_ = wireDigest;
+}
+
 bool ResponseMessage::getStatus() const {
     return status_;
 }
@@ -347,6 +566,18 @@ size_t ResponseMessage::getPolicyEpoch() const {
     return policyEpoch_;
 }
 
+const std::string& ResponseMessage::getDataName() const {
+    return dataName_;
+}
+
+const std::string& ResponseMessage::getSignerCertificate() const {
+    return signerCertificate_;
+}
+
+const std::string& ResponseMessage::getWireDigest() const {
+    return wireDigest_;
+}
+
 void ResponseMessage::Clear() {
     status_ = false;
     errorInfo_.clear();
@@ -355,6 +586,9 @@ void ResponseMessage::Clear() {
     payloadBlock_.reset();
     payloadSize_ = 0;
     policyEpoch_ = 0;
+    dataName_.clear();
+    signerCertificate_.clear();
+    wireDigest_.clear();
     m_wire.reset();
 }
 
@@ -437,6 +671,9 @@ RequestAckMessage::operator=(const RequestAckMessage& other)
         payloadBlock_ = clonePayloadBlock(other.getPayloadBlock());
         payloadSize_ = other.payloadSize_;
         policyEpoch_ = other.policyEpoch_;
+        providerCapabilityOffer_ = other.providerCapabilityOffer_;
+        selectionInputKeyOffer_ = other.selectionInputKeyOffer_;
+        reservationLease_ = other.reservationLease_;
         m_wire.reset();
     }
     return *this;
@@ -470,6 +707,34 @@ void RequestAckMessage::setPayloadBlock(const ndn::Block& payloadBlock) {
 
 void RequestAckMessage::setPolicyEpoch(size_t policyEpoch) {
     policyEpoch_ = policyEpoch;
+}
+
+void RequestAckMessage::setProviderCapabilityOffer(const ProviderCapabilityOffer& offer) {
+    providerCapabilityOffer_ = offer;
+    m_wire.reset();
+}
+bool RequestAckMessage::hasProviderCapabilityOffer() const { return providerCapabilityOffer_.has_value(); }
+const ProviderCapabilityOffer& RequestAckMessage::getProviderCapabilityOffer() const {
+    if (!providerCapabilityOffer_) throw std::logic_error("ACK has no provider capability offer");
+    return *providerCapabilityOffer_;
+}
+void RequestAckMessage::setSelectionInputKeyOffer(const SelectionInputKeyOffer& offer) {
+    selectionInputKeyOffer_ = offer;
+    m_wire.reset();
+}
+void RequestAckMessage::setReservationLease(const ReservationLease& lease) {
+    reservationLease_ = lease;
+    m_wire.reset();
+}
+bool RequestAckMessage::hasSelectionInputKeyOffer() const { return selectionInputKeyOffer_.has_value(); }
+bool RequestAckMessage::hasReservationLease() const { return reservationLease_.has_value(); }
+const SelectionInputKeyOffer& RequestAckMessage::getSelectionInputKeyOffer() const {
+    if (!selectionInputKeyOffer_) throw std::logic_error("ACK has no selection input key offer");
+    return *selectionInputKeyOffer_;
+}
+const ReservationLease& RequestAckMessage::getReservationLease() const {
+    if (!reservationLease_) throw std::logic_error("ACK has no reservation lease");
+    return *reservationLease_;
 }
 
 bool RequestAckMessage::getStatus() const {
@@ -512,6 +777,9 @@ void RequestAckMessage::Clear() {
     payloadBlock_.reset();
     payloadSize_ = 0;
     policyEpoch_ = 0;
+    providerCapabilityOffer_.reset();
+    selectionInputKeyOffer_.reset();
+    reservationLease_.reset();
     m_wire.reset();
 }
 
@@ -535,6 +803,9 @@ ndn::Block RequestAckMessage::WireEncode() const {
     if (policyEpoch_ > 0) {
         block.push_back(ndn::makeNonNegativeIntegerBlock(tlv::VersionType, policyEpoch_));
     }
+    if (providerCapabilityOffer_) block.push_back(providerCapabilityOffer_->WireEncode());
+    if (selectionInputKeyOffer_) block.push_back(selectionInputKeyOffer_->WireEncode());
+    if (reservationLease_) block.push_back(reservationLease_->WireEncode());
     block.encode();
     m_wire = std::make_shared<const ndn::Block>(block);
     return *m_wire;
@@ -568,6 +839,21 @@ bool RequestAckMessage::WireDecode(const ndn::Block& block) {
         else if (b.type() == tlv::VersionType) {
             policyEpoch_ = ndn::readNonNegativeInteger(b);
         }
+        else if (b.type() == tlv::ProviderCapabilityOfferType) {
+            ProviderCapabilityOffer offer;
+            if (!offer.WireDecode(b)) return false;
+            providerCapabilityOffer_ = std::move(offer);
+        }
+        else if (b.type() == tlv::SelectionInputKeyOfferType) {
+            SelectionInputKeyOffer offer;
+            if (!offer.WireDecode(b)) return false;
+            selectionInputKeyOffer_ = std::move(offer);
+        }
+        else if (b.type() == tlv::ReservationLeaseType) {
+            ReservationLease lease;
+            if (!lease.WireDecode(b)) return false;
+            reservationLease_ = std::move(lease);
+        }
     }
 
     return true;
@@ -589,6 +875,10 @@ ServiceSelectionMessage::operator=(const ServiceSelectionMessage& other)
         assignmentPayload_ = other.assignmentPayload_;
         policyEpoch_ = other.policyEpoch_;
         providerEntries_ = other.providerEntries_;
+        deploymentPlan_ = other.deploymentPlan_;
+        selectionDecision_ = other.selectionDecision_;
+        selectionInputKeyGrant_ = other.selectionInputKeyGrant_;
+        recipientEncryptedAssignment_ = other.recipientEncryptedAssignment_;
         m_wire.reset();
     }
     return *this;
@@ -612,6 +902,43 @@ void ServiceSelectionMessage::setPolicyEpoch(size_t policyEpoch) {
 
 void ServiceSelectionMessage::addProviderEntry(const SelectionProviderEntry& entry) {
     providerEntries_.push_back(entry);
+}
+
+void ServiceSelectionMessage::setDeploymentPlan(const DeploymentPlan& plan) {
+    deploymentPlan_ = plan;
+    m_wire.reset();
+}
+bool ServiceSelectionMessage::hasDeploymentPlan() const { return deploymentPlan_.has_value(); }
+const DeploymentPlan& ServiceSelectionMessage::getDeploymentPlan() const {
+    if (!deploymentPlan_) throw std::logic_error("Selection has no deployment plan");
+    return *deploymentPlan_;
+}
+void ServiceSelectionMessage::setSelectionDecision(const SelectionDecision& decision) {
+    selectionDecision_ = decision;
+    m_wire.reset();
+}
+void ServiceSelectionMessage::setSelectionInputKeyGrant(const SelectionInputKeyGrant& grant) {
+    selectionInputKeyGrant_ = grant;
+    m_wire.reset();
+}
+void ServiceSelectionMessage::setRecipientEncryptedAssignment(const RecipientEncryptedAssignment& assignment) {
+    recipientEncryptedAssignment_ = assignment;
+    m_wire.reset();
+}
+bool ServiceSelectionMessage::hasSelectionDecision() const { return selectionDecision_.has_value(); }
+bool ServiceSelectionMessage::hasSelectionInputKeyGrant() const { return selectionInputKeyGrant_.has_value(); }
+bool ServiceSelectionMessage::hasRecipientEncryptedAssignment() const { return recipientEncryptedAssignment_.has_value(); }
+const SelectionDecision& ServiceSelectionMessage::getSelectionDecision() const {
+    if (!selectionDecision_) throw std::logic_error("Selection has no R1 decision");
+    return *selectionDecision_;
+}
+const SelectionInputKeyGrant& ServiceSelectionMessage::getSelectionInputKeyGrant() const {
+    if (!selectionInputKeyGrant_) throw std::logic_error("Selection has no input key grant");
+    return *selectionInputKeyGrant_;
+}
+const RecipientEncryptedAssignment& ServiceSelectionMessage::getRecipientEncryptedAssignment() const {
+    if (!recipientEncryptedAssignment_) throw std::logic_error("Selection has no encrypted assignment");
+    return *recipientEncryptedAssignment_;
 }
 
 const std::vector<std::string>& ServiceSelectionMessage::getRequestIDs() const {
@@ -640,6 +967,10 @@ void ServiceSelectionMessage::Clear() {
     assignmentPayload_.clear();
     policyEpoch_ = 0;
     providerEntries_.clear();
+    deploymentPlan_.reset();
+    selectionDecision_.reset();
+    selectionInputKeyGrant_.reset();
+    recipientEncryptedAssignment_.reset();
     m_wire.reset();
 }
 
@@ -678,6 +1009,10 @@ ndn::Block ServiceSelectionMessage::WireEncode() const {
         entryBlock.encode();
         block.push_back(entryBlock);
     }
+    if (deploymentPlan_) block.push_back(deploymentPlan_->WireEncode());
+    if (selectionDecision_) block.push_back(selectionDecision_->WireEncode());
+    if (selectionInputKeyGrant_) block.push_back(selectionInputKeyGrant_->WireEncode());
+    if (recipientEncryptedAssignment_) block.push_back(recipientEncryptedAssignment_->WireEncode());
     block.encode();
     m_wire = block;
     return m_wire;
@@ -721,6 +1056,26 @@ bool ServiceSelectionMessage::WireDecode(const ndn::Block& block) {
             if (!entry.providerName.empty()) {
                 providerEntries_.push_back(entry);
             }
+        }
+        else if (b.type() == tlv::DeploymentPlanType) {
+            DeploymentPlan plan;
+            if (!plan.WireDecode(b)) return false;
+            deploymentPlan_ = std::move(plan);
+        }
+        else if (b.type() == tlv::SelectionDecisionType) {
+            SelectionDecision decision;
+            if (!decision.WireDecode(b)) return false;
+            selectionDecision_ = std::move(decision);
+        }
+        else if (b.type() == tlv::SelectionInputKeyGrantType) {
+            SelectionInputKeyGrant grant;
+            if (!grant.WireDecode(b)) return false;
+            selectionInputKeyGrant_ = std::move(grant);
+        }
+        else if (b.type() == tlv::RecipientEncryptedAssignmentType) {
+            RecipientEncryptedAssignment assignment;
+            if (!assignment.WireDecode(b)) return false;
+            recipientEncryptedAssignment_ = std::move(assignment);
         }
     }
 

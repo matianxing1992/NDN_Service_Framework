@@ -1,0 +1,7 @@
+{
+  "baselinePath": "specs/111-ndnsf-di-core-app-separation/evidence/historical-evidence-baseline.json",
+  "baselineSha256": "sha256:a219f3084c823d8b63874f7cbed108572cbc272e4c9272a7b867695482d4197c",
+  "frozenFileCount": 100,
+  "schemaVersion": 1,
+  "sourceCommit": "4d695ce8b7ffe2c79465dc1f3db649a5a65806a6"
+}

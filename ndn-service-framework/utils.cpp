@@ -4,6 +4,9 @@
 #include <ndn-cxx/util/sha256.hpp>
 
 #include <sstream>
+#include <algorithm>
+#include <iomanip>
+#include <openssl/rand.h>
 
 namespace ndn_service_framework
 {
@@ -330,6 +333,18 @@ namespace ndn_service_framework
     std::optional<ServiceSelectionNameV2>
     parseServiceSelectionNameV2(const ndn::Name& serviceSelectionName)
     {
+        // R1 appends a positive attempt after requestId. Preserve the legacy
+        // parsed view for generic crypto/routing callers; the dedicated parser
+        // retains the attempt for authority checks.
+        if (serviceSelectionName.size() >= 2) {
+            const auto attempt = serviceSelectionName[-1].toUri();
+            if (!attempt.empty() &&
+                std::all_of(attempt.begin(), attempt.end(), [] (char ch) {
+                    return ch >= '0' && ch <= '9';
+                }) && attempt != "0") {
+                return parseServiceSelectionNameV2(serviceSelectionName.getPrefix(-1));
+            }
+        }
         auto marker = findNdnsfMessageMarker(serviceSelectionName, "SELECTION");
         if (!marker) {
             return std::nullopt;
@@ -351,6 +366,56 @@ namespace ndn_service_framework
             *providerName,
             getSubNameByComponentCount(serviceSelectionName, serviceIndex, serviceComponentCount),
             getSubNameByComponentCount(serviceSelectionName, serviceSelectionName.size() - 1, 1)};
+    }
+
+    ndn::Name makeServiceSelectionDecisionNameV2(const ndn::Name& requesterName,
+                                                  const ndn::Name& providerName,
+                                                  const ndn::Name& serviceName,
+                                                  const ndn::Name& requestId,
+                                                  uint64_t attempt)
+    {
+        if (attempt == 0) throw std::invalid_argument("Selection attempt must be positive");
+        auto name = makeServiceSelectionNameV2(requesterName, providerName,
+                                               serviceName, requestId);
+        name.append(std::to_string(attempt));
+        return name;
+    }
+
+    ndn::Name makeServiceSelectionDecisionNameWithoutPrefixV2(
+                                                  const ndn::Name& providerName,
+                                                  const ndn::Name& serviceName,
+                                                  const ndn::Name& requestId,
+                                                  uint64_t attempt)
+    {
+        if (attempt == 0) throw std::invalid_argument("Selection attempt must be positive");
+        auto name = makeServiceSelectionNameWithoutPrefixV2(providerName,
+                                                             serviceName, requestId);
+        name.append(std::to_string(attempt));
+        return name;
+    }
+
+    std::optional<ServiceSelectionDecisionNameV2>
+    parseServiceSelectionDecisionNameV2(const ndn::Name& name)
+    {
+        if (name.size() < 2) return std::nullopt;
+        uint64_t attempt = 0;
+        try {
+            const auto text = name[-1].toUri();
+            size_t used = 0;
+            attempt = std::stoull(text, &used);
+            if (attempt == 0 || used != text.size()) return std::nullopt;
+        }
+        catch (const std::exception&) {
+            return std::nullopt;
+        }
+        const auto base = name.getPrefix(-1);
+        auto parsed = parseServiceSelectionNameV2(base);
+        if (!parsed) return std::nullopt;
+        return ServiceSelectionDecisionNameV2{parsed->requesterName,
+                                              parsed->providerName,
+                                              parsed->serviceName,
+                                              parsed->requestId,
+                                              attempt};
     }
 
     ndn::Name makeCompactServiceSelectionNameV2(const ndn::Name& requesterName,
@@ -377,6 +442,9 @@ namespace ndn_service_framework
     std::optional<CompactServiceSelectionNameV2>
     parseCompactServiceSelectionNameV2(const ndn::Name& serviceSelectionName)
     {
+        if (parseServiceSelectionDecisionNameV2(serviceSelectionName)) {
+            return std::nullopt;
+        }
         auto marker = findNdnsfMessageMarker(serviceSelectionName, "SELECTION");
         if (!marker) {
             return std::nullopt;
@@ -456,6 +524,102 @@ namespace ndn_service_framework
         digest << std::string(reinterpret_cast<const char*>(block.data()),
                               block.size());
         return digest.toString();
+    }
+
+    std::string
+    makeOpaqueControlHandle(size_t bytes)
+    {
+        if (bytes < 16 || bytes > 64) {
+            throw std::invalid_argument("opaque control handle must contain 16..64 random bytes");
+        }
+        std::vector<uint8_t> random(bytes);
+        if (RAND_bytes(random.data(), static_cast<int>(random.size())) != 1) {
+            throw std::runtime_error("RAND_bytes failed for opaque control handle");
+        }
+        std::ostringstream os;
+        os << std::hex << std::setfill('0');
+        for (const auto byte : random) os << std::setw(2) << unsigned(byte);
+        return os.str();
+    }
+
+    bool
+    isValidOpaqueControlHandle(const std::string& handle)
+    {
+        if (handle.size() < 32 || handle.size() > 128 || handle.size() % 2 != 0) return false;
+        return std::all_of(handle.begin(), handle.end(), [] (unsigned char ch) {
+            return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
+        });
+    }
+
+    namespace {
+    template<typename Parsed>
+    std::optional<Parsed>
+    parseOpaqueControlName(const ndn::Name& name, const char* markerText)
+    {
+        auto marker = findNdnsfMessageMarker(name, markerText);
+        if (!marker || name.size() != *marker + 4) return std::nullopt;
+        const auto versionText = name.get(*marker + 2).toUri();
+        uint64_t version = 0;
+        if (versionText.empty()) return std::nullopt;
+        for (char ch : versionText) {
+            if (ch < '0' || ch > '9') return std::nullopt;
+            version = version * 10 + static_cast<uint64_t>(ch - '0');
+        }
+        const auto handle = name.get(*marker + 3).toUri();
+        if (version != DeploymentControlMessage::VERSION || !isValidOpaqueControlHandle(handle)) {
+            return std::nullopt;
+        }
+        return Parsed{getSubNameByComponentCount(name, 0, *marker), version, handle};
+    }
+
+    ndn::Name
+    makeOpaqueControlName(const ndn::Name& prefix, const char* marker,
+                          uint64_t version, const std::string& handle)
+    {
+        if (version != DeploymentControlMessage::VERSION || !isValidOpaqueControlHandle(handle)) {
+            throw std::invalid_argument("invalid opaque control name arguments");
+        }
+        ndn::Name name(prefix);
+        name.append("NDNSF").append(marker).append(std::to_string(version)).append(handle);
+        return name;
+    }
+    } // namespace
+
+    ndn::Name makeSecureSelectionStatusName(const ndn::Name& providerName,
+                                             uint64_t version,
+                                             const std::string& statusHandle)
+    {
+        return makeOpaqueControlName(providerName, "SELECTION-STATUS", version, statusHandle);
+    }
+
+    std::optional<SecureSelectionStatusName>
+    parseSecureSelectionStatusName(const ndn::Name& name)
+    {
+        return parseOpaqueControlName<SecureSelectionStatusName>(name, "SELECTION-STATUS");
+    }
+
+    ndn::Name makeProviderReadyName(const ndn::Name& requesterName,
+                                     uint64_t version,
+                                     const std::string& controlHandle)
+    {
+        return makeOpaqueControlName(requesterName, "PROVIDER-READY", version, controlHandle);
+    }
+
+    std::optional<ProviderReadyName> parseProviderReadyName(const ndn::Name& name)
+    {
+        return parseOpaqueControlName<ProviderReadyName>(name, "PROVIDER-READY");
+    }
+
+    ndn::Name makeExecutionActivateName(const ndn::Name& providerName,
+                                         uint64_t version,
+                                         const std::string& controlHandle)
+    {
+        return makeOpaqueControlName(providerName, "EXECUTION-ACTIVATE", version, controlHandle);
+    }
+
+    std::optional<ExecutionActivateName> parseExecutionActivateName(const ndn::Name& name)
+    {
+        return parseOpaqueControlName<ExecutionActivateName>(name, "EXECUTION-ACTIVATE");
     }
 
     ndn::Name makeCollaborationDataName(const ndn::Name& producerName,
@@ -659,6 +823,9 @@ namespace ndn_service_framework
         }
         if (auto ackV2 = parseRequestAckNameV2(name)) {
             return std::vector<std::string>{"/PERMISSION" + ackV2->serviceName.toUri()};
+        }
+        if (auto decisionSelectionV2 = parseServiceSelectionDecisionNameV2(name)) {
+            return std::vector<std::string>{"/SERVICE" + decisionSelectionV2->serviceName.toUri()};
         }
         if (auto compactSelectionV2 = parseCompactServiceSelectionNameV2(name)) {
             return std::vector<std::string>{"/SERVICE" + compactSelectionV2->serviceName.toUri()};

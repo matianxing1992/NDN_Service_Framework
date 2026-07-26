@@ -6,7 +6,7 @@ from __future__ import annotations
 import unittest
 
 import ndnsf_distributed_inference as di
-from ndnsf_distributed_inference.planner_registry import default_planner_registry
+from ndnsf_distributed_inference.planner.backend_registry import default_planner_registry
 from ndnsf_distributed_inference.retry import RetryPolicy, RetryReason
 
 

@@ -118,7 +118,7 @@ def run_provider_adapter_smoke() -> None:
 
 
 def run_artifact_provisioning_state_smoke() -> None:
-    from ndnsf_distributed_inference import ArtifactProvisioningState
+    from ndnsf_distributed_inference.artifact_deployment import ArtifactProvisioningState
 
     state = ArtifactProvisioningState(component="smoke runtime")
     release_install = threading.Event()

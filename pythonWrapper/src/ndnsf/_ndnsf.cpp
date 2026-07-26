@@ -125,6 +125,59 @@ toPyBytes(const ndn::Buffer& value)
   return py::bytes(reinterpret_cast<const char*>(value.data()), value.size());
 }
 
+py::bytes
+toPyStreamContentDigest(const nsf::StreamContentDigest& value)
+{
+  return py::bytes(reinterpret_cast<const char*>(value.data()), value.size());
+}
+
+nsf::StreamContentDigest
+streamContentDigestFromPyBytes(const py::bytes& value)
+{
+  const std::string bytes = value;
+  if (bytes.size() != nsf::StreamContentDigest{}.size()) {
+    throw std::invalid_argument("stream content digest must contain exactly 32 bytes");
+  }
+
+  nsf::StreamContentDigest digest{};
+  std::copy(bytes.begin(), bytes.end(), digest.begin());
+  return digest;
+}
+
+py::bytes
+toPyBlockWire(const ndn::Block& block)
+{
+  if (!block.isValid()) {
+    return py::bytes();
+  }
+  return py::bytes(reinterpret_cast<const char*>(block.data()), block.size());
+}
+
+ndn::Block
+blockFromExactPyBytes(const py::bytes& value)
+{
+  const std::string bytes = value;
+  if (bytes.empty()) {
+    throw std::invalid_argument("encoded TLV block must not be empty");
+  }
+
+  try {
+    ndn::Block block(ndn::span<const uint8_t>(
+      reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size()));
+    if (block.size() != bytes.size()) {
+      throw std::invalid_argument("encoded TLV block has trailing bytes");
+    }
+    return block;
+  }
+  catch (const std::invalid_argument&) {
+    throw;
+  }
+  catch (const std::exception& error) {
+    throw std::invalid_argument(std::string("invalid encoded TLV block: ") +
+                                error.what());
+  }
+}
+
 py::dict
 largeDataReferenceToDict(const nsf::LargeDataReference& reference)
 {
@@ -182,6 +235,9 @@ struct PyServiceResponse
   py::bytes payload;
   std::string error;
   std::string requestId;
+  std::string dataName;
+  std::string signerCertificate;
+  std::string wireDigest;
 };
 
 struct PyAckDecision
@@ -190,7 +246,44 @@ struct PyAckDecision
   py::bytes payload;
   std::string message = "ok";
   bool suppress = false;
+  py::dict reservationLease;
+  py::dict selectionInputKeyOffer;
 };
+
+template<typename Contract>
+std::optional<Contract>
+toDeploymentControlContract(const py::dict& fields)
+{
+  if (fields.empty()) return std::nullopt;
+  Contract contract;
+  for (const auto& item : fields) {
+    contract.setField(py::cast<std::string>(item.first),
+                      py::cast<std::string>(item.second));
+  }
+  return contract;
+}
+
+py::dict
+makeAckRequestContext(const nsf::RequestMessage& request)
+{
+  auto fieldsToDict = [] (const auto& fields) {
+    py::dict output;
+    for (const auto& field : fields) output[field.first.c_str()] = field.second;
+    return output;
+  };
+  py::dict context;
+  context["user_token"] = request.getUserToken();
+  context["strategy"] = request.getStrategy();
+  context["request_mode"] = request.getRequestMode();
+  context["target_provider"] = request.getTargetProvider().toUri();
+  context["request_capabilities"] = request.hasRequestCapabilities() ?
+    fieldsToDict(request.getRequestCapabilities().getFields()) : py::dict();
+  context["deployment_intent"] = request.hasDeploymentIntent() ?
+    fieldsToDict(request.getDeploymentIntent().getFields()) : py::dict();
+  context["encrypted_request_input"] = request.hasEncryptedRequestInput() ?
+    fieldsToDict(request.getEncryptedRequestInput().getFields()) : py::dict();
+  return context;
+}
 
 struct PyAckCandidate
 {
@@ -208,6 +301,15 @@ struct PyLargeDataPublishResult
   bool success = false;
   std::string encryptedDataName;
   std::string objectId;
+  std::string error;
+};
+
+struct PySignedAppDataResult
+{
+  bool success = false;
+  std::string dataName;
+  std::string signerCertificate;
+  py::bytes payload;
   std::string error;
 };
 
@@ -1145,6 +1247,7 @@ struct PyCollaborationAssignment
   std::string artifactDataName;
   bool requiresProvisioning = false;
   int provisioningTimeoutMs = 0;
+  std::string selectionDigest;
   py::bytes assignmentPayload;
 };
 
@@ -1158,6 +1261,52 @@ struct PyCollaborationData
   uint64_t sequence = 0;
   py::bytes payload;
 };
+
+py::dict
+selectionStatusToDict(const nsf::SelectionExecutionStatus& status)
+{
+  py::list members;
+  for (const auto& member : status.memberStatuses) {
+    py::dict value;
+    value["providerName"] = member.providerName.toUri();
+    value["serviceName"] = member.serviceName.toUri();
+    value["requestId"] = member.requestId.toUri();
+    value["selectionDigest"] = member.selectionDigest;
+    value["role"] = member.role;
+    value["operationId"] = member.operationId;
+    value["operation"] = member.operation;
+    value["state"] = member.state;
+    value["reasonCode"] = member.reasonCode;
+    value["message"] = member.message;
+    value["attempt"] = member.attempt;
+    value["epoch"] = member.epoch;
+    value["sequence"] = member.sequence;
+    value["progressKnown"] = member.progressKnown;
+    value["progress"] = member.progress;
+    value["createdAtMs"] = member.createdAtMs;
+    value["updatedAtMs"] = member.updatedAtMs;
+    value["expiresAtMs"] = member.expiresAtMs;
+    value["detailsSchema"] = member.detailsSchema;
+    value["detailsPayload"] = toPyBytes(member.detailsPayload);
+    members.append(std::move(value));
+  }
+  py::dict output;
+  output["providerName"] = status.providerName.toUri();
+  output["serviceName"] = status.serviceName.toUri();
+  output["requestId"] = status.requestId.toUri();
+  output["selectionDigest"] = status.selectionDigest;
+  output["state"] = nsf::selectionExecutionStateToString(status.state);
+  output["message"] = status.message;
+  output["responseName"] = status.responseName.toUri();
+  output["receivedAtUs"] = status.receivedAtUs;
+  output["queuedAtUs"] = status.queuedAtUs;
+  output["runningAtUs"] = status.runningAtUs;
+  output["completedAtUs"] = status.completedAtUs;
+  output["updatedAtUs"] = status.updatedAtUs;
+  output["decisionReceipt"] = toPyBytes(status.decisionReceipt);
+  output["memberStatuses"] = std::move(members);
+  return output;
+}
 
 std::string
 bytesToString(const ndn::Buffer& value)
@@ -1256,6 +1405,14 @@ providerCapabilityFromAckPayload(const ndn::Buffer& payload)
   if (schema != "ndnsf-provider-capability-v1" &&
       schema != "ndnsf-provider-capability-v2") {
     throw std::invalid_argument("unknown typed provider capability schema: " + schema);
+  }
+  if (!root.get_child_optional("servicePayload")) {
+    if (const auto snakePayload = root.get_child_optional("service_payload")) {
+      // Python dataclass producers intentionally serialize public fields in
+      // snake_case, while the native producer emits the wire-contract
+      // camelCase spelling. Normalize both at this language boundary.
+      root.put_child("servicePayload", *snakePayload);
+    }
   }
   if (!root.get_child_optional("servicePayload")) {
     throw std::invalid_argument("typed provider capability has no servicePayload");
@@ -1472,37 +1629,6 @@ admissionBiasFromEnv()
   return output;
 }
 
-std::map<std::string, std::string>
-roleProviderPreferenceFromEnv()
-{
-  std::map<std::string, std::string> output;
-  const char* raw = std::getenv("NDNSF_COLLAB_ROLE_PROVIDER_PREFERENCE");
-  if (raw == nullptr || *raw == '\0') {
-    return output;
-  }
-  const std::string text(raw);
-  size_t begin = 0;
-  while (begin <= text.size()) {
-    const auto end = text.find(';', begin);
-    const auto item = text.substr(
-      begin,
-      end == std::string::npos ? std::string::npos : end - begin);
-    const auto delimiter = item.find("=>");
-    if (delimiter != std::string::npos && delimiter > 0) {
-      const auto role = item.substr(0, delimiter);
-      const auto provider = item.substr(delimiter + 2);
-      if (!provider.empty()) {
-        output[role] = provider;
-      }
-    }
-    if (end == std::string::npos) {
-      break;
-    }
-    begin = end + 1;
-  }
-  return output;
-}
-
 std::string
 preferredProviderForRole(const std::map<std::string, std::string>& preferences,
                          const std::string& role)
@@ -1566,10 +1692,12 @@ public:
   RoleAssignmentSelectionPolicy(std::map<std::string, ndn::Name> artifactDataNames,
                                 std::map<std::string, ndn::Name> scopeKeyDataNames,
                                 std::map<std::string, std::vector<std::string>> roleScopes,
+                                std::map<std::string, std::string> roleProviderPreference,
                                 PyFunctionPtr ackObserver = nullptr)
     : m_artifactDataNames(std::move(artifactDataNames))
     , m_scopeKeyDataNames(std::move(scopeKeyDataNames))
     , m_roleScopes(std::move(roleScopes))
+    , m_roleProviderPreference(std::move(roleProviderPreference))
     , m_ackObserver(std::move(ackObserver))
   {
   }
@@ -1602,7 +1730,6 @@ public:
 
     std::map<std::string, size_t> providerAssignments;
     const auto admissionBias = admissionBiasFromEnv();
-    const auto roleProviderPreference = roleProviderPreferenceFromEnv();
     for (const auto& role : roles) {
       auto candidatesForRole = candidatesByRole.find(role.role);
       if (candidatesForRole == candidatesByRole.end() ||
@@ -1610,7 +1737,7 @@ public:
         continue;
       }
       auto best = candidatesForRole->second.begin();
-      const auto preferredProvider = preferredProviderForRole(roleProviderPreference, role.role);
+      const auto preferredProvider = preferredProviderForRole(m_roleProviderPreference, role.role);
       if (!preferredProvider.empty()) {
         auto preferredIt = std::find_if(
           candidatesForRole->second.begin(),
@@ -1698,30 +1825,10 @@ public:
       }
       std::cout << std::endl;
     }
-    if (!selected.empty()) {
-      std::string roleProviderFields;
-      for (const auto& participant : selected) {
-        roleProviderFields += "roleProvider." + participant.role + "=" +
-                              participant.provider.toUri() + ";";
-      }
-      if (!roleProviderFields.empty()) {
-        for (auto& participant : selected) {
-          std::string assignment;
-          if (!participant.assignmentPayload.empty()) {
-            assignment.assign(
-              reinterpret_cast<const char*>(participant.assignmentPayload.data()),
-              participant.assignmentPayload.size());
-          }
-          if (assignment.find("roleProvider.") != std::string::npos) {
-            continue;
-          }
-          assignment += roleProviderFields;
-          participant.assignmentPayload = ndn::Buffer(
-            reinterpret_cast<const uint8_t*>(assignment.data()),
-            assignment.size());
-        }
-      }
-    }
+    // The compact Selection already carries every provider entry.  Providers
+    // deterministically reconstruct roleProvider.* from those authenticated
+    // entries, so repeating the complete map in every assignment wastes more
+    // than a kilobyte and can exceed NDN's 8,800-byte packet ceiling.
     return selected;
   }
 
@@ -1729,6 +1836,7 @@ private:
   std::map<std::string, ndn::Name> m_artifactDataNames;
   std::map<std::string, ndn::Name> m_scopeKeyDataNames;
   std::map<std::string, std::vector<std::string>> m_roleScopes;
+  std::map<std::string, std::string> m_roleProviderPreference;
   PyFunctionPtr m_ackObserver;
 };
 
@@ -1765,6 +1873,7 @@ public:
     assignment.artifactDataName = native.artifactDataName.toUri();
     assignment.requiresProvisioning = native.requiresProvisioning;
     assignment.provisioningTimeoutMs = native.provisioningTimeoutMs;
+    assignment.selectionDigest = native.selectionDigest;
     assignment.assignmentPayload = toPyBytes(native.assignmentPayload);
     return assignment;
   }
@@ -1895,6 +2004,40 @@ public:
     m_ctx->publishFinalResponse(toBuffer(payload));
   }
 
+  void reportOperationStatus(const py::dict& payload)
+  {
+    nsf::ServiceProvider::ServiceOperationStatus status;
+    auto text = [&payload](const char* name, const std::string& fallback = "") {
+      auto item = payload.contains(name) ? payload[name] : py::none();
+      return item.is_none() ? fallback : py::cast<std::string>(item);
+    };
+    auto integer = [&payload](const char* name, uint64_t fallback) {
+      auto item = payload.contains(name) ? payload[name] : py::none();
+      return item.is_none() ? fallback : py::cast<uint64_t>(item);
+    };
+    status.operationId = text("operation_id");
+    status.operation = text("operation");
+    status.role = text("role");
+    status.attempt = integer("attempt", 1);
+    status.epoch = integer("epoch", 1);
+    status.sequence = integer("sequence", 1);
+    status.state = text("state", "QUEUED");
+    status.reasonCode = text("reason_code");
+    status.message = text("message");
+    status.progressKnown = payload.contains("progress_known") &&
+                           py::cast<bool>(payload["progress_known"]);
+    status.progress = payload.contains("progress") ?
+      py::cast<double>(payload["progress"]) : 0.0;
+    status.createdAtMs = integer("created_at_ms", 0);
+    status.updatedAtMs = integer("updated_at_ms", 0);
+    status.expiresAtMs = integer("expires_at_ms", 0);
+    status.detailsSchema = text("details_schema");
+    if (payload.contains("details_payload")) {
+      status.detailsPayload = toBuffer(py::cast<py::bytes>(payload["details_payload"]));
+    }
+    m_ctx->reportOperationStatus(std::move(status));
+  }
+
 private:
   nsf::ServiceProvider::CollaborationContext* m_ctx = nullptr;
 };
@@ -1952,7 +2095,8 @@ public:
   addService(const std::string& serviceName,
              py::function requestHandler,
              std::optional<py::function> ackHandler,
-             bool includeRequestContext = false)
+             bool includeRequestContext = false,
+             bool includeAckContext = false)
   {
     if (!m_provider) {
       throw std::runtime_error("provider is not initialized");
@@ -1963,7 +2107,7 @@ public:
     }
 
     auto ackAdapter = nsf::ServiceProvider::AckStrategyHandler(
-        [this, serviceName](const nsf::RequestMessage& request) {
+        [this, serviceName, includeAckContext](const nsf::RequestMessage& request) {
           nsf::ServiceProvider::AckDecision decision;
           auto it = m_ackHandlers.find(serviceName);
           if (it == m_ackHandlers.end()) {
@@ -1973,13 +2117,21 @@ public:
           }
           py::gil_scoped_acquire gil;
           try {
-            py::object result = it->second(toPyBytes(request.getPayload()));
+            py::object result = includeAckContext ?
+              it->second(makeAckRequestContext(request), toPyBytes(request.getPayload())) :
+              it->second(toPyBytes(request.getPayload()));
             if (py::isinstance<PyAckDecision>(result)) {
               auto pyDecision = result.cast<PyAckDecision>();
               decision.status = pyDecision.status;
               decision.suppressAck = pyDecision.suppress;
               decision.message = pyDecision.message;
               decision.payload = toBuffer(pyDecision.payload);
+              decision.reservationLease =
+                toDeploymentControlContract<nsf::ReservationLease>(
+                  pyDecision.reservationLease);
+              decision.selectionInputKeyOffer =
+                toDeploymentControlContract<nsf::SelectionInputKeyOffer>(
+                  pyDecision.selectionInputKeyOffer);
             }
             else {
               decision.status = result.cast<bool>();
@@ -2044,10 +2196,86 @@ public:
   }
 
   void
+  setDeploymentPrepareHandler(py::function handler)
+  {
+    auto callback = keepPyFunction(std::move(handler));
+    m_deploymentPrepareHandler = callback;
+    m_provider->setDeploymentPrepareHandler(
+      [callback](const ndn::Name& requester, const ndn::Name& provider,
+                 const ndn::Name& service, const ndn::Name& requestId,
+                 const nsf::RequestMessage& request,
+                 const nsf::DeploymentPlan& plan,
+                 const std::string& selectionDigest) {
+        py::gil_scoped_acquire gil;
+        py::dict context;
+        context["requester_identity"] = requester.toUri();
+        context["provider_identity"] = provider.toUri();
+        context["service_name"] = service.toUri();
+        context["request_id"] = requestId.toUri();
+        context["request_payload"] = toPyBytes(request.getPayload());
+        context["selection_digest"] = selectionDigest;
+        context["deployment_plan_digest"] = plan.computeDigest();
+        context["deployment_plan"] = plan.getFields();
+        py::object result = (*callback)(context);
+        if (py::isinstance<nsf::ProviderReadyMessage>(result)) {
+          return result.cast<nsf::ProviderReadyMessage>();
+        }
+        auto fields = result.cast<std::map<std::string, std::string>>();
+        nsf::ProviderReadyMessage ready;
+        for (const auto& field : fields) ready.setField(field.first, field.second);
+        return ready;
+      });
+  }
+
+  void
+  setR1SelectionDecisionHandler(const std::string& serviceName,
+                                py::function handler)
+  {
+    auto callback = keepPyFunction(std::move(handler));
+    m_r1SelectionDecisionHandlers[serviceName] = callback;
+    m_provider->setR1SelectionDecisionHandler(
+      ndn::Name(serviceName),
+      [callback](const nsf::SelectionDecision& decision) {
+        py::gil_scoped_acquire gil;
+        py::object result = (*callback)(py::cast(decision.getFields()));
+        if (py::isinstance<nsf::SelectionDecisionReceipt>(result)) {
+          auto receipt = result.cast<nsf::SelectionDecisionReceipt>();
+          receipt.setField("decisionDigest", decision.computeDigest());
+          receipt.setField("reservationId", decision.getField("reservationId"));
+          return receipt;
+        }
+        const auto fields = result.cast<std::map<std::string, std::string>>();
+        nsf::SelectionDecisionReceipt receipt;
+        for (const auto& field : fields)
+          receipt.setField(field.first, field.second);
+        // Python may use a JSON canonical form internally. Wire authority is
+        // the exact C++ SelectionDecision digest received by Core.
+        receipt.setField("decisionDigest", decision.computeDigest());
+        receipt.setField("reservationId", decision.getField("reservationId"));
+        return receipt;
+      });
+  }
+
+  void
+  setR1ReservationTerminalHandler(const std::string& serviceName,
+                                  py::function handler)
+  {
+    auto callback = keepPyFunction(std::move(handler));
+    m_r1ReservationTerminalHandlers[serviceName] = callback;
+    m_provider->setR1ReservationTerminalHandler(
+      ndn::Name(serviceName), [callback](const std::string& reservationId,
+                                        const std::string& cause) {
+        py::gil_scoped_acquire gil;
+        (*callback)(reservationId, cause);
+      });
+  }
+
+  void
   addCollaborationService(const std::string& serviceName,
                           const std::vector<std::string>& allowedRoles,
                           py::function collaborationHandler,
-                          std::optional<py::function> ackHandler)
+                          std::optional<py::function> ackHandler,
+                          bool includeAckContext = false)
   {
     if (!m_provider) {
       throw std::runtime_error("provider is not initialized");
@@ -2061,7 +2289,7 @@ public:
       ndn::Name(serviceName),
       allowedRoles,
       nsf::ServiceProvider::AckStrategyHandler(
-        [this, serviceName](const nsf::RequestMessage& request) {
+        [this, serviceName, includeAckContext](const nsf::RequestMessage& request) {
           nsf::ServiceProvider::AckDecision decision;
           auto it = m_collaborationAckHandlers.find(serviceName);
           if (it == m_collaborationAckHandlers.end()) {
@@ -2071,13 +2299,21 @@ public:
           }
           py::gil_scoped_acquire gil;
           try {
-            py::object result = it->second(toPyBytes(request.getPayload()));
+            py::object result = includeAckContext ?
+              it->second(makeAckRequestContext(request), toPyBytes(request.getPayload())) :
+              it->second(toPyBytes(request.getPayload()));
             if (py::isinstance<PyAckDecision>(result)) {
               auto pyDecision = result.cast<PyAckDecision>();
               decision.status = pyDecision.status;
               decision.suppressAck = pyDecision.suppress;
               decision.message = pyDecision.message;
               decision.payload = toBuffer(pyDecision.payload);
+              decision.reservationLease =
+                toDeploymentControlContract<nsf::ReservationLease>(
+                  pyDecision.reservationLease);
+              decision.selectionInputKeyOffer =
+                toDeploymentControlContract<nsf::SelectionInputKeyOffer>(
+                  pyDecision.selectionInputKeyOffer);
             }
             else {
               decision.status = result.cast<bool>();
@@ -2192,6 +2428,20 @@ public:
     m_provider->startNdnsdPeriodicPublish(intervalSeconds);
   }
 
+  std::shared_ptr<nsf::LiveStreamPublisher>
+  createLiveStream(const nsf::LiveStreamDefinition& definition)
+  {
+    start();
+    return m_provider->createLiveStream(definition);
+  }
+
+  std::shared_ptr<nsf::StreamPublisher>
+  createStream(const nsf::StreamConfig& config)
+  {
+    start();
+    return m_provider->createStream(config);
+  }
+
 private:
   ndn::Face m_face;
   ndn::KeyChain m_keyChain;
@@ -2211,6 +2461,11 @@ private:
   std::map<std::string, py::function> m_ackHandlers;
   std::map<std::string, py::function> m_collaborationHandlers;
   std::map<std::string, py::function> m_collaborationAckHandlers;
+  std::shared_ptr<py::function> m_deploymentPrepareHandler;
+  std::map<std::string, std::shared_ptr<py::function>>
+    m_r1SelectionDecisionHandlers;
+  std::map<std::string, std::shared_ptr<py::function>>
+    m_r1ReservationTerminalHandlers;
   std::atomic<bool> m_running{false};
   std::thread m_thread;
   std::mutex m_errorMutex;
@@ -2438,12 +2693,39 @@ public:
     }
   }
 
+  template<typename Predicate>
+  bool
+  waitForRuntimeResult(std::condition_variable& cv,
+                       std::unique_lock<std::mutex>& lock,
+                       const std::chrono::steady_clock::time_point& deadline,
+                       Predicate predicate)
+  {
+    while (!predicate()) {
+      if (!m_running.load()) {
+        lock.unlock();
+        throwIfError();
+        lock.lock();
+        return false;
+      }
+      const auto now = std::chrono::steady_clock::now();
+      if (now >= deadline) {
+        return false;
+      }
+      const auto nextCheck = std::min(deadline, now + std::chrono::milliseconds(50));
+      cv.wait_until(lock, nextCheck, predicate);
+    }
+    return true;
+  }
+
   PyServiceResponse
   requestService(const std::string& serviceName,
                  const py::bytes& requestPayload,
                  int ackTimeoutMs,
                  int timeoutMs,
-                 const std::string& strategy)
+                 const std::string& strategy,
+                 const std::string& requestedRequestId = "",
+                 const std::optional<nsf::DeploymentIntent>& deploymentIntent = std::nullopt,
+                 const std::optional<nsf::RequestCapabilities>& requestCapabilities = std::nullopt)
   {
     PyServiceResponse output;
     std::mutex mutex;
@@ -2453,29 +2735,56 @@ public:
     auto payload = toBuffer(requestPayload);
     auto selection = selectionPolicyByName(strategy);
 
-    auto submit = [&, payload, selection] {
-      m_user->RequestService(
-        ndn::Name(serviceName),
-        payload,
-        ackTimeoutMs,
-        selection,
-        timeoutMs,
-        [&](const nsf::ResponseMessage& response) {
+    auto submit = [&, payload, selection, deploymentIntent, requestCapabilities] {
+      auto onResponse = [&](const nsf::ResponseMessage& response) {
           py::gil_scoped_acquire gil;
           std::lock_guard<std::mutex> lock(mutex);
           output.status = response.getStatus();
           output.payload = toPyBytes(response.getPayload());
           output.error = response.getErrorInfo();
+          output.dataName = response.getDataName();
+          output.signerCertificate = response.getSignerCertificate();
+          output.wireDigest = response.getWireDigest();
           done = true;
           cv.notify_one();
-        },
-        [&](const ndn::Name& requestId) {
+      };
+      auto onTimeout = [&](const ndn::Name& requestId) {
           std::lock_guard<std::mutex> lock(mutex);
           output.status = false;
           output.error = "timeout: " + requestId.toUri();
           done = true;
           cv.notify_one();
-        });
+      };
+      ndn::Name actualRequestId;
+      if (deploymentIntent || requestCapabilities) {
+        nsf::RequestMessage request;
+        auto mutablePayload = payload;
+        request.setPayload(mutablePayload, mutablePayload.size());
+        if (deploymentIntent) request.setDeploymentIntent(*deploymentIntent);
+        if (requestCapabilities) request.setRequestCapabilities(*requestCapabilities);
+        const auto nativeSelection = strategy == "all-selected" ?
+          nsf::ServiceUser::AckSelectionStrategy::AllSelected :
+          (strategy == "random" ?
+             nsf::ServiceUser::AckSelectionStrategy::RandomSelection :
+             nsf::ServiceUser::AckSelectionStrategy::FirstRespondingSelection);
+        actualRequestId = m_user->RequestService(
+          {}, ndn::Name(serviceName), std::move(request), ackTimeoutMs,
+          nativeSelection, timeoutMs, onTimeout, onResponse,
+          requestedRequestId.empty() ? ndn::Name() : ndn::Name(requestedRequestId));
+      }
+      else {
+        actualRequestId = m_user->RequestService(
+          ndn::Name(serviceName), payload, ackTimeoutMs, selection, timeoutMs,
+        [&](const nsf::ResponseMessage& response) {
+          onResponse(response);
+        },
+        [&](const ndn::Name& requestId) {
+          onTimeout(requestId);
+        },
+        requestedRequestId.empty() ? ndn::Name() : ndn::Name(requestedRequestId));
+      }
+      std::lock_guard<std::mutex> lock(mutex);
+      output.requestId = actualRequestId.toUri();
     };
 
     if (m_running.load()) {
@@ -2484,12 +2793,11 @@ public:
                             std::chrono::milliseconds(timeoutMs + 3000);
       py::gil_scoped_release release;
       std::unique_lock<std::mutex> lock(mutex);
-      cv.wait_until(lock, deadline, [&done] { return done; });
-      if (done) {
+      if (waitForRuntimeResult(cv, lock, deadline, [&done] { return done; })) {
         return output;
       }
       output.status = false;
-      output.error = "local deadline";
+      output.error = m_running.load() ? "local deadline" : "runtime stopped";
       return output;
     }
 
@@ -2519,13 +2827,18 @@ public:
                          const py::bytes& requestPayload,
                          int timeoutMs)
   {
-    PyServiceResponse output;
-    std::mutex mutex;
-    std::condition_variable cv;
-    bool done = false;
+    struct TargetedSyncState
+    {
+      std::mutex mutex;
+      std::condition_variable cv;
+      PyServiceResponse output;
+      std::atomic_bool terminalClaimed{false};
+      bool done = false;
+    };
+    auto state = std::make_shared<TargetedSyncState>();
 
     auto payload = toBuffer(requestPayload);
-    auto submit = [&, payload]() mutable {
+    auto submit = [this, providerName, serviceName, payload, timeoutMs, state]() mutable {
       nsf::RequestMessage request;
       request.setPayload(payload, payload.size());
       m_user->RequestServiceTargeted(
@@ -2533,53 +2846,66 @@ public:
         ndn::Name(serviceName),
         std::move(request),
         timeoutMs,
-        [&](const ndn::Name& requestId) {
-          std::lock_guard<std::mutex> lock(mutex);
-          output.status = false;
-          output.error = "timeout: " + requestId.toUri();
-          done = true;
-          cv.notify_one();
+        [state](const ndn::Name& requestId) {
+          if (state->terminalClaimed.exchange(true)) {
+            return;
+          }
+          std::lock_guard<std::mutex> lock(state->mutex);
+          state->output.status = false;
+          state->output.error = "timeout: " + requestId.toUri();
+          state->done = true;
+          state->cv.notify_one();
         },
-        [&](const nsf::ResponseMessage& response) {
+        [state](const nsf::ResponseMessage& response) {
+          if (state->terminalClaimed.exchange(true)) {
+            return;
+          }
           py::gil_scoped_acquire gil;
-          std::lock_guard<std::mutex> lock(mutex);
-          output.status = response.getStatus();
-          output.payload = toPyBytes(response.getPayload());
-          output.error = response.getErrorInfo();
-          done = true;
-          cv.notify_one();
+          std::lock_guard<std::mutex> lock(state->mutex);
+          state->output.status = response.getStatus();
+          state->output.payload = toPyBytes(response.getPayload());
+          state->output.error = response.getErrorInfo();
+          state->output.dataName = response.getDataName();
+          state->output.signerCertificate = response.getSignerCertificate();
+          state->output.wireDigest = response.getWireDigest();
+          state->done = true;
+          state->cv.notify_one();
         });
     };
 
     if (m_running.load()) {
       boost::asio::post(m_face.getIoContext(), submit);
       const auto deadline = std::chrono::steady_clock::now() +
-                            std::chrono::milliseconds(timeoutMs + 3000);
+                            std::chrono::milliseconds(std::max(timeoutMs, 0) + 500);
       py::gil_scoped_release release;
-      std::unique_lock<std::mutex> lock(mutex);
-      cv.wait_until(lock, deadline, [&done] { return done; });
-      if (done) {
-        return output;
+      std::unique_lock<std::mutex> lock(state->mutex);
+      if (waitForRuntimeResult(state->cv, lock, deadline,
+                               [state] { return state->done; })) {
+        return state->output;
       }
+      state->terminalClaimed.store(true);
+      PyServiceResponse output;
       output.status = false;
-      output.error = "local deadline";
+      output.error = m_running.load() ? "local deadline" : "runtime stopped";
       return output;
     }
 
     std::lock_guard<std::mutex> callLock(m_callMutex);
     submit();
     const auto deadline = std::chrono::steady_clock::now() +
-                          std::chrono::milliseconds(timeoutMs + 3000);
+                          std::chrono::milliseconds(std::max(timeoutMs, 0) + 500);
     while (std::chrono::steady_clock::now() < deadline) {
       {
-        std::lock_guard<std::mutex> lock(mutex);
-        if (done) {
-          return output;
+        std::lock_guard<std::mutex> lock(state->mutex);
+        if (state->done) {
+          return state->output;
         }
       }
       py::gil_scoped_release release;
       processFaceEvents(m_face, pythonFacePollTimeout());
     }
+    state->terminalClaimed.store(true);
+    PyServiceResponse output;
     output.status = false;
     output.error = "local deadline";
     return output;
@@ -2626,10 +2952,11 @@ public:
                             std::chrono::milliseconds(30000);
       py::gil_scoped_release release;
       std::unique_lock<std::mutex> lock(state->mutex);
-      if (!state->cv.wait_until(lock, deadline, [&state] { return state->done; })) {
+      if (!waitForRuntimeResult(state->cv, lock, deadline,
+                                [&state] { return state->done; })) {
         PyLargeDataPublishResult output;
         output.success = false;
-        output.error = "local deadline";
+        output.error = m_running.load() ? "local deadline" : "runtime stopped";
         return output;
       }
     }
@@ -2646,6 +2973,134 @@ public:
     return output;
   }
 
+  PySignedAppDataResult
+  publishSignedAppData(const std::string& dataName,
+                       const py::bytes& payload,
+                       int freshnessMs)
+  {
+    const auto input = toBuffer(payload);
+    struct PublishState
+    {
+      std::mutex mutex;
+      std::condition_variable cv;
+      bool done = false;
+      bool success = false;
+      std::string name;
+      std::string error;
+    };
+    auto state = std::make_shared<PublishState>();
+    auto submit = [this, dataName, input, freshnessMs, state] {
+      try {
+        m_user->publishSignedAppData(
+          ndn::Name(dataName), input, ndn::time::milliseconds(freshnessMs));
+        // Preserve the caller's URI spelling. ndn-cxx may render an equivalent
+        // component using percent escapes (for example ':' as '%3A').
+        state->name = dataName;
+        state->success = true;
+      }
+      catch (const std::exception& e) {
+        state->error = e.what();
+      }
+      std::lock_guard<std::mutex> lock(state->mutex);
+      state->done = true;
+      state->cv.notify_one();
+    };
+    if (m_running.load()) {
+      boost::asio::post(m_face.getIoContext(), std::move(submit));
+      const auto deadline = std::chrono::steady_clock::now() +
+                            std::chrono::milliseconds(30000);
+      py::gil_scoped_release release;
+      std::unique_lock<std::mutex> lock(state->mutex);
+      if (!waitForRuntimeResult(state->cv, lock, deadline,
+                                [&state] { return state->done; })) {
+        PySignedAppDataResult output;
+        output.error = m_running.load() ? "local deadline" : "runtime stopped";
+        return output;
+      }
+    }
+    else {
+      std::lock_guard<std::mutex> callLock(m_callMutex);
+      submit();
+    }
+    PySignedAppDataResult output;
+    output.success = state->success;
+    output.dataName = state->name;
+    output.error = state->error;
+    return output;
+  }
+
+  PySignedAppDataResult
+  fetchSignedAppData(const std::string& dataName,
+                     const std::string& expectedSigner,
+                     int timeoutMs)
+  {
+    if (timeoutMs <= 0) {
+      throw std::invalid_argument("timeout_ms must be positive");
+    }
+    start();
+    struct FetchState
+    {
+      std::mutex mutex;
+      std::condition_variable cv;
+      bool done = false;
+      bool success = false;
+      ndn::Buffer payload;
+      std::string name;
+      std::string signerCertificate;
+      std::string error;
+    };
+    auto state = std::make_shared<FetchState>();
+    boost::asio::post(m_face.getIoContext(),
+      [this, dataName, expectedSigner, timeoutMs, state] {
+        try {
+          m_user->fetchSignedAppData(
+            ndn::Name(dataName), ndn::Name(expectedSigner), timeoutMs,
+            [state, dataName](const ndn::Data& data) {
+              std::lock_guard<std::mutex> lock(state->mutex);
+              const auto& content = data.getContent();
+              state->payload = ndn::Buffer(content.value(), content.value_size());
+              state->name = dataName;
+              if (data.getSignatureInfo().hasKeyLocator() &&
+                  data.getSignatureInfo().getKeyLocator().getType() == ndn::tlv::Name) {
+                state->signerCertificate =
+                  data.getSignatureInfo().getKeyLocator().getName().toUri();
+              }
+              state->success = true;
+              state->done = true;
+              state->cv.notify_one();
+            },
+            [state](const ndn::Name&, const std::string& reason) {
+              std::lock_guard<std::mutex> lock(state->mutex);
+              if (state->done) {
+                return;
+              }
+              state->error = reason;
+              state->done = true;
+              state->cv.notify_one();
+            });
+        }
+        catch (const std::exception& e) {
+          std::lock_guard<std::mutex> lock(state->mutex);
+          state->error = e.what();
+          state->done = true;
+          state->cv.notify_one();
+        }
+      });
+    {
+      py::gil_scoped_release release;
+      std::unique_lock<std::mutex> lock(state->mutex);
+      state->cv.wait_for(lock, std::chrono::milliseconds(timeoutMs + 1000),
+                         [state] { return state->done; });
+    }
+    PySignedAppDataResult output;
+    output.success = state->success;
+    output.dataName = state->name;
+    output.signerCertificate = state->signerCertificate;
+    output.payload = toPyBytes(state->payload);
+    output.error = state->done ? state->error : "local deadline";
+    return output;
+  }
+
   nsf::CollaborationPlan
   buildCollaborationPlan(const std::string& serviceName,
                          const std::vector<std::map<std::string, py::object>>& roles,
@@ -2656,6 +3111,7 @@ public:
                          const std::map<std::string, std::vector<std::string>>& roleScopes,
                          int ackTimeoutMs,
                          int timeoutMs,
+                         const std::map<std::string, std::string>& roleProviderAssignments = {},
                          PyFunctionPtr ackObserver = nullptr)
   {
     nsf::CollaborationPlan plan;
@@ -2744,6 +3200,7 @@ public:
       std::move(nativeArtifactDataNames),
       std::move(nativeScopeKeyDataNames),
       roleScopes,
+      roleProviderAssignments,
       std::move(ackObserver));
     return plan;
   }
@@ -2759,7 +3216,9 @@ public:
                        const std::map<std::string, std::vector<std::string>>& roleScopes,
                        int ackTimeoutMs,
                        int timeoutMs,
-                       py::object ackObserver = py::none())
+                       py::object ackObserver = py::none(),
+                       const std::map<std::string, std::string>& roleProviderAssignments = {},
+                       const std::string& requestedRequestId = "")
   {
     PyFunctionPtr observer;
     if (!ackObserver.is_none()) {
@@ -2774,6 +3233,7 @@ public:
                                        roleScopes,
                                        ackTimeoutMs,
                                        timeoutMs,
+                                       roleProviderAssignments,
                                        std::move(observer));
 
     PyServiceResponse output;
@@ -2783,7 +3243,7 @@ public:
     bool submitted = false;
     auto payload = toBuffer(initialPayload);
 
-    auto submit = [&, payload, plan = std::move(plan)]() mutable {
+    auto submit = [&, payload, plan = std::move(plan), requestedRequestId]() mutable {
       const auto requestId = m_user->RequestCollaboration(
         ndn::Name(serviceName),
         payload,
@@ -2794,6 +3254,9 @@ public:
           output.status = response.getStatus();
           output.payload = toPyBytes(response.getPayload());
           output.error = response.getErrorInfo();
+          output.dataName = response.getDataName();
+          output.signerCertificate = response.getSignerCertificate();
+          output.wireDigest = response.getWireDigest();
           done = true;
           cv.notify_one();
         },
@@ -2803,7 +3266,8 @@ public:
           output.error = "timeout: " + requestId.toUri();
           done = true;
           cv.notify_one();
-        });
+        },
+        requestedRequestId.empty() ? ndn::Name() : ndn::Name(requestedRequestId));
       {
         std::lock_guard<std::mutex> lock(mutex);
         output.requestId = requestId.toUri();
@@ -2818,12 +3282,12 @@ public:
                             std::chrono::milliseconds(timeoutMs + 3000);
       py::gil_scoped_release release;
       std::unique_lock<std::mutex> lock(mutex);
-      cv.wait_until(lock, deadline, [&done, &submitted] { return done && submitted; });
-      if (done && submitted) {
+      if (waitForRuntimeResult(cv, lock, deadline,
+                               [&done, &submitted] { return done && submitted; })) {
         return output;
       }
       output.status = false;
-      output.error = "local deadline";
+      output.error = m_running.load() ? "local deadline" : "runtime stopped";
       return output;
     }
 
@@ -2858,7 +3322,9 @@ public:
                             py::function onResponse,
                             py::function onTimeout,
                             int ackTimeoutMs,
-                            int timeoutMs)
+                            int timeoutMs,
+                            const std::map<std::string, std::string>& roleProviderAssignments = {},
+                            const std::string& requestedRequestId = "")
   {
     start();
     auto payload = toBuffer(initialPayload);
@@ -2870,23 +3336,28 @@ public:
                                        scopeKeyDataNames,
                                        roleScopes,
                                        ackTimeoutMs,
-                                       timeoutMs);
+                                       timeoutMs,
+                                       roleProviderAssignments);
     auto responseCallback = keepPyFunction(std::move(onResponse));
     auto timeoutCallback = keepPyFunction(std::move(onTimeout));
     boost::asio::post(m_face.getIoContext(),
-      [this, serviceName, payload, plan = std::move(plan),
+      [this, serviceName, payload, plan = std::move(plan), requestedRequestId,
        responseCallback = std::move(responseCallback),
        timeoutCallback = std::move(timeoutCallback)]() mutable {
         m_user->RequestCollaboration(
           ndn::Name(serviceName),
           payload,
           std::move(plan),
-          [responseCallback](const nsf::ResponseMessage& response) mutable {
+          [responseCallback, requestedRequestId](const nsf::ResponseMessage& response) mutable {
             py::gil_scoped_acquire gil;
             PyServiceResponse output;
             output.status = response.getStatus();
             output.payload = toPyBytes(response.getPayload());
             output.error = response.getErrorInfo();
+            output.requestId = requestedRequestId;
+            output.dataName = response.getDataName();
+            output.signerCertificate = response.getSignerCertificate();
+            output.wireDigest = response.getWireDigest();
             try {
               (*responseCallback)(output);
             }
@@ -2902,7 +3373,8 @@ public:
             catch (const py::error_already_set& e) {
               PyErr_WriteUnraisable(e.value().ptr());
             }
-          });
+          },
+          requestedRequestId.empty() ? ndn::Name() : ndn::Name(requestedRequestId));
       });
   }
 
@@ -2912,7 +3384,9 @@ public:
                        py::function selector,
                        int ackTimeoutMs,
                        int timeoutMs,
-                       const std::string& requestStrategy)
+                       const std::string& requestStrategy,
+                       const std::optional<nsf::DeploymentIntent>& deploymentIntent = std::nullopt,
+                       const std::optional<nsf::RequestCapabilities>& requestCapabilities = std::nullopt)
   {
     PyServiceResponse output;
     std::mutex mutex;
@@ -2960,11 +3434,13 @@ public:
         return selectedCandidates;
       };
 
-    auto submit = [&, payload, handler, nativeStrategy] {
+    auto submit = [&, payload, handler, nativeStrategy, deploymentIntent, requestCapabilities] {
       nsf::RequestMessage requestMessage;
       auto mutablePayload = payload;
       requestMessage.setPayload(mutablePayload, mutablePayload.size());
       requestMessage.setStrategy(nativeStrategy);
+      if (deploymentIntent) requestMessage.setDeploymentIntent(*deploymentIntent);
+      if (requestCapabilities) requestMessage.setRequestCapabilities(*requestCapabilities);
       m_user->RequestService(
         std::vector<ndn::Name>{},
         ndn::Name(serviceName),
@@ -2997,12 +3473,11 @@ public:
                             std::chrono::milliseconds(timeoutMs + 3000);
       py::gil_scoped_release release;
       std::unique_lock<std::mutex> lock(mutex);
-      cv.wait_until(lock, deadline, [&done] { return done; });
-      if (done) {
+      if (waitForRuntimeResult(cv, lock, deadline, [&done] { return done; })) {
         return output;
       }
       output.status = false;
-      output.error = "local deadline";
+      output.error = m_running.load() ? "local deadline" : "runtime stopped";
       return output;
     }
 
@@ -3086,10 +3561,12 @@ public:
     auto payload = toBuffer(requestPayload);
     auto responseCallback = keepPyFunction(std::move(onResponse));
     auto timeoutCallback = keepPyFunction(std::move(onTimeout));
+    auto terminalClaimed = std::make_shared<std::atomic_bool>(false);
     boost::asio::post(m_face.getIoContext(),
       [this, providerName, serviceName, payload, timeoutMs,
        responseCallback = std::move(responseCallback),
-       timeoutCallback = std::move(timeoutCallback)]() mutable {
+       timeoutCallback = std::move(timeoutCallback),
+       terminalClaimed]() mutable {
         nsf::RequestMessage request;
         request.setPayload(payload, payload.size());
         m_user->RequestServiceTargeted(
@@ -3097,7 +3574,10 @@ public:
           ndn::Name(serviceName),
           std::move(request),
           timeoutMs,
-          [timeoutCallback](const ndn::Name& requestId) mutable {
+          [timeoutCallback, terminalClaimed](const ndn::Name& requestId) mutable {
+            if (terminalClaimed->exchange(true)) {
+              return;
+            }
             py::gil_scoped_acquire gil;
             try {
               (*timeoutCallback)(requestId.toUri());
@@ -3106,7 +3586,10 @@ public:
               PyErr_WriteUnraisable(e.value().ptr());
             }
           },
-          [responseCallback](const nsf::ResponseMessage& response) mutable {
+          [responseCallback, terminalClaimed](const nsf::ResponseMessage& response) mutable {
+            if (terminalClaimed->exchange(true)) {
+              return;
+            }
             py::gil_scoped_acquire gil;
             PyServiceResponse output;
             output.status = response.getStatus();
@@ -3169,6 +3652,199 @@ public:
     return result;
   }
 
+  py::object
+  queryCollaborationStatus(const std::string& providerName,
+                           const std::string& serviceName,
+                           const std::string& selectionDigest,
+                           int timeoutMs)
+  {
+    if (providerName.empty() || serviceName.empty() || selectionDigest.empty() ||
+        timeoutMs <= 0) {
+      throw std::invalid_argument("invalid collaboration status query binding");
+    }
+    start();
+    struct QueryState {
+      std::mutex mutex;
+      std::condition_variable cv;
+      bool done = false;
+      std::optional<nsf::SelectionExecutionStatus> result;
+    };
+    auto state = std::make_shared<QueryState>();
+    boost::asio::post(m_face.getIoContext(),
+      [this, providerName, serviceName, selectionDigest, timeoutMs,
+       state] {
+        m_user->QuerySelectionStatus(
+          ndn::Name(providerName), ndn::Name(serviceName), selectionDigest,
+          [state](const nsf::SelectionExecutionStatus& status) {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            state->result = status;
+            state->done = true;
+            state->cv.notify_one();
+          },
+          [state](const ndn::Name&) {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            state->done = true;
+            state->cv.notify_one();
+          }, timeoutMs);
+      });
+    {
+      py::gil_scoped_release release;
+      std::unique_lock<std::mutex> lock(state->mutex);
+      state->cv.wait_for(lock, std::chrono::milliseconds(timeoutMs + 250),
+                         [state] { return state->done; });
+    }
+    if (!state->result) return py::none();
+    return selectionStatusToDict(*state->result);
+  }
+
+  py::list
+  getCollaborationStatusSnapshot(const std::string& requestId,
+                                 int timeoutMs)
+  {
+    if (requestId.empty() || timeoutMs <= 0) {
+      throw std::invalid_argument("invalid collaboration request status binding");
+    }
+    start();
+    struct SnapshotState {
+      std::mutex mutex;
+      std::condition_variable cv;
+      bool done = false;
+      std::vector<nsf::SelectionExecutionStatus> result;
+    };
+    auto state = std::make_shared<SnapshotState>();
+    boost::asio::post(m_face.getIoContext(), [this, requestId, state] {
+      auto result = m_user->GetCollaborationStatusSnapshot(ndn::Name(requestId));
+      std::lock_guard<std::mutex> lock(state->mutex);
+      state->result = std::move(result);
+      state->done = true;
+      state->cv.notify_one();
+    });
+    {
+      py::gil_scoped_release release;
+      std::unique_lock<std::mutex> lock(state->mutex);
+      state->cv.wait_for(lock, std::chrono::milliseconds(timeoutMs),
+                         [state] { return state->done; });
+    }
+    py::list output;
+    for (const auto& item : state->result) {
+      output.append(selectionStatusToDict(item));
+    }
+    return output;
+  }
+
+  std::shared_ptr<nsf::LiveStreamConsumerHandle>
+  openLiveStream(const nsf::LiveStreamDescriptor& descriptor,
+                 py::function onItem,
+                 const std::string& startMode,
+                 const std::string& prefetchPolicy,
+                 size_t aggregateInterestLimit,
+                 bool enableFecRecovery,
+                 uint64_t interestLifetimeMs,
+                 std::optional<py::function> onStatus)
+  {
+    start();
+    auto itemCallback = keepPyFunction(std::move(onItem));
+    PyFunctionPtr statusCallback;
+    if (onStatus) statusCallback = keepPyFunction(std::move(*onStatus));
+    nsf::LiveStreamOpenOptions options;
+    if (startMode == "latest") options.start = nsf::LiveStreamStart::Latest;
+    else if (startMode == "beginning") options.start = nsf::LiveStreamStart::Beginning;
+    else throw std::invalid_argument("start must be latest or beginning");
+    if (prefetchPolicy == "mapped-pressure") {
+      options.prefetchPolicy = nsf::LiveStreamPrefetchPolicy::MappedPressure;
+    }
+    else if (prefetchPolicy == "mapped-live-v1-future-on") {
+      options.prefetchPolicy = nsf::LiveStreamPrefetchPolicy::MappedLiveFutureOn;
+    }
+    else if (prefetchPolicy == "mapped-live-v1-future-off") {
+      options.prefetchPolicy = nsf::LiveStreamPrefetchPolicy::MappedLiveFutureOff;
+    }
+    else if (prefetchPolicy == "adaptive-sample-atomic") {
+      options.prefetchPolicy = nsf::LiveStreamPrefetchPolicy::AdaptiveSampleAtomic;
+    }
+    else throw std::invalid_argument("unknown live-stream prefetch policy");
+    options.aggregateInterestLimit = aggregateInterestLimit;
+    options.enableFecRecovery = enableFecRecovery;
+    options.interestLifetimeMs = interestLifetimeMs;
+    options.onItem = [itemCallback] (const nsf::VerifiedLiveStreamItem& item) {
+      py::gil_scoped_acquire gil;
+      py::object result = (*itemCallback)(item);
+      if (py::isinstance<py::bool_>(result)) {
+        return py::cast<bool>(result) ? nsf::LiveStreamItemAdmission::acceptItem() :
+          nsf::LiveStreamItemAdmission::rejectItem("application-rejected");
+      }
+      return result.cast<nsf::LiveStreamItemAdmission>();
+    };
+    if (statusCallback) {
+      options.onStatus = [statusCallback] (const nsf::LiveStreamStatus& status) {
+        py::gil_scoped_acquire gil;
+        (*statusCallback)(status);
+      };
+    }
+    return m_user->openLiveStream(descriptor, std::move(options));
+  }
+
+  std::shared_ptr<nsf::PredictiveStreamSubscriber>
+  subscribeStream(const nsf::PredictiveStreamDescriptor& descriptor,
+                  py::function onItem,
+                  const std::string& startMode,
+                  const std::optional<std::string>& prefetchPolicy,
+                  size_t aggregateInterestLimit,
+                  bool enableFecRecovery,
+                  bool requireFullDelivery,
+                  uint64_t interestLifetimeMs,
+                  std::optional<py::function> onStatus)
+  {
+    start();
+    auto itemCallback = keepPyFunction(std::move(onItem));
+    PyFunctionPtr statusCallback;
+    if (onStatus) statusCallback = keepPyFunction(std::move(*onStatus));
+
+    nsf::StreamSubscriptionOptions options;
+    if (startMode == "latest") options.start = nsf::LiveStreamStart::Latest;
+    else if (startMode == "beginning") options.start = nsf::LiveStreamStart::Beginning;
+    else throw std::invalid_argument("start must be latest or beginning");
+
+    if (prefetchPolicy) {
+      if (*prefetchPolicy == "mapped-pressure") {
+        options.prefetchPolicy = nsf::LiveStreamPrefetchPolicy::MappedPressure;
+      }
+      else if (*prefetchPolicy == "mapped-live-v1-future-on") {
+        options.prefetchPolicy = nsf::LiveStreamPrefetchPolicy::MappedLiveFutureOn;
+      }
+      else if (*prefetchPolicy == "mapped-live-v1-future-off") {
+        options.prefetchPolicy = nsf::LiveStreamPrefetchPolicy::MappedLiveFutureOff;
+      }
+      else if (*prefetchPolicy == "adaptive-sample-atomic") {
+        options.prefetchPolicy = nsf::LiveStreamPrefetchPolicy::AdaptiveSampleAtomic;
+      }
+      else {
+        throw std::invalid_argument("unknown live-stream prefetch policy");
+      }
+    }
+    options.aggregateInterestLimit = aggregateInterestLimit;
+    options.enableFecRecovery = enableFecRecovery;
+    options.requireFullDelivery = requireFullDelivery;
+    options.interestLifetimeMs = interestLifetimeMs;
+    options.onItem = [itemCallback] (const nsf::VerifiedLiveStreamItem& item) {
+      py::gil_scoped_acquire gil;
+      py::object result = (*itemCallback)(item);
+      if (py::isinstance<py::bool_>(result)) {
+        return py::cast<bool>(result) ?
+          nsf::LiveStreamItemAdmission::acceptItem() :
+          nsf::LiveStreamItemAdmission::rejectItem("application-rejected");
+      }
+      return result.cast<nsf::LiveStreamItemAdmission>();
+    };
+    if (statusCallback) {
+      options.onStatus = [statusCallback] (const nsf::LiveStreamStatus& status) {
+        py::gil_scoped_acquire gil;
+        (*statusCallback)(status);
+      };
+    }
+    return m_user->subscribeStream(descriptor, std::move(options));
+  }
+
 private:
   ndn::Face m_face;
   ndn::KeyChain m_keyChain;
@@ -3188,10 +3864,61 @@ private:
   std::string m_error;
 };
 
+template<typename T>
+void
+bindDeploymentControlMessage(py::module_& m, const char* name)
+{
+  py::class_<T>(m, name)
+    .def(py::init<>())
+    .def_property("version", &T::getVersion, &T::setVersion)
+    .def("set_field", &T::setField, py::arg("name"), py::arg("value"))
+    .def("has_field", &T::hasField, py::arg("name"))
+    .def("get_field", &T::getField, py::arg("name"),
+         py::return_value_policy::copy)
+    .def_property_readonly("fields", [] (const T& value) {
+      return value.getFields();
+    })
+    .def("digest", &T::computeDigest)
+    .def("wire_encode", [] (const T& value) {
+      return toPyBlockWire(value.WireEncode());
+    })
+    .def_static("decode", [] (const py::bytes& wire) {
+      T value;
+      if (!value.WireDecode(blockFromExactPyBytes(wire))) {
+        throw std::invalid_argument("invalid deployment-control wire encoding");
+      }
+      return value;
+    }, py::arg("wire"));
+}
+
 } // namespace
 
 PYBIND11_MODULE(_ndnsf, m)
 {
+  bindDeploymentControlMessage<nsf::DeploymentIntent>(m, "NativeDeploymentIntent");
+  bindDeploymentControlMessage<nsf::ProviderCapabilityOffer>(m, "NativeProviderCapabilityOffer");
+  bindDeploymentControlMessage<nsf::DeploymentPlan>(m, "NativeDeploymentPlan");
+  bindDeploymentControlMessage<nsf::ProviderReadyMessage>(m, "NativeProviderReadyMessage");
+  bindDeploymentControlMessage<nsf::ReadyAcknowledgement>(m, "NativeReadyAcknowledgement");
+  bindDeploymentControlMessage<nsf::ExecutionActivateMessage>(m, "NativeExecutionActivateMessage");
+  bindDeploymentControlMessage<nsf::SecureStatusQuery>(m, "NativeSecureStatusQuery");
+  bindDeploymentControlMessage<nsf::SecureStatusSnapshot>(m, "NativeSecureStatusSnapshot");
+  bindDeploymentControlMessage<nsf::RequestCapabilities>(m, "NativeRequestCapabilities");
+  bindDeploymentControlMessage<nsf::EncryptedRequestInput>(m, "NativeEncryptedRequestInput");
+  bindDeploymentControlMessage<nsf::SelectionInputKeyOffer>(m, "NativeSelectionInputKeyOffer");
+  bindDeploymentControlMessage<nsf::SelectionInputKeyGrant>(m, "NativeSelectionInputKeyGrant");
+  bindDeploymentControlMessage<nsf::ReservationLease>(m, "NativeReservationLease");
+  bindDeploymentControlMessage<nsf::SelectionDecision>(m, "NativeSelectionDecision");
+  bindDeploymentControlMessage<nsf::SelectionDecisionReceipt>(m, "NativeSelectionDecisionReceipt");
+  bindDeploymentControlMessage<nsf::RecipientEncryptedAssignment>(m, "NativeRecipientEncryptedAssignment");
+  bindDeploymentControlMessage<nsf::StageInputEvidence>(m, "NativeStageInputEvidence");
+  bindDeploymentControlMessage<nsf::StageAbort>(m, "NativeStageAbort");
+  bindDeploymentControlMessage<nsf::SelectionDecisionTombstone>(m, "NativeSelectionDecisionTombstone");
+  m.def("make_opaque_control_handle", &nsf::makeOpaqueControlHandle,
+        py::arg("bytes") = 24);
+  m.def("is_valid_opaque_control_handle", &nsf::isValidOpaqueControlHandle,
+        py::arg("handle"));
+
   py::class_<nsf::StreamFecInfo>(m, "NativeStreamFecInfo")
     .def(py::init<>())
     .def_readwrite("scheme", &nsf::StreamFecInfo::scheme)
@@ -3232,6 +3959,309 @@ PYBIND11_MODULE(_ndnsf, m)
     .def_readwrite("fec", &nsf::StreamChunk::fec)
     .def_readwrite("metadata", &nsf::StreamChunk::metadata);
 
+  py::class_<nsf::StreamNameMapEntry>(m, "NativeStreamNameMapEntry")
+    .def(py::init<>())
+    .def_property("original_name",
+      [] (const nsf::StreamNameMapEntry& entry) {
+        return entry.originalName.toUri();
+      },
+      [] (nsf::StreamNameMapEntry& entry, const std::string& value) {
+        entry.originalName = ndn::Name(value);
+      })
+    .def_readwrite("tombstone", &nsf::StreamNameMapEntry::tombstone)
+    .def_readwrite("group_id", &nsf::StreamNameMapEntry::groupId)
+    .def_readwrite("sample_class", &nsf::StreamNameMapEntry::sampleClass)
+    .def_readwrite("group_item_index", &nsf::StreamNameMapEntry::groupItemIndex)
+    .def_readwrite("predicted_source_items",
+                   &nsf::StreamNameMapEntry::predictedSourceItems)
+    .def_readwrite("predicted_repair_items",
+                   &nsf::StreamNameMapEntry::predictedRepairItems)
+    .def_static("from_name",
+      [] (const std::string& name) {
+        return nsf::StreamNameMapEntry::fromName(ndn::Name(name));
+      }, py::arg("name"))
+    .def_static("from_grouped_name",
+      [] (const std::string& name, std::string groupId, std::string sampleClass,
+          uint64_t groupItemIndex, uint64_t predictedSourceItems,
+          uint64_t predictedRepairItems) {
+        return nsf::StreamNameMapEntry::fromGroupedName(
+          ndn::Name(name), std::move(groupId), std::move(sampleClass),
+          groupItemIndex, predictedSourceItems, predictedRepairItems);
+      }, py::arg("name"), py::arg("group_id"), py::arg("sample_class"),
+         py::arg("group_item_index"), py::arg("predicted_source_items"),
+         py::arg("predicted_repair_items"))
+    .def_static("make_tombstone", &nsf::StreamNameMapEntry::makeTombstone)
+    .def("is_tombstone", &nsf::StreamNameMapEntry::isTombstone)
+    .def_property_readonly("has_group_binding",
+                           &nsf::StreamNameMapEntry::hasGroupBinding)
+    .def_property_readonly("predicted_group_items",
+                           &nsf::StreamNameMapEntry::predictedGroupItems);
+
+  py::class_<nsf::StreamNameMapBlock>(m, "NativeStreamNameMapBlock")
+    .def(py::init<>())
+    .def_readwrite("contract_version", &nsf::StreamNameMapBlock::contractVersion)
+    .def_readwrite("stream_id", &nsf::StreamNameMapBlock::streamId)
+    .def_readwrite("session_epoch", &nsf::StreamNameMapBlock::sessionEpoch)
+    .def_readwrite("mapping_version", &nsf::StreamNameMapBlock::mappingVersion)
+    .def_readwrite("block_number", &nsf::StreamNameMapBlock::blockNumber)
+    .def_readwrite("block_capacity", &nsf::StreamNameMapBlock::blockCapacity)
+    .def_readwrite("first_cursor", &nsf::StreamNameMapBlock::firstCursor)
+    .def_property("previous_content_digest",
+      [] (const nsf::StreamNameMapBlock& block) -> py::object {
+        if (!block.previousContentDigest) {
+          return py::none();
+        }
+        return toPyStreamContentDigest(*block.previousContentDigest);
+      },
+      [] (nsf::StreamNameMapBlock& block, const py::object& value) {
+        if (value.is_none()) {
+          block.previousContentDigest.reset();
+          return;
+        }
+        block.previousContentDigest =
+          streamContentDigestFromPyBytes(value.cast<py::bytes>());
+      })
+    .def_readwrite("entries", &nsf::StreamNameMapBlock::entries)
+    .def("validate", [] (const nsf::StreamNameMapBlock& block) -> py::object {
+      const auto error = block.validate();
+      return error ? py::cast(*error) : py::none();
+    })
+    .def("wire_encode", [] (const nsf::StreamNameMapBlock& block) {
+      return toPyBlockWire(block.wireEncode());
+    })
+    .def_static("decode", [] (const py::bytes& wire) {
+      const auto encoded = blockFromExactPyBytes(wire);
+      nsf::StreamNameMapBlock block;
+      if (!block.wireDecode(encoded)) {
+        throw std::invalid_argument("invalid StreamNameMapBlock wire encoding");
+      }
+      return block;
+    }, py::arg("wire"))
+    .def("canonical_content", [] (const nsf::StreamNameMapBlock& block) {
+      return toPyBlockWire(block.canonicalContent());
+    })
+    .def("content_digest", [] (const nsf::StreamNameMapBlock& block) {
+      return toPyStreamContentDigest(block.contentDigest());
+    })
+    .def("fits_signed_wire_budget", &nsf::StreamNameMapBlock::fitsSignedWireBudget,
+         py::arg("signed_envelope_overhead"), py::arg("configured_wire_cap"))
+    .def("last_cursor", &nsf::StreamNameMapBlock::lastCursor);
+
+  m.def("make_stream_name_map_root",
+    [] (const std::string& provider, const std::string& streamId) {
+      return nsf::makeStreamNameMapRoot(ndn::Name(provider), streamId).toUri();
+    }, py::arg("provider"), py::arg("stream_id"));
+
+  m.def("make_stream_name_map_block_name",
+    [] (const std::string& mappingRoot, uint64_t mappingVersion,
+        uint64_t blockNumber) {
+      return nsf::makeStreamNameMapBlockName(ndn::Name(mappingRoot),
+                                             mappingVersion,
+                                             blockNumber).toUri();
+    }, py::arg("mapping_root"), py::arg("mapping_version"),
+       py::arg("block_number"));
+
+  py::class_<nsf::StreamCursorFrontiers>(m, "NativeStreamCursorFrontiers")
+    .def(py::init<>())
+    .def_readwrite("oldest_retained", &nsf::StreamCursorFrontiers::oldestRetained)
+    .def_readwrite("latest_join", &nsf::StreamCursorFrontiers::latestJoin)
+    .def_readwrite("latest_produced", &nsf::StreamCursorFrontiers::latestProduced)
+    .def_readwrite("mapping_committed_through",
+                   &nsf::StreamCursorFrontiers::mappingCommittedThrough)
+    .def_readwrite("next_reserved", &nsf::StreamCursorFrontiers::nextReserved)
+    .def("validate", [] (const nsf::StreamCursorFrontiers& frontiers,
+                         uint64_t blockCapacity,
+                         uint64_t checkpointBlock) -> py::object {
+      const auto error = frontiers.validate(blockCapacity, checkpointBlock);
+      return error ? py::cast(*error) : py::none();
+    }, py::arg("block_capacity"), py::arg("checkpoint_block"));
+
+  py::class_<nsf::StreamNameMapCheckpoint>(m, "NativeStreamNameMapCheckpoint")
+    .def(py::init<>())
+    .def_readwrite("frontiers", &nsf::StreamNameMapCheckpoint::frontiers)
+    .def_readwrite("block_number", &nsf::StreamNameMapCheckpoint::blockNumber)
+    .def_property("content_digest",
+      [] (const nsf::StreamNameMapCheckpoint& checkpoint) {
+        return toPyStreamContentDigest(checkpoint.contentDigest);
+      },
+      [] (nsf::StreamNameMapCheckpoint& checkpoint, const py::bytes& value) {
+        checkpoint.contentDigest = streamContentDigestFromPyBytes(value);
+      });
+
+  py::class_<nsf::StreamNameMapResolverConfig>(m, "NativeStreamNameMapResolverConfig")
+    .def(py::init<>())
+    .def_readwrite("contract_version", &nsf::StreamNameMapResolverConfig::contractVersion)
+    .def_readwrite("stream_id", &nsf::StreamNameMapResolverConfig::streamId)
+    .def_readwrite("session_epoch", &nsf::StreamNameMapResolverConfig::sessionEpoch)
+    .def_readwrite("mapping_version", &nsf::StreamNameMapResolverConfig::mappingVersion)
+    .def_readwrite("block_capacity", &nsf::StreamNameMapResolverConfig::blockCapacity)
+    .def_property("expected_provider",
+      [] (const nsf::StreamNameMapResolverConfig& config) {
+        return config.expectedProvider.toUri();
+      },
+      [] (nsf::StreamNameMapResolverConfig& config, const std::string& value) {
+        config.expectedProvider = ndn::Name(value);
+      })
+    .def_property("mapping_root",
+      [] (const nsf::StreamNameMapResolverConfig& config) {
+        return config.mappingRoot.toUri();
+      },
+      [] (nsf::StreamNameMapResolverConfig& config, const std::string& value) {
+        config.mappingRoot = ndn::Name(value);
+      })
+    .def_property("payload_prefix",
+      [] (const nsf::StreamNameMapResolverConfig& config) {
+        return config.payloadPrefix.toUri();
+      },
+      [] (nsf::StreamNameMapResolverConfig& config, const std::string& value) {
+        config.payloadPrefix = ndn::Name(value);
+      })
+    .def_readwrite("signed_wire_cap", &nsf::StreamNameMapResolverConfig::signedWireCap)
+    .def_readwrite("max_verified_blocks",
+                   &nsf::StreamNameMapResolverConfig::maxVerifiedBlocks)
+    .def_readwrite("max_quarantine_blocks",
+                   &nsf::StreamNameMapResolverConfig::maxQuarantineBlocks)
+    .def_readwrite("max_reverse_entries",
+                   &nsf::StreamNameMapResolverConfig::maxReverseEntries)
+    .def_readwrite("max_original_name_wire_bytes",
+                   &nsf::StreamNameMapResolverConfig::maxOriginalNameWireBytes);
+
+  py::class_<nsf::VerifiedStreamNameMapData>(m, "NativeVerifiedStreamNameMapData")
+    .def(py::init<>())
+    .def_property("data_name",
+      [] (const nsf::VerifiedStreamNameMapData& input) {
+        return input.dataName.toUri();
+      },
+      [] (nsf::VerifiedStreamNameMapData& input, const std::string& value) {
+        input.dataName = ndn::Name(value);
+      })
+    .def_property("verified_provider",
+      [] (const nsf::VerifiedStreamNameMapData& input) {
+        return input.verifiedProvider.toUri();
+      },
+      [] (nsf::VerifiedStreamNameMapData& input, const std::string& value) {
+        input.verifiedProvider = ndn::Name(value);
+      })
+    .def_readwrite("content_type", &nsf::VerifiedStreamNameMapData::contentType)
+    .def_readwrite("has_final_block", &nsf::VerifiedStreamNameMapData::hasFinalBlock)
+    .def_readwrite("signed_wire_size", &nsf::VerifiedStreamNameMapData::signedWireSize)
+    .def_property("content",
+      [] (const nsf::VerifiedStreamNameMapData& input) {
+        return toPyBlockWire(input.content);
+      },
+      [] (nsf::VerifiedStreamNameMapData& input, const py::bytes& value) {
+        input.content = blockFromExactPyBytes(value);
+      })
+    .def_readwrite("received_monotonic_ms",
+                   &nsf::VerifiedStreamNameMapData::receivedMonotonicMs)
+    .def_readwrite("required_before_monotonic_ms",
+                   &nsf::VerifiedStreamNameMapData::requiredBeforeMonotonicMs);
+
+  py::enum_<nsf::StreamNameMapAdmissionDisposition>(
+      m, "NativeStreamNameMapAdmissionDisposition")
+    .value("ADMITTED", nsf::StreamNameMapAdmissionDisposition::Admitted)
+    .value("DUPLICATE", nsf::StreamNameMapAdmissionDisposition::Duplicate)
+    .value("QUARANTINED", nsf::StreamNameMapAdmissionDisposition::Quarantined)
+    .value("REJECTED", nsf::StreamNameMapAdmissionDisposition::Rejected)
+    .value("FATAL_SESSION", nsf::StreamNameMapAdmissionDisposition::FatalSession);
+
+  py::enum_<nsf::StreamNameMapTiming>(m, "NativeStreamNameMapTiming")
+    .value("UNCLASSIFIED", nsf::StreamNameMapTiming::Unclassified)
+    .value("AHEAD", nsf::StreamNameMapTiming::Ahead)
+    .value("LATE", nsf::StreamNameMapTiming::Late);
+
+  py::class_<nsf::StreamNameMapAdmissionResult>(
+      m, "NativeStreamNameMapAdmissionResult")
+    .def_property_readonly("disposition_name",
+      [] (const nsf::StreamNameMapAdmissionResult& result) {
+        return std::string(nsf::toString(result.disposition));
+      })
+    .def_property_readonly("timing_name",
+      [] (const nsf::StreamNameMapAdmissionResult& result) {
+        return std::string(nsf::toString(result.timing));
+      })
+    .def_readonly("reason", &nsf::StreamNameMapAdmissionResult::reason)
+    .def_readonly("state_changed", &nsf::StreamNameMapAdmissionResult::stateChanged)
+    .def_readonly("mapping_committed_through",
+                  &nsf::StreamNameMapAdmissionResult::mappingCommittedThrough)
+    .def_property_readonly("accepted", &nsf::StreamNameMapAdmissionResult::accepted)
+    .def_property_readonly("fatal", &nsf::StreamNameMapAdmissionResult::fatal);
+
+  py::class_<nsf::StreamNameMapResolution>(m, "NativeStreamNameMapResolution")
+    .def_readonly("cursor", &nsf::StreamNameMapResolution::cursor)
+    .def_property_readonly("original_name",
+      [] (const nsf::StreamNameMapResolution& resolution) {
+        return resolution.originalName.empty() ? std::string()
+                                               : resolution.originalName.toUri();
+      })
+    .def_readonly("tombstone", &nsf::StreamNameMapResolution::tombstone)
+    .def_readonly("terminal_unproduced",
+                  &nsf::StreamNameMapResolution::terminalUnproduced)
+    .def_readonly("group_id", &nsf::StreamNameMapResolution::groupId)
+    .def_readonly("sample_class", &nsf::StreamNameMapResolution::sampleClass)
+    .def_readonly("group_item_index", &nsf::StreamNameMapResolution::groupItemIndex)
+    .def_readonly("predicted_source_items",
+                  &nsf::StreamNameMapResolution::predictedSourceItems)
+    .def_readonly("predicted_repair_items",
+                  &nsf::StreamNameMapResolution::predictedRepairItems)
+    .def_property_readonly("timing_name",
+      [] (const nsf::StreamNameMapResolution& resolution) {
+        return std::string(nsf::toString(resolution.timing));
+      })
+    .def_property_readonly("schedulable", &nsf::StreamNameMapResolution::schedulable)
+    .def_property_readonly("has_group_binding",
+                           &nsf::StreamNameMapResolution::hasGroupBinding)
+    .def_property_readonly("predicted_group_items",
+                           &nsf::StreamNameMapResolution::predictedGroupItems);
+
+  py::class_<nsf::StreamNameResolverState>(m, "NativeStreamNameResolverState")
+    .def(py::init<>())
+    .def("reset", &nsf::StreamNameResolverState::reset,
+         py::arg("config"), py::arg("checkpoint"))
+    .def("admit_verified_block", &nsf::StreamNameResolverState::admitVerifiedBlock,
+         py::arg("input"))
+    .def("admit_verified_wire",
+      [] (nsf::StreamNameResolverState& resolver,
+          nsf::VerifiedStreamNameMapData input,
+          const py::bytes& contentWire) {
+        try {
+          input.content = blockFromExactPyBytes(contentWire);
+        }
+        catch (const std::invalid_argument&) {
+          // Keep malformed wire on the same structured Core rejection path as
+          // C++. The synthetic empty Content is never admitted or exposed.
+          input.content = ndn::makeEmptyBlock(ndn::tlv::Content);
+        }
+        return resolver.admitVerifiedBlock(input);
+      }, py::arg("input"), py::arg("content_wire"))
+    .def("refresh_checkpoint", &nsf::StreamNameResolverState::refreshCheckpoint,
+         py::arg("checkpoint"))
+    .def("lookup", &nsf::StreamNameResolverState::lookup,
+         py::arg("cursor"))
+    .def("resolve", [] (const nsf::StreamNameResolverState& resolver,
+                        nsf::StreamCursor cursor) -> py::object {
+      const auto name = resolver.resolve(cursor);
+      return name ? py::cast(name->toUri()) : py::none();
+    }, py::arg("cursor"))
+    .def("reverse_resolve", [] (const nsf::StreamNameResolverState& resolver,
+                                const std::string& originalName) -> py::object {
+      const auto cursor = resolver.reverseResolve(ndn::Name(originalName));
+      return cursor ? py::cast(*cursor) : py::none();
+    }, py::arg("original_name"))
+    .def("mark_terminal_unproduced",
+         &nsf::StreamNameResolverState::markTerminalUnproduced,
+         py::arg("cursor"))
+    .def("evict_local_block", &nsf::StreamNameResolverState::evictLocalBlock,
+         py::arg("block_number"))
+    .def("frontiers", &nsf::StreamNameResolverState::frontiers)
+    .def("checkpoint", &nsf::StreamNameResolverState::checkpoint)
+    .def("faulted", &nsf::StreamNameResolverState::faulted)
+    .def("verified_block_count", &nsf::StreamNameResolverState::verifiedBlockCount)
+    .def("quarantined_block_count",
+         &nsf::StreamNameResolverState::quarantinedBlockCount)
+    .def("binding_count", &nsf::StreamNameResolverState::bindingCount)
+    .def("diagnostics", &nsf::StreamNameResolverState::diagnostics);
+
   py::class_<nsf::StreamMetrics>(m, "NativeStreamMetrics")
     .def(py::init<>())
     .def_readwrite("produced", &nsf::StreamMetrics::produced)
@@ -3244,6 +4274,7 @@ PYBIND11_MODULE(_ndnsf, m)
     .def_readwrite("timeouts", &nsf::StreamMetrics::timeouts)
     .def_readwrite("nacks", &nsf::StreamMetrics::nacks)
     .def_readwrite("overflows", &nsf::StreamMetrics::overflows)
+    .def_readwrite("max_pending", &nsf::StreamMetrics::maxPending)
     .def_readwrite("bytes_produced", &nsf::StreamMetrics::bytesProduced)
     .def_readwrite("bytes_received", &nsf::StreamMetrics::bytesReceived);
 
@@ -3274,13 +4305,52 @@ PYBIND11_MODULE(_ndnsf, m)
     .def_property_readonly("pending_bytes", &nsf::StreamConsumerReorderBuffer::pendingBytes)
     .def_property_readonly("metrics", &nsf::StreamConsumerReorderBuffer::metrics);
 
+  py::enum_<nsf::StreamPrefetchPhase>(m, "NativeStreamPrefetchPhase")
+    .value("INACTIVE", nsf::StreamPrefetchPhase::Inactive)
+    .value("CHASING", nsf::StreamPrefetchPhase::Chasing)
+    .value("ADJUSTING", nsf::StreamPrefetchPhase::Adjusting)
+    .value("FETCHING", nsf::StreamPrefetchPhase::Fetching)
+    .value("RECOVERING", nsf::StreamPrefetchPhase::Recovering)
+    .value("STOPPED", nsf::StreamPrefetchPhase::Stopped);
+
   py::class_<nsf::StreamFetchDecision>(m, "NativeStreamFetchDecision")
     .def(py::init<>())
     .def_readwrite("window", &nsf::StreamFetchDecision::window)
     .def_readwrite("lookahead", &nsf::StreamFetchDecision::lookahead)
     .def_readwrite("interest_lifetime_ms", &nsf::StreamFetchDecision::interestLifetimeMs)
     .def_readwrite("missing_timeout_ms", &nsf::StreamFetchDecision::missingTimeoutMs)
+    .def_readwrite("sample_demand", &nsf::StreamFetchDecision::sampleDemand)
+    .def_readwrite("packet_demand", &nsf::StreamFetchDecision::packetDemand)
+    .def_readwrite("hold_ms", &nsf::StreamFetchDecision::holdMs)
+    .def_readwrite("recovery_checkpoint_ms", &nsf::StreamFetchDecision::recoveryCheckpointMs)
+    .def_readwrite("remaining_recovery_budget_ms", &nsf::StreamFetchDecision::remainingRecoveryBudgetMs)
+    .def_readwrite("mapping_begin_block", &nsf::StreamFetchDecision::mappingBeginBlock)
+    .def_readwrite("mapping_end_block", &nsf::StreamFetchDecision::mappingEndBlock)
+    .def_readwrite("payload_begin_cursor", &nsf::StreamFetchDecision::payloadBeginCursor)
+    .def_readwrite("payload_end_cursor", &nsf::StreamFetchDecision::payloadEndCursor)
+    .def_readwrite("aggregate_in_flight_limit", &nsf::StreamFetchDecision::aggregateInFlightLimit)
+    .def_readwrite("mapping_budget", &nsf::StreamFetchDecision::mappingBudget)
+    .def_readwrite("payload_budget", &nsf::StreamFetchDecision::payloadBudget)
+    .def_readwrite("retransmission_budget", &nsf::StreamFetchDecision::retransmissionBudget)
+    .def_readwrite("future_wait_count", &nsf::StreamFetchDecision::futureWaitCount)
+    .def_readwrite("terminal_unproduced_advice", &nsf::StreamFetchDecision::terminalUnproducedAdvice)
+    .def_readwrite("later_cursor_advice", &nsf::StreamFetchDecision::laterCursorAdvice)
+    .def_readwrite("atomic_expansions", &nsf::StreamFetchDecision::atomicExpansions)
+    .def_readwrite("atomic_deferrals", &nsf::StreamFetchDecision::atomicDeferrals)
     .def_readwrite("pressure", &nsf::StreamFetchDecision::pressure)
+    .def_readwrite("live_edge_confidence", &nsf::StreamFetchDecision::liveEdgeConfidence)
+    .def_readwrite("mapping_ready", &nsf::StreamFetchDecision::mappingReady)
+    .def_readwrite("future_wait", &nsf::StreamFetchDecision::futureWait)
+    .def_readwrite("congestion_hold", &nsf::StreamFetchDecision::congestionHold)
+    .def_readwrite("retransmission_eligible", &nsf::StreamFetchDecision::retransmissionEligible)
+    .def_readwrite("phase", &nsf::StreamFetchDecision::phase)
+    .def_property_readonly("phase_name", [] (const nsf::StreamFetchDecision& value) {
+      return std::string(nsf::toString(value.phase));
+    })
+    .def_readwrite("policy_mode", &nsf::StreamFetchDecision::policyMode)
+    .def_readwrite("detector_profile", &nsf::StreamFetchDecision::detectorProfile)
+    .def_readwrite("mapping_wait_reason", &nsf::StreamFetchDecision::mappingWaitReason)
+    .def_readwrite("capacity_reason", &nsf::StreamFetchDecision::capacityReason)
     .def_readwrite("reason", &nsf::StreamFetchDecision::reason);
 
   py::class_<nsf::StreamAdaptiveFetcherState>(m, "NativeStreamAdaptiveFetcherState")
@@ -3300,14 +4370,578 @@ PYBIND11_MODULE(_ndnsf, m)
     .def_readwrite("max_interest_lifetime_ms", &nsf::StreamAdaptiveFetcherState::maxInterestLifetimeMs)
     .def_readwrite("min_missing_timeout_ms", &nsf::StreamAdaptiveFetcherState::minMissingTimeoutMs)
     .def_readwrite("max_missing_timeout_ms", &nsf::StreamAdaptiveFetcherState::maxMissingTimeoutMs)
+    .def_readwrite("live_edge_change_threshold", &nsf::StreamAdaptiveFetcherState::liveEdgeChangeThreshold)
+    .def_readwrite("live_edge_period_similarity", &nsf::StreamAdaptiveFetcherState::liveEdgePeriodSimilarity)
+    .def_readwrite("live_edge_window", &nsf::StreamAdaptiveFetcherState::liveEdgeWindow)
+    .def_readwrite("live_edge_stable_required", &nsf::StreamAdaptiveFetcherState::liveEdgeStableRequired)
+    .def_readwrite("detection_period_ms", &nsf::StreamAdaptiveFetcherState::detectionPeriodMs)
+    .def_readwrite("recovery_reserve_packets", &nsf::StreamAdaptiveFetcherState::recoveryReservePackets)
+    .def_readwrite("aggregate_in_flight_limit", &nsf::StreamAdaptiveFetcherState::aggregateInFlightLimit)
+    .def_readwrite("mapping_reserve", &nsf::StreamAdaptiveFetcherState::mappingReserve)
+    .def_readwrite("retransmission_reserve", &nsf::StreamAdaptiveFetcherState::retransmissionReserve)
+    .def_readwrite("mapping_block_capacity", &nsf::StreamAdaptiveFetcherState::mappingBlockCapacity)
+    .def_readwrite("chase_multiplier", &nsf::StreamAdaptiveFetcherState::chaseMultiplier)
+    .def_readwrite("adjust_multiplier", &nsf::StreamAdaptiveFetcherState::adjustMultiplier)
+    .def_readwrite("congestion_decrease_multiplier", &nsf::StreamAdaptiveFetcherState::congestionDecreaseMultiplier)
+    .def_readwrite("detector_profile", &nsf::StreamAdaptiveFetcherState::detectorProfile)
     .def("observe_rtt", &nsf::StreamAdaptiveFetcherState::observeRtt,
          py::arg("sample_ms"), py::arg("alpha") = 0.25)
-    .def("record_timeout", &nsf::StreamAdaptiveFetcherState::recordTimeout)
-    .def("record_nack", &nsf::StreamAdaptiveFetcherState::recordNack)
+    .def("record_timeout", py::overload_cast<>(
+           &nsf::StreamAdaptiveFetcherState::recordTimeout))
+    .def("record_timeout_evidence", py::overload_cast<uint64_t, bool, bool>(
+           &nsf::StreamAdaptiveFetcherState::recordTimeout),
+         py::arg("cursor"), py::arg("known_produced"), py::arg("was_future"))
+    .def("record_nack", py::overload_cast<>(
+           &nsf::StreamAdaptiveFetcherState::recordNack))
+    .def("record_nack_reason", py::overload_cast<uint64_t, const std::string&>(
+           &nsf::StreamAdaptiveFetcherState::recordNack),
+         py::arg("cursor"), py::arg("reason"))
+    .def("record_congestion_mark", &nsf::StreamAdaptiveFetcherState::recordCongestionMark,
+         py::arg("cursor"), py::arg("mark"))
     .def("record_duplicate", &nsf::StreamAdaptiveFetcherState::recordDuplicate)
     .def("set_backlog_pressure", &nsf::StreamAdaptiveFetcherState::setBacklogPressure)
     .def("decay", &nsf::StreamAdaptiveFetcherState::decay, py::arg("factor") = 0.85)
-    .def("decide", &nsf::StreamAdaptiveFetcherState::decide);
+    .def("reset_live", &nsf::StreamAdaptiveFetcherState::resetLive,
+         py::arg("session_epoch"), py::arg("next_seq"), py::arg("sample_period_ms"),
+         py::arg("now_ms") = 0)
+    .def("configure_mapped_live", &nsf::StreamAdaptiveFetcherState::configureMappedLive,
+         py::arg("aggregate_limit"), py::arg("mapping_reserve"),
+         py::arg("retransmission_reserve"), py::arg("block_capacity"),
+         py::arg("detector_profile"))
+    .def("reset_mapped_live", &nsf::StreamAdaptiveFetcherState::resetMappedLive,
+         py::arg("session_epoch"), py::arg("next_cursor"),
+         py::arg("sample_period_ms"), py::arg("latest_produced_cursor"),
+         py::arg("mapping_committed_through_cursor"),
+         py::arg("next_reserved_cursor"), py::arg("now_ms") = 0)
+    .def("update_mapping_frontier", &nsf::StreamAdaptiveFetcherState::updateMappingFrontier,
+         py::arg("mapping_committed_through_cursor"),
+         py::arg("next_reserved_cursor"))
+    .def("advance_next_cursor", &nsf::StreamAdaptiveFetcherState::advanceNextCursor,
+         py::arg("next_cursor"))
+    .def("set_mapped_live_policy_enabled",
+         &nsf::StreamAdaptiveFetcherState::setMappedLivePolicyEnabled,
+         py::arg("enabled"))
+    .def("set_in_flight", &nsf::StreamAdaptiveFetcherState::setInFlight,
+         py::arg("mapping"), py::arg("payload"), py::arg("retransmission"))
+    .def("observe_accepted_sample", &nsf::StreamAdaptiveFetcherState::observeAcceptedSample,
+         py::arg("session_epoch"), py::arg("sample_id"), py::arg("arrival_ms"),
+         py::arg("retrieval_delay_ms"), py::arg("segment_count") = 1,
+         py::arg("known_produced") = true)
+    .def("observe_sample_extent", &nsf::StreamAdaptiveFetcherState::observeSampleExtent,
+         py::arg("predicted_count"), py::arg("actual_count"))
+    .def("begin_recovery", &nsf::StreamAdaptiveFetcherState::beginRecovery,
+         py::arg("now_ms"), py::arg("playout_deadline_ms"))
+    .def("record_recovery", &nsf::StreamAdaptiveFetcherState::recordRecovery,
+         py::arg("completed"))
+    .def("record_invalid_observation", &nsf::StreamAdaptiveFetcherState::recordInvalidObservation)
+    .def("stop_live", &nsf::StreamAdaptiveFetcherState::stopLive)
+    .def_property_readonly("phase_name", [] (const nsf::StreamAdaptiveFetcherState& value) {
+      return std::string(nsf::toString(value.phase()));
+    })
+    .def_property_readonly("invalid_observations", &nsf::StreamAdaptiveFetcherState::invalidObservations)
+    .def("decide", &nsf::StreamAdaptiveFetcherState::decide,
+         py::arg("now_ms") = 0, py::arg("playout_deadline_ms") = 0);
+
+  py::enum_<nsf::LiveStreamFecScheme>(m, "NativeLiveStreamFecScheme")
+    .value("NONE", nsf::LiveStreamFecScheme::None)
+    .value("XOR_ONE_REPAIR", nsf::LiveStreamFecScheme::XorOneRepair)
+    .value("GF256_TWO_REPAIR", nsf::LiveStreamFecScheme::Gf256TwoRepair);
+
+  py::class_<nsf::SampleClassProfile>(m, "NativeSampleClassProfile")
+    .def(py::init<>())
+    .def_readwrite("class_id", &nsf::SampleClassProfile::classId)
+    .def_readwrite("seed_source_items", &nsf::SampleClassProfile::seedSourceItems)
+    .def_readwrite("hard_max_source_items",
+                   &nsf::SampleClassProfile::hardMaxSourceItems)
+    .def_readwrite("history_capacity", &nsf::SampleClassProfile::historyCapacity)
+    .def_readwrite("safety_margin_items",
+                   &nsf::SampleClassProfile::safetyMarginItems)
+    .def_static("bounded", &nsf::SampleClassProfile::bounded,
+                py::arg("class_id"), py::arg("seed_source_items"),
+                py::arg("hard_max_source_items"),
+                py::arg("history_capacity") = 32,
+                py::arg("safety_margin_items") = 1)
+    .def("validate", [] (const nsf::SampleClassProfile& value) -> py::object {
+      const auto error = value.validate();
+      return error ? py::cast(*error) : py::none();
+    });
+
+  py::class_<nsf::SampleClassPredictionStatus>(m,
+      "NativeSampleClassPredictionStatus")
+    .def_readonly("class_id", &nsf::SampleClassPredictionStatus::classId)
+    .def_readonly("prediction", &nsf::SampleClassPredictionStatus::prediction)
+    .def_readonly("observations", &nsf::SampleClassPredictionStatus::observations)
+    .def_readonly("underpredictions",
+                  &nsf::SampleClassPredictionStatus::underpredictions)
+    .def_readonly("underpredicted_items",
+                  &nsf::SampleClassPredictionStatus::underpredictedItems)
+    .def_readonly("overpredictions",
+                  &nsf::SampleClassPredictionStatus::overpredictions)
+    .def_readonly("overpredicted_items",
+                  &nsf::SampleClassPredictionStatus::overpredictedItems);
+
+  py::class_<nsf::LiveStreamSamplePredictor>(m, "NativeLiveStreamSamplePredictor")
+    .def(py::init<std::vector<nsf::SampleClassProfile>>(),
+         py::arg("profiles") = std::vector<nsf::SampleClassProfile>{})
+    .def("reset", &nsf::LiveStreamSamplePredictor::reset)
+    .def("predict", [] (const nsf::LiveStreamSamplePredictor& predictor,
+                         const std::string& classId) {
+      return predictor.predict(classId);
+    })
+    .def("observe", &nsf::LiveStreamSamplePredictor::observe)
+    .def("status", &nsf::LiveStreamSamplePredictor::status)
+    .def("statuses", &nsf::LiveStreamSamplePredictor::statuses);
+
+  py::class_<nsf::LiveStreamFecOptions>(m, "NativeLiveStreamFecOptions")
+    .def(py::init<>())
+    .def_readwrite("scheme", &nsf::LiveStreamFecOptions::scheme)
+    .def_readwrite("max_source_items", &nsf::LiveStreamFecOptions::maxSourceItems)
+    .def_property("source_items",
+      [] (const nsf::LiveStreamFecOptions& value) { return value.maxSourceItems; },
+      [] (nsf::LiveStreamFecOptions& value, size_t count) { value.maxSourceItems = count; })
+    .def_readwrite("max_source_bytes", &nsf::LiveStreamFecOptions::maxSourceBytes)
+    .def_readwrite("recovery_budget_ms", &nsf::LiveStreamFecOptions::recoveryBudgetMs)
+    .def_readwrite("repair_symbols", &nsf::LiveStreamFecOptions::repairSymbols)
+    .def_static("none", &nsf::LiveStreamFecOptions::none)
+    .def_static("xor_one_repair", &nsf::LiveStreamFecOptions::xorOneRepair,
+                py::arg("source_items"), py::arg("max_source_bytes"),
+                py::arg("recovery_budget_ms") = 500)
+    .def_static("gf256_two_repair", &nsf::LiveStreamFecOptions::gf256TwoRepair,
+                py::arg("source_items"), py::arg("max_source_bytes"),
+                py::arg("recovery_budget_ms") = 500)
+    .def_property_readonly("recovery_capacity", &nsf::LiveStreamFecOptions::recoveryCapacity)
+    .def_property_readonly("enabled", &nsf::LiveStreamFecOptions::enabled)
+    .def("validate", [] (const nsf::LiveStreamFecOptions& value) -> py::object {
+      const auto error = value.validate();
+      return error ? py::cast(*error) : py::none();
+	    });
+
+  py::class_<nsf::StreamAdvancedOptions>(m, "NativeStreamAdvancedOptions")
+    .def(py::init<>())
+    .def_readwrite("mapping_block_capacity",
+                   &nsf::StreamAdvancedOptions::mappingBlockCapacity)
+    .def_readwrite("mapping_ahead_blocks",
+                   &nsf::StreamAdvancedOptions::mappingAheadBlocks)
+    .def_readwrite("retained_items",
+                   &nsf::StreamAdvancedOptions::retainedItems)
+    .def_readwrite("max_name_reservations",
+                   &nsf::StreamAdvancedOptions::maxNameReservations)
+    .def_readwrite("max_pending_interests",
+                   &nsf::StreamAdvancedOptions::maxPendingInterests)
+    .def_readwrite("signed_wire_cap",
+                   &nsf::StreamAdvancedOptions::signedWireCap)
+    .def_readwrite("startup_timeout_ms",
+                   &nsf::StreamAdvancedOptions::startupTimeoutMs);
+
+  py::class_<nsf::StreamConfig>(m, "NativeStreamConfig")
+    .def(py::init<>())
+    .def_readwrite("stream_id", &nsf::StreamConfig::streamId)
+    .def_property("data_prefix",
+      [] (const nsf::StreamConfig& value) { return value.dataPrefix.toUri(); },
+      [] (nsf::StreamConfig& value, const std::string& name) {
+        value.dataPrefix = ndn::Name(name);
+      })
+    .def_readwrite("sample_period_ms", &nsf::StreamConfig::samplePeriodMs)
+    .def_readwrite("sample_classes", &nsf::StreamConfig::sampleClasses)
+    .def_readwrite("fec", &nsf::StreamConfig::fec)
+    .def_readwrite("session_epoch", &nsf::StreamConfig::sessionEpoch)
+    .def_readwrite("advanced", &nsf::StreamConfig::advanced);
+
+  py::class_<nsf::LiveStreamDefinition>(m, "NativeLiveStreamDefinition")
+    .def(py::init<>())
+    .def_readwrite("contract_version", &nsf::LiveStreamDefinition::contractVersion)
+    .def_readwrite("stream_id", &nsf::LiveStreamDefinition::streamId)
+    .def_property("provider",
+      [] (const nsf::LiveStreamDefinition& value) { return value.provider.toUri(); },
+      [] (nsf::LiveStreamDefinition& value, const std::string& name) { value.provider = ndn::Name(name); })
+    .def_property("semantic_data_prefix",
+      [] (const nsf::LiveStreamDefinition& value) { return value.semanticDataPrefix.toUri(); },
+      [] (nsf::LiveStreamDefinition& value, const std::string& name) { value.semanticDataPrefix = ndn::Name(name); })
+    .def_readwrite("session_epoch", &nsf::LiveStreamDefinition::sessionEpoch)
+    .def_readwrite("mapping_version", &nsf::LiveStreamDefinition::mappingVersion)
+    .def_readwrite("mapping_block_capacity", &nsf::LiveStreamDefinition::mappingBlockCapacity)
+    .def_readwrite("mapping_ahead_blocks", &nsf::LiveStreamDefinition::mappingAheadBlocks)
+    .def_readwrite("retained_items", &nsf::LiveStreamDefinition::retainedItems)
+    .def_readwrite("max_name_reservations", &nsf::LiveStreamDefinition::maxNameReservations)
+    .def_readwrite("max_pending_interests", &nsf::LiveStreamDefinition::maxPendingInterests)
+    .def_readwrite("signed_wire_cap", &nsf::LiveStreamDefinition::signedWireCap)
+    .def_readwrite("sample_period_ms", &nsf::LiveStreamDefinition::samplePeriodMs)
+    .def_readwrite("sample_classes", &nsf::LiveStreamDefinition::sampleClasses)
+    .def_readwrite("fec", &nsf::LiveStreamDefinition::fec)
+    .def_property_readonly("mapping_root", [] (const nsf::LiveStreamDefinition& value) {
+      return value.mappingRoot().toUri();
+    })
+    .def("validate", [] (const nsf::LiveStreamDefinition& value) -> py::object {
+      const auto error = value.validate();
+      return error ? py::cast(*error) : py::none();
+    });
+
+  py::class_<nsf::LiveStreamItemReservation>(m, "NativeLiveStreamItemReservation")
+    .def(py::init<>())
+    .def_readonly("cursor", &nsf::LiveStreamItemReservation::cursor)
+    .def_property_readonly("original_name", [] (const nsf::LiveStreamItemReservation& value) {
+      return value.originalName.toUri();
+    })
+    .def_readonly("session_epoch", &nsf::LiveStreamItemReservation::sessionEpoch)
+    .def_readonly("mapping_version", &nsf::LiveStreamItemReservation::mappingVersion);
+
+  py::class_<nsf::LiveStreamGroupReservation>(m, "NativeLiveStreamGroupReservation")
+    .def_property_readonly("group_id", [] (const nsf::LiveStreamGroupReservation& value) {
+      return value.groupId;
+    })
+    .def_readonly("sources", &nsf::LiveStreamGroupReservation::sources)
+    .def_readonly("repairs", &nsf::LiveStreamGroupReservation::repairs);
+
+  py::enum_<nsf::LiveStreamItemKind>(m, "NativeLiveStreamItemKind")
+    .value("SOURCE", nsf::LiveStreamItemKind::Source)
+    .value("REPAIR", nsf::LiveStreamItemKind::Repair);
+
+  py::class_<nsf::LiveStreamSampleReservation>(m,
+      "NativeLiveStreamSampleReservation")
+    .def_readonly("sample_id", &nsf::LiveStreamSampleReservation::sampleId)
+    .def_readonly("sample_class", &nsf::LiveStreamSampleReservation::sampleClass)
+    .def_readonly("predicted_source_items",
+                  &nsf::LiveStreamSampleReservation::predictedSourceItems)
+    .def_readonly("group", &nsf::LiveStreamSampleReservation::group);
+
+  py::class_<nsf::LiveStreamReadiness>(m, "NativeLiveStreamReadiness")
+    .def(py::init<>())
+    .def_readwrite("measured_sample_period_ms", &nsf::LiveStreamReadiness::measuredSamplePeriodMs)
+    .def_readwrite("safe_join_cursor", &nsf::LiveStreamReadiness::safeJoinCursor);
+
+  py::class_<nsf::LiveStreamDescriptor>(m, "NativeLiveStreamDescriptor")
+    .def(py::init<>())
+    .def_readwrite("definition", &nsf::LiveStreamDescriptor::definition)
+    .def_readwrite("checkpoint", &nsf::LiveStreamDescriptor::checkpoint)
+    .def_readwrite("measured_sample_period_ms", &nsf::LiveStreamDescriptor::measuredSamplePeriodMs)
+    .def_readwrite("safe_join_cursor", &nsf::LiveStreamDescriptor::safeJoinCursor)
+    .def("validate", [] (const nsf::LiveStreamDescriptor& value) -> py::object {
+      const auto error = value.validate();
+      return error ? py::cast(*error) : py::none();
+    });
+
+  py::enum_<nsf::LiveStreamLifecycleState>(m, "NativeLiveStreamLifecycleState")
+    .value("PREPARING", nsf::LiveStreamLifecycleState::Preparing)
+    .value("ACTIVE", nsf::LiveStreamLifecycleState::Active)
+    .value("STOPPED", nsf::LiveStreamLifecycleState::Stopped)
+    .value("FAILED", nsf::LiveStreamLifecycleState::Failed);
+
+  py::enum_<nsf::LiveStreamItemProvenance>(m, "NativeLiveStreamItemProvenance")
+    .value("SIGNED_DATA", nsf::LiveStreamItemProvenance::SignedData)
+    .value("FEC_RECOVERED", nsf::LiveStreamItemProvenance::FecRecovered);
+
+  py::class_<nsf::VerifiedLiveStreamItem>(m, "NativeVerifiedLiveStreamItem")
+    .def_readonly("cursor", &nsf::VerifiedLiveStreamItem::cursor)
+    .def_property_readonly("original_name", [] (const nsf::VerifiedLiveStreamItem& value) {
+      return value.originalName.toUri();
+    })
+    .def_property_readonly("verified_provider", [] (const nsf::VerifiedLiveStreamItem& value) {
+      return value.verifiedProvider.toUri();
+    })
+    .def_property_readonly("content", [] (const nsf::VerifiedLiveStreamItem& value) {
+      return py::bytes(reinterpret_cast<const char*>(value.content.data()), value.content.size());
+    })
+    .def_readonly("provenance", &nsf::VerifiedLiveStreamItem::provenance)
+    .def_readonly("received_ms", &nsf::VerifiedLiveStreamItem::receivedMs);
+
+  py::class_<nsf::LiveStreamItemAdmission>(m, "NativeLiveStreamItemAdmission")
+    .def_readonly("accepted", &nsf::LiveStreamItemAdmission::accepted)
+    .def_readonly("reason", &nsf::LiveStreamItemAdmission::reason)
+    .def_static("accept_item", &nsf::LiveStreamItemAdmission::acceptItem)
+    .def_static("reject_item", &nsf::LiveStreamItemAdmission::rejectItem);
+
+  py::class_<nsf::LiveStreamSampleObservation>(m, "NativeLiveStreamSampleObservation")
+    .def(py::init<>())
+    .def_readwrite("sample_id", &nsf::LiveStreamSampleObservation::sampleId)
+    .def_readwrite("arrival_ms", &nsf::LiveStreamSampleObservation::arrivalMs)
+    .def_readwrite("retrieval_delay_ms", &nsf::LiveStreamSampleObservation::retrievalDelayMs)
+    .def_readwrite("item_count", &nsf::LiveStreamSampleObservation::itemCount);
+
+  py::class_<nsf::LiveStreamStatus>(m, "NativeLiveStreamStatus")
+    .def_readonly("state", &nsf::LiveStreamStatus::state)
+    .def_readonly("frontiers", &nsf::LiveStreamStatus::frontiers)
+    .def_readonly("retained_items", &nsf::LiveStreamStatus::retainedItems)
+    .def_readonly("pending_interests", &nsf::LiveStreamStatus::pendingInterests)
+    .def_readonly("mapping_blocks", &nsf::LiveStreamStatus::mappingBlocks)
+    .def_readonly("in_flight", &nsf::LiveStreamStatus::inFlight)
+    .def_readonly("delivered", &nsf::LiveStreamStatus::delivered)
+    .def_readonly("rejected", &nsf::LiveStreamStatus::rejected)
+    .def_readonly("recovered", &nsf::LiveStreamStatus::recovered)
+    .def_readonly("timeouts", &nsf::LiveStreamStatus::timeouts)
+    .def_readonly("nacks", &nsf::LiveStreamStatus::nacks)
+    .def_readonly("retry_attempts", &nsf::LiveStreamStatus::retryAttempts)
+    .def_readonly("late_arrivals", &nsf::LiveStreamStatus::lateArrivals)
+    .def_readonly("deadline_skips", &nsf::LiveStreamStatus::deadlineSkips)
+    .def_readonly("retry_exhaustions", &nsf::LiveStreamStatus::retryExhaustions)
+    .def_readonly("mapping_interests", &nsf::LiveStreamStatus::mappingInterests)
+    .def_readonly("mapping_data_responses", &nsf::LiveStreamStatus::mappingDataResponses)
+    .def_readonly("mapping_new_data_responses",
+                  &nsf::LiveStreamStatus::mappingNewDataResponses)
+    .def_readonly("payload_interests", &nsf::LiveStreamStatus::payloadInterests)
+    .def_readonly("initial_payload_interests", &nsf::LiveStreamStatus::initialPayloadInterests)
+    .def_readonly("retry_payload_interests", &nsf::LiveStreamStatus::retryPayloadInterests)
+    .def_readonly("payload_source_interests", &nsf::LiveStreamStatus::payloadSourceInterests)
+    .def_readonly("initial_payload_source_interests",
+                  &nsf::LiveStreamStatus::initialPayloadSourceInterests)
+    .def_readonly("retry_payload_source_interests",
+                  &nsf::LiveStreamStatus::retryPayloadSourceInterests)
+    .def_readonly("payload_repair_interests", &nsf::LiveStreamStatus::payloadRepairInterests)
+    .def_readonly("initial_payload_repair_interests",
+                  &nsf::LiveStreamStatus::initialPayloadRepairInterests)
+    .def_readonly("retry_payload_repair_interests",
+                  &nsf::LiveStreamStatus::retryPayloadRepairInterests)
+    .def_readonly("payload_unclassified_interests",
+                  &nsf::LiveStreamStatus::payloadUnclassifiedInterests)
+    .def_readonly("payload_source_data_admissions",
+                  &nsf::LiveStreamStatus::payloadSourceDataAdmissions)
+    .def_readonly("payload_repair_data_responses",
+                  &nsf::LiveStreamStatus::payloadRepairDataResponses)
+    .def_readonly("payload_repair_data_consumed",
+                  &nsf::LiveStreamStatus::payloadRepairDataConsumed)
+    .def_readonly("payload_application_useful_interests",
+                  &nsf::LiveStreamStatus::payloadApplicationUsefulInterests)
+    .def_readonly("payload_protection_only_interests",
+                  &nsf::LiveStreamStatus::payloadProtectionOnlyInterests)
+    .def_readonly("payload_nonproductive_interests",
+                  &nsf::LiveStreamStatus::payloadNonproductiveInterests)
+    .def_readonly("payload_unresolved_interests",
+                  &nsf::LiveStreamStatus::payloadUnresolvedInterests)
+    .def_readonly("future_payload_interests", &nsf::LiveStreamStatus::futurePayloadInterests)
+    .def_readonly("initial_future_payload_interests",
+                  &nsf::LiveStreamStatus::initialFuturePayloadInterests)
+    .def_readonly("retry_future_payload_interests",
+                  &nsf::LiveStreamStatus::retryFuturePayloadInterests)
+    .def_readonly("future_cursor_horizon",
+                  &nsf::LiveStreamStatus::futureCursorHorizon)
+    .def_readonly("retry_successes", &nsf::LiveStreamStatus::retrySuccesses)
+    .def_readonly("retry_suppressions", &nsf::LiveStreamStatus::retrySuppressions)
+    .def_readonly("retry_suppression_reasons",
+                  &nsf::LiveStreamStatus::retrySuppressionReasons)
+    .def_readonly("declared_recovery_capacity",
+                  &nsf::LiveStreamStatus::declaredRecoveryCapacity)
+    .def_readonly("recovery_eligible_sources",
+                  &nsf::LiveStreamStatus::recoveryEligibleSources)
+    .def_readonly("terminal_missing_sources",
+                  &nsf::LiveStreamStatus::terminalMissingSources)
+    .def_readonly("recoverable_groups",
+                  &nsf::LiveStreamStatus::recoverableGroups)
+    .def_readonly("recovered_groups",
+                  &nsf::LiveStreamStatus::recoveredGroups)
+    .def_readonly("recovery_attempts", &nsf::LiveStreamStatus::recoveryAttempts)
+    .def_readonly("recovery_exhaustions", &nsf::LiveStreamStatus::recoveryExhaustions)
+    .def_readonly("recovery_control_interests",
+                  &nsf::LiveStreamStatus::recoveryControlInterests)
+    .def_readonly("recovery_frontier_interests",
+                  &nsf::LiveStreamStatus::recoveryFrontierInterests)
+    .def_readonly("recovery_group_interests",
+                  &nsf::LiveStreamStatus::recoveryGroupInterests)
+    .def_readonly("recovery_coalesced_waiters",
+                  &nsf::LiveStreamStatus::recoveryCoalescedWaiters)
+    .def_readonly("recovery_metadata_cache_hits",
+                  &nsf::LiveStreamStatus::recoveryMetadataCacheHits)
+    .def_readonly("next_deliver_cursor",
+                  &nsf::LiveStreamStatus::nextDeliverCursor)
+    .def_readonly("ready_queue_depth",
+                  &nsf::LiveStreamStatus::readyQueueDepth)
+    .def_readonly("oldest_ready_cursor",
+                  &nsf::LiveStreamStatus::oldestReadyCursor)
+    .def_readonly("terminal_gap_queue_depth",
+                  &nsf::LiveStreamStatus::terminalGapQueueDepth)
+    .def_readonly("drain_wake_count",
+                  &nsf::LiveStreamStatus::drainWakeCount)
+    .def_readonly("stale_ready_drops",
+                  &nsf::LiveStreamStatus::staleReadyDrops)
+    .def_readonly("terminal_gap_superseded",
+                  &nsf::LiveStreamStatus::terminalGapSuperseded)
+    .def_readonly("mapping_bytes", &nsf::LiveStreamStatus::mappingBytes)
+    .def_readonly("provider_future_interests", &nsf::LiveStreamStatus::providerFutureInterests)
+    .def_readonly("provider_future_hits", &nsf::LiveStreamStatus::providerFutureHits)
+    .def_readonly("provider_initial_future_interests",
+                  &nsf::LiveStreamStatus::providerInitialFutureInterests)
+    .def_readonly("provider_initial_future_hits",
+                  &nsf::LiveStreamStatus::providerInitialFutureHits)
+    .def_readonly("provider_retry_future_interests",
+                  &nsf::LiveStreamStatus::providerRetryFutureInterests)
+    .def_readonly("provider_retry_future_hits",
+                  &nsf::LiveStreamStatus::providerRetryFutureHits)
+    .def_readonly("sample_class_predictions",
+                  &nsf::LiveStreamStatus::sampleClassPredictions)
+    .def_readonly("reason", &nsf::LiveStreamStatus::reason)
+    .def_readonly("fetch_decision", &nsf::LiveStreamStatus::fetchDecision);
+
+  py::enum_<nsf::PublishedLiveStreamPacketKind>(m, "NativePublishedLiveStreamPacketKind")
+    .value("MAPPING", nsf::PublishedLiveStreamPacketKind::Mapping)
+    .value("SOURCE", nsf::PublishedLiveStreamPacketKind::Source)
+    .value("REPAIR", nsf::PublishedLiveStreamPacketKind::Repair);
+
+  py::class_<nsf::PublishedLiveStreamPacket>(m, "NativePublishedLiveStreamPacket")
+    .def_readonly("kind", &nsf::PublishedLiveStreamPacket::kind)
+    .def_readonly("stream_id", &nsf::PublishedLiveStreamPacket::streamId)
+    .def_readonly("session_epoch", &nsf::PublishedLiveStreamPacket::sessionEpoch)
+    .def_readonly("mapping_version", &nsf::PublishedLiveStreamPacket::mappingVersion)
+    .def_property_readonly("cursor", [] (const nsf::PublishedLiveStreamPacket& value) -> py::object {
+      return value.cursor ? py::cast(*value.cursor) : py::none();
+    })
+    .def_property_readonly("data_name", [] (const nsf::PublishedLiveStreamPacket& value) {
+      return value.dataName.toUri();
+    })
+    .def_property_readonly("provider", [] (const nsf::PublishedLiveStreamPacket& value) {
+      return value.provider.toUri();
+    })
+    .def_property_readonly("signed_data_wire", [] (const nsf::PublishedLiveStreamPacket& value) {
+      return py::bytes(reinterpret_cast<const char*>(value.signedDataWire.data()),
+                       value.signedDataWire.size());
+    })
+    .def_property_readonly("wire_digest", [] (const nsf::PublishedLiveStreamPacket& value) {
+      return py::bytes(reinterpret_cast<const char*>(value.wireDigest.data()), value.wireDigest.size());
+    })
+    .def_readonly("materialized_monotonic_us",
+                  &nsf::PublishedLiveStreamPacket::materializedMonotonicUs);
+
+  py::class_<nsf::PublishedPacketFeedOptions>(m, "NativePublishedPacketFeedOptions")
+    .def(py::init<>())
+    .def_readwrite("from_cursor", &nsf::PublishedPacketFeedOptions::fromCursor)
+    .def_readwrite("max_queued_packets", &nsf::PublishedPacketFeedOptions::maxQueuedPackets)
+    .def_readwrite("max_queued_bytes", &nsf::PublishedPacketFeedOptions::maxQueuedBytes);
+
+  py::class_<nsf::PublishedPacketFeedStatus>(m, "NativePublishedPacketFeedStatus")
+    .def_readonly("queued_packets", &nsf::PublishedPacketFeedStatus::queuedPackets)
+    .def_readonly("queued_bytes", &nsf::PublishedPacketFeedStatus::queuedBytes)
+    .def_readonly("dropped_packets", &nsf::PublishedPacketFeedStatus::droppedPackets)
+    .def_readonly("first_dropped_cursor", &nsf::PublishedPacketFeedStatus::firstDroppedCursor)
+    .def_readonly("last_dropped_cursor", &nsf::PublishedPacketFeedStatus::lastDroppedCursor)
+    .def_readonly("closed", &nsf::PublishedPacketFeedStatus::closed);
+
+  py::class_<nsf::PublishedPacketFeed, std::shared_ptr<nsf::PublishedPacketFeed>>(
+      m, "NativePublishedPacketFeed")
+    .def("take_available", &nsf::PublishedPacketFeed::takeAvailable)
+    .def("status", &nsf::PublishedPacketFeed::status)
+    .def("close", &nsf::PublishedPacketFeed::close);
+
+  py::class_<nsf::LiveStreamPublisher, std::shared_ptr<nsf::LiveStreamPublisher>>(
+      m, "NativeLiveStreamPublisher")
+    .def("reserve_ahead", [] (nsf::LiveStreamPublisher& publisher, const std::string& name) {
+      return publisher.reserveAhead(ndn::Name(name));
+    })
+    .def("reserve_many_ahead", [] (nsf::LiveStreamPublisher& publisher,
+                                    const std::vector<std::string>& names) {
+      std::vector<ndn::Name> converted;
+      for (const auto& name : names) converted.emplace_back(name);
+      return publisher.reserveAhead(converted);
+    })
+    .def("reserve_group", [] (nsf::LiveStreamPublisher& publisher,
+                               const std::string& groupId,
+                               const std::vector<std::string>& sourceNames,
+                               const std::vector<std::string>& repairNames) {
+      std::vector<ndn::Name> sources;
+      std::vector<ndn::Name> repairs;
+      for (const auto& name : sourceNames) sources.emplace_back(name);
+      for (const auto& name : repairNames) repairs.emplace_back(name);
+      return publisher.reserveGroup(groupId, sources, repairs);
+    })
+    .def("announce_sample", [] (nsf::LiveStreamPublisher& publisher,
+                                  uint64_t sampleId,
+                                  const std::string& sampleClass,
+                                  const py::function& nameFactory) {
+      return publisher.announceSample(
+        sampleId, sampleClass,
+        [nameFactory] (size_t index, nsf::LiveStreamItemKind kind) {
+          py::gil_scoped_acquire acquire;
+          const auto kindName = kind == nsf::LiveStreamItemKind::Source ?
+            "source" : "repair";
+          return ndn::Name(nameFactory(index, kindName).cast<std::string>());
+        });
+    }, py::arg("sample_id"), py::arg("sample_class"), py::arg("name_factory"))
+    .def("prepare_sample_extent", &nsf::LiveStreamPublisher::prepareSampleExtent,
+         py::arg("reservation"), py::arg("actual_source_items"))
+    .def("publish", [] (nsf::LiveStreamPublisher& publisher,
+                         const nsf::LiveStreamItemReservation& reservation,
+                         const py::bytes& content) {
+      const auto buffer = toBuffer(content);
+      publisher.publish(reservation, std::vector<uint8_t>(buffer.begin(), buffer.end()));
+    })
+    .def("publish_group", [] (nsf::LiveStreamPublisher& publisher,
+                               const nsf::LiveStreamGroupReservation& reservation,
+                               const std::vector<py::bytes>& contents) {
+      std::vector<std::vector<uint8_t>> converted;
+      for (const auto& content : contents) {
+        const auto buffer = toBuffer(content);
+        converted.emplace_back(buffer.begin(), buffer.end());
+      }
+      publisher.publishGroup(reservation, converted);
+    })
+    .def("publish_sample", [] (nsf::LiveStreamPublisher& publisher,
+                                 const nsf::LiveStreamSampleReservation& reservation,
+                                 const std::vector<py::bytes>& contents) {
+      std::vector<std::vector<uint8_t>> converted;
+      for (const auto& content : contents) {
+        const auto buffer = toBuffer(content);
+        converted.emplace_back(buffer.begin(), buffer.end());
+      }
+      publisher.publishSample(reservation, converted);
+    })
+    .def("activate", &nsf::LiveStreamPublisher::activate)
+    .def("open_published_packet_feed", &nsf::LiveStreamPublisher::openPublishedPacketFeed)
+    .def("status", &nsf::LiveStreamPublisher::status)
+	    .def("stop", &nsf::LiveStreamPublisher::stop);
+
+  py::class_<nsf::StreamPublisher, std::shared_ptr<nsf::StreamPublisher>>(
+      m, "NativeStreamPublisher")
+    .def("start", [] (nsf::StreamPublisher& publisher) {
+      py::gil_scoped_release release;
+      return publisher.start();
+    })
+    .def("push", [] (nsf::StreamPublisher& publisher, const py::bytes& data) {
+      auto buffer = toBuffer(data);
+      auto ndnData = std::make_shared<ndn::Data>(
+        ndn::Block(ndn::span<const uint8_t>(buffer.data(), buffer.size())));
+      py::gil_scoped_release release;
+      publisher.push(ndnData);
+    }, py::arg("signed_data"))
+    .def("flush", &nsf::StreamPublisher::flush)
+    .def("status", &nsf::StreamPublisher::status)
+    .def("stop", &nsf::StreamPublisher::stop);
+
+  py::class_<nsf::PredictiveStreamCheckpoint>(
+      m, "NativePredictiveStreamCheckpoint")
+    .def(py::init<>())
+    .def_readwrite("initial_sample_id",
+      &nsf::PredictiveStreamCheckpoint::initialSampleId)
+    .def_readwrite("oldest_retained_sample_id",
+      &nsf::PredictiveStreamCheckpoint::oldestRetainedSampleId)
+    .def_readwrite("latest_produced_sample_id",
+      &nsf::PredictiveStreamCheckpoint::latestProducedSampleId)
+    .def_readwrite("next_expected_sample_id",
+      &nsf::PredictiveStreamCheckpoint::nextExpectedSampleId);
+
+  py::class_<nsf::PredictiveStreamDescriptor>(
+      m, "NativePredictiveStreamDescriptor")
+    .def_property_readonly("definition",
+      [] (const nsf::PredictiveStreamDescriptor& d) {
+        return d.definition;
+      })
+    .def_property_readonly("checkpoint",
+      [] (const nsf::PredictiveStreamDescriptor& d) {
+        return d.checkpoint;
+      })
+    .def_property_readonly("frontier_name",
+      [] (const nsf::PredictiveStreamDescriptor& d) {
+        return d.frontierName.toUri();
+      });
+
+  py::class_<nsf::LiveStreamConsumerHandle, std::shared_ptr<nsf::LiveStreamConsumerHandle>>(
+      m, "NativeLiveStreamConsumerHandle")
+    .def("start", &nsf::LiveStreamConsumerHandle::start)
+    .def("observe_accepted_sample", &nsf::LiveStreamConsumerHandle::observeAcceptedSample)
+    .def("status", &nsf::LiveStreamConsumerHandle::status)
+    .def("stop", &nsf::LiveStreamConsumerHandle::stop);
+
+  py::class_<nsf::PredictiveStreamSubscriber,
+             std::shared_ptr<nsf::PredictiveStreamSubscriber>>(
+      m, "NativePredictiveStreamSubscriber")
+    .def("start", &nsf::PredictiveStreamSubscriber::start)
+    .def("status", &nsf::PredictiveStreamSubscriber::status)
+    .def("stop", &nsf::PredictiveStreamSubscriber::stop);
 
   py::enum_<nsf::ExecutionLeaseState>(m, "ExecutionLeaseState")
     .value("PREPARED", nsf::ExecutionLeaseState::Prepared)
@@ -3473,14 +5107,19 @@ PYBIND11_MODULE(_ndnsf, m)
     .def_readwrite("status", &PyServiceResponse::status)
     .def_readwrite("payload", &PyServiceResponse::payload)
     .def_readwrite("error", &PyServiceResponse::error)
-    .def_readwrite("request_id", &PyServiceResponse::requestId);
+    .def_readwrite("request_id", &PyServiceResponse::requestId)
+    .def_readwrite("data_name", &PyServiceResponse::dataName)
+    .def_readwrite("signer_certificate", &PyServiceResponse::signerCertificate)
+    .def_readwrite("wire_digest", &PyServiceResponse::wireDigest);
 
   py::class_<PyAckDecision>(m, "AckDecision")
     .def(py::init<>())
     .def_readwrite("status", &PyAckDecision::status)
     .def_readwrite("payload", &PyAckDecision::payload)
     .def_readwrite("message", &PyAckDecision::message)
-    .def_readwrite("suppress", &PyAckDecision::suppress);
+    .def_readwrite("suppress", &PyAckDecision::suppress)
+    .def_readwrite("reservation_lease", &PyAckDecision::reservationLease)
+    .def_readwrite("selection_input_key_offer", &PyAckDecision::selectionInputKeyOffer);
 
   py::class_<PyAckCandidate>(m, "AckCandidate")
     .def(py::init<>())
@@ -3499,6 +5138,14 @@ PYBIND11_MODULE(_ndnsf, m)
     .def_readwrite("object_id", &PyLargeDataPublishResult::objectId)
     .def_readwrite("error", &PyLargeDataPublishResult::error);
 
+  py::class_<PySignedAppDataResult>(m, "SignedAppDataResult")
+    .def(py::init<>())
+    .def_readwrite("success", &PySignedAppDataResult::success)
+    .def_readwrite("data_name", &PySignedAppDataResult::dataName)
+    .def_readwrite("signer_certificate", &PySignedAppDataResult::signerCertificate)
+    .def_readwrite("payload", &PySignedAppDataResult::payload)
+    .def_readwrite("error", &PySignedAppDataResult::error);
+
   py::class_<PyCollaborationAssignment>(m, "CollaborationAssignment")
     .def(py::init<>())
     .def_readwrite("role", &PyCollaborationAssignment::role)
@@ -3507,6 +5154,7 @@ PYBIND11_MODULE(_ndnsf, m)
     .def_readwrite("artifact_data_name", &PyCollaborationAssignment::artifactDataName)
     .def_readwrite("requires_provisioning", &PyCollaborationAssignment::requiresProvisioning)
     .def_readwrite("provisioning_timeout_ms", &PyCollaborationAssignment::provisioningTimeoutMs)
+    .def_readwrite("selection_digest", &PyCollaborationAssignment::selectionDigest)
     .def_readwrite("assignment_payload", &PyCollaborationAssignment::assignmentPayload);
 
   py::class_<PyCollaborationData>(m, "CollaborationData")
@@ -3683,6 +5331,8 @@ PYBIND11_MODULE(_ndnsf, m)
          py::arg("topic_prefix"),
          py::arg("min_count"),
          py::arg("timeout_ms") = 5000)
+    .def("report_operation_status", &PyCollaborationContext::reportOperationStatus,
+         py::arg("status"))
     .def("publish_final_response", &PyCollaborationContext::publishFinalResponse,
          py::arg("payload"));
 
@@ -3726,12 +5376,23 @@ PYBIND11_MODULE(_ndnsf, m)
          py::arg("service"),
          py::arg("request_handler"),
          py::arg("ack_handler") = std::optional<py::function>(),
-         py::arg("include_request_context") = false)
+         py::arg("include_request_context") = false,
+         py::arg("include_ack_context") = false)
+    .def("set_deployment_prepare_handler",
+         &NativeServiceProvider::setDeploymentPrepareHandler,
+         py::arg("handler"))
+    .def("set_r1_selection_decision_handler",
+         &NativeServiceProvider::setR1SelectionDecisionHandler,
+         py::arg("service"), py::arg("handler"))
+    .def("set_r1_reservation_terminal_handler",
+         &NativeServiceProvider::setR1ReservationTerminalHandler,
+         py::arg("service"), py::arg("handler"))
     .def("add_collaboration_service", &NativeServiceProvider::addCollaborationService,
          py::arg("service"),
          py::arg("allowed_roles"),
          py::arg("collaboration_handler"),
-         py::arg("ack_handler") = std::optional<py::function>())
+         py::arg("ack_handler") = std::optional<py::function>(),
+         py::arg("include_ack_context") = false)
     .def("start", &NativeServiceProvider::start)
     .def("publish_service_info", &NativeServiceProvider::publishServiceInfo,
          py::arg("service_name"), py::arg("service_lifetime_seconds"), py::arg("meta_info") = py::dict())
@@ -3741,6 +5402,10 @@ PYBIND11_MODULE(_ndnsf, m)
          py::arg("meta"))
     .def("start_ndnsd_periodic_publish", &NativeServiceProvider::startNdnsdPeriodicPublish,
          py::arg("interval_seconds"))
+	    .def("create_live_stream", &NativeServiceProvider::createLiveStream,
+	         py::arg("definition"))
+    .def("create_stream", &NativeServiceProvider::createStream,
+         py::arg("config"))
     .def("run", &NativeServiceProvider::run, py::call_guard<py::gil_scoped_release>())
     .def("stop", &NativeServiceProvider::stop);
 
@@ -3765,12 +5430,32 @@ PYBIND11_MODULE(_ndnsf, m)
          py::arg("adaptive_admission") = false,
          py::arg("serve_certificates") = true,
          py::arg("bootstrap_token") = "")
+	    .def("open_live_stream", &NativeServiceUser::openLiveStream,
+         py::arg("descriptor"), py::arg("on_item"),
+         py::arg("start") = "latest",
+         py::arg("prefetch_policy") = "mapped-pressure",
+         py::arg("aggregate_interest_limit") = 64,
+         py::arg("enable_fec_recovery") = false,
+         py::arg("interest_lifetime_ms") = 500,
+	         py::arg("on_status") = std::optional<py::function>())
+    .def("subscribe_stream", &NativeServiceUser::subscribeStream,
+         py::arg("descriptor"), py::arg("on_item"),
+         py::arg("start") = "latest",
+         py::arg("prefetch_policy") = std::optional<std::string>(),
+         py::arg("aggregate_interest_limit") = 64,
+         py::arg("enable_fec_recovery") = true,
+         py::arg("require_full_delivery") = false,
+         py::arg("interest_lifetime_ms") = 500,
+         py::arg("on_status") = std::optional<py::function>())
     .def("request_service", &NativeServiceUser::requestService,
          py::arg("service"),
          py::arg("payload"),
          py::arg("ack_timeout_ms") = 300,
          py::arg("timeout_ms") = 5000,
-         py::arg("strategy") = "first-responding")
+         py::arg("strategy") = "first-responding",
+         py::arg("request_id") = "",
+         py::arg("deployment_intent") = std::nullopt,
+         py::arg("request_capabilities") = std::nullopt)
     .def("request_service_targeted", &NativeServiceUser::requestServiceTargeted,
          py::arg("provider"),
          py::arg("service"),
@@ -3782,7 +5467,9 @@ PYBIND11_MODULE(_ndnsf, m)
          py::arg("selector"),
          py::arg("ack_timeout_ms") = 300,
          py::arg("timeout_ms") = 5000,
-         py::arg("request_strategy") = "first-responding")
+         py::arg("request_strategy") = "first-responding",
+         py::arg("deployment_intent") = std::nullopt,
+         py::arg("request_capabilities") = std::nullopt)
     .def("request_service_async", &NativeServiceUser::requestServiceAsync,
          py::arg("service"),
          py::arg("payload"),
@@ -3803,6 +5490,12 @@ PYBIND11_MODULE(_ndnsf, m)
          py::arg("payload"),
          py::arg("object_label") = "",
          py::arg("freshness_ms") = 60000)
+    .def("publish_signed_app_data", &NativeServiceUser::publishSignedAppData,
+         py::arg("data_name"), py::arg("payload"),
+         py::arg("freshness_ms") = 60000)
+    .def("fetch_signed_app_data", &NativeServiceUser::fetchSignedAppData,
+         py::arg("data_name"), py::arg("expected_signer"),
+         py::arg("timeout_ms") = 5000)
     .def("request_collaboration", &NativeServiceUser::requestCollaboration,
          py::arg("service"),
          py::arg("payload"),
@@ -3814,7 +5507,9 @@ PYBIND11_MODULE(_ndnsf, m)
          py::arg("role_scopes"),
          py::arg("ack_timeout_ms") = 300,
          py::arg("timeout_ms") = 10000,
-         py::arg("ack_observer") = py::none())
+         py::arg("ack_observer") = py::none(),
+         py::arg("role_provider_assignments") = std::map<std::string, std::string>{},
+         py::arg("request_id") = "")
     .def("request_collaboration_async", &NativeServiceUser::requestCollaborationAsync,
          py::arg("service"),
          py::arg("payload"),
@@ -3827,7 +5522,15 @@ PYBIND11_MODULE(_ndnsf, m)
          py::arg("on_response"),
          py::arg("on_timeout"),
          py::arg("ack_timeout_ms") = 300,
-         py::arg("timeout_ms") = 10000)
+         py::arg("timeout_ms") = 10000,
+         py::arg("role_provider_assignments") = std::map<std::string, std::string>{},
+         py::arg("request_id") = "")
+    .def("query_collaboration_status", &NativeServiceUser::queryCollaborationStatus,
+         py::arg("provider"), py::arg("service"),
+         py::arg("selection_digest"), py::arg("timeout_ms") = 500)
+    .def("get_collaboration_status_snapshot",
+         &NativeServiceUser::getCollaborationStatusSnapshot,
+         py::arg("request_id"), py::arg("timeout_ms") = 500)
     .def("start", &NativeServiceUser::start)
     .def("stop", &NativeServiceUser::stop)
     .def("get_allowed_services", &NativeServiceUser::getAllowedServices)

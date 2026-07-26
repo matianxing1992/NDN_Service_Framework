@@ -1014,7 +1014,8 @@ main(int argc, char** argv)
             }
           }
           return std::vector<std::string>{};
-        });
+        },
+        providerBootId);
       *executionLeaseServiceRef = executionLeaseService.get();
       provider.addService(
         ndn::Name(ndnsf::di::EXECUTION_LEASE_SERVICE_NAME),
@@ -1178,7 +1179,6 @@ main(int argc, char** argv)
           }
           handler(ctx, request);
         });
-
       auto installTask =
         [options,
          plan,
@@ -1297,6 +1297,7 @@ main(int argc, char** argv)
             config.providerBootId = providerBootId;
             config.planDigest = sha256File(options.planPath);
             config.requireExecutionAttemptBinding = options.requireExecutionLease;
+            config.requireExecutionActivation = options.requireExecutionLease;
             config.workerCount = options.workers;
             config.kvStateStore = std::make_shared<KvStateStore>(
               64ULL * 1024ULL * 1024ULL, 128);

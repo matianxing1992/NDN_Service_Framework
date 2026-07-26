@@ -3,6 +3,7 @@
 #include <ndn-cxx/data.hpp>
 #include <ndn-cxx/encoding/block.hpp>
 
+#include <algorithm>
 #include <stdexcept>
 #include <utility>
 
@@ -113,7 +114,7 @@ RepoCore::putDataPacket(const std::string& dataName,
   manifest.segmentCount = 1;
   manifest.packetNames = {dataName};
   m_store->put(manifest, wire);
-  refreshCapabilityUsage();
+  updateCapabilityUsage(0, wire.size());
   return manifest;
 }
 
@@ -153,9 +154,10 @@ RepoCore::handleStore(const std::vector<uint8_t>& request)
     throw std::runtime_error("repo node has insufficient free space for object: " +
                              manifest.objectName);
   }
+  const auto newSize = payload.size();
   m_store->put(manifest, std::move(payload));
   rememberCatalogChange(manifest, "AVAILABLE");
-  refreshCapabilityUsage();
+  updateCapabilityUsage(oldSize, newSize);
   return toBytes(manifest.toJson());
 }
 
@@ -164,9 +166,13 @@ RepoCore::handleStoreManifest(const std::vector<uint8_t>& request)
 {
   auto manifest = parseManifestJson(toString(request));
   std::lock_guard<std::mutex> lock(m_mutex);
+  uint64_t oldSize = 0;
+  if (m_store->has(manifest.objectName)) {
+    oldSize = m_store->get(manifest.objectName).payload.size();
+  }
   m_store->putManifest(manifest);
   rememberCatalogChange(manifest, "AVAILABLE");
-  refreshCapabilityUsage();
+  updateCapabilityUsage(oldSize, 0);
   return toBytes(manifest.toJson());
 }
 
@@ -297,15 +303,18 @@ RepoCore::handleDelete(const std::vector<uint8_t>& request)
   const auto objectName = toString(request);
   std::lock_guard<std::mutex> lock(m_mutex);
   RepoObjectManifest manifest;
+  uint64_t oldSize = 0;
   const bool hadObject = m_store->has(objectName);
   if (hadObject) {
-    manifest = m_store->get(objectName).manifest;
+    const auto stored = m_store->get(objectName);
+    manifest = stored.manifest;
+    oldSize = stored.payload.size();
   }
   const bool removed = m_store->erase(objectName);
   if (removed) {
     rememberCatalogChange(manifest, "DELETED");
   }
-  refreshCapabilityUsage();
+  if (removed) updateCapabilityUsage(oldSize, 0);
   return toBytes(removed ? "deleted" : "not-found");
 }
 
@@ -313,6 +322,20 @@ void
 RepoCore::refreshCapabilityUsage()
 {
   m_capability.usedBytes = m_store->usedBytes();
+  m_capability.freeBytes = m_capacityBytes > m_capability.usedBytes
+    ? m_capacityBytes - m_capability.usedBytes
+    : 0;
+}
+
+void
+RepoCore::updateCapabilityUsage(uint64_t oldSize, uint64_t newSize)
+{
+  if (newSize >= oldSize) {
+    m_capability.usedBytes += newSize - oldSize;
+  }
+  else {
+    m_capability.usedBytes -= std::min(m_capability.usedBytes, oldSize - newSize);
+  }
   m_capability.freeBytes = m_capacityBytes > m_capability.usedBytes
     ? m_capacityBytes - m_capability.usedBytes
     : 0;

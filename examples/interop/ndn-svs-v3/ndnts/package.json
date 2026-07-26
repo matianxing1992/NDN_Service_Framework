@@ -1,0 +1,25 @@
+{
+  "name": "ndnsf-ndn-svs-v3-interop-peer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "peer": "node svs3-peer.ts"
+  },
+  "dependencies": {
+    "@ndn/cli-common": "0.0.20250307",
+    "@ndn/keychain": "0.0.20250307",
+    "@ndn/packet": "0.0.20250307",
+    "@ndn/repo-api": "0.0.20250307",
+    "@ndn/svs": "0.0.20250307",
+    "@ndn/util": "0.0.20250307",
+    "yargs": "17.7.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "typescript": "^5.8.2"
+  }
+}

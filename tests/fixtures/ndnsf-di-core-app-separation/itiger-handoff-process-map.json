@@ -1,0 +1,81 @@
+{
+  "schema": "ndnsf-di-allocation-process-map-v2-fixture",
+  "fixtureOnly": true,
+  "candidateId": "spec111-fixture-candidate",
+  "deploymentRevisionDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "ociDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "sifDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "binds": [
+    {"source": "/project/tma1/ndnsf-di/models/qwen-fixture", "target": "/models/qwen", "mode": "ro"},
+    {"source": "/project/tma1/ndnsf-di/artifacts/spec111-fixture-candidate", "target": "/artifacts", "mode": "ro"},
+    {"source": "/project/tma1/ndnsf-di/state/spec111-fixture-candidate/deployment-a", "target": "/state", "mode": "rw"},
+    {"source": "$SLURM_TMPDIR/run/0", "target": "/run/ndnsf", "mode": "rw"}
+  ],
+  "processes": [
+    {
+      "kind": "nfd",
+      "role": "node-forwarder",
+      "identity": null,
+      "identityBind": null,
+      "gpuUuid": null,
+      "nfdSocket": "/run/ndnsf/nfd.sock",
+      "sifDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "command": ["/opt/ndnsf/bin/run-container.sh", "nfd"]
+    },
+    {
+      "kind": "controller",
+      "role": "controller",
+      "identity": "/ndnsf/controller",
+      "identityBind": {"source": "/project/tma1/ndnsf-di/identities/spec111-fixture-candidate/controller", "target": "/identity", "mode": "ro"},
+      "gpuUuid": null,
+      "nfdSocket": "/run/ndnsf/nfd.sock",
+      "sifDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "command": ["/opt/ndnsf/bin/run-container.sh", "controller"]
+    },
+    {
+      "kind": "deployment",
+      "role": "deployment-coordinator",
+      "identity": "/ndnsf/deployment",
+      "identityBind": {"source": "/project/tma1/ndnsf-di/identities/spec111-fixture-candidate/deployment", "target": "/identity", "mode": "ro"},
+      "gpuUuid": null,
+      "nfdSocket": "/run/ndnsf/nfd.sock",
+      "sifDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "command": ["/opt/ndnsf/bin/run-container.sh", "deployment", "--revision", "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"]
+    },
+    {
+      "kind": "provider",
+      "role": "/LLM/Prefill",
+      "identity": "/ndnsf/provider/prefill",
+      "identityBind": {"source": "/project/tma1/ndnsf-di/identities/spec111-fixture-candidate/provider-prefill", "target": "/identity", "mode": "ro"},
+      "gpuUuid": "GPU-FIXTURE-000",
+      "nfdSocket": "/run/ndnsf/nfd.sock",
+      "sifDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "command": ["/opt/ndnsf/bin/run-container.sh", "provider", "--role", "/LLM/Prefill"]
+    },
+    {
+      "kind": "provider",
+      "role": "/LLM/Decode",
+      "identity": "/ndnsf/provider/decode",
+      "identityBind": {"source": "/project/tma1/ndnsf-di/identities/spec111-fixture-candidate/provider-decode", "target": "/identity", "mode": "ro"},
+      "gpuUuid": "GPU-FIXTURE-001",
+      "nfdSocket": "/run/ndnsf/nfd.sock",
+      "sifDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "command": ["/opt/ndnsf/bin/run-container.sh", "provider", "--role", "/LLM/Decode"]
+    },
+    {
+      "kind": "client",
+      "role": "requester",
+      "identity": "/ndnsf/client",
+      "identityBind": {"source": "/project/tma1/ndnsf-di/identities/spec111-fixture-candidate/client", "target": "/identity", "mode": "ro"},
+      "gpuUuid": null,
+      "nfdSocket": "/run/ndnsf/nfd.sock",
+      "sifDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "command": ["/opt/ndnsf/bin/run-container.sh", "client"]
+    }
+  ],
+  "stateMachines": {
+    "scheduler": ["PENDING", "RUNNING", "COMPLETED", "FAILED"],
+    "deployment": ["RESOLVED", "STAGING", "READY", "ACTIVE", "DRAINING", "RETIRED"],
+    "request": ["SUBMITTED", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"]
+  }
+}

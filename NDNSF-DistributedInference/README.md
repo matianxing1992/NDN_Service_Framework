@@ -1,5 +1,78 @@
 # NDNSF-DistributedInference
 
+## Preferred user API (Spec 116)
+
+New applications import only `ndnsf_distributed_inference.api`. The primary
+workflow is a request against signed Application intent; a separate deployment
+call is optional prewarming, not a correctness prerequisite.
+
+```python
+from datetime import timedelta
+from ndnsf_distributed_inference.api import InferenceApplication
+
+application = InferenceApplication.from_config(
+    "ndnsf-di.yaml",
+    state_root="/var/lib/ndnsf-di/application",
+    envelope_key_file="/run/secrets/ndnsf-di-envelope-key",
+)
+definition = application.define(...)  # typed intent, signed by the Application
+request = application.request(
+    definition, input={"prompt": "Hello"}, timeout=timedelta(minutes=5))
+print(request.deployment_status())
+result = request.result()
+```
+
+The request may select Providers and prepare a cold model. ACK availability is
+advisory; Selection commits responsibility and leases; signed generic status
+reports observable progress; only exact signed all-role DI readiness permits
+model execution. Remote callers discover typed `ON_DEMAND` or `ACTIVE`
+deployment references with `InferenceClient.deployments`. `deploy(definition)`
+calls the same ensure operation and changes latency only. The older
+`APPClient`/`APPProvider`/`APPDeployment` examples below are maintained
+compatibility surfaces and emit migration guidance where adapted.
+
+### API migration table
+
+| Maintained legacy call | Canonical owner/call |
+|---|---|
+| `APPClient.submit(...)` / `distributed_inference(...)` | `InferenceClient.request(deployment, ...)` |
+| `APPClient.infer(...)` | `InferenceClient.run(deployment, ...)` |
+| `APPProvider.serve_service(...)` | `InferenceProvider.serve(...)` |
+| Provider `stage/activate/drain/delete` | separately credentialed `ProviderAdminPort` |
+| raw deployment discovery dictionaries | `client.deployments.discover(...)` typed summaries |
+
+`InferenceApplication.request` and `InferenceClient.request` have the same
+signature and return the same durable handle. For a local creator it projects
+validated Provider-signed snapshots. For a remote caller, the bound
+deployment-owner coordinator projects the same aggregate through signed
+Collaboration status while its inner request still verifies every Provider.
+A generic `DONE` status without the exact revision, adapter, artifacts, and all
+required roles remains `PREPARING`. Definitions signed by an unknown
+Application key are rejected even when their self-signature is valid.
+
+Remote discovery is record-based rather than metadata-based. The Application
+publishes an exact, signed definition Data packet; the lifecycle owner may
+publish an exact signed activation or revocation packet. NDNSD carries only a
+bounded locator/digest hint created by
+`application.deployments.discovery_hint(...)` or
+`application.deployments.advertise(...)`. A requester fetches and validates
+the exact records before it receives a typed reference. Revoking an activation
+fences that immutable revision; it cannot silently reappear as ON_DEMAND. A
+signed successor names `previous_revision`; activating it increases the
+lifecycle epoch, links the activation records, and fences the old ACTIVE
+revision.
+
+The deployment-owner process registers the advanced
+`app_sdk.coordinator.InferenceCoordinator` as a one-role NDNSF Collaboration
+service. A
+remote requester sends the signed definition reference and input to that bound
+service; it never runs the Application's optimization policy locally. The
+coordinator and `deploy(definition)` bind the same one-shot ensure owner, so
+request-triggered preparation and optional prewarming cannot diverge into two
+lifecycle state machines. Existing signed `SELECTION-STATUS` snapshots expose
+coordinator progress to the remote request handle; no DI-specific status wire
+protocol is added.
+
 NDNSF-DistributedInference is an application-layer distributed inference
 runtime built on NDNSF. The current user-facing API and examples are still
 Python-first, but the performance direction is C++-first: hot-path scheduling,
@@ -11,7 +84,7 @@ The repository therefore contains two layers today:
 
 ```text
 Stable APP-facing layer
-  Python APPClient / APPProvider / APPController / APPDeployment
+  Python InferenceApplication / InferenceClient / InferenceProvider
   policy generation, MiniNDN experiments, GUI, and example scripts
 
 Native hot-path migration layer
@@ -119,7 +192,8 @@ NDNSF native runtime are already available in the same checkout.
 
 ### 2. Understand the Main Objects
 
-The public APP API has four main entry points:
+The following four objects are the legacy APP compatibility layer. New code
+uses `InferenceApplication`, `InferenceClient`, and `InferenceProvider` above:
 
 ```text
 APPDeployment   reads the policy and generates deployment files
@@ -860,7 +934,7 @@ paths, artifact references, or the model split itself.
 Client side:
 
 ```python
-from ndnsf_distributed_inference import APPClient
+from ndnsf_distributed_inference.app_sdk import APPClient
 
 client = APPClient.from_config("yolo_policy.yaml")
 service = "/AI/YOLO/SplitInference"
@@ -956,7 +1030,7 @@ prefer `largeDataReference` and only fall back to `repoManifest` or
 Provider side:
 
 ```python
-from ndnsf_distributed_inference import APPProvider
+from ndnsf_distributed_inference.app_sdk import APPProvider
 
 provider = APPProvider.from_config("yolo_policy.yaml", provider_id="A")
 provider.serve_service(
@@ -995,7 +1069,7 @@ callback function itself.
 Controller side:
 
 ```python
-from ndnsf_distributed_inference import APPController
+from ndnsf_distributed_inference.app_sdk.controller import APPController
 
 controller = APPController.from_config("yolo_policy.yaml")
 controller.run()
@@ -1004,7 +1078,7 @@ controller.run()
 Deployment-only utilities:
 
 ```python
-from ndnsf_distributed_inference import APPDeployment
+from ndnsf_distributed_inference.app_sdk import APPDeployment
 
 deployment = APPDeployment.from_config("yolo_policy.yaml")
 print(deployment.trust_schema)
@@ -3330,3 +3404,74 @@ See `packaging/ndnsf-di-container/docs/itiger-qwen-models.md` for transfer,
 license, quota, and cleanup operations, and `itiger-qwen-evidence.md` for the
 standalone/artifact/staged-baseline/candidate authority boundary. Physical
 production remains owned by Spec 106.
+# Owner profiles and external optimizers
+
+Install only required distributions under `packaging/python/`. External
+optimizers implement the ten public SDK protocols; omitted hooks resolve to
+named defaults. `RunnerAdapterRegistry` remains independent. `APPDeployment`
+uses external `ArtifactReference` values and `APPClient` provides durable
+submit/reopen/wait/cancel/stream/result handles. The aggregate is compatibility-only.
+
+An exact-model request sets one candidate with `exact_semantics=True`; an
+alternative-model request supplies an operator-authorized bounded candidate
+set to `ModelVariantPolicy`. Applications construct one process-local
+`DistributedInferenceEngine(DefaultOptimizationSuite())` or inject an explicit
+external `OptimizationSuite` into the authorized deployment coordinator's
+`InferenceClient.from_config(..., optimization=suite)`. Remote requesters do
+not execute that suite. Model execution is registered separately through
+`RunnerAdapterRegistry`, so registering an ONNX/Qwen/llama Runner never selects
+that Runner or weakens Core eligibility. Models and tokenizer weights stay in
+external mounted artifacts, not Python wheels or container images.
+
+### Durable APP state and request-envelope keys
+
+Production `APPClient.from_config()` and `APPDeployment.from_config()` require
+an operator-selected persistent `state_root` (or `NDNSF_DI_STATE_ROOT`). They
+never fall back to `/tmp`. Durable request submission additionally requires an
+owner-injected `RequestEnvelopeKeyProvider`, an owner-only raw 32-byte
+`envelope_key_file`, or `NDNSF_DI_ENVELOPE_KEY_FILE`. Key bytes stay outside
+the `RuntimeJournal`; only a non-secret key identity is stored with the
+encrypted envelope. A rotated provider may retain bounded previous keys for
+reading unexpired envelopes. MiniNDN and unit harnesses must opt in through the
+explicit `RuntimeJournal.for_test()` or
+`test_only_allow_ephemeral_state_root=True` path.
+
+## Selection-gated deployment (Spec 129 R1)
+
+R1 negotiates two independent capabilities. `DIReservationSelectionV1`
+changes only NDNSF-DI: a positive ACK is issued after authorization and an
+atomic, finite provider-local reservation. Ordinary NDNSF applications keep
+their non-exclusive ACK semantics. `SelectionGatedInputV1` is the generic
+NDNSF opt-in: REQUEST carries AEAD ciphertext and no input key, independently
+of whether DI reservation is enabled.
+
+At the single ACK deadline, the requester closes one immutable candidate
+snapshot. Every valid reservation-bearing ACK receives an exact-target
+`SELECTED` or `NOT_SELECTED`; a late positive ACK receives `NOT_SELECTED`
+without reopening the window. The selected message wraps the request-input key
+and a separately encrypted minimum assignment with distinct keys and nonces.
+Neither REQUEST, ACK nor `NOT_SELECTED` discloses the input key or an exact
+assignment. Decision delivery retries the identical signed bytes at most twice
+and stops after a signed receipt or lease expiry. Provider-local lease expiry
+is the final cleanup authority if the requester disappears.
+
+Selected roles commit before preparation and keep their resources pinned until
+local completion, failure, cancellation or bounded committed-lease expiry.
+There is no R1 global ReadySet or ExecutionActivate barrier. A source role may
+run when selected and locally ready; every other role additionally requires
+authenticated, attempt/plan-bound evidence from each direct predecessor. Only
+the declared terminal role may make the request result authoritative. The old
+ReadySet APIs remain an R0 compatibility surface and cannot authorize R1.
+
+Partial multi-provider acquisition is resolved before retry: send
+`NOT_SELECTED` for every acquired reservation, wait for each receipt or lease
+expiry, then apply bounded full-jitter exponential backoff. Attempts and the
+total deadline are finite. This provides probabilistic progress only; it does
+not guarantee starvation freedom or fairness.
+
+Status remains requester-driven and pull-only. A transition emits no status
+push. Exact-name queries are authenticated; responses are signed and
+recipient-encrypted, use unique nonce/AAD, and return only sequences strictly
+newer than the cursor. Polling has bounded adaptive intervals and stops on a
+terminal state. These rules contain no UAV, codec, model-family or workload
+special case.

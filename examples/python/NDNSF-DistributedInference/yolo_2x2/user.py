@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from ndnsf_distributed_inference import APPClient
+from ndnsf_distributed_inference.app_sdk import APPClient
 from pathlib import Path
 import os
 import time

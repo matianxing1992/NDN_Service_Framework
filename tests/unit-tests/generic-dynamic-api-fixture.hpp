@@ -9,6 +9,7 @@
 #include <ndn-cxx/security/key-params.hpp>
 #include <ndn-cxx/util/sha256.hpp>
 #include <ndn-cxx/util/dummy-client-face.hpp>
+#include <openssl/sha.h>
 
 #include <algorithm>
 #include <atomic>
@@ -102,6 +103,23 @@ makeRsaIdentity(ndn::security::KeyChain& keyChain, const ndn::Name& identity)
   return id.getDefaultKey().getDefaultCertificate();
 }
 
+inline SelectionInputKeyOffer
+makeSelectionInputKeyOffer(const ndn::security::Certificate& certificate,
+                           const std::string& bootEpoch = "boot-1")
+{
+  const auto publicKey = certificate.getPublicKey();
+  ndn::util::Sha256 digest;
+  digest << std::string(reinterpret_cast<const char*>(publicKey.data()),
+                        publicKey.size());
+  SelectionInputKeyOffer offer;
+  offer.setField("recipient", certificate.getIdentity().toUri());
+  offer.setField("recipientCertName", certificate.getName().toUri());
+  offer.setField("recipientPublicKey", selectionGatedHex(publicKey));
+  offer.setField("recipientCertDigest", "sha256:" + digest.toString());
+  offer.setField("providerBootEpoch", bootEpoch);
+  return offer;
+}
+
 std::string
 makeProviderTokenHashForTest(const ndn::Name& requesterName,
                              const ndn::Name& serviceName,
@@ -130,6 +148,14 @@ public:
                   attrAuthorityCertificate,
                   trustSchemaPath)
   {
+  }
+
+  static SelectionExecutionStatus
+  parseSelectionStatusForTest(const ndn::Data& data,
+                              const ndn::Name& provider,
+                              const std::string& digest)
+  {
+    return parseSelectionExecutionStatusPayload(data, provider, digest);
   }
 
   size_t
@@ -211,6 +237,28 @@ public:
     return pending != m_pendingCalls.end() && pending->second.ackWindowExpired;
   }
 
+  size_t
+  getR1DecisionTransmissionCount(const ndn::Name& requestId,
+                                 const std::string& reservationId) const
+  {
+    const auto pending = m_pendingCalls.find(requestId);
+    if (pending == m_pendingCalls.end()) return 0;
+    const auto delivery = pending->second.r1DecisionDeliveries.find(reservationId);
+    return delivery == pending->second.r1DecisionDeliveries.end() ? 0 :
+                                                                    delivery->second.transmissions;
+  }
+
+  std::string
+  getR1DecisionDigestForTest(const ndn::Name& requestId,
+                             const std::string& reservationId) const
+  {
+    const auto pending = m_pendingCalls.find(requestId);
+    if (pending == m_pendingCalls.end()) return {};
+    const auto delivery = pending->second.r1DecisionDeliveries.find(reservationId);
+    return delivery == pending->second.r1DecisionDeliveries.end() ? std::string() :
+                                                                    delivery->second.decisionDigest;
+  }
+
   bool
   hasLegacyStrategyState(const ndn::Name& requestId) const
   {
@@ -245,6 +293,19 @@ public:
     pendingCall.strategy = strategy;
     pendingCall.requestMessage.setUserToken(userToken);
     m_pendingCalls[requestId] = pendingCall;
+  }
+
+  void
+  addPendingCollaborationCallForTest(
+    const ndn::Name& requestId,
+    const std::vector<ndn::Name>& participants,
+    ResponseHandler responseHandler)
+  {
+    PendingCall pendingCall;
+    pendingCall.isCollaboration = true;
+    pendingCall.expectedResponseProviders = participants;
+    pendingCall.responseHandler = std::move(responseHandler);
+    m_pendingCalls[requestId] = std::move(pendingCall);
   }
 
   void
@@ -320,6 +381,12 @@ public:
   {
   }
 
+  static std::string
+  encodeSelectionStatusForTest(const SelectionExecutionStatus& status)
+  {
+    return encodeSelectionExecutionStatus(status);
+  }
+
   void
   addPendingRequestForTokenTest(const ndn::Name& requesterName,
                                 const ndn::Name& serviceName,
@@ -332,6 +399,38 @@ public:
     std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
     pendingRequests[key] = std::make_shared<RequestMessage>(requestMessage);
     pendingProviderTokens[key] = providerToken;
+  }
+
+  void
+  addPendingR1RequestForTokenTest(const ndn::Name& requesterName,
+                                  const ndn::Name& serviceName,
+                                  const ndn::Name& requestId,
+                                  const RequestMessage& requestMessage,
+                                  const std::string& providerToken,
+                                  const ReservationLease& lease)
+  {
+    addPendingRequestForTokenTest(requesterName, serviceName, requestId,
+                                  requestMessage, providerToken);
+    ndn::Name key(requesterName);
+    key.append(serviceName).append(requestId);
+    std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+    pendingReservationLeases[key] = lease;
+  }
+
+  bool
+  hasAcceptedR1DecisionForTest(const std::string& reservationId) const
+  {
+    std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+    return m_r1AcceptedSelectionDecisions.find(reservationId) !=
+           m_r1AcceptedSelectionDecisions.end();
+  }
+
+  ndn::Buffer
+  getDecisionReceiptForTest(const std::string& selectionDigest) const
+  {
+    const auto found = m_selectionExecutionStatuses.find(selectionDigest);
+    return found == m_selectionExecutionStatuses.end() ? ndn::Buffer() :
+                                                         found->second.decisionReceipt;
   }
 
   void
@@ -380,6 +479,19 @@ public:
   replySelectionStatusForTest(const ndn::Interest& interest)
   {
     return replySelectionExecutionStatus(interest);
+  }
+
+  void
+  seedSelectionStatusForTest(const std::string& selectionDigest,
+                             const ndn::Name& serviceName,
+                             const ndn::Name& requestId)
+  {
+    updateSelectionExecutionStatus(selectionDigest,
+                                   SelectionExecutionState::Received,
+                                   identity,
+                                   serviceName,
+                                   requestId,
+                                   "selection received");
   }
 
   void

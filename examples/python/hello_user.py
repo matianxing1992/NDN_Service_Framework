@@ -16,6 +16,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the HELLO user")
     parser.add_argument("--ack-timeout-ms", type=int, default=300)
     parser.add_argument("--timeout-ms", type=int, default=5000)
+    parser.add_argument("--deployment-intent", action="store_true")
+    parser.add_argument("--all-providers", action="store_true")
     parser.add_argument(
         "--list-services",
         action="store_true",
@@ -48,12 +50,31 @@ def main() -> int:
                 print(f"{entry.service}\tprovider={provider}")
             return 0
 
-        response = user.request_service(
-            "/HELLO",
-            b"HELLO",
-            ack_timeout_ms=args.ack_timeout_ms,
-            timeout_ms=args.timeout_ms,
-        )
+        intent = None
+        if args.deployment_intent:
+            intent = {
+                "artifactDigest": "sha256:spec129-generic-artifact",
+                "modelReference": "ndn:/models/spec129-generic",
+                "requiredRoles": "generic-member",
+            }
+        if args.all_providers:
+            response = user.request_service_select(
+                "/HELLO", b"HELLO",
+                lambda candidates: [item.provider_name for item in candidates
+                                    if item.status],
+                ack_timeout_ms=args.ack_timeout_ms,
+                timeout_ms=args.timeout_ms,
+                request_strategy="all-selected",
+                deployment_intent=intent,
+            )
+        else:
+            response = user.request_service(
+                "/HELLO",
+                b"HELLO",
+                ack_timeout_ms=args.ack_timeout_ms,
+                timeout_ms=args.timeout_ms,
+                deployment_intent=intent,
+            )
     if response.status:
         print(response.payload.decode(errors="replace"))
         return 0

@@ -704,7 +704,8 @@ public:
     m_runtime.setStatusCallback([this](std::string status) {
       {
         std::lock_guard<std::mutex> guard(m_mutex);
-        if (status.rfind("Video packet stream", 0) == 0) {
+        if (status.rfind("Video packet stream", 0) == 0 ||
+            status.rfind("Protected LiveStream", 0) == 0) {
           const auto droneId = statusField(status, "drone", "");
           if (droneId == m_runtime.targetDroneId()) {
             beginLocalStreamViewLocked();
@@ -778,10 +779,10 @@ public:
       }
       m_statusDispatcher.emit();
     });
-    m_runtime.setFrameCallback([this](std::vector<uint8_t> frame, uint64_t seq,
+    m_runtime.setFrameCallback([this](UavVideoFrame frame,
                                       uint64_t elapsedMs, std::string streamId,
                                       uint64_t streamSessionEpoch) {
-      pushEncodedChunk(std::move(frame), seq, elapsedMs, std::move(streamId), streamSessionEpoch);
+      pushEncodedChunk(std::move(frame), elapsedMs, std::move(streamId), streamSessionEpoch);
     });
 
     m_statusDispatcher.connect([this] {
@@ -825,12 +826,14 @@ public:
       uint64_t seq = 0;
       uint64_t elapsedMs = 0;
       uint64_t frameGeneration = 0;
+      uint64_t callbackQueuedMs = 0;
       {
         std::lock_guard<std::mutex> guard(m_mutex);
         pixbuf = m_pendingPixbuf;
         seq = m_pendingSeq;
         elapsedMs = m_pendingElapsedMs;
         frameGeneration = m_pendingFrameGeneration;
+        callbackQueuedMs = m_pendingFrameCallbackQueuedMs;
       }
       if (pixbuf) {
         {
@@ -848,6 +851,14 @@ public:
           m_lastDisplayedSeq = seq;
         }
         m_image.set(pixbuf);
+        const auto displayedMs = nowMilliseconds();
+        if (seq <= 3 || seq % 30 == 0) {
+          NDN_LOG_DEBUG("GS_VIDEO_GUI_DELIVERY decoded_frame=" << seq
+                        << " decoder_callback_to_gui_ms="
+                        << (callbackQueuedMs != 0 && displayedMs >= callbackQueuedMs ?
+                            displayedMs - callbackQueuedMs : 0)
+                        << " correlation=decoded-frame-ordinal");
+        }
         auto stats = "Decoded frames: " + std::to_string(m_decodedFrames.load()) +
                      "  latest chunk: " + std::to_string(seq) +
                      "  stream elapsed: " + std::to_string(elapsedMs) + " ms";
@@ -927,7 +938,23 @@ public:
           }
         }
         std::this_thread::sleep_for(std::chrono::seconds(autoStopSeconds));
+        const auto guiDecodedFrames = m_decodedFrames.load();
+        NDN_LOG_INFO("AUTO_VIDEO_GUI_RENDER_GATE status="
+                     << (guiDecodedFrames > 0 ? "PASS" : "FAIL")
+                     << " decoded_frames=" << guiDecodedFrames);
         m_runtime.stopVideo();
+        const bool finalizeRetentionAfterViewer = [] {
+          const auto* value = std::getenv("NDNSF_UAV_FINALIZE_RETENTION_AFTER_VIDEO_TEST");
+          return value != nullptr && std::string(value) == "1";
+        }();
+        if (finalizeRetentionAfterViewer) {
+          // Viewer detach and retention stop are deliberately separate actions.
+          // The acceptance workflow closes retention explicitly so the immutable
+          // terminal manifest is committed before the process exits.
+          std::this_thread::sleep_for(std::chrono::seconds(2));
+          m_runtime.requestRecordingRetentionAction("stop");
+          std::this_thread::sleep_for(std::chrono::seconds(10));
+        }
         if (m_autoRepeatStopTest) {
           std::this_thread::sleep_for(std::chrono::milliseconds(3500));
           Glib::signal_idle().connect_once([this] {
@@ -935,6 +962,19 @@ public:
           });
           std::this_thread::sleep_for(std::chrono::milliseconds(200));
           m_runtime.stopVideo();
+        }
+        else {
+          // The loss campaign impairs control and stream traffic on the same
+          // link. Preserve strict remote-stop evidence, but do not let one lost
+          // idempotent control request leave the producer running.
+          for (int attempt = 0; attempt < 4; ++attempt) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(3500));
+            if (m_runtime.activeVideoDroneId().empty()) {
+              break;
+            }
+            NDN_LOG_INFO("AUTO_VIDEO_STOP_RETRY attempt=" << (attempt + 1));
+            m_runtime.stopVideo();
+          }
         }
         std::this_thread::sleep_for(std::chrono::seconds(5));
         Glib::signal_idle().connect_once([this] {
@@ -1345,10 +1385,40 @@ public:
     }
     if (autoRecordingPlaybackTest) {
       std::thread([this] {
-        std::this_thread::sleep_for(std::chrono::seconds(5));
+        const bool exerciseRetentionLifecycle = [] {
+          const auto* value = std::getenv("NDNSF_UAV_RECORDING_LIFECYCLE_TEST");
+          return value != nullptr && std::string(value) == "1";
+        }();
+        const auto playbackDelaySeconds = [] {
+          const auto* value = std::getenv("NDNSF_UAV_RECORDING_PLAYBACK_DELAY_SECONDS");
+          if (value == nullptr) return uint64_t{5};
+          try {
+            return std::clamp<uint64_t>(std::stoull(value), 1, 120);
+          }
+          catch (const std::exception&) {
+            return uint64_t{5};
+          }
+        }();
+        std::this_thread::sleep_for(std::chrono::seconds(playbackDelaySeconds));
+        if (exerciseRetentionLifecycle) {
+          Glib::signal_idle().connect_once([this] {
+            m_runtime.requestRecordingRetentionAction("stop");
+          });
+          std::this_thread::sleep_for(std::chrono::seconds(2));
+          Glib::signal_idle().connect_once([this] {
+            m_runtime.requestRecordingRetentionAction("start");
+          });
+          std::this_thread::sleep_for(std::chrono::seconds(5));
+          Glib::signal_idle().connect_once([this] {
+            m_runtime.requestRecordingRetentionAction("restart");
+          });
+          std::this_thread::sleep_for(std::chrono::seconds(5));
+        }
         Glib::signal_idle().connect_once([this] {
           beginLocalStreamView();
-          m_runtime.requestRecordingManifest();
+          // playLatestRecording() already requests and finalizes the latest
+          // canonical manifest.  A second concurrent request can race the
+          // immutable final snapshot and does not exercise a real UI flow.
           m_runtime.playLatestRecording();
         });
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(35);
@@ -2209,6 +2279,7 @@ private:
     m_lastDisplayedSeq = 0;
     m_lastDisplayedGeneration = m_streamGeneration;
     m_pendingFrameGeneration = m_streamGeneration;
+    m_pendingFrameCallbackQueuedMs = 0;
     m_pendingPixbuf.reset();
   }
 
@@ -2243,6 +2314,7 @@ private:
     m_lastDisplayedSeq = 0;
     m_lastDisplayedGeneration = 0;
     m_pendingFrameGeneration = 0;
+    m_pendingFrameCallbackQueuedMs = 0;
     m_decodedFrames = 0;
     m_pendingClearFrame = true;
   }
@@ -2289,9 +2361,12 @@ private:
   }
 
   void
-  pushEncodedChunk(std::vector<uint8_t> chunk, uint64_t seq, uint64_t elapsedMs,
+  pushEncodedChunk(UavVideoFrame frame, uint64_t elapsedMs,
                   const std::string& streamId, uint64_t streamSessionEpoch)
   {
+    const auto seq = frame.sourceFrameId;
+    auto chunk = std::move(frame.bytes);
+    const auto callbackQueuedMs = nowMilliseconds();
     uint64_t generation = 0;
     {
       std::lock_guard<std::mutex> guard(m_mutex);
@@ -2304,7 +2379,9 @@ private:
       generation = m_streamGeneration;
     }
     Glib::signal_idle().connect_once([this, chunk = std::move(chunk), seq, elapsedMs, generation,
-                                       streamId, streamSessionEpoch] {
+                                       callbackQueuedMs, streamId, streamSessionEpoch,
+                                       captureOriginNs = frame.captureOriginNs,
+                                       codecPts = frame.codecPts] {
       {
         std::lock_guard<std::mutex> guard(m_mutex);
         const auto activeStreamId = m_runtime.activeVideoStreamId();
@@ -2322,16 +2399,33 @@ private:
         loader->close();
         auto pixbuf = loader->get_pixbuf();
         if (pixbuf) {
+          if (captureOriginNs != 0) {
+            ndn::Name frameTrace("/NDNSF/UAV/VIDEO/FRAME");
+            frameTrace.append(streamId).appendNumber(streamSessionEpoch)
+              .appendNumber(seq);
+            ndn_service_framework::logTimelineTrace(
+              "consumer", "gui-delivered", frameTrace,
+              {{"clock_domain", "host-steady"},
+               {"frame_correlation", "exact"},
+               {"source_id", std::to_string(seq)},
+               {"output_ordinal", "0"},
+               {"capture_origin_ns", std::to_string(captureOriginNs)}});
+          }
           {
             std::lock_guard<std::mutex> guard(m_mutex);
             m_pendingPixbuf = pixbuf;
             m_pendingSeq = seq;
             m_pendingElapsedMs = elapsedMs;
             m_pendingFrameGeneration = generation;
+            m_pendingFrameCallbackQueuedMs = callbackQueuedMs;
           }
           ++m_decodedFrames;
           if (m_decodedFrames.load() <= 3 || m_decodedFrames.load() % 30 == 0) {
-            NDN_LOG_INFO("GS_DECODED_FRAMES count=" << m_decodedFrames.load());
+            NDN_LOG_INFO("GS_DECODED_FRAMES count=" << m_decodedFrames.load()
+                         << " source_frame_id=" << seq
+                         << " capture_origin_ns=" << captureOriginNs
+                         << " codec_pts=" << codecPts
+                         << " presentation_observation=widget-submit");
           }
           m_frameDispatcher.emit();
         }
@@ -4820,6 +4914,7 @@ private:
   uint64_t m_pendingSeq = 0;
   uint64_t m_pendingElapsedMs = 0;
   uint64_t m_pendingFrameGeneration = 0;
+  uint64_t m_pendingFrameCallbackQueuedMs = 0;
   bool m_pendingButtonState = false;
   bool m_pendingStartSensitive = true;
   bool m_pendingStopSensitive = false;

@@ -32,7 +32,10 @@ REQUIRED_ADAPTIVE_METRICS = (
 FIELD_RE = re.compile(r"([a-z_]+)=([^\s]+)")
 LOG_TIME_RE = re.compile(r"^(\d+(?:\.\d+)?)\s")
 DECODED_RE = re.compile(r"GS_DECODED_FRAMES count=(\d+)")
+DECODE_LAG_RE = re.compile(r"capture_to_decode_ms=(\d+)")
 PARITY_RE = re.compile(r"fec_parity_shards=(\d+)")
+SAMPLE_PERIOD_RE = re.compile(r"sample_period_ms=(\d+)")
+SECRET_FIELDS = ("stream_key_hex=", "nonce_salt_hex=")
 
 
 def percentile(values: list[float], fraction: float) -> float:
@@ -90,7 +93,8 @@ def topology_text(loss_percent: int, *, delay_ms: int = 1,
 
 def build_command(*, run_dir: Path, topology: Path, duration_seconds: int,
                   fec_parity_shards: int, include_mavlink: bool,
-                  include_video: bool = True) -> list[str]:
+                  include_video: bool = True,
+                  prefetch_policy: str = "mapped-pressure") -> list[str]:
     timeout_seconds = max(180, duration_seconds + 120)
     command = [
         "sudo", "-n", "-E", "timeout", f"{timeout_seconds}s", "xvfb-run", "-a",
@@ -115,6 +119,7 @@ def build_command(*, run_dir: Path, topology: Path, duration_seconds: int,
             "--video-bitrate-kbps", "1200",
             "--video-width", "320",
             "--video-fec-parity-shards", str(fec_parity_shards),
+            "--live-stream-prefetch-policy", prefetch_policy,
         ])
     if include_mavlink:
         command.append("--auto-mavlink-test")
@@ -130,9 +135,10 @@ def parse_run(run_dir: Path, returncode: int, command: list[str], *,
               loss_percent: int = 5, fec_parity_shards: int = 1,
               repetition: int = 1, duration_seconds: int = 0,
               include_mavlink: bool = False,
-              elapsed_seconds: float = 0.0, expected_fps: int = 30,
+              elapsed_seconds: float = 0.0,
               min_decoded_frame_ratio: float = 0.5,
-              include_video: bool = True) -> dict[str, Any]:
+              include_video: bool = True,
+              prefetch_policy: str = "mapped-pressure") -> dict[str, Any]:
     gs_log = run_dir / "ground-station.log"
     text = gs_log.read_text(encoding="utf-8", errors="replace") if gs_log.exists() else ""
     lines = text.splitlines()
@@ -140,6 +146,17 @@ def parse_run(run_dir: Path, returncode: int, command: list[str], *,
         fields_from_line(line)
         for line in lines
         if ADAPTIVE_MARKER in line and "VideoAdaptive" in line
+    ]
+    core_snapshots = [
+        fields_from_line(line) for line in lines
+        if "GS_VIDEO_CORE_STATUS" in line
+    ]
+    drone_log = run_dir / "drone.log"
+    drone_text = drone_log.read_text(
+        encoding="utf-8", errors="replace") if drone_log.exists() else ""
+    provider_snapshots = [
+        fields_from_line(line) for line in drone_text.splitlines()
+        if "VIDEO_LIVE_STREAM_CORE_" in line
     ]
     malformed_metrics: list[str] = []
     if include_video and not snapshots:
@@ -168,14 +185,22 @@ def parse_run(run_dir: Path, returncode: int, command: list[str], *,
 
     rtts = [float(value) for value in integer_values("rtt_ms")]
     decoded_frames = [int(value) for value in DECODED_RE.findall(text)]
+    decoded_frames.extend(integer_values("decoded_frames"))
+    decode_lags = [float(value) for value in DECODE_LAG_RE.findall(text)]
     parity_values = [
         int(match.group(1))
-        for line in lines if "GS_RESPONSE" in line
+        for line in lines if "GS_VIDEO_STREAM_READY" in line
         for match in [PARITY_RE.search(line)] if match
+    ]
+    sample_period_values = [
+        int(match.group(1))
+        for line in lines if "GS_VIDEO_STREAM_READY" in line
+        for match in [SAMPLE_PERIOD_RE.search(line)]
+        if match and int(match.group(1)) > 0
     ]
     start_times = [
         timestamp for line in lines
-        if "GS_RESPONSE" in line and "status=streaming" in line
+        if "GS_VIDEO_STREAM_READY" in line and "status=streaming" in line
         for timestamp in [_line_timestamp(line)] if timestamp is not None
     ]
     stop_times = [
@@ -192,14 +217,18 @@ def parse_run(run_dir: Path, returncode: int, command: list[str], *,
     takeoff = f"MAVLink takeoff drone=A accepted=true" in text
     land = f"MAVLink land drone=A accepted=true" in text
     controls_ok = not include_mavlink or (arm and takeoff and land)
+    observed_policy = core_snapshots[-1].get("policy", "") if core_snapshots else ""
+    policy_accepted = observed_policy == prefetch_policy
     accepted_parity = parity_values[-1] if parity_values else -1
     duration_ok = (
         not include_video or duration_seconds <= 0 or
         stream_duration >= duration_seconds * 0.90
     )
+    measured_sample_period_ms = sample_period_values[-1] if sample_period_values else 1000
     minimum_decoded_frames = (
-        max(30, int(duration_seconds * expected_fps * min_decoded_frame_ratio))
-        if include_video and duration_seconds > 0 else (30 if include_video else 0)
+        max(3, int(duration_seconds * 1000 / measured_sample_period_ms *
+                   min_decoded_frame_ratio))
+        if include_video and duration_seconds > 0 else (3 if include_video else 0)
     )
     decoded_frame_count = max(decoded_frames, default=0)
     video_completion = (
@@ -210,7 +239,48 @@ def parse_run(run_dir: Path, returncode: int, command: list[str], *,
             duration_ok
         )
     )
-    completion = returncode == 0 and video_completion and controls_ok
+    persisted_logs = ""
+    for path in sorted(run_dir.glob("*.log")):
+        persisted_logs += path.read_text(encoding="utf-8", errors="replace")
+    secret_leak_count = sum(persisted_logs.count(field) for field in SECRET_FIELDS)
+    secret_scan_accepted = secret_leak_count == 0
+    completion = (returncode == 0 and video_completion and controls_ok and
+                  secret_scan_accepted and policy_accepted)
+
+    def last_core_int(field: str) -> int:
+        for snapshot in reversed(core_snapshots):
+            value = snapshot.get(field, "")
+            if value.isdigit():
+                return int(value)
+        return 0
+
+    def last_provider_int(field: str) -> int:
+        for snapshot in reversed(provider_snapshots):
+            value = snapshot.get(field, "")
+            if value.isdigit():
+                return int(value)
+        return 0
+
+    provider_future_interests = last_provider_int("provider_future_interests")
+    provider_future_hits = last_provider_int("provider_future_hits")
+    provider_pending_at_stop = last_provider_int("pending_interests")
+    provider_future_eligible = max(
+        0, provider_future_interests - provider_pending_at_stop)
+    core_in_flight = [
+        int(snapshot["in_flight"]) for snapshot in core_snapshots
+        if snapshot.get("in_flight", "").isdigit()
+    ]
+    mapping_interest_count = last_core_int("mapping_interests")
+    payload_interest_count = last_core_int("payload_interests")
+    pit_samples: list[int] = []
+    pit_path = run_dir / "nfd-pit-samples.csv"
+    if pit_path.exists():
+        with pit_path.open(encoding="utf-8", errors="replace") as stream:
+            reader = csv.DictReader(stream)
+            for row in reader:
+                value = row.get("pit_entries", "")
+                if value.isdigit():
+                    pit_samples.append(int(value))
 
     pending_chunks = integer_values("pending_chunks")
     pending_bytes = integer_values("pending_bytes")
@@ -226,6 +296,9 @@ def parse_run(run_dir: Path, returncode: int, command: list[str], *,
         "command": command,
         "lossPercent": loss_percent,
         "fecParityShards": fec_parity_shards,
+        "prefetchPolicy": prefetch_policy,
+        "observedPrefetchPolicy": observed_policy,
+        "policyAccepted": policy_accepted,
         "acceptedFecParityShards": accepted_parity,
         "repetition": repetition,
         "durationSeconds": duration_seconds,
@@ -235,14 +308,36 @@ def parse_run(run_dir: Path, returncode: int, command: list[str], *,
         "processCompletion": returncode == 0,
         "videoCompletion": video_completion,
         "controlCompletion": controls_ok,
+        "secretLeakCount": secret_leak_count,
+        "secretScanAccepted": secret_scan_accepted,
         "durationAccepted": duration_ok,
         "adaptiveSnapshotCount": len(snapshots),
         "metricsValid": not malformed_metrics,
         "malformedMetrics": ";".join(malformed_metrics),
         "decodedFrames": decoded_frame_count,
         "minimumDecodedFrames": minimum_decoded_frames,
+        "measuredSamplePeriodMs": measured_sample_period_ms,
         "decodedFrameRate": (
             decoded_frame_count / stream_duration if stream_duration > 0 else 0.0
+        ),
+        "captureToDecodeP50Ms": percentile(decode_lags, 0.50),
+        "captureToDecodeP95Ms": percentile(decode_lags, 0.95),
+        "mappingInterests": mapping_interest_count,
+        "payloadInterests": payload_interest_count,
+        "futurePayloadInterests": last_core_int("future_payload_interests"),
+        "mappingBytes": last_core_int("mapping_bytes"),
+        "mappingInterestShare": (
+            mapping_interest_count / (mapping_interest_count + payload_interest_count)
+            if mapping_interest_count + payload_interest_count else 0.0
+        ),
+        "maxCoreInFlight": max(core_in_flight, default=0),
+        "maxNfdPitEntries": max(pit_samples, default=0),
+        "providerFutureInterests": provider_future_interests,
+        "providerFutureEligible": provider_future_eligible,
+        "providerFutureHits": provider_future_hits,
+        "providerFutureHitRatio": (
+            provider_future_hits / provider_future_eligible
+            if provider_future_eligible else 0.0
         ),
         "mavlinkArm": arm,
         "mavlinkTakeoff": takeoff,
@@ -264,12 +359,20 @@ def parse_run(run_dir: Path, returncode: int, command: list[str], *,
 
 RUN_FIELDS = [
     "runId", "runDirectory", "returncode", "lossPercent", "fecParityShards",
+    "prefetchPolicy",
+    "observedPrefetchPolicy", "policyAccepted",
     "acceptedFecParityShards", "repetition", "durationSeconds",
     "streamDurationSeconds", "elapsedSeconds", "completion",
     "processCompletion", "videoCompletion", "controlCompletion",
+    "secretLeakCount", "secretScanAccepted",
     "durationAccepted", "adaptiveSnapshotCount", "decodedFrames",
     "metricsValid", "malformedMetrics",
-    "minimumDecodedFrames", "decodedFrameRate",
+    "minimumDecodedFrames", "measuredSamplePeriodMs", "decodedFrameRate",
+    "captureToDecodeP50Ms", "captureToDecodeP95Ms", "mappingInterests",
+    "payloadInterests", "futurePayloadInterests", "providerFutureInterests",
+    "providerFutureEligible",
+    "providerFutureHits", "providerFutureHitRatio", "mappingBytes",
+    "mappingInterestShare", "maxCoreInFlight", "maxNfdPitEntries",
     "mavlinkArm", "mavlinkTakeoff", "mavlinkLand",
     "staleSessionRejectCount", "staleStreamRejectCount",
     "fecRecoveryLogCount", "fecRecoveredChunks", "maxPendingChunks",
@@ -294,19 +397,23 @@ def is_run_accepted(run: dict[str, Any], *, max_pending_chunks: int,
         int(run["maxPendingChunks"]) <= max_pending_chunks and
         int(run["maxPendingBytes"]) <= max_pending_bytes and
         int(run["staleSessionRejectCount"]) == 0 and
-        int(run["staleStreamRejectCount"]) == 0
+        int(run["staleStreamRejectCount"]) == 0 and
+        bool(run["secretScanAccepted"])
+        and bool(run["policyAccepted"])
     )
 
 
 def aggregate_treatments(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    grouped: dict[tuple[int, int], list[dict[str, Any]]] = {}
+    grouped: dict[tuple[str, int, int], list[dict[str, Any]]] = {}
     for run in runs:
         grouped.setdefault(
-            (int(run["lossPercent"]), int(run["fecParityShards"])), []
+            (str(run.get("prefetchPolicy", "mapped-pressure")),
+             int(run["lossPercent"]), int(run["fecParityShards"])), []
         ).append(run)
     aggregates: list[dict[str, Any]] = []
-    for (loss, parity), rows in sorted(grouped.items()):
+    for (policy, loss, parity), rows in sorted(grouped.items()):
         aggregates.append({
+            "prefetchPolicy": policy,
             "lossPercent": loss,
             "fecParityShards": parity,
             "runCount": len(rows),
@@ -325,9 +432,28 @@ def aggregate_treatments(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "maxPendingBytes": max(row["maxPendingBytes"] for row in rows),
             "meanRttP50Ms": statistics.fmean(row["rttP50Ms"] for row in rows),
             "meanRttP95Ms": statistics.fmean(row["rttP95Ms"] for row in rows),
+            "meanCaptureToDecodeP50Ms": statistics.fmean(
+                row.get("captureToDecodeP50Ms", 0.0) for row in rows),
+            "meanCaptureToDecodeP95Ms": statistics.fmean(
+                row.get("captureToDecodeP95Ms", 0.0) for row in rows),
+            "meanMappingInterests": statistics.fmean(
+                row.get("mappingInterests", 0) for row in rows),
+            "meanPayloadInterests": statistics.fmean(
+                row.get("payloadInterests", 0) for row in rows),
+            "meanFuturePayloadInterests": statistics.fmean(
+                row.get("futurePayloadInterests", 0) for row in rows),
+            "meanMappingBytes": statistics.fmean(
+                row.get("mappingBytes", 0) for row in rows),
+            "meanMappingInterestShare": statistics.fmean(
+                row.get("mappingInterestShare", 0.0) for row in rows),
+            "maxCoreInFlight": max(row.get("maxCoreInFlight", 0) for row in rows),
+            "maxNfdPitEntries": max(row.get("maxNfdPitEntries", 0) for row in rows),
+            "meanProviderFutureHitRatio": statistics.fmean(
+                row.get("providerFutureHitRatio", 0.0) for row in rows),
             "controlsPassed": sum(
                 row["mavlinkArm"] and row["mavlinkTakeoff"] and row["mavlinkLand"]
                 for row in rows),
+            "secretLeakCount": sum(int(row.get("secretLeakCount", 0)) for row in rows),
         })
     return aggregates
 
@@ -345,6 +471,11 @@ def main() -> int:
     parser.add_argument("--max-pending-chunks", type=int, default=48)
     parser.add_argument("--max-pending-bytes", type=int, default=16 * 1024 * 1024)
     parser.add_argument("--no-mavlink", action="store_true")
+    parser.add_argument(
+        "--live-stream-prefetch-policy",
+        choices=("mapped-pressure", "mapped-live-v1-future-on",
+                 "mapped-live-v1-future-off"),
+        default="mapped-pressure")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--reparse-existing", action="store_true",
                         help="Rebuild summaries from existing immutable run logs without executing MiniNDN.")
@@ -391,6 +522,7 @@ def main() -> int:
             duration_seconds=args.auto_stop_seconds,
             fec_parity_shards=parity,
             include_mavlink=include_mavlink,
+            prefetch_policy=args.live_stream_prefetch_policy,
         )
         if args.reparse_existing:
             previous = prior_runs.get(run_id)
@@ -407,6 +539,7 @@ def main() -> int:
                 include_mavlink=include_mavlink,
                 elapsed_seconds=float(previous.get("elapsedSeconds", 0.0)),
                 min_decoded_frame_ratio=args.min_decoded_frame_ratio,
+                prefetch_policy=args.live_stream_prefetch_policy,
             ))
             continue
         if args.dry_run:
@@ -440,6 +573,7 @@ def main() -> int:
             include_mavlink=include_mavlink,
             elapsed_seconds=time.monotonic() - started,
             min_decoded_frame_ratio=args.min_decoded_frame_ratio,
+            prefetch_policy=args.live_stream_prefetch_policy,
         ))
 
     if args.dry_run:
@@ -492,6 +626,7 @@ def main() -> int:
                 "maxPendingChunks": args.max_pending_chunks,
                 "maxPendingBytes": args.max_pending_bytes,
                 "automaticRetry": False,
+                "prefetchPolicy": args.live_stream_prefetch_policy,
             },
             "runCount": len(runs),
             "acceptedRuns": sum(bool(run["accepted"]) for run in runs),

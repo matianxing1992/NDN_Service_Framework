@@ -11,6 +11,7 @@ import os
 import pwd
 import re
 import signal
+import shutil
 import statistics
 import site
 import subprocess
@@ -50,6 +51,10 @@ from spec107_preflight import (  # noqa: E402
     run_campaign_preflight,
     write_invalid_preflight_record,
 )
+from ndnsf_distributed_inference.app_sdk import (  # noqa: E402
+    ArtifactReference, DeploymentDefinition, DeploymentRevision,
+    ProviderEvidenceSigner,
+)
 from mininet.log import info, setLogLevel  # noqa: E402
 from minindn.apps.app_manager import AppManager  # noqa: E402
 from minindn.apps.nfd import Nfd  # noqa: E402
@@ -80,6 +85,101 @@ STAGE_IDENTITIES = [
     PROVIDER_PREFIX + "/1",
     PROVIDER_PREFIX + "/2",
 ]
+DEPLOYMENT_ARTIFACT_DIGEST = "sha256:" + "a" * 64
+
+
+def configure_spec111_deployment_workflow(config_path: Path, out: Path,
+                                          stages: int) -> dict[str, object]:
+    if stages != len(STAGE_IDENTITIES):
+        raise ValueError("Spec 111 deployment workflow currently requires three stages")
+    controls = [f"/APP/Deployment/Control/Stage/{index}"
+                for index in range(stages)]
+    roles = [f"/LLM/Pipeline/Stage/{index}" for index in range(stages)]
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    payload["services"] = [
+        item for item in payload.get("services", ())
+        if not str(item.get("name", "")).startswith("/APP/Deployment/Control/")
+    ]
+    for index, (service, role, identity) in enumerate(
+            zip(controls, roles, STAGE_IDENTITIES)):
+        payload["services"].append({
+            "name": service,
+            "model": "/Model/Deployment/Evidence",
+            "users": [USER_IDENTITY],
+            "providers": [{"identity": identity, "roles": [role]}],
+            "roles": [role],
+            "dependencies": [],
+            "artifacts": [],
+            "input": {"codec": "application/json", "implemented": True},
+            "output": {"codec": "application/json", "implemented": True},
+            "metadata": {"owner": "APPDeployment", "wireProtocol": "ordinary-NDNSF"},
+        })
+    authorization = payload.setdefault("authorization_summary", {})
+    for user in authorization.get("users", ()):
+        if user.get("identity") == USER_IDENTITY:
+            user["services"] = [
+                item for item in user.get("services", ())
+                if not str(item).startswith("/APP/Deployment/Control/")
+            ] + controls
+    for provider in authorization.get("providers", ()):
+        identity = str(provider.get("identity", ""))
+        if identity not in STAGE_IDENTITIES:
+            continue
+        index = STAGE_IDENTITIES.index(identity)
+        provider["services"] = [
+            item for item in provider.get("services", ())
+            if not str(item.get("service", "")).startswith(
+                "/APP/Deployment/Control/")
+        ] + [{"service": controls[index], "roles": "all"}]
+    config_path.write_text(
+        yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+    definition = DeploymentDefinition(
+        "spec111-minindn-qwen",
+        "qwen-external",
+        (ArtifactReference(
+            "file:///project/tma1/ndnsf-di/models/qwen",
+            DEPLOYMENT_ARTIFACT_DIGEST, 1, "/models/qwen"),),
+        tuple(roles),
+        {"precision": "fake", "workflow": "spec111-minindn"},
+    )
+    revision = DeploymentRevision.resolve(definition)
+    definition_path = out / "deployment-definition.json"
+    definition_path.write_text(json.dumps({
+        "deploymentId": definition.deployment_id,
+        "modelId": definition.model_id,
+        "artifacts": [item.__dict__ for item in definition.artifacts],
+        "roles": list(definition.roles),
+        "configuration": dict(definition.configuration),
+    }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    key_dir = Path(f"/tmp/spec111-provider-evidence-{os.getpid()}")
+    shutil.rmtree(key_dir, ignore_errors=True)
+    key_dir.mkdir(mode=0o700, parents=True)
+    public_keys = {}
+    private_keys = []
+    for index in range(stages):
+        signer = ProviderEvidenceSigner.generate()
+        private_path = key_dir / f"stage-{index}.pem"
+        private_path.write_bytes(signer.private_pem())
+        private_path.chmod(0o600)
+        private_keys.append(str(private_path))
+        public_keys[signer.key_id] = signer.public_pem().decode("ascii")
+    trust_path = out / "provider-evidence-trust.json"
+    trust_path.write_text(json.dumps({
+        "schema": "ndnsf-di-provider-evidence-trust-v1",
+        "trustedProviderKeys": public_keys,
+        "controlServices": controls,
+    }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return {
+        "revision": revision.revision,
+        "definition": str(definition_path),
+        "trust": str(trust_path),
+        "controls": controls,
+        "roles": roles,
+        "privateKeys": private_keys,
+        "keyDir": str(key_dir),
+    }
 
 
 class CleanNlsr(Nlsr):
@@ -143,6 +243,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--warmup-requests", type=int, default=0)
     parser.add_argument("--measured-requests", type=int, default=1)
     parser.add_argument("--max-new-tokens", type=int, default=1)
+    parser.add_argument("--durable-app-submit", action="store_true")
+    parser.add_argument(
+        "--deployment-workflow", action="store_true",
+        help="Run the Spec 111 signed Provider lifecycle over ordinary NDNSF services")
+    parser.add_argument("--deployment-revision", default="")
+    parser.add_argument(
+        "--app-state-root", default="/tmp/ndnsf-di-app-state")
+    parser.add_argument(
+        "--test-only-allow-ephemeral-app-state", action="store_true")
     parser.add_argument("--expected-token-ids", default="")
     parser.add_argument(
         "--native-first-kv-mode",
@@ -1375,6 +1484,19 @@ def main() -> int:
             qwen_service_manifest=spec107_qwen_service_manifest,
             qwen_runtime_manifest=spec107_qwen_runtime_manifest,
         )
+    workflow_bundle = None
+    if args.deployment_workflow:
+        if args.runtime == "qwen-onnx-cpu-native" or args.spec107_live_fault_cell:
+            raise SystemExit(
+                "Spec 111 deployment workflow requires the Python Provider path")
+        workflow_bundle = configure_spec111_deployment_workflow(
+            CONFIG, OUT, args.stages)
+        workflow_revision = str(workflow_bundle["revision"])
+        if args.deployment_revision and args.deployment_revision != workflow_revision:
+            raise SystemExit("--deployment-revision conflicts with resolved workflow revision")
+        args.deployment_revision = workflow_revision
+        args.durable_app_submit = True
+        shutil.rmtree(Path(args.app_state_root), ignore_errors=True)
     base_env = {
         **os.environ,
         "PYTHONFAULTHANDLER": "1",
@@ -1539,7 +1661,7 @@ def main() -> int:
         start_process(
             ndn, CONTROLLER_NODE, "controller",
             base + "-c " + perf.shell_quote(
-                "from ndnsf_distributed_inference import APPController; "
+                "from ndnsf_distributed_inference.app_sdk.controller import APPController; "
                 "import sys; "
                 "c=APPController.from_config(sys.argv[1], generated_policy_dir=sys.argv[2]); "
                 "print('controller ready', flush=True); c.run()"
@@ -1555,6 +1677,22 @@ def main() -> int:
                 if provider_id else
                 " "
             )
+            workflow_provider_args = ""
+            if workflow_bundle is not None:
+                workflow_provider_args = (
+                    " --provider-identity {} --deployment-control-service {} "
+                    "--deployment-role {} --deployment-revision {} "
+                    "--deployment-artifact-digest {} --provider-boot-epoch {} "
+                    "--provider-evidence-private-key {}"
+                ).format(
+                    perf.shell_quote(STAGE_IDENTITIES[stage_index]),
+                    perf.shell_quote(workflow_bundle["controls"][stage_index]),
+                    perf.shell_quote(workflow_bundle["roles"][stage_index]),
+                    perf.shell_quote(workflow_bundle["revision"]),
+                    perf.shell_quote(DEPLOYMENT_ARTIFACT_DIGEST),
+                    perf.shell_quote(f"spec111-stage-{stage_index}-boot-1"),
+                    perf.shell_quote(workflow_bundle["privateKeys"][stage_index]),
+                )
             if args.runtime == "qwen-onnx-cpu-native":
                 if native_plan is None or native_manifest is None:
                     raise RuntimeError("native Qwen plan/manifest were not generated")
@@ -1597,7 +1735,8 @@ def main() -> int:
                     f"--runtime {args.runtime} "
                     f"--stages {args.stages} "
                     f"--transformer-layers {args.transformer_layers} "
-                    f"--compute-delay-ms {args.compute_delay_ms}"
+                    f"--compute-delay-ms {args.compute_delay_ms}" +
+                    workflow_provider_args
                 )
                 ready_marker = "LLM_PIPELINE_PROVIDER_READY"
             proc, log_path = start_process(
@@ -1640,6 +1779,34 @@ def main() -> int:
             )
             if args.spec107_diagnostic else ""
         )
+        # The canonical APPClient always owns a RuntimeJournal, even when this
+        # workload uses the compatibility inference call instead of durable
+        # submit/reopen.  Forward the state-root safety contract unconditionally;
+        # only the submit mode and revision remain conditional.
+        durable_user_args = "--app-state-root {} {} {}".format(
+            perf.shell_quote(args.app_state_root),
+            ("--test-only-allow-ephemeral-app-state"
+             if args.test_only_allow_ephemeral_app_state else ""),
+            (
+                "--durable-app-submit --deployment-revision {}".format(
+                    perf.shell_quote(args.deployment_revision))
+                if args.durable_app_submit else ""
+            ),
+        )
+        workflow_user_args = ""
+        if workflow_bundle is not None:
+            control_args = " ".join(
+                "--deployment-control-service " + perf.shell_quote(service)
+                for service in workflow_bundle["controls"])
+            workflow_user_args = (
+                "--deployment-workflow --deployment-definition {} "
+                "--provider-trust-bundle {} {} --deployment-workflow-summary {}"
+            ).format(
+                perf.shell_quote(workflow_bundle["definition"]),
+                perf.shell_quote(workflow_bundle["trust"]),
+                control_args,
+                perf.shell_quote(OUT / "deployment-workflow-summary.json"),
+            )
         user_proc = getPopen(
             ndn.net[USER_NODE],
             base + perf.shell_quote(LLM_DIR / "user.py") + common +
@@ -1653,7 +1820,7 @@ def main() -> int:
             "--native-first-kv-mode {} "
             "--expected-token-ids {} "
             "--measured-duration-s {} --request-interval-ms {} --campaign-id {} "
-            "--metrics-csv {} {} {} {}".format(
+            "--metrics-csv {} {} {} {} {} {}".format(
                 perf.shell_quote(args.prompt),
                 args.stages,
                 args.compute_delay_ms,
@@ -1676,6 +1843,8 @@ def main() -> int:
                 "--publish-input-reference" if args.publish_input_reference else "",
                 native_user_args,
                 spec107_user_args,
+                durable_user_args,
+                workflow_user_args,
             ),
             envDict=node_env[USER_NODE],
             shell=True,
@@ -1741,6 +1910,10 @@ def main() -> int:
         )
         if expected_user_marker not in user_text:
             raise RuntimeError(f"LLM pipeline user failed; log={user_log}")
+        if (workflow_bundle is not None and
+                "LLM_PIPELINE_DEPLOYMENT_WORKFLOW_PASS" not in user_text):
+            raise RuntimeError(
+                f"Spec 111 deployment workflow did not finish; log={user_log}")
         user_failed = user_proc.returncode != 0
         for stage_index, log_path in enumerate(provider_logs):
             text = log_path.read_text(errors="replace")
@@ -1851,6 +2024,8 @@ def main() -> int:
         )
         return 0
     finally:
+        if workflow_bundle is not None:
+            shutil.rmtree(str(workflow_bundle["keyDir"]), ignore_errors=True)
         if fault_registry is not None:
             cleanup = fault_registry.cleanup()
             if not cleanup["proven"]:

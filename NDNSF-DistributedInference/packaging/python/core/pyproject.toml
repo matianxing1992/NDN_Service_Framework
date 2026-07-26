@@ -1,0 +1,10 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+[project]
+name = "ndnsf-di-core"
+version = "0.111.0"
+description = "Owner-neutral NDNSF-DI contracts and mechanisms"
+[tool.setuptools.packages.find]
+where = ["../../.."]
+include = ["ndnsf_distributed_inference.core*"]
