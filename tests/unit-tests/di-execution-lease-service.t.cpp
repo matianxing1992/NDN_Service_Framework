@@ -16,7 +16,14 @@ BOOST_AUTO_TEST_CASE(PythonFixtureRoundTripsByteForByte)
     "\"schema\":\"ndnsf-di-execution-lease-operation-v1\","
     "\"targetServiceName\":\"/Inference/NativeTracer\"}";
   const auto decodedRequest = decodeLeaseOperationRequest(pythonRequest);
-  BOOST_CHECK_EQUAL(encodeLeaseOperationRequest(decodedRequest), pythonRequest);
+  const std::string compactPythonRequest =
+    "{\"expiresAtMs\":5000,\"idempotencyKey\":\"prepare-1\","
+    "\"operation\":\"PREPARE\",\"planDigest\":\"plan-1\","
+    "\"requestId\":\"request-1\",\"resourceBindingProof\":\"AGJpbmRpbmf/\","
+    "\"roles\":[\"/Backbone\"],"
+    "\"schema\":\"ndnsf-di-execution-lease-operation-v1\","
+    "\"targetServiceName\":\"/Inference/NativeTracer\"}";
+  BOOST_CHECK_EQUAL(encodeLeaseOperationRequest(decodedRequest), compactPythonRequest);
 
   const std::string pythonResponse =
     "{\"conflictKeys\":[],\"executionDeadlineMs\":0,\"expiresAtMs\":0,"

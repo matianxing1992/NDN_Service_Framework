@@ -16,10 +16,9 @@ from ndnsf import (
     encode_large_data_reference_payload,
     parse_large_data_reference_payload,
 )
-from ndnsf_distributed_inference import (
-    DependencyEdge,
-    ProviderRuntimeContext,
-    RoleDependencyView,
+from ndnsf_distributed_inference.plan import DependencyEdge, RoleDependencyView
+from ndnsf_distributed_inference.app_sdk import ProviderRuntimeContext
+from ndnsf_distributed_inference.adapters.onnx.executor import (
     execute_onnx_dependency_chunk,
 )
 

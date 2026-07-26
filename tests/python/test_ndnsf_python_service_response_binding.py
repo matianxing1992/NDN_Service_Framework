@@ -25,6 +25,43 @@ class NativeServiceResponseBindingTest(unittest.TestCase):
     def test_native_binding_exports_request_id(self) -> None:
         self.assertIn("request_id", dir(_ndnsf.ServiceResponse))
 
+    def test_authenticated_transport_evidence_round_trips_across_pybind_boundary(self) -> None:
+        native = _ndnsf.ServiceResponse()
+        native.status = True
+        native.payload = b"lease"
+        native.data_name = "/provider/NDNSF/RESPONSE/request"
+        native.signer_certificate = "/provider/KEY/key/issuer/version"
+        native.wire_digest = "sha256:abc"
+        response = _from_native_response(native)
+        self.assertEqual(response.data_name, native.data_name)
+        self.assertEqual(response.signer_certificate, native.signer_certificate)
+        self.assertEqual(response.wire_digest, native.wire_digest)
+        rebuilt = _to_native_response(response)
+        self.assertEqual(rebuilt.data_name, native.data_name)
+        self.assertEqual(rebuilt.signer_certificate, native.signer_certificate)
+        self.assertEqual(rebuilt.wire_digest, native.wire_digest)
+
+    def test_collaboration_callbacks_export_authenticated_transport_evidence(self) -> None:
+        """Keep sync and async collaboration paths aligned with normal responses.
+
+        The end-to-end MiniNDN gate proves that these values originate from a
+        validated Data packet.  This focused source contract prevents the
+        pybind adapters from silently dropping that evidence again.
+        """
+        source = (REPO / "pythonWrapper/src/ndnsf/_ndnsf.cpp").read_text()
+        collaboration = source[source.index("requestCollaboration("):
+                               source.index("requestServiceSelect(")]
+        for field, getter in (
+            ("output.dataName", "response.getDataName()"),
+            ("output.signerCertificate", "response.getSignerCertificate()"),
+            ("output.wireDigest", "response.getWireDigest()"),
+        ):
+            self.assertGreaterEqual(
+                collaboration.count(f"{field} = {getter};"),
+                2,
+                f"sync and async collaboration callbacks must copy {field}",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

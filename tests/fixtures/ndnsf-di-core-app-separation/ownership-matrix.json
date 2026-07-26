@@ -1,0 +1,56 @@
+{
+  "schema": "ndnsf-di-spec111-ownership-matrix-v1",
+  "source": "specs/111-ndnsf-di-core-app-separation/contracts/ownership-matrix.md",
+  "phases": {
+    "legacy": {
+      "roots": ["ndnsf_distributed_inference"],
+      "forbiddenImports": []
+    },
+    "core": {
+      "roots": ["ndnsf_distributed_inference.core"],
+      "forbiddenImports": [
+        "ndnsf_distributed_inference.app",
+        "ndnsf_distributed_inference.policy",
+        "ndnsf_distributed_inference.models",
+        "ndnsf_distributed_inference.ops",
+        "ndnsf_distributed_inference.experiments",
+        "onnx",
+        "onnxruntime",
+        "transformers",
+        "llama_cpp",
+        "tkinter"
+      ]
+    },
+    "sdk": {
+      "roots": ["ndnsf_distributed_inference.sdk"],
+      "forbiddenImports": [
+        "ndnsf_distributed_inference.app",
+        "ndnsf_distributed_inference.models",
+        "ndnsf_distributed_inference.ops",
+        "ndnsf_distributed_inference.experiments"
+      ]
+    },
+    "planner": {
+      "roots": ["ndnsf_distributed_inference.planner"],
+      "forbiddenImports": [
+        "ndnsf_distributed_inference.app_sdk",
+        "ndnsf_distributed_inference.ops"
+      ]
+    },
+    "requestScopedAssignment": {
+      "roots": ["ndnsf_distributed_inference.core"],
+      "forbiddenImports": [],
+      "forbiddenState": [
+        "NDNSF_COLLAB_ROLE_PROVIDER_PREFERENCE",
+        "roleProviderPreferenceFromEnv"
+      ]
+    }
+  },
+  "rules": [
+    "core-never-imports-app-policy-model-ops-experiments",
+    "sdk-imports-public-core-contracts-only",
+    "compatibility-may-import-canonical-owner-never-reverse",
+    "optional-model-and-ops-dependencies-are-lazy"
+  ],
+  "enforcedPhases": ["US1", "US2", "US3"]
+}

@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ndnsf-di-external-optimizer-fixture"
+version = "1.0.0"
+description = "Spec 111 standalone ten-policy optimizer fixture"
+requires-python = ">=3.8"
+
+[project.entry-points."ndnsf_di.optimizers"]
+fixture = "ndnsf_di_external_optimizer:create_suite"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

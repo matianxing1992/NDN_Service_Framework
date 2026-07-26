@@ -32,18 +32,26 @@ class UavStreamParityCampaignTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp)
             (run_dir / "ground-station.log").write_text(
-                "100.0 INFO GS_RESPONSE status=streaming fec_parity_shards=1\n"
+                "100.0 INFO GS_VIDEO_STREAM_READY status=streaming fec_parity_shards=1 "
+                "sample_period_ms=1000\n"
+                "GS_VIDEO_CORE_STATUS policy=mapped-live-v1-future-on "
+                "mapping_interests=1 payload_interests=4 future_payload_interests=3\n"
                 "GS_VIDEO_ADAPTIVE_STATE reason=active VideoAdaptive drone=A "
                 "rtt_ms=40 pending_chunks=2 pending_bytes=7200 "
                 "fec_recovered_chunks=1 decoded_frame_gap=0 timeouts=1 "
                 "nacks=0 duplicates=0\n"
                 "GS_VIDEO_FEC_RECOVERED stream=A session=1 frame_seq=2 packet_seq=3\n"
-                "GS_DECODED_FRAMES count=30\n"
+                "GS_VIDEO_ADAPTIVE_STATE reason=decoded VideoAdaptive "
+                "rtt_ms=40 pending_chunks=0 pending_bytes=0 fec_recovered_chunks=1 "
+                "decoded_frame_gap=0 timeouts=1 nacks=0 duplicates=0 decoded_frames=30\n"
                 "101.0 INFO GS_VIDEO_ADAPTIVE_STATE reason=stop-ack state=stopped\n"
                 "GS_GUI_EXIT rc=0\n",
                 encoding="utf-8",
             )
-            summary = campaign.parse_run(run_dir, 0, ["launcher"])
+            summary = campaign.parse_run(
+                run_dir, 0, ["launcher"],
+                prefetch_policy="mapped-live-v1-future-on",
+            )
 
         self.assertTrue(summary["completion"])
         self.assertTrue(summary["metricsValid"])
@@ -81,11 +89,14 @@ class UavStreamParityCampaignTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp)
             (run_dir / "ground-station.log").write_text(
-                "100.0 INFO GS_RESPONSE status=streaming fec_parity_shards=1\n"
+                "100.0 INFO GS_VIDEO_STREAM_READY status=streaming fec_parity_shards=1 "
+                "sample_period_ms=440\n"
+                "GS_VIDEO_CORE_STATUS policy=mapped-live-v1-future-on "
+                "mapping_interests=1 payload_interests=4 future_payload_interests=3\n"
                 "MAVLink arm drone=A accepted=true\n"
                 "MAVLink takeoff drone=A accepted=true\n"
                 "MAVLink land drone=A accepted=true\n"
-                "GS_DECODED_FRAMES count=90\n"
+                "GS_DECODED_FRAMES count=60\n"
                 "161.0 INFO GS_VIDEO_ADAPTIVE_STATE reason=stop-ack state=stopped\n"
                 "GS_GUI_EXIT rc=0\n",
                 encoding="utf-8",
@@ -96,6 +107,7 @@ class UavStreamParityCampaignTest(unittest.TestCase):
                 ["launcher"],
                 duration_seconds=60,
                 include_mavlink=True,
+                prefetch_policy="mapped-live-v1-future-on",
             )
 
         self.assertTrue(summary["processCompletion"])
@@ -103,8 +115,36 @@ class UavStreamParityCampaignTest(unittest.TestCase):
         self.assertTrue(summary["controlCompletion"])
         self.assertFalse(summary["videoCompletion"])
         self.assertFalse(summary["completion"])
-        self.assertEqual(summary["minimumDecodedFrames"], 900)
-        self.assertAlmostEqual(summary["decodedFrameRate"], 90 / 61)
+        self.assertEqual(summary["minimumDecodedFrames"], 68)
+        self.assertEqual(summary["measuredSamplePeriodMs"], 440)
+        self.assertAlmostEqual(summary["decodedFrameRate"], 60 / 61)
+
+    def test_persisted_stream_secret_rejects_run(self) -> None:
+        campaign = load_campaign()
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "ground-station.log").write_text(
+                "100.0 INFO GS_VIDEO_STREAM_READY status=streaming "
+                "fec_parity_shards=1 sample_period_ms=1000\n"
+                "GS_VIDEO_CORE_STATUS policy=mapped-live-v1-future-on "
+                "mapping_interests=1 payload_interests=4 future_payload_interests=3\n"
+                "GS_VIDEO_ADAPTIVE_STATE reason=active VideoAdaptive "
+                "rtt_ms=20 pending_chunks=0 pending_bytes=0 "
+                "fec_recovered_chunks=0 decoded_frame_gap=0 timeouts=0 "
+                "nacks=0 duplicates=0 decoded_frames=30\n"
+                "stream_key_hex=deadbeef\n"
+                "101.0 INFO GS_VIDEO_ADAPTIVE_STATE reason=stop-ack state=stopped\n"
+                "GS_GUI_EXIT rc=0\n",
+                encoding="utf-8",
+            )
+            summary = campaign.parse_run(
+                run_dir, 0, ["launcher"],
+                prefetch_policy="mapped-live-v1-future-on",
+            )
+
+        self.assertFalse(summary["secretScanAccepted"])
+        self.assertEqual(summary["secretLeakCount"], 1)
+        self.assertFalse(summary["completion"])
 
     def test_treatment_aggregation_keeps_failed_runs(self) -> None:
         campaign = load_campaign()
@@ -143,7 +183,9 @@ class UavStreamParityCampaignTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp)
             (run_dir / "ground-station.log").write_text(
-                "100.0 INFO GS_RESPONSE status=streaming fec_parity_shards=1\n"
+                "100.0 INFO GS_VIDEO_STREAM_READY status=streaming fec_parity_shards=1\n"
+                "GS_VIDEO_CORE_STATUS policy=mapped-live-v1-future-on "
+                "mapping_interests=1 payload_interests=4 future_payload_interests=3\n"
                 "GS_VIDEO_ADAPTIVE_STATE reason=active VideoAdaptive "
                 "rtt_ms=20 pending_chunks=0 pending_bytes=0 "
                 "fec_recovered_chunks=0 decoded_frame_gap=0 timeouts=bad "
@@ -153,7 +195,10 @@ class UavStreamParityCampaignTest(unittest.TestCase):
                 "GS_GUI_EXIT rc=0\n",
                 encoding="utf-8",
             )
-            summary = campaign.parse_run(run_dir, 0, ["launcher"])
+            summary = campaign.parse_run(
+                run_dir, 0, ["launcher"],
+                prefetch_policy="mapped-live-v1-future-on",
+            )
 
         self.assertTrue(summary["completion"])
         self.assertFalse(summary["metricsValid"])

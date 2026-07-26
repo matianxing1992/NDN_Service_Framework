@@ -12,7 +12,7 @@ import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from ndnsf_distributed_inference.gui import (
+from ndnsf_distributed_inference.app_sdk.gui import (
     ControllerTabConfig,
     DistributedInferenceGui,
     FakeRuntimeFactory,

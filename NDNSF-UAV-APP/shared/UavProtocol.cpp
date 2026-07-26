@@ -1,8 +1,10 @@
 #include "UavProtocol.hpp"
 #include "UavNames.hpp"
+#include "ndn-service-framework/HybridMessageCrypto.hpp"
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -487,6 +489,1277 @@ decodeFields(const std::string& payload)
     start = end + 1;
   }
   return fields;
+}
+
+namespace {
+
+const std::set<std::string>&
+videoStreamDescriptorRequiredFields()
+{
+  static const std::set<std::string> fields{
+    "data_prefix",
+    "key_epoch",
+    "latest_join_cursor",
+    "latest_produced_cursor",
+    "mapping_anchor_block",
+    "mapping_anchor_content_digest",
+    "mapping_block_capacity",
+    "mapping_committed_through_cursor",
+    "mapping_root",
+    "mapping_version",
+    "max_name_reservations",
+    "next_reserved_cursor",
+    "nonce_salt_hex",
+    "oldest_retained_cursor",
+    "prefetch_eligibility",
+    "sample_period_ms",
+    "sample_unit",
+    "stream_cipher",
+    "stream_contract_version",
+    "stream_id",
+    "stream_key_hex",
+    "stream_session_epoch",
+  };
+  return fields;
+}
+
+bool
+isCanonicalDescriptorKey(const std::string& key)
+{
+  if (key.empty()) {
+    return false;
+  }
+  return std::all_of(key.begin(), key.end(), [] (unsigned char ch) {
+    return (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_';
+  });
+}
+
+int
+uppercaseHexValue(char ch)
+{
+  if (ch >= '0' && ch <= '9') {
+    return ch - '0';
+  }
+  if (ch >= 'A' && ch <= 'F') {
+    return ch - 'A' + 10;
+  }
+  return -1;
+}
+
+Fields
+decodeCanonicalDescriptorFields(const std::string& payload)
+{
+  if (payload.empty()) {
+    throw std::invalid_argument("empty UAV stream descriptor");
+  }
+
+  Fields fields;
+  std::string previousKey;
+  size_t start = 0;
+  while (start < payload.size()) {
+    const auto end = payload.find(';', start);
+    const auto partEnd = end == std::string::npos ? payload.size() : end;
+    if (partEnd == start) {
+      throw std::invalid_argument("empty UAV stream descriptor field");
+    }
+
+    const auto equal = payload.find('=', start);
+    if (equal == std::string::npos || equal >= partEnd || equal == start) {
+      throw std::invalid_argument("malformed UAV stream descriptor field");
+    }
+    const auto key = payload.substr(start, equal - start);
+    if (!isCanonicalDescriptorKey(key) ||
+        (!previousKey.empty() && key <= previousKey)) {
+      throw std::invalid_argument("non-canonical UAV stream descriptor key order");
+    }
+
+    std::string value;
+    value.reserve(partEnd - equal - 1);
+    for (size_t i = equal + 1; i < partEnd; ++i) {
+      const char ch = payload[i];
+      if (ch == '=') {
+        throw std::invalid_argument("unescaped UAV stream descriptor delimiter");
+      }
+      if (ch != '%') {
+        value.push_back(ch);
+        continue;
+      }
+      if (i + 2 >= partEnd) {
+        throw std::invalid_argument("truncated UAV stream descriptor escape");
+      }
+      const int high = uppercaseHexValue(payload[i + 1]);
+      const int low = uppercaseHexValue(payload[i + 2]);
+      if (high < 0 || low < 0) {
+        throw std::invalid_argument("non-canonical UAV stream descriptor escape");
+      }
+      const char decoded = static_cast<char>((high << 4) | low);
+      if (decoded != '%' && decoded != ';' && decoded != '=') {
+        throw std::invalid_argument("unnecessary UAV stream descriptor escape");
+      }
+      value.push_back(decoded);
+      i += 2;
+    }
+
+    if (!fields.emplace(key, std::move(value)).second) {
+      throw std::invalid_argument("duplicate UAV stream descriptor field");
+    }
+    previousKey = key;
+    if (end == std::string::npos) {
+      break;
+    }
+    start = end + 1;
+    if (start == payload.size()) {
+      throw std::invalid_argument("trailing UAV stream descriptor delimiter");
+    }
+  }
+
+  if (encodeFields(fields) != payload) {
+    throw std::invalid_argument("non-canonical UAV stream descriptor encoding");
+  }
+  return fields;
+}
+
+const std::string&
+requiredDescriptorField(const Fields& fields, const std::string& key)
+{
+  const auto it = fields.find(key);
+  if (it == fields.end()) {
+    throw std::invalid_argument("missing UAV stream descriptor field: " + key);
+  }
+  return it->second;
+}
+
+uint64_t
+parseCanonicalUint64(const Fields& fields, const std::string& key)
+{
+  const auto& value = requiredDescriptorField(fields, key);
+  if (value.empty() || (value.size() > 1 && value.front() == '0')) {
+    throw std::invalid_argument("non-canonical UAV stream descriptor integer: " + key);
+  }
+  uint64_t result = 0;
+  const auto parsed = std::from_chars(value.data(), value.data() + value.size(), result);
+  if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size()) {
+    throw std::invalid_argument("invalid UAV stream descriptor integer: " + key);
+  }
+  return result;
+}
+
+bool
+isLowerHex(const std::string& value)
+{
+  return std::all_of(value.begin(), value.end(), [] (unsigned char ch) {
+    return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
+  });
+}
+
+ndn::Buffer
+decodeFixedLowerHex(const Fields& fields, const std::string& key, size_t bytes)
+{
+  const auto& value = requiredDescriptorField(fields, key);
+  if (value.size() != bytes * 2 || !isLowerHex(value)) {
+    throw std::invalid_argument("invalid UAV stream descriptor hex field: " + key);
+  }
+  ndn::Buffer decoded(bytes);
+  for (size_t i = 0; i < bytes; ++i) {
+    auto digit = [] (char ch) -> uint8_t {
+      return static_cast<uint8_t>(ch >= 'a' ? ch - 'a' + 10 : ch - '0');
+    };
+    decoded[i] = static_cast<uint8_t>((digit(value[2 * i]) << 4) |
+                                      digit(value[2 * i + 1]));
+  }
+  return decoded;
+}
+
+template<typename Range>
+std::string
+encodeLowerHex(const Range& value)
+{
+  static constexpr char digits[] = "0123456789abcdef";
+  std::string encoded;
+  encoded.reserve(value.size() * 2);
+  for (const auto byte : value) {
+    encoded.push_back(digits[(static_cast<uint8_t>(byte) >> 4) & 0x0f]);
+    encoded.push_back(digits[static_cast<uint8_t>(byte) & 0x0f]);
+  }
+  return encoded;
+}
+
+ndn::Name
+parseCanonicalName(const Fields& fields, const std::string& key)
+{
+  const auto& value = requiredDescriptorField(fields, key);
+  try {
+    ndn::Name name(value);
+    if (name.empty() || name.toUri() != value) {
+      throw std::invalid_argument("non-canonical UAV stream descriptor name: " + key);
+    }
+    return name;
+  }
+  catch (const std::invalid_argument&) {
+    throw;
+  }
+  catch (const std::exception&) {
+    throw std::invalid_argument("invalid UAV stream descriptor name: " + key);
+  }
+}
+
+bool
+isCanonicalStreamId(const std::string& streamId)
+{
+  static const std::string prefix = "stream-";
+  return streamId.size() == prefix.size() + 32 &&
+         streamId.compare(0, prefix.size(), prefix) == 0 &&
+         isLowerHex(streamId.substr(prefix.size()));
+}
+
+void
+validateVideoStreamSessionContext(const VideoStreamDescriptor& descriptor)
+{
+  using namespace ndn_service_framework;
+
+  if (descriptor.contractVersion != 2 ||
+      descriptor.providerIdentity.empty() || descriptor.serviceName.empty() ||
+      !isCanonicalStreamId(descriptor.streamId) ||
+      descriptor.sessionEpoch == 0 || descriptor.mappingVersion == 0 ||
+      descriptor.keyEpoch == 0) {
+    throw std::invalid_argument("invalid UAV stream descriptor identity context");
+  }
+  if (descriptor.mappingRoot !=
+      makeStreamNameMapRoot(descriptor.providerIdentity, descriptor.streamId)) {
+    throw std::invalid_argument("invalid UAV stream Mapping root");
+  }
+  if (!descriptor.providerIdentity.isPrefixOf(descriptor.dataPrefix) ||
+      descriptor.dataPrefix.size() != descriptor.providerIdentity.size() + 4) {
+    throw std::invalid_argument("invalid UAV stream payload prefix");
+  }
+  const auto videoIndex = descriptor.providerIdentity.size();
+  const auto& video = descriptor.dataPrefix.get(videoIndex);
+  const auto& camera = descriptor.dataPrefix.get(videoIndex + 1);
+  const auto& stream = descriptor.dataPrefix.get(videoIndex + 2);
+  const auto& version = descriptor.dataPrefix.get(videoIndex + 3);
+  if (!video.isGeneric() || video.toUri() != "video" ||
+      !camera.isGeneric() || camera.value_size() == 0 ||
+      !stream.isGeneric() || stream.toUri() != descriptor.streamId ||
+      !version.isVersion() || version.toVersion() != descriptor.mappingVersion) {
+    throw std::invalid_argument("invalid UAV stream semantic payload prefix");
+  }
+  if (descriptor.mappingBlockCapacity == 0 ||
+      descriptor.mappingBlockCapacity > STREAM_NAME_MAP_MAX_BLOCK_CAPACITY) {
+    throw std::invalid_argument("invalid UAV stream Mapping block capacity");
+  }
+  if (descriptor.maxNameReservations == 0 ||
+      descriptor.maxNameReservations > STREAM_NAME_MAP_MAX_REVERSE_ENTRIES ||
+      descriptor.maxNameReservations < descriptor.mappingBlockCapacity) {
+    throw std::invalid_argument("invalid UAV stream name-reservation limit");
+  }
+  if (descriptor.sampleUnit != "fec-group" || descriptor.samplePeriodMs == 0 ||
+      (descriptor.prefetchEligibility != "ahead-mapped" &&
+       descriptor.prefetchEligibility != "retrieval-only" &&
+       descriptor.prefetchEligibility != "predictive-sequential") ||
+      descriptor.cipher != "aes-256-gcm" || descriptor.streamKey.size() != 32 ||
+      descriptor.nonceSalt.size() != 4) {
+    throw std::invalid_argument("invalid UAV stream crypto or prefetch contract");
+  }
+  for (const auto& [key, value] : descriptor.extensions) {
+    (void)value;
+    if (!isCanonicalDescriptorKey(key) ||
+        videoStreamDescriptorRequiredFields().count(key) != 0) {
+      throw std::invalid_argument("invalid UAV stream descriptor extension key");
+    }
+  }
+}
+
+void
+validateVideoStreamDescriptor(const VideoStreamDescriptor& descriptor)
+{
+  validateVideoStreamSessionContext(descriptor);
+  if (const auto error = descriptor.frontiers.validate(
+        descriptor.mappingBlockCapacity, descriptor.mappingAnchorBlock)) {
+    throw std::invalid_argument("invalid UAV stream cursor frontiers: " + *error);
+  }
+  const auto retainedBlockCount =
+    descriptor.frontiers.mappingCommittedThrough / descriptor.mappingBlockCapacity -
+    descriptor.frontiers.oldestRetained / descriptor.mappingBlockCapacity + 1;
+  if (retainedBlockCount >
+      descriptor.maxNameReservations / descriptor.mappingBlockCapacity) {
+    throw std::invalid_argument("UAV stream retained range exceeds reservation limit");
+  }
+  if (descriptor.mappingAnchorBlock !=
+      descriptor.frontiers.latestJoin / descriptor.mappingBlockCapacity) {
+    throw std::invalid_argument("UAV stream Mapping anchor does not cover join cursor");
+  }
+}
+
+} // namespace
+
+UavH264ReadinessTracker::UavH264ReadinessTracker(uint64_t minimumGroups)
+  : m_minimumGroups(minimumGroups)
+{
+  if (m_minimumGroups < 3) {
+    throw std::invalid_argument("UAV stream readiness requires at least three groups");
+  }
+}
+
+void
+UavH264ReadinessTracker::reset()
+{
+  m_completedGroups = 0;
+  m_previousPublishedMs = 0;
+  m_periodSumMs = 0;
+  m_periodSamples = 0;
+  m_latestProducedCursor = 0;
+  m_lastSpsCursor = 0;
+  m_lastPpsCursor = 0;
+  m_latestJoinCursor = 0;
+  m_hasProduced = false;
+  m_hasSps = false;
+  m_hasPps = false;
+  m_hasIdrJoin = false;
+  m_annexBTail.clear();
+}
+
+void
+UavH264ReadinessTracker::observePublicationGroup(
+  uint64_t firstCursor,
+  uint64_t lastCursor,
+  uint64_t publishedMonotonicMs,
+  const std::vector<uint8_t>& annexBBytes)
+{
+  if (firstCursor > lastCursor || publishedMonotonicMs == 0 ||
+      (m_hasProduced && firstCursor <= m_latestProducedCursor) ||
+      (m_previousPublishedMs != 0 && publishedMonotonicMs <= m_previousPublishedMs)) {
+    throw std::invalid_argument("stale or invalid UAV publication-group observation");
+  }
+
+  if (m_previousPublishedMs != 0) {
+    const auto period = publishedMonotonicMs - m_previousPublishedMs;
+    if (m_periodSumMs > std::numeric_limits<uint64_t>::max() - period) {
+      throw std::overflow_error("UAV publication-period accumulator overflow");
+    }
+    m_periodSumMs += period;
+    ++m_periodSamples;
+  }
+  m_previousPublishedMs = publishedMonotonicMs;
+  ++m_completedGroups;
+  m_latestProducedCursor = lastCursor;
+  m_hasProduced = true;
+
+  std::vector<uint8_t> scan;
+  scan.reserve(m_annexBTail.size() + annexBBytes.size());
+  scan.insert(scan.end(), m_annexBTail.begin(), m_annexBTail.end());
+  scan.insert(scan.end(), annexBBytes.begin(), annexBBytes.end());
+  for (size_t i = 0; i + 3 < scan.size(); ++i) {
+    size_t header = 0;
+    if (scan[i] == 0 && scan[i + 1] == 0 && scan[i + 2] == 1) {
+      header = i + 3;
+    }
+    else if (i + 4 < scan.size() && scan[i] == 0 && scan[i + 1] == 0 &&
+             scan[i + 2] == 0 && scan[i + 3] == 1) {
+      header = i + 4;
+    }
+    if (header == 0 || header >= scan.size()) {
+      continue;
+    }
+    const auto nalType = static_cast<uint8_t>(scan[header] & 0x1f);
+    if (nalType == 7) {
+      m_hasSps = true;
+      m_lastSpsCursor = firstCursor;
+    }
+    else if (nalType == 8) {
+      m_hasPps = true;
+      m_lastPpsCursor = firstCursor;
+    }
+    else if (nalType == 5 && m_hasSps && m_hasPps) {
+      m_hasIdrJoin = true;
+      m_latestJoinCursor = std::min({m_lastSpsCursor, m_lastPpsCursor, firstCursor});
+    }
+  }
+
+  const auto tailSize = std::min<size_t>(4, scan.size());
+  m_annexBTail.assign(scan.end() - tailSize, scan.end());
+}
+
+bool
+UavH264ReadinessTracker::ready() const
+{
+  return m_completedGroups >= m_minimumGroups && m_periodSamples != 0 && m_hasIdrJoin;
+}
+
+uint64_t
+sourceMediaSequenceForJoinCursor(ndn_service_framework::StreamCursor cursor,
+                                 uint32_t dataShards,
+                                 uint32_t parityShards)
+{
+  if (dataShards == 0) {
+    throw std::invalid_argument("UAV media join requires source shards");
+  }
+  const uint64_t groupSize = static_cast<uint64_t>(dataShards) + parityShards;
+  if (groupSize == 0) {
+    throw std::overflow_error("UAV media join group size overflow");
+  }
+  const auto group = cursor / groupSize;
+  const auto symbol = cursor % groupSize;
+  if (group > std::numeric_limits<uint64_t>::max() / dataShards) {
+    throw std::overflow_error("UAV media join sequence overflow");
+  }
+  const auto groupFirstSource = group * dataShards;
+  if (symbol < dataShards) {
+    return groupFirstSource + symbol;
+  }
+  if (groupFirstSource > std::numeric_limits<uint64_t>::max() - dataShards) {
+    throw std::overflow_error("UAV media join repair skip overflow");
+  }
+  return groupFirstSource + dataShards;
+}
+
+// ── Predictive Stream Helpers (Spec 148) ──
+
+ndn::Name
+makeUavPredictiveSessionPrefix(const std::string& droneId, uint64_t epoch)
+{
+  ndn::Name prefix("/example/uav/drone");
+  prefix.append(droneId);
+  prefix.append("video");
+  prefix.append("v").appendNumber(epoch);
+  return prefix;
+}
+
+ndn::Name
+makeUavPredictiveMappingName(const ndn::Name& sessionPrefix,
+                              uint64_t mappingVersion,
+                              uint64_t cursor)
+{
+  ndn::Name name(sessionPrefix);
+  name.append("v").appendNumber(mappingVersion);
+  name.appendSequenceNumber(cursor);
+  return name;
+}
+
+std::shared_ptr<ndn::Data>
+uavVideoPacketToSignedData(const VideoPacket& packet,
+                            const ndn::Name& sessionPrefix,
+                            uint64_t mappingVersion,
+                            ndn::KeyChain& keyChain,
+                            const ndn::security::SigningInfo& signingInfo)
+{
+  auto data = std::make_shared<ndn::Data>(
+    makeUavPredictiveMappingName(sessionPrefix, mappingVersion, packet.packetSeq));
+  data->setFreshnessPeriod(ndn::time::milliseconds(1000));
+  data->setContent(ndn::span<const uint8_t>(packet.payload.data(),
+                                              packet.payload.size()));
+  keyChain.sign(*data, signingInfo);
+  return data;
+}
+
+uint64_t
+UavH264ReadinessTracker::completedGroups() const
+{
+  return m_completedGroups;
+}
+
+uint64_t
+UavH264ReadinessTracker::samplePeriodMs() const
+{
+  if (m_periodSamples == 0) {
+    return 0;
+  }
+  return std::max<uint64_t>(1, (m_periodSumMs + m_periodSamples / 2) / m_periodSamples);
+}
+
+uint64_t
+UavH264ReadinessTracker::latestJoinCursor() const
+{
+  if (!m_hasIdrJoin) {
+    throw std::logic_error("UAV stream has no decoder-safe join cursor");
+  }
+  return m_latestJoinCursor;
+}
+
+uint64_t
+UavH264ReadinessTracker::latestProducedCursor() const
+{
+  if (!m_hasProduced) {
+    throw std::logic_error("UAV stream has no produced cursor");
+  }
+  return m_latestProducedCursor;
+}
+
+std::string
+UavH264ReadinessTracker::reason() const
+{
+  if (m_completedGroups < m_minimumGroups) {
+    return "waiting-publication-groups";
+  }
+  if (!m_hasSps) {
+    return "waiting-sps";
+  }
+  if (!m_hasPps) {
+    return "waiting-pps";
+  }
+  if (!m_hasIdrJoin) {
+    return "waiting-idr";
+  }
+  if (m_periodSamples == 0) {
+    return "waiting-sample-period";
+  }
+  return "ready";
+}
+
+std::string
+encodeVideoStreamDescriptor(const VideoStreamDescriptor& descriptor)
+{
+  validateVideoStreamDescriptor(descriptor);
+  Fields fields = descriptor.extensions;
+  fields["data_prefix"] = descriptor.dataPrefix.toUri();
+  fields["key_epoch"] = std::to_string(descriptor.keyEpoch);
+  fields["latest_join_cursor"] = std::to_string(descriptor.frontiers.latestJoin);
+  fields["latest_produced_cursor"] = std::to_string(descriptor.frontiers.latestProduced);
+  fields["mapping_anchor_block"] = std::to_string(descriptor.mappingAnchorBlock);
+  fields["mapping_anchor_content_digest"] =
+    encodeLowerHex(descriptor.mappingAnchorContentDigest);
+  fields["mapping_block_capacity"] = std::to_string(descriptor.mappingBlockCapacity);
+  fields["mapping_committed_through_cursor"] =
+    std::to_string(descriptor.frontiers.mappingCommittedThrough);
+  fields["mapping_root"] = descriptor.mappingRoot.toUri();
+  fields["mapping_version"] = std::to_string(descriptor.mappingVersion);
+  fields["max_name_reservations"] = std::to_string(descriptor.maxNameReservations);
+  fields["next_reserved_cursor"] = std::to_string(descriptor.frontiers.nextReserved);
+  fields["nonce_salt_hex"] = encodeLowerHex(descriptor.nonceSalt);
+  fields["oldest_retained_cursor"] = std::to_string(descriptor.frontiers.oldestRetained);
+  fields["prefetch_eligibility"] = descriptor.prefetchEligibility;
+  fields["sample_period_ms"] = std::to_string(descriptor.samplePeriodMs);
+  fields["sample_unit"] = descriptor.sampleUnit;
+  fields["stream_cipher"] = descriptor.cipher;
+  fields["stream_contract_version"] = std::to_string(descriptor.contractVersion);
+  fields["stream_id"] = descriptor.streamId;
+  fields["stream_key_hex"] = encodeLowerHex(descriptor.streamKey);
+  fields["stream_session_epoch"] = std::to_string(descriptor.sessionEpoch);
+  return encodeFields(fields);
+}
+
+ndn_service_framework::LiveStreamDescriptor
+toCoreLiveStreamDescriptor(const VideoStreamDescriptor& descriptor)
+{
+  validateVideoStreamDescriptor(descriptor);
+  ndn_service_framework::LiveStreamDescriptor core;
+  core.definition.contractVersion = descriptor.contractVersion;
+  core.definition.streamId = descriptor.streamId;
+  core.definition.provider = descriptor.providerIdentity;
+  core.definition.semanticDataPrefix = descriptor.dataPrefix;
+  core.definition.sessionEpoch = descriptor.sessionEpoch;
+  core.definition.mappingVersion = descriptor.mappingVersion;
+  core.definition.mappingBlockCapacity = descriptor.mappingBlockCapacity;
+  core.definition.mappingAheadBlocks = 4;
+  const auto retainedSpan = descriptor.frontiers.latestProduced >=
+                              descriptor.frontiers.oldestRetained ?
+    descriptor.frontiers.latestProduced - descriptor.frontiers.oldestRetained + 1 : 0;
+  const auto roundedRetainedSpan = retainedSpan == 0 ? size_t{0} :
+    static_cast<size_t>(((retainedSpan + descriptor.mappingBlockCapacity - 1) /
+                         descriptor.mappingBlockCapacity) *
+                        descriptor.mappingBlockCapacity);
+  core.definition.retainedItems = std::min<size_t>(
+    descriptor.maxNameReservations,
+    std::max<size_t>(std::min<size_t>(600, descriptor.maxNameReservations),
+                     roundedRetainedSpan));
+  core.definition.maxNameReservations = descriptor.maxNameReservations;
+  core.definition.maxPendingInterests = 256;
+  core.definition.samplePeriodMs = static_cast<double>(descriptor.samplePeriodMs);
+  const auto dataShards = std::stoull(fieldOr(descriptor.extensions, "fec_data_shards", "0"));
+  const auto parityShards = std::stoull(fieldOr(descriptor.extensions, "fec_parity_shards", "0"));
+  if (parityShards == 1 && dataShards >= 2) {
+    core.definition.fec = ndn_service_framework::LiveStreamFecOptions::xorOneRepair(
+      static_cast<size_t>(dataShards), 7000, 500);
+  }
+  if (descriptor.contractVersion == 2) {
+    const auto classMode = fieldOr(
+      descriptor.extensions, "sample_class_mode", "exact-key-delta");
+    const auto keySeed = std::stoull(fieldOr(
+      descriptor.extensions, "sample_class_key_seed", std::to_string(dataShards)));
+    const auto deltaSeed = std::stoull(fieldOr(
+      descriptor.extensions, "sample_class_delta_seed",
+      std::to_string(std::min<uint64_t>(3, dataShards))));
+    if (classMode == "bounded-opaque") {
+      const auto opaqueSeed = std::stoull(fieldOr(
+        descriptor.extensions, "sample_class_opaque_seed",
+        std::to_string(dataShards)));
+      core.definition.sampleClasses = {
+        ndn_service_framework::SampleClassProfile::bounded(
+          "opaque", static_cast<size_t>(opaqueSeed),
+          static_cast<size_t>(dataShards), 32, 0),
+      };
+    }
+    else if (classMode == "exact-key-delta") {
+      core.definition.sampleClasses = {
+        ndn_service_framework::SampleClassProfile::bounded(
+          "key", static_cast<size_t>(keySeed),
+          static_cast<size_t>(dataShards), 32, 0),
+        ndn_service_framework::SampleClassProfile::bounded(
+          "delta", static_cast<size_t>(deltaSeed),
+          static_cast<size_t>(dataShards), 32, 0),
+      };
+    }
+    else {
+      throw std::invalid_argument("unsupported UAV video sample-class mode");
+    }
+  }
+  core.checkpoint.frontiers = descriptor.frontiers;
+  core.checkpoint.blockNumber = descriptor.mappingAnchorBlock;
+  core.checkpoint.contentDigest = descriptor.mappingAnchorContentDigest;
+  core.measuredSamplePeriodMs = descriptor.samplePeriodMs;
+  core.safeJoinCursor = descriptor.frontiers.latestJoin;
+  if (const auto error = core.validate()) {
+    throw std::invalid_argument("invalid UAV-to-Core LiveStream projection: " + *error);
+  }
+  return core;
+}
+
+ndn_service_framework::PredictiveStreamDescriptor
+toCorePredictiveStreamDescriptor(const VideoStreamDescriptor& descriptor)
+{
+  const auto legacyProjection = toCoreLiveStreamDescriptor(descriptor);
+  ndn_service_framework::PredictiveStreamDescriptor core;
+  core.definition = legacyProjection.definition;
+  core.checkpoint.initialSampleId = descriptor.frontiers.latestJoin;
+  core.checkpoint.oldestRetainedSampleId =
+    descriptor.frontiers.oldestRetained;
+  core.checkpoint.latestProducedSampleId =
+    descriptor.frontiers.latestProduced;
+  core.checkpoint.nextExpectedSampleId =
+    std::max(descriptor.frontiers.nextReserved,
+             descriptor.frontiers.latestProduced + 1);
+  core.frontierName = ndn_service_framework::makePredictiveFrontierName(
+    core.definition.mappingRoot());
+  core.measuredSamplePeriodMs =
+    static_cast<double>(descriptor.samplePeriodMs);
+  if (const auto error = core.validate()) {
+    throw std::invalid_argument(
+      "invalid UAV-to-Core predictive projection: " + *error);
+  }
+  return core;
+}
+
+void
+applyCoreLiveStreamDescriptor(
+  VideoStreamDescriptor& descriptor,
+  const ndn_service_framework::LiveStreamDescriptor& core)
+{
+  if (const auto error = core.validate()) {
+    throw std::invalid_argument("invalid Core LiveStream descriptor: " + *error);
+  }
+  if (core.definition.streamId != descriptor.streamId ||
+      core.definition.contractVersion != descriptor.contractVersion ||
+      core.definition.provider != descriptor.providerIdentity ||
+      core.definition.semanticDataPrefix != descriptor.dataPrefix ||
+      core.definition.sessionEpoch != descriptor.sessionEpoch ||
+      core.definition.mappingVersion != descriptor.mappingVersion ||
+      core.definition.mappingBlockCapacity != descriptor.mappingBlockCapacity) {
+    throw std::invalid_argument("Core/UAV LiveStream descriptor binding mismatch");
+  }
+  descriptor.mappingRoot = core.definition.mappingRoot();
+  descriptor.mappingAnchorBlock = core.checkpoint.blockNumber;
+  descriptor.mappingAnchorContentDigest = core.checkpoint.contentDigest;
+  descriptor.samplePeriodMs = static_cast<uint64_t>(std::max(1.0,
+    std::round(core.measuredSamplePeriodMs)));
+  descriptor.frontiers = core.checkpoint.frontiers;
+}
+
+void
+applyCorePredictiveStreamDescriptor(
+  VideoStreamDescriptor& descriptor,
+  const ndn_service_framework::PredictiveStreamDescriptor& core)
+{
+  if (const auto error = core.validate()) {
+    throw std::invalid_argument(
+      "invalid Core predictive descriptor: " + *error);
+  }
+  if (core.definition.streamId != descriptor.streamId ||
+      core.definition.contractVersion != descriptor.contractVersion ||
+      core.definition.provider != descriptor.providerIdentity ||
+      core.definition.sessionEpoch != descriptor.sessionEpoch) {
+    throw std::invalid_argument(
+      "Core/UAV predictive descriptor binding mismatch");
+  }
+
+  descriptor.dataPrefix = core.definition.semanticDataPrefix;
+  descriptor.mappingRoot = core.definition.mappingRoot();
+  descriptor.mappingVersion = core.definition.mappingVersion;
+  descriptor.mappingBlockCapacity = core.definition.mappingBlockCapacity;
+  descriptor.samplePeriodMs = static_cast<uint64_t>(std::max(
+    1.0, std::round(core.measuredSamplePeriodMs)));
+  descriptor.frontiers.oldestRetained =
+    core.checkpoint.oldestRetainedSampleId;
+  descriptor.frontiers.latestJoin = core.checkpoint.initialSampleId;
+  descriptor.frontiers.latestProduced =
+    core.checkpoint.latestProducedSampleId;
+  const auto capacity = descriptor.mappingBlockCapacity;
+  descriptor.frontiers.mappingCommittedThrough =
+    ((descriptor.frontiers.latestProduced / capacity) + 1) * capacity - 1;
+  descriptor.frontiers.nextReserved =
+    descriptor.frontiers.mappingCommittedThrough + 1;
+  descriptor.mappingAnchorBlock =
+    descriptor.frontiers.latestJoin / capacity;
+  descriptor.mappingAnchorContentDigest = {};
+  descriptor.prefetchEligibility = "predictive-sequential";
+}
+
+void
+applyCoreLiveStreamStatus(
+  VideoStreamDescriptor& descriptor,
+  const ndn_service_framework::LiveStreamStatus& status,
+  ndn_service_framework::StreamCursor latestProduced)
+{
+  auto frontiers = status.frontiers;
+  frontiers.latestProduced = latestProduced;
+  if (const auto error = frontiers.validate(
+        descriptor.mappingBlockCapacity, descriptor.mappingAnchorBlock)) {
+    throw std::invalid_argument("invalid provisional Core LiveStream frontiers: " + *error);
+  }
+  descriptor.frontiers = frontiers;
+}
+
+VideoStreamDescriptor
+decodeVideoStreamDescriptorStrict(const std::string& payload,
+                                  const ndn::Name& expectedProvider,
+                                  const ndn::Name& verifiedProvider,
+                                  const ndn::Name& expectedService,
+                                  const ndn::Name& responseService)
+{
+  if (expectedProvider.empty() || verifiedProvider != expectedProvider) {
+    throw std::invalid_argument("UAV stream descriptor Provider binding failed");
+  }
+  if (expectedService.empty() || responseService != expectedService) {
+    throw std::invalid_argument("UAV stream descriptor service binding failed");
+  }
+
+  const auto fields = decodeCanonicalDescriptorFields(payload);
+  for (const auto& field : videoStreamDescriptorRequiredFields()) {
+    requiredDescriptorField(fields, field);
+  }
+
+  VideoStreamDescriptor descriptor;
+  descriptor.providerIdentity = expectedProvider;
+  descriptor.serviceName = expectedService;
+  descriptor.contractVersion = parseCanonicalUint64(fields, "stream_contract_version");
+  descriptor.streamId = requiredDescriptorField(fields, "stream_id");
+  descriptor.sessionEpoch = parseCanonicalUint64(fields, "stream_session_epoch");
+  descriptor.dataPrefix = parseCanonicalName(fields, "data_prefix");
+  descriptor.mappingRoot = parseCanonicalName(fields, "mapping_root");
+  descriptor.mappingVersion = parseCanonicalUint64(fields, "mapping_version");
+  descriptor.mappingBlockCapacity =
+    parseCanonicalUint64(fields, "mapping_block_capacity");
+  const auto maxNameReservations =
+    parseCanonicalUint64(fields, "max_name_reservations");
+  if (maxNameReservations > std::numeric_limits<size_t>::max()) {
+    throw std::invalid_argument("UAV stream name-reservation limit exceeds size_t");
+  }
+  descriptor.maxNameReservations = static_cast<size_t>(maxNameReservations);
+  descriptor.mappingAnchorBlock = parseCanonicalUint64(fields, "mapping_anchor_block");
+  const auto anchorDigest = decodeFixedLowerHex(
+    fields, "mapping_anchor_content_digest", descriptor.mappingAnchorContentDigest.size());
+  std::copy(anchorDigest.begin(), anchorDigest.end(),
+            descriptor.mappingAnchorContentDigest.begin());
+  descriptor.sampleUnit = requiredDescriptorField(fields, "sample_unit");
+  descriptor.samplePeriodMs = parseCanonicalUint64(fields, "sample_period_ms");
+  descriptor.frontiers.oldestRetained =
+    parseCanonicalUint64(fields, "oldest_retained_cursor");
+  descriptor.frontiers.latestJoin =
+    parseCanonicalUint64(fields, "latest_join_cursor");
+  descriptor.frontiers.latestProduced =
+    parseCanonicalUint64(fields, "latest_produced_cursor");
+  descriptor.frontiers.mappingCommittedThrough =
+    parseCanonicalUint64(fields, "mapping_committed_through_cursor");
+  descriptor.frontiers.nextReserved =
+    parseCanonicalUint64(fields, "next_reserved_cursor");
+  descriptor.prefetchEligibility = requiredDescriptorField(fields, "prefetch_eligibility");
+  descriptor.cipher = requiredDescriptorField(fields, "stream_cipher");
+  descriptor.keyEpoch = parseCanonicalUint64(fields, "key_epoch");
+  descriptor.streamKey = decodeFixedLowerHex(fields, "stream_key_hex", 32);
+  descriptor.nonceSalt = decodeFixedLowerHex(fields, "nonce_salt_hex", 4);
+
+  for (const auto& [key, value] : fields) {
+    if (videoStreamDescriptorRequiredFields().count(key) == 0) {
+      descriptor.extensions.emplace(key, value);
+    }
+  }
+  validateVideoStreamDescriptor(descriptor);
+  return descriptor;
+}
+
+UavVideoDataName
+makeUavVideoDataName(const VideoStreamDescriptor& descriptor,
+                     const VideoPacket& packet)
+{
+  // Payload names and AEAD bindings belong to the immutable stream session.
+  // A long-lived producer may legitimately outlive the descriptor's join
+  // checkpoint as retention advances, so packet publication must not depend
+  // on that historical frontier snapshot remaining current.
+  validateVideoStreamSessionContext(descriptor);
+  if (packet.streamId != descriptor.streamId ||
+      packet.streamSessionEpoch != descriptor.sessionEpoch) {
+    throw std::invalid_argument("VideoPacket does not belong to UAV stream descriptor");
+  }
+  const uint64_t symbolCount = static_cast<uint64_t>(packet.fecDataShards) +
+                               packet.fecParityShards;
+  if (packet.fecDataShards == 0 || symbolCount == 0 ||
+      packet.fecSymbolCount != symbolCount || packet.frameSegmentCount != symbolCount ||
+      packet.fecSymbolIndex >= symbolCount ||
+      packet.frameSegmentIndex != packet.fecSymbolIndex) {
+    throw std::invalid_argument("invalid UAV video FEC-group coordinates");
+  }
+
+  UavVideoDataName result;
+  result.cursor = packet.packetSeq;
+  if (descriptor.prefetchEligibility == "predictive-sequential") {
+    if (packet.fecSymbolIndex >= packet.fecDataShards) {
+      throw std::invalid_argument(
+        "predictive UAV source Data cannot carry an app parity symbol");
+    }
+    result.name = descriptor.mappingRoot;
+    result.name.append("v").appendNumber(descriptor.mappingVersion)
+      .appendSequenceNumber(packet.packetSeq);
+    result.parity = false;
+    return result;
+  }
+  result.name = descriptor.dataPrefix;
+  result.name.append("fec-group").appendSequenceNumber(packet.frameSeq);
+  if (packet.fecSymbolIndex < packet.fecDataShards) {
+    result.parity = false;
+    result.name.append("data").appendSegment(packet.fecSymbolIndex);
+    result.finalBlockId = ndn::name::Component::fromSegment(packet.fecDataShards - 1);
+  }
+  else {
+    if (packet.fecParityShards == 0) {
+      throw std::invalid_argument("parity symbol requires UAV video parity shards");
+    }
+    result.parity = true;
+    result.name.append("parity").appendSegment(
+      packet.fecSymbolIndex - packet.fecDataShards);
+    result.finalBlockId = ndn::name::Component::fromSegment(packet.fecParityShards - 1);
+  }
+  return result;
+}
+
+ndn_service_framework::StreamNameMapResolverConfig
+makeUavStreamNameMapResolverConfig(const VideoStreamDescriptor& descriptor)
+{
+  validateVideoStreamDescriptor(descriptor);
+  ndn_service_framework::StreamNameMapResolverConfig config;
+  config.contractVersion = descriptor.contractVersion;
+  config.streamId = descriptor.streamId;
+  config.sessionEpoch = descriptor.sessionEpoch;
+  config.mappingVersion = descriptor.mappingVersion;
+  config.blockCapacity = descriptor.mappingBlockCapacity;
+  config.expectedProvider = descriptor.providerIdentity;
+  config.mappingRoot = descriptor.mappingRoot;
+  config.payloadPrefix = descriptor.dataPrefix;
+  config.maxReverseEntries = descriptor.maxNameReservations;
+  return config;
+}
+
+ndn_service_framework::StreamNameMapCheckpoint
+makeUavStreamNameMapCheckpoint(const VideoStreamDescriptor& descriptor)
+{
+  validateVideoStreamDescriptor(descriptor);
+  ndn_service_framework::StreamNameMapCheckpoint checkpoint;
+  checkpoint.frontiers = descriptor.frontiers;
+  checkpoint.blockNumber = descriptor.mappingAnchorBlock;
+  checkpoint.contentDigest = descriptor.mappingAnchorContentDigest;
+  return checkpoint;
+}
+
+ndn::Buffer
+deriveUavVideoNonce(const ndn::Buffer& nonceSalt,
+                    ndn_service_framework::StreamCursor cursor)
+{
+  if (nonceSalt.size() != 4) {
+    throw std::invalid_argument("UAV video nonce salt must be exactly four bytes");
+  }
+  ndn::Buffer nonce(12);
+  std::copy(nonceSalt.begin(), nonceSalt.end(), nonce.begin());
+  for (size_t i = 0; i < sizeof(cursor); ++i) {
+    nonce[4 + i] = static_cast<uint8_t>(cursor >> (56 - i * 8));
+  }
+  return nonce;
+}
+
+namespace {
+
+void
+validateUavVideoAad(const UavVideoAad& aad)
+{
+  if (aad.version != 1 || aad.exactDataName.empty() ||
+      aad.providerIdentity.empty() || aad.serviceName.empty() ||
+      !aad.providerIdentity.isPrefixOf(aad.exactDataName) ||
+      aad.exactDataName.size() <= aad.providerIdentity.size() ||
+      !isCanonicalStreamId(aad.streamId) || aad.sessionEpoch == 0 ||
+      aad.mappingVersion == 0 || aad.keyEpoch == 0) {
+    throw std::invalid_argument("invalid UAV video AAD context");
+  }
+}
+
+ndn::Block
+makeNestedNameBlock(uint32_t type, const ndn::Name& name)
+{
+  ndn::Block wrapper(type);
+  wrapper.push_back(name.wireEncode());
+  wrapper.encode();
+  return wrapper;
+}
+
+ndn::Name
+readNestedNameBlock(const ndn::Block& wrapper)
+{
+  wrapper.parse();
+  if (wrapper.elements().size() != 1 ||
+      wrapper.elements().front().type() != ndn::tlv::Name) {
+    throw std::invalid_argument("invalid nested Name in UAV video AAD");
+  }
+  return ndn::Name(wrapper.elements().front());
+}
+
+bool
+hasSameWire(const ndn::Block& lhs, const ndn::Block& rhs)
+{
+  return lhs.isValid() && rhs.isValid() && lhs.size() == rhs.size() &&
+         std::equal(lhs.begin(), lhs.end(), rhs.begin());
+}
+
+} // namespace
+
+ndn::Block
+UavVideoAad::wireEncode() const
+{
+  validateUavVideoAad(*this);
+  ndn::Block block(uav_stream_tlv::UavVideoAadType);
+  block.push_back(ndn::makeNonNegativeIntegerBlock(
+    uav_stream_tlv::UavVideoAadVersionType, version));
+  block.push_back(makeNestedNameBlock(
+    uav_stream_tlv::UavVideoAadExactDataNameType, exactDataName));
+  block.push_back(makeNestedNameBlock(
+    uav_stream_tlv::UavVideoAadProviderIdentityType, providerIdentity));
+  block.push_back(makeNestedNameBlock(
+    uav_stream_tlv::UavVideoAadServiceNameType, serviceName));
+  block.push_back(ndn::makeStringBlock(
+    uav_stream_tlv::UavVideoAadStreamIdType, streamId));
+  block.push_back(ndn::makeNonNegativeIntegerBlock(
+    uav_stream_tlv::UavVideoAadSessionEpochType, sessionEpoch));
+  block.push_back(ndn::makeNonNegativeIntegerBlock(
+    uav_stream_tlv::UavVideoAadMappingVersionType, mappingVersion));
+  block.push_back(ndn::makeNonNegativeIntegerBlock(
+    uav_stream_tlv::UavVideoAadKeyEpochType, keyEpoch));
+  block.push_back(ndn::makeNonNegativeIntegerBlock(
+    uav_stream_tlv::UavVideoAadCursorType, cursor));
+  block.encode();
+  return block;
+}
+
+UavVideoAad
+UavVideoAad::wireDecodeStrict(const ndn::Block& block)
+{
+  try {
+    if (block.type() != uav_stream_tlv::UavVideoAadType) {
+      throw std::invalid_argument("unexpected UAV video AAD TLV type");
+    }
+    block.parse();
+    if (block.elements().size() != 9) {
+      throw std::invalid_argument("unexpected UAV video AAD field count");
+    }
+
+    size_t index = 0;
+    const auto take = [&] (uint32_t expectedType) -> const ndn::Block& {
+      if (index >= block.elements().size() ||
+          block.elements()[index].type() != expectedType) {
+        throw std::invalid_argument("non-canonical UAV video AAD field order");
+      }
+      return block.elements()[index++];
+    };
+
+    UavVideoAad decoded;
+    decoded.version = ndn::readNonNegativeInteger(
+      take(uav_stream_tlv::UavVideoAadVersionType));
+    decoded.exactDataName = readNestedNameBlock(
+      take(uav_stream_tlv::UavVideoAadExactDataNameType));
+    decoded.providerIdentity = readNestedNameBlock(
+      take(uav_stream_tlv::UavVideoAadProviderIdentityType));
+    decoded.serviceName = readNestedNameBlock(
+      take(uav_stream_tlv::UavVideoAadServiceNameType));
+    decoded.streamId = ndn::readString(
+      take(uav_stream_tlv::UavVideoAadStreamIdType));
+    decoded.sessionEpoch = ndn::readNonNegativeInteger(
+      take(uav_stream_tlv::UavVideoAadSessionEpochType));
+    decoded.mappingVersion = ndn::readNonNegativeInteger(
+      take(uav_stream_tlv::UavVideoAadMappingVersionType));
+    decoded.keyEpoch = ndn::readNonNegativeInteger(
+      take(uav_stream_tlv::UavVideoAadKeyEpochType));
+    decoded.cursor = ndn::readNonNegativeInteger(
+      take(uav_stream_tlv::UavVideoAadCursorType));
+    if (index != block.elements().size()) {
+      throw std::invalid_argument("trailing UAV video AAD fields");
+    }
+    validateUavVideoAad(decoded);
+    if (!hasSameWire(decoded.wireEncode(), block)) {
+      throw std::invalid_argument("non-canonical UAV video AAD wire");
+    }
+    return decoded;
+  }
+  catch (const std::invalid_argument&) {
+    throw;
+  }
+  catch (const std::exception& error) {
+    throw std::invalid_argument(std::string("invalid UAV video AAD: ") + error.what());
+  }
+}
+
+UavVideoAad
+makeUavVideoAad(const VideoStreamDescriptor& descriptor,
+                const UavVideoDataName& binding)
+{
+  validateVideoStreamSessionContext(descriptor);
+  const auto& authorityPrefix =
+    descriptor.prefetchEligibility == "predictive-sequential"
+      ? descriptor.mappingRoot : descriptor.dataPrefix;
+  if (!authorityPrefix.isPrefixOf(binding.name) ||
+      binding.name.size() <= authorityPrefix.size()) {
+    throw std::invalid_argument("UAV video Data name is outside descriptor prefix");
+  }
+  UavVideoAad aad;
+  aad.exactDataName = binding.name;
+  aad.providerIdentity = descriptor.providerIdentity;
+  aad.serviceName = descriptor.serviceName;
+  aad.streamId = descriptor.streamId;
+  aad.sessionEpoch = descriptor.sessionEpoch;
+  aad.mappingVersion = descriptor.mappingVersion;
+  aad.keyEpoch = descriptor.keyEpoch;
+  aad.cursor = binding.cursor;
+  validateUavVideoAad(aad);
+  return aad;
+}
+
+UavVideoNonceUseGuard::UavVideoNonceUseGuard(
+  const VideoStreamDescriptor& descriptor)
+  : m_contractVersion(descriptor.contractVersion)
+  , m_streamId(descriptor.streamId)
+  , m_sessionEpoch(descriptor.sessionEpoch)
+  , m_keyEpoch(descriptor.keyEpoch)
+  , m_providerIdentity(descriptor.providerIdentity)
+  , m_serviceName(descriptor.serviceName)
+  , m_dataPrefix(descriptor.dataPrefix)
+  , m_mappingRoot(descriptor.mappingRoot)
+  , m_mappingVersion(descriptor.mappingVersion)
+  , m_mappingBlockCapacity(descriptor.mappingBlockCapacity)
+  , m_cipher(descriptor.cipher)
+  , m_streamKey(descriptor.streamKey)
+  , m_nonceSalt(descriptor.nonceSalt)
+  , m_maxNameReservations(descriptor.maxNameReservations)
+{
+  validateVideoStreamDescriptor(descriptor);
+}
+
+void
+UavVideoNonceUseGuard::reserve(const VideoStreamDescriptor& descriptor,
+                               const UavVideoDataName& binding)
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+  const bool contextMismatch = descriptor.contractVersion != m_contractVersion ||
+                               descriptor.streamId != m_streamId ||
+                               descriptor.sessionEpoch != m_sessionEpoch ||
+                               descriptor.keyEpoch != m_keyEpoch ||
+                               descriptor.providerIdentity != m_providerIdentity ||
+                               descriptor.serviceName != m_serviceName ||
+                               descriptor.dataPrefix != m_dataPrefix ||
+                               descriptor.mappingRoot != m_mappingRoot ||
+                               descriptor.mappingVersion != m_mappingVersion ||
+                               descriptor.mappingBlockCapacity != m_mappingBlockCapacity ||
+                               descriptor.maxNameReservations != m_maxNameReservations ||
+                               descriptor.cipher != m_cipher ||
+                               descriptor.streamKey != m_streamKey ||
+                               descriptor.nonceSalt != m_nonceSalt;
+  const auto& authorityPrefix =
+    descriptor.prefetchEligibility == "predictive-sequential"
+      ? descriptor.mappingRoot : descriptor.dataPrefix;
+  const bool nameMismatch = !authorityPrefix.isPrefixOf(binding.name) ||
+                            binding.name.size() <= authorityPrefix.size();
+  // Continuation reservations may append after already announced future
+  // samples, so valid unique cursors can materialize out of order. AES-GCM
+  // requires nonce uniqueness, not monotonic encryption order.
+  const bool cursorViolation =
+    binding.cursor == std::numeric_limits<ndn_service_framework::StreamCursor>::max() ||
+    m_reservedCursors.count(binding.cursor) != 0;
+  const bool explicitNameReuse = m_reservedNames.count(binding.name) != 0;
+  const bool reservationOverflow =
+    m_reservedNames.size() >= m_maxNameReservations;
+  if (m_closed || contextMismatch || nameMismatch || cursorViolation ||
+      explicitNameReuse || reservationOverflow) {
+    m_closed = true;
+    throw std::invalid_argument(
+      "UAV video reservation would reuse a nonce or explicit Data name");
+  }
+  m_reservedCursors.insert(binding.cursor);
+  m_reservedNames.emplace(binding.name, binding.cursor);
+}
+
+void
+UavVideoNonceUseGuard::closeForUncertainUse()
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+  m_closed = true;
+}
+
+bool
+UavVideoNonceUseGuard::isClosed() const
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+  return m_closed;
+}
+
+ndn_service_framework::HybridMessageEnvelope
+decodeUavVideoEnvelopeStrict(const ndn::Buffer& wire,
+                             const VideoStreamDescriptor& descriptor,
+                             const UavVideoDataName& binding)
+{
+  using namespace ndn_service_framework;
+  try {
+    validateVideoStreamSessionContext(descriptor);
+    makeUavVideoAad(descriptor, binding);
+    if (wire.empty()) {
+      throw std::invalid_argument("empty UAV video envelope");
+    }
+    ndn::Block block(ndn::span<const uint8_t>(wire.data(), wire.size()));
+    if (block.size() != wire.size() || block.type() != tlv::HybridMessageEnvelopeType) {
+      throw std::invalid_argument("trailing or unexpected UAV video envelope wire");
+    }
+    block.parse();
+    static constexpr std::array<uint32_t, 8> EXPECTED_TYPES{
+      tlv::VersionType,
+      tlv::AlgorithmType,
+      tlv::KeyIdType,
+      tlv::EpochIdType,
+      tlv::MessageTypeType,
+      tlv::NonceType,
+      tlv::CipherTextType,
+      tlv::AuthTagType,
+    };
+    if (block.elements().size() != EXPECTED_TYPES.size()) {
+      throw std::invalid_argument("unexpected UAV video envelope field count");
+    }
+    for (size_t i = 0; i < EXPECTED_TYPES.size(); ++i) {
+      if (block.elements()[i].type() != EXPECTED_TYPES[i]) {
+        throw std::invalid_argument("non-canonical UAV video envelope field order");
+      }
+    }
+
+    HybridMessageEnvelope envelope;
+    if (!envelope.WireDecode(block) || envelope.getVersion() != 1 ||
+        envelope.getAlgorithm() != "AES-256-GCM" ||
+        envelope.getKeyId() != descriptor.streamId ||
+        envelope.getEpochId() != std::to_string(descriptor.keyEpoch) ||
+        envelope.getMessageType() != "uav-live-video-packet" ||
+        envelope.getNonce().size() != HybridMessageCrypto::NONCE_SIZE ||
+        envelope.getCipherText().empty() ||
+        envelope.getAuthTag().size() != HybridMessageCrypto::TAG_SIZE ||
+        envelope.hasWrappedMessageKey()) {
+      throw std::invalid_argument("invalid UAV video envelope context");
+    }
+    const auto expectedNonce = deriveUavVideoNonce(descriptor.nonceSalt, binding.cursor);
+    if (envelope.getNonce() != expectedNonce) {
+      throw std::invalid_argument("UAV video envelope nonce does not match cursor");
+    }
+    if (!hasSameWire(envelope.WireEncode(), block)) {
+      throw std::invalid_argument("non-canonical UAV video envelope wire");
+    }
+    return envelope;
+  }
+  catch (const std::invalid_argument&) {
+    throw;
+  }
+  catch (const std::exception& error) {
+    throw std::invalid_argument(std::string("invalid UAV video envelope: ") + error.what());
+  }
+}
+
+ndn::Buffer
+protectUavVideoPacket(const VideoStreamDescriptor& descriptor,
+                      const UavVideoDataName& binding,
+                      const VideoPacket& packet,
+                      UavVideoNonceUseGuard& nonceGuard)
+{
+  using namespace ndn_service_framework;
+  const auto canonicalBinding = makeUavVideoDataName(descriptor, packet);
+  if (binding.name != canonicalBinding.name ||
+      binding.finalBlockId != canonicalBinding.finalBlockId ||
+      binding.cursor != canonicalBinding.cursor || binding.parity != canonicalBinding.parity) {
+    nonceGuard.closeForUncertainUse();
+    throw std::invalid_argument("VideoPacket does not match its immutable UAV Data binding");
+  }
+
+  const auto plaintext = encodeVideoPacket(packet);
+  const auto nonce = deriveUavVideoNonce(descriptor.nonceSalt, binding.cursor);
+  const auto aad = makeUavVideoAad(descriptor, binding).wireEncode();
+  nonceGuard.reserve(descriptor, binding);
+  try {
+    const auto encrypted = hybridAesGcmEncryptWithNonce(
+      descriptor.streamKey,
+      ndn::span<const uint8_t>(nonce.data(), nonce.size()),
+      ndn::span<const uint8_t>(plaintext.data(), plaintext.size()),
+      ndn::span<const uint8_t>(aad.data(), aad.size()));
+
+    HybridMessageEnvelope envelope;
+    envelope.setVersion(1);
+    envelope.setAlgorithm("AES-256-GCM");
+    envelope.setKeyId(descriptor.streamId);
+    envelope.setEpochId(std::to_string(descriptor.keyEpoch));
+    envelope.setMessageType("uav-live-video-packet");
+    envelope.setNonce(encrypted.nonce);
+    envelope.setCipherText(encrypted.ciphertext);
+    envelope.setAuthTag(encrypted.tag);
+    const auto envelopeWire = envelope.WireEncode();
+    return ndn::Buffer(envelopeWire.begin(), envelopeWire.end());
+  }
+  catch (...) {
+    nonceGuard.closeForUncertainUse();
+    throw;
+  }
+}
+
+VideoPacket
+unprotectUavVideoPacket(const VideoStreamDescriptor& descriptor,
+                        const UavVideoDataName& binding,
+                        const ndn::Name& verifiedProvider,
+                        const ndn::Buffer& wire)
+{
+  using namespace ndn_service_framework;
+  if (verifiedProvider != descriptor.providerIdentity) {
+    throw std::invalid_argument("UAV video Provider binding failed");
+  }
+  const auto envelope = decodeUavVideoEnvelopeStrict(wire, descriptor, binding);
+  const auto aad = makeUavVideoAad(descriptor, binding).wireEncode();
+  ndn::Buffer plaintext;
+  if (!hybridAesGcmDecrypt(
+        descriptor.streamKey, envelope,
+        ndn::span<const uint8_t>(aad.data(), aad.size()), plaintext)) {
+    throw std::invalid_argument("UAV video authentication failed");
+  }
+
+  VideoPacket packet;
+  try {
+    packet = decodeVideoPacket(plaintext);
+  }
+  catch (const std::exception&) {
+    throw std::invalid_argument("invalid authenticated UAV VideoPacket");
+  }
+  const auto canonicalPlaintext = encodeVideoPacket(packet);
+  if (canonicalPlaintext.size() != plaintext.size() ||
+      !std::equal(canonicalPlaintext.begin(), canonicalPlaintext.end(), plaintext.begin())) {
+    throw std::invalid_argument("non-canonical authenticated UAV VideoPacket");
+  }
+  const auto canonicalBinding = makeUavVideoDataName(descriptor, packet);
+  if (packet.packetSeq != binding.cursor || canonicalBinding.name != binding.name ||
+      (!binding.finalBlockId.empty() &&
+       canonicalBinding.finalBlockId != binding.finalBlockId) ||
+      canonicalBinding.parity != binding.parity) {
+    throw std::invalid_argument("authenticated UAV VideoPacket binding mismatch");
+  }
+  return packet;
 }
 
 TelemetryState
@@ -1466,9 +2739,28 @@ VideoAdaptiveState::fromFields(const Fields& fields)
   state.suggestedBitrateKbps = uint64FieldOr(fields, "suggested_bitrate_kbps", state.suggestedBitrateKbps);
   state.bitrateAction = fieldOr(fields, "bitrate_action", state.bitrateAction);
   state.bitrateReason = fieldOr(fields, "bitrate_reason", state.bitrateReason);
+  state.coreFetchDecisionAvailable =
+    fieldOr(fields, "core_fetch_decision_available", "false") == "true";
+  state.coreFetchDecisionSource =
+    fieldOr(fields, "core_fetch_decision_source", state.coreFetchDecisionSource);
+  state.coreFetchDecisionGeneration =
+    uint64FieldOr(fields, "core_fetch_decision_generation",
+                  state.coreFetchDecisionGeneration);
+  state.coreFetchDecisionObservedAtMs =
+    uint64FieldOr(fields, "core_fetch_decision_observed_at_ms",
+                  state.coreFetchDecisionObservedAtMs);
+  state.coreFetchPhase = fieldOr(fields, "core_fetch_phase", state.coreFetchPhase);
+  state.coreFetchPolicyMode =
+    fieldOr(fields, "core_fetch_policy_mode", state.coreFetchPolicyMode);
+  state.coreFetchCapacityReason =
+    fieldOr(fields, "core_fetch_capacity_reason", state.coreFetchCapacityReason);
+  state.coreFetchReason =
+    fieldOr(fields, "core_fetch_reason", state.coreFetchReason);
   state.window = uint64FieldOr(fields, "window", state.window);
   state.lookahead = uint64FieldOr(fields, "lookahead", state.lookahead);
   state.futureProbeLimit = uint64FieldOr(fields, "future_probe_limit", state.futureProbeLimit);
+  state.futureProbeLimitSource =
+    fieldOr(fields, "future_probe_limit_source", state.futureProbeLimitSource);
   state.interestLifetimeMs = uint64FieldOr(fields, "interest_lifetime_ms", state.interestLifetimeMs);
   state.missingTimeoutMs = uint64FieldOr(fields, "missing_timeout_ms", state.missingTimeoutMs);
   state.timeoutPressure = uint64FieldOr(fields, "timeout_pressure", state.timeoutPressure);
@@ -1479,6 +2771,7 @@ VideoAdaptiveState::fromFields(const Fields& fields)
   state.primaryPressure = fieldOr(fields, "primary_pressure", state.primaryPressure);
   state.policyReason = fieldOr(fields, "policy_reason", state.policyReason);
   state.pendingChunks = uint64FieldOr(fields, "pending_chunks", state.pendingChunks);
+  state.maxReorderDepth = uint64FieldOr(fields, "max_reorder_depth", state.maxReorderDepth);
   state.pendingBytes = uint64FieldOr(fields, "pending_bytes", state.pendingBytes);
   state.receivedChunks = uint64FieldOr(fields, "received_chunks", state.receivedChunks);
   state.fecRecoveredChunks = uint64FieldOr(fields, "fec_recovered_chunks", state.fecRecoveredChunks);
@@ -1505,9 +2798,18 @@ VideoAdaptiveState::toFields() const
     {"suggested_bitrate_kbps", std::to_string(suggestedBitrateKbps)},
     {"bitrate_action", bitrateAction},
     {"bitrate_reason", bitrateReason},
+    {"core_fetch_decision_available", coreFetchDecisionAvailable ? "true" : "false"},
+    {"core_fetch_decision_source", coreFetchDecisionSource},
+    {"core_fetch_decision_generation", std::to_string(coreFetchDecisionGeneration)},
+    {"core_fetch_decision_observed_at_ms", std::to_string(coreFetchDecisionObservedAtMs)},
+    {"core_fetch_phase", coreFetchPhase},
+    {"core_fetch_policy_mode", coreFetchPolicyMode},
+    {"core_fetch_capacity_reason", coreFetchCapacityReason},
+    {"core_fetch_reason", coreFetchReason},
     {"window", std::to_string(window)},
     {"lookahead", std::to_string(lookahead)},
     {"future_probe_limit", std::to_string(futureProbeLimit)},
+    {"future_probe_limit_source", futureProbeLimitSource},
     {"interest_lifetime_ms", std::to_string(interestLifetimeMs)},
     {"missing_timeout_ms", std::to_string(missingTimeoutMs)},
     {"timeout_pressure", std::to_string(timeoutPressure)},
@@ -1518,6 +2820,7 @@ VideoAdaptiveState::toFields() const
     {"primary_pressure", primaryPressure},
     {"policy_reason", policyReason},
     {"pending_chunks", std::to_string(pendingChunks)},
+    {"max_reorder_depth", std::to_string(maxReorderDepth)},
     {"pending_bytes", std::to_string(pendingBytes)},
     {"received_chunks", std::to_string(receivedChunks)},
     {"fec_recovered_chunks", std::to_string(fecRecoveredChunks)},
@@ -1567,6 +2870,13 @@ VideoAdaptiveState::toStreamHealth(uint64_t streamSessionEpoch,
     {"bitrate_action", bitrateAction},
     {"primary_pressure", primaryPressure},
     {"policy_reason", policyReason},
+    {"core_fetch_decision_available", coreFetchDecisionAvailable ? "true" : "false"},
+    {"core_fetch_decision_source", coreFetchDecisionSource},
+    {"core_fetch_phase", coreFetchPhase},
+    {"core_fetch_policy_mode", coreFetchPolicyMode},
+    {"core_fetch_capacity_reason", coreFetchCapacityReason},
+    {"core_fetch_reason", coreFetchReason},
+    {"future_probe_limit_source", futureProbeLimitSource},
   };
 
   ndn_service_framework::StreamMetrics metrics;
@@ -1582,7 +2892,8 @@ VideoAdaptiveState::toStreamHealth(uint64_t streamSessionEpoch,
   decision.interestLifetimeMs = interestLifetimeMs;
   decision.missingTimeoutMs = missingTimeoutMs;
   decision.pressure = static_cast<double>(maxPressure()) / 100.0;
-  decision.reason = (
+  decision.reason = coreFetchDecisionAvailable ? coreFetchReason : "unavailable";
+  const auto applicationCondition = (
     backlogPressure >= 80 || timeoutPressure >= 80 || probePressure >= 80
   ) ? "congested" : policyReason;
 
@@ -1601,6 +2912,15 @@ VideoAdaptiveState::toStreamHealth(uint64_t streamSessionEpoch,
     {"suggested_bitrate_kbps", std::to_string(suggestedBitrateKbps)},
     {"primary_pressure", primaryPressure},
     {"policy_reason", policyReason},
+    {"application_condition", applicationCondition},
+    {"core_fetch_decision_available", coreFetchDecisionAvailable ? "true" : "false"},
+    {"core_fetch_decision_source", coreFetchDecisionSource},
+    {"core_fetch_phase", coreFetchPhase},
+    {"core_fetch_policy_mode", coreFetchPolicyMode},
+    {"core_fetch_capacity_reason", coreFetchCapacityReason},
+    {"core_fetch_reason", coreFetchReason},
+    {"future_probe_limit", std::to_string(futureProbeLimit)},
+    {"future_probe_limit_source", futureProbeLimitSource},
   };
   return health;
 }
@@ -1635,7 +2955,8 @@ VideoAdaptiveState::compactSummary() const
          ",bitrate=" + std::to_string(acceptedBitrateKbps) +
          "->" + std::to_string(suggestedBitrateKbps) +
          "kbps/" + bitrateAction +
-         ",reason=" + policyReason;
+         ",app_reason=" + policyReason +
+         ",core_fetch=" + (coreFetchDecisionAvailable ? coreFetchPhase : "unavailable");
 }
 
 std::string
@@ -1649,9 +2970,21 @@ VideoAdaptiveState::statusLine() const
          " suggested_bitrate_kbps=" + std::to_string(suggestedBitrateKbps) +
          " bitrate_action=" + bitrateAction +
          " bitrate_reason=" + bitrateReason +
+         " core_fetch_decision_available=" +
+           std::string(coreFetchDecisionAvailable ? "true" : "false") +
+         " core_fetch_decision_source=" + coreFetchDecisionSource +
+         " core_fetch_decision_generation=" +
+           std::to_string(coreFetchDecisionGeneration) +
+         " core_fetch_decision_observed_at_ms=" +
+           std::to_string(coreFetchDecisionObservedAtMs) +
+         " core_fetch_phase=" + coreFetchPhase +
+         " core_fetch_policy_mode=" + coreFetchPolicyMode +
+         " core_fetch_capacity_reason=" + coreFetchCapacityReason +
+         " core_fetch_reason=" + coreFetchReason +
          " window=" + std::to_string(window) +
          " lookahead=" + std::to_string(lookahead) +
          " future_probe_limit=" + std::to_string(futureProbeLimit) +
+         " future_probe_limit_source=" + futureProbeLimitSource +
          " interest_lifetime_ms=" + std::to_string(interestLifetimeMs) +
          " missing_timeout_ms=" + std::to_string(missingTimeoutMs) +
          " timeout_pressure=" + std::to_string(timeoutPressure) +
@@ -1662,6 +2995,7 @@ VideoAdaptiveState::statusLine() const
          " primary_pressure=" + primaryPressure +
          " policy_reason=" + policyReason +
          " pending_chunks=" + std::to_string(pendingChunks) +
+         " max_reorder_depth=" + std::to_string(maxReorderDepth) +
          " pending_bytes=" + std::to_string(pendingBytes) +
          " received_chunks=" + std::to_string(receivedChunks) +
          " fec_recovered_chunks=" + std::to_string(fecRecoveredChunks) +
@@ -1672,6 +3006,57 @@ VideoAdaptiveState::statusLine() const
          " decoded_frames=" + std::to_string(decodedFrames) +
          " decoded_frame_gap=" + std::to_string(decodedFrameGap) +
          " frame_gap_pressure=" + std::to_string(frameGapPressure);
+}
+
+void
+VideoCoreFetchDecisionSnapshot::reset(uint64_t newGeneration)
+{
+  generation = newGeneration;
+  observedAtMs = 0;
+  decision.reset();
+}
+
+bool
+VideoCoreFetchDecisionSnapshot::observe(
+  uint64_t activeGeneration,
+  uint64_t callbackGeneration,
+  const ndn_service_framework::LiveStreamStatus& status,
+  uint64_t nowMs)
+{
+  if (callbackGeneration != activeGeneration || callbackGeneration != generation) {
+    return false;
+  }
+  observedAtMs = nowMs;
+  if (status.state == ndn_service_framework::LiveStreamLifecycleState::Active &&
+      status.fetchDecision) {
+    decision = *status.fetchDecision;
+  }
+  else {
+    decision.reset();
+  }
+  return true;
+}
+
+void
+VideoCoreFetchDecisionSnapshot::applyTo(VideoAdaptiveState& state) const
+{
+  state.coreFetchDecisionGeneration = generation;
+  state.coreFetchDecisionObservedAtMs = observedAtMs;
+  state.coreFetchDecisionAvailable = decision.has_value();
+  state.coreFetchDecisionSource =
+    decision ? "core-live-stream-status" : "unavailable";
+  state.window = decision ? decision->window : 0;
+  state.lookahead = decision ? decision->lookahead : 0;
+  state.interestLifetimeMs = decision ? decision->interestLifetimeMs : 0;
+  state.missingTimeoutMs = decision ? decision->missingTimeoutMs : 0;
+  state.coreFetchPhase =
+    decision ? ndn_service_framework::toString(decision->phase) : "INACTIVE";
+  state.coreFetchPolicyMode = decision ? decision->policyMode : "none";
+  state.coreFetchCapacityReason =
+    decision && !decision->capacityReason.empty() ?
+      decision->capacityReason : "unavailable";
+  state.coreFetchReason =
+    decision && !decision->reason.empty() ? decision->reason : "unavailable";
 }
 
 namespace {
@@ -1956,6 +3341,218 @@ computeVideoAdaptivePolicy(const VideoAdaptivePolicyInput& input)
   return decision;
 }
 
+std::optional<std::string>
+CanonicalVideoRecordingManifest::validate() const
+{
+  if (contractVersion != 1 || manifestVersion == 0 || recordingId.empty() ||
+      !isCanonicalStreamId(streamId) || sessionEpoch == 0 || mappingVersion == 0 ||
+      keyEpoch == 0 || providerIdentity.empty() || serviceName.empty() ||
+      signerCertificateName.empty() || trustPolicyVersion.empty() ||
+      archivedCertificateObjects.empty() ||
+      keyAuthorizationObject.empty() ||
+      (packetCatalogEntries != 0 && packetCatalogPrefix.empty())) {
+    return "invalid recording manifest identity";
+  }
+  if (!packets.empty() && (lastCommittedCursor < firstCommittedCursor ||
+      safeJoinCursor < firstCommittedCursor || safeJoinCursor > lastCommittedCursor)) {
+    return "invalid recording manifest cursor range";
+  }
+  if (complete && endedMs < startedMs) return "invalid recording manifest interval";
+  std::map<ndn::Name, ndn_service_framework::StreamContentDigest> bindings;
+  for (const auto& packet : packets) {
+    if (packet.kind != "mapping" && packet.kind != "source" && packet.kind != "repair")
+      return "invalid retained packet kind";
+    if (packet.dataName.empty()) return "empty retained packet name";
+    if (!bindings.emplace(packet.dataName, packet.wireDigest).second)
+      return "duplicate retained packet name";
+    // Catalog order is publication order, not cursor order: a Mapping block
+    // intentionally announces future cursors before their source Data exists.
+    // The signed entry index/hash chain is monotonic; source cursor bounds are
+    // carried by the committed checkpoint.
+  }
+  uint64_t previousGapEnd = 0;
+  bool haveGap = false;
+  for (const auto& gap : gaps) {
+    if (gap.reason.empty() || gap.lastCursor < gap.firstCursor ||
+        (haveGap && gap.firstCursor <= previousGapEnd))
+      return "invalid retention gap";
+    previousGapEnd = gap.lastCursor;
+    haveGap = true;
+  }
+  if (complete && !gaps.empty()) return "gapped recording cannot be complete";
+  if (redactedStreamDescriptor.empty() ||
+      redactedStreamDescriptor.count("stream_key_hex") != 0 ||
+      redactedStreamDescriptor.count("nonce_salt_hex") != 0)
+    return "recording manifest descriptor is missing or contains secrets";
+  return std::nullopt;
+}
+
+Fields
+CanonicalVideoRecordingManifest::toFields() const
+{
+  if (const auto error = validate()) throw std::invalid_argument(*error);
+  Fields fields{
+    {"type", "canonical-video-recording-manifest"},
+    {"contract_version", std::to_string(contractVersion)},
+    {"manifest_version", std::to_string(manifestVersion)},
+    {"recording_id", recordingId}, {"stream_id", streamId},
+    {"session_epoch", std::to_string(sessionEpoch)},
+    {"mapping_version", std::to_string(mappingVersion)},
+    {"key_epoch", std::to_string(keyEpoch)},
+    {"provider_identity", providerIdentity.toUri()},
+    {"service_name", serviceName.toUri()},
+    {"first_committed_cursor", std::to_string(firstCommittedCursor)},
+    {"last_committed_cursor", std::to_string(lastCommittedCursor)},
+    {"safe_join_cursor", std::to_string(safeJoinCursor)},
+    {"started_ms", std::to_string(startedMs)}, {"ended_ms", std::to_string(endedMs)},
+    {"complete", complete ? "true" : "false"},
+    {"signer_certificate_name", signerCertificateName},
+    {"signer_certificate_digest", hexEncode(std::vector<uint8_t>(
+      signerCertificateDigest.begin(), signerCertificateDigest.end()))},
+    {"trust_policy_version", trustPolicyVersion},
+    {"archived_certificate_count", std::to_string(archivedCertificateObjects.size())},
+    {"key_authorization_object", keyAuthorizationObject.toUri()},
+    {"packet_catalog_prefix", packetCatalogPrefix.toUri()},
+    {"packet_catalog_entries", std::to_string(packetCatalogEntries)},
+    {"packet_catalog_head_digest", hexEncode(std::vector<uint8_t>(
+      packetCatalogHeadDigest.begin(), packetCatalogHeadDigest.end()))},
+    {"packet_count", std::to_string(packets.size())},
+    {"gap_count", std::to_string(gaps.size())},
+  };
+  fields["descriptor_field_count"] = std::to_string(redactedStreamDescriptor.size());
+  size_t descriptorIndex = 0;
+  for (const auto& [key, value] : redactedStreamDescriptor) {
+    const auto prefix = "descriptor." + std::to_string(descriptorIndex++) + ".";
+    fields[prefix + "key"] = key;
+    fields[prefix + "value"] = value;
+  }
+  for (size_t i = 0; i < archivedCertificateObjects.size(); ++i)
+    fields["archived_certificate." + std::to_string(i)] =
+      archivedCertificateObjects[i].toUri();
+  for (size_t i = 0; i < packets.size(); ++i) {
+    const auto prefix = "packet." + std::to_string(i) + ".";
+    fields[prefix + "kind"] = packets[i].kind;
+    fields[prefix + "cursor"] = packets[i].cursor ?
+      std::to_string(*packets[i].cursor) : "mapping";
+    fields[prefix + "name"] = packets[i].dataName.toUri();
+    fields[prefix + "wire_digest"] = hexEncode(std::vector<uint8_t>(
+      packets[i].wireDigest.begin(), packets[i].wireDigest.end()));
+  }
+  for (size_t i = 0; i < gaps.size(); ++i) {
+    const auto prefix = "gap." + std::to_string(i) + ".";
+    fields[prefix + "first"] = std::to_string(gaps[i].firstCursor);
+    fields[prefix + "last"] = std::to_string(gaps[i].lastCursor);
+    fields[prefix + "reason"] = gaps[i].reason;
+  }
+  return fields;
+}
+
+CanonicalVideoRecordingManifest
+CanonicalVideoRecordingManifest::fromFields(const Fields& fields)
+{
+  CanonicalVideoRecordingManifest value;
+  if (fieldOr(fields, "type", "") != "canonical-video-recording-manifest")
+    throw std::invalid_argument("unsupported recording manifest format");
+  value.contractVersion = std::stoull(fieldOr(fields, "contract_version", "0"));
+  value.manifestVersion = std::stoull(fieldOr(fields, "manifest_version", "0"));
+  value.recordingId = fieldOr(fields, "recording_id", "");
+  value.streamId = fieldOr(fields, "stream_id", "");
+  value.sessionEpoch = std::stoull(fieldOr(fields, "session_epoch", "0"));
+  value.mappingVersion = std::stoull(fieldOr(fields, "mapping_version", "0"));
+  value.keyEpoch = std::stoull(fieldOr(fields, "key_epoch", "0"));
+  value.providerIdentity = ndn::Name(fieldOr(fields, "provider_identity", ""));
+  value.serviceName = ndn::Name(fieldOr(fields, "service_name", ""));
+  value.firstCommittedCursor = std::stoull(fieldOr(fields, "first_committed_cursor", "0"));
+  value.lastCommittedCursor = std::stoull(fieldOr(fields, "last_committed_cursor", "0"));
+  value.safeJoinCursor = std::stoull(fieldOr(fields, "safe_join_cursor", "0"));
+  value.startedMs = std::stoull(fieldOr(fields, "started_ms", "0"));
+  value.endedMs = std::stoull(fieldOr(fields, "ended_ms", "0"));
+  value.complete = fieldOr(fields, "complete", "false") == "true";
+  value.signerCertificateName = fieldOr(fields, "signer_certificate_name", "");
+  const auto certificateDigest = hexDecode(fieldOr(fields, "signer_certificate_digest", ""));
+  if (certificateDigest.size() != value.signerCertificateDigest.size())
+    throw std::invalid_argument("invalid signer certificate digest");
+  std::copy(certificateDigest.begin(), certificateDigest.end(),
+            value.signerCertificateDigest.begin());
+  value.trustPolicyVersion = fieldOr(fields, "trust_policy_version", "");
+  const auto descriptorCount = std::stoull(fieldOr(fields, "descriptor_field_count", "0"));
+  for (size_t i = 0; i < descriptorCount; ++i) {
+    const auto prefix = "descriptor." + std::to_string(i) + ".";
+    if (!value.redactedStreamDescriptor.emplace(
+          fieldOr(fields, prefix + "key", ""),
+          fieldOr(fields, prefix + "value", "")).second)
+      throw std::invalid_argument("duplicate manifest descriptor field");
+  }
+  const auto certificateCount = std::stoull(
+    fieldOr(fields, "archived_certificate_count", "0"));
+  for (size_t i = 0; i < certificateCount; ++i)
+    value.archivedCertificateObjects.emplace_back(
+      fieldOr(fields, "archived_certificate." + std::to_string(i), ""));
+  value.keyAuthorizationObject = ndn::Name(
+    fieldOr(fields, "key_authorization_object", ""));
+  value.packetCatalogPrefix = ndn::Name(fieldOr(fields, "packet_catalog_prefix", ""));
+  value.packetCatalogEntries = std::stoull(fieldOr(fields, "packet_catalog_entries", "0"));
+  const auto catalogDigest = hexDecode(fieldOr(fields, "packet_catalog_head_digest",
+                                                std::string(64, '0')));
+  if (catalogDigest.size() != value.packetCatalogHeadDigest.size())
+    throw std::invalid_argument("invalid packet catalog head digest");
+  std::copy(catalogDigest.begin(), catalogDigest.end(), value.packetCatalogHeadDigest.begin());
+  const auto packetCount = std::stoull(fieldOr(fields, "packet_count", "0"));
+  for (size_t i = 0; i < packetCount; ++i) {
+    const auto prefix = "packet." + std::to_string(i) + ".";
+    RetainedVideoPacketReference packet;
+    packet.kind = fieldOr(fields, prefix + "kind", "");
+    const auto cursor = fieldOr(fields, prefix + "cursor", "");
+    if (cursor != "mapping") packet.cursor = std::stoull(cursor);
+    packet.dataName = ndn::Name(fieldOr(fields, prefix + "name", ""));
+    const auto digest = hexDecode(fieldOr(fields, prefix + "wire_digest", ""));
+    if (digest.size() != packet.wireDigest.size())
+      throw std::invalid_argument("invalid retained packet digest");
+    std::copy(digest.begin(), digest.end(), packet.wireDigest.begin());
+    value.packets.push_back(std::move(packet));
+  }
+  const auto gapCount = std::stoull(fieldOr(fields, "gap_count", "0"));
+  for (size_t i = 0; i < gapCount; ++i) {
+    const auto prefix = "gap." + std::to_string(i) + ".";
+    value.gaps.push_back({std::stoull(fieldOr(fields, prefix + "first", "0")),
+                          std::stoull(fieldOr(fields, prefix + "last", "0")),
+                          fieldOr(fields, prefix + "reason", "")});
+  }
+  if (const auto error = value.validate()) throw std::invalid_argument(*error);
+  return value;
+}
+
+std::optional<std::string>
+UavVideoContentKeyGrant::validate() const
+{
+  if (contractVersion != 1 || recipientIdentity.empty() || providerIdentity.empty() ||
+      serviceName.empty() || permission.empty() || !isCanonicalStreamId(streamId) ||
+      sessionEpoch == 0 || keyEpoch == 0 || cipher != "aes-256-gcm" ||
+      protectedKeyMaterial.size() != 32 || protectedNonceSalt.size() != 4 ||
+      issuedMs == 0 || expiresMs <= issuedMs)
+    return "invalid UAV video content-key grant";
+  return std::nullopt;
+}
+
+Fields
+UavVideoContentKeyGrant::toProtectedFields() const
+{
+  if (const auto error = validate()) throw std::invalid_argument(*error);
+  return {{"grant_contract_version", std::to_string(contractVersion)},
+          {"grant_recipient", recipientIdentity},
+          {"grant_provider", providerIdentity.toUri()},
+          {"grant_service", serviceName.toUri()}, {"grant_permission", permission},
+          {"grant_stream_id", streamId},
+          {"grant_session_epoch", std::to_string(sessionEpoch)},
+          {"grant_key_epoch", std::to_string(keyEpoch)}, {"grant_cipher", cipher},
+          {"grant_protected_key_hex", hexEncode(std::vector<uint8_t>(
+            protectedKeyMaterial.begin(), protectedKeyMaterial.end()))},
+          {"grant_protected_nonce_salt_hex", hexEncode(std::vector<uint8_t>(
+            protectedNonceSalt.begin(), protectedNonceSalt.end()))},
+          {"grant_issued_ms", std::to_string(issuedMs)},
+          {"grant_expires_ms", std::to_string(expiresMs)}};
+}
+
 RecordingDataProductState
 RecordingDataProductState::fromFields(const Fields& fields,
                                       const std::string& fallbackDroneId)
@@ -1971,14 +3568,9 @@ RecordingDataProductState::fromFields(const Fields& fields,
                             fieldOr(fields, "session_id", state.sessionId));
   state.objectPrefix = fieldOr(fields, "recording_object_prefix",
                                fieldOr(fields, "object_prefix", state.objectPrefix));
-  state.encryption = fieldOr(fields, "recording_encryption",
-                             fieldOr(fields, "encryption", state.encryption));
-  state.keyId = fieldOr(fields, "recording_encryption_key_id",
-                        fieldOr(fields, "key_id", state.keyId));
-  state.contentKey = hexDecode(fieldOr(fields, "recording_encryption_content_key_hex",
-                                       fieldOr(fields, "content_key_hex", "")));
   state.chunks = uint64FieldOr(fields, "recording_chunks",
-                               uint64FieldOr(fields, "chunks", state.chunks));
+                               uint64FieldOr(fields, "packet_catalog_entries",
+                                 uint64FieldOr(fields, "chunks", state.chunks)));
   state.bytes = uint64FieldOr(fields, "recording_bytes",
                               uint64FieldOr(fields, "bytes", state.bytes));
   state.updatedMs = uint64FieldOr(fields, "updated_ms",
@@ -1987,24 +3579,18 @@ RecordingDataProductState::fromFields(const Fields& fields,
 }
 
 Fields
-RecordingDataProductState::toFields(bool includeContentKey) const
+RecordingDataProductState::toFields() const
 {
-  Fields fields{
+  return {
     {"type", productType + "-manifest"},
     {"product_type", productType},
     {"drone_id", droneId},
     {"recording_session_id", sessionId},
     {"recording_object_prefix", objectPrefix},
-    {"recording_encryption", encryption},
-    {"recording_encryption_key_id", keyId},
     {"recording_chunks", std::to_string(chunks)},
     {"recording_bytes", std::to_string(bytes)},
     {"updated_ms", std::to_string(updatedMs)},
   };
-  if (includeContentKey) {
-    fields["recording_encryption_content_key_hex"] = hexEncode(contentKey);
-  }
-  return fields;
 }
 
 bool
@@ -2014,15 +3600,9 @@ RecordingDataProductState::isAvailable() const
 }
 
 bool
-RecordingDataProductState::isEncrypted() const
-{
-  return encryption != "none" && !encryption.empty();
-}
-
-bool
 RecordingDataProductState::isPlayable() const
 {
-  return isAvailable() && (!isEncrypted() || (!keyId.empty() && !contentKey.empty()));
+  return isAvailable();
 }
 
 ndn_service_framework::ServiceProvider::DataProductReference
@@ -2043,15 +3623,6 @@ RecordingDataProductState::toDataProductReference(const ndn::Name& serviceName,
 }
 
 std::string
-RecordingDataProductState::chunkObjectName(uint64_t index) const
-{
-  if (objectPrefix.empty() || sessionId.empty()) {
-    return "";
-  }
-  return objectPrefix + "/" + sessionId + "/chunk/" + std::to_string(index);
-}
-
-std::string
 RecordingDataProductState::statusLine() const
 {
   return "RecordingDataProduct drone=" + droneId +
@@ -2060,9 +3631,7 @@ RecordingDataProductState::statusLine() const
          " prefix=" + objectPrefix +
          " chunks=" + std::to_string(chunks) +
          " bytes=" + std::to_string(bytes) +
-         " encryption=" + encryption +
-         " key_id=" + keyId +
-         " key_bytes=" + std::to_string(contentKey.size()) +
+         " representation=canonical-signed-data" +
          " available=" + std::string(isAvailable() ? "true" : "false") +
          " playable=" + std::string(isPlayable() ? "true" : "false");
 }
@@ -3309,7 +4878,7 @@ UavDataProductCatalogState::fromRecording(const RecordingDataProductState& recor
     state.sourceRepo = recording.droneId;
     state.latestProductType = recording.productType;
     state.latestObjectPrefix = recording.objectPrefix;
-    state.latestMissionId = fieldOr(recording.toFields(false), "mission_id", "none");
+    state.latestMissionId = fieldOr(recording.toFields(), "mission_id", "none");
     state.updatedMs = recording.updatedMs;
   }
   return state;
@@ -4648,11 +6217,12 @@ buildPatrolMissionPlan(const std::string& taskId,
 std::vector<uint8_t>
 encodeVideoPacket(const VideoPacket& packet)
 {
-  const auto header = encodeFields({
+  Fields headerFields{
     {"stream_id", packet.streamId},
     {"stream_session_epoch", std::to_string(packet.streamSessionEpoch)},
     {"capture_ms", std::to_string(packet.captureMs)},
     {"bucket_packet_count", std::to_string(packet.bucketPacketCount)},
+    {"media_sequence", std::to_string(packet.mediaSequence)},
     {"encoding", packet.encoding},
     {"frame_first_packet_seq", std::to_string(packet.frameFirstPacketSeq)},
     {"frame_last_packet_seq", std::to_string(packet.frameLastPacketSeq)},
@@ -4667,7 +6237,18 @@ encodeVideoPacket(const VideoPacket& packet)
     {"fec_data_lengths", packet.fecDataLengths},
     {"packet_seq", std::to_string(packet.packetSeq)},
     {"second", std::to_string(packet.second)},
-  });
+  };
+  if (packet.frameBindingVersion != 0) {
+    headerFields["frame_binding_version"] = std::to_string(packet.frameBindingVersion);
+    headerFields["source_frame_id"] = std::to_string(packet.sourceFrameId);
+    headerFields["capture_origin_ns"] = std::to_string(packet.captureOriginNs);
+    headerFields["capture_clock_id"] = packet.captureClockId;
+    headerFields["codec_pts"] = std::to_string(packet.codecPts);
+    headerFields["codec_time_base_num"] = std::to_string(packet.codecTimeBaseNum);
+    headerFields["codec_time_base_den"] = std::to_string(packet.codecTimeBaseDen);
+    headerFields["codec_config_epoch"] = std::to_string(packet.codecConfigEpoch);
+  }
+  const auto header = encodeFields(headerFields);
   if (header.size() > 0xffffffffULL) {
     throw std::runtime_error("video packet header too large");
   }
@@ -4708,12 +6289,26 @@ decodeVideoPacket(const std::vector<uint8_t>& payload)
   packet.packetSeq = std::stoull(fieldOr(header, "packet_seq", "0"));
   packet.frameSeq = std::stoull(fieldOr(header, "frame_seq", "0"));
   packet.captureMs = std::stoull(fieldOr(header, "capture_ms", "0"));
+  packet.frameBindingVersion = std::stoull(
+    fieldOr(header, "frame_binding_version", "0"));
+  packet.sourceFrameId = std::stoull(fieldOr(header, "source_frame_id", "0"));
+  packet.captureOriginNs = std::stoull(fieldOr(header, "capture_origin_ns", "0"));
+  packet.captureClockId = fieldOr(header, "capture_clock_id", "");
+  packet.codecPts = std::stoll(fieldOr(header, "codec_pts", "0"));
+  packet.codecTimeBaseNum = static_cast<uint32_t>(
+    std::stoul(fieldOr(header, "codec_time_base_num", "0")));
+  packet.codecTimeBaseDen = static_cast<uint32_t>(
+    std::stoul(fieldOr(header, "codec_time_base_den", "0")));
+  packet.codecConfigEpoch = std::stoull(
+    fieldOr(header, "codec_config_epoch", "0"));
   packet.frameFirstPacketSeq = std::stoull(fieldOr(header, "frame_first_packet_seq",
                                                    std::to_string(packet.packetSeq)));
   packet.frameLastPacketSeq = std::stoull(fieldOr(header, "frame_last_packet_seq",
                                                   std::to_string(packet.packetSeq)));
   packet.bucketPacketCount = std::stoull(fieldOr(header, "bucket_packet_count",
                                                  std::to_string(packet.packetSeq + 1)));
+  packet.mediaSequence = std::stoull(fieldOr(header, "media_sequence",
+                                              std::to_string(packet.packetSeq)));
   packet.frameSegmentIndex = static_cast<uint32_t>(
     std::stoul(fieldOr(header, "frame_segment_index", "0")));
   packet.frameSegmentCount = static_cast<uint32_t>(
@@ -4731,6 +6326,34 @@ decodeVideoPacket(const std::vector<uint8_t>& payload)
   packet.encoding = fieldOr(header, "encoding", "");
   packet.payload.assign(payload.begin() + 4 + headerSize, payload.end());
   return packet;
+}
+
+bool
+hasExactVideoFrameBinding(const VideoPacket& packet)
+{
+  return packet.frameBindingVersion == 1 &&
+         packet.streamSessionEpoch != 0 &&
+         packet.captureOriginNs != 0 &&
+         !packet.captureClockId.empty() &&
+         packet.codecTimeBaseNum != 0 &&
+         packet.codecTimeBaseDen != 0 &&
+         packet.codecConfigEpoch != 0;
+}
+
+void
+validateVideoFrameBinding(const VideoPacket& packet,
+                          uint64_t expectedSessionEpoch)
+{
+  if (!hasExactVideoFrameBinding(packet)) {
+    throw std::invalid_argument("missing or unsupported UAV video frame binding");
+  }
+  if (packet.streamSessionEpoch != expectedSessionEpoch) {
+    throw std::invalid_argument("stale UAV video frame binding session");
+  }
+  if (packet.codecTimeBaseDen > 1000000000U ||
+      packet.codecTimeBaseNum > packet.codecTimeBaseDen) {
+    throw std::invalid_argument("invalid UAV video codec time base");
+  }
 }
 
 namespace {
@@ -4798,6 +6421,15 @@ videoPacketToStreamChunk(const VideoPacket& packet)
   chunk.segmentCount = packet.frameSegmentCount;
   chunk.metadata["uav.second"] = std::to_string(packet.second);
   chunk.metadata["uav.bucket_packet_count"] = std::to_string(packet.bucketPacketCount);
+  chunk.metadata["uav.media_sequence"] = std::to_string(packet.mediaSequence);
+  chunk.metadata["uav.frame_binding_version"] = std::to_string(packet.frameBindingVersion);
+  chunk.metadata["uav.source_frame_id"] = std::to_string(packet.sourceFrameId);
+  chunk.metadata["uav.capture_origin_ns"] = std::to_string(packet.captureOriginNs);
+  chunk.metadata["uav.capture_clock_id"] = packet.captureClockId;
+  chunk.metadata["uav.codec_pts"] = std::to_string(packet.codecPts);
+  chunk.metadata["uav.codec_time_base_num"] = std::to_string(packet.codecTimeBaseNum);
+  chunk.metadata["uav.codec_time_base_den"] = std::to_string(packet.codecTimeBaseDen);
+  chunk.metadata["uav.codec_config_epoch"] = std::to_string(packet.codecConfigEpoch);
 
   if (packet.fecDataShards > 0 || packet.fecParityShards > 0 ||
       packet.fecSymbolCount > 0 || !packet.fecDataLengths.empty()) {
@@ -4830,6 +6462,21 @@ streamChunkToVideoPacket(const ndn_service_framework::StreamChunk& chunk)
   packet.frameLastPacketSeq = chunk.frameLastSeq;
   packet.bucketPacketCount =
     metadataUint64(chunk.metadata, "uav.bucket_packet_count", chunk.seq + 1);
+  packet.mediaSequence =
+    metadataUint64(chunk.metadata, "uav.media_sequence", chunk.seq);
+  packet.frameBindingVersion =
+    metadataUint64(chunk.metadata, "uav.frame_binding_version", 0);
+  packet.sourceFrameId = metadataUint64(chunk.metadata, "uav.source_frame_id", 0);
+  packet.captureOriginNs = metadataUint64(chunk.metadata, "uav.capture_origin_ns", 0);
+  const auto captureClock = chunk.metadata.find("uav.capture_clock_id");
+  packet.captureClockId = captureClock == chunk.metadata.end() ? "" : captureClock->second;
+  const auto codecPts = chunk.metadata.find("uav.codec_pts");
+  packet.codecPts = codecPts == chunk.metadata.end() ? 0 : std::stoll(codecPts->second);
+  packet.codecTimeBaseNum = static_cast<uint32_t>(
+    metadataUint64(chunk.metadata, "uav.codec_time_base_num", 0));
+  packet.codecTimeBaseDen = static_cast<uint32_t>(
+    metadataUint64(chunk.metadata, "uav.codec_time_base_den", 0));
+  packet.codecConfigEpoch = metadataUint64(chunk.metadata, "uav.codec_config_epoch", 0);
   packet.frameSegmentIndex = static_cast<uint32_t>(chunk.segmentIndex);
   packet.frameSegmentCount = static_cast<uint32_t>(chunk.segmentCount);
   packet.keyFrame = chunk.keyChunk;
@@ -5311,6 +6958,34 @@ makeVideoStartFields(uint64_t fps, uint64_t requestedBitrateKbps,
     {"requested_frame_width", std::to_string(requestedFrameWidth)},
     {"fec_parity_shards", std::to_string(fecParityShards)},
   };
+}
+
+size_t
+computeLiveVideoRetentionItems(uint64_t fps,
+                               uint64_t dataShards,
+                               uint64_t parityShards,
+                               uint64_t retentionMs)
+{
+  if (fps == 0 || dataShards == 0 || retentionMs == 0 ||
+      parityShards > std::numeric_limits<uint64_t>::max() - dataShards) {
+    throw std::invalid_argument("invalid live video retention inputs");
+  }
+  const auto itemsPerFrame = dataShards + parityShards;
+  const auto cap = static_cast<uint64_t>(UAV_VIDEO_MAX_RETAINED_ITEMS);
+  // Saturate before multiplication. The configured cap is the authority; no
+  // caller can turn a duration hint into unbounded live memory.
+  if (fps > cap || itemsPerFrame > cap || retentionMs > cap * 1000 ||
+      fps > std::numeric_limits<uint64_t>::max() / itemsPerFrame) {
+    return UAV_VIDEO_MAX_RETAINED_ITEMS;
+  }
+  const auto itemsPerSecond = fps * itemsPerFrame;
+  if (itemsPerSecond > std::numeric_limits<uint64_t>::max() / retentionMs) {
+    return UAV_VIDEO_MAX_RETAINED_ITEMS;
+  }
+  const auto numerator = itemsPerSecond * retentionMs;
+  const auto requested = numerator / 1000 + (numerator % 1000 == 0 ? 0 : 1);
+  return static_cast<size_t>(std::clamp<uint64_t>(
+    requested, itemsPerFrame, UAV_VIDEO_MAX_RETAINED_ITEMS));
 }
 
 uint64_t

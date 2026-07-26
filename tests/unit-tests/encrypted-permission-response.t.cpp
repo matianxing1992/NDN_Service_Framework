@@ -660,6 +660,52 @@ BOOST_FIXTURE_TEST_CASE(MessageValidatorFailureCallbackIsExplicit,
   BOOST_CHECK_EQUAL(validator.getFailureCountForTesting(), 1);
 }
 
+BOOST_AUTO_TEST_CASE(MessageValidatorAcceptsBoundV3StateVectorName)
+{
+  ndn::KeyChain keyChain;
+  const ndn::Name signerIdentity(
+    "/example/spec114/provider-" +
+    std::to_string(ndn::time::system_clock::now().time_since_epoch().count()));
+  const auto identity = keyChain.createIdentity(signerIdentity, ndn::RsaKeyParams(2048));
+  const auto certificate = identity.getDefaultKey().getDefaultCertificate();
+  const ndn::Name groupPrefix("/example/spec114/group");
+  ndn::Data stateData(ndn::Name(groupPrefix).appendVersion(3));
+  stateData.setContent("state-vector");
+  keyChain.sign(stateData, ndn::security::signingByCertificate(certificate));
+
+  MessageValidator validator("tests/reject-rsa-data.conf", groupPrefix);
+  bool successCalled = false;
+  bool failureCalled = false;
+  validator.validate(
+    stateData,
+    [&] (const ndn::Data&) { successCalled = true; },
+    [&] (const ndn::Data&, const ndn::security::ValidationError&) {
+      failureCalled = true;
+    });
+
+  BOOST_CHECK(successCalled);
+  BOOST_CHECK(!failureCalled);
+  BOOST_CHECK_EQUAL(validator.getFailureCountForTesting(), 0);
+  BOOST_CHECK_EQUAL(validator.getLocalCertificateCacheSizeForTesting(), 1);
+
+  ndn::Data nextStateData(ndn::Name(groupPrefix).appendVersion(3));
+  nextStateData.setContent("next-state-vector");
+  keyChain.sign(nextStateData, ndn::security::signingByCertificate(certificate));
+  successCalled = false;
+  failureCalled = false;
+  validator.validate(
+    nextStateData,
+    [&] (const ndn::Data&) { successCalled = true; },
+    [&] (const ndn::Data&, const ndn::security::ValidationError&) {
+      failureCalled = true;
+    });
+
+  BOOST_CHECK(successCalled);
+  BOOST_CHECK(!failureCalled);
+  BOOST_CHECK_EQUAL(validator.getFailureCountForTesting(), 0);
+  BOOST_CHECK_EQUAL(validator.getLocalCertificateCacheSizeForTesting(), 1);
+}
+
 BOOST_FIXTURE_TEST_CASE(ValidatorFailureCallbacksAreExactlyOnceAndLeaveNoState,
                         EncryptedPermissionResponseFixture)
 {

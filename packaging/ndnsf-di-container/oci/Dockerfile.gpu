@@ -19,6 +19,7 @@ ARG SOURCE_REVISION
 ARG FOUNDATION_SOURCE_REVISION
 ARG ONNXRUNTIME_CPP_URL
 ARG ONNXRUNTIME_CPP_SHA256
+ARG NDNSF_DI_OWNER_PROFILES="core sdk app planner adapters/onnx adapters/qwen adapters/llama ops compat"
 ARG DEBIAN_FRONTEND=noninteractive
 ENV PREFIX=/opt/ndnsf-di/current \
     PATH=/opt/venv/bin:/opt/ndnsf-di/current/bin:${PATH} \
@@ -102,7 +103,11 @@ RUN --mount=type=bind,source=.,target=/src/ndnsf,rw \
     install -m 0755 build/examples/App_ServiceController $PREFIX/bin/App_ServiceController; \
     install -m 0755 build/examples/di-native-provider $PREFIX/bin/di-native-provider; \
     /opt/venv/bin/pip install --no-deps \
-      ./pythonWrapper ./NDNSF-DistributedRepo/pythonWrapper ./NDNSF-DistributedInference
+      ./pythonWrapper ./NDNSF-DistributedRepo/pythonWrapper; \
+    for profile in $NDNSF_DI_OWNER_PROFILES; do \
+      /opt/venv/bin/pip install --no-deps \
+        "./NDNSF-DistributedInference/packaging/python/$profile"; \
+    done
 
 RUN install -D -m 0644 /opt/ndnsf-di/manifest/nfd.conf /etc/ndn/nfd.conf && \
     python3 /build-contract/derive-runtime-packages.py \

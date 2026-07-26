@@ -11,8 +11,10 @@ from __future__ import annotations
 import argparse
 import glob
 import importlib.util
+import json
 import os
 from pathlib import Path
+import re
 import signal
 import subprocess
 import sys
@@ -56,6 +58,178 @@ JMAVSIM_READY_MARKERS = [
 
 def log(message: str) -> None:
     info(message + "\n")
+
+
+def _bounded_percent(value: float, name: str) -> float:
+    if not math.isfinite(value) or value < 0.0 or value > 100.0:
+        raise ValueError(f"{name} must be finite and within [0, 100]")
+    return value
+
+
+def build_experiment_netem_arguments(args: argparse.Namespace) -> list[str]:
+    """Build the exact per-endpoint netem arguments for a frozen campaign cell."""
+    loss = _bounded_percent(args.experiment_netem_loss_percent, "loss percent")
+    reorder = _bounded_percent(args.experiment_netem_reorder_percent,
+                               "reorder percent")
+    correlation = _bounded_percent(
+        args.experiment_netem_reorder_correlation_percent,
+        "reorder correlation percent")
+    delay = args.experiment_netem_delay_ms
+    jitter = args.experiment_netem_jitter_ms
+    gap = args.experiment_netem_reorder_gap
+    if (not math.isfinite(delay) or not math.isfinite(jitter) or
+            delay < 0.0 or jitter < 0.0):
+        raise ValueError("netem delay and jitter must be finite and non-negative")
+    if gap < 0:
+        raise ValueError("netem reorder gap must be non-negative")
+    if reorder > 0.0 and (delay <= 0.0 or gap <= 0):
+        raise ValueError("netem reordering requires positive delay and gap")
+
+    tokens = ["limit", "1000"]
+    if delay > 0.0:
+        tokens.extend(["delay", f"{delay:g}ms"])
+        if jitter > 0.0:
+            tokens.extend([f"{jitter:g}ms", "distribution", "normal"])
+    if loss > 0.0:
+        tokens.extend(["loss", "random", f"{loss:g}%"])
+    if reorder > 0.0:
+        tokens.extend(["reorder", f"{reorder:g}%"])
+        if correlation > 0.0:
+            tokens.append(f"{correlation:g}%")
+        tokens.extend(["gap", str(gap)])
+    return tokens
+
+
+def capture_experiment_qdiscs(ndn, endpoint_names: list[str]) -> dict[str, dict[str, str]]:
+    captured: dict[str, dict[str, str]] = {}
+    for node_name in sorted(set(endpoint_names)):
+        node = ndn.net[node_name]
+        interfaces: dict[str, str] = {}
+        for intf in node.intfList():
+            device = str(getattr(intf, "name", intf))
+            if device == "lo" or not re.fullmatch(r"[A-Za-z0-9_.:-]+", device):
+                continue
+            interfaces[device] = node.cmd(f"tc -s qdisc show dev {device}")
+        captured[node_name] = interfaces
+    return captured
+
+
+def verify_experiment_netem_output(output: str, args: argparse.Namespace) -> bool:
+    """Compare normalized `tc -s` values with the requested experiment profile."""
+    if "qdisc netem 10: parent 5:1" not in output or "limit 1000" not in output:
+        return False
+
+    def numeric(pattern: str) -> tuple[float, ...] | None:
+        match = re.search(pattern, output)
+        if not match:
+            return None
+        return tuple(float(value) for value in match.groups() if value is not None)
+
+    def close(actual: float, expected: float) -> bool:
+        return math.isclose(actual, expected, rel_tol=1e-9, abs_tol=1e-9)
+
+    delay = numeric(r"\bdelay\s+([0-9.]+)ms(?:\s+([0-9.]+)ms)?")
+    if args.experiment_netem_delay_ms > 0.0:
+        if not delay or not close(delay[0], args.experiment_netem_delay_ms):
+            return False
+        expected_jitter = args.experiment_netem_jitter_ms
+        actual_jitter = delay[1] if len(delay) > 1 else 0.0
+        if not close(actual_jitter, expected_jitter):
+            return False
+    elif delay is not None:
+        return False
+
+    loss = numeric(r"\bloss(?:\s+random)?\s+([0-9.]+)%")
+    expected_loss = args.experiment_netem_loss_percent
+    if ((expected_loss > 0.0 and (not loss or not close(loss[0], expected_loss))) or
+            (expected_loss == 0.0 and loss is not None)):
+        return False
+
+    reorder = re.search(
+        r"\breorder\s+([0-9.]+)%(?:\s+([0-9.]+)%)?\s+gap\s+(\d+)", output)
+    expected_reorder = args.experiment_netem_reorder_percent
+    if expected_reorder > 0.0:
+        if not reorder:
+            return False
+        actual_correlation = float(reorder.group(2) or 0.0)
+        if (not close(float(reorder.group(1)), expected_reorder) or
+                not close(actual_correlation,
+                          args.experiment_netem_reorder_correlation_percent) or
+                int(reorder.group(3)) != args.experiment_netem_reorder_gap):
+            return False
+    elif reorder is not None:
+        return False
+    return True
+
+
+def apply_experiment_netem(ndn, args: argparse.Namespace,
+                           output_dir: Path) -> None:
+    """Install and persist a runner-owned netem profile before NFD/apps start."""
+    endpoints = [args.gs_node, args.drone_node]
+    tokens = build_experiment_netem_arguments(args)
+    applied: list[dict[str, str]] = []
+    for node_name in sorted(set(endpoints)):
+        node = ndn.net[node_name]
+        interfaces = [
+            str(getattr(intf, "name", intf)) for intf in node.intfList()
+            if str(getattr(intf, "name", intf)) != "lo"
+        ]
+        if not interfaces:
+            raise RuntimeError(f"netem endpoint {node_name} has no data interface")
+        for device in interfaces:
+            if not re.fullmatch(r"[A-Za-z0-9_.:-]+", device):
+                raise RuntimeError(f"unsafe netem interface name: {device!r}")
+            command = (
+                f"tc qdisc replace dev {device} parent 5:1 handle 10: netem " +
+                " ".join(tokens)
+            )
+            output = node.cmd(command + "; printf '\\n__RC__%s' $?")
+            if not output.rstrip().endswith("__RC__0"):
+                raise RuntimeError(
+                    f"netem install failed node={node_name} interface={device}: {output}")
+            applied.append({"node": node_name, "interface": device,
+                            "command": command})
+
+    effective = capture_experiment_qdiscs(ndn, endpoints)
+    evidence = {
+        "phase": "before-nfd-and-apps",
+        "endpoints": endpoints,
+        "arguments": tokens,
+        "applied": applied,
+        "effective": effective,
+    }
+    if not effective or any(
+            not verify_experiment_netem_output(value, args)
+            for interfaces in effective.values() for value in interfaces.values()):
+        raise RuntimeError("effective qdisc does not contain the frozen netem profile")
+    (output_dir / "experiment-netem-before-apps.json").write_text(
+        json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def start_nfd_pit_monitor(ndn, node_names, output_dir: Path,
+                          stop_event: threading.Event) -> threading.Thread:
+    """Sample NFD PIT occupancy without changing forwarding state."""
+    output = output_dir / "nfd-pit-samples.csv"
+
+    def _monitor() -> None:
+        with output.open("w", encoding="utf-8") as stream:
+            stream.write("timestamp_ms,node,pit_entries\n")
+            while not stop_event.is_set():
+                timestamp_ms = int(time.time() * 1000)
+                for node_name in sorted(set(node_names)):
+                    report = ndn.net[node_name].cmd(
+                        f"NDN_CLIENT_TRANSPORT=unix:///run/nfd/{node_name}.sock "
+                        "nfdc status report 2>/dev/null")
+                    match = re.search(r"(?:PIT entries:\s*|nPitEntries=)(\d+)", report,
+                                      flags=re.IGNORECASE)
+                    if match:
+                        stream.write(f"{timestamp_ms},{node_name},{match.group(1)}\n")
+                stream.flush()
+                stop_event.wait(1.0)
+
+    thread = threading.Thread(target=_monitor, name="nfd-pit-monitor", daemon=True)
+    thread.start()
+    return thread
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -117,6 +291,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Do not let the Drone app set PX4 SITL demo failsafe parameters.")
     parser.add_argument("--video-bitrate-kbps", type=int, default=8000,
                         help="Requested video bitrate passed to the ground-station control request.")
+    parser.add_argument("--video-fps", type=int, default=30, choices=range(1, 61),
+                        metavar="[1-60]",
+                        help="Requested video frame rate passed to the ground-station control request.")
     parser.add_argument("--video-bitrate-policy", default="manual",
                         choices=("manual", "auto-after-pressure"),
                         help="Ground-station policy for applying adaptive bitrate recommendations.")
@@ -127,8 +304,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--video-fec-parity-shards", type=int, default=1,
                         choices=(0, 1),
                         help="Requested UAV XOR parity shards per video FEC group.")
+    parser.add_argument(
+        "--live-stream-prefetch-policy",
+        default="mapped-pressure",
+        choices=("adaptive-sample-atomic", "mapped-pressure", "mapped-live-v1-future-on",
+                 "mapped-live-v1-future-off"),
+        help="Core LiveStream receiver policy used by matched experiments.")
     parser.add_argument("--output-dir", default=str(REPO / "results/uav_gui_minindn"))
     parser.add_argument("--nfd-log-level", default="WARN")
+    parser.add_argument("--experiment-netem-enable", action="store_true",
+                        help="Apply the frozen experiment-only netem profile before NFD starts")
+    parser.add_argument("--experiment-netem-loss-percent", type=float, default=0.0)
+    parser.add_argument("--experiment-netem-delay-ms", type=float, default=0.0)
+    parser.add_argument("--experiment-netem-jitter-ms", type=float, default=0.0)
+    parser.add_argument("--experiment-netem-reorder-percent", type=float, default=0.0)
+    parser.add_argument("--experiment-netem-reorder-correlation-percent", type=float,
+                        default=0.0)
+    parser.add_argument("--experiment-netem-reorder-gap", type=int, default=0)
     parser.add_argument("--quick-smoke", action="store_true",
                         help="Validate launcher inputs, APP binaries, topology nodes, and configs without starting MiniNDN or GUI apps.")
     parser.add_argument("--enable-ndnsd", action="store_true",
@@ -168,6 +360,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Have the GS verify flight action buttons follow typed ReadinessState.")
     parser.add_argument("--auto-recording-playback-test", action="store_true",
                         help="Have the drone record to its local repo and the GS discover/replay the recording.")
+    parser.add_argument("--camera-record-during-video-test", action="store_true",
+                        help="Retain the canonical video during a full auto-video window without starting playback.")
+    parser.add_argument("--camera-retention-packet-limit", type=int, default=240,
+                        help="Canonical packet limit for recording tests; zero means no configured limit.")
     parser.add_argument("--auto-repo-catalog-browse-test", action="store_true",
                         help="Have the drone record to its local repo and the GS browse the repo catalog.")
     parser.add_argument("--auto-parameter-cache-test", action="store_true",
@@ -382,6 +578,23 @@ def make_env(args: argparse.Namespace, node_name: str, home: Path) -> dict[str, 
     if os.environ.get("PATH"):
         env["PATH"] = os.environ["PATH"]
     env["NDNSF_DISABLE_NDNSD"] = os.environ.get("NDNSF_DISABLE_NDNSD", "1")
+    for name in (
+        "NDNSF_TIMELINE_TRACE",
+        "NDNSF_TIMELINE_TRACE_SAMPLE_RATE",
+        "NDNSF_STREAM_PACKET_TIMELINE_TRACE",
+        "NDNSF_UAV_RECORDING_LIFECYCLE_TEST",
+        "NDNSF_UAV_RECORDING_PLAYBACK_DELAY_SECONDS",
+        "NDNSF_UAV_SIMULATE_STORAGE_FAILURE_AFTER_PACKETS",
+        "NDNSF_UAV_RECORDING_BITRATE_KBPS",
+        "NDNSF_UAV_RECORDING_FRAME_WIDTH",
+        "NDNSF_UAV_FINALIZE_RETENTION_AFTER_VIDEO_TEST",
+        "NDNSF_UAV_ARCHIVED_TRUST_REPLAY_TEST",
+        "NDNSF_UAV_VIDEO_PIPELINE",
+        "NDNSF_UAV_GSTREAMER_SOURCE",
+        "NDNSF_UAV_ENCODER_PIPE_READ_MODE",
+    ):
+        if os.environ.get(name) is not None:
+            env[name] = os.environ[name]
     if args.enable_ndnsd:
         env["NDNSF_UAV_NDNSD_EXPERIMENT_REQUESTED"] = "1"
     python_paths = []
@@ -832,6 +1045,18 @@ def require_log_any(path: Path, needles: list[str]) -> None:
         raise RuntimeError(f"missing any of {needles} in {path}\n--- tail ---\n{tail}")
 
 
+def require_decoded_video(path: Path, minimum: int = 3) -> None:
+    text = path.read_text(errors="replace") if path.exists() else ""
+    counts = [int(value) for value in re.findall(r"GS_DECODED_FRAMES count=(\d+)", text)]
+    counts.extend(int(value) for value in re.findall(r"decoded_frames=(\d+)", text))
+    observed = max(counts, default=0)
+    if observed < minimum:
+        tail = "\n".join(text.splitlines()[-40:])
+        raise RuntimeError(
+            f"decoded video evidence below {minimum}: observed={observed} in {path}"
+            f"\n--- tail ---\n{tail}")
+
+
 def run_quick_smoke(args: argparse.Namespace) -> int:
     required_binaries = [APP_CONTROLLER, APP_DRONE, APP_GS]
     missing_binaries = [str(path) for path in required_binaries if not path.is_file()]
@@ -877,6 +1102,30 @@ def run_quick_smoke(args: argparse.Namespace) -> int:
     return 0
 
 
+def _parse_latency_ms(log_path: Path) -> dict:
+    """Extract per-frame decode latency from ground station logs."""
+    import statistics
+    latencies = []
+    with open(log_path) as f:
+        for line in f:
+            if "GS_DECODED_FRAMES" in line:
+                # Format: GS_DECODED_FRAMES count=N frame=N latency_ms=X
+                import re
+                m = re.search(r"latency_ms=(\d+\.?\d*)", line)
+                if m:
+                    latencies.append(float(m.group(1)))
+    if not latencies:
+        return {}
+    return {
+        "count": len(latencies),
+        "median_ms": statistics.median(latencies),
+        "p95_ms": sorted(latencies)[int(len(latencies) * 0.95)] if len(latencies) > 1 else latencies[0],
+        "min_ms": min(latencies),
+        "max_ms": max(latencies),
+    }
+
+
+
 def main() -> int:
     args = build_parser().parse_args()
     if args.auto_video_pressure_profile_test:
@@ -898,11 +1147,15 @@ def main() -> int:
     log(f"UAV video source selected: {video_source_kind} {video_source}")
 
     ndn = None
+    pit_monitor_stop = threading.Event()
+    pit_monitor_thread = None
     Minindn.cleanUp()
     Minindn.verifyDependencies()
     try:
         ndn = Minindn(topoFile=args.topology_file)
         ndn.start()
+        if args.experiment_netem_enable:
+            apply_experiment_netem(ndn, args, output_dir)
         AppManager(ndn, ndn.net.hosts, Nfd, logLevel=args.nfd_log_level)
         perf.wait_for_nfd_sockets(ndn, output_dir)
         configure_routes(ndn, args)
@@ -946,6 +1199,7 @@ def main() -> int:
             )
 
         drone_logs = {}
+        drone_processes = {}
         simulator_status_files = {}
         if should_start_jmavsim(args):
             cleanup_px4_jmavsim(args.px4_dir)
@@ -969,7 +1223,8 @@ def main() -> int:
                 "--mavlink-udp-port", mavlink_udp_port,
                 "--mavlink-udp-listen-port", args.mavlink_udp_listen_port,
             ])
-            if args.auto_recording_playback_test or args.auto_repo_catalog_browse_test:
+            if (args.auto_recording_playback_test or args.auto_repo_catalog_browse_test or
+                    args.camera_record_during_video_test):
                 repo_path = output_dir / f"drone-{drone_id}-camera-recording.sqlite3"
                 try:
                     repo_path.unlink()
@@ -979,7 +1234,8 @@ def main() -> int:
                     " --camera-capture-on-start"
                     " --camera-record-to-local-repo"
                     " --camera-record-repo-path " + shell_quote(repo_path) +
-                    " --camera-record-chunk-limit 240"
+                    " --camera-retention-packet-limit " +
+                    shell_quote(str(args.camera_retention_packet_limit))
                 )
             if start_simulator:
                 drone_cmd += " --fc-status-file " + shell_quote(simulator_status_files[drone_id])
@@ -992,6 +1248,7 @@ def main() -> int:
                                           drone_cmd, drone_envs[drone_id],
                                           output_dir, processes)
             drone_logs[drone_id] = drone_log
+            drone_processes[drone_id] = drone_proc
             drone_ready_markers = ["DRONE_HEADLESS_READY"] if args.drone_headless else ["DRONE_GUI_READY"]
             if not wait_log_any(drone_log, drone_ready_markers, 30, proc=drone_proc):
                 mode = "headless runtime" if args.drone_headless else "GUI"
@@ -1018,10 +1275,12 @@ def main() -> int:
             "--runtime-config", str(Path(args.runtime_config).resolve()),
             "--target-drone", args.drone_id,
             "--video-bitrate-kbps", str(args.video_bitrate_kbps),
+            "--video-fps", str(args.video_fps),
             "--video-bitrate-policy", args.video_bitrate_policy,
             "--video-bitrate-auto-pressure-ms", str(args.video_bitrate_auto_pressure_ms),
             "--video-width", str(args.video_width),
             "--video-fec-parity-shards", str(args.video_fec_parity_shards),
+            "--live-stream-prefetch-policy", args.live_stream_prefetch_policy,
             "--patrol-drones", ",".join(drone_id for drone_id, _ in drones),
             "--no-cert-dialog",
         ]
@@ -1248,6 +1507,12 @@ def main() -> int:
             ]
         gs_proc, gs_log = start(ndn.net[args.gs_node], "ground-station",
                                 app_cmd(APP_GS, gs_argv), gs_env, output_dir, processes)
+        pit_monitor_thread = start_nfd_pit_monitor(
+            ndn,
+            [args.controller_node, args.gs_node] + [node for _, node in drones],
+            output_dir,
+            pit_monitor_stop,
+        )
         if not (args.auto_patrol_test or args.auto_single_mission_test or
                 args.auto_loaded_mission_plan_test or
                 args.auto_repo_catalog_browse_test or
@@ -1633,8 +1898,8 @@ def main() -> int:
             require_log(gs_log, "fc_available=true")
             require_log(gs_log, "fc_ready=true")
             require_log(gs_log, "TELEMETRY_STATE_MODEL sample=0 phase=initial")
-            require_log(gs_log, "TELEMETRY_STATE_MODEL sample=1 phase=armed")
-            require_log(gs_log, "TELEMETRY_STATE_MODEL sample=2 phase=takeoff")
+            require_log(gs_log, "phase=armed FlightAction selected=")
+            require_log(gs_log, "phase=takeoff FlightAction selected=")
             require_log(gs_log, "FlightAction selected=")
             require_log(gs_log, "SelectedAction selected=")
             require_log(gs_log, "SelectedDroneSummary selected=")
@@ -1791,19 +2056,19 @@ def main() -> int:
                 print("NDNSF_UAV_MAVLINK_TARGETED_MININDN_SMOKE_OK")
         elif args.auto_recording_playback_test and args.no_cli:
             try:
-                gs_proc.wait(timeout=75)
+                # A delayed replay candidate first records for auto_stop_seconds,
+                # then needs a bounded interval to resolve, fetch, and decode the
+                # archived canonical stream.
+                gs_proc.wait(timeout=max(120, args.auto_stop_seconds + 60))
             except subprocess.TimeoutExpired as e:
                 raise RuntimeError(f"ground station recording playback smoke did not finish; see {gs_log}") from e
             if gs_proc.returncode != 0:
                 raise RuntimeError(f"ground station exited with {gs_proc.returncode}; see {gs_log}")
-            require_log(gs_log, "RecordingDataProduct drone=" + args.drone_id)
-            require_log(gs_log, "available=true")
-            require_log(gs_log, "playable=true")
-            require_log(gs_log, "Recording manifest drone=" + args.drone_id)
-            require_log(gs_log, "Recording playback drone=" + args.drone_id)
-            require_log(gs_log, "Recording playback fetched drone=" + args.drone_id)
+            require_log(gs_log, "Canonical recording manifest drone=" + args.drone_id)
+            require_log(gs_log, "complete=true")
+            require_log(gs_log, "Canonical recording replay drone=" + args.drone_id)
             require_log(gs_log, "GS_DECODED_FRAMES count=1")
-            require_log(drone_logs[args.drone_id], "camera_recording=on")
+            require_log(drone_logs[args.drone_id], "CAMERA_RECORDING_CANONICAL drone=" + args.drone_id)
             print("NDNSF_UAV_RECORDING_PLAYBACK_MININDN_SMOKE_OK")
         elif args.auto_video_test and args.no_cli:
             try:
@@ -1812,7 +2077,7 @@ def main() -> int:
                 raise RuntimeError(f"ground station auto smoke did not finish; see {gs_log}") from e
             if gs_proc.returncode != 0:
                 raise RuntimeError(f"ground station exited with {gs_proc.returncode}; see {gs_log}")
-            require_log(gs_log, "GS_STATUS Video packet stream")
+            require_log(gs_log, "GS_STATUS Protected LiveStream")
             require_log(gs_log, "GS_VIDEO_ADAPTIVE_STATE reason=configured VideoAdaptive drone=" + args.drone_id)
             require_log(gs_log, "VIDEO_ADAPTIVE_VIEW_STATE phase=auto-video-active selected=" + args.drone_id + " has_adaptive=true")
             require_log(gs_log, "window=")
@@ -1846,14 +2111,34 @@ def main() -> int:
             if args.video_bitrate_policy == "auto-after-pressure":
                 require_log(gs_log, "GS_VIDEO_BITRATE_POLICY_ARMED drone=" + args.drone_id)
                 require_log(gs_log, "GS_VIDEO_BITRATE_POLICY_APPLY drone=" + args.drone_id)
-            require_log(gs_log, "GS_DECODED_FRAMES count=30")
+            require_decoded_video(gs_log)
+            require_log(gs_log, "AUTO_VIDEO_GUI_RENDER_GATE status=PASS")
             require_log(gs_log, "GS_GUI_EXIT rc=0")
             require_log(gs_log, "VIDEO_ADAPTIVE_VIEW_STATE phase=auto-video-stopped selected=" + args.drone_id + " has_adaptive=true")
             require_log(drone_logs[args.drone_id], "DRONE_STATUS drone=" + args.drone_id + " video streaming")
-            require_log(drone_logs[args.drone_id], "DRONE_STATUS drone=" + args.drone_id + " video stopped")
+            if args.camera_record_during_video_test:
+                require_log(drone_logs[args.drone_id], "DRONE_STATUS drone=" + args.drone_id + " video stopped")
+                require_log(drone_logs[args.drone_id], "recording=on")
+                require_log(drone_logs[args.drone_id], "CAMERA_CANONICAL_RETENTION_FINALIZED")
+                if os.environ.get("NDNSF_UAV_SIMULATE_STORAGE_FAILURE_AFTER_PACKETS"):
+                    require_log(drone_logs[args.drone_id], "CAMERA_CANONICAL_RETENTION_FAILED")
+                    require_log(drone_logs[args.drone_id], "complete=false")
+                else:
+                    require_log(drone_logs[args.drone_id], "complete=true")
+            else:
+                wait_log(
+                    drone_logs[args.drone_id],
+                    "DRONE_STATUS drone=" + args.drone_id + " video stopped",
+                    5,
+                    proc=drone_processes[args.drone_id],
+                )
+                require_log(drone_logs[args.drone_id], "DRONE_STATUS drone=" + args.drone_id + " video stopped")
             if args.drone_headless:
                 require_log(drone_logs[args.drone_id], "DRONE_HEADLESS_STATUS")
-                require_log(drone_logs[args.drone_id], "video=stopped")
+                if args.camera_record_during_video_test:
+                    require_log(drone_logs[args.drone_id], "recording=on")
+                else:
+                    require_log(drone_logs[args.drone_id], "video=stopped")
             if args.auto_repeat_stop_test:
                 require_log(gs_log, "Video stop timed out for drone " + args.drone_id)
                 require_log(gs_log, "VIDEO_SELECTION_STATE phase=auto-video-stop-timeout selected=" + args.drone_id)
@@ -1869,10 +2154,23 @@ def main() -> int:
             MiniNDNCLI(ndn.net)
         return 0
     finally:
+        pit_monitor_stop.set()
+        if pit_monitor_thread is not None:
+            pit_monitor_thread.join(timeout=2.0)
         stop(processes)
         if 'args' in locals() and should_start_jmavsim(args):
             cleanup_px4_jmavsim(args.px4_dir)
         if ndn is not None:
+            if args.experiment_netem_enable:
+                try:
+                    final_qdiscs = capture_experiment_qdiscs(
+                        ndn, [args.gs_node, args.drone_node])
+                    (output_dir / "experiment-netem-final.json").write_text(
+                        json.dumps(final_qdiscs, indent=2, sort_keys=True) + "\n",
+                        encoding="utf-8")
+                except Exception as error:
+                    (output_dir / "experiment-netem-final-error.txt").write_text(
+                        str(error) + "\n", encoding="utf-8")
             ndn.stop()
         Minindn.cleanUp()
 

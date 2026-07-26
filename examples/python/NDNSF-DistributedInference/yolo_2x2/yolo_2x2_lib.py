@@ -45,18 +45,17 @@ from ndnsf import (
     parse_large_data_reference_payload,
 )
 
-from ndnsf_distributed_inference import (
-    InferenceDependency,
+from ndnsf_distributed_inference.plan import InferenceDependency
+from ndnsf_distributed_inference.adapters.onnx.graph import (
     OnnxChunkSpec,
-    ProviderProfile,
-    SequentialSplitCandidate,
     analyze_onnx_graph,
     build_sequential_chunk_dependencies,
     estimate_split_candidates,
-    homogeneous_provider_profiles,
-    nxm_stage_roles,
-    recommend_sequential_splits,
     write_onnx_graph_summary,
+)
+from ndnsf_distributed_inference.planner.sequential_split import (
+    ProviderProfile, SequentialSplitCandidate, homogeneous_provider_profiles,
+    nxm_stage_roles, recommend_sequential_splits,
 )
 from ndnsf_distributed_inference.repo_reference import (
     repo_manifest_from_large_data_reference,
@@ -68,7 +67,7 @@ from ndnsf_distributed_inference.plan import (
     PlannerKind,
     RuntimeSpec,
 )
-from ndnsf_distributed_inference.planner_registry import (
+from ndnsf_distributed_inference.planner.backend_registry import (
     PlannerBackend,
     PlannerBackendRegistry,
     PlannerRequest,

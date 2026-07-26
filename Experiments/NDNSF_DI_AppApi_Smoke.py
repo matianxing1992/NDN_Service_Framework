@@ -12,11 +12,13 @@ from pathlib import Path
 
 import numpy as np
 
-from ndnsf_distributed_inference import (
-    APPClient,
+from ndnsf_distributed_inference.app_sdk import APPClient
+from ndnsf_distributed_inference.plan import (
     ArtifactSpec,
     RuntimeSpec,
-    load_npz_payload,
+)
+from ndnsf_distributed_inference.adapters.onnx.executor import load_npz_payload
+from ndnsf_distributed_inference.policy import (
     load_or_generate_deployment,
 )
 
@@ -136,7 +138,7 @@ def main() -> int:
         assert Path(str(native_plan_file) + ".sha256").exists()
         native_plan = json.loads(native_plan_file.read_text(encoding="utf-8"))
         native_service_plan = native_plan["services"][0]
-        assert native_plan["version"] == 1
+        assert native_plan["version"] == 2
         assert native_service_plan["service"] == "/AI/Toy/Inference"
         assert native_service_plan["roles"] == ["/Stage/0", "/Stage/1"]
         native_dependency = native_service_plan["dependencies"][0]
@@ -145,7 +147,12 @@ def main() -> int:
         assert native_dependency["expectedSegments"] == 3
         assert native_dependency["expectedBytes"] == 17000
 
-        client = APPClient(deployment, client=None)
+        client = APPClient.for_deployment(
+            deployment,
+            client=None,
+            state_root=root / "app-state",
+            test_only_allow_ephemeral_state_root=True,
+        )
         policy_text = Path(deployment.policy_file).read_text(encoding="utf-8")
         assert "for /example/di/users/alice" in policy_text
         assert "for /example/di/provider/A" in policy_text

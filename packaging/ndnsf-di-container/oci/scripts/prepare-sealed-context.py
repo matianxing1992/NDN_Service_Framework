@@ -16,6 +16,10 @@ import tarfile
 
 
 SCHEMA = "spec110-oci-source-seal-v1"
+OWNER_PROFILES = (
+    "core", "sdk", "app", "planner", "adapters/onnx",
+    "adapters/qwen", "adapters/llama", "ops", "compat",
+)
 ARCHIVE_CONFIG = (
     "-c", "filter.lfs.process=",
     "-c", "filter.lfs.smudge=",
@@ -217,6 +221,8 @@ def create(
             "workspace": _workspace_record(workspace),
             "dependencies": dependencies,
             "lockDigest": _sha256(lock_path),
+            "ndnsfDiOwnerProfiles": list(OWNER_PROFILES),
+            "modelWeightsIncluded": False,
         }
         body["sealDigest"] = _body_digest(body)
         manifest = staging / "source-seal.json"

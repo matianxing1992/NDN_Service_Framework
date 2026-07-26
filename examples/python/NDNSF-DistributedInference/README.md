@@ -199,7 +199,7 @@ that assigned role.
 The controller starts from the same policy:
 
 ```python
-from ndnsf_distributed_inference import APPController
+from ndnsf_distributed_inference.app_sdk.controller import APPController
 
 controller = APPController.from_config("yolo_policy.yaml")
 controller.run()

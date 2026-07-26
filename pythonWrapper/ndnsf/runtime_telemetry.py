@@ -108,6 +108,8 @@ def to_plain(value: Any) -> Any:
         return {str(key): to_plain(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [to_plain(item) for item in value]
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return "base64:" + base64.b64encode(bytes(value)).decode("ascii")
     return value
 
 
@@ -438,15 +440,22 @@ class ServiceOperationStatus:
     service_name: str = ""
     provider_name: str = ""
     request_id: str = ""
+    role: str = ""
+    attempt: int = 1
+    epoch: int = 1
+    sequence: int = 1
     state: ServiceOperationState = ServiceOperationState.QUEUED
     reason_code: str = ""
     message: str = ""
+    progress_known: bool = False
     progress: float = 0.0
     result_reference: dict[str, Any] = field(default_factory=dict)
     retry_after_ms: int = 0
     created_at_ms: int = field(default_factory=now_ms)
     updated_at_ms: int = field(default_factory=now_ms)
     expires_at_ms: int = 0
+    details_schema: str = ""
+    details_payload: bytes = b""
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -454,26 +463,47 @@ class ServiceOperationStatus:
             raise ValueError("operation_id is required")
         if not self.operation:
             raise ValueError("operation is required")
+        if self.attempt <= 0 or self.epoch <= 0 or self.sequence <= 0:
+            raise ValueError("attempt, epoch, and sequence must be positive")
         if not 0.0 <= float(self.progress) <= 1.0:
             raise ValueError("progress must be between 0 and 1")
+        if len(self.details_payload) > 4096:
+            raise ValueError("operation status details exceed 4096 bytes")
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "ServiceOperationStatus":
+        raw_details = payload.get(
+            "detailsPayload", payload.get("details_payload", b"")) or b""
+        if isinstance(raw_details, str):
+            if raw_details.startswith("base64:"):
+                raw_details = base64.b64decode(
+                    raw_details[len("base64:"):], validate=True)
+            else:
+                raw_details = raw_details.encode("utf-8")
         return cls(
             operation_id=str(payload.get("operationId", payload.get("operation_id", ""))),
             operation=str(payload.get("operation", "")),
             service_name=str(payload.get("serviceName", payload.get("service_name", ""))),
             provider_name=str(payload.get("providerName", payload.get("provider_name", ""))),
             request_id=str(payload.get("requestId", payload.get("request_id", ""))),
+            role=str(payload.get("role", payload.get("member", ""))),
+            attempt=int(payload.get("attempt", 1) or 1),
+            epoch=int(payload.get("epoch", payload.get("statusEpoch", 1)) or 1),
+            sequence=int(payload.get("sequence", 1) or 1),
             state=ServiceOperationState(payload.get("state", ServiceOperationState.QUEUED.value)),
             reason_code=str(payload.get("reasonCode", payload.get("reason_code", ""))),
             message=str(payload.get("message", "")),
+            progress_known=bool(payload.get(
+                "progressKnown", payload.get("progress_known", False))),
             progress=float(payload.get("progress", 0.0) or 0.0),
             result_reference=dict(payload.get("resultReference", payload.get("result_reference", {})) or {}),
             retry_after_ms=int(payload.get("retryAfterMs", payload.get("retry_after_ms", 0)) or 0),
             created_at_ms=int(payload.get("createdAtMs", payload.get("created_at_ms", now_ms()))),
             updated_at_ms=int(payload.get("updatedAtMs", payload.get("updated_at_ms", now_ms()))),
             expires_at_ms=int(payload.get("expiresAtMs", payload.get("expires_at_ms", 0)) or 0),
+            details_schema=str(payload.get(
+                "detailsSchema", payload.get("details_schema", ""))),
+            details_payload=bytes(raw_details),
             metadata=dict(payload.get("metadata", {}) or {}),
         )
 
@@ -484,6 +514,52 @@ class ServiceOperationStatus:
     def is_fresh(self, *, now_ms_value: int | None = None) -> bool:
         current = now_ms() if now_ms_value is None else int(now_ms_value)
         return not self.expires_at_ms or current < self.expires_at_ms
+
+
+@dataclass(frozen=True)
+class CollaborationSelectionStatus:
+    """Validated signed SELECTION-STATUS snapshot with bounded members."""
+
+    provider_name: str
+    service_name: str
+    request_id: str
+    selection_digest: str
+    state: str
+    message: str = ""
+    response_name: str = ""
+    updated_at_us: int = 0
+    member_statuses: tuple[ServiceOperationStatus, ...] = ()
+
+    def __post_init__(self) -> None:
+        if (not self.provider_name or not self.service_name or
+                not self.selection_digest or len(self.member_statuses) > 64):
+            raise ValueError("invalid collaboration selection status")
+        seen: set[tuple[str, str]] = set()
+        for member in self.member_statuses:
+            if (member.provider_name != self.provider_name or
+                    member.service_name != self.service_name or
+                    member.request_id != self.request_id or
+                    not member.role):
+                raise ValueError("collaboration member status binding mismatch")
+            key = (member.role, member.operation_id)
+            if key in seen:
+                raise ValueError("duplicate collaboration member status")
+            seen.add(key)
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "CollaborationSelectionStatus":
+        return cls(
+            provider_name=str(payload.get("providerName", "")),
+            service_name=str(payload.get("serviceName", "")),
+            request_id=str(payload.get("requestId", "")),
+            selection_digest=str(payload.get("selectionDigest", "")),
+            state=str(payload.get("state", "Unknown")),
+            message=str(payload.get("message", "")),
+            response_name=str(payload.get("responseName", "")),
+            updated_at_us=int(payload.get("updatedAtUs", 0) or 0),
+            member_statuses=tuple(ServiceOperationStatus.from_dict(dict(item))
+                                  for item in payload.get("memberStatuses", ())),
+        )
 
 
 @dataclass(frozen=True)

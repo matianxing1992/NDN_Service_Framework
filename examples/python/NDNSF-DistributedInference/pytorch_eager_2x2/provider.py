@@ -3,9 +3,8 @@
 
 from __future__ import annotations
 
-from ndnsf_distributed_inference import (
-    APPProvider,
-    ProviderRuntimeContext,
+from ndnsf_distributed_inference.app_sdk import APPProvider, ProviderRuntimeContext
+from ndnsf_distributed_inference.adapters.onnx.executor import (
     execute_onnx_dependency_chunk,
     prefetch_dependency_inputs,
 )

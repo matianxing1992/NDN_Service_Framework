@@ -1,11 +1,14 @@
 #include "../shared/UavNames.hpp"
 #include "../shared/UavProtocol.hpp"
+#include "../shared/UavVideoPipeline.hpp"
+#include "../shared/UavSensorStreams.hpp"
 #include "GroundStationRuntimeState.hpp"
 #include "ndn-service-framework/CertificatePublisher.hpp"
 #include "ndn-service-framework/HybridMessageCrypto.hpp"
 #include "ndn-service-framework/ServiceContainer.hpp"
 #include "ndn-service-framework/ServiceProvider.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
+#include "ndn-service-framework/StreamFacade.hpp"
 #include "ndn-service-framework/NDNSFMessages.hpp"
 
 #include <ndn-cxx/face.hpp>
@@ -421,6 +424,12 @@ main(int argc, char** argv)
     const int timeoutMs = std::stoi(getConfigOption(argc, argv, appConfig, "--timeout-ms", "timeout-ms", "10000"));
     const auto videoBitrateKbps = static_cast<uint64_t>(
       std::stoull(getConfigOption(argc, argv, appConfig, "--video-bitrate-kbps", "video-bitrate-kbps", "8000")));
+    const auto videoFps = static_cast<uint64_t>(
+      std::stoull(getConfigOption(argc, argv, appConfig,
+                                  "--video-fps", "video-fps", "30")));
+    if (videoFps < 1 || videoFps > 60) {
+      throw std::invalid_argument("--video-fps must be between 1 and 60");
+    }
     const auto videoFrameWidth = static_cast<uint64_t>(
       std::stoull(getConfigOption(argc, argv, appConfig, "--video-width", "video-width", "480")));
     const auto videoFecParityShards = static_cast<uint64_t>(
@@ -430,6 +439,9 @@ main(int argc, char** argv)
     if (videoFecParityShards > 1) {
       throw std::invalid_argument("--video-fec-parity-shards must be 0 or 1");
     }
+    const std::string liveStreamPrefetchPolicy = getConfigOption(
+      argc, argv, appConfig, "--live-stream-prefetch-policy",
+      "live-stream-prefetch-policy", "mapped-pressure");
     const std::string yoloModel = getConfigOption(argc, argv, appConfig, "--yolo-model", "yolo-model", "yolo26n.pt");
     const std::string yoloScript = getConfigOption(
       argc, argv, appConfig, "--yolo-script", "yolo-script",
@@ -566,7 +578,8 @@ main(int argc, char** argv)
 
     auto runtime = std::make_unique<GroundStationServiceContainer>(
       serveCertificates, ackTimeoutMs, timeoutMs, config, targetDroneId,
-      videoBitrateKbps, videoFrameWidth, videoFecParityShards,
+      videoBitrateKbps, videoFps, videoFrameWidth, videoFecParityShards,
+      liveStreamPrefetchPolicy,
       patrolDroneIds, yoloModel, yoloScript,
       yoloWorkerScript, linkStaleMs, linkLostMs, lostLinkAction,
       videoBitratePolicy, videoBitrateAutoPressureMs, missionPlanFile,
@@ -739,7 +752,9 @@ main(int argc, char** argv)
               << " operator_authority_refresh_interval_ms=" << operatorAuthorityRefreshIntervalMs
               << " auto_apply_bitrate_test=" << (autoApplyBitrateTest ? "true" : "false")
               << " auto_video_pressure_profile_test=" << (autoVideoPressureProfileTest ? "true" : "false")
+              << " video_fps=" << videoFps
               << " video_bitrate_policy=" << videoBitratePolicy
+              << " live_stream_prefetch_policy=" << liveStreamPrefetchPolicy
               << " operator_id=" << operatorId
               << " operator_lease_drone=" << operatorLeaseDrone
               << " operator_lease_scope=" << operatorLeaseScope

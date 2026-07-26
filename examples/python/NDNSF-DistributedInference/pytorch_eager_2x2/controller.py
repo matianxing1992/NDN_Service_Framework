@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from ndnsf_distributed_inference import APPController
+from ndnsf_distributed_inference.app_sdk.controller import APPController
 
 from pytorch_2x2_lib import optional_local_nfd, parse_args_with_common
 

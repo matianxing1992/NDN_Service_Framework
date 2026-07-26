@@ -19,15 +19,15 @@ import torch
 import torch.nn as nn
 import yaml
 
-from ndnsf_distributed_inference import (
-    InferenceDependency,
-    ProviderProfile,
-    SequentialSplitCandidate,
+from ndnsf_distributed_inference.plan import InferenceDependency
+from ndnsf_distributed_inference.adapters.onnx.graph import (
     analyze_onnx_graph,
     estimate_split_candidates,
-    homogeneous_provider_profiles,
-    recommend_sequential_splits,
     write_onnx_graph_summary,
+)
+from ndnsf_distributed_inference.planner.sequential_split import (
+    ProviderProfile, SequentialSplitCandidate, homogeneous_provider_profiles,
+    recommend_sequential_splits,
 )
 from ndnsf_distributed_inference.splitter import (
     SplitArtifact,

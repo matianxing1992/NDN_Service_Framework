@@ -28,6 +28,7 @@
 #include <filesystem>
 #include <fstream>
 #include <future>
+#include <ndn-cxx/name.hpp>
 #include <ndn-cxx/util/sha256.hpp>
 #include <sstream>
 #include <map>
@@ -1724,6 +1725,22 @@ BOOST_AUTO_TEST_CASE(NativeExecutionPlanBuildsRoleLocalSpecsWithDeterministicNam
   BOOST_CHECK_THROW(roleSpecFor(plan, "/Missing", "/run-7", assignment), std::out_of_range);
 }
 
+BOOST_AUTO_TEST_CASE(Spec111NativePlanSessionAndAttemptDefaultsAreCharacterized)
+{
+  NativeExecutionPlan plan;
+  BOOST_CHECK_EQUAL(plan.version, 1);
+  BOOST_CHECK_EQUAL(plan.modelFamily, "generic-onnx");
+  BOOST_CHECK_EQUAL(plan.modelFormat, "unknown");
+  BOOST_CHECK_EQUAL(plan.plannerKind, "onnx-dag");
+
+  const ExecutionAttemptKey attempt{"request-spec111", 7};
+  BOOST_CHECK_EQUAL(attempt.scopedSessionId(), "request-spec111/attempt/7");
+  BOOST_CHECK_NO_THROW(ndn::Name("/" + attempt.scopedSessionId()));
+  const auto fields = attempt.assignmentFields();
+  BOOST_CHECK_EQUAL(fields.at("executionRequestId"), "request-spec111");
+  BOOST_CHECK_EQUAL(fields.at("executionAttemptEpoch"), "7");
+}
+
 BOOST_AUTO_TEST_CASE(ExecutionAttemptEpochScopesDependencyNamesAndMetadata)
 {
   NativeExecutionPlan plan;
@@ -1750,10 +1767,12 @@ BOOST_AUTO_TEST_CASE(ExecutionAttemptEpochScopesDependencyNamesAndMetadata)
   BOOST_CHECK_EQUAL(firstRole.requestId, "request-7");
   BOOST_CHECK_EQUAL(firstRole.attemptEpoch, 1);
   BOOST_CHECK_EQUAL(replacementRole.attemptEpoch, 2);
-  BOOST_CHECK(firstRole.inputs[0].plannedDataName.find("attempt=1") !=
+  BOOST_CHECK(firstRole.inputs[0].plannedDataName.find("/attempt/1/") !=
               std::string::npos);
-  BOOST_CHECK(replacementRole.inputs[0].plannedDataName.find("attempt=2") !=
+  BOOST_CHECK(replacementRole.inputs[0].plannedDataName.find("/attempt/2/") !=
               std::string::npos);
+  BOOST_CHECK_NO_THROW(ndn::Name(firstRole.inputs[0].plannedDataName));
+  BOOST_CHECK_NO_THROW(ndn::Name(replacementRole.inputs[0].plannedDataName));
 }
 
 BOOST_AUTO_TEST_CASE(ExecutionAttemptAuthorityRejectsOldCancelledAndDuplicateTerminal)
@@ -1781,6 +1800,32 @@ BOOST_AUTO_TEST_CASE(ExecutionAttemptAuthorityRejectsOldCancelledAndDuplicateTer
   BOOST_CHECK(authority.isAuthoritative(finalAttempt));
   BOOST_CHECK(authority.complete(finalAttempt));
   BOOST_CHECK(!authority.complete(finalAttempt));
+}
+
+BOOST_AUTO_TEST_CASE(Spec111CacheSessionAndAttemptEpochRemainIndependentBindings)
+{
+  KvStateStore store(16, 4);
+  store.setProviderBootId("boot-spec111");
+  KvStateBinding binding{
+    "session-spec111", "/Stage/0", 3, "sha256:model", "sha256:plan",
+    "/provider/spec111", "boot-spec111", 11,
+  };
+  BOOST_REQUIRE(store.put(binding, bundle("kv", "state")));
+  BOOST_CHECK(store.lookup(binding));
+
+  auto changedContextEpoch = binding;
+  changedContextEpoch.contextEpoch += 1;
+  BOOST_CHECK(!store.lookup(changedContextEpoch));
+  auto changedSecurityEpoch = binding;
+  changedSecurityEpoch.securityEpoch += 1;
+  BOOST_CHECK(!store.lookup(changedSecurityEpoch));
+
+  ExecutionAttemptAuthority attempts;
+  BOOST_CHECK_EQUAL(attempts.admit({"request-spec111", 3}),
+                    ExecutionAttemptAdmission::Accepted);
+  BOOST_CHECK_EQUAL(attempts.admit({"request-spec111", 2}),
+                    ExecutionAttemptAdmission::Stale);
+  BOOST_CHECK(store.lookup(binding));
 }
 
 BOOST_AUTO_TEST_CASE(NativeProviderExecutionBindingValidatesAttemptBootAndPlan)

@@ -1,0 +1,29 @@
+{
+  "schema": "ndnsf-di-spec111-runtime-v1-score-golden-v1",
+  "role": {
+    "roleId": "/Stage/0",
+    "estimatedComputeMs": 10.0,
+    "fragmentDigest": "sha256:golden"
+  },
+  "scores": [
+    {"id": "gpu-ready", "provider": "/gpu", "residency": "GPU_LOADED", "queue": 0, "queueWaitMs": 0, "confidence": 1.0, "estimatedReadyMs": 0, "valid": true, "reason": "OK", "scoreMs": 10.0},
+    {"id": "queued-low-confidence", "provider": "/queue", "residency": "GPU_LOADED", "queue": 3, "queueWaitMs": 20, "confidence": 0.8, "estimatedReadyMs": 0, "valid": true, "reason": "OK", "scoreMs": 55.0},
+    {"id": "cpu-resident", "provider": "/cpu", "residency": "CPU_RESIDENT", "queue": 0, "queueWaitMs": 0, "confidence": 1.0, "estimatedReadyMs": 2, "valid": true, "reason": "OK", "scoreMs": 20.0},
+    {"id": "disk-resident", "provider": "/disk", "residency": "DISK_RESIDENT", "queue": 0, "queueWaitMs": 0, "confidence": 1.0, "estimatedReadyMs": 5, "valid": true, "reason": "OK", "scoreMs": 50.0},
+    {"id": "repo-available", "provider": "/repo", "residency": "REPO_AVAILABLE", "queue": 0, "queueWaitMs": 0, "confidence": 0.5, "estimatedReadyMs": 10, "valid": true, "reason": "OK", "scoreMs": 165.0},
+    {"id": "fragment-missing", "provider": "/missing", "residency": "MISSING", "queue": 0, "queueWaitMs": 0, "confidence": 1.0, "estimatedReadyMs": 0, "valid": false, "reason": "FRAGMENT_MISSING", "scoreMs": "Infinity"}
+  ],
+  "fallbacks": [
+    {"runtimeRequired": false, "valid": true, "reason": "CONSERVATIVE_FALLBACK", "scoreMs": 10000.0},
+    {"runtimeRequired": true, "valid": false, "reason": "RUNTIME_METADATA_REQUIRED", "scoreMs": "Infinity"}
+  ],
+  "network": {
+    "nowMs": 100,
+    "bytes": 1024,
+    "staleAfterMs": 10,
+    "stalePenaltyMs": 25,
+    "unknownPenaltyMs": 100,
+    "metric": {"srcPeer": "/A", "dstPeer": "/B", "rttMs": 10, "bandwidthMbps": 1000, "updatedAtMs": 0, "confidence": 1.0},
+    "expect": {"knownStale": true, "unknown": true, "unknownCostsMore": true}
+  }
+}

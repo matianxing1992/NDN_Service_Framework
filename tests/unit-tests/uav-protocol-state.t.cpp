@@ -1,8 +1,15 @@
 #include "tests/boost-test.hpp"
 
 #include "NDNSF-UAV-APP/shared/UavProtocol.hpp"
+#include "NDNSF-UAV-APP/shared/UavVideoPipeline.hpp"
+#include "NDNSF-UAV-APP/shared/UavSensorStreams.hpp"
+#include "ndn-service-framework/HybridMessageCrypto.hpp"
 
+#include <array>
 #include <cstdio>
+#include <limits>
+#include <openssl/sha.h>
+#include <set>
 
 namespace ndn_service_framework::test {
 namespace {
@@ -37,25 +44,72 @@ using ndnsf::examples::uav::UavAnalyzeSnapshot;
 using ndnsf::examples::uav::UavOperatorDashboardSnapshot;
 using ndnsf::examples::uav::UavPracticalityState;
 using ndnsf::examples::uav::UavStabilityState;
+using ndnsf::examples::uav::UavVideoAad;
+using ndnsf::examples::uav::UavVideoNonceUseGuard;
+using ndnsf::examples::uav::CanonicalVideoRecordingManifest;
+using ndnsf::examples::uav::RetainedVideoPacketReference;
+using ndnsf::examples::uav::UavVideoContentKeyGrant;
 using ndnsf::examples::uav::VehicleParameterEditRequest;
 using ndnsf::examples::uav::VehicleParameterEditResult;
 using ndnsf::examples::uav::VehicleParameterSnapshot;
 using ndnsf::examples::uav::VideoAdaptiveState;
+using ndnsf::examples::uav::VideoCoreFetchDecisionSnapshot;
 using ndnsf::examples::uav::VideoAdaptivePolicyInput;
 using ndnsf::examples::uav::VideoControlState;
 using ndnsf::examples::uav::VideoPacket;
+using ndnsf::examples::uav::UavH264ReadinessTracker;
 using ndnsf::examples::uav::VideoState;
+using ndnsf::examples::uav::BoundedLatestFrameQueue;
+using ndnsf::examples::uav::LegacyPipeVideoPipeline;
+using ndnsf::examples::uav::GStreamerVideoPipeline;
+using ndnsf::examples::uav::UavVideoCaptureConfig;
+using ndnsf::examples::uav::UavVideoFrame;
+using ndnsf::examples::uav::UavVideoPipelineState;
+using ndnsf::examples::uav::UavVideoSampleClassMode;
+using ndnsf::examples::uav::UavVideoSampleClassSchedule;
+using ndnsf::examples::uav::CompactTelemetrySample;
+using ndnsf::examples::uav::LatestTelemetryAdmission;
+using ndnsf::examples::uav::OpaqueAcousticSource;
+using ndnsf::examples::uav::CompleteAcousticBlockAdmission;
+using ndnsf::examples::uav::acousticSourceCountClass;
 using ndnsf::examples::uav::buildPatrolMissionPlan;
 using ndnsf::examples::uav::computeVideoAdaptivePolicy;
+using ndnsf::examples::uav::computeLiveVideoRetentionItems;
 using ndnsf::examples::uav::decodeVideoPacket;
+using ndnsf::examples::uav::decodeVideoStreamDescriptorStrict;
+using ndnsf::examples::uav::decodeUavVideoEnvelopeStrict;
+using ndnsf::examples::uav::deriveUavVideoNonce;
+using ndnsf::examples::uav::encodeFields;
 using ndnsf::examples::uav::encodeVideoPacket;
+using ndnsf::examples::uav::encodeVideoStreamDescriptor;
 using ndnsf::examples::uav::loadMissionPlanDocument;
 using ndnsf::examples::uav::makeVideoStartFields;
+using ndnsf::examples::uav::makeUavVideoDataName;
+using ndnsf::examples::uav::makeUavStreamNameMapCheckpoint;
+using ndnsf::examples::uav::makeUavStreamNameMapResolverConfig;
+using ndnsf::examples::uav::protectUavVideoPacket;
 using ndnsf::examples::uav::parseVideoFecParityShards;
 using ndnsf::examples::uav::saveMissionPlanDocument;
+using ndnsf::examples::uav::sourceMediaSequenceForJoinCursor;
 using ndnsf::examples::uav::streamChunkToVideoPacket;
+using ndnsf::examples::uav::toCoreLiveStreamDescriptor;
 using ndnsf::examples::uav::toServiceOperationStatus;
+using ndnsf::examples::uav::unprotectUavVideoPacket;
 using ndnsf::examples::uav::videoPacketToStreamChunk;
+using ndnsf::examples::uav::applyCoreLiveStreamDescriptor;
+using ndnsf::examples::uav::applyCoreLiveStreamStatus;
+
+BOOST_AUTO_TEST_CASE(LiveVideoRetentionUsesDurationAndRemainsBounded)
+{
+  BOOST_CHECK_EQUAL(computeLiveVideoRetentionItems(30, 12, 1), 3900);
+  BOOST_CHECK_EQUAL(computeLiveVideoRetentionItems(30, 12, 0, 1500), 540);
+  BOOST_CHECK_EQUAL(computeLiveVideoRetentionItems(1000000, 1000000, 1),
+                    ndnsf::examples::uav::UAV_VIDEO_MAX_RETAINED_ITEMS);
+  BOOST_CHECK_THROW(computeLiveVideoRetentionItems(0, 12, 1),
+                    std::invalid_argument);
+  BOOST_CHECK_THROW(computeLiveVideoRetentionItems(30, 0, 1),
+                    std::invalid_argument);
+}
 
 ReadinessState
 makeReadyState(bool armed)
@@ -122,6 +176,1342 @@ makeMissionState(const std::string& phase)
 }
 
 BOOST_AUTO_TEST_SUITE(UavProtocolState)
+
+BOOST_AUTO_TEST_CASE(UavVideoLegacyPipelineIsBoundedAndByteEquivalent)
+{
+  LegacyPipeVideoPipeline pipeline(true);
+  std::vector<uint8_t> observed;
+  pipeline.startDecode([&] (const UavVideoFrame& frame) {
+    observed = frame.bytes;
+  });
+  UavVideoFrame encoded;
+  encoded.sourceFrameId = 7;
+  encoded.captureOriginNs = 1000;
+  encoded.codecPts = 7;
+  encoded.bytes = {0x00, 0x00, 0x01, 0x65, 0xff, 0x00};
+  BOOST_CHECK(pipeline.submitAccessUnit(encoded));
+  BOOST_CHECK(observed == encoded.bytes);
+  BOOST_CHECK(pipeline.isHeadless());
+  BOOST_CHECK(pipeline.state() == UavVideoPipelineState::Running);
+  pipeline.stop();
+  pipeline.stop();
+  BOOST_CHECK(pipeline.state() == UavVideoPipelineState::Stopped);
+  BOOST_CHECK(!pipeline.submitAccessUnit(encoded));
+
+  BoundedLatestFrameQueue queue(2, 12);
+  BOOST_CHECK(queue.push(encoded));
+  encoded.sourceFrameId = 8;
+  BOOST_CHECK(queue.push(encoded));
+  encoded.sourceFrameId = 9;
+  BOOST_CHECK(queue.push(encoded));
+  const auto snapshot = queue.snapshot();
+  BOOST_CHECK_EQUAL(snapshot.queuedFrames, 2);
+  BOOST_CHECK_EQUAL(snapshot.queuedBytes, 12);
+  BOOST_CHECK_EQUAL(snapshot.droppedFrames, 1);
+  BOOST_CHECK_EQUAL(snapshot.lastDropReason, "superseded-by-newer-frame");
+  const auto latest = queue.popLatest();
+  BOOST_REQUIRE(latest.has_value());
+  BOOST_CHECK_EQUAL(latest->sourceFrameId, 9);
+  BOOST_CHECK_EQUAL(queue.snapshot().queuedFrames, 0);
+}
+
+BOOST_AUTO_TEST_CASE(UavVideoSampleClassScheduleIsBackendTruthfulAtSupportedFps)
+{
+  for (const uint32_t fps : {20u, 30u, 60u}) {
+    const auto exact = UavVideoSampleClassSchedule::exactKeyDelta(
+      fps, 12, 17);
+    BOOST_CHECK(exact.mode() == UavVideoSampleClassMode::ExactKeyDelta);
+    BOOST_CHECK_EQUAL(exact.fps(), fps);
+    BOOST_CHECK_EQUAL(exact.hardMaxSources(), 12);
+    BOOST_CHECK_EQUAL(exact.sessionGeneration(), 17);
+    BOOST_CHECK_EQUAL(exact.classFor(0), "key");
+    BOOST_CHECK_EQUAL(exact.classFor(1), "delta");
+    BOOST_CHECK_EQUAL(exact.classFor(fps - 1), "delta");
+    BOOST_CHECK_EQUAL(exact.classFor(fps), "key");
+    BOOST_CHECK(exact.matchesActual(0, true));
+    BOOST_CHECK(!exact.matchesActual(0, false));
+    BOOST_CHECK(exact.matchesActual(1, false));
+
+    const auto legacy = UavVideoSampleClassSchedule::boundedOpaque(
+      fps, 12, 18);
+    BOOST_CHECK(legacy.mode() == UavVideoSampleClassMode::BoundedOpaque);
+    BOOST_CHECK_EQUAL(legacy.fps(), fps);
+    BOOST_CHECK_EQUAL(legacy.hardMaxSources(), 12);
+    BOOST_CHECK_EQUAL(legacy.sessionGeneration(), 18);
+    BOOST_CHECK_EQUAL(legacy.classFor(0), "opaque");
+    BOOST_CHECK_EQUAL(legacy.classFor(fps), "opaque");
+    BOOST_CHECK(!legacy.hasExactFrameClass());
+  }
+
+  BOOST_CHECK_THROW(
+    UavVideoSampleClassSchedule::exactKeyDelta(0, 12, 1),
+    std::invalid_argument);
+  BOOST_CHECK_THROW(
+    UavVideoSampleClassSchedule::exactKeyDelta(61, 12, 1),
+    std::invalid_argument);
+  BOOST_CHECK_THROW(
+    UavVideoSampleClassSchedule::boundedOpaque(20, 0, 1),
+    std::invalid_argument);
+  BOOST_CHECK_THROW(
+    UavVideoSampleClassSchedule::boundedOpaque(20, 12, 0),
+    std::invalid_argument);
+
+  const auto beforeRestart =
+    UavVideoSampleClassSchedule::exactKeyDelta(20, 12, 41);
+  const auto afterRestart =
+    UavVideoSampleClassSchedule::exactKeyDelta(20, 12, 42);
+  BOOST_CHECK_NE(beforeRestart.sessionGeneration(),
+                 afterRestart.sessionGeneration());
+  BOOST_CHECK_EQUAL(afterRestart.classFor(0), "key");
+}
+
+BOOST_AUTO_TEST_CASE(UavVideoFrameBindingIsVersionedAndAuthenticated)
+{
+  VideoPacket packet;
+  packet.streamId = "stream-00112233445566778899aabbccddeeff";
+  packet.streamSessionEpoch = 17;
+  packet.packetSeq = 4;
+  packet.frameSeq = 2;
+  packet.frameBindingVersion = 1;
+  packet.sourceFrameId = 42;
+  packet.captureOriginNs = 123456789;
+  packet.captureClockId = "provider-monotonic";
+  packet.codecPts = 9000;
+  packet.codecTimeBaseNum = 1;
+  packet.codecTimeBaseDen = 90000;
+  packet.codecConfigEpoch = 3;
+  packet.frameSegmentIndex = 0;
+  packet.frameSegmentCount = 1;
+  packet.payload = {0x00, 0x00, 0x01, 0x65};
+
+  const auto decoded = decodeVideoPacket(encodeVideoPacket(packet));
+  BOOST_CHECK_EQUAL(decoded.frameBindingVersion, 1);
+  BOOST_CHECK_EQUAL(decoded.sourceFrameId, 42);
+  BOOST_CHECK_EQUAL(decoded.captureOriginNs, 123456789);
+  BOOST_CHECK_EQUAL(decoded.captureClockId, "provider-monotonic");
+  BOOST_CHECK_EQUAL(decoded.codecPts, 9000);
+  BOOST_CHECK_EQUAL(decoded.codecTimeBaseNum, 1);
+  BOOST_CHECK_EQUAL(decoded.codecTimeBaseDen, 90000);
+  BOOST_CHECK_EQUAL(decoded.codecConfigEpoch, 3);
+  BOOST_CHECK_NO_THROW(validateVideoFrameBinding(decoded, 17));
+
+  auto stale = decoded;
+  stale.streamSessionEpoch = 16;
+  BOOST_CHECK_THROW(validateVideoFrameBinding(stale, 17), std::invalid_argument);
+  auto malformed = decoded;
+  malformed.codecTimeBaseDen = 0;
+  BOOST_CHECK_THROW(validateVideoFrameBinding(malformed, 17), std::invalid_argument);
+  auto legacy = decoded;
+  legacy.frameBindingVersion = 0;
+  BOOST_CHECK(!hasExactVideoFrameBinding(legacy));
+}
+
+BOOST_AUTO_TEST_CASE(UavGStreamerPipelinePreservesSourceIdentityThroughDecode)
+{
+  GStreamerVideoPipeline capture;
+  if (!capture.probeCapabilities().available) {
+    BOOST_TEST_MESSAGE("GStreamer capability unavailable; covered by capability gate");
+    return;
+  }
+  std::mutex mutex;
+  std::condition_variable ready;
+  std::vector<UavVideoFrame> encoded;
+  UavVideoCaptureConfig config;
+  config.source = "videotestsrc";
+  config.width = 160;
+  config.height = 120;
+  config.fps = 30;
+  capture.startCapture(config, [&] (const UavVideoFrame& frame) {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (encoded.size() < 12) encoded.push_back(frame);
+    ready.notify_all();
+  });
+  {
+    std::unique_lock<std::mutex> lock(mutex);
+    BOOST_REQUIRE(ready.wait_for(lock, std::chrono::seconds(3), [&] {
+      return encoded.size() == 12;
+    }));
+  }
+  capture.stop();
+  BOOST_CHECK_EQUAL(encoded[1].sourceFrameId, encoded[0].sourceFrameId + 1);
+  BOOST_CHECK(encoded[1].captureOriginNs > encoded[0].captureOriginNs);
+
+  GStreamerVideoPipeline decoder;
+  std::vector<UavVideoFrame> decoded;
+  decoder.startDecode([&] (const UavVideoFrame& frame) {
+    std::lock_guard<std::mutex> lock(mutex);
+    decoded.push_back(frame);
+    ready.notify_all();
+  });
+  for (auto& frame : encoded) {
+    frame.sessionEpoch = 17;
+    BOOST_REQUIRE(decoder.submitAccessUnit(frame));
+  }
+  auto conflictingPts = encoded.back();
+  conflictingPts.sourceFrameId += 1000;
+  BOOST_CHECK(!decoder.submitAccessUnit(conflictingPts));
+  {
+    std::unique_lock<std::mutex> lock(mutex);
+    BOOST_REQUIRE(ready.wait_for(lock, std::chrono::seconds(3), [&] {
+      return decoded.size() >= 8;
+    }));
+  }
+  decoder.stop();
+  for (const auto& output : decoded) {
+    const auto input = std::find_if(encoded.begin(), encoded.end(), [&] (const auto& frame) {
+      return frame.sourceFrameId == output.sourceFrameId;
+    });
+    BOOST_REQUIRE(input != encoded.end());
+    BOOST_CHECK_EQUAL(output.captureOriginNs, input->captureOriginNs);
+    BOOST_CHECK_EQUAL(output.codecPts, input->codecPts);
+    BOOST_CHECK(!output.bytes.empty());
+  }
+}
+
+BOOST_AUTO_TEST_CASE(UavGStreamerFileCaptureHonorsWallClockFrameRate)
+{
+  GStreamerVideoPipeline capabilityProbe;
+  if (!capabilityProbe.probeCapabilities().available) {
+    BOOST_TEST_MESSAGE("GStreamer capability unavailable; covered by capability gate");
+    return;
+  }
+
+  const std::string source = "NDNSF-UAV-APP/videos/drone.mp4";
+  for (const uint32_t fps : {10U, 60U}) {
+    GStreamerVideoPipeline capture;
+    std::atomic<uint64_t> callbacks{0};
+    std::mutex lagMutex;
+    std::vector<double> callbackLagMs;
+    UavVideoCaptureConfig config;
+    config.source = source;
+    config.width = 160;
+    config.height = 120;
+    config.fps = fps;
+    config.bitrateKbps = 600;
+    config.keyFrameInterval = fps;
+
+    const auto started = std::chrono::steady_clock::now();
+    capture.startCapture(config, [&] (const UavVideoFrame& frame) {
+      ++callbacks;
+      const auto nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+      std::lock_guard<std::mutex> lock(lagMutex);
+      callbackLagMs.push_back(
+        static_cast<double>(nowNs - frame.captureOriginNs) / 1'000'000.0);
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+    capture.stop();
+    const auto seconds = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - started).count();
+    const auto achievedFps = callbacks.load() / seconds;
+    std::sort(callbackLagMs.begin(), callbackLagMs.end());
+    BOOST_REQUIRE(!callbackLagMs.empty());
+    const auto medianCallbackLagMs =
+      callbackLagMs[callbackLagMs.size() / 2];
+    const auto maximumAcceptedLagMs =
+      std::max(50.0, 1000.0 / static_cast<double>(fps));
+
+    BOOST_TEST_CONTEXT("configured fps=" << fps
+                       << " callbacks=" << callbacks.load()
+                       << " seconds=" << seconds
+                       << " achieved_fps=" << achievedFps
+                       << " median_callback_lag_ms=" << medianCallbackLagMs) {
+      BOOST_CHECK_GE(achievedFps, static_cast<double>(fps) * 0.75);
+      BOOST_CHECK_LE(achievedFps, static_cast<double>(fps) * 1.25);
+      BOOST_CHECK_LE(medianCallbackLagMs, maximumAcceptedLagMs);
+    }
+  }
+}
+
+BOOST_AUTO_TEST_CASE(UavGStreamerLowRateDecodeDoesNotBufferFourFrames)
+{
+  GStreamerVideoPipeline capture;
+  if (!capture.probeCapabilities().available) {
+    BOOST_TEST_MESSAGE("GStreamer capability unavailable; covered by capability gate");
+    return;
+  }
+
+  GStreamerVideoPipeline decoder;
+  std::mutex mutex;
+  std::condition_variable ready;
+  std::vector<double> decodeLagMs;
+  decoder.startDecode([&] (const UavVideoFrame& frame) {
+    const auto nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+    std::lock_guard<std::mutex> lock(mutex);
+    decodeLagMs.push_back(
+      static_cast<double>(nowNs - frame.captureOriginNs) / 1'000'000.0);
+    ready.notify_all();
+  });
+
+  UavVideoCaptureConfig config;
+  config.source = "NDNSF-UAV-APP/videos/drone.mp4";
+  config.width = 160;
+  config.height = 120;
+  config.fps = 10;
+  config.bitrateKbps = 600;
+  config.keyFrameInterval = 10;
+  capture.startCapture(config, [&] (const UavVideoFrame& frame) {
+    decoder.submitAccessUnit(frame);
+  });
+  {
+    std::unique_lock<std::mutex> lock(mutex);
+    BOOST_REQUIRE(ready.wait_for(lock, std::chrono::seconds(6), [&] {
+      return decodeLagMs.size() >= 20;
+    }));
+  }
+  capture.stop();
+  decoder.stop();
+  std::sort(decodeLagMs.begin(), decodeLagMs.end());
+  const auto medianDecodeLagMs = decodeLagMs[decodeLagMs.size() / 2];
+  BOOST_TEST_CONTEXT("decoded=" << decodeLagMs.size()
+                     << " median_decode_lag_ms=" << medianDecodeLagMs) {
+    BOOST_CHECK_LE(medianDecodeLagMs, 200.0);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(UavGStreamerCaptureCallbackExceptionsFailClosed)
+{
+  GStreamerVideoPipeline capabilityProbe;
+  if (!capabilityProbe.probeCapabilities().available) {
+    BOOST_TEST_MESSAGE("GStreamer capability unavailable; covered by capability gate");
+    return;
+  }
+
+  UavVideoCaptureConfig config;
+  config.source = "videotestsrc";
+  config.width = 160;
+  config.height = 120;
+  config.fps = 20;
+  config.keyFrameInterval = 20;
+
+  for (const bool nonStandard : {false, true}) {
+    GStreamerVideoPipeline pipeline;
+    std::atomic<uint64_t> callbacks{0};
+    pipeline.startCapture(config, [&] (const UavVideoFrame&) {
+      ++callbacks;
+      if (nonStandard) {
+        throw 145;
+      }
+      throw std::runtime_error("injected-capture-failure");
+    });
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::seconds(3);
+    while (pipeline.state() != UavVideoPipelineState::Failed &&
+           std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    BOOST_REQUIRE(pipeline.state() == UavVideoPipelineState::Failed);
+    const auto failure = pipeline.failure();
+    BOOST_REQUIRE(failure.has_value());
+    BOOST_CHECK_EQUAL(failure->direction, "capture");
+    BOOST_CHECK_EQUAL(
+      failure->code,
+      nonStandard ? "capture-callback-nonstandard-exception" :
+                    "capture-callback-exception");
+    BOOST_CHECK(failure->reason.size() <= 256);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    BOOST_CHECK_EQUAL(callbacks.load(), 1);
+    pipeline.stop();
+    pipeline.stop();
+    BOOST_CHECK(pipeline.state() == UavVideoPipelineState::Stopped);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(UavGStreamerDecodeCallbackExceptionsFailClosed)
+{
+  GStreamerVideoPipeline capture;
+  if (!capture.probeCapabilities().available) {
+    BOOST_TEST_MESSAGE("GStreamer capability unavailable; covered by capability gate");
+    return;
+  }
+
+  std::mutex mutex;
+  std::condition_variable ready;
+  std::vector<UavVideoFrame> encoded;
+  UavVideoCaptureConfig config;
+  config.source = "videotestsrc";
+  config.width = 160;
+  config.height = 120;
+  config.fps = 20;
+  config.keyFrameInterval = 20;
+  capture.startCapture(config, [&] (const UavVideoFrame& frame) {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (encoded.size() < 12) encoded.push_back(frame);
+    ready.notify_all();
+  });
+  {
+    std::unique_lock<std::mutex> lock(mutex);
+    BOOST_REQUIRE(ready.wait_for(lock, std::chrono::seconds(3), [&] {
+      return encoded.size() == 12;
+    }));
+  }
+  capture.stop();
+  BOOST_REQUIRE_EQUAL(encoded.size(), 12);
+  BOOST_REQUIRE(encoded.front().keyFrame);
+
+  for (const bool nonStandard : {false, true}) {
+    GStreamerVideoPipeline decoder;
+    std::atomic<uint64_t> callbacks{0};
+    decoder.startDecode([&] (const UavVideoFrame&) {
+      ++callbacks;
+      if (nonStandard) {
+        throw 145;
+      }
+      throw std::runtime_error("injected-decode-failure");
+    });
+    for (const auto& frame : encoded) {
+      if (!decoder.submitAccessUnit(frame)) {
+        break;
+      }
+    }
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::seconds(3);
+    while (decoder.state() != UavVideoPipelineState::Failed &&
+           std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    BOOST_REQUIRE(decoder.state() == UavVideoPipelineState::Failed);
+    const auto failure = decoder.failure();
+    BOOST_REQUIRE(failure.has_value());
+    BOOST_CHECK_EQUAL(failure->direction, "decode");
+    BOOST_CHECK_EQUAL(
+      failure->code,
+      nonStandard ? "decode-callback-nonstandard-exception" :
+                    "decode-callback-exception");
+    BOOST_CHECK(failure->reason.size() <= 256);
+    BOOST_CHECK_EQUAL(callbacks.load(), 1);
+    BOOST_CHECK(!decoder.submitAccessUnit(encoded.back()));
+    decoder.stop();
+    decoder.stop();
+    BOOST_CHECK(decoder.state() == UavVideoPipelineState::Stopped);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(PublicationJoinCursorMapsToSourceOnlyMediaSequence)
+{
+  BOOST_CHECK_EQUAL(sourceMediaSequenceForJoinCursor(0, 4, 1), 0);
+  BOOST_CHECK_EQUAL(sourceMediaSequenceForJoinCursor(3, 4, 1), 3);
+  BOOST_CHECK_EQUAL(sourceMediaSequenceForJoinCursor(4, 4, 1), 4);
+  BOOST_CHECK_EQUAL(sourceMediaSequenceForJoinCursor(5, 4, 1), 4);
+  BOOST_CHECK_EQUAL(sourceMediaSequenceForJoinCursor(6, 4, 1), 5);
+  BOOST_CHECK_EQUAL(sourceMediaSequenceForJoinCursor(10, 4, 1), 8);
+  BOOST_CHECK_THROW(sourceMediaSequenceForJoinCursor(0, 0, 1),
+                    std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(UavStreamExplicitNonceAesGcmGoldenVector)
+{
+  ndn::Buffer key(32, 0);
+  ndn::Buffer nonce(12, 0);
+  const ndn::Buffer plaintext(16, 0);
+
+  const auto encrypted = hybridAesGcmEncryptWithNonce(
+    key,
+    ndn::span<const uint8_t>(nonce.data(), nonce.size()),
+    ndn::span<const uint8_t>(plaintext.data(), plaintext.size()),
+    {});
+
+  BOOST_CHECK(encrypted.nonce == nonce);
+  BOOST_CHECK_EQUAL(ndn::toHex(encrypted.ciphertext),
+                    "CEA7403D4D606B6E074EC5D3BAF39D18");
+  BOOST_CHECK_EQUAL(ndn::toHex(encrypted.tag),
+                    "D0D1C8A799996BF0265B98B5D48AB919");
+
+  ndn::Buffer shortNonce(11, 0);
+  BOOST_CHECK_THROW(
+    hybridAesGcmEncryptWithNonce(
+      key,
+      ndn::span<const uint8_t>(shortNonce.data(), shortNonce.size()),
+      ndn::span<const uint8_t>(plaintext.data(), plaintext.size()),
+      {}),
+    std::invalid_argument);
+}
+
+Fields
+makeUavStreamDescriptorFields()
+{
+  const std::string streamId = "stream-00112233445566778899aabbccddeeff";
+  ndn::Name dataPrefix("/uav/7/video/front");
+  dataPrefix.append(streamId).appendVersion(23);
+  return {
+    {"data_prefix", dataPrefix.toUri()},
+    {"fec_data_shards", "4"},
+    {"fec_parity_shards", "1"},
+    {"key_epoch", "3"},
+    {"latest_join_cursor", "4"},
+    {"latest_join_media_sequence", "3"},
+    {"latest_produced_cursor", "5"},
+    {"mapping_anchor_block", "1"},
+    {"mapping_anchor_content_digest", std::string(64, '0')},
+    {"mapping_block_capacity", "4"},
+    {"mapping_committed_through_cursor", "7"},
+    {"mapping_root", "/uav/7/NDNSF/STREAM-MAP/" + streamId},
+    {"mapping_version", "23"},
+    {"max_name_reservations", "65536"},
+    {"next_reserved_cursor", "8"},
+    {"nonce_salt_hex", "a1b2c3d4"},
+    {"oldest_retained_cursor", "0"},
+    {"prefetch_eligibility", "ahead-mapped"},
+    {"sample_period_ms", "33"},
+    {"sample_class_key_seed", "4"},
+    {"sample_class_delta_seed", "2"},
+    {"sample_unit", "fec-group"},
+    {"stream_cipher", "aes-256-gcm"},
+    {"stream_contract_version", "2"},
+    {"stream_id", streamId},
+    {"stream_key_hex",
+     "000102030405060708090a0b0c0d0e0f"
+     "101112131415161718191a1b1c1d1e1f"},
+    {"stream_session_epoch", "17"},
+  };
+}
+
+ndnsf::examples::uav::VideoStreamDescriptor
+makeUavStreamDescriptor()
+{
+  return decodeVideoStreamDescriptorStrict(
+    encodeFields(makeUavStreamDescriptorFields()),
+    ndn::Name("/uav/7"), ndn::Name("/uav/7"),
+    ndn::Name("/UAV/Camera/Video"), ndn::Name("/UAV/Camera/Video"));
+}
+
+std::string
+blockHex(const ndn::Block& block)
+{
+  static constexpr char DIGITS[] = "0123456789abcdef";
+  std::string result;
+  result.reserve(block.size() * 2);
+  for (const auto byte : block) {
+    result.push_back(DIGITS[byte >> 4]);
+    result.push_back(DIGITS[byte & 0x0f]);
+  }
+  return result;
+}
+
+std::string
+blockSha256Hex(const ndn::Block& block)
+{
+  std::array<unsigned char, SHA256_DIGEST_LENGTH> digest{};
+  const auto* wire = block.size() == 0 ? nullptr : std::addressof(*block.begin());
+  SHA256(wire, block.size(), digest.data());
+  static constexpr char DIGITS[] = "0123456789abcdef";
+  std::string result;
+  result.reserve(digest.size() * 2);
+  for (const auto byte : digest) {
+    result.push_back(DIGITS[byte >> 4]);
+    result.push_back(DIGITS[byte & 0x0f]);
+  }
+  return result;
+}
+
+ndn::Buffer
+blockBuffer(const ndn::Block& block)
+{
+  return ndn::Buffer(block.begin(), block.end());
+}
+
+BOOST_AUTO_TEST_CASE(UavStreamDescriptorStrictContract)
+{
+  const auto fields = makeUavStreamDescriptorFields();
+  const auto wire = encodeFields(fields);
+  BOOST_CHECK_EQUAL(wire,
+    "data_prefix=/uav/7/video/front/stream-00112233445566778899aabbccddeeff/v%3D23;"
+    "fec_data_shards=4;fec_parity_shards=1;key_epoch=3;latest_join_cursor=4;"
+    "latest_join_media_sequence=3;latest_produced_cursor=5;mapping_anchor_block=1;"
+    "mapping_anchor_content_digest=0000000000000000000000000000000000000000000000000000000000000000;"
+    "mapping_block_capacity=4;mapping_committed_through_cursor=7;"
+    "mapping_root=/uav/7/NDNSF/STREAM-MAP/stream-00112233445566778899aabbccddeeff;"
+    "mapping_version=23;max_name_reservations=65536;next_reserved_cursor=8;"
+    "nonce_salt_hex=a1b2c3d4;"
+    "oldest_retained_cursor=0;prefetch_eligibility=ahead-mapped;"
+    "sample_class_delta_seed=2;sample_class_key_seed=4;sample_period_ms=33;"
+    "sample_unit=fec-group;stream_cipher=aes-256-gcm;stream_contract_version=2;"
+    "stream_id=stream-00112233445566778899aabbccddeeff;"
+    "stream_key_hex=000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f;"
+    "stream_session_epoch=17");
+  const ndn::Name provider("/uav/7");
+  const ndn::Name service("/UAV/Camera/Video");
+
+  const auto descriptor = decodeVideoStreamDescriptorStrict(
+    wire, provider, provider, service, service);
+  BOOST_CHECK_EQUAL(descriptor.streamId,
+                    "stream-00112233445566778899aabbccddeeff");
+  BOOST_CHECK_EQUAL(descriptor.mappingVersion, 23);
+  BOOST_CHECK_EQUAL(descriptor.mappingRoot,
+                    ndn_service_framework::makeStreamNameMapRoot(
+                      provider, descriptor.streamId));
+  BOOST_CHECK(descriptor.dataPrefix[-1].isVersion());
+  BOOST_CHECK_EQUAL(descriptor.dataPrefix[-1].toVersion(), 23);
+  BOOST_CHECK_EQUAL(descriptor.streamKey.size(), 32);
+  BOOST_CHECK_EQUAL(descriptor.nonceSalt.size(), 4);
+  BOOST_CHECK_EQUAL(descriptor.frontiers.oldestRetained, 0);
+  BOOST_CHECK_EQUAL(descriptor.frontiers.latestJoin, 4);
+  BOOST_CHECK_EQUAL(descriptor.frontiers.latestProduced, 5);
+  BOOST_CHECK_EQUAL(descriptor.frontiers.mappingCommittedThrough, 7);
+  BOOST_CHECK_EQUAL(descriptor.frontiers.nextReserved, 8);
+  BOOST_CHECK_EQUAL(encodeVideoStreamDescriptor(descriptor), wire);
+
+  const auto resolverConfig = makeUavStreamNameMapResolverConfig(descriptor);
+  BOOST_CHECK_EQUAL(resolverConfig.contractVersion,
+                    ndn_service_framework::STREAM_NAME_MAP_CONTRACT_VERSION_V2);
+  BOOST_CHECK_EQUAL(resolverConfig.expectedProvider, provider);
+  BOOST_CHECK_EQUAL(resolverConfig.mappingRoot, descriptor.mappingRoot);
+  BOOST_CHECK_EQUAL(resolverConfig.payloadPrefix, descriptor.dataPrefix);
+  BOOST_CHECK_EQUAL(resolverConfig.mappingVersion, 23);
+  BOOST_CHECK_EQUAL(
+    resolverConfig.maxReverseEntries,
+    ndnsf::examples::uav::UAV_VIDEO_MAX_NAME_RESERVATIONS);
+  const auto checkpoint = makeUavStreamNameMapCheckpoint(descriptor);
+  BOOST_CHECK_EQUAL(checkpoint.blockNumber, 1);
+  BOOST_CHECK(checkpoint.frontiers.nextReserved == 8);
+  BOOST_CHECK(checkpoint.contentDigest == descriptor.mappingAnchorContentDigest);
+  BOOST_CHECK_EQUAL(
+    ndn_service_framework::makeStreamNameMapBlockName(
+      descriptor.mappingRoot, descriptor.mappingVersion,
+      descriptor.mappingAnchorBlock).toUri(),
+    "/uav/7/NDNSF/STREAM-MAP/stream-00112233445566778899aabbccddeeff/"
+    "v=23/seq=1");
+
+  BOOST_CHECK_THROW(
+    decodeVideoStreamDescriptorStrict(
+      wire + ";stream_id=stream-00112233445566778899aabbccddeeff",
+      provider, provider, service, service),
+    std::invalid_argument);
+
+  auto uppercaseKey = fields;
+  uppercaseKey["stream_key_hex"][10] = 'A';
+  BOOST_CHECK_THROW(
+    decodeVideoStreamDescriptorStrict(
+      encodeFields(uppercaseKey), provider, provider, service, service),
+    std::invalid_argument);
+
+  auto shortKey = fields;
+  shortKey["stream_key_hex"].pop_back();
+  BOOST_CHECK_THROW(
+    decodeVideoStreamDescriptorStrict(
+      encodeFields(shortKey), provider, provider, service, service),
+    std::invalid_argument);
+
+  auto uppercaseSalt = fields;
+  uppercaseSalt["nonce_salt_hex"][0] = 'A';
+  BOOST_CHECK_THROW(
+    decodeVideoStreamDescriptorStrict(
+      encodeFields(uppercaseSalt), provider, provider, service, service),
+    std::invalid_argument);
+
+  auto nonCanonicalInteger = fields;
+  nonCanonicalInteger["key_epoch"] = "03";
+  BOOST_CHECK_THROW(
+    decodeVideoStreamDescriptorStrict(
+      encodeFields(nonCanonicalInteger), provider, provider, service, service),
+    std::invalid_argument);
+
+  auto zeroReservationLimit = fields;
+  zeroReservationLimit["max_name_reservations"] = "0";
+  BOOST_CHECK_THROW(
+    decodeVideoStreamDescriptorStrict(
+      encodeFields(zeroReservationLimit), provider, provider, service, service),
+    std::invalid_argument);
+
+  auto badFrontier = fields;
+  badFrontier["latest_join_cursor"] = "6";
+  BOOST_CHECK_THROW(
+    decodeVideoStreamDescriptorStrict(
+      encodeFields(badFrontier), provider, provider, service, service),
+    std::invalid_argument);
+
+  BOOST_CHECK_THROW(
+    decodeVideoStreamDescriptorStrict(
+      wire, provider, ndn::Name("/uav/8"), service, service),
+    std::invalid_argument);
+  BOOST_CHECK_THROW(
+    decodeVideoStreamDescriptorStrict(
+      wire, provider, provider, service, ndn::Name("/UAV/Camera/Status")),
+    std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(UavStreamDescriptorProjectsLegacyBoundedOpaqueClass)
+{
+  auto descriptor = makeUavStreamDescriptor();
+  descriptor.extensions["sample_class_mode"] = "bounded-opaque";
+  descriptor.extensions["sample_class_opaque_seed"] = "4";
+  const auto core = toCoreLiveStreamDescriptor(descriptor);
+  BOOST_REQUIRE_EQUAL(core.definition.sampleClasses.size(), 1);
+  BOOST_CHECK_EQUAL(core.definition.sampleClasses.front().classId, "opaque");
+  BOOST_CHECK_EQUAL(core.definition.sampleClasses.front().seedSourceItems, 4);
+  BOOST_CHECK_EQUAL(core.definition.sampleClasses.front().hardMaxSourceItems, 4);
+
+  descriptor.extensions["sample_class_mode"] = "unsupported";
+  BOOST_CHECK_THROW(toCoreLiveStreamDescriptor(descriptor),
+                    std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(UavStreamProjectsSecretsOutOfCoreDescriptor)
+{
+  auto uav = makeUavStreamDescriptor();
+  const auto key = uav.streamKey;
+  const auto salt = uav.nonceSalt;
+  const auto core = toCoreLiveStreamDescriptor(uav);
+  BOOST_CHECK_EQUAL(core.definition.streamId, uav.streamId);
+  BOOST_CHECK_EQUAL(core.definition.provider, uav.providerIdentity);
+  BOOST_CHECK_EQUAL(core.definition.semanticDataPrefix, uav.dataPrefix);
+  BOOST_CHECK_EQUAL(core.safeJoinCursor, uav.frontiers.latestJoin);
+  BOOST_REQUIRE(core.definition.fec.enabled());
+  BOOST_CHECK_EQUAL(core.definition.fec.maxSourceItems, 4);
+
+  auto archived = uav;
+  archived.frontiers.oldestRetained = 0;
+  archived.frontiers.latestJoin = 0;
+  archived.frontiers.latestProduced = 15031;
+  archived.frontiers.mappingCommittedThrough = 15031;
+  archived.frontiers.nextReserved = 15032;
+  archived.mappingAnchorBlock = 0;
+  const auto archivedCore = toCoreLiveStreamDescriptor(archived);
+  BOOST_CHECK_GE(archivedCore.definition.retainedItems, 15032);
+  BOOST_CHECK(!archivedCore.validate());
+
+  applyCoreLiveStreamDescriptor(uav, core);
+  BOOST_CHECK(uav.streamKey == key);
+  BOOST_CHECK(uav.nonceSalt == salt);
+
+  auto substituted = core;
+  substituted.definition.provider = "/uav/8";
+  BOOST_CHECK_THROW(applyCoreLiveStreamDescriptor(uav, substituted),
+                    std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(UavProvisionalDescriptorTracksAheadMappingFrontiers)
+{
+  auto descriptor = makeUavStreamDescriptor();
+  ndn_service_framework::LiveStreamStatus status;
+  status.frontiers = descriptor.frontiers;
+
+  // Reproduces the frozen Spec 125 failure: the next atomic sample begins
+  // beyond the provisional descriptor's original committed Mapping block.
+  BOOST_CHECK_THROW(applyCoreLiveStreamStatus(descriptor, status, 8),
+                    std::invalid_argument);
+
+  status.frontiers.mappingCommittedThrough = 31;
+  status.frontiers.nextReserved = 32;
+  applyCoreLiveStreamStatus(descriptor, status, 8);
+  BOOST_CHECK_EQUAL(descriptor.frontiers.latestProduced, 8);
+  BOOST_CHECK_EQUAL(descriptor.frontiers.mappingCommittedThrough, 31);
+  BOOST_CHECK_EQUAL(descriptor.frontiers.nextReserved, 32);
+}
+
+BOOST_AUTO_TEST_CASE(UavStreamReadinessRequiresMeasuredGroupsAndDecoderSafeJoin)
+{
+  UavH264ReadinessTracker tracker(3);
+  const std::vector<uint8_t> parameterSets{
+    0x00, 0x00, 0x00, 0x01, 0x67, 0x64, 0x00, 0x1f,
+    0x00, 0x00, 0x01, 0x68, 0xee, 0x3c, 0x80,
+  };
+  const std::vector<uint8_t> delta{
+    0x00, 0x00, 0x01, 0x41, 0x9a, 0x22,
+  };
+  const std::vector<uint8_t> idr{
+    0x00, 0x00, 0x01, 0x65, 0x88, 0x84,
+  };
+
+  BOOST_CHECK(!tracker.ready());
+  tracker.observePublicationGroup(0, 8, 100, parameterSets);
+  tracker.observePublicationGroup(9, 17, 133, delta);
+  BOOST_CHECK(!tracker.ready());
+  tracker.observePublicationGroup(18, 26, 166, idr);
+  BOOST_CHECK(tracker.ready());
+  BOOST_CHECK_EQUAL(tracker.completedGroups(), 3);
+  BOOST_CHECK_EQUAL(tracker.samplePeriodMs(), 33);
+  BOOST_CHECK_EQUAL(tracker.latestJoinCursor(), 0);
+  BOOST_CHECK_EQUAL(tracker.latestProducedCursor(), 26);
+
+  tracker.reset();
+  tracker.observePublicationGroup(0, 8, 100, parameterSets);
+  tracker.observePublicationGroup(9, 17, 133, delta);
+  tracker.observePublicationGroup(18, 26, 166, delta);
+  BOOST_CHECK(!tracker.ready());
+  BOOST_CHECK_EQUAL(tracker.reason(), "waiting-idr");
+  BOOST_CHECK_THROW(
+    tracker.observePublicationGroup(20, 28, 199, idr),
+    std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(UavStreamSemanticDataNameContract)
+{
+  const auto descriptor = decodeVideoStreamDescriptorStrict(
+    encodeFields(makeUavStreamDescriptorFields()),
+    ndn::Name("/uav/7"), ndn::Name("/uav/7"),
+    ndn::Name("/UAV/Camera/Video"), ndn::Name("/UAV/Camera/Video"));
+
+  VideoPacket data;
+  data.streamId = descriptor.streamId;
+  data.streamSessionEpoch = descriptor.sessionEpoch;
+  data.packetSeq = 6;
+  data.frameSeq = 9;
+  data.frameSegmentIndex = 1;
+  data.frameSegmentCount = 4;
+  data.fecDataShards = 3;
+  data.fecParityShards = 1;
+  data.fecSymbolIndex = 1;
+  data.fecSymbolCount = 4;
+
+  const auto dataName = makeUavVideoDataName(descriptor, data);
+  BOOST_CHECK_EQUAL(dataName.cursor, 6);
+  BOOST_CHECK(!dataName.parity);
+  BOOST_CHECK_EQUAL(dataName.name.toUri(),
+    "/uav/7/video/front/stream-00112233445566778899aabbccddeeff/"
+    "v=23/fec-group/seq=9/data/seg=1");
+  BOOST_CHECK(dataName.finalBlockId.isSegment());
+  BOOST_CHECK_EQUAL(dataName.finalBlockId.toSegment(), 2);
+
+  auto parity = data;
+  parity.packetSeq = 7;
+  parity.frameSegmentIndex = 3;
+  parity.fecSymbolIndex = 3;
+  const auto parityName = makeUavVideoDataName(descriptor, parity);
+  BOOST_CHECK(parityName.parity);
+  BOOST_CHECK_EQUAL(parityName.name.toUri(),
+    "/uav/7/video/front/stream-00112233445566778899aabbccddeeff/"
+    "v=23/fec-group/seq=9/parity/seg=0");
+  BOOST_CHECK_EQUAL(parityName.finalBlockId.toSegment(), 0);
+
+  auto wrongStream = data;
+  wrongStream.streamId = "stream-ffffffffffffffffffffffffffffffff";
+  BOOST_CHECK_THROW(makeUavVideoDataName(descriptor, wrongStream),
+                    std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(UavStreamThousandCursorNamesAndNoncesRemainUnique)
+{
+  const auto descriptor = makeUavStreamDescriptor();
+  std::set<ndn::Name> names;
+  std::set<ndn::Buffer> nonces;
+  for (uint64_t cursor = 0; cursor < 1000; ++cursor) {
+    VideoPacket packet;
+    packet.streamId = descriptor.streamId;
+    packet.streamSessionEpoch = descriptor.sessionEpoch;
+    packet.packetSeq = cursor;
+    packet.frameSeq = cursor / 4;
+    packet.frameSegmentIndex = static_cast<uint32_t>(cursor % 4);
+    packet.frameSegmentCount = 4;
+    packet.fecDataShards = 3;
+    packet.fecParityShards = 1;
+    packet.fecSymbolIndex = static_cast<uint32_t>(cursor % 4);
+    packet.fecSymbolCount = 4;
+
+    const auto binding = makeUavVideoDataName(descriptor, packet);
+    BOOST_CHECK_EQUAL(binding.cursor, cursor);
+    BOOST_CHECK(names.insert(binding.name).second);
+    BOOST_CHECK(nonces.insert(deriveUavVideoNonce(descriptor.nonceSalt, cursor)).second);
+  }
+  BOOST_CHECK_EQUAL(names.size(), 1000);
+  BOOST_CHECK_EQUAL(nonces.size(), 1000);
+}
+
+BOOST_AUTO_TEST_CASE(UavStreamNonceAndCanonicalAadContract)
+{
+  const ndn::Buffer salt{0xa1, 0xb2, 0xc3, 0xd4};
+  const auto nonce = deriveUavVideoNonce(salt, 0x0102030405060708ULL);
+  BOOST_CHECK_EQUAL(ndn::toHex(nonce), "A1B2C3D40102030405060708");
+  BOOST_CHECK_THROW(deriveUavVideoNonce(ndn::Buffer(3, 0), 1),
+                    std::invalid_argument);
+
+  UavVideoAad aad;
+  aad.exactDataName = ndn::Name(
+    "/uav/7/video/front/stream-00112233445566778899aabbccddeeff/"
+    "v=23/fec-group/seq=9/data/seg=1");
+  aad.providerIdentity = ndn::Name("/uav/7");
+  aad.serviceName = ndn::Name("/UAV/Camera/Video");
+  aad.streamId = "stream-00112233445566778899aabbccddeeff";
+  aad.sessionEpoch = 17;
+  aad.mappingVersion = 23;
+  aad.keyEpoch = 3;
+  aad.cursor = 0x0102030405060708ULL;
+
+  const auto wire = aad.wireEncode();
+  const auto decoded = UavVideoAad::wireDecodeStrict(wire);
+  BOOST_CHECK_EQUAL(decoded.exactDataName, aad.exactDataName);
+  BOOST_CHECK_EQUAL(decoded.providerIdentity, aad.providerIdentity);
+  BOOST_CHECK_EQUAL(decoded.serviceName, aad.serviceName);
+  BOOST_CHECK_EQUAL(decoded.streamId, aad.streamId);
+  BOOST_CHECK_EQUAL(decoded.sessionEpoch, aad.sessionEpoch);
+  BOOST_CHECK_EQUAL(decoded.mappingVersion, aad.mappingVersion);
+  BOOST_CHECK_EQUAL(decoded.keyEpoch, aad.keyEpoch);
+  BOOST_CHECK_EQUAL(decoded.cursor, aad.cursor);
+  BOOST_CHECK_EQUAL(blockHex(decoded.wireEncode()), blockHex(wire));
+
+  // Freeze a byte-exact vector after the private TLV assignments and the
+  // standard nested Name encoding have both been applied.
+  BOOST_CHECK_EQUAL(blockHex(wire),
+    "fdf700d2fdf7010101fdf7025b075908037561760801370805766964656f080566726f6e74"
+    "082773747265616d2d3030313132323333343435353636373738383939616162626363646465"
+    "65666636011708096665632d67726f75703a0109080464617461320101fdf7030a0708080375"
+    "6176080137fdf7041607140803554156080643616d6572610805566964656ffdf7052773747265"
+    "616d2d3030313132323333343435353636373738383939616162626363646465656666fdf706"
+    "0111fdf7070117fdf7080103fdf709080102030405060708");
+
+  ndn::Block withUnknown(wire.type());
+  wire.parse();
+  for (const auto& element : wire.elements()) {
+    withUnknown.push_back(element);
+  }
+  withUnknown.push_back(ndn::makeEmptyBlock(0xF70A));
+  withUnknown.encode();
+  BOOST_CHECK_THROW(UavVideoAad::wireDecodeStrict(withUnknown),
+                    std::invalid_argument);
+
+  ndn::Block duplicate(wire.type());
+  for (const auto& element : wire.elements()) {
+    duplicate.push_back(element);
+  }
+  duplicate.push_back(wire.elements().front());
+  duplicate.encode();
+  BOOST_CHECK_THROW(UavVideoAad::wireDecodeStrict(duplicate),
+                    std::invalid_argument);
+
+  const std::array<uint8_t, 2> nonMinimalOne{0x00, 0x01};
+  ndn::Block nonMinimal(wire.type());
+  nonMinimal.push_back(ndn::makeBinaryBlock(
+    ndnsf::examples::uav::uav_stream_tlv::UavVideoAadVersionType,
+    nonMinimalOne.begin(), nonMinimalOne.end()));
+  for (size_t i = 1; i < wire.elements().size(); ++i) {
+    nonMinimal.push_back(wire.elements()[i]);
+  }
+  nonMinimal.encode();
+  BOOST_CHECK_THROW(UavVideoAad::wireDecodeStrict(nonMinimal),
+                    std::invalid_argument);
+
+  ndn::Block reordered(wire.type());
+  reordered.push_back(wire.elements()[1]);
+  reordered.push_back(wire.elements()[0]);
+  for (size_t i = 2; i < wire.elements().size(); ++i) {
+    reordered.push_back(wire.elements()[i]);
+  }
+  reordered.encode();
+  BOOST_CHECK_THROW(UavVideoAad::wireDecodeStrict(reordered),
+                    std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(UavStreamEncryptedVideoPacketStrictRoundTrip)
+{
+  const auto descriptor = makeUavStreamDescriptor();
+  VideoPacket packet;
+  packet.streamId = descriptor.streamId;
+  packet.streamSessionEpoch = descriptor.sessionEpoch;
+  packet.second = 4;
+  packet.packetSeq = 6;
+  packet.frameSeq = 9;
+  packet.captureMs = 123456;
+  packet.frameFirstPacketSeq = 5;
+  packet.frameLastPacketSeq = 8;
+  packet.bucketPacketCount = 7;
+  packet.frameSegmentIndex = 1;
+  packet.frameSegmentCount = 4;
+  packet.keyFrame = true;
+  packet.encoding = "h264";
+  packet.fecDataShards = 3;
+  packet.fecParityShards = 1;
+  packet.fecSymbolIndex = 1;
+  packet.fecSymbolCount = 4;
+  packet.fecDataLengths = "5,4,3";
+  packet.payload = {0x00, 0x01, 0xff, 0x7f, 0x00};
+  const auto binding = makeUavVideoDataName(descriptor, packet);
+
+  UavVideoNonceUseGuard guard(descriptor);
+  const auto protectedWire = protectUavVideoPacket(
+    descriptor, binding, packet, guard);
+  const ndn::Block protectedBlock(ndn::span<const uint8_t>(
+    protectedWire.data(), protectedWire.size()));
+  BOOST_CHECK_EQUAL(blockSha256Hex(protectedBlock),
+                    "767bd7c6357d7e3b591aeb6a03d5c795d7799e881f287eca054aadc02a586e27");
+  const auto envelope = decodeUavVideoEnvelopeStrict(
+    protectedWire, descriptor, binding);
+  BOOST_CHECK_EQUAL(envelope.getAlgorithm(), "AES-256-GCM");
+  BOOST_CHECK_EQUAL(envelope.getKeyId(), descriptor.streamId);
+  BOOST_CHECK_EQUAL(envelope.getEpochId(), "3");
+  BOOST_CHECK_EQUAL(envelope.getMessageType(), "uav-live-video-packet");
+  BOOST_CHECK_EQUAL(ndn::toHex(envelope.getNonce()),
+                    "A1B2C3D40000000000000006");
+  BOOST_CHECK_EQUAL(envelope.getAuthTag().size(), 16);
+  BOOST_CHECK(!envelope.hasWrappedMessageKey());
+
+  const auto decoded = unprotectUavVideoPacket(
+    descriptor, binding, ndn::Name("/uav/7"), protectedWire);
+  BOOST_CHECK(encodeVideoPacket(decoded) == encodeVideoPacket(packet));
+
+  // A consumer does not know the variable per-frame source extent before it
+  // authenticates and decodes the packet. An omitted FinalBlock is therefore
+  // resolved from authenticated VideoPacket coordinates, while an explicit
+  // contradictory value remains a hard failure.
+  auto unresolvedFinalBlock = binding;
+  unresolvedFinalBlock.finalBlockId = ndn::name::Component();
+  const auto decodedVariableExtent = unprotectUavVideoPacket(
+    descriptor, unresolvedFinalBlock, ndn::Name("/uav/7"), protectedWire);
+  BOOST_CHECK(encodeVideoPacket(decodedVariableExtent) == encodeVideoPacket(packet));
+  auto contradictoryFinalBlock = binding;
+  contradictoryFinalBlock.finalBlockId = ndn::name::Component::fromSegment(99);
+  BOOST_CHECK_THROW(
+    unprotectUavVideoPacket(
+      descriptor, contradictoryFinalBlock, ndn::Name("/uav/7"), protectedWire),
+    std::invalid_argument);
+
+  // Payload publication is bound to immutable session identity, name and
+  // cursor, not to a descriptor's historical join-checkpoint snapshot.
+  auto historicalCheckpoint = descriptor;
+  historicalCheckpoint.frontiers = {0, 0, 0, 3, 4};
+  historicalCheckpoint.mappingAnchorBlock = 0;
+  UavVideoNonceUseGuard historicalGuard(historicalCheckpoint);
+  const auto historicalWire = protectUavVideoPacket(
+    historicalCheckpoint, binding, packet, historicalGuard);
+  const auto historicalDecoded = unprotectUavVideoPacket(
+    historicalCheckpoint, unresolvedFinalBlock, ndn::Name("/uav/7"), historicalWire);
+  BOOST_CHECK(encodeVideoPacket(historicalDecoded) == encodeVideoPacket(packet));
+
+  BOOST_CHECK_THROW(
+    unprotectUavVideoPacket(
+      descriptor, binding, ndn::Name("/uav/8"), protectedWire),
+    std::invalid_argument);
+
+  auto wrongCursor = binding;
+  wrongCursor.cursor = 7;
+  BOOST_CHECK_THROW(
+    unprotectUavVideoPacket(
+      descriptor, wrongCursor, ndn::Name("/uav/7"), protectedWire),
+    std::invalid_argument);
+
+  auto wrongName = binding;
+  wrongName.name.append("tampered");
+  BOOST_CHECK_THROW(
+    unprotectUavVideoPacket(
+      descriptor, wrongName, ndn::Name("/uav/7"), protectedWire),
+    std::invalid_argument);
+
+  auto wrongService = descriptor;
+  wrongService.serviceName = ndn::Name("/UAV/Camera/Status");
+  BOOST_CHECK_THROW(
+    unprotectUavVideoPacket(
+      wrongService, binding, ndn::Name("/uav/7"), protectedWire),
+    std::invalid_argument);
+
+  auto wrongSession = descriptor;
+  wrongSession.sessionEpoch += 1;
+  BOOST_CHECK_THROW(
+    unprotectUavVideoPacket(
+      wrongSession, binding, ndn::Name("/uav/7"), protectedWire),
+    std::invalid_argument);
+
+  auto wrongKey = descriptor;
+  wrongKey.streamKey[0] ^= 0x01;
+  BOOST_CHECK_THROW(
+    unprotectUavVideoPacket(
+      wrongKey, binding, ndn::Name("/uav/7"), protectedWire),
+    std::invalid_argument);
+
+  auto wrongKeyEpoch = descriptor;
+  wrongKeyEpoch.keyEpoch += 1;
+  BOOST_CHECK_THROW(
+    unprotectUavVideoPacket(
+      wrongKeyEpoch, binding, ndn::Name("/uav/7"), protectedWire),
+    std::invalid_argument);
+
+  auto wrongMapping = descriptor;
+  wrongMapping.mappingVersion += 1;
+  wrongMapping.dataPrefix = ndn::Name("/uav/7/video/front");
+  wrongMapping.dataPrefix.append(wrongMapping.streamId)
+                         .appendVersion(wrongMapping.mappingVersion);
+  const auto wrongMappingBinding = makeUavVideoDataName(wrongMapping, packet);
+  BOOST_CHECK_THROW(
+    unprotectUavVideoPacket(
+      wrongMapping, wrongMappingBinding, ndn::Name("/uav/7"), protectedWire),
+    std::invalid_argument);
+
+  auto wrongStream = descriptor;
+  wrongStream.streamId = "stream-ffffffffffffffffffffffffffffffff";
+  wrongStream.dataPrefix = ndn::Name("/uav/7/video/front");
+  wrongStream.dataPrefix.append(wrongStream.streamId)
+                        .appendVersion(wrongStream.mappingVersion);
+  wrongStream.mappingRoot = ndn_service_framework::makeStreamNameMapRoot(
+    wrongStream.providerIdentity, wrongStream.streamId);
+  auto wrongStreamPacket = packet;
+  wrongStreamPacket.streamId = wrongStream.streamId;
+  const auto wrongStreamBinding = makeUavVideoDataName(
+    wrongStream, wrongStreamPacket);
+  BOOST_CHECK_THROW(
+    unprotectUavVideoPacket(
+      wrongStream, wrongStreamBinding, ndn::Name("/uav/7"), protectedWire),
+    std::invalid_argument);
+
+  BOOST_CHECK_THROW(
+    protectUavVideoPacket(descriptor, binding, packet, guard),
+    std::invalid_argument);
+  BOOST_CHECK(guard.isClosed());
+}
+
+BOOST_AUTO_TEST_CASE(UavStreamStrictEnvelopeRejectsMalformedWire)
+{
+  const auto descriptor = makeUavStreamDescriptor();
+  VideoPacket packet;
+  packet.streamId = descriptor.streamId;
+  packet.streamSessionEpoch = descriptor.sessionEpoch;
+  packet.packetSeq = 6;
+  packet.frameSeq = 9;
+  packet.frameSegmentIndex = 0;
+  packet.frameSegmentCount = 1;
+  packet.fecDataShards = 1;
+  packet.fecSymbolIndex = 0;
+  packet.fecSymbolCount = 1;
+  packet.payload = {0x00, 0xff};
+  const auto binding = makeUavVideoDataName(descriptor, packet);
+  UavVideoNonceUseGuard guard(descriptor);
+  const auto protectedWire = protectUavVideoPacket(
+    descriptor, binding, packet, guard);
+
+  ndn::Block valid(ndn::span<const uint8_t>(protectedWire.data(),
+                                            protectedWire.size()));
+  valid.parse();
+
+  ndn::Block unknown(valid.type());
+  for (const auto& element : valid.elements()) {
+    unknown.push_back(element);
+  }
+  unknown.push_back(ndn::makeEmptyBlock(0xF70A));
+  unknown.encode();
+  BOOST_CHECK_THROW(
+    decodeUavVideoEnvelopeStrict(blockBuffer(unknown), descriptor, binding),
+    std::invalid_argument);
+
+  ndn::Block duplicate(valid.type());
+  for (const auto& element : valid.elements()) {
+    duplicate.push_back(element);
+  }
+  duplicate.push_back(valid.elements()[5]);
+  duplicate.encode();
+  BOOST_CHECK_THROW(
+    decodeUavVideoEnvelopeStrict(blockBuffer(duplicate), descriptor, binding),
+    std::invalid_argument);
+
+  HybridMessageEnvelope wrapped = decodeUavVideoEnvelopeStrict(
+    protectedWire, descriptor, binding);
+  wrapped.setWrappedMessageKey(ndn::Buffer{0x01});
+  BOOST_CHECK_THROW(
+    decodeUavVideoEnvelopeStrict(blockBuffer(wrapped.WireEncode()),
+                                 descriptor, binding),
+    std::invalid_argument);
+
+  HybridMessageEnvelope shortNonce = decodeUavVideoEnvelopeStrict(
+    protectedWire, descriptor, binding);
+  shortNonce.setNonce(ndn::Buffer(11, 0));
+  BOOST_CHECK_THROW(
+    decodeUavVideoEnvelopeStrict(blockBuffer(shortNonce.WireEncode()),
+                                 descriptor, binding),
+    std::invalid_argument);
+
+  HybridMessageEnvelope shortTag = decodeUavVideoEnvelopeStrict(
+    protectedWire, descriptor, binding);
+  shortTag.setAuthTag(ndn::Buffer(15, 0));
+  BOOST_CHECK_THROW(
+    decodeUavVideoEnvelopeStrict(blockBuffer(shortTag.WireEncode()),
+                                 descriptor, binding),
+    std::invalid_argument);
+
+  HybridMessageEnvelope tamperedCipher = decodeUavVideoEnvelopeStrict(
+    protectedWire, descriptor, binding);
+  auto ciphertext = tamperedCipher.getCipherText();
+  ciphertext[0] ^= 0x01;
+  tamperedCipher.setCipherText(ciphertext);
+  BOOST_CHECK_THROW(
+    unprotectUavVideoPacket(
+      descriptor, binding, ndn::Name("/uav/7"),
+      blockBuffer(tamperedCipher.WireEncode())),
+    std::invalid_argument);
+
+  HybridMessageEnvelope tamperedTag = decodeUavVideoEnvelopeStrict(
+    protectedWire, descriptor, binding);
+  auto authTag = tamperedTag.getAuthTag();
+  authTag[0] ^= 0x01;
+  tamperedTag.setAuthTag(authTag);
+  BOOST_CHECK_THROW(
+    unprotectUavVideoPacket(
+      descriptor, binding, ndn::Name("/uav/7"),
+      blockBuffer(tamperedTag.WireEncode())),
+    std::invalid_argument);
+
+  auto trailing = protectedWire;
+  trailing.push_back(0x00);
+  BOOST_CHECK_THROW(
+    decodeUavVideoEnvelopeStrict(trailing, descriptor, binding),
+    std::invalid_argument);
+
+  UavVideoNonceUseGuard remapGuard(descriptor);
+  remapGuard.reserve(descriptor, binding);
+  auto remapped = binding;
+  remapped.name.append("different");
+  BOOST_CHECK_THROW(remapGuard.reserve(descriptor, remapped),
+                    std::invalid_argument);
+  BOOST_CHECK(remapGuard.isClosed());
+
+  UavVideoNonceUseGuard explicitNameGuard(descriptor);
+  explicitNameGuard.reserve(descriptor, binding);
+  auto sameNameAtNextCursor = binding;
+  sameNameAtNextCursor.cursor += 1;
+  BOOST_CHECK_THROW(
+    explicitNameGuard.reserve(descriptor, sameNameAtNextCursor),
+    std::invalid_argument);
+  BOOST_CHECK(explicitNameGuard.isClosed());
+
+  UavVideoNonceUseGuard rollbackGuard(descriptor);
+  rollbackGuard.reserve(descriptor, binding);
+  auto rollback = binding;
+  rollback.cursor -= 1;
+  BOOST_CHECK_THROW(rollbackGuard.reserve(descriptor, rollback),
+                    std::invalid_argument);
+  BOOST_CHECK(rollbackGuard.isClosed());
+
+  // Spec 125 continuations can be appended after future sample reservations.
+  // Unique cursor-derived nonces remain safe even when encryption order is
+  // non-monotonic, while reusing a cursor under another name must still close
+  // the guard.
+  UavVideoNonceUseGuard continuationGuard(descriptor);
+  auto laterBinding = binding;
+  laterBinding.cursor += 2;
+  laterBinding.name.append("later");
+  continuationGuard.reserve(descriptor, laterBinding);
+  auto earlierBinding = binding;
+  earlierBinding.cursor += 1;
+  earlierBinding.name.append("earlier");
+  BOOST_CHECK_NO_THROW(continuationGuard.reserve(descriptor, earlierBinding));
+  auto reusedCursor = binding;
+  reusedCursor.cursor = laterBinding.cursor;
+  reusedCursor.name.append("reused-cursor");
+  BOOST_CHECK_THROW(continuationGuard.reserve(descriptor, reusedCursor),
+                    std::invalid_argument);
+  BOOST_CHECK(continuationGuard.isClosed());
+
+  UavVideoNonceUseGuard overflowGuard(descriptor);
+  auto overflow = binding;
+  overflow.cursor = std::numeric_limits<uint64_t>::max();
+  BOOST_CHECK_THROW(overflowGuard.reserve(descriptor, overflow),
+                    std::invalid_argument);
+  BOOST_CHECK(overflowGuard.isClosed());
+
+  const auto expectContextChangeCloses = [&] (const auto& changedDescriptor) {
+    UavVideoNonceUseGuard contextGuard(descriptor);
+    contextGuard.reserve(descriptor, binding);
+    auto nextBinding = binding;
+    nextBinding.cursor += 1;
+    nextBinding.name.append("next-context");
+    BOOST_CHECK_THROW(contextGuard.reserve(changedDescriptor, nextBinding),
+                      std::invalid_argument);
+    BOOST_CHECK(contextGuard.isClosed());
+  };
+  auto changedKey = descriptor;
+  changedKey.streamKey[0] ^= 0x01;
+  expectContextChangeCloses(changedKey);
+  auto changedSalt = descriptor;
+  changedSalt.nonceSalt[0] ^= 0x01;
+  expectContextChangeCloses(changedSalt);
+  auto changedProvider = descriptor;
+  changedProvider.providerIdentity = ndn::Name("/uav/8");
+  expectContextChangeCloses(changedProvider);
+  auto changedService = descriptor;
+  changedService.serviceName = ndn::Name("/UAV/Camera/Other");
+  expectContextChangeCloses(changedService);
+  auto changedMappingVersion = descriptor;
+  changedMappingVersion.mappingVersion += 1;
+  expectContextChangeCloses(changedMappingVersion);
+  auto changedBlockCapacity = descriptor;
+  changedBlockCapacity.mappingBlockCapacity *= 2;
+  expectContextChangeCloses(changedBlockCapacity);
+
+  auto changedReservationLimit = descriptor;
+  changedReservationLimit.maxNameReservations /= 2;
+  expectContextChangeCloses(changedReservationLimit);
+
+  auto oneEntryDescriptor = descriptor;
+  oneEntryDescriptor.mappingBlockCapacity = 1;
+  oneEntryDescriptor.maxNameReservations = 1;
+  oneEntryDescriptor.mappingAnchorBlock = 0;
+  oneEntryDescriptor.frontiers.oldestRetained = 0;
+  oneEntryDescriptor.frontiers.latestJoin = 0;
+  oneEntryDescriptor.frontiers.latestProduced = 0;
+  oneEntryDescriptor.frontiers.mappingCommittedThrough = 0;
+  oneEntryDescriptor.frontiers.nextReserved = 1;
+  const auto oneEntryResolver =
+    makeUavStreamNameMapResolverConfig(oneEntryDescriptor);
+  BOOST_CHECK_EQUAL(oneEntryResolver.maxReverseEntries, 1);
+  UavVideoNonceUseGuard oneEntryGuard(oneEntryDescriptor);
+  oneEntryGuard.reserve(oneEntryDescriptor, binding);
+  auto secondUniqueBinding = binding;
+  secondUniqueBinding.cursor += 1;
+  secondUniqueBinding.name.append("second-unique-name");
+  BOOST_CHECK_THROW(
+    oneEntryGuard.reserve(oneEntryDescriptor, secondUniqueBinding),
+                    std::invalid_argument);
+  BOOST_CHECK(oneEntryGuard.isClosed());
+  auto invalidLimitDescriptor = oneEntryDescriptor;
+  invalidLimitDescriptor.maxNameReservations = 0;
+  BOOST_CHECK_THROW(UavVideoNonceUseGuard{invalidLimitDescriptor},
+                    std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(UavStreamOriginalPayloadFitsDirectSignedData)
+{
+  const auto descriptor = makeUavStreamDescriptor();
+  VideoPacket packet;
+  packet.streamId = descriptor.streamId;
+  packet.streamSessionEpoch = descriptor.sessionEpoch;
+  packet.packetSeq = 6;
+  packet.frameSeq = 9;
+  packet.frameFirstPacketSeq = 6;
+  packet.frameLastPacketSeq = 18;
+  packet.frameSegmentIndex = 0;
+  packet.frameSegmentCount = 13;
+  packet.fecDataShards = 12;
+  packet.fecParityShards = 1;
+  packet.fecSymbolIndex = 0;
+  packet.fecSymbolCount = 13;
+  packet.payload.assign(3600, 0x5a);
+  const auto binding = makeUavVideoDataName(descriptor, packet);
+  UavVideoNonceUseGuard guard(descriptor);
+  const auto protectedWire = protectUavVideoPacket(
+    descriptor, binding, packet, guard);
+
+  ndn::KeyChain keyChain("pib-memory:uav-original-payload",
+                         "tpm-memory:uav-original-payload");
+  const auto identity = keyChain.createIdentity(descriptor.providerIdentity);
+  ndn::Data data(binding.name);
+  data.setContent(protectedWire);
+  keyChain.sign(data, ndn::security::signingByIdentity(identity));
+  BOOST_CHECK_LE(data.wireEncode().size(), ndn::MAX_NDN_PACKET_SIZE);
+}
+
+BOOST_AUTO_TEST_CASE(UavStreamLeavesGenericMessageWireUnchanged)
+{
+  HybridMessageEnvelope envelope;
+  envelope.setVersion(1);
+  envelope.setAlgorithm("AES-256-GCM");
+  envelope.setKeyId("generic-key");
+  envelope.setEpochId("9");
+  envelope.setMessageType("RESPONSE");
+  envelope.setNonce(ndn::Buffer(12, 0));
+  envelope.setCipherText(ndn::Buffer{0x00, 0xff});
+  envelope.setAuthTag(ndn::Buffer(16, 0x11));
+  BOOST_CHECK_EQUAL(blockHex(envelope.WireEncode()),
+                    "ac4ea30101a60b4145532d3235362d47434dad0b67656e657269632d6b6579ae"
+                    "0139b208524553504f4e5345af0c000000000000000000000000a90200ffb010"
+                    "11111111111111111111111111111111");
+
+  ResponseMessage response;
+  response.setStatus(true);
+  response.setErrorInfo("ok");
+  response.setTokens({{"a", "b"}});
+  response.setUserToken("token");
+  ndn::Buffer payload{0x00, 0xff};
+  response.setPayload(payload, payload.size());
+  response.setPolicyEpoch(7);
+  BOOST_CHECK_EQUAL(blockHex(response.WireEncode()),
+                    "811a98010199026f6b9603613d62aa05746f6b656e970200ffa30107");
+}
 
 BOOST_AUTO_TEST_CASE(FlightCommandEvidenceFactoriesPreserveTimeSemantics)
 {
@@ -531,9 +1921,18 @@ BOOST_AUTO_TEST_CASE(VideoAdaptiveStateRoundTripsAndReportsPressure)
   state.suggestedBitrateKbps = 4000;
   state.bitrateAction = "decrease";
   state.bitrateReason = "pressure";
+  state.coreFetchDecisionAvailable = true;
+  state.coreFetchDecisionSource = "core-live-stream-status";
+  state.coreFetchDecisionGeneration = 9;
+  state.coreFetchDecisionObservedAtMs = 123450;
+  state.coreFetchPhase = "FETCHING";
+  state.coreFetchPolicyMode = "adaptive-sample-atomic";
+  state.coreFetchCapacityReason = "sample-atomic-fit";
+  state.coreFetchReason = "stable-live-edge";
   state.window = 64;
   state.lookahead = 18;
   state.futureProbeLimit = 3;
+  state.futureProbeLimitSource = "uav-app-policy";
   state.interestLifetimeMs = 620;
   state.missingTimeoutMs = 240;
   state.timeoutPressure = 55;
@@ -565,7 +1964,16 @@ BOOST_AUTO_TEST_CASE(VideoAdaptiveStateRoundTripsAndReportsPressure)
   BOOST_CHECK_EQUAL(decoded.suggestedBitrateKbps, 4000);
   BOOST_CHECK_EQUAL(decoded.bitrateAction, "decrease");
   BOOST_CHECK_EQUAL(decoded.bitrateReason, "pressure");
+  BOOST_CHECK(decoded.coreFetchDecisionAvailable);
+  BOOST_CHECK_EQUAL(decoded.coreFetchDecisionSource, "core-live-stream-status");
+  BOOST_CHECK_EQUAL(decoded.coreFetchDecisionGeneration, 9);
+  BOOST_CHECK_EQUAL(decoded.coreFetchDecisionObservedAtMs, 123450);
+  BOOST_CHECK_EQUAL(decoded.coreFetchPhase, "FETCHING");
+  BOOST_CHECK_EQUAL(decoded.coreFetchPolicyMode, "adaptive-sample-atomic");
+  BOOST_CHECK_EQUAL(decoded.coreFetchCapacityReason, "sample-atomic-fit");
+  BOOST_CHECK_EQUAL(decoded.coreFetchReason, "stable-live-edge");
   BOOST_CHECK_EQUAL(decoded.window, 64);
+  BOOST_CHECK_EQUAL(decoded.futureProbeLimitSource, "uav-app-policy");
   BOOST_CHECK_EQUAL(decoded.missingTimeoutMs, 240);
   BOOST_CHECK_EQUAL(decoded.timeoutPressure, 55);
   BOOST_CHECK_EQUAL(decoded.primaryPressure, "timeout");
@@ -579,6 +1987,10 @@ BOOST_AUTO_TEST_CASE(VideoAdaptiveStateRoundTripsAndReportsPressure)
   BOOST_CHECK_NE(decoded.statusLine().find("VideoAdaptive drone=A"), std::string::npos);
   BOOST_CHECK_NE(decoded.statusLine().find("suggested_bitrate_kbps=4000"), std::string::npos);
   BOOST_CHECK_NE(decoded.statusLine().find("bitrate_action=decrease"), std::string::npos);
+  BOOST_CHECK_NE(decoded.statusLine().find("core_fetch_decision_available=true"),
+                 std::string::npos);
+  BOOST_CHECK_NE(decoded.statusLine().find("core_fetch_phase=FETCHING"),
+                 std::string::npos);
   BOOST_CHECK_NE(decoded.statusLine().find("primary_pressure=timeout"), std::string::npos);
   BOOST_CHECK_NE(decoded.statusLine().find("policy_reason=pressure-timeout"), std::string::npos);
   BOOST_CHECK_NE(decoded.statusLine().find("window=64"), std::string::npos);
@@ -605,6 +2017,90 @@ BOOST_AUTO_TEST_CASE(VideoAdaptiveStateRoundTripsAndReportsPressure)
   BOOST_CHECK_NE(healthSummary.find("reason=loss-or-gap"), std::string::npos);
   BOOST_CHECK_NE(healthSummary.find("window=64"), std::string::npos);
   BOOST_CHECK_NE(healthSummary.find("gaps=45"), std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(VideoCoreFetchDecisionSnapshotReportsOnlyCurrentCoreState)
+{
+  VideoCoreFetchDecisionSnapshot snapshot;
+  snapshot.reset(7);
+
+  VideoAdaptiveState unavailable;
+  unavailable.window = 99;
+  unavailable.lookahead = 88;
+  unavailable.interestLifetimeMs = 777;
+  unavailable.missingTimeoutMs = 666;
+  snapshot.applyTo(unavailable);
+  BOOST_CHECK(!unavailable.coreFetchDecisionAvailable);
+  BOOST_CHECK_EQUAL(unavailable.coreFetchDecisionSource, "unavailable");
+  BOOST_CHECK_EQUAL(unavailable.coreFetchDecisionGeneration, 7);
+  BOOST_CHECK_EQUAL(unavailable.window, 0);
+  BOOST_CHECK_EQUAL(unavailable.lookahead, 0);
+  BOOST_CHECK_EQUAL(unavailable.interestLifetimeMs, 0);
+  BOOST_CHECK_EQUAL(unavailable.missingTimeoutMs, 0);
+
+  ndn_service_framework::LiveStreamStatus current;
+  current.state = ndn_service_framework::LiveStreamLifecycleState::Active;
+  current.fetchDecision =
+    std::make_shared<ndn_service_framework::StreamFetchDecision>();
+  current.fetchDecision->window = 41;
+  current.fetchDecision->lookahead = 13;
+  current.fetchDecision->interestLifetimeMs = 521;
+  current.fetchDecision->missingTimeoutMs = 233;
+  current.fetchDecision->phase =
+    ndn_service_framework::StreamPrefetchPhase::Fetching;
+  current.fetchDecision->policyMode = "adaptive-sample-atomic";
+  current.fetchDecision->capacityReason = "sample-atomic-fit";
+  current.fetchDecision->reason = "stable-live-edge";
+
+  BOOST_CHECK(snapshot.observe(7, 7, current, 123456));
+  VideoAdaptiveState available;
+  snapshot.applyTo(available);
+  BOOST_CHECK(available.coreFetchDecisionAvailable);
+  BOOST_CHECK_EQUAL(available.coreFetchDecisionSource, "core-live-stream-status");
+  BOOST_CHECK_EQUAL(available.coreFetchDecisionGeneration, 7);
+  BOOST_CHECK_EQUAL(available.coreFetchDecisionObservedAtMs, 123456);
+  BOOST_CHECK_EQUAL(available.coreFetchPhase, "FETCHING");
+  BOOST_CHECK_EQUAL(available.coreFetchPolicyMode, "adaptive-sample-atomic");
+  BOOST_CHECK_EQUAL(available.coreFetchCapacityReason, "sample-atomic-fit");
+  BOOST_CHECK_EQUAL(available.coreFetchReason, "stable-live-edge");
+  BOOST_CHECK_EQUAL(available.window, 41);
+  BOOST_CHECK_EQUAL(available.lookahead, 13);
+  BOOST_CHECK_EQUAL(available.interestLifetimeMs, 521);
+  BOOST_CHECK_EQUAL(available.missingTimeoutMs, 233);
+
+  auto stale = current;
+  stale.fetchDecision = std::make_shared<ndn_service_framework::StreamFetchDecision>(
+    *current.fetchDecision);
+  stale.fetchDecision->window = 2;
+  BOOST_CHECK(!snapshot.observe(7, 6, stale, 123999));
+  VideoAdaptiveState afterStale;
+  snapshot.applyTo(afterStale);
+  BOOST_CHECK_EQUAL(afterStale.window, 41);
+  BOOST_CHECK_EQUAL(afterStale.coreFetchDecisionObservedAtMs, 123456);
+
+  ndn_service_framework::LiveStreamStatus noDecision;
+  noDecision.state = ndn_service_framework::LiveStreamLifecycleState::Active;
+  BOOST_CHECK(snapshot.observe(7, 7, noDecision, 124000));
+  VideoAdaptiveState cleared;
+  snapshot.applyTo(cleared);
+  BOOST_CHECK(!cleared.coreFetchDecisionAvailable);
+  BOOST_CHECK_EQUAL(cleared.coreFetchDecisionSource, "unavailable");
+  BOOST_CHECK_EQUAL(cleared.window, 0);
+
+  auto stopped = current;
+  stopped.state = ndn_service_framework::LiveStreamLifecycleState::Stopped;
+  BOOST_CHECK(snapshot.observe(7, 7, stopped, 124050));
+  VideoAdaptiveState afterStop;
+  snapshot.applyTo(afterStop);
+  BOOST_CHECK(!afterStop.coreFetchDecisionAvailable);
+  BOOST_CHECK_EQUAL(afterStop.window, 0);
+
+  snapshot.reset(8);
+  BOOST_CHECK(!snapshot.observe(8, 7, current, 124100));
+  VideoAdaptiveState nextGeneration;
+  snapshot.applyTo(nextGeneration);
+  BOOST_CHECK_EQUAL(nextGeneration.coreFetchDecisionGeneration, 8);
+  BOOST_CHECK(!nextGeneration.coreFetchDecisionAvailable);
 }
 
 BOOST_AUTO_TEST_CASE(VideoControlStateDerivesStartStopActions)
@@ -929,9 +2425,6 @@ BOOST_AUTO_TEST_CASE(UavFunctionalityStateTracksImplementedAndMissingCapabilitie
   recording.droneId = "A";
   recording.sessionId = "record-1";
   recording.objectPrefix = "/example/uav/drone/A/repo/camera/recording";
-  recording.encryption = "hybrid-aes-256-gcm-at-rest";
-  recording.keyId = "/example/uav/drone/A/repo/key";
-  recording.contentKey = {0x01, 0x02, 0x03};
   recording.chunks = 3;
   recording.bytes = 1024;
 
@@ -1628,6 +3121,7 @@ BOOST_AUTO_TEST_CASE(VideoPacketSessionMetadataRoundTrips)
   packet.streamId = "live|A|1";
   packet.streamSessionEpoch = 42;
   packet.packetSeq = 7;
+  packet.mediaSequence = 5;
   packet.frameSeq = 3;
   packet.frameFirstPacketSeq = 6;
   packet.frameLastPacketSeq = 8;
@@ -1641,6 +3135,7 @@ BOOST_AUTO_TEST_CASE(VideoPacketSessionMetadataRoundTrips)
   BOOST_CHECK_EQUAL(decoded.streamId, packet.streamId);
   BOOST_CHECK_EQUAL(decoded.streamSessionEpoch, 42);
   BOOST_CHECK_EQUAL(decoded.packetSeq, 7);
+  BOOST_CHECK_EQUAL(decoded.mediaSequence, 5);
   BOOST_CHECK_EQUAL(decoded.frameSeq, 3);
   BOOST_CHECK_EQUAL(decoded.frameFirstPacketSeq, 6);
   BOOST_CHECK_EQUAL(decoded.frameLastPacketSeq, 8);
@@ -1658,6 +3153,7 @@ BOOST_AUTO_TEST_CASE(VideoPacketMapsToCoreStreamChunkWithoutChangingWire)
   packet.streamSessionEpoch = 77;
   packet.second = 1234;
   packet.packetSeq = 9;
+  packet.mediaSequence = 17;
   packet.frameSeq = 4;
   packet.captureMs = 5555;
   packet.frameFirstPacketSeq = 8;
@@ -1682,6 +3178,7 @@ BOOST_AUTO_TEST_CASE(VideoPacketMapsToCoreStreamChunkWithoutChangingWire)
   BOOST_CHECK_EQUAL(streamChunk.frameId, packet.frameSeq);
   BOOST_CHECK_EQUAL(streamChunk.metadata.at("uav.second"), "1234");
   BOOST_CHECK_EQUAL(streamChunk.metadata.at("uav.bucket_packet_count"), "12");
+  BOOST_CHECK_EQUAL(streamChunk.metadata.at("uav.media_sequence"), "17");
   BOOST_REQUIRE(streamChunk.fec);
   BOOST_CHECK_EQUAL(streamChunk.fec->scheme, "xor-parity");
   BOOST_CHECK(streamChunk.fec->repairSymbol);
@@ -1692,6 +3189,7 @@ BOOST_AUTO_TEST_CASE(VideoPacketMapsToCoreStreamChunkWithoutChangingWire)
   BOOST_CHECK_EQUAL(restored.streamSessionEpoch, packet.streamSessionEpoch);
   BOOST_CHECK_EQUAL(restored.second, packet.second);
   BOOST_CHECK_EQUAL(restored.packetSeq, packet.packetSeq);
+  BOOST_CHECK_EQUAL(restored.mediaSequence, packet.mediaSequence);
   BOOST_CHECK_EQUAL(restored.frameSeq, packet.frameSeq);
   BOOST_CHECK_EQUAL(restored.captureMs, packet.captureMs);
   BOOST_CHECK_EQUAL(restored.frameFirstPacketSeq, packet.frameFirstPacketSeq);
@@ -1782,16 +3280,13 @@ BOOST_AUTO_TEST_CASE(StreamChunkHandoffPreservesFecRecoveryInputs)
   BOOST_CHECK_EQUAL(recoveredChunk.seq, 21);
 }
 
-BOOST_AUTO_TEST_CASE(RecordingDataProductTracksEncryptedManifest)
+BOOST_AUTO_TEST_CASE(RecordingDataProductTracksCanonicalCatalogSummary)
 {
   Fields fields{
     {"type", "camera-recording-manifest"},
     {"drone_id", "A"},
     {"recording_session_id", "record-123"},
     {"recording_object_prefix", "/example/uav/drone/A/repo/camera/recording"},
-    {"recording_encryption", "hybrid-aes-256-gcm-at-rest"},
-    {"recording_encryption_key_id", "/example/uav/drone/A/repo/key"},
-    {"recording_encryption_content_key_hex", "00112233445566778899aabbccddeeff"},
     {"recording_chunks", "42"},
     {"recording_bytes", "123456"},
   };
@@ -1803,19 +3298,80 @@ BOOST_AUTO_TEST_CASE(RecordingDataProductTracksEncryptedManifest)
   BOOST_CHECK_EQUAL(product.chunks, 42);
   BOOST_CHECK_EQUAL(product.bytes, 123456);
   BOOST_CHECK(product.isAvailable());
-  BOOST_CHECK(product.isEncrypted());
   BOOST_CHECK(product.isPlayable());
-  BOOST_CHECK_EQUAL(product.chunkObjectName(7),
-                    "/example/uav/drone/A/repo/camera/recording/record-123/chunk/7");
 
   const auto roundTrip = RecordingDataProductState::fromFields(product.toFields());
-  BOOST_CHECK_EQUAL(roundTrip.keyId, product.keyId);
-  BOOST_CHECK_EQUAL(roundTrip.contentKey.size(), product.contentKey.size());
   BOOST_CHECK_NE(roundTrip.statusLine().find("RecordingDataProduct drone=A"), std::string::npos);
+  BOOST_CHECK_NE(roundTrip.statusLine().find("representation=canonical-signed-data"),
+                 std::string::npos);
   BOOST_CHECK_NE(roundTrip.statusLine().find("playable=true"), std::string::npos);
 }
 
-BOOST_AUTO_TEST_CASE(RecordingDataProductRejectsEncryptedManifestWithoutKey)
+BOOST_AUTO_TEST_CASE(CanonicalRecordingManifestRejectsRollbackGapsAndPlaintextKeyFields)
+{
+  CanonicalVideoRecordingManifest manifest;
+  manifest.manifestVersion = 3;
+  manifest.recordingId = "record-stream";
+  manifest.streamId = "stream-00112233445566778899aabbccddeeff";
+  manifest.sessionEpoch = 7;
+  manifest.mappingVersion = 8;
+  manifest.keyEpoch = 1;
+  manifest.providerIdentity = ndn::Name("/uav/drone/A");
+  manifest.serviceName = ndn::Name("/UAV/VideoControl");
+  manifest.firstCommittedCursor = 4;
+  manifest.lastCommittedCursor = 4;
+  manifest.safeJoinCursor = 4;
+  manifest.startedMs = 100;
+  manifest.endedMs = 200;
+  manifest.complete = true;
+  manifest.signerCertificateName = "/uav/drone/A/KEY/k/issuer/v=1";
+  manifest.signerCertificateDigest.fill(0x11);
+  manifest.trustPolicyVersion = "uav-stream-v1";
+  manifest.redactedStreamDescriptor = {{"stream_id", manifest.streamId}};
+  manifest.archivedCertificateObjects.emplace_back(
+    "/uav/drone/A/KEY/k/issuer/v=1");
+  manifest.keyAuthorizationObject = ndn::Name(
+    "/uav/drone/A/repo/camera/recording/record-stream/KEY-AUTH/v=1");
+  RetainedVideoPacketReference packet;
+  packet.kind = "source";
+  packet.cursor = 4;
+  packet.dataName = ndn::Name("/uav/drone/A/video/front/stream/v=8/fec-group/0/data/0");
+  packet.wireDigest.fill(0x22);
+  manifest.packets.push_back(packet);
+
+  const auto fields = manifest.toFields();
+  BOOST_CHECK_EQUAL(fields.count("recording_encryption_content_key_hex"), 0);
+  const auto decoded = CanonicalVideoRecordingManifest::fromFields(fields);
+  BOOST_CHECK_EQUAL(decoded.packets.front().dataName, packet.dataName);
+  BOOST_CHECK_EQUAL(decoded.keyAuthorizationObject, manifest.keyAuthorizationObject);
+
+  manifest.gaps.push_back({4, 4, "storage-failure"});
+  BOOST_REQUIRE(manifest.validate());
+  BOOST_CHECK_EQUAL(*manifest.validate(), "gapped recording cannot be complete");
+}
+
+BOOST_AUTO_TEST_CASE(UavVideoContentKeyGrantBindsRecipientPermissionAndEpoch)
+{
+  UavVideoContentKeyGrant grant;
+  grant.recipientIdentity = "/operator/alice";
+  grant.providerIdentity = ndn::Name("/uav/drone/A");
+  grant.serviceName = ndn::Name("/UAV/VideoControl");
+  grant.permission = "/PERMISSION/UAV/VideoControl/history";
+  grant.streamId = "stream-00112233445566778899aabbccddeeff";
+  grant.sessionEpoch = 7;
+  grant.keyEpoch = 2;
+  grant.protectedKeyMaterial = ndn::Buffer(32, 0x33);
+  grant.protectedNonceSalt = ndn::Buffer(4, 0x44);
+  grant.issuedMs = 100;
+  grant.expiresMs = 200;
+  BOOST_CHECK(!grant.validate());
+  const auto fields = grant.toProtectedFields();
+  BOOST_CHECK_EQUAL(fields.at("grant_recipient"), "/operator/alice");
+  grant.expiresMs = 99;
+  BOOST_CHECK(grant.validate());
+}
+
+BOOST_AUTO_TEST_CASE(RecordingDataProductIgnoresRetiredEnvelopeFields)
 {
   Fields fields{
     {"drone_id", "A"},
@@ -1828,9 +3384,150 @@ BOOST_AUTO_TEST_CASE(RecordingDataProductRejectsEncryptedManifestWithoutKey)
 
   const auto product = RecordingDataProductState::fromFields(fields);
   BOOST_CHECK(product.isAvailable());
-  BOOST_CHECK(product.isEncrypted());
-  BOOST_CHECK(!product.isPlayable());
-  BOOST_CHECK(product.toFields(false).count("recording_encryption_content_key_hex") == 0);
+  BOOST_CHECK(product.isPlayable());
+  const auto emitted = product.toFields();
+  BOOST_CHECK(emitted.count("recording_encryption") == 0);
+  BOOST_CHECK(emitted.count("recording_encryption_key_id") == 0);
+  BOOST_CHECK(emitted.count("recording_encryption_content_key_hex") == 0);
+}
+
+BOOST_AUTO_TEST_CASE(CompactTelemetryHasFrozenSizesAndMonotonicAdmission)
+{
+  LatestTelemetryAdmission admission("A");
+  for (uint64_t sampleId = 10; sampleId < 16; ++sampleId) {
+    const auto sample = CompactTelemetrySample::deterministic(
+      sampleId, 1'000'000'000 + sampleId * 50'000'000, "A");
+    const auto wire = sample.encode();
+    BOOST_CHECK_EQUAL(wire.size(), CompactTelemetrySample::encodedSizeFor(sampleId));
+    const auto decoded = CompactTelemetrySample::decode(wire);
+    BOOST_REQUIRE(decoded);
+    BOOST_CHECK_EQUAL(decoded->sampleId, sampleId);
+    BOOST_CHECK_EQUAL(decoded->droneId, "A");
+    const auto result = admission.admit(wire, sample.sourceTimestampNs + 2'000'000);
+    BOOST_CHECK(result.valid);
+    BOOST_CHECK(result.stateAdvanced);
+    BOOST_CHECK_EQUAL(result.ageNs, 2'000'000);
+  }
+  const auto duplicate = CompactTelemetrySample::deterministic(
+    15, 1'750'000'000, "A").encode();
+  BOOST_CHECK(admission.admit(duplicate, 1'752'000'000).duplicate);
+  const auto old = CompactTelemetrySample::deterministic(
+    9, 900'000'000, "A").encode();
+  const auto outOfOrder = admission.admit(old, 1'753'000'000);
+  BOOST_CHECK(outOfOrder.outOfOrder);
+  BOOST_CHECK(outOfOrder.newSample);
+  BOOST_REQUIRE(admission.latest());
+  BOOST_CHECK_EQUAL(admission.latest()->sampleId, 15);
+  BOOST_CHECK_EQUAL(admission.admittedCount(), 7);
+  BOOST_CHECK_EQUAL(admission.duplicateCount(), 1);
+  BOOST_CHECK_EQUAL(admission.outOfOrderCount(), 1);
+}
+
+BOOST_AUTO_TEST_CASE(CompactTelemetryFailsClosedOnWrongIdentityAndPadding)
+{
+  LatestTelemetryAdmission admission("A");
+  auto wrong = CompactTelemetrySample::deterministic(0, 100, "B").encode();
+  const auto wrongResult = admission.admit(wrong, 200);
+  BOOST_CHECK(!wrongResult.valid);
+  BOOST_CHECK(!wrongResult.stateAdvanced);
+  BOOST_CHECK_EQUAL(wrongResult.reason, "wrong-drone");
+
+  auto malformed = CompactTelemetrySample::deterministic(0, 100, "A").encode();
+  malformed.back() ^= 0xff;
+  const auto malformedResult = admission.admit(malformed, 200);
+  BOOST_CHECK(!malformedResult.valid);
+  BOOST_CHECK_EQUAL(malformedResult.reason, "invalid-payload");
+}
+
+BOOST_AUTO_TEST_CASE(OpaqueAcousticCyclesExtentAndCompletesOnce)
+{
+  CompleteAcousticBlockAdmission admission("uav-acoustic-test");
+  for (uint64_t blockId = 0; blockId < 6; ++blockId) {
+    const auto captured = 1'000'000'000 + blockId * 40'000'000;
+    const auto count = OpaqueAcousticSource::sourceCountFor(blockId);
+    BOOST_CHECK_EQUAL(count, 2 + blockId % 3);
+    BOOST_CHECK_EQUAL(acousticSourceCountClass(count),
+                      "opaque-block-" + std::to_string(count));
+    for (size_t index = 0; index < count; ++index) {
+      const auto wire =
+        OpaqueAcousticSource::deterministic(blockId, captured, index).encode();
+      BOOST_CHECK_LE(wire.size(), 512);
+      const auto result = admission.admit(
+        wire,
+        index == 0 ? LiveStreamItemProvenance::FecRecovered :
+                     LiveStreamItemProvenance::SignedData,
+        captured + 3'000'000);
+      BOOST_CHECK(result.valid);
+      if (index + 1 == count) {
+        BOOST_REQUIRE(result.completed);
+        BOOST_CHECK_EQUAL(result.completed->blockId, blockId);
+        BOOST_CHECK_EQUAL(result.completed->orderedSources.size(), count);
+        BOOST_CHECK_EQUAL(result.completed->recoveredSources, 1);
+      }
+      else {
+        BOOST_CHECK(!result.completed);
+      }
+    }
+  }
+  BOOST_CHECK_EQUAL(admission.completedCount(), 6);
+}
+
+BOOST_AUTO_TEST_CASE(OpaqueAcousticRejectsMalformedAndDuplicateSources)
+{
+  CompleteAcousticBlockAdmission admission("uav-acoustic-test");
+  auto wire = OpaqueAcousticSource::deterministic(0, 100, 0).encode();
+  BOOST_CHECK(admission.admit(
+    wire, LiveStreamItemProvenance::SignedData, 200).valid);
+  const auto duplicate = admission.admit(
+    wire, LiveStreamItemProvenance::SignedData, 201);
+  BOOST_CHECK(duplicate.duplicate);
+  wire.back() ^= 0x01;
+  const auto malformed = admission.admit(
+    wire, LiveStreamItemProvenance::SignedData, 202);
+  BOOST_CHECK(!malformed.valid);
+  BOOST_CHECK_EQUAL(admission.duplicateCount(), 1);
+  BOOST_CHECK_EQUAL(admission.invalidCount(), 1);
+}
+
+BOOST_AUTO_TEST_CASE(OpaqueAcousticRejectsSourceWireAboveFrozenLimit)
+{
+  auto source = OpaqueAcousticSource::deterministic(0, 100, 0);
+  source.opaqueBytes.resize(486);
+  BOOST_CHECK_THROW(source.encode(), std::invalid_argument);
+
+  source.opaqueBytes.resize(485);
+  const auto wire = source.encode();
+  BOOST_CHECK_EQUAL(wire.size(), 512);
+}
+
+BOOST_AUTO_TEST_CASE(UavSensorDefinitionsStayOnGenericMappingV2)
+{
+  const auto telemetry = ndnsf::examples::uav::makeUavTelemetryStreamDefinition(
+    ndn::Name("/example/uav/drone/A"), 144001, 144001);
+  BOOST_CHECK(!telemetry.validate());
+  BOOST_CHECK_EQUAL(telemetry.samplePeriodMs, 50);
+  BOOST_CHECK_EQUAL(telemetry.mappingBlockCapacity, 1);
+  BOOST_CHECK(!telemetry.fec.enabled());
+  BOOST_REQUIRE_EQUAL(telemetry.sampleClasses.size(), 1);
+  BOOST_CHECK_EQUAL(telemetry.sampleClasses.front().hardMaxSourceItems, 1);
+
+  const auto acoustic = ndnsf::examples::uav::makeUavAcousticStreamDefinition(
+    ndn::Name("/example/uav/drone/A"), 144002, 144002);
+  BOOST_CHECK(!acoustic.validate());
+  BOOST_CHECK_EQUAL(acoustic.samplePeriodMs, 40);
+  BOOST_CHECK_EQUAL(acoustic.mappingBlockCapacity, 6);
+  BOOST_CHECK_EQUAL(acoustic.maxNameReservations %
+                      acoustic.mappingBlockCapacity, 0);
+  BOOST_CHECK_EQUAL(acoustic.fec.recoveryCapacity(), 2);
+  BOOST_CHECK_EQUAL(acoustic.fec.repairItemCount(), 2);
+  BOOST_REQUIRE_EQUAL(acoustic.sampleClasses.size(), 3);
+  for (size_t index = 0; index < acoustic.sampleClasses.size(); ++index) {
+    BOOST_CHECK_EQUAL(acoustic.sampleClasses[index].seedSourceItems, index + 2);
+    BOOST_CHECK_EQUAL(acoustic.sampleClasses[index].hardMaxSourceItems, index + 2);
+    BOOST_CHECK_EQUAL(acoustic.sampleClasses[index].safetyMarginItems, 0);
+  }
+  BOOST_CHECK_THROW(acousticSourceCountClass(1), std::invalid_argument);
+  BOOST_CHECK_THROW(acousticSourceCountClass(5), std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

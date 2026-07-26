@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from ndnsf_distributed_inference.gui import main
+from ndnsf_distributed_inference.app_sdk.gui import main
 
 
 if __name__ == "__main__":

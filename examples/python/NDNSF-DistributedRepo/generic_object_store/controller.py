@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import argparse
-from ndnsf_distributed_inference import APPController
+from ndnsf_distributed_inference.app_sdk.controller import APPController
 
 
 CONFIG_FILE = "examples/python/NDNSF-DistributedRepo/generic_object_store/repo_policy.yaml"

@@ -9,6 +9,7 @@
 #include <mutex>
 #include <set>
 #include <string>
+#include <utility>
 
 namespace ndn_service_framework {
 
@@ -43,6 +44,11 @@ public:
                                         const std::string& accessAttribute,
                                         const std::string& direction,
                                         HybridCryptoCounters& counters);
+
+    HybridMessageKey getOrCreateStatusSendKey(const ndn::Name& requesterIdentity,
+                                              const std::string& statusHandle,
+                                              const std::string& recipientKeyId,
+                                              HybridCryptoCounters& counters);
 
     void cacheReceiveKey(const std::string& keyId,
                          const std::string& epochId,
@@ -89,6 +95,12 @@ HybridAeadResult hybridAesGcmEncrypt(const ndn::Buffer& key,
                                      ndn::span<const uint8_t> plaintext,
                                      ndn::span<const uint8_t> associatedData);
 
+HybridAeadResult hybridAesGcmEncryptWithNonce(
+                                     const ndn::Buffer& key,
+                                     ndn::span<const uint8_t> nonce,
+                                     ndn::span<const uint8_t> plaintext,
+                                     ndn::span<const uint8_t> associatedData);
+
 bool hybridAesGcmDecrypt(const ndn::Buffer& key,
                          const HybridMessageEnvelope& envelope,
                          ndn::span<const uint8_t> associatedData,
@@ -104,6 +116,52 @@ ndn::Buffer hybridAssociatedData(const ndn::Name& messageName,
                                  const ndn::Name& senderPrefix,
                                  const std::string& keyId,
                                  const std::string& epochId);
+
+ndn::Buffer secureStatusAssociatedData(const ndn::Name& dataName,
+                                       uint64_t version,
+                                       const std::string& statusHandle,
+                                       const ndn::Name& requesterIdentity,
+                                       const ndn::Name& providerIdentity,
+                                       uint64_t attempt,
+                                       const std::string& keyId,
+                                       const std::string& epochId);
+
+std::string generateSecureStatusKeyHex();
+ndn::Buffer decodeSecureStatusKeyHex(const std::string& value);
+
+std::string selectionGatedHex(ndn::span<const uint8_t> value);
+ndn::Buffer selectionGatedUnhex(const std::string& value);
+ndn::Buffer selectionGatedInputAssociatedData(
+    const ndn::Name& requester, const ndn::Name& serviceName,
+    const ndn::Name& requestId);
+std::pair<EncryptedRequestInput, ndn::Buffer> encryptSelectionGatedInput(
+    const ndn::Name& requester, const ndn::Name& serviceName,
+    const ndn::Name& requestId, ndn::span<const uint8_t> plaintext);
+ndn::Buffer wrapSelectionGatedInputKey(
+    const ndn::Buffer& key, ndn::span<const uint8_t> recipientPublicKey);
+ndn::Buffer unwrapSelectionGatedInputKey(
+    const ndn::Buffer& wrappedKey, const ndn::Name& recipientCertName,
+    const ndn::security::KeyChain& keyChain);
+bool decryptSelectionGatedInput(
+    const EncryptedRequestInput& encrypted, const ndn::Buffer& key,
+    const ndn::Name& requester, const ndn::Name& serviceName,
+    const ndn::Name& requestId, ndn::Buffer& plaintext);
+RecipientEncryptedAssignment encryptRecipientAssignment(
+    ndn::span<const uint8_t> plaintext,
+    ndn::span<const uint8_t> recipientPublicKey,
+    const ndn::Name& recipient, const ndn::Name& recipientCertName,
+    ndn::span<const uint8_t> associatedData);
+ndn::Buffer recipientAssignmentAssociatedData(
+    const ndn::Name& requester, const ndn::Name& provider,
+    const ndn::Name& serviceName, const ndn::Name& requestId,
+    const std::string& reservationId, const std::string& planDigest);
+bool decryptRecipientAssignment(
+    const RecipientEncryptedAssignment& encrypted,
+    const ndn::Name& expectedRecipient,
+    const ndn::Name& expectedRecipientCertName,
+    const ndn::security::KeyChain& keyChain,
+    ndn::span<const uint8_t> associatedData,
+    ndn::Buffer& plaintext);
 
 } // namespace ndn_service_framework
 

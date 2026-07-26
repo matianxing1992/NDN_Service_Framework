@@ -1,0 +1,38 @@
+{
+  "schema": "ndnsf-unified-video-performance-v1",
+  "sourceEvidence": "results/spec119-live-prefetch-acceptance-20260718-candidate1/pair-01/loss-00/mapped-pressure/loss-00-fec-1-run-01",
+  "metric": {
+    "legacyName": "capture-to-decode",
+    "canonicalName": "encoded-output-to-decoder-output",
+    "origin": "encoded-output-ready",
+    "terminal": "decoder-output",
+    "includesCameraAcquisition": false,
+    "includesH264Encoding": false
+  },
+  "baseline": {
+    "samples": 420,
+    "rttP50Ms": 120.0,
+    "rttP95Ms": 120.0,
+    "encodedOutputToDecoderOutputP50Ms": 237.0,
+    "encodedOutputToDecoderOutputP95Ms": 256.0,
+    "encodedOutputToDecoderOutputP99Ms": 263.0,
+    "providerFutureEligible": 73,
+    "providerFutureHits": 73
+  },
+  "requiredProviderOrder": [
+    "encoded-output-ready",
+    "group-ready",
+    "protection-complete",
+    "signed-and-materialized",
+    "data-put"
+  ],
+  "requiredConsumerOrder": [
+    "data-received",
+    "signature-validated",
+    "decrypted",
+    "reorder-ready",
+    "decoder-input",
+    "decoder-output"
+  ],
+  "crossClockRule": "unavailable-without-offset-uncertainty"
+}

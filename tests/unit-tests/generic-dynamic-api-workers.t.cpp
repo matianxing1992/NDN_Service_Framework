@@ -227,6 +227,35 @@ BOOST_AUTO_TEST_CASE(AllSelectedHandlesMultipleSelectedProviderResponses)
   BOOST_CHECK(!user.hasPendingCall(requestId));
 }
 
+BOOST_AUTO_TEST_CASE(CollaborationFinalResponseReleasesPendingCall)
+{
+  ndn::security::KeyChain keyChain("pib-memory:collaboration-final-response",
+                                   "tpm-memory:collaboration-final-response");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name requesterName("/test/user/alice");
+  const ndn::Name finalProvider("/test/provider/merge");
+  auto userCert = makeRsaIdentity(keyChain, requesterName);
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-collaboration-final-response"));
+  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert,
+                        "examples/trust-any.conf");
+
+  const ndn::Name requestId("/request-collaboration-final-response");
+  int responseCallbacks = 0;
+  user.addPendingCollaborationCallForTest(
+    requestId,
+    {ndn::Name("/test/provider/prefill"),
+     ndn::Name("/test/provider/decode"),
+     finalProvider},
+    [&] (const ResponseMessage&) { ++responseCallbacks; });
+
+  ResponseMessage response;
+  response.setStatus(true);
+  user.handleResponse(requestId, finalProvider, response);
+
+  BOOST_CHECK_EQUAL(responseCallbacks, 1);
+  BOOST_CHECK(!user.hasPendingCall(requestId));
+}
+
 BOOST_AUTO_TEST_CASE(BaseServiceProviderDefaultsAreSafe)
 {
   ndn::Face face;

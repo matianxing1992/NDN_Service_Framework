@@ -9,11 +9,11 @@ import os
 import time
 
 from ndnsf import ServiceUser
-from ndnsf_distributed_inference import (
-    APPDeployment,
-    APPProvider,
+from ndnsf_distributed_inference.app_sdk import (
+    APPDeployment, APPProvider, ProviderRuntimeContext,
+)
+from ndnsf_distributed_inference.artifact_deployment import (
     ArtifactProvisioningState,
-    ProviderRuntimeContext,
     artifact_references_need_repo_client,
 )
 from py_repoclient.orchestration import NetworkDistributedRepoClient
@@ -23,7 +23,7 @@ from ndnsf_distributed_inference.experimental.semantic_cache import (
     SemanticServiceCacheManager,
     semantic_cache_token_saving_ratio,
 )
-from ndnsf_distributed_inference.llm_runtime import (
+from ndnsf_distributed_inference.adapters.llama.runtime import (
     ManagedLlamaServerRuntime,
     materialize_llm_runtime_artifacts,
 )

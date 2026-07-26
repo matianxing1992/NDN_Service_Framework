@@ -1,0 +1,10 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+[project]
+name = "ndnsf-di-planner"
+version = "0.111.0"
+dependencies = ["ndnsf-di-core==0.111.0", "ndnsf-di-sdk==0.111.0"]
+[tool.setuptools.packages.find]
+where = ["../../.."]
+include = ["ndnsf_distributed_inference.planner*"]

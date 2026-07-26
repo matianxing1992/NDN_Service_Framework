@@ -1,0 +1,13 @@
+{
+  "schema": "ndnsf-di-spec111-cost-policy-v1",
+  "source": "runtime-v1-score-golden.json",
+  "version": "runtime-v1-cost-parity-v1",
+  "cases": [
+    {"name": "gpu-ready", "computeMs": 10, "residencyReadyMs": 0, "queueWaitMs": 0, "queueLength": 0, "confidence": 1.0, "scoreMs": 10.0},
+    {"name": "queued-low-confidence", "computeMs": 10, "residencyReadyMs": 0, "queueWaitMs": 20, "queueLength": 3, "confidence": 0.8, "scoreMs": 55.0},
+    {"name": "cpu-resident", "computeMs": 10, "residencyReadyMs": 10, "queueWaitMs": 0, "queueLength": 0, "confidence": 1.0, "scoreMs": 20.0},
+    {"name": "disk-resident", "computeMs": 10, "residencyReadyMs": 40, "queueWaitMs": 0, "queueLength": 0, "confidence": 1.0, "scoreMs": 50.0},
+    {"name": "repo-available", "computeMs": 10, "residencyReadyMs": 130, "queueWaitMs": 0, "queueLength": 0, "confidence": 0.5, "scoreMs": 165.0}
+  ],
+  "conservativeFallbackMs": 10000.0
+}

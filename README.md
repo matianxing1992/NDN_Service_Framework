@@ -167,6 +167,14 @@ Manual C++-only installation is still possible:
 sudo ./waf install
 ```
 
+For an 8 GB development VM, keep 4 GB of swap available as an OOM safety net
+(increase a 2 GB swap allocation to 4 GB), and use `./waf build -j2` for routine
+builds. Reduce large dependency builds or memory-heavy link steps to
+`./waf build -j1` if necessary; avoid the default `-j4` concurrency on this VM
+profile. Because the full-stack installer currently derives its job count from
+`nproc`, run it as `sudo taskset -c 0,1 ./install_ndnsf_stack.sh` to hold it to
+two jobs.
+
 If you install manually and also need Python APIs, install the Python packages
 after the C++ build:
 
@@ -345,12 +353,15 @@ flow again.
 
 NDNSF separates continuous publication from exact-name object transfer:
 
-- Use the **streaming substrate** (`StreamInfo`, `StreamChunk`, stream buffers,
-  and stream fetch state) for video, telemetry, logs, and other live or
-  near-live sequences where freshness, sequence gaps, duplicate suppression,
-  reordering, and optional FEC metadata matter.
+- Use the **LiveStream API** (`ServiceProvider::createLiveStream` and
+  `ServiceUser::openLiveStream`) for video, telemetry, logs, and other live or
+  near-live sequences. The application reserves meaningful immutable Data
+  names ahead of production; signed sequential Mapping Data lets Core resolve
+  an internal cursor and keep bounded future exact-name Interests outstanding.
+  Payload Content stays opaque, is never wrapped as a nested Data packet, and
+  optional one-loss XOR recovery operates over those opaque bytes.
 - Use the **large-data / segmented object path** for large files, model
-  artifacts, catalog snapshots, recordings, and DI tensor bundles. These
+  artifacts, catalog snapshots, exported recording files, and DI tensor bundles. These
   objects already have exact NDN names, so they should be published with the
   large-data helper or `CollaborationContext::publishLargeNamed(...)` and
   fetched with `fetchLarge(...)` / SegmentFetcher-style retrieval.
@@ -362,8 +373,11 @@ ongoing sequence with freshness/ordering/buffer state -> stream substrate
 known object name with complete-object retrieval        -> large-data path
 ```
 
-For example, a live UAV video feed is a stream, while a recorded video object
-is large data. Live telemetry updates are a stream, while a telemetry log file
+For example, live UAV video and its durable packet history use the same
+canonical LiveStream Data: the application retains the exact signed wires and
+publishes a manifest/catalog for historical replay through the normal stream
+consumer. A separately exported complete MP4 is large data. Live telemetry
+updates are a stream, while a telemetry log file
 or mission snapshot is large data. A DI activation tensor with a planned
 dependency name is large data, while a future token-by-token generation feed
 would be a stream.
@@ -371,6 +385,42 @@ would be a stream.
 In short: a stream is an ongoing sequence; a large object is fetched by its
 exact name. StreamChunk is not a generic replacement for SegmentFetcher-style
 large-object retrieval.
+
+Minimal lifecycle:
+
+```cpp
+auto publisher = provider.createLiveStream(definition);
+auto reservation = publisher->reserveAhead(semanticDataName);
+publisher->publish(reservation, opaqueBytes);
+auto descriptor = publisher->activate(readiness);
+
+auto consumer = user.openLiveStream(descriptor, options);
+consumer->start();
+// onItem receives Provider-validated semantic-name opaque bytes.
+consumer->stop();
+```
+
+Encryption remains application-owned: encrypt before `publish`, then decrypt
+and admit inside `onItem`. Core sees no key or plaintext. `Latest` and
+`Beginning` starts, status/stop, bounded retries, prefetch-policy rollback, and
+optional FEC are part of the shared C++/Python API. See
+[`docs/streaming-substrate.md`](docs/streaming-substrate.md).
+
+The matched 30-cell MiniNDN campaign kept `mapped-pressure` as the default.
+Future-on lowered 5% median p95 live lag, but increased timeout/Nack load by
+137.5% and Mapping Interest share to 98.85%; it therefore remains an explicit
+experimental option rather than a claimed optimization.
+
+Spec 123 repairs the exact-name future pipeline exposed by the negative Spec
+122 media result. Core measures Interest-to-Data DRD directly, refills the
+network pipeline before bounded APP processing, makes Chasing/Adjusting windows
+control actual cursor issuance, and translates one segmented sample into a
+complete-group reserve. UAV keeps the original 3600-byte, 12-source plus
+one-repair workload and uses 32-name Mapping blocks. In the accepted 60-second
+MiniNDN UAV run, 1830 frames decoded, Provider future Interests hit 7153/7153,
+and capture-to-decode p50/p95/p99 was 142.654/205.946/269.402 ms.
+`legacy-pipe` remains the default until a broader paired promotion matrix is
+requested; physical scan-out is still not claimed.
 
 For payloads that exceed the inline/single-segment threshold, NDNSF uses one
 common large-data reference abstraction. Small request and response payloads
@@ -1021,6 +1071,7 @@ Key runtime settings:
 ```text
 NDN_LOG=ndn_service_framework.*=INFO
 NFD log level: WARN
+NDNSF_SVS_PROTOCOL_VERSION=v3
 NDNSF_SVS_MAX_SUPPRESSION_MS=1
 NDNSF_SVS_ASYNC_PUBLISH=1
 NDNSF_SVS_PARALLEL_SYNC=1
@@ -1035,6 +1086,23 @@ provider ACK worker threads: 2
 strategy: first-responding
 workload: open-loop, 60 s warmup + 60 s measured duration for latency floor validation
 ```
+
+`NDNSF_SVS_PROTOCOL_VERSION` accepts only `v3` (the default) or explicit
+rollback `v2`; an invalid value fails runtime construction. When
+`NDNSF_SVS_MAX_SUPPRESSION_MS` is unset, the selected profile owns the default:
+V3 resolves to 200 ms and V2 to 500 ms. The `1` above is an explicit latency
+experiment override, not the normal V3 default. The NDNSF-DI GUI follows the
+same rule: it emits `v3` by default and omits the suppression variable until an
+operator enters an override. Every affected C++ consumer must be rebuilt after
+changing NDN-SVS because the protocol-options change is source compatible, not
+ABI compatible.
+
+V3 signs the shared StateVector Data name `/<group>/v=3`. Because a participant
+identity is not a prefix of that shared name, the trust schema must authorize
+admitted participant certificates for this exact group object. NDNSF binds the
+non-hierarchical name exception to its configured group and still verifies the
+Data signature; it does not relax validation for other names. The example trust
+schema includes the corresponding `/example/.../group/...` rule.
 
 Verified software stack for the 100 RPS latency-floor run:
 
@@ -1140,3 +1208,11 @@ parallel SVS production. Keep `--performance-mode` aligned with the runtime
 profile above when validating the latency floor, and only set
 `--svs-disable-parallel-production` when an experiment is specifically studying
 single-threaded production behavior.
+# Spec 111 Python optimization and deployment API
+
+New applications construct a process-local suite through
+`ndnsf_distributed_inference.sdk` and use deployment/request APIs from
+`ndnsf_distributed_inference.app_sdk`. Exact model requests expose only exact
+semantic candidates; alternatives require explicit application authorization.
+Models remain external artifacts. Spec 111 uses MiniNDN only; OCI/SIF and
+iTiger execution remain deferred to Spec 110 under a new candidate identity.

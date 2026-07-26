@@ -20,6 +20,13 @@ void logTimelineTrace(const std::string& role,
                       const ndn::Name& requestId,
                       TimelineFields fields = {});
 
+void logStreamTimelineTrace(const std::string& role,
+                            const std::string& event,
+                            const std::string& streamId,
+                            uint64_t sessionEpoch,
+                            uint64_t cursor,
+                            TimelineFields fields = {});
+
 bool hybridCryptoTimingEnvEnabled();
 
 void logHybridCryptoTiming(const std::string& role,

@@ -1,0 +1,13 @@
+{
+  "schema": "ndnsf-di-spec111-transport-faults-v1",
+  "candidateId": "spec111-local-minindn-only",
+  "cases": [
+    {"id": "drop-prepare", "operation": "PREPARE", "fault": "drop", "expected": "abort-prepared-no-activate"},
+    {"id": "duplicate-prepare", "operation": "PREPARE", "fault": "duplicate", "expected": "idempotent-prepared"},
+    {"id": "reorder-commit", "operation": "COMMIT", "fault": "reorder", "expected": "exact-certificate-before-activate"},
+    {"id": "conflicting-commit", "operation": "COMMIT", "fault": "conflict", "expected": "release-committed-abort-prepared"},
+    {"id": "duplicate-abort", "operation": "ABORT", "fault": "duplicate", "expected": "idempotent-aborted"},
+    {"id": "duplicate-release", "operation": "RELEASE", "fault": "duplicate", "expected": "idempotent-released"},
+    {"id": "provider-restart", "operation": "COMMIT", "fault": "boot-epoch-change", "expected": "fenced-no-activate"}
+  ]
+}

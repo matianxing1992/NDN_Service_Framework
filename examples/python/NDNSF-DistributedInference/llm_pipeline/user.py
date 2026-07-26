@@ -11,8 +11,13 @@ import threading
 import time
 from pathlib import Path
 
-from ndnsf_distributed_inference import APPClient
-from ndnsf_distributed_inference.qwen_pilot import (
+from ndnsf_distributed_inference.app_sdk import (
+    APPClient, APPDeployment, FileRequestEnvelopeKeyProvider,
+    ProviderEvidenceVerifier, RuntimeJournal,
+)
+from ndnsf_distributed_inference.app_sdk.status import RequestState, RevisionState
+from ndnsf_distributed_inference.ops.cli import definition_from_json
+from ndnsf_distributed_inference.adapters.qwen.pilot import (
     BoundedGenerationScheduler,
     GenerationQueueFull,
 )
@@ -35,6 +40,159 @@ from llm_pipeline_lib import (
     _decode_native_tensor_bundle,
     _native_tensor_bundle_payload,
 )
+from deployment_control import (
+    CONTROL_SCHEMA, action_from_response, readiness_from_response,
+)
+
+
+def _runtime_journal(args, identity: str, *, request_envelopes: bool = False):
+    if args.test_only_allow_ephemeral_app_state:
+        return RuntimeJournal.for_test(args.app_state_root, identity)
+    key_provider = None
+    if request_envelopes:
+        if not args.app_envelope_key_file:
+            raise RuntimeError(
+                "--app-envelope-key-file is required for durable production submit")
+        key_provider = FileRequestEnvelopeKeyProvider(
+            args.app_envelope_key_file)
+    return RuntimeJournal(
+        args.app_state_root,
+        identity,
+        envelope_key_provider=key_provider,
+    )
+
+
+def _deployment_control_request(client, service: str, action: str, revision: str,
+                                artifact_digests, args) -> bytes:
+    payload = json.dumps({
+        "schema": CONTROL_SCHEMA,
+        "action": action,
+        "revision": revision,
+        "artifactDigests": list(artifact_digests),
+    }, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    result = client.distributed_inference(
+        service, payload, deployment_revision=revision,
+        dynamic_provisioning=False,
+        ack_timeout_ms=args.ack_timeout_ms,
+        timeout_ms=args.timeout_ms,
+    )
+    if not result.status:
+        raise RuntimeError(
+            f"deployment control {action} failed for {service}: {result.error}")
+    return result.payload
+
+
+def _start_deployment_workflow(client, args):
+    trust = json.loads(Path(args.provider_trust_bundle).read_text(encoding="utf-8"))
+    verifier = ProviderEvidenceVerifier({
+        str(key_id): str(pem).encode("utf-8")
+        for key_id, pem in trust["trustedProviderKeys"].items()
+    })
+    services = tuple(args.deployment_control_service)
+    if not services:
+        services = tuple(str(item) for item in trust.get("controlServices", ()))
+    definition = definition_from_json(args.deployment_definition)
+    deployment = APPDeployment(
+        _runtime_journal(args, "deployment-operator"),
+        readiness_verifier=verifier)
+    revision = deployment.resolve(definition)
+    if revision.revision != args.deployment_revision:
+        raise RuntimeError("deployment workflow revision differs from harness identity")
+    artifacts = tuple(item.digest for item in definition.artifacts)
+    readiness = tuple(readiness_from_response(_deployment_control_request(
+        client, service, "PREPARE", revision.revision, artifacts, args))
+        for service in services)
+    activations = tuple(action_from_response(_deployment_control_request(
+        client, service, "ACTIVATE", revision.revision, artifacts, args))
+        for service in services)
+    operation = deployment.apply(
+        revision, readiness=readiness, activation_receipts=activations)
+    if operation.status != "ACTIVE":
+        raise RuntimeError(f"deployment apply did not activate: {operation.reason}")
+    restarted = APPDeployment(
+        _runtime_journal(args, "deployment-operator"),
+        readiness_verifier=verifier)
+    if restarted.status(definition.deployment_id) != RevisionState.ACTIVE:
+        raise RuntimeError("deployment restart did not recover ACTIVE")
+    print(
+        "LLM_PIPELINE_DEPLOYMENT_ACTIVE "
+        f"revision={revision.revision} roles={len(readiness)}",
+        flush=True,
+    )
+    return {
+        "deployment": restarted,
+        "definition": definition,
+        "revision": revision,
+        "services": services,
+        "artifacts": artifacts,
+        "verifier": verifier,
+    }
+
+
+def _finish_deployment_workflow(client, workflow, args) -> None:
+    deployment = workflow["deployment"]
+    definition = workflow["definition"]
+    revision = workflow["revision"]
+    services = workflow["services"]
+    artifacts = workflow["artifacts"]
+    drains = tuple(action_from_response(_deployment_control_request(
+        client, service, "DRAIN", revision.revision, artifacts, args))
+        for service in services)
+    if deployment.drain(
+            definition.deployment_id,
+            action_receipts=drains).status != RevisionState.INACTIVE.value:
+        raise RuntimeError("deployment did not become INACTIVE")
+
+    preview = type(revision).resolve(
+        definition, epoch=revision.lifecycle_epoch + 1)
+    rollback_readiness = tuple(readiness_from_response(_deployment_control_request(
+        client, service, "PREPARE", preview.revision, artifacts, args))
+        for service in services)
+    rollback_activations = tuple(action_from_response(_deployment_control_request(
+        client, service, "ACTIVATE", preview.revision, artifacts, args))
+        for service in services)
+    rollback = deployment.rollback(
+        definition, readiness=rollback_readiness,
+        activation_receipts=rollback_activations)
+    if rollback.revision != preview.revision or rollback.lifecycle_epoch != 2:
+        raise RuntimeError("rollback did not create the fenced epoch-2 revision")
+
+    final_drains = tuple(action_from_response(_deployment_control_request(
+        client, service, "DRAIN", preview.revision, artifacts, args))
+        for service in services)
+    deployment.drain(
+        definition.deployment_id, action_receipts=final_drains)
+    deletes = tuple(action_from_response(_deployment_control_request(
+        client, service, "DELETE", preview.revision, artifacts, args))
+        for service in services)
+    deployment.delete(
+        definition.deployment_id, action_receipts=deletes)
+    final = APPDeployment(
+        _runtime_journal(args, "deployment-operator"),
+        readiness_verifier=workflow["verifier"])
+    if final.status(definition.deployment_id) != RevisionState.DELETED:
+        raise RuntimeError("deployment restart did not recover DELETED")
+    wire_bindings = [record["payload"] for record in client.journal.records()
+                     if record["kind"] == "request-wire-binding"]
+    if not wire_bindings:
+        raise RuntimeError("deployment workflow observed no durable NDNSF wire binding")
+    summary = {
+        "schema": "ndnsf-di-spec111-minindn-deployment-workflow-v1",
+        "status": "PASS",
+        "initialRevision": revision.revision,
+        "rollbackRevision": rollback.revision,
+        "rollbackEpoch": rollback.lifecycle_epoch,
+        "terminalState": RevisionState.DELETED.value,
+        "providerCount": len(services),
+        "wireRequestIds": [item["wireRequestId"] for item in wire_bindings],
+    }
+    Path(args.deployment_workflow_summary).write_text(
+        json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(
+        "LLM_PIPELINE_DEPLOYMENT_WORKFLOW_PASS " +
+        json.dumps(summary, sort_keys=True, separators=(",", ":")),
+        flush=True,
+    )
 
 
 def _percentile(values: list[float], percentile: float) -> float:
@@ -50,6 +208,15 @@ def _percentile(values: list[float], percentile: float) -> float:
         return ordered[lower]
     weight = index - lower
     return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
+
+
+def _fixed_rate_slot_time(started: float, ordinal: int, interval_s: float,
+                          deadline: "Optional[float]") -> "Optional[float]":
+    """Return an absolute start slot without accumulating request latency."""
+    scheduled = started + max(0, ordinal) * max(0.0, interval_s)
+    if deadline is not None and scheduled >= deadline:
+        return None
+    return scheduled
 
 
 def _stable_timeline_sample_allows(request_id: str, sample_rate: int) -> bool:
@@ -261,6 +428,7 @@ def _run_native_open_loop(client, args, qwen_summary: dict, manifest: dict,
                 future = client.async_distributed_inference(
                     SERVICE,
                     payload,
+                    deployment_revision=args.deployment_revision,
                     dynamic_provisioning=False,
                     ack_timeout_ms=args.ack_timeout_ms,
                     timeout_ms=args.timeout_ms,
@@ -494,11 +662,33 @@ def main() -> int:
     parser.add_argument("--campaign-id", default="")
     parser.add_argument("--spec107-candidate-id", default="")
     parser.add_argument("--spec107-diagnostic-timing-jsonl", default="")
+    parser.add_argument("--durable-app-submit", action="store_true")
+    parser.add_argument("--deployment-revision", default="")
+    parser.add_argument(
+        "--app-state-root", default="/tmp/ndnsf-di-app-state")
+    parser.add_argument("--app-envelope-key-file", default="")
+    parser.add_argument(
+        "--test-only-allow-ephemeral-app-state",
+        action="store_true",
+        help="MiniNDN/unit-only override for volatile APP state and test key",
+    )
+    parser.add_argument("--deployment-workflow", action="store_true")
+    parser.add_argument("--deployment-definition", default="")
+    parser.add_argument("--provider-trust-bundle", default="")
+    parser.add_argument("--deployment-control-service", action="append", default=[])
+    parser.add_argument("--deployment-workflow-summary", default="")
     args = parser.parse_args()
     if args.max_new_tokens < 1 or args.max_new_tokens > 32:
         raise SystemExit("--max-new-tokens must be between 1 and 32")
     if args.native_cpu_provider and args.publish_input_reference:
         raise SystemExit("native CPU pilot does not yet accept referenced request bundles")
+    if args.durable_app_submit and not args.deployment_revision:
+        raise SystemExit("--durable-app-submit requires --deployment-revision")
+    if args.deployment_workflow and not all((
+            args.deployment_revision, args.deployment_definition,
+            args.provider_trust_bundle, args.deployment_workflow_summary)):
+        raise SystemExit(
+            "--deployment-workflow requires revision/definition/trust/summary")
 
     qwen_summary = {}
     if args.runtime in (QWEN_TRANSFORMERS_RUNTIME, QWEN_ONNX_RUNTIME) and args.qwen_runtime_summary:
@@ -557,7 +747,17 @@ def main() -> int:
         args.config,
         generated_policy_dir=args.generated_policy_dir,
         group=args.group,
+        state_root=args.app_state_root,
+        envelope_key_file=(args.app_envelope_key_file or None),
+        test_only_allow_ephemeral_state_root=(
+            args.test_only_allow_ephemeral_app_state),
     )
+    if not args.deployment_revision:
+        args.deployment_revision = "sha256:" + hashlib.sha256(
+            Path(args.config).read_bytes()).hexdigest()
+    deployment_workflow = (
+        _start_deployment_workflow(client, args)
+        if args.deployment_workflow else None)
     local_qwen_onnx = None
     if (
         args.runtime == QWEN_ONNX_RUNTIME and
@@ -600,11 +800,11 @@ def main() -> int:
 
     measured_latencies: list[float] = []
     measured_count = 0
-    deadline = (
-        time.perf_counter() + args.measured_duration_s
-        if args.measured_duration_s > 0 else
-        None
-    )
+    # Start the measured-duration clock only after all warmup requests finish.
+    # The Spec 111 matched campaign freezes warmup outside the measured window.
+    deadline = None
+    warmup_started = time.perf_counter()
+    measured_started = None
     total_limit = args.warmup_requests + max(1, args.measured_requests)
     index = 0
     qwen_session_id = args.session_id or (
@@ -617,12 +817,29 @@ def main() -> int:
     try:
         while True:
             phase = "warmup" if index < args.warmup_requests else "measured"
-            if phase == "measured" and deadline is None and measured_count >= args.measured_requests:
-                break
-            if phase == "measured" and deadline is not None and measured_count > 0 and time.perf_counter() >= deadline:
+            if phase == "measured" and measured_started is None:
+                measured_started = time.perf_counter()
+                if args.measured_duration_s > 0:
+                    deadline = measured_started + args.measured_duration_s
+            if phase == "measured" and args.measured_duration_s <= 0 and measured_count >= args.measured_requests:
                 break
             if deadline is None and index >= total_limit:
                 break
+
+            if args.request_interval_ms > 0:
+                interval_s = args.request_interval_ms / 1000.0
+                phase_started = (
+                    warmup_started if phase == "warmup" else measured_started)
+                ordinal = index if phase == "warmup" else measured_count
+                scheduled = _fixed_rate_slot_time(
+                    phase_started, ordinal, interval_s, deadline)
+                if scheduled is None:
+                    break
+                delay = scheduled - time.perf_counter()
+                if delay > 0:
+                    time.sleep(delay)
+                if deadline is not None and time.perf_counter() >= deadline:
+                    break
 
             if args.runtime in (QWEN_TRANSFORMERS_RUNTIME, QWEN_ONNX_RUNTIME):
                 request_id = f"{args.request_id}-{index}"
@@ -752,6 +969,7 @@ def main() -> int:
                     result = client.distributed_inference(
                         SERVICE,
                         native_payload,
+                        deployment_revision=args.deployment_revision,
                         dynamic_provisioning=False,
                         ack_timeout_ms=args.ack_timeout_ms,
                         timeout_ms=args.timeout_ms,
@@ -790,13 +1008,63 @@ def main() -> int:
                     "tokenCount": len(generated_tokens),
                 }
             else:
-                result = client.distributed_inference(
-                    SERVICE,
-                    request_payload,
-                    dynamic_provisioning=False,
-                    ack_timeout_ms=args.ack_timeout_ms,
-                    timeout_ms=args.timeout_ms,
-                )
+                if args.durable_app_submit:
+                    handle = client.submit(
+                        service=SERVICE,
+                        input=request_payload,
+                        deployment_revision=args.deployment_revision,
+                        deadline=(args.timeout_ms + 10_000) / 1000.0,
+                        inference_options={
+                            "dynamic_provisioning": False,
+                            "ack_timeout_ms": args.ack_timeout_ms,
+                            "timeout_ms": args.timeout_ms,
+                        },
+                    )
+                    state = client.wait(
+                        handle, timeout_ms=args.timeout_ms + 10_000)
+                    if state == RequestState.SUCCEEDED:
+                        result = type("DurableInferenceResult", (), {
+                            "status": True,
+                            "payload": client.result(handle),
+                            "error": "",
+                            "request_id": handle.request_id,
+                        })()
+                    else:
+                        result = type("DurableInferenceResult", (), {
+                            "status": False,
+                            "payload": b"",
+                            "error": state.value,
+                            "request_id": handle.request_id,
+                        })()
+                    restarted = APPClient(
+                        _runtime_journal(
+                            args,
+                            client.journal.root.name,
+                            request_envelopes=True,
+                        ),
+                        requester_identity=client.requester_identity,
+                    )
+                    reopened = restarted.open_request(handle.request_id)
+                    if (restarted.status(reopened) != state or
+                            (state == RequestState.SUCCEEDED and
+                             restarted.result(reopened) != result.payload)):
+                        raise RuntimeError("durable request reopen mismatch")
+                    print(
+                        "LLM_PIPELINE_DURABLE_REQUEST "
+                        f"requestId={handle.request_id} "
+                        f"wireRequestId={result.request_id} "
+                        f"state={state.value}",
+                        flush=True,
+                    )
+                else:
+                    result = client.distributed_inference(
+                        SERVICE,
+                        request_payload,
+                        deployment_revision=args.deployment_revision,
+                        dynamic_provisioning=False,
+                        ack_timeout_ms=args.ack_timeout_ms,
+                        timeout_ms=args.timeout_ms,
+                    )
             distributed_ms = (time.perf_counter() - started) * 1000.0
             if not result.status:
                 if metrics_file:
@@ -846,8 +1114,6 @@ def main() -> int:
                 json.dumps(response, sort_keys=True),
             )
             index += 1
-            if args.request_interval_ms > 0:
-                time.sleep(args.request_interval_ms / 1000.0)
     finally:
         if metrics_file:
             metrics_file.close()
@@ -866,6 +1132,8 @@ def main() -> int:
             f"runtime={args.runtime}",
             f"metrics_csv={metrics_path or ''}",
         )
+    if deployment_workflow is not None:
+        _finish_deployment_workflow(client, deployment_workflow, args)
     return 0
 
 

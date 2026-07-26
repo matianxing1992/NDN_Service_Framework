@@ -1,0 +1,41 @@
+{
+  "schemaVersion": "ndnsf-di-public-api-v1",
+  "owners": {
+    "InferenceApplication": "ndnsf_distributed_inference.app_sdk.application",
+    "InferenceClient": "ndnsf_distributed_inference.app_sdk.client",
+    "InferenceProvider": "ndnsf_distributed_inference.app_sdk.provider"
+  },
+  "apiExports": [
+    "ArtifactReference",
+    "DeploymentActivationRecord",
+    "DeploymentConstraints",
+    "DeploymentDefinition",
+    "DeploymentDefinitionRef",
+    "DeploymentHandle",
+    "DeploymentHandleRef",
+    "DeploymentProgress",
+    "DeploymentRef",
+    "DeploymentStatus",
+    "DeploymentSummary",
+    "InferenceApplication",
+    "InferenceClient",
+    "InferenceOptions",
+    "InferenceProvider",
+    "InferenceRequestHandle",
+    "InferenceResult",
+    "ModelIntent",
+    "OptimizationObjective",
+    "ProviderDeploymentOffer",
+    "ProviderDeploymentOffers",
+    "RequestContract",
+    "RequestRef",
+    "RequestableDeployment"
+  ],
+  "protocol": {
+    "ack": "willingness-and-availability",
+    "selection": "responsibility-membership-lease",
+    "genericStatus": "observation-only",
+    "readiness": "exact-all-role-execution-gate",
+    "response": "final-inference-result"
+  }
+}

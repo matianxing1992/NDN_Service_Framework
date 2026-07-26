@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+[project]
+name = "ndnsf-distributed-inference"
+version = "0.111.0"
+dependencies = ["ndnsf-di-core==0.111.0", "ndnsf-di-sdk==0.111.0", "ndnsf-di-app==0.111.0", "ndnsf-di-planner==0.111.0", "ndnsf-di-ops==0.111.0"]
+[project.scripts]
+ndnsf-di = "ndnsf_distributed_inference.ops.cli:main"
+[tool.setuptools.packages.find]
+where = ["../../.."]
+include = ["ndnsf_distributed_inference", "ndnsf_distributed_inference.compatibility*"]

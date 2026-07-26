@@ -1,0 +1,29 @@
+{
+  "schema": "ndnsf-di-spec111-deployment-preference-golden-v1",
+  "cases": [
+    {
+      "id": "active",
+      "deploymentId": "dep-active",
+      "records": [{"deploymentId": "dep-active", "status": "ACTIVE", "fragmentMap": {"/Stage/0": [{"provider": "/P/0"}], "/Stage/1": ["/P/1"]}}],
+      "expected": "/Stage/0=>/P/0;/Stage/1=>/P/1;"
+    },
+    {
+      "id": "degraded",
+      "deploymentId": "dep-degraded",
+      "records": [{"deploymentId": "dep-degraded", "status": "DEGRADED", "fragment_map": {"/Stage/0": [{"provider": "/P/fallback"}], "/Stage/empty": []}}],
+      "expected": "/Stage/0=>/P/fallback;"
+    },
+    {
+      "id": "inactive",
+      "deploymentId": "dep-idle",
+      "records": [{"deploymentId": "dep-idle", "status": "IDLE", "fragmentMap": {"/Stage/0": ["/P/0"]}}],
+      "expected": ""
+    },
+    {
+      "id": "malformed-records",
+      "deploymentId": "dep-bad",
+      "rawDeployments": "{not-json",
+      "expected": ""
+    }
+  ]
+}

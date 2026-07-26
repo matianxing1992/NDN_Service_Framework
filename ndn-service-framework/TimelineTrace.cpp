@@ -116,6 +116,35 @@ logTimelineTrace(const std::string& role,
 }
 
 void
+logStreamTimelineTrace(const std::string& role,
+                       const std::string& event,
+                       const std::string& streamId,
+                       uint64_t sessionEpoch,
+                       uint64_t cursor,
+                       TimelineFields fields)
+{
+    // Per-packet Stream traces are substantially more frequent than request or
+    // exact-frame traces.  A 12+1, 30-fps UAV stream emits hundreds of these
+    // records per second and DEBUG logging can become the bottleneck being
+    // measured.  Keep the diagnostic available, but allow latency campaigns
+    // to retain exact source/decode/widget evidence without enabling this
+    // high-rate probe.
+    if (const char* value = std::getenv("NDNSF_STREAM_PACKET_TIMELINE_TRACE");
+        value != nullptr) {
+        const std::string text(value);
+        if (text.empty() || text == "0" || text == "false" || text == "FALSE" ||
+            text == "no" || text == "NO") {
+            return;
+        }
+    }
+    ndn::Name correlation("/NDNSF/STREAM/TIMELINE");
+    correlation.append(streamId);
+    correlation.appendNumber(sessionEpoch);
+    correlation.appendNumber(cursor);
+    logTimelineTrace(role, event, correlation, fields);
+}
+
+void
 logHybridCryptoTiming(const std::string& role,
                       const std::string& event,
                       const ndn::Name& requestId,

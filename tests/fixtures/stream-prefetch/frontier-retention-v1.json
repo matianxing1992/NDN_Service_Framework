@@ -1,0 +1,26 @@
+{
+  "contractVersion": 1,
+  "valid": {
+    "oldestRetained": 0,
+    "latestJoin": 1,
+    "latestProduced": 2,
+    "mappingCommittedThrough": 7,
+    "nextReserved": 8,
+    "checkpointBlock": 0,
+    "blockCapacity": 4
+  },
+  "invariants": [
+    "oldestRetained <= latestJoin",
+    "latestJoin <= latestProduced",
+    "latestProduced <= mappingCommittedThrough",
+    "mappingCommittedThrough < nextReserved",
+    "checkpointBlock == floor(latestJoin / blockCapacity)"
+  ],
+  "retentionTransition": {
+    "oldestRetainedBefore": 0,
+    "oldestRetainedAfter": 4,
+    "evictedBlock": 0,
+    "providerSnapshotRequired": true,
+    "consumerLocalEvictionMayAdvanceProviderFrontier": false
+  }
+}

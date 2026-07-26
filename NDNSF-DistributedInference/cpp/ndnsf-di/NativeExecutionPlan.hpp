@@ -3,6 +3,8 @@
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp"
 
+#include <ndn-cxx/encoding/buffer.hpp>
+
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -97,6 +99,95 @@ struct NativeExecutionPlan
   std::string plannerKind = "onnx-dag";
   std::vector<std::string> roles;
   std::vector<NativeDependencySpec> dependencies;
+};
+
+/** Provider-local R1 reservation policy. This class deliberately lives in DI:
+ * generic NDNSF applications are not required to reserve exclusive resources.
+ */
+struct DiReservationPolicy
+{
+  std::size_t globalLimit = 1;
+  std::size_t requesterLimit = 1;
+  std::size_t serviceLimit = 1;
+  std::uint64_t tentativeLeaseMs = 5000;
+};
+
+struct DiReservationRequest
+{
+  std::string providerName;
+  std::string requesterName;
+  std::string requestId;
+  std::string serviceName;
+  std::string planDigest;
+  ndn::Buffer resourceBindingProof;
+  std::vector<std::string> conflictKeys;
+  bool authorized = false;
+};
+
+enum class DiReservationState { Tentative, Committed, Released, Expired };
+
+struct DiReservationLease
+{
+  std::string reservationId;
+  std::string providerName;
+  std::string providerBootId;
+  std::string requesterName;
+  std::string requestId;
+  std::string serviceName;
+  std::string planDigest;
+  ndn::Buffer resourceBindingProof;
+  std::vector<std::string> conflictKeys;
+  std::uint64_t expiresAtMs = 0;
+  DiReservationState state = DiReservationState::Tentative;
+};
+
+struct DiReservationResult
+{
+  bool status = false;
+  std::string reasonCode;
+  DiReservationLease lease;
+  bool idempotentReplay = false;
+};
+
+/** Authorization-first, bounded and idempotent reservation authority for
+ * DIReservationSelectionV1 positive ACK generation. No model lifecycle work
+ * is performed by this authority.
+ */
+class DiReservationAuthority
+{
+public:
+  DiReservationAuthority(std::string providerBootId,
+                         DiReservationPolicy policy = {});
+  ~DiReservationAuthority();
+
+  DiReservationResult
+  reserve(const DiReservationRequest& request, std::uint64_t nowMs);
+
+  DiReservationResult commit(const std::string& reservationId,
+                             std::uint64_t nowMs);
+  bool release(const std::string& reservationId, const std::string& cause,
+               std::uint64_t nowMs);
+
+  std::size_t cleanupExpired(std::uint64_t nowMs);
+  void releaseAll(std::uint64_t nowMs, const std::string& cause = "PROVIDER_SHUTDOWN");
+
+private:
+  struct Record
+  {
+    DiReservationLease lease;
+    std::string releaseCause;
+  };
+
+  std::string keyFor(const DiReservationRequest& request) const;
+  bool withinQuota(const DiReservationRequest& request, std::uint64_t nowMs);
+
+private:
+  std::string m_providerBootId;
+  DiReservationPolicy m_policy;
+  std::mutex m_reservationMutex;
+  std::map<std::string, Record> m_records;
+  std::map<std::string, std::string> m_keyByReservation;
+  std::uint64_t m_nextReservationId = 1;
 };
 
 struct NativeProviderAssignment

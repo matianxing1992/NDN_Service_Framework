@@ -13,12 +13,16 @@ from dataclasses import dataclass, field
 import hashlib
 import os
 import threading
-from typing import Any, Callable, Optional
+import time
+from typing import Any, Callable, Mapping, Optional, Union
 
 from . import _ndnsf
 from .runtime_telemetry import (
+    CollaborationSelectionStatus,
     ProviderCapabilityHint,
+    ServiceOperationStatus,
     parse_ack_metadata,
+    to_plain,
 )
 from .service_discovery import ServiceDiscoveryRecord
 
@@ -41,6 +45,29 @@ RECOMMENDED_NEGATIVE_ACK_REASONS = frozenset({
 })
 
 
+def _native_deployment_intent(
+    value: Optional[Union[Mapping[str, str], _ndnsf.NativeDeploymentIntent]],
+):
+    """Normalize the additive deployment intent without changing legacy calls."""
+    if value is None or isinstance(value, _ndnsf.NativeDeploymentIntent):
+        return value
+    native = _ndnsf.NativeDeploymentIntent()
+    for key, field_value in value.items():
+        native.set_field(str(key), str(field_value))
+    return native
+
+
+def _native_request_capabilities(
+    value: Optional[Union[Mapping[str, str], _ndnsf.NativeRequestCapabilities]],
+):
+    if value is None or isinstance(value, _ndnsf.NativeRequestCapabilities):
+        return value
+    native = _ndnsf.NativeRequestCapabilities()
+    for key, field_value in value.items():
+        native.set_field(str(key), str(field_value))
+    return native
+
+
 def default_large_data_interest_lifetime_ms() -> int:
     """InterestLifetime for segmented large-object fetches.
 
@@ -59,6 +86,9 @@ class ServiceResponse:
     payload: bytes = b""
     error: str = ""
     request_id: str = ""
+    data_name: str = ""
+    signer_certificate: str = ""
+    wire_digest: str = ""
 
 
 @dataclass(frozen=True)
@@ -67,6 +97,8 @@ class AckDecision:
     payload: bytes = b""
     message: str = "ok"
     suppress: bool = False
+    reservation_lease: Mapping[str, str] = field(default_factory=dict)
+    selection_input_key_offer: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -100,6 +132,17 @@ class LargeDataPublishResult:
     success: bool
     encrypted_data_name: str = ""
     object_id: str = ""
+    error: str = ""
+
+
+@dataclass(frozen=True)
+class SignedAppDataResult:
+    """Result of exact-name, trust-schema-validated APP Data I/O."""
+
+    success: bool
+    data_name: str = ""
+    signer_certificate: str = ""
+    payload: bytes = b""
     error: str = ""
 
 
@@ -411,6 +454,7 @@ class CollaborationAssignment:
     artifact_data_name: str = ""
     requires_provisioning: bool = False
     provisioning_timeout_ms: int = 0
+    selection_digest: str = ""
     assignment_payload: bytes = b""
     role_providers: dict[str, str] = field(default_factory=dict)
 
@@ -480,6 +524,7 @@ class CollaborationContext:
             artifact_data_name=str(native.artifact_data_name),
             requires_provisioning=bool(native.requires_provisioning),
             provisioning_timeout_ms=int(native.provisioning_timeout_ms),
+            selection_digest=str(native.selection_digest),
             assignment_payload=assignment_payload,
             role_providers=_parse_role_providers(assignment_payload),
         )
@@ -692,6 +737,18 @@ class CollaborationContext:
             for data in self._native.wait_for(key_scope, topic_prefix, min_count, timeout_ms)
         ]
 
+    def report_operation_status(self, status: ServiceOperationStatus) -> None:
+        """Report the latest observation through signed SELECTION-STATUS.
+
+        This is generic progress only. Applications still own any exact
+        readiness or completion certificate needed to authorize execution.
+        """
+        if not isinstance(status, ServiceOperationStatus):
+            raise TypeError("status must be ServiceOperationStatus")
+        payload = to_plain(status)
+        payload["details_payload"] = bytes(status.details_payload)
+        self._native.report_operation_status(payload)
+
     def publish_final_response(self, payload: bytes) -> None:
         self._native.publish_final_response(bytes(payload))
 
@@ -702,6 +759,9 @@ def _to_native_response(response: ServiceResponse) -> _ndnsf.ServiceResponse:
     native.payload = response.payload
     native.error = response.error
     native.request_id = response.request_id
+    native.data_name = response.data_name
+    native.signer_certificate = response.signer_certificate
+    native.wire_digest = response.wire_digest
     return native
 
 
@@ -711,6 +771,9 @@ def _from_native_response(response: _ndnsf.ServiceResponse) -> ServiceResponse:
         payload=bytes(response.payload),
         error=str(response.error),
         request_id=str(response.request_id),
+        data_name=str(response.data_name),
+        signer_certificate=str(response.signer_certificate),
+        wire_digest=str(response.wire_digest),
     )
 
 
@@ -720,6 +783,8 @@ def _to_native_ack(decision: AckDecision) -> _ndnsf.AckDecision:
     native.payload = decision.payload
     native.message = decision.message
     native.suppress = decision.suppress
+    native.reservation_lease = dict(decision.reservation_lease)
+    native.selection_input_key_offer = dict(decision.selection_input_key_offer)
     return native
 
 
@@ -728,6 +793,16 @@ def _from_native_large_data_result(result) -> LargeDataPublishResult:
         success=bool(result.success),
         encrypted_data_name=str(result.encrypted_data_name),
         object_id=str(result.object_id),
+        error=str(result.error),
+    )
+
+
+def _from_native_signed_app_data_result(result) -> SignedAppDataResult:
+    return SignedAppDataResult(
+        success=bool(result.success),
+        data_name=str(result.data_name),
+        signer_certificate=str(result.signer_certificate),
+        payload=bytes(result.payload),
         error=str(result.error),
     )
 
@@ -810,7 +885,26 @@ class ServiceProvider:
         self._handlers: dict[str, Callable[[bytes], bytes | ServiceResponse]] = {}
         self._context_handlers: set[str] = set()
         self._ack_handlers: dict[str, Callable[[bytes], bool | AckDecision]] = {}
+        self._ack_context_handlers: set[str] = set()
         self._collaboration_services: set[str] = set()
+
+    def create_live_stream(self, definition):
+        """Create the Core-owned publisher; application supplies opaque bytes only."""
+        from .streaming import LiveStreamDefinition, LiveStreamPublisher
+
+        if not isinstance(definition, LiveStreamDefinition):
+            raise TypeError("definition must be LiveStreamDefinition")
+        return LiveStreamPublisher(
+            self._native.create_live_stream(definition._to_native()))
+
+    def create_stream(self, config):
+        """Create the high-level stream facade with Core-owned defaults."""
+        from .streaming import StreamConfig, StreamPublisher
+
+        if not isinstance(config, StreamConfig):
+            raise TypeError("config must be StreamConfig")
+        return StreamPublisher(
+            self._native.create_stream(config._to_native()))
 
     def add_handler(
         self,
@@ -841,12 +935,63 @@ class ServiceProvider:
         handler: Callable[[bytes], bool | AckDecision],
     ) -> None:
         self._ack_handlers[service] = handler
+        self._ack_context_handlers.discard(service)
+
+    def set_ack_context_handler(
+        self,
+        service: str,
+        handler: Callable[[Mapping[str, Any], bytes], bool | AckDecision],
+    ) -> None:
+        """Register an ACK policy with authenticated Request metadata.
+
+        The context exposes negotiated capabilities and opaque encrypted input;
+        it never exposes decrypted application input.
+        """
+        self._ack_handlers[service] = handler
+        self._ack_context_handlers.add(service)
 
     def ack_handler(self, service: str):
         def decorator(fn: Callable[[bytes], bool | AckDecision]):
             self.set_ack_handler(service, fn)
             return fn
         return decorator
+
+    def set_deployment_prepare_handler(
+        self, handler: Callable[[dict[str, Any]], Mapping[str, str]],
+    ) -> None:
+        """Register generic verify/load/warm preparation after Selection.
+
+        The callback returns readiness-specific fields such as
+        ``artifactDigest``, ``deploymentInstanceId``, and ``operationId``.
+        Core overwrites all authority and identity bindings before sending the
+        signed ProviderReadyMessage.
+        """
+        def native_handler(context):
+            return {str(key): str(value)
+                    for key, value in handler(dict(context)).items()}
+
+        self._native.set_deployment_prepare_handler(native_handler)
+
+    def set_r1_selection_decision_handler(
+        self, service: str,
+        handler: Callable[[Mapping[str, str]], Mapping[str, str]],
+    ) -> None:
+        """Apply a Core-authenticated R1 decision in application policy.
+
+        The handler owns reservation commit/release semantics and must return
+        a receipt bound to the supplied decision digest and reservation ID.
+        """
+        def native_handler(decision):
+            return {str(key): str(value)
+                    for key, value in handler(dict(decision)).items()}
+
+        self._native.set_r1_selection_decision_handler(service, native_handler)
+
+    def set_r1_reservation_terminal_handler(
+        self, service: str, handler: Callable[[str, str], None],
+    ) -> None:
+        """Release a DI-owned committed reservation on local termination."""
+        self._native.set_r1_reservation_terminal_handler(service, handler)
 
     def _register_service(self, service: str) -> None:
         if service not in self._handlers:
@@ -862,14 +1007,15 @@ class ServiceProvider:
 
         ack_handler = None
         if service in self._ack_handlers:
-            def ack_handler(payload: bytes):
-                result = self._ack_handlers[service](payload)
+            def ack_handler(*args):
+                result = self._ack_handlers[service](*args)
                 if isinstance(result, AckDecision):
                     return _to_native_ack(result)
                 return bool(result)
 
         self._native.add_service(
-            service, request_handler, ack_handler, include_context)
+            service, request_handler, ack_handler, include_context,
+            service in self._ack_context_handlers)
 
     def add_collaboration_handler(
         self,
@@ -877,14 +1023,16 @@ class ServiceProvider:
         allowed_roles: list[str],
         handler: Callable[[CollaborationContext, bytes], None],
         ack_handler: Optional[Callable[[bytes], bool | AckDecision]] = None,
+        *,
+        include_ack_context: bool = False,
     ) -> None:
         def request_handler(native_ctx, payload: bytes):
             handler(CollaborationContext(native_ctx), bytes(payload))
 
         native_ack = None
         if ack_handler is not None:
-            def native_ack(payload: bytes):
-                result = ack_handler(bytes(payload))
+            def native_ack(*args):
+                result = ack_handler(*args)
                 if isinstance(result, AckDecision):
                     return _to_native_ack(result)
                 return bool(result)
@@ -894,6 +1042,7 @@ class ServiceProvider:
             list(allowed_roles),
             request_handler,
             native_ack,
+            include_ack_context,
         )
         self._collaboration_services.add(service)
 
@@ -1045,6 +1194,101 @@ class ServiceUser:
             bootstrap_token=bootstrap_token,
         )
 
+    def open_live_stream(
+        self,
+        descriptor,
+        *,
+        start: str = "latest",
+        prefetch_policy: str | None = None,
+        aggregate_interest_limit: int = 64,
+        enable_fec_recovery: bool = False,
+        interest_lifetime_ms: int = 500,
+        on_item,
+        on_status=None,
+    ):
+        """Open semantic-name prefetch; callback receives validated opaque bytes."""
+        from .streaming import (
+            LiveStreamConsumerHandle,
+            LiveStreamDescriptor,
+            LiveStreamItemAdmission,
+            VerifiedLiveStreamItem,
+        )
+
+        if not isinstance(descriptor, LiveStreamDescriptor):
+            raise TypeError("descriptor must be LiveStreamDescriptor")
+        if prefetch_policy is None:
+            prefetch_policy = ("adaptive-sample-atomic"
+                               if descriptor.contract_version == 2
+                               else "mapped-pressure")
+
+        def item_adapter(native_item):
+            result = on_item(VerifiedLiveStreamItem._from_native(native_item))
+            if isinstance(result, LiveStreamItemAdmission):
+                return result._native
+            return bool(result)
+
+        native_status = None
+        if on_status is not None:
+            def native_status(value):
+                on_status(value)
+
+        native = self._native.open_live_stream(
+            descriptor._native,
+            item_adapter,
+            start=str(start),
+            prefetch_policy=str(prefetch_policy),
+            aggregate_interest_limit=int(aggregate_interest_limit),
+            enable_fec_recovery=bool(enable_fec_recovery),
+            interest_lifetime_ms=int(interest_lifetime_ms),
+            on_status=native_status,
+        )
+        return LiveStreamConsumerHandle(native)
+
+    def subscribe_stream(self, descriptor, options):
+        """Open and start one high-level stream subscription."""
+        from .streaming import (
+            LiveStreamItemAdmission,
+            PredictiveStreamDescriptor,
+            PredictiveStreamSubscriber,
+            StreamSubscriptionOptions,
+            VerifiedLiveStreamItem,
+        )
+
+        if not isinstance(descriptor, PredictiveStreamDescriptor):
+            raise TypeError("descriptor must be PredictiveStreamDescriptor")
+        if not isinstance(options, StreamSubscriptionOptions):
+            raise TypeError("options must be StreamSubscriptionOptions")
+        if not callable(options.on_item):
+            raise TypeError("options.on_item must be callable")
+
+        def item_adapter(native_item):
+            result = options.on_item(
+                VerifiedLiveStreamItem._from_native(native_item))
+            if isinstance(result, LiveStreamItemAdmission):
+                return result._native
+            return bool(result)
+
+        native_status = None
+        if options.on_status is not None:
+            if not callable(options.on_status):
+                raise TypeError("options.on_status must be callable")
+
+            def native_status(value):
+                options.on_status(value)
+
+        native = self._native.subscribe_stream(
+            descriptor._native,
+            item_adapter,
+            start=str(options.start),
+            prefetch_policy=options.prefetch_policy,
+            aggregate_interest_limit=int(options.aggregate_interest_limit),
+            enable_fec_recovery=bool(options.enable_fec_recovery),
+            require_full_delivery=bool(options.require_full_delivery),
+            interest_lifetime_ms=int(options.interest_lifetime_ms),
+            on_status=native_status,
+        )
+        return PredictiveStreamSubscriber(native)
+
     def request_service(
         self,
         service: str,
@@ -1053,6 +1297,13 @@ class ServiceUser:
         ack_timeout_ms: int = 300,
         timeout_ms: int = 5000,
         strategy: str = "first-responding",
+        request_id: str = "",
+        deployment_intent: Optional[
+            Union[Mapping[str, str], _ndnsf.NativeDeploymentIntent]
+        ] = None,
+        request_capabilities: Optional[
+            Union[Mapping[str, str], _ndnsf.NativeRequestCapabilities]
+        ] = None,
     ) -> ServiceResponse:
         response = self._native.request_service(
             service,
@@ -1060,6 +1311,9 @@ class ServiceUser:
             ack_timeout_ms=ack_timeout_ms,
             timeout_ms=timeout_ms,
             strategy=strategy,
+            request_id=request_id,
+            deployment_intent=_native_deployment_intent(deployment_intent),
+            request_capabilities=_native_request_capabilities(request_capabilities),
         )
         return _from_native_response(response)
 
@@ -1071,7 +1325,11 @@ class ServiceUser:
         *,
         timeout_ms: int = 5000,
     ) -> ServiceResponse:
-        """Invoke a known provider through NDNSF's authenticated Targeted path."""
+        """Invoke a known provider through NDNSF's authenticated Targeted path.
+
+        ``timeout_ms`` is one total deadline beginning when the request is
+        submitted, including local admission, token bootstrap, and publication.
+        """
 
         response = self._native.request_service_targeted(
             provider,
@@ -1080,6 +1338,113 @@ class ServiceUser:
             timeout_ms=timeout_ms,
         )
         return _from_native_response(response)
+
+    def query_collaboration_status(
+        self, *, provider: str, service: str, selection_digest: str,
+        timeout_ms: int = 500,
+    ) -> Optional[CollaborationSelectionStatus]:
+        value = self._native.query_collaboration_status(
+            provider, service, selection_digest, timeout_ms)
+        if value is None:
+            return None
+        snapshot = CollaborationSelectionStatus.from_dict(dict(value))
+        if (snapshot.provider_name != provider or
+                snapshot.service_name != service or
+                snapshot.selection_digest != selection_digest):
+            raise ValueError("collaboration status binding mismatch")
+        return snapshot
+
+    def collaboration_status(
+        self, request_id: str, *, timeout_ms: int = 500,
+    ) -> tuple[CollaborationSelectionStatus, ...]:
+        """Return the latest validated per-Provider snapshots for a request."""
+        values = self._native.get_collaboration_status_snapshot(
+            request_id, timeout_ms)
+        snapshots = tuple(CollaborationSelectionStatus.from_dict(dict(value))
+                          for value in values)
+        if any(item.request_id != request_id for item in snapshots):
+            raise ValueError("collaboration request status binding mismatch")
+        return snapshots
+
+    def watch_collaboration_request(
+        self, request_id: str, *, timeout_ms: int = 5000,
+        query_interval_ms: int = 250,
+    ):
+        deadline = time.monotonic() + timeout_ms / 1000.0
+        versions = {}
+        while time.monotonic() < deadline:
+            snapshots = self.collaboration_status(
+                request_id, timeout_ms=min(query_interval_ms, timeout_ms))
+            changed = False
+            for snapshot in snapshots:
+                for member in snapshot.member_statuses:
+                    key = (snapshot.provider_name, member.role,
+                           member.operation_id)
+                    version = (member.attempt, member.epoch, member.sequence)
+                    if key in versions and version < versions[key]:
+                        raise ValueError("stale/replayed collaboration status")
+                    if versions.get(key) != version:
+                        versions[key] = version
+                        changed = True
+            if changed or (snapshots and not versions):
+                yield snapshots
+            time.sleep(min(query_interval_ms / 1000.0,
+                           max(0.0, deadline - time.monotonic())))
+
+    def wait_collaboration_request(
+        self, request_id: str, *, predicate,
+        timeout_ms: int = 5000, query_interval_ms: int = 250,
+    ) -> tuple[CollaborationSelectionStatus, ...]:
+        for snapshots in self.watch_collaboration_request(
+                request_id, timeout_ms=timeout_ms,
+                query_interval_ms=query_interval_ms):
+            if predicate(snapshots):
+                return snapshots
+        raise TimeoutError("collaboration request status was not satisfied")
+
+    def watch_collaboration_status(
+        self, *, provider: str, service: str, selection_digest: str,
+        timeout_ms: int = 5000, query_interval_ms: int = 250,
+    ):
+        """Yield only monotonic member snapshots until the local watch ends."""
+        if timeout_ms <= 0 or query_interval_ms <= 0:
+            raise ValueError("watch timing must be positive")
+        deadline = time.monotonic() + timeout_ms / 1000.0
+        observed: dict[tuple[str, str], tuple[int, int, int]] = {}
+        while time.monotonic() < deadline:
+            remaining = max(1, int((deadline - time.monotonic()) * 1000))
+            snapshot = self.query_collaboration_status(
+                provider=provider, service=service,
+                selection_digest=selection_digest,
+                timeout_ms=min(remaining, query_interval_ms))
+            if snapshot is not None:
+                changed = not snapshot.member_statuses
+                for member in snapshot.member_statuses:
+                    key = (member.role, member.operation_id)
+                    version = (member.attempt, member.epoch, member.sequence)
+                    previous = observed.get(key)
+                    if previous is not None and version < previous:
+                        raise ValueError("stale/replayed collaboration status")
+                    if previous != version:
+                        observed[key] = version
+                        changed = True
+                if changed:
+                    yield snapshot
+            time.sleep(min(query_interval_ms / 1000.0,
+                           max(0.0, deadline - time.monotonic())))
+
+    def wait_collaboration_status(
+        self, *, provider: str, service: str, selection_digest: str,
+        predicate: Callable[[CollaborationSelectionStatus], bool],
+        timeout_ms: int = 5000, query_interval_ms: int = 250,
+    ) -> CollaborationSelectionStatus:
+        for snapshot in self.watch_collaboration_status(
+                provider=provider, service=service,
+                selection_digest=selection_digest,
+                timeout_ms=timeout_ms, query_interval_ms=query_interval_ms):
+            if predicate(snapshot):
+                return snapshot
+        raise TimeoutError("collaboration status predicate was not satisfied")
 
     def request_service_select(
         self,
@@ -1090,6 +1455,12 @@ class ServiceUser:
         ack_timeout_ms: int = 300,
         timeout_ms: int = 5000,
         request_strategy: str = "first-responding",
+        deployment_intent: Optional[
+            Union[Mapping[str, str], _ndnsf.NativeDeploymentIntent]
+        ] = None,
+        request_capabilities: Optional[
+            Union[Mapping[str, str], _ndnsf.NativeRequestCapabilities]
+        ] = None,
     ) -> ServiceResponse:
         """Request a service using an application-defined ACK selector.
 
@@ -1123,6 +1494,8 @@ class ServiceUser:
             ack_timeout_ms=ack_timeout_ms,
             timeout_ms=timeout_ms,
             request_strategy=request_strategy,
+            deployment_intent=_native_deployment_intent(deployment_intent),
+            request_capabilities=_native_request_capabilities(request_capabilities),
         )
         return _from_native_response(response)
 
@@ -1163,7 +1536,11 @@ class ServiceUser:
         on_timeout: Callable[[str], None],
         timeout_ms: int = 5000,
     ) -> None:
-        """Submit a known-provider Targeted request and return immediately."""
+        """Submit a known-provider Targeted request and return immediately.
+
+        Exactly one of ``on_response`` or ``on_timeout`` is delivered. The
+        total deadline includes admission, token bootstrap, and publication.
+        """
 
         self._native.request_service_targeted_async(
             provider,
@@ -1190,6 +1567,32 @@ class ServiceUser:
         )
         return _from_native_large_data_result(result)
 
+    def publish_signed_app_data(
+        self,
+        data_name: str,
+        payload: bytes,
+        *,
+        freshness_ms: int = 60000,
+    ) -> SignedAppDataResult:
+        """Publish signed APP Data at an exact name below this identity's DI prefix."""
+
+        return _from_native_signed_app_data_result(
+            self._native.publish_signed_app_data(
+                data_name, bytes(payload), freshness_ms))
+
+    def fetch_signed_app_data(
+        self,
+        data_name: str,
+        expected_signer: str,
+        *,
+        timeout_ms: int = 5000,
+    ) -> SignedAppDataResult:
+        """Fetch one exact APP record and validate its trust and signer identity."""
+
+        return _from_native_signed_app_data_result(
+            self._native.fetch_signed_app_data(
+                data_name, expected_signer, timeout_ms))
+
     def request_collaboration(
         self,
         service: str,
@@ -1204,6 +1607,8 @@ class ServiceUser:
         ack_timeout_ms: int = 300,
         timeout_ms: int = 10000,
         ack_observer: Optional[Callable[[list[AckCandidate]], None]] = None,
+        assignment_context: Optional[object] = None,
+        request_id: str = "",
     ) -> ServiceResponse:
         """Run a generic multi-provider collaboration.
 
@@ -1235,6 +1640,10 @@ class ServiceUser:
                     for candidate in native_candidates
                 ])
 
+        role_provider_assignments = (
+            assignment_context.providers_by_role()
+            if assignment_context is not None else {}
+        )
         response = self._native.request_collaboration(
             service,
             bytes(payload),
@@ -1247,6 +1656,8 @@ class ServiceUser:
             ack_timeout_ms,
             timeout_ms,
             native_ack_observer,
+            role_provider_assignments,
+            request_id,
         )
         return _from_native_response(response)
 
@@ -1265,9 +1676,15 @@ class ServiceUser:
         on_timeout: Callable[[str], None],
         ack_timeout_ms: int = 300,
         timeout_ms: int = 10000,
+        assignment_context: Optional[object] = None,
+        request_id: str = "",
     ) -> None:
         """Submit a generic multi-provider collaboration without blocking."""
 
+        role_provider_assignments = (
+            assignment_context.providers_by_role()
+            if assignment_context is not None else {}
+        )
         self._native.request_collaboration_async(
             service,
             bytes(payload),
@@ -1281,6 +1698,8 @@ class ServiceUser:
             on_timeout,
             ack_timeout_ms,
             timeout_ms,
+            role_provider_assignments,
+            request_id,
         )
 
     def start(self) -> None:

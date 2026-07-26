@@ -47,6 +47,15 @@ class TypedAckCompatibilityTest(unittest.TestCase):
         self.assertEqual(result.hint.runtime_hint.queue_length, 2)
         self.assertEqual(result.hint.service_payload["residency"], "GPU_LOADED")
 
+    def test_native_collaboration_reader_accepts_python_wire_field_names(self) -> None:
+        """Keep the Python producer and native role selector interoperable."""
+        typed_root = hint().to_ack_fields()["providerCapabilityHint"]
+        self.assertIn("service_payload", typed_root)
+        wrapper = (Path(__file__).resolve().parents[2] /
+                   "pythonWrapper/src/ndnsf/_ndnsf.cpp").read_text(encoding="utf-8")
+        self.assertIn('get_child_optional("service_payload")', wrapper)
+        self.assertIn('put_child("servicePayload"', wrapper)
+
     def test_v1_typed_reader_is_supported_during_epoch(self) -> None:
         result = decode_provider_capability_ack(
             encode_provider_capability_ack(hint(schema="ndnsf-provider-capability-v1")))

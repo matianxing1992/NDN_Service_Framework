@@ -38,6 +38,23 @@ class ExecutionLeaseCodecTest(unittest.TestCase):
             LeaseOperationResponse.from_bytes(response.to_bytes()), response
         )
 
+    def test_commit_omits_defaults_and_round_trips_v1(self) -> None:
+        request = LeaseOperationRequest(
+            operation=LeaseOperation.COMMIT,
+            request_id="request-1",
+            plan_digest="plan-1",
+            idempotency_key="commit-1",
+            target_service_name="/Inference/NativeTracer",
+            lease_id="lease-1",
+            provider_epoch="epoch-1",
+        )
+        wire = request.to_bytes()
+        self.assertNotIn(b'"expiresAtMs"', wire)
+        self.assertNotIn(b'"resourceBindingProof"', wire)
+        self.assertNotIn(b'"resourceBindingSchema"', wire)
+        self.assertNotIn(b'"roles"', wire)
+        self.assertEqual(LeaseOperationRequest.from_bytes(wire), request)
+
     def test_malformed_and_unknown_schema_are_rejected(self) -> None:
         with self.assertRaises(ValueError):
             LeaseOperationRequest.from_bytes(b"not-json")

@@ -6,8 +6,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from ndnsf_distributed_inference import (
-    PlannerKind,
+from ndnsf_distributed_inference.plan import PlannerKind
+from ndnsf_distributed_inference.llm_stub_planner import (
     llm_planner_registry,
     llm_planner_request,
     llm_splitter_output_from_result,

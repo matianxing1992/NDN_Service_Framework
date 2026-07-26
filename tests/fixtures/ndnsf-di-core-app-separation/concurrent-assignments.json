@@ -1,0 +1,6 @@
+{
+  "schema": "ndnsf-di-spec111-concurrent-assignments-v1",
+  "left": {"prefill": "/provider/a", "decode": "/provider/b"},
+  "right": {"prefill": "/provider/b", "decode": "/provider/a"},
+  "repetitions": 100
+}

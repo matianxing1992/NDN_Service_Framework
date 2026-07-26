@@ -1,0 +1,1118 @@
+diff --git a/ndn-svs/core.cpp b/ndn-svs/core.cpp
+index 3858472..d5f9f1a 100644
+--- a/ndn-svs/core.cpp
++++ b/ndn-svs/core.cpp
+@@ -28,6 +28,7 @@
+ 
+ #include <chrono>
+ #include <cmath>
++#include <ctime>
+ 
+ #ifdef NDN_SVS_COMPRESSION
+ #include <boost/iostreams/copy.hpp>
+@@ -56,6 +57,65 @@ elapsedUs(const SteadyClock::time_point& start, const SteadyClock::time_point& e
+   return std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
+ }
+ 
++static uint64_t
++elapsedNs(const SteadyClock::time_point& start, const SteadyClock::time_point& end)
++{
++  return std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
++}
++
++static uint64_t
++threadCpuNs()
++{
++  ::timespec value{};
++  if (::clock_gettime(CLOCK_THREAD_CPUTIME_ID, &value) != 0) {
++    return 0;
++  }
++  return static_cast<uint64_t>(value.tv_sec) * 1000000000ULL +
++         static_cast<uint64_t>(value.tv_nsec);
++}
++
++static uint64_t
++threadToken()
++{
++  auto token = static_cast<uint64_t>(std::hash<std::thread::id>{}(std::this_thread::get_id()));
++  return token == 0 ? 1 : token;
++}
++
++static void
++updateMaximum(std::atomic<uint64_t>& maximum, uint64_t value)
++{
++  auto observed = maximum.load(std::memory_order_relaxed);
++  while (observed < value &&
++         !maximum.compare_exchange_weak(observed, value, std::memory_order_relaxed)) {
++  }
++}
++
++class ScopeExit
++{
++public:
++  explicit
++  ScopeExit(std::function<void()> callback)
++    : m_callback(std::move(callback))
++  {
++  }
++
++  ~ScopeExit()
++  {
++    if (m_callback) {
++      m_callback();
++    }
++  }
++
++  void
++  release()
++  {
++    m_callback = {};
++  }
++
++private:
++  std::function<void()> m_callback;
++};
++
+ static BootstrapTime
+ getCurrentBootstrapTime()
+ {
+@@ -101,8 +161,10 @@ struct SVSyncCore::SyncProcessingResult
+ 
+ struct SVSyncCore::SyncProductionJob
+ {
++  uint64_t productionId = 0;
+   VersionVector localVector;
+   std::vector<ndn::Block> extraBlocks;
++  uint64_t extraBuildNs = 0;
+   uint64_t stateGeneration = 0;
+   SteadyClock::time_point submittedAt;
+   std::string traceKey;
+@@ -115,6 +177,13 @@ struct SVSyncCore::SyncProductionResult
+   Interest interest;
+   bool signedInWorker = false;
+   bool extraBlockBuiltInWorker = false;
++  SteadyClock::time_point workerFinishedAt;
++  uint64_t queueWaitNs = 0;
++  uint64_t extraBuildNs = 0;
++  uint64_t encodeNs = 0;
++  uint64_t signNs = 0;
++  uint64_t workerServiceNs = 0;
++  uint64_t workerCpuNs = 0;
+   uint64_t encodeUs = 0;
+   uint64_t signUs = 0;
+   uint64_t workerUs = 0;
+@@ -124,13 +193,19 @@ class SVSyncCore::SyncWorkerPool
+ {
+ public:
+   explicit
+-  SyncWorkerPool(size_t workerThreads, size_t maxQueueSize)
++  SyncWorkerPool(size_t workerThreads, size_t maxQueueSize,
++                 std::function<void()> workerInitializer = {})
+     : m_maxQueueSize(std::max<size_t>(1, maxQueueSize))
+   {
+     workerThreads = std::max<size_t>(1, workerThreads);
+     m_workers.reserve(workerThreads);
+     for (size_t i = 0; i < workerThreads; ++i) {
+-      m_workers.emplace_back([this] { run(); });
++      m_workers.emplace_back([this, workerInitializer] {
++        if (workerInitializer) {
++          workerInitializer();
++        }
++        run();
++      });
+     }
+   }
+ 
+@@ -276,7 +351,8 @@ void
+ SVSyncCore::setParallelSyncProduction(bool enabled, size_t workerThreads,
+                                       size_t maxQueueSize,
+                                       bool signInWorker,
+-                                      bool buildExtraBlockInWorker)
++                                      bool buildExtraBlockInWorker,
++                                      std::function<void()> workerInitializer)
+ {
+   if (!enabled) {
+     m_parallelSyncProduction = false;
+@@ -289,18 +365,34 @@ SVSyncCore::setParallelSyncProduction(bool enabled, size_t workerThreads,
+       m_syncProductionWorkerPool->shutdown();
+       m_syncProductionWorkerPool.reset();
+     }
++    incrementStat(m_syncProductionCancelled,
++                  m_syncProductionPending.exchange(0, std::memory_order_relaxed));
+     return;
+   }
+ 
+   m_syncProductionAlive = std::make_shared<std::atomic<bool>>(true);
+   if (!m_syncProductionWorkerPool) {
+-    m_syncProductionWorkerPool = std::make_unique<SyncWorkerPool>(workerThreads, maxQueueSize);
++    m_syncProductionWorkerPool =
++      std::make_unique<SyncWorkerPool>(workerThreads, maxQueueSize,
++                                       std::move(workerInitializer));
+   }
+   m_parallelSyncProductionSigning = signInWorker;
+   m_parallelSyncProductionExtraBlock = buildExtraBlockInWorker;
+   m_parallelSyncProduction = true;
+ }
+ 
++void
++SVSyncCore::setSyncProductionDiagnostics(bool enabled, size_t sampleModulo)
++{
++  m_syncProductionDiagnosticsEnabled.store(enabled, std::memory_order_relaxed);
++  m_syncProductionSampleModulo.store(std::max<size_t>(1, sampleModulo),
++                                     std::memory_order_relaxed);
++  if (enabled) {
++    m_syncProductionFaceThreadToken.store(threadToken(), std::memory_order_relaxed);
++    m_syncProductionWorkerThreadToken.store(0, std::memory_order_relaxed);
++  }
++}
++
+ void
+ SVSyncCore::setSyncInterestBatching(bool enabled, time::milliseconds window)
+ {
+@@ -371,6 +463,35 @@ SVSyncCore::getSyncProcessingStats() const
+   stats.syncProductionWorkerQueueDepth = m_syncProductionWorkerQueueDepth.load();
+   stats.syncProductionWorkerProcessingMs = m_syncProductionWorkerProcessingMs.load();
+   stats.syncProductionParallelTotalMs = m_syncProductionParallelTotalMs.load();
++  stats.syncProductionTriggers = m_syncProductionTriggers.load();
++  stats.syncProductionSerialCompleted = m_syncProductionSerialCompleted.load();
++  stats.syncProductionSerialFailures = m_syncProductionSerialFailures.load();
++  stats.syncProductionFallbacks = m_syncProductionFallbacks.load();
++  stats.syncProductionWorkerFailures = m_syncProductionWorkerFailures.load();
++  stats.syncProductionFaceFailures = m_syncProductionFaceFailures.load();
++  stats.syncProductionCancelled = m_syncProductionCancelled.load();
++  stats.syncProductionPending = m_syncProductionPending.load();
++  stats.syncProductionStaleSent = m_syncProductionStaleSent.load();
++  stats.syncProductionStaleDropped = m_syncProductionStaleDropped.load();
++  stats.syncProductionActiveSigners = m_syncProductionActiveSigners.load();
++  stats.syncProductionMaxActiveSigners = m_syncProductionMaxActiveSigners.load();
++  stats.syncProductionThreadOwnerViolations =
++    m_syncProductionThreadOwnerViolations.load();
++  stats.syncProductionWorkerThreadChanges = m_syncProductionWorkerThreadChanges.load();
++  stats.syncProductionFaceThreadToken = m_syncProductionFaceThreadToken.load();
++  stats.syncProductionWorkerThreadToken = m_syncProductionWorkerThreadToken.load();
++  stats.syncProductionMaxWorkerQueueDepth = m_syncProductionMaxWorkerQueueDepth.load();
++  stats.syncProductionSnapshotNs = m_syncProductionSnapshotNs.load();
++  stats.syncProductionQueueWaitNs = m_syncProductionQueueWaitNs.load();
++  stats.syncProductionExtraBuildNs = m_syncProductionExtraBuildNs.load();
++  stats.syncProductionEncodeNs = m_syncProductionEncodeNs.load();
++  stats.syncProductionSignNs = m_syncProductionSignNs.load();
++  stats.syncProductionWorkerServiceNs = m_syncProductionWorkerServiceNs.load();
++  stats.syncProductionFaceQueueWaitNs = m_syncProductionFaceQueueWaitNs.load();
++  stats.syncProductionFaceFinalizeNs = m_syncProductionFaceFinalizeNs.load();
++  stats.syncProductionFaceCpuNs = m_syncProductionFaceCpuNs.load();
++  stats.syncProductionWorkerCpuNs = m_syncProductionWorkerCpuNs.load();
++  stats.syncProductionSerialCpuNs = m_syncProductionSerialCpuNs.load();
+   return stats;
+ }
+ 
+@@ -900,36 +1021,103 @@ SVSyncCore::sendLocalPublicationSyncInterest()
+   }
+ }
+ 
++void
++SVSyncCore::observeSyncProductionThread(bool expectWorker)
++{
++  if (!m_syncProductionDiagnosticsEnabled.load(std::memory_order_relaxed)) {
++    return;
++  }
++
++  const auto token = threadToken();
++  const auto faceToken = m_syncProductionFaceThreadToken.load(std::memory_order_relaxed);
++  if (!expectWorker) {
++    if (token != faceToken) {
++      incrementStat(m_syncProductionThreadOwnerViolations);
++    }
++    return;
++  }
++
++  auto workerToken = m_syncProductionWorkerThreadToken.load(std::memory_order_relaxed);
++  if (workerToken == 0) {
++    m_syncProductionWorkerThreadToken.compare_exchange_strong(
++      workerToken, token, std::memory_order_relaxed);
++    workerToken = m_syncProductionWorkerThreadToken.load(std::memory_order_relaxed);
++  }
++  if (token == faceToken || token != workerToken) {
++    incrementStat(m_syncProductionThreadOwnerViolations);
++  }
++  if (token != workerToken) {
++    incrementStat(m_syncProductionWorkerThreadChanges);
++  }
++}
++
++void
++SVSyncCore::signSyncInterestMeasured(Interest& interest, bool expectWorker)
++{
++  if (!m_syncProductionDiagnosticsEnabled.load(std::memory_order_relaxed)) {
++    signSyncInterest(interest);
++    return;
++  }
++
++  observeSyncProductionThread(expectWorker);
++  const auto active =
++    m_syncProductionActiveSigners.fetch_add(1, std::memory_order_relaxed) + 1;
++  updateMaximum(m_syncProductionMaxActiveSigners, active);
++  const auto start = SteadyClock::now();
++  try {
++    signSyncInterest(interest);
++  }
++  catch (...) {
++    m_syncProductionActiveSigners.fetch_sub(1, std::memory_order_relaxed);
++    throw;
++  }
++  incrementStat(m_syncProductionSignNs, elapsedNs(start, SteadyClock::now()));
++  m_syncProductionActiveSigners.fetch_sub(1, std::memory_order_relaxed);
++}
++
+ void
+ SVSyncCore::sendSyncInterest()
+ {
+   if (!m_initialized)
+     return;
+ 
++  const auto productionId =
++    m_syncProductionNextId.fetch_add(1, std::memory_order_relaxed) + 1;
++  incrementStat(m_syncProductionTriggers);
++  observeSyncProductionThread(false);
++
+   if (!m_parallelSyncProduction || !m_syncProductionWorkerPool) {
+-    sendSyncInterestSerial();
++    sendSyncInterestSerial(productionId);
+     return;
+   }
+ 
+   const auto mainStart = SteadyClock::now();
++  const auto mainCpuStart = m_syncProductionDiagnosticsEnabled.load(std::memory_order_relaxed) ?
++                            threadCpuNs() : 0;
+   SyncProductionJob job;
++  job.productionId = productionId;
+   job.submittedAt = mainStart;
+   job.traceKey = m_syncPrefix.toUri();
+ 
+   NDN_LOG_TRACE("event=response_encode_start mode=parallel-main key=" << job.traceKey);
++  const auto snapshotStart = SteadyClock::now();
+   {
+     std::lock_guard<std::mutex> lock(m_vvMutex);
+     job.localVector = m_vv;
+     job.stateGeneration = m_stateGeneration;
+   }
++  incrementStat(m_syncProductionSnapshotNs, elapsedNs(snapshotStart, SteadyClock::now()));
+ 
+   if (!m_parallelSyncProductionExtraBlock) {
++    const auto extraBuildStart = SteadyClock::now();
+     if (m_getExtraBlocks) {
+       job.extraBlocks = m_getExtraBlocks(job.localVector);
+     }
+     else if (m_getExtraBlock) {
+       job.extraBlocks.push_back(m_getExtraBlock(job.localVector));
+     }
++    job.extraBuildNs = elapsedNs(extraBuildStart, SteadyClock::now());
++    incrementStat(m_syncProductionExtraBuildNs, job.extraBuildNs);
+   }
+   NDN_LOG_TRACE("event=response_encode_snapshot_done mode=parallel-main key=" << job.traceKey <<
+                 " elapsed_us=" << elapsedUs(mainStart, SteadyClock::now()));
+@@ -937,26 +1125,40 @@ SVSyncCore::sendSyncInterest()
+   size_t queueDepth = 0;
+   auto* pool = m_syncProductionWorkerPool.get();
+   auto alive = m_syncProductionAlive;
++  incrementStat(m_syncProductionPending);
+   bool queued = pool->post([this, alive, job = std::move(job)] {
+     SyncProductionResult result;
+     result.job = job;
++    result.extraBuildNs = result.job.extraBuildNs;
+     const auto workerStart = SteadyClock::now();
++    const auto workerCpuStart =
++      m_syncProductionDiagnosticsEnabled.load(std::memory_order_relaxed) ?
++      threadCpuNs() : 0;
++    observeSyncProductionThread(true);
++    result.queueWaitNs = elapsedNs(result.job.submittedAt, workerStart);
++    incrementStat(m_syncProductionQueueWaitNs, result.queueWaitNs);
+ 
+     try {
+-      const auto encodeStart = SteadyClock::now();
+       auto extensions = result.job.extraBlocks;
+       if (m_parallelSyncProductionExtraBlock && m_getExtraBlocks) {
++        const auto extraBuildStart = SteadyClock::now();
+         extensions = m_getExtraBlocks(result.job.localVector);
+         result.extraBlockBuiltInWorker = true;
++        result.extraBuildNs = elapsedNs(extraBuildStart, SteadyClock::now());
++        incrementStat(m_syncProductionExtraBuildNs, result.extraBuildNs);
+       }
+       else if (m_parallelSyncProductionExtraBlock && m_getExtraBlock) {
++        const auto extraBuildStart = SteadyClock::now();
+         extensions = {m_getExtraBlock(result.job.localVector)};
+         result.extraBlockBuiltInWorker = true;
++        result.extraBuildNs = elapsedNs(extraBuildStart, SteadyClock::now());
++        incrementStat(m_syncProductionExtraBuildNs, result.extraBuildNs);
+       }
+ 
+       // A V3 Data signature is covered by the parameters digest. If signer
+       // thread use was not explicitly enabled, defer both encoding and signing
+       // to the Face thread instead of constructing a hybrid packet.
++      const auto encodeStart = SteadyClock::now();
+       if (m_protocolOptions.version == SvsProtocolVersion::V2 ||
+           m_parallelSyncProductionSigning) {
+         std::lock_guard<std::mutex> signingLock(m_syncProductionSigningMutex);
+@@ -971,8 +1173,10 @@ SVSyncCore::sendSyncInterest()
+               m_securityOptions.dataSigner->sign(data);
+             }
+           });
+-        result.encodeUs = elapsedUs(encodeStart, SteadyClock::now());
+       }
++      result.encodeNs = elapsedNs(encodeStart, SteadyClock::now());
++      result.encodeUs = result.encodeNs / 1000;
++      incrementStat(m_syncProductionEncodeNs, result.encodeNs);
+ 
+       if (m_parallelSyncProductionSigning &&
+           m_protocolOptions.version == SvsProtocolVersion::V2) {
+@@ -981,9 +1185,10 @@ SVSyncCore::sendSyncInterest()
+                       << result.interest.getName());
+         {
+           std::lock_guard<std::mutex> signingLock(m_syncProductionSigningMutex);
+-          signSyncInterest(result.interest);
++          signSyncInterestMeasured(result.interest, true);
+         }
+-        result.signUs = elapsedUs(signStart, SteadyClock::now());
++        result.signNs = elapsedNs(signStart, SteadyClock::now());
++        result.signUs = result.signNs / 1000;
+         result.signedInWorker = true;
+         NDN_LOG_TRACE("event=response_sign_done mode=parallel-worker key="
+                       << result.interest.getName() << " elapsed_us=" << result.signUs);
+@@ -993,11 +1198,41 @@ SVSyncCore::sendSyncInterest()
+     }
+     catch (const std::exception&) {
+       result.ok = false;
++      incrementStat(m_syncProductionWorkerFailures);
+     }
+ 
+-    result.workerUs = elapsedUs(workerStart, SteadyClock::now());
++    result.workerFinishedAt = SteadyClock::now();
++    result.workerServiceNs = elapsedNs(workerStart, result.workerFinishedAt);
++    result.workerUs = result.workerServiceNs / 1000;
++    incrementStat(m_syncProductionWorkerServiceNs, result.workerServiceNs);
++    const auto workerCpuDone = threadCpuNs();
++    if (m_syncProductionDiagnosticsEnabled.load(std::memory_order_relaxed) &&
++        workerCpuDone >= workerCpuStart) {
++      result.workerCpuNs = workerCpuDone - workerCpuStart;
++      incrementStat(m_syncProductionWorkerCpuNs, result.workerCpuNs);
++    }
+     incrementStat(m_syncProductionWorkerProcessingMs, result.workerUs / 1000);
++    const auto sampleModulo = m_syncProductionSampleModulo.load(std::memory_order_relaxed);
++    if (m_syncProductionDiagnosticsEnabled.load(std::memory_order_relaxed) &&
++        result.job.productionId % sampleModulo == 0) {
++      NDN_LOG_TRACE("event=sync_production_sample mode=worker production_id="
++                    << result.job.productionId
++                    << " queue_wait_ns=" << result.queueWaitNs
++                    << " extra_build_ns=" << result.extraBuildNs
++                    << " encode_ns=" << result.encodeNs
++                    << " sign_ns=" << result.signNs
++                    << " worker_service_ns=" << result.workerServiceNs
++                    << " worker_cpu_ns=" << result.workerCpuNs);
++    }
+ 
++    if (!result.ok) {
++      incrementStat(m_syncProductionJobsDropped);
++      m_syncProductionPending.fetch_sub(1, std::memory_order_relaxed);
++      return;
++    }
++    if (!alive || !alive->load(std::memory_order_relaxed)) {
++      return;
++    }
+     boost::asio::post(m_face.getIoContext(), [this, alive, result = std::move(result)] () mutable {
+       if (!alive || !alive->load(std::memory_order_relaxed)) {
+         return;
+@@ -1007,12 +1242,20 @@ SVSyncCore::sendSyncInterest()
+   }, queueDepth);
+ 
+   m_syncProductionWorkerQueueDepth.store(queueDepth, std::memory_order_relaxed);
++  updateMaximum(m_syncProductionMaxWorkerQueueDepth, queueDepth);
++  const auto mainCpuDone = threadCpuNs();
++  if (m_syncProductionDiagnosticsEnabled.load(std::memory_order_relaxed) &&
++      mainCpuDone >= mainCpuStart) {
++    incrementStat(m_syncProductionFaceCpuNs, mainCpuDone - mainCpuStart);
++  }
+ 
+   if (!queued) {
++    m_syncProductionPending.fetch_sub(1, std::memory_order_relaxed);
+     incrementStat(m_syncProductionJobsDropped);
++    incrementStat(m_syncProductionFallbacks);
+     NDN_LOG_DEBUG("event=sync_production_queue_full key=" << m_syncPrefix <<
+                   " queue_depth=" << queueDepth << " action=fallback_serial");
+-    sendSyncInterestSerial();
++    sendSyncInterestSerial(productionId);
+     return;
+   }
+ 
+@@ -1021,27 +1264,43 @@ SVSyncCore::sendSyncInterest()
+ }
+ 
+ void
+-SVSyncCore::sendSyncInterestSerial()
++SVSyncCore::sendSyncInterestSerial(uint64_t productionId)
+ {
+   if (!m_initialized)
+     return;
+ 
++  ScopeExit failure([this] {
++    incrementStat(m_syncProductionSerialFailures);
++  });
++  observeSyncProductionThread(false);
+   const auto publishStart = SteadyClock::now();
++  const auto publishCpuStart =
++    m_syncProductionDiagnosticsEnabled.load(std::memory_order_relaxed) ?
++    threadCpuNs() : 0;
+   NDN_LOG_TRACE("event=response_encode_start key=" << m_syncPrefix);
+ 
+   VersionVector stateVector;
+   std::vector<Block> extensions;
++  uint64_t extraBuildNs = 0;
++  uint64_t snapshotNs = 0;
+   {
+     std::lock_guard<std::mutex> lock(m_vvMutex);
++    const auto snapshotStart = SteadyClock::now();
+     stateVector = m_vv;
++    snapshotNs = elapsedNs(snapshotStart, SteadyClock::now());
++    const auto extraBuildStart = SteadyClock::now();
+     if (m_getExtraBlocks) {
+       extensions = m_getExtraBlocks(m_vv);
+     }
+     else if (m_getExtraBlock) {
+       extensions.push_back(m_getExtraBlock(m_vv));
+     }
++    extraBuildNs = elapsedNs(extraBuildStart, SteadyClock::now());
+   }
++  incrementStat(m_syncProductionSnapshotNs, snapshotNs);
++  incrementStat(m_syncProductionExtraBuildNs, extraBuildNs);
+ 
++  const auto encodeStart = SteadyClock::now();
+   Interest interest = SyncProtocolCodec::encode(
+     m_syncPrefix, stateVector, extensions, m_protocolOptions,
+     [this] (Data& data) {
+@@ -1053,14 +1312,17 @@ SVSyncCore::sendSyncInterestSerial()
+         m_securityOptions.dataSigner->sign(data);
+       }
+     });
++  const auto encodeNs = elapsedNs(encodeStart, SteadyClock::now());
++  incrementStat(m_syncProductionEncodeNs, encodeNs);
+   NDN_LOG_TRACE("event=response_encode_done key=" << interest.getName() <<
+                 " elapsed_us=" << elapsedUs(publishStart, SteadyClock::now()));
+ 
+   const auto signStart = SteadyClock::now();
+   NDN_LOG_TRACE("event=response_sign_start key=" << interest.getName());
+   if (m_protocolOptions.version == SvsProtocolVersion::V2) {
+-    signSyncInterest(interest);
++    signSyncInterestMeasured(interest, false);
+   }
++  const auto signNs = elapsedNs(signStart, SteadyClock::now());
+   NDN_LOG_TRACE("event=response_sign_done key=" << interest.getName() <<
+                 " elapsed_us=" << elapsedUs(signStart, SteadyClock::now()));
+ 
+@@ -1070,18 +1332,55 @@ SVSyncCore::sendSyncInterestSerial()
+   m_face.expressInterest(interest, nullptr, nullptr, nullptr);
+   NDN_LOG_TRACE("event=face_put_done key=" << interest.getName() <<
+                 " operation=expressInterest elapsed_us=" << elapsedUs(faceStart, SteadyClock::now()));
++  const auto faceFinalizeNs = elapsedNs(faceStart, SteadyClock::now());
++  incrementStat(m_syncProductionFaceFinalizeNs, faceFinalizeNs);
++  const auto publishDone = SteadyClock::now();
++  const auto publishCpuDone = threadCpuNs();
++  const auto serialCpuNs = publishCpuDone >= publishCpuStart ?
++                           publishCpuDone - publishCpuStart : 0;
++  if (m_syncProductionDiagnosticsEnabled.load(std::memory_order_relaxed)) {
++    incrementStat(m_syncProductionFaceCpuNs, serialCpuNs);
++    incrementStat(m_syncProductionSerialCpuNs, serialCpuNs);
++  }
++  incrementStat(m_syncProductionSerialCompleted);
+   incrementStat(m_syncMainThreadPublishMs, elapsedMs(publishStart, SteadyClock::now()));
++  const auto sampleModulo = m_syncProductionSampleModulo.load(std::memory_order_relaxed);
++  if (m_syncProductionDiagnosticsEnabled.load(std::memory_order_relaxed) &&
++      productionId % sampleModulo == 0) {
++    NDN_LOG_TRACE("event=sync_production_sample mode=face-serial production_id="
++                  << productionId
++                  << " snapshot_ns=" << snapshotNs
++                  << " extra_build_ns=" << extraBuildNs
++                  << " encode_ns=" << encodeNs
++                  << " sign_ns=" << signNs
++                  << " face_finalize_ns=" << faceFinalizeNs
++                  << " serial_total_ns=" << elapsedNs(publishStart, publishDone)
++                  << " serial_cpu_ns=" << serialCpuNs);
++  }
++  failure.release();
+ }
+ 
+ void
+ SVSyncCore::processSyncProductionResult(SyncProductionResult result)
+ {
++  ScopeExit failure([this] {
++    incrementStat(m_syncProductionJobsDropped);
++    incrementStat(m_syncProductionFaceFailures);
++    m_syncProductionPending.fetch_sub(1, std::memory_order_relaxed);
++  });
++  observeSyncProductionThread(false);
+   const auto mainStart = SteadyClock::now();
++  const auto mainCpuStart =
++    m_syncProductionDiagnosticsEnabled.load(std::memory_order_relaxed) ?
++    threadCpuNs() : 0;
++  if (result.workerFinishedAt != SteadyClock::time_point{}) {
++    incrementStat(m_syncProductionFaceQueueWaitNs,
++                  elapsedNs(result.workerFinishedAt, mainStart));
++  }
+   const auto& traceKey = result.job.traceKey;
+ 
+   if (!result.ok) {
+-    incrementStat(m_syncProductionJobsDropped);
+-    NDN_LOG_DEBUG("event=sync_production_failed key=" << traceKey);
++    // Worker failures terminate before posting a result to the Face thread.
+     return;
+   }
+ 
+@@ -1093,15 +1392,24 @@ SVSyncCore::processSyncProductionResult(SyncProductionResult result)
+ 
+   if (currentGeneration != result.job.stateGeneration && !result.extraBlockBuiltInWorker) {
+     incrementStat(m_syncProductionJobsStale);
++    incrementStat(m_syncProductionStaleDropped);
++    const auto mainCpuDone = threadCpuNs();
++    if (m_syncProductionDiagnosticsEnabled.load(std::memory_order_relaxed) &&
++        mainCpuDone >= mainCpuStart) {
++      incrementStat(m_syncProductionFaceCpuNs, mainCpuDone - mainCpuStart);
++    }
+     NDN_LOG_DEBUG("event=sync_production_stale key=" << traceKey <<
+                   " captured_generation=" << result.job.stateGeneration <<
+                   " current_generation=" << currentGeneration <<
+                   " action=drop");
++    m_syncProductionPending.fetch_sub(1, std::memory_order_relaxed);
++    failure.release();
+     return;
+   }
+ 
+   if (currentGeneration != result.job.stateGeneration) {
+     incrementStat(m_syncProductionJobsStale);
++    incrementStat(m_syncProductionStaleSent);
+     NDN_LOG_DEBUG("event=sync_production_stale key=" << traceKey <<
+                   " captured_generation=" << result.job.stateGeneration <<
+                   " current_generation=" << currentGeneration <<
+@@ -1126,6 +1434,7 @@ SVSyncCore::processSyncProductionResult(SyncProductionResult result)
+           m_securityOptions.dataSigner->sign(data);
+         }
+       });
++    incrementStat(m_syncProductionEncodeNs, elapsedNs(encodeStart, SteadyClock::now()));
+     NDN_LOG_TRACE("event=response_encode_done mode=parallel-main key="
+                   << result.interest.getName() << " elapsed_us="
+                   << elapsedUs(encodeStart, SteadyClock::now()));
+@@ -1134,7 +1443,7 @@ SVSyncCore::processSyncProductionResult(SyncProductionResult result)
+   if (!result.signedInWorker && m_protocolOptions.version == SvsProtocolVersion::V2) {
+     const auto signStart = SteadyClock::now();
+     NDN_LOG_TRACE("event=response_sign_start mode=parallel key=" << result.interest.getName());
+-    signSyncInterest(result.interest);
++    signSyncInterestMeasured(result.interest, false);
+     NDN_LOG_TRACE("event=response_sign_done mode=parallel key=" << result.interest.getName() <<
+                   " elapsed_us=" << elapsedUs(signStart, SteadyClock::now()));
+   }
+@@ -1149,13 +1458,32 @@ SVSyncCore::processSyncProductionResult(SyncProductionResult result)
+   m_face.expressInterest(result.interest, nullptr, nullptr, nullptr);
+   NDN_LOG_TRACE("event=face_put_done mode=parallel key=" << result.interest.getName() <<
+                 " operation=expressInterest elapsed_us=" << elapsedUs(faceStart, SteadyClock::now()));
++  const auto faceFinalizeNs = elapsedNs(faceStart, SteadyClock::now());
++  incrementStat(m_syncProductionFaceFinalizeNs, faceFinalizeNs);
+ 
+   const auto mainMs = elapsedMs(mainStart, SteadyClock::now());
+   const auto totalMs = elapsedMs(result.job.submittedAt, SteadyClock::now());
++  const auto mainCpuDone = threadCpuNs();
++  if (m_syncProductionDiagnosticsEnabled.load(std::memory_order_relaxed) &&
++      mainCpuDone >= mainCpuStart) {
++    incrementStat(m_syncProductionFaceCpuNs, mainCpuDone - mainCpuStart);
++  }
+   incrementStat(m_syncProductionJobsCompleted);
++  m_syncProductionPending.fetch_sub(1, std::memory_order_relaxed);
++  failure.release();
+   incrementStat(m_syncProductionParallelTotalMs, totalMs);
+   incrementStat(m_syncMainThreadPublishMs, mainMs);
+   incrementStat(m_syncInterestMainThreadBlockingMs, mainMs);
++  const auto sampleModulo = m_syncProductionSampleModulo.load(std::memory_order_relaxed);
++  if (m_syncProductionDiagnosticsEnabled.load(std::memory_order_relaxed) &&
++      result.job.productionId % sampleModulo == 0) {
++    NDN_LOG_TRACE("event=sync_production_terminal mode=worker production_id="
++                  << result.job.productionId
++                  << " stale_sent="
++                  << (currentGeneration != result.job.stateGeneration ? 1 : 0)
++                  << " face_finalize_ns=" << faceFinalizeNs
++                  << " total_us=" << elapsedUs(result.job.submittedAt, SteadyClock::now()));
++  }
+ }
+ 
+ void
+diff --git a/ndn-svs/core.hpp b/ndn-svs/core.hpp
+index 34c0d5f..f366c16 100644
+--- a/ndn-svs/core.hpp
++++ b/ndn-svs/core.hpp
+@@ -114,6 +114,34 @@ public:
+     uint64_t syncProductionWorkerQueueDepth = 0;
+     uint64_t syncProductionWorkerProcessingMs = 0;
+     uint64_t syncProductionParallelTotalMs = 0;
++    uint64_t syncProductionTriggers = 0;
++    uint64_t syncProductionSerialCompleted = 0;
++    uint64_t syncProductionSerialFailures = 0;
++    uint64_t syncProductionFallbacks = 0;
++    uint64_t syncProductionWorkerFailures = 0;
++    uint64_t syncProductionFaceFailures = 0;
++    uint64_t syncProductionCancelled = 0;
++    uint64_t syncProductionPending = 0;
++    uint64_t syncProductionStaleSent = 0;
++    uint64_t syncProductionStaleDropped = 0;
++    uint64_t syncProductionActiveSigners = 0;
++    uint64_t syncProductionMaxActiveSigners = 0;
++    uint64_t syncProductionThreadOwnerViolations = 0;
++    uint64_t syncProductionWorkerThreadChanges = 0;
++    uint64_t syncProductionFaceThreadToken = 0;
++    uint64_t syncProductionWorkerThreadToken = 0;
++    uint64_t syncProductionMaxWorkerQueueDepth = 0;
++    uint64_t syncProductionSnapshotNs = 0;
++    uint64_t syncProductionQueueWaitNs = 0;
++    uint64_t syncProductionExtraBuildNs = 0;
++    uint64_t syncProductionEncodeNs = 0;
++    uint64_t syncProductionSignNs = 0;
++    uint64_t syncProductionWorkerServiceNs = 0;
++    uint64_t syncProductionFaceQueueWaitNs = 0;
++    uint64_t syncProductionFaceFinalizeNs = 0;
++    uint64_t syncProductionFaceCpuNs = 0;
++    uint64_t syncProductionWorkerCpuNs = 0;
++    uint64_t syncProductionSerialCpuNs = 0;
+   };
+ 
+   struct SyncRejectionStats
+@@ -131,7 +159,18 @@ public:
+   setParallelSyncProduction(bool enabled, size_t workerThreads = 1,
+                             size_t maxQueueSize = 1024,
+                             bool signInWorker = false,
+-                            bool buildExtraBlockInWorker = false);
++                            bool buildExtraBlockInWorker = false,
++                            std::function<void()> workerInitializer = {});
++
++  /**
++   * @brief Enable low-overhead Sync production diagnostics.
++   *
++   * The calling thread is recorded as the expected Face thread. This
++   * experiment-only surface observes execution ownership and timing; it does
++   * not serialize production or alter the selected production mode.
++   */
++  void
++  setSyncProductionDiagnostics(bool enabled, size_t sampleModulo = 100);
+ 
+   /**
+    * @brief Experimentally coalesce locally triggered sync interests.
+@@ -340,7 +379,7 @@ public:
+   };
+ 
+   void
+-  sendSyncInterestSerial();
++  sendSyncInterestSerial(uint64_t productionId);
+ 
+   /**
+    * @brief Send a Sync Interest for a local publication.
+@@ -427,6 +466,12 @@ private:
+   void
+   signSyncInterest(Interest& interest);
+ 
++  void
++  signSyncInterestMeasured(Interest& interest, bool expectWorker);
++
++  void
++  observeSyncProductionThread(bool expectWorker);
++
+   void
+   schedulePublicationSync();
+ 
+@@ -528,6 +573,37 @@ private:
+   std::atomic<uint64_t> m_syncProductionWorkerQueueDepth{0};
+   std::atomic<uint64_t> m_syncProductionWorkerProcessingMs{0};
+   std::atomic<uint64_t> m_syncProductionParallelTotalMs{0};
++  std::atomic<bool> m_syncProductionDiagnosticsEnabled{false};
++  std::atomic<uint64_t> m_syncProductionSampleModulo{100};
++  std::atomic<uint64_t> m_syncProductionNextId{0};
++  std::atomic<uint64_t> m_syncProductionTriggers{0};
++  std::atomic<uint64_t> m_syncProductionSerialCompleted{0};
++  std::atomic<uint64_t> m_syncProductionSerialFailures{0};
++  std::atomic<uint64_t> m_syncProductionFallbacks{0};
++  std::atomic<uint64_t> m_syncProductionWorkerFailures{0};
++  std::atomic<uint64_t> m_syncProductionFaceFailures{0};
++  std::atomic<uint64_t> m_syncProductionCancelled{0};
++  std::atomic<uint64_t> m_syncProductionPending{0};
++  std::atomic<uint64_t> m_syncProductionStaleSent{0};
++  std::atomic<uint64_t> m_syncProductionStaleDropped{0};
++  std::atomic<uint64_t> m_syncProductionActiveSigners{0};
++  std::atomic<uint64_t> m_syncProductionMaxActiveSigners{0};
++  std::atomic<uint64_t> m_syncProductionThreadOwnerViolations{0};
++  std::atomic<uint64_t> m_syncProductionWorkerThreadChanges{0};
++  std::atomic<uint64_t> m_syncProductionFaceThreadToken{0};
++  std::atomic<uint64_t> m_syncProductionWorkerThreadToken{0};
++  std::atomic<uint64_t> m_syncProductionMaxWorkerQueueDepth{0};
++  std::atomic<uint64_t> m_syncProductionSnapshotNs{0};
++  std::atomic<uint64_t> m_syncProductionQueueWaitNs{0};
++  std::atomic<uint64_t> m_syncProductionExtraBuildNs{0};
++  std::atomic<uint64_t> m_syncProductionEncodeNs{0};
++  std::atomic<uint64_t> m_syncProductionSignNs{0};
++  std::atomic<uint64_t> m_syncProductionWorkerServiceNs{0};
++  std::atomic<uint64_t> m_syncProductionFaceQueueWaitNs{0};
++  std::atomic<uint64_t> m_syncProductionFaceFinalizeNs{0};
++  std::atomic<uint64_t> m_syncProductionFaceCpuNs{0};
++  std::atomic<uint64_t> m_syncProductionWorkerCpuNs{0};
++  std::atomic<uint64_t> m_syncProductionSerialCpuNs{0};
+ };
+ 
+ } // namespace ndn::svs
+diff --git a/ndn-svs/svspubsub.cpp b/ndn-svs/svspubsub.cpp
+index f8cafce..6cefb68 100644
+--- a/ndn-svs/svspubsub.cpp
++++ b/ndn-svs/svspubsub.cpp
+@@ -159,6 +159,10 @@ SVSPubSub::SVSPubSub(const Name& syncPrefix,
+ 
+ SVSPubSub::~SVSPubSub()
+ {
++  // The Core worker may invoke onGetExtraBlocks(), which is bound to this
++  // SVSPubSub instance. Join it while all callback state and mutexes are still
++  // alive rather than waiting for m_svsync's later member destruction.
++  m_svsync.getCore().setParallelSyncProduction(false);
+   if (m_asyncPublishAlive) {
+     m_asyncPublishAlive->store(false, std::memory_order_relaxed);
+   }
+diff --git a/tests/unit-tests/core.t.cpp b/tests/unit-tests/core.t.cpp
+index b6f40d9..2b60b29 100644
+--- a/tests/unit-tests/core.t.cpp
++++ b/tests/unit-tests/core.t.cpp
+@@ -29,7 +29,10 @@
+ #include <boost/asio/post.hpp>
+ 
+ #include <algorithm>
++#include <atomic>
++#include <condition_variable>
+ #include <fstream>
++#include <mutex>
+ #include <thread>
+ 
+ namespace ndn::tests {
+@@ -489,22 +492,288 @@ BOOST_AUTO_TEST_CASE(ParallelSyncProductionHandling)
+   BOOST_CHECK_EQUAL(sentVector.get("local-node"), 1);
+ }
+ 
+-BOOST_AUTO_TEST_CASE(ParallelSyncProductionDropsStaleResult)
++BOOST_AUTO_TEST_CASE(SyncProductionDiagnosticsDistinguishFaceAndSingleWorker)
+ {
+-  m_core.setParallelSyncProduction(true, 1, 16);
++  DummyClientFace localFace;
++  SVSyncCore core(localFace, "/ndn/test/spec137", [] (const auto&) {},
++                  SecurityOptions::DEFAULT, SVSyncCore::EMPTY_NODE_ID, legacyProfile());
++  core.setSyncProductionDiagnostics(true, 1);
++  core.setParallelSyncProduction(true, 1, 16, true, true);
++
++  core.sendInitialInterest();
++  runIoUntil(localFace, [&] {
++    return !localFace.sentInterests.empty();
++  });
++  BOOST_REQUIRE(!localFace.sentInterests.empty());
++  core.updateSeqNo(1, "/local");
++  runIoUntil(localFace, [&] {
++    const auto stats = core.getSyncProcessingStats();
++    return stats.syncProductionJobsSubmitted >= 1 &&
++           stats.syncProductionJobsCompleted + stats.syncProductionStaleDropped +
++             stats.syncProductionWorkerFailures >= 1;
++  });
++
++  const auto stats = core.getSyncProcessingStats();
++  BOOST_CHECK_GE(stats.syncProductionTriggers, 1);
++  BOOST_CHECK_GE(stats.syncProductionJobsSubmitted, 1);
++  BOOST_CHECK_EQUAL(stats.syncProductionFallbacks, 0);
++  BOOST_CHECK_EQUAL(stats.syncProductionThreadOwnerViolations, 0);
++  BOOST_CHECK_EQUAL(stats.syncProductionWorkerThreadChanges, 0);
++  BOOST_CHECK_EQUAL(stats.syncProductionMaxActiveSigners, 1);
++  BOOST_CHECK_NE(stats.syncProductionFaceThreadToken, 0);
++  BOOST_CHECK_NE(stats.syncProductionWorkerThreadToken, 0);
++  BOOST_CHECK_NE(stats.syncProductionFaceThreadToken,
++                 stats.syncProductionWorkerThreadToken);
++  BOOST_CHECK_GE(stats.syncProductionWorkerServiceNs, 1);
++  BOOST_CHECK_GE(stats.syncProductionWorkerCpuNs, 1);
++  BOOST_CHECK_EQUAL(stats.syncProductionJobsSubmitted,
++                    stats.syncProductionJobsCompleted +
++                      stats.syncProductionStaleDropped +
++                      stats.syncProductionWorkerFailures +
++                      stats.syncProductionFaceFailures +
++                      stats.syncProductionCancelled);
++}
++
++BOOST_AUTO_TEST_CASE(SyncProductionDiagnosticsMeasureFaceSerialPath)
++{
++  m_core.setSyncProductionDiagnostics(true, 1);
++  m_core.setParallelSyncProduction(false);
+   m_core.sendInitialInterest();
++  runIoUntil(m_face, [this] {
++    return m_core.getSyncProcessingStats().syncProductionTriggers >= 1;
++  });
++  BOOST_REQUIRE_GE(m_core.getSyncProcessingStats().syncProductionTriggers, 1);
+   m_core.updateSeqNo(1, "local-node");
++  runIoUntil(m_face, [this] {
++    return m_core.getSyncProcessingStats().syncProductionTriggers >= 2;
++  });
++
++  const auto stats = m_core.getSyncProcessingStats();
++  BOOST_CHECK_GE(stats.syncProductionTriggers, 2);
++  BOOST_CHECK_EQUAL(stats.syncProductionSerialCompleted,
++                    stats.syncProductionTriggers -
++                      stats.syncProductionSerialFailures);
++  BOOST_CHECK_EQUAL(stats.syncProductionJobsSubmitted, 0);
++  BOOST_CHECK_EQUAL(stats.syncProductionFallbacks, 0);
++  BOOST_CHECK_EQUAL(stats.syncProductionThreadOwnerViolations, 0);
++  BOOST_CHECK_EQUAL(stats.syncProductionMaxActiveSigners, 1);
++  BOOST_CHECK_NE(stats.syncProductionFaceThreadToken, 0);
++  BOOST_CHECK_EQUAL(stats.syncProductionWorkerThreadToken, 0);
++  BOOST_CHECK_GE(stats.syncProductionFaceCpuNs, 1);
++  BOOST_CHECK_GE(stats.syncProductionSerialCpuNs, 1);
++}
++
++BOOST_AUTO_TEST_CASE(SyncProductionDiagnosticsExposeQueueFallback)
++{
++  DummyClientFace localFace;
++  SVSyncCore core(localFace, "/ndn/test/spec137-fallback", [] (const auto&) {},
++                  SecurityOptions::DEFAULT, SVSyncCore::EMPTY_NODE_ID, legacyProfile());
++  core.setSyncProductionDiagnostics(true, 1);
++
++  const auto faceThread = std::this_thread::get_id();
++  std::mutex mutex;
++  std::condition_variable cv;
++  bool workerEntered = false;
++  bool releaseWorker = false;
++  core.setGetExtraBlockCallback([&] (const VersionVector&) {
++    if (std::this_thread::get_id() != faceThread) {
++      std::unique_lock<std::mutex> lock(mutex);
++      workerEntered = true;
++      cv.notify_all();
++      cv.wait(lock, [&] { return releaseWorker; });
++    }
++    return VersionVector().encode();
++  });
++  core.setParallelSyncProduction(true, 1, 1, true, true);
++
++  core.sendInitialInterest();
++  runIoUntil(localFace, [&] {
++    std::lock_guard<std::mutex> lock(mutex);
++    return workerEntered;
++  });
++  {
++    std::lock_guard<std::mutex> lock(mutex);
++    BOOST_REQUIRE(workerEntered);
++  }
++  core.updateSeqNo(1, "/local");
++  core.updateSeqNo(2, "/local");
++
++  auto duringFallback = core.getSyncProcessingStats();
++  BOOST_CHECK_GE(duringFallback.syncProductionFallbacks, 1);
++  BOOST_CHECK_GE(duringFallback.syncProductionJobsDropped, 1);
++
++  {
++    std::lock_guard<std::mutex> lock(mutex);
++    releaseWorker = true;
++  }
++  cv.notify_all();
++  runIoUntil(localFace, [&] {
++    const auto stats = core.getSyncProcessingStats();
++    return stats.syncProductionJobsCompleted + stats.syncProductionStaleDropped +
++             stats.syncProductionWorkerFailures >= stats.syncProductionJobsSubmitted;
++  });
++  core.setParallelSyncProduction(false);
++
++  const auto stats = core.getSyncProcessingStats();
++  BOOST_CHECK_GE(stats.syncProductionFallbacks, 1);
++  BOOST_CHECK_EQUAL(stats.syncProductionActiveSigners, 0);
++}
+ 
++BOOST_AUTO_TEST_CASE(SyncProductionShutdownAccountsPendingWorkAsCancelled)
++{
++  DummyClientFace localFace;
++  SVSyncCore core(localFace, "/ndn/test/spec137-cancel", [] (const auto&) {},
++                  SecurityOptions::DEFAULT, SVSyncCore::EMPTY_NODE_ID, legacyProfile());
++  core.setSyncProductionDiagnostics(true, 1);
++
++  std::mutex mutex;
++  std::condition_variable cv;
++  bool workerEntered = false;
++  bool releaseWorker = false;
++  core.setGetExtraBlockCallback([&] (const VersionVector&) {
++    std::unique_lock<std::mutex> lock(mutex);
++    workerEntered = true;
++    cv.notify_all();
++    cv.wait(lock, [&] { return releaseWorker; });
++    return makeStringBlock(0xf0, "spec137-cancel");
++  });
++  core.setParallelSyncProduction(true, 1, 16, true, true);
++  core.sendInitialInterest();
++  runIoUntil(localFace, [&] {
++    std::lock_guard<std::mutex> lock(mutex);
++    return workerEntered;
++  });
++  {
++    std::lock_guard<std::mutex> lock(mutex);
++    BOOST_REQUIRE(workerEntered);
++  }
++
++  std::atomic<bool> shutdownStarted{false};
++  std::thread shutdown([&] {
++    shutdownStarted.store(true, std::memory_order_release);
++    core.setParallelSyncProduction(false);
++  });
++  while (!shutdownStarted.load(std::memory_order_acquire)) {
++    std::this_thread::yield();
++  }
++  std::this_thread::sleep_for(5ms);
++  {
++    std::lock_guard<std::mutex> lock(mutex);
++    releaseWorker = true;
++  }
++  cv.notify_all();
++  shutdown.join();
++
++  auto stats = core.getSyncProcessingStats();
++  BOOST_REQUIRE_GE(stats.syncProductionJobsSubmitted, 1);
++  BOOST_CHECK_EQUAL(stats.syncProductionPending, 0);
++  BOOST_CHECK_EQUAL(stats.syncProductionCancelled,
++                    stats.syncProductionJobsSubmitted);
++  BOOST_CHECK_EQUAL(stats.syncProductionJobsCompleted, 0);
++  BOOST_CHECK_EQUAL(stats.syncProductionWorkerFailures, 0);
++  BOOST_CHECK_EQUAL(stats.syncProductionFaceFailures, 0);
++
++  runIoUntil(localFace, [] { return false; });
++  stats = core.getSyncProcessingStats();
++  BOOST_CHECK_EQUAL(stats.syncProductionCancelled,
++                    stats.syncProductionJobsSubmitted);
++  BOOST_CHECK_EQUAL(stats.syncProductionPending, 0);
++}
++
++BOOST_AUTO_TEST_CASE(SyncProductionFailuresAreTerminalAndConserved)
++{
++  m_core.setSyncProductionDiagnostics(true, 1);
++  m_core.setParallelSyncProduction(false);
++  m_core.sendInitialInterest();
+   runIoUntil(m_face, [this] {
+-    auto stats = m_core.getSyncProcessingStats();
+-    return stats.syncProductionJobsSubmitted >= 1 &&
+-           stats.syncProductionJobsCompleted + stats.syncProductionJobsStale +
+-             stats.syncProductionJobsDropped >= 1;
++    return m_core.getSyncProcessingStats().syncProductionTriggers >= 1;
+   });
++  BOOST_REQUIRE_GE(m_core.getSyncProcessingStats().syncProductionTriggers, 1);
+ 
+-  auto stats = m_core.getSyncProcessingStats();
++  m_core.setGetExtraBlockCallback([] (const VersionVector&) -> Block {
++    throw std::runtime_error("injected serial production failure");
++  });
++  BOOST_CHECK_NO_THROW(m_core.updateSeqNo(1, "local-node"));
++  auto serial = m_core.getSyncProcessingStats();
++  BOOST_CHECK_GE(serial.syncProductionSerialFailures, 1);
++  BOOST_CHECK_EQUAL(serial.syncProductionTriggers,
++                    serial.syncProductionSerialCompleted +
++                      serial.syncProductionSerialFailures);
++
++  DummyClientFace workerFace;
++  SVSyncCore workerCore(workerFace, "/ndn/test/spec137-worker-failure",
++                        [] (const auto&) {}, SecurityOptions::DEFAULT,
++                        SVSyncCore::EMPTY_NODE_ID, legacyProfile());
++  workerCore.setSyncProductionDiagnostics(true, 1);
++  workerCore.setGetExtraBlockCallback([] (const VersionVector&) -> Block {
++    throw std::runtime_error("injected worker production failure");
++  });
++  workerCore.setParallelSyncProduction(true, 1, 16, true, true);
++  workerCore.sendInitialInterest();
++  runIoUntil(workerFace, [&] {
++    return workerCore.getSyncProcessingStats().syncProductionWorkerFailures >= 1;
++  });
++  BOOST_REQUIRE_GE(
++    workerCore.getSyncProcessingStats().syncProductionWorkerFailures, 1);
++  workerCore.setParallelSyncProduction(false);
++
++  const auto worker = workerCore.getSyncProcessingStats();
++  BOOST_CHECK_EQUAL(worker.syncProductionPending, 0);
++  BOOST_CHECK_EQUAL(worker.syncProductionJobsDropped,
++                    worker.syncProductionWorkerFailures);
++  BOOST_CHECK_EQUAL(worker.syncProductionJobsSubmitted,
++                    worker.syncProductionWorkerFailures +
++                      worker.syncProductionCancelled);
++  BOOST_CHECK_EQUAL(worker.syncProductionJobsCompleted, 0);
++  BOOST_CHECK_EQUAL(worker.syncProductionFaceFailures, 0);
++}
++
++BOOST_AUTO_TEST_CASE(ParallelSyncProductionDropsStaleResult)
++{
++  DummyClientFace localFace;
++  SVSyncCore core(localFace, "/ndn/test/spec137-stale", [] (const auto&) {},
++                  SecurityOptions::DEFAULT, SVSyncCore::EMPTY_NODE_ID, legacyProfile());
++  core.setSyncProductionDiagnostics(true, 1);
++
++  std::mutex mutex;
++  std::condition_variable cv;
++  bool releaseWorker = false;
++  core.setParallelSyncProduction(true, 1, 16, true, false, [&] {
++    std::unique_lock<std::mutex> lock(mutex);
++    cv.wait(lock, [&] { return releaseWorker; });
++  });
++  core.sendInitialInterest();
++
++  runIoUntil(localFace, [&] {
++    return core.getSyncProcessingStats().syncProductionJobsSubmitted >= 1;
++  });
++  BOOST_REQUIRE_GE(core.getSyncProcessingStats().syncProductionJobsSubmitted, 1);
++  core.updateSeqNo(1, "local-node");
++  {
++    std::lock_guard<std::mutex> lock(mutex);
++    releaseWorker = true;
++  }
++  cv.notify_all();
++
++  runIoUntil(localFace, [&] {
++    const auto stats = core.getSyncProcessingStats();
++    return stats.syncProductionJobsSubmitted ==
++      stats.syncProductionJobsCompleted +
++      stats.syncProductionStaleDropped +
++      stats.syncProductionWorkerFailures +
++      stats.syncProductionFaceFailures;
++  });
++
++  const auto stats = core.getSyncProcessingStats();
+   BOOST_CHECK_EQUAL(stats.syncProductionJobsDropped, 0);
+   BOOST_CHECK_GE(stats.syncProductionJobsSubmitted, 1);
++  BOOST_CHECK_GE(stats.syncProductionStaleDropped, 1);
++  BOOST_CHECK_EQUAL(stats.syncProductionPending, 0);
++  BOOST_CHECK_EQUAL(stats.syncProductionJobsSubmitted,
++                    stats.syncProductionJobsCompleted +
++                      stats.syncProductionStaleDropped +
++                      stats.syncProductionWorkerFailures +
++                      stats.syncProductionFaceFailures);
+ }
+ 
+ 
+diff --git a/tests/unit-tests/svspubsub.t.cpp b/tests/unit-tests/svspubsub.t.cpp
+index 4b300d6..71663c8 100644
+--- a/tests/unit-tests/svspubsub.t.cpp
++++ b/tests/unit-tests/svspubsub.t.cpp
+@@ -987,6 +987,27 @@ BOOST_AUTO_TEST_CASE(ShutdownRollsBackStoredButUnadvertisedPublication)
+   BOOST_CHECK_EQUAL(store->size(), 0);
+ }
+ 
++BOOST_AUTO_TEST_CASE(ShutdownJoinsParallelProductionBeforePubSubStateDestruction)
++{
++  DummyClientFace face;
++  SVSPubSubOptions opts;
++  opts.useTimestamp = false;
++  opts.syncProtocol.version = SvsProtocolVersion::V2;
++
++  BOOST_CHECK_NO_THROW({
++    SVSPubSub pubsub("/sync/spec137-shutdown", "/producer", face,
++                     [] (const std::vector<MissingDataInfo>&) {}, opts);
++    auto& core = pubsub.getSVSync().getCore();
++    core.setSyncProductionDiagnostics(true, 1);
++    core.setParallelSyncProduction(true, 1, 4096, true, true);
++    for (size_t i = 0; i < 128; ++i) {
++      pubsub.publishAsync(Name("/app/spec137").appendNumber(i), makePayload(64));
++    }
++    // Do not run the Face io_context. Destruction must stop the production
++    // worker while SVSPubSub callback state and mutexes are still alive.
++  });
++}
++
+ BOOST_AUTO_TEST_CASE(InnerSegmentAssemblyRejectsMissingMalformedAndDuplicateSegments)
+ {
+   KeyChain keyChain("pib-memory:svspubsub-assembly", "tpm-memory:svspubsub-assembly");

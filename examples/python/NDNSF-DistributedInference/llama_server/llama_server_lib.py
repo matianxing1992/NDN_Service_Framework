@@ -13,15 +13,12 @@ import json
 from pathlib import Path
 from typing import Any
 
-from ndnsf_distributed_inference import (
-    ModelFamily,
-    PlannerKind,
-    SplitArtifact,
-    SplitServiceSpec,
-    SplitterOutput,
+from ndnsf_distributed_inference.plan import ModelFamily, PlannerKind
+from ndnsf_distributed_inference.splitter import (
+    SplitArtifact, SplitServiceSpec, SplitterOutput,
 )
 from ndnsf_distributed_inference.repo_reference import repo_artifact_reference
-from ndnsf_distributed_inference.llm_runtime import (
+from ndnsf_distributed_inference.adapters.llama.runtime import (
     call_openai_chat_runtime,
     decode_openai_chat_response,
     encode_openai_chat_request,

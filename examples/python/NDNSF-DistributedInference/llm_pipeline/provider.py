@@ -5,9 +5,17 @@ from __future__ import annotations
 
 import hashlib
 import time
+from pathlib import Path
 
 from ndnsf import parse_large_data_reference_payload
-from ndnsf_distributed_inference import APPProvider, ProviderRuntimeContext
+from ndnsf_distributed_inference.app_sdk import (
+    APPProvider, ProviderEvidenceSigner, ProviderRuntimeContext,
+)
+from ndnsf_distributed_inference.sdk.adapters import RunnerAdapterRegistry
+
+from deployment_control import (
+    EvidenceRunnerAdapter, ProviderDeploymentControl,
+)
 
 from llm_pipeline_lib import (
     QWEN_ONNX_RUNTIME,
@@ -659,18 +667,60 @@ def main() -> int:
     )
     parser.add_argument("--stages", type=int, default=3)
     parser.add_argument("--transformer-layers", type=int, default=4)
+    parser.add_argument("--provider-identity", default="")
+    parser.add_argument("--deployment-control-service", default="")
+    parser.add_argument("--deployment-role", default="")
+    parser.add_argument("--deployment-revision", default="")
+    parser.add_argument("--deployment-artifact-digest", action="append", default=[])
+    parser.add_argument("--provider-boot-epoch", default="")
+    parser.add_argument("--provider-evidence-private-key", default="")
     args = parser.parse_args()
     if args.dry_run:
         print("LLM_PIPELINE_PROVIDER_DRY_RUN", args.provider_id, args.roles)
         return 0
 
+    signer = None
+    adapters = None
+    if args.deployment_control_service:
+        required = (
+            args.provider_identity, args.deployment_role,
+            args.deployment_revision, args.provider_boot_epoch,
+            args.provider_evidence_private_key,
+        )
+        if not all(required) or not args.deployment_artifact_digest:
+            raise SystemExit("deployment control requires identity/role/revision/artifact/boot/key")
+        signer = ProviderEvidenceSigner.from_private_pem(
+            Path(args.provider_evidence_private_key).read_bytes())
+        adapters = RunnerAdapterRegistry()
+        adapters.register(EvidenceRunnerAdapter())
     provider = APPProvider.from_config(
         args.config,
         generated_policy_dir=args.generated_policy_dir,
         provider_id=args.provider_id,
         group=args.group,
         handler_workers=args.handler_workers,
+        provider_identity=args.provider_identity,
+        adapter_registry=adapters,
+        signer=signer,
+        signer_key_id=signer.key_id if signer is not None else "",
     )
+    if args.deployment_control_service:
+        control = ProviderDeploymentControl(
+            provider,
+            role=args.deployment_role,
+            revision=args.deployment_revision,
+            artifact_digests=tuple(args.deployment_artifact_digest),
+            boot_epoch=args.provider_boot_epoch,
+        )
+        provider.serve_service(
+            service=args.deployment_control_service,
+            roles=args.deployment_role,
+            handler=control.handle,
+            backends=("custom",),
+            has_model=False,
+            can_provision=False,
+            ready_without_model=True,
+        )
     if args.runtime == TINY_TRANSFORMERS_RUNTIME:
         tiny_models = _preload_tiny_stage_models(
             provider,

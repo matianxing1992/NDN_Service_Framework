@@ -130,6 +130,76 @@ class DistributedLeaseTransactionTest(unittest.TestCase):
         self.assertEqual(payload, b"lease-response")
         self.assertEqual(user.calls, 3)
 
+    def test_authenticated_targeted_response_preserves_data_evidence(self) -> None:
+        request = LeaseOperationRequest(
+            LeaseOperation.PREPARE, "req", "sha256:plan", "prepare:req",
+            "/Inference/Test")
+        wire = LeaseOperationResponse(
+            True, LeaseOperation.PREPARE, "OK", "lease-1", "boot-1",
+            "PREPARED", 5_000).to_bytes()
+
+        class Response:
+            status = True
+            payload = wire
+            error = ""
+            data_name = "/p/NDNSF/RESPONSE/u/Inference/Control/Lease/req"
+            signer_certificate = "/p/KEY/key/issuer/version"
+            wire_digest = "sha256:abcdef"
+
+        class User:
+            def request_service_targeted(self, *_args, **_kwargs):
+                return Response()
+
+        result = NdnsfLeaseTransport(User()).request_authenticated(
+            "/p", request.to_bytes())
+        self.assertEqual(result.payload, wire)
+        self.assertTrue(result.data_name.startswith("/p/NDNSF/RESPONSE"))
+        self.assertTrue(result.signer_certificate.startswith("/p/KEY/"))
+        self.assertEqual(result.wire_digest, "sha256:abcdef")
+
+    def test_authenticated_targeted_response_rejects_unknown_version(self) -> None:
+        class Response:
+            status = True
+            payload = b'{"schema":"v999","operation":"PREPARE"}'
+            error = ""
+            data_name = "/data"
+            signer_certificate = "/cert"
+            wire_digest = "sha256:abc"
+        class User:
+            def request_service_targeted(self, *_args, **_kwargs):
+                return Response()
+        with self.assertRaisesRegex(ValueError, "unsupported lease operation schema"):
+            NdnsfLeaseTransport(User()).request_authenticated("/p", b"request")
+
+    def test_transaction_rejects_targeted_response_without_authenticated_evidence(self) -> None:
+        wire = LeaseOperationResponse(
+            True, LeaseOperation.PREPARE, "OK", "lease-1", "boot-1",
+            "PREPARED", 5_000).to_bytes()
+
+        class Response:
+            status = True
+            payload = wire
+            error = ""
+            data_name = "/p/NDNSF/RESPONSE/u/Inference/Control/Lease/req"
+            signer_certificate = ""
+            wire_digest = "sha256:abcdef"
+
+        class User:
+            def request_service_targeted(self, *_args, **_kwargs):
+                return Response()
+
+        transaction = DistributedLeaseTransaction(NdnsfLeaseTransport(User()))
+        with self.assertRaisesRegex(
+            ValueError, "lacks authenticated Data evidence"
+        ):
+            transaction.acquire(
+                request_id="request-auth",
+                plan_digest="sha256:PLAN",
+                service_name="/Inference/NativeTracer",
+                assignments=(assignments()[0],),
+                expires_at_ms=5_000,
+            )
+
     def test_capacity_rejection_retries_with_fresh_idempotency_key(self) -> None:
         class CapacityOnceTransport(FakeLeaseTransport):
             def __init__(self):

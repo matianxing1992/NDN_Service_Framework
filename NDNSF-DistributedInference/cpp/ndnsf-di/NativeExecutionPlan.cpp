@@ -1,9 +1,165 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
 
+#include <chrono>
 #include <stdexcept>
 #include <utility>
 
 namespace ndnsf::di {
+
+DiReservationAuthority::DiReservationAuthority(
+  std::string providerBootId,
+  DiReservationPolicy policy)
+  : m_providerBootId(std::move(providerBootId))
+  , m_policy(std::move(policy))
+{
+  if (m_providerBootId.empty() || m_policy.globalLimit == 0 ||
+      m_policy.requesterLimit == 0 ||
+      m_policy.serviceLimit == 0 || m_policy.tentativeLeaseMs == 0) {
+    throw std::invalid_argument("DI reservation limits and lifetime must be positive");
+  }
+}
+
+DiReservationAuthority::~DiReservationAuthority()
+{
+  releaseAll(static_cast<std::uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count()));
+}
+
+std::string
+DiReservationAuthority::keyFor(const DiReservationRequest& request) const
+{
+  return request.providerName + '\n' + request.requesterName + '\n' +
+         request.serviceName + '\n' + request.requestId;
+}
+
+bool
+DiReservationAuthority::withinQuota(const DiReservationRequest& request,
+                                    std::uint64_t nowMs)
+{
+  std::size_t global = 0;
+  std::size_t requester = 0;
+  std::size_t service = 0;
+  for (const auto& item : m_records) {
+    const auto& lease = item.second.lease;
+    if (lease.state == DiReservationState::Tentative && nowMs >= lease.expiresAtMs) {
+      continue;
+    }
+    if (lease.state != DiReservationState::Tentative &&
+        lease.state != DiReservationState::Committed) continue;
+    ++global;
+    requester += lease.requesterName == request.requesterName;
+    service += lease.serviceName == request.serviceName;
+  }
+  return global < m_policy.globalLimit &&
+         requester < m_policy.requesterLimit &&
+         service < m_policy.serviceLimit;
+}
+
+DiReservationResult
+DiReservationAuthority::reserve(const DiReservationRequest& request,
+                                std::uint64_t nowMs)
+{
+  DiReservationResult rejected;
+  if (!request.authorized) {
+    rejected.reasonCode = "AUTHORIZATION_FAILED";
+    return rejected;
+  }
+  std::lock_guard<std::mutex> lock(m_reservationMutex);
+  const auto key = keyFor(request);
+  auto prior = m_records.find(key);
+  std::uint64_t expiresAtMs = nowMs + m_policy.tentativeLeaseMs;
+  if (prior != m_records.end()) {
+    auto& lease = prior->second.lease;
+    if (lease.state == DiReservationState::Tentative && nowMs < lease.expiresAtMs) {
+      return {true, "OK", lease, true}; // duplicate ACK never extends lease
+    }
+    rejected.reasonCode = "RESERVATION_NOT_LIVE";
+    return rejected;
+  }
+  else if (!withinQuota(request, nowMs)) {
+    rejected.reasonCode = "LEASE_CAPACITY_REJECTED";
+    return rejected;
+  }
+  DiReservationLease lease;
+  lease.reservationId = m_providerBootId + "-reservation-" +
+                        std::to_string(m_nextReservationId++);
+  lease.providerBootId = m_providerBootId;
+  lease.providerName = request.providerName;
+  lease.requesterName = request.requesterName;
+  lease.requestId = request.requestId;
+  lease.serviceName = request.serviceName;
+  lease.planDigest = request.planDigest;
+  lease.resourceBindingProof = request.resourceBindingProof;
+  lease.conflictKeys = request.conflictKeys;
+  lease.expiresAtMs = expiresAtMs;
+  m_records.emplace(key, Record{lease, {}});
+  m_keyByReservation.emplace(lease.reservationId, key);
+  return {true, "OK", lease, false};
+}
+
+DiReservationResult
+DiReservationAuthority::commit(const std::string& reservationId,
+                               std::uint64_t nowMs)
+{
+  std::lock_guard<std::mutex> lock(m_reservationMutex);
+  auto key = m_keyByReservation.find(reservationId);
+  if (key == m_keyByReservation.end()) return {false, "RESERVATION_NOT_FOUND", {}, false};
+  auto& lease = m_records.at(key->second).lease;
+  if (lease.state == DiReservationState::Committed) return {true, "OK", lease, true};
+  if (lease.state != DiReservationState::Tentative || nowMs >= lease.expiresAtMs) {
+    if (lease.state == DiReservationState::Tentative) lease.state = DiReservationState::Expired;
+    return {false, "RESERVATION_EXPIRED", lease, false};
+  }
+  lease.state = DiReservationState::Committed;
+  return {true, "OK", lease, false};
+}
+
+bool
+DiReservationAuthority::release(const std::string& reservationId,
+                                const std::string& cause,
+                                std::uint64_t nowMs)
+{
+  (void)nowMs;
+  std::lock_guard<std::mutex> lock(m_reservationMutex);
+  auto key = m_keyByReservation.find(reservationId);
+  if (key == m_keyByReservation.end()) return false;
+  auto& record = m_records.at(key->second);
+  if (record.lease.state == DiReservationState::Released ||
+      record.lease.state == DiReservationState::Expired) return true;
+  record.lease.state = DiReservationState::Released;
+  record.releaseCause = cause;
+  return true;
+}
+
+std::size_t
+DiReservationAuthority::cleanupExpired(std::uint64_t nowMs)
+{
+  std::lock_guard<std::mutex> lock(m_reservationMutex);
+  std::size_t count = 0;
+  for (auto& item : m_records) {
+    auto& lease = item.second.lease;
+    if (lease.state == DiReservationState::Tentative && nowMs >= lease.expiresAtMs) {
+      lease.state = DiReservationState::Expired;
+      item.second.releaseCause = "TENTATIVE_TIMEOUT";
+      ++count;
+    }
+  }
+  return count;
+}
+
+void
+DiReservationAuthority::releaseAll(std::uint64_t nowMs, const std::string& cause)
+{
+  std::lock_guard<std::mutex> lock(m_reservationMutex);
+  for (auto& item : m_records) {
+    if (item.second.lease.state == DiReservationState::Tentative ||
+        item.second.lease.state == DiReservationState::Committed) {
+      item.second.lease.state = DiReservationState::Released;
+      item.second.releaseCause = cause;
+    }
+  }
+}
 
 void
 ExecutionAttemptKey::validate() const
@@ -18,7 +174,10 @@ std::string
 ExecutionAttemptKey::scopedSessionId() const
 {
   validate();
-  return trimSlashes(requestId) + "/attempt=" + std::to_string(attemptEpoch);
+  // Keep the attempt discriminator as ordinary generic name components.
+  // `attempt=<epoch>` is interpreted by ndn-cxx as typed-component URI
+  // syntax, and `attempt` is not a registered component type.
+  return trimSlashes(requestId) + "/attempt/" + std::to_string(attemptEpoch);
 }
 
 std::map<std::string, std::string>

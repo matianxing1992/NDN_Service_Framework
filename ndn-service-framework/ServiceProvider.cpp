@@ -33,6 +33,33 @@ namespace ndn_service_framework
 
     namespace
     {
+        void
+        configureSvsProtocol(ndn::svs::SVSPubSubOptions& options)
+        {
+            std::string version = std::getenv("NDNSF_SVS_PROTOCOL_VERSION") != nullptr
+                ? std::getenv("NDNSF_SVS_PROTOCOL_VERSION") : "v3";
+            std::transform(version.begin(), version.end(), version.begin(),
+                           [] (unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (version == "v2" || version == "2") {
+                options.syncProtocol.version = ndn::svs::SvsProtocolVersion::V2;
+            }
+            else if (version == "v3" || version == "3") {
+                options.syncProtocol.version = ndn::svs::SvsProtocolVersion::V3;
+            }
+            else {
+                throw std::invalid_argument("NDNSF_SVS_PROTOCOL_VERSION must be v2 or v3");
+            }
+            if (const char* raw = std::getenv("NDNSF_SVS_MAX_SUPPRESSION_MS")) {
+                try {
+                    options.syncProtocol.suppressionPeriod =
+                        ndn::time::milliseconds(std::max(0, std::stoi(raw)));
+                }
+                catch (const std::exception&) {
+                    throw std::invalid_argument("NDNSF_SVS_MAX_SUPPRESSION_MS must be an integer");
+                }
+            }
+        }
+
         std::string
         formatAttributesForLog(const std::vector<std::string>& attributes)
         {
@@ -394,7 +421,10 @@ namespace ndn_service_framework
         bool
         useAsyncSvsPublish()
         {
-            return std::getenv("NDNSF_SVS_ASYNC_PUBLISH") == nullptr ||
+            // Fire-and-forget async publication cannot report a background
+            // prepare failure to the caller.  Runtime control messages require
+            // commit-before-return reliability, so async is explicit opt-in.
+            return std::getenv("NDNSF_SVS_ASYNC_PUBLISH") != nullptr &&
                    isTruthyEnv("NDNSF_SVS_ASYNC_PUBLISH");
         }
 
@@ -460,6 +490,19 @@ namespace ndn_service_framework
                     return {};
                 }
                 out[i] = static_cast<uint8_t>((hi << 4) | lo);
+            }
+            return out;
+        }
+
+        std::string
+        hexEncode(const ndn::Buffer& value)
+        {
+            static const char* digits = "0123456789abcdef";
+            std::string out;
+            out.reserve(value.size() * 2);
+            for (const auto byte : value) {
+                out.push_back(digits[(byte >> 4) & 0x0f]);
+                out.push_back(digits[byte & 0x0f]);
             }
             return out;
         }
@@ -860,6 +903,169 @@ namespace ndn_service_framework
         }
     }
 
+    void ServiceProvider::setDeploymentPrepareHandler(DeploymentPrepareHandler handler)
+    {
+        m_deploymentPrepareHandler = std::move(handler);
+    }
+
+    void ServiceProvider::setProviderReadyPublisher(ProviderReadyPublisher publisher)
+    {
+        m_providerReadyPublisher = std::move(publisher);
+    }
+
+    bool ServiceProvider::acceptExecutionActivate(
+        const ExecutionActivateMessage& activation,
+        std::string* rejectionReason)
+    {
+        auto reject = [&] (const std::string& reason) {
+            if (rejectionReason != nullptr) *rejectionReason = reason;
+            return false;
+        };
+        static const std::vector<std::string> required = {
+            "requestId", "selectionDigest", "deploymentPlanDigest",
+            "readySetDigest", "memberSetDigest", "requesterIdentity",
+            "activationSequence", "expiresAtUs"
+        };
+        for (const auto& field : required) {
+            if (!activation.hasField(field) || activation.getField(field).empty()) {
+                return reject("activation missing " + field);
+            }
+        }
+        auto preparedIt = m_preparedDeployments.find(
+            activation.getField("selectionDigest"));
+        if (preparedIt == m_preparedDeployments.end()) {
+            return reject("no prepared deployment for selection");
+        }
+        auto& prepared = preparedIt->second;
+        if (prepared.activated) {
+            if (activation.computeDigest() == prepared.activationDigest) return true;
+            return reject("conflicting duplicate activation");
+        }
+        uint64_t expiresAtUs = 0;
+        try { expiresAtUs = std::stoull(activation.getField("expiresAtUs")); }
+        catch (...) { return reject("invalid activation expiry"); }
+        if (expiresAtUs <= nowMicroseconds()) return reject("activation expired");
+        if (activation.getField("requestId") != prepared.requestId.toUri() ||
+            activation.getField("requesterIdentity") != prepared.requesterName.toUri() ||
+            activation.getField("deploymentPlanDigest") != prepared.plan.computeDigest()) {
+            return reject("activation binding mismatch");
+        }
+        prepared.activated = true;
+        prepared.activationDigest = activation.computeDigest();
+        RequestMessage requestCopy = prepared.request;
+        if (dispatchRequestExecutionAsync(prepared.requesterName,
+                                          prepared.providerName,
+                                          prepared.serviceName,
+                                          prepared.requestId,
+                                          requestCopy,
+                                          prepared.selectionDigest)) {
+            return true;
+        }
+        auto response = dispatchRequest(prepared.requesterName,
+                                        prepared.providerName,
+                                        prepared.serviceName,
+                                        prepared.requestId,
+                                        requestCopy);
+        finishRequestExecutionOnEventLoop(prepared.requesterName,
+                                          prepared.providerName,
+                                          prepared.serviceName,
+                                          prepared.requestId,
+                                          requestCopy,
+                                          std::move(response),
+                                          prepared.selectionDigest);
+        return true;
+    }
+
+    void ServiceProvider::publishProviderReady(
+        const ndn::Name& requesterIdentity,
+        const ProviderReadyMessage& ready,
+        const std::string& statusHandle,
+        int attempt)
+    {
+        if (attempt > 2) {
+            NDN_LOG_WARN("ProviderReady acknowledgement retry exhausted requestId="
+                         << ready.getField("requestId"));
+            return;
+        }
+        ndn::Interest interest(makeProviderReadyName(
+            requesterIdentity, DeploymentControlMessage::VERSION, statusHandle));
+        interest.setMustBeFresh(true);
+        interest.setCanBePrefix(false);
+        interest.setInterestLifetime(ndn::time::milliseconds(500));
+        interest.setApplicationParameters(ready.WireEncode());
+        m_keyChain.sign(interest, m_signingInfo);
+        m_face.expressInterest(
+            interest,
+            [this, requesterIdentity, ready, statusHandle](const ndn::Interest&,
+                                                           const ndn::Data& data) {
+                nac_validator.validate(
+                    data,
+                    [ready](const ndn::Data& validated) {
+                        ReadyAcknowledgement ack;
+                        if (!ack.WireDecode(validated.getContent()) ||
+                            !ack.hasField("readyMessageDigest") ||
+                            ack.getField("readyMessageDigest") != ready.computeDigest()) {
+                            NDN_LOG_WARN("Reject malformed ProviderReady acknowledgement");
+                        }
+                    },
+                    [](const ndn::Data&, const ndn::security::ValidationError& error) {
+                        NDN_LOG_WARN("ProviderReady acknowledgement validation failed: " << error);
+                    });
+            },
+            [this, requesterIdentity, ready, statusHandle, attempt](const ndn::Interest&,
+                                                                    const ndn::lp::Nack&) {
+                m_scheduler.schedule(ndn::time::milliseconds(100 * (attempt + 1)),
+                    [this, requesterIdentity, ready, statusHandle, attempt] {
+                        publishProviderReady(requesterIdentity, ready, statusHandle, attempt + 1);
+                    });
+            },
+            [this, requesterIdentity, ready, statusHandle, attempt](const ndn::Interest&) {
+                m_scheduler.schedule(ndn::time::milliseconds(100 * (attempt + 1)),
+                    [this, requesterIdentity, ready, statusHandle, attempt] {
+                        publishProviderReady(requesterIdentity, ready, statusHandle, attempt + 1);
+                    });
+            });
+    }
+
+    bool ServiceProvider::handleExecutionActivateInterest(const ndn::Interest& interest)
+    {
+        const auto parsed = parseExecutionActivateName(interest.getName());
+        if (!parsed) return false;
+        nac_validator.validate(
+            interest,
+            [this](const ndn::Interest& validated) {
+                ExecutionActivateMessage activation;
+                bool accepted = activation.WireDecode(validated.getApplicationParameters());
+                std::string reason;
+                if (accepted) {
+                    const auto signatureInfo = validated.getSignatureInfo();
+                    accepted = signatureInfo && signatureInfo->hasKeyLocator() &&
+                        signatureInfo->getKeyLocator().getType() == ndn::tlv::Name &&
+                        activation.hasField("requesterIdentity") &&
+                        ndn::security::extractIdentityFromCertName(
+                            signatureInfo->getKeyLocator().getName()).toUri() ==
+                            activation.getField("requesterIdentity");
+                    if (!accepted) reason = "activation signer identity mismatch";
+                }
+                if (accepted) accepted = acceptExecutionActivate(activation, &reason);
+                ReadyAcknowledgement ack;
+                ack.setField("accepted", accepted ? "true" : "false");
+                ack.setField("reason", reason);
+                if (activation.hasField("selectionDigest"))
+                    ack.setField("activationDigest", activation.computeDigest());
+                ack.setField("issuedAtUs", std::to_string(nowMicroseconds()));
+                ndn::Data data(validated.getName());
+                data.setFreshnessPeriod(ndn::time::milliseconds(250));
+                data.setContent(ack.WireEncode());
+                m_keyChain.sign(data, m_signingInfo);
+                m_face.put(data);
+            },
+            [](const ndn::Interest&, const ndn::security::ValidationError& error) {
+                NDN_LOG_WARN("ExecutionActivate signature validation failed: " << error);
+            });
+        return true;
+    }
+
     ServiceProvider::ServiceProvider(ndn::Face& face,
                                      ndn::Name group_prefix,
                                      ndn::security::Certificate identityCert,
@@ -883,7 +1089,8 @@ namespace ndn_service_framework
         : m_face(face),
         m_scheduler(m_face.getIoContext()),
         identity(encryptionCert.getIdentity()),
-        validator(std::make_shared<MessageValidator>(trustSchemaPath)),
+        validator(std::make_shared<MessageValidator>(
+          trustSchemaPath, group_prefix, &face)),
         identityCert(encryptionCert),
         signingCert(signingCert),
         // nac_validator(std::move(ndn::security::ValidatorNull())),
@@ -964,6 +1171,7 @@ namespace ndn_service_framework
 
         // Do not fetch publications older than 10 seconds
         ndn::svs::SVSPubSubOptions opts;
+        configureSvsProtocol(opts);
         #ifdef USE_TIMESTAMP
         opts.useTimestamp = true;
         // opts.maxPubAge = ndn::time::seconds(0);
@@ -1020,12 +1228,12 @@ namespace ndn_service_framework
                 std::bind(&ServiceProvider::onMissingData, this, _1),
                 opts,
                 secOpts);
-            const int suppressionMs =
-                std::max(0, intEnvOrDefault("NDNSF_SVS_MAX_SUPPRESSION_MS", 1));
-            m_svsps->getSVSync().getCore().setMaxSuppressionTime(
-                ndn::time::milliseconds(suppressionMs));
-            NDN_LOG_INFO("NDNSF_SVS_MAX_SUPPRESSION_MS role=provider value="
-                         << suppressionMs);
+            const auto& syncProfile = m_svsps->getSyncProtocolOptions();
+            NDN_LOG_INFO("NDNSF_SVS_PROTOCOL role=provider version="
+                         << static_cast<int>(syncProfile.version)
+                         << " lifetimeMs=" << syncProfile.syncInterestLifetime.count()
+                         << " suppressionMs=" << syncProfile.suppressionPeriod.count()
+                         << " periodicMs=" << syncProfile.periodicTimeout.count());
             if (std::getenv("NDNSF_SVS_PERIODIC_SYNC_MS") != nullptr) {
                 const int periodicSyncMs =
                     std::max(1, intEnvOrDefault("NDNSF_SVS_PERIODIC_SYNC_MS", 30000));
@@ -1130,7 +1338,7 @@ namespace ndn_service_framework
         identity(encryptionCert.getIdentity()),
         m_keyChain(),
         m_svsps(nullptr),
-        validator(std::make_shared<MessageValidator>(trustSchemaPath)),
+        validator(std::make_shared<MessageValidator>(trustSchemaPath, group_prefix)),
         nac_validator(m_face),
         identityCert(encryptionCert),
         signingCert(signingCert),
@@ -1271,6 +1479,29 @@ namespace ndn_service_framework
         NDN_LOG_WARN("Selection status query "
                      << (enabled ? "enabled" : "disabled")
                      << " for service " << serviceUri);
+    }
+
+    void ServiceProvider::setR1SelectionDecisionHandler(
+        const ndn::Name& serviceName,
+        R1SelectionDecisionHandler handler)
+    {
+        if (!handler) {
+            m_r1SelectionDecisionHandlers.erase(serviceName);
+            return;
+        }
+        m_r1SelectionDecisionHandlers[serviceName] = std::move(handler);
+        setSelectionStatusQueryable(serviceName, true);
+    }
+
+    void ServiceProvider::setR1ReservationTerminalHandler(
+        const ndn::Name& serviceName,
+        R1ReservationTerminalHandler handler)
+    {
+        if (!handler) {
+            m_r1ReservationTerminalHandlers.erase(serviceName);
+            return;
+        }
+        m_r1ReservationTerminalHandlers[serviceName] = std::move(handler);
     }
 
     void ServiceProvider::ProviderAdmissionLeaseTable::grant(
@@ -1581,6 +1812,12 @@ namespace ndn_service_framework
         if (!status.requestId.empty()) {
             payload += "operationRequestId=" + status.requestId.toUri() + ";";
         }
+        if (!status.role.empty()) {
+            payload += "operationRole=" + status.role + ";";
+        }
+        payload += "operationAttempt=" + std::to_string(status.attempt) + ";";
+        payload += "operationEpoch=" + std::to_string(status.epoch) + ";";
+        payload += "operationSequence=" + std::to_string(status.sequence) + ";";
         payload += "operationState=" + status.state + ";";
         if (!status.reasonCode.empty()) {
             payload += "operationReasonCode=" + status.reasonCode + ";";
@@ -1588,6 +1825,8 @@ namespace ndn_service_framework
         if (!status.message.empty()) {
             payload += "operationMessage=" + status.message + ";";
         }
+        payload += "operationProgressKnown=" +
+            std::string(status.progressKnown ? "1" : "0") + ";";
         payload += "operationProgress=" + numberToText(status.progress) + ";";
         if (status.retryAfterMs > 0) {
             payload += "operationRetryAfterMs=" + std::to_string(status.retryAfterMs) + ";";
@@ -1600,6 +1839,16 @@ namespace ndn_service_framework
         }
         if (status.expiresAtMs > 0) {
             payload += "operationExpiresAtMs=" + std::to_string(status.expiresAtMs) + ";";
+        }
+        if (!status.detailsSchema.empty()) {
+            payload += "operationDetailsSchema=" + status.detailsSchema + ";";
+        }
+        if (!status.detailsPayload.empty()) {
+            if (status.detailsPayload.size() > 4096) {
+                throw std::invalid_argument(
+                    "service operation details exceed 4096 bytes");
+            }
+            payload += "operationDetailsHex=" + hexEncode(status.detailsPayload) + ";";
         }
         if (status.resultReference) {
             const auto referencePayload =
@@ -1628,6 +1877,16 @@ namespace ndn_service_framework
         status.serviceName = nameFieldOrDefault(fields, "operationService");
         status.providerName = nameFieldOrDefault(fields, "operationProvider");
         status.requestId = nameFieldOrDefault(fields, "operationRequestId");
+        if (const auto it = fields.find("operationRole"); it != fields.end()) {
+            status.role = it->second;
+        }
+        status.attempt = uintFieldOrDefault(fields, "operationAttempt");
+        status.epoch = uintFieldOrDefault(fields, "operationEpoch");
+        status.sequence = uintFieldOrDefault(fields, "operationSequence");
+        // Legacy payloads omitted these monotonic fields.
+        status.attempt = status.attempt == 0 ? 1 : status.attempt;
+        status.epoch = status.epoch == 0 ? 1 : status.epoch;
+        status.sequence = status.sequence == 0 ? 1 : status.sequence;
         if (const auto it = fields.find("operationState"); it != fields.end()) {
             status.state = it->second;
         }
@@ -1637,11 +1896,25 @@ namespace ndn_service_framework
         if (const auto it = fields.find("operationMessage"); it != fields.end()) {
             status.message = it->second;
         }
+        status.progressKnown = fields.find("operationProgressKnown") != fields.end() &&
+                               fields.at("operationProgressKnown") == "1";
         status.progress = doubleFieldOrDefault(fields, "operationProgress");
         status.retryAfterMs = uintFieldOrDefault(fields, "operationRetryAfterMs");
         status.createdAtMs = uintFieldOrDefault(fields, "operationCreatedAtMs");
         status.updatedAtMs = uintFieldOrDefault(fields, "operationUpdatedAtMs");
         status.expiresAtMs = uintFieldOrDefault(fields, "operationExpiresAtMs");
+        if (const auto it = fields.find("operationDetailsSchema"); it != fields.end()) {
+            status.detailsSchema = it->second;
+        }
+        if (const auto it = fields.find("operationDetailsHex"); it != fields.end()) {
+            status.detailsPayload = hexDecode(it->second);
+            if (status.detailsPayload.size() > 4096) {
+                return std::nullopt;
+            }
+        }
+        if (status.progress < 0.0 || status.progress > 1.0) {
+            return std::nullopt;
+        }
         status.resultReference = parseDataProductReferencePayload(payload);
         return status;
     }
@@ -1997,6 +2270,9 @@ namespace ndn_service_framework
     {
         m_collaborationServices[serviceName] =
             {std::move(ackHandler), std::move(handler), std::move(allowedRoles)};
+        // Collaboration work is long-running by design. Registration therefore
+        // enables the existing signed SELECTION-STATUS path by default.
+        m_services[serviceName].selectionStatusQueryable = true;
         const auto serviceUri = serviceName.toUri();
         if (std::find(m_serviceNames.begin(), m_serviceNames.end(), serviceUri) ==
             m_serviceNames.end()) {
@@ -2249,6 +2525,19 @@ namespace ndn_service_framework
                                                    timeoutMs);
     }
 
+    void ServiceProvider::CollaborationContext::reportOperationStatus(
+        ServiceOperationStatus status)
+    {
+        status.providerName = m_provider.identity;
+        status.serviceName = m_assignment.service;
+        status.requestId = m_requestId;
+        if (status.role.empty()) {
+            status.role = m_assignment.role;
+        }
+        m_provider.reportSelectionOperationStatus(
+            m_assignment.selectionDigest, std::move(status));
+    }
+
     void ServiceProvider::CollaborationContext::publishFinalResponse(
         const ndn::Buffer& payload)
     {
@@ -2457,8 +2746,101 @@ namespace ndn_service_framework
            << "queued_at_us=" << status.queuedAtUs << "\n"
            << "running_at_us=" << status.runningAtUs << "\n"
            << "completed_at_us=" << status.completedAtUs << "\n"
-           << "updated_at_us=" << status.updatedAtUs << "\n";
+           << "updated_at_us=" << status.updatedAtUs << "\n"
+           << "decision_receipt_hex=" << hexEncode(status.decisionReceipt) << "\n"
+           << "member_count=" << status.memberStatuses.size() << "\n";
+        for (size_t i = 0; i < status.memberStatuses.size(); ++i) {
+            const auto& member = status.memberStatuses[i];
+            const std::string prefix = "member." + std::to_string(i) + ".";
+            os << prefix << "provider=" << member.providerName.toUri() << "\n"
+               << prefix << "service=" << member.serviceName.toUri() << "\n"
+               << prefix << "request_id=" << member.requestId.toUri() << "\n"
+               << prefix << "selection_digest=" << member.selectionDigest << "\n"
+               << prefix << "role=" << member.role << "\n"
+               << prefix << "operation_id=" << member.operationId << "\n"
+               << prefix << "operation=" << member.operation << "\n"
+               << prefix << "state=" << member.state << "\n"
+               << prefix << "reason_code=" << member.reasonCode << "\n"
+               << prefix << "message=" << member.message << "\n"
+               << prefix << "attempt=" << member.attempt << "\n"
+               << prefix << "epoch=" << member.epoch << "\n"
+               << prefix << "sequence=" << member.sequence << "\n"
+               << prefix << "progress_known=" << (member.progressKnown ? 1 : 0) << "\n"
+               << prefix << "progress=" << member.progress << "\n"
+               << prefix << "created_at_ms=" << member.createdAtMs << "\n"
+               << prefix << "updated_at_ms=" << member.updatedAtMs << "\n"
+               << prefix << "expires_at_ms=" << member.expiresAtMs << "\n"
+               << prefix << "details_schema=" << member.detailsSchema << "\n"
+               << prefix << "details_hex=" << hexEncode(member.detailsPayload) << "\n";
+        }
         return os.str();
+    }
+
+    void ServiceProvider::reportSelectionOperationStatus(
+        const std::string& selectionDigest,
+        ServiceOperationStatus status)
+    {
+        if (selectionDigest.empty() || status.operationId.empty() ||
+            status.operation.empty() || status.attempt == 0 || status.epoch == 0 ||
+            status.sequence == 0 || status.progress < 0.0 || status.progress > 1.0 ||
+            status.detailsPayload.size() > 4096) {
+            throw std::invalid_argument("invalid collaboration operation status");
+        }
+        auto found = m_selectionExecutionStatuses.find(selectionDigest);
+        if (found == m_selectionExecutionStatuses.end()) {
+            throw std::invalid_argument("selection status binding is unknown");
+        }
+        auto& parent = found->second;
+        status.providerName = status.providerName.empty() ? identity : status.providerName;
+        status.serviceName = status.serviceName.empty() ? parent.serviceName : status.serviceName;
+        status.requestId = status.requestId.empty() ? parent.requestId : status.requestId;
+        if (!status.providerName.equals(identity) ||
+            !status.serviceName.equals(parent.serviceName) ||
+            !status.requestId.equals(parent.requestId)) {
+            throw std::invalid_argument("collaboration operation status binding mismatch");
+        }
+        CollaborationMemberStatus snapshot;
+        snapshot.providerName = status.providerName;
+        snapshot.serviceName = status.serviceName;
+        snapshot.requestId = status.requestId;
+        snapshot.selectionDigest = selectionDigest;
+        snapshot.role = status.role;
+        snapshot.operationId = status.operationId;
+        snapshot.operation = status.operation;
+        snapshot.state = status.state;
+        snapshot.reasonCode = status.reasonCode;
+        snapshot.message = status.message;
+        snapshot.attempt = status.attempt;
+        snapshot.epoch = status.epoch;
+        snapshot.sequence = status.sequence;
+        snapshot.progressKnown = status.progressKnown;
+        snapshot.progress = status.progress;
+        snapshot.createdAtMs = status.createdAtMs;
+        snapshot.updatedAtMs = status.updatedAtMs;
+        snapshot.expiresAtMs = status.expiresAtMs;
+        snapshot.detailsSchema = status.detailsSchema;
+        snapshot.detailsPayload = status.detailsPayload;
+        auto& members = parent.memberStatuses;
+        auto existing = std::find_if(members.begin(), members.end(),
+            [&snapshot](const CollaborationMemberStatus& item) {
+                return item.role == snapshot.role &&
+                       item.operationId == snapshot.operationId;
+            });
+        if (existing != members.end()) {
+            if (snapshot.epoch < existing->epoch ||
+                (snapshot.epoch == existing->epoch &&
+                 snapshot.sequence <= existing->sequence)) {
+                throw std::invalid_argument("stale collaboration operation status");
+            }
+            *existing = std::move(snapshot);
+        }
+        else {
+            if (members.size() >= 64) {
+                throw std::length_error("collaboration status member bound exceeded");
+            }
+            members.push_back(std::move(snapshot));
+        }
+        parent.updatedAtUs = nowMicroseconds();
     }
 
     SelectionExecutionStatus
@@ -2512,6 +2894,12 @@ namespace ndn_service_framework
         }
         const auto nowUs = nowMicroseconds();
         status.updatedAtUs = nowUs;
+        NDN_LOG_INFO("NDNSF_SELECTION_STATUS digest=" << selectionDigest
+                     << " state=" << static_cast<int>(state)
+                     << " provider=" << providerName.toUri()
+                     << " service=" << serviceName.toUri()
+                     << " requestId=" << requestId.toUri()
+                     << " message=" << status.message);
         switch (state) {
         case SelectionExecutionState::Received:
             if (status.receivedAtUs == 0) {
@@ -2781,11 +3169,23 @@ namespace ndn_service_framework
                 decision.message.empty() ? "ACK suppressed" : decision.message);
             return;
         }
+        const bool requiresReservation =
+            requestMessage.hasRequestCapabilities() &&
+            requestMessage.getRequestCapabilities().hasField(
+                "DIReservationSelectionV1") &&
+            requestMessage.getRequestCapabilities().getField(
+                "DIReservationSelectionV1") == "required";
+        if (decision.status && requiresReservation && !decision.reservationLease) {
+            decision.status = false;
+            decision.message = "DI_RESERVATION_REQUIRED";
+        }
         std::string providerToken;
         if (decision.status) {
             std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
             pendingRequests[pendingKey] =
                 std::make_shared<RequestMessage>(requestMessage);
+            if (decision.reservationLease)
+                pendingReservationLeases[pendingKey] = *decision.reservationLease;
             NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=PENDING_REQUEST_STORED timestamp_us="
                       << nowMicroseconds()
                       << " providerName=" << identity.toUri()
@@ -2821,7 +3221,9 @@ namespace ndn_service_framework
                                    decision.message,
                                    decision.payload,
                                    m_useTokens ? requestMessage.getUserToken() : "",
-                                   providerToken);
+                                   providerToken,
+                                   &requestMessage,
+                                   &decision);
     }
 
     bool ServiceProvider::consumeTargetedProviderToken(
@@ -3396,6 +3798,27 @@ namespace ndn_service_framework
         ResponseMessage response,
         std::string selectionDigest)
     {
+        auto releaseR1Reservation = [this, &requesterName, &serviceName,
+                                     &requestId](const std::string& cause) {
+            const ndn::Name key = ndn::Name(requesterName).append(serviceName).append(requestId);
+            std::string reservationId;
+            {
+                std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+                const auto found = m_r1ReservationByRequest.find(key);
+                if (found == m_r1ReservationByRequest.end()) return;
+                reservationId = found->second;
+                m_r1ReservationByRequest.erase(found);
+            }
+            const auto handler = m_r1ReservationTerminalHandlers.find(serviceName);
+            if (handler != m_r1ReservationTerminalHandlers.end()) {
+                try { handler->second(reservationId, cause); }
+                catch (const std::exception& e) {
+                    NDN_LOG_ERROR("R1 reservation terminal release failed reservation="
+                                  << reservationId << " cause=" << cause
+                                  << " error=" << e.what());
+                }
+            }
+        };
         NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=PROVIDER_EXECUTE_DONE timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << requestId.toUri()
@@ -3489,6 +3912,8 @@ namespace ndn_service_framework
                        std::memory_order_relaxed,
                        std::memory_order_relaxed)) {
             }
+            releaseR1Reservation(response.getStatus() ? "LOCAL_COMPLETE" :
+                                                        "EXECUTION_FAILED");
         }
         catch (const std::exception& e) {
             NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=RESPONSE_PUBLISH_FAILED timestamp_us="
@@ -3513,6 +3938,7 @@ namespace ndn_service_framework
                                            requestId,
                                            std::string("response publish failed: ") + e.what(),
                                            responseName);
+            releaseR1Reservation("RESPONSE_PUBLISH_FAILED");
             throw;
         }
     }
@@ -4771,6 +5197,8 @@ namespace ndn_service_framework
 
         {
             std::lock_guard<std::mutex> lock(m_collaborationMutex);
+            m_collaborationServiceNamesByRequest[requestId] =
+                state->assignment.service;
             auto& scopeKeys = m_collaborationScopeKeysByRequest[requestId];
             for (const auto& entry : state->assignment.scopeKeys) {
                 scopeKeys[entry.first] = entry.second;
@@ -5039,6 +5467,7 @@ namespace ndn_service_framework
         const KeyScope& keyScope)
     {
         ndn::Name keyDataName;
+        ndn::Name serviceName;
         const std::string fetchKey = requestId.toUri() + "|" + keyScope;
         {
             std::lock_guard<std::mutex> lock(m_collaborationMutex);
@@ -5055,69 +5484,81 @@ namespace ndn_service_framework
             if (nameIt == namesIt->second.end() || nameIt->second.empty()) {
                 return false;
             }
+            auto serviceIt = m_collaborationServiceNamesByRequest.find(requestId);
+            if (serviceIt == m_collaborationServiceNamesByRequest.end() ||
+                serviceIt->second.empty()) {
+                NDN_LOG_ERROR("Missing collaboration service name for scope key fetch "
+                              << requestId.toUri() << " scope=" << keyScope);
+                return false;
+            }
             if (!m_collaborationScopeKeyFetchesInFlight.insert(fetchKey).second) {
                 return false;
             }
             keyDataName = nameIt->second;
+            serviceName = serviceIt->second;
         }
 
-        ndn::Interest interest(keyDataName);
-        interest.setCanBePrefix(true);
-        interest.setMustBeFresh(true);
-        interest.setInterestLifetime(ndn::time::seconds(4));
+        // scopeKeyData names identify hybrid segmented large-data objects.
+        // Fetching them through NAC-ABE Consumer::consume races the assignment
+        // prefetch and attempts to decode HybridMessageEnvelope (TLV 172) as
+        // NAC encrypted content (TLV 602), which can terminate the Face loop.
+        // Use the same hybrid large-data path as assignment prefetch, off the
+        // event-loop thread because that path waits for asynchronous fetches.
+        std::thread([this, keyDataName, serviceName, requestId, keyScope,
+                     fetchKey]() mutable {
+            LargeDataFetchResult result;
+            try {
+                result = fetchAndDecryptLargeData(keyDataName, serviceName.toUri());
+            }
+            catch (const std::exception& e) {
+                result.success = false;
+                result.errorMessage = e.what();
+            }
+            catch (...) {
+                result.success = false;
+                result.errorMessage = "unknown collaboration scope key fetch error";
+            }
 
-        boost::asio::post(m_face.getIoContext(),
-            [this, interest, requestId, keyScope, fetchKey]() mutable {
-                try {
-                    nacConsumer.consume(
-                        interest,
-                        [this, requestId, keyScope, fetchKey](
-                            const ndn::Buffer& buffer) {
-                            std::vector<PendingEncryptedCollaborationData> pending;
-                            {
-                                std::lock_guard<std::mutex> lock(m_collaborationMutex);
-                                m_collaborationScopeKeyFetchesInFlight.erase(fetchKey);
-                                if (buffer.size() != HybridMessageCrypto::MESSAGE_KEY_SIZE) {
-                                    NDN_LOG_ERROR("Fetched invalid collaboration scope key for "
-                                                  << requestId.toUri()
-                                                  << " scope=" << keyScope);
-                                    return;
-                                }
-                                m_collaborationScopeKeysByRequest[requestId][keyScope] =
-                                    buffer;
-                                auto pendingIt =
-                                    m_pendingEncryptedCollaborationData.find(requestId);
-                                if (pendingIt != m_pendingEncryptedCollaborationData.end()) {
-                                    pending = std::move(pendingIt->second);
-                                    m_pendingEncryptedCollaborationData.erase(pendingIt);
-                                }
-                            }
-                            for (const auto& item : pending) {
-                                decryptCollaborationDataOrQueue(item.dataName,
-                                                                item.requestId,
-                                                                item.producer,
-                                                                item.message);
-                            }
-                        },
-                        [this, requestId, keyScope, fetchKey](
-                            const std::string& reason) {
-                            std::lock_guard<std::mutex> lock(m_collaborationMutex);
-                            m_collaborationScopeKeyFetchesInFlight.erase(fetchKey);
+            boost::asio::post(m_face.getIoContext(),
+                [this, requestId, keyScope, fetchKey,
+                 result = std::move(result)]() mutable {
+                    std::vector<PendingEncryptedCollaborationData> pending;
+                    {
+                        std::lock_guard<std::mutex> lock(m_collaborationMutex);
+                        m_collaborationScopeKeyFetchesInFlight.erase(fetchKey);
+                        if (!result.success) {
                             NDN_LOG_ERROR("Failed to fetch collaboration scope key for "
                                           << requestId.toUri()
                                           << " scope=" << keyScope
-                                          << ": " << reason);
-                        });
-                }
-                catch (const std::exception& e) {
-                    std::lock_guard<std::mutex> lock(m_collaborationMutex);
-                    m_collaborationScopeKeyFetchesInFlight.erase(fetchKey);
-                    NDN_LOG_ERROR("Failed to start collaboration scope key fetch for "
-                                  << requestId.toUri()
-                                  << " scope=" << keyScope
-                                  << ": " << e.what());
-                }
-            });
+                                          << ": " << result.errorMessage);
+                            return;
+                        }
+                        if (result.plaintext.size() !=
+                            HybridMessageCrypto::MESSAGE_KEY_SIZE) {
+                            NDN_LOG_ERROR("Fetched invalid collaboration scope key for "
+                                          << requestId.toUri()
+                                          << " scope=" << keyScope);
+                            return;
+                        }
+                        ndn::Buffer buffer(result.plaintext.begin(),
+                                           result.plaintext.end());
+                        m_collaborationScopeKeysByRequest[requestId][keyScope] =
+                            std::move(buffer);
+                        auto pendingIt =
+                            m_pendingEncryptedCollaborationData.find(requestId);
+                        if (pendingIt != m_pendingEncryptedCollaborationData.end()) {
+                            pending = std::move(pendingIt->second);
+                            m_pendingEncryptedCollaborationData.erase(pendingIt);
+                        }
+                    }
+                    for (const auto& item : pending) {
+                        decryptCollaborationDataOrQueue(item.dataName,
+                                                        item.requestId,
+                                                        item.producer,
+                                                        item.message);
+                    }
+                });
+        }).detach();
         return true;
     }
 
@@ -5428,6 +5869,7 @@ namespace ndn_service_framework
         }
         pendingRequests.erase(pendingKey);
         pendingProviderTokens.erase(pendingKey);
+        pendingReservationLeases.erase(pendingKey);
         m_recentProviderRequests.erase(pendingKey);
         m_selectedProviderRequests.erase(pendingKey);
         m_selectionDecryptsInFlight.erase(pendingKey);
@@ -5472,6 +5914,7 @@ namespace ndn_service_framework
         }
         pendingRequests.erase(pendingKey);
         pendingProviderTokens.erase(pendingKey);
+        pendingReservationLeases.erase(pendingKey);
         m_recentProviderRequests.erase(pendingKey);
         m_selectedProviderRequests.erase(pendingKey);
         m_selectionDecryptsInFlight.erase(pendingKey);
@@ -6691,6 +7134,23 @@ void ServiceProvider::finishDecodedRequestOnEventLoop(
         return;
     }
     std::string msg = "Permission Granted";
+    const bool requiresDiReservation =
+        requestMessage.hasRequestCapabilities() &&
+        requestMessage.getRequestCapabilities().hasField(
+            "DIReservationSelectionV1") &&
+        requestMessage.getRequestCapabilities().getField(
+            "DIReservationSelectionV1") == "required";
+    if (requiresDiReservation) {
+        PublishRequestAckMessageV2(requesterIdentity,
+                                   serviceName,
+                                   requestId,
+                                   false,
+                                   "DI_RESERVATION_HANDLER_REQUIRED",
+                                   ndn::Buffer(),
+                                   m_useTokens ? requestMessage.getUserToken() : "",
+                                   "");
+        return;
+    }
     std::string providerToken;
     {
         std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
@@ -7171,6 +7631,9 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
     {
         // log interest
         NDN_LOG_DEBUG("Received Interest: " << interest.getName().toUri());
+        if (handleExecutionActivateInterest(interest)) {
+            return;
+        }
         if (replySelectionExecutionStatus(interest)) {
             return;
         }
@@ -7495,7 +7958,9 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                                                      const std::string& msg,
                                                      const ndn::Buffer& payload,
                                                      const std::string& userToken,
-                                                     const std::string& providerToken)
+                                                     const std::string& providerToken,
+                                                     const RequestMessage* sourceRequest,
+                                                     const AckDecision* ackDecision)
     {
         NDN_LOG_DEBUG("PublishRequestAckMessageV2: " << requesterIdentity.toUri()
                      << serviceName.toUri() << requestId.toUri());
@@ -7520,6 +7985,47 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         requestAckMessage.setUserToken(userToken);
         requestAckMessage.setProviderToken(providerToken);
         requestAckMessage.setPolicyEpoch(m_currentPolicyEpoch);
+        // Deployment discovery is deliberately advisory: constructing this
+        // bounded offer performs no fetch, load, warm, reservation, or handler
+        // execution. Selection remains the first mutation authority.
+        if (status && sourceRequest != nullptr && sourceRequest->hasDeploymentIntent()) {
+            ProviderCapabilityOffer offer;
+            offer.setField("providerIdentity", identity.toUri());
+            offer.setField("providerBootEpoch",
+                           identity.toUri() + ":" + std::to_string(m_processStartedAtUs));
+            offer.setField("deploymentControlVersion", "1");
+            offer.setField("secureStatusVersion", "1");
+            offer.setField("intentDigest",
+                           sourceRequest->getDeploymentIntent().computeDigest());
+            offer.setField("observedAtUs", std::to_string(nowMicroseconds()));
+            requestAckMessage.setProviderCapabilityOffer(offer);
+        }
+        if (status && ackDecision != nullptr) {
+            if (ackDecision->selectionInputKeyOffer)
+                requestAckMessage.setSelectionInputKeyOffer(
+                    *ackDecision->selectionInputKeyOffer);
+            if (ackDecision->reservationLease)
+                requestAckMessage.setReservationLease(*ackDecision->reservationLease);
+        }
+        if (status && sourceRequest != nullptr &&
+            sourceRequest->hasRequestCapabilities() &&
+            ((sourceRequest->getRequestCapabilities().hasField("SelectionGatedInputV1") &&
+              sourceRequest->getRequestCapabilities().getField("SelectionGatedInputV1") == "required") ||
+             (sourceRequest->getRequestCapabilities().hasField("DIReservationSelectionV1") &&
+              sourceRequest->getRequestCapabilities().getField("DIReservationSelectionV1") == "required")) &&
+            !requestAckMessage.hasSelectionInputKeyOffer()) {
+            const auto publicKey = identityCert.getPublicKey();
+            ndn::Buffer publicKeyBuffer(publicKey.begin(), publicKey.end());
+            SelectionInputKeyOffer offer;
+            offer.setField("schemaVersion", "1");
+            offer.setField("recipient", identity.toUri());
+            offer.setField("recipientCertName", identityCert.getName().toUri());
+            offer.setField("recipientPublicKey", selectionGatedHex(publicKeyBuffer));
+            offer.setField("recipientCertDigest", sha256DigestString(publicKeyBuffer));
+            offer.setField("providerBootEpoch",
+                           identity.toUri() + ":" + std::to_string(m_processStartedAtUs));
+            requestAckMessage.setSelectionInputKeyOffer(offer);
+        }
         if (!payload.empty()) {
             ndn::Buffer ackPayload(payload);
             requestAckMessage.setPayload(ackPayload, ackPayload.size());
@@ -7625,7 +8131,10 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
     {
         if(checkFreshness && !isFresh(subscription)) return;
 
-        auto compactSelectionV2 =
+        const auto decisionSelectionV2 =
+            ndn_service_framework::parseServiceSelectionDecisionNameV2(subscription.name);
+        auto compactSelectionV2 = decisionSelectionV2 ?
+            std::optional<CompactServiceSelectionNameV2>{} :
             ndn_service_framework::parseCompactServiceSelectionNameV2(subscription.name);
         if (compactSelectionV2) {
             NDN_LOG_DEBUG("Received compact Service Selection Message: "
@@ -7743,8 +8252,18 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             return;
         }
 
-        auto selectionV2 =
-            ndn_service_framework::parseServiceSelectionNameV2(subscription.name);
+        std::optional<ServiceSelectionNameV2> selectionV2;
+        if (decisionSelectionV2) {
+            selectionV2 = ServiceSelectionNameV2{
+                decisionSelectionV2->requesterName,
+                decisionSelectionV2->providerName,
+                decisionSelectionV2->serviceName,
+                decisionSelectionV2->requestId};
+        }
+        else {
+            selectionV2 =
+                ndn_service_framework::parseServiceSelectionNameV2(subscription.name);
+        }
         if (selectionV2) {
             if (!selectionV2->providerName.equals(identity)) {
                 return;
@@ -8004,6 +8523,37 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
     ndn::Name ServiceProvider::getName()
     {
         return identity;
+    }
+
+    std::shared_ptr<LiveStreamPublisher>
+    ServiceProvider::createLiveStream(const LiveStreamDefinition& definition)
+    {
+        if (definition.provider != identity) {
+            throw std::invalid_argument(
+                "LiveStream Provider must match ServiceProvider identity");
+        }
+        auto publisher = std::make_shared<LiveStreamPublisher>(
+            definition, m_face, m_keyChain, m_signingInfo);
+        publisher->start();
+        return publisher;
+    }
+
+    std::shared_ptr<StreamPublisher>
+    ServiceProvider::createStream(const StreamConfig& config)
+    {
+        return StreamPublisher::create(
+          config, identity,
+          [this] (const LiveStreamDefinition& definition) {
+              if (definition.provider != identity) {
+                  throw std::invalid_argument(
+                      "Stream Provider must match ServiceProvider identity");
+              }
+              // The predictive high-level facade owns route registration.
+              // createLiveStream() intentionally retains the Mapping-first
+              // low-level lifecycle for internal/legacy Core callers.
+              return std::make_shared<LiveStreamPublisher>(
+                  definition, m_face, m_keyChain, m_signingInfo);
+          });
     }
 
     void ServiceProvider::fetchPermissionsFromController(const ndn::Name& controllerPrefix)
@@ -8275,6 +8825,48 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             return;
         }
 
+        bool hasR1Decision = false;
+        bool r1NotSelected = false;
+        std::string r1ReservationId;
+        std::string r1DecisionDigest;
+        uint64_t r1TombstoneRetainUntilMs = 0;
+        ndn::Buffer r1ReceiptWire;
+        if (message.hasSelectionDecision()) {
+            const auto& decision = message.getSelectionDecision();
+            const auto validBinding =
+                decision.hasField("decision") &&
+                decision.hasField("requester") &&
+                decision.getField("requester") == requesterName.toUri() &&
+                decision.hasField("requestId") &&
+                decision.getField("requestId") == msgId.toUri() &&
+                decision.hasField("attempt") &&
+                decision.hasField("targetProvider") &&
+                decision.getField("targetProvider") == providerName.toUri() &&
+                decision.hasField("reservationId") &&
+                decision.hasField("reservationDigest");
+            if (!validBinding) {
+                updateSelectionExecutionStatus(selectionDigest,
+                                               SelectionExecutionState::Rejected,
+                                               providerName, serviceName, msgId,
+                                               "R1 SelectionDecision binding mismatch");
+                clearSelectionDecryptInFlight();
+                return;
+            }
+            const auto decisionValue = decision.getField("decision");
+            if (decisionValue != "SELECTED" && decisionValue != "NOT_SELECTED") {
+                updateSelectionExecutionStatus(selectionDigest,
+                                               SelectionExecutionState::Rejected,
+                                               providerName, serviceName, msgId,
+                                               "unknown R1 SelectionDecision");
+                clearSelectionDecryptInFlight();
+                return;
+            }
+            hasR1Decision = true;
+            r1NotSelected = decisionValue == "NOT_SELECTED";
+            r1ReservationId = decision.getField("reservationId");
+            r1DecisionDigest = decision.computeDigest();
+        }
+
         if (m_timelineTrace) {
             logTimelineTrace("provider", "provider_token_validate_start", msgId,
                              {{"serviceName", serviceName.toUri()}});
@@ -8287,6 +8879,30 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                                            serviceName, receivedProviderToken)) : "";
         {
             std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+            if (hasR1Decision) {
+                const auto accepted =
+                    m_r1AcceptedSelectionDecisions.find(r1ReservationId);
+                if (accepted != m_r1AcceptedSelectionDecisions.end()) {
+                    const bool exactDuplicate =
+                        accepted->second.decisionDigest == r1DecisionDigest &&
+                        accepted->second.providerTokenHash == providerTokenHash &&
+                        accepted->second.decision ==
+                            (r1NotSelected ? "NOT_SELECTED" : "SELECTED");
+                    updateSelectionExecutionStatus(
+                        selectionDigest,
+                        exactDuplicate ? SelectionExecutionState::Completed :
+                                         SelectionExecutionState::Rejected,
+                        providerName, serviceName, msgId,
+                        exactDuplicate ? "duplicate immutable R1 decision" :
+                                         "conflicting immutable R1 decision");
+                    if (exactDuplicate) {
+                        m_selectionExecutionStatuses[selectionDigest].decisionReceipt =
+                            accepted->second.receiptWire;
+                    }
+                    m_selectionDecryptsInFlight.erase(key);
+                    return;
+                }
+            }
             if (m_selectedProviderRequests.find(key) !=
                     m_selectedProviderRequests.end() ||
                 (!providerTokenHash.empty() &&
@@ -8366,9 +8982,186 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                 m_selectionDecryptsInFlight.erase(key);
                 return;
             }
+            if (hasR1Decision) {
+                const auto lease = pendingReservationLeases.find(key);
+                const bool reservationMatches =
+                    lease != pendingReservationLeases.end() &&
+                    lease->second.hasField("reservationId") &&
+                    lease->second.getField("reservationId") == r1ReservationId &&
+                    lease->second.computeDigest() ==
+                        message.getSelectionDecision().getField("reservationDigest") &&
+                    (!lease->second.hasField("attempt") ||
+                     lease->second.getField("attempt") ==
+                         message.getSelectionDecision().getField("attempt")) &&
+                    (!lease->second.hasField("providerBootEpoch") ||
+                     (message.getSelectionDecision().hasField("providerBootEpoch") &&
+                      lease->second.getField("providerBootEpoch") ==
+                          message.getSelectionDecision().getField("providerBootEpoch")));
+                if (!reservationMatches) {
+                    updateSelectionExecutionStatus(
+                        selectionDigest, SelectionExecutionState::Rejected,
+                        providerName, serviceName, msgId,
+                        "R1 reservation or provider boot binding mismatch");
+                    m_selectionDecryptsInFlight.erase(key);
+                    return;
+                }
+            }
             selectedRequest = *(it->second);
+            const bool gatesInput = selectedRequest.hasRequestCapabilities() &&
+                selectedRequest.getRequestCapabilities().hasField("SelectionGatedInputV1") &&
+                selectedRequest.getRequestCapabilities().getField("SelectionGatedInputV1") == "required";
+            if (gatesInput && !r1NotSelected) {
+                if (!selectedRequest.hasEncryptedRequestInput() ||
+                    !message.hasSelectionInputKeyGrant()) {
+                    updateSelectionExecutionStatus(
+                        selectionDigest, SelectionExecutionState::Rejected,
+                        providerName, serviceName, msgId,
+                        std::string("SelectionGatedInputV1 missing ") +
+                        (!selectedRequest.hasEncryptedRequestInput() ?
+                            "encrypted input" : "key grant"));
+                    m_selectionDecryptsInFlight.erase(key);
+                    return;
+                }
+                const auto& grant = message.getSelectionInputKeyGrant();
+                const auto publicKey = identityCert.getPublicKey();
+                ndn::Buffer publicKeyBuffer(publicKey.begin(), publicKey.end());
+                const bool grantMatches =
+                    grant.hasField("recipient") &&
+                    grant.getField("recipient") == providerName.toUri() &&
+                    grant.hasField("recipientCertName") &&
+                    grant.getField("recipientCertName") == identityCert.getName().toUri() &&
+                    grant.hasField("recipientCertDigest") &&
+                    grant.getField("recipientCertDigest") == sha256DigestString(publicKeyBuffer) &&
+                    grant.hasField("wrappedInputKey") &&
+                    grant.hasField("encryptedInputDigest") &&
+                    grant.getField("encryptedInputDigest") ==
+                        selectedRequest.getEncryptedRequestInput().computeDigest() &&
+                    grant.hasField("requestId") &&
+                    grant.getField("requestId") == msgId.toUri() &&
+                    (!hasR1Decision ||
+                     (grant.hasField("reservationId") &&
+                      grant.getField("reservationId") == r1ReservationId));
+                if (!grantMatches) {
+                    updateSelectionExecutionStatus(
+                        selectionDigest, SelectionExecutionState::Rejected,
+                        providerName, serviceName, msgId,
+                        "Selection input key grant binding mismatch");
+                    m_selectionDecryptsInFlight.erase(key);
+                    return;
+                }
+                const auto wrapped = selectionGatedUnhex(grant.getField("wrappedInputKey"));
+                const auto inputKey = unwrapSelectionGatedInputKey(
+                    wrapped, identityCert.getName(), m_keyChain);
+                ndn::Buffer plaintext;
+                if (!decryptSelectionGatedInput(
+                      selectedRequest.getEncryptedRequestInput(), inputKey,
+                      requesterName, serviceName, msgId, plaintext)) {
+                    updateSelectionExecutionStatus(
+                        selectionDigest, SelectionExecutionState::Rejected,
+                        providerName, serviceName, msgId,
+                        "Selection input authentication failed");
+                    m_selectionDecryptsInFlight.erase(key);
+                    return;
+                }
+                selectedRequest.setPayload(plaintext, plaintext.size());
+            }
+            if (hasR1Decision && !r1NotSelected) {
+                const auto& decision = message.getSelectionDecision();
+                if (!message.hasDeploymentPlan() ||
+                    !decision.hasField("globalPlanDigest") ||
+                    decision.getField("globalPlanDigest") !=
+                        message.getDeploymentPlan().computeDigest() ||
+                    !message.hasRecipientEncryptedAssignment() ||
+                    !effectiveAssignmentPayload.empty()) {
+                    updateSelectionExecutionStatus(
+                        selectionDigest, SelectionExecutionState::Rejected,
+                        providerName, serviceName, msgId,
+                        "R1 selected assignment is missing, plaintext, or plan-unbound");
+                    m_selectionDecryptsInFlight.erase(key);
+                    return;
+                }
+                const auto aad = recipientAssignmentAssociatedData(
+                    requesterName, providerName, serviceName, msgId,
+                    r1ReservationId, message.getDeploymentPlan().computeDigest());
+                if (!decryptRecipientAssignment(
+                      message.getRecipientEncryptedAssignment(), providerName,
+                      identityCert.getName(), m_keyChain, aad,
+                      effectiveAssignmentPayload)) {
+                    updateSelectionExecutionStatus(
+                        selectionDigest, SelectionExecutionState::Rejected,
+                        providerName, serviceName, msgId,
+                        "recipient assignment authentication failed");
+                    m_selectionDecryptsInFlight.erase(key);
+                    return;
+                }
+            }
+            if (hasR1Decision) {
+                SelectionDecisionReceipt receipt;
+                const auto handler = m_r1SelectionDecisionHandlers.find(serviceName);
+                try {
+                    if (handler != m_r1SelectionDecisionHandlers.end()) {
+                        receipt = handler->second(message.getSelectionDecision());
+                    }
+                    else {
+                        receipt.setField("schemaVersion", "1");
+                        receipt.setField("decisionDigest", r1DecisionDigest);
+                        receipt.setField("reservationId", r1ReservationId);
+                        receipt.setField("provider", providerName.toUri());
+                        receipt.setField("acceptedState",
+                                         r1NotSelected ? "RELEASE_ACCEPTED" :
+                                                         "COMMIT_ACCEPTED");
+                        receipt.setField("reason", "AUTHENTICATED");
+                        receipt.setField("sequence", "1");
+                        if (message.getSelectionDecision().hasField("providerBootEpoch"))
+                            receipt.setField(
+                                "providerBootEpoch",
+                                message.getSelectionDecision().getField("providerBootEpoch"));
+                    }
+                }
+                catch (const std::exception& e) {
+                    updateSelectionExecutionStatus(
+                        selectionDigest, SelectionExecutionState::Rejected,
+                        providerName, serviceName, msgId,
+                        std::string("R1 reservation transition rejected: ") + e.what());
+                    m_selectionDecryptsInFlight.erase(key);
+                    return;
+                }
+                if (!receipt.hasField("decisionDigest") ||
+                    receipt.getField("decisionDigest") != r1DecisionDigest ||
+                    !receipt.hasField("reservationId") ||
+                    receipt.getField("reservationId") != r1ReservationId) {
+                    updateSelectionExecutionStatus(
+                        selectionDigest, SelectionExecutionState::Rejected,
+                        providerName, serviceName, msgId,
+                        "R1 reservation transition returned an unbound receipt");
+                    m_selectionDecryptsInFlight.erase(key);
+                    return;
+                }
+                const auto receiptBlock = receipt.WireEncode();
+                r1ReceiptWire = ndn::Buffer(receiptBlock.data(), receiptBlock.size());
+                const auto pendingLease = pendingReservationLeases.find(key);
+                if (pendingLease != pendingReservationLeases.end() &&
+                    pendingLease->second.hasField("expiresAtMs")) {
+                    try {
+                        r1TombstoneRetainUntilMs = std::stoull(
+                            pendingLease->second.getField("expiresAtMs"));
+                    }
+                    catch (const std::exception&) {
+                        r1TombstoneRetainUntilMs = 0;
+                    }
+                }
+                m_r1AcceptedSelectionDecisions.emplace(
+                    r1ReservationId,
+                    R1AcceptedSelectionDecision{
+                        r1DecisionDigest, providerTokenHash,
+                        r1NotSelected ? "NOT_SELECTED" : "SELECTED",
+                        r1ReceiptWire, r1TombstoneRetainUntilMs});
+                if (!r1NotSelected)
+                    m_r1ReservationByRequest[key] = r1ReservationId;
+            }
             ++m_cleanupInvocationCount;
-            m_selectedProviderRequests.insert(key);
+            if (!r1NotSelected)
+                m_selectedProviderRequests.insert(key);
             if (!providerTokenHash.empty()) {
                 m_consumedProviderTokenHashes.insert(providerTokenHash);
                 m_selectedProviderTokenHashes[key] = providerTokenHash;
@@ -8380,8 +9173,40 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             }
             pendingRequests.erase(it);
             pendingProviderTokens.erase(key);
+            pendingReservationLeases.erase(key);
             m_recentProviderRequests.erase(key);
             m_selectionDecryptsInFlight.erase(key);
+        }
+        if (hasR1Decision && r1TombstoneRetainUntilMs > 0) {
+            const auto nowMs = nowMilliseconds();
+            const auto delayMs = r1TombstoneRetainUntilMs > nowMs ?
+                r1TombstoneRetainUntilMs - nowMs : 1;
+            m_scheduler.schedule(ndn::time::milliseconds(delayMs),
+                [this, reservationId = r1ReservationId,
+                 decisionDigest = r1DecisionDigest] {
+                    std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+                    const auto found =
+                        m_r1AcceptedSelectionDecisions.find(reservationId);
+                    if (found != m_r1AcceptedSelectionDecisions.end() &&
+                        found->second.decisionDigest == decisionDigest &&
+                        (found->second.retainUntilMs == 0 ||
+                         nowMilliseconds() >= found->second.retainUntilMs)) {
+                        m_r1AcceptedSelectionDecisions.erase(found);
+                    }
+                });
+        }
+        if (r1NotSelected) {
+            updateSelectionExecutionStatus(selectionDigest,
+                                           SelectionExecutionState::Completed,
+                                           providerName, serviceName, msgId,
+                                           "authenticated R1 reservation not selected");
+            m_selectionExecutionStatuses[selectionDigest].decisionReceipt =
+                r1ReceiptWire;
+            return;
+        }
+        if (hasR1Decision) {
+            m_selectionExecutionStatuses[selectionDigest].decisionReceipt =
+                r1ReceiptWire;
         }
         if (m_timelineTrace) {
             logTimelineTrace("provider", "provider_token_validate_done", msgId,
@@ -8390,6 +9215,126 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         }
         if (m_useTokens) {
             ++m_tokenConsumeCount;
+        }
+
+        // Deployment-capable requests take the additive selection-gated path.
+        // Legacy V2 requests (no DeploymentIntent) continue directly to the
+        // existing handler path below.
+        if (selectedRequest.hasDeploymentIntent()) {
+            if (!message.hasDeploymentPlan()) {
+                updateSelectionExecutionStatus(selectionDigest,
+                                               SelectionExecutionState::Rejected,
+                                               providerName, serviceName, msgId,
+                                               "deployment Selection missing DeploymentPlan");
+                return;
+            }
+            const auto& plan = message.getDeploymentPlan();
+            if (!plan.hasField("requestId") ||
+                plan.getField("requestId") != msgId.toUri() ||
+                !plan.hasField("requesterIdentity") ||
+                plan.getField("requesterIdentity") != requesterName.toUri() ||
+                !plan.hasField("intentDigest") ||
+                plan.getField("intentDigest") !=
+                    selectedRequest.getDeploymentIntent().computeDigest()) {
+                updateSelectionExecutionStatus(selectionDigest,
+                                               SelectionExecutionState::Rejected,
+                                               providerName, serviceName, msgId,
+                                               "DeploymentPlan binding mismatch");
+                return;
+            }
+            bool localMember = false;
+            std::string localRole;
+            for (size_t i = 0; i < DeploymentControlMessage::MAX_FIELDS; ++i) {
+                const auto prefix = "member." + std::to_string(i) + ".";
+                if (!plan.hasField(prefix + "provider")) continue;
+                if (plan.getField(prefix + "provider") == providerName.toUri()) {
+                    localMember = true;
+                    localRole = plan.hasField(prefix + "role") ?
+                        plan.getField(prefix + "role") : "primary";
+                    break;
+                }
+            }
+            if (!localMember || !m_deploymentPrepareHandler) {
+                updateSelectionExecutionStatus(selectionDigest,
+                                               SelectionExecutionState::Rejected,
+                                               providerName, serviceName, msgId,
+                                               localMember ?
+                                                   "deployment preparation handler not registered" :
+                                                   "Provider absent from exact DeploymentPlan");
+                return;
+            }
+            if (hasR1Decision) {
+                // R1 readiness is local state, not a network-wide barrier.
+                // Preparation may verify/fetch/load/warm, then execution falls
+                // through to the normal collaboration handler where direct
+                // predecessor data gates non-source work.
+                (void)m_deploymentPrepareHandler(
+                    requesterName, providerName, serviceName, msgId,
+                    selectedRequest, plan, selectionDigest);
+                updateSelectionExecutionStatus(
+                    selectionDigest, SelectionExecutionState::Queued,
+                    providerName, serviceName, msgId,
+                    "R1 local preparation complete; dependency-gated");
+            }
+            else {
+            ProviderReadyMessage ready = m_deploymentPrepareHandler(
+                requesterName, providerName, serviceName, msgId,
+                selectedRequest, plan, selectionDigest);
+            // The Core owns immutable protocol bindings; applications own only
+            // the generic verify/load/warm work and operation identifiers.
+            ready.setField("requestId", msgId.toUri());
+            ready.setField("attempt", plan.getField("attempt"));
+            ready.setField("selectionDigest", selectionDigest);
+            ready.setField("deploymentPlanDigest", plan.computeDigest());
+            ready.setField("providerIdentity", providerName.toUri());
+            ready.setField("providerBootEpoch", std::to_string(m_processStartedAtUs));
+            ready.setField("role", localRole);
+            if (!ready.hasField("readySequence")) ready.setField("readySequence", "1");
+            if (!ready.hasField("issuedAtUs"))
+                ready.setField("issuedAtUs", std::to_string(nowMicroseconds()));
+            if (!ready.hasField("expiresAtUs"))
+                ready.setField("expiresAtUs", std::to_string(
+                    nowMicroseconds() + static_cast<uint64_t>(m_pendingRequestTimeoutGrace.count()) * 1000));
+            PreparedDeploymentExecution prepared;
+            prepared.requesterName = requesterName;
+            prepared.providerName = providerName;
+            prepared.serviceName = serviceName;
+            prepared.requestId = msgId;
+            prepared.request = selectedRequest;
+            prepared.plan = plan;
+            prepared.ready = ready;
+            prepared.selectionDigest = selectionDigest;
+            m_preparedDeployments.emplace(selectionDigest, std::move(prepared));
+            updateSelectionExecutionStatus(selectionDigest,
+                                           SelectionExecutionState::Queued,
+                                           providerName, serviceName, msgId,
+                                           "deployment READY; awaiting activation");
+            if (m_providerReadyPublisher) {
+                m_providerReadyPublisher(requesterName, ready);
+            }
+            else {
+                std::string statusHandle;
+                for (size_t i = 0; i < DeploymentControlMessage::MAX_FIELDS; ++i) {
+                    const auto prefix = "member." + std::to_string(i) + ".";
+                    if (plan.hasField(prefix + "provider") &&
+                        plan.getField(prefix + "provider") == providerName.toUri() &&
+                        plan.hasField(prefix + "statusHandle")) {
+                        statusHandle = plan.getField(prefix + "statusHandle");
+                        break;
+                    }
+                }
+                if (!isValidOpaqueControlHandle(statusHandle)) {
+                    m_preparedDeployments.erase(selectionDigest);
+                    updateSelectionExecutionStatus(
+                        selectionDigest, SelectionExecutionState::Rejected,
+                        providerName, serviceName, msgId,
+                        "DeploymentPlan has no valid local StatusHandle");
+                    return;
+                }
+                publishProviderReady(requesterName, ready, statusHandle);
+            }
+            return;
+            }
         }
 
         for (const auto& requestID : message.getRequestIDs()) {
@@ -8464,6 +9409,31 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                              << " leaseId=" << leaseValidation.leaseId);
             }
 
+            if (collabService != m_collaborationServices.end()) {
+                const auto consistencyFields =
+                    parseSemicolonFields(effectiveAssignmentPayload);
+                const auto required = consistencyFields.find(
+                    "executionCertificateRequired");
+                if (required != consistencyFields.end() && required->second == "true") {
+                    const auto schema = consistencyFields.find(
+                        "executionCertificateSchema");
+                    const auto digest = consistencyFields.find(
+                        "executionCertificateDigest");
+                    const auto members = consistencyFields.find(
+                        "executionCertificateMembers");
+                    if (schema == consistencyFields.end() ||
+                        schema->second != "ndnsf-di-execution-commit-certificate-v1" ||
+                        digest == consistencyFields.end() || digest->second.empty() ||
+                        members == consistencyFields.end() || members->second.empty()) {
+                        updateSelectionExecutionStatus(
+                            selectionDigest, SelectionExecutionState::Rejected,
+                            providerName, serviceName, requestId,
+                            "distributed execution certificate envelope rejected");
+                        continue;
+                    }
+                }
+            }
+
             NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=PROVIDER_EXECUTE_START timestamp_us="
                       << nowMicroseconds()
                       << " requestId=" << requestId.toUri()
@@ -8491,6 +9461,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                 auto assignment =
                     parseCollaborationAssignment(serviceName,
                                                  effectiveAssignmentPayload);
+                assignment.selectionDigest = selectionDigest;
                 if (dispatchCollaborationExecutionAsync(requesterName,
                                                         providerName,
                                                         serviceName,

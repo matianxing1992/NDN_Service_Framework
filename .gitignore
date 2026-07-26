@@ -10,6 +10,7 @@
 .lock-waf*
 compile_commands.json
 __pycache__/
+node_modules/
 *.py[cod]
 *.so
 *.egg-info/
@@ -42,6 +43,7 @@ docs/NDNSF-UAV/**/*.toc
 docs/reports/*
 !docs/reports/negative_ack_early_stop_minindn_20260702.md
 results/
+examples/interop/ndn-svs-v3/build/
 .spec110-build/
 .spec110-build-context/
 # Spec 109 evidence is local/durable-cluster output; only curated docs/contracts are tracked.

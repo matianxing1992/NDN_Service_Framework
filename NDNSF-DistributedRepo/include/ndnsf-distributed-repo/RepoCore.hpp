@@ -76,6 +76,8 @@ public:
 private:
   void refreshCapabilityUsage();
 
+  void updateCapabilityUsage(uint64_t oldSize, uint64_t newSize);
+
   RepoCatalogEntry makeCatalogEntry(const RepoObjectManifest& manifest,
                                     std::string state,
                                     uint64_t epoch) const;

@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "observations": [
+    {
+      "streamId": "camera-front",
+      "sessionEpoch": 4,
+      "sourceFrameId": 7,
+      "captureOriginNs": 1000000,
+      "oracleFrameId": 7,
+      "oracleCaptureOriginNs": 1000000,
+      "widgetSubmittedNs": 2500000
+    },
+    {
+      "streamId": "camera-front",
+      "sessionEpoch": 4,
+      "sourceFrameId": 8,
+      "captureOriginNs": 2000000,
+      "oracleFrameId": 9,
+      "oracleCaptureOriginNs": 2000000,
+      "widgetSubmittedNs": 3000000
+    },
+    {
+      "streamId": "camera-front",
+      "sessionEpoch": 3,
+      "activeSessionEpoch": 4,
+      "sourceFrameId": 6,
+      "captureOriginNs": 500000,
+      "oracleFrameId": 6,
+      "oracleCaptureOriginNs": 500000,
+      "widgetSubmittedNs": 1000000
+    }
+  ],
+  "expected": {
+    "acceptedFrames": 1,
+    "oracle-runtime-mismatch": 1,
+    "stale-session": 1,
+    "captureToWidgetP95Ms": 1.5
+  },
+  "coveredEdgeCases": [
+    "exact-binding",
+    "oracle-runtime-mismatch",
+    "stale-session"
+  ]
+}

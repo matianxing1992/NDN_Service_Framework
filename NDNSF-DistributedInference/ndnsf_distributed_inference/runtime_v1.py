@@ -9,9 +9,7 @@ runtime paths.
 from __future__ import annotations
 
 import argparse
-import base64
 import csv
-import hashlib
 import itertools
 import json
 import os
@@ -19,7 +17,7 @@ import subprocess
 import sys
 import time
 import zlib
-from dataclasses import asdict, dataclass, field, is_dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -47,6 +45,25 @@ from ndnsf.runtime_telemetry import (
     write_json,
 )
 
+from .core.runtime_contracts import (
+    ExecutionEvidenceV1, KvCacheTelemetry, MeasuredTelemetrySnapshotV1,
+    PlanFeasibilityDecisionV1, PlanFeasibilityRequirementsV1,
+    PlanPredicateResultV1, ProviderCapabilityV3, ProviderProfileV1,
+    REAL_RUNNER_KINDS, RunnerKind, RuntimeTelemetryV1,
+    classify_execution_evidence, evaluate_plan_feasibility,
+)
+from .core.contracts import (
+    CoreAssignment, CoreExecutionEvidence, CoreExecutionPlan,
+    CorePlanDependency, ProviderAssignment,
+)
+from .core.eligibility import (
+    CandidateFacts, EligibilityDecision, EligibilityRequirements,
+    eligible_candidates, evaluate_candidate, normalize_candidate,
+)
+from .core.state import (
+    BoundStateStore, ExecutionAttemptV1, StateBinding, TerminalReasonV1,
+)
+
 
 class ContextObjectKind(str, Enum):
     PROMPT_CHUNK = "PromptChunk"
@@ -64,414 +81,9 @@ class CacheEventKind(str, Enum):
     EXPIRE = "expire"
 
 
-class RunnerKind(str, Enum):
-    SYNTHETIC_DELAY = "synthetic-delay"
-    WIRING_ONLY = "wiring-only"
-    ONNXRUNTIME_CPU = "onnxruntime-cpu"
-    ONNXRUNTIME_CUDA = "onnxruntime-cuda"
-    TRANSFORMERS = "transformers"
-    LLAMA_SERVER = "llama-server"
-    UNKNOWN = "unknown"
+# Core-owned execution evidence contracts are re-exported above.
 
-
-REAL_RUNNER_KINDS = {
-    RunnerKind.ONNXRUNTIME_CPU,
-    RunnerKind.ONNXRUNTIME_CUDA,
-    RunnerKind.TRANSFORMERS,
-    RunnerKind.LLAMA_SERVER,
-}
-
-
-@dataclass(frozen=True)
-class ExecutionEvidenceV1:
-    provider_name: str
-    provider_boot_id: str
-    runner_kind: RunnerKind
-    real_compute: bool
-    runtime_version: str
-    model_digest: str
-    plan_digest: str
-    artifact_digests: dict[str, str]
-    roles: tuple[str, ...]
-    device_kind: str
-    device_id: str = ""
-    evidence_epoch: int = 0
-    created_at_ms: int = field(default_factory=now_ms)
-    schema: str = "ndnsf-di-execution-evidence-v1"
-
-    @classmethod
-    def from_dict(cls, payload: dict[str, Any]) -> "ExecutionEvidenceV1":
-        forbidden = {"key", "privateKey", "token", "userToken", "providerToken",
-                     "prompt", "payload", "tensor", "kvPayload"}
-        leaked = forbidden.intersection(payload)
-        if leaked:
-            raise ValueError(f"execution evidence contains forbidden fields: {sorted(leaked)}")
-        if payload.get("schema") != "ndnsf-di-execution-evidence-v1":
-            raise ValueError("unsupported execution evidence schema")
-        device = dict(payload.get("device", {}))
-        value = cls(
-            provider_name=str(payload.get("providerName", "")),
-            provider_boot_id=str(payload.get("providerBootId", "")),
-            evidence_epoch=int(payload.get("evidenceEpoch", 0)),
-            runner_kind=RunnerKind(str(payload.get("runnerKind", "unknown"))),
-            real_compute=bool(payload.get("realCompute", False)),
-            device_kind=str(device.get("kind", payload.get("deviceKind", ""))),
-            device_id=str(device.get("id", payload.get("deviceId", ""))),
-            runtime_version=str(payload.get("runtimeVersion", "")),
-            model_digest=str(payload.get("modelDigest", "")),
-            plan_digest=str(payload.get("planDigest", "")),
-            artifact_digests={str(k): str(v) for k, v in dict(payload.get("artifactDigests", {})).items()},
-            roles=tuple(str(item) for item in payload.get("roles", [])),
-            created_at_ms=int(payload.get("createdAtMs", 0)),
-        )
-        value.validate()
-        return value
-
-    def validate(self) -> None:
-        required = (self.provider_name, self.provider_boot_id, self.runtime_version,
-                    self.model_digest, self.plan_digest, self.device_kind)
-        if not all(required) or not self.roles or not self.artifact_digests or self.created_at_ms <= 0:
-            raise ValueError("execution evidence missing required field")
-        if self.real_compute != (self.runner_kind in REAL_RUNNER_KINDS):
-            raise ValueError("execution evidence real-compute classification mismatch")
-        if self.runner_kind == RunnerKind.ONNXRUNTIME_CUDA and not self.device_id:
-            raise ValueError("CUDA evidence requires a device id")
-
-
-def classify_execution_evidence(items: Iterable[ExecutionEvidenceV1]) -> str:
-    evidence = tuple(items)
-    if not evidence:
-        return "invalid-evidence"
-    for item in evidence:
-        item.validate()
-    identity = {(item.real_compute, item.runner_kind, item.runtime_version,
-                 item.model_digest, item.plan_digest, item.device_kind)
-                for item in evidence}
-    if len(identity) != 1:
-        return "invalid-evidence"
-    observed_artifacts: dict[str, str] = {}
-    for item in evidence:
-        for role, digest in item.artifact_digests.items():
-            existing = observed_artifacts.get(role)
-            if existing is not None and existing != digest:
-                return "invalid-evidence"
-            observed_artifacts[role] = digest
-    if not evidence[0].real_compute:
-        return evidence[0].runner_kind.value
-    return evidence[0].runner_kind.value
-
-
-@dataclass(frozen=True)
-class ProviderCapabilityV3:
-    provider_name: str
-    supported_runner_kinds: tuple[str, ...]
-    total_gpu_memory_mb: int = 0
-    source: str = "profile"
-
-
-@dataclass(frozen=True)
-class MeasuredTelemetrySnapshotV1:
-    provider_name: str
-    provider_boot_id: str
-    sequence: int
-    measured_at_ms: int
-    source: str
-    status: str
-    device_id: str = ""
-    free_gpu_memory_mb: int = 0
-    ready_queue: int = 0
-    waiting_dependencies: int = 0
-    active_workers: int = 0
-    resource_sequence: int = 0
-    sampled_at_ms: int = 0
-    host_total_memory_bytes: int = 0
-    host_available_memory_bytes: int = 0
-    process_rss_bytes: int = 0
-    worker_count: int = 0
-    completed_stages: int = 0
-    stage_service_time_ewma_ms: float = 0.0
-    stage_service_rate_ewma_per_second: float = 0.0
-    evidence_epoch: int = 0
-    runner_kind: str = ""
-    runtime_version: str = ""
-    model_digest: str = ""
-    plan_digest: str = ""
-    artifact_digests: dict[str, str] = field(default_factory=dict)
-    device_kind: str = ""
-    membership_version: str = ""
-    network_profile_version: str = ""
-    cache_version: str = ""
-    error_code: str = ""
-
-    @classmethod
-    def from_service_payload(cls, payload: dict[str, Any]) -> "MeasuredTelemetrySnapshotV1":
-        measured = payload.get("measuredTelemetry")
-        if not isinstance(measured, dict):
-            raise ValueError("measured telemetry section is missing")
-        if measured.get("schema") != "ndnsf-di-measured-telemetry-v1":
-            raise ValueError("measured telemetry schema is unsupported")
-        evidence_payload = payload.get("executionEvidence")
-        if not isinstance(evidence_payload, dict):
-            raise ValueError("measured telemetry execution evidence is missing")
-        evidence = ExecutionEvidenceV1.from_dict(evidence_payload)
-        evidence.validate()
-
-        provider_name = str(measured.get("providerName", ""))
-        provider_boot_id = str(measured.get("providerBootId", ""))
-        source = str(measured.get("source", ""))
-        status = str(measured.get("status", ""))
-        if source in {"", "configured", "profile", "unavailable"}:
-            raise ValueError("configured or unavailable telemetry is not measured")
-        if provider_name != evidence.provider_name or provider_boot_id != evidence.provider_boot_id:
-            raise ValueError("telemetry and execution evidence identity mismatch")
-
-        def nonnegative_int(name: str, *, required_positive: bool = False) -> int:
-            value = measured.get(name, 0)
-            if isinstance(value, bool):
-                raise ValueError(f"invalid measured telemetry integer: {name}")
-            try:
-                parsed = int(value)
-            except (TypeError, ValueError) as exc:
-                raise ValueError(f"invalid measured telemetry integer: {name}") from exc
-            if parsed < 0 or (required_positive and parsed <= 0):
-                raise ValueError(f"invalid measured telemetry integer: {name}")
-            return parsed
-
-        sequence = nonnegative_int("sequence", required_positive=status == "measured")
-        resource_sequence = nonnegative_int(
-            "resourceSequence", required_positive=status == "measured")
-        sampled_at_ms = nonnegative_int(
-            "sampledAtMs", required_positive=status == "measured")
-        measured_at_ms = nonnegative_int(
-            "resourceMeasuredAtMs", required_positive=status == "measured")
-        host_total = nonnegative_int("hostTotalMemoryBytes")
-        host_available = nonnegative_int("hostAvailableMemoryBytes")
-        process_rss = nonnegative_int("processRssBytes")
-        if status == "measured" and (host_total <= 0 or host_available > host_total):
-            raise ValueError("invalid measured host memory facts")
-
-        def nonnegative_float(name: str) -> float:
-            try:
-                parsed = float(measured.get(name, 0.0))
-            except (TypeError, ValueError) as exc:
-                raise ValueError(f"invalid measured telemetry number: {name}") from exc
-            if parsed < 0.0:
-                raise ValueError(f"invalid measured telemetry number: {name}")
-            return parsed
-
-        return cls(
-            provider_name=provider_name,
-            provider_boot_id=provider_boot_id,
-            sequence=sequence,
-            measured_at_ms=measured_at_ms,
-            source=source,
-            status=status,
-            device_id=evidence.device_id,
-            ready_queue=nonnegative_int("readyQueue"),
-            waiting_dependencies=nonnegative_int("waitingDependencies"),
-            active_workers=nonnegative_int("activeWorkers"),
-            resource_sequence=resource_sequence,
-            sampled_at_ms=sampled_at_ms,
-            host_total_memory_bytes=host_total,
-            host_available_memory_bytes=host_available,
-            process_rss_bytes=process_rss,
-            worker_count=nonnegative_int("workers"),
-            completed_stages=nonnegative_int("completedStages"),
-            stage_service_time_ewma_ms=nonnegative_float("stageServiceTimeEwmaMs"),
-            stage_service_rate_ewma_per_second=nonnegative_float(
-                "stageServiceRateEwmaPerSecond"),
-            evidence_epoch=evidence.evidence_epoch,
-            runner_kind=evidence.runner_kind.value,
-            runtime_version=evidence.runtime_version,
-            model_digest=evidence.model_digest,
-            plan_digest=evidence.plan_digest,
-            artifact_digests=dict(evidence.artifact_digests),
-            device_kind=evidence.device_kind,
-            membership_version=str(measured.get(
-                "membershipVersion", payload.get("membershipVersion", ""))),
-            network_profile_version=str(measured.get(
-                "networkProfileVersion", payload.get("networkProfileVersion", ""))),
-            cache_version=str(measured.get(
-                "cacheVersion", payload.get("cacheVersion", ""))),
-            error_code=str(measured.get("errorCode", "")),
-        )
-
-    def is_fresh(self, *, at_ms: int, maximum_age_ms: int = 2000) -> bool:
-        age = int(at_ms) - self.measured_at_ms
-        return (
-            self.source not in {"", "configured", "profile", "unavailable"}
-            and self.status == "measured"
-            and 0 <= age <= maximum_age_ms
-        )
-
-
-@dataclass(frozen=True)
-class PlanPredicateResultV1:
-    name: str
-    status: str
-    observed: Any = None
-    limit: Any = None
-
-
-@dataclass(frozen=True)
-class PlanFeasibilityRequirementsV1:
-    expected_provider_name: str = ""
-    expected_provider_boot_id: str = ""
-    minimum_evidence_epoch: int = 0
-    expected_runner_kind: str = ""
-    expected_runtime_version: str = ""
-    expected_model_digest: str = ""
-    expected_plan_digest: str = ""
-    expected_artifact_digests: dict[str, str] = field(default_factory=dict)
-    expected_device_id: str = ""
-    maximum_telemetry_age_ms: int = 2000
-    minimum_free_host_memory_bytes: int = 0
-    maximum_ready_queue: int = 0
-    maximum_waiting_dependencies: int = 0
-    maximum_active_workers: int = 0
-    expected_membership_version: str = ""
-    expected_network_profile_version: str = ""
-    expected_cache_version: str = ""
-
-
-@dataclass(frozen=True)
-class PlanFeasibilityDecisionV1:
-    decision: str
-    reason_codes: tuple[str, ...]
-    predicates: tuple[PlanPredicateResultV1, ...]
-
-
-def evaluate_plan_feasibility(
-    telemetry: MeasuredTelemetrySnapshotV1,
-    requirements: PlanFeasibilityRequirementsV1,
-    *,
-    at_ms: int,
-) -> PlanFeasibilityDecisionV1:
-    """Evaluate mandatory fail-closed predicates before candidate scoring."""
-    predicates: list[PlanPredicateResultV1] = []
-    failures: list[tuple[str, str]] = []
-
-    def check(name: str, passed: bool, observed: Any, limit: Any,
-              reason: str, failure_decision: str) -> None:
-        predicates.append(PlanPredicateResultV1(
-            name=name,
-            status="PASS" if passed else "FAIL",
-            observed=observed,
-            limit=limit,
-        ))
-        if not passed:
-            failures.append((reason, failure_decision))
-
-    measured_source = telemetry.source not in {
-        "", "configured", "profile", "unavailable"
-    } and telemetry.status == "measured"
-    check("measured-source", measured_source,
-          {"source": telemetry.source, "status": telemetry.status},
-          "non-configured measured source", "TELEMETRY_NOT_MEASURED", "reject")
-    check("freshness", telemetry.is_fresh(
-        at_ms=at_ms, maximum_age_ms=requirements.maximum_telemetry_age_ms),
-        at_ms - telemetry.measured_at_ms,
-        requirements.maximum_telemetry_age_ms,
-        "TELEMETRY_STALE", "defer")
-
-    expected_checks = (
-        ("provider-name", telemetry.provider_name,
-         requirements.expected_provider_name, "PROVIDER_IDENTITY_MISMATCH", "reject"),
-        ("provider-boot", telemetry.provider_boot_id,
-         requirements.expected_provider_boot_id, "PROVIDER_BOOT_CHANGED", "replan"),
-        ("runner-kind", telemetry.runner_kind,
-         requirements.expected_runner_kind, "RUNNER_IDENTITY_MISMATCH", "reject"),
-        ("runtime-version", telemetry.runtime_version,
-         requirements.expected_runtime_version, "RUNTIME_IDENTITY_MISMATCH", "reject"),
-        ("model-digest", telemetry.model_digest,
-         requirements.expected_model_digest, "MODEL_IDENTITY_MISMATCH", "reject"),
-        ("plan-digest", telemetry.plan_digest,
-         requirements.expected_plan_digest, "PLAN_IDENTITY_MISMATCH", "reject"),
-        ("device-id", telemetry.device_id,
-         requirements.expected_device_id, "DEVICE_IDENTITY_MISMATCH", "reject"),
-        ("membership-version", telemetry.membership_version,
-         requirements.expected_membership_version, "MEMBERSHIP_VERSION_CHANGED", "replan"),
-        ("network-profile-version", telemetry.network_profile_version,
-         requirements.expected_network_profile_version, "NETWORK_VERSION_CHANGED", "replan"),
-        ("cache-version", telemetry.cache_version,
-         requirements.expected_cache_version, "CACHE_VERSION_CHANGED", "replan"),
-    )
-    for name, observed, expected, reason, failure_decision in expected_checks:
-        if expected:
-            check(name, observed == expected, observed, expected,
-                  reason, failure_decision)
-    if requirements.minimum_evidence_epoch > 0:
-        check("evidence-epoch",
-              telemetry.evidence_epoch >= requirements.minimum_evidence_epoch,
-              telemetry.evidence_epoch, requirements.minimum_evidence_epoch,
-              "EVIDENCE_EPOCH_REGRESSED", "reject")
-    if requirements.expected_artifact_digests:
-        check("artifact-digests",
-              telemetry.artifact_digests == requirements.expected_artifact_digests,
-              telemetry.artifact_digests,
-              requirements.expected_artifact_digests,
-              "ARTIFACT_IDENTITY_MISMATCH", "reject")
-    if requirements.minimum_free_host_memory_bytes > 0:
-        check("free-host-memory",
-              telemetry.host_available_memory_bytes >=
-              requirements.minimum_free_host_memory_bytes,
-              telemetry.host_available_memory_bytes,
-              requirements.minimum_free_host_memory_bytes,
-              "HOST_MEMORY_PRESSURE", "defer")
-    if requirements.maximum_ready_queue > 0:
-        check("ready-queue", telemetry.ready_queue <= requirements.maximum_ready_queue,
-              telemetry.ready_queue, requirements.maximum_ready_queue,
-              "READY_QUEUE_PRESSURE", "defer")
-    if requirements.maximum_waiting_dependencies > 0:
-        check("waiting-dependencies",
-              telemetry.waiting_dependencies <=
-              requirements.maximum_waiting_dependencies,
-              telemetry.waiting_dependencies,
-              requirements.maximum_waiting_dependencies,
-              "DEPENDENCY_QUEUE_PRESSURE", "defer")
-    if requirements.maximum_active_workers > 0:
-        check("active-workers",
-              telemetry.active_workers <= requirements.maximum_active_workers,
-              telemetry.active_workers, requirements.maximum_active_workers,
-              "ACTIVE_WORKER_PRESSURE", "defer")
-
-    priority = {"reuse": 0, "defer": 1, "replan": 2, "reject": 3}
-    decision = "reuse"
-    for _, candidate_decision in failures:
-        if priority[candidate_decision] > priority[decision]:
-            decision = candidate_decision
-    return PlanFeasibilityDecisionV1(
-        decision=decision,
-        reason_codes=tuple(reason for reason, _ in failures),
-        predicates=tuple(predicates),
-    )
-
-
-class TerminalReasonV1(str, Enum):
-    NONE = "NONE"
-    PROVIDER_LOST = "PROVIDER_LOST"
-    STRAGGLER_DEADLINE = "STRAGGLER_DEADLINE"
-    DEPENDENCY_MISSING = "DEPENDENCY_MISSING"
-    DEPENDENCY_HASH_MISMATCH = "DEPENDENCY_HASH_MISMATCH"
-    PLAN_STALE = "PLAN_STALE"
-    TELEMETRY_STALE = "TELEMETRY_STALE"
-    CACHE_MISS_FULL_CONTEXT_REQUIRED = "CACHE_MISS_FULL_CONTEXT_REQUIRED"
-    ATTEMPT_CANCELLED = "ATTEMPT_CANCELLED"
-    NO_COMPATIBLE_REPLACEMENT = "NO_COMPATIBLE_REPLACEMENT"
-    REQUEST_DEADLINE = "REQUEST_DEADLINE"
-
-
-@dataclass(frozen=True)
-class ExecutionAttemptV1:
-    request_id: str
-    attempt_epoch: int
-    plan_id: str
-    terminal_reason: TerminalReasonV1 = TerminalReasonV1.NONE
-
-    def __post_init__(self) -> None:
-        if not self.request_id or not self.plan_id or self.attempt_epoch not in (0, 1):
-            raise ValueError("invalid execution attempt")
-
+# Core-owned feasibility and attempt contracts are re-exported above.
 
 class RoleWorkStatus(str, Enum):
     QUEUED = "queued"
@@ -507,107 +119,6 @@ class ExactForwardCacheKind(str, Enum):
     KV_BLOCK = "kv-block"
     HIDDEN_STATE = "hidden-state"
     LOGITS = "logits"
-
-
-def now_ms() -> int:
-    return int(time.time() * 1000)
-
-
-def stable_json(payload: Any) -> str:
-    return json.dumps(to_plain(payload), sort_keys=True, separators=(",", ":"))
-
-
-def stable_digest(payload: Any, *, length: int = 16) -> str:
-    return hashlib.sha256(stable_json(payload).encode("utf-8")).hexdigest()[:length]
-
-
-def to_plain(value: Any) -> Any:
-    if isinstance(value, Enum):
-        return value.value
-    if is_dataclass(value):
-        return {key: to_plain(item) for key, item in asdict(value).items()}
-    if isinstance(value, dict):
-        return {str(key): to_plain(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [to_plain(item) for item in value]
-    return value
-
-
-def write_json(path: str | Path, payload: Any) -> None:
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(to_plain(payload), indent=2, sort_keys=True) + "\n",
-                      encoding="utf-8")
-
-
-def read_json(path: str | Path) -> dict[str, Any]:
-    return json.loads(Path(path).read_text(encoding="utf-8"))
-
-
-def _string_list(value: Any) -> list[str]:
-    if value is None:
-        return []
-    if isinstance(value, str):
-        return [item.strip() for item in value.split(",") if item.strip()]
-    return [str(item) for item in value]
-
-
-def _safe_field(value: str, field: str) -> str:
-    text = str(value)
-    if not text:
-        raise ValueError(f"{field} must not be empty")
-    if any(ch in text for ch in ";\r\n"):
-        raise ValueError(f"{field} must not contain ';' or newlines: {text!r}")
-    return text
-
-
-def encode_ack_metadata(fields: dict[str, Any]) -> bytes:
-    """Encode typed metadata as legacy-compatible ``key=value;`` fields."""
-
-    parts: list[str] = []
-    for key in sorted(fields):
-        value = fields[key]
-        if value is None:
-            continue
-        safe_key = _safe_field(key, "ACK key")
-        if isinstance(value, bool):
-            encoded = "1" if value else "0"
-        elif isinstance(value, (int, float, str)):
-            encoded = str(value)
-        elif isinstance(value, (list, tuple)) and all(
-            isinstance(item, (str, int, float)) for item in value
-        ):
-            if not value:
-                continue
-            encoded = ",".join(str(item) for item in value)
-        else:
-            raw = stable_json(value).encode("utf-8")
-            encoded = "json64:" + base64.urlsafe_b64encode(raw).decode("ascii")
-        _safe_field(encoded, f"ACK field {safe_key}")
-        parts.append(f"{safe_key}={encoded}")
-    return (";".join(parts) + (";" if parts else "")).encode("utf-8")
-
-
-def parse_ack_metadata(payload: bytes | str) -> dict[str, Any]:
-    text = payload.decode("utf-8", errors="replace") if isinstance(payload, bytes) else str(payload)
-    fields: dict[str, Any] = {}
-    for item in text.split(";"):
-        if not item or "=" not in item:
-            continue
-        key, value = item.split("=", 1)
-        key = key.strip()
-        value = value.strip()
-        if not key:
-            continue
-        if value.startswith("json64:"):
-            try:
-                raw = base64.urlsafe_b64decode(value[len("json64:"):].encode("ascii"))
-                fields[key] = json.loads(raw.decode("utf-8"))
-            except Exception:
-                fields[key] = value
-        else:
-            fields[key] = value
-    return fields
 
 
 # ---------------------------------------------------------------------------
@@ -670,192 +181,6 @@ class Deployment:
         if self.status == DeploymentStatus.DISK_RESIDENT:
             return RESIDENCY_READY_COST_MS["DISK_RESIDENT"]
         return self.ready_cost_ms
-
-
-@dataclass(frozen=True)
-class KvCacheTelemetry:
-    budget_mb: float = 0.0
-    used_mb: float = 0.0
-    max_context_tokens: int = 0
-    resident_prefix_ids: tuple[str, ...] = ()
-    resident_session_ids: tuple[str, ...] = ()
-    resident_exact_cache_key_digests: tuple[str, ...] = ()
-    hits: int = 0
-    misses: int = 0
-    evictions: int = 0
-
-    @property
-    def free_mb(self) -> float:
-        return max(0.0, self.budget_mb - self.used_mb)
-
-    @classmethod
-    def from_dict(cls, payload: dict[str, Any]) -> "KvCacheTelemetry":
-        return cls(
-            budget_mb=float(payload.get("budgetMb", payload.get("budget_mb", 0)) or 0),
-            used_mb=float(payload.get("usedMb", payload.get("used_mb", 0)) or 0),
-            max_context_tokens=int(payload.get(
-                "maxContextTokens",
-                payload.get("max_context_tokens", 0)) or 0),
-            resident_prefix_ids=tuple(_string_list(payload.get(
-                "residentPrefixIds",
-                payload.get("resident_prefix_ids", ())))),
-            resident_session_ids=tuple(_string_list(payload.get(
-                "residentSessionIds",
-                payload.get("resident_session_ids", ())))),
-            resident_exact_cache_key_digests=tuple(_string_list(payload.get(
-                "residentExactCacheKeyDigests",
-                payload.get("resident_exact_cache_key_digests", ())))),
-            hits=int(payload.get("hits", 0) or 0),
-            misses=int(payload.get("misses", 0) or 0),
-            evictions=int(payload.get("evictions", 0) or 0),
-        )
-
-
-@dataclass(frozen=True)
-class ProviderProfileV1:
-    provider: str
-    node: str = ""
-    gpu_memory_mb: float = 0.0
-    ram_memory_mb: float = 0.0
-    flops_tflops: float = 0.0
-    llm_stage_capacity_mb: float = 0.0
-    llm_max_stage_layers: int = 0
-    max_workers: int = 1
-    supported_backends: tuple[str, ...] = ()
-    model_families: tuple[str, ...] = ("llm",)
-    max_context_tokens: int = 0
-    kv_cache_budget_mb: float = 0.0
-    model_cache: tuple[str, ...] = ()
-    version: str = ""
-
-    @classmethod
-    def from_dict(cls, payload: dict[str, Any]) -> "ProviderProfileV1":
-        provider = str(payload.get("provider") or payload.get("providerName") or "")
-        if not provider:
-            raise ValueError("provider profile requires provider")
-        gpu = float(payload.get("gpuMemoryMb", payload.get("gpu_memory_mb", 0)) or 0)
-        ram = float(payload.get("ramMemoryMb", payload.get("ram_memory_mb", 0)) or 0)
-        return cls(
-            provider=provider,
-            node=str(payload.get("node", "")),
-            gpu_memory_mb=gpu,
-            ram_memory_mb=ram,
-            flops_tflops=float(payload.get("flopsTflops", payload.get("flops_tflops", 0)) or 0),
-            llm_stage_capacity_mb=float(payload.get(
-                "llmStageCapacityMb",
-                payload.get("llm_stage_capacity_mb", gpu)) or 0),
-            llm_max_stage_layers=int(payload.get(
-                "llmMaxStageLayers",
-                payload.get("llm_max_stage_layers", 0)) or 0),
-            max_workers=max(1, int(payload.get("maxWorkers", payload.get("max_workers", 1)) or 1)),
-            supported_backends=tuple(_string_list(payload.get(
-                "supportedBackends",
-                payload.get("backends", payload.get("supported_backends", ()))))),
-            model_families=tuple(_string_list(payload.get(
-                "modelFamilies",
-                payload.get("model_families", ("llm",))))),
-            max_context_tokens=int(payload.get(
-                "maxContextTokens",
-                payload.get("max_context_tokens", 0)) or 0),
-            kv_cache_budget_mb=float(payload.get(
-                "kvCacheBudgetMb",
-                payload.get("kv_cache_budget_mb", 0)) or 0),
-            model_cache=tuple(_string_list(payload.get(
-                "modelCache",
-                payload.get("model_cache", ())))),
-            version=str(payload.get("version", "")),
-        )
-
-    def effective_capacity_weight(self, max_memory: float, max_flops: float) -> float:
-        memory_ratio = self.llm_stage_capacity_mb / max(max_memory, 0.001)
-        compute_ratio = self.flops_tflops / max(max_flops, 0.001)
-        return max(0.0, min(memory_ratio, compute_ratio))
-
-    def to_ack_fields(self) -> dict[str, Any]:
-        return {
-            "schema": "ndnsf-di-runtime-v1",
-            "providerProfile": to_plain(self),
-            "gpuMemoryMb": self.gpu_memory_mb,
-            "ramMemoryMb": self.ram_memory_mb,
-            "flopsTflops": self.flops_tflops,
-            "llmStageCapacityMb": self.llm_stage_capacity_mb,
-            "llmMaxStageLayers": self.llm_max_stage_layers,
-            "maxWorkers": self.max_workers,
-            "modelFamilies": list(self.model_families),
-            "maxContextTokens": self.max_context_tokens,
-            "kvCacheBudgetMb": self.kv_cache_budget_mb,
-            "backends": list(self.supported_backends),
-        }
-
-
-@dataclass(frozen=True)
-class RuntimeTelemetryV1:
-    provider: str
-    timestamp_ms: int = field(default_factory=now_ms)
-    ready_queue: int = 0
-    waiting_dependencies: int = 0
-    active_workers: int = 0
-    free_memory_mb: float = 0.0
-    model_loaded: bool = False
-    runtime_backend: str = ""
-    service_time_ewma_ms: float = 0.0
-    queue_wait_ewma_ms: float = 0.0
-    kv_cache: KvCacheTelemetry = field(default_factory=KvCacheTelemetry)
-    network_rtt_ms: dict[str, float] = field(default_factory=dict)
-    network_bandwidth_mbps: dict[str, float] = field(default_factory=dict)
-
-    @classmethod
-    def from_dict(cls, payload: dict[str, Any]) -> "RuntimeTelemetryV1":
-        kv_payload = payload.get("kvCache", payload.get("kv_cache", {}))
-        kv_cache = (
-            kv_payload
-            if isinstance(kv_payload, KvCacheTelemetry)
-            else KvCacheTelemetry.from_dict(dict(kv_payload or {}))
-        )
-        return cls(
-            provider=str(payload.get("provider", "")),
-            timestamp_ms=int(payload.get("timestampMs", payload.get("timestamp_ms", now_ms()))),
-            ready_queue=int(payload.get("readyQueue", payload.get("ready_queue", 0)) or 0),
-            waiting_dependencies=int(payload.get(
-                "waitingDependencies",
-                payload.get("waiting_dependencies", 0)) or 0),
-            active_workers=int(payload.get("activeWorkers", payload.get("active_workers", 0)) or 0),
-            free_memory_mb=float(payload.get("freeMemoryMb", payload.get("free_memory_mb", 0)) or 0),
-            model_loaded=bool(payload.get("modelLoaded", payload.get("model_loaded", False))),
-            runtime_backend=str(payload.get("runtimeBackend", payload.get("runtime_backend", ""))),
-            service_time_ewma_ms=float(payload.get(
-                "serviceTimeEwmaMs",
-                payload.get("service_time_ewma_ms", 0)) or 0),
-            queue_wait_ewma_ms=float(payload.get(
-                "queueWaitEwmaMs",
-                payload.get("queue_wait_ewma_ms", 0)) or 0),
-            kv_cache=kv_cache,
-            network_rtt_ms=dict(payload.get("networkRttMs", payload.get("network_rtt_ms", {}))),
-            network_bandwidth_mbps=dict(payload.get(
-                "networkBandwidthMbps",
-                payload.get("network_bandwidth_mbps", {}))),
-        )
-
-    @property
-    def aggregate_queue(self) -> int:
-        return max(0, self.ready_queue + self.waiting_dependencies + self.active_workers)
-
-    def to_ack_fields(self) -> dict[str, Any]:
-        return {
-            "providerTelemetry": to_plain(self),
-            "queue": self.aggregate_queue,
-            "readyQueue": self.ready_queue,
-            "waitingInputs": self.waiting_dependencies,
-            "activeWorkers": self.active_workers,
-            "freeMemoryMb": self.free_memory_mb,
-            "modelLoaded": self.model_loaded,
-            "runtimeBackend": self.runtime_backend,
-            "kvCacheUsedMb": self.kv_cache.used_mb,
-            "kvCacheBudgetMb": self.kv_cache.budget_mb,
-            "kvCacheHits": self.kv_cache.hits,
-            "kvCacheMisses": self.kv_cache.misses,
-            "kvCacheEvictions": self.kv_cache.evictions,
-        }
 
 
 @dataclass(frozen=True)
@@ -1512,12 +837,13 @@ def score_runtime_candidate(role: PlanRole,
             "scoreMs": float("inf"),
         }
     lease = valid_leases[0] if valid_leases else None
-    score = (
-        max(0.0, role.estimated_compute_ms) +
-        residency_ready_cost_ms(residency, ready_ms) +
-        max(0.0, hint.estimated_queue_wait_ms) +
-        max(0, hint.queue_length) * 5.0 +
-        (1.0 - min(1.0, max(0.0, hint.confidence))) * 50.0
+    from .planner.cost_policy import score_cost
+    score = score_cost(
+        compute_ms=role.estimated_compute_ms,
+        residency_ready_ms=residency_ready_cost_ms(residency, ready_ms),
+        queue_wait_ms=hint.estimated_queue_wait_ms,
+        queue_length=hint.queue_length,
+        confidence=hint.confidence,
     )
     return {
         "provider": provider,
@@ -1572,7 +898,33 @@ def choose_runtime_assignment(template: PlanTemplate,
         rejected.extend(item for item in scored if not item["valid"])
         if not valid:
             raise ValueError(f"no valid provider for role {role.role_id}")
-        selected = min(valid, key=lambda item: item["scoreMs"])
+        # Compatibility path delegates the actual choice to the same public
+        # default policy available to external optimizers; runtime_v1 only
+        # translates its characterized score records.
+        from .core.ports import (
+            CandidateBudget, EngineSnapshot, MetricValue,
+            OptimizationObjective, PolicyRequest, PolicyState,
+            ProviderCandidate,
+        )
+        from .planner.provider_assignment_policy import CostProviderAssignmentPolicy
+        observed = int(telemetry_at_ms or now_ms())
+        provider_values = tuple(ProviderCandidate(
+            str(item["provider"]), "runtime-v1", (role.role_id,),
+            score=float(item["scoreMs"])) for item in valid)
+        policy_request = PolicyRequest(
+            OptimizationObjective(
+                {"latency": MetricValue(1.0e12, "ms", "min")},
+                {"latency": 1.0}, {"latency": 1.0}),
+            EngineSnapshot(
+                f"runtime-v1:{request_id}:{role.role_id}", 1, observed,
+                {}, {}, PolicyState(1, "sha256:runtime-v1-parity")),
+            CandidateBudget(max(1, len(provider_values))), provider_values,
+            metadata={"roles": (role.role_id,), "plan_id": template.template_id,
+                      "variant_id": "runtime-v1", "assignment_id": request_id})
+        proposal = CostProviderAssignmentPolicy().propose(policy_request).value
+        selected_provider = proposal.providers_by_role[role.role_id]
+        selected = next(item for item in valid
+                        if item["provider"] == selected_provider)
         role_assignments[role.role_id] = selected
     edge_costs: list[dict[str, Any]] = []
     edge_total = 0.0
@@ -3536,99 +2888,9 @@ def _cmd_metrics(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="NDNSF-DI Runtime v1 utilities")
-    sub = parser.add_subparsers(dest="command", required=True)
-
-    provider = sub.add_parser("provider", help="run the native provider adapter")
-    provider.add_argument("--profile", required=True)
-    provider.add_argument("--dry-run", action="store_true")
-    provider.set_defaults(func=_cmd_production_provider)
-
-    plan = sub.add_parser("plan", help="build a local Runtime v1 plan lease")
-    plan.add_argument("--model", required=True)
-    plan.add_argument("--providers", required=True)
-    plan.add_argument("--out", required=True)
-    plan.add_argument("--explain", required=True)
-    plan.add_argument("--target-rps", type=float, default=0.0)
-    plan.add_argument("--context-class", default="short")
-    plan.add_argument("--prefix-id", default="")
-    plan.add_argument("--session-id", default="")
-    plan.set_defaults(func=_cmd_plan)
-
-    run = sub.add_parser("run", help="run a real deployment request adapter")
-    run.add_argument("--plan", required=True)
-    run.add_argument("--profile", default="")
-    run.add_argument("--request", default="")
-    run.add_argument("--out", default="")
-    run.add_argument("--dry-run", action="store_true")
-    run.set_defaults(func=_cmd_production_run)
-
-    bench = sub.add_parser("bench", help="run a real MiniNDN campaign adapter")
-    bench.add_argument("--campaign", default="")
-    bench.add_argument("--out", type=Path)
-    bench.add_argument("--dry-run", action="store_true")
-    bench.set_defaults(func=_cmd_production_bench)
-
-    status = sub.add_parser("status", help="read the deployment status snapshot")
-    status.add_argument("--profile", required=True)
-    status.add_argument("--json", action="store_true")
-    status.set_defaults(func=_cmd_status)
-
-    metrics = sub.add_parser("metrics", help="export a deployment metrics snapshot")
-    metrics.add_argument("--profile", required=True)
-    metrics.add_argument("--format", choices=("json", "prometheus-textfile"), default="json")
-    metrics.add_argument("--out", required=True)
-    metrics.set_defaults(func=_cmd_metrics)
-
-    doctor = sub.add_parser("doctor", help="run production deployment preflight")
-    doctor.add_argument("--profile", required=True)
-    doctor.add_argument("--json", action="store_true")
-    doctor.add_argument("--dry-run", action="store_true")
-    doctor.set_defaults(func=_cmd_production_doctor)
-
-    smoke = sub.add_parser("contract-smoke", help="explicit simulated Runtime v1 utilities")
-    smoke_sub = smoke.add_subparsers(dest="smoke_command", required=True)
-
-    smoke_run = smoke_sub.add_parser("run")
-    smoke_run.add_argument("--plan", required=True)
-    smoke_run.add_argument("--requests", type=int, default=1)
-    smoke_run.add_argument("--prompt-tokens", type=int, default=1024)
-    smoke_run.add_argument("--generated-tokens", type=int, default=32)
-    smoke_run.add_argument("--microbatch", type=int, default=1)
-    smoke_run.add_argument("--provider-flops-tflops", type=float, default=8.0)
-    smoke_run.add_argument("--out", default="")
-    smoke_run.set_defaults(func=_cmd_run)
-
-    smoke_bench = smoke_sub.add_parser("bench")
-    smoke_bench.add_argument("--out-dir", type=Path, required=True)
-    smoke_bench.add_argument("--runs", type=int, default=1)
-    smoke_bench.set_defaults(func=_cmd_bench)
-
-    sweep = smoke_sub.add_parser("context-sweep")
-    sweep.add_argument("--model", required=True)
-    sweep.add_argument("--providers", required=True)
-    sweep.add_argument("--out-dir", type=Path, required=True)
-    sweep.add_argument("--context-tokens", default="1024,8192")
-    sweep.add_argument("--rps", default="1,4,8")
-    sweep.add_argument("--generated-tokens", type=int, default=32)
-    sweep.add_argument("--microbatch", type=int, default=1)
-    sweep.add_argument("--cache-aware", action="store_true")
-    sweep.set_defaults(func=_cmd_context_sweep)
-
-    smoke_sample = smoke_sub.add_parser("schema-sample")
-    smoke_sample.add_argument("--out", default="")
-    smoke_sample.set_defaults(func=_cmd_schema_sample)
-
-    sample = sub.add_parser("schema-sample", help="write a Runtime v1 smoke payload")
-    sample.add_argument("--out", default="")
-    sample.set_defaults(func=_cmd_schema_sample)
-
-    inspect = sub.add_parser("inspect", help="pretty-print a Runtime v1 JSON file")
-    inspect.add_argument("path")
-    inspect.set_defaults(func=_cmd_inspect)
-
-    args = parser.parse_args(argv)
-    return int(args.func(args))
+    """Compatibility delegation; command ownership lives in ops."""
+    from .ops.contract_smoke import runtime_v1_main
+    return runtime_v1_main(argv)
 
 
 if __name__ == "__main__":

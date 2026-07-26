@@ -5,6 +5,390 @@ namespace ndn_service_framework::test {
 BOOST_AUTO_TEST_SUITE(GenericDynamicApi)
 BOOST_AUTO_TEST_SUITE(SelectionStrategies)
 
+BOOST_AUTO_TEST_CASE(R1ReservationSelectionClosesOnlyAtDeadlineAndTargetsEveryLease)
+{
+  ndn::security::KeyChain keyChain("pib-memory:r1-decision-closure",
+                                   "tpm-memory:r1-decision-closure");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name requester("/test/user/r1");
+  const ndn::Name providerA("/test/provider/A");
+  const ndn::Name providerB("/test/provider/B");
+  const ndn::Name service("/Inference/Generic");
+  auto cert = makeRsaIdentity(keyChain, requester);
+  auto aa = makeRsaIdentity(keyChain, ndn::Name("/test/aa-r1"));
+  auto providerCertA = makeRsaIdentity(keyChain, providerA);
+  auto providerCertB = makeRsaIdentity(keyChain, providerB);
+  LocalServiceUser user(face, ndn::Name("/test/group"), cert, aa,
+                        "examples/trust-any.conf");
+  RequestMessage published;
+  user.setRequestPublisher(
+    [&] (const ndn::Name&, const ndn::Name&, const std::vector<ndn::Name>&,
+         const ndn::Name&, const RequestMessage& value, size_t) { published = value; });
+  RequestCapabilities capabilities;
+  capabilities.setField("DIReservationSelectionV1", "required");
+  RequestMessage request;
+  request.setRequestCapabilities(capabilities);
+  const auto requestId = user.RequestService(
+    {providerA, providerB}, service, request, 30,
+    ServiceUser::AckSelectionStrategy::FirstRespondingSelection, 200,
+    [](const ndn::Name&) {}, [](const ResponseMessage&) {});
+
+  auto makeAck = [&published] (const std::string& token,
+                               const std::string& reservation,
+                               const ndn::security::Certificate& providerCert) {
+    auto ack = makeSuccessAckForRequest(published, token);
+    ReservationLease lease;
+    lease.setField("reservationId", reservation);
+    lease.setField("providerBootEpoch", "boot-1");
+    lease.setField("expiresAtMs", "9999999999999");
+    ack.setReservationLease(lease);
+    ack.setSelectionInputKeyOffer(makeSelectionInputKeyOffer(providerCert));
+    return ack;
+  };
+  BOOST_CHECK(user.handleRequestAckByName(
+    makeRequestAckNameV2(providerA, requester, service, requestId),
+    makeAck("token-a", "reservation-a", providerCertA)));
+  BOOST_CHECK(user.handleRequestAckByName(
+    makeRequestAckNameV2(providerB, requester, service, requestId),
+    makeAck("token-b", "reservation-b", providerCertB)));
+  BOOST_CHECK(user.getSelectedProvider(requestId).empty());
+  BOOST_CHECK(user.getSelectionPublishedProviders(requestId).empty());
+
+  pumpFace(face, ndn::time::milliseconds(50));
+  BOOST_CHECK(user.isAckWindowExpired(requestId));
+  BOOST_CHECK_EQUAL(user.getSelectedProvider(requestId), providerA);
+  const auto decisions = user.getSelectionPublishedProviders(requestId);
+  BOOST_CHECK_EQUAL(decisions.size(), 2);
+  BOOST_CHECK(namesContain(decisions, providerA));
+  BOOST_CHECK(namesContain(decisions, providerB));
+}
+
+BOOST_AUTO_TEST_CASE(R1LatePositiveAckReceivesNotSelectedWithoutReopeningWindow)
+{
+  ndn::security::KeyChain keyChain("pib-memory:r1-late-negative",
+                                   "tpm-memory:r1-late-negative");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name requester("/test/user/r1-late");
+  const ndn::Name provider("/test/provider/late");
+  const ndn::Name service("/Inference/Generic");
+  auto cert = makeRsaIdentity(keyChain, requester);
+  auto aa = makeRsaIdentity(keyChain, ndn::Name("/test/aa-r1-late"));
+  auto providerCert = makeRsaIdentity(keyChain, provider);
+  LocalServiceUser user(face, ndn::Name("/test/group"), cert, aa,
+                        "examples/trust-any.conf");
+  RequestMessage published;
+  user.setRequestPublisher(
+    [&] (const ndn::Name&, const ndn::Name&, const std::vector<ndn::Name>&,
+         const ndn::Name&, const RequestMessage& value, size_t) { published = value; });
+  RequestCapabilities capabilities;
+  capabilities.setField("DIReservationSelectionV1", "required");
+  RequestMessage request;
+  request.setRequestCapabilities(capabilities);
+  const auto requestId = user.RequestService(
+    {provider}, service, request, 5,
+    ServiceUser::AckSelectionStrategy::FirstRespondingSelection, 200,
+    [](const ndn::Name&) {}, [](const ResponseMessage&) {});
+  pumpFace(face, ndn::time::milliseconds(20));
+  BOOST_REQUIRE(user.isAckWindowExpired(requestId));
+
+  auto ack = makeSuccessAckForRequest(published, "late-token");
+  ReservationLease lease;
+  lease.setField("reservationId", "late-reservation");
+  lease.setField("providerBootEpoch", "boot-1");
+  lease.setField("expiresAtMs", "9999999999999");
+  ack.setReservationLease(lease);
+  ack.setSelectionInputKeyOffer(makeSelectionInputKeyOffer(providerCert));
+  BOOST_CHECK(user.handleRequestAckByName(
+    makeRequestAckNameV2(provider, requester, service, requestId), ack));
+  BOOST_CHECK(user.getSelectedProvider(requestId).empty());
+  const auto decisions = user.getSelectionPublishedProviders(requestId);
+  BOOST_REQUIRE_EQUAL(decisions.size(), 1);
+  BOOST_CHECK_EQUAL(decisions.front(), provider);
+}
+
+BOOST_AUTO_TEST_CASE(R1LostReceiptRetriesExactDecisionAtMostTwice)
+{
+  ndn::security::KeyChain keyChain("pib-memory:r1-receipt-retry",
+                                   "tpm-memory:r1-receipt-retry");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name requester("/test/user/r1-retry");
+  const ndn::Name provider("/test/provider/r1-retry");
+  const ndn::Name service("/Inference/Generic");
+  auto cert = makeRsaIdentity(keyChain, requester);
+  auto aa = makeRsaIdentity(keyChain, ndn::Name("/test/aa-r1-retry"));
+  auto providerCert = makeRsaIdentity(keyChain, provider);
+  LocalServiceUser user(face, ndn::Name("/test/group"), cert, aa,
+                        "examples/trust-any.conf");
+  RequestMessage published;
+  user.setRequestPublisher(
+    [&] (const ndn::Name&, const ndn::Name&, const std::vector<ndn::Name>&,
+         const ndn::Name&, const RequestMessage& value, size_t) { published = value; });
+  RequestCapabilities capabilities;
+  capabilities.setField("DIReservationSelectionV1", "required");
+  RequestMessage request;
+  request.setRequestCapabilities(capabilities);
+  const auto requestId = user.RequestService(
+    {provider}, service, request, 5,
+    ServiceUser::AckSelectionStrategy::FirstRespondingSelection, 1000,
+    [](const ndn::Name&) {}, [](const ResponseMessage&) {});
+  auto ack = makeSuccessAckForRequest(published, "retry-token");
+  ReservationLease lease;
+  lease.setField("reservationId", "reservation-retry");
+  lease.setField("providerBootEpoch", "boot-1");
+  lease.setField("expiresAtMs", "9999999999999");
+  ack.setReservationLease(lease);
+  ack.setSelectionInputKeyOffer(makeSelectionInputKeyOffer(providerCert));
+  BOOST_CHECK(user.handleRequestAckByName(
+    makeRequestAckNameV2(provider, requester, service, requestId), ack));
+  pumpFace(face, ndn::time::milliseconds(500));
+  BOOST_CHECK_EQUAL(user.getR1DecisionTransmissionCount(
+                      requestId, "reservation-retry"), 3);
+  BOOST_CHECK(!user.getR1DecisionDigestForTest(
+                      requestId, "reservation-retry").empty());
+  pumpFace(face, ndn::time::milliseconds(300));
+  BOOST_CHECK_EQUAL(user.getR1DecisionTransmissionCount(
+                      requestId, "reservation-retry"), 3);
+}
+
+BOOST_AUTO_TEST_CASE(R1DecisionAuthenticatesBeforeReleaseAndIsImmutable)
+{
+  ndn::security::KeyChain keyChain("pib-memory:r1-provider-decision",
+                                   "tpm-memory:r1-provider-decision");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name requester("/test/user/r1-provider");
+  const ndn::Name providerName("/test/provider/r1-provider");
+  const ndn::Name service("/Inference/Generic");
+  const ndn::Name requestId("request-r1-provider");
+  auto cert = makeRsaIdentity(keyChain, providerName);
+  auto aa = makeRsaIdentity(keyChain, ndn::Name("/test/aa-r1-provider"));
+  LocalServiceProvider provider(face, ndn::Name("/test/group"), cert, aa,
+                                "examples/trust-any.conf");
+
+  RequestMessage request;
+  RequestCapabilities capabilities;
+  capabilities.setField("DIReservationSelectionV1", "required");
+  request.setRequestCapabilities(capabilities);
+  ReservationLease lease;
+  lease.setField("reservationId", "reservation-r1-provider");
+  lease.setField("providerBootEpoch", "boot-1");
+  lease.setField("expiresAtMs", "9999999999999");
+  provider.addPendingR1RequestForTokenTest(requester, service, requestId,
+                                           request, "provider-token", lease);
+
+  auto makeDecision = [&] (const std::string& value,
+                           const std::string& token) {
+    SelectionDecision decision;
+    decision.setField("decision", value);
+    decision.setField("requester", requester.toUri());
+    decision.setField("requestId", requestId.toUri());
+    decision.setField("attempt", "1");
+    decision.setField("targetProvider", providerName.toUri());
+    decision.setField("reservationId", lease.getField("reservationId"));
+    decision.setField("reservationDigest", lease.computeDigest());
+    decision.setField("providerBootEpoch", "boot-1");
+    ServiceSelectionMessage selection;
+    selection.setSelectionDecision(decision);
+    selection.setProviderToken(token);
+    return selection;
+  };
+  auto deliver = [&] (ServiceSelectionMessage selection) {
+    const auto wire = selection.WireEncode();
+    provider.OnServiceSelectionMessageDecryptionSuccessCallbackV2(
+      requester, providerName, service, requestId,
+      ndn::Buffer(wire.data(), wire.size()));
+    return computeSelectionDigest(selection);
+  };
+
+  deliver(makeDecision("NOT_SELECTED", "wrong-token"));
+  BOOST_CHECK(provider.hasPendingRequestForTokenTest(requester, service, requestId));
+  BOOST_CHECK(!provider.hasAcceptedR1DecisionForTest("reservation-r1-provider"));
+
+  auto accepted = makeDecision("NOT_SELECTED", "provider-token");
+  const auto acceptedDigest = deliver(accepted);
+  BOOST_CHECK(!provider.hasPendingRequestForTokenTest(requester, service, requestId));
+  BOOST_CHECK(provider.hasAcceptedR1DecisionForTest("reservation-r1-provider"));
+  BOOST_CHECK(!provider.getDecisionReceiptForTest(acceptedDigest).empty());
+
+  // The exact same authenticated bytes are idempotent after pending state is gone.
+  deliver(accepted);
+  BOOST_CHECK(provider.hasAcceptedR1DecisionForTest("reservation-r1-provider"));
+
+  // A later conflicting value cannot replace or execute the first decision.
+  deliver(makeDecision("SELECTED", "provider-token"));
+  BOOST_CHECK(provider.hasAcceptedR1DecisionForTest("reservation-r1-provider"));
+}
+
+BOOST_AUTO_TEST_CASE(R1SelectedProviderDecryptsInputAndAssignmentBeforeCommitAndExecution)
+{
+  // Use the default PIB/TPM because ServiceProvider owns a default KeyChain;
+  // both must address the same recipient private key for this integration test.
+  ndn::security::KeyChain keyChain;
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name requester("/test/user/r1-private");
+  const ndn::Name providerName("/test/provider/r1-private");
+  const ndn::Name service("/Inference/Generic");
+  const ndn::Name requestId("request-r1-private");
+  auto providerCert = makeRsaIdentity(keyChain, providerName);
+  auto aa = makeRsaIdentity(keyChain, ndn::Name("/test/aa-r1-private"));
+  LocalServiceProvider provider(face, ndn::Name("/test/group"), providerCert,
+                                aa, "examples/trust-any.conf");
+  std::string observedInput;
+  provider.addService(service, ServiceProvider::RequestHandler(
+    [&] (const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name&,
+         const RequestMessage& request) {
+      const auto payload = request.getPayload();
+      observedInput.assign(reinterpret_cast<const char*>(payload.data()), payload.size());
+      ResponseMessage response; response.setStatus(true); return response;
+    }));
+
+  const std::string plaintext = "private-selected-input";
+  auto input = encryptSelectionGatedInput(
+    requester, service, requestId,
+    ndn::span<const uint8_t>(reinterpret_cast<const uint8_t*>(plaintext.data()),
+                             plaintext.size()));
+  RequestMessage request;
+  RequestCapabilities capabilities;
+  capabilities.setField("DIReservationSelectionV1", "required");
+  capabilities.setField("SelectionGatedInputV1", "required");
+  request.setRequestCapabilities(capabilities);
+  request.setEncryptedRequestInput(input.first);
+  ReservationLease lease;
+  lease.setField("reservationId", "reservation-r1-private");
+  lease.setField("providerBootEpoch", "boot-private");
+  lease.setField("attempt", "1");
+  lease.setField("expiresAtMs", "9999999999999");
+  provider.addPendingR1RequestForTokenTest(
+    requester, service, requestId, request, "provider-token", lease);
+
+  DeploymentPlan plan;
+  plan.setField("requesterIdentity", requester.toUri());
+  plan.setField("requestId", requestId.toUri());
+  plan.setField("attempt", "1");
+  plan.setField("member.0.provider", providerName.toUri());
+  plan.setField("member.0.role", "primary");
+  plan.setField("memberCount", "1");
+  SelectionDecision decision;
+  decision.setField("decision", "SELECTED");
+  decision.setField("requester", requester.toUri());
+  decision.setField("requestId", requestId.toUri());
+  decision.setField("attempt", "1");
+  decision.setField("targetProvider", providerName.toUri());
+  decision.setField("reservationId", lease.getField("reservationId"));
+  decision.setField("reservationDigest", lease.computeDigest());
+  decision.setField("providerBootEpoch", "boot-1");
+  decision.setField("providerBootEpoch", "boot-private");
+  decision.setField("globalPlanDigest", plan.computeDigest());
+
+  const auto offer = makeSelectionInputKeyOffer(providerCert, "boot-private");
+  SelectionInputKeyGrant grant;
+  grant.setField("recipient", providerName.toUri());
+  grant.setField("recipientCertName", offer.getField("recipientCertName"));
+  grant.setField("recipientCertDigest", offer.getField("recipientCertDigest"));
+  grant.setField("wrappedInputKey", selectionGatedHex(wrapSelectionGatedInputKey(
+    input.second, selectionGatedUnhex(offer.getField("recipientPublicKey")))));
+  grant.setField("encryptedInputDigest", input.first.computeDigest());
+  grant.setField("requestId", requestId.toUri());
+  grant.setField("attempt", "1");
+  grant.setField("reservationId", lease.getField("reservationId"));
+  const std::string assignmentText = "role=primary;privateFragment=only-this-provider;";
+  const auto assignmentAad = recipientAssignmentAssociatedData(
+    requester, providerName, service, requestId, lease.getField("reservationId"),
+    plan.computeDigest());
+  const auto assignment = encryptRecipientAssignment(
+    ndn::span<const uint8_t>(reinterpret_cast<const uint8_t*>(assignmentText.data()),
+                             assignmentText.size()),
+    providerCert.getPublicKey(), providerName, providerCert.getName(), assignmentAad);
+
+  bool committed = false;
+  unsigned terminalReleaseCount = 0;
+  std::string terminalReservation;
+  std::string terminalCause;
+  provider.setR1SelectionDecisionHandler(service,
+    [&] (const SelectionDecision& accepted) {
+      committed = true;
+      SelectionDecisionReceipt receipt;
+      receipt.setField("decisionDigest", accepted.computeDigest());
+      receipt.setField("reservationId", accepted.getField("reservationId"));
+      return receipt;
+    });
+  provider.setR1ReservationTerminalHandler(service,
+    [&] (const std::string& reservationId, const std::string& cause) {
+      ++terminalReleaseCount;
+      terminalReservation = reservationId;
+      terminalCause = cause;
+    });
+  ServiceSelectionMessage selection;
+  selection.setRequestIDs({requestId.toUri()});
+  selection.setProviderToken("provider-token");
+  selection.setSelectionDecision(decision);
+  selection.setDeploymentPlan(plan);
+  selection.setSelectionInputKeyGrant(grant);
+  selection.setRecipientEncryptedAssignment(assignment);
+  const auto wire = selection.WireEncode();
+  provider.OnServiceSelectionMessageDecryptionSuccessCallbackV2(
+    requester, providerName, service, requestId,
+    ndn::Buffer(wire.data(), wire.size()));
+  const auto selectionStatus = provider.getSelectionExecutionStatus(
+    computeSelectionDigest(selection));
+  BOOST_TEST_MESSAGE("R1 selected status=" <<
+                     (selectionStatus ? selectionStatus->message : "missing"));
+  BOOST_CHECK(committed);
+  BOOST_CHECK_EQUAL(observedInput, plaintext);
+  BOOST_CHECK_EQUAL(terminalReleaseCount, 1);
+  BOOST_CHECK_EQUAL(terminalReservation, lease.getField("reservationId"));
+  BOOST_CHECK_EQUAL(terminalCause, "LOCAL_COMPLETE");
+}
+
+BOOST_AUTO_TEST_CASE(R1DecisionTombstoneExpiresAtReservationLeaseBoundary)
+{
+  ndn::security::KeyChain keyChain("pib-memory:r1-tombstone",
+                                   "tpm-memory:r1-tombstone");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name requester("/test/user/r1-tombstone");
+  const ndn::Name providerName("/test/provider/r1-tombstone");
+  const ndn::Name service("/Inference/Generic");
+  const ndn::Name requestId("request-r1-tombstone");
+  auto cert = makeRsaIdentity(keyChain, providerName);
+  auto aa = makeRsaIdentity(keyChain, ndn::Name("/test/aa-r1-tombstone"));
+  LocalServiceProvider provider(face, ndn::Name("/test/group"), cert, aa,
+                                "examples/trust-any.conf");
+
+  RequestMessage request;
+  RequestCapabilities capabilities;
+  capabilities.setField("DIReservationSelectionV1", "required");
+  request.setRequestCapabilities(capabilities);
+  ReservationLease lease;
+  lease.setField("reservationId", "reservation-r1-tombstone");
+  lease.setField("providerBootEpoch", "boot-1");
+  const auto expiresAtMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::system_clock::now().time_since_epoch()).count() + 250;
+  lease.setField("expiresAtMs", std::to_string(expiresAtMs));
+  provider.addPendingR1RequestForTokenTest(
+    requester, service, requestId, request, "provider-token", lease);
+
+  SelectionDecision decision;
+  decision.setField("decision", "NOT_SELECTED");
+  decision.setField("requester", requester.toUri());
+  decision.setField("requestId", requestId.toUri());
+  decision.setField("attempt", "1");
+  decision.setField("targetProvider", providerName.toUri());
+  decision.setField("reservationId", lease.getField("reservationId"));
+  decision.setField("reservationDigest", lease.computeDigest());
+  decision.setField("providerBootEpoch", "boot-1");
+  ServiceSelectionMessage selection;
+  selection.setSelectionDecision(decision);
+  selection.setProviderToken("provider-token");
+  const auto wire = selection.WireEncode();
+  provider.OnServiceSelectionMessageDecryptionSuccessCallbackV2(
+    requester, providerName, service, requestId,
+    ndn::Buffer(wire.data(), wire.size()));
+  BOOST_CHECK(provider.hasAcceptedR1DecisionForTest(
+    lease.getField("reservationId")));
+  face.processEvents(ndn::time::milliseconds(350));
+  BOOST_CHECK(!provider.hasAcceptedR1DecisionForTest(
+    lease.getField("reservationId")));
+}
+
 BOOST_AUTO_TEST_CASE(LateAckAfterAckTimeoutSelectsProviderBeforeRequestTimeout)
 {
   ndn::security::KeyChain keyChain("pib-memory:late-ack-selects",
@@ -588,6 +972,94 @@ BOOST_AUTO_TEST_CASE(RandomSelectionDistributionSanity)
   BOOST_CHECK_GE(selectedCounts.size(), 2);
 }
 
+
+BOOST_AUTO_TEST_CASE(DeploymentSelectionPreparesButCannotExecuteBeforeActivation)
+{
+  ndn::security::KeyChain keyChain("pib-memory:deployment-gate", "tpm-memory:deployment-gate");
+  ndn::DummyClientFace::Options faceOptions;
+  ndn::DummyClientFace face(keyChain, faceOptions);
+  const ndn::Name requesterName("/test/user/deployer");
+  const ndn::Name providerName("/test/provider/worker");
+  const ndn::Name serviceName("/Inference/Generic");
+  const ndn::Name requestId("/deployment-gate");
+  auto providerCert = makeRsaIdentity(keyChain, providerName);
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-deployment-gate"));
+  LocalServiceProvider provider(face, ndn::Name("/test/group"), providerCert, aaCert,
+                                "examples/trust-any.conf");
+  provider.setUseTokens(false);
+
+  int prepareCalls = 0;
+  int executeCalls = 0;
+  int readyPublications = 0;
+  provider.addService(serviceName, ServiceProvider::RequestHandler(
+    [&] (const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name&,
+         const RequestMessage&) {
+      ++executeCalls;
+      ResponseMessage response;
+      response.setStatus(true);
+      return response;
+    }));
+  provider.setDeploymentPrepareHandler(
+    [&] (const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name&,
+         const RequestMessage&, const DeploymentPlan&, const std::string&) {
+      ++prepareCalls;
+      ProviderReadyMessage ready;
+      ready.setField("artifactDigest", "sha256:test");
+      ready.setField("deploymentInstanceId", "instance-1");
+      ready.setField("operationId", "prepare-1");
+      return ready;
+    });
+  provider.setProviderReadyPublisher(
+    [&] (const ndn::Name&, const ProviderReadyMessage&) { ++readyPublications; });
+
+  DeploymentIntent intent;
+  intent.setField("artifactDigest", "sha256:test");
+  RequestMessage request;
+  request.setDeploymentIntent(intent);
+  provider.addPendingRequestForTokenTest(requesterName, serviceName, requestId, request, "");
+
+  DeploymentPlan plan;
+  plan.setField("requestId", requestId.toUri());
+  plan.setField("attempt", "1");
+  plan.setField("requesterIdentity", requesterName.toUri());
+  plan.setField("intentDigest", intent.computeDigest());
+  plan.setField("member.0.provider", providerName.toUri());
+  plan.setField("member.0.role", "worker");
+  ServiceSelectionMessage selection;
+  selection.setRequestIDs({requestId.toUri()});
+  selection.setDeploymentPlan(plan);
+  auto selectionBlock = selection.WireEncode();
+  ndn::Buffer selectionBuffer(selectionBlock.data(), selectionBlock.size());
+  provider.OnServiceSelectionMessageDecryptionSuccessCallbackV2(
+    requesterName, providerName, serviceName, requestId, selectionBuffer);
+
+  BOOST_CHECK_EQUAL(prepareCalls, 1);
+  BOOST_CHECK_EQUAL(readyPublications, 1);
+  BOOST_CHECK_EQUAL(executeCalls, 0);
+
+  ExecutionActivateMessage activation;
+  activation.setField("requestId", requestId.toUri());
+  activation.setField("selectionDigest", computeSelectionDigest(selection));
+  activation.setField("deploymentPlanDigest", plan.computeDigest());
+  activation.setField("readySetDigest", "ready-set-digest");
+  activation.setField("memberSetDigest", "member-set-digest");
+  activation.setField("requesterIdentity", requesterName.toUri());
+  activation.setField("activationSequence", "1");
+  activation.setField("expiresAtUs", std::to_string(
+    std::chrono::duration_cast<std::chrono::microseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count() + 1000000));
+  std::string rejection;
+  BOOST_CHECK(provider.acceptExecutionActivate(activation, &rejection));
+  pumpFace(face, ndn::time::milliseconds(50));
+  BOOST_CHECK_EQUAL(executeCalls, 1);
+  BOOST_CHECK(provider.acceptExecutionActivate(activation, &rejection));
+  BOOST_CHECK_EQUAL(executeCalls, 1);
+
+  auto conflicting = activation;
+  conflicting.setField("activationSequence", "2");
+  BOOST_CHECK(!provider.acceptExecutionActivate(conflicting, &rejection));
+  BOOST_CHECK_EQUAL(executeCalls, 1);
+}
 
 BOOST_AUTO_TEST_SUITE_END()
 BOOST_AUTO_TEST_SUITE_END()

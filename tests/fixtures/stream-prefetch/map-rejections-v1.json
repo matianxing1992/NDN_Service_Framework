@@ -1,0 +1,41 @@
+{
+  "contractVersion": 1,
+  "reasonByCase": {
+    "wrong-control-name": "wrong-control-name",
+    "wrong-provider": "wrong-provider",
+    "stale-session": "stale-session",
+    "stale-mapping-version": "stale-mapping-version",
+    "same-name-different-content": "same-name-different-content",
+    "continuity-fork": "continuity-fork",
+    "original-name-reuse": "original-name-reuse",
+    "wrong-content-type": "wrong-content-type",
+    "final-block": "final-block-not-allowed",
+    "wire-cap": "signed-wire-cap-exceeded",
+    "noncanonical": "malformed-or-noncanonical-content",
+    "outside-prefix": "original-name-outside-prefix",
+    "name-too-large": "original-name-too-large",
+    "stale-block": "stale-block",
+    "frontier-regression": "frontier-regression",
+    "checkpoint-anchor-not-verified": "checkpoint-anchor-not-verified",
+    "checkpoint-equivocation": "checkpoint-equivocation"
+  },
+  "rejections": [
+    {"case": "wrong-control-name", "reason": "wrong-control-name", "fatal": false},
+    {"case": "wrong-provider", "reason": "wrong-provider", "fatal": true},
+    {"case": "stale-session", "reason": "stale-session", "fatal": true},
+    {"case": "stale-mapping-version", "reason": "stale-mapping-version", "fatal": true},
+    {"case": "same-name-different-content", "reason": "same-name-different-content", "fatal": true},
+    {"case": "continuity-fork", "reason": "continuity-fork", "fatal": true},
+    {"case": "original-name-reuse", "reason": "original-name-reuse", "fatal": true},
+    {"case": "wrong-content-type", "reason": "wrong-content-type", "fatal": false},
+    {"case": "final-block", "reason": "final-block-not-allowed", "fatal": false},
+    {"case": "wire-cap", "reason": "signed-wire-cap-exceeded", "fatal": false},
+    {"case": "noncanonical", "reason": "malformed-or-noncanonical-content", "fatal": false},
+    {"case": "outside-prefix", "reason": "original-name-outside-prefix", "fatal": true},
+    {"case": "name-too-large", "reason": "original-name-too-large", "fatal": true},
+    {"case": "stale-block", "reason": "stale-block", "fatal": false},
+    {"case": "frontier-regression", "reason": "frontier-regression", "fatal": false},
+    {"case": "checkpoint-anchor-not-verified", "reason": "checkpoint-anchor-not-verified", "fatal": false},
+    {"case": "checkpoint-equivocation", "reason": "checkpoint-equivocation", "fatal": true}
+  ]
+}

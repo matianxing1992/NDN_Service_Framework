@@ -18,15 +18,15 @@ from typing import Iterator
 import numpy as np
 import onnxruntime as ort
 
-from ndnsf_distributed_inference import InferenceDependency
-from ndnsf_distributed_inference.onnx_graph import (
+from ndnsf_distributed_inference.plan import InferenceDependency
+from ndnsf_distributed_inference.adapters.onnx.graph import (
     OnnxChunkSpec,
     analyze_onnx_graph,
     build_sequential_chunk_dependencies,
     estimate_split_candidates,
     write_onnx_graph_summary,
 )
-from ndnsf_distributed_inference.split_planner import (
+from ndnsf_distributed_inference.planner.sequential_split import (
     SequentialSplitCandidate,
     homogeneous_provider_profiles,
     recommend_sequential_splits,

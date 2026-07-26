@@ -35,7 +35,7 @@ def build_env() -> dict[str, str]:
 def run_preflight(env: dict[str, str]) -> None:
     code = (
         "import tkinter\n"
-        "from ndnsf_distributed_inference.gui import "
+        "from ndnsf_distributed_inference.app_sdk.gui import "
         "DistributedInferenceGui, DeploymentRunnerTab, build_arg_parser, run_headless\n"
         "from ndnsf_distributed_inference.policy import load_config\n"
         f"load_config({str(DEFAULT_POLICY)!r})\n"

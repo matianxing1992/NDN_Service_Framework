@@ -461,22 +461,13 @@ class RuntimeAwareCampaignTest(unittest.TestCase):
         self.assertEqual(assignments["/Backbone"][0]["provider"], "/P/backbone")
         self.assertEqual(assignments["/Merge"][0]["assignment"], "default")
 
-    def test_user_driver_role_preference_env_is_scoped(self) -> None:
+    def test_user_driver_role_preference_becomes_explicit_context_without_env(self) -> None:
         user_driver = load_user_driver_module()
-        original = os.environ.get(user_driver.ROLE_PROVIDER_PREFERENCE_ENV)
-        os.environ[user_driver.ROLE_PROVIDER_PREFERENCE_ENV] = "previous"
-        try:
-            with user_driver.role_provider_preference_env("/Backbone=>/P/backbone;"):
-                self.assertEqual(
-                    os.environ[user_driver.ROLE_PROVIDER_PREFERENCE_ENV],
-                    "/Backbone=>/P/backbone;",
-                )
-            self.assertEqual(os.environ[user_driver.ROLE_PROVIDER_PREFERENCE_ENV], "previous")
-        finally:
-            if original is None:
-                os.environ.pop(user_driver.ROLE_PROVIDER_PREFERENCE_ENV, None)
-            else:
-                os.environ[user_driver.ROLE_PROVIDER_PREFERENCE_ENV] = original
+        before = dict(os.environ)
+        context = user_driver.assignment_context_from_preference(
+            "/Backbone=>/P/backbone;", request_id="r", deadline_ms=1000)
+        self.assertEqual(context.providers_by_role(), {"/Backbone": "/P/backbone"})
+        self.assertEqual(dict(os.environ), before)
 
     def test_user_driver_keeps_base_publisher_started_for_workload(self) -> None:
         user_driver = load_user_driver_module()

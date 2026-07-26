@@ -1397,30 +1397,37 @@ public:
     bool recordToLocalRepo = false;
     std::string recordRepoPath;
     std::string recordObjectPrefix;
-    uint64_t recordChunkLimit = 0;
+    uint64_t recordPacketLimit = 0;
     std::string v4l2InputFormat = "auto";
     std::string v4l2InputSize = "auto";
     uint64_t v4l2InputFps = 0;
   };
 
-  VideoPublisher(ndn::Face& face, ndn::KeyChain& keyChain,
+  VideoPublisher(ndn_service_framework::ServiceProvider& serviceProvider,
+                 ndn::Face& face, ndn::KeyChain& keyChain,
                  ndn_service_framework::LocalServiceRegistry& localRegistry,
-                 ndn::Name localRecordingChunkServiceName,
+                 ndn::Name localArchivedPacketServiceName,
                  UavRuntimeConfig config, std::string droneId, std::string videoPath,
                  CameraRuntimeOptions options)
-    : m_face(face)
+    : m_serviceProvider(serviceProvider)
+    , m_face(face)
     , m_keyChain(keyChain)
     , m_localRegistry(localRegistry)
-    , m_localRecordingChunkServiceName(std::move(localRecordingChunkServiceName))
+    , m_localArchivedPacketServiceName(std::move(localArchivedPacketServiceName))
     , m_config(std::move(config))
     , m_droneId(std::move(droneId))
     , m_videoPath(std::move(videoPath))
     , m_cameraOptions(std::move(options))
   {
+    if (const auto* mode = std::getenv("NDNSF_UAV_ENCODER_PIPE_READ_MODE")) {
+      m_useLegacyBatchedEncoderRead = std::string(mode) == "stdio-batched";
+    }
+    if (const auto* backend = std::getenv("NDNSF_UAV_VIDEO_PIPELINE")) {
+      m_useGStreamerPipeline = std::string(backend) == "gstreamer";
+    }
     m_signingInfo = ndn_service_framework::makeEcdsaPreferredSigningInfo(
       m_keyChain, droneIdentity(m_config, m_droneId));
-    m_videoPrefix = droneIdentity(m_config, m_droneId).append("video");
-    m_streamPrefix = ndn::Name(m_videoPrefix).append(m_streamId);
+    m_streamPrefix = droneIdentity(m_config, m_droneId).append("video").append(m_streamId);
     if (m_cameraOptions.recordObjectPrefix.empty()) {
       m_cameraOptions.recordObjectPrefix = droneIdentity(m_config, m_droneId)
         .append("repo")
@@ -1443,32 +1450,50 @@ public:
         capability,
         ndnsf_distributed_repo::makeTieredRepoStore(
           m_cameraOptions.recordRepoPath, 64 * 1024 * 1024));
+      for (const auto& object : m_recordingRepo->list()) {
+        if (object.objectType == "video/h264-chunk" ||
+            object.objectName.find("/chunk/") != std::string::npos) {
+          m_legacyRecordingDetected = true;
+          NDN_LOG_WARN("CAMERA_RECORDING_LEGACY_DB_UNSUPPORTED path="
+                       << m_cameraOptions.recordRepoPath
+                       << " action=export-with-pre-spec120-or-delete-old-repo");
+          break;
+        }
+      }
+      if (!m_legacyRecordingDetected) {
+        try {
+          recoverLatestCompletedRecording();
+        }
+        catch (const std::exception& e) {
+          // Historical material is never guessed or silently downgraded. A
+          // new live session may still run, but replay remains unavailable.
+          NDN_LOG_WARN("CAMERA_RECORDING_RECOVERY_REJECTED path="
+                       << m_cameraOptions.recordRepoPath << " reason=" << e.what());
+        }
+      }
       m_recordingSessionId = "record-" + std::to_string(nowMilliseconds());
-      m_recordingKeyId = droneIdentity(m_config, m_droneId)
-        .append("repo")
-        .append("camera")
-        .append("recording")
-        .append("hybrid-key")
-        .toUri();
-      m_recordingContentKey = loadOrCreateRecordingContentKey();
       m_recordingLastUpdateMs = nowMilliseconds();
+      m_retentionActive = true;
       m_localRegistry.registerLocalService(
-        m_localRecordingChunkServiceName,
+        m_localArchivedPacketServiceName,
         [this](const ndn::Name&,
                const ndn::Name&,
                const ndn_service_framework::RequestMessage& request) {
           const auto objectName = payloadToString(request);
-          const auto payload = recordingChunkData(objectName);
+          const auto payload = archivedPacketWire(objectName);
           return makeBinaryResponse(!payload.empty(), payload,
-                                    payload.empty() ? "recording chunk not found" : "No error");
+                                    payload.empty() ? "archived signed packet not found" : "No error");
         });
       ensureRecordingFilterRegistered();
-      NDN_LOG_INFO("CAMERA_RECORDING_ENCRYPTION drone=" << m_droneId
-                   << " algorithm=hybrid-aes-256-gcm-at-rest"
-                   << " key_id=" << m_recordingKeyId
-                   << " key_scope=local-drone-runtime");
+      NDN_LOG_INFO("CAMERA_RECORDING_CANONICAL drone=" << m_droneId
+                   << " object_type=application/ndn-data"
+                   << " media_encryption=live-stream-epoch-key"
+                   << " storage_mode=exact-signed-wire");
     }
     m_captureEnabled = m_cameraOptions.captureOnStart || m_cameraOptions.recordToLocalRepo;
+    if (m_recordingRepo) {
+      m_retentionThread = std::thread([this] { this->retentionLoop(); });
+    }
     m_captureThread = std::thread([this] { this->captureLoop(); });
   }
 
@@ -1486,48 +1511,456 @@ public:
     if (m_captureThread.joinable()) {
       m_captureThread.join();
     }
+    if (m_retentionThread.joinable()) {
+      m_retentionThread.join();
+    }
+    {
+      std::lock_guard<std::mutex> guard(m_mutex);
+      if (m_recordingPacketFeed) m_recordingPacketFeed->close();
+    }
+    try {
+      persistCanonicalManifest(true);
+    }
+    catch (const std::exception& e) {
+      NDN_LOG_WARN("CAMERA_CANONICAL_FINAL_MANIFEST_FAILED reason=" << e.what());
+    }
+  }
+
+  static ndn::Buffer
+  randomBytes(size_t size)
+  {
+    ndn::Buffer value(size);
+    if (size == 0 || RAND_bytes(value.data(), static_cast<int>(value.size())) != 1) {
+      throw std::runtime_error("RAND_bytes failed for live video session");
+    }
+    return value;
+  }
+
+  static std::string
+  lowerHex(const ndn::Buffer& value)
+  {
+    static constexpr char DIGITS[] = "0123456789abcdef";
+    std::string result;
+    result.reserve(value.size() * 2);
+    for (const auto byte : value) {
+      result.push_back(DIGITS[byte >> 4]);
+      result.push_back(DIGITS[byte & 0x0f]);
+    }
+    return result;
+  }
+
+  static uint64_t
+  randomNonZeroUint64()
+  {
+    const auto bytes = randomBytes(sizeof(uint64_t));
+    uint64_t value = 0;
+    for (const auto byte : bytes) {
+      value = (value << 8) | byte;
+    }
+    return value == 0 ? 1 : value;
+  }
+
+  void
+  ensureFutureSampleAnnouncementsLocked(uint64_t throughSampleId)
+  {
+    if (!m_livePublisher) {
+      throw std::logic_error("Core LiveStream publisher is missing");
+    }
+    const auto period = std::max<uint64_t>(1, m_streamDescriptor.samplePeriodMs);
+    const auto lead = std::max<uint64_t>(
+      4, static_cast<uint64_t>(std::ceil(120.0 / static_cast<double>(period))) + 2);
+    const auto required = throughSampleId + lead;
+    while (m_nextAnnouncedSampleId <= required) {
+      const auto sampleId = m_nextAnnouncedSampleId++;
+      if (!m_videoSampleClassSchedule) {
+        throw std::logic_error("UAV video sample-class schedule is missing");
+      }
+      const auto sampleClass = m_videoSampleClassSchedule->classFor(sampleId);
+      auto reservation = m_livePublisher->announceSample(
+        sampleId, sampleClass,
+        [this, sampleId] (size_t index,
+                          ndn_service_framework::LiveStreamItemKind kind) {
+          ndn::Name name = m_streamDescriptor.dataPrefix;
+          name.append("fec-group").appendSequenceNumber(sampleId)
+              .append(kind == ndn_service_framework::LiveStreamItemKind::Source ?
+                        "data" : "parity")
+              .appendSegment(index);
+          return name;
+        });
+      m_announcedVideoSamples.emplace(sampleId, std::move(reservation));
+    }
+  }
+
+  void
+  initializeProtectedSessionLocked()
+  {
+    if (m_legacyRecordingDetected) {
+      throw std::runtime_error(
+        "legacy recording-only Repo is unsupported; export it with the pre-Spec-120 "
+        "application or delete the old Repo database");
+    }
+    m_readiness.reset();
+    m_mediaSequenceByCursor.clear();
+    m_coreStreamDescriptor.reset();
+    m_streamId = "stream-" + lowerHex(randomBytes(16));
+    ++m_streamSessionEpoch;
+    if (m_streamSessionEpoch == 0) {
+      ++m_streamSessionEpoch;
+    }
+    m_videoSampleClassSchedule = m_useGStreamerPipeline ?
+      UavVideoSampleClassSchedule::exactKeyDelta(
+        static_cast<uint32_t>(m_targetFps.load()),
+        static_cast<size_t>(m_fecDataShards), m_streamSessionEpoch) :
+      UavVideoSampleClassSchedule::boundedOpaque(
+        static_cast<uint32_t>(m_targetFps.load()),
+        static_cast<size_t>(m_fecDataShards), m_streamSessionEpoch);
+
+    m_streamDescriptor = VideoStreamDescriptor{};
+    m_streamDescriptor.streamId = m_streamId;
+    m_streamDescriptor.sessionEpoch = m_streamSessionEpoch;
+    m_streamDescriptor.providerIdentity = droneIdentity(m_config, m_droneId);
+    m_streamDescriptor.serviceName = droneVideoControlService(m_config, m_droneId);
+    m_streamDescriptor.mappingVersion = randomNonZeroUint64();
+    m_streamDescriptor.dataPrefix = m_streamDescriptor.providerIdentity;
+    m_streamDescriptor.dataPrefix.append("video").append("front").append(m_streamId);
+    m_streamDescriptor.mappingRoot = ndn_service_framework::makeStreamNameMapRoot(
+      m_streamDescriptor.providerIdentity, m_streamId);
+    // Thirty-two semantic names remain safely below one signed NDN Data packet
+    // for this namespace while halving Mapping fetch/validation work versus
+    // the former 16-entry block at the original 12+1 video load.
+    m_streamDescriptor.mappingBlockCapacity = 32;
+    m_streamDescriptor.maxNameReservations = UAV_VIDEO_MAX_NAME_RESERVATIONS;
+    m_streamDescriptor.sampleUnit = "fec-group";
+    m_streamDescriptor.samplePeriodMs = std::max<uint64_t>(1, 1000 / m_targetFps.load());
+    m_streamDescriptor.prefetchEligibility = "ahead-mapped";
+    m_streamDescriptor.cipher = "aes-256-gcm";
+    m_streamDescriptor.keyEpoch = 1;
+    m_streamDescriptor.streamKey = randomBytes(32);
+    m_streamDescriptor.nonceSalt = randomBytes(4);
+    // Decoder/FEC parameters are part of the durable stream contract.  They
+    // must not exist only as convenience fields in the live start response,
+    // otherwise canonical replay cannot interpret the same encrypted Data.
+    m_streamDescriptor.extensions = {
+      {"encoding", "video/h264"},
+      {"stream_format", "semantic-name-map+aead-video-packet-v1"},
+      {"fec_data_shards", std::to_string(m_fecDataShards)},
+      {"fec_parity_shards", std::to_string(m_fecParityShards)},
+      {"frame_width", std::to_string(m_acceptedFrameWidth.load())},
+      {"max_payload_bytes", std::to_string(MAX_VIDEO_PACKET_PAYLOAD)},
+      {"streaming_model", "h264-low-latency-packet-stream"},
+      {"prefetch_hint", "ahead-mapped"},
+      {"sample_class_mode",
+       m_videoSampleClassSchedule->hasExactFrameClass() ?
+         "exact-key-delta" : "bounded-opaque"},
+      {"sample_class_key_seed", std::to_string(m_fecDataShards)},
+      {"sample_class_delta_seed", std::to_string(
+        std::min<uint64_t>(3, m_fecDataShards))},
+      {"sample_class_opaque_seed", std::to_string(m_fecDataShards)},
+    };
+    // A descriptor is encoded before the first reservation is materialized.
+    // Use the valid empty-session checkpoint shape; Core status replaces it
+    // immediately after the first announceSample() reservation.
+    m_streamDescriptor.frontiers = {
+      0, 0, 0, m_streamDescriptor.mappingBlockCapacity - 1,
+      m_streamDescriptor.mappingBlockCapacity};
+    m_streamPrefix = m_streamDescriptor.dataPrefix;
+    m_recordingSessionId = "record-" + m_streamId;
+
+    if (m_recordingRepo) {
+      CanonicalVideoRecordingManifest manifest;
+      manifest.recordingId = m_recordingSessionId;
+      manifest.streamId = m_streamId;
+      manifest.sessionEpoch = m_streamSessionEpoch;
+      manifest.mappingVersion = m_streamDescriptor.mappingVersion;
+      manifest.keyEpoch = m_streamDescriptor.keyEpoch;
+      manifest.providerIdentity = m_streamDescriptor.providerIdentity;
+      manifest.serviceName = m_streamDescriptor.serviceName;
+      manifest.redactedStreamDescriptor = decodeFields(
+        encodeVideoStreamDescriptor(m_streamDescriptor));
+      manifest.redactedStreamDescriptor.erase("stream_key_hex");
+      manifest.redactedStreamDescriptor.erase("nonce_salt_hex");
+      manifest.startedMs = nowMilliseconds();
+      manifest.signerCertificateName = m_signingInfo.getSignerName().toUri();
+      manifest.trustPolicyVersion = "unavailable";
+      {
+        std::ifstream trustInput(m_config.trustSchema, std::ios::binary);
+        if (trustInput) {
+          const std::vector<uint8_t> trustBytes(
+            (std::istreambuf_iterator<char>(trustInput)),
+            std::istreambuf_iterator<char>());
+          const auto trustDigest = ndn_service_framework::computeStreamContentDigest(
+            ndn::span<const uint8_t>(trustBytes.data(), trustBytes.size()));
+          manifest.trustPolicyVersion = "sha256:" + hexEncode(
+            std::vector<uint8_t>(trustDigest.begin(), trustDigest.end()));
+        }
+      }
+      manifest.packetCatalogPrefix = ndn::Name(m_cameraOptions.recordObjectPrefix)
+        .append(m_recordingSessionId).append("CATALOG");
+      try {
+        const auto signingCertificateName = m_signingInfo.getSignerName();
+        const auto signingKeyName =
+          ndn::security::extractKeyNameFromCertName(signingCertificateName);
+        const auto certificate = m_keyChain.getPib()
+          .getIdentity(m_streamDescriptor.providerIdentity)
+          .getKey(signingKeyName).getCertificate(signingCertificateName);
+        manifest.signerCertificateName = certificate.getName().toUri();
+        const auto certificateWire = certificate.wireEncode();
+        manifest.signerCertificateDigest =
+          ndn_service_framework::computeStreamContentDigest(
+            ndn::span<const uint8_t>(certificateWire.begin(), certificateWire.size()));
+        manifest.archivedCertificateObjects.push_back(certificate.getName());
+        m_recordingRepo->put(
+          certificate.getName().toUri(),
+          std::vector<uint8_t>(certificateWire.begin(), certificateWire.end()),
+          "application/ndn-cert", 1,
+          "recording_id=" + m_recordingSessionId,
+          {m_streamDescriptor.providerIdentity.toUri()});
+
+        // Durable replay must survive a Provider process restart without ever
+        // writing a plaintext epoch key. Wrap the small key record to the
+        // Provider's persistent RSA encryption certificate and bind every
+        // field again inside the signed authorization object.
+        const auto encryptionCertificate =
+          ndn_service_framework::getRsaEncryptionCertificateOrThrow(
+            m_keyChain, certificate);
+        if (encryptionCertificate.getName() != certificate.getName()) {
+          const auto encryptionCertificateWire = encryptionCertificate.wireEncode();
+          m_recordingRepo->put(
+            encryptionCertificate.getName().toUri(),
+            std::vector<uint8_t>(encryptionCertificateWire.begin(),
+                                 encryptionCertificateWire.end()),
+            "application/ndn-cert", 1,
+            "recording_id=" + m_recordingSessionId + ";role=key-encryption",
+            {m_streamDescriptor.providerIdentity.toUri()});
+          manifest.archivedCertificateObjects.push_back(
+            encryptionCertificate.getName());
+        }
+
+        ndn::Buffer protectedPlaintext;
+        protectedPlaintext.reserve(m_streamDescriptor.streamKey.size() +
+                                   m_streamDescriptor.nonceSalt.size());
+        protectedPlaintext.insert(protectedPlaintext.end(),
+                                  m_streamDescriptor.streamKey.begin(),
+                                  m_streamDescriptor.streamKey.end());
+        protectedPlaintext.insert(protectedPlaintext.end(),
+                                  m_streamDescriptor.nonceSalt.begin(),
+                                  m_streamDescriptor.nonceSalt.end());
+        ndn::security::transform::PublicKey publicKey;
+        publicKey.loadPkcs8(encryptionCertificate.getPublicKey());
+        auto wrapped = publicKey.encrypt(ndn::span<const uint8_t>(
+          protectedPlaintext.data(), protectedPlaintext.size()));
+        if (!wrapped) {
+          throw std::runtime_error("RSA epoch-key wrap returned no ciphertext");
+        }
+        const Fields archiveFields{
+          {"type", "canonical-video-epoch-key-archive-v1"},
+          {"provider_identity", m_streamDescriptor.providerIdentity.toUri()},
+          {"service_name", m_streamDescriptor.serviceName.toUri()},
+          {"stream_id", m_streamDescriptor.streamId},
+          {"session_epoch", std::to_string(m_streamDescriptor.sessionEpoch)},
+          {"key_epoch", std::to_string(m_streamDescriptor.keyEpoch)},
+          {"recipient_certificate", encryptionCertificate.getName().toUri()},
+          {"algorithm", "RSA-OAEP"},
+          {"wrapped_key_record_hex", hexEncode(std::vector<uint8_t>(
+            wrapped->begin(), wrapped->end()))},
+        };
+        manifest.keyAuthorizationObject = ndn::Name(m_cameraOptions.recordObjectPrefix)
+          .append(m_recordingSessionId).append("KEY-AUTH")
+          .appendVersion(m_streamDescriptor.keyEpoch);
+        ndn::Data keyAuthorizationData(manifest.keyAuthorizationObject);
+        const auto archiveText = encodeFields(archiveFields);
+        keyAuthorizationData.setContent(ndn::span<const uint8_t>(
+          reinterpret_cast<const uint8_t*>(archiveText.data()), archiveText.size()));
+        {
+          std::lock_guard<std::mutex> signGuard(m_signMutex);
+          m_keyChain.sign(keyAuthorizationData, m_signingInfo);
+        }
+        const auto keyAuthorizationWire = keyAuthorizationData.wireEncode();
+        m_recordingRepo->put(
+          manifest.keyAuthorizationObject.toUri(),
+          std::vector<uint8_t>(keyAuthorizationWire.begin(), keyAuthorizationWire.end()),
+          "application/ndn-data-key-authorization", 1,
+          "recording_id=" + m_recordingSessionId,
+          {m_streamDescriptor.providerIdentity.toUri()});
+      }
+      catch (const std::exception& e) {
+        throw std::runtime_error(std::string("cannot archive Provider certificate: ") + e.what());
+      }
+      std::lock_guard<std::mutex> retentionGuard(m_retentionMutex);
+      m_retentionManifest = std::move(manifest);
+      m_retentionCatalogHead.fill(0);
+      m_retentionHasSource = false;
+    }
+
+    ndn_service_framework::LiveStreamDefinition definition;
+    definition.contractVersion =
+      ndn_service_framework::STREAM_NAME_MAP_CONTRACT_VERSION_V2;
+    definition.streamId = m_streamDescriptor.streamId;
+    definition.provider = m_streamDescriptor.providerIdentity;
+    definition.semanticDataPrefix = m_streamDescriptor.dataPrefix;
+    definition.sessionEpoch = m_streamDescriptor.sessionEpoch;
+    definition.mappingVersion = m_streamDescriptor.mappingVersion;
+    definition.mappingBlockCapacity = m_streamDescriptor.mappingBlockCapacity;
+    definition.mappingAheadBlocks = 4;
+    definition.retainedItems = computeLiveVideoRetentionItems(
+      m_targetFps.load(), m_fecDataShards, m_fecParityShards);
+    definition.maxNameReservations = m_streamDescriptor.maxNameReservations;
+    definition.maxPendingInterests = 256;
+    definition.samplePeriodMs = static_cast<double>(m_streamDescriptor.samplePeriodMs);
+    if (m_videoSampleClassSchedule->hasExactFrameClass()) {
+      definition.sampleClasses = {
+        ndn_service_framework::SampleClassProfile::bounded(
+          "key", static_cast<size_t>(m_fecDataShards),
+          static_cast<size_t>(m_fecDataShards), 32, 0),
+        ndn_service_framework::SampleClassProfile::bounded(
+          "delta", static_cast<size_t>(std::min<uint64_t>(3, m_fecDataShards)),
+          static_cast<size_t>(m_fecDataShards), 32, 0),
+      };
+    }
+    else {
+      definition.sampleClasses = {
+        ndn_service_framework::SampleClassProfile::bounded(
+          "opaque", static_cast<size_t>(m_fecDataShards),
+          static_cast<size_t>(m_fecDataShards), 32, 0),
+      };
+    }
+    if (m_fecParityShards == 1) {
+      // FEC protects the already-encrypted UAV item, so this bound includes
+      // the VideoPacket and AES-GCM envelope overhead above the 3600-byte
+      // plaintext media payload. It does not change packetization or rate.
+      definition.fec = ndn_service_framework::LiveStreamFecOptions::xorOneRepair(
+        static_cast<size_t>(m_fecDataShards), 7000, 500);
+    }
+    {
+      ndn_service_framework::StreamConfig sc;
+      sc.streamId = m_streamId;
+      sc.dataPrefix = definition.semanticDataPrefix;
+      sc.samplePeriodMs = static_cast<double>(m_streamDescriptor.samplePeriodMs);
+      sc.sampleClasses = definition.sampleClasses;
+      sc.fec = definition.fec;
+      sc.sessionEpoch = m_streamSessionEpoch;
+      sc.advanced.mappingBlockCapacity = definition.mappingBlockCapacity;
+      sc.advanced.mappingAheadBlocks = definition.mappingAheadBlocks;
+      sc.advanced.retainedItems = definition.retainedItems;
+      sc.advanced.maxNameReservations = definition.maxNameReservations;
+      sc.advanced.maxPendingInterests = definition.maxPendingInterests;
+      m_streamPublisher = m_serviceProvider.createStream(sc);
+    }
+    m_coreStreamDescriptor = m_streamPublisher->start();
+    applyCorePredictiveStreamDescriptor(
+      m_streamDescriptor, *m_coreStreamDescriptor);
+    NDN_LOG_INFO("STREAM_API_ACTIVE role=provider mode=predictive"
+                 << " stream=" << m_streamId
+                 << " epoch=" << m_streamSessionEpoch);
+    m_retentionStorageCircuitOpen = false;
+    m_nonceGuard = std::make_unique<UavVideoNonceUseGuard>(m_streamDescriptor);
+  }
+
+  void
+  clearProtectedSessionLocked()
+  {
+    m_streaming = false;
+    std::fill(m_streamDescriptor.streamKey.begin(), m_streamDescriptor.streamKey.end(), 0);
+    std::fill(m_streamDescriptor.nonceSalt.begin(), m_streamDescriptor.nonceSalt.end(), 0);
+    if (m_nonceGuard) {
+      m_nonceGuard->closeForUncertainUse();
+    }
+    m_nonceGuard.reset();
+    if (m_streamPublisher) {
+      m_streamPublisher->stop();
+    }
+    if (m_recordingPacketFeed) m_recordingPacketFeed->close();
+    m_recordingPacketFeed.reset();
+    m_streamPublisher.reset();
+    m_coreStreamDescriptor.reset();
+    m_videoSampleClassSchedule.reset();
+    m_readiness.reset();
+    m_streamDescriptor = VideoStreamDescriptor{};
+  }
+
+  static uint64_t
+  fieldAsUint64(const Fields& fields, const std::string& key, uint64_t fallback)
+  {
+    try {
+      return std::stoull(fieldOr(fields, key, std::to_string(fallback)));
+    }
+    catch (const std::exception&) {
+      return fallback;
+    }
+  }
+
+  std::string
+  startFingerprintLocked() const
+  {
+    return std::to_string(m_targetFps.load()) + "|" +
+      std::to_string(m_requestedBitrateKbps.load()) + "|" +
+      std::to_string(m_requestedFrameWidth.load()) + "|" +
+      std::to_string(m_fecParityShards);
+  }
+
+  void
+  refreshDescriptorSnapshotLocked()
+  {
+    if (!m_readiness.ready() || !m_streamPublisher ||
+        !m_coreStreamDescriptor) {
+      throw std::logic_error("live video descriptor requested before readiness");
+    }
+    const auto status = m_streamPublisher->status();
+    if (status.state !=
+        ndn_service_framework::LiveStreamLifecycleState::Active) {
+      throw std::logic_error(
+        "predictive stream is not active: " + status.reason);
+    }
+    m_coreStreamDescriptor->checkpoint.initialSampleId =
+      m_readiness.latestJoinCursor();
+    m_coreStreamDescriptor->checkpoint.oldestRetainedSampleId =
+      status.frontiers.oldestRetained;
+    m_coreStreamDescriptor->checkpoint.latestProducedSampleId =
+      status.frontiers.latestProduced;
+    m_coreStreamDescriptor->checkpoint.nextExpectedSampleId =
+      std::max(status.frontiers.nextReserved,
+               status.frontiers.latestProduced + 1);
+    m_coreStreamDescriptor->measuredSamplePeriodMs =
+      static_cast<double>(m_readiness.samplePeriodMs());
+    applyCorePredictiveStreamDescriptor(
+      m_streamDescriptor, *m_coreStreamDescriptor);
+    const auto joinMedia = m_mediaSequenceByCursor.find(
+      m_coreStreamDescriptor->checkpoint.initialSampleId);
+    if (joinMedia == m_mediaSequenceByCursor.end()) {
+      throw std::logic_error("live video join cursor lacks media sequence binding");
+    }
+    m_streamDescriptor.extensions["latest_join_media_sequence"] =
+      std::to_string(joinMedia->second);
+    if (m_recordingRepo) {
+      auto redacted = decodeFields(encodeVideoStreamDescriptor(m_streamDescriptor));
+      redacted.erase("stream_key_hex");
+      redacted.erase("nonce_salt_hex");
+      std::lock_guard<std::mutex> retentionGuard(m_retentionMutex);
+      m_retentionManifest.redactedStreamDescriptor = std::move(redacted);
+    }
+    // Canonical encode is also the final invariant check before key disclosure.
+    (void)encodeVideoStreamDescriptor(m_streamDescriptor);
   }
 
   Fields
-  start(const Fields& requestFields)
+  makeStartFailureFieldsLocked(const std::string& reason) const
   {
-    std::lock_guard<std::mutex> guard(m_mutex);
-    ++m_streamSessionEpoch;
-    m_targetFps = std::clamp<uint64_t>(
-      std::stoull(fieldOr(requestFields, "fps", "30")), 1, 60);
-    m_requestedBitrateKbps = std::max<uint64_t>(
-      1, std::stoull(fieldOr(requestFields, "requested_bitrate_kbps",
-                             fieldOr(requestFields, "target_bitrate_kbps", "8000"))));
-    m_acceptedBitrateKbps = std::clamp<uint64_t>(
-      m_requestedBitrateKbps.load(), MIN_VIDEO_BITRATE_KBPS, MAX_VIDEO_BITRATE_KBPS);
-    auto requestedWidth = std::clamp<uint64_t>(
-      std::stoull(fieldOr(requestFields, "requested_frame_width", "480")),
-      MIN_VIDEO_FRAME_WIDTH, MAX_VIDEO_FRAME_WIDTH);
-    if (requestedWidth % 2 != 0) {
-      --requestedWidth;
-    }
-    m_requestedFrameWidth = requestedWidth;
-    m_acceptedFrameWidth = requestedWidth;
-    m_encoderQuality = qualityForBitrate(m_acceptedBitrateKbps);
-    m_fecDataShards = defaultFecDataShardsForBitrate(m_acceptedBitrateKbps.load());
-    m_fecParityShards = parseVideoFecParityShards(requestFields);
-    m_restartEncoder = true;
-    ensureFrameFilterRegistered();
-    m_streamId = "stream-" + std::to_string(nowMilliseconds());
-    m_streamPrefix = ndn::Name(m_videoPrefix).append(m_streamId);
-    m_nextSeq = 0;
-    m_nextPacketSeq = 0;
-    m_nextFecFrameSeq = 0;
-    m_packets.clear();
-    m_order.clear();
-    m_pending.clear();
-    m_fecPendingChunks.clear();
-    m_fecCurrentFrameStartMs = 0;
-    m_jpegBuffer.clear();
-    m_streaming = true;
-    m_captureEnabled = true;
-    const auto startSecond = nowMilliseconds() / 1000;
     return {
+      {"status", "failed"},
+      {"drone_id", m_droneId},
+      {"reason", reason},
+      {"camera_available", cameraAvailable() ? "true" : "false"},
+      {"camera_source", cameraSource()},
+      {"camera_reason", cameraReason()},
+      {"timestamp_ms", std::to_string(nowMilliseconds())},
+    };
+  }
+
+  Fields
+  makeStartResponseFieldsLocked() const
+  {
+    auto fields = decodeFields(encodeVideoStreamDescriptor(m_streamDescriptor));
+    fields.insert({
       {"status", "streaming"},
       {"drone_id", m_droneId},
       {"capture", isCapturing() ? "on" : "off"},
@@ -1536,9 +1969,6 @@ public:
       {"recording_object_prefix", m_cameraOptions.recordObjectPrefix},
       {"recording_chunks", std::to_string(m_recordingChunks.load())},
       {"recording_bytes", std::to_string(m_recordingBytes.load())},
-      {"stream_id", m_streamId},
-      {"stream_session_epoch", std::to_string(m_streamSessionEpoch)},
-      {"stream_prefix", m_streamPrefix.toUri()},
       {"fps", std::to_string(m_targetFps)},
       {"requested_bitrate_kbps", std::to_string(m_requestedBitrateKbps)},
       {"accepted_bitrate_kbps", std::to_string(m_acceptedBitrateKbps)},
@@ -1547,22 +1977,144 @@ public:
       {"encoder_quality", std::to_string(m_encoderQuality)},
       {"requested_frame_width", std::to_string(m_requestedFrameWidth)},
       {"accepted_frame_width", std::to_string(m_acceptedFrameWidth)},
-      {"start_second", std::to_string(startSecond)},
-      {"next_packet", "0"},
       {"encoding", "video/h264"},
-      {"stream_format", "stream-start-time/packetSeq with stream-chunk metadata"},
+      {"stream_format", "semantic-name-map+aead-video-packet-v1"},
       {"fec_data_shards", std::to_string(m_fecDataShards)},
       {"fec_parity_shards", std::to_string(m_fecParityShards)},
       {"frame_width", std::to_string(m_acceptedFrameWidth)},
       {"max_payload_bytes", std::to_string(MAX_VIDEO_PACKET_PAYLOAD)},
       {"streaming_model", "h264-low-latency-packet-stream"},
-      {"prefetch_hint", "budget-from-bitrate"},
+      {"prefetch_hint", "ahead-mapped"},
       {"source", m_videoPath},
       {"camera_available", cameraAvailable() ? "true" : "false"},
       {"camera_source", cameraSource()},
       {"camera_reason", cameraReason()},
       {"timestamp_ms", std::to_string(nowMilliseconds())},
+    });
+    return fields;
+  }
+
+  Fields
+  start(const Fields& requestFields)
+  {
+    std::unique_lock<std::mutex> guard(m_mutex);
+    const auto requestedFps = std::clamp<uint64_t>(
+      std::stoull(fieldOr(requestFields, "fps", "30")), 1, 60);
+    const auto requestedBitrate = std::max<uint64_t>(
+      1, std::stoull(fieldOr(requestFields, "requested_bitrate_kbps",
+                             fieldOr(requestFields, "target_bitrate_kbps", "8000"))));
+    const auto acceptedBitrate = std::clamp<uint64_t>(
+      requestedBitrate, MIN_VIDEO_BITRATE_KBPS, MAX_VIDEO_BITRATE_KBPS);
+    auto requestedWidth = std::clamp<uint64_t>(
+      std::stoull(fieldOr(requestFields, "requested_frame_width", "480")),
+      MIN_VIDEO_FRAME_WIDTH, MAX_VIDEO_FRAME_WIDTH);
+    if (requestedWidth % 2 != 0) {
+      --requestedWidth;
+    }
+    const auto requestedParity = parseVideoFecParityShards(requestFields);
+    auto refreshForLateViewer = [this, &guard, &requestFields]() -> Fields {
+      m_readiness.reset();
+      m_restartEncoder = true;
+      NDN_LOG_INFO("CAMERA_VIEWER_SAFE_JOIN_REQUESTED stream_id=" << m_streamId
+                   << " join=next-encoder-idr");
+      const auto timeoutMs = std::clamp<uint64_t>(
+        fieldAsUint64(requestFields, "readiness_timeout_ms", 4000), 500, 10000);
+      const auto deadline = std::chrono::steady_clock::now() +
+                            std::chrono::milliseconds(timeoutMs);
+      const auto ready = m_readinessCv.wait_until(
+        guard, deadline,
+        [this] { return !m_streaming.load() || m_readiness.ready(); });
+      if (!ready || !m_streaming.load() || !m_readiness.ready()) {
+        return makeStartFailureFieldsLocked("viewer-safe-join-timeout");
+      }
+      refreshDescriptorSnapshotLocked();
+      NDN_LOG_INFO("CAMERA_VIEWER_SAFE_JOIN_READY stream_id=" << m_streamId
+                   << " safe_join_cursor=" << m_readiness.latestJoinCursor());
+      return makeStartResponseFieldsLocked();
     };
+    if (m_streaming.load() && m_recordingRepo) {
+      if (requestedFps == m_targetFps.load() &&
+          requestedBitrate == m_requestedBitrateKbps.load() &&
+          requestedWidth == m_requestedFrameWidth.load() &&
+          requestedParity == m_fecParityShards && m_readiness.ready()) {
+        // Keep the canonical session, but do not return an old delta-frame
+        // frontier. Wait until the restarted encoder publishes a Mapping-
+        // covered SPS/PPS/IDR boundary and return that cursor.
+        return refreshForLateViewer();
+      }
+      return makeStartFailureFieldsLocked(
+        "retention-session-active-reconfiguration-rejected");
+    }
+    m_targetFps = requestedFps;
+    m_requestedBitrateKbps = requestedBitrate;
+    m_acceptedBitrateKbps = acceptedBitrate;
+    m_requestedFrameWidth = requestedWidth;
+    m_acceptedFrameWidth = requestedWidth;
+    m_encoderQuality = qualityForBitrate(m_acceptedBitrateKbps);
+    m_fecDataShards = defaultFecDataShardsForBitrate(m_acceptedBitrateKbps.load());
+    m_fecParityShards = requestedParity;
+    const auto fingerprint = startFingerprintLocked();
+    if (m_streaming.load() && m_readiness.ready() &&
+        fingerprint == m_activeStartFingerprint) {
+      return refreshForLateViewer();
+    }
+    clearProtectedSessionLocked();
+    m_restartEncoder = true;
+    m_nextSeq = 0;
+    m_nextFecFrameSeq = 0;
+    m_nextMediaSequence = 0;
+    m_fecPendingChunks.clear();
+    m_fecCurrentFrameStartMs = 0;
+    m_jpegBuffer.clear();
+    m_readiness.reset();
+    m_activeStartFingerprint = fingerprint;
+    try {
+      initializeProtectedSessionLocked();
+    }
+    catch (const std::exception& e) {
+      NDN_LOG_ERROR("VIDEO_SESSION_INITIALIZATION_FAILED reason=" << e.what());
+      clearProtectedSessionLocked();
+      return makeStartFailureFieldsLocked(std::string("session-initialization-failed:") + e.what());
+    }
+    m_streaming = true;
+    m_captureEnabled = true;
+
+    const auto readinessTimeoutMs = std::clamp<uint64_t>(
+      fieldAsUint64(requestFields, "readiness_timeout_ms", 4000), 500, 10000);
+    const auto deadline = std::chrono::steady_clock::now() +
+      std::chrono::milliseconds(readinessTimeoutMs);
+    const auto ready = m_readinessCv.wait_until(
+      guard, deadline,
+      [this] {
+        return !m_streaming.load() || m_readiness.ready() ||
+               (m_streamPublisher &&
+                m_streamPublisher->status().state ==
+                  ndn_service_framework::LiveStreamLifecycleState::Failed);
+      });
+    if (!ready || !m_streaming.load() || !m_readiness.ready() ||
+        (m_streamPublisher &&
+         m_streamPublisher->status().state ==
+           ndn_service_framework::LiveStreamLifecycleState::Failed)) {
+      const auto reason = m_streamPublisher &&
+                          m_streamPublisher->status().state ==
+                            ndn_service_framework::LiveStreamLifecycleState::Failed ?
+        m_streamPublisher->status().reason : m_readiness.reason();
+      clearProtectedSessionLocked();
+      return makeStartFailureFieldsLocked("readiness-timeout:" + reason);
+    }
+    while (!m_coreStreamDescriptor && std::chrono::steady_clock::now() < deadline) {
+      try {
+        refreshDescriptorSnapshotLocked();
+      }
+      catch (const std::logic_error&) {
+        m_readinessCv.wait_for(guard, 10ms);
+      }
+    }
+    if (!m_coreStreamDescriptor) {
+      clearProtectedSessionLocked();
+      return makeStartFailureFieldsLocked("readiness-timeout:core-routes-not-ready");
+    }
+    return makeStartResponseFieldsLocked();
   }
 
   Fields
@@ -1577,18 +2129,44 @@ public:
     std::lock_guard<std::mutex> guard(m_mutex);
     const auto streamPacketsPublished = m_nextSeq.load();
     const auto fecGroupsPublished = m_nextFecFrameSeq.load();
+    const auto stoppedStreamId = m_streamId;
+    if (isRecording() && m_streaming.load() && !m_done.load()) {
+      return {
+        {"status", "viewer-detached-retention-active"},
+        {"drone_id", m_droneId}, {"reason", reason},
+        {"publication_state", "active"}, {"live_consumption_state", "detached"},
+        {"retention_state", m_retentionFailures.load() == 0 ? "active" : "degraded"},
+        {"stream_id", stoppedStreamId},
+        {"recording_session_id", m_recordingSessionId},
+        {"timestamp_ms", std::to_string(nowMilliseconds())},
+      };
+    }
+    if (m_streamPublisher) {
+      const auto coreStatus = m_streamPublisher->status();
+      NDN_LOG_INFO("VIDEO_LIVE_STREAM_CORE_FINAL"
+                   << " stream_id=" << stoppedStreamId
+                   << " pending_interests=" << coreStatus.pendingInterests
+                   << " provider_future_interests="
+                   << coreStatus.providerFutureInterests
+                   << " provider_future_hits=" << coreStatus.providerFutureHits
+                   << " future_hit_ratio="
+                   << (coreStatus.providerFutureInterests == 0 ? 0.0 :
+                     static_cast<double>(coreStatus.providerFutureHits) /
+                     static_cast<double>(coreStatus.providerFutureInterests)));
+    }
     m_streaming = false;
     if (!m_cameraOptions.captureOnStart && !m_cameraOptions.recordToLocalRepo) {
       m_captureEnabled = false;
     }
-    m_pending.clear();
-    m_packets.clear();
-    m_order.clear();
     m_fecPendingChunks.clear();
     m_fecCurrentFrameStartMs = 0;
     m_nextFecFrameSeq = 0;
+    m_nextMediaSequence = 0;
+    m_mediaSequenceByCursor.clear();
     m_jpegBuffer.clear();
     m_restartEncoder = true;
+    clearProtectedSessionLocked();
+    m_activeStartFingerprint.clear();
     return {
       {"status", "stopped"},
       {"drone_id", m_droneId},
@@ -1599,7 +2177,7 @@ public:
       {"recording_object_prefix", m_cameraOptions.recordObjectPrefix},
       {"recording_chunks", std::to_string(m_recordingChunks.load())},
       {"recording_bytes", std::to_string(m_recordingBytes.load())},
-      {"stream_id", m_streamId},
+      {"stream_id", stoppedStreamId},
       {"stream_packets_published", std::to_string(streamPacketsPublished)},
       {"fec_groups_published", std::to_string(fecGroupsPublished)},
       {"frames_published", std::to_string(fecGroupsPublished)},
@@ -1625,7 +2203,8 @@ public:
   bool
   isRecording() const
   {
-    return m_cameraOptions.recordToLocalRepo && m_recordingRepo != nullptr;
+    return m_cameraOptions.recordToLocalRepo && m_recordingRepo != nullptr &&
+      m_retentionActive.load();
   }
 
   bool
@@ -1724,32 +2303,278 @@ public:
   Fields
   recordingManifestFields() const
   {
-    const auto chunks = recordingChunks();
-    Fields fields{
-      {"type", "camera-recording-manifest"},
+    if (m_legacyRecordingDetected) {
+      return {{"type", "unsupported-legacy-recording"},
+              {"drone_id", m_droneId},
+              {"recording_repo_path", recordingRepoPath()},
+              {"action", "export-with-pre-spec120-or-delete-old-repo"}};
+    }
+    Fields fields;
+    {
+      std::lock_guard<std::mutex> guard(m_retentionMutex);
+      const auto* manifest = m_retentionManifest.complete ? &m_retentionManifest :
+        (m_latestCompletedManifest ? &*m_latestCompletedManifest : &m_retentionManifest);
+      if (!manifest->recordingId.empty() &&
+          !manifest->signerCertificateName.empty()) {
+        try {
+          fields = manifest->toFields();
+        }
+        catch (const std::exception& e) {
+          // An empty recording has no committed cursor range yet. Report its
+          // lifecycle without advertising an invalid durable manifest.
+          NDN_LOG_WARN("CAMERA_CANONICAL_MANIFEST_SNAPSHOT_PENDING recording_id="
+                       << manifest->recordingId << " reason=" << e.what());
+        }
+      }
+    }
+    fields.insert({
+      {"type", fields.empty() ? "canonical-video-recording-pending" :
+                                "canonical-video-recording-manifest"},
       {"drone_id", m_droneId},
       {"capture", isCapturing() ? "on" : "off"},
       {"recording", isRecording() ? "on" : "off"},
       {"recording_session_id", m_recordingSessionId},
       {"recording_object_prefix", m_cameraOptions.recordObjectPrefix},
-      {"recording_object_pattern",
-       m_cameraOptions.recordObjectPrefix + "/" + m_recordingSessionId + "/chunk/<index>"},
-      {"recording_chunks", std::to_string(chunks)},
+      {"recording_object_type", "application/ndn-data"},
+      {"recording_packets", std::to_string(recordingChunks())},
       {"recording_bytes", std::to_string(recordingBytes())},
-      {"recording_object_type", "video/h264-chunk"},
-      {"recording_encryption", isRecording() ? "hybrid-aes-256-gcm-at-rest" : "none"},
-      {"recording_encryption_key_id", m_recordingKeyId},
-      {"recording_encryption_content_key_hex", recordingContentKeyHex()},
-      {"recording_encryption_access", "NDNSF user permission on recording manifest service"},
+      {"retention_queue_packets", std::to_string(m_retentionQueuePackets.load())},
+      {"retention_queue_bytes", std::to_string(m_retentionQueueBytes.load())},
+      {"retention_gap_packets", std::to_string(m_retentionGapPackets.load())},
+      {"retention_failures", std::to_string(m_retentionFailures.load())},
+      {"retention_storage_circuit",
+       m_retentionStorageCircuitOpen.load() ? "open" : "closed"},
+      {"retention_checkpoint_cursor", std::to_string(m_retentionCheckpointCursor.load())},
+      {"publication_state", m_streaming.load() ? "active" : "stopped"},
+      {"live_consumption_state", "externally-observed"},
+      {"retention_state", !m_recordingRepo ? "disabled" :
+        (!m_retentionActive.load() ? "stopped" :
+         (m_retentionFailures.load() == 0 ? "active" : "degraded"))},
+      {"media_encryption", "canonical-live-stream-epoch-key"},
       {"timestamp_ms", std::to_string(nowMilliseconds())},
-    };
-    if (chunks > 0) {
-      fields["first_chunk_object"] = m_cameraOptions.recordObjectPrefix + "/" +
-        m_recordingSessionId + "/chunk/0";
-      fields["last_chunk_object"] = m_cameraOptions.recordObjectPrefix + "/" +
-        m_recordingSessionId + "/chunk/" + std::to_string(chunks - 1);
-    }
+    });
     return fields;
+  }
+
+  Fields
+  recordingManifestFieldsFor(const ndn::Name& requesterIdentity) const
+  {
+    auto fields = recordingManifestFields();
+    if (requesterIdentity.empty()) return fields;
+    VideoStreamDescriptor descriptor;
+    bool useCurrent = false;
+    {
+      std::lock_guard<std::mutex> retentionGuard(m_retentionMutex);
+      if (m_retentionManifest.complete) {
+        useCurrent = true;
+      }
+      else if (m_latestCompletedManifest && m_latestCompletedDescriptor) {
+        descriptor = *m_latestCompletedDescriptor;
+      }
+      else {
+        return fields;
+      }
+    }
+    if (useCurrent) {
+      std::lock_guard<std::mutex> stateGuard(m_mutex);
+      descriptor = m_streamDescriptor;
+    }
+    if (descriptor.streamKey.size() != 32 || descriptor.nonceSalt.size() != 4)
+      return fields;
+    UavVideoContentKeyGrant grant;
+    grant.recipientIdentity = requesterIdentity.toUri();
+    grant.providerIdentity = descriptor.providerIdentity;
+    grant.serviceName = descriptor.serviceName;
+    grant.permission = ndn::Name("/PERMISSION")
+      .append(descriptor.serviceName).append("history").toUri();
+    grant.streamId = descriptor.streamId;
+    grant.sessionEpoch = descriptor.sessionEpoch;
+    grant.keyEpoch = descriptor.keyEpoch;
+    grant.protectedKeyMaterial = descriptor.streamKey;
+    grant.protectedNonceSalt = descriptor.nonceSalt;
+    grant.issuedMs = nowMilliseconds();
+    grant.expiresMs = grant.issuedMs + 3600 * 1000;
+    const auto grantFields = grant.toProtectedFields();
+    for (const auto& [key, value] : grantFields) fields[key] = value;
+    fields["grant_transport"] = "protected-ndnsf-response-only";
+    return fields;
+  }
+
+  Fields
+  startRetention()
+  {
+    std::lock_guard<std::mutex> lifecycleGuard(m_retentionLifecycleMutex);
+    if (!m_recordingRepo) return {{"status", "retention-disabled"}};
+    if (m_retentionActive.load()) {
+      return {{"status", "retention-already-active"},
+              {"recording_session_id", m_recordingSessionId}};
+    }
+
+    std::lock_guard<std::mutex> stateGuard(m_mutex);
+    if (m_retentionActive.load()) {
+      return {{"status", "retention-already-active"},
+              {"recording_session_id", m_recordingSessionId}};
+    }
+    if (!m_livePublisher || !m_streaming.load()) {
+      return {{"status", "retention-start-rejected"},
+              {"reason", "canonical-publication-not-active"}};
+    }
+
+    CanonicalVideoRecordingManifest evidence;
+    {
+      std::lock_guard<std::mutex> retentionGuard(m_retentionMutex);
+      if (m_latestCompletedManifest) evidence = *m_latestCompletedManifest;
+      else evidence = m_retentionManifest;
+    }
+    if (evidence.signerCertificateName.empty() ||
+        evidence.keyAuthorizationObject.empty() ||
+        evidence.archivedCertificateObjects.empty()) {
+      return {{"status", "retention-start-rejected"},
+              {"reason", "archived-trust-evidence-unavailable"}};
+    }
+
+    const auto fromCursor = m_nextSeq.load();
+    const auto startedMs = nowMilliseconds();
+    m_recordingSessionId = "record-" + m_streamId + "-" +
+                           std::to_string(startedMs);
+    CanonicalVideoRecordingManifest manifest;
+    manifest.recordingId = m_recordingSessionId;
+    manifest.streamId = m_streamId;
+    manifest.sessionEpoch = m_streamSessionEpoch;
+    manifest.mappingVersion = m_streamDescriptor.mappingVersion;
+    manifest.keyEpoch = m_streamDescriptor.keyEpoch;
+    manifest.providerIdentity = m_streamDescriptor.providerIdentity;
+    manifest.serviceName = m_streamDescriptor.serviceName;
+    manifest.redactedStreamDescriptor = decodeFields(
+      encodeVideoStreamDescriptor(m_streamDescriptor));
+    manifest.redactedStreamDescriptor.erase("stream_key_hex");
+    manifest.redactedStreamDescriptor.erase("nonce_salt_hex");
+    manifest.startedMs = startedMs;
+    manifest.signerCertificateName = evidence.signerCertificateName;
+    manifest.signerCertificateDigest = evidence.signerCertificateDigest;
+    manifest.archivedCertificateObjects = evidence.archivedCertificateObjects;
+    manifest.trustPolicyVersion = evidence.trustPolicyVersion;
+    manifest.keyAuthorizationObject = evidence.keyAuthorizationObject;
+    manifest.packetCatalogPrefix = ndn::Name(m_cameraOptions.recordObjectPrefix)
+      .append(m_recordingSessionId).append("CATALOG");
+
+    ndn_service_framework::PublishedPacketFeedOptions feedOptions;
+    feedOptions.fromCursor = fromCursor;
+    feedOptions.maxQueuedPackets = 512;
+    feedOptions.maxQueuedBytes = 16 * 1024 * 1024;
+    auto feed = m_livePublisher->openPublishedPacketFeed(feedOptions);
+    {
+      std::lock_guard<std::mutex> retentionGuard(m_retentionMutex);
+      m_retentionManifest = std::move(manifest);
+      m_retentionCatalogHead.fill(0);
+      m_retainedMappingContentDigests.clear();
+      m_retentionHasSource = false;
+      m_lastObservedFeedDrops = 0;
+    }
+    m_recordingChunks = 0;
+    m_recordingBytes = 0;
+    m_retentionQueuePackets = 0;
+    m_retentionQueueBytes = 0;
+    m_retentionGapPackets = 0;
+    m_retentionFailures = 0;
+    m_retentionStorageCircuitOpen = false;
+    m_retentionCheckpointCursor = fromCursor;
+    m_recordingPacketFeed = std::move(feed);
+    m_retentionActive = true;
+
+    // The feed is attached before the restart fence. Therefore the first
+    // retained source cursor is Mapping-covered and begins with fresh
+    // SPS/PPS/IDR bytes, while the canonical publisher and live consumers
+    // remain the same session.
+    m_restartEncoder = true;
+    NDN_LOG_INFO("CAMERA_CANONICAL_RETENTION_STARTED recording_id="
+                 << m_recordingSessionId << " from_cursor=" << fromCursor
+                 << " join=next-encoder-idr");
+    return {{"status", "retention-started"},
+            {"recording_session_id", m_recordingSessionId},
+            {"retention_start_cursor", std::to_string(fromCursor)}};
+  }
+
+  Fields
+  finalizeRetention()
+  {
+    std::lock_guard<std::mutex> lifecycleGuard(m_retentionLifecycleMutex);
+    if (!m_recordingRepo) return {{"status", "retention-disabled"}};
+    if (!m_retentionActive.exchange(false)) {
+      return {{"status", "retention-already-stopped"},
+              {"recording_session_id", m_recordingSessionId}};
+    }
+    std::shared_ptr<ndn_service_framework::PublishedPacketFeed> feed;
+    {
+      std::lock_guard<std::mutex> guard(m_mutex);
+      feed = m_recordingPacketFeed;
+    }
+    if (feed) feed->close();
+    const auto deadline = std::chrono::steady_clock::now() + 10s;
+    while (feed &&
+           (feed->status().queuedPackets != 0 || m_retentionWorkerBusy.load()) &&
+           std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::sleep_for(5ms);
+    }
+    if (feed &&
+        (feed->status().queuedPackets != 0 || m_retentionWorkerBusy.load())) {
+      recordRetentionGap(m_retentionCheckpointCursor.load(),
+                         m_retentionCheckpointCursor.load(),
+                         "retention-finalize-drain-timeout");
+      return {{"status", "retention-finalize-drain-timeout"},
+              {"recording_session_id", m_recordingSessionId},
+              {"retention_checkpoint_cursor",
+               std::to_string(m_retentionCheckpointCursor.load())}};
+    }
+    {
+      std::lock_guard<std::mutex> guard(m_mutex);
+      if (m_recordingPacketFeed == feed) m_recordingPacketFeed.reset();
+    }
+    {
+      std::lock_guard<std::mutex> guard(m_retentionMutex);
+      if (!m_retentionHasSource || m_retentionManifest.packetCatalogEntries == 0) {
+        NDN_LOG_INFO("CAMERA_CANONICAL_RETENTION_FINALIZED_EMPTY recording_id="
+                     << m_recordingSessionId);
+        return {{"status", "retention-finalized-empty"},
+                {"recording_session_id", m_recordingSessionId},
+                {"retention_checkpoint_cursor",
+                 std::to_string(m_retentionCheckpointCursor.load())}};
+      }
+    }
+    const auto descriptor = freezeArchivedDescriptorSnapshot();
+    persistCanonicalManifest(true);
+    if (const auto* rotate = std::getenv("NDNSF_UAV_ARCHIVED_TRUST_REPLAY_TEST");
+        rotate != nullptr && std::string(rotate) == "1") {
+      const auto identityName = droneIdentity(m_config, m_droneId);
+      const auto oldCertificate = m_signingInfo.getSignerName();
+      auto identity = m_keyChain.getPib().getIdentity(identityName);
+      auto rotatedKey = m_keyChain.createKey(identity, ndn::EcKeyParams());
+      const auto rotatedCertificate = rotatedKey.getDefaultCertificate();
+      {
+        std::lock_guard<std::mutex> signGuard(m_signMutex);
+        m_signingInfo = ndn::security::signingByCertificate(rotatedCertificate);
+      }
+      NDN_LOG_INFO("CAMERA_ARCHIVED_TRUST_CERTIFICATE_ROTATED old_certificate="
+                   << oldCertificate << " current_certificate="
+                   << rotatedCertificate.getName()
+                   << " archived_packets=unchanged");
+    }
+    {
+      std::lock_guard<std::mutex> guard(m_retentionMutex);
+      if (m_retentionManifest.complete) {
+        m_latestCompletedManifest = m_retentionManifest;
+        m_latestCompletedDescriptor = descriptor;
+      }
+      NDN_LOG_INFO("CAMERA_CANONICAL_RETENTION_FINALIZED recording_id="
+                   << m_retentionManifest.recordingId
+                   << " complete=" << (m_retentionManifest.complete ? "true" : "false")
+                   << " packets=" << m_retentionManifest.packetCatalogEntries
+                   << " gaps=" << m_retentionManifest.gaps.size());
+    }
+    return {{"status", "retention-finalized"},
+            {"recording_session_id", m_recordingSessionId},
+            {"retention_checkpoint_cursor",
+             std::to_string(m_retentionCheckpointCursor.load())}};
   }
 
   Fields
@@ -1766,7 +2591,7 @@ public:
       {"recording_chunks", std::to_string(recordingChunks())},
       {"recording_bytes", std::to_string(recordingBytes())},
       {"recording_last_update_ms", std::to_string(recordingLastUpdateMs())},
-      {"recording_chunk_limit", std::to_string(m_cameraOptions.recordChunkLimit)},
+      {"retention_packet_limit", std::to_string(m_cameraOptions.recordPacketLimit)},
       {"timestamp_ms", std::to_string(nowMilliseconds())},
     };
   }
@@ -1809,32 +2634,40 @@ public:
   }
 
   std::vector<uint8_t>
-  recordingChunk(const std::string& objectName) const
+  archivedPacketWire(const std::string& objectName) const
   {
-    if (!isRecording() || objectName.empty() || !m_recordingRepo) {
+    // Historical replay is expected after retention has been finalized.
+    // Authorization comes from the manifest/key grant and integrity from the
+    // committed catalog digest, not from the current recording lifecycle.
+    if (objectName.empty() || !m_recordingRepo) {
       return {};
+    }
+    {
+      // The archive producer is registered below the provider prefix so it
+      // sees unrelated Interests too.  Reject names outside the committed
+      // recording catalog before touching SQLite or producing warning noise.
+      std::lock_guard<std::mutex> guard(m_retentionMutex);
+      if (m_committedPacketDigests.find(ndn::Name(objectName)) ==
+          m_committedPacketDigests.end()) {
+        return {};
+      }
     }
     try {
-      return decryptRecordingChunk(objectName, m_recordingRepo->get(objectName));
+      const auto wire = m_recordingRepo->get(objectName);
+      const auto digest = ndn_service_framework::computeStreamContentDigest(
+        ndn::span<const uint8_t>(wire.data(), wire.size()));
+      {
+        std::lock_guard<std::mutex> guard(m_retentionMutex);
+        const auto expected = m_committedPacketDigests.find(ndn::Name(objectName));
+        if (expected == m_committedPacketDigests.end() || expected->second != digest) {
+          NDN_LOG_WARN("CAMERA_ARCHIVE_CATALOG_BINDING_REJECT name=" << objectName);
+          return {};
+        }
+      }
+      return wire;
     }
     catch (const std::exception& e) {
-      NDN_LOG_WARN("CAMERA_RECORD_CHUNK_GET_FAILED object=" << objectName
-                   << " reason=" << e.what());
-      return {};
-    }
-  }
-
-  std::vector<uint8_t>
-  recordingChunkData(const std::string& objectName) const
-  {
-    if (!isRecording() || objectName.empty() || !m_recordingRepo) {
-      return {};
-    }
-    try {
-      return m_recordingRepo->get(objectName);
-    }
-    catch (const std::exception& e) {
-      NDN_LOG_WARN("CAMERA_RECORD_CHUNK_DATA_GET_FAILED object=" << objectName
+      NDN_LOG_WARN("CAMERA_ARCHIVE_DATA_GET_FAILED object=" << objectName
                    << " reason=" << e.what());
       return {};
     }
@@ -1920,68 +2753,19 @@ private:
   }
 
   void
-  onFrameInterest(const ndn::Interest& interest)
-  {
-    const auto interestCount = ++m_frameInterests;
-    if (interestCount <= 3 || interestCount % 30 == 0) {
-      NDN_LOG_INFO("VIDEO_FRAME_INTEREST count=" << interestCount
-                   << " name=" << interest.getName());
-    }
-    const auto& name = interest.getName();
-    if (name.size() < m_streamPrefix.size() + 1) {
-      return;
-    }
-
-    std::vector<uint8_t> packet;
-    {
-      std::lock_guard<std::mutex> guard(m_mutex);
-      if (!m_streaming.load() || !m_streamPrefix.isPrefixOf(name)) {
-        return;
-      }
-      const auto uri = name.toUri();
-      const auto it = m_packets.find(uri);
-      if (it != m_packets.end()) {
-        packet = it->second;
-      }
-      else {
-        m_pending[uri] = name;
-      }
-    }
-
-    if (!packet.empty()) {
-      putPacket(name, packet);
-    }
-  }
-
-  void
-  ensureFrameFilterRegistered()
-  {
-    if (m_filterRegistered) {
-      return;
-    }
-    m_face.setInterestFilter(
-      m_videoPrefix,
-      [this] (const auto&, const ndn::Interest& interest) {
-        this->onFrameInterest(interest);
-      },
-      [] (const ndn::Name&) {},
-      [] (const ndn::Name& prefix, const std::string& reason) {
-        NDN_LOG_WARN("VIDEO_PREFIX_REGISTER_FAILED prefix=" << prefix << " reason=" << reason);
-      });
-    m_filterRegistered = true;
-  }
-
-  void
   ensureRecordingFilterRegistered()
   {
     if (m_recordingFilterRegistered || m_cameraOptions.recordObjectPrefix.empty()) {
       return;
     }
-    const ndn::Name recordingPrefix(m_cameraOptions.recordObjectPrefix);
+    // One APP-owned fallback serves exact archived wires under their original
+    // Provider namespace. LiveStream remains authoritative for active/future
+    // packets; this path only answers objects already durable in Repo.
+    const ndn::Name recordingPrefix = droneIdentity(m_config, m_droneId);
     m_face.setInterestFilter(
       recordingPrefix,
       [this] (const auto&, const ndn::Interest& interest) {
-        this->onRecordingChunkInterest(interest);
+        this->onArchivedPacketInterest(interest);
       },
       [] (const ndn::Name&) {},
       [] (const ndn::Name& prefix, const std::string& reason) {
@@ -1991,76 +2775,197 @@ private:
     m_recordingFilterRegistered = true;
   }
 
+  static ndn::Data
+  decodeStoredData(const std::vector<uint8_t>& wire, const std::string& label)
+  {
+    auto [ok, block] = ndn::Block::fromBuffer(
+      ndn::span<const uint8_t>(wire.data(), wire.size()));
+    if (!ok) throw std::invalid_argument(label + " is not a complete TLV block");
+    try {
+      return ndn::Data(block);
+    }
+    catch (const std::exception& e) {
+      throw std::invalid_argument(label + " is not Data: " + e.what());
+    }
+  }
+
+  static Fields
+  decodeDataFields(const ndn::Data& data)
+  {
+    return decodeFields(std::string(
+      reinterpret_cast<const char*>(data.getContent().value()),
+      data.getContent().value_size()));
+  }
+
   void
-  onRecordingChunkInterest(const ndn::Interest& interest)
+  recoverLatestCompletedRecording()
+  {
+    std::optional<CanonicalVideoRecordingManifest> selected;
+    std::optional<ndn::Data> selectedData;
+    for (const auto& object : m_recordingRepo->list()) {
+      if (object.objectType != "application/ndn-data-manifest") continue;
+      try {
+        auto data = decodeStoredData(m_recordingRepo->get(object.objectName),
+                                     "recording manifest");
+        auto candidate = CanonicalVideoRecordingManifest::fromFields(
+          decodeDataFields(data));
+        if (!candidate.complete || !candidate.gaps.empty()) continue;
+        if (!selected || candidate.endedMs > selected->endedMs ||
+            (candidate.endedMs == selected->endedMs &&
+             candidate.manifestVersion > selected->manifestVersion)) {
+          selected = std::move(candidate);
+          selectedData = std::move(data);
+        }
+      }
+      catch (const std::exception&) {
+        // A torn/old manifest is not a candidate; the selected object below
+        // must independently pass all integrity checks.
+      }
+    }
+    if (!selected || !selectedData) return;
+
+    const auto certificateData = decodeStoredData(
+      m_recordingRepo->get(selected->archivedCertificateObjects.front().toUri()),
+      "archived signing certificate");
+    ndn::security::Certificate signingCertificate(certificateData);
+    const auto certificateWire = signingCertificate.wireEncode();
+    const auto certificateDigest = ndn_service_framework::computeStreamContentDigest(
+      ndn::span<const uint8_t>(certificateWire.begin(), certificateWire.size()));
+    if (signingCertificate.getName().toUri() != selected->signerCertificateName)
+      throw std::invalid_argument("archived manifest certificate name mismatch");
+    if (certificateDigest != selected->signerCertificateDigest)
+      throw std::invalid_argument("archived manifest certificate digest mismatch");
+    if (signingCertificate.getIdentity() != selected->providerIdentity)
+      throw std::invalid_argument("archived manifest certificate identity mismatch");
+    if (!ndn::security::verifySignature(
+          *selectedData,
+          std::optional<ndn::security::Certificate>{signingCertificate}))
+      throw std::invalid_argument("archived manifest signature mismatch");
+
+    const auto keyData = decodeStoredData(
+      m_recordingRepo->get(selected->keyAuthorizationObject.toUri()),
+      "epoch-key authorization");
+    if (keyData.getName() != selected->keyAuthorizationObject ||
+        !ndn::security::verifySignature(
+          keyData, std::optional<ndn::security::Certificate>{signingCertificate})) {
+      throw std::invalid_argument("epoch-key authorization signature mismatch");
+    }
+    const auto archive = decodeDataFields(keyData);
+    const auto recipientCertificateName = ndn::Name(
+      fieldOr(archive, "recipient_certificate", ""));
+    if (fieldOr(archive, "type", "") != "canonical-video-epoch-key-archive-v1" ||
+        fieldOr(archive, "algorithm", "") != "RSA-OAEP" ||
+        fieldOr(archive, "provider_identity", "") != selected->providerIdentity.toUri() ||
+        fieldOr(archive, "service_name", "") != selected->serviceName.toUri() ||
+        fieldOr(archive, "stream_id", "") != selected->streamId ||
+        fieldOr(archive, "session_epoch", "") != std::to_string(selected->sessionEpoch) ||
+        fieldOr(archive, "key_epoch", "") != std::to_string(selected->keyEpoch)) {
+      throw std::invalid_argument("epoch-key authorization binding mismatch");
+    }
+    const auto wrapped = hexDecode(fieldOr(archive, "wrapped_key_record_hex", ""));
+    auto plaintext = m_keyChain.getTpm().decrypt(
+      ndn::span<const uint8_t>(wrapped.data(), wrapped.size()),
+      ndn::security::extractKeyNameFromCertName(recipientCertificateName));
+    if (!plaintext) throw std::runtime_error("Provider cannot unwrap archived epoch key");
+    if (plaintext->size() != 36)
+      throw std::invalid_argument("unwrapped epoch-key record size mismatch");
+    auto descriptorFields = selected->redactedStreamDescriptor;
+    descriptorFields["stream_key_hex"] = hexEncode(std::vector<uint8_t>(
+      plaintext->begin(), plaintext->begin() + 32));
+    descriptorFields["nonce_salt_hex"] = hexEncode(std::vector<uint8_t>(
+      plaintext->begin() + 32, plaintext->end()));
+    auto descriptor = decodeVideoStreamDescriptorStrict(
+      encodeFields(descriptorFields), selected->providerIdentity,
+      selected->providerIdentity, selected->serviceName, selected->serviceName);
+    if (descriptor.streamKey.size() != 32 || descriptor.nonceSalt.size() != 4)
+      throw std::invalid_argument("unwrapped epoch-key size mismatch");
+
+    std::map<ndn::Name, ndn_service_framework::StreamContentDigest> recoveredDigests;
+    ndn_service_framework::StreamContentDigest previousCatalogDigest{};
+    for (uint64_t index = 0; index < selected->packetCatalogEntries; ++index) {
+      const auto catalogName = ndn::Name(selected->packetCatalogPrefix)
+        .appendSequenceNumber(index);
+      const auto catalogData = decodeStoredData(
+        m_recordingRepo->get(catalogName.toUri()), "packet catalog entry");
+      if (catalogData.getName() != catalogName ||
+          !ndn::security::verifySignature(
+            catalogData,
+            std::optional<ndn::security::Certificate>{signingCertificate}))
+        throw std::invalid_argument("packet catalog signature/name mismatch");
+      const auto catalogFields = decodeDataFields(catalogData);
+      const auto previous = hexDecode(
+        fieldOr(catalogFields, "previous_entry_digest", ""));
+      const auto packetDigestBytes = hexDecode(
+        fieldOr(catalogFields, "wire_digest", ""));
+      if (fieldOr(catalogFields, "type", "") !=
+            "canonical-video-packet-catalog-entry" ||
+          fieldOr(catalogFields, "recording_id", "") != selected->recordingId ||
+          fieldOr(catalogFields, "stream_id", "") != selected->streamId ||
+          fieldOr(catalogFields, "session_epoch", "") !=
+            std::to_string(selected->sessionEpoch) ||
+          fieldOr(catalogFields, "mapping_version", "") !=
+            std::to_string(selected->mappingVersion) ||
+          fieldOr(catalogFields, "entry_index", "") != std::to_string(index) ||
+          previous.size() != previousCatalogDigest.size() ||
+          !std::equal(previous.begin(), previous.end(), previousCatalogDigest.begin()) ||
+          packetDigestBytes.size() != previousCatalogDigest.size())
+        throw std::invalid_argument("packet catalog chain/binding mismatch");
+      const auto packetName = ndn::Name(fieldOr(catalogFields, "data_name", ""));
+      const auto packetWire = m_recordingRepo->get(packetName.toUri());
+      const auto packetData = decodeStoredData(packetWire, "canonical archived packet");
+      const auto packetDigest = ndn_service_framework::computeStreamContentDigest(
+        ndn::span<const uint8_t>(packetWire.data(), packetWire.size()));
+      ndn_service_framework::StreamContentDigest expectedPacketDigest{};
+      std::copy(packetDigestBytes.begin(), packetDigestBytes.end(),
+                expectedPacketDigest.begin());
+      if (packetData.getName() != packetName || packetDigest != expectedPacketDigest ||
+          !recoveredDigests.emplace(packetName, packetDigest).second)
+        throw std::invalid_argument("canonical archived packet digest/name mismatch");
+      const auto catalogWire = catalogData.wireEncode();
+      previousCatalogDigest = ndn_service_framework::computeStreamContentDigest(
+        ndn::span<const uint8_t>(catalogWire.begin(), catalogWire.size()));
+    }
+    if (previousCatalogDigest != selected->packetCatalogHeadDigest)
+      throw std::invalid_argument("packet catalog head digest mismatch");
+
+    std::lock_guard<std::mutex> guard(m_retentionMutex);
+    m_latestCompletedManifest = std::move(selected);
+    m_latestCompletedDescriptor = std::move(descriptor);
+    m_committedPacketDigests = std::move(recoveredDigests);
+    NDN_LOG_INFO("CAMERA_RECORDING_RECOVERED recording_id="
+                 << m_latestCompletedManifest->recordingId
+                 << " packets=" << m_latestCompletedManifest->packetCatalogEntries);
+  }
+
+  void
+  onArchivedPacketInterest(const ndn::Interest& interest)
   {
     const auto objectName = interest.getName().toUri();
     ndn_service_framework::ResponseMessage response;
     m_localRegistry.localInvokeRawInto(
-      m_localRecordingChunkServiceName, makeRequest(objectName), response,
+      m_localArchivedPacketServiceName, makeRequest(objectName), response,
       droneIdentity(m_config, m_droneId));
     const auto responsePayload = response.getPayload();
     std::vector<uint8_t> payload(responsePayload.begin(), responsePayload.end());
     if (payload.empty()) {
-      NDN_LOG_DEBUG("CAMERA_RECORDING_CHUNK_MISS object=" << objectName);
+      NDN_LOG_DEBUG("CAMERA_ARCHIVED_PACKET_MISS object=" << objectName);
       return;
     }
 
-    auto data = std::make_shared<ndn::Data>(interest.getName());
-    data->setFreshnessPeriod(2_s);
-    data->setContent(ndn::span<const uint8_t>(payload.data(), payload.size()));
-    {
-      std::lock_guard<std::mutex> guard(m_signMutex);
-      m_keyChain.sign(*data, m_signingInfo);
-    }
-    boost::asio::post(m_face.getIoContext(), [this, data] {
-      m_face.put(*data);
-    });
-  }
-
-  void
-  putPacket(const ndn::Name& name, const std::vector<uint8_t>& packet)
-  {
-    const auto putCount = ++m_framePuts;
-    if (putCount <= 3 || putCount % 30 == 0) {
-      NDN_LOG_INFO("VIDEO_PACKET_PUT count=" << putCount
-                   << " name=" << name
-                   << " bytes=" << packet.size());
-    }
-    auto data = std::make_shared<ndn::Data>(name);
-    data->setFreshnessPeriod(80_ms);
-    data->setContent(ndn::span<const uint8_t>(packet.data(), packet.size()));
-    {
-      std::lock_guard<std::mutex> guard(m_signMutex);
-      m_keyChain.sign(*data, m_signingInfo);
-    }
-    boost::asio::post(m_face.getIoContext(), [this, data] {
-      m_face.put(*data);
-    });
-  }
-
-  void
-  rememberPacket(const ndn::Name& name, const std::vector<uint8_t>& packet)
-  {
-    ndn::Name pendingName;
-    {
-      std::lock_guard<std::mutex> guard(m_mutex);
-      const auto uri = name.toUri();
-      m_packets[uri] = packet;
-      m_order.push_back(uri);
-      while (m_order.size() > 600) {
-        m_packets.erase(m_order.front());
-        m_order.pop_front();
+    try {
+      ndn::Block wire(ndn::span<const uint8_t>(payload.data(), payload.size()));
+      wire.parse();
+      ndn::Data data(wire);
+      if (data.getName() != interest.getName()) {
+        NDN_LOG_WARN("CAMERA_ARCHIVE_NAME_MISMATCH requested=" << interest.getName()
+                     << " stored=" << data.getName());
+        return;
       }
-      const auto pending = m_pending.find(uri);
-      if (pending != m_pending.end()) {
-        pendingName = pending->second;
-        m_pending.erase(pending);
-      }
+      m_face.put(data); // exact archived wire; no re-signing or re-encryption
     }
-
-    if (!pendingName.empty()) {
-      putPacket(pendingName, packet);
+    catch (const std::exception& e) {
+      NDN_LOG_WARN("CAMERA_ARCHIVE_WIRE_REJECT name=" << interest.getName()
+                   << " reason=" << e.what());
     }
   }
 
@@ -2070,227 +2975,478 @@ private:
     if (!m_streaming.load()) {
       return;
     }
-    if (m_fecPendingChunks.empty()) {
-      m_fecCurrentFrameStartMs = nowMs;
-    }
-    m_fecPendingChunks.push_back(std::move(chunk));
-
-    if (m_fecPendingChunks.size() >= m_fecDataShards ||
+    bool publish = false;
+    {
+      std::lock_guard<std::mutex> guard(m_mutex);
+      if (!m_streaming.load()) {
+        return;
+      }
+      if (m_fecPendingChunks.empty()) {
+        m_fecCurrentFrameStartMs = nowMs;
+      }
+      m_fecPendingChunks.push_back(std::move(chunk));
+      publish = m_fecPendingChunks.size() >= m_fecDataShards ||
         (m_fecCurrentFrameStartMs != 0 &&
-         nowMs >= m_fecCurrentFrameStartMs + m_fecFrameTimeoutMs)) {
+         nowMs >= m_fecCurrentFrameStartMs + m_fecFrameTimeoutMs);
+    }
+    if (publish) {
       publishCurrentFrame(nowMs);
     }
   }
 
   void
-  recordRawChunk(const uint8_t* data, size_t size, uint64_t captureMs)
+  ensureCanonicalRecordingSession()
   {
-    if (!isRecording() || data == nullptr || size == 0) {
-      return;
-    }
-    size_t offset = 0;
-    while (offset < size) {
-      const auto chunkSize = std::min<size_t>(MAX_VIDEO_PACKET_PAYLOAD, size - offset);
-      recordSingleRawChunk(data + offset, chunkSize, captureMs);
-      offset += chunkSize;
-    }
-  }
-
-  void
-  recordSingleRawChunk(const uint8_t* data, size_t size, uint64_t captureMs)
-  {
-    if (!isRecording() || data == nullptr || size == 0) {
-      return;
-    }
-    if (m_cameraOptions.recordChunkLimit != 0 &&
-        m_recordingChunks.load() >= m_cameraOptions.recordChunkLimit) {
-      return;
-    }
-    const auto index = m_recordingChunks.fetch_add(1);
-    if (m_cameraOptions.recordChunkLimit != 0 && index >= m_cameraOptions.recordChunkLimit) {
-      return;
-    }
-
-    const auto objectName = m_cameraOptions.recordObjectPrefix + "/" +
-      m_recordingSessionId + "/chunk/" + std::to_string(index);
+    if (m_done.load() || !isRecording() || m_streaming.load()) return;
+    const auto now = nowMilliseconds();
+    if (now < m_nextRecordingSessionRetryMs.load()) return;
+    std::lock_guard<std::mutex> guard(m_mutex);
+    if (m_done.load() || m_streaming.load()) return;
     try {
-      auto payload = encryptRecordingChunk(objectName, data, size);
-      m_recordingRepo->put(objectName,
-                           payload,
-                           "video/h264-chunk+hybrid-aes-256-gcm",
-                           1,
-                           "capture_ms=" + std::to_string(captureMs) +
-                             ";encryption=hybrid-aes-256-gcm-at-rest" +
-                             ";key_id=" + m_recordingKeyId,
-                           {droneIdentity(m_config, m_droneId).toUri()});
-      m_recordingBytes += static_cast<uint64_t>(size);
-      m_recordingLastUpdateMs = nowMilliseconds();
+      if (const auto* bitrate = std::getenv("NDNSF_UAV_RECORDING_BITRATE_KBPS")) {
+        try {
+          m_requestedBitrateKbps = std::stoull(bitrate);
+        }
+        catch (const std::exception&) {
+          NDN_LOG_WARN("CAMERA_RECORDING_BITRATE_INVALID value=" << bitrate);
+        }
+      }
+      if (const auto* width = std::getenv("NDNSF_UAV_RECORDING_FRAME_WIDTH")) {
+        try {
+          auto parsed = std::clamp<uint64_t>(
+            std::stoull(width), MIN_VIDEO_FRAME_WIDTH, MAX_VIDEO_FRAME_WIDTH);
+          if (parsed % 2 != 0) --parsed;
+          m_requestedFrameWidth = parsed;
+          m_acceptedFrameWidth = parsed;
+        }
+        catch (const std::exception&) {
+          NDN_LOG_WARN("CAMERA_RECORDING_FRAME_WIDTH_INVALID value=" << width);
+        }
+      }
+      m_acceptedBitrateKbps = std::clamp<uint64_t>(
+        m_requestedBitrateKbps.load(), MIN_VIDEO_BITRATE_KBPS, MAX_VIDEO_BITRATE_KBPS);
+      m_encoderQuality = qualityForBitrate(m_acceptedBitrateKbps.load());
+      m_fecDataShards = defaultFecDataShardsForBitrate(m_acceptedBitrateKbps.load());
+      m_activeStartFingerprint = startFingerprintLocked();
+      initializeProtectedSessionLocked();
+      m_streaming = true;
+      NDN_LOG_INFO("CAMERA_RECORDING_SESSION_STARTED stream_id=" << m_streamId
+                   << " session_epoch=" << m_streamSessionEpoch
+                   << " publication=canonical-live-stream");
     }
     catch (const std::exception& e) {
-      NDN_LOG_WARN("CAMERA_RECORD_CHUNK_FAILED object=" << objectName
-                   << " reason=" << e.what());
+      clearProtectedSessionLocked();
+      m_nextRecordingSessionRetryMs = now + 500;
+      NDN_LOG_WARN("CAMERA_RECORDING_SESSION_START_FAILED reason=" << e.what());
     }
-  }
-
-  ndn::Buffer
-  loadOrCreateRecordingContentKey() const
-  {
-    const auto keyPath = m_cameraOptions.recordRepoPath + ".content-key";
-    {
-      std::ifstream input(keyPath, std::ios::binary);
-      if (input) {
-        std::vector<char> bytes((std::istreambuf_iterator<char>(input)),
-                                std::istreambuf_iterator<char>());
-        if (bytes.size() == ndn_service_framework::HybridMessageCrypto::MESSAGE_KEY_SIZE) {
-          return ndn::Buffer(reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size());
-        }
-        NDN_LOG_WARN("CAMERA_RECORDING_KEY_INVALID path=" << keyPath
-                     << " bytes=" << bytes.size()
-                     << " regenerating=true");
-      }
-    }
-
-    auto key = randomRecordingContentKey();
-    {
-      std::ofstream output(keyPath, std::ios::binary | std::ios::trunc);
-      if (!output) {
-        throw std::runtime_error("cannot create camera recording content key: " + keyPath);
-      }
-      output.write(reinterpret_cast<const char*>(key.data()), key.size());
-    }
-    chmod(keyPath.c_str(), S_IRUSR | S_IWUSR);
-    return key;
-  }
-
-  static ndn::Buffer
-  randomRecordingContentKey()
-  {
-    ndn::Buffer key(ndn_service_framework::HybridMessageCrypto::MESSAGE_KEY_SIZE);
-    if (RAND_bytes(key.data(), static_cast<int>(key.size())) != 1) {
-      throw std::runtime_error("RAND_bytes failed for camera recording content key");
-    }
-    return key;
-  }
-
-  ndn::Buffer
-  recordingAssociatedData(const std::string& objectName) const
-  {
-    const auto value = "ndnsf-uav-recording|" + droneIdentity(m_config, m_droneId).toUri() +
-      "|" + m_recordingSessionId + "|" + objectName;
-    return ndn::Buffer(reinterpret_cast<const uint8_t*>(value.data()), value.size());
-  }
-
-  std::vector<uint8_t>
-  encryptRecordingChunk(const std::string& objectName, const uint8_t* data, size_t size) const
-  {
-    if (m_recordingContentKey.empty()) {
-      throw std::runtime_error("camera recording content key is not initialized");
-    }
-    const auto ad = recordingAssociatedData(objectName);
-    const auto encrypted = ndn_service_framework::hybridAesGcmEncrypt(
-      m_recordingContentKey,
-      ndn::span<const uint8_t>(data, size),
-      ndn::span<const uint8_t>(ad.data(), ad.size()));
-
-    ndn_service_framework::HybridMessageEnvelope envelope;
-    envelope.setAlgorithm("AES-256-GCM");
-    envelope.setKeyId(m_recordingKeyId);
-    envelope.setEpochId("camera-recording-persistent-v1");
-    envelope.setMessageType("uav-camera-recording-chunk");
-    envelope.setNonce(encrypted.nonce);
-    envelope.setCipherText(encrypted.ciphertext);
-    envelope.setAuthTag(encrypted.tag);
-    const auto wire = envelope.WireEncode();
-    return std::vector<uint8_t>(wire.data(), wire.data() + wire.size());
-  }
-
-  std::string
-  recordingContentKeyHex() const
-  {
-    return hexEncode(std::vector<uint8_t>(m_recordingContentKey.begin(),
-                                          m_recordingContentKey.end()));
-  }
-
-  std::vector<uint8_t>
-  decryptRecordingChunk(const std::string& objectName,
-                        const std::vector<uint8_t>& encryptedPayload) const
-  {
-    if (encryptedPayload.empty()) {
-      return {};
-    }
-
-    auto [ok, block] = ndn::Block::fromBuffer(
-      ndn::span<const uint8_t>(encryptedPayload.data(), encryptedPayload.size()));
-    ndn_service_framework::HybridMessageEnvelope envelope;
-    if (!ok || !envelope.WireDecode(block)) {
-      NDN_LOG_WARN("CAMERA_RECORDING_LEGACY_PLAINTEXT object=" << objectName);
-      return encryptedPayload;
-    }
-    if (envelope.getKeyId() != m_recordingKeyId ||
-        envelope.getMessageType() != "uav-camera-recording-chunk") {
-      NDN_LOG_WARN("CAMERA_RECORDING_DECRYPT_REJECT object=" << objectName
-                   << " key_id=" << envelope.getKeyId()
-                   << " message_type=" << envelope.getMessageType());
-      return {};
-    }
-
-    const auto ad = recordingAssociatedData(objectName);
-    ndn::Buffer plaintext;
-    if (!ndn_service_framework::hybridAesGcmDecrypt(
-          m_recordingContentKey,
-          envelope,
-          ndn::span<const uint8_t>(ad.data(), ad.size()),
-          plaintext)) {
-      NDN_LOG_WARN("CAMERA_RECORDING_DECRYPT_FAILED object=" << objectName);
-      return {};
-    }
-    return std::vector<uint8_t>(plaintext.begin(), plaintext.end());
   }
 
   void
-  publishCurrentFrame(uint64_t captureMs)
+  retentionLoop()
   {
-    const auto dataShardCount = m_fecPendingChunks.size();
-    if (dataShardCount == 0 || !m_streaming.load()) {
+    while (true) {
+      std::shared_ptr<ndn_service_framework::PublishedPacketFeed> feed;
+      {
+        std::lock_guard<std::mutex> guard(m_mutex);
+        feed = m_recordingPacketFeed;
+      }
+      if (!feed) {
+        if (m_done.load()) break;
+        std::this_thread::sleep_for(10ms);
+        continue;
+      }
+      m_retentionWorkerBusy = true;
+      const auto packets = feed->takeAvailable(64);
+      if (packets.empty()) {
+        const auto status = feed->status();
+        m_retentionQueuePackets = status.queuedPackets;
+        m_retentionQueueBytes = status.queuedBytes;
+        m_retentionGapPackets = std::max<uint64_t>(m_retentionGapPackets.load(),
+                                                   status.droppedPackets);
+        observeFeedDrops(status);
+        if (m_done.load()) break;
+        if (status.closed) {
+          std::lock_guard<std::mutex> guard(m_mutex);
+          if (m_recordingPacketFeed == feed) m_recordingPacketFeed.reset();
+        }
+        m_retentionWorkerBusy = false;
+        std::this_thread::sleep_for(5ms);
+        continue;
+      }
+      bool retentionLimitReached = false;
+      bool retentionStorageCircuitOpened = false;
+      for (const auto& packet : packets) {
+        if (m_cameraOptions.recordPacketLimit != 0 &&
+            m_recordingChunks.load() >= m_cameraOptions.recordPacketLimit) {
+          // A configured retention bound is a clean interval boundary, not a
+          // storage failure. Stop observing future packets and commit exactly
+          // the prefix already made durable.
+          m_retentionActive = false;
+          feed->close();
+          retentionLimitReached = true;
+          break;
+        }
+        const auto cursor = packet.cursor.value_or(0);
+        ndn_service_framework::logStreamTimelineTrace(
+          "provider", "retention-dequeued", packet.streamId,
+          packet.sessionEpoch, cursor,
+          {{"packet_kind", packet.kind ==
+             ndn_service_framework::PublishedLiveStreamPacketKind::Mapping ?
+             "mapping" : packet.kind ==
+             ndn_service_framework::PublishedLiveStreamPacketKind::Repair ?
+             "repair" : "source"}});
+        try {
+          if (const auto* failAfterText =
+                std::getenv("NDNSF_UAV_SIMULATE_STORAGE_FAILURE_AFTER_PACKETS")) {
+            try {
+              const auto failAfter = std::stoull(failAfterText);
+              if (m_recordingChunks.load() >= failAfter) {
+                throw std::runtime_error("simulated canonical retention storage failure");
+              }
+            }
+            catch (const std::invalid_argument&) {
+              NDN_LOG_WARN("CAMERA_CANONICAL_STORAGE_FAILURE_INJECTION_INVALID value="
+                           << failAfterText);
+            }
+          }
+          const auto objectName = packet.dataName.toUri();
+          m_recordingRepo->put(
+            objectName, packet.signedDataWire, "application/ndn-data", 1,
+            "stream_id=" + packet.streamId +
+              ";session_epoch=" + std::to_string(packet.sessionEpoch) +
+              ";mapping_version=" + std::to_string(packet.mappingVersion) +
+              ";wire_sha256=" + hexEncode(std::vector<uint8_t>(
+                packet.wireDigest.begin(), packet.wireDigest.end())),
+            {packet.provider.toUri()});
+          persistCanonicalCatalogEntry(packet);
+          ++m_recordingChunks;
+          m_recordingBytes += packet.signedDataWire.size();
+          m_recordingLastUpdateMs = nowMilliseconds();
+          if (packet.cursor) m_retentionCheckpointCursor = *packet.cursor;
+          ndn_service_framework::logStreamTimelineTrace(
+            "provider", "retention-durable", packet.streamId,
+            packet.sessionEpoch, cursor,
+            {{"wire_bytes", std::to_string(packet.signedDataWire.size())}});
+        }
+        catch (const std::exception& e) {
+          ++m_retentionFailures;
+          const auto firstFailed = packet.cursor.value_or(m_retentionCheckpointCursor.load());
+          auto lastFailed = firstFailed;
+          for (const auto& remaining : packets) {
+            if (remaining.cursor && *remaining.cursor >= firstFailed) {
+              lastFailed = std::max(lastFailed, *remaining.cursor);
+            }
+          }
+          m_retentionGapPackets += lastFailed - firstFailed + 1;
+          recordRetentionGap(firstFailed, lastFailed,
+                             "storage-or-integrity-failure");
+          m_retentionStorageCircuitOpen = true;
+          retentionStorageCircuitOpened = true;
+          feed->close();
+          NDN_LOG_WARN("CAMERA_CANONICAL_RETENTION_FAILED first_cursor="
+                       << firstFailed << " last_cursor=" << lastFailed
+                       << " action=storage-circuit-open reason=" << e.what());
+          break;
+        }
+      }
+      std::optional<VideoStreamDescriptor> completedDescriptor;
+      try {
+        if (retentionLimitReached) {
+          completedDescriptor = freezeArchivedDescriptorSnapshot();
+        }
+        persistCanonicalManifest(retentionLimitReached);
+        if (retentionLimitReached && completedDescriptor) {
+          std::lock_guard<std::mutex> guard(m_retentionMutex);
+          if (m_retentionManifest.complete) {
+            m_latestCompletedManifest = m_retentionManifest;
+            m_latestCompletedDescriptor = *completedDescriptor;
+          }
+        }
+      }
+      catch (const std::exception& e) {
+        ++m_retentionFailures;
+        ++m_retentionGapPackets;
+        NDN_LOG_WARN("CAMERA_CANONICAL_MANIFEST_COMMIT_FAILED reason=" << e.what());
+      }
+      const auto status = feed->status();
+      m_retentionQueuePackets = status.queuedPackets;
+      m_retentionQueueBytes = status.queuedBytes;
+      m_retentionGapPackets = std::max<uint64_t>(m_retentionGapPackets.load(),
+                                                 status.droppedPackets);
+      observeFeedDrops(status);
+      if (retentionLimitReached || retentionStorageCircuitOpened) {
+        std::lock_guard<std::mutex> guard(m_mutex);
+        if (m_recordingPacketFeed == feed) m_recordingPacketFeed.reset();
+      }
+      m_retentionWorkerBusy = false;
+    }
+  }
+
+  void
+  observeFeedDrops(const ndn_service_framework::PublishedPacketFeedStatus& status)
+  {
+    if (status.droppedPackets <= m_lastObservedFeedDrops) return;
+    if (status.firstDroppedCursor && status.lastDroppedCursor) {
+      recordRetentionGap(*status.firstDroppedCursor, *status.lastDroppedCursor,
+                         "bounded-feed-overflow");
+    }
+    m_lastObservedFeedDrops = status.droppedPackets;
+  }
+
+  void
+  recordRetentionGap(uint64_t firstCursor, uint64_t lastCursor,
+                     const std::string& reason)
+  {
+    std::lock_guard<std::mutex> guard(m_retentionMutex);
+    if (!m_retentionManifest.gaps.empty() &&
+        firstCursor <= m_retentionManifest.gaps.back().lastCursor + 1 &&
+        m_retentionManifest.gaps.back().reason == reason) {
+      m_retentionManifest.gaps.back().lastCursor =
+        std::max(m_retentionManifest.gaps.back().lastCursor, lastCursor);
+      return;
+    }
+    if (!m_retentionManifest.gaps.empty() &&
+        firstCursor <= m_retentionManifest.gaps.back().lastCursor) {
+      firstCursor = m_retentionManifest.gaps.back().lastCursor + 1;
+      lastCursor = std::max(firstCursor, lastCursor);
+    }
+    m_retentionManifest.gaps.push_back({firstCursor, lastCursor, reason});
+  }
+
+  void
+  persistCanonicalCatalogEntry(
+    const ndn_service_framework::PublishedLiveStreamPacket& packet)
+  {
+    CanonicalVideoRecordingManifest snapshot;
+    RetainedVideoPacketReference reference;
+    reference.kind = packet.kind ==
+      ndn_service_framework::PublishedLiveStreamPacketKind::Mapping ? "mapping" :
+      packet.kind == ndn_service_framework::PublishedLiveStreamPacketKind::Repair ? "repair" :
+      "source";
+    reference.cursor = packet.cursor;
+    reference.dataName = packet.dataName;
+    reference.wireDigest = packet.wireDigest;
+
+    std::optional<std::pair<uint64_t,
+      ndn_service_framework::StreamContentDigest>> mappingCheckpoint;
+    if (packet.kind == ndn_service_framework::PublishedLiveStreamPacketKind::Mapping) {
+      const auto mappingData = decodeStoredData(
+        std::vector<uint8_t>(packet.signedDataWire.begin(), packet.signedDataWire.end()),
+        "retained Mapping Data");
+      auto content = mappingData.getContent();
+      content.parse();
+      ndn_service_framework::StreamNameMapBlock block;
+      if (content.elements().size() != 1 ||
+          !block.wireDecode(content.elements().front()) ||
+          block.streamId != packet.streamId ||
+          block.sessionEpoch != packet.sessionEpoch ||
+          block.mappingVersion != packet.mappingVersion ||
+          !packet.cursor || block.firstCursor != *packet.cursor) {
+        throw std::invalid_argument("retained Mapping checkpoint binding mismatch");
+      }
+      mappingCheckpoint = std::make_pair(block.blockNumber, block.contentDigest());
+    }
+
+    uint64_t catalogIndex = 0;
+    ndn_service_framework::StreamContentDigest previousDigest{};
+    {
+      std::lock_guard<std::mutex> guard(m_retentionMutex);
+      if (packet.streamId != m_retentionManifest.streamId ||
+          packet.sessionEpoch != m_retentionManifest.sessionEpoch) {
+        throw std::invalid_argument("mixed-session packet rejected by retention adapter");
+      }
+      catalogIndex = m_retentionManifest.packetCatalogEntries;
+      previousDigest = m_retentionCatalogHead;
+    }
+
+    Fields catalogFields{
+      {"type", "canonical-video-packet-catalog-entry"},
+      {"recording_id", m_recordingSessionId},
+      {"stream_id", packet.streamId},
+      {"session_epoch", std::to_string(packet.sessionEpoch)},
+      {"mapping_version", std::to_string(packet.mappingVersion)},
+      {"entry_index", std::to_string(catalogIndex)},
+      {"packet_kind", reference.kind},
+      {"cursor", packet.cursor ? std::to_string(*packet.cursor) : "mapping"},
+      {"data_name", packet.dataName.toUri()},
+      {"wire_digest", hexEncode(std::vector<uint8_t>(
+        packet.wireDigest.begin(), packet.wireDigest.end()))},
+      {"previous_entry_digest", hexEncode(std::vector<uint8_t>(
+        previousDigest.begin(), previousDigest.end()))},
+    };
+    const auto catalogName = ndn::Name(m_cameraOptions.recordObjectPrefix)
+      .append(m_recordingSessionId).append("CATALOG").appendSequenceNumber(catalogIndex);
+    auto catalogData = ndn::Data(catalogName);
+    const auto catalogText = encodeFields(catalogFields);
+    catalogData.setContent(ndn::span<const uint8_t>(
+      reinterpret_cast<const uint8_t*>(catalogText.data()), catalogText.size()));
+    {
+      std::lock_guard<std::mutex> signGuard(m_signMutex);
+      m_keyChain.sign(catalogData, m_signingInfo);
+    }
+    const auto catalogWire = catalogData.wireEncode();
+    const auto catalogDigest = ndn_service_framework::computeStreamContentDigest(
+      ndn::span<const uint8_t>(catalogWire.begin(), catalogWire.size()));
+    m_recordingRepo->put(catalogName.toUri(),
+                         std::vector<uint8_t>(catalogWire.begin(), catalogWire.end()),
+                         "application/ndn-data-catalog", 1,
+                         "recording_id=" + m_recordingSessionId,
+                         {packet.provider.toUri()});
+
+    std::lock_guard<std::mutex> guard(m_retentionMutex);
+    if (catalogIndex != m_retentionManifest.packetCatalogEntries ||
+        previousDigest != m_retentionCatalogHead) {
+      throw std::logic_error("retention catalog changed during durable write");
+    }
+    ++m_retentionManifest.packetCatalogEntries;
+    m_retentionManifest.packetCatalogHeadDigest = catalogDigest;
+    m_retentionCatalogHead = catalogDigest;
+    m_committedPacketDigests[packet.dataName] = packet.wireDigest;
+    if (mappingCheckpoint) {
+      const auto [it, inserted] = m_retainedMappingContentDigests.emplace(
+        mappingCheckpoint->first, mappingCheckpoint->second);
+      if (!inserted && it->second != mappingCheckpoint->second) {
+        throw std::logic_error("retained Mapping checkpoint equivocation");
+      }
+    }
+    if (reference.cursor && reference.kind == "source") {
+      if (!m_retentionHasSource) {
+        m_retentionManifest.firstCommittedCursor = *reference.cursor;
+        m_retentionManifest.safeJoinCursor = *reference.cursor;
+        m_retentionHasSource = true;
+      }
+      m_retentionManifest.lastCommittedCursor = *reference.cursor;
+    }
+    // Keep only a small audit tail inline; the signed catalog is authoritative.
+    m_retentionManifest.packets.push_back(std::move(reference));
+    if (m_retentionManifest.packets.size() > 8)
+      m_retentionManifest.packets.erase(m_retentionManifest.packets.begin());
+  }
+
+  void
+  persistCanonicalManifest(bool complete)
+  {
+    CanonicalVideoRecordingManifest manifest;
+    {
+      std::lock_guard<std::mutex> guard(m_retentionMutex);
+      if (m_retentionManifest.recordingId.empty() ||
+          m_retentionManifest.packetCatalogEntries == 0) return;
+      ++m_retentionManifest.manifestVersion;
+      m_retentionManifest.complete = complete && m_retentionManifest.gaps.empty();
+      if (complete) m_retentionManifest.endedMs = nowMilliseconds();
+      manifest = m_retentionManifest;
+    }
+    const auto manifestFields = manifest.toFields();
+    const auto manifestText = encodeFields(manifestFields);
+    auto manifestName = ndn::Name(m_cameraOptions.recordObjectPrefix)
+      .append(m_recordingSessionId).append("MANIFEST")
+      .appendVersion(manifest.manifestVersion);
+    ndn::Data manifestData(manifestName);
+    manifestData.setFreshnessPeriod(2_s);
+    manifestData.setContent(ndn::span<const uint8_t>(
+      reinterpret_cast<const uint8_t*>(manifestText.data()), manifestText.size()));
+    {
+      std::lock_guard<std::mutex> signGuard(m_signMutex);
+      m_keyChain.sign(manifestData, m_signingInfo);
+    }
+    const auto wire = manifestData.wireEncode();
+    m_recordingRepo->put(manifestName.toUri(),
+                         std::vector<uint8_t>(wire.begin(), wire.end()),
+                         "application/ndn-data-manifest", 1,
+                         "recording_id=" + manifest.recordingId,
+                         {manifest.providerIdentity.toUri()});
+  }
+
+  VideoStreamDescriptor
+  freezeArchivedDescriptorSnapshot()
+  {
+    VideoStreamDescriptor descriptor;
+    {
+      std::lock_guard<std::mutex> guard(m_mutex);
+      descriptor = m_streamDescriptor;
+    }
+    std::lock_guard<std::mutex> guard(m_retentionMutex);
+    if (!m_retentionHasSource || m_retainedMappingContentDigests.empty()) {
+      throw std::logic_error("canonical retention has no replay checkpoint");
+    }
+    const auto firstCursor = m_retentionManifest.firstCommittedCursor;
+    const auto lastCursor = m_retentionManifest.lastCommittedCursor;
+    const auto anchorBlock = firstCursor / descriptor.mappingBlockCapacity;
+    const auto anchor = m_retainedMappingContentDigests.find(anchorBlock);
+    if (anchor == m_retainedMappingContentDigests.end()) {
+      throw std::logic_error("canonical retention is missing its anchor Mapping");
+    }
+    const auto lastMappingBlock = m_retainedMappingContentDigests.rbegin()->first;
+    const auto mappingThrough =
+      (lastMappingBlock + 1) * descriptor.mappingBlockCapacity - 1;
+    if (lastCursor > mappingThrough) {
+      throw std::logic_error("canonical retention source exceeds Mapping frontier");
+    }
+    descriptor.frontiers.oldestRetained = firstCursor;
+    descriptor.frontiers.latestJoin = firstCursor;
+    descriptor.frontiers.latestProduced = lastCursor;
+    descriptor.frontiers.mappingCommittedThrough = mappingThrough;
+    descriptor.frontiers.nextReserved = mappingThrough + 1;
+    descriptor.mappingAnchorBlock = anchorBlock;
+    descriptor.mappingAnchorContentDigest = anchor->second;
+    auto redacted = decodeFields(encodeVideoStreamDescriptor(descriptor));
+    redacted.erase("stream_key_hex");
+    redacted.erase("nonce_salt_hex");
+    m_retentionManifest.safeJoinCursor = firstCursor;
+    m_retentionManifest.redactedStreamDescriptor = std::move(redacted);
+    return descriptor;
+  }
+
+  void
+  publishCurrentFrame(uint64_t encodedOutputReadyMs,
+                      const UavVideoFrame* exactFrame = nullptr)
+  {
+    std::unique_lock<std::mutex> stateGuard(m_mutex);
+    const auto actualDataShardCount = m_fecPendingChunks.size();
+    if (actualDataShardCount == 0 || !m_streaming.load() || !m_nonceGuard ||
+        !m_streamPublisher || !m_coreStreamDescriptor) {
       return;
     }
 
     const auto frameSeq = m_nextFecFrameSeq++;
-    const auto second = captureMs / 1000;
+    const auto second = encodedOutputReadyMs / 1000;
     auto dataChunks = std::move(m_fecPendingChunks);
     m_fecPendingChunks.clear();
     m_fecCurrentFrameStartMs = 0;
-
-    std::vector<size_t> dataLengths;
-    dataLengths.reserve(dataChunks.size());
-    size_t maxPayloadSize = 0;
+    std::vector<uint8_t> readinessBytes;
     for (const auto& payload : dataChunks) {
-      dataLengths.push_back(payload.size());
-      maxPayloadSize = std::max(maxPayloadSize, payload.size());
+      readinessBytes.insert(readinessBytes.end(), payload.begin(), payload.end());
     }
-
-    std::vector<uint8_t> parityPayload(maxPayloadSize, 0);
-    for (const auto& payload : dataChunks) {
-      for (size_t i = 0; i < payload.size(); ++i) {
-        parityPayload[i] ^= payload[i];
-      }
+    const auto dataShardCount = dataChunks.size();
+    if (!m_videoSampleClassSchedule) {
+      throw std::logic_error("UAV video sample-class schedule is missing");
     }
-
-    const auto firstPacketSeq = allocatePacketRange(dataShardCount + m_fecParityShards);
-    const auto frameLastPacketSeq = firstPacketSeq + dataShardCount + m_fecParityShards - 1;
-    const std::vector<uint64_t> streamDataLengths(dataLengths.begin(), dataLengths.end());
-    m_nextSeq += static_cast<uint64_t>(dataShardCount + m_fecParityShards);
-
-    auto makeStreamChunk = [&] (uint64_t symbolIndex,
+    const auto sampleClass = m_videoSampleClassSchedule->classFor(frameSeq);
+    if (exactFrame != nullptr &&
+        !m_videoSampleClassSchedule->matchesActual(frameSeq,
+                                                   exactFrame->keyFrame)) {
+      throw std::logic_error(
+        "encoded access-unit class does not match its future class announcement");
+    }
+    const bool keyFrame = exactFrame != nullptr && exactFrame->keyFrame;
+    const auto firstPacketSeq = m_nextSeq.load();
+    const auto frameLastPacketSeq =
+      firstPacketSeq + static_cast<uint64_t>(dataShardCount) - 1;
+    m_nextSeq = frameLastPacketSeq + 1;
+    const auto firstMediaSequence = m_nextMediaSequence.fetch_add(dataShardCount);
+    m_mediaSequenceByCursor[firstPacketSeq] = firstMediaSequence;
+    auto makeStreamChunk = [&] (uint64_t symbolIndex, uint64_t cursor,
                                 std::vector<uint8_t> payload,
                                 bool keyChunk) {
       ndn_service_framework::StreamChunk chunk;
       chunk.streamId = m_streamId;
       chunk.sessionEpoch = m_streamSessionEpoch;
-      chunk.seq = firstPacketSeq + symbolIndex;
+      chunk.seq = cursor;
       chunk.payload = std::move(payload);
       chunk.contentType = "video/h264";
-      chunk.captureMs = captureMs;
+      // StreamChunk keeps the wire-compatible field name. Its actual origin is
+      // the first post-FFmpeg encoded byte, not camera acquisition.
+      chunk.captureMs = encodedOutputReadyMs;
       chunk.keyChunk = keyChunk;
       chunk.frameId = frameSeq;
       chunk.frameFirstSeq = firstPacketSeq;
@@ -2299,52 +3455,258 @@ private:
       chunk.segmentCount = dataShardCount + m_fecParityShards;
       chunk.metadata["uav.second"] = std::to_string(second);
       chunk.metadata["uav.bucket_packet_count"] = std::to_string(frameLastPacketSeq + 1);
+      chunk.metadata["uav.media_sequence"] =
+        std::to_string(firstMediaSequence + symbolIndex);
+      if (exactFrame != nullptr) {
+        chunk.metadata["uav.frame_binding_version"] = "1";
+        chunk.metadata["uav.source_frame_id"] = std::to_string(exactFrame->sourceFrameId);
+        chunk.metadata["uav.capture_origin_ns"] = std::to_string(exactFrame->captureOriginNs);
+        chunk.metadata["uav.capture_clock_id"] = "provider-steady-v1";
+        chunk.metadata["uav.codec_pts"] = std::to_string(exactFrame->codecPts);
+        chunk.metadata["uav.codec_time_base_num"] = "1";
+        chunk.metadata["uav.codec_time_base_den"] = "1000000000";
+        chunk.metadata["uav.codec_config_epoch"] =
+          std::to_string(exactFrame->codecConfigEpoch);
+      }
 
-      ndn_service_framework::StreamFecInfo fec;
-      fec.scheme = "xor-parity";
-      fec.dataShards = dataShardCount;
-      fec.parityShards = m_fecParityShards;
-      fec.symbolIndex = symbolIndex;
-      fec.symbolCount = dataShardCount + m_fecParityShards;
-      fec.dataLengths = streamDataLengths;
-      fec.sourceBlockId = std::to_string(frameSeq);
-      fec.repairSymbol = symbolIndex >= dataShardCount;
-      chunk.fec = std::move(fec);
+      // FEC is a Core transport concern over the protected bytes. The UAV
+      // payload records only the source grouping needed by its decoder.
+      ndn_service_framework::StreamFecInfo group;
+      group.scheme = m_fecParityShards == 1 ? "core-xor-one-repair" : "none";
+      group.dataShards = dataShardCount;
+      group.parityShards = m_fecParityShards;
+      group.symbolIndex = symbolIndex;
+      group.symbolCount = dataShardCount + m_fecParityShards;
+      group.sourceBlockId = std::to_string(frameSeq);
+      group.repairSymbol = false;
+      chunk.fec = std::move(group);
       return chunk;
     };
 
-    auto publishStreamChunk = [&] (const ndn_service_framework::StreamChunk& chunk) {
+    auto protectStreamChunk = [&] (
+      const ndn_service_framework::StreamChunk& chunk, uint64_t cursor) {
       const auto packet = streamChunkToVideoPacket(chunk);
-
-      ndn::Name packetName = m_streamPrefix;
-      packetName.append(std::to_string(packet.packetSeq));
-      rememberPacket(packetName, encodeVideoPacket(packet));
+      UavVideoDataName binding;
+      binding.cursor = cursor;
+      binding.parity = false;
+      binding.name = ndn_service_framework::makePredictiveDataName(
+        m_coreStreamDescriptor->definition, cursor);
+      return protectUavVideoPacket(
+        m_streamDescriptor, binding, packet, *m_nonceGuard);
     };
 
-    for (uint64_t i = 0; i < dataShardCount; ++i) {
-      auto chunk = makeStreamChunk(i, std::move(dataChunks[i]), ((frameSeq % 30) == 0));
-      publishStreamChunk(chunk);
+    try {
+      if (exactFrame != nullptr) {
+        ndn::Name frameTrace("/NDNSF/UAV/VIDEO/FRAME");
+        frameTrace.append(m_streamId).appendNumber(m_streamSessionEpoch)
+          .appendNumber(exactFrame->sourceFrameId);
+        ndn_service_framework::logTimelineTrace(
+          "provider", "source-acquired", frameTrace,
+          {{"clock_domain", "host-steady"},
+           {"frame_correlation", "exact"},
+           {"source_id", std::to_string(exactFrame->sourceFrameId)},
+           {"capture_origin_ns", std::to_string(exactFrame->captureOriginNs)},
+           {"codec_pts", std::to_string(exactFrame->codecPts)}});
+        ndn_service_framework::logTimelineTrace(
+          "provider", "encoded-output-ready", frameTrace,
+          {{"clock_domain", "host-steady"},
+           {"frame_correlation", "exact"},
+           {"source_id", std::to_string(exactFrame->sourceFrameId)},
+           {"output_ordinal", "0"}});
+      }
+      std::vector<uint64_t> producedCursors;
+      producedCursors.reserve(dataShardCount);
+      for (size_t index = 0; index < dataShardCount; ++index) {
+        producedCursors.push_back(
+          firstPacketSeq + static_cast<uint64_t>(index));
+      }
+      for (const auto cursor : producedCursors) {
+        if (exactFrame != nullptr) {
+          ndn_service_framework::logStreamTimelineTrace(
+            "provider", "source-acquired", m_streamId,
+            m_streamSessionEpoch, cursor,
+            {{"clock_domain", "provider-steady-v1"},
+             {"source_frame_id", std::to_string(exactFrame->sourceFrameId)},
+             {"capture_origin_ns", std::to_string(exactFrame->captureOriginNs)},
+             {"codec_pts", std::to_string(exactFrame->codecPts)}});
+        }
+        ndn_service_framework::logStreamTimelineTrace(
+          "provider", "encoded-output-ready", m_streamId,
+          m_streamSessionEpoch, cursor,
+          {{"origin", exactFrame == nullptr ? "post-ffmpeg-h264-output" :
+                                              "gstreamer-access-unit"}});
+        ndn_service_framework::logStreamTimelineTrace(
+          "provider", "group-ready", m_streamId,
+          m_streamSessionEpoch, cursor);
+      }
+      std::vector<std::vector<uint8_t>> protectedSources;
+      protectedSources.reserve(dataShardCount);
+      for (uint64_t i = 0; i < dataShardCount; ++i) {
+        const auto cursor = firstPacketSeq + i;
+        auto chunk = makeStreamChunk(i, cursor,
+                                     std::move(dataChunks[i]), keyFrame);
+        protectedSources.push_back(
+          protectStreamChunk(chunk, cursor));
+        ndn_service_framework::logStreamTimelineTrace(
+          "provider", "protection-complete", m_streamId,
+          m_streamSessionEpoch, cursor);
+      }
+      size_t pendingCoreGroup = 0;
+      const auto coreGroupLimit =
+        std::max<size_t>(1, static_cast<size_t>(m_fecDataShards));
+      for (size_t i = 0; i < protectedSources.size(); ++i) {
+        const auto cursor = firstPacketSeq + static_cast<uint64_t>(i);
+        auto data = std::make_shared<ndn::Data>(
+          ndn_service_framework::makePredictiveDataName(
+            m_coreStreamDescriptor->definition, cursor));
+        data->setContent(ndn::span<const uint8_t>(
+          protectedSources[i].data(), protectedSources[i].size()));
+        data->setFreshnessPeriod(ndn::time::milliseconds(1000));
+        m_keyChain.sign(*data, m_signingInfo);
+        m_streamPublisher->push(data);
+        if (++pendingCoreGroup == coreGroupLimit) {
+          m_streamPublisher->flush();
+          pendingCoreGroup = 0;
+        }
+      }
+      if (pendingCoreGroup != 0) {
+        m_streamPublisher->flush();
+      }
+      m_readiness.observePublicationGroup(
+        firstPacketSeq, frameLastPacketSeq,
+        std::max<uint64_t>(1, nowMilliseconds()), readinessBytes);
+      if (m_readiness.ready()) {
+        m_streamDescriptor.samplePeriodMs = m_readiness.samplePeriodMs();
+      }
+      if (frameSeq % 30 == 0) {
+        const auto coreStatus = m_streamPublisher->status();
+        NDN_LOG_INFO("VIDEO_LIVE_STREAM_CORE_STATUS"
+                     << " stream_id=" << m_streamId
+                     << " frame_seq=" << frameSeq
+                     << " retained_items=" << coreStatus.retainedItems
+                     << " pending_interests=" << coreStatus.pendingInterests
+                     << " provider_future_interests="
+                     << coreStatus.providerFutureInterests
+                     << " provider_future_hits=" << coreStatus.providerFutureHits
+                     << " latest_produced_cursor="
+                     << coreStatus.frontiers.latestProduced
+                     << " mapping_committed_through_cursor="
+                     << coreStatus.frontiers.mappingCommittedThrough);
+        for (const auto& [classId, prediction] : coreStatus.sampleClassPredictions) {
+          NDN_LOG_INFO("VIDEO_SAMPLE_CLASS_PREDICTION"
+                       << " stream_id=" << m_streamId
+                       << " class=" << classId
+                       << " predicted_sources=" << prediction.prediction
+                       << " observations=" << prediction.observations
+                       << " underpredictions=" << prediction.underpredictions
+                       << " underpredicted_items=" << prediction.underpredictedItems
+                       << " overpredictions=" << prediction.overpredictions
+                       << " overpredicted_items=" << prediction.overpredictedItems);
+        }
+      }
     }
-
-    for (uint64_t i = 0; i < m_fecParityShards; ++i) {
-      const auto symbolIndex = dataShardCount + i;
-      auto chunk = makeStreamChunk(symbolIndex, parityPayload, false);
-      publishStreamChunk(chunk);
+    catch (const std::exception& e) {
+      NDN_LOG_ERROR("VIDEO_PROTECTED_PUBLICATION_FAILED stream=" << m_streamId
+                    << " frame=" << frameSeq << " reason=" << e.what());
+      m_nonceGuard->closeForUncertainUse();
+      m_streaming = false;
+      m_readinessCv.notify_all();
+      return;
     }
+    stateGuard.unlock();
+    m_readinessCv.notify_all();
   }
 
-  uint64_t
-  allocatePacketRange(uint64_t count)
+  void
+  publishGStreamerAccessUnit(const UavVideoFrame& frame)
   {
-    const auto first = m_nextPacketSeq.fetch_add(count);
-    return first;
+    if (!m_streaming.load() || frame.bytes.empty()) {
+      return;
+    }
+    ensureCanonicalRecordingSession();
+    {
+      std::lock_guard<std::mutex> guard(m_mutex);
+      m_fecPendingChunks.clear();
+      m_fecCurrentFrameStartMs = nowMilliseconds();
+      for (size_t offset = 0; offset < frame.bytes.size();
+           offset += MAX_VIDEO_PACKET_PAYLOAD) {
+        const auto size = std::min(MAX_VIDEO_PACKET_PAYLOAD,
+                                   frame.bytes.size() - offset);
+        m_fecPendingChunks.emplace_back(frame.bytes.begin() + offset,
+                                        frame.bytes.begin() + offset + size);
+      }
+    }
+    publishCurrentFrame(nowMilliseconds(), &frame);
+  }
+
+  void
+  captureLoopGStreamer()
+  {
+    GStreamerVideoPipeline pipeline;
+    bool running = false;
+    while (!m_done.load()) {
+      if (running && pipeline.state() == UavVideoPipelineState::Failed) {
+        const auto failure = pipeline.failure();
+        NDN_LOG_ERROR("UAV_VIDEO_PIPELINE backend=gstreamer state=failed"
+                      << " direction="
+                      << (failure ? failure->direction : "unknown")
+                      << " code=" << (failure ? failure->code : "unknown")
+                      << " reason=" << (failure ? failure->reason : "unknown"));
+        pipeline.stop();
+        running = false;
+        m_streaming = false;
+        m_captureEnabled = false;
+        m_readinessCv.notify_all();
+        continue;
+      }
+      if (!m_captureEnabled.load()) {
+        if (running) {
+          pipeline.stop();
+          running = false;
+        }
+        std::this_thread::sleep_for(50ms);
+        continue;
+      }
+      if (!running || m_restartEncoder.exchange(false)) {
+        if (running) pipeline.stop();
+        UavVideoCaptureConfig config;
+        const auto* sourceOverride = std::getenv("NDNSF_UAV_GSTREAMER_SOURCE");
+        config.source = sourceOverride == nullptr ? m_videoPath : sourceOverride;
+        config.width = static_cast<uint32_t>(m_acceptedFrameWidth.load());
+        config.height = std::max<uint32_t>(2, config.width * 3 / 4);
+        config.fps = static_cast<uint32_t>(m_targetFps.load());
+        config.bitrateKbps = static_cast<uint32_t>(m_acceptedBitrateKbps.load());
+        config.keyFrameInterval = config.fps;
+        try {
+          pipeline.startCapture(config, [this] (const UavVideoFrame& frame) {
+            publishGStreamerAccessUnit(frame);
+          });
+          running = true;
+          NDN_LOG_INFO("UAV_VIDEO_PIPELINE backend=gstreamer state=running"
+                       << " exact_frame_binding=true");
+        }
+        catch (const std::exception& e) {
+          NDN_LOG_ERROR("UAV_VIDEO_PIPELINE backend=gstreamer state=failed reason="
+                        << e.what());
+          std::this_thread::sleep_for(1s);
+        }
+      }
+      std::this_thread::sleep_for(20ms);
+    }
+    pipeline.stop();
   }
 
   void
   captureLoop()
   {
+    if (m_useGStreamerPipeline) {
+      captureLoopGStreamer();
+      return;
+    }
     std::unique_ptr<FILE, decltype(&pclose)> pipe(nullptr, pclose);
     std::vector<uint8_t> chunkBuffer;
+    uint64_t chunkBufferStartMs = 0;
+    uint64_t packetizationFlushes = 0;
     while (!m_done.load()) {
       if (!m_captureEnabled.load()) {
         pipe.reset();
@@ -2353,6 +3715,7 @@ private:
           m_jpegBuffer.clear();
         }
         chunkBuffer.clear();
+        chunkBufferStartMs = 0;
         std::this_thread::sleep_for(50ms);
         continue;
       }
@@ -2408,30 +3771,80 @@ private:
       }
 
       std::array<uint8_t, 8192> buffer{};
-      const auto n = fread(buffer.data(), 1, buffer.size(), pipe.get());
+      const auto n = m_useLegacyBatchedEncoderRead ?
+        static_cast<ssize_t>(fread(buffer.data(), 1, buffer.size(), pipe.get())) :
+        ::read(fileno(pipe.get()), buffer.data(), buffer.size());
+      if (n < 0 && errno == EINTR) {
+        continue;
+      }
       if (n == 0) {
         pipe.reset();
+        chunkBufferStartMs = 0;
+        continue;
+      }
+      if (n < 0) {
+        NDN_LOG_WARN("VIDEO_ENCODER_PIPE_READ_FAILED errno=" << errno);
+        pipe.reset();
+        chunkBufferStartMs = 0;
         continue;
       }
 
-      const auto captureMs = nowMilliseconds();
-      recordRawChunk(buffer.data(), n, captureMs);
+      // start() may fence the encoder while this thread is blocked in fread().
+      // Never publish the final bytes returned by the old process: they can
+      // begin in the middle of a GOP and make a bounded recording undecodable
+      // until a later key frame.  Reopen libx264 so cursor zero begins with the
+      // new stream's SPS/PPS and IDR boundary.
+      if (m_restartEncoder.exchange(false)) {
+        pipe.reset();
+        chunkBuffer.clear();
+        chunkBufferStartMs = 0;
+        continue;
+      }
+
+      const auto encodedOutputReadyMs = nowMilliseconds();
+      ensureCanonicalRecordingSession();
       if (!m_streaming.load()) {
         chunkBuffer.clear();
+        chunkBufferStartMs = 0;
         continue;
       }
 
+      if (chunkBuffer.empty()) {
+        chunkBufferStartMs = encodedOutputReadyMs;
+      }
       chunkBuffer.insert(chunkBuffer.end(), buffer.begin(), buffer.begin() + n);
       while (chunkBuffer.size() >= MAX_VIDEO_PACKET_PAYLOAD) {
         const auto chunkSize = std::min(MAX_VIDEO_PACKET_PAYLOAD, chunkBuffer.size());
         std::vector<uint8_t> packetBytes(chunkBuffer.begin(), chunkBuffer.begin() + chunkSize);
         chunkBuffer.erase(chunkBuffer.begin(), chunkBuffer.begin() + chunkSize);
-        appendStreamChunk(std::move(packetBytes), captureMs);
+        appendStreamChunk(std::move(packetBytes), encodedOutputReadyMs);
+        chunkBufferStartMs = chunkBuffer.empty() ? 0 : encodedOutputReadyMs;
       }
-      if (!m_fecPendingChunks.empty() &&
+      if (!m_useLegacyBatchedEncoderRead && !chunkBuffer.empty() &&
+          chunkBufferStartMs != 0 &&
+          encodedOutputReadyMs >= chunkBufferStartMs + m_encoderPacketizationTimeoutMs) {
+        std::vector<uint8_t> packetBytes(chunkBuffer.begin(), chunkBuffer.end());
+        chunkBuffer.clear();
+        appendStreamChunk(std::move(packetBytes), encodedOutputReadyMs);
+        chunkBufferStartMs = 0;
+        ++packetizationFlushes;
+        if (packetizationFlushes <= 3 || packetizationFlushes % 30 == 0) {
+          NDN_LOG_DEBUG("VIDEO_ENCODER_PACKETIZATION_FLUSH"
+                        << " flushes=" << packetizationFlushes
+                        << " mode=posix-time-bounded"
+                        << " timeout_ms=" << m_encoderPacketizationTimeoutMs);
+        }
+      }
+      const auto timeoutNowMs = nowMilliseconds();
+      bool publishTimedOutGroup = false;
+      {
+        std::lock_guard<std::mutex> guard(m_mutex);
+        publishTimedOutGroup = !m_fecPendingChunks.empty() &&
           m_fecCurrentFrameStartMs != 0 &&
-          nowMilliseconds() >= m_fecCurrentFrameStartMs + m_fecFrameTimeoutMs) {
-        publishCurrentFrame(nowMilliseconds());
+          timeoutNowMs >= m_fecCurrentFrameStartMs + m_fecFrameTimeoutMs;
+      }
+      if (publishTimedOutGroup) {
+        publishCurrentFrame(timeoutNowMs);
       }
     }
   }
@@ -2632,45 +4045,79 @@ private:
     return selection;
   }
 
+  // Preserve the original high-packet-rate UAV load as the prefetch gate.
+  // Packet sizing is an APP capacity decision, not a Core pipeline repair.
   static constexpr size_t MAX_VIDEO_PACKET_PAYLOAD = 3600;
   static constexpr uint64_t MIN_VIDEO_BITRATE_KBPS = 256;
   static constexpr uint64_t MAX_VIDEO_BITRATE_KBPS = 16000;
   static constexpr uint64_t MIN_VIDEO_FRAME_WIDTH = 160;
   static constexpr uint64_t MAX_VIDEO_FRAME_WIDTH = 1280;
+  ndn_service_framework::ServiceProvider& m_serviceProvider;
   ndn::Face& m_face;
   ndn::KeyChain& m_keyChain;
   ndn::security::SigningInfo m_signingInfo;
   ndn_service_framework::LocalServiceRegistry& m_localRegistry;
-  ndn::Name m_localRecordingChunkServiceName;
+  ndn::Name m_localArchivedPacketServiceName;
   UavRuntimeConfig m_config;
   std::string m_droneId;
   std::string m_videoPath;
   CameraRuntimeOptions m_cameraOptions;
   std::unique_ptr<ndnsf_distributed_repo::RepoCore> m_recordingRepo;
   std::string m_recordingSessionId = "record-idle";
-  std::string m_recordingKeyId;
-  ndn::Buffer m_recordingContentKey;
   mutable std::mutex m_mutex;
   std::mutex m_signMutex;
-  ndn::Name m_videoPrefix;
   ndn::Name m_streamPrefix;
   std::string m_streamId = "idle";
   uint64_t m_streamSessionEpoch = 0;
-  bool m_filterRegistered = false;
   bool m_recordingFilterRegistered = false;
+  std::condition_variable m_readinessCv;
+  UavH264ReadinessTracker m_readiness{3};
+  VideoStreamDescriptor m_streamDescriptor;
+  std::shared_ptr<ndn_service_framework::LiveStreamPublisher> m_livePublisher;
+  std::shared_ptr<ndn_service_framework::StreamPublisher> m_streamPublisher;
+  std::shared_ptr<ndn_service_framework::PublishedPacketFeed> m_recordingPacketFeed;
+  std::mutex m_retentionLifecycleMutex;
+  std::optional<ndn_service_framework::PredictiveStreamDescriptor>
+    m_coreStreamDescriptor;
+  std::optional<UavVideoSampleClassSchedule> m_videoSampleClassSchedule;
+  std::unique_ptr<UavVideoNonceUseGuard> m_nonceGuard;
+  std::string m_activeStartFingerprint;
   std::atomic<bool> m_streaming{false};
   std::atomic<bool> m_captureEnabled{false};
   std::atomic<bool> m_cameraCaptureUsable{true};
   std::atomic<uint64_t> m_cameraProbeFailures{0};
   std::atomic<bool> m_done{false};
   std::atomic<uint64_t> m_nextSeq{0};
-  std::atomic<uint64_t> m_nextPacketSeq{0};
   std::atomic<uint64_t> m_nextFecFrameSeq{0};
-  std::atomic<uint64_t> m_frameInterests{0};
-  std::atomic<uint64_t> m_framePuts{0};
+  std::atomic<uint64_t> m_nextMediaSequence{0};
+  std::map<uint64_t, uint64_t> m_mediaSequenceByCursor;
+  uint64_t m_nextAnnouncedSampleId = 0;
+  std::map<uint64_t, ndn_service_framework::LiveStreamSampleReservation>
+    m_announcedVideoSamples;
   std::atomic<uint64_t> m_recordingChunks{0};
   std::atomic<uint64_t> m_recordingBytes{0};
   std::atomic<uint64_t> m_recordingLastUpdateMs{0};
+  std::atomic<uint64_t> m_retentionQueuePackets{0};
+  std::atomic<uint64_t> m_retentionQueueBytes{0};
+  std::atomic<uint64_t> m_retentionGapPackets{0};
+  std::atomic<uint64_t> m_retentionFailures{0};
+  std::atomic<bool> m_retentionStorageCircuitOpen{false};
+  std::atomic<bool> m_retentionWorkerBusy{false};
+  std::atomic<uint64_t> m_retentionCheckpointCursor{0};
+  std::atomic<uint64_t> m_nextRecordingSessionRetryMs{0};
+  std::atomic<bool> m_retentionActive{false};
+  mutable std::mutex m_retentionMutex;
+  CanonicalVideoRecordingManifest m_retentionManifest;
+  std::optional<CanonicalVideoRecordingManifest> m_latestCompletedManifest;
+  std::optional<VideoStreamDescriptor> m_latestCompletedDescriptor;
+  std::map<ndn::Name, ndn_service_framework::StreamContentDigest>
+    m_committedPacketDigests;
+  std::map<uint64_t, ndn_service_framework::StreamContentDigest>
+    m_retainedMappingContentDigests;
+  ndn_service_framework::StreamContentDigest m_retentionCatalogHead{};
+  bool m_retentionHasSource = false;
+  uint64_t m_lastObservedFeedDrops = 0;
+  bool m_legacyRecordingDetected = false;
   std::atomic<uint64_t> m_targetFps{30};
   std::atomic<uint64_t> m_requestedBitrateKbps{8000};
   std::atomic<uint64_t> m_acceptedBitrateKbps{8000};
@@ -2678,9 +4125,9 @@ private:
   std::atomic<uint64_t> m_acceptedFrameWidth{480};
   std::atomic<uint64_t> m_encoderQuality{6};
   std::atomic<bool> m_restartEncoder{false};
-  std::map<std::string, std::vector<uint8_t>> m_packets;
-  std::deque<std::string> m_order;
-  std::map<std::string, ndn::Name> m_pending;
+  bool m_useLegacyBatchedEncoderRead = false;
+  bool m_useGStreamerPipeline = false;
+  static constexpr uint64_t m_encoderPacketizationTimeoutMs = 20;
   std::vector<uint8_t> m_jpegBuffer;
   std::vector<std::vector<uint8_t>> m_fecPendingChunks;
   uint64_t m_fecCurrentFrameStartMs = 0;
@@ -2688,6 +4135,7 @@ private:
   uint64_t m_fecParityShards = 1;
   static constexpr uint64_t m_fecFrameTimeoutMs = 35;
   std::thread m_captureThread;
+  std::thread m_retentionThread;
 };
 
 class DroneServiceContainer
@@ -2721,7 +4169,8 @@ private:
   class RecordingManifestLocalHelper
   {
   public:
-    explicit RecordingManifestLocalHelper(std::function<Fields()> manifestProvider)
+    explicit RecordingManifestLocalHelper(
+      std::function<Fields(const ndn::Name&)> manifestProvider)
       : m_manifestProvider(std::move(manifestProvider))
     {
     }
@@ -2732,15 +4181,15 @@ private:
     {
       localRegistry.registerLocalService(
         serviceName,
-        [this](const ndn::Name&,
+        [this](const ndn::Name& requesterIdentity,
                const ndn::Name&,
                const ndn_service_framework::RequestMessage&) {
-          return makeResponse(true, encodeFields(m_manifestProvider()));
+          return makeResponse(true, encodeFields(m_manifestProvider(requesterIdentity)));
         });
     }
 
   private:
-    std::function<Fields()> m_manifestProvider;
+    std::function<Fields(const ndn::Name&)> m_manifestProvider;
   };
 
 public:
@@ -2807,7 +4256,7 @@ public:
         auto provider = std::make_unique<ndn_service_framework::ServiceProvider>(
           m_face, m_config.groupPrefix, m_providerCert, m_controllerCert, m_config.trustSchema);
         auto videoPublisher = std::make_unique<VideoPublisher>(
-          m_face, m_keyChain, m_coreContainer.localRegistry(), localRecordingChunkServiceName(),
+          *provider, m_face, m_keyChain, m_coreContainer.localRegistry(), localArchivedPacketServiceName(),
           m_config, m_droneId, m_videoPath, m_cameraOptions);
         {
           std::lock_guard<std::mutex> guard(m_containerMutex);
@@ -2959,6 +4408,18 @@ public:
   }
 
   Fields
+  recordingManifestFieldsFor(const ndn::Name& requesterIdentity) const
+  {
+    std::lock_guard<std::mutex> guard(m_containerMutex);
+    if (m_videoPublisher == nullptr) {
+      return {{"type", "canonical-video-recording-pending"},
+              {"drone_id", m_droneId}, {"recording", "off"},
+              {"recording_packets", "0"}, {"recording_bytes", "0"}};
+    }
+    return m_videoPublisher->recordingManifestFieldsFor(requesterIdentity);
+  }
+
+  Fields
   repoStatusFields() const
   {
     std::lock_guard<std::mutex> guard(m_containerMutex);
@@ -2975,7 +4436,7 @@ public:
         {"recording_chunks", "0"},
         {"recording_bytes", "0"},
         {"recording_last_update_ms", "0"},
-        {"recording_chunk_limit", std::to_string(m_cameraOptions.recordChunkLimit)},
+        {"retention_packet_limit", std::to_string(m_cameraOptions.recordPacketLimit)},
         {"timestamp_ms", std::to_string(nowMilliseconds())},
       };
     }
@@ -3001,10 +4462,10 @@ public:
   }
 
   std::vector<uint8_t>
-  recordingChunk(const std::string& objectName) const
+  archivedPacketWire(const std::string& objectName) const
   {
     std::lock_guard<std::mutex> guard(m_containerMutex);
-    return m_videoPublisher != nullptr ? m_videoPublisher->recordingChunk(objectName)
+    return m_videoPublisher != nullptr ? m_videoPublisher->archivedPacketWire(objectName)
                                        : std::vector<uint8_t>{};
   }
 
@@ -3254,7 +4715,9 @@ private:
 
     if (!m_recordingManifestLocalHelper) {
       m_recordingManifestLocalHelper = std::make_unique<RecordingManifestLocalHelper>(
-        [this] { return recordingManifestFields(); });
+        [this](const ndn::Name& requesterIdentity) {
+          return recordingManifestFieldsFor(requesterIdentity);
+        });
     }
     m_recordingManifestLocalHelper->registerService(m_coreContainer.localRegistry(),
                                                    localRecordingManifestServiceName());
@@ -3289,18 +4752,29 @@ private:
                              << " value=" << delayText << " error=" << e.what());
               }
             }
+            Fields responseFields;
+            bool alreadyStopped = false;
             {
               std::lock_guard<std::mutex> guard(m_containerMutex);
-              if (!m_videoPublisher->isStreaming()) {
-                const auto responseFields = m_videoPublisher->stopWithReason("already-stopped");
-                publishStatus("video already stopped");
-                return makeResponse(true, encodeFields(responseFields));
+              alreadyStopped = !m_videoPublisher->isStreaming();
+              if (alreadyStopped) {
+                responseFields =
+                  m_videoPublisher->stopWithReason("already-stopped");
               }
-              const auto responseFields = m_videoPublisher->stop();
-              stopObjectDetectionLoop();
-              publishStatus("video stopped");
-              return makeResponse(true, encodeFields(responseFields));
+              else {
+                responseFields = m_videoPublisher->stop();
+              }
             }
+            // Joining while holding m_containerMutex can deadlock when the
+            // detection loop is already entering isStreaming(), which takes
+            // the same mutex. Complete the APP-owned thread lifecycle only
+            // after releasing the container state lock.
+            if (!alreadyStopped) {
+              stopObjectDetectionLoop();
+            }
+            publishStatus(alreadyStopped ? "video already stopped" :
+                                           "video stopped");
+            return makeResponse(true, encodeFields(responseFields));
           }
           return makeResponse(false, encodeFields({
             {"status", "rejected"},
@@ -3313,11 +4787,33 @@ private:
     m_provider->addService(
       droneCameraRecordingManifestService(m_config, m_droneId),
       ndn_service_framework::ServiceProvider::AckStrategyHandler(ackHandler),
-      ndn_service_framework::ServiceProvider::SimpleRequestHandler(
-        [this](const ndn_service_framework::RequestMessage& request) {
+      ndn_service_framework::ServiceProvider::RequestHandler(
+        [this](const ndn::Name& requesterIdentity,
+               const ndn::Name&,
+               const ndn::Name&,
+               const ndn::Name&,
+               const ndn_service_framework::RequestMessage& request) {
+          const auto fields = decodeFields(payloadToString(request));
+          const auto retentionAction = fieldOr(fields, "retention_action", "status");
+          if (retentionAction == "start") {
+            (void)m_videoPublisher->startRetention();
+          }
+          else if (retentionAction == "stop" ||
+                   fieldOr(fields, "finalize_retention", "false") == "true") {
+            (void)m_videoPublisher->finalizeRetention();
+          }
+          else if (retentionAction == "restart") {
+            (void)m_videoPublisher->finalizeRetention();
+            (void)m_videoPublisher->startRetention();
+          }
           ndn_service_framework::ResponseMessage response;
           m_coreContainer.localRegistry().localInvokeRawInto(
-            localRecordingManifestServiceName(), request, response, m_identity);
+            localRecordingManifestServiceName(), request, response, requesterIdentity);
+          const auto responseFields = decodeFields(responsePayload(response));
+          NDN_LOG_INFO("CAMERA_CANONICAL_MANIFEST_RESPONSE type="
+                       << fieldOr(responseFields, "type", "missing")
+                       << " fields=" << responseFields.size()
+                       << " bytes=" << response.getPayload().size());
           return response;
         }),
       ServiceInvocationMode::NormalOnly);
@@ -3626,9 +5122,9 @@ private:
   }
 
   ndn::Name
-  localRecordingChunkServiceName() const
+  localArchivedPacketServiceName() const
   {
-    return ndn::Name(m_identity).append("Local").append("Recording").append("Chunk");
+    return ndn::Name(m_identity).append("Local").append("Recording").append("ArchivedPacket");
   }
 
   void

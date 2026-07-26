@@ -11,7 +11,8 @@ from pathlib import Path
 import subprocess
 import sys
 
-from ndnsf_distributed_inference import (
+from ndnsf_distributed_inference.policy import write_policy_bundle
+from ndnsf_distributed_inference.runtime_v1 import (
     GenericAckMetadata,
     GenericProviderRuntimeHint,
     ModelFragmentKey,
@@ -22,7 +23,6 @@ from ndnsf_distributed_inference import (
     choose_edge_aware_runtime_assignment,
     to_plain,
     write_json,
-    write_policy_bundle,
 )
 from runtime_aware_fixtures.loader import (
     load_provider_ack_metadata,

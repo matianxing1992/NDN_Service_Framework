@@ -92,6 +92,41 @@ class ProviderExecutionLeaseTableBindingTest(unittest.TestCase):
         self.assertFalse(stale.status)
         self.assertEqual(stale.reason_code, "LEASE_STALE_EPOCH")
 
+    def test_commit_abort_and_release_are_idempotent(self) -> None:
+        operations = ("commit", "abort", "release")
+        for operation in operations:
+            with self.subTest(operation=operation):
+                table = ndnsf.ProviderExecutionLeaseTable("epoch-A")
+                prepared = table.prepare(make_lease(), 1000)
+                lease_id = prepared.lease.lease_id
+                if operation == "commit":
+                    invoke = lambda: table.commit(
+                        lease_id, "epoch-A", "/user/A", "commit-key", 1100)
+                    expected = ndnsf.ExecutionLeaseState.COMMITTED
+                elif operation == "abort":
+                    invoke = lambda: table.abort(
+                        lease_id, "epoch-A", "/user/A", "abort-key", 1100)
+                    expected = ndnsf.ExecutionLeaseState.ABORTED
+                else:
+                    table.commit(lease_id, "epoch-A", "/user/A", "commit-key", 1050)
+                    invoke = lambda: table.release(
+                        lease_id, "epoch-A", "/user/A", "release-key", 1100)
+                    expected = ndnsf.ExecutionLeaseState.RELEASED
+                first, repeated = invoke(), invoke()
+                self.assertTrue(first.status)
+                self.assertTrue(repeated.status)
+                self.assertEqual(first.lease.state, expected)
+                self.assertEqual(repeated.lease.state, expected)
+
+    def test_expiry_cleanup_reclaims_without_operation_entry(self) -> None:
+        table = ndnsf.ProviderExecutionLeaseTable("epoch-A")
+        prepared = table.prepare(make_lease(), 1000)
+        self.assertEqual(table.cleanup_expired(5001), 1)
+        expired = table.find(prepared.lease.lease_id)
+        self.assertIsNotNone(expired)
+        self.assertEqual(expired.state, ndnsf.ExecutionLeaseState.EXPIRED)
+        self.assertFalse(table.has_active_conflict_key("compute-slot:0", 5001))
+
 
 if __name__ == "__main__":
     unittest.main()

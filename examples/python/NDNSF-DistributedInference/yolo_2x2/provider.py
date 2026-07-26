@@ -5,13 +5,14 @@ from __future__ import annotations
 
 import subprocess
 
-from ndnsf_distributed_inference import (
-    APPProvider,
+from ndnsf_distributed_inference.app_sdk import APPProvider, ProviderRuntimeContext
+from ndnsf_distributed_inference.artifact_deployment import (
     ArtifactProvisioningState,
-    ProviderRuntimeContext,
-    execute_onnx_dependency_chunk,
     materialize_role_artifacts,
     materialized_path,
+)
+from ndnsf_distributed_inference.adapters.onnx.executor import (
+    execute_onnx_dependency_chunk,
     prefetch_dependency_inputs,
 )
 

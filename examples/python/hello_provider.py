@@ -16,6 +16,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run a HELLO provider")
     parser.add_argument("--provider-id", default="")
     parser.add_argument("--service", default="/HELLO")
+    parser.add_argument("--selection-gated", action="store_true")
+    parser.add_argument("--prepare-failure", action="store_true")
     add_process_arguments(parser)
     return parser
 
@@ -32,8 +34,21 @@ def main() -> int:
 
     provider = ServiceProvider(provider_id=args.provider_id, **session_kwargs(args))
 
+    if args.selection_gated:
+        def prepare(context):
+            if args.prepare_failure:
+                raise RuntimeError("injected generic preparation failure")
+            print("SPEC129_PREPARE READY " + context["provider_identity"], flush=True)
+            return {
+                "artifactDigest": "sha256:spec129-generic-artifact",
+                "deploymentInstanceId": "instance-" + args.provider_id.lower(),
+                "operationId": "prepare-" + args.provider_id.lower(),
+            }
+        provider.set_deployment_prepare_handler(prepare)
+
     @provider.handler(args.service)
     def hello(request: bytes) -> bytes:
+        print("SPEC129_EXECUTE provider=" + (args.provider_id or "default"), flush=True)
         return b"HELLO" if request == b"HELLO" else b"unexpected payload"
 
     with optional_local_nfd(args.start_local_nfd):

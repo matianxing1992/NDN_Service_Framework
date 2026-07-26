@@ -7,7 +7,9 @@ public:
   GroundStationServiceContainer(bool serveCertificates, int ackTimeoutMs, int timeoutMs,
                        UavRuntimeConfig config,
                        std::string targetDroneId, uint64_t videoBitrateKbps,
-                       uint64_t videoFrameWidth, uint64_t videoFecParityShards,
+                       uint64_t videoFps, uint64_t videoFrameWidth,
+                       uint64_t videoFecParityShards,
+                       std::string liveStreamPrefetchPolicy = "mapped-pressure",
                        std::vector<std::string> patrolDroneIds = {},
                        std::string yoloModel = "yolo26n.pt",
                        std::string yoloScript = "NDNSF-UAV-APP/tools/yolo_detect_once.py",
@@ -37,8 +39,10 @@ public:
     , m_timeoutMs(timeoutMs)
     , m_targetDroneId(std::move(targetDroneId))
     , m_videoBitrateKbps(videoBitrateKbps)
+    , m_videoFps(videoFps)
     , m_videoFrameWidth(videoFrameWidth)
     , m_videoFecParityShards(videoFecParityShards)
+    , m_liveStreamPrefetchPolicy(std::move(liveStreamPrefetchPolicy))
     , m_patrolDroneIds(std::move(patrolDroneIds))
     , m_yoloModel(std::move(yoloModel))
     , m_yoloScript(std::move(yoloScript))
@@ -57,8 +61,19 @@ public:
     , m_operatorAuthorityStateFile(std::move(operatorAuthorityStateFile))
     , m_operatorAdminIds(parseOperatorIdList(operatorAdminIds))
     , m_operatorAuthorityRefreshIntervalMs(operatorAuthorityRefreshIntervalMs)
-    , m_videoPumpTimer(m_face.getIoContext())
   {
+    if (m_videoFps < 1 || m_videoFps > 60) {
+      throw std::invalid_argument("video FPS must be between 1 and 60");
+    }
+    if (const auto* backend = std::getenv("NDNSF_UAV_VIDEO_PIPELINE")) {
+      m_useGStreamerPipeline = std::string(backend) == "gstreamer";
+    }
+    if (m_liveStreamPrefetchPolicy != "adaptive-sample-atomic" &&
+        m_liveStreamPrefetchPolicy != "mapped-pressure" &&
+        m_liveStreamPrefetchPolicy != "mapped-live-v1-future-on" &&
+        m_liveStreamPrefetchPolicy != "mapped-live-v1-future-off") {
+      throw std::invalid_argument("unknown LiveStream prefetch policy");
+    }
     if (m_patrolDroneIds.empty()) {
       m_patrolDroneIds.push_back(m_targetDroneId);
     }
@@ -99,6 +114,7 @@ public:
     }
     NDN_LOG_INFO("GS_RUNTIME_SHUTDOWN phase=begin");
     m_streaming = false;
+    stopLiveVideoHandle();
     m_recordingPlaybackActive = false;
     if (m_operatorAuthorityRefreshThread.joinable()) {
       m_operatorAuthorityRefreshThread.join();
@@ -118,9 +134,6 @@ public:
     }
     stopYoloWorker();
     stopDecoder();
-    if (m_recordingPlaybackDecodeThread.joinable()) {
-      m_recordingPlaybackDecodeThread.join();
-    }
     NDN_LOG_INFO("GS_RUNTIME_SHUTDOWN phase=workers-joined");
   }
 
@@ -299,7 +312,7 @@ public:
   }
 
   void
-  setFrameCallback(std::function<void(std::vector<uint8_t>, uint64_t, uint64_t, std::string, uint64_t)> callback)
+  setFrameCallback(std::function<void(UavVideoFrame, uint64_t, std::string, uint64_t)> callback)
   {
     m_frameCallback = std::move(callback);
   }
@@ -1180,6 +1193,8 @@ public:
     }
     if (m_recordingPlaybackActive.load() && activeRecordingPlaybackDroneId() == droneId) {
       m_recordingPlaybackActive = false;
+      m_streaming = false;
+      stopLiveVideoHandle();
       stopDecoder();
       {
         std::lock_guard<std::mutex> guard(m_videoStateMutex);
@@ -1201,10 +1216,8 @@ public:
     }
     m_videoStartInFlight = false;
     m_streaming = false;
+    stopLiveVideoHandle();
     m_activeStreamId = makeVideoSessionId("live-stop", droneId);
-    m_videoPumpScheduled = false;
-    boost::system::error_code ec;
-    m_videoPumpTimer.cancel(ec);
     publishVideoAdaptiveState("stop-requested", true);
     stopDecoder();
     stopVideoAttempt(droneId);
@@ -1255,6 +1268,28 @@ public:
   requestRecordingManifest()
   {
     requestRecordingManifestForDrone(targetDroneId(), false);
+  }
+
+  void
+  requestRecordingRetentionAction(const std::string& action)
+  {
+    const auto droneId = targetDroneId();
+    postRequestForDrone(
+      droneId,
+      droneCameraRecordingManifestService(m_config, droneId),
+      encodeFields({{"type", "camera-recording-retention-control"},
+                    {"retention_action", action}}),
+      [this, droneId, action](const std::string& payload) {
+        const auto fields = decodeFields(payload);
+        NDN_LOG_INFO("GS_CANONICAL_RETENTION_ACTION drone=" << droneId
+                     << " action=" << action
+                     << " status=" << fieldOr(fields, "retention_state", "unknown")
+                     << " recording_id="
+                     << fieldOr(fields, "recording_id",
+                                fieldOr(fields, "recording_session_id", "missing")));
+        publishStatus("Canonical retention " + action + " drone=" + droneId +
+                      " state=" + fieldOr(fields, "retention_state", "unknown"));
+      });
   }
 
   void
@@ -5437,6 +5472,135 @@ private:
   }
 
   void
+  stopLiveVideoHandle()
+  {
+    std::shared_ptr<ndn_service_framework::LiveStreamConsumerHandle>
+      legacyHandle;
+    std::shared_ptr<ndn_service_framework::PredictiveStreamSubscriber>
+      predictiveHandle;
+    {
+      std::lock_guard<std::mutex> guard(m_liveStreamMutex);
+      ++m_liveStreamConsumerGeneration;
+      m_coreFetchDecisionSnapshot.reset(m_liveStreamConsumerGeneration);
+      legacyHandle = std::move(m_liveStreamHandle);
+      predictiveHandle = std::move(m_predictiveSubscriber);
+      if (m_liveVideoDescriptor) {
+        std::fill(m_liveVideoDescriptor->streamKey.begin(),
+                  m_liveVideoDescriptor->streamKey.end(), 0);
+        std::fill(m_liveVideoDescriptor->nonceSalt.begin(),
+                  m_liveVideoDescriptor->nonceSalt.end(), 0);
+      }
+      m_liveVideoDescriptor.reset();
+      m_liveSampleSymbols.clear();
+    }
+    if (predictiveHandle) {
+      predictiveHandle->stop();
+    }
+    if (legacyHandle) {
+      legacyHandle->stop();
+    }
+  }
+
+  uint64_t
+  beginLiveStreamConsumerGeneration()
+  {
+    std::lock_guard<std::mutex> guard(m_liveStreamMutex);
+    ++m_liveStreamConsumerGeneration;
+    m_coreFetchDecisionSnapshot.reset(m_liveStreamConsumerGeneration);
+    return m_liveStreamConsumerGeneration;
+  }
+
+  bool
+  observeCoreFetchDecision(
+    uint64_t callbackGeneration,
+    const ndn_service_framework::LiveStreamStatus& status)
+  {
+    std::lock_guard<std::mutex> guard(m_liveStreamMutex);
+    return m_coreFetchDecisionSnapshot.observe(
+      m_liveStreamConsumerGeneration, callbackGeneration, status,
+      nowMilliseconds());
+  }
+
+  ndn_service_framework::LiveStreamItemAdmission
+  admitLiveVideoItem(const ndn_service_framework::VerifiedLiveStreamItem& item)
+  {
+    VideoStreamDescriptor descriptor;
+    {
+      std::lock_guard<std::mutex> guard(m_liveStreamMutex);
+      if (!m_streaming.load() || !m_liveVideoDescriptor ||
+          item.verifiedProvider != m_liveVideoDescriptor->providerIdentity) {
+        return ndn_service_framework::LiveStreamItemAdmission::rejectItem(
+          "retired-or-wrong-provider");
+      }
+      descriptor = *m_liveVideoDescriptor;
+    }
+
+    try {
+      ndn_service_framework::logStreamTimelineTrace(
+        "consumer", "data-received", descriptor.streamId,
+        descriptor.sessionEpoch, item.cursor,
+        {{"clock_domain", "consumer-steady"},
+         {"wire_validation", "completed-by-core"}});
+      ndn_service_framework::logStreamTimelineTrace(
+        "consumer", "signature-validated", descriptor.streamId,
+        descriptor.sessionEpoch, item.cursor,
+        {{"verified_provider", item.verifiedProvider.toUri()}});
+      UavVideoDataName binding;
+      binding.name = item.originalName;
+      binding.cursor = item.cursor;
+      binding.parity = false;
+      // The descriptor carries only the class hard maximum. The actual source
+      // extent is variable per frame and is authenticated inside VideoPacket;
+      // do not manufacture a false FinalBlock from that maximum here.
+      const ndn::Buffer protectedWire(item.content.begin(), item.content.end());
+      const auto packet = unprotectUavVideoPacket(
+        descriptor, binding, item.verifiedProvider, protectedWire);
+      ndn_service_framework::logStreamTimelineTrace(
+        "consumer", "decrypted", descriptor.streamId,
+        descriptor.sessionEpoch, item.cursor,
+        {{"cipher", descriptor.cipher}});
+
+      if (!isCurrentVideoSessionPacket(packet.streamId, packet.streamSessionEpoch) ||
+          !isCurrentLiveVideoStream(packet.streamId) ||
+          !markVideoPacketCompleted(packet.packetSeq)) {
+        return ndn_service_framework::LiveStreamItemAdmission::rejectItem(
+          "stale-or-replayed-uav-packet");
+      }
+
+      const auto receivedMs = item.receivedMs == 0 ? nowMilliseconds() : item.receivedMs;
+      if (m_firstFrameMs == 0) {
+        m_firstFrameMs = receivedMs;
+      }
+      recordVideoDataReceived();
+      ++m_receivedChunks;
+      updateHighestReceivedVideoPacket(packet.packetSeq);
+      queueStreamChunk(packet, receivedMs);
+
+      bool sampleComplete = false;
+      {
+        std::lock_guard<std::mutex> guard(m_liveStreamMutex);
+        auto& symbols = m_liveSampleSymbols[{packet.streamSessionEpoch, packet.frameSeq}];
+        symbols.insert(packet.fecSymbolIndex);
+        sampleComplete = symbols.size() >= packet.fecDataShards;
+        if (sampleComplete) {
+          m_liveSampleSymbols.erase({packet.streamSessionEpoch, packet.frameSeq});
+        }
+        while (m_liveSampleSymbols.size() > 64) {
+          m_liveSampleSymbols.erase(m_liveSampleSymbols.begin());
+        }
+      }
+      (void)sampleComplete;
+      return ndn_service_framework::LiveStreamItemAdmission::acceptItem();
+    }
+    catch (const std::exception& error) {
+      NDN_LOG_WARN("GS_LIVE_STREAM_ITEM_REJECTED cursor=" << item.cursor
+                   << " provenance=" << ndn_service_framework::toString(item.provenance)
+                   << " reason=" << error.what());
+      return ndn_service_framework::LiveStreamItemAdmission::rejectItem(error.what());
+    }
+  }
+
+  void
   startVideoAttempt(std::string droneId, uint64_t requestedBitrateKbps = 0)
   {
     if (requestedBitrateKbps == 0) {
@@ -5445,87 +5609,253 @@ private:
     m_activeStreamId = makeVideoSessionId("live-start", droneId);
     postRequestForDrone(droneId, droneVideoControlService(m_config, droneId),
                 encodeFields(makeVideoStartFields(
-                  VIDEO_FPS, requestedBitrateKbps, m_videoFrameWidth,
+                  m_videoFps, requestedBitrateKbps, m_videoFrameWidth,
                   m_videoFecParityShards)),
                 [this, droneId, requestedBitrateKbps](const std::string& payload) {
-                  const auto fields = decodeFields(payload);
-                  const auto prefix = fieldOr(fields, "stream_prefix", "");
-                  const auto seqText = fieldOr(fields, "next_seq", "0");
-                  uint64_t streamSessionEpoch = 0;
                   try {
-                    streamSessionEpoch = std::stoull(fieldOr(fields, "stream_session_epoch", "0"));
-                  }
-                  catch (const std::exception&) {
-                    streamSessionEpoch = 0;
-                  }
-                  if (prefix.empty()) {
-                    publishStatus("Video control response missing stream prefix");
-                    return;
-                  }
+                    const auto provider = droneIdentity(m_config, droneId);
+                    const auto service = droneVideoControlService(m_config, droneId);
+                    const auto descriptor = decodeVideoStreamDescriptorStrict(
+                      payload, provider, provider, service, service);
+                    const auto coreDescriptor =
+                      toCorePredictiveStreamDescriptor(descriptor);
+                    const auto fields = decodeFields(payload);
 
-                  updateVideoState(droneId, fields);
-                  m_videoBitrateKbps = requestedBitrateKbps;
-                  m_streamPrefix = ndn::Name(prefix);
-                  m_activeStreamId = fieldOr(fields, "stream_id", "");
-                  if (m_activeStreamId.empty()) {
-                    m_activeStreamId = "live|" + droneId + "|" +
-                      std::to_string(nowMilliseconds()) + "|" +
-                      std::to_string(++m_videoSessionCounter);
+                    // Persist only the non-secret acceptance fields. The key and
+                    // nonce salt remain in the validated descriptor in memory.
+                    NDN_LOG_INFO("GS_VIDEO_STREAM_READY"
+                                 << " status=streaming"
+                                 << " stream_id=" << descriptor.streamId
+                                 << " sample_period_ms=" << descriptor.samplePeriodMs
+                                 << " fec_parity_shards="
+                                 << fieldOr(fields, "fec_parity_shards", "0")
+                                 << " latest_join_cursor=" << descriptor.frontiers.latestJoin
+                                 << " mapping_committed_through_cursor="
+                                 << descriptor.frontiers.mappingCommittedThrough);
+
+                    stopLiveVideoHandle();
+                    const auto liveStreamGeneration =
+                      beginLiveStreamConsumerGeneration();
+                    updateVideoState(droneId, fields);
+                    m_videoBitrateKbps = requestedBitrateKbps;
+                    m_streamPrefix = descriptor.dataPrefix;
+                    m_activeStreamId = descriptor.streamId;
+                    allocateStreamSessionEpoch(
+                      descriptor.streamId, descriptor.sessionEpoch);
+                    {
+                      std::lock_guard<std::mutex> guard(m_videoStateMutex);
+                      m_activeVideoDroneId = droneId;
+                    }
+                    configurePrefetch(fields);
+                    m_streaming = true;
+                    m_seenVideoStart = true;
+                    m_videoStartInFlight = false;
+                    m_firstFrameMs = 0;
+                    m_receivedChunks = 0;
+                    m_frameNacks = 0;
+                    m_frameTimeouts = 0;
+                    m_duplicateVideoPackets = 0;
+                    m_lastCoreStatusDelivered = 0;
+                    m_decodedVideoFrames = 0;
+                    m_videoFramesPublished = 0;
+                    m_lastVideoAdaptiveLogMs = 0;
+                    resetVideoAdaptiveState();
+                    m_highestReceivedVideoPacketSeq = UINT64_MAX;
+                    resetVideoPacketTracking();
+                    {
+                      std::lock_guard<std::mutex> guard(m_decoderQueueMutex);
+                      m_chunkQueue.clear();
+                      m_decoderReorderBuffer.reset();
+                      m_decoderPendingChunkCount = 0;
+                      m_decoderMaxReorderDepth = 0;
+                      m_decoderOutBuffer.clear();
+                    }
+                    stopDecoder();
+                    const auto initialMediaSequence = std::stoull(fieldOr(
+                      descriptor.extensions, "latest_join_media_sequence", "0"));
+                    startDecoder(initialMediaSequence);
+
+                    ndn_service_framework::StreamSubscriptionOptions options;
+                    options.start = ndn_service_framework::LiveStreamStart::Beginning;
+                    options.prefetchPolicy =
+                      ndn_service_framework::LiveStreamPrefetchPolicy::AdaptiveSampleAtomic;
+                    const auto largestSample = std::max_element(
+                      coreDescriptor.definition.sampleClasses.begin(),
+                      coreDescriptor.definition.sampleClasses.end(),
+                      [] (const auto& left, const auto& right) {
+                        return left.hardMaxSourceItems < right.hardMaxSourceItems;
+                      });
+                    const auto atomicMinimum = largestSample->hardMaxSourceItems +
+                      (coreDescriptor.definition.fec.enabled() ? 1u : 0u) + 5u;
+                    options.aggregateInterestLimit = std::max<size_t>(
+                      atomicMinimum, static_cast<size_t>(m_dynamicWindowMax));
+                    options.enableFecRecovery = coreDescriptor.definition.fec.enabled();
+                    options.interestLifetimeMs = dynamicInterestLifetimeMs();
+                    options.onItem = [this](const auto& item) {
+                      return admitLiveVideoItem(item);
+                    };
+                    options.onStatus = [this, liveStreamGeneration](const auto& status) {
+                      m_frameTimeouts = status.timeouts;
+                      m_frameNacks = status.nacks;
+                      const auto acceptedCoreStatus =
+                        observeCoreFetchDecision(liveStreamGeneration, status);
+                      if (acceptedCoreStatus) {
+                        publishVideoAdaptiveState("core-status");
+                      }
+                      const auto previous = m_lastCoreStatusDelivered.load();
+                      const bool sampled = status.delivered == 0 ||
+                        status.delivered >= previous + 64;
+                      if (!status.reason.empty() || sampled) {
+                        if (sampled) {
+                          m_lastCoreStatusDelivered = status.delivered;
+                        }
+                        NDN_LOG_INFO("GS_VIDEO_CORE_STATUS state="
+                                     << ndn_service_framework::toString(status.state)
+                                     << " policy="
+                                     << (status.fetchDecision ?
+                                       status.fetchDecision->policyMode : "none")
+                                     << " reason=" << status.reason
+                                     << " delivered=" << status.delivered
+                                     << " rejected=" << status.rejected
+                                     << " recovered=" << status.recovered
+                                     << " recovery_attempts="
+                                     << status.recoveryAttempts
+                                     << " recovery_exhaustions="
+                                     << status.recoveryExhaustions
+                                     << " recoverable_groups="
+                                     << status.recoverableGroups
+                                     << " recovered_groups="
+                                     << status.recoveredGroups
+                                     << " terminal_missing_sources="
+                                     << status.terminalMissingSources
+                                     << " retry_attempts=" << status.retryAttempts
+                                     << " timeouts=" << status.timeouts
+                                     << " nacks=" << status.nacks
+                                     << " late_arrivals=" << status.lateArrivals
+                                     << " deadline_skips=" << status.deadlineSkips
+                                     << " retry_exhaustions=" << status.retryExhaustions
+                                     << " recovery_control_interests="
+                                     << status.recoveryControlInterests
+                                     << " recovery_frontier_interests="
+                                     << status.recoveryFrontierInterests
+                                     << " recovery_group_interests="
+                                     << status.recoveryGroupInterests
+                                     << " recovery_coalesced_waiters="
+                                     << status.recoveryCoalescedWaiters
+                                     << " recovery_metadata_cache_hits="
+                                     << status.recoveryMetadataCacheHits
+                                     << " next_deliver_cursor="
+                                     << status.nextDeliverCursor
+                                     << " ready_queue_depth="
+                                     << status.readyQueueDepth
+                                     << " oldest_ready_cursor="
+                                     << status.oldestReadyCursor
+                                     << " terminal_gap_queue_depth="
+                                     << status.terminalGapQueueDepth
+                                     << " drain_wake_count="
+                                     << status.drainWakeCount
+                                     << " stale_ready_drops="
+                                     << status.staleReadyDrops
+                                     << " terminal_gap_superseded="
+                                     << status.terminalGapSuperseded
+                                     << " mapping_interests=" << status.mappingInterests
+                                     << " mapping_data_responses="
+                                     << status.mappingDataResponses
+                                     << " mapping_new_data_responses="
+                                     << status.mappingNewDataResponses
+                                     << " payload_interests=" << status.payloadInterests
+                                     << " payload_source_data_admissions="
+                                     << status.payloadSourceDataAdmissions
+                                     << " payload_repair_interests="
+                                     << status.payloadRepairInterests
+                                     << " payload_repair_data_responses="
+                                     << status.payloadRepairDataResponses
+                                     << " payload_repair_data_consumed="
+                                     << status.payloadRepairDataConsumed
+                                     << " payload_application_useful_interests="
+                                     << status.payloadApplicationUsefulInterests
+                                     << " payload_protection_only_interests="
+                                     << status.payloadProtectionOnlyInterests
+                                     << " payload_nonproductive_interests="
+                                     << status.payloadNonproductiveInterests
+                                     << " payload_unresolved_interests="
+                                     << status.payloadUnresolvedInterests
+                                     << " ahead_join_payload_interests="
+                                     << status.futurePayloadInterests
+                                     << " future_cursor_horizon="
+                                     << status.futureCursorHorizon
+                                     << " mapping_bytes=" << status.mappingBytes
+                                     << " in_flight=" << status.inFlight
+                                     << " phase="
+                                     << (status.fetchDecision ?
+                                           ndn_service_framework::toString(
+                                             status.fetchDecision->phase) : "UNKNOWN")
+                                     << " window="
+                                     << (status.fetchDecision ? status.fetchDecision->window : 0)
+                                     << " lookahead="
+                                     << (status.fetchDecision ? status.fetchDecision->lookahead : 0)
+                                     << " sample_demand="
+                                     << (status.fetchDecision ? status.fetchDecision->sampleDemand : 0)
+                                     << " packet_demand="
+                                     << (status.fetchDecision ? status.fetchDecision->packetDemand : 0)
+                                     << " atomic_expansions="
+                                     << (status.fetchDecision ? status.fetchDecision->atomicExpansions : 0)
+                                     << " atomic_deferrals="
+                                     << (status.fetchDecision ? status.fetchDecision->atomicDeferrals : 0)
+                                     << " terminal_unproduced="
+                                     << (status.fetchDecision ?
+                                           status.fetchDecision->terminalUnproducedAdvice : 0)
+                                     << " later_cursor_advice="
+                                     << (status.fetchDecision ?
+                                           status.fetchDecision->laterCursorAdvice : 0)
+                                     << " capacity_reason="
+                                     << (status.fetchDecision ?
+                                           status.fetchDecision->capacityReason : "none"));
+                      }
+                    };
+                    auto handle = m_user->subscribeStream(
+                      coreDescriptor, std::move(options));
+                    bool currentGeneration = false;
+                    {
+                      std::lock_guard<std::mutex> guard(m_liveStreamMutex);
+                      currentGeneration =
+                        liveStreamGeneration == m_liveStreamConsumerGeneration;
+                      if (currentGeneration) {
+                        m_liveVideoDescriptor = descriptor;
+                        m_predictiveSubscriber = handle;
+                      }
+                    }
+                    if (!currentGeneration) {
+                      handle->stop();
+                      return;
+                    }
+                    NDN_LOG_INFO("STREAM_API_ACTIVE role=consumer mode=predictive"
+                                 << " stream=" << descriptor.streamId
+                                 << " epoch=" << descriptor.sessionEpoch);
+                    publishVideoAdaptiveState("configured", true);
+                    if (m_videoBitrateChangePending.exchange(false)) {
+                      const auto acceptedBitrateKbps = m_videoAcceptedBitrateKbps.load();
+                      const auto expectedBitrateKbps = m_videoBitrateChangeToKbps.load();
+                      NDN_LOG_INFO("GS_VIDEO_BITRATE_CHANGE_COMPLETE drone=" << droneId
+                                   << " from_kbps=" << m_videoBitrateChangeFromKbps.load()
+                                   << " requested_kbps=" << requestedBitrateKbps
+                                   << " expected_kbps=" << expectedBitrateKbps
+                                   << " accepted_kbps=" << acceptedBitrateKbps
+                                   << " matched="
+                                   << (acceptedBitrateKbps == expectedBitrateKbps ? "true" : "false")
+                                   << " stream_prefix=" << descriptor.dataPrefix);
+                    }
+                    publishStatus("Protected LiveStream drone=" + droneId + " from " +
+                                  descriptor.dataPrefix.toUri());
                   }
-                  if (streamSessionEpoch > 0) {
-                    allocateStreamSessionEpoch(m_activeStreamId, streamSessionEpoch);
+                  catch (const std::exception& error) {
+                    m_streaming = false;
+                    m_videoStartInFlight = false;
+                    stopLiveVideoHandle();
+                    stopDecoder();
+                    publishStatus(std::string("Rejected video stream descriptor: ") +
+                                  error.what());
                   }
-                  else {
-                    allocateStreamSessionEpoch(m_activeStreamId);
-                  }
-                  {
-                    std::lock_guard<std::mutex> guard(m_videoStateMutex);
-                    m_activeVideoDroneId = droneId;
-                  }
-                  configurePrefetch(fields);
-                  m_keyLane = PacketLane{};
-                  m_deltaLane = PacketLane{"packet", 0, 0, 0, 0};
-	                  m_videoPumpScheduled = false;
-                  m_streaming = true;
-                  m_seenVideoStart = true;
-                  m_videoStartInFlight = false;
-                  m_firstFrameMs = 0;
-                  m_receivedChunks = 0;
-                  m_frameNacks = 0;
-                  m_frameTimeouts = 0;
-                  m_duplicateVideoPackets = 0;
-                  m_decodedVideoFrames = 0;
-                  m_videoFramesPublished = 0;
-                  m_lastVideoAdaptiveLogMs = 0;
-                  resetVideoAdaptiveState();
-                  m_highestReceivedVideoPacketSeq = UINT64_MAX;
-                  m_nextChunkSeqToDecode = 0;
-                  m_fecFrames.clear();
-                  resetVideoPacketTracking();
-                  {
-                    std::lock_guard<std::mutex> guard(m_decoderQueueMutex);
-                    m_chunkQueue.clear();
-                    m_decoderReorderBuffer.reset();
-                    m_decoderPendingChunkCount = 0;
-                    m_decoderOutBuffer.clear();
-                  }
-                  stopDecoder();
-                  startDecoder();
-                  publishVideoAdaptiveState("configured", true);
-                  if (m_videoBitrateChangePending.exchange(false)) {
-                    const auto acceptedBitrateKbps = m_videoAcceptedBitrateKbps.load();
-                    const auto expectedBitrateKbps = m_videoBitrateChangeToKbps.load();
-                    NDN_LOG_INFO("GS_VIDEO_BITRATE_CHANGE_COMPLETE drone=" << droneId
-                                 << " from_kbps=" << m_videoBitrateChangeFromKbps.load()
-                                 << " requested_kbps=" << requestedBitrateKbps
-                                 << " expected_kbps=" << expectedBitrateKbps
-                                 << " accepted_kbps=" << acceptedBitrateKbps
-                                 << " matched="
-                                 << (acceptedBitrateKbps == expectedBitrateKbps ? "true" : "false")
-                                 << " stream_prefix=" << prefix);
-                  }
-                  publishStatus("Video packet stream drone=" + droneId + " from " + prefix);
-                  requestVideoPackets();
                 },
                 [this, droneId, requestedBitrateKbps] {
                   if (m_seenVideoStart.load()) {
@@ -5582,10 +5912,8 @@ private:
     m_videoBitrateChangeToKbps = requestedBitrateKbps;
     m_videoBitrateChangePending = true;
     m_streaming = false;
+    stopLiveVideoHandle();
     m_activeStreamId = makeVideoSessionId("live-restart", droneId);
-    m_videoPumpScheduled = false;
-    boost::system::error_code ec;
-    m_videoPumpTimer.cancel(ec);
     publishVideoAdaptiveState("bitrate-change-requested", true);
     stopDecoder();
     NDN_LOG_INFO("GS_VIDEO_BITRATE_CHANGE_APPLY drone=" << droneId
@@ -5720,24 +6048,42 @@ private:
     postRequestForDrone(
       droneId,
       droneCameraRecordingManifestService(m_config, droneId),
-      encodeFields({{"type", "camera-recording-manifest-request"}}),
+      encodeFields({{"type", "camera-recording-manifest-request"},
+                    {"finalize_retention", playAfterRefresh ? "true" : "false"}}),
       [this, droneId, playAfterRefresh](const std::string& payload) {
         const auto fields = decodeFields(payload);
-        auto manifest = RecordingDataProductState::fromFields(fields, droneId);
-        {
-          std::lock_guard<std::mutex> guard(m_recordingManifestMutex);
-          m_recordingManifests[droneId] = manifest;
+        NDN_LOG_INFO("GS_CANONICAL_MANIFEST_RESPONSE type="
+                     << fieldOr(fields, "type", "missing")
+                     << " fields=" << fields.size()
+                     << " bytes=" << payload.size());
+        if (fieldOr(fields, "type", "") == "canonical-video-recording-manifest") {
+          try {
+            const auto manifest = CanonicalVideoRecordingManifest::fromFields(fields);
+            {
+              std::lock_guard<std::mutex> guard(m_recordingManifestMutex);
+              const auto previous = m_canonicalRecordingManifestVersions.find(
+                manifest.recordingId);
+              if (previous != m_canonicalRecordingManifestVersions.end() &&
+                  manifest.manifestVersion < previous->second) {
+                throw std::invalid_argument("recording manifest rollback rejected");
+              }
+              m_canonicalRecordingManifestVersions[manifest.recordingId] =
+                manifest.manifestVersion;
+            }
+            publishStatus("Canonical recording manifest drone=" + droneId +
+                          " packets=" + std::to_string(manifest.packetCatalogEntries) +
+                          " session=" + manifest.recordingId +
+                          " complete=" + (manifest.complete ? "true" : "false"));
+            if (playAfterRefresh) startCanonicalRecordingPlayback(manifest, fields, droneId);
+          }
+          catch (const std::exception& e) {
+            publishStatus(std::string("Rejected canonical recording manifest: ") + e.what());
+          }
+          return;
         }
-        publishStatus(manifest.statusLine());
-        publishStatus("Recording manifest drone=" + droneId +
-                      " chunks=" + std::to_string(manifest.chunks) +
-                      " bytes=" + std::to_string(manifest.bytes) +
-                      " session=" + manifest.sessionId +
-                      " encryption=" + manifest.encryption +
-                      " playable=" + std::string(manifest.isPlayable() ? "true" : "false"));
-        if (playAfterRefresh) {
-          startRecordingPlayback(manifest);
-        }
+        publishStatus("Unsupported legacy UAV recording for drone=" + droneId +
+                      "; export it with the pre-Spec-120 application or delete the old Repo "
+                      "database before requesting canonical playback");
       });
   }
 
@@ -6077,140 +6423,135 @@ private:
   }
 
   void
-  startRecordingPlayback(const RecordingDataProductState& manifest)
+  startCanonicalRecordingPlayback(const CanonicalVideoRecordingManifest& manifest,
+                                  const Fields& protectedResponseFields,
+                                  const std::string& droneId)
   {
-    if (!manifest.isAvailable()) {
-      publishStatus("No recorded video chunks for drone " + manifest.droneId);
-      return;
+    if (!manifest.complete || !manifest.gaps.empty() ||
+        manifest.packetCatalogEntries == 0) {
+      throw std::invalid_argument("recording is incomplete or contains retention gaps");
     }
-    if (!manifest.isPlayable()) {
-      publishStatus("Recording data product is not playable drone=" + manifest.droneId +
-                    " encryption=" + manifest.encryption +
-                    " key_bytes=" + std::to_string(manifest.contentKey.size()));
-      return;
+    const auto expectedRecipient = m_config.groundStationIdentity.toUri();
+    const auto grantRecipient = fieldOr(protectedResponseFields, "grant_recipient", "");
+    const auto grantProvider = fieldOr(protectedResponseFields, "grant_provider", "");
+    const auto grantService = fieldOr(protectedResponseFields, "grant_service", "");
+    const auto grantStream = fieldOr(protectedResponseFields, "grant_stream_id", "");
+    const auto grantSession = std::stoull(
+      fieldOr(protectedResponseFields, "grant_session_epoch", "0"));
+    const auto grantEpoch = std::stoull(
+      fieldOr(protectedResponseFields, "grant_key_epoch", "0"));
+    const auto grantExpires = std::stoull(
+      fieldOr(protectedResponseFields, "grant_expires_ms", "0"));
+    const auto grantPermission = fieldOr(protectedResponseFields, "grant_permission", "");
+    if (grantRecipient != expectedRecipient ||
+        grantProvider != manifest.providerIdentity.toUri() ||
+        grantService != manifest.serviceName.toUri() ||
+        grantStream != manifest.streamId || grantSession != manifest.sessionEpoch ||
+        grantEpoch != manifest.keyEpoch || grantExpires <= nowMilliseconds() ||
+        grantPermission.find("/PERMISSION/") != 0 ||
+        grantPermission.rfind("/history") != grantPermission.size() - 8) {
+      throw std::invalid_argument("recording content-key grant binding rejected");
+    }
+    const auto streamKey = hexDecode(
+      fieldOr(protectedResponseFields, "grant_protected_key_hex", ""));
+    const auto nonceSalt = hexDecode(
+      fieldOr(protectedResponseFields, "grant_protected_nonce_salt_hex", ""));
+    if (streamKey.size() != 32 || nonceSalt.size() != 4)
+      throw std::invalid_argument("recording content-key grant size rejected");
+
+    auto descriptorFields = manifest.redactedStreamDescriptor;
+    descriptorFields["stream_key_hex"] = hexEncode(streamKey);
+    descriptorFields["nonce_salt_hex"] = hexEncode(nonceSalt);
+    const auto descriptor = decodeVideoStreamDescriptorStrict(
+      encodeFields(descriptorFields), manifest.providerIdentity,
+      manifest.providerIdentity, manifest.serviceName, manifest.serviceName);
+    const auto coreDescriptor = toCoreLiveStreamDescriptor(descriptor);
+    if (descriptor.streamId != manifest.streamId ||
+        descriptor.sessionEpoch != manifest.sessionEpoch ||
+        descriptor.mappingVersion != manifest.mappingVersion ||
+        descriptor.keyEpoch != manifest.keyEpoch ||
+        descriptor.frontiers.latestProduced < manifest.lastCommittedCursor) {
+      throw std::invalid_argument("recording descriptor/manifest mismatch");
     }
 
-    m_streaming = false;
-    const auto recordingStreamId = "recording|" + manifest.droneId + "|" +
-      manifest.sessionId + "|" + std::to_string(nowMilliseconds());
-    allocateStreamSessionEpoch(recordingStreamId);
-    m_videoPumpScheduled = false;
-    boost::system::error_code ec;
-    m_videoPumpTimer.cancel(ec);
+    stopLiveVideoHandle();
+    const auto liveStreamGeneration = beginLiveStreamConsumerGeneration();
     stopDecoder();
-    m_firstFrameMs = nowMilliseconds();
-    m_receivedChunks = 0;
-    m_nextChunkSeqToDecode = 0;
-    {
-      std::lock_guard<std::mutex> guard(m_decoderQueueMutex);
-      m_chunkQueue.clear();
-      m_decoderReorderBuffer.reset();
-      m_recordingPlaybackChunks.clear();
-      m_decoderOutBuffer.clear();
-    }
+    m_activeStreamId = descriptor.streamId;
+    allocateStreamSessionEpoch(descriptor.streamId, descriptor.sessionEpoch);
     {
       std::lock_guard<std::mutex> guard(m_videoStateMutex);
       m_activeVideoDroneId.clear();
-      m_recordingPlaybackDroneId = manifest.droneId;
-      m_recordingPlaybackStreamId = recordingStreamId;
+      m_recordingPlaybackDroneId = droneId;
+      m_recordingPlaybackStreamId = descriptor.streamId;
     }
     m_recordingPlaybackActive = true;
-    startDecoder();
-    publishStatus("Recording playback drone=" + manifest.droneId +
-                  " chunks=" + std::to_string(manifest.chunks));
-    constexpr uint64_t recordingFetchWindow = 16;
-    const auto initialFetches = std::min<uint64_t>(recordingFetchWindow, manifest.chunks);
-    for (uint64_t index = 0; index < initialFetches; ++index) {
-        fetchRecordingChunk(manifest, index, recordingFetchWindow);
-    }
-  }
+    m_streaming = true;
+    m_streamPrefix = descriptor.dataPrefix;
+    m_firstFrameMs = 0;
+    m_receivedChunks = 0;
+    m_frameNacks = 0;
+    m_frameTimeouts = 0;
+    m_duplicateVideoPackets = 0;
+    resetVideoPacketTracking();
+    const auto initialMediaSequence = std::stoull(fieldOr(
+      descriptor.extensions, "latest_join_media_sequence", "0"));
+    startDecoder(initialMediaSequence);
 
-  void
-  fetchRecordingChunk(RecordingDataProductState manifest, uint64_t index, uint64_t stride)
-  {
-    if (!m_recordingPlaybackActive.load() ||
-        activeRecordingPlaybackDroneId() != manifest.droneId ||
-        index >= manifest.chunks) {
-      if (index >= manifest.chunks) {
-        publishStatus("Recording playback completed drone=" + manifest.droneId +
-                      " chunks=" + std::to_string(manifest.chunks));
+    ndn_service_framework::LiveStreamOpenOptions options;
+    options.start = ndn_service_framework::LiveStreamStart::Beginning;
+    options.prefetchPolicy =
+      ndn_service_framework::LiveStreamPrefetchPolicy::AdaptiveSampleAtomic;
+    const auto largestSample = std::max_element(
+      coreDescriptor.definition.sampleClasses.begin(),
+      coreDescriptor.definition.sampleClasses.end(),
+      [] (const auto& left, const auto& right) {
+        return left.hardMaxSourceItems < right.hardMaxSourceItems;
+      });
+    const auto atomicMinimum = largestSample->hardMaxSourceItems +
+      (coreDescriptor.definition.fec.enabled() ? 1u : 0u) + 5u;
+    options.aggregateInterestLimit = std::max<size_t>(
+      atomicMinimum, static_cast<size_t>(m_dynamicWindowMax));
+    options.enableFecRecovery = coreDescriptor.definition.fec.enabled();
+    options.interestLifetimeMs = dynamicInterestLifetimeMs();
+    options.onItem = [this](const auto& item) { return admitLiveVideoItem(item); };
+    options.onStatus = [this, liveStreamGeneration](const auto& status) {
+      m_frameTimeouts = status.timeouts;
+      m_frameNacks = status.nacks;
+      observeCoreFetchDecision(liveStreamGeneration, status);
+      NDN_LOG_DEBUG("GS_RECORDING_CORE_STATUS state="
+                    << ndn_service_framework::toString(status.state)
+                    << " reason=" << status.reason
+                    << " mappings=" << status.mappingBlocks
+                    << " mapping_interests=" << status.mappingInterests
+                    << " mapping_data_responses=" << status.mappingDataResponses
+                    << " mapping_new_data_responses=" << status.mappingNewDataResponses
+                    << " payload_interests=" << status.payloadInterests
+                    << " in_flight=" << status.inFlight
+                    << " delivered=" << status.delivered
+                    << " rejected=" << status.rejected
+                    << " timeouts=" << status.timeouts
+                    << " nacks=" << status.nacks);
+    };
+    auto handle = m_user->openLiveStream(coreDescriptor, std::move(options));
+    bool currentGeneration = false;
+    {
+      std::lock_guard<std::mutex> guard(m_liveStreamMutex);
+      currentGeneration =
+        liveStreamGeneration == m_liveStreamConsumerGeneration;
+      if (currentGeneration) {
+        m_liveVideoDescriptor = descriptor;
+        m_liveStreamHandle = handle;
       }
+    }
+    if (!currentGeneration) {
+      handle->stop();
       return;
     }
-
-    const auto objectName = manifest.chunkObjectName(index);
-    if (index < 3 || index + 1 == manifest.chunks) {
-      publishStatus("Recording chunk request drone=" + manifest.droneId +
-                    " index=" + std::to_string(index));
-    }
-    fetchRecordingChunkData(
-      manifest,
-      objectName,
-      [this, manifest, index, stride](std::vector<uint8_t> payload) mutable {
-        if (!payload.empty()) {
-          {
-            std::lock_guard<std::mutex> guard(m_decoderQueueMutex);
-            m_recordingPlaybackChunks[index] = payload;
-          }
-          const auto sessionId = activeRecordingPlaybackStreamId();
-          insertChunkForDecode(index,
-                               payload,
-                               sessionId,
-                               streamSessionEpochForStreamId(sessionId),
-                               nowMilliseconds() - m_firstFrameMs.load());
-          const auto receivedCount = ++m_receivedChunks;
-          if (receivedCount <= 3 || receivedCount % 30 == 0) {
-            publishStatus("Recording playback chunk drone=" + manifest.droneId +
-                          " count=" + std::to_string(receivedCount) +
-                          " index=" + std::to_string(index));
-          }
-        }
-        if (index + stride < manifest.chunks) {
-          fetchRecordingChunk(std::move(manifest), index + stride, stride);
-        }
-        else if (m_receivedChunks.load() >= manifest.chunks) {
-          publishStatus("Recording playback fetched drone=" + manifest.droneId +
-                        " chunks=" + std::to_string(m_receivedChunks.load()));
-          m_closeDecoderInputWhenQueueDrained = true;
-          m_decoderQueueCv.notify_one();
-          decodeRecordingFromFetchedChunksAsync(manifest);
-        }
-      },
-      [this, manifest, index] {
-        publishStatus("Recording chunk timeout drone=" + manifest.droneId +
-                      " index=" + std::to_string(index));
-      });
-  }
-
-  void
-  fetchRecordingChunkData(const RecordingDataProductState& manifest,
-                          const std::string& objectName,
-                          std::function<void(std::vector<uint8_t>)> onData,
-                          std::function<void()> onTimeout)
-  {
-    boost::asio::post(m_face.getIoContext(), [this, manifest, objectName,
-                                onData = std::move(onData),
-                                onTimeout = std::move(onTimeout)]() mutable {
-      ndn::Interest interest{ndn::Name(objectName)};
-      interest.setCanBePrefix(false);
-      interest.setMustBeFresh(false);
-      interest.setInterestLifetime(2500_ms);
-      m_face.expressInterest(
-        interest,
-        [this, manifest, objectName, onData = std::move(onData)](
-          const ndn::Interest&, const ndn::Data& data) mutable {
-          std::vector<uint8_t> encrypted(data.getContent().value(),
-                                         data.getContent().value() + data.getContent().value_size());
-          auto plaintext = decryptRecordingChunkData(manifest, objectName, encrypted);
-          onData(std::move(plaintext));
-        },
-        [this, objectName](const ndn::Interest&, const ndn::lp::Nack&) {
-          publishStatus("Recording chunk Nack object=" + objectName);
-        },
-        [onTimeout = std::move(onTimeout)](const ndn::Interest&) mutable {
-          onTimeout();
-        });
-    });
+    handle->start();
+    publishStatus("Canonical recording replay drone=" + droneId +
+                  " stream=" + descriptor.streamId +
+                  " start_cursor=" + std::to_string(manifest.safeJoinCursor));
   }
 
   void
@@ -6547,56 +6888,6 @@ private:
     return makeResponse(true, encodeFields(response));
   }
 
-  std::vector<uint8_t>
-  decryptRecordingChunkData(const RecordingDataProductState& manifest,
-                            const std::string& objectName,
-                            const std::vector<uint8_t>& encryptedPayload) const
-  {
-    if (encryptedPayload.empty()) {
-      return {};
-    }
-    if (manifest.encryption != "hybrid-aes-256-gcm-at-rest") {
-      return encryptedPayload;
-    }
-    if (manifest.contentKey.size() != ndn_service_framework::HybridMessageCrypto::MESSAGE_KEY_SIZE) {
-      NDN_LOG_WARN("GS_RECORDING_DECRYPT_NO_KEY object=" << objectName
-                   << " key_bytes=" << manifest.contentKey.size());
-      return {};
-    }
-
-    auto [ok, block] = ndn::Block::fromBuffer(
-      ndn::span<const uint8_t>(encryptedPayload.data(), encryptedPayload.size()));
-    ndn_service_framework::HybridMessageEnvelope envelope;
-    if (!ok || !envelope.WireDecode(block)) {
-      NDN_LOG_WARN("GS_RECORDING_DECRYPT_BAD_ENVELOPE object=" << objectName);
-      return {};
-    }
-    if (envelope.getKeyId() != manifest.keyId ||
-        envelope.getMessageType() != "uav-camera-recording-chunk") {
-      NDN_LOG_WARN("GS_RECORDING_DECRYPT_REJECT object=" << objectName
-                   << " key_id=" << envelope.getKeyId()
-                   << " expected_key_id=" << manifest.keyId
-                   << " message_type=" << envelope.getMessageType());
-      return {};
-    }
-
-    const auto adString = "ndnsf-uav-recording|" +
-      droneIdentity(m_config, manifest.droneId).toUri() + "|" +
-      manifest.sessionId + "|" + objectName;
-    const ndn::Buffer ad(reinterpret_cast<const uint8_t*>(adString.data()), adString.size());
-    ndn::Buffer key(manifest.contentKey.data(), manifest.contentKey.size());
-    ndn::Buffer plaintext;
-    if (!ndn_service_framework::hybridAesGcmDecrypt(
-          key,
-          envelope,
-          ndn::span<const uint8_t>(ad.data(), ad.size()),
-          plaintext)) {
-      NDN_LOG_WARN("GS_RECORDING_DECRYPT_FAILED object=" << objectName);
-      return {};
-    }
-    return std::vector<uint8_t>(plaintext.begin(), plaintext.end());
-  }
-
   void
   publishStatus(const std::string& value)
   {
@@ -6666,7 +6957,12 @@ private:
         [this, onSuccess, service, droneId, requestStartMs](
           const ndn_service_framework::ResponseMessage& response) {
           const auto payloadText = responsePayload(response);
-          NDN_LOG_INFO("GS_RESPONSE service=" << service << " payload=" << payloadText);
+          // Response payloads are application data and may contain session secrets.
+          // Never persist their plaintext in this generic diagnostic.
+          NDN_LOG_INFO("GS_RESPONSE service=" << service
+                       << " status=" << (response.getStatus() ? "success" : "failure")
+                       << " error=" << response.getErrorInfo()
+                       << " payload_bytes=" << payloadText.size());
           publishUiOnlyStatus("Link drone=" + droneId +
                               " service=" + service.toUri() +
                               " rtt_ms=" +
@@ -6790,7 +7086,7 @@ private:
                        << " status=" << (response.getStatus() ? "success" : "failure"));
           const auto payloadText = responsePayload(response);
           NDN_LOG_INFO("GS_TARGETED_RESPONSE service=" << service
-                       << " payload=" << payloadText);
+                       << " payload_bytes=" << payloadText.size());
           publishUiOnlyStatus("Link provider=" + provider.toUri() +
                               " service=" + service.toUri() +
                               " rtt_ms=" +
@@ -6808,44 +7104,24 @@ private:
     });
   }
 
-  struct PacketLane
-  {
-    std::string kind;
-    uint64_t second = 0;
-    uint64_t nextSeq = 0;
-    uint64_t inFlight = 0;
-    uint64_t futureInFlight = 0;
-    uint64_t maxPacketsPerSecond = 0;
-    uint64_t prefetchLimit = 0;
-    uint64_t advertisedPackets = 0;
-    uint64_t probeNotBeforeMs = 0;
-  };
-
   struct DecoderStreamChunk
   {
     uint64_t packetSeq = 0;
+    uint64_t publicationCursor = 0;
     uint64_t arrivalMs = 0;
     uint64_t elapsedMs = 0;
+    uint64_t captureMs = 0;
     uint64_t streamSessionEpoch = 0;
+    uint64_t frameId = 0;
+    uint64_t segmentIndex = 0;
+    uint64_t dataShards = 0;
+    uint64_t frameBindingVersion = 0;
+    uint64_t sourceFrameId = 0;
+    uint64_t captureOriginNs = 0;
+    int64_t codecPts = 0;
+    uint64_t codecConfigEpoch = 0;
     std::string streamId;
     std::vector<uint8_t> payload;
-  };
-
-  struct FecFrameState
-  {
-    uint64_t streamSessionEpoch = 0;
-    std::string streamId;
-    bool initialized = false;
-    uint64_t frameSeq = 0;
-    uint64_t frameFirstPacketSeq = 0;
-    uint64_t frameLastPacketSeq = 0;
-    uint32_t dataShards = 0;
-    uint32_t parityShards = 0;
-    uint32_t symbolCount = 0;
-    uint64_t firstArrivalMs = 0;
-    std::vector<size_t> fecDataLengths;
-    std::map<uint32_t, std::vector<uint8_t>> shards;
-    bool complete = false;
   };
 
   struct VideoBitrateAdvice
@@ -6856,30 +7132,6 @@ private:
     std::string action = "hold";
     std::string reason = "stable";
   };
-
-  void
-  requestVideoPackets()
-  {
-    if (!m_streaming.load()) {
-      return;
-    }
-    requestVideoLane(m_deltaLane, dynamicVideoWindow());
-  }
-
-  void
-  scheduleVideoPump(uint64_t delayMs)
-  {
-    if (!m_streaming.load() || m_videoPumpScheduled.exchange(true)) {
-      return;
-    }
-    m_videoPumpTimer.expires_after(std::chrono::milliseconds(delayMs));
-    m_videoPumpTimer.async_wait([this] (const boost::system::error_code& ec) {
-      m_videoPumpScheduled = false;
-      if (!ec && m_streaming.load()) {
-        requestVideoPackets();
-      }
-    });
-  }
 
   static uint64_t
   fieldAsUint64(const Fields& fields, const std::string& key, uint64_t fallback)
@@ -6902,7 +7154,7 @@ private:
       128, fieldAsUint64(fields, "requested_bitrate_kbps", m_videoBitrateKbps.load()));
     const auto payloadBytes = std::max<uint64_t>(
       512, fieldAsUint64(fields, "max_payload_bytes", 3600));
-    const auto fps = std::max<uint64_t>(1, fieldAsUint64(fields, "fps", VIDEO_FPS));
+    const auto fps = std::max<uint64_t>(1, fieldAsUint64(fields, "fps", m_videoFps));
     const auto frameWidth = std::max<uint64_t>(
       1, fieldAsUint64(fields, "accepted_frame_width",
                        fieldAsUint64(fields, "frame_width", m_videoFrameWidth)));
@@ -6958,21 +7210,6 @@ private:
     return std::clamp<uint64_t>(m_videoRttEwmaMs.load(), 20, 2000);
   }
 
-  void
-  recordVideoRtt(uint64_t sentMs, uint64_t receivedMs)
-  {
-    if (sentMs == 0 || receivedMs <= sentMs) {
-      return;
-    }
-    const auto sample = std::clamp<uint64_t>(receivedMs - sentMs, 1, 3000);
-    auto previous = m_videoRttEwmaMs.load();
-    if (previous == 0) {
-      previous = sample;
-    }
-    const auto updated = (previous * 7 + sample) / 8;
-    m_videoRttEwmaMs = std::clamp<uint64_t>(updated, 20, 2000);
-  }
-
   static void
   recordVideoPressure(std::atomic<uint64_t>& pressure, uint64_t sample)
   {
@@ -6987,26 +7224,6 @@ private:
     recordVideoPressure(m_videoTimeoutPressurePercent, 0);
     recordVideoPressure(m_videoProbePressurePercent, 0);
     recordVideoPressure(m_videoDuplicatePressurePercent, 0);
-  }
-
-  void
-  recordVideoFutureProbeTimeout()
-  {
-    recordVideoPressure(m_videoProbePressurePercent, 100);
-    recordVideoPressure(m_videoTimeoutPressurePercent, 20);
-  }
-
-  void
-  recordVideoFetchTimeout()
-  {
-    recordVideoPressure(m_videoTimeoutPressurePercent, 100);
-  }
-
-  void
-  recordVideoDuplicatePacket()
-  {
-    recordVideoPressure(m_videoDuplicatePressurePercent, 100);
-    recordVideoPressure(m_videoProbePressurePercent, 60);
   }
 
   void
@@ -7034,24 +7251,6 @@ private:
   dynamicVideoWindow() const
   {
     return currentVideoAdaptivePolicyDecision().window;
-  }
-
-  uint64_t
-  dynamicVideoLookahead() const
-  {
-    return currentVideoAdaptivePolicyDecision().lookahead;
-  }
-
-  uint64_t
-  dynamicFutureProbeInFlightLimit() const
-  {
-    return currentVideoAdaptivePolicyDecision().futureProbeLimit;
-  }
-
-  uint64_t
-  dynamicProbeBackoffMs() const
-  {
-    return currentVideoAdaptivePolicyDecision().probeBackoffMs;
   }
 
   uint64_t
@@ -7147,11 +7346,12 @@ private:
     state.suggestedBitrateKbps = decision.suggestedBitrateKbps;
     state.bitrateAction = decision.bitrateAction;
     state.bitrateReason = decision.bitrateReason;
-    state.window = decision.window;
-    state.lookahead = decision.lookahead;
     state.futureProbeLimit = decision.futureProbeLimit;
-    state.interestLifetimeMs = decision.interestLifetimeMs;
-    state.missingTimeoutMs = decision.missingTimeoutMs;
+    state.futureProbeLimitSource = "uav-app-policy";
+    {
+      std::lock_guard<std::mutex> guard(m_liveStreamMutex);
+      m_coreFetchDecisionSnapshot.applyTo(state);
+    }
     state.timeoutPressure = m_videoTimeoutPressurePercent.load();
     state.probePressure = decision.probePressure;
     state.duplicatePressure = m_videoDuplicatePressurePercent.load();
@@ -7160,6 +7360,7 @@ private:
     state.primaryPressure = decision.primaryPressure;
     state.policyReason = decision.policyReason;
     state.pendingChunks = m_decoderPendingChunkCount.load();
+    state.maxReorderDepth = m_decoderMaxReorderDepth.load();
     state.pendingBytes = m_decoderPendingBytes.load();
     state.receivedChunks = m_receivedChunks.load();
     state.fecRecoveredChunks = m_fecRecoveredChunks.load();
@@ -7200,265 +7401,12 @@ private:
     publishStatus(state.statusLine());
     maybeApplyVideoBitratePolicy(state, reason);
   }
-
-  void
-  requestVideoLane(PacketLane& lane, uint64_t window)
-  {
-    advanceLaneIfStale(lane);
-    while (m_streaming.load() && lane.inFlight < window) {
-      advanceLaneIfStale(lane);
-      const auto highWaterLimit = lane.advertisedPackets == 0 ?
-        INITIAL_PACKET_PROBE :
-        lane.advertisedPackets + dynamicVideoLookahead();
-      if (lane.prefetchLimit == 0 &&
-          lane.nextSeq >= highWaterLimit) {
-        if (lane.inFlight == 0 && lane.advertisedPackets > 0) {
-          lane.nextSeq = lane.advertisedPackets;
-        }
-        scheduleVideoPump(STREAM_PUMP_INTERVAL_MS);
-        break;
-      }
-      if (lane.nextSeq >= lane.advertisedPackets &&
-          lane.advertisedPackets > 0 &&
-          lane.futureInFlight >= dynamicFutureProbeInFlightLimit()) {
-        scheduleVideoPump(dynamicProbeBackoffMs());
-        break;
-      }
-      if (lane.probeNotBeforeMs > 0 &&
-          nowMilliseconds() < lane.probeNotBeforeMs &&
-          lane.nextSeq >= lane.advertisedPackets) {
-        scheduleVideoPump(dynamicProbeBackoffMs());
-        break;
-      }
-      const auto packetSeq = lane.nextSeq++;
-      if (!reserveVideoPacketFetch(packetSeq)) {
-        continue;
-      }
-      ++lane.inFlight;
-      const auto sentMs = nowMilliseconds();
-      const auto advertisedAtSend = lane.advertisedPackets;
-      const auto futureProbeAtSend =
-        advertisedAtSend == 0 ||
-        packetSeq >= advertisedAtSend ||
-        isBeyondHighestReceivedVideoPacket(packetSeq);
-      if (futureProbeAtSend) {
-        ++lane.futureInFlight;
-      }
-      ndn::Name packetName = m_streamPrefix;
-      packetName.append(std::to_string(packetSeq));
-      auto interest = ndn::Interest(packetName);
-      interest.setMustBeFresh(false);
-      interest.setInterestLifetime(ndn::time::milliseconds(dynamicInterestLifetimeMs()));
-
-      m_face.expressInterest(
-        interest,
-        [this, &lane, packetSeq, sentMs, advertisedAtSend, futureProbeAtSend](const ndn::Interest&, const ndn::Data& data) {
-          if (lane.inFlight > 0) {
-            --lane.inFlight;
-          }
-          if (futureProbeAtSend && lane.futureInFlight > 0) {
-            --lane.futureInFlight;
-          }
-          releaseVideoPacketFetch(packetSeq);
-          lane.probeNotBeforeMs = 0;
-          advanceLaneIfStale(lane);
-        const auto receivedMs = nowMilliseconds();
-        if (advertisedAtSend > packetSeq) {
-          recordVideoRtt(sentMs, receivedMs);
-        }
-        if (m_firstFrameMs == 0) {
-          m_firstFrameMs = receivedMs;
-        }
-          const auto content = data.getContent();
-          std::vector<uint8_t> bytes(content.value(), content.value() + content.value_size());
-          try {
-            const auto packet = decodeVideoPacket(bytes);
-            if (!isCurrentVideoSessionPacket(packet.streamId, packet.streamSessionEpoch)) {
-              NDN_LOG_WARN("GS_VIDEO_STALE_SESSION_PACKET expected="
-                           << activeVideoStreamId() << "@" << m_videoStreamSessionEpoch.load()
-                           << " got=" << packet.streamId << "@" << packet.streamSessionEpoch
-                           << " packetSeq=" << packet.packetSeq
-                           << " requestedSeq=" << packetSeq);
-              requestVideoPackets();
-              return;
-            }
-            const auto activeStreamId = activeVideoStreamId();
-            if (!activeStreamId.empty() && packet.streamId != activeStreamId) {
-              NDN_LOG_WARN("GS_VIDEO_STALE_STREAM_PACKET expected=" << activeStreamId
-                           << " got=" << packet.streamId
-                           << " packetSeq=" << packet.packetSeq
-                           << " requestedSeq=" << packetSeq);
-              requestVideoPackets();
-              return;
-            }
-            if (!markVideoPacketCompleted(packet.packetSeq)) {
-              recordVideoDuplicatePacket();
-              const auto duplicateCount = ++m_duplicateVideoPackets;
-              if (duplicateCount <= 3 || duplicateCount % 30 == 0) {
-                NDN_LOG_INFO("GS_VIDEO_DUPLICATE_PACKET count=" << duplicateCount
-                             << " packetSeq=" << packet.packetSeq
-                             << " requestedSeq=" << packetSeq);
-              }
-              requestVideoPackets();
-              return;
-            }
-            recordVideoDataReceived();
-            const auto receivedCount = ++m_receivedChunks;
-            if (receivedCount <= 3 || receivedCount % 30 == 0) {
-              NDN_LOG_INFO("GS_VIDEO_CHUNK count=" << receivedCount
-                           << " packetSeq=" << packet.packetSeq
-                           << " requestedSeq=" << packetSeq
-                           << " name=" << data.getName()
-                           << " bytes=" << data.getContent().value_size()
-                           << " rttMs=" << videoRttMs()
-                           << " lossPressure=" << videoLossPressurePercent()
-                           << " congestionPressure=" << videoCongestionPressurePercent()
-                           << " probePressure=" << videoProbePressurePercent()
-                           << " futureInFlight=" << lane.futureInFlight
-                           << " futureLimit=" << dynamicFutureProbeInFlightLimit()
-                           << " backlogPressure=" << decoderBacklogPressurePercent()
-                           << " interestLifetimeMs=" << dynamicInterestLifetimeMs()
-                           << " missingTimeoutMs=" << dynamicDecoderMissingTimeoutMs()
-                           << " window=" << dynamicVideoWindow());
-            }
-            publishVideoAdaptiveState("chunk");
-            updateHighestReceivedVideoPacket(packet.packetSeq);
-            updateLaneHighWatermark(lane, packet);
-            queueStreamChunk(packet, receivedMs);
-          }
-          catch (const std::exception& e) {
-            NDN_LOG_WARN("GS_VIDEO_PACKET_DECODE_FAILED " << e.what());
-          }
-          requestVideoPackets();
-      },
-        [this, &lane, packetSeq, futureProbeAtSend](const ndn::Interest&, const ndn::lp::Nack&) {
-          if (lane.inFlight > 0) {
-            --lane.inFlight;
-          }
-          if (futureProbeAtSend && lane.futureInFlight > 0) {
-            --lane.futureInFlight;
-          }
-          releaseVideoPacketFetch(packetSeq);
-          recordVideoFetchTimeout();
-          const auto nackCount = ++m_frameNacks;
-          if (nackCount <= 3 || nackCount % 30 == 0) {
-            NDN_LOG_INFO("GS_VIDEO_NACK count=" << nackCount
-                         << " packetSeq=" << packetSeq
-                         << " congestionPressure=" << videoCongestionPressurePercent()
-                         << " probePressure=" << videoProbePressurePercent());
-          }
-          publishVideoAdaptiveState("nack");
-          advanceLaneIfStale(lane);
-          requestVideoPackets();
-      },
-        [this, &lane, packetSeq, futureProbeAtSend](const ndn::Interest&) {
-          if (lane.inFlight > 0) {
-            --lane.inFlight;
-          }
-          if (futureProbeAtSend && lane.futureInFlight > 0) {
-            --lane.futureInFlight;
-          }
-          releaseVideoPacketFetch(packetSeq);
-          const bool isFutureProbe =
-            futureProbeAtSend ||
-            packetSeq >= lane.advertisedPackets ||
-            isBeyondHighestReceivedVideoPacket(packetSeq);
-          if (isFutureProbe && lane.nextSeq > packetSeq) {
-            recordVideoFutureProbeTimeout();
-            NDN_LOG_DEBUG("GS_VIDEO_FUTURE_PROBE_TIMEOUT packetSeq=" << packetSeq
-                          << " advertisedPackets=" << lane.advertisedPackets
-                          << " highestReceived=" << m_highestReceivedVideoPacketSeq.load()
-                          << " probePressure=" << videoProbePressurePercent()
-                          << " futureLimit=" << dynamicFutureProbeInFlightLimit()
-                          << " backoffMs=" << dynamicProbeBackoffMs());
-            lane.nextSeq = packetSeq;
-            lane.probeNotBeforeMs = nowMilliseconds() + dynamicProbeBackoffMs();
-            publishVideoAdaptiveState("future-probe-timeout");
-          }
-          else {
-            recordVideoFetchTimeout();
-            const auto timeoutCount = ++m_frameTimeouts;
-            if (timeoutCount <= 3 || timeoutCount % 30 == 0) {
-              NDN_LOG_INFO("GS_VIDEO_TIMEOUT count=" << timeoutCount
-                           << " packetSeq=" << packetSeq
-                           << " congestionPressure=" << videoCongestionPressurePercent()
-                           << " probePressure=" << videoProbePressurePercent());
-            }
-            publishVideoAdaptiveState("timeout");
-          }
-          advanceLaneIfStale(lane);
-          scheduleVideoPump(dynamicProbeBackoffMs());
-          requestVideoPackets();
-      });
-    }
-  }
-
-  void
-  advanceLaneIfStale(PacketLane& lane)
-  {
-    const auto currentSecond = nowMilliseconds() / 1000;
-    if (lane.second == 0) {
-      return;
-    }
-    if (lane.prefetchLimit > 0 && currentSecond >= lane.second) {
-      lane.prefetchLimit = 0;
-    }
-    if (currentSecond > lane.second + 1 ||
-        (currentSecond > lane.second &&
-         lane.maxPacketsPerSecond > 0 &&
-         lane.nextSeq >= lane.maxPacketsPerSecond &&
-         lane.inFlight == 0)) {
-      lane.second = currentSecond;
-      lane.nextSeq = 0;
-      lane.inFlight = 0;
-      lane.futureInFlight = 0;
-      lane.prefetchLimit = 0;
-      lane.advertisedPackets = 0;
-      lane.probeNotBeforeMs = 0;
-    }
-  }
-
-  void
-  updateLaneHighWatermark(PacketLane& lane, const VideoPacket& packet)
-  {
-    lane.nextSeq = std::max(lane.nextSeq, packet.packetSeq + 1);
-    lane.advertisedPackets = std::max(lane.advertisedPackets, packet.bucketPacketCount);
-  }
-
   void
   resetVideoPacketTracking()
   {
     std::lock_guard<std::mutex> guard(m_videoPacketTrackingMutex);
-    m_videoInFlightPacketSeqs.clear();
     m_videoCompletedPacketSeqs.clear();
     m_videoCompletedPacketSeqOrder.clear();
-  }
-
-  bool
-  reserveVideoPacketFetch(uint64_t packetSeq)
-  {
-    if (packetSeq == UINT64_MAX) {
-      return false;
-    }
-
-    std::lock_guard<std::mutex> guard(m_videoPacketTrackingMutex);
-    if (m_videoCompletedPacketSeqs.find(packetSeq) != m_videoCompletedPacketSeqs.end() ||
-        m_videoInFlightPacketSeqs.find(packetSeq) != m_videoInFlightPacketSeqs.end()) {
-      return false;
-    }
-    m_videoInFlightPacketSeqs.insert(packetSeq);
-    return true;
-  }
-
-  void
-  releaseVideoPacketFetch(uint64_t packetSeq)
-  {
-    if (packetSeq == UINT64_MAX) {
-      return;
-    }
-
-    std::lock_guard<std::mutex> guard(m_videoPacketTrackingMutex);
-    m_videoInFlightPacketSeqs.erase(packetSeq);
   }
 
   bool
@@ -7469,7 +7417,6 @@ private:
     }
 
     std::lock_guard<std::mutex> guard(m_videoPacketTrackingMutex);
-    m_videoInFlightPacketSeqs.erase(packetSeq);
     if (m_videoCompletedPacketSeqs.find(packetSeq) != m_videoCompletedPacketSeqs.end()) {
       return false;
     }
@@ -7495,17 +7442,10 @@ private:
     }
   }
 
-  bool
-  isBeyondHighestReceivedVideoPacket(uint64_t packetSeq) const
-  {
-    const auto highest = m_highestReceivedVideoPacketSeq.load();
-    return highest == UINT64_MAX || packetSeq > highest;
-  }
-
   void
   queueStreamChunk(const VideoPacket& packet, uint64_t receivedMs)
   {
-    if (!m_decoderRunning.load() || packet.payload.empty()) {
+    if (!m_decoderRunning.load()) {
       return;
     }
 
@@ -7524,255 +7464,53 @@ private:
       return;
     }
 
-    if (packet.fecDataShards > 0 || packet.fecParityShards > 0 || packet.fecSymbolCount > 0) {
-      processFecChunk(packet, receivedMs);
-      return;
-    }
-
     if (packet.packetSeq == UINT64_MAX) {
       return;
+    }
+    if (m_useGStreamerPipeline) {
+      try {
+        validateVideoFrameBinding(packet, videoStreamSessionEpoch());
+      }
+      catch (const std::exception& e) {
+        NDN_LOG_WARN("GS_VIDEO_FRAME_BINDING_REJECT reason=" << e.what()
+                     << " stream=" << packet.streamId
+                     << " seq=" << packet.packetSeq);
+        return;
+      }
     }
 
     const auto elapsedMs = (m_firstFrameMs == 0 ? 0 : receivedMs - m_firstFrameMs);
     auto streamChunk = videoPacketToStreamChunk(packet);
+    streamChunk.metadata["publicationCursor"] = std::to_string(packet.packetSeq);
+    // Publication cursors include repair symbols, while the H.264 decoder must
+    // see one contiguous sequence containing source shards only.  Empty source
+    // shards still advance this media sequence; the writer simply emits no
+    // bytes for them.  Using publication cursors here made every FEC repair
+    // symbol look like packet loss and corrupted both live and archive replay.
+    if (packet.fecDataShards > 0) {
+      if (packet.frameSegmentIndex >= packet.fecDataShards) {
+        return;
+      }
+      streamChunk.seq = packet.mediaSequence;
+    }
+    if (streamChunk.seq == 0) {
+      static constexpr char HEX[] = "0123456789abcdef";
+      std::ostringstream prefix;
+      for (size_t i = 0; i < std::min<size_t>(streamChunk.payload.size(), 16); ++i) {
+        const auto byte = streamChunk.payload[i];
+        prefix << HEX[byte >> 4] << HEX[byte & 0x0f];
+      }
+      NDN_LOG_DEBUG("GS_VIDEO_FIRST_SOURCE bytes=" << streamChunk.payload.size()
+                    << " prefix_hex=" << prefix.str());
+    }
     streamChunk.arrivalMs = receivedMs;
     insertStreamChunkForDecode(streamChunk, elapsedMs);
   }
-
-  void
-  processFecChunk(const VideoPacket& packet, uint64_t receivedMs)
-  {
-    if (!m_decoderRunning.load() || packet.payload.empty() ||
-        packet.fecSymbolCount == 0 || packet.fecDataShards == 0) {
-      return;
-    }
-
-    if (!isCurrentVideoSessionPacket(packet.streamId, packet.streamSessionEpoch)) {
-      NDN_LOG_WARN("GS_VIDEO_STALE_SESSION_FEC dropped stream="
-                   << packet.streamId << " session=" << packet.streamSessionEpoch
-                   << " active_session=" << m_videoStreamSessionEpoch.load()
-                   << " frameSeq=" << packet.frameSeq);
-      return;
-    }
-
-    if (!isCurrentLiveVideoStream(packet.streamId)) {
-      NDN_LOG_WARN("GS_VIDEO_STALE_STREAM_FEC dropped=" << packet.streamId
-                   << " active=" << activeVideoStreamId()
-                   << " seq=" << packet.packetSeq
-                   << " frameSeq=" << packet.frameSeq);
-      return;
-    }
-
-    const auto frameSeq = packet.frameSeq;
-    const auto frameKey = std::make_pair(packet.streamSessionEpoch, frameSeq);
-    auto it = m_fecFrames.find(frameKey);
-    if (it == m_fecFrames.end()) {
-      it = m_fecFrames.emplace(frameKey, FecFrameState{}).first;
-      it->second.streamSessionEpoch = packet.streamSessionEpoch;
-      it->second.frameSeq = frameSeq;
-    }
-
-    if (it->second.initialized && !it->second.streamId.empty() && it->second.streamId != packet.streamId) {
-      NDN_LOG_INFO("GS_VIDEO_STALE_STREAM_FEC_STATE reset stream=" << it->second.streamId
-                   << " frameSeq=" << frameSeq
-                   << " incoming=" << packet.streamId
-                   << " seq=" << packet.packetSeq);
-      m_fecFrames.erase(it);
-      it = m_fecFrames.emplace(frameKey, FecFrameState{}).first;
-      it->second.streamSessionEpoch = packet.streamSessionEpoch;
-      it->second.frameSeq = frameSeq;
-      it->second.streamId = packet.streamId;
-    }
-
-    auto& state = it->second;
-
-    if (!state.initialized) {
-      state.streamId = packet.streamId;
-      state.frameSeq = frameSeq;
-      state.frameFirstPacketSeq = packet.frameFirstPacketSeq;
-      state.frameLastPacketSeq = packet.frameLastPacketSeq;
-      state.dataShards = packet.fecDataShards;
-      state.parityShards = packet.fecParityShards;
-      state.symbolCount = packet.fecSymbolCount;
-      state.fecDataLengths = parseFecDataLengths(packet.fecDataLengths);
-      state.firstArrivalMs = receivedMs;
-      state.initialized = true;
-    }
-
-    state.dataShards = std::max<uint32_t>(state.dataShards, packet.fecDataShards);
-    state.parityShards = std::max<uint32_t>(state.parityShards, packet.fecParityShards);
-    state.symbolCount = std::max<uint32_t>(state.symbolCount, packet.fecSymbolCount);
-    state.frameLastPacketSeq =
-      packet.frameLastPacketSeq != 0 ?
-      packet.frameLastPacketSeq :
-      (packet.frameFirstPacketSeq + state.symbolCount - 1);
-    if (state.fecDataLengths.empty() && !packet.fecDataLengths.empty()) {
-      state.fecDataLengths = parseFecDataLengths(packet.fecDataLengths);
-    }
-
-    if (packet.fecSymbolIndex < packet.fecSymbolCount) {
-      state.shards.try_emplace(packet.fecSymbolIndex, packet.payload);
-    }
-
-    const auto elapsedMs = (m_firstFrameMs == 0 ? 0 : receivedMs - m_firstFrameMs);
-    attemptAndRecoverFrame(state);
-    if (packet.fecSymbolIndex < state.dataShards) {
-      auto streamChunk = videoPacketToStreamChunk(packet);
-      streamChunk.arrivalMs = receivedMs;
-      insertStreamChunkForDecode(streamChunk, elapsedMs);
-    }
-    if (state.complete) {
-      cleanupFecFrames();
-    }
-  }
-
-  void
-  attemptAndRecoverFrame(FecFrameState& state)
-  {
-    if (state.complete || state.dataShards == 0 || state.symbolCount == 0) {
-      return;
-    }
-
-    uint32_t receivedDataShards = 0;
-    for (uint32_t i = 0; i < state.dataShards; ++i) {
-      if (state.shards.find(i) != state.shards.end()) {
-        ++receivedDataShards;
-      }
-    }
-
-    if (receivedDataShards == state.dataShards) {
-      state.complete = true;
-      return;
-    }
-
-    if (receivedDataShards + state.parityShards < state.dataShards) {
-      return;
-    }
-
-    if (state.dataShards - receivedDataShards != 1) {
-      return;
-    }
-
-    for (uint32_t missingIdx = 0; missingIdx < state.dataShards; ++missingIdx) {
-      if (state.shards.find(missingIdx) != state.shards.end()) {
-        continue;
-      }
-      const auto recovered = recoverFecDataSymbol(state, missingIdx);
-      if (recovered.empty()) {
-        return;
-      }
-      const auto recoveredSeq = state.frameFirstPacketSeq + missingIdx;
-      if (!markVideoPacketCompleted(recoveredSeq)) {
-        return;
-      }
-      const auto recoveredElapsed = (m_firstFrameMs == 0 ? 0 : state.firstArrivalMs - m_firstFrameMs);
-      ndn_service_framework::StreamChunk recoveredChunk;
-      recoveredChunk.streamId = !state.streamId.empty() ? state.streamId : activeVideoStreamId();
-      recoveredChunk.sessionEpoch = state.streamSessionEpoch;
-      recoveredChunk.seq = recoveredSeq;
-      recoveredChunk.payload = recovered;
-      recoveredChunk.contentType = "video/h264";
-      recoveredChunk.arrivalMs = state.firstArrivalMs;
-      insertStreamChunkForDecode(recoveredChunk, recoveredElapsed);
-      state.shards[missingIdx] = recovered;
-      ++m_fecRecoveredChunks;
-      NDN_LOG_INFO("GS_VIDEO_FEC_RECOVERED stream=" << recoveredChunk.streamId
-                   << " session=" << recoveredChunk.sessionEpoch
-                   << " frame_seq=" << state.frameSeq
-                   << " packet_seq=" << recoveredSeq);
-      state.complete = true;
-      break;
-    }
-  }
-
-  std::vector<size_t>
-  parseFecDataLengths(const std::string& value)
-  {
-    std::vector<size_t> lengths;
-    if (value.empty()) {
-      return lengths;
-    }
-
-    std::stringstream parser(value);
-    std::string token;
-    while (std::getline(parser, token, ',')) {
-      if (token.empty()) {
-        continue;
-      }
-      try {
-        lengths.push_back(std::stoull(token));
-      }
-      catch (const std::exception&) {
-      }
-    }
-    return lengths;
-  }
-
-  std::vector<uint8_t>
-  recoverFecDataSymbol(const FecFrameState& state, uint32_t missingIdx)
-  {
-    if (missingIdx >= state.dataShards || state.fecDataLengths.empty()) {
-      return {};
-    }
-    if (missingIdx >= state.fecDataLengths.size()) {
-      return {};
-    }
-
-    const auto targetLen = state.fecDataLengths[missingIdx];
-    if (targetLen == 0) {
-      return {};
-    }
-
-    std::vector<uint8_t> recovered(targetLen, 0);
-    bool usedParity = false;
-    for (uint32_t i = 0; i < state.symbolCount; ++i) {
-      if (i == missingIdx) {
-        continue;
-      }
-      const auto it = state.shards.find(i);
-      if (it == state.shards.end()) {
-        continue;
-      }
-      const auto& payload = it->second;
-      for (size_t j = 0; j < targetLen; ++j) {
-        const auto byte = (j < payload.size()) ? payload[j] : 0;
-        recovered[j] ^= byte;
-      }
-      if (i >= state.dataShards) {
-        usedParity = true;
-      }
-    }
-
-    if (!usedParity) {
-      return {};
-    }
-    return recovered;
-  }
-
-  void
-  cleanupFecFrames()
-  {
-    for (auto it = m_fecFrames.begin(); it != m_fecFrames.end();) {
-      if (it->second.complete ||
-          (it->second.frameLastPacketSeq != 0 &&
-           it->second.frameLastPacketSeq < m_nextChunkSeqToDecode)) {
-        it = m_fecFrames.erase(it);
-      }
-      else {
-        ++it;
-      }
-    }
-  }
-
   void
   insertStreamChunkForDecode(const ndn_service_framework::StreamChunk& chunk,
                              uint64_t elapsedMs)
   {
-    insertChunkForDecode(chunk.seq,
-                         chunk.payload,
-                         chunk.streamId,
-                         chunk.sessionEpoch,
-                         elapsedMs);
+    insertChunkForDecode(chunk, elapsedMs);
   }
 
   bool
@@ -7782,28 +7520,59 @@ private:
     for (const auto& ready : readyChunks) {
       DecoderStreamChunk chunk;
       chunk.packetSeq = ready.seq;
+      try {
+        chunk.publicationCursor = std::stoull(ready.metadata.at("publicationCursor"));
+      }
+      catch (const std::exception&) {
+        chunk.publicationCursor = ready.seq;
+      }
       chunk.arrivalMs = ready.arrivalMs;
       chunk.streamSessionEpoch = ready.sessionEpoch;
+      chunk.frameId = ready.frameId;
+      chunk.segmentIndex = ready.segmentIndex;
+      chunk.dataShards = ready.fec ? ready.fec->dataShards : ready.segmentCount;
       chunk.streamId = ready.streamId;
       chunk.payload = ready.payload;
+      chunk.frameBindingVersion = fieldAsUint64(
+        ready.metadata, "uav.frame_binding_version", 0);
+      chunk.sourceFrameId = fieldAsUint64(
+        ready.metadata, "uav.source_frame_id", 0);
+      chunk.captureOriginNs = fieldAsUint64(
+        ready.metadata, "uav.capture_origin_ns", 0);
+      chunk.codecPts = static_cast<int64_t>(fieldAsUint64(
+        ready.metadata, "uav.codec_pts", 0));
+      chunk.codecConfigEpoch = fieldAsUint64(
+        ready.metadata, "uav.codec_config_epoch", 0);
       try {
         chunk.elapsedMs = std::stoull(ready.metadata.at("decoderElapsedMs"));
       }
       catch (const std::exception&) {
         chunk.elapsedMs = 0;
       }
+      try {
+        chunk.captureMs = std::stoull(ready.metadata.at("captureMs"));
+      }
+      catch (const std::exception&) {
+        chunk.captureMs = 0;
+      }
       m_chunkQueue.push_back(std::move(chunk));
+      ndn_service_framework::logStreamTimelineTrace(
+        "consumer", "reorder-ready", ready.streamId,
+        ready.sessionEpoch, chunk.publicationCursor,
+        {{"clock_domain", "consumer-steady"},
+         {"publication_cursor", std::to_string(chunk.publicationCursor)},
+         {"media_sequence", std::to_string(ready.seq)}});
     }
     return !readyChunks.empty();
   }
 
   void
-  insertChunkForDecode(uint64_t packetSeq,
-                      const std::vector<uint8_t>& payload,
-                      const std::string& streamId,
-                      uint64_t streamSessionEpoch,
-                      uint64_t elapsedMs)
+  insertChunkForDecode(ndn_service_framework::StreamChunk streamChunk,
+                       uint64_t elapsedMs)
   {
+    const auto packetSeq = streamChunk.seq;
+    const auto& streamId = streamChunk.streamId;
+    const auto streamSessionEpoch = streamChunk.sessionEpoch;
     if (packetSeq == UINT64_MAX) {
       return;
     }
@@ -7824,19 +7593,16 @@ private:
         m_decoderMissingChunkStartMs = 0;
       }
 
-      ndn_service_framework::StreamChunk streamChunk;
-      streamChunk.streamId = streamId;
-      streamChunk.sessionEpoch = streamSessionEpoch;
-      streamChunk.seq = packetSeq;
-      streamChunk.payload = payload;
-      streamChunk.contentType = "video/h264";
       streamChunk.arrivalMs = m_firstFrameMs == 0 ? 0 : m_firstFrameMs + elapsedMs;
       streamChunk.metadata["decoderElapsedMs"] = std::to_string(elapsedMs);
+      streamChunk.metadata["captureMs"] = std::to_string(streamChunk.captureMs);
 
       const auto before = m_decoderReorderBuffer->metrics();
       notifyWriter = appendDecoderReadyChunksUnderLock(
         m_decoderReorderBuffer->push(streamChunk));
       const auto after = m_decoderReorderBuffer->metrics();
+      m_decoderMaxReorderDepth = std::max(
+        m_decoderMaxReorderDepth.load(), after.maxPending);
       m_decoderDroppedChunks +=
         (after.duplicates - before.duplicates) + (after.stale - before.stale);
       m_nextChunkSeqToDecode = m_decoderReorderBuffer->nextSeq();
@@ -7873,18 +7639,32 @@ private:
   }
 
   void
-  startDecoder()
+  startDecoder(uint64_t initialMediaSequence)
   {
     if (m_decoderRunning.load()) {
       return;
     }
-    std::string command =
-      "ffmpeg -hide_banner -loglevel error -fflags nobuffer -flags low_delay "
-      "-analyzeduration 100000 -probesize 32768 -f h264 -i pipe:0 -f image2pipe -vcodec mjpeg -";
-
-    if (!startDecoderProcess(command)) {
-      publishStatus("Failed to start video decoder");
-      return;
+    if (m_useGStreamerPipeline) {
+      m_gstreamerDecoder = std::make_unique<GStreamerVideoPipeline>();
+      try {
+        m_gstreamerDecoder->startDecode([this] (const UavVideoFrame& frame) {
+          emitGStreamerDecodedFrame(frame);
+        });
+      }
+      catch (const std::exception& e) {
+        m_gstreamerDecoder.reset();
+        publishStatus(std::string("Failed to start GStreamer video decoder: ") + e.what());
+        return;
+      }
+    }
+    else {
+      std::string command =
+        "ffmpeg -hide_banner -loglevel error -flags low_delay "
+        "-analyzeduration 100000 -probesize 32768 -f h264 -i pipe:0 -f image2pipe -vcodec mjpeg -";
+      if (!startDecoderProcess(command)) {
+        publishStatus("Failed to start video decoder");
+        return;
+      }
     }
 
   m_decoderRunning = true;
@@ -7893,6 +7673,17 @@ private:
   m_lastOutputChunkStreamId.clear();
   m_lastOutputChunkStreamSessionEpoch = 0;
   m_decoderDroppedChunks = 0;
+    {
+      std::lock_guard<std::mutex> guard(m_decodeTimingMutex);
+      m_decoderOutputIntervalsMs.clear();
+    }
+    m_decoderFirstInputMs = 0;
+    m_decoderFirstOutputMs = 0;
+    m_decoderLastOutputMs = 0;
+    m_decoderInputChunks = 0;
+    m_decoderInputBytes = 0;
+    m_decoderOutputReads = 0;
+    m_decoderOutputBytes = 0;
     m_decoderMissingChunkSeq = UINT64_MAX;
     m_decoderMissingChunkStartMs = 0;
     m_closeDecoderInputWhenQueueDrained = false;
@@ -7901,117 +7692,22 @@ private:
       std::lock_guard<std::mutex> guard(m_decoderQueueMutex);
       m_chunkQueue.clear();
       m_decoderReorderBuffer = std::make_unique<ndn_service_framework::StreamConsumerReorderBuffer>(
-        activeVideoStreamId(), videoStreamSessionEpoch(), 0,
+        activeVideoStreamId(), videoStreamSessionEpoch(), initialMediaSequence,
         std::max<uint64_t>(1, m_decoderBacklogLimit));
       m_decoderReorderStreamId = activeVideoStreamId();
       m_decoderReorderSessionEpoch = videoStreamSessionEpoch();
       m_decoderPendingChunkCount = 0;
+      m_decoderMaxReorderDepth = 0;
       m_decoderPendingBytes = 0;
       m_fecRecoveredChunks = 0;
-      m_nextChunkSeqToDecode = 0;
+      m_nextChunkSeqToDecode = initialMediaSequence;
     }
 
     m_decoderWriterThread = std::thread([this] { decoderWriterLoop(); });
-    m_decoderReaderThread = std::thread([this] { decoderReaderLoop(); });
+    if (!m_useGStreamerPipeline) {
+      m_decoderReaderThread = std::thread([this] { decoderReaderLoop(); });
+    }
     publishStatus("Video decoder started");
-  }
-
-  void
-  decodeRecordingFromFetchedChunksAsync(RecordingDataProductState manifest)
-  {
-    const auto sessionId = activeRecordingPlaybackStreamId();
-    auto sessionGuard = sessionId;
-    std::map<uint64_t, std::vector<uint8_t>> chunks;
-    {
-      std::lock_guard<std::mutex> guard(m_decoderQueueMutex);
-      chunks = m_recordingPlaybackChunks;
-    }
-    if (chunks.empty()) {
-      return;
-    }
-
-    if (m_recordingPlaybackDecodeThread.joinable()) {
-      m_recordingPlaybackDecodeThread.join();
-    }
-    m_recordingPlaybackDecodeThread =
-      std::thread([this, manifest = std::move(manifest), chunks = std::move(chunks),
-                   sessionGuard]() mutable {
-      const auto tempPath = "/tmp/ndnsf-uav-recording-playback-" +
-        std::to_string(getpid()) + "-" + std::to_string(nowMilliseconds()) + ".h264";
-      {
-        std::ofstream out(tempPath, std::ios::binary | std::ios::trunc);
-        if (!out) {
-          publishStatus("Recording playback temp file failed drone=" + manifest.droneId);
-          return;
-        }
-        for (const auto& [index, payload] : chunks) {
-          (void)index;
-          out.write(reinterpret_cast<const char*>(payload.data()),
-                    static_cast<std::streamsize>(payload.size()));
-        }
-      }
-
-      const auto command =
-        "ffmpeg -hide_banner -loglevel error -f h264 -i " + shellQuote(tempPath) +
-        " -f image2pipe -vcodec mjpeg -";
-      std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(command.c_str(), "r"), pclose);
-      if (!pipe) {
-        publishStatus("Recording playback decoder failed drone=" + manifest.droneId);
-        unlink(tempPath.c_str());
-        return;
-      }
-
-      std::vector<uint8_t> outBuffer;
-      std::array<uint8_t, 8192> buffer{};
-      uint64_t frameCount = 0;
-      while (m_recordingPlaybackActive.load() &&
-             activeRecordingPlaybackDroneId() == manifest.droneId) {
-        const auto n = fread(buffer.data(), 1, buffer.size(), pipe.get());
-        if (n == 0) {
-          break;
-        }
-        outBuffer.insert(outBuffer.end(), buffer.begin(), buffer.begin() + n);
-
-        static constexpr uint8_t kJpegStart[2] = {0xff, 0xd8};
-        static constexpr uint8_t kJpegEnd[2] = {0xff, 0xd9};
-        while (outBuffer.size() >= 4) {
-          const auto start = std::search(outBuffer.begin(), outBuffer.end(),
-                                         std::begin(kJpegStart), std::end(kJpegStart));
-          if (start == outBuffer.end()) {
-            outBuffer.clear();
-            break;
-          }
-          if (start != outBuffer.begin()) {
-            outBuffer.erase(outBuffer.begin(), start);
-            if (outBuffer.size() < 4) {
-              break;
-            }
-          }
-          const auto end = std::search(outBuffer.begin() + 2, outBuffer.end(),
-                                       std::begin(kJpegEnd), std::end(kJpegEnd));
-          if (end == outBuffer.end()) {
-            break;
-          }
-          const auto endIt = end + 2;
-          std::vector<uint8_t> frame(outBuffer.begin(), endIt);
-          outBuffer.erase(outBuffer.begin(), endIt);
-          {
-            std::lock_guard<std::mutex> guard(m_latestDecodedFrameMutex);
-            m_latestDecodedFrame = frame;
-          }
-          ++frameCount;
-          if (m_frameCallback) {
-            m_frameCallback(std::move(frame),
-                            frameCount,
-                            frameCount * 33,
-                            sessionGuard,
-                            streamSessionEpochForStreamId(sessionGuard));
-          }
-          std::this_thread::sleep_for(33ms);
-        }
-      }
-      unlink(tempPath.c_str());
-    });
   }
 
   void
@@ -8027,8 +7723,16 @@ private:
   void
   stopDecoder()
   {
+    NDN_LOG_DEBUG("GS_VIDEO_DECODER_FINAL input_chunks=" << m_decoderInputChunks.load()
+                  << " input_bytes=" << m_decoderInputBytes.load()
+                  << " output_reads=" << m_decoderOutputReads.load()
+                  << " output_bytes=" << m_decoderOutputBytes.load()
+                  << " decoded_frames=" << m_decodedVideoFrames.load());
     m_decoderRunning = false;
     m_decoderQueueCv.notify_all();
+    if (m_gstreamerDecoder) {
+      m_gstreamerDecoder->stop();
+    }
 
     closeDecoderInput();
     if (m_decoderOutFd >= 0) {
@@ -8040,6 +7744,30 @@ private:
     }
     if (m_decoderReaderThread.joinable()) {
       m_decoderReaderThread.join();
+    }
+
+    {
+      std::vector<uint64_t> intervals;
+      {
+        std::lock_guard<std::mutex> guard(m_decodeTimingMutex);
+        intervals = m_decoderOutputIntervalsMs;
+      }
+      if (!intervals.empty()) {
+        std::sort(intervals.begin(), intervals.end());
+        const auto percentile = [&intervals](double fraction) {
+          const auto index = std::min(
+            intervals.size() - 1,
+            static_cast<size_t>(std::llround(
+              static_cast<double>(intervals.size() - 1) * fraction)));
+          return intervals[index];
+        };
+        NDN_LOG_DEBUG("GS_VIDEO_OUTPUT_CADENCE"
+                      << " metric=decoder-output-interval"
+                      << " samples=" << intervals.size()
+                      << " p50_ms=" << percentile(0.50)
+                      << " p95_ms=" << percentile(0.95)
+                      << " p99_ms=" << percentile(0.99));
+      }
     }
 
     if (m_decoderPid > 0) {
@@ -8055,6 +7783,7 @@ private:
       m_decoderReorderStreamId.clear();
       m_decoderReorderSessionEpoch = 0;
       m_decoderPendingChunkCount = 0;
+      m_decoderMaxReorderDepth = 0;
       m_decoderPendingBytes = 0;
       m_decoderOutBuffer.clear();
       m_lastOutputChunkStreamId.clear();
@@ -8063,11 +7792,16 @@ private:
       m_decoderMissingChunkStartMs = 0;
     }
     m_decoderDroppedChunks = 0;
+    m_gstreamerDecoder.reset();
   }
 
   void
   decoderWriterLoop()
   {
+    uint64_t assemblingFrameId = UINT64_MAX;
+    UavVideoFrame assemblingFrame;
+    std::vector<std::vector<uint8_t>> assemblingShards;
+    std::vector<bool> assemblingPresent;
     while (m_decoderRunning.load()) {
       DecoderStreamChunk chunk;
       {
@@ -8094,19 +7828,96 @@ private:
         m_chunkQueue.pop_front();
       }
 
-      if (m_decoderInFd < 0) {
+      if (!m_useGStreamerPipeline && m_decoderInFd < 0) {
         continue;
       }
 
-      if (chunk.payload.empty()) {
-        continue;
-      }
-      m_lastOutputChunkSeq = chunk.packetSeq;
-      m_lastOutputChunkElapsedMs = chunk.elapsedMs;
       {
         std::lock_guard<std::mutex> guard(m_decoderQueueMutex);
+        m_lastOutputChunkSeq = chunk.publicationCursor;
+        m_lastOutputChunkElapsedMs = chunk.elapsedMs;
         m_lastOutputChunkStreamId = chunk.streamId;
         m_lastOutputChunkStreamSessionEpoch = chunk.streamSessionEpoch;
+      }
+
+      if (chunk.payload.empty()) {
+        if (!m_useGStreamerPipeline) continue;
+      }
+
+      if (m_useGStreamerPipeline) {
+        if (chunk.frameBindingVersion != 1 || chunk.sourceFrameId == 0 ||
+            chunk.captureOriginNs == 0 || chunk.dataShards == 0 ||
+            chunk.segmentIndex >= chunk.dataShards) {
+          NDN_LOG_WARN("GS_VIDEO_FRAME_BINDING_REJECT reason=malformed"
+                       << " frame=" << chunk.frameId
+                       << " segment=" << chunk.segmentIndex);
+          continue;
+        }
+        if (assemblingFrameId != chunk.frameId) {
+          if (assemblingFrameId != UINT64_MAX &&
+              !assemblingPresent.empty() &&
+              !std::all_of(assemblingPresent.begin(), assemblingPresent.end(),
+                           [] (bool present) { return present; })) {
+            const auto present = static_cast<size_t>(std::count(
+              assemblingPresent.begin(), assemblingPresent.end(), true));
+            NDN_LOG_WARN("GS_VIDEO_ACCESS_UNIT_DROPPED"
+                         << " reason=incomplete-next-frame"
+                         << " frame=" << assemblingFrameId
+                         << " received_shards=" << present
+                         << " expected_shards=" << assemblingPresent.size()
+                         << " next_frame=" << chunk.frameId);
+          }
+          assemblingFrameId = chunk.frameId;
+          assemblingFrame = {};
+          assemblingFrame.sessionEpoch = chunk.streamSessionEpoch;
+          assemblingFrame.sourceFrameId = chunk.sourceFrameId;
+          assemblingFrame.captureOriginNs = chunk.captureOriginNs;
+          assemblingFrame.codecPts = chunk.codecPts;
+          assemblingFrame.codecConfigEpoch = chunk.codecConfigEpoch;
+          assemblingShards.assign(chunk.dataShards, {});
+          assemblingPresent.assign(chunk.dataShards, false);
+        }
+        if (assemblingFrame.sourceFrameId != chunk.sourceFrameId ||
+            assemblingFrame.captureOriginNs != chunk.captureOriginNs ||
+            assemblingFrame.codecPts != chunk.codecPts ||
+            assemblingShards.size() != chunk.dataShards) {
+          NDN_LOG_WARN("GS_VIDEO_FRAME_BINDING_REJECT reason=conflict"
+                       << " frame=" << chunk.frameId);
+          assemblingFrameId = UINT64_MAX;
+          assemblingShards.clear();
+          assemblingPresent.clear();
+          continue;
+        }
+        assemblingShards[chunk.segmentIndex] = std::move(chunk.payload);
+        assemblingPresent[chunk.segmentIndex] = true;
+        if (std::all_of(assemblingPresent.begin(), assemblingPresent.end(),
+                        [] (bool present) { return present; })) {
+          for (const auto& shard : assemblingShards) {
+            assemblingFrame.bytes.insert(assemblingFrame.bytes.end(),
+                                         shard.begin(), shard.end());
+          }
+          auto expectedFirstInput = uint64_t{0};
+          m_decoderFirstInputMs.compare_exchange_strong(expectedFirstInput,
+                                                        nowMilliseconds());
+          ++m_decoderInputChunks;
+          m_decoderInputBytes += assemblingFrame.bytes.size();
+          ndn_service_framework::logStreamTimelineTrace(
+            "consumer", "decoder-input", chunk.streamId,
+            chunk.streamSessionEpoch, chunk.publicationCursor,
+            {{"clock_domain", "consumer-steady"},
+             {"source_frame_id", std::to_string(assemblingFrame.sourceFrameId)},
+             {"codec_pts", std::to_string(assemblingFrame.codecPts)},
+             {"frame_correlation", "exact-pts"}});
+          if (!m_gstreamerDecoder ||
+              !m_gstreamerDecoder->submitAccessUnit(assemblingFrame)) {
+            NDN_LOG_WARN("GS_VIDEO_DECODER_SUBMIT_FAILED backend=gstreamer"
+                         << " source_frame_id=" << assemblingFrame.sourceFrameId);
+          }
+          assemblingFrameId = UINT64_MAX;
+          assemblingShards.clear();
+          assemblingPresent.clear();
+        }
+        continue;
       }
 
       const auto* data = chunk.payload.data();
@@ -8121,9 +7932,66 @@ private:
         if (errno == EINTR) {
           continue;
         }
+        NDN_LOG_WARN("GS_VIDEO_DECODER_WRITE_FAILED errno=" << errno
+                     << " input_chunks=" << m_decoderInputChunks.load()
+                     << " input_bytes=" << m_decoderInputBytes.load());
         m_decoderRunning = false;
         return;
       }
+      if (remaining == 0) {
+        auto expectedFirstInput = uint64_t{0};
+        m_decoderFirstInputMs.compare_exchange_strong(expectedFirstInput, nowMilliseconds());
+        const auto inputChunks = ++m_decoderInputChunks;
+        m_decoderInputBytes += chunk.payload.size();
+        if (inputChunks <= 3 || inputChunks % 30 == 0) {
+          NDN_LOG_DEBUG("GS_VIDEO_DECODER_INPUT chunks=" << inputChunks
+                        << " bytes=" << m_decoderInputBytes.load()
+                        << " media_seq=" << chunk.packetSeq);
+        }
+        ndn_service_framework::logStreamTimelineTrace(
+          "consumer", "decoder-input", chunk.streamId,
+          chunk.streamSessionEpoch, chunk.publicationCursor,
+          {{"clock_domain", "consumer-steady"},
+           {"publication_cursor", std::to_string(chunk.publicationCursor)},
+           {"media_sequence", std::to_string(chunk.packetSeq)}});
+      }
+    }
+  }
+
+  void
+  emitGStreamerDecodedFrame(UavVideoFrame frame)
+  {
+    if (!m_decoderRunning.load() ||
+        frame.sessionEpoch != videoStreamSessionEpoch()) {
+      NDN_LOG_WARN("GS_VIDEO_FRAME_BINDING_REJECT reason=stale-session"
+                   << " source_frame_id=" << frame.sourceFrameId);
+      return;
+    }
+    const auto decoded = ++m_decodedVideoFrames;
+    const auto decodedMs = nowMilliseconds();
+    auto expectedFirstOutput = uint64_t{0};
+    if (m_decoderFirstOutputMs.compare_exchange_strong(expectedFirstOutput, decodedMs)) {
+      const auto firstInputMs = m_decoderFirstInputMs.load();
+      NDN_LOG_INFO("GS_VIDEO_DECODER_STARTUP backend=gstreamer"
+                   << " first_input_to_first_output_ms="
+                   << (firstInputMs != 0 && decodedMs >= firstInputMs ?
+                       decodedMs - firstInputMs : 0));
+    }
+    ndn::Name outputTrace("/NDNSF/UAV/VIDEO/FRAME");
+    outputTrace.append(activeVideoStreamId())
+      .appendNumber(frame.sessionEpoch).appendNumber(frame.sourceFrameId);
+    ndn_service_framework::logTimelineTrace(
+      "consumer", "decoder-output", outputTrace,
+      {{"clock_domain", "host-steady"},
+       {"frame_correlation", "exact"},
+       {"source_id", std::to_string(frame.sourceFrameId)},
+       {"decoded_frames", std::to_string(decoded)},
+       {"output_ordinal", "0"},
+       {"capture_origin_ns", std::to_string(frame.captureOriginNs)},
+       {"codec_pts", std::to_string(frame.codecPts)}});
+    if (m_frameCallback) {
+      m_frameCallback(std::move(frame), 0, activeVideoStreamId(),
+                      videoStreamSessionEpoch());
     }
   }
 
@@ -8139,6 +8007,29 @@ private:
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
         continue;
+      }
+      const auto outputReads = ++m_decoderOutputReads;
+      m_decoderOutputBytes += static_cast<uint64_t>(n);
+      if (outputReads <= 3) {
+        std::ostringstream prefix;
+        static constexpr char HEX[] = "0123456789abcdef";
+        for (ssize_t i = 0; i < std::min<ssize_t>(n, 16); ++i) {
+          const auto byte = buffer[static_cast<size_t>(i)];
+          prefix << HEX[byte >> 4] << HEX[byte & 0x0f];
+        }
+        NDN_LOG_DEBUG("GS_VIDEO_DECODER_OUTPUT reads=" << outputReads
+                      << " bytes=" << m_decoderOutputBytes.load()
+                      << " prefix_hex=" << prefix.str());
+        if (n <= 256) {
+          std::string diagnostic;
+          diagnostic.reserve(static_cast<size_t>(n));
+          for (ssize_t i = 0; i < n; ++i) {
+            const auto byte = buffer[static_cast<size_t>(i)];
+            diagnostic.push_back(byte >= 0x20 && byte <= 0x7e ?
+                                 static_cast<char>(byte) : ' ');
+          }
+          NDN_LOG_DEBUG("GS_VIDEO_DECODER_OUTPUT_TEXT text=" << diagnostic);
+        }
       }
       {
         std::lock_guard<std::mutex> guard(m_decoderQueueMutex);
@@ -8187,27 +8078,56 @@ private:
     }
 
     for (auto& frame : frameCandidates) {
-      std::string streamId;
-      uint64_t streamSessionEpoch = 0;
+      uint64_t lastCursor = 0;
+      uint64_t lastElapsedMs = 0;
+      uint64_t lastEpoch = 0;
+      std::string lastStreamId;
       {
         std::lock_guard<std::mutex> guard(m_decoderQueueMutex);
-        streamId = m_lastOutputChunkStreamId;
-        streamSessionEpoch = m_lastOutputChunkStreamSessionEpoch;
+        lastCursor = m_lastOutputChunkSeq;
+        lastElapsedMs = m_lastOutputChunkElapsedMs;
+        lastStreamId = m_lastOutputChunkStreamId;
+        lastEpoch = m_lastOutputChunkStreamSessionEpoch;
       }
       {
         std::lock_guard<std::mutex> guard(m_latestDecodedFrameMutex);
         m_latestDecodedFrame = frame;
       }
       const auto decoded = ++m_decodedVideoFrames;
+      const auto decodedMs = nowMilliseconds();
+      const auto previousOutputMs = m_decoderLastOutputMs.exchange(decodedMs);
+      if (previousOutputMs != 0 && decodedMs >= previousOutputMs) {
+        std::lock_guard<std::mutex> guard(m_decodeTimingMutex);
+        if (m_decoderOutputIntervalsMs.size() < 65536) {
+          m_decoderOutputIntervalsMs.push_back(decodedMs - previousOutputMs);
+        }
+      }
+      auto expectedFirstOutput = uint64_t{0};
+      if (m_decoderFirstOutputMs.compare_exchange_strong(expectedFirstOutput, decodedMs)) {
+        const auto firstInputMs = m_decoderFirstInputMs.load();
+        NDN_LOG_DEBUG("GS_VIDEO_DECODER_STARTUP"
+                      << " first_input_to_first_output_ms="
+                      << (firstInputMs != 0 && decodedMs >= firstInputMs ?
+                          decodedMs - firstInputMs : 0)
+                      << " correlation=decoder-process-only");
+      }
+      ndn::Name outputTrace("/NDNSF/STREAM/DECODER");
+      outputTrace.append(lastStreamId).appendNumber(lastEpoch).appendNumber(decoded);
+      ndn_service_framework::logTimelineTrace(
+        "consumer", "decoder-output", outputTrace,
+        {{"clock_domain", "consumer-steady"},
+         {"frame_correlation", "ambiguous-one-to-many"},
+         {"last_publication_cursor", std::to_string(lastCursor)}});
       if (decoded <= 3 || decoded % 30 == 0) {
         publishVideoAdaptiveState("decoded");
       }
       if (m_frameCallback) {
-        m_frameCallback(std::move(frame),
-                        decoded,
-                        m_lastOutputChunkElapsedMs,
-                        streamId,
-                        streamSessionEpoch);
+        UavVideoFrame legacyFrame;
+        legacyFrame.sessionEpoch = lastEpoch;
+        legacyFrame.sourceFrameId = decoded;
+        legacyFrame.bytes = std::move(frame);
+        m_frameCallback(std::move(legacyFrame), lastElapsedMs,
+                        lastStreamId, lastEpoch);
       }
     }
   }
@@ -8326,6 +8246,7 @@ private:
   std::string m_recordingPlaybackDroneId;
   std::string m_recordingPlaybackStreamId;
   std::map<std::string, RecordingDataProductState> m_recordingManifests;
+  std::map<std::string, uint64_t> m_canonicalRecordingManifestVersions;
   std::map<std::string, UavDataProductCatalogState> m_catalogByDrone;
   std::map<std::string, VehicleParameterSnapshot> m_parameterSnapshots;
   std::map<std::string, std::vector<PreflightCheckItem>> m_preflightByDrone;
@@ -8335,8 +8256,11 @@ private:
   std::map<std::string, Fields> m_operatorRevocationRecords;
   std::vector<OperatorAuthorityAlert> m_operatorAuthorityAlerts;
   std::atomic<uint64_t> m_videoBitrateKbps{8000};
+  uint64_t m_videoFps = 30;
   uint64_t m_videoFrameWidth = 480;
   uint64_t m_videoFecParityShards = 1;
+  std::string m_liveStreamPrefetchPolicy = "mapped-pressure";
+  std::atomic<uint64_t> m_lastCoreStatusDelivered{0};
   std::vector<std::string> m_patrolDroneIds;
   mutable std::mutex m_patrolTaskMutex;
   std::string m_activePatrolTaskId;
@@ -8367,16 +8291,23 @@ private:
   std::mutex m_latestDecodedFrameMutex;
   std::vector<uint8_t> m_latestDecodedFrame;
   ndn::Face m_face;
-  boost::asio::steady_timer m_videoPumpTimer;
   ndn::KeyChain m_keyChain;
   ndn::security::Certificate m_gsCert;
   ndn::security::Certificate m_controllerCert;
   std::unique_ptr<ndn_service_framework::CertificatePublisher> m_certPublisher;
   std::unique_ptr<ndn_service_framework::ServiceUser> m_user;
+  mutable std::mutex m_liveStreamMutex;
+  std::shared_ptr<ndn_service_framework::LiveStreamConsumerHandle> m_liveStreamHandle;
+  std::shared_ptr<ndn_service_framework::PredictiveStreamSubscriber>
+    m_predictiveSubscriber;
+  std::optional<VideoStreamDescriptor> m_liveVideoDescriptor;
+  std::map<std::pair<uint64_t, uint64_t>, std::set<uint32_t>> m_liveSampleSymbols;
+  uint64_t m_liveStreamConsumerGeneration = 0;
+  VideoCoreFetchDecisionSnapshot m_coreFetchDecisionSnapshot;
   std::unique_ptr<ndn_service_framework::ServiceProvider> m_objectDetectionProvider;
   std::thread m_faceThread;
   std::function<void(std::string)> m_statusCallback;
-  std::function<void(std::vector<uint8_t>, uint64_t, uint64_t, std::string, uint64_t)> m_frameCallback;
+  std::function<void(UavVideoFrame, uint64_t, std::string, uint64_t)> m_frameCallback;
   std::atomic<bool> m_containerReady{false};
   std::atomic<bool> m_streaming{false};
   std::atomic<bool> m_seenVideoStart{false};
@@ -8396,6 +8327,11 @@ private:
   std::atomic<uint64_t> m_duplicateVideoPackets{0};
   std::atomic<uint64_t> m_videoFramesPublished{0};
   std::atomic<uint64_t> m_decodedVideoFrames{0};
+  std::mutex m_decodeTimingMutex;
+  std::vector<uint64_t> m_decoderOutputIntervalsMs;
+  std::atomic<uint64_t> m_decoderFirstInputMs{0};
+  std::atomic<uint64_t> m_decoderFirstOutputMs{0};
+  std::atomic<uint64_t> m_decoderLastOutputMs{0};
   std::atomic<uint64_t> m_lastVideoAdaptiveLogMs{0};
   std::atomic<uint64_t> m_videoBitrateAdviceSinceMs{0};
   std::atomic<uint64_t> m_lastVideoBitrateApplyMs{0};
@@ -8419,14 +8355,11 @@ private:
   ndn::Name m_streamPrefix;
   std::string m_activeStreamId;
   std::map<std::string, uint64_t> m_streamEpochByStreamId;
-  PacketLane m_keyLane;
-  PacketLane m_deltaLane;
   uint64_t m_keyPacketsPerSecond = 16;
   uint64_t m_deltaPacketsPerSecond = 160;
   uint64_t m_keyWindow = 16;
   uint64_t m_deltaWindow = 108;
   uint64_t m_videoPayloadBytes = 3600;
-  uint64_t m_videoFps = 30;
   std::atomic<uint64_t> m_videoRequestedBitrateKbps{8000};
   std::atomic<uint64_t> m_videoAcceptedBitrateKbps{8000};
   uint64_t m_videoTimeoutBudgetMs = 2500;
@@ -8442,10 +8375,7 @@ private:
   std::string m_lastOutputChunkStreamId;
   uint64_t m_lastOutputChunkStreamSessionEpoch = 0;
   uint64_t m_lastOutputChunkElapsedMs = 0;
-  static constexpr uint64_t VIDEO_FPS = 30;
-  static constexpr uint64_t INITIAL_PACKET_PROBE = 4;
   static constexpr uint64_t DEFAULT_VIDEO_RTT_MS = 120;
-  static constexpr uint64_t STREAM_PUMP_INTERVAL_MS = 25;
   static constexpr uint64_t MAX_VIDEO_START_RETRIES = 2;
   static constexpr uint64_t VIDEO_BITRATE_APPLY_COOLDOWN_MS = 8000;
   static constexpr uint64_t VIDEO_STOP_CLICK_SUPPRESS_MS = 900;
@@ -8455,12 +8385,15 @@ private:
   std::atomic<uint64_t> m_videoProbePressurePercent{0};
   std::atomic<uint64_t> m_videoDuplicatePressurePercent{0};
   std::atomic<uint64_t> m_decoderPendingChunkCount{0};
+  std::atomic<uint64_t> m_decoderMaxReorderDepth{0};
   std::atomic<uint64_t> m_decoderPendingBytes{0};
   std::atomic<uint64_t> m_fecRecoveredChunks{0};
+  std::atomic<uint64_t> m_decoderInputChunks{0};
+  std::atomic<uint64_t> m_decoderInputBytes{0};
+  std::atomic<uint64_t> m_decoderOutputReads{0};
+  std::atomic<uint64_t> m_decoderOutputBytes{0};
   std::atomic<bool> m_done{false};
-  std::atomic<bool> m_videoPumpScheduled{false};
   std::mutex m_videoPacketTrackingMutex;
-  std::set<uint64_t> m_videoInFlightPacketSeqs;
   std::set<uint64_t> m_videoCompletedPacketSeqs;
   std::deque<uint64_t> m_videoCompletedPacketSeqOrder;
   static constexpr size_t MAX_VIDEO_PACKET_HISTORY = 4096;
@@ -8470,13 +8403,12 @@ private:
   std::unique_ptr<ndn_service_framework::StreamConsumerReorderBuffer> m_decoderReorderBuffer;
   std::string m_decoderReorderStreamId;
   uint64_t m_decoderReorderSessionEpoch = 0;
-  std::map<uint64_t, std::vector<uint8_t>> m_recordingPlaybackChunks;
-  std::map<std::pair<uint64_t, uint64_t>, FecFrameState> m_fecFrames;
   std::vector<uint8_t> m_decoderOutBuffer;
   std::thread m_decoderWriterThread;
   std::thread m_decoderReaderThread;
-  std::thread m_recordingPlaybackDecodeThread;
   std::atomic<bool> m_decoderRunning{false};
+  bool m_useGStreamerPipeline = false;
+  std::unique_ptr<GStreamerVideoPipeline> m_gstreamerDecoder;
   std::atomic<bool> m_closeDecoderInputWhenQueueDrained{false};
   int m_decoderInFd = -1;
   int m_decoderOutFd = -1;

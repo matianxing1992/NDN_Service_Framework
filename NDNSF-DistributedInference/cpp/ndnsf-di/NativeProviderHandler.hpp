@@ -34,8 +34,17 @@ struct NativeProviderHandlerConfig
   int freshnessMs = 60000;
   std::size_t workerCount = 1;
   ndn_service_framework::ProviderExecutionLeaseTable* executionLeaseTable = nullptr;
+  uint64_t executionLeaseCleanupIntervalMs = 1000;
   std::string executionLeaseTargetService;
   uint64_t executionLeaseHardDeadlineMs = 120000;
+  // R0 rollback-only compatibility: Core validates the signed
+  // ExecutionActivateMessage before invoking the legacy path. R1 execution
+  // uses local readiness plus authenticated direct-predecessor evidence and
+  // never treats this message as authority.
+  bool requireExecutionActivation = false;
+  // Explicit rollback-only compatibility switch. New configurations never
+  // enable the former peer readiness barrier; Core owns READY aggregation.
+  bool allowLegacyPeerReadinessBarrier = false;
   std::shared_ptr<KvStateStore> kvStateStore;
   std::string kvOutputScope = "kv-state";
   std::uint64_t kvSecurityEpoch = 0;
