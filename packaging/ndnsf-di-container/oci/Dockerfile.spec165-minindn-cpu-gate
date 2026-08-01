@@ -1,0 +1,24 @@
+ARG BASE_IMAGE=ndnsf-di:spec165-minindn-gate
+FROM ${BASE_IMAGE}
+
+USER 0:0
+
+# The existing Spec 165 candidate is a CUDA-layer image.  Gate C requests the
+# CPU backend on this host, so replace only the Python ONNX Runtime wheel with
+# the matching CPU distribution.  The NDNSF/NDN and MiniNDN layers remain the
+# same; this makes the image/runtime choice explicit and digestable.
+RUN /opt/venv/bin/python3 -m pip uninstall -y onnxruntime-gpu \
+    && /opt/venv/bin/python3 -m pip install --no-cache-dir \
+        onnxruntime==1.20.1 \
+    && /opt/venv/bin/python3 - <<'PY'
+import onnxruntime as ort
+assert "CPUExecutionProvider" in ort.get_available_providers()
+assert "CUDAExecutionProvider" not in ort.get_available_providers()
+print(ort.__version__, ort.get_available_providers())
+PY
+
+LABEL org.ndnsf.di.backend="onnxruntime-cpu" \
+      org.ndnsf.di.validation-harness="spec165-real-minindn-model" \
+      org.ndnsf.di.cpu-overlay-parent="ndnsf-di:spec165-minindn-gate"
+
+USER 65532:65532

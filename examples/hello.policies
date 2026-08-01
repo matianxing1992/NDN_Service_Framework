@@ -8,6 +8,10 @@ provider-policies
         allow
         {
             /HELLO
+            /NDNSF/DistributedRepo/Store
+            /NDNSF/DistributedRepo/Store/ROLE/artifact-replica-0
+            /NDNSF/DistributedRepo/Artifact/v2/STORE
+            /NDNSF/DistributedRepo/Artifact/v2/STORE/ROLE/artifact-replica-0
         }
     }
     provider-policy
@@ -16,6 +20,10 @@ provider-policies
         allow
         {
             /HELLO
+            /NDNSF/DistributedRepo/Store
+            /NDNSF/DistributedRepo/Store/ROLE/artifact-replica-0
+            /NDNSF/DistributedRepo/Artifact/v2/STORE
+            /NDNSF/DistributedRepo/Artifact/v2/STORE/ROLE/artifact-replica-0
         }
     }
     provider-policy
@@ -24,6 +32,9 @@ provider-policies
         allow
         {
             /HELLO
+            /NDNSF/DistributedRepo/Store
+            /NDNSF/DistributedRepo/Artifact/v2/STORE
+            /NDNSF/DistributedRepo/Store/ROLE/artifact-replica-0
         }
     }
     provider-policy
@@ -32,6 +43,8 @@ provider-policies
         allow
         {
             /HELLO
+            /NDNSF/DistributedRepo/Store
+            /NDNSF/DistributedRepo/Store/ROLE/artifact-replica-0
         }
     }
 }
@@ -44,6 +57,8 @@ user-policies
         allow
         {
             /HELLO
+            /NDNSF/DistributedRepo/Store
+            /NDNSF/DistributedRepo/Artifact/v2/STORE
         }
     }
 }

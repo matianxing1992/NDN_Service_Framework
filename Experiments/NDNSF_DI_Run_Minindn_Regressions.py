@@ -104,6 +104,10 @@ CASES = {
         script=REPO / "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
         success_marker="LLM_PIPELINE_MININDN_OK",
         description="Distributed LLM pipeline MiniNDN smoke with local/distributed timing",
+        # MiniNDN intentionally uses a volatile /tmp app-state root.  The
+        # application client requires this test-only acknowledgement explicitly;
+        # without it the harness exits before the first collaboration request.
+        extra_args=("--test-only-allow-ephemeral-app-state",),
     ),
     "llm-pipeline-transformers-minindn": RegressionCase(
         name="llm-pipeline-transformers-minindn",

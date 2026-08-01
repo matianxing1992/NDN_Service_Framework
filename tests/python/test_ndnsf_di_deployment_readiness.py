@@ -596,18 +596,18 @@ class DeploymentReadinessContractsTest(unittest.TestCase):
             "generation-complete": 3,
         })
 
-    def test_qwen_pilot_greedy_token_fixtures_1_2_and_32(self) -> None:
-        logits = [[-1.0, float(index), 100.0 + index] for index in range(32)]
+    def test_qwen_pilot_greedy_token_fixtures_1_2_and_64(self) -> None:
+        logits = [[-1.0, float(index), 100.0 + index] for index in range(64)]
         self.assertEqual(greedy_decode_fixture(logits, 1), [2])
         self.assertEqual(greedy_decode_fixture(logits, 2), [2, 2])
-        self.assertEqual(greedy_decode_fixture(logits, 32), [2] * 32)
+        self.assertEqual(greedy_decode_fixture(logits, 64), [2] * 64)
 
     def test_qwen_pilot_admission_enforces_input_and_output_bounds(self) -> None:
-        QwenPilotRequest(tuple(range(512)), 32).validate()
+        QwenPilotRequest(tuple(range(512)), 64).validate()
         with self.assertRaises(ValueError):
             QwenPilotRequest(tuple(range(513)), 1).validate()
         with self.assertRaises(ValueError):
-            QwenPilotRequest((1,), 33).validate()
+            QwenPilotRequest((1,), 65).validate()
         with self.assertRaises(ValueError):
             QwenPilotRequest((), 1).validate()
 

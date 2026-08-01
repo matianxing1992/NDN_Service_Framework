@@ -456,7 +456,8 @@ namespace ndn_service_framework{
         MessageValidator(std::string trustSchemaPath,
                          std::optional<ndn::Name> svsGroupPrefix = std::nullopt,
                          ndn::Face* callbackFace = nullptr)
-            : m_validator(m_face, makeCommandInterestOptions(), makeSignedInterestOptions()),
+            : m_validator(makeCertificateFetcher(m_face, callbackFace),
+                         makeCommandInterestOptions(), makeSignedInterestOptions()),
               m_callbackIo(callbackFace == nullptr
                              ? nullptr
                              : &callbackFace->getIoContext()),
@@ -619,6 +620,20 @@ namespace ndn_service_framework{
         }
 
     private:
+        static std::unique_ptr<ndn::security::CertificateFetcher>
+        makeCertificateFetcher(ndn::Face& fallbackFace, ndn::Face* callbackFace)
+        {
+            // ValidatorConfig performs asynchronous certificate retrieval when
+            // the local PIB does not contain the signer certificate.  The
+            // ServiceUser/ServiceProvider face is the face whose IO loop is
+            // actually driven by the runtime; the private m_face is retained
+            // only as a fallback for local/mock construction.  Binding the
+            // network fetcher to the private face leaves remote certificates
+            // permanently pending on real multi-node deployments.
+            ndn::Face& fetchFace = callbackFace == nullptr ? fallbackFace : *callbackFace;
+            return std::make_unique<ndn::security::CertificateFetcherFromNetwork>(fetchFace);
+        }
+
         std::optional<ndn::security::Certificate>
         findLocalCertificate(const ndn::Data& data,
                              const ndn::Name& certName)

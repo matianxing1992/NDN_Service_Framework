@@ -8,7 +8,8 @@ them to the installed NDNSF Python ``ServiceUser`` API.
 from __future__ import annotations
 
 import json
-from typing import Callable, Iterable, Optional
+from pathlib import Path
+from typing import Callable, Iterable, Optional, Union
 
 from ndnsf import _ndnsf
 from ndnsf import (
@@ -19,20 +20,64 @@ from ndnsf import (
 )
 
 from ._py_repoclient import (
+    AdaptiveArtifactTransfer,
+    AdaptiveTransferOptions,
+    ArtifactCapability,
+    ArtifactChunk,
+    ArtifactLimits,
+    ArtifactManifestChild,
+    ArtifactManifestPage,
+    ArtifactManifestTrustPolicy,
+    ArtifactManifestVerificationResult,
+    ArtifactReference,
+    ArtifactResumeIdentity,
+    ArtifactResumeSession,
+    ArtifactResumeSnapshot,
+    ArtifactResumeState,
+    ArtifactReplicaReceipt,
+    ArtifactRootManifest,
+    ArtifactSegmentDisposition,
+    ArtifactSegmentRequest,
+    ArtifactTransferSnapshot,
+    SignedArtifactRoot,
+    ArtifactUploadLease,
+    ArtifactValidationError,
     PlacementPolicy,
+    ReplicaLeaseControlFlow,
+    ReplicaLeaseControlSnapshot,
+    ReplicaLeaseControlState,
     RepoCacheStatus,
     RepoCatalogDelta,
     RepoCatalogEntry,
     RepoCatalogStatus,
     RepoDataReference,
     RepoObjectManifest,
+    RepoOperationMetrics,
     RepoOperationStatus,
     StorageCapability,
+    artifact_capability_from_dict,
+    artifact_chunk_from_dict,
+    artifact_manifest_child_from_dict,
+    artifact_manifest_page_from_dict,
+    artifact_reference_from_dict,
+    artifact_replica_receipt_from_dict,
+    artifact_resume_identity_from_dict,
+    artifact_root_manifest_from_dict,
+    artifact_upload_lease_from_dict,
+    artifact_sha256_hex,
+    canonical_manifest_page_bytes,
+    canonical_root_manifest_bytes,
+    decode_artifact_manifest_page,
+    decode_signed_artifact_root,
     decode_store_request,
     encode_inventory,
+    encode_artifact_manifest_page,
+    encode_signed_artifact_root,
     encode_store_request,
     make_manifest,
     make_repo_service_name,
+    derive_artifact_data_name,
+    derive_manifest_page_name,
     parse_manifest_json,
     parse_cache_status_json,
     parse_catalog_delta_json,
@@ -43,6 +88,11 @@ from ._py_repoclient import (
     parse_operation_status_json,
     select_replicas,
     sha256_hex,
+    validate_artifact_resume_identity,
+    verify_artifact_chunk_payload,
+    verify_artifact_manifest_graph,
+    verify_artifact_payload,
+    verify_signed_artifact_root,
 )
 from .service_names import (
     DEFAULT_REPO_SERVICE_ROOT,
@@ -51,6 +101,72 @@ from .service_names import (
     repo_service_for_operation,
     repo_versioned_services,
 )
+from .persistence import (
+    ARTIFACT_LIFECYCLE_STATES,
+    ARTIFACT_LIFECYCLE_TRANSITIONS,
+    ArtifactStorageIdentity,
+    ArtifactCapacityStatus,
+    ArtifactFinalizationRecord,
+    ArtifactTransferSessionRecord,
+    FilesystemCasPayloadStore,
+    LifecycleTransitionError,
+    MetadataStore,
+    PayloadStore,
+    PersistenceOwnershipError,
+    RepoLifecycleEvent,
+    SqliteRepositoryPersistence,
+)
+from .artifact_transfer import (
+    ArtifactStoreAssignment,
+    ArtifactStoreOffer,
+    ReplicaTaskControlSnapshot,
+    PendingReplicaTaskCollaboration,
+    ReplicaTaskCollaborationClient,
+    decode_store_assignment,
+    decode_store_offer_ack,
+    encode_store_offer_ack,
+    decode_upload_lease_assignment,
+    encode_upload_lease_ack,
+    PendingReplicaLeaseCollaboration,
+    ReplicaLeaseCollaborationClient,
+)
+from .network_artifact_backend import (
+    ArtifactControlMetrics,
+    CollaborationArtifactApiBackend,
+    install_artifact_collaboration_service,
+)
+from .artifact_lifecycle import (
+    AuthenticatedReplicaReceipt,
+    ArtifactReplicaSession,
+    AtomicArtifactDestination,
+    HmacReceiptAuthenticator,
+    resolve_active_artifact,
+    retrieve_to_atomic_destination,
+)
+from .artifact_api import (
+    ArtifactApiBackend,
+    ArtifactApiError,
+    ArtifactCancellationToken,
+    ArtifactCapabilityNegotiation,
+    ArtifactCapabilityRejection,
+    ArtifactCapabilityRequirements,
+    ArtifactControlMode,
+    ArtifactControlOptions,
+    ArtifactDescriptor,
+    ArtifactErrorCode,
+    ArtifactFetchDriver,
+    ArtifactFetchResult,
+    ArtifactFetchSession,
+    ArtifactProgress,
+    ArtifactPublishDriver,
+    ArtifactPublishResult,
+    ArtifactReplicaResult,
+    ArtifactRepositoryApi,
+    ArtifactSessionStatus,
+    ArtifactUploadSession,
+    negotiate_artifact_capabilities,
+)
+from .local_artifact_backend import FilesystemArtifactApiBackend
 
 
 class RepoDataPlaneProducer:
@@ -130,6 +246,25 @@ def capability_from_ack(candidate: AckCandidate) -> Optional[StorageCapability]:
         return None
 
 
+def artifact_capability_from_ack(
+    candidate: AckCandidate,
+) -> Optional[ArtifactCapability]:
+    """Decode one strict artifact capability from a generic NDNSF ACK."""
+
+    decoded = decode_provider_capability_ack(
+        bytes(candidate.payload),
+        provider_name=str(candidate.provider_name),
+        service_name=str(candidate.service_name),
+    )
+    value = decoded.hint.service_payload.get("artifactCapability")
+    if not isinstance(value, dict):
+        return None
+    try:
+        return artifact_capability_from_dict(value)
+    except (ArtifactValidationError, TypeError, ValueError):
+        return None
+
+
 def discovery_record_from_ack(candidate: AckCandidate) -> ServiceDiscoveryRecord:
     """Parse a core service-discovery record from a Repo ACK.
 
@@ -168,11 +303,73 @@ class RepoClient:
         *,
         ack_timeout_ms: int = 1000,
         timeout_ms: int = 30000,
+        artifact_backend: Optional[ArtifactApiBackend] = None,
     ) -> None:
         self.user = user
         self.repo_service_name = repo_service_name
         self.ack_timeout_ms = ack_timeout_ms
         self.timeout_ms = timeout_ms
+        self._artifact_api = ArtifactRepositoryApi(
+            artifact_backend,
+            publisher_identity=str(self.user.user),
+            default_timeout_ms=max(int(timeout_ms), 60_000),
+        )
+
+    @property
+    def artifact_api(self) -> ArtifactRepositoryApi:
+        """Public advanced artifact facade; never exposes runtime private state."""
+
+        return self._artifact_api
+
+    def configure_artifact_backend(
+        self, backend: ArtifactApiBackend
+    ) -> None:
+        """Install the application/runtime artifact-manifest-v2 backend."""
+
+        self._artifact_api.backend = backend
+
+    def publish_file(self, path: Union[str, Path], **kwargs) -> ArtifactPublishResult:
+        return self._artifact_api.publish_file(path, **kwargs)
+
+    async def publish_file_async(
+        self, path: Union[str, Path], **kwargs
+    ) -> ArtifactPublishResult:
+        return await self._artifact_api.publish_file_async(path, **kwargs)
+
+    def fetch_file(
+        self,
+        reference: ArtifactReference,
+        destination: Union[str, Path],
+        **kwargs,
+    ) -> ArtifactFetchResult:
+        return self._artifact_api.fetch_file(
+            reference, destination, **kwargs
+        )
+
+    async def fetch_file_async(
+        self,
+        reference: ArtifactReference,
+        destination: Union[str, Path],
+        **kwargs,
+    ) -> ArtifactFetchResult:
+        return await self._artifact_api.fetch_file_async(
+            reference, destination, **kwargs
+        )
+
+    def begin_upload(
+        self, descriptor: ArtifactDescriptor, **kwargs
+    ) -> ArtifactUploadSession:
+        return self._artifact_api.begin_upload(descriptor, **kwargs)
+
+    def begin_fetch(
+        self,
+        reference: ArtifactReference,
+        destination: Union[str, Path],
+        **kwargs,
+    ) -> ArtifactFetchSession:
+        return self._artifact_api.begin_fetch(
+            reference, destination, **kwargs
+        )
 
     def _service_for(self, operation: str) -> str:
         return repo_service_for_operation(operation, self.repo_service_name)
@@ -238,6 +435,32 @@ class RepoClient:
         if "repoNode" in obj:
             return [_capability_from_json(obj)]
         return []
+
+    def artifact_capabilities(self) -> list[ArtifactCapability]:
+        """Fetch validated format capabilities without inferring defaults."""
+
+        response = self.user.request_service(
+            self._service_for("CAPABILITY"),
+            _request("CAPABILITY"),
+            ack_timeout_ms=self.ack_timeout_ms,
+            timeout_ms=self.timeout_ms,
+            strategy="all-selected",
+        )
+        if not response.status:
+            raise RuntimeError(response.error)
+        obj = _json_payload(response.payload)
+        values = obj.get("capabilities", [obj])
+        capabilities = []
+        for value in values:
+            if not isinstance(value, dict):
+                continue
+            artifact_value = value.get("artifactCapability")
+            if not isinstance(artifact_value, dict):
+                continue
+            capabilities.append(
+                artifact_capability_from_dict(artifact_value)
+            )
+        return capabilities
 
     def insert(
         self,
@@ -483,9 +706,73 @@ def _verify_manifest_payload(manifest: RepoObjectManifest, payload: bytes) -> No
 
 
 __all__ = [
+    "ARTIFACT_LIFECYCLE_STATES",
+    "ARTIFACT_LIFECYCLE_TRANSITIONS",
+    "AdaptiveArtifactTransfer",
+    "AdaptiveTransferOptions",
+    "AuthenticatedReplicaReceipt",
+    "ArtifactApiBackend",
+    "ArtifactApiError",
+    "ArtifactCancellationToken",
+    "ArtifactCapabilityNegotiation",
+    "ArtifactCapabilityRejection",
+    "ArtifactCapabilityRequirements",
+    "ArtifactControlMetrics",
+    "ArtifactControlMode",
+    "ArtifactControlOptions",
+    "ArtifactDescriptor",
+    "ArtifactErrorCode",
+    "ArtifactFetchDriver",
+    "ArtifactFetchResult",
+    "ArtifactFetchSession",
+    "ArtifactProgress",
+    "ArtifactPublishDriver",
+    "ArtifactPublishResult",
+    "ArtifactReplicaResult",
+    "ArtifactRepositoryApi",
+    "ArtifactReplicaSession",
+    "ArtifactSessionStatus",
+    "ArtifactStorageIdentity",
+    "ArtifactUploadSession",
+    "AtomicArtifactDestination",
+    "ArtifactCapability",
+    "ArtifactChunk",
+    "ArtifactLimits",
+    "ArtifactManifestChild",
+    "ArtifactManifestPage",
+    "ArtifactManifestTrustPolicy",
+    "ArtifactManifestVerificationResult",
+    "ArtifactReference",
+    "ArtifactReplicaReceipt",
+    "ArtifactRootManifest",
+    "ArtifactSegmentDisposition",
+    "ArtifactSegmentRequest",
+    "ArtifactTransferSnapshot",
+    "SignedArtifactRoot",
+    "ArtifactUploadLease",
+    "ArtifactValidationError",
     "DEFAULT_REPO_SERVICE_ROOT",
+    "FilesystemCasPayloadStore",
+    "FilesystemArtifactApiBackend",
+    "CollaborationArtifactApiBackend",
+    "install_artifact_collaboration_service",
+    "HmacReceiptAuthenticator",
+    "LifecycleTransitionError",
+    "MetadataStore",
+    "PayloadStore",
+    "PersistenceOwnershipError",
+    "PendingReplicaLeaseCollaboration",
+    "PendingReplicaTaskCollaboration",
     "canonical_repo_operation",
     "PlacementPolicy",
+    "ReplicaLeaseControlFlow",
+    "ReplicaLeaseControlSnapshot",
+    "ReplicaLeaseControlState",
+    "ReplicaLeaseCollaborationClient",
+    "ReplicaTaskCollaborationClient",
+    "ReplicaTaskControlSnapshot",
+    "ArtifactStoreAssignment",
+    "ArtifactStoreOffer",
     "RepoClient",
     "RepoCacheStatus",
     "RepoCatalogDelta",
@@ -493,16 +780,37 @@ __all__ = [
     "RepoCatalogStatus",
     "RepoDataReference",
     "RepoObjectManifest",
+    "RepoOperationMetrics",
     "RepoOperationStatus",
+    "RepoLifecycleEvent",
+    "SqliteRepositoryPersistence",
     "StorageCapability",
     "discovery_record_from_ack",
     "capability_from_ack",
     "ready_capability_from_ack",
+    "resolve_active_artifact",
+    "retrieve_to_atomic_destination",
     "decode_store_request",
+    "artifact_sha256_hex",
+    "artifact_capability_from_ack",
+    "canonical_manifest_page_bytes",
+    "canonical_root_manifest_bytes",
+    "decode_artifact_manifest_page",
+    "decode_upload_lease_assignment",
+    "encode_upload_lease_ack",
+    "decode_store_assignment",
+    "decode_store_offer_ack",
+    "encode_store_offer_ack",
+    "decode_signed_artifact_root",
     "encode_inventory",
+    "encode_artifact_manifest_page",
+    "encode_signed_artifact_root",
     "encode_store_request",
     "make_manifest",
     "make_repo_service_name",
+    "negotiate_artifact_capabilities",
+    "derive_artifact_data_name",
+    "derive_manifest_page_name",
     "manifest_to_dict",
     "is_internal_repo_service",
     "parse_manifest_json",
@@ -514,6 +822,11 @@ __all__ = [
     "parse_inventory_json",
     "parse_operation_status_json",
     "select_replicas",
+    "validate_artifact_resume_identity",
+    "verify_artifact_chunk_payload",
+    "verify_artifact_manifest_graph",
+    "verify_artifact_payload",
+    "verify_signed_artifact_root",
     "repo_service_for_operation",
     "repo_versioned_services",
     "sha256_hex",

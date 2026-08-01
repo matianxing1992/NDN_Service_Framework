@@ -7,6 +7,11 @@ when that dependency is installed; value contracts are always available.
 
 from .contracts import *
 from .status import *
+from ..planner.compatibility import *
+from ..sdk.loader import (
+    PlacementStrategyAllowlistEntry, discover_placement_strategies,
+    select_placement_strategy,
+)
 
 try:
     from .runtime_journal import *
@@ -16,6 +21,8 @@ try:
     from .engine import DistributedInferenceEngine
     from .execution_control import *
     from .facades import ProviderRuntimeContext
+    from .placement import *
+    from .presplit import *
     from .provider import (
         APPProvider, ProviderActionReceipt, ProviderEvidenceSigner,
         ProviderEvidenceVerifier, ProviderReadiness,

@@ -5,14 +5,14 @@
 #include "ndnsf-distributed-repo/RepoProtocol.hpp"
 #include "ndnsf-distributed-repo/RepoTypes.hpp"
 
-#include "ndn-service-framework/ServiceProvider.hpp"
-
 #include <functional>
 #include <map>
 #include <mutex>
 
 namespace ndn_service_framework {
 class LocalServiceRegistry;
+class ResponseMessage;
+class ServiceProvider;
 } // namespace ndn_service_framework
 
 namespace ndnsf_distributed_repo {

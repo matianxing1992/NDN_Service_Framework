@@ -16,6 +16,7 @@ from pathlib import Path
 from unittest.mock import ANY, patch
 
 from ndnsf import make_segmented_data_packets
+from py_repoclient import artifact_capability_from_dict
 
 from py_repoclient.orchestration import (
     NetworkDistributedRepoClient,
@@ -303,11 +304,20 @@ def make_repo(database: Path, *, budget: int = 4096) -> RepoNodeApp:
     repo.repo_node = "/repo/ha-test"
     repo.service_name = "/NDNSF/DistributedRepo"
     repo.provider_name = "/provider/ha-test"
+    # The fixture bypasses RepoNodeApp.__init__, so provide the durable root
+    # used by the artifact receipt key just as production construction does.
+    repo.storage_dir = database.parent
     repo.capacity_bytes = 1024 * 1024
     repo.capability = StorageCapability(
         repo_node=repo.repo_node,
         free_bytes=repo.capacity_bytes,
         failure_domain="test-domain",
+        artifact_format_versions=(
+            "artifact-manifest-v2", "exact-packet-v1",
+        ),
+        artifact_supports_resume=True,
+        artifact_supports_replica_receipts=True,
+        artifact_policy_epoch="default",
     )
     repo.memory_cache_bytes = budget
     repo._hot_cache = _BoundedRepoHotCache(budget)
@@ -334,6 +344,9 @@ class RepoContractTest(unittest.TestCase):
     def test_run_advertises_one_stable_data_plane_locator(self) -> None:
         class FakeProvider:
             def add_context_handler(self, *args) -> None:
+                del args
+
+            def add_collaboration_handler(self, *args) -> None:
                 del args
 
             def set_ack_handler(self, *args) -> None:
@@ -486,6 +499,7 @@ class RepoSchemaMigrationTest(unittest.TestCase):
         "repo_membership",
         "repair_jobs",
         "capacity_reservations",
+        "artifact_lifecycle_journal",
     }
 
     def test_ha_schema_is_idempotent_and_configures_sqlite(self) -> None:
@@ -506,7 +520,10 @@ class RepoSchemaMigrationTest(unittest.TestCase):
             schema_version = repo._db.execute(
                 "SELECT value FROM repo_meta WHERE key='schema_version'"
             ).fetchone()
-            self.assertEqual(schema_version, ("8",))
+            self.assertEqual(
+                schema_version,
+                (str(repo._persistence.SCHEMA_GENERATION),),
+            )
             repair_columns = {
                 str(row[1]) for row in repo._db.execute(
                     "PRAGMA table_info(repair_jobs)").fetchall()
@@ -744,17 +761,21 @@ class DurableCatalogRepairTest(unittest.TestCase):
             self.assertIn("/repo/peer", restarted._repo_status)
             restarted._db.close()
 
-    def test_capacity_reservations_prevent_oversubscription_and_are_consumed(self) -> None:
+    def test_legacy_capacity_reservations_are_ignored_by_active_capability(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = make_repo(Path(tmp) / "repo.sqlite3")
             repo.capacity_bytes = 100
-            first = repo._reserve_capacity("reserve-1", "op-1", 80, 10_000)
-            self.assertEqual(first.state, "RESERVED")
-            with self.assertRaisesRegex(RuntimeError, "repo-capacity-rejected"):
-                repo._reserve_capacity("reserve-2", "op-2", 30, 10_000)
+            repo._db.execute(
+                "INSERT INTO capacity_reservations "
+                "(reservation_id, operation_id, reserved_bytes, state, expires_at_ms) "
+                "VALUES ('legacy-reserve', 'legacy-op', 80, 'RESERVED', ?)",
+                (int(time.time() * 1000) + 10_000,),
+            )
+            repo._db.commit()
+            self.assertEqual(repo._capability().free_bytes, 100)
             payload = b"x" * 20
             manifest = RepoObjectManifest(
-                object_name="/publisher/reserved",
+                object_name="/publisher/queued",
                 object_type="artifact",
                 sha256=hashlib.sha256(payload).hexdigest(),
                 size=len(payload),
@@ -769,8 +790,10 @@ class DurableCatalogRepairTest(unittest.TestCase):
             )
             repo._persist_object(manifest, payload, intent=intent)
             self.assertEqual(repo._db.execute(
-                "SELECT state FROM capacity_reservations WHERE reservation_id='reserve-1'"
-            ).fetchone()[0], "CONSUMED")
+                "SELECT state FROM capacity_reservations "
+                "WHERE reservation_id='legacy-reserve'"
+            ).fetchone()[0], "RESERVED")
+            self.assertEqual(repo._capability().free_bytes, 80)
             repo._db.close()
 
     def test_runtime_and_network_metrics_affect_placement(self) -> None:
@@ -1550,6 +1573,22 @@ class DurableCatalogRepairTest(unittest.TestCase):
                     "inflightRepair", "rejected", "storageReadLatencyMs",
                     "storageWriteLatencyMs", "metricsTimestampMs"):
                 self.assertIn(key, payload)
+            artifact = artifact_capability_from_dict(
+                payload["artifactCapability"]
+            )
+            self.assertIn(
+                "artifact-manifest-v2", artifact.format_versions
+            )
+            self.assertIn("exact-packet-v1", artifact.format_versions)
+            self.assertTrue(artifact.supports_resume)
+            self.assertTrue(artifact.supports_replica_receipts)
+            service_payload = payload[
+                "providerCapabilityHint"
+            ]["service_payload"]
+            self.assertEqual(
+                service_payload["artifactCapability"],
+                payload["artifactCapability"],
+            )
             hint = payload["providerCapabilityHint"]["runtime_hint"]
             self.assertGreaterEqual(hint["active_work_count"], 1)
             repo._db.close()
@@ -1637,20 +1676,16 @@ class DurableCatalogRepairTest(unittest.TestCase):
             )
         self.assertEqual(incomplete_operations, ["STORE"])
 
-    def test_rf3_quorum_commits_with_two_reservations_and_receipts(self) -> None:
+    def test_rf3_quorum_commits_with_two_store_receipts(self) -> None:
         client = NetworkDistributedRepoClient.__new__(NetworkDistributedRepoClient)
         client.user = type("User", (), {"user": "/publisher"})()
         client.timeout_ms = 1000
         client.ack_timeout_ms = 10
         client.verbose = False
-        client.enable_capacity_reservations = True
         client._replica_health = {}
         client._select_repo_nodes = lambda **_kwargs: [
             "/repo/A", "/repo/B", "/repo/C"]
         client._record_control_phase = lambda *_args, **_kwargs: None
-        released = []
-        client._release_reservations_parallel = lambda reservations: (
-            released.append(dict(reservations)) or {})
         operations = []
 
         def response(payload: dict):
@@ -1669,16 +1704,7 @@ class DurableCatalogRepairTest(unittest.TestCase):
                 request = decode_repo_request(payload)
                 if repo_node == "/repo/C":
                     continue
-                if operation == "RESERVE_CAPACITY":
-                    responses[repo_node] = response({
-                        "reservationId": request["reservationId"],
-                        "operationId": request["operationId"],
-                        "repoNode": repo_node,
-                        "reservedBytes": request["reservedBytes"],
-                        "state": "ACTIVE",
-                        "expiresAtMs": int(time.time() * 1000) + 30_000,
-                    })
-                elif operation == "FINALIZE_WRITE":
+                if operation == "FINALIZE_WRITE":
                     responses[repo_node] = response({"status": "finalized"})
                 else:
                     intent = RepoWriteIntent.from_dict(request["writeIntent"])
@@ -1713,27 +1739,20 @@ class DurableCatalogRepairTest(unittest.TestCase):
         self.assertEqual(manifest.confirmed_replica_nodes, ("/repo/A", "/repo/B"))
         self.assertEqual(len(manifest.replica_data_names), 2)
         self.assertEqual(operations[0], (
-            "RESERVE_CAPACITY", ("/repo/A", "/repo/B", "/repo/C")))
+            "STORE_PACKETS", ("/repo/A", "/repo/B", "/repo/C")))
         self.assertEqual(
-            operations[1], ("STORE_PACKETS", ("/repo/A", "/repo/B")))
-        self.assertEqual(
-            operations[2], ("FINALIZE_WRITE", ("/repo/A", "/repo/B")))
-        self.assertEqual(released, [])
+            operations[1], ("FINALIZE_WRITE", ("/repo/A", "/repo/B")))
 
-    def test_rf3_all_rejects_two_reservations(self) -> None:
+    def test_rf3_all_rejects_two_store_receipts(self) -> None:
         client = NetworkDistributedRepoClient.__new__(NetworkDistributedRepoClient)
         client.user = type("User", (), {"user": "/publisher"})()
         client.timeout_ms = 1000
         client.ack_timeout_ms = 10
         client.verbose = False
-        client.enable_capacity_reservations = True
         client._replica_health = {}
         client._select_repo_nodes = lambda **_kwargs: [
             "/repo/A", "/repo/B", "/repo/C"]
         client._record_control_phase = lambda *_args, **_kwargs: None
-        released = []
-        client._release_reservations_parallel = lambda reservations: (
-            released.append(tuple(reservations)) or {})
 
         def request_specific_repos(payload_by_repo, **_kwargs):
             responses = {}
@@ -1741,22 +1760,25 @@ class DurableCatalogRepairTest(unittest.TestCase):
                 if repo_node == "/repo/C":
                     continue
                 request = decode_repo_request(payload)
+                intent = RepoWriteIntent.from_dict(request["writeIntent"])
                 responses[repo_node] = type("Response", (), {
                     "status": True,
                     "error": "",
                     "payload": json.dumps({
-                        "reservationId": request["reservationId"],
-                        "operationId": request["operationId"],
-                        "repoNode": repo_node,
-                        "reservedBytes": request["reservedBytes"],
-                        "state": "ACTIVE",
-                        "expiresAtMs": int(time.time() * 1000) + 30_000,
+                        "writeReceipt": RepoWriteReceipt(
+                            operation_id=intent.operation_id,
+                            repo_node=repo_node,
+                            object_name=intent.object_name,
+                            generation=intent.generation,
+                            digest=intent.digest,
+                            persisted_bytes=4,
+                        ).to_dict(),
                     }).encode(),
                 })()
             return responses, {"/repo/C": "provider unavailable"}
 
         client._request_specific_repos_parallel = request_specific_repos
-        with self.assertRaisesRegex(RuntimeError, "reservation failed"):
+        with self.assertRaises(RepoIncompleteWriteError):
             client.store_versioned(
                 object_name="/publisher/all",
                 payload=b"data",
@@ -1767,7 +1789,6 @@ class DurableCatalogRepairTest(unittest.TestCase):
                 replication_factor=3,
                 policy_epoch="test",
             )
-        self.assertEqual(released, [("/repo/A", "/repo/B")])
 
     def test_quorum_omits_explicit_replica_in_active_cooldown(self) -> None:
         client = NetworkDistributedRepoClient.__new__(NetworkDistributedRepoClient)
@@ -1775,7 +1796,6 @@ class DurableCatalogRepairTest(unittest.TestCase):
         client.timeout_ms = 1000
         client.ack_timeout_ms = 10
         client.verbose = False
-        client.enable_capacity_reservations = False
         client._replica_health = {
             "/repo/C": {"cooldownUntilMs": int(time.time() * 1000) + 60_000}}
         client._select_repo_nodes = lambda **_kwargs: [

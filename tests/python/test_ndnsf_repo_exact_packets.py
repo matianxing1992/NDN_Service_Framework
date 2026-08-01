@@ -60,6 +60,10 @@ class ExactPacketRepositoryTest(unittest.TestCase):
             max_segment_size=4096,
         )
         self.assertGreater(len(self.packets), 1)
+        self.assertEqual(
+            b"".join(packet.content for packet in self.packets),
+            self.payload,
+        )
 
     def test_exact_names_and_wires_survive_restart(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

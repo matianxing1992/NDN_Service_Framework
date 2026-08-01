@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 import hashlib
 import json
+from types import MappingProxyType
 import warnings
 from typing import Any, Mapping, Optional, Tuple, Union
 
@@ -662,11 +663,71 @@ class InfrastructureAllocationHandle:
             raise ValueError("invalid infrastructure allocation handle")
 
 
+@dataclass(frozen=True)
+class PreSplitArtifactInput:
+    """One locally materialized, signed splitter artifact before publication."""
+
+    role: str
+    path: str
+    artifact_name: str
+    digest: str
+    size_bytes: int
+    signer_key_id: str
+    signature: str
+
+    def __post_init__(self):
+        if (not self.role or not self.path or not self.artifact_name
+                or not self.signer_key_id or not self.signature
+                or self.size_bytes < 0
+                or not self.digest.startswith("sha256:")
+                or len(self.digest) != 71):
+            raise ValueError("invalid pre-split artifact input")
+        try:
+            int(self.digest[7:], 16)
+        except ValueError as exc:
+            raise ValueError("invalid pre-split artifact digest") from exc
+
+
+@dataclass(frozen=True)
+class PreSplitCatalogSnapshot:
+    alias: str
+    manifest_digest: str
+    model_content_digest: str
+    semantics_digest: str
+    graph_digest: str
+    candidate_digest: str
+    backend: str
+    precision: str
+    artifact_data_names: Mapping[str, Tuple[str, ...]]
+    status: str
+    created_at_ms: int
+
+    def __post_init__(self):
+        if self.status not in {"ACTIVE", "RETIRED", "REVOKED"}:
+            raise ValueError("invalid pre-split catalog status")
+        object.__setattr__(
+            self,
+            "artifact_data_names",
+            MappingProxyType({
+                str(role): tuple(names)
+                for role, names in self.artifact_data_names.items()
+            }),
+        )
+
+
 RequestRef = InferenceRequestHandle
 RequestableDeployment = Union[
     DeploymentDefinition, DeploymentDefinitionRef, "DeploymentHandle",
     DeploymentRef,
 ]
+
+# Spec 163's application coordinator and external optimizer share the same
+# immutable, sanitized placement values.  Re-exporting (not redefining) them
+# prevents a second application-only planning contract.
+from ..sdk.placement import (  # noqa: E402
+    DIProviderOfferV2, ModelPlacementStrategy, PlacementDecision,
+    PlacementRequest, ProviderAssignment, ProviderPlanningView,
+)
 
 
 __all__ = [
@@ -679,5 +740,8 @@ __all__ = [
     "OptimizationObjective", "ProviderDeploymentOffer", "ProviderDeploymentOffers",
     "RequestContract", "RequestEnvelopeReference", "RequestHandle", "RequestRef",
     "RequestTiming", "RequestableDeployment", "ResultRendezvousRecord",
-    "RuntimeAllocationHandoff",
+    "RuntimeAllocationHandoff", "PreSplitArtifactInput",
+    "PreSplitCatalogSnapshot",
+    "DIProviderOfferV2", "ModelPlacementStrategy", "PlacementDecision",
+    "PlacementRequest", "ProviderAssignment", "ProviderPlanningView",
 ]

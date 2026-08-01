@@ -85,6 +85,19 @@ namespace tlv {
         StageInputEvidenceType = 0xF623,
         StageAbortType = 0xF624,
         SelectionDecisionTombstoneType = 0xF625,
+        AttemptType = 0xF626,
+        OpaqueAssignmentSetType = 0xF627,
+        OpaqueAssignmentItemType = 0xF628,
+        CollaborationAssignmentEnvelopeType = 0xF629,
+        CollaborationRoleType = 0xF62A,
+        CollaborationArtifactType = 0xF62B,
+        CollaborationProvisioningType = 0xF62C,
+        CollaborationProvisioningTimeoutType = 0xF62D,
+        CollaborationOpaquePayloadType = 0xF62E,
+        CollaborationScopeKeysType = 0xF62F,
+        CollaborationScopeKeyType = 0xF630,
+        CollaborationScopeKeyNameType = 0xF631,
+        CollaborationScopeKeyValueType = 0xF632,
     };
 
     // Selection strategies.
@@ -343,6 +356,43 @@ private:
     mutable std::shared_ptr<const ndn::Block> m_wire;
 };
 
+/** Encode multiple generic collaboration assignments for one provider.
+ *
+ * Core preserves item order and byte identity but never interprets an item.
+ * A single assignment remains its original bytes for wire compatibility.
+ */
+ndn::Buffer
+encodeOpaqueAssignmentSet(const std::vector<ndn::Buffer>& assignments);
+
+/** Decode a Core assignment set; a non-container is one opaque item. */
+std::vector<ndn::Buffer>
+decodeOpaqueAssignmentSet(const ndn::Buffer& payload);
+
+/** Framework-owned metadata around one application-owned opaque assignment.
+ *
+ * The envelope keeps role/authorization and optional provisioning metadata
+ * separate from the application bytes. Decoding returns false for legacy
+ * semicolon assignments and arbitrary opaque payloads.
+ */
+struct CollaborationAssignmentEnvelope
+{
+    std::string role;
+    ndn::Name assignedArtifact;
+    bool requiresProvisioning = false;
+    uint64_t provisioningTimeoutMs = 0;
+    std::map<std::string, ndn::Buffer> scopeKeys;
+    ndn::Buffer opaquePayload;
+};
+
+ndn::Buffer
+encodeCollaborationAssignmentEnvelope(
+    const CollaborationAssignmentEnvelope& assignment);
+
+bool
+decodeCollaborationAssignmentEnvelope(
+    const ndn::Buffer& payload,
+    CollaborationAssignmentEnvelope& assignment);
+
 struct SelectionProviderEntry
 {
     ndn::Name providerName;
@@ -360,6 +410,7 @@ public:
     void setProviderToken(const std::string& providerToken);
     void setAssignmentPayload(const ndn::Buffer& payload);
     void setPolicyEpoch(size_t policyEpoch);
+    void setAttempt(uint64_t attempt);
     void addProviderEntry(const SelectionProviderEntry& entry);
     void setDeploymentPlan(const DeploymentPlan& plan);
     void setSelectionDecision(const SelectionDecision& decision);
@@ -377,6 +428,7 @@ public:
     const std::string& getProviderToken() const;
     const ndn::Buffer& getAssignmentPayload() const;
     size_t getPolicyEpoch() const;
+    uint64_t getAttempt() const;
     const std::vector<SelectionProviderEntry>& getProviderEntries() const;
     void Clear() override;
     ndn::Block WireEncode() const override;
@@ -387,6 +439,7 @@ private:
     std::string providerToken_;
     ndn::Buffer assignmentPayload_;
     size_t policyEpoch_ = 0;
+    uint64_t attempt_ = 1;
     std::vector<SelectionProviderEntry> providerEntries_;
     std::optional<DeploymentPlan> deploymentPlan_;
     std::optional<SelectionDecision> selectionDecision_;

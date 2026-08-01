@@ -82,6 +82,9 @@ namespace ndn_service_framework{
         bool allowDynamicProvisioning = false;
         int provisioningTimeoutMs = 30000;
         ndn::Buffer appRequirement;
+        // Optional exact participant payload chosen after ACK closure.  This is
+        // generic opaque application data; NDNSF does not parse its schema.
+        ndn::Buffer assignmentPayload;
         size_t minProviders = 1;
         size_t maxProviders = 1;
     };
@@ -130,8 +133,23 @@ namespace ndn_service_framework{
         std::vector<CollaborationRoleSpec> roles;
         std::vector<CollaborationKeyScope> keyScopes;
         std::vector<CollaborationDependency> dependencies;
+        // Generic metadata shared by selected participants and transported
+        // separately from each exact opaque assignment.
+        ndn::Buffer sharedAssignmentMetadata;
         std::shared_ptr<const ParticipantSelectionPolicy> participantSelector;
     };
+
+    struct CollaborationAckClosure
+    {
+        RequestId requestId;
+        std::vector<AckCandidate> candidates;
+        std::string digest;
+        uint64_t closedAtUs = 0;
+        uint64_t requestDeadlineUs = 0;
+    };
+
+    using CollaborationAckClosedHandler =
+        std::function<void(const CollaborationAckClosure&)>;
 
     struct PreparedServiceRequest
     {
@@ -569,6 +587,19 @@ namespace ndn_service_framework{
                                            TimeoutHandler onTimeout,
                                            const RequestId& requestId = RequestId());
 
+            ndn::Name BeginCollaboration(const ServiceName& service,
+                                         const RequestPayload& initialRequest,
+                                         int ackCollectionTimeMs,
+                                         int timeoutMs,
+                                         CollaborationAckClosedHandler onAckClosed,
+                                         ResponseHandler onFinalResponse,
+                                         TimeoutHandler onTimeout,
+                                         const RequestId& requestId = RequestId());
+
+            bool CommitCollaborationPlan(const RequestId& requestId,
+                                         const std::string& ackClosedDigest,
+                                         CollaborationPlan plan);
+
             template<typename RequestT, typename ResponseT>
             ndn::Name RequestService(const ServiceName& service,
                                      const RequestT& request,
@@ -905,8 +936,22 @@ namespace ndn_service_framework{
                 ndn::Buffer selectionGatedInputKey;
                 std::map<std::string, std::string> negativeAckReasons;
                 bool isCollaboration = false;
+                bool collaborationDeferred = false;
+                bool collaborationAcksClosed = false;
+                bool collaborationPlanCommitted = false;
                 CollaborationPlan collaborationPlan;
+                CollaborationAckClosedHandler collaborationAckClosedHandler;
+                std::vector<StoredAck> collaborationClosedAcks;
+                std::vector<SelectedParticipant> collaborationCommittedParticipants;
+                std::string collaborationAckClosedDigest;
+                std::string collaborationCommittedPlanDigest;
+                uint64_t collaborationAcksClosedAtUs = 0;
                 std::map<std::string, ndn::Buffer> collaborationAssignments;
+                // One generated key per committed collaboration dependency
+                // scope.  The keys are carried only in the framework-owned
+                // assignment envelope and are reused for an idempotent
+                // Selection retransmission.
+                std::map<std::string, ndn::Buffer> collaborationScopeKeys;
                 std::map<std::string, ndn::Buffer> selectionAssignmentPayloads;
                 bool trackSelectionStatus = false;
                 SelectionStatusOptions selectionStatusOptions;
@@ -942,6 +987,9 @@ namespace ndn_service_framework{
             bool evaluateAckSelection(const ndn::Name& requestId);
 
             bool handleAckCollectionTimeout(const ndn::Name& requestId);
+
+            bool closeDeferredCollaborationAcks(const ndn::Name& requestId,
+                                                PendingCall& pendingCall);
 
             bool selectLateAckAfterAckTimeout(PendingCall& pendingCall,
                                               const StoredAck& storedAck);

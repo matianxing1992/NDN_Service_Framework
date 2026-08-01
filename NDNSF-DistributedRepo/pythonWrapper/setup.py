@@ -5,7 +5,7 @@ import shlex
 import subprocess
 from pathlib import Path
 
-from setuptools import Extension, setup
+from setuptools import Extension, find_packages, setup
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -40,8 +40,12 @@ def pkg_config(*packages: str) -> tuple[list[str], list[str], list[str], list[st
 def build_extension() -> Extension:
     import pybind11
 
+    # RepoClient's public headers include ServiceUser, whose public surface in
+    # turn includes NDN-SVS headers.  Ask pkg-config for both transitive public
+    # dependencies instead of relying on an image-specific include path.
     include_dirs, library_dirs, libraries, extra_link_args = pkg_config(
         "libndn-cxx",
+        "libndn-svs",
     )
 
     local_build = ROOT / "build"
@@ -61,10 +65,15 @@ def build_extension() -> Extension:
         "py_repoclient._py_repoclient",
         sources=[
             "src/py_repoclient/_py_repoclient.cpp",
+            "../src/ArtifactManifest.cpp",
+            "../src/ArtifactTransfer.cpp",
+            "../src/ArtifactTypes.cpp",
+            "../src/backends/FilesystemArtifactStore.cpp",
             "../src/RepoClient.cpp",
             "../src/RepoCore.cpp",
             "../src/RepoNode.cpp",
             "../src/RepoProtocol.cpp",
+            "../src/RepoStoreBackend.cpp",
             "../src/RepoTypes.cpp",
         ],
         include_dirs=[
@@ -82,4 +91,15 @@ def build_extension() -> Extension:
     )
 
 
-setup(ext_modules=[build_extension()])
+setup(
+    name="py-repoclient",
+    version="0.2.0",
+    description=(
+        "Public trusted-artifact API and Python bindings for "
+        "NDNSF-DistributedRepo"
+    ),
+    packages=find_packages(include=("py_repoclient", "py_repoclient.*")),
+    package_data={"py_repoclient": ["py.typed"]},
+    python_requires=">=3.8",
+    ext_modules=[build_extension()],
+)

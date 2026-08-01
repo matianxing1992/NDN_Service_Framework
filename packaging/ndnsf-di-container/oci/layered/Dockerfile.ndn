@@ -1,0 +1,124 @@
+# syntax=docker/dockerfile:1.7
+
+ARG ML_DEVEL_IMAGE
+ARG ML_RUNTIME_IMAGE
+
+FROM ${ML_DEVEL_IMAGE} AS ndn-devel
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+ARG NDN_LOCK_DIGEST
+ARG NDN_SEAL_DIGEST
+ARG BUILD_JOBS=2
+ARG DEBIAN_FRONTEND=noninteractive
+ENV PREFIX=/opt/ndn-base \
+    PATH=/opt/venv/bin:/opt/ndn-base/bin:${PATH} \
+    PKG_CONFIG_PATH=/opt/ndn-base/lib/pkgconfig:/opt/onnxruntime/lib/pkgconfig \
+    LD_LIBRARY_PATH=/opt/ndn-base/lib:/opt/onnxruntime/lib
+
+COPY packaging/ndnsf-di-container/oci/layered/locks/ndn-foundation.lock.json /build-contract/ndn-foundation.lock.json
+RUN python3 - <<'PY' >/tmp/ndn-system-packages
+import json
+print('\n'.join(json.load(open('/build-contract/ndn-foundation.lock.json'))['systemPackages']))
+PY
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    sed -i 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g; s|http://security.ubuntu.com|https://security.ubuntu.com|g' /etc/apt/sources.list && \
+    rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb /var/cache/apt/archives/partial/* && \
+    apt-get -o Acquire::Retries=3 update && \
+    apt-get install -y --no-install-recommends \
+      $(cat /tmp/ndn-system-packages)
+
+COPY packaging/ndnsf-di-container/oci/layered/scripts/prepare-layer-seals.py /build-contract/prepare-layer-seals.py
+COPY packaging/ndnsf-di-container/oci/scripts/prepare-openabe-relic.py /build-contract/prepare-openabe-relic.py
+COPY packaging/ndnsf-di-container/oci/scripts/derive-runtime-packages.py /build-contract/derive-runtime-packages.py
+COPY --from=ndn_seal / /build-contract/seal/
+
+RUN python3 /build-contract/prepare-layer-seals.py verify \
+      --lock /build-contract/ndn-foundation.lock.json \
+      --output /build-contract/seal | grep -Fx "$NDN_SEAL_DIGEST" && \
+    python3 - "$NDN_LOCK_DIGEST" <<'PY'
+import hashlib,pathlib,sys
+measured='sha256:'+hashlib.sha256(pathlib.Path('/build-contract/ndn-foundation.lock.json').read_bytes()).hexdigest()
+if measured != sys.argv[1]:
+ raise SystemExit('NDN_LOCK_DIGEST_MISMATCH')
+PY
+
+RUN set -eu; mkdir -p /src/dependencies; \
+    for archive in /build-contract/seal/archives/*.tar; do \
+      name=$(basename "$archive" .tar); mkdir -p "/src/dependencies/$name"; \
+      tar -xf "$archive" -C "/src/dependencies/$name"; \
+    done; \
+    rm -rf /src/dependencies/NFD/websocketpp; \
+    mv /src/dependencies/websocketpp /src/dependencies/NFD/websocketpp; \
+    test -f /src/dependencies/NFD/websocketpp/websocketpp/version.hpp
+RUN python3 /build-contract/prepare-openabe-relic.py \
+      --source /src/dependencies/relic --openabe /src/dependencies/openabe
+
+RUN set -eu; cd /src/dependencies/ndn-cxx; \
+    ./waf configure --prefix=$PREFIX; ./waf -j"$BUILD_JOBS"; ./waf install
+RUN set -eu; cd /src/dependencies/NFD; \
+    ./waf configure --prefix=$PREFIX; ./waf -j"$BUILD_JOBS"; ./waf install; \
+    test -f $PREFIX/etc/ndn/nfd.conf.sample
+# Keep the OpenABE top-level build serial: it incorrectly declares src and
+# cli as parallel siblings although cli consumes root/lib/libopenabe.a.
+RUN set -eu; cd /src/dependencies/openabe; \
+    export LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}; . ./env; \
+    make -C deps/relic relic-toolkit-0.5.0/.built; \
+    NO_DEPS=1 BISON="$(command -v bison)" make; \
+    make test; make INSTALL_PREFIX=$PREFIX install
+RUN set -eu; cd /src/dependencies/NAC-ABE; \
+    cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+      -DHAVE_TESTS=TRUE -DCMAKE_INSTALL_PREFIX=$PREFIX \
+      -DCMAKE_PREFIX_PATH=$PREFIX; \
+    cmake --build build --parallel "$BUILD_JOBS"; \
+    cp examples/trust-schema.conf build/trust-schema.conf; \
+    (cd build && tests/unit-tests -l test_suite -x); \
+    cmake --install build
+RUN install -d /opt/ndn-base/manifest && \
+    install -m 0644 /build-contract/ndn-foundation.lock.json /opt/ndn-base/manifest/ && \
+    install -m 0644 /build-contract/seal/seal.json /opt/ndn-base/manifest/source-seal.json && \
+    install -m 0644 $PREFIX/etc/ndn/nfd.conf.sample /opt/ndn-base/manifest/nfd.conf && \
+    python3 /build-contract/derive-runtime-packages.py \
+      --root $PREFIX --output /opt/ndn-base/manifest/runtime-system-packages && \
+    printf '%s\n' "$NDN_LOCK_DIGEST" >/opt/ndn-base/manifest/lock-digest && \
+    printf '%s\n' "$NDN_SEAL_DIGEST" >/opt/ndn-base/manifest/seal-digest && \
+    test -x $PREFIX/bin/nfd && test -x $PREFIX/bin/nfdc && \
+    test ! -e $PREFIX/lib/pkgconfig/libndn-svs.pc && \
+    test ! -e $PREFIX/lib/pkgconfig/ndnsd.pc
+LABEL org.ndnsf.di.layer="ndn-devel" \
+      org.ndnsf.di.ndn-lock="${NDN_LOCK_DIGEST}" \
+      org.ndnsf.di.ndn-seal="${NDN_SEAL_DIGEST}"
+
+FROM ${ML_RUNTIME_IMAGE} AS ndn-runtime
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+ARG NDN_LOCK_DIGEST
+ARG NDN_SEAL_DIGEST
+ARG DEBIAN_FRONTEND=noninteractive
+COPY --from=ndn-devel /opt/ndn-base/manifest/runtime-system-packages /tmp/runtime-system-packages
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    missing_packages="$(while IFS= read -r package; do \
+      [ -n "$package" ] || continue; \
+      if ! dpkg-query -W -f='${db:Status-Abbrev}' "$package" 2>/dev/null | grep -qx '.i '; then \
+        printf '%s\n' "$package"; \
+      fi; \
+    done < /tmp/runtime-system-packages)" && \
+    if [ -n "$missing_packages" ]; then \
+      sed -i 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g; s|http://security.ubuntu.com|https://security.ubuntu.com|g' /etc/apt/sources.list && \
+      rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb /var/cache/apt/archives/partial/* && \
+      apt-get -o Acquire::Retries=3 update && \
+      apt-get install -y --no-install-recommends $missing_packages; \
+    fi && \
+    rm -rf /var/lib/apt/lists/* /tmp/runtime-system-packages
+COPY --from=ndn-devel /opt/ndn-base /opt/ndn-base
+COPY packaging/ndnsf-di-container/oci/scripts/verify-runtime-closure.py /usr/local/bin/verify-runtime-closure.py
+ENV PATH=/opt/venv/bin:/opt/ndn-base/bin:${PATH} \
+    PKG_CONFIG_PATH=/opt/ndn-base/lib/pkgconfig:/opt/onnxruntime/lib/pkgconfig \
+    LD_LIBRARY_PATH=/opt/ndn-base/lib:/opt/onnxruntime/lib
+RUN ldconfig && \
+    python3 /usr/local/bin/verify-runtime-closure.py --root /opt/ndn-base && \
+    nfd --version && nfdc --version && \
+    test ! -e /opt/ndn-base/lib/pkgconfig/libndn-svs.pc && \
+    test ! -e /opt/ndn-base/lib/pkgconfig/ndnsd.pc
+LABEL org.ndnsf.di.layer="ndn-runtime" \
+      org.ndnsf.di.ndn-lock="${NDN_LOCK_DIGEST}" \
+      org.ndnsf.di.ndn-seal="${NDN_SEAL_DIGEST}"

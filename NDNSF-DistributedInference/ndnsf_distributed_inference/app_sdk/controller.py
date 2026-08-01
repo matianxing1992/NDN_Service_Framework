@@ -34,6 +34,7 @@ class DistributedInferenceController:
         trust_schema: str,
         bootstrap_identities: list[str] | None = None,
         serve_certificates: bool = True,
+        bootstrap_token_file: str = "",
     ) -> "DistributedInferenceController":
         # Keep importing the application SDK independent from the optional
         # NDNSF network runtime.  A real controller construction is the point
@@ -46,6 +47,7 @@ class DistributedInferenceController:
             trust_schema=trust_schema,
             bootstrap_identities=list(bootstrap_identities or []),
             serve_certificates=serve_certificates,
+            bootstrap_token_file=bootstrap_token_file,
         ))
 
     def start(self) -> None:
@@ -75,6 +77,7 @@ class APPController:
         config: str | Path,
         *,
         generated_policy_dir: str | Path = "/tmp/ndnsf-di-policy",
+        bootstrap_token_file: str = "",
     ) -> "APPController":
         # Deployment parsing also reaches the optional NDNSF runtime through
         # plan wire types, so defer it until a controller is actually created.
@@ -86,6 +89,7 @@ class APPController:
             policy_file=deployment.policy_file,
             trust_schema=deployment.trust_schema,
             bootstrap_identities=deployment.bootstrap_identities,
+            bootstrap_token_file=bootstrap_token_file,
         )
         return cls(deployment, controller)
 

@@ -8,9 +8,11 @@ import os
 import secrets
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
+from enum import Enum
 from threading import Lock
-from time import perf_counter
+from time import perf_counter, time
 from typing import Callable, Iterable
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from ndnsf import CollaborationDependency, CollaborationRole, ServiceResponse, ServiceUser
 
@@ -27,6 +29,86 @@ from .core import (
     ExecutionActivateMessage,
 )
 from .plan import DistributedInferencePlan, InferenceDependency
+
+
+class SelectionAcceptanceState(str, Enum):
+    PENDING = "PENDING"
+    ACCEPTED = "ACCEPTED"
+    UNKNOWN = "UNKNOWN"
+    FAILED = "FAILED"
+
+
+class SelectionAcceptanceTracker:
+    """Deadline-bounded encrypted requester control journal.
+
+    Missing acceptance is UNKNOWN, never implicit rejection. The only retry
+    payload is the authenticated byte-identical Selection originally stored.
+    """
+
+    def __init__(self, *, request_id: str, attempt: int, deadline_ms: int,
+                 encryption_key: bytes,
+                 clock_ms: Callable[[], int] | None = None) -> None:
+        if (not request_id or attempt <= 0 or deadline_ms <= 0
+                or len(bytes(encryption_key)) != 32):
+            raise ValueError("invalid Selection acceptance tracker")
+        self.request_id = request_id
+        self.attempt = int(attempt)
+        self.deadline_ms = int(deadline_ms)
+        self._cipher = AESGCM(bytes(encryption_key))
+        self._clock_ms = clock_ms or (lambda: int(time() * 1000))
+        self._records: dict[str, dict[str, object]] = {}
+        self._lock = Lock()
+
+    def _aad(self, provider: str) -> bytes:
+        return (
+            f"{self.request_id}|{self.attempt}|{provider}|"
+            f"{self.deadline_ms}"
+        ).encode()
+
+    def record_selection(self, provider: str, payload: bytes) -> None:
+        wire = bytes(payload)
+        value_digest = "sha256:" + hashlib.sha256(wire).hexdigest()
+        with self._lock:
+            current = self._records.get(provider)
+            if current is not None:
+                if current["digest"] != value_digest:
+                    raise ValueError(
+                        "conflicting Selection bytes for one Provider attempt")
+                return
+            nonce = secrets.token_bytes(12)
+            self._records[provider] = {
+                "digest": value_digest,
+                "nonce": nonce,
+                "ciphertext": self._cipher.encrypt(
+                    nonce, wire, self._aad(provider)),
+                "state": SelectionAcceptanceState.PENDING,
+                "acceptance_digest": "",
+            }
+
+    def mark_delivery_timeout(self, provider: str) -> None:
+        with self._lock:
+            self._records[provider]["state"] = (
+                SelectionAcceptanceState.UNKNOWN)
+
+    def record_acceptance(self, provider: str, acceptance: bytes) -> None:
+        value = bytes(acceptance)
+        with self._lock:
+            record = self._records[provider]
+            record["acceptance_digest"] = (
+                "sha256:" + hashlib.sha256(value).hexdigest())
+            record["state"] = SelectionAcceptanceState.ACCEPTED
+
+    def state(self, provider: str) -> SelectionAcceptanceState:
+        with self._lock:
+            return self._records[provider]["state"]
+
+    def retry_payload(self, provider: str) -> bytes:
+        if self._clock_ms() > self.deadline_ms:
+            raise TimeoutError("Selection acceptance deadline expired")
+        with self._lock:
+            record = dict(self._records[provider])
+        return self._cipher.decrypt(
+            record["nonce"], record["ciphertext"], self._aad(provider))
 
 
 @dataclass(frozen=True)

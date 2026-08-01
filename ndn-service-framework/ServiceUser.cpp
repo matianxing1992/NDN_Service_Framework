@@ -682,6 +682,133 @@ namespace ndn_service_framework
             return "sha256:" + digest.toString();
         }
 
+        void
+        appendDigestField(std::string& output, const std::string& value)
+        {
+            output += std::to_string(value.size());
+            output.push_back(':');
+            output.append(value);
+        }
+
+        void
+        appendDigestBuffer(std::string& output, const ndn::Buffer& value)
+        {
+            output += std::to_string(value.size());
+            output.push_back(':');
+            output.append(reinterpret_cast<const char*>(value.data()), value.size());
+        }
+
+        std::string
+        deferredAckClosureDigest(
+            const ndn::Name& requestId,
+            uint64_t requestDeadlineUs,
+            std::vector<AckCandidate> candidates)
+        {
+            std::sort(candidates.begin(), candidates.end(),
+                      [](const AckCandidate& lhs, const AckCandidate& rhs) {
+                          const auto left = std::make_tuple(
+                              lhs.providerName.toUri(), lhs.serviceName.toUri(),
+                              lhs.requestId.toUri());
+                          const auto right = std::make_tuple(
+                              rhs.providerName.toUri(), rhs.serviceName.toUri(),
+                              rhs.requestId.toUri());
+                          return left < right;
+                      });
+            std::string canonical;
+            appendDigestField(canonical, "ndnsf-collaboration-ack-closed-v1");
+            appendDigestField(canonical, requestId.toUri());
+            appendDigestField(canonical, std::to_string(requestDeadlineUs));
+            appendDigestField(canonical, std::to_string(candidates.size()));
+            for (const auto& candidate : candidates) {
+                appendDigestField(canonical, candidate.providerName.toUri());
+                appendDigestField(canonical, candidate.serviceName.toUri());
+                appendDigestField(canonical, candidate.requestId.toUri());
+                const auto wire = candidate.ack.WireEncode();
+                appendDigestBuffer(canonical, ndn::Buffer(
+                    wire.data(), wire.data() + wire.size()));
+            }
+            return sha256DigestString(ndn::Buffer(
+                reinterpret_cast<const uint8_t*>(canonical.data()),
+                canonical.size()));
+        }
+
+        std::string
+        deferredPlanCommitDigest(
+            const std::string& ackClosedDigest,
+            const CollaborationPlan& plan,
+            std::vector<SelectedParticipant> participants)
+        {
+            std::sort(participants.begin(), participants.end(),
+                      [](const SelectedParticipant& lhs,
+                         const SelectedParticipant& rhs) {
+                          return std::make_tuple(
+                              lhs.role, lhs.provider.toUri(), lhs.service.toUri()) <
+                                 std::make_tuple(
+                              rhs.role, rhs.provider.toUri(), rhs.service.toUri());
+                      });
+            std::string canonical;
+            appendDigestField(canonical, "ndnsf-collaboration-plan-commit-v1");
+            appendDigestField(canonical, ackClosedDigest);
+            appendDigestField(canonical, std::to_string(plan.roles.size()));
+            for (const auto& role : plan.roles) {
+                appendDigestField(canonical, role.role);
+                appendDigestField(canonical, role.service.toUri());
+                appendDigestField(canonical, role.requiredArtifact.toUri());
+                appendDigestField(canonical,
+                                  role.allowDynamicProvisioning ? "1" : "0");
+                appendDigestField(
+                    canonical, std::to_string(role.provisioningTimeoutMs));
+                appendDigestBuffer(canonical, role.appRequirement);
+                appendDigestBuffer(canonical, role.assignmentPayload);
+                appendDigestField(canonical, std::to_string(role.minProviders));
+                appendDigestField(canonical, std::to_string(role.maxProviders));
+            }
+            appendDigestField(canonical, std::to_string(plan.keyScopes.size()));
+            for (const auto& scope : plan.keyScopes) {
+                appendDigestField(canonical, scope.name);
+                appendDigestField(canonical, std::to_string(scope.roles.size()));
+                for (const auto& role : scope.roles) {
+                    appendDigestField(canonical, role);
+                }
+            }
+            appendDigestField(
+                canonical, std::to_string(plan.dependencies.size()));
+            for (const auto& dependency : plan.dependencies) {
+                appendDigestField(canonical, dependency.keyScope);
+                appendDigestField(canonical, dependency.topicPrefix.toUri());
+                appendDigestField(canonical, dependency.required ? "1" : "0");
+                appendDigestField(
+                    canonical, std::to_string(dependency.producers.size()));
+                for (const auto& role : dependency.producers) {
+                    appendDigestField(canonical, role);
+                }
+                appendDigestField(
+                    canonical, std::to_string(dependency.consumers.size()));
+                for (const auto& role : dependency.consumers) {
+                    appendDigestField(canonical, role);
+                }
+            }
+            appendDigestBuffer(canonical, plan.sharedAssignmentMetadata);
+            appendDigestField(canonical, std::to_string(participants.size()));
+            for (const auto& participant : participants) {
+                appendDigestField(canonical, participant.role);
+                appendDigestField(canonical, participant.service.toUri());
+                appendDigestField(canonical, participant.provider.toUri());
+                appendDigestField(canonical, participant.assignedArtifact.toUri());
+                appendDigestField(
+                    canonical, participant.requiresProvisioning ? "1" : "0");
+                appendDigestField(
+                    canonical, std::to_string(participant.provisioningTimeoutMs));
+                appendDigestBuffer(canonical, participant.assignmentPayload);
+                const auto ackWire = participant.ack.ack.WireEncode();
+                appendDigestBuffer(canonical, ndn::Buffer(
+                    ackWire.data(), ackWire.data() + ackWire.size()));
+            }
+            return sha256DigestString(ndn::Buffer(
+                reinterpret_cast<const uint8_t*>(canonical.data()),
+                canonical.size()));
+        }
+
         ndn::Name
         makeLargeDataNameWithoutPrefix(const ndn::Name& serviceName,
                                        const ndn::Name& requestId,
@@ -4161,6 +4288,184 @@ namespace ndn_service_framework
         return requestId;
     }
 
+    ndn::Name ServiceUser::BeginCollaboration(
+        const ServiceName& service,
+        const RequestPayload& initialRequest,
+        int ackCollectionTimeMs,
+        int timeoutMs,
+        CollaborationAckClosedHandler onAckClosed,
+        ResponseHandler onFinalResponse,
+        TimeoutHandler onTimeout,
+        const RequestId& requestedRequestId)
+    {
+        if (!onAckClosed || ackCollectionTimeMs <= 0 ||
+            timeoutMs <= ackCollectionTimeMs) {
+            throw std::invalid_argument(
+                "deferred collaboration requires valid ACK and request deadlines");
+        }
+        const ndn::Name requestId = requestedRequestId.empty() ?
+            makeRequestId() : requestedRequestId;
+        if (m_pendingCalls.count(requestId) != 0) {
+            throw std::invalid_argument(
+                "collaboration request ID is already pending");
+        }
+
+        ndn_service_framework::RequestMessage requestMessage;
+        auto payload = initialRequest;
+        requestMessage.setPayload(payload, payload.size());
+        requestMessage.setStrategy(ndn_service_framework::tlv::AllSelected);
+
+        PendingCall pendingCall;
+        pendingCall.serviceName = service;
+        pendingCall.requestMessage = std::move(requestMessage);
+        pendingCall.strategy = ndn_service_framework::tlv::AllSelected;
+        pendingCall.timeoutMs = timeoutMs;
+        pendingCall.ackTimeoutMs = ackCollectionTimeMs;
+        pendingCall.createdAtUs = nowMicroseconds();
+        pendingCall.requestDeadlineUs =
+            pendingCall.createdAtUs + static_cast<uint64_t>(timeoutMs) * 1000;
+        pendingCall.timeoutHandler = std::move(onTimeout);
+        pendingCall.responseHandler = std::move(onFinalResponse);
+        pendingCall.isCollaboration = true;
+        pendingCall.collaborationDeferred = true;
+        pendingCall.collaborationPlan.ackCollectionTimeMs = ackCollectionTimeMs;
+        pendingCall.collaborationPlan.timeoutMs = timeoutMs;
+        pendingCall.collaborationAckClosedHandler = std::move(onAckClosed);
+        pendingCall.trackSelectionStatus = true;
+        pendingCall.selectionStatusOptions = SelectionStatusOptions();
+        m_pendingCalls[requestId] = std::move(pendingCall);
+
+        updateRequestLifecycleState(
+            requestId, RequestLifecycleState::QUEUED_LOCAL);
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=COLLAB_DEFERRED_REQUEST_CREATED"
+                  << " timestamp_us=" << nowMicroseconds()
+                  << " requestId=" << requestId.toUri()
+                  << " serviceName=" << service.toUri());
+        admitOrQueuePendingCall(requestId, true, true);
+        return requestId;
+    }
+
+    bool ServiceUser::CommitCollaborationPlan(
+        const RequestId& requestId,
+        const std::string& ackClosedDigest,
+        CollaborationPlan plan)
+    {
+        auto pending = m_pendingCalls.find(requestId);
+        if (pending == m_pendingCalls.end() ||
+            !pending->second.isCollaboration ||
+            !pending->second.collaborationDeferred) {
+            throw std::invalid_argument(
+                "deferred collaboration invocation is unavailable");
+        }
+        auto& call = pending->second;
+        if (!call.collaborationAcksClosed) {
+            throw std::logic_error(
+                "collaboration plan cannot commit before ACK_CLOSED");
+        }
+        if (ackClosedDigest.empty() ||
+            ackClosedDigest != call.collaborationAckClosedDigest) {
+            throw std::invalid_argument(
+                "collaboration ACK_CLOSED digest mismatch");
+        }
+        if (call.requestDeadlineUs > 0 &&
+            nowMicroseconds() >= call.requestDeadlineUs) {
+            throw std::runtime_error(
+                "collaboration plan commit is expired");
+        }
+        if (!plan.participantSelector || plan.roles.empty()) {
+            throw std::invalid_argument(
+                "collaboration plan is incomplete");
+        }
+        if (plan.ackCollectionTimeMs != call.ackTimeoutMs ||
+            plan.timeoutMs != call.timeoutMs) {
+            throw std::invalid_argument(
+                "collaboration plan changed invocation deadlines");
+        }
+
+        std::vector<AckCandidate> candidates;
+        for (const auto& storedAck : call.collaborationClosedAcks) {
+            candidates.push_back(makeAckSelectionCandidate(storedAck));
+        }
+        const auto selected =
+            plan.participantSelector->select(candidates, plan.roles);
+        std::string validationError;
+        if (!validateCollaborationSelection(
+                plan, selected, validationError)) {
+            throw std::invalid_argument(
+                "invalid collaboration plan: " + validationError);
+        }
+        for (const auto& participant : selected) {
+            const bool matched = std::any_of(
+                call.collaborationClosedAcks.begin(),
+                call.collaborationClosedAcks.end(),
+                [&participant](const StoredAck& storedAck) {
+                    return storedAck.message.getStatus() &&
+                           storedAck.providerName.equals(participant.provider) &&
+                           storedAck.serviceName.equals(participant.service) &&
+                           storedAck.requestId.equals(participant.ack.requestId) &&
+                           ackEquals(storedAck.message, participant.ack.ack);
+                });
+            if (!matched) {
+                throw std::invalid_argument(
+                    "collaboration plan selected outside ACK_CLOSED");
+            }
+        }
+
+        const auto commitDigest = deferredPlanCommitDigest(
+            ackClosedDigest, plan, selected);
+        if (call.collaborationPlanCommitted) {
+            if (commitDigest == call.collaborationCommittedPlanDigest) {
+                return true;
+            }
+            throw std::logic_error(
+                "conflicting second collaboration plan commit");
+        }
+
+        // Collaboration large-data primitives are encrypted with one key per
+        // dependency scope.  Generate these keys exactly once at commit time,
+        // after ACK_CLOSED has fixed the selected participants, so a
+        // retransmitted Selection reuses the same material and cannot create
+        // a second cryptographic state for one durable invocation.
+        if (call.collaborationScopeKeys.empty()) {
+            std::set<std::string> scopeNames;
+            for (const auto& scope : plan.keyScopes) {
+                if (!scope.name.empty()) {
+                    scopeNames.insert(scope.name);
+                }
+            }
+            for (const auto& dependency : plan.dependencies) {
+                if (!dependency.keyScope.empty()) {
+                    scopeNames.insert(dependency.keyScope);
+                }
+            }
+            for (const auto& scope : scopeNames) {
+                const auto key = decodeSecureStatusKeyHex(
+                    generateSecureStatusKeyHex());
+                if (key.size() != HybridMessageCrypto::MESSAGE_KEY_SIZE) {
+                    throw std::runtime_error(
+                        "failed to generate collaboration scope key");
+                }
+                call.collaborationScopeKeys.emplace(scope, key);
+            }
+        }
+
+        call.collaborationPlan = std::move(plan);
+        call.collaborationCommittedParticipants = selected;
+        call.collaborationCommittedPlanDigest = commitDigest;
+        call.collaborationPlanCommitted = true;
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=COLLAB_PLAN_COMMITTED"
+                  << " timestamp_us=" << nowMicroseconds()
+                  << " requestId=" << requestId.toUri()
+                  << " ackClosedDigest=" << ackClosedDigest
+                  << " planDigest=" << commitDigest
+                  << " selectedCount=" << selected.size());
+        if (!evaluateAckSelection(requestId)) {
+            throw std::runtime_error(
+                "committed collaboration plan produced no Selection");
+        }
+        return true;
+    }
+
     void ServiceUser::handleResponse(const ndn::Name& requestId,
                                      const ndn::Name& providerName,
                                      const ndn_service_framework::ResponseMessage& responseMessage)
@@ -5075,7 +5380,9 @@ namespace ndn_service_framework
                 pendingCall->second.ackCandidatesHandler) {
                 if (pendingCall->second.ackWindowExpired) {
                     if (completeAckDecrypt()) {
-                        evaluateAckSelection(parsedV2->requestId);
+                        if (!pendingCall->second.collaborationDeferred) {
+                            evaluateAckSelection(parsedV2->requestId);
+                        }
                     }
                     return true;
                 }
@@ -5315,7 +5622,8 @@ namespace ndn_service_framework
         }
 
         auto& call = pendingCall->second;
-        if (call.providers.empty() ||
+        if (call.collaborationDeferred ||
+            call.providers.empty() ||
             call.hasResponse ||
             call.timedOut ||
             call.providerSelected ||
@@ -5699,6 +6007,13 @@ namespace ndn_service_framework
                           "-" : pendingCall->second.selectedProvider.toUri()));
             return true;
         }
+        if (pendingCall->second.collaborationDeferred &&
+            !pendingCall->second.collaborationPlanCommitted) {
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_CLOSED_AWAITING_PLAN"
+                      << " timestamp_us=" << nowMicroseconds()
+                      << " requestId=" << requestId.toUri());
+            return false;
+        }
 
         pendingCall->second.ackSelectionAtUs = nowMicroseconds();
         size_t successfulAckCount = 0;
@@ -5797,6 +6112,51 @@ namespace ndn_service_framework
         return selected;
     }
 
+    bool ServiceUser::closeDeferredCollaborationAcks(
+        const ndn::Name& requestId,
+        PendingCall& pendingCall)
+    {
+        if (!pendingCall.collaborationDeferred) {
+            return false;
+        }
+        if (pendingCall.collaborationAcksClosed) {
+            return true;
+        }
+        std::vector<AckCandidate> candidates;
+        for (const auto& storedAck : pendingCall.requestAcks) {
+            candidates.push_back(makeAckSelectionCandidate(storedAck));
+        }
+        pendingCall.collaborationClosedAcks = pendingCall.requestAcks;
+        pendingCall.collaborationAcksClosedAtUs = nowMicroseconds();
+        pendingCall.collaborationAckClosedDigest = deferredAckClosureDigest(
+            requestId, pendingCall.requestDeadlineUs, candidates);
+        pendingCall.collaborationAcksClosed = true;
+
+        CollaborationAckClosure closure;
+        closure.requestId = requestId;
+        closure.candidates = std::move(candidates);
+        closure.digest = pendingCall.collaborationAckClosedDigest;
+        closure.closedAtUs = pendingCall.collaborationAcksClosedAtUs;
+        closure.requestDeadlineUs = pendingCall.requestDeadlineUs;
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=COLLAB_ACK_CLOSED"
+                  << " timestamp_us=" << closure.closedAtUs
+                  << " requestId=" << requestId.toUri()
+                  << " candidateCount=" << closure.candidates.size()
+                  << " digest=" << closure.digest);
+        try {
+            pendingCall.collaborationAckClosedHandler(closure);
+        }
+        catch (const std::exception& error) {
+            NDN_LOG_ERROR("Deferred collaboration ACK_CLOSED callback failed: "
+                          << error.what());
+        }
+        catch (...) {
+            NDN_LOG_ERROR(
+                "Deferred collaboration ACK_CLOSED callback failed");
+        }
+        return true;
+    }
+
     bool ServiceUser::handleAckCollectionTimeout(const ndn::Name& requestId)
     {
         auto pendingCall = m_pendingCalls.find(requestId);
@@ -5832,6 +6192,10 @@ namespace ndn_service_framework
                 handleAckCollectionTimeout(requestId);
             });
             return false;
+        }
+        if (pendingCall->second.collaborationDeferred) {
+            return closeDeferredCollaborationAcks(
+                requestId, pendingCall->second);
         }
         return evaluateAckSelection(requestId);
     }
@@ -5889,14 +6253,19 @@ namespace ndn_service_framework
         if (pendingCall.isCollaboration &&
             pendingCall.collaborationPlan.participantSelector) {
             std::vector<ndn_service_framework::AckSelectionCandidate> candidates;
-            for (const auto& storedAck : pendingCall.requestAcks) {
+            const auto& candidateAcks = pendingCall.collaborationDeferred ?
+                pendingCall.collaborationClosedAcks : pendingCall.requestAcks;
+            for (const auto& storedAck : candidateAcks) {
                 candidates.push_back(makeAckSelectionCandidate(storedAck));
             }
 
             const auto selectedParticipants =
+                pendingCall.collaborationDeferred ?
+                pendingCall.collaborationCommittedParticipants :
                 pendingCall.collaborationPlan.participantSelector->select(
-                    candidates,
-                    pendingCall.collaborationPlan.roles);
+                    candidates, pendingCall.collaborationPlan.roles);
+            std::map<std::string, std::vector<ndn::Buffer>>
+                assignmentsByProvider;
             std::string validationError;
             if (!validateCollaborationSelection(pendingCall.collaborationPlan,
                                                 selectedParticipants,
@@ -5907,7 +6276,7 @@ namespace ndn_service_framework
                 return false;
             }
             for (const auto& participant : selectedParticipants) {
-                for (const auto& storedAck : pendingCall.requestAcks) {
+                for (const auto& storedAck : candidateAcks) {
                     if (!storedAck.providerName.equals(participant.provider) ||
                         !storedAck.serviceName.equals(participant.service) ||
                         !storedAck.requestId.equals(participant.ack.requestId) ||
@@ -5925,6 +6294,15 @@ namespace ndn_service_framework
 
                     ndn::Buffer assignment = participant.assignmentPayload;
                     if (assignment.empty()) {
+                        if (pendingCall.collaborationDeferred) {
+                            NDN_LOG_ERROR(
+                                "Reject deferred collaboration plan with empty "
+                                "opaque participant assignment");
+                            return false;
+                        }
+                        // Preplanned V1 compatibility only. Deferred planning
+                        // requires the external participant to provide its
+                        // exact opaque assignment bytes.
                         const std::string text =
                             "role=" + participant.role +
                             ";artifact=" + participant.assignedArtifact.toUri() +
@@ -5937,25 +6315,92 @@ namespace ndn_service_framework
                             reinterpret_cast<const uint8_t*>(text.data()),
                             text.size());
                     }
-                    pendingCall.collaborationAssignments[
-                        storedAck.providerName.toUri()] =
-                        mergeSelectionAssignmentPayloads(
+                    if (pendingCall.collaborationDeferred) {
+                        CollaborationAssignmentEnvelope envelope;
+                        envelope.role = participant.role;
+                        envelope.assignedArtifact = participant.assignedArtifact;
+                        envelope.requiresProvisioning =
+                            participant.requiresProvisioning;
+                        envelope.provisioningTimeoutMs =
+                            participant.provisioningTimeoutMs;
+                        for (const auto& [scope, key] :
+                             pendingCall.collaborationScopeKeys) {
+                            bool roleUsesScope = false;
+                            for (const auto& keyScope :
+                                 pendingCall.collaborationPlan.keyScopes) {
+                                if (keyScope.name != scope) {
+                                    continue;
+                                }
+                                roleUsesScope = std::any_of(
+                                    keyScope.roles.begin(), keyScope.roles.end(),
+                                    [&participant](const CollaborationRole& role) {
+                                        return role == participant.role;
+                                    });
+                                break;
+                            }
+                            if (!roleUsesScope) {
+                                for (const auto& dependency :
+                                     pendingCall.collaborationPlan.dependencies) {
+                                    if (dependency.keyScope != scope) {
+                                        continue;
+                                    }
+                                    roleUsesScope = std::any_of(
+                                        dependency.producers.begin(),
+                                        dependency.producers.end(),
+                                        [&participant](const CollaborationRole& role) {
+                                            return role == participant.role;
+                                        }) ||
+                                        std::any_of(
+                                        dependency.consumers.begin(),
+                                        dependency.consumers.end(),
+                                        [&participant](const CollaborationRole& role) {
+                                            return role == participant.role;
+                                        });
+                                    break;
+                                }
+                            }
+                            if (roleUsesScope) {
+                                envelope.scopeKeys.emplace(scope, key);
+                            }
+                        }
+                        envelope.opaquePayload = std::move(assignment);
+                        assignment =
+                            encodeCollaborationAssignmentEnvelope(envelope);
+                    }
+                    else {
+                        assignment = mergeSelectionAssignmentPayloads(
                             assignment,
-                            genericAdmissionLeaseSelectionPayloadFromAck(storedAck.message));
-                    const auto assignmentIt = pendingCall.collaborationAssignments.find(
-                        storedAck.providerName.toUri());
+                            genericAdmissionLeaseSelectionPayloadFromAck(
+                                storedAck.message));
+                    }
+                    auto& providerAssignments = assignmentsByProvider[
+                        storedAck.providerName.toUri()];
+                    const bool duplicateOpaqueTuple = std::any_of(
+                        providerAssignments.begin(),
+                        providerAssignments.end(),
+                        [&assignment] (const ndn::Buffer& existing) {
+                            return existing.size() == assignment.size() &&
+                                std::equal(existing.begin(), existing.end(),
+                                           assignment.begin());
+                        });
+                    if (!duplicateOpaqueTuple) {
+                        providerAssignments.push_back(std::move(assignment));
+                    }
                     NDN_LOG_INFO("NDNSF_COLLAB_ASSIGNMENT_SELECTED requestId="
                                  << storedAck.requestId.toUri()
                                  << " providerName=" << storedAck.providerName.toUri()
                                  << " serviceName=" << storedAck.serviceName.toUri()
                                  << " role=" << participant.role
                                  << " assignmentPayloadBytes="
-                                 << (assignmentIt == pendingCall.collaborationAssignments.end() ?
-                                     0 : assignmentIt->second.size())
+                                 << providerAssignments.back().size()
                                  << " ackPayloadBytes="
                                  << storedAck.message.getPayload().size());
                     break;
                 }
+            }
+            for (auto& [provider, assignments] : assignmentsByProvider) {
+                pendingCall.collaborationAssignments[provider] =
+                    encodeOpaqueAssignmentSet(assignments);
             }
         }
         else if (pendingCall.ackCandidatesHandler) {
@@ -7170,6 +7615,16 @@ void ServiceUser::finishRequestAckOnEventLoop(
             pendingIt->second.deploymentPlan = plan;
         }
         std::map<std::string, std::string> sharedScopeKeyFields;
+        for (const auto& field :
+             parseSemicolonFields(
+                 pendingIt->second.collaborationPlan.sharedAssignmentMetadata)) {
+            static const std::string scopeKeyPrefix = "scopeKeyData.";
+            if (field.first.rfind(scopeKeyPrefix, 0) == 0 &&
+                !field.first.substr(scopeKeyPrefix.size()).empty() &&
+                !field.second.empty()) {
+                sharedScopeKeyFields[field.first] = field.second;
+            }
+        }
         for (const auto& selectedAck : selectedAcks) {
             SelectionProviderEntry entry;
             entry.providerName = selectedAck.providerName;

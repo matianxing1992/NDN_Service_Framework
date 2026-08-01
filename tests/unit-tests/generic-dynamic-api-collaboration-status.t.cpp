@@ -5,6 +5,101 @@ namespace ndn_service_framework::test {
 BOOST_AUTO_TEST_SUITE(GenericDynamicApi)
 BOOST_AUTO_TEST_SUITE(CollaborationStatus)
 
+namespace {
+
+class FixedDeferredSelection final : public ParticipantSelectionPolicy
+{
+public:
+  std::vector<SelectedParticipant>
+  select(const std::vector<AckCandidate>& candidates,
+         const std::vector<CollaborationRoleSpec>& roles) const override
+  {
+    if (candidates.empty() || roles.empty() || !candidates.front().ack.getStatus()) {
+      return {};
+    }
+    const auto& candidate = candidates.front();
+    const auto& role = roles.front();
+    std::string assignment = "opaque=" + role.requiredArtifact.toUri();
+    ndn::Buffer payload(
+      reinterpret_cast<const uint8_t*>(assignment.data()), assignment.size());
+    return {{
+      role.role,
+      candidate.serviceName,
+      candidate.providerName,
+      role.requiredArtifact,
+      false,
+      0,
+      std::move(payload),
+      candidate,
+    }};
+  }
+};
+
+CollaborationPlan
+makeDeferredPlan(const ndn::Name& artifact = ndn::Name("/artifact/a"))
+{
+  CollaborationPlan plan;
+  plan.ackCollectionTimeMs = 100;
+  plan.timeoutMs = 1000;
+  CollaborationRoleSpec role;
+  role.role = "worker";
+  role.service = ndn::Name("/generic/work");
+  role.requiredArtifact = artifact;
+  plan.roles.push_back(std::move(role));
+  plan.participantSelector = std::make_shared<FixedDeferredSelection>();
+  return plan;
+}
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(DeferredAckClosureAndPlanCommitAreOneShotAndIdempotent)
+{
+  ndn::security::KeyChain keyChain(
+    "pib-memory:deferred-collab", "tpm-memory:deferred-collab");
+  ndn::DummyClientFace face(keyChain);
+  auto userCert = makeRsaIdentity(keyChain, ndn::Name("/user/a"));
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa"));
+  LocalServiceUser user(
+    face, ndn::Name("/test/group"), userCert, aaCert,
+    "examples/trust-any.conf");
+  const ndn::Name requestId("/request/deferred-1");
+  size_t closureCount = 0;
+  CollaborationAckClosure closed;
+  user.prepareDeferredCollaborationForTest(
+    requestId,
+    [&](const CollaborationAckClosure& value) {
+      ++closureCount;
+      closed = value;
+    });
+  user.addDeferredAckForTest(requestId, ndn::Name("/provider/a"), "worker");
+
+  BOOST_CHECK_THROW(
+    user.CommitCollaborationPlan(
+      requestId, "sha256:" + std::string(64, '0'), makeDeferredPlan()),
+    std::logic_error);
+  BOOST_CHECK(user.closeDeferredAcksForTest(requestId));
+  BOOST_CHECK(user.closeDeferredAcksForTest(requestId));
+  BOOST_CHECK_EQUAL(closureCount, 1);
+  BOOST_CHECK_EQUAL(closed.requestId, requestId);
+  BOOST_REQUIRE_EQUAL(closed.candidates.size(), 1);
+  BOOST_CHECK_EQUAL(closed.candidates.front().providerName, "/provider/a");
+  BOOST_CHECK_EQUAL(closed.digest.size(), 71);
+
+  BOOST_CHECK_THROW(
+    user.CommitCollaborationPlan(
+      requestId, "sha256:" + std::string(64, '1'), makeDeferredPlan()),
+    std::invalid_argument);
+  BOOST_CHECK(user.CommitCollaborationPlan(
+    requestId, closed.digest, makeDeferredPlan()));
+  BOOST_CHECK(user.CommitCollaborationPlan(
+    requestId, closed.digest, makeDeferredPlan()));
+  BOOST_CHECK_EQUAL(user.getSelectedProvider(requestId), "/provider/a");
+  BOOST_CHECK_THROW(
+    user.CommitCollaborationPlan(
+      requestId, closed.digest, makeDeferredPlan(ndn::Name("/artifact/b"))),
+    std::logic_error);
+}
+
 BOOST_AUTO_TEST_CASE(OperationStatusCodecRetainsMonotonicAndUnknownProgressFields)
 {
   ServiceProvider::ServiceOperationStatus status;
@@ -80,6 +175,35 @@ BOOST_AUTO_TEST_CASE(SelectionSnapshotRejectsStaleMemberAndKeepsLatest)
   BOOST_REQUIRE(snapshot);
   BOOST_REQUIRE_EQUAL(snapshot->memberStatuses.size(), 1);
   BOOST_CHECK_EQUAL(snapshot->memberStatuses.front().sequence, 2);
+}
+
+BOOST_AUTO_TEST_CASE(CollaborationFailureUpdatesSelectionStatus)
+{
+  ndn::security::KeyChain keyChain("pib-memory:collab-failure",
+                                   "tpm-memory:collab-failure");
+  ndn::DummyClientFace face(keyChain);
+  auto providerCert = makeRsaIdentity(keyChain, ndn::Name("/provider/a"));
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa"));
+  LocalServiceProvider provider(face, ndn::Name("/test/group"),
+                                providerCert, aaCert,
+                                "examples/trust-any.conf");
+  const std::string selectionDigest = "sha256:failed-selection";
+  const ndn::Name serviceName("/LLM/Qwen");
+  const ndn::Name requestId("/request/failed-1");
+  provider.seedSelectionStatusForTest(selectionDigest, serviceName, requestId);
+
+  provider.failCollaborationForTest(selectionDigest,
+                                    serviceName,
+                                    requestId,
+                                    "model fragment verification failed");
+
+  const auto snapshot = provider.getSelectionExecutionStatus(selectionDigest);
+  BOOST_REQUIRE(snapshot);
+  BOOST_CHECK(snapshot->state == SelectionExecutionState::Failed);
+  BOOST_CHECK_EQUAL(snapshot->serviceName, serviceName);
+  BOOST_CHECK_EQUAL(snapshot->requestId, requestId);
+  BOOST_CHECK_EQUAL(snapshot->message, "model fragment verification failed");
+  BOOST_CHECK_NE(snapshot->completedAtUs, 0);
 }
 
 BOOST_AUTO_TEST_CASE(R1DecisionReceiptSurvivesSignedStatusPayloadCodec)

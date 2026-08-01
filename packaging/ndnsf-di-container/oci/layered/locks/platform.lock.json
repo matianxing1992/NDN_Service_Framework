@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "ndnsf-di-layer-lock-v1",
+  "layer": "platform",
+  "platform": "linux/amd64",
+  "distributionBase": "ubuntu20.04-openssl1.1",
+  "cuda": "12.4.1",
+  "cudnnMajor": 9,
+  "minimumLinuxDriver": "550.54.14",
+  "baseImages": {
+    "python": "python@sha256:b3061b93c8df9809c3783a4f17bbf2520425ec6b40bd3e5e7538870e21ba7209",
+    "gpuBuild": "nvidia/cuda@sha256:a6a8417cb56c9a5d30c4d8c78ad18bc9b75ffe4453fe1c04b3149b3741518b06",
+    "gpuRuntime": "nvidia/cuda@sha256:a6a8417cb56c9a5d30c4d8c78ad18bc9b75ffe4453fe1c04b3149b3741518b06"
+  },
+  "baseImagePolicy": "digest-reference-only",
+  "cpuFallbackAllowed": false
+}

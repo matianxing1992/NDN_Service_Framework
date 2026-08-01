@@ -173,8 +173,12 @@ def run():
 
         with client_log.open("w") as out:
             client_proc = getPopen(client, client_cmd, stdout=out, stderr=out)
-            run_budget_s = args.duration_s if args.duration_s > 0 else args.timeout_s * args.count
-            rc = client_proc.wait(timeout=max(30, int(run_budget_s + args.timeout_s + 10)))
+            if args.duration_s > 0:
+                run_budget_s = args.warmup_s + args.duration_s
+            else:
+                run_budget_s = args.timeout_s * args.count
+            rc = client_proc.wait(
+                timeout=max(30, int(run_budget_s + args.timeout_s + 15)))
         if rc != 0:
             raise RuntimeError(f"gRPC client failed rc={rc}; see {client_log}")
 
@@ -193,6 +197,7 @@ def run():
             "count": args.count,
             "rate_rps": args.rate_rps,
             "duration_s": args.duration_s,
+            "timeout_s": args.timeout_s,
             "warmup_s": args.warmup_s,
             "server_workers": args.server_workers,
             "failure_probability": args.failure_probability,

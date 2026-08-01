@@ -2,6 +2,7 @@
 #define NDNSF_DISTRIBUTED_REPO_REPO_TYPES_HPP
 
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -141,6 +142,55 @@ struct RepoOperationStatus
   uint64_t updatedAtMs = 0;
   uint64_t expiresAtMs = 0;
 
+  std::string toJson() const;
+};
+
+/**
+ * Canonical, per-operation evidence for Spec 164 performance gates.
+ *
+ * Byte counters are deliberately non-overlapping concepts: logical payload is
+ * reconstructed application content, wire bytes include NDN packet encoding,
+ * retransmitted bytes are the repeated subset of wire traffic, and storage
+ * bytes describe payload-store I/O.  committedReplicaCount counts distinct
+ * retained valid receipts, never attempted writes.
+ */
+struct RepoOperationMetrics
+{
+  static constexpr size_t MAX_OPERATION_ID_BYTES = 256;
+
+  std::string operationId;
+  uint64_t startedAtMs = 0;
+  uint64_t completedAtMs = 0;
+  std::map<std::string, double> phaseTimingsMs;
+
+  uint64_t logicalPayloadBytes = 0;
+  uint64_t dataWireBytes = 0;
+  uint64_t interestWireBytes = 0;
+  uint64_t wireBytes = 0;
+  uint64_t retransmittedBytes = 0;
+  uint64_t payloadStoreBytesRead = 0;
+  uint64_t payloadStoreBytesWritten = 0;
+  uint64_t metadataStoreBytesRead = 0;
+  uint64_t metadataStoreBytesWritten = 0;
+  uint64_t storageBytesRead = 0;
+  uint64_t storageBytesWritten = 0;
+
+  uint64_t asymmetricVerifications = 0;
+  uint64_t digestVerifications = 0;
+  double asymmetricVerificationMs = 0.0;
+  double digestVerificationMs = 0.0;
+
+  uint64_t controlOperations = 0;
+  uint64_t metadataOperations = 0;
+  uint64_t metadataRecordCount = 0;
+
+  uint32_t requestedReplicaCount = 0;
+  uint32_t selectedReplicaCount = 0;
+  uint32_t committedReplicaCount = 0;
+  uint32_t rejectedReplicaReceiptCount = 0;
+
+  static bool isCanonicalPhase(const std::string& phase);
+  void validate() const;
   std::string toJson() const;
 };
 

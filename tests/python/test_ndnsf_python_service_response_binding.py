@@ -62,6 +62,26 @@ class NativeServiceResponseBindingTest(unittest.TestCase):
                 f"sync and async collaboration callbacks must copy {field}",
             )
 
+    def test_sync_request_does_not_capture_submit_local_callbacks_by_reference(self) -> None:
+        """The native runtime retains callbacks after the submit lambda returns."""
+        source = (REPO / "pythonWrapper/src/ndnsf/_ndnsf.cpp").read_text()
+        request_service = source[source.index("PyServiceResponse\n  requestService("):
+                                 source.index("PyServiceResponse\n  requestServiceTargeted(")]
+        self.assertIn(
+            "timeoutMs, onResponse, onTimeout,",
+            " ".join(request_service.split()),
+        )
+        self.assertNotIn(
+            "[&](const nsf::ResponseMessage& response) {\n"
+            "          onResponse(response);",
+            request_service,
+        )
+        self.assertNotIn(
+            "[&](const ndn::Name& requestId) {\n"
+            "          onTimeout(requestId);",
+            request_service,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

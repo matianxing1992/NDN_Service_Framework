@@ -39,7 +39,23 @@ def static_probe() -> dict[str, object]:
             fail("RUNTIME_BINARY_MISSING", binary)
         found[binary] = path
     imports = {}
-    for module in ("ndnsf", "ndnsf_distributed_inference", "torch", "transformers", "onnxruntime"):
+    for module in (
+        "ndnsf",
+        "ndnsf_distributed_inference",
+        "ndnsf_distributed_inference.core",
+        "ndnsf_distributed_inference.sdk",
+        "ndnsf_distributed_inference.app_sdk",
+        "ndnsf_distributed_inference.app_sdk.provider",
+        "ndnsf_distributed_inference.app_sdk.client",
+        "ndnsf_distributed_inference.app_sdk.controller",
+        "ndnsf_distributed_inference.planner",
+        "ndnsf_distributed_inference.ops",
+        "ndnsf_distributed_inference.adapters.onnx",
+        "ndnsf_distributed_inference.adapters.qwen",
+        "torch",
+        "transformers",
+        "onnxruntime",
+    ):
         loaded = importlib.import_module(module)
         imports[module] = str(getattr(loaded, "__version__", "present"))
     profile_names = (

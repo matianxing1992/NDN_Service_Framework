@@ -11,6 +11,8 @@
 #include <ndn-cxx/security/key-params.hpp>
 #include <ndn-cxx/security/validator-config.hpp>
 #include <ndn-cxx/security/validator-null.hpp>
+#include <ndn-cxx/security/verification-helpers.hpp>
+#include <ndn-cxx/util/io.hpp>
 #include <ndn-cxx/util/segment-fetcher.hpp>
 #include <ndn-cxx/util/segmenter.hpp>
 
@@ -27,7 +29,10 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
+#include <deque>
 #include <exception>
+#include <cmath>
+#include <fstream>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -110,6 +115,39 @@ getOrCreateIdentity(ndn::KeyChain& keyChain, const ndn::Name& identity)
       .getDefaultKey()
       .getDefaultCertificate();
   }
+}
+
+const ndn::Name&
+nfdCommandIdentity()
+{
+  static const ndn::Name identity([] {
+    const char* configured = std::getenv("NDNSF_NFD_COMMAND_IDENTITY");
+    return (configured != nullptr && *configured != '\0') ?
+      ndn::Name(configured) : ndn::Name("/localhost/operator");
+  }());
+  return identity;
+}
+
+std::optional<ndn::security::Certificate>
+loadControllerCertificateOverride(const ndn::Name& controller)
+{
+  const char* certPath = std::getenv("NDNSF_CONTROLLER_CERT_FILE");
+  if (certPath == nullptr || *certPath == '\0') {
+    return std::nullopt;
+  }
+
+  auto cert = ndn::io::load<ndn::security::Certificate>(certPath);
+  if (cert == nullptr || !cert->isValid()) {
+    throw std::runtime_error("NDNSF_CONTROLLER_CERT_FILE is not a valid certificate: " +
+                             std::string(certPath));
+  }
+  if (cert->getIdentity() != controller) {
+    throw std::runtime_error("NDNSF_CONTROLLER_CERT_FILE identity " +
+                             cert->getIdentity().toUri() +
+                             " does not match controller " +
+                             controller.toUri());
+  }
+  return *cert;
 }
 
 ndn::Buffer
@@ -248,6 +286,7 @@ struct PyAckDecision
   bool suppress = false;
   py::dict reservationLease;
   py::dict selectionInputKeyOffer;
+  uint64_t pendingStateTtlMs = 0;
 };
 
 template<typename Contract>
@@ -296,6 +335,15 @@ struct PyAckCandidate
   py::object telemetry = py::none();
 };
 
+struct PyCollaborationAckClosure
+{
+  std::string requestId;
+  std::vector<PyAckCandidate> candidates;
+  std::string digest;
+  uint64_t closedAtUs = 0;
+  uint64_t requestDeadlineUs = 0;
+};
+
 struct PyLargeDataPublishResult
 {
   bool success = false;
@@ -318,6 +366,7 @@ struct PyDataPacket
   std::string name;
   uint64_t segment = 0;
   py::bytes wire;
+  py::bytes content;
 };
 
 struct PySegmentHintRange
@@ -337,6 +386,9 @@ toPyDataPacket(const ndn::Data& data)
     packet.segment = data.getName()[-1].toSegment();
   }
   packet.wire = py::bytes(reinterpret_cast<const char*>(wire.data()), wire.size());
+  packet.content = py::bytes(
+    reinterpret_cast<const char*>(data.getContent().value()),
+    data.getContent().value_size());
   return packet;
 }
 
@@ -356,6 +408,44 @@ decodeDataPacket(const py::bytes& wireBytes)
   return toPyDataPacket(*dataFromWireBytes(wireBytes));
 }
 
+bool
+verifyDataPacketSignature(const py::bytes& wireBytes, const py::bytes& publicKeyDer)
+{
+  const std::string key = publicKeyDer;
+  return ndn::security::verifySignature(
+    *dataFromWireBytes(wireBytes),
+    ndn::span<const uint8_t>(
+      reinterpret_cast<const uint8_t*>(key.data()), key.size()));
+}
+
+bool
+verifyDetachedSha256Signature(const py::bytes& payloadBytes,
+                              const py::bytes& signatureBytes,
+                              const py::bytes& publicKeyDer)
+{
+  const std::string payload = payloadBytes;
+  const std::string signature = signatureBytes;
+  const std::string key = publicKeyDer;
+  const ndn::InputBuffers inputs{
+    ndn::span<const uint8_t>(
+      reinterpret_cast<const uint8_t*>(payload.data()), payload.size())
+  };
+  return ndn::security::verifySignature(
+    inputs,
+    ndn::span<const uint8_t>(
+      reinterpret_cast<const uint8_t*>(signature.data()), signature.size()),
+    ndn::span<const uint8_t>(
+      reinterpret_cast<const uint8_t*>(key.data()), key.size()));
+}
+
+bool
+verifyDataPacketDigest(const py::bytes& wireBytes)
+{
+  return ndn::security::verifySignature(
+    *dataFromWireBytes(wireBytes),
+    std::optional<ndn::security::Certificate>{});
+}
+
 class NativeSegmentedObjectProducer
 {
 public:
@@ -370,6 +460,7 @@ public:
       ndn::Name("/ndnsf/python/segmented-producer") : ndn::Name(signingIdentity);
     getOrCreateIdentity(m_keyChain, identityName);
     m_signingIdentity = identityName;
+    getOrCreateIdentity(m_keyChain, nfdCommandIdentity());
 
     m_versionedName = m_baseName;
     m_versionedName.appendVersion(static_cast<uint64_t>(
@@ -430,8 +521,9 @@ public:
         m_error = "failed to register stored Data prefix " + prefix.toUri() +
                   ": " + reason;
       },
-      ndn::security::SigningInfo(ndn::security::SigningInfo::SIGNER_TYPE_ID,
-                                 m_signingIdentity));
+      ndn::security::SigningInfo(
+        ndn::security::SigningInfo::SIGNER_TYPE_ID,
+        nfdCommandIdentity()));
 
     m_thread = std::thread([this] {
       while (m_running.load()) {
@@ -502,6 +594,267 @@ private:
   std::thread m_thread;
   mutable std::mutex m_errorMutex;
   std::string m_error;
+};
+
+class NativeFileSegmentedObjectProducer
+{
+public:
+  NativeFileSegmentedObjectProducer(const std::string& baseName,
+                                    const std::string& filePath,
+                                    const std::string& signingIdentity,
+                                    size_t maxSegmentSize,
+                                    int freshnessMs,
+                                    bool digestSigning)
+    : m_baseName(baseName)
+    , m_filePath(filePath)
+    , m_maxSegmentSize(maxSegmentSize)
+    , m_freshnessMs(freshnessMs)
+    , m_digestSigning(digestSigning)
+  {
+    if (m_maxSegmentSize == 0) {
+      throw std::invalid_argument("file segmented producer max segment size must be positive");
+    }
+    std::ifstream stream(m_filePath, std::ios::binary | std::ios::ate);
+    if (!stream) {
+      throw std::runtime_error("cannot open file segmented producer payload: " + m_filePath);
+    }
+    const auto end = stream.tellg();
+    if (end < 0) {
+      throw std::runtime_error("cannot determine file segmented producer payload size");
+    }
+    m_fileSize = static_cast<uint64_t>(end);
+    m_segmentCount = std::max<uint64_t>(
+      1, (m_fileSize + m_maxSegmentSize - 1) / m_maxSegmentSize);
+
+    m_signingIdentity = signingIdentity.empty() ?
+      ndn::Name("/ndnsf/python/file-segmented-producer") : ndn::Name(signingIdentity);
+    getOrCreateIdentity(m_keyChain, m_signingIdentity);
+    getOrCreateIdentity(m_keyChain, nfdCommandIdentity());
+    const auto certificate = m_keyChain.getPib()
+      .getIdentity(m_signingIdentity)
+      .getDefaultKey()
+      .getDefaultCertificate();
+    const auto publicKey = certificate.getPublicKey();
+    m_publicKeyDer.assign(publicKey.begin(), publicKey.end());
+    m_versionedName = m_baseName;
+    m_versionedName.appendVersion(static_cast<uint64_t>(
+      ndn::time::toUnixTimestamp(ndn::time::system_clock::now()).count()));
+  }
+
+  ~NativeFileSegmentedObjectProducer()
+  {
+    stop();
+  }
+
+  void
+  start()
+  {
+    bool expected = false;
+    if (!m_running.compare_exchange_strong(expected, true)) {
+      return;
+    }
+    {
+      std::lock_guard<std::mutex> lock(m_registrationMutex);
+      m_registrationComplete = false;
+      m_registrationSucceeded = false;
+      m_registrationError.clear();
+    }
+    m_face.setInterestFilter(
+      m_baseName,
+      [this] (const ndn::InterestFilter&, const ndn::Interest& interest) {
+        this->serveInterest(interest);
+      },
+      [this] (const ndn::Name&) {
+        {
+          std::lock_guard<std::mutex> lock(m_registrationMutex);
+          m_registrationComplete = true;
+          m_registrationSucceeded = true;
+        }
+        m_registrationCv.notify_all();
+      },
+      [this] (const ndn::Name& prefix, const std::string& reason) {
+        const auto error = "failed to register file Data prefix " +
+                           prefix.toUri() + ": " + reason;
+        {
+          std::lock_guard<std::mutex> lock(m_errorMutex);
+          m_error = error;
+        }
+        {
+          std::lock_guard<std::mutex> lock(m_registrationMutex);
+          m_registrationComplete = true;
+          m_registrationSucceeded = false;
+          m_registrationError = error;
+        }
+        m_registrationCv.notify_all();
+      },
+      ndn::security::SigningInfo(
+        ndn::security::SigningInfo::SIGNER_TYPE_ID,
+        nfdCommandIdentity()));
+    m_thread = std::thread([this] {
+      while (m_running.load()) {
+        try {
+          processFaceEvents(m_face, ndn::time::milliseconds(50));
+        }
+        catch (const std::exception& e) {
+          {
+            std::lock_guard<std::mutex> lock(m_errorMutex);
+            m_error = e.what();
+          }
+          bool notifyRegistration = false;
+          {
+            std::lock_guard<std::mutex> lock(m_registrationMutex);
+            if (!m_registrationComplete) {
+              m_registrationComplete = true;
+              m_registrationSucceeded = false;
+              m_registrationError = e.what();
+              notifyRegistration = true;
+            }
+          }
+          if (notifyRegistration) {
+            m_registrationCv.notify_all();
+          }
+        }
+      }
+    });
+    std::unique_lock<std::mutex> lock(m_registrationMutex);
+    const bool completed = m_registrationCv.wait_for(
+      lock, std::chrono::seconds(5),
+      [this] { return m_registrationComplete; });
+    const bool succeeded = completed && m_registrationSucceeded;
+    const std::string registrationError = completed ?
+      m_registrationError : "timed out registering file Data prefix " +
+                            m_baseName.toUri();
+    lock.unlock();
+    if (!succeeded) {
+      {
+        std::lock_guard<std::mutex> errorLock(m_errorMutex);
+        m_error = registrationError;
+      }
+      stop();
+      throw std::runtime_error(registrationError);
+    }
+  }
+
+  void
+  stop()
+  {
+    bool expected = true;
+    if (!m_running.compare_exchange_strong(expected, false)) {
+      return;
+    }
+    try {
+      m_face.getIoContext().stop();
+    }
+    catch (const std::exception&) {
+    }
+    if (m_thread.joinable()) {
+      m_thread.join();
+    }
+  }
+
+  std::string baseName() const { return m_baseName.toUri(); }
+  std::string versionedName() const { return m_versionedName.toUri(); }
+  uint64_t segmentCount() const { return m_segmentCount; }
+  uint64_t fileSize() const { return m_fileSize; }
+  uint64_t dataCount() const { return m_dataCount.load(); }
+  uint64_t wireBytes() const { return m_wireBytes.load(); }
+  double signingMs() const
+  {
+    return static_cast<double>(m_signingNanoseconds.load()) / 1000000.0;
+  }
+  py::bytes publicKeyDer() const
+  {
+    return py::bytes(
+      reinterpret_cast<const char*>(m_publicKeyDer.data()), m_publicKeyDer.size());
+  }
+  std::string error() const
+  {
+    std::lock_guard<std::mutex> lock(m_errorMutex);
+    return m_error;
+  }
+
+private:
+  void
+  serveInterest(const ndn::Interest& interest)
+  {
+    uint64_t segmentNo = 0;
+    const auto& interestName = interest.getName();
+    if (!interestName.empty() && interestName[-1].isSegment()) {
+      segmentNo = interestName[-1].toSegment();
+    }
+    if (segmentNo >= m_segmentCount) {
+      return;
+    }
+
+    const uint64_t offset = segmentNo * m_maxSegmentSize;
+    const size_t length = static_cast<size_t>(
+      std::min<uint64_t>(m_maxSegmentSize, m_fileSize - std::min(offset, m_fileSize)));
+    std::vector<uint8_t> content(length);
+    if (length > 0) {
+      std::ifstream stream(m_filePath, std::ios::binary);
+      if (!stream) {
+        throw std::runtime_error("cannot reopen file segmented producer payload");
+      }
+      stream.seekg(static_cast<std::streamoff>(offset));
+      stream.read(reinterpret_cast<char*>(content.data()),
+                  static_cast<std::streamsize>(length));
+      if (static_cast<size_t>(stream.gcount()) != length) {
+        throw std::runtime_error("short read from file segmented producer payload");
+      }
+    }
+
+    ndn::Name dataName = m_versionedName;
+    dataName.appendSegment(segmentNo);
+    ndn::Data data(dataName);
+    data.setFreshnessPeriod(ndn::time::milliseconds(m_freshnessMs));
+    data.setFinalBlock(ndn::name::Component::fromSegment(m_segmentCount - 1));
+    data.setContent(content);
+    const auto signingStarted = std::chrono::steady_clock::now();
+    if (m_digestSigning) {
+      m_keyChain.sign(
+        data,
+        ndn::security::SigningInfo(ndn::security::SigningInfo::SIGNER_TYPE_SHA256));
+    }
+    else {
+      m_keyChain.sign(
+        data,
+        ndn::security::SigningInfo(ndn::security::SigningInfo::SIGNER_TYPE_ID,
+                                   m_signingIdentity));
+    }
+    const auto signingElapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now() - signingStarted).count();
+    const auto wire = data.wireEncode();
+    m_signingNanoseconds.fetch_add(static_cast<uint64_t>(signingElapsed));
+    m_wireBytes.fetch_add(wire.size());
+    m_dataCount.fetch_add(1);
+    m_face.put(data);
+  }
+
+private:
+  ndn::Face m_face;
+  ndn::KeyChain m_keyChain;
+  ndn::Name m_baseName;
+  std::string m_filePath;
+  ndn::Name m_versionedName;
+  ndn::Name m_signingIdentity;
+  size_t m_maxSegmentSize;
+  int m_freshnessMs;
+  bool m_digestSigning;
+  uint64_t m_fileSize = 0;
+  uint64_t m_segmentCount = 0;
+  std::atomic<uint64_t> m_dataCount{0};
+  std::atomic<uint64_t> m_wireBytes{0};
+  std::atomic<uint64_t> m_signingNanoseconds{0};
+  std::vector<uint8_t> m_publicKeyDer;
+  std::atomic_bool m_running{false};
+  std::thread m_thread;
+  mutable std::mutex m_errorMutex;
+  std::string m_error;
+  std::mutex m_registrationMutex;
+  std::condition_variable m_registrationCv;
+  bool m_registrationComplete = false;
+  bool m_registrationSucceeded = false;
+  std::string m_registrationError;
 };
 
 class NativeWireDataProducer
@@ -1043,6 +1396,257 @@ fetchSegmentedDataPackets(const std::string& baseName,
     packets[segmentNo] = fetchOneDataPacket(face, interest, deadline);
   }
   return packets;
+}
+
+struct PyAdaptiveSegmentFetchResult
+{
+  uint64_t totalSegments = 0;
+  uint64_t deliveredSegments = 0;
+  uint64_t interestCount = 0;
+  uint64_t retransmissionCount = 0;
+  uint64_t duplicateCount = 0;
+  uint64_t timeoutCount = 0;
+  uint64_t logicalBytes = 0;
+  uint64_t dataWireBytes = 0;
+  uint64_t interestWireBytes = 0;
+  uint64_t wireBytes = 0;
+  uint64_t retransmittedBytes = 0;
+  uint64_t maximumInFlight = 0;
+  double finalWindow = 0.0;
+};
+
+PyAdaptiveSegmentFetchResult
+fetchAdaptiveSegmentedDataPackets(
+  const std::string& baseName,
+  int timeoutMs,
+  int interestLifetimeMs,
+  uint32_t initialWindow,
+  uint32_t maximumWindow,
+  uint32_t maximumRetries,
+  uint32_t persistenceBacklogLimit,
+  const std::vector<std::string>& forwardingHints,
+  py::function onPacket)
+{
+  if (timeoutMs <= 0 || interestLifetimeMs <= 0 || initialWindow == 0 ||
+      maximumWindow < initialWindow || persistenceBacklogLimit == 0 ||
+      !onPacket) {
+    throw std::invalid_argument(
+      "adaptive segmented fetch requires bounded positive options and callback");
+  }
+  ndn::Face face;
+  const auto deadline =
+    ndn::time::steady_clock::now() + ndn::time::milliseconds(timeoutMs);
+  std::vector<ndn::Name> hintNames;
+  hintNames.reserve(forwardingHints.size());
+  for (const auto& hint : forwardingHints) {
+    hintNames.emplace_back(hint);
+  }
+
+  ndn::Interest firstInterest{ndn::Name(baseName)};
+  firstInterest.setCanBePrefix(true);
+  firstInterest.setMustBeFresh(false);
+  firstInterest.setInterestLifetime(ndn::time::milliseconds(interestLifetimeMs));
+  if (!hintNames.empty()) {
+    firstInterest.setForwardingHint(hintNames);
+  }
+  std::optional<PyDataPacket> first;
+  std::string firstError;
+  uint32_t firstAttempts = 0;
+  while (!first && firstAttempts <= maximumRetries &&
+         ndn::time::steady_clock::now() < deadline) {
+    ++firstAttempts;
+    try {
+      first = fetchOneDataPacket(face, firstInterest, deadline);
+    }
+    catch (const std::exception& error) {
+      firstError = error.what();
+    }
+  }
+  if (!first) {
+    throw std::runtime_error(firstError.empty() ?
+      "adaptive segmented fetch failed before first Data" : firstError);
+  }
+  const auto firstData = dataFromWireBytes(first->wire);
+  const auto finalBlock = firstData->getFinalBlock();
+  if (!finalBlock || !finalBlock->isSegment()) {
+    throw std::runtime_error(
+      "First adaptive segmented Data has no segment FinalBlockId: " + first->name);
+  }
+  const uint64_t finalSegment = finalBlock->toSegment();
+  if (finalSegment >= (uint64_t{1} << 32) || first->segment > finalSegment) {
+    throw std::runtime_error(
+      "adaptive segmented fetch exceeds segment-count safety bound");
+  }
+  const uint64_t totalSegments = finalSegment + 1;
+  const auto versionedName = firstData->getName().getPrefix(-1);
+
+  PyAdaptiveSegmentFetchResult result;
+  result.totalSegments = totalSegments;
+  result.interestCount = firstAttempts;
+  result.retransmissionCount = firstAttempts - 1;
+  result.maximumInFlight = 1;
+  result.logicalBytes = firstData->getContent().value_size();
+  result.dataWireBytes = py::cast<std::string>(first->wire).size();
+  result.interestWireBytes = firstInterest.wireEncode().size() * firstAttempts;
+  result.wireBytes = result.dataWireBytes + result.interestWireBytes;
+  result.retransmittedBytes =
+    firstInterest.wireEncode().size() * (firstAttempts - 1);
+  if (firstAttempts > 1) {
+    result.retransmittedBytes += result.dataWireBytes;
+  }
+  onPacket(*first);
+  result.deliveredSegments = 1;
+
+  enum SegmentState : uint8_t {
+    Missing,
+    InFlight,
+    Delivered,
+  };
+  std::vector<uint8_t> states(static_cast<size_t>(totalSegments), Missing);
+  std::vector<uint32_t> attempts(static_cast<size_t>(totalSegments), 0);
+  states[first->segment] = Delivered;
+  attempts[first->segment] = firstAttempts;
+  std::deque<uint64_t> retryQueue;
+  uint64_t nextNew = 0;
+  uint64_t inFlight = 0;
+  double congestionWindow = initialWindow;
+  std::string error;
+
+  auto nextSegment = [&] () -> std::optional<uint64_t> {
+    while (!retryQueue.empty()) {
+      const uint64_t segmentNo = retryQueue.front();
+      retryQueue.pop_front();
+      if (states[segmentNo] == Missing) {
+        return segmentNo;
+      }
+    }
+    while (nextNew < totalSegments) {
+      const uint64_t candidate = nextNew++;
+      if (states[candidate] == Missing) {
+        return candidate;
+      }
+    }
+    return std::nullopt;
+  };
+
+  auto schedule = [&] {
+    const uint64_t windowBound = std::min<uint64_t>(
+      static_cast<uint64_t>(std::floor(congestionWindow)),
+      persistenceBacklogLimit);
+    while (error.empty() && inFlight < windowBound) {
+      const auto segment = nextSegment();
+      if (!segment) {
+        break;
+      }
+      const uint64_t segmentNo = *segment;
+      states[segmentNo] = InFlight;
+      ++attempts[segmentNo];
+      ++inFlight;
+      ++result.interestCount;
+      if (attempts[segmentNo] > 1) {
+        ++result.retransmissionCount;
+      }
+      result.maximumInFlight = std::max(result.maximumInFlight, inFlight);
+
+      ndn::Name segmentName(versionedName);
+      segmentName.appendSegment(segmentNo);
+      ndn::Interest interest(segmentName);
+      interest.setCanBePrefix(false);
+      interest.setMustBeFresh(false);
+      interest.setInterestLifetime(
+        ndn::time::milliseconds(interestLifetimeMs));
+      if (!hintNames.empty()) {
+        interest.setForwardingHint(hintNames);
+      }
+      const auto interestWireBytes = interest.wireEncode().size();
+      result.interestWireBytes += interestWireBytes;
+      result.wireBytes += interestWireBytes;
+      if (attempts[segmentNo] > 1) {
+        result.retransmittedBytes += interestWireBytes;
+      }
+      face.expressInterest(
+        interest,
+        [&, segmentNo] (const ndn::Interest&, const ndn::Data& data) {
+          if (states[segmentNo] != InFlight) {
+            ++result.duplicateCount;
+            return;
+          }
+          --inFlight;
+          const auto packet = toPyDataPacket(data);
+          if (packet.segment != segmentNo ||
+              data.getName().getPrefix(-1) != versionedName) {
+            error = "received substituted segment";
+            return;
+          }
+          try {
+            // Synchronous callback completion is persistence backpressure:
+            // no replacement Interest is scheduled until it returns.
+            onPacket(packet);
+          }
+          catch (const py::error_already_set& exception) {
+            error = std::string("packet callback failed: ") + exception.what();
+            return;
+          }
+          states[segmentNo] = Delivered;
+          ++result.deliveredSegments;
+          result.logicalBytes += data.getContent().value_size();
+          const auto packetWireBytes =
+            py::cast<std::string>(packet.wire).size();
+          result.dataWireBytes += packetWireBytes;
+          result.wireBytes += packetWireBytes;
+          if (attempts[segmentNo] > 1) {
+            result.retransmittedBytes += packetWireBytes;
+          }
+          congestionWindow = std::min<double>(
+            maximumWindow,
+            congestionWindow + 1.0 / std::max(1.0, congestionWindow));
+        },
+        [&, segmentNo] (const ndn::Interest&, const ndn::lp::Nack&) {
+          if (states[segmentNo] != InFlight) {
+            return;
+          }
+          --inFlight;
+          states[segmentNo] = Missing;
+          congestionWindow = std::max(1.0, std::floor(congestionWindow / 2.0));
+          if (attempts[segmentNo] > maximumRetries) {
+            error = "retry budget exhausted after Nack";
+          }
+          else {
+            retryQueue.push_back(segmentNo);
+          }
+        },
+        [&, segmentNo] (const ndn::Interest&) {
+          if (states[segmentNo] != InFlight) {
+            return;
+          }
+          --inFlight;
+          ++result.timeoutCount;
+          states[segmentNo] = Missing;
+          congestionWindow = std::max(1.0, std::floor(congestionWindow / 2.0));
+          if (attempts[segmentNo] > maximumRetries) {
+            error = "retry budget exhausted after timeout";
+          }
+          else {
+            retryQueue.push_back(segmentNo);
+          }
+        });
+    }
+  };
+
+  while (result.deliveredSegments < totalSegments && error.empty() &&
+         ndn::time::steady_clock::now() < deadline) {
+    schedule();
+    processFaceEvents(face, pythonFacePollTimeout());
+  }
+  if (result.deliveredSegments != totalSegments && error.empty()) {
+    error = "operation deadline reached";
+  }
+  if (!error.empty()) {
+    throw std::runtime_error(
+      "adaptive segmented fetch failed for " + baseName + ": " + error);
+  }
+  result.finalWindow = congestionWindow;
+  return result;
 }
 
 PyDataPacket
@@ -1686,6 +2290,27 @@ ackCandidatesToPyList(const std::vector<nsf::AckCandidate>& candidates)
   return pyCandidates;
 }
 
+std::vector<PyAckCandidate>
+ackCandidatesToPyVector(const std::vector<nsf::AckCandidate>& candidates)
+{
+  std::vector<PyAckCandidate> output;
+  output.reserve(candidates.size());
+  for (const auto& candidate : candidates) {
+    PyAckCandidate item;
+    item.providerName = candidate.providerName.toUri();
+    item.serviceName = candidate.serviceName.toUri();
+    item.requestId = candidate.requestId.toUri();
+    item.status = candidate.ack.getStatus();
+    item.message = candidate.ack.getMessage();
+    item.payload = toPyBytes(candidate.ack.getPayload());
+    if (candidate.telemetry) {
+      item.telemetry = networkTelemetrySnapshotToDict(*candidate.telemetry);
+    }
+    output.push_back(std::move(item));
+  }
+  return output;
+}
+
 class RoleAssignmentSelectionPolicy final : public nsf::ParticipantSelectionPolicy
 {
 public:
@@ -1732,25 +2357,25 @@ public:
     const auto admissionBias = admissionBiasFromEnv();
     for (const auto& role : roles) {
       auto candidatesForRole = candidatesByRole.find(role.role);
-      if (candidatesForRole == candidatesByRole.end() ||
-          candidatesForRole->second.empty()) {
-        continue;
-      }
-      auto best = candidatesForRole->second.begin();
-      const auto preferredProvider = preferredProviderForRole(m_roleProviderPreference, role.role);
+      std::vector<nsf::AckCandidate> eligible;
+      const auto preferredProvider =
+        preferredProviderForRole(m_roleProviderPreference, role.role);
       if (!preferredProvider.empty()) {
-        auto preferredIt = std::find_if(
-          candidatesForRole->second.begin(),
-          candidatesForRole->second.end(),
-          [&preferredProvider] (const nsf::AckCandidate& candidate) {
-            return candidate.providerName.toUri() == preferredProvider;
-          });
-        if (preferredIt != candidatesForRole->second.end()) {
-          best = preferredIt;
+        for (const auto& candidate : candidates) {
+          if (candidate.ack.getStatus() &&
+              candidate.providerName.toUri() == preferredProvider) {
+            eligible.push_back(candidate);
+          }
         }
       }
-      for (auto it = candidatesForRole->second.begin();
-           it != candidatesForRole->second.end(); ++it) {
+      else if (candidatesForRole != candidatesByRole.end()) {
+        eligible = candidatesForRole->second;
+      }
+      if (eligible.empty()) {
+        continue;
+      }
+      auto best = eligible.begin();
+      for (auto it = eligible.begin(); it != eligible.end(); ++it) {
         if (!preferredProvider.empty() &&
             best->providerName.toUri() == preferredProvider) {
           continue;
@@ -1761,45 +2386,57 @@ public:
       }
       providerAssignments[best->providerName.toUri()]++;
 
-      std::string assignment =
-        "role=" + role.role +
-        ";artifact=" + role.requiredArtifact.toUri() +
-        ";requiresProvisioning=" +
-        (role.allowDynamicProvisioning ? "1" : "0") +
-        ";provisioningTimeoutMs=" + std::to_string(role.provisioningTimeoutMs) + ";";
-      if (!role.appRequirement.empty()) {
-        assignment.append(
-          reinterpret_cast<const char*>(role.appRequirement.data()),
-          role.appRequirement.size());
-        if (!assignment.empty() && assignment.back() != ';') {
-          assignment.push_back(';');
-        }
+      std::string assignment;
+      if (!role.assignmentPayload.empty()) {
+        assignment.assign(
+          reinterpret_cast<const char*>(role.assignmentPayload.data()),
+          role.assignmentPayload.size());
       }
-
-      auto artifactData = m_artifactDataNames.find(role.role);
-      if (artifactData != m_artifactDataNames.end()) {
-        assignment += "artifactDataName=" + artifactData->second.toUri() + ";";
-      }
-
-      auto scopes = m_roleScopes.find(role.role);
-      if (scopes != m_roleScopes.end()) {
-        for (const auto& scopeName : scopes->second) {
-          auto scopeKeyData = m_scopeKeyDataNames.find(scopeName);
-          if (scopeKeyData != m_scopeKeyDataNames.end()) {
-            assignment += "scopeKeyData." + scopeName + "=" +
-                          scopeKeyData->second.toUri() + ";";
+      else {
+        assignment =
+          "role=" + role.role +
+          ";artifact=" + role.requiredArtifact.toUri() +
+          ";requiresProvisioning=" +
+          (role.allowDynamicProvisioning ? "1" : "0") +
+          ";provisioningTimeoutMs=" +
+          std::to_string(role.provisioningTimeoutMs) + ";";
+        if (!role.appRequirement.empty()) {
+          assignment.append(
+            reinterpret_cast<const char*>(role.appRequirement.data()),
+            role.appRequirement.size());
+          if (!assignment.empty() && assignment.back() != ';') {
+            assignment.push_back(';');
           }
         }
       }
-      const auto ackPayloadText = bytesToString(best->ack.getPayload());
-      const auto leaseId = fieldFromText(ackPayloadText, "leaseId");
-      if (!leaseId.empty()) {
-        assignment += "leaseId=" + leaseId + ";";
-      }
-      const auto resourceBindingProof =
-        fieldFromText(ackPayloadText, "resourceBindingProof");
-      if (!resourceBindingProof.empty()) {
-        assignment += "resourceBindingProof=" + resourceBindingProof + ";";
+
+      if (role.assignmentPayload.empty()) {
+        auto artifactData = m_artifactDataNames.find(role.role);
+        if (artifactData != m_artifactDataNames.end()) {
+          assignment += "artifactDataName=" + artifactData->second.toUri() + ";";
+        }
+
+        auto scopes = m_roleScopes.find(role.role);
+        if (scopes != m_roleScopes.end()) {
+          for (const auto& scopeName : scopes->second) {
+            auto scopeKeyData = m_scopeKeyDataNames.find(scopeName);
+            if (scopeKeyData != m_scopeKeyDataNames.end()) {
+              assignment += "scopeKeyData." + scopeName + "=" +
+                            scopeKeyData->second.toUri() + ";";
+            }
+          }
+        }
+
+        const auto ackPayloadText = bytesToString(best->ack.getPayload());
+        const auto leaseId = fieldFromText(ackPayloadText, "leaseId");
+        if (!leaseId.empty()) {
+          assignment += "leaseId=" + leaseId + ";";
+        }
+        const auto resourceBindingProof =
+          fieldFromText(ackPayloadText, "resourceBindingProof");
+        if (!resourceBindingProof.empty()) {
+          assignment += "resourceBindingProof=" + resourceBindingProof + ";";
+        }
       }
 
       ndn::Buffer assignmentPayload(reinterpret_cast<const uint8_t*>(assignment.data()),
@@ -2008,12 +2645,16 @@ public:
   {
     nsf::ServiceProvider::ServiceOperationStatus status;
     auto text = [&payload](const char* name, const std::string& fallback = "") {
-      auto item = payload.contains(name) ? payload[name] : py::none();
-      return item.is_none() ? fallback : py::cast<std::string>(item);
+      if (!payload.contains(name) || payload[name].is_none()) {
+        return fallback;
+      }
+      return py::cast<std::string>(payload[name]);
     };
     auto integer = [&payload](const char* name, uint64_t fallback) {
-      auto item = payload.contains(name) ? payload[name] : py::none();
-      return item.is_none() ? fallback : py::cast<uint64_t>(item);
+      if (!payload.contains(name) || payload[name].is_none()) {
+        return fallback;
+      }
+      return py::cast<uint64_t>(payload[name]);
     };
     status.operationId = text("operation_id");
     status.operation = text("operation");
@@ -2042,6 +2683,127 @@ private:
   nsf::ServiceProvider::CollaborationContext* m_ctx = nullptr;
 };
 
+class PyOpaqueSelectionParticipant final : public nsf::OpaqueSelectionParticipant
+{
+public:
+  PyOpaqueSelectionParticipant(
+      std::string id, uint32_t version,
+      std::shared_ptr<py::function> prepare,
+      std::shared_ptr<py::function> onCommitted,
+      std::shared_ptr<py::function> onAborted)
+    : m_id(std::move(id))
+    , m_version(version)
+    , m_prepare(std::move(prepare))
+    , m_onCommitted(std::move(onCommitted))
+    , m_onAborted(std::move(onAborted))
+  {
+    if (m_id.empty() || m_version == 0 || !m_prepare || !m_onCommitted ||
+        !m_onAborted) {
+      throw std::invalid_argument(
+          "opaque Selection participant registration is incomplete");
+    }
+  }
+
+  std::string participantId() const override
+  {
+    return m_id;
+  }
+
+  uint32_t participantVersion() const override
+  {
+    return m_version;
+  }
+
+  nsf::OpaqueSelectionPrepareResult
+  prepare(const nsf::AuthenticatedSelectionContext& context,
+          ndn::span<const uint8_t> payload) override
+  {
+    py::gil_scoped_acquire gil;
+    py::dict immutableContext;
+    immutableContext["transaction_id"] = context.transactionId;
+    immutableContext["service_name"] = context.serviceName.toUri();
+    immutableContext["request_id"] = context.requestId.toUri();
+    immutableContext["attempt"] = context.attempt;
+    immutableContext["selection_identity"] = context.selectionIdentity;
+    immutableContext["selection_payload_digest"] =
+        context.selectionPayloadDigest;
+    immutableContext["provider_identity"] = context.providerIdentity.toUri();
+    immutableContext["provider_boot_epoch"] = context.providerBootEpoch;
+    immutableContext["expires_at_unix_ms"] = context.expiresAtUnixMs;
+    immutableContext["provider_token_record_ref"] =
+        context.providerTokenRecordRef;
+    immutableContext["lease_record_ref"] =
+        context.leaseRecordRef.value_or("");
+    const py::object result =
+        (*m_prepare)(std::move(immutableContext),
+                     py::bytes(reinterpret_cast<const char*>(payload.data()),
+                               payload.size()));
+    const auto fields = result.cast<py::dict>();
+    if (!fields.contains("commit_blob") ||
+        !fields.contains("acceptance_payload")) {
+      throw std::invalid_argument(
+          "opaque prepare must return commit_blob and acceptance_payload");
+    }
+    nsf::OpaqueSelectionPrepareResult prepared;
+    prepared.participantId = m_id;
+    prepared.participantVersion = m_version;
+    prepared.commitBlob =
+        toBuffer(py::cast<py::bytes>(fields["commit_blob"]));
+    prepared.acceptancePayload =
+        toBuffer(py::cast<py::bytes>(fields["acceptance_payload"]));
+    prepared.commitBlobDigest = nsf::GenericSelectionTxnStore::digest(
+        {prepared.commitBlob.data(), prepared.commitBlob.size()});
+    prepared.acceptancePayloadDigest =
+        nsf::GenericSelectionTxnStore::digest(
+            {prepared.acceptancePayload.data(),
+             prepared.acceptancePayload.size()});
+    return prepared;
+  }
+
+  void
+  onCommitted(const nsf::GenericCommittedSelectionView& committed) override
+  {
+    py::gil_scoped_acquire gil;
+    py::dict view;
+    view["transaction_id"] = committed.transactionId;
+    view["participant_id"] = committed.participantId;
+    view["participant_version"] = committed.participantVersion;
+    view["service_name"] = committed.serviceName.toUri();
+    view["request_id"] = committed.requestId.toUri();
+    view["attempt"] = committed.attempt;
+    view["selection_identity"] = committed.selectionIdentity;
+    view["selection_payload_digest"] = committed.selectionPayloadDigest;
+    view["provider_identity"] = committed.providerIdentity.toUri();
+    view["provider_boot_epoch"] = committed.providerBootEpoch;
+    view["provider_token_record_ref"] =
+        committed.providerTokenRecordRef;
+    view["lease_record_ref"] = committed.leaseRecordRef.value_or("");
+    view["commit_blob"] = toPyBytes(committed.commitBlob);
+    view["commit_blob_digest"] = committed.commitBlobDigest;
+    view["acceptance_payload"] = toPyBytes(committed.acceptancePayload);
+    view["acceptance_payload_digest"] =
+        committed.acceptancePayloadDigest;
+    view["committed_at_unix_ms"] = committed.committedAtUnixMs;
+    view["expires_at_unix_ms"] = committed.expiresAtUnixMs;
+    (*m_onCommitted)(std::move(view));
+  }
+
+  void
+  onAborted(const std::string& transactionId,
+            const std::string& reasonCode) override
+  {
+    py::gil_scoped_acquire gil;
+    (*m_onAborted)(transactionId, reasonCode);
+  }
+
+private:
+  std::string m_id;
+  uint32_t m_version = 0;
+  std::shared_ptr<py::function> m_prepare;
+  std::shared_ptr<py::function> m_onCommitted;
+  std::shared_ptr<py::function> m_onAborted;
+};
+
 class NativeServiceProvider
 {
 public:
@@ -2064,7 +2826,12 @@ public:
     , m_serveCertificates(serveCertificates)
   {
     m_providerCert = getOrCreateIdentity(m_keyChain, m_providerIdentity);
-    m_controllerCert = getOrCreateIdentity(m_keyChain, m_controller);
+    if (auto controllerCert = loadControllerCertificateOverride(m_controller)) {
+      m_controllerCert = *controllerCert;
+    }
+    else {
+      m_controllerCert = getOrCreateIdentity(m_keyChain, m_controller);
+    }
     if (!bootstrapToken.empty()) {
       m_providerCert = nsf::ensureControllerSignedCertificate(
         m_face, m_keyChain, m_controller, m_providerIdentity,
@@ -2089,6 +2856,15 @@ public:
   ~NativeServiceProvider()
   {
     stop();
+  }
+
+  std::string
+  providerBootEpoch() const
+  {
+    if (!m_provider) {
+      throw std::runtime_error("provider is not initialized");
+    }
+    return m_provider->getProviderBootEpoch();
   }
 
   void
@@ -2132,6 +2908,7 @@ public:
               decision.selectionInputKeyOffer =
                 toDeploymentControlContract<nsf::SelectionInputKeyOffer>(
                   pyDecision.selectionInputKeyOffer);
+              decision.pendingStateTtlMs = pyDecision.pendingStateTtlMs;
             }
             else {
               decision.status = result.cast<bool>();
@@ -2193,6 +2970,42 @@ public:
       std::move(ackAdapter),
       std::move(requestAdapter),
       nsf::ServiceProvider::ServiceInvocationMode::NormalAndTargeted);
+  }
+
+  void
+  configureOpaqueSelectionStore(const std::string& walPath,
+                                py::bytes storageKey,
+                                const std::string& storageKeyEpoch,
+                                uint64_t maxPrepareMs)
+  {
+    nsf::GenericSelectionTxnOptions options;
+    options.maxPrepareTime = std::chrono::milliseconds(maxPrepareMs);
+    m_opaqueSelectionStore =
+        std::make_shared<nsf::GenericSelectionTxnStore>(
+            walPath, toBuffer(storageKey), storageKeyEpoch, options);
+    m_provider->setGenericSelectionTxnStore(m_opaqueSelectionStore);
+  }
+
+  void
+  registerOpaqueSelectionParticipant(
+      const std::string& serviceName,
+      const std::string& participantId,
+      uint32_t participantVersion,
+      py::function prepare,
+      py::function onCommitted,
+      py::function onAborted)
+  {
+    if (!m_opaqueSelectionStore)
+      throw std::logic_error(
+          "configure opaque Selection store before participant registration");
+    auto participant = std::make_shared<PyOpaqueSelectionParticipant>(
+        participantId, participantVersion,
+        keepPyFunction(std::move(prepare)),
+        keepPyFunction(std::move(onCommitted)),
+        keepPyFunction(std::move(onAborted)));
+    m_opaqueSelectionParticipants[serviceName] = participant;
+    m_provider->registerOpaqueSelectionParticipant(
+        ndn::Name(serviceName), participant);
   }
 
   void
@@ -2314,6 +3127,7 @@ public:
               decision.selectionInputKeyOffer =
                 toDeploymentControlContract<nsf::SelectionInputKeyOffer>(
                   pyDecision.selectionInputKeyOffer);
+              decision.pendingStateTtlMs = pyDecision.pendingStateTtlMs;
             }
             else {
               decision.status = result.cast<bool>();
@@ -2466,6 +3280,9 @@ private:
     m_r1SelectionDecisionHandlers;
   std::map<std::string, std::shared_ptr<py::function>>
     m_r1ReservationTerminalHandlers;
+  std::shared_ptr<nsf::GenericSelectionTxnStore> m_opaqueSelectionStore;
+  std::map<std::string, std::shared_ptr<PyOpaqueSelectionParticipant>>
+    m_opaqueSelectionParticipants;
   std::atomic<bool> m_running{false};
   std::thread m_thread;
   std::mutex m_errorMutex;
@@ -2775,13 +3592,9 @@ public:
       else {
         actualRequestId = m_user->RequestService(
           ndn::Name(serviceName), payload, ackTimeoutMs, selection, timeoutMs,
-        [&](const nsf::ResponseMessage& response) {
-          onResponse(response);
-        },
-        [&](const ndn::Name& requestId) {
-          onTimeout(requestId);
-        },
-        requestedRequestId.empty() ? ndn::Name() : ndn::Name(requestedRequestId));
+          onResponse,
+          onTimeout,
+          requestedRequestId.empty() ? ndn::Name() : ndn::Name(requestedRequestId));
       }
       std::lock_guard<std::mutex> lock(mutex);
       output.requestId = actualRequestId.toUri();
@@ -3153,12 +3966,29 @@ public:
       if (reqIt != entry.end() && !reqIt->second.is_none()) {
         role.appRequirement = toBuffer(reqIt->second.cast<py::bytes>());
       }
+      auto assignmentIt = entry.find("assignment_payload");
+      if (assignmentIt != entry.end() && !assignmentIt->second.is_none()) {
+        role.assignmentPayload =
+          toBuffer(assignmentIt->second.cast<py::bytes>());
+      }
       plan.roles.push_back(std::move(role));
     }
 
     for (const auto& entry : keyScopes) {
       plan.keyScopes.push_back({entry.first, entry.second});
     }
+    std::string sharedAssignmentMetadata;
+    for (const auto& entry : scopeKeyDataNames) {
+      if (entry.first.empty() || entry.second.empty()) {
+        throw std::runtime_error(
+          "collaboration scope-key Data reference is incomplete");
+      }
+      sharedAssignmentMetadata +=
+        "scopeKeyData." + entry.first + "=" + entry.second + ";";
+    }
+    plan.sharedAssignmentMetadata = ndn::Buffer(
+      reinterpret_cast<const uint8_t*>(sharedAssignmentMetadata.data()),
+      sharedAssignmentMetadata.size());
 
     auto readStringList = [](const std::map<std::string, py::object>& dict,
                              const std::string& key) {
@@ -3308,6 +4138,167 @@ public:
     output.status = false;
     output.error = "local deadline";
     return output;
+  }
+
+  std::string
+  beginCollaboration(const std::string& serviceName,
+                     const py::bytes& initialPayload,
+                     py::function onAckClosed,
+                     py::function onResponse,
+                     py::function onTimeout,
+                     int ackTimeoutMs,
+                     int timeoutMs,
+                     const std::string& requestedRequestId = "")
+  {
+    start();
+    auto payload = toBuffer(initialPayload);
+    auto ackClosedCallback = keepPyFunction(std::move(onAckClosed));
+    auto responseCallback = keepPyFunction(std::move(onResponse));
+    auto timeoutCallback = keepPyFunction(std::move(onTimeout));
+    auto actualRequestId = std::make_shared<std::string>();
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool submitted = false;
+    std::string submissionError;
+
+    boost::asio::post(m_face.getIoContext(),
+      [this, serviceName, payload, ackTimeoutMs, timeoutMs, requestedRequestId,
+       ackClosedCallback = std::move(ackClosedCallback),
+       responseCallback = std::move(responseCallback),
+       timeoutCallback = std::move(timeoutCallback),
+       actualRequestId, &mutex, &cv, &submitted, &submissionError]() mutable {
+        try {
+          const auto requestId = m_user->BeginCollaboration(
+            ndn::Name(serviceName),
+            payload,
+            ackTimeoutMs,
+            timeoutMs,
+            [ackClosedCallback](const nsf::CollaborationAckClosure& closure) {
+              py::gil_scoped_acquire gil;
+              PyCollaborationAckClosure output;
+              output.requestId = closure.requestId.toUri();
+              output.candidates = ackCandidatesToPyVector(closure.candidates);
+              output.digest = closure.digest;
+              output.closedAtUs = closure.closedAtUs;
+              output.requestDeadlineUs = closure.requestDeadlineUs;
+              try {
+                (*ackClosedCallback)(output);
+              }
+              catch (const py::error_already_set& error) {
+                PyErr_WriteUnraisable(error.value().ptr());
+              }
+            },
+            [responseCallback, actualRequestId](
+                const nsf::ResponseMessage& response) {
+              py::gil_scoped_acquire gil;
+              PyServiceResponse output;
+              output.status = response.getStatus();
+              output.payload = toPyBytes(response.getPayload());
+              output.error = response.getErrorInfo();
+              output.requestId = *actualRequestId;
+              output.dataName = response.getDataName();
+              output.signerCertificate = response.getSignerCertificate();
+              output.wireDigest = response.getWireDigest();
+              try {
+                (*responseCallback)(output);
+              }
+              catch (const py::error_already_set& error) {
+                PyErr_WriteUnraisable(error.value().ptr());
+              }
+            },
+            [timeoutCallback](const ndn::Name& requestId) {
+              py::gil_scoped_acquire gil;
+              try {
+                (*timeoutCallback)(requestId.toUri());
+              }
+              catch (const py::error_already_set& error) {
+                PyErr_WriteUnraisable(error.value().ptr());
+              }
+            },
+            requestedRequestId.empty() ?
+              ndn::Name() : ndn::Name(requestedRequestId));
+          {
+            std::lock_guard<std::mutex> lock(mutex);
+            *actualRequestId = requestId.toUri();
+            submitted = true;
+          }
+        }
+        catch (const std::exception& error) {
+          std::lock_guard<std::mutex> lock(mutex);
+          submissionError = error.what();
+          submitted = true;
+        }
+        cv.notify_one();
+      });
+
+    {
+      py::gil_scoped_release release;
+      std::unique_lock<std::mutex> lock(mutex);
+      if (!cv.wait_for(lock, std::chrono::seconds(3),
+                       [&submitted] { return submitted; })) {
+        throw std::runtime_error(
+          "timed out submitting deferred collaboration");
+      }
+    }
+    if (!submissionError.empty()) {
+      throw std::runtime_error(submissionError);
+    }
+    return *actualRequestId;
+  }
+
+  bool
+  commitCollaborationPlan(
+      const std::string& serviceName,
+      const std::string& requestId,
+      const std::string& ackClosedDigest,
+      const std::vector<std::map<std::string, py::object>>& roles,
+      const std::map<std::string, std::vector<std::string>>& keyScopes,
+      const std::vector<std::map<std::string, py::object>>& dependencies,
+      const std::map<std::string, std::string>& artifactDataNames,
+      const std::map<std::string, std::string>& scopeKeyDataNames,
+      const std::map<std::string, std::vector<std::string>>& roleScopes,
+      int ackTimeoutMs,
+      int timeoutMs,
+      const std::map<std::string, std::string>& roleProviderAssignments = {})
+  {
+    auto plan = buildCollaborationPlan(
+      serviceName, roles, keyScopes, dependencies, artifactDataNames,
+      scopeKeyDataNames, roleScopes, ackTimeoutMs, timeoutMs,
+      roleProviderAssignments);
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool done = false;
+    bool result = false;
+    std::string error;
+    boost::asio::post(m_face.getIoContext(),
+      [this, requestId, ackClosedDigest, plan = std::move(plan),
+       &mutex, &cv, &done, &result, &error]() mutable {
+        try {
+          result = m_user->CommitCollaborationPlan(
+            ndn::Name(requestId), ackClosedDigest, std::move(plan));
+        }
+        catch (const std::exception& exception) {
+          error = exception.what();
+        }
+        {
+          std::lock_guard<std::mutex> lock(mutex);
+          done = true;
+        }
+        cv.notify_one();
+      });
+    {
+      py::gil_scoped_release release;
+      std::unique_lock<std::mutex> lock(mutex);
+      if (!cv.wait_for(lock, std::chrono::seconds(3),
+                       [&done] { return done; })) {
+        throw std::runtime_error(
+          "timed out committing deferred collaboration plan");
+      }
+    }
+    if (!error.empty()) {
+      throw std::runtime_error(error);
+    }
+    return result;
   }
 
   void
@@ -5119,7 +6110,8 @@ PYBIND11_MODULE(_ndnsf, m)
     .def_readwrite("message", &PyAckDecision::message)
     .def_readwrite("suppress", &PyAckDecision::suppress)
     .def_readwrite("reservation_lease", &PyAckDecision::reservationLease)
-    .def_readwrite("selection_input_key_offer", &PyAckDecision::selectionInputKeyOffer);
+    .def_readwrite("selection_input_key_offer", &PyAckDecision::selectionInputKeyOffer)
+    .def_readwrite("pending_state_ttl_ms", &PyAckDecision::pendingStateTtlMs);
 
   py::class_<PyAckCandidate>(m, "AckCandidate")
     .def(py::init<>())
@@ -5130,6 +6122,15 @@ PYBIND11_MODULE(_ndnsf, m)
     .def_readwrite("message", &PyAckCandidate::message)
     .def_readwrite("payload", &PyAckCandidate::payload)
     .def_readwrite("telemetry", &PyAckCandidate::telemetry);
+
+  py::class_<PyCollaborationAckClosure>(m, "CollaborationAckClosure")
+    .def(py::init<>())
+    .def_readwrite("request_id", &PyCollaborationAckClosure::requestId)
+    .def_readwrite("candidates", &PyCollaborationAckClosure::candidates)
+    .def_readwrite("digest", &PyCollaborationAckClosure::digest)
+    .def_readwrite("closed_at_us", &PyCollaborationAckClosure::closedAtUs)
+    .def_readwrite(
+      "request_deadline_us", &PyCollaborationAckClosure::requestDeadlineUs);
 
   py::class_<PyLargeDataPublishResult>(m, "LargeDataPublishResult")
     .def(py::init<>())
@@ -5185,11 +6186,44 @@ PYBIND11_MODULE(_ndnsf, m)
     .def_property_readonly("segment_count", &NativeSegmentedObjectProducer::segmentCount)
     .def_property_readonly("error", &NativeSegmentedObjectProducer::error);
 
+  py::class_<NativeFileSegmentedObjectProducer>(m, "FileSegmentedObjectProducer")
+    .def(py::init<const std::string&,
+                  const std::string&,
+                  const std::string&,
+                  size_t,
+                  int,
+                  bool>(),
+         py::arg("base_name"),
+         py::arg("file_path"),
+         py::arg("signing_identity") = "",
+         py::arg("max_segment_size") = 6000,
+         py::arg("freshness_ms") = 60000,
+         py::arg("digest_signing") = true)
+    .def("start", &NativeFileSegmentedObjectProducer::start)
+    .def("stop", &NativeFileSegmentedObjectProducer::stop)
+    .def_property_readonly("base_name", &NativeFileSegmentedObjectProducer::baseName)
+    .def_property_readonly("versioned_name", &NativeFileSegmentedObjectProducer::versionedName)
+    .def_property_readonly("segment_count", &NativeFileSegmentedObjectProducer::segmentCount)
+    .def_property_readonly("file_size", &NativeFileSegmentedObjectProducer::fileSize)
+    .def_property_readonly("data_count", &NativeFileSegmentedObjectProducer::dataCount)
+    .def_property_readonly("wire_bytes", &NativeFileSegmentedObjectProducer::wireBytes)
+    .def_property_readonly("signing_ms", &NativeFileSegmentedObjectProducer::signingMs)
+    .def_property_readonly("public_key_der", &NativeFileSegmentedObjectProducer::publicKeyDer)
+    .def_property_readonly("error", &NativeFileSegmentedObjectProducer::error);
+
   py::class_<PyDataPacket>(m, "DataPacket")
     .def(py::init<>())
     .def_readwrite("name", &PyDataPacket::name)
     .def_readwrite("segment", &PyDataPacket::segment)
-    .def_readwrite("wire", &PyDataPacket::wire);
+    .def_readwrite("wire", &PyDataPacket::wire)
+    .def_readwrite("content", &PyDataPacket::content);
+
+  m.def("verify_data_packet_signature", &verifyDataPacketSignature,
+        py::arg("wire"), py::arg("public_key_der"));
+  m.def("verify_detached_sha256_signature", &verifyDetachedSha256Signature,
+        py::arg("payload"), py::arg("signature"), py::arg("public_key_der"));
+  m.def("verify_data_packet_digest", &verifyDataPacketDigest,
+        py::arg("wire"));
 
   py::class_<PySegmentHintRange>(m, "SegmentHintRange")
     .def(py::init<>())
@@ -5248,6 +6282,45 @@ PYBIND11_MODULE(_ndnsf, m)
         py::arg("timeout_ms") = 30000,
         py::arg("interest_lifetime_ms") = 10000,
         py::arg("forwarding_hints") = std::vector<std::string>{});
+
+  py::class_<PyAdaptiveSegmentFetchResult>(m, "AdaptiveSegmentFetchResult")
+    .def_readonly("total_segments",
+                  &PyAdaptiveSegmentFetchResult::totalSegments)
+    .def_readonly("delivered_segments",
+                  &PyAdaptiveSegmentFetchResult::deliveredSegments)
+    .def_readonly("interest_count",
+                  &PyAdaptiveSegmentFetchResult::interestCount)
+    .def_readonly("retransmission_count",
+                  &PyAdaptiveSegmentFetchResult::retransmissionCount)
+    .def_readonly("duplicate_count",
+                  &PyAdaptiveSegmentFetchResult::duplicateCount)
+    .def_readonly("timeout_count",
+                  &PyAdaptiveSegmentFetchResult::timeoutCount)
+    .def_readonly("logical_bytes",
+                  &PyAdaptiveSegmentFetchResult::logicalBytes)
+    .def_readonly("data_wire_bytes",
+                  &PyAdaptiveSegmentFetchResult::dataWireBytes)
+    .def_readonly("interest_wire_bytes",
+                  &PyAdaptiveSegmentFetchResult::interestWireBytes)
+    .def_readonly("wire_bytes", &PyAdaptiveSegmentFetchResult::wireBytes)
+    .def_readonly("retransmitted_bytes",
+                  &PyAdaptiveSegmentFetchResult::retransmittedBytes)
+    .def_readonly("maximum_in_flight",
+                  &PyAdaptiveSegmentFetchResult::maximumInFlight)
+    .def_readonly("final_window",
+                  &PyAdaptiveSegmentFetchResult::finalWindow);
+
+  m.def("fetch_adaptive_segmented_data_packets",
+        &fetchAdaptiveSegmentedDataPackets,
+        py::arg("base_name"),
+        py::arg("timeout_ms") = 30000,
+        py::arg("interest_lifetime_ms") = 1000,
+        py::arg("initial_window") = 4,
+        py::arg("maximum_window") = 64,
+        py::arg("maximum_retries") = 5,
+        py::arg("persistence_backlog_limit") = 16,
+        py::arg("forwarding_hints") = std::vector<std::string>{},
+        py::arg("on_packet"));
 
   m.def("fetch_exact_data_packet",
         &fetchExactDataPacket,
@@ -5381,6 +6454,17 @@ PYBIND11_MODULE(_ndnsf, m)
     .def("set_deployment_prepare_handler",
          &NativeServiceProvider::setDeploymentPrepareHandler,
          py::arg("handler"))
+    .def_property_readonly("provider_boot_epoch",
+         &NativeServiceProvider::providerBootEpoch)
+    .def("configure_opaque_selection_store",
+         &NativeServiceProvider::configureOpaqueSelectionStore,
+         py::arg("wal_path"), py::arg("storage_key"),
+         py::arg("storage_key_epoch"), py::arg("max_prepare_ms") = 1000)
+    .def("register_opaque_selection_participant",
+         &NativeServiceProvider::registerOpaqueSelectionParticipant,
+         py::arg("service"), py::arg("participant_id"),
+         py::arg("participant_version"), py::arg("prepare"),
+         py::arg("on_committed"), py::arg("on_aborted"))
     .def("set_r1_selection_decision_handler",
          &NativeServiceProvider::setR1SelectionDecisionHandler,
          py::arg("service"), py::arg("handler"))
@@ -5510,6 +6594,21 @@ PYBIND11_MODULE(_ndnsf, m)
          py::arg("ack_observer") = py::none(),
          py::arg("role_provider_assignments") = std::map<std::string, std::string>{},
          py::arg("request_id") = "")
+    .def("begin_collaboration", &NativeServiceUser::beginCollaboration,
+         py::arg("service"), py::arg("payload"),
+         py::arg("on_ack_closed"), py::arg("on_response"),
+         py::arg("on_timeout"), py::arg("ack_timeout_ms") = 300,
+         py::arg("timeout_ms") = 10000, py::arg("request_id") = "")
+    .def("commit_collaboration_plan",
+         &NativeServiceUser::commitCollaborationPlan,
+         py::arg("service"), py::arg("request_id"),
+         py::arg("ack_closed_digest"), py::arg("roles"),
+         py::arg("key_scopes"), py::arg("dependencies"),
+         py::arg("artifact_data_names"), py::arg("scope_key_data_names"),
+         py::arg("role_scopes"), py::arg("ack_timeout_ms") = 300,
+         py::arg("timeout_ms") = 10000,
+         py::arg("role_provider_assignments") =
+           std::map<std::string, std::string>{})
     .def("request_collaboration_async", &NativeServiceUser::requestCollaborationAsync,
          py::arg("service"),
          py::arg("payload"),

@@ -16,6 +16,7 @@ from enum import Enum
 from functools import wraps
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import sqlite3
@@ -53,6 +54,7 @@ from ndnsf import (
     to_plain,
 )
 from py_repoclient import RepoDataPlaneProducer
+from py_repoclient.persistence import SqliteRepositoryPersistence
 from py_repoclient.service_names import (
     canonical_repo_operation,
     is_internal_repo_service,
@@ -115,8 +117,6 @@ REPO_REASON_OPERATION_CONFLICT = "repo-operation-conflict"
 REPO_REASON_GENERATION_CONFLICT = "repo-generation-conflict"
 REPO_REASON_WRITE_INCOMPLETE = "repo-write-incomplete"
 REPO_REASON_OVERLOADED = "repo-overloaded"
-REPO_REASON_CAPACITY_RESERVED = "repo-capacity-reserved"
-REPO_REASON_CAPACITY_REJECTED = "repo-capacity-rejected"
 REPO_REASON_INTEGRITY_FAILURE = "repo-integrity-failure"
 REPO_REASON_REPAIR_UNAVAILABLE = "repo-repair-unavailable"
 CATALOG_MERGE_MAX_PULL_BYTES = 16 * 1024 * 1024
@@ -126,11 +126,238 @@ REPO_REJECTION_REASONS = frozenset({
     REPO_REASON_GENERATION_CONFLICT,
     REPO_REASON_WRITE_INCOMPLETE,
     REPO_REASON_OVERLOADED,
-    REPO_REASON_CAPACITY_RESERVED,
-    REPO_REASON_CAPACITY_REJECTED,
     REPO_REASON_INTEGRITY_FAILURE,
     REPO_REASON_REPAIR_UNAVAILABLE,
 })
+
+REPO_METRIC_PHASES = frozenset({
+    "discovery",
+    "ackCollection",
+    "planning",
+    "queueWait",
+    "sessionStart",
+    "transfer",
+    "verification",
+    "persistence",
+    "replication",
+    "commit",
+    "activation",
+})
+REPO_OPERATION_ID_MAX_BYTES = 256
+_UINT64_MAX = (1 << 64) - 1
+_UINT32_MAX = (1 << 32) - 1
+
+
+def _metric_counter(value: object, field_name: str,
+                    maximum: int = _UINT64_MAX) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{field_name} must be a non-negative integer")
+    try:
+        result = int(value)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValueError(
+            f"{field_name} must be a non-negative integer") from error
+    if result != value or result < 0 or result > maximum:
+        raise ValueError(f"{field_name} must be within [0, {maximum}]")
+    return result
+
+
+@dataclass
+class RepoOperationMetrics:
+    """Canonical per-operation evidence shared by every Spec 164 gate."""
+
+    operation_id: str
+    started_at_ms: int = 0
+    completed_at_ms: int = 0
+    phase_timings_ms: dict[str, float] = field(default_factory=dict)
+    logical_payload_bytes: int = 0
+    data_wire_bytes: int = 0
+    interest_wire_bytes: int = 0
+    wire_bytes: int = 0
+    retransmitted_bytes: int = 0
+    payload_store_bytes_read: int = 0
+    payload_store_bytes_written: int = 0
+    metadata_store_bytes_read: int = 0
+    metadata_store_bytes_written: int = 0
+    storage_bytes_read: int = 0
+    storage_bytes_written: int = 0
+    asymmetric_verifications: int = 0
+    digest_verifications: int = 0
+    asymmetric_verification_ms: float = 0.0
+    digest_verification_ms: float = 0.0
+    control_operations: int = 0
+    metadata_operations: int = 0
+    metadata_record_count: int = 0
+    requested_replica_count: int = 0
+    selected_replica_count: int = 0
+    committed_replica_count: int = 0
+    rejected_replica_receipt_count: int = 0
+
+    def __post_init__(self) -> None:
+        encoded_id = self.operation_id.encode("utf-8")
+        if (not encoded_id or len(encoded_id) > REPO_OPERATION_ID_MAX_BYTES or
+                any(byte < 0x20 or byte == 0x7f for byte in encoded_id)):
+            raise ValueError("repo-metrics-invalid-operation-id")
+        if len(self.phase_timings_ms) > len(REPO_METRIC_PHASES):
+            raise ValueError("repo-metrics-invalid-phase")
+        normalized_phases: dict[str, float] = {}
+        for phase, elapsed in self.phase_timings_ms.items():
+            elapsed_value = float(elapsed)
+            if (phase not in REPO_METRIC_PHASES or
+                    not math.isfinite(elapsed_value) or elapsed_value < 0.0):
+                raise ValueError("repo-metrics-invalid-phase")
+            normalized_phases[str(phase)] = elapsed_value
+        self.phase_timings_ms = normalized_phases
+
+        for name in (
+                "started_at_ms", "completed_at_ms", "logical_payload_bytes",
+                "data_wire_bytes", "interest_wire_bytes", "wire_bytes",
+                "retransmitted_bytes", "payload_store_bytes_read",
+                "payload_store_bytes_written", "metadata_store_bytes_read",
+                "metadata_store_bytes_written", "storage_bytes_read",
+                "storage_bytes_written", "asymmetric_verifications",
+                "digest_verifications", "control_operations",
+                "metadata_operations", "metadata_record_count"):
+            setattr(self, name, _metric_counter(getattr(self, name), name))
+        detailed_wire = self.data_wire_bytes + self.interest_wire_bytes
+        if self.wire_bytes == 0 and detailed_wire:
+            self.wire_bytes = detailed_wire
+        elif detailed_wire == 0 and self.wire_bytes:
+            # Legacy evidence counted Data wire only.
+            self.data_wire_bytes = self.wire_bytes
+        elif self.wire_bytes != detailed_wire:
+            raise ValueError("repo-metrics-inconsistent-wire-bytes")
+        detailed_read = (
+            self.payload_store_bytes_read + self.metadata_store_bytes_read)
+        detailed_written = (
+            self.payload_store_bytes_written + self.metadata_store_bytes_written)
+        if self.storage_bytes_read == 0 and detailed_read:
+            self.storage_bytes_read = detailed_read
+        elif detailed_read == 0 and self.storage_bytes_read:
+            self.payload_store_bytes_read = self.storage_bytes_read
+        elif self.storage_bytes_read != detailed_read:
+            raise ValueError("repo-metrics-inconsistent-storage-read-bytes")
+        if self.storage_bytes_written == 0 and detailed_written:
+            self.storage_bytes_written = detailed_written
+        elif detailed_written == 0 and self.storage_bytes_written:
+            self.payload_store_bytes_written = self.storage_bytes_written
+        elif self.storage_bytes_written != detailed_written:
+            raise ValueError("repo-metrics-inconsistent-storage-written-bytes")
+        for name in (
+                "requested_replica_count", "selected_replica_count",
+                "committed_replica_count", "rejected_replica_receipt_count"):
+            setattr(self, name, _metric_counter(
+                getattr(self, name), name, _UINT32_MAX))
+        for name in ("asymmetric_verification_ms", "digest_verification_ms"):
+            value = float(getattr(self, name))
+            if not math.isfinite(value) or value < 0.0:
+                raise ValueError("repo-metrics-invalid-crypto-time")
+            setattr(self, name, value)
+        if self.completed_at_ms and self.completed_at_ms < self.started_at_ms:
+            raise ValueError("repo-metrics-invalid-time-boundary")
+        if (self.selected_replica_count > self.requested_replica_count or
+                self.committed_replica_count > self.selected_replica_count):
+            raise ValueError("repo-metrics-invalid-replica-count")
+
+    def record_phase(self, phase: str, elapsed_ms: float) -> None:
+        elapsed = float(elapsed_ms)
+        if (phase not in REPO_METRIC_PHASES or
+                not math.isfinite(elapsed) or elapsed < 0.0):
+            raise ValueError("repo-metrics-invalid-phase")
+        self.phase_timings_ms[phase] = self.phase_timings_ms.get(phase, 0.0) + elapsed
+
+    def increment(self, field_name: str, amount: int = 1) -> None:
+        if field_name not in {
+                "logical_payload_bytes", "data_wire_bytes",
+                "interest_wire_bytes", "wire_bytes", "retransmitted_bytes",
+                "payload_store_bytes_read", "payload_store_bytes_written",
+                "metadata_store_bytes_read", "metadata_store_bytes_written",
+                "storage_bytes_read", "storage_bytes_written",
+                "asymmetric_verifications", "digest_verifications",
+                "control_operations", "metadata_operations",
+                "metadata_record_count", "requested_replica_count",
+                "selected_replica_count", "committed_replica_count",
+                "rejected_replica_receipt_count"}:
+            raise ValueError(f"unknown repo metric counter: {field_name}")
+        maximum = (_UINT32_MAX if field_name.endswith("_replica_count") or
+                   field_name == "rejected_replica_receipt_count"
+                   else _UINT64_MAX)
+        delta = _metric_counter(amount, field_name, maximum)
+        setattr(self, field_name, _metric_counter(
+            getattr(self, field_name) + delta, field_name, maximum))
+
+    def to_dict(self) -> dict[str, object]:
+        self.__post_init__()
+        return {
+            "operationId": self.operation_id,
+            "startedAtMs": self.started_at_ms,
+            "completedAtMs": self.completed_at_ms,
+            "phaseTimingsMs": dict(sorted(self.phase_timings_ms.items())),
+            "logicalPayloadBytes": self.logical_payload_bytes,
+            "dataWireBytes": self.data_wire_bytes,
+            "interestWireBytes": self.interest_wire_bytes,
+            "wireBytes": self.wire_bytes,
+            "retransmittedBytes": self.retransmitted_bytes,
+            "payloadStoreBytesRead": self.payload_store_bytes_read,
+            "payloadStoreBytesWritten": self.payload_store_bytes_written,
+            "metadataStoreBytesRead": self.metadata_store_bytes_read,
+            "metadataStoreBytesWritten": self.metadata_store_bytes_written,
+            "storageBytesRead": self.storage_bytes_read,
+            "storageBytesWritten": self.storage_bytes_written,
+            "asymmetricVerifications": self.asymmetric_verifications,
+            "digestVerifications": self.digest_verifications,
+            "asymmetricVerificationMs": self.asymmetric_verification_ms,
+            "digestVerificationMs": self.digest_verification_ms,
+            "controlOperations": self.control_operations,
+            "metadataOperations": self.metadata_operations,
+            "metadataRecordCount": self.metadata_record_count,
+            "requestedReplicaCount": self.requested_replica_count,
+            "selectedReplicaCount": self.selected_replica_count,
+            "committedReplicaCount": self.committed_replica_count,
+            "rejectedReplicaReceiptCount": self.rejected_replica_receipt_count,
+        }
+
+    @staticmethod
+    def from_dict(obj: dict) -> "RepoOperationMetrics":
+        phase_input = obj.get("phaseTimingsMs", {})
+        if not isinstance(phase_input, dict):
+            raise ValueError("repo-metrics-invalid-phase")
+        phases = dict(phase_input)
+        if "reservation" in phases:
+            if "sessionStart" in phases:
+                raise ValueError("repo-metrics-ambiguous-legacy-phase")
+            phases["sessionStart"] = phases.pop("reservation")
+        if len(phases) > len(REPO_METRIC_PHASES):
+            raise ValueError("repo-metrics-invalid-phase")
+        return RepoOperationMetrics(
+            operation_id=str(obj.get("operationId", "")),
+            started_at_ms=obj.get("startedAtMs", 0),
+            completed_at_ms=obj.get("completedAtMs", 0),
+            phase_timings_ms=phases,
+            logical_payload_bytes=obj.get("logicalPayloadBytes", 0),
+            data_wire_bytes=obj.get("dataWireBytes", 0),
+            interest_wire_bytes=obj.get("interestWireBytes", 0),
+            wire_bytes=obj.get("wireBytes", 0),
+            retransmitted_bytes=obj.get("retransmittedBytes", 0),
+            payload_store_bytes_read=obj.get("payloadStoreBytesRead", 0),
+            payload_store_bytes_written=obj.get("payloadStoreBytesWritten", 0),
+            metadata_store_bytes_read=obj.get("metadataStoreBytesRead", 0),
+            metadata_store_bytes_written=obj.get("metadataStoreBytesWritten", 0),
+            storage_bytes_read=obj.get("storageBytesRead", 0),
+            storage_bytes_written=obj.get("storageBytesWritten", 0),
+            asymmetric_verifications=obj.get("asymmetricVerifications", 0),
+            digest_verifications=obj.get("digestVerifications", 0),
+            asymmetric_verification_ms=obj.get("asymmetricVerificationMs", 0.0),
+            digest_verification_ms=obj.get("digestVerificationMs", 0.0),
+            control_operations=obj.get("controlOperations", 0),
+            metadata_operations=obj.get("metadataOperations", 0),
+            metadata_record_count=obj.get("metadataRecordCount", 0),
+            requested_replica_count=obj.get("requestedReplicaCount", 0),
+            selected_replica_count=obj.get("selectedReplicaCount", 0),
+            committed_replica_count=obj.get("committedReplicaCount", 0),
+            rejected_replica_receipt_count=obj.get(
+                "rejectedReplicaReceiptCount", 0),
+        )
 
 
 def normalize_write_consistency(value: str | WriteConsistency) -> str:
@@ -265,26 +492,6 @@ class RepoWriteReceipt:
             state=str(obj.get("state", "COMMITTED")),
             completed_at_ms=int(obj.get("completedAtMs", 0)),
         )
-
-
-@dataclass(frozen=True)
-class RepoCapacityReservation:
-    reservation_id: str
-    operation_id: str
-    repo_node: str
-    reserved_bytes: int
-    state: str
-    expires_at_ms: int
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "reservationId": self.reservation_id,
-            "operationId": self.operation_id,
-            "repoNode": self.repo_node,
-            "reservedBytes": self.reserved_bytes,
-            "state": self.state,
-            "expiresAtMs": self.expires_at_ms,
-        }
 
 
 class RepoIncompleteWriteError(RuntimeError):
@@ -894,6 +1101,48 @@ class StorageCapability:
     storage_latency_ms: float = 0.0
     network_rtt_ms: float = 0.0
     network_bandwidth_mbps: float = 0.0
+    artifact_format_versions: tuple[str, ...] = ("exact-packet-v1",)
+    artifact_digest_algorithms: tuple[str, ...] = ("sha256",)
+    artifact_signature_algorithms: tuple[str, ...] = (
+        "rsa-sha256", "ecdsa-sha256", "ed25519",
+    )
+    artifact_max_bytes: int = 1 << 50
+    artifact_max_chunk_bytes: int = 64 * 1024 * 1024
+    artifact_max_root_encoded_bytes: int = 64 * 1024
+    artifact_max_page_encoded_bytes: int = 4 * 1024 * 1024
+    artifact_max_page_entries: int = 65536
+    artifact_max_manifest_depth: int = 16
+    artifact_supports_resume: bool = False
+    artifact_supports_replica_receipts: bool = False
+    artifact_policy_epoch: str = "default"
+
+
+def _artifact_capability_payload(
+    capability: StorageCapability,
+) -> dict[str, object]:
+    return {
+        "repoNode": capability.repo_node,
+        "formatVersions": list(capability.artifact_format_versions),
+        "digestAlgorithms": list(capability.artifact_digest_algorithms),
+        "signatureAlgorithms": list(
+            capability.artifact_signature_algorithms
+        ),
+        "maxArtifactBytes": capability.artifact_max_bytes,
+        "maxChunkBytes": capability.artifact_max_chunk_bytes,
+        "maxRootEncodedBytes": (
+            capability.artifact_max_root_encoded_bytes
+        ),
+        "maxPageEncodedBytes": (
+            capability.artifact_max_page_encoded_bytes
+        ),
+        "maxPageEntries": capability.artifact_max_page_entries,
+        "maxManifestDepth": capability.artifact_max_manifest_depth,
+        "supportsResume": capability.artifact_supports_resume,
+        "supportsReplicaReceipts": (
+            capability.artifact_supports_replica_receipts
+        ),
+        "policyEpoch": capability.artifact_policy_epoch,
+    }
 
 
 @dataclass(frozen=True)
@@ -1318,7 +1567,14 @@ class RepoNodeApp:
         handler_threads: int = 4,
         ack_threads: int = 2,
         serve_certificates: bool = True,
+        bootstrap_token: str = "",
         exact_data_validation_policy: str = "wire-name-and-request-digest",
+        artifact_format_versions: tuple[str, ...] = ("exact-packet-v1",),
+        artifact_policy_epoch: str = "default",
+        artifact_supports_resume: bool = False,
+        artifact_supports_replica_receipts: bool = False,
+        artifact_writes_enabled: bool = True,
+        artifact_max_write_schema_generation: int | None = None,
     ) -> None:
         self.repo_node = repo_node
         self.service_name = service_name
@@ -1338,6 +1594,17 @@ class RepoNodeApp:
                 "wire-name-and-request-digest", "wire-name-only"}:
             raise ValueError("unsupported exact Data validation policy")
         self.exact_data_validation_policy = exact_data_validation_policy
+        artifact_formats = tuple(str(value) for value in artifact_format_versions)
+        if (
+            not artifact_formats
+            or len(set(artifact_formats)) != len(artifact_formats)
+            or any(value not in {
+                "artifact-manifest-v2", "exact-packet-v1"
+            } for value in artifact_formats)
+        ):
+            raise ValueError("artifact format advertisement is invalid")
+        if not str(artifact_policy_epoch).strip():
+            raise ValueError("artifact policy epoch must not be empty")
         self.capability = StorageCapability(
             repo_node=repo_node,
             free_bytes=free_bytes,
@@ -1345,6 +1612,12 @@ class RepoNodeApp:
             storage_classes=storage_classes,
             repo_mode=repo_mode,
             accepts_backup_replica=accepts_backup_replica,
+            artifact_format_versions=artifact_formats,
+            artifact_supports_resume=bool(artifact_supports_resume),
+            artifact_supports_replica_receipts=bool(
+                artifact_supports_replica_receipts
+            ),
+            artifact_policy_epoch=str(artifact_policy_epoch),
         )
         self.provider = ServiceProvider(
             provider_id=provider_id,
@@ -1355,6 +1628,7 @@ class RepoNodeApp:
             handler_threads=handler_threads,
             ack_threads=ack_threads,
             serve_certificates=serve_certificates,
+            bootstrap_token=bootstrap_token,
         )
         default_storage_root = Path(os.environ.get(
             "NDNSF_REPO_STORAGE_ROOT", "/tmp/ndnsf-distributed-repo"))
@@ -1366,11 +1640,28 @@ class RepoNodeApp:
         self.memory_cache_bytes = max(0, memory_cache_bytes)
         self._hot_cache = _BoundedRepoHotCache(self.memory_cache_bytes)
         self._cache_bytes = 0
-        self._db_lock = threading.RLock()
-        self._db: Optional[sqlite3.Connection] = sqlite3.connect(
+        self._persistence = SqliteRepositoryPersistence(
             self.storage_dir / "repo.sqlite3",
-            check_same_thread=False,
+            owner_id=f"python-repo-node:{self.repo_node}",
+            artifact_writes_enabled=artifact_writes_enabled,
+            max_write_schema_generation=artifact_max_write_schema_generation,
         )
+        if not self._persistence.artifact_writes_enabled:
+            legacy_formats = tuple(
+                value for value in self.capability.artifact_format_versions
+                if value != "artifact-manifest-v2"
+            )
+            if "exact-packet-v1" not in legacy_formats:
+                legacy_formats += ("exact-packet-v1",)
+            self.capability = replace(
+                self.capability,
+                artifact_format_versions=legacy_formats,
+                artifact_supports_resume=False,
+                artifact_supports_replica_receipts=False,
+            )
+        self._db_lock = self._persistence.lock
+        self._db = self._persistence.connection
+        self._artifact_payload_store = self._persistence.artifact_payload_store
         self._init_sqlite()
         if preallocate_bytes > 0:
             reserve = self.storage_dir / "repo.reserve"
@@ -1406,6 +1697,20 @@ class RepoNodeApp:
 
     def _init_sqlite(self) -> None:
         assert self._db is not None
+        if not hasattr(self, "_persistence"):
+            path_row = self._db.execute("PRAGMA database_list").fetchone()
+            database_path = str(path_row[2]) if path_row and path_row[2] else ""
+            if not database_path:
+                raise ValueError(
+                    "repo-persistence-invalid-backend: SQLite path is required")
+            self._db.close()
+            self._persistence = SqliteRepositoryPersistence(
+                database_path,
+                owner_id=f"python-repo-node:{getattr(self, 'repo_node', 'fixture')}",
+            )
+            self._db_lock = self._persistence.lock
+            self._db = self._persistence.connection
+        self._artifact_payload_store = self._persistence.artifact_payload_store
         if not hasattr(self, "_read_local"):
             self._read_local = threading.local()
         if not hasattr(self, "_object_locks"):
@@ -1640,9 +1945,16 @@ class RepoNodeApp:
                     expires_at_ms INTEGER NOT NULL
                 )
             """)
+            schema_diagnostics = self._persistence.migration_diagnostics()
             self._db.execute(
-                "INSERT INTO repo_meta(key, value) VALUES('schema_version', '8') "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+                "INSERT INTO repo_meta(key, value) VALUES('schema_version', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (str(schema_diagnostics["databaseSchemaGeneration"]),),
+            )
+            self._db.execute(
+                "INSERT INTO repo_meta(key, value) VALUES('persistence_owner', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (self._persistence.owner_id,),
             )
             # One-time compatibility migration. New writes use only exact-name
             # packet authority plus manifest references.
@@ -1734,7 +2046,6 @@ class RepoNodeApp:
             "STORE_PACKET_BATCH", "STORE_PACKET_PULL", "STORE_MANIFEST",
             "COMMIT_PACKET_SET", "DELETE", "CATALOG_MERGE",
             "CATALOG_MERGE_PULL",
-            "RESERVE_CAPACITY", "RELEASE_CAPACITY",
         }
         repair_operations = {
             "CATALOG_REPAIR", "REPAIR_SCAN", "REPAIR_CLAIM",
@@ -1847,77 +2158,11 @@ class RepoNodeApp:
             return sum(len(payload) for _, payload in objects.values())
         return int(self._used_bytes)
 
-    def _active_reserved_bytes_locked(self) -> int:
-        assert self._db is not None
-        now_ms = self._now_ms()
-        self._db.execute("""
-            UPDATE capacity_reservations SET state='EXPIRED'
-            WHERE state='RESERVED' AND expires_at_ms<=?
-        """, (now_ms,))
-        row = self._db.execute("""
-            SELECT COALESCE(SUM(reserved_bytes), 0)
-            FROM capacity_reservations WHERE state='RESERVED'
-        """).fetchone()
-        return int(row[0] if row else 0)
-
-    def _reserve_capacity(self, reservation_id: str, operation_id: str,
-                          reserved_bytes: int, ttl_ms: int = 30_000
-                          ) -> RepoCapacityReservation:
-        if not reservation_id or not operation_id or reserved_bytes <= 0:
-            raise ValueError("capacity reservation requires ids and positive bytes")
-        with self._db_lock:
-            existing = self._db.execute("""
-                SELECT operation_id, reserved_bytes, state, expires_at_ms
-                FROM capacity_reservations WHERE reservation_id=?
-            """, (reservation_id,)).fetchone()
-            if existing is not None:
-                if (str(existing[0]), int(existing[1])) != (
-                        operation_id, int(reserved_bytes)):
-                    raise ValueError(REPO_REASON_OPERATION_CONFLICT)
-                if str(existing[2]) in {"RESERVED", "CONSUMED"}:
-                    return RepoCapacityReservation(
-                        reservation_id, operation_id, self.repo_node,
-                        int(existing[1]), str(existing[2]), int(existing[3]))
-            active_reserved = self._active_reserved_bytes_locked()
-            if self._used_bytes + active_reserved + reserved_bytes > self.capacity_bytes:
-                self._db.commit()
-                raise RuntimeError(REPO_REASON_CAPACITY_REJECTED)
-            expires_at_ms = self._now_ms() + max(1000, int(ttl_ms))
-            self._db.execute("""
-                INSERT INTO capacity_reservations
-                  (reservation_id, operation_id, reserved_bytes, state, expires_at_ms)
-                VALUES (?, ?, ?, 'RESERVED', ?)
-                ON CONFLICT(reservation_id) DO UPDATE SET
-                  state='RESERVED', expires_at_ms=excluded.expires_at_ms
-            """, (reservation_id, operation_id, int(reserved_bytes), expires_at_ms))
-            self._db.commit()
-        return RepoCapacityReservation(
-            reservation_id, operation_id, self.repo_node, int(reserved_bytes),
-            "RESERVED", expires_at_ms)
-
-    def _release_capacity(self, *, reservation_id: str = "",
-                          operation_id: str = "", state: str = "RELEASED") -> int:
-        if not reservation_id and not operation_id:
-            raise ValueError("reservationId or operationId is required")
-        with self._db_lock:
-            column = "reservation_id" if reservation_id else "operation_id"
-            value = reservation_id or operation_id
-            cursor = self._db.execute(
-                f"UPDATE capacity_reservations SET state=? "
-                f"WHERE {column}=? AND state='RESERVED'",
-                (state, value),
-            )
-            self._db.commit()
-            return int(cursor.rowcount)
-
     def _capability(self) -> StorageCapability:
         used = self._sqlite_used_bytes()
-        with self._db_lock:
-            reserved = self._active_reserved_bytes_locked()
-            self._db.commit()
         return StorageCapability(
             repo_node=self.capability.repo_node,
-            free_bytes=max(0, self.capacity_bytes - used - reserved),
+            free_bytes=max(0, self.capacity_bytes - used),
             used_bytes=used,
             recent_load=self.capability.recent_load,
             availability_score=self.capability.availability_score,
@@ -1925,6 +2170,36 @@ class RepoNodeApp:
             storage_classes=self.capability.storage_classes,
             repo_mode=self.capability.repo_mode,
             accepts_backup_replica=self.capability.accepts_backup_replica,
+            artifact_format_versions=self.capability.artifact_format_versions,
+            artifact_digest_algorithms=self.capability.artifact_digest_algorithms,
+            artifact_signature_algorithms=(
+                self.capability.artifact_signature_algorithms
+            ),
+            artifact_max_bytes=min(
+                self.capability.artifact_max_bytes, self.capacity_bytes
+            ),
+            artifact_max_chunk_bytes=(
+                self.capability.artifact_max_chunk_bytes
+            ),
+            artifact_max_root_encoded_bytes=(
+                self.capability.artifact_max_root_encoded_bytes
+            ),
+            artifact_max_page_encoded_bytes=(
+                self.capability.artifact_max_page_encoded_bytes
+            ),
+            artifact_max_page_entries=(
+                self.capability.artifact_max_page_entries
+            ),
+            artifact_max_manifest_depth=(
+                self.capability.artifact_max_manifest_depth
+            ),
+            artifact_supports_resume=(
+                self.capability.artifact_supports_resume
+            ),
+            artifact_supports_replica_receipts=(
+                self.capability.artifact_supports_replica_receipts
+            ),
+            artifact_policy_epoch=self.capability.artifact_policy_epoch,
         )
 
     def _load_manifest(self, object_name: str) -> RepoObjectManifest:
@@ -2198,10 +2473,6 @@ class RepoNodeApp:
             SET state='COMMITTED', updated_at_ms=?, error=''
             WHERE operation_id=?
         """, (receipt.completed_at_ms, intent.operation_id))
-        self._db.execute("""
-            UPDATE capacity_reservations SET state='CONSUMED'
-            WHERE operation_id=? AND state='RESERVED'
-        """, (intent.operation_id,))
         self._cleanup_operation_status_locked()
         return receipt
 
@@ -2255,10 +2526,6 @@ class RepoNodeApp:
             json.dumps(list(intent.selected_replicas), sort_keys=True),
             error, now_ms, now_ms,
         ))
-        self._db.execute("""
-            UPDATE capacity_reservations SET state='RELEASED'
-            WHERE operation_id=? AND state='RESERVED'
-        """, (intent.operation_id,))
         self._cleanup_operation_status_locked()
         self._db.commit()
 
@@ -4180,6 +4447,10 @@ class RepoNodeApp:
         return self._data_plane
 
     def _stop_producers(self) -> None:
+        artifact_producers = getattr(self, "_artifact_file_producers", {})
+        for producer in tuple(artifact_producers.values()):
+            producer.stop()
+        artifact_producers.clear()
         data_plane = getattr(self, "_data_plane", None)
         if data_plane is not None:
             data_plane.stop()
@@ -4320,6 +4591,7 @@ class RepoNodeApp:
         capability = self._capability()
         cache_status = self._cache_status()
         runtime = self._runtime_snapshot()
+        migration = self._persistence.migration_diagnostics()
         capability_fields: dict[str, object] = {
             "repoNode": capability.repo_node,
             "freeBytes": capability.free_bytes,
@@ -4339,6 +4611,8 @@ class RepoNodeApp:
             "exactDataValidationPolicy": getattr(
                 self, "exact_data_validation_policy",
                 "wire-name-and-request-digest"),
+            "artifactCapability": _artifact_capability_payload(capability),
+            "artifactMigration": migration,
             **runtime,
         }
         capability_hint = ProviderCapabilityHint(
@@ -4368,7 +4642,7 @@ class RepoNodeApp:
                 },
                 confidence=capability.availability_score,
             ),
-            service_payload_schema="ndnsf-repo-capability-v1",
+            service_payload_schema="ndnsf-repo-capability-v2",
             service_payload={
                 **capability_fields,
                 "storageClasses": list(capability.storage_classes),
@@ -4453,6 +4727,7 @@ class RepoNodeApp:
                 capability = self._capability()
                 cache_status = self._cache_status()
                 runtime = self._runtime_snapshot()
+                migration = self._persistence.migration_diagnostics()
                 return ServiceResponse(True, json.dumps({
                     "repoNode": capability.repo_node,
                     "freeBytes": capability.free_bytes,
@@ -4471,6 +4746,10 @@ class RepoNodeApp:
                     "exactDataValidationPolicy": getattr(
                         self, "exact_data_validation_policy",
                         "wire-name-and-request-digest"),
+                    "artifactCapability": _artifact_capability_payload(
+                        capability
+                    ),
+                    "artifactMigration": migration,
                     **runtime,
                     "providerCapabilityHint": to_plain(ProviderCapabilityHint(
                         provider_name=capability.repo_node,
@@ -4496,7 +4775,7 @@ class RepoNodeApp:
                             },
                             confidence=capability.availability_score,
                         ),
-                        service_payload_schema="ndnsf-repo-capability-v1",
+                        service_payload_schema="ndnsf-repo-capability-v2",
                         service_payload={
                             "repoNode": capability.repo_node,
                             "freeBytes": capability.free_bytes,
@@ -4507,6 +4786,10 @@ class RepoNodeApp:
                             "repoMode": capability.repo_mode,
                             "acceptsBackupReplica": capability.accepts_backup_replica,
                             "storageClasses": list(capability.storage_classes),
+                            "artifactCapability": (
+                                _artifact_capability_payload(capability)
+                            ),
+                            "artifactMigration": migration,
                         },
                     )),
                 }, sort_keys=True).encode())
@@ -4515,23 +4798,6 @@ class RepoNodeApp:
                     True,
                     json.dumps(self._cache_status(), sort_keys=True).encode(),
                 )
-            if operation == "RESERVE_CAPACITY":
-                reservation = self._reserve_capacity(
-                    str(request["reservationId"]),
-                    str(request["operationId"]),
-                    int(request["reservedBytes"]),
-                    int(request.get("ttlMs", 30_000)),
-                )
-                return ServiceResponse(
-                    True, json.dumps(reservation.to_dict(), sort_keys=True).encode())
-            if operation == "RELEASE_CAPACITY":
-                released = self._release_capacity(
-                    reservation_id=str(request.get("reservationId", "")),
-                    operation_id=str(request.get("operationId", "")),
-                )
-                return ServiceResponse(True, json.dumps({
-                    "status": "released", "releasedCount": released,
-                }, sort_keys=True).encode())
             if operation == "FINALIZE_WRITE":
                 manifest = RepoObjectManifest.from_dict(request["manifest"])
                 intent = self._write_intent_from_request(request, manifest)
@@ -5169,6 +5435,15 @@ class RepoNodeApp:
         self._catalog_thread.start()
 
     def run(self) -> int:
+        if (
+            self._persistence.artifact_writes_enabled
+            and "artifact-manifest-v2"
+            in self.capability.artifact_format_versions
+        ):
+            from py_repoclient.network_artifact_backend import (
+                install_artifact_collaboration_service,
+            )
+            install_artifact_collaboration_service(self)
         for service_name in repo_versioned_services(self.service_name):
             self.provider.add_context_handler(
                 service_name,
@@ -5246,7 +5521,6 @@ class NetworkDistributedRepoClient:
         placement_cache_ttl_ms: int = 5000,
         replica_cooldown_ms: int = 3000,
         hedged_read_delay_ms: int = 0,
-        enable_capacity_reservations: bool = True,
         control_mode: str = "targeted",
         enable_targeted_fallback: bool = True,
     ) -> None:
@@ -5261,7 +5535,6 @@ class NetworkDistributedRepoClient:
         self.placement_cache_ttl_ms = max(0, int(placement_cache_ttl_ms))
         self.replica_cooldown_ms = max(0, int(replica_cooldown_ms))
         self.hedged_read_delay_ms = max(0, int(hedged_read_delay_ms))
-        self.enable_capacity_reservations = bool(enable_capacity_reservations)
         normalized_control_mode = str(control_mode).strip().lower()
         if normalized_control_mode not in {"normal", "targeted"}:
             raise ValueError("repo control_mode must be 'normal' or 'targeted'")
@@ -5384,24 +5657,41 @@ class NetworkDistributedRepoClient:
             self._control_metrics[last_key] = elapsed_ms
         operation_metrics = getattr(
             getattr(self, "_client_local", None),
-            "operation_phase_metrics", None)
+            "operation_metrics", None)
         if operation_metrics is not None:
-            operation_metrics[f"{phase}Ms"] = (
-                float(operation_metrics.get(f"{phase}Ms", 0.0)) + elapsed_ms)
+            operation_metrics.increment("control_operations")
+            canonical_phase = {
+                # The legacy method name now describes execution-time creation
+                # of a private transfer session, never an ACK-side reservation.
+                "reserve": "sessionStart",
+                "store": "replication",
+            }.get(phase, phase)
+            if canonical_phase in REPO_METRIC_PHASES:
+                operation_metrics.record_phase(canonical_phase, elapsed_ms)
 
-    def begin_operation_metrics(self) -> None:
+    def begin_operation_metrics(self, operation_id: Optional[str] = None) -> str:
         if not hasattr(self, "_client_local"):
             self._client_local = threading.local()
-        self._client_local.operation_phase_metrics = {}
+        stable_id = operation_id or uuid.uuid4().hex
+        self._client_local.operation_metrics = RepoOperationMetrics(
+            operation_id=stable_id,
+            started_at_ms=int(time.time() * 1000),
+        )
+        return stable_id
 
-    def end_operation_metrics(self) -> dict[str, float]:
+    def operation_metrics(self) -> Optional[RepoOperationMetrics]:
         if not hasattr(self, "_client_local"):
+            return None
+        return getattr(self._client_local, "operation_metrics", None)
+
+    def end_operation_metrics(self) -> dict[str, object]:
+        metrics = self.operation_metrics()
+        if metrics is None:
             return {}
-        metrics = dict(getattr(
-            self._client_local, "operation_phase_metrics", {}))
-        if hasattr(self._client_local, "operation_phase_metrics"):
-            del self._client_local.operation_phase_metrics
-        return metrics
+        metrics.completed_at_ms = int(time.time() * 1000)
+        result = metrics.to_dict()
+        del self._client_local.operation_metrics
+        return result
 
     def control_metrics(self) -> dict[str, int | float | str]:
         self._ensure_control_metrics()
@@ -5618,29 +5908,6 @@ class NetworkDistributedRepoClient:
         if not isinstance(decoded, dict):
             raise ValueError("repo cache status response must be a JSON object")
         return decoded
-
-    def reserve_capacity(self, repo_node: str, *, operation_id: str,
-                         reserved_bytes: int, ttl_ms: int = 30_000) -> dict:
-        reservation_id = hashlib.sha256(
-            f"{operation_id}|{repo_node}".encode()).hexdigest()
-        response = self._request_specific_repo(
-            repo_node=repo_node,
-            payload=encode_repo_request(
-                "RESERVE_CAPACITY", reservationId=reservation_id,
-                operationId=operation_id, reservedBytes=reserved_bytes,
-                ttlMs=ttl_ms),
-        )
-        return json.loads(response.payload.decode())
-
-    def release_capacity(self, repo_node: str, *, reservation_id: str = "",
-                         operation_id: str = "") -> dict:
-        response = self._request_specific_repo(
-            repo_node=repo_node,
-            payload=encode_repo_request(
-                "RELEASE_CAPACITY", reservationId=reservation_id,
-                operationId=operation_id),
-        )
-        return json.loads(response.payload.decode())
 
     def catalog_bucket_digest(self, repo_node: str,
                               bucket_count: int = 64) -> dict:
@@ -6251,81 +6518,6 @@ class NetworkDistributedRepoClient:
             return response
         raise RuntimeError(failures.get(repo_node, "repo request failed"))
 
-    def _reserve_replicas(
-        self,
-        repo_nodes: Iterable[str],
-        operation_id: str,
-        reserved_bytes: int,
-        required_reservations: int | None = None,
-    ) -> dict[str, RepoCapacityReservation]:
-        if not getattr(self, "enable_capacity_reservations", False):
-            return {}
-        started = time.monotonic()
-        ordered_repo_nodes = list(repo_nodes)
-        required = (
-            len(ordered_repo_nodes)
-            if required_reservations is None else int(required_reservations))
-        if required < 1 or required > len(ordered_repo_nodes):
-            raise ValueError(
-                "required Repo reservations must be within selected replicas")
-        reservations: dict[str, RepoCapacityReservation] = {}
-        try:
-            payload_by_repo = {}
-            for repo_node in ordered_repo_nodes:
-                reservation_id = hashlib.sha256(
-                    f"{operation_id}|{repo_node}".encode()).hexdigest()
-                payload_by_repo[repo_node] = encode_repo_request(
-                        "RESERVE_CAPACITY",
-                        reservationId=reservation_id,
-                        operationId=operation_id,
-                        reservedBytes=max(1, int(reserved_bytes)),
-                        ttlMs=max(30_000, self.timeout_ms * 2),
-                    )
-            responses, failures = self._request_specific_repos_parallel(
-                payload_by_repo)
-            for repo_node, response in responses.items():
-                try:
-                    obj = json.loads(response.payload.decode())
-                    reservations[repo_node] = RepoCapacityReservation(
-                        reservation_id=str(obj["reservationId"]),
-                        operation_id=str(obj["operationId"]),
-                        repo_node=str(obj["repoNode"]),
-                        reserved_bytes=int(obj["reservedBytes"]),
-                        state=str(obj["state"]),
-                        expires_at_ms=int(obj["expiresAtMs"]),
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    failures[repo_node] = str(exc)
-            if len(reservations) < required:
-                raise RuntimeError(
-                    "repo capacity reservation failed: "
-                    f"confirmed={len(reservations)} required={required} "
-                    f"failures={failures}")
-            return reservations
-        except Exception:
-            self._release_reservations_parallel(reservations)
-            raise
-        finally:
-            self._record_control_phase(
-                "reserve", (time.monotonic() - started) * 1000.0)
-
-    def _release_reservations_parallel(
-        self,
-        reservations: dict[str, RepoCapacityReservation],
-    ) -> dict[str, str]:
-        if not reservations:
-            return {}
-        payload_by_repo = {
-            repo_node: encode_repo_request(
-                "RELEASE_CAPACITY",
-                reservationId=reservation.reservation_id,
-                operationId=reservation.operation_id,
-            )
-            for repo_node, reservation in reservations.items()
-        }
-        _, failures = self._request_specific_repos_parallel(payload_by_repo)
-        return failures
-
     def _store_once(
         self,
         *,
@@ -6375,17 +6567,7 @@ class NetworkDistributedRepoClient:
             if manifest_override is not None and manifest_override.operation_id
             else str(uuid.uuid4())
         )
-        reservations = self._reserve_replicas(
-            selected_repo_nodes, operation_id, len(payload), required_acks)
-        store_repo_nodes = (
-            list(reservations)
-            if getattr(self, "enable_capacity_reservations", False)
-            else list(selected_repo_nodes))
-        if len(store_repo_nodes) < required_acks:
-            self._release_reservations_parallel(reservations)
-            raise RuntimeError(
-                f"repo store has {len(store_repo_nodes)} reserved replicas, "
-                f"need {required_acks} acknowledgements")
+        store_repo_nodes = list(selected_repo_nodes)
         manifest = manifest_override or RepoObjectManifest(
             object_name=object_name,
             object_type=object_type,
@@ -6462,7 +6644,6 @@ class NetworkDistributedRepoClient:
                     failures[repo_node] = str(exc)
             validated = validate_write_receipts(intent, receipts, failures=failures)
         except Exception:
-            self._release_reservations_parallel(reservations)
             raise
         finally:
             self._record_control_phase(
@@ -6666,7 +6847,6 @@ class NetworkDistributedRepoClient:
                         f"repo store selected {len(selected)} replicas, "
                         f"need {replication_factor}")
                 selected = selected[:replication_factor]
-                self._reserve_replicas(selected, operation_id, len(payload))
                 use_pull_store = len(payload) >= self.pull_store_threshold_bytes
                 data_names = tuple(
                     self._upload_data_name(repo_node, object_name)
@@ -6919,7 +7099,6 @@ class NetworkDistributedRepoClient:
                 f"need {replication_factor}")
         selected = selected[:replication_factor]
         operation_id = str(uuid.uuid4())
-        self._reserve_replicas(selected, operation_id, object_size)
         manifest = RepoObjectManifest(
             object_name=object_name,
             object_type=object_type,
@@ -7634,6 +7813,17 @@ class DistributedRepo:
     def publisher_namespace(self) -> str:
         return self._client.publisher_namespace
 
+    @property
+    def exact_packets(self) -> "ExactPacketRepositoryApi":
+        """Explicit exact-packet-v1 compatibility surface.
+
+        The legacy direct methods remain source-compatible, but new code can
+        name the preserved wire/trust format without confusing it with the
+        artifact-manifest-v2 file API.
+        """
+
+        return ExactPacketRepositoryApi(self)
+
     def object_name(self, suffix: str) -> str:
         return self._client.publisher_object_name(suffix)
 
@@ -7654,6 +7844,7 @@ class DistributedRepo:
         ack_timeout_ms: int = 500,
         timeout_ms: int = 10000,
         verbose: bool = False,
+        bootstrap_token: str = "",
     ) -> "DistributedRepo":
         from ndnsf_distributed_inference.app import APPDeployment
         from ndnsf_distributed_inference.policy import load_config
@@ -7672,6 +7863,7 @@ class DistributedRepo:
             trust_schema=deployment.trust_schema,
             permission_wait_ms=6000,
             adaptive_admission=False,
+            bootstrap_token=bootstrap_token,
         )
         return cls(NetworkDistributedRepoClient(
             user=service_user,
@@ -7760,6 +7952,184 @@ class DistributedRepo:
         )
         self._known_manifests[manifest.object_name] = manifest
         return manifest
+
+    def put_file(
+        self,
+        object_name: str,
+        path: str | Path,
+        *,
+        chunk_size: int = 16 * 1024 * 1024,
+        expected_sha256: str = "",
+        expected_size: int | None = None,
+        object_type: str = "file",
+        replication_factor: int = 1,
+        replica_nodes: Iterable[str] = (),
+        policy_epoch: str = "",
+        metadata: Optional[dict] = None,
+    ) -> RepoObjectManifest:
+        """Publish one file through bounded Repo objects plus a root manifest.
+
+        ``put`` remains suitable for small objects. This method bounds publisher
+        memory independently of file size by passing at most one chunk to
+        ``put`` at a time. The returned manifest describes the small root
+        manifest; its metadata binds the complete file digest and size.
+        """
+
+        source = Path(path)
+        if not source.is_file():
+            raise ValueError(f"repo file source is not a regular file: {source}")
+        if chunk_size < 1024 * 1024 or chunk_size > 64 * 1024 * 1024:
+            raise ValueError("repo file chunk_size must be between 1 MiB and 64 MiB")
+        stat_before = source.stat()
+        source_size = int(stat_before.st_size)
+        if expected_size is not None and source_size != int(expected_size):
+            raise ValueError("repo file size differs from expected_size")
+        expected_digest = str(expected_sha256).lower()
+        if expected_digest.startswith("sha256:"):
+            expected_digest = expected_digest[7:]
+        if expected_digest and (
+                len(expected_digest) != 64
+                or any(character not in "0123456789abcdef"
+                       for character in expected_digest)):
+            raise ValueError("repo file expected_sha256 is invalid")
+        if not expected_digest:
+            hasher = hashlib.sha256()
+            with source.open("rb") as stream:
+                while True:
+                    block = stream.read(chunk_size)
+                    if not block:
+                        break
+                    hasher.update(block)
+            expected_digest = hasher.hexdigest()
+
+        replicas = tuple(replica_nodes)
+        chunk_prefix = (
+            f"{str(object_name).rstrip('/')}/chunks/{expected_digest}")
+        chunks: list[dict[str, object]] = []
+        observed = hashlib.sha256()
+        observed_size = 0
+        with source.open("rb") as stream:
+            index = 0
+            while True:
+                payload = stream.read(chunk_size)
+                if not payload:
+                    break
+                digest = hashlib.sha256(payload).hexdigest()
+                chunk_manifest = self.put(
+                    f"{chunk_prefix}/{index:08d}",
+                    payload,
+                    object_type="file-chunk",
+                    replication_factor=replication_factor,
+                    replica_nodes=replicas,
+                    policy_epoch=policy_epoch,
+                    metadata={
+                        "bundleObjectName": str(object_name),
+                        "fileSha256": expected_digest,
+                        "chunkIndex": index,
+                        "chunkSha256": digest,
+                    },
+                )
+                if (chunk_manifest.sha256 != digest
+                        or int(chunk_manifest.size) != len(payload)):
+                    raise RuntimeError("repo chunk receipt does not match published bytes")
+                chunks.append({
+                    "index": index,
+                    "objectName": chunk_manifest.object_name,
+                    "sha256": digest,
+                    "bytes": len(payload),
+                })
+                observed.update(payload)
+                observed_size += len(payload)
+                index += 1
+        stat_after = source.stat()
+        if (stat_before.st_size != stat_after.st_size
+                or stat_before.st_mtime_ns != stat_after.st_mtime_ns
+                or observed_size != source_size
+                or observed.hexdigest() != expected_digest):
+            raise RuntimeError("repo file changed or failed digest verification during publish")
+
+        bundle = {
+            "schemaVersion": "ndnsf-distributed-repo-file-bundle-v1",
+            "objectName": str(object_name),
+            "objectType": str(object_type),
+            "fileSha256": expected_digest,
+            "fileBytes": source_size,
+            "chunkSize": int(chunk_size),
+            "chunkCount": len(chunks),
+            "chunks": chunks,
+            "metadata": dict(metadata or {}),
+        }
+        root_metadata = dict(metadata or {})
+        root_metadata.update({
+            "bundleSchema": bundle["schemaVersion"],
+            "fileSha256": expected_digest,
+            "fileBytes": source_size,
+            "chunkCount": len(chunks),
+        })
+        return self.put(
+            object_name,
+            json.dumps(
+                bundle, sort_keys=True, separators=(",", ":")).encode(),
+            object_type="file-bundle-manifest",
+            replication_factor=replication_factor,
+            replica_nodes=replicas,
+            policy_epoch=policy_epoch,
+            metadata=root_metadata,
+        )
+
+    def get_file(
+        self,
+        object_name: str,
+        destination: str | Path,
+        *,
+        manifest: RepoObjectManifest | None = None,
+        expected_sha256: str = "",
+        expected_size: int | None = None,
+    ) -> Path:
+        """Fetch and verify a bounded file bundle into a new local file."""
+
+        target = Path(destination)
+        if target.exists():
+            raise FileExistsError(target)
+        bundle = json.loads(self.get(object_name, manifest).decode("utf-8"))
+        if bundle.get("schemaVersion") != "ndnsf-distributed-repo-file-bundle-v1":
+            raise ValueError("unsupported repo file bundle schema")
+        chunks = list(bundle.get("chunks", []))
+        if int(bundle.get("chunkCount", -1)) != len(chunks):
+            raise ValueError("repo file bundle chunk count mismatch")
+        file_digest = str(bundle.get("fileSha256", "")).lower()
+        file_size = int(bundle.get("fileBytes", -1))
+        required_digest = str(expected_sha256).lower()
+        if required_digest.startswith("sha256:"):
+            required_digest = required_digest[7:]
+        if required_digest and required_digest != file_digest:
+            raise ValueError("repo file bundle digest differs from expected_sha256")
+        if expected_size is not None and int(expected_size) != file_size:
+            raise ValueError("repo file bundle size differs from expected_size")
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        observed = hashlib.sha256()
+        observed_size = 0
+        try:
+            with target.open("xb") as stream:
+                for expected_index, chunk in enumerate(chunks):
+                    if int(chunk.get("index", -1)) != expected_index:
+                        raise ValueError("repo file bundle chunk order is invalid")
+                    payload = self.get(str(chunk["objectName"]))
+                    chunk_digest = hashlib.sha256(payload).hexdigest()
+                    if (chunk_digest != str(chunk.get("sha256", ""))
+                            or len(payload) != int(chunk.get("bytes", -1))):
+                        raise RuntimeError("repo file chunk failed integrity verification")
+                    stream.write(payload)
+                    observed.update(payload)
+                    observed_size += len(payload)
+        except BaseException:
+            target.unlink(missing_ok=True)
+            raise
+        if observed_size != file_size or observed.hexdigest() != file_digest:
+            target.unlink(missing_ok=True)
+            raise RuntimeError("repo reconstructed file failed integrity verification")
+        return target
 
     def get(self, object_name: str, manifest: RepoObjectManifest | None = None) -> bytes:
         canonical_name = (
@@ -7914,6 +8284,30 @@ class DistributedRepo:
     fetch = get
     inventory = list
     delete = remove
+
+
+class ExactPacketRepositoryApi:
+    """Compatibility backend that preserves application-signed Data wires."""
+
+    format_version = "exact-packet-v1"
+
+    def __init__(self, repo: DistributedRepo):
+        self._repo = repo
+
+    def put_signed_packets(self, object_name: str, packets: list[DataPacket],
+                           **kwargs) -> RepoObjectManifest:
+        return self._repo.put_signed_packets(object_name, packets, **kwargs)
+
+    def get_signed_packets(
+        self,
+        object_name: str,
+        manifest: RepoObjectManifest | None = None,
+        *,
+        repo_node: str = "",
+    ) -> list[DataPacket]:
+        return self._repo.get_signed_packets(
+            object_name, manifest, repo_node=repo_node
+        )
 
 
 def _score(capability: StorageCapability) -> tuple[float, str]:

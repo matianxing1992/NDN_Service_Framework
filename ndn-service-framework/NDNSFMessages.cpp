@@ -1,4 +1,5 @@
 #include "NDNSFMessages.hpp"
+#include "HybridMessageCrypto.hpp"
 
 #include <algorithm>
 #include <iomanip>
@@ -861,6 +862,236 @@ bool RequestAckMessage::WireDecode(const ndn::Block& block) {
 
 ServiceSelectionMessage::ServiceSelectionMessage() {}
 
+ndn::Buffer
+encodeOpaqueAssignmentSet(const std::vector<ndn::Buffer>& assignments)
+{
+    if (assignments.empty()) {
+        return {};
+    }
+    if (assignments.size() == 1) {
+        return assignments.front();
+    }
+    if (assignments.size() > 256) {
+        throw std::length_error("opaque assignment set exceeds item bound");
+    }
+    ndn::Block block(tlv::OpaqueAssignmentSetType);
+    size_t total = 0;
+    for (const auto& assignment : assignments) {
+        if (assignment.size() > 1024 * 1024 ||
+            total > 4 * 1024 * 1024 - assignment.size()) {
+            throw std::length_error("opaque assignment set exceeds byte bound");
+        }
+        total += assignment.size();
+        block.push_back(ndn::makeBinaryBlock(
+            tlv::OpaqueAssignmentItemType,
+            {assignment.data(), assignment.size()}));
+    }
+    block.encode();
+    return ndn::Buffer(block.data(), block.size());
+}
+
+std::vector<ndn::Buffer>
+decodeOpaqueAssignmentSet(const ndn::Buffer& payload)
+{
+    if (payload.empty()) {
+        return {};
+    }
+    try {
+        ndn::Block block(payload);
+        if (block.type() != tlv::OpaqueAssignmentSetType) {
+            return {payload};
+        }
+        block.parse();
+        std::vector<ndn::Buffer> assignments;
+        for (const auto& element : block.elements()) {
+            if (element.type() != tlv::OpaqueAssignmentItemType ||
+                assignments.size() >= 256 ||
+                element.value_size() > 1024 * 1024) {
+                throw std::runtime_error("invalid opaque assignment set");
+            }
+            assignments.emplace_back(element.value_begin(), element.value_end());
+        }
+        if (assignments.size() < 2) {
+            throw std::runtime_error("non-canonical opaque assignment set");
+        }
+        return assignments;
+    }
+    catch (const ndn::tlv::Error&) {
+        return {payload};
+    }
+}
+
+ndn::Buffer
+encodeCollaborationAssignmentEnvelope(
+    const CollaborationAssignmentEnvelope& assignment)
+{
+    if (assignment.role.empty() || assignment.role.size() > 1024 ||
+        assignment.assignedArtifact.toUri().size() > 8192 ||
+        assignment.opaquePayload.size() > 1024 * 1024) {
+        throw std::invalid_argument(
+            "collaboration assignment envelope exceeds bounds");
+    }
+    ndn::Block block(tlv::CollaborationAssignmentEnvelopeType);
+    block.push_back(ndn::makeStringBlock(
+        tlv::CollaborationRoleType, assignment.role));
+    if (!assignment.assignedArtifact.empty()) {
+        block.push_back(ndn::makeStringBlock(
+            tlv::CollaborationArtifactType,
+            assignment.assignedArtifact.toUri()));
+    }
+    block.push_back(ndn::makeNonNegativeIntegerBlock(
+        tlv::CollaborationProvisioningType,
+        assignment.requiresProvisioning ? 1 : 0));
+    block.push_back(ndn::makeNonNegativeIntegerBlock(
+        tlv::CollaborationProvisioningTimeoutType,
+        assignment.provisioningTimeoutMs));
+    if (!assignment.scopeKeys.empty()) {
+        ndn::Block scopeKeys(tlv::CollaborationScopeKeysType);
+        for (const auto& [scope, key] : assignment.scopeKeys) {
+            if (scope.empty() || scope.size() > 1024 ||
+                key.size() != HybridMessageCrypto::MESSAGE_KEY_SIZE) {
+                throw std::invalid_argument(
+                    "invalid collaboration assignment scope key");
+            }
+            ndn::Block entry(tlv::CollaborationScopeKeyType);
+            entry.push_back(ndn::makeStringBlock(
+                tlv::CollaborationScopeKeyNameType, scope));
+            entry.push_back(ndn::makeBinaryBlock(
+                tlv::CollaborationScopeKeyValueType,
+                {key.data(), key.size()}));
+            entry.encode();
+            scopeKeys.push_back(entry);
+        }
+        scopeKeys.encode();
+        block.push_back(scopeKeys);
+    }
+    block.push_back(ndn::makeBinaryBlock(
+        tlv::CollaborationOpaquePayloadType,
+        {assignment.opaquePayload.data(), assignment.opaquePayload.size()}));
+    block.encode();
+    return ndn::Buffer(block.data(), block.size());
+}
+
+bool
+decodeCollaborationAssignmentEnvelope(
+    const ndn::Buffer& payload,
+    CollaborationAssignmentEnvelope& assignment)
+{
+    if (payload.empty()) {
+        return false;
+    }
+    const auto wire = ndn::span<const uint8_t>(
+        payload.data(), payload.size());
+    auto [isBlock, candidate] = ndn::Block::fromBuffer(wire);
+    if (!isBlock ||
+        candidate.type() != tlv::CollaborationAssignmentEnvelopeType) {
+        return false;
+    }
+    try {
+        ndn::Block block = std::move(candidate);
+        block.parse();
+        CollaborationAssignmentEnvelope decoded;
+        bool hasRole = false;
+        bool hasOpaquePayload = false;
+        for (const auto& element : block.elements()) {
+            switch (element.type()) {
+            case tlv::CollaborationRoleType:
+                if (hasRole) {
+                    throw std::runtime_error(
+                        "duplicate collaboration assignment role");
+                }
+                decoded.role = ndn::readString(element);
+                hasRole = true;
+                break;
+            case tlv::CollaborationArtifactType:
+                if (!decoded.assignedArtifact.empty()) {
+                    throw std::runtime_error(
+                        "duplicate collaboration assignment artifact");
+                }
+                decoded.assignedArtifact = ndn::Name(ndn::readString(element));
+                break;
+            case tlv::CollaborationProvisioningType:
+                decoded.requiresProvisioning =
+                    ndn::readNonNegativeInteger(element) != 0;
+                break;
+            case tlv::CollaborationProvisioningTimeoutType:
+                decoded.provisioningTimeoutMs =
+                    ndn::readNonNegativeInteger(element);
+                break;
+            case tlv::CollaborationScopeKeysType:
+                if (element.value_size() > 64 * 1024) {
+                    throw std::runtime_error(
+                        "collaboration assignment scope-key set exceeds bounds");
+                }
+                {
+                    auto scopeBlock = element;
+                    scopeBlock.parse();
+                    for (const auto& scopeElement : scopeBlock.elements()) {
+                        if (scopeElement.type() != tlv::CollaborationScopeKeyType) {
+                            throw std::runtime_error(
+                                "unknown collaboration assignment scope-key field");
+                        }
+                        auto entry = scopeElement;
+                        entry.parse();
+                        std::string scope;
+                        ndn::Buffer key;
+                        for (const auto& field : entry.elements()) {
+                            if (field.type() == tlv::CollaborationScopeKeyNameType) {
+                                if (!scope.empty()) {
+                                    throw std::runtime_error(
+                                        "duplicate collaboration assignment scope-key name");
+                                }
+                                scope = ndn::readString(field);
+                            }
+                            else if (field.type() == tlv::CollaborationScopeKeyValueType) {
+                                if (!key.empty()) {
+                                    throw std::runtime_error(
+                                        "duplicate collaboration assignment scope-key value");
+                                }
+                                key = ndn::Buffer(field.value_begin(), field.value_end());
+                            }
+                            else {
+                                throw std::runtime_error(
+                                    "unknown collaboration assignment scope-key field");
+                            }
+                        }
+                        if (scope.empty() || scope.size() > 1024 ||
+                            key.size() != HybridMessageCrypto::MESSAGE_KEY_SIZE ||
+                            decoded.scopeKeys.count(scope) != 0) {
+                            throw std::runtime_error(
+                                "invalid collaboration assignment scope key");
+                        }
+                        decoded.scopeKeys.emplace(std::move(scope), std::move(key));
+                    }
+                }
+                break;
+            case tlv::CollaborationOpaquePayloadType:
+                if (hasOpaquePayload || element.value_size() > 1024 * 1024) {
+                    throw std::runtime_error(
+                        "invalid collaboration opaque assignment payload");
+                }
+                decoded.opaquePayload = ndn::Buffer(
+                    element.value_begin(), element.value_end());
+                hasOpaquePayload = true;
+                break;
+            default:
+                throw std::runtime_error(
+                    "unknown collaboration assignment envelope field");
+            }
+        }
+        if (!hasRole || decoded.role.empty() || !hasOpaquePayload) {
+            throw std::runtime_error(
+                "incomplete collaboration assignment envelope");
+        }
+        assignment = std::move(decoded);
+        return true;
+    }
+    catch (const ndn::tlv::Error&) {
+        throw std::runtime_error(
+            "invalid collaboration assignment envelope wire");
+    }
+}
+
 ServiceSelectionMessage::ServiceSelectionMessage(const ServiceSelectionMessage& other)
 {
     *this = other;
@@ -874,6 +1105,7 @@ ServiceSelectionMessage::operator=(const ServiceSelectionMessage& other)
         providerToken_ = other.providerToken_;
         assignmentPayload_ = other.assignmentPayload_;
         policyEpoch_ = other.policyEpoch_;
+        attempt_ = other.attempt_;
         providerEntries_ = other.providerEntries_;
         deploymentPlan_ = other.deploymentPlan_;
         selectionDecision_ = other.selectionDecision_;
@@ -898,6 +1130,12 @@ void ServiceSelectionMessage::setAssignmentPayload(const ndn::Buffer& payload) {
 
 void ServiceSelectionMessage::setPolicyEpoch(size_t policyEpoch) {
     policyEpoch_ = policyEpoch;
+}
+
+void ServiceSelectionMessage::setAttempt(uint64_t attempt) {
+    if (attempt == 0) throw std::invalid_argument("Selection attempt must be positive");
+    attempt_ = attempt;
+    m_wire.reset();
 }
 
 void ServiceSelectionMessage::addProviderEntry(const SelectionProviderEntry& entry) {
@@ -957,6 +1195,10 @@ size_t ServiceSelectionMessage::getPolicyEpoch() const {
     return policyEpoch_;
 }
 
+uint64_t ServiceSelectionMessage::getAttempt() const {
+    return attempt_;
+}
+
 const std::vector<SelectionProviderEntry>& ServiceSelectionMessage::getProviderEntries() const {
     return providerEntries_;
 }
@@ -966,6 +1208,7 @@ void ServiceSelectionMessage::Clear() {
     providerToken_.clear();
     assignmentPayload_.clear();
     policyEpoch_ = 0;
+    attempt_ = 1;
     providerEntries_.clear();
     deploymentPlan_.reset();
     selectionDecision_.reset();
@@ -993,6 +1236,7 @@ ndn::Block ServiceSelectionMessage::WireEncode() const {
     if (policyEpoch_ > 0) {
         block.push_back(ndn::makeNonNegativeIntegerBlock(tlv::VersionType, policyEpoch_));
     }
+    block.push_back(ndn::makeNonNegativeIntegerBlock(tlv::AttemptType, attempt_));
     for (const auto& entry : providerEntries_) {
         ndn::Block entryBlock(tlv::SelectionProviderEntryType);
         entryBlock.push_back(ndn::makeStringBlock(tlv::ProviderNameType,
@@ -1038,6 +1282,10 @@ bool ServiceSelectionMessage::WireDecode(const ndn::Block& block) {
         }
         else if (b.type() == tlv::VersionType) {
             policyEpoch_ = ndn::readNonNegativeInteger(b);
+        }
+        else if (b.type() == tlv::AttemptType) {
+            attempt_ = ndn::readNonNegativeInteger(b);
+            if (attempt_ == 0) return false;
         }
         else if (b.type() == tlv::SelectionProviderEntryType) {
             SelectionProviderEntry entry;

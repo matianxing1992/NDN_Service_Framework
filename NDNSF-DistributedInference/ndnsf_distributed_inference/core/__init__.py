@@ -1,6 +1,9 @@
 """Minimal, optional-dependency-free NDNSF-DI Core public surface."""
 
 from .contracts import (
+    DIRequestEnvelopeV2, DIRoleAssignmentV2, DISelectionAssignmentV2,
+    DISelectionAcceptanceV2, ExactPrefixKvKeyV1, StateReuseBindingV2,
+    ShardResidencyEvidenceV2,
     AssignmentContext, AuthenticatedProviderReceipt, CanonicalContract, CoreAssignment,
     CoreExecutionEvidence, CoreExecutionPlan, CorePlanDependency,
     DeploymentLifecycleRecord, OrphanCleanupRecord,
@@ -22,10 +25,16 @@ from .eligibility import (
     eligible_candidates, evaluate_candidate, normalize_candidate,
 )
 from .execution import (
-    CoreExecutor, DependencyDrivenExecution, ExecutionAdapter, ExecutionResult, NativeSession,
+    CoreExecutor, DependencyDrivenExecution, DIResultEnvelopeV2,
+    ExecutionAdapter, ExecutionResult, InputOutputObjectManifest,
+    NativeSession, ResultContract, RoleExecutionBinding,
     ReadySetCoordinator, ProviderActivationGate,
 )
 from .deployment_control import (
+    DISelectionParticipant, GpuMiBAdmissionLedger,
+    SelectionPreparationCallbacks, SelectionPreparationContext,
+    ShardPreparationCallbacks, ShardPreparationPipeline,
+    ModelShardRetentionCache, DerivedStateStore,
     AckWindowDecisionCoordinator, AtomicReservationBook, BoundedExactTargetRetry,
     DeploymentSideEffectCounters, ReservationDecisionAuthority,
     PreparationCallbacks, SelectionGatedProvider,
@@ -41,6 +50,9 @@ from .native import NativeBindingAdapter
 from .ports import *
 from .placement import create_assignment_context
 from .recovery import (
+    AdoptedInputEvidence, AttemptCompensationController,
+    AttemptTransition, ControlDispatchResult,
+    DICancelAttemptV2, DIReleaseOfferV2, DIStatusQueryV2,
     ContentionRetryController,
     BoundedRecoveryController, OrphanResourceRegistry, RecoveryAction,
     RecoveryAttempt, RecoveryReason, ResultRendezvousStore,
