@@ -1,0 +1,51 @@
+# syntax=docker/dockerfile:1.7
+
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+ARG BASE_IMAGE_ID
+ARG PROVIDER_SHA256
+ARG REPO_ORCHESTRATION_SHA256
+ARG REPO_SERVICE_NAMES_SHA256
+ARG REPO_PERSISTENCE_SHA256
+ARG INSTRUMENTATION_SEAL
+
+USER 0
+COPY --from=instrumentation_seal /provider.py \
+  /opt/ndnsf-app/python/ndnsf_distributed_inference/provider.py
+COPY --from=instrumentation_seal /py_repoclient/ \
+  /opt/ndnsf-app/python/py_repoclient/
+RUN printf '%s  %s\n' \
+      "${PROVIDER_SHA256}" \
+      /opt/ndnsf-app/python/ndnsf_distributed_inference/provider.py \
+      | sha256sum -c - \
+    && printf '%s  %s\n' \
+      "${REPO_ORCHESTRATION_SHA256}" \
+      /opt/ndnsf-app/python/py_repoclient/orchestration.py \
+      | sha256sum -c - \
+    && printf '%s  %s\n' \
+      "${REPO_SERVICE_NAMES_SHA256}" \
+      /opt/ndnsf-app/python/py_repoclient/service_names.py \
+      | sha256sum -c - \
+    && printf '%s  %s\n' \
+      "${REPO_PERSISTENCE_SHA256}" \
+      /opt/ndnsf-app/python/py_repoclient/persistence.py \
+      | sha256sum -c - \
+    && grep -Fq NDNSF_DI_ACK_DECISION \
+      /opt/ndnsf-app/python/ndnsf_distributed_inference/provider.py \
+    && ! grep -Fq RepoCapacityReservation \
+      /opt/ndnsf-app/python/py_repoclient/orchestration.py \
+    && ! grep -Fq RESERVE_CAPACITY \
+      /opt/ndnsf-app/python/py_repoclient/service_names.py \
+    && ! grep -Fq RELEASE_CAPACITY \
+      /opt/ndnsf-app/python/py_repoclient/service_names.py \
+    && chmod 0444 \
+      /opt/ndnsf-app/python/ndnsf_distributed_inference/provider.py \
+      /opt/ndnsf-app/python/py_repoclient/orchestration.py \
+      /opt/ndnsf-app/python/py_repoclient/service_names.py
+
+LABEL org.ndnsf.di.instrumentation-parent-image-id="${BASE_IMAGE_ID}" \
+      org.ndnsf.di.instrumentation-seal="${INSTRUMENTATION_SEAL}" \
+      org.ndnsf.di.instrumentation-purpose="spec162-cold-warm-ack-release-no-reservation"
+
+USER 10001:10001

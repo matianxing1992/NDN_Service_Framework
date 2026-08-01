@@ -5,6 +5,7 @@ import sys
 import tempfile
 import os
 from pathlib import Path
+import shutil
 import unittest
 import zipfile
 
@@ -17,10 +18,26 @@ class InstallationProfilesTest(unittest.TestCase):
     def test_owner_wheels_build_and_records_do_not_collide(self):
         names=("core","sdk","app","planner","adapters/onnx","adapters/qwen","adapters/llama","ops","compat")
         owned={}; wheels={}
-        with tempfile.TemporaryDirectory() as output:
+        with tempfile.TemporaryDirectory() as temporary:
+            temporary_root = Path(temporary)
+            source_root = temporary_root / "source"
+            shutil.copytree(
+                ROOT / "NDNSF-DistributedInference/ndnsf_distributed_inference",
+                source_root / "ndnsf_distributed_inference",
+                ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+            )
+            shutil.copytree(
+                PROFILES,
+                source_root / "packaging/python",
+                ignore=shutil.ignore_patterns(
+                    "build", "dist", "*.egg-info", "__pycache__", "*.pyc"),
+            )
+            profiles = source_root / "packaging/python"
+            output = temporary_root / "wheels"
+            output.mkdir()
             for name in names:
                 subprocess.run([sys.executable,"-m","pip","wheel","--no-deps","--no-build-isolation",
-                                str(PROFILES/name),"-w",output],check=True,capture_output=True,text=True)
+                                str(profiles/name),"-w",output],check=True,capture_output=True,text=True)
             subprocess.run([sys.executable,"-m","pip","wheel","--no-deps","--no-build-isolation",
                             str(ROOT/"tests/fixtures/ndnsf-di-external-optimizer"),"-w",output],
                            check=True,capture_output=True,text=True)
@@ -38,6 +55,10 @@ class InstallationProfilesTest(unittest.TestCase):
             core=next(files for name,files in wheels.items() if name.startswith("ndnsf_di_core-"))
             self.assertTrue(core)
             self.assertTrue(all(path.startswith("ndnsf_distributed_inference/core/") for path in core))
+            sdk=next(files for name,files in wheels.items() if name.startswith("ndnsf_di_sdk-"))
+            self.assertIn("ndnsf_distributed_inference/adapters/__init__.py", sdk)
+            self.assertIn("ndnsf_distributed_inference/adapters/base.py", sdk)
+            self.assertIn("ndnsf_distributed_inference/adapters/builtin.py", sdk)
 
             with tempfile.TemporaryDirectory() as environment:
                 subprocess.run([sys.executable, "-m", "venv", environment], check=True)
@@ -50,10 +71,17 @@ class InstallationProfilesTest(unittest.TestCase):
                     check=True, capture_output=True, text=True, env=clean_env,
                 )
                 probe = subprocess.run(
-                    [python, "-c", "import ndnsf_distributed_inference.core; "
+                    [python, "-c", "import sys, types; "
+                     "ndnsf = types.ModuleType('ndnsf'); "
+                     "ndnsf.CollaborationDependency = type("
+                     "'CollaborationDependency', (), {}); "
+                     "ndnsf.CollaborationRole = type("
+                     "'CollaborationRole', (), {}); "
+                     "sys.modules['ndnsf'] = ndnsf; "
+                     "import ndnsf_distributed_inference.core; "
                      "import ndnsf_distributed_inference.sdk; "
-                     "import ndnsf_distributed_inference.planner; "
-                     "import ndnsf_distributed_inference.app_sdk; "
+                     "from ndnsf_distributed_inference.adapters import "
+                     "ApplicationInput, ModelFamilyAdapter; "
                      "import ndnsf_distributed_inference.adapters.onnx; "
                      "import ndnsf_distributed_inference.ops"],
                     check=False, capture_output=True, text=True, env=clean_env,

@@ -43,6 +43,7 @@ def run():
     parser.add_argument("--rate-series", default="10,50,100")
     parser.add_argument("--duration-s", type=float, default=10.0)
     parser.add_argument("--warmup-s", type=float, default=5.0)
+    parser.add_argument("--request-deadline-ms", type=int, default=5000)
     parser.add_argument("--failure-probability", type=float, default=0.0)
     parser.add_argument("--epoch-ms", type=int, default=10000)
     parser.add_argument("--seed", type=int, default=100)
@@ -81,7 +82,14 @@ def run():
         routing = NdnRoutingHelper(ndn.net, "udp", "link-state")
         routing.addOrigin([ndn.net[args.server_node]], [f"/muas/{args.server_node}"])
         routing.addOrigin([ndn.net[args.client_node]], [f"/muas/{args.client_node}"])
-        routing.calculateNPossibleRoutes()
+        routing.calculateRoutes()
+
+        for node_name in (args.client_node, args.server_node):
+            node = ndn.net[node_name]
+            (output_dir / f"{node_name}-route-list.txt").write_text(
+                node.cmd("nfdc route list 2>&1"))
+            (output_dir / f"{node_name}-fib-list.txt").write_text(
+                node.cmd("nfdc fib list 2>&1"))
 
         for node_name in (args.client_node, args.server_node):
             ndn.net[node_name].cmd(f"ndnsec key-gen -t r /muas/{node_name} > /dev/null")
@@ -108,11 +116,14 @@ def run():
             consumer_cmd = (
                 f"{nsc_dir / 'consumer'} /muas/{args.client_node} /muas/{args.server_node} "
                 f"/FlightControl /ManualControl {interval_ms} {count} {run_id} {warmup_count}"
+                f" {args.request_deadline_ms}"
             )
             info(f"Running NSC rate={rate_label} rps count={count} warmup_count={warmup_count} interval_ms={interval_ms}\n")
             with client_log.open("w") as out:
                 consumer_proc = getPopen(ndn.net[args.client_node], consumer_cmd, stdout=out, stderr=out)
-                consumer_proc.wait(timeout=int(args.duration_s + args.warmup_s + 35))
+                consumer_proc.wait(timeout=int(
+                    args.duration_s + args.warmup_s +
+                    args.request_deadline_ms / 1000.0 + 15))
             summary_line = ""
             for line in client_log.read_text(errors="replace").splitlines():
                 if line.startswith("NSC_CLIENT_SUMMARY"):
@@ -140,6 +151,7 @@ def run():
             "service_delay_ms": args.service_delay_ms,
             "duration_s": args.duration_s,
             "warmup_s": args.warmup_s,
+            "request_deadline_ms": args.request_deadline_ms,
             "failure_probability": args.failure_probability,
             "epoch_ms": args.epoch_ms,
             "seed": args.seed,

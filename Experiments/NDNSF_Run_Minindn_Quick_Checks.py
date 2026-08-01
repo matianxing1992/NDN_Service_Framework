@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import pwd
 import site
@@ -49,6 +50,46 @@ class QuickCheck:
     timeout_s: int
     description: str
     use_sudo: bool = False
+
+
+def fidelity_declaration(check: QuickCheck) -> dict[str, object]:
+    """Declare diagnostic fidelity without promoting a quick check to a gate."""
+    if check.name == "script-sanity":
+        tier = "STATIC"
+        real = ["Python parser"]
+        simulated = ["NDNSF runtime", "MiniNDN", "model execution"]
+    elif check.name == "script-quick-smokes":
+        tier = "FIXTURE"
+        real = ["Python control flow"]
+        simulated = ["MiniNDN", "NDN transport", "model execution"]
+    elif check.name in {
+        "ndnsf-python-hello",
+        "repo-quick",
+        "di-minindn-native",
+        "di-llama-server-minindn",
+        "di-llm-pipeline-minindn",
+        "di-llm-transformers-minindn",
+        "di-llm-transformers-benchmark",
+        "di-llm-qwen-minindn",
+        "di-llm-qwen-onnx-delta-minindn",
+    }:
+        # These launch real processes/MiniNDN, but they do not implement the
+        # complete Spec 165 multi-prompt/token/lineage evidence contract.
+        tier = "HOST_PROCESS"
+        real = ["process runtime", "MiniNDN/NFD where selected"]
+        simulated = ["Spec165 deployment evidence contract"]
+    else:
+        tier = "FIXTURE"
+        real = ["implemented diagnostic code"]
+        simulated = ["deployment environment or workload"]
+    return {
+        "schemaVersion": 1,
+        "caseId": check.name,
+        "fidelityTier": tier,
+        "realComponents": real,
+        "simulatedComponents": simulated,
+        "deploymentAuthorizing": False,
+    }
 
 
 def checks() -> dict[str, QuickCheck]:
@@ -288,6 +329,15 @@ def command_with_environment(check: QuickCheck) -> list[str]:
 
 
 def run_check(check: QuickCheck) -> None:
+    print(
+        "NDNSF_QUICK_CHECK_FIDELITY "
+        + json.dumps(
+            fidelity_declaration(check),
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        flush=True,
+    )
     print(f"NDNSF_QUICK_CHECK_START case={check.name} desc={check.description}", flush=True)
     start = time.time()
     proc = subprocess.run(
@@ -355,7 +405,11 @@ def main() -> int:
 
     if args.list:
         for name, check in all_checks.items():
-            print(f"{name}: {check.description}")
+            fidelity = fidelity_declaration(check)
+            print(
+                f"{name}: tier={fidelity['fidelityTier']} "
+                f"deploymentAuthorizing=false {check.description}"
+            )
         return 0
 
     for check in selected_checks(args.case, args.include_di_minindn):

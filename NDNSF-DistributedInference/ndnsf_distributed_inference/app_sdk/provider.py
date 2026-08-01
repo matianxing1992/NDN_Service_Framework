@@ -227,6 +227,14 @@ class APPProvider:
         self._active_readiness: dict[str, ProviderReadiness] = {}
         self._drained_readiness: dict[str, ProviderReadiness] = {}
 
+    @property
+    def provider_boot_epoch(self) -> str:
+        """Return the network Provider's Core-authenticated boot epoch."""
+
+        if self._network_provider is None:
+            raise AttributeError("provider_boot_epoch")
+        return self._network_provider.provider_boot_epoch
+
     @classmethod
     def from_config(
         cls,

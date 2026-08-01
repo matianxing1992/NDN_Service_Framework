@@ -1,11 +1,14 @@
 #include "ndnsf-distributed-repo/RepoTypes.hpp"
 #include "ndnsf-distributed-repo/RepoProtocol.hpp"
+#include "ndnsf-distributed-repo/RepoStoreBackend.hpp"
 
 #include <openssl/sha.h>
 #include <sqlite3.h>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
+#include <cmath>
 #include <iomanip>
 #include <limits>
 #include <list>
@@ -155,6 +158,7 @@ class SqliteRepoStore : public RepoStoreBackend
 public:
   explicit SqliteRepoStore(std::string databasePath)
     : m_databasePath(std::move(databasePath))
+    , m_ownership(m_databasePath, "cpp-sqlite-repo")
   {
     if (m_databasePath.empty()) {
       throw std::invalid_argument("sqlite repo database path must not be empty");
@@ -401,6 +405,7 @@ private:
 
 private:
   std::string m_databasePath;
+  BackendOwnershipLease m_ownership;
   sqlite3* m_db = nullptr;
 };
 
@@ -787,6 +792,115 @@ RepoOperationStatus::toJson() const
   os << ",\"createdAtMs\":" << createdAtMs;
   os << ",\"updatedAtMs\":" << updatedAtMs;
   os << ",\"expiresAtMs\":" << expiresAtMs;
+  os << "}";
+  return os.str();
+}
+
+bool
+RepoOperationMetrics::isCanonicalPhase(const std::string& phase)
+{
+  static const std::array<const char*, 11> phases = {{
+    "discovery", "ackCollection", "planning", "queueWait", "sessionStart",
+    "transfer", "verification", "persistence", "replication", "commit",
+    "activation",
+  }};
+  return std::find_if(phases.begin(), phases.end(), [&phase] (const char* candidate) {
+    return phase == candidate;
+  }) != phases.end();
+}
+
+void
+RepoOperationMetrics::validate() const
+{
+  if (operationId.empty() || operationId.size() > MAX_OPERATION_ID_BYTES ||
+      std::any_of(operationId.begin(), operationId.end(), [] (unsigned char ch) {
+        return std::iscntrl(ch) != 0;
+      })) {
+    throw std::invalid_argument("repo-metrics-invalid-operation-id");
+  }
+  if (completedAtMs != 0 && completedAtMs < startedAtMs) {
+    throw std::invalid_argument("repo-metrics-invalid-time-boundary");
+  }
+  for (const auto& timing : phaseTimingsMs) {
+    if (!isCanonicalPhase(timing.first) || !std::isfinite(timing.second) ||
+        timing.second < 0.0) {
+      throw std::invalid_argument("repo-metrics-invalid-phase");
+    }
+  }
+  if (!std::isfinite(asymmetricVerificationMs) ||
+      asymmetricVerificationMs < 0.0 ||
+      !std::isfinite(digestVerificationMs) ||
+      digestVerificationMs < 0.0) {
+    throw std::invalid_argument("repo-metrics-invalid-crypto-time");
+  }
+  const auto checkedByteSum = [] (uint64_t left, uint64_t right) {
+    if (std::numeric_limits<uint64_t>::max() - left < right) {
+      throw std::invalid_argument("repo-metrics-byte-counter-overflow");
+    }
+    return left + right;
+  };
+  const auto detailedWireBytes =
+    checkedByteSum(dataWireBytes, interestWireBytes);
+  if (detailedWireBytes != 0 && wireBytes != detailedWireBytes) {
+    throw std::invalid_argument("repo-metrics-inconsistent-wire-bytes");
+  }
+  const auto detailedReadBytes =
+    checkedByteSum(payloadStoreBytesRead, metadataStoreBytesRead);
+  if (detailedReadBytes != 0 && storageBytesRead != detailedReadBytes) {
+    throw std::invalid_argument("repo-metrics-inconsistent-storage-read-bytes");
+  }
+  const auto detailedWrittenBytes =
+    checkedByteSum(payloadStoreBytesWritten, metadataStoreBytesWritten);
+  if (detailedWrittenBytes != 0 &&
+      storageBytesWritten != detailedWrittenBytes) {
+    throw std::invalid_argument("repo-metrics-inconsistent-storage-written-bytes");
+  }
+  if (selectedReplicaCount > requestedReplicaCount ||
+      committedReplicaCount > selectedReplicaCount) {
+    throw std::invalid_argument("repo-metrics-invalid-replica-count");
+  }
+}
+
+std::string
+RepoOperationMetrics::toJson() const
+{
+  validate();
+  std::ostringstream os;
+  os << "{";
+  os << "\"operationId\":" << jsonQuote(operationId) << ",";
+  os << "\"startedAtMs\":" << startedAtMs << ",";
+  os << "\"completedAtMs\":" << completedAtMs << ",";
+  os << "\"phaseTimingsMs\":{";
+  size_t phaseIndex = 0;
+  for (const auto& timing : phaseTimingsMs) {
+    if (phaseIndex++ != 0) {
+      os << ",";
+    }
+    os << jsonQuote(timing.first) << ":" << timing.second;
+  }
+  os << "},";
+  os << "\"logicalPayloadBytes\":" << logicalPayloadBytes << ",";
+  os << "\"dataWireBytes\":" << dataWireBytes << ",";
+  os << "\"interestWireBytes\":" << interestWireBytes << ",";
+  os << "\"wireBytes\":" << wireBytes << ",";
+  os << "\"retransmittedBytes\":" << retransmittedBytes << ",";
+  os << "\"payloadStoreBytesRead\":" << payloadStoreBytesRead << ",";
+  os << "\"payloadStoreBytesWritten\":" << payloadStoreBytesWritten << ",";
+  os << "\"metadataStoreBytesRead\":" << metadataStoreBytesRead << ",";
+  os << "\"metadataStoreBytesWritten\":" << metadataStoreBytesWritten << ",";
+  os << "\"storageBytesRead\":" << storageBytesRead << ",";
+  os << "\"storageBytesWritten\":" << storageBytesWritten << ",";
+  os << "\"asymmetricVerifications\":" << asymmetricVerifications << ",";
+  os << "\"digestVerifications\":" << digestVerifications << ",";
+  os << "\"asymmetricVerificationMs\":" << asymmetricVerificationMs << ",";
+  os << "\"digestVerificationMs\":" << digestVerificationMs << ",";
+  os << "\"controlOperations\":" << controlOperations << ",";
+  os << "\"metadataOperations\":" << metadataOperations << ",";
+  os << "\"metadataRecordCount\":" << metadataRecordCount << ",";
+  os << "\"requestedReplicaCount\":" << requestedReplicaCount << ",";
+  os << "\"selectedReplicaCount\":" << selectedReplicaCount << ",";
+  os << "\"committedReplicaCount\":" << committedReplicaCount << ",";
+  os << "\"rejectedReplicaReceiptCount\":" << rejectedReplicaReceiptCount;
   os << "}";
   return os.str();
 }

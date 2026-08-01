@@ -6,9 +6,11 @@
 #include <ndn-cxx/encoding/block-helpers.hpp>
 #include <ndn-cxx/security/signing-helpers.hpp>
 #include <ndn-cxx/security/transform.hpp>
+#include <ndn-cxx/util/io.hpp>
 #include <ndn-cxx/util/logger.hpp>
 #include <ndn-cxx/util/random.hpp>
 
+#include <cstdlib>
 #include <stdexcept>
 
 namespace ndn_service_framework {
@@ -68,6 +70,25 @@ ndn::security::Certificate
 getLocalControllerCertificateForBootstrap(ndn::security::KeyChain& keyChain,
                                           const ndn::Name& controllerPrefix)
 {
+  if (const char* certPath = std::getenv("NDNSF_CONTROLLER_CERT_FILE")) {
+    if (*certPath != '\0') {
+      auto cert = ndn::io::load<ndn::security::Certificate>(certPath);
+      if (cert == nullptr || !cert->isValid()) {
+        throw std::runtime_error("Cannot encrypt certificate bootstrap request because "
+                                 "NDNSF_CONTROLLER_CERT_FILE is not a valid certificate: " +
+                                 std::string(certPath));
+      }
+      if (cert->getIdentity() != controllerPrefix) {
+        throw std::runtime_error("Cannot encrypt certificate bootstrap request because "
+                                 "NDNSF_CONTROLLER_CERT_FILE identity " +
+                                 cert->getIdentity().toUri() +
+                                 " does not match controller " +
+                                 controllerPrefix.toUri());
+      }
+      return *cert;
+    }
+  }
+
   try {
     auto cert = keyChain.getPib()
       .getIdentity(controllerPrefix)

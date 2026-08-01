@@ -9,6 +9,7 @@
 #include "NDNSFMessages.hpp"
 #include "ConfigManager.hpp"
 #include "HybridMessageCrypto.hpp"
+#include "GenericSelectionTxnStore.hpp"
 #include "NetworkTelemetry.hpp"
 #include "TimelineTrace.hpp"
 #include "Stream.hpp"
@@ -77,6 +78,9 @@ namespace ndn_service_framework{
                 ndn::Buffer payload;
                 std::optional<SelectionInputKeyOffer> selectionInputKeyOffer;
                 std::optional<ReservationLease> reservationLease;
+                // Provider-owned local retention horizon for pending
+                // Request/Selection state. Zero keeps Core's bounded default.
+                uint64_t pendingStateTtlMs = 0;
             };
 
             struct PeerNetworkMetric
@@ -288,6 +292,11 @@ namespace ndn_service_framework{
             void setR1ReservationTerminalHandler(
                 const ndn::Name& serviceName,
                 R1ReservationTerminalHandler handler);
+            void setGenericSelectionTxnStore(
+                std::shared_ptr<GenericSelectionTxnStore> store);
+            void registerOpaqueSelectionParticipant(
+                const ndn::Name& serviceName,
+                std::shared_ptr<OpaqueSelectionParticipant> participant);
             bool acceptExecutionActivate(const ExecutionActivateMessage& activation,
                                          std::string* rejectionReason = nullptr);
 
@@ -776,6 +785,13 @@ namespace ndn_service_framework{
                                       const std::string& statusHandle,
                                       int attempt = 0);
 
+            /** Stable process-incarnation fence exposed to opaque application
+             * participants. It is an identity binding, not a secret. */
+            std::string getProviderBootEpoch() const
+            {
+                return std::to_string(m_processStartedAtUs);
+            }
+
             void serveDataWithIMS(ndn::nacabe::SPtrVector<ndn::Data>& contentData, ndn::nacabe::SPtrVector<ndn::Data>& ckData);
 
             void PublishRequestAckMessageV2(const ndn::Name& requesterIdentity,
@@ -885,7 +901,8 @@ namespace ndn_service_framework{
             static AckDecision makeDefaultAckDecision();
 
             void schedulePendingRequestCleanup(const ndn::Name& pendingKey,
-                                               ndn::time::milliseconds ttl = ndn::time::seconds(30));
+                                               ndn::time::milliseconds ttl = ndn::time::seconds(30),
+                                               bool authoritative = false);
 
             void cleanupPendingRequestState(const ndn::Name& pendingKey);
 
@@ -1138,6 +1155,10 @@ namespace ndn_service_framework{
             ProviderReadyPublisher m_providerReadyPublisher;
             std::map<ndn::Name, R1SelectionDecisionHandler>
                 m_r1SelectionDecisionHandlers;
+            std::shared_ptr<GenericSelectionTxnStore>
+                m_genericSelectionTxnStore;
+            std::map<ndn::Name, std::shared_ptr<OpaqueSelectionParticipant>>
+                m_opaqueSelectionParticipants;
             std::map<ndn::Name, R1ReservationTerminalHandler>
                 m_r1ReservationTerminalHandlers;
             std::map<ndn::Name, std::string> m_r1ReservationByRequest;
@@ -1168,6 +1189,11 @@ namespace ndn_service_framework{
             size_t m_providerAckMaxPending = 0;
             ndn::time::milliseconds m_providerAckMaxEventLoopLag{0};
             ndn::time::milliseconds m_providerAckMaxSelectionLag{0};
+            mutable std::mutex m_pendingCleanupDeadlineMutex;
+            std::map<ndn::Name, std::chrono::steady_clock::time_point>
+                m_pendingCleanupDeadlines;
+            std::map<ndn::Name, uint64_t> m_pendingCleanupExpiryUnixMs;
+            std::set<ndn::Name> m_authoritativePendingCleanupDeadlines;
             std::map<ndn::Name, ProviderRequestLifecycleStatus>
                 m_providerRequestLifecycleStatuses;
             std::map<std::string, SelectionExecutionStatus>

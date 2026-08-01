@@ -1,0 +1,32 @@
+# syntax=docker/dockerfile:1.7
+
+ARG APP_RUNTIME_IMAGE
+FROM ${APP_RUNTIME_IMAGE} AS qwen36-runtime
+
+ARG APP_PARENT_IMAGE_ID
+ARG QWEN36_LOCK_DIGEST
+
+USER 0
+COPY --from=qwen36_wheelhouse / /tmp/qwen36-wheelhouse/
+COPY packaging/ndnsf-di-container/oci/layered/locks/qwen36-overlay.lock.json \
+  /opt/ndnsf-di/locks/qwen36-overlay.lock.json
+COPY packaging/ndnsf-di-container/oci/layered/scripts/verify-qwen36-runtime.py \
+  /usr/local/bin/ndnsf-di-verify-qwen36-runtime
+
+RUN /opt/venv/bin/python -m pip install \
+      --no-index \
+      --find-links=/tmp/qwen36-wheelhouse \
+      --require-hashes \
+      --no-deps \
+      --upgrade \
+      -r /tmp/qwen36-wheelhouse/requirements.txt \
+    && chmod 0755 /usr/local/bin/ndnsf-di-verify-qwen36-runtime \
+    && /usr/local/bin/ndnsf-di-verify-qwen36-runtime \
+      --lock /opt/ndnsf-di/locks/qwen36-overlay.lock.json \
+    && rm -rf /tmp/qwen36-wheelhouse
+
+LABEL org.ndnsf.di.layer="qwen36-runtime" \
+      org.ndnsf.di.app-parent-image-id="${APP_PARENT_IMAGE_ID}" \
+      org.ndnsf.di.qwen36-lock-digest="${QWEN36_LOCK_DIGEST}"
+
+USER 10001:10001

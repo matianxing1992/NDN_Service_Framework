@@ -36,6 +36,28 @@ def main() -> int:
                         help="Repo object name that stores the deployment config")
     parser.add_argument("--advertise-stored-prefixes", action="store_true",
                         help="Advertise stored Data prefixes through NLSR")
+    parser.add_argument(
+        "--artifact-format", action="append",
+        choices=("artifact-manifest-v2", "exact-packet-v1"),
+        help=(
+            "Explicit supported artifact format; default is legacy "
+            "exact-packet-v1 only"
+        ),
+    )
+    parser.add_argument("--artifact-policy-epoch", default="default")
+    parser.add_argument("--artifact-resume", action="store_true")
+    parser.add_argument("--artifact-replica-receipts", action="store_true")
+    parser.add_argument(
+        "--artifact-read-only",
+        action="store_true",
+        help="Disable new artifact-manifest-v2 writes without deleting bytes",
+    )
+    parser.add_argument(
+        "--artifact-max-write-schema-generation",
+        type=int,
+        default=None,
+        help="Fail closed for v2 writes when the DB schema is newer",
+    )
     args = parser.parse_args()
 
     deployment = APPDeployment.from_config(
@@ -62,6 +84,18 @@ def main() -> int:
         memory_cache_bytes=args.memory_cache_bytes,
         preallocate_bytes=args.preallocate_bytes,
         advertise_stored_prefixes=args.advertise_stored_prefixes,
+        artifact_format_versions=tuple(
+            args.artifact_format or ("exact-packet-v1",)
+        ),
+        artifact_policy_epoch=args.artifact_policy_epoch,
+        artifact_supports_resume=args.artifact_resume,
+        artifact_supports_replica_receipts=(
+            args.artifact_replica_receipts
+        ),
+        artifact_writes_enabled=not args.artifact_read_only,
+        artifact_max_write_schema_generation=(
+            args.artifact_max_write_schema_generation
+        ),
     )
     app.seed_object(
         args.config_object,

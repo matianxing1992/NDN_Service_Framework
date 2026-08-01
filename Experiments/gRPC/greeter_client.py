@@ -57,49 +57,45 @@ async def run():
             await channel.channel_ready()
         stub = helloworld_pb2_grpc.GreeterStub(channel)
 
-        if args.rate_rps > 0 and args.warmup_s > 0:
-            warmup_interval_s = 1.0 / args.rate_rps
-            warmup_start = time.monotonic()
-            next_send = warmup_start
-            warmup_tasks = []
-            i = 0
-            while time.monotonic() - warmup_start < args.warmup_s:
-                now = time.monotonic()
-                if now < next_send:
-                    await asyncio.sleep(next_send - now)
-                warmup_tasks.append(asyncio.create_task(
-                    send_request(stub, -i - 1, args.timeout_s, quiet=True, measured=False)))
-                i += 1
-                next_send += warmup_interval_s
-            await asyncio.gather(*warmup_tasks, return_exceptions=True)
-
         latencies = []
         if args.rate_rps > 0 and args.duration_s > 0:
             interval_s = 1.0 / args.rate_rps
             start = time.monotonic()
-            next_send = start
             tasks = []
-            i = 0
-            while time.monotonic() - start < args.duration_s:
+            measured_flags = []
+            warmup_count = max(0, int(round(args.rate_rps * args.warmup_s)))
+            target_count = max(1, int(round(args.rate_rps * args.duration_s)))
+            total_count = warmup_count + target_count
+            for i in range(total_count):
+                next_send = start + i * interval_s
                 now = time.monotonic()
                 if now < next_send:
                     await asyncio.sleep(next_send - now)
+                measured = i >= warmup_count
+                request_id = i - warmup_count if measured else -i - 1
                 tasks.append(asyncio.create_task(
-                    send_request(stub, i, args.timeout_s, quiet=args.quiet)))
-                i += 1
-                next_send += interval_s
+                    send_request(stub, request_id, args.timeout_s,
+                                 quiet=args.quiet if measured else True,
+                                 measured=measured)))
+                measured_flags.append(measured)
             results = await asyncio.gather(*tasks, return_exceptions=True)
             failures = 0
-            for result in results:
+            warmup_success = 0
+            for result, measured in zip(results, measured_flags):
+                if not measured:
+                    if not isinstance(result, Exception):
+                        warmup_success += 1
+                    continue
                 if isinstance(result, Exception):
                     failures += 1
                     print(f"request_failed error={result}", flush=True)
                 else:
                     latencies.append(result)
-            print(f"GRPC_CLIENT_RATE sent={len(tasks)} success={len(latencies)} "
+            print(f"GRPC_CLIENT_RATE sent={target_count} success={len(latencies)} "
                   f"failures={failures} duration_s={args.duration_s:.3f} "
                   f"offered_rps={args.rate_rps:.3f} "
-                  f"actual_success_rps={len(latencies) / args.duration_s:.3f}",
+                  f"actual_success_rps={len(latencies) / args.duration_s:.3f} "
+                  f"warmup_sent={warmup_count} warmup_success={warmup_success}",
                   flush=True)
         else:
             for i in range(args.count):

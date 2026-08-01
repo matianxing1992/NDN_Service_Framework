@@ -9,6 +9,9 @@ setup(
         "ndnsf_distributed_inference",
         "ndnsf_distributed_inference.compatibility*",
     ]),
+    package_data={
+        "ndnsf_distributed_inference.compatibility": ["manifest.json"],
+    },
     python_requires=">=3.8",
     install_requires=[
         "ndnsf-di-core==0.111.0", "ndnsf-di-sdk==0.111.0",

@@ -238,6 +238,7 @@ def build(bld):
                         bld.path.parent.ant_glob([
                             'ndn-service-framework/NDNSFMessages.cpp',
                             'ndn-service-framework/ConfigManager.cpp',
+                            'ndn-service-framework/GenericSelectionTxnStore.cpp',
                             'ndn-service-framework/ServiceProvider.cpp',
                             'ndn-service-framework/ServiceUser.cpp',
                             'ndn-service-framework/Stream.cpp',
@@ -259,6 +260,7 @@ def build(bld):
                         bld.path.parent.ant_glob([
                             'ndn-service-framework/NDNSFMessages.cpp',
                             'ndn-service-framework/ConfigManager.cpp',
+                            'ndn-service-framework/GenericSelectionTxnStore.cpp',
                             'ndn-service-framework/ServiceProvider.cpp',
                             'ndn-service-framework/ServiceUser.cpp',
                             'ndn-service-framework/Stream.cpp',
@@ -282,6 +284,7 @@ def build(bld):
                         bld.path.parent.ant_glob([
                             'ndn-service-framework/NDNSFMessages.cpp',
                             'ndn-service-framework/ConfigManager.cpp',
+                            'ndn-service-framework/GenericSelectionTxnStore.cpp',
                             'ndn-service-framework/ServiceProvider.cpp',
                             'ndn-service-framework/ServiceUser.cpp',
                             'ndn-service-framework/HybridMessageCrypto.cpp',
@@ -344,6 +347,7 @@ def build(bld):
                             'NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionLeaseService.cpp',
                             'ndn-service-framework/NDNSFMessages.cpp',
                             'ndn-service-framework/ConfigManager.cpp',
+                            'ndn-service-framework/GenericSelectionTxnStore.cpp',
                             'ndn-service-framework/ServiceProvider.cpp',
                             'ndn-service-framework/ServiceUser.cpp',
                             'ndn-service-framework/HybridMessageCrypto.cpp',
@@ -376,6 +380,7 @@ def build(bld):
                             'NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionLeaseService.cpp',
                             'ndn-service-framework/NDNSFMessages.cpp',
                             'ndn-service-framework/ConfigManager.cpp',
+                            'ndn-service-framework/GenericSelectionTxnStore.cpp',
                             'ndn-service-framework/ServiceProvider.cpp',
                             'ndn-service-framework/ServiceUser.cpp',
                             'ndn-service-framework/HybridMessageCrypto.cpp',

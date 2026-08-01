@@ -1,0 +1,30 @@
+ARG BASE_IMAGE=ndnsf-di:spec164-native-75a614424271
+FROM ${BASE_IMAGE}
+
+USER 0:0
+
+# MiniNDN is a validation harness, not part of the production runtime.  This
+# local derivative adds only the Linux network-emulation dependencies needed
+# to execute the same Qwen workload inside the candidate container.
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        iproute2 \
+        iputils-ping \
+        mininet \
+        net-tools \
+        openvswitch-switch \
+        openvswitch-testcontroller \
+        procps \
+        sudo \
+    && /opt/venv/bin/python3 -m pip install --no-cache-dir \
+        cryptography \
+        joblib \
+        mininet \
+        python-ndn \
+        python-igraph \
+        six \
+    && rm -rf /var/lib/apt/lists/*
+
+LABEL org.ndnsf.di.validation-harness="spec165-real-minindn-model"
+
+USER 65532:65532

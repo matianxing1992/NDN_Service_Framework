@@ -233,6 +233,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--compute-delay-ms", type=float, default=1.0)
     parser.add_argument("--nlsr-wait-s", type=float, default=8.0)
+    parser.add_argument(
+        "--static-routing-only",
+        action="store_true",
+        help=(
+            "Use MiniNDN's explicit NdnRoutingHelper routes without launching "
+            "NLSR. Intended for minimal candidate containers."
+        ),
+    )
     parser.add_argument("--controller-wait-s", type=float, default=8.0)
     parser.add_argument("--provider-wait-s", type=float, default=10.0)
     parser.add_argument("--provider-start-timeout-s", type=float, default=20.0)
@@ -243,6 +251,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--warmup-requests", type=int, default=0)
     parser.add_argument("--measured-requests", type=int, default=1)
     parser.add_argument("--max-new-tokens", type=int, default=1)
+    parser.add_argument("--generation-campaign-manifest", default="")
+    parser.add_argument("--generation-jsonl", default="")
+    parser.add_argument("--qwen-tokenizer-dir", default="")
+    parser.add_argument("--workload-digest", default="")
+    parser.add_argument("--model-identity-digest", default="")
+    parser.add_argument(
+        "--require-real-model",
+        action="store_true",
+        help=(
+            "Fail closed unless this is an explicit Qwen real-model run with "
+            "campaign, tokenizer, and immutable identity evidence."
+        ),
+    )
     parser.add_argument("--durable-app-submit", action="store_true")
     parser.add_argument(
         "--deployment-workflow", action="store_true",
@@ -410,12 +431,16 @@ def execute_fault_matrix_contract() -> dict[str, object]:
 def python_path_entries() -> list[str]:
     entries = [
         str(REPO / "NDNSF-DistributedInference"),
-        str(REPO / "pythonWrapper"),
-        str(REPO / "NDNSF-DistributedRepo/pythonWrapper"),
         str(LLM_DIR),
         str(REPO / "Experiments"),
         site.getusersitepackages(),
     ]
+    # A sealed container carries ABI-matched NDNSF and DistributedRepo native
+    # extensions.  Keep current application/experiment Python code mounted,
+    # but do not let host or stale native packages shadow the candidate.
+    if os.environ.get("NDNSF_PREFER_INSTALLED_NATIVE") != "1":
+        entries.insert(1, str(REPO / "pythonWrapper"))
+        entries.insert(2, str(REPO / "NDNSF-DistributedRepo/pythonWrapper"))
     sudo_user = os.environ.get("SUDO_USER")
     if sudo_user:
         try:
@@ -1274,6 +1299,41 @@ def main() -> int:
     args = build_parser().parse_args()
     if args.stages != 3:
         raise SystemExit("this MiniNDN smoke currently maps exactly 3 stages")
+    if args.require_real_model:
+        if args.runtime not in {
+            "qwen-transformers", "qwen-onnx", "qwen-onnx-cpu-native"
+        }:
+            raise SystemExit(
+                "--require-real-model rejects simulated runtime: "
+                f"{args.runtime}"
+            )
+        if args.qwen_model != "Qwen/Qwen3-0.6B":
+            raise SystemExit(
+                "--require-real-model requires Qwen/Qwen3-0.6B, got "
+                f"{args.qwen_model}"
+            )
+        required = {
+            "--generation-campaign-manifest": args.generation_campaign_manifest,
+            "--generation-jsonl": args.generation_jsonl,
+            "--qwen-tokenizer-dir": args.qwen_tokenizer_dir,
+            "--workload-digest": args.workload_digest,
+            "--model-identity-digest": args.model_identity_digest,
+        }
+        missing = [name for name, value in required.items() if not str(value).strip()]
+        if missing:
+            raise SystemExit(
+                "--require-real-model requires: " + ", ".join(missing)
+            )
+        tokenizer_dir = Path(args.qwen_tokenizer_dir).expanduser()
+        if not (tokenizer_dir / "config.json").is_file():
+            raise SystemExit(
+                "--require-real-model tokenizer snapshot is not resolvable: "
+                f"{tokenizer_dir}"
+            )
+        if not str(args.model_identity_digest).startswith("sha256:"):
+            raise SystemExit(
+                "--require-real-model requires a sha256 model identity digest"
+            )
     if args.runtime == "tiny-transformers" and args.layers == 24:
         args.layers = args.transformer_layers
     sys.argv = [sys.argv[0]]
@@ -1534,8 +1594,23 @@ def main() -> int:
     subprocess.run(["pkill", "-f", "llm_pipeline/(provider|user)\\.py"],
                    check=False)
     Minindn.cleanUp()
-    Minindn.verifyDependencies()
-    ndn = Minindn(topoFile=args.topology_file)
+    if args.static_routing_only:
+        required = ("nfd", "nfdc", "ndnsec", "infoconv", "mnexec", "ovs-vsctl")
+        missing = [name for name in required if shutil.which(name) is None]
+        if missing:
+            raise SystemExit(
+                "static MiniNDN dependencies are missing: " + ",".join(missing))
+    else:
+        Minindn.verifyDependencies()
+    if args.static_routing_only:
+        from mininet.node import OVSBridge
+        ndn = Minindn(
+            topoFile=args.topology_file,
+            controller=None,
+            switch=OVSBridge,
+        )
+    else:
+        ndn = Minindn(topoFile=args.topology_file)
     processes: list[tuple[object, object, Path]] = []
     fault_registry = (
         OwnedProcessRegistry(
@@ -1549,9 +1624,10 @@ def main() -> int:
         ndn.start()
         normalize_nlsr_link_costs(ndn)
         AppManager(ndn, ndn.net.hosts, Nfd, logLevel="INFO")
-        AppManager(ndn, ndn.net.hosts, CleanNlsr, sync="psync", security=False,
-                   faceType="udp", nFaces=3, routingType="link-state",
-                   logLevel="INFO")
+        if not args.static_routing_only:
+            AppManager(ndn, ndn.net.hosts, CleanNlsr, sync="psync", security=False,
+                       faceType="udp", nFaces=3, routingType="link-state",
+                       logLevel="INFO")
         perf.wait_for_nfd_sockets(ndn, OUT)
 
         rh = NdnRoutingHelper(ndn.net, "udp", "link-state")
@@ -1565,7 +1641,10 @@ def main() -> int:
             rh.addOrigin([ndn.net[node_name]], [identity, identity + "/KEY"])
         rh.addOrigin(ndn.net.hosts, [GROUP_IDENTITY])
         rh.calculateRoutes()
-        log(f"Waiting {args.nlsr_wait_s:.1f}s for NLSR convergence")
+        log(
+            f"Waiting {args.nlsr_wait_s:.1f}s for "
+            + ("static route settlement"
+               if args.static_routing_only else "NLSR convergence"))
         time.sleep(args.nlsr_wait_s)
         for node in ndn.net.hosts:
             Nfdc.setStrategy(node, APP_ROOT, Nfdc.STRATEGY_MULTICAST)
@@ -1820,7 +1899,7 @@ def main() -> int:
             "--native-first-kv-mode {} "
             "--expected-token-ids {} "
             "--measured-duration-s {} --request-interval-ms {} --campaign-id {} "
-            "--metrics-csv {} {} {} {} {} {}".format(
+            "--metrics-csv {} {} {} {} {} {} {}".format(
                 perf.shell_quote(args.prompt),
                 args.stages,
                 args.compute_delay_ms,
@@ -1840,6 +1919,17 @@ def main() -> int:
                 args.request_interval_ms,
                 perf.shell_quote(args.campaign_id),
                 perf.shell_quote(metrics_csv),
+                (
+                    "--generation-campaign-manifest {} --generation-jsonl {} "
+                    "--qwen-tokenizer-dir {} --workload-digest {} "
+                    "--model-identity-digest {}"
+                ).format(
+                    perf.shell_quote(args.generation_campaign_manifest),
+                    perf.shell_quote(args.generation_jsonl),
+                    perf.shell_quote(args.qwen_tokenizer_dir),
+                    perf.shell_quote(args.workload_digest),
+                    perf.shell_quote(args.model_identity_digest),
+                ) if args.generation_campaign_manifest else "",
                 "--publish-input-reference" if args.publish_input_reference else "",
                 native_user_args,
                 spec107_user_args,
@@ -1904,6 +1994,8 @@ def main() -> int:
         user_text = user_log.read_text(errors="replace")
         print(user_text)
         expected_user_marker = (
+            "LLM_PIPELINE_GENERATION_CAMPAIGN_PASS"
+            if args.generation_campaign_manifest else
             "LLM_PIPELINE_OPEN_LOOP_SUMMARY"
             if args.runtime == "qwen-onnx-cpu-native" and args.measured_duration_s > 0 else
             "LLM_PIPELINE_USER_RESPONSE"
@@ -1938,6 +2030,30 @@ def main() -> int:
             )
             if expected not in text:
                 raise RuntimeError(f"stage {stage_index} missing {expected}; log={log_path}")
+            if args.require_real_model and (
+                "LLM_PIPELINE_QWEN_ONNX_STAGE_ARTIFACT_READY" not in text
+            ):
+                raise RuntimeError(
+                    "real-model gate missing immutable ONNX artifact readiness "
+                    f"for stage {stage_index}; log={log_path}"
+                )
+
+        if args.require_real_model:
+            selected_roles = {
+                match.group(1)
+                for match in re.finditer(
+                    r"NDNSF_COLLAB_ASSIGNMENT_SELECTED .*?role=(/LLM/Pipeline/Stage/\d+)",
+                    user_text,
+                )
+            }
+            expected_roles = {
+                f"/LLM/Pipeline/Stage/{index}" for index in range(args.stages)
+            }
+            if selected_roles != expected_roles:
+                raise RuntimeError(
+                    "real-model gate did not select every provider role: "
+                    f"expected={sorted(expected_roles)} observed={sorted(selected_roles)}"
+                )
 
         summary_match = re.search(
             r"LLM_PIPELINE_USER_SUMMARY .*?count=([0-9]+).*?local_ms=([0-9.]+)"

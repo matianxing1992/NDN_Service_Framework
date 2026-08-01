@@ -5,21 +5,35 @@ from __future__ import annotations
 
 import json
 import hashlib
+import hmac
 import os
 import statistics
 import threading
 import time
 from pathlib import Path
 
-from ndnsf_distributed_inference.app_sdk import (
-    APPClient, APPDeployment, FileRequestEnvelopeKeyProvider,
-    ProviderEvidenceVerifier, RuntimeJournal,
+from ndnsf_distributed_inference.app_sdk.client import APPClient
+from ndnsf_distributed_inference.app_sdk.deployment import APPDeployment
+from ndnsf_distributed_inference.app_sdk.provider import ProviderEvidenceVerifier
+from ndnsf_distributed_inference.app_sdk.runtime_journal import (
+    FileRequestEnvelopeKeyProvider, RuntimeJournal,
 )
 from ndnsf_distributed_inference.app_sdk.status import RequestState, RevisionState
 from ndnsf_distributed_inference.ops.cli import definition_from_json
 from ndnsf_distributed_inference.adapters.qwen.pilot import (
     BoundedGenerationScheduler,
     GenerationQueueFull,
+)
+from ndnsf_distributed_inference.adapters.qwen import (
+    build_qwen36_27b_three_stage_adapter,
+)
+from ndnsf_distributed_inference.app_sdk.contracts import PreSplitCatalogSnapshot
+from ndnsf_distributed_inference.app_sdk.placement import (
+    InferenceTaskRef,
+    ModelRef,
+)
+from ndnsf_distributed_inference.planner.presplit_first import (
+    PreSplitFirstStrategy,
 )
 
 from llm_pipeline_lib import (
@@ -34,6 +48,7 @@ from llm_pipeline_lib import (
     encode_prompt,
     merge_qwen_pipeline_delta,
     parse_common_args,
+    run_bounded_qwen_generation,
     run_qwen_onnx_stage,
     run_local_pipeline,
     run_local_tiny_transformer_pipeline,
@@ -208,6 +223,102 @@ def _percentile(values: list[float], percentile: float) -> float:
         return ordered[lower]
     weight = index - lower
     return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
+
+
+def _configure_qwen_automatic_planning(client, args) -> None:
+    manifest = json.loads(Path(
+        args.automatic_planning_manifest).read_text(encoding="utf-8"))
+    stages = tuple(manifest.get("stages", ()))
+    if len(stages) != 3:
+        raise RuntimeError("automatic planning manifest requires three stages")
+    artifact_digests = {
+        str(item["role"]): (
+            str(item["sha256"])
+            if str(item["sha256"]).startswith("sha256:")
+            else "sha256:" + str(item["sha256"])
+        )
+        for item in stages
+    }
+    weight_bytes = {
+        str(item["role"]): int(item["bytes"]) for item in stages
+    }
+    adapter = build_qwen36_27b_three_stage_adapter(
+        artifact_digests_by_role=artifact_digests,
+        weight_bytes_by_role=weight_bytes,
+    )
+    model_doc = dict(manifest["model"])
+    model = ModelRef(
+        model_name=str(model_doc["name"]),
+        content_digest=str(model_doc["contentDigest"]),
+        semantics_digest=str(model_doc["semanticsDigest"]),
+        source_revision=str(model_doc["revision"]),
+    )
+    described = adapter.describe_model(
+        model.model_name,
+        model.content_digest,
+        model.semantics_digest,
+        source_revision=model.source_revision or "",
+    )
+    graph = adapter.graph.inspect(described)
+    candidate = adapter.splitter.enumerate_candidates(described, graph)[0]
+    catalog_doc = dict(manifest["preSplitCatalog"])
+    if catalog_doc.get("publicationState") != "ACTIVE":
+        raise RuntimeError(
+            "automatic planning manifest is not active in DistributedRepo")
+    if str(catalog_doc.get("candidateDigest", candidate.candidate_digest)) != (
+            candidate.candidate_digest):
+        raise RuntimeError("automatic planning candidate digest mismatch")
+    snapshot = PreSplitCatalogSnapshot(
+        alias=str(catalog_doc["alias"]),
+        manifest_digest=str(catalog_doc["manifestDigest"]),
+        model_content_digest=model.content_digest,
+        semantics_digest=model.semantics_digest,
+        graph_digest=graph.graph_digest,
+        candidate_digest=candidate.candidate_digest,
+        backend="transformers",
+        precision="bfloat16",
+        artifact_data_names={
+            str(item["role"]): (str(item["dataName"]),)
+            for item in stages
+        },
+        status="ACTIVE",
+        created_at_ms=int(catalog_doc["createdAtMs"]),
+    )
+    key_paths = json.loads(Path(
+        args.selection_offer_key_map).read_text(encoding="utf-8"))
+    offer_keys = {
+        str(provider): Path(path).read_bytes()
+        for provider, path in key_paths.items()
+    }
+    if not offer_keys or any(len(value) != 32 for value in offer_keys.values()):
+        raise RuntimeError("selection offer verifier requires 32-byte Provider keys")
+
+    def verify_offer(offer) -> bool:
+        key = offer_keys.get(offer.provider)
+        if key is None:
+            return False
+        if offer.signer_key_id != (
+                "sha256:" + hashlib.sha256(key).hexdigest()):
+            return False
+        expected = hmac.new(
+            key, offer.digest().encode("utf-8"), hashlib.sha256).hexdigest()
+        return hmac.compare_digest(expected, offer.signature)
+
+    client.configure_automatic_planning(
+        service_name=SERVICE,
+        adapters=(adapter,),
+        strategy=PreSplitFirstStrategy(
+            at_ms=int(time.time() * 1000),
+            maximum_cache_age_ms=args.selection_cache_max_age_ms,
+            clock_ms=lambda: int(time.time() * 1000),
+        ),
+        catalog_snapshot_provider=lambda: (snapshot,),
+        verify_offer_signature=verify_offer,
+        ack_timeout_ms=args.ack_timeout_ms,
+    )
+    args._automatic_adapter = adapter
+    args._automatic_model = model
+    args._automatic_task = InferenceTaskRef.from_adapter(adapter)
 
 
 def _fixed_rate_slot_time(started: float, ordinal: int, interval_s: float,
@@ -605,6 +716,271 @@ def _run_native_open_loop(client, args, qwen_summary: dict, manifest: dict,
     return 0
 
 
+def _run_qwen_transformer_generation_sample(
+    client,
+    args,
+    *,
+    prompt_case: dict,
+    generation_id: str,
+    decoder,
+    require_eos: bool = True,
+):
+    input_token_ids = tuple(
+        int(token) for token in prompt_case["formattedInputIds"])
+    expected_token_ids = tuple(
+        int(token) for token in prompt_case["referenceGeneratedTokenIds"])
+    eos_token_ids = tuple(
+        int(token) for token in prompt_case["eosTokenIds"])
+    if not expected_token_ids:
+        raise ValueError("referenceGeneratedTokenIds must not be empty")
+    if len(expected_token_ids) > args.max_new_tokens:
+        raise ValueError("reference generation exceeds max_new_tokens")
+    if require_eos and expected_token_ids[-1] not in eos_token_ids:
+        raise ValueError("reference generation must terminate with EOS")
+
+    def token_step(context, token_epoch, request_id):
+        token_step_started = time.perf_counter()
+        application_encode_started = token_step_started
+        request_payload = encode_qwen_pipeline_context(
+            [list(context)],
+            attention_mask=[[1] * len(context)],
+            request_id=request_id,
+            session_id=generation_id,
+            context_epoch=token_epoch,
+        )
+        if getattr(args, "automatic_planning_manifest", ""):
+            application_input = args._automatic_adapter.task.encode_input(
+                request_payload,
+                {
+                    "greedy": True,
+                    "maxNewTokens": 1,
+                    "useCache": False,
+                },
+            )
+            application_encode_ms = (
+                time.perf_counter() - application_encode_started
+            ) * 1000.0
+            client_request_started = time.perf_counter()
+            handle = client.request(
+                model=args._automatic_model,
+                task=args._automatic_task,
+                input=application_input,
+                timeout_ms=args.timeout_ms,
+                request_id=request_id,
+            )
+            client_request_ms = (
+                time.perf_counter() - client_request_started
+            ) * 1000.0
+            response_started = time.perf_counter()
+            response_payload = handle.result(args.timeout_ms)
+            response_wait_decode_ms = (
+                time.perf_counter() - response_started
+            ) * 1000.0
+            phase_timings = dict(handle.planning_timings_ms)
+            phase_timings.update({
+                "application_input_encode_ms": application_encode_ms,
+                "client_request_ms": client_request_ms,
+                "response_wait_decode_ms": response_wait_decode_ms,
+                "token_step_total_ms": (
+                    time.perf_counter() - token_step_started
+                ) * 1000.0,
+            })
+            print(
+                "LLM_PIPELINE_QWEN_REQUEST_PHASE_TIMING",
+                f"requestId={request_id}",
+                json.dumps(
+                    phase_timings,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                flush=True,
+            )
+            result = type("AutomaticInferenceResult", (), {
+                "status": True,
+                "payload": response_payload,
+                "error": "",
+                "request_id": handle.collaboration.request_id,
+            })()
+        else:
+            result = client.distributed_inference(
+                SERVICE,
+                request_payload,
+                deployment_revision=args.deployment_revision,
+                dynamic_provisioning=False,
+                ack_timeout_ms=args.ack_timeout_ms,
+                timeout_ms=args.timeout_ms,
+                request_id=request_id,
+            )
+        if not result.status:
+            raise RuntimeError(str(result.error) or "distributed token step failed")
+        wire_request_id = str(getattr(result, "request_id", "") or request_id)
+        if wire_request_id != request_id:
+            raise RuntimeError(
+                "distributed token response request ID mismatch: "
+                f"expected={request_id} actual={wire_request_id}"
+            )
+        response = decode_payload(result.payload)
+        if "topToken" not in response:
+            raise RuntimeError("distributed token response lacks topToken")
+        expected_stages = int(getattr(args, "stages", 0) or 0)
+        if (
+            expected_stages
+            and int(response.get("stageCount", 0) or 0) != expected_stages
+        ):
+            raise RuntimeError(
+                "distributed token response stageCount mismatch")
+        return {
+            "topToken": int(response["topToken"]),
+            "wireRequestId": wire_request_id,
+            "attempt": 1,
+            "planId": args.deployment_revision,
+            "modelIdentityDigest": getattr(args, "model_identity_digest", ""),
+            "responseSchema": str(response.get("schema", "")),
+            "stageCount": int(response.get("stageCount", 0) or 0),
+            "layerRanges": response.get("layerRanges", []),
+        }
+
+    return run_bounded_qwen_generation(
+        input_token_ids=input_token_ids,
+        max_new_tokens=args.max_new_tokens,
+        eos_token_ids=eos_token_ids,
+        generation_id=generation_id,
+        token_step=token_step,
+        expected_token_ids=expected_token_ids,
+        require_eos=require_eos,
+        decode=decoder,
+    )
+
+
+def _run_qwen_transformer_generation_campaign(client, args, campaign: dict) -> int:
+    if campaign.get("schemaVersion") != "ndnsf-di-qwen-generation-campaign-v1":
+        raise RuntimeError("unsupported Qwen generation campaign schema")
+    generation = dict(campaign.get("generation", {}))
+    repetitions = dict(campaign.get("repetitions", {}))
+    if generation.get("strategy") != "greedy":
+        raise RuntimeError("Qwen generation campaign must use greedy strategy")
+    manifest_max = int(generation.get("maxNewTokens", 0))
+    if manifest_max != args.max_new_tokens:
+        raise RuntimeError(
+            "campaign maxNewTokens differs from --max-new-tokens")
+    require_eos = generation.get("requireEos", True)
+    if not isinstance(require_eos, bool):
+        raise RuntimeError("campaign requireEos must be boolean")
+    warmup_count = int(repetitions.get("warmupPerPrompt", 0))
+    measured_count = int(repetitions.get("measuredPerPrompt", 0))
+    if warmup_count < 0 or measured_count < 1:
+        raise RuntimeError(
+            "generation campaign requires non-negative warmup and positive measured counts")
+    prompts = list(campaign.get("prompts", []))
+    if not prompts:
+        raise RuntimeError("generation campaign requires at least one prompt")
+    prompt_ids = [str(prompt.get("promptId", "")) for prompt in prompts]
+    if any(not prompt_id for prompt_id in prompt_ids):
+        raise RuntimeError("campaign prompt IDs must not be empty")
+    if len(set(prompt_ids)) != len(prompt_ids):
+        raise RuntimeError("campaign prompt IDs must be unique")
+    safe_characters = frozenset(
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+    if any(
+        any(character not in safe_characters for character in prompt_id)
+        for prompt_id in prompt_ids
+    ):
+        raise RuntimeError("campaign prompt IDs contain unsafe characters")
+    if not args.generation_jsonl:
+        raise RuntimeError(
+            "--generation-jsonl is required for a generation campaign")
+    if not args.qwen_tokenizer_dir:
+        raise RuntimeError(
+            "--qwen-tokenizer-dir is required for a generation campaign")
+
+    from transformers import AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.qwen_tokenizer_dir,
+        local_files_only=True,
+        trust_remote_code=False,
+    )
+    decoder = lambda values: tokenizer.decode(
+        list(values), skip_special_tokens=True)
+    output_path = Path(args.generation_jsonl)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    campaign_id = str(campaign.get("campaignId", ""))
+    if not campaign_id:
+        raise RuntimeError("campaignId must not be empty")
+    if any(character not in safe_characters for character in campaign_id):
+        raise RuntimeError("campaignId contains unsafe characters")
+
+    with output_path.open("x", encoding="utf-8") as output:
+        for prompt_case in prompts:
+            prompt_id = str(prompt_case["promptId"])
+            phases = (
+                [("warmup", index) for index in range(warmup_count)]
+                + [("measured", index) for index in range(measured_count)]
+            )
+            for phase, repetition in phases:
+                marker = "w" if phase == "warmup" else "m"
+                generation_id = (
+                    f"{campaign_id}-{prompt_id}-{marker}{repetition}")
+                result = _run_qwen_transformer_generation_sample(
+                    client,
+                    args,
+                    prompt_case=prompt_case,
+                    generation_id=generation_id,
+                    decoder=decoder,
+                    require_eos=require_eos,
+                )
+                row = {
+                    **result.to_dict(),
+                    "schemaVersion": "ndnsf-di-qwen-generation-sample-v1",
+                    "campaignId": campaign_id,
+                    "promptId": prompt_id,
+                    "phase": phase,
+                    "repetition": repetition,
+                    "inputTokenCount": len(
+                        prompt_case["formattedInputIds"]),
+                    "workloadDigest": getattr(args, "workload_digest", ""),
+                    "modelIdentityDigest": getattr(
+                        args, "model_identity_digest", ""),
+                    "planId": args.deployment_revision,
+                }
+                output.write(
+                    json.dumps(row, sort_keys=True, separators=(",", ":"))
+                    + "\n")
+                output.flush()
+                print(
+                    "LLM_PIPELINE_GENERATION_SAMPLE",
+                    f"campaignId={campaign_id}",
+                    f"promptId={prompt_id}",
+                    f"phase={phase}",
+                    f"repetition={repetition}",
+                    f"generationId={generation_id}",
+                    f"status={result.status}",
+                    f"stopReason={result.stop_reason}",
+                    f"tokenCount={len(result.generated_token_ids)}",
+                    f"totalMs={result.total_ms:.3f}",
+                    flush=True,
+                )
+                if result.status != "OK":
+                    print(
+                        "LLM_PIPELINE_GENERATION_CAMPAIGN_FAIL",
+                        f"campaignId={campaign_id}",
+                        f"promptId={prompt_id}",
+                        f"phase={phase}",
+                        f"repetition={repetition}",
+                        flush=True,
+                    )
+                    return 2
+    print(
+        "LLM_PIPELINE_GENERATION_CAMPAIGN_PASS",
+        f"campaignId={campaign_id}",
+        f"promptCount={len(prompts)}",
+        f"warmupSamples={len(prompts) * warmup_count}",
+        f"measuredSamples={len(prompts) * measured_count}",
+        flush=True,
+    )
+    return 0
+
+
 def main() -> int:
     parser = parse_common_args("Run validation LLM pipeline user")
     parser.add_argument("--prompt", default="Explain NDNSF-DI pipeline inference.")
@@ -618,6 +994,9 @@ def main() -> int:
     )
     parser.add_argument("--transformer-layers", type=int, default=4)
     parser.add_argument("--qwen-runtime-summary", default="")
+    parser.add_argument("--generation-campaign-manifest", default="")
+    parser.add_argument("--generation-jsonl", default="")
+    parser.add_argument("--qwen-tokenizer-dir", default="")
     parser.add_argument("--native-cpu-provider", action="store_true")
     parser.add_argument("--qwen-service-manifest", default="")
     parser.add_argument("--max-new-tokens", type=int, default=1)
@@ -659,6 +1038,8 @@ def main() -> int:
     parser.add_argument("--measured-duration-s", type=float, default=0.0)
     parser.add_argument("--request-interval-ms", type=float, default=0.0)
     parser.add_argument("--metrics-csv", default="")
+    parser.add_argument("--workload-digest", default="")
+    parser.add_argument("--model-identity-digest", default="")
     parser.add_argument("--campaign-id", default="")
     parser.add_argument("--spec107-candidate-id", default="")
     parser.add_argument("--spec107-diagnostic-timing-jsonl", default="")
@@ -677,9 +1058,17 @@ def main() -> int:
     parser.add_argument("--provider-trust-bundle", default="")
     parser.add_argument("--deployment-control-service", action="append", default=[])
     parser.add_argument("--deployment-workflow-summary", default="")
+    parser.add_argument(
+        "--automatic-planning-manifest",
+        default="",
+        help="Spec 162 exact model/graph/pre-split manifest for DEFERRED planning.",
+    )
+    parser.add_argument("--selection-offer-key-map", default="")
+    parser.add_argument(
+        "--selection-cache-max-age-ms", type=int, default=600000)
     args = parser.parse_args()
-    if args.max_new_tokens < 1 or args.max_new_tokens > 32:
-        raise SystemExit("--max-new-tokens must be between 1 and 32")
+    if args.max_new_tokens < 1 or args.max_new_tokens > 64:
+        raise SystemExit("--max-new-tokens must be between 1 and 64")
     if args.native_cpu_provider and args.publish_input_reference:
         raise SystemExit("native CPU pilot does not yet accept referenced request bundles")
     if args.durable_app_submit and not args.deployment_revision:
@@ -689,8 +1078,20 @@ def main() -> int:
             args.provider_trust_bundle, args.deployment_workflow_summary)):
         raise SystemExit(
             "--deployment-workflow requires revision/definition/trust/summary")
+    if bool(args.automatic_planning_manifest) != bool(
+            args.selection_offer_key_map):
+        raise SystemExit(
+            "automatic planning requires both manifest and offer key map")
 
     qwen_summary = {}
+    generation_campaign = {}
+    if args.generation_campaign_manifest:
+        generation_campaign = json.loads(
+            Path(args.generation_campaign_manifest).read_text(encoding="utf-8"))
+        if args.runtime not in (QWEN_TRANSFORMERS_RUNTIME, QWEN_ONNX_RUNTIME):
+            raise SystemExit(
+                "generation campaigns require a real Qwen runtime "
+                "(qwen-transformers or qwen-onnx)")
     if args.runtime in (QWEN_TRANSFORMERS_RUNTIME, QWEN_ONNX_RUNTIME) and args.qwen_runtime_summary:
         qwen_summary = json.loads(Path(args.qwen_runtime_summary).read_text(encoding="utf-8"))
     if args.runtime == QWEN_ONNX_RUNTIME:
@@ -698,14 +1099,29 @@ def main() -> int:
         # decoding exists only inside the library as a labeled comparison fixture.
         print("LLM_PIPELINE_TENSOR_TRANSPORT typed-tensor-bundle", flush=True)
     if args.runtime in (QWEN_TRANSFORMERS_RUNTIME, QWEN_ONNX_RUNTIME):
-        if not qwen_summary:
-            raise SystemExit("--qwen-runtime-summary is required for Qwen runtimes")
+        if not qwen_summary and not generation_campaign:
+            raise SystemExit(
+                "--qwen-runtime-summary or --generation-campaign-manifest "
+                "is required for Qwen runtimes")
+        first_prompt = (
+            list(generation_campaign.get("prompts", [{}]))[0]
+            if generation_campaign else {}
+        )
+        campaign_input_ids = first_prompt.get("formattedInputIds")
+        input_ids = (
+            [list(campaign_input_ids)]
+            if campaign_input_ids is not None else qwen_summary["inputIds"]
+        )
         session_id = args.session_id or (
             args.request_id if args.context_input_mode != "full" else ""
         )
         payload = encode_qwen_pipeline_context(
-            qwen_summary["inputIds"],
-            attention_mask=qwen_summary.get("attentionMask"),
+            input_ids,
+            attention_mask=(
+                [[1] * len(campaign_input_ids)]
+                if campaign_input_ids is not None
+                else qwen_summary.get("attentionMask")
+            ),
             request_id=args.request_id,
             session_id=session_id,
             context_epoch=args.context_epoch,
@@ -720,11 +1136,16 @@ def main() -> int:
             compute_delay_ms=args.compute_delay_ms,
         )
     elif args.runtime in (QWEN_TRANSFORMERS_RUNTIME, QWEN_ONNX_RUNTIME):
+        first_reference = first_prompt.get(
+            "referenceGeneratedTokenIds", [0])
         local = type("LocalResult", (), {
             "payload": json.dumps({
                 "schema": "ndnsf-di-qwen-transformer-response-v1",
                 "runtime": args.runtime,
-                "topToken": int(qwen_summary["expectedTopToken"]),
+                "topToken": int(
+                    first_reference[0]
+                    if generation_campaign
+                    else qwen_summary["expectedTopToken"]),
             }).encode("utf-8"),
             "elapsed_ms": float(qwen_summary.get("fullMs", 0.0)),
         })()
@@ -752,12 +1173,29 @@ def main() -> int:
         test_only_allow_ephemeral_state_root=(
             args.test_only_allow_ephemeral_app_state),
     )
+    if args.automatic_planning_manifest:
+        _configure_qwen_automatic_planning(client, args)
+    startup_settle_ms = int(os.environ.get("NDNSF_DI_STARTUP_SETTLE_MS", "0"))
+    if startup_settle_ms < 0:
+        raise ValueError("NDNSF_DI_STARTUP_SETTLE_MS must be non-negative")
+    if startup_settle_ms:
+        # APPClient starts the native ServiceUser's Face loop during
+        # construction.  Give its producer prefix and first SVS mapping a
+        # bounded opportunity to register before the first request is
+        # published; this is especially important on a multi-node mesh.
+        time.sleep(startup_settle_ms / 1000.0)
     if not args.deployment_revision:
         args.deployment_revision = "sha256:" + hashlib.sha256(
             Path(args.config).read_bytes()).hexdigest()
     deployment_workflow = (
         _start_deployment_workflow(client, args)
         if args.deployment_workflow else None)
+    if generation_campaign:
+        try:
+            return _run_qwen_transformer_generation_campaign(
+                client, args, generation_campaign)
+        finally:
+            client.shutdown(wait=False)
     local_qwen_onnx = None
     if (
         args.runtime == QWEN_ONNX_RUNTIME and

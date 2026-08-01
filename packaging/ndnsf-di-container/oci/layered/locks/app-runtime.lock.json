@@ -1,0 +1,86 @@
+{
+  "schemaVersion": "ndnsf-di-layer-lock-v1",
+  "layer": "app-runtime",
+  "sourcePolicy": "allowlisted-working-tree-snapshot",
+  "sources": {
+    "NDNSD": {
+      "url": "https://github.com/matianxing1992/NDNSD.git",
+      "revision": "25f7ad9d2f8848c10025e71358e3dafd62c348c0",
+      "sourcePolicy": "sealed-archive"
+    },
+    "ndn-svs": {
+      "pathHint": "/home/tianxing/NDN/ndn-svs",
+      "url": "https://github.com/matianxing1992/ndn-svs.git",
+      "baseRevision": "6bb34545b4f89f1f6c265a68c18f1a40ade413eb"
+    },
+    "ndnsf-workspace": {
+      "pathHint": ".",
+      "baseRevision": "f179f779f2e6863f23d8387d38f6b45bb58a59ef"
+    }
+  },
+  "installPrefix": "/opt/ndnsf-app",
+  "pythonTarget": "/opt/ndnsf-app/python",
+  "buildCompatibilityPatches": {
+    "ndn-svs-boost-1.71": {
+      "path": "packaging/ndnsf-di-container/oci/layered/patches/ndn-svs-boost-1.71.patch",
+      "sha256": "bf35cc763bc8339a17e57896b390d3f855335439d1480e410c7fd847437e5653",
+      "scope": "build-only sealed ndn-svs wscript compatibility",
+      "allowedChanges": [
+        "BOOST_VERSION_NUMBER < 107400 -> BOOST_VERSION_NUMBER < 107100",
+        "minimum supported version of Boost is 1.74.0 -> minimum supported version of Boost is 1.71.0"
+      ]
+    }
+  },
+  "workspaceIncludeRoots": [
+    ".waf-tools",
+    "waf",
+    "wscript",
+    "libndn-service-framework.pc.in",
+    "ndn-service-framework",
+    "NDNSF-DistributedRepo",
+    "NDNSF-DistributedInference",
+    "NDNSF-UAV-APP",
+    "examples",
+    "pythonWrapper"
+  ],
+  "ownerProfiles": [
+    "core",
+    "sdk",
+    "app",
+    "planner",
+    "adapters/onnx",
+    "adapters/qwen",
+    "adapters/llama",
+    "ops",
+    "compat"
+  ],
+  "runtimePythonPackages": {
+    "cffi": "1.17.1",
+    "cryptography": "44.0.1",
+    "pycparser": "2.22"
+  },
+  "excludedContent": [
+    ".git",
+    ".codegraph",
+    ".planning",
+    ".specify",
+    "build",
+    "__pycache__",
+    "*.pyc",
+    "results",
+    "RELEASE",
+    "Experiments",
+    "videos",
+    "models",
+    "identities",
+    "secrets",
+    "*.onnx",
+    "*.pt",
+    "*.safetensors",
+    "*.gguf",
+    "*.key",
+    "*.pem",
+    "*.p12"
+  ],
+  "cpuFallbackAllowed": false
+}

@@ -5,6 +5,9 @@ build-backend = "setuptools.build_meta"
 name = "ndnsf-di-sdk"
 version = "0.111.0"
 dependencies = ["ndnsf-di-core==0.111.0"]
-[tool.setuptools.packages.find]
-where = ["../../.."]
-include = ["ndnsf_distributed_inference.sdk*"]
+[tool.setuptools]
+package-dir = {"" = "../../.."}
+packages = [
+  "ndnsf_distributed_inference.sdk",
+  "ndnsf_distributed_inference.adapters",
+]

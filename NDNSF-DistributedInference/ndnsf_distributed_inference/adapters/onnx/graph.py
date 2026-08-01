@@ -16,6 +16,21 @@ from typing import Any, Sequence
 
 from ...plan import InferenceDependency
 from ...core.ports import CandidateBudget, PlanCandidate, PlanCandidateSet
+from ...splitter import (
+    AdapterDescriptor,
+    GraphNodeView,
+    ModelDescriptor,
+    ModelGraphSnapshot,
+    RoleDependency,
+    RoleExecutionPlan,
+    RoleResourceRequirement,
+    SplitCandidate,
+    SplitSource,
+    SplitterDescriptor,
+    TensorContract,
+    TensorEdgeView,
+    canonical_contract_digest,
+)
 
 
 _ONNX_DTYPE_SIZES = {
@@ -361,6 +376,174 @@ def estimate_split_candidates(
         selected.setdefault(candidate.cut_after_node, candidate)
 
     return sorted(selected.values(), key=_split_candidate_transfer_key)
+
+
+def to_model_graph_snapshot(
+    summary: OnnxGraphSummary,
+    adapter: AdapterDescriptor,
+) -> ModelGraphSnapshot:
+    """Normalize ONNX dependencies into the model-family-neutral graph value."""
+
+    if "onnx" not in adapter.model_formats:
+        raise ValueError("adapter does not declare ONNX model support")
+    node_ids = {
+        node.index: f"onnx-node-{node.index}"
+        for node in summary.nodes
+    }
+    if len(node_ids) != len(summary.nodes):
+        raise ValueError("ONNX graph contains duplicate node indices")
+    edges = []
+    for tensor_name, producer_index in sorted(summary.tensor_producers.items()):
+        consumer_indices = summary.tensor_consumers.get(tensor_name, ())
+        if not consumer_indices:
+            continue
+        if producer_index not in node_ids or any(
+                index not in node_ids for index in consumer_indices):
+            raise ValueError("ONNX tensor dependency references an unknown node")
+        tensor = summary.tensor(tensor_name)
+        edges.append(TensorEdgeView(
+            edge_id=tensor_name,
+            producer=node_ids[producer_index],
+            consumers=tuple(node_ids[index] for index in consumer_indices),
+            dtype=tensor.dtype or "unknown",
+            shape=tensor.shape,
+            estimated_bytes=tensor.size_bytes,
+        ))
+    legal_cut_edges = tuple(sorted({
+        tensor
+        for candidate in estimate_split_candidates(summary, max_candidates=0)
+        for tensor in candidate.boundary_tensors
+        if tensor in {edge.edge_id for edge in edges}
+    }))
+    graph_identity = {
+        "adapter_descriptor_digest": adapter.descriptor_digest,
+        "inputs": summary.inputs,
+        "outputs": summary.outputs,
+        "initializers": summary.initializers,
+        "tensors": {
+            name: tensor.to_dict()
+            for name, tensor in sorted(summary.tensors.items())
+        },
+        "nodes": tuple(node.to_dict() for node in summary.nodes),
+        "tensor_producers": summary.tensor_producers,
+        "tensor_consumers": summary.tensor_consumers,
+    }
+    return ModelGraphSnapshot(
+        graph_digest=canonical_contract_digest(graph_identity),
+        adapter=adapter,
+        nodes=tuple(
+            GraphNodeView(node_ids[node.index], node.op_type)
+            for node in summary.nodes
+        ),
+        edges=tuple(edges),
+        topological_order=tuple(node_ids[node.index] for node in summary.nodes),
+        legal_cut_edges=legal_cut_edges,
+        model_inputs=tuple(
+            TensorContract(
+                name,
+                summary.tensor(name).dtype or "unknown",
+                summary.tensor(name).shape,
+                summary.tensor(name).size_bytes,
+            )
+            for name in summary.inputs
+        ),
+        model_outputs=tuple(
+            TensorContract(
+                name,
+                summary.tensor(name).dtype or "unknown",
+                summary.tensor(name).shape,
+                summary.tensor(name).size_bytes,
+            )
+            for name in summary.outputs
+        ),
+    )
+
+
+def to_split_candidate(
+    *,
+    summary: OnnxGraphSummary,
+    candidate: OnnxSplitCandidate,
+    model: ModelDescriptor,
+    graph: ModelGraphSnapshot,
+    splitter: SplitterDescriptor,
+) -> SplitCandidate:
+    """Normalize one ONNX topological cut without inventing size bounds."""
+
+    model.validate_graph(graph)
+    if candidate.cut_after_node < 0 or candidate.cut_after_node >= len(
+            summary.nodes) - 1:
+        raise ValueError("ONNX split cut is outside the graph")
+    node_roles = {
+        f"onnx-node-{node.index}": (
+            "stage-0" if position <= candidate.cut_after_node else "stage-1"
+        )
+        for position, node in enumerate(summary.nodes)
+    }
+    graph_edges = {edge.edge_id: edge for edge in graph.edges}
+    crossed = tuple(
+        tensor for tensor in candidate.boundary_tensors
+        if tensor in graph_edges
+        and graph_edges[tensor].producer in node_roles
+        and any(
+            node_roles[consumer] != node_roles[graph_edges[tensor].producer]
+            for consumer in graph_edges[tensor].consumers
+        )
+    )
+    dependencies = (
+        RoleDependency("stage-0", "stage-1", crossed),
+    ) if crossed else ()
+    has_unknown_transfer = any(
+        graph_edges[tensor].estimated_bytes is None for tensor in crossed
+    )
+    known_transfer = sum(
+        graph_edges[tensor].estimated_bytes or 0 for tensor in crossed
+    )
+    fragments = {
+        role: canonical_contract_digest({
+            "model": model.model_digest,
+            "graph": graph.graph_digest,
+            "splitter": splitter.descriptor_digest,
+            "cut_after_node": candidate.cut_after_node,
+            "role": role,
+        })
+        for role in ("stage-0", "stage-1")
+    }
+    requirements = {
+        role: RoleResourceRequirement(
+            backends=model.adapter.backends,
+            weight_bytes=None,
+            workspace_bytes=None,
+            kv_bytes=None,
+            activation_bytes=None if has_unknown_transfer else known_transfer,
+            transient_bytes=None,
+        )
+        for role in ("stage-0", "stage-1")
+    }
+    normalized = SplitCandidate(
+        source=SplitSource.GENERATED,
+        splitter=splitter,
+        model=model,
+        graph_digest=graph.graph_digest,
+        execution_plan=RoleExecutionPlan(
+            roles=("stage-0", "stage-1"),
+            dependencies=dependencies,
+            node_roles=node_roles,
+        ),
+        fragments_by_role=fragments,
+        artifacts_by_role={
+            role: (fragment,) for role, fragment in fragments.items()
+        },
+        requirements_by_role=requirements,
+        cross_partition_tensors=crossed,
+        estimated_costs={
+            "known_transfer_bytes": known_transfer,
+            "unknown_transfer_tensors": sum(
+                graph_edges[tensor].estimated_bytes is None for tensor in crossed
+            ),
+        },
+    )
+    normalized.validate_against(graph)
+    return normalized
 
 
 def _split_candidate_transfer_key(candidate: OnnxSplitCandidate):

@@ -23,10 +23,15 @@ def _install_py_repoclient(bld):
 
 def build(bld):
     repo_sources = [
+        'src/ArtifactManifest.cpp',
+        'src/ArtifactTransfer.cpp',
+        'src/ArtifactTypes.cpp',
+        'src/backends/FilesystemArtifactStore.cpp',
         'src/RepoClient.cpp',
         'src/RepoCore.cpp',
         'src/RepoNode.cpp',
         'src/RepoProtocol.cpp',
+        'src/RepoStoreBackend.cpp',
         'src/RepoTypes.cpp',
     ]
 

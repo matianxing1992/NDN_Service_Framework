@@ -1,6 +1,7 @@
 #include "ndnsf-distributed-repo/RepoNode.hpp"
 
 #include "ndn-service-framework/LocalServiceRegistry.hpp"
+#include "ndn-service-framework/ServiceProvider.hpp"
 
 #include <ndn-cxx/data.hpp>
 #include <ndn-cxx/encoding/block.hpp>
@@ -315,12 +316,13 @@ RepoNode::registerLocalServices(ndn_service_framework::LocalServiceRegistry& reg
         makeRepoServiceName(m_servicePrefix, operation),
         [this, handler = std::move(handler)] (
           const ndn::Name&, const ndn::Name&,
-          const ndn_service_framework::RequestMessage& request) {
+          const ndn_service_framework::RequestMessage& request,
+          ndn_service_framework::ResponseMessage& response) {
           try {
-            return makeResponse(handler(payloadOf(request)));
+            response = makeResponse(handler(payloadOf(request)));
           }
           catch (const std::exception& e) {
-            return makeError(e.what());
+            response = makeError(e.what());
           }
         });
     };

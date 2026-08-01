@@ -84,7 +84,11 @@ class RepoCoreDiscoverySelectionTest(unittest.TestCase):
             repo_service_for_operation("CATALOG_DELTA"),
             "/NDNSF/DistributedRepo/Internal/v1/CATALOG_DIGEST",
         )
-        self.assertEqual(len(repo_versioned_services()), 13)
+        self.assertEqual(len(repo_versioned_services()), 11)
+        for retired_operation in ("RESERVE_CAPACITY", "RELEASE_CAPACITY"):
+            with self.assertRaisesRegex(
+                    ValueError, "unsupported repo operation"):
+                repo_service_for_operation(retired_operation)
 
     def test_versioned_service_rejects_payload_operation_mismatch(self) -> None:
         app = self._repo_app_validation_fixture()

@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+from threading import RLock
 from time import monotonic, perf_counter, sleep, time
 from typing import Callable, Mapping, Sequence
 
@@ -39,10 +40,13 @@ from .artifact_deployment import (
 from .core import (
     AssignmentContext, AtomicReservationBook, ProviderAssignment, ProviderProfileV1,
     RuntimeTelemetryV1, DeploymentIntent, DeploymentPlan,
+    DIRequestEnvelopeV2, DISelectionAssignmentV2, DISelectionParticipant,
+    GpuMiBAdmissionLedger,
     ExecutionActivateMessage, ProviderCapabilityOffer, PreparationCallbacks,
     ReservationDecisionAuthority, SelectionDecision, SelectionGatedProvider,
 )
 from .plan import RoleDependencyView
+from .sdk.placement import DIProviderOfferV2, canonical_digest
 
 
 @dataclass(frozen=True)
@@ -91,6 +95,202 @@ class ProviderAdmissionPolicy:
             diagnostics["admissionThreshold"] = self.max_queue_wait_ewma_ms
             return False, NEGATIVE_ACK_REASON_PROVIDER_BUSY, diagnostics
         return True, "", diagnostics
+
+
+class DIProviderOfferIssuer:
+    """Issue signed, capacity-held V2 offers for positive generic ACKs.
+
+    The issuer sanitizes the ACK payload to the public V2 contract and reserves
+    its GPU-MiB promise before returning a positive decision. Call
+    ``release_unused`` when ACK closure identifies offers that were not
+    selected.
+    """
+
+    def __init__(
+        self, *, provider: str, service: str, boot_epoch: str,
+        ledger: GpuMiBAdmissionLedger, offered_gpu_memory_mb: int,
+        signer_key_id: str, sign_offer_digest: Callable[[str], str],
+        offer_lease_ms: int = 5000,
+        max_pending_state_ttl_ms: int = 60 * 60 * 1000,
+        clock_ms: Callable[[], int] | None = None,
+    ) -> None:
+        if (ledger.provider != provider or ledger.boot_epoch != boot_epoch
+                or offered_gpu_memory_mb <= 0 or not signer_key_id
+                or not callable(sign_offer_digest) or offer_lease_ms <= 0
+                or max_pending_state_ttl_ms <= 0):
+            raise ValueError("invalid DI Provider offer issuer")
+        self.provider = provider
+        self.service = service
+        self.boot_epoch = boot_epoch
+        self.ledger = ledger
+        self.offered_gpu_memory_mb = int(offered_gpu_memory_mb)
+        self.signer_key_id = signer_key_id
+        self._sign = sign_offer_digest
+        self.offer_lease_ms = int(offer_lease_ms)
+        self.max_pending_state_ttl_ms = int(max_pending_state_ttl_ms)
+        self._clock_ms = clock_ms or (lambda: int(time() * 1000))
+        self._sequence = 0
+        self._offers: dict[str, DIProviderOfferV2] = {}
+        self._lock = RLock()
+
+    def issue(
+        self, request_wire: bytes, *, accepted_roles: Sequence[str],
+        backends: Sequence[str], queue_depth: int | None = None,
+        estimated_wait_ms: float | None = None,
+        rtt_ms: float | None = None, bandwidth_mbps: float | None = None,
+        cached_shards: Sequence[object] = (),
+        reusable_state: Sequence[object] = (),
+    ) -> AckDecision:
+        request = DIRequestEnvelopeV2.from_bytes(request_wire)
+        now_ms = self._clock_ms()
+        if request.service != self.service or request.plan_deadline_ms <= now_ms:
+            return AckDecision(
+                status=False, message="DI_V2_REQUEST_NOT_ADMISSIBLE")
+        pending_state_ttl_ms = request.plan_deadline_ms - now_ms
+        if pending_state_ttl_ms > self.max_pending_state_ttl_ms:
+            return AckDecision(
+                status=False,
+                message="DI_V2_REQUEST_DEADLINE_EXCEEDS_PROVIDER_LIMIT")
+        with self._lock:
+            # Core may re-enter the collaboration ACK policy while the same
+            # request is being admitted (for example after a Selection
+            # retransmission or an ACK replay).  A positive DI ACK already
+            # owns one ledger hold; issuing a second signed offer for the same
+            # request would try to reserve the same GPU twice and incorrectly
+            # turn a valid Selection into DI_GPU_CAPACITY_UNAVAILABLE.
+            # Reuse only an unexpired offer with the complete immutable request
+            # and capability binding.  A different request, attempt, model,
+            # role set, or backend set still goes through fresh admission.
+            accepted_roles_tuple = tuple(accepted_roles)
+            backends_tuple = tuple(backends)
+            for offer in tuple(self._offers.values()):
+                if (
+                    offer.request_id == request.request_id
+                    and offer.attempt == request.attempt
+                    and offer.service == request.service
+                    and offer.model_intent_digest == request.model_identity_hash
+                    and offer.provider == self.provider
+                    and offer.boot_epoch == self.boot_epoch
+                    and offer.accepted_roles == accepted_roles_tuple
+                    and offer.backends == backends_tuple
+                    and offer.expires_at_ms > now_ms
+                ):
+                    return AckDecision(
+                        status=True,
+                        message="DI_SELECTION_DATAFLOW_V2_READY",
+                        payload=offer.to_bytes(),
+                        pending_state_ttl_ms=pending_state_ttl_ms)
+            self._sequence += 1
+            evidence = {
+                "provider": self.provider,
+                "boot_epoch": self.boot_epoch,
+                "resource_sequence": self._sequence,
+                "accepted_roles": accepted_roles_tuple,
+                "backends": backends_tuple,
+                "gpu_mib": self.offered_gpu_memory_mb,
+                "queue_depth": queue_depth,
+                "estimated_wait_ms": estimated_wait_ms,
+                "rtt_ms": rtt_ms,
+                "bandwidth_mbps": bandwidth_mbps,
+                "cached_shards": tuple(cached_shards),
+                "reusable_state": tuple(reusable_state),
+            }
+            unsigned = DIProviderOfferV2(
+                profile="ndnsf-di-provider-offer-v2",
+                profile_version=2,
+                request_id=request.request_id,
+                attempt=request.attempt,
+                service=request.service,
+                provider=self.provider,
+                model_intent_digest=request.model_identity_hash,
+                boot_epoch=self.boot_epoch,
+                resource_sequence=self._sequence,
+                captured_at_ms=now_ms,
+                expires_at_ms=min(
+                    request.plan_deadline_ms, now_ms + self.offer_lease_ms),
+                accepted_deadline_ms=request.plan_deadline_ms,
+                accepted_roles=accepted_roles_tuple,
+                backends=backends_tuple,
+                offered_gpu_memory_mb=self.offered_gpu_memory_mb,
+                queue_depth=queue_depth,
+                estimated_wait_ms=estimated_wait_ms,
+                rtt_ms=rtt_ms,
+                bandwidth_mbps=bandwidth_mbps,
+                capability_resource_digest=canonical_digest({
+                    "provider": self.provider,
+                    "boot_epoch": self.boot_epoch,
+                    "capacity_mib": self.ledger.capacity_mib,
+                }),
+                acceptance_predicate_digest=canonical_digest({
+                    "predicate": "DI_ACCEPTANCE_V2",
+                    "service": self.service,
+                }),
+                evidence_digest=canonical_digest(evidence),
+                signer_key_id=self.signer_key_id,
+                signature="unsigned-placeholder",
+                cached_shards=tuple(cached_shards),
+                reusable_state=tuple(reusable_state),
+            )
+            signature = str(self._sign(unsigned.digest()))
+            if not signature:
+                raise ValueError("DI Provider offer signer returned no signature")
+            offer = replace(unsigned, signature=signature)
+            try:
+                self.ledger.hold_offer(offer, now_ms=now_ms)
+            except ValueError:
+                return AckDecision(
+                    status=False, message="DI_GPU_CAPACITY_UNAVAILABLE")
+            self._offers[offer.digest()] = offer
+            return AckDecision(
+                status=True, message="DI_SELECTION_DATAFLOW_V2_READY",
+                payload=offer.to_bytes(),
+                pending_state_ttl_ms=pending_state_ttl_ms)
+
+    def lookup(self, offer_digest: str) -> DIProviderOfferV2:
+        with self._lock:
+            return self._offers[offer_digest]
+
+    def release_unused(self, *, request_id: str, attempt: int,
+                       selected_offer_digest: str = "") -> None:
+        with self._lock:
+            for digest, offer in tuple(self._offers.items()):
+                if (offer.request_id == request_id and offer.attempt == attempt
+                        and digest != selected_offer_digest):
+                    self.ledger.release_offer(digest, reason="not-selected")
+                    self._offers.pop(digest, None)
+
+
+def register_selection_dataflow_v2(
+    network_provider: ServiceProvider,
+    *,
+    service: str,
+    participant: DISelectionParticipant,
+    wal_path: str | Path,
+    storage_key: bytes,
+    storage_key_epoch: str,
+    max_prepare_ms: int = 1000,
+) -> DISelectionParticipant:
+    """Attach DI V2 to the generic Core opaque Selection transaction.
+
+    Core owns authentication, token/lease disposition, encrypted WAL and
+    replay. This function registers only DI-owned semantic validation and
+    post-COMMITTED preparation callbacks.
+    """
+    network_provider.configure_opaque_selection_store(
+        wal_path=str(wal_path),
+        storage_key=bytes(storage_key),
+        storage_key_epoch=storage_key_epoch,
+        max_prepare_ms=max_prepare_ms,
+    )
+    network_provider.register_opaque_selection_participant(
+        service,
+        participant_id=participant.PARTICIPANT_ID,
+        participant_version=participant.PARTICIPANT_VERSION,
+        prepare=participant.prepare,
+        on_committed=participant.on_committed,
+        on_aborted=participant.on_aborted,
+    )
+    return participant
 
 
 def make_selection_gated_provider(
@@ -385,6 +585,12 @@ class DistributedInferenceProvider:
             if int(handler_workers) > 0 else None
         )
 
+    @property
+    def provider_boot_epoch(self) -> str:
+        """Return NDNSF Core's authoritative process-incarnation fence."""
+
+        return self.provider.provider_boot_epoch
+
     @classmethod
     def create(
         cls,
@@ -398,6 +604,7 @@ class DistributedInferenceProvider:
         ack_threads: int = 2,
         handler_workers: int = 0,
         serve_certificates: bool = True,
+        bootstrap_token: str = "",
     ) -> "DistributedInferenceProvider":
         """Create an inference provider without exposing NDNSF Core objects."""
 
@@ -410,6 +617,7 @@ class DistributedInferenceProvider:
             handler_threads=handler_threads,
             ack_threads=ack_threads,
             serve_certificates=serve_certificates,
+            bootstrap_token=bootstrap_token,
         ), handler_workers=handler_workers)
 
     def _run_handler(self, handler: InferenceHandler,
@@ -803,6 +1011,14 @@ class DistributedInferenceProvider:
         reservation_signature: str = "provider-reservation-signature",
         register_simple_service: bool = False,
         ready_without_model: bool = False,
+        selection_offer_issuer: DIProviderOfferIssuer | None = None,
+        selection_participant: DISelectionParticipant | None = None,
+        selection_wal_path: str | Path | None = None,
+        selection_storage_key: bytes | None = None,
+        selection_storage_key_epoch: str = "",
+        selection_max_prepare_ms: int = 1000,
+        selection_cached_shards: Callable[[], Sequence[object]] | None = None,
+        selection_reusable_state: Callable[[], Sequence[object]] | None = None,
     ) -> None:
         """Register one provider as capable of serving multiple inference roles.
 
@@ -817,6 +1033,23 @@ class DistributedInferenceProvider:
             raise ValueError("at least one role capability is required")
         backend_list = [_validate_list_token(str(backend), "backend")
                         for backend in backends]
+        if selection_offer_issuer is not None and not backend_list:
+            raise ValueError("V2 Selection offers require at least one backend")
+        if selection_participant is not None:
+            if (selection_offer_issuer is None or selection_wal_path is None
+                    or not selection_storage_key
+                    or not selection_storage_key_epoch):
+                raise ValueError(
+                    "V2 Selection participant requires issuer, WAL, and storage key")
+            register_selection_dataflow_v2(
+                self.provider,
+                service=service,
+                participant=selection_participant,
+                wal_path=selection_wal_path,
+                storage_key=selection_storage_key,
+                storage_key_epoch=selection_storage_key_epoch,
+                max_prepare_ms=selection_max_prepare_ms,
+            )
         local_artifacts = dict(local_artifacts or {})
 
         def attach_negotiated_reservation(
@@ -896,6 +1129,26 @@ class DistributedInferenceProvider:
             return replace(decision, reservation_lease=lease_fields)
 
         def ack(context: Mapping[str, object], _payload: bytes) -> AckDecision:
+            v2_request = False
+            v2_envelope: DIRequestEnvelopeV2 | None = None
+            try:
+                request_document = json.loads(bytes(_payload).decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                request_document = None
+            if (isinstance(request_document, dict)
+                    and request_document.get("schema")
+                    == "ndnsf-di-request-envelope-v2"):
+                try:
+                    v2_envelope = DIRequestEnvelopeV2.from_bytes(_payload)
+                except ValueError as exc:
+                    return AckDecision(
+                        status=False,
+                        message=f"DI_V2_REQUEST_REJECTED:{exc}")
+                v2_request = True
+                if selection_offer_issuer is None:
+                    return AckDecision(
+                        status=False,
+                        message="DI_SELECTION_DATAFLOW_V2_UNAVAILABLE")
             readiness_fields: dict[str, object] = {}
             if readiness_probe is not None:
                 readiness = readiness_probe()
@@ -1028,6 +1281,43 @@ class DistributedInferenceProvider:
                         message=reason,
                         payload=encode_provider_capability_ack(capability_hint),
                     )
+            if v2_request:
+                assert selection_offer_issuer is not None
+                assert v2_envelope is not None
+                current_cached_shards = (
+                    tuple(selection_cached_shards())
+                    if selection_cached_shards is not None
+                    else tuple(fields.get("cachedShards", ()) or ())
+                )
+                current_reusable_state = (
+                    tuple(selection_reusable_state())
+                    if selection_reusable_state is not None
+                    else tuple(fields.get("reusableState", ()) or ())
+                )
+                decision = selection_offer_issuer.issue(
+                    _payload, accepted_roles=role_list,
+                    backends=backend_list,
+                    queue_depth=(
+                        telemetry.aggregate_queue
+                        if telemetry is not None else queue_depth),
+                    estimated_wait_ms=(
+                        telemetry.queue_wait_ewma_ms
+                        if telemetry is not None else None),
+                    cached_shards=current_cached_shards,
+                    reusable_state=current_reusable_state,
+                )
+                print(
+                    "NDNSF_DI_ACK_DECISION",
+                    f"requestId={v2_envelope.request_id}",
+                    f"attempt={v2_envelope.attempt}",
+                    f"status={str(bool(decision.status)).lower()}",
+                    f"pendingStateTtlMs={decision.pending_state_ttl_ms}",
+                    "reservationHeld="
+                    f"{str(bool(decision.status)).lower()}",
+                    f"reason={decision.message or '-'}",
+                    flush=True,
+                )
+                return decision
             capability_hint = ProviderCapabilityHint(
                 provider_name=runtime_hint.provider_name,
                 service_name=service,
@@ -1111,6 +1401,39 @@ class DistributedInferenceProvider:
 
         def wrapped(ctx: CollaborationContext, request: bytes) -> None:
             sequence = 1
+            assignment_payload = bytes(ctx.assignment.assignment_payload or b"")
+            terminal_released = False
+
+            def release_selection_reservation(reason: str) -> None:
+                nonlocal terminal_released
+                if (terminal_released or selection_participant is None
+                        or not assignment_payload):
+                    return
+                assignment = DISelectionAssignmentV2.from_bytes(
+                    assignment_payload)
+                released = selection_participant.mark_role_terminal(
+                    assignment_payload, ctx.assignment.role, reason=reason)
+                terminal_released = True
+                if released:
+                    print(
+                        "NDNSF_DI_SELECTION_RESERVATION_RELEASED",
+                        f"requestId={assignment.request_id}",
+                        f"attempt={assignment.attempt}",
+                        f"role={ctx.assignment.role}",
+                        f"reason={reason}",
+                        flush=True,
+                    )
+
+            class TerminalAwareContext:
+                """Delegate Core context while releasing DI capacity before Response."""
+
+                def __getattr__(self, name):
+                    return getattr(ctx, name)
+
+                def publish_final_response(self, payload: bytes) -> None:
+                    release_selection_reservation("RESPONSE_PUBLISHED")
+                    ctx.publish_final_response(payload)
+
             self._report_preparation(
                 ctx, phase="ACCEPTED", sequence=sequence, progress=0.0)
 
@@ -1121,6 +1444,17 @@ class DistributedInferenceProvider:
                     ctx, phase=phase, sequence=sequence, progress=value)
 
             try:
+                if selection_participant is not None:
+                    if not assignment_payload:
+                        raise RuntimeError(
+                            "V2 Selection execution has no assignment payload")
+                    transaction_id = selection_participant.wait_role_prepared(
+                        assignment_payload,
+                        ctx.assignment.role,
+                        timeout=max(0.001, selection_max_prepare_ms / 1000.0),
+                    )
+                    selection_participant.mark_input_ready(
+                        ctx.assignment.role, transaction_id=transaction_id)
                 assigned_artifact = str(ctx.assignment.assigned_artifact or "")
                 role_has_local_artifact = bool(local_artifacts.get(ctx.assignment.role, {}).get("path"))
                 if has_model and role_has_local_artifact:
@@ -1153,6 +1487,7 @@ class DistributedInferenceProvider:
                 self._report_preparation(
                     ctx, phase="FAILED", sequence=sequence, progress=0.0,
                     reason=type(exc).__name__)
+                release_selection_reservation("PREPARATION_FAILED")
                 ctx.fail(f"failed to prepare inference execution: {exc}")
                 return
 
@@ -1172,7 +1507,7 @@ class DistributedInferenceProvider:
             prefetcher = DependencyPrefetcher(ctx)
             try:
                 self._run_handler(handler, ProviderRuntimeContext(
-                    ndnsf=ctx,
+                    ndnsf=TerminalAwareContext(),
                     execution=execution,
                     request=request,
                     role=ctx.assignment.role,
@@ -1183,6 +1518,7 @@ class DistributedInferenceProvider:
                 ))
             finally:
                 prefetcher.shutdown()
+                release_selection_reservation("ROLE_HANDLER_RETURNED")
 
         try:
             self.provider.add_collaboration_handler(

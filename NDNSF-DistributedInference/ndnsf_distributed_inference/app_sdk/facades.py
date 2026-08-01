@@ -244,7 +244,8 @@ class APPClient:
     """Simple client facade for AI application code."""
 
     def __init__(self, deployment: DistributedInferenceDeployment,
-                 client: DistributedInferenceClient, *, optimization_suite=None):
+                 client: DistributedInferenceClient, *, optimization_suite=None,
+                 automatic_planner=None):
         from .engine import DistributedInferenceEngine
         from ..planner.defaults import DefaultOptimizationSuite
         self.deployment = deployment
@@ -253,6 +254,34 @@ class APPClient:
             optimization_suite or DefaultOptimizationSuite())
         self._input_encoders: dict[str, Callable[[Any], bytes]] = {}
         self._service_runtimes: dict[str, RuntimeSpec] = {}
+        self._automatic_planner = automatic_planner
+
+    def request(
+        self,
+        *,
+        model,
+        task,
+        input,
+        timeout_ms: int,
+        options=None,
+        objective=None,
+        constraints=None,
+        request_id: str = "",
+    ):
+        """Run one request without a caller-supplied deployment or split."""
+        if self._automatic_planner is None:
+            raise RuntimeError(
+                "APPClient requires an AutomaticPlanningCoordinator")
+        return self._automatic_planner.request(
+            model=model,
+            task=task,
+            input=input,
+            timeout_ms=timeout_ms,
+            options=options,
+            objective=objective,
+            constraints=constraints,
+            request_id=request_id,
+        )
 
     def request_execution_control(
         self, provider: str, role: str, service: str, payload: bytes, *,
@@ -301,6 +330,7 @@ class APPClient:
         async_workers: int = 4,
         adaptive_admission: bool = False,
         optimization_suite=None,
+        automatic_planner=None,
     ) -> "APPClient":
         trace_init = os.environ.get("NDNSF_DI_INIT_TRACE") == "1"
         if trace_init:
@@ -321,7 +351,12 @@ class APPClient:
         )
         if trace_init:
             print("NDNSF_DI_INIT_TRACE stage=client_connect_done", flush=True)
-        return cls(deployment, client, optimization_suite=optimization_suite)
+        return cls(
+            deployment,
+            client,
+            optimization_suite=optimization_suite,
+            automatic_planner=automatic_planner,
+        )
 
     def infer(self, plan: DistributedInferencePlan, payload: bytes, *,
               ack_timeout_ms: int = 500,
@@ -891,6 +926,11 @@ class APPClient:
         return self._client.user.collaboration_status(
             request_id, timeout_ms=timeout_ms)
 
+    @property
+    def service_user(self):
+        """Expose the generic NDNSF collaboration owner for trusted composition."""
+        return self._client.user
+
     def dependency_graph(self, service: str) -> DependencyGraph:
         return self.deployment.dependency_graph_for_service(service)
 
@@ -989,6 +1029,12 @@ class APPProvider:
         self.deployment = deployment
         self._provider = provider
 
+    @property
+    def provider_boot_epoch(self) -> str:
+        """Return the boot epoch authenticated by NDNSF Core."""
+
+        return self._provider.provider_boot_epoch
+
     @classmethod
     def from_config(
         cls,
@@ -1000,6 +1046,7 @@ class APPProvider:
         handler_threads: int = 4,
         ack_threads: int = 2,
         handler_workers: int = 0,
+        bootstrap_token: str = "",
     ) -> "APPProvider":
         deployment = load_or_generate_deployment(config, generated_policy_dir)
         provider = DistributedInferenceProvider.create(
@@ -1011,6 +1058,7 @@ class APPProvider:
             handler_threads=handler_threads,
             ack_threads=ack_threads,
             handler_workers=handler_workers,
+            bootstrap_token=bootstrap_token,
         )
         return cls(deployment, provider)
 
@@ -1030,6 +1078,14 @@ class APPProvider:
         local_artifacts: dict[str, dict] | None = None,
         admission_policy: ProviderAdmissionPolicy | None = None,
         ready_without_model: bool = False,
+        selection_offer_issuer=None,
+        selection_participant=None,
+        selection_wal_path: str | None = None,
+        selection_storage_key: bytes | None = None,
+        selection_storage_key_epoch: str = "",
+        selection_max_prepare_ms: int = 1000,
+        selection_cached_shards=None,
+        selection_reusable_state=None,
     ) -> None:
         if allow_executables:
             self.deployment.require_executable_artifacts_allowed()
@@ -1069,6 +1125,14 @@ class APPProvider:
             readiness_probe=readiness_probe,
             admission_policy=admission_policy,
             ready_without_model=ready_without_model,
+            selection_offer_issuer=selection_offer_issuer,
+            selection_participant=selection_participant,
+            selection_wal_path=selection_wal_path,
+            selection_storage_key=selection_storage_key,
+            selection_storage_key_epoch=selection_storage_key_epoch,
+            selection_max_prepare_ms=selection_max_prepare_ms,
+            selection_cached_shards=selection_cached_shards,
+            selection_reusable_state=selection_reusable_state,
             register_simple_service=(
                 len(list(roles)) == 1 and
                 not list(self.deployment.service_policy(service).dependencies)

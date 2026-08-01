@@ -14,6 +14,7 @@ import hashlib
 import os
 import threading
 import time
+from types import MappingProxyType
 from typing import Any, Callable, Mapping, Optional, Union
 
 from . import _ndnsf
@@ -25,6 +26,16 @@ from .runtime_telemetry import (
     to_plain,
 )
 from .service_discovery import ServiceDiscoveryRecord
+
+
+class CollaborationDeadlineExceeded(TimeoutError):
+    """Distinct terminal reason for a collaboration status watch."""
+
+    def __init__(self, reason: str):
+        if reason not in {"STALLED", "HARD_TIMEOUT"}:
+            raise ValueError("invalid collaboration deadline reason")
+        self.reason = reason
+        super().__init__(reason)
 
 NEGATIVE_ACK_REASON_QUEUE_FULL = "QUEUE_FULL"
 NEGATIVE_ACK_REASON_PROVIDER_BUSY = "PROVIDER_BUSY"
@@ -99,6 +110,7 @@ class AckDecision:
     suppress: bool = False
     reservation_lease: Mapping[str, str] = field(default_factory=dict)
     selection_input_key_offer: Mapping[str, str] = field(default_factory=dict)
+    pending_state_ttl_ms: int = 0
 
 
 @dataclass(frozen=True)
@@ -109,7 +121,23 @@ class AckCandidate:
     status: bool
     message: str = ""
     payload: bytes = b""
-    telemetry: Optional[dict[str, Any]] = None
+    telemetry: Optional[Mapping[str, Any]] = None
+
+
+@dataclass(frozen=True)
+class CollaborationAckClosed:
+    request_id: str
+    candidates: tuple[AckCandidate, ...]
+    digest: str
+    closed_at_us: int
+    request_deadline_us: int
+
+    def __post_init__(self) -> None:
+        if (not self.request_id or not self.digest.startswith("sha256:")
+                or len(self.digest) != 71 or self.closed_at_us <= 0
+                or self.request_deadline_us <= self.closed_at_us):
+            raise ValueError("invalid immutable ACK_CLOSED snapshot")
+        object.__setattr__(self, "candidates", tuple(self.candidates))
 
 
 @dataclass(frozen=True)
@@ -235,6 +263,72 @@ class SegmentedObjectProducer:
         self._native.stop()
 
 
+class FileSegmentedObjectProducer:
+    """Serve a file as on-demand signed segments with bounded producer memory."""
+
+    def __init__(
+        self,
+        base_name: str,
+        file_path: str,
+        *,
+        signing_identity: str = "",
+        max_segment_size: int = 6000,
+        freshness_ms: int = 60000,
+        digest_signing: bool = True,
+    ) -> None:
+        self._native = _ndnsf.FileSegmentedObjectProducer(
+            base_name,
+            str(file_path),
+            signing_identity,
+            int(max_segment_size),
+            int(freshness_ms),
+            bool(digest_signing),
+        )
+
+    def start(self) -> "FileSegmentedObjectProducer":
+        self._native.start()
+        return self
+
+    def stop(self) -> None:
+        self._native.stop()
+
+    @property
+    def base_name(self) -> str:
+        return str(self._native.base_name)
+
+    @property
+    def versioned_name(self) -> str:
+        return str(self._native.versioned_name)
+
+    @property
+    def segment_count(self) -> int:
+        return int(self._native.segment_count)
+
+    @property
+    def file_size(self) -> int:
+        return int(self._native.file_size)
+
+    @property
+    def data_count(self) -> int:
+        return int(self._native.data_count)
+
+    @property
+    def wire_bytes(self) -> int:
+        return int(self._native.wire_bytes)
+
+    @property
+    def signing_ms(self) -> float:
+        return float(self._native.signing_ms)
+
+    @property
+    def public_key_der(self) -> bytes:
+        return bytes(self._native.public_key_der)
+
+    @property
+    def error(self) -> str:
+        return str(self._native.error)
+
+
 @dataclass(frozen=True)
 class DataPacket:
     """One immutable NDN Data packet encoded in wire format."""
@@ -242,6 +336,48 @@ class DataPacket:
     name: str
     segment: int
     wire: bytes
+    content: bytes = b""
+
+
+def verify_data_packet_signature(wire: bytes, public_key_der: bytes) -> bool:
+    """Verify one RSA/ECDSA signed Data packet against a DER public key."""
+
+    return bool(_ndnsf.verify_data_packet_signature(bytes(wire), bytes(public_key_der)))
+
+
+def verify_detached_sha256_signature(
+    payload: bytes, signature: bytes, public_key_der: bytes
+) -> bool:
+    """Verify one detached RSA/ECDSA SHA-256 signature in-process."""
+
+    return bool(_ndnsf.verify_detached_sha256_signature(
+        bytes(payload), bytes(signature), bytes(public_key_der)
+    ))
+
+
+def verify_data_packet_digest(wire: bytes) -> bool:
+    """Verify one self-verifying DigestSha256 Data packet."""
+
+    return bool(_ndnsf.verify_data_packet_digest(bytes(wire)))
+
+
+@dataclass(frozen=True)
+class AdaptiveSegmentFetchResult:
+    """Metrics from callback-streamed adaptive segmented delivery."""
+
+    total_segments: int
+    delivered_segments: int
+    interest_count: int
+    retransmission_count: int
+    duplicate_count: int
+    timeout_count: int
+    logical_bytes: int
+    data_wire_bytes: int
+    interest_wire_bytes: int
+    wire_bytes: int
+    retransmitted_bytes: int
+    maximum_in_flight: int
+    final_window: float
 
 
 @dataclass(frozen=True)
@@ -291,7 +427,12 @@ def decode_data_packet(wire: bytes) -> DataPacket:
     """Decode one immutable NDN Data wire packet without rewriting it."""
 
     packet = _ndnsf.decode_data_packet(bytes(wire))
-    return DataPacket(str(packet.name), int(packet.segment), bytes(packet.wire))
+    return DataPacket(
+        str(packet.name),
+        int(packet.segment),
+        bytes(packet.wire),
+        bytes(packet.content),
+    )
 
 
 def make_segmented_data_packets(
@@ -312,7 +453,12 @@ def make_segmented_data_packets(
         int(freshness_ms),
     )
     return [
-        DataPacket(str(packet.name), int(packet.segment), bytes(packet.wire))
+        DataPacket(
+            str(packet.name),
+            int(packet.segment),
+            bytes(packet.wire),
+            bytes(packet.content),
+        )
         for packet in packets
     ]
 
@@ -333,9 +479,69 @@ def fetch_segmented_data_packets(
         list(forwarding_hints or []),
     )
     return [
-        DataPacket(str(packet.name), int(packet.segment), bytes(packet.wire))
+        DataPacket(
+            str(packet.name),
+            int(packet.segment),
+            bytes(packet.wire),
+            bytes(packet.content),
+        )
         for packet in packets
     ]
+
+
+def fetch_adaptive_segmented_data_packets(
+    base_name: str,
+    on_packet: Callable[[DataPacket], None],
+    *,
+    timeout_ms: int = 30000,
+    interest_lifetime_ms: Optional[int] = None,
+    initial_window: int = 4,
+    maximum_window: int = 64,
+    maximum_retries: int = 5,
+    persistence_backlog_limit: int = 16,
+    forwarding_hints: Optional[list[str]] = None,
+) -> AdaptiveSegmentFetchResult:
+    """Stream adaptive NDN segments into a synchronous verifier/persistence sink.
+
+    ``on_packet`` must return only after the packet is verified and persisted.
+    Its execution is therefore the backpressure boundary; the native fetcher
+    never assembles the full artifact in memory.
+    """
+
+    def deliver(native_packet) -> None:
+        on_packet(DataPacket(
+            str(native_packet.name),
+            int(native_packet.segment),
+            bytes(native_packet.wire),
+            bytes(native_packet.content),
+        ))
+
+    result = _ndnsf.fetch_adaptive_segmented_data_packets(
+        base_name,
+        int(timeout_ms),
+        int(interest_lifetime_ms or default_large_data_interest_lifetime_ms()),
+        int(initial_window),
+        int(maximum_window),
+        int(maximum_retries),
+        int(persistence_backlog_limit),
+        list(forwarding_hints or []),
+        deliver,
+    )
+    return AdaptiveSegmentFetchResult(
+        total_segments=int(result.total_segments),
+        delivered_segments=int(result.delivered_segments),
+        interest_count=int(result.interest_count),
+        retransmission_count=int(result.retransmission_count),
+        duplicate_count=int(result.duplicate_count),
+        timeout_count=int(result.timeout_count),
+        logical_bytes=int(result.logical_bytes),
+        data_wire_bytes=int(result.data_wire_bytes),
+        interest_wire_bytes=int(result.interest_wire_bytes),
+        wire_bytes=int(result.wire_bytes),
+        retransmitted_bytes=int(result.retransmitted_bytes),
+        maximum_in_flight=int(result.maximum_in_flight),
+        final_window=float(result.final_window),
+    )
 
 
 def fetch_exact_data_packet(
@@ -353,7 +559,12 @@ def fetch_exact_data_packet(
         int(interest_lifetime_ms or default_large_data_interest_lifetime_ms()),
         list(forwarding_hints or []),
     )
-    return DataPacket(str(packet.name), int(packet.segment), bytes(packet.wire))
+    return DataPacket(
+        str(packet.name),
+        int(packet.segment),
+        bytes(packet.wire),
+        bytes(packet.content),
+    )
 
 
 def fetch_segmented_object(
@@ -433,6 +644,7 @@ class CollaborationRole:
     allow_dynamic_provisioning: bool = False
     provisioning_timeout_ms: int = 30000
     app_requirement: bytes = b""
+    assignment_payload: bytes = b""
     min_providers: int = 1
     max_providers: int = 1
 
@@ -778,6 +990,8 @@ def _from_native_response(response: _ndnsf.ServiceResponse) -> ServiceResponse:
 
 
 def _to_native_ack(decision: AckDecision) -> _ndnsf.AckDecision:
+    if int(decision.pending_state_ttl_ms) < 0:
+        raise ValueError("pending_state_ttl_ms must be non-negative")
     native = _ndnsf.AckDecision()
     native.status = decision.status
     native.payload = decision.payload
@@ -785,6 +999,7 @@ def _to_native_ack(decision: AckDecision) -> _ndnsf.AckDecision:
     native.suppress = decision.suppress
     native.reservation_lease = dict(decision.reservation_lease)
     native.selection_input_key_offer = dict(decision.selection_input_key_offer)
+    native.pending_state_ttl_ms = int(decision.pending_state_ttl_ms)
     return native
 
 
@@ -828,6 +1043,7 @@ def _role_to_dict(role: CollaborationRole | dict) -> dict:
             "allow_dynamic_provisioning": role.allow_dynamic_provisioning,
             "provisioning_timeout_ms": role.provisioning_timeout_ms,
             "app_requirement": role.app_requirement,
+            "assignment_payload": role.assignment_payload,
             "min_providers": role.min_providers,
             "max_providers": role.max_providers,
         }
@@ -846,8 +1062,227 @@ def _dependency_to_dict(dep: CollaborationDependency | dict) -> dict:
     return dict(dep)
 
 
+def _freeze_collaboration_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return MappingProxyType({
+            str(key): _freeze_collaboration_value(item)
+            for key, item in value.items()
+        })
+    if isinstance(value, (tuple, list)):
+        return tuple(_freeze_collaboration_value(item) for item in value)
+    return value
+
+
+def _from_native_ack_candidate(candidate) -> AckCandidate:
+    telemetry = None
+    if candidate.telemetry is not None:
+        telemetry = _freeze_collaboration_value(dict(candidate.telemetry))
+    return AckCandidate(
+        provider_name=str(candidate.provider_name),
+        service_name=str(candidate.service_name),
+        request_id=str(candidate.request_id),
+        status=bool(candidate.status),
+        message=str(candidate.message),
+        payload=bytes(candidate.payload),
+        telemetry=telemetry,
+    )
+
+
+class _CollaborationInvocationState:
+    def __init__(self) -> None:
+        self.condition = threading.Condition()
+        self.ack_closed: Optional[CollaborationAckClosed] = None
+        self.response: Optional[ServiceResponse] = None
+        self.timeout_reason = ""
+
+    def set_ack_closed(self, value: CollaborationAckClosed) -> None:
+        with self.condition:
+            if self.ack_closed is not None and self.ack_closed != value:
+                raise RuntimeError("conflicting ACK_CLOSED callback")
+            self.ack_closed = value
+            self.condition.notify_all()
+
+    def set_response(self, value: ServiceResponse) -> None:
+        with self.condition:
+            if self.response is None:
+                self.response = value
+            self.condition.notify_all()
+
+    def set_timeout(self, reason: str) -> None:
+        with self.condition:
+            if not self.timeout_reason:
+                self.timeout_reason = str(reason)
+            self.condition.notify_all()
+
+
+class CollaborationInvocation:
+    """One durable generic collaboration request with deferred plan commit."""
+
+    _TERMINAL_SELECTION_STATES = frozenset({
+        "REJECTED", "FAILED", "EXPIRED", "CANCELLED", "ABORTED",
+    })
+
+    def __init__(
+        self,
+        *,
+        native,
+        state: _CollaborationInvocationState,
+        service: str,
+        request_id: str,
+        ack_timeout_ms: int,
+        timeout_ms: int,
+        fail_fast_terminal_selection: bool = False,
+    ) -> None:
+        self._native = native
+        self._state = state
+        self.service = str(service)
+        self.request_id = str(request_id)
+        self.ack_timeout_ms = int(ack_timeout_ms)
+        self.timeout_ms = int(timeout_ms)
+        # Generic collaborations include DistributedRepo control operations;
+        # terminal Selection polling is opt-in for DI request handles only.
+        self.fail_fast_terminal_selection = bool(fail_fast_terminal_selection)
+
+    def acks_closed(self, timeout_ms: Optional[int] = None) -> CollaborationAckClosed:
+        wait_ms = self.timeout_ms if timeout_ms is None else int(timeout_ms)
+        with self._state.condition:
+            ready = self._state.condition.wait_for(
+                lambda: (
+                    self._state.ack_closed is not None
+                    or bool(self._state.timeout_reason)
+                    or self._state.response is not None
+                ),
+                max(wait_ms, 0) / 1000.0,
+            )
+            if not ready:
+                raise TimeoutError("local wait for ACK_CLOSED expired")
+            if self._state.ack_closed is None:
+                raise TimeoutError(
+                    self._state.timeout_reason
+                    or "collaboration ended before ACK_CLOSED"
+                )
+            return self._state.ack_closed
+
+    def commit_plan(
+        self,
+        *,
+        ack_closed_digest: str,
+        roles: list[CollaborationRole | dict],
+        key_scopes: dict[str, list[str]],
+        dependencies: Optional[list[CollaborationDependency | dict]] = None,
+        artifact_data_names: Optional[dict[str, str]] = None,
+        scope_key_data_names: Optional[dict[str, str]] = None,
+        role_scopes: Optional[dict[str, list[str]]] = None,
+        role_provider_assignments: Optional[dict[str, str]] = None,
+        assignment_payloads_by_role: Optional[Mapping[str, bytes]] = None,
+    ) -> bool:
+        closed = self.acks_closed()
+        if ack_closed_digest != closed.digest:
+            raise ValueError("commit does not bind this ACK_CLOSED snapshot")
+        role_values = []
+        assignment_payloads = dict(assignment_payloads_by_role or {})
+        for role in roles:
+            value = _role_to_dict(role)
+            role_name = str(value.get("role", ""))
+            if role_name in assignment_payloads:
+                value["assignment_payload"] = bytes(
+                    assignment_payloads[role_name])
+            role_values.append(value)
+        return bool(self._native.commit_collaboration_plan(
+            self.service,
+            self.request_id,
+            ack_closed_digest,
+            role_values,
+            {str(scope): list(scope_roles)
+             for scope, scope_roles in key_scopes.items()},
+            [_dependency_to_dict(dep) for dep in (dependencies or [])],
+            dict(artifact_data_names or {}),
+            dict(scope_key_data_names or {}),
+            {str(role): list(scopes)
+             for role, scopes in (role_scopes or {}).items()},
+            self.ack_timeout_ms,
+            self.timeout_ms,
+            dict(role_provider_assignments or {}),
+        ))
+
+    def result(self, timeout_ms: Optional[int] = None) -> ServiceResponse:
+        wait_ms = self.timeout_ms if timeout_ms is None else int(timeout_ms)
+        if wait_ms <= 0:
+            raise TimeoutError("local wait for collaboration Response expired")
+        deadline = time.monotonic() + wait_ms / 1000.0
+        while True:
+            with self._state.condition:
+                if self._state.response is not None:
+                    return self._state.response
+                if self._state.timeout_reason:
+                    raise TimeoutError(self._state.timeout_reason)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError(
+                        "local wait for collaboration Response expired")
+
+            terminal_reason = self._terminal_selection_failure()
+            if terminal_reason:
+                self._state.set_timeout(terminal_reason)
+                raise TimeoutError(terminal_reason)
+
+            with self._state.condition:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError(
+                        "local wait for collaboration Response expired")
+                self._state.condition.wait(timeout=min(0.25, remaining))
+
+    def _terminal_selection_failure(self) -> str:
+        """Return a fail-fast reason when every observed selection is terminal.
+
+        Selection rejection is a durable protocol outcome, not transport
+        silence.  Polling the generic request snapshot keeps this behavior in
+        the framework collaboration handle while retaining the conservative
+        rule that one rejected Provider does not abort other live Providers.
+        """
+
+        if not self.fail_fast_terminal_selection:
+            return ""
+        getter = getattr(self._native, "get_collaboration_status_snapshot", None)
+        if getter is None:
+            return ""
+        try:
+            snapshots = getter(self.request_id, 250)
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            return ""
+        if not snapshots:
+            return ""
+        states = []
+        reasons = []
+        for raw in snapshots:
+            if not isinstance(raw, Mapping):
+                return ""
+            state = str(raw.get("state", "")).strip().upper()
+            if not state:
+                return ""
+            states.append(state)
+            message = str(raw.get("message", "")).strip()
+            if message:
+                reasons.append(message)
+        if not states or not all(
+                state in self._TERMINAL_SELECTION_STATES for state in states):
+            return ""
+        if not any(state == "REJECTED" for state in states):
+            return ""
+        detail = "; ".join(dict.fromkeys(reasons))
+        return "selection reached terminal rejection" + (
+            f": {detail}" if detail else "")
+
+
 class ServiceProvider:
     """Python API for writing NDNSF provider business logic."""
+
+    @property
+    def provider_boot_epoch(self) -> str:
+        """Return Core's stable process-incarnation fence."""
+
+        return str(self._native.provider_boot_epoch)
 
     def __init__(
         self,
@@ -955,6 +1390,81 @@ class ServiceProvider:
             self.set_ack_handler(service, fn)
             return fn
         return decorator
+
+    def configure_opaque_selection_store(
+        self,
+        *,
+        wal_path: str,
+        storage_key: bytes,
+        storage_key_epoch: str,
+        max_prepare_ms: int = 1000,
+    ) -> None:
+        """Configure Core's encrypted durable Selection transaction journal.
+
+        ``storage_key`` must be an application-supplied 32-byte secret. Core
+        never derives it from a token or writes it into the journal. The
+        participant must be registered only after this store is configured.
+        """
+        key = bytes(storage_key)
+        if len(key) != 32:
+            raise ValueError("storage_key must contain exactly 32 bytes")
+        if not wal_path or not storage_key_epoch:
+            raise ValueError("wal_path and storage_key_epoch are required")
+        if max_prepare_ms <= 0:
+            raise ValueError("max_prepare_ms must be positive")
+        self._native.configure_opaque_selection_store(
+            str(wal_path), key, str(storage_key_epoch), int(max_prepare_ms),
+        )
+
+    def register_opaque_selection_participant(
+        self,
+        service: str,
+        *,
+        participant_id: str,
+        participant_version: int,
+        prepare: Callable[[Mapping[str, Any], bytes], Mapping[str, bytes]],
+        on_committed: Callable[[Mapping[str, Any]], None],
+        on_aborted: Callable[[str, str], None],
+    ) -> None:
+        """Register service-owned policy behind Core's generic Selection seam.
+
+        ``prepare`` receives an immutable authenticated context and the exact
+        opaque Selection payload. It must be side-effect free and return only
+        ``commit_blob`` and ``acceptance_payload`` bytes. Core bounds its
+        execution, computes both digests, fsyncs the encrypted commit record,
+        and only then calls ``on_committed``. This API is model-agnostic.
+        """
+        if not service or not participant_id or participant_version <= 0:
+            raise ValueError(
+                "service, participant_id, and positive participant_version "
+                "are required"
+            )
+
+        def native_prepare(context, payload):
+            result = prepare(MappingProxyType(dict(context)), bytes(payload))
+            if not isinstance(result, Mapping):
+                raise TypeError("prepare must return a mapping")
+            if set(result) != {"commit_blob", "acceptance_payload"}:
+                raise ValueError(
+                    "prepare result must contain exactly commit_blob and "
+                    "acceptance_payload"
+                )
+            return {
+                "commit_blob": bytes(result["commit_blob"]),
+                "acceptance_payload": bytes(result["acceptance_payload"]),
+            }
+
+        def native_committed(view):
+            on_committed(MappingProxyType(dict(view)))
+
+        self._native.register_opaque_selection_participant(
+            service,
+            participant_id,
+            int(participant_version),
+            native_prepare,
+            native_committed,
+            on_aborted,
+        )
 
     def set_deployment_prepare_handler(
         self, handler: Callable[[dict[str, Any]], Mapping[str, str]],
@@ -1369,13 +1879,38 @@ class ServiceUser:
     def watch_collaboration_request(
         self, request_id: str, *, timeout_ms: int = 5000,
         query_interval_ms: int = 250,
+        idle_timeout_ms: Optional[int] = None,
+        hard_timeout_ms: Optional[int] = None,
+        _clock: Callable[[], float] = time.monotonic,
+        _sleep: Callable[[float], None] = time.sleep,
     ):
-        deadline = time.monotonic() + timeout_ms / 1000.0
+        idle_ms = timeout_ms if idle_timeout_ms is None else idle_timeout_ms
+        hard_ms = timeout_ms if hard_timeout_ms is None else hard_timeout_ms
+        if idle_ms <= 0 or hard_ms <= 0 or idle_ms > hard_ms:
+            raise ValueError(
+                "collaboration deadlines require 0 < idle <= hard")
+        started = _clock()
+        idle_budget = idle_ms / 1000.0
+        idle_deadline = started + idle_budget
+        hard_deadline = started + hard_ms / 1000.0
         versions = {}
-        while time.monotonic() < deadline:
+        observations = {}
+        while True:
+            now = _clock()
+            # Hard timeout wins when both boundaries are reached.
+            if now >= hard_deadline:
+                raise CollaborationDeadlineExceeded("HARD_TIMEOUT")
+            if now >= idle_deadline:
+                raise CollaborationDeadlineExceeded("STALLED")
             snapshots = self.collaboration_status(
-                request_id, timeout_ms=min(query_interval_ms, timeout_ms))
+                request_id,
+                timeout_ms=min(
+                    query_interval_ms,
+                    max(1, int((hard_deadline - now) * 1000)),
+                ),
+            )
             changed = False
+            advanced = False
             for snapshot in snapshots:
                 for member in snapshot.member_statuses:
                     key = (snapshot.provider_name, member.role,
@@ -1386,18 +1921,57 @@ class ServiceUser:
                     if versions.get(key) != version:
                         versions[key] = version
                         changed = True
+                        state = getattr(member.state, "value", str(member.state))
+                        observation = (
+                            state,
+                            bool(member.progress_known),
+                            float(member.progress),
+                        )
+                        previous = observations.get(key)
+                        if (
+                            previous is None
+                            or state != previous[0]
+                            or (
+                                member.progress_known
+                                and (
+                                    not previous[1]
+                                    or float(member.progress) > previous[2]
+                                )
+                            )
+                        ):
+                            advanced = True
+                        observations[key] = observation
+                    else:
+                        state = getattr(member.state, "value", str(member.state))
+                        current = (
+                            state,
+                            bool(member.progress_known),
+                            float(member.progress),
+                        )
+                        if observations.get(key) != current:
+                            raise ValueError(
+                                "same-version collaboration status equivocation")
+            if advanced:
+                idle_deadline = min(_clock() + idle_budget, hard_deadline)
             if changed or (snapshots and not versions):
                 yield snapshots
-            time.sleep(min(query_interval_ms / 1000.0,
-                           max(0.0, deadline - time.monotonic())))
+            now = _clock()
+            _sleep(min(
+                query_interval_ms / 1000.0,
+                max(0.0, min(idle_deadline, hard_deadline) - now),
+            ))
 
     def wait_collaboration_request(
         self, request_id: str, *, predicate,
         timeout_ms: int = 5000, query_interval_ms: int = 250,
+        idle_timeout_ms: Optional[int] = None,
+        hard_timeout_ms: Optional[int] = None,
     ) -> tuple[CollaborationSelectionStatus, ...]:
         for snapshots in self.watch_collaboration_request(
                 request_id, timeout_ms=timeout_ms,
-                query_interval_ms=query_interval_ms):
+                query_interval_ms=query_interval_ms,
+                idle_timeout_ms=idle_timeout_ms,
+                hard_timeout_ms=hard_timeout_ms):
             if predicate(snapshots):
                 return snapshots
         raise TimeoutError("collaboration request status was not satisfied")
@@ -1592,6 +2166,66 @@ class ServiceUser:
         return _from_native_signed_app_data_result(
             self._native.fetch_signed_app_data(
                 data_name, expected_signer, timeout_ms))
+
+    def begin_collaboration(
+        self,
+        service: str,
+        payload: bytes,
+        *,
+        mode: str = "DEFERRED",
+        ack_timeout_ms: int = 300,
+        timeout_ms: int = 10000,
+        request_id: str = "",
+        fail_fast_terminal_selection: bool = False,
+    ) -> CollaborationInvocation:
+        """Publish one generic Request and defer plan choice until ACK_CLOSED."""
+
+        if str(mode).upper() != "DEFERRED":
+            raise ValueError(
+                "begin_collaboration supports DEFERRED; use "
+                "request_collaboration for PREPLANNED compatibility"
+            )
+        if ack_timeout_ms <= 0 or timeout_ms <= ack_timeout_ms:
+            raise ValueError("invalid collaboration ACK/request deadline")
+        state = _CollaborationInvocationState()
+
+        def on_ack_closed(native) -> None:
+            state.set_ack_closed(CollaborationAckClosed(
+                request_id=str(native.request_id),
+                candidates=tuple(
+                    _from_native_ack_candidate(candidate)
+                    for candidate in native.candidates
+                ),
+                digest=str(native.digest),
+                closed_at_us=int(native.closed_at_us),
+                request_deadline_us=int(native.request_deadline_us),
+            ))
+
+        def on_response(native) -> None:
+            state.set_response(_from_native_response(native))
+
+        def on_timeout(reason: str) -> None:
+            state.set_timeout(reason)
+
+        actual_request_id = self._native.begin_collaboration(
+            service,
+            bytes(payload),
+            on_ack_closed,
+            on_response,
+            on_timeout,
+            ack_timeout_ms,
+            timeout_ms,
+            request_id,
+        )
+        return CollaborationInvocation(
+            native=self._native,
+            state=state,
+            service=service,
+            request_id=str(actual_request_id),
+            ack_timeout_ms=ack_timeout_ms,
+            timeout_ms=timeout_ms,
+            fail_fast_terminal_selection=fail_fast_terminal_selection,
+        )
 
     def request_collaboration(
         self,

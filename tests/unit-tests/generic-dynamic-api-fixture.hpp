@@ -15,6 +15,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <random>
@@ -212,6 +213,58 @@ public:
   hasPendingCall(const ndn::Name& requestId) const
   {
     return m_pendingCalls.find(requestId) != m_pendingCalls.end();
+  }
+
+  void
+  prepareDeferredCollaborationForTest(
+      const ndn::Name& requestId,
+      CollaborationAckClosedHandler onAckClosed,
+      int ackTimeoutMs = 100,
+      int timeoutMs = 1000)
+  {
+    PendingCall call;
+    call.serviceName = ndn::Name("/generic/work");
+    call.requestMessage.setUserToken("user-token");
+    call.timeoutMs = timeoutMs;
+    call.ackTimeoutMs = ackTimeoutMs;
+    call.createdAtUs = 1;
+    call.requestDeadlineUs = std::numeric_limits<uint64_t>::max();
+    call.ackWindowExpired = true;
+    call.isCollaboration = true;
+    call.collaborationDeferred = true;
+    call.collaborationPlan.ackCollectionTimeMs = ackTimeoutMs;
+    call.collaborationPlan.timeoutMs = timeoutMs;
+    call.collaborationAckClosedHandler = std::move(onAckClosed);
+    m_pendingCalls[requestId] = std::move(call);
+  }
+
+  void
+  addDeferredAckForTest(const ndn::Name& requestId,
+                        const ndn::Name& provider,
+                        const std::string& role)
+  {
+    auto pending = m_pendingCalls.find(requestId);
+    BOOST_REQUIRE(pending != m_pendingCalls.end());
+    RequestAckMessage ack;
+    ack.setStatus(true);
+    ack.setMessage("willing");
+    ack.setUserToken("user-token");
+    ack.setProviderToken("provider-token");
+    std::string text = "role=" + role + ";";
+    ndn::Buffer payload(
+      reinterpret_cast<const uint8_t*>(text.data()), text.size());
+    ack.setPayload(payload, payload.size());
+    pending->second.requestAcks.push_back({
+      provider, pending->second.serviceName, requestId, std::move(ack)});
+    pending->second.providerTokens[provider.toUri()] = "provider-token";
+  }
+
+  bool
+  closeDeferredAcksForTest(const ndn::Name& requestId)
+  {
+    auto pending = m_pendingCalls.find(requestId);
+    BOOST_REQUIRE(pending != m_pendingCalls.end());
+    return closeDeferredCollaborationAcks(requestId, pending->second);
   }
 
   ndn::Buffer
@@ -443,6 +496,32 @@ public:
     cleanupPendingRequestState(key);
   }
 
+  void
+  schedulePendingRequestCleanupForTest(
+      const ndn::Name& requesterName,
+      const ndn::Name& serviceName,
+      const ndn::Name& requestId,
+      ndn::time::milliseconds ttl = ndn::time::seconds(30),
+      bool authoritative = false)
+  {
+    ndn::Name key(requesterName);
+    key.append(serviceName).append(requestId);
+    schedulePendingRequestCleanup(key, ttl, authoritative);
+  }
+
+  uint64_t
+  pendingCleanupExpiryUnixMsForTest(
+      const ndn::Name& requesterName,
+      const ndn::Name& serviceName,
+      const ndn::Name& requestId) const
+  {
+    ndn::Name key(requesterName);
+    key.append(serviceName).append(requestId);
+    std::lock_guard<std::mutex> lock(m_pendingCleanupDeadlineMutex);
+    const auto found = m_pendingCleanupExpiryUnixMs.find(key);
+    return found == m_pendingCleanupExpiryUnixMs.end() ? 0 : found->second;
+  }
+
   bool
   expirePendingRequestStateForTest(const ndn::Name& requesterName,
                                    const ndn::Name& serviceName,
@@ -492,6 +571,25 @@ public:
                                    serviceName,
                                    requestId,
                                    "selection received");
+  }
+
+  void
+  failCollaborationForTest(const std::string& selectionDigest,
+                           const ndn::Name& serviceName,
+                           const ndn::Name& requestId,
+                           const std::string& reason)
+  {
+    CollaborationAssignment assignment;
+    assignment.role = "worker";
+    assignment.service = serviceName;
+    assignment.selectionDigest = selectionDigest;
+    RequestMessage request;
+    CollaborationContext ctx(*this,
+                             ndn::Name("/user/test"),
+                             requestId,
+                             std::move(request),
+                             std::move(assignment));
+    ctx.fail(reason);
   }
 
   void

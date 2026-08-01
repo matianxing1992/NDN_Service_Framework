@@ -45,7 +45,9 @@ class rpcConsumer
 {
 public:
     //Usage: ./consumer <user> <provider> <service> <function> <interval_in_ms> <count>
-    rpcConsumer(char *user, char *provider, char *service, char *function, char *interval_in_ms, char *count, char *run_id = nullptr, char *warmup_count = nullptr)
+    rpcConsumer(char *user, char *provider, char *service, char *function,
+                char *interval_in_ms, char *count, char *run_id = nullptr,
+                char *warmup_count = nullptr, char *request_deadline_ms = nullptr)
         : m_face(m_ioService),
           m_scheduler(m_ioService),
           CONSUMER_IDENTITY(user),
@@ -60,6 +62,8 @@ public:
         this->interval_in_ms = std::stoi(interval_in_ms);
         this->count = std::stoi(count);
         this->warmupCount = warmup_count != nullptr ? std::stoi(warmup_count) : 0;
+        this->requestDeadlineMs = request_deadline_ms != nullptr ?
+                                  std::stoi(request_deadline_ms) : 5000;
     }
 
     void run()
@@ -78,7 +82,9 @@ public:
         {
             m_scheduler.schedule(ndn::time::milliseconds(interval_in_ms*i), std::bind(&rpcConsumer::pubAndNotify, this));
         }
-        m_scheduler.schedule(ndn::time::milliseconds(interval_in_ms*totalCount+20000), std::bind(&rpcConsumer::CalculateLantency, this));
+        m_scheduler.schedule(
+          ndn::time::milliseconds(interval_in_ms * totalCount + requestDeadlineMs + 1000),
+          std::bind(&rpcConsumer::CalculateLantency, this));
        
         m_ioService.run();
     }
@@ -86,11 +92,30 @@ public:
     void CalculateLantency(){
 
         // calculate success rate for RPC Calls
-        int successfulRPCCalls = rpcEndTimeMap.size();
         int totalRPCCalls = rpcStartTimeMap.size();
+        int lateAfterDeadline = 0;
+        std::vector<double> latenciesMs;
+        latenciesMs.reserve(rpcEndTimeMap.size());
+        for (auto const& [id, endTime] : rpcEndTimeMap)
+        {
+            auto startIt = rpcStartTimeMap.find(id);
+            if (startIt == rpcStartTimeMap.end()) {
+                continue;
+            }
+            auto latency = ndn::time::duration_cast<ndn::time::milliseconds>(
+              endTime - startIt->second).count();
+            if (latency <= requestDeadlineMs) {
+                latenciesMs.push_back(static_cast<double>(latency));
+            }
+            else {
+                lateAfterDeadline++;
+            }
+        }
+        int successfulRPCCalls = static_cast<int>(latenciesMs.size());
 
         // rpcEndTimeMap.size() / rpcStartTimeMap.size()
-        double successRate = (double)successfulRPCCalls / (double)totalRPCCalls;
+        double successRate = totalRPCCalls > 0 ?
+          (double)successfulRPCCalls / (double)totalRPCCalls : 0.0;
         nscLog() << "------------------------" << std::endl;
         nscLog() << "Success Rate for RPC Calls: " << successRate  << std::endl;
         
@@ -100,14 +125,6 @@ public:
         // calculate average latency for successful RPC Calls only
         if (successfulRPCCalls > 0)
         {
-            std::vector<double> latenciesMs;
-            latenciesMs.reserve(successfulRPCCalls);
-            for (auto const& [id, endTime] : rpcEndTimeMap)
-            {
-                auto startTime = rpcStartTimeMap[id];
-                auto latency = ndn::time::duration_cast<ndn::time::milliseconds>(endTime - startTime).count();
-                latenciesMs.push_back(static_cast<double>(latency));
-            }
             std::sort(latenciesMs.begin(), latenciesMs.end());
             double totalLatencyForSuccessCalls = 0.0;
             for (double latency : latenciesMs) {
@@ -126,6 +143,8 @@ public:
                       << "NSC_CLIENT_SUMMARY count=" << totalRPCCalls
                       << " success=" << successfulRPCCalls
                       << " timeout=" << timeoutCount
+                      << " late_after_deadline=" << lateAfterDeadline
+                      << " deadline_ms=" << requestDeadlineMs
                       << " success_rate=" << (successRate * 100.0)
                       << " avg_ms=" << averageLatencyForSuccessCalls
                       << " p50_ms=" << percentile(0.50)
@@ -139,6 +158,8 @@ public:
             nscLog() << "No successful RPC Calls" << std::endl;
             std::cout << "NSC_CLIENT_SUMMARY count=" << totalRPCCalls
                       << " success=0 timeout=" << timeoutCount
+                      << " late_after_deadline=" << lateAfterDeadline
+                      << " deadline_ms=" << requestDeadlineMs
                       << " success_rate=0 avg_ms=0 p50_ms=0 p95_ms=0 min_ms=0 max_ms=0"
                       << std::endl;
         }
@@ -179,6 +200,7 @@ private:
     int interval_in_ms = 1000;
     int count = 1;
     int warmupCount = 0;
+    int requestDeadlineMs = 5000;
     // a map to record the starting time of each RPC Call
     std::map<int, ndn::time::steady_clock::time_point> rpcStartTimeMap;
     // a map to record the end time of each RPC Call
@@ -314,6 +336,7 @@ private:
         Interest interest(interestName);
         interest.setCanBePrefix(canBePrefix);
         interest.setMustBeFresh(mustBeFresh);
+        interest.setInterestLifetime(ndn::time::milliseconds(requestDeadlineMs));
 
         return interest;
     }
@@ -434,14 +457,15 @@ int main(int argc, char **argv)
 {
     try
     {
-        if (argc < 7 || argc > 9)
+        if (argc < 7 || argc > 10)
         {
-            std::cerr << "Usage: ./consumer <user> <provider> <service> <function> <interval_in_ms> <count> [run_id] [warmup_count]" << std::endl;
+            std::cerr << "Usage: ./consumer <user> <provider> <service> <function> <interval_in_ms> <count> [run_id] [warmup_count] [request_deadline_ms]" << std::endl;
             exit(1);
         }
         rpcConsumer consumer1(argv[1], argv[2], argv[3], argv[4], argv[5], argv[6],
                               argc >= 8 ? argv[7] : nullptr,
-                              argc >= 9 ? argv[8] : nullptr);
+                              argc >= 9 ? argv[8] : nullptr,
+                              argc >= 10 ? argv[9] : nullptr);
         consumer1.run();
         return 0;
     }
