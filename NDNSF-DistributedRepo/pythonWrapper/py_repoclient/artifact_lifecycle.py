@@ -710,11 +710,15 @@ class AtomicArtifactDestination:
         operation_id: str,
         *,
         max_range_bytes: int = 16 * 1024 * 1024,
+        resume: bool = True,
+        replace: bool = False,
     ) -> None:
         self.destination = Path(destination).resolve()
         self.artifact = artifact
         self.operation_id = str(operation_id).strip()
         self.max_range_bytes = int(max_range_bytes)
+        self.resume = bool(resume)
+        self.replace = bool(replace)
         if not self.operation_id or self.max_range_bytes <= 0:
             raise ValueError("repo-atomic-destination-invalid-options")
         self.destination.parent.mkdir(parents=True, exist_ok=True)
@@ -725,16 +729,35 @@ class AtomicArtifactDestination:
         self.sidecar = Path(str(self.temporary) + ".resume.json")
         self._ranges: list[tuple[int, int]] = []
         self._reused = False
+        if self.destination.is_symlink() or (
+            self.destination.exists() and not self.destination.is_file()
+        ):
+            raise FileExistsError(
+                f"{REPO_ATOMIC_DESTINATION_CONFLICT}: "
+                f"destination is not a regular file: {self.destination}"
+            )
         if self.destination.exists():
             if self._file_digest(self.destination) == artifact.content_digest:
                 self._reused = True
                 return
-            raise FileExistsError(
-                f"{REPO_ATOMIC_DESTINATION_CONFLICT}: {self.destination}"
-            )
-        if self.temporary.exists():
+            if self.replace:
+                if not self.destination.is_file() or self.destination.is_symlink():
+                    raise FileExistsError(
+                        f"{REPO_ATOMIC_DESTINATION_CONFLICT}: "
+                        f"destination is not a regular file: {self.destination}"
+                    )
+                self.destination.unlink()
+            else:
+                raise FileExistsError(
+                    f"{REPO_ATOMIC_DESTINATION_CONFLICT}: {self.destination}"
+                )
+        if self.temporary.exists() and self.resume:
             self._restore_sidecar()
         else:
+            if self.temporary.exists():
+                self.temporary.unlink()
+            if self.sidecar.exists():
+                self.sidecar.unlink()
             descriptor = os.open(
                 self.temporary, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600
             )

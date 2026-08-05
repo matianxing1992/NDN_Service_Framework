@@ -267,6 +267,31 @@ class ArtifactResumeTests(unittest.TestCase):
         self.assertFalse(sink.temporary.exists())
         self.assertFalse(sink.sidecar.exists())
 
+    def test_atomic_destination_honors_resume_false_and_replace(self):
+        destination = self.root / "replace.bin"
+        destination.write_bytes(b"stale")
+        with self.assertRaises(FileExistsError):
+            AtomicArtifactDestination(
+                destination, self.fixture.artifact, "replace-op"
+            )
+
+        replaced = AtomicArtifactDestination(
+            destination,
+            self.fixture.artifact,
+            "replace-op",
+            max_range_bytes=4,
+            replace=True,
+        )
+        replaced.write_range(0, self.fixture.payload[:4])
+        restarted = AtomicArtifactDestination(
+            destination,
+            self.fixture.artifact,
+            "replace-op",
+            max_range_bytes=4,
+            resume=False,
+        )
+        self.assertEqual(restarted.missing_ranges(), ((0, 4), (4, 4)))
+
     def test_persistence_rejects_changed_root_identity(self):
         operation_id = "identity-conflict"
         session = self._session(

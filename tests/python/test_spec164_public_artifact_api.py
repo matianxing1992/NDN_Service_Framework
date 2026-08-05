@@ -402,6 +402,69 @@ class PublicArtifactApiTest(unittest.TestCase):
             ArtifactErrorCode.CONTENT_DIGEST_MISMATCH,
         )
 
+        entered = threading.Event()
+        aborted = threading.Event()
+
+        class BlockingDriver(FakePublishDriver):
+            def transfer(self, path, cancellation):
+                del path
+                entered.set()
+                while not cancellation.cancelled:
+                    time.sleep(0.005)
+                cancellation.raise_if_cancelled(
+                    self.operation_id, self.descriptor.reference
+                )
+
+            def abort(self, preserve_progress):
+                aborted.set()
+                return super().abort(preserve_progress)
+
+        class BlockingBackend(FakeBackend):
+            def begin_publish(self, descriptor, operation_id, emit_progress):
+                driver = BlockingDriver(
+                    self, descriptor, operation_id, emit_progress
+                )
+                self.publish_drivers.append(driver)
+                self.publish_descriptors.append(descriptor)
+                return driver
+
+        blocking_backend = BlockingBackend()
+        blocking_api = ArtifactRepositoryApi(
+            blocking_backend, publisher_identity="/publisher"
+        )
+        reference = ArtifactReference(
+            logical_name="/models/blocking",
+            content_digest=self.digest,
+            size_bytes=len(self.payload),
+            root_manifest_name=f"/models/blocking/root/sha256={self.digest}",
+            publisher_identity="/publisher",
+            policy_epoch="default",
+        )
+        session = blocking_api.begin_upload(ArtifactDescriptor(
+            reference, 1, "blocking-upload"
+        ))
+        upload_errors = []
+
+        def upload():
+            try:
+                session.upload_file(self.source)
+            except Exception as error:
+                upload_errors.append(error)
+
+        thread = threading.Thread(target=upload, daemon=True)
+        thread.start()
+        self.assertTrue(entered.wait(0.5))
+        started = time.monotonic()
+        status = session.abort()
+        elapsed = time.monotonic() - started
+        thread.join(0.5)
+        self.assertLess(elapsed, 0.5)
+        self.assertTrue(aborted.is_set())
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(status.state, "CANCELLED")
+        self.assertEqual(len(upload_errors), 1)
+        self.assertEqual(upload_errors[0].code, ArtifactErrorCode.CANCELLED)
+
         unavailable = ArtifactRepositoryApi(
             None, publisher_identity="/publisher"
         )

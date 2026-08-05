@@ -564,11 +564,19 @@ class ArtifactUploadSession:
             self._cancellation.raise_if_cancelled(
                 self.operation_id, self.descriptor.reference
             )
-            try:
-                self._driver.transfer(source, self._cancellation)
-            except Exception as error:
-                raise _as_api_error(
-                    error, self.operation_id, self.descriptor.reference
+        try:
+            self._driver.transfer(source, self._cancellation)
+        except Exception as error:
+            raise _as_api_error(
+                error, self.operation_id, self.descriptor.reference
+            )
+        with self._lock:
+            if self._terminal:
+                raise ArtifactApiError(
+                    ArtifactErrorCode.CANCELLED,
+                    "upload was cancelled while transferring",
+                    operation_id=self.operation_id,
+                    artifact=self.descriptor.reference,
                 )
             self._transferred = True
             return self.status()
@@ -623,17 +631,23 @@ class ArtifactUploadSession:
             return result
 
     def abort(self, preserve_progress: bool = True) -> ArtifactSessionStatus:
+        # Signal first so a concurrent transfer can leave its blocking NDN
+        # operation at the next packet boundary; do not wait on the session
+        # mutex before publishing cancellation.
+        self._cancellation.cancel()
         with self._lock:
             if self._terminal_status is not None:
                 return self._terminal_status
-            self._cancellation.cancel()
-            try:
-                status = self._driver.abort(bool(preserve_progress))
-            except Exception as error:
-                raise _as_api_error(
-                    error, self.operation_id, self.descriptor.reference
-                )
             self._terminal = True
+        try:
+            status = self._driver.abort(bool(preserve_progress))
+        except Exception as error:
+            with self._lock:
+                self._terminal = True
+            raise _as_api_error(
+                error, self.operation_id, self.descriptor.reference
+            )
+        with self._lock:
             self._terminal_status = status
             self._guard.close()
             return status
@@ -673,11 +687,19 @@ class ArtifactFetchSession:
             self._cancellation.raise_if_cancelled(
                 self.operation_id, self.reference
             )
-            try:
-                self._driver.transfer(self._cancellation)
-            except Exception as error:
-                raise _as_api_error(
-                    error, self.operation_id, self.reference
+        try:
+            self._driver.transfer(self._cancellation)
+        except Exception as error:
+            raise _as_api_error(
+                error, self.operation_id, self.reference
+            )
+        with self._lock:
+            if self._terminal:
+                raise ArtifactApiError(
+                    ArtifactErrorCode.CANCELLED,
+                    "fetch was cancelled while transferring",
+                    operation_id=self.operation_id,
+                    artifact=self.reference,
                 )
             self._transferred = True
             return self.status()
@@ -729,17 +751,18 @@ class ArtifactFetchSession:
             return result
 
     def abort(self, preserve_progress: bool = True) -> ArtifactSessionStatus:
+        self._cancellation.cancel()
         with self._lock:
             if self._terminal_status is not None:
                 return self._terminal_status
-            self._cancellation.cancel()
-            try:
-                status = self._driver.abort(bool(preserve_progress))
-            except Exception as error:
-                raise _as_api_error(
-                    error, self.operation_id, self.reference
-                )
             self._terminal = True
+        try:
+            status = self._driver.abort(bool(preserve_progress))
+        except Exception as error:
+            with self._lock:
+                self._terminal = True
+            raise _as_api_error(error, self.operation_id, self.reference)
+        with self._lock:
             self._terminal_status = status
             self._guard.close()
             return status

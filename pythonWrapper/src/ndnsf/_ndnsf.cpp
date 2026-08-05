@@ -5907,6 +5907,23 @@ PYBIND11_MODULE(_ndnsf, m)
 
   py::class_<nsf::PredictiveStreamDescriptor>(
       m, "NativePredictiveStreamDescriptor")
+    .def(py::init([] (const nsf::LiveStreamDefinition& definition,
+                      const nsf::PredictiveStreamCheckpoint& checkpoint,
+                      const std::string& frontierName,
+                      double measuredSamplePeriodMs) {
+      nsf::PredictiveStreamDescriptor descriptor;
+      descriptor.definition = definition;
+      descriptor.checkpoint = checkpoint;
+      descriptor.frontierName = ndn::Name(frontierName);
+      descriptor.measuredSamplePeriodMs = measuredSamplePeriodMs;
+      if (const auto error = descriptor.validate()) {
+        throw std::invalid_argument("invalid predictive stream descriptor: " +
+                                    *error);
+      }
+      return descriptor;
+    }),
+      py::arg("definition"), py::arg("checkpoint"),
+      py::arg("frontier_name"), py::arg("measured_sample_period_ms"))
     .def_property_readonly("definition",
       [] (const nsf::PredictiveStreamDescriptor& d) {
         return d.definition;
@@ -5918,6 +5935,10 @@ PYBIND11_MODULE(_ndnsf, m)
     .def_property_readonly("frontier_name",
       [] (const nsf::PredictiveStreamDescriptor& d) {
         return d.frontierName.toUri();
+      })
+    .def_property_readonly("measured_sample_period_ms",
+      [] (const nsf::PredictiveStreamDescriptor& d) {
+        return d.measuredSamplePeriodMs;
       });
 
   py::class_<nsf::LiveStreamConsumerHandle, std::shared_ptr<nsf::LiveStreamConsumerHandle>>(

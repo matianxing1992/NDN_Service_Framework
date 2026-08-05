@@ -423,6 +423,11 @@ PredictiveStreamSubscriber::PredictiveStreamSubscriber(
       m_options.interestLifetimeMs == 0) {
     throw std::invalid_argument("predictive subscriber requires onItem callback");
   }
+  if (m_options.prefetchPolicy.has_value() &&
+      *m_options.prefetchPolicy != LiveStreamPrefetchPolicy::AdaptiveSampleAtomic) {
+    throw std::invalid_argument(
+      "predictive subscriber only supports adaptive-sample-atomic prefetch");
+  }
 }
 
 PredictiveStreamSubscriber::~PredictiveStreamSubscriber()
@@ -557,8 +562,10 @@ PredictiveStreamSubscriber::fetchFrontier(uint64_t generation)
         }
         self->m_frontierInterest.reset();
         ++self->m_nacks;
+        self->m_state = LiveStreamLifecycleState::Failed;
+        self->m_reason = "predictive frontier unavailable after Nack";
       }
-      self->installDescriptorCheckpointAndSchedule(generation);
+      self->emitStatus();
     },
     [weak, generation] (const ndn::Interest&) {
       const auto self = weak.lock();
@@ -572,8 +579,10 @@ PredictiveStreamSubscriber::fetchFrontier(uint64_t generation)
         }
         self->m_frontierInterest.reset();
         ++self->m_timeouts;
+        self->m_state = LiveStreamLifecycleState::Failed;
+        self->m_reason = "predictive frontier unavailable after timeout";
       }
-      self->installDescriptorCheckpointAndSchedule(generation);
+      self->emitStatus();
     });
   std::lock_guard<std::mutex> guard(m_mutex);
   if (isActiveLocked(generation) && !m_frontierInterest) {
@@ -1074,6 +1083,8 @@ PredictiveStreamSubscriber::fetchRecoveryFrontier(
             auto content = validated.getContent();
             content.parse();
             valid =
+              validated.wireEncode().size() <=
+                subscriber->m_descriptor.definition.signedWireCap &&
               validated.getName() == subscriber->m_descriptor.frontierName &&
               subscriber->hasExpectedProviderSignature(validated) &&
               content.elements().size() == 1 &&
@@ -1309,6 +1320,8 @@ PredictiveStreamSubscriber::fetchRecoveryGroup(
             auto content = validated.getContent();
             content.parse();
             valid =
+              validated.wireEncode().size() <=
+                subscriber->m_descriptor.definition.signedWireCap &&
               validated.getName() == groupName &&
               subscriber->hasExpectedProviderSignature(validated) &&
               content.elements().size() == 1 &&
@@ -1523,6 +1536,8 @@ PredictiveStreamSubscriber::fetchRecoveryRepairs(
               auto content = validated.getContent();
               content.parse();
               valid =
+                validated.wireEncode().size() <=
+                  subscriber->m_descriptor.definition.signedWireCap &&
                 validated.getName() == repairName &&
                 subscriber->hasExpectedProviderSignature(validated) &&
                 content.elements().size() == 1 &&
@@ -1697,6 +1712,7 @@ PredictiveStreamSubscriber::finishRecoveryFailure(
         m_recoveryInProgress.erase(cursor) == 0) {
       return;
     }
+    m_recoveryAttempted.erase(cursor);
     m_repairResponsesPending.erase(cursor);
     m_recoveryRepairs.erase(cursor);
     ++m_recoveryExhaustions;
@@ -1924,7 +1940,12 @@ void
 PredictiveStreamSubscriber::emitStatus() const
 {
   if (m_options.onStatus) {
-    m_options.onStatus(status());
+    try {
+      m_options.onStatus(status());
+    }
+    catch (...) {
+      // Observability callbacks must not unwind the Face event loop.
+    }
   }
 }
 
