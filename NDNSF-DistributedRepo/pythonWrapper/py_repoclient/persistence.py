@@ -2816,6 +2816,37 @@ class SqliteRepositoryPersistence:
             return None
         return artifact
 
+    def active_artifacts(
+        self,
+        *,
+        format_version: str = "artifact-manifest-v2",
+        digest_algorithm: str = "sha256",
+    ) -> tuple[dict[str, Any], ...]:
+        """Return durable active-catalog rows for restart-time rehydration."""
+        with self.lock:
+            connection = self._require_connection()
+            if not self._table_exists(connection, "artifact_active_catalog"):
+                return ()
+            rows = connection.execute("""
+                SELECT logical_name, policy_epoch, format_version,
+                       digest_algorithm, artifact_digest, generation,
+                       operation_id, artifact_json, activated_at_ms
+                FROM artifact_active_catalog
+                WHERE format_version=? AND digest_algorithm=?
+                ORDER BY logical_name, policy_epoch, artifact_digest
+            """, (str(format_version), str(digest_algorithm))).fetchall()
+        return tuple({
+            "logicalName": str(row[0]),
+            "policyEpoch": str(row[1]),
+            "formatVersion": str(row[2]),
+            "digestAlgorithm": str(row[3]),
+            "artifactDigest": str(row[4]),
+            "generation": int(row[5]),
+            "operationId": str(row[6]),
+            "artifact": json.loads(str(row[7])),
+            "activatedAtMs": int(row[8]),
+        } for row in rows)
+
     def authenticated_receipt(
         self, operation_id: str
     ) -> dict[str, Any] | None:
