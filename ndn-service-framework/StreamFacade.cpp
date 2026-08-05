@@ -836,7 +836,7 @@ PredictiveStreamSubscriber::onTimeout(
       cursor, cursor <= m_latestKnownProducedCursor,
       cursor > m_latestKnownProducedCursor);
   }
-  retryOrDeclareGap(cursor, generation, false, "timeout");
+  retryOrDeclareGap(cursor, generation, true, "timeout");
 }
 
 void
@@ -893,6 +893,10 @@ PredictiveStreamSubscriber::onValidatedData(
       ++m_terminalGapSuperseded;
     }
     m_admittedDigests.emplace(cursor, digest);
+    // A successful exact retry or recovered Data completes the one bounded
+    // FEC attempt for this cursor.  Clearing the marker here also keeps the
+    // recovery-eligibility accounting bounded by live ready state.
+    m_recoveryAttempted.erase(cursor);
     m_latestKnownProducedCursor =
       std::max(m_latestKnownProducedCursor, cursor);
     m_sourceWires[cursor] =
@@ -927,14 +931,18 @@ PredictiveStreamSubscriber::onValidationFailure(
     }
     ++m_rejected;
   }
-  retryOrDeclareGap(cursor, generation, false, std::move(reason));
+  retryOrDeclareGap(cursor, generation, true, std::move(reason));
 }
 
 void
 PredictiveStreamSubscriber::retryOrDeclareGap(
-  uint64_t cursor, uint64_t generation, bool, std::string reason)
+  uint64_t cursor, uint64_t generation, bool allowRecovery,
+  std::string reason)
 {
-  if (beginRecovery(cursor, generation)) {
+  // Recovery is a bounded first-class attempt.  Once it has failed, the
+  // cursor must spend its remaining finite attempts on exact source retries;
+  // otherwise every timeout re-enters recovery and can starve ordered drain.
+  if (allowRecovery && beginRecovery(cursor, generation)) {
     return;
   }
   bool retry = false;
@@ -959,6 +967,7 @@ PredictiveStreamSubscriber::retryOrDeclareGap(
         ++m_retryExhaustions;
         ++m_terminalMissingSources;
         m_terminalGaps.insert(cursor);
+        m_recoveryAttempted.erase(cursor);
         m_futureRequested.erase(cursor);
         m_reason = "terminal-gap:" + reason;
         if (m_options.requireFullDelivery) {
@@ -1712,7 +1721,6 @@ PredictiveStreamSubscriber::finishRecoveryFailure(
         m_recoveryInProgress.erase(cursor) == 0) {
       return;
     }
-    m_recoveryAttempted.erase(cursor);
     m_repairResponsesPending.erase(cursor);
     m_recoveryRepairs.erase(cursor);
     ++m_recoveryExhaustions;
