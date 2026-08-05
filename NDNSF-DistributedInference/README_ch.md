@@ -3054,6 +3054,19 @@ multi-node 则等待 Spec 108 T134 network evidence。
 `packaging/ndnsf-di-container/docs/itiger-qwen-models.md`；standalone、artifact、
 staged-baseline 和 candidate 的权威边界见 `itiger-qwen-evidence.md`。物理生产验证
 仍由 Spec 106 负责。
+
+该操作手册现在也记录了后续 Spec 160/161 的经验：先用受内存限制的小型 Docker
+collaboration smoke 检查安全与 binding，再在计算节点验证单一 coherent SIF；加载
+模型前先验证跨节点 NFD；完整模型的临时峰值放到 allocation scratch；正式重复实验前
+先跑一次完整答案 generation smoke。手册还严格区分 Slurm 终态与不可变 workload
+证据。带日期的状态快照并不表示排队中的 Qwen2.5-32B preparation 或正式 generation
+campaign 已经完成。
+
+当前后续方案是 Spec 162：官方 `Qwen/Qwen3.6-27B`，三个不同 RTX 5000 节点，
+每节点一个 stage；每个 prompt 最多生成 64 tokens；五个 prompts 分别先 warmup
+一次、再测量五次。该配置目前只是冻结设计，不是运行结果。现有 stage runtime 只支持
+Qwen2，因此 live submission 前必须完成并测试 `qwen3_5` hybrid-layer adapter、
+coherent replacement SIF 和实测 32 GB stage-fit gate。
 # 所有者安装配置与外部优化器
 
 只安装 `packaging/python/` 下需要的发行包。外部优化器实现十个公开 SDK
@@ -3111,3 +3124,64 @@ exponential backoff。attempt 数量和总 deadline 都有限。该机制只提�
 查询需要认证；回复先签名、再按接收者加密，并使用唯一 nonce/AAD，只返回严格大于
 cursor 的 sequence。轮询使用有界自适应间隔，并在 terminal state 停止。上述逻辑
 不包含 UAV、codec、model-family 或 workload 特判。
+
+## Spec 163 延迟协作规划
+
+规范应用入口现在只需要模型、任务和输入，不要求应用提前编写 deployment、
+Provider 列表、角色列表或预分割模型：
+
+```python
+model = ModelRef(
+    model_name="Qwen/Qwen3-0.6B",
+    content_digest="sha256:<精确冻结文件清单摘要>",
+    semantics_digest="sha256:<适配器与推理语义摘要>",
+)
+handle = client.request(
+    model=model,
+    task=task,
+    input=validated_input,
+    timeout_ms=30_000,
+)
+```
+
+NDNSF-DI 以 `DEFERRED` 模式启动基础 NDNSF 的通用 Collaboration API，收集一个
+不可变 `ACK_CLOSED` 快照，通过选定的摘要固定 `ModelFamilyAdapter` 产生图有效的
+分割候选，并把清洗后的 Provider 签名 offer 交给配置的
+`ModelPlacementStrategy`。决策经过独立验证，所需的可信物化和
+DistributedRepo 发布完成后，再在同一 invocation 上提交计划。现有
+Request 前传入 roles/dependencies 的接口作为显式 `PREPLANNED` 兼容路径保留。
+
+`PreSplitFirstStrategy` 先检查精确且处于 active 状态的预分割 manifest，然后按
+固定 GPU、可安全 reload 的 GPU、主机 RAM、磁盘、仓库、最后新生成的图有效分割
+排序新鲜签名驻留证据。驻留信息只是证据，不是执行权威。Selection 会重新验证模型、
+语义、工件、Provider boot/cache epoch、容量、pin 或 reload 可行性，以及完整的
+每 Provider 角色元组。
+
+模型片缓存与派生推理状态缓存彼此独立。精确前缀 KV 默认只在 Provider 本地复用，
+其 key 同时绑定模型内容与语义、adapter、runner、split、tokenizer、精确 prefix
+及长度、position、层范围、precision、layout、runtime ABI 和安全域。过期、驱逐、
+重启、pin 丢失、Requester/租户不匹配或任何 key 字段不匹配都会回退到 clean
+compute。KV 不作为不可变模型工件发布，ACK 也不暴露 prompt/token 内容。
+
+运行受内存限制的本地安全生命周期：
+
+```bash
+tests/container/placement-preparation/run.sh
+```
+
+运行冻结的 MiniNDN/Qwen3 验收矩阵：
+
+```bash
+sudo -n env \
+  PYTHONPATH="$PWD/pythonWrapper:$PWD/NDNSF-DistributedInference:$PWD/NDNSF-DistributedRepo/pythonWrapper:/usr/lib/python3/dist-packages" \
+  LD_LIBRARY_PATH="$PWD/build:/usr/local/lib:/opt/onnxruntime/lib:/opt/ndn-base/lib:/opt/ndnsf-app/lib:/opt/ndnsf/lib" \
+  /usr/bin/python3 Experiments/NDNSF_DI_PlacementPreparation_Minindn.py \
+  --output "$PWD/results/spec163-minindn-qwen3-<timestamp>"
+```
+
+2026-07-29 接受的本地证据是
+`results/spec163-minindn-qwen3-20260729_014203`：59/59 个矩阵行和 21/21 个
+门禁通过；固定 Qwen3-0.6B CPU reference 保留了 5 次 warmup 和 25 次 measured
+完整生成，包括完整答案和逐 token 时延。本机没有 CUDA，因此 GPU 加载和精确
+warm-GPU 复用条件明确标记为 `DEFERRED`。该运行不构成分布式 Qwen、
+TigerCluster、大模型、恶意计算正确性、分布式原子性、无死锁或通用最优器证据。

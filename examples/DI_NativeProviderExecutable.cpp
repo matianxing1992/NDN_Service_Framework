@@ -97,6 +97,7 @@ struct Options
   bool tracerDeterministicRunner = false;
   bool enableAdmissionLease = false;
   bool requireExecutionLease = false;
+  std::string executionPolicy;
   int admissionLeaseTtlMs = 60000;
 };
 
@@ -564,6 +565,9 @@ parseArgs(int argc, char** argv)
     else if (arg == "--require-execution-lease") {
       options.requireExecutionLease = true;
     }
+    else if (arg == "--execution-policy") {
+      options.executionPolicy = readValue();
+    }
     else if (arg == "--admission-lease-ttl-ms") {
       options.admissionLeaseTtlMs = parsePositiveInt(readValue(), "--admission-lease-ttl-ms");
     }
@@ -580,6 +584,16 @@ parseArgs(int argc, char** argv)
   }
   if (options.wiringCheckOnly && !options.checkOnly) {
     throw std::invalid_argument("--wiring-check-only requires --check-only");
+  }
+  if (!options.executionPolicy.empty() &&
+      options.executionPolicy != "DATA_DRIVEN_V2" &&
+      options.executionPolicy != "LEGACY_READY_SET_V1") {
+    throw std::invalid_argument("unsupported --execution-policy");
+  }
+  if (options.executionPolicy == "LEGACY_READY_SET_V1" &&
+      !options.requireExecutionLease) {
+    throw std::invalid_argument(
+      "LEGACY_READY_SET_V1 requires --require-execution-lease");
   }
   return options;
 }
@@ -857,6 +871,7 @@ printUsage(const char* program)
     << "[--repo-permission-wait-ms <ms>] [--wiring-check-only] "
     << "[--tracer-deterministic-runner] [--enable-admission-lease] "
     << "[--require-execution-lease] "
+    << "[--execution-policy DATA_DRIVEN_V2|LEGACY_READY_SET_V1] "
     << "[--admission-lease-ttl-ms <ms>]\n";
 }
 
@@ -879,6 +894,16 @@ main(int argc, char** argv)
     }
 
     auto plan = loadPlan(options);
+    if (!options.executionPolicy.empty() &&
+        options.executionPolicy != plan.executionPolicy) {
+      throw std::invalid_argument(
+        "--execution-policy does not match the sealed native plan");
+    }
+    if (plan.executionPolicy == "LEGACY_READY_SET_V1" &&
+        !options.requireExecutionLease) {
+      throw std::invalid_argument(
+        "LEGACY_READY_SET_V1 plan requires --require-execution-lease");
+    }
     const auto providerStartedAtMs = static_cast<std::uint64_t>(std::max<long long>(0, epochMs()));
     const auto providerBootId = options.providerName + "@" + std::to_string(providerStartedAtMs);
     auto specs = withExecutionEvidenceContext(loadManifestSpecs(options), options,
@@ -1296,8 +1321,15 @@ main(int argc, char** argv)
             config.localProviderName = options.providerName;
             config.providerBootId = providerBootId;
             config.planDigest = sha256File(options.planPath);
+            config.executionPolicy = plan.executionPolicy;
             config.requireExecutionAttemptBinding = options.requireExecutionLease;
-            config.requireExecutionActivation = options.requireExecutionLease;
+            // Execution leases bind the attempt and resources. They are not a
+            // global ReadySet barrier: DATA_DRIVEN_V2 roles start after local
+            // preparation and authenticated direct-predecessor data.
+            config.requireExecutionActivation =
+              plan.executionPolicy == "LEGACY_READY_SET_V1";
+            config.allowLegacyPeerReadinessBarrier =
+              plan.executionPolicy == "LEGACY_READY_SET_V1";
             config.workerCount = options.workers;
             config.kvStateStore = std::make_shared<KvStateStore>(
               64ULL * 1024ULL * 1024ULL, 128);

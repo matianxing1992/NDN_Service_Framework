@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from threading import RLock
 from typing import Any, Callable, Iterable, Mapping, Protocol
 
@@ -16,6 +16,8 @@ from .contracts import (
     ProviderReadyMessage,
     ReadyAcknowledgement,
     ReadySetMember,
+    DATA_DRIVEN_V2,
+    LEGACY_READY_SET_V1,
     canonical_digest,
 )
 
@@ -601,11 +603,19 @@ class ReadySetCoordinator:
 
     def __init__(self, plan: DeploymentPlan, *,
                  verifier: Callable[[ProviderReadyMessage], bool]) -> None:
+        if plan.execution_policy != LEGACY_READY_SET_V1:
+            raise ValueError(
+                "ReadySetCoordinator requires explicit LEGACY_READY_SET_V1")
         self.plan = plan
         self._verifier = verifier
         self._accepted: dict[tuple[str, str], ProviderReadyMessage] = {}
         self._ack_sequence = 0
         self._activation: ExecutionActivateMessage | None = None
+        self._legacy_activation_count = 0
+
+    @property
+    def legacy_activation_count(self) -> int:
+        return self._legacy_activation_count
 
     @property
     def complete(self) -> bool:
@@ -655,6 +665,8 @@ class ReadySetCoordinator:
             self.plan.deadline_ms, sequence, signature)
         if self._activation is not None and self._activation.digest() != candidate.digest():
             raise RuntimeError("conflicting execution activation")
+        if self._activation is None:
+            self._legacy_activation_count += 1
         self._activation = candidate
         return candidate
 
@@ -664,11 +676,19 @@ class ProviderActivationGate:
 
     def __init__(self, plan: DeploymentPlan, provider: str, role: str,
                  *, verifier: Callable[[ExecutionActivateMessage], bool]) -> None:
+        if plan.execution_policy != LEGACY_READY_SET_V1:
+            raise ValueError(
+                "ProviderActivationGate requires explicit LEGACY_READY_SET_V1")
         self.plan = plan
         self.provider = provider
         self.role = role
         self._verifier = verifier
         self._accepted_digest = ""
+        self._legacy_activation_count = 0
+
+    @property
+    def legacy_activation_count(self) -> int:
+        return self._legacy_activation_count
 
     def validate(self, activation: ExecutionActivateMessage, *, now_ms: int) -> bool:
         assignment = next((item for item in self.plan.assignments
@@ -694,5 +714,42 @@ class ProviderActivationGate:
         if self._accepted_digest and self._accepted_digest != digest:
             raise ValueError("conflicting execution activation")
         duplicate = self._accepted_digest == digest
+        if not duplicate:
+            self._legacy_activation_count += 1
         self._accepted_digest = digest
         return not duplicate
+
+
+def new_legacy_rollback_plan(
+    current: DeploymentPlan, *, request_id: str,
+    assignments: Iterable[ProviderAssignment], selection_digest: str,
+    deadline_ms: int, status_handles: Mapping[str, str] | None = None,
+) -> DeploymentPlan:
+    """Create an explicit V1 rollback as a fresh wire invocation.
+
+    A DATA_DRIVEN_V2 request is never downgraded in place.  Rollback requires
+    a new request identity, a fresh Selection and fresh Provider resource
+    bindings so replay state and leases cannot cross execution policies.
+    """
+    if current.execution_policy != DATA_DRIVEN_V2:
+        raise ValueError("rollback source must use DATA_DRIVEN_V2")
+    if not request_id or request_id == current.request_id:
+        raise ValueError("V1 rollback requires a new request_id")
+    if (not selection_digest
+            or selection_digest == current.selection_digest):
+        raise ValueError("V1 rollback requires a new selection_digest")
+    if deadline_ms <= 0:
+        raise ValueError("V1 rollback requires a positive deadline")
+    fresh_assignments = tuple(assignments)
+    if not fresh_assignments or fresh_assignments == current.assignments:
+        raise ValueError("V1 rollback requires fresh assignments")
+    return replace(
+        current,
+        request_id=request_id,
+        attempt=1,
+        assignments=fresh_assignments,
+        deadline_ms=int(deadline_ms),
+        selection_digest=selection_digest,
+        status_handles=dict(status_handles or {}),
+        execution_policy=LEGACY_READY_SET_V1,
+    )

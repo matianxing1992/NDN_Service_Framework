@@ -715,6 +715,112 @@ class PreSplitCatalogSnapshot:
         )
 
 
+@dataclass(frozen=True)
+class ApplicationRuntimeConfig:
+    """Identity/connectivity only; never an inference deployment plan."""
+
+    identity: str
+    controller: str
+    service: str
+    group: str = "/NDNSF-DistributeInference/example/group"
+    trust_schema: str = "examples/trust-schema.conf"
+    ack_timeout_ms: int = 500
+    hard_deadline_ms: int = 900_000
+    progress_idle_ms: int = 30_000
+
+    _PREPLANNED_FIELDS = frozenset({
+        "roles", "dependencies", "shards", "deployment",
+        "deployment_revision", "deploymentRevision", "artifacts",
+        "provider_assignments", "providerAssignments",
+    })
+
+    def __post_init__(self) -> None:
+        if (not self.identity.startswith("/")
+                or not self.controller.startswith("/")
+                or not self.service.startswith("/")
+                or not self.group.startswith("/") or not self.trust_schema):
+            raise ValueError("application runtime identities are incomplete")
+        if (self.ack_timeout_ms <= 0 or self.progress_idle_ms <= 0
+                or self.hard_deadline_ms <= self.ack_timeout_ms
+                or self.hard_deadline_ms <= self.progress_idle_ms):
+            raise ValueError("application runtime deadlines are invalid")
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "ApplicationRuntimeConfig":
+        if not isinstance(value, Mapping):
+            raise TypeError("application configuration must be a mapping")
+        forbidden = cls._PREPLANNED_FIELDS.intersection(value)
+        application = value.get("application", {})
+        if isinstance(application, Mapping):
+            forbidden |= cls._PREPLANNED_FIELDS.intersection(application)
+            identity = str(application.get("identity", ""))
+        else:
+            identity = str(application)
+        if forbidden:
+            raise ValueError(
+                "normal app.yaml cannot contain preplanned deployment fields: "
+                + ",".join(sorted(forbidden)))
+        return cls(
+            identity=identity,
+            controller=str(value.get("controller", "")),
+            service=str(value.get("service", "")),
+            group=str(value.get(
+                "group", "/NDNSF-DistributeInference/example/group")),
+            trust_schema=str(value.get(
+                "trust_schema", "examples/trust-schema.conf")),
+            ack_timeout_ms=int(value.get("ack_timeout_ms", 500)),
+            hard_deadline_ms=int(value.get("hard_deadline_ms", 900_000)),
+            progress_idle_ms=int(value.get("progress_idle_ms", 30_000)),
+        )
+
+
+@dataclass(frozen=True)
+class GenerationInput:
+    prompt: str
+    metadata: Mapping[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.prompt, str) or not self.prompt.strip():
+            raise ValueError("generation prompt is required")
+        object.__setattr__(self, "metadata", MappingProxyType({
+            str(key): str(item) for key, item in self.metadata.items()
+        }))
+
+    def to_task_value(self) -> dict[str, Any]:
+        return {"prompt": self.prompt, "metadata": dict(self.metadata)}
+
+
+@dataclass(frozen=True)
+class GenerationConfig:
+    max_new_tokens: int = 64
+    do_sample: bool = False
+    temperature: float = 1.0
+    top_p: float = 1.0
+    stop: Tuple[str, ...] = ()
+    timeout_ms: int = 900_000
+    adapter_name: str = ""
+
+    def __post_init__(self) -> None:
+        if not 1 <= self.max_new_tokens <= 1_000_000:
+            raise ValueError("max_new_tokens is outside the bounded range")
+        if self.timeout_ms <= 0 or self.temperature <= 0.0:
+            raise ValueError("generation timeout/temperature is invalid")
+        if not 0.0 < self.top_p <= 1.0:
+            raise ValueError("generation top_p is invalid")
+        if type(self.do_sample) is not bool:
+            raise ValueError("do_sample must be boolean")
+        object.__setattr__(self, "stop", tuple(str(item) for item in self.stop))
+
+    def to_task_options(self) -> dict[str, Any]:
+        return {
+            "max_new_tokens": self.max_new_tokens,
+            "do_sample": self.do_sample,
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+            "stop": list(self.stop),
+        }
+
+
 RequestRef = InferenceRequestHandle
 RequestableDeployment = Union[
     DeploymentDefinition, DeploymentDefinitionRef, "DeploymentHandle",
@@ -731,6 +837,7 @@ from ..sdk.placement import (  # noqa: E402
 
 
 __all__ = [
+    "ApplicationRuntimeConfig", "GenerationConfig", "GenerationInput",
     "ArtifactReference", "DeploymentActivationRecord", "DeploymentAvailability",
     "DeploymentConstraints", "DeploymentDefinition", "DeploymentDefinitionRef",
     "DeploymentHandleRef", "DeploymentOperation", "DeploymentOperationHandle",

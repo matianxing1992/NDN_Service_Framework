@@ -12,6 +12,7 @@ from .fixed_policy import *
 from .model_variant_policy import *
 from .provider_assignment_policy import *
 from .presplit_first import *
+from .layer_reuse_first import *
 from .recovery_policy import *
 from .scheduling_policy import *
 from .split_policy import *

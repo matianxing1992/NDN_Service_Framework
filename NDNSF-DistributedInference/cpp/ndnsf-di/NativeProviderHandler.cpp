@@ -781,9 +781,89 @@ nativeProviderFinalResponsePayload(const RoleSpec& roleSpec,
   return std::nullopt;
 }
 
+void
+validateNativeProviderExecutionPolicy(
+  const NativeProviderHandlerConfig& config)
+{
+  if (config.plan.executionPolicy != config.executionPolicy) {
+    throw std::invalid_argument(
+      "native Provider execution policy is not plan-bound");
+  }
+  if (config.executionPolicy == "DATA_DRIVEN_V2") {
+    if (config.requireExecutionActivation ||
+        config.allowLegacyPeerReadinessBarrier) {
+      throw std::invalid_argument(
+        "DATA_DRIVEN_V2 rejects legacy execution activation/barrier flags");
+    }
+    return;
+  }
+  if (config.executionPolicy == "LEGACY_READY_SET_V1") {
+    if (!config.requireExecutionActivation ||
+        !config.allowLegacyPeerReadinessBarrier) {
+      throw std::invalid_argument(
+        "LEGACY_READY_SET_V1 requires explicit activation and readiness barrier");
+    }
+    return;
+  }
+  throw std::invalid_argument("unsupported NDNSF-DI execution policy");
+}
+
+std::optional<std::string>
+validateNativeProviderRuntimeReadiness(
+  const ExecutionEvidence& evidence,
+  const std::string& expectedRole,
+  const std::string& expectedBackend,
+  const std::string& expectedDevice,
+  const std::string& expectedArtifactDigest)
+{
+  if (expectedRole.empty() || expectedBackend.empty() ||
+      expectedDevice.empty() || expectedArtifactDigest.empty()) {
+    return "DI_RUNTIME_ASSIGNMENT_INCOMPLETE";
+  }
+  try {
+    evidence.validate();
+  }
+  catch (const std::exception&) {
+    return "DI_RUNTIME_EVIDENCE_INVALID";
+  }
+  if (!evidence.realCompute || evidence.runnerKind != RunnerKind::OnnxRuntimeCuda ||
+      evidence.deviceKind != "cuda" || evidence.cpuFallbackUsed) {
+    return "DI_RUNTIME_CUDA_REQUIRED";
+  }
+  if (!evidence.loadCompleted) {
+    return "DI_RUNTIME_MODEL_NOT_LOADED";
+  }
+  if (!evidence.warmupCompleted) {
+    return "DI_RUNTIME_WARMUP_INCOMPLETE";
+  }
+  if (std::find(evidence.roles.begin(), evidence.roles.end(), expectedRole) ==
+      evidence.roles.end()) {
+    return "DI_RUNTIME_ROLE_MISMATCH";
+  }
+  if (expectedBackend != "onnxruntime" &&
+      expectedBackend != "onnxruntime-cuda") {
+    return "DI_RUNTIME_BACKEND_MISMATCH";
+  }
+  auto expectedDeviceId = expectedDevice;
+  if (expectedDeviceId.rfind("cuda:", 0) == 0) {
+    expectedDeviceId = expectedDeviceId.substr(5);
+  }
+  if (expectedDevice.rfind("cuda:", 0) != 0 ||
+      expectedDeviceId.empty() || evidence.deviceId != expectedDeviceId) {
+    return "DI_RUNTIME_DEVICE_MISMATCH";
+  }
+  const auto artifact = evidence.artifactDigests.find(expectedRole);
+  if (artifact == evidence.artifactDigests.end() ||
+      artifact->second != expectedArtifactDigest) {
+    return "DI_RUNTIME_ARTIFACT_MISMATCH";
+  }
+  return std::nullopt;
+}
+
 NativeProviderCollaborationRuntime
 makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
 {
+  validateNativeProviderExecutionPolicy(config);
   if (!config.runnerFactory) {
     throw std::invalid_argument(
       "NativeProviderHandlerConfig requires NativeModelRunnerFactory");
@@ -849,6 +929,16 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
       const auto role = ctx.role();
       const auto assignmentFields = parseNativeProviderAssignmentFields(
         ctx.assignment().assignmentPayload);
+      const auto assignmentExecutionPolicy = nativeProviderFieldValue(
+        assignmentFields, {"executionPolicy"});
+      const bool legacyPolicy =
+        config.executionPolicy == "LEGACY_READY_SET_V1";
+      if ((!assignmentExecutionPolicy.empty() &&
+           assignmentExecutionPolicy != config.executionPolicy) ||
+          (legacyPolicy && assignmentExecutionPolicy != config.executionPolicy)) {
+        ctx.fail("DI_EXECUTION_POLICY_MISMATCH");
+        return;
+      }
       std::optional<ExecutionAttemptKey> executionAttempt;
       if (config.requireExecutionAttemptBinding) {
         auto binding = validateNativeProviderExecutionBinding(
@@ -1007,9 +1097,35 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         ctx.assignment().selectionDigest + ":" + role + ":readiness";
       const auto executionOperationId =
         ctx.assignment().selectionDigest + ":" + role + ":execution";
-      // This provider was prepared by its bounded install task before it could
-      // return an affirmative ACK.  Preserve that exact warm-readiness fact as
-      // a separate operation; generic execution DONE must never imply READY.
+      if (config.executionPolicy == "DATA_DRIVEN_V2") {
+        const auto expectedBackend = nativeProviderFieldValue(
+          assignmentFields, {"backend", "executionBackend"});
+        const auto expectedDevice = nativeProviderFieldValue(
+          assignmentFields, {"device", "executionDevice"});
+        const auto expectedArtifact = nativeProviderFieldValue(
+          assignmentFields,
+          {"artifactDigest", "fragmentDigest", "modelFragmentDigest"});
+        const auto evidence = std::find_if(
+          state->executionEvidence.begin(), state->executionEvidence.end(),
+          [&role] (const ExecutionEvidence& item) {
+            return std::find(item.roles.begin(), item.roles.end(), role) !=
+              item.roles.end();
+          });
+        if (evidence == state->executionEvidence.end()) {
+          completeExecutionLease();
+          ctx.fail("DI_RUNTIME_EVIDENCE_MISSING");
+          return;
+        }
+        const auto readinessError = validateNativeProviderRuntimeReadiness(
+          *evidence, role, expectedBackend, expectedDevice, expectedArtifact);
+        if (readinessError) {
+          completeExecutionLease();
+          ctx.fail(*readinessError);
+          return;
+        }
+      }
+      // READY is truthful only after the runner proves exact artifact load,
+      // CUDA placement, no CPU fallback, and a real warmup execution.
       reportStatus(readinessOperationId, "ensure-deployment", "DONE", 1, 1.0,
                    "READY");
 

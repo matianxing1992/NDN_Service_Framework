@@ -97,6 +97,7 @@ struct NativeExecutionPlan
   std::string modelFamily = "generic-onnx";
   std::string modelFormat = "unknown";
   std::string plannerKind = "onnx-dag";
+  std::string executionPolicy = "DATA_DRIVEN_V2";
   std::vector<std::string> roles;
   std::vector<NativeDependencySpec> dependencies;
 };

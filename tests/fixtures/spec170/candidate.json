@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "spec170-evidence-v1",
+  "source": {"gitRef": "refs/heads/Experimental", "tree": "sha256:source"},
+  "oci": {"image": "ghcr.io/example/ndnsf-di", "digest": "sha256:oci"},
+  "sif": {"path": "ndnsf-di.sif", "digest": "sha256:sif"},
+  "dependencyLock": {"path": "requirements.lock", "digest": "sha256:deps"},
+  "model": {"name": "Qwen/Qwen3-0.6B", "digest": "sha256:model"},
+  "canonicalArtifact": {"manifest": "sha256:manifest", "layers": ["sha256:l0"]},
+  "promptCorpus": {"name": "spec170-p01-p05", "digest": "sha256:prompts"},
+  "security": {"policyEpoch": 1, "digest": "sha256:security"},
+  "route": {"controller": "/controller", "repo": "/repo"},
+  "schedule": {"profile": "minindn-3-provider-cpu", "digest": "sha256:schedule"},
+  "freezeTimestamp": "2026-08-04T20:00:00Z"
+}

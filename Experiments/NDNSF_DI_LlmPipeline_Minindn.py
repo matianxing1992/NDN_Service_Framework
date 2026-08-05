@@ -23,6 +23,12 @@ import yaml  # type: ignore
 
 REPO = Path(__file__).resolve().parents[1]
 MININDN_ROOT = Path("/tmp/minindn")
+# The runner is deliberately executable from a clean checkout.  Import the
+# two local Python wrapper trees before loading NDNSF-DI; relying on a globally
+# installed py_repoclient made the MiniNDN gate pass on one host and fail in a
+# sealed candidate container.
+sys.path.insert(0, str(REPO / "NDNSF-DistributedRepo/pythonWrapper"))
+sys.path.insert(1, str(REPO / "pythonWrapper"))
 sys.path.insert(0, str(REPO / "Experiments"))
 sys.path.insert(0, str(REPO / "NDNSF-DistributedInference"))
 sys.path.insert(0, str(REPO / "tools/ndnsf-di"))
@@ -45,6 +51,12 @@ from spec107_identity import (  # noqa: E402
     validate_candidate_identity,
 )
 from spec107_artifacts import verify_artifact_set  # noqa: E402
+from spec168_real_model_gate import (  # noqa: E402
+    expected_stage_completion_marker,
+    real_model_readiness_marker,
+    validate_real_model_binding,
+)
+from spec168_runtime_evidence import write_spec168_runtime_evidence  # noqa: E402
 from spec107_preflight import (  # noqa: E402
     PreflightError,
     claim_campaign_writer,
@@ -53,7 +65,6 @@ from spec107_preflight import (  # noqa: E402
 )
 from ndnsf_distributed_inference.app_sdk import (  # noqa: E402
     ArtifactReference, DeploymentDefinition, DeploymentRevision,
-    ProviderEvidenceSigner,
 )
 from mininet.log import info, setLogLevel  # noqa: E402
 from minindn.apps.app_manager import AppManager  # noqa: E402
@@ -69,12 +80,14 @@ TOPO = REPO / "Experiments/Topology/AI_Lab.conf"
 OUT = REPO / "results/llm_pipeline_minindn_smoke"
 LLM_DIR = REPO / "examples/python/NDNSF-DistributedInference/llm_pipeline"
 CONFIG = OUT / "llm_pipeline_policy.yaml"
+DEFAULT_QWEN_CONTENT_STORE = REPO / "results/.ndnsf-di-content-addressed"
 GEN_POLICY = "/tmp/ndnsf-di-llm-pipeline-minindn-policy"
 APP_ROOT = "/example/llm-pipeline"
 CONTROLLER_IDENTITY = APP_ROOT + "/controller"
 GROUP_IDENTITY = APP_ROOT + "/group"
 USER_IDENTITY = APP_ROOT + "/user"
 PROVIDER_PREFIX = APP_ROOT + "/provider"
+REPO_PROVIDER_PREFIX = APP_ROOT + "/repo"
 SERVICE = "/AI/LLM/Pipeline/Fake"
 CONTROLLER_NODE = "memphis"
 USER_NODE = "memphis"
@@ -85,11 +98,22 @@ STAGE_IDENTITIES = [
     PROVIDER_PREFIX + "/1",
     PROVIDER_PREFIX + "/2",
 ]
+REPO_IDENTITIES = [
+    REPO_PROVIDER_PREFIX,
+    REPO_PROVIDER_PREFIX + "/1",
+    REPO_PROVIDER_PREFIX + "/2",
+]
 DEPLOYMENT_ARTIFACT_DIGEST = "sha256:" + "a" * 64
 
 
 def configure_spec111_deployment_workflow(config_path: Path, out: Path,
                                           stages: int) -> dict[str, object]:
+    # Keep parser/help and topology-validation commands usable in the minimal
+    # runner image.  The signer is only needed when the deployment workflow is
+    # actually constructed; importing it at module load made ``--help`` fail
+    # on images that intentionally omit the optional cryptography package.
+    from ndnsf_distributed_inference.app_sdk import ProviderEvidenceSigner
+
     if stages != len(STAGE_IDENTITIES):
         raise ValueError("Spec 111 deployment workflow currently requires three stages")
     controls = [f"/APP/Deployment/Control/Stage/{index}"
@@ -202,6 +226,23 @@ def log(message: str) -> None:
     info(message + "\n")
 
 
+def write_bootstrap_token(
+    token_file: str | Path,
+    identity: str,
+    output: str | Path,
+) -> Path:
+    for raw in Path(token_file).read_text(encoding="utf-8").splitlines():
+        fields = raw.split()
+        if fields and not fields[0].startswith("#") and fields[0] == identity:
+            if len(fields) < 2:
+                break
+            target = Path(output)
+            target.write_text(fields[1] + "\n", encoding="utf-8")
+            target.chmod(0o600)
+            return target
+    raise RuntimeError(f"bootstrap token missing for {identity}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="MiniNDN smoke for distributed LLM pipeline inference")
@@ -220,6 +261,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--qwen-revision", default="main")
     parser.add_argument("--qwen-allow-download", action="store_true")
     parser.add_argument("--qwen-dtype", choices=("float32", "float16", "auto"), default="float32")
+    parser.add_argument(
+        "--qwen-content-store",
+        default=str(DEFAULT_QWEN_CONTENT_STORE),
+        help=(
+            "Persistent content-addressed store for Qwen stage artifacts; "
+            "run directories contain symlinks instead of model copies."),
+    )
     parser.add_argument("--qwen-execution-provider", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("--qwen-device-ids", default="0", help="Comma-separated logical GPU IDs mapped round-robin to stages")
     parser.add_argument(
@@ -241,8 +289,21 @@ def build_parser() -> argparse.ArgumentParser:
             "NLSR. Intended for minimal candidate containers."
         ),
     )
-    parser.add_argument("--controller-wait-s", type=float, default=8.0)
-    parser.add_argument("--provider-wait-s", type=float, default=10.0)
+    parser.add_argument(
+        "--controller-wait-s", type=float, default=0.0,
+        help=(
+            "Deprecated compatibility input; must remain zero. The controller "
+            "ready marker is the startup authority."
+        ),
+    )
+    parser.add_argument(
+        "--provider-wait-s", type=float, default=0.0,
+        help=(
+            "Deprecated compatibility input; must remain zero. Provider ready "
+            "markers, ACK closure, preparation progress, and dependency data "
+            "drive request execution."
+        ),
+    )
     parser.add_argument("--provider-start-timeout-s", type=float, default=20.0)
     parser.add_argument("--ack-timeout-ms", type=int, default=1500)
     parser.add_argument("--timeout-ms", type=int, default=60000)
@@ -256,6 +317,43 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--qwen-tokenizer-dir", default="")
     parser.add_argument("--workload-digest", default="")
     parser.add_argument("--model-identity-digest", default="")
+    parser.add_argument(
+        "--spec168-source-digest", default="",
+        help=(
+            "Emit the canonical Spec 168 runtime admission and lifecycle "
+            "artifacts bound to this immutable source digest."
+        ),
+    )
+    parser.add_argument(
+        "--spec168-max-ack-collect-ms", type=float, default=5000.0,
+        help=(
+            "Maximum ACK coverage closure time admitted by the Spec 168 "
+            "real-MiniNDN gate."
+        ),
+    )
+    parser.add_argument(
+        "--selection-dataflow-v2",
+        action="store_true",
+        help=(
+            "Use request-first ACK_CLOSED planning, deferred DistributedRepo "
+            "publication/fetch, and per-role data-driven execution."
+        ),
+    )
+    parser.add_argument(
+        "--selection-dataflow-v3",
+        action="store_true",
+        help=(
+            "Use the normal V3 request-first ACK/Selection path with signed "
+            "cache residency and no ACK-time reservation."
+        ),
+    )
+    parser.add_argument("--qwen-stage-manifest", default="")
+    parser.add_argument("--qwen-stage-root", default="")
+    parser.add_argument("--repo-object-prefix", default="")
+    parser.add_argument("--request-id", default="")
+    parser.add_argument("--selection-offer-lease-ms", type=int, default=900000)
+    parser.add_argument("--selection-max-prepare-ms", type=int, default=900000)
+    parser.add_argument("--selection-cache-max-age-ms", type=int, default=900000)
     parser.add_argument(
         "--require-real-model",
         action="store_true",
@@ -429,18 +527,30 @@ def execute_fault_matrix_contract() -> dict[str, object]:
 
 
 def python_path_entries() -> list[str]:
-    entries = [
+    source_entries = [
         str(REPO / "NDNSF-DistributedInference"),
         str(LLM_DIR),
         str(REPO / "Experiments"),
         site.getusersitepackages(),
     ]
+    inherited_entries = [
+        entry for entry in os.environ.get("PYTHONPATH", "").split(os.pathsep)
+        if entry
+    ]
     # A sealed container carries ABI-matched NDNSF and DistributedRepo native
     # extensions.  Keep current application/experiment Python code mounted,
-    # but do not let host or stale native packages shadow the candidate.
-    if os.environ.get("NDNSF_PREFER_INSTALLED_NATIVE") != "1":
+    # but do not let host or stale native packages shadow the candidate.  The
+    # entrypoint-provided overlay must remain first even after MiniNDN rebuilds
+    # the environment for each node process.
+    prefer_runtime_closure = bool(os.environ.get("SPEC168_OVERLAY_ROOT")) \
+        or os.environ.get("NDNSF_PREFER_INSTALLED_NATIVE") == "1"
+    if prefer_runtime_closure:
+        entries = inherited_entries + source_entries
+    else:
+        entries = list(source_entries)
         entries.insert(1, str(REPO / "pythonWrapper"))
         entries.insert(2, str(REPO / "NDNSF-DistributedRepo/pythonWrapper"))
+        entries.extend(inherited_entries)
     sudo_user = os.environ.get("SUDO_USER")
     if sudo_user:
         try:
@@ -449,13 +559,57 @@ def python_path_entries() -> list[str]:
             entries.append(str(Path(sudo_home) / ".local/lib" / version / "site-packages"))
         except KeyError:
             pass
-    if os.environ.get("PYTHONPATH"):
-        entries.append(os.environ["PYTHONPATH"])
     deduped = []
     for entry in entries:
         if entry and entry not in deduped:
             deduped.append(entry)
     return deduped
+
+
+def local_python_subprocess_env() -> dict[str, str]:
+    """Keep repository-local Python wrappers visible to helper subprocesses.
+
+    The runner itself prepends the wrappers to ``sys.path``.  Helper scripts
+    (notably the Spec 162 policy/manifest builders) are separate Python
+    processes and therefore cannot inherit that in-process path mutation.
+    Passing the same closure explicitly makes the MiniNDN gate independent of
+    whether the host has ``py_repoclient`` installed globally.
+    """
+    return {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join(python_path_entries()),
+        "PYTHONNOUSERSITE": "1",
+    }
+
+
+def python_process_prefix(base_env: dict[str, str]) -> str:
+    """Return a fail-closed Python command prefix for MiniNDN node processes.
+
+    Mininet implementations differ in how completely they preserve ``env``
+    through their namespace helper.  Put the candidate's import and native
+    library closure on the command line as well as in ``envDict`` so every
+    controller, repository, provider, and user resolves the same build.
+    """
+    required = ("PYTHONPATH",)
+    missing = [key for key in required if not base_env.get(key)]
+    if missing:
+        raise RuntimeError(
+            "MiniNDN Python runtime closure is incomplete: " + ",".join(missing))
+    closure = {
+        "PYTHONPATH": base_env["PYTHONPATH"],
+        "PYTHONNOUSERSITE": "1",
+        "NDN_LOG": base_env["NDN_LOG"],
+    }
+    if base_env.get("LD_LIBRARY_PATH"):
+        closure["LD_LIBRARY_PATH"] = base_env["LD_LIBRARY_PATH"]
+    if base_env.get("NDNSF_SELECTION_TARGETED_PREFETCH"):
+        closure["NDNSF_SELECTION_TARGETED_PREFETCH"] = base_env["NDNSF_SELECTION_TARGETED_PREFETCH"]
+    assignments = " ".join(
+        f"{key}={perf.shell_quote(value)}" for key, value in closure.items())
+    return (
+        f"cd {perf.shell_quote(REPO)} && exec env {assignments} "
+        f"{perf.shell_quote(sys.executable)} "
+    )
 
 
 def normalize_nlsr_link_costs(ndn) -> None:
@@ -507,6 +661,27 @@ def stop_processes(processes: list[tuple[object, object, Path]]) -> None:
             file.close()
         except Exception:
             pass
+
+
+def spec168_process_rows(
+    processes: list[tuple[object, object, Path]],
+) -> list[dict[str, object]]:
+    role_by_log = {
+        "controller.log": "controller",
+        "repo-0.log": "repository",
+        "repo-1.log": "repository-replica-1",
+        "repo-2.log": "repository-replica-2",
+        "llm-pipeline-user.log": "user",
+        "stage0-provider.log": "provider-stage-0",
+        "stage1-provider.log": "provider-stage-1",
+        "stage2-provider.log": "provider-stage-2",
+    }
+    rows = []
+    for process, _, log_path in processes:
+        role = role_by_log.get(log_path.name)
+        if role is not None:
+            rows.append({"role": role, "pid": int(process.pid)})
+    return rows
 
 
 def wait_log(path: Path, needle: str, timeout_s: float, proc=None) -> bool:
@@ -887,6 +1062,7 @@ def prepare_policy(stages: int, layers: int, *,
                    qwen_prompt: str = "",
                    qwen_allow_download: bool = False,
                    qwen_dtype: str = "float32",
+                   qwen_content_store: str = "",
                    qwen_artifact_store: str = "",
                    qwen_service_manifest: str = "",
                    qwen_runtime_manifest: str = "") -> None:
@@ -924,6 +1100,8 @@ def prepare_policy(stages: int, layers: int, *,
         "--qwen-revision", qwen_revision,
         "--qwen-prompt", qwen_prompt,
         "--qwen-dtype", qwen_dtype,
+        *( ["--qwen-content-store", qwen_content_store]
+           if qwen_content_store else []),
         *(["--qwen-artifact-store", qwen_artifact_store]
           if qwen_artifact_store else []),
         *(["--qwen-service-manifest", qwen_service_manifest]
@@ -933,6 +1111,128 @@ def prepare_policy(stages: int, layers: int, *,
         "--trust-app-root", APP_ROOT,
         *(["--qwen-allow-download"] if qwen_allow_download else []),
     ], cwd=str(REPO), env=policy_env, check=True)
+
+
+def prepare_selection_dataflow_v2(args) -> dict[str, object]:
+    """Freeze graph/offer inputs without publishing model bytes before Request."""
+
+    source_stage_manifest = Path(
+        args.qwen_stage_manifest).expanduser().resolve()
+    stage_root = Path(args.qwen_stage_root).expanduser().resolve()
+    model_name = str(args.qwen_model)
+    if "Qwen3.6" in model_name:
+        model_type = "qwen3_5"
+    elif "Qwen3" in model_name:
+        model_type = "qwen3"
+    elif "Qwen2" in model_name:
+        model_type = "qwen2"
+    else:
+        raise RuntimeError(
+            f"unsupported request-first Qwen model family: {model_name}")
+    stage_document = json.loads(
+        source_stage_manifest.read_text(encoding="utf-8"))
+    for stage in stage_document.get("stages", ()):
+        artifact = stage_root / Path(str(stage["path"])).name
+        if not artifact.is_file() or artifact.stat().st_size != int(stage["bytes"]):
+            raise RuntimeError(
+                f"frozen Qwen stage is unavailable: {artifact}")
+        digest = hashlib.sha256()
+        with artifact.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b""):
+                digest.update(chunk)
+        if digest.hexdigest() != str(stage["sha256"]):
+            raise RuntimeError(
+                f"frozen Qwen stage digest mismatch: {artifact}")
+        stage["path"] = str(artifact)
+    stage_document["sourceManifestSha256"] = hashlib.sha256(
+        source_stage_manifest.read_bytes()).hexdigest()
+    stage_manifest = OUT / "stage-manifest.runtime.json"
+    stage_manifest.write_text(
+        json.dumps(stage_document, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    automatic = OUT / "automatic-planning.json"
+    repo_registration = OUT / "repo-registration.json"
+    repo_prefix = (
+        args.repo_object_prefix
+        or USER_IDENTITY + "/NDNSF-DISTRIBUTED-REPO/OBJECT/QWEN"
+    )
+    subprocess.run([
+        sys.executable,
+        str(REPO / "specs/162-itiger-qwen36-generation/jobs/"
+            "build-automatic-planning-manifest.py"),
+        "--stage-manifest", str(stage_manifest),
+        "--repository-prefix", repo_prefix,
+        "--output", str(automatic),
+    ], cwd=str(REPO), env=local_python_subprocess_env(), check=True)
+    manifest = json.loads(automatic.read_text(encoding="utf-8"))
+    backend = (
+        "transformers" if args.qwen_execution_provider == "cuda"
+        else "transformers-cpu"
+    )
+    offer_key_map: dict[str, str] = {}
+    residency_paths: list[str] = []
+    storage_key_paths: list[str] = []
+    offer_key_paths: list[str] = []
+    for index, (provider, stage) in enumerate(
+            zip(STAGE_IDENTITIES, manifest["stages"])):
+        storage_key = OUT / f"selection-storage-{index}.key"
+        offer_key = OUT / f"selection-offer-{index}.key"
+        storage_key.write_bytes(os.urandom(32))
+        offer_key.write_bytes(os.urandom(32))
+        storage_key.chmod(0o600)
+        offer_key.chmod(0o600)
+        offer_key_map[provider] = str(offer_key)
+        storage_key_paths.append(str(storage_key))
+        offer_key_paths.append(str(offer_key))
+        residency = {
+            "role": str(stage["role"]),
+            "artifact_digest": str(stage["sha256"]),
+            "model_content_digest": str(
+                manifest["model"]["contentDigest"]),
+            "semantics_digest": str(
+                manifest["model"]["semanticsDigest"]),
+            "graph_digest": str(manifest["graphDigest"]),
+            "partition_digest": str(manifest["candidateDigest"]),
+            "adapter_id": str(manifest["adapterId"]),
+            "adapter_version": str(manifest["adapterVersion"]),
+            "precision": str(manifest.get("dtype", "bfloat16")),
+            "backend": backend,
+        }
+        residency_path = OUT / f"selection-residency-{index}.json"
+        residency_path.write_text(
+            json.dumps(residency, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        residency_paths.append(str(residency_path))
+    offer_map_path = OUT / "selection-offer-key-map.json"
+    offer_map_path.write_text(
+        json.dumps(offer_key_map, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    envelope_key = OUT / "request-envelope.key"
+    envelope_key.write_bytes(os.urandom(32))
+    envelope_key.chmod(0o600)
+    return {
+        "stageManifest": str(stage_manifest),
+        "automaticPlanning": str(automatic),
+        "repoRegistration": str(repo_registration),
+        "repoObjectPrefix": repo_prefix,
+        "offerKeyMap": str(offer_map_path),
+        "envelopeKey": str(envelope_key),
+        "storageKeys": tuple(storage_key_paths),
+        "offerKeys": tuple(offer_key_paths),
+        "residency": tuple(residency_paths),
+        "localArtifacts": tuple(
+            f"{stage['role']}={stage['path']}"
+            for stage in manifest["stages"]
+        ),
+        "requiredMiB": tuple(
+            int(stage["requiredGpuMiB"])
+            for stage in manifest["stages"]
+        ),
+        "modelType": model_type,
+    }
 
 
 def generate_policy_bundle(env: dict[str, str]) -> None:
@@ -1297,43 +1597,57 @@ def validate_spec107_command_binding(
 def main() -> int:
     global OUT, CONFIG
     args = build_parser().parse_args()
+    # MiniNDN launches NFD and Mininet shells from the runner's process
+    # environment.  A host-wide framework ``NDN_LOG`` filter is not valid
+    # NFD syntax and can abort every node before the application starts;
+    # ``--ndn-log`` is copied into application child environments below.
+    # Likewise, Mininet's ``Host.popen`` indexes ``SHELL`` directly, so a
+    # minimal container image must still receive an explicit shell contract.
+    os.environ.pop("NDN_LOG", None)
+    os.environ.setdefault("SHELL", "/bin/bash")
+    if args.controller_wait_s != 0.0:
+        raise SystemExit(
+            "--controller-wait-s is no longer supported; controller startup "
+            "is marker-driven")
+    if args.provider_wait_s != 0.0:
+        raise SystemExit(
+            "--provider-wait-s is no longer supported; provider readiness is "
+            "event-driven")
     if args.stages != 3:
         raise SystemExit("this MiniNDN smoke currently maps exactly 3 stages")
+    if args.selection_dataflow_v2 or args.selection_dataflow_v3:
+        profile = "selection-dataflow-v3" if args.selection_dataflow_v3 else "selection-dataflow-v2"
+        if args.runtime != "qwen-transformers":
+            raise SystemExit(
+                f"--{profile} currently requires qwen-transformers")
+        if not args.qwen_stage_manifest:
+            raise SystemExit(
+                f"--{profile} requires --qwen-stage-manifest")
+        if not Path(args.qwen_stage_manifest).expanduser().is_file():
+            raise SystemExit(
+                "--qwen-stage-manifest does not exist: "
+                f"{args.qwen_stage_manifest}")
+        if (not args.qwen_stage_root
+                or not Path(args.qwen_stage_root).expanduser().is_dir()):
+            raise SystemExit(
+                f"--{profile} requires an existing "
+                "--qwen-stage-root")
+        if not args.request_id:
+            raise SystemExit(
+                f"--{profile} requires one explicit --request-id")
+        if args.max_new_tokens < 2:
+            raise SystemExit(
+                f"--{profile} requires multi-token generation")
+        if args.test_only_allow_ephemeral_app_state:
+            raise SystemExit(
+                f"--{profile} forbids test-only application state")
+    if args.selection_dataflow_v2 and args.selection_dataflow_v3:
+        raise SystemExit("select exactly one Selection Dataflow profile")
     if args.require_real_model:
-        if args.runtime not in {
-            "qwen-transformers", "qwen-onnx", "qwen-onnx-cpu-native"
-        }:
-            raise SystemExit(
-                "--require-real-model rejects simulated runtime: "
-                f"{args.runtime}"
-            )
-        if args.qwen_model != "Qwen/Qwen3-0.6B":
-            raise SystemExit(
-                "--require-real-model requires Qwen/Qwen3-0.6B, got "
-                f"{args.qwen_model}"
-            )
-        required = {
-            "--generation-campaign-manifest": args.generation_campaign_manifest,
-            "--generation-jsonl": args.generation_jsonl,
-            "--qwen-tokenizer-dir": args.qwen_tokenizer_dir,
-            "--workload-digest": args.workload_digest,
-            "--model-identity-digest": args.model_identity_digest,
-        }
-        missing = [name for name, value in required.items() if not str(value).strip()]
-        if missing:
-            raise SystemExit(
-                "--require-real-model requires: " + ", ".join(missing)
-            )
-        tokenizer_dir = Path(args.qwen_tokenizer_dir).expanduser()
-        if not (tokenizer_dir / "config.json").is_file():
-            raise SystemExit(
-                "--require-real-model tokenizer snapshot is not resolvable: "
-                f"{tokenizer_dir}"
-            )
-        if not str(args.model_identity_digest).startswith("sha256:"):
-            raise SystemExit(
-                "--require-real-model requires a sha256 model identity digest"
-            )
+        try:
+            validate_real_model_binding(args)
+        except ValueError as error:
+            raise SystemExit(str(error)) from error
     if args.runtime == "tiny-transformers" and args.layers == 24:
         args.layers = args.transformer_layers
     sys.argv = [sys.argv[0]]
@@ -1529,7 +1843,11 @@ def main() -> int:
         OUT.mkdir(parents=True, exist_ok=True)
         print(f"LLM_PIPELINE_REUSE_POLICY policy={CONFIG}")
     else:
-        policy_runtime = "qwen-onnx" if args.runtime == "qwen-onnx-cpu-native" else args.runtime
+        policy_runtime = (
+            "fake" if (args.selection_dataflow_v2 or args.selection_dataflow_v3)
+            else "qwen-onnx" if args.runtime == "qwen-onnx-cpu-native"
+            else args.runtime
+        )
         prepare_policy(
             args.stages,
             args.layers,
@@ -1540,10 +1858,25 @@ def main() -> int:
             qwen_prompt=args.prompt,
             qwen_allow_download=args.qwen_allow_download,
             qwen_dtype=args.qwen_dtype,
+            qwen_content_store=args.qwen_content_store,
             qwen_artifact_store=spec107_artifact_store,
             qwen_service_manifest=spec107_qwen_service_manifest,
             qwen_runtime_manifest=spec107_qwen_runtime_manifest,
         )
+    if args.selection_dataflow_v2 or args.selection_dataflow_v3:
+        repo_policy = OUT / "llm_pipeline_policy.repo.yaml"
+        subprocess.run([
+            sys.executable,
+            str(REPO / "specs/162-itiger-qwen36-generation/jobs/"
+                "build-generation-policy.py"),
+            "--input", str(CONFIG),
+            "--output", str(repo_policy),
+            "--provenance", str(OUT / "policy-provenance.json"),
+            "--user", USER_IDENTITY,
+            "--provider-prefix", PROVIDER_PREFIX,
+            "--repo-provider-prefix", REPO_PROVIDER_PREFIX,
+        ], cwd=str(REPO), env=local_python_subprocess_env(), check=True)
+        os.replace(repo_policy, CONFIG)
     workflow_bundle = None
     if args.deployment_workflow:
         if args.runtime == "qwen-onnx-cpu-native" or args.spec107_live_fault_cell:
@@ -1565,6 +1898,16 @@ def main() -> int:
         "NDN_LOG": args.ndn_log,
         "NDNSF_RESPONSE_LARGE_DATA_THRESHOLD": "1024",
     }
+    if args.selection_dataflow_v2 or args.selection_dataflow_v3:
+        # A collaboration Selection can be larger than one SVS publication
+        # path reliably fans out.  The same authenticated, hybrid-encrypted
+        # provider-specific Data is therefore also fetched by its exact V2
+        # name.  Both producer direct-put and Provider prefetch are guarded by
+        # this shared flag; this is transport redundancy, not an authorization
+        # bypass or a second collaboration attempt.
+        base_env["NDNSF_SELECTION_TARGETED_PREFETCH"] = "1"
+    if os.environ.get("NDNSF_SPEC168_SELECTION_TRACE") == "1":
+        base_env["NDN_LOG"] = "ndn_service_framework.*=TRACE"
     if args.large_fetch_timing:
         base_env["NDNSF_COLLAB_LARGE_FETCH_TIMING"] = "1"
     if args.runtime == "qwen-onnx-cpu-native":
@@ -1575,6 +1918,10 @@ def main() -> int:
             args.spec107_timing_sample_rate)
     base_env.pop("NDN_CLIENT_TRANSPORT", None)
     generate_policy_bundle(base_env)
+    selection_bundle = (
+        prepare_selection_dataflow_v2(args)
+        if (args.selection_dataflow_v2 or args.selection_dataflow_v3) else None
+    )
     native_plan = native_manifest = None
     if args.runtime == "qwen-onnx-cpu-native":
         native_plan, native_manifest = write_native_qwen_bundle(
@@ -1637,8 +1984,16 @@ def main() -> int:
              CONTROLLER_IDENTITY + "/KEY", APP_ROOT, APP_ROOT + "/KEY"],
         )
         rh.addOrigin([ndn.net[USER_NODE]], [USER_IDENTITY, USER_IDENTITY + "/KEY"])
-        for node_name, identity in zip(STAGE_NODES, STAGE_IDENTITIES):
-            rh.addOrigin([ndn.net[node_name]], [identity, identity + "/KEY"])
+        for node_name, identity, repo_identity in zip(
+                STAGE_NODES, STAGE_IDENTITIES, REPO_IDENTITIES):
+            rh.addOrigin(
+                [ndn.net[node_name]],
+                [identity, identity + "/KEY",
+                 repo_identity, repo_identity + "/KEY"],
+            )
+            if args.selection_dataflow_v2 or args.selection_dataflow_v3:
+                rh.addOrigin(
+                    [ndn.net[node_name]], ["/NDNSF/DistributedRepo"])
         rh.addOrigin(ndn.net.hosts, [GROUP_IDENTITY])
         rh.calculateRoutes()
         log(
@@ -1649,15 +2004,21 @@ def main() -> int:
         for node in ndn.net.hosts:
             Nfdc.setStrategy(node, APP_ROOT, Nfdc.STRATEGY_MULTICAST)
             Nfdc.setStrategy(node, GROUP_IDENTITY, Nfdc.STRATEGY_MULTICAST)
+            if args.selection_dataflow_v2 or args.selection_dataflow_v3:
+                Nfdc.setStrategy(
+                    node, "/NDNSF/DistributedRepo", Nfdc.STRATEGY_MULTICAST)
 
         node_identities = [
             (CONTROLLER_NODE, CONTROLLER_IDENTITY),
             (USER_NODE, USER_IDENTITY),
             *list(zip(STAGE_NODES, STAGE_IDENTITIES)),
+            *list(zip(STAGE_NODES, REPO_IDENTITIES)),
         ]
         identities_by_node: dict[str, str] = {}
+        local_identities_by_node: dict[str, list[str]] = {}
         for host_name, identity in node_identities:
             identities_by_node.setdefault(host_name, identity)
+            local_identities_by_node.setdefault(host_name, []).append(identity)
         homes: dict[str, Path] = {}
         for host_name in sorted(set(identities_by_node)):
             home = MININDN_ROOT / host_name
@@ -1699,7 +2060,7 @@ def main() -> int:
                           "ndnsec cert-install -f {} >/dev/null 2>&1 || true".format(
                               perf.shell_quote(cert)))
             cert_name = perf.certificate_name_from_file(cert)
-            cert_names[host_name] = cert_name
+            cert_names[identity] = cert_name
             key_name = key_name_from_certificate_name(cert_name)
             perf.node_cmd(controller_node,
                           "ndnsec set-default -k -n {} >/dev/null 2>&1 || true".format(
@@ -1707,22 +2068,35 @@ def main() -> int:
             perf.node_cmd(controller_node, "ndnsec-export -P {} -o {} -k {}".format(
                 perf.shell_quote(passphrase), perf.shell_quote(key),
                 perf.shell_quote(key_name)))
-            exported_keys.append((key, key_name))
+            exported_keys.append((host_name, identity, cert, key, key_name))
 
         for host_name in sorted(set(identities_by_node)):
             perf.node_cmd(ndn.net[host_name],
                           "ndnsec cert-install -f {} >/dev/null 2>&1 || true".format(
                               perf.shell_quote(root_cert)))
-            for key, _ in exported_keys:
+            # Every participant receives the public trust material, but a
+            # host receives private keys only for identities it owns.  The
+            # previous all-keys-on-all-hosts setup made isolated MiniNDN homes
+            # behave like one shared PIB and hid TigerCluster certificate
+            # bootstrap failures.
+            for _, _, cert, _, _ in exported_keys:
+                perf.node_cmd(
+                    ndn.net[host_name],
+                    "ndnsec cert-install -N -f {} >/dev/null 2>&1".format(
+                        perf.shell_quote(cert)))
+            for owner_host, _, _, key, _ in exported_keys:
+                if owner_host == host_name:
+                    perf.node_cmd(
+                        ndn.net[host_name],
+                        "ndnsec import -P {} {} >/dev/null 2>&1".format(
+                            perf.shell_quote(passphrase), perf.shell_quote(key)))
+            for identity in local_identities_by_node[host_name]:
                 perf.node_cmd(ndn.net[host_name],
-                              "ndnsec import -P {} {} >/dev/null 2>&1 || true".format(
-                                  perf.shell_quote(passphrase), perf.shell_quote(key)))
+                              "ndnsec set-default -c -n {} >/dev/null 2>&1".format(
+                                  perf.shell_quote(cert_names[identity])))
             perf.node_cmd(ndn.net[host_name],
                           "ndnsec set-default -n {} >/dev/null 2>&1 || true".format(
                               perf.shell_quote(identities_by_node[host_name])))
-            perf.node_cmd(ndn.net[host_name],
-                          "ndnsec set-default -c -n {} >/dev/null 2>&1 || true".format(
-                              perf.shell_quote(cert_names[host_name])))
 
         config_obj = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
         config_obj.setdefault("trust", {})["anchor_file"] = str(root_cert)
@@ -1734,20 +2108,97 @@ def main() -> int:
             name: command_env(homes, name, base_env)
             for name in sorted(set(identities_by_node))
         }
-        base = f"cd {perf.shell_quote(REPO)} && exec python3 "
+        base = python_process_prefix(base_env)
         common = " --config {} --generated-policy-dir {}".format(
             perf.shell_quote(CONFIG), perf.shell_quote(GEN_POLICY))
-        start_process(
+        controller_proc, controller_log = start_process(
             ndn, CONTROLLER_NODE, "controller",
             base + "-c " + perf.shell_quote(
                 "from ndnsf_distributed_inference.app_sdk.controller import APPController; "
-                "import sys; "
-                "c=APPController.from_config(sys.argv[1], generated_policy_dir=sys.argv[2]); "
+                "import subprocess,sys; "
+                "c=APPController.from_config(sys.argv[1], "
+                "generated_policy_dir=sys.argv[2], "
+                "bootstrap_token_file=sys.argv[3]); "
+                "f=open(sys.argv[4],'wb'); "
+                "subprocess.run(['ndnsec','cert-dump','-i',"
+                "'/example/llm-pipeline/controller'],stdout=f,check=True); "
+                "f.close(); "
                 "print('controller ready', flush=True); c.run()"
-            ) + " " + perf.shell_quote(CONFIG) + " " + perf.shell_quote(GEN_POLICY),
+            ) + " " + perf.shell_quote(CONFIG)
+            + " " + perf.shell_quote(GEN_POLICY)
+            + " " + perf.shell_quote(OUT / "bootstrap-tokens.txt")
+            + " " + perf.shell_quote(OUT / "controller.cert"),
             node_env[CONTROLLER_NODE], processes,
         )
-        time.sleep(args.controller_wait_s)
+        if not wait_log(controller_log, "controller ready",
+                        args.provider_start_timeout_s, controller_proc):
+            raise RuntimeError(
+                f"controller did not reach ready state; log={controller_log}")
+
+        repo_logs = []
+        repo_user_bootstrap = None
+        if selection_bundle is not None:
+            token_file = OUT / "bootstrap-tokens.txt"
+            controller_cert = OUT / "controller.cert"
+            if not token_file.is_file() or not controller_cert.is_file():
+                raise RuntimeError(
+                    "controller did not publish Repo bootstrap authority")
+            for env in node_env.values():
+                env["NDNSF_CONTROLLER_CERT_FILE"] = str(controller_cert)
+            repo_free_bytes = shutil.disk_usage(OUT).free
+            for stage_index, (node_name, provider_id, repo_identity) in enumerate(
+                    zip(STAGE_NODES, STAGE_PROVIDER_IDS, REPO_IDENTITIES)):
+                bootstrap = write_bootstrap_token(
+                    token_file,
+                    repo_identity,
+                    OUT / f"repo-provider-{stage_index}.token",
+                )
+                provider_id_arg = (
+                    f" --provider-id {perf.shell_quote(provider_id)}"
+                    if provider_id else ""
+                )
+                repo_command = (
+                    base
+                    + perf.shell_quote(
+                        REPO / "specs/162-itiger-qwen36-generation/jobs/"
+                        "run-repo-node.py")
+                    + " --config " + perf.shell_quote(CONFIG)
+                    + " --generated-policy-dir "
+                    + perf.shell_quote(OUT / f"generated/repo-{stage_index}")
+                    + provider_id_arg
+                    + " --provider-prefix "
+                    + perf.shell_quote(REPO_PROVIDER_PREFIX)
+                    + " --repo-node "
+                    + perf.shell_quote(
+                        f"/NDNSF/DistributedRepo/Node/{stage_index}")
+                    + " --storage-dir "
+                    + perf.shell_quote(OUT / f"repo-store-{stage_index}")
+                    + " --state-root "
+                    + perf.shell_quote(OUT / "repo-operator-state")
+                    + " --test-only-allow-ephemeral-app-state"
+                    + " --free-bytes " + str(repo_free_bytes)
+                    + " --bootstrap-token-file "
+                    + perf.shell_quote(bootstrap)
+                )
+                repo_proc, repo_log = start_process(
+                    ndn,
+                    node_name,
+                    f"repo-{stage_index}",
+                    repo_command,
+                    node_env[node_name],
+                    processes,
+                )
+                repo_logs.append(repo_log)
+                if not wait_log(
+                        repo_log, "SPEC162_REPO_NODE_STARTING",
+                        args.provider_start_timeout_s, repo_proc):
+                    raise RuntimeError(
+                        f"Repo node did not start; log={repo_log}")
+            repo_user_bootstrap = write_bootstrap_token(
+                token_file,
+                USER_IDENTITY,
+                OUT / "repo-user-bootstrap.token",
+            )
 
         provider_logs = []
         for stage_index, (node_name, provider_id) in enumerate(zip(STAGE_NODES, STAGE_PROVIDER_IDS)):
@@ -1771,6 +2222,58 @@ def main() -> int:
                     perf.shell_quote(DEPLOYMENT_ARTIFACT_DIGEST),
                     perf.shell_quote(f"spec111-stage-{stage_index}-boot-1"),
                     perf.shell_quote(workflow_bundle["privateKeys"][stage_index]),
+                )
+            selection_provider_args = ""
+            if selection_bundle is not None:
+                device = (
+                    "cuda:0"
+                    if args.qwen_execution_provider == "cuda" else "cpu"
+                )
+                require_cuda = (
+                    " --require-cuda"
+                    if args.qwen_execution_provider == "cuda" else ""
+                )
+                required_mib = int(
+                    selection_bundle["requiredMiB"][stage_index])
+                selection_provider_args = (
+                    (" --lazy-qwen-load"
+                     if args.selection_dataflow_v2 else "")
+                    + f" --device {perf.shell_quote(device)}{require_cuda}"
+                    " --handler-workers 2"
+                    " --provider-identity "
+                    + perf.shell_quote(STAGE_IDENTITIES[stage_index])
+                    + (" --selection-dataflow-v2"
+                       if args.selection_dataflow_v2
+                       else " --selection-dataflow-v3")
+                    + " --selection-model-type "
+                    + perf.shell_quote(selection_bundle["modelType"])
+                    + f" --selection-gpu-capacity-mib {max(32760, required_mib)}"
+                    f" --selection-offered-gpu-mib {required_mib}"
+                    f" --selection-offer-lease-ms {args.selection_offer_lease_ms}"
+                    f" --selection-max-prepare-ms {args.selection_max_prepare_ms}"
+                    f" --selection-residency-ttl-ms {args.selection_cache_max_age_ms}"
+                    " --selection-wal-path "
+                    + perf.shell_quote(OUT / f"selection-{stage_index}.wal")
+                    + " --selection-storage-key-file "
+                    + perf.shell_quote(
+                        selection_bundle["storageKeys"][stage_index])
+                    + " --selection-signing-key-file "
+                    + perf.shell_quote(
+                        selection_bundle["offerKeys"][stage_index])
+                    + " --selection-residency-json "
+                    + perf.shell_quote(
+                        selection_bundle["residency"][stage_index])
+                    + " --selection-repo-registration "
+                    + perf.shell_quote(selection_bundle["repoRegistration"])
+                    + " --selection-model-cache-dir "
+                    + perf.shell_quote(
+                        OUT / f"provider-model-cache-{stage_index}")
+                    + " --selection-local-artifact "
+                    + perf.shell_quote(
+                        selection_bundle["localArtifacts"][stage_index])
+                    + " --repo-client-state-root "
+                    + perf.shell_quote(
+                        OUT / f"repo-client-state-{stage_index}")
                 )
             if args.runtime == "qwen-onnx-cpu-native":
                 if native_plan is None or native_manifest is None:
@@ -1815,7 +2318,7 @@ def main() -> int:
                     f"--stages {args.stages} "
                     f"--transformer-layers {args.transformer_layers} "
                     f"--compute-delay-ms {args.compute_delay_ms}" +
-                    workflow_provider_args
+                    workflow_provider_args + selection_provider_args
                 )
                 ready_marker = "LLM_PIPELINE_PROVIDER_READY"
             proc, log_path = start_process(
@@ -1839,8 +2342,8 @@ def main() -> int:
                 )
                 fault_provider_specs[stage_index] = (
                     node_name, provider_command, node_env[node_name], ready_marker)
-        log(f"Waiting {args.provider_wait_s:.1f}s for providers")
-        time.sleep(args.provider_wait_s)
+        log("Provider process readiness complete; the User Request now drives "
+            "ACK closure, model preparation, and dataflow execution")
 
         user_log = OUT / "llm-pipeline-user.log"
         metrics_csv = OUT / "llm-pipeline-user-measured.csv"
@@ -1886,12 +2389,51 @@ def main() -> int:
                 control_args,
                 perf.shell_quote(OUT / "deployment-workflow-summary.json"),
             )
+        qwen_summary_user_args = (
+            "--qwen-runtime-summary "
+            + perf.shell_quote(OUT / "qwen-pipeline-runtime.json")
+            if selection_bundle is None else ""
+        )
+        selection_user_args = ""
+        if selection_bundle is not None:
+            if repo_user_bootstrap is None:
+                raise RuntimeError("Repo User bootstrap token is unavailable")
+            selection_user_args = (
+                " --automatic-planning-manifest "
+                + perf.shell_quote(selection_bundle["automaticPlanning"])
+                + " --selection-offer-key-map "
+                + perf.shell_quote(selection_bundle["offerKeyMap"])
+                + f" --selection-cache-max-age-ms {args.selection_cache_max_age_ms}"
+                + " --qwen-stage-manifest "
+                + perf.shell_quote(selection_bundle["stageManifest"])
+                + " --repo-registration-output "
+                + perf.shell_quote(selection_bundle["repoRegistration"])
+                + " --repo-user " + perf.shell_quote(USER_IDENTITY)
+                + " --repo-bootstrap-token-file "
+                + perf.shell_quote(repo_user_bootstrap)
+                + " --repo-object-prefix "
+                + perf.shell_quote(selection_bundle["repoObjectPrefix"])
+                + " --repo-generated-policy-dir "
+                + perf.shell_quote(OUT / "generated/repo-publisher")
+                + " --repo-state-root "
+                + perf.shell_quote(OUT / "repo-publisher-state")
+                + " --test-only-allow-ephemeral-app-state"
+                + " --repo-publisher-script "
+                + perf.shell_quote(
+                    REPO / "specs/162-itiger-qwen36-generation/jobs/"
+                    "register-qwen36-repo.py")
+                + " --request-id " + perf.shell_quote(args.request_id)
+                + " --app-envelope-key-file "
+                + perf.shell_quote(selection_bundle["envelopeKey"])
+                + (" --selection-dataflow-v3"
+                   if args.selection_dataflow_v3 else "")
+            )
         user_proc = getPopen(
             ndn.net[USER_NODE],
             base + perf.shell_quote(LLM_DIR / "user.py") + common +
             " --prompt {} --stages {} --compute-delay-ms {} "
             "--runtime {} --transformer-layers {} "
-            "--qwen-runtime-summary {} "
+            "{} "
             "--context-input-mode {} --delta-token-ids {} "
             "--ack-timeout-ms {} --timeout-ms {} "
             "--warmup-requests {} --measured-requests {} "
@@ -1899,13 +2441,13 @@ def main() -> int:
             "--native-first-kv-mode {} "
             "--expected-token-ids {} "
             "--measured-duration-s {} --request-interval-ms {} --campaign-id {} "
-            "--metrics-csv {} {} {} {} {} {} {}".format(
+            "--metrics-csv {} {} {} {} {} {} {} {}".format(
                 perf.shell_quote(args.prompt),
                 args.stages,
                 args.compute_delay_ms,
                 user_runtime,
                 args.transformer_layers,
-                perf.shell_quote(OUT / "qwen-pipeline-runtime.json"),
+                qwen_summary_user_args,
                 args.context_input_mode,
                 perf.shell_quote(args.delta_token_ids),
                 args.ack_timeout_ms,
@@ -1935,6 +2477,7 @@ def main() -> int:
                 spec107_user_args,
                 durable_user_args,
                 workflow_user_args,
+                selection_user_args,
             ),
             envDict=node_env[USER_NODE],
             shell=True,
@@ -2009,32 +2552,27 @@ def main() -> int:
         user_failed = user_proc.returncode != 0
         for stage_index, log_path in enumerate(provider_logs):
             text = log_path.read_text(errors="replace")
-            expected = (
-                "NDNSF_DI_ONNX_TIMING"
-                if args.runtime == "qwen-onnx-cpu-native" else
-                "LLM_PIPELINE_QWEN_ONNX_STAGE_FINAL"
-                if args.runtime == "qwen-onnx" and stage_index == args.stages - 1 else
-                "LLM_PIPELINE_QWEN_ONNX_STAGE_OUTPUT"
-                if args.runtime == "qwen-onnx" else
-                "LLM_PIPELINE_QWEN_STAGE_FINAL"
-                if args.runtime == "qwen-transformers" and stage_index == args.stages - 1 else
-                "LLM_PIPELINE_QWEN_STAGE_OUTPUT"
-                if args.runtime == "qwen-transformers" else
-                "LLM_PIPELINE_TRANSFORMER_STAGE_FINAL"
-                if args.runtime == "tiny-transformers" and stage_index == args.stages - 1 else
-                "LLM_PIPELINE_TRANSFORMER_STAGE_OUTPUT"
-                if args.runtime == "tiny-transformers" else
-                "LLM_PIPELINE_STAGE_FINAL"
-                if stage_index == args.stages - 1 else
-                "LLM_PIPELINE_STAGE_OUTPUT"
+            full_generation = (
+                args.generation_campaign_manifest and
+                "LLM_PIPELINE_QWEN_FULL_STAGE_START" in text
+            )
+            expected = expected_stage_completion_marker(
+                args.runtime,
+                stage_index=stage_index,
+                stages=args.stages,
+                full_generation=full_generation,
             )
             if expected not in text:
                 raise RuntimeError(f"stage {stage_index} missing {expected}; log={log_path}")
             if args.require_real_model and (
-                "LLM_PIPELINE_QWEN_ONNX_STAGE_ARTIFACT_READY" not in text
+                real_model_readiness_marker(
+                    args.runtime,
+                    deferred_selection=(
+                        args.selection_dataflow_v2 or args.selection_dataflow_v3),
+                ) not in text
             ):
                 raise RuntimeError(
-                    "real-model gate missing immutable ONNX artifact readiness "
+                    "real-model gate missing immutable stage artifact readiness "
                     f"for stage {stage_index}; log={log_path}"
                 )
 
@@ -2133,6 +2671,82 @@ def main() -> int:
                 f"runtime={args.runtime} user_log={user_log}"
             )
             return int(user_proc.returncode or 2)
+        if args.spec168_source_digest:
+            security_logs = [user_text]
+            security_logs.extend(
+                path.read_text(errors="replace") for path in provider_logs)
+            local_pib_misses = sum(
+                text.count("local PIB certificate lookup miss")
+                for text in security_logs
+            )
+            if local_pib_misses:
+                raise RuntimeError(
+                    "SPEC168_LOCAL_PIB_CERTIFICATE_LOOKUP_MISS:"
+                    f"count={local_pib_misses}")
+            max_ack_collect_ms = 0.0
+            if args.generation_campaign_manifest:
+                generation_rows = [
+                    json.loads(line)
+                    for line in Path(args.generation_jsonl).read_text(
+                        encoding="utf-8").splitlines()
+                    if line.strip()
+                ]
+                if not generation_rows:
+                    raise RuntimeError("SPEC168_GENERATION_EVIDENCE_MISSING")
+                ack_collect_values = []
+                for row in generation_rows:
+                    steps = row.get("tokenSteps", [])
+                    if len(steps) != 1:
+                        raise RuntimeError(
+                            "SPEC168_PLANNING_TIMING_STEP_COUNT_INVALID")
+                    timings = steps[0].get("metadata", {}).get(
+                        "planningTimingsMs", {})
+                    if "ack_collect_ms" not in timings:
+                        raise RuntimeError(
+                            "SPEC168_ACK_COLLECT_TIMING_MISSING")
+                    ack_collect_values.append(float(timings["ack_collect_ms"]))
+                max_ack_collect_ms = max(ack_collect_values)
+                if max_ack_collect_ms > args.spec168_max_ack_collect_ms:
+                    raise RuntimeError(
+                        "SPEC168_ACK_COVERAGE_CLOSURE_TOO_SLOW:"
+                        f"observedMs={max_ack_collect_ms:.3f}:"
+                        f"limitMs={args.spec168_max_ack_collect_ms:.3f}")
+            print(
+                "SPEC168_SECURITY_FIDELITY_PASS "
+                f"isolatedPibHosts={len(local_identities_by_node)} "
+                "localPibMisses=0 "
+                f"maxAckCollectMs={max_ack_collect_ms:.3f}"
+            )
+            route_parts = []
+            for node in sorted(ndn.net.hosts, key=lambda item: item.name):
+                route_parts.append(
+                    f"## {node.name}\n"
+                    + perf.node_cmd(node, "nfdc route list 2>&1")
+                )
+            sif_digest = os.environ.get(
+                "NDNSF_SPEC168_EXPECTED_SIF_DIGEST", "")
+            admission = write_spec168_runtime_evidence(
+                OUT,
+                source_digest=args.spec168_source_digest,
+                model_identity_digest=args.model_identity_digest,
+                workload_digest=args.workload_digest,
+                process_rows=spec168_process_rows(processes),
+                route_snapshot="\n".join(route_parts),
+                fidelity="EXACT_SIF" if sif_digest else "REAL_MININDN",
+                sif_digest=sif_digest,
+                admission_path=(
+                    os.environ.get("NDNSF_SPEC168_ADMISSION_OUTPUT") or None
+                ),
+            )
+            admission_path = Path(os.environ.get(
+                "NDNSF_SPEC168_ADMISSION_OUTPUT",
+                str(OUT / "spec168-runtime-admission.json"),
+            ))
+            print(
+                "SPEC168_RUNTIME_ADMISSION_EMITTED "
+                f"fidelity={admission['fidelity']} "
+                f"path={admission_path}"
+            )
         print(
             "LLM_PIPELINE_MININDN_OK "
             f"local_ms={local_ms} distributed_ms={distributed_ms} "

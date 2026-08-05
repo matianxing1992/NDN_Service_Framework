@@ -57,6 +57,7 @@ def _normalize_digest(value: str) -> str:
 class BytesGenerationTaskAdapter:
     port_descriptor: AdapterPortDescriptor
     descriptor: InferenceTaskDescriptor
+    adapter_name: str = "qwen-three-stage-pipeline"
 
     def encode_input(
         self, value: Any, options: Mapping[str, Any],
@@ -71,7 +72,7 @@ class BytesGenerationTaskAdapter:
             options=json.dumps(
                 dict(options), sort_keys=True, separators=(",", ":"),
             ).encode(),
-            metadata={"adapter": "qwen36-27b-pipeline"},
+            metadata={"adapter": self.adapter_name},
         )
 
     def decode_result(self, payload: bytes) -> bytes:
@@ -79,46 +80,58 @@ class BytesGenerationTaskAdapter:
 
 
 @dataclass(frozen=True)
-class Qwen36ThreeStageSplitter:
+class QwenThreeStageSplitter:
     descriptor: AdapterPortDescriptor
     splitter_descriptor: SplitterDescriptor
     artifact_digests_by_role: Mapping[str, str]
     weight_bytes_by_role: Mapping[str, int]
+    layer_ranges: tuple[tuple[int, int], ...]
+    roles: tuple[str, ...] = QWEN36_STAGE_ROLES
+
+    def __post_init__(self) -> None:
+        ranges = tuple((int(start), int(end))
+                       for start, end in self.layer_ranges)
+        if (len(ranges) != len(self.roles) or not ranges
+                or ranges[0][0] != 0
+                or any(start < 0 or end <= start for start, end in ranges)
+                or any(ranges[index][1] != ranges[index + 1][0]
+                       for index in range(len(ranges) - 1))
+                or set(self.artifact_digests_by_role) != set(self.roles)
+                or set(self.weight_bytes_by_role) != set(self.roles)):
+            raise ValueError("Qwen stage ranges and artifacts are inconsistent")
+        object.__setattr__(self, "layer_ranges", ranges)
 
     def enumerate_candidates(
         self, model: ModelDescriptor, graph: ModelGraphSnapshot,
     ) -> tuple[SplitCandidate, ...]:
         model.validate_graph(graph)
-        node_roles: dict[str, str] = {"embedding": QWEN36_STAGE_ROLES[0]}
-        for layer in range(64):
+        node_roles: dict[str, str] = {"embedding": self.roles[0]}
+        decoder_layers = self.layer_ranges[-1][1]
+        for layer in range(decoder_layers):
             role_index = next(
-                index for index, (start, end) in enumerate(
-                    QWEN36_27B_LAYER_RANGES)
+                index for index, (start, end) in enumerate(self.layer_ranges)
                 if start <= layer < end
             )
-            node_roles[f"layer-{layer:02d}"] = QWEN36_STAGE_ROLES[role_index]
-        node_roles["final-norm-head"] = QWEN36_STAGE_ROLES[-1]
-        cut_edges = (
-            "hidden-layer-20-to-21",
-            "hidden-layer-41-to-42",
+            node_roles[f"layer-{layer:02d}"] = self.roles[role_index]
+        node_roles["final-norm-head"] = self.roles[-1]
+        cut_edges = tuple(
+            f"hidden-layer-{end - 1}-to-{end}"
+            for _start, end in self.layer_ranges[:-1]
         )
-        dependencies = (
+        dependencies = tuple(
             RoleDependency(
-                QWEN36_STAGE_ROLES[0], QWEN36_STAGE_ROLES[1],
-                (cut_edges[0],),
-            ),
-            RoleDependency(
-                QWEN36_STAGE_ROLES[1], QWEN36_STAGE_ROLES[2],
-                (cut_edges[1],),
-            ),
+                self.roles[index], self.roles[index + 1],
+                (cut_edges[index],),
+            )
+            for index in range(len(self.roles) - 1)
         )
         artifacts = {
             role: (_normalize_digest(self.artifact_digests_by_role[role]),)
-            for role in QWEN36_STAGE_ROLES
+            for role in self.roles
         }
         requirements = {
             role: RoleResourceRequirement(
-                backends=("transformers", "cuda"),
+                backends=("transformers", "cuda", "transformers-cpu"),
                 weight_bytes=int(self.weight_bytes_by_role[role]),
                 workspace_bytes=1024 * 1024 * 1024,
                 kv_bytes=0,
@@ -126,7 +139,7 @@ class Qwen36ThreeStageSplitter:
                 transient_bytes=512 * 1024 * 1024,
                 safety_margin=1.10,
             )
-            for role in QWEN36_STAGE_ROLES
+            for role in self.roles
         }
         candidate = SplitCandidate(
             source=SplitSource.PRE_SPLIT,
@@ -134,7 +147,7 @@ class Qwen36ThreeStageSplitter:
             model=model,
             graph_digest=graph.graph_digest,
             execution_plan=RoleExecutionPlan(
-                roles=QWEN36_STAGE_ROLES,
+                roles=self.roles,
                 dependencies=dependencies,
                 node_roles=node_roles,
             ),
@@ -145,8 +158,8 @@ class Qwen36ThreeStageSplitter:
             requirements_by_role=requirements,
             cross_partition_tensors=cut_edges,
             estimated_costs={
-                "role_count": 3,
-                "decoder_layers": 64,
+                "role_count": len(self.roles),
+                "decoder_layers": decoder_layers,
                 "known_transfer_bytes": 0,
                 "unknown_transfer_tensors": 2,
             },
@@ -155,32 +168,45 @@ class Qwen36ThreeStageSplitter:
         return (candidate,)
 
 
-def build_qwen36_27b_three_stage_adapter(
+def build_qwen_three_stage_adapter(
     *,
+    model_name: str,
+    revision: str,
+    layer_ranges: tuple[tuple[int, int], ...],
     artifact_digests_by_role: Mapping[str, str],
     weight_bytes_by_role: Mapping[str, int],
+    precision: str = "bfloat16",
+    adapter_name: str = "qwen-three-stage-pipeline",
 ) -> ModelFamilyAdapter:
-    """Build the content-bound adapter used by Spec 162.
+    """Build one content-bound Qwen dependency graph from model metadata.
 
     The graph is a dependency graph, not a hard-coded provider assignment.
     Provider placement still happens only after ACK_CLOSED.
     """
     if (set(artifact_digests_by_role) != set(QWEN36_STAGE_ROLES)
-            or set(weight_bytes_by_role) != set(QWEN36_STAGE_ROLES)):
-        raise ValueError("Qwen3.6 adapter requires all three exact stage artifacts")
+            or set(weight_bytes_by_role) != set(QWEN36_STAGE_ROLES)
+            or not model_name or not revision or not precision):
+        raise ValueError("Qwen adapter requires one exact three-stage model")
+    ranges = tuple((int(start), int(end)) for start, end in layer_ranges)
+    if (len(ranges) != 3 or ranges[0][0] != 0
+            or any(start < 0 or end <= start for start, end in ranges)
+            or any(ranges[index][1] != ranges[index + 1][0]
+                   for index in range(2))):
+        raise ValueError("Qwen adapter requires three contiguous layer ranges")
+    decoder_layers = ranges[-1][1]
 
     input_schema = _digest("pipeline-input-v1")
     options_schema = _digest("generation-options-v1")
     result_schema = _digest("pipeline-result-v1")
     descriptor = AdapterDescriptor(
-        name="qwen36-27b-pipeline",
+        name=adapter_name,
         version="1.0.0",
         state_digest=_digest("adapter-state"),
         abi="python-v1",
         model_formats=("transformers-stage-package",),
         tasks=("text-generation",),
-        backends=("transformers", "cuda"),
-        precisions=("bfloat16",),
+        backends=("transformers", "cuda", "transformers-cpu"),
+        precisions=(precision,),
         input_schema_digest=input_schema,
         options_schema_digest=options_schema,
         result_schema_digest=result_schema,
@@ -192,7 +218,7 @@ def build_qwen36_27b_three_stage_adapter(
     )
     node_ids = (
         ("embedding",)
-        + tuple(f"layer-{index:02d}" for index in range(64))
+        + tuple(f"layer-{index:02d}" for index in range(decoder_layers))
         + ("final-norm-head",)
     )
     edges = []
@@ -202,7 +228,7 @@ def build_qwen36_27b_three_stage_adapter(
         if producer == "embedding":
             edge_id = "hidden-embedding-to-layer-00"
         elif consumer == "final-norm-head":
-            edge_id = "hidden-layer-63-to-final"
+            edge_id = f"hidden-layer-{decoder_layers - 1}-to-final"
         else:
             left = int(producer.split("-")[1])
             right = int(consumer.split("-")[1])
@@ -211,13 +237,14 @@ def build_qwen36_27b_three_stage_adapter(
             edge_id=edge_id,
             producer=producer,
             consumers=(consumer,),
-            dtype="bfloat16",
+            dtype=precision,
             shape=("batch", "sequence", "hidden"),
             estimated_bytes=None,
         ))
     graph_digest = canonical_contract_digest({
-        "model": QWEN36_27B_MODEL,
-        "revision": QWEN36_27B_REVISION,
+        "model": model_name,
+        "revision": revision,
+        "layer_ranges": ranges,
         "nodes": node_ids,
         "edges": tuple(edge.edge_id for edge in edges),
         "legal_cuts": tuple(edge.edge_id for edge in edges),
@@ -232,45 +259,65 @@ def build_qwen36_27b_three_stage_adapter(
         model_inputs=(TensorContract(
             "token-ids", "int64", ("batch", "sequence"), None),),
         model_outputs=(TensorContract(
-            "logits", "bfloat16", ("batch", "sequence", "vocabulary"), None),),
+            "logits", precision, ("batch", "sequence", "vocabulary"), None),),
     )
     graph_port = StaticGraphAdapter(
         AdapterPortDescriptor(
-            "qwen36-graph", "1", _digest("graph-port")),
+            "qwen-three-stage-graph", "1", _digest("graph-port")),
         graph,
     )
     splitter_port = AdapterPortDescriptor(
-        "qwen36-three-stage-splitter", "1", _digest("splitter-port"))
-    splitter = Qwen36ThreeStageSplitter(
+        "qwen-three-stage-splitter", "1", _digest("splitter-port"))
+    splitter = QwenThreeStageSplitter(
         splitter_port,
         SplitterDescriptor(
             splitter_port.name, splitter_port.version,
             splitter_port.state_digest),
         dict(artifact_digests_by_role),
         {role: int(value) for role, value in weight_bytes_by_role.items()},
+        ranges,
     )
     task = BytesGenerationTaskAdapter(
         AdapterPortDescriptor(
-            "qwen36-generation-task", "1", _digest("task-port")),
+            "qwen-generation-task", "1", _digest("task-port")),
         InferenceTaskDescriptor(
             "text-generation", input_schema, options_schema, result_schema),
+        adapter_name,
     )
     state = StaticStateAdapter(
         AdapterPortDescriptor(
-            "qwen36-state", "1", _digest("state-port")),
+            "qwen-state", "1", _digest("state-port")),
         (
             _state_contract(
-                "qwen36", InferenceStateClass.REQUEST_SCOPED, retention_ms=0),
+                "qwen", InferenceStateClass.REQUEST_SCOPED, retention_ms=0),
             _state_contract(
-                "qwen36", InferenceStateClass.EXACT_PREFIX_REUSABLE,
+                "qwen", InferenceStateClass.EXACT_PREFIX_REUSABLE,
                 retention_ms=300_000),
         ),
     )
     runner = GuardedRunnerAdapter(
         AdapterPortDescriptor(
-            "qwen36-runner", "1", _digest("runner-port")))
+            "qwen-runner", "1", _digest("runner-port")))
     return ModelFamilyAdapter(
         descriptor, graph_port, splitter, task, state, runner)
+
+
+def build_qwen36_27b_three_stage_adapter(
+    *,
+    artifact_digests_by_role: Mapping[str, str],
+    weight_bytes_by_role: Mapping[str, int],
+) -> ModelFamilyAdapter:
+    """Compatibility constructor for the pinned Qwen3.6-27B profile."""
+
+    return build_qwen_three_stage_adapter(
+        model_name=QWEN36_27B_MODEL,
+        revision=QWEN36_27B_REVISION,
+        layer_ranges=QWEN36_27B_LAYER_RANGES,
+        artifact_digests_by_role=artifact_digests_by_role,
+        weight_bytes_by_role=weight_bytes_by_role,
+        precision="bfloat16",
+        adapter_name="qwen36-27b-pipeline",
+    )
 
 
 __all__ = [
@@ -278,5 +325,7 @@ __all__ = [
     "QWEN36_27B_MODEL",
     "QWEN36_27B_REVISION",
     "QWEN36_STAGE_ROLES",
+    "QwenThreeStageSplitter",
+    "build_qwen_three_stage_adapter",
     "build_qwen36_27b_three_stage_adapter",
 ]

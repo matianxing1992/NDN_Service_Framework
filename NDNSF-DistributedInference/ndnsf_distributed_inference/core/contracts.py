@@ -15,6 +15,27 @@ import json
 from typing import Any, Callable, ClassVar, Iterable, Mapping
 
 
+DATA_DRIVEN_V2 = "DATA_DRIVEN_V2"
+LEGACY_READY_SET_V1 = "LEGACY_READY_SET_V1"
+DI_PLACEMENT_V3 = "DI_PLACEMENT_V3"
+
+
+def placement_wire_schema(wire: bytes | bytearray | str) -> str:
+    """Return the explicit placement schema without performing downgrade."""
+
+    try:
+        raw = wire.encode() if isinstance(wire, str) else bytes(wire)
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError) as exc:
+        raise ValueError("malformed placement wire") from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("schema"), str):
+        raise ValueError("placement wire lacks schema")
+    schema = payload["schema"]
+    if schema not in {DI_PLACEMENT_V3, "ndnsf-di-provider-offer-v2"}:
+        raise ValueError("unknown placement schema; downgrade is forbidden")
+    return schema
+
+
 def to_plain(value: Any) -> Any:
     if isinstance(value, Enum):
         return value.value
@@ -159,6 +180,35 @@ class DIRequestEnvelopeV2(CanonicalContract):
 
 
 @dataclass(frozen=True)
+class DIDataDependencyV2:
+    """One committed data edge carried inside a Provider assignment."""
+
+    producers: tuple[str, ...]
+    consumers: tuple[str, ...]
+    key_scope: str
+    topic_prefix: str
+    required: bool = True
+    tensors: tuple[str, ...] = ()
+    object_name_template: str = ""
+    expected_segments: int = 0
+    expected_bytes: int = 0
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "producers", tuple(self.producers))
+        object.__setattr__(self, "consumers", tuple(self.consumers))
+        object.__setattr__(self, "tensors", tuple(self.tensors))
+        if (not self.producers or not self.consumers
+                or len(set(self.producers)) != len(self.producers)
+                or len(set(self.consumers)) != len(self.consumers)
+                or any(not value for value in self.producers + self.consumers)
+                or not self.key_scope
+                or not self.topic_prefix.startswith("/")
+                or any(not value for value in self.tensors)
+                or self.expected_segments < 0 or self.expected_bytes < 0):
+            raise ValueError("invalid DI data dependency")
+
+
+@dataclass(frozen=True)
 class DIRoleAssignmentV2:
     role: str
     graph_node_id: str
@@ -168,12 +218,23 @@ class DIRoleAssignmentV2:
     dependency_digest: str
     adapter_id: str
     adapter_version: str
+    dependencies: tuple[DIDataDependencyV2, ...]
     required_gpu_mib: int
     input_grant_digests: tuple[str, ...] = ()
+    required_input_scopes: tuple[str, ...] = ()
+    backend: str = ""
+    device: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(
             self, "input_grant_digests", tuple(self.input_grant_digests))
+        object.__setattr__(
+            self, "required_input_scopes", tuple(self.required_input_scopes))
+        object.__setattr__(self, "dependencies", tuple(self.dependencies))
+        dependency_scopes = [item.key_scope for item in self.dependencies]
+        required_inputs = tuple(
+            item.key_scope for item in self.dependencies
+            if item.required and self.role in item.consumers)
         if (not self.role or not self.graph_node_id
                 or (self.layer_start is None) != (self.layer_end is None)
                 or self.layer_start is not None and (
@@ -181,10 +242,22 @@ class DIRoleAssignmentV2:
                 or not self.adapter_id or not self.adapter_version
                 or self.required_gpu_mib <= 0
                 or not self.input_grant_digests
-                or len(self.input_grant_digests) > 64):
+                or len(self.input_grant_digests) > 64
+                or len(self.required_input_scopes) > 64
+                or len(set(self.required_input_scopes))
+                != len(self.required_input_scopes)
+                or any(not value for value in self.required_input_scopes)
+                or len(set(dependency_scopes)) != len(dependency_scopes)
+                or any(self.role not in item.producers + item.consumers
+                       for item in self.dependencies)
+                or required_inputs != self.required_input_scopes
+                or bool(self.backend) != bool(self.device)):
             raise ValueError("invalid DI role assignment")
         _require_sha256(self.artifact_digest, "artifact_digest")
         _require_sha256(self.dependency_digest, "dependency_digest")
+        if self.dependency_digest != canonical_digest(self.dependencies):
+            raise ValueError(
+                "DI role dependency digest does not match committed edges")
         for value in self.input_grant_digests:
             _require_sha256(value, "input_grant_digest")
 
@@ -321,6 +394,45 @@ class ShardResidencyEvidenceV2(CanonicalContract):
 
 
 @dataclass(frozen=True)
+class ProviderResidencyIdentity(CanonicalContract):
+    """Complete compatibility identity for one reusable Provider shard.
+
+    The durable portion deliberately excludes request identity, Provider boot
+    epoch, and device so compatible requests can share verified bytes.  RAM
+    reuse is additionally boot-bound and GPU reuse is boot-and-device-bound by
+    the Provider residency ledger.
+    """
+
+    SCHEMA: ClassVar[str] = "ndnsf-di-provider-residency-identity-v1"
+    model_content_digest: str
+    graph_digest: str
+    partition_digest: str
+    artifact_digest: str
+    adapter_id: str
+    adapter_version: str
+    backend: str
+    device: str
+    provider_boot_epoch: str
+
+    def __post_init__(self) -> None:
+        for name in (
+                "model_content_digest", "graph_digest", "partition_digest",
+                "artifact_digest"):
+            _require_sha256(getattr(self, name), name)
+        if not all((self.adapter_id, self.adapter_version, self.backend,
+                    self.device, self.provider_boot_epoch)):
+            raise ValueError("Provider residency identity is incomplete")
+
+    @property
+    def durable_key(self) -> tuple[str, ...]:
+        return (
+            self.model_content_digest, self.graph_digest,
+            self.partition_digest, self.artifact_digest,
+            self.adapter_id, self.adapter_version, self.backend,
+        )
+
+
+@dataclass(frozen=True)
 class DISelectionAssignmentV2(CanonicalContract):
     SCHEMA: ClassVar[str] = "ndnsf-di-selection-assignment-v2"
     invocation_id: str
@@ -337,6 +449,7 @@ class DISelectionAssignmentV2(CanonicalContract):
     deadline_ms: int
     generation: int
     state_reuse_binding: StateReuseBindingV2 | None = None
+    execution_policy: str = DATA_DRIVEN_V2
     schema_version: int = 2
     canonical_encoding_version: str = "canonical-json-v1"
     capability_version: str = "SELECTION_DATAFLOW_V2"
@@ -344,6 +457,9 @@ class DISelectionAssignmentV2(CanonicalContract):
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "roles", tuple(self.roles))
+        if self.execution_policy != DATA_DRIVEN_V2:
+            raise ValueError(
+                "DI Selection execution policy must be DATA_DRIVEN_V2")
         if (not self.invocation_id or not self.request_id or self.attempt <= 0
                 or not self.provider or len(self.provider_boot_epoch) < 8
                 or self.resource_sequence <= 0 or not self.roles
@@ -389,7 +505,20 @@ class DISelectionAssignmentV2(CanonicalContract):
         roles = payload.get("roles")
         if not isinstance(roles, list):
             raise ValueError("DI role tuple must be an array")
-        payload["roles"] = tuple(DIRoleAssignmentV2(**item) for item in roles)
+        decoded_roles = []
+        for item in roles:
+            if not isinstance(item, dict):
+                raise ValueError("DI role tuple contains a non-object")
+            role_payload = dict(item)
+            dependencies = role_payload.get("dependencies")
+            if not isinstance(dependencies, list):
+                raise ValueError("DI role assignment lacks dependency edges")
+            role_payload["dependencies"] = tuple(
+                DIDataDependencyV2(**dependency)
+                for dependency in dependencies
+            )
+            decoded_roles.append(DIRoleAssignmentV2(**role_payload))
+        payload["roles"] = tuple(decoded_roles)
         binding = payload.get("state_reuse_binding")
         if binding is not None:
             if not isinstance(binding, dict):
@@ -1024,6 +1153,7 @@ class DeploymentPlan(CanonicalContract):
     selection_digest: str
     status_handles: Mapping[str, str] = field(default_factory=dict)
     requester_encryption_key: str = ""
+    execution_policy: str = LEGACY_READY_SET_V1
 
     def __post_init__(self) -> None:
         required = (self.requester_identity, self.request_id, self.model_variant,
@@ -1031,6 +1161,9 @@ class DeploymentPlan(CanonicalContract):
         if (not all(required) or self.attempt <= 0 or self.deadline_ms <= 0
                 or not self.artifact_digests or not self.assignments):
             raise ValueError("invalid DeploymentPlan")
+        if self.execution_policy not in {
+                DATA_DRIVEN_V2, LEGACY_READY_SET_V1}:
+            raise ValueError("unsupported DeploymentPlan execution policy")
         keys = [(item.provider, item.role) for item in self.assignments]
         if len(keys) != len(set(keys)) or len({item.role for item in self.assignments}) != len(self.assignments):
             raise ValueError("DeploymentPlan requires exact unique provider-role membership")
@@ -1052,6 +1185,8 @@ class DeploymentPlan(CanonicalContract):
             selection_digest=str(payload.get("selection_digest", "")),
             status_handles={str(k): str(v) for k, v in dict(payload.get("status_handles", {})).items()},
             requester_encryption_key=str(payload.get("requester_encryption_key", "")),
+            execution_policy=str(payload.get(
+                "execution_policy", LEGACY_READY_SET_V1)),
         )
 
 
@@ -1223,3 +1358,207 @@ class ExecutionActivateMessage(CanonicalContract):
         return canonical_digest(tuple(sorted(
             (to_plain(item) for item in self.members),
             key=lambda item: (item["provider"], item["role"]))))
+
+
+# Spec 168 deployment-fidelity evidence is deliberately workload-neutral.  It
+# belongs in NDNSF-DI's canonical boundary rather than in the generic NDNSF
+# collaboration protocol.
+LIFECYCLE_EVENT_TYPES = frozenset({
+    "REQUEST_CREATED", "REQUEST_PUBLISHED", "ACK_ACCEPTED", "ACK_REJECTED",
+    "ACK_CLOSED", "GRAPH_INSPECTED", "PLAN_VALIDATED", "ARTIFACT_PUBLISHED",
+    "PLAN_COMMITTED", "FINAL_SELECTION", "ROLE_ASSIGNED",
+    "ARTIFACT_FETCHED", "VERIFIED_DISK", "HOST_RESIDENT", "GPU_RESIDENT",
+    "LOCAL_READY", "DEPENDENCY_INPUT_ACCEPTED", "STAGE_EXECUTING",
+    "STAGE_OUTPUT_PUBLISHED", "STAGE_COMPLETED", "TOKEN_RECORDED",
+    "RESPONSE_PUBLISHED", "FAILURE_PUBLISHED", "CANCELED", "EXPIRED",
+    "CLEANUP_RECORDED",
+})
+
+TERMINAL_LIFECYCLE_EVENT_TYPES = frozenset({
+    "RESPONSE_PUBLISHED", "FAILURE_PUBLISHED", "CANCELED", "EXPIRED",
+})
+
+FAILURE_CODE_PREFIXES = (
+    "ENV_", "BOOT_", "ROUTE_", "ACK_", "PLAN_", "REPO_PUBLISH_",
+    "REPO_FETCH_", "PREP_", "DEPENDENCY_", "EXEC_", "TOKEN_",
+    "RESPONSE_", "CLEANUP_", "ANALYZER_",
+)
+
+
+def validate_lifecycle_failure_code(value: str) -> None:
+    """Reject ambiguous terminal labels such as ``TIMEOUT`` or ``ERROR``."""
+    if value == "UNRESOLVED_EVIDENCE_GAP":
+        return
+    if (not isinstance(value, str) or not value
+            or not value.replace("_", "").isalnum()
+            or value != value.upper()
+            or not any(value.startswith(prefix)
+                       and len(value) > len(prefix)
+                       for prefix in FAILURE_CODE_PREFIXES)):
+        raise ValueError("failure_code must identify an exact lifecycle boundary")
+
+
+@dataclass(frozen=True)
+class LifecycleEventV1(CanonicalContract):
+    """One immutable, fully bound NDNSF-DI lifecycle observation."""
+
+    SCHEMA: ClassVar[str] = "ndnsf-di.lifecycle-event.v1"
+    experiment_id: str
+    request_id: str
+    attempt_epoch: int
+    event_id: str
+    event_type: str
+    component: str
+    provider: str | None
+    provider_boot_epoch: str | None
+    role: str | None
+    plan_digest: str | None
+    operation_id: str | None
+    epoch: int
+    sequence: int
+    monotonic_ns: int
+    wall_time_utc: str
+    authenticated: bool
+    details_schema: str
+    details: dict[str, Any]
+
+    def __post_init__(self) -> None:
+        if not all((self.experiment_id, self.request_id, self.event_id,
+                    self.component, self.wall_time_utc, self.details_schema)):
+            raise ValueError("lifecycle event identities are required")
+        if self.attempt_epoch <= 0 or self.epoch < 0 or self.sequence <= 0:
+            raise ValueError("lifecycle event epochs and sequence are invalid")
+        if self.monotonic_ns < 0:
+            raise ValueError("lifecycle event monotonic_ns is invalid")
+        if self.event_type not in LIFECYCLE_EVENT_TYPES:
+            raise ValueError("unsupported lifecycle event_type")
+        if type(self.authenticated) is not bool or not isinstance(self.details, dict):
+            raise ValueError("invalid lifecycle authentication/details")
+        scoped = (self.provider, self.provider_boot_epoch, self.role)
+        if any(value is not None for value in scoped) and not all(scoped):
+            raise ValueError("provider, boot epoch and role form one binding")
+        if self.plan_digest is not None:
+            _require_sha256(self.plan_digest, "plan_digest")
+        if self.operation_id is None and self.epoch != 0:
+            raise ValueError("operation epoch requires operation_id")
+        if self.event_type == "FAILURE_PUBLISHED":
+            validate_lifecycle_failure_code(
+                str(self.details.get("failure_code", "")))
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "LifecycleEventV1":
+        expected = {item.name for item in dataclass_fields(cls)}
+        if set(payload) != expected | {"schema"} or payload.get("schema") != cls.SCHEMA:
+            raise ValueError("lifecycle event contains unknown or missing fields")
+        return cls(**{name: payload[name] for name in expected})
+
+    @classmethod
+    def from_bytes(cls, wire: bytes) -> "LifecycleEventV1":
+        payload = _decode(wire, cls.SCHEMA)
+        if bytes(wire) != canonical_json(payload).encode():
+            raise ValueError("lifecycle event is not canonically encoded")
+        return cls.from_dict(payload)
+
+
+@dataclass(frozen=True)
+class InvocationSummaryV1(CanonicalContract):
+    """Exactly one terminal analysis row for one frozen schedule row."""
+
+    SCHEMA: ClassVar[str] = "ndnsf-di.invocation-summary.v1"
+    experiment_id: str
+    schedule_row: int
+    prompt_id: str
+    request_id: str
+    attempt_epoch: int
+    model_identity: str
+    plan_digest: str
+    assignment_digest: str
+    cache_class: str
+    terminal_kind: str
+    terminal_reason: str
+    accepted: bool
+    answer: str
+    answer_digest: str
+    token_count: int
+    request_to_ack_close_ms: float
+    planning_ms: float
+    publication_ms: float
+    artifact_fetch_ms: float
+    disk_to_ram_ms: float
+    ram_to_gpu_ms: float
+    dependency_wait_ms: float
+    execution_ms: float
+    response_ms: float
+    total_ms: float
+    ttft_ms: float | None
+    inter_token_latency_ms: tuple[float, ...]
+    tokens_per_second: float
+    repo_unique_bytes: int
+    repo_wire_bytes: int
+    duplicate_model_payload_bytes: int
+    device_load_count: int
+    cpu_fallback_count: int
+    security_verdict: str
+    failure_class: str
+    failure_code: str
+    evidence_path: str
+
+    def __post_init__(self) -> None:
+        if not all((self.experiment_id, self.prompt_id, self.request_id,
+                    self.model_identity, self.terminal_kind,
+                    self.terminal_reason, self.security_verdict,
+                    self.evidence_path)):
+            raise ValueError("invocation summary identities are required")
+        if self.schedule_row <= 0 or self.attempt_epoch <= 0:
+            raise ValueError("invocation summary row/attempt is invalid")
+        if self.cache_class not in {"cold", "disk", "ram", "gpu", "mixed", "invalid"}:
+            raise ValueError("invalid cache_class")
+        if self.terminal_kind not in {
+                "RESPONSE", "FAILURE", "CANCELED", "EXPIRED",
+                "SCHEDULER_NOT_ADMITTED", "ENVIRONMENTAL_FAILURE"}:
+            raise ValueError("invalid terminal_kind")
+        if type(self.accepted) is not bool:
+            raise ValueError("accepted must be boolean")
+        if self.plan_digest:
+            _require_sha256(self.plan_digest, "plan_digest")
+        if self.assignment_digest:
+            _require_sha256(self.assignment_digest, "assignment_digest")
+        if self.answer_digest:
+            _require_sha256(self.answer_digest, "answer_digest")
+        numeric = (
+            self.request_to_ack_close_ms, self.planning_ms,
+            self.publication_ms, self.artifact_fetch_ms, self.disk_to_ram_ms,
+            self.ram_to_gpu_ms, self.dependency_wait_ms, self.execution_ms,
+            self.response_ms, self.total_ms, self.tokens_per_second,
+            self.repo_unique_bytes, self.repo_wire_bytes,
+            self.duplicate_model_payload_bytes, self.device_load_count,
+            self.cpu_fallback_count, self.token_count,
+        )
+        if any(value < 0 for value in numeric):
+            raise ValueError("invocation summary metrics must be nonnegative")
+        if self.ttft_ms is not None and self.ttft_ms < 0:
+            raise ValueError("ttft_ms must be nonnegative or null")
+        if any(value < 0 for value in self.inter_token_latency_ms):
+            raise ValueError("inter-token latency must be nonnegative")
+        if self.terminal_kind == "RESPONSE":
+            if not self.answer_digest or self.failure_code:
+                raise ValueError("successful response summary is inconsistent")
+        else:
+            validate_lifecycle_failure_code(self.failure_code)
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "InvocationSummaryV1":
+        expected = {item.name for item in dataclass_fields(cls)}
+        if set(payload) != expected | {"schema"} or payload.get("schema") != cls.SCHEMA:
+            raise ValueError("invocation summary contains unknown or missing fields")
+        values = {name: payload[name] for name in expected}
+        values["inter_token_latency_ms"] = tuple(
+            float(item) for item in values["inter_token_latency_ms"])
+        return cls(**values)
+
+    @classmethod
+    def from_bytes(cls, wire: bytes) -> "InvocationSummaryV1":
+        payload = _decode(wire, cls.SCHEMA)
+        if bytes(wire) != canonical_json(payload).encode():
+            raise ValueError("invocation summary is not canonically encoded")
+        return cls.from_dict(payload)
