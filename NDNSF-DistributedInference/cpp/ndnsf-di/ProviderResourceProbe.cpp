@@ -9,6 +9,8 @@
 #include <sstream>
 #include <thread>
 #include <utility>
+#include <cstdlib>
+#include <openssl/sha.h>
 
 namespace ndnsf::di {
 namespace {
@@ -20,6 +22,58 @@ nowMs()
 {
   return std::chrono::duration_cast<std::chrono::milliseconds>(
            std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+std::vector<std::string>
+configuredDevices(const ProviderResourceProbeConfig& config)
+{
+  if (!config.visibleDevices.empty()) {
+    return config.visibleDevices;
+  }
+  const char* raw = std::getenv("CUDA_VISIBLE_DEVICES");
+  if (raw == nullptr || *raw == '\0') {
+    return {"cpu"};
+  }
+  std::vector<std::string> result;
+  std::string token;
+  for (const char ch : std::string(raw)) {
+    if (ch == ',') {
+      if (!token.empty()) {
+        result.push_back("cuda:" + token);
+        token.clear();
+      }
+    }
+    else if (!std::isspace(static_cast<unsigned char>(ch))) {
+      token.push_back(ch);
+    }
+  }
+  if (!token.empty()) {
+    result.push_back("cuda:" + token);
+  }
+  return result.empty() ? std::vector<std::string>{"cpu"} : result;
+}
+
+std::string
+topologyDigest(const std::vector<std::string>& devices)
+{
+  // This is an identity token for the signed telemetry envelope.  Native
+  // offer signing binds the canonical device list; no placement decision is
+  // made from this helper alone.
+  std::ostringstream text;
+  for (const auto& device : devices) {
+    text << device << '\n';
+  }
+  const std::string canonical = text.str();
+  unsigned char digest[SHA256_DIGEST_LENGTH]{};
+  SHA256(reinterpret_cast<const unsigned char*>(canonical.data()),
+         canonical.size(), digest);
+  std::ostringstream encoded;
+  encoded << "sha256:";
+  constexpr char hex[] = "0123456789abcdef";
+  for (const auto byte : digest) {
+    encoded << hex[(byte >> 4) & 0x0f] << hex[byte & 0x0f];
+  }
+  return encoded.str();
 }
 
 std::string
@@ -145,6 +199,8 @@ public:
       snapshot.sequence = ++sequence;
     }
     snapshot.measuredAtMs = nowMs();
+    snapshot.visibleDevices = configuredDevices(config);
+    snapshot.topologyDigest = topologyDigest(snapshot.visibleDevices);
     if (snapshot.providerName.empty() || snapshot.providerBootId.empty()) {
       snapshot.status = ResourceProbeStatus::IdentityMismatch;
       snapshot.errorCode = "probe-identity-missing";

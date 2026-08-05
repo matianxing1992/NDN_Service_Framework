@@ -6,8 +6,12 @@ from pathlib import Path
 import unittest
 
 from ndnsf_distributed_inference.core import (
+    DATA_DRIVEN_V2, LEGACY_READY_SET_V1,
     ProviderAssignment, DeploymentPlan, ProviderReadyMessage, ReadySetCoordinator,
-    ProviderActivationGate,
+    ProviderActivationGate, new_legacy_rollback_plan,
+)
+from ndnsf_distributed_inference.policy import (
+    ServicePolicy, native_execution_plan_spec,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -34,6 +38,7 @@ class ExecutionConsistencyTest(unittest.TestCase):
 
     def test_ready_set_requires_exact_members_and_activation_is_idempotent(self):
         plan = self._selection_plan()
+        self.assertEqual(plan.execution_policy, LEGACY_READY_SET_V1)
         coordinator = ReadySetCoordinator(plan, verifier=lambda message: bool(message.signature))
         first = self._ready(plan, plan.assignments[0])
         self.assertTrue(coordinator.accept(first, now_ms=1_000).accepted)
@@ -47,6 +52,65 @@ class ExecutionConsistencyTest(unittest.TestCase):
         gate = ProviderActivationGate(plan, "/p1", "r1", verifier=lambda message: bool(message.signature))
         self.assertTrue(gate.validate(activation, now_ms=1_000))
         self.assertFalse(gate.validate(activation, now_ms=1_000))
+        self.assertEqual(gate.legacy_activation_count, 1)
+
+    def test_data_driven_plan_cannot_enter_legacy_ready_set_path(self):
+        plan = replace(
+            self._selection_plan(), execution_policy=DATA_DRIVEN_V2)
+        with self.assertRaisesRegex(ValueError, "LEGACY_READY_SET_V1"):
+            ReadySetCoordinator(plan, verifier=lambda _message: True)
+        with self.assertRaisesRegex(ValueError, "LEGACY_READY_SET_V1"):
+            ProviderActivationGate(
+                plan, "/p1", "r1", verifier=lambda _message: True)
+
+    def test_rollback_to_v1_requires_a_new_invocation_identity(self):
+        current = replace(
+            self._selection_plan(), execution_policy=DATA_DRIVEN_V2)
+        fresh_assignments = tuple(
+            replace(item, lease_id=item.lease_id + "-rollback")
+            for item in current.assignments)
+        with self.assertRaisesRegex(ValueError, "new request_id"):
+            new_legacy_rollback_plan(
+                current, request_id=current.request_id,
+                assignments=fresh_assignments,
+                selection_digest="sha256:rollback-selection",
+                deadline_ms=20_000)
+        with self.assertRaisesRegex(ValueError, "fresh assignments"):
+            new_legacy_rollback_plan(
+                current, request_id="req-rollback-v1",
+                assignments=current.assignments,
+                selection_digest="sha256:rollback-selection",
+                deadline_ms=20_000)
+        rolled_back = new_legacy_rollback_plan(
+            current, request_id="req-rollback-v1",
+            assignments=fresh_assignments,
+            selection_digest="sha256:rollback-selection",
+            deadline_ms=20_000)
+        self.assertEqual(rolled_back.execution_policy, LEGACY_READY_SET_V1)
+        self.assertEqual(rolled_back.request_id, "req-rollback-v1")
+        self.assertEqual(rolled_back.attempt, 1)
+        self.assertNotEqual(rolled_back.selection_digest,
+                            current.selection_digest)
+        self.assertEqual(rolled_back.assignments, fresh_assignments)
+        self.assertEqual(dict(rolled_back.status_handles), {})
+        self.assertEqual(current.execution_policy, DATA_DRIVEN_V2)
+
+    def test_native_plan_generator_seals_execution_policy(self):
+        service = ServicePolicy(
+            name="/Inference/Test", model_name="model-v1",
+            roles=("stage-0",), dependencies=(), users=(), providers=(),
+        )
+        generated = native_execution_plan_spec((service,))
+        self.assertEqual(
+            generated["services"][0]["executionPolicy"], DATA_DRIVEN_V2)
+        legacy = native_execution_plan_spec((replace(
+            service, metadata={"executionPolicy": LEGACY_READY_SET_V1}),))
+        self.assertEqual(
+            legacy["services"][0]["executionPolicy"],
+            LEGACY_READY_SET_V1)
+        with self.assertRaisesRegex(ValueError, "execution policy"):
+            native_execution_plan_spec((replace(
+                service, metadata={"executionPolicy": "AUTOMATIC_FALLBACK"}),))
 
     def test_ready_set_rejects_stale_restart_conflict_and_wrong_role(self):
         plan = self._selection_plan()

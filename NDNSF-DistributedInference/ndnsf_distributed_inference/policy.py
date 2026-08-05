@@ -19,6 +19,7 @@ from .plan import (
     normalize_planner_kind,
 )
 from .runtime_compatibility import validate_runtime_compatibility
+from .core.contracts import DATA_DRIVEN_V2, LEGACY_READY_SET_V1
 
 
 @dataclass(frozen=True)
@@ -581,6 +582,45 @@ def _hierarchical_checkers(indent: str = "  ") -> str:
 {indent}}}"""
 
 
+def _controller_certificate_checkers(config: dict[str, Any],
+                                     indent: str = "  ") -> str:
+    """Allow the configured controller CA to issue participant certificates.
+
+    NDN's hierarchical checker accepts a parent namespace signer, which is
+    sufficient for the trust anchor to issue the controller certificate.  The
+    controller and participants are siblings under the application root,
+    however, so provider/user certificates signed by the controller require an
+    explicit checker for the configured controller key name.
+    """
+
+    controller = str(config.get("controller", "")).strip().rstrip("/")
+    if not controller.startswith("/"):
+        return ""
+    controller_regex = _name_to_regex_components(controller)
+    key_locator_regex = f'"^{controller_regex}<KEY><>{{1,3}}$"'
+    return f"""{indent}checker
+{indent}{{
+{indent}  type customized
+{indent}  sig-type rsa-sha256
+{indent}  key-locator
+{indent}  {{
+{indent}    type name
+{indent}    regex {key_locator_regex}
+{indent}  }}
+{indent}}}
+{indent}checker
+{indent}{{
+{indent}  type customized
+{indent}  sig-type ecdsa-sha256
+{indent}  key-locator
+{indent}  {{
+{indent}    type name
+{indent}    regex {key_locator_regex}
+{indent}  }}
+{indent}}}
+"""
+
+
 def generate_trust_schema(config: dict[str, Any], services: tuple[ServicePolicy, ...]) -> str:
     roots = app_roots(config, services)
     anchor_file = trust_anchor_file(config)
@@ -597,7 +637,7 @@ rule
     type name
     regex ^<>+<KEY><><><>$
   }
-""" + _hierarchical_checkers() + """
+""" + _controller_certificate_checkers(config) + _hierarchical_checkers() + """
 }
 """
     ]
@@ -613,6 +653,38 @@ rule
   {{
     type name
     regex ^{root_regex}<>*<NDNSF><>*$
+  }}
+  checker
+  {{
+    type customized
+    sig-type rsa-sha256
+    key-locator
+    {{
+      type name
+      regex {_root_key_locator_regex(root_regex)}
+    }}
+  }}
+  checker
+  {{
+    type customized
+    sig-type ecdsa-sha256
+    key-locator
+    {{
+      type name
+      regex {_root_key_locator_regex(root_regex)}
+    }}
+  }}
+}}
+""")
+        blocks.append(f"""
+rule
+{{
+  id "NDN-SVS group data {root}"
+  for data
+  filter
+  {{
+    type name
+    regex ^{root_regex}<group><>*$
   }}
   checker
   {{
@@ -862,11 +934,21 @@ def _service_planner_descriptor(service: ServicePolicy) -> dict[str, Any]:
         metadata.get("schemaVersion") or
         2
     )
+    execution_policy = str(
+        planner.get("executionPolicy") or
+        planner.get("execution_policy") or
+        metadata.get("executionPolicy") or
+        metadata.get("execution_policy") or
+        DATA_DRIVEN_V2
+    ).strip()
+    if execution_policy not in {DATA_DRIVEN_V2, LEGACY_READY_SET_V1}:
+        raise ValueError("unsupported NDNSF-DI execution policy")
     merged_planner = {
         "modelFamily": model_family,
         "modelFormat": model_format,
         "plannerKind": planner_kind,
         "schemaVersion": schema_version,
+        "executionPolicy": execution_policy,
         **planner,
         **({"runtimeBackend": runtime_backend} if runtime_backend else {}),
     }
@@ -875,6 +957,7 @@ def _service_planner_descriptor(service: ServicePolicy) -> dict[str, Any]:
         "modelFormat": model_format,
         "plannerKind": planner_kind,
         "schemaVersion": schema_version,
+        "executionPolicy": execution_policy,
         **({"runtimeBackend": runtime_backend} if runtime_backend else {}),
         "planner": merged_planner,
     }
@@ -897,14 +980,14 @@ def native_execution_plan_spec(services: tuple[ServicePolicy, ...]) -> dict[str,
                 "model": service.model_name,
                 **_service_planner_descriptor(service),
                 **({
-                    "executionMode": service.metadata.get("executionMode")
-                } if service.metadata.get("executionMode") else {}),
+                    "executionMode": (service.metadata or {}).get("executionMode")
+                } if (service.metadata or {}).get("executionMode") else {}),
                 **({
-                    "roleMetadata": dict(service.metadata.get("roleMetadata", {}) or {})
-                } if service.metadata.get("roleMetadata") else {}),
+                    "roleMetadata": dict((service.metadata or {}).get("roleMetadata", {}) or {})
+                } if (service.metadata or {}).get("roleMetadata") else {}),
                 **({
-                    "llmPipeline": dict(service.metadata.get("llmPipeline", {}) or {})
-                } if service.metadata.get("llmPipeline") else {}),
+                    "llmPipeline": dict((service.metadata or {}).get("llmPipeline", {}) or {})
+                } if (service.metadata or {}).get("llmPipeline") else {}),
                 "roles": list(service.roles),
                 "dependencies": [
                     {

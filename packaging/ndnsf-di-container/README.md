@@ -1,7 +1,8 @@
 # NDNSF-DI OCI Container Package
 
-This package is the implementation surface for Spec 108. It produces one
-digest-bound OCI release and executes it through two thin adapters:
+This package is the implementation surface for the NDNSF-DI container release.
+It supports the existing digest-bound release and a reusable layered local
+development build. Runtime execution uses two thin adapters:
 
 - `docker-compose` for long-lived cloud hosts; and
 - `slurm-apptainer` for bounded iTiger allocations.
@@ -22,9 +23,20 @@ context or Git history.
 bin/            operator CLI
 lib/            common contracts and adapters
 schemas/        checked-in runtime schemas
-oci/            OCI build source (added in Phase 3)
+oci/            OCI build sources, including the layered local build
 adapters/       runtime templates (added by their story phases)
 ```
+
+For the reusable ML → stable NDN → mutable App build, including routine App
+rebuild, evidence, failure recovery, cleanup, and future iTiger boundaries, see
+[docs/layered-build.md](docs/layered-build.md).
+
+For iTiger Qwen work, start with the
+[end-to-end operations runbook](docs/itiger-qwen-models.md), then apply the
+[evidence and acceptance rules](docs/itiger-qwen-evidence.md). The runbook
+separates local Docker security smoke, Slurm/SIF validation, allocation-scratch
+capacity, cross-node NFD probing, model preparation, full generation, and
+formal repeated campaigns so failures are found at the cheapest valid gate.
 
 Run the offline contract suite from the repository root:
 

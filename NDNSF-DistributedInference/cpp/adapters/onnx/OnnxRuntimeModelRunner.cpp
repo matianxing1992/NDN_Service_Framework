@@ -477,6 +477,37 @@ OnnxRuntimeModelRunner::OnnxRuntimeModelRunner(NativeModelRunnerSpec spec)
       Ort::GetVersionString(),
       isCuda ? "cuda" : "cpu",
       m_impl->selection.deviceId);
+    m_evidence->loadCompleted = true;
+  }
+
+  // Session construction proves model load, but not executable readiness.
+  // Execute one shape-valid zero input through the real selected provider so
+  // DATA_DRIVEN_V2 cannot publish READY for an unavailable CUDA graph.
+  RoleExecutionContext warmup;
+  warmup.sessionId = "native-runtime-warmup";
+  warmup.role = m_spec.role;
+  Ort::AllocatorWithDefaultOptions allocator;
+  const auto inputCount = m_impl->session.GetInputCount();
+  for (std::size_t index = 0; index < inputCount; ++index) {
+    auto name = m_impl->session.GetInputNameAllocated(index, allocator);
+    const std::string inputName(name.get());
+    auto typeInfo = m_impl->session.GetInputTypeInfo(index);
+    auto tensorInfo = typeInfo.GetTensorTypeAndShapeInfo();
+    NamedTensor tensor;
+    tensor.name = inputName;
+    tensor.elementType = fromOnnxElementType(tensorInfo.GetElementType());
+    tensor.shape = shapeForInput(
+      m_spec, inputName, index, tensorInfo.GetShape());
+    tensor.payload.assign(
+      elementCount(tensor.shape) * tensorElementByteSize(tensor.elementType),
+      0);
+    warmup.inputsByScope.emplace(
+      inputName, makeEncodedTensorBundle(inputName, {std::move(tensor)}));
+  }
+  (void)run(warmup);
+  if (m_evidence) {
+    m_evidence->warmupCompleted = true;
+    m_evidence->validate();
   }
 }
 
@@ -771,4 +802,3 @@ registerOnnxRuntimeBackend(RegistryNativeModelRunnerFactory& factory)
 } // namespace ndnsf::di
 
 #endif // NDNSF_DI_ENABLE_ONNXRUNTIME_CPP
-

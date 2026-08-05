@@ -1,0 +1,29 @@
+{
+  "campaignId": "spec170-qwen-runtime-v514-two-token",
+  "generation": {
+    "enableThinking": false,
+    "maxNewTokens": 2,
+    "requireEos": false,
+    "strategy": "greedy",
+    "useCache": false
+  },
+  "model": {
+    "repository": "Qwen/Qwen3-0.6B",
+    "revision": "e6de91484c29aa9480d55605af694f39b081c455",
+    "dtype": "bf16"
+  },
+  "prompts": [
+    {
+      "promptId": "ndn-vs-ip-two-token",
+      "formattedInputIds": [151644, 872, 198, 14880, 11622, 106070, 77540, 100908, 104136, 5122, 8065, 45, 6567, 234, 231, 43815, 29991, 108942, 57218, 6790, 6567, 234, 231, 110293, 46477, 108942, 104867, 102665, 102021, 11319, 151645, 198, 151644, 77091, 198, 151667, 271, 151668, 271],
+      "referenceGeneratedTokenIds": [8065, 45],
+      "eosTokenIds": [151643, 151645]
+    }
+  ],
+  "repetitions": {
+    "warmupPerPrompt": 0,
+    "measuredPerPrompt": 1
+  },
+  "schemaVersion": "ndnsf-di-qwen-generation-campaign-v1",
+  "sourceCampaign": "results/_artifacts/qwen-transformers-stage-bundles/sha256/8d8475db33efab5398014d0aac9570cda90bae5d50fd0128bed7b0215d0156f/smoke-campaign.json"
+}

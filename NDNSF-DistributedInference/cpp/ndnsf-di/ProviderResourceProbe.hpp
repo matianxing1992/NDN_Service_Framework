@@ -6,6 +6,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace ndnsf::di {
 
@@ -54,6 +55,30 @@ struct ProviderResourceSnapshot
   std::uint64_t hostAvailableMemoryBytes = 0;
   std::uint64_t processRssBytes = 0;
   std::string errorCode;
+  // Container-visible device identities.  An empty vector is a legacy probe
+  // that did not expose topology; a populated vector is authoritative for
+  // V3 (including the explicit CPU-only identity).
+  std::vector<std::string> visibleDevices;
+  std::string topologyDigest;
+
+  bool
+  hasValidTopology() const noexcept
+  {
+    if (visibleDevices.empty()) {
+      return false;
+    }
+    for (std::size_t i = 0; i < visibleDevices.size(); ++i) {
+      if (visibleDevices[i].empty()) {
+        return false;
+      }
+      for (std::size_t j = i + 1; j < visibleDevices.size(); ++j) {
+        if (visibleDevices[i] == visibleDevices[j]) {
+          return false;
+        }
+      }
+    }
+    return !topologyDigest.empty();
+  }
 
   bool
   isMeasured() const noexcept
@@ -87,6 +112,7 @@ struct ProviderResourceProbeConfig
   std::chrono::milliseconds sampleInterval{1000};
   std::chrono::milliseconds readTimeout{250};
   std::chrono::milliseconds maximumAge{2000};
+  std::vector<std::string> visibleDevices;
 };
 
 class ProviderResourceProbe

@@ -1,0 +1,14 @@
+{
+  "schema": "ndnsf-di-qwen-pipeline-runtime-v1",
+  "model": "Qwen/Qwen3-0.6B",
+  "prompt": "frozen stage-campaign input: ndn-vs-ip",
+  "stages": 3,
+  "layerCount": 28,
+  "layerRanges": [[0, 9], [9, 18], [18, 28]],
+  "inputIds": [[151644, 872, 198, 14880, 11622, 106070, 77540, 100908, 104136, 5122, 8065, 45, 6567, 234, 231, 43815, 29991, 108942, 57218, 6790, 6567, 234, 231, 110293, 46477, 108942, 104867, 102665, 102021, 11319, 151645, 198, 151644, 77091, 198, 151667, 271, 151668, 271]],
+  "attentionMask": [[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]],
+  "expectedTopToken": 8065,
+  "fullMs": 0.0,
+  "sourceCampaign": "results/_artifacts/qwen-transformers-stage-bundles/sha256/8d8475db33efab5398014d0aac9570cda90bae5d50fd0128bed7b0215d0156f/smoke-campaign.json",
+  "sourceCampaignSha256": "72ac067699263434995a9d0615ccae2de3eb90913b1dcd3c96f0a3f0a38b41b4"
+}

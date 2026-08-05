@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import unittest
 from pathlib import Path
 import socket
@@ -7,6 +8,9 @@ import time
 
 from ndnsf_distributed_inference.core.decision_validation import (
     reject_placement_sensitive,
+)
+from ndnsf_distributed_inference.core.contracts import (
+    DATA_DRIVEN_V2, LEGACY_READY_SET_V1,
 )
 from ndnsf_distributed_inference.core.ports import CandidateBudget
 from ndnsf_distributed_inference.sdk.placement import (
@@ -80,6 +84,7 @@ class PlacementStrategyContractTest(unittest.TestCase):
             accepted_deadline_ms=4500,
             accepted_roles=("stage-0", "stage-1"),
             backends=("onnxruntime",),
+            devices=("cuda:0",),
             offered_gpu_memory_mb=12_288,
             queue_depth=1,
             estimated_wait_ms=2.5,
@@ -106,10 +111,20 @@ class PlacementStrategyContractTest(unittest.TestCase):
 
         self.assertEqual(view.usable_gpu_memory_mb, 12_288)
         self.assertEqual(view.offer_digest, offer.digest())
+        self.assertEqual(view.execution_policies, (DATA_DRIVEN_V2,))
         self.assertNotIn("signature", view.to_dict())
         self.assertNotIn("token", repr(view.to_dict()).lower())
         with self.assertRaises(TypeError):
             view.cached_shards[0]["artifact_digest"] = "changed"
+        with self.assertRaisesRegex(ValueError, "execution policy"):
+            build_provider_planning_view(
+                replace(offer, execution_policies=(LEGACY_READY_SET_V1,)),
+                ack_status=True, at_ms=2000, request_id="request-a",
+                attempt=1,
+                model_intent_digest="sha256:" + "d" * 64,
+                deadline_ms=4500,
+                verify_signature=lambda _value: True,
+            )
 
     def test_invalid_ack_offers_fail_closed(self):
         def offer(**changes):
@@ -128,6 +143,7 @@ class PlacementStrategyContractTest(unittest.TestCase):
                 accepted_deadline_ms=4500,
                 accepted_roles=("stage-0",),
                 backends=("onnxruntime",),
+                devices=("cuda:0",),
                 offered_gpu_memory_mb=4096,
                 queue_depth=0,
                 estimated_wait_ms=0.0,

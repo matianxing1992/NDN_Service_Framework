@@ -10,6 +10,8 @@ from pathlib import PurePosixPath
 import re
 from typing import Any, Mapping
 
+from .core.contracts import InvocationSummaryV1
+
 from .runtime_v1 import (
     ExactForwardCacheEntry,
     ExactForwardCacheManager,
@@ -707,4 +709,89 @@ def evaluate_spec107_release_input(
         "eligible": not unique_errors,
         "errors": unique_errors,
         "physicalProductionOverall": "DEFERRED",
+    }
+
+
+def reconcile_frozen_schedule(
+    schedule_rows: list[Mapping[str, object]],
+    summaries: list[InvocationSummaryV1 | Mapping[str, object]],
+) -> dict[str, object]:
+    """Fail closed unless every frozen row has one explicit terminal result."""
+    schedule: dict[tuple[str, int], Mapping[str, object]] = {}
+    for row in schedule_rows:
+        experiment_id = str(row.get("experiment_id", ""))
+        try:
+            schedule_row = int(row.get("schedule_row", 0))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("invalid frozen schedule row") from exc
+        key = (experiment_id, schedule_row)
+        if not experiment_id or schedule_row <= 0:
+            raise ValueError("invalid frozen schedule row")
+        if key in schedule:
+            raise ValueError(f"duplicate frozen schedule row: {key}")
+        schedule[key] = row
+
+    terminal: dict[tuple[str, int], InvocationSummaryV1] = {}
+    request_ids: set[str] = set()
+    for value in summaries:
+        item = (value if isinstance(value, InvocationSummaryV1)
+                else InvocationSummaryV1.from_dict(value))
+        key = (item.experiment_id, item.schedule_row)
+        if key in terminal:
+            raise ValueError(f"duplicate summary for schedule row: {key}")
+        if key not in schedule:
+            raise ValueError(f"summary does not bind a frozen schedule row: {key}")
+        if not item.accepted:
+            raise ValueError(f"summary was not accepted by analyzer: {key}")
+        expected_prompt = str(schedule[key].get("prompt_id", ""))
+        if expected_prompt and item.prompt_id != expected_prompt:
+            raise ValueError(f"summary prompt mismatch for schedule row: {key}")
+        if item.request_id in request_ids:
+            raise ValueError(f"request identity reused across schedule rows: {item.request_id}")
+        request_ids.add(item.request_id)
+        terminal[key] = item
+
+    missing = sorted(set(schedule) - set(terminal))
+    if missing:
+        raise ValueError(f"missing schedule rows: {missing}")
+
+    category_for_terminal = {
+        "RESPONSE": "success",
+        "FAILURE": "classified_failure",
+        "EXPIRED": "classified_failure",
+        "CANCELED": "canceled",
+        "SCHEDULER_NOT_ADMITTED": "scheduler_not_admitted",
+        "ENVIRONMENTAL_FAILURE": "environmental_failure",
+    }
+    counts = {
+        "success": 0,
+        "classified_failure": 0,
+        "canceled": 0,
+        "scheduler_not_admitted": 0,
+        "environmental_failure": 0,
+    }
+    rows = []
+    for key in sorted(schedule):
+        item = terminal[key]
+        category = category_for_terminal[item.terminal_kind]
+        counts[category] += 1
+        rows.append({
+            "experiment_id": key[0],
+            "schedule_row": key[1],
+            "prompt_id": item.prompt_id,
+            "request_id": item.request_id,
+            "attempt_epoch": item.attempt_epoch,
+            "category": category,
+            "terminal_kind": item.terminal_kind,
+            "terminal_reason": item.terminal_reason,
+            "failure_code": item.failure_code or None,
+            "summary_digest": item.digest(),
+        })
+    return {
+        "schema": "ndnsf-di.schedule-reconciliation.v1",
+        "complete": len(rows) == len(schedule),
+        "scheduled_rows": len(schedule),
+        "terminal_rows": len(rows),
+        "counts": counts,
+        "rows": rows,
     }

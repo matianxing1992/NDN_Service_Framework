@@ -11,6 +11,7 @@ from ndnsf_distributed_inference.core import (
     DIRequestEnvelopeV2,
     DIRoleAssignmentV2,
     DISelectionAssignmentV2,
+    canonical_digest,
 )
 from ndnsf_distributed_inference.core.ports import CandidateBudget
 from ndnsf_distributed_inference.planner.presplit_first import (
@@ -264,8 +265,9 @@ def main() -> int:
                 role=role, graph_node_id=f"node-{role}",
                 layer_start=None, layer_end=None,
                 artifact_digest=digest(f"artifact-{role}"),
-                dependency_digest=digest(f"dependency-{role}"),
+                dependency_digest=canonical_digest(()),
                 adapter_id="opaque-container", adapter_version="1",
+                dependencies=(),
                 required_gpu_mib=512,
                 input_grant_digests=(digest(f"grant-{role}"),))
             for role in roles)

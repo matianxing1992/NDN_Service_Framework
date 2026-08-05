@@ -80,6 +80,13 @@ nativeExecutionPlansByServiceFromJson(std::istream& input)
     plan.modelFamily = service.get<std::string>("modelFamily", "generic-onnx");
     plan.modelFormat = service.get<std::string>("modelFormat", "unknown");
     plan.plannerKind = service.get<std::string>("plannerKind", "onnx-dag");
+    plan.executionPolicy = service.get<std::string>(
+      "executionPolicy", "DATA_DRIVEN_V2");
+    if (plan.executionPolicy != "DATA_DRIVEN_V2" &&
+        plan.executionPolicy != "LEGACY_READY_SET_V1") {
+      throw std::invalid_argument(
+        "unsupported native execution plan executionPolicy");
+    }
     plan.roles = stringArrayFromJson(service, "roles");
     const auto dependencies = service.get_child_optional("dependencies");
     if (dependencies) {

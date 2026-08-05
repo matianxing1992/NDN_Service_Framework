@@ -48,7 +48,7 @@ class PreSplitFirstStrategyTest(unittest.TestCase):
             abi="ndnsf-di-adapter-v1",
             model_formats=("onnx",),
             tasks=("classification",),
-            backends=("onnxruntime",),
+            backends=("onnxruntime", "onnxruntime-cpu"),
             precisions=("fp32",),
             input_schema_digest=digest("1"),
             options_schema_digest=digest("2"),
@@ -114,10 +114,10 @@ class PreSplitFirstStrategyTest(unittest.TestCase):
             },
             requirements_by_role={
                 "stage-0": RoleResourceRequirement(
-                    ("onnxruntime",), 60 * MIB, 0, 0, 0, 0,
+                    ("onnxruntime", "onnxruntime-cpu"), 60 * MIB, 0, 0, 0, 0,
                     safety_margin=1.0),
                 "stage-1": RoleResourceRequirement(
-                    ("onnxruntime",), 60 * MIB, 0, 0,
+                    ("onnxruntime", "onnxruntime-cpu"), 60 * MIB, 0, 0,
                     None if unknown else 0, 0,
                     safety_margin=1.0),
             },
@@ -126,13 +126,15 @@ class PreSplitFirstStrategyTest(unittest.TestCase):
         )
 
     def shard(self, candidate, role, tier, *, boot="boot-epoch-a",
-              semantics=None, pin_until=3000):
+              semantics=None, partition=None, pin_until=3000,
+              backend="onnxruntime"):
         return {
             "artifact_digest": candidate.artifacts_by_role[role][0],
             "model_content_digest": self.model.content_digest,
             "semantics_digest": semantics or self.model.semantics_digest,
             "graph_digest": self.graph.graph_digest,
-            "backend": "onnxruntime",
+            "partition_digest": partition or candidate.candidate_digest,
+            "backend": backend,
             "precision": "fp32",
             "tier": tier,
             "boot_epoch": boot,
@@ -143,7 +145,8 @@ class PreSplitFirstStrategyTest(unittest.TestCase):
         }
 
     def provider(self, name, capacity=120, *, cached=(), state=(),
-                 rtt=1.0):
+                 rtt=1.0, wait=0.0, queue=0, bandwidth=1000.0,
+                 backends=("onnxruntime",), devices=("cuda:0",)):
         return ProviderPlanningView(
             provider=name,
             service="/inference",
@@ -154,12 +157,13 @@ class PreSplitFirstStrategyTest(unittest.TestCase):
             expires_at_ms=4000,
             accepted_deadline_ms=3000,
             accepted_roles=("stage-0", "stage-1"),
-            backends=("onnxruntime",),
+            backends=tuple(backends),
+            devices=tuple(devices),
             usable_gpu_memory_mb=capacity,
-            queue_depth=0,
-            estimated_wait_ms=0.0,
+            queue_depth=queue,
+            estimated_wait_ms=wait,
             rtt_ms=rtt,
-            bandwidth_mbps=1000.0,
+            bandwidth_mbps=bandwidth,
             cached_shards=tuple(cached),
             reusable_state=tuple(state),
         )
@@ -208,16 +212,25 @@ class PreSplitFirstStrategyTest(unittest.TestCase):
 
     def test_exact_presplit_and_residency_tier_order_are_deterministic(self):
         candidate = self.candidate()
+        repository = self.provider("/provider/repository")
         disk = self.provider("/provider/d", cached=(
             self.shard(candidate, "stage-0", "DISK"),
             self.shard(candidate, "stage-1", "DISK"),
+        ))
+        ram = self.provider("/provider/ram", cached=(
+            self.shard(candidate, "stage-0", "HOST_RAM"),
+            self.shard(candidate, "stage-1", "HOST_RAM"),
+        ))
+        reload_safe = self.provider("/provider/reload", cached=(
+            self.shard(candidate, "stage-0", "RELOAD_SAFE_GPU"),
+            self.shard(candidate, "stage-1", "RELOAD_SAFE_GPU"),
         ))
         pinned = self.provider("/provider/p", cached=(
             self.shard(candidate, "stage-0", "PINNED_GPU"),
             self.shard(candidate, "stage-1", "PINNED_GPU"),
         ))
         request = self.request(
-            (candidate,), (disk, pinned,),
+            (candidate,), (repository, disk, ram, reload_safe, pinned,),
             catalog=(self.catalog(candidate),),
         )
         decision = evaluate_placement_strategy(
@@ -232,11 +245,68 @@ class PreSplitFirstStrategyTest(unittest.TestCase):
         )
         self.assertEqual(
             decision.evidence["split_specification"]["source"],
-            "EXACT_PRE_SPLIT",
+            "EXACT_PROVIDER_CACHE",
         )
         self.assertIs(
             decision.artifact_preparation,
+            ArtifactPreparationMode.REUSE_CACHED,
+        )
+        self.assertEqual(
+            decision.fallback_order["stage-0"],
+            ("/provider/p", "/provider/reload", "/provider/ram",
+             "/provider/d", "/provider/repository"),
+        )
+
+    def test_catalog_artifact_backend_is_not_provider_execution_backend(self):
+        candidate = self.candidate()
+        cpu = self.provider(
+            "/provider/cpu",
+            cached=(
+                self.shard(
+                    candidate, "stage-0", "HOST_RAM",
+                    backend="onnxruntime-cpu"),
+                self.shard(
+                    candidate, "stage-1", "HOST_RAM",
+                    backend="onnxruntime-cpu"),
+            ),
+            backends=("onnxruntime-cpu",),
+            devices=("cpu",),
+        )
+        decision = evaluate_placement_strategy(
+            self.strategy(),
+            self.request(
+                (candidate,), (cpu,), catalog=(self.catalog(candidate),)),
+        )
+        self.assertIs(
+            decision.artifact_preparation,
+            ArtifactPreparationMode.REUSE_CACHED,
+        )
+        self.assertEqual(
+            {assignment.backend for assignment in decision.assignments},
+            {"onnxruntime-cpu"},
+        )
+
+    def test_published_candidate_precedes_new_materialization(self):
+        published = self.candidate(
+            SplitSource.PRE_SPLIT, marker="7")
+        generated = self.candidate(
+            SplitSource.GENERATED, marker="6")
+        decision = evaluate_placement_strategy(
+            self.strategy(),
+            self.request(
+                (generated, published),
+                (self.provider("/provider/a"),),
+                catalog=(self.catalog(published),),
+            ),
+        )
+        self.assertEqual(published.candidate_digest, decision.split_id)
+        self.assertEqual(
+            "EXACT_PRE_SPLIT",
+            decision.evidence["split_specification"]["source"],
+        )
+        self.assertIs(
             ArtifactPreparationMode.PRE_SPLIT,
+            decision.artifact_preparation,
         )
 
     def test_stale_or_identity_mismatched_cache_is_not_reused(self):
@@ -260,6 +330,65 @@ class PreSplitFirstStrategyTest(unittest.TestCase):
             item["residency_tier"] == "REPOSITORY"
             for item in decision.evidence["roles"].values()
         ))
+
+    def test_different_partition_digest_cannot_reuse_cached_shards(self):
+        candidate = self.candidate()
+        invalid = self.provider("/provider/a", cached=(
+            self.shard(
+                candidate, "stage-0", "PINNED_GPU",
+                partition=digest("e")),
+            self.shard(
+                candidate, "stage-1", "PINNED_GPU",
+                partition=digest("e")),
+        ))
+        decision = evaluate_placement_strategy(
+            self.strategy(),
+            self.request(
+                (candidate,), (invalid,),
+                catalog=(self.catalog(candidate),),
+            ),
+        )
+        self.assertTrue(all(
+            item["residency_tier"] == "REPOSITORY"
+            for item in decision.evidence["roles"].values()
+        ))
+
+    def test_provider_cache_without_active_catalog_requires_first_publication(self):
+        candidate = self.candidate()
+        disk = self.provider("/provider/d", cached=(
+            self.shard(candidate, "stage-0", "DISK"),
+            self.shard(candidate, "stage-1", "DISK"),
+        ))
+        decision = evaluate_placement_strategy(
+            self.strategy(), self.request((candidate,), (disk,)),
+        )
+        self.assertEqual(
+            decision.evidence["split_specification"]["source"],
+            "ACK_CAPACITY_GENERATED",
+        )
+        self.assertIs(
+            decision.artifact_preparation,
+            ArtifactPreparationMode.GENERATED,
+        )
+
+    def test_provider_cache_with_active_catalog_can_reuse_existing_names(self):
+        candidate = self.candidate()
+        disk = self.provider("/provider/d", cached=(
+            self.shard(candidate, "stage-0", "DISK"),
+            self.shard(candidate, "stage-1", "DISK"),
+        ))
+        decision = evaluate_placement_strategy(
+            self.strategy(),
+            self.request((candidate,), (disk,), catalog=(self.catalog(candidate),)),
+        )
+        self.assertEqual(
+            decision.evidence["split_specification"]["source"],
+            "EXACT_PROVIDER_CACHE",
+        )
+        self.assertIs(
+            decision.artifact_preparation,
+            ArtifactPreparationMode.REUSE_CACHED,
+        )
 
     def test_closed_ack_capacity_generates_balanced_graph_valid_split(self):
         generated = self.candidate(
@@ -289,6 +418,65 @@ class PreSplitFirstStrategyTest(unittest.TestCase):
             sum(decision.evidence["aggregate_gpu_memory_mb"].values()),
             120,
         )
+
+    def test_exact_ack_set_and_score_inputs_are_retained(self):
+        candidate = self.candidate()
+        cached = (
+            self.shard(candidate, "stage-0", "HOST_RAM"),
+            self.shard(candidate, "stage-1", "HOST_RAM"),
+        )
+        busy = self.provider(
+            "/provider/busy", cached=cached, wait=12.0, queue=4,
+            rtt=20.0, bandwidth=100.0)
+        fast = self.provider(
+            "/provider/fast", cached=cached, wait=1.0, queue=0,
+            rtt=2.0, bandwidth=1000.0)
+        decision = evaluate_placement_strategy(
+            self.strategy(),
+            self.request(
+                (candidate,), (busy, fast),
+                catalog=(self.catalog(candidate),),
+            ),
+        )
+        self.assertEqual(
+            [item["provider"] for item in decision.evidence["ack_set"]],
+            ["/provider/busy", "/provider/fast"],
+        )
+        scores = decision.evidence["roles"]["stage-0"]["candidate_scores"]
+        self.assertEqual(2, len(scores))
+        selected = next(item for item in scores if item["selected"])
+        self.assertEqual("/provider/fast", selected["provider"])
+        self.assertEqual(1.0, selected["score"]["estimated_wait_ms"])
+        self.assertEqual(0, selected["score"]["queue_depth"])
+        self.assertEqual(2.0, selected["score"]["rtt_ms"])
+        self.assertEqual(1000.0, selected["score"]["bandwidth_mbps"])
+
+    def test_heterogeneous_capacity_uses_cached_small_then_large_provider(self):
+        candidate = self.candidate()
+        small = self.provider(
+            "/provider/small", capacity=60, cached=(
+                self.shard(candidate, "stage-0", "PINNED_GPU"),
+            ))
+        large = self.provider("/provider/large", capacity=180)
+        decision = evaluate_placement_strategy(
+            self.strategy(),
+            self.request(
+                (candidate,), (small, large),
+                catalog=(self.catalog(candidate),),
+            ),
+        )
+        assignments = {
+            item.role: item.provider for item in decision.assignments
+        }
+        self.assertEqual("/provider/small", assignments["stage-0"])
+        self.assertEqual("/provider/large", assignments["stage-1"])
+        stage_one_scores = decision.evidence["roles"]["stage-1"][
+            "candidate_scores"]
+        rejected = next(
+            item for item in stage_one_scores
+            if item["provider"] == "/provider/small")
+        self.assertFalse(rejected["feasible"])
+        self.assertEqual("GPU_CAPACITY", rejected["rejection"])
 
     def test_unknown_runtime_bound_fails_closed(self):
         unknown = self.candidate(

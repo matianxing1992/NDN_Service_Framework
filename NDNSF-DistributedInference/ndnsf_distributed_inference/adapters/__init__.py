@@ -23,6 +23,8 @@ from .qwen import (
     QWEN36_27B_MODEL,
     QWEN36_27B_REVISION,
     QWEN36_STAGE_ROLES,
+    QwenThreeStageSplitter,
+    build_qwen_three_stage_adapter,
     build_qwen36_27b_three_stage_adapter,
 )
 
@@ -51,6 +53,8 @@ __all__ = [
     "QWEN36_27B_MODEL",
     "QWEN36_27B_REVISION",
     "QWEN36_STAGE_ROLES",
+    "QwenThreeStageSplitter",
+    "build_qwen_three_stage_adapter",
     "build_qwen36_27b_three_stage_adapter",
     "register",
 ]

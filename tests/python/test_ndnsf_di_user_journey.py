@@ -97,7 +97,7 @@ class UserJourneyTest(unittest.TestCase):
             app = InferenceApplication(signer, client)
             value = definition(signer)
 
-            request = app.request(
+            request = app.request_preplanned(
                 value, input={"prompt": "hello"},
                 timeout=timedelta(seconds=5))
             self.assertEqual(request.status(), RequestState.COMPLETED)
@@ -156,7 +156,7 @@ class UserJourneyTest(unittest.TestCase):
             signer = ApplicationDefinitionSigner.generate("/app/creator")
             app = InferenceApplication(signer, client)
             value = definition(signer)
-            request = app.request(
+            request = app.request_preplanned(
                 value, input=b"hello", timeout=timedelta(seconds=5))
             revision = request.ref.revision
 
@@ -204,7 +204,7 @@ class UserJourneyTest(unittest.TestCase):
             signer = ApplicationDefinitionSigner.generate("/app/creator")
             app = InferenceApplication(signer, client)
             value = definition(signer)
-            request = app.request(
+            request = app.request_preplanned(
                 value, input=b"hello", timeout=timedelta(seconds=5))
             revision = request.ref.revision
             progress = DeploymentProgress(

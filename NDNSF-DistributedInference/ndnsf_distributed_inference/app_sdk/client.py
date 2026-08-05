@@ -9,6 +9,7 @@ import os
 import time
 import uuid
 import asyncio
+import warnings
 from concurrent.futures import Future
 from dataclasses import replace
 from datetime import timedelta
@@ -20,6 +21,9 @@ from ..client import (
 from .contracts import (
     DeploymentProgress,
     DeploymentStatus,
+    ApplicationRuntimeConfig,
+    GenerationConfig,
+    GenerationInput,
     InferenceRequestHandle as RequestRecord,
     InferenceOptions,
     RequestTiming,
@@ -80,6 +84,68 @@ class APPClient:
                     str(payload["requestId"]), []).append(payload)
             elif record["kind"] == "result-rendezvous":
                 self._result_rendezvous_by_id[str(payload["request_id"])] = payload
+
+    @classmethod
+    def from_application_runtime(
+        cls,
+        runtime: ApplicationRuntimeConfig,
+        *,
+        state_root: str | Path,
+        envelope_key_provider: RequestEnvelopeKeyProvider | None = None,
+        envelope_key_file: str | Path | None = None,
+        optimization_suite=None,
+        **network_options,
+    ) -> "APPClient":
+        """Connect from identity/routing config without generating a plan."""
+        from ..client import DistributedInferenceClient
+        from ..policy import DistributedInferenceDeployment
+        from .facades import APPClient as NetworkAPPClient
+
+        if envelope_key_provider is not None and envelope_key_file is not None:
+            raise RuntimeJournalKeyError(
+                "configure either an envelope key provider or key file, not both")
+        if envelope_key_file is not None:
+            envelope_key_provider = FileRequestEnvelopeKeyProvider(
+                envelope_key_file)
+        requester = runtime.identity
+        namespace = "requester-" + hashlib.sha256(
+            requester.encode("utf-8")).hexdigest()[:24]
+        journal = RuntimeJournal(
+            Path(state_root), namespace,
+            envelope_key_provider=envelope_key_provider)
+        deployment = DistributedInferenceDeployment(
+            application=runtime.identity,
+            controller=runtime.controller,
+            group=runtime.group,
+            user=runtime.identity,
+            provider_prefix=runtime.service.rstrip("/") + "/provider",
+            services=(),
+            trust_schema=runtime.trust_schema,
+            policy_file="",
+        )
+        native = DistributedInferenceClient.connect(
+            group=runtime.group,
+            controller=runtime.controller,
+            user=runtime.identity,
+            trust_schema=runtime.trust_schema,
+            permission_wait_ms=int(network_options.pop(
+                "permission_wait_ms", 2500)),
+            async_workers=int(network_options.pop("async_workers", 4)),
+            adaptive_admission=bool(network_options.pop(
+                "adaptive_admission", False)),
+        )
+        if network_options:
+            raise TypeError(
+                "unknown application runtime options: "
+                + ",".join(sorted(network_options)))
+        facade = NetworkAPPClient(
+            deployment, native, optimization_suite=optimization_suite)
+        return cls(
+            journal,
+            engine=facade.optimization_engine,
+            network_client=facade,
+            requester_identity=requester,
+        )
 
     @classmethod
     def from_config(
@@ -224,12 +290,13 @@ class APPClient:
         objective=None,
         constraints=None,
         request_id: str = "",
+        strategy=None,
     ):
         """Run the canonical model/task-first deferred-planning lifecycle."""
         if self._automatic_planner is None:
             raise RuntimeError(
                 "APPClient requires an AutomaticPlanningCoordinator")
-        return self._automatic_planner.request(
+        request_args = dict(
             model=model,
             task=task,
             input=input,
@@ -239,6 +306,20 @@ class APPClient:
             constraints=constraints,
             request_id=request_id,
         )
+        if strategy is not None:
+            request_args["strategy"] = strategy
+        return self._automatic_planner.request(**request_args)
+
+    def generate(self, request):
+        """Submit one complete-generation request through one invocation.
+
+        The adapter/provider owns the internal autoregressive loop; this
+        method never expands it into per-token NDNSF Requests.
+        """
+        if self._automatic_planner is None:
+            raise RuntimeError(
+                "APPClient requires an AutomaticPlanningCoordinator")
+        return self._automatic_planner.generate(request)
 
     def configure_automatic_planning(
         self,
@@ -250,8 +331,11 @@ class APPClient:
         verify_offer_signature,
         split_materializer=None,
         artifact_publisher=None,
+        canonical_artifact_ensurer=None,
         budget=None,
         ack_timeout_ms: int = 300,
+        ack_coverage_roles=(),
+        ack_coverage_predicate=None,
     ):
         """Attach the canonical deferred planner after the network client exists."""
         if self._network_client is None:
@@ -261,8 +345,17 @@ class APPClient:
             CatalogSnapshotArtifactPublisher,
             RejectGeneratedSplitMaterializer,
             v2_provider_view_factory,
+            v3_provider_view_factory,
         )
         snapshot_provider = catalog_snapshot_provider or (lambda: ())
+        placement_profile = str(
+            getattr(strategy, "placement_profile", "DI_PLACEMENT_V2"))
+        if placement_profile == "DI_PLACEMENT_V3":
+            provider_factory = v3_provider_view_factory(
+                verify_offer_signature)
+        else:
+            provider_factory = v2_provider_view_factory(
+                verify_offer_signature)
         coordinator = AutomaticPlanningCoordinator(
             service_user=self._network_client.service_user,
             service_name=service_name,
@@ -270,16 +363,18 @@ class APPClient:
                 adapter.descriptor.name: adapter for adapter in adapters
             },
             strategy=strategy,
-            provider_view_factory=v2_provider_view_factory(
-                verify_offer_signature),
+            provider_view_factory=provider_factory,
             split_materializer=(
                 split_materializer or RejectGeneratedSplitMaterializer()),
             artifact_publisher=(
                 artifact_publisher
                 or CatalogSnapshotArtifactPublisher(snapshot_provider)),
+            canonical_artifact_ensurer=canonical_artifact_ensurer,
             catalog_snapshot_provider=snapshot_provider,
             budget=budget,
             ack_timeout_ms=ack_timeout_ms,
+            ack_coverage_roles=tuple(ack_coverage_roles),
+            ack_coverage_predicate=ack_coverage_predicate,
         )
         self._automatic_planner = coordinator
         return coordinator
@@ -1171,6 +1266,22 @@ class InferenceClient:
         self._requests = RequestCatalog(self)
 
     @classmethod
+    def from_application_config(
+        cls, runtime: ApplicationRuntimeConfig, *, state_root,
+        envelope_key_file=None, envelope_key_provider=None,
+        optimization=None, **network_options,
+    ):
+        core = APPClient.from_application_runtime(
+            runtime,
+            state_root=state_root,
+            envelope_key_file=envelope_key_file,
+            envelope_key_provider=envelope_key_provider,
+            optimization_suite=optimization,
+            **network_options,
+        )
+        return cls(core)
+
+    @classmethod
     def from_config(cls, config, *, state_root,
                     envelope_key_file=None, envelope_key_provider=None,
                     optimization=None):
@@ -1258,13 +1369,36 @@ class InferenceClient:
 
         return submit
 
-    def request(
+    def request_model(
+        self, *, model, input: GenerationInput,
+        generation: GenerationConfig, strategy=None, request_id: str = "",
+    ):
+        if self._core._automatic_planner is None:
+            raise RuntimeError(
+                "model-first request requires an AutomaticPlanningCoordinator")
+        return self._core._automatic_planner.request_application(
+            model=model, input=input, generation=generation,
+            strategy=strategy, request_id=request_id)
+
+    def request_preplanned(
         self, deployment: RequestableDeployment, *, input,
         timeout=None, deadline=None, options: InferenceOptions | None = None,
     ) -> InferenceRequestHandle:
         return self._request_impl(
             deployment, input=input, timeout=timeout, deadline=deadline,
             options=options, authorized_coordinator="")
+
+    def request(
+        self, deployment: RequestableDeployment, *, input,
+        timeout=None, deadline=None, options: InferenceOptions | None = None,
+    ) -> InferenceRequestHandle:
+        warnings.warn(
+            "InferenceClient.request(deployment, ...) is preplanned compatibility; "
+            "use request_preplanned() or InferenceApplication.request(model=...)",
+            DeprecationWarning, stacklevel=2)
+        return self.request_preplanned(
+            deployment, input=input, timeout=timeout, deadline=deadline,
+            options=options)
 
     def _request_as_coordinator(
         self, deployment: RequestableDeployment, *, input,

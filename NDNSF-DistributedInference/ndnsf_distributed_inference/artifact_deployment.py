@@ -8,7 +8,7 @@ or a local repo-compatible object for smoke tests.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 import hashlib
 import json
 import os
@@ -37,6 +37,7 @@ from ndnsf import (
 
 from py_repoclient.orchestration import NetworkDistributedRepoClient, RepoObjectManifest
 
+from .core.contracts import ProviderResidencyIdentity
 from .repo_reference import repo_manifest_from_large_data_reference
 
 
@@ -62,6 +63,92 @@ class MaterializedArtifact:
     manifest: RepoObjectManifest
     executable: bool = False
     metadata: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class ProviderAssemblyResult:
+    """Immutable Provider-local activation record for one assembled role."""
+
+    role: str
+    path: Path
+    object_digest: str
+    artifact: Any
+
+
+def assemble_onnx_role(
+    *,
+    role: str,
+    model_name: str,
+    model_digest: str,
+    profile: str,
+    graph_digest: str,
+    layer_payloads: dict[str, bytes],
+    layer_digests: dict[str, str],
+    recipe_digest: str,
+    provider: str,
+    signature: str,
+    output_path: str | Path,
+    verify_signature=None,
+) -> ProviderAssemblyResult:
+    """Assemble verified canonical layers without request-directory copies.
+
+    ``layer_payloads`` is ordered by its canonical NDN name.  The resulting
+    file is written through a private sibling and atomically activated only
+    after framing, digest, Provider identity, and signature checks complete.
+    """
+    from .app_sdk.canonical_artifacts import AssembledOnnxArtifactV1
+    if not role or not provider or not layer_payloads:
+        raise ValueError("Provider assembly requires role, Provider, and layers")
+    if set(layer_payloads) != set(layer_digests):
+        raise ValueError("layer digest cover is incomplete")
+    ordered = tuple(sorted(layer_payloads.items()))
+    for name, payload in ordered:
+        digest = str(layer_digests[name])
+        actual = "sha256:" + hashlib.sha256(bytes(payload)).hexdigest()
+        if digest != actual:
+            raise ValueError(f"canonical layer digest mismatch for {name}")
+    model_bytes = b"".join(bytes(payload) for _, payload in ordered)
+    entry_digests = {
+        "model.onnx": "sha256:" + hashlib.sha256(model_bytes).hexdigest(),
+    }
+    manifest = {
+        "schema": "ndnsf-di-assembled-onnx-v1",
+        "modelName": str(model_name),
+        "modelDigest": str(model_digest),
+        "profile": str(profile),
+        "graphDigest": str(graph_digest),
+        "role": str(role),
+        "recipeDigest": str(recipe_digest),
+        "layerNames": [name for name, _ in ordered],
+        "layerDigests": [layer_digests[name] for name, _ in ordered],
+        "entryDigests": entry_digests,
+        "signer": str(provider),
+        "layout": "INLINE_ONNX",
+    }
+    artifact = AssembledOnnxArtifactV1(
+        manifest=manifest, entries={"model.onnx": model_bytes},
+        signer=str(provider), signature=str(signature))
+    artifact.verify_provider(str(provider), verify_signature=verify_signature)
+    target = Path(output_path).expanduser()
+    if target.suffix != ".ndnsf-onnx-artifact":
+        raise ValueError("assembled output must use .ndnsf-onnx-artifact suffix")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(target.name + ".tmp")
+    try:
+        artifact.write_atomic(temporary)
+        # Verify the exact bytes that will become visible before activation.
+        checked = AssembledOnnxArtifactV1.from_bytes(temporary.read_bytes())
+        checked.verify_provider(str(provider), verify_signature=verify_signature)
+        temporary.replace(target)
+    except Exception:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+    return ProviderAssemblyResult(
+        role=str(role), path=target, object_digest=artifact.object_digest,
+        artifact=artifact)
 
 
 class ArtifactProvisioningState:
@@ -496,6 +583,7 @@ class ExecutionContext:
     spec: ExecutionArtifactSpec
     artifact_paths: dict[str, Path]
     work_dir: Path
+    runtime_evidence: "RuntimePreparationEvidence | None" = None
 
     def path(self, artifact_name: str) -> Path:
         return self.artifact_paths[artifact_name]
@@ -509,6 +597,380 @@ class ExecutionContext:
         if artifact is None or not artifact.executable:
             raise KeyError(f"artifact {artifact_name!r} is not declared executable")
         return path
+
+
+@dataclass(frozen=True)
+class ProviderResidencyHit:
+    identity: ProviderResidencyIdentity
+    tier: str
+    path: Path | None
+    resource: Any = field(compare=False, repr=False, default=None)
+
+
+@dataclass
+class _ProviderResidencyEntry:
+    identity: ProviderResidencyIdentity
+    size: int
+    disk_path: Path | None = None
+    ram_resource: Any = None
+    ram_boot_epoch: str = ""
+    gpu_resource: Any = None
+    gpu_boot_epoch: str = ""
+    gpu_device: str = ""
+    owners: set[str] = field(default_factory=set)
+
+
+class ProviderResidencyLedger:
+    """Thread-safe, content-addressed disk/RAM/GPU residency authority.
+
+    The ledger owns no NDNSF wire semantics.  It is an NDNSF-DI Provider
+    facility that turns adapter and Repository facts into auditable reuse and
+    invalidation decisions without copying payloads into request directories.
+    """
+
+    _COUNTERS = (
+        "repoUniqueBytes", "repoWireBytes", "duplicatePayloadBytes",
+        "ramLoadCount", "deviceLoadCount", "diskHitCount", "ramHitCount",
+        "gpuHitCount", "evictionCount", "invalidationCount",
+    )
+
+    def __init__(self, root: str | Path, *, provider_boot_epoch: str):
+        if not provider_boot_epoch:
+            raise ValueError("provider_boot_epoch is required")
+        self.root = Path(root).expanduser().resolve()
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.provider_boot_epoch = str(provider_boot_epoch)
+        self._entries: dict[tuple[str, ...], _ProviderResidencyEntry] = {}
+        self._counters = {name: 0 for name in self._COUNTERS}
+        self._lock = threading.RLock()
+
+    def content_path(
+        self, identity: ProviderResidencyIdentity, filename: str,
+    ) -> Path:
+        name = Path(str(filename)).name
+        if not name or name in {".", ".."}:
+            raise ValueError("content-addressed filename is invalid")
+        return self.root / "sha256" / identity.artifact_digest[7:] / name
+
+    @staticmethod
+    def _digest_file(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as source:
+            while chunk := source.read(4 << 20):
+                digest.update(chunk)
+        return "sha256:" + digest.hexdigest()
+
+    def admit_disk(
+        self, identity: ProviderResidencyIdentity, path: str | Path, *,
+        size: int, unique_bytes: int = 0, wire_bytes: int = 0,
+    ) -> ProviderResidencyHit:
+        target = Path(path).expanduser().resolve()
+        if not target.is_file() or target.stat().st_size != int(size):
+            raise ValueError("disk residency size does not match verified artifact")
+        if self._digest_file(target) != identity.artifact_digest:
+            raise ValueError("disk residency digest does not match verified artifact")
+        expected_parent = (self.root / "sha256" / identity.artifact_digest[7:]).resolve()
+        if target.parent != expected_parent:
+            raise ValueError("disk residency must use the content-addressed root")
+        with self._lock:
+            entry = self._entries.get(identity.durable_key)
+            if entry is None:
+                entry = _ProviderResidencyEntry(identity=identity, size=int(size))
+                self._entries[identity.durable_key] = entry
+            elif entry.size != int(size):
+                raise ValueError("content-addressed residency size changed")
+            entry.disk_path = target
+            self._counters["repoUniqueBytes"] += int(unique_bytes)
+            self._counters["repoWireBytes"] += int(wire_bytes)
+            return ProviderResidencyHit(identity, "DISK", target)
+
+    def create_view(
+        self, identity: ProviderResidencyIdentity, view_path: str | Path,
+    ) -> Path:
+        with self._lock:
+            entry = self._entries.get(identity.durable_key)
+            if entry is None or entry.disk_path is None:
+                raise KeyError("artifact has no verified disk residency")
+            target = entry.disk_path
+        view = Path(view_path).expanduser()
+        view.parent.mkdir(parents=True, exist_ok=True)
+        if view.is_symlink() and view.resolve() == target.resolve():
+            return view
+        if view.exists() or view.is_symlink():
+            raise FileExistsError(f"residency view already exists: {view}")
+        view.symlink_to(target)
+        return view
+
+    def promote_ram(
+        self, identity: ProviderResidencyIdentity, resource: Any, *,
+        bytes_loaded: int,
+    ) -> ProviderResidencyHit:
+        if resource is None or int(bytes_loaded) <= 0:
+            raise ValueError("RAM promotion requires a loaded resource")
+        with self._lock:
+            self._require_current_boot(identity)
+            entry = self._require_disk(identity)
+            entry.ram_resource = resource
+            entry.ram_boot_epoch = self.provider_boot_epoch
+            self._counters["ramLoadCount"] += 1
+            return ProviderResidencyHit(identity, "RAM", entry.disk_path, resource)
+
+    def promote_gpu(
+        self, identity: ProviderResidencyIdentity, resource: Any, *,
+        bytes_loaded: int, load_completed: bool, warmup_completed: bool,
+        cpu_fallback_count: int,
+    ) -> ProviderResidencyHit:
+        if (resource is None or int(bytes_loaded) <= 0 or not load_completed
+                or not warmup_completed or int(cpu_fallback_count) != 0):
+            raise ValueError(
+                "GPU promotion requires load, warmup, bytes, and zero CPU fallback")
+        if (not identity.device.startswith("cuda:")
+                or not identity.device[5:].isdigit()):
+            raise ValueError("GPU promotion requires one exact CUDA device")
+        with self._lock:
+            self._require_current_boot(identity)
+            entry = self._require_disk(identity)
+            entry.gpu_resource = resource
+            entry.gpu_boot_epoch = self.provider_boot_epoch
+            entry.gpu_device = identity.device
+            self._counters["deviceLoadCount"] += 1
+            return ProviderResidencyHit(identity, "GPU", entry.disk_path, resource)
+
+    def lookup(
+        self, identity: ProviderResidencyIdentity,
+    ) -> ProviderResidencyHit | None:
+        with self._lock:
+            entry = self._entries.get(identity.durable_key)
+            if entry is None or entry.disk_path is None or not entry.disk_path.is_file():
+                return None
+            if (identity.provider_boot_epoch == self.provider_boot_epoch
+                    and entry.gpu_resource is not None
+                    and entry.gpu_boot_epoch == self.provider_boot_epoch
+                    and entry.gpu_device == identity.device):
+                return ProviderResidencyHit(
+                    identity, "GPU", entry.disk_path, entry.gpu_resource)
+            if (identity.provider_boot_epoch == self.provider_boot_epoch
+                    and entry.ram_resource is not None
+                    and entry.ram_boot_epoch == self.provider_boot_epoch):
+                return ProviderResidencyHit(
+                    identity, "RAM", entry.disk_path, entry.ram_resource)
+            return ProviderResidencyHit(identity, "DISK", entry.disk_path)
+
+    def acquire(
+        self, identity: ProviderResidencyIdentity, *, owner: str,
+    ) -> ProviderResidencyHit:
+        if not owner:
+            raise ValueError("residency owner is required")
+        with self._lock:
+            hit = self.lookup(identity)
+            if hit is None:
+                raise KeyError("compatible residency is unavailable")
+            self._entries[identity.durable_key].owners.add(str(owner))
+            self._counters[hit.tier.lower() + "HitCount"] += 1
+            return hit
+
+    def release(self, identity: ProviderResidencyIdentity, *, owner: str) -> None:
+        with self._lock:
+            entry = self._entries.get(identity.durable_key)
+            if entry is not None:
+                entry.owners.discard(str(owner))
+
+    def evict(
+        self, identity: ProviderResidencyIdentity, *, tier: str,
+    ) -> None:
+        tier = str(tier).upper()
+        with self._lock:
+            entry = self._entries.get(identity.durable_key)
+            if entry is None:
+                return
+            if entry.owners:
+                raise RuntimeError("residency is owned by active requests")
+            if tier == "GPU":
+                entry.gpu_resource = None
+                entry.gpu_boot_epoch = ""
+                entry.gpu_device = ""
+            elif tier == "RAM":
+                entry.ram_resource = None
+                entry.ram_boot_epoch = ""
+            elif tier == "DISK":
+                raise ValueError("durable disk eviction requires an explicit retention policy")
+            else:
+                raise ValueError("unknown residency tier")
+            self._counters["evictionCount"] += 1
+
+    def rebind_boot_epoch(self, provider_boot_epoch: str) -> None:
+        if not provider_boot_epoch:
+            raise ValueError("provider_boot_epoch is required")
+        with self._lock:
+            if provider_boot_epoch == self.provider_boot_epoch:
+                return
+            self.provider_boot_epoch = str(provider_boot_epoch)
+            for entry in self._entries.values():
+                entry.ram_resource = None
+                entry.ram_boot_epoch = ""
+                entry.gpu_resource = None
+                entry.gpu_boot_epoch = ""
+                entry.gpu_device = ""
+                entry.owners.clear()
+            self._counters["invalidationCount"] += 1
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            records = []
+            for entry in self._entries.values():
+                records.append({
+                    "modelContentDigest": entry.identity.model_content_digest,
+                    "graphDigest": entry.identity.graph_digest,
+                    "partitionDigest": entry.identity.partition_digest,
+                    "artifactDigest": entry.identity.artifact_digest,
+                    "adapterId": entry.identity.adapter_id,
+                    "adapterVersion": entry.identity.adapter_version,
+                    "backend": entry.identity.backend,
+                    "diskPath": str(entry.disk_path or ""),
+                    "ramBootEpoch": entry.ram_boot_epoch,
+                    "gpuBootEpoch": entry.gpu_boot_epoch,
+                    "gpuDevice": entry.gpu_device,
+                    "owners": sorted(entry.owners),
+                })
+            return {
+                "schema": "ndnsf-di.provider-residency.v1",
+                "providerBootEpoch": self.provider_boot_epoch,
+                "records": records,
+                "counters": dict(self._counters),
+            }
+
+    def _require_current_boot(self, identity: ProviderResidencyIdentity) -> None:
+        if identity.provider_boot_epoch != self.provider_boot_epoch:
+            raise ValueError("residency identity uses a stale provider boot epoch")
+
+    def _require_disk(
+        self, identity: ProviderResidencyIdentity,
+    ) -> _ProviderResidencyEntry:
+        entry = self._entries.get(identity.durable_key)
+        if entry is None or entry.disk_path is None or not entry.disk_path.is_file():
+            raise RuntimeError("verified disk residency is required before promotion")
+        return entry
+
+
+@dataclass(frozen=True)
+class RuntimePreparationEvidence:
+    """Adapter-issued proof that one assigned shard is runtime-ready.
+
+    File materialization is not runtime readiness.  This contract is created
+    only after the model adapter has loaded the verified shard and completed a
+    warmup on the exact assigned device. ``CPU_LOGIC`` is an explicit backend
+    class and cannot satisfy a CUDA acceptance gate.
+    """
+
+    adapter_id: str
+    adapter_version: str
+    backend: str
+    device: str
+    artifact_digests: tuple[str, ...]
+    load_completed: bool
+    warmup_completed: bool
+    cpu_fallback_count: int
+    prepared_at_ms: int
+    device_class: str = "CUDA"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "artifact_digests", tuple(self.artifact_digests))
+        if not self.adapter_id or not self.adapter_version or not self.backend:
+            raise ValueError("runtime adapter identity is incomplete")
+        device = str(self.device)
+        if self.device_class not in {"CUDA", "CPU_LOGIC"}:
+            raise ValueError("runtime preparation device class is invalid")
+        if self.device_class == "CUDA" and (
+                not device.startswith("cuda:") or not device[5:].isdigit()):
+            raise ValueError("CUDA runtime preparation requires an exact device")
+        if self.device_class == "CPU_LOGIC" and (
+                device != "cpu" or not self.backend.endswith("-cpu")):
+            raise ValueError(
+                "CPU logic preparation requires cpu and an explicit -cpu backend")
+        if not self.load_completed or not self.warmup_completed:
+            raise ValueError("runtime preparation requires load and warmup")
+        if self.cpu_fallback_count != 0:
+            raise ValueError("runtime preparation rejects CPU fallback")
+        if self.prepared_at_ms <= 0 or not self.artifact_digests:
+            raise ValueError("runtime preparation evidence is incomplete")
+        for digest in self.artifact_digests:
+            if (not isinstance(digest, str) or len(digest) != 71
+                    or not digest.startswith("sha256:")):
+                raise ValueError("runtime artifact digest is not canonical")
+            try:
+                int(digest[7:], 16)
+            except ValueError as exc:
+                raise ValueError(
+                    "runtime artifact digest is not canonical") from exc
+
+    def validate_assignment(
+        self, *, adapter_id: str, adapter_version: str, backend: str,
+        device: str, artifact_digest: str,
+    ) -> None:
+        mismatches = []
+        if self.adapter_id != adapter_id:
+            mismatches.append("adapter_id")
+        if self.adapter_version != adapter_version:
+            mismatches.append("adapter_version")
+        if self.backend != backend:
+            mismatches.append("backend")
+        if self.device != device:
+            mismatches.append("device")
+        if artifact_digest not in self.artifact_digests:
+            mismatches.append("artifact_digest")
+        if mismatches:
+            raise ValueError(
+                "runtime preparation/assignment mismatch: "
+                + ",".join(mismatches))
+
+
+def prepare_runtime(
+    execution: ExecutionContext, *,
+    preparer: Callable[
+        [ExecutionContext, Callable[[str, float], None]],
+        RuntimePreparationEvidence],
+    expected_adapter_id: str,
+    expected_adapter_version: str,
+    expected_backend: str,
+    expected_device: str,
+    expected_artifact_digest: str,
+    progress: Callable[[str, float], None] | None = None,
+) -> ExecutionContext:
+    """Run one adapter load/warmup and attach exact CUDA readiness proof."""
+    if not callable(preparer):
+        raise TypeError("runtime preparer must be callable")
+    phases: list[str] = []
+    last_progress = 0.0
+
+    def report(phase: str, value: float) -> None:
+        nonlocal last_progress
+        phase = str(phase)
+        value = float(value)
+        if phase not in {"LOADING", "WARMING"}:
+            raise ValueError("runtime preparer reported an invalid phase")
+        if value < last_progress or not 0.0 <= value <= 1.0:
+            raise ValueError("runtime preparation progress is not monotonic")
+        last_progress = value
+        phases.append(phase)
+        if progress is not None:
+            progress(phase, value)
+
+    evidence = preparer(execution, report)
+    if not isinstance(evidence, RuntimePreparationEvidence):
+        raise TypeError("runtime preparer returned no readiness evidence")
+    if "LOADING" not in phases or "WARMING" not in phases:
+        raise ValueError("runtime preparer omitted load/warmup progress")
+    if phases.index("LOADING") > phases.index("WARMING"):
+        raise ValueError("runtime preparer reported warmup before load")
+    evidence.validate_assignment(
+        adapter_id=expected_adapter_id,
+        adapter_version=expected_adapter_version,
+        backend=expected_backend,
+        device=expected_device,
+        artifact_digest=expected_artifact_digest,
+    )
+    return replace(execution, runtime_evidence=evidence)
 
 
 def build_output_object_manifest(
