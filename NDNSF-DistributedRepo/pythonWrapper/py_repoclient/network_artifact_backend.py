@@ -303,13 +303,37 @@ class _NetworkPublishDriver:
         backend: "CollaborationArtifactApiBackend",
         descriptor: ArtifactDescriptor,
         operation_id: str,
+        emit_progress,
     ) -> None:
         self.backend = backend
         self.descriptor = descriptor
         self.operation_id = operation_id
+        self.emit_progress = emit_progress
         self.control_metrics = None
         self._result = None
         self._state = "OPEN"
+        self._started = time.monotonic()
+        self._progress_sequence = 0
+
+    def _emit_progress(
+        self, *, phase: str, received: int, verified: int, committed: int,
+        selected: int = 0, committed_replicas: int = 0,
+    ) -> None:
+        self._progress_sequence += 1
+        self.emit_progress(ArtifactProgress(
+            operation_id=self.operation_id,
+            artifact=self.descriptor.reference,
+            phase=phase,
+            received_bytes=int(received),
+            verified_bytes=int(verified),
+            committed_bytes=int(committed),
+            total_bytes=int(self.descriptor.reference.size_bytes),
+            selected_replicas=int(selected),
+            committed_replicas=int(committed_replicas),
+            retransmitted_bytes=0,
+            sequence=self._progress_sequence,
+            timestamp_ms=time.time_ns() // 1_000_000,
+        ))
 
     def transfer(self, path, cancellation) -> None:
         cancellation.raise_if_cancelled(
@@ -398,6 +422,13 @@ class _NetworkPublishDriver:
                     state="COMMITTED",
                     receipt_id=receipt.receipt_id,
                 ))
+            self._emit_progress(
+                phase="transfer",
+                received=int(self.descriptor.reference.size_bytes),
+                verified=int(self.descriptor.reference.size_bytes),
+                committed=0,
+                selected=len(selected),
+            )
             elapsed_ms = (time.monotonic() - started) * 1000.0
             self._result = ArtifactPublishResult(
                 reference=self.descriptor.reference,
@@ -432,6 +463,14 @@ class _NetworkPublishDriver:
     def commit(self):
         if self._result is None:
             raise RuntimeError("artifact network transfer is incomplete")
+        self._emit_progress(
+            phase="commit",
+            received=int(self.descriptor.reference.size_bytes),
+            verified=int(self.descriptor.reference.size_bytes),
+            committed=int(self.descriptor.reference.size_bytes),
+            selected=int(self._result.achieved_replicas),
+            committed_replicas=int(self._result.achieved_replicas),
+        )
         self._state = "COMMITTED"
         return self._result
 
@@ -450,6 +489,10 @@ class _NetworkFetchDriver:
         operation_id: str,
         *,
         resume: bool,
+        verify: bool,
+        replace: bool,
+        timeout_ms: int,
+        control,
         emit_progress,
     ) -> None:
         self.backend = backend
@@ -457,6 +500,20 @@ class _NetworkFetchDriver:
         self.destination = Path(destination).resolve()
         self.operation_id = str(operation_id)
         self.resume = bool(resume)
+        self.verify = bool(verify)
+        self.replace = bool(replace)
+        self.timeout_ms = int(timeout_ms)
+        self.control = control
+        if not self.verify:
+            raise ValueError(
+                "repo artifact network fetch requires signed-manifest verification"
+            )
+        if self.control.mode == ArtifactControlMode.TARGETED:
+            raise ValueError(
+                "repo artifact network fetch does not support targeted control"
+            )
+        if self.timeout_ms <= 0:
+            raise ValueError("repo artifact fetch timeout must be positive")
         self.emit_progress = emit_progress
         self.started = time.monotonic()
         self.state = "OPEN"
@@ -467,6 +524,8 @@ class _NetworkFetchDriver:
             max_range_bytes=max(
                 16 * 1024 * 1024, self.backend.packet_payload_bytes
             ),
+            resume=self.resume,
+            replace=self.replace,
         )
         candidates = [
             value for value in self.backend.last_receipts
@@ -520,10 +579,7 @@ class _NetworkFetchDriver:
             metrics = fetch_adaptive_segmented_data_packets(
                 self.data_name,
                 persist,
-                timeout_ms=max(
-                    60_000,
-                    int(self.reference.size_bytes // (256 * 1024)) * 1000,
-                ),
+                timeout_ms=self.timeout_ms,
                 interest_lifetime_ms=10_000,
                 initial_window=8,
                 maximum_window=128,
@@ -731,7 +787,9 @@ class CollaborationArtifactApiBackend:
         self, descriptor: ArtifactDescriptor, operation_id: str, emit_progress
     ):
         if self.delegate is None:
-            return _NetworkPublishDriver(self, descriptor, operation_id)
+            return _NetworkPublishDriver(
+                self, descriptor, operation_id, emit_progress
+            )
         delegate_driver = self.delegate.begin_publish(
             descriptor, operation_id, emit_progress
         )
@@ -748,6 +806,10 @@ class CollaborationArtifactApiBackend:
                 Path(destination),
                 operation_id,
                 resume=bool(kwargs.get("resume", True)),
+                verify=bool(kwargs.get("verify", True)),
+                replace=bool(kwargs.get("replace", False)),
+                timeout_ms=int(kwargs.get("timeout_ms", 60_000)),
+                control=kwargs["control"],
                 emit_progress=kwargs["emit_progress"],
             )
         return self.delegate.begin_fetch(*args, **kwargs)

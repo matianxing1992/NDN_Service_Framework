@@ -37,6 +37,8 @@ from ._ndnsf import (
     NativeLiveStreamReadiness,
     NativeLiveStreamSampleObservation,
     NativeLiveStreamSamplePredictor,
+    NativePredictiveStreamCheckpoint,
+    NativePredictiveStreamDescriptor,
     NativeSampleClassProfile,
     NativeStreamAdvancedOptions,
     NativeStreamConfig,
@@ -1836,6 +1838,14 @@ class PredictiveStreamCheckpoint:
     latest_produced_sample_id: int = 0
     next_expected_sample_id: int = 0
 
+    def to_dict(self) -> dict[str, int]:
+        return {
+            "initialSampleId": int(self.initial_sample_id),
+            "oldestRetainedSampleId": int(self.oldest_retained_sample_id),
+            "latestProducedSampleId": int(self.latest_produced_sample_id),
+            "nextExpectedSampleId": int(self.next_expected_sample_id),
+        }
+
 
 class PredictiveStreamDescriptor:
     def __init__(self, native) -> None:
@@ -1858,6 +1868,128 @@ class PredictiveStreamDescriptor:
     @property
     def frontier_name(self) -> str:
         return str(self._native.frontier_name)
+
+    def to_dict(self) -> dict[str, Any]:
+        definition = self.definition
+        fec = definition.fec
+        return {
+            "definition": {
+                "streamId": definition.stream_id,
+                "contractVersion": int(definition.contract_version),
+                "provider": definition.provider,
+                "semanticDataPrefix": definition.semantic_data_prefix,
+                "sessionEpoch": int(definition.session_epoch),
+                "mappingVersion": int(definition.mapping_version),
+                "mappingBlockCapacity": int(definition.mapping_block_capacity),
+                "mappingAheadBlocks": int(definition.mapping_ahead_blocks),
+                "retainedItems": int(definition.retained_items),
+                "maxNameReservations": int(definition.max_name_reservations),
+                "maxPendingInterests": int(definition.max_pending_interests),
+                "signedWireCap": int(definition.signed_wire_cap),
+                "samplePeriodMs": float(definition.sample_period_ms),
+                "sampleClasses": [
+                    {
+                        "classId": profile.class_id,
+                        "seedSourceItems": int(profile.seed_source_items),
+                        "hardMaxSourceItems": int(profile.hard_max_source_items),
+                        "historyCapacity": int(profile.history_capacity),
+                        "safetyMarginItems": int(profile.safety_margin_items),
+                    }
+                    for profile in definition.sample_classes
+                ],
+                "fec": {
+                    "scheme": fec.scheme,
+                    "maxSourceItems": int(fec.max_source_items),
+                    "maxSourceBytes": int(fec.max_source_bytes),
+                    "recoveryBudgetMs": int(fec.recovery_budget_ms),
+                    "repairSymbols": int(fec.repair_symbols),
+                },
+            },
+            "checkpoint": self.checkpoint.to_dict(),
+            "frontierName": self.frontier_name,
+            "measuredSamplePeriodMs": float(
+                self._native.measured_sample_period_ms
+            ),
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "PredictiveStreamDescriptor":
+        definition_value = dict(payload["definition"])
+        fec_value = dict(definition_value.get("fec") or {})
+        fec_scheme = str(fec_value.get("scheme", "none"))
+        if fec_scheme == "xor-one-repair":
+            fec = LiveStreamFecOptions.xor_one_repair(
+                int(fec_value["maxSourceItems"]),
+                int(fec_value["maxSourceBytes"]),
+                int(fec_value.get("recoveryBudgetMs", 500)),
+            )
+        elif fec_scheme == "gf256-two-repair":
+            fec = LiveStreamFecOptions.gf256_two_repair(
+                int(fec_value["maxSourceItems"]),
+                int(fec_value["maxSourceBytes"]),
+                int(fec_value.get("recoveryBudgetMs", 500)),
+            )
+        elif fec_scheme == "none":
+            fec = LiveStreamFecOptions.none()
+        else:
+            raise ValueError(f"unsupported descriptor FEC scheme: {fec_scheme}")
+        definition = LiveStreamDefinition(
+            stream_id=str(definition_value["streamId"]),
+            provider=str(definition_value["provider"]),
+            semantic_data_prefix=str(definition_value["semanticDataPrefix"]),
+            session_epoch=int(definition_value["sessionEpoch"]),
+            mapping_version=int(definition_value["mappingVersion"]),
+            contract_version=int(definition_value.get("contractVersion", 2)),
+            mapping_block_capacity=int(definition_value.get("mappingBlockCapacity", 16)),
+            mapping_ahead_blocks=int(definition_value.get("mappingAheadBlocks", 4)),
+            retained_items=int(definition_value.get("retainedItems", 600)),
+            max_name_reservations=int(definition_value.get("maxNameReservations", 65536)),
+            max_pending_interests=int(definition_value.get("maxPendingInterests", 256)),
+            signed_wire_cap=int(definition_value.get("signedWireCap", 8800)),
+            sample_period_ms=float(definition_value.get("samplePeriodMs", 0.0)),
+            sample_classes=tuple(
+                SampleClassProfile(
+                    class_id=str(item["classId"]),
+                    seed_source_items=int(item["seedSourceItems"]),
+                    hard_max_source_items=int(item["hardMaxSourceItems"]),
+                    history_capacity=int(item.get("historyCapacity", 32)),
+                    safety_margin_items=int(item.get("safetyMarginItems", 1)),
+                )
+                for item in definition_value.get("sampleClasses", ())
+            ),
+            fec=fec,
+        )
+        checkpoint_value = dict(payload["checkpoint"])
+        checkpoint = PredictiveStreamCheckpoint(
+            initial_sample_id=int(checkpoint_value["initialSampleId"]),
+            oldest_retained_sample_id=int(
+                checkpoint_value["oldestRetainedSampleId"]
+            ),
+            latest_produced_sample_id=int(
+                checkpoint_value["latestProducedSampleId"]
+            ),
+            next_expected_sample_id=int(
+                checkpoint_value["nextExpectedSampleId"]
+            ),
+        )
+        native_checkpoint = NativePredictiveStreamCheckpoint()
+        native_checkpoint.initial_sample_id = checkpoint.initial_sample_id
+        native_checkpoint.oldest_retained_sample_id = (
+            checkpoint.oldest_retained_sample_id
+        )
+        native_checkpoint.latest_produced_sample_id = (
+            checkpoint.latest_produced_sample_id
+        )
+        native_checkpoint.next_expected_sample_id = (
+            checkpoint.next_expected_sample_id
+        )
+        native = NativePredictiveStreamDescriptor(
+            definition._to_native(),
+            native_checkpoint,
+            str(payload["frontierName"]),
+            float(payload.get("measuredSamplePeriodMs", definition.sample_period_ms)),
+        )
+        return cls(native)
 
 
 class LiveStreamPublisher:

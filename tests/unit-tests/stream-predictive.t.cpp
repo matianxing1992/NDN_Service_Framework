@@ -125,6 +125,37 @@ BOOST_AUTO_TEST_CASE(PredictiveDescriptorValidation)
   BOOST_CHECK(d.isPredictive());
 }
 
+BOOST_AUTO_TEST_CASE(PredictiveDescriptorRejectsNonCanonicalFrontier)
+{
+  nsf::LiveStreamDefinition definition;
+  definition.contractVersion = nsf::STREAM_NAME_MAP_CONTRACT_VERSION_V2;
+  definition.streamId = "descriptor-check";
+  definition.provider = ndn::Name("/provider");
+  definition.semanticDataPrefix =
+    ndn::Name("/provider/stream/descriptor-check").appendVersion(3);
+  definition.sessionEpoch = 3;
+  definition.mappingVersion = 3;
+  definition.samplePeriodMs = 20.0;
+  definition.sampleClasses.push_back(
+    nsf::SampleClassProfile::bounded("default", 1, 4));
+
+  nsf::PredictiveStreamDescriptor descriptor;
+  descriptor.definition = definition;
+  descriptor.frontierName =
+    nsf::makePredictiveFrontierName(definition.mappingRoot());
+  BOOST_CHECK(!descriptor.validate().has_value());
+
+  descriptor.frontierName.append("/attacker");
+  BOOST_CHECK(descriptor.validate().has_value());
+}
+
+BOOST_AUTO_TEST_CASE(FECOptionsRejectUnknownScheme)
+{
+  nsf::LiveStreamFecOptions options;
+  options.scheme = static_cast<nsf::LiveStreamFecScheme>(99);
+  BOOST_CHECK(options.validate().has_value());
+}
+
 BOOST_AUTO_TEST_CASE(FECOptionsDefault)
 {
   auto fec = nsf::LiveStreamFecOptions::none();

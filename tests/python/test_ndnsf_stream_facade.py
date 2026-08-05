@@ -15,12 +15,43 @@ from ndnsf.streaming import (
     StreamAdvancedOptions,
     StreamConfig,
     StreamSubscriptionOptions,
+    STREAM_NAME_MAP_CONTRACT_VERSION_V2,
 )
 from ndnsf.service import ServiceProvider, ServiceUser
-from ndnsf._ndnsf import NativeLiveStreamStatus
+from ndnsf._ndnsf import (
+    NativeLiveStreamStatus,
+    NativePredictiveStreamCheckpoint,
+    NativePredictiveStreamDescriptor,
+)
 
 
 class StreamFacadePythonContractTest(unittest.TestCase):
+    def test_predictive_descriptor_round_trip_preserves_authenticated_frontier(self):
+        definition = LiveStreamDefinition(
+            stream_id="round-trip",
+            provider="/provider",
+            semantic_data_prefix="/provider/stream/round-trip",
+            session_epoch=3,
+            mapping_version=3,
+            contract_version=STREAM_NAME_MAP_CONTRACT_VERSION_V2,
+            sample_period_ms=20.0,
+            sample_classes=(SampleClassProfile("default", 1, 4),),
+            fec=LiveStreamFecOptions.none(),
+        )
+        checkpoint = NativePredictiveStreamCheckpoint()
+        checkpoint.latest_produced_sample_id = 2
+        checkpoint.next_expected_sample_id = 3
+        native = NativePredictiveStreamDescriptor(
+            definition._to_native(),
+            checkpoint,
+            "/provider/NDNSF/STREAM-MAP/round-trip/frontier",
+            20.0,
+        )
+        descriptor = PredictiveStreamDescriptor(native)
+        encoded = descriptor.to_dict()
+        restored = PredictiveStreamDescriptor.from_dict(encoded)
+        self.assertEqual(restored.to_dict(), encoded)
+
     def test_recovery_control_status_surface_is_explicit(self):
         for field in (
             "recovery_control_interests",

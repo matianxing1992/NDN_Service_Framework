@@ -292,6 +292,11 @@ LiveStreamFecOptions::recoveryCapacity() const
 std::optional<std::string>
 LiveStreamFecOptions::validate() const
 {
+  if (scheme != LiveStreamFecScheme::None &&
+      scheme != LiveStreamFecScheme::XorOneRepair &&
+      scheme != LiveStreamFecScheme::Gf256TwoRepair) {
+    return "unknown-fec-scheme";
+  }
   if (scheme == LiveStreamFecScheme::None) {
     if (maxSourceItems != 0 || maxSourceBytes != 0 || recoveryBudgetMs != 0 ||
         repairSymbols != 0) {
@@ -3968,6 +3973,9 @@ PredictiveStreamDescriptor::validate() const
   if (frontierName.empty()) {
     return "missing frontier name in predictive descriptor";
   }
+  if (frontierName != makePredictiveFrontierName(definition.mappingRoot())) {
+    return "predictive descriptor frontier name is not canonical";
+  }
   return std::nullopt;
 }
 
@@ -6084,7 +6092,10 @@ LiveStreamConsumerHandle::fetchPayload(StreamCursor cursor, const ndn::Name& nam
           [weak, cursor, name, generation, attemptNumber] (const ndn::Data& validated) {
             const auto self = weak.lock();
             if (!self || !self->isActive(generation)) return;
-            if (!self->hasExpectedProviderSignature(validated) || validated.getName() != name) {
+            if (validated.wireEncode().size() >
+                  self->m_descriptor.definition.signedWireCap ||
+                !self->hasExpectedProviderSignature(validated) ||
+                validated.getName() != name) {
               {
                 std::lock_guard<std::mutex> guard(self->m_mutex);
                 ++self->m_payloadNonproductiveInterests;
@@ -6223,7 +6234,7 @@ LiveStreamConsumerHandle::fetchPayload(StreamCursor cursor, const ndn::Name& nam
             try {
               admission = self->m_options.onItem(item);
             }
-            catch (const std::exception& e) {
+            catch (...) {
               {
                 std::lock_guard<std::mutex> guard(self->m_mutex);
                 ++self->m_payloadNonproductiveInterests;
@@ -6234,7 +6245,7 @@ LiveStreamConsumerHandle::fetchPayload(StreamCursor cursor, const ndn::Name& nam
                 self->m_descriptor.definition.sessionEpoch, cursor,
                 {{"attempt", std::to_string(attemptNumber)},
                  {"outcome", "item-callback-failed"}});
-              self->fail(std::string("item-callback-failed:") + e.what());
+              self->fail("item-callback-failed");
               self->emitStatus();
               return;
             }
