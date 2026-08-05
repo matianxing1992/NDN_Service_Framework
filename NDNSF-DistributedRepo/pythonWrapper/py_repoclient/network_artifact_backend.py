@@ -30,6 +30,7 @@ from ._py_repoclient import (
     artifact_capability_from_dict,
     artifact_chunk_from_dict,
     artifact_manifest_page_from_dict,
+    artifact_reference_from_dict,
     artifact_replica_receipt_from_dict,
     artifact_root_manifest_from_dict,
     artifact_sha256_hex,
@@ -448,7 +449,7 @@ class _NetworkPublishDriver:
                 elapsed_ms=elapsed_ms,
             )
             self.backend.last_control_metrics = self.control_metrics
-            self.backend.last_receipts = receipts
+            self.backend._store_receipts(receipts)
         finally:
             source.stop()
 
@@ -721,6 +722,7 @@ class CollaborationArtifactApiBackend:
         packet_payload_bytes: int = _DEFAULT_PACKET_PAYLOAD_BYTES,
         chunk_bytes: int = _DEFAULT_CHUNK_BYTES,
         committed_receipts: tuple[dict[str, Any], ...] = (),
+        receipt_store_path: str | Path | None = None,
         clock_ms=None,
     ) -> None:
         if int(ack_timeout_ms) <= 0:
@@ -734,7 +736,55 @@ class CollaborationArtifactApiBackend:
         self.chunk_bytes = int(chunk_bytes)
         self.clock_ms = clock_ms or (lambda: time.time_ns() // 1_000_000)
         self.last_control_metrics = None
-        self.last_receipts = tuple(dict(value) for value in committed_receipts)
+        self._receipt_store_path = (
+            None if receipt_store_path is None else Path(receipt_store_path)
+        )
+        self.last_receipts = self._load_receipts(committed_receipts)
+
+    def _load_receipts(
+        self, committed_receipts: tuple[dict[str, Any], ...]
+    ) -> tuple[dict[str, Any], ...]:
+        if committed_receipts:
+            return tuple(dict(value) for value in committed_receipts)
+        if self._receipt_store_path is None or not self._receipt_store_path.exists():
+            return ()
+        try:
+            value = json.loads(
+                self._receipt_store_path.read_text(encoding="utf-8")
+            )
+            if not isinstance(value, list) or not all(
+                isinstance(item, dict) for item in value
+            ):
+                raise ValueError("receipt catalog must be a list of objects")
+            return tuple(dict(item) for item in value)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+            raise RuntimeError("repo artifact receipt catalog is invalid") from error
+
+    def _store_receipts(self, receipts: tuple[dict[str, Any], ...]) -> None:
+        merged = list(self.last_receipts)
+        merged.extend(dict(value) for value in receipts)
+        unique: dict[tuple[str, str], dict[str, Any]] = {}
+        for value in merged:
+            receipt = value.get("receipt", {})
+            key = (
+                str(receipt.get("receiptId", "")),
+                str(value.get("dataName", "")),
+            )
+            if key != ("", ""):
+                unique[key] = value
+        self.last_receipts = tuple(unique.values())[-1024:]
+        if self._receipt_store_path is None:
+            return
+        path = self._receipt_store_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = Path(str(path) + ".tmp")
+        temporary.write_text(
+            json.dumps(
+                list(self.last_receipts), sort_keys=True, separators=(",", ":")
+            ),
+            encoding="utf-8",
+        )
+        os.replace(temporary, path)
 
     @classmethod
     def from_config(
@@ -781,6 +831,7 @@ class CollaborationArtifactApiBackend:
             packet_payload_bytes=packet_payload_bytes,
             chunk_bytes=chunk_bytes,
             committed_receipts=committed_receipts,
+            receipt_store_path=Path(state_root) / "artifact-receipts.json",
         )
 
     def begin_publish(
@@ -1079,6 +1130,36 @@ def _execute_repo_store_assignment(repo_app, context) -> dict[str, Any]:
     return value
 
 
+def _rehydrate_committed_artifact_producers(repo_app) -> None:
+    """Re-publish durable active artifacts after a RepoNode restart."""
+    limits = ArtifactLimits()
+    for row in repo_app._persistence.active_artifacts():
+        artifact = artifact_reference_from_dict(row["artifact"], limits)
+        identity = ArtifactStorageIdentity(
+            content_digest=artifact.content_digest,
+            size_bytes=int(artifact.size_bytes),
+            generation=int(row["generation"]),
+            digest_algorithm=artifact.digest_algorithm,
+        )
+        path = repo_app._artifact_payload_store.committed_path(identity)
+        if not path.is_file():
+            continue
+        data_name = (
+            f"{repo_app.provider_name.rstrip('/')}/NDNSF-ARTIFACT/"
+            f"sha256/{artifact.content_digest}"
+        )
+        repo_app._artifact_file_producers[artifact.content_digest] = (
+            FileSegmentedObjectProducer(
+                data_name,
+                str(path),
+                signing_identity=repo_app.provider_name,
+                max_segment_size=_DEFAULT_PACKET_PAYLOAD_BYTES,
+                freshness_ms=60_000,
+                digest_signing=True,
+            ).start()
+        )
+
+
 def install_artifact_collaboration_service(
     repo_app,
     service_name: str | None = None,
@@ -1098,6 +1179,7 @@ def install_artifact_collaboration_service(
         f"{repo_app.provider_name.rstrip('/')}/KEY/artifact-receipt",
         _receipt_key(repo_app.storage_dir),
     )
+    _rehydrate_committed_artifact_producers(repo_app)
 
     def acknowledge(payload: bytes):
         try:
