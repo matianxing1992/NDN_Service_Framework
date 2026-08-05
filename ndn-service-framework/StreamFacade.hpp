@@ -138,7 +138,7 @@ private:
   void onValidationFailure(uint64_t cursor, uint64_t generation,
                            std::string reason);
   void retryOrDeclareGap(uint64_t cursor, uint64_t generation,
-                         bool wasNack, std::string reason);
+                         bool allowRecovery, std::string reason);
   bool beginRecovery(uint64_t cursor, uint64_t generation);
   void fetchRecoveryFrontier(uint64_t cursor, uint64_t generation);
   void fetchRecoveryGroup(
