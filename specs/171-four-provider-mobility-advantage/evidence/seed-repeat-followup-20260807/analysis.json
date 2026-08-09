@@ -1,0 +1,236 @@
+{
+  "claim_gate": {
+    "all_repeat_trace_hashes_match": true,
+    "ndnsf_vs_grpc_lower_positive": false,
+    "ndnsf_vs_grpc_noninferior_minus_5pp": true,
+    "ndnsf_vs_nsc_lower_at_least_10pp": false,
+    "ndnsf_vs_nsc_lower_positive": true
+  },
+  "claim_verdict": "NO_POSITIVE_MOBILITY_CONFIRMATION",
+  "combined_paired_success_difference_grpc": {
+    "lower": -0.037333333333333336,
+    "mean": -0.005555555555555565,
+    "upper": 0.01622222222222221,
+    "values": [
+      0.07333333333333325,
+      0.0,
+      0.0,
+      -0.19666666666666666,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.010000000000000009,
+      0.026666666666666616,
+      0.0,
+      0.0,
+      -0.0033333333333332993,
+      0.006666666666666599,
+      0.0
+    ]
+  },
+  "combined_prior_seeds": [
+    43,
+    44,
+    45,
+    46,
+    47
+  ],
+  "combined_seed_count": 15,
+  "condition": "range-50-speed-2p0",
+  "paired_success_difference": {
+    "grpc": {
+      "lower": -0.0003333333333333299,
+      "mean": 0.003999999999999992,
+      "upper": 0.009666666666666657,
+      "values": [
+        0.0,
+        0.0,
+        0.0,
+        0.010000000000000009,
+        0.026666666666666616,
+        0.0,
+        0.0,
+        -0.0033333333333332993,
+        0.006666666666666599,
+        0.0
+      ]
+    },
+    "nsc": {
+      "lower": 0.015000000000000003,
+      "mean": 0.02033333333333335,
+      "upper": 0.024333333333333353,
+      "values": [
+        0.026666666666666727,
+        0.023333333333333428,
+        0.023333333333333317,
+        0.01666666666666672,
+        0.020000000000000018,
+        0.020000000000000018,
+        0.0,
+        0.023333333333333317,
+        0.019999999999999907,
+        0.030000000000000027
+      ]
+    }
+  },
+  "primary_seeds": [
+    50,
+    51,
+    52,
+    53,
+    54,
+    55,
+    56,
+    57,
+    58,
+    59
+  ],
+  "repeat_rows": [
+    {
+      "mean_latency_delta_ms": 42.04,
+      "primary_mean_ms": 48.93,
+      "primary_success": 204,
+      "repeat_mean_ms": 90.97,
+      "repeat_success": 204,
+      "seed": 50,
+      "success_delta_pp": 0.0,
+      "system": "ndnsf",
+      "trace_match": true,
+      "trace_sha256": "12c59027c4920950da531df92876c9775e219649655e693fc7fcf3d97715d380"
+    },
+    {
+      "mean_latency_delta_ms": 5.914999999999992,
+      "primary_mean_ms": 140.559,
+      "primary_success": 204,
+      "repeat_mean_ms": 146.474,
+      "repeat_success": 204,
+      "seed": 50,
+      "success_delta_pp": 0.0,
+      "system": "grpc",
+      "trace_match": true,
+      "trace_sha256": "12c59027c4920950da531df92876c9775e219649655e693fc7fcf3d97715d380"
+    },
+    {
+      "mean_latency_delta_ms": 10.201000000000022,
+      "primary_mean_ms": 795.837,
+      "primary_success": 196,
+      "repeat_mean_ms": 806.038,
+      "repeat_success": 196,
+      "seed": 50,
+      "success_delta_pp": 0.0,
+      "system": "nsc",
+      "trace_match": true,
+      "trace_sha256": "12c59027c4920950da531df92876c9775e219649655e693fc7fcf3d97715d380"
+    },
+    {
+      "mean_latency_delta_ms": -0.2599999999999909,
+      "primary_mean_ms": 118.07,
+      "primary_success": 300,
+      "repeat_mean_ms": 117.81,
+      "repeat_success": 300,
+      "seed": 54,
+      "success_delta_pp": 0.0,
+      "system": "ndnsf",
+      "trace_match": true,
+      "trace_sha256": "77b5013a436ef68a5063332cd22c710b0f5885acaad2ba1792310a54d028bb9a"
+    },
+    {
+      "mean_latency_delta_ms": 1.9119999999999777,
+      "primary_mean_ms": 178.288,
+      "primary_success": 292,
+      "repeat_mean_ms": 180.2,
+      "repeat_success": 292,
+      "seed": 54,
+      "success_delta_pp": 0.0,
+      "system": "grpc",
+      "trace_match": true,
+      "trace_sha256": "77b5013a436ef68a5063332cd22c710b0f5885acaad2ba1792310a54d028bb9a"
+    },
+    {
+      "mean_latency_delta_ms": -0.3310000000000173,
+      "primary_mean_ms": 896.753,
+      "primary_success": 294,
+      "repeat_mean_ms": 896.422,
+      "repeat_success": 294,
+      "seed": 54,
+      "success_delta_pp": 0.0,
+      "system": "nsc",
+      "trace_match": true,
+      "trace_sha256": "77b5013a436ef68a5063332cd22c710b0f5885acaad2ba1792310a54d028bb9a"
+    },
+    {
+      "mean_latency_delta_ms": -0.18000000000000682,
+      "primary_mean_ms": 87.95,
+      "primary_success": 194,
+      "repeat_mean_ms": 87.77,
+      "repeat_success": 194,
+      "seed": 58,
+      "success_delta_pp": 0.0,
+      "system": "ndnsf",
+      "trace_match": true,
+      "trace_sha256": "304477d8ddb9eed16b9a3dd016ea16f4187ef314cf7f0f03850fb0a00661142f"
+    },
+    {
+      "mean_latency_delta_ms": -0.7660000000000053,
+      "primary_mean_ms": 109.962,
+      "primary_success": 192,
+      "repeat_mean_ms": 109.196,
+      "repeat_success": 192,
+      "seed": 58,
+      "success_delta_pp": 0.0,
+      "system": "grpc",
+      "trace_match": true,
+      "trace_sha256": "304477d8ddb9eed16b9a3dd016ea16f4187ef314cf7f0f03850fb0a00661142f"
+    },
+    {
+      "mean_latency_delta_ms": 0.35399999999992815,
+      "primary_mean_ms": 539.076,
+      "primary_success": 188,
+      "repeat_mean_ms": 539.43,
+      "repeat_success": 188,
+      "seed": 58,
+      "success_delta_pp": 0.0,
+      "system": "nsc",
+      "trace_match": true,
+      "trace_sha256": "304477d8ddb9eed16b9a3dd016ea16f4187ef314cf7f0f03850fb0a00661142f"
+    }
+  ],
+  "repeat_seeds": [
+    50,
+    54,
+    58
+  ],
+  "schema": "ndnsf-seed-repeat-followup-analysis-v1",
+  "systems": {
+    "grpc": {
+      "mean_success_latency_ms": 187.70042420152947,
+      "sent": 3000,
+      "success": 2223,
+      "success_rate": 0.741
+    },
+    "ndnsf": {
+      "mean_success_latency_ms": 81.59139597315436,
+      "sent": 3000,
+      "success": 2235,
+      "success_rate": 0.745
+    },
+    "nsc": {
+      "mean_success_latency_ms": 887.644934222631,
+      "sent": 3000,
+      "success": 2174,
+      "success_rate": 0.7246666666666667
+    }
+  },
+  "trace_matches": {
+    "50:grpc": true,
+    "50:ndnsf": true,
+    "50:nsc": true,
+    "54:grpc": true,
+    "54:ndnsf": true,
+    "54:nsc": true,
+    "58:grpc": true,
+    "58:ndnsf": true,
+    "58:nsc": true
+  }
+}
