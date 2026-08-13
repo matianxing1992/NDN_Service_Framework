@@ -1,4 +1,4 @@
-name: NDNSF-DI iTiger GPU image
+name: NDNSF-DI Spec170 iTiger GPU image
 
 # Deliberately dispatch-only: a source push must never start an unreviewed cloud
 # build. The required foundation digest is produced and tested locally first.
@@ -25,13 +25,13 @@ permissions:
   id-token: write
 
 concurrency:
-  group: spec110-gpu-release-${{ inputs.release_id || github.sha }}
+  group: spec170-gpu-release-${{ inputs.release_id || github.sha }}
   cancel-in-progress: false
 
 env:
   IMAGE_REPOSITORY: ghcr.io/matianxing1992/ndnsf-di
-  RESULT_ROOT: results/spec110-itiger-qwen-live/release-build
-  RELEASE_ID: ${{ inputs.release_id || format('spec110-runtime-{0}', github.sha) }}
+  RESULT_ROOT: results/spec170-itiger-qwen-live/release-build
+  RELEASE_ID: ${{ inputs.release_id || format('spec170-runtime-{0}', github.sha) }}
   GPU_BUILD_BASE: nvidia/cuda@sha256:f18cf1a9ac2842e59f13b0d0729594da8cbd68cadd2379308cdd98c0374dbd80
   GPU_RUNTIME_BASE: nvidia/cuda@sha256:a6a8417cb56c9a5d30c4d8c78ad18bc9b75ffe4453fe1c04b3149b3741518b06
   PYTHON_BASE: python@sha256:b3061b93c8df9809c3783a4f17bbf2520425ec6b40bd3e5e7538870e21ba7209
@@ -59,7 +59,7 @@ jobs:
         run: |
           set -euo pipefail
           digest_ref='^[^[:space:]]+@sha256:[a-f0-9]{64}$'
-          release_id='^spec110-runtime-[a-f0-9]{40}$'
+          release_id='^spec170-runtime-[a-f0-9]{40}$'
           [[ "$BUILD_BASE" =~ $digest_ref ]]
           [[ "$RUNTIME_BASE" =~ $digest_ref ]]
           [[ "$FOUNDATION" =~ $digest_ref ]]
@@ -126,8 +126,8 @@ jobs:
             RELEASE_ID=${{ env.RELEASE_ID }}
             ONNXRUNTIME_CPP_URL=https://github.com/microsoft/onnxruntime/releases/download/v1.20.1/onnxruntime-linux-x64-gpu-1.20.1.tgz
             ONNXRUNTIME_CPP_SHA256=6bfb87c6ebe55367a94509b8ef062239e188dccf8d5caac8d6909b2344893bf0
-          cache-from: type=gha,scope=spec110-gpu
-          cache-to: type=gha,mode=min,scope=spec110-gpu
+          cache-from: type=gha,scope=spec170-gpu
+          cache-to: type=gha,mode=min,scope=spec170-gpu
           provenance: mode=max
           sbom: true
 
@@ -153,6 +153,8 @@ jobs:
           PY
 
       - uses: sigstore/cosign-installer@v3.8.2
+        with:
+          cosign-release: v2.4.3
 
       - name: Sign and verify digest with GitHub OIDC identity
         shell: bash
@@ -161,7 +163,9 @@ jobs:
         run: |
           set -euo pipefail
           image_ref="${IMAGE_REPOSITORY}@${IMAGE_DIGEST}"
-          cosign sign --yes --bundle "$RESULT_ROOT/cosign-bundle.json" "$image_ref"
+          # cosign v2.4.3 stores the signed bundle as an OCI signature
+          # attachment; --bundle is a sign-blob flag, not a v2 image-sign flag.
+          cosign sign --yes "$image_ref"
           cosign verify \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             --certificate-identity-regexp "^https://github.com/${GITHUB_REPOSITORY}/.github/workflows/ndnsf-di-itiger-image.yml@" \
@@ -179,7 +183,7 @@ jobs:
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           set -euo pipefail
-          anonymous_config="$RUNNER_TEMP/spec110-anonymous-docker"
+          anonymous_config="$RUNNER_TEMP/spec170-anonymous-docker"
           mkdir -p "$anonymous_config"
           DOCKER_CONFIG="$anonymous_config" docker manifest inspect \
             "${IMAGE_REPOSITORY}@${IMAGE_DIGEST}" \
@@ -246,7 +250,7 @@ jobs:
           PYTHONPATH=packaging/ndnsf-di-container/lib python3 - <<'PY'
           from pathlib import Path
           import release
-          root = Path("results/spec110-itiger-qwen-live/release-build")
+          root = Path("results/spec170-itiger-qwen-live/release-build")
           release.create_immutable_gpu_release_record(
               manifest_path=root / "release-manifest.json",
               signature_bundle_path=root / "signature.json",
@@ -267,7 +271,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: spec110-release-build-${{ env.RELEASE_ID }}
-          path: results/spec110-itiger-qwen-live/release-build/
+          name: spec170-release-build-${{ env.RELEASE_ID }}
+          path: results/spec170-itiger-qwen-live/release-build/
           if-no-files-found: error
           retention-days: 90
