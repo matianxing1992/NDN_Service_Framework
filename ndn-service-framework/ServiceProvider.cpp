@@ -700,11 +700,16 @@ namespace ndn_service_framework
                                     const std::string& keyId,
                                     const std::string& epochId)
         {
+            // Collaboration envelopes use the v2 compact key-id encoding.
+            // Bind the authenticated data to the identifier carried on the
+            // wire; the pre-compression key id would make producer and
+            // consumer derive different AEAD tags after WireDecode().
+            const auto wireKeyId = hybridCompactKeyId(keyId);
             const std::string text =
                 dataName.toUri() + "|COLLAB|" + requestId.toUri() + "|" +
                 message.getKeyScope() + "|" + message.getTopic().toUri() + "|" +
                 message.getProducerRole() + "|" +
-                std::to_string(message.getSequence()) + "|" + keyId + "|" + epochId;
+                std::to_string(message.getSequence()) + "|" + wireKeyId + "|" + epochId;
             return ndn::Buffer(reinterpret_cast<const uint8_t*>(text.data()), text.size());
         }
 
