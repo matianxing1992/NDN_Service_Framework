@@ -12,6 +12,9 @@ authors = [
   {name = "NDNSF Developers"}
 ]
 
+[project.optional-dependencies]
+ndn-python = ["python-ndn>=0.3"]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["ndnsf*"]

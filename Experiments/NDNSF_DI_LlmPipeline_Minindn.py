@@ -1898,13 +1898,17 @@ def main() -> int:
         "NDN_LOG": args.ndn_log,
         "NDNSF_RESPONSE_LARGE_DATA_THRESHOLD": "1024",
     }
-    if args.selection_dataflow_v2 or args.selection_dataflow_v3:
+    if args.selection_dataflow_v2:
         # A collaboration Selection can be larger than one SVS publication
         # path reliably fans out.  The same authenticated, hybrid-encrypted
         # provider-specific Data is therefore also fetched by its exact V2
         # name.  Both producer direct-put and Provider prefetch are guarded by
         # this shared flag; this is transport redundancy, not an authorization
         # bypass or a second collaboration attempt.
+        base_env["NDNSF_SELECTION_TARGETED_PREFETCH"] = "1"
+    elif args.selection_dataflow_v3:
+        # V3 retains the same authenticated targeted-prefetch transport guard;
+        # only the Selection encoding/version differs from V2.
         base_env["NDNSF_SELECTION_TARGETED_PREFETCH"] = "1"
     if os.environ.get("NDNSF_SPEC168_SELECTION_TRACE") == "1":
         base_env["NDN_LOG"] = "ndn_service_framework.*=TRACE"

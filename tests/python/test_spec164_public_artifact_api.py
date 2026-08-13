@@ -253,6 +253,57 @@ class PublicArtifactApiTest(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
+    def test_progress_supports_segment_diagnostics_without_breaking_defaults(self):
+        reference = ArtifactReference(
+            logical_name="/artifact/progress",
+            digest_algorithm="sha256",
+            content_digest="ab" * 32,
+            size_bytes=7600 * 4,
+            format_version="artifact-manifest-v2",
+            root_manifest_name="/artifact/progress/root",
+            publisher_identity="/publisher",
+            policy_epoch="default",
+        )
+        progress = ArtifactProgress(
+            operation_id="fetch-progress",
+            artifact=reference,
+            phase="transfer",
+            received_bytes=7600,
+            verified_bytes=7600,
+            committed_bytes=0,
+            total_bytes=reference.size_bytes,
+            selected_replicas=1,
+            committed_replicas=0,
+            retransmitted_bytes=0,
+            sequence=1,
+            timestamp_ms=1000,
+            last_segment=0,
+            delivered_segments=1,
+            total_segments=4,
+            elapsed_ms=12.5,
+        )
+        self.assertEqual(progress.last_segment, 0)
+        self.assertEqual(progress.delivered_segments, 1)
+        self.assertEqual(progress.total_segments, 4)
+        self.assertAlmostEqual(progress.elapsed_ms, 12.5)
+
+        legacy = ArtifactProgress(
+            operation_id="legacy-progress",
+            artifact=reference,
+            phase="transfer",
+            received_bytes=0,
+            verified_bytes=0,
+            committed_bytes=0,
+            total_bytes=reference.size_bytes,
+            selected_replicas=1,
+            committed_replicas=0,
+            retransmitted_bytes=0,
+            sequence=1,
+            timestamp_ms=1000,
+        )
+        self.assertEqual(legacy.last_segment, -1)
+        self.assertEqual(legacy.total_segments, 0)
+
     def publish(self, **kwargs):
         return self.api.publish_file(
             self.source,

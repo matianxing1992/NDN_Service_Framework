@@ -676,8 +676,21 @@ private:
         cancelAttempt(state);
         state.globalTimer.cancel();
         if (state.measured) {
-            rpcEndTimeMap[state.id] = ndn::time::steady_clock::now();
+            const auto completedAt = ndn::time::steady_clock::now();
+            rpcEndTimeMap[state.id] = completedAt;
             ++successfulCalls;
+            const auto latencyMs = ndn::time::duration_cast<ndn::time::milliseconds>(
+                completedAt - state.startedAt).count();
+            const double publishedMonotonicMs =
+              ndn::time::duration_cast<ndn::time::microseconds>(
+                state.startedAt.time_since_epoch()).count() / 1000.0;
+            std::cout << std::fixed << std::setprecision(3)
+                      << "NSC_REQUEST_RESULT request_id=" << state.id
+                      << " status=SUCCESS latency_ms=" << latencyMs
+                      << " attempts=" << state.nextAttemptOrdinal
+                      << " provider=" << state.currentProvider
+                      << " published_monotonic_ms=" << publishedMonotonicMs
+                      << std::endl;
         }
     }
 
@@ -691,6 +704,18 @@ private:
         state.globalTimer.cancel();
         if (state.measured) {
             ++terminalFailures;
+            const auto latencyMs = ndn::time::duration_cast<ndn::time::milliseconds>(
+                ndn::time::steady_clock::now() - state.startedAt).count();
+            const double publishedMonotonicMs =
+              ndn::time::duration_cast<ndn::time::microseconds>(
+                state.startedAt.time_since_epoch()).count() / 1000.0;
+            std::cout << std::fixed << std::setprecision(3)
+                      << "NSC_REQUEST_RESULT request_id=" << state.id
+                      << " status=FAILURE latency_ms=" << latencyMs
+                      << " attempts=" << state.nextAttemptOrdinal
+                      << " provider=" << state.currentProvider
+                      << " published_monotonic_ms=" << publishedMonotonicMs
+                      << std::endl;
         }
     }
 

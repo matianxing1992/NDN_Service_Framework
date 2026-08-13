@@ -179,20 +179,27 @@ NdnsfIntegrationEnvironment::~NdnsfIntegrationEnvironment() = default;
 void
 NdnsfIntegrationEnvironment::installPermissions()
 {
+  PermissionResponse userPermissions;
+  userPermissions.setTargetIdentity(m_profile.userIdentity.toUri());
+  userPermissions.setPermissionKind(tlv::UserPermission);
+  userPermissions.setPolicyEpoch(1);
   for (size_t index = 0; index < providerCount(); ++index) {
     auto& providerRuntime = provider(index);
     const auto providerName = providerRuntime.getName();
-    m_user->applyPermissionResponse(
-        makePermissionResponse(m_profile.userIdentity,
-                               tlv::UserPermission,
-                               providerName,
-                               m_profile.serviceName));
+    PermissionEntry userEntry;
+    userEntry.setProviderName(providerName.toUri());
+    userEntry.setServiceName(m_profile.serviceName.toUri());
+    userEntry.setToken("");
+    userEntry.setTtl(0);
+    userEntry.setVersion(1);
+    userPermissions.addEntry(userEntry);
     providerRuntime.applyPermissionResponse(
         makePermissionResponse(providerName,
                                tlv::ProviderPermission,
                                providerName,
                                m_profile.serviceName));
   }
+  m_user->applyPermissionResponse(userPermissions);
 }
 
 void

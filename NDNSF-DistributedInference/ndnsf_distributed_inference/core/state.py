@@ -8,6 +8,132 @@ from threading import RLock
 from typing import Any
 
 
+class FailureBoundaryV1(str, Enum):
+    """Primary lifecycle ownership for one classified terminal failure."""
+
+    ENVIRONMENT = "ENVIRONMENT"
+    BOOTSTRAP = "BOOTSTRAP"
+    ROUTING = "ROUTING"
+    ACK = "ACK"
+    PLAN = "PLAN"
+    REPO_PUBLISH = "REPO_PUBLISH"
+    REPO_FETCH = "REPO_FETCH"
+    PREP = "PREP"
+    DEPENDENCY = "DEPENDENCY"
+    EXEC = "EXEC"
+    TOKEN = "TOKEN"
+    RESPONSE = "RESPONSE"
+    CLEANUP = "CLEANUP"
+    ANALYZER = "ANALYZER"
+    UNRESOLVED = "UNRESOLVED"
+
+
+_FAILURE_CODE_BOUNDARIES = {
+    "ENV_": FailureBoundaryV1.ENVIRONMENT,
+    "BOOT_": FailureBoundaryV1.BOOTSTRAP,
+    "ROUTE_": FailureBoundaryV1.ROUTING,
+    "ACK_": FailureBoundaryV1.ACK,
+    "PLAN_": FailureBoundaryV1.PLAN,
+    "REPO_PUBLISH_": FailureBoundaryV1.REPO_PUBLISH,
+    "REPO_FETCH_": FailureBoundaryV1.REPO_FETCH,
+    "PREP_": FailureBoundaryV1.PREP,
+    "DEPENDENCY_": FailureBoundaryV1.DEPENDENCY,
+    "EXEC_": FailureBoundaryV1.EXEC,
+    "TOKEN_": FailureBoundaryV1.TOKEN,
+    "RESPONSE_": FailureBoundaryV1.RESPONSE,
+    "CLEANUP_": FailureBoundaryV1.CLEANUP,
+    "ANALYZER_": FailureBoundaryV1.ANALYZER,
+}
+
+
+def failure_boundary_for_code(code: str) -> FailureBoundaryV1:
+    """Map one exact failure code to its primary lifecycle boundary."""
+
+    value = str(code or "")
+    if value == "UNRESOLVED_EVIDENCE_GAP":
+        return FailureBoundaryV1.UNRESOLVED
+    for prefix, boundary in _FAILURE_CODE_BOUNDARIES.items():
+        if value.startswith(prefix) and len(value) > len(prefix):
+            return boundary
+    raise ValueError("failure code does not identify an exact lifecycle boundary")
+
+
+@dataclass(frozen=True)
+class FailureRecordV1:
+    """Durable primary-boundary failure record with a causal checkpoint."""
+
+    request_id: str
+    attempt_epoch: int
+    component: str
+    failure_code: str
+    last_checkpoint: str
+    terminal_reason: str
+    boundary: FailureBoundaryV1 | str | None = None
+    provider: str = ""
+    role: str = ""
+    operation_id: str = ""
+    artifact_range: str = ""
+    evidence_paths: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.request_id or self.attempt_epoch <= 0 or not self.component:
+            raise ValueError("failure record identity is incomplete")
+        if not self.last_checkpoint or not self.terminal_reason:
+            raise ValueError("failure record requires last checkpoint and reason")
+        inferred = failure_boundary_for_code(self.failure_code)
+        boundary = inferred if self.boundary is None else FailureBoundaryV1(
+            self.boundary)
+        if boundary is not inferred:
+            raise ValueError("failure code and primary boundary disagree")
+        object.__setattr__(self, "boundary", boundary)
+        paths = tuple(str(path) for path in self.evidence_paths)
+        if any(not path for path in paths):
+            raise ValueError("failure evidence paths must be non-empty")
+        object.__setattr__(self, "evidence_paths", paths)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema": "ndnsf-di.failure-record.v1",
+            "requestId": self.request_id,
+            "attemptEpoch": self.attempt_epoch,
+            "component": self.component,
+            "boundary": self.boundary.value,
+            "failureCode": self.failure_code,
+            "provider": self.provider,
+            "role": self.role,
+            "operationId": self.operation_id,
+            "artifactRange": self.artifact_range,
+            "lastCheckpoint": self.last_checkpoint,
+            "terminalReason": self.terminal_reason,
+            "evidencePaths": list(self.evidence_paths),
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "FailureRecordV1":
+        expected = {
+            "schema", "requestId", "attemptEpoch", "component", "boundary",
+            "failureCode", "provider", "role", "operationId", "artifactRange",
+            "lastCheckpoint", "terminalReason", "evidencePaths",
+        }
+        if set(payload) != expected or payload.get("schema") != (
+                "ndnsf-di.failure-record.v1"):
+            raise ValueError("failure record schema mismatch")
+        return cls(
+            request_id=str(payload["requestId"]),
+            attempt_epoch=int(payload["attemptEpoch"]),
+            component=str(payload["component"]),
+            failure_code=str(payload["failureCode"]),
+            last_checkpoint=str(payload["lastCheckpoint"]),
+            terminal_reason=str(payload["terminalReason"]),
+            boundary=str(payload["boundary"]),
+            provider=str(payload["provider"]),
+            role=str(payload["role"]),
+            operation_id=str(payload["operationId"]),
+            artifact_range=str(payload["artifactRange"]),
+            evidence_paths=tuple(str(path) for path in payload["evidencePaths"]),
+        )
+
+
 class TerminalReasonV1(str, Enum):
     NONE = "NONE"
     PROVIDER_LOST = "PROVIDER_LOST"

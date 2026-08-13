@@ -163,6 +163,7 @@ from .service import (
     SegmentedObjectProducer,
     ServiceController,
     ServiceProvider,
+    ProviderSigningMetadata,
     ServiceResponse,
     ServiceUser,
     StoredDataProducer,
@@ -175,6 +176,8 @@ from .service import (
     fetch_segmented_data_packets,
     fetch_exact_data_packet,
     make_segmented_data_packets,
+    make_signed_data,
+    make_predictive_data_name,
     parse_large_data_reference_payload,
 )
 from .progress_deadline import (
@@ -294,6 +297,7 @@ __all__ = [
     "ServiceOperationState",
     "ServiceOperationStatus",
     "ServiceProvider",
+    "ProviderSigningMetadata",
     "ServiceResponse",
     "ServiceUser",
     "StoredDataProducer",
@@ -360,6 +364,8 @@ __all__ = [
     "fetch_exact_data_packet",
     "is_recommended_rejection_reason",
     "make_segmented_data_packets",
+    "make_signed_data",
+    "make_predictive_data_name",
     "normalize_drain_state",
     "parse_large_data_reference_payload",
     "provider_ready_for_new_request",

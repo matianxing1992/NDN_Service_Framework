@@ -2,6 +2,8 @@
 #include "utils.hpp"
 
 #include <iomanip>
+#include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <sstream>
 #include <stdexcept>
@@ -35,7 +37,32 @@ hexEncode(ndn::span<const uint8_t> bytes)
     return os.str();
 }
 
+bool
+isCompactHexKeyId(const std::string& value)
+{
+    if (value.size() != 16) {
+        return false;
+    }
+    return std::all_of(value.begin(), value.end(), [] (unsigned char c) {
+        return std::isxdigit(c) != 0;
+    });
+}
+
 } // namespace
+
+std::string
+hybridCompactKeyId(const std::string& keyId)
+{
+    if (isCompactHexKeyId(keyId)) {
+        std::string normalized = keyId;
+        std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                       [] (unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return normalized;
+    }
+    uint8_t digest[SHA256_DIGEST_LENGTH];
+    SHA256(reinterpret_cast<const uint8_t*>(keyId.data()), keyId.size(), digest);
+    return hexEncode(ndn::span<const uint8_t>(digest, 8));
+}
 
 std::string
 HybridMessageCrypto::makeScope(const ndn::Name& serviceName,
@@ -111,7 +138,8 @@ HybridMessageCrypto::cacheReceiveKey(const std::string& keyId,
                                      const ndn::Buffer& key)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
-    m_receiveKeys[keyId] = CachedKey{epochId, key, std::chrono::steady_clock::now(), 0};
+    m_receiveKeys[hybridCompactKeyId(keyId)] =
+        CachedKey{epochId, key, std::chrono::steady_clock::now(), 0};
 }
 
 bool
@@ -120,7 +148,7 @@ HybridMessageCrypto::findReceiveKey(const std::string& keyId,
                                     HybridCryptoCounters& counters)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
-    auto it = m_receiveKeys.find(keyId);
+    auto it = m_receiveKeys.find(hybridCompactKeyId(keyId));
     if (it == m_receiveKeys.end()) {
         ++counters.key_cache_miss_count;
         return false;
@@ -187,6 +215,18 @@ makeHybridMessageKeyName(const ndn::Name& serviceName,
     name.append("ATTRIBUTE");
     name.append(ndn::Name(accessAttribute));
     name.append(epochId);
+    return name;
+}
+
+ndn::Name
+makeHybridMessageKeyDataName(const ndn::Name& serviceName,
+                             const ndn::Name& senderPrefix,
+                             const std::string& accessAttribute,
+                             const std::string& epochId)
+{
+    auto name = senderPrefix;
+    name.append(makeHybridMessageKeyName(serviceName, senderPrefix,
+                                         accessAttribute, epochId));
     return name;
 }
 
@@ -340,7 +380,7 @@ hybridAssociatedData(const ndn::Name& messageName,
 {
     const std::string text = messageName.toUri() + "|" + messageType + "|" +
                              requestId.toUri() + "|" + serviceName.toUri() + "|" +
-                             senderPrefix.toUri() + "|" + keyId + "|" + epochId;
+                             senderPrefix.toUri() + "|" + hybridCompactKeyId(keyId) + "|" + epochId;
     return ndn::Buffer(reinterpret_cast<const uint8_t*>(text.data()), text.size());
 }
 
@@ -361,7 +401,7 @@ secureStatusAssociatedData(const ndn::Name& dataName,
     const std::string text = dataName.toUri() + "|SECURE-SELECTION-STATUS|" +
       std::to_string(version) + "|" + statusHandle + "|" +
       requesterIdentity.toUri() + "|" + providerIdentity.toUri() + "|" +
-      std::to_string(attempt) + "|" + keyId + "|" + epochId;
+      std::to_string(attempt) + "|" + hybridCompactKeyId(keyId) + "|" + epochId;
     return ndn::Buffer(reinterpret_cast<const uint8_t*>(text.data()), text.size());
 }
 

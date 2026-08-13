@@ -82,7 +82,8 @@ from .runtime_contracts import (
     classify_execution_evidence, evaluate_plan_feasibility,
 )
 from .state import (
-    BoundStateStore, ExecutionAttemptV1, StateBinding, TerminalReasonV1,
+    BoundStateStore, ExecutionAttemptV1, FailureBoundaryV1, FailureRecordV1,
+    StateBinding, TerminalReasonV1, failure_boundary_for_code,
 )
 from .conflict_coordination import (
     CAPABILITY as CONFLICT_ADMISSION_CAPABILITY,

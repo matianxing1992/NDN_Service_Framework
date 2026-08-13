@@ -29,6 +29,7 @@ class ProgressObservation:
     total_work: Optional[int]
     authenticated: bool
     observed_at: Optional[float] = None
+    checkpoint: str = ""
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,7 @@ class ProgressDecision:
     reason: str
     idle_deadline: float
     hard_deadline: float
+    last_checkpoint: str = ""
 
 
 class DeadlineMonitor:
@@ -78,6 +80,7 @@ class DeadlineMonitor:
         self._last_phase: Optional[str] = None
         self._last_completed = -1
         self._last_total: Optional[int] = None
+        self._last_checkpoint = ""
 
     def _now(self, observation: Optional[ProgressObservation] = None) -> float:
         if observation is not None and observation.observed_at is not None:
@@ -121,6 +124,7 @@ class DeadlineMonitor:
             reason=reason,
             idle_deadline=self.idle_deadline,
             hard_deadline=self.hard_deadline,
+            last_checkpoint=self._last_checkpoint,
         )
 
     def admit(self, observation: ProgressObservation) -> ProgressDecision:
@@ -186,6 +190,8 @@ class DeadlineMonitor:
         self._last_phase = observation.phase
         self._last_completed = observation.completed_work
         self._last_total = observation.total_work
+        if observation.checkpoint:
+            self._last_checkpoint = str(observation.checkpoint)
         self.last_admitted_progress_at = now
         self.idle_deadline = min(now + self.idle_budget, self.hard_deadline)
         return ProgressDecision(
@@ -194,4 +200,24 @@ class DeadlineMonitor:
             reason="advanced",
             idle_deadline=self.idle_deadline,
             hard_deadline=self.hard_deadline,
+            last_checkpoint=self._last_checkpoint,
         )
+
+    @property
+    def last_checkpoint(self) -> str:
+        return self._last_checkpoint
+
+    def terminal_evidence(self) -> dict[str, object]:
+        """Return bounded operator evidence for a terminal deadline outcome."""
+
+        return {
+            "requestId": self.request_id,
+            "operationId": self.operation_id,
+            "provider": self.provider,
+            "role": self.role,
+            "attempt": self.attempt,
+            "terminal": self.terminal.value if self.terminal else "",
+            "lastCheckpoint": self._last_checkpoint,
+            "lastProgressAt": self.last_admitted_progress_at,
+            "terminalAt": self.terminal_at,
+        }

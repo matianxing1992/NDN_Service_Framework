@@ -93,6 +93,65 @@ class Qwen36StageContractTest(unittest.TestCase):
             for requirement in candidate.requirements_by_role.values()
         ))
 
+    def test_qwen3_small_manifest_builds_its_own_28_layer_graph(self) -> None:
+        from ndnsf_distributed_inference.adapters.qwen import (
+            QWEN36_STAGE_ROLES,
+            build_qwen_three_stage_adapter,
+            build_qwen36_27b_three_stage_adapter,
+        )
+
+        artifact_digests = {
+            role: "sha256:" + str(index + 4) * 64
+            for index, role in enumerate(QWEN36_STAGE_ROLES)
+        }
+        weight_bytes = {
+            role: (index + 1) * 1000
+            for index, role in enumerate(QWEN36_STAGE_ROLES)
+        }
+        adapter = build_qwen_three_stage_adapter(
+            model_name="Qwen/Qwen3-0.6B",
+            revision="e6de91484c29aa9480d55605af694f39b081c455",
+            layer_ranges=((0, 9), (9, 18), (18, 28)),
+            artifact_digests_by_role=artifact_digests,
+            weight_bytes_by_role=weight_bytes,
+        )
+        model = adapter.describe_model(
+            "Qwen/Qwen3-0.6B",
+            "sha256:" + "a" * 64,
+            "sha256:" + "b" * 64,
+            source_revision="e6de91484c29aa9480d55605af694f39b081c455",
+        )
+        graph = adapter.graph.inspect(model)
+        candidate = adapter.splitter.enumerate_candidates(model, graph)[0]
+
+        self.assertEqual(len(graph.nodes), 30)
+        self.assertNotIn("layer-28", candidate.execution_plan.node_roles)
+        self.assertEqual(
+            candidate.cross_partition_tensors,
+            ("hidden-layer-8-to-9", "hidden-layer-17-to-18"),
+        )
+        self.assertEqual(
+            candidate.execution_plan.node_roles["layer-27"],
+            QWEN36_STAGE_ROLES[2],
+        )
+
+        large_adapter = build_qwen36_27b_three_stage_adapter(
+            artifact_digests_by_role=artifact_digests,
+            weight_bytes_by_role=weight_bytes,
+        )
+        large_model = large_adapter.describe_model(
+            "Qwen/Qwen3.6-27B",
+            model.content_digest,
+            model.semantics_digest,
+            source_revision="6a9e13bd6fc8f0983b9b99948120bc37f49c13e9",
+        )
+        large_graph = large_adapter.graph.inspect(large_model)
+        large_candidate = large_adapter.splitter.enumerate_candidates(
+            large_model, large_graph)[0]
+        self.assertNotEqual(graph.graph_digest, large_graph.graph_digest)
+        self.assertNotEqual(
+            candidate.candidate_digest, large_candidate.candidate_digest)
+
     def test_nested_qwen35_text_config_is_normalized(self) -> None:
         model_type, config = self.pipeline._normalize_qwen_stage_config({
             "model_type": "qwen3_5",
@@ -276,7 +335,7 @@ class Qwen36StageContractTest(unittest.TestCase):
         self.assertEqual(loaded.ndnsf_stage_start, 0)
         self.assertEqual(next(loaded.parameters()).dtype, torch.bfloat16)
         self.assertEqual(loaded.ndnsf_stage_end, 1)
-        self.assertTrue(loaded.ndnsf_cpu_fallback)
+        self.assertFalse(loaded.ndnsf_cpu_fallback)
 
     def test_qwen35_positions_follow_four_plane_contract(self) -> None:
         input_ids = torch.tensor([[1, 2, 3], [4, 5, 6]])

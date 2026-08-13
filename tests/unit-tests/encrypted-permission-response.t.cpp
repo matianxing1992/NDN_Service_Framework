@@ -8,6 +8,11 @@
 
 #include <ndn-cxx/security/key-chain.hpp>
 #include <ndn-cxx/security/key-params.hpp>
+#include <ndn-cxx/util/io.hpp>
+
+#include <filesystem>
+#include <fstream>
+#include <chrono>
 
 namespace ndn_service_framework::test {
 namespace {
@@ -218,6 +223,20 @@ protected:
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(EncryptedPermissionResponse)
+
+BOOST_FIXTURE_TEST_CASE(RsaPermissionRecipientIsSelectedWhenEcdsaIsDefault,
+                        EncryptedPermissionResponseFixture)
+{
+  auto identity = controllerKeyChain.getPib().getIdentity(controllerIdentity);
+  auto ecdsaKey = controllerKeyChain.createKey(identity, ndn::EcKeyParams());
+  controllerKeyChain.setDefaultKey(identity, ecdsaKey);
+  auto ecdsaCert = ecdsaKey.getDefaultCertificate();
+
+  auto rsaCert = getRsaEncryptionCertificateOrThrow(controllerKeyChain, ecdsaCert);
+  BOOST_CHECK_EQUAL(rsaCert.getIdentity(), controllerIdentity);
+  BOOST_CHECK_EQUAL(getCertificateKeyType(rsaCert), ndn::KeyType::RSA);
+  BOOST_CHECK_NE(rsaCert.getName(), ecdsaCert.getName());
+}
 
 BOOST_FIXTURE_TEST_CASE(PermissionResponseWireEncodeDecode, EncryptedPermissionResponseFixture)
 {
@@ -633,6 +652,7 @@ BOOST_FIXTURE_TEST_CASE(PermissionResponseValidationRejectsUnsupportedSignatureA
     });
   BOOST_CHECK(signerMismatchRejected);
   BOOST_CHECK(permissionTable.snapshot().empty());
+  BOOST_TEST_MESSAGE("NDNSF_AUTH_CASE case_id=signer_name_mismatch terminal=deny observed_executions=0 gate=signature_trust");
 }
 
 BOOST_FIXTURE_TEST_CASE(MessageValidatorFailureCallbackIsExplicit,
@@ -706,6 +726,156 @@ BOOST_AUTO_TEST_CASE(MessageValidatorAcceptsBoundV3StateVectorName)
   BOOST_CHECK_EQUAL(validator.getLocalCertificateCacheSizeForTesting(), 1);
 }
 
+BOOST_AUTO_TEST_CASE(MessageValidatorAsyncNetworkCallbacksOwnTheirState)
+{
+  ndn::KeyChain signerKeyChain("pib-memory:async-validator-signer",
+                                "tpm-memory:async-validator-signer");
+  const ndn::Name rootIdentity("/async-validator");
+  const ndn::Name controllerIdentity("/async-validator/controller");
+  const ndn::Name signerIdentity("/async-validator/provider");
+  const auto root = signerKeyChain.createIdentity(
+    rootIdentity, ndn::RsaKeyParams(2048));
+  const auto controller = signerKeyChain.createIdentity(
+    controllerIdentity, ndn::RsaKeyParams(2048));
+  const auto signer = signerKeyChain.createIdentity(
+    signerIdentity, ndn::RsaKeyParams(2048));
+  const auto rootCert = root.getDefaultKey().getDefaultCertificate();
+  const auto controllerCert = signerKeyChain.makeCertificate(
+    controller.getDefaultKey(), ndn::security::signingByCertificate(rootCert));
+  signerKeyChain.addCertificate(controller.getDefaultKey(), controllerCert);
+  signerKeyChain.setDefaultCertificate(controller.getDefaultKey(), controllerCert);
+  const auto signerCert = signerKeyChain.makeCertificate(
+    signer.getDefaultKey(), ndn::security::signingByCertificate(controllerCert));
+  signerKeyChain.addCertificate(signer.getDefaultKey(), signerCert);
+  signerKeyChain.setDefaultCertificate(signer.getDefaultKey(), signerCert);
+
+  const auto nonce = std::to_string(
+    ndn::time::system_clock::now().time_since_epoch().count());
+  const auto rootPath = std::filesystem::temp_directory_path() /
+                        ("ndnsf-validator-root-" + nonce + ".cert");
+  const auto schemaPath = std::filesystem::temp_directory_path() /
+                          ("ndnsf-validator-schema-" + nonce + ".conf");
+  ndn::io::save(rootCert, rootPath.string());
+  {
+    std::ofstream schema(schemaPath);
+    schema << R"SCHEMA(
+rule
+{
+  id "Async validator certificates"
+  for data
+  filter { type name regex ^<>+<KEY><><><>$ }
+  checker
+  {
+    type customized
+    sig-type rsa-sha256
+    key-locator
+    {
+      type name
+      regex "^<async-validator><controller><KEY><>{1,3}$"
+    }
+  }
+  checker { type hierarchical sig-type rsa-sha256 }
+}
+rule
+{
+  id "Async validator application data"
+  for data
+  filter { type name regex ^<async-validator><provider><>*$ }
+  checker
+  {
+    type customized
+    sig-type rsa-sha256
+    key-locator
+    {
+      type name
+      regex "^<async-validator><provider><KEY><>{1,3}$"
+    }
+  }
+}
+trust-anchor
+{
+  type file
+  file-name ")SCHEMA" << rootPath.string() << R"SCHEMA("
+}
+)SCHEMA";
+  }
+
+  ndn::Data data(ndn::Name(signerIdentity).append("publication"));
+  data.setContent("async-certificate-fetch");
+  signerKeyChain.sign(data, ndn::security::signingByCertificate(signerCert));
+
+  ndn::KeyChain faceKeyChain("pib-memory:async-validator-face",
+                              "tpm-memory:async-validator-face");
+  ndn::DummyClientFace face(faceKeyChain);
+  auto validator = std::make_shared<MessageValidator>(
+    schemaPath.string(), std::nullopt, &face);
+
+  constexpr int nConcurrentValidations = 16;
+  std::atomic<int> successCount{0};
+  std::atomic<int> failureCount{0};
+  std::atomic<int> replacedSuccessCount{0};
+  std::atomic<int> replacedFailureCount{0};
+  ndn::security::DataValidationSuccessCallback success =
+    [&] (const ndn::Data& validated) {
+      BOOST_CHECK_EQUAL(validated.getName(), data.getName());
+      successCount.fetch_add(1);
+    };
+  ndn::security::DataValidationFailureCallback failure =
+    [&] (const ndn::Data&, const ndn::security::ValidationError&) {
+      failureCount.fetch_add(1);
+    };
+  std::atomic<int> callersReady{0};
+  std::atomic<bool> releaseCallers{false};
+  std::vector<std::thread> validationCallers;
+  for (int i = 0; i < nConcurrentValidations; ++i) {
+    validationCallers.emplace_back([&] {
+      callersReady.fetch_add(1);
+      while (!releaseCallers.load()) {
+        std::this_thread::yield();
+      }
+      validator->validate(data, success, failure);
+    });
+  }
+  while (callersReady.load() != nConcurrentValidations) {
+    std::this_thread::yield();
+  }
+  releaseCallers.store(true);
+  for (auto& caller : validationCallers) {
+    caller.join();
+  }
+  success = [&] (const ndn::Data&) { replacedSuccessCount.fetch_add(1); };
+  failure = [&] (const ndn::Data&, const ndn::security::ValidationError&) {
+    replacedFailureCount.fetch_add(1);
+  };
+
+  // Network-backed ValidatorConfig state belongs to the Face io_context.
+  // A caller on an SVS worker thread must enqueue the validation instead of
+  // touching the Face/Validator directly from that worker.
+  BOOST_CHECK(face.sentInterests.empty());
+
+  for (int attempt = 0; attempt < 50 && face.sentInterests.empty(); ++attempt) {
+    face.processEvents(ndn::time::milliseconds(2));
+  }
+  BOOST_REQUIRE(!face.sentInterests.empty());
+  // Each queued validation may express its certificate Interest after an
+  // earlier one has already consumed a response. Re-offer both immutable
+  // certificates while pumping the deterministic dummy Face.
+  for (int attempt = 0; attempt < 200 &&
+       successCount.load() + failureCount.load() < nConcurrentValidations;
+       ++attempt) {
+    face.receive(signerCert);
+    face.receive(controllerCert);
+    face.processEvents(ndn::time::milliseconds(2));
+  }
+
+  BOOST_CHECK_EQUAL(successCount.load(), nConcurrentValidations);
+  BOOST_CHECK_EQUAL(failureCount.load(), 0);
+  BOOST_CHECK_EQUAL(replacedSuccessCount.load(), 0);
+  BOOST_CHECK_EQUAL(replacedFailureCount.load(), 0);
+  std::filesystem::remove(schemaPath);
+  std::filesystem::remove(rootPath);
+}
+
 BOOST_FIXTURE_TEST_CASE(ValidatorFailureCallbacksAreExactlyOnceAndLeaveNoState,
                         EncryptedPermissionResponseFixture)
 {
@@ -745,6 +915,50 @@ BOOST_FIXTURE_TEST_CASE(ValidatorFailureCallbacksAreExactlyOnceAndLeaveNoState,
   }
 
   BOOST_CHECK_EQUAL(validator.getFailureCountForTesting(), 20);
+}
+
+BOOST_FIXTURE_TEST_CASE(PermissionProvisioningScaleEmitsRegisteredCostEvidence,
+                        EncryptedPermissionResponseFixture)
+{
+  const std::vector<size_t> userCounts{1, 10, 100};
+  const std::vector<size_t> providerCounts{1, 4, 16};
+  for (const auto userCount : userCounts) {
+    for (const auto providerCount : providerCounts) {
+      PermissionResponse response;
+      response.setTargetIdentity(userIdentity.toUri());
+      response.setPermissionKind(tlv::UserPermission);
+      response.setPolicyEpoch(1);
+      for (size_t provider = 0; provider < providerCount; ++provider) {
+        response.addEntry(makeEntry(
+          "/test/provider/" + std::to_string(provider),
+          "/ObjectDetection/YOLOv8",
+          ""));
+      }
+
+      size_t encryptedBytes = 0;
+      const auto started = std::chrono::steady_clock::now();
+      for (size_t user = 0; user < userCount; ++user) {
+        auto encrypted = encryptPermissionResponseForCertificate(response, userCert);
+        if (user == 0) {
+          encryptedBytes = encrypted.WireEncode().size();
+        }
+        auto decrypted = decryptPermissionResponseWithKeyChain(encrypted, userKeyChain);
+        BOOST_REQUIRE_EQUAL(decrypted.getEntries().size(), providerCount);
+      }
+      const auto totalUs = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - started).count();
+      const auto responseBytes = response.WireEncode().size();
+      BOOST_TEST_MESSAGE(
+        "NDNSF_AUTH_SCALE users=" << userCount
+        << " providers=" << providerCount
+        << " policy_terms=" << providerCount
+        << " encryptions=" << userCount
+        << " decryptions=" << userCount
+        << " response_bytes=" << responseBytes
+        << " encrypted_bytes=" << encryptedBytes
+        << " total_us=" << totalUs);
+    }
+  }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

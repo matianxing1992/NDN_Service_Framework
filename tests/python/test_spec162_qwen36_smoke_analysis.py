@@ -26,6 +26,19 @@ def load_module():
 
 
 class Qwen36SmokeAnalysisTest(unittest.TestCase):
+    def test_marker_parser_handles_interleaved_key_boundaries(self) -> None:
+        module = load_module()
+        rows = module.marker_fields(
+            "prefix LLM_PIPELINE_QWEN_SELECTION_PREPARE "
+            "requestId=/submission-token-5reason=DI_SELECTION_DATAFLOW_V2_READY "
+            "cacheHit=true diskCacheHit=true fetch_ms=0.00",
+            "LLM_PIPELINE_QWEN_SELECTION_PREPARE",
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["requestId"], "/submission-token-5")
+        self.assertEqual(rows[0]["reason"], "DI_SELECTION_DATAFLOW_V2_READY")
+        self.assertEqual(rows[0]["cacheHit"], "true")
+
     def test_repo_cold_then_gpu_warm_requests_are_proven(self) -> None:
         module = load_module()
         with tempfile.TemporaryDirectory() as directory:
@@ -41,6 +54,7 @@ class Qwen36SmokeAnalysisTest(unittest.TestCase):
                 "stopReason": "EOS",
                 "exactReferenceMatch": True,
                 "promptId": "prompt-0",
+                "generationId": "generation-0",
                 "decodedText": "answer",
                 "generatedTokenIds": [7, 8],
                 "tokenSteps": [
@@ -64,7 +78,35 @@ class Qwen36SmokeAnalysisTest(unittest.TestCase):
                 f"requestId={request_id} "
                 '{"ack_collect_ms":1.0,"selection_commit_ms":2.0}\n'
                 for request_id in request_ids
+            ) + (
+                "SPEC162_REQUEST_GATE_OPEN "
+                "requestId=smoke-submission epochMs=1000 mode=REQUEST_FIRST\n"
+                "NDNSF_DI_AUTOPLANNING_REQUEST_SENT "
+                "requestId=/smoke-token-0 mode=DEFERRED\n"
+                "NDNSF_DI_AUTOPLANNING_ACK_CLOSED "
+                "requestId=/smoke-token-0 ackCount=3\n"
+                "NDNSF_DI_AUTOPLANNING_GRAPH_READY "
+                "requestId=/smoke-token-0 after=ACK_CLOSED\n"
+                "LLM_PIPELINE_QWEN_DEFERRED_SPLIT "
+                "requestId=/smoke-token-0\n"
+                "LLM_PIPELINE_QWEN_DEFERRED_REPO_PUBLISH_START "
+                "requestId=/smoke-token-0\n"
+                "LLM_PIPELINE_QWEN_DEFERRED_REPO_PUBLISH_DONE "
+                "requestId=/smoke-token-0\n"
+                "NDNSF_DI_AUTOPLANNING_ARTIFACTS_READY "
+                "requestId=/smoke-token-0\n"
+                "NDNSF_DI_AUTOPLANNING_SELECTION_COMMITTED "
+                "requestId=/smoke-token-0\n"
+                "LLM_PIPELINE_GENERATION_FINAL_RESPONSE "
+                "generationId=generation-0 status=OK tokenCount=2 "
+                "responseSha256=0db52f4076c082518412afd3dd3576e2cb0c63703fd7fed5e23ade60efef31d9\n"
             ), encoding="utf-8")
+            (root / "automatic-planning.json").write_text(json.dumps({
+                "preSplitCatalog": {
+                    "publicationState":
+                    "REQUIRES_DISTRIBUTED_REPO_REGISTRATION",
+                },
+            }), encoding="utf-8")
 
             for rank in range(3):
                 lines = ["LLM_PIPELINE_PROVIDER_READY\n"]
@@ -94,7 +136,7 @@ class Qwen36SmokeAnalysisTest(unittest.TestCase):
                     )
                     lines.append(
                         "LLM_PIPELINE_QWEN_SELECTION_PREPARE "
-                        f"requestId={request_id} "
+                        f"requestId={'/' + request_id} "
                         f"role=/LLM/Pipeline/Stage/{rank} "
                         f"cacheHit={'false' if index == 0 else 'true'} "
                         f"diskCacheHit={'false' if index == 0 else 'true'} "
@@ -102,6 +144,42 @@ class Qwen36SmokeAnalysisTest(unittest.TestCase):
                         f"load_ms={'100.0' if index == 0 else '0.0'} "
                         "device=cuda:0 cpuFallback=false\n"
                     )
+                    lines.append(
+                        "LLM_PIPELINE_QWEN_STAGE_EXECUTION_READY "
+                        f"requestId={request_id} role=/LLM/Pipeline/Stage/{rank}\n"
+                    )
+                    if rank > 0:
+                        lines.extend([
+                            "LLM_PIPELINE_QWEN_STAGE_DEPENDENCY_WAIT "
+                            f"requestId={request_id}\n",
+                            "LLM_PIPELINE_QWEN_STAGE_DEPENDENCY_READY "
+                            f"requestId={request_id}\n",
+                        ])
+                    if index == 0:
+                        lines.extend([
+                            "LLM_PIPELINE_QWEN_REPO_FETCH_PROGRESS "
+                            f"requestId=/{request_id} sequence=1 "
+                            "receivedBytes=100 verifiedBytes=100 totalBytes=100 "
+                            "lastSegment=0 deliveredSegments=1 totalSegments=1 "
+                            "retransmittedBytes=0 elapsedMs=1.0\n",
+                            "LLM_PIPELINE_QWEN_REPO_FETCH_COMPLETE "
+                            f"requestId=/{request_id} role=/LLM/Pipeline/Stage/{rank} "
+                            "bytes=100 deliveredSegments=1 totalSegments=1\n",
+                            "LLM_PIPELINE_QWEN_REPO_FETCH "
+                            f"requestId=/{request_id} objectName=/artifact/{rank} "
+                            "bytes=100 deliveredSegments=1 totalSegments=1 "
+                            "lastSegment=0\n",
+                        ])
+                    if rank < 2:
+                        lines.append(
+                            "LLM_PIPELINE_QWEN_STAGE_OUTPUT "
+                            f"requestId={request_id}\n"
+                        )
+                    else:
+                        lines.append(
+                            "LLM_PIPELINE_QWEN_FINAL_RESPONSE_PUBLISHED "
+                            f"requestId={request_id}\n"
+                        )
                     lines.append(
                         "NDNSF_DI_SELECTION_RESERVATION_RELEASED "
                         f"requestId={request_id} attempt=1 "
@@ -116,6 +194,8 @@ class Qwen36SmokeAnalysisTest(unittest.TestCase):
                             "validated_segments=1 received_wire_bytes=192\n"
                         )
                 (root / f"node-{rank}/provider-{rank}.log").write_text(
+                    "".join(lines), encoding="utf-8")
+                (root / f"node-{rank}/provider-markers-{rank}.log").write_text(
                     "".join(lines), encoding="utf-8")
 
             output = root / "analysis.json"
@@ -140,14 +220,14 @@ class Qwen36SmokeAnalysisTest(unittest.TestCase):
                     item["releaseBeforeNextAckCount"]
                     for item in result["ackReleaseOrderingByRank"]
                 ],
-                [1, 1, 1],
+                [None, None, None],
             )
             self.assertEqual(
                 result["timingSemantics"]["requestUnit"].split(";", 1)[0],
                 "one token-level NDNSF collaboration",
             )
 
-    def test_next_ack_before_release_is_rejected(self) -> None:
+    def test_overlapping_ack_before_release_is_allowed(self) -> None:
         module = load_module()
         text = "\n".join([
             "NDNSF_DI_ACK_DECISION requestId=r0 attempt=1 status=true "
@@ -159,10 +239,9 @@ class Qwen36SmokeAnalysisTest(unittest.TestCase):
             "NDNSF_DI_SELECTION_RESERVATION_RELEASED "
             "requestId=r1 attempt=1 role=/stage/0 reason=done",
         ])
-        with self.assertRaisesRegex(
-            RuntimeError, "admitted r1 before releasing r0"
-        ):
-            module.ack_release_order(text, ["r0", "r1"], rank=0)
+        result = module.ack_release_order(text, ["r0", "r1"], rank=0)
+        self.assertEqual(result["ackTrueCount"], 2)
+        self.assertIsNone(result["releaseBeforeNextAckCount"])
 
 
 if __name__ == "__main__":

@@ -389,10 +389,15 @@ class ThreeProviderFailoverClient:
         *,
         measured: bool = True,
     ) -> RequestOutcome:
+        request_started = time.monotonic()
+        print(
+            f"GRPC_REQUEST_PUBLISHED request_id={logical_request_id} "
+            f"monotonic_s={request_started:.9f}",
+            flush=True,
+        )
         if getattr(self, "parallel", False):
             return await self.execute_request_parallel(
                 logical_request_id, metrics, measured=measured)
-        request_started = time.monotonic()
         request_deadline = request_started + self.global_deadline_s
         base_order = rotated(self.endpoints, logical_request_id)
         now = time.monotonic()

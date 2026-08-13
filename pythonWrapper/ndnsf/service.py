@@ -103,6 +103,15 @@ class ServiceResponse:
 
 
 @dataclass(frozen=True)
+class ProviderSigningMetadata:
+    """Public Provider signing names; no private key material is exposed."""
+
+    provider_identity: str
+    signing_key_name: str
+    signing_certificate_name: str
+
+
+@dataclass(frozen=True)
 class AckDecision:
     status: bool = True
     payload: bytes = b""
@@ -463,6 +472,35 @@ def make_segmented_data_packets(
     ]
 
 
+def make_signed_data(
+    name: str,
+    content: bytes,
+    *,
+    signing_identity: str = "",
+    freshness_ms: int = 300,
+) -> bytes:
+    """Make a signed exact-name Data packet for tests and convenience only.
+
+    Production stream applications should sign with their own NDN keychain
+    (for example ``python-ndn``) and pass that exact wire to
+    :meth:`StreamPublisher.push`. This helper creates or uses an ndn-cxx
+    identity in the process keychain and is not the Provider-bound production
+    signing path.
+    """
+
+    return bytes(_ndnsf.make_signed_data(
+        str(name), bytes(content), str(signing_identity), int(freshness_ms)))
+
+
+def make_predictive_data_name(
+    mapping_root: str, mapping_version: int, sequence: int
+) -> str:
+    """Return the canonical predictive source Data name URI."""
+
+    return str(_ndnsf.make_predictive_data_name(
+        str(mapping_root), int(mapping_version), int(sequence)))
+
+
 def fetch_segmented_data_packets(
     base_name: str,
     *,
@@ -763,6 +801,15 @@ class CollaborationContext:
     def fail(self, reason: str) -> None:
         self._native.fail(reason)
 
+    def allow_data(self, key_scope: str, topic_prefix: str) -> None:
+        """Allow one request-scoped collaboration binding before decryption.
+
+        Providers receive a broad SVS collaboration subscription.  Registering
+        the local role's scope/topic bindings lets the native layer discard
+        other roles' ciphertext before trying authentication with a local key.
+        """
+        self._native.allow_data(key_scope, topic_prefix)
+
     def publish(self, key_scope: str, topic: str, payload: bytes) -> None:
         self._native.publish(key_scope, topic, bytes(payload))
 
@@ -848,6 +895,9 @@ class CollaborationContext:
                 freshness_ms=freshness_ms,
             )
         )
+        if not data_name:
+            raise RuntimeError(
+                "large collaboration object publication returned no Data name")
         effective_digest = digest or ("sha256:" + hashlib.sha256(payload_bytes).hexdigest())
         reference = encode_large_data_reference_payload(LargeDataReference(
             data_name=data_name,
@@ -1001,6 +1051,35 @@ def _to_native_ack(decision: AckDecision) -> _ndnsf.AckDecision:
     native.selection_input_key_offer = dict(decision.selection_input_key_offer)
     native.pending_state_ttl_ms = int(decision.pending_state_ttl_ms)
     return native
+
+
+def _invoke_ack_handler_safely(
+    service: str,
+    handler: Callable[..., bool | AckDecision],
+    args: tuple[Any, ...],
+) -> bool | AckDecision:
+    """Keep Python ACK failures observable without exposing request payloads.
+
+    The native binding treats an escaping Python exception as a suppressed ACK.
+    That preserves safety but makes a provider-side bug indistinguishable from
+    packet loss at the requester. Convert ordinary application exceptions into
+    a fail-closed, non-suppressed negative ACK and emit a bounded local marker.
+    """
+    try:
+        return handler(*args)
+    except Exception as exc:
+        detail = " ".join(str(exc).split())[:240]
+        print(
+            "NDNSF_ACK_HANDLER_EXCEPTION "
+            f"service={service} errorType={type(exc).__name__} "
+            f"detail={detail or '-'}",
+            flush=True,
+        )
+        return AckDecision(
+            status=False,
+            message=NEGATIVE_ACK_REASON_INTERNAL_ERROR,
+            suppress=False,
+        )
 
 
 def _from_native_large_data_result(result) -> LargeDataPublishResult:
@@ -1279,6 +1358,34 @@ class ServiceProvider:
     """Python API for writing NDNSF provider business logic."""
 
     @property
+    def provider_identity(self) -> str:
+        """Return the Provider identity used by the native runtime."""
+
+        return str(self._native.provider_identity)
+
+    @property
+    def provider_signing_key_name(self) -> str:
+        """Return the public NDN key name used for Provider-signed Data."""
+
+        return str(self._native.provider_signing_key_name)
+
+    @property
+    def provider_signing_certificate_name(self) -> str:
+        """Return the public certificate name used for Provider-signed Data."""
+
+        return str(self._native.provider_signing_certificate_name)
+
+    @property
+    def signing_metadata(self) -> ProviderSigningMetadata:
+        """Return public signing metadata for an external application signer."""
+
+        return ProviderSigningMetadata(
+            provider_identity=self.provider_identity,
+            signing_key_name=self.provider_signing_key_name,
+            signing_certificate_name=self.provider_signing_certificate_name,
+        )
+
+    @property
     def provider_boot_epoch(self) -> str:
         """Return Core's stable process-incarnation fence."""
 
@@ -1518,7 +1625,8 @@ class ServiceProvider:
         ack_handler = None
         if service in self._ack_handlers:
             def ack_handler(*args):
-                result = self._ack_handlers[service](*args)
+                result = _invoke_ack_handler_safely(
+                    service, self._ack_handlers[service], args)
                 if isinstance(result, AckDecision):
                     return _to_native_ack(result)
                 return bool(result)
@@ -1542,7 +1650,7 @@ class ServiceProvider:
         native_ack = None
         if ack_handler is not None:
             def native_ack(*args):
-                result = ack_handler(*args)
+                result = _invoke_ack_handler_safely(service, ack_handler, args)
                 if isinstance(result, AckDecision):
                     return _to_native_ack(result)
                 return bool(result)
@@ -2177,8 +2285,17 @@ class ServiceUser:
         timeout_ms: int = 10000,
         request_id: str = "",
         fail_fast_terminal_selection: bool = False,
+        ack_coverage_predicate: Optional[
+            Callable[[tuple[AckCandidate, ...]], bool]
+        ] = None,
     ) -> CollaborationInvocation:
-        """Publish one generic Request and defer plan choice until ACK_CLOSED."""
+        """Publish one generic Request and defer plan choice until ACK_CLOSED.
+
+        ``ack_coverage_predicate`` is an application-owned early-close
+        optimization. It may only report that the observed ACK candidates
+        provide enough capability coverage; it cannot select providers or
+        mutate the immutable ACK_CLOSED/commit_plan lifecycle.
+        """
 
         if str(mode).upper() != "DEFERRED":
             raise ValueError(
@@ -2207,16 +2324,35 @@ class ServiceUser:
         def on_timeout(reason: str) -> None:
             state.set_timeout(reason)
 
-        actual_request_id = self._native.begin_collaboration(
-            service,
-            bytes(payload),
-            on_ack_closed,
-            on_response,
-            on_timeout,
-            ack_timeout_ms,
-            timeout_ms,
-            request_id,
+        native_ack_coverage = None
+        if ack_coverage_predicate is not None:
+            def native_ack_coverage(native_candidates) -> bool:
+                candidates = tuple(
+                    _from_native_ack_candidate(candidate)
+                    for candidate in native_candidates
+                )
+                return bool(ack_coverage_predicate(candidates))
+
+        native_args = (
+            service, bytes(payload), on_ack_closed, on_response, on_timeout,
+            ack_timeout_ms, timeout_ms, request_id,
         )
+        if native_ack_coverage is None:
+            actual_request_id = self._native.begin_collaboration(*native_args)
+        else:
+            try:
+                actual_request_id = self._native.begin_collaboration(
+                    *native_args,
+                    ack_coverage_predicate=native_ack_coverage,
+                )
+            except TypeError as exc:
+                # A sealed runtime image may contain the pre-early-close
+                # native binding.  Keep the durable FULL invocation usable
+                # without weakening the new binding: the callback is an
+                # optimization, while ACK_CLOSED remains the authority.
+                if "ack_coverage_predicate" not in str(exc):
+                    raise
+                actual_request_id = self._native.begin_collaboration(*native_args)
         return CollaborationInvocation(
             native=self._native,
             state=state,

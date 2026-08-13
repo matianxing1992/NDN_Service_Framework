@@ -2,7 +2,44 @@
 
 #include <ndn-cxx/security/transform/public-key.hpp>
 
+#include <algorithm>
+#include <cctype>
+#include <cstdlib>
+#include <limits>
+#include <stdexcept>
+#include <string>
+
 namespace ndn_service_framework {
+
+namespace {
+
+size_t
+readSizeEnvironment(const char* name, size_t current)
+{
+  const char* raw = std::getenv(name);
+  if (raw == nullptr || *raw == '\0') {
+    return current;
+  }
+
+  std::string text(raw);
+  if (text.empty() || !std::all_of(text.begin(), text.end(),
+                                  [] (unsigned char c) { return std::isdigit(c) != 0; })) {
+    throw std::invalid_argument(std::string(name) + " must be a positive integer");
+  }
+  size_t parsed = 0;
+  try {
+    parsed = static_cast<size_t>(std::stoull(text));
+  }
+  catch (const std::exception&) {
+    throw std::invalid_argument(std::string(name) + " must be a positive integer");
+  }
+  if (parsed == 0 || parsed > ndn::MAX_NDN_PACKET_SIZE) {
+    throw std::invalid_argument(std::string(name) + " exceeds the NDN packet-size bound");
+  }
+  return parsed;
+}
+
+} // namespace
 
 NDN_LOG_MEMBER_INIT(SerializedWorkerQueue, ndn_service_framework.SerializedWorkerQueue);
 NDN_LOG_MEMBER_INIT(BoundedWorkerPool, ndn_service_framework.BoundedWorkerPool);
@@ -107,6 +144,18 @@ signDataEcdsaPreferred(ndn::KeyChain& keyChain,
                        const ndn::Name& identityName)
 {
   keyChain.sign(data, makeEcdsaPreferredSigningInfo(keyChain, identityName));
+}
+
+void
+configureSvsPubSubOptionsFromEnvironment(ndn::svs::SVSPubSubOptions& options)
+{
+  // These are transport/resource bounds. They do not alter SVS suppression,
+  // retry, or selection semantics; the piggyback value is only a safety
+  // margin and oversized publications remain recoverable by name.
+  options.maxApplicationParametersSize = readSizeEnvironment(
+    "NDNSF_SVS_MAX_APP_PARAMS_BYTES", options.maxApplicationParametersSize);
+  options.maxPiggyDataSize = readSizeEnvironment(
+    "NDNSF_SVS_MAX_PIGGYDATA_BYTES", options.maxPiggyDataSize);
 }
 
 const char*
