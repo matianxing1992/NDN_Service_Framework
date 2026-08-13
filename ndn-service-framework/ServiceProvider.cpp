@@ -672,11 +672,17 @@ namespace ndn_service_framework
                                     const std::string& keyId,
                                     const std::string& epochId)
         {
+            // CollaborationEnvelopeV2 carries the compact wire key ID after
+            // decode. Authenticate the same canonical identifier on both
+            // producer and consumer paths; otherwise a long logical key ID
+            // authenticates successfully before encoding but fails after the
+            // consumer observes its compact representation.
+            const auto wireKeyId = hybridCompactKeyId(keyId);
             const std::string text =
                 dataName.toUri() + "|COLLAB|" + requestId.toUri() + "|" +
                 message.getKeyScope() + "|" + message.getTopic().toUri() + "|" +
                 message.getProducerRole() + "|" +
-                std::to_string(message.getSequence()) + "|" + keyId + "|" + epochId;
+                std::to_string(message.getSequence()) + "|" + wireKeyId + "|" + epochId;
             return ndn::Buffer(reinterpret_cast<const uint8_t*>(text.data()), text.size());
         }
 
