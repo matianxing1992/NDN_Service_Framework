@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 import functools
 import hashlib
+import os
 from pathlib import Path
 import queue
 import threading
@@ -233,6 +234,13 @@ class ArtifactProgress:
     retransmitted_bytes: int
     sequence: int
     timestamp_ms: int
+    # Optional data-plane diagnostics.  Existing backends may leave these at
+    # their defaults; the native segmented fetch backend fills them so a
+    # stalled large artifact retains the last delivered segment and range.
+    last_segment: int = -1
+    delivered_segments: int = 0
+    total_segments: int = 0
+    elapsed_ms: float = 0.0
 
     def __post_init__(self) -> None:
         counters = (
@@ -250,6 +258,11 @@ class ArtifactProgress:
             not self.operation_id
             or not self.phase
             or min(counters) < 0
+            or self.last_segment < -1
+            or self.delivered_segments < 0
+            or self.total_segments < 0
+            or self.delivered_segments > self.total_segments > 0
+            or self.elapsed_ms < 0.0
             or self.verified_bytes > self.received_bytes
             or self.committed_bytes > self.verified_bytes
             or self.received_bytes > self.total_bytes
@@ -309,6 +322,10 @@ class ArtifactFetchResult:
     source_replicas: tuple[str, ...]
     total_duration_ms: float = 0.0
     phase_durations_ms: dict[str, float] = field(default_factory=dict)
+    last_segment: int = -1
+    delivered_segments: int = 0
+    total_segments: int = 0
+    retransmitted_bytes: int = 0
 
     def __post_init__(self) -> None:
         if (
@@ -316,6 +333,11 @@ class ArtifactFetchResult:
             or self.reused_bytes < 0
             or self.transferred_bytes < 0
             or self.total_duration_ms < 0
+            or self.last_segment < -1
+            or self.delivered_segments < 0
+            or self.total_segments < 0
+            or self.delivered_segments > self.total_segments > 0
+            or self.retransmitted_bytes < 0
             or self.reused_bytes + self.transferred_bytes
             != int(self.reference.size_bytes)
             or any(value < 0 for value in self.phase_durations_ms.values())
@@ -517,6 +539,12 @@ class _ProgressGuard:
                 or progress.selected_replicas < previous.selected_replicas
                 or progress.committed_replicas < previous.committed_replicas
                 or progress.retransmitted_bytes < previous.retransmitted_bytes
+                or progress.last_segment < previous.last_segment
+                or progress.delivered_segments < previous.delivered_segments
+                or (
+                    previous.total_segments > 0
+                    and progress.total_segments < previous.total_segments
+                )
             ):
                 raise ArtifactApiError(
                     ArtifactErrorCode.INTERNAL_ERROR,
@@ -987,6 +1015,20 @@ def _as_api_error(
     else:
         code = ArtifactErrorCode.INTERNAL_ERROR
         message = "artifact backend failed"
+        # Keep the normal public surface bounded and peer-independent.  An
+        # explicitly opt-in operator diagnostic is useful for native NDN
+        # transfer failures, whose stable wrapper otherwise hides whether the
+        # backend stopped on a timeout, Nack, missing FinalBlockId, or another
+        # local condition.  The experiment harness enables this only on a
+        # trusted, short-lived diagnostic run; production defaults remain
+        # unchanged.
+        if os.environ.get("NDNSF_ARTIFACT_DEBUG_ERRORS") == "1":
+            detail = " ".join(str(error).split())[:384]
+            if detail:
+                message = (
+                    f"artifact backend failed ({type(error).__name__}): "
+                    f"{detail}"
+                )
     return ArtifactApiError(
         code,
         message,

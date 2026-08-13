@@ -462,6 +462,14 @@ namespace ndn_service_framework
         if (compactMarker && *compactMarker == ndn::Name("/NDNSF/COMPACT")) {
             ++serviceIndex;
         }
+        else if (parseServiceSelectionNameV2(serviceSelectionName)) {
+            // Provider-bound and compact Selection names share the same V2
+            // prefix.  The former is distinguished by its first post-marker
+            // component being an encoded provider Name.  Reject that shape
+            // here so callers cannot silently treat the provider component as
+            // the first component of serviceName.
+            return std::nullopt;
+        }
         if (serviceIndex + 2 > serviceSelectionName.size()) {
             return std::nullopt;
         }

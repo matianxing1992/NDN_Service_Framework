@@ -17,6 +17,7 @@ from py_repoclient import (
     ArtifactStoreOffer,
     CollaborationArtifactApiBackend,
     HmacReceiptAuthenticator,
+    PendingReplicaTaskCollaboration,
     SqliteRepositoryPersistence,
     artifact_reference_from_dict,
     decode_store_assignment,
@@ -26,6 +27,8 @@ from py_repoclient.artifact_api import ArtifactDescriptor
 from py_repoclient.artifact_transfer import _store_assignment_payload
 from py_repoclient.network_artifact_backend import (
     _PreparedArtifactSource,
+    _NetworkFetchDriver,
+    _artifact_adaptive_fetch_options,
     _execute_repo_store_assignment,
 )
 
@@ -126,6 +129,159 @@ class DelegateBackend:
 
 
 class CollaborationArtifactBackendTests(unittest.TestCase):
+    def test_insufficient_store_cover_reports_capacity_exclusion(self):
+        artifact = artifact_reference_from_dict({
+            "logicalName": "/artifact/spec168/diagnostic",
+            "digestAlgorithm": "sha256",
+            "contentDigest": "1" * 64,
+            "sizeBytes": 1024,
+            "formatVersion": "artifact-manifest-v2",
+            "rootManifestName": "/artifact/spec168/diagnostic/root",
+            "publisherIdentity": "/publisher",
+            "policyEpoch": "default",
+        })
+        invocation = SimpleNamespace(
+            request_id="request-diagnostic",
+            acks_closed=lambda _timeout_ms=None: SimpleNamespace(
+                digest="sha256:" + "2" * 64,
+                candidates=(SimpleNamespace(
+                    provider_name="/repo/small",
+                    status=True,
+                    payload=encode_store_offer_ack(ArtifactStoreOffer(
+                        queue_depth=0,
+                        queue_capacity=8,
+                        available_bytes=512,
+                        max_artifact_bytes=512,
+                    )),
+                ),),
+            ),
+        )
+        pending = PendingReplicaTaskCollaboration(
+            invocation,
+            "/NDNSF/DistributedRepo/Artifact/v2/STORE",
+            artifact,
+            requested_replicas=1,
+            operation_id="operation-diagnostic",
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            r"candidateCount=1.*eligibleCount=0.*requiredBytes=1024.*"
+            r"availableBytes=512.*maxArtifactBytes=512",
+        ):
+            pending.commit_ack_tasks()
+
+    def test_large_artifact_fetch_profile_is_bounded_for_concurrent_shards(self):
+        options = _artifact_adaptive_fetch_options(19 * 1024**3)
+        self.assertEqual(options["interest_lifetime_ms"], 30_000)
+        self.assertEqual(options["initial_window"], 4)
+        self.assertEqual(options["maximum_window"], 16)
+        self.assertEqual(options["maximum_retries"], 8)
+        self.assertEqual(options["persistence_backlog_limit"], 16)
+        self.assertLessEqual(
+            options["maximum_window"] * 3,
+            48,
+            "three concurrent shard pulls must not recreate the old 96-interest fan-out",
+        )
+        with mock.patch.dict(
+            "os.environ",
+            {
+                "NDNSF_ARTIFACT_FETCH_INITIAL_WINDOW": "not-an-int",
+                "NDNSF_ARTIFACT_FETCH_MAXIMUM_WINDOW": "9999",
+                "NDNSF_ARTIFACT_FETCH_BACKLOG": "0",
+                "NDNSF_ARTIFACT_FETCH_INTEREST_LIFETIME_MS": "-1",
+                "NDNSF_ARTIFACT_FETCH_MAX_RETRIES": "0",
+            },
+            clear=False,
+        ):
+            clamped = _artifact_adaptive_fetch_options(19 * 1024**3)
+        self.assertEqual(clamped["initial_window"], 4)
+        self.assertEqual(clamped["maximum_window"], 32)
+        self.assertEqual(clamped["persistence_backlog_limit"], 4)
+        self.assertEqual(clamped["interest_lifetime_ms"], 10_000)
+        self.assertEqual(clamped["maximum_retries"], 5)
+
+    def test_network_fetch_emits_segment_progress_and_final_coverage(self):
+        payload = b"segment-progress" * 700
+        artifact = artifact_reference_from_dict({
+            "logicalName": "/artifact/spec164/fetch-progress",
+            "digestAlgorithm": "sha256",
+            "contentDigest": hashlib.sha256(payload).hexdigest(),
+            "sizeBytes": len(payload),
+            "formatVersion": "artifact-manifest-v2",
+            "rootManifestName": "/artifact/spec164/fetch-progress/root",
+            "publisherIdentity": "/publisher",
+            "policyEpoch": "default",
+        })
+        receipt = {
+            "receipt": {
+                "artifact": {"contentDigest": artifact.content_digest},
+                "repoNode": "/repo/a",
+            },
+            "dataName": "/repo/a/payload",
+        }
+        backend = SimpleNamespace(
+            packet_payload_bytes=7600,
+            last_receipts=[receipt],
+        )
+        events = []
+        fetch_options = {}
+
+        def fetch_payload(_name, on_packet, **_kwargs):
+            fetch_options.update(_kwargs)
+            delivered = 0
+            for segment, offset in enumerate(range(0, len(payload), 7600)):
+                content = payload[offset:offset + 7600]
+                on_packet(SimpleNamespace(segment=segment, content=content))
+                delivered += 1
+            return SimpleNamespace(
+                total_segments=delivered,
+                delivered_segments=delivered,
+                logical_bytes=len(payload),
+                retransmitted_bytes=0,
+            )
+
+        class NoCancellation:
+            def raise_if_cancelled(self, *_args):
+                return None
+
+        with tempfile.TemporaryDirectory() as temporary:
+            destination = Path(temporary) / "stage.bin"
+            with mock.patch(
+                "py_repoclient.network_artifact_backend."
+                "fetch_adaptive_segmented_data_packets",
+                side_effect=fetch_payload,
+            ), mock.patch(
+                "py_repoclient.network_artifact_backend."
+                "_PROGRESS_CHECKPOINT_BYTES",
+                1,
+            ):
+                driver = _NetworkFetchDriver(
+                    backend,
+                    artifact,
+                    destination,
+                    "fetch-progress-operation",
+                    resume=True,
+                    emit_progress=events.append,
+                )
+                driver.transfer(NoCancellation())
+                result = driver.commit()
+                committed_payload = destination.read_bytes()
+
+        self.assertEqual(result.transferred_bytes, len(payload))
+        self.assertEqual(committed_payload, payload)
+        self.assertTrue(events)
+        final = events[-1]
+        self.assertEqual(final.received_bytes, len(payload))
+        self.assertEqual(final.delivered_segments, final.total_segments)
+        self.assertGreater(final.total_segments, 0)
+        self.assertEqual(final.last_segment, final.total_segments - 1)
+        self.assertEqual(fetch_options["initial_window"], 4)
+        self.assertEqual(fetch_options["maximum_window"], 16)
+        self.assertEqual(fetch_options["persistence_backlog_limit"], 16)
+        self.assertEqual(fetch_options["interest_lifetime_ms"], 30_000)
+        self.assertEqual(fetch_options["maximum_retries"], 8)
+
     def test_public_publish_assigns_task_without_ack_reservation(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -220,6 +220,15 @@ def apply_timeout_overrides(global_deadline_ms=None, attempt_timeout_ms=None,
             f"{CONFIG['ack_timeout_ms']}ms-ack")
 
 
+def apply_traffic_start_delay(value=None):
+    """Set a shared request phase without changing the mobility trace clock."""
+    if value is None:
+        return
+    if not math.isfinite(value) or value < 0:
+        raise SystemExit("traffic-start-delay-s must be finite and non-negative")
+    CONFIG["traffic_start_delay_s"] = float(value)
+
+
 def command_for(system: str, seed: int, campaign_id: str, trace: Path,
                 output_dir: Path, ap_range: float, speed: float) -> list[str]:
     harness_system = {
@@ -489,6 +498,11 @@ def main() -> int:
         help="override the measured window duration; default is the registered 60 s",
     )
     parser.add_argument(
+        "--traffic-start-delay-s", type=float, default=None,
+        help=("shared request phase relative to trace epoch; use 4.05 to place "
+              "5 RPS requests between 100 ms trace gate updates"),
+    )
+    parser.add_argument(
         "--mobility-warmup-s", type=float, default=0.0,
         help=("advance deterministic RandomWaypoint state before trace time zero; "
               "does not add wall-clock delay"),
@@ -506,6 +520,7 @@ def main() -> int:
         CONFIG["grpc_health_oracle"] = "disabled-primary"
     apply_timeout_overrides(
         args.global_deadline_ms, args.attempt_timeout_ms, args.ack_timeout_ms)
+    apply_traffic_start_delay(args.traffic_start_delay_s)
     if args.duration_s is not None:
         if args.duration_s <= 0:
             raise SystemExit("duration-s must be a positive integer")

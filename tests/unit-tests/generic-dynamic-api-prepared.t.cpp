@@ -43,6 +43,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestServicePreservesOpaquePayloadAndRequestId)
   auto userCert = makeRsaIdentity(keyChain, requesterName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-prepared-opaque"));
   LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+  installUserPermissions(user, requesterName, serviceName, {providerName});
 
   const auto ctx = user.prepareServiceRequest(serviceName.toUri());
   const std::string payloadText =
@@ -104,6 +105,7 @@ BOOST_AUTO_TEST_CASE(AdaptiveAdmissionControlWarnsAtSoftLimitAndRejectsAtHardLim
   auto userCert = makeRsaIdentity(keyChain, requesterName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-admission"));
   LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+  installUserPermissions(user, requesterName, serviceName, {providerName});
 
   ServiceUser::AdaptiveAdmissionOptions options;
   options.enabled = true;
@@ -179,6 +181,7 @@ BOOST_AUTO_TEST_CASE(LargeDataNamePayloadRemainsOpaqueAcrossPreparedRequestServi
   auto userCert = makeRsaIdentity(keyChain, requesterName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-large-data-name-opaque"));
   LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+  installUserPermissions(user, requesterName, serviceName, {providerName});
 
   const auto ctx = user.prepareServiceRequest(serviceName.toUri());
   const std::string encryptedDataNameUri =
@@ -520,6 +523,7 @@ BOOST_AUTO_TEST_CASE(V2RequestAndResponseNames)
   BOOST_REQUIRE(parsedLegacySelection);
   BOOST_CHECK_EQUAL(parsedLegacySelection->providerName, provider);
   BOOST_CHECK_EQUAL(parsedLegacySelection->serviceName, serviceName);
+  BOOST_CHECK(!parseCompactServiceSelectionNameV2(legacySelectionName));
 }
 
 BOOST_AUTO_TEST_CASE(AddHandlerRequestServiceDispatchResponseAndAck)

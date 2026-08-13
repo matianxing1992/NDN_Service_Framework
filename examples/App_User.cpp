@@ -131,6 +131,21 @@ sampleByRequestId(const ndn::Name& requestId, size_t sampleRate)
   return (std::hash<std::string>{}(requestId.toUri()) % sampleRate) == 0;
 }
 
+void
+logAuthorizationCryptoCounters(
+  const ndn_service_framework::HybridCryptoCounters& counters)
+{
+  NDN_LOG_INFO("NDNSF_AUTH_OVERHEAD_COUNTERS role=user"
+               << " hybrid_key_epochs=" << counters.hybrid_key_epoch_created.load()
+               << " abe_wraps=" << counters.nac_abe_key_wrap_count.load()
+               << " abe_unwraps=" << counters.nac_abe_key_unwrap_count.load()
+               << " symmetric_encrypts=" << counters.symmetric_encrypt_count.load()
+               << " symmetric_decrypts=" << counters.symmetric_decrypt_count.load()
+               << " key_cache_hits=" << counters.key_cache_hit_count.load()
+               << " key_cache_misses=" << counters.key_cache_miss_count.load()
+               << " decrypt_failures=" << counters.auth_decrypt_failure_count.load());
+}
+
 ndn::security::Certificate
 getOrCreateIdentity(ndn::security::KeyChain& keyChain, const ndn::Name& identity)
 {
@@ -910,12 +925,6 @@ main(int argc, char** argv)
         const auto stopSendingAt = std::make_shared<std::chrono::steady_clock::time_point>();
         const auto drainDeadline = std::make_shared<std::chrono::steady_clock::time_point>();
         const auto nextDueAt = std::make_shared<std::chrono::steady_clock::time_point>();
-        const auto noAdmissionWarmupRequests = static_cast<uint64_t>(
-          std::llround(std::max(0.0, rateRps * static_cast<double>(benchmarkWarmup))));
-        const auto noAdmissionMeasuredRequests = static_cast<uint64_t>(
-          std::llround(std::max(1.0, rateRps * static_cast<double>(openLoopDurationSeconds))));
-        const auto noAdmissionTargetRequests =
-          noAdmissionWarmupRequests + noAdmissionMeasuredRequests;
         auto nextSequence = std::make_shared<uint64_t>(0);
         auto sendStopped = std::make_shared<bool>(false);
         auto states = std::make_shared<std::map<std::string, std::shared_ptr<OpenLoopRequestState>>>();
@@ -1329,6 +1338,7 @@ main(int argc, char** argv)
                     << " ack_p95_ms=" << percentile(*ackLatencySamples, 95.0)
                     << " csv=" << outputCsv
                    );
+          logAuthorizationCryptoCounters(user.getHybridCryptoCounters());
           csv->flush();
           if (lifecycleCsv && *lifecycleCsv) {
             lifecycleCsv->flush();
@@ -1345,8 +1355,11 @@ main(int argc, char** argv)
                      timeoutCount, lateResponseCount, outstandingLimitSkips, latencies,
                      sampleOutstanding, sendNext, maybeFinish]() {
           const auto now = std::chrono::steady_clock::now();
-          const bool generating = adaptiveAdmission.enabled ?
-            now < *stopSendingAt : *nextSequence < noAdmissionTargetRequests;
+          // Both admission modes share the same absolute warm-up and measured
+          // generation window. Under overload, no-admission may issue fewer
+          // than the scheduled ticks; extending the wall-clock window until a
+          // target count is reached would make the comparison unmatched.
+          const bool generating = now < *stopSendingAt;
           if (!generating &&
               (!adaptiveAdmission.enabled || *queuedTasks == 0 ||
                now >= *drainDeadline)) {
@@ -1574,30 +1587,27 @@ main(int argc, char** argv)
           }
 
           bool scheduledNextTickBeforeSend = false;
-          uint64_t currentSequence = *nextSequence;
           if (*queuedTasks > 0) {
             if (generating) {
               if (!adaptiveAdmission.enabled) {
                 ++(*nextSequence);
-                if (*nextSequence < noAdmissionTargetRequests) {
-                  auto idealNextDue =
-                    *startTime +
-                    std::chrono::nanoseconds(intervalNs * static_cast<int64_t>(*nextSequence)) +
-                    openLoopPacingJitter(*nextSequence, openLoopPacingJitterUs);
-                  const auto boundedCatchUpSpacing = std::min(
-                    std::chrono::nanoseconds(intervalNs),
-                    std::chrono::nanoseconds(std::chrono::milliseconds(5)));
-                  const auto minimumNextDue =
-                    std::chrono::steady_clock::now() + boundedCatchUpSpacing;
-                  if (idealNextDue < minimumNextDue) {
-                    ++(*delayedPublications);
-                    idealNextDue = minimumNextDue;
-                  }
-                  *nextDueAt = idealNextDue;
-                  scheduleNext(std::max(std::chrono::nanoseconds(0),
-                                        *nextDueAt - std::chrono::steady_clock::now()));
-                  scheduledNextTickBeforeSend = true;
+                auto idealNextDue =
+                  *startTime +
+                  std::chrono::nanoseconds(intervalNs * static_cast<int64_t>(*nextSequence)) +
+                  openLoopPacingJitter(*nextSequence, openLoopPacingJitterUs);
+                const auto boundedCatchUpSpacing = std::min(
+                  std::chrono::nanoseconds(intervalNs),
+                  std::chrono::nanoseconds(std::chrono::milliseconds(5)));
+                const auto minimumNextDue =
+                  std::chrono::steady_clock::now() + boundedCatchUpSpacing;
+                if (idealNextDue < minimumNextDue) {
+                  ++(*delayedPublications);
+                  idealNextDue = minimumNextDue;
                 }
+                *nextDueAt = idealNextDue;
+                scheduleNext(std::max(std::chrono::nanoseconds(0),
+                                      *nextDueAt - std::chrono::steady_clock::now()));
+                scheduledNextTickBeforeSend = true;
               }
               else {
                 scheduleNext(delayUntilNextOpenLoopTick());
@@ -1617,8 +1627,7 @@ main(int argc, char** argv)
 
             auto state = std::make_shared<OpenLoopRequestState>();
             state->start = now;
-            state->measured = adaptiveAdmission.enabled ?
-              now >= *measurementStartAt : currentSequence >= noAdmissionWarmupRequests;
+            state->measured = now >= *measurementStartAt;
 
             auto onTimeout = std::function<void(const ndn::Name&)>(
               [&, csv, states, completedRequestIds, timeoutCount,
@@ -2035,6 +2044,7 @@ main(int argc, char** argv)
                                                               useBenchmarkRandomSelection) << "\n"
                     << "pendingCalls_remaining=" << user.getPendingCallCount() << "\n"
                     << "csv=" << outputCsv);
+          logAuthorizationCryptoCounters(user.getHybridCryptoCounters());
 
           csv->flush();
           if (success == benchmarkCount && timeout == 0) {

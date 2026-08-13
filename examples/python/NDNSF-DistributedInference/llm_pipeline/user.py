@@ -1274,6 +1274,7 @@ def _run_qwen_transformer_generation_sample(
             expected_token_ids=expected_token_ids,
             require_eos=require_eos,
             decode=decoder,
+            numeric_equivalence=prompt_case.get("numericEquivalence"),
         )
 
     def token_step(context, token_epoch, generated_request_id):

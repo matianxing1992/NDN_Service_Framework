@@ -566,11 +566,14 @@ ServiceController::buildPolicyManifest() const
 }
 
 ndn::security::Certificate
-ServiceController::getTargetIdentityCertificate(const ndn::Name& targetIdentity) const
+ServiceController::getTargetIdentityCertificate(const ndn::Name& targetIdentity)
 {
   if (auto issued = m_bootstrapIssuedCertificates.find(targetIdentity.toUri());
       issued != m_bootstrapIssuedCertificates.end()) {
-    return issued->second;
+    // Permission responses are encrypted with the identity's RSA key even
+    // when the runtime uses a separate ECDSA signing certificate.  Bootstrap
+    // may have issued either certificate type, so normalize it to RSA here.
+    return getRsaEncryptionCertificateOrThrow(m_keyChain, issued->second);
   }
 
   auto cert = m_keyChain.getPib()
@@ -581,7 +584,9 @@ ServiceController::getTargetIdentityCertificate(const ndn::Name& targetIdentity)
     throw std::runtime_error("Target identity certificate is not currently valid: " +
                              cert.getName().toUri());
   }
-  return cert;
+  // The default key may be ECDSA because it is preferred for Data signing;
+  // NAC-ABE permission encryption still requires the RSA certificate.
+  return getRsaEncryptionCertificateOrThrow(m_keyChain, cert);
 }
 
 void

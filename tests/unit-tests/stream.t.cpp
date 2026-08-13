@@ -3017,7 +3017,17 @@ BOOST_AUTO_TEST_CASE(LiveStreamAdaptiveConsumerPrefetchesNextUnpublishedMappingB
   // Allow the one injected Mapping Nack to be retried. The unrelated
   // speculative block retains enough lifetime to remain pending while this
   // exact block is retried.
-  pump(30);
+  // The congestion Nack above is injected synchronously. Ten pump rounds are
+  // enough to process its retry while keeping the observation comfortably
+  // before the 100--166 ms Mapping lifetimes under test. Waiting 30 rounds
+  // sampled the publisher PIT at its expiry boundary and made this assertion
+  // depend on host scheduling rather than prefetch behavior.
+  pump(10);
+  // pump() handles the Provider before the Consumer. Drain any Provider
+  // callback queued by the final Consumer slice without advancing the clock,
+  // so the publisher and consumer status snapshots describe the same traffic.
+  providerIo.poll();
+  providerIo.restart();
   // Keep the complete bounded Mapping lookahead window pending. Fetching only
   // block 1 serializes Mapping -> payload once network delay is non-zero and
   // eventually lets a live consumer fall behind Provider retention.

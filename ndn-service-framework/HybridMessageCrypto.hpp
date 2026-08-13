@@ -91,6 +91,15 @@ ndn::Name makeHybridMessageKeyName(const ndn::Name& serviceName,
                                    const std::string& accessAttribute,
                                    const std::string& epochId);
 
+/** Full producer-prefixed Data name used to recover the epoch wrapping. */
+ndn::Name makeHybridMessageKeyDataName(const ndn::Name& serviceName,
+                                       const ndn::Name& senderPrefix,
+                                       const std::string& accessAttribute,
+                                       const std::string& epochId);
+
+/** Return the 8-byte, hex-encoded key identifier carried by envelope v2. */
+std::string hybridCompactKeyId(const std::string& keyId);
+
 HybridAeadResult hybridAesGcmEncrypt(const ndn::Buffer& key,
                                      ndn::span<const uint8_t> plaintext,
                                      ndn::span<const uint8_t> associatedData);

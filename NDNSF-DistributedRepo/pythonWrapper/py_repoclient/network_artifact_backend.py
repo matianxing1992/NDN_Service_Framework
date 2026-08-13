@@ -70,7 +70,38 @@ from .persistence import ArtifactStorageIdentity
 
 _DEFAULT_PACKET_PAYLOAD_BYTES = 7600
 _DEFAULT_CHUNK_BYTES = 16 * 1024 * 1024
+_PROGRESS_CHECKPOINT_BYTES = 64 * 1024 * 1024
+_PROGRESS_CHECKPOINT_INTERVAL_S = 1.0
 _MAX_REPLICA_ROLES = 32
+
+
+def _artifact_adaptive_fetch_options(size_bytes: int) -> dict[str, int]:
+    """Return bounded fetch settings for a large immutable artifact."""
+    del size_bytes
+
+    def bounded_int(name: str, default: int, lower: int, upper: int) -> int:
+        raw = os.environ.get(name, str(default))
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            value = default
+        return max(lower, min(upper, value))
+
+    initial = bounded_int("NDNSF_ARTIFACT_FETCH_INITIAL_WINDOW", 4, 2, 8)
+    maximum = max(initial, bounded_int(
+        "NDNSF_ARTIFACT_FETCH_MAXIMUM_WINDOW", 16, 2, 32))
+    backlog = max(initial, bounded_int(
+        "NDNSF_ARTIFACT_FETCH_BACKLOG", 16, 2, 16))
+    return {
+        "interest_lifetime_ms": bounded_int(
+            "NDNSF_ARTIFACT_FETCH_INTEREST_LIFETIME_MS", 30_000,
+            10_000, 60_000),
+        "initial_window": initial,
+        "maximum_window": maximum,
+        "maximum_retries": bounded_int(
+            "NDNSF_ARTIFACT_FETCH_MAX_RETRIES", 8, 5, 8),
+        "persistence_backlog_limit": backlog,
+    }
 
 
 def _repo_pending_state_ttl_ms(size_bytes: int) -> int:
@@ -490,11 +521,11 @@ class _NetworkFetchDriver:
         operation_id: str,
         *,
         resume: bool,
-        verify: bool,
-        replace: bool,
-        timeout_ms: int,
-        control,
-        emit_progress,
+        verify: bool = True,
+        replace: bool = False,
+        timeout_ms: int = 60_000,
+        control=None,
+        emit_progress=None,
     ) -> None:
         self.backend = backend
         self.reference = reference
@@ -509,13 +540,13 @@ class _NetworkFetchDriver:
             raise ValueError(
                 "repo artifact network fetch requires signed-manifest verification"
             )
-        if self.control.mode == ArtifactControlMode.TARGETED:
+        if self.control is not None and self.control.mode == ArtifactControlMode.TARGETED:
             raise ValueError(
                 "repo artifact network fetch does not support targeted control"
             )
         if self.timeout_ms <= 0:
             raise ValueError("repo artifact fetch timeout must be positive")
-        self.emit_progress = emit_progress
+        self.emit_progress = emit_progress or (lambda _event: None)
         self.started = time.monotonic()
         self.state = "OPEN"
         self._sink = AtomicArtifactDestination(
@@ -554,6 +585,46 @@ class _NetworkFetchDriver:
             if self._sink._reused else 0
         )
         self.retransmitted_bytes = 0
+        self._received_bytes = 0
+        self._delivered_segments = 0
+        self._total_segments = 0
+        self._last_segment = -1
+        self._progress_sequence = 0
+        self._last_progress_bytes = 0
+        self._last_progress_at = self.started
+
+    def _emit_transfer_progress(self, *, force: bool = False) -> None:
+        now = time.monotonic()
+        received = min(
+            int(self.reference.size_bytes),
+            int(self.reused_bytes) + int(self._received_bytes),
+        )
+        if not force and (
+            received - self._last_progress_bytes < _PROGRESS_CHECKPOINT_BYTES
+            and now - self._last_progress_at < _PROGRESS_CHECKPOINT_INTERVAL_S
+        ):
+            return
+        self._progress_sequence += 1
+        self._last_progress_bytes = received
+        self._last_progress_at = now
+        self.emit_progress(ArtifactProgress(
+            operation_id=self.operation_id,
+            artifact=self.reference,
+            phase="transfer",
+            received_bytes=received,
+            verified_bytes=received,
+            committed_bytes=0,
+            total_bytes=int(self.reference.size_bytes),
+            selected_replicas=1,
+            committed_replicas=0,
+            retransmitted_bytes=int(self.retransmitted_bytes),
+            sequence=self._progress_sequence,
+            timestamp_ms=time.time_ns() // 1_000_000,
+            last_segment=int(self._last_segment),
+            delivered_segments=int(self._delivered_segments),
+            total_segments=int(self._total_segments),
+            elapsed_ms=(now - self.started) * 1000.0,
+        ))
 
     def transfer(self, cancellation) -> None:
         cancellation.raise_if_cancelled(
@@ -576,38 +647,30 @@ class _NetworkFetchDriver:
                         "repo artifact fetch segment exceeds declared size"
                     )
                 self._sink.write_range(offset, packet.content)
+                self._received_bytes += len(packet.content)
+                self._delivered_segments += 1
+                self._last_segment = max(
+                    self._last_segment, int(packet.segment))
+                self._emit_transfer_progress()
 
+            fetch_options = _artifact_adaptive_fetch_options(
+                int(self.reference.size_bytes))
             metrics = fetch_adaptive_segmented_data_packets(
                 self.data_name,
                 persist,
-                timeout_ms=self.timeout_ms,
-                interest_lifetime_ms=10_000,
-                initial_window=8,
-                maximum_window=128,
-                maximum_retries=5,
-                persistence_backlog_limit=32,
+                timeout_ms=max(
+                    self.timeout_ms,
+                    60_000,
+                    int(self.reference.size_bytes // (256 * 1024)) * 1000,
+                ),
+                **fetch_options,
             )
             self.transferred_bytes = int(metrics.logical_bytes)
             self.retransmitted_bytes = int(metrics.retransmitted_bytes)
+            self._total_segments = int(metrics.total_segments)
+            self._delivered_segments = int(metrics.delivered_segments)
         self.state = "VERIFIED"
-        self.emit_progress(ArtifactProgress(
-            operation_id=self.operation_id,
-            artifact=self.reference,
-            phase="transfer",
-            received_bytes=(
-                self.transferred_bytes + self.reused_bytes
-            ),
-            verified_bytes=(
-                self.transferred_bytes + self.reused_bytes
-            ),
-            committed_bytes=0,
-            total_bytes=int(self.reference.size_bytes),
-            selected_replicas=1,
-            committed_replicas=0,
-            retransmitted_bytes=self.retransmitted_bytes,
-            sequence=1,
-            timestamp_ms=time.time_ns() // 1_000_000,
-        ))
+        self._emit_transfer_progress(force=True)
 
     def status(self):
         return ArtifactSessionStatus(

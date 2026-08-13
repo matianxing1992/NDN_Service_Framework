@@ -49,6 +49,7 @@ namespace ndn_service_framework
             else {
                 throw std::invalid_argument("NDNSF_SVS_PROTOCOL_VERSION must be v2 or v3");
             }
+            configureSvsPubSubOptionsFromEnvironment(options);
             if (const char* raw = std::getenv("NDNSF_SVS_MAX_SUPPRESSION_MS")) {
                 try {
                     options.syncProtocol.suppressionPeriod =
@@ -398,6 +399,47 @@ namespace ndn_service_framework
             return "sha256:" + digest.toString();
         }
 
+        void
+        logValidatedPublicationAudit(
+            const char* role,
+            const char* messageType,
+            const ndn::svs::SVSPubSub::SubscriptionData& subscription,
+            const ndn::Name& requestId,
+            const ndn::Name& serviceName,
+            const ndn::Name& requesterName,
+            const ndn::Name& providerName)
+        {
+            std::string packetName = "-";
+            std::string signerKeyLocator = "-";
+            std::string wireDigest = sha256DigestString(
+                ndn::Buffer(subscription.data.begin(), subscription.data.end()));
+            if (subscription.packet) {
+                packetName = subscription.packet->getName().toUri();
+                const auto& signatureInfo = subscription.packet->getSignatureInfo();
+                if (signatureInfo.hasKeyLocator() &&
+                    signatureInfo.getKeyLocator().getType() == ndn::tlv::Name) {
+                    signerKeyLocator =
+                        signatureInfo.getKeyLocator().getName().toUri();
+                }
+                const auto wire = subscription.packet->wireEncode();
+                wireDigest = sha256DigestString(ndn::Buffer(
+                    wire.data(), wire.data() + wire.size()));
+            }
+            NDN_LOG_INFO("NDNSF_PUBLICATION_AUDIT role=" << role
+                         << " type=" << messageType
+                         << " validated=true"
+                         << " packetPresent=" << (subscription.packet ? "true" : "false")
+                         << " packetName=" << packetName
+                         << " producerPrefix=" << subscription.producerPrefix.toUri()
+                         << " seqNo=" << subscription.seqNo
+                         << " signerKeyLocator=" << signerKeyLocator
+                         << " wireDigest=" << wireDigest
+                         << " requestId=" << requestId.toUri()
+                         << " serviceName=" << serviceName.toUri()
+                         << " requesterName=" << requesterName.toUri()
+                         << " providerName=" << providerName.toUri());
+        }
+
         size_t
         defaultNdnsfWorkerThreads()
         {
@@ -638,20 +680,18 @@ namespace ndn_service_framework
             return ndn::Buffer(reinterpret_cast<const uint8_t*>(text.data()), text.size());
         }
 
-        void
+        ndn::svs::SeqNo
         publishSvs(const std::shared_ptr<ndn::svs::SVSPubSub>& svs,
                    const ndn::Name& name,
                    const ndn::Block& content)
         {
             if (svs == nullptr) {
-                return;
+                return 0;
             }
             if (useAsyncSvsPublish()) {
-                svs->publishAsync(name, content);
+                return svs->publishAsync(name, content);
             }
-            else {
-                svs->publish(name, content);
-            }
+            return svs->publish(name, content);
         }
 
         ndn::Buffer
@@ -1172,6 +1212,9 @@ namespace ndn_service_framework
         // Do not fetch publications older than 10 seconds
         ndn::svs::SVSPubSubOptions opts;
         configureSvsProtocol(opts);
+        NDN_LOG_INFO("NDNSF_SVS_OPTIONS role=provider"
+                     << " maxApplicationParametersSize=" << opts.maxApplicationParametersSize
+                     << " maxPiggyDataSize=" << opts.maxPiggyDataSize);
         #ifdef USE_TIMESTAMP
         opts.useTimestamp = true;
         // opts.maxPubAge = ndn::time::seconds(0);
@@ -1392,10 +1435,41 @@ namespace ndn_service_framework
                          << " queueDepth=" << stats.syncWorkerQueueDepth
                          << " workerMs=" << stats.syncWorkerProcessingMs
                          << " publishMs=" << stats.syncMainThreadPublishMs
-                         << " serialMs=" << stats.syncInterestSerialHandlerMs
-                         << " parallelTotalMs=" << stats.syncInterestParallelTotalMs
-                         << " mainBlockingMs=" << stats.syncInterestMainThreadBlockingMs);
-        }
+	                         << " serialMs=" << stats.syncInterestSerialHandlerMs
+	                         << " parallelTotalMs=" << stats.syncInterestParallelTotalMs
+	                         << " mainBlockingMs=" << stats.syncInterestMainThreadBlockingMs
+	                         << " productionSubmitted=" << stats.syncProductionJobsSubmitted
+	                         << " productionCompleted=" << stats.syncProductionJobsCompleted
+	                         << " productionDropped=" << stats.syncProductionJobsDropped
+	                         << " productionStale=" << stats.syncProductionJobsStale
+	                         << " productionQueueDepth=" << stats.syncProductionWorkerQueueDepth);
+	            const auto rejection = m_svsps->getSVSync().getCore().getSyncRejectionStats();
+	            const auto mapping = m_svsps->getMappingFetchStats();
+	            const auto publication = m_svsps->getPublicationFetchStats();
+	            const auto piggy = m_svsps->getPiggybackStats();
+	            NDN_LOG_INFO("NDNSF_SVS_DELIVERY_STATS role=provider"
+	                         << " malformed=" << rejection.malformedEnvelope
+	                         << " signaturePolicy=" << rejection.signaturePolicy
+	                         << " vectorDecode=" << rejection.vectorDecode
+	                         << " mappingQueued=" << mapping.queued
+	                         << " mappingPending=" << mapping.pending
+	                         << " mappingDispatched=" << mapping.dispatched
+	                         << " mappingData=" << mapping.data
+	                         << " mappingNacks=" << mapping.nacks
+	                         << " mappingTimeouts=" << mapping.timeouts
+	                         << " mappingRetries=" << mapping.retries
+	                         << " publicationQueued=" << publication.queued
+	                         << " publicationPending=" << publication.pending
+	                         << " publicationDispatched=" << publication.dispatched
+	                         << " publicationData=" << publication.data
+	                         << " publicationNacks=" << publication.nacks
+	                         << " publicationTimeouts=" << publication.timeouts
+	                         << " publicationRetries=" << publication.retries
+	                         << " piggyReceived=" << piggy.received
+	                         << " piggyDelivered=" << piggy.delivered
+	                         << " publicationFallbacks=" << piggy.publicationFetchFallbacks
+	                         << " publicationRetryActivations=" << piggy.publicationRetryActivations);
+	        }
         m_cryptoProduceQueue.shutdown();
         m_ackPool.shutdown();
         m_handlerPool.shutdown();
@@ -2561,6 +2635,15 @@ namespace ndn_service_framework
                                                 std::move(keyScope),
                                                 std::move(topicPrefix),
                                                 std::move(onData));
+    }
+
+    void ServiceProvider::CollaborationContext::allowData(
+        KeyScope keyScope,
+        Topic topicPrefix)
+    {
+        m_provider.addCollaborationReceiveFilter(m_requestId,
+                                                  std::move(keyScope),
+                                                  std::move(topicPrefix));
     }
 
     std::optional<ServiceProvider::CollaborationData>
@@ -3800,9 +3883,9 @@ namespace ndn_service_framework
                     result.errorMessage = "NAC-ABE produced no wrapped large-response MessageKey";
                     return result;
                 }
-                envelope.setWrappedMessageKey(ndn::Buffer(wrapped.data(), wrapped.size()));
                 serveDataWithIMS(contentData, ckData);
-                m_hybridMessageCrypto.markSendKeyWrapped(key.keyId);
+                m_hybridMessageCrypto.cacheWrappedSendKey(
+                    key.keyId, ndn::Buffer(wrapped.data(), wrapped.size()));
                 ++m_hybridCryptoCounters.nac_abe_key_wrap_count;
             }
 
@@ -4108,6 +4191,19 @@ namespace ndn_service_framework
             try {
                 auto ad = collaborationAssociatedData(name, requestId,
                                                       message, keyId, epochId);
+                if (isTruthyEnv("NDNSF_COLLAB_AUTH_TRACE")) {
+                    NDN_LOG_WARN("NDNSF_COLLAB_AUTH_TRACE event=encrypt"
+                                 << " provider=" << identity.toUri()
+                                 << " requestId=" << requestId.toUri()
+                                 << " dataName=" << name.toUri()
+                                 << " keyScope=" << message.getKeyScope()
+                                 << " producerRole=" << message.getProducerRole()
+                                 << " sequence=" << message.getSequence()
+                                 << " keyDigest=" << sha256DigestString(scopeKey)
+                                 << " adDigest=" << sha256DigestString(ad)
+                                 << " keyId=" << keyId
+                                 << " epochId=" << epochId);
+                }
                 auto encrypted = hybridAesGcmEncrypt(
                     scopeKey,
                     ndn::span<const uint8_t>(plaintext.data(), plaintext.size()),
@@ -5260,6 +5356,20 @@ namespace ndn_service_framework
         }
     }
 
+    void ServiceProvider::addCollaborationReceiveFilter(
+        const ndn::Name& requestId,
+        KeyScope keyScope,
+        Topic topicPrefix)
+    {
+        std::lock_guard<std::mutex> lock(m_collaborationMutex);
+        CollaborationSubscription subscription;
+        subscription.requestId = requestId;
+        subscription.keyScope = std::move(keyScope);
+        subscription.topicPrefix = std::move(topicPrefix);
+        subscription.receiveFilterOnly = true;
+        m_collaborationSubscriptions.push_back(std::move(subscription));
+    }
+
     void ServiceProvider::prepareCollaborationAssignmentAsync(
         const ndn::Name& requestId,
         CollaborationAssignment assignment,
@@ -5522,6 +5632,20 @@ namespace ndn_service_framework
                                                           message,
                                                           envelope.getKeyId(),
                                                           envelope.getEpochId());
+                    if (isTruthyEnv("NDNSF_COLLAB_AUTH_TRACE")) {
+                        NDN_LOG_WARN("NDNSF_COLLAB_AUTH_TRACE event=decrypt"
+                                     << " provider=" << identity.toUri()
+                                     << " producer=" << producer.toUri()
+                                     << " requestId=" << requestId.toUri()
+                                     << " dataName=" << dataName.toUri()
+                                     << " keyScope=" << message.getKeyScope()
+                                     << " producerRole=" << message.getProducerRole()
+                                     << " sequence=" << message.getSequence()
+                                     << " keyDigest=" << sha256DigestString(scopeKey)
+                                     << " adDigest=" << sha256DigestString(ad)
+                                     << " envelopeKeyId=" << envelope.getKeyId()
+                                     << " envelopeEpochId=" << envelope.getEpochId());
+                    }
                     ok = hybridAesGcmDecrypt(
                         scopeKey,
                         envelope,
@@ -5714,6 +5838,32 @@ namespace ndn_service_framework
             return;
         }
 
+        // The SVS subscription intentionally covers every collaboration
+        // packet.  Once a request installs one or more role bindings, drop
+        // packets outside those bindings before looking up a key or trying
+        // authentication.  Otherwise another role's ciphertext can be
+        // attempted with a local key of the same name and produce a false
+        // authentication failure.
+        {
+            std::lock_guard<std::mutex> lock(m_collaborationMutex);
+            bool hasReceiveFilter = false;
+            bool matchesReceiveFilter = false;
+            for (const auto& filter : m_collaborationSubscriptions) {
+                if (!filter.requestId.equals(parsed->requestId)) {
+                    continue;
+                }
+                hasReceiveFilter = true;
+                if (filter.keyScope == message.getKeyScope() &&
+                    filter.topicPrefix.isPrefixOf(message.getTopic())) {
+                    matchesReceiveFilter = true;
+                    break;
+                }
+            }
+            if (hasReceiveFilter && !matchesReceiveFilter) {
+                return;
+            }
+        }
+
         decryptCollaborationDataOrQueue(subscription.name,
                                         parsed->requestId,
                                         parsed->producerName,
@@ -5744,6 +5894,7 @@ namespace ndn_service_framework
                     envelope.provisioningTimeoutMs,
                     static_cast<uint64_t>(std::numeric_limits<int>::max())));
             assignment.scopeKeys = std::move(envelope.scopeKeys);
+            assignment.scopeKeyDataNames = std::move(envelope.scopeKeyDataNames);
             assignment.assignmentPayload =
                 std::move(envelope.opaquePayload);
             return assignment;
@@ -6105,14 +6256,12 @@ namespace ndn_service_framework
                               {"mode", "hybrid"}});
         }
 
-        const bool requestScopedReceiver =
-            messageType == "ACK" || messageType == "RESPONSE";
-        const bool attachWrappedKey =
-            requestScopedReceiver ||
-            m_hybridMessageCrypto.shouldAttachWrappedKey(key.keyId);
-        if (attachWrappedKey) {
+        // Publish the NAC-ABE wrapped MessageKey once under its deterministic
+        // epoch name. ACK/Response packets no longer repeat the wrapped key;
+        // receivers fetch it by name after a cache miss.
+        if (m_hybridMessageCrypto.shouldAttachWrappedKey(key.keyId)) {
             if (m_timelineTrace) {
-                logTimelineTrace("provider", "wrapped_key_attached", requestId,
+                logTimelineTrace("provider", "wrapped_key_published", requestId,
                                  {{"value", "true"},
                                   {"serviceName", serviceName.toUri()},
                                   {"messageType", messageType}});
@@ -6133,11 +6282,9 @@ namespace ndn_service_framework
                               << messageName.toUri());
                 return;
             }
-            envelope.setWrappedMessageKey(ndn::Buffer(wrapped.data(), wrapped.size()));
             serveDataWithIMS(contentData, ckData);
-            if (!requestScopedReceiver) {
-                m_hybridMessageCrypto.markSendKeyWrapped(key.keyId);
-            }
+            m_hybridMessageCrypto.cacheWrappedSendKey(
+                key.keyId, ndn::Buffer(wrapped.data(), wrapped.size()));
             ++m_hybridCryptoCounters.nac_abe_key_wrap_count;
             const auto wrapEndUs = timelineSteadyMicroseconds();
             if (m_timelineTrace) {
@@ -6149,8 +6296,9 @@ namespace ndn_service_framework
             }
         }
         else if (m_timelineTrace) {
-            logTimelineTrace("provider", "wrapped_key_attached", requestId,
+            logTimelineTrace("provider", "wrapped_key_published", requestId,
                              {{"value", "false"},
+                              {"source", "epoch-cache"},
                               {"serviceName", serviceName.toUri()},
                               {"messageType", messageType}});
         }
@@ -6259,7 +6407,16 @@ namespace ndn_service_framework
                                           {"mode", "hybrid"}});
                     }
                 }
-                publishSvs(m_svsps, messageName, contentBlock);
+                const bool asyncPublish = useAsyncSvsPublish();
+                const auto publishedSeqNo = publishSvs(m_svsps, messageName, contentBlock);
+                NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event="
+                              << (asyncPublish ? "SVS_PUBLISH_ACCEPTED" : "SVS_PUBLISH_DONE")
+                              << " timestamp_us=" << nowMicroseconds()
+                              << " requestId=" << requestId.toUri()
+                              << " providerName=" << identity.toUri()
+                              << " messageName=" << messageName.toUri()
+                              << " seqNo=" << publishedSeqNo
+                              << " mode=hybrid-message-crypto");
                 logControlTiming("provider", "SVS_PUBLISH_DONE", requestId,
                                  {{"serviceName", serviceName.toUri()},
                                   {"providerName", identity.toUri()},
@@ -6326,6 +6483,10 @@ namespace ndn_service_framework
         else {
             return false;
         }
+
+        const auto accessAttribute = hybridAccessAttributeForName(messageName, serviceName);
+        const auto keyDataName = makeHybridMessageKeyDataName(
+            serviceName, senderPrefix, accessAttribute, envelope.getEpochId());
 
         auto finish = [this, envelope, messageName, serviceName, requestId,
                        senderPrefix, decryptEntryUs, onSuccess = std::move(onSuccess),
@@ -6404,40 +6565,44 @@ namespace ndn_service_framework
                                 envelope.hasWrappedMessageKey() ? "true" : "false"},
                                {"entryToCacheLookupUs",
                                 std::to_string(timelineSteadyMicroseconds() - decryptEntryUs)}});
-        if (!envelope.hasWrappedMessageKey()) {
-            logHybridCryptoTiming("provider", "hybrid_decrypt_key_missing", requestId,
-                                  {{"messageType", envelope.getMessageType()},
-                                   {"source", "missing-attached-key"}});
-            if (onError) {
-                onError("hybrid MessageKey is not cached and not attached");
-            }
-            return true;
-        }
-
         ++m_hybridCryptoCounters.nac_abe_key_unwrap_count;
         const auto unwrapStartUs = timelineSteadyMicroseconds();
         logHybridCryptoTiming("provider", "hybrid_decrypt_key_unwrap_start", requestId,
                               {{"messageType", envelope.getMessageType()},
-                               {"source", "attached"}});
+                               {"source", envelope.hasWrappedMessageKey() ?
+                                          "inline" : "named-fetch"},
+                               {"keyName", keyDataName.toUri()}});
         try {
-            nacConsumer.consume(ndn::Name(envelope.getKeyId()),
-                                makeNacInlineContentBlock(envelope.getWrappedMessageKey()),
-                                [this, envelope, finish = std::move(finish), requestId, unwrapStartUs](const ndn::Buffer& unwrappedKey) mutable {
+            auto onKey = [this, envelope, finish = std::move(finish), requestId,
+                          unwrapStartUs, keyDataName](const ndn::Buffer& unwrappedKey) mutable {
                                     logHybridCryptoTiming("provider", "hybrid_decrypt_key_unwrap_done", requestId,
                                                           {{"messageType", envelope.getMessageType()},
-                                                           {"source", "attached"},
+                                                           {"source", envelope.hasWrappedMessageKey() ?
+                                                                      "inline" : "named-fetch"},
+                                                           {"keyName", keyDataName.toUri()},
                                                            {"unwrapUs", std::to_string(timelineSteadyMicroseconds() - unwrapStartUs)},
                                                            {"keyBytes", std::to_string(unwrappedKey.size())}});
                                     m_hybridMessageCrypto.cacheReceiveKey(envelope.getKeyId(),
                                                                           envelope.getEpochId(),
                                                                           unwrappedKey);
                                     finish(unwrappedKey);
-                                },
-                                [onError = std::move(onError)](const std::string& error) {
+                                };
+            auto onKeyError = [onError = std::move(onError), keyDataName](const std::string& error) {
                                     if (onError) {
-                                        onError("hybrid MessageKey unwrap failed: " + error);
+                                        onError("hybrid MessageKey " +
+                                                std::string(keyDataName.empty() ? "unwrap" :
+                                                            "fetch/unwrap") +
+                                                " failed: " + error);
                                     }
-                                });
+                                };
+            if (envelope.hasWrappedMessageKey()) {
+                nacConsumer.consume(keyDataName,
+                                    makeNacInlineContentBlock(envelope.getWrappedMessageKey()),
+                                    std::move(onKey), std::move(onKeyError));
+            }
+            else {
+                nacConsumer.consume(keyDataName, std::move(onKey), std::move(onKeyError));
+            }
         }
         catch (const std::exception& e) {
             if (onError) {
@@ -6954,6 +7119,10 @@ namespace ndn_service_framework
 
         auto requestV2 = ndn_service_framework::parseRequestNameV2(subscription.name);
         if (requestV2) {
+            logValidatedPublicationAudit(
+                "provider", "REQUEST", subscription,
+                requestV2->requestId, requestV2->serviceName,
+                requestV2->requesterName, identity);
             NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=REQUEST_RECEIVED timestamp_us="
                       << nowMicroseconds()
                       << " requestId=" << requestV2->requestId.toUri()
@@ -8012,10 +8181,14 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         }
         else if (envelope.hasWrappedMessageKey()) {
             boost::asio::post(m_face.getIoContext(),
-                [this, envelope, finishDecrypt, decryptCompleted,
+                [this, envelope, serviceName, encryptedDataName, finishDecrypt, decryptCompleted,
                  decryptMutex, decryptCv, decryptError]() mutable {
+                    const auto keyDataName = makeHybridMessageKeyDataName(
+                        ndn::Name(serviceName), extractLargeDataProducerPrefix(encryptedDataName),
+                        std::string("/SERVICE") + serviceName,
+                        envelope.getEpochId());
                     nacConsumer.consume(
-                        ndn::Name(envelope.getKeyId()),
+                        keyDataName,
                         makeNacInlineContentBlock(envelope.getWrappedMessageKey()),
                         [this, envelope, finishDecrypt](const ndn::Buffer& unwrappedKey) mutable {
                             m_hybridMessageCrypto.cacheReceiveKey(envelope.getKeyId(),
@@ -8036,10 +8209,12 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         }
         else {
             boost::asio::post(m_face.getIoContext(),
-                [this, encryptedDataName, envelope, finishDecrypt, decryptCompleted,
+                [this, serviceName, encryptedDataName, envelope, finishDecrypt, decryptCompleted,
                  decryptMutex, decryptCv, decryptError]() mutable {
-                    ndn::Name keyDataName = extractLargeDataProducerPrefix(encryptedDataName);
-                    keyDataName.append(ndn::Name(envelope.getKeyId()));
+                    const auto keyDataName = makeHybridMessageKeyDataName(
+                        ndn::Name(serviceName), extractLargeDataProducerPrefix(encryptedDataName),
+                        std::string("/SERVICE") + serviceName,
+                        envelope.getEpochId());
                     nacConsumer.consume(
                         keyDataName,
                         [this, envelope, finishDecrypt](const ndn::Buffer& unwrappedKey) mutable {
@@ -8207,32 +8382,41 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             return;
         }
 
-        const ndn::Name selectionName =
-            makeCompactServiceSelectionNameV2(requesterIdentity, serviceName, requestId);
-        ndn::Interest interest(selectionName);
-        interest.setCanBePrefix(false);
-        interest.setMustBeFresh(false);
-        interest.setInterestLifetime(ndn::time::milliseconds(
-            std::max(100, intEnvOrDefault("NDNSF_SELECTION_TARGETED_PREFETCH_LIFETIME_MS", 10000))));
+        const bool providerProjected =
+            m_collaborationServices.find(serviceName) != m_collaborationServices.end() ||
+            m_opaqueSelectionParticipants.find(serviceName) !=
+                m_opaqueSelectionParticipants.end();
+        const auto expressPrefetch =
+            [this, requesterIdentity, serviceName, requestId]
+            (const ndn::Name& selectionName, const char* selectionMode) {
+            ndn::Interest interest(selectionName);
+            interest.setCanBePrefix(false);
+            interest.setMustBeFresh(false);
+            interest.setInterestLifetime(ndn::time::milliseconds(
+                std::max(100, intEnvOrDefault(
+                    "NDNSF_SELECTION_TARGETED_PREFETCH_LIFETIME_MS", 10000))));
 
-        NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=SELECTION_TARGETED_PREFETCH_ISSUED timestamp_us="
-                      << nowMicroseconds()
-                      << " requestId=" << requestId.toUri()
-                      << " serviceName=" << serviceName.toUri()
-                      << " requesterName=" << requesterIdentity.toUri()
-                      << " providerName=" << identity.toUri()
-                      << " selectionName=" << selectionName.toUri());
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=SELECTION_TARGETED_PREFETCH_ISSUED timestamp_us="
+                          << nowMicroseconds()
+                          << " requestId=" << requestId.toUri()
+                          << " serviceName=" << serviceName.toUri()
+                          << " requesterName=" << requesterIdentity.toUri()
+                          << " providerName=" << identity.toUri()
+                          << " selectionMode=" << selectionMode
+                          << " selectionName=" << selectionName.toUri());
 
-        m_face.expressInterest(
-            interest,
-            [this, requesterIdentity, serviceName, requestId, selectionName]
-            (const ndn::Interest&, const ndn::Data& data) {
+            m_face.expressInterest(
+                interest,
+                [this, requesterIdentity, serviceName, requestId,
+                 selectionName, selectionMode]
+                (const ndn::Interest&, const ndn::Data& data) {
                 NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=SELECTION_TARGETED_PREFETCH_DATA timestamp_us="
                               << nowMicroseconds()
                               << " requestId=" << requestId.toUri()
                               << " serviceName=" << serviceName.toUri()
                               << " requesterName=" << requesterIdentity.toUri()
                               << " providerName=" << identity.toUri()
+                              << " selectionMode=" << selectionMode
                               << " selectionName=" << selectionName.toUri()
                               << " dataName=" << data.getName().toUri()
                               << " contentBytes=" << data.getContent().value_size());
@@ -8253,27 +8437,47 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                     packet,
                 };
                 handleServiceSelectionMessage(subData, false);
-            },
-            [this, requestId, serviceName, requesterIdentity, selectionName]
-            (const ndn::Interest&, const ndn::lp::Nack&) {
+                },
+                [this, requestId, serviceName, requesterIdentity,
+                 selectionName, selectionMode]
+                (const ndn::Interest&, const ndn::lp::Nack&) {
                 NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=SELECTION_TARGETED_PREFETCH_NACK timestamp_us="
                               << nowMicroseconds()
                               << " requestId=" << requestId.toUri()
                               << " serviceName=" << serviceName.toUri()
                               << " requesterName=" << requesterIdentity.toUri()
                               << " providerName=" << identity.toUri()
+                              << " selectionMode=" << selectionMode
                               << " selectionName=" << selectionName.toUri());
-            },
-            [this, requestId, serviceName, requesterIdentity, selectionName]
-            (const ndn::Interest&) {
+                },
+                [this, requestId, serviceName, requesterIdentity,
+                 selectionName, selectionMode]
+                (const ndn::Interest&) {
                 NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=SELECTION_TARGETED_PREFETCH_TIMEOUT timestamp_us="
                               << nowMicroseconds()
                               << " requestId=" << requestId.toUri()
                               << " serviceName=" << serviceName.toUri()
                               << " requesterName=" << requesterIdentity.toUri()
                               << " providerName=" << identity.toUri()
+                              << " selectionMode=" << selectionMode
                               << " selectionName=" << selectionName.toUri());
-            });
+                });
+        };
+
+        // Every individual decision is now provider-bound, including a
+        // one-provider generic selection.  Always prefetch that exact name.
+        // Generic multi-selection retains the compact publication, so only
+        // non-collaboration services need the second bounded prefetch.
+        expressPrefetch(
+            makeServiceSelectionNameV2(requesterIdentity, identity,
+                                       serviceName, requestId),
+            "provider-projection");
+        if (!providerProjected) {
+            expressPrefetch(
+                makeCompactServiceSelectionNameV2(requesterIdentity,
+                                                  serviceName, requestId),
+                "compact-fallback");
+        }
     }
 
     void ServiceProvider::handleServiceSelectionMessage(
@@ -8288,6 +8492,12 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             std::optional<CompactServiceSelectionNameV2>{} :
             ndn_service_framework::parseCompactServiceSelectionNameV2(subscription.name);
         if (compactSelectionV2) {
+            if (checkFreshness) {
+                logValidatedPublicationAudit(
+                    "provider", "SELECTION", subscription,
+                    compactSelectionV2->requestId, compactSelectionV2->serviceName,
+                    compactSelectionV2->requesterName, identity);
+            }
             NDN_LOG_DEBUG("Received compact Service Selection Message: "
                           << subscription.name.toUri());
             if (m_timelineTrace) {
@@ -8418,6 +8628,12 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         if (selectionV2) {
             if (!selectionV2->providerName.equals(identity)) {
                 return;
+            }
+            if (checkFreshness) {
+                logValidatedPublicationAudit(
+                    "provider", "SELECTION", subscription,
+                    selectionV2->requestId, selectionV2->serviceName,
+                    selectionV2->requesterName, selectionV2->providerName);
             }
             NDN_LOG_DEBUG("Received Service Selection Message: "
                           << subscription.name.toUri());
@@ -8674,6 +8890,16 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
     ndn::Name ServiceProvider::getName()
     {
         return identity;
+    }
+
+    ndn::Name ServiceProvider::getSigningKeyName() const
+    {
+        return signingCert.getKeyName();
+    }
+
+    ndn::Name ServiceProvider::getSigningCertificateName() const
+    {
+        return signingCert.getName();
     }
 
     std::shared_ptr<LiveStreamPublisher>
@@ -9812,7 +10038,16 @@ opaque_selection_committed:
                 auto assignment =
                     parseCollaborationAssignment(serviceName,
                                                  effectiveAssignmentPayload);
-                if (hasOpaqueParticipant && !sharedAssignmentPayload.empty()) {
+                // Structured deferred assignments carry the exact
+                // provider-scoped scope-key references in their envelope.
+                // The compact Selection metadata is a legacy fallback for
+                // unstructured opaque assignments only; merging it into a
+                // structured assignment would reintroduce every peer's key
+                // and make the provider attempt to decrypt data for another
+                // role with the wrong key.
+                if (hasOpaqueParticipant && !sharedAssignmentPayload.empty() &&
+                    assignment.scopeKeys.empty() &&
+                    assignment.scopeKeyDataNames.empty()) {
                     for (const auto& field :
                          parseSemicolonFields(sharedAssignmentPayload)) {
                         static const std::string prefix = "scopeKeyData.";

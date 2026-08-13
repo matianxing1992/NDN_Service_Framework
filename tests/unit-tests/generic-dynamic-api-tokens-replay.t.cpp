@@ -20,6 +20,7 @@ BOOST_AUTO_TEST_CASE(TokenHandshakeNegativeRegression)
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-token-negative"));
 
   LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+  installUserPermissions(user, requesterName, serviceName, {providerName});
   user.addPendingCallForTokenTest(requestId, serviceName, "user-token");
 
   auto ackName = makeRequestAckNameV2(providerName, requesterName, serviceName, requestId);
@@ -28,6 +29,7 @@ BOOST_AUTO_TEST_CASE(TokenHandshakeNegativeRegression)
   wrongUserAck.setProviderToken("provider-token");
   BOOST_CHECK(!user.handleRequestAckByName(ackName, wrongUserAck));
   BOOST_CHECK_EQUAL(user.getPendingRequestAckCount(requestId), 0);
+  BOOST_TEST_MESSAGE("NDNSF_AUTH_CASE case_id=user_token_mismatch terminal=deny observed_executions=0 gate=user_token");
 
   auto missingProviderTokenAck = makeSuccessAck();
   missingProviderTokenAck.setUserToken("user-token");
@@ -88,6 +90,7 @@ BOOST_AUTO_TEST_CASE(TokenHandshakeNegativeRegression)
     requestId,
     wrongSelectionBuffer);
   BOOST_CHECK_EQUAL(providerHandlerCallCount, 0);
+  BOOST_TEST_MESSAGE("NDNSF_AUTH_CASE case_id=provider_token_mismatch terminal=deny observed_executions=0 gate=provider_token");
 
   ServiceSelectionMessage goodSelection;
   goodSelection.setRequestIDs({requestId.toUri()});
@@ -130,6 +133,7 @@ BOOST_AUTO_TEST_CASE(TokenHandshakeNegativeRegression)
     replayedRequestId,
     replayedOldTokenBuffer);
   BOOST_CHECK_EQUAL(providerHandlerCallCount, 1);
+  BOOST_TEST_MESSAGE("NDNSF_AUTH_CASE case_id=provider_token_replay terminal=deny observed_executions=0 gate=provider_token_replay");
 }
 
 BOOST_AUTO_TEST_CASE(CompactSelectionUsesProviderBoundTokenProof)
@@ -274,6 +278,7 @@ BOOST_AUTO_TEST_CASE(ReplayedRuntimeMessagesOnlyTakeEffectOnce)
   BOOST_CHECK_EQUAL(ackHandlerCalls, 1);
   BOOST_CHECK_EQUAL(providerExecutions, 0);
   BOOST_CHECK(provider.hasPendingRequestForTokenTest(requesterName, serviceName, requestId));
+  BOOST_TEST_MESSAGE("NDNSF_AUTH_CASE case_id=user_token_replay terminal=deny observed_executions=0 gate=user_token_replay");
 
   user.addPendingCallForTokenTest(requestId, serviceName, "user-token");
   user.setPendingAckCandidatesHandlerForTest(
@@ -326,6 +331,7 @@ BOOST_AUTO_TEST_CASE(TokenModeDefaultsToEnabledAndPreservesChecks)
   BOOST_CHECK(user.getUseTokens());
   BOOST_CHECK(provider.getUseTokens());
 
+  installUserPermissions(user, requesterName, serviceName, {providerName});
   user.addPendingCallForTokenTest(requestId, serviceName, "user-token");
   auto ackName = makeRequestAckNameV2(providerName, requesterName, serviceName, requestId);
   auto missingProviderTokenAck = makeSuccessAck();
@@ -492,6 +498,7 @@ BOOST_AUTO_TEST_CASE(TokenModeMismatchFailsClearly)
                               userCert,
                               aaCert,
                               "examples/trust-any.conf");
+  installUserPermissions(secureUser, requesterName, serviceName, {providerName});
   secureUser.addPendingCallForTokenTest(requestId, serviceName, "user-token");
   auto tokenlessAck = makeSuccessAck();
   BOOST_CHECK(!secureUser.handleRequestAckByName(

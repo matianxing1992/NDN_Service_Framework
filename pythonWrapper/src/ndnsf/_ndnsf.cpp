@@ -623,6 +623,14 @@ public:
       throw std::runtime_error("cannot determine file segmented producer payload size");
     }
     m_fileSize = static_cast<uint64_t>(end);
+    // The producer serves one NDN segment per Interest.  Re-opening the
+    // payload for every Interest turns a large artifact into millions of
+    // open/seek/close cycles and defeats the bounded streaming design.  Keep
+    // one descriptor for the producer thread and seek it for each segment.
+    m_fileStream.open(m_filePath, std::ios::binary);
+    if (!m_fileStream) {
+      throw std::runtime_error("cannot open file segmented producer stream: " + m_filePath);
+    }
     m_segmentCount = std::max<uint64_t>(
       1, (m_fileSize + m_maxSegmentSize - 1) / m_maxSegmentSize);
 
@@ -791,14 +799,11 @@ private:
       std::min<uint64_t>(m_maxSegmentSize, m_fileSize - std::min(offset, m_fileSize)));
     std::vector<uint8_t> content(length);
     if (length > 0) {
-      std::ifstream stream(m_filePath, std::ios::binary);
-      if (!stream) {
-        throw std::runtime_error("cannot reopen file segmented producer payload");
-      }
-      stream.seekg(static_cast<std::streamoff>(offset));
-      stream.read(reinterpret_cast<char*>(content.data()),
-                  static_cast<std::streamsize>(length));
-      if (static_cast<size_t>(stream.gcount()) != length) {
+      m_fileStream.clear();
+      m_fileStream.seekg(static_cast<std::streamoff>(offset));
+      m_fileStream.read(reinterpret_cast<char*>(content.data()),
+                        static_cast<std::streamsize>(length));
+      if (static_cast<size_t>(m_fileStream.gcount()) != length) {
         throw std::runtime_error("short read from file segmented producer payload");
       }
     }
@@ -835,6 +840,7 @@ private:
   ndn::KeyChain m_keyChain;
   ndn::Name m_baseName;
   std::string m_filePath;
+  std::ifstream m_fileStream;
   ndn::Name m_versionedName;
   ndn::Name m_signingIdentity;
   size_t m_maxSegmentSize;
@@ -1225,6 +1231,44 @@ makeSegmentedDataPackets(const std::string& baseName,
     output.push_back(toPyDataPacket(*segment));
   }
   return output;
+}
+
+// Convenience/test signer only. Production predictive streams should let the
+// application sign with its own ndn-python (or another NDN) keychain and pass
+// the resulting exact wire to StreamPublisher::push().
+py::bytes
+makeSignedData(const std::string& name,
+               const py::bytes& content,
+               const std::string& signingIdentity,
+               int freshnessMs)
+{
+  if (freshnessMs < 0) {
+    throw std::invalid_argument("freshness_ms must be nonnegative");
+  }
+  ndn::KeyChain keyChain;
+  const auto identityName = signingIdentity.empty() ?
+    ndn::Name("/ndnsf/python/signed-data") : ndn::Name(signingIdentity);
+  getOrCreateIdentity(keyChain, identityName);
+
+  ndn::Data data(ndn::Name{name});
+  data.setFreshnessPeriod(ndn::time::milliseconds(freshnessMs));
+  const std::string bytes = content;
+  data.setContent(ndn::span<const uint8_t>(
+    reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size()));
+  keyChain.sign(data,
+    ndn::security::SigningInfo(ndn::security::SigningInfo::SIGNER_TYPE_ID,
+                               identityName));
+  const auto wire = data.wireEncode();
+  return py::bytes(reinterpret_cast<const char*>(wire.data()), wire.size());
+}
+
+std::string
+makePredictiveDataNameUri(const std::string& mappingRoot,
+                          uint64_t mappingVersion,
+                          uint64_t sequence)
+{
+  return nsf::makePredictiveDataName(
+           ndn::Name(mappingRoot), mappingVersion, sequence).toUri();
 }
 
 PyDataPacket
@@ -2462,10 +2506,10 @@ public:
       }
       std::cout << std::endl;
     }
-    // The compact Selection already carries every provider entry.  Providers
-    // deterministically reconstruct roleProvider.* from those authenticated
-    // entries, so repeating the complete map in every assignment wastes more
-    // than a kilobyte and can exceed NDN's 8,800-byte packet ceiling.
+    // Core publishes each collaboration assignment as an authenticated,
+    // provider-specific Selection projection.  Do not repeat the complete
+    // roleProvider.* map inside every opaque assignment: the plan already
+    // binds that map and the participant needs only its own exact projection.
     return selected;
   }
 
@@ -2544,6 +2588,11 @@ public:
   void fail(const std::string& reason)
   {
     m_ctx->fail(reason);
+  }
+
+  void allowData(const std::string& keyScope, const std::string& topicPrefix)
+  {
+    m_ctx->allowData(keyScope, ndn::Name(topicPrefix));
   }
 
   void publish(const std::string& keyScope,
@@ -2865,6 +2914,33 @@ public:
       throw std::runtime_error("provider is not initialized");
     }
     return m_provider->getProviderBootEpoch();
+  }
+
+  std::string
+  providerIdentity() const
+  {
+    if (!m_provider) {
+      throw std::runtime_error("provider is not initialized");
+    }
+    return m_provider->getName().toUri();
+  }
+
+  std::string
+  providerSigningKeyName() const
+  {
+    if (!m_provider) {
+      throw std::runtime_error("provider is not initialized");
+    }
+    return m_provider->getSigningKeyName().toUri();
+  }
+
+  std::string
+  providerSigningCertificateName() const
+  {
+    if (!m_provider) {
+      throw std::runtime_error("provider is not initialized");
+    }
+    return m_provider->getSigningCertificateName().toUri();
   }
 
   void
@@ -4148,13 +4224,19 @@ public:
                      py::function onTimeout,
                      int ackTimeoutMs,
                      int timeoutMs,
-                     const std::string& requestedRequestId = "")
+                     const std::string& requestedRequestId = "",
+                     py::object ackCoveragePredicate = py::none())
   {
     start();
     auto payload = toBuffer(initialPayload);
     auto ackClosedCallback = keepPyFunction(std::move(onAckClosed));
     auto responseCallback = keepPyFunction(std::move(onResponse));
     auto timeoutCallback = keepPyFunction(std::move(onTimeout));
+    PyFunctionPtr ackCoverageCallback;
+    if (!ackCoveragePredicate.is_none()) {
+      ackCoverageCallback = keepPyFunction(
+        ackCoveragePredicate.cast<py::function>());
+    }
     auto actualRequestId = std::make_shared<std::string>();
     std::mutex mutex;
     std::condition_variable cv;
@@ -4166,6 +4248,7 @@ public:
        ackClosedCallback = std::move(ackClosedCallback),
        responseCallback = std::move(responseCallback),
        timeoutCallback = std::move(timeoutCallback),
+       ackCoverageCallback = std::move(ackCoverageCallback),
        actualRequestId, &mutex, &cv, &submitted, &submissionError]() mutable {
         try {
           const auto requestId = m_user->BeginCollaboration(
@@ -4216,7 +4299,22 @@ public:
               }
             },
             requestedRequestId.empty() ?
-              ndn::Name() : ndn::Name(requestedRequestId));
+              ndn::Name() : ndn::Name(requestedRequestId),
+            [ackCoverageCallback](const std::vector<nsf::AckCandidate>& candidates) {
+              if (!ackCoverageCallback) {
+                return false;
+              }
+              py::gil_scoped_acquire gil;
+              try {
+                py::object result = (*ackCoverageCallback)(
+                  ackCandidatesToPyList(candidates));
+                return result.cast<bool>();
+              }
+              catch (const py::error_already_set& error) {
+                PyErr_WriteUnraisable(error.value().ptr());
+              }
+              return false;
+            });
           {
             std::lock_guard<std::mutex> lock(mutex);
             *actualRequestId = requestId.toUri();
@@ -6293,6 +6391,19 @@ PYBIND11_MODULE(_ndnsf, m)
         py::arg("max_segment_size") = 6000,
         py::arg("freshness_ms") = 60000);
 
+  m.def("make_signed_data",
+        &makeSignedData,
+        py::arg("name"),
+        py::arg("content"),
+        py::arg("signing_identity") = "",
+        py::arg("freshness_ms") = 300);
+
+  m.def("make_predictive_data_name",
+        &makePredictiveDataNameUri,
+        py::arg("mapping_root"),
+        py::arg("mapping_version"),
+        py::arg("sequence"));
+
   m.def("decode_data_packet",
         &decodeDataPacket,
         py::arg("wire"));
@@ -6391,6 +6502,9 @@ PYBIND11_MODULE(_ndnsf, m)
          py::arg("service") = "")
     .def("fail", &PyCollaborationContext::fail,
          py::arg("reason"))
+    .def("allow_data", &PyCollaborationContext::allowData,
+         py::arg("key_scope"),
+         py::arg("topic_prefix"))
     .def("publish", &PyCollaborationContext::publish,
          py::arg("key_scope"),
          py::arg("topic"),
@@ -6477,6 +6591,12 @@ PYBIND11_MODULE(_ndnsf, m)
          py::arg("handler"))
     .def_property_readonly("provider_boot_epoch",
          &NativeServiceProvider::providerBootEpoch)
+    .def_property_readonly("provider_identity",
+         &NativeServiceProvider::providerIdentity)
+    .def_property_readonly("provider_signing_key_name",
+         &NativeServiceProvider::providerSigningKeyName)
+    .def_property_readonly("provider_signing_certificate_name",
+         &NativeServiceProvider::providerSigningCertificateName)
     .def("configure_opaque_selection_store",
          &NativeServiceProvider::configureOpaqueSelectionStore,
          py::arg("wal_path"), py::arg("storage_key"),
@@ -6619,7 +6739,8 @@ PYBIND11_MODULE(_ndnsf, m)
          py::arg("service"), py::arg("payload"),
          py::arg("on_ack_closed"), py::arg("on_response"),
          py::arg("on_timeout"), py::arg("ack_timeout_ms") = 300,
-         py::arg("timeout_ms") = 10000, py::arg("request_id") = "")
+         py::arg("timeout_ms") = 10000, py::arg("request_id") = "",
+         py::arg("ack_coverage_predicate") = py::none())
     .def("commit_collaboration_plan",
          &NativeServiceUser::commitCollaborationPlan,
          py::arg("service"), py::arg("request_id"),

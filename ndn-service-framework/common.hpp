@@ -85,6 +85,10 @@ namespace ndn_service_framework{
                            ndn::Data& data,
                            const ndn::Name& identityName);
 
+    /** Apply validated NDNSF environment overrides to SVS PubSub options. */
+    void
+    configureSvsPubSubOptionsFromEnvironment(ndn::svs::SVSPubSubOptions& options);
+
     enum class SelectionExecutionState
     {
         Unknown,
@@ -506,6 +510,38 @@ namespace ndn_service_framework{
           const ndn::security::DataValidationSuccessCallback& successCb,
           const ndn::security::DataValidationFailureCallback& failureCb)
         {
+            // ndn-svs may invoke its validator from parallel Sync workers,
+            // while CertificateFetcherFromNetwork completes on the Face
+            // io_context. ValidatorConfig and its validation states are owned
+            // by that Face thread; starting them concurrently from workers can
+            // corrupt the stored completion callback. Marshal the entire
+            // validation entry back to the Face event loop and own every input
+            // until it runs there.
+            if (m_callbackIo != nullptr) {
+                if (auto self = weak_from_this().lock()) {
+                    auto ownedData = data;
+                    auto ownedSuccessCb = successCb;
+                    auto ownedFailureCb = failureCb;
+                    boost::asio::post(
+                      *m_callbackIo,
+                      [self, data = std::move(ownedData),
+                       success = std::move(ownedSuccessCb),
+                       failure = std::move(ownedFailureCb)]() mutable {
+                        self->validateDataOnFace(
+                          data, std::move(success), std::move(failure));
+                      });
+                    return;
+                }
+            }
+            validateDataOnFace(data, successCb, failureCb);
+        }
+
+        void
+        validateDataOnFace(
+          const ndn::Data& data,
+          ndn::security::DataValidationSuccessCallback successCb,
+          ndn::security::DataValidationFailureCallback failureCb)
+        {
             const auto sigType = data.getSignatureType();
             if ((sigType != ndn::tlv::SignatureSha256WithRsa &&
                  sigType != ndn::tlv::SignatureSha256WithEcdsa) ||
@@ -566,20 +602,33 @@ namespace ndn_service_framework{
             catch (const std::exception&) {
             }
 
+            // ValidatorConfig may complete only after one or more network
+            // certificate fetches.  Own the callbacks for that asynchronous
+            // lifetime; retaining references to validateData() parameters
+            // makes them dangle as soon as this function returns.
+            auto ownedSuccessCb = successCb;
+            auto ownedFailureCb = failureCb;
             m_validator.validate(
                 data,
-                [&](const ndn::Data &)
+                [success = std::move(ownedSuccessCb)](const ndn::Data& validatedData)
                 {
-                    successCb(data);
+                    NDN_LOG_DEBUG(
+                      "MessageValidator Data validated through configured validator "
+                      "name=" << validatedData.getName());
+                    if (success) {
+                        success(validatedData);
+                    }
                 },
-                [&](const ndn::Data& data, const ndn::security::ValidationError& error)
+                [this, failure = std::move(ownedFailureCb)](
+                    const ndn::Data& failedData,
+                    const ndn::security::ValidationError& error)
                 {
                     NDN_LOG_ERROR("MessageValidator Data validation failed name="
-                                  << data.getName()
+                                  << failedData.getName()
                                   << " reason=" << error);
                     ++m_failureCount;
-                    if (failureCb) {
-                        failureCb(data, error);
+                    if (failure) {
+                        failure(failedData, error);
                     }
                 });
         }

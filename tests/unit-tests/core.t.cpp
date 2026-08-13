@@ -23,6 +23,9 @@
 #include "ndn-service-framework/common.hpp"
 #include "tests/boost-test.hpp"
 
+#include <cstdlib>
+#include <optional>
+
 namespace ndn_service_framework {
 namespace test {
 
@@ -34,6 +37,33 @@ struct TestCoreFixture
 
   ndn::Face m_face;
 
+};
+
+class ScopedEnvironmentVariable
+{
+public:
+  ScopedEnvironmentVariable(const char* name, const char* value)
+    : m_name(name)
+  {
+    if (const char* previous = std::getenv(name)) {
+      m_previous = previous;
+    }
+    ::setenv(name, value, 1);
+  }
+
+  ~ScopedEnvironmentVariable()
+  {
+    if (m_previous) {
+      ::setenv(m_name.c_str(), m_previous->c_str(), 1);
+    }
+    else {
+      ::unsetenv(m_name.c_str());
+    }
+  }
+
+private:
+  std::string m_name;
+  std::optional<std::string> m_previous;
 };
 
 BOOST_FIXTURE_TEST_SUITE(Core, TestCoreFixture)
@@ -74,6 +104,20 @@ BOOST_AUTO_TEST_CASE(EcdsaPreferredSigningInfoFallsBackToRsa)
   keyChain.sign(signedRsaOnly, makeEcdsaPreferredSigningInfo(keyChain, rsaOnlyIdentity));
   BOOST_CHECK_EQUAL(signedRsaOnly.getSignatureInfo().getKeyLocator().getName(),
                     rsaOnly.getName());
+}
+
+BOOST_AUTO_TEST_CASE(ConfiguredPiggybackLimitOverridesSvsDefault)
+{
+  ScopedEnvironmentVariable configuredLimit("NDNSF_SVS_MAX_PIGGYDATA_BYTES", "4096");
+  ScopedEnvironmentVariable configuredApplicationParameters(
+    "NDNSF_SVS_MAX_APP_PARAMS_BYTES", "5000");
+  ndn::svs::SVSPubSubOptions options;
+
+  BOOST_REQUIRE_EQUAL(options.maxPiggyDataSize, 800);
+  configureSvsPubSubOptionsFromEnvironment(options);
+
+  BOOST_CHECK_EQUAL(options.maxPiggyDataSize, 4096);
+  BOOST_CHECK_EQUAL(options.maxApplicationParametersSize, 5000);
 }
 
 // BOOST_AUTO_TEST_CASE(mergeStateVector)

@@ -15,6 +15,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -30,6 +31,33 @@
 
 namespace ndn_service_framework::test {
 namespace {
+
+class ScopedEnvironmentValue
+{
+public:
+  ScopedEnvironmentValue(const char* name, const char* value)
+    : m_name(name)
+  {
+    if (const char* previous = std::getenv(name)) {
+      m_previous = previous;
+    }
+    ::setenv(name, value, 1);
+  }
+
+  ~ScopedEnvironmentValue()
+  {
+    if (m_previous) {
+      ::setenv(m_name.c_str(), m_previous->c_str(), 1);
+    }
+    else {
+      ::unsetenv(m_name.c_str());
+    }
+  }
+
+private:
+  std::string m_name;
+  std::optional<std::string> m_previous;
+};
 
 class DynamicRequest
 {
@@ -209,6 +237,54 @@ public:
     return pending->second.selectionPublishedProviders;
   }
 
+  void
+  deliverPlaintextAckPublicationForTest(
+      const ndn::Name& providerName,
+      const ndn::Name& serviceName,
+      const ndn::Name& requestId,
+      const RequestAckMessage& ackMessage)
+  {
+    const auto ackName = makeRequestAckNameV2(providerName, identity,
+                                               serviceName, requestId);
+    const auto ackBlock = ackMessage.WireEncode();
+    const ndn::Buffer ackBuffer(ackBlock.data(), ackBlock.size());
+    const std::optional<ndn::Data> packet;
+    const ndn::Name producerPrefix = ndn::Name(providerName).append("1");
+    const ndn::svs::SVSPubSub::SubscriptionData publication{
+      ackName,
+      ndn::span<const uint8_t>(ackBuffer.data(), ackBuffer.size()),
+      producerPrefix,
+      1,
+      packet};
+    OnRequestAck(publication);
+  }
+
+  std::map<std::string, std::string>
+  getSelectionDigestsByProvider(const ndn::Name& requestId) const
+  {
+    const auto pending = m_pendingCalls.find(requestId);
+    if (pending == m_pendingCalls.end()) {
+      return {};
+    }
+    return pending->second.selectionDigestsByProvider;
+  }
+
+  ndn::Buffer
+  getCollaborationAssignmentForTest(const ndn::Name& requestId,
+                                    const ndn::Name& providerName) const
+  {
+    const auto pending = m_pendingCalls.find(requestId);
+    if (pending == m_pendingCalls.end()) {
+      return {};
+    }
+    const auto assignment = pending->second.collaborationAssignments.find(
+      providerName.toUri());
+    if (assignment == pending->second.collaborationAssignments.end()) {
+      return {};
+    }
+    return assignment->second;
+  }
+
   bool
   hasPendingCall(const ndn::Name& requestId) const
   {
@@ -265,6 +341,14 @@ public:
     auto pending = m_pendingCalls.find(requestId);
     BOOST_REQUIRE(pending != m_pendingCalls.end());
     return closeDeferredCollaborationAcks(requestId, pending->second);
+  }
+
+  bool
+  tracksAckDecryptForTest(const ndn::Name& requestId) const
+  {
+    const auto pending = m_pendingCalls.find(requestId);
+    BOOST_REQUIRE(pending != m_pendingCalls.end());
+    return shouldTrackAckDecrypt(pending->second);
   }
 
   ndn::Buffer
@@ -619,20 +703,45 @@ PermissionResponse
 makePermissionResponse(const ndn::Name& targetIdentity,
                        size_t permissionKind,
                        const ndn::Name& providerName,
-                       const ndn::Name& serviceName)
+                       const ndn::Name& serviceName,
+                       size_t policyEpoch = 1)
 {
   PermissionEntry entry;
   entry.setProviderName(providerName.toUri());
   entry.setServiceName(serviceName.toUri());
   entry.setToken("");
   entry.setTtl(0);
-  entry.setVersion(1);
+  entry.setVersion(policyEpoch);
 
   PermissionResponse response;
   response.setTargetIdentity(targetIdentity.toUri());
   response.setPermissionKind(permissionKind);
+  response.setPolicyEpoch(policyEpoch);
   response.addEntry(entry);
   return response;
+}
+
+void
+installUserPermissions(LocalServiceUser& user,
+                       const ndn::Name& requesterName,
+                       const ndn::Name& serviceName,
+                       const std::vector<ndn::Name>& providerNames,
+                       size_t policyEpoch = 1)
+{
+  PermissionResponse response;
+  response.setTargetIdentity(requesterName.toUri());
+  response.setPermissionKind(tlv::UserPermission);
+  response.setPolicyEpoch(policyEpoch);
+  for (const auto& providerName : providerNames) {
+    PermissionEntry entry;
+    entry.setProviderName(providerName.toUri());
+    entry.setServiceName(serviceName.toUri());
+    entry.setToken("");
+    entry.setTtl(0);
+    entry.setVersion(policyEpoch);
+    response.addEntry(entry);
+  }
+  user.applyPermissionResponse(response);
 }
 
 void

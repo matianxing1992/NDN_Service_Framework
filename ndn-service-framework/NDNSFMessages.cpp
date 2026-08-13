@@ -2,6 +2,7 @@
 #include "HybridMessageCrypto.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <iomanip>
 #include <openssl/sha.h>
 #include <sstream>
@@ -9,6 +10,77 @@
 namespace ndn_service_framework {
 
 namespace {
+
+std::string
+hexEncodeBytes(const uint8_t* bytes, size_t size)
+{
+    std::ostringstream os;
+    os << std::hex << std::setfill('0');
+    for (size_t i = 0; i < size; ++i) {
+        os << std::setw(2) << static_cast<unsigned>(bytes[i]);
+    }
+    return os.str();
+}
+
+bool
+decodeFixedHex(const std::string& text, size_t expectedBytes, ndn::Buffer& result)
+{
+    if (text.size() != expectedBytes * 2) {
+        return false;
+    }
+    result.resize(expectedBytes);
+    for (size_t i = 0; i < expectedBytes; ++i) {
+        const auto hi = std::tolower(static_cast<unsigned char>(text[i * 2]));
+        const auto lo = std::tolower(static_cast<unsigned char>(text[i * 2 + 1]));
+        auto value = [] (unsigned char c) -> int {
+            if (c >= '0' && c <= '9') return c - '0';
+            if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+            return -1;
+        };
+        const int high = value(hi);
+        const int low = value(lo);
+        if (high < 0 || low < 0) {
+            result.clear();
+            return false;
+        }
+        result[i] = static_cast<uint8_t>((high << 4) | low);
+    }
+    return true;
+}
+
+uint64_t
+hybridAlgorithmCode(const std::string& algorithm)
+{
+    return algorithm == "AES-256-GCM" ? 1 : 0;
+}
+
+std::string
+hybridAlgorithmFromCode(uint64_t code)
+{
+    return code == 1 ? "AES-256-GCM" : std::string();
+}
+
+uint64_t
+hybridMessageTypeCode(const std::string& messageType)
+{
+    if (messageType == "REQUEST") return 1;
+    if (messageType == "ACK") return 2;
+    if (messageType == "RESPONSE") return 3;
+    if (messageType == "SELECTION") return 4;
+    return 0;
+}
+
+std::string
+hybridMessageTypeFromCode(uint64_t code)
+{
+    switch (code) {
+    case 1: return "REQUEST";
+    case 2: return "ACK";
+    case 3: return "RESPONSE";
+    case 4: return "SELECTION";
+    default: return {};
+    }
+}
 
 ndn::Block
 makePayloadBlock(const uint8_t* payload, size_t size)
@@ -965,6 +1037,26 @@ encodeCollaborationAssignmentEnvelope(
         scopeKeys.encode();
         block.push_back(scopeKeys);
     }
+    if (!assignment.scopeKeyDataNames.empty()) {
+        ndn::Block scopeKeyDataNames(tlv::CollaborationScopeKeyDataNamesType);
+        for (const auto& [scope, dataName] : assignment.scopeKeyDataNames) {
+            if (scope.empty() || scope.size() > 1024 || dataName.empty() ||
+                dataName.toUri().size() > 8192) {
+                throw std::invalid_argument(
+                    "invalid collaboration scope-key Data reference");
+            }
+            ndn::Block entry(tlv::CollaborationScopeKeyDataNameType);
+            entry.push_back(ndn::makeStringBlock(
+                tlv::CollaborationScopeKeyDataValueType,
+                dataName.toUri()));
+            entry.push_back(ndn::makeStringBlock(
+                tlv::CollaborationScopeKeyNameType, scope));
+            entry.encode();
+            scopeKeyDataNames.push_back(entry);
+        }
+        scopeKeyDataNames.encode();
+        block.push_back(scopeKeyDataNames);
+    }
     block.push_back(ndn::makeBinaryBlock(
         tlv::CollaborationOpaquePayloadType,
         {assignment.opaquePayload.data(), assignment.opaquePayload.size()}));
@@ -1062,6 +1154,55 @@ decodeCollaborationAssignmentEnvelope(
                                 "invalid collaboration assignment scope key");
                         }
                         decoded.scopeKeys.emplace(std::move(scope), std::move(key));
+                    }
+                }
+                break;
+            case tlv::CollaborationScopeKeyDataNamesType:
+                if (element.value_size() > 64 * 1024) {
+                    throw std::runtime_error(
+                        "collaboration assignment scope-key Data set exceeds bounds");
+                }
+                {
+                    auto scopeBlock = element;
+                    scopeBlock.parse();
+                    for (const auto& scopeElement : scopeBlock.elements()) {
+                        if (scopeElement.type() !=
+                            tlv::CollaborationScopeKeyDataNameType) {
+                            throw std::runtime_error(
+                                "unknown collaboration scope-key Data field");
+                        }
+                        auto entry = scopeElement;
+                        entry.parse();
+                        std::string scope;
+                        ndn::Name dataName;
+                        for (const auto& field : entry.elements()) {
+                            if (field.type() == tlv::CollaborationScopeKeyNameType) {
+                                if (!scope.empty()) {
+                                    throw std::runtime_error(
+                                        "duplicate collaboration scope-key Data scope");
+                                }
+                                scope = ndn::readString(field);
+                            }
+                            else if (field.type() ==
+                                     tlv::CollaborationScopeKeyDataValueType) {
+                                if (!dataName.empty()) {
+                                    throw std::runtime_error(
+                                        "duplicate collaboration scope-key Data name");
+                                }
+                                dataName = ndn::Name(ndn::readString(field));
+                            }
+                            else {
+                                throw std::runtime_error(
+                                    "unknown collaboration scope-key Data field");
+                            }
+                        }
+                        if (scope.empty() || scope.size() > 1024 || dataName.empty() ||
+                            decoded.scopeKeyDataNames.count(scope) != 0) {
+                            throw std::runtime_error(
+                                "invalid collaboration scope-key Data reference");
+                        }
+                        decoded.scopeKeyDataNames.emplace(std::move(scope),
+                                                         std::move(dataName));
                     }
                 }
                 break;
@@ -1448,7 +1589,7 @@ const ndn::Buffer& HybridMessageEnvelope::getWrappedMessageKey() const { return 
 bool HybridMessageEnvelope::hasWrappedMessageKey() const { return !wrappedMessageKey_.empty(); }
 
 void HybridMessageEnvelope::Clear() {
-    version_ = 1;
+    version_ = 2;
     algorithm_ = "AES-256-GCM";
     keyId_.clear();
     epochId_.clear();
@@ -1466,10 +1607,42 @@ ndn::Block HybridMessageEnvelope::WireEncode() const {
     }
     ndn::Block block(tlv::HybridMessageEnvelopeType);
     block.push_back(ndn::makeNonNegativeIntegerBlock(tlv::VersionType, version_));
-    block.push_back(ndn::makeStringBlock(tlv::AlgorithmType, algorithm_));
-    block.push_back(ndn::makeStringBlock(tlv::KeyIdType, keyId_));
-    block.push_back(ndn::makeStringBlock(tlv::EpochIdType, epochId_));
-    block.push_back(ndn::makeStringBlock(tlv::MessageTypeType, messageType_));
+    if (version_ >= 2 && hybridAlgorithmCode(algorithm_) != 0) {
+        block.push_back(ndn::makeNonNegativeIntegerBlock(
+            tlv::AlgorithmType, hybridAlgorithmCode(algorithm_)));
+    }
+    else {
+        block.push_back(ndn::makeStringBlock(tlv::AlgorithmType, algorithm_));
+    }
+    if (version_ >= 2) {
+        ndn::Buffer compactKey;
+        if (!decodeFixedHex(hybridCompactKeyId(keyId_), 8, compactKey)) {
+            compactKey.resize(8, 0);
+        }
+        block.push_back(ndn::makeBinaryBlock(tlv::KeyIdType,
+                                             compactKey.begin(), compactKey.end()));
+        ndn::Buffer compactEpoch;
+        if (decodeFixedHex(epochId_, 8, compactEpoch)) {
+            block.push_back(ndn::makeBinaryBlock(tlv::EpochIdType,
+                                                 compactEpoch.begin(), compactEpoch.end()));
+        }
+        else {
+            block.push_back(ndn::makeStringBlock(tlv::EpochIdType, epochId_));
+        }
+        const auto messageTypeCode = hybridMessageTypeCode(messageType_);
+        if (messageTypeCode != 0) {
+            block.push_back(ndn::makeNonNegativeIntegerBlock(
+                tlv::MessageTypeType, messageTypeCode));
+        }
+        else {
+            block.push_back(ndn::makeStringBlock(tlv::MessageTypeType, messageType_));
+        }
+    }
+    else {
+        block.push_back(ndn::makeStringBlock(tlv::KeyIdType, keyId_));
+        block.push_back(ndn::makeStringBlock(tlv::EpochIdType, epochId_));
+        block.push_back(ndn::makeStringBlock(tlv::MessageTypeType, messageType_));
+    }
     block.push_back(ndn::makeBinaryBlock(tlv::NonceType, nonce_.begin(), nonce_.end()));
     block.push_back(ndn::makeBinaryBlock(tlv::CipherTextType, cipherText_.begin(), cipherText_.end()));
     block.push_back(ndn::makeBinaryBlock(tlv::AuthTagType, authTag_.begin(), authTag_.end()));
@@ -1494,16 +1667,38 @@ bool HybridMessageEnvelope::WireDecode(const ndn::Block& block) {
             version_ = ndn::readNonNegativeInteger(b);
         }
         else if (b.type() == tlv::AlgorithmType) {
-            algorithm_ = ndn::readString(b);
+            if (version_ >= 2 && b.value_size() <= 2 && b.value_size() > 0 &&
+                b.value()[0] <= 4) {
+                algorithm_ = hybridAlgorithmFromCode(ndn::readNonNegativeInteger(b));
+            }
+            else {
+                algorithm_ = ndn::readString(b);
+            }
         }
         else if (b.type() == tlv::KeyIdType) {
-            keyId_ = ndn::readString(b);
+            if (version_ >= 2 && b.value_size() == 8) {
+                keyId_ = hexEncodeBytes(b.value(), b.value_size());
+            }
+            else {
+                keyId_ = ndn::readString(b);
+            }
         }
         else if (b.type() == tlv::EpochIdType) {
-            epochId_ = ndn::readString(b);
+            if (version_ >= 2 && b.value_size() == 8) {
+                epochId_ = hexEncodeBytes(b.value(), b.value_size());
+            }
+            else {
+                epochId_ = ndn::readString(b);
+            }
         }
         else if (b.type() == tlv::MessageTypeType) {
-            messageType_ = ndn::readString(b);
+            if (version_ >= 2 && b.value_size() <= 2 && b.value_size() > 0 &&
+                b.value()[0] <= 4) {
+                messageType_ = hybridMessageTypeFromCode(ndn::readNonNegativeInteger(b));
+            }
+            else {
+                messageType_ = ndn::readString(b);
+            }
         }
         else if (b.type() == tlv::NonceType) {
             nonce_ = ndn::Buffer(b.value(), b.value_size());
@@ -1518,7 +1713,7 @@ bool HybridMessageEnvelope::WireDecode(const ndn::Block& block) {
             wrappedMessageKey_ = ndn::Buffer(b.value(), b.value_size());
         }
     }
-    return version_ == 1 && algorithm_ == "AES-256-GCM" &&
+    return (version_ == 1 || version_ == 2) && algorithm_ == "AES-256-GCM" &&
            !keyId_.empty() && !epochId_.empty() && !nonce_.empty() &&
            !cipherText_.empty() && !authTag_.empty();
 }

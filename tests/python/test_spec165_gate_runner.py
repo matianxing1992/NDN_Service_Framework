@@ -1,3 +1,4 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -6,6 +7,7 @@ from Experiments.NDNSF_DI_Run_Local_Deployment_Gates import (
     MANDATORY_TIERS,
     base_record,
     container_command,
+    retain_stage_artifacts,
 )
 from Experiments.NDNSF_Run_Minindn_Quick_Checks import (
     checks as quick_checks,
@@ -137,6 +139,83 @@ class GateRunnerTests(unittest.TestCase):
         self.assertIn("service openvswitch-switch start", rendered)
         self.assertIn("/opt/mini-ndn:ro", rendered)
         self.assertNotIn("tigercluster", rendered.lower())
+
+    def test_stage_artifacts_move_to_content_addressed_store_without_copy(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as temporary:
+            root = Path(temporary).resolve()
+            stage_dir = root / "run" / "runtime" / "qwen-onnx-stage-artifacts"
+            stage_dir.mkdir(parents=True)
+            first = stage_dir / "stage-0-qwen.onnx"
+            second = stage_dir / "stage-0-qwen-onnx-export.pt"
+            first.write_bytes(b"onnx-stage")
+            second.write_bytes(b"export-stage")
+            first_inode = first.stat().st_ino
+
+            record = retain_stage_artifacts(
+                stage_dir=stage_dir,
+                artifact_store_root=root / "artifact-store",
+                model_content_digest="sha256:model",
+                workload_digest="sha256:workload",
+                replace_source=True,
+            )
+
+            self.assertTrue(stage_dir.is_symlink())
+            self.assertFalse(Path(os.readlink(stage_dir)).is_absolute())
+            self.assertEqual(record["duplicatePayloadBytes"], 0)
+            self.assertEqual(record["fileCount"], 2)
+            bundle = Path(record["bundlePath"])
+            self.assertEqual(
+                (bundle / "stage-0-qwen.onnx").stat().st_ino,
+                first_inode,
+            )
+            self.assertEqual((stage_dir / "stage-0-qwen.onnx").read_bytes(), b"onnx-stage")
+            self.assertTrue((bundle / "bundle-manifest.json").is_file())
+            reused = retain_stage_artifacts(
+                stage_dir=stage_dir,
+                artifact_store_root=root / "artifact-store",
+                model_content_digest="sha256:model",
+                workload_digest="sha256:different-prompt-workload",
+                replace_source=False,
+            )
+            self.assertEqual(reused["bundleDigest"], record["bundleDigest"])
+            self.assertFalse(reused["installed"])
+
+    def test_historical_run_can_seed_store_and_then_be_deleted(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as temporary:
+            root = Path(temporary).resolve()
+            stage_dir = root / "historical" / "qwen-onnx-stage-artifacts"
+            stage_dir.mkdir(parents=True)
+            payload = stage_dir / "stage-0-qwen.onnx"
+            payload.write_bytes(b"retained")
+
+            record = retain_stage_artifacts(
+                stage_dir=stage_dir,
+                artifact_store_root=root / "artifact-store",
+                model_content_digest="sha256:model",
+                workload_digest="sha256:workload",
+                replace_source=False,
+            )
+            bundle_payload = Path(record["bundlePath"]) / payload.name
+            self.assertEqual(payload.stat().st_ino, bundle_payload.stat().st_ino)
+
+            payload.unlink()
+            stage_dir.rmdir()
+            self.assertEqual(bundle_payload.read_bytes(), b"retained")
+
+    def test_artifact_store_outside_repository_fails_without_copy_fallback(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as temporary:
+            stage_dir = Path(temporary) / "stages"
+            stage_dir.mkdir()
+            (stage_dir / "stage.onnx").write_bytes(b"stage")
+            with tempfile.TemporaryDirectory() as external:
+                with self.assertRaisesRegex(RuntimeError, "inside the repository"):
+                    retain_stage_artifacts(
+                        stage_dir=stage_dir,
+                        artifact_store_root=Path(external),
+                        model_content_digest="sha256:model",
+                        workload_digest="sha256:workload",
+                        replace_source=False,
+                    )
 
 
 if __name__ == "__main__":

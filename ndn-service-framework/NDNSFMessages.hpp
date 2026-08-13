@@ -98,6 +98,9 @@ namespace tlv {
         CollaborationScopeKeyType = 0xF630,
         CollaborationScopeKeyNameType = 0xF631,
         CollaborationScopeKeyValueType = 0xF632,
+        CollaborationScopeKeyDataNamesType = 0xF633,
+        CollaborationScopeKeyDataNameType = 0xF634,
+        CollaborationScopeKeyDataValueType = 0xF635,
     };
 
     // Selection strategies.
@@ -381,6 +384,9 @@ struct CollaborationAssignmentEnvelope
     bool requiresProvisioning = false;
     uint64_t provisioningTimeoutMs = 0;
     std::map<std::string, ndn::Buffer> scopeKeys;
+    // Encrypted large-Data names from which Providers fetch request-scoped
+    // keys when the assignment does not carry the raw key material.
+    std::map<std::string, ndn::Name> scopeKeyDataNames;
     ndn::Buffer opaquePayload;
 };
 
@@ -507,7 +513,10 @@ public:
     bool WireDecode(const ndn::Block& block) override;
 
 private:
-    size_t version_ = 1;
+    // Version 2 keeps the public semantic fields but uses compact numeric and
+    // binary encodings on the wire. Version 1 remains decodable for old
+    // applications and is still available through setVersion(1).
+    size_t version_ = 2;
     std::string algorithm_ = "AES-256-GCM";
     std::string keyId_;
     std::string epochId_;

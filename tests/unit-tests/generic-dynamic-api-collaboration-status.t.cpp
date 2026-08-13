@@ -1,5 +1,7 @@
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
 
+#include <set>
+
 namespace ndn_service_framework::test {
 
 BOOST_AUTO_TEST_SUITE(GenericDynamicApi)
@@ -35,6 +37,40 @@ public:
   }
 };
 
+class ThreeRoleLargeDeferredSelection final : public ParticipantSelectionPolicy
+{
+public:
+  std::vector<SelectedParticipant>
+  select(const std::vector<AckCandidate>& candidates,
+         const std::vector<CollaborationRoleSpec>& roles) const override
+  {
+    if (candidates.size() != 3 || roles.size() != 3) {
+      return {};
+    }
+    std::vector<SelectedParticipant> selected;
+    for (size_t i = 0; i < candidates.size(); ++i) {
+      if (!candidates[i].ack.getStatus()) {
+        return {};
+      }
+      std::string opaque(2400, static_cast<char>('A' + i));
+      opaque.replace(0, roles[i].role.size(), roles[i].role);
+      ndn::Buffer payload(
+        reinterpret_cast<const uint8_t*>(opaque.data()), opaque.size());
+      selected.push_back({
+        roles[i].role,
+        candidates[i].serviceName,
+        candidates[i].providerName,
+        roles[i].requiredArtifact,
+        false,
+        0,
+        std::move(payload),
+        candidates[i],
+      });
+    }
+    return selected;
+  }
+};
+
 CollaborationPlan
 makeDeferredPlan(const ndn::Name& artifact = ndn::Name("/artifact/a"))
 {
@@ -47,6 +83,40 @@ makeDeferredPlan(const ndn::Name& artifact = ndn::Name("/artifact/a"))
   role.requiredArtifact = artifact;
   plan.roles.push_back(std::move(role));
   plan.participantSelector = std::make_shared<FixedDeferredSelection>();
+  return plan;
+}
+
+CollaborationPlan
+makeThreeRoleLargeDeferredPlan()
+{
+  CollaborationPlan plan;
+  plan.ackCollectionTimeMs = 100;
+  plan.timeoutMs = 1000;
+  for (size_t i = 0; i < 3; ++i) {
+    CollaborationRoleSpec role;
+    role.role = "stage-" + std::to_string(i);
+    role.service = ndn::Name("/generic/work");
+    role.requiredArtifact = ndn::Name("/artifact/stage").appendNumber(i);
+    role.minProviders = 1;
+    role.maxProviders = 1;
+    plan.roles.push_back(std::move(role));
+  }
+  plan.keyScopes = {
+    {"stage-0-to-1", {"stage-0", "stage-1"}},
+    {"stage-1-to-2", {"stage-1", "stage-2"}},
+  };
+  plan.dependencies = {
+    {{"stage-0"}, {"stage-1"}, "stage-0-to-1", ndn::Name("/activation"), true},
+    {{"stage-1"}, {"stage-2"}, "stage-1-to-2", ndn::Name("/activation"), true},
+  };
+  const std::string scopeKeyMetadata =
+    "scopeKeyData.stage-0-to-1=/key/stage-0-to-1;"
+    "scopeKeyData.stage-1-to-2=/key/stage-1-to-2;";
+  plan.sharedAssignmentMetadata = ndn::Buffer(
+    reinterpret_cast<const uint8_t*>(scopeKeyMetadata.data()),
+    scopeKeyMetadata.size());
+  plan.participantSelector =
+    std::make_shared<ThreeRoleLargeDeferredSelection>();
   return plan;
 }
 
@@ -98,6 +168,115 @@ BOOST_AUTO_TEST_CASE(DeferredAckClosureAndPlanCommitAreOneShotAndIdempotent)
     user.CommitCollaborationPlan(
       requestId, closed.digest, makeDeferredPlan(ndn::Name("/artifact/b"))),
     std::logic_error);
+}
+
+BOOST_AUTO_TEST_CASE(LargeThreeRoleCollaborationPublishesBoundedProviderProjections)
+{
+  ndn::security::KeyChain keyChain(
+    "pib-memory:deferred-large-collab", "tpm-memory:deferred-large-collab");
+  ndn::DummyClientFace face(keyChain);
+  auto userCert = makeRsaIdentity(keyChain, ndn::Name("/user/large-collab"));
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa"));
+  LocalServiceUser user(
+    face, ndn::Name("/test/group"), userCert, aaCert,
+    "examples/trust-any.conf");
+  const ndn::Name requestId("/request/large-collab-1");
+  size_t closureCount = 0;
+  CollaborationAckClosure closed;
+  user.prepareDeferredCollaborationForTest(
+    requestId,
+    [&](const CollaborationAckClosure& value) {
+      ++closureCount;
+      closed = value;
+    });
+
+  const std::vector<ndn::Name> providers = {
+    ndn::Name("/provider/stage-0"),
+    ndn::Name("/provider/stage-1"),
+    ndn::Name("/provider/stage-2"),
+  };
+  for (size_t i = 0; i < providers.size(); ++i) {
+    user.addDeferredAckForTest(
+      requestId, providers[i], "stage-" + std::to_string(i));
+  }
+  BOOST_CHECK(user.closeDeferredAcksForTest(requestId));
+  BOOST_REQUIRE_EQUAL(closed.candidates.size(), 3);
+  BOOST_REQUIRE_EQUAL(closureCount, 1);
+
+  const auto plan = makeThreeRoleLargeDeferredPlan();
+  BOOST_CHECK(user.CommitCollaborationPlan(requestId, closed.digest, plan));
+
+  const auto published = user.getSelectionPublishedProviders(requestId);
+  BOOST_REQUIRE_EQUAL(published.size(), 3);
+  const auto digests = user.getSelectionDigestsByProvider(requestId);
+  BOOST_REQUIRE_EQUAL(digests.size(), 3);
+  std::set<std::string> distinctDigests;
+  size_t combinedAssignmentBytes = 0;
+  for (const auto& provider : providers) {
+    BOOST_CHECK(std::find(published.begin(), published.end(), provider) !=
+                published.end());
+    const auto found = digests.find(provider.toUri());
+    BOOST_REQUIRE(found != digests.end());
+    distinctDigests.insert(found->second);
+    const auto assignment =
+      user.getCollaborationAssignmentForTest(requestId, provider);
+    BOOST_REQUIRE(!assignment.empty());
+    CollaborationAssignmentEnvelope envelope;
+    BOOST_REQUIRE(decodeCollaborationAssignmentEnvelope(assignment, envelope));
+    const auto expectedScopeCount =
+      provider == providers[0] || provider == providers[2] ? 1 : 2;
+    BOOST_CHECK_EQUAL(envelope.scopeKeys.size(), expectedScopeCount);
+    BOOST_CHECK_EQUAL(envelope.scopeKeyDataNames.size(), expectedScopeCount);
+    if (provider == providers[0]) {
+      BOOST_CHECK(envelope.scopeKeys.count("stage-0-to-1") == 1);
+      BOOST_CHECK(envelope.scopeKeys.count("stage-1-to-2") == 0);
+      BOOST_CHECK(envelope.scopeKeyDataNames.count("stage-0-to-1") == 1);
+      BOOST_CHECK(envelope.scopeKeyDataNames.count("stage-1-to-2") == 0);
+    }
+    else if (provider == providers[1]) {
+      BOOST_CHECK(envelope.scopeKeys.count("stage-0-to-1") == 1);
+      BOOST_CHECK(envelope.scopeKeys.count("stage-1-to-2") == 1);
+      BOOST_CHECK(envelope.scopeKeyDataNames.count("stage-0-to-1") == 1);
+      BOOST_CHECK(envelope.scopeKeyDataNames.count("stage-1-to-2") == 1);
+    }
+    else {
+      BOOST_CHECK(envelope.scopeKeys.count("stage-0-to-1") == 0);
+      BOOST_CHECK(envelope.scopeKeys.count("stage-1-to-2") == 1);
+      BOOST_CHECK(envelope.scopeKeyDataNames.count("stage-0-to-1") == 0);
+      BOOST_CHECK(envelope.scopeKeyDataNames.count("stage-1-to-2") == 1);
+    }
+    combinedAssignmentBytes += assignment.size();
+  }
+  BOOST_CHECK(combinedAssignmentBytes > 7 * 1024);
+  BOOST_CHECK_EQUAL(distinctDigests.size(), 3);
+
+  // Recommitting the identical plan is idempotent: it does not reopen ACKs or
+  // publish a second set of provider projections.
+  BOOST_CHECK(user.CommitCollaborationPlan(requestId, closed.digest, plan));
+  BOOST_CHECK_EQUAL(closureCount, 1);
+  BOOST_CHECK_EQUAL(user.getSelectionPublishedProviders(requestId).size(), 3);
+  BOOST_CHECK(user.getSelectionDigestsByProvider(requestId) == digests);
+}
+
+BOOST_AUTO_TEST_CASE(DeferredCollaborationTracksAckDecryptBeforeClosure)
+{
+  ndn::security::KeyChain keyChain(
+    "pib-memory:deferred-ack-decrypt", "tpm-memory:deferred-ack-decrypt");
+  ndn::DummyClientFace face(keyChain);
+  auto userCert = makeRsaIdentity(keyChain, ndn::Name("/user/decrypt"));
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa"));
+  LocalServiceUser user(
+    face, ndn::Name("/test/group"), userCert, aaCert,
+    "examples/trust-any.conf");
+  const ndn::Name requestId("/request/deferred-ack-decrypt");
+  user.prepareDeferredCollaborationForTest(
+    requestId, [](const CollaborationAckClosure&) {});
+
+  // A deferred collaboration owns an immutable ACK_CLOSED snapshot. An ACK
+  // observed before the deadline must therefore be tracked while its
+  // asynchronous decrypt finishes; otherwise the timer can freeze an empty
+  // candidate set even though the Provider already accepted the Request.
+  BOOST_CHECK(user.tracksAckDecryptForTest(requestId));
 }
 
 BOOST_AUTO_TEST_CASE(OperationStatusCodecRetainsMonotonicAndUnknownProgressFields)

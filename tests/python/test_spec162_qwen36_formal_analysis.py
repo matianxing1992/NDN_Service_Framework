@@ -110,7 +110,6 @@ class Qwen36FormalAnalysisTest(unittest.TestCase):
                     lines.append(
                         "NDNSF_DI_ACK_DECISION "
                         f"requestId={request_id} attempt=1 status=true "
-                        "reservationHeld=true "
                         "reason=DI_SELECTION_DATAFLOW_V2_READY\n"
                     )
                     lines.append(
@@ -183,7 +182,7 @@ class Qwen36FormalAnalysisTest(unittest.TestCase):
                     item["releaseBeforeNextAckCount"]
                     for item in result["ackReleaseOrderingByRank"]
                 ],
-                [59, 59, 59],
+                [None, None, None],
             )
             self.assertEqual(
                 [

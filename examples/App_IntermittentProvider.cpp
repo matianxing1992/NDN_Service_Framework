@@ -5,6 +5,7 @@
 #include <ndn-cxx/security/key-chain.hpp>
 #include <ndn-cxx/security/key-params.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <fstream>
@@ -215,6 +216,7 @@ main(int argc, char** argv)
     const int epochMs = parseIntOption(argc, argv, "--epoch-ms", 10000);
     const int rejectMs = parseIntOption(argc, argv, "--reject-ms", 10000);
     const int normalDelayMs = parseIntOption(argc, argv, "--processing-delay-ms", 5);
+    const int ackDelayMs = parseIntOption(argc, argv, "--ack-delay-ms", 0);
     const int unavailableDelayMs =
       parseIntOption(argc, argv, "--unavailable-processing-delay-ms", 10000);
     const int handlerThreads = parseIntOption(argc, argv, "--handler-threads", 4);
@@ -246,13 +248,17 @@ main(int argc, char** argv)
     provider.setPerformanceMode(true);
     provider.setUseTokens(true);
     provider.setHandlerThreads(static_cast<size_t>(std::max(0, handlerThreads)));
+    auto requestExecutions = std::make_shared<std::atomic<size_t>>(0);
 
     provider.addService(
       serviceName,
       ndn_service_framework::ServiceProvider::AckStrategyHandler(
-        [providerId, &availability, serviceName](
+        [providerId, &availability, serviceName, ackDelayMs](
           const ndn_service_framework::RequestMessage&) {
           ndn_service_framework::ServiceProvider::AckDecision decision;
+          if (ackDelayMs > 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(ackDelayMs));
+          }
           if (availability.isUnavailable()) {
             decision.suppressAck = true;
             decision.status = false;
@@ -274,14 +280,22 @@ main(int argc, char** argv)
           return decision;
         }),
       ndn_service_framework::ServiceProvider::RequestHandler(
-        [providerId, &availability, normalDelayMs, unavailableDelayMs](
+        [providerId, &availability, normalDelayMs, unavailableDelayMs,
+         requestExecutions](
           const ndn::Name&,
           const ndn::Name&,
           const ndn::Name& serviceName,
           const ndn::Name& requestId,
           const ndn_service_framework::RequestMessage& request) {
+          const auto executionNumber =
+            requestExecutions->fetch_add(1, std::memory_order_relaxed) + 1;
           const bool unavailable = availability.isUnavailable();
           const int delayMs = unavailable ? unavailableDelayMs : normalDelayMs;
+          std::cout << "INTERMITTENT_PROVIDER_REQUEST_EXECUTION provider="
+                    << providerId << " request=" << requestId.toUri()
+                    << " service=" << serviceName.toUri()
+                    << " execution=" << executionNumber
+                    << " unavailable=" << unavailable << std::endl;
           if (delayMs > 0) {
             std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
           }
@@ -314,6 +328,8 @@ main(int argc, char** argv)
               << " failureProbability=" << failureProbability
               << " epochMs=" << epochMs
               << " rejectMs=" << rejectMs
+              << " ackDelayMs=" << ackDelayMs
+              << " processingDelayMs=" << normalDelayMs
               << " selectiveAck=suppress-when-unavailable"
               << std::endl;
 

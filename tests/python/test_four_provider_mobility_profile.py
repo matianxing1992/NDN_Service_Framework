@@ -281,6 +281,21 @@ class FourProviderMobilityProfileTests(unittest.TestCase):
                 self.assertEqual(
                     command[command.index("--traffic-start-delay-s") + 1], "4.0")
 
+    def test_holdout_can_offset_requests_between_trace_gate_epochs(self):
+        original = pilot.CONFIG["traffic_start_delay_s"]
+        try:
+            pilot.apply_traffic_start_delay(4.05)
+            with tempfile.TemporaryDirectory() as temporary:
+                command = pilot.command_for(
+                    "grpc", 72, "phase-offset-holdout",
+                    Path(temporary) / "trace.csv",
+                    Path(temporary) / "grpc", 100.0, 2.0)
+            self.assertEqual(pilot.CONFIG["traffic_start_delay_s"], 4.05)
+            self.assertEqual(
+                command[command.index("--traffic-start-delay-s") + 1], "4.05")
+        finally:
+            pilot.CONFIG["traffic_start_delay_s"] = original
+
 
 if __name__ == "__main__":
     unittest.main()
