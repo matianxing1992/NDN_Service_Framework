@@ -195,6 +195,11 @@ class GithubSealedWorkflowTests(unittest.TestCase):
             "pip --no-deps must not package stale tracked build/lib modules",
         )
 
+    def test_gpu_release_manifest_uses_existing_oci_schema_fields(self) -> None:
+        text = (REPO / ".github/workflows/ndnsf-di-itiger-image.yml").read_text()
+        self.assertNotIn('"foundationSourceRevision":', text)
+        self.assertIn('"path": "foundationImage", "digest":', text)
+
     def test_qwen_slurm_uses_canonical_least_privilege_runner(self) -> None:
         template = (
             REPO

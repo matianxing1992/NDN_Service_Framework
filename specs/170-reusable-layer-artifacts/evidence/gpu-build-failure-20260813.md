@@ -64,3 +64,21 @@ to `oci/locks/gpu.lock`. No image was pushed or signed by this run.
 The correction removes generated `build` directories under the Python profiles
 inside the GPU assembly mount before installing the profiles. No image was
 pushed or signed by this run.
+
+## Release-manifest schema failure
+
+- Workflow run: `31719525746`
+- Source revision: `16b18fa77d4931a40eaa9358ddf1ff36d670d4ce`
+- Image digest produced before evidence failure:
+  `sha256:d1fc676d35f8671435c8020a564f860359bc9ecb1f618c41ba4eebfbacb435f8`
+- Build result: native compilation, Python environment, runtime library
+  closure, static probe, cosign verification, anonymous digest access, and
+  SBOM generation passed.
+- Failure: release record validation rejected the generated manifest because
+  top-level `foundationSourceRevision` is not allowed by
+  `oci-release.schema.json`.
+- Candidate status: `INVALID_CANDIDATE`; the image is not an accepted release
+  until a new source identity produces a valid manifest and record.
+
+The correction removes that non-schema property and retains the foundation
+image digest in the existing `buildInputs` field.
