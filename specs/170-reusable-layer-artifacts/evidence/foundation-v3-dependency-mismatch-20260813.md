@@ -10,7 +10,7 @@
 - Failure location: `ServiceUser.cpp` compilation against the sealed
   `ndn-svs@7b616b08624a79617bb05f2d3553bbbacdc4c482` headers.
 
-The locked dependency was an older publication-fetch revision. It does not
+The locked dependency was an older publication-fetch revision. It did not
 provide the V3/runtime surface used by the current NDNSF source, including
 `SVSPubSubOptions::syncProtocol`, `SvsProtocolVersion`,
 `getSyncProtocolOptions()`, and the fetch/piggyback statistics accessors.
@@ -38,6 +38,13 @@ Running 82 test cases ... No errors detected
 NDNSF `gpu.lock` now records this exact commit. The lock-parity/spec170 Python
 and container suite remains green: `69 passed, 2 skipped, 1 warning`.
 
+The first corrected-lock dispatch (`31687612105`) stopped at the existing
+preflight guard because that guard still hard-coded the old revision. The
+guard is now updated in
+`packaging/ndnsf-di-container/oci/scripts/preflight-gpu-build.py` to require
+`060811333de68b9674e45522222a14d4e047bf28`; this is a source/preflight
+correction, not a bypass. A new dispatch is required.
+
 This evidence does not close T024: the foundation workflow must be rerun from
-the corrected lock and must produce a signed immutable manifest before any
-GPU image or exact-SIF gate is attempted.
+the corrected lock and corrected preflight, and must produce a signed immutable
+manifest before any GPU image or exact-SIF gate is attempted.
