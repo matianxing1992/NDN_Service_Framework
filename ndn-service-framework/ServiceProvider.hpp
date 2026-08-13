@@ -984,6 +984,7 @@ namespace ndn_service_framework{
                                               std::string& error) const;
             void attachTargetedTokenBatch(const ndn::Name& requesterIdentity,
                                           const ndn::Name& serviceName,
+                                          const RequestMessage& requestMessage,
                                           ResponseMessage& response) const;
             bool dispatchRequestExecutionAsync(
                 const ndn::Name& requesterName,

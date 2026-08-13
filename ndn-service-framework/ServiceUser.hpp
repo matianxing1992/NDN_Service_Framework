@@ -1005,6 +1005,17 @@ namespace ndn_service_framework{
                 std::string userToken;
             };
 
+            struct TargetedTokenPoolControl
+            {
+                size_t nextBatch = 0;
+                size_t capacity = 0;
+                size_t consumedSinceStore = 0;
+                uint64_t lastStoredAtUs = 0;
+                uint64_t refillStartedAtUs = 0;
+                bool observed = false;
+                bool refillInFlight = false;
+            };
+
             struct PendingCallTraceRecord
             {
                 uint64_t createdAtUs = 0;
@@ -1111,6 +1122,15 @@ namespace ndn_service_framework{
             void storeTargetedTokenPairs(const ndn::Name& providerName,
                                          const ndn::Name& serviceName,
                                          const ndn_service_framework::ResponseMessage& responseMessage);
+            size_t getTargetedTokenBatchHint(const ndn::Name& providerName,
+                                             const ndn::Name& serviceName);
+            bool markTargetedTokenRefillInFlight(const ndn::Name& providerName,
+                                                 const ndn::Name& serviceName,
+                                                 size_t requestedBatch);
+            void clearTargetedTokenRefill(const ndn::Name& providerName,
+                                          const ndn::Name& serviceName);
+            void maybeRefillTargetedTokenPool(const ndn::Name& providerName,
+                                              const ndn::Name& serviceName);
 
             static const StoredAck* findStoredAck(
                 const PendingCall& pendingCall,
@@ -1214,6 +1234,8 @@ namespace ndn_service_framework{
             std::map<ndn::Name, PendingCall> m_pendingCalls;
             std::mutex m_targetedTokenPoolsMutex;
             std::map<std::string, std::deque<TargetedTokenPair>> m_targetedTokenPools;
+            std::map<std::string, TargetedTokenPoolControl>
+                m_targetedTokenPoolControls;
             std::map<ndn::Name, std::map<std::string, uint64_t>>
                 m_recentAckProvidersByService;
             std::map<ndn::Name, PendingCallTraceRecord> m_pendingCallTraceHistory;

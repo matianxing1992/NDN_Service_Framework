@@ -217,6 +217,10 @@ def build_parser():
                         help="App_User benchmark strategy")
     parser.add_argument("--targeted", action="store_true",
                         help="Use RequestServiceTargeted against the first provider")
+    parser.add_argument("--targeted-token-batch-size", type=int, default=None,
+                        help="Set NDNSF_TARGETED_TOKEN_BATCH_SIZE for targeted bootstrap/refill (1-256)")
+    parser.add_argument("--targeted-token-adaptive", action="store_true",
+                        help="Opt in to adaptive targeted-token refill sizing; fixed batch is the default")
     parser.add_argument("--ack-timeout-ms", type=int, default=1000,
                         help="ACK collection timeout for custom selection")
     parser.add_argument("--timeout-ms", type=int, default=5000,
@@ -337,6 +341,8 @@ def ensure_runtime(args):
         raise RuntimeError("--warmup must be non-negative and --max-requests must be positive")
     if args.provider_ready_timeout_seconds <= 0:
         raise RuntimeError("--provider-ready-timeout-seconds must be positive")
+    if args.targeted_token_batch_size is not None and not (1 <= args.targeted_token_batch_size <= 256):
+        raise RuntimeError("--targeted-token-batch-size must be between 1 and 256")
     if args.controller_settle_seconds < 0:
         raise RuntimeError("--controller-settle-seconds must be non-negative")
     if args.provider_start_gap_seconds < 0:
@@ -1708,6 +1714,10 @@ def app_env(output_dir, session_base, args):
     }
     if args.workload_mode == "open-loop" and getattr(args, "rate_rps", None) is not None:
         env["NDNSF_SVS_EXPECTED_RPS"] = "{:.3f}".format(float(args.rate_rps))
+    if getattr(args, "targeted", False) and getattr(args, "targeted_token_batch_size", None) is not None:
+        env["NDNSF_TARGETED_TOKEN_BATCH_SIZE"] = str(int(args.targeted_token_batch_size))
+    if getattr(args, "targeted", False) and getattr(args, "targeted_token_adaptive", False):
+        env["NDNSF_TARGETED_TOKEN_ADAPTIVE"] = "1"
     if args.performance_mode:
         env["NDNSF_SVS_MAX_APP_PARAMS_BYTES"] = os.environ.get(
             "NDNSF_SVS_MAX_APP_PARAMS_BYTES", "4096")

@@ -1,6 +1,8 @@
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
 
+#include <chrono>
 #include <cstdlib>
+#include <thread>
 
 namespace ndn_service_framework::test {
 
@@ -148,6 +150,188 @@ BOOST_AUTO_TEST_CASE(RequestServiceTargetedBootstrapsBeforeFastPath)
   BOOST_CHECK_EQUAL(user.getTargetedTokenPoolSizeForTest(providerName, serviceName), 0);
 }
 
+BOOST_AUTO_TEST_CASE(TargetedPoolProactivelyRefillsOnceAtLowWatermark)
+{
+  // This case explicitly exercises the opt-in adaptive controller.  The
+  // production default is fixed-size refill (256); keep the adaptive
+  // contract isolated from the default-path tests below.
+  ::setenv("NDNSF_TARGETED_TOKEN_ADAPTIVE", "1", 1);
+  ::setenv("NDNSF_TARGETED_TOKEN_BATCH_SIZE", "16", 1);
+  struct RestoreEnv {
+    ~RestoreEnv()
+    {
+      ::unsetenv("NDNSF_TARGETED_TOKEN_ADAPTIVE");
+      ::unsetenv("NDNSF_TARGETED_TOKEN_BATCH_SIZE");
+    }
+  } restoreEnv;
+
+  ndn::security::KeyChain keyChain("pib-memory:targeted-user-refill",
+                                   "tpm-memory:targeted-user-refill");
+  ndn::DummyClientFace face(keyChain);
+  auto userCert = makeRsaIdentity(keyChain, ndn::Name("/test/user/refill"));
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa/refill"));
+  LocalServiceUser user(face,
+                        ndn::Name("/test/group/refill"),
+                        userCert,
+                        aaCert,
+                        "examples/trust-any.conf");
+  const ndn::Name providerName("/test/provider/refill");
+  const ndn::Name serviceName("/Repo/Adaptive");
+  user.applyPermissionResponse(
+    makePermissionResponse(ndn::Name("/test/user/refill"),
+                           tlv::UserPermission,
+                           providerName,
+                           serviceName));
+
+  ResponseMessage bootstrapResponse;
+  bootstrapResponse.setStatus(true);
+  bootstrapResponse.setUserToken("bootstrap-user-token");
+  std::map<std::string, std::string> tokens;
+  for (size_t i = 0; i < 16; ++i) {
+    tokens["targeted." + std::to_string(i) + ".provider"] =
+      "provider-token-" + std::to_string(i);
+    tokens["targeted." + std::to_string(i) + ".user"] =
+      "user-token-" + std::to_string(i);
+  }
+  tokens["targeted.count"] = "16";
+  bootstrapResponse.setTokens(tokens);
+  user.addTargetedPendingCallForTokenTest(ndn::Name("/bootstrap-refill"),
+                                          serviceName,
+                                          providerName,
+                                          "bootstrap-user-token");
+  BOOST_REQUIRE(user.handleDecryptedResponse(ndn::Name("/bootstrap-refill"),
+                                             providerName,
+                                             bootstrapResponse));
+  BOOST_CHECK_EQUAL(user.getTargetedTokenPoolSizeForTest(providerName, serviceName), 16);
+
+  struct PublishedCall {
+    ndn::Name requestId;
+    RequestMessage request;
+  };
+  std::vector<PublishedCall> published;
+  user.setRequestPublisher(
+    [&published] (const ndn::Name& requestId,
+                  const ndn::Name&,
+                  const std::vector<ndn::Name>&,
+                  const ndn::Name&,
+                  const RequestMessage& requestMessage,
+                  size_t) {
+      published.push_back(PublishedCall{requestId, requestMessage});
+    });
+
+  // Consuming down to the 25% low-watermark must trigger exactly one
+  // bootstrap refill, while all application calls continue using Targeted.
+  for (size_t i = 0; i < 12; ++i) {
+    BOOST_REQUIRE(!user.RequestServiceTargeted(
+      providerName,
+      serviceName,
+      RequestMessage(),
+      5000,
+      [] (const ndn::Name&) {},
+      [] (const ResponseMessage&) {}).empty());
+  }
+
+  size_t bootstrapCount = 0;
+  ndn::Name refillRequestId;
+  std::string refillUserToken;
+  for (const auto& call : published) {
+    if (call.request.getRequestMode() == tlv::TargetedBootstrapRequest) {
+      ++bootstrapCount;
+      refillRequestId = call.requestId;
+      refillUserToken = call.request.getUserToken();
+      BOOST_CHECK_EQUAL(call.request.getTokens().at("targeted.refill"), "1");
+      BOOST_CHECK_EQUAL(call.request.getTokens().at("targeted.batch_hint"), "16");
+    }
+    else {
+      BOOST_CHECK_EQUAL(call.request.getRequestMode(), tlv::TargetedRequest);
+    }
+  }
+  BOOST_CHECK_EQUAL(bootstrapCount, 1);
+  BOOST_REQUIRE(!refillRequestId.empty());
+
+  // Give the adaptive controller a measurable demand interval.  A fast
+  // refill must use the observed consumption rate rather than staying fixed
+  // at the initial batch size.
+  std::this_thread::sleep_for(std::chrono::milliseconds(120));
+  ResponseMessage refillResponse;
+  refillResponse.setStatus(true);
+  refillResponse.setUserToken(refillUserToken);
+  refillResponse.setTokens(tokens);
+  BOOST_REQUIRE(user.handleDecryptedResponse(refillRequestId,
+                                             providerName,
+                                             refillResponse));
+  BOOST_CHECK_EQUAL(user.getTargetedTokenPoolSizeForTest(providerName, serviceName), 20);
+
+  const auto publishedBeforeSecondRefill = published.size();
+  for (size_t i = 0; i < 16; ++i) {
+    BOOST_REQUIRE(!user.RequestServiceTargeted(
+      providerName,
+      serviceName,
+      RequestMessage(),
+      5000,
+      [] (const ndn::Name&) {},
+      [] (const ResponseMessage&) {}).empty());
+  }
+  size_t secondBootstrapCount = 0;
+  size_t secondBatchHint = 0;
+  for (size_t i = publishedBeforeSecondRefill; i < published.size(); ++i) {
+    const auto& call = published[i];
+    if (call.request.getRequestMode() == tlv::TargetedBootstrapRequest) {
+      ++secondBootstrapCount;
+      secondBatchHint = static_cast<size_t>(std::stoul(
+        call.request.getTokens().at("targeted.batch_hint")));
+    }
+  }
+  BOOST_CHECK_EQUAL(secondBootstrapCount, 1);
+  BOOST_CHECK_GT(secondBatchHint, 16);
+  BOOST_CHECK_LE(secondBatchHint, 256);
+}
+
+BOOST_AUTO_TEST_CASE(TargetedEmptyPoolCoalescesBootstrapAndUsesNormalFallback)
+{
+  ndn::security::KeyChain keyChain("pib-memory:targeted-user-coalesce",
+                                   "tpm-memory:targeted-user-coalesce");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name userName("/test/user/coalesce");
+  const ndn::Name providerName("/test/provider/coalesce");
+  const ndn::Name serviceName("/Repo/Coalesce");
+  auto userCert = makeRsaIdentity(keyChain, userName);
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa/coalesce"));
+  LocalServiceUser user(face,
+                        ndn::Name("/test/group/coalesce"),
+                        userCert,
+                        aaCert,
+                        "examples/trust-any.conf");
+  user.applyPermissionResponse(
+    makePermissionResponse(userName,
+                           tlv::UserPermission,
+                           providerName,
+                           serviceName));
+
+  std::vector<size_t> publishedModes;
+  user.setRequestPublisher(
+    [&publishedModes] (const ndn::Name&,
+                       const ndn::Name&,
+                       const std::vector<ndn::Name>&,
+                       const ndn::Name&,
+                       const RequestMessage& requestMessage,
+                       size_t) {
+      publishedModes.push_back(requestMessage.getRequestMode());
+    });
+
+  const auto first = user.RequestServiceTargeted(
+    providerName, serviceName, RequestMessage(), 5000,
+    [] (const ndn::Name&) {}, [] (const ResponseMessage&) {});
+  const auto second = user.RequestServiceTargeted(
+    providerName, serviceName, RequestMessage(), 5000,
+    [] (const ndn::Name&) {}, [] (const ResponseMessage&) {});
+  BOOST_REQUIRE(!first.empty());
+  BOOST_REQUIRE(!second.empty());
+  BOOST_REQUIRE_EQUAL(publishedModes.size(), 2);
+  BOOST_CHECK_EQUAL(publishedModes[0], tlv::TargetedBootstrapRequest);
+  BOOST_CHECK_EQUAL(publishedModes[1], tlv::NormalRequest);
+}
+
 BOOST_AUTO_TEST_CASE(RequestServiceTargetedRequiresUserPermission)
 {
   ndn::security::KeyChain keyChain("pib-memory:targeted-user-permission",
@@ -244,7 +428,7 @@ BOOST_AUTO_TEST_CASE(TargetedBootstrapExecutesAndReturnsTokenBatch)
   BOOST_CHECK(response.getStatus());
   BOOST_CHECK_EQUAL(handlerCalls, 1);
   BOOST_CHECK_EQUAL(response.getUserToken(), "user-token");
-  BOOST_CHECK_EQUAL(response.getTokens().at("targeted.count"), "8");
+  BOOST_CHECK_EQUAL(response.getTokens().at("targeted.count"), "256");
   BOOST_CHECK(response.getTokens().find("targeted.0.provider") != response.getTokens().end());
   BOOST_CHECK(response.getTokens().find("targeted.0.user") != response.getTokens().end());
 }
@@ -296,6 +480,107 @@ BOOST_AUTO_TEST_CASE(TargetedBootstrapUsesConfiguredBoundedTokenBatch)
   BOOST_CHECK_EQUAL(response.getTokens().at("targeted.count"), "3");
   BOOST_CHECK(response.getTokens().find("targeted.2.provider") != response.getTokens().end());
   BOOST_CHECK(response.getTokens().find("targeted.3.provider") == response.getTokens().end());
+}
+
+BOOST_AUTO_TEST_CASE(TargetedBootstrapHonorsAdaptiveBatchHintWithinProviderBound)
+{
+  ::setenv("NDNSF_TARGETED_TOKEN_BATCH_SIZE", "32", 1);
+  struct RestoreEnv {
+    ~RestoreEnv()
+    {
+      ::unsetenv("NDNSF_TARGETED_TOKEN_BATCH_SIZE");
+    }
+  } restoreEnv;
+
+  ndn::security::KeyChain keyChain("pib-memory:targeted-provider-hint",
+                                   "tpm-memory:targeted-provider-hint");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name providerName("/test/provider/hint");
+  const ndn::Name requesterName("/test/user/hint");
+  const ndn::Name serviceName("/Repo/Adaptive");
+  auto providerCert = makeRsaIdentity(keyChain, providerName);
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-hint"));
+  LocalServiceProvider provider(face,
+                                ndn::Name("/test/group-hint"),
+                                providerCert,
+                                aaCert,
+                                "examples/trust-any.conf");
+  provider.applyPermissionResponse(
+    makePermissionResponse(providerName,
+                           tlv::ProviderPermission,
+                           providerName,
+                           serviceName));
+  provider.addTargetedService(
+    serviceName,
+    [](const RequestMessage&) {
+      ResponseMessage response;
+      response.setStatus(true);
+      return response;
+    });
+
+  auto request = makeRequestMessageWithUserToken("store", "user-token");
+  request.setRequestMode(tlv::TargetedBootstrapRequest);
+  request.setTargetProvider(providerName);
+  request.setTokens({{"targeted.batch_hint", "12"}});
+  auto response = provider.handleDecryptedRequestByName(
+    makeRequestNameV2(requesterName, serviceName, ndn::Name("/hint-12")),
+    request);
+  BOOST_REQUIRE(response.getStatus());
+  BOOST_CHECK_EQUAL(response.getTokens().at("targeted.count"), "12");
+  BOOST_CHECK(response.getTokens().find("targeted.11.provider") != response.getTokens().end());
+  BOOST_CHECK(response.getTokens().find("targeted.12.provider") == response.getTokens().end());
+
+  request.setTokens({{"targeted.batch_hint", "9999"}});
+  response = provider.handleDecryptedRequestByName(
+    makeRequestNameV2(requesterName, serviceName, ndn::Name("/hint-cap")),
+    request);
+  BOOST_REQUIRE(response.getStatus());
+  BOOST_CHECK_EQUAL(response.getTokens().at("targeted.count"), "256");
+  BOOST_CHECK(response.getTokens().find("targeted.255.provider") != response.getTokens().end());
+  BOOST_CHECK(response.getTokens().find("targeted.256.provider") == response.getTokens().end());
+}
+
+BOOST_AUTO_TEST_CASE(TargetedUserStoresFullAdvertised256PairBatch)
+{
+  ndn::security::KeyChain keyChain("pib-memory:targeted-user-256",
+                                   "tpm-memory:targeted-user-256");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name userName("/test/user/256");
+  const ndn::Name providerName("/test/provider/256");
+  const ndn::Name serviceName("/Repo/Batch256");
+  auto userCert = makeRsaIdentity(keyChain, userName);
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa/256"));
+  LocalServiceUser user(face,
+                        ndn::Name("/test/group/256"),
+                        userCert,
+                        aaCert,
+                        "examples/trust-any.conf");
+  user.applyPermissionResponse(
+    makePermissionResponse(userName,
+                           tlv::UserPermission,
+                           providerName,
+                           serviceName));
+
+  ResponseMessage response;
+  response.setStatus(true);
+  response.setUserToken("user-token-256");
+  std::map<std::string, std::string> tokens;
+  for (size_t i = 0; i < 256; ++i) {
+    tokens["targeted." + std::to_string(i) + ".provider"] =
+      "provider-token-" + std::to_string(i);
+    tokens["targeted." + std::to_string(i) + ".user"] =
+      "user-token-" + std::to_string(i);
+  }
+  tokens["targeted.count"] = "256";
+  response.setTokens(tokens);
+  user.addTargetedPendingCallForTokenTest(ndn::Name("/bootstrap-256"),
+                                          serviceName,
+                                          providerName,
+                                          "user-token-256");
+  BOOST_REQUIRE(user.handleDecryptedResponse(ndn::Name("/bootstrap-256"),
+                                             providerName,
+                                             response));
+  BOOST_CHECK_EQUAL(user.getTargetedTokenPoolSizeForTest(providerName, serviceName), 256);
 }
 
 BOOST_AUTO_TEST_CASE(TargetedServiceConsumesCachedTokenForFastPath)
@@ -424,7 +709,7 @@ BOOST_AUTO_TEST_CASE(NormalAndTargetedRegistrationsCoexistForSameService)
   BOOST_CHECK_EQUAL(normalCalls, 1);
   BOOST_CHECK_EQUAL(targetedCalls, 1);
   BOOST_CHECK_EQUAL(responsePayloadToString(bootstrapResponse), "targeted");
-  BOOST_CHECK_EQUAL(bootstrapResponse.getTokens().at("targeted.count"), "8");
+  BOOST_CHECK_EQUAL(bootstrapResponse.getTokens().at("targeted.count"), "256");
 
   auto targetedRequest = makeRequestMessageWithUserToken("get", "fast-user-token");
   targetedRequest.setRequestMode(tlv::TargetedRequest);
@@ -503,7 +788,7 @@ BOOST_AUTO_TEST_CASE(ExplicitNormalAndTargetedInvocationModeRegistersBothPaths)
     bootstrapRequest);
   BOOST_REQUIRE(bootstrapResponse.getStatus());
   BOOST_CHECK_EQUAL(responsePayloadToString(bootstrapResponse), "telemetry");
-  BOOST_CHECK_EQUAL(bootstrapResponse.getTokens().at("targeted.count"), "8");
+  BOOST_CHECK_EQUAL(bootstrapResponse.getTokens().at("targeted.count"), "256");
   BOOST_CHECK_EQUAL(calls, 2);
 
   auto targetedRequest = makeRequestMessageWithUserToken("get", "fast-user-token");

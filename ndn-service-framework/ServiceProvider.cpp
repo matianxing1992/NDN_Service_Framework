@@ -253,6 +253,34 @@ namespace ndn_service_framework
             }
         }
 
+        constexpr size_t TARGETED_TOKEN_BATCH_MIN = 1;
+        constexpr size_t TARGETED_TOKEN_BATCH_MAX = 256;
+
+        size_t
+        clampTargetedTokenBatch(size_t value)
+        {
+            return std::clamp(value,
+                              TARGETED_TOKEN_BATCH_MIN,
+                              TARGETED_TOKEN_BATCH_MAX);
+        }
+
+        size_t
+        parseTargetedTokenBatch(const std::string& value,
+                                size_t fallback)
+        {
+            try {
+                size_t parsed = 0;
+                const auto result = std::stoul(value, &parsed);
+                if (parsed != value.size()) {
+                    return fallback;
+                }
+                return clampTargetedTokenBatch(static_cast<size_t>(result));
+            }
+            catch (const std::exception&) {
+                return fallback;
+            }
+        }
+
         bool
         envIsSet(const char* name)
         {
@@ -3428,14 +3456,21 @@ namespace ndn_service_framework
     void ServiceProvider::attachTargetedTokenBatch(
         const ndn::Name& requesterIdentity,
         const ndn::Name& serviceName,
+        const RequestMessage& requestMessage,
         ResponseMessage& response) const
     {
         if (!m_useTokens || !response.getStatus()) {
             return;
         }
 
-        const size_t tokenPairCount = static_cast<size_t>(std::clamp(
-            intEnvOrDefault("NDNSF_TARGETED_TOKEN_BATCH_SIZE", 8), 1, 256));
+        const size_t configuredBatch = static_cast<size_t>(std::clamp(
+            intEnvOrDefault("NDNSF_TARGETED_TOKEN_BATCH_SIZE", 256), 1, 256));
+        size_t tokenPairCount = configuredBatch;
+        const auto& requestTokens = requestMessage.getTokens();
+        const auto hintIt = requestTokens.find("targeted.batch_hint");
+        if (hintIt != requestTokens.end()) {
+            tokenPairCount = parseTargetedTokenBatch(hintIt->second, configuredBatch);
+        }
         std::map<std::string, std::string> tokens = response.getTokens();
         std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
         for (size_t i = 0; i < tokenPairCount; ++i) {
@@ -3455,7 +3490,10 @@ namespace ndn_service_framework
                   << nowMicroseconds()
                   << " requesterName=" << requesterIdentity.toUri()
                   << " serviceName=" << serviceName.toUri()
-                  << " count=" << tokenPairCount);
+                  << " count=" << tokenPairCount
+                  << " configuredBatch=" << configuredBatch
+                  << " requestedBatch=" << (hintIt == requestTokens.end() ?
+                                               configuredBatch : tokenPairCount));
     }
 
     bool ServiceProvider::finishTargetedRequestOnEventLoop(
@@ -4013,7 +4051,7 @@ namespace ndn_service_framework
         if (requestMessage.getRequestMode() == tlv::TargetedBootstrapRequest &&
             registeredService != m_services.end() &&
             registeredService->second.targetedRequestHandler) {
-            attachTargetedTokenBatch(requesterName, serviceName, response);
+            attachTargetedTokenBatch(requesterName, serviceName, requestMessage, response);
         }
         auto optimizedResponse = makeResponseWithLargeDataOptimization(
             requesterName, serviceName, requestId, std::move(response));
@@ -6067,6 +6105,7 @@ namespace ndn_service_framework
                 service->second.targetedRequestHandler) {
                 attachTargetedTokenBatch(parsedV2->requesterName,
                                          parsedV2->serviceName,
+                                         requestMessage,
                                          response);
             }
             response.setPolicyEpoch(m_currentPolicyEpoch);
