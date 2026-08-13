@@ -1450,6 +1450,9 @@ def initialize_example_keychains(ndn, args, output_dir):
         cert_path = security_dir / "identity-{}.cert".format(index)
         req_path = security_dir / "identity-{}.req".format(index)
         key_path = security_dir / "identity-{}.ndnkey".format(index)
+        ec_cert_path = security_dir / "identity-{}-ecdsa.cert".format(index)
+        ec_req_path = security_dir / "identity-{}-ecdsa.req".format(index)
+        ec_key_path = security_dir / "identity-{}-ecdsa.ndnkey".format(index)
         node_cmd(controller, "ndnsec key-gen -n -t r {} > {}".format(
             shell_quote(identity), shell_quote(req_path)))
         node_cmd(controller, "ndnsec cert-gen -s {} -i ROOT {} > {}".format(
@@ -1458,7 +1461,20 @@ def initialize_example_keychains(ndn, args, output_dir):
             shell_quote(cert_path)))
         node_cmd(controller, "ndnsec-export -P 123456 -o {} -i {}".format(
             shell_quote(key_path), shell_quote(identity)))
-        exported_keys.append(key_path)
+        # The RSA key is used only for NAC-ABE encryption. Generate a second,
+        # controller-signed ECDSA certificate for all runtime signatures so
+        # the benchmark exercises the intended split identity roles instead
+        # of silently falling back to RSA.
+        node_cmd(controller, "ndnsec key-gen -n -t e {} > {}".format(
+            shell_quote(identity), shell_quote(ec_req_path)))
+        node_cmd(controller, "ndnsec cert-gen -s {} -i ECDSA {} > {}".format(
+            shell_quote(root_identity), shell_quote(ec_req_path), shell_quote(ec_cert_path)))
+        node_cmd(controller, "ndnsec cert-install -f {} >/dev/null 2>&1 || true".format(
+            shell_quote(ec_cert_path)))
+        ec_cert_name = certificate_name_from_file(ec_cert_path)
+        node_cmd(controller, "ndnsec-export -P 123456 -o {} -c {}".format(
+            shell_quote(ec_key_path), shell_quote(ec_cert_name)))
+        exported_keys.extend([key_path, ec_key_path])
         if identity.startswith("/example/hello/provider/") and identity.count("/") == 4:
             cert_name = certificate_name_from_file(cert_path)
             provider_id = identity.rsplit("/", 1)[1]
@@ -1467,6 +1483,8 @@ def initialize_example_keychains(ndn, args, output_dir):
                 "identity": identity,
                 "cert_name": cert_name,
                 "cert_file": str(cert_path),
+                "signing_cert_name": ec_cert_name,
+                "signing_cert_file": str(ec_cert_path),
             })
 
     for node in ndn.net.hosts:
@@ -1684,6 +1702,7 @@ def app_env(output_dir, session_base, args):
         "NDNSF_DISABLE_NDNSD": "1",
         "NDNSF_CONFIG": str(output_dir / "ndnsf.conf"),
         "NDNSF_SESSION_BASE": str(session_base),
+        "NDNSF_DISABLE_SPLIT_SIGNING": "0",
         "NDN_LOG": ndn_log,
         "NDNSF_SVS_MAX_SUPPRESSION_MS": os.environ.get("NDNSF_SVS_MAX_SUPPRESSION_MS", "1"),
     }
@@ -1692,8 +1711,11 @@ def app_env(output_dir, session_base, args):
     if args.performance_mode:
         env["NDNSF_SVS_MAX_APP_PARAMS_BYTES"] = os.environ.get(
             "NDNSF_SVS_MAX_APP_PARAMS_BYTES", "4096")
+        # Keep the SVS piggyback bound as a packet-size safety margin. Message
+        # encoding/signing must fit this bound; increasing it is not a
+        # performance workaround.
         env["NDNSF_SVS_MAX_PIGGYDATA_BYTES"] = os.environ.get(
-            "NDNSF_SVS_MAX_PIGGYDATA_BYTES", "4096")
+            "NDNSF_SVS_MAX_PIGGYDATA_BYTES", "800")
         env["NDNSF_SVS_PARALLEL_PRODUCTION"] = os.environ.get(
             "NDNSF_SVS_PARALLEL_PRODUCTION", "4")
     if "NDNSF_SVS_PERIODIC_SYNC_MS" in os.environ:
@@ -1867,6 +1889,8 @@ def provider_ready_state(log_path, provider_id):
             value = match.group(1)
             timestamps[key] = int(value) if value.isdigit() else int(float(value) * 1000000)
     checks = {
+        "split_signing_ecdsa": bool(re.search(
+            r"NDNSF_CERT_SELECTION role=provider .*splitSigning=true", text)),
         "service_registered": bool(re.search(
             r"Provider {} registered service /HELLO|Registered service handler for /HELLO".format(
                 re.escape(provider_id)), text)),
@@ -3788,6 +3812,11 @@ def launch_apps(ndn, args, output_dir):
         user_proc, user_log = start_process(
             ndn.net[args.user_node], "user", APP_TARGETS["user"], app_user_argv(args, app_csv),
             output_dir, session_base, processes, args)
+        if not wait_for_log(user_log,
+                            r"NDNSF_CERT_SELECTION role=user .*splitSigning=true",
+                            max(10, args.provider_ready_timeout_seconds), user_proc):
+            raise RuntimeError(
+                "App_User did not select an ECDSA signing certificate; see {}".format(user_log))
         return processes, user_proc, user_log, app_csv, readiness
     except Exception:
         stop_processes(processes)
@@ -4647,6 +4676,8 @@ def app_user_argv(args, app_csv):
         "--timeout-ms", str(args.timeout_ms),
         "--output-csv", str(app_csv),
     ]
+    if getattr(args, "disable_adaptive_admission_control", False):
+        user_args.append("--disable-adaptive-admission-control")
     if args.workload_mode == "open-loop":
         user_args.extend([
             "--rate-rps", str(float(args.rate_rps)),
@@ -4656,8 +4687,6 @@ def app_user_argv(args, app_csv):
             "--drain-seconds", str(int(args.drain_seconds)),
             "--pacing-jitter-us", str(max(0, int(args.pacing_jitter_us))),
         ])
-        if getattr(args, "disable_adaptive_admission_control", False):
-            user_args.append("--disable-adaptive-admission-control")
         if (getattr(args, "adaptive_admission_control", False) or
                 not getattr(args, "disable_adaptive_admission_control", False)):
             adaptive_max = (args.adaptive_max_window

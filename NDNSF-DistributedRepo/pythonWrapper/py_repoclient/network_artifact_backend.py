@@ -69,7 +69,53 @@ from .persistence import ArtifactStorageIdentity
 
 _DEFAULT_PACKET_PAYLOAD_BYTES = 7600
 _DEFAULT_CHUNK_BYTES = 16 * 1024 * 1024
+_PROGRESS_CHECKPOINT_BYTES = 64 * 1024 * 1024
+_PROGRESS_CHECKPOINT_INTERVAL_S = 1.0
 _MAX_REPLICA_ROLES = 32
+
+
+def _artifact_adaptive_fetch_options(size_bytes: int) -> dict[str, int]:
+    """Return a fair, progress-tolerant profile for one large artifact.
+
+    A fixed 8/128/32 window allowed one multi-gigabyte fetch to occupy most
+    of the Repo/NFD pending-interest capacity.  Under three simultaneous
+    Qwen3.6 shard pulls, another shard exhausted its 10-second Interest
+    lifetime before it received service.  Keep the per-fetch window bounded
+    and give a busy producer more time to answer; the overall transfer
+    deadline remains authoritative and progress continues to be reported.
+
+    The environment knobs are intentionally bounded so an experiment can
+    freeze a different profile without permitting an unbounded fan-out.
+    """
+
+    del size_bytes  # reserved for future size-specific profiles
+
+    def bounded_int(name: str, default: int, lower: int, upper: int) -> int:
+        raw = os.environ.get(name, str(default))
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            value = default
+        return max(lower, min(upper, value))
+
+    initial = bounded_int(
+        "NDNSF_ARTIFACT_FETCH_INITIAL_WINDOW", 4, 2, 8)
+    maximum = max(initial, bounded_int(
+        "NDNSF_ARTIFACT_FETCH_MAXIMUM_WINDOW", 16, 2, 32))
+    backlog = max(initial, bounded_int(
+        "NDNSF_ARTIFACT_FETCH_BACKLOG", 16, 2, 16))
+    lifetime = bounded_int(
+        "NDNSF_ARTIFACT_FETCH_INTEREST_LIFETIME_MS", 30_000,
+        10_000, 60_000)
+    retries = bounded_int(
+        "NDNSF_ARTIFACT_FETCH_MAX_RETRIES", 8, 5, 8)
+    return {
+        "interest_lifetime_ms": lifetime,
+        "initial_window": initial,
+        "maximum_window": maximum,
+        "maximum_retries": retries,
+        "persistence_backlog_limit": backlog,
+    }
 
 
 def _repo_pending_state_ttl_ms(size_bytes: int) -> int:
@@ -494,6 +540,47 @@ class _NetworkFetchDriver:
             if self._sink._reused else 0
         )
         self.retransmitted_bytes = 0
+        self._received_bytes = 0
+        self._delivered_segments = 0
+        self._total_segments = 0
+        self._last_segment = -1
+        self._progress_sequence = 0
+        self._last_progress_bytes = 0
+        self._last_progress_at = self.started
+
+    def _emit_transfer_progress(self, *, force: bool = False) -> None:
+        """Emit bounded live fetch evidence without slowing the NDN face."""
+        now = time.monotonic()
+        received = min(
+            int(self.reference.size_bytes),
+            int(self.reused_bytes) + int(self._received_bytes),
+        )
+        if not force and (
+            received - self._last_progress_bytes < _PROGRESS_CHECKPOINT_BYTES
+            and now - self._last_progress_at < _PROGRESS_CHECKPOINT_INTERVAL_S
+        ):
+            return
+        self._progress_sequence += 1
+        self._last_progress_bytes = received
+        self._last_progress_at = now
+        self.emit_progress(ArtifactProgress(
+            operation_id=self.operation_id,
+            artifact=self.reference,
+            phase="transfer",
+            received_bytes=received,
+            verified_bytes=received,
+            committed_bytes=0,
+            total_bytes=int(self.reference.size_bytes),
+            selected_replicas=1,
+            committed_replicas=0,
+            retransmitted_bytes=int(self.retransmitted_bytes),
+            sequence=self._progress_sequence,
+            timestamp_ms=time.time_ns() // 1_000_000,
+            last_segment=int(self._last_segment),
+            delivered_segments=int(self._delivered_segments),
+            total_segments=int(self._total_segments),
+            elapsed_ms=(now - self.started) * 1000.0,
+        ))
 
     def transfer(self, cancellation) -> None:
         cancellation.raise_if_cancelled(
@@ -516,7 +603,15 @@ class _NetworkFetchDriver:
                         "repo artifact fetch segment exceeds declared size"
                     )
                 self._sink.write_range(offset, packet.content)
+                self._received_bytes += len(packet.content)
+                self._delivered_segments += 1
+                self._last_segment = max(
+                    self._last_segment, int(packet.segment)
+                )
+                self._emit_transfer_progress()
 
+            fetch_options = _artifact_adaptive_fetch_options(
+                int(self.reference.size_bytes))
             metrics = fetch_adaptive_segmented_data_packets(
                 self.data_name,
                 persist,
@@ -524,33 +619,16 @@ class _NetworkFetchDriver:
                     60_000,
                     int(self.reference.size_bytes // (256 * 1024)) * 1000,
                 ),
-                interest_lifetime_ms=10_000,
-                initial_window=8,
-                maximum_window=128,
-                maximum_retries=5,
-                persistence_backlog_limit=32,
+                **fetch_options,
             )
             self.transferred_bytes = int(metrics.logical_bytes)
             self.retransmitted_bytes = int(metrics.retransmitted_bytes)
+            self._total_segments = int(metrics.total_segments)
+            self._delivered_segments = int(metrics.delivered_segments)
+            self._emit_transfer_progress(force=True)
         self.state = "VERIFIED"
-        self.emit_progress(ArtifactProgress(
-            operation_id=self.operation_id,
-            artifact=self.reference,
-            phase="transfer",
-            received_bytes=(
-                self.transferred_bytes + self.reused_bytes
-            ),
-            verified_bytes=(
-                self.transferred_bytes + self.reused_bytes
-            ),
-            committed_bytes=0,
-            total_bytes=int(self.reference.size_bytes),
-            selected_replicas=1,
-            committed_replicas=0,
-            retransmitted_bytes=self.retransmitted_bytes,
-            sequence=1,
-            timestamp_ms=time.time_ns() // 1_000_000,
-        ))
+        if self._sink._reused:
+            self._emit_transfer_progress(force=True)
 
     def status(self):
         return ArtifactSessionStatus(
@@ -573,6 +651,10 @@ class _NetworkFetchDriver:
             transferred_bytes=self.transferred_bytes,
             source_replicas=(self.repo_node,),
             total_duration_ms=(time.monotonic() - self.started) * 1000.0,
+            last_segment=int(self._last_segment),
+            delivered_segments=int(self._delivered_segments),
+            total_segments=int(self._total_segments),
+            retransmitted_bytes=int(self.retransmitted_bytes),
         )
 
     def abort(self, preserve_progress):
@@ -694,6 +776,7 @@ class CollaborationArtifactApiBackend:
         packet_payload_bytes: int = _DEFAULT_PACKET_PAYLOAD_BYTES,
         chunk_bytes: int = _DEFAULT_CHUNK_BYTES,
         committed_receipts: tuple[dict[str, Any], ...] = (),
+        test_only_allow_ephemeral_state_root: bool = False,
     ) -> "CollaborationArtifactApiBackend":
         """Construct the public artifact transport from one deployment file."""
         from ndnsf import ServiceUser
@@ -707,6 +790,8 @@ class CollaborationArtifactApiBackend:
                 + hashlib.sha256(str(user).encode()).hexdigest()[:16]
             ),
             generated_policy_dir=generated_policy_dir,
+            test_only_allow_ephemeral_state_root=(
+                test_only_allow_ephemeral_state_root),
         ).deployment
         service_user = ServiceUser(
             group=deployment.group,
@@ -925,17 +1010,15 @@ def _execute_repo_store_assignment(repo_app, context) -> dict[str, Any]:
                 raise RuntimeError("repo artifact final segment exceeds size")
             store.write_range(identity, offset, packet.content)
 
+        fetch_options = _artifact_adaptive_fetch_options(
+            int(assignment.artifact.size_bytes))
         fetch_adaptive_segmented_data_packets(
             assignment.source_payload_name,
             persist,
             timeout_ms=max(60_000, int(
                 assignment.artifact.size_bytes // (256 * 1024)
             ) * 1000),
-            interest_lifetime_ms=10_000,
-            initial_window=8,
-            maximum_window=128,
-            maximum_retries=5,
-            persistence_backlog_limit=32,
+            **fetch_options,
         )
         for chunk in chunks:
             payload = store.read_range(

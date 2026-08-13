@@ -729,6 +729,11 @@ ndn::Name
 makePredictiveFrontierName(const ndn::Name& mappingRoot);
 
 ndn::Name
+makePredictiveDataName(const ndn::Name& mappingRoot,
+                       uint64_t mappingVersion,
+                       uint64_t sequence);
+
+ndn::Name
 makePredictiveDataName(const LiveStreamDefinition& definition,
                        uint64_t sequence);
 

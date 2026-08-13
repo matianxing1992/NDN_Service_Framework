@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from ..core.state import FailureBoundaryV1, failure_boundary_for_code
+
 
 class RevisionState(str, Enum):
     RESOLVED = "RESOLVED"; READY = "READY"; ACTIVE = "ACTIVE"
@@ -55,6 +57,35 @@ class StatusCondition:
 class RequestEvent:
     request_id: str; sequence: int; state: RequestState; timestamp_ms: int
     result_digest: str = ""; reason_code: str = ""
+    failure_boundary: FailureBoundaryV1 | None = None
+    last_checkpoint: str = ""
+
+
+@dataclass(frozen=True)
+class RequestFailureStatus:
+    """Status projection used by operators and analyzers for one failure."""
+
+    request_id: str
+    state: RequestState
+    failure_code: str
+    last_checkpoint: str
+    terminal_reason: str
+    boundary: FailureBoundaryV1 | str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.request_id or not self.last_checkpoint or not self.terminal_reason:
+            raise ValueError("failure status identity/checkpoint is incomplete")
+        inferred = failure_boundary_for_code(self.failure_code)
+        actual = inferred if self.boundary is None else FailureBoundaryV1(
+            self.boundary)
+        if actual is not inferred:
+            raise ValueError("failure status boundary disagrees with code")
+        if self.state not in {
+            RequestState.FAILED, RequestState.EXPIRED,
+            RequestState.CANCELLED,
+        }:
+            raise ValueError("failure status requires a terminal failure state")
+        object.__setattr__(self, "boundary", actual)
 
 
 __all__ = [name for name in globals() if not name.startswith("_")]

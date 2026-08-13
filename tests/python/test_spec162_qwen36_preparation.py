@@ -49,6 +49,7 @@ class Qwen36PreparationContractTest(unittest.TestCase):
         )
         self.assertEqual(self.prepare.DTYPE, "bfloat16")
         self.assertEqual(self.prepare.STAGE_RANGES, ((0, 21), (21, 42), (42, 64)))
+        self.assertEqual(self.prepare.REFERENCE_DEVICE_MAP, "stage-ranges")
         self.assertEqual(self.prepare.MAX_NEW_TOKENS, 64)
 
         source = PREPARE.read_text(encoding="utf-8")
@@ -142,6 +143,22 @@ class Qwen36PreparationContractTest(unittest.TestCase):
                 Model([("cuda", 0), ("cpu", None)]),
                 expected_devices={0},
             )
+
+    def test_reference_map_uses_exported_stage_boundaries(self) -> None:
+        ranges = self.prepare.STAGE_RANGES
+        mapping = self.prepare._stage_reference_device_map(ranges)
+        self.assertEqual(mapping["model.layers.0"], 0)
+        self.assertEqual(mapping["model.layers.20"], 0)
+        self.assertEqual(mapping["model.layers.21"], 1)
+        self.assertEqual(mapping["model.layers.41"], 1)
+        self.assertEqual(mapping["model.layers.42"], 2)
+        self.assertEqual(mapping["model.layers.63"], 2)
+        self.prepare._assert_reference_layer_ranges(mapping, ranges)
+
+        invalid = dict(mapping)
+        invalid["model.layers.20"] = 1
+        with self.assertRaisesRegex(RuntimeError, "differ from exported stage ranges"):
+            self.prepare._assert_reference_layer_ranges(invalid, ranges)
 
     def test_stage_acceptance_requires_forward_and_one_gib_headroom(self) -> None:
         total = 32_760 * 1024 * 1024
@@ -273,23 +290,40 @@ class Qwen36PreparationContractTest(unittest.TestCase):
         self.assertIn('ack_timeout_ms="${SPEC162_ACK_TIMEOUT_MS:-120000}"', inner)
         self.assertIn('--ack-timeout-ms "$ack_timeout_ms"', inner)
         self.assertIn('--env "SPEC162_ACK_TIMEOUT_MS=${ack_timeout_ms}"', rank)
-        self.assertIn('selection_offer_lease_ms="${SPEC162_SELECTION_OFFER_LEASE_MS:-600000}"', inner)
+        self.assertIn(
+            'selection_offer_lease_ms="${SPEC162_SELECTION_OFFER_LEASE_MS:-$SPEC162_REQUEST_TIMEOUT_MS}"',
+            inner,
+        )
         self.assertIn('--selection-offer-lease-ms "$selection_offer_lease_ms"', inner)
+        self.assertIn('--selection-max-prepare-ms "$SPEC162_REQUEST_TIMEOUT_MS"', inner)
+        self.assertIn('--selection-model-type "$selection_model_type"', inner)
+        self.assertIn('manifest.get("repository") == "Qwen/Qwen3.6-27B"', inner)
         self.assertIn('--env "SPEC162_SELECTION_OFFER_LEASE_MS=${selection_offer_lease_ms}"', rank)
-        self.assertIn('provider_settle_seconds="${SPEC162_PROVIDER_SETTLE_SECONDS:-120}"', rank)
-        self.assertIn('--env "SPEC162_PROVIDER_SETTLE_SECONDS=${provider_settle_seconds}"', rank)
-        self.assertIn('user_startup_settle_ms="${SPEC162_USER_STARTUP_SETTLE_MS:-5000}"', rank)
-        self.assertIn('--env "SPEC162_USER_STARTUP_SETTLE_MS=${user_startup_settle_ms}"', rank)
+        self.assertNotIn("SPEC162_PROVIDER_SETTLE_SECONDS", rank)
+        self.assertNotIn("SPEC162_USER_STARTUP_SETTLE_MS", rank)
         self.assertIn('face_scheme="${SPEC162_FACE_SCHEME:-tcp4}"', rank)
         self.assertIn('--env "SPEC162_FACE_SCHEME=${face_scheme}"', rank)
-        self.assertIn('provider_settle_seconds="${SPEC162_PROVIDER_SETTLE_SECONDS:-120}"', inner)
-        self.assertIn('sleep "$provider_settle_seconds"', inner)
+        self.assertNotIn("SPEC162_PROVIDER_SETTLE_SECONDS", inner)
+        self.assertNotIn('sleep "$provider_settle_seconds"', inner)
         self.assertIn('face_scheme="${SPEC162_FACE_SCHEME:-tcp4}"', inner)
         self.assertIn('uri="${face_scheme}://${peer_ip}:${SPEC162_PORT}"', inner)
-        self.assertIn('NDNSF_DI_STARTUP_SETTLE_MS="${SPEC162_USER_STARTUP_SETTLE_MS:-5000}"', inner)
+        self.assertIn("the first planning trigger", inner)
+        self.assertIn("NDNSF_DI_AUTOPLANNING_ACK_CLOSED", analyzer)
+        self.assertIn("NDNSF_DI_AUTOPLANNING_GRAPH_READY", analyzer)
         self.assertIn("expected one smoke row", analyzer)
         self.assertIn("invalid three-stage layer cover", analyzer)
         self.assertIn('stage_manifest["layerCount"]', analyzer)
+        self.assertIn("SPEC162_STAGE_MANIFEST_RUNTIME_SIF_MISMATCH", smoke)
+        self.assertIn('manifest.get("runtimeSifSha256", "")', smoke)
+        self.assertIn("SPEC162_STAGE_PATH_MISMATCH", smoke)
+        self.assertIn("SPEC162_STAGE_PATH_MISSING", smoke)
+        self.assertIn('stage_root = (artifact_dir / "qwen-transformers-stage-artifacts").resolve()', smoke)
+        self.assertIn("SPEC162_POLICY_STAGE_PATH_MISMATCH", smoke)
+        self.assertIn("yaml.safe_load", smoke)
+        self.assertIn('artifact.get("kind") != "llm-stage-weights"', smoke)
+        self.assertIn("SPEC162_FIXED_SETTLE_FORBIDDEN", smoke)
+        self.assertIn("SPEC162_REQUEST_GATE_OPEN", inner)
+        self.assertIn("mode=REQUEST_FIRST", inner)
 
     def test_frozen_small_qwen_profile_is_exact_and_isolated(self) -> None:
         profile = self.prepare.MODEL_PROFILES["qwen3-0.6b"]
@@ -325,6 +359,11 @@ class Qwen36PreparationContractTest(unittest.TestCase):
         self.assertIn('"$partial/source/jobs/analyze-generation-formal.py"', job)
         self.assertIn('--campaign "$SPEC162_SMOKE_CAMPAIGN"', job)
         self.assertIn('generation["requireEos"] = False', job)
+        self.assertIn(
+            'campaign["campaignId"] = f"{submission_id}-{campaign_mode}-max64"',
+            job,
+        )
+        self.assertIn("SPEC162_SMOKE_SUBMISSION_ID_MISSING_FOR_CAMPAIGN", job)
         self.assertIn(
             'export SPEC162_SMOKE_CAMPAIGN="$partial/$campaign_name"',
             job,

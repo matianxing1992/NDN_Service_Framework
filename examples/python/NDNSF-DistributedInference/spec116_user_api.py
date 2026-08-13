@@ -29,7 +29,7 @@ def run(config: str, state_root: str, envelope_key_file: str):
     application = InferenceApplication.from_config(
         config, state_root=state_root,
         envelope_key_file=envelope_key_file)
-    request = application.request(
+    request = application.request_preplanned(
         build_definition(application),
         input={"prompt": "Explain NDN in one sentence."},
         timeout=timedelta(minutes=6))

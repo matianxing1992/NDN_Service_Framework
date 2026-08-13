@@ -3756,13 +3756,22 @@ makePredictiveFrontierName(const ndn::Name& mappingRoot)
 }
 
 ndn::Name
+makePredictiveDataName(const ndn::Name& mappingRoot,
+                       uint64_t mappingVersion,
+                       uint64_t sequence)
+{
+  ndn::Name name(mappingRoot);
+  name.append("v").appendNumber(mappingVersion);
+  name.appendSequenceNumber(sequence);
+  return name;
+}
+
+ndn::Name
 makePredictiveDataName(const LiveStreamDefinition& definition,
                        uint64_t sequence)
 {
-  ndn::Name name(definition.mappingRoot());
-  name.append("v").appendNumber(definition.mappingVersion);
-  name.appendSequenceNumber(sequence);
-  return name;
+  return makePredictiveDataName(
+    definition.mappingRoot(), definition.mappingVersion, sequence);
 }
 
 ndn::Name

@@ -49,6 +49,7 @@ namespace ndn_service_framework
             else {
                 throw std::invalid_argument("NDNSF_SVS_PROTOCOL_VERSION must be v2 or v3");
             }
+            configureSvsPubSubOptionsFromEnvironment(options);
             if (const char* raw = std::getenv("NDNSF_SVS_MAX_SUPPRESSION_MS")) {
                 try {
                     options.syncProtocol.suppressionPeriod =
@@ -491,20 +492,18 @@ namespace ndn_service_framework
             return true;
         }
 
-        void
+        ndn::svs::SeqNo
         publishSvs(const std::shared_ptr<ndn::svs::SVSPubSub>& svs,
                    const ndn::Name& name,
                    const ndn::Block& content)
         {
             if (svs == nullptr) {
-                return;
+                return 0;
             }
             if (useAsyncSvsPublish()) {
-                svs->publishAsync(name, content);
+                return svs->publishAsync(name, content);
             }
-            else {
-                svs->publish(name, content);
-            }
+            return svs->publish(name, content);
         }
 
         bool
@@ -680,6 +679,47 @@ namespace ndn_service_framework
                                       payload.size());
             }
             return "sha256:" + digest.toString();
+        }
+
+        void
+        logValidatedPublicationAudit(
+            const char* role,
+            const char* messageType,
+            const ndn::svs::SVSPubSub::SubscriptionData& subscription,
+            const ndn::Name& requestId,
+            const ndn::Name& serviceName,
+            const ndn::Name& requesterName,
+            const ndn::Name& providerName)
+        {
+            std::string packetName = "-";
+            std::string signerKeyLocator = "-";
+            std::string wireDigest = sha256DigestString(
+                ndn::Buffer(subscription.data.begin(), subscription.data.end()));
+            if (subscription.packet) {
+                packetName = subscription.packet->getName().toUri();
+                const auto& signatureInfo = subscription.packet->getSignatureInfo();
+                if (signatureInfo.hasKeyLocator() &&
+                    signatureInfo.getKeyLocator().getType() == ndn::tlv::Name) {
+                    signerKeyLocator =
+                        signatureInfo.getKeyLocator().getName().toUri();
+                }
+                const auto wire = subscription.packet->wireEncode();
+                wireDigest = sha256DigestString(ndn::Buffer(
+                    wire.data(), wire.data() + wire.size()));
+            }
+            NDN_LOG_INFO("NDNSF_PUBLICATION_AUDIT role=" << role
+                         << " type=" << messageType
+                         << " validated=true"
+                         << " packetPresent=" << (subscription.packet ? "true" : "false")
+                         << " packetName=" << packetName
+                         << " producerPrefix=" << subscription.producerPrefix.toUri()
+                         << " seqNo=" << subscription.seqNo
+                         << " signerKeyLocator=" << signerKeyLocator
+                         << " wireDigest=" << wireDigest
+                         << " requestId=" << requestId.toUri()
+                         << " serviceName=" << serviceName.toUri()
+                         << " requesterName=" << requesterName.toUri()
+                         << " providerName=" << providerName.toUri());
         }
 
         void
@@ -1037,6 +1077,9 @@ namespace ndn_service_framework
         // Do not fetch publications older than 10 seconds
         ndn::svs::SVSPubSubOptions opts;
         configureSvsProtocol(opts);
+        NDN_LOG_INFO("NDNSF_SVS_OPTIONS role=user"
+                     << " maxApplicationParametersSize=" << opts.maxApplicationParametersSize
+                     << " maxPiggyDataSize=" << opts.maxPiggyDataSize);
         #ifdef USE_TIMESTAMP
         opts.useTimestamp = true;
         // opts.maxPubAge = ndn::time::seconds(0);
@@ -1245,10 +1288,41 @@ namespace ndn_service_framework
                          << " queueDepth=" << stats.syncWorkerQueueDepth
                          << " workerMs=" << stats.syncWorkerProcessingMs
                          << " publishMs=" << stats.syncMainThreadPublishMs
-                         << " serialMs=" << stats.syncInterestSerialHandlerMs
-                         << " parallelTotalMs=" << stats.syncInterestParallelTotalMs
-                         << " mainBlockingMs=" << stats.syncInterestMainThreadBlockingMs);
-            m_svsps.reset();
+	                         << " serialMs=" << stats.syncInterestSerialHandlerMs
+	                         << " parallelTotalMs=" << stats.syncInterestParallelTotalMs
+	                         << " mainBlockingMs=" << stats.syncInterestMainThreadBlockingMs
+	                         << " productionSubmitted=" << stats.syncProductionJobsSubmitted
+	                         << " productionCompleted=" << stats.syncProductionJobsCompleted
+	                         << " productionDropped=" << stats.syncProductionJobsDropped
+	                         << " productionStale=" << stats.syncProductionJobsStale
+	                         << " productionQueueDepth=" << stats.syncProductionWorkerQueueDepth);
+	            const auto rejection = m_svsps->getSVSync().getCore().getSyncRejectionStats();
+	            const auto mapping = m_svsps->getMappingFetchStats();
+	            const auto publication = m_svsps->getPublicationFetchStats();
+	            const auto piggy = m_svsps->getPiggybackStats();
+	            NDN_LOG_INFO("NDNSF_SVS_DELIVERY_STATS role=user"
+	                         << " malformed=" << rejection.malformedEnvelope
+	                         << " signaturePolicy=" << rejection.signaturePolicy
+	                         << " vectorDecode=" << rejection.vectorDecode
+	                         << " mappingQueued=" << mapping.queued
+	                         << " mappingPending=" << mapping.pending
+	                         << " mappingDispatched=" << mapping.dispatched
+	                         << " mappingData=" << mapping.data
+	                         << " mappingNacks=" << mapping.nacks
+	                         << " mappingTimeouts=" << mapping.timeouts
+	                         << " mappingRetries=" << mapping.retries
+	                         << " publicationQueued=" << publication.queued
+	                         << " publicationPending=" << publication.pending
+	                         << " publicationDispatched=" << publication.dispatched
+	                         << " publicationData=" << publication.data
+	                         << " publicationNacks=" << publication.nacks
+	                         << " publicationTimeouts=" << publication.timeouts
+	                         << " publicationRetries=" << publication.retries
+	                         << " piggyReceived=" << piggy.received
+	                         << " piggyDelivered=" << piggy.delivered
+	                         << " publicationFallbacks=" << piggy.publicationFetchFallbacks
+	                         << " publicationRetryActivations=" << piggy.publicationRetryActivations);
+	            m_svsps.reset();
         }
         m_cryptoProduceQueue.shutdown();
         m_ackProcessingPool.shutdown();
@@ -1983,6 +2057,21 @@ namespace ndn_service_framework
         m_pendingCallTimeoutGrace = std::max(ndn::time::milliseconds(0), grace);
     }
 
+    void ServiceUser::setResponseRetryOptions(ResponseRetryOptions options)
+    {
+        options.attemptTimeoutMs = std::max(1, options.attemptTimeoutMs);
+        options.maxAttempts = std::max<size_t>(1, options.maxAttempts);
+        m_responseRetryOptions = options;
+        NDN_LOG_INFO("NDNSF_RESPONSE_RETRY enabled=" << options.enabled
+                     << " attemptTimeoutMs=" << options.attemptTimeoutMs
+                     << " maxAttempts=" << options.maxAttempts);
+    }
+
+    ServiceUser::ResponseRetryOptions ServiceUser::getResponseRetryOptions() const
+    {
+        return m_responseRetryOptions;
+    }
+
     void ServiceUser::setPerformanceMode(bool enabled)
     {
         m_performanceMode = enabled;
@@ -2192,6 +2281,7 @@ namespace ndn_service_framework
         }
         releaseAdaptiveAdmissionSlot(requestId, pendingCall->second, reason, eraseAtUs);
         pendingCall->second.requestTimeoutEvent.cancel();
+        pendingCall->second.responseAttemptTimeoutEvent.cancel();
         m_pendingCalls.erase(pendingCall);
         cleanupPendingCallState(requestId);
     }
@@ -2341,6 +2431,142 @@ namespace ndn_service_framework
                       << " requestId=" << requestId.toUri());
             finalizeTimedOutPendingCall(requestId);
           });
+    }
+
+    void ServiceUser::scheduleResponseAttemptTimeout(
+        const ndn::Name& requestId,
+        const ndn::Name& providerName)
+    {
+        auto pending = m_pendingCalls.find(requestId);
+        if (pending == m_pendingCalls.end() ||
+            !pending->second.responseRetryEnabled ||
+            pending->second.hasResponse ||
+            pending->second.timedOut ||
+            providerName.empty() ||
+            containsName(pending->second.responseAttemptProviders, providerName)) {
+            return;
+        }
+
+        addUniqueName(pending->second.responseAttemptProviders, providerName);
+        pending->second.responseAttemptStartedAtUs = nowMicroseconds();
+        pending->second.expectedResponseProviders.clear();
+        addUniqueName(pending->second.expectedResponseProviders, providerName);
+
+        const size_t attempt = pending->second.responseAttemptProviders.size();
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=RESPONSE_ATTEMPT_STARTED timestamp_us="
+                  << pending->second.responseAttemptStartedAtUs
+                  << " requestId=" << requestId.toUri()
+                  << " providerName=" << providerName.toUri()
+                  << " attempt=" << attempt
+                  << " maxAttempts=" << pending->second.responseMaxAttempts
+                  << " attemptTimeoutMs="
+                  << pending->second.responseAttemptTimeoutMs);
+
+        if (attempt >= pending->second.responseMaxAttempts) {
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=RESPONSE_RETRY_EXHAUSTED timestamp_us="
+                      << nowMicroseconds()
+                      << " requestId=" << requestId.toUri()
+                      << " reason=max_attempts_selected"
+                      << " attempts=" << attempt);
+            return;
+        }
+
+        const uint64_t deadlineUs = pending->second.requestDeadlineUs != 0 ?
+            pending->second.requestDeadlineUs :
+            (pending->second.publishedAtUs != 0 && pending->second.timeoutMs > 0 ?
+                pending->second.publishedAtUs +
+                    static_cast<uint64_t>(pending->second.timeoutMs) * 1000 : 0);
+        const uint64_t nowUs = nowMicroseconds();
+        const uint64_t attemptUs =
+            static_cast<uint64_t>(std::max(1, pending->second.responseAttemptTimeoutMs)) * 1000;
+        if (deadlineUs != 0 && (nowUs >= deadlineUs || deadlineUs - nowUs <= attemptUs)) {
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=RESPONSE_RETRY_EXHAUSTED timestamp_us="
+                      << nowUs
+                      << " requestId=" << requestId.toUri()
+                      << " reason=insufficient_global_deadline"
+                      << " attempts=" << attempt);
+            return;
+        }
+
+        pending->second.responseAttemptTimeoutEvent.cancel();
+        pending->second.responseRetryTimerArmed = true;
+        pending->second.responseAttemptTimeoutEvent = m_scheduler.schedule(
+            ndn::time::milliseconds(pending->second.responseAttemptTimeoutMs),
+            [this, requestId, providerName]() {
+                auto call = m_pendingCalls.find(requestId);
+                if (call == m_pendingCalls.end()) {
+                    return;
+                }
+                call->second.responseRetryTimerArmed = false;
+                if (call->second.hasResponse || call->second.timedOut ||
+                    !call->second.selectedProvider.equals(providerName)) {
+                    return;
+                }
+                NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=RESPONSE_ATTEMPT_TIMEOUT timestamp_us="
+                          << nowMicroseconds()
+                          << " requestId=" << requestId.toUri()
+                          << " providerName=" << providerName.toUri()
+                          << " attempt="
+                          << call->second.responseAttemptProviders.size());
+                retryResponseWithNextProvider(requestId,
+                                              "response_attempt_timeout");
+            });
+    }
+
+    bool ServiceUser::retryResponseWithNextProvider(
+        const ndn::Name& requestId,
+        const char* trigger)
+    {
+        auto pending = m_pendingCalls.find(requestId);
+        if (pending == m_pendingCalls.end() ||
+            !pending->second.responseRetryEnabled ||
+            pending->second.hasResponse ||
+            pending->second.timedOut ||
+            pending->second.responseAttemptProviders.size() >=
+                pending->second.responseMaxAttempts) {
+            return false;
+        }
+
+        const StoredAck* nextAck = nullptr;
+        for (const auto& ack : pending->second.requestAcks) {
+            if (!ack.message.getStatus() ||
+                containsName(pending->second.responseAttemptProviders,
+                             ack.providerName)) {
+                continue;
+            }
+            if (m_useTokens &&
+                pending->second.providerTokens.find(ack.providerName.toUri()) ==
+                    pending->second.providerTokens.end()) {
+                continue;
+            }
+            nextAck = &ack;
+            break;
+        }
+
+        if (nextAck == nullptr) {
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=RESPONSE_RETRY_WAITING_NO_CANDIDATE timestamp_us="
+                      << nowMicroseconds()
+                      << " requestId=" << requestId.toUri()
+                      << " trigger=" << trigger
+                      << " attempts="
+                      << pending->second.responseAttemptProviders.size());
+            return false;
+        }
+
+        const ndn::Name providerName = nextAck->providerName;
+        const ndn::Name serviceName = nextAck->serviceName;
+        pending->second.selectedProvider = providerName;
+        pending->second.providerSelected = true;
+        pending->second.selectionScheduledAtUs = nowMicroseconds();
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=RESPONSE_RESELECTION timestamp_us="
+                  << pending->second.selectionScheduledAtUs
+                  << " requestId=" << requestId.toUri()
+                  << " providerName=" << providerName.toUri()
+                  << " trigger=" << trigger
+                  << " nextAttempt="
+                  << (pending->second.responseAttemptProviders.size() + 1));
+        PublishServiceSelectionMessageV2(providerName, serviceName, requestId);
+        return true;
     }
 
     void ServiceUser::admitOrQueuePendingCall(const ndn::Name& requestId,
@@ -3361,6 +3587,17 @@ namespace ndn_service_framework
             pendingIt->second.requestMessage = requestMessage;
             pendingIt->second.strategy = strategy;
             pendingIt->second.publishedAtUs = nowMicroseconds();
+            pendingIt->second.responseRetryEnabled =
+                m_responseRetryOptions.enabled &&
+                strategy == ndn_service_framework::tlv::FirstResponding &&
+                !pendingIt->second.targetedMode &&
+                !pendingIt->second.isCollaboration &&
+                !pendingIt->second.acksHandler &&
+                !pendingIt->second.ackCandidatesHandler;
+            pendingIt->second.responseAttemptTimeoutMs =
+                m_responseRetryOptions.attemptTimeoutMs;
+            pendingIt->second.responseMaxAttempts =
+                m_responseRetryOptions.maxAttempts;
         }
         updateRequestLifecycleState(requestId, RequestLifecycleState::REQUEST_PUBLISHED);
 
@@ -3488,9 +3725,9 @@ namespace ndn_service_framework
                     result.errorMessage = "NAC-ABE produced no wrapped large-data MessageKey";
                     return result;
                 }
-                envelope.setWrappedMessageKey(ndn::Buffer(wrapped.data(), wrapped.size()));
                 serveDataWithIMS(contentData, ckData);
-                m_hybridMessageCrypto.markSendKeyWrapped(key.keyId);
+                m_hybridMessageCrypto.cacheWrappedSendKey(
+                    key.keyId, ndn::Buffer(wrapped.data(), wrapped.size()));
                 ++m_hybridCryptoCounters.nac_abe_key_wrap_count;
             }
 
@@ -3710,6 +3947,11 @@ namespace ndn_service_framework
         SelectionStatusTimeoutHandler statusTimeoutHandler,
         SelectionStatusOptions statusOptions)
     {
+        if (!hasUserPermissionForRequest(providers, serviceName)) {
+            NDN_LOG_ERROR("Reject request without user permission serviceName="
+                          << serviceName.toUri());
+            return ndn::Name();
+        }
         auto selectionGatedInputKey = prepareSelectionGatedInput(
             requestMessage, serviceName, requestId);
         PendingCall pendingCall;
@@ -3756,6 +3998,30 @@ namespace ndn_service_framework
         return m_authorizations.contains(providerServiceName.toUri(),
                                          serviceName.toUri(),
                                          tlv::UserPermission);
+    }
+
+    bool ServiceUser::hasUserPermissionForRequest(
+        const std::vector<ndn::Name>& providers,
+        const ndn::Name& serviceName) const
+    {
+        if (serviceName.empty()) {
+            return false;
+        }
+        if (!providers.empty()) {
+            return std::any_of(
+                providers.begin(), providers.end(),
+                [this, &serviceName] (const ndn::Name& provider) {
+                    return hasUserPermissionForProvider(provider, serviceName);
+                });
+        }
+        const auto serviceUri = serviceName.toUri();
+        const auto permissions = m_authorizations.snapshot();
+        return std::any_of(
+            permissions.begin(), permissions.end(),
+            [&serviceUri] (const ServiceAuthorizationRecord& record) {
+                return record.permissionKind == tlv::UserPermission &&
+                       record.serviceName == serviceUri;
+            });
     }
 
     std::string ServiceUser::makeTargetedTokenPoolKey(
@@ -4004,6 +4270,11 @@ namespace ndn_service_framework
                                       TimeoutHandler onTimeout,
                                       ResponseHandler onResponseHandler)
     {
+        if (!hasUserPermissionForRequest({}, serviceName)) {
+            NDN_LOG_ERROR("Reject request without user permission serviceName="
+                          << serviceName.toUri());
+            return ndn::Name();
+        }
         const ndn::Name requestId = makeRequestId();
 
         PendingCall pendingCall;
@@ -4041,6 +4312,11 @@ namespace ndn_service_framework
                                       TimeoutHandler onTimeout,
                                       ResponseHandler onResponseHandler)
     {
+        if (!hasUserPermissionForRequest({}, serviceName)) {
+            NDN_LOG_ERROR("Reject request without user permission serviceName="
+                          << serviceName.toUri());
+            return ndn::Name();
+        }
         const ndn::Name requestId = makeRequestId();
 
         PendingCall pendingCall;
@@ -4081,6 +4357,11 @@ namespace ndn_service_framework
                                       size_t requestStrategy,
                                       const RequestId& requestedRequestId)
     {
+        if (!hasUserPermissionForRequest(providers, serviceName)) {
+            NDN_LOG_ERROR("Reject request without user permission serviceName="
+                          << serviceName.toUri());
+            return ndn::Name();
+        }
         const ndn::Name requestId = requestedRequestId.empty() ?
             makeRequestId() : requestedRequestId;
         if (m_pendingCalls.count(requestId) != 0) {
@@ -4126,6 +4407,11 @@ namespace ndn_service_framework
                                       const RequestId& requestedRequestId)
     {
         if (selectionStrategy == AckSelectionStrategy::FirstRespondingSelection) {
+            if (!hasUserPermissionForRequest(providers, serviceName)) {
+                NDN_LOG_ERROR("Reject request without user permission serviceName="
+                              << serviceName.toUri());
+                return ndn::Name();
+            }
             const ndn::Name requestId = requestedRequestId.empty() ?
                 makeRequestId() : requestedRequestId;
             if (m_pendingCalls.count(requestId) != 0) {
@@ -4316,6 +4602,24 @@ namespace ndn_service_framework
         TimeoutHandler onTimeout,
         const RequestId& requestedRequestId)
     {
+        return BeginCollaboration(
+            service, initialRequest, ackCollectionTimeMs, timeoutMs,
+            std::move(onAckClosed), std::move(onFinalResponse),
+            std::move(onTimeout), requestedRequestId,
+            CollaborationAckCoverageHandler());
+    }
+
+    ndn::Name ServiceUser::BeginCollaboration(
+        const ServiceName& service,
+        const RequestPayload& initialRequest,
+        int ackCollectionTimeMs,
+        int timeoutMs,
+        CollaborationAckClosedHandler onAckClosed,
+        ResponseHandler onFinalResponse,
+        TimeoutHandler onTimeout,
+        const RequestId& requestedRequestId,
+        CollaborationAckCoverageHandler onAckCoverage)
+    {
         if (!onAckClosed || ackCollectionTimeMs <= 0 ||
             timeoutMs <= ackCollectionTimeMs) {
             throw std::invalid_argument(
@@ -4349,6 +4653,7 @@ namespace ndn_service_framework
         pendingCall.collaborationPlan.ackCollectionTimeMs = ackCollectionTimeMs;
         pendingCall.collaborationPlan.timeoutMs = timeoutMs;
         pendingCall.collaborationAckClosedHandler = std::move(onAckClosed);
+        pendingCall.collaborationAckCoverageHandler = std::move(onAckCoverage);
         pendingCall.trackSelectionStatus = true;
         pendingCall.selectionStatusOptions = SelectionStatusOptions();
         m_pendingCalls[requestId] = std::move(pendingCall);
@@ -4654,9 +4959,9 @@ namespace ndn_service_framework
             releaseResponseDecryptInFlight();
             return false;
         }
-        if (pendingCall->second.targetedMode &&
-            !hasUserPermissionForProvider(providerName, pendingCall->second.serviceName)) {
-            NDN_LOG_ERROR("Reject targeted response from provider without user permission requestId="
+        if (!hasUserPermissionForProvider(providerName,
+                                          pendingCall->second.serviceName)) {
+            NDN_LOG_ERROR("Reject response from provider without user permission requestId="
                           << requestId.toUri()
                           << " provider=" << providerName.toUri()
                           << " serviceName=" << pendingCall->second.serviceName.toUri());
@@ -4939,10 +5244,14 @@ namespace ndn_service_framework
         }
         else if (envelope.hasWrappedMessageKey()) {
             boost::asio::post(m_face.getIoContext(),
-                [this, envelope, finishDecrypt, decryptCompleted,
+                [this, envelope, serviceName, providerName, finishDecrypt, decryptCompleted,
                  decryptMutex, decryptCv, decryptError]() mutable {
+                    const auto keyDataName = makeHybridMessageKeyDataName(
+                        serviceName, providerName,
+                        std::string("/PERMISSION") + serviceName.toUri(),
+                        envelope.getEpochId());
                     nacConsumer.consume(
-                        ndn::Name(envelope.getKeyId()),
+                        keyDataName,
                         makeNacInlineContentBlock(envelope.getWrappedMessageKey()),
                         [this, envelope, finishDecrypt](const ndn::Buffer& unwrappedKey) mutable {
                             m_hybridMessageCrypto.cacheReceiveKey(envelope.getKeyId(),
@@ -4963,10 +5272,12 @@ namespace ndn_service_framework
         }
         else {
             boost::asio::post(m_face.getIoContext(),
-                [this, providerName, envelope, finishDecrypt, decryptCompleted,
+                [this, serviceName, providerName, envelope, finishDecrypt, decryptCompleted,
                  decryptMutex, decryptCv, decryptError]() mutable {
-                    ndn::Name keyDataName = providerName;
-                    keyDataName.append(ndn::Name(envelope.getKeyId()));
+                    const auto keyDataName = makeHybridMessageKeyDataName(
+                        serviceName, providerName,
+                        std::string("/PERMISSION") + serviceName.toUri(),
+                        envelope.getEpochId());
                     nacConsumer.consume(
                         keyDataName,
                         [this, envelope, finishDecrypt](const ndn::Buffer& unwrappedKey) mutable {
@@ -5212,8 +5523,7 @@ namespace ndn_service_framework
                 if (pending == m_pendingCalls.end()) {
                     return false;
                 }
-                if ((pending->second.acksHandler ||
-                     pending->second.ackCandidatesHandler) &&
+                if (shouldTrackAckDecrypt(pending->second) &&
                     pending->second.ackDecryptsInFlight > 0) {
                     --pending->second.ackDecryptsInFlight;
                     NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_DECRYPT_IN_FLIGHT_DONE timestamp_us="
@@ -5222,8 +5532,7 @@ namespace ndn_service_framework
                               << " inFlight=" << pending->second.ackDecryptsInFlight
                               << " ackWindowExpired=" << pending->second.ackWindowExpired);
                 }
-                return (pending->second.acksHandler ||
-                        pending->second.ackCandidatesHandler) &&
+                return shouldTrackAckDecrypt(pending->second) &&
                        pending->second.ackWindowExpired &&
                        pending->second.ackDecryptsInFlight == 0 &&
                        !pending->second.providerSelected &&
@@ -5245,6 +5554,18 @@ namespace ndn_service_framework
                           << " requestId=" << parsedV2->requestId.toUri()
                           << " providerName=" << parsedV2->providerName.toUri()
                           << " status=" << ackMessage.getStatus());
+                return false;
+            }
+
+            if (!hasUserPermissionForProvider(parsedV2->providerName,
+                                              pendingCall->second.serviceName)) {
+                NDN_LOG_ERROR("Reject ACK from provider without user permission requestId="
+                              << parsedV2->requestId.toUri()
+                              << " provider=" << parsedV2->providerName.toUri()
+                              << " serviceName=" << pendingCall->second.serviceName.toUri());
+                if (completeAckDecrypt()) {
+                    evaluateAckSelection(parsedV2->requestId);
+                }
                 return false;
             }
 
@@ -5314,8 +5635,19 @@ namespace ndn_service_framework
                 return false;
             }
 
-            if (pendingCall->second.providerSelected ||
-                !pendingCall->second.selectedProvider.empty()) {
+            const bool collectResponseRetryCandidate =
+                pendingCall->second.responseRetryEnabled &&
+                pendingCall->second.strategy == ndn_service_framework::tlv::FirstResponding &&
+                !pendingCall->second.targetedMode &&
+                !pendingCall->second.isCollaboration &&
+                !pendingCall->second.acksHandler &&
+                !pendingCall->second.ackCandidatesHandler &&
+                pendingCall->second.providerSelected &&
+                !pendingCall->second.selectedProvider.empty() &&
+                !pendingCall->second.selectedProvider.equals(parsedV2->providerName);
+            if ((pendingCall->second.providerSelected ||
+                 !pendingCall->second.selectedProvider.empty()) &&
+                !collectResponseRetryCandidate) {
                 NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_IGNORED_PROVIDER_SELECTED timestamp_us="
                           << nowMicroseconds()
                           << " requestId=" << parsedV2->requestId.toUri()
@@ -5362,6 +5694,18 @@ namespace ndn_service_framework
                           parsedV2->serviceName,
                           parsedV2->requestId,
                           ackMessage});
+            if (collectResponseRetryCandidate && ackMessage.getStatus()) {
+                addUniqueName(pendingCall->second.successfulAckProviders,
+                              parsedV2->providerName);
+                NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=RESPONSE_RETRY_CANDIDATE_STORED timestamp_us="
+                          << nowMicroseconds()
+                          << " requestId=" << parsedV2->requestId.toUri()
+                          << " providerName=" << parsedV2->providerName.toUri()
+                          << " selectedProvider="
+                          << pendingCall->second.selectedProvider.toUri()
+                          << " candidateCount="
+                          << pendingCall->second.successfulAckProviders.size());
+            }
             updateRequestLifecycleState(parsedV2->requestId, RequestLifecycleState::ACK_MATCHED);
             auto& traceRecord = m_pendingCallTraceHistory[parsedV2->requestId];
             if (traceRecord.createdAtUs == 0) {
@@ -5393,9 +5737,14 @@ namespace ndn_service_framework
                 return true;
             }
             const auto& storedAck = pendingCall->second.requestAcks.back();
-            if (pendingCall->second.isCollaboration ||
-                pendingCall->second.acksHandler ||
-                pendingCall->second.ackCandidatesHandler) {
+            if (collectResponseRetryCandidate) {
+                if (!pendingCall->second.responseRetryTimerArmed) {
+                    retryResponseWithNextProvider(parsedV2->requestId,
+                                                  "late_ack_after_attempt_timeout");
+                }
+                return true;
+            }
+            if (shouldTrackAckDecrypt(pendingCall->second)) {
                 if (pendingCall->second.ackWindowExpired) {
                     if (completeAckDecrypt()) {
                         if (!pendingCall->second.collaborationDeferred) {
@@ -5411,18 +5760,57 @@ namespace ndn_service_framework
                 }
                 const size_t learnedProviderCount =
                     pendingCall->second.learnedAckProviderCountAtPublish;
+                bool applicationCoverageSatisfied = false;
+                if (pendingCall->second.isCollaboration &&
+                    pendingCall->second.collaborationAckCoverageHandler) {
+                    std::vector<AckCandidate> coverageCandidates;
+                    coverageCandidates.reserve(
+                        pendingCall->second.requestAcks.size());
+                    for (const auto& ack : pendingCall->second.requestAcks) {
+                        coverageCandidates.push_back(
+                            makeAckSelectionCandidate(ack));
+                    }
+                    try {
+                        applicationCoverageSatisfied =
+                            pendingCall->second.collaborationAckCoverageHandler(
+                                coverageCandidates);
+                    }
+                    catch (const std::exception& error) {
+                        // Coverage is an optimization hint.  A failed hook
+                        // must preserve the normal ACK deadline path rather
+                        // than closing a partial candidate set.
+                        NDN_LOG_ERROR(
+                            "Collaboration ACK coverage hook failed: "
+                            << error.what());
+                    }
+                    catch (...) {
+                        NDN_LOG_ERROR(
+                            "Collaboration ACK coverage hook failed");
+                    }
+                }
                 if (!usesR1ReservationSelection(pendingCall->second) &&
                     pendingCall->second.isCollaboration &&
-                    collaborationAckRoleCoverageSatisfied(parsedV2->requestId,
-                                                          pendingCall->second)) {
+                    (applicationCoverageSatisfied ||
+                     collaborationAckRoleCoverageSatisfied(
+                         parsedV2->requestId, pendingCall->second))) {
                     pendingCall->second.ackWindowExpired = true;
                     NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_SELECTION_EARLY_COLLAB_ROLE_COVERAGE timestamp_us="
                               << nowMicroseconds()
                               << " requestId=" << parsedV2->requestId.toUri()
                               << " ackProviderCount=" << ackProviders.size()
                               << " roleCount="
-                              << pendingCall->second.collaborationPlan.roles.size());
-                    evaluateAckSelection(parsedV2->requestId);
+                              << pendingCall->second.collaborationPlan.roles.size()
+                              << " applicationHook="
+                              << applicationCoverageSatisfied);
+                    if (pendingCall->second.collaborationDeferred) {
+                        // Deferred callers must receive the immutable
+                        // ACK_CLOSED snapshot before DI can inspect the
+                        // graph, split the model, and commit the plan.
+                        handleAckCollectionTimeout(parsedV2->requestId);
+                    }
+                    else {
+                        evaluateAckSelection(parsedV2->requestId);
+                    }
                 }
                 else if (!usesR1ReservationSelection(pendingCall->second) &&
                          !pendingCall->second.isCollaboration &&
@@ -6130,6 +6518,18 @@ namespace ndn_service_framework
         return selected;
     }
 
+    bool ServiceUser::shouldTrackAckDecrypt(const PendingCall& pendingCall)
+    {
+        // Deferred collaborations freeze an immutable ACK_CLOSED snapshot.
+        // An ACK observed before the deadline must keep that snapshot open
+        // until asynchronous decrypt/authentication finishes, just as custom
+        // ACK handlers already do. Otherwise a Provider can accept a Request
+        // while the User closes an empty candidate set.
+        return pendingCall.isCollaboration ||
+               static_cast<bool>(pendingCall.acksHandler) ||
+               static_cast<bool>(pendingCall.ackCandidatesHandler);
+    }
+
     bool ServiceUser::closeDeferredCollaborationAcks(
         const ndn::Name& requestId,
         PendingCall& pendingCall)
@@ -6194,9 +6594,7 @@ namespace ndn_service_framework
         }
 
         pendingCall->second.ackWindowExpired = true;
-        if ((pendingCall->second.isCollaboration ||
-             pendingCall->second.acksHandler ||
-             pendingCall->second.ackCandidatesHandler) &&
+        if (shouldTrackAckDecrypt(pendingCall->second) &&
             !usesR1ReservationSelection(pendingCall->second) &&
             pendingCall->second.ackDecryptsInFlight > 0 &&
             pendingCall->second.ackSelectionDeferrals < 5) {
@@ -6310,7 +6708,7 @@ namespace ndn_service_framework
                         pendingCall.selectedProvider = storedAck.providerName;
                     }
 
-                    ndn::Buffer assignment = participant.assignmentPayload;
+        ndn::Buffer assignment = participant.assignmentPayload;
                     if (assignment.empty()) {
                         if (pendingCall.collaborationDeferred) {
                             NDN_LOG_ERROR(
@@ -6341,43 +6739,62 @@ namespace ndn_service_framework
                             participant.requiresProvisioning;
                         envelope.provisioningTimeoutMs =
                             participant.provisioningTimeoutMs;
-                        for (const auto& [scope, key] :
-                             pendingCall.collaborationScopeKeys) {
-                            bool roleUsesScope = false;
-                            for (const auto& keyScope :
-                                 pendingCall.collaborationPlan.keyScopes) {
-                                if (keyScope.name != scope) {
-                                    continue;
+                        const auto roleUsesScope =
+                            [&pendingCall, &participant](const std::string& scope) {
+                                for (const auto& keyScope :
+                                     pendingCall.collaborationPlan.keyScopes) {
+                                    if (keyScope.name != scope) {
+                                        continue;
+                                    }
+                                    return std::any_of(
+                                        keyScope.roles.begin(), keyScope.roles.end(),
+                                        [&participant](const CollaborationRole& role) {
+                                            return role == participant.role;
+                                        });
                                 }
-                                roleUsesScope = std::any_of(
-                                    keyScope.roles.begin(), keyScope.roles.end(),
-                                    [&participant](const CollaborationRole& role) {
-                                        return role == participant.role;
-                                    });
-                                break;
-                            }
-                            if (!roleUsesScope) {
                                 for (const auto& dependency :
                                      pendingCall.collaborationPlan.dependencies) {
                                     if (dependency.keyScope != scope) {
                                         continue;
                                     }
-                                    roleUsesScope = std::any_of(
-                                        dependency.producers.begin(),
-                                        dependency.producers.end(),
-                                        [&participant](const CollaborationRole& role) {
-                                            return role == participant.role;
-                                        }) ||
-                                        std::any_of(
-                                        dependency.consumers.begin(),
-                                        dependency.consumers.end(),
-                                        [&participant](const CollaborationRole& role) {
-                                            return role == participant.role;
-                                        });
-                                    break;
+                                    return std::any_of(
+                                               dependency.producers.begin(),
+                                               dependency.producers.end(),
+                                               [&participant](const CollaborationRole& role) {
+                                                   return role == participant.role;
+                                               }) ||
+                                           std::any_of(
+                                               dependency.consumers.begin(),
+                                               dependency.consumers.end(),
+                                               [&participant](const CollaborationRole& role) {
+                                                   return role == participant.role;
+                                               });
                                 }
+                                return false;
+                            };
+                        // Carry encrypted scope-key Data references in the
+                        // per-Provider envelope as well as the shared
+                        // Selection metadata.  Preparation runs before the
+                        // application handler and therefore must receive the
+                        // references on the exact assignment it prepares.
+                        for (const auto& field :
+                             parseSemicolonFields(
+                                 pendingCall.collaborationPlan.sharedAssignmentMetadata)) {
+                            static const std::string prefix = "scopeKeyData.";
+                            if (field.first.rfind(prefix, 0) != 0 ||
+                                field.first.substr(prefix.size()).empty() ||
+                                field.second.empty()) {
+                                continue;
                             }
-                            if (roleUsesScope) {
+                            const auto scope = field.first.substr(prefix.size());
+                            if (roleUsesScope(scope)) {
+                                envelope.scopeKeyDataNames.emplace(
+                                    scope, ndn::Name(field.second));
+                            }
+                        }
+                        for (const auto& [scope, key] :
+                             pendingCall.collaborationScopeKeys) {
+                            if (roleUsesScope(scope)) {
                                 envelope.scopeKeys.emplace(scope, key);
                             }
                         }
@@ -6479,6 +6896,26 @@ namespace ndn_service_framework
         if (usesR1ReservationSelection(pendingCall)) {
             // The timeout-closure path publishes one exact-target decision
             // for every reservation-bearing positive ACK.
+        }
+        else if (pendingCall.isCollaboration &&
+            pendingCall.customSelectedAcks.size() > 1) {
+            // A collaboration assignment is an independently authorized
+            // provider projection.  Combining every opaque assignment into
+            // one hybrid/SVS publication can exceed NDN's single-packet wire
+            // budget after encryption, key wrapping, and signatures.  Keep
+            // one durable request and one Selection phase, but publish one
+            // bounded provider-specific projection per selected participant.
+            for (const auto& selectedAck : pendingCall.customSelectedAcks) {
+                NDN_LOG_INFO("NDNSF_SELECTION_PROVIDER_PROJECTION requestId="
+                             << selectedAck.requestId.toUri()
+                             << " providerName=" << selectedAck.providerName.toUri()
+                             << " serviceName=" << selectedAck.serviceName.toUri()
+                             << " selectedCount="
+                             << pendingCall.customSelectedAcks.size());
+                PublishServiceSelectionMessageV2(selectedAck.providerName,
+                                                 selectedAck.serviceName,
+                                                 selectedAck.requestId);
+            }
         }
         else if (pendingCall.customSelectedAcks.size() > 1) {
             PublishCompactServiceSelectionMessageV2(pendingCall.customSelectedAcks);
@@ -6809,6 +7246,10 @@ namespace ndn_service_framework
 
         auto ackV2 = parseRequestAckNameV2(subscription.name);
         if (ackV2) {
+            logValidatedPublicationAudit(
+                "user", "ACK", subscription,
+                ackV2->requestId, ackV2->serviceName,
+                ackV2->requesterName, ackV2->providerName);
             const auto ackReceiveUs = nowMicroseconds();
             recordObservedAckProvider(ackV2->serviceName,
                                       ackV2->providerName,
@@ -6830,11 +7271,23 @@ namespace ndn_service_framework
                                ackReceiveUs,
                                "pre_decrypt");
             auto pendingCall = m_pendingCalls.find(ackV2->requestId);
+            const bool mayCollectResponseRetryCandidate =
+                pendingCall != m_pendingCalls.end() &&
+                pendingCall->second.responseRetryEnabled &&
+                pendingCall->second.strategy == ndn_service_framework::tlv::FirstResponding &&
+                !pendingCall->second.targetedMode &&
+                !pendingCall->second.isCollaboration &&
+                !pendingCall->second.acksHandler &&
+                !pendingCall->second.ackCandidatesHandler &&
+                pendingCall->second.providerSelected &&
+                !pendingCall->second.selectedProvider.empty() &&
+                !pendingCall->second.selectedProvider.equals(ackV2->providerName);
             if (pendingCall == m_pendingCalls.end() ||
                 pendingCall->second.hasResponse ||
                 pendingCall->second.timedOut ||
-                pendingCall->second.providerSelected ||
-                !pendingCall->second.selectedProvider.empty()) {
+                ((pendingCall->second.providerSelected ||
+                  !pendingCall->second.selectedProvider.empty()) &&
+                 !mayCollectResponseRetryCandidate)) {
                 if (pendingCall == m_pendingCalls.end()) {
                     logAckNoPending(ackV2->requestId,
                                     subscription.name,
@@ -6866,8 +7319,7 @@ namespace ndn_service_framework
             }
 
             const bool collectAckCandidates =
-                pendingCall->second.acksHandler ||
-                pendingCall->second.ackCandidatesHandler;
+                shouldTrackAckDecrypt(pendingCall->second);
             if (collectAckCandidates) {
                 const auto deadlineUs = pendingCall->second.ackWindowDeadlineUs;
                 if (pendingCall->second.ackWindowExpired &&
@@ -7054,6 +7506,10 @@ namespace ndn_service_framework
         providerName = resultsV2->providerName;
         ServiceName = resultsV2->serviceName;
         RequestId = resultsV2->requestId;
+
+        logValidatedPublicationAudit(
+            "user", "RESPONSE", subscription,
+            RequestId, ServiceName, requesterName, providerName);
 
         const ndn::Name responseName(subscription.name);
         auto responsePending = m_pendingCalls.find(RequestId);
@@ -7506,9 +7962,11 @@ void ServiceUser::finishRequestAckOnEventLoop(
         }
 
         ndn::Name serviceSelectionName =
-            makeCompactServiceSelectionNameV2(identity, serviceName, requestId);
+            makeServiceSelectionNameV2(identity, providerName,
+                                       serviceName, requestId);
         ndn::Name serviceSelectionNameWithoutPrefix =
-            makeCompactServiceSelectionNameWithoutPrefixV2(serviceName, requestId);
+            makeServiceSelectionNameWithoutPrefixV2(providerName,
+                                                    serviceName, requestId);
         const std::string selectionDigest = computeSelectionDigest(selectionMessage);
 
         NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=SELECTION_PUBLISH_ATTEMPT timestamp_us="
@@ -7564,6 +8022,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
                   << " requestId=" << requestId.toUri()
                   << " providerName=" << providerName.toUri()
                   << " serviceName=" << serviceName.toUri());
+        scheduleResponseAttemptTimeout(requestId, providerName);
     }
 
     void ServiceUser::PublishCompactServiceSelectionMessageV2(
@@ -8104,23 +8563,12 @@ void ServiceUser::finishRequestAckOnEventLoop(
                               {"mode", "hybrid"}});
         }
 
-        ndn::Buffer cachedWrappedKey;
-        if (m_hybridMessageCrypto.getWrappedSendKey(key.keyId, cachedWrappedKey)) {
-            // REQUEST and SELECTION are group control messages. Every receiver
-            // must be able to recover after missing the first packet of a new
-            // key epoch, so attach the cached NAC-ABE wrapping on every packet.
-            envelope.setWrappedMessageKey(std::move(cachedWrappedKey));
+        // Publish the NAC-ABE wrapped MessageKey once under its deterministic
+        // epoch name. Packets carry only the compact key/epoch identifiers;
+        // receivers recover the key by fetching that name when needed.
+        if (m_hybridMessageCrypto.shouldAttachWrappedKey(key.keyId)) {
             if (m_timelineTrace) {
-                logTimelineTrace("user", "wrapped_key_attached", requestId,
-                                 {{"value", "true"},
-                                  {"source", "cached"},
-                                  {"serviceName", serviceName.toUri()},
-                                  {"messageType", messageType}});
-            }
-        }
-        else {
-            if (m_timelineTrace) {
-                logTimelineTrace("user", "wrapped_key_attached", requestId,
+                logTimelineTrace("user", "wrapped_key_published", requestId,
                                  {{"value", "true"},
                                   {"source", "new"},
                                   {"serviceName", serviceName.toUri()},
@@ -8143,7 +8591,6 @@ void ServiceUser::finishRequestAckOnEventLoop(
                 return;
             }
             ndn::Buffer wrappedBuffer(wrapped.data(), wrapped.size());
-            envelope.setWrappedMessageKey(wrappedBuffer);
             serveDataWithIMS(contentData, ckData);
             m_hybridMessageCrypto.cacheWrappedSendKey(key.keyId, wrappedBuffer);
             ++m_hybridCryptoCounters.nac_abe_key_wrap_count;
@@ -8155,6 +8602,13 @@ void ServiceUser::finishRequestAckOnEventLoop(
                                   {"duration_us", std::to_string(wrapEndUs >= wrapStartUs ?
                                                                  wrapEndUs - wrapStartUs : 0)}});
             }
+        }
+        else if (m_timelineTrace) {
+            logTimelineTrace("user", "wrapped_key_published", requestId,
+                             {{"value", "false"},
+                              {"source", "epoch-cache"},
+                              {"serviceName", serviceName.toUri()},
+                              {"messageType", messageType}});
         }
         auto encryptAndPost = [this, messageName, requestId, serviceName, messageType,
                                keyId = key.keyId, epochId = key.epochId,
@@ -8261,7 +8715,15 @@ void ServiceUser::finishRequestAckOnEventLoop(
                                           {"mode", "hybrid"}});
                     }
                 }
-                publishSvs(m_svsps, messageName, contentBlock);
+                const bool asyncPublish = useAsyncSvsPublish();
+                const auto publishedSeqNo = publishSvs(m_svsps, messageName, contentBlock);
+                NDN_LOG_TRACE("[NDNSF_TRACE] role=user event="
+                              << (asyncPublish ? "SVS_PUBLISH_ACCEPTED" : "SVS_PUBLISH_DONE")
+                              << " timestamp_us=" << nowMicroseconds()
+                              << " requestId=" << requestId.toUri()
+                              << " messageName=" << messageName.toUri()
+                              << " seqNo=" << publishedSeqNo
+                              << " mode=hybrid-message-crypto");
                 if (messageType == "SELECTION" &&
                     isTruthyEnv("NDNSF_SELECTION_TARGETED_PREFETCH")) {
                     try {
@@ -8355,6 +8817,10 @@ void ServiceUser::finishRequestAckOnEventLoop(
             return false;
         }
 
+        const auto accessAttribute = hybridAccessAttributeForName(messageName, serviceName);
+        const auto keyDataName = makeHybridMessageKeyDataName(
+            serviceName, senderPrefix, accessAttribute, envelope.getEpochId());
+
         auto finish = [this, envelope, messageName, serviceName, requestId,
                        senderPrefix, decryptEntryUs, onSuccess = std::move(onSuccess),
                        onError = std::move(onError)](const ndn::Buffer& key) mutable {
@@ -8435,40 +8901,44 @@ void ServiceUser::finishRequestAckOnEventLoop(
                                 envelope.hasWrappedMessageKey() ? "true" : "false"},
                                {"entryToCacheLookupUs",
                                 std::to_string(timelineSteadyMicroseconds() - decryptEntryUs)}});
-        if (!envelope.hasWrappedMessageKey()) {
-            logHybridCryptoTiming("user", "hybrid_decrypt_key_missing", requestId,
-                                  {{"messageType", envelope.getMessageType()},
-                                   {"source", "missing-attached-key"}});
-            if (onError) {
-                onError("hybrid MessageKey is not cached and not attached");
-            }
-            return true;
-        }
-
         ++m_hybridCryptoCounters.nac_abe_key_unwrap_count;
         const auto unwrapStartUs = timelineSteadyMicroseconds();
         logHybridCryptoTiming("user", "hybrid_decrypt_key_unwrap_start", requestId,
                               {{"messageType", envelope.getMessageType()},
-                               {"source", "attached"}});
+                               {"source", envelope.hasWrappedMessageKey() ?
+                                          "inline" : "named-fetch"},
+                               {"keyName", keyDataName.toUri()}});
         try {
-            nacConsumer.consume(ndn::Name(envelope.getKeyId()),
-                                makeNacInlineContentBlock(envelope.getWrappedMessageKey()),
-                                [this, envelope, finish = std::move(finish), requestId, unwrapStartUs](const ndn::Buffer& unwrappedKey) mutable {
+            auto onKey = [this, envelope, finish = std::move(finish), requestId,
+                          unwrapStartUs, keyDataName](const ndn::Buffer& unwrappedKey) mutable {
                                     logHybridCryptoTiming("user", "hybrid_decrypt_key_unwrap_done", requestId,
                                                           {{"messageType", envelope.getMessageType()},
-                                                           {"source", "attached"},
+                                                           {"source", envelope.hasWrappedMessageKey() ?
+                                                                      "inline" : "named-fetch"},
+                                                           {"keyName", keyDataName.toUri()},
                                                            {"unwrapUs", std::to_string(timelineSteadyMicroseconds() - unwrapStartUs)},
                                                            {"keyBytes", std::to_string(unwrappedKey.size())}});
                                     m_hybridMessageCrypto.cacheReceiveKey(envelope.getKeyId(),
                                                                           envelope.getEpochId(),
                                                                           unwrappedKey);
                                     finish(unwrappedKey);
-                                },
-                                [onError = std::move(onError)](const std::string& error) {
+                                };
+            auto onKeyError = [onError = std::move(onError), keyDataName](const std::string& error) {
                                     if (onError) {
-                                        onError("hybrid MessageKey unwrap failed: " + error);
+                                        onError("hybrid MessageKey " +
+                                                std::string(keyDataName.empty() ? "unwrap" :
+                                                            "fetch/unwrap") +
+                                                " failed: " + error);
                                     }
-                                });
+                                };
+            if (envelope.hasWrappedMessageKey()) {
+                nacConsumer.consume(keyDataName,
+                                    makeNacInlineContentBlock(envelope.getWrappedMessageKey()),
+                                    std::move(onKey), std::move(onKeyError));
+            }
+            else {
+                nacConsumer.consume(keyDataName, std::move(onKey), std::move(onKeyError));
+            }
         }
         catch (const std::exception& e) {
             if (onError) {

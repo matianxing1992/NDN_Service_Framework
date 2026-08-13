@@ -159,6 +159,7 @@ def collaboration_roles(service_plan: dict, service: str) -> list[dict]:
         "dependencies": service_plan.get("dependencies", []),
     })
     common = (
+        "executionPolicy=LEGACY_READY_SET_V1;"
         f"readinessRoleCount={len(role_names)};"
         f"readinessRoles={','.join(role_names)};"
         f"readinessBindingDigest={binding};"
@@ -467,6 +468,7 @@ def execution_activation_fields(
         1, "requester-authorized-native-tracer")
     members = ",".join(sorted(member_text.values()))
     common = (
+        "executionPolicy=LEGACY_READY_SET_V1;"
         "executionActivationRequired=true;"
         f"executionActivationSchema={ExecutionActivateMessage.SCHEMA};"
         f"executionActivationDigest={activation.digest()};"

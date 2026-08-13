@@ -1,0 +1,25 @@
+name /example/python-ndn/controller/NDNSF/ControllerPolicy/v1
+
+provider-policies
+{
+    provider-policy
+    {
+        for /example/python-ndn/provider
+        allow
+        {
+            /LiveStream/Dummy
+        }
+    }
+}
+
+user-policies
+{
+    user-policy
+    {
+        for /example/python-ndn/user
+        allow
+        {
+            /LiveStream/Dummy
+        }
+    }
+}

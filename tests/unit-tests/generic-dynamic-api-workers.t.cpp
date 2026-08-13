@@ -20,6 +20,7 @@ BOOST_AUTO_TEST_CASE(AllSelectedPublishesSelectionForEveryValidAckResponder)
   auto userCert = makeRsaIdentity(keyChain, requesterName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-all-selected-selection"));
   LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+  installUserPermissions(user, requesterName, serviceName, providers);
 
   ndn::Name publishedRequestId;
   user.setRequestPublisher(
@@ -167,6 +168,7 @@ BOOST_AUTO_TEST_CASE(AllSelectedHandlesMultipleSelectedProviderResponses)
   auto userCert = makeRsaIdentity(keyChain, requesterName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-all-selected-responses"));
   LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+  installUserPermissions(user, requesterName, serviceName, providers);
 
   ndn::Name publishedRequestId;
   std::string userToken;
@@ -613,6 +615,7 @@ BOOST_AUTO_TEST_CASE(UserResponseCallbackCanRunOffEventLoopAfterStateUpdate)
   auto userCert = makeRsaIdentity(keyChain, requesterName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-user-callback"));
   LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+  installUserPermissions(user, requesterName, serviceName, {providerName});
   user.setHandlerThreads(1);
 
   bool callbackOffEventLoop = false;
@@ -664,6 +667,7 @@ BOOST_AUTO_TEST_CASE(UserResponseCallbackRunsInlineWhenHandlerThreadsAreDisabled
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-user-callback-inline"));
   LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert,
                         "examples/trust-any.conf");
+  installUserPermissions(user, requesterName, serviceName, {providerName});
   user.setHandlerThreads(0);
 
   bool callbackRan = false;

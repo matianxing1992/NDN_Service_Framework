@@ -204,6 +204,8 @@ class BoundedQwenGenerationResult:
     tokens_per_second: float
     token_steps: tuple[dict[str, Any], ...]
     error: str = ""
+    reference_acceptance: str = "EXACT"
+    reference_evidence_digest: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -214,6 +216,8 @@ class BoundedQwenGenerationResult:
             "generatedTokenIds": list(self.generated_token_ids),
             "decodedText": self.decoded_text,
             "exactReferenceMatch": self.exact_reference_match,
+            "referenceAcceptance": self.reference_acceptance,
+            "referenceEvidenceDigest": self.reference_evidence_digest,
             "ttftMs": self.ttft_ms,
             "interTokenMs": list(self.inter_token_ms),
             "totalMs": self.total_ms,
@@ -444,6 +448,7 @@ def run_full_qwen_generation(
     expected_token_ids: Sequence[int] | None = None,
     require_eos: bool = True,
     decode: Callable[[Sequence[int]], str] | None = None,
+    numeric_equivalence: Mapping[str, Any] | None = None,
     clock: Callable[[], float] = time.perf_counter,
 ) -> BoundedQwenGenerationResult:
     """Validate one durable full-generation response.
@@ -477,6 +482,8 @@ def run_full_qwen_generation(
     generated: tuple[int, ...] = ()
     metadata: dict[str, Any] = {}
     completion_monotonic_ms: tuple[float, ...] = ()
+    reference_acceptance = "EXACT"
+    reference_evidence_digest = ""
     try:
         value = generation_call(initial, max_new_tokens, generation_id)
         if not isinstance(value, Mapping):
@@ -518,8 +525,33 @@ def run_full_qwen_generation(
             status, stop_reason, error = "TRUNCATED", "TOKEN_LIMIT", (
                 "full generation did not terminate with EOS")
         elif expected is not None and generated != expected:
-            status, stop_reason, error = "FAILED", "TOKEN_MISMATCH", (
-                f"TOKEN_MISMATCH expected={len(expected)} actual={len(generated)}")
+            policy = dict(numeric_equivalence or {})
+            divergence = dict(policy.get("firstDivergence") or {})
+            allowed = {
+                int(item) for item in policy.get("allowedTokenIds", ())
+            }
+            index = divergence.get("tokenIndex")
+            equivalent = (
+                policy.get("classification") ==
+                "NUMERICALLY_EQUIVALENT_DIVERGENCE"
+                and isinstance(index, int)
+                and index >= 0
+                and index < len(expected)
+                and index < len(generated)
+                and generated[:index] == expected[:index]
+                and generated[index] != expected[index]
+                and generated[index] in allowed
+                and policy.get("evidenceDigest", "")
+            )
+            if equivalent:
+                status = "OK"
+                stop_reason = "EOS" if generated[-1] in eos else "MAX_NEW_TOKENS"
+                error = ""
+                reference_acceptance = "NUMERICALLY_EQUIVALENT_DIVERGENCE"
+                reference_evidence_digest = str(policy["evidenceDigest"])
+            else:
+                status, stop_reason, error = "FAILED", "TOKEN_MISMATCH", (
+                    f"TOKEN_MISMATCH expected={len(expected)} actual={len(generated)}")
         else:
             status = "OK"
             stop_reason = "EOS" if generated[-1] in eos else "MAX_NEW_TOKENS"
@@ -556,6 +588,8 @@ def run_full_qwen_generation(
                            if generated and total_ms > 0 else 0.0),
         token_steps=({"mode": "FULL", "metadata": metadata},) if metadata else (),
         error=error,
+        reference_acceptance=reference_acceptance,
+        reference_evidence_digest=reference_evidence_digest,
     )
 
 

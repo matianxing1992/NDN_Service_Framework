@@ -151,6 +151,13 @@ namespace ndn_service_framework{
     using CollaborationAckClosedHandler =
         std::function<void(const CollaborationAckClosure&)>;
 
+    // Optional, application-owned ACK coverage hook.  The hook is evaluated
+    // only after a candidate has passed the normal ACK authentication and
+    // replay checks.  Returning true closes the ACK window early; it does not
+    // select providers, create a plan, or bypass ACK_CLOSED immutability.
+    using CollaborationAckCoverageHandler =
+        std::function<bool(const std::vector<AckCandidate>&)>;
+
     struct PreparedServiceRequest
     {
         ndn::Name serviceName;
@@ -281,6 +288,14 @@ namespace ndn_service_framework{
                 std::string reason;
             };
 
+            struct ResponseRetryOptions
+            {
+                bool enabled = false;
+                int attemptTimeoutMs = 1000;
+                /** Maximum selections, including the initial Provider. */
+                size_t maxAttempts = 4;
+            };
+
             using AdmissionControlWarningHandler =
                 std::function<void(const AdmissionControlStatus&)>;
 
@@ -364,6 +379,8 @@ namespace ndn_service_framework{
             static const char* requestLifecycleStateToString(RequestLifecycleState state);
             size_t getPendingCallCount() const;
             void setPendingCallTimeoutGrace(ndn::time::milliseconds grace);
+            void setResponseRetryOptions(ResponseRetryOptions options);
+            ResponseRetryOptions getResponseRetryOptions() const;
             void setPerformanceMode(bool enabled);
             void setHandlerThreads(size_t n);
             size_t getHandlerThreads() const;
@@ -595,6 +612,16 @@ namespace ndn_service_framework{
                                          ResponseHandler onFinalResponse,
                                          TimeoutHandler onTimeout,
                                          const RequestId& requestId = RequestId());
+
+            ndn::Name BeginCollaboration(const ServiceName& service,
+                                         const RequestPayload& initialRequest,
+                                         int ackCollectionTimeMs,
+                                         int timeoutMs,
+                                         CollaborationAckClosedHandler onAckClosed,
+                                         ResponseHandler onFinalResponse,
+                                         TimeoutHandler onTimeout,
+                                         const RequestId& requestId,
+                                         CollaborationAckCoverageHandler onAckCoverage);
 
             bool CommitCollaborationPlan(const RequestId& requestId,
                                          const std::string& ackClosedDigest,
@@ -919,6 +946,13 @@ namespace ndn_service_framework{
                 bool timedOut = false;
                 bool timeoutGraceActive = false;
                 ndn::scheduler::EventId requestTimeoutEvent;
+                ndn::scheduler::EventId responseAttemptTimeoutEvent;
+                bool responseRetryEnabled = false;
+                bool responseRetryTimerArmed = false;
+                int responseAttemptTimeoutMs = 0;
+                size_t responseMaxAttempts = 1;
+                uint64_t responseAttemptStartedAtUs = 0;
+                std::vector<ndn::Name> responseAttemptProviders;
                 size_t ackDecryptsInFlight = 0;
                 size_t ackSelectionDeferrals = 0;
                 size_t learnedAckProviderCountAtPublish = 0;
@@ -941,6 +975,7 @@ namespace ndn_service_framework{
                 bool collaborationPlanCommitted = false;
                 CollaborationPlan collaborationPlan;
                 CollaborationAckClosedHandler collaborationAckClosedHandler;
+                CollaborationAckCoverageHandler collaborationAckCoverageHandler;
                 std::vector<StoredAck> collaborationClosedAcks;
                 std::vector<SelectedParticipant> collaborationCommittedParticipants;
                 std::string collaborationAckClosedDigest;
@@ -983,6 +1018,8 @@ namespace ndn_service_framework{
             static ndn::Name makeRequestId();
 
             static std::string sanitizeLargeDataObjectId(const std::string& objectLabel);
+
+            static bool shouldTrackAckDecrypt(const PendingCall& pendingCall);
 
             bool evaluateAckSelection(const ndn::Name& requestId);
 
@@ -1062,6 +1099,9 @@ namespace ndn_service_framework{
 
             bool hasUserPermissionForProvider(const ndn::Name& providerName,
                                               const ndn::Name& serviceName) const;
+            bool hasUserPermissionForRequest(
+                const std::vector<ndn::Name>& providers,
+                const ndn::Name& serviceName) const;
             static std::string makeTargetedTokenPoolKey(
                 const ndn::Name& providerName,
                 const ndn::Name& serviceName);
@@ -1121,6 +1161,10 @@ namespace ndn_service_framework{
             void dispatchResponseHandler(ResponseHandler responseHandler,
                                          const ndn::Name& requestId,
                                          ResponseMessage responseMessage);
+            void scheduleResponseAttemptTimeout(const ndn::Name& requestId,
+                                                const ndn::Name& providerName);
+            bool retryResponseWithNextProvider(const ndn::Name& requestId,
+                                               const char* trigger);
 
             ndn::Face& m_face;
             ndn::Scheduler m_scheduler;
@@ -1179,6 +1223,7 @@ namespace ndn_service_framework{
             AdmissionControlRejectHandler m_admissionControlRejectHandler;
             RequestPublisher m_requestPublisher;
             ndn::time::milliseconds m_pendingCallTimeoutGrace{500};
+            ResponseRetryOptions m_responseRetryOptions;
             bool m_performanceMode = false;
             RuntimeDiagnostics m_runtimeDiagnostics;
             NetworkTelemetryStore m_networkTelemetry;

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -194,6 +195,33 @@ class ArtifactLifecycleTests(unittest.TestCase):
             sink.finalize()
         self.assertFalse(destination.exists())
         self.assertFalse(sink.temporary.exists())
+
+    def test_atomic_destination_batches_and_forces_resume_checkpoint(self) -> None:
+        destination = self.root / "consumer-batched.bin"
+        sink = AtomicArtifactDestination(
+            destination,
+            self.fixture.artifact,
+            "retrieval-batched",
+            max_range_bytes=len(self.fixture.payload),
+            checkpoint_bytes=len(self.fixture.payload),
+        )
+        sink.write_range(0, self.fixture.payload[:4])
+        # Below the configured checkpoint threshold, the sidecar remains at
+        # its initial empty coverage; this is the high-throughput path.
+        self.assertEqual(json.loads(sink.sidecar.read_text())['ranges'], [])
+        sink.abort(preserve_progress=True)
+
+        resumed = AtomicArtifactDestination(
+            destination,
+            self.fixture.artifact,
+            "retrieval-batched",
+            max_range_bytes=len(self.fixture.payload),
+            checkpoint_bytes=len(self.fixture.payload),
+        )
+        self.assertEqual(resumed.missing_ranges(), ((4, len(self.fixture.payload) - 4),))
+        resumed.write_range(4, self.fixture.payload[4:])
+        self.assertEqual(resumed.finalize(), destination)
+        self.assertEqual(destination.read_bytes(), self.fixture.payload)
 
     def test_receipt_tamper_and_wrong_operation_fail_authentication(self) -> None:
         session = self.session()

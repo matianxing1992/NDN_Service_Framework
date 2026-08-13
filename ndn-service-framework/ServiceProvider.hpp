@@ -420,6 +420,16 @@ namespace ndn_service_framework{
                                Topic topicPrefix,
                                std::function<void(CollaborationContext&,
                                                   const CollaborationData&)> onData);
+                /**
+                 * Allow encrypted collaboration Data for this request only
+                 * when its scope and topic match the supplied binding.
+                 *
+                 * This is useful for applications that consume through
+                 * waitOne()/waitFor(): the receive filter is installed before
+                 * any Data is decrypted, so unrelated role traffic is dropped
+                 * without attempting authentication with the wrong scope key.
+                 */
+                void allowData(KeyScope keyScope, Topic topicPrefix);
                 std::optional<CollaborationData> waitOne(KeyScope keyScope,
                                                          Topic topicPrefix,
                                                          int timeoutMs);
@@ -508,6 +518,12 @@ namespace ndn_service_framework{
             void init();
 
             ndn::Name getName();
+
+            /** Public names of the certificate used for Provider-signed Data.
+             * These expose no private key material and let an external
+             * application signer select the exact Provider signing key. */
+            ndn::Name getSigningKeyName() const;
+            ndn::Name getSigningCertificateName() const;
 
             /** Create the sole Core-owned semantic-name live-stream publisher. */
             std::shared_ptr<LiveStreamPublisher>
@@ -887,6 +903,7 @@ namespace ndn_service_framework{
                 std::function<void(const CollaborationData&)> onData;
                 std::function<void(CollaborationContext&,
                                    const CollaborationData&)> onContextData;
+                bool receiveFilterOnly = false;
             };
 
             struct TargetedProviderTokenState
@@ -1054,6 +1071,9 @@ namespace ndn_service_framework{
                 Topic topicPrefix,
                 std::function<void(CollaborationContext&,
                                    const CollaborationData&)> onData);
+            void addCollaborationReceiveFilter(const ndn::Name& requestId,
+                                                KeyScope keyScope,
+                                                Topic topicPrefix);
             void decryptCollaborationDataOrQueue(
                 const ndn::Name& dataName,
                 const ndn::Name& requestId,

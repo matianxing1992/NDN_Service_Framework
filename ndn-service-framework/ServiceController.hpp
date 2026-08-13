@@ -91,7 +91,7 @@ private:
   PermissionResponse buildUserPermissionResponse(const ndn::Name& targetIdentity) const;
   PermissionResponse buildProviderPermissionResponse(const ndn::Name& targetIdentity) const;
   PolicyManifest buildPolicyManifest() const;
-  ndn::security::Certificate getTargetIdentityCertificate(const ndn::Name& targetIdentity) const;
+  ndn::security::Certificate getTargetIdentityCertificate(const ndn::Name& targetIdentity);
 
   // ===== signer-based encryption =====
   bool identitiesMatch(const ndn::Name& lhs, const ndn::Name& rhs) const;
