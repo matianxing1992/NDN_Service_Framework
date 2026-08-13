@@ -18,3 +18,16 @@ TigerCluster candidate.
 The correction is `examples/wscript` commit `faaed18`:
 `BOOST NDN_CXX NDN_SVS ONNXRUNTIME`. A new GPU workflow identity is required;
 the failed image was never pushed or signed.
+
+## Follow-up failure
+
+- Workflow run: `31694109243`
+- Source revision: `7514fb7245c3b7e9a7148d6055aed3644fca2f39`
+- Failure: the separate `di-native-onnxruntime-smoke` target reached
+  compilation but could not find `<ndn-cxx/encoding/buffer.hpp>`.
+- Root cause: its Waf `use` list still contained only `ONNXRUNTIME`; the
+  previous correction covered `di-native-plan-onnx-smoke` but not this target.
+- Candidate status: `INVALID_CANDIDATE`
+
+The next correction adds the same `BOOST NDN_CXX NDN_SVS` dependencies to the
+`di-native-onnxruntime-smoke` target. No image was pushed or signed by this run.
