@@ -8,13 +8,21 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
 LIB = REPO / "packaging" / "ndnsf-di-container" / "lib"
-if str(LIB) not in sys.path:
+_LIB_INSERTED = str(LIB) not in sys.path
+if _LIB_INSERTED:
     sys.path.insert(0, str(LIB))
 if str(Path(__file__).parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).parent))
 
 import spec170_allocation_topology as topology
 from test_spec170_allocation_topology import profile
+
+# This directory contains a generic ``profile.py`` deployment helper.  Do not
+# leave it at the front of the process-wide import path: later tests importing
+# the standard-library ``profile`` module (e.g. through cProfile/torch) would
+# otherwise resolve the deployment helper and fail during collection.
+if _LIB_INSERTED:
+    sys.path.remove(str(LIB))
 
 
 class Spec170ExactSifGateTest(unittest.TestCase):
