@@ -1,9 +1,11 @@
 """Minimal, optional-dependency-free NDNSF-DI Core public surface."""
 
 from .contracts import (
-    DIRequestEnvelopeV2, DIRoleAssignmentV2, DISelectionAssignmentV2,
+    DATA_DRIVEN_V2, LEGACY_READY_SET_V1, DI_PLACEMENT_V3, placement_wire_schema,
+    DIDataDependencyV2, DIRequestEnvelopeV2, DIRoleAssignmentV2,
+    DISelectionAssignmentV2,
     DISelectionAcceptanceV2, ExactPrefixKvKeyV1, StateReuseBindingV2,
-    ShardResidencyEvidenceV2,
+    ShardResidencyEvidenceV2, ProviderResidencyIdentity,
     AssignmentContext, AuthenticatedProviderReceipt, CanonicalContract, CoreAssignment,
     CoreExecutionEvidence, CoreExecutionPlan, CorePlanDependency,
     DeploymentLifecycleRecord, OrphanCleanupRecord,
@@ -11,6 +13,9 @@ from .contracts import (
     DeploymentInstance, DeploymentInstanceState,
     ProviderReadyMessage, ReadyAcknowledgement, ReadySetMember,
     ExecutionActivateMessage,
+    InvocationSummaryV1, LifecycleEventV1,
+    LIFECYCLE_EVENT_TYPES, TERMINAL_LIFECYCLE_EVENT_TYPES,
+    validate_lifecycle_failure_code,
     ProviderAssignment, ReceiptOperation, RequestCoordinatorBinding,
     ResultRendezvousRecord, canonical_digest, canonical_json,
     exact_receipt_membership,
@@ -28,7 +33,7 @@ from .execution import (
     CoreExecutor, DependencyDrivenExecution, DIResultEnvelopeV2,
     ExecutionAdapter, ExecutionResult, InputOutputObjectManifest,
     NativeSession, ResultContract, RoleExecutionBinding,
-    ReadySetCoordinator, ProviderActivationGate,
+    ReadySetCoordinator, ProviderActivationGate, new_legacy_rollback_plan,
 )
 from .deployment_control import (
     DISelectionParticipant, GpuMiBAdmissionLedger,
@@ -40,6 +45,17 @@ from .deployment_control import (
     PreparationCallbacks, SelectionGatedProvider,
     DeploymentControlJournal, TentativeReservation,
     ReservationLedgerEvent,
+)
+from .v3_lifecycle import V3AdmissionController, V3FencingToken, V3LifecycleState, V3QueueRecord
+from .device_scheduler import DeviceAdmissionV3, DeviceJobV3, MultiDeviceSchedulerV3
+from .accelerator_policy import AcceleratorMode, AcceleratorPolicy
+from .hybrid_contracts import (
+    NDNSF_DATA_V1, DataSegmentReplayWindow, DataSegmentV1, HybridPlan, LocalTensorGroup,
+    RedistributionEdge, TensorDisposition, TensorSlice,
+)
+from .protected_artifacts import (
+    GrantRequestV1, KeyGrantV1, PlaintextLeaseRegistry, ProtectionState,
+    RevocationStateV1,
 )
 from .secure_status import (
     BoundedStatusPoller, EncryptedStatusSnapshot, SecureStatusProvider,

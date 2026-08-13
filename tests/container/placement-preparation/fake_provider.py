@@ -50,6 +50,7 @@ def main() -> int:
         ledger=ledger, offered_gpu_memory_mb=2048,
         signer_key_id=f"{identity}/KEY/1",
         sign_offer_digest=lambda value: "provider-signature:" + value,
+        devices=("cuda:0",),
         offer_lease_ms=8000)
 
     def prepared(context) -> None:

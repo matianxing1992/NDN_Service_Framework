@@ -54,6 +54,8 @@ SOURCE_FILES = (
     "Experiments/NDNSF_Run_Minindn_Quick_Checks.py",
     "examples/python/NDNSF-DistributedInference/llm_pipeline/user.py",
     "examples/python/NDNSF-DistributedInference/llm_pipeline/llm_pipeline_lib.py",
+    "examples/python/NDNSF-DistributedInference/llm_pipeline/provider.py",
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/provider.py",
 )
 MANDATORY_TIERS = {
     "gate-a-fidelity": FidelityTier.UNIT,
@@ -61,6 +63,8 @@ MANDATORY_TIERS = {
     "gate-c-container": FidelityTier.REAL_CANDIDATE_CONTAINER_MODEL,
     "gate-d-deadline": FidelityTier.UNIT,
 }
+ARTIFACT_BUNDLE_SCHEMA = "ndnsf-experiment-artifact-bundle-v2"
+DEFAULT_ARTIFACT_STORE_ROOT = REPO / "results" / "_artifacts"
 
 
 def now_iso() -> str:
@@ -90,6 +94,195 @@ def source_identity() -> tuple[str, dict[str, str]]:
 
 def command_text(command: list[str]) -> str:
     return shlex.join(command)
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(4 * 1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _canonical_json_bytes(value: Any) -> bytes:
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+
+
+def _stage_bundle_manifest(
+    stage_dir: Path, *, model_content_digest: str
+) -> dict[str, Any]:
+    prior_manifest = stage_dir / "bundle-manifest.json"
+    files = []
+    if prior_manifest.is_file():
+        prior = json.loads(prior_manifest.read_text(encoding="utf-8"))
+        files = [dict(item) for item in prior.get("files", [])]
+        for item in files:
+            path = stage_dir / item["path"]
+            if (
+                not path.is_file()
+                or path.is_symlink()
+                or path.stat().st_size != item["size"]
+            ):
+                raise RuntimeError(f"prior artifact bundle member is malformed: {path}")
+    else:
+        for path in sorted(item for item in stage_dir.rglob("*") if item.is_file()):
+            if path.relative_to(stage_dir).as_posix() == "bundle-manifest.json":
+                continue
+            if path.is_symlink():
+                raise RuntimeError(f"stage artifact bundle cannot contain symlinks: {path}")
+            files.append(
+                {
+                    "path": path.relative_to(stage_dir).as_posix(),
+                    "size": path.stat().st_size,
+                    "sha256": _sha256_file(path),
+                }
+            )
+    if not files:
+        raise RuntimeError(f"stage artifact directory is empty: {stage_dir}")
+    identity = {
+        "schema": ARTIFACT_BUNDLE_SCHEMA,
+        "kind": "qwen-onnx-stage-bundle",
+        "modelContentDigest": model_content_digest,
+        "files": files,
+    }
+    return {
+        **identity,
+        "bundleDigest": "sha256:"
+        + hashlib.sha256(_canonical_json_bytes(identity)).hexdigest(),
+        "payloadBytes": sum(item["size"] for item in files),
+    }
+
+
+def _verify_stage_bundle(
+    bundle_dir: Path, manifest: dict[str, Any], *, verify_payload: bool
+) -> None:
+    manifest_path = bundle_dir / "bundle-manifest.json"
+    if not manifest_path.is_file():
+        raise RuntimeError(f"artifact store manifest is missing: {manifest_path}")
+    stored = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if stored != manifest:
+        raise RuntimeError(f"artifact store manifest conflicts with identity: {bundle_dir}")
+    for item in manifest["files"]:
+        path = bundle_dir / item["path"]
+        if (
+            not path.is_file()
+            or path.is_symlink()
+            or path.stat().st_size != item["size"]
+        ):
+            raise RuntimeError(f"artifact store member is absent or malformed: {path}")
+        if verify_payload and _sha256_file(path) != item["sha256"]:
+            raise RuntimeError(f"artifact store member digest mismatch: {path}")
+
+
+def retain_stage_artifacts(
+    *,
+    stage_dir: Path,
+    artifact_store_root: Path,
+    model_content_digest: str,
+    workload_digest: str,
+    replace_source: bool,
+) -> dict[str, Any]:
+    """Install a stage bundle by hard link, then leave only a run-local link.
+
+    The content store must share the repository filesystem. This makes import
+    write zero duplicate payload bytes and keeps a bundle alive after its
+    originating run directory is pruned.
+    """
+    source_dir = stage_dir.resolve(strict=True)
+    if not source_dir.is_dir():
+        raise RuntimeError(f"stage artifact directory is absent: {stage_dir}")
+    store_root = artifact_store_root.expanduser().resolve()
+    try:
+        store_root.relative_to(REPO)
+    except ValueError as exc:
+        raise RuntimeError(
+            "artifact store must be inside the repository so candidate containers can mount it"
+        ) from exc
+    manifest = _stage_bundle_manifest(
+        source_dir,
+        model_content_digest=model_content_digest,
+    )
+    digest = manifest["bundleDigest"].split(":", 1)[1]
+    bundle_parent = store_root / "qwen-stage-bundles" / "sha256"
+    bundle_dir = bundle_parent / digest
+    bundle_parent.mkdir(parents=True, exist_ok=True)
+    installed = False
+    if bundle_dir.exists():
+        _verify_stage_bundle(bundle_dir, manifest, verify_payload=False)
+    else:
+        staging = bundle_parent / f".{digest}.{uuid.uuid4().hex}.partial"
+        staging.mkdir(parents=False, exist_ok=False)
+        try:
+            for item in manifest["files"]:
+                source = source_dir / item["path"]
+                target = staging / item["path"]
+                target.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    os.link(source, target)
+                except OSError as exc:
+                    raise RuntimeError(
+                        "artifact store must share a filesystem with prepared artifacts; "
+                        "copy fallback is intentionally disabled"
+                    ) from exc
+            (staging / "bundle-manifest.json").write_text(
+                json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            _verify_stage_bundle(staging, manifest, verify_payload=False)
+            try:
+                staging.rename(bundle_dir)
+                installed = True
+            except FileExistsError:
+                _verify_stage_bundle(bundle_dir, manifest, verify_payload=False)
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging)
+
+    if replace_source:
+        backup = stage_dir.with_name(
+            f".{stage_dir.name}.{uuid.uuid4().hex}.retention-source"
+        )
+        prior_link_target = None
+        if stage_dir.is_symlink():
+            prior_link_target = os.readlink(stage_dir)
+            stage_dir.unlink()
+            backup = None
+        else:
+            stage_dir.rename(backup)
+        try:
+            relative_target = os.path.relpath(bundle_dir, start=stage_dir.parent)
+            stage_dir.symlink_to(relative_target, target_is_directory=True)
+        except Exception:
+            if stage_dir.is_symlink():
+                stage_dir.unlink()
+            if backup is not None and backup.exists():
+                backup.rename(stage_dir)
+            elif prior_link_target is not None:
+                stage_dir.symlink_to(prior_link_target, target_is_directory=True)
+            raise
+        if backup is not None:
+            shutil.rmtree(backup)
+
+    return {
+        "schemaVersion": 1,
+        "bundleDigest": manifest["bundleDigest"],
+        "bundlePath": str(bundle_dir),
+        "payloadBytes": manifest["payloadBytes"],
+        "fileCount": len(manifest["files"]),
+        "installed": installed,
+        "duplicatePayloadBytes": 0,
+        "storeMode": "content-addressed-hardlink",
+        "runReferenceMode": "relative-symlink" if replace_source else "none",
+        "workloadDigest": workload_digest,
+    }
+
+
+def write_artifact_retention(run_dir: Path, record: dict[str, Any]) -> None:
+    (run_dir / "artifact-retention.json").write_text(
+        json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
 
 
 def run_command(
@@ -463,7 +656,11 @@ def prepare_policy_in_container(
 
 
 def reuse_prepared_run(
-    *, source_run: Path, run_dir: Path, snapshot: Path
+    *,
+    source_run: Path,
+    run_dir: Path,
+    snapshot: Path,
+    artifact_store_root: Path,
 ) -> dict[str, Any]:
     source_run = source_run.resolve()
     source_runtime = source_run / "minindn" / "runtime"
@@ -483,10 +680,25 @@ def reuse_prepared_run(
         source_run / "generation-campaign.json",
         run_dir / "generation-campaign.json",
     )
+    workload = json.loads(
+        (run_dir / "workload.json").read_text(encoding="utf-8"))
+    if workload["modelIdentity"]["localSnapshot"] != str(snapshot):
+        raise RuntimeError("prepared run model snapshot identity mismatch")
+    retention = retain_stage_artifacts(
+        stage_dir=source_stages,
+        artifact_store_root=artifact_store_root,
+        model_content_digest=workload["modelIdentity"]["contentDigest"],
+        workload_digest=workload["workloadDigest"],
+        replace_source=False,
+    )
     target_runtime = run_dir / "minindn" / "runtime"
     target_runtime.mkdir(parents=True, exist_ok=True)
     target_stages = target_runtime / "qwen-onnx-stage-artifacts"
-    target_stages.symlink_to(source_stages, target_is_directory=True)
+    bundle_dir = Path(retention["bundlePath"])
+    target_stages.symlink_to(
+        os.path.relpath(bundle_dir, start=target_stages.parent),
+        target_is_directory=True,
+    )
     for name in (
         "llm_pipeline_policy.yaml",
         "qwen-pipeline-runtime.json",
@@ -497,16 +709,16 @@ def reuse_prepared_run(
         text = text.replace("/workspace/", str(REPO) + "/")
         text = text.replace(str(source_runtime), str(target_runtime))
         (target_runtime / name).write_text(text, encoding="utf-8")
-    workload = json.loads(
-        (run_dir / "workload.json").read_text(encoding="utf-8"))
-    if workload["modelIdentity"]["localSnapshot"] != str(snapshot):
-        raise RuntimeError("prepared run model snapshot identity mismatch")
+    retention["runReferenceMode"] = "relative-symlink"
+    write_artifact_retention(run_dir, retention)
     (run_dir / "preparation-reuse.json").write_text(
         json.dumps(
             {
-                "schemaVersion": 1,
+                "schemaVersion": 2,
                 "sourceRun": str(source_run),
-                "stageArtifactDirectory": str(source_stages),
+                "stageArtifactDirectory": str(bundle_dir),
+                "bundleDigest": retention["bundleDigest"],
+                "duplicatePayloadBytes": 0,
                 "modelContentDigest": workload["modelIdentity"]["contentDigest"],
                 "workloadDigest": workload["workloadDigest"],
             },
@@ -582,7 +794,18 @@ def run_real_gate(
                         raise RuntimeError(
                             f"MiniNDN stage {index} lacks artifact readiness evidence"
                         )
+                    full_generation = (
+                        "LLM_PIPELINE_QWEN_FULL_STAGE_START" in stage_text
+                    )
                     marker = (
+                        (
+                            "LLM_PIPELINE_QWEN_FULL_GENERATION_FINAL"
+                            if index == 0
+                            else "LLM_PIPELINE_QWEN_FULL_HIDDEN_PUBLISHED"
+                            if index == 1
+                            else "LLM_PIPELINE_QWEN_FULL_TOKEN_PUBLISHED"
+                        )
+                        if full_generation else
                         "LLM_PIPELINE_QWEN_ONNX_STAGE_FINAL"
                         if index == 2
                         else "LLM_PIPELINE_QWEN_ONNX_STAGE_OUTPUT"
@@ -772,10 +995,23 @@ def write_summary(run_dir: Path, verdict: dict[str, Any]) -> None:
         f"- Passed: `{verdict['passed']}`",
         "- TigerCluster submitted: `false`",
         f"- External validation authorized: `{verdict['externalValidationAuthorized']}`",
-        "",
-        "| Case | Required fidelity | Status | Passed | Reasons |",
-        "|---|---|---|---:|---|",
     ]
+    retention_path = run_dir / "artifact-retention.json"
+    if retention_path.is_file():
+        retention = json.loads(retention_path.read_text(encoding="utf-8"))
+        lines.extend(
+            (
+                f"- Artifact bundle: `{retention['bundleDigest']}`",
+                f"- Duplicate model payload bytes: `{retention['duplicatePayloadBytes']}`",
+            )
+        )
+    lines.extend(
+        (
+            "",
+            "| Case | Required fidelity | Status | Passed | Reasons |",
+            "|---|---|---|---:|---|",
+        )
+    )
     for item in verdict["caseResults"]:
         lines.append(
             f"| {item['caseId']} | {item['requiredTier']} | {item['status']} | "
@@ -820,6 +1056,14 @@ def main() -> int:
         default="",
         help="Reuse immutable Qwen stage artifacts from an earlier local run.",
     )
+    parser.add_argument(
+        "--artifact-store-root",
+        default=str(DEFAULT_ARTIFACT_STORE_ROOT.relative_to(REPO)),
+        help=(
+            "Repository-local content-addressed store. Prepared model payloads "
+            "are hard-linked once; run directories retain relative links only."
+        ),
+    )
     args = parser.parse_args()
 
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
@@ -831,6 +1075,10 @@ def main() -> int:
         encoding="utf-8",
     )
     snapshot = Path(args.model_snapshot).expanduser().resolve()
+    artifact_store_root = Path(args.artifact_store_root).expanduser()
+    if not artifact_store_root.is_absolute():
+        artifact_store_root = REPO / artifact_store_root
+    artifact_store_root = artifact_store_root.resolve()
     # A lightweight identity is sufficient for unit-only subsets. Real gates
     # replace it with the byte-resolved manifest produced by preparation.
     workload = canonical_workload(
@@ -853,6 +1101,7 @@ def main() -> int:
                     source_run=(REPO / args.reuse_prepared_run),
                     run_dir=run_dir,
                     snapshot=snapshot,
+                    artifact_store_root=artifact_store_root,
                 )
             else:
                 workload = prepare_workload(
@@ -867,6 +1116,17 @@ def main() -> int:
                     tooling_image=args.tooling_image,
                     workload=workload,
                 )
+                retention = retain_stage_artifacts(
+                    stage_dir=run_dir
+                    / "minindn"
+                    / "runtime"
+                    / "qwen-onnx-stage-artifacts",
+                    artifact_store_root=artifact_store_root,
+                    model_content_digest=workload["modelIdentity"]["contentDigest"],
+                    workload_digest=workload["workloadDigest"],
+                    replace_source=True,
+                )
+                write_artifact_retention(run_dir, retention)
         except Exception as exc:
             # Do not skip mandatory real gates. Emit explicit failed records for
             # every requested real case so aggregate accounting stays complete.

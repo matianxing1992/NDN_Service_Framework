@@ -48,6 +48,8 @@ class SelectionPreparationCallbacks:
     start_role: Callable[[str], None]
     release_role: Callable[[str, str], None] = (
         lambda _role, _reason: None)
+    release_assignment: Callable[[SelectionPreparationContext, str], None] = (
+        lambda _context, _reason: None)
 
 
 @dataclass(frozen=True)
@@ -359,9 +361,14 @@ class GpuMiBAdmissionLedger:
 class _RoleGateV2:
     selected: bool = True
     local_ready: bool = False
-    input_ready: bool = False
+    required_input_scopes: frozenset[str] = field(default_factory=frozenset)
+    ready_input_scopes: set[str] = field(default_factory=set)
     started: bool = False
     failed: bool = False
+
+    @property
+    def input_ready(self) -> bool:
+        return self.required_input_scopes.issubset(self.ready_input_scopes)
 
 
 class DISelectionParticipant:
@@ -455,9 +462,13 @@ class DISelectionParticipant:
                 or offer.provider != assignment.provider
                 or offer.boot_epoch != assignment.provider_boot_epoch
                 or offer.resource_sequence != assignment.resource_sequence
+                or assignment.execution_policy not in offer.execution_policies
                 or offer.expires_at_ms <= now_ms
                 or offer.accepted_deadline_ms < assignment.deadline_ms
                 or any(role.role not in offer.accepted_roles
+                       for role in assignment.roles)
+                or any(role.backend not in offer.backends
+                       or role.device not in offer.devices
                        for role in assignment.roles)):
             raise ValueError("DI Selection is not exactly ACK-offer bound")
         if assignment.state_reuse_binding is not None:
@@ -557,7 +568,9 @@ class DISelectionParticipant:
             self._assignment_transactions[assignment.digest()] = transaction_id
             self._terminal_roles[transaction_id] = set()
             for role in assignment.roles:
-                self._gates[(transaction_id, role.role)] = _RoleGateV2()
+                self._gates[(transaction_id, role.role)] = _RoleGateV2(
+                    required_input_scopes=frozenset(
+                        role.required_input_scopes))
                 context = SelectionPreparationContext(
                     transaction_id=transaction_id,
                     invocation_id=assignment.invocation_id,
@@ -600,6 +613,12 @@ class DISelectionParticipant:
 
     def mark_input_ready(self, role: str, *,
                          transaction_id: str | None = None) -> None:
+        """Confirm that a source role has no direct predecessor input.
+
+        Downstream roles must use :meth:`mark_dependency_input_ready` with the
+        exact committed assignment and scope.  This method remains for source
+        compatibility but cannot bypass dependency evidence.
+        """
         with self._lock:
             matches = [
                 key for key in self._gates
@@ -608,8 +627,42 @@ class DISelectionParticipant:
             ]
             if len(matches) != 1:
                 raise ValueError("role input readiness is ambiguous or unknown")
-            self._gates[matches[0]].input_ready = True
+            if self._gates[matches[0]].required_input_scopes:
+                raise RuntimeError(
+                    "downstream role requires bound predecessor input evidence")
             self._maybe_start(matches[0])
+
+    def mark_dependency_input_ready(
+        self, assignment_payload: bytes, role: str, key_scope: str,
+    ) -> bool:
+        """Admit one direct-predecessor input against the committed plan.
+
+        The exact assignment bytes bind request, attempt, plan, Provider boot
+        epoch, role tuple, and dependency graph.  Unknown scopes and replayed
+        inputs cannot expand authorization or start a role twice.
+        """
+        assignment = DISelectionAssignmentV2.from_bytes(
+            bytes(assignment_payload))
+        transaction_id = self.transaction_for_assignment(assignment_payload)
+        if not transaction_id:
+            raise ValueError("DI assignment is not committed on this Provider")
+        selected_role = next(
+            (item for item in assignment.roles if item.role == role), None)
+        if selected_role is None:
+            raise ValueError("DI predecessor role is not selected")
+        scope = str(key_scope)
+        if scope not in selected_role.required_input_scopes:
+            raise ValueError("DI predecessor scope is not plan-bound")
+        key = (transaction_id, role)
+        with self._lock:
+            gate = self._gates.get(key)
+            if gate is None:
+                raise ValueError("DI predecessor role is not committed")
+            first = scope not in gate.ready_input_scopes
+            if first:
+                gate.ready_input_scopes.add(scope)
+                self._maybe_start(key)
+            return first
 
     def roles(self, transaction_id: str | None = None) -> tuple[str, ...]:
         with self._lock:
@@ -717,6 +770,21 @@ class DISelectionParticipant:
             key = (transaction_id, item.role)
             self._gates.pop(key, None)
             self._role_futures.pop(key, None)
+            self._callbacks.release_assignment(
+                SelectionPreparationContext(
+                    transaction_id=transaction_id,
+                    invocation_id=assignment.invocation_id,
+                    request_id=assignment.request_id,
+                    attempt=assignment.attempt,
+                    plan_digest=assignment.plan_digest,
+                    provider=assignment.provider,
+                    provider_boot_epoch=assignment.provider_boot_epoch,
+                    deadline_ms=assignment.deadline_ms,
+                    generation=assignment.generation,
+                    role=item,
+                ),
+                reason,
+            )
 
     def on_aborted(self, transaction_id: str, reason: str) -> None:
         with self._lock:

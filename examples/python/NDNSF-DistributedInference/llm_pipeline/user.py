@@ -6,8 +6,11 @@ from __future__ import annotations
 import json
 import hashlib
 import hmac
+import inspect
 import os
 import statistics
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -25,15 +28,26 @@ from ndnsf_distributed_inference.adapters.qwen.pilot import (
     GenerationQueueFull,
 )
 from ndnsf_distributed_inference.adapters.qwen import (
-    build_qwen36_27b_three_stage_adapter,
+    build_qwen_three_stage_adapter,
+    QWEN36_STAGE_ROLES,
+)
+from ndnsf_distributed_inference.adapters.qwen.repo_registration import (
+    publish_qwen_stage_manifest,
 )
 from ndnsf_distributed_inference.app_sdk.contracts import PreSplitCatalogSnapshot
 from ndnsf_distributed_inference.app_sdk.placement import (
+    GenerationRequest,
     InferenceTaskRef,
+    MaterializedSplit,
     ModelRef,
+    PublishedSplit,
+    normalize_request_id_component,
 )
 from ndnsf_distributed_inference.planner.presplit_first import (
     PreSplitFirstStrategy,
+)
+from ndnsf_distributed_inference.planner.layer_reuse_first import (
+    LayerReuseFirstStrategy,
 )
 
 from llm_pipeline_lib import (
@@ -49,6 +63,7 @@ from llm_pipeline_lib import (
     merge_qwen_pipeline_delta,
     parse_common_args,
     run_bounded_qwen_generation,
+    run_full_qwen_generation,
     run_qwen_onnx_stage,
     run_local_pipeline,
     run_local_tiny_transformer_pipeline,
@@ -58,6 +73,44 @@ from llm_pipeline_lib import (
 from deployment_control import (
     CONTROL_SCHEMA, action_from_response, readiness_from_response,
 )
+
+
+def _publish_identity_certificate_and_wait(client, args) -> None:
+    """Open the Request gate without preloading peer certificates.
+
+    Every runtime already publishes its own public certificate.  Remote
+    certificates are fetched on demand by MessageValidator from the Data
+    KeyLocator, so a global certificate matrix would add an artificial startup
+    phase and violate the request-first, data-driven execution contract.
+    """
+    if args.identity_certificate_output or args.startup_barrier_file:
+        raise RuntimeError(
+            "preloaded certificate barriers are unsupported; use on-demand "
+            "MessageValidator network fetching")
+    if args.request_gate_output:
+        gate = Path(args.request_gate_output)
+        gate.parent.mkdir(parents=True, exist_ok=True)
+        gate_temporary = gate.with_name(f".{gate.name}.tmp-{os.getpid()}")
+        gate_epoch_ms = int(time.time() * 1000)
+        gate_temporary.write_text(
+            json.dumps({
+                "schemaVersion": "ndnsf-di-request-gate-v1",
+                "requestId": args.request_id,
+                "epochMs": gate_epoch_ms,
+                "mode": "REQUEST_FIRST",
+                "certificateMode": "ON_DEMAND_NETWORK_FETCH",
+            }, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(gate_temporary, gate)
+        print(
+            "SPEC162_REQUEST_GATE_OPEN",
+            f"requestId={args.request_id}",
+            f"epochMs={gate_epoch_ms}",
+            "mode=REQUEST_FIRST",
+            "certificateMode=ON_DEMAND_NETWORK_FETCH",
+            flush=True,
+        )
 
 
 def _runtime_journal(args, identity: str, *, request_envelopes: bool = False):
@@ -75,6 +128,26 @@ def _runtime_journal(args, identity: str, *, request_envelopes: bool = False):
         identity,
         envelope_key_provider=key_provider,
     )
+
+
+def _canonical_request_id(value: object) -> str:
+    """Compare IDs independently of an NDN Name-like leading slash."""
+    return str(value or "").strip().lstrip("/")
+
+
+def _emit_atomic_marker(*parts: object) -> None:
+    """Write one runtime marker without interleaving its fields.
+
+    NDNSF and the Python user share stdout in the TigerCluster harness.  A
+    normal ``print`` with multiple arguments can be interleaved with a
+    framework log write, producing an unparsable marker even though the
+    request completed.  Keep the marker as one small ``os.write`` operation.
+    """
+    sys.stdout.flush()
+    # Prefix a newline as well: a concurrent framework logger can finish its
+    # write without a trailing newline immediately before this marker.
+    line = "\n" + " ".join(str(part) for part in parts) + "\n"
+    os.write(sys.stdout.fileno(), line.encode("utf-8"))
 
 
 def _deployment_control_request(client, service: str, action: str, revision: str,
@@ -225,6 +298,256 @@ def _percentile(values: list[float], percentile: float) -> float:
     return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
 
 
+def _qwen_digest(value: object) -> str:
+    text = str(value)
+    return text if text.startswith("sha256:") else "sha256:" + text
+
+
+def _qwen_dynamic_catalog_snapshot(
+    *, alias, model, graph, candidate, published, registration,
+    backend: str, precision: str,
+) -> PreSplitCatalogSnapshot:
+    """Activate one verified deferred publication for later requests."""
+    registration_digest = "sha256:" + hashlib.sha256(
+        json.dumps(
+            registration,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    return PreSplitCatalogSnapshot(
+        alias=str(alias),
+        manifest_digest=registration_digest,
+        model_content_digest=model.content_digest,
+        semantics_digest=model.semantics_digest,
+        graph_digest=graph.graph_digest,
+        candidate_digest=candidate.candidate_digest,
+        backend=str(backend),
+        precision=str(precision),
+        artifact_data_names={
+            role: (name,)
+            for role, name in published.artifact_data_names_by_role.items()
+        },
+        status="ACTIVE",
+        created_at_ms=int(registration.get(
+            "completedAtUnixMs", int(time.time() * 1000))),
+    )
+
+
+class _QwenDeferredStageMaterializer:
+    """Bind the selected graph candidate to sealed local stage inputs.
+
+    Spec 162's stage files are sealed before the campaign to make the model
+    artifact immutable and content-addressed.  This adapter deliberately does
+    not publish them during startup: materialization is invoked only after
+    ACK_CLOSED has selected the candidate.  A future model adapter can replace
+    this class with a physical ONNX graph splitter without changing the
+    planner/publisher contract.
+    """
+
+    def __init__(self, stage_manifest_path: str) -> None:
+        self._stage_manifest_path = Path(stage_manifest_path)
+
+    def materialize(self, candidate, *, deadline_ms: int) -> MaterializedSplit:
+        if int(time.time() * 1000) >= int(deadline_ms):
+            raise TimeoutError("deferred Qwen materialization deadline expired")
+        document = json.loads(
+            self._stage_manifest_path.read_text(encoding="utf-8"))
+        rows = {str(item["role"]): dict(item)
+                for item in document.get("stages", ())}
+        roles = tuple(candidate.execution_plan.roles)
+        if set(rows) != set(roles):
+            raise ValueError("Qwen stage manifest role coverage mismatch")
+        digests = {}
+        references = {}
+        for role in roles:
+            row = rows[role]
+            digest = _qwen_digest(row["sha256"])
+            expected = candidate.artifacts_by_role[role][0]
+            if digest != expected:
+                raise ValueError(
+                    f"Qwen deferred stage digest mismatch for {role}")
+            path = Path(str(row["path"]))
+            if not path.is_file() or path.stat().st_size != int(row["bytes"]):
+                raise FileNotFoundError(
+                    f"sealed Qwen stage input is unavailable for {role}: {path}")
+            digests[role] = digest
+            references[role] = str(path)
+        print(
+            "LLM_PIPELINE_QWEN_DEFERRED_SPLIT",
+            f"candidateDigest={candidate.candidate_digest}",
+            "materialization=sealed-stage-input",
+            "publication=deferred",
+            f"roles={','.join(roles)}",
+            flush=True,
+        )
+        return MaterializedSplit(
+            candidate_digest=candidate.candidate_digest,
+            artifact_digests_by_role=digests,
+            local_references_by_role=references,
+        )
+
+
+class _QwenDeferredRepoPublisher:
+    """Publish the selected Qwen split exactly once, after ACK_CLOSED."""
+
+    def __init__(
+        self,
+        *,
+        service_user,
+        stage_manifest_path: str,
+        output_path: str,
+        publisher_identity: str,
+        object_prefix: str,
+        activate_catalog_snapshot=None,
+        canonical_model_name: str = "",
+        canonical_graph_digest: str = "",
+        canonical_profile: str = "",
+        canonical_publisher: str = "/ndnsf-di",
+    ) -> None:
+        self._service_user = service_user
+        self._stage_manifest_path = Path(stage_manifest_path)
+        self._output_path = Path(output_path)
+        self._publisher_identity = str(publisher_identity)
+        self._object_prefix = str(object_prefix)
+        self._activate_catalog_snapshot = activate_catalog_snapshot
+        self._canonical_model_name = str(canonical_model_name)
+        self._canonical_graph_digest = str(canonical_graph_digest)
+        self._canonical_profile = str(canonical_profile)
+        self._canonical_publisher = str(canonical_publisher)
+
+    def _read_registration(self) -> dict | None:
+        if not self._output_path.is_file():
+            return None
+        registration = json.loads(
+            self._output_path.read_text(encoding="utf-8"))
+        if registration.get("schemaVersion") != (
+                "ndnsf-di-qwen36-repo-registration-v1"):
+            raise RuntimeError("unsupported Qwen DistributedRepo registration")
+        expected_manifest_digest = "sha256:" + hashlib.sha256(
+            self._stage_manifest_path.read_bytes()).hexdigest()
+        if registration.get("stageManifestSha256") != expected_manifest_digest:
+            raise RuntimeError("Qwen Repo registration is not stage-manifest bound")
+        artifacts = list(registration.get("artifacts", ()))
+        if len(artifacts) != 3 or len({str(item.get("role")) for item in artifacts}) != 3:
+            raise RuntimeError("Qwen Repo registration requires three roles")
+        return registration
+
+    def _published(self, candidate, registration: dict) -> PublishedSplit:
+        by_role = {str(item["role"]): item
+                    for item in registration.get("artifacts", ())}
+        roles = tuple(candidate.execution_plan.roles)
+        if set(by_role) != set(roles):
+            raise ValueError("Qwen Repo registration role coverage mismatch")
+        digests = {}
+        names = {}
+        for role in roles:
+            item = by_role[role]
+            digest = _qwen_digest(item["fileSha256"])
+            if digest != candidate.artifacts_by_role[role][0]:
+                raise ValueError(
+                    f"Qwen Repo registration digest mismatch for {role}")
+            # V3 carries the stable content-addressed logical identity.  The
+            # receipt dataName is only the Repo transport-serving name.
+            name = str(item.get("canonicalName") or item.get("objectName", ""))
+            if not name.startswith("/"):
+                raise ValueError(f"Qwen Repo registration has invalid name for {role}")
+            digests[role] = digest
+            names[role] = name
+        published = PublishedSplit(
+            candidate_digest=candidate.candidate_digest,
+            artifact_digests_by_role=digests,
+            artifact_data_names_by_role=names,
+        )
+        if self._activate_catalog_snapshot is not None:
+            self._activate_catalog_snapshot(candidate, published, registration)
+        return published
+
+    def publish(self, candidate, materialized, *, deadline_ms: int) -> PublishedSplit:
+        del materialized
+        existing = self._read_registration()
+        if existing is not None:
+            print(
+                "LLM_PIPELINE_QWEN_DEFERRED_REPO_REUSE",
+                f"candidateDigest={candidate.candidate_digest}",
+                f"output={self._output_path}",
+                flush=True,
+            )
+            return self._published(candidate, existing)
+        remaining_ms = int(deadline_ms) - int(time.time() * 1000)
+        if remaining_ms <= 0:
+            raise TimeoutError("deferred Qwen Repo publication deadline expired")
+        self._output_path.parent.mkdir(parents=True, exist_ok=True)
+        print(
+            "LLM_PIPELINE_QWEN_DEFERRED_REPO_PUBLISH_START",
+            f"candidateDigest={candidate.candidate_digest}",
+            f"remainingMs={remaining_ms}",
+            flush=True,
+        )
+        from py_repoclient import CollaborationArtifactApiBackend
+        backend = CollaborationArtifactApiBackend(
+            None,
+            self._service_user,
+            "/NDNSF/DistributedRepo/Artifact/v2/STORE",
+            ack_timeout_ms=3000,
+            packet_payload_bytes=7600,
+            chunk_bytes=16 * 1024 * 1024,
+        )
+        publish_qwen_stage_manifest(
+            backend=backend,
+            stage_manifest_path=self._stage_manifest_path,
+            output_path=self._output_path,
+            publisher_identity=self._publisher_identity,
+            object_prefix=self._object_prefix,
+            deadline_ms=int(deadline_ms),
+            chunk_mib=16,
+            replication_factor=1,
+            control_mode="normal",
+            canonical_model_name=self._canonical_model_name,
+            canonical_graph_digest=self._canonical_graph_digest,
+            canonical_profile=self._canonical_profile,
+            canonical_publisher=self._canonical_publisher,
+        )
+        registration = self._read_registration()
+        if registration is None:
+            raise RuntimeError("Qwen Repo publisher exited without registration")
+        print(
+            "LLM_PIPELINE_QWEN_DEFERRED_REPO_PUBLISH_DONE",
+            f"candidateDigest={candidate.candidate_digest}",
+            f"output={self._output_path}",
+            flush=True,
+        )
+        return self._published(candidate, registration)
+
+    def ensure(self, candidate, role_specs, *, deadline_ms: int) -> PublishedSplit:
+        """Ensure the selected V3 canonical stage objects after ACK_CLOSED.
+
+        ``role_specs`` is intentionally checked here even though the current
+        Qwen stage manifest has one object per pipeline range.  Future adapters
+        can replace this implementation with ONNX graph-layer publication
+        without changing the coordinator contract.
+        """
+
+        by_role = {str(item.role): item for item in role_specs}
+        expected_roles = tuple(candidate.execution_plan.roles)
+        if set(by_role) != set(expected_roles):
+            raise ValueError("canonical Qwen ensure role coverage mismatch")
+        materializer = _QwenDeferredStageMaterializer(
+            str(self._stage_manifest_path))
+        materialized = materializer.materialize(
+            candidate, deadline_ms=deadline_ms)
+        return self.publish(candidate, materialized, deadline_ms=deadline_ms)
+
+    def resolve_existing(self, candidate, *, deadline_ms: int) -> PublishedSplit:
+        if int(time.time() * 1000) >= int(deadline_ms):
+            raise TimeoutError("deferred Qwen Repo resolution deadline expired")
+        registration = self._read_registration()
+        if registration is None:
+            raise RuntimeError("no deferred Qwen Repo registration exists")
+        return self._published(candidate, registration)
+
+
 def _configure_qwen_automatic_planning(client, args) -> None:
     manifest = json.loads(Path(
         args.automatic_planning_manifest).read_text(encoding="utf-8"))
@@ -242,11 +565,25 @@ def _configure_qwen_automatic_planning(client, args) -> None:
     weight_bytes = {
         str(item["role"]): int(item["bytes"]) for item in stages
     }
-    adapter = build_qwen36_27b_three_stage_adapter(
+    model_doc = dict(manifest["model"])
+    layer_ranges = tuple(
+        (int(item[0]), int(item[1]))
+        for item in manifest.get("layerRanges", ())
+    )
+    precision = str(
+        manifest.get("precision")
+        or manifest.get("dtype")
+        or model_doc.get("dtype")
+        or "bfloat16"
+    )
+    adapter = build_qwen_three_stage_adapter(
+        model_name=str(model_doc["name"]),
+        revision=str(model_doc["revision"]),
+        layer_ranges=layer_ranges,
         artifact_digests_by_role=artifact_digests,
         weight_bytes_by_role=weight_bytes,
+        precision=precision,
     )
-    model_doc = dict(manifest["model"])
     model = ModelRef(
         model_name=str(model_doc["name"]),
         content_digest=str(model_doc["contentDigest"]),
@@ -262,28 +599,93 @@ def _configure_qwen_automatic_planning(client, args) -> None:
     graph = adapter.graph.inspect(described)
     candidate = adapter.splitter.enumerate_candidates(described, graph)[0]
     catalog_doc = dict(manifest["preSplitCatalog"])
-    if catalog_doc.get("publicationState") != "ACTIVE":
-        raise RuntimeError(
-            "automatic planning manifest is not active in DistributedRepo")
     if str(catalog_doc.get("candidateDigest", candidate.candidate_digest)) != (
             candidate.candidate_digest):
         raise RuntimeError("automatic planning candidate digest mismatch")
-    snapshot = PreSplitCatalogSnapshot(
-        alias=str(catalog_doc["alias"]),
-        manifest_digest=str(catalog_doc["manifestDigest"]),
-        model_content_digest=model.content_digest,
-        semantics_digest=model.semantics_digest,
-        graph_digest=graph.graph_digest,
-        candidate_digest=candidate.candidate_digest,
-        backend="transformers",
-        precision="bfloat16",
-        artifact_data_names={
-            str(item["role"]): (str(item["dataName"]),)
-            for item in stages
-        },
-        status="ACTIVE",
-        created_at_ms=int(catalog_doc["createdAtMs"]),
-    )
+    publication_state = str(catalog_doc.get("publicationState", ""))
+    catalog_snapshots = {}
+    split_materializer = None
+    artifact_publisher = None
+    v3_default = bool(getattr(args, "selection_dataflow_v3", False))
+    if publication_state == "ACTIVE" and not v3_default:
+        snapshot = PreSplitCatalogSnapshot(
+            alias=str(catalog_doc["alias"]),
+            manifest_digest=str(catalog_doc["manifestDigest"]),
+            model_content_digest=model.content_digest,
+            semantics_digest=model.semantics_digest,
+            graph_digest=graph.graph_digest,
+            candidate_digest=candidate.candidate_digest,
+            backend="transformers",
+            precision=precision,
+            artifact_data_names={
+                str(item["role"]): (str(item["dataName"]),)
+                for item in stages
+            },
+            status="ACTIVE",
+            created_at_ms=int(catalog_doc["createdAtMs"]),
+        )
+        catalog_snapshots[snapshot.candidate_digest] = snapshot
+    elif v3_default or publication_state == "REQUIRES_DISTRIBUTED_REPO_REGISTRATION":
+        required = (
+            args.qwen_stage_manifest,
+            args.repo_registration_output,
+            args.repo_user,
+            args.repo_object_prefix,
+        )
+        if not all(required):
+            raise RuntimeError(
+                "deferred Qwen planning requires stage manifest, Repo output, "
+                "identity, and object prefix")
+        if str(args.repo_user) != str(client.deployment.user):
+            raise RuntimeError(
+                "deferred Qwen Repo publisher identity must match the main "
+                "inference ServiceUser")
+        split_materializer = _QwenDeferredStageMaterializer(
+            args.qwen_stage_manifest)
+        def activate_catalog_snapshot(
+            selected_candidate, published, registration,
+        ) -> None:
+            activated = _qwen_dynamic_catalog_snapshot(
+                alias=catalog_doc["alias"],
+                model=model,
+                graph=graph,
+                candidate=selected_candidate,
+                published=published,
+                registration=registration,
+                backend="transformers",
+                precision=precision,
+            )
+            catalog_snapshots[activated.candidate_digest] = activated
+            print(
+                "LLM_PIPELINE_QWEN_DYNAMIC_CATALOG_ACTIVE",
+                f"candidateDigest={activated.candidate_digest}",
+                f"manifestDigest={activated.manifest_digest}",
+                f"roles={','.join(sorted(activated.artifact_data_names))}",
+                flush=True,
+            )
+
+        artifact_publisher = _QwenDeferredRepoPublisher(
+            service_user=client.service_user,
+            stage_manifest_path=args.qwen_stage_manifest,
+            output_path=args.repo_registration_output,
+            publisher_identity=args.repo_user,
+            object_prefix=args.repo_object_prefix,
+            activate_catalog_snapshot=activate_catalog_snapshot,
+            canonical_model_name=model.model_name,
+            canonical_graph_digest=str(graph.graph_digest),
+            canonical_profile=str(
+                manifest.get("modelProfile") or precision),
+            canonical_publisher="/ndnsf-di",
+        )
+        if v3_default:
+            # V3 is request-first: the graph-derived stage objects are ensured
+            # only after ACK_CLOSED, through the canonical V3 port.  The same
+            # object is retained as the explicit V2 role-split compatibility
+            # publisher when callers select that profile.
+            publication_state = "V3_REQUEST_FIRST"
+    else:
+        raise RuntimeError(
+            f"unsupported automatic planning publication state: {publication_state}")
     key_paths = json.loads(Path(
         args.selection_offer_key_map).read_text(encoding="utf-8"))
     offer_keys = {
@@ -304,17 +706,39 @@ def _configure_qwen_automatic_planning(client, args) -> None:
             key, offer.digest().encode("utf-8"), hashlib.sha256).hexdigest()
         return hmac.compare_digest(expected, offer.signature)
 
-    client.configure_automatic_planning(
+    configure_kwargs = dict(
         service_name=SERVICE,
         adapters=(adapter,),
-        strategy=PreSplitFirstStrategy(
-            at_ms=int(time.time() * 1000),
-            maximum_cache_age_ms=args.selection_cache_max_age_ms,
-            clock_ms=lambda: int(time.time() * 1000),
-        ),
-        catalog_snapshot_provider=lambda: (snapshot,),
+        strategy=(LayerReuseFirstStrategy()
+                  if v3_default else PreSplitFirstStrategy(
+                      at_ms=int(time.time() * 1000),
+                      maximum_cache_age_ms=args.selection_cache_max_age_ms,
+                      clock_ms=lambda: int(time.time() * 1000),
+                  )),
+        catalog_snapshot_provider=lambda: tuple(
+            catalog_snapshots[key] for key in sorted(catalog_snapshots)),
         verify_offer_signature=verify_offer,
         ack_timeout_ms=args.ack_timeout_ms,
+        # This is only a bounded early-ACK coverage hint.  It does not carry
+        # artifacts or assignments; graph inspection, splitting, and role
+        # placement still happen after the immutable ACK_CLOSED snapshot.
+        ack_coverage_roles=(() if v3_default else QWEN36_STAGE_ROLES),
+    )
+    if split_materializer is not None:
+        configure_kwargs["split_materializer"] = split_materializer
+    if artifact_publisher is not None:
+        configure_kwargs["artifact_publisher"] = artifact_publisher
+    if v3_default and artifact_publisher is not None:
+        configure_kwargs["canonical_artifact_ensurer"] = artifact_publisher
+    client.configure_automatic_planning(**configure_kwargs)
+    print(
+        "LLM_PIPELINE_QWEN_AUTOPLANNING_CONFIGURED",
+        f"publicationState={publication_state}",
+        f"materializer={type(split_materializer).__module__}.{type(split_materializer).__qualname__}",
+        f"publisher={type(artifact_publisher).__module__}.{type(artifact_publisher).__qualname__}",
+        f"stageManifest={args.qwen_stage_manifest}",
+        f"repoRegistration={args.repo_registration_output}",
+        flush=True,
     )
     args._automatic_adapter = adapter
     args._automatic_model = model
@@ -723,6 +1147,7 @@ def _run_qwen_transformer_generation_sample(
     prompt_case: dict,
     generation_id: str,
     decoder,
+    request_id: str = "",
     require_eos: bool = True,
 ):
     input_token_ids = tuple(
@@ -738,13 +1163,130 @@ def _run_qwen_transformer_generation_sample(
     if require_eos and expected_token_ids[-1] not in eos_token_ids:
         raise ValueError("reference generation must terminate with EOS")
 
-    def token_step(context, token_epoch, request_id):
+    # Production/automatic-planning path: one durable NDNSF-DI invocation for
+    # the complete generation.  The provider stages own the bounded internal
+    # autoregressive loop; this user process never emits one Request per token.
+    # The command-line parser always supplies ``diagnostic_token_loop`` and
+    # therefore defaults to the production FULL invocation.  Keep direct
+    # callers of this legacy helper source-compatible: older unit fixtures
+    # construct a minimal args object without the flag and intentionally test
+    # the per-token diagnostic path.
+    use_token_diagnostic = bool(
+        getattr(args, "diagnostic_token_loop", False)
+        or not hasattr(args, "diagnostic_token_loop"))
+    if not use_token_diagnostic:
+        def full_generation_call(context, max_new_tokens, request_id):
+            context_payload = encode_qwen_pipeline_context(
+                [list(context)],
+                attention_mask=[[1] * len(context)],
+                request_id=request_id,
+                session_id=generation_id,
+                context_epoch=0,
+                generation={
+                    "maxNewTokens": int(max_new_tokens),
+                    "eosTokenIds": list(eos_token_ids),
+                    "outputMode": "FULL",
+                },
+            )
+            # Core's request-id argument is a single canonical component;
+            # the wire Name gains its leading slash internally.  Generation
+            # IDs contain only the permitted component characters.
+            wire_request_id = str(request_id).strip().lstrip("/")
+            if getattr(args, "automatic_planning_manifest", ""):
+                application_input = args._automatic_adapter.task.encode_input(
+                    context_payload,
+                    {
+                        "greedy": True,
+                        "maxNewTokens": int(max_new_tokens),
+                        "eosTokenIds": list(eos_token_ids),
+                        "useCache": False,
+                        "outputMode": "FULL",
+                    },
+                )
+                handle = client.generate(GenerationRequest(
+                    model=args._automatic_model,
+                    task=args._automatic_task,
+                    input=application_input,
+                    timeout_ms=args.timeout_ms,
+                    request_id=wire_request_id,
+                    output_mode="FULL",
+                ))
+                # ``AutomaticInferenceHandle.result`` returns the adapter-
+                # decoded application value (bytes for this Qwen adapter),
+                # while this transport boundary still needs the raw
+                # ServiceResponse to validate request identity and decode the
+                # generation envelope exactly once.
+                try:
+                    result = handle.response(args.timeout_ms)
+                except Exception as exc:
+                    # Keep the terminal wire error observable at the
+                    # application boundary.  The native collaboration layer
+                    # intentionally returns only a bounded reason (never
+                    # model bytes or prompt contents); without this marker a
+                    # provider-side role rejection is indistinguishable from
+                    # a generic generation failure in the campaign JSON.
+                    print(
+                        "LLM_PIPELINE_QWEN_AUTOPLANNING_RESPONSE_FAILED",
+                        f"requestId={wire_request_id}",
+                        f"errorType={type(exc).__name__}",
+                        f"error={exc!r}",
+                        flush=True,
+                    )
+                    raise
+            else:
+                result = client.distributed_inference(
+                    SERVICE,
+                    context_payload,
+                    deployment_revision=args.deployment_revision,
+                    dynamic_provisioning=False,
+                    ack_timeout_ms=args.ack_timeout_ms,
+                    timeout_ms=args.timeout_ms,
+                    request_id=wire_request_id,
+                )
+                if not result.status:
+                    raise RuntimeError(str(result.error) or "full generation failed")
+            actual_request_id = str(getattr(result, "request_id", "") or wire_request_id)
+            if _canonical_request_id(actual_request_id) != _canonical_request_id(wire_request_id):
+                raise RuntimeError(
+                    "full-generation response request ID mismatch: "
+                    f"expected={wire_request_id} actual={actual_request_id}")
+            response = decode_payload(result.payload)
+            if response.get("generationMode") != "FULL":
+                raise RuntimeError("full-generation response is not marked FULL")
+            if getattr(args, "automatic_planning_manifest", ""):
+                response["planningTimingsMs"] = dict(
+                    handle.planning_timings_ms)
+                response["cacheClass"] = (
+                    handle.decision.artifact_preparation.value)
+                response["placementEvidenceDigest"] = (
+                    handle.decision.evidence_digest)
+            return response
+
+        durable_request_id = request_id or generation_id
+        return run_full_qwen_generation(
+            input_token_ids=input_token_ids,
+            max_new_tokens=args.max_new_tokens,
+            eos_token_ids=eos_token_ids,
+            generation_id=generation_id,
+            generation_call=lambda context, limit, _generated_request_id: (
+                full_generation_call(context, limit, durable_request_id)
+            ),
+            expected_token_ids=expected_token_ids,
+            require_eos=require_eos,
+            decode=decoder,
+        )
+
+    def token_step(context, token_epoch, generated_request_id):
+        wire_request_id = (
+            f"{request_id.rstrip('/')}/token/{token_epoch}"
+            if request_id else generated_request_id
+        )
         token_step_started = time.perf_counter()
         application_encode_started = token_step_started
         request_payload = encode_qwen_pipeline_context(
             [list(context)],
             attention_mask=[[1] * len(context)],
-            request_id=request_id,
+            request_id=wire_request_id,
             session_id=generation_id,
             context_epoch=token_epoch,
         )
@@ -761,18 +1303,48 @@ def _run_qwen_transformer_generation_sample(
                 time.perf_counter() - application_encode_started
             ) * 1000.0
             client_request_started = time.perf_counter()
-            handle = client.request(
-                model=args._automatic_model,
-                task=args._automatic_task,
-                input=application_input,
-                timeout_ms=args.timeout_ms,
-                request_id=request_id,
+            planner = getattr(client, "_automatic_planner", None)
+            planner_request = getattr(type(planner), "request", None)
+            print(
+                "LLM_PIPELINE_QWEN_AUTOPLANNING_RUNTIME",
+                f"requestId={wire_request_id}",
+                f"plannerType={type(planner).__module__}.{type(planner).__qualname__}",
+                f"plannerSource={inspect.getsourcefile(planner_request) or ''}",
+                f"artifactsMarker={int('NDNSF_DI_AUTOPLANNING_ARTIFACTS_BEGIN' in getattr(planner_request, '__code__', type('', (), {'co_consts': ()})()).co_consts)}",
+                flush=True,
             )
+            try:
+                handle = client.request(
+                    model=args._automatic_model,
+                    task=args._automatic_task,
+                    input=application_input,
+                    timeout_ms=args.timeout_ms,
+                    request_id=wire_request_id,
+                )
+            except Exception as exc:
+                print(
+                    "LLM_PIPELINE_QWEN_AUTOPLANNING_REQUEST_FAILED",
+                    f"requestId={wire_request_id}",
+                    f"errorType={type(exc).__name__}",
+                    f"error={exc!r}",
+                    flush=True,
+                )
+                raise
             client_request_ms = (
                 time.perf_counter() - client_request_started
             ) * 1000.0
             response_started = time.perf_counter()
-            response_payload = handle.result(args.timeout_ms)
+            try:
+                response_payload = handle.result(args.timeout_ms)
+            except Exception as exc:
+                print(
+                    "LLM_PIPELINE_QWEN_AUTOPLANNING_RESPONSE_FAILED",
+                    f"requestId={wire_request_id}",
+                    f"errorType={type(exc).__name__}",
+                    f"error={exc!r}",
+                    flush=True,
+                )
+                raise
             response_wait_decode_ms = (
                 time.perf_counter() - response_started
             ) * 1000.0
@@ -785,15 +1357,14 @@ def _run_qwen_transformer_generation_sample(
                     time.perf_counter() - token_step_started
                 ) * 1000.0,
             })
-            print(
+            _emit_atomic_marker(
                 "LLM_PIPELINE_QWEN_REQUEST_PHASE_TIMING",
-                f"requestId={request_id}",
+                f"requestId={wire_request_id}",
                 json.dumps(
                     phase_timings,
                     sort_keys=True,
                     separators=(",", ":"),
                 ),
-                flush=True,
             )
             result = type("AutomaticInferenceResult", (), {
                 "status": True,
@@ -809,15 +1380,17 @@ def _run_qwen_transformer_generation_sample(
                 dynamic_provisioning=False,
                 ack_timeout_ms=args.ack_timeout_ms,
                 timeout_ms=args.timeout_ms,
-                request_id=request_id,
+                request_id=wire_request_id,
             )
         if not result.status:
             raise RuntimeError(str(result.error) or "distributed token step failed")
-        wire_request_id = str(getattr(result, "request_id", "") or request_id)
-        if wire_request_id != request_id:
+        actual_wire_request_id = str(
+            getattr(result, "request_id", "") or wire_request_id)
+        if _canonical_request_id(actual_wire_request_id) != _canonical_request_id(
+                wire_request_id):
             raise RuntimeError(
                 "distributed token response request ID mismatch: "
-                f"expected={request_id} actual={wire_request_id}"
+                f"expected={wire_request_id} actual={actual_wire_request_id}"
             )
         response = decode_payload(result.payload)
         if "topToken" not in response:
@@ -831,7 +1404,7 @@ def _run_qwen_transformer_generation_sample(
                 "distributed token response stageCount mismatch")
         return {
             "topToken": int(response["topToken"]),
-            "wireRequestId": wire_request_id,
+            "wireRequestId": actual_wire_request_id,
             "attempt": 1,
             "planId": args.deployment_revision,
             "modelIdentityDigest": getattr(args, "model_identity_digest", ""),
@@ -850,6 +1423,23 @@ def _run_qwen_transformer_generation_sample(
         require_eos=require_eos,
         decode=decoder,
     )
+
+
+def _campaign_wire_request_id(
+    base_request_id: str,
+    generation_id: str,
+    sample_count: int,
+) -> str:
+    """Bind each campaign sample to the application-selected request namespace."""
+
+    if not str(base_request_id or "").strip():
+        return ""
+    base = normalize_request_id_component(base_request_id)
+    if sample_count <= 0:
+        raise ValueError("campaign sample count must be positive")
+    if sample_count == 1:
+        return base
+    return f"{base}--sample--{generation_id}"
 
 
 def _run_qwen_transformer_generation_campaign(client, args, campaign: dict) -> int:
@@ -910,6 +1500,7 @@ def _run_qwen_transformer_generation_campaign(client, args, campaign: dict) -> i
     if any(character not in safe_characters for character in campaign_id):
         raise RuntimeError("campaignId contains unsafe characters")
 
+    sample_count = len(prompts) * (warmup_count + measured_count)
     with output_path.open("x", encoding="utf-8") as output:
         for prompt_case in prompts:
             prompt_id = str(prompt_case["promptId"])
@@ -921,11 +1512,17 @@ def _run_qwen_transformer_generation_campaign(client, args, campaign: dict) -> i
                 marker = "w" if phase == "warmup" else "m"
                 generation_id = (
                     f"{campaign_id}-{prompt_id}-{marker}{repetition}")
+                request_id = _campaign_wire_request_id(
+                    getattr(args, "request_id", ""),
+                    generation_id,
+                    sample_count,
+                )
                 result = _run_qwen_transformer_generation_sample(
                     client,
                     args,
                     prompt_case=prompt_case,
                     generation_id=generation_id,
+                    request_id=request_id,
                     decoder=decoder,
                     require_eos=require_eos,
                 )
@@ -947,6 +1544,23 @@ def _run_qwen_transformer_generation_campaign(client, args, campaign: dict) -> i
                     json.dumps(row, sort_keys=True, separators=(",", ":"))
                     + "\n")
                 output.flush()
+                response_text = str(result.decoded_text)
+                response_digest = hashlib.sha256(
+                    response_text.encode("utf-8")).hexdigest()
+                print(
+                    "LLM_PIPELINE_GENERATION_FINAL_RESPONSE",
+                    f"campaignId={campaign_id}",
+                    f"promptId={prompt_id}",
+                    f"phase={phase}",
+                    f"repetition={repetition}",
+                    f"generationId={generation_id}",
+                    f"status={result.status}",
+                    f"stopReason={result.stop_reason}",
+                    f"tokenCount={len(result.generated_token_ids)}",
+                    f"responseBytes={len(response_text.encode('utf-8'))}",
+                    f"responseSha256={response_digest}",
+                    flush=True,
+                )
                 print(
                     "LLM_PIPELINE_GENERATION_SAMPLE",
                     f"campaignId={campaign_id}",
@@ -997,6 +1611,11 @@ def main() -> int:
     parser.add_argument("--generation-campaign-manifest", default="")
     parser.add_argument("--generation-jsonl", default="")
     parser.add_argument("--qwen-tokenizer-dir", default="")
+    parser.add_argument(
+        "--diagnostic-token-loop",
+        action="store_true",
+        help="retain the legacy one-NDNSF-request-per-token diagnostic path",
+    )
     parser.add_argument("--native-cpu-provider", action="store_true")
     parser.add_argument("--qwen-service-manifest", default="")
     parser.add_argument("--max-new-tokens", type=int, default=1)
@@ -1063,9 +1682,57 @@ def main() -> int:
         default="",
         help="Spec 162 exact model/graph/pre-split manifest for DEFERRED planning.",
     )
+    parser.add_argument(
+        "--qwen-stage-manifest", default="",
+        help="Sealed Qwen stage inputs used by the deferred materializer.",
+    )
+    parser.add_argument(
+        "--repo-registration-output", default="",
+        help="Registration JSON written after ACK_CLOSED and before Selection.",
+    )
+    parser.add_argument("--repo-user", default="")
+    parser.add_argument("--repo-bootstrap-token-file", default="")
+    parser.add_argument("--repo-object-prefix", default="")
+    parser.add_argument("--repo-generated-policy-dir", default="")
+    parser.add_argument("--repo-state-root", default="")
+    parser.add_argument(
+        "--repo-publisher-script",
+        default="/source/jobs/register-qwen36-repo.py",
+    )
     parser.add_argument("--selection-offer-key-map", default="")
     parser.add_argument(
+        "--selection-dataflow-v3", action="store_true",
+        help="Use the normal V3 request-first planning and cache-reuse path.",
+    )
+    parser.add_argument(
         "--selection-cache-max-age-ms", type=int, default=600000)
+    parser.add_argument(
+        "--identity-certificate-output",
+        default="",
+        help=(
+            "Atomically export the Controller-bootstrapped User public "
+            "certificate before any request is published."
+        ),
+    )
+    parser.add_argument(
+        "--startup-barrier-file",
+        action="append",
+        default=[],
+        help=(
+            "Wait for this public-certificate installation marker after "
+            "exporting the User certificate; repeat for multiple ranks."
+        ),
+    )
+    parser.add_argument(
+        "--startup-barrier-timeout-s", type=float, default=600.0)
+    parser.add_argument(
+        "--request-gate-output",
+        default="",
+        help=(
+            "Atomically publish the request-gate record only after all "
+            "startup certificate barriers close."
+        ),
+    )
     args = parser.parse_args()
     if args.max_new_tokens < 1 or args.max_new_tokens > 64:
         raise SystemExit("--max-new-tokens must be between 1 and 64")
@@ -1082,6 +1749,8 @@ def main() -> int:
             args.selection_offer_key_map):
         raise SystemExit(
             "automatic planning requires both manifest and offer key map")
+    if args.startup_barrier_timeout_s <= 0:
+        raise SystemExit("--startup-barrier-timeout-s must be positive")
 
     qwen_summary = {}
     generation_campaign = {}
@@ -1173,17 +1842,9 @@ def main() -> int:
         test_only_allow_ephemeral_state_root=(
             args.test_only_allow_ephemeral_app_state),
     )
+    _publish_identity_certificate_and_wait(client, args)
     if args.automatic_planning_manifest:
         _configure_qwen_automatic_planning(client, args)
-    startup_settle_ms = int(os.environ.get("NDNSF_DI_STARTUP_SETTLE_MS", "0"))
-    if startup_settle_ms < 0:
-        raise ValueError("NDNSF_DI_STARTUP_SETTLE_MS must be non-negative")
-    if startup_settle_ms:
-        # APPClient starts the native ServiceUser's Face loop during
-        # construction.  Give its producer prefix and first SVS mapping a
-        # bounded opportunity to register before the first request is
-        # published; this is especially important on a multi-node mesh.
-        time.sleep(startup_settle_ms / 1000.0)
     if not args.deployment_revision:
         args.deployment_revision = "sha256:" + hashlib.sha256(
             Path(args.config).read_bytes()).hexdigest()

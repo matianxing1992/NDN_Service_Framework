@@ -15,12 +15,12 @@ from types import MappingProxyType
 from typing import Mapping, Optional
 
 from ndnsf import CollaborationDependency, CollaborationRole
+from .core.contracts import DATA_DRIVEN_V2
 from .repo_reference import large_data_reference_from_repo_manifest
 
 
-# APP-level, request-scoped rendezvous used to gate model execution until every
-# selected DI role has reported exact readiness.  This is not an NDNSF base
-# message or a model dependency edge.
+# Rollback-only V1 rendezvous. DATA_DRIVEN_V2 never emits or waits on this
+# all-member scope; it uses local preparation plus direct predecessor data.
 NDNSF_DI_READINESS_SCOPE = "ndnsf-di-readiness-v1"
 
 
@@ -529,6 +529,7 @@ class DistributedInferencePlan:
                 binding_payload, sort_keys=True,
                 separators=(",", ":")).encode()).hexdigest())
         common = (
+            "executionPolicy=LEGACY_READY_SET_V1;"
             f"readinessRoleCount={len(role_names)};"
             f"readinessRoles={','.join(role_names)};"
             f"readinessBindingDigest={binding};"
@@ -551,6 +552,8 @@ class SealedCollaborationPlan:
     ack_closed_digest: str
     placement_input_digest: str
     placement_decision_digest: str
+    strategy_identity_digest: str
+    execution_policy: str
     roles: tuple[CollaborationRole, ...]
     dependencies: tuple[CollaborationDependency, ...]
     key_scopes: Mapping[str, tuple[str, ...]]
@@ -563,11 +566,14 @@ class SealedCollaborationPlan:
     def __post_init__(self) -> None:
         for name in (
                 "ack_closed_digest", "placement_input_digest",
-                "placement_decision_digest"):
+                "placement_decision_digest", "strategy_identity_digest"):
             value = getattr(self, name)
             if (not isinstance(value, str) or len(value) != 71
                     or not value.startswith("sha256:")):
                 raise ValueError(f"{name} must be a canonical sha256 digest")
+        if self.execution_policy != DATA_DRIVEN_V2:
+            raise ValueError(
+                "sealed collaboration plan requires DATA_DRIVEN_V2")
         roles = tuple(self.roles)
         role_names = tuple(role.role for role in roles)
         if (not roles or len(set(role_names)) != len(role_names)
@@ -605,6 +611,8 @@ class SealedCollaborationPlan:
             "ack_closed_digest": self.ack_closed_digest,
             "placement_input_digest": self.placement_input_digest,
             "placement_decision_digest": self.placement_decision_digest,
+            "strategy_identity_digest": self.strategy_identity_digest,
+            "execution_policy": self.execution_policy,
             "roles": [{
                 "role": role.role,
                 "service": role.service,

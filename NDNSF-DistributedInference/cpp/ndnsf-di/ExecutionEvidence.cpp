@@ -125,6 +125,10 @@ void ExecutionEvidence::validate() const
   if (runnerKind == RunnerKind::OnnxRuntimeCuda && deviceId.empty()) {
     throw std::invalid_argument("CUDA execution evidence missing device id");
   }
+  if (warmupCompleted && !loadCompleted) {
+    throw std::invalid_argument(
+      "execution evidence cannot warm before model load");
+  }
 }
 
 std::string executionEvidenceToJson(const ExecutionEvidence& evidence)
@@ -157,6 +161,8 @@ std::string executionEvidenceToJson(const ExecutionEvidence& evidence)
   }
   root.add_child("nodeProviderAssignments", assignments);
   root.put("cpuFallbackUsed", evidence.cpuFallbackUsed);
+  root.put("loadCompleted", evidence.loadCompleted);
+  root.put("warmupCompleted", evidence.warmupCompleted);
   root.put("gpuUuid", evidence.gpuUuid);
   root.put("providerProfilePath", evidence.providerProfilePath);
   root.put("createdAtMs", evidence.createdAtMs);
@@ -197,6 +203,8 @@ ExecutionEvidence executionEvidenceFromJson(const std::string& json)
     }
   }
   evidence.cpuFallbackUsed = root.get<bool>("cpuFallbackUsed", false);
+  evidence.loadCompleted = root.get<bool>("loadCompleted", false);
+  evidence.warmupCompleted = root.get<bool>("warmupCompleted", false);
   evidence.gpuUuid = root.get<std::string>("gpuUuid", "");
   evidence.providerProfilePath = root.get<std::string>("providerProfilePath", "");
   evidence.createdAtMs = root.get<std::uint64_t>("createdAtMs", 0);

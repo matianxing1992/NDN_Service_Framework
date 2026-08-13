@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Spec 170 Evidence Bundle",
+  "type": "object",
+  "required": ["schemaVersion", "candidate", "run", "completeRows", "negativeRows"],
+  "properties": {
+    "schemaVersion": {"const": "spec170-evidence-v1"},
+    "candidate": {"type": "object"},
+    "run": {"type": "object"},
+    "completeRows": {"type": "array"},
+    "negativeRows": {"type": "array"},
+    "frozenDigest": {"type": ["string", "null"]}
+  },
+  "additionalProperties": false
+}

@@ -11,7 +11,7 @@ from typing import Any, Mapping
 
 from ..sdk.placement import (
     ArtifactPreparationMode, ModelPlacementStrategy, PlacementDecision, PlacementRequest,
-    ProviderAssignment, canonical_digest,
+    ProviderAssignment, canonical_digest, is_cpu_backend,
 )
 from ..splitter import SplitCandidate, SplitSource
 
@@ -81,6 +81,10 @@ class PreSplitFirstStrategy(ModelPlacementStrategy):
     version = "2"
     state_digest = "sha256:" + hashlib.sha256(
         b"ndnsf-di-pre-split-first-v2").hexdigest()
+    # Compatibility callers explicitly selecting this strategy stay on the
+    # legacy V2 request envelope. Spec 170's LayerReuseFirstStrategy overrides
+    # this marker with DI_PLACEMENT_V3.
+    placement_profile = "DI_PLACEMENT_V2"
     deterministic = True
 
     def __init__(
@@ -137,9 +141,22 @@ class PreSplitFirstStrategy(ModelPlacementStrategy):
         self, request: PlacementRequest,
     ) -> set[str]:
         model = request.model
+        candidates_by_digest = {
+            candidate.candidate_digest: candidate
+            for candidate in request.candidates
+            if isinstance(candidate, SplitCandidate)
+        }
         matches = set()
         for entry in request.catalog_snapshot or ():
             if getattr(entry, "status", "") != "ACTIVE":
+                continue
+            candidate_digest = getattr(entry, "candidate_digest", "")
+            candidate = candidates_by_digest.get(candidate_digest)
+            catalog_backend = getattr(entry, "backend", "")
+            if candidate is None or not all(
+                catalog_backend in candidate.requirements_by_role[role].backends
+                for role in candidate.execution_plan.roles
+            ):
                 continue
             if (
                 getattr(entry, "model_content_digest", "")
@@ -148,12 +165,9 @@ class PreSplitFirstStrategy(ModelPlacementStrategy):
                     == model.semantics_digest
                 and getattr(entry, "graph_digest", "")
                     == request.graph_digest
-                and getattr(entry, "backend", "")
-                    in {backend for provider in request.providers
-                        for backend in provider.backends}
                 and getattr(entry, "precision", "") == model.precision
             ):
-                matches.add(getattr(entry, "candidate_digest", ""))
+                matches.add(candidate_digest)
         return matches
 
     def _place_candidate(
@@ -173,6 +187,21 @@ class PreSplitFirstStrategy(ModelPlacementStrategy):
         assignments = []
         fallback: dict[str, tuple[str, ...]] = {}
         role_evidence = {}
+        ack_set = tuple({
+            "provider": provider.provider,
+            "offer_digest": provider.offer_digest,
+            "evidence_digest": provider.evidence_digest,
+            "resource_sequence": provider.resource_sequence,
+            "boot_epoch": provider.boot_epoch,
+            "accepted_roles": tuple(provider.accepted_roles),
+            "backends": tuple(provider.backends),
+            "devices": tuple(provider.devices),
+            "usable_gpu_memory_mb": provider.usable_gpu_memory_mb,
+            "queue_depth": provider.queue_depth,
+            "estimated_wait_ms": provider.estimated_wait_ms,
+            "rtt_ms": provider.rtt_ms,
+            "bandwidth_mbps": provider.bandwidth_mbps,
+        } for provider in providers)
         for role in candidate.execution_plan.roles:
             required = candidate.requirements_by_role[role]
             peak_bytes = required.estimated_peak_gpu_memory_bytes
@@ -180,52 +209,108 @@ class PreSplitFirstStrategy(ModelPlacementStrategy):
                 raise ValueError(f"unknown runtime peak for {role}")
             required_mb = int(math.ceil(peak_bytes / (1024 * 1024)))
             scored = []
+            candidate_scores = []
             for provider in providers:
-                if (role not in provider.accepted_roles
-                        or not set(required.backends).intersection(
-                            provider.backends)
-                        or used_mb[provider.provider] + required_mb
-                            > provider.usable_gpu_memory_mb):
+                score_evidence = {
+                    "provider": provider.provider,
+                    "offer_digest": provider.offer_digest,
+                    "evidence_digest": provider.evidence_digest,
+                    "resource_sequence": provider.resource_sequence,
+                    "boot_epoch": provider.boot_epoch,
+                }
+                if role not in provider.accepted_roles:
+                    candidate_scores.append({
+                        **score_evidence, "feasible": False,
+                        "rejection": "ROLE_NOT_ACCEPTED",
+                    })
                     continue
-                backend = sorted(
-                    set(required.backends).intersection(provider.backends))[0]
+                compatible_backends = set(required.backends).intersection(
+                    provider.backends)
+                if not compatible_backends:
+                    candidate_scores.append({
+                        **score_evidence, "feasible": False,
+                        "rejection": "BACKEND_INCOMPATIBLE",
+                    })
+                    continue
+                if (used_mb[provider.provider] + required_mb
+                        > provider.usable_gpu_memory_mb):
+                    candidate_scores.append({
+                        **score_evidence, "feasible": False,
+                        "rejection": "GPU_CAPACITY",
+                    })
+                    continue
+                backend = sorted(compatible_backends)[0]
                 tier, cache_evidence = self._artifact_tier(
                     request, candidate, role, provider, pre_split,
                     at_ms=planning_at_ms)
                 state_saving = self._state_saving(request, role, provider)
+                score_components = {
+                    "residency_tier": ResidencyTier(tier).name,
+                    "estimated_wait_ms": float(
+                        provider.estimated_wait_ms or 0.0),
+                    "queue_depth": int(provider.queue_depth or 0),
+                    "rtt_ms": float(provider.rtt_ms or 0.0),
+                    "bandwidth_mbps": float(provider.bandwidth_mbps or 0.0),
+                    "derived_state_saved_ms": state_saving,
+                    "used_gpu_memory_mb": used_mb[provider.provider],
+                }
                 score = (
                     int(tier),
-                    float(provider.estimated_wait_ms or 0.0),
-                    float(provider.rtt_ms or 0.0),
-                    -float(provider.bandwidth_mbps or 0.0),
+                    score_components["estimated_wait_ms"],
+                    score_components["queue_depth"],
+                    score_components["rtt_ms"],
+                    -score_components["bandwidth_mbps"],
                     -state_saving,
                     used_mb[provider.provider],
                     provider.provider,
                 )
+                candidate_scores.append({
+                    **score_evidence,
+                    "feasible": True,
+                    "score": score_components,
+                })
                 scored.append(
-                    (score, provider, backend, tier, cache_evidence,
+                    (score, provider, backend, self._select_device(
+                        provider, backend), tier, cache_evidence,
                      state_saving))
             if not scored:
                 raise ValueError(f"no feasible Provider for {role}")
             scored.sort(key=lambda item: item[0])
             fallback[role] = tuple(item[1].provider for item in scored)
-            _, provider, backend, tier, cache_evidence, state_saving = scored[0]
+            (_, provider, backend, device, tier, cache_evidence,
+             state_saving) = scored[0]
+            for score_evidence in candidate_scores:
+                score_evidence["selected"] = (
+                    score_evidence["provider"] == provider.provider)
             used_mb[provider.provider] += required_mb
             assignments.append(ProviderAssignment(
-                role, provider.provider, required_mb, backend))
+                role, provider.provider, required_mb, backend, device))
             role_evidence[role] = {
                 "provider": provider.provider,
                 "residency_tier": ResidencyTier(tier).name,
                 "required_gpu_memory_mb": required_mb,
+                "backend": backend,
+                "device": device,
                 "cache": cache_evidence,
                 "derived_state_saved_ms": state_saving,
+                "candidate_scores": tuple(candidate_scores),
             }
 
         specification = SplitSpecification(
             candidate_digest=candidate.candidate_digest,
             graph_digest=request.graph_digest,
             source=(
-                "EXACT_PRE_SPLIT" if pre_split
+                "EXACT_PROVIDER_CACHE"
+                if pre_split and all(
+                    item["residency_tier"] in {
+                        ResidencyTier.PINNED_GPU.name,
+                        ResidencyTier.RELOAD_SAFE_GPU.name,
+                        ResidencyTier.HOST_RAM.name,
+                        ResidencyTier.DISK.name,
+                    }
+                    for item in role_evidence.values()
+                )
+                else "EXACT_PRE_SPLIT" if pre_split
                 else "ACK_CAPACITY_GENERATED"),
             node_roles=tuple(sorted(
                 candidate.execution_plan.node_roles.items())),
@@ -245,8 +330,26 @@ class PreSplitFirstStrategy(ModelPlacementStrategy):
                 "provider_capacity_mb": specification.provider_capacity_mb,
             },
             "roles": role_evidence,
+            "ack_set": ack_set,
             "aggregate_gpu_memory_mb": used_mb,
         }
+        cached_reuse = all(
+            item["residency_tier"] in {
+                ResidencyTier.PINNED_GPU.name,
+                ResidencyTier.RELOAD_SAFE_GPU.name,
+                ResidencyTier.HOST_RAM.name,
+                ResidencyTier.DISK.name,
+            }
+            for item in role_evidence.values()
+        )
+        # Cache residency in an ACK is not by itself a resolvable artifact
+        # reference.  REUSE_CACHED is safe only when the exact candidate is
+        # also present in the active catalog (``pre_split``), which supplies
+        # the content-addressed Data names consumed by Selection.  A Provider
+        # may retain bytes on disk from an earlier process while the current
+        # Repo has no manifest; the first request must publish/register that
+        # candidate instead of timing out in resolve_existing().
+        cached_reuse = pre_split and cached_reuse
         return PlacementDecision(
             split_id=candidate.candidate_digest,
             split_digest=candidate.candidate_digest,
@@ -255,10 +358,33 @@ class PreSplitFirstStrategy(ModelPlacementStrategy):
             input_digest=request.digest(),
             evidence_digest=canonical_digest(evidence),
             artifact_preparation=(
+                ArtifactPreparationMode.REUSE_CACHED
+                if cached_reuse else
                 ArtifactPreparationMode.PRE_SPLIT
                 if pre_split else ArtifactPreparationMode.GENERATED),
             evidence=evidence,
         )
+
+    @staticmethod
+    def _select_device(provider: ProviderPlanningView, backend: str) -> str:
+        """Resolve one exact execution device from the signed ACK capability."""
+
+        devices = tuple(provider.devices)
+        cuda_devices = tuple(
+            device for device in devices if device.startswith("cuda:"))
+        if is_cpu_backend(backend):
+            if not devices:
+                return "cpu"
+            cpu_devices = tuple(device for device in devices if device == "cpu")
+            if len(cpu_devices) == 1:
+                return cpu_devices[0]
+            raise ValueError(
+                f"Provider {provider.provider} did not offer one CPU device")
+        if len(cuda_devices) != 1:
+            raise ValueError(
+                f"Provider {provider.provider} must offer exactly one CUDA "
+                f"device for backend {backend}")
+        return cuda_devices[0]
 
     def _artifact_tier(
         self, request, candidate, role, provider, pre_split, *, at_ms,
@@ -278,7 +404,7 @@ class PreSplitFirstStrategy(ModelPlacementStrategy):
                     ResidencyTier.DISK}:
                 continue
             if not self._valid_shard(
-                    request, provider, shard, at_ms=at_ms):
+                    request, candidate, provider, shard, at_ms=at_ms):
                 continue
             digest = str(shard.get("artifact_digest", ""))
             if digest in required:
@@ -300,7 +426,9 @@ class PreSplitFirstStrategy(ModelPlacementStrategy):
             {"artifact_digests": tuple(sorted(required))},
         )
 
-    def _valid_shard(self, request, provider, shard, *, at_ms=None) -> bool:
+    def _valid_shard(
+        self, request, candidate, provider, shard, *, at_ms=None,
+    ) -> bool:
         model = request.model
         at_ms = self.at_ms if at_ms is None else int(at_ms)
         try:
@@ -312,6 +440,7 @@ class PreSplitFirstStrategy(ModelPlacementStrategy):
             shard.get("model_content_digest") != model.content_digest
             or shard.get("semantics_digest") != model.semantics_digest
             or shard.get("graph_digest") != request.graph_digest
+            or shard.get("partition_digest") != candidate.candidate_digest
             or shard.get("precision") != model.precision
             or shard.get("backend") not in provider.backends
             or shard.get("boot_epoch") != provider.boot_epoch

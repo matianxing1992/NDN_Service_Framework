@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-sif=''; sif_sha=''; project=''; scratch=''; identity=''; release=''; models=''; artifacts=''; evidence=''
+sif=''; sif_sha=''; project=''; scratch=''; identity=''; release=''; models=''; artifacts=''; evidence=''; gpu_count=''
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --sif) sif=$2; shift 2 ;;
@@ -13,6 +13,7 @@ while [ "$#" -gt 0 ]; do
     --models) models=$2; shift 2 ;;
     --artifacts) artifacts=$2; shift 2 ;;
     --evidence) evidence=$2; shift 2 ;;
+    --gpu-count) gpu_count=$2; shift 2 ;;
     --) shift; break ;;
     *) echo "APPTAINER_RUN_ARGUMENT_INVALID:$1" >&2; exit 2 ;;
   esac
@@ -21,6 +22,10 @@ done
 if [ -z "$sif" ] || [ -z "$sif_sha" ] || [ -z "$project" ] || [ -z "$scratch" ] || [ -z "$identity" ]; then
   echo APPTAINER_RUN_REQUIRED_PATH_MISSING >&2; exit 2;
 fi
+[ -n "$gpu_count" ] || gpu_count=${SLURM_GPUS_ON_NODE:-0}
+case "$gpu_count" in
+  ''|*[!0-9]*) echo APPTAINER_GPU_COUNT_INVALID >&2; exit 2 ;;
+esac
 [ "$#" -gt 0 ] || { echo WORKLOAD_REQUIRED >&2; exit 2; }
 release=${release:-$project/releases}
 models=${models:-$project/models}
@@ -48,7 +53,15 @@ PY
 actual=sha256:$(sha256sum "$sif" | cut -d' ' -f1)
 [ "$actual" = "$sif_sha" ] || { echo SIF_DIGEST_MISMATCH >&2; exit 4; }
 
-exec apptainer exec --cleanenv --containall --no-home --nv \
+# GPU runs use the literal `apptainer exec --cleanenv --nv` shape; CPU runs
+# intentionally omit --nv so no host GPU libraries are injected.
+gpu_args=''
+if [ "$gpu_count" -gt 0 ]; then
+  gpu_args='--nv'
+fi
+
+# shellcheck disable=SC2086
+exec apptainer exec --cleanenv --containall --no-home $gpu_args \
   --env HOME=/scratch,PYTHONNOUSERSITE=1,PYTHONDONTWRITEBYTECODE=1,NDNSF_MODEL_ROOT=/models,NDNSF_ARTIFACT_ROOT=/artifacts \
   --bind "$release:/release:ro" \
   --bind "$models:/models:ro" \

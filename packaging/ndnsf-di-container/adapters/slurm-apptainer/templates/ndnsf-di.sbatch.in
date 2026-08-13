@@ -8,7 +8,7 @@
 #SBATCH --ntasks-per-node=@@TASKS_PER_NODE@@
 #SBATCH --cpus-per-task=@@CPUS_PER_TASK@@
 #SBATCH --mem=@@MEMORY@@
-#SBATCH --gres=gpu:@@GPU_TYPE@@:@@GPU_COUNT@@
+@@GPU_DIRECTIVE@@
 #SBATCH --output=@@LOG_ROOT@@/slurm-%j.out
 #SBATCH --error=@@LOG_ROOT@@/slurm-%j.err
 set -euo pipefail
@@ -26,4 +26,4 @@ finish() {
 }
 trap finish EXIT TERM INT
 @@COMPUTE_PREFLIGHT@@ --scratch "$SCRATCH_ROOT" --gpu-type @@GPU_TYPE@@ --gpu-count @@GPU_COUNT@@
-@@RUN_CONTAINER@@ --sif @@SIF_PATH@@ --sif-sha256 @@SIF_SHA256@@ --project "$PROJECT_ROOT" --scratch "$SCRATCH_ROOT" --identity @@IDENTITY_ROOT@@ -- @@WORKLOAD@@
+@@RUN_CONTAINER@@ --sif @@SIF_PATH@@ --sif-sha256 @@SIF_SHA256@@ --gpu-count @@GPU_COUNT@@ --project "$PROJECT_ROOT" --scratch "$SCRATCH_ROOT" --identity @@IDENTITY_ROOT@@ -- @@WORKLOAD@@

@@ -24,26 +24,25 @@ class PublicApiContractTest(unittest.TestCase):
             self.assertEqual(getattr(api, name).__module__, module)
         self.assertNotIn("__getattr__", api.__dict__)
 
-    def test_application_and_client_request_signatures_are_identical(self):
+    def test_application_and_client_expose_model_first_and_explicit_preplanned(self):
         from ndnsf_distributed_inference.api import (
             InferenceApplication, InferenceClient,
         )
 
         app = inspect.signature(InferenceApplication.request)
-        client = inspect.signature(InferenceClient.request)
-        self.assertEqual(
-            tuple(app.parameters)[1:], tuple(client.parameters)[1:])
-        self.assertEqual(tuple(app.parameters)[1], "deployment")
-        self.assertFalse(any(name.startswith("_") for name in
-                             tuple(app.parameters)[1:]))
-        self.assertEqual(app.return_annotation, client.return_annotation)
+        client = inspect.signature(InferenceClient.request_model)
+        for name in ("model", "input", "generation", "strategy", "request_id"):
+            self.assertIn(name, app.parameters)
+            self.assertIn(name, client.parameters)
+        self.assertIn("legacy_deployment", app.parameters)
+        self.assertTrue(hasattr(InferenceApplication, "request_preplanned"))
+        self.assertTrue(hasattr(InferenceClient, "request_preplanned"))
 
     def test_preferred_request_has_no_numeric_or_empty_sentinel_mode(self):
-        from ndnsf_distributed_inference.api import InferenceClient
+        from ndnsf_distributed_inference.api import InferenceApplication
 
-        signature = inspect.signature(InferenceClient.request)
-        self.assertIn("timeout", signature.parameters)
-        self.assertIn("deadline", signature.parameters)
+        signature = inspect.signature(InferenceApplication.request)
+        self.assertIn("generation", signature.parameters)
         self.assertNotIn("timeout_ms", signature.parameters)
         self.assertNotIn("deployment_revision", signature.parameters)
         self.assertNotIn("service", signature.parameters)
@@ -60,8 +59,13 @@ class PublicApiContractTest(unittest.TestCase):
             deployments=SimpleNamespace(
                 authorize_application=lambda *args: authorized.append(args)))
         suite = object()
+        runtime = {
+            "application": {"identity": "/app/creator"},
+            "controller": "/controller", "service": "/Inference/Generate"}
         with tempfile.TemporaryDirectory() as root, patch(
-                "ndnsf_distributed_inference.app_sdk.client.InferenceClient.from_config",
+                "ndnsf_distributed_inference.policy.load_config",
+                return_value=runtime), patch(
+                "ndnsf_distributed_inference.app_sdk.client.InferenceClient.from_application_config",
                 return_value=client) as factory:
             InferenceApplication.from_config(
                 "app.yaml", state_root=root, optimization=suite)

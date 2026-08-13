@@ -36,8 +36,10 @@ from .artifact_deployment import (
     ExecutionArtifactSpec,
     ExecutionContext,
     prepare_execution,
+    prepare_runtime,
 )
 from .core import (
+    LEGACY_READY_SET_V1,
     AssignmentContext, AtomicReservationBook, ProviderAssignment, ProviderProfileV1,
     RuntimeTelemetryV1, DeploymentIntent, DeploymentPlan,
     DIRequestEnvelopeV2, DISelectionAssignmentV2, DISelectionParticipant,
@@ -45,8 +47,12 @@ from .core import (
     ExecutionActivateMessage, ProviderCapabilityOffer, PreparationCallbacks,
     ReservationDecisionAuthority, SelectionDecision, SelectionGatedProvider,
 )
-from .plan import RoleDependencyView
-from .sdk.placement import DIProviderOfferV2, canonical_digest
+from .plan import DependencyEdge, RoleDependencyView
+from .sdk.placement import (
+    DIProviderOfferV2, ProviderOfferV3, DeviceTopologyProfile,
+    DeviceResourceSnapshot, ExecutionDisposition, ResidencyProofV3,
+    ProviderSelectionProjectionV3, UNBOUND_GRAPH_DIGEST_V3, canonical_digest,
+)
 
 
 @dataclass(frozen=True)
@@ -58,6 +64,88 @@ class LargePrefetchResult:
     expected_segments: int = 0
     expected_bytes: int = 0
     used_planned_name: bool = False
+
+
+def _dependency_view_from_assignment(role_assignment) -> RoleDependencyView:
+    """Build the handler view from the exact dependency edges in Selection."""
+
+    role = str(role_assignment.role)
+    inputs: list[DependencyEdge] = []
+    outputs: list[DependencyEdge] = []
+    internal: list[DependencyEdge] = []
+    for committed in role_assignment.dependencies:
+        edge = DependencyEdge(
+            producers=list(committed.producers),
+            consumers=list(committed.consumers),
+            key_scope=committed.key_scope,
+            topic_prefix=committed.topic_prefix,
+            required=committed.required,
+            tensors=list(committed.tensors),
+            object_name_template=committed.object_name_template,
+            expected_segments=committed.expected_segments,
+            expected_bytes=committed.expected_bytes,
+        )
+        is_producer = role in edge.producers
+        is_consumer = role in edge.consumers
+        if is_producer and is_consumer:
+            internal.append(edge)
+        elif is_producer:
+            outputs.append(edge)
+        elif is_consumer:
+            inputs.append(edge)
+        else:
+            raise ValueError(
+                f"committed dependency {edge.key_scope!r} excludes role {role!r}")
+    return RoleDependencyView(
+        role=role, inputs=inputs, outputs=outputs, internal=internal)
+
+
+def _dependency_view_from_v3_projection(
+    role: str, dependencies: Sequence[Mapping[str, object]],
+) -> RoleDependencyView:
+    """Build the handler view from the request's sealed V3 projection.
+
+    V3 planning is intentionally request-first: the requester derives graph
+    edges after ACK_CLOSED and seals their exact key scopes in the Selection
+    projection.  A Provider's static service policy may describe an older
+    model or split and therefore must not override those request-bound edges.
+    """
+    edges: list[DependencyEdge] = []
+    for item in dependencies:
+        if not isinstance(item, Mapping):
+            raise ValueError("V3 projection dependency is not an object")
+        producers = [str(value) for value in item.get("producers", ())]
+        consumers = [str(value) for value in item.get("consumers", ())]
+        key_scope = str(item.get("key_scope", ""))
+        topic_prefix = str(item.get("topic_prefix", "/activation"))
+        if not producers or not consumers or not key_scope or not topic_prefix:
+            raise ValueError("V3 projection dependency binding is invalid")
+        # A Selection projection is intentionally identical for every
+        # Provider so its plan digest covers the complete graph.  Providers
+        # must ignore edges owned by other roles and retain only their local
+        # input/output/internal view; rejecting unrelated edges would make a
+        # valid multi-role projection unusable.
+        if role not in producers + consumers:
+            continue
+        edges.append(DependencyEdge(
+            producers=producers,
+            consumers=consumers,
+            key_scope=key_scope,
+            topic_prefix=topic_prefix,
+            required=bool(item.get("required", True)),
+            tensors=[str(value) for value in item.get("tensors", ())],
+            object_name_template=str(item.get("object_name_template", "")),
+            expected_segments=int(item.get("expected_segments", 0) or 0),
+            expected_bytes=int(item.get("expected_bytes", 0) or 0),
+        ))
+    inputs = [edge for edge in edges
+              if role in edge.consumers and role not in edge.producers]
+    outputs = [edge for edge in edges
+               if role in edge.producers and role not in edge.consumers]
+    internal = [edge for edge in edges
+                if role in edge.producers and role in edge.consumers]
+    return RoleDependencyView(
+        role=role, inputs=inputs, outputs=outputs, internal=internal)
 
 
 @dataclass(frozen=True)
@@ -110,14 +198,18 @@ class DIProviderOfferIssuer:
         self, *, provider: str, service: str, boot_epoch: str,
         ledger: GpuMiBAdmissionLedger, offered_gpu_memory_mb: int,
         signer_key_id: str, sign_offer_digest: Callable[[str], str],
-        offer_lease_ms: int = 5000,
+        devices: Sequence[str],
+        offer_lease_ms: int = 60 * 60 * 1000,
         max_pending_state_ttl_ms: int = 60 * 60 * 1000,
         clock_ms: Callable[[], int] | None = None,
     ) -> None:
         if (ledger.provider != provider or ledger.boot_epoch != boot_epoch
                 or offered_gpu_memory_mb <= 0 or not signer_key_id
                 or not callable(sign_offer_digest) or offer_lease_ms <= 0
-                or max_pending_state_ttl_ms <= 0):
+                or max_pending_state_ttl_ms <= 0
+                or not devices
+                or len(set(devices)) != len(tuple(devices))
+                or any(not device for device in devices)):
             raise ValueError("invalid DI Provider offer issuer")
         self.provider = provider
         self.service = service
@@ -125,6 +217,7 @@ class DIProviderOfferIssuer:
         self.ledger = ledger
         self.offered_gpu_memory_mb = int(offered_gpu_memory_mb)
         self.signer_key_id = signer_key_id
+        self.devices = tuple(devices)
         self._sign = sign_offer_digest
         self.offer_lease_ms = int(offer_lease_ms)
         self.max_pending_state_ttl_ms = int(max_pending_state_ttl_ms)
@@ -132,6 +225,58 @@ class DIProviderOfferIssuer:
         self._sequence = 0
         self._offers: dict[str, DIProviderOfferV2] = {}
         self._lock = RLock()
+
+    def _validated_cached_shards(
+        self, cached_shards: Sequence[object], *, now_ms: int,
+        backends: Sequence[str],
+    ) -> tuple[dict, ...]:
+        """Fail closed before signing malformed or stale residency claims."""
+
+        required = {
+            "artifact_digest", "model_content_digest", "semantics_digest",
+            "graph_digest", "partition_digest", "backend", "precision",
+            "tier", "boot_epoch", "cache_epoch", "captured_at_ms",
+            "expires_at_ms",
+        }
+        result = []
+        for raw in cached_shards:
+            if not isinstance(raw, Mapping):
+                raise ValueError("cached shard evidence must be a mapping")
+            shard = {str(key): value for key, value in raw.items()}
+            if not required.issubset(shard):
+                raise ValueError("cached shard evidence is incomplete")
+            for name in (
+                    "artifact_digest", "model_content_digest",
+                    "semantics_digest", "graph_digest", "partition_digest"):
+                value = str(shard[name])
+                if (len(value) != 71 or not value.startswith("sha256:")):
+                    raise ValueError(
+                        f"cached shard {name} is not a canonical digest")
+                try:
+                    int(value[7:], 16)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"cached shard {name} is not a canonical digest") from exc
+            tier = str(shard["tier"]).upper()
+            if tier not in {
+                    "PINNED_GPU", "RELOAD_SAFE_GPU", "HOST_RAM", "DISK"}:
+                raise ValueError("cached shard tier is not reusable")
+            if (str(shard["boot_epoch"]) != self.boot_epoch
+                    or str(shard["backend"]) not in tuple(backends)
+                    or int(shard["cache_epoch"]) <= 0
+                    or int(shard["captured_at_ms"]) > now_ms
+                    or int(shard["expires_at_ms"]) <= now_ms):
+                raise ValueError("cached shard evidence is stale or incompatible")
+            if tier in {"PINNED_GPU", "RELOAD_SAFE_GPU"}:
+                device = str(shard.get("device", ""))
+                if device not in self.devices:
+                    raise ValueError(
+                        "GPU cached shard does not match an offered device")
+            if (tier == "PINNED_GPU"
+                    and int(shard.get("pin_until_ms", 0)) <= now_ms):
+                raise ValueError("pinned GPU cached shard has no live pin")
+            result.append(shard)
+        return tuple(result)
 
     def issue(
         self, request_wire: bytes, *, accepted_roles: Sequence[str],
@@ -151,6 +296,20 @@ class DIProviderOfferIssuer:
             return AckDecision(
                 status=False,
                 message="DI_V2_REQUEST_DEADLINE_EXCEEDS_PROVIDER_LIMIT")
+        if pending_state_ttl_ms > self.offer_lease_ms:
+            # This attempt has no offer-renewal round.  Returning a positive
+            # ACK whose signed offer expires before the accepted plan deadline
+            # would make a request-first cold plan fail only after expensive
+            # artifact publication.  Reject at admission instead.
+            return AckDecision(
+                status=False,
+                message="DI_V2_REQUEST_DEADLINE_EXCEEDS_OFFER_LEASE")
+        try:
+            cached_shards = self._validated_cached_shards(
+                cached_shards, now_ms=now_ms, backends=backends)
+        except (TypeError, ValueError):
+            return AckDecision(
+                status=False, message="DI_RESIDENCY_EVIDENCE_INVALID")
         with self._lock:
             # Core may re-enter the collaboration ACK policy while the same
             # request is being admitted (for example after a Selection
@@ -172,7 +331,8 @@ class DIProviderOfferIssuer:
                     and offer.provider == self.provider
                     and offer.boot_epoch == self.boot_epoch
                     and offer.accepted_roles == accepted_roles_tuple
-                    and offer.backends == backends_tuple
+                and offer.backends == backends_tuple
+                    and offer.devices == self.devices
                     and offer.expires_at_ms > now_ms
                 ):
                     return AckDecision(
@@ -187,6 +347,7 @@ class DIProviderOfferIssuer:
                 "resource_sequence": self._sequence,
                 "accepted_roles": accepted_roles_tuple,
                 "backends": backends_tuple,
+                "devices": self.devices,
                 "gpu_mib": self.offered_gpu_memory_mb,
                 "queue_depth": queue_depth,
                 "estimated_wait_ms": estimated_wait_ms,
@@ -211,6 +372,7 @@ class DIProviderOfferIssuer:
                 accepted_deadline_ms=request.plan_deadline_ms,
                 accepted_roles=accepted_roles_tuple,
                 backends=backends_tuple,
+                devices=self.devices,
                 offered_gpu_memory_mb=self.offered_gpu_memory_mb,
                 queue_depth=queue_depth,
                 estimated_wait_ms=estimated_wait_ms,
@@ -258,6 +420,76 @@ class DIProviderOfferIssuer:
                         and digest != selected_offer_digest):
                     self.ledger.release_offer(digest, reason="not-selected")
                     self._offers.pop(digest, None)
+
+
+class DIProviderOfferIssuerV3:
+    """Issue observational V3 offers without touching a reservation ledger."""
+
+    def __init__(self, *, provider: str, service: str, boot_epoch: str,
+                 devices: Sequence[str], signer_key_id: str,
+                 sign_offer_digest: Callable[[str], str],
+                 clock_ms: Callable[[], int] | None = None) -> None:
+        if (not provider or not service or not boot_epoch or not signer_key_id
+                or not callable(sign_offer_digest)
+                or len(set(devices)) != len(tuple(devices))):
+            raise ValueError("invalid V3 Provider offer issuer")
+        self.provider = provider
+        self.service = service
+        self.boot_epoch = boot_epoch
+        self.devices = tuple(str(item) for item in devices)
+        self.signer_key_id = signer_key_id
+        self._sign = sign_offer_digest
+        self._clock_ms = clock_ms or (lambda: int(time() * 1000))
+        self._sequence = 0
+
+    def issue(
+        self, *, request_id: str, attempt: int, model_digest: str,
+        graph_digest: str = "", deadline_ms: int = 0,
+        accepted_roles: Sequence[str] = (),
+        backends: Sequence[str], execution_disposition: ExecutionDisposition | str,
+        preparation_accepted: bool, residency: Sequence[ResidencyProofV3] = (),
+        resources: Sequence[DeviceResourceSnapshot] = (), queue_depth: int = 0,
+        estimated_wait_ms: float = 0.0, rtt_ms: float = 0.0,
+        bandwidth_mbps: float = 0.0) -> AckDecision:
+        now_ms = int(self._clock_ms())
+        if int(deadline_ms) <= now_ms:
+            return AckDecision(status=False, message="DI_V3_REQUEST_EXPIRED")
+        graph_digest = str(graph_digest or UNBOUND_GRAPH_DIGEST_V3)
+        disposition = ExecutionDisposition(execution_disposition)
+        status = disposition != ExecutionDisposition.REJECT
+        self._sequence += 1
+        topology = DeviceTopologyProfile(
+            self.provider, self.devices,
+            "cuda" if any(item.startswith("cuda:") for item in self.devices) else "cpu")
+        offer = ProviderOfferV3(
+            request_id=str(request_id), attempt=int(attempt), service=self.service,
+            provider=self.provider, model_digest=model_digest,
+            graph_digest=graph_digest, status=status,
+            execution_disposition=disposition,
+            preparation_accepted=bool(preparation_accepted), topology=topology,
+            resources=tuple(resources), residency=tuple(residency),
+            accepted_roles=tuple(accepted_roles), backends=tuple(backends),
+            queue_depth=int(queue_depth), estimated_wait_ms=float(estimated_wait_ms),
+            rtt_ms=float(rtt_ms), bandwidth_mbps=float(bandwidth_mbps),
+            boot_epoch=self.boot_epoch, captured_at_ms=now_ms,
+            expires_at_ms=int(deadline_ms), signer_key_id=self.signer_key_id,
+            signature="unsigned-placeholder")
+        signature = str(self._sign(offer.digest()))
+        if not signature:
+            raise ValueError("V3 Provider offer signer returned no signature")
+        offer = replace(offer, signature=signature)
+        # No reservation, lease, queue entry, or device-state mutation occurs.
+        return AckDecision(
+            status=status, message="DI_PLACEMENT_V3_OFFER",
+            payload=offer.to_bytes(),
+            # V3 does not reserve a device at ACK time, but Core still needs
+            # to retain the authenticated Request/token state until the
+            # requester's post-ACK graph planning and canonical publication
+            # can deliver Selection.  Leaving this at zero makes Core apply
+            # its short provisional cleanup (30 s), so any legitimate cold
+            # publication is rejected as "no pending request".  The horizon
+            # is request-deadline bounded and carries no resource hold.
+            pending_state_ttl_ms=max(1, int(deadline_ms) - now_ms))
 
 
 def register_selection_dataflow_v2(
@@ -401,6 +633,63 @@ class DependencyPrefetcher:
         self._executor.shutdown(wait=True)
 
 
+def _assignment_deadline_ms(payload: bytes) -> int:
+    """Return the signed execution deadline carried by a DI assignment.
+
+    Selection Dataflow V2 assignments are canonical JSON contracts.  Older
+    collaboration paths used semicolon-delimited metadata, so retain a small
+    compatibility parser without treating unsigned application fields as an
+    authority for the V2 path.
+    """
+
+    raw = bytes(payload or b"")
+    if not raw:
+        return 0
+    try:
+        assignment = DISelectionAssignmentV2.from_bytes(raw)
+    except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+        assignment = None
+    if assignment is not None:
+        return max(0, int(assignment.deadline_ms))
+    try:
+        projection = ProviderSelectionProjectionV3.from_bytes(raw)
+    except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+        projection = None
+    if projection is not None:
+        return max(0, int(projection.deadline_ms))
+    try:
+        text = raw.decode("utf-8", errors="replace")
+    except Exception:
+        return 0
+    fields: dict[str, str] = {}
+    for item in text.split(";"):
+        if "=" in item:
+            key, value = item.split("=", 1)
+            fields[key] = value
+    for key in ("executionDeadlineMs", "deadlineMs", "deadline_ms"):
+        try:
+            value = int(fields.get(key, "0"))
+        except (TypeError, ValueError):
+            value = 0
+        if value > 0:
+            return value
+    return 0
+
+
+@dataclass(frozen=True)
+class _TerminalResponseGuard:
+    lock: RLock = field(default_factory=RLock, compare=False, repr=False)
+    published: list[bool] = field(
+        default_factory=list, compare=False, repr=False)
+
+    def claim(self) -> None:
+        with self.lock:
+            if self.published:
+                raise RuntimeError(
+                    "NDNSF-DI terminal Response was already published")
+            self.published.append(True)
+
+
 @dataclass(frozen=True)
 class ProviderRuntimeContext:
     ndnsf: CollaborationContext
@@ -411,6 +700,68 @@ class ProviderRuntimeContext:
         default_factory=lambda: RoleDependencyView(role=""))
     prefetcher: DependencyPrefetcher | None = None
     assignment_context: AssignmentContext | None = None
+    deadline_ms: int = 0
+    on_dependency_ready: Callable[[object], None] | None = None
+    _terminal_response_guard: _TerminalResponseGuard = field(
+        default_factory=_TerminalResponseGuard,
+        compare=False, repr=False,
+    )
+
+    @property
+    def request_id(self) -> str:
+        """Return the immutable request identifier for this invocation.
+
+        The wire/runtime context owns the identifier as ``session_id``.  DI
+        application handlers use ``request_id`` in their evidence records, so
+        expose the explicit alias at this boundary instead of making every
+        adapter reach through ``ctx.ndnsf``.
+        """
+
+        return str(self.ndnsf.session_id)
+
+    def publish_final_response(self, payload: bytes) -> None:
+        """Publish exactly one complete authenticated terminal Response."""
+        self._terminal_response_guard.claim()
+        self.ndnsf.publish_final_response(bytes(payload))
+
+    def remaining_deadline_ms(
+        self,
+        *,
+        fallback_ms: int = 30000,
+        safety_margin_ms: int = 1000,
+        now_ms: int | None = None,
+    ) -> int:
+        """Return a bounded timeout derived from the signed request deadline.
+
+        A missing deadline is only possible on legacy/non-DI local paths and
+        keeps their historical bounded timeout.  A V2 assignment must never
+        silently fall back after its deadline has expired.
+        """
+
+        deadline = int(self.deadline_ms or 0)
+        if not deadline:
+            metadata = getattr(getattr(self.execution, "spec", None), "metadata", {})
+            if isinstance(metadata, Mapping):
+                for key in ("executionDeadlineMs", "deadlineMs", "deadline_ms"):
+                    try:
+                        candidate = int(metadata.get(key, 0) or 0)
+                    except (TypeError, ValueError):
+                        candidate = 0
+                    if candidate > 0:
+                        deadline = candidate
+                        break
+        if deadline <= 0:
+            return max(1, int(fallback_ms))
+        current = int(time() * 1000) if now_ms is None else int(now_ms)
+        remaining = deadline - current - max(0, int(safety_margin_ms))
+        if remaining <= 0:
+            raise TimeoutError("DI execution deadline expired before dependency fetch")
+        return remaining
+
+    def dependency_timeout_ms(self, *, fallback_ms: int = 30000) -> int:
+        """Timeout for one dependency wait/fetch operation in this invocation."""
+
+        return self.remaining_deadline_ms(fallback_ms=fallback_ms)
 
     def planned_large_data_name(self, edge, producer_role: str) -> str:
         template = str(getattr(edge, "object_name_template", "") or "")
@@ -482,7 +833,11 @@ class ProviderRuntimeContext:
     def wait_input(self, *, key_scope: str = "", topic_suffix: str = "",
                    timeout_ms: int = 10000):
         edge = self.dependencies.input(key_scope)
-        return self.ndnsf.wait_one(edge.key_scope, edge.topic(topic_suffix), timeout_ms)
+        value = self.ndnsf.wait_one(
+            edge.key_scope, edge.topic(topic_suffix), timeout_ms)
+        if value is not None and self.on_dependency_ready is not None:
+            self.on_dependency_ready(edge)
+        return value
 
     def prefetch_input_large(self, *, key_scope: str = "",
                              topic_suffix: str = "",
@@ -502,7 +857,7 @@ class ProviderRuntimeContext:
         edge = self.dependencies.input(key_scope)
         data_name = self.planned_large_data_name(edge, producer_role) if producer_role else ""
         try:
-            return self.prefetcher.prefetch_large(
+            future = self.prefetcher.prefetch_large(
                 edge,
                 topic_suffix,
                 ref_timeout_ms=ref_timeout_ms,
@@ -512,20 +867,23 @@ class ProviderRuntimeContext:
             expected_bytes=int(getattr(edge, "expected_bytes", 0) or 0),
         )
         except TypeError:
-            return self.prefetcher.prefetch_large(
+            future = self.prefetcher.prefetch_large(
                 edge,
                 topic_suffix,
                 ref_timeout_ms=ref_timeout_ms,
                 fetch_timeout_ms=fetch_timeout_ms,
             )
+        future._ndnsf_di_dependency_edge = edge
+        return future
 
-    @staticmethod
-    def wait_prefetched_input_large(future: Future, *,
+    def wait_prefetched_input_large(self, future: Future, *,
                                     timeout_ms: int | None = None) -> bytes:
-        return ProviderRuntimeContext.wait_prefetched_input_large_result(
-            future,
-            timeout_ms=timeout_ms,
-        ).payload
+        result = self.wait_prefetched_input_large_result(
+            future, timeout_ms=timeout_ms)
+        edge = getattr(future, "_ndnsf_di_dependency_edge", None)
+        if edge is not None and self.on_dependency_ready is not None:
+            self.on_dependency_ready(edge)
+        return result.payload
 
     @staticmethod
     def wait_prefetched_input_large_result(future: Future, *,
@@ -785,7 +1143,7 @@ class DistributedInferenceProvider:
         *,
         timeout_ms: int = 30_000,
     ) -> None:
-        """Gate execution on exact request-scoped readiness for every role."""
+        """Rollback-only V1 exact-member readiness barrier."""
         scope = "ndnsf-di-readiness-v1"
         topic = "/ndnsf-di/readiness"
         assignment = ctx.assignment
@@ -797,6 +1155,9 @@ class DistributedInferenceProvider:
             if "=" in item:
                 key, value = item.split("=", 1)
                 assignment_fields[key] = value
+        if assignment_fields.get("executionPolicy") != LEGACY_READY_SET_V1:
+            raise RuntimeError(
+                "DI_LEGACY_READY_SET_REQUIRES_EXPLICIT_POLICY")
         activation_digest = assignment_fields.get(
             "executionActivationDigest", "")
         activation_members = {
@@ -976,6 +1337,8 @@ class DistributedInferenceProvider:
                                   if dependency_graph is not None
                                   else RoleDependencyView(ctx.assignment.role)),
                     prefetcher=prefetcher,
+                    deadline_ms=_assignment_deadline_ms(
+                        bytes(ctx.assignment.assignment_payload)),
                 ))
             finally:
                 prefetcher.shutdown()
@@ -1012,6 +1375,7 @@ class DistributedInferenceProvider:
         register_simple_service: bool = False,
         ready_without_model: bool = False,
         selection_offer_issuer: DIProviderOfferIssuer | None = None,
+        selection_offer_issuer_v3: DIProviderOfferIssuerV3 | None = None,
         selection_participant: DISelectionParticipant | None = None,
         selection_wal_path: str | Path | None = None,
         selection_storage_key: bytes | None = None,
@@ -1019,6 +1383,7 @@ class DistributedInferenceProvider:
         selection_max_prepare_ms: int = 1000,
         selection_cached_shards: Callable[[], Sequence[object]] | None = None,
         selection_reusable_state: Callable[[], Sequence[object]] | None = None,
+        runtime_preparer: Callable | None = None,
     ) -> None:
         """Register one provider as capable of serving multiple inference roles.
 
@@ -1130,7 +1495,9 @@ class DistributedInferenceProvider:
 
         def ack(context: Mapping[str, object], _payload: bytes) -> AckDecision:
             v2_request = False
+            v3_request = False
             v2_envelope: DIRequestEnvelopeV2 | None = None
+            v3_request_document: Mapping[str, object] | None = None
             try:
                 request_document = json.loads(bytes(_payload).decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError):
@@ -1138,6 +1505,19 @@ class DistributedInferenceProvider:
             if (isinstance(request_document, dict)
                     and request_document.get("schema")
                     == "ndnsf-di-request-envelope-v2"):
+                task_document = request_document.get("task", {})
+                if not isinstance(task_document, Mapping):
+                    task_document = {}
+                placement_profile = (
+                    request_document.get("placementProfile")
+                    or task_document.get("placement_profile")
+                    or task_document.get("placementProfile"))
+                v3_request = placement_profile == "DI_PLACEMENT_V3"
+                if v3_request:
+                    v3_request_document = request_document
+                if v3_request and selection_offer_issuer_v3 is None:
+                    return AckDecision(
+                        status=False, message="DI_PLACEMENT_V3_UNAVAILABLE")
                 try:
                     v2_envelope = DIRequestEnvelopeV2.from_bytes(_payload)
                 except ValueError as exc:
@@ -1145,7 +1525,7 @@ class DistributedInferenceProvider:
                         status=False,
                         message=f"DI_V2_REQUEST_REJECTED:{exc}")
                 v2_request = True
-                if selection_offer_issuer is None:
+                if not v3_request and selection_offer_issuer is None:
                     return AckDecision(
                         status=False,
                         message="DI_SELECTION_DATAFLOW_V2_UNAVAILABLE")
@@ -1281,6 +1661,67 @@ class DistributedInferenceProvider:
                         message=reason,
                         payload=encode_provider_capability_ack(capability_hint),
                     )
+            if v2_request and v3_request:
+                assert selection_offer_issuer_v3 is not None
+                assert v2_envelope is not None
+                document = dict(v3_request_document or {})
+                graph_digest = str(
+                    document.get("graphDigest")
+                    or dict(document.get("task", {}) or {}).get("graph_digest", ""))
+                # The normal request deliberately reaches Providers before
+                # graph inspection.  A missing graph digest therefore means a
+                # signed wildcard offer, not a malformed request.  The
+                # coordinator binds the actual digest after ACK_CLOSED.
+                if not graph_digest.startswith("sha256:"):
+                    graph_digest = UNBOUND_GRAPH_DIGEST_V3
+                cached_state = tuple(
+                    selection_reusable_state()
+                    if selection_reusable_state is not None else ())
+                cached_proofs = tuple(
+                    item for item in cached_state
+                    if isinstance(item, ResidencyProofV3))
+                # ``has_model`` is only a coarse readiness hint.  It cannot
+                # prove an exact post-ACK role/rank identity, so it must not
+                # manufacture ACCEPT_IF_EXACT_REUSE.  Exact reuse is offered
+                # only with explicit, signed residency proofs.
+                exact_reuse_available = bool(cached_proofs)
+                # Exact residency is the strongest admissible disposition.
+                # A Provider may still be able to prepare a cold artifact, but
+                # that must not downgrade a warm, exact hit to a rejection or
+                # force an unnecessary preparation path.  Preparation is the
+                # fallback only when no complete proof is available.
+                if exact_reuse_available:
+                    v3_disposition = ExecutionDisposition.ACCEPT_IF_EXACT_REUSE
+                    v3_preparation_accepted = False
+                elif can_provision or ready_without_model:
+                    v3_disposition = ExecutionDisposition.ACCEPT_WITH_PREPARATION
+                    v3_preparation_accepted = True
+                else:
+                    v3_disposition = ExecutionDisposition.REJECT
+                    v3_preparation_accepted = False
+                decision = selection_offer_issuer_v3.issue(
+                    request_id=v2_envelope.request_id,
+                    attempt=v2_envelope.attempt,
+                    model_digest=v2_envelope.model_identity_hash,
+                    graph_digest=graph_digest,
+                    deadline_ms=v2_envelope.plan_deadline_ms,
+                    accepted_roles=role_list, backends=backend_list,
+                    execution_disposition=v3_disposition,
+                    preparation_accepted=v3_preparation_accepted,
+                    queue_depth=(telemetry.aggregate_queue
+                                 if telemetry is not None else queue_depth),
+                    estimated_wait_ms=(telemetry.queue_wait_ewma_ms
+                                       if telemetry is not None else 0.0),
+                    residency=cached_proofs,
+                )
+                print(
+                    "NDNSF_DI_ACK_DECISION",
+                    f"requestId={v2_envelope.request_id}",
+                    f"attempt={v2_envelope.attempt}",
+                    f"status={str(bool(decision.status)).lower()}",
+                    "reservationHeld=false", "v3=true",
+                    f"reason={decision.message or '-'}", flush=True)
+                return decision
             if v2_request:
                 assert selection_offer_issuer is not None
                 assert v2_envelope is not None
@@ -1389,6 +1830,7 @@ class DistributedInferenceProvider:
                         role=simple_role,
                         dependencies=RoleDependencyView(simple_role),
                         prefetcher=None,
+                        deadline_ms=0,
                     ))
                     return simple_ctx.response
                 except Exception as exc:  # noqa: BLE001
@@ -1403,6 +1845,44 @@ class DistributedInferenceProvider:
             sequence = 1
             assignment_payload = bytes(ctx.assignment.assignment_payload or b"")
             terminal_released = False
+            role_assignment = None
+            committed_dependency_view = None
+            v3_projection = None
+            v3_role_spec = None
+            v3_dependency_view = None
+            if assignment_payload.lstrip().startswith(b"{"):
+                try:
+                    decoded_projection = ProviderSelectionProjectionV3.from_bytes(
+                        assignment_payload)
+                except ValueError:
+                    decoded_projection = None
+                if decoded_projection is not None:
+                    v3_projection = decoded_projection
+                    if decoded_projection.provider != ctx.local_provider:
+                        ctx.fail("V3 Selection Provider binding mismatch")
+                        return
+                    matching = [
+                        item for item in decoded_projection.roles
+                        if item.role == ctx.assignment.role
+                    ]
+                    if len(matching) != 1:
+                        ctx.fail("V3 Selection role coverage mismatch")
+                        return
+                    v3_role_spec = matching[0]
+                    v3_dependency_view = _dependency_view_from_v3_projection(
+                        ctx.assignment.role, decoded_projection.dependencies)
+                    # SVS delivers the collaboration namespace broadly to all
+                    # Providers.  Install this role's exact request-bound
+                    # scope/topic bindings before artifact preparation so
+                    # unrelated role traffic is filtered before native
+                    # decryption (including packets that arrive while this
+                    # role is still becoming ready).
+                    for dependency in (
+                            *v3_dependency_view.inputs,
+                            *v3_dependency_view.outputs,
+                            *v3_dependency_view.internal):
+                        ctx.allow_data(dependency.key_scope,
+                                       dependency.topic_prefix)
 
             def release_selection_reservation(reason: str) -> None:
                 nonlocal terminal_released
@@ -1444,6 +1924,9 @@ class DistributedInferenceProvider:
                     ctx, phase=phase, sequence=sequence, progress=value)
 
             try:
+                dependency_ready = None
+                if v3_projection is not None and selection_participant is not None:
+                    raise RuntimeError("V3 Selection cannot use the V2 participant")
                 if selection_participant is not None:
                     if not assignment_payload:
                         raise RuntimeError(
@@ -1453,11 +1936,49 @@ class DistributedInferenceProvider:
                         ctx.assignment.role,
                         timeout=max(0.001, selection_max_prepare_ms / 1000.0),
                     )
-                    selection_participant.mark_input_ready(
-                        ctx.assignment.role, transaction_id=transaction_id)
+                    assignment = DISelectionAssignmentV2.from_bytes(
+                        assignment_payload)
+                    role_assignment = next(
+                        item for item in assignment.roles
+                        if item.role == ctx.assignment.role)
+                    committed_dependency_view = _dependency_view_from_assignment(
+                        role_assignment)
+                    if not role_assignment.required_input_scopes:
+                        selection_participant.mark_input_ready(
+                            ctx.assignment.role,
+                            transaction_id=transaction_id)
+
+                    def dependency_ready(edge) -> None:
+                        selection_participant.mark_dependency_input_ready(
+                            assignment_payload,
+                            ctx.assignment.role,
+                            str(edge.key_scope),
+                        )
                 assigned_artifact = str(ctx.assignment.assigned_artifact or "")
+                if v3_role_spec is not None:
+                    # The generic Role carries the canonical NDN artifact name;
+                    # the opaque V3 projection independently binds its object
+                    # digest, recipe, graph range, and Provider.
+                    if not assigned_artifact or assigned_artifact == "/":
+                        raise RuntimeError(
+                            "V3 Selection has no canonical artifact identity")
                 role_has_local_artifact = bool(local_artifacts.get(ctx.assignment.role, {}).get("path"))
-                if has_model and role_has_local_artifact:
+                if selection_participant is not None:
+                    # In V2, the committed NDNSF-DI participant owns artifact
+                    # verification, materialization, and runtime preparation.
+                    # ``assigned_artifact`` is the participant's immutable
+                    # artifact identity (for example a DistributedRepo object),
+                    # not the name of a legacy Core ExecutionArtifactSpec.
+                    # Build only the adapter-facing execution shell here; the
+                    # mandatory runtime_preparer below binds it to the exact
+                    # role assignment and returns readiness evidence.
+                    execution = self._local_execution(
+                        ctx.assignment.role,
+                        backend=backend_list[0] if backend_list else "",
+                        temp_dir=temp_dir,
+                        local_artifacts=local_artifacts,
+                    )
+                elif has_model and role_has_local_artifact:
                     execution = self._local_execution(
                         ctx.assignment.role,
                         backend=backend_list[0] if backend_list else "",
@@ -1482,6 +2003,95 @@ class DistributedInferenceProvider:
                     raise RuntimeError(
                         "collaboration assignment has no artifact and provider "
                         "was not registered with has_model=True")
+                execution = self._bind_assignment_metadata(ctx, execution)
+                if v3_role_spec is not None:
+                    execution = replace(execution, spec=replace(
+                        execution.spec,
+                        backend=v3_role_spec.backend,
+                        metadata={
+                            **dict(execution.spec.metadata),
+                            "placementProfile": "DI_PLACEMENT_V3",
+                            "selectionRequestId": v3_projection.request_id,
+                            "selectionAttempt": v3_projection.attempt,
+                            "planDigest": v3_projection.plan_digest,
+                            "planCoreDigest": v3_projection.plan_core_digest,
+                            "selectionArtifactDigest": v3_role_spec.artifact_digest,
+                            "selectionRecipeDigest": v3_role_spec.recipe_digest,
+                            "selectionAdapterId": v3_role_spec.adapter_id,
+                            "selectionAdapterVersion": v3_role_spec.adapter_version,
+                            "selectionDevice": (
+                                v3_role_spec.device_set[0]
+                                if len(v3_role_spec.device_set) == 1 else ""),
+                            "selectionLayerRange": (
+                                v3_role_spec.layer_begin,
+                                v3_role_spec.layer_end),
+                            "selectionRank": v3_role_spec.rank,
+                        },
+                    ))
+                if selection_participant is not None:
+                    if role_assignment is None:
+                        raise RuntimeError(
+                            "V2 Selection has no local role assignment")
+                    if runtime_preparer is None:
+                        raise RuntimeError(
+                            "V2 CUDA Selection requires a runtime preparer")
+                    execution = replace(execution, spec=replace(
+                        execution.spec,
+                        backend=role_assignment.backend,
+                        metadata={
+                            **dict(execution.spec.metadata),
+                            "selectionRequestId": assignment.request_id,
+                            "selectionAttempt": assignment.attempt,
+                            "selectionAdapterId": role_assignment.adapter_id,
+                            "selectionAdapterVersion":
+                                role_assignment.adapter_version,
+                            "selectionBackend": role_assignment.backend,
+                            "selectionDevice": role_assignment.device,
+                            "selectionArtifactDigest":
+                                role_assignment.artifact_digest,
+                        },
+                    ))
+                    execution = prepare_runtime(
+                        execution,
+                        preparer=runtime_preparer,
+                        expected_adapter_id=role_assignment.adapter_id,
+                        expected_adapter_version=role_assignment.adapter_version,
+                        expected_backend=role_assignment.backend,
+                        expected_device=role_assignment.device,
+                        expected_artifact_digest=role_assignment.artifact_digest,
+                        progress=report,
+                    )
+                elif v3_role_spec is not None and runtime_preparer is not None:
+                    if not v3_role_spec.adapter_id or not v3_role_spec.adapter_version:
+                        raise RuntimeError(
+                            "V3 Selection lacks adapter identity for runtime preparation")
+                    execution = prepare_runtime(
+                        execution,
+                        preparer=runtime_preparer,
+                        expected_adapter_id=v3_role_spec.adapter_id,
+                        expected_adapter_version=v3_role_spec.adapter_version,
+                        expected_backend=v3_role_spec.backend,
+                        expected_device=(
+                            v3_role_spec.device_set[0]
+                            if len(v3_role_spec.device_set) == 1
+                            else ""),
+                        expected_artifact_digest=v3_role_spec.artifact_digest,
+                        progress=report,
+                    )
+                elif v3_role_spec is not None:
+                    # V3 remains selection-bound even for a provider that uses
+                    # an already materialized local runtime.  The signed role
+                    # metadata is attached above; only the adapter-specific
+                    # preparer may add runtime readiness evidence.
+                    if sequence == 1:
+                        report("LOADING", 0.70)
+                    report("WARMING", 0.90)
+                else:
+                    # Legacy/preplanned compatibility has no signed runtime
+                    # binding. Keep it explicit and outside the V2 proof path.
+                    if sequence == 1:
+                        report("LOADING", 0.70)
+                    report("WARMING", 0.90)
             except Exception as exc:
                 sequence += 1
                 self._report_preparation(
@@ -1491,14 +2101,6 @@ class DistributedInferenceProvider:
                 ctx.fail(f"failed to prepare inference execution: {exc}")
                 return
 
-            execution = self._bind_assignment_metadata(ctx, execution)
-
-            if sequence == 1:
-                report("LOADING", 0.70)
-            sequence += 1
-            self._report_preparation(
-                ctx, phase="WARMING", sequence=sequence, progress=0.90,
-                execution=execution)
             sequence += 1
             self._report_preparation(
                 ctx, phase="READY", sequence=sequence, progress=1.0,
@@ -1511,10 +2113,18 @@ class DistributedInferenceProvider:
                     execution=execution,
                     request=request,
                     role=ctx.assignment.role,
-                    dependencies=(dependency_graph.for_role(ctx.assignment.role)
-                                  if dependency_graph is not None
-                                  else RoleDependencyView(ctx.assignment.role)),
+                    dependencies=(
+                        committed_dependency_view
+                        if selection_participant is not None
+                        else v3_dependency_view
+                        if v3_dependency_view is not None
+                        else dependency_graph.for_role(ctx.assignment.role)
+                        if dependency_graph is not None
+                        else RoleDependencyView(ctx.assignment.role)
+                    ),
                     prefetcher=prefetcher,
+                    deadline_ms=_assignment_deadline_ms(assignment_payload),
+                    on_dependency_ready=dependency_ready,
                 ))
             finally:
                 prefetcher.shutdown()

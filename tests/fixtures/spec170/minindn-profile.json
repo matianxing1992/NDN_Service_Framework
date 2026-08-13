@@ -1,0 +1,17 @@
+{
+  "schema": "spec170-minindn-profile-v1",
+  "topology": "Experiments/Topology/AI_Lab.conf",
+  "providers": 3,
+  "stages": 3,
+  "runtime": "fake",
+  "security": "controller-permission-and-token-auth",
+  "request_mode": "normal-default-deferred-planning",
+  "required_markers": [
+    "NDNSF_DI_AUTOPLANNING_REQUEST_SENT",
+    "NDNSF_DI_AUTOPLANNING_ACK_CLOSED",
+    "NDNSF_DI_AUTOPLANNING_SELECTION_COMMITTED",
+    "LLM_PIPELINE_USER_RESPONSE",
+    "LLM_PIPELINE_MININDN_OK"
+  ],
+  "cleanup": "before-ndn-stop"
+}

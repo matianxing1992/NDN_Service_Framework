@@ -26,6 +26,11 @@ from .placement import (
     PlacementDecision,
     PlacementRequest, ProviderAssignment, ProviderPlanningView,
     build_provider_planning_view, evaluate_placement_strategy,
+    DI_PLACEMENT_V3, UNBOUND_GRAPH_DIGEST_V3, ExecutionDisposition, ResidencyTierV3,
+    DeviceTopologyProfile, DeviceResourceSnapshot, ResidencyProofV3,
+    ProviderOfferV3, ProviderPlanningViewV3, RoleAssemblySpec,
+    PlacementProposalV3, PlacementPlanCoreV3, ProviderGrantViewV1,
+    ProviderSelectionProjectionV3, PlanSealerV3, decode_placement_wire,
 )
 from .registry import PolicyRegistry, RegisteredPolicy
 from .suite import OptimizationSuite, OptimizationSuiteBuilder
@@ -56,6 +61,11 @@ __all__ = [
     "distribution_record_digest", "encode_worker_envelope",
     "DIProviderOfferV2", "build_provider_planning_view",
     "evaluate_placement_strategy", "least_input_projection",
+    "DI_PLACEMENT_V3", "UNBOUND_GRAPH_DIGEST_V3", "ExecutionDisposition", "ResidencyTierV3",
+    "DeviceTopologyProfile", "DeviceResourceSnapshot", "ResidencyProofV3",
+    "ProviderOfferV3", "ProviderPlanningViewV3", "RoleAssemblySpec",
+    "PlacementProposalV3", "PlacementPlanCoreV3", "ProviderGrantViewV1",
+    "ProviderSelectionProjectionV3", "PlanSealerV3", "decode_placement_wire",
     "PlacementStrategyAllowlistEntry", "discover_placement_strategies",
     "select_placement_strategy",
 ]

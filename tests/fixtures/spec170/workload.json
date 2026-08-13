@@ -1,0 +1,14 @@
+{
+  "name": "spec170-p01-p05",
+  "model": "Qwen/Qwen3-0.6B",
+  "maxNewTokens": 64,
+  "prompts": [
+    "Explain what a content-addressed model layer is.",
+    "Why must a provider validate a role assembly recipe?",
+    "Describe data-driven pipeline execution.",
+    "What is the difference between an ACK and device admission?",
+    "Summarize the purpose of NDNSF-DI."
+  ],
+  "warmup": 1,
+  "measured": 5
+}

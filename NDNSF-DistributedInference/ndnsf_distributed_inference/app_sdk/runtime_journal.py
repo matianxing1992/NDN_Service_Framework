@@ -17,6 +17,11 @@ from typing import Any, Iterable, Protocol
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+from ..core.contracts import (
+    LifecycleEventV1,
+    TERMINAL_LIFECYCLE_EVENT_TYPES,
+)
+
 
 _ENVELOPE_SYNC_POOL = ThreadPoolExecutor(
     max_workers=2, thread_name_prefix="ndnsf-di-journal-sync")
@@ -179,6 +184,7 @@ def _is_volatile_state_root(path: Path) -> bool:
 
 class RuntimeJournal:
     SCHEMA = "ndnsf-di-app-runtime-journal-v1"
+    LIFECYCLE_KIND = "spec168-lifecycle-event-v1"
 
     def __init__(
         self,
@@ -288,6 +294,17 @@ class RuntimeJournal:
         self, entries: Iterable[tuple[str, dict[str, Any]]]
     ) -> tuple[dict[str, Any], ...]:
         """Append an ordered state transition batch with one durable flush."""
+        entries = tuple(entries)
+        if not entries:
+            return ()
+        with self._exclusive_lock():
+            self._refresh_records_if_changed()
+            return self._append_many_locked(entries)
+
+    def _append_many_locked(
+        self, entries: Iterable[tuple[str, dict[str, Any]]]
+    ) -> tuple[dict[str, Any], ...]:
+        """Append entries while the caller owns the journal lock."""
         envelopes = []
         wires = []
         for kind, payload in entries:
@@ -325,20 +342,128 @@ class RuntimeJournal:
             wire = (json.dumps(
                 batch_envelope, sort_keys=True, separators=(",", ":")) +
                 "\n").encode()
-        with self._exclusive_lock():
-            with self.path.open("ab") as output:
-                self._refresh_records_if_changed()
-                if self._usage_bytes + len(wire) > self.quota_bytes:
-                    raise RuntimeJournalQuotaError("journal quota exceeded")
-                output.write(wire)
-                output.flush()
-                os.fsync(output.fileno())
-                self._records_cache = (*self._records_cache, *envelopes)
-                for envelope in envelopes:
-                    self._index_envelope_record(envelope)
-                self._journal_size += len(wire)
-                self._usage_bytes += len(wire)
+        with self.path.open("ab") as output:
+            if self._usage_bytes + len(wire) > self.quota_bytes:
+                raise RuntimeJournalQuotaError("journal quota exceeded")
+            output.write(wire)
+            output.flush()
+            os.fsync(output.fileno())
+            self._records_cache = (*self._records_cache, *envelopes)
+            for envelope in envelopes:
+                self._index_envelope_record(envelope)
+            self._journal_size += len(wire)
+            self._usage_bytes += len(wire)
         return tuple(envelopes)
+
+    def lifecycle_records(self) -> tuple[dict[str, Any], ...]:
+        """Return immutable Spec 168 acceptance decisions in journal order."""
+        return tuple(
+            dict(record["payload"])
+            for record in self.records()
+            if record.get("kind") == self.LIFECYCLE_KIND
+        )
+
+    def append_lifecycle_event(self, event: LifecycleEventV1) -> dict[str, Any]:
+        """Atomically validate and retain one canonical lifecycle event.
+
+        Invalid/stale observations remain visible as rejected evidence but do
+        not become inputs to later acceptance decisions.
+        """
+        if not isinstance(event, LifecycleEventV1):
+            raise TypeError("event must be LifecycleEventV1")
+        with self._exclusive_lock():
+            self._refresh_records_if_changed()
+            existing = tuple(
+                record["payload"] for record in self._records_cache
+                if record.get("kind") == self.LIFECYCLE_KIND
+            )
+            rejection_code = self._lifecycle_rejection(existing, event)
+            decision = {
+                "event": event.to_dict(),
+                "accepted": rejection_code is None,
+                "rejection_code": rejection_code,
+            }
+            self._append_many_locked(((self.LIFECYCLE_KIND, decision),))
+            return decision
+
+    @staticmethod
+    def _lifecycle_rejection(
+        records: tuple[dict[str, Any], ...], event: LifecycleEventV1,
+    ) -> str | None:
+        accepted = []
+        for record in records:
+            if not record.get("accepted"):
+                continue
+            try:
+                accepted.append(LifecycleEventV1.from_dict(record["event"]))
+            except (KeyError, TypeError, ValueError):
+                return "JOURNAL_LIFECYCLE_CORRUPT"
+
+        if any(item.event_id == event.event_id for item in accepted):
+            return "DUPLICATE_EVENT_ID"
+        if not event.authenticated:
+            return "UNAUTHENTICATED_EVENT"
+
+        same_request = [item for item in accepted
+                        if item.request_id == event.request_id]
+        if same_request:
+            max_attempt = max(item.attempt_epoch for item in same_request)
+            if event.attempt_epoch < max_attempt:
+                return "STALE_ATTEMPT"
+            if (event.attempt_epoch > max_attempt
+                    and event.event_type != "REQUEST_CREATED"):
+                return "ATTEMPT_NOT_OPENED"
+        same_attempt = [
+            item for item in same_request
+            if item.attempt_epoch == event.attempt_epoch
+        ]
+        if any(item.experiment_id != event.experiment_id
+               for item in same_attempt):
+            return "EXPERIMENT_BINDING_MISMATCH"
+
+        terminals = [item for item in same_attempt
+                     if item.event_type in TERMINAL_LIFECYCLE_EVENT_TYPES]
+        if terminals:
+            if event.event_type in TERMINAL_LIFECYCLE_EVENT_TYPES:
+                return "TERMINAL_ALREADY_SET"
+            return "REQUEST_ALREADY_TERMINAL"
+
+        plans = [item.plan_digest for item in same_attempt
+                 if item.event_type == "PLAN_COMMITTED"]
+        committed_plan = plans[0] if plans else None
+        if committed_plan is not None and event.plan_digest != committed_plan:
+            return "PLAN_BINDING_MISMATCH"
+
+        assignments = {
+            item.role: (item.provider, item.provider_boot_epoch)
+            for item in same_attempt if item.event_type == "ROLE_ASSIGNED"
+        }
+        role_scoped = {
+            "ARTIFACT_FETCHED", "VERIFIED_DISK", "HOST_RESIDENT",
+            "GPU_RESIDENT", "LOCAL_READY", "DEPENDENCY_INPUT_ACCEPTED",
+            "STAGE_EXECUTING", "STAGE_OUTPUT_PUBLISHED", "STAGE_COMPLETED",
+        }
+        if event.event_type in role_scoped and event.role not in assignments:
+            return "ROLE_NOT_ASSIGNED"
+        if event.role in assignments:
+            expected = assignments[event.role]
+            if (event.provider, event.provider_boot_epoch) != expected:
+                return "PROVIDER_ROLE_BINDING_MISMATCH"
+
+        if event.operation_id is not None:
+            progress = [
+                item for item in same_attempt
+                if item.operation_id == event.operation_id
+            ]
+            if progress:
+                max_epoch = max(item.epoch for item in progress)
+                if event.epoch < max_epoch:
+                    return "STALE_OPERATION_EPOCH"
+                if event.epoch == max_epoch and event.sequence <= max(
+                        item.sequence for item in progress
+                        if item.epoch == max_epoch):
+                    return "NON_MONOTONIC_PROGRESS"
+        return None
 
     def records(self, *, tolerate_torn_tail: bool = True) -> tuple[dict[str, Any], ...]:
         self._refresh_records_if_changed(tolerate_torn_tail=tolerate_torn_tail)
