@@ -1,0 +1,20 @@
+# Spec170 GPU image build failure — 2026-08-13
+
+This is a retained negative build record. It is not a GPU image, SIF, or
+TigerCluster candidate.
+
+- Workflow run: `31692859784`
+- Source revision: `df517857171158f3f68d4915c1a4e4528d38d72f`
+- Foundation input: `ghcr.io/matianxing1992/ndnsf-di-spec170-foundation@sha256:94e0caed7c5675469843fc744a71f6dfd484d59594eb32b042b9288a75d7f15d`
+- Build stage: `gpu-assembler`, NDNSF native example build
+- Failure: `NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp`
+  could not find `<ndn-cxx/encoding/buffer.hpp>` while building
+  `di-native-plan-onnx-smoke`
+- Root cause: that Waf target declared `BOOST ONNXRUNTIME` but omitted the
+  `NDN_CXX` and `NDN_SVS` use dependencies; the locally built foundation uses
+  `/opt/ndnsf-di/include`, not a system `/usr/local/include` fallback.
+- Candidate status: `INVALID_CANDIDATE`
+
+The correction is `examples/wscript` commit `faaed18`:
+`BOOST NDN_CXX NDN_SVS ONNXRUNTIME`. A new GPU workflow identity is required;
+the failed image was never pushed or signed.
