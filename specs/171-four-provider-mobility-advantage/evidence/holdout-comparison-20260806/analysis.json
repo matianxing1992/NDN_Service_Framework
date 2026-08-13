@@ -1,0 +1,1391 @@
+{
+  "aggregate": "/home/tianxing/NDN/ndn-service-framework/results/ndnsf-grpc-holdout-50m2ms-20260806/aggregate.json",
+  "aggregate_sha256": "d9f40684ab2ed31d321cbcdb17b25e41a20f617fb2b0a21b63d5024195b31d2d",
+  "claim_gate": {
+    "confirmed_conditional_advantage": false,
+    "control_success_lower_positive": false,
+    "mean_latency_ratio_upper_below_one": false,
+    "p95_latency_ratio_upper_below_one": false,
+    "sequential_success_noninferior": false
+  },
+  "claim_verdict": "NO_HOLDOUT_CONFIRMATION",
+  "condition": "range-50-speed-2p0",
+  "coverage": {
+    "all_unreachable_fraction": 0.20833333333333334,
+    "at_least_one_fraction": 0.7916666666666667,
+    "at_least_two_fraction": 0.582,
+    "per_seed": {
+      "43": {
+        "all_unreachable_fraction": 0.08833333333333333,
+        "at_least_one_fraction": 0.9116666666666666,
+        "at_least_two_fraction": 0.6583333333333333,
+        "end_s": 64.0,
+        "epochs": 600,
+        "max_reachable": 3,
+        "start_s": 4.0
+      },
+      "44": {
+        "all_unreachable_fraction": 0.38333333333333336,
+        "at_least_one_fraction": 0.6166666666666667,
+        "at_least_two_fraction": 0.0,
+        "end_s": 64.0,
+        "epochs": 600,
+        "max_reachable": 1,
+        "start_s": 4.0
+      },
+      "45": {
+        "all_unreachable_fraction": 0.23333333333333334,
+        "at_least_one_fraction": 0.7666666666666667,
+        "at_least_two_fraction": 0.765,
+        "end_s": 64.0,
+        "epochs": 600,
+        "max_reachable": 3,
+        "start_s": 4.0
+      },
+      "46": {
+        "all_unreachable_fraction": 0.065,
+        "at_least_one_fraction": 0.935,
+        "at_least_two_fraction": 0.7633333333333333,
+        "end_s": 64.0,
+        "epochs": 600,
+        "max_reachable": 4,
+        "start_s": 4.0
+      },
+      "47": {
+        "all_unreachable_fraction": 0.27166666666666667,
+        "at_least_one_fraction": 0.7283333333333334,
+        "at_least_two_fraction": 0.7233333333333334,
+        "end_s": 64.0,
+        "epochs": 600,
+        "max_reachable": 3,
+        "start_s": 4.0
+      }
+    }
+  },
+  "paired": {
+    "grpc": {
+      "mean_latency_ratio": {
+        "lower": 0.4705336174290926,
+        "mean": 0.8784822337293771,
+        "upper": 1.2864308500296615,
+        "values": [
+          1.3375537425099022,
+          0.8017372931095199,
+          1.4776547360094918,
+          0.2739110530866919,
+          0.5015543439312796
+        ]
+      },
+      "p95_latency_ratio": {
+        "lower": 0.06879164572860949,
+        "mean": 1.7121382457110197,
+        "upper": 4.111070878333159,
+        "values": [
+          2.2149664142792718,
+          0.14628913682515346,
+          6.100601131541726,
+          0.03858458276134646,
+          0.06024996314760054
+        ]
+      },
+      "success_difference": {
+        "lower": -0.118,
+        "mean": -0.02466666666666668,
+        "upper": 0.04399999999999995,
+        "values": [
+          0.07333333333333325,
+          0.0,
+          0.0,
+          -0.19666666666666666,
+          0.0
+        ]
+      }
+    },
+    "grpc-single": {
+      "mean_latency_ratio": {
+        "lower": 6.107311320754716,
+        "mean": 7.203108729614355,
+        "upper": 7.999504827927706,
+        "values": [
+          7.502510040160643,
+          7.999504827927706,
+          6.107311320754716
+        ]
+      },
+      "p95_latency_ratio": {
+        "lower": 6.51615664455382,
+        "mean": 7.4729671340583534,
+        "upper": 8.44865100087032,
+        "values": [
+          7.454093756750919,
+          8.44865100087032,
+          6.51615664455382
+        ]
+      },
+      "success_difference": {
+        "lower": -0.053333333333333274,
+        "mean": 0.29400000000000004,
+        "upper": 0.714,
+        "values": [
+          0.9833333333333333,
+          0.6166666666666667,
+          0.0033333333333334103,
+          -0.1399999999999999,
+          0.006666666666666599
+        ]
+      }
+    }
+  },
+  "registration": "/home/tianxing/NDN/ndn-service-framework/results/ndnsf-grpc-holdout-50m2ms-20260806/registration.json",
+  "registration_sha256": "f47c98443312730103d11facb0e7f6db8dc4ea470d43f490095d7d748513b0c9",
+  "rows": [
+    {
+      "attempts": 300,
+      "condition": "range-50-speed-2p0",
+      "deadline_failures": 300,
+      "failovers": 0,
+      "mean_ms": null,
+      "measurement_start_lateness_ms": 4.666,
+      "p50_ms": null,
+      "p95_ms": null,
+      "p99_ms": null,
+      "provider_executions": 0,
+      "seed": 43,
+      "sent": 300,
+      "success": 0,
+      "success_rate": 0.0,
+      "system": "grpc-single",
+      "system_label": "gRPC-1 (no failover)",
+      "trace_metrics": {
+        "measurement_window": {
+          "all_unreachable_fraction": 0.08833333333333333,
+          "at_least_one_fraction": 0.9116666666666666,
+          "at_least_two_fraction": 0.6583333333333333,
+          "end_s": 64.0,
+          "epochs": 600,
+          "max_reachable": 3,
+          "start_s": 4.0
+        },
+        "whole_trace": {
+          "all_unreachable_fraction": 0.07454289732770746,
+          "at_least_one_fraction": 0.9254571026722925,
+          "at_least_two_fraction": 0.6118143459915611,
+          "end_s": null,
+          "epochs": 711,
+          "max_reachable": 4,
+          "start_s": null
+        }
+      },
+      "trace_sha256": "9fa52b97674c8a0a4fd1b3fc19de74cbbf98cbe5e90c3dd3114e1934cb1191d8",
+      "traffic_launch_offset_s": 4.004666
+    },
+    {
+      "attempts": 573,
+      "condition": "range-50-speed-2p0",
+      "deadline_failures": 27,
+      "failovers": 273,
+      "mean_ms": 206.773,
+      "measurement_start_lateness_ms": 4.169,
+      "p50_ms": 8.439,
+      "p95_ms": 1011.144,
+      "p99_ms": 1012.32,
+      "provider_executions": 273,
+      "seed": 43,
+      "sent": 300,
+      "success": 273,
+      "success_rate": 0.91,
+      "system": "grpc",
+      "system_label": "gRPC-SEQ-4",
+      "trace_metrics": {
+        "measurement_window": {
+          "all_unreachable_fraction": 0.08833333333333333,
+          "at_least_one_fraction": 0.9116666666666666,
+          "at_least_two_fraction": 0.6583333333333333,
+          "end_s": 64.0,
+          "epochs": 600,
+          "max_reachable": 3,
+          "start_s": 4.0
+        },
+        "whole_trace": {
+          "all_unreachable_fraction": 0.07454289732770746,
+          "at_least_one_fraction": 0.9254571026722925,
+          "at_least_two_fraction": 0.6118143459915611,
+          "end_s": null,
+          "epochs": 711,
+          "max_reachable": 4,
+          "start_s": null
+        }
+      },
+      "trace_sha256": "9fa52b97674c8a0a4fd1b3fc19de74cbbf98cbe5e90c3dd3114e1934cb1191d8",
+      "traffic_launch_offset_s": 4.004169
+    },
+    {
+      "attempts": 295,
+      "condition": "range-50-speed-2p0",
+      "deadline_failures": 5,
+      "failovers": 0,
+      "mean_ms": 276.57,
+      "measurement_start_lateness_ms": 0.33,
+      "p50_ms": 57.75,
+      "p95_ms": 2239.65,
+      "p99_ms": 4690.08,
+      "provider_executions": 295,
+      "seed": 43,
+      "sent": 300,
+      "success": 295,
+      "success_rate": 0.9833333333333333,
+      "system": "ndnsf",
+      "system_label": "NDNSF",
+      "trace_metrics": {
+        "measurement_window": {
+          "all_unreachable_fraction": 0.08833333333333333,
+          "at_least_one_fraction": 0.9116666666666666,
+          "at_least_two_fraction": 0.6583333333333333,
+          "end_s": 64.0,
+          "epochs": 600,
+          "max_reachable": 3,
+          "start_s": 4.0
+        },
+        "whole_trace": {
+          "all_unreachable_fraction": 0.07454289732770746,
+          "at_least_one_fraction": 0.9254571026722925,
+          "at_least_two_fraction": 0.6118143459915611,
+          "end_s": null,
+          "epochs": 711,
+          "max_reachable": 4,
+          "start_s": null
+        }
+      },
+      "trace_sha256": "9fa52b97674c8a0a4fd1b3fc19de74cbbf98cbe5e90c3dd3114e1934cb1191d8",
+      "traffic_launch_offset_s": 4.00033
+    },
+    {
+      "attempts": 300,
+      "condition": "range-50-speed-2p0",
+      "deadline_failures": 300,
+      "failovers": 0,
+      "mean_ms": null,
+      "measurement_start_lateness_ms": 0.89,
+      "p50_ms": null,
+      "p95_ms": null,
+      "p99_ms": null,
+      "provider_executions": 0,
+      "seed": 44,
+      "sent": 300,
+      "success": 0,
+      "success_rate": 0.0,
+      "system": "grpc-single",
+      "system_label": "gRPC-1 (no failover)",
+      "trace_metrics": {
+        "measurement_window": {
+          "all_unreachable_fraction": 0.38333333333333336,
+          "at_least_one_fraction": 0.6166666666666667,
+          "at_least_two_fraction": 0.0,
+          "end_s": 64.0,
+          "epochs": 600,
+          "max_reachable": 1,
+          "start_s": 4.0
+        },
+        "whole_trace": {
+          "all_unreachable_fraction": 0.42334739803094235,
+          "at_least_one_fraction": 0.5766526019690577,
+          "at_least_two_fraction": 0.0,
+          "end_s": null,
+          "epochs": 711,
+          "max_reachable": 1,
+          "start_s": null
+        }
+      },
+      "trace_sha256": "bb54832d0c66cc1b2ea3f90517a81007ca1f1a72c19aab87e569fbc3df1590b8",
+      "traffic_launch_offset_s": 4.00089
+    },
+    {
+      "attempts": 922,
+      "condition": "range-50-speed-2p0",
+      "deadline_failures": 115,
+      "failovers": 622,
+      "mean_ms": 59.633,
+      "measurement_start_lateness_ms": 3.373,
+      "p50_ms": 8.702,
+      "p95_ms": 362.638,
+      "p99_ms": 1012.548,
+      "provider_executions": 185,
+      "seed": 44,
+      "sent": 300,
+      "success": 185,
+      "success_rate": 0.6166666666666667,
+      "system": "grpc",
+      "system_label": "gRPC-SEQ-4",
+      "trace_metrics": {
+        "measurement_window": {
+          "all_unreachable_fraction": 0.38333333333333336,
+          "at_least_one_fraction": 0.6166666666666667,
+          "at_least_two_fraction": 0.0,
+          "end_s": 64.0,
+          "epochs": 600,
+          "max_reachable": 1,
+          "start_s": 4.0
+        },
+        "whole_trace": {
+          "all_unreachable_fraction": 0.42334739803094235,
+          "at_least_one_fraction": 0.5766526019690577,
+          "at_least_two_fraction": 0.0,
+          "end_s": null,
+          "epochs": 711,
+          "max_reachable": 1,
+          "start_s": null
+        }
+      },
+      "trace_sha256": "bb54832d0c66cc1b2ea3f90517a81007ca1f1a72c19aab87e569fbc3df1590b8",
+      "traffic_launch_offset_s": 4.003373
+    },
+    {
+      "attempts": 185,
+      "condition": "range-50-speed-2p0",
+      "deadline_failures": 115,
+      "failovers": 0,
+      "mean_ms": 47.81,
+      "measurement_start_lateness_ms": 0.1,
+      "p50_ms": 46.78,
+      "p95_ms": 53.05,
+      "p99_ms": 69.32,
+      "provider_executions": 185,
+      "seed": 44,
+      "sent": 300,
+      "success": 185,
+      "success_rate": 0.6166666666666667,
+      "system": "ndnsf",
+      "system_label": "NDNSF",
+      "trace_metrics": {
+        "measurement_window": {
+          "all_unreachable_fraction": 0.38333333333333336,
+          "at_least_one_fraction": 0.6166666666666667,
+          "at_least_two_fraction": 0.0,
+          "end_s": 64.0,
+          "epochs": 600,
+          "max_reachable": 1,
+          "start_s": 4.0
+        },
+        "whole_trace": {
+          "all_unreachable_fraction": 0.42334739803094235,
+          "at_least_one_fraction": 0.5766526019690577,
+          "at_least_two_fraction": 0.0,
+          "end_s": null,
+          "epochs": 711,
+          "max_reachable": 1,
+          "start_s": null
+        }
+      },
+      "trace_sha256": "bb54832d0c66cc1b2ea3f90517a81007ca1f1a72c19aab87e569fbc3df1590b8",
+      "traffic_launch_offset_s": 4.0001
+    },
+    {
+      "attempts": 300,
+      "condition": "range-50-speed-2p0",
+      "deadline_failures": 71,
+      "failovers": 0,
+      "mean_ms": 7.968,
+      "measurement_start_lateness_ms": 1.158,
+      "p50_ms": 7.796,
+      "p95_ms": 9.258,
+      "p99_ms": 10.495,
+      "provider_executions": 229,
+      "seed": 45,
+      "sent": 300,
+      "success": 229,
+      "success_rate": 0.7633333333333333,
+      "system": "grpc-single",
+      "system_label": "gRPC-1 (no failover)",
+      "trace_metrics": {
+        "measurement_window": {
+          "all_unreachable_fraction": 0.23333333333333334,
+          "at_least_one_fraction": 0.7666666666666667,
+          "at_least_two_fraction": 0.765,
+          "end_s": 64.0,
+          "epochs": 600,
+          "max_reachable": 3,
+          "start_s": 4.0
+        },
+        "whole_trace": {
+          "all_unreachable_fraction": 0.2967651195499297,
+          "at_least_one_fraction": 0.7032348804500703,
+          "at_least_two_fraction": 0.7018284106891702,
+          "end_s": null,
+          "epochs": 711,
+          "max_reachable": 3,
+          "start_s": null
+        }
+      },
+      "trace_sha256": "aa8b4085d3556296ed5fe4163071a72707a990e3769b779aa31cde8147b52326",
+      "traffic_launch_offset_s": 4.001158
+    },
+    {
+      "attempts": 567,
+      "condition": "range-50-speed-2p0",
+      "deadline_failures": 70,
+      "failovers": 267,
+      "mean_ms": 40.456,
+      "measurement_start_lateness_ms": 1.723,
+      "p50_ms": 8.307,
+      "p95_ms": 11.312,
+      "p99_ms": 1010.217,
+      "provider_executions": 230,
+      "seed": 45,
+      "sent": 300,
+      "success": 230,
+      "success_rate": 0.7666666666666667,
+      "system": "grpc",
+      "system_label": "gRPC-SEQ-4",
+      "trace_metrics": {
+        "measurement_window": {
+          "all_unreachable_fraction": 0.23333333333333334,
+          "at_least_one_fraction": 0.7666666666666667,
+          "at_least_two_fraction": 0.765,
+          "end_s": 64.0,
+          "epochs": 600,
+          "max_reachable": 3,
+          "start_s": 4.0
+        },
+        "whole_trace": {
+          "all_unreachable_fraction": 0.2967651195499297,
+          "at_least_one_fraction": 0.7032348804500703,
+          "at_least_two_fraction": 0.7018284106891702,
+          "end_s": null,
+          "epochs": 711,
+          "max_reachable": 3,
+          "start_s": null
+        }
+      },
+      "trace_sha256": "aa8b4085d3556296ed5fe4163071a72707a990e3769b779aa31cde8147b52326",
+      "traffic_launch_offset_s": 4.001723
+    },
+    {
+      "attempts": 230,
+      "condition": "range-50-speed-2p0",
+      "deadline_failures": 70,
+      "failovers": 0,
+      "mean_ms": 59.78,
+      "measurement_start_lateness_ms": 0.56,
+      "p50_ms": 58.18,
+      "p95_ms": 69.01,
+      "p99_ms": 80.16,
+      "provider_executions": 230,
+      "seed": 45,
+      "sent": 300,
+      "success": 230,
+      "success_rate": 0.7666666666666667,
+      "system": "ndnsf",
+      "system_label": "NDNSF",
+      "trace_metrics": {
+        "measurement_window": {
+          "all_unreachable_fraction": 0.23333333333333334,
+          "at_least_one_fraction": 0.7666666666666667,
+          "at_least_two_fraction": 0.765,
+          "end_s": 64.0,
+          "epochs": 600,
+          "max_reachable": 3,
+          "start_s": 4.0
+        },
+        "whole_trace": {
+          "all_unreachable_fraction": 0.2967651195499297,
+          "at_least_one_fraction": 0.7032348804500703,
+          "at_least_two_fraction": 0.7018284106891702,
+          "end_s": null,
+          "epochs": 711,
+          "max_reachable": 3,
+          "start_s": null
+        }
+      },
+      "trace_sha256": "aa8b4085d3556296ed5fe4163071a72707a990e3769b779aa31cde8147b52326",
+      "traffic_launch_offset_s": 4.00056
+    },
+    {
+      "attempts": 300,
+      "condition": "range-50-speed-2p0",
+      "deadline_failures": 28,
+      "failovers": 0,
+      "mean_ms": 8.078,
+      "measurement_start_lateness_ms": 1.413,
+      "p50_ms": 7.995,
+      "p95_ms": 9.192,
+      "p99_ms": 11.133,
+      "provider_executions": 272,
+      "seed": 46,
+      "sent": 300,
+      "success": 272,
+      "success_rate": 0.9066666666666666,
+      "system": "grpc-single",
+      "system_label": "gRPC-1 (no failover)",
+      "trace_metrics": {
+        "measurement_window": {
+          "all_unreachable_fraction": 0.065,
+          "at_least_one_fraction": 0.935,
+          "at_least_two_fraction": 0.7633333333333333,
+          "end_s": 64.0,
+          "epochs": 600,
+          "max_reachable": 4,
+          "start_s": 4.0
+        },
+        "whole_trace": {
+          "all_unreachable_fraction": 0.05485232067510549,
+          "at_least_one_fraction": 0.9451476793248945,
+          "at_least_two_fraction": 0.70042194092827,
+          "end_s": null,
+          "epochs": 711,
+          "max_reachable": 4,
+          "start_s": null
+        }
+      },
+      "trace_sha256": "30e51c1e8d0abdb14c7bc71514b6f66444b752cb503f5fbc1f3fd6c733da4179",
+      "traffic_launch_offset_s": 4.001413
+    },
+    {
+      "attempts": 468,
+      "condition": "range-50-speed-2p0",
+      "deadline_failures": 11,
+      "failovers": 168,
+      "mean_ms": 235.916,
+      "measurement_start_lateness_ms": 3.083,
+      "p50_ms": 8.268,
+      "p95_ms": 2012.721,
+      "p99_ms": 2015.672,
+      "provider_executions": 289,
+      "seed": 46,
+      "sent": 300,
+      "success": 289,
+      "success_rate": 0.9633333333333334,
+      "system": "grpc",
+      "system_label": "gRPC-SEQ-4",
+      "trace_metrics": {
+        "measurement_window": {
+          "all_unreachable_fraction": 0.065,
+          "at_least_one_fraction": 0.935,
+          "at_least_two_fraction": 0.7633333333333333,
+          "end_s": 64.0,
+          "epochs": 600,
+          "max_reachable": 4,
+          "start_s": 4.0
+        },
+        "whole_trace": {
+          "all_unreachable_fraction": 0.05485232067510549,
+          "at_least_one_fraction": 0.9451476793248945,
+          "at_least_two_fraction": 0.70042194092827,
+          "end_s": null,
+          "epochs": 711,
+          "max_reachable": 4,
+          "start_s": null
+        }
+      },
+      "trace_sha256": "30e51c1e8d0abdb14c7bc71514b6f66444b752cb503f5fbc1f3fd6c733da4179",
+      "traffic_launch_offset_s": 4.003083
+    },
+    {
+      "attempts": 230,
+      "condition": "range-50-speed-2p0",
+      "deadline_failures": 70,
+      "failovers": 0,
+      "mean_ms": 64.62,
+      "measurement_start_lateness_ms": 0.36,
+      "p50_ms": 61.35,
+      "p95_ms": 77.66,
+      "p99_ms": 89.83,
+      "provider_executions": 230,
+      "seed": 46,
+      "sent": 300,
+      "success": 230,
+      "success_rate": 0.7666666666666667,
+      "system": "ndnsf",
+      "system_label": "NDNSF",
+      "trace_metrics": {
+        "measurement_window": {
+          "all_unreachable_fraction": 0.065,
+          "at_least_one_fraction": 0.935,
+          "at_least_two_fraction": 0.7633333333333333,
+          "end_s": 64.0,
+          "epochs": 600,
+          "max_reachable": 4,
+          "start_s": 4.0
+        },
+        "whole_trace": {
+          "all_unreachable_fraction": 0.05485232067510549,
+          "at_least_one_fraction": 0.9451476793248945,
+          "at_least_two_fraction": 0.70042194092827,
+          "end_s": null,
+          "epochs": 711,
+          "max_reachable": 4,
+          "start_s": null
+        }
+      },
+      "trace_sha256": "30e51c1e8d0abdb14c7bc71514b6f66444b752cb503f5fbc1f3fd6c733da4179",
+      "traffic_launch_offset_s": 4.00036
+    },
+    {
+      "attempts": 300,
+      "condition": "range-50-speed-2p0",
+      "deadline_failures": 83,
+      "failovers": 0,
+      "mean_ms": 8.48,
+      "measurement_start_lateness_ms": 2.056,
+      "p50_ms": 8.41,
+      "p95_ms": 9.346,
+      "p99_ms": 10.433,
+      "provider_executions": 217,
+      "seed": 47,
+      "sent": 300,
+      "success": 217,
+      "success_rate": 0.7233333333333334,
+      "system": "grpc-single",
+      "system_label": "gRPC-1 (no failover)",
+      "trace_metrics": {
+        "measurement_window": {
+          "all_unreachable_fraction": 0.27166666666666667,
+          "at_least_one_fraction": 0.7283333333333334,
+          "at_least_two_fraction": 0.7233333333333334,
+          "end_s": 64.0,
+          "epochs": 600,
+          "max_reachable": 3,
+          "start_s": 4.0
+        },
+        "whole_trace": {
+          "all_unreachable_fraction": 0.3291139240506329,
+          "at_least_one_fraction": 0.6708860759493671,
+          "at_least_two_fraction": 0.6666666666666666,
+          "end_s": null,
+          "epochs": 711,
+          "max_reachable": 3,
+          "start_s": null
+        }
+      },
+      "trace_sha256": "51690ef0401eaebf5979be39b55e2030dd7c79ae9ebbcf91c7070358da4e475a",
+      "traffic_launch_offset_s": 4.002056
+    },
+    {
+      "attempts": 640,
+      "condition": "range-50-speed-2p0",
+      "deadline_failures": 81,
+      "failovers": 340,
+      "mean_ms": 103.259,
+      "measurement_start_lateness_ms": 1.084,
+      "p50_ms": 8.639,
+      "p95_ms": 1010.789,
+      "p99_ms": 1012.464,
+      "provider_executions": 219,
+      "seed": 47,
+      "sent": 300,
+      "success": 219,
+      "success_rate": 0.73,
+      "system": "grpc",
+      "system_label": "gRPC-SEQ-4",
+      "trace_metrics": {
+        "measurement_window": {
+          "all_unreachable_fraction": 0.27166666666666667,
+          "at_least_one_fraction": 0.7283333333333334,
+          "at_least_two_fraction": 0.7233333333333334,
+          "end_s": 64.0,
+          "epochs": 600,
+          "max_reachable": 3,
+          "start_s": 4.0
+        },
+        "whole_trace": {
+          "all_unreachable_fraction": 0.3291139240506329,
+          "at_least_one_fraction": 0.6708860759493671,
+          "at_least_two_fraction": 0.6666666666666666,
+          "end_s": null,
+          "epochs": 711,
+          "max_reachable": 3,
+          "start_s": null
+        }
+      },
+      "trace_sha256": "51690ef0401eaebf5979be39b55e2030dd7c79ae9ebbcf91c7070358da4e475a",
+      "traffic_launch_offset_s": 4.001084
+    },
+    {
+      "attempts": 219,
+      "condition": "range-50-speed-2p0",
+      "deadline_failures": 81,
+      "failovers": 0,
+      "mean_ms": 51.79,
+      "measurement_start_lateness_ms": 1.44,
+      "p50_ms": 48.77,
+      "p95_ms": 60.9,
+      "p99_ms": 72.17,
+      "provider_executions": 219,
+      "seed": 47,
+      "sent": 300,
+      "success": 219,
+      "success_rate": 0.73,
+      "system": "ndnsf",
+      "system_label": "NDNSF",
+      "trace_metrics": {
+        "measurement_window": {
+          "all_unreachable_fraction": 0.27166666666666667,
+          "at_least_one_fraction": 0.7283333333333334,
+          "at_least_two_fraction": 0.7233333333333334,
+          "end_s": 64.0,
+          "epochs": 600,
+          "max_reachable": 3,
+          "start_s": 4.0
+        },
+        "whole_trace": {
+          "all_unreachable_fraction": 0.3291139240506329,
+          "at_least_one_fraction": 0.6708860759493671,
+          "at_least_two_fraction": 0.6666666666666666,
+          "end_s": null,
+          "epochs": 711,
+          "max_reachable": 3,
+          "start_s": null
+        }
+      },
+      "trace_sha256": "51690ef0401eaebf5979be39b55e2030dd7c79ae9ebbcf91c7070358da4e475a",
+      "traffic_launch_offset_s": 4.00144
+    }
+  ],
+  "schema": "ndnsf-mobility-comparison-analysis-v1",
+  "systems": {
+    "grpc": {
+      "attempts_per_request": 2.1133333333333333,
+      "failovers_per_request": 1.1133333333333333,
+      "label": "gRPC-SEQ-4",
+      "mean_p50_ms": 8.471,
+      "mean_p95_ms": 881.7207999999999,
+      "mean_p99_ms": 1212.6442,
+      "mean_success_latency_ms": 140.11660451505017,
+      "per_seed": [
+        {
+          "attempts": 573,
+          "condition": "range-50-speed-2p0",
+          "deadline_failures": 27,
+          "failovers": 273,
+          "mean_ms": 206.773,
+          "measurement_start_lateness_ms": 4.169,
+          "p50_ms": 8.439,
+          "p95_ms": 1011.144,
+          "p99_ms": 1012.32,
+          "provider_executions": 273,
+          "seed": 43,
+          "sent": 300,
+          "success": 273,
+          "success_rate": 0.91,
+          "system": "grpc",
+          "system_label": "gRPC-SEQ-4",
+          "trace_metrics": {
+            "measurement_window": {
+              "all_unreachable_fraction": 0.08833333333333333,
+              "at_least_one_fraction": 0.9116666666666666,
+              "at_least_two_fraction": 0.6583333333333333,
+              "end_s": 64.0,
+              "epochs": 600,
+              "max_reachable": 3,
+              "start_s": 4.0
+            },
+            "whole_trace": {
+              "all_unreachable_fraction": 0.07454289732770746,
+              "at_least_one_fraction": 0.9254571026722925,
+              "at_least_two_fraction": 0.6118143459915611,
+              "end_s": null,
+              "epochs": 711,
+              "max_reachable": 4,
+              "start_s": null
+            }
+          },
+          "trace_sha256": "9fa52b97674c8a0a4fd1b3fc19de74cbbf98cbe5e90c3dd3114e1934cb1191d8",
+          "traffic_launch_offset_s": 4.004169
+        },
+        {
+          "attempts": 922,
+          "condition": "range-50-speed-2p0",
+          "deadline_failures": 115,
+          "failovers": 622,
+          "mean_ms": 59.633,
+          "measurement_start_lateness_ms": 3.373,
+          "p50_ms": 8.702,
+          "p95_ms": 362.638,
+          "p99_ms": 1012.548,
+          "provider_executions": 185,
+          "seed": 44,
+          "sent": 300,
+          "success": 185,
+          "success_rate": 0.6166666666666667,
+          "system": "grpc",
+          "system_label": "gRPC-SEQ-4",
+          "trace_metrics": {
+            "measurement_window": {
+              "all_unreachable_fraction": 0.38333333333333336,
+              "at_least_one_fraction": 0.6166666666666667,
+              "at_least_two_fraction": 0.0,
+              "end_s": 64.0,
+              "epochs": 600,
+              "max_reachable": 1,
+              "start_s": 4.0
+            },
+            "whole_trace": {
+              "all_unreachable_fraction": 0.42334739803094235,
+              "at_least_one_fraction": 0.5766526019690577,
+              "at_least_two_fraction": 0.0,
+              "end_s": null,
+              "epochs": 711,
+              "max_reachable": 1,
+              "start_s": null
+            }
+          },
+          "trace_sha256": "bb54832d0c66cc1b2ea3f90517a81007ca1f1a72c19aab87e569fbc3df1590b8",
+          "traffic_launch_offset_s": 4.003373
+        },
+        {
+          "attempts": 567,
+          "condition": "range-50-speed-2p0",
+          "deadline_failures": 70,
+          "failovers": 267,
+          "mean_ms": 40.456,
+          "measurement_start_lateness_ms": 1.723,
+          "p50_ms": 8.307,
+          "p95_ms": 11.312,
+          "p99_ms": 1010.217,
+          "provider_executions": 230,
+          "seed": 45,
+          "sent": 300,
+          "success": 230,
+          "success_rate": 0.7666666666666667,
+          "system": "grpc",
+          "system_label": "gRPC-SEQ-4",
+          "trace_metrics": {
+            "measurement_window": {
+              "all_unreachable_fraction": 0.23333333333333334,
+              "at_least_one_fraction": 0.7666666666666667,
+              "at_least_two_fraction": 0.765,
+              "end_s": 64.0,
+              "epochs": 600,
+              "max_reachable": 3,
+              "start_s": 4.0
+            },
+            "whole_trace": {
+              "all_unreachable_fraction": 0.2967651195499297,
+              "at_least_one_fraction": 0.7032348804500703,
+              "at_least_two_fraction": 0.7018284106891702,
+              "end_s": null,
+              "epochs": 711,
+              "max_reachable": 3,
+              "start_s": null
+            }
+          },
+          "trace_sha256": "aa8b4085d3556296ed5fe4163071a72707a990e3769b779aa31cde8147b52326",
+          "traffic_launch_offset_s": 4.001723
+        },
+        {
+          "attempts": 468,
+          "condition": "range-50-speed-2p0",
+          "deadline_failures": 11,
+          "failovers": 168,
+          "mean_ms": 235.916,
+          "measurement_start_lateness_ms": 3.083,
+          "p50_ms": 8.268,
+          "p95_ms": 2012.721,
+          "p99_ms": 2015.672,
+          "provider_executions": 289,
+          "seed": 46,
+          "sent": 300,
+          "success": 289,
+          "success_rate": 0.9633333333333334,
+          "system": "grpc",
+          "system_label": "gRPC-SEQ-4",
+          "trace_metrics": {
+            "measurement_window": {
+              "all_unreachable_fraction": 0.065,
+              "at_least_one_fraction": 0.935,
+              "at_least_two_fraction": 0.7633333333333333,
+              "end_s": 64.0,
+              "epochs": 600,
+              "max_reachable": 4,
+              "start_s": 4.0
+            },
+            "whole_trace": {
+              "all_unreachable_fraction": 0.05485232067510549,
+              "at_least_one_fraction": 0.9451476793248945,
+              "at_least_two_fraction": 0.70042194092827,
+              "end_s": null,
+              "epochs": 711,
+              "max_reachable": 4,
+              "start_s": null
+            }
+          },
+          "trace_sha256": "30e51c1e8d0abdb14c7bc71514b6f66444b752cb503f5fbc1f3fd6c733da4179",
+          "traffic_launch_offset_s": 4.003083
+        },
+        {
+          "attempts": 640,
+          "condition": "range-50-speed-2p0",
+          "deadline_failures": 81,
+          "failovers": 340,
+          "mean_ms": 103.259,
+          "measurement_start_lateness_ms": 1.084,
+          "p50_ms": 8.639,
+          "p95_ms": 1010.789,
+          "p99_ms": 1012.464,
+          "provider_executions": 219,
+          "seed": 47,
+          "sent": 300,
+          "success": 219,
+          "success_rate": 0.73,
+          "system": "grpc",
+          "system_label": "gRPC-SEQ-4",
+          "trace_metrics": {
+            "measurement_window": {
+              "all_unreachable_fraction": 0.27166666666666667,
+              "at_least_one_fraction": 0.7283333333333334,
+              "at_least_two_fraction": 0.7233333333333334,
+              "end_s": 64.0,
+              "epochs": 600,
+              "max_reachable": 3,
+              "start_s": 4.0
+            },
+            "whole_trace": {
+              "all_unreachable_fraction": 0.3291139240506329,
+              "at_least_one_fraction": 0.6708860759493671,
+              "at_least_two_fraction": 0.6666666666666666,
+              "end_s": null,
+              "epochs": 711,
+              "max_reachable": 3,
+              "start_s": null
+            }
+          },
+          "trace_sha256": "51690ef0401eaebf5979be39b55e2030dd7c79ae9ebbcf91c7070358da4e475a",
+          "traffic_launch_offset_s": 4.001084
+        }
+      ],
+      "provider_executions_per_request": 0.7973333333333333,
+      "requests": 1500,
+      "success": 1196,
+      "success_rate": 0.7973333333333333
+    },
+    "grpc-single": {
+      "attempts_per_request": 1.0,
+      "failovers_per_request": 0.0,
+      "label": "gRPC-1 (no failover)",
+      "mean_p50_ms": 8.067,
+      "mean_p95_ms": 9.265333333333333,
+      "mean_p99_ms": 10.687,
+      "mean_success_latency_ms": 8.16441225626741,
+      "per_seed": [
+        {
+          "attempts": 300,
+          "condition": "range-50-speed-2p0",
+          "deadline_failures": 300,
+          "failovers": 0,
+          "mean_ms": null,
+          "measurement_start_lateness_ms": 4.666,
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "provider_executions": 0,
+          "seed": 43,
+          "sent": 300,
+          "success": 0,
+          "success_rate": 0.0,
+          "system": "grpc-single",
+          "system_label": "gRPC-1 (no failover)",
+          "trace_metrics": {
+            "measurement_window": {
+              "all_unreachable_fraction": 0.08833333333333333,
+              "at_least_one_fraction": 0.9116666666666666,
+              "at_least_two_fraction": 0.6583333333333333,
+              "end_s": 64.0,
+              "epochs": 600,
+              "max_reachable": 3,
+              "start_s": 4.0
+            },
+            "whole_trace": {
+              "all_unreachable_fraction": 0.07454289732770746,
+              "at_least_one_fraction": 0.9254571026722925,
+              "at_least_two_fraction": 0.6118143459915611,
+              "end_s": null,
+              "epochs": 711,
+              "max_reachable": 4,
+              "start_s": null
+            }
+          },
+          "trace_sha256": "9fa52b97674c8a0a4fd1b3fc19de74cbbf98cbe5e90c3dd3114e1934cb1191d8",
+          "traffic_launch_offset_s": 4.004666
+        },
+        {
+          "attempts": 300,
+          "condition": "range-50-speed-2p0",
+          "deadline_failures": 300,
+          "failovers": 0,
+          "mean_ms": null,
+          "measurement_start_lateness_ms": 0.89,
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "provider_executions": 0,
+          "seed": 44,
+          "sent": 300,
+          "success": 0,
+          "success_rate": 0.0,
+          "system": "grpc-single",
+          "system_label": "gRPC-1 (no failover)",
+          "trace_metrics": {
+            "measurement_window": {
+              "all_unreachable_fraction": 0.38333333333333336,
+              "at_least_one_fraction": 0.6166666666666667,
+              "at_least_two_fraction": 0.0,
+              "end_s": 64.0,
+              "epochs": 600,
+              "max_reachable": 1,
+              "start_s": 4.0
+            },
+            "whole_trace": {
+              "all_unreachable_fraction": 0.42334739803094235,
+              "at_least_one_fraction": 0.5766526019690577,
+              "at_least_two_fraction": 0.0,
+              "end_s": null,
+              "epochs": 711,
+              "max_reachable": 1,
+              "start_s": null
+            }
+          },
+          "trace_sha256": "bb54832d0c66cc1b2ea3f90517a81007ca1f1a72c19aab87e569fbc3df1590b8",
+          "traffic_launch_offset_s": 4.00089
+        },
+        {
+          "attempts": 300,
+          "condition": "range-50-speed-2p0",
+          "deadline_failures": 71,
+          "failovers": 0,
+          "mean_ms": 7.968,
+          "measurement_start_lateness_ms": 1.158,
+          "p50_ms": 7.796,
+          "p95_ms": 9.258,
+          "p99_ms": 10.495,
+          "provider_executions": 229,
+          "seed": 45,
+          "sent": 300,
+          "success": 229,
+          "success_rate": 0.7633333333333333,
+          "system": "grpc-single",
+          "system_label": "gRPC-1 (no failover)",
+          "trace_metrics": {
+            "measurement_window": {
+              "all_unreachable_fraction": 0.23333333333333334,
+              "at_least_one_fraction": 0.7666666666666667,
+              "at_least_two_fraction": 0.765,
+              "end_s": 64.0,
+              "epochs": 600,
+              "max_reachable": 3,
+              "start_s": 4.0
+            },
+            "whole_trace": {
+              "all_unreachable_fraction": 0.2967651195499297,
+              "at_least_one_fraction": 0.7032348804500703,
+              "at_least_two_fraction": 0.7018284106891702,
+              "end_s": null,
+              "epochs": 711,
+              "max_reachable": 3,
+              "start_s": null
+            }
+          },
+          "trace_sha256": "aa8b4085d3556296ed5fe4163071a72707a990e3769b779aa31cde8147b52326",
+          "traffic_launch_offset_s": 4.001158
+        },
+        {
+          "attempts": 300,
+          "condition": "range-50-speed-2p0",
+          "deadline_failures": 28,
+          "failovers": 0,
+          "mean_ms": 8.078,
+          "measurement_start_lateness_ms": 1.413,
+          "p50_ms": 7.995,
+          "p95_ms": 9.192,
+          "p99_ms": 11.133,
+          "provider_executions": 272,
+          "seed": 46,
+          "sent": 300,
+          "success": 272,
+          "success_rate": 0.9066666666666666,
+          "system": "grpc-single",
+          "system_label": "gRPC-1 (no failover)",
+          "trace_metrics": {
+            "measurement_window": {
+              "all_unreachable_fraction": 0.065,
+              "at_least_one_fraction": 0.935,
+              "at_least_two_fraction": 0.7633333333333333,
+              "end_s": 64.0,
+              "epochs": 600,
+              "max_reachable": 4,
+              "start_s": 4.0
+            },
+            "whole_trace": {
+              "all_unreachable_fraction": 0.05485232067510549,
+              "at_least_one_fraction": 0.9451476793248945,
+              "at_least_two_fraction": 0.70042194092827,
+              "end_s": null,
+              "epochs": 711,
+              "max_reachable": 4,
+              "start_s": null
+            }
+          },
+          "trace_sha256": "30e51c1e8d0abdb14c7bc71514b6f66444b752cb503f5fbc1f3fd6c733da4179",
+          "traffic_launch_offset_s": 4.001413
+        },
+        {
+          "attempts": 300,
+          "condition": "range-50-speed-2p0",
+          "deadline_failures": 83,
+          "failovers": 0,
+          "mean_ms": 8.48,
+          "measurement_start_lateness_ms": 2.056,
+          "p50_ms": 8.41,
+          "p95_ms": 9.346,
+          "p99_ms": 10.433,
+          "provider_executions": 217,
+          "seed": 47,
+          "sent": 300,
+          "success": 217,
+          "success_rate": 0.7233333333333334,
+          "system": "grpc-single",
+          "system_label": "gRPC-1 (no failover)",
+          "trace_metrics": {
+            "measurement_window": {
+              "all_unreachable_fraction": 0.27166666666666667,
+              "at_least_one_fraction": 0.7283333333333334,
+              "at_least_two_fraction": 0.7233333333333334,
+              "end_s": 64.0,
+              "epochs": 600,
+              "max_reachable": 3,
+              "start_s": 4.0
+            },
+            "whole_trace": {
+              "all_unreachable_fraction": 0.3291139240506329,
+              "at_least_one_fraction": 0.6708860759493671,
+              "at_least_two_fraction": 0.6666666666666666,
+              "end_s": null,
+              "epochs": 711,
+              "max_reachable": 3,
+              "start_s": null
+            }
+          },
+          "trace_sha256": "51690ef0401eaebf5979be39b55e2030dd7c79ae9ebbcf91c7070358da4e475a",
+          "traffic_launch_offset_s": 4.002056
+        }
+      ],
+      "provider_executions_per_request": 0.4786666666666667,
+      "requests": 1500,
+      "success": 718,
+      "success_rate": 0.4786666666666667
+    },
+    "ndnsf": {
+      "attempts_per_request": 0.7726666666666666,
+      "failovers_per_request": 0.0,
+      "label": "NDNSF",
+      "mean_p50_ms": 54.566,
+      "mean_p95_ms": 500.05400000000003,
+      "mean_p99_ms": 1000.312,
+      "mean_success_latency_ms": 112.49957722174288,
+      "per_seed": [
+        {
+          "attempts": 295,
+          "condition": "range-50-speed-2p0",
+          "deadline_failures": 5,
+          "failovers": 0,
+          "mean_ms": 276.57,
+          "measurement_start_lateness_ms": 0.33,
+          "p50_ms": 57.75,
+          "p95_ms": 2239.65,
+          "p99_ms": 4690.08,
+          "provider_executions": 295,
+          "seed": 43,
+          "sent": 300,
+          "success": 295,
+          "success_rate": 0.9833333333333333,
+          "system": "ndnsf",
+          "system_label": "NDNSF",
+          "trace_metrics": {
+            "measurement_window": {
+              "all_unreachable_fraction": 0.08833333333333333,
+              "at_least_one_fraction": 0.9116666666666666,
+              "at_least_two_fraction": 0.6583333333333333,
+              "end_s": 64.0,
+              "epochs": 600,
+              "max_reachable": 3,
+              "start_s": 4.0
+            },
+            "whole_trace": {
+              "all_unreachable_fraction": 0.07454289732770746,
+              "at_least_one_fraction": 0.9254571026722925,
+              "at_least_two_fraction": 0.6118143459915611,
+              "end_s": null,
+              "epochs": 711,
+              "max_reachable": 4,
+              "start_s": null
+            }
+          },
+          "trace_sha256": "9fa52b97674c8a0a4fd1b3fc19de74cbbf98cbe5e90c3dd3114e1934cb1191d8",
+          "traffic_launch_offset_s": 4.00033
+        },
+        {
+          "attempts": 185,
+          "condition": "range-50-speed-2p0",
+          "deadline_failures": 115,
+          "failovers": 0,
+          "mean_ms": 47.81,
+          "measurement_start_lateness_ms": 0.1,
+          "p50_ms": 46.78,
+          "p95_ms": 53.05,
+          "p99_ms": 69.32,
+          "provider_executions": 185,
+          "seed": 44,
+          "sent": 300,
+          "success": 185,
+          "success_rate": 0.6166666666666667,
+          "system": "ndnsf",
+          "system_label": "NDNSF",
+          "trace_metrics": {
+            "measurement_window": {
+              "all_unreachable_fraction": 0.38333333333333336,
+              "at_least_one_fraction": 0.6166666666666667,
+              "at_least_two_fraction": 0.0,
+              "end_s": 64.0,
+              "epochs": 600,
+              "max_reachable": 1,
+              "start_s": 4.0
+            },
+            "whole_trace": {
+              "all_unreachable_fraction": 0.42334739803094235,
+              "at_least_one_fraction": 0.5766526019690577,
+              "at_least_two_fraction": 0.0,
+              "end_s": null,
+              "epochs": 711,
+              "max_reachable": 1,
+              "start_s": null
+            }
+          },
+          "trace_sha256": "bb54832d0c66cc1b2ea3f90517a81007ca1f1a72c19aab87e569fbc3df1590b8",
+          "traffic_launch_offset_s": 4.0001
+        },
+        {
+          "attempts": 230,
+          "condition": "range-50-speed-2p0",
+          "deadline_failures": 70,
+          "failovers": 0,
+          "mean_ms": 59.78,
+          "measurement_start_lateness_ms": 0.56,
+          "p50_ms": 58.18,
+          "p95_ms": 69.01,
+          "p99_ms": 80.16,
+          "provider_executions": 230,
+          "seed": 45,
+          "sent": 300,
+          "success": 230,
+          "success_rate": 0.7666666666666667,
+          "system": "ndnsf",
+          "system_label": "NDNSF",
+          "trace_metrics": {
+            "measurement_window": {
+              "all_unreachable_fraction": 0.23333333333333334,
+              "at_least_one_fraction": 0.7666666666666667,
+              "at_least_two_fraction": 0.765,
+              "end_s": 64.0,
+              "epochs": 600,
+              "max_reachable": 3,
+              "start_s": 4.0
+            },
+            "whole_trace": {
+              "all_unreachable_fraction": 0.2967651195499297,
+              "at_least_one_fraction": 0.7032348804500703,
+              "at_least_two_fraction": 0.7018284106891702,
+              "end_s": null,
+              "epochs": 711,
+              "max_reachable": 3,
+              "start_s": null
+            }
+          },
+          "trace_sha256": "aa8b4085d3556296ed5fe4163071a72707a990e3769b779aa31cde8147b52326",
+          "traffic_launch_offset_s": 4.00056
+        },
+        {
+          "attempts": 230,
+          "condition": "range-50-speed-2p0",
+          "deadline_failures": 70,
+          "failovers": 0,
+          "mean_ms": 64.62,
+          "measurement_start_lateness_ms": 0.36,
+          "p50_ms": 61.35,
+          "p95_ms": 77.66,
+          "p99_ms": 89.83,
+          "provider_executions": 230,
+          "seed": 46,
+          "sent": 300,
+          "success": 230,
+          "success_rate": 0.7666666666666667,
+          "system": "ndnsf",
+          "system_label": "NDNSF",
+          "trace_metrics": {
+            "measurement_window": {
+              "all_unreachable_fraction": 0.065,
+              "at_least_one_fraction": 0.935,
+              "at_least_two_fraction": 0.7633333333333333,
+              "end_s": 64.0,
+              "epochs": 600,
+              "max_reachable": 4,
+              "start_s": 4.0
+            },
+            "whole_trace": {
+              "all_unreachable_fraction": 0.05485232067510549,
+              "at_least_one_fraction": 0.9451476793248945,
+              "at_least_two_fraction": 0.70042194092827,
+              "end_s": null,
+              "epochs": 711,
+              "max_reachable": 4,
+              "start_s": null
+            }
+          },
+          "trace_sha256": "30e51c1e8d0abdb14c7bc71514b6f66444b752cb503f5fbc1f3fd6c733da4179",
+          "traffic_launch_offset_s": 4.00036
+        },
+        {
+          "attempts": 219,
+          "condition": "range-50-speed-2p0",
+          "deadline_failures": 81,
+          "failovers": 0,
+          "mean_ms": 51.79,
+          "measurement_start_lateness_ms": 1.44,
+          "p50_ms": 48.77,
+          "p95_ms": 60.9,
+          "p99_ms": 72.17,
+          "provider_executions": 219,
+          "seed": 47,
+          "sent": 300,
+          "success": 219,
+          "success_rate": 0.73,
+          "system": "ndnsf",
+          "system_label": "NDNSF",
+          "trace_metrics": {
+            "measurement_window": {
+              "all_unreachable_fraction": 0.27166666666666667,
+              "at_least_one_fraction": 0.7283333333333334,
+              "at_least_two_fraction": 0.7233333333333334,
+              "end_s": 64.0,
+              "epochs": 600,
+              "max_reachable": 3,
+              "start_s": 4.0
+            },
+            "whole_trace": {
+              "all_unreachable_fraction": 0.3291139240506329,
+              "at_least_one_fraction": 0.6708860759493671,
+              "at_least_two_fraction": 0.6666666666666666,
+              "end_s": null,
+              "epochs": 711,
+              "max_reachable": 3,
+              "start_s": null
+            }
+          },
+          "trace_sha256": "51690ef0401eaebf5979be39b55e2030dd7c79ae9ebbcf91c7070358da4e475a",
+          "traffic_launch_offset_s": 4.00144
+        }
+      ],
+      "provider_executions_per_request": 0.7726666666666666,
+      "requests": 1500,
+      "success": 1159,
+      "success_rate": 0.7726666666666666
+    }
+  }
+}
