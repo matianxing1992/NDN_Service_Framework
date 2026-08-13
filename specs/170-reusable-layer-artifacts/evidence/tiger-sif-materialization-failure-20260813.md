@@ -83,3 +83,11 @@ does not provide an authoritative per-user quota command in this session:
 Shared `df` is therefore not a quota authority. Durable Spec170 SIF promotion
 is blocked until the storage administrator provides the user/project quota or
 frees/expands it. Existing models, SIFs, and evidence were not deleted.
+
+## Recheck on 2026-08-15
+
+VPN and batch SSH remained healthy, but a fresh one-byte write to the same
+release directory again returned `Disk quota exceeded`. The shared `/project`
+filesystem still reported about 840T free, and no accepted `.sif` appeared in
+the release directory. No new materialization job was submitted; the exact
+OCI identity and all prior failure evidence remain unchanged.
