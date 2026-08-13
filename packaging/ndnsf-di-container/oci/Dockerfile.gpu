@@ -102,6 +102,8 @@ RUN --mount=type=bind,source=.,target=/src/ndnsf,rw \
     ./waf -j"$(nproc)"; ./waf install; \
     install -m 0755 build/examples/App_ServiceController $PREFIX/bin/App_ServiceController; \
     install -m 0755 build/examples/di-native-provider $PREFIX/bin/di-native-provider; \
+    find NDNSF-DistributedInference/packaging/python -type d -name build \
+      -prune -exec rm -rf {} +; \
     /opt/venv/bin/pip install --no-deps \
       ./pythonWrapper ./NDNSF-DistributedRepo/pythonWrapper; \
     for profile in $NDNSF_DI_OWNER_PROFILES; do \

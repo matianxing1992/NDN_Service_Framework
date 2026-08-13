@@ -47,3 +47,20 @@ The next correction adds the same `BOOST NDN_CXX NDN_SVS` dependencies to the
 
 The next correction adds those three exact versions from the app-runtime lock
 to `oci/locks/gpu.lock`. No image was pushed or signed by this run.
+
+## Stale generated Python module failure
+
+- Workflow run: `31716587492`
+- Source revision: `3863354b3acd88d5877841694ae988c79406974c`
+- Build result: C++ targets, Python lock verification, and native runtime
+  library closure all passed.
+- Failure: the final static probe could not import `AdapterDescriptor` from
+  `ndnsf_distributed_inference.splitter`.
+- Root cause: tracked `packaging/python/planner/build/lib` contained an older
+  generated `splitter.py`; `pip install --no-deps` packaged that stale output
+  instead of the current source module.
+- Candidate status: `INVALID_CANDIDATE`
+
+The correction removes generated `build` directories under the Python profiles
+inside the GPU assembly mount before installing the profiles. No image was
+pushed or signed by this run.
