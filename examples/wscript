@@ -407,7 +407,7 @@ def build(bld):
                             'NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.cpp',
                         ])),
                 includes=['..', '../ndn-service-framework'],
-                use='ONNXRUNTIME',
+                use='BOOST NDN_CXX NDN_SVS ONNXRUNTIME',
                 cxxflags=['-fPIC', '-pthread'],
                 linkflags=['-pthread'],
                 install_path=None)
