@@ -19,6 +19,11 @@ class Spec171SeedRepeatFollowupTests(unittest.TestCase):
     REPEATS = REPO_ROOT / "results" / "ndnsf-mobility-followup-20260807-repeats"
 
     def test_primary_seed_gate_and_trace_matched_repeats(self):
+        if not self.PRIMARY.is_dir() or not self.REPEATS.is_dir():
+            self.skipTest(
+                "requires ignored local Spec 171 primary/repeat evidence: "
+                f"{self.PRIMARY} and {self.REPEATS}"
+            )
         primary = analysis.records_by_seed(
             analysis.load(self.PRIMARY), analysis.PRIMARY_SEEDS)
         repeats = analysis.records_by_seed(
