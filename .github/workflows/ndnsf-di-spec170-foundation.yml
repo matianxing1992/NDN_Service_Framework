@@ -1,0 +1,147 @@
+name: NDNSF-DI Spec170 foundation image
+
+# Build the expensive NDN/security/native layer from the exact locked
+# ndn-svs Experimental revision. The GPU workflow consumes the resulting
+# immutable digest; no mutable foundation tag is accepted downstream.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+concurrency:
+  group: spec170-foundation-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE_REPOSITORY: ghcr.io/matianxing1992/ndnsf-di-foundation
+  RESULT_ROOT: results/spec170-foundation/${{ github.sha }}
+  FOUNDATION_BASE_IMAGE: ubuntu@sha256:8feb4d8ca5354def3d8fce243717141ce31e2c428701f6682bd2fafe15388214
+
+jobs:
+  build-foundation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          submodules: false
+
+      - name: Prepare and verify the sealed dependency context
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RESULT_ROOT"
+          python3 packaging/ndnsf-di-container/oci/scripts/prepare-sealed-context.py create \
+            --workspace . \
+            --lock packaging/ndnsf-di-container/oci/locks/gpu.lock \
+            --output .spec110-build \
+            --work-root "$RUNNER_TEMP/spec170-dependency-work"
+          python3 packaging/ndnsf-di-container/oci/scripts/prepare-sealed-context.py verify \
+            --workspace . \
+            --lock packaging/ndnsf-di-container/oci/locks/gpu.lock \
+            --output .spec110-build
+          python3 packaging/ndnsf-di-container/oci/scripts/preflight-gpu-build.py \
+            --workspace . \
+            --seal .spec110-build \
+            --output "$RESULT_ROOT/preflight.json"
+
+      - name: Record build context
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s\n' \
+            "workflow=${GITHUB_WORKFLOW}" \
+            "runId=${GITHUB_RUN_ID}" \
+            "sourceRevision=${GITHUB_SHA}" \
+            "runUrl=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            >"$RESULT_ROOT/build-context.txt"
+          df -h >"$RESULT_ROOT/runner-disk-before.txt"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish immutable Spec170 foundation
+        id: foundation
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: packaging/ndnsf-di-container/oci/Dockerfile.foundation
+          target: foundation
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.IMAGE_REPOSITORY }}:spec170-foundation-${{ github.sha }}
+          build-args: |
+            FOUNDATION_BASE_IMAGE=${{ env.FOUNDATION_BASE_IMAGE }}
+            SOURCE_REVISION=${{ github.sha }}
+            DEPENDENCY_SOURCE_MODE=sealed
+          cache-from: type=gha,scope=spec170-foundation
+          cache-to: type=gha,mode=min,scope=spec170-foundation
+          provenance: mode=max
+          sbom: true
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3.8.2
+
+      - name: Sign and verify the foundation digest
+        shell: bash
+        env:
+          IMAGE_DIGEST: ${{ steps.foundation.outputs.digest }}
+        run: |
+          set -euo pipefail
+          image_ref="${IMAGE_REPOSITORY}@${IMAGE_DIGEST}"
+          cosign sign --yes --bundle "$RESULT_ROOT/cosign-bundle.json" "$image_ref"
+          cosign verify \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-identity-regexp "^https://github.com/${GITHUB_REPOSITORY}/.github/workflows/ndnsf-di-spec170-foundation.yml@" \
+            --output json "$image_ref" >"$RESULT_ROOT/cosign-verification.json"
+
+      - name: Record immutable foundation manifest
+        shell: bash
+        env:
+          IMAGE_DIGEST: ${{ steps.foundation.outputs.digest }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import datetime, hashlib, json, os
+          from pathlib import Path
+          root = Path(os.environ["RESULT_ROOT"])
+          lock = Path("packaging/ndnsf-di-container/oci/locks/gpu.lock")
+          body = {
+              "schemaVersion": "spec170-foundation-release-v1",
+              "releaseId": "spec170-foundation-" + os.environ["GITHUB_SHA"],
+              "sourceRevision": os.environ["GITHUB_SHA"],
+              "imageReference": os.environ["IMAGE_REPOSITORY"] + "@" + os.environ["IMAGE_DIGEST"],
+              "imageDigest": os.environ["IMAGE_DIGEST"],
+              "foundationBase": os.environ["FOUNDATION_BASE_IMAGE"],
+              "lockDigest": "sha256:" + hashlib.sha256(lock.read_bytes()).hexdigest(),
+              "createdAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+              "immutable": True,
+          }
+          body["manifestDigest"] = "sha256:" + hashlib.sha256(
+              json.dumps(body, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+          (root / "foundation-manifest.json").write_text(
+              json.dumps(body, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          PY
+          sha256sum "$RESULT_ROOT/foundation-manifest.json" >"$RESULT_ROOT/SHA256SUMS"
+
+      - name: Record runner disk after build
+        if: always()
+        shell: bash
+        run: df -h >"$RESULT_ROOT/runner-disk-after.txt"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: spec170-foundation-${{ github.sha }}
+          path: ${{ env.RESULT_ROOT }}/
+          if-no-files-found: error
+          retention-days: 90
