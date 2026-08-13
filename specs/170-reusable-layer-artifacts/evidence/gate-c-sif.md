@@ -1,7 +1,22 @@
 # Spec 170 Gate C Evidence (current checkpoint)
 
-**Verdict: BLOCKED / NOT EXECUTED.** This is a preflight record, not a Gate C
-PASS and not authorization for TigerCluster.
+**Verdict: OCI PASS / SIF PENDING.** The immutable GPU OCI candidate has now
+passed its full GitHub build, runtime probe, signature, SBOM, anonymous pull,
+and release-manifest checks. This file still does not claim SIF or TigerCluster
+execution.
+
+## Immutable OCI checkpoint (2026-08-13)
+
+The accepted OCI candidate and its evidence are recorded in
+`gpu-release-20260813.md`:
+
+```text
+ghcr.io/matianxing1992/ndnsf-di-spec170@sha256:94ce0cc847d453df90fc1aab74fade597f45e3199274ad782094fb45dd9bf916
+```
+
+The exact SIF has not yet been materialized. The next authorized operation is a
+bounded Slurm CPU conversion from this digest; no mutable tag or old Spec110/
+Spec168 image may be substituted.
 
 ## Local exact-SIF availability check (2026-08-05)
 
