@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "runId": "table5-matched-fixed-20260813",
+  "status": "pass",
+  "purpose": "Current-build Table V normal and targeted rows with fixed targeted refill sizing; adaptive sizing disabled by default",
+  "configuration": {
+    "topologyFile": "Experiments/Topology/testbed(loss=0%).conf",
+    "userNode": "memphis",
+    "controllerNode": "arizona",
+    "providerNodes": ["ucla"],
+    "providers": 1,
+    "offeredRateRps": 10,
+    "warmupSeconds": 10,
+    "measurementSeconds": 60,
+    "intervalMs": 100,
+    "providerRequestDelayMs": 5,
+    "ackTimeoutMs": 1000,
+    "globalTimeoutMs": 5000,
+    "maxOutstanding": 512,
+    "admissionControl": false,
+    "strategy": "first-responding",
+    "tokens": "enabled",
+    "targetedTokenBatchSize": 256,
+    "targetedTokenAdaptive": false
+  },
+  "build": {
+    "gitBase": "9a132e60675bb4e991d6fc979d64699e8cac4e71",
+    "boost": "1.71.0",
+    "ndnCxx": ".local-boost171/lib/libndn-cxx.so.0.9.0",
+    "ndnSvs": "pinned ndn-svs prefix/lib/libndn-svs.so.0.1.0",
+    "App_UserSha256": "ffa3b8d251d040300c6acd74969eae0ae4e8586c95699455a77e7d26ba31a44e",
+    "App_ProviderSha256": "bc4f0ba324e39b3d8825aeb65e9432c05656355ddcd76ea83aef52ad94806fb9",
+    "App_ServiceControllerSha256": "c0f34b7c2324f07c5f830c37c7ffd814ccb969894bd4950225600d8268aa1d3f",
+    "ndnsfSharedLibrarySha256": "1f8031125625b6bba83c854625c11b861d2aca0c017f0aba9bdc3e6a2ddfd2c6"
+  },
+  "latencyRuns": {
+    "normal": [
+      {"run": "normal-r1", "successful": 600, "completionPct": 100.0, "meanMs": 170.485172, "p95Ms": 174.927},
+      {"run": "normal-r2", "successful": 600, "completionPct": 100.0, "meanMs": 169.911568, "p95Ms": 174.025},
+      {"run": "normal-r3", "successful": 600, "completionPct": 100.0, "meanMs": 192.847477, "p95Ms": 229.104}
+    ],
+    "targeted": [
+      {"run": "targeted-r1", "successful": 600, "completionPct": 100.0, "meanMs": 88.958175, "p95Ms": 90.401},
+      {"run": "targeted-r2", "successful": 600, "completionPct": 100.0, "meanMs": 90.156248, "p95Ms": 93.579},
+      {"run": "targeted-r3", "successful": 600, "completionPct": 100.0, "meanMs": 90.462088, "p95Ms": 91.866}
+    ]
+  },
+  "aggregates": {
+    "normal": {"completionPctMeanSd": "100.00 +/- 0.00", "meanMsMeanSd": "177.75 +/- 13.08", "p95MsMeanSd": "192.69 +/- 31.54"},
+    "targeted": {"completionPctMeanSd": "100.00 +/- 0.00", "meanMsMeanSd": "89.86 +/- 0.79", "p95MsMeanSd": "91.95 +/- 1.59"}
+  },
+  "targetedRefillDiagnostics": {
+    "source": "one matched --debug-ack trace repetition; debug trace is not used for latency aggregates",
+    "run": "targeted-trace",
+    "refillRequests": 3,
+    "refillFailures": 0,
+    "batchStores": 3,
+    "fallbackRequests": 0,
+    "nextBatchRange": "256-256",
+    "poolDepthRange": "256-256",
+    "fastPathTrue": 697,
+    "fastPathFalse": 11,
+    "interpretation": "The initial bootstrap and two low-watermark refills each carried 256 pairs; adaptive sizing was not enabled and no request fell back while a refill was in flight."
+  },
+  "artifactHashes": {
+    "latencySummarySha256": {
+      "normal-r1": "17356a73ec4d6b16f1712f640f9820e103d5034b9315a33824cc79a480f52b24",
+      "normal-r2": "38037b8548da7794d7759730fbd6959e6f3172341f04135022e71b1b458b1b0a",
+      "normal-r3": "0c782a541ec5a0cb311e8e15e71b2768f2630003b826506defd080ffcb8b1c10",
+      "targeted-r1": "d859c9e5c686b6f786147075c6fa2c6d45a99dd5382316842c138bc34c3b5612",
+      "targeted-r2": "101bb34f9709939d162ea8b40f261ace43978a63994c8d718f421d2e4674f35b",
+      "targeted-r3": "90328b827782952eb54477b3ac3b943cb9779f24d67f0165de89386d9b64bd55"
+    },
+    "diagnosticTraceSha256": {
+      "targeted-trace/summary.json": "a2b933b291e5477b3f9b59ebecb24ccf1d7f1dbfeef9472d1347751cd900f100",
+      "targeted-trace/user.log": "2e2ca3b2513d2e792c621123cce0221fc7d0a0efef00b904c81d563782e7ceab"
+    }
+  },
+  "interpretation": "The previous default-adaptive rows are superseded: small demand-derived batches caused frequent refills and inflated targeted latency, while an unconditional token-pool parse/lock path regressed normal latency. With that path removed and fixed 256-pair sizing as the default, targeted latency returns to about 90 ms. Normal latency is restored to the prior 165-170 ms range in two repetitions but shows one higher-variance 193 ms repetition; the three-run aggregate reports that variance rather than discarding it. Targeted remains a contextual known-Provider fast path, not multi-Provider discovery evidence."
+}
