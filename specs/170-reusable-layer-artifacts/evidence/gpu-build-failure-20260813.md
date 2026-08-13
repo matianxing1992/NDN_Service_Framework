@@ -31,3 +31,19 @@ the failed image was never pushed or signed.
 
 The next correction adds the same `BOOST NDN_CXX NDN_SVS` dependencies to the
 `di-native-onnxruntime-smoke` target. No image was pushed or signed by this run.
+
+## Runtime dependency closure failure
+
+- Workflow run: `31695668300`
+- Source revision: `620ff11dcb0d4cac3fb4a1f0e8f5a3a6ab69a1ff`
+- Build result: all native targets, including `di-native-onnxruntime-smoke`,
+  compiled successfully.
+- Failure: the final runtime static probe returned
+  `No module named 'cryptography'`.
+- Root cause: the GPU lock omitted the application security runtime closure
+  (`cryptography`, `cffi`, and `pycparser`) while the owner profiles are
+  installed with `--no-deps`.
+- Candidate status: `INVALID_CANDIDATE`
+
+The next correction adds those three exact versions from the app-runtime lock
+to `oci/locks/gpu.lock`. No image was pushed or signed by this run.
