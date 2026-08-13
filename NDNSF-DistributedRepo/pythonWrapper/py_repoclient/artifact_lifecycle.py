@@ -697,11 +697,19 @@ def resolve_active_artifact(
 
 
 class AtomicArtifactDestination:
-    """Out-of-order bounded range sink with no partial destination visibility."""
+    """Out-of-order bounded range sink with no partial destination visibility.
+
+    Payload fsync and resume-sidecar replacement are batched so a large NDN
+    transfer does not perform one directory fsync per segment.  ``finalize``
+    and ``abort(preserve_progress=True)`` always force the latest checkpoint;
+    an interrupted transfer can therefore lose only ranges since the last
+    checkpoint, never expose a partial destination.
+    """
 
     _MAX_RANGES = 1 << 16
     _MAX_SIDECAR_BYTES = 4 * 1024 * 1024
     _HASH_BUFFER_BYTES = 256 * 1024
+    _DEFAULT_CHECKPOINT_BYTES = 4 * 1024 * 1024
 
     def __init__(
         self,
@@ -710,6 +718,7 @@ class AtomicArtifactDestination:
         operation_id: str,
         *,
         max_range_bytes: int = 16 * 1024 * 1024,
+        checkpoint_bytes: int | None = None,
     ) -> None:
         self.destination = Path(destination).resolve()
         self.artifact = artifact
@@ -717,6 +726,13 @@ class AtomicArtifactDestination:
         self.max_range_bytes = int(max_range_bytes)
         if not self.operation_id or self.max_range_bytes <= 0:
             raise ValueError("repo-atomic-destination-invalid-options")
+        requested_checkpoint = (
+            self._DEFAULT_CHECKPOINT_BYTES
+            if checkpoint_bytes is None else int(checkpoint_bytes)
+        )
+        self.checkpoint_bytes = min(requested_checkpoint, self.max_range_bytes)
+        if self.checkpoint_bytes <= 0:
+            raise ValueError("repo-atomic-destination-invalid-checkpoint")
         self.destination.parent.mkdir(parents=True, exist_ok=True)
         suffix = hashlib.sha256(self.operation_id.encode("utf-8")).hexdigest()[:16]
         self.temporary = self.destination.with_name(
@@ -724,6 +740,7 @@ class AtomicArtifactDestination:
         )
         self.sidecar = Path(str(self.temporary) + ".resume.json")
         self._ranges: list[tuple[int, int]] = []
+        self._bytes_since_checkpoint = 0
         self._reused = False
         if self.destination.exists():
             if self._file_digest(self.destination) == artifact.content_digest:
@@ -790,6 +807,17 @@ class AtomicArtifactDestination:
             os.close(descriptor)
         os.replace(temporary, self.sidecar)
         self._fsync_directory(self.sidecar.parent)
+
+    def _checkpoint(self, *, force: bool = False) -> None:
+        if not force and self._bytes_since_checkpoint < self.checkpoint_bytes:
+            return
+        descriptor = os.open(self.temporary, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        self._persist_sidecar()
+        self._bytes_since_checkpoint = 0
 
     def _restore_sidecar(self) -> None:
         try:
@@ -902,12 +930,8 @@ class AtomicArtifactDestination:
         finally:
             os.close(descriptor)
         self._merge_range(offset, len(payload))
-        descriptor = os.open(self.temporary, os.O_RDONLY)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-        self._persist_sidecar()
+        self._bytes_since_checkpoint += len(payload)
+        self._checkpoint()
 
     def _merge_range(self, offset: int, length: int) -> None:
         if length == 0:
@@ -932,6 +956,7 @@ class AtomicArtifactDestination:
     def finalize(self) -> Path:
         if self._reused:
             return self.destination
+        self._checkpoint(force=True)
         expected = (
             [] if int(self.artifact.size_bytes) == 0
             else [(0, int(self.artifact.size_bytes))]
@@ -966,7 +991,7 @@ class AtomicArtifactDestination:
     def abort(self, *, preserve_progress: bool = False) -> None:
         if not self._reused:
             if preserve_progress:
-                self._persist_sidecar()
+                self._checkpoint(force=True)
                 return
             self.temporary.unlink(missing_ok=True)
             self.sidecar.unlink(missing_ok=True)

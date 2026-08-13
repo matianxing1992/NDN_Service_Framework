@@ -1815,7 +1815,11 @@ class StreamPublisher:
         return PredictiveStreamDescriptor(self._native.start())
 
     def push(self, signed_data: bytes) -> None:
-        """Push one signed NDN Data packet. App-named, App-signed."""
+        """Push one exact-name, application-signed NDN Data packet.
+
+        The application owns the keychain and signature. ``ndnsf`` validates
+        and retains the supplied wire; it does not sign or wrap it again.
+        """
         self._native.push(bytes(signed_data))
 
     def flush(self) -> None:

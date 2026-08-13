@@ -2,6 +2,7 @@
 set -u
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+build_dir="${NDNSF_BUILD_DIR:-${repo_root}/build}"
 tmpdir="$(mktemp -d /tmp/ndnsf-selective-ack-custom.XXXXXX)"
 
 controller_pid=""
@@ -24,7 +25,7 @@ cleanup() {
 trap cleanup EXIT
 
 cd "${repo_root}"
-export LD_LIBRARY_PATH="${repo_root}/build:${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="${build_dir}:${LD_LIBRARY_PATH:-}"
 export NDNSF_DISABLE_NDNSD=1
 export NDNSF_CONFIG="${tmpdir}/ndnsf.conf"
 export NDNSF_SESSION_BASE="$(( $(date +%s) + $$ ))"
@@ -89,7 +90,7 @@ start_provider() {
   local log="${tmpdir}/provider-${id}.log"
   local pid_var="provider_${id,,}_pid"
 
-  ./build/examples/App_Provider \
+  "${build_dir}/examples/App_Provider" \
     --provider-id "${id}" \
     --ack-status "${status}" \
     --ack-message "${message}" \
@@ -106,7 +107,7 @@ start_provider() {
   fi
 }
 
-./build/examples/App_ServiceController >"${tmpdir}/controller.log" 2>&1 &
+"${build_dir}/examples/App_ServiceController" >"${tmpdir}/controller.log" 2>&1 &
 controller_pid=$!
 if ! wait_for_controller; then
   echo "Controller did not become ready"
@@ -118,7 +119,7 @@ start_provider B true "Provider B ready" "queue=1;gpu=idle;rank=1" "HELLO_FROM_B
 start_provider C reject "PROVIDER_BUSY" "queue=99;gpu=busy;rank=99" "HELLO_FROM_C"
 
 echo "All providers subscribed before user request"
-timeout 35s ./build/examples/App_User \
+timeout 35s "${build_dir}/examples/App_User" \
   --custom-selection \
   --ack-timeout-ms 500 \
   --expect-response HELLO_FROM_B \

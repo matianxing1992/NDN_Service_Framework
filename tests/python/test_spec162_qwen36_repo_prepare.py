@@ -5,10 +5,11 @@ import importlib.util
 import json
 import sys
 import tempfile
+import time
 import types
 import unittest
 from pathlib import Path
-from threading import Lock
+from threading import Lock, Thread
 from unittest import mock
 
 
@@ -45,11 +46,98 @@ class FakeRepo:
         path = Path(destination)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(self.payload)
-        return path
+        return types.SimpleNamespace(
+            destination=path,
+            transferred_bytes=len(self.payload),
+            retransmitted_bytes=0,
+            last_segment=0,
+            delivered_segments=1,
+            total_segments=1,
+        )
 
 
 class QwenRepoSelectionPrepareTest(unittest.TestCase):
-    def test_first_selection_fetches_once_and_warm_selection_reuses_gpu(self):
+    def test_explicit_cpu_stage_warmup_executes_without_cuda_sync(self):
+        import torch
+
+        provider_module = load_provider()
+
+        class TinyBase(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.embed_tokens = torch.nn.Embedding(8, 4)
+                self.layers = torch.nn.ModuleList()
+
+        class TinyStage(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.model = TinyBase()
+                self.config = types.SimpleNamespace(hidden_size=4)
+                self.ndnsf_stage_index = 0
+                self.ndnsf_stage_count = 2
+                self.ndnsf_execution_device = "cpu"
+
+        model = TinyStage()
+        with mock.patch.object(torch.cuda, "synchronize") as synchronize:
+            self.assertTrue(
+                provider_module.warm_qwen_transformer_stage(model, "cpu"))
+        synchronize.assert_not_called()
+
+        with self.assertRaisesRegex(
+                RuntimeError, "does not match committed assignment"):
+            provider_module.warm_qwen_transformer_stage(model, "cuda:0")
+
+    def test_explicit_cpu_logic_is_not_counted_as_cuda_fallback(self):
+        provider_module = load_provider()
+        explicit_cpu = types.SimpleNamespace(ndnsf_cpu_fallback=True)
+        self.assertEqual(
+            provider_module._unexpected_cpu_fallback_count(
+                explicit_cpu, "cpu"),
+            0,
+        )
+        self.assertEqual(
+            provider_module._unexpected_cpu_fallback_count(
+                explicit_cpu, "cuda:0"),
+            1,
+        )
+
+    def test_provider_probes_required_qwen_family_before_network_ready(self):
+        provider_module = load_provider()
+        args = types.SimpleNamespace(
+            runtime=provider_module.QWEN_TRANSFORMERS_RUNTIME,
+            selection_dataflow_v2=True,
+            selection_model_type="qwen3",
+        )
+        with mock.patch.object(
+                provider_module,
+                "probe_qwen_transformers_model_type",
+        ) as probe:
+            provider_module._preflight_qwen_runtime(args)
+        probe.assert_called_once_with("qwen3")
+
+        source = PROVIDER.read_text(encoding="utf-8")
+        self.assertLess(
+            source.index("_preflight_qwen_runtime(args)"),
+            source.index("provider = APPProvider.from_config("),
+        )
+
+    def test_request_first_offer_lease_covers_preparation_window(self):
+        provider_module = load_provider()
+        with self.assertRaisesRegex(
+                RuntimeError, "offer lease must cover"):
+            provider_module._validate_selection_timing_window(
+                offer_lease_ms=120000,
+                max_prepare_ms=900000,
+            )
+        self.assertEqual(
+            provider_module._validate_selection_timing_window(
+                offer_lease_ms=900000,
+                max_prepare_ms=900000,
+            ),
+            (900000, 900000),
+        )
+
+    def test_delayed_registration_fetches_once_and_warm_selection_reuses_gpu(self):
         provider_module = load_provider()
         payload = b"qwen-stage-fixture"
         digest = hashlib.sha256(payload).hexdigest()
@@ -61,11 +149,19 @@ class QwenRepoSelectionPrepareTest(unittest.TestCase):
             (root / "residency.json").write_text(json.dumps({
                 "role": role,
                 "artifact_digest": "sha256:" + digest,
+                "model_content_digest": "sha256:" + "1" * 64,
+                "semantics_digest": "sha256:" + "2" * 64,
+                "graph_digest": "sha256:" + "3" * 64,
+                "partition_digest": "sha256:" + "4" * 64,
+                "adapter_id": "qwen36-27b-pipeline",
+                "adapter_version": "1.0.0",
+                "precision": "bfloat16",
+                "backend": "transformers",
                 "layer_start": 0,
                 "layer_end": 21,
             }), encoding="utf-8")
             registration = root / "registration.json"
-            registration.write_text(json.dumps({
+            registration_payload = {
                 "schemaVersion": "ndnsf-di-qwen36-repo-registration-v1",
                 "artifacts": [{
                     "role": role,
@@ -84,7 +180,7 @@ class QwenRepoSelectionPrepareTest(unittest.TestCase):
                     },
                     "receipts": [],
                 }],
-            }), encoding="utf-8")
+            }
             args = types.SimpleNamespace(
                 selection_dataflow_v2=True,
                 provider_identity="/example/provider",
@@ -95,7 +191,7 @@ class QwenRepoSelectionPrepareTest(unittest.TestCase):
                 selection_residency_json=str(root / "residency.json"),
                 selection_gpu_capacity_mib=32760,
                 selection_offered_gpu_mib=20000,
-                selection_offer_lease_ms=120000,
+                selection_offer_lease_ms=600000,
                 selection_max_prepare_ms=600000,
                 selection_residency_ttl_ms=600000,
                 selection_repo_registration=str(registration),
@@ -152,17 +248,72 @@ class QwenRepoSelectionPrepareTest(unittest.TestCase):
                 participant = config["selection_participant"]
                 context = types.SimpleNamespace(
                     request_id="request-1",
+                    deadline_ms=int(time.time() * 1000) + 5000,
                     role=types.SimpleNamespace(
                         role=role,
+                        artifact_digest="sha256:" + digest,
+                        adapter_id="qwen36-27b-pipeline",
+                        adapter_version="1.0.0",
+                        backend="transformers",
+                        device="cuda:0",
                         artifact=types.SimpleNamespace(
                             data_name="/repo/qwen/stage-0"),
                     ),
                 )
-                participant._callbacks.prepare_role(context)
-                context.request_id = "request-2"
-                participant._callbacks.prepare_role(context)
+                progress = []
+                writer = Thread(target=lambda: (
+                    time.sleep(0.05),
+                    registration.write_text(
+                        json.dumps(registration_payload), encoding="utf-8"),
+                ))
+                writer.start()
+                with mock.patch.object(
+                    provider_module, "warm_qwen_transformer_stage",
+                    return_value=True,
+                ) as warmup:
+                    participant._callbacks.prepare_role(context)
+                    evidence = config["runtime_preparer"](
+                        types.SimpleNamespace(spec=types.SimpleNamespace(
+                            role=role,
+                            metadata={
+                                "selectionRequestId": "request-1",
+                                "selectionAttempt": 1,
+                                "selectionArtifactDigest": "sha256:" + digest,
+                            },
+                        )),
+                        lambda phase, value: progress.append((phase, value)),
+                    )
+                    participant._callbacks.release_assignment(
+                        context, "RESPONSE_PUBLISHED")
+                    context.request_id = "request-2"
+                    context.deadline_ms = int(time.time() * 1000) + 5000
+                    participant._callbacks.prepare_role(context)
+                    warm_evidence = config["runtime_preparer"](
+                        types.SimpleNamespace(spec=types.SimpleNamespace(
+                            role=role,
+                            metadata={
+                                "selectionRequestId": "request-2",
+                                "selectionAttempt": 1,
+                                "selectionArtifactDigest": "sha256:" + digest,
+                            },
+                        )),
+                        lambda phase, value: progress.append((phase, value)),
+                    )
+                    participant._callbacks.release_assignment(
+                        context, "RESPONSE_PUBLISHED")
+                writer.join(timeout=1.0)
+                self.assertFalse(writer.is_alive())
             self.assertEqual(fake_repo.fetches, 1)
             self.assertEqual(loader.call_count, 1)
+            self.assertEqual(warmup.call_count, 1)
+            warmup.assert_called_once_with(model, "cuda:0")
+            self.assertEqual(
+                [item[0] for item in progress],
+                ["LOADING", "WARMING", "LOADING", "WARMING"],
+            )
+            self.assertEqual(evidence.device, "cuda:0")
+            self.assertEqual(warm_evidence.device, "cuda:0")
+            self.assertEqual(evidence.cpu_fallback_count, 0)
             self.assertEqual(
                 config["selection_participant"].boot_epoch,
                 "core-boot-epoch-verified",
@@ -172,6 +323,7 @@ class QwenRepoSelectionPrepareTest(unittest.TestCase):
                 "core-boot-epoch-verified",
             )
             self.assertIs(cache["/repo/qwen/stage-0"], model)
+            self.assertIs(cache[role], model)
             self.assertEqual(
                 config["selection_cached_shards"]()[0]["tier"],
                 "RELOAD_SAFE_GPU",

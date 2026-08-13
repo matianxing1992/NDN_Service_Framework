@@ -2,6 +2,7 @@
 set -u
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+build_dir="${NDNSF_BUILD_DIR:-${repo_root}/build}"
 tmpdir="$(mktemp -d /tmp/ndnsf-token-cert-bootstrap.XXXXXX)"
 
 source "${repo_root}/examples/common_regression.sh"
@@ -24,7 +25,7 @@ cleanup() {
 trap cleanup EXIT
 
 cd "${repo_root}"
-export LD_LIBRARY_PATH="${repo_root}/build:${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="${build_dir}:${LD_LIBRARY_PATH:-}"
 export HOME="${tmpdir}/home"
 export NDNSF_CONFIG="${tmpdir}/ndnsf.conf"
 export NDNSF_SESSION_BASE="$(( $(date +%s) + $$ ))"
@@ -38,7 +39,7 @@ ndnsf_start_nfd_if_needed "${tmpdir}/nfd.log" || {
 }
 
 generated_token_file="${tmpdir}/generated.bootstrap-tokens"
-timeout 4s ./build/examples/App_ServiceController \
+timeout 4s "${build_dir}/examples/App_ServiceController" \
   --bootstrap-token-file "${generated_token_file}" \
   >"${tmpdir}/generated-controller.log" 2>&1
 generated_controller_status=$?
@@ -47,54 +48,54 @@ generated_entry_count=$(awk 'NF >= 2 && $1 !~ /^#/ { count++ } END { print count
 generated_bad_token_count=$(awk 'NF >= 2 && $1 !~ /^#/ && length($2) != 8 { count++ } END { print count + 0 }' \
   "${generated_token_file}" 2>/dev/null || echo 0)
 
-./build/examples/App_ServiceController \
+"${build_dir}/examples/App_ServiceController" \
   --bootstrap-token-file examples/hello.bootstrap-tokens \
   >"${tmpdir}/controller.log" 2>&1 &
 controller_pid=$!
 
 ndnsf_wait_for_log "${tmpdir}/controller.log" "ServiceController listening on:" 15 || true
 
-timeout 12s ./build/examples/App_User \
+timeout 12s "${build_dir}/examples/App_User" \
   --bootstrap-token wrong-token \
   >"${tmpdir}/wrong-user.log" 2>&1
 wrong_status=$?
 
-timeout 12s ./build/examples/App_User \
+timeout 12s "${build_dir}/examples/App_User" \
   --bootstrap-token user045A \
   --bootstrap-name /example/hello/provider \
   >"${tmpdir}/wrong-name-user.log" 2>&1
 wrong_name_status=$?
 
-timeout 12s ./build/examples/App_CertificateBootstrapTamper \
+timeout 12s "${build_dir}/examples/App_CertificateBootstrapTamper" \
   --bootstrap-token user045A \
   >"${tmpdir}/tampered-proof-user.log" 2>&1
 tampered_status=$?
 
-timeout 12s ./build/examples/App_CertificateBootstrapTamper \
+timeout 12s "${build_dir}/examples/App_CertificateBootstrapTamper" \
   --bootstrap-token user045A \
   --valid-request \
   >"${tmpdir}/valid-token-probe-1.log" 2>&1
 valid_probe_1_status=$?
 
-timeout 12s ./build/examples/App_CertificateBootstrapTamper \
+timeout 12s "${build_dir}/examples/App_CertificateBootstrapTamper" \
   --bootstrap-token user045A \
   --valid-request \
   >"${tmpdir}/valid-token-probe-2.log" 2>&1
 valid_probe_2_status=$?
 
-./build/examples/App_Provider \
+"${build_dir}/examples/App_Provider" \
   --bootstrap-token prov045A \
   >"${tmpdir}/provider.log" 2>&1 &
 provider_pid=$!
 
 ndnsf_wait_for_log "${tmpdir}/provider.log" "Provider .* registered service /HELLO" 20 || true
 
-timeout 30s ./build/examples/App_User \
+timeout 30s "${build_dir}/examples/App_User" \
   --bootstrap-token user045A \
   >"${tmpdir}/user.log" 2>&1
 user_status=$?
 
-timeout 30s ./build/examples/App_User \
+timeout 30s "${build_dir}/examples/App_User" \
   --bootstrap-token user045A \
   >"${tmpdir}/user-reuse.log" 2>&1
 reuse_status=$?

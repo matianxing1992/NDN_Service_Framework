@@ -2,12 +2,13 @@
 set -u
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+build_dir="${NDNSF_BUILD_DIR:-${repo_root}/build}"
 tmpdir="$(mktemp -d /tmp/ndnsf-token-handshake-negative.XXXXXX)"
 
 cd "${repo_root}"
-export LD_LIBRARY_PATH="${repo_root}/build:${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="${build_dir}:${LD_LIBRARY_PATH:-}"
 
-./build/unit-tests \
+"${build_dir}/unit-tests" \
   --run_test=GenericDynamicApi/TokensAndReplay/TokenHandshakeNegativeRegression \
   >"${tmpdir}/unit-tests.log" 2>&1
 status=$?

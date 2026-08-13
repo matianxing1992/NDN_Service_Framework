@@ -73,9 +73,12 @@ def configure(conf):
         pkg_config_paths.append(f'{conf.env.LIBDIR}/pkgconfig')
     if os.path.isdir(local_pkg_config_path):
         pkg_config_paths.append(local_pkg_config_path)
-        conf.env.append_value('LINKFLAGS',
-                              [f'-Wl,-rpath,{conf.env.LIBDIR}',
-                               f'-Wl,-rpath,{os.path.join(local_prefix, "lib")}'])
+        # /usr/local/lib (conf.env.LIBDIR) is already in the system loader
+        # cache.  Encoding it ahead of a target's $ORIGIN runpath makes build-
+        # tree examples load an older installed framework, and transitively an
+        # older NDN-SVS, instead of the libraries they were just linked with.
+        conf.env.append_value(
+            'LINKFLAGS', f'-Wl,-rpath,{os.path.join(local_prefix, "lib")}')
     pkg_config_path = os.pathsep.join(pkg_config_paths)
 
     conf.check_cfg(package='libndn-cxx', args=['libndn-cxx >= 0.8.0', '--cflags', '--libs'],
@@ -85,7 +88,29 @@ def configure(conf):
     conf.check_cfg(package='libndn-svs', args=['libndn-svs >= 0.1.0', '--cflags', '--libs'],
                        uselib_store='NDN_SVS', pkg_config_path=pkg_config_path)
 
+    # An isolated NDN-SVS prefix may coexist with an older installation under
+    # /usr/local.  libndn-cxx's pkg-config metadata also contributes
+    # /usr/local/include, so the generic use='NDN_CXX NDN_SVS ...' ordering
+    # would otherwise compile against the old SVS headers while linking the
+    # isolated library.  Put the selected SVS include and runtime directories
+    # first to keep headers, link input, and runtime SONAME resolution aligned.
+    svs_includes = list(conf.env.INCLUDES_NDN_SVS or [])
+    conf.env.INCLUDES_NDN_CXX = svs_includes + [
+        path for path in list(conf.env.INCLUDES_NDN_CXX or [])
+        if path not in svs_includes
+    ]
+    svs_rpaths = [f'-Wl,-rpath,{path}' for path in list(conf.env.LIBPATH_NDN_SVS or [])]
+    conf.env.LINKFLAGS = svs_rpaths + [
+        flag for flag in list(conf.env.LINKFLAGS or [])
+        if flag not in svs_rpaths
+    ]
+
     conf.check(features='cxx cxxprogram', lib=['sqlite3'], cflags=['-Wall'], defines=['var=foo'], uselib_store='sqlite3')
+    # OpenSSL on the current Debian/Brew toolchain exposes libdl symbols
+    # without propagating -ldl through its pkg-config metadata. Keep this
+    # explicit for test and example linkers instead of relying on ld's
+    # transitive-dependency behavior.
+    conf.check(features='cxx cxxprogram', lib=['dl'], uselib_store='DL')
 
 
     conf.check_cfg(package='libnac-abe', args=['--cflags', '--libs'], uselib_store='NAC-ABE',
@@ -122,11 +147,21 @@ def configure(conf):
     conf.check_cfg(package='gstreamer-1.0 gstreamer-app-1.0 gstreamer-video-1.0',
                    args=['--cflags', '--libs'], uselib_store='GSTREAMER',
                    mandatory=False, pkg_config_path=pkg_config_path)
+    # Debian's GStreamer .pc files expose GLib/GObject as direct libraries,
+    # while the linker used in this environment does not automatically close
+    # their gmodule/libffi/PCRE dependency chain. Keep these optional so a
+    # minimal host can still configure, but make the transitive closure
+    # explicit for the unit-test executable when the libraries are present.
+    for library, store in [('gmodule-2.0', 'GMODULE'),
+                           ('ffi', 'FFI'),
+                           ('pcre', 'PCRE')]:
+        conf.check(features='cxx cxxprogram', lib=[library],
+                   uselib_store=store, mandatory=False)
     conf.env.HAVE_GSTREAMER = bool(
         conf.env.CXXFLAGS_GSTREAMER or conf.env.INCLUDES_GSTREAMER or
         conf.env.LIB_GSTREAMER or conf.env.LIBPATH_GSTREAMER)
 
-    boost_libs = ['system']
+    boost_libs = ['system', 'filesystem']
     if conf.env.WITH_TESTS:
         boost_libs.append('unit_test_framework')
 

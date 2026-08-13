@@ -44,17 +44,24 @@ def load_module():
 class T009LiveSourceBundleTests(unittest.TestCase):
     def test_cold_repo_publication_uses_whole_artifact_collaboration(self):
         inner = RANK_INNER_SCRIPT.read_text(encoding="utf-8")
+        user = (ROOT / "examples/python/NDNSF-DistributedInference/llm_pipeline/user.py").read_text(
+            encoding="utf-8")
         registration = REPO_REGISTER_SCRIPT.read_text(encoding="utf-8")
-        self.assertIn("--control-mode normal", inner)
+        # Request-scoped publication stays on the inference User's existing
+        # ServiceUser/SVS session after ACK_CLOSED.  A second same-identity
+        # ServiceUser would supersede the session and make final Selection
+        # stale at Providers.
+        self.assertIn("service_user=client.service_user", user)
+        self.assertIn("publish_qwen_stage_manifest", user)
+        self.assertIn("CollaborationArtifactApiBackend(", user)
+        self.assertNotIn("subprocess.run(", user)
         self.assertIn('choices=("normal", "targeted")', registration)
         self.assertIn("CollaborationArtifactApiBackend.from_config", registration)
         self.assertIn("repo.publish_file(", registration)
         self.assertNotIn("repo.put_file(", registration)
         self.assertIn('"controlMode": args.control_mode', registration)
-        self.assertIn(
-            "wait_file /shared/repo-registration-ready 432000",
-            inner,
-        )
+        self.assertNotIn("repo-registration-ready", inner)
+        self.assertIn("LLM_PIPELINE_QWEN_DEFERRED_REPO_PUBLISH_START", user)
         sbatch = SBATCH_SCRIPT.read_text(encoding="utf-8")
         self.assertIn("#SBATCH --time=16:00:00", sbatch)
 
@@ -71,6 +78,33 @@ class T009LiveSourceBundleTests(unittest.TestCase):
         self.assertIn(
             'uri="${face_scheme}://${peer_ip}:${SPEC162_PORT}"',
             inner,
+        )
+
+    def test_request_gate_has_no_fixed_provider_settle_sleep(self):
+        inner = RANK_INNER_SCRIPT.read_text(encoding="utf-8")
+        self.assertNotIn("\nsleep 30\n", inner)
+        self.assertIn(
+            "the first planning trigger; model publication happens after ACK_CLOSED",
+            inner,
+        )
+
+    def test_deferred_planner_records_graph_after_ack_closed(self):
+        placement = (
+            ROOT / "NDNSF-DistributedInference"
+            / "ndnsf_distributed_inference/app_sdk/placement.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            '"NDNSF_DI_AUTOPLANNING_GRAPH_READY"',
+            placement,
+        )
+        self.assertIn('"after=ACK_CLOSED"', placement)
+        self.assertLess(
+            placement.index("collaboration = self.service_user.begin_collaboration"),
+            placement.index("closed = collaboration.acks_closed()"),
+        )
+        self.assertLess(
+            placement.index("closed = collaboration.acks_closed()"),
+            placement.index("model_descriptor = adapter.describe_model"),
         )
 
     def test_repo_node_uses_explicit_operator_state_root(self):
@@ -109,6 +143,28 @@ class T009LiveSourceBundleTests(unittest.TestCase):
             text,
         )
 
+    def test_runtime_marker_gate_does_not_scan_sealed_source_bundle(self):
+        text = SBATCH_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn('"$partial"/node-* "$partial"/rank-step.log', text)
+        self.assertIn(
+            "source bundle intentionally",
+            text,
+        )
+
+    def test_ephemeral_bootstrap_is_removed_before_secret_scan(self):
+        text = SBATCH_SCRIPT.read_text(encoding="utf-8")
+        cleanup = 'rm -f -- "$partial/bootstrap-tokens.txt"'
+        scan = 'test -z "$(find "$partial" -type f'
+        self.assertGreaterEqual(text.count(cleanup), 2)
+        self.assertLess(text.index(cleanup, text.index("test \"$(<")),
+                        text.index(scan))
+        self.assertNotIn(
+            "grep -RniE \\\n  'double free|invalid pointer|munmap_chunk|Aborted|core dumped|CPUExecutionProvider|"
+            "QWEN_STAGE_CPU_FALLBACK_FORBIDDEN|QWEN_STAGE_CUDA_UNAVAILABLE|"
+            "reportOperationStatus.*incompatible function arguments' \\\n  \"$partial\";",
+            text,
+        )
+
     def test_candidate_policy_adds_artifact_service_without_mutating_input(self):
         module = load_module()
         self.assertIn(
@@ -122,6 +178,33 @@ class T009LiveSourceBundleTests(unittest.TestCase):
         )
         self.assertIn("export SPEC162_POLICY=/shared/policy.yaml", inner)
         self.assertIn("/shared/policy-provenance.json", inner)
+
+    def test_minindn_repo_processes_do_not_reuse_compute_provider_identity(self):
+        experiment = (
+            ROOT / "Experiments/NDNSF_DI_LlmPipeline_Minindn.py"
+        ).read_text(encoding="utf-8")
+        runner = (
+            ROOT / "specs/162-itiger-qwen36-generation/jobs/run-repo-node.py"
+        ).read_text(encoding="utf-8")
+        policy = (
+            ROOT / "specs/162-itiger-qwen36-generation/jobs/"
+            "build-generation-policy.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('REPO_PROVIDER_PREFIX = APP_ROOT + "/repo"', experiment)
+        self.assertIn('"--repo-provider-prefix", REPO_PROVIDER_PREFIX', experiment)
+        self.assertIn('" --provider-prefix "', experiment)
+        self.assertIn('parser.add_argument("--provider-prefix", required=True)', runner)
+        self.assertIn('provider_prefix=args.provider_prefix', runner)
+        self.assertIn('parser.add_argument("--repo-provider-prefix", required=True)', policy)
+        inner = RANK_INNER_SCRIPT.read_text(encoding="utf-8")
+        provider = (
+            ROOT / "examples/python/NDNSF-DistributedInference/llm_pipeline/"
+            "provider.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('repo_provider_identity="/NDNSF-DistributeInference/example/repo', inner)
+        self.assertIn('--provider-prefix /NDNSF-DistributeInference/example/repo', inner)
+        self.assertIn('--bootstrap-token-file "/scratch/provider-bootstrap-${rank}.token"', inner)
+        self.assertIn('parser.add_argument("--bootstrap-token-file", default="")', provider)
 
     def test_runtime_override_is_source_sealed_and_read_only(self):
         module = load_module()
@@ -143,6 +226,16 @@ class T009LiveSourceBundleTests(unittest.TestCase):
                 f"py_repoclient/{name}:ro",
                 rank,
             )
+
+    def test_sdk_placement_contract_is_bound_into_the_runtime(self):
+        module = load_module()
+        rank = RANK_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("runtime/sdk-placement.py", module.SOURCES)
+        self.assertIn(
+            "$di_sdk_placement_override:/opt/ndnsf-app/python/"
+            "ndnsf_distributed_inference/sdk/placement.py:ro",
+            rank,
+        )
 
     def test_rank_scratch_fallback_does_not_duplicate_cluster_user(self):
         text = RANK_SCRIPT.read_text(encoding="utf-8")

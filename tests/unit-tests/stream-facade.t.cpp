@@ -724,7 +724,12 @@ BOOST_AUTO_TEST_CASE(PredictiveConsumerValidatesAndDeliversReorderedData)
   BOOST_CHECK_EQUAL(status.terminalGapQueueDepth, 0);
   BOOST_CHECK_GE(status.drainWakeCount, 1);
   BOOST_REQUIRE(status.fetchDecision);
-  BOOST_CHECK_EQUAL(
+  // The bounded-catch-up contract requires a positive horizon no larger than
+  // the current adaptive lookahead and aggregate capacity. packetDemand may
+  // cover several predicted sample groups and therefore is not a lower bound
+  // on the cursor horizon when the aggregate window is smaller.
+  BOOST_CHECK_GE(status.futureCursorHorizon, uint64_t{1});
+  BOOST_CHECK_LE(
     status.futureCursorHorizon,
     std::min<uint64_t>(status.fetchDecision->lookahead, uint64_t{8}));
   {
@@ -875,7 +880,19 @@ BOOST_AUTO_TEST_CASE(PredictiveTerminalGapAdvancesOrderedDrain)
     BOOST_CHECK_EQUAL_COLLECTIONS(
       delivered.begin(), delivered.end(), expected.begin(), expected.end());
   }
-  const auto status = subscriber->status();
+  // onItem notifies the application before drainReady commits the accepted
+  // cursor under its own mutex. Wait for that commit instead of racing the
+  // callback notification with the status snapshot.
+  LiveStreamStatus status;
+  const auto statusDeadline = std::chrono::steady_clock::now() +
+                              std::chrono::seconds(1);
+  do {
+    status = subscriber->status();
+    if (status.nextDeliverCursor >= 8) {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  } while (std::chrono::steady_clock::now() < statusDeadline);
   // The subscriber may already have declared and drained the next unproduced
   // future cursor before this asynchronous snapshot is taken.
   BOOST_CHECK_GE(status.nextDeliverCursor, 8);

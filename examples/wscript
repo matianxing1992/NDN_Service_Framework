@@ -5,7 +5,7 @@ def build(bld):
                 target='App_ServiceController',
                 source=['App_ServiceController.cpp'],
                 includes=['..'],
-                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
+                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD DL',
                 linkflags=['-Wl,-rpath,$ORIGIN/..'],
                 install_path=None)
 
@@ -13,7 +13,7 @@ def build(bld):
                 target='App_Provider',
                 source=['App_Provider.cpp'],
                 includes=['..'],
-                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
+                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD DL',
                 linkflags=['-Wl,-rpath,$ORIGIN/..'],
                 install_path=None)
 
@@ -21,7 +21,7 @@ def build(bld):
                 target='App_User',
                 source=['App_User.cpp'],
                 includes=['..'],
-                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
+                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD DL',
                 linkflags=['-Wl,-rpath,$ORIGIN/..'],
                 install_path=None)
 
@@ -29,7 +29,7 @@ def build(bld):
                 target='LiveStreamProvider',
                 source=['LiveStreamProvider.cpp'],
                 includes=['..'],
-                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
+                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD DL',
                 linkflags=['-Wl,-rpath,$ORIGIN/..'],
                 install_path=None)
 
@@ -61,7 +61,7 @@ def build(bld):
                 target='App_CertificateBootstrapTamper',
                 source=['App_CertificateBootstrapTamper.cpp'],
                 includes=['..'],
-                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
+                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD DL',
                 linkflags=['-Wl,-rpath,$ORIGIN/..'],
                 install_path=None)
 
@@ -109,7 +109,7 @@ def build(bld):
                 target='App_IntermittentUser',
                 source=['App_IntermittentUser.cpp'],
                 includes=['..'],
-                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
+                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD DL',
                 linkflags=['-Wl,-rpath,$ORIGIN/..'],
                 install_path=None)
 
@@ -196,7 +196,7 @@ def build(bld):
                 target='App_WifiMobilityProvider',
                 source=['App_IntermittentProvider.cpp'],
                 includes=['..'],
-                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
+                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD DL',
                 linkflags=['-Wl,-rpath,$ORIGIN/..'],
                 install_path=None)
 
@@ -204,7 +204,7 @@ def build(bld):
                 target='App_WifiMobilityUser',
                 source=['App_IntermittentUser.cpp'],
                 includes=['..'],
-                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
+                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD DL',
                 linkflags=['-Wl,-rpath,$ORIGIN/..'],
                 install_path=None)
 

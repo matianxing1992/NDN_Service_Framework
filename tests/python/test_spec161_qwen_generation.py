@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import types
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -91,6 +94,31 @@ class QwenGenerationTest(unittest.TestCase):
         sys.path.insert(0, str(USER.parent))
         cls.user = load_module("spec161_llm_pipeline_user", USER)
 
+    def test_full_generation_uses_provider_completion_clock_for_token_latency(
+        self,
+    ) -> None:
+        clock_values = iter((100.0, 100.2))
+        result = self.pipeline.run_full_qwen_generation(
+            input_token_ids=[10, 11],
+            max_new_tokens=4,
+            eos_token_ids={2},
+            generation_id="full-token-clock",
+            generation_call=lambda *_args: {
+                "generatedTokenIds": [7, 2],
+                "tokenCompletionClock": "CLOCK_MONOTONIC",
+                "tokenCompletionMonotonicMs": [100050.0, 100080.0],
+                "wireRequestCount": 1,
+                "tokenRequestCount": 0,
+            },
+            expected_token_ids=[7, 2],
+            decode=lambda _tokens: "complete answer",
+            clock=lambda: next(clock_values),
+        )
+        self.assertEqual(result.status, "OK")
+        self.assertAlmostEqual(result.ttft_ms, 50.0)
+        self.assertEqual(result.inter_token_ms, (30.0,))
+        self.assertAlmostEqual(result.total_ms, 200.0)
+
     def test_generation_appends_tokens_and_stops_on_eos(self) -> None:
         clock = FakeClock()
         contexts = []
@@ -132,6 +160,142 @@ class QwenGenerationTest(unittest.TestCase):
         self.assertEqual(len(result.token_steps), 3)
         self.assertAlmostEqual(result.ttft_ms, 10.0)
         self.assertEqual(len(result.inter_token_ms), 2)
+
+    def test_wire_request_id_accepts_ndn_leading_name_separator(self) -> None:
+        self.assertEqual(
+            self.user._canonical_request_id(
+                "/spec162-submission-t009-qwen3small-debug-token-0"
+            ),
+            "spec162-submission-t009-qwen3small-debug-token-0",
+        )
+        self.assertEqual(
+            self.user._canonical_request_id(
+                "spec162-submission-t009-qwen3small-debug-token-0"
+            ),
+            "spec162-submission-t009-qwen3small-debug-token-0",
+        )
+
+    def test_single_sample_campaign_keeps_application_request_id(self) -> None:
+        self.assertEqual(
+            self.user._campaign_wire_request_id(
+                "/spec168/minindn/qwen3-0.6b/v14",
+                "frozen-campaign-prompt-m0",
+                1,
+            ),
+            "/spec168%2Fminindn%2Fqwen3-0.6b%2Fv14",
+        )
+
+    def test_deferred_repo_publisher_reuses_main_service_user(self) -> None:
+        service_user = object()
+        roles = tuple(f"/LLM/Pipeline/Stage/{index}" for index in range(3))
+        digests = {
+            role: "sha256:" + f"{index + 1:064x}"
+            for index, role in enumerate(roles)
+        }
+        candidate = types.SimpleNamespace(
+            candidate_digest="sha256:" + "c" * 64,
+            execution_plan=types.SimpleNamespace(roles=roles),
+            artifacts_by_role={role: (digests[role],) for role in roles},
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            stage_manifest = root / "stage-manifest.json"
+            stage_manifest.write_text(json.dumps({
+                "modelDigest": "sha256:" + "m" * 64,
+                "revision": "test-revision",
+                "stages": [
+                    {
+                        "role": role,
+                        "stageIndex": index,
+                        "path": str(root / f"stage-{index}.bin"),
+                        "bytes": index + 1,
+                        "sha256": digests[role],
+                    }
+                    for index, role in enumerate(roles)
+                ],
+            }, sort_keys=True), encoding="utf-8")
+            expected_stage_manifest_digest = "sha256:" + hashlib.sha256(
+                stage_manifest.read_bytes()).hexdigest()
+            output = root / "registration.json"
+            activations = []
+
+            def publish_registration(*, backend, output_path, **_kwargs):
+                self.assertIs(backend.control.service_user, service_user)
+                registration = {
+                    "schemaVersion": "ndnsf-di-qwen36-repo-registration-v1",
+                    "stageManifestSha256": expected_stage_manifest_digest,
+                    "artifacts": [
+                        {
+                            "role": role,
+                            "fileSha256": digests[role],
+                            "objectName": f"/repo/stage-{index}",
+                        }
+                        for index, role in enumerate(roles)
+                    ],
+                }
+                Path(output_path).write_text(
+                    json.dumps(registration), encoding="utf-8")
+                return registration
+
+            publisher = self.user._QwenDeferredRepoPublisher(
+                service_user=service_user,
+                stage_manifest_path=str(stage_manifest),
+                output_path=str(output),
+                publisher_identity="/example/llm-pipeline/user",
+                object_prefix="/repo/qwen",
+                activate_catalog_snapshot=lambda *values: activations.append(
+                    values),
+            )
+            with mock.patch.object(
+                self.user,
+                "publish_qwen_stage_manifest",
+                side_effect=publish_registration,
+            ), mock.patch.object(
+                subprocess,
+                "run",
+                side_effect=AssertionError("must not create a second ServiceUser"),
+            ):
+                published = publisher.publish(
+                    candidate,
+                    materialized=None,
+                    deadline_ms=int(time.time() * 1000) + 10_000,
+                )
+
+        self.assertEqual(published.candidate_digest, candidate.candidate_digest)
+        self.assertEqual(
+            published.artifact_data_names_by_role,
+            {role: f"/repo/stage-{index}" for index, role in enumerate(roles)},
+        )
+        self.assertEqual(len(activations), 1)
+        self.assertIs(activations[0][0], candidate)
+        self.assertIs(activations[0][1], published)
+        self.assertEqual(
+            activations[0][2]["stageManifestSha256"],
+            expected_stage_manifest_digest,
+        )
+        snapshot = self.user._qwen_dynamic_catalog_snapshot(
+            alias="qwen-test",
+            model=types.SimpleNamespace(
+                content_digest="sha256:" + "a" * 64,
+                semantics_digest="sha256:" + "b" * 64,
+            ),
+            graph=types.SimpleNamespace(
+                graph_digest="sha256:" + "d" * 64),
+            candidate=candidate,
+            published=published,
+            registration=activations[0][2],
+            backend="transformers",
+            precision="bfloat16",
+        )
+        self.assertEqual(snapshot.status, "ACTIVE")
+        self.assertEqual(snapshot.candidate_digest, candidate.candidate_digest)
+        self.assertEqual(
+            snapshot.artifact_data_names,
+            {role: (f"/repo/stage-{index}",)
+             for index, role in enumerate(roles)},
+        )
+        self.assertTrue(snapshot.manifest_digest.startswith("sha256:"))
 
     def test_token_limit_is_retained_as_truncated(self) -> None:
         result = self.pipeline.run_bounded_qwen_generation(
@@ -448,10 +612,12 @@ class QwenGenerationTest(unittest.TestCase):
         class Client:
             def __init__(self):
                 self.calls = 0
+                self.request_ids = []
 
             def distributed_inference(self, _service, payload, **_kwargs):
                 document = self_outer.pipeline.decode_qwen_pipeline_context(payload)
                 self.calls += 1
+                self.request_ids.append(_kwargs.get("request_id", ""))
                 token_epoch = int(document["contextEpoch"])
                 token = 7 if token_epoch == 0 else 2
                 return types.SimpleNamespace(
@@ -508,6 +674,7 @@ class QwenGenerationTest(unittest.TestCase):
                     deployment_revision="sha256:test",
                     ack_timeout_ms=100,
                     timeout_ms=1000,
+                    request_id="/spec161/test-request",
                 )
                 rc = self.user._run_qwen_transformer_generation_campaign(
                     client, args, campaign)
@@ -523,6 +690,12 @@ class QwenGenerationTest(unittest.TestCase):
 
         self.assertEqual(rc, 0)
         self.assertEqual(client.calls, 60)
+        self.assertTrue(all(
+            request_id.startswith(
+                "/spec161%2Ftest-request--sample--spec161-test-")
+            for request_id in client.request_ids
+        ))
+        self.assertEqual(len(set(client.request_ids)), 60)
         self.assertEqual(len(rows), 30)
         self.assertEqual(sum(row["phase"] == "warmup" for row in rows), 5)
         self.assertEqual(sum(row["phase"] == "measured" for row in rows), 25)

@@ -322,9 +322,12 @@ class PendingReplicaTaskCollaboration:
         closed = self.acks_closed()
         offers = []
         seen = set()
+        successful_count = 0
+        excluded = []
         for candidate in closed.candidates:
             if not bool(candidate.status):
                 continue
+            successful_count += 1
             provider = str(candidate.provider_name)
             if provider in seen:
                 raise ValueError("repo-store-offer-duplicate-provider")
@@ -339,6 +342,13 @@ class PendingReplicaTaskCollaboration:
             if (offer.queue_depth >= offer.queue_capacity
                     or offer.available_bytes < int(self.artifact.size_bytes)
                     or offer.max_artifact_bytes < int(self.artifact.size_bytes)):
+                if len(excluded) < 8:
+                    excluded.append(
+                        f"{provider}(queue={offer.queue_depth}/"
+                        f"{offer.queue_capacity},"
+                        f"availableBytes={offer.available_bytes},"
+                        f"maxArtifactBytes={offer.max_artifact_bytes})"
+                    )
                 continue
             offers.append((offer.queue_depth, provider))
         offers.sort(key=lambda item: (item[0], item[1]))
@@ -347,8 +357,13 @@ class PendingReplicaTaskCollaboration:
         )
         if len(selected) != self.requested_replicas:
             raise ValueError(
-                "repo-store-insufficient-cover: ACK offers do not cover "
-                "requested replicas"
+                "repo-store-insufficient-cover: "
+                f"candidateCount={len(closed.candidates)} "
+                f"successfulCount={successful_count} "
+                f"eligibleCount={len(offers)} "
+                f"requestedReplicas={self.requested_replicas} "
+                f"requiredBytes={int(self.artifact.size_bytes)} "
+                f"excluded={';'.join(excluded) or 'none'}"
             )
         roles = []
         provider_assignments = {}

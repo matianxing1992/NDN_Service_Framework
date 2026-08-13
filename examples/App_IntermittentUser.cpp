@@ -17,6 +17,8 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
 #include <fcntl.h>
 #include <sys/file.h>
@@ -112,6 +114,21 @@ parseIntOption(int argc, char** argv, const std::string& option, int fallback)
   }
 }
 
+int64_t
+parseInt64Option(int argc, char** argv, const std::string& option, int64_t fallback)
+{
+  const auto value = getOption(argc, argv, option, "");
+  if (value.empty()) {
+    return fallback;
+  }
+  try {
+    return std::stoll(value);
+  }
+  catch (const std::exception&) {
+    return fallback;
+  }
+}
+
 double
 parseDoubleOption(int argc, char** argv, const std::string& option, double fallback)
 {
@@ -150,8 +167,15 @@ main(int argc, char** argv)
     const double rateRps = parseDoubleOption(argc, argv, "--rate-rps", 50.0);
     const int durationMs = parseIntOption(argc, argv, "--duration-ms", 60000);
     const int startupDelayMs = parseIntOption(argc, argv, "--startup-delay-ms", 2500);
+    const int64_t measurementStartMonotonicMs = parseInt64Option(
+      argc, argv, "--measurement-start-monotonic-ms", 0);
     const int ackTimeoutMs = parseIntOption(argc, argv, "--ack-timeout-ms", 200);
     const int requestTimeoutMs = parseIntOption(argc, argv, "--timeout-ms", 5000);
+    const int responseAttemptTimeoutMs = parseIntOption(
+      argc, argv, "--response-attempt-timeout-ms", 1000);
+    const int responseMaxAttempts = parseIntOption(
+      argc, argv, "--response-max-attempts", 4);
+    const bool responseRetry = hasFlag(argc, argv, "--response-retry");
     const std::string strategyName = getOption(argc, argv, "--strategy", "first-responding");
     const bool serveCertificates = !hasFlag(argc, argv, "--no-serve-certificates");
     std::shared_ptr<const ndn_service_framework::AckSelectionPolicy> selectionStrategy =
@@ -187,6 +211,11 @@ main(int argc, char** argv)
     user.init();
     user.setPerformanceMode(true);
     user.setUseTokens(true);
+    ndn_service_framework::ServiceUser::ResponseRetryOptions retryOptions;
+    retryOptions.enabled = responseRetry;
+    retryOptions.attemptTimeoutMs = responseAttemptTimeoutMs;
+    retryOptions.maxAttempts = static_cast<size_t>(std::max(1, responseMaxAttempts));
+    user.setResponseRetryOptions(retryOptions);
     ndn_service_framework::ServiceUser::AdaptiveAdmissionOptions admission;
     admission.enabled = false;
     user.setAdaptiveAdmissionControl(admission);
@@ -201,6 +230,8 @@ main(int argc, char** argv)
       size_t badResponse = 0;
       std::set<std::string> outstanding;
       std::set<std::string> completed;
+      std::unordered_map<std::string, std::chrono::steady_clock::time_point> sendTimes;
+      std::vector<double> latenciesMs;
       std::mutex mutex;
       std::chrono::steady_clock::time_point firstSend;
       std::chrono::steady_clock::time_point lastSend;
@@ -210,9 +241,17 @@ main(int argc, char** argv)
 
     const auto interval = ndn::time::nanoseconds(
       static_cast<int64_t>(1000000000.0 / std::max(0.001, rateRps)));
-    const auto startAt =
+    const size_t targetRequests = static_cast<size_t>(std::llround(
+      std::max(0.0, rateRps * static_cast<double>(durationMs) / 1000.0)));
+    auto startAt =
       std::chrono::steady_clock::now() + std::chrono::milliseconds(startupDelayMs);
-    const auto stopAt = startAt + std::chrono::milliseconds(durationMs);
+    if (measurementStartMonotonicMs > 0) {
+      // Mininet nodes share the host monotonic clock.  An absolute target
+      // prevents process-launch overhead from giving NDNSF a different
+      // mobility phase than the gRPC/NSC clients.
+      startAt = std::chrono::steady_clock::time_point(
+        std::chrono::milliseconds(measurementStartMonotonicMs));
+    }
 
     auto finishIfDone = std::make_shared<std::function<void()>>();
     *finishIfDone = [&, counters, stoppedSending] {
@@ -225,23 +264,31 @@ main(int argc, char** argv)
     };
 
     auto sendOne = std::make_shared<std::function<void()>>();
-    *sendOne = [&, counters, stoppedSending, sendOne, finishIfDone, stopAt, interval] {
+    *sendOne = [&, counters, stoppedSending, sendOne, finishIfDone,
+                startAt, interval, targetRequests] {
       const auto now = std::chrono::steady_clock::now();
-      if (now >= stopAt) {
+      bool reachedTarget = false;
+      size_t requestIndex = 0;
+      {
+        std::lock_guard<std::mutex> lock(counters->mutex);
+        if (counters->sent >= targetRequests) {
+          reachedTarget = true;
+        }
+        else {
+          ++counters->sent;
+          requestIndex = counters->sent;
+          if (counters->accepted == 0) {
+            counters->firstSend = now;
+          }
+          counters->lastSend = now;
+        }
+      }
+      if (reachedTarget) {
         *stoppedSending = true;
         scheduler.schedule(ndn::time::milliseconds(requestTimeoutMs + 1000),
                            [&] { face.getIoContext().stop(); });
         (*finishIfDone)();
         return;
-      }
-
-      {
-        std::lock_guard<std::mutex> lock(counters->mutex);
-        ++counters->sent;
-        if (counters->accepted == 0) {
-          counters->firstSend = now;
-        }
-        counters->lastSend = now;
       }
 
       auto requestPayload = makeBuffer("HELLO");
@@ -252,8 +299,12 @@ main(int argc, char** argv)
         ackTimeoutMs,
         selectionStrategy,
         requestTimeoutMs,
-        [counters, finishIfDone, requestKey](const ndn_service_framework::ResponseMessage& response) {
-          bool shouldFinish = false;
+        [counters, finishIfDone, requestKey, requestIndex](
+          const ndn_service_framework::ResponseMessage& response) {
+	          bool shouldFinish = false;
+	          bool responseOk = false;
+	          double latencyMs = 0.0;
+	          double publishedMonotonicMs = 0.0;
           {
             std::lock_guard<std::mutex> lock(counters->mutex);
             if (requestKey->empty() || counters->completed.count(*requestKey) != 0) {
@@ -262,19 +313,41 @@ main(int argc, char** argv)
             counters->completed.insert(*requestKey);
             counters->outstanding.erase(*requestKey);
             if (response.getStatus() && payloadToString(response) == "HELLO") {
+              const auto start = counters->sendTimes.find(*requestKey);
+	              if (start != counters->sendTimes.end()) {
+	                publishedMonotonicMs = std::chrono::duration<double, std::milli>(
+	                  start->second.time_since_epoch()).count();
+	                latencyMs = std::chrono::duration<double, std::milli>(
+                  std::chrono::steady_clock::now() - start->second).count();
+                counters->latenciesMs.push_back(latencyMs);
+                counters->sendTimes.erase(start);
+              }
               ++counters->success;
+              responseOk = true;
             }
             else {
+              counters->sendTimes.erase(*requestKey);
               ++counters->badResponse;
             }
             shouldFinish = true;
           }
           if (shouldFinish) {
+            std::cout << std::fixed << std::setprecision(3)
+                      << "INTERMITTENT_USER_REQUEST_RESULT"
+                      << " request_index=" << (requestIndex - 1)
+                      << " requestId=" << *requestKey
+	                      << " status=" << (responseOk ? "SUCCESS" : "BAD_RESPONSE")
+	                      << " latency_ms=" << latencyMs
+	                      << " published_monotonic_ms=" << publishedMonotonicMs
+	                      << std::endl;
             (*finishIfDone)();
           }
         },
-        [counters, finishIfDone](const ndn_service_framework::RequestId& requestId) {
-          bool shouldFinish = false;
+        [counters, finishIfDone, requestIndex](
+          const ndn_service_framework::RequestId& requestId) {
+	          bool shouldFinish = false;
+	          double latencyMs = 0.0;
+	          double publishedMonotonicMs = 0.0;
           {
             const auto key = requestId.toUri();
             std::lock_guard<std::mutex> lock(counters->mutex);
@@ -282,11 +355,27 @@ main(int argc, char** argv)
               return;
             }
             counters->completed.insert(key);
+            const auto start = counters->sendTimes.find(key);
+	            if (start != counters->sendTimes.end()) {
+	              publishedMonotonicMs = std::chrono::duration<double, std::milli>(
+	                start->second.time_since_epoch()).count();
+	              latencyMs = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - start->second).count();
+              counters->sendTimes.erase(start);
+            }
             ++counters->timeout;
             counters->outstanding.erase(key);
             shouldFinish = true;
           }
           if (shouldFinish) {
+            std::cout << std::fixed << std::setprecision(3)
+                      << "INTERMITTENT_USER_REQUEST_RESULT"
+                      << " request_index=" << (requestIndex - 1)
+                      << " requestId=" << requestId.toUri()
+	                      << " status=TIMEOUT"
+	                      << " latency_ms=" << latencyMs
+	                      << " published_monotonic_ms=" << publishedMonotonicMs
+	                      << std::endl;
             (*finishIfDone)();
           }
         });
@@ -296,20 +385,35 @@ main(int argc, char** argv)
         std::lock_guard<std::mutex> lock(counters->mutex);
         ++counters->accepted;
         counters->outstanding.insert(*requestKey);
+        counters->sendTimes[*requestKey] = now;
       }
-      scheduler.schedule(interval, [sendOne] { (*sendOne)(); });
+      // Schedule against the absolute request index.  Scheduling the next
+      // interval relative to callback completion accumulates event-loop and
+      // crypto jitter and can under-send a long formal cell.
+      const auto nextAt = startAt + std::chrono::nanoseconds(
+        interval.count() * static_cast<int64_t>(requestIndex));
+      const auto delay = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        nextAt - std::chrono::steady_clock::now());
+      scheduler.schedule(ndn::time::nanoseconds(std::max<int64_t>(0, delay.count())),
+                         [sendOne] { (*sendOne)(); });
     };
 
     std::cout << "INTERMITTENT_USER_READY service=" << serviceName.toUri()
               << " rateRps=" << rateRps
               << " durationMs=" << durationMs
+              << " responseRetry=" << (responseRetry ? "enabled" : "disabled")
+              << " responseAttemptTimeoutMs=" << responseAttemptTimeoutMs
+              << " responseMaxAttempts=" << std::max(1, responseMaxAttempts)
               << " ackTimeoutMs=" << ackTimeoutMs
               << " timeoutMs=" << requestTimeoutMs
               << " strategy=" << strategyName
               << " adaptiveAdmission=disabled"
               << std::endl;
 
-    scheduler.schedule(ndn::time::milliseconds(startupDelayMs),
+    const auto initialDelay = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      startAt - std::chrono::steady_clock::now());
+    scheduler.schedule(ndn::time::nanoseconds(
+                          std::max<int64_t>(0, initialDelay.count())),
                        [sendOne] { (*sendOne)(); });
     face.processEvents();
 
@@ -319,6 +423,7 @@ main(int argc, char** argv)
     size_t timeout = 0;
     size_t badResponse = 0;
     size_t completed = 0;
+    std::vector<double> latenciesMs;
     std::chrono::steady_clock::time_point firstSend;
     std::chrono::steady_clock::time_point lastSend;
     {
@@ -329,6 +434,7 @@ main(int argc, char** argv)
       timeout = counters->timeout;
       badResponse = counters->badResponse;
       completed = counters->completed.size();
+      latenciesMs = counters->latenciesMs;
       firstSend = counters->firstSend;
       lastSend = counters->lastSend;
     }
@@ -338,6 +444,29 @@ main(int argc, char** argv)
       sent == 0 ? 0.0 : 100.0 * static_cast<double>(success) / static_cast<double>(sent);
     const double timeoutRate =
       sent == 0 ? 0.0 : 100.0 * static_cast<double>(timeout) / static_cast<double>(sent);
+    const auto percentile = [&latenciesMs](double p) {
+      if (latenciesMs.empty()) {
+        return 0.0;
+      }
+      auto ordered = latenciesMs;
+      std::sort(ordered.begin(), ordered.end());
+      const auto rank = static_cast<size_t>(std::ceil(p * ordered.size()));
+      return ordered[std::min(std::max<size_t>(1, rank) - 1, ordered.size() - 1)];
+    };
+    double latencySum = 0.0;
+    for (const auto latency : latenciesMs) {
+      latencySum += latency;
+    }
+    const double meanLatencyMs = latenciesMs.empty() ? 0.0 :
+      latencySum / static_cast<double>(latenciesMs.size());
+    double measurementStartMonotonicMsActual = 0.0;
+    double measurementStartLatenessMs = 0.0;
+    if (measurementStartMonotonicMs > 0 && firstSend != std::chrono::steady_clock::time_point{}) {
+      measurementStartMonotonicMsActual =
+        std::chrono::duration<double, std::milli>(firstSend.time_since_epoch()).count();
+      measurementStartLatenessMs =
+        measurementStartMonotonicMsActual - measurementStartMonotonicMs;
+    }
 
     std::cout << std::fixed << std::setprecision(2)
               << "INTERMITTENT_USER_SUMMARY"
@@ -351,6 +480,16 @@ main(int argc, char** argv)
               << " bad_response=" << badResponse
               << " success_rate=" << successRate
               << " timeout_rate=" << timeoutRate
+              << " mean_ms=" << meanLatencyMs
+              << " p50_ms=" << percentile(0.50)
+              << " p95_ms=" << percentile(0.95)
+              << " p99_ms=" << percentile(0.99)
+              << " measurement_start_monotonic_ms="
+              << measurementStartMonotonicMsActual
+              << " measurement_start_target_monotonic_ms="
+              << measurementStartMonotonicMs
+              << " measurement_start_lateness_ms="
+              << measurementStartLatenessMs
               << std::endl;
     return 0;
   }

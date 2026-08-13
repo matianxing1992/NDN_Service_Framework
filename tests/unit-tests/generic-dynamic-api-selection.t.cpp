@@ -5,6 +5,110 @@ namespace ndn_service_framework::test {
 BOOST_AUTO_TEST_SUITE(GenericDynamicApi)
 BOOST_AUTO_TEST_SUITE(SelectionStrategies)
 
+BOOST_AUTO_TEST_CASE(FirstRespondingResponseTimeoutReselectsBoundedAlternate)
+{
+  ndn::security::KeyChain keyChain("pib-memory:response-reselection",
+                                   "tpm-memory:response-reselection");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name requester("/test/user/reselection");
+  const ndn::Name providerA("/test/provider/A");
+  const ndn::Name providerB("/test/provider/B");
+  const ndn::Name service("/Inference/Generic");
+  auto cert = makeRsaIdentity(keyChain, requester);
+  auto aa = makeRsaIdentity(keyChain, ndn::Name("/test/aa-reselection"));
+  LocalServiceUser user(face, ndn::Name("/test/group"), cert, aa,
+                        "examples/trust-any.conf");
+  installUserPermissions(user, requester, service, {providerA, providerB});
+  RequestMessage published;
+  user.setRequestPublisher(
+    [&] (const ndn::Name&, const ndn::Name&, const std::vector<ndn::Name>&,
+         const ndn::Name&, const RequestMessage& value, size_t) { published = value; });
+  ServiceUser::ResponseRetryOptions retry;
+  retry.enabled = true;
+  retry.attemptTimeoutMs = 10;
+  retry.maxAttempts = 2;
+  user.setResponseRetryOptions(retry);
+
+  RequestMessage request;
+  const auto requestId = user.RequestService(
+    {providerA, providerB}, service, request, 50,
+    ServiceUser::AckSelectionStrategy::FirstRespondingSelection, 200,
+    [](const ndn::Name&) {}, [](const ResponseMessage&) {});
+
+  BOOST_CHECK(user.handleRequestAckByName(
+    makeRequestAckNameV2(providerA, requester, service, requestId),
+    makeSuccessAckForRequest(published, "token-a")));
+  BOOST_CHECK_EQUAL(user.getSelectedProvider(requestId), providerA);
+
+  // A later ACK is retained as a standby after FirstResponding has selected A.
+  BOOST_CHECK(user.handleRequestAckByName(
+    makeRequestAckNameV2(providerB, requester, service, requestId),
+    makeSuccessAckForRequest(published, "token-b")));
+  BOOST_CHECK_EQUAL(user.getPendingRequestAckCount(requestId), 2);
+
+  pumpFace(face, ndn::time::milliseconds(30));
+  BOOST_CHECK_EQUAL(user.getSelectedProvider(requestId), providerB);
+  const auto selections = user.getSelectionPublishedProviders(requestId);
+  BOOST_REQUIRE_EQUAL(selections.size(), 2);
+  BOOST_CHECK_EQUAL(selections[0], providerA);
+  BOOST_CHECK_EQUAL(selections[1], providerB);
+
+  // maxAttempts includes the initial selection, so no third selection can be
+  // scheduled even if the global request remains pending.
+  pumpFace(face, ndn::time::milliseconds(30));
+  BOOST_CHECK_EQUAL(user.getSelectionPublishedProviders(requestId).size(), 2);
+}
+
+BOOST_AUTO_TEST_CASE(FirstRespondingResponseRetryDecryptsLateAckPublication)
+{
+  ScopedEnvironmentValue cryptoDiag("NDNSF_CRYPTO_DIAG", "1");
+  ScopedEnvironmentValue plaintextAck("NDNSF_DIAG_PLAINTEXT_ACK", "1");
+  ndn::security::KeyChain keyChain("pib-memory:response-retry-late-ack",
+                                   "tpm-memory:response-retry-late-ack");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name requester("/test/user/late-ack");
+  const ndn::Name providerA("/test/provider/A");
+  const ndn::Name providerB("/test/provider/B");
+  const ndn::Name service("/Inference/Generic");
+  auto cert = makeRsaIdentity(keyChain, requester);
+  auto aa = makeRsaIdentity(keyChain, ndn::Name("/test/aa-late-ack"));
+  LocalServiceUser user(face, ndn::Name("/test/group"), cert, aa,
+                        "examples/trust-any.conf");
+  installUserPermissions(user, requester, service, {providerA, providerB});
+  RequestMessage published;
+  user.setRequestPublisher(
+    [&] (const ndn::Name&, const ndn::Name&, const std::vector<ndn::Name>&,
+         const ndn::Name&, const RequestMessage& value, size_t) { published = value; });
+  ServiceUser::ResponseRetryOptions retry;
+  retry.enabled = true;
+  retry.attemptTimeoutMs = 100;
+  retry.maxAttempts = 2;
+  user.setResponseRetryOptions(retry);
+
+  const auto requestId = user.RequestService(
+    {providerA, providerB}, service, RequestMessage(), 50,
+    ServiceUser::AckSelectionStrategy::FirstRespondingSelection, 500,
+    [](const ndn::Name&) {}, [](const ResponseMessage&) {});
+
+  user.deliverPlaintextAckPublicationForTest(
+    providerA, service, requestId,
+    makeSuccessAckForRequest(published, "token-a"));
+  pumpFace(face, 20_ms);
+  BOOST_CHECK_EQUAL(user.getSelectedProvider(requestId), providerA);
+
+  // This exercises the real SVS subscription callback seam.  Response retry
+  // must keep decrypting ACKs from alternate Providers after FirstResponding
+  // has already selected its initial Provider.
+  user.deliverPlaintextAckPublicationForTest(
+    providerB, service, requestId,
+    makeSuccessAckForRequest(published, "token-b"));
+  pumpFace(face, 20_ms);
+  BOOST_CHECK_EQUAL(user.getPendingRequestAckCount(requestId), 2);
+  const auto candidates = user.getSuccessfulAckProviders(requestId);
+  BOOST_CHECK(std::find(candidates.begin(), candidates.end(), providerB) !=
+              candidates.end());
+}
+
 BOOST_AUTO_TEST_CASE(R1ReservationSelectionClosesOnlyAtDeadlineAndTargetsEveryLease)
 {
   ndn::security::KeyChain keyChain("pib-memory:r1-decision-closure",
@@ -20,6 +124,7 @@ BOOST_AUTO_TEST_CASE(R1ReservationSelectionClosesOnlyAtDeadlineAndTargetsEveryLe
   auto providerCertB = makeRsaIdentity(keyChain, providerB);
   LocalServiceUser user(face, ndn::Name("/test/group"), cert, aa,
                         "examples/trust-any.conf");
+  installUserPermissions(user, requester, service, {providerA, providerB});
   RequestMessage published;
   user.setRequestPublisher(
     [&] (const ndn::Name&, const ndn::Name&, const std::vector<ndn::Name>&,
@@ -76,6 +181,7 @@ BOOST_AUTO_TEST_CASE(R1LatePositiveAckReceivesNotSelectedWithoutReopeningWindow)
   auto providerCert = makeRsaIdentity(keyChain, provider);
   LocalServiceUser user(face, ndn::Name("/test/group"), cert, aa,
                         "examples/trust-any.conf");
+  installUserPermissions(user, requester, service, {provider});
   RequestMessage published;
   user.setRequestPublisher(
     [&] (const ndn::Name&, const ndn::Name&, const std::vector<ndn::Name>&,
@@ -119,6 +225,7 @@ BOOST_AUTO_TEST_CASE(R1LostReceiptRetriesExactDecisionAtMostTwice)
   auto providerCert = makeRsaIdentity(keyChain, provider);
   LocalServiceUser user(face, ndn::Name("/test/group"), cert, aa,
                         "examples/trust-any.conf");
+  installUserPermissions(user, requester, service, {provider});
   RequestMessage published;
   user.setRequestPublisher(
     [&] (const ndn::Name&, const ndn::Name&, const std::vector<ndn::Name>&,
@@ -402,6 +509,7 @@ BOOST_AUTO_TEST_CASE(LateAckAfterAckTimeoutSelectsProviderBeforeRequestTimeout)
   auto userCert = makeRsaIdentity(keyChain, requesterName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-late-ack-selects"));
   LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+  installUserPermissions(user, requesterName, serviceName, {providerName});
 
   RequestMessage publishedRequest;
   user.setRequestPublisher(
@@ -445,6 +553,7 @@ BOOST_AUTO_TEST_CASE(FirstRespondingSelectsFirstAckBeforeAckTimeout)
   auto userCert = makeRsaIdentity(keyChain, requesterName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-first-before-timeout"));
   LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+  installUserPermissions(user, requesterName, serviceName, {providerA, providerB});
 
   RequestMessage publishedRequest;
   user.setRequestPublisher(
@@ -487,6 +596,7 @@ BOOST_AUTO_TEST_CASE(FirstRespondingSelectsFirstAckAfterNominalAckTimeout)
   auto userCert = makeRsaIdentity(keyChain, requesterName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-first-late-ack"));
   LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+  installUserPermissions(user, requesterName, serviceName, {providerName});
 
   RequestMessage publishedRequest;
   user.setRequestPublisher(
@@ -529,6 +639,7 @@ BOOST_AUTO_TEST_CASE(RequestTimeoutExpressesSelectionStatusDiagnosticQuery)
   auto userCert = makeRsaIdentity(keyChain, requesterName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-timeout-status-diag"));
   LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+  installUserPermissions(user, requesterName, serviceName, {providerName});
   user.setPendingCallTimeoutGrace(ndn::time::milliseconds(0));
 
   user.setRequestPublisher(
@@ -587,6 +698,7 @@ BOOST_AUTO_TEST_CASE(FirstRespondingIgnoresAckTimeoutCompletely)
   auto userCert = makeRsaIdentity(keyChain, requesterName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-first-ignore-ack-timeout"));
   LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+  installUserPermissions(user, requesterName, serviceName, {providerName});
 
   RequestMessage publishedRequest;
   user.setRequestPublisher(
@@ -631,6 +743,7 @@ BOOST_AUTO_TEST_CASE(FirstRespondingLateAckAfterRequestTimeoutIsIgnored)
   auto userCert = makeRsaIdentity(keyChain, requesterName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-first-late-timeout"));
   LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+  installUserPermissions(user, requesterName, serviceName, {providerName});
 
   RequestMessage publishedRequest;
   user.setRequestPublisher(
@@ -672,6 +785,7 @@ BOOST_AUTO_TEST_CASE(FirstRespondingAckAfterProviderSelectedIsIgnored)
   auto userCert = makeRsaIdentity(keyChain, requesterName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-first-ack-after-selected"));
   LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+  installUserPermissions(user, requesterName, serviceName, {providerA, providerB});
 
   RequestMessage publishedRequest;
   user.setRequestPublisher(
@@ -718,6 +832,7 @@ BOOST_AUTO_TEST_CASE(FirstRespondingV2AckCallbackDoesNotFallThroughToLegacySelec
   auto userCert = makeRsaIdentity(keyChain, requesterName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-first-v2-no-legacy"));
   LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+  installUserPermissions(user, requesterName, serviceName, {providerA, providerB});
 
   RequestMessage publishedRequest;
   user.setRequestPublisher(
@@ -772,6 +887,7 @@ BOOST_AUTO_TEST_CASE(LateAckAfterRequestTimeoutIsIgnored)
   auto userCert = makeRsaIdentity(keyChain, requesterName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-late-ack-timeout"));
   LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+  installUserPermissions(user, requesterName, serviceName, {providerName});
 
   RequestMessage publishedRequest;
   user.setRequestPublisher(
@@ -813,6 +929,7 @@ BOOST_AUTO_TEST_CASE(AckAfterProviderSelectedIsIgnored)
   auto userCert = makeRsaIdentity(keyChain, requesterName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-ack-after-selected"));
   LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+  installUserPermissions(user, requesterName, serviceName, {providerA, providerB});
 
   RequestMessage publishedRequest;
   user.setRequestPublisher(
@@ -860,6 +977,7 @@ BOOST_AUTO_TEST_CASE(RandomSelectionMultipleAcksWithinWindowSelectsOneCandidate)
   auto userCert = makeRsaIdentity(keyChain, requesterName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-random-selection-normal"));
   LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+  installUserPermissions(user, requesterName, serviceName, {providerA, providerB});
 
   RequestMessage publishedRequest;
   user.setRequestPublisher(
@@ -907,6 +1025,7 @@ BOOST_AUTO_TEST_CASE(RandomSelectionIgnoresFailedAcksAndKeepsPendingForLateSucce
   auto userCert = makeRsaIdentity(keyChain, requesterName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-random-selection-valid-only"));
   LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+  installUserPermissions(user, requesterName, serviceName, {providerA, providerB});
 
   RequestMessage publishedRequest;
   user.setRequestPublisher(

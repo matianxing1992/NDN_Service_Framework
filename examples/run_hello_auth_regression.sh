@@ -2,6 +2,7 @@
 set -u
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+build_dir="${NDNSF_BUILD_DIR:-${repo_root}/build}"
 tmpdir="$(mktemp -d /tmp/ndnsf-hello-auth.XXXXXX)"
 
 controller_pid=""
@@ -20,20 +21,20 @@ cleanup() {
 trap cleanup EXIT
 
 cd "${repo_root}"
-export LD_LIBRARY_PATH="${repo_root}/build:${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="${build_dir}:${LD_LIBRARY_PATH:-}"
 export NDNSF_CONFIG="${tmpdir}/ndnsf.conf"
 export NDNSF_SESSION_BASE="$(( $(date +%s) + $$ ))"
 export NDN_LOG="${NDN_LOG:-ndn_service_framework.*=INFO}"
 
-./build/examples/App_ServiceController >"${tmpdir}/controller.log" 2>&1 &
+"${build_dir}/examples/App_ServiceController" >"${tmpdir}/controller.log" 2>&1 &
 controller_pid=$!
 sleep 2
 
-./build/examples/App_Provider >"${tmpdir}/provider.log" 2>&1 &
+"${build_dir}/examples/App_Provider" >"${tmpdir}/provider.log" 2>&1 &
 provider_pid=$!
 sleep 4
 
-timeout 30s ./build/examples/App_User >"${tmpdir}/user.log" 2>&1
+timeout 30s "${build_dir}/examples/App_User" >"${tmpdir}/user.log" 2>&1
 user_status=$?
 sleep 2
 
