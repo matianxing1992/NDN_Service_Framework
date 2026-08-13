@@ -28,6 +28,10 @@ struct NativeProviderHandlerConfig
   std::string localProviderName;
   std::string providerBootId;
   std::string planDigest;
+  // Sealed NDNSF-DI execution contract. The default is per-role,
+  // dependency-driven execution; V1 is rollback-only and must be paired with
+  // both legacy activation switches plus an exact assignment field.
+  std::string executionPolicy = "DATA_DRIVEN_V2";
   bool requireExecutionAttemptBinding = false;
   int fetchTimeoutMs = 30000;
   std::size_t maxSegmentSize = 7000;
@@ -61,12 +65,24 @@ struct NativeProviderExecutionBindingResult
   ExecutionAttemptKey attempt;
 };
 
+void
+validateNativeProviderExecutionPolicy(
+  const NativeProviderHandlerConfig& config);
+
 NativeProviderExecutionBindingResult
 validateNativeProviderExecutionBinding(
   const std::map<std::string, std::string>& fields,
   const std::string& expectedProviderBootId,
   const std::string& expectedPlanDigest,
   ExecutionAttemptAuthority& authority);
+
+std::optional<std::string>
+validateNativeProviderRuntimeReadiness(
+  const ExecutionEvidence& evidence,
+  const std::string& expectedRole,
+  const std::string& expectedBackend,
+  const std::string& expectedDevice,
+  const std::string& expectedArtifactDigest);
 
 struct NativeProviderExecutionControlResult
 {

@@ -49,6 +49,8 @@ struct ExecutionEvidence
   std::vector<std::string> roles;
   std::vector<NodeProviderAssignment> nodeProviderAssignments;
   bool cpuFallbackUsed = false;
+  bool loadCompleted = false;
+  bool warmupCompleted = false;
   std::string gpuUuid;
   std::string providerProfilePath;
   std::uint64_t createdAtMs = 0;

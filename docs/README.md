@@ -25,6 +25,8 @@ codebase.
   status and next gates.
 - [Documentation Policy](documentation-policy.md): where to put docs, papers,
   generated outputs, and result artifacts.
+- [Development Branching Policy](DEVELOPMENT_BRANCHING_POLICY.md): temporary
+  Spec branch lifecycle and the required `Experimental` → `main` merge path.
 - [Engineering Reports](reports/README.md): dated validation reports and
   supporting evidence that should not replace current project docs.
 

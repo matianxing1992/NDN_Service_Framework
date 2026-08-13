@@ -209,6 +209,13 @@ makeProviderCapabilityHintJson(const ProviderRoleWorkerSnapshot& capacity,
        << "\"ready\":" << (ready ? "true" : "false") << ","
        << "\"reasonCode\":" << jsonString(reasonCode) << ","
        << "\"message\":" << jsonString(message) << ","
+       // Native readiness exposes the same V3 tuple as Python.  This is an
+       // observational ACK field; device admission remains Selection/JIT.
+       << "\"placementProfile\":\"DI_PLACEMENT_V3\","
+       << "\"ackReservation\":false,"
+       << "\"executionDisposition\":"
+       << jsonString(ready ? "ACCEPT_WITH_PREPARATION" : "REJECT") << ","
+       << "\"preparationAccepted\":" << (ready ? "true" : "false") << ","
        << "\"runtimeHint\":{"
        << "\"providerName\":" << jsonString(provider) << ","
        << "\"activeWorkCount\":" << capacity.activeWorkerCount << ","
@@ -297,6 +304,15 @@ makeProviderCapabilityHintJson(const ProviderRoleWorkerSnapshot& capacity,
          << "\"hostAvailableMemoryBytes\":"
          << resources.hostAvailableMemoryBytes << ","
          << "\"processRssBytes\":" << resources.processRssBytes << ","
+         << "\"topologyDigest\":" << jsonString(resources.topologyDigest) << ","
+         << "\"visibleDevices\":[";
+    for (std::size_t i = 0; i < resources.visibleDevices.size(); ++i) {
+      if (i != 0) {
+        json << ",";
+      }
+      json << jsonString(resources.visibleDevices[i]);
+    }
+    json << "],"
          << "\"readyQueue\":" << telemetry->capacity.readyQueueDepth << ","
          << "\"waitingDependencies\":"
          << telemetry->capacity.waitingForInputCount << ","
@@ -338,6 +354,8 @@ makeProviderCapabilityHintJson(const ProviderRoleWorkerSnapshot& capacity,
          << "\"resourceSequence\":0,"
          << "\"sampledAtMs\":0,"
          << "\"resourceMeasuredAtMs\":0,"
+         << "\"topologyDigest\":\"\","
+         << "\"visibleDevices\":[],"
          << "\"errorCode\":\"telemetry-not-configured\"";
   }
   json << "}";

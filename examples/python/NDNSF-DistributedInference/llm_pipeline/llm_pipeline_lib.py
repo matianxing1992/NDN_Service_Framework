@@ -20,7 +20,7 @@ import time
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from ndnsf_distributed_inference.plan import PlannerKind
 from ndnsf_distributed_inference.splitter import (
@@ -87,6 +87,71 @@ def _safe_torch_save(torch: Any, package: dict[str, Any], path: Path) -> None:
             f"failed to write torch artifact {path}; "
             f"free space in {path.parent} is {free_gib:.2f} GiB"
         ) from exc
+
+
+def _content_addressed_torch_save(
+    torch: Any,
+    package: dict[str, Any],
+    run_path: Path,
+    content_store: str | Path,
+    *,
+    identity: Mapping[str, Any],
+) -> str:
+    """Persist one immutable stage and expose only a run-local symlink.
+
+    The semantic identity index avoids rewriting the same stage on later
+    requests. The object filename is still a SHA-256 digest, so an interrupted
+    or corrupted entry cannot be accepted merely because its identity matches.
+    """
+
+    store = Path(content_store).expanduser().resolve()
+    objects = store / "sha256"
+    objects.mkdir(parents=True, exist_ok=True)
+    index_path = store / "index-v1.json"
+    index: dict[str, Any] = {
+        "schema": "ndnsf-di-content-store-v1",
+        "entries": {},
+    }
+    if index_path.exists():
+        try:
+            loaded = json.loads(index_path.read_text(encoding="utf-8"))
+            if loaded.get("schema") == index["schema"]:
+                index["entries"] = dict(loaded.get("entries") or {})
+        except (OSError, TypeError, ValueError):
+            # Object names are hashes, so a damaged index is recoverable.
+            pass
+
+    identity_key = hashlib.sha256(json.dumps(
+        dict(identity), sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")).hexdigest()
+    digest = str(index["entries"].get(identity_key, ""))
+    object_path = (
+        objects / f"{digest[7:]}.pt"
+        if digest.startswith("sha256:") and len(digest) == 71 else None
+    )
+    if object_path is None or not _is_loadable_torch_file(torch, object_path):
+        tmp_path = objects / f".{identity_key}.tmp-{os.getpid()}"
+        tmp_path.unlink(missing_ok=True)
+        _safe_torch_save(torch, package, tmp_path)
+        raw_digest = _sha256_file(tmp_path)
+        digest = f"sha256:{raw_digest}"
+        object_path = objects / f"{raw_digest}.pt"
+        if object_path.exists() and _is_loadable_torch_file(torch, object_path):
+            tmp_path.unlink(missing_ok=True)
+        else:
+            os.replace(tmp_path, object_path)
+
+    index["entries"][identity_key] = digest
+    index_tmp = index_path.with_name(f".{index_path.name}.tmp-{os.getpid()}")
+    index_tmp.write_text(
+        json.dumps(index, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(index_tmp, index_path)
+
+    run_path.parent.mkdir(parents=True, exist_ok=True)
+    if run_path.exists() or run_path.is_symlink():
+        run_path.unlink()
+    run_path.symlink_to(os.path.relpath(object_path, run_path.parent))
+    return digest
 
 
 def role_name(index: int) -> str:
@@ -369,6 +434,131 @@ def run_bounded_qwen_generation(
     )
 
 
+def run_full_qwen_generation(
+    *,
+    input_token_ids: Sequence[int],
+    max_new_tokens: int,
+    eos_token_ids: Iterable[int],
+    generation_id: str,
+    generation_call: Callable[[tuple[int, ...], int, str], Any],
+    expected_token_ids: Sequence[int] | None = None,
+    require_eos: bool = True,
+    decode: Callable[[Sequence[int]], str] | None = None,
+    clock: Callable[[], float] = time.perf_counter,
+) -> BoundedQwenGenerationResult:
+    """Validate one durable full-generation response.
+
+    ``generation_call`` is invoked exactly once.  Provider-side autoregressive
+    work, including any inter-stage control traffic, is internal to that one
+    invocation and must return ``generatedTokenIds`` as a complete sequence.
+    This deliberately keeps the old :func:`run_bounded_qwen_generation`
+    token-step helper separate for diagnostics and compatibility experiments.
+    """
+
+    initial = tuple(int(token) for token in input_token_ids)
+    if not initial or any(token < 0 for token in initial):
+        raise ValueError("Qwen generation input token IDs must be non-empty and non-negative")
+    if max_new_tokens < 1 or max_new_tokens > MAX_QWEN_GENERATED_TOKENS:
+        raise ValueError(
+            f"max_new_tokens must be between 1 and {MAX_QWEN_GENERATED_TOKENS}")
+    eos = frozenset(int(token) for token in eos_token_ids)
+    if not eos or any(token < 0 for token in eos):
+        raise ValueError("Qwen generation EOS token IDs must be non-empty and non-negative")
+    if not generation_id:
+        raise ValueError("Qwen generation ID must not be empty")
+    expected = (
+        tuple(int(token) for token in expected_token_ids)
+        if expected_token_ids is not None else None
+    )
+    started = clock()
+    status = "FAILED"
+    stop_reason = "REQUEST_FAILURE"
+    error = ""
+    generated: tuple[int, ...] = ()
+    metadata: dict[str, Any] = {}
+    completion_monotonic_ms: tuple[float, ...] = ()
+    try:
+        value = generation_call(initial, max_new_tokens, generation_id)
+        if not isinstance(value, Mapping):
+            raise TypeError("full-generation response must be a mapping")
+        raw = value.get("generatedTokenIds")
+        if not isinstance(raw, (list, tuple)):
+            raise ValueError("full-generation response lacks generatedTokenIds")
+        generated = tuple(int(token) for token in raw)
+        if any(token < 0 for token in generated):
+            raise ValueError("full-generation response contains a negative token ID")
+        metadata = {
+            str(key): item for key, item in value.items()
+            if key not in {"generatedTokenIds", "topToken"}
+        }
+        raw_completion_times = value.get("tokenCompletionMonotonicMs", ())
+        if raw_completion_times:
+            if (value.get("tokenCompletionClock") != "CLOCK_MONOTONIC"
+                    or not isinstance(raw_completion_times, (list, tuple))):
+                raise ValueError(
+                    "full-generation token completion clock is invalid")
+            completion_monotonic_ms = tuple(
+                float(item) for item in raw_completion_times)
+            if (len(completion_monotonic_ms) != len(generated)
+                    or any(right < left for left, right in zip(
+                        completion_monotonic_ms,
+                        completion_monotonic_ms[1:]))):
+                raise ValueError(
+                    "full-generation token completion timestamps are invalid")
+    except Exception as exc:
+        error = str(exc)
+
+    if not error:
+        if not generated:
+            status, stop_reason, error = "FAILED", "EMPTY_OUTPUT", "full generation returned no tokens"
+        elif len(generated) > max_new_tokens:
+            status, stop_reason, error = "FAILED", "TOKEN_LIMIT", (
+                f"full generation returned {len(generated)} tokens, limit {max_new_tokens}")
+        elif require_eos and generated[-1] not in eos:
+            status, stop_reason, error = "TRUNCATED", "TOKEN_LIMIT", (
+                "full generation did not terminate with EOS")
+        elif expected is not None and generated != expected:
+            status, stop_reason, error = "FAILED", "TOKEN_MISMATCH", (
+                f"TOKEN_MISMATCH expected={len(expected)} actual={len(generated)}")
+        else:
+            status = "OK"
+            stop_reason = "EOS" if generated[-1] in eos else "MAX_NEW_TOKENS"
+
+    decoded_text = ""
+    if decode is not None and generated:
+        try:
+            decoded_text = str(decode(generated))
+        except Exception as exc:
+            status, stop_reason, error = "FAILED", "REQUEST_FAILURE", f"generation decode failed: {exc}"
+    if status == "OK" and not decoded_text.strip():
+        status, stop_reason, error = "FAILED", "EMPTY_OUTPUT", "decoded generation text is empty"
+    ended = clock()
+    total_ms = max(0.0, (ended - started) * 1000.0)
+    ttft_ms = total_ms
+    inter_token_ms: tuple[float, ...] = ()
+    if completion_monotonic_ms:
+        ttft_ms = max(0.0, completion_monotonic_ms[0] - started * 1000.0)
+        inter_token_ms = tuple(
+            max(0.0, right - left)
+            for left, right in zip(
+                completion_monotonic_ms, completion_monotonic_ms[1:]))
+    return BoundedQwenGenerationResult(
+        status=status,
+        stop_reason=stop_reason,
+        generation_id=generation_id,
+        generated_token_ids=generated,
+        decoded_text=decoded_text,
+        exact_reference_match=(status == "OK" and expected is not None and generated == expected),
+        ttft_ms=ttft_ms,
+        inter_token_ms=inter_token_ms,
+        total_ms=total_ms,
+        tokens_per_second=(len(generated) / (total_ms / 1000.0)
+                           if generated and total_ms > 0 else 0.0),
+        token_steps=({"mode": "FULL", "metadata": metadata},) if metadata else (),
+        error=error,
+    )
+
+
 def _call_with_supported_kwargs(fn: Any, **kwargs: Any) -> Any:
     signature = inspect.signature(fn)
     return fn(**{
@@ -449,6 +639,21 @@ def _stage_state_dict(full_state: dict[str, Any], spec: dict[str, Any]) -> dict[
     }
 
 
+def _torch_state_identity(torch: Any, state: Mapping[str, Any]) -> str:
+    """Hash model weights and metadata for immutable model identity binding."""
+
+    digest = hashlib.sha256()
+    for name in sorted(state):
+        tensor = state[name].detach().cpu().contiguous()
+        digest.update(name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(str(tensor.dtype).encode("ascii"))
+        digest.update(repr(tuple(tensor.shape)).encode("ascii"))
+        # A byte view avoids dtype-specific NumPy conversions such as bfloat16.
+        digest.update(tensor.view(torch.uint8).numpy().tobytes())
+    return "sha256:" + digest.hexdigest()
+
+
 def _model_layer_count(model: Any) -> int:
     base = getattr(model, "model", None)
     layers = list(getattr(base, "layers", [])) if base is not None else []
@@ -485,6 +690,7 @@ def write_tiny_transformer_stage_artifacts(
     roles: list[str],
     stages: int,
     layer_count: int,
+    content_store: str | Path = "",
 ) -> list[SplitArtifact]:
     import torch
 
@@ -492,6 +698,7 @@ def write_tiny_transformer_stage_artifacts(
     root.mkdir(parents=True, exist_ok=True)
     full_model = create_tiny_transformer_model(layer_count)
     full_state = full_model.state_dict()
+    model_identity_digest = _torch_state_identity(torch, full_state)
     artifacts: list[SplitArtifact] = []
     for role in roles:
         spec = tiny_transformer_stage_spec(
@@ -507,7 +714,20 @@ def write_tiny_transformer_stage_artifacts(
             "config": _tiny_transformer_config_dict(layer_count, spec.get("seed", 7)),
             "state_dict": _stage_state_dict(full_state, spec),
         }
-        _safe_torch_save(torch, package, path)
+        content_digest = ""
+        if content_store:
+            content_digest = _content_addressed_torch_save(
+                torch, package, path, content_store,
+                identity={
+                    "model": "NDNSF/TinyTransformers-Fixture",
+                    "revision": "seed-7-config-v1",
+                    "modelIdentityDigest": model_identity_digest,
+                    "spec": spec,
+                    "config": _tiny_transformer_config_dict(
+                        layer_count, spec.get("seed", 7)),
+                })
+        else:
+            _safe_torch_save(torch, package, path)
         artifacts.append(SplitArtifact(
             role=role,
             path=str(path),
@@ -523,6 +743,9 @@ def write_tiny_transformer_stage_artifacts(
                 "layerRange": dict(spec["layerRange"]),
                 "modelFamily": "llm",
                 "runtimeBackend": "transformers",
+                **({"contentAddress": content_digest}
+                   if content_digest else {}),
+                "modelIdentityDigest": model_identity_digest,
             },
         ))
     return artifacts
@@ -534,6 +757,7 @@ def with_tiny_transformer_artifacts(
     output_dir: str | Path,
     stages: int,
     layer_count: int,
+    content_store: str | Path = "",
 ) -> SplitterOutput:
     services: list[SplitServiceSpec] = []
     for service in splitter.services:
@@ -550,6 +774,7 @@ def with_tiny_transformer_artifacts(
                 roles=list(service.roles),
                 stages=stages,
                 layer_count=layer_count,
+                content_store=content_store,
             ),
             input_schema=dict(service.input_schema),
             output_schema=dict(service.output_schema),
@@ -682,6 +907,7 @@ def encode_qwen_pipeline_context(
     request_id: str = "manual",
     session_id: str = "",
     context_epoch: int = 0,
+    generation: Mapping[str, Any] | None = None,
 ) -> bytes:
     """Encode the formal Qwen ONNX full-context input object.
 
@@ -712,6 +938,7 @@ def encode_qwen_pipeline_context(
         "contextMode": "full",
         "delta": None,
         "kvCacheReference": None,
+        "generation": dict(generation or {}),
     }, sort_keys=True).encode("utf-8")
 
 
@@ -803,6 +1030,7 @@ def decode_qwen_pipeline_context(payload: bytes) -> dict[str, Any]:
         "contextMode": doc.get("contextMode", "full"),
         "sessionId": doc.get("sessionId", ""),
         "contextEpoch": int(doc.get("contextEpoch", 0) or 0),
+        "generation": dict(doc.get("generation") or {}),
     }
 
 
@@ -854,6 +1082,126 @@ def merge_qwen_pipeline_delta(base_doc: dict[str, Any],
     }
 
 
+def write_tiny_qwen3_transformer_stage_artifacts(
+    output_dir: str | Path,
+    *,
+    roles: list[str],
+    stages: int,
+    layer_count: int = 3,
+    vocab_size: int = 151936,
+    hidden_size: int = 64,
+    intermediate_size: int = 128,
+    attention_heads: int = 4,
+    key_value_heads: int = 2,
+    seed: int = 168,
+    content_store: str | Path = "",
+) -> list[SplitArtifact]:
+    """Write a bounded, random-weight Qwen3 fixture for local lifecycle gates.
+
+    This is a real Qwen3 architecture executed by the production stage loader;
+    it is not a pretrained quality or GPU-capacity subject.  Its distinct model
+    identity prevents the local fixture from being confused with Qwen3-0.6B.
+    """
+
+    import torch
+    from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
+    from transformers.models.qwen3.modeling_qwen3 import Qwen3ForCausalLM
+
+    if (stages <= 0 or layer_count < stages or len(roles) != stages
+            or hidden_size <= 0 or intermediate_size <= 0
+            or attention_heads <= 0 or key_value_heads <= 0
+            or hidden_size % attention_heads != 0
+            or attention_heads % key_value_heads != 0
+            or vocab_size <= 151645):
+        raise ValueError("invalid tiny Qwen3 fixture configuration")
+    expected_roles = [role_name(index) for index in range(stages)]
+    if list(roles) != expected_roles:
+        raise ValueError("tiny Qwen3 fixture roles must use canonical stage order")
+
+    config = Qwen3Config(
+        vocab_size=int(vocab_size),
+        hidden_size=int(hidden_size),
+        intermediate_size=int(intermediate_size),
+        num_hidden_layers=int(layer_count),
+        num_attention_heads=int(attention_heads),
+        num_key_value_heads=int(key_value_heads),
+        head_dim=int(hidden_size // attention_heads),
+        max_position_embeddings=256,
+        rope_theta=10000.0,
+        pad_token_id=151643,
+        bos_token_id=151643,
+        eos_token_id=151645,
+        tie_word_embeddings=False,
+    )
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(int(seed))
+        full_model = Qwen3ForCausalLM(config)
+    full_model.eval()
+    full_state = full_model.state_dict()
+    model_identity_digest = _torch_state_identity(torch, full_state)
+    model_name = "NDNSF/TinyQwen3-Fixture"
+    root = Path(output_dir) / "qwen-transformers-stage-artifacts"
+    root.mkdir(parents=True, exist_ok=True)
+    artifacts: list[SplitArtifact] = []
+    for role in roles:
+        spec = qwen_transformer_stage_spec(
+            role=role,
+            stages=stages,
+            layer_count=layer_count,
+            model_name=model_name,
+        )
+        spec["fixtureProfile"] = "spec168-tiny-qwen3-v1"
+        spec["fixtureSeed"] = int(seed)
+        filename = f"stage-{spec['stageIndex']}-qwen-transformers.pt"
+        path = root / filename
+        package = {
+            "schema": "ndnsf-di-qwen-stage-weights-v1",
+            "spec": spec,
+            "config": config.to_dict(),
+            "attnImplementation": "sdpa",
+            "state_dict": _stage_state_dict(full_state, spec),
+        }
+        content_digest = ""
+        if content_store:
+            content_digest = _content_addressed_torch_save(
+                torch, package, path, content_store,
+                identity={
+                    "model": model_name,
+                    "revision": "spec168-tiny-qwen3-v1",
+                    "seed": int(seed),
+                    "modelIdentityDigest": model_identity_digest,
+                    "spec": spec,
+                    "config": config.to_dict(),
+                })
+        else:
+            _safe_torch_save(torch, package, path)
+        artifacts.append(SplitArtifact(
+            role=role,
+            path=str(path),
+            artifact_name=(
+                f"/Model/LLM/Pipeline/TinyQwen3/{role.strip('/')}"),
+            filename=filename,
+            kind="llm-stage-weights",
+            backend="transformers",
+            metadata={
+                "runtime": QWEN_TRANSFORMERS_RUNTIME,
+                "stageIndex": spec["stageIndex"],
+                "stageCount": spec["stageCount"],
+                "layerCount": spec["layerCount"],
+                "layerRange": dict(spec["layerRange"]),
+                "modelFamily": "llm",
+                "modelType": "qwen3",
+                "runtimeBackend": "transformers",
+                "fixtureProfile": "spec168-tiny-qwen3-v1",
+                "fixtureSeed": int(seed),
+                **({"contentAddress": content_digest}
+                   if content_digest else {}),
+                "modelIdentityDigest": model_identity_digest,
+            },
+        ))
+    return artifacts
+
+
 def write_qwen_transformer_stage_artifacts(
     output_dir: str | Path,
     *,
@@ -864,6 +1212,7 @@ def write_qwen_transformer_stage_artifacts(
     prompt: str = "",
     allow_download: bool = False,
     dtype: str = "float32",
+    content_store: str | Path = "",
 ) -> list[SplitArtifact]:
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -889,6 +1238,7 @@ def write_qwen_transformer_stage_artifacts(
     full_model.eval()
     layer_count = _model_layer_count(full_model)
     full_state = full_model.state_dict()
+    model_identity_digest = _torch_state_identity(torch, full_state)
     artifacts: list[SplitArtifact] = []
     for role in roles:
         spec = qwen_transformer_stage_spec(
@@ -906,7 +1256,20 @@ def write_qwen_transformer_stage_artifacts(
             "attnImplementation": getattr(full_model.config, "_attn_implementation", ""),
             "state_dict": _stage_state_dict(full_state, spec),
         }
-        _safe_torch_save(torch, package, path)
+        content_digest = ""
+        if content_store:
+            content_digest = _content_addressed_torch_save(
+                torch, package, path, content_store,
+                identity={
+                    "model": model_name,
+                    "revision": model_revision,
+                    "dtype": dtype,
+                    "modelIdentityDigest": model_identity_digest,
+                    "spec": spec,
+                    "config": full_model.config.to_dict(),
+                })
+        else:
+            _safe_torch_save(torch, package, path)
         artifacts.append(SplitArtifact(
             role=role,
             path=str(path),
@@ -922,6 +1285,9 @@ def write_qwen_transformer_stage_artifacts(
                 "layerRange": dict(spec["layerRange"]),
                 "modelFamily": "llm",
                 "runtimeBackend": "transformers",
+                **({"contentAddress": content_digest}
+                   if content_digest else {}),
+                "modelIdentityDigest": model_identity_digest,
             },
         ))
     if prompt:
@@ -966,6 +1332,7 @@ def with_qwen_transformer_artifacts(
     prompt: str = "",
     allow_download: bool = False,
     dtype: str = "float32",
+    content_store: str | Path = "",
 ) -> SplitterOutput:
     services: list[SplitServiceSpec] = []
     for service in splitter.services:
@@ -986,6 +1353,7 @@ def with_qwen_transformer_artifacts(
                 prompt=prompt,
                 allow_download=allow_download,
                 dtype=dtype,
+                content_store=content_store,
             ),
             input_schema=dict(service.input_schema),
             output_schema=dict(service.output_schema),
@@ -1944,6 +2312,40 @@ def _require_qwen_transformers_runtime(
         )
 
 
+def probe_qwen_transformers_model_type(model_type: str) -> None:
+    """Prove the configured runtime can construct a model family before ACK."""
+
+    from importlib import import_module
+
+    modules = {
+        "qwen2": (
+            "transformers.models.qwen2.configuration_qwen2",
+            "transformers.models.qwen2.modeling_qwen2",
+        ),
+        "qwen3": (
+            "transformers.models.qwen3.configuration_qwen3",
+            "transformers.models.qwen3.modeling_qwen3",
+        ),
+        "qwen3_5": (
+            "transformers.models.qwen3_5.configuration_qwen3_5",
+            "transformers.models.qwen3_5.modeling_qwen3_5",
+        ),
+    }
+    model_type = str(model_type or "")
+    if model_type not in modules:
+        raise RuntimeError(
+            f"QWEN_TRANSFORMERS_MODEL_TYPE_UNSUPPORTED:{model_type}")
+    _require_qwen_transformers_runtime(model_type)
+    try:
+        for module_name in modules[model_type]:
+            import_module(module_name)
+    except (ImportError, ModuleNotFoundError) as exc:
+        raise RuntimeError(
+            "QWEN_TRANSFORMERS_MODEL_TYPE_UNAVAILABLE:"
+            f"{model_type}:{type(exc).__name__}:{exc}"
+        ) from exc
+
+
 def _remap_qwen_stage_state_dict(
     state_dict: dict[str, Any],
     *,
@@ -2026,7 +2428,23 @@ def qwen_transformer_model_from_stage_package(
     import torch
     from torch import nn
 
-    package = torch.load(Path(model_path), map_location="cpu", weights_only=True)
+    # Stage packages are loaded concurrently by the three deployment-faithful
+    # Providers.  A normal ``torch.load`` followed by a normally initialized
+    # model briefly keeps both the serialized state dict and the model's
+    # freshly allocated parameters alive.  On the fixed 8-GiB Gate-B host that
+    # peak is enough to push the final stage into swap before it can publish
+    # ``QWEN_RUNTIME_READY``.  Local stage artifacts are immutable regular
+    # files, so use PyTorch's file-backed storage when available.  Older
+    # PyTorch releases do not accept ``mmap`` and retain the previous path.
+    try:
+        package = torch.load(
+            Path(model_path),
+            map_location="cpu",
+            weights_only=True,
+            mmap=True,
+        )
+    except (TypeError, RuntimeError):
+        package = torch.load(Path(model_path), map_location="cpu", weights_only=True)
     spec = dict(package.get("spec", {}))
     model_type, config_dict = _normalize_qwen_stage_config(
         dict(package.get("config", {})))
@@ -2109,11 +2527,10 @@ def qwen_transformer_model_from_stage_package(
             self.ndnsf_layer_count = int(spec["layerCount"])
             self.ndnsf_model_type = model_type
 
-    model = _StageCausalLM()
     remapped = _remap_qwen_stage_state_dict(
         dict(package.get("state_dict", {})),
         start=start,
-        local_layer_count=len(model.model.layers),
+        local_layer_count=end - start,
         include_embedding=stage_index == 0,
         include_final=stage_index == stage_count - 1,
     )
@@ -2127,14 +2544,41 @@ def qwen_transformer_model_from_stage_package(
             "Qwen stage package must use exactly one floating-point dtype, "
             f"got {sorted(map(str, floating_dtypes))}")
     stage_dtype = next(iter(floating_dtypes))
-    model.to(dtype=stage_dtype)
-    model.load_state_dict(remapped, strict=True)
+
+    # Construct on the meta device when supported.  ``assign=True`` then
+    # attaches the already-loaded tensors instead of copying them into a
+    # second full parameter allocation.  Keep a compatibility fallback for
+    # PyTorch versions without meta/assign support and for unusual custom
+    # modules that reject the low-memory load contract.
+    try:
+        with torch.device("meta"):
+            model = _StageCausalLM()
+        model.to(dtype=stage_dtype)
+        model.load_state_dict(remapped, strict=True, assign=True)
+        if any(
+            tensor.is_meta
+            for tensor in tuple(model.parameters()) + tuple(model.buffers())
+        ):
+            raise RuntimeError(
+                "meta Qwen stage load left an unassigned parameter or buffer")
+    except (TypeError, RuntimeError, NotImplementedError):
+        model = _StageCausalLM()
+        model.to(dtype=stage_dtype)
+        model.load_state_dict(remapped, strict=True)
+    # The model now owns the state tensors (or copied them in the compatibility
+    # path); release the package graph before moving to CUDA or warming so the
+    # serialized state dict cannot keep a second copy resident.
+    del remapped
+    del package
     execution_device = resolve_qwen_execution_device(
         device, require_cuda=require_cuda)
     model.to(execution_device)
     model.eval()
     model.ndnsf_execution_device = str(execution_device)
-    model.ndnsf_cpu_fallback = execution_device.type != "cuda"
+    model.ndnsf_cpu_fallback = (
+        str(device or "cpu").strip().lower() == "auto"
+        and execution_device.type != "cuda"
+    )
     return model
 
 
@@ -2209,6 +2653,23 @@ def _build_qwen_attention_masks(
     position_ids: Any,
     model_type: str,
 ) -> Any:
+    if model_type == "qwen3":
+        # Qwen3Model.forward constructs an explicit mask through
+        # create_causal_mask even when the caller supplies an all-one
+        # attention mask.  Passing None here silently selects SDPA's inline
+        # is_causal path, which is mathematically equivalent but can produce
+        # different bfloat16 reductions for near-tied vocabulary logits.
+        from transformers.masking_utils import create_causal_mask
+
+        import torch
+
+        return create_causal_mask(
+            config=base_model.config,
+            inputs_embeds=hidden_states,
+            attention_mask=torch.ones_like(input_ids),
+            past_key_values=None,
+            position_ids=position_ids,
+        )
     if model_type != "qwen3_5":
         return _build_causal_mask(base_model, input_ids, hidden_states)
     from transformers.masking_utils import (
@@ -2379,6 +2840,62 @@ def run_tiny_transformer_stage(
             "topToken": top_token,
             "logitsShape": list(logits.shape),
         }, sort_keys=True).encode("utf-8")
+
+
+def warm_qwen_transformer_stage(
+    model: Any,
+    assigned_device: str | None = None,
+) -> bool:
+    """Execute one real token on the stage's committed execution device."""
+
+    import torch
+
+    base = model.model
+    try:
+        parameter = next(model.parameters())
+    except StopIteration as exc:
+        raise RuntimeError("Qwen stage has no model parameters") from exc
+    device = parameter.device
+    expected_device = torch.device(
+        assigned_device
+        if assigned_device is not None
+        else getattr(model, "ndnsf_execution_device", str(device))
+    )
+    if device != expected_device:
+        raise RuntimeError(
+            "Qwen stage warmup device does not match committed assignment: "
+            f"loaded={device} assigned={expected_device}"
+        )
+    input_ids = torch.zeros((1, 1), dtype=torch.long, device=device)
+    stage_index = int(getattr(model, "ndnsf_stage_index", -1))
+    stage_count = int(getattr(model, "ndnsf_stage_count", 0))
+    if stage_index < 0 or stage_count <= 0:
+        raise RuntimeError("Qwen stage warmup lacks stage identity")
+    with torch.no_grad():
+        if stage_index == 0:
+            hidden_states = base.embed_tokens(input_ids)
+        else:
+            hidden_states = torch.zeros(
+                (1, 1, int(model.config.hidden_size)),
+                dtype=parameter.dtype,
+                device=device,
+            )
+        position_ids = _position_ids_like(input_ids)
+        attention_mask = _build_causal_mask(base, input_ids, hidden_states)
+        for layer in list(base.layers):
+            hidden_states = _run_transformer_layer(
+                layer,
+                hidden_states,
+                position_ids=position_ids,
+                position_embeddings=_rotary_embeddings(
+                    base, hidden_states, position_ids),
+                attention_mask=attention_mask,
+            )
+        if stage_index == stage_count - 1:
+            model.lm_head(base.norm(hidden_states))
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    return True
 
 
 def run_qwen_transformer_stage(
@@ -2843,6 +3360,7 @@ def write_policy(
     qwen_prompt: str = "",
     qwen_allow_download: bool = False,
     qwen_dtype: str = "float32",
+    qwen_content_store: str = "",
     qwen_artifact_store: str = "",
     qwen_service_manifest: str = "",
     qwen_runtime_manifest: str = "",
@@ -2873,6 +3391,7 @@ def write_policy(
             output_dir=output_dir,
             stages=stages,
             layer_count=transformer_layers,
+            content_store=qwen_content_store,
         )
     elif runtime == QWEN_TRANSFORMERS_RUNTIME:
         splitter = with_qwen_transformer_artifacts(
@@ -2884,6 +3403,7 @@ def write_policy(
             prompt=qwen_prompt,
             allow_download=qwen_allow_download,
             dtype=qwen_dtype,
+            content_store=qwen_content_store,
         )
     elif runtime == QWEN_ONNX_RUNTIME:
         reuse_inputs = (

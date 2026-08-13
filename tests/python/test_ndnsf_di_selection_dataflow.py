@@ -6,8 +6,14 @@ import json
 import threading
 import time
 import unittest
+from concurrent.futures import Future
+from types import SimpleNamespace
 
+from ndnsf import CollaborationContext as CoreCollaborationContext
 from ndnsf_distributed_inference.core.contracts import (
+    DATA_DRIVEN_V2,
+    LEGACY_READY_SET_V1,
+    DIDataDependencyV2,
     DIRequestEnvelopeV2,
     DIRoleAssignmentV2,
     DISelectionAcceptanceV2,
@@ -15,6 +21,7 @@ from ndnsf_distributed_inference.core.contracts import (
     ExactPrefixKvKeyV1,
     ShardResidencyEvidenceV2,
     StateReuseBindingV2,
+    canonical_digest,
 )
 from ndnsf_distributed_inference.core.deployment_control import (
     DISelectionParticipant,
@@ -32,6 +39,8 @@ from ndnsf_distributed_inference.client import (
 from ndnsf_distributed_inference.sdk.placement import DIProviderOfferV2
 from ndnsf_distributed_inference.provider import (
     DIProviderOfferIssuer,
+    LargePrefetchResult,
+    ProviderRuntimeContext,
     register_selection_dataflow_v2,
 )
 from ndnsf_distributed_inference.app_sdk.deployment import (
@@ -41,6 +50,14 @@ from ndnsf_distributed_inference.app_sdk.deployment import (
 
 def digest(value: bytes) -> str:
     return "sha256:" + hashlib.sha256(value).hexdigest()
+
+
+def committed_dependency() -> DIDataDependencyV2:
+    return DIDataDependencyV2(
+        producers=("stage-0",), consumers=("stage-1",),
+        key_scope="tensor-stage-0-stage-1", topic_prefix="/activation",
+        tensors=("hidden-state",),
+    )
 
 
 def exact_kv_key() -> ExactPrefixKvKeyV1:
@@ -80,6 +97,7 @@ def offer(*, request_id="request-1", attempt=1, gpu_mib=6000,
         accepted_deadline_ms=9000,
         accepted_roles=("stage-0", "stage-1"),
         backends=("onnxruntime",),
+        devices=("cuda:0",),
         offered_gpu_memory_mb=gpu_mib,
         queue_depth=0,
         estimated_wait_ms=0.0,
@@ -98,22 +116,28 @@ def assignment(provider_offer, *, roles=None, attempt=1,
                provider=None, deadline_ms=9000,
                state_reuse=None):
     provider = provider or provider_offer.provider
+    dependency = committed_dependency()
     roles = roles or (
         DIRoleAssignmentV2(
             role="stage-0", graph_node_id="node-0", layer_start=0,
             layer_end=8, artifact_digest="sha256:" + "5" * 64,
-            dependency_digest="sha256:" + "6" * 64,
+            dependency_digest=canonical_digest((dependency,)),
             adapter_id="onnx", adapter_version="1",
+            dependencies=(dependency,),
+            backend="onnxruntime", device="cuda:0",
             required_gpu_mib=3000,
             input_grant_digests=("sha256:" + "7" * 64,),
         ),
         DIRoleAssignmentV2(
             role="stage-1", graph_node_id="node-1", layer_start=8,
             layer_end=16, artifact_digest="sha256:" + "8" * 64,
-            dependency_digest="sha256:" + "9" * 64,
+            dependency_digest=canonical_digest((dependency,)),
             adapter_id="onnx", adapter_version="1",
+            dependencies=(dependency,),
+            backend="onnxruntime", device="cuda:0",
             required_gpu_mib=3000,
             input_grant_digests=("sha256:" + "a" * 64,),
+            required_input_scopes=("tensor-stage-0-stage-1",),
         ),
     )
     return DISelectionAssignmentV2(
@@ -151,6 +175,212 @@ def core_context(value):
 
 
 class SelectionDataflowV2Test(unittest.TestCase):
+    def test_provider_refuses_to_sign_incomplete_cached_shard_claim(self):
+        ledger = GpuMiBAdmissionLedger(
+            provider="/provider/a", boot_epoch="boot-epoch-a",
+            capacity_mib=6000,
+        )
+        issuer = DIProviderOfferIssuer(
+            provider="/provider/a", service="/Inference/Generic",
+            boot_epoch="boot-epoch-a", ledger=ledger,
+            offered_gpu_memory_mb=3000, signer_key_id="provider-key",
+            sign_offer_digest=lambda value: "signed:" + value,
+            devices=("cuda:0",), clock_ms=lambda: 2000,
+        )
+        request = DIRequestEnvelopeV2(
+            invocation_id="invocation-1", request_id="request-1", attempt=1,
+            service="/Inference/Generic", model_name="Qwen",
+            model_identity_hash="sha256:" + "1" * 64,
+            task_kind="text-generation",
+            input_manifest_digest="sha256:" + "2" * 64,
+            input_payload_b64="aW5wdXQ=", options_payload_b64="",
+            plan_deadline_ms=9000, security_domain="tenant-a",
+        )
+        incomplete = {
+            "artifact_digest": "sha256:" + "3" * 64,
+            "model_content_digest": "sha256:" + "1" * 64,
+            "semantics_digest": "sha256:" + "2" * 64,
+            "graph_digest": "sha256:" + "4" * 64,
+            "backend": "onnxruntime", "precision": "fp32",
+            "tier": "RELOAD_SAFE_GPU", "device": "cuda:0",
+            "boot_epoch": "boot-epoch-a", "cache_epoch": 1,
+            "captured_at_ms": 1900, "expires_at_ms": 8000,
+        }
+        decision = issuer.issue(
+            request.to_bytes(), accepted_roles=("stage-0",),
+            backends=("onnxruntime",), cached_shards=(incomplete,),
+        )
+        self.assertFalse(decision.status)
+        self.assertEqual(decision.message, "DI_RESIDENCY_EVIDENCE_INVALID")
+
+    def test_selection_dataflow_policy_is_explicit_and_fail_closed(self):
+        selected = assignment(offer())
+        self.assertEqual(selected.execution_policy, DATA_DRIVEN_V2)
+        self.assertEqual(selected.roles[0].backend, "onnxruntime")
+        self.assertEqual(selected.roles[0].device, "cuda:0")
+        self.assertEqual(
+            DISelectionAssignmentV2.from_bytes(selected.to_bytes()), selected)
+        with self.assertRaisesRegex(ValueError, "execution policy"):
+            replace(selected, execution_policy="LEGACY_READY_SET_V1")
+        with self.assertRaisesRegex(ValueError, "execution policy"):
+            replace(selected, execution_policy="AUTOMATIC_FALLBACK")
+
+    def test_selection_rejects_offer_that_did_not_advertise_v2(self):
+        provider_offer = replace(
+            offer(), execution_policies=(LEGACY_READY_SET_V1,))
+        ledger = GpuMiBAdmissionLedger(
+            provider="/provider/a", boot_epoch="boot-epoch-a",
+            capacity_mib=6000,
+        )
+        ledger.hold_offer(provider_offer, now_ms=1500)
+        selected = assignment(provider_offer)
+        participant = DISelectionParticipant(
+            provider="/provider/a", boot_epoch="boot-epoch-a",
+            ledger=ledger,
+            offer_lookup=lambda value: (
+                provider_offer if value == provider_offer.digest() else None),
+            callbacks=SelectionPreparationCallbacks(
+                prepare_role=lambda _context: None,
+                start_role=lambda _role: None,
+            ),
+            clock_ms=lambda: 2000,
+        )
+        with self.assertRaisesRegex(ValueError, "ACK-offer bound"):
+            participant.prepare(core_context(selected), selected.to_bytes())
+
+    def test_selection_rejects_backend_or_device_not_in_signed_offer(self):
+        provider_offer = offer(gpu_mib=3000)
+        ledger = GpuMiBAdmissionLedger(
+            provider="/provider/a", boot_epoch="boot-epoch-a",
+            capacity_mib=3000,
+        )
+        ledger.hold_offer(provider_offer, now_ms=1500)
+        participant = DISelectionParticipant(
+            provider="/provider/a", boot_epoch="boot-epoch-a",
+            ledger=ledger,
+            offer_lookup=lambda value: (
+                provider_offer if value == provider_offer.digest() else None),
+            callbacks=SelectionPreparationCallbacks(
+                prepare_role=lambda _context: None,
+                start_role=lambda _role: None,
+            ),
+            clock_ms=lambda: 2000,
+        )
+        selected = assignment(provider_offer, roles=(replace(
+            assignment(provider_offer).roles[0], device="cuda:1"),))
+        with self.assertRaisesRegex(ValueError, "ACK-offer bound"):
+            participant.prepare(core_context(selected), selected.to_bytes())
+
+        selected = assignment(provider_offer, roles=(replace(
+            assignment(provider_offer).roles[0], backend="tensorrt"),))
+        with self.assertRaisesRegex(ValueError, "ACK-offer bound"):
+            participant.prepare(core_context(selected), selected.to_bytes())
+
+    def test_downstream_starts_only_after_bound_predecessor_scope_arrives(self):
+        provider_offer = offer(gpu_mib=3000)
+        ledger = GpuMiBAdmissionLedger(
+            provider="/provider/a", boot_epoch="boot-epoch-a",
+            capacity_mib=3000,
+        )
+        ledger.hold_offer(provider_offer, now_ms=1500)
+        downstream = replace(
+            assignment(provider_offer).roles[1], required_gpu_mib=3000)
+        selected = assignment(provider_offer, roles=(downstream,))
+        starts = []
+        participant = DISelectionParticipant(
+            provider="/provider/a", boot_epoch="boot-epoch-a",
+            ledger=ledger,
+            offer_lookup=lambda value: (
+                provider_offer if value == provider_offer.digest() else None),
+            callbacks=SelectionPreparationCallbacks(
+                prepare_role=lambda _context: None,
+                start_role=starts.append,
+            ),
+            clock_ms=lambda: 2000,
+        )
+        prepared = participant.prepare(
+            core_context(selected), selected.to_bytes())
+        participant.on_committed({
+            "transaction_id": "txn-1",
+            "commit_blob": prepared["commit_blob"],
+            "acceptance_payload": prepared["acceptance_payload"],
+        })
+        participant.wait_role_prepared(
+            selected.to_bytes(), "stage-1", timeout=1)
+        self.assertEqual(starts, [])
+        with self.assertRaisesRegex(ValueError, "predecessor scope"):
+            participant.mark_dependency_input_ready(
+                selected.to_bytes(), "stage-1", "foreign-scope")
+        self.assertTrue(participant.mark_dependency_input_ready(
+            selected.to_bytes(), "stage-1", "tensor-stage-0-stage-1"))
+        self.assertFalse(participant.mark_dependency_input_ready(
+            selected.to_bytes(), "stage-1", "tensor-stage-0-stage-1"))
+        self.assertEqual(starts, ["stage-1"])
+        with self.assertRaisesRegex(ValueError, "not committed"):
+            participant.mark_dependency_input_ready(
+                replace(selected, plan_digest="sha256:" + "f" * 64).to_bytes(),
+                "stage-1", "tensor-stage-0-stage-1")
+
+    def test_verified_dependency_fetch_notifies_data_driven_gate(self):
+        edge = SimpleNamespace(key_scope="tensor-stage-0-stage-1")
+        fetched = Future()
+        fetched._ndnsf_di_dependency_edge = edge
+        fetched.set_result(LargePrefetchResult(
+            payload=b"activation", ref_wait_ms=1.0, fetch_ms=2.0,
+            total_ms=3.0,
+        ))
+        observed = []
+        context = ProviderRuntimeContext(
+            ndnsf=SimpleNamespace(session_id="request-1"),
+            execution=object(), request=b"request", role="stage-1",
+            on_dependency_ready=lambda value: observed.append(value.key_scope),
+        )
+        self.assertEqual(
+            context.wait_prefetched_input_large(fetched), b"activation")
+        self.assertEqual(observed, ["tensor-stage-0-stage-1"])
+
+    def test_data_driven_source_starts_after_its_own_preparation(self):
+        provider_offer = offer(gpu_mib=3000)
+        ledger = GpuMiBAdmissionLedger(
+            provider="/provider/a", boot_epoch="boot-epoch-a",
+            capacity_mib=3000,
+        )
+        ledger.hold_offer(provider_offer, now_ms=1500)
+        source = DIRoleAssignmentV2(
+            role="stage-0", graph_node_id="node-0", layer_start=0,
+            layer_end=8, artifact_digest="sha256:" + "5" * 64,
+            dependency_digest=canonical_digest(()),
+            adapter_id="onnx", adapter_version="1",
+            dependencies=(),
+            backend="onnxruntime", device="cuda:0",
+            required_gpu_mib=3000,
+            input_grant_digests=("sha256:" + "7" * 64,),
+            required_input_scopes=(),
+        )
+        selected = assignment(provider_offer, roles=(source,))
+        starts = []
+        participant = DISelectionParticipant(
+            provider="/provider/a", boot_epoch="boot-epoch-a",
+            ledger=ledger,
+            offer_lookup=lambda value: (
+                provider_offer if value == provider_offer.digest() else None),
+            callbacks=SelectionPreparationCallbacks(
+                prepare_role=lambda _context: None,
+                start_role=starts.append,
+            ),
+            clock_ms=lambda: 2000,
+        )
+        prepared = participant.prepare(
+            core_context(selected), selected.to_bytes())
+        participant.on_committed({
+            "transaction_id": "txn-1",
+            "commit_blob": prepared["commit_blob"],
+            "acceptance_payload": prepared["acceptance_payload"],
+        })
+        participant.wait_role_prepared(
+            selected.to_bytes(), "stage-0", timeout=1)
+        self.assertEqual(starts, ["stage-0"])
+
     def test_positive_ack_offer_is_signed_and_capacity_held(self):
         request = DIRequestEnvelopeV2(
             invocation_id="invocation-1", request_id="request-1", attempt=1,
@@ -170,6 +400,7 @@ class SelectionDataflowV2Test(unittest.TestCase):
             boot_epoch="boot-epoch-a", ledger=ledger,
             offered_gpu_memory_mb=6000, signer_key_id="provider-key",
             sign_offer_digest=lambda value: "sig:" + value,
+            devices=("cuda:0",),
             clock_ms=lambda: 1000,
         )
         decision = issuer.issue(
@@ -180,6 +411,7 @@ class SelectionDataflowV2Test(unittest.TestCase):
         self.assertTrue(decision.status)
         self.assertEqual(decision.pending_state_ttl_ms, 8000)
         issued = DIProviderOfferV2.from_bytes(decision.payload)
+        self.assertEqual(issued.execution_policies, (DATA_DRIVEN_V2,))
         self.assertEqual(ledger.held_mib(now_ms=1000), 6000)
         self.assertEqual(issuer.lookup(issued.digest()), issued)
         second = issuer.issue(
@@ -209,6 +441,7 @@ class SelectionDataflowV2Test(unittest.TestCase):
             boot_epoch="boot-epoch-a", ledger=ledger,
             offered_gpu_memory_mb=6000, signer_key_id="provider-key",
             sign_offer_digest=lambda value: "sig:" + value,
+            devices=("cuda:0",),
             clock_ms=lambda: 1000,
         )
         first = issuer.issue(
@@ -246,6 +479,7 @@ class SelectionDataflowV2Test(unittest.TestCase):
             boot_epoch="boot-epoch-a", ledger=ledger,
             offered_gpu_memory_mb=6000, signer_key_id="provider-key",
             sign_offer_digest=lambda value: "sig:" + value,
+            devices=("cuda:0",),
             max_pending_state_ttl_ms=10_000,
             clock_ms=lambda: 2_000,
         )
@@ -257,6 +491,40 @@ class SelectionDataflowV2Test(unittest.TestCase):
         self.assertEqual(
             decision.message,
             "DI_V2_REQUEST_DEADLINE_EXCEEDS_PROVIDER_LIMIT",
+        )
+        self.assertEqual(ledger.held_mib(now_ms=2_000), 0)
+
+    def test_offer_rejects_deadline_beyond_signed_offer_lease(self):
+        request = DIRequestEnvelopeV2(
+            invocation_id="invocation-1", request_id="request-1", attempt=1,
+            service="/Inference/Generic",
+            model_name="Qwen/Qwen3-0.6B",
+            model_identity_hash="sha256:" + "1" * 64,
+            task_kind="generic", input_manifest_digest="sha256:" + "2" * 64,
+            input_payload_b64="aW5wdXQ=", options_payload_b64="",
+            plan_deadline_ms=10_001, security_domain="tenant-a",
+        )
+        ledger = GpuMiBAdmissionLedger(
+            provider="/provider/a", boot_epoch="boot-epoch-a",
+            capacity_mib=6000,
+        )
+        issuer = DIProviderOfferIssuer(
+            provider="/provider/a", service="/Inference/Generic",
+            boot_epoch="boot-epoch-a", ledger=ledger,
+            offered_gpu_memory_mb=6000, signer_key_id="provider-key",
+            sign_offer_digest=lambda value: "sig:" + value,
+            devices=("cuda:0",), offer_lease_ms=5_000,
+            max_pending_state_ttl_ms=10_000,
+            clock_ms=lambda: 2_000,
+        )
+        decision = issuer.issue(
+            request.to_bytes(), accepted_roles=("stage-0",),
+            backends=("onnxruntime",),
+        )
+        self.assertFalse(decision.status)
+        self.assertEqual(
+            decision.message,
+            "DI_V2_REQUEST_DEADLINE_EXCEEDS_OFFER_LEASE",
         )
         self.assertEqual(ledger.held_mib(now_ms=2_000), 0)
 
@@ -303,10 +571,42 @@ class SelectionDataflowV2Test(unittest.TestCase):
             DISelectionAssignmentV2.from_bytes(
                 json.dumps(changed, sort_keys=True,
                            separators=(",", ":")).encode())
+        missing_dependencies = json.loads(selected.to_bytes())
+        missing_dependencies["roles"][0].pop("dependencies")
+        with self.assertRaises(ValueError):
+            DISelectionAssignmentV2.from_bytes(json.dumps(
+                missing_dependencies, sort_keys=True,
+                separators=(",", ":")).encode())
+        mismatched_dependency = json.loads(selected.to_bytes())
+        mismatched_dependency["roles"][0]["dependencies"][0][
+            "key_scope"] = "tensor-stale-static-scope"
+        with self.assertRaisesRegex(ValueError, "dependency digest"):
+            DISelectionAssignmentV2.from_bytes(json.dumps(
+                mismatched_dependency, sort_keys=True,
+                separators=(",", ":")).encode())
         noncanonical = json.dumps(
             json.loads(request.to_bytes()), indent=2).encode()
         with self.assertRaises(ValueError):
             DIRequestEnvelopeV2.from_bytes(noncanonical)
+
+    def test_large_publication_empty_data_name_fails_before_reference(self):
+        class Native:
+            published = []
+
+            @staticmethod
+            def publish_large(*_args):
+                return ""
+
+            def publish(self, *args):
+                self.published.append(args)
+
+        native = Native()
+        context = CoreCollaborationContext(native)
+        with self.assertRaisesRegex(RuntimeError, "returned no Data name"):
+            context.publish_large_reference(
+                "tensor-scope", "/activation/data", "/activation/ref",
+                b"payload")
+        self.assertEqual(native.published, [])
 
     def test_gpu_offers_cannot_overlap_and_unused_hold_releases(self):
         ledger = GpuMiBAdmissionLedger(
@@ -380,7 +680,8 @@ class SelectionDataflowV2Test(unittest.TestCase):
         release.set()
         participant.wait_for_preparation(timeout=1)
         self.assertEqual(starts, ["stage-0"])
-        participant.mark_input_ready("stage-1")
+        participant.mark_dependency_input_ready(
+            selected.to_bytes(), "stage-1", "tensor-stage-0-stage-1")
         self.assertEqual(starts, ["stage-0", "stage-1"])
 
         recovered_ledger = GpuMiBAdmissionLedger(
@@ -411,6 +712,7 @@ class SelectionDataflowV2Test(unittest.TestCase):
             boot_epoch="boot-epoch-a", ledger=ledger,
             offered_gpu_memory_mb=6000, signer_key_id="provider-key",
             sign_offer_digest=lambda value: "sig:" + value,
+            devices=("cuda:0",),
             clock_ms=lambda: 1000,
         )
 
@@ -433,13 +735,17 @@ class SelectionDataflowV2Test(unittest.TestCase):
         )
         self.assertTrue(first_decision.status)
         first_offer = DIProviderOfferV2.from_bytes(first_decision.payload)
-        selected = assignment(first_offer, roles=(assignment(first_offer).roles[0],))
+        selected = assignment(first_offer, roles=(replace(
+            assignment(first_offer).roles[0], backend="transformers"),))
+        released_assignments = []
         participant = DISelectionParticipant(
             provider="/provider/a", boot_epoch="boot-epoch-a", ledger=ledger,
             offer_lookup=issuer.lookup,
             callbacks=SelectionPreparationCallbacks(
                 prepare_role=lambda _context: None,
                 start_role=lambda _role: None,
+                release_assignment=lambda context, reason:
+                    released_assignments.append((context, reason)),
             ),
             clock_ms=lambda: 2000,
         )
@@ -467,6 +773,10 @@ class SelectionDataflowV2Test(unittest.TestCase):
             selected.to_bytes(), "stage-0", reason="DUPLICATE"))
         self.assertEqual(ledger.committed_mib(), 0)
         self.assertIn("stage-0", resident_model_cache)
+        self.assertEqual(len(released_assignments), 1)
+        self.assertEqual(released_assignments[0][0].request_id, "request-1")
+        self.assertEqual(released_assignments[0][0].role.role, "stage-0")
+        self.assertEqual(released_assignments[0][1], "RESPONSE_PUBLISHED")
 
         next_decision = issuer.issue(
             request("request-3").to_bytes(),
@@ -499,8 +809,9 @@ class SelectionDataflowV2Test(unittest.TestCase):
         too_large_role = (DIRoleAssignmentV2(
             role="stage-0", graph_node_id="node-0", layer_start=0,
             layer_end=8, artifact_digest="sha256:" + "5" * 64,
-            dependency_digest="sha256:" + "6" * 64,
+            dependency_digest=canonical_digest(()),
             adapter_id="onnx", adapter_version="1",
+            dependencies=(),
             required_gpu_mib=7000,
             input_grant_digests=("sha256:" + "7" * 64,),
         ),)
@@ -585,7 +896,8 @@ class SelectionDataflowV2Test(unittest.TestCase):
             "commit_blob": prepared_b["commit_blob"],
             "acceptance_payload": prepared_b["acceptance_payload"],
         })
-        participant_b.mark_input_ready("stage-1")
+        participant_b.mark_dependency_input_ready(
+            selected_b.to_bytes(), "stage-1", "tensor-stage-0-stage-1")
         participant_b.wait_for_preparation(timeout=1)
         self.assertEqual(starts, ["stage-0", "stage-1"])
 

@@ -283,6 +283,13 @@ class APPClient:
             request_id=request_id,
         )
 
+    def generate(self, request):
+        """Submit one complete-generation request without per-token planning."""
+        if self._automatic_planner is None:
+            raise RuntimeError(
+                "APPClient requires an AutomaticPlanningCoordinator")
+        return self._automatic_planner.generate(request)
+
     def request_execution_control(
         self, provider: str, role: str, service: str, payload: bytes, *,
         timeout_ms: int = 5000
@@ -827,6 +834,7 @@ class APPClient:
                 "dependencies": [str(item) for item in dependencies],
             }, sort_keys=True, separators=(",", ":")).encode()).hexdigest())
         readiness_fields = (
+            "executionPolicy=LEGACY_READY_SET_V1;"
             f"readinessRoleCount={len(role_names)};"
             f"readinessRoles={','.join(sorted(role_names))};"
             f"readinessBindingDigest={readiness_binding};"
@@ -1079,6 +1087,7 @@ class APPProvider:
         admission_policy: ProviderAdmissionPolicy | None = None,
         ready_without_model: bool = False,
         selection_offer_issuer=None,
+        selection_offer_issuer_v3=None,
         selection_participant=None,
         selection_wal_path: str | None = None,
         selection_storage_key: bytes | None = None,
@@ -1086,6 +1095,7 @@ class APPProvider:
         selection_max_prepare_ms: int = 1000,
         selection_cached_shards=None,
         selection_reusable_state=None,
+        runtime_preparer=None,
     ) -> None:
         if allow_executables:
             self.deployment.require_executable_artifacts_allowed()
@@ -1126,6 +1136,7 @@ class APPProvider:
             admission_policy=admission_policy,
             ready_without_model=ready_without_model,
             selection_offer_issuer=selection_offer_issuer,
+            selection_offer_issuer_v3=selection_offer_issuer_v3,
             selection_participant=selection_participant,
             selection_wal_path=selection_wal_path,
             selection_storage_key=selection_storage_key,
@@ -1133,6 +1144,7 @@ class APPProvider:
             selection_max_prepare_ms=selection_max_prepare_ms,
             selection_cached_shards=selection_cached_shards,
             selection_reusable_state=selection_reusable_state,
+            runtime_preparer=runtime_preparer,
             register_simple_service=(
                 len(list(roles)) == 1 and
                 not list(self.deployment.service_policy(service).dependencies)

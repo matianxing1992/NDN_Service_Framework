@@ -3404,6 +3404,22 @@ See `packaging/ndnsf-di-container/docs/itiger-qwen-models.md` for transfer,
 license, quota, and cleanup operations, and `itiger-qwen-evidence.md` for the
 standalone/artifact/staged-baseline/candidate authority boundary. Physical
 production remains owned by Spec 106.
+
+The operations guide now also records the later Spec 160/161 lessons: use a
+small memory-bounded Docker collaboration smoke before cluster work, validate
+one coherent SIF on a compute node, prove cross-node NFD before model preload,
+use allocation scratch for the temporary full-model peak, and run one
+complete-generation smoke before a repeated campaign. It also distinguishes a
+Slurm terminal result from immutable workload evidence. The dated checkpoint
+does not claim that the pending Qwen2.5-32B preparation or formal generation
+campaign has completed.
+
+The active successor plan is Spec 162: official `Qwen/Qwen3.6-27B` on three
+distinct RTX 5000 nodes, one stage per node, up to 64 generated tokens, five
+prompts, one warmup and five measured generations per prompt. This is currently
+a frozen design, not an execution result. The existing stage runtime is
+Qwen2-only, so a tested `qwen3_5` hybrid-layer adapter, coherent replacement
+SIF, and measured 32 GB stage-fit gate are required before any live submission.
 # Owner profiles and external optimizers
 
 Install only required distributions under `packaging/python/`. External
@@ -3475,3 +3491,72 @@ recipient-encrypted, use unique nonce/AAD, and return only sequences strictly
 newer than the cursor. Polling has bounded adaptive intervals and stops on a
 terminal state. These rules contain no UAV, codec, model-family or workload
 special case.
+
+## Spec 163 deferred collaboration planning
+
+The canonical application path is now model/task/input first. It does not
+require an application-authored deployment, provider list, role list, or
+pre-split model:
+
+```python
+model = ModelRef(
+    model_name="Qwen/Qwen3-0.6B",
+    content_digest="sha256:<exact frozen file-manifest digest>",
+    semantics_digest="sha256:<adapter and inference-semantics digest>",
+)
+handle = client.request(
+    model=model,
+    task=task,
+    input=validated_input,
+    timeout_ms=30_000,
+)
+```
+
+NDNSF-DI starts the generic NDNSF Collaboration API in `DEFERRED` mode,
+collects one immutable `ACK_CLOSED` snapshot, derives graph-valid split
+candidates through the selected digest-pinned `ModelFamilyAdapter`, and passes
+sanitized signed Provider offers to the configured `ModelPlacementStrategy`.
+After independent decision validation and any required trusted
+materialization/DistributedRepo publication, it commits the plan on the same
+invocation. The existing roles/dependencies-before-Request API remains the
+explicit `PREPLANNED` compatibility path.
+
+`PreSplitFirstStrategy` first considers an exact active pre-split manifest,
+then ranks fresh signed residency evidence in this order: pinned GPU,
+reload-safe GPU, host RAM, disk, repository, and finally a newly generated
+graph-valid split. Residency is evidence rather than authority. Selection
+revalidates model, semantics, artifact, Provider boot/cache epochs, capacity,
+pin or reload feasibility, and the complete per-Provider role tuple.
+
+Model shards and derived inference state are separate caches. Exact-prefix KV
+reuse is Provider-local by default and its key binds model content and
+semantics, adapter, runner, split, tokenizer, exact prefix and length,
+positions, layer range, precision, layout, runtime ABI, and security domain.
+Expiry, eviction, restart, pin loss, requester/tenant mismatch, or any key
+mismatch falls back to clean compute. KV data is never published as an
+immutable model artifact, and prompt/token material is not exposed in ACKs.
+
+Run the bounded local security lifecycle with:
+
+```bash
+tests/container/placement-preparation/run.sh
+```
+
+Run the frozen MiniNDN/Qwen3 acceptance matrix with:
+
+```bash
+sudo -n env \
+  PYTHONPATH="$PWD/pythonWrapper:$PWD/NDNSF-DistributedInference:$PWD/NDNSF-DistributedRepo/pythonWrapper:/usr/lib/python3/dist-packages" \
+  LD_LIBRARY_PATH="$PWD/build:/usr/local/lib:/opt/onnxruntime/lib:/opt/ndn-base/lib:/opt/ndnsf-app/lib:/opt/ndnsf/lib" \
+  /usr/bin/python3 Experiments/NDNSF_DI_PlacementPreparation_Minindn.py \
+  --output "$PWD/results/spec163-minindn-qwen3-<timestamp>"
+```
+
+The accepted 2026-07-29 local evidence is
+`results/spec163-minindn-qwen3-20260729_014203`: 59/59 matrix rows and
+21/21 gates passed; the pinned Qwen3-0.6B CPU reference retained five warmups
+and 25 measured complete generations, with full answers and per-token timing.
+This host has no CUDA, so GPU load and exact warm-GPU-reuse criteria remain
+explicitly `DEFERRED`. The run is not distributed-Qwen, TigerCluster,
+large-model, malicious-computation, distributed-atomicity, deadlock-freedom,
+or universal-optimizer evidence.

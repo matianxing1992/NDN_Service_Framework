@@ -777,6 +777,32 @@ BOOST_AUTO_TEST_CASE(NativeProviderHandlerRejectsMissingRunnerFactory)
                     std::invalid_argument);
 }
 
+BOOST_AUTO_TEST_CASE(NativeProviderExecutionPolicyRejectsMixedFallback)
+{
+  NativeProviderHandlerConfig dataDriven;
+  BOOST_CHECK_NO_THROW(validateNativeProviderExecutionPolicy(dataDriven));
+
+  dataDriven.requireExecutionActivation = true;
+  BOOST_CHECK_THROW(validateNativeProviderExecutionPolicy(dataDriven),
+                    std::invalid_argument);
+
+  NativeProviderHandlerConfig legacy;
+  legacy.executionPolicy = "LEGACY_READY_SET_V1";
+  BOOST_CHECK_THROW(validateNativeProviderExecutionPolicy(legacy),
+                    std::invalid_argument);
+  legacy.requireExecutionActivation = true;
+  legacy.allowLegacyPeerReadinessBarrier = true;
+  BOOST_CHECK_THROW(validateNativeProviderExecutionPolicy(legacy),
+                    std::invalid_argument);
+  legacy.plan.executionPolicy = "LEGACY_READY_SET_V1";
+  BOOST_CHECK_NO_THROW(validateNativeProviderExecutionPolicy(legacy));
+
+  NativeProviderHandlerConfig unknown;
+  unknown.executionPolicy = "AUTOMATIC_FALLBACK";
+  BOOST_CHECK_THROW(validateNativeProviderExecutionPolicy(unknown),
+                    std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_CASE(NativeProviderHandlerExtractsOnlyFinalRoleResponse)
 {
   RoleSpec finalRole{
@@ -1732,6 +1758,7 @@ BOOST_AUTO_TEST_CASE(Spec111NativePlanSessionAndAttemptDefaultsAreCharacterized)
   BOOST_CHECK_EQUAL(plan.modelFamily, "generic-onnx");
   BOOST_CHECK_EQUAL(plan.modelFormat, "unknown");
   BOOST_CHECK_EQUAL(plan.plannerKind, "onnx-dag");
+  BOOST_CHECK_EQUAL(plan.executionPolicy, "DATA_DRIVEN_V2");
 
   const ExecutionAttemptKey attempt{"request-spec111", 7};
   BOOST_CHECK_EQUAL(attempt.scopedSessionId(), "request-spec111/attempt/7");
@@ -1932,6 +1959,7 @@ BOOST_AUTO_TEST_CASE(NativeExecutionPlanLoadsFromGeneratedJsonShape)
         "modelFamily": "yolo-onnx",
         "modelFormat": "onnx",
         "plannerKind": "yolo-detect-auto",
+        "executionPolicy": "LEGACY_READY_SET_V1",
         "roles": ["/Stage/0", "/Stage/1"],
         "dependencies": [
           {
@@ -1962,6 +1990,7 @@ BOOST_AUTO_TEST_CASE(NativeExecutionPlanLoadsFromGeneratedJsonShape)
   BOOST_CHECK_EQUAL(plan.modelFamily, "yolo-onnx");
   BOOST_CHECK_EQUAL(plan.modelFormat, "onnx");
   BOOST_CHECK_EQUAL(plan.plannerKind, "yolo-detect-auto");
+  BOOST_CHECK_EQUAL(plan.executionPolicy, "LEGACY_READY_SET_V1");
   BOOST_REQUIRE_EQUAL(plan.roles.size(), 2);
   BOOST_REQUIRE_EQUAL(plan.dependencies.size(), 1);
   BOOST_CHECK_EQUAL(plan.dependencies[0].keyScope, "stage0-to-stage1");
@@ -1990,6 +2019,23 @@ BOOST_AUTO_TEST_CASE(NativeExecutionPlanLoadsFromGeneratedJsonShape)
   BOOST_CHECK_EQUAL(
     stage1.inputs[0].plannedDataName,
                     "/example/provider/stage0/NDNSF/DI/ACTIVATION/run-json/stage0-to-stage1/Stage/0/bundle/0");
+}
+
+BOOST_AUTO_TEST_CASE(NativeExecutionPlanRejectsAutomaticPolicyFallback)
+{
+  std::istringstream input(R"JSON({
+    "version": 2,
+    "services": [{
+      "service": "/AI/Toy/Inference",
+      "model": "/Model/Toy/v1",
+      "executionPolicy": "AUTOMATIC_FALLBACK",
+      "roles": ["/Stage/0"],
+      "dependencies": []
+    }]
+  })JSON");
+  BOOST_CHECK_THROW(
+    nativeExecutionPlanForServiceFromJson(input, "/AI/Toy/Inference"),
+    std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(NativeExecutionPlanJsonSupportsDynamicSegmentFallback)
@@ -2926,6 +2972,21 @@ BOOST_AUTO_TEST_CASE(ProviderResourceSnapshotFreshnessFailsClosed)
   BOOST_CHECK(!snapshot.isFresh(1'001, 2'000));
 }
 
+BOOST_AUTO_TEST_CASE(ProviderResourceSnapshotV3TopologyIsExplicit)
+{
+  ProviderResourceSnapshot snapshot;
+  snapshot.visibleDevices = {"cuda:0", "cuda:1"};
+  snapshot.topologyDigest = "sha256:topology";
+  BOOST_CHECK(snapshot.hasValidTopology());
+  snapshot.visibleDevices.push_back("cuda:1");
+  BOOST_CHECK(!snapshot.hasValidTopology());
+  snapshot.visibleDevices = {"cpu"};
+  snapshot.topologyDigest = "sha256:cpu";
+  BOOST_CHECK(snapshot.hasValidTopology());
+  snapshot.visibleDevices.clear();
+  BOOST_CHECK(!snapshot.hasValidTopology());
+}
+
 BOOST_AUTO_TEST_CASE(LinuxProviderResourceProbeParsesExactMemoryFacts)
 {
   ProviderResourceProbeConfig config;
@@ -3191,6 +3252,8 @@ BOOST_AUTO_TEST_CASE(ExecutionEvidenceRoundTripsAndExcludesSecrets)
   evidence.planDigest = "sha256:plan";
   evidence.artifactDigests["/LLM/Stage/0"] = "sha256:stage0";
   evidence.roles = {"/LLM/Stage/0"};
+  evidence.loadCompleted = true;
+  evidence.warmupCompleted = true;
   evidence.createdAtMs = 1234;
   const auto json = executionEvidenceToJson(evidence);
   BOOST_CHECK(json.find("token") == std::string::npos);
@@ -3199,6 +3262,81 @@ BOOST_AUTO_TEST_CASE(ExecutionEvidenceRoundTripsAndExcludesSecrets)
   BOOST_CHECK_EQUAL(decoded.providerBootId, "boot-a");
   BOOST_CHECK(decoded.runnerKind == RunnerKind::OnnxRuntimeCuda);
   BOOST_CHECK_EQUAL(decoded.artifactDigests.at("/LLM/Stage/0"), "sha256:stage0");
+  BOOST_CHECK(decoded.loadCompleted);
+  BOOST_CHECK(decoded.warmupCompleted);
+}
+
+BOOST_AUTO_TEST_CASE(NativeProviderRuntimeReadinessRequiresExactCudaLoadAndWarmup)
+{
+  auto validEvidence = [] {
+    ExecutionEvidence evidence;
+    evidence.providerName = "/provider/A";
+    evidence.providerBootId = "boot-a";
+    evidence.evidenceEpoch = 3;
+    evidence.runnerKind = RunnerKind::OnnxRuntimeCuda;
+    evidence.realCompute = true;
+    evidence.deviceKind = "cuda";
+    evidence.deviceId = "0";
+    evidence.runtimeVersion = "onnxruntime=1;cuda=1";
+    evidence.modelDigest = "sha256:model";
+    evidence.planDigest = "sha256:plan";
+    evidence.artifactDigests["stage-0"] = "sha256:stage0";
+    evidence.roles = {"stage-0"};
+    evidence.loadCompleted = true;
+    evidence.warmupCompleted = true;
+    evidence.createdAtMs = 1234;
+    return evidence;
+  };
+
+  const auto accepted = validateNativeProviderRuntimeReadiness(
+    validEvidence(), "stage-0", "onnxruntime-cuda", "cuda:0", "sha256:stage0");
+  BOOST_CHECK(!accepted);
+
+  auto expectReason = [&] (ExecutionEvidence evidence,
+                           const std::string& backend,
+                           const std::string& device,
+                           const std::string& artifact,
+                           const std::string& expectedReason) {
+    const auto result = validateNativeProviderRuntimeReadiness(
+      evidence, "stage-0", backend, device, artifact);
+    BOOST_REQUIRE(result);
+    BOOST_CHECK_EQUAL(*result, expectedReason);
+  };
+
+  auto evidence = validEvidence();
+  evidence.cpuFallbackUsed = true;
+  expectReason(evidence, "onnxruntime-cuda", "cuda:0", "sha256:stage0",
+               "DI_RUNTIME_CUDA_REQUIRED");
+
+  evidence = validEvidence();
+  evidence.loadCompleted = false;
+  evidence.warmupCompleted = false;
+  expectReason(evidence, "onnxruntime-cuda", "cuda:0", "sha256:stage0",
+               "DI_RUNTIME_MODEL_NOT_LOADED");
+
+  evidence = validEvidence();
+  evidence.warmupCompleted = false;
+  expectReason(evidence, "onnxruntime-cuda", "cuda:0", "sha256:stage0",
+               "DI_RUNTIME_WARMUP_INCOMPLETE");
+
+  expectReason(validEvidence(), "pytorch", "cuda:0", "sha256:stage0",
+               "DI_RUNTIME_BACKEND_MISMATCH");
+  expectReason(validEvidence(), "onnxruntime-cuda", "cuda:1", "sha256:stage0",
+               "DI_RUNTIME_DEVICE_MISMATCH");
+  expectReason(validEvidence(), "onnxruntime-cuda", "cuda:0", "sha256:other",
+               "DI_RUNTIME_ARTIFACT_MISMATCH");
+
+  const auto incomplete = validateNativeProviderRuntimeReadiness(
+    validEvidence(), "stage-0", "", "cuda:0", "sha256:stage0");
+  BOOST_REQUIRE(incomplete);
+  BOOST_CHECK_EQUAL(*incomplete, "DI_RUNTIME_ASSIGNMENT_INCOMPLETE");
+
+  evidence = validEvidence();
+  evidence.loadCompleted = false;
+  const auto invalid = validateNativeProviderRuntimeReadiness(
+    evidence, "stage-0", "onnxruntime-cuda", "cuda:0", "sha256:stage0");
+  BOOST_REQUIRE(invalid);
+  BOOST_CHECK_EQUAL(*invalid, "DI_RUNTIME_EVIDENCE_INVALID");
 }
 
 BOOST_AUTO_TEST_CASE(ExecutionEvidenceRejectsMissingUnknownAndSecretFields)

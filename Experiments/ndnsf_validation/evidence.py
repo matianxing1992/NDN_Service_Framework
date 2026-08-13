@@ -70,7 +70,29 @@ def validate_generation_evidence(
         token_steps = row.get("tokenSteps")
         if not isinstance(token_ids, list) or not isinstance(token_steps, list):
             raise EvidenceError("generation token evidence must be lists")
-        if len(token_ids) < minimum_tokens or len(token_steps) != len(token_ids):
+        full_step = (
+            len(token_steps) == 1
+            and isinstance(token_steps[0], dict)
+            and str(token_steps[0].get("mode", "")).upper() == "FULL"
+        )
+        if len(token_ids) < minimum_tokens:
+            raise EvidenceError("generation does not meet token-event minimum")
+        if full_step:
+            # FULL is one durable distributed invocation: the transport emits
+            # one response carrying the complete generated sequence rather
+            # than manufacturing a wire request for every token.
+            metadata = token_steps[0].get("metadata")
+            if not isinstance(metadata, dict):
+                raise EvidenceError("FULL generation response metadata is absent")
+            if str(metadata.get("generationMode", "")).upper() != "FULL":
+                raise EvidenceError("FULL generation mode marker is absent")
+            if str(metadata.get("requestId", "")) != f"/{row['generationId']}":
+                raise EvidenceError("FULL request ID lineage mismatch")
+            if token_steps[0].get("transport") is not None:
+                raise EvidenceError("FULL evidence must not contain token transports")
+            if len(row.get("interTokenMs", [])) != 0:
+                raise EvidenceError("FULL evidence must not claim per-token wire latency")
+        elif len(token_steps) != len(token_ids):
             raise EvidenceError("generation does not meet token-event minimum")
         if not str(row.get("decodedText", "")).strip():
             raise EvidenceError("generation decoded answer is empty")
@@ -81,7 +103,9 @@ def validate_generation_evidence(
         if float(row.get("tokensPerSecond", 0)) <= 0:
             raise EvidenceError("generation tokens/s must be positive")
         inter_token = row.get("interTokenMs")
-        if not isinstance(inter_token, list) or len(inter_token) != len(token_ids) - 1:
+        expected_inter_token_count = 0 if full_step else len(token_ids) - 1
+        if (not isinstance(inter_token, list)
+                or len(inter_token) != expected_inter_token_count):
             raise EvidenceError("inter-token latency count is incomplete")
         if require_lineage:
             expected_model = workload["modelIdentity"]["contentDigest"]
@@ -89,7 +113,11 @@ def validate_generation_evidence(
                 raise EvidenceError("generation model identity mismatch")
             if row.get("workloadDigest") != workload["workloadDigest"]:
                 raise EvidenceError("generation workload identity mismatch")
-            for token_epoch, step in enumerate(token_steps):
+            if full_step:
+                # The single response metadata above is the complete lineage
+                # check for FULL mode; no per-token request IDs exist.
+                pass
+            for token_epoch, step in enumerate(token_steps if not full_step else []):
                 request_id = str(step.get("requestId", ""))
                 expected = f"{row['generationId']}-token-{token_epoch}"
                 if request_id != expected:
