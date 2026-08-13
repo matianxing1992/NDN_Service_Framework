@@ -18,6 +18,29 @@ BASE_PACKAGES = {"ca-certificates", "libgomp1", "python3", "zlib1g"}
 HOST_DRIVER_LIBRARIES = {"libcuda.so.1"}
 
 
+def library_search_dirs(path: Path) -> list[Path]:
+    """Return the vendored directories needed to resolve *path* with ldd.
+
+    Python manylinux wheels (including Pillow) keep native DSOs in a sibling
+    ``<distribution>.libs`` directory rather than beside the importing
+    extension.  The runtime image must account for those files too; relying
+    only on ``path.parent`` makes the build pass for the binary but fail when
+    the same wheel is loaded in the final image.
+    """
+    directories = [path.parent.resolve()]
+    for ancestor in path.resolve().parents:
+        try:
+            children = list(ancestor.iterdir())
+        except OSError:
+            continue
+        directories.extend(
+            child.resolve()
+            for child in children
+            if child.is_dir() and child.name.endswith(".libs")
+        )
+    return list(dict.fromkeys(directories))
+
+
 def elf_files(roots: list[Path]):
     for root in roots:
         for path in root.rglob("*"):
@@ -30,12 +53,12 @@ def elf_files(roots: list[Path]):
 
 def linked_paths(path: Path) -> list[Path]:
     environment = dict(os.environ)
-    sibling_directory = str(path.parent.resolve())
+    search_path = os.pathsep.join(str(directory) for directory in library_search_dirs(path))
     inherited_library_path = environment.get("LD_LIBRARY_PATH")
     environment["LD_LIBRARY_PATH"] = (
-        sibling_directory
+        search_path
         if not inherited_library_path
-        else os.pathsep.join((sibling_directory, inherited_library_path))
+        else os.pathsep.join((search_path, inherited_library_path))
     )
     result = subprocess.run(
         ["ldd", str(path)],

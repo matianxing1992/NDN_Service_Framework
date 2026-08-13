@@ -86,6 +86,57 @@ class RuntimePackageClosureTests(unittest.TestCase):
         )
         return consumer, dependency
 
+    def build_adjacent_wheel_bundle(self, root: Path) -> tuple[Path, Path]:
+        package = root / "PIL"
+        package.mkdir()
+        bundle = root / "pillow.libs"
+        bundle.mkdir()
+        dependency_source = root / "dependency.c"
+        consumer_source = root / "consumer.c"
+        dependency_source.write_text(
+            "int spec170_wheel_value(void) { return 170; }\n",
+            encoding="utf-8",
+        )
+        consumer_source.write_text(
+            "extern int spec170_wheel_value(void);\n"
+            "int spec170_wheel_consumer(void) { return spec170_wheel_value(); }\n",
+            encoding="utf-8",
+        )
+        dependency = bundle / "libspec170_wheel.so.1"
+        subprocess.run(
+            [
+                "gcc",
+                "-fPIC",
+                "-shared",
+                str(dependency_source),
+                "-Wl,-soname,libspec170_wheel.so.1",
+                "-o",
+                str(dependency),
+            ],
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+        (bundle / "libspec170_wheel.so").symlink_to(dependency.name)
+        consumer = package / "_imaging.so"
+        subprocess.run(
+            [
+                "gcc",
+                "-fPIC",
+                "-shared",
+                str(consumer_source),
+                f"-L{bundle}",
+                "-Wl,--no-as-needed",
+                "-lspec170_wheel",
+                "-o",
+                str(consumer),
+            ],
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+        return consumer, dependency
+
     def test_sibling_vendored_dso_is_part_of_runtime_closure(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             consumer, dependency = self.build_sibling_bundle(Path(directory))
@@ -120,6 +171,23 @@ class RuntimePackageClosureTests(unittest.TestCase):
                 rf"^RUNTIME_LIBRARY_MISSING:{consumer}$",
             ):
                 self.verify_module.verify_elf(consumer)
+
+    def test_adjacent_wheel_libs_directory_is_part_of_runtime_closure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            consumer, dependency = self.build_adjacent_wheel_bundle(Path(directory))
+            clean_environment = dict(os.environ)
+            clean_environment.pop("LD_LIBRARY_PATH", None)
+            direct = subprocess.run(
+                ["ldd", str(consumer)],
+                env=clean_environment,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertIn("libspec170_wheel.so.1 => not found", direct.stdout)
+
+            self.assertIn(dependency.resolve(), self.module.linked_paths(consumer))
+            self.verify_module.verify_elf(consumer)
 
     def test_host_driver_libcuda_is_the_only_allowed_missing_dso(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
