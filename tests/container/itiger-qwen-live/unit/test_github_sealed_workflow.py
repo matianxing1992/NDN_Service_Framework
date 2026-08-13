@@ -51,7 +51,7 @@ class GithubSealedWorkflowTests(unittest.TestCase):
             lock["sourceRepositories"]["ndn-svs"],
             {
                 "url": "https://github.com/matianxing1992/ndn-svs.git",
-                "revision": "7b616b08624a79617bb05f2d3553bbbacdc4c482",
+                "revision": "060811333de68b9674e45522222a14d4e047bf28",
             },
         )
         self.assertIn("libboost-all-dev", lock["systemPackages"])
@@ -129,6 +129,7 @@ class GithubSealedWorkflowTests(unittest.TestCase):
             "filelock", "fsspec", "pyyaml", "requests", "tqdm",
             "typing-extensions", "coloredlogs", "flatbuffers", "sympy",
             "nvidia-ml-py", "pillow", "regex", "jinja2", "networkx",
+            "cffi", "cryptography", "pycparser",
         ):
             self.assertIn(required, packages)
 
@@ -417,7 +418,7 @@ class GithubSealedWorkflowTests(unittest.TestCase):
         self.assertIn("df -h", text)
         self.assertIn("preflight-gpu-build.py", text)
         self.assertRegex(text, r"(?s)Record runner disk after build.*?if: always\(\)")
-        self.assertIn("path: results/spec110-itiger-qwen-live/release-build/", text)
+        self.assertIn("path: results/spec170-itiger-qwen-live/release-build/", text)
         self.assertNotIn("path: .spec110-build", text)
         self.assertNotIn("runtime.oci", text)
         self.assertNotIn("runtime.sif", text)
