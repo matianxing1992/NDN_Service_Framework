@@ -22,6 +22,11 @@ class Spec171PublicationFigureTests(unittest.TestCase):
                  "combined-six-seed-aggregate.json")
 
     def test_frozen_aggregate_values_and_outputs(self):
+        if not self.AGGREGATE.is_file():
+            self.skipTest(
+                "requires ignored local Spec 171 aggregate evidence: "
+                f"{self.AGGREGATE}"
+            )
         report = figures.load_work_efficiency(self.AGGREGATE)
         self.assertEqual(report["requests"], 1800)
         self.assertEqual(report["seeds"], [20, 21, 22, 23, 24, 25])
