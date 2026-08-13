@@ -181,6 +181,20 @@ class GithubSealedWorkflowTests(unittest.TestCase):
             "gpu.lock must remain the single Python/CUDA version contract",
         )
 
+    def test_gpu_profile_install_removes_stale_generated_build_outputs(self) -> None:
+        dockerfile = (
+            REPO / "packaging/ndnsf-di-container/oci/Dockerfile.gpu"
+        ).read_text()
+        self.assertIn(
+            "find NDNSF-DistributedInference/packaging/python -type d -name build",
+            dockerfile,
+        )
+        self.assertIn(
+            "-exec rm -rf {} +",
+            dockerfile,
+            "pip --no-deps must not package stale tracked build/lib modules",
+        )
+
     def test_qwen_slurm_uses_canonical_least_privilege_runner(self) -> None:
         template = (
             REPO
