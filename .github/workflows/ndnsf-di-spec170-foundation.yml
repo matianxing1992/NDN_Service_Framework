@@ -90,6 +90,8 @@ jobs:
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3.8.2
+        with:
+          cosign-release: v2.4.3
 
       - name: Sign and verify the foundation digest
         shell: bash
@@ -98,7 +100,9 @@ jobs:
         run: |
           set -euo pipefail
           image_ref="${IMAGE_REPOSITORY}@${IMAGE_DIGEST}"
-          cosign sign --yes --bundle "$RESULT_ROOT/cosign-bundle.json" "$image_ref"
+          # cosign v2.4.3 stores the signed bundle as an OCI signature
+          # attachment; --bundle is a sign-blob flag, not a v2 image-sign flag.
+          cosign sign --yes "$image_ref"
           cosign verify \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             --certificate-identity-regexp "^https://github.com/${GITHUB_REPOSITORY}/.github/workflows/ndnsf-di-spec170-foundation.yml@" \
