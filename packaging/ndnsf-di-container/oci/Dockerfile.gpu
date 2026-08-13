@@ -126,6 +126,7 @@ ARG RELEASE_ID
 ARG FOUNDATION_IMAGE
 ARG DEBIAN_FRONTEND=noninteractive
 LABEL org.opencontainers.image.title="NDNSF-DI iTiger GPU runtime" \
+      org.opencontainers.image.source="https://github.com/matianxing1992/NDN_Service_Framework" \
       org.opencontainers.image.revision="${SOURCE_REVISION}" \
       org.opencontainers.image.version="${RELEASE_ID}" \
       org.ndnsf.di.foundation="${FOUNDATION_IMAGE}" \
