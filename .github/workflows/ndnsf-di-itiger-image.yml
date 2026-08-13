@@ -214,7 +214,6 @@ jobs:
               "schemaVersion": "1.0",
               "releaseId": os.environ["RELEASE_ID"],
               "sourceRevision": os.environ["GITHUB_SHA"],
-              "foundationSourceRevision": os.environ["FOUNDATION_REVISION"],
               "createdAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
               "images": {"linux-amd64-gpu": {
                   "reference": os.environ["IMAGE_REPOSITORY"] + "@" + digest,
