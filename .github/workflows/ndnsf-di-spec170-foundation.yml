@@ -16,7 +16,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  IMAGE_REPOSITORY: ghcr.io/matianxing1992/ndnsf-di-foundation
+  IMAGE_REPOSITORY: ghcr.io/matianxing1992/ndnsf-di-spec170-foundation
   RESULT_ROOT: results/spec170-foundation/${{ github.sha }}
   FOUNDATION_BASE_IMAGE: ubuntu@sha256:8feb4d8ca5354def3d8fce243717141ce31e2c428701f6682bd2fafe15388214
 

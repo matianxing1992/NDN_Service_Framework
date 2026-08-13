@@ -120,6 +120,7 @@ RUN install -d /opt/ndnsf-di/manifest && \
 FROM scratch AS foundation
 ARG SOURCE_REVISION
 LABEL org.opencontainers.image.title="NDNSF-DI local foundation" \
+      org.opencontainers.image.source="https://github.com/matianxing1992/NDN_Service_Framework" \
       org.opencontainers.image.revision="${SOURCE_REVISION}" \
       org.ndnsf.di.layer="local-foundation" \
       org.ndnsf.di.contains-gpu-runtime="false"
