@@ -1109,8 +1109,13 @@ namespace ndn_service_framework
             }
             NDN_LOG_INFO("NDNSF_SVS_ASYNC_PUBLISH role=user "
                          << (useAsyncSvsPublish() ? "enabled" : "disabled"));
+            // Parallel Sync receive processing is an experimental optimization.
+            // Replaying a fixed mobility trace showed that worker results can
+            // delay a reconnected Provider's state beyond the ACK window.  Keep
+            // the serial correctness path as the default until that state
+            // transition is repaired in NDN-SVS.
             const bool enableParallelSync =
-                std::getenv("NDNSF_SVS_PARALLEL_SYNC") == nullptr ||
+                std::getenv("NDNSF_SVS_PARALLEL_SYNC") != nullptr &&
                 isTruthyEnv("NDNSF_SVS_PARALLEL_SYNC");
             if (enableParallelSync) {
                 const int workers = std::max(1, intEnvOrDefault("NDNSF_SVS_PARALLEL_WORKERS", 4));
@@ -1120,8 +1125,17 @@ namespace ndn_service_framework
                 NDN_LOG_INFO("NDNSF_SVS_PARALLEL_SYNC enabled role=user workers="
                              << workers << " queue=" << queue);
             }
+            else {
+                NDN_LOG_INFO("NDNSF_SVS_PARALLEL_SYNC disabled role=user"
+                             " reason=explicit-opt-in-required");
+            }
+            // Parallel Sync production is an experimental optimization.  A
+            // mobility regression showed that it can delay a reconnected
+            // producer's state until another peer gossips that state.  Keep
+            // the serial correctness path as the default and require an
+            // explicit opt-in while the production state machine is repaired.
             const bool enableParallelProduction =
-                std::getenv("NDNSF_SVS_PARALLEL_PRODUCTION") == nullptr ||
+                std::getenv("NDNSF_SVS_PARALLEL_PRODUCTION") != nullptr &&
                 isTruthyEnv("NDNSF_SVS_PARALLEL_PRODUCTION");
             if (enableParallelProduction) {
                 const int workers = std::max(
@@ -1145,6 +1159,10 @@ namespace ndn_service_framework
                              << workers << " queue=" << queue
                              << " signInWorker=" << signInWorker
                              << " extraBlockInWorker=" << extraBlockInWorker);
+            }
+            else {
+                NDN_LOG_INFO("NDNSF_SVS_PARALLEL_PRODUCTION disabled role=user"
+                             " reason=explicit-opt-in-required");
             }
             if (isTruthyEnv("NDNSF_SVS_SYNC_BATCHING")) {
                 const int windowMs = std::max(0, intEnvOrDefault("NDNSF_SVS_SYNC_BATCH_MS", 5));
