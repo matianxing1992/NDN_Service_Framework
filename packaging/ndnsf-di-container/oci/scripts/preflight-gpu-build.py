@@ -60,6 +60,128 @@ def require(condition: bool, code: str) -> None:
         raise PreflightError(code)
 
 
+def _call_block(text: str, start: int) -> str:
+    """Return one balanced ``bld.program(...)`` call.
+
+    Waf files contain nested calls (for example ``ant_glob``), so a regular
+    expression that stops at the first ``)`` is not a reliable target census.
+    This small scanner is deliberately conservative and understands Python
+    string literals and comments well enough for the checked-in wscript.
+    """
+    open_paren = text.find("(", start)
+    if open_paren < 0:
+        raise PreflightError("PREFLIGHT_WAF_PROGRAM_CALL_MALFORMED")
+    depth = 0
+    quote: str | None = None
+    escaped = False
+    comment = False
+    for index in range(open_paren, len(text)):
+        char = text[index]
+        if comment:
+            if char == "\n":
+                comment = False
+            continue
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char == "#":
+            comment = True
+        elif char in "'\"":
+            quote = char
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return text[start:index + 1]
+    raise PreflightError("PREFLIGHT_WAF_PROGRAM_CALL_UNBALANCED")
+
+
+def waf_program_census(workspace: Path) -> list[dict[str, object]]:
+    """Enumerate every bld.program target and its explicit use list."""
+    wscript_path = workspace / "examples/wscript"
+    require(wscript_path.is_file(), "PREFLIGHT_WAF_SCRIPT_MISSING")
+    text = wscript_path.read_text(encoding="utf-8")
+    census: list[dict[str, object]] = []
+    cursor = 0
+    marker = "bld.program"
+    while True:
+        start = text.find(marker, cursor)
+        if start < 0:
+            break
+        block = _call_block(text, start)
+        name_match = re.search(r"\bname\s*=\s*['\"]([^'\"]+)['\"]", block)
+        use_match = re.search(r"\buse\s*=\s*['\"]([^'\"]*)['\"]", block)
+        require(name_match is not None, "PREFLIGHT_WAF_TARGET_NAME_MISSING")
+        name = name_match.group(1)
+        use = sorted(set((use_match.group(1) if use_match else "").split()))
+        census.append({"name": name, "use": use})
+        cursor = start + len(block)
+    require(census, "PREFLIGHT_WAF_TARGET_CENSUS_EMPTY")
+    return census
+
+
+def validate_waf_target_closure(workspace: Path) -> list[dict[str, object]]:
+    """Fail closed when an ONNX target drops framework or loader libraries."""
+    census = waf_program_census(workspace)
+    required = {
+        "di-native-plan-onnx-smoke": {"BOOST", "NDN_CXX", "NDN_SVS", "ONNXRUNTIME", "DL"},
+        "di-native-onnxruntime-smoke": {"BOOST", "NDN_CXX", "NDN_SVS", "ONNXRUNTIME", "DL"},
+        "di-native-provider": {"BOOST", "NDN_CXX", "NDN_SVS", "ONNXRUNTIME", "DL"},
+        "di-native-fault-provider": {"BOOST", "NDN_CXX", "NDN_SVS", "ONNXRUNTIME", "DL"},
+    }
+    targets = {
+        str(row["name"]): set(row["use"])
+        for row in census
+        if row["name"] in required
+    }
+    require(
+        set(targets) == {
+            "di-native-plan-onnx-smoke",
+            "di-native-onnxruntime-smoke",
+            "di-native-provider",
+            "di-native-fault-provider",
+        },
+        "PREFLIGHT_ONNX_TARGET_CENSUS_INCOMPLETE",
+    )
+    for name, use in sorted(targets.items()):
+        missing = sorted(required[name] - use)
+        require(
+            not missing,
+            "PREFLIGHT_TARGET_USE_MISSING:%s:%s" % (name, ",".join(missing)),
+        )
+    expected_sources = {
+        "DI_NativePlanOnnxSmoke.cpp",
+        "DI_NativeOnnxRuntimeSmoke.cpp",
+        "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.cpp",
+    }
+    for source in expected_sources:
+        require(
+            (workspace / "examples" / source).is_file()
+            if "/" not in source
+            else (workspace / source).is_file(),
+            "PREFLIGHT_ONNX_SOURCE_MISSING:%s" % source,
+        )
+    return census
+
+
+def validate_python_build_outputs(workspace: Path) -> list[str]:
+    """Reject stale setuptools ``build`` trees before the sealed install."""
+    root = workspace / "NDNSF-DistributedInference/packaging/python"
+    stale = sorted(
+        str(path.relative_to(workspace))
+        for path in root.glob("*/build")
+        if path.is_dir()
+    )
+    require(not stale, "PREFLIGHT_STALE_PYTHON_BUILD_DIRS:" + ",".join(stale))
+    return stale
+
+
 def validate_archives(seal_root: Path, sources: set[str]) -> int:
     seal = json.loads((seal_root / "source-seal.json").read_text())
     dependencies = seal.get("dependencies", {})
@@ -76,6 +198,8 @@ def validate_archives(seal_root: Path, sources: set[str]) -> int:
 
 def run(workspace: Path, seal_root: Path | None) -> dict[str, object]:
     oci = workspace / "packaging/ndnsf-di-container/oci"
+    waf_census = validate_waf_target_closure(workspace)
+    validate_python_build_outputs(workspace)
     lock = json.loads((oci / "locks/gpu.lock").read_text())
     foundation = (oci / "Dockerfile.foundation").read_text()
     dockerfile = (oci / "Dockerfile.gpu").read_text()
@@ -219,6 +343,9 @@ def run(workspace: Path, seal_root: Path | None) -> dict[str, object]:
         "archiveCount": archive_count,
         "pythonPackageCount": len(python),
         "systemCudaRequirementCount": len(system_python),
+        "wafTargetCount": len(waf_census),
+        "wafTargets": waf_census,
+        "stalePythonBuildDirectories": [],
     }
 
 
