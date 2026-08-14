@@ -513,11 +513,13 @@ SPEC170_V3_USER_RESPONSE payload=..."payload":"V3_OK"...
 SPEC170_PYTHON_V3_NETWORK_PASS job=189472 user_rc=0
 ```
 
-This is a current sealed-SIF, real-NFD, four-Provider CPU control/selection/
-response result. It is not yet formal T030/D0 evidence because the frozen
-`gate-d0-cpu.sbatch` entrypoint still needs a candidate-bound workload and the
-full T027/T029 closure; it also does not prove ONNX execution, GPU behavior,
-canonical artifact publication, or multi-token generation.
+This earlier job is a current sealed-SIF, real-NFD, four-Provider CPU
+control/selection/response diagnostic.  It was not itself the formal D0 gate.
+The candidate-bound D0 workload subsequently passed as Slurm job `189483`,
+including CPU ONNX execution and per-role PIB isolation; see
+`evidence/tiger-d0.md`.  Neither result proves GPU behavior, canonical model
+artifact publication, multi-token generation, or the remaining T027/T029/D1/
+D2 gates.
 
 ## Current-candidate exact-SIF preflights
 
