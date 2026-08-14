@@ -391,6 +391,27 @@ PYTHONPATH=NDNSF-DistributedInference:pythonWrapper \
 59 passed, 2 skipped, 1 warning in 5.65s
 ```
 
+## Sealed foundation and GPU image handoff
+
+The GitHub Actions foundation workflow completed successfully as run
+`31782722011` from source revision
+`07debb71ed5fbe5d208ae27291f063906e68a07a`. Its immutable manifest records:
+
+```text
+image: ghcr.io/matianxing1992/ndnsf-di-spec170-foundation@sha256:b94c323f0e0fbd10f0a1fc48faffaba7aa3e277ae2100567937b4dd65a61c96f
+manifestDigest: sha256:2bcf5ea32dbd5b60ab6cd66407ea07ecf32a4e75351b1597377c1f2ce8c7f40e
+lockDigest: sha256:f98df291346ef1bec2554ea924a4fc6b8f2d75cb012281b4960ded033804a050
+base: ubuntu@sha256:8feb4d8ca5354def3d8fce243717141ce31e2c428701f6682bd2fafe15388214
+cosign: verified with the GitHub Actions OIDC identity
+```
+
+The GPU image workflow was then dispatched as run `31784722395` using that
+foundation digest, the locked foundation source revision above, and the
+current `Experimental` source head
+`db1601ab8614677107ba65a001cb1a029363e555`. It is queued; no Tiger SIF or
+real-Qwen claim is made until this workflow produces and verifies its own
+immutable runtime manifest.
+
 ## Next gate
 
 The next implementation gate is to resolve the real Qwen artifact/runtime
