@@ -32,7 +32,7 @@ keychain_env() {
     "$KEYCHAIN_ROOT/$role/pib" "$KEYCHAIN_ROOT/$role/tpm"
 }
 
-for role in nfd controller backbone head0 head1 merge user; do
+for role in nfd nfdctl controller backbone head0 head1 merge user; do
   prepare_keychain "$role"
 done
 
@@ -86,12 +86,13 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 read -r nfd_pib nfd_tpm < <(keychain_env nfd)
+read -r nfdctl_pib nfdctl_tpm < <(keychain_env nfdctl)
 read -r controller_pib controller_tpm < <(keychain_env controller)
 env "$nfd_pib" "$nfd_tpm" nfd --config "$BUNDLE/nfd.conf" \
   >"$LOG/nfd.log" 2>&1 & PIDS+=("$!")
 nfd_ready=0
 for _ in $(seq 1 100); do
-  if env "$nfd_pib" "$nfd_tpm" nfdc status \
+  if env "$nfdctl_pib" "$nfdctl_tpm" nfdc status \
       >"$STATUS/nfdc-status.txt" 2>&1; then
     nfd_ready=1
     break
@@ -102,9 +103,9 @@ if [ "$nfd_ready" -ne 1 ]; then
   echo SPEC170_D0_V3_NFD_READY_FAIL
   exit 10
 fi
-env "$nfd_pib" "$nfd_tpm" nfdc strategy set /NDNSF-DI/Tracer/group \
+env "$nfdctl_pib" "$nfdctl_tpm" nfdc strategy set /NDNSF-DI/Tracer/group \
   /localhost/nfd/strategy/multicast >/dev/null 2>&1 || true
-env "$nfd_pib" "$nfd_tpm" nfdc strategy set /NDNSF-DI/Tracer \
+env "$nfdctl_pib" "$nfdctl_tpm" nfdc strategy set /NDNSF-DI/Tracer \
   /localhost/nfd/strategy/multicast >/dev/null 2>&1 || true
 
 env "$controller_pib" "$controller_tpm" App_ServiceController \
