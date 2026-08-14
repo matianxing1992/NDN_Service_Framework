@@ -519,6 +519,55 @@ response result. It is not yet formal T030/D0 evidence because the frozen
 full T027/T029 closure; it also does not prove ONNX execution, GPU behavior,
 canonical artifact publication, or multi-token generation.
 
+## Candidate-bound GPU V3 rerun after execution-drain correction
+
+The first GPU diagnostic on the current candidate (`189473`) reached CUDA
+runtime initialization, four positive ACKs, four Selection callbacks, and a
+final Merge Response, but the wrapper returned `12:0`. Its immediate
+post-User check raced the Provider processes: the Merge Provider published the
+final response first, while the parent entered its EXIT cleanup before the
+other three Providers had flushed their execution markers. This was a test
+harness timing failure, not a CUDA, SIF, NFD, or selection failure.
+
+Commit `7bb169e` added a bounded five-second execution-drain wait to the
+diagnostic job. It does not change the SIF or the NDNSF protocol; it only lets
+selected Provider processes flush their already-started ONNX execution
+markers before teardown. The staged job hash is:
+
+```text
+ee0edebc05ab0a584b31e99df34870543c94f879454c98bb5e84f7bd32fcaf97  tiger-python-v3-cpu-network-smoke.sbatch
+```
+
+The rerun used the same immutable SIF and artifacts, `SPEC170_V3_ONNX=1`,
+`SPEC170_V3_DEVICE=cuda:0`, and one Slurm GPU allocation:
+
+```text
+job: 189475
+node: itiger01
+elapsed: 00:00:15
+exit: 0:0
+terminal: SPEC170_PYTHON_V3_NETWORK_PASS job=189475 user_rc=0
+```
+
+All four Providers emitted `CUDAExecutionProvider,CPUExecutionProvider` with
+`cpuFallbackDisabled=true`, then emitted execution markers with the expected
+artifact digests and output shapes:
+
+```text
+/Backbone       [1,16] 64 bytes
+/Head/Shard/0   [1,8]  32 bytes
+/Head/Shard/1   [1,8]  32 bytes
+/Merge          [1,4]  16 bytes
+```
+
+The User observed `allowed=5`, `ackCount=4`, committed V3 Selection, and
+received the final `V3_OK` Response from Merge. The run emitted no stderr
+diagnostic. This closes the current candidate's sealed-SIF GPU control,
+selection, and four-role ONNX smoke gate, but remains diagnostic evidence: it
+does not prove canonical artifact publication, Provider-local assembly,
+cross-Provider activation/dataflow, a formal T030/T031 gate, or distributed
+Qwen execution.
+
 ## Next gate
 
 The next implementation gate is to resolve the real Qwen artifact/runtime
