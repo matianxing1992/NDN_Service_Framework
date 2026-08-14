@@ -329,7 +329,7 @@ def build(bld):
                             'NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.cpp',
                         ])),
                 includes=['..', '../ndn-service-framework'],
-                use='BOOST NDN_CXX NDN_SVS ONNXRUNTIME',
+                use='BOOST NDN_CXX NDN_SVS ONNXRUNTIME DL',
                 cxxflags=['-fPIC', '-pthread'],
                 linkflags=['-pthread'],
                 install_path=None)
@@ -362,7 +362,7 @@ def build(bld):
                             'ndn-service-framework/CertificatePublisher.cpp',
                         ])),
                 includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
-                use='BOOST ONNXRUNTIME NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD OPENSSL',
+                use='BOOST ONNXRUNTIME NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD OPENSSL DL',
                 cxxflags=['-fPIC', '-pthread'],
                 linkflags=['-pthread'],
                 install_path=None)
@@ -396,7 +396,7 @@ def build(bld):
                             'ndn-service-framework/CertificatePublisher.cpp',
                         ])),
                 includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
-                use='BOOST ONNXRUNTIME NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD OPENSSL',
+                use='BOOST ONNXRUNTIME NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD OPENSSL DL',
                 cxxflags=['-fPIC', '-pthread', '-DNDNSF_DI_EXPERIMENT_FAULTS=1'],
                 linkflags=['-pthread'],
                 install_path=None)
@@ -409,7 +409,7 @@ def build(bld):
                             'NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.cpp',
                         ])),
                 includes=['..', '../ndn-service-framework'],
-                use='BOOST NDN_CXX NDN_SVS ONNXRUNTIME',
+                use='BOOST NDN_CXX NDN_SVS ONNXRUNTIME DL',
                 cxxflags=['-fPIC', '-pthread'],
                 linkflags=['-pthread'],
                 install_path=None)
