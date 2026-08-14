@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Exact-SIF static runtime probe for the 85d7aa immutable candidate.
+# Exact-SIF static runtime probe. Override CANDIDATE_DIR for a new release.
 #SBATCH --job-name=spec170-static-85d7aa
 #SBATCH --partition=bigTiger
 #SBATCH --account=devs
@@ -10,7 +10,8 @@
 #SBATCH --error=/project/tma1/ndnsf-di/logs/spec170-static-85d7aa-%j.err
 
 set -euo pipefail
-sif=/project/tma1/ndnsf-di/releases/spec170-runtime-85d7aa475217cabbcfa92ad28612db99cd36e77b/runtime.sif
+CANDIDATE_DIR=${CANDIDATE_DIR:-runtime-85d7aa475217cabbcfa92ad28612db99cd36e77b}
+sif=/project/tma1/ndnsf-di/releases/spec170-${CANDIDATE_DIR}/runtime.sif
 sha256sum "$sif"
 apptainer exec --cleanenv --containall --home /tmp --pwd /tmp \
   --env CUDA_VISIBLE_DEVICES= "$sif" \
