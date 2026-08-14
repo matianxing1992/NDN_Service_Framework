@@ -194,14 +194,14 @@ def build(bld):
         bld.program(
             target='uav-video-pipeline-probe',
             source='NDNSF-UAV-APP/tools/uav_video_pipeline_probe.cpp',
-            use='GSTREAMER', install_path=None)
+            use='GSTREAMER GMODULE FFI PCRE DL', install_path=None)
 
     libndn_service_framework = dict(
         target='ndn-service-framework',
         vnum=VERSION,
         cnum=VERSION,
         source=bld.path.ant_glob('ndn-service-framework/**/*.cpp'),
-        use='NDN_CXX NDN_SVS BOOST PROTOBUF NAC-ABE OPENSSL',
+        use='NDN_CXX NDN_SVS BOOST PROTOBUF NAC-ABE OPENSSL DL',
         includes='ndn-service-framework .',
         export_includes='ndn-service-framework .',
         install_path='${LIBDIR}')

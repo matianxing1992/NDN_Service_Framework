@@ -301,6 +301,52 @@ This is the same model-graph compatibility block seen in standalone job
 and the stderr are retained under
 `evidence/tiger-qwen-stage-runner-20260814/`.
 
+## Full native build closure: installed SVS mismatch (2026-08-14)
+
+The mandatory full examples build was configured successfully with the
+repository's detected dependencies, including `libndn-svs` 0.1.0 and Boost
+1.71.0, but failed before any image rebuild. `ServiceUser.cpp` and
+`ServiceProvider.cpp` call the current Experimental SVS statistics API
+(`getMappingFetchStats()`, `getPublicationFetchStats()`, and
+`getPiggybackStats()`). The compiler resolved `pkg-config libndn-svs` to
+`/usr/local/include` and `/usr/local/lib`, whose installed `SVSPubSub` header
+does not expose those methods. The active `/home/tianxing/NDN/ndn-svs`
+`Experimental` checkout does expose them, but it is a separate dirty checkout
+and was not silently installed over the system library.
+
+This is an external dependency/build-closure mismatch, not a Docker-versus-
+MiniNDN network result. The exact commands and first errors were:
+
+```text
+./waf configure --with-examples       # PASS; libndn-svs 0.1.0, Boost 1.71.0
+./waf -j"$(nproc)"                   # FAIL
+ServiceUser.cpp:1300:44: error: SVSPubSub has no member named getMappingFetchStats
+ServiceUser.cpp:1301:48: error: SVSPubSub has no member named getPublicationFetchStats
+ServiceUser.cpp:1302:42: error: SVSPubSub has no member named getPiggybackStats
+ServiceProvider.cpp:1453-1455: same three missing members
+```
+
+The release remains blocked until a temporary-prefix build using the exact
+Experimental SVS source is configured and the complete NDNSF examples closure
+links against that prefix. The installed system library must not be modified
+in place.
+
+The first Experimental-prefix full build then exposed two independent host
+closure issues. The UAV video probe was configured with GStreamer but its
+target omitted the detected `gmodule-2.0`, `ffi`, `pcre`, and `dl` libraries;
+adding those explicit `use` entries allowed that target to link. The next
+targets (`App_SvsLatency` and `CryptoMicrobench`) also required `dl` because
+the host OpenSSL/Boost stacktrace libraries expose dynamic-loader symbols.
+Those `DL` entries are source-level link-closure fixes, not runtime behavior
+changes.
+
+The same build initially used `/home/linuxbrew/.linuxbrew/bin/ld` (Binutils
+2.47) with Ubuntu system GTK/GLib libraries and failed with a large set of
+transitive GTK/GLib/X11/Fontconfig undefined references. A clean rebuild now
+uses `/usr/bin/ld` (Ubuntu Binutils 2.34) with the same Experimental SVS
+prefix; its final full-build result is still pending and must be recorded
+separately.
+
 ## Next gate
 
 The next implementation gate is to resolve the real Qwen artifact/runtime

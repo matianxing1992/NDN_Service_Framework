@@ -85,7 +85,7 @@ def build(bld):
                 target='App_SvsLatency',
                 source=['App_SvsLatency.cpp'],
                 includes=['..'],
-                use='NDN_CXX NDN_SVS BOOST',
+                use='NDN_CXX NDN_SVS BOOST DL',
                 linkflags=['-Wl,-rpath,$ORIGIN/..'],
                 install_path=None)
 
@@ -93,7 +93,7 @@ def build(bld):
                 target='CryptoMicrobench',
                 source=['CryptoMicrobench.cpp'],
                 includes=['..'],
-                use='NDN_CXX BOOST',
+                use='NDN_CXX BOOST DL',
                 linkflags=['-Wl,-rpath,$ORIGIN/..'],
                 install_path=None)
 
