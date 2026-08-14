@@ -63,9 +63,23 @@ class Spec170BuildClosurePreflightTests(unittest.TestCase):
         build = root / "NDNSF-DistributedInference/packaging/python/app/build"
         build.mkdir(parents=True)
         with self.assertRaisesRegex(
-            preflight.PreflightError, "PREFLIGHT_STALE_PYTHON_BUILD_DIRS"
+            preflight.PreflightError,
+            "PREFLIGHT_STALE_PYTHON_BUILD_CLEANUP_MISSING",
         ):
-            preflight.validate_python_build_outputs(root)
+            preflight.validate_python_build_outputs(root, "")
+
+    def test_stale_python_build_tree_is_allowed_only_with_explicit_cleanup(self) -> None:
+        root = self._workspace("BOOST NDN_CXX NDN_SVS ONNXRUNTIME DL")
+        (root / "NDNSF-DistributedInference/packaging/python/app/build").mkdir(
+            parents=True
+        )
+        stale = preflight.validate_python_build_outputs(
+            root,
+            "find NDNSF-DistributedInference/packaging/python -type d -name build \\\n+              -prune -exec rm -rf {} +",
+        )
+        self.assertEqual(stale, [
+            "NDNSF-DistributedInference/packaging/python/app/build"
+        ])
 
 
 if __name__ == "__main__":

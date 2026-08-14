@@ -19,7 +19,9 @@ must be rejected before dispatch.
 - requires `BOOST NDN_CXX NDN_SVS ONNXRUNTIME DL` for both ONNX smoke targets
   and both native Provider targets;
 - verifies the ONNX smoke source files exist; and
-- fails closed when a Python profile contains a generated `build` directory.
+- fails closed when a Python profile contains a generated `build` directory
+  without an explicit Docker cleanup command; the report records any source
+  trees that the image will remove.
 
 The corresponding `examples/wscript` targets now declare `DL` explicitly.
 
@@ -27,14 +29,15 @@ The corresponding `examples/wscript` targets now declare `DL` explicitly.
 
 The isolated candidate reports `WAF_CLOSURE_PASS targets=32`. The focused
 regression file `tests/python/test_spec170_build_closure_preflight.py` passes
-3/3 tests. Running the full preflight against the current dirty checkout
-returns the expected negative marker:
+4/4 tests. The full preflight accepts the current checkout's generated trees
+only because `Dockerfile.gpu` contains the explicit cleanup command. Removing
+that command produces the expected negative marker:
 
 ```text
-PREFLIGHT_STALE_PYTHON_BUILD_DIRS:.../app/build,.../planner/build,.../sdk/build
+PREFLIGHT_STALE_PYTHON_BUILD_CLEANUP_MISSING:.../app/build,.../planner/build,.../sdk/build
 ```
 
-Those generated trees must be absent from the sealed source context. This
+Those generated trees must be removed before profile installation. This
 commit is a source/preflight correction only; the already materialized SIF
 bound to `920552ec...` is unchanged and must not be presented as containing
 this correction. A new sealed OCI/SIF identity is required before using this
