@@ -80,8 +80,6 @@ provider=/NDNSF-DI/Tracer/provider/merge
 role=/Merge
 ```
 
-## Scope and remaining gates
-
 ## Single-GPU CUDA V3 gate
 
 Job `189515` used the same SIF with one allocated `rtx_5000` GPU and
@@ -102,6 +100,26 @@ permission discovery, four ACKs, V3 Selection commit, and a Merge response
 with `payload=V3_OK`. This is a functional single-GPU V3 gate; it does not
 yet prove per-operator placement, two-GPU device-set admission, or hybrid
 collectives.
+
+## D2 two-GPU topology preflight
+
+Job `189516` requested two `rtx_5000` GPUs and used the exact candidate SIF.
+It completed with `0:0`; the host and Apptainer container reported the same
+two allocated devices:
+
+```text
+GPU-36f78728-c1c0-b6c6-b0dd-51c3c9f99aac
+GPU-2ef43e7d-85c7-bad0-04e3-af9ba4257245
+CUDA_VISIBLE_DEVICES=0,1
+torchDeviceCount=2
+```
+
+The container reported CUDA-capable ONNX Runtime providers. This closes only
+the scheduler/container visibility preflight. It is **not** D2a logical-role
+execution: no two-rank Provider-local collective, independent role admission,
+or device-set Selection was run. The formal D2a workload remains open.
+
+## Scope and remaining gates
 
 These jobs prove the new candidate's exact SIF closure, CPU/no-GPU startup,
 real ONNX artifact loading/execution, multi-Provider ACK/Selection, native
