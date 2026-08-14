@@ -110,7 +110,7 @@ RUN install -d $APP_PREFIX/manifest && \
     test -x $APP_PREFIX/bin/di-native-provider && \
     ldd $APP_PREFIX/bin/di-native-provider | grep -F '/opt/onnxruntime/lib/libonnxruntime.so' && \
     PYTHONPATH=$APP_PREFIX/python /opt/venv/bin/python -c \
-      'import ndnsf,ndnsf_distributed_inference,ndnsf_distributed_inference.core,ndnsf_distributed_inference.sdk,ndnsf_distributed_inference.app_sdk,ndnsf_distributed_inference.app_sdk.provider,ndnsf_distributed_inference.app_sdk.client,ndnsf_distributed_inference.app_sdk.controller,ndnsf_distributed_inference.planner,ndnsf_distributed_inference.ops,ndnsf_distributed_inference.adapters.onnx,ndnsf_distributed_inference.adapters.qwen'
+      'import ndnsf,ndnsf_distributed_inference,ndnsf_distributed_inference.core,ndnsf_distributed_inference.sdk,ndnsf_distributed_inference.app_sdk,ndnsf_distributed_inference.app_sdk.provider,ndnsf_distributed_inference.app_sdk.client,ndnsf_distributed_inference.app_sdk.controller,ndnsf_distributed_inference.deployment,ndnsf_distributed_inference.retry,ndnsf_distributed_inference.runtime_v1,ndnsf_distributed_inference.runtime_v1_evidence,ndnsf_distributed_inference.planner,ndnsf_distributed_inference.ops,ndnsf_distributed_inference.adapters.onnx,ndnsf_distributed_inference.adapters.qwen'
 
 FROM ${NDN_RUNTIME_IMAGE} AS app-runtime
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -175,7 +175,7 @@ ENV PATH=/opt/venv/bin:/opt/ndnsf-app/bin:/opt/ndn-base/bin:${PATH} \
     NDNSF_ALLOW_CPU_FALLBACK=0
 RUN python3 /usr/local/bin/verify-runtime-closure.py --root /opt/ndnsf-app && \
     /opt/venv/bin/python -c \
-      'import ndnsf,ndnsf_distributed_inference,ndnsf_distributed_inference.core,ndnsf_distributed_inference.sdk,ndnsf_distributed_inference.app_sdk,ndnsf_distributed_inference.app_sdk.provider,ndnsf_distributed_inference.app_sdk.client,ndnsf_distributed_inference.app_sdk.controller,ndnsf_distributed_inference.planner,ndnsf_distributed_inference.ops,ndnsf_distributed_inference.adapters.onnx,ndnsf_distributed_inference.adapters.qwen,torch,onnxruntime,transformers' && \
+      'import ndnsf,ndnsf_distributed_inference,ndnsf_distributed_inference.core,ndnsf_distributed_inference.sdk,ndnsf_distributed_inference.app_sdk,ndnsf_distributed_inference.app_sdk.provider,ndnsf_distributed_inference.app_sdk.client,ndnsf_distributed_inference.app_sdk.controller,ndnsf_distributed_inference.deployment,ndnsf_distributed_inference.retry,ndnsf_distributed_inference.runtime_v1,ndnsf_distributed_inference.runtime_v1_evidence,ndnsf_distributed_inference.planner,ndnsf_distributed_inference.ops,ndnsf_distributed_inference.adapters.onnx,ndnsf_distributed_inference.adapters.qwen,torch,onnxruntime,transformers' && \
     test ! -e /src && test ! -e /root/.ssh && test ! -e /root/.cache/huggingface
 LABEL org.opencontainers.image.title="NDNSF-DI layered local GPU runtime" \
       org.ndnsf.di.layer="app-runtime" \
