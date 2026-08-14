@@ -62,6 +62,7 @@ class GithubSealedWorkflowTests(unittest.TestCase):
             (REPO / "packaging/ndnsf-di-container/oci/locks/gpu.lock").read_text()
         )
         self.assertEqual(lock["pythonPackages"]["transformers"], "4.51.0")
+        self.assertEqual(lock["pythonPackages"]["huggingface-hub"], "0.30.2")
 
     def test_nfd_build_inputs_include_pcap_and_locked_websocketpp(self) -> None:
         lock = json.loads(

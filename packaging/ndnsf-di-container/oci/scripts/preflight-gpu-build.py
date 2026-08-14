@@ -31,6 +31,7 @@ REQUIRED_PYTHON = {
 }
 REQUIRED_QWEN_PYTHON = {"onnxruntime-gpu", "torch", "transformers"}
 REQUIRED_QWEN3_TRANSFORMERS = "4.51.0"
+REQUIRED_QWEN3_HUGGINGFACE_HUB = "0.30.2"
 UNUSED_TORCH_MEDIA = {"torchaudio", "torchvision"}
 REQUIRED_SYSTEM_PYTHON = {
     "nvidia-cublas-cu12", "nvidia-cuda-cupti-cu12", "nvidia-cuda-nvrtc-cu12",
@@ -122,6 +123,10 @@ def run(workspace: Path, seal_root: Path | None) -> dict[str, object]:
     require(
         lock.get("pythonPackages", {}).get("transformers") == REQUIRED_QWEN3_TRANSFORMERS,
         "PREFLIGHT_QWEN3_TRANSFORMERS_VERSION_INVALID",
+    )
+    require(
+        lock.get("pythonPackages", {}).get("huggingface-hub") == REQUIRED_QWEN3_HUGGINGFACE_HUB,
+        "PREFLIGHT_QWEN3_HUGGINGFACE_HUB_VERSION_INVALID",
     )
     require(
         UNUSED_TORCH_MEDIA.isdisjoint(python),
