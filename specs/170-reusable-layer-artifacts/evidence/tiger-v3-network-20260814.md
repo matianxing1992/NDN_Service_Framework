@@ -6,14 +6,16 @@
 - OCI digest: `sha256:920ccd37d4365fcd8f5423e45112753cd8113163ebabe864b51c0695cdd20b7b`
 - SIF: `/project/tma1/ndnsf-di/releases/spec170-runtime-2a7b847bbeba1b628a1a9e2a146b5411f1df5556/runtime.sif`
 - SIF SHA-256: `c40cfa9abd964e9feec293093753a3de6fb32327b332bd0a873e15b50cfb6c70`
-- V3 diagnostic source commits: `10520f2` and `1d5aafa` (scripts are bind-mounted, not baked into
+- V3 diagnostic source commits: `10520f2`, `1d5aafa`, `8f59423`, and `37f7e4c` (scripts are bind-mounted, not baked into
   the base SIF)
 - provider script SHA-256:
-  `414419bbd584ce588cb91d598e380b46df71653c0d726e902913b2292f503657`
+  `3813f61bbab174755d7e3cc183dc61d4ccdb53066891d40d28c29d32ecb8207e`
 - user script SHA-256:
-  `0def5d06701d51d18e6d60c6a94f78eb9067f666b13ca8b755af3c584846a3d0`
+  `ddff996aaa259613bd9ddda02f023cf111da31fffae248169b7fe87e8b1d9d3b`
 - Slurm job wrapper SHA-256:
-  `6dcb5071cae33ce6a33763b8c82a99e01acc0871d091c8c1b844d2f1385910f3`
+  `8383f331889c65825bedd36c41520b1a5d94033108adab466929c92d6333093b`
+- semantic validator SHA-256:
+  `26dba0a69111975a4a647a164dea8a011c15837b7a56a119b61356104c72a019`
 
 The base SIF passed the static import, CUDA, Qwen, mount, and isolated-PIB/
 network preflights. The base SIF is therefore retained unchanged for this
@@ -101,18 +103,61 @@ The User again observed permission, four ACKs, V3 Selection commit, four
 selected callbacks, and a final `V3_CPU_OK` Response. The job emitted
 `SPEC170_PYTHON_V3_NETWORK_PASS job=189435 user_rc=0`.
 
-ONNX Runtime also emitted repeated `pthread_setaffinity_np ... Invalid
-argument` warnings under the Slurm/Apptainer CPU allocation. They did not
-change the result, but they are retained as environment evidence; a future
-performance run should set explicit ONNX Runtime thread counts before making
-latency claims. This job proves real CPU ONNX execution of pre-mounted role
-artifacts, not canonical publication, cross-Provider activation dataflow, or
-multi-token model generation.
+The final CPU rerun (`189446`) used the corrected generic V3 scripts and
+explicit ONNX Runtime thread counts. It completed with exit code `0:0` on
+`itiger05`, including four `CPUExecutionProvider` runtime markers and a final
+`V3_OK` response. This confirms that the later GPU-only guard changes did not
+regress the CPU path. This job proves real CPU ONNX execution of pre-mounted
+role artifacts, not canonical publication, cross-Provider activation dataflow,
+or multi-token model generation.
+
+## GPU ONNX artifact execution gate
+
+The first GPU run (`189438`) used `bigTiger`, `rtx_5000:1`, node `itiger11`,
+and `SPEC170_V3_DEVICE=cuda:0` with `apptainer --nv`. All four Providers
+loaded and executed their mounted artifacts, and the V3 User completed
+permission, four ACKs, Selection, and Merge Response. Its terminal marker was
+`SPEC170_PYTHON_V3_NETWORK_PASS job=189438 user_rc=0`.
+
+The next run (`189440`) is retained as a wrapper negative: the same runtime
+flow reached a final Response, but the wrapper returned exit `13` because its
+regular expression did not allow the comma-separated
+`CUDAExecutionProvider,CPUExecutionProvider` list. No runtime or network
+failure occurred. The wrapper was corrected without changing the candidate
+image or protocol.
+
+The corrected GPU gate (`189443`) completed with `0:0` on `itiger11` using
+`TresPerNode=gres/gpu:rtx_5000:1`. The allocation recorded:
+
+```text
+GPU-36f78728-c1c0-b6c6-b0dd-51c3c9f99aac,
+NVIDIA RTX 5000 Ada Generation, 560.28.03, 32760 MiB
+```
+
+Each Provider emitted:
+
+```text
+backend=onnxruntime-cuda device=cuda:0
+providers=CUDAExecutionProvider,CPUExecutionProvider
+cpuFallbackDisabled=true
+```
+
+The CUDA provider was first in the active provider list; the ONNX Runtime
+session also set `session.disable_cpu_ep_fallback=1`. Each role executed its
+artifact with the same output shapes as the CPU gate (`[1,16]`, `[1,8]`,
+`[1,8]`, `[1,4]`). The User observed `allowed=5`, `ackCount=4`, V3 Selection
+commit, selected callbacks for all four roles, and a final `V3_OK` Response.
+The terminal marker was `SPEC170_PYTHON_V3_NETWORK_PASS job=189443 user_rc=0`.
+
+This is a real-NFD, real-GPU, four-Provider V3 functional gate. It does not
+yet establish per-operator CUDA placement through an ONNX profile, latency,
+canonical artifact publication, cross-Provider activation transfer, or
+multi-token generation.
 
 ## Next gate
 
 The next implementation gate is to make the real native/Python V3 offer and
-CPU execution paths conform to one contract, then replace the diagnostic
-handler with the smallest real model/artifact workload. Only after that gate
-passes should the Tiger matrix expand to GPU, reuse, cross-Provider, and
-hybrid-device cases.
+execution paths conform to one contract, then replace the diagnostic handler
+with the smallest real model/artifact workload and capture stage-level output
+bindings. Only after that gate passes should the Tiger matrix expand to reuse,
+cross-Provider activation transfer, and hybrid-device cases.
