@@ -245,6 +245,28 @@ produce a complete CPU response, but it does **not** prove KV-cache reuse,
 GPU no-fallback execution, canonical publication, or NDNSF-DI network
 execution.
 
+## Qwen ONNX stage-runner correction
+
+Before the next network artifact run, `run_qwen_onnx_stage` was tested with a
+regression fixture whose ONNX output order placed `present_key.0` before the
+primary stage output. The old positional `outputs[0]` selection therefore
+forwarded a KV tensor as hidden state. Commit `51d928f` now binds outputs by
+their semantic names (`hidden_states_out` or `logits`) and fails closed on
+metadata/value-count or required-output mismatches.
+
+Source hashes:
+
+```text
+c9030aea89ff925ec86c762b27cc486efd4e0bd66ba04cbb167d036242c72b01  examples/python/NDNSF-DistributedInference/llm_pipeline/llm_pipeline_lib.py
+9664247630ab51c4293de3c2a63d45010a2f836f6bec72ab83afd3d00df873c7  tests/python/test_spec170_qwen_onnx_stage_runner.py
+```
+
+Validation: the regression test first failed with the old positional output
+selection, then passed after the fix; the complete Spec170 Python lane now
+passes `59 passed, 2 skipped, 1 warning`. The current Tiger SIF has not been
+rebuilt from this commit, so no remote Qwen network result is attributed to
+this correction yet.
+
 ## Next gate
 
 The next implementation gate is to resolve the real Qwen artifact/runtime
