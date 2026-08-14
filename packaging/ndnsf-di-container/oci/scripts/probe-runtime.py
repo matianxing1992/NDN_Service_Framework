@@ -52,6 +52,8 @@ def static_probe() -> dict[str, object]:
         "ndnsf_distributed_inference.ops",
         "ndnsf_distributed_inference.adapters.onnx",
         "ndnsf_distributed_inference.adapters.qwen",
+        "transformers.models.qwen3",
+        "transformers.models.qwen3.configuration_qwen3",
         "torch",
         "transformers",
         "onnxruntime",
