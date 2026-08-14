@@ -170,15 +170,20 @@ def validate_waf_target_closure(workspace: Path) -> list[dict[str, object]]:
     return census
 
 
-def validate_python_build_outputs(workspace: Path) -> list[str]:
-    """Reject stale setuptools ``build`` trees before the sealed install."""
+def validate_python_build_outputs(workspace: Path, dockerfile: str) -> list[str]:
+    """Require the image build to remove generated trees before installing."""
     root = workspace / "NDNSF-DistributedInference/packaging/python"
     stale = sorted(
         str(path.relative_to(workspace))
         for path in root.glob("*/build")
         if path.is_dir()
     )
-    require(not stale, "PREFLIGHT_STALE_PYTHON_BUILD_DIRS:" + ",".join(stale))
+    if stale:
+        require(
+            "find NDNSF-DistributedInference/packaging/python -type d -name build"
+            in dockerfile,
+            "PREFLIGHT_STALE_PYTHON_BUILD_CLEANUP_MISSING:" + ",".join(stale),
+        )
     return stale
 
 
@@ -199,10 +204,10 @@ def validate_archives(seal_root: Path, sources: set[str]) -> int:
 def run(workspace: Path, seal_root: Path | None) -> dict[str, object]:
     oci = workspace / "packaging/ndnsf-di-container/oci"
     waf_census = validate_waf_target_closure(workspace)
-    validate_python_build_outputs(workspace)
     lock = json.loads((oci / "locks/gpu.lock").read_text())
     foundation = (oci / "Dockerfile.foundation").read_text()
     dockerfile = (oci / "Dockerfile.gpu").read_text()
+    stale_python_build_directories = validate_python_build_outputs(workspace, dockerfile)
     runtime_closure = (oci / "scripts/verify-runtime-closure.py").read_text()
     matrix = (oci / "compatibility/gpu-matrix.yaml").read_text()
     workflow = (workspace / ".github/workflows/ndnsf-di-itiger-image.yml").read_text()
@@ -345,7 +350,7 @@ def run(workspace: Path, seal_root: Path | None) -> dict[str, object]:
         "systemCudaRequirementCount": len(system_python),
         "wafTargetCount": len(waf_census),
         "wafTargets": waf_census,
-        "stalePythonBuildDirectories": [],
+        "stalePythonBuildDirectories": stale_python_build_directories,
     }
 
 
