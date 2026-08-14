@@ -361,6 +361,28 @@ ONNX smoke targets explicitly declared `BOOST NDN_CXX NDN_SVS ONNXRUNTIME`.
 This is a local source/link-closure PASS only. It does not yet prove that the
 same source is installed in a sealed OCI/SIF candidate.
 
+### Clean locked-SVS equivalence build
+
+To remove the remaining ambiguity about the dirty local SVS checkout, the
+exact foundation lock revision was built in a separate worktree:
+
+```text
+SVS revision: 060811333de68b9674e45522222a14d4e047bf28
+SVS library SHA-256: 2d3dfa0edcecb2d06bcd5c3123f88827bcef750613475bb036d6546578ec66f0
+linker: /usr/bin/ld (GNU Binutils for Ubuntu) 2.34
+Boost: 1.71.0
+NDNSF build: ./waf ... configure --with-examples; ./waf ... build -j4
+result: 'build' finished successfully (14m29.589s), 306/306 tasks
+```
+
+The clean locked SVS build included the two ONNX smoke executables and the
+full examples/DistributedRepo closure. This confirms that the current NDNSF
+source links against the exact SVS revision consumed by the foundation build;
+the earlier missing-statistics failure was caused by selecting the stale
+installed `/usr/local` SVS, not by MiniNDN networking. The temporary worktree
+and prefix are retained for this evidence record only; the active dirty SVS
+checkout was not modified.
+
 The source-level Spec170 Python regression suite also passed at this candidate:
 
 ```text
