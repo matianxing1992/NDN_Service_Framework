@@ -1,11 +1,38 @@
 # Spec 170 Gate C Evidence (current checkpoint)
 
-**Verdict: PARTIAL PASS.** The latest immutable GPU OCI candidate passed its full
+**Verdict: PARTIAL PASS.** The current immutable OCI candidate passed its
 GitHub build, runtime probe, signature, SBOM, anonymous pull, and
-release-manifest checks. It has now also been materialized to an exact SIF with
-matching local/project hashes. The new SIF has passed the no-GPU static probe,
-the allocated-GPU CUDA/ONNX preflight, and a standalone Qwen3-0.6B reference.
-Full Gate C and Tiger D0/D1/D2 completion are still unclaimed.
+release-manifest checks. It has been materialized to an exact SIF with
+matching local/project hashes, and the same SIF has passed the no-GPU static
+probe, allocated-GPU CUDA/ONNX preflight, sealed four-Provider CPU D0
+execution, and a direct four-Provider CUDA V3 diagnostic. Full Gate C and
+Tiger D1/D2 completion remain unclaimed until the pre-freeze closure and sole
+candidate freeze are complete.
+
+## Current candidate binding (2026-08-14)
+
+All new Tiger evidence below binds the same source/OCI/SIF tuple:
+
+```text
+source: db1601ab8614677107ba65a001cb1a029363e555
+OCI: ghcr.io/matianxing1992/ndnsf-di-spec170@sha256:29e51b62e0165b1d05c4dc5c7627da741f9d196a935bf85d76abd4f75cf28c34
+SIF: /project/tma1/ndnsf-di/releases/spec170-runtime-db1601ab8614677107ba65a001cb1a029363e555/runtime.sif
+SIF SHA-256: 431c2721cecd209a713ced5c9b8e8c0aa22cf8af35934f717e6824db3846a091
+```
+
+Static job `189476` passed on `itiger05` with all native binaries, all V3
+Python imports, ONNX Runtime `1.20.0`, Torch `2.6.0+cu124`, Transformers
+`4.51.0`, and Qwen3 imports. It reported `modelWeightsIncluded: false`, as
+required for the content-addressed external model contract. Allocated-GPU
+job `189477` passed on `itiger02` with one RTX 6000 Ada, CUDA 12.4,
+`CUDAExecutionProvider`, and `cpuFallback=false`.
+
+The same candidate then passed the candidate-bound CPU/no-GPU D0 gate as job
+`189483`; the result is recorded in `tiger-d0.md`. The direct CUDA V3 network
+diagnostic job `189475` also completed with four Providers using
+`CUDAExecutionProvider`, four execution markers, ACK/Selection, and a final
+Merge response. These are current-candidate checks; they do not substitute
+for T025/T026/T028 pre-freeze closure or for the frozen D1/D2 gates.
 
 The current Qwen3-compatible candidate is documented in
 `tiger-qwen3-sif-materialization-20260814.md` and
