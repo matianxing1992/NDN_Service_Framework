@@ -14,6 +14,7 @@ import argparse
 import hashlib
 import hmac
 import json
+from pathlib import Path
 import time
 
 from ndnsf import AckDecision, ServiceProvider
@@ -46,6 +47,8 @@ def main() -> int:
     parser.add_argument("--trust-schema", required=True)
     parser.add_argument("--bootstrap-token", required=True)
     parser.add_argument("--service", default="/Inference/NativeTracer")
+    parser.add_argument("--artifact", default="")
+    parser.add_argument("--onnx", action="store_true")
     args = parser.parse_args()
 
     provider_id = args.provider.rstrip("/").rsplit("/", 1)[-1]
@@ -71,6 +74,47 @@ def main() -> int:
         sign_offer_digest=lambda digest: hmac.new(
             signing_key, digest.encode("utf-8"), hashlib.sha256).hexdigest(),
     )
+    session = None
+    np = None
+    artifact_digest = ""
+    if args.onnx:
+        if not args.artifact:
+            raise SystemExit("--onnx requires --artifact")
+        try:
+            import numpy as np  # type: ignore
+            import onnxruntime as ort  # type: ignore
+            artifact_path = Path(args.artifact)
+            artifact_digest = "sha256:" + hashlib.sha256(
+                artifact_path.read_bytes()).hexdigest()
+            session = ort.InferenceSession(
+                str(artifact_path), providers=["CPUExecutionProvider"])
+            print(
+                "SPEC170_V3_PROVIDER_RUNTIME_READY "
+                f"provider={args.provider} role={args.role} "
+                f"backend=onnxruntime device=cpu artifactDigest={artifact_digest} "
+                f"providers={','.join(session.get_providers())}",
+                flush=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise SystemExit(f"ONNX_RUNTIME_INIT_FAIL: {exc}") from exc
+
+    def execute_onnx() -> list[dict]:
+        if session is None or np is None:
+            return []
+        outputs = []
+        for input_meta in session.get_inputs():
+            shape = tuple(
+                1 if not isinstance(dim, int) or dim <= 0 else dim
+                for dim in input_meta.shape
+            )
+            value = np.zeros(shape, dtype=np.float32)
+            outputs.append((input_meta.name, value))
+        result = session.run(None, dict(outputs))
+        return [
+            {"shape": list(getattr(value, "shape", ())),
+             "bytes": int(getattr(value, "nbytes", 0))}
+            for value in result
+        ]
 
     def make_ack(context, payload: bytes) -> AckDecision:
         request = _parse_request(payload)
@@ -107,6 +151,15 @@ def main() -> int:
             f"requestId={context.session_id}",
             flush=True,
         )
+        outputs = execute_onnx()
+        if args.onnx:
+            print(
+                "SPEC170_V3_PROVIDER_EXECUTION "
+                f"provider={args.provider} role={args.role} "
+                f"backend=onnxruntime device=cpu artifactDigest={artifact_digest} "
+                f"outputs={json.dumps(outputs, sort_keys=True, separators=(',', ':'))}",
+                flush=True,
+            )
         if args.role == "/Merge":
             context.publish_final_response(
                 json.dumps({
@@ -114,6 +167,8 @@ def main() -> int:
                     "provider": args.provider,
                     "role": args.role,
                     "payload": "V3_CPU_OK",
+                    "backend": "onnxruntime" if args.onnx else "diagnostic",
+                    "outputs": outputs,
                 }, sort_keys=True, separators=(",", ":")).encode("utf-8")
             )
             print(
@@ -133,7 +188,8 @@ def main() -> int:
     print(
         "SPEC170_V3_PROVIDER_READY "
         f"provider={args.provider} role={args.role} device=cpu "
-        "placementProfile=DI_PLACEMENT_V3",
+        "placementProfile=DI_PLACEMENT_V3 "
+        f"onnx={str(args.onnx).lower()}",
         flush=True,
     )
     return provider.run()

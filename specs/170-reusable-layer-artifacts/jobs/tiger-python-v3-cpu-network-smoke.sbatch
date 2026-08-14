@@ -19,6 +19,7 @@ CANDIDATE_DIR=${CANDIDATE_DIR:-runtime-${CANDIDATE_SOURCE}}
 ROOT=/project/tma1/ndnsf-di/evidence/spec170/${CANDIDATE_DIR}/network-bundle
 SIF=/project/tma1/ndnsf-di/releases/spec170-${CANDIDATE_DIR}/runtime.sif
 SCRATCH=/tmp/ndnsf-di-python-v3-${SLURM_JOB_ID}
+SPEC170_V3_ONNX=${SPEC170_V3_ONNX:-0}
 mkdir -p "$SCRATCH/run" "$SCRATCH/log" "$SCRATCH/status"
 cat >"$SCRATCH/bootstrap.tokens" <<'EOF'
 # identity token role
@@ -119,12 +120,17 @@ provider() {
   local provider_identity="$2"
   local role="$3"
   local token="$4"
+  local artifact="${5:-}"
+  local runtime_args=()
+  if [ "$SPEC170_V3_ONNX" = 1 ]; then
+    runtime_args=(--onnx --artifact "$artifact")
+  fi
   container "$name" python3 /scripts/spec170_v3_cpu_provider.py \
     --provider "$provider_identity" --role "$role" \
     --group /NDNSF-DI/Tracer/group \
     --controller /NDNSF-DI/Tracer/controller \
     --trust-schema /bundle/trust-schema.conf \
-    --bootstrap-token "$token" \
+    --bootstrap-token "$token" "${runtime_args[@]}" \
     >"$SCRATCH/log/$name.log" 2>&1
   local status=$?
   echo "$status" >"$SCRATCH/status/$name.status"
@@ -136,13 +142,17 @@ for _ in $(seq 1 150); do
     "$SCRATCH/log/controller.log" 2>/dev/null && break
   sleep 0.1
 done
-provider backbone /NDNSF-DI/Tracer/provider/backbone /Backbone back0001 &
+provider backbone /NDNSF-DI/Tracer/provider/backbone /Backbone back0001 \
+  /bundle/artifacts/qwen-native-tracer-backbone.onnx &
 provider_pid=$!; PROVIDER_PIDS+=("$provider_pid"); PIDS+=("$provider_pid")
-provider head0 /NDNSF-DI/Tracer/provider/head0 /Head/Shard/0 head0001 &
+provider head0 /NDNSF-DI/Tracer/provider/head0 /Head/Shard/0 head0001 \
+  /bundle/artifacts/qwen-native-tracer-head0.onnx &
 provider_pid=$!; PROVIDER_PIDS+=("$provider_pid"); PIDS+=("$provider_pid")
-provider head1 /NDNSF-DI/Tracer/provider/head1 /Head/Shard/1 head1001 &
+provider head1 /NDNSF-DI/Tracer/provider/head1 /Head/Shard/1 head1001 \
+  /bundle/artifacts/qwen-native-tracer-head1.onnx &
 provider_pid=$!; PROVIDER_PIDS+=("$provider_pid"); PIDS+=("$provider_pid")
-provider merge /NDNSF-DI/Tracer/provider/merge /Merge merge001 &
+provider merge /NDNSF-DI/Tracer/provider/merge /Merge merge001 \
+  /bundle/artifacts/qwen-native-tracer-merge.onnx &
 provider_pid=$!; PROVIDER_PIDS+=("$provider_pid"); PIDS+=("$provider_pid")
 
 providers_ready=0
@@ -161,6 +171,25 @@ done
 if [ "$providers_ready" -ne 1 ]; then
   echo SPEC170_PYTHON_V3_NETWORK_PROVIDER_READY_FAIL
   exit 11
+fi
+if [ "$SPEC170_V3_ONNX" = 1 ]; then
+  runtimes_ready=0
+  for _ in $(seq 1 100); do
+    count=0
+    for name in backbone head0 head1 merge; do
+      grep -q 'SPEC170_V3_PROVIDER_RUNTIME_READY' \
+        "$SCRATCH/log/$name.log" 2>/dev/null && count=$((count + 1))
+    done
+    if [ "$count" -eq 4 ]; then
+      runtimes_ready=1
+      break
+    fi
+    sleep 0.1
+  done
+  if [ "$runtimes_ready" -ne 1 ]; then
+    echo SPEC170_PYTHON_V3_NETWORK_RUNTIME_READY_FAIL
+    exit 11
+  fi
 fi
 
 set +e
@@ -187,7 +216,13 @@ if [ "$user_rc" -eq 0 ] \
    && grep -q 'SPEC170_V3_PROVIDER_SELECTED' "$SCRATCH/log/backbone.log" \
    && grep -q 'SPEC170_V3_PROVIDER_SELECTED' "$SCRATCH/log/head0.log" \
    && grep -q 'SPEC170_V3_PROVIDER_SELECTED' "$SCRATCH/log/head1.log" \
-   && grep -q 'SPEC170_V3_PROVIDER_RESPONSE' "$SCRATCH/log/merge.log"; then
+   && grep -q 'SPEC170_V3_PROVIDER_RESPONSE' "$SCRATCH/log/merge.log" \
+   && { [ "$SPEC170_V3_ONNX" != 1 ] || {
+        grep -q 'SPEC170_V3_PROVIDER_EXECUTION' "$SCRATCH/log/backbone.log" &&
+        grep -q 'SPEC170_V3_PROVIDER_EXECUTION' "$SCRATCH/log/head0.log" &&
+        grep -q 'SPEC170_V3_PROVIDER_EXECUTION' "$SCRATCH/log/head1.log" &&
+        grep -q 'SPEC170_V3_PROVIDER_EXECUTION' "$SCRATCH/log/merge.log";
+      }; }; then
   echo "SPEC170_PYTHON_V3_NETWORK_PASS job=$SLURM_JOB_ID user_rc=$user_rc"
   exit 0
 fi
