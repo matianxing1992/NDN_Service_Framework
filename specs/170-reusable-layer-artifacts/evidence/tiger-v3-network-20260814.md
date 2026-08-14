@@ -549,6 +549,18 @@ exit: 0:0
 terminal: SPEC170_PYTHON_V3_NETWORK_PASS job=189475 user_rc=0
 ```
 
+The retained Slurm streams and per-process logs are content-addressed as:
+
+```text
+520fe28922b15db72f6ca088a3b95b7e73ff62e8f073c0772c789523919ab4a4  spec170-v3-gpu-drain-db1601-189475.out
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  spec170-v3-gpu-drain-db1601-189475.err
+ed2f2cc72a81dce471333f82a1d43db61920f1d1926858311e8116094f795eaf  backbone.log
+ee72cfc1fe601c6724f522c051d2b664ec78efdc107c0c816233abc2f2b76ead  head0.log
+a0a911c2cf592888a95876976949b993e9d06d1bf34f3b9b25bb5f91c5895555  head1.log
+18729dbebdb715dc862d7f782c88a1b8acb242184c15a97efb8579631ce0f7ae  merge.log
+e4bf20ecdae40dbb9af3559a2c3f4c214d0656ccdcf4c298883c2f668744773b  user.log
+```
+
 All four Providers emitted `CUDAExecutionProvider,CPUExecutionProvider` with
 `cpuFallbackDisabled=true`, then emitted execution markers with the expected
 artifact digests and output shapes:
