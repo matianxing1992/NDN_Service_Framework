@@ -408,9 +408,9 @@ cosign: verified with the GitHub Actions OIDC identity
 The GPU image workflow was then dispatched as run `31784722395` using that
 foundation digest, the locked foundation source revision above, and the
 current `Experimental` source head
-`db1601ab8614677107ba65a001cb1a029363e555`. It is queued; no Tiger SIF or
-real-Qwen claim is made until this workflow produces and verifies its own
-immutable runtime manifest.
+`db1601ab8614677107ba65a001cb1a029363e555`. It completed successfully and
+produced the immutable runtime manifest recorded below. The release remains a
+runtime candidate, not a formal Spec170 freeze.
 
 TigerCluster read-only preflight also passed before materialization:
 
@@ -422,9 +422,8 @@ Slurm: sbatch available; bigTiger exposes H100_80GB, RTX_6000, and RTX_5000 GRES
 root filesystem: 790G available of 862G
 ```
 
-No existing SIF was relabeled as this release. Materialization will use the
-new GPU image digest and a new release directory after run `31784722395`
-completes.
+No existing SIF was relabeled as this release. Materialization used the new
+GPU image digest and a new release directory after run `31784722395` completed.
 
 The local allocation/SIF harness was checked before remote submission:
 
@@ -469,6 +468,56 @@ materialize-runtime.sbatch: sha256:cdbec51ae422e2317ff5a54fcd2392364c55780acbc47
 
 The staged wrapper still requires an explicit immutable `OCI_REFERENCE` at
 submission time; no mutable tag can be used.
+
+## Current immutable GPU release and CPU V3 network diagnostic
+
+Run `31784722395` completed in `43m26s` with successful Buildx publication,
+OIDC cosign verification, SBOM generation, anonymous manifest inspection,
+release-manifest creation, and artifact checksums. The release artifact
+records:
+
+```text
+releaseId: spec170-runtime-db1601ae9547d51ae8cd20a0182b78a5be25c434
+sourceRevision: db1601ab8614677107ba65a001cb1a029363e555
+OCI: ghcr.io/matianxing1992/ndnsf-di-spec170@sha256:29e51b62e0165b1d05c4dc5c7627da741f9d196a935bf85d76abd4f75cf28c34
+manifestDigest: sha256:63341a597cba366a13007a37aa370e5001e164323f7cdaada81f568981ce4a2b
+SBOM digest: sha256:1d7b32acbb392b1ce4ba5552a2a0119af313d3d57e50c5d7cf44f94e51336230
+signature: verified, GitHub Actions OIDC, anonymous-read manifest
+```
+
+Slurm job `189470` materialized that exact OCI digest on `itiger05` with
+Apptainer `1.5.3-1.el9`. The project SIF and local scratch SIF were byte
+identical:
+
+```text
+SIF: /project/tma1/ndnsf-di/releases/spec170-runtime-db1601ab8614677107ba65a001cb1a029363e555/runtime.sif
+SIF SHA-256: sha256:431c2721cecd209a713ced5c9b8e8c0aa22cf8af35934f717e6824db3846a091
+size: 4,397,137,920 bytes
+materialization record: verified=true
+```
+
+The current candidate-bound CPU V3 network diagnostic staged the current
+Provider/User scripts and the existing four-role test artifacts under
+`runtime-db1601ab8614677107ba65a001cb1a029363e555/network-bundle/`. Slurm job
+`189472` ran with `SPEC170_V3_ONNX=0` and `SPEC170_V3_DEVICE=cpu` on `itiger05`
+and exited `0:0`. It observed:
+
+```text
+four SPEC170_V3_PROVIDER_READY markers with device=cpu
+four positive DI_PLACEMENT_V3 ACKs
+SPEC170_V3_USER_ACK_CLOSED ackCount=4
+SPEC170_V3_USER_SELECTION_COMMITTED
+selected callbacks for Backbone, Head/Shard/0, Head/Shard/1, and Merge
+SPEC170_V3_PROVIDER_RESPONSE from Merge
+SPEC170_V3_USER_RESPONSE payload=..."payload":"V3_OK"...
+SPEC170_PYTHON_V3_NETWORK_PASS job=189472 user_rc=0
+```
+
+This is a current sealed-SIF, real-NFD, four-Provider CPU control/selection/
+response result. It is not yet formal T030/D0 evidence because the frozen
+`gate-d0-cpu.sbatch` entrypoint still needs a candidate-bound workload and the
+full T027/T029 closure; it also does not prove ONNX execution, GPU behavior,
+canonical artifact publication, or multi-token generation.
 
 ## Next gate
 
