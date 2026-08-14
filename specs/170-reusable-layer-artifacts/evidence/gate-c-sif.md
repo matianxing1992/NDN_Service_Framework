@@ -34,6 +34,33 @@ diagnostic job `189475` also completed with four Providers using
 Merge response. These are current-candidate checks; they do not substitute
 for T025/T026/T028 pre-freeze closure or for the frozen D1/D2 gates.
 
+## Current-candidate Qwen reference
+
+The first attempt (`189484`) was discarded because the remotely staged job
+script hard-coded the old `runtime-85d7aa...` candidate.  It is not mixed into
+the current result.  After staging the parameterized script, job `189485`
+completed on `itiger02` with the current SIF and one GPU:
+
+```text
+candidate: runtime-db1601ab8614677107ba65a001cb1a029363e555
+job: 189485
+state: COMPLETED, exit 0:0
+elapsed: 00:00:14
+SIF SHA-256: 431c2721cecd209a713ced5c9b8e8c0aa22cf8af35934f717e6824db3846a091
+prompt SHA-256: d0ba0089a42d3f617369547844f0179b848a92c2315159c687c2869e10622d7b
+job script SHA-256: ecd2dd019c057a36f2287172b66e12bf0d5b9a5d6d3fab19c54361e5162d0b56
+result SHA-256: 5ad88fccaf6a824f3e40250de62635fbc525f080ce60b13b9e64945be0be0b63
+```
+
+The external content-addressed Qwen model produced one greedy two-token row
+with output token IDs `[3555, 374]`, input digest
+`sha256:723029d4d90b3c7b8d6cfe74fcf9a1c11f4d6d3cb904eb090c3986efd4f4bc88`,
+output digest
+`sha256:d6e7e388458351e97bb8987d7798ab29d034d0a0fdfe24212cfafe0e07d57b18`,
+and measured elapsed time `0.832749 s`.  This proves current-candidate
+single-GPU model execution only; it is not a distributed multi-Provider
+generation result or final T031 evidence.
+
 The current Qwen3-compatible candidate is documented in
 `tiger-qwen3-sif-materialization-20260814.md` and
 `tiger-qwen3-runtime-probes-20260814.md`. The earlier SIF below remains a
