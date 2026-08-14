@@ -144,6 +144,35 @@ def load_plan_tracer_module():
 
 
 class RuntimeAwareCampaignTest(unittest.TestCase):
+    def test_native_tracer_default_roles_bind_data_driven_runtime(self) -> None:
+        driver = load_user_driver_module()
+        plan = driver.sample_service_plan("/Inference/NativeTracer")
+        roles = driver.collaboration_roles(plan, plan["service"])
+
+        self.assertEqual(len(roles), 4)
+        for entry in roles:
+            fields = driver.parse_semicolon_fields(entry["app_requirement"])
+            role = entry["role"]
+            digest = "sha256:native-tracer:" + role.strip("/").replace("/", "-")
+            self.assertEqual(fields["executionPolicy"], "DATA_DRIVEN_V2")
+            self.assertEqual(fields["backend"], "onnxruntime")
+            self.assertEqual(fields["device"], "cpu")
+            self.assertEqual(fields["artifactDigest"], digest)
+            self.assertEqual(fields["fragmentDigest"], digest)
+
+    def test_native_tracer_legacy_policy_is_explicit(self) -> None:
+        driver = load_user_driver_module()
+        plan = driver.sample_service_plan("/Inference/NativeTracer")
+        roles = driver.collaboration_roles(
+            plan,
+            plan["service"],
+            execution_policy="LEGACY_READY_SET_V1",
+        )
+        fields = driver.parse_semicolon_fields(roles[0]["app_requirement"])
+        self.assertEqual(fields["executionPolicy"], "LEGACY_READY_SET_V1")
+        self.assertNotIn("backend", fields)
+        self.assertNotIn("artifactDigest", fields)
+
     def test_minindn_static_resource_profiles_are_configured_only(self) -> None:
         harness = load_harness_module()
         fixture = json.loads(harness.RUNTIME_V1_PROVIDER_PROFILES.read_text(
