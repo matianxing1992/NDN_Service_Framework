@@ -44,6 +44,7 @@ class CoreProfileStaticTest(unittest.TestCase):
         self.assertIn('"modelWeightsIncluded": False',probe)
         self.assertIn('"ndnsf-di-core"',probe)
         self.assertIn('"ndnsf-di-adapter-qwen"',probe)
+        self.assertIn('"transformers.models.qwen3.configuration_qwen3"', probe)
 
     def test_spec111_static_gate_never_starts_a_container_runtime(self):
         tree=ast.parse(Path(__file__).read_text())

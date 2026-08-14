@@ -30,6 +30,7 @@ REQUIRED_PYTHON = {
     "triton", "typing-extensions", "urllib3",
 }
 REQUIRED_QWEN_PYTHON = {"onnxruntime-gpu", "torch", "transformers"}
+REQUIRED_QWEN3_TRANSFORMERS = "4.51.0"
 UNUSED_TORCH_MEDIA = {"torchaudio", "torchvision"}
 REQUIRED_SYSTEM_PYTHON = {
     "nvidia-cublas-cu12", "nvidia-cuda-cupti-cu12", "nvidia-cuda-nvrtc-cu12",
@@ -118,6 +119,10 @@ def run(workspace: Path, seal_root: Path | None) -> dict[str, object]:
     python = {name.lower() for name in lock.get("pythonPackages", {})}
     require(REQUIRED_PYTHON <= python, "PREFLIGHT_PYTHON_CLOSURE_INCOMPLETE")
     require(REQUIRED_QWEN_PYTHON <= python, "PREFLIGHT_QWEN_RUNTIME_INCOMPLETE")
+    require(
+        lock.get("pythonPackages", {}).get("transformers") == REQUIRED_QWEN3_TRANSFORMERS,
+        "PREFLIGHT_QWEN3_TRANSFORMERS_VERSION_INVALID",
+    )
     require(
         UNUSED_TORCH_MEDIA.isdisjoint(python),
         "PREFLIGHT_UNUSED_TORCH_MEDIA_PRESENT",

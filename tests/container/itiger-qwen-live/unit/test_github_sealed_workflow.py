@@ -57,6 +57,12 @@ class GithubSealedWorkflowTests(unittest.TestCase):
         self.assertIn("libboost-all-dev", lock["systemPackages"])
         self.assertNotIn("sourceArchives", lock)
 
+    def test_qwen3_runtime_is_locked_to_a_transformers_version_with_qwen3(self) -> None:
+        lock = json.loads(
+            (REPO / "packaging/ndnsf-di-container/oci/locks/gpu.lock").read_text()
+        )
+        self.assertEqual(lock["pythonPackages"]["transformers"], "4.51.0")
+
     def test_nfd_build_inputs_include_pcap_and_locked_websocketpp(self) -> None:
         lock = json.loads(
             (REPO / "packaging/ndnsf-di-container/oci/locks/gpu.lock").read_text()
