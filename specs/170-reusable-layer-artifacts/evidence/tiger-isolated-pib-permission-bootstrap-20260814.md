@@ -65,6 +65,20 @@ The skill text was validated with `quick_validate.py`; its checker output must
 be retained with each candidate rather than treating the presence of the skill
 file as proof that the gate ran.
 
+The first replacement OCI workflow (`31771295874`, source
+`bfdd3a031881b6a18e81ca0898e06caa3d3bec18`) was retained as a build-negative.
+Its full Waf compile reached the native Provider link, then failed with:
+
+```text
+undefined reference to ndn_service_framework::ensureControllerSignedCertificate(...)
+```
+
+The isolated network fix added the call site but the manually enumerated
+`di-native-provider` and `di-native-fault-provider` source lists omitted
+`ndn-service-framework/CertificateBootstrap.cpp`. The next source candidate
+adds that implementation to both link closures; this is a release build
+closure correction, not a Tiger GPU or network result.
+
 The next valid positive result must include, in order:
 
 ```text
