@@ -12,7 +12,34 @@ set -u
 ROOT=/scratch
 LOG="$ROOT/log"
 STATUS="$ROOT/status"
-mkdir -p "$ROOT/run" "$LOG" "$STATUS"
+KEYCHAIN_ROOT="$ROOT/keychains"
+mkdir -p "$ROOT/run" "$LOG" "$STATUS" "$KEYCHAIN_ROOT"
+
+# ndn-cxx's default KeyChain is process-local only when the PIB/TPM locators
+# are distinct.  MiniNDN gives each node an isolated ~/.ndn directory; this
+# one-container workload must make that isolation explicit for the controller,
+# every Provider, and the User.  Otherwise concurrent identity creation races
+# on one SQLite PIB and produces "database is locked" or wrong-default-key
+# failures before any protocol packet is exchanged.
+prepare_keychain() {
+  role="$1"
+  mkdir -p "$KEYCHAIN_ROOT/$role/pib" "$KEYCHAIN_ROOT/$role/tpm"
+}
+
+keychain_env() {
+  role="$1"
+  printf 'NDN_CLIENT_PIB=pib-sqlite3:%s NDN_CLIENT_TPM=tpm-file:%s' \
+    "$KEYCHAIN_ROOT/$role/pib" "$KEYCHAIN_ROOT/$role/tpm"
+}
+
+for role in controller backbone head0 head1 merge user; do
+  prepare_keychain "$role"
+done
+
+# Shell-side commands that inspect the controller certificate should use the
+# controller PIB, while child processes below receive their own locators.
+export NDN_CLIENT_PIB="pib-sqlite3:$KEYCHAIN_ROOT/controller/pib"
+export NDN_CLIENT_TPM="tpm-file:$KEYCHAIN_ROOT/controller/tpm"
 
 # The release bind contains exactly one staged Spec170 V3 network bundle for a
 # candidate-bound D0 run.  Refuse ambiguity instead of silently choosing an
@@ -81,7 +108,8 @@ nfdc strategy set /NDNSF-DI/Tracer/group \
 nfdc strategy set /NDNSF-DI/Tracer \
   /localhost/nfd/strategy/multicast >/dev/null 2>&1 || true
 
-App_ServiceController \
+read -r controller_pib controller_tpm < <(keychain_env controller)
+env "$controller_pib" "$controller_tpm" App_ServiceController \
   --policy-file "$BUNDLE/controller.policies" \
   --trust-schema "$BUNDLE/trust-schema.conf" \
   --controller-prefix /NDNSF-DI/Tracer/controller \
@@ -110,7 +138,9 @@ provider() {
   role="$3"
   token="$4"
   artifact="$5"
-  python3 "$BUNDLE/spec170_v3_cpu_provider.py" \
+  read -r provider_pib provider_tpm < <(keychain_env "$name")
+  env "$provider_pib" "$provider_tpm" \
+    python3 "$BUNDLE/spec170_v3_cpu_provider.py" \
     --provider "$provider_identity" --role "$role" \
     --group /NDNSF-DI/Tracer/group \
     --controller /NDNSF-DI/Tracer/controller \
@@ -167,7 +197,9 @@ if [ "$runtimes_ready" -ne 1 ]; then
 fi
 
 set +e
-python3 "$BUNDLE/spec170_v3_cpu_user.py" \
+read -r user_pib user_tpm < <(keychain_env user)
+env "$user_pib" "$user_tpm" \
+  python3 "$BUNDLE/spec170_v3_cpu_user.py" \
   --group /NDNSF-DI/Tracer/group \
   --controller /NDNSF-DI/Tracer/controller \
   --user /NDNSF-DI/Tracer/user \
