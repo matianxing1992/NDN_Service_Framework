@@ -82,6 +82,27 @@ role=/Merge
 
 ## Scope and remaining gates
 
+## Single-GPU CUDA V3 gate
+
+Job `189515` used the same SIF with one allocated `rtx_5000` GPU and
+`apptainer --nv`. Slurm recorded one GPU allocation and the job completed
+with exit `0:0`:
+
+```text
+gres/gpu:rtx_5000=1
+SPEC170_PYTHON_V3_EXECUTION_DRAIN count=4 graceMs=5000
+SPEC170_PYTHON_V3_NETWORK_PASS job=189515 user_rc=0
+```
+
+All four Providers reported `backend=onnxruntime-cuda`, `device=cuda:0`,
+`providers=CUDAExecutionProvider,CPUExecutionProvider`, and
+`cpuFallbackDisabled=true`. CUDA was first in every active provider list.
+All four roles executed their ONNX artifacts, and the User completed
+permission discovery, four ACKs, V3 Selection commit, and a Merge response
+with `payload=V3_OK`. This is a functional single-GPU V3 gate; it does not
+yet prove per-operator placement, two-GPU device-set admission, or hybrid
+collectives.
+
 These jobs prove the new candidate's exact SIF closure, CPU/no-GPU startup,
 real ONNX artifact loading/execution, multi-Provider ACK/Selection, native
 cross-Provider dependency naming, and Python V3 response delivery. They do
@@ -89,4 +110,3 @@ not yet prove one/two-GPU allocation, canonical artifact publication and
 reuse, `NDNSF_DATA_V1` cross-Provider transfer, protected-artifact security,
 or heterogeneous `[1,2,1]`/`[2,1,2]` hybrid execution. Those remain the next
 Spec170 gates and must use the same frozen candidate identity.
-
