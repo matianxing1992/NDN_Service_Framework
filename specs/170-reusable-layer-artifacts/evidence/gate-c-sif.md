@@ -109,3 +109,15 @@ digest or runtime-content failure.
 
 Gate C remains open until the exact candidate is checked for the full T027
 native/Python V3 parity and bounded CUDA-preflight contract without rebuilding.
+
+## Bounded CUDA preflight (2026-08-14)
+
+The same immutable SIF passed the bounded allocated-GPU probe in Slurm job
+`189262` on `itiger01` with one `--gres=gpu:1` allocation and Apptainer
+`--nv`. The probe reported `status: PASS`, `cpuFallback: false`, one UUID
+(`GPU-90597ffb-6498-9a24-ca98-18fbdc33c447`), NVIDIA H100 80GB HBM3,
+driver `560.35.03`, Torch CUDA `12.4`, and ONNX Runtime providers
+`CUDAExecutionProvider` plus `CPUExecutionProvider`; the ONNX profile observed
+CUDA execution. Non-fatal ONNX Runtime thread-affinity warnings were emitted
+by the constrained Slurm CPU mask, but the CUDA kernel/provider and UUID checks
+passed. This is only the bounded runtime preflight, not a frozen D1 workload.
