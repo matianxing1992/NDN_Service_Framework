@@ -1,9 +1,10 @@
 # Spec 170 Gate C Evidence (current checkpoint)
 
-**Verdict: OCI PASS / SIF PENDING.** The immutable GPU OCI candidate has now
-passed its full GitHub build, runtime probe, signature, SBOM, anonymous pull,
-and release-manifest checks. This file still does not claim SIF or TigerCluster
-execution.
+**Verdict: PARTIAL PASS.** The immutable GPU OCI candidate passed its full
+GitHub build, runtime probe, signature, SBOM, anonymous pull, and
+release-manifest checks. It has now also been materialized to an exact SIF and
+passed a no-GPU static runtime probe. This file still does not claim full Gate C
+or Tiger D0/D1/D2 completion.
 
 ## Immutable OCI checkpoint (2026-08-13)
 
@@ -14,9 +15,8 @@ The accepted OCI candidate and its evidence are recorded in
 ghcr.io/matianxing1992/ndnsf-di-spec170@sha256:94ce0cc847d453df90fc1aab74fade597f45e3199274ad782094fb45dd9bf916
 ```
 
-The exact SIF has not yet been materialized. The next authorized operation is a
-bounded Slurm CPU conversion from this digest; no mutable tag or old Spec110/
-Spec168 image may be substituted.
+The exact SIF materialization and static probe are recorded below. No mutable
+tag or old Spec110/Spec168 image was substituted.
 
 ## Local exact-SIF availability check (2026-08-05)
 
@@ -75,5 +75,37 @@ c7263f2bdce939689ce654fc7e54857698cdc8139137c6c751dd7b9ec0a3bc88  specs/170-reus
 7b18323a045b17fe063c39199ce81807c339118ab50d9da8e379be0dd74d7bb2  tests/container/unit/test_spec170_exact_sif_gate.py
 ```
 
-Gate C remains open until T024 produces one immutable OCI/SIF candidate and the
-same candidate is executed in CPU/no-GPU mode with bounded CUDA preflights.
+## Exact SIF materialization and no-GPU static probe (2026-08-14)
+
+The accepted OCI release was materialized once on TigerCluster compute node
+`itiger05` by Slurm job `189255` using the local-scratch build path. The job
+completed with exit code 0, peak RSS `25588064K`, and no OOM. The local SIF and
+the promoted project copy were byte-identical:
+
+```text
+OCI:
+  ghcr.io/matianxing1992/ndnsf-di-spec170@sha256:94ce0cc847d453df90fc1aab74fade597f45e3199274ad782094fb45dd9bf916
+SIF:
+  /project/tma1/ndnsf-di/releases/spec170-runtime-e23d759bb61159c8b3093e599fe301599d8c043f/runtime.sif
+SIF SHA-256:
+  sha256:525c4b890c4012d3f36653d0209f7decec508635818e5b0829250ef06d012af1
+materialization:
+  schema ndnsf-sif-materialization-v2; verified=true
+  recordDigest sha256:0f9ca6b32fd58861496ac4b9f326d20b76bed840ece07ac88cb1d4c760562612
+```
+
+The exact SIF was then executed without `--nv` in Slurm job `189260` on
+`itiger05`, with Apptainer `1.5.3-1.el9`, `--cleanenv --containall --home /tmp`,
+and `/usr/local/bin/ndnsf-di-probe-runtime --mode static`. The probe exited 0
+and reported `status: PASS`, all required native binaries, all required Python
+imports, `torch 2.6.0+cu124`, and `onnxruntime 1.20.0`. It intentionally reports
+`modelWeightsIncluded: false`; this is a runtime-image probe, not a model
+execution result.
+
+Three bounded probe attempts before the final invocation are retained as
+negative launch evidence in `tiger-sif-static-probe-20260814.md`; they exposed
+only missing/overridden container HOME and working-directory setup, not a SIF
+digest or runtime-content failure.
+
+Gate C remains open until the exact candidate is checked for the full T027
+native/Python V3 parity and bounded CUDA-preflight contract without rebuilding.
