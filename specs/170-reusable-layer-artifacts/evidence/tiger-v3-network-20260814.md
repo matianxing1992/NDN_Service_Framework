@@ -21,6 +21,36 @@ The base SIF passed the static import, CUDA, Qwen, mount, and isolated-PIB/
 network preflights. The base SIF is therefore retained unchanged for this
 diagnostic; the V3 scripts are separately hashed release inputs.
 
+## Local MiniNDN dependency-closure gate
+
+The opt-in real MiniNDN gate was first run from this clean checkout with
+`SPEC170_RUN_REAL_MININDN=1`. It failed before MiniNDN/NFD startup because the
+checkout contains the Python package but not its compiled extension:
+
+```text
+ModuleNotFoundError: No module named 'py_repoclient._py_repoclient'
+```
+
+This is a dependency-closure failure, not a MiniNDN protocol result. As a
+reversible diagnostic only, the ABI-matched Python 3.8 extension from the
+existing host build was symlinked into the checkout for one run, then removed:
+
+```text
+source: /home/tianxing/NDN/ndn-service-framework/
+        NDNSF-DistributedRepo/pythonWrapper/py_repoclient/
+        _py_repoclient.cpython-38-x86_64-linux-gnu.so
+SHA-256: b27e960b103d796345fc004aacd797a468f33ed6efc4534d1d86ef8325967cf7
+```
+
+With that extension present, the same one-request real MiniNDN topology
+completed successfully (`LLM_PIPELINE_MININDN_OK`), including three Provider
+ACKs, assignment selection, provider projection, selected-stage execution,
+and `LLM_PIPELINE_USER_RESPONSE`. The run used the fake model runtime and
+therefore proves the MiniNDN control/request path only; it does not replace
+the Tiger SIF gate or prove real Qwen execution. The release candidate must
+package or build this ABI-matched extension inside its own runtime closure;
+relying on a host-installed extension is not acceptable for a sealed image.
+
 ## Native path diagnosis
 
 Jobs `189427`, `189428`, `189430`, and `189431` used the old NativeTracer
