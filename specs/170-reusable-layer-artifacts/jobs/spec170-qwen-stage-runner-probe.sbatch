@@ -25,7 +25,7 @@ RUNNER="$ROOT/llm_pipeline_lib.py"
 MANIFEST="$INPUT/qwen-onnx-service-manifest.json"
 SCRATCH="/tmp/spec170-qwen-runner-$SLURM_JOB_ID"
 OUT="$ROOT/run-$SLURM_JOB_ID"
-mkdir -p "$ROOT" "$SCRATCH" "$OUT"
+mkdir -p "$ROOT" "$SCRATCH/home" "$OUT"
 trap 'rc=$?; echo "SPEC170_QWEN_STAGE_RUNNER_TERMINAL exit=$rc job=$SLURM_JOB_ID"; exit "$rc"' EXIT
 
 if [ "$SPEC170_DEVICE" != cpu ]; then
@@ -41,7 +41,8 @@ for required in "$SIF" "$MANIFEST" "$SCRIPT" "$RUNNER"; do
 done
 
 env -u APPTAINERENV_HOME -u SINGULARITYENV_HOME \
-apptainer exec "${GPU_ARGS[@]}" --cleanenv --containall --no-home --pwd /tmp \
+apptainer exec "${GPU_ARGS[@]}" --cleanenv --containall --pwd /tmp \
+  --home "$SCRATCH/home:/home/tma1" \
   --env HOME=/scratch,PYTHONNOUSERSITE=1,PYTHONDONTWRITEBYTECODE=1 \
   --bind "$INPUT/model:/models:ro" \
   --bind "$INPUT/artifacts:/artifacts:ro" \
