@@ -18,4 +18,4 @@ sha256sum "$sif"
 apptainer exec --nv --cleanenv --containall --home /tmp --pwd /tmp \
   --env SLURM_JOB_ID="$SLURM_JOB_ID" "$sif" \
   /usr/local/bin/ndnsf-di-probe-runtime --mode allocated-gpu
-printf 'SPEC170_RUNTIME_85D7AA_GPU_PASS job=%s\n' "$SLURM_JOB_ID"
+printf 'SPEC170_RUNTIME_GPU_PASS candidate=%s job=%s\n' "$CANDIDATE_DIR" "$SLURM_JOB_ID"

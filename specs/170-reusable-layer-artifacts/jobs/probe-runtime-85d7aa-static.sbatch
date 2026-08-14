@@ -16,4 +16,4 @@ sha256sum "$sif"
 apptainer exec --cleanenv --containall --home /tmp --pwd /tmp \
   --env CUDA_VISIBLE_DEVICES= "$sif" \
   /usr/local/bin/ndnsf-di-probe-runtime --mode static
-printf 'SPEC170_RUNTIME_85D7AA_STATIC_PASS job=%s\n' "$SLURM_JOB_ID"
+printf 'SPEC170_RUNTIME_STATIC_PASS candidate=%s job=%s\n' "$CANDIDATE_DIR" "$SLURM_JOB_ID"

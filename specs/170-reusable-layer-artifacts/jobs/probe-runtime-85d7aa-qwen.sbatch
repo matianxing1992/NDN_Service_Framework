@@ -31,4 +31,4 @@ apptainer exec --nv --cleanenv --containall --home /tmp --pwd /tmp \
   --seed 109 --output "$output"
 test -s "$host_output"
 sha256sum "$host_output"
-printf 'SPEC170_RUNTIME_85D7AA_QWEN_PASS job=%s output=%s\n' "$SLURM_JOB_ID" "$host_output"
+printf 'SPEC170_RUNTIME_QWEN_PASS candidate=%s job=%s output=%s\n' "$CANDIDATE_DIR" "$SLURM_JOB_ID" "$host_output"
