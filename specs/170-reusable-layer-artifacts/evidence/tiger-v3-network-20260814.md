@@ -426,6 +426,18 @@ No existing SIF was relabeled as this release. Materialization will use the
 new GPU image digest and a new release directory after run `31784722395`
 completes.
 
+The local allocation/SIF harness was checked before remote submission:
+
+```text
+PYTHONPATH=packaging/ndnsf-di-container/lib \
+  python3 -m pytest -q \
+    tests/container/unit/test_spec170_allocation_topology.py \
+    tests/container/unit/test_spec170_exact_sif_gate.py
+7 passed in 0.03s
+preflight-gpu-build.py: PASS (41 Python packages, 11 CUDA requirements,
+8 source entries, 0 archive entries)
+```
+
 ## Next gate
 
 The next implementation gate is to resolve the real Qwen artifact/runtime
