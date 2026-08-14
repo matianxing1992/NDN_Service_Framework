@@ -44,3 +44,19 @@ Commit `0a90d332e34a6a888a017b54a34f79e5fad7b500` on `Experimental`:
 The repaired immutable GPU workflow is `31758215135`; its resulting OCI digest
 and SIF must be recorded separately. The old SIF remains diagnostic only and
 must not be used for Gate B or freeze evidence.
+
+## First repaired-image build failure
+
+Workflow `31758215135` failed before publishing an image. Its sealed GPU
+runtime installed `transformers==4.51.0`, but the GPU lock still required
+`huggingface-hub==0.28.1`; the image's dependency verifier therefore reported:
+
+```text
+PYTHON_DEPENDENCY_VERSION_MISMATCH:transformers:huggingface-hub:0.28.1:<1.0,>=0.30.0
+```
+
+This was a packaging-lock inconsistency, not evidence that Qwen3 or CUDA could
+not run. Commit `a46abe9110ff816145a42b42e9b365d847e41135` changes the GPU lock
+to `huggingface-hub==0.30.2`, adds a fail-closed preflight check, and extends the
+regression test. The replacement build is workflow `31758620149`; no OCI digest
+or SIF is accepted until that run and the subsequent Tiger probes complete.
