@@ -173,6 +173,7 @@ done
 set +e
 container user python3 /scripts/user_driver.py \
   --plan /bundle/native-execution-plan.json \
+  --manifest /bundle/service-manifest.json \
   --service /Inference/NativeTracer \
   --group /NDNSF-DI/Tracer/group \
   --controller /NDNSF-DI/Tracer/controller \

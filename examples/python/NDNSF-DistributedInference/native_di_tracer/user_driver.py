@@ -159,6 +159,33 @@ def _native_fragment_digest(role: str) -> str:
     return "sha256:native-tracer:" + role.strip("/").replace("/", "-")
 
 
+def load_native_artifact_digests(path: Path) -> dict[str, str]:
+    """Return the exact on-disk digest required by native Selection binding.
+
+    ``fragmentDigest`` is a semantic role identifier, while the native
+    readiness evidence binds ``artifactDigest`` to the bytes loaded by the
+    ONNX Runtime runner.  The two must remain separate on the wire.
+    """
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    output: dict[str, str] = {}
+    for service in manifest.get("services", []):
+        for artifact in service.get("artifacts", []):
+            role = str(artifact.get("role", "")).strip()
+            artifact_path = str(artifact.get("path", "")).strip()
+            if not role or not artifact_path:
+                continue
+            file_path = Path(artifact_path)
+            if not file_path.is_file():
+                raise ValueError(
+                    f"native artifact path is not readable: {artifact_path}"
+                )
+            digest = hashlib.sha256(file_path.read_bytes()).hexdigest().upper()
+            output[role] = "sha256:" + digest
+    if not output:
+        raise ValueError(f"native manifest has no readable artifacts: {path}")
+    return output
+
+
 def _validate_assignment_field(name: str, value: str) -> str:
     value = str(value).strip()
     if not value or ";" in value or "=" in value:
@@ -173,6 +200,7 @@ def collaboration_roles(
     execution_policy: str = DEFAULT_EXECUTION_POLICY,
     execution_backend: str = DEFAULT_EXECUTION_BACKEND,
     execution_device: str = DEFAULT_EXECUTION_DEVICE,
+    artifact_digests: dict[str, str] | None = None,
 ) -> list[dict]:
     role_names = list(service_plan["roles"])
     if execution_policy not in {DEFAULT_EXECUTION_POLICY, LEGACY_EXECUTION_POLICY}:
@@ -205,7 +233,7 @@ def collaboration_roles(
             "app_requirement": (
                 common
                 + (
-                    f"artifactDigest={_native_fragment_digest(role)};"
+                    f"artifactDigest={(artifact_digests or {}).get(role, _native_fragment_digest(role))};"
                     f"fragmentDigest={_native_fragment_digest(role)};"
                 ).encode()
                 if execution_policy == DEFAULT_EXECUTION_POLICY
@@ -388,6 +416,11 @@ def is_overload_fast_fail_error(args, error: str, elapsed_ms: float) -> bool:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the NativeTracer user driver")
     parser.add_argument("--plan", default="")
+    parser.add_argument(
+        "--manifest", default="",
+        help=("Service manifest containing the exact native artifact paths; "
+              "used to bind Selection artifactDigest to loaded bytes"),
+    )
     parser.add_argument("--service", default=SERVICE)
     parser.add_argument("--group", default=GROUP)
     parser.add_argument("--controller", default=CONTROLLER)
@@ -1649,6 +1682,7 @@ def run_child_process_requests(args,
             sys.executable,
             str(script),
             "--plan", args.plan,
+            "--manifest", args.manifest,
             "--service", args.service,
             "--group", args.group,
             "--controller", args.controller,
@@ -1857,12 +1891,17 @@ def main() -> int:
         service_plan = sample_service_plan(args.service)
     else:
         raise SystemExit("--plan is required unless --dry-run is used")
+    artifact_digests = (
+        load_native_artifact_digests(Path(args.manifest))
+        if args.manifest else {}
+    )
     roles = collaboration_roles(
         service_plan,
         args.service,
         execution_policy=args.execution_policy,
         execution_backend=args.execution_backend,
         execution_device=args.execution_device,
+        artifact_digests=artifact_digests,
     )
     dependencies = collaboration_dependencies(service_plan)
     key_scopes, role_scopes = key_scopes_and_role_scopes(service_plan)
