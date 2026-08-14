@@ -361,6 +361,14 @@ ONNX smoke targets explicitly declared `BOOST NDN_CXX NDN_SVS ONNXRUNTIME`.
 This is a local source/link-closure PASS only. It does not yet prove that the
 same source is installed in a sealed OCI/SIF candidate.
 
+The source-level Spec170 Python regression suite also passed at this candidate:
+
+```text
+PYTHONPATH=NDNSF-DistributedInference:pythonWrapper \
+  python3 -m pytest -q tests/python/test_spec170_*.py
+59 passed, 2 skipped, 1 warning in 5.65s
+```
+
 ## Next gate
 
 The next implementation gate is to resolve the real Qwen artifact/runtime
