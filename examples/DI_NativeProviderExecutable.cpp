@@ -9,6 +9,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 
 #include "ndn-service-framework/CertificatePublisher.hpp"
+#include "ndn-service-framework/CertificateBootstrap.hpp"
 #include "ndn-service-framework/ServiceProvider.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
 
@@ -21,6 +22,7 @@
 #include <ndn-cxx/security/transform/stream-sink.hpp>
 #include <ndn-cxx/util/segment-fetcher.hpp>
 #include <ndn-cxx/util/sha256.hpp>
+#include <ndn-cxx/util/io.hpp>
 
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -93,6 +95,7 @@ struct Options
   bool serve = false;
   bool noServeCertificates = false;
   bool disableTokens = false;
+  std::string bootstrapToken;
   bool wiringCheckOnly = false;
   bool tracerDeterministicRunner = false;
   bool enableAdmissionLease = false;
@@ -477,6 +480,28 @@ getOrCreateIdentity(ndn::KeyChain& keyChain, const ndn::Name& identity)
   }
 }
 
+ndn::security::Certificate
+loadControllerCertificate(const ndn::Name& controller,
+                          ndn::KeyChain& keyChain)
+{
+  if (const char* certPath = std::getenv("NDNSF_CONTROLLER_CERT_FILE");
+      certPath != nullptr && *certPath != '\0') {
+    auto cert = ndn::io::load<ndn::security::Certificate>(certPath);
+    if (cert == nullptr || !cert->isValid()) {
+      throw std::runtime_error(
+        "NDNSF_CONTROLLER_CERT_FILE is not a valid certificate: " +
+        std::string(certPath));
+    }
+    if (cert->getIdentity() != controller) {
+      throw std::runtime_error(
+        "NDNSF_CONTROLLER_CERT_FILE identity " + cert->getIdentity().toUri() +
+        " does not match controller " + controller.toUri());
+    }
+    return *cert;
+  }
+  return getOrCreateIdentity(keyChain, controller);
+}
+
 Options
 parseArgs(int argc, char** argv)
 {
@@ -552,6 +577,9 @@ parseArgs(int argc, char** argv)
     }
     else if (arg == "--disable-tokens") {
       options.disableTokens = true;
+    }
+    else if (arg == "--bootstrap-token") {
+      options.bootstrapToken = readValue();
     }
     else if (arg == "--wiring-check-only") {
       options.wiringCheckOnly = true;
@@ -948,7 +976,12 @@ main(int argc, char** argv)
       const ndn::Name providerIdentity(options.providerName);
       const ndn::Name controllerIdentity(options.controllerName);
       auto providerCert = getOrCreateIdentity(keyChain, providerIdentity);
-      auto controllerCert = getOrCreateIdentity(keyChain, controllerIdentity);
+      auto controllerCert = loadControllerCertificate(controllerIdentity, keyChain);
+      if (!options.bootstrapToken.empty()) {
+        providerCert = ndn_service_framework::ensureControllerSignedCertificate(
+          face, keyChain, controllerIdentity, providerIdentity,
+          options.bootstrapToken);
+      }
       keyChain.setDefaultIdentity(keyChain.getPib().getIdentity(providerIdentity));
       std::cout << "NDNSF_DI_NATIVE_PROVIDER_KEYCHAIN_READY providerCert="
                 << providerCert.getName()

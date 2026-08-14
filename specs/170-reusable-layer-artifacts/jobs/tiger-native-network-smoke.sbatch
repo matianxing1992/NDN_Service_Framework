@@ -20,6 +20,14 @@ ROOT=/project/tma1/ndnsf-di/evidence/spec170/${CANDIDATE_DIR}/network-bundle
 SIF=/project/tma1/ndnsf-di/releases/spec170-${CANDIDATE_DIR}/runtime.sif
 SCRATCH=/tmp/ndnsf-di-native-network-${SLURM_JOB_ID}
 mkdir -p "$SCRATCH/run" "$SCRATCH/log" "$SCRATCH/cache" "$SCRATCH/status"
+cat >"$SCRATCH/bootstrap.tokens" <<'EOF'
+# identity token role
+/NDNSF-DI/Tracer/user user00001 user
+/NDNSF-DI/Tracer/provider/backbone back0001 provider
+/NDNSF-DI/Tracer/provider/head0 head0001 provider
+/NDNSF-DI/Tracer/provider/head1 head1001 provider
+/NDNSF-DI/Tracer/provider/merge merge001 provider
+EOF
 PIDS=()
 PROVIDER_PIDS=()
 
@@ -32,9 +40,19 @@ container() {
     apptainer exec --cleanenv --containall \
       --home "$home:/home/tma1" --pwd /tmp \
       --env NDN_CLIENT_TRANSPORT=unix:///scratch/run/nfd.sock \
+      --env NDNSF_CONTROLLER_CERT_FILE=/scratch/controller.cert \
       --bind "$ROOT:/bundle:ro" --bind "$ROOT/artifacts:/artifacts:ro" \
       --bind "$SCRATCH:/scratch:rw" \
       --bind "$ROOT/user_driver.py:/scripts/user_driver.py:ro" "$SIF" "$@"
+}
+
+container_controller_home() {
+  env -u APPTAINERENV_HOME -u SINGULARITYENV_HOME \
+    apptainer exec --cleanenv --containall \
+      --home "$SCRATCH/home-controller:/home/tma1" --pwd /tmp \
+      --env NDN_CLIENT_TRANSPORT=unix:///scratch/run/nfd.sock \
+      --bind "$ROOT:/bundle:ro" --bind "$ROOT/artifacts:/artifacts:ro" \
+      --bind "$SCRATCH:/scratch:rw" "$SIF" "$@"
 }
 
 cleanup() {
@@ -74,12 +92,31 @@ container controller /opt/ndnsf-di/current/bin/App_ServiceController \
   --policy-file /bundle/controller.policies \
   --trust-schema /bundle/trust-schema.conf \
   --controller-prefix /NDNSF-DI/Tracer/controller \
+  --bootstrap-token-file /scratch/bootstrap.tokens \
   >"$SCRATCH/log/controller.log" 2>&1 & PIDS+=("$!")
+
+controller_cert_ready=0
+for _ in $(seq 1 100); do
+  if container_controller_home ndnsec cert-dump -i /NDNSF-DI/Tracer/controller \
+      >"$SCRATCH/controller.cert.tmp" 2>"$SCRATCH/controller-cert.err" \
+      && test -s "$SCRATCH/controller.cert.tmp"; then
+    mv "$SCRATCH/controller.cert.tmp" "$SCRATCH/controller.cert"
+    controller_cert_ready=1
+    break
+  fi
+  sleep 0.1
+done
+if [ "$controller_cert_ready" -ne 1 ]; then
+  echo SPEC170_NATIVE_NETWORK_CONTROLLER_CERT_FAIL
+  cat "$SCRATCH/controller-cert.err" 2>/dev/null || true
+  exit 10
+fi
 
 provider() {
   local name="$1"
   local provider="$2"
   local role="$3"
+  local bootstrap_token="$4"
   container "$name" /opt/ndnsf-di/current/bin/di-native-provider \
     --plan /bundle/native-execution-plan.json \
     --manifest /bundle/service-manifest.json \
@@ -87,6 +124,7 @@ provider() {
     --group /NDNSF-DI/Tracer/group \
     --controller /NDNSF-DI/Tracer/controller \
     --trust-schema /bundle/trust-schema.conf \
+    --bootstrap-token "$bootstrap_token" \
     --artifact-cache-dir "/scratch/cache-$name" --serve \
     >"$SCRATCH/log/$name.log" 2>&1
   local rc=$?
@@ -99,13 +137,13 @@ for _ in $(seq 1 150); do
     "$SCRATCH/log/controller.log" 2>/dev/null && break
   sleep 0.1
 done
-provider backbone /NDNSF-DI/Tracer/provider/backbone /Backbone &
+provider backbone /NDNSF-DI/Tracer/provider/backbone /Backbone back0001 &
 provider_pid=$!; PROVIDER_PIDS+=("$provider_pid"); PIDS+=("$provider_pid")
-provider head0 /NDNSF-DI/Tracer/provider/head0 /Head/Shard/0 &
+provider head0 /NDNSF-DI/Tracer/provider/head0 /Head/Shard/0 head0001 &
 provider_pid=$!; PROVIDER_PIDS+=("$provider_pid"); PIDS+=("$provider_pid")
-provider head1 /NDNSF-DI/Tracer/provider/head1 /Head/Shard/1 &
+provider head1 /NDNSF-DI/Tracer/provider/head1 /Head/Shard/1 head1001 &
 provider_pid=$!; PROVIDER_PIDS+=("$provider_pid"); PIDS+=("$provider_pid")
-provider merge /NDNSF-DI/Tracer/provider/merge /Merge &
+provider merge /NDNSF-DI/Tracer/provider/merge /Merge merge001 &
 provider_pid=$!; PROVIDER_PIDS+=("$provider_pid"); PIDS+=("$provider_pid")
 
 providers_ready=0
@@ -140,6 +178,7 @@ container user python3 /scripts/user_driver.py \
   --controller /NDNSF-DI/Tracer/controller \
   --user /NDNSF-DI/Tracer/user \
   --trust-schema /bundle/trust-schema.conf \
+  --bootstrap-token user00001 \
   --permission-wait-ms 5000 --ack-timeout-ms 3000 \
   --timeout-ms 30000 --requests 1 \
   >"$SCRATCH/log/user.log" 2>&1 &

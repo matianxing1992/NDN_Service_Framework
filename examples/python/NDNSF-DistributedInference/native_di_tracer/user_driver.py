@@ -356,6 +356,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ack-timeout-ms", type=int, default=1200)
     parser.add_argument("--timeout-ms", type=int, default=20000)
     parser.add_argument("--permission-wait-ms", type=int, default=2500)
+    parser.add_argument("--bootstrap-token", default="",
+                        help="Controller-issued certificate bootstrap token")
     parser.add_argument("--requests", type=int, default=1,
                         help="Number of closed-loop collaboration requests to submit")
     parser.add_argument("--concurrency", type=int, default=1,
@@ -1605,6 +1607,7 @@ def run_child_process_requests(args,
             "--timeout-ms", str(args.timeout_ms),
             "--overload-fast-fail-timeout-ms", str(args.overload_fast_fail_timeout_ms),
             "--permission-wait-ms", str(args.permission_wait_ms),
+            "--bootstrap-token", args.bootstrap_token,
             "--requests", str(args.requests),
             "--concurrency", str(args.concurrency),
             "--worker-child",
@@ -1818,6 +1821,7 @@ def main() -> int:
         trust_schema=args.trust_schema,
         permission_wait_ms=args.permission_wait_ms,
         serve_certificates=True,
+        bootstrap_token=args.bootstrap_token,
     )
     allowed = [entry.service for entry in user.get_allowed_services()]
     print("NDNSF_DI_NATIVE_TRACER_USER_ALLOWED " + json.dumps(allowed), flush=True)
@@ -1941,6 +1945,7 @@ def main() -> int:
                     trust_schema=args.trust_schema,
                     permission_wait_ms=args.permission_wait_ms,
                     serve_certificates=True,
+                    bootstrap_token=args.bootstrap_token,
                 )
                 for index in range(1, args.concurrency + 1)
             ]

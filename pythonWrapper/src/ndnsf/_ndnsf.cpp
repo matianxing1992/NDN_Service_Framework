@@ -3515,7 +3515,12 @@ public:
     , m_permissionWaitMs(permissionWaitMs)
   {
     m_userCert = getOrCreateIdentity(m_keyChain, m_userIdentity);
-    m_controllerCert = getOrCreateIdentity(m_keyChain, m_controller);
+    if (auto controllerCert = loadControllerCertificateOverride(m_controller)) {
+      m_controllerCert = *controllerCert;
+    }
+    else {
+      m_controllerCert = getOrCreateIdentity(m_keyChain, m_controller);
+    }
     if (!bootstrapToken.empty()) {
       m_userCert = nsf::ensureControllerSignedCertificate(
         m_face, m_keyChain, m_controller, m_userIdentity,
