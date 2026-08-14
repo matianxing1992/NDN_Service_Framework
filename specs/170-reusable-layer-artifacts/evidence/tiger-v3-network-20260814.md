@@ -344,8 +344,22 @@ The same build initially used `/home/linuxbrew/.linuxbrew/bin/ld` (Binutils
 2.47) with Ubuntu system GTK/GLib libraries and failed with a large set of
 transitive GTK/GLib/X11/Fontconfig undefined references. A clean rebuild now
 uses `/usr/bin/ld` (Ubuntu Binutils 2.34) with the same Experimental SVS
-prefix; its final full-build result is still pending and must be recorded
-separately.
+prefix. The clean full build completed successfully:
+
+```text
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+PKG_CONFIG_PATH=/tmp/ndnsf-svs-experimental.x2d6gC/prefix/lib/pkgconfig
+./waf -o /tmp/ndnsf-build-svs-experimental-systemld-20260814 configure --with-examples
+./waf -o /tmp/ndnsf-build-svs-experimental-systemld-20260814 build -j4
+# incremental confirmation:
+'build' finished successfully (7.020s)
+```
+
+The configured source declared 32 `examples/wscript` program targets, four
+DistributedRepo program targets, and the top-level GStreamer probe; both
+ONNX smoke targets explicitly declared `BOOST NDN_CXX NDN_SVS ONNXRUNTIME`.
+This is a local source/link-closure PASS only. It does not yet prove that the
+same source is installed in a sealed OCI/SIF candidate.
 
 ## Next gate
 
