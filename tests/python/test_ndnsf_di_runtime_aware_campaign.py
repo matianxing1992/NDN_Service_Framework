@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import os
 import subprocess
@@ -172,6 +173,33 @@ class RuntimeAwareCampaignTest(unittest.TestCase):
         self.assertEqual(fields["executionPolicy"], "LEGACY_READY_SET_V1")
         self.assertNotIn("backend", fields)
         self.assertNotIn("artifactDigest", fields)
+
+    def test_native_tracer_manifest_binds_byte_digest_separately_from_fragment(self) -> None:
+        driver = load_user_driver_module()
+        plan = driver.sample_service_plan("/Inference/NativeTracer")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifact = root / "backbone.onnx"
+            artifact.write_bytes(b"stable-native-artifact")
+            manifest = root / "service-manifest.json"
+            manifest.write_text(json.dumps({
+                "services": [{"artifacts": [{
+                    "role": "/Backbone", "path": str(artifact),
+                }]}],
+            }), encoding="utf-8")
+            digests = driver.load_native_artifact_digests(manifest)
+            roles = driver.collaboration_roles(
+                {**plan, "roles": ["/Backbone"]}, plan["service"],
+                artifact_digests=digests,
+            )
+            fields = driver.parse_semicolon_fields(roles[0]["app_requirement"])
+            self.assertEqual(
+                fields["artifactDigest"],
+                "sha256:" + hashlib.sha256(
+                    b"stable-native-artifact").hexdigest().upper(),
+            )
+            self.assertEqual(fields["fragmentDigest"],
+                             "sha256:native-tracer:Backbone")
 
     def test_minindn_static_resource_profiles_are_configured_only(self) -> None:
         harness = load_harness_module()
