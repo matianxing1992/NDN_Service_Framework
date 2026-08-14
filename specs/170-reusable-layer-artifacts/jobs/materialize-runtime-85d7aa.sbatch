@@ -25,4 +25,4 @@ sha256sum "$stage"/*.sh
 bash -n "$stage/materialize-sif-local-scratch.sh"
 sh -n "$stage/materialize-sif.sh"
 bash "$stage/materialize-sif-local-scratch.sh" "$oci" "$final_sif" "$final_record"
-printf 'SPEC170_RUNTIME_85D7AA_SIF_PASS job=%s sif=%s\n' "$SLURM_JOB_ID" "$final_sif"
+printf 'SPEC170_RUNTIME_SIF_PASS candidate=%s job=%s sif=%s\n' "$CANDIDATE_DIR" "$SLURM_JOB_ID" "$final_sif"
