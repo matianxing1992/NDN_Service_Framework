@@ -21,6 +21,11 @@ SIF=/project/tma1/ndnsf-di/releases/spec170-${CANDIDATE_DIR}/runtime.sif
 SCRATCH=/tmp/ndnsf-di-python-v3-${SLURM_JOB_ID}
 SPEC170_V3_ONNX=${SPEC170_V3_ONNX:-0}
 SPEC170_V3_DEVICE=${SPEC170_V3_DEVICE:-cpu}
+# The Merge role publishes the final response as soon as its own execution
+# completes.  Other selected roles may still be flushing their execution
+# markers when the User process returns, so drain their bounded diagnostics
+# before the EXIT trap tears down the Provider containers.
+SPEC170_V3_EXECUTION_GRACE_MS=${SPEC170_V3_EXECUTION_GRACE_MS:-5000}
 mkdir -p "$SCRATCH/run" "$SCRATCH/log" "$SCRATCH/status"
 if [ "$SPEC170_V3_DEVICE" != cpu ]; then
   nvidia-smi --query-gpu=uuid,name,driver_version,memory.total \
@@ -223,6 +228,25 @@ container user python3 /scripts/spec170_v3_cpu_user.py \
 user_rc=$?
 set -u
 
+execution_count=0
+if [ "$SPEC170_V3_ONNX" = 1 ]; then
+  execution_count=0
+  execution_polls=$((SPEC170_V3_EXECUTION_GRACE_MS / 100))
+  if [ "$execution_polls" -lt 1 ]; then
+    execution_polls=1
+  fi
+  for _ in $(seq 1 "$execution_polls"); do
+    execution_count=0
+    for name in backbone head0 head1 merge; do
+      grep -q 'SPEC170_V3_PROVIDER_EXECUTION' \
+        "$SCRATCH/log/$name.log" 2>/dev/null && execution_count=$((execution_count + 1))
+    done
+    [ "$execution_count" -eq 4 ] && break
+    sleep 0.1
+  done
+  echo "SPEC170_PYTHON_V3_EXECUTION_DRAIN count=$execution_count graceMs=$SPEC170_V3_EXECUTION_GRACE_MS"
+fi
+
 for name in controller backbone head0 head1 merge user; do
   echo "=== $name ==="
   cat "$SCRATCH/log/$name.log" 2>/dev/null || true
@@ -237,10 +261,7 @@ if [ "$user_rc" -eq 0 ] \
    && grep -q 'SPEC170_V3_PROVIDER_SELECTED' "$SCRATCH/log/head1.log" \
    && grep -q 'SPEC170_V3_PROVIDER_RESPONSE' "$SCRATCH/log/merge.log" \
    && { [ "$SPEC170_V3_ONNX" != 1 ] || {
-        grep -q 'SPEC170_V3_PROVIDER_EXECUTION' "$SCRATCH/log/backbone.log" &&
-        grep -q 'SPEC170_V3_PROVIDER_EXECUTION' "$SCRATCH/log/head0.log" &&
-        grep -q 'SPEC170_V3_PROVIDER_EXECUTION' "$SCRATCH/log/head1.log" &&
-        grep -q 'SPEC170_V3_PROVIDER_EXECUTION' "$SCRATCH/log/merge.log";
+        [ "$execution_count" -eq 4 ];
       }; }; then
   if [ "$SPEC170_V3_ONNX" = 1 ] && [ "$SPEC170_V3_DEVICE" != cpu ]; then
     for name in backbone head0 head1 merge; do
