@@ -30,6 +30,10 @@ cat >"$SCRATCH/bootstrap.tokens" <<'EOF'
 EOF
 PIDS=()
 PROVIDER_PIDS=()
+# Emit bounded native assignment/selection diagnostics for candidate smoke
+# evidence. The output is retained with the run and is not a benchmark trace.
+export APPTAINERENV_NDNSF_DI_RUNTIME_TIMING=1
+export APPTAINERENV_NDNSF_PY_COLLAB_SELECTION_TRACE=1
 
 container() {
   local name="$1"
