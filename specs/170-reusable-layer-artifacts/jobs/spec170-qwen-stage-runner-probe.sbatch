@@ -40,7 +40,8 @@ for required in "$SIF" "$MANIFEST" "$SCRIPT" "$RUNNER"; do
   test -s "$required"
 done
 
-apptainer exec "${GPU_ARGS[@]}" --cleanenv --containall --no-home \
+env -u APPTAINERENV_HOME -u SINGULARITYENV_HOME \
+apptainer exec "${GPU_ARGS[@]}" --cleanenv --containall --no-home --pwd /tmp \
   --env HOME=/scratch,PYTHONNOUSERSITE=1,PYTHONDONTWRITEBYTECODE=1 \
   --bind "$INPUT/model:/models:ro" \
   --bind "$INPUT/artifacts:/artifacts:ro" \
