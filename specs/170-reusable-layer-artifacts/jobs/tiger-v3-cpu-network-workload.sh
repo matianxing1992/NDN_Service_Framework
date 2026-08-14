@@ -32,14 +32,9 @@ keychain_env() {
     "$KEYCHAIN_ROOT/$role/pib" "$KEYCHAIN_ROOT/$role/tpm"
 }
 
-for role in controller backbone head0 head1 merge user; do
+for role in nfd controller backbone head0 head1 merge user; do
   prepare_keychain "$role"
 done
-
-# Shell-side commands that inspect the controller certificate should use the
-# controller PIB, while child processes below receive their own locators.
-export NDN_CLIENT_PIB="pib-sqlite3:$KEYCHAIN_ROOT/controller/pib"
-export NDN_CLIENT_TPM="tpm-file:$KEYCHAIN_ROOT/controller/tpm"
 
 # The release bind contains exactly one staged Spec170 V3 network bundle for a
 # candidate-bound D0 run.  Refuse ambiguity instead of silently choosing an
@@ -90,10 +85,14 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-nfd --config "$BUNDLE/nfd.conf" >"$LOG/nfd.log" 2>&1 & PIDS+=("$!")
+read -r nfd_pib nfd_tpm < <(keychain_env nfd)
+read -r controller_pib controller_tpm < <(keychain_env controller)
+env "$nfd_pib" "$nfd_tpm" nfd --config "$BUNDLE/nfd.conf" \
+  >"$LOG/nfd.log" 2>&1 & PIDS+=("$!")
 nfd_ready=0
 for _ in $(seq 1 100); do
-  if nfdc status >"$STATUS/nfdc-status.txt" 2>&1; then
+  if env "$nfd_pib" "$nfd_tpm" nfdc status \
+      >"$STATUS/nfdc-status.txt" 2>&1; then
     nfd_ready=1
     break
   fi
@@ -103,12 +102,11 @@ if [ "$nfd_ready" -ne 1 ]; then
   echo SPEC170_D0_V3_NFD_READY_FAIL
   exit 10
 fi
-nfdc strategy set /NDNSF-DI/Tracer/group \
+env "$nfd_pib" "$nfd_tpm" nfdc strategy set /NDNSF-DI/Tracer/group \
   /localhost/nfd/strategy/multicast >/dev/null 2>&1 || true
-nfdc strategy set /NDNSF-DI/Tracer \
+env "$nfd_pib" "$nfd_tpm" nfdc strategy set /NDNSF-DI/Tracer \
   /localhost/nfd/strategy/multicast >/dev/null 2>&1 || true
 
-read -r controller_pib controller_tpm < <(keychain_env controller)
 env "$controller_pib" "$controller_tpm" App_ServiceController \
   --policy-file "$BUNDLE/controller.policies" \
   --trust-schema "$BUNDLE/trust-schema.conf" \
@@ -118,7 +116,8 @@ env "$controller_pib" "$controller_tpm" App_ServiceController \
 
 controller_ready=0
 for _ in $(seq 1 100); do
-  if ndnsec cert-dump -i /NDNSF-DI/Tracer/controller \
+  if env "$controller_pib" "$controller_tpm" \
+      ndnsec cert-dump -i /NDNSF-DI/Tracer/controller \
       >"$ROOT/controller.cert.tmp" 2>"$STATUS/controller-cert.err" \
       && test -s "$ROOT/controller.cert.tmp"; then
     mv "$ROOT/controller.cert.tmp" "$ROOT/controller.cert"
