@@ -3,11 +3,13 @@
 **Verdict: PARTIAL PASS.** The latest immutable GPU OCI candidate passed its full
 GitHub build, runtime probe, signature, SBOM, anonymous pull, and
 release-manifest checks. It has now also been materialized to an exact SIF with
-matching local/project hashes. The SIF is ready for the no-GPU static probe;
-full Gate C and Tiger D0/D1/D2 completion are still unclaimed.
+matching local/project hashes. The new SIF has passed the no-GPU static probe,
+the allocated-GPU CUDA/ONNX preflight, and a standalone Qwen3-0.6B reference.
+Full Gate C and Tiger D0/D1/D2 completion are still unclaimed.
 
 The current Qwen3-compatible candidate is documented in
-`tiger-qwen3-sif-materialization-20260814.md`. The earlier SIF below remains a
+`tiger-qwen3-sif-materialization-20260814.md` and
+`tiger-qwen3-runtime-probes-20260814.md`. The earlier SIF below remains a
 diagnostic-only runtime and must not be mixed with this candidate.
 
 ## Latest Qwen3-compatible OCI/SIF checkpoint (2026-08-14)
@@ -31,6 +33,21 @@ been written because an optional helper was not staged; that failure and its
 promotion-failure record are retained in the dedicated evidence file. The
 artifact is accepted as an exact-SIF input for the next probe, not as a clean
 Slurm orchestration PASS.
+
+## Latest Qwen3 runtime probes (2026-08-14)
+
+Against the exact SIF above, job `189302` passed the static probe on `itiger01`;
+it found `transformers==4.51.0` and both Qwen3 import modules. Jobs `189303`
+and `189304` are retained launch failures: the first used the invalid mode
+`cuda`, and the second stripped the required `SLURM_JOB_ID` with
+`--cleanenv`. Job `189305` passed the declared `allocated-gpu` mode on
+`itiger09` after forwarding only that scheduler variable. It observed an RTX
+5000 Ada, CUDA 12.4, `CUDAExecutionProvider`, and `cpuFallback=false`.
+
+Job `189306` then loaded the external content-addressed Qwen3-0.6B model and
+completed one greedy two-token reference row on the same SIF/GPU path. Prompt,
+output, result hashes, and the non-fatal deterministic-CuBLAS warnings are
+recorded in `tiger-qwen3-runtime-probes-20260814.md`.
 
 ## Immutable OCI checkpoint (2026-08-13)
 
