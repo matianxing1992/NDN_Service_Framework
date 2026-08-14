@@ -22,7 +22,7 @@ SCRATCH=/tmp/ndnsf-di-native-network-${SLURM_JOB_ID}
 mkdir -p "$SCRATCH/run" "$SCRATCH/log" "$SCRATCH/cache" "$SCRATCH/status"
 cat >"$SCRATCH/bootstrap.tokens" <<'EOF'
 # identity token role
-/NDNSF-DI/Tracer/user user00001 user
+/NDNSF-DI/Tracer/user user0001 user
 /NDNSF-DI/Tracer/provider/backbone back0001 provider
 /NDNSF-DI/Tracer/provider/head0 head0001 provider
 /NDNSF-DI/Tracer/provider/head1 head1001 provider
@@ -178,7 +178,7 @@ container user python3 /scripts/user_driver.py \
   --controller /NDNSF-DI/Tracer/controller \
   --user /NDNSF-DI/Tracer/user \
   --trust-schema /bundle/trust-schema.conf \
-  --bootstrap-token user00001 \
+  --bootstrap-token user0001 \
   --permission-wait-ms 5000 --ack-timeout-ms 3000 \
   --timeout-ms 30000 --requests 1 \
   >"$SCRATCH/log/user.log" 2>&1 &
