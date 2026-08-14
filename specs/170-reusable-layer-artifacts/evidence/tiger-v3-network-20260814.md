@@ -457,6 +457,19 @@ PYTHONPATH=packaging/ndnsf-di-container/lib \
 This is a test-environment namespace collision, not a runtime image failure;
 release scripts import the deployment helpers only in their own subprocess.
 
+While the GPU image was building, the candidate-bound materialization inputs
+were staged on Tiger without submitting a job or creating a SIF:
+
+```text
+candidate: runtime-db1601ab8614677107ba65a001cb1a029363e555
+materialize-sif-local-scratch.sh: sha256:2b96f17f83c37abd66955b8bafbf9a3e6c9ef54afff083c507eebfd7ebaf95fb
+materialize-sif.sh: sha256:268e4b3328bd874f9537b82deb8ed5682bc3d19408b9dfd9a1cf3387adc3f5e1
+materialize-runtime.sbatch: sha256:cdbec51ae422e2317ff5a54fcd2392364c55780acbc474f968088cc323cb789d
+```
+
+The staged wrapper still requires an explicit immutable `OCI_REFERENCE` at
+submission time; no mutable tag can be used.
+
 ## Next gate
 
 The next implementation gate is to resolve the real Qwen artifact/runtime
