@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Minimal real-network Spec170 V3 CPU Provider.
+"""Minimal real-network Spec170 V3 Provider.
 
 This process deliberately exercises the public Python V3 collaboration API,
-not the legacy NativeTracer V1 driver.  It advertises one CPU role, accepts a
-V3 offer, and emits a final response only for the merge role.  The workload is
-small by design: this is a control/selection/response gate before model and
-artifact campaigns.
+not the legacy NativeTracer V1 driver.  It advertises one explicitly selected
+CPU or CUDA role, accepts a V3 offer, and emits a final response only for the
+merge role.  The workload is small by design: this is a control/selection/
+response gate before larger model campaigns.
 """
 
 from __future__ import annotations
@@ -49,6 +49,7 @@ def main() -> int:
     parser.add_argument("--service", default="/Inference/NativeTracer")
     parser.add_argument("--artifact", default="")
     parser.add_argument("--onnx", action="store_true")
+    parser.add_argument("--device", choices=("cpu", "cuda:0"), default="cpu")
     args = parser.parse_args()
 
     provider_id = args.provider.rstrip("/").rsplit("/", 1)[-1]
@@ -63,13 +64,16 @@ def main() -> int:
         trust_schema=args.trust_schema,
         bootstrap_token=args.bootstrap_token,
     )
-    signing_key = b"spec170-v3-cpu-network-diagnostic-key"
+    signing_key = b"spec170-v3-network-diagnostic-key"
     signer_key_id = "sha256:" + hashlib.sha256(signing_key).hexdigest()
+    is_cuda = args.device.startswith("cuda:")
+    runtime_provider = "CUDAExecutionProvider" if is_cuda else "CPUExecutionProvider"
+    backend = "onnxruntime-cuda" if is_cuda else "cpu"
     issuer = DIProviderOfferIssuerV3(
         provider=args.provider,
         service=args.service,
         boot_epoch=provider.provider_boot_epoch,
-        devices=("cpu",),
+        devices=(args.device,),
         signer_key_id=signer_key_id,
         sign_offer_digest=lambda digest: hmac.new(
             signing_key, digest.encode("utf-8"), hashlib.sha256).hexdigest(),
@@ -84,15 +88,41 @@ def main() -> int:
             import numpy as np  # type: ignore
             import onnxruntime as ort  # type: ignore
             artifact_path = Path(args.artifact)
+            if runtime_provider not in ort.get_available_providers():
+                raise RuntimeError(
+                    f"required {runtime_provider} is unavailable; "
+                    "CPU fallback is disabled")
             artifact_digest = "sha256:" + hashlib.sha256(
                 artifact_path.read_bytes()).hexdigest()
+            options = ort.SessionOptions()
+            options.intra_op_num_threads = 1
+            options.inter_op_num_threads = 1
+            cpu_fallback_disabled = False
+            if is_cuda:
+                if not hasattr(options, "add_session_config_entry"):
+                    raise RuntimeError(
+                        "ONNX Runtime cannot disable CPU execution fallback")
+                options.add_session_config_entry(
+                    "session.disable_cpu_ep_fallback", "1")
+                cpu_fallback_disabled = True
+            provider_spec = runtime_provider
+            if is_cuda:
+                provider_spec = (runtime_provider, {"device_id": 0})
             session = ort.InferenceSession(
-                str(artifact_path), providers=["CPUExecutionProvider"])
+                str(artifact_path), sess_options=options,
+                providers=[provider_spec])
+            active_providers = tuple(session.get_providers())
+            if not active_providers or active_providers[0] != runtime_provider:
+                raise RuntimeError(
+                    f"{runtime_provider} was not selected; "
+                    f"active={active_providers}")
             print(
                 "SPEC170_V3_PROVIDER_RUNTIME_READY "
                 f"provider={args.provider} role={args.role} "
-                f"backend=onnxruntime device=cpu artifactDigest={artifact_digest} "
-                f"providers={','.join(session.get_providers())}",
+                f"backend={backend} device={args.device} "
+                f"artifactDigest={artifact_digest} "
+                f"providers={','.join(active_providers)} "
+                f"cpuFallbackDisabled={str(cpu_fallback_disabled).lower()}",
                 flush=True,
             )
         except Exception as exc:  # noqa: BLE001
@@ -131,7 +161,7 @@ def main() -> int:
             graph_digest=UNBOUND_GRAPH_DIGEST_V3,
             deadline_ms=deadline_ms,
             accepted_roles=(args.role,),
-            backends=("cpu",),
+            backends=(backend,),
             execution_disposition=ExecutionDisposition.ACCEPT_WITH_PREPARATION,
             preparation_accepted=True,
         )
@@ -139,7 +169,7 @@ def main() -> int:
             "SPEC170_V3_PROVIDER_ACK "
             f"provider={args.provider} role={args.role} "
             f"requestId={request_id} status={str(decision.status).lower()} "
-            "placementProfile=DI_PLACEMENT_V3 executionDevice=cpu",
+            f"placementProfile=DI_PLACEMENT_V3 executionDevice={args.device}",
             flush=True,
         )
         return decision
@@ -156,18 +186,19 @@ def main() -> int:
             print(
                 "SPEC170_V3_PROVIDER_EXECUTION "
                 f"provider={args.provider} role={args.role} "
-                f"backend=onnxruntime device=cpu artifactDigest={artifact_digest} "
+                f"backend={backend} device={args.device} "
+                f"artifactDigest={artifact_digest} "
                 f"outputs={json.dumps(outputs, sort_keys=True, separators=(',', ':'))}",
                 flush=True,
             )
         if args.role == "/Merge":
             context.publish_final_response(
                 json.dumps({
-                    "schema": "spec170-v3-cpu-response-v1",
+                    "schema": "spec170-v3-response-v1",
                     "provider": args.provider,
                     "role": args.role,
-                    "payload": "V3_CPU_OK",
-                    "backend": "onnxruntime" if args.onnx else "diagnostic",
+                    "payload": "V3_OK",
+                    "backend": backend if args.onnx else "diagnostic",
                     "outputs": outputs,
                 }, sort_keys=True, separators=(",", ":")).encode("utf-8")
             )
@@ -187,7 +218,7 @@ def main() -> int:
     )
     print(
         "SPEC170_V3_PROVIDER_READY "
-        f"provider={args.provider} role={args.role} device=cpu "
+        f"provider={args.provider} role={args.role} device={args.device} "
         "placementProfile=DI_PLACEMENT_V3 "
         f"onnx={str(args.onnx).lower()}",
         flush=True,

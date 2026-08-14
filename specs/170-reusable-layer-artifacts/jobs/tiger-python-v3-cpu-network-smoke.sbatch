@@ -20,7 +20,15 @@ ROOT=/project/tma1/ndnsf-di/evidence/spec170/${CANDIDATE_DIR}/network-bundle
 SIF=/project/tma1/ndnsf-di/releases/spec170-${CANDIDATE_DIR}/runtime.sif
 SCRATCH=/tmp/ndnsf-di-python-v3-${SLURM_JOB_ID}
 SPEC170_V3_ONNX=${SPEC170_V3_ONNX:-0}
+SPEC170_V3_DEVICE=${SPEC170_V3_DEVICE:-cpu}
 mkdir -p "$SCRATCH/run" "$SCRATCH/log" "$SCRATCH/status"
+if [ "$SPEC170_V3_DEVICE" != cpu ]; then
+  nvidia-smi --query-gpu=uuid,name,driver_version,memory.total \
+    --format=csv,noheader >"$SCRATCH/status/host-gpu.txt" 2>"$SCRATCH/status/host-gpu.err" || {
+      echo SPEC170_PYTHON_V3_NETWORK_HOST_GPU_FAIL
+      exit 9
+    }
+fi
 cat >"$SCRATCH/bootstrap.tokens" <<'EOF'
 # identity token role
 /NDNSF-DI/Tracer/user user0001 user
@@ -37,12 +45,16 @@ container() {
   shift
   local home="$SCRATCH/home-$name"
   mkdir -p "$home"
+  local gpu_args=()
+  if [ "$SPEC170_V3_DEVICE" != cpu ]; then
+    gpu_args=(--nv)
+  fi
   env -u APPTAINERENV_HOME -u SINGULARITYENV_HOME \
-    apptainer exec --cleanenv --containall \
+    apptainer exec "${gpu_args[@]}" --cleanenv --containall \
       --home "$home:/home/tma1" --pwd /tmp \
       --env NDN_CLIENT_TRANSPORT=unix:///scratch/run/nfd.sock \
       --env NDNSF_CONTROLLER_CERT_FILE=/scratch/controller.cert \
-      --env SPEC170_V3_HMAC_KEY=spec170-v3-cpu-network-diagnostic-key \
+      --env SPEC170_V3_HMAC_KEY=spec170-v3-network-diagnostic-key \
       --bind "$ROOT:/bundle:ro" \
       --bind "$SCRATCH:/scratch:rw" \
       --bind "$ROOT/spec170_v3_cpu_provider.py:/scripts/spec170_v3_cpu_provider.py:ro" \
@@ -51,8 +63,12 @@ container() {
 }
 
 container_controller_home() {
+  local gpu_args=()
+  if [ "$SPEC170_V3_DEVICE" != cpu ]; then
+    gpu_args=(--nv)
+  fi
   env -u APPTAINERENV_HOME -u SINGULARITYENV_HOME \
-    apptainer exec --cleanenv --containall \
+    apptainer exec "${gpu_args[@]}" --cleanenv --containall \
       --home "$SCRATCH/home-controller:/home/tma1" --pwd /tmp \
       --env NDN_CLIENT_TRANSPORT=unix:///scratch/run/nfd.sock \
       --bind "$ROOT:/bundle:ro" --bind "$SCRATCH:/scratch:rw" \
@@ -123,7 +139,9 @@ provider() {
   local artifact="${5:-}"
   local runtime_args=()
   if [ "$SPEC170_V3_ONNX" = 1 ]; then
-    runtime_args=(--onnx --artifact "$artifact")
+    runtime_args=(--onnx --artifact "$artifact" --device "$SPEC170_V3_DEVICE")
+  else
+    runtime_args=(--device "$SPEC170_V3_DEVICE")
   fi
   container "$name" python3 /scripts/spec170_v3_cpu_provider.py \
     --provider "$provider_identity" --role "$role" \
@@ -199,6 +217,7 @@ container user python3 /scripts/spec170_v3_cpu_user.py \
   --user /NDNSF-DI/Tracer/user \
   --trust-schema /bundle/trust-schema.conf \
   --bootstrap-token user0001 \
+  --device "$SPEC170_V3_DEVICE" \
   --ack-timeout-ms 1500 --timeout-ms 15000 \
   >"$SCRATCH/log/user.log" 2>&1
 user_rc=$?
@@ -223,6 +242,15 @@ if [ "$user_rc" -eq 0 ] \
         grep -q 'SPEC170_V3_PROVIDER_EXECUTION' "$SCRATCH/log/head1.log" &&
         grep -q 'SPEC170_V3_PROVIDER_EXECUTION' "$SCRATCH/log/merge.log";
       }; }; then
+  if [ "$SPEC170_V3_ONNX" = 1 ] && [ "$SPEC170_V3_DEVICE" != cpu ]; then
+    for name in backbone head0 head1 merge; do
+      grep -Eq "SPEC170_V3_PROVIDER_RUNTIME_READY .*device=$SPEC170_V3_DEVICE .*providers=CUDAExecutionProvider[^ ]* .*cpuFallbackDisabled=true" \
+        "$SCRATCH/log/$name.log" || {
+          echo "SPEC170_PYTHON_V3_NETWORK_GPU_PROVIDER_FAIL name=$name"
+          exit 13
+        }
+    done
+  fi
   echo "SPEC170_PYTHON_V3_NETWORK_PASS job=$SLURM_JOB_ID user_rc=$user_rc"
   exit 0
 fi

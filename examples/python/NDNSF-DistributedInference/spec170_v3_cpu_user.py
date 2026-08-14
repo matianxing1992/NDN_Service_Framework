@@ -44,9 +44,12 @@ def main() -> int:
     parser.add_argument("--ack-timeout-ms", type=int, default=1500)
     parser.add_argument("--timeout-ms", type=int, default=15000)
     parser.add_argument("--request-id", default="spec170-v3-cpu-network")
+    parser.add_argument("--device", choices=("cpu", "cuda:0"), default="cpu")
     args = parser.parse_args()
 
-    signing_key = b"spec170-v3-cpu-network-diagnostic-key"
+    signing_key = b"spec170-v3-network-diagnostic-key"
+    expected_backend = (
+        "onnxruntime-cuda" if args.device.startswith("cuda:") else "cpu")
 
     def verify_offer(offer: ProviderOfferV3) -> bool:
         expected = hmac.new(
@@ -115,6 +118,14 @@ def main() -> int:
                 deadline_ms=deadline_ms,
                 verify_signature=verify_offer,
             )
+            if tuple(view.topology.devices) != (args.device,):
+                raise RuntimeError(
+                    f"provider {offer.provider} advertised devices "
+                    f"{view.topology.devices}, expected {(args.device,)}")
+            if expected_backend not in view.backends:
+                raise RuntimeError(
+                    f"provider {offer.provider} lacks backend "
+                    f"{expected_backend}: {view.backends}")
             views[offer.provider] = view
 
         role_provider = {}
@@ -138,8 +149,8 @@ def main() -> int:
                 layer_end=index + 1,
                 recipe_digest=digest,
                 artifact_digest=digest,
-                backend="cpu",
-                device_set=("cpu",),
+                backend=expected_backend,
+                device_set=(args.device,),
             ))
 
         proposal = PlacementProposalV3(
@@ -151,9 +162,9 @@ def main() -> int:
             provider_by_role=role_provider,
             dependencies=(),
             candidate_digest=canonical_digest({"roles": list(ROLES)}),
-            strategy_name="spec170-v3-cpu-gate",
+            strategy_name="spec170-v3-device-gate",
             strategy_version="1",
-            strategy_state_digest=canonical_digest({"mode": "cpu"}),
+            strategy_state_digest=canonical_digest({"device": args.device}),
         )
         request = {
             "request_id": args.request_id,
@@ -164,7 +175,8 @@ def main() -> int:
             "deadline_ms": deadline_ms,
         }
         core = PlanSealerV3.seal_core(request, proposal, views)
-        security_digest = canonical_digest({"policy": "spec170-v3-cpu-gate"})
+        security_digest = canonical_digest(
+            {"policy": "spec170-v3-device-gate", "device": args.device})
         grants = tuple(
             PlanSealerV3.grant_view(core, provider, views[provider], security_digest)
             for provider in sorted(set(role_provider.values()))
@@ -206,6 +218,7 @@ def main() -> int:
             raise RuntimeError("V3 commit_plan returned false")
         print(
             f"SPEC170_V3_USER_SELECTION_COMMITTED requestId={args.request_id} "
+            f"device={args.device} "
             f"planCoreDigest={core.plan_core_digest} planDigest={plan_digest}",
             flush=True,
         )
