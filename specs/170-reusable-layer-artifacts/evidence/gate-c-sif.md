@@ -1,10 +1,36 @@
 # Spec 170 Gate C Evidence (current checkpoint)
 
-**Verdict: PARTIAL PASS.** The immutable GPU OCI candidate passed its full
+**Verdict: PARTIAL PASS.** The latest immutable GPU OCI candidate passed its full
 GitHub build, runtime probe, signature, SBOM, anonymous pull, and
-release-manifest checks. It has now also been materialized to an exact SIF and
-passed a no-GPU static runtime probe. This file still does not claim full Gate C
-or Tiger D0/D1/D2 completion.
+release-manifest checks. It has now also been materialized to an exact SIF with
+matching local/project hashes. The SIF is ready for the no-GPU static probe;
+full Gate C and Tiger D0/D1/D2 completion are still unclaimed.
+
+The current Qwen3-compatible candidate is documented in
+`tiger-qwen3-sif-materialization-20260814.md`. The earlier SIF below remains a
+diagnostic-only runtime and must not be mixed with this candidate.
+
+## Latest Qwen3-compatible OCI/SIF checkpoint (2026-08-14)
+
+```text
+OCI:
+  ghcr.io/matianxing1992/ndnsf-di-spec170@sha256:f1c8288e26d3dd7700b9519e51296fc3ed17027c60780fac4b361f470c628a26
+source:
+  a46abe9110ff816145a42b42e9b365d847e41135
+SIF:
+  /project/tma1/ndnsf-di/releases/spec170-runtime-a46abe9110ff816145a42b42e9b365d847e41135/runtime.sif
+SIF SHA-256:
+  sha256:5e556c17492957d07cde1debad5f7d93d794d43f87b3186914065d53e812fb4c
+materialization record digest:
+  sha256:9ab379c74ef7952c9eee825a75b69b2c2e832f1b8539dffe1e9ea556f9ee34aa
+```
+
+The release artifact checksums and the canonical materialization record verify.
+Job `189293` reached a valid promoted SIF but ended `127` after the record had
+been written because an optional helper was not staged; that failure and its
+promotion-failure record are retained in the dedicated evidence file. The
+artifact is accepted as an exact-SIF input for the next probe, not as a clean
+Slurm orchestration PASS.
 
 ## Immutable OCI checkpoint (2026-08-13)
 
