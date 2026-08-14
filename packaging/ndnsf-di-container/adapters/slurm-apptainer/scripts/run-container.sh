@@ -63,6 +63,7 @@ fi
 # shellcheck disable=SC2086
 exec apptainer exec --cleanenv --containall --no-home $gpu_args \
   --env HOME=/scratch,PYTHONNOUSERSITE=1,PYTHONDONTWRITEBYTECODE=1,NDNSF_MODEL_ROOT=/models,NDNSF_ARTIFACT_ROOT=/artifacts \
+  --bind "$scratch:/home/tma1:rw" \
   --bind "$release:/release:ro" \
   --bind "$models:/models:ro" \
   --bind "$artifacts:/artifacts:ro" \
