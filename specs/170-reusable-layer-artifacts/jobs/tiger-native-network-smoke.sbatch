@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Candidate-bound Spec170 diagnostic: real NFD + controller + four native
 # providers + Python NativeTracer user. This is not the packaged wrapper.
-# Replace the three immutable paths only when creating a new candidate record.
+# Candidate: source 85d7aa4, with a separately hashed network bundle.
 #SBATCH --job-name=spec170-native-network-smoke
 #SBATCH --partition=bigTiger
 #SBATCH --account=devs
@@ -12,8 +12,8 @@
 #SBATCH --error=/project/tma1/ndnsf-di/logs/spec170-native-network-smoke-%j.err
 
 set -u
-ROOT=/project/tma1/ndnsf-di/evidence/spec170/native-tracer-check-20260814
-SIF=/project/tma1/ndnsf-di/releases/spec170-runtime-a46abe9110ff816145a42b42e9b365d847e41135/runtime.sif
+ROOT=/project/tma1/ndnsf-di/evidence/spec170/runtime-85d7aa475217cabbcfa92ad28612db99cd36e77b/network-bundle
+SIF=/project/tma1/ndnsf-di/releases/spec170-runtime-85d7aa475217cabbcfa92ad28612db99cd36e77b/runtime.sif
 SCRATCH=/tmp/ndnsf-di-native-network-${SLURM_JOB_ID}
 mkdir -p "$SCRATCH/run" "$SCRATCH/log" "$SCRATCH/cache" "$SCRATCH/status"
 PIDS=()

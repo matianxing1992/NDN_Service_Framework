@@ -3538,8 +3538,11 @@ public:
     nsf::ServiceUser::AdaptiveAdmissionOptions admission;
     admission.enabled = adaptiveAdmission;
     m_user->setAdaptiveAdmissionControl(admission);
-    m_user->fetchPermissionsFromController(m_controller);
     m_user->init();
+    // Initialize the ServiceUser before issuing the asynchronous permission
+    // fetch. The native C++ application follows this order; fetching first
+    // leaves the Python binding with an empty permission snapshot.
+    m_user->fetchPermissionsFromController(m_controller);
     pump(m_permissionWaitMs);
   }
 
