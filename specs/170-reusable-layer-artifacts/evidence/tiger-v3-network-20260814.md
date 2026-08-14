@@ -154,10 +154,61 @@ yet establish per-operator CUDA placement through an ONNX profile, latency,
 canonical artifact publication, cross-Provider activation transfer, or
 multi-token generation.
 
+## Standalone real-Qwen artifact gate
+
+The diagnostic standalone gate uses the Spec166 three-stage Qwen ONNX set,
+before attempting to place it behind NDNSF-DI. The immutable manifest digest is
+`sha256:b670f8ec25df1d2521ce782f46fdf2c5aecb33bdfb1eb97e07bcb99aeca84b3d` and
+the stage identities are:
+
+| role | bytes | SHA-256 |
+|---|---:|---|
+| `/LLM/Pipeline/Stage/0` | 1,188,932,451 | `6f02058ba2cc420b4f11c6e7ab391451c3fbdb9bc4ca4ba8adebd633de60ec06` |
+| `/LLM/Pipeline/Stage/1` | 566,602,475 | `b9e4acb15b5ea2ba009f4bd6a132ce7efb90c18b5062aadc6769bd5514f3e501` |
+| `/LLM/Pipeline/Stage/2` | 1,251,892,730 | `b2cb724a2f4638fee6c008c0f657ce687a1de262b67b8cbaf351aca6033ac841` |
+
+The standalone script and Slurm wrapper are source commit `8516c73` with
+SHA-256 values `5e257e2f020dbeb54bd84a30bffd8af387885dc87d991cf9cdefdd03f015e7e6`
+and `b3e37423ba3aefa089f754cc3a8483a2aa175d58837897af583b12fb37af0c3b`.
+
+The first launch (`189452`) failed before model startup because the wrapper
+used a multi-argument `test -s`; it is retained as orchestration negative
+evidence. The corrected GPU launch (`189453`) reached ONNX Runtime session
+creation on `itiger11` with the allocated RTX 5000, but failed closed with:
+
+```text
+This session contains graph nodes that are assigned to the default CPU EP,
+but fallback to CPU EP has been explicitly disabled by the user.
+```
+
+This is a meaningful Spec170 GPU result: the real Qwen stage graph cannot yet
+satisfy the `CPU fallback zero` requirement. It is not a missing-GPU or
+container-visibility failure; the allocation recorded the same RTX 5000 UUID
+and driver as the V3 GPU gate.
+
+Two early CPU attempts (`189454` and `189455`) also remain negative evidence.
+`189454`/`189455` show that feeding returned KV tensors, or sending a single
+new token with the full-context mask, reaches the first prefill successfully
+but fails on the next-token MatMul shape. This exposes a runtime contract gap,
+not a model-load failure.
+
+The corrected CPU standalone run (`189457`) uses the currently supported
+`stateless-zero-full-context-recompute` path: each token recomputes all three
+stages with a full input context and zero KV inputs. It completed with exit
+`0:0` on `itiger11`, ONNX Runtime `1.20.0`, and generated the deterministic
+two-token sequence `[81917, 304]`. Per-token times were approximately
+`[161.57, 163.60]` ms in the first run and `[160.47, 163.05]` ms in the
+second run. This proves the real three-stage artifacts and tokenizer can
+produce a complete CPU response, but it does **not** prove KV-cache reuse,
+GPU no-fallback execution, canonical publication, or NDNSF-DI network
+execution.
+
 ## Next gate
 
-The next implementation gate is to make the real native/Python V3 offer and
-execution paths conform to one contract, then replace the diagnostic handler
-with the smallest real model/artifact workload and capture stage-level output
-bindings. Only after that gate passes should the Tiger matrix expand to reuse,
-cross-Provider activation transfer, and hybrid-device cases.
+The next implementation gate is to resolve the real Qwen artifact/runtime
+contract: either make every required graph node CUDA-capable for the D1
+no-fallback requirement, or explicitly keep the run CPU-only and document the
+GPU gate as `BLOCK`; then wire the full-context stage dataflow into the V3
+Provider projections. T030/T031 and the later reuse/cross-Provider/hybrid
+gates remain open; the current evidence is diagnostic and has not created a
+Spec170 frozen candidate.
