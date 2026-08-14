@@ -820,15 +820,43 @@ validateNativeProviderRuntimeReadiness(
       expectedDevice.empty() || expectedArtifactDigest.empty()) {
     return "DI_RUNTIME_ASSIGNMENT_INCOMPLETE";
   }
+  const bool deviceRequestsCuda = expectedDevice.rfind("cuda:", 0) == 0;
+  const bool backendRequestsCuda = expectedBackend == "onnxruntime-cuda";
+  const bool backendRequestsCpu = expectedBackend == "cpu" ||
+                                  expectedBackend == "onnxruntime-cpu";
+  const bool backendIsGenericOnnx = expectedBackend == "onnxruntime";
+  if (!backendRequestsCuda && !backendRequestsCpu && !backendIsGenericOnnx) {
+    return "DI_RUNTIME_BACKEND_MISMATCH";
+  }
+  const bool expectsCuda = backendRequestsCuda ||
+                           (backendIsGenericOnnx && deviceRequestsCuda);
+  const bool expectsCpu = backendRequestsCpu ||
+                          (backendIsGenericOnnx && !deviceRequestsCuda);
   try {
     evidence.validate();
   }
   catch (const std::exception&) {
     return "DI_RUNTIME_EVIDENCE_INVALID";
   }
-  if (!evidence.realCompute || evidence.runnerKind != RunnerKind::OnnxRuntimeCuda ||
-      evidence.deviceKind != "cuda" || evidence.cpuFallbackUsed) {
-    return "DI_RUNTIME_CUDA_REQUIRED";
+  if (expectsCuda) {
+    if (!evidence.realCompute ||
+        evidence.runnerKind != RunnerKind::OnnxRuntimeCuda ||
+        evidence.deviceKind != "cuda" || evidence.cpuFallbackUsed) {
+      return "DI_RUNTIME_CUDA_REQUIRED";
+    }
+  }
+  else {
+    // CPU/no-GPU is a first-class V3 execution mode. It must still be a real
+    // ONNX Runtime CPU execution and may not be advertised as a silent
+    // CUDA-to-CPU fallback.
+    if (evidence.cpuFallbackUsed) {
+      return "DI_RUNTIME_CPU_FALLBACK_USED";
+    }
+    if (!evidence.realCompute ||
+        evidence.runnerKind != RunnerKind::OnnxRuntimeCpu ||
+        evidence.deviceKind != "cpu") {
+      return "DI_RUNTIME_CPU_REQUIRED";
+    }
   }
   if (!evidence.loadCompleted) {
     return "DI_RUNTIME_MODEL_NOT_LOADED";
@@ -840,17 +868,24 @@ validateNativeProviderRuntimeReadiness(
       evidence.roles.end()) {
     return "DI_RUNTIME_ROLE_MISMATCH";
   }
-  if (expectedBackend != "onnxruntime" &&
-      expectedBackend != "onnxruntime-cuda") {
-    return "DI_RUNTIME_BACKEND_MISMATCH";
+  if (expectsCuda) {
+    auto expectedDeviceId = expectedDevice;
+    if (expectedDeviceId.rfind("cuda:", 0) == 0) {
+      expectedDeviceId = expectedDeviceId.substr(5);
+    }
+    if (expectedDevice.rfind("cuda:", 0) != 0 ||
+        expectedDeviceId.empty() || evidence.deviceId != expectedDeviceId) {
+      return "DI_RUNTIME_DEVICE_MISMATCH";
+    }
   }
-  auto expectedDeviceId = expectedDevice;
-  if (expectedDeviceId.rfind("cuda:", 0) == 0) {
-    expectedDeviceId = expectedDeviceId.substr(5);
-  }
-  if (expectedDevice.rfind("cuda:", 0) != 0 ||
-      expectedDeviceId.empty() || evidence.deviceId != expectedDeviceId) {
-    return "DI_RUNTIME_DEVICE_MISMATCH";
+  else if (expectedDevice != "cpu") {
+    auto expectedDeviceId = expectedDevice;
+    if (expectedDeviceId.rfind("cpu:", 0) == 0) {
+      expectedDeviceId = expectedDeviceId.substr(4);
+    }
+    if (expectedDeviceId.empty() || evidence.deviceId != expectedDeviceId) {
+      return "DI_RUNTIME_DEVICE_MISMATCH";
+    }
   }
   const auto artifact = evidence.artifactDigests.find(expectedRole);
   if (artifact == evidence.artifactDigests.end() ||

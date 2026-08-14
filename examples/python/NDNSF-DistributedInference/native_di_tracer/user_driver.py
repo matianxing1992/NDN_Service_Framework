@@ -59,6 +59,10 @@ GROUP = "/NDNSF-DI/Tracer/group"
 CONTROLLER = "/NDNSF-DI/Tracer/controller"
 USER = "/NDNSF-DI/Tracer/user"
 ACK_COMPATIBILITY_COUNTERS = AckCompatibilityCounters()
+DEFAULT_EXECUTION_POLICY = "DATA_DRIVEN_V2"
+LEGACY_EXECUTION_POLICY = "LEGACY_READY_SET_V1"
+DEFAULT_EXECUTION_BACKEND = "onnxruntime"
+DEFAULT_EXECUTION_DEVICE = "cpu"
 
 
 def encode_tensor_bundle() -> bytes:
@@ -151,26 +155,62 @@ def sample_service_plan(service: str) -> dict:
     }
 
 
-def collaboration_roles(service_plan: dict, service: str) -> list[dict]:
+def _native_fragment_digest(role: str) -> str:
+    return "sha256:native-tracer:" + role.strip("/").replace("/", "-")
+
+
+def _validate_assignment_field(name: str, value: str) -> str:
+    value = str(value).strip()
+    if not value or ";" in value or "=" in value:
+        raise ValueError(f"invalid native assignment {name}")
+    return value
+
+
+def collaboration_roles(
+    service_plan: dict,
+    service: str,
+    *,
+    execution_policy: str = DEFAULT_EXECUTION_POLICY,
+    execution_backend: str = DEFAULT_EXECUTION_BACKEND,
+    execution_device: str = DEFAULT_EXECUTION_DEVICE,
+) -> list[dict]:
     role_names = list(service_plan["roles"])
+    if execution_policy not in {DEFAULT_EXECUTION_POLICY, LEGACY_EXECUTION_POLICY}:
+        raise ValueError(f"unsupported native execution policy: {execution_policy}")
     binding = canonical_digest({
         "service": service,
         "roles": role_names,
         "dependencies": service_plan.get("dependencies", []),
     })
-    common = (
-        "executionPolicy=LEGACY_READY_SET_V1;"
-        f"readinessRoleCount={len(role_names)};"
-        f"readinessRoles={','.join(role_names)};"
-        f"readinessBindingDigest={binding};"
-    ).encode()
+    common_fields = [
+        f"executionPolicy={execution_policy}",
+        f"readinessRoleCount={len(role_names)}",
+        f"readinessRoles={','.join(role_names)}",
+        f"readinessBindingDigest={binding}",
+    ]
+    if execution_policy == DEFAULT_EXECUTION_POLICY:
+        backend = _validate_assignment_field("backend", execution_backend)
+        device = _validate_assignment_field("device", execution_device)
+        common_fields.extend([
+            f"backend={backend}",
+            f"device={device}",
+        ])
+    common = (";".join(common_fields) + ";").encode()
     return [
         {
             "role": role,
             "service": service,
             "min_providers": 1,
             "max_providers": 1,
-            "app_requirement": common,
+            "app_requirement": (
+                common
+                + (
+                    f"artifactDigest={_native_fragment_digest(role)};"
+                    f"fragmentDigest={_native_fragment_digest(role)};"
+                ).encode()
+                if execution_policy == DEFAULT_EXECUTION_POLICY
+                else common
+            ),
         }
         for role in role_names
     ]
@@ -358,6 +398,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--permission-wait-ms", type=int, default=2500)
     parser.add_argument("--bootstrap-token", default="",
                         help="Controller-issued certificate bootstrap token")
+    parser.add_argument(
+        "--execution-policy",
+        choices=[DEFAULT_EXECUTION_POLICY, LEGACY_EXECUTION_POLICY],
+        default=DEFAULT_EXECUTION_POLICY,
+        help=("Native assignment policy. DATA_DRIVEN_V2 is the default; "
+              "LEGACY_READY_SET_V1 is an explicit compatibility path."),
+    )
+    parser.add_argument("--execution-backend", default=DEFAULT_EXECUTION_BACKEND,
+                        help="Backend bound into DATA_DRIVEN_V2 assignments")
+    parser.add_argument("--execution-device", default=DEFAULT_EXECUTION_DEVICE,
+                        help="Device bound into DATA_DRIVEN_V2 assignments")
     parser.add_argument("--requests", type=int, default=1,
                         help="Number of closed-loop collaboration requests to submit")
     parser.add_argument("--concurrency", type=int, default=1,
@@ -1608,6 +1659,9 @@ def run_child_process_requests(args,
             "--overload-fast-fail-timeout-ms", str(args.overload_fast_fail_timeout_ms),
             "--permission-wait-ms", str(args.permission_wait_ms),
             "--bootstrap-token", args.bootstrap_token,
+            "--execution-policy", args.execution_policy,
+            "--execution-backend", args.execution_backend,
+            "--execution-device", args.execution_device,
             "--requests", str(args.requests),
             "--concurrency", str(args.concurrency),
             "--worker-child",
@@ -1789,6 +1843,11 @@ def main() -> int:
         raise SystemExit("--overload-fast-fail-timeout-ms must be non-negative")
     if args.cancellation_delay_ms < 0:
         raise SystemExit("--cancellation-delay-ms must be non-negative")
+    if args.execution_leases and args.execution_policy != LEGACY_EXECUTION_POLICY:
+        raise SystemExit(
+            "--execution-leases requires --execution-policy "
+            f"{LEGACY_EXECUTION_POLICY}; it is not a DATA_DRIVEN_V2 path"
+        )
     open_loop = args.target_rps > 0.0 or args.open_loop_duration_s > 0.0
     if open_loop and (args.target_rps <= 0.0 or args.open_loop_duration_s <= 0.0):
         raise SystemExit("--target-rps and --open-loop-duration-s must be set together")
@@ -1798,13 +1857,22 @@ def main() -> int:
         service_plan = sample_service_plan(args.service)
     else:
         raise SystemExit("--plan is required unless --dry-run is used")
-    roles = collaboration_roles(service_plan, args.service)
+    roles = collaboration_roles(
+        service_plan,
+        args.service,
+        execution_policy=args.execution_policy,
+        execution_backend=args.execution_backend,
+        execution_device=args.execution_device,
+    )
     dependencies = collaboration_dependencies(service_plan)
     key_scopes, role_scopes = key_scopes_and_role_scopes(service_plan)
     if args.dry_run:
         payload = {
             "service": args.service,
             "roles": roles,
+            "executionPolicy": args.execution_policy,
+            "executionBackend": args.execution_backend,
+            "executionDevice": args.execution_device,
             "dependencies": dependencies,
             "keyScopes": key_scopes,
             "roleScopes": role_scopes,

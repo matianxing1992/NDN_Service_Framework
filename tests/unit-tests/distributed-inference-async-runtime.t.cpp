@@ -3339,6 +3339,42 @@ BOOST_AUTO_TEST_CASE(NativeProviderRuntimeReadinessRequiresExactCudaLoadAndWarmu
   BOOST_CHECK_EQUAL(*invalid, "DI_RUNTIME_EVIDENCE_INVALID");
 }
 
+BOOST_AUTO_TEST_CASE(NativeProviderRuntimeReadinessAcceptsExactCpuLoadAndWarmup)
+{
+  ExecutionEvidence evidence;
+  evidence.providerName = "/provider/A";
+  evidence.providerBootId = "boot-a";
+  evidence.evidenceEpoch = 3;
+  evidence.runnerKind = RunnerKind::OnnxRuntimeCpu;
+  evidence.realCompute = true;
+  evidence.deviceKind = "cpu";
+  evidence.deviceId = "cpu0";
+  evidence.runtimeVersion = "onnxruntime=1.20.1";
+  evidence.modelDigest = "sha256:model";
+  evidence.planDigest = "sha256:plan";
+  evidence.artifactDigests["stage-0"] = "sha256:stage0";
+  evidence.roles = {"stage-0"};
+  evidence.loadCompleted = true;
+  evidence.warmupCompleted = true;
+  evidence.createdAtMs = 1234;
+
+  const auto accepted = validateNativeProviderRuntimeReadiness(
+    evidence, "stage-0", "onnxruntime", "cpu", "sha256:stage0");
+  BOOST_CHECK(!accepted);
+
+  evidence.cpuFallbackUsed = true;
+  const auto fallback = validateNativeProviderRuntimeReadiness(
+    evidence, "stage-0", "onnxruntime", "cpu", "sha256:stage0");
+  BOOST_REQUIRE(fallback);
+  BOOST_CHECK_EQUAL(*fallback, "DI_RUNTIME_CPU_FALLBACK_USED");
+
+  evidence.cpuFallbackUsed = false;
+  const auto wrongDevice = validateNativeProviderRuntimeReadiness(
+    evidence, "stage-0", "onnxruntime", "cpu:1", "sha256:stage0");
+  BOOST_REQUIRE(wrongDevice);
+  BOOST_CHECK_EQUAL(*wrongDevice, "DI_RUNTIME_DEVICE_MISMATCH");
+}
+
 BOOST_AUTO_TEST_CASE(ExecutionEvidenceRejectsMissingUnknownAndSecretFields)
 {
   BOOST_CHECK_THROW(executionEvidenceFromJson("{\"schema\":\"ndnsf-di-execution-evidence-v2\"}"),
