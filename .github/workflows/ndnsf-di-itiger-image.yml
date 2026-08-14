@@ -127,7 +127,10 @@ jobs:
             ONNXRUNTIME_CPP_URL=https://github.com/microsoft/onnxruntime/releases/download/v1.20.1/onnxruntime-linux-x64-gpu-1.20.1.tgz
             ONNXRUNTIME_CPP_SHA256=6bfb87c6ebe55367a94509b8ef062239e188dccf8d5caac8d6909b2344893bf0
           cache-from: type=gha,scope=spec170-gpu
-          cache-to: type=gha,mode=min,scope=spec170-gpu
+          # Preserve intermediate gpu-assembler layers (apt, ONNX SDK, and
+          # locked Python environment) so a source-only correction does not
+          # repeat the full dependency installation on the next release.
+          cache-to: type=gha,mode=max,scope=spec170-gpu
           provenance: mode=max
           sbom: true
 
