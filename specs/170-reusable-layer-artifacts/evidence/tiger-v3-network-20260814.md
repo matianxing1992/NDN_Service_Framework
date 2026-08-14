@@ -412,6 +412,20 @@ current `Experimental` source head
 real-Qwen claim is made until this workflow produces and verifies its own
 immutable runtime manifest.
 
+TigerCluster read-only preflight also passed before materialization:
+
+```text
+login host: itiger / tma1
+Apptainer: 1.3.4-1.el9
+Slurm: sbatch available; bigTiger exposes H100_80GB, RTX_6000, and RTX_5000 GRES
+/project/tma1: 840T available of 900T
+root filesystem: 790G available of 862G
+```
+
+No existing SIF was relabeled as this release. Materialization will use the
+new GPU image digest and a new release directory after run `31784722395`
+completes.
+
 ## Next gate
 
 The next implementation gate is to resolve the real Qwen artifact/runtime
