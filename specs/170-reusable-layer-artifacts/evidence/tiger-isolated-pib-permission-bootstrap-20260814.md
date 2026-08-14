@@ -56,6 +56,15 @@ not evidence that the bootstrap patch compiles in the release image. The
 immutable release workflow must therefore perform the authoritative full build
 and static probe before another network smoke.
 
+The updated iTiger operations skill now has an executable isolated-PIB
+preflight at
+`itiger-ndnsf-ops/scripts/validate-isolated-pib-network-inputs.py`.
+Against the candidate policy, network job, and Python user driver it returned
+`ISOLATED_PIB_NETWORK_PREFLIGHT=PASS` with `ISOLATED_PIB_DETECTED=true`.
+The skill text was validated with `quick_validate.py`; its checker output must
+be retained with each candidate rather than treating the presence of the skill
+file as proof that the gate ran.
+
 The next valid positive result must include, in order:
 
 ```text
@@ -64,4 +73,3 @@ PermissionResponse encrypted and installed
 USER_ALLOWED includes /Inference/NativeTracer
 REQUEST -> ACK -> SELECTION -> RESPONSE
 ```
-
