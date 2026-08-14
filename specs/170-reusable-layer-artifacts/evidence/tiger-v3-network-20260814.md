@@ -51,6 +51,18 @@ the Tiger SIF gate or prove real Qwen execution. The release candidate must
 package or build this ABI-matched extension inside its own runtime closure;
 relying on a host-installed extension is not acceptable for a sealed image.
 
+The retained evidence files are under
+`evidence/minindn-rootext-20260814/`:
+
+```text
+controller.log                 sha256:5a3c99cdaacfe373650c6687d6b503a825c6780eeb084a6f25f4fc1ff17e0d7d
+stage0-provider.log             sha256:2e8e21c178e5cbaa3501afda9a1e3c41c65eae6845590e58416f68b872a2ba99
+stage1-provider.log             sha256:eccf493864f379d1d64fb762e7de48358a62704f8a20220412260a05749eca7d
+stage2-provider.log             sha256:19ef8e85c06497a6d13f266e63e464e4d8f710401befe99af4a8108f1ce03a0a
+llm-pipeline-user.log           sha256:1be9f49d8ce73048b3029efe91631300df28de0fd57ab41bff0ff95bf2e790c4
+llm-pipeline-user-measured.csv  sha256:32aa53168267e0744ef79651366bc3195712677d51e12cc0a975356d4e35af9e
+```
+
 ## Native path diagnosis
 
 Jobs `189427`, `189428`, `189430`, and `189431` used the old NativeTracer

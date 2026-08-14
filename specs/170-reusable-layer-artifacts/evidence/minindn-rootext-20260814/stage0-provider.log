@@ -1,0 +1,48 @@
+1786692535.224143  INFO: [ndn_service_framework.CertificatePublisher] Serving certificate name=/example/llm-pipeline/provider/KEY/l%AC%9E%AC%CD%A8%17%D8/ROOT/v=1786692533022 prefix=/example/llm-pipeline/provider/KEY/l%AC%9E%AC%CD%A8%17%D8
+1786692535.224184  INFO: [ndn_service_framework.CertificatePublisher] NDNSF_CERT_PUBLISHER_READY prefix=/example/llm-pipeline/provider/KEY/l%AC%9E%AC%CD%A8%17%D8 name=/example/llm-pipeline/provider/KEY/l%AC%9E%AC%CD%A8%17%D8/ROOT/v=1786692533022 certCount=1
+1786692535.231900  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=constructor_begin provider=/example/llm-pipeline/provider
+1786692535.231930  WARN: [ndn_service_framework.ServiceProvider] NDNSF_CERT_SELECTION role=provider identity=/example/llm-pipeline/provider encryptionCert=/example/llm-pipeline/provider/KEY/l%AC%9E%AC%CD%A8%17%D8/ROOT/v=1786692533022 signingCert=/example/llm-pipeline/provider/KEY/l%AC%9E%AC%CD%A8%17%D8/ROOT/v=1786692533022 splitSigning=false
+1786692535.232072  INFO: [ndn_service_framework.ServiceProvider] NDNSF_HANDLER_THREADS role=provider workers=2
+1786692535.232089  INFO: [ndn_service_framework.ServiceProvider] NDNSF_ACK_THREADS role=provider workers=2
+1786692535.233282  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=validator_loaded provider=/example/llm-pipeline/provider
+1786692535.233303  INFO: [ndn_service_framework.ServiceProvider] [ServiceProvider] NAC_ABE_BOOTSTRAP provider=/example/llm-pipeline/provider authority=/example/llm-pipeline/controller dkPrefix=/example/llm-pipeline/controller/DKEY
+1786692535.233342  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=dkey_initial_interest_issued provider=/example/llm-pipeline/provider
+1786692535.233364  INFO: [ndn_service_framework.ServiceProvider] [ServiceProvider] registered service content prefix=/example/llm-pipeline/provider/NDNSF
+1786692535.234498  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=content_filters_registered provider=/example/llm-pipeline/provider
+1786692535.234532  INFO: [ndn_service_framework.ServiceProvider] NDNSF_SVS_OPTIONS role=provider maxApplicationParametersSize=4096 maxPiggyDataSize=800
+1786692535.234538  WARN: [ndn_service_framework.ServiceProvider] NDNSF_SVS_PUBLICATION_FETCH_CONFIG role=provider retries=2 innerRetries=2 lifetimeMs=500 backoffMs=50 maxBackoffMs=2000 window=10 expectedRps=0 explicitWindow=false
+1786692535.238254  INFO: [ndn_service_framework.ServiceProvider] NDNSF_SVS_PROTOCOL role=provider version=3 lifetimeMs=1000 suppressionMs=200 periodicMs=30000
+1786692535.238283  INFO: [ndn_service_framework.ServiceProvider] NDNSF_SVS_ASYNC_PUBLISH role=provider disabled
+1786692535.238287  INFO: [ndn_service_framework.ServiceProvider] NDNSF_SVS_PARALLEL_SYNC disabled role=provider reason=explicit-opt-in-required
+1786692535.238289  INFO: [ndn_service_framework.ServiceProvider] NDNSF_SVS_PARALLEL_PRODUCTION disabled role=provider reason=explicit-opt-in-required
+1786692535.238316  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=svs_pubsub_ready provider=/example/llm-pipeline/provider
+1786692535.238329  INFO: [ndn_service_framework.ServiceProvider] DK_INTEREST_EXPRESSED prefix=/example/llm-pipeline/controller/DKEY provider=/example/llm-pipeline/provider
+1786692535.238361  INFO: [ndn_service_framework.ServiceProvider] Waiting for decryption key
+1786692535.239089  INFO: [ndn_service_framework.CertificatePublisher] NDNSF_CERT_PUBLISHER_REGISTERED prefix=/example/llm-pipeline/provider/KEY/l%AC%9E%AC%CD%A8%17%D8
+1786692536.243618  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=dkey_wait_iteration provider=/example/llm-pipeline/provider
+1786692536.243670  INFO: [ndn_service_framework.ServiceProvider] DK_DECRYPT_SUCCESS provider=/example/llm-pipeline/provider
+1786692536.243676  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=constructor_done provider=/example/llm-pipeline/provider
+1786692536.245022  WARN: [ndn_service_framework.ServiceProvider] UserToken/ProviderToken runtime mode: enabled
+1786692536.245336  WARN: [ndn_service_framework.ServiceProvider] NDNSF provider worker threads: 4
+1786692536.245435  WARN: [ndn_service_framework.ServiceProvider] NDNSF provider ACK worker threads: 2
+LLM_PIPELINE_PROVIDER_READY provider_id=(root) roles=/LLM/Pipeline/Stage/0 runtime=fake1786692536.245864  INFO: [ndn_service_framework.ServiceProvider] Registered collaboration handler for /AI/LLM/Pipeline/Fake
+
+1786692536.245973  INFO: [ndn_service_framework.ServiceProvider] No provider service info registration configured for /example/llm-pipeline/provider
+1786692536.245992  WARN: [ndn_service_framework.ServiceProvider] Register NDNSF Messages in ndn-svs
+1786692536.246015  INFO: [ndn_service_framework.utils] <AI><LLM><Pipeline><Fake>
+1786692536.246018  WARN: [ndn_service_framework.ServiceProvider] [ServiceProvider] SVS request subscription regex=^(<>*)<NDNSF><REQUEST><AI><LLM><Pipeline><Fake>(<>)$
+1786692536.246083  INFO: [ndn_service_framework.ServiceProvider] Fetch policy manifest: /example/llm-pipeline/controller/NDNSF/POLICY-MANIFEST attempt=1/20
+1786692536.246113  INFO: [ndn_service_framework.ServiceProvider] Fetch provider permissions: /example/llm-pipeline/controller/NDNSF/PERMISSIONS/PROVIDER/example/llm-pipeline/provider attempt=1/20
+1786692536.263878  INFO: [ndn_service_framework.ServiceProvider] Installed PolicyManifest PolicyManifest{policyEpoch=13041036640078058612, validFromMs=0, gracePeriodMs=0, requiredKeyEpoch=13041036640078058612}
+1786692536.264919  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/llm-pipeline/provider/AI/LLM/Pipeline/Fake service=/AI/LLM/Pipeline/Fake policyEpoch=13041036640078058612
+1786692536.264939  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/llm-pipeline/provider/AI/LLM/Pipeline/Fake/ROLE/LLM/Pipeline/Stage/0 service=/AI/LLM/Pipeline/Fake/ROLE/LLM/Pipeline/Stage/0 policyEpoch=13041036640078058612
+1786692543.336499  INFO: [ndn_service_framework.ServiceProvider] NDNSF_PUBLICATION_AUDIT role=provider type=REQUEST validated=true packetPresent=true packetName=/example/llm-pipeline/user/NDNSF/REQUEST/AI/LLM/Pipeline/Fake/d809bd49a263466b9cc19d55916ae538 producerPrefix=/example/llm-pipeline/user/user/303 seqNo=1 signerKeyLocator=/example/llm-pipeline/user/KEY/%1C2%E8%A3%C1%3CU%27/ROOT/v=1786692532949 wireDigest=sha256:DE70753C3E8ED60A0E323E27B8C9E08B130948A57F49F226F0E42F456497CDE4 requestId=/d809bd49a263466b9cc19d55916ae538 serviceName=/AI/LLM/Pipeline/Fake requesterName=/example/llm-pipeline/user providerName=/example/llm-pipeline/provider
+1786692543.403932  INFO: [ndn_service_framework.CertificatePublisher] NDNSF_CERT_PUBLISHER_INTEREST interest=/example/llm-pipeline/provider/KEY/l%AC%9E%AC%CD%A8%17%D8/ROOT/v=1786692533022 cert=/example/llm-pipeline/provider/KEY/l%AC%9E%AC%CD%A8%17%D8/ROOT/v=1786692533022 certCount=1
+1786692543.403956  INFO: [ndn_service_framework.CertificatePublisher] NDNSF_CERT_PUBLISHER_DATA interest=/example/llm-pipeline/provider/KEY/l%AC%9E%AC%CD%A8%17%D8/ROOT/v=1786692533022 cert=/example/llm-pipeline/provider/KEY/l%AC%9E%AC%CD%A8%17%D8/ROOT/v=1786692533022 bytes=744
+1786692543.486457  INFO: [ndn_service_framework.ServiceProvider] NDNSF_PUBLICATION_AUDIT role=provider type=SELECTION validated=true packetPresent=true packetName=/example/llm-pipeline/user/NDNSF/SELECTION/%2Fexample%2Fllm-pipeline%2Fprovider/AI/LLM/Pipeline/Fake/d809bd49a263466b9cc19d55916ae538 producerPrefix=/example/llm-pipeline/user/user/303 seqNo=2 signerKeyLocator=/example/llm-pipeline/user/KEY/%1C2%E8%A3%C1%3CU%27/ROOT/v=1786692532949 wireDigest=sha256:7F7E7CD9797231594E6C31A65EC13088C72BCC8336E269DF55E7272B14FDE38D requestId=/d809bd49a263466b9cc19d55916ae538 serviceName=/AI/LLM/Pipeline/Fake requesterName=/example/llm-pipeline/user providerName=/example/llm-pipeline/provider
+1786692543.492976  INFO: [ndn_service_framework.ServiceProvider] NDNSF_SELECTION_STATUS digest=3152CCE33F1A14BAA800BCFFB465689266F4B602F14BB3ABC5470241A1571655 state=1 provider=/example/llm-pipeline/provider service=/AI/LLM/Pipeline/Fake requestId=/d809bd49a263466b9cc19d55916ae538 message=selection received
+1786692543.493028  INFO: [ndn_service_framework.ServiceProvider] NDNSF_SELECTION_STATUS digest=3152CCE33F1A14BAA800BCFFB465689266F4B602F14BB3ABC5470241A1571655 state=2 provider=/example/llm-pipeline/provider service=/AI/LLM/Pipeline/Fake requestId=/d809bd49a263466b9cc19d55916ae538 message=handler queued
+1786692543.506699  INFO: [ndn_service_framework.ServiceProvider] NDNSF_SELECTION_STATUS digest=3152CCE33F1A14BAA800BCFFB465689266F4B602F14BB3ABC5470241A1571655 state=3 provider=/example/llm-pipeline/provider service=/AI/LLM/Pipeline/Fake requestId=/d809bd49a263466b9cc19d55916ae538 message=collaboration handler running
+NDNSF_DI_PROVIDER_HANDLER_TIMING event=start session=/d809bd49a263466b9cc19d55916ae538 role=/LLM/Pipeline/Stage/0 queue_wait_ms=0.28 submitted_epoch_ms=1786692543508 start_epoch_ms=1786692543508
+LLM_PIPELINE_STAGE_OUTPUT role=/LLM/Pipeline/Stage/0 bytes=194 plannedName=True
+NDNSF_DI_PROVIDER_HANDLER_TIMING event=end session=/d809bd49a263466b9cc19d55916ae538 role=/LLM/Pipeline/Stage/0 handler_ms=6.73 start_epoch_ms=1786692543508 end_epoch_ms=1786692543515
