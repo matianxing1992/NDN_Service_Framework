@@ -267,6 +267,40 @@ passes `59 passed, 2 skipped, 1 warning`. The current Tiger SIF has not been
 rebuilt from this commit, so no remote Qwen network result is attributed to
 this correction yet.
 
+## Tiger shared-stage artifact probe
+
+To validate the corrected helper against the real artifacts before rebuilding
+the SIF, the helper and probe were bind-mounted into the existing candidate
+SIF `2a7b847bbeba1b628a1a9e2a146b5411f1df5556`. This is an artifact/runtime
+probe, not an NDNSF network acceptance result.
+
+CPU job `189462` ran on `itiger11` with the Spec166 three-stage Qwen ONNX set,
+the pinned tokenizer, and `CPUExecutionProvider`. It completed:
+
+```text
+SPEC170_QWEN_STAGE_RUNNER_PROBE_PASS device=cpu stages=3 tokens=[81917,304]
+```
+
+The two repeated decodes returned the same tokens. The recorded per-token
+times were approximately `154.84/163.37 ms` on the first decode and
+`161.06/163.37 ms` on the second. The summary is retained at
+`evidence/tiger-qwen-stage-runner-20260814/cpu-189462-summary.json` with
+SHA-256 `cf1e2f3120b41e151809af53266de2bebba45f5627349369525b65704955c833`.
+
+GPU job `189463` used `rtx_5000:1`, `itiger11`, and `--nv`. The allocation
+reported the expected RTX 5000 UUID, but strict no-fallback ONNX session
+creation failed closed because the graph still contains CPU-assigned nodes:
+
+```text
+This session contains graph nodes that are assigned to the default CPU EP,
+but fallback to CPU EP has been explicitly disabled by the user.
+```
+
+This is the same model-graph compatibility block seen in standalone job
+`189453`, not a missing GPU or container-visibility failure. Host-GPU evidence
+and the stderr are retained under
+`evidence/tiger-qwen-stage-runner-20260814/`.
+
 ## Next gate
 
 The next implementation gate is to resolve the real Qwen artifact/runtime

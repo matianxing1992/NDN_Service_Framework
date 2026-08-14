@@ -1,0 +1,1 @@
+GPU-36f78728-c1c0-b6c6-b0dd-51c3c9f99aac, NVIDIA RTX 5000 Ada Generation, 560.28.03, 32760 MiB

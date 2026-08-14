@@ -1,0 +1,54 @@
+{
+  "artifacts": [
+    {
+      "path": "/artifacts/stage-0-qwen.onnx",
+      "providers": [
+        "CPUExecutionProvider"
+      ],
+      "role": "/LLM/Pipeline/Stage/0",
+      "sha256": "sha256:6f02058ba2cc420b4f11c6e7ab391451c3fbdb9bc4ca4ba8adebd633de60ec06"
+    },
+    {
+      "path": "/artifacts/stage-1-qwen.onnx",
+      "providers": [
+        "CPUExecutionProvider"
+      ],
+      "role": "/LLM/Pipeline/Stage/1",
+      "sha256": "sha256:b9e4acb15b5ea2ba009f4bd6a132ce7efb90c18b5062aadc6769bd5514f3e501"
+    },
+    {
+      "path": "/artifacts/stage-2-qwen.onnx",
+      "providers": [
+        "CPUExecutionProvider"
+      ],
+      "role": "/LLM/Pipeline/Stage/2",
+      "sha256": "sha256:b2cb724a2f4638fee6c008c0f657ce687a1de262b67b8cbaf351aca6033ac841"
+    }
+  ],
+  "cpuFallbackDisabled": false,
+  "device": "cpu",
+  "firstTimingsMs": [
+    154.8441294580698,
+    163.36879692971706
+  ],
+  "generatedTokens": [
+    81917,
+    304
+  ],
+  "manifestSha256": "sha256:b670f8ec25df1d2521ce782f46fdf2c5aecb33bdfb1eb97e07bcb99aeca84b3d",
+  "maxNewTokens": 2,
+  "model": "/models",
+  "modelRevision": "e6de91484c29aa9480d55605af694f39b081c455",
+  "promptTokenCount": 9,
+  "runnerSha256": "sha256:c9030aea89ff925ec86c762b27cc486efd4e0bd66ba04cbb167d036242c72b01",
+  "runtimeProvider": "CPUExecutionProvider",
+  "schema": "spec170-qwen-onnx-stage-runner-probe-v1",
+  "secondTimingsMs": [
+    161.05843894183636,
+    163.3660774677992
+  ],
+  "warmupTokens": [
+    81917,
+    304
+  ]
+}

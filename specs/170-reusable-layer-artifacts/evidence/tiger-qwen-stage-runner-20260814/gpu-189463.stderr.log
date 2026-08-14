@@ -1,0 +1,13 @@
+WARNING: Overriding HOME environment variable with APPTAINERENV_HOME is not permitted
+[0;93m2026-08-14 07:40:05.750890241 [W:onnxruntime:, transformer_memcpy.cc:74 ApplyImpl] 1 Memcpy nodes are added to the graph main_graph for CUDAExecutionProvider. It might have negative impact on performance (including unable to run CUDA graph). Set session_options.log_severity_level=1 to see the detail logs before this message.[m
+[1;31m2026-08-14 07:40:05.754994287 [E:onnxruntime:, inference_session.cc:2005 Initialize] This session contains graph nodes that are assigned to the default CPU EP, but fallback to CPU EP has been explicitly disabled by the user.[m
+Traceback (most recent call last):
+  File "/scripts/spec170_qwen_onnx_stage_runner_probe.py", line 177, in <module>
+    raise SystemExit(main())
+  File "/scripts/spec170_qwen_onnx_stage_runner_probe.py", line 91, in main
+    session = ort.InferenceSession(
+  File "/opt/venv/lib/python3.10/site-packages/onnxruntime/capi/onnxruntime_inference_collection.py", line 465, in __init__
+    self._create_inference_session(providers, provider_options, disabled_optimizers)
+  File "/opt/venv/lib/python3.10/site-packages/onnxruntime/capi/onnxruntime_inference_collection.py", line 537, in _create_inference_session
+    sess.initialize_session(providers, provider_options, disabled_optimizers)
+onnxruntime.capi.onnxruntime_pybind11_state.Fail: [ONNXRuntimeError] : 1 : FAIL : This session contains graph nodes that are assigned to the default CPU EP, but fallback to CPU EP has been explicitly disabled by the user.
