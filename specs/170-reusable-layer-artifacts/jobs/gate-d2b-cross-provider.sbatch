@@ -18,7 +18,7 @@ set -euo pipefail
 test "${SPEC170_GATE:-d2b-cross-provider}" = d2b-cross-provider
 case "$SPEC170_WORKLOAD" in /*) ;; *) echo 'SPEC170_WORKLOAD_MUST_BE_CONTAINER_ABSOLUTE' >&2; exit 2 ;; esac
 test "$(sha256sum "$SPEC170_RUNTIME_SIF" | cut -d' ' -f1)" = "${SPEC170_RUNTIME_SIF_SHA256#sha256:}"
-scratch="/tmp/ndnsf-di-${SLURM_JOB_ID}"
+scratch="/tmp/${SLURM_JOB_ID}"
 mkdir -p "$scratch/evidence"
 trap 'rm -rf "$scratch"' EXIT
 "$SPEC170_PROJECT_ROOT/packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/preflight-compute.sh" \
