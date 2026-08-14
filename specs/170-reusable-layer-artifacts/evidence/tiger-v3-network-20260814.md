@@ -438,6 +438,25 @@ preflight-gpu-build.py: PASS (41 Python packages, 11 CUDA requirements,
 8 source entries, 0 archive entries)
 ```
 
+The two Python namespaces must remain separate when reproducing the checks.
+Putting `packaging/ndnsf-di-container/lib` first in `PYTHONPATH` exposes its
+deployment helper `profile.py` as the stdlib `profile` module and makes the
+tiny-transformer test fail during `transformers` import. The correct lanes
+were rerun independently:
+
+```text
+PYTHONPATH=NDNSF-DistributedInference:pythonWrapper \
+  python3 -m pytest -q tests/python/test_spec170_*.py
+59 passed, 2 skipped, 1 warning in 4.08s
+
+PYTHONPATH=packaging/ndnsf-di-container/lib \
+  python3 -m pytest -q tests/container/unit/test_spec170_*.py
+7 passed in 0.03s
+```
+
+This is a test-environment namespace collision, not a runtime image failure;
+release scripts import the deployment helpers only in their own subprocess.
+
 ## Next gate
 
 The next implementation gate is to resolve the real Qwen artifact/runtime
