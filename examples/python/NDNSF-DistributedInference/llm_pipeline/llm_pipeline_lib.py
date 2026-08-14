@@ -3177,13 +3177,24 @@ def run_qwen_onnx_stage(
             (int(input_ids.shape[0]), int(shape[1]), 0, int(shape[3])),
             dtype=np.float32,
         )
-    outputs = session.run(None, feed)
+    output_names = tuple(item.name for item in session.get_outputs())
+    output_values = session.run(None, feed)
+    if len(output_names) != len(output_values):
+        raise ValueError(
+            "Qwen ONNX output metadata/value count mismatch: "
+            f"{len(output_names)} != {len(output_values)}")
+    outputs = dict(zip(output_names, output_values))
+    primary_name = (
+        "logits" if stage_index == stage_count - 1 else "hidden_states_out")
+    if primary_name not in outputs:
+        raise ValueError(
+            f"Qwen ONNX stage output is missing required {primary_name!r}")
     record("layers_ms", (time.perf_counter() - run_start) * 1000.0)
     record("mask_ms", 0.0)
     if stage_index < stage_count - 1:
         encode_start = time.perf_counter()
         payload = _native_tensor_bundle_payload({
-            "hidden_states": np.asarray(outputs[0], dtype=np.float32),
+            "hidden_states": np.asarray(outputs[primary_name], dtype=np.float32),
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "position_ids": position_ids,
@@ -3197,7 +3208,7 @@ def run_qwen_onnx_stage(
         record("final_head_ms", 0.0)
         record("total_ms", (time.perf_counter() - total_start) * 1000.0)
         return payload
-    logits = np.asarray(outputs[0])
+    logits = np.asarray(outputs[primary_name])
     top_token = int(np.argmax(logits[:, -1, :], axis=-1)[0])
     record("final_head_ms", 0.0)
     encode_start = time.perf_counter()
