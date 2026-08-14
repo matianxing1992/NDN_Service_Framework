@@ -119,7 +119,7 @@ RUN install -D -m 0644 /opt/ndnsf-di/manifest/nfd.conf /etc/ndn/nfd.conf && \
     test -x $PREFIX/bin/App_ServiceController && \
     test -x $PREFIX/bin/di-native-provider && \
     ldd $PREFIX/bin/di-native-provider | grep -F '/opt/onnxruntime/lib/libonnxruntime.so' && \
-    /opt/venv/bin/python -c 'import ndnsf,ndnsf_distributed_inference,torch,onnxruntime,transformers'
+    /opt/venv/bin/python -c 'import ndnsf,ndnsf_distributed_inference,ndnsf_distributed_inference.retry,ndnsf_distributed_inference.runtime_v1,ndnsf_distributed_inference.runtime_v1_evidence,torch,onnxruntime,transformers'
 
 FROM ${GPU_RUNTIME_BASE_IMAGE} AS runtime
 ARG SOURCE_REVISION

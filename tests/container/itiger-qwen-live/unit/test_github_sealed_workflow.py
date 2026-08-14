@@ -15,6 +15,27 @@ PREFLIGHT = (
 
 
 class GithubSealedWorkflowTests(unittest.TestCase):
+    def test_native_tracer_entrypoint_modules_are_in_app_wheel_and_probes(self) -> None:
+        setup = (
+            REPO / "NDNSF-DistributedInference/packaging/python/app/setup.py"
+        ).read_text()
+        probe = (
+            REPO / "packaging/ndnsf-di-container/oci/scripts/probe-runtime.py"
+        ).read_text()
+        gpu = (REPO / "packaging/ndnsf-di-container/oci/Dockerfile.gpu").read_text()
+        layered = (
+            REPO / "packaging/ndnsf-di-container/oci/layered/Dockerfile.app"
+        ).read_text()
+        for module in (
+            "ndnsf_distributed_inference.retry",
+            "ndnsf_distributed_inference.runtime_v1",
+            "ndnsf_distributed_inference.runtime_v1_evidence",
+        ):
+            self.assertIn(module, setup)
+            self.assertIn(module, probe)
+            self.assertIn(module, gpu)
+            self.assertIn(module, layered)
+
     def test_transient_local_seal_is_not_a_git_artifact(self) -> None:
         patterns = set((REPO / ".gitignore").read_text().splitlines())
         self.assertIn(".spec110-build/", patterns)
