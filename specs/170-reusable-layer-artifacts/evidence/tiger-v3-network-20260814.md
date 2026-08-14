@@ -6,14 +6,14 @@
 - OCI digest: `sha256:920ccd37d4365fcd8f5423e45112753cd8113163ebabe864b51c0695cdd20b7b`
 - SIF: `/project/tma1/ndnsf-di/releases/spec170-runtime-2a7b847bbeba1b628a1a9e2a146b5411f1df5556/runtime.sif`
 - SIF SHA-256: `c40cfa9abd964e9feec293093753a3de6fb32327b332bd0a873e15b50cfb6c70`
-- V3 diagnostic source commit: `10520f2` (scripts are bind-mounted, not baked into
+- V3 diagnostic source commits: `10520f2` and `1d5aafa` (scripts are bind-mounted, not baked into
   the base SIF)
 - provider script SHA-256:
-  `c42655acd07b6bf1feb82f2580f6a48a9d7314487b193216494cd1c1b3d464be`
+  `414419bbd584ce588cb91d598e380b46df71653c0d726e902913b2292f503657`
 - user script SHA-256:
   `0def5d06701d51d18e6d60c6a94f78eb9067f666b13ca8b755af3c584846a3d0`
 - Slurm job wrapper SHA-256:
-  `337a4f7478498f7a8788ee63ef104527045696e34f05afbcfec1e2f37fe48edf`
+  `6dcb5071cae33ce6a33763b8c82a99e01acc0871d091c8c1b844d2f1385910f3`
 
 The base SIF passed the static import, CUDA, Qwen, mount, and isolated-PIB/
 network preflights. The base SIF is therefore retained unchanged for this
@@ -82,6 +82,32 @@ This is a real-NFD V3 control/selection/response gate, not a full Gate D0:
 it uses CPU diagnostic handlers and does not yet prove canonical artifact
 publication, Provider-side assembly, model execution, or complete multi-token
 output. Spec170 T002–T039 therefore remain open.
+
+## CPU ONNX artifact execution gate
+
+Job `189435` reran the same V3 network flow with `SPEC170_V3_ONNX=1`. Each
+Provider loaded its mounted artifact with `onnxruntime` and
+`CPUExecutionProvider` before advertising readiness, then executed the model
+after Selection:
+
+| role | artifact SHA-256 | output shape | output bytes |
+|---|---|---:|---:|
+| `/Backbone` | `78933d8d10878d0c1590f04e269c733c40c686595ad92fd15ba78104707ff4bc` | `[1,16]` | 64 |
+| `/Head/Shard/0` | `3a8bf108bac8fddfc7edf92f5f26680e33f9c6b0e6de254eebfed43e65e6b0ef` | `[1,8]` | 32 |
+| `/Head/Shard/1` | `4cd0bed590c455b44fb5903dc7b996d5216929d40c8fd242a430e8a73dc03a28` | `[1,8]` | 32 |
+| `/Merge` | `874a664d460b9bba8f631e1dea8d6342d391364c27c74f5deebe65813d32fd78` | `[1,4]` | 16 |
+
+The User again observed permission, four ACKs, V3 Selection commit, four
+selected callbacks, and a final `V3_CPU_OK` Response. The job emitted
+`SPEC170_PYTHON_V3_NETWORK_PASS job=189435 user_rc=0`.
+
+ONNX Runtime also emitted repeated `pthread_setaffinity_np ... Invalid
+argument` warnings under the Slurm/Apptainer CPU allocation. They did not
+change the result, but they are retained as environment evidence; a future
+performance run should set explicit ONNX Runtime thread counts before making
+latency claims. This job proves real CPU ONNX execution of pre-mounted role
+artifacts, not canonical publication, cross-Provider activation dataflow, or
+multi-token model generation.
 
 ## Next gate
 
