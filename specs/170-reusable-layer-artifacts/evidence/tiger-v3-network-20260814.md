@@ -519,6 +519,44 @@ response result. It is not yet formal T030/D0 evidence because the frozen
 full T027/T029 closure; it also does not prove ONNX execution, GPU behavior,
 canonical artifact publication, or multi-token generation.
 
+## Current-candidate exact-SIF preflights
+
+The same candidate SIF was independently checked before the GPU network rerun.
+Static job `189476` completed on `itiger05` with exit `0:0` and verified SIF
+SHA-256 `431c2721cecd209a713ced5c9b8e8c0aa22cf8af35934f717e6824db3846a091`.
+The probe reported `status: PASS`, all required native binaries, all V3
+Python imports including `ndnsf_distributed_inference.retry`, ONNX Runtime
+`1.20.0`, Torch `2.6.0+cu124`, and Transformers `4.51.0` with Qwen3 imports.
+The image intentionally contains no model weights; those remain external
+content-addressed inputs.
+
+Allocated-GPU job `189477` completed on `itiger02` with exit `0:0` and one
+allocated RTX 6000 Ada:
+
+```text
+UUID: GPU-c01b5bea-ba0f-82ef-e46a-5ae3d2f9de0f
+driver: 560.28.03
+CUDA: 12.4
+ORT profile provider: CUDAExecutionProvider
+cpuFallback: false
+terminal: SPEC170_RUNTIME_GPU_PASS candidate=runtime-db1601ab8614677107ba65a001cb1a029363e555 job=189477
+```
+
+The GPU probe emitted non-fatal ONNX Runtime thread-affinity warnings because
+the Slurm CPU mask did not contain the affinity indices requested by the
+default probe thread pool. The V3 network Provider explicitly sets one intra-
+and inter-op thread, and its successful run was unaffected. The retained
+preflight streams and staged job hashes are:
+
+```text
+4ce8605f5d332ed9570da8666ccc9cb99f772541c65071612ad1d307bfa9e12e  spec170-static-85d7aa-189476.out
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  spec170-static-85d7aa-189476.err
+dd6013d502d4971b677c7076eac7926c8f7726405615d6c08aa952192c854220  spec170-gpu-85d7aa-189477.out
+4e3231cf8e282502bf3cd2d516ae6f2478bc0397e59888752ac1ca00368ddb18  spec170-gpu-85d7aa-189477.err
+51823ec203f5ea02dc56a22f62f06077703e0411c0c2709e0521a9945a684278  probe-runtime-85d7aa-static.sbatch
+ad9d9c847bd9c014278def0eb2944bfee204b1207cea0f7421e030f82df61144  probe-runtime-85d7aa-gpu.sbatch
+```
+
 ## Candidate-bound GPU V3 rerun after execution-drain correction
 
 The first GPU diagnostic on the current candidate (`189473`) reached CUDA
