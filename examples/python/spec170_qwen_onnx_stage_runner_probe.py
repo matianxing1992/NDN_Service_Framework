@@ -14,6 +14,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import sys
 import time
 
 
@@ -30,6 +31,7 @@ def load_runner(path: Path):
     if spec is None or spec.loader is None:
         raise RuntimeError(f"cannot load stage runner: {path}")
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
