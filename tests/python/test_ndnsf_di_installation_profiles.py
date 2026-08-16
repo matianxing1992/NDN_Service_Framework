@@ -61,6 +61,7 @@ class InstallationProfilesTest(unittest.TestCase):
             self.assertIn("ndnsf_distributed_inference/adapters/builtin.py", sdk)
             app=next(files for name,files in wheels.items() if name.startswith("ndnsf_di_app-"))
             self.assertIn("ndnsf_distributed_inference/retry.py", app)
+            self.assertIn("ndnsf_distributed_inference/runtime_v1.py", app)
 
             with tempfile.TemporaryDirectory() as environment:
                 subprocess.run([sys.executable, "-m", "venv", environment], check=True)
