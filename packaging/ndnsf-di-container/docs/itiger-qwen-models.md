@@ -1,5 +1,12 @@
 # iTiger NDNSF-DI Qwen operations runbook
 
+> **Spec170 note:** this runbook retains older Spec160/Spec110 Docker smoke and
+> remote-materialization procedures for historical Qwen campaigns. For current
+> Spec170 work, start with a locally built and locally verified application SIF;
+> do not build or materialize the release on TigerCluster. Follow
+> `specs/170-reusable-layer-artifacts/quickstart.md` and the
+> `itiger-ndnsf-ops` skill for the active route.
+
 This is the practical entry point for running Qwen experiments with NDNSF-DI
 on iTiger. Repository scripts, frozen source bundles, and promoted evidence are
 authoritative. Personal wrappers may shorten commands, but never own a run
@@ -13,7 +20,7 @@ discover a failure that a smaller gate could have found.
 | Gate | Recommended workload | What it proves | What it does not prove |
 |---|---|---|---|
 | Local contract tests | Python/unit fixtures | generation state, EOS, request correlation, analyzer rules | native bindings, NFD, CUDA |
-| Local Docker security smoke | one container; controller, NFD, one provider, one user; tiny fake payload; `--memory=4g --memory-swap=5g` | collaboration assignment, permissions/tokens, and `report_operation_status()` in the candidate image | SIF materialization, cluster networking, GPU/model execution |
+| Local application-SIF control smoke | the locally built SIF; controller, NFD, one provider, one user; tiny fake payload | collaboration assignment, permissions/tokens, and `report_operation_status()` in the candidate runtime | cluster networking, GPU/model execution |
 | Single-node Slurm SIF smoke | same fake workload in Apptainer | the sealed SIF works on a compute node without mounted replacement libraries | cross-node NFD or Qwen correctness |
 | Multi-node NFD probe | bounded allocation, no model | allocated nodes can exchange the required signed named data over job-scoped TCP/UDP faces | CUDA or model execution |
 | Standalone model reference | one GPU, frozen revision and prompt contract | expected tokens, tokenizer/chat template, capacity | NDNSF-DI execution |
@@ -21,10 +28,12 @@ discover a failure that a smaller gate could have found.
 | NDNSF-DI development smoke | three nodes, one prompt/request | secured assignment, all stages, two dependency transfers, final exact result | performance distribution or production readiness |
 | Formal generation campaign | frozen prompts and repetitions | full EOS-terminated answers and retained latency distribution | KV-cache, throughput scaling, tensor parallelism unless separately designed |
 
-The local Docker smoke is intentionally small. Do not load Torch/Qwen or start
-three model providers on a memory-constrained workstation merely to test the
-security/control path. The accepted Spec 160 harness is
-`specs/160-itiger-multinode-qwen-collaboration/jobs/run-local-docker-operation-status-smoke.sh`.
+The local SIF control smoke is intentionally small. Do not load Torch/Qwen or
+start three model providers on a memory-constrained workstation merely to test
+the security/control path. The old Docker-only harness
+`specs/160-itiger-multinode-qwen-collaboration/jobs/run-local-docker-operation-status-smoke.sh`
+is retained for historical Spec160 comparison and is not a substitute for the
+current local-SIF closure gate.
 
 ## End-to-end workflow
 
@@ -135,12 +144,21 @@ The SIF must contain a mutually compatible native stack: NFD/NDNSF libraries,
 Python bindings, PyTorch/Transformers, CUDA user-space libraries, and the
 application code. The host supplies the NVIDIA driver and allocated devices.
 
+The host drives Apptainer but does not supply the SIF's Python build ABI. Build
+`_ndnsf.so` and every other container-bound extension inside the candidate SIF
+build stage, or a sealed ABI-identical builder rootfs, using its Python headers,
+`SOABI`, `EXT_SUFFIX`, compiler/glibc, and native libraries. Never install host
+Python development headers or use a host virtual environment/site-packages tree
+to repair a container build; that crosses the release boundary even when the
+extension filename appears to carry the expected `cpXY` tag.
+
 Do not combine an older SIF with mounted replacement `.so` files, pybind
 modules, or a different vendor site-packages directory. Spec 160 showed that
 this can produce constructor/import mismatches and allocator corruption before
-model execution. A local Docker pass alone does not prove that the materialized
-SIF is coherent, so repeat the small operation-status smoke inside a bounded
-Slurm allocation.
+model execution. A local control smoke alone does not prove that the candidate
+SIF works on a compute node, so repeat the small operation-status smoke inside
+a bounded Slurm allocation. The old Docker smoke is historical diagnostics,
+not a replacement for this SIF gate.
 
 GPU validation fails closed. A visible GPU is insufficient: every stage must
 record its allocated GPU UUID, `device=cuda:*`, a successful CUDA operation,
@@ -245,7 +263,7 @@ authorization.
 | Symptom | Likely class | Correct response |
 |---|---|---|
 | `double free`, invalid pointer, native import/constructor mismatch | mixed runtime | stop; rebuild and seal one coherent SIF; do not mount replacement native libraries |
-| `report_operation_status()` missing or binding mismatch | Python/native API drift | reproduce with the tiny Docker smoke, rebuild the app/binding layer, then repeat the single-node SIF smoke |
+| `report_operation_status()` missing or binding mismatch | Python/native API drift | reproduce with the local SIF control smoke, rebuild the app/binding layer, then repeat the single-node SIF smoke |
 | cross-node request timeout before model load | NFD face/routing/configuration | run the allocation-scoped NFD probe; keep it separate from model evidence |
 | CUDA visible but stage reports CPU | backend fallback | fail the cell; retain logs; never accept timing or correctness from that cell |
 | model download fills project storage | source/cache placed on durable storage | use measured allocation scratch and promote only final stages/tokenizer/evidence |
@@ -495,8 +513,9 @@ generic NDNSF internal failure. Fix-035b changes only the User startup settle to
 
 ### Current gate boundary: strict MiniNDN first — 2026-08-01
 
-Before submitting another TigerCluster workload or treating a Docker image as
-deployable, rerun the strict local MiniNDN Gate-B profile. The accepted run is
+Before submitting another TigerCluster workload, rerun the strict local
+MiniNDN Gate-B profile and the local-SIF closure checks. A Docker image is not a
+Spec170 deployment artifact. The accepted run is
 `results/spec165-minindn-first/20260801T204709Z-28c987c4`: Qwen3-0.6B ONNX,
 real MiniNDN/NFD, explicit AI_Lab topology, three role selections, and complete
 multi-request/multi-token lineage. The launcher rejects fake runtime

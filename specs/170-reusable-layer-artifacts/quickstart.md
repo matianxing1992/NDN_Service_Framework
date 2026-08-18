@@ -17,6 +17,103 @@ runnable only after their implementation tasks create those entry points.
   studies wireless behavior; host NFD is diagnosis only, not final evidence.
 - Performance windows are at least 60 seconds after readiness/warmup. A smoke
   mode stays under 10 seconds, emits `SMOKE_OK`, and supports no performance claim.
+- Before any native Python build command, classify its output as host-runtime or
+  container-runtime. A container-runtime extension may be compiled only inside
+  the candidate SIF build stage or sealed ABI-identical builder rootfs. Any
+  proposal to install host Python headers, change host Python, use host
+  site-packages/native libraries, or copy a host-built `.so` into the SIF is
+  `WRONG_BUILD_BOUNDARY` and stops the release workflow.
+- Treat a missing host `Python.h` during a container-runtime build as proof that
+  the build command crossed this boundary. Do not troubleshoot or modify the
+  host Python installation. Move the build into the sealed SIF definition or
+  ABI-identical builder before doing any further compilation. A later import
+  PASS cannot repair invalid build provenance.
+
+## Release construction order (the only normal path)
+
+**Start locally:** the first runtime artifact is one complete application SIF
+whose build is driven and validated on the local host. The host is not the ABI
+authority for container-bound binaries: `_ndnsf.so` and every compiled Python
+extension must be built inside the SIF build stage, or in a sealed builder
+rootfs proven ABI-identical to it. Never use host Python headers, a host virtual
+environment/site-packages tree, or host native libraries and then copy or mount
+the result into the SIF. Seal source/lock inputs, query
+Apptainer from a bounded Slurm allocation on the intended compute partition,
+install that matching release locally, and run the repository
+`build-local-sif.sh` entry point. The login-node version is diagnostic only;
+it is not the release contract. A Tiger job is never used to construct,
+convert, or repair the candidate.
+
+Run the static, Python/native, runner-help, and closure probes against that
+same local SIF. Only after those checks pass, copy the SIF plus its
+hash/build record to project storage. TigerCluster stages the immutable file,
+verifies the same SHA-256, and executes it with Apptainer. Keep one current
+candidate release; older images and failed builds remain evidence only and
+must not be selected for a new run.
+
+The repository entry point is:
+
+```bash
+packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/build-local-sif.sh \
+  --definition /path/to/sealed-runtime.def \
+  --sif /path/to/release/runtime.sif \
+  --record /path/to/release/local-sif-build-record.json \
+  --source-seal /path/to/release/source-seal.json \
+  --apptainer /absolute/path/to/compute-matched/apptainer \
+  --expected-apptainer COMPUTE_PACKAGE_VERSION
+```
+
+Derive `COMPUTE_PACKAGE_VERSION` from an allocation, not from the login node,
+and record the node, executable path, and package version. The builder records
+the exact local Apptainer path and SHA-256 and rejects a semantic version
+mismatch before construction. Each Tiger job repeats the version check on its
+allocated node before staging the SIF so a heterogeneous pool cannot silently
+change the runtime.
+
+The definition is the only build input accepted by this command. A
+`Bootstrap: localimage` definition may start from a qualified base SIF, but
+the output must be the complete application SIF. Do not substitute an OCI
+archive, registry pull, or remote materialization step.
+
+Before invoking Apptainer, run the build-boundary validator through
+`build-local-sif.sh`. It rejects host-built runtime inputs lexically even when
+their old source paths no longer exist. When a base SIF already contains an
+application build, the final stage must remove its Provider, framework shared
+library, and all `_ndnsf*.so` files before installing exactly one output set
+from the builder stage. The final in-SIF census and
+`container-native-build.json` hash comparison must prove that no stale base
+artifact remains active.
+
+Do not invoke `apptainer build` directly for a release candidate; doing so
+bypasses the provenance gate even if the resulting image later passes import
+or `ldd`. Keep the former r13 definition as a permanent negative fixture and
+run the public-entry-point regression before sealing a candidate:
+
+```bash
+python3 -m pytest -q \
+  tests/python/test_build_local_sif_record.py \
+  tests/container/unit/test_spec170_exact_sif_gate.py
+```
+
+The r13-shaped case must fail before the fake Apptainer observes a `build`
+command. If that regression fails or the canonical entry point no longer calls
+`spec170_sif_build_boundary.py`, SIF construction and Tiger submission stop.
+
+The host-side exact-SIF test driver must remain pure Python until
+`apptainer exec` starts. It must not import the host checkout's `_ndnsf.so`
+directly or indirectly; native workload imports belong inside the candidate
+SIF. This prevents host ABI drift from blocking or falsely qualifying Gate C.
+
+The active sequence is always:
+
+```text
+sealed source + locks
+  -> local Apptainer build-local-sif.sh
+  -> local static/Python/native/runtime checks
+  -> one hash-bound SIF promotion
+  -> Tiger hash verification
+  -> Tiger Apptainer execution
+```
 
 ## Gate A - Contract and Property Tests
 
@@ -167,7 +264,7 @@ This diagnostic passed on 2026-08-04 (three measured responses, p50
 because the normal-default V3 Selection/Provider-assembly and the required
 three cold/warm statistical blocks are still separate acceptance conditions.
 
-## Gate C - Exact OCI/SIF Parity
+## Gate C - Exact local-SIF closure
 
 Planned container tests:
 
@@ -180,16 +277,44 @@ python3 -m pytest -q \
 Then run the exact candidate SIF in:
 
 - CPU-only mode with no GPU exposure;
+- the real D0 four-Provider/one-role and CPU single-Provider/four-role network
+  workloads, using one read-only mounted bundle and requiring Selection,
+  matching non-empty publish/fetch evidence for all four planned dependency
+  edges, and a final Response;
 - one-GPU CUDA preflight;
 - two-GPU visibility/topology preflight when a qualified allocation is available.
 
-The container must use the same installed code/contracts as Gate B and must not
+The SIF must use the same installed code/contracts as Gate B and must not
 inject test-only role, device, shard, security, or fallback defaults.
+
+The closure gate is also a library-consistency gate. Inventory and hash the
+NDNSF, NDN-SVS, NDN-CXX, NAC-ABE, ndnsd, Boost, ONNX Runtime, CUDA/cuDNN, and
+Python-extension libraries inside the exact SIF. The closure checker runs
+`ldd` for the Provider, `_ndnsf.so`, and every distinct packaged `.so` payload;
+all dependencies must resolve, every required versioned SONAME and
+compatibility symlink must exist inside its declared root, and no absolute
+RPATH may escape the recorded library/system prefixes or point to a host
+`/tmp`/`/home`/checkout. The sealed lock must use
+`ndnsf-sif-library-lock-v2` and contain the exact packaged library set,
+hashes, SONAMEs, and a non-empty package/toolchain version for every row;
+extra or missing entries fail Gate C. SONAME links are checked within their
+own library root, so a same-named link in another root cannot hide a missing
+ABI link. A host-side link or Python import against the checkout does not
+close Gate C. Store the checker JSON and hashes with the local SIF build
+record, then repeat the same check on the staged Tiger SIF.
+The build record must also contain the build-stage Python executable/version,
+`SOABI`, `EXT_SUFFIX`, include directory, compiler, glibc, extension hash, and
+native-library hashes. Compare these with the final SIF runtime. A missing
+`Python.h` on the host or a suggestion to install host `pythonX.Y-dev` means the
+wrong build boundary was selected; fix the SIF definition/builder stage instead.
+Internal NDNSF, NDN-SVS, NDN-CXX, NAC-ABE, OpenABE, RELIC, and ONNX Runtime
+dependencies may not silently resolve from `/lib` or `/usr/lib`; external
+Boost is accepted only when its SONAME major/minor equals the locked version.
 
 ## Freeze Cut - Required Between Gate C and Gate D
 
 After Gate A, Gate B, and Gate C pass, create T029's frozen-candidate manifest.
-It binds source, OCI/SIF, dependencies, native/Python installed files, every job
+It binds source, the local SIF, dependencies, native/Python installed files, every job
 file, model/canonical payload, prompt corpus, security, routes, schedule, and the
 three local gate reports. Run the mismatch self-test before submission.
 
@@ -203,6 +328,24 @@ Create three immutable GPU-count classes from the same source/SIF/config bundle.
 D0 and D1 each use their own job identity. The two-GPU class contains at least
 the distinct D2a and D2b topology/job identities; counting GPU classes MUST NOT
 collapse those identities.
+
+The runtime contract is intentionally small: one hash-verified immutable SIF,
+one read-only mounted candidate bundle, and one direct workload path. `--nv`
+controls device/library exposure only; CPU versus CUDA is selected explicitly
+by the manifest in that bundle. Do not derive or patch a workload inside the
+allocation, and do not reuse a stale bundle whose plan/driver/manifest hashes
+were not recorded together.
+
+### Operator-facing rule
+
+The Tiger operator should need to choose only the release, the mounted bundle,
+the workload, and the recorded SIF hash. The workload must start the Provider
+from the bundle directory (`cd "$BUNDLE"`) and verify every relative artifact
+before launch. Runtime-provider selection belongs in the signed service
+manifest; it must not be inferred from `--nv` or reconstructed by a wrapper.
+Any extra path rewrite, generated command fragment, or unregistered manifest
+override is a configuration defect and must fail preflight rather than reach a
+cluster allocation.
 
 ### D0: zero GPU
 
