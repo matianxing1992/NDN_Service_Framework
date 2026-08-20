@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cctype>
 #include <iterator>
+#include <map>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -990,7 +991,22 @@ roleSpecFromSelectionProjectionV3(
       "V3 Selection dataflow cannot be projected for this Provider");
   }
 
-  auto makeEdge = [&projection, &dataflow, &localProvider](
+  std::map<std::string, std::size_t> fetchesByGroup;
+  for (const auto& endpoint : dataflow.mustFetch) {
+    ++fetchesByGroup[endpoint.groupId];
+  }
+  const auto runtimeScopeFor = [&] (const NativeTensorEndpointV3& endpoint) {
+    if (fetchesByGroup[endpoint.groupId] <= 1) {
+      return endpoint.groupId;
+    }
+    auto producerRole = endpoint.producerRole;
+    while (!producerRole.empty() && producerRole.front() == '/') {
+      producerRole.erase(producerRole.begin());
+    }
+    return endpoint.groupId + "/from/" + producerRole;
+  };
+
+  auto makeEdge = [&projection, &dataflow, &localProvider, &runtimeScopeFor](
                     const NativeTensorEndpointV3& endpoint,
                     bool output) {
     if (endpoint.requestId != dataflow.requestId ||
@@ -1005,7 +1021,7 @@ roleSpecFromSelectionProjectionV3(
     DependencyEdge edge;
     // groupId is the runtime dependency scope. tensorId remains the adapter
     // tensor identity and is carried separately in `tensors`.
-    edge.scope = endpoint.groupId;
+    edge.scope = runtimeScopeFor(endpoint);
     edge.producerRole = endpoint.producerRole;
     edge.consumerRole = endpoint.consumerRole;
     edge.consumerRoles = endpoint.consumerRoles;
@@ -1040,6 +1056,38 @@ roleSpecFromSelectionProjectionV3(
     edge.microbatch = endpoint.microbatch;
     edge.noProgressDeadlineMs = endpoint.noProgressDeadlineMs;
     edge.hardDeadlineMs = endpoint.hardDeadlineMs;
+    for (const auto& dependency : projection.plan.dependencies) {
+      if (dependency.keyScope != endpoint.groupId ||
+          std::find(dependency.producers.begin(), dependency.producers.end(),
+                    endpoint.producerRole) == dependency.producers.end() ||
+          std::find(dependency.consumers.begin(), dependency.consumers.end(),
+                    endpoint.consumerRole) == dependency.consumers.end()) {
+        continue;
+      }
+      edge.redistributions = dependency.redistributions;
+      if (!edge.redistributions.empty()) {
+        const auto& redistribution = edge.redistributions.front();
+        const auto producerIndex = static_cast<std::size_t>(
+          std::distance(dependency.producers.begin(),
+                        std::find(dependency.producers.begin(),
+                                  dependency.producers.end(),
+                                  endpoint.producerRole)));
+        const auto consumerIndex = static_cast<std::size_t>(
+          std::distance(dependency.consumers.begin(),
+                        std::find(dependency.consumers.begin(),
+                                  dependency.consumers.end(),
+                                  endpoint.consumerRole)));
+        if (producerIndex < redistribution.producerRanks.size()) {
+          edge.redistributionProducerRank =
+            redistribution.producerRanks[producerIndex];
+        }
+        if (consumerIndex < redistribution.consumerRanks.size()) {
+          edge.redistributionConsumerRank =
+            redistribution.consumerRanks[consumerIndex];
+        }
+      }
+      break;
+    }
     return edge;
   };
 

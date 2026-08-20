@@ -1900,6 +1900,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
       }
       else {
         std::vector<RoleSpec> localRoleSpecs;
+        bool selectionRoleMatched = false;
         for (const auto& plannedRole : executionPlan.roles) {
           const auto assigned = assignment.providerByRole.find(plannedRole);
           if (assigned == assignment.providerByRole.end() ||
@@ -1908,9 +1909,12 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           }
           if (selectionProjection) {
             if (plannedRole != selectionProjection->executionRole.roleId) {
-              throw std::invalid_argument(
-                "V3 Selection cannot execute an undeclared local role");
+              // A V3 assignment envelope authorizes exactly one local role.
+              // Other roles owned by this Provider are launched by their own
+              // envelope; they must not make this envelope fail closed.
+              continue;
             }
+            selectionRoleMatched = true;
             localRoleSpecs.push_back(roleSpecFromSelectionProjectionV3(
               *selectionProjection, ctx.localProvider().toUri()));
           }
@@ -1928,6 +1932,10 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                               assignment,
                               ctx.localProvider().toUri()));
           }
+        }
+        if (selectionProjection && !selectionRoleMatched) {
+          throw std::invalid_argument(
+            "V3 Selection cannot execute an undeclared local role");
         }
         // Register every local consumer's dependency wait before a colocated
         // source can publish.  SVSPubSub subscriptions are prospective; this

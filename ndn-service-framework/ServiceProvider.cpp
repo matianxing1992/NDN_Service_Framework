@@ -11058,59 +11058,85 @@ opaque_selection_committed:
             m_selectedOutstandingRequests.fetch_add(1, std::memory_order_relaxed);
             RequestMessage requestCopy = selectedRequest;
             if (collabService != m_collaborationServices.end()) {
-                auto assignment =
-                    parseCollaborationAssignment(serviceName,
-                                                 effectiveAssignmentPayload);
-                // The Provider-entry projection is Core-owned metadata.  It
-                // remains available even when the application registers an
-                // opaque Selection participant; the participant still sees
-                // only its exact envelope opaquePayload below.
-                for (const auto& entry : message.getProviderEntries()) {
-                    for (const auto& entryRole :
-                         rolesFromAssignmentPayload(entry.assignmentPayload)) {
-                        assignment.roleProviders[entryRole] = entry.providerName;
-                    }
-                }
-                // Structured deferred assignments carry the exact
-                // provider-scoped scope-key references in their envelope.
-                // The compact Selection metadata is a legacy fallback for
-                // unstructured opaque assignments only; merging it into a
-                // structured assignment would reintroduce every peer's key
-                // and make the provider attempt to decrypt data for another
-                // role with the wrong key.
-                if ((hasOpaqueParticipant || structuredAssignmentPayload) &&
-                    !sharedAssignmentPayload.empty()) {
-                    for (const auto& field :
-                         parseSemicolonFields(sharedAssignmentPayload)) {
-                        static const std::string prefix = "scopeKeyData.";
-                        static const std::string roleProviderPrefix =
-                            "roleProvider.";
-                        if (field.first.rfind(roleProviderPrefix, 0) == 0 &&
-                            !field.first.substr(roleProviderPrefix.size()).empty() &&
-                            !field.second.empty()) {
-                            assignment.roleProviders[
-                                field.first.substr(roleProviderPrefix.size())] =
-                                    ndn::Name(field.second);
+                // A V3 assignment set contains one sealed JSON projection per
+                // local role. Dispatch those envelopes separately; legacy
+                // binary/semicolon assignment sets still represent one local
+                // execution context and must retain their existing behavior.
+                std::vector<ndn::Buffer> rolePayloads;
+                bool v3AssignmentSet = structuredAssignmentPayload;
+                if (structuredAssignmentPayload) {
+                    for (const auto& item :
+                         decodeOpaqueAssignmentSet(effectiveAssignmentPayload)) {
+                        CollaborationAssignmentEnvelope envelope;
+                        if (decodeCollaborationAssignmentEnvelope(item, envelope)) {
+                            rolePayloads.push_back(item);
+                            const auto first = std::string(
+                                reinterpret_cast<const char*>(
+                                  envelope.opaquePayload.data()),
+                                envelope.opaquePayload.size()).find_first_not_of(
+                                  " \t\r\n");
+                            if (first == std::string::npos ||
+                                envelope.opaquePayload[first] != '{') {
+                                v3AssignmentSet = false;
+                            }
                         }
-                        else if (assignment.scopeKeys.empty() &&
-                                 assignment.scopeKeyDataNames.empty() &&
-                                 field.first.rfind(prefix, 0) == 0 &&
-                            !field.first.substr(prefix.size()).empty() &&
-                            !field.second.empty()) {
-                            assignment.scopeKeyDataNames[
-                                field.first.substr(prefix.size())] =
-                                    ndn::Name(field.second);
+                        else {
+                            v3AssignmentSet = false;
                         }
                     }
                 }
-                assignment.selectionDigest = selectionDigest;
-                if (dispatchCollaborationExecutionAsync(requesterName,
-                                                        providerName,
-                                                        serviceName,
-                                                        requestId,
-                                                        requestCopy,
-                                                        std::move(assignment),
-                                                        selectionDigest)) {
+                if (!v3AssignmentSet || rolePayloads.empty()) {
+                    rolePayloads.clear();
+                    rolePayloads.push_back(effectiveAssignmentPayload);
+                }
+                bool dispatchedAny = false;
+                for (const auto& rolePayload : rolePayloads) {
+                    auto assignment =
+                        parseCollaborationAssignment(serviceName, rolePayload);
+                    // The Provider-entry projection is Core-owned metadata. It
+                    // remains available even when the application registers an
+                    // opaque Selection participant; the participant still sees
+                    // only its exact envelope opaquePayload below.
+                    for (const auto& entry : message.getProviderEntries()) {
+                        for (const auto& entryRole :
+                             rolesFromAssignmentPayload(entry.assignmentPayload)) {
+                            assignment.roleProviders[entryRole] = entry.providerName;
+                        }
+                    }
+                    // Structured deferred assignments carry exact
+                    // provider-scoped scope-key references in their envelope.
+                    if ((hasOpaqueParticipant || structuredAssignmentPayload) &&
+                        !sharedAssignmentPayload.empty()) {
+                        for (const auto& field :
+                             parseSemicolonFields(sharedAssignmentPayload)) {
+                            static const std::string prefix = "scopeKeyData.";
+                            static const std::string roleProviderPrefix =
+                                "roleProvider.";
+                            if (field.first.rfind(roleProviderPrefix, 0) == 0 &&
+                                !field.first.substr(roleProviderPrefix.size()).empty() &&
+                                !field.second.empty()) {
+                                assignment.roleProviders[
+                                    field.first.substr(roleProviderPrefix.size())] =
+                                      ndn::Name(field.second);
+                            }
+                            else if (assignment.scopeKeys.empty() &&
+                                     assignment.scopeKeyDataNames.empty() &&
+                                     field.first.rfind(prefix, 0) == 0 &&
+                                     !field.first.substr(prefix.size()).empty() &&
+                                     !field.second.empty()) {
+                                assignment.scopeKeyDataNames[
+                                    field.first.substr(prefix.size())] =
+                                      ndn::Name(field.second);
+                            }
+                        }
+                    }
+                    assignment.selectionDigest = selectionDigest;
+                    dispatchedAny = dispatchCollaborationExecutionAsync(
+                        requesterName, providerName, serviceName, requestId,
+                        requestCopy, std::move(assignment), selectionDigest) ||
+                      dispatchedAny;
+                }
+                if (dispatchedAny) {
                     continue;
                 }
             }

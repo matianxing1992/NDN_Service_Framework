@@ -1395,12 +1395,157 @@ makeD2bOperation()
   GroupOperationV1 operation;
   operation.operationIndex = 7;
   operation.kind = "ALL_GATHER";
-  operation.producerRanks = {"0", "1"};
-  operation.consumerRanks = {"receiver"};
+  // The capability members below are ranks 0 and 1.  Keep every operation
+  // endpoint expressed in that authenticated rank namespace; symbolic names
+  // such as "receiver" are not valid GroupCapabilityV1 member ranks.
+  operation.producerRanks = {"0"};
+  operation.consumerRanks = {"1"};
   operation.tensorLayoutDigest = "layout-v1";
   operation.maxBytes = 32;
   operation.maxSegments = 2;
   return operation;
+}
+
+std::string
+makeV3SelectionRoleJson(const std::string& logicalRole,
+                        std::uint64_t rank,
+                        const std::string& artifactDigest,
+                        const std::string& recipeDigest,
+                        const std::string& backend = "onnxruntime",
+                        const std::string& device = "cpu:0",
+                        const std::string& roleKind = "TENSOR_RANK")
+{
+  const auto deviceSet = (backend == "cpu" ||
+                          (backend.size() > 4 &&
+                           backend.compare(backend.size() - 4, 4, "-cpu") == 0))
+    ? std::string("[]")
+    : std::string("[\"") + device + "\"]";
+  return std::string("{\"adapter_id\":\"qwen-test\",") +
+    "\"adapter_version\":\"1\",\"artifact_digest\":\"" +
+    artifactDigest + "\",\"backend\":\"" + backend +
+    "\",\"device_set\":" + deviceSet +
+    ",\"layer_begin\":0,\"layer_end\":1,\"rank\":" +
+    std::to_string(rank) + ",\"recipe_digest\":\"" + recipeDigest +
+    "\",\"role\":\"" + logicalRole +
+    "\",\"role_kind\":\"" + roleKind + "\"}";
+}
+
+std::string
+makeV3TensorEndpointJson(const std::string& producerNamespace,
+                         const std::string& requester,
+                         const std::string& requestId,
+                         const std::string& planDigest,
+                         const std::string& groupId,
+                         std::uint64_t round,
+                         const std::string& producerRole,
+                         std::uint64_t producerRank,
+                         const std::string& consumerRole,
+                         const std::string& consumerRoles,
+                         const std::string& tensorId,
+                         const std::string& tensorDigest,
+                         const std::string& layoutDigest,
+                         const std::string& targetLayoutDigest,
+                         const std::string& operation,
+                         const std::string& endpointDigest,
+                         const std::string& manifestDigest)
+{
+  return std::string("{\"attempt\":1,\"consumer_role\":\"") +
+    consumerRole + "\",\"consumer_roles\":[" + consumerRoles +
+    "],\"endpoint_digest\":\"" + endpointDigest +
+    "\",\"group_epoch\":\"1\",\"group_id\":\"" + groupId +
+    "\",\"hard_deadline_ms\":8000,\"layout_digest\":\"" +
+    layoutDigest + "\",\"manifest_digest\":\"" + manifestDigest +
+    "\",\"microbatch\":0,\"no_progress_deadline_ms\":2000,\"operation\":\"" +
+    operation + "\",\"producer_namespace\":\"" + producerNamespace +
+    "\",\"producer_rank\":" + std::to_string(producerRank) +
+    ",\"producer_role\":\"" + producerRole +
+    "\",\"plan_digest\":\"" + planDigest +
+    "\",\"request_id\":\"" + requestId +
+    "\",\"requester\":\"" + requester +
+    "\",\"round\":" + std::to_string(round) +
+    ",\"security_profile\":\"NDNSF_DATA_V1\",\"segment_count\":1,"+
+    "\"source_kind\":\"ROLE\",\"target_layout_digest\":\"" +
+    targetLayoutDigest + "\",\"tensor_digest\":\"" + tensorDigest +
+    "\",\"tensor_id\":\"" + tensorId + "\"}";
+}
+
+[[maybe_unused]] std::string
+makeV3SelectionProjectionJsonDisabled(const std::string& roleJson,
+                              const std::string& logicalRole,
+                              const std::string& roleKey,
+                              std::uint64_t rank,
+                              const std::string& provider,
+                              const std::string& requestId,
+                              const std::string& planDigest,
+                              const std::string& capabilityHex,
+                              const std::string& dependenciesJson,
+                              const std::string& dataflowJson,
+                              const std::string& offerDigest,
+                              const std::string& device = "cpu:0")
+{
+#if 0
+  return std::string("{\"ack_closed_digest\":\"") + planDigest +
+    "\",\"assembly\":" + roleJson +
+    ",\"attempt\":1,\"dataflow\":" + dataflowJson +
+    ",\"deadline_ms\":9999999999999,\"dependencies\":" +
+    dependenciesJson + ",\"device_binding\":{"mode":"SINGLE_DEVICE",\"offer_digest\":\"" +
+    offerDigest + "\",\"offer_scoped_device_handle\":\"" + device +
+    "\",\"provider\":\"" + provider + "\",\"resource_sequence\":1,"+
+    "\"resource_snapshot_digest\":\"" + planDigest +
+    "\",\"role\":\"" + roleKey +
+    "\",\"sharing_policy\":\"EXCLUSIVE_ROLE\",\"topology_profile_digest\":\"" +
+    planDigest + "\"},\"execution_role\":{"adapter_id\":\"qwen-test\",\"adapter_version\":\"1\",\"backend\":\"onnxruntime\",\"layer_begin\":0,\"layer_end\":1,\"rank\":" +
+    std::to_string(rank) + ",\"role_id\":\"" + roleKey +
+    "\",\"stage_id\":\"" + logicalRole +
+    "\"},\"group_capability_v1\":\"" + capabilityHex +
+    "\",\"offer_digest\":\"" + offerDigest +
+    "\",\"plan_core_digest\":\"" + planDigest +
+    "\",\"plan_digest\":\"" + planDigest +
+    "\",\"provider\":\"" + provider +
+    "\",\"request_id\":\"" + requestId +
+    "\",\"roles\":[" + roleJson +
+    "],\"schema\":\"ndnsf-di-selection-v3\",\"schema_version\":3,"+
+    "\"security_policy_snapshot_digest\":\"" + planDigest + "\"}";
+#endif
+  return {};
+}
+
+std::string
+makeV3SelectionProjectionJson(const std::string& roleJson,
+                              const std::string& logicalRole,
+                              const std::string& roleKey,
+                              std::uint64_t rank,
+                              const std::string& provider,
+                              const std::string& requestId,
+                              const std::string& planDigest,
+                              const std::string& capabilityHex,
+                              const std::string& dependenciesJson,
+                              const std::string& dataflowJson,
+                              const std::string& offerDigest,
+                              const std::string& device = "cpu:0")
+{
+  return std::string("{\"ack_closed_digest\":\"") + planDigest +
+    "\",\"assembly\":" + roleJson +
+    ",\"attempt\":1,\"dataflow\":" + dataflowJson +
+    ",\"deadline_ms\":9999999999999,\"dependencies\":" +
+    dependenciesJson + ",\"device_binding\":{\"mode\":\"SINGLE_DEVICE\",\"offer_digest\":\"" +
+    offerDigest + "\",\"offer_scoped_device_handle\":\"" + device +
+    "\",\"provider\":\"" + provider + "\",\"resource_sequence\":1," +
+    "\"resource_snapshot_digest\":\"" + planDigest +
+    "\",\"role\":\"" + roleKey +
+    "\",\"sharing_policy\":\"EXCLUSIVE_ROLE\",\"topology_profile_digest\":\"" +
+    planDigest + "\"},\"execution_role\":{\"adapter_id\":\"qwen-test\",\"adapter_version\":\"1\",\"backend\":\"onnxruntime\",\"layer_begin\":0,\"layer_end\":1,\"rank\":" +
+    std::to_string(rank) + ",\"role_id\":\"" + roleKey +
+    "\",\"stage_id\":\"" + logicalRole +
+    "\"},\"group_capability_v1\":\"" + capabilityHex +
+    "\",\"offer_digest\":\"" + offerDigest +
+    "\",\"plan_core_digest\":\"" + planDigest +
+    "\",\"plan_digest\":\"" + planDigest +
+    "\",\"provider\":\"" + provider +
+    "\",\"request_id\":\"" + requestId +
+    "\",\"roles\":[" + roleJson +
+    "],\"schema\":\"ndnsf-di-selection-v3\",\"schema_version\":3," +
+    "\"security_policy_snapshot_digest\":\"" + planDigest + "\"}";
 }
 
 } // namespace
@@ -3378,19 +3523,9 @@ runProductionNativeD2bCase(bool tamperCapability)
   ProviderGroupCoordinator capabilitySealer(makeD2bCoordinatorOptions());
   const auto capability = capabilitySealer.createCapability(
     requestId.toUri(), "attempt-1", planDigest, "group-d2b-native", 1,
-    {{provider0Name.toUri(), 0, "offer-p0", producerPrefix.toUri()},
-     {provider1Name.toUri(), 1, "offer-p1", consumerPrefix.toUri()}},
+    {{provider0Name.toUri(), 0, "offer-p0", provider0Name.toUri()},
+     {provider1Name.toUri(), 1, "offer-p1", provider1Name.toUri()}},
     {operation}, 4096, 2000, 8000);
-  const auto capabilityHex = bytesToHex(
-    ProviderGroupCoordinator::encodeCapability(capability));
-  std::string selectionCapabilityHex = capabilityHex;
-  if (tamperCapability) {
-    // Preserve the JSON/hex wire shape while changing the request-scoped
-    // capability.  The Provider must reject this before native execution.
-    auto& byte = selectionCapabilityHex[selectionCapabilityHex.size() / 2];
-    byte = byte == '0' ? '1' : '0';
-  }
-
   auto observedMutex = std::make_shared<std::mutex>();
   auto observedRoles = std::make_shared<std::set<std::string>>();
   auto observedInputs = std::make_shared<
@@ -3476,6 +3611,7 @@ runProductionNativeD2bCase(bool tamperCapability)
     config.fetchTimeoutMs = 3000;
     config.maxSegmentSize = 4096;
     config.freshnessMs = 60000;
+    config.allowPreassembledV3Compatibility = true;
     config.groupCoordinatorFactory =
       [&, index, localProvider = provider.getName().toUri()] (
           ServiceProvider::CollaborationContext& context,
@@ -3564,33 +3700,29 @@ runProductionNativeD2bCase(bool tamperCapability)
 
   auto publishSelection = [&] (size_t index, const std::string& role) {
     const auto providerName = environment.provider(index).getName();
+    const auto projectedCapability = capability.projectForProvider(
+      providerName.toUri());
+    std::string selectionCapabilityHex = bytesToHex(
+      ProviderGroupCoordinator::encodeCapability(projectedCapability));
+    if (tamperCapability) {
+      // Preserve the projected wire shape while changing the request-scoped
+      // capability.  The Provider must reject this before native execution.
+      auto& byte = selectionCapabilityHex[selectionCapabilityHex.size() / 2];
+      byte = byte == '0' ? '1' : '0';
+    }
     const auto artifactDigest =
       "sha256:" + std::string(64, index == 0 ? 'a' : 'b');
     const auto recipeDigest =
       "sha256:" + std::string(64, index == 0 ? 'c' : 'e');
-    const auto roleKind = index == 0 ? "COMPONENT_SET" : "TENSOR_RANK";
     const auto deviceSet = useRealOnnx ? "cpu:0" : "cuda:0";
-    const auto roleProjection = [&] (const std::string& projectedRole,
-                                     const std::string& projectedRoleKind) {
-      return std::string("{\"adapter_id\":\"integration-test\",") +
-        "\"adapter_version\":\"1\",\"artifact_digest\":\"" + artifactDigest +
-        "\",\"backend\":\"onnxruntime\",\"device_set\":[\"" +
-        deviceSet + "\"]," +
-        "\"layer_begin\":" + std::to_string(index) +
-        ",\"layer_end\":" + std::to_string(index + 1) +
-        ",\"rank\":0,\"recipe_digest\":\"" + recipeDigest +
-        "\",\"role\":\"" + projectedRole + "\",\"role_kind\":\"" +
-        projectedRoleKind + "\"}";
-    };
-    auto projectedRoles = roleProjection(role, roleKind);
-    if (index == 0) {
-      projectedRoles += "," + roleProjection("/Aux", "COMPONENT_SET");
-    }
-    // Exercise the real Python V3 assignment shape.  The request-scoped
-    // capability is carried in the canonical JSON projection rather than the
-    // legacy semicolon-only diagnostic payload.
-    const auto text = std::string("{\"attempt\":1,\"deadline_ms\":9999999999999,") +
-      "\"dependencies\":[{\"consumers\":[\"/Head/Shard/0\"]," +
+    const auto endpoint = makeV3TensorEndpointJson(
+      provider0Name.toUri(), requesterName.toUri(), requestId.toUri(),
+      planDigest, "backbone-to-head0", 7, "/Backbone", 0,
+      "/Head/Shard/0", "\"/Head/Shard/0\"", "features",
+      featureTensorDigest, pipelineLayoutDigest, pipelineLayoutDigest,
+      "PIPELINE_TRANSFER",
+      featureTensorDigest, featureTensorDigest);
+    const auto dependenciesJson = std::string("[{\"consumers\":[\"/Head/Shard/0\"],") +
       "\"expected_segments\":0,\"key_scope\":\"backbone-to-head0\"," +
       "\"object_name_template\":\"{producerProvider}/NDNSF/DI/DATA/{sessionId}/{keyScope}/{producerRole}\"," +
       "\"producers\":[\"/Backbone\"],\"required\":true," +
@@ -3599,17 +3731,31 @@ runProductionNativeD2bCase(bool tamperCapability)
       "\"collectiveOperationIndex\":7,\"collectiveProducerRank\":\"0\"," +
       "\"collectiveSourceLayoutDigest\":\"" + pipelineLayoutDigest + "\"," +
       "\"collectiveTargetLayoutDigest\":\"" + pipelineLayoutDigest + "\"," +
-      "\"collectiveTensorDigest\":\"" + featureTensorDigest + "\"}]," +
-      "\"group_capability_v1\":\"" + selectionCapabilityHex +
-      "\",\"plan_core_digest\":\"" + planDigest +
-      "\",\"plan_digest\":\"" + planDigest +
-      "\",\"provider\":\"" + providerName.toUri() +
-      "\",\"request_id\":\"" + requestId.toUri() +
-      "\",\"roles\":[" + projectedRoles +
-      "],\"schema\":\"ndnsf-di-selection-v3\"," +
-      "\"schema_version\":3}";
+      "\"collectiveTensorDigest\":\"" + featureTensorDigest + "\"}]";
     std::vector<ndn::Buffer> assignmentItems;
     const auto addAssignment = [&] (const std::string& assignedRole) {
+      const auto roleKind = assignedRole == "/Aux"
+        ? "COMPONENT_SET" : "TENSOR_RANK";
+      const auto roleJson = makeV3SelectionRoleJson(
+        assignedRole, 0, artifactDigest, recipeDigest, "onnxruntime",
+        deviceSet, roleKind);
+      const auto isProducer = assignedRole == "/Backbone";
+      const auto isConsumer = assignedRole == "/Head/Shard/0";
+      const auto dataflow = std::string("{\"attempt\":1,\"dataflow_digest\":\"") +
+        planDigest + "\",\"may_publish\":[" +
+        (isProducer ? endpoint : std::string()) +
+        "],\"must_fetch\":[" +
+        (isConsumer ? endpoint : std::string()) +
+        "],\"plan_digest\":\"" + planDigest +
+        "\",\"request_id\":\"" + requestId.toUri() +
+        "\",\"role\":\"" + assignedRole +
+        "\",\"terminal_response_owner\":" +
+        (assignedRole == "/Aux" ? "true" : "false") +
+        ",\"wait_for\":[]}";
+      const auto text = makeV3SelectionProjectionJson(
+        roleJson, assignedRole, assignedRole, 0, providerName.toUri(),
+        requestId.toUri(), planDigest, selectionCapabilityHex,
+        dependenciesJson, dataflow, artifactDigest, deviceSet);
       CollaborationAssignmentEnvelope envelope;
       envelope.role = assignedRole;
       envelope.assignedArtifact = ndn::Name("/artifact").append(assignedRole);
@@ -3727,7 +3873,7 @@ runProductionNativeD2bCase(bool tamperCapability)
   if (!tamperCapability) {
     BOOST_CHECK(handlerEntered[0]);
     BOOST_CHECK(handlerEntered[1]);
-    BOOST_CHECK_EQUAL(coordinatorFactoryCalls[0].load(), 1U);
+    BOOST_CHECK_EQUAL(coordinatorFactoryCalls[0].load(), 2U);
     BOOST_CHECK_EQUAL(coordinatorFactoryCalls[1].load(), 1U);
     BOOST_CHECK_EQUAL(uniqueResponsePublications.load(), 1U);
     BOOST_CHECK(!timedOut);
@@ -3916,8 +4062,8 @@ BOOST_AUTO_TEST_CASE(ProductionNativeHandlersRunD2h121ToOracleResponse)
   ProviderGroupCoordinator capabilitySealer(makeD2bCoordinatorOptions());
   const auto capability = capabilitySealer.createCapability(
     requestId.toUri(), "attempt-1", planDigest, "group-d2h-121", 1,
-    {{providerNames[0].toUri(), 0, "offer-p0", provider0Prefix.toUri()},
-     {providerNames[1].toUri(), 1, "offer-p1", provider1Prefix.toUri()}},
+    {{providerNames[0].toUri(), 0, "offer-p0", providerNames[0].toUri()},
+     {providerNames[1].toUri(), 1, "offer-p1", providerNames[1].toUri()}},
     {scatterOperation, gatherOperation}, 128U * 1024U, 3000, 12000);
   const auto capabilityHex = bytesToHex(
     ProviderGroupCoordinator::encodeCapability(capability));
@@ -3971,6 +4117,7 @@ BOOST_AUTO_TEST_CASE(ProductionNativeHandlersRunD2h121ToOracleResponse)
     config.fetchTimeoutMs = 5000;
     config.maxSegmentSize = 4096;
     config.freshnessMs = 60000;
+    config.allowPreassembledV3Compatibility = true;
     config.groupCoordinatorFactory =
       [&, provider, localProvider = providerNames[provider].toUri()] (
           ServiceProvider::CollaborationContext& context,
@@ -4084,36 +4231,88 @@ BOOST_AUTO_TEST_CASE(ProductionNativeHandlersRunD2h121ToOracleResponse)
     "\",\"redistributions\":[" + redistributionJson(
       "1,2", "3", "activation-1", "GATHER", layout1, layout2, tensor1) + "]}]";
 
+  const auto providerPrefixForRole = [&] (const std::string& role) {
+    return (role == "S0R0" || role == "S1R0") ?
+      providerNames[0].toUri() : providerNames[1].toUri();
+  };
+  const auto endpointFor = [&] (const std::string& producerRole,
+                               std::uint64_t producerRank,
+                               const std::string& consumerRole,
+                               const std::string& consumerRoles,
+                               const std::string& tensorId,
+                               const std::string& tensorDigest,
+                               const std::string& sourceLayout,
+                               const std::string& targetLayout,
+                               const std::string& operation,
+                               char endpointTag) {
+    const auto endpointDigest = "sha256:" + std::string(64, endpointTag);
+    const auto manifestDigest = "sha256:" + std::string(64, endpointTag + 1);
+    return makeV3TensorEndpointJson(
+      providerPrefixForRole(producerRole), requesterName.toUri(),
+      requestId.toUri(), planDigest,
+      operation == "SCATTER" ? "boundary-0" : "boundary-1",
+      operation == "SCATTER" ? 0 : 1, producerRole, producerRank,
+      consumerRole, consumerRoles, tensorId, tensorDigest, sourceLayout,
+      targetLayout, operation, endpointDigest, manifestDigest);
+  };
+  const auto makeDataflow = [&] (const std::string& role,
+                                 const std::string& publish,
+                                 const std::string& fetch,
+                                 bool terminal) {
+    return std::string("{\"attempt\":1,\"dataflow_digest\":\"") +
+      planDigest + "\",\"may_publish\":[" + publish +
+      "],\"must_fetch\":[" + fetch + "] ,\"plan_digest\":\"" +
+      planDigest + "\",\"request_id\":\"" + requestId.toUri() +
+      "\",\"role\":\"" + role + "\",\"terminal_response_owner\":" +
+      (terminal ? "true" : "false") + ",\"wait_for\":[]}";
+  };
   const auto publishSelection = [&] (size_t provider) {
-      std::string rolesJson;
-      for (const auto& role : localRoles[provider]) {
-        if (!rolesJson.empty()) {
-          rolesJson += ',';
-        }
-        const auto roleRank = role.size() >= 2 &&
-            role.substr(role.size() - 2) == "R1" ? 1 : 0;
-        rolesJson += std::string("{\"adapter_id\":\"qwen-test\",") +
-          "\"adapter_version\":\"1\",\"artifact_digest\":\"" +
-          artifactDigest(provider) +
-          "\",\"backend\":\"onnxruntime\",\"device_set\":[\"cpu:0\"]," +
-          "\"layer_begin\":0,\"layer_end\":1,\"rank\":" +
-          std::to_string(roleRank) + "," +
-          "\"recipe_digest\":\"" + artifactDigest(provider) +
-          "\",\"role\":\"" + role +
-          "\",\"role_kind\":\"TENSOR_RANK\"}";
-      }
-      const auto text =
-        std::string("{\"attempt\":1,\"deadline_ms\":9999999999999,") +
-        "\"dependencies\":" + dependenciesJson +
-        ",\"group_capability_v1\":\"" + capabilityHex +
-        "\",\"plan_core_digest\":\"" + planDigest +
-        "\",\"plan_digest\":\"" + planDigest +
-        "\",\"provider\":\"" + providerNames[provider].toUri() +
-        "\",\"request_id\":\"" + requestId.toUri() +
-        "\",\"roles\":[" + rolesJson +
-        "],\"schema\":\"ndnsf-di-selection-v3\",\"schema_version\":3}";
+      const auto projectedCapability = capability.projectForProvider(
+        providerNames[provider].toUri());
+      const auto selectionCapabilityHex = bytesToHex(
+        ProviderGroupCoordinator::encodeCapability(projectedCapability));
       std::vector<ndn::Buffer> assignmentItems;
       for (const auto& role : localRoles[provider]) {
+        const auto roleRank = role.size() >= 2 &&
+            role.substr(role.size() - 2) == "R1" ? 1 : 0;
+        const auto roleJson = makeV3SelectionRoleJson(
+          role, roleRank, artifactDigest(provider), artifactDigest(provider),
+          "onnxruntime", "cpu:0", "TENSOR_RANK");
+        const auto scatter0 = endpointFor(
+          "S0R0", 0, "S1R0", "\"S1R0\",\"S1R1\"", "activation-0",
+          tensor0, layout0, layout1, "SCATTER", 'a');
+      const auto scatter1 = endpointFor(
+        "S0R0", 0, "S1R1", "\"S1R0\",\"S1R1\"", "activation-0",
+        tensor0, layout0, layout1, "SCATTER", 'a');
+        const auto gather0 = endpointFor(
+          "S1R0", 0, "S2R0", "\"S2R0\"", "activation-1", tensor1,
+          layout1, layout2, "GATHER", 'c');
+        const auto gather1 = endpointFor(
+          "S1R1", 1, "S2R0", "\"S2R0\"", "activation-1", tensor1,
+          layout1, layout2, "GATHER", 'd');
+        std::string publish;
+        std::string fetch;
+        bool terminal = false;
+        if (role == "S0R0") {
+          publish = scatter0;
+        }
+        else if (role == "S1R0") {
+          fetch = scatter0;
+          publish = gather0;
+        }
+        else if (role == "S1R1") {
+          fetch = scatter1;
+          publish = gather1;
+        }
+        else if (role == "S2R0") {
+          fetch = gather0 + "," + gather1;
+          terminal = true;
+        }
+        const auto dataflow = makeDataflow(role, publish, fetch, terminal);
+        const auto text = makeV3SelectionProjectionJson(
+          roleJson, role, role, roleRank, providerNames[provider].toUri(),
+          requestId.toUri(), planDigest, selectionCapabilityHex,
+          dependenciesJson, dataflow, artifactDigest(provider), "cpu:0");
         CollaborationAssignmentEnvelope envelope;
         envelope.role = role;
         envelope.assignedArtifact = ndn::Name("/artifact").append(role);
@@ -4203,8 +4402,8 @@ BOOST_AUTO_TEST_CASE(ProductionNativeHandlersRunD2h121ToOracleResponse)
   environment.pumpUntil([&] { return responseCallback || timedOut; });
   BOOST_CHECK(handlerEntered[0]);
   BOOST_CHECK(handlerEntered[1]);
-  BOOST_CHECK_EQUAL(coordinatorFactoryCalls[0].load(), 1U);
-  BOOST_CHECK_EQUAL(coordinatorFactoryCalls[1].load(), 1U);
+  BOOST_CHECK_EQUAL(coordinatorFactoryCalls[0].load(), 2U);
+  BOOST_CHECK_EQUAL(coordinatorFactoryCalls[1].load(), 2U);
   BOOST_CHECK(responseCallback);
   BOOST_CHECK(!timedOut);
   {
@@ -4365,8 +4564,8 @@ BOOST_AUTO_TEST_CASE(ProductionNativeHandlersRunD2h212ToCompleteOracleResponse)
   ProviderGroupCoordinator capabilitySealer(makeD2bCoordinatorOptions());
   const auto capability = capabilitySealer.createCapability(
     requestId.toUri(), "attempt-1", planDigest, "group-d2h-212", 1,
-    {{providerNames[0].toUri(), 0, "offer-p0", provider0Prefix.toUri()},
-     {providerNames[1].toUri(), 1, "offer-p1", provider1Prefix.toUri()}},
+    {{providerNames[0].toUri(), 0, "offer-p0", providerNames[0].toUri()},
+     {providerNames[1].toUri(), 1, "offer-p1", providerNames[1].toUri()}},
     operations, 192U * 1024U, 3000, 12000);
   const auto capabilityHex = bytesToHex(
     ProviderGroupCoordinator::encodeCapability(capability));
@@ -4419,6 +4618,7 @@ BOOST_AUTO_TEST_CASE(ProductionNativeHandlersRunD2h212ToCompleteOracleResponse)
     config.fetchTimeoutMs = 5000;
     config.maxSegmentSize = 4096;
     config.freshnessMs = 60000;
+    config.allowPreassembledV3Compatibility = true;
     config.groupCoordinatorFactory =
       [&, provider, localProvider = providerNames[provider].toUri()] (
           ServiceProvider::CollaborationContext& context,
@@ -4536,36 +4736,95 @@ BOOST_AUTO_TEST_CASE(ProductionNativeHandlersRunD2h212ToCompleteOracleResponse)
       "\"S2R1\"", "\"S2R0\"", "boundary-2", "partial-sum", 2,
       layout2, layout2, tensor2) + "]";
 
+  const auto providerPrefixForRole = [&] (const std::string& role) {
+    return (role == "S0R0" || role == "S1R0" || role == "S2R0") ?
+      providerNames[0].toUri() : providerNames[1].toUri();
+  };
+  const auto endpointFor = [&] (const std::string& producerRole,
+                               std::uint64_t producerRank,
+                               const std::string& consumerRole,
+                               const std::string& consumerRoles,
+                               const std::string& groupId,
+                               std::uint64_t round,
+                               const std::string& tensorId,
+                               const std::string& tensorDigest,
+                               const std::string& sourceLayout,
+                               const std::string& targetLayout,
+                               const std::string& operationName,
+                               char endpointTag) {
+    const auto endpointDigest = "sha256:" + std::string(64, endpointTag);
+    const auto manifestDigest = "sha256:" + std::string(64, endpointTag + 1);
+    return makeV3TensorEndpointJson(
+      providerPrefixForRole(producerRole), requesterName.toUri(),
+      requestId.toUri(), planDigest, groupId, round, producerRole,
+      producerRank, consumerRole, consumerRoles, tensorId, tensorDigest,
+      sourceLayout, targetLayout, operationName, endpointDigest,
+      manifestDigest);
+  };
+  const auto makeDataflow = [&] (const std::string& role,
+                                 const std::string& publish,
+                                 const std::string& fetch,
+                                 bool terminal) {
+    return std::string("{\"attempt\":1,\"dataflow_digest\":\"") +
+      planDigest + "\",\"may_publish\":[" + publish +
+      "],\"must_fetch\":[" + fetch + "],\"plan_digest\":\"" +
+      planDigest + "\",\"request_id\":\"" + requestId.toUri() +
+      "\",\"role\":\"" + role + "\",\"terminal_response_owner\":" +
+      (terminal ? "true" : "false") + ",\"wait_for\":[]}";
+  };
   const auto publishSelection = [&] (size_t provider) {
-    std::string rolesJson;
-    for (const auto& role : localRoles[provider]) {
-      if (!rolesJson.empty()) {
-        rolesJson += ',';
-      }
-      const auto roleRank = role.size() >= 2 && role.substr(role.size() - 2) == "R1"
-        ? 1 : 0;
-      rolesJson += std::string("{\"adapter_id\":\"qwen-test\",") +
-        "\"adapter_version\":\"1\",\"artifact_digest\":\"" +
-        artifactDigest(provider) +
-        "\",\"backend\":\"onnxruntime\",\"device_set\":[\"cpu:0\"]," +
-        "\"layer_begin\":0,\"layer_end\":1,\"rank\":" +
-        std::to_string(roleRank) +
-        ",\"recipe_digest\":\"" + artifactDigest(provider) +
-        "\",\"role\":\"" + role +
-        "\",\"role_kind\":\"TENSOR_RANK\"}";
-    }
-    const auto text =
-      std::string("{\"attempt\":1,\"deadline_ms\":9999999999999,") +
-      "\"dependencies\":" + dependenciesJson +
-      ",\"group_capability_v1\":\"" + capabilityHex +
-      "\",\"plan_core_digest\":\"" + planDigest +
-      "\",\"plan_digest\":\"" + planDigest +
-      "\",\"provider\":\"" + providerNames[provider].toUri() +
-      "\",\"request_id\":\"" + requestId.toUri() +
-      "\",\"roles\":[" + rolesJson +
-      "],\"schema\":\"ndnsf-di-selection-v3\",\"schema_version\":3}";
+    const auto projectedCapability = capability.projectForProvider(
+      providerNames[provider].toUri());
+    const auto selectionCapabilityHex = bytesToHex(
+      ProviderGroupCoordinator::encodeCapability(projectedCapability));
     std::vector<ndn::Buffer> assignmentItems;
     for (const auto& role : localRoles[provider]) {
+      const auto roleRank = role.size() >= 2 && role.substr(role.size() - 2) == "R1"
+        ? 1 : 0;
+      const auto roleJson = makeV3SelectionRoleJson(
+        role, roleRank, artifactDigest(provider), artifactDigest(provider),
+        "onnxruntime", "cpu:0", "TENSOR_RANK");
+      const auto gather0 = endpointFor(
+        "S0R0", 0, "S1R0", "\"S1R0\"", "boundary-0", 0,
+        "activation-0", tensor0, layout0, layout1, "GATHER", 'a');
+      const auto gather1 = endpointFor(
+        "S0R1", 1, "S1R0", "\"S1R0\"", "boundary-0", 0,
+        "activation-0", tensor0, layout0, layout1, "GATHER", 'b');
+      const auto scatter0 = endpointFor(
+        "S1R0", 0, "S2R0", "\"S2R0\",\"S2R1\"", "boundary-1", 1,
+        "activation-1", tensor1, layout1, layout2, "SCATTER", 'c');
+      const auto scatter1 = endpointFor(
+        "S1R0", 0, "S2R1", "\"S2R0\",\"S2R1\"", "boundary-1", 1,
+        "activation-1", tensor1, layout1, layout2, "SCATTER", 'c');
+      const auto finalMerge = endpointFor(
+        "S2R1", 1, "S2R0", "\"S2R0\"", "boundary-2", 2,
+        "partial-sum", tensor2, layout2, layout2, "PIPELINE_TRANSFER", 'e');
+      std::string publish;
+      std::string fetch;
+      bool terminal = false;
+      if (role == "S0R0") {
+        publish = gather0;
+      }
+      else if (role == "S0R1") {
+        publish = gather1;
+      }
+      else if (role == "S1R0") {
+        fetch = gather0 + "," + gather1;
+        publish = scatter0;
+      }
+      else if (role == "S2R1") {
+        fetch = scatter1;
+        publish = finalMerge;
+      }
+      else if (role == "S2R0") {
+        fetch = scatter0 + "," + finalMerge;
+        terminal = true;
+      }
+      const auto dataflow = makeDataflow(role, publish, fetch, terminal);
+      const auto text = makeV3SelectionProjectionJson(
+        roleJson, role, role, roleRank, providerNames[provider].toUri(),
+        requestId.toUri(), planDigest, selectionCapabilityHex,
+        dependenciesJson, dataflow, artifactDigest(provider), "cpu:0");
       CollaborationAssignmentEnvelope envelope;
       envelope.role = role;
       envelope.assignedArtifact = ndn::Name("/artifact").append(role);
@@ -4656,8 +4915,8 @@ BOOST_AUTO_TEST_CASE(ProductionNativeHandlersRunD2h212ToCompleteOracleResponse)
 
   BOOST_CHECK(handlerEntered[0]);
   BOOST_CHECK(handlerEntered[1]);
-  BOOST_CHECK_EQUAL(coordinatorFactoryCalls[0].load(), 1U);
-  BOOST_CHECK_EQUAL(coordinatorFactoryCalls[1].load(), 1U);
+  BOOST_CHECK_EQUAL(coordinatorFactoryCalls[0].load(), 3U);
+  BOOST_CHECK_EQUAL(coordinatorFactoryCalls[1].load(), 2U);
   BOOST_CHECK(responseCallback);
   BOOST_CHECK(!timedOut);
   {
