@@ -45,6 +45,8 @@ done
 
 sed -e 's|@@NFD_SOCKET@@|/scratch/run/nfd.sock|g' \
     -e 's|@@TCP_PORT@@|6363|g' \
+    -e 's|@@UDP_PORT@@|6363|g' \
+    -e '/^[[:space:]]*status[[:space:]]*$/d' \
     "$BUNDLE/nfd.conf.in" > "$ROOT/nfd.conf"
 
 export NDN_CLIENT_TRANSPORT=unix:///scratch/run/nfd.sock

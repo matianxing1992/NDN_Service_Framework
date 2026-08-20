@@ -75,6 +75,18 @@ def prepare(output: Path, *, activation_pad_bytes: int = 0) -> dict[str, object]
             cwd=ROOT,
             check=True,
         )
+        # The SIF workload contract resolves controller policy and trust
+        # schema relative to the sealed bundle root.  Keep the planner's
+        # policy-bundle copy intact, but expose the two runtime inputs at the
+        # root where the workload validates them.
+        for name in (
+            "controller.policies",
+            "trust-schema.conf",
+            "native-execution-plan.json",
+            "service-manifest.json",
+        ):
+            shutil.copy2(policy / name, temporary / name)
+        shutil.copytree(policy / "artifacts", temporary / "artifacts")
         for source, destination in (
             (NFD_TEMPLATE, temporary / "nfd.conf.in"),
             (USER_DRIVER, temporary / "user_driver.py"),
