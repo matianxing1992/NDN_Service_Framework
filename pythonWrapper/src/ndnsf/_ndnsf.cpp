@@ -2408,6 +2408,7 @@ public:
 
     std::vector<nsf::SelectedParticipant> selected;
     std::map<std::string, std::vector<nsf::AckCandidate>> candidatesByRole;
+    std::map<std::string, std::string> selectedRoleProviders;
 
     for (const auto& candidate : candidates) {
       if (!candidate.ack.getStatus()) {
@@ -2450,6 +2451,7 @@ public:
         }
       }
       providerAssignments[best->providerName.toUri()]++;
+      selectedRoleProviders[role.role] = best->providerName.toUri();
 
       std::string assignment;
       if (!role.assignmentPayload.empty()) {
@@ -2575,6 +2577,33 @@ public:
                           role.provisioningTimeoutMs,
                           std::move(assignmentPayload),
                           *best});
+    }
+    // Native distributed execution derives cross-role dependency names from
+    // the immutable role->Provider assignment.  A collaboration with more
+    // than one selected participant is published as one bounded,
+    // provider-specific Selection projection, so the core cannot derive the
+    // other roles from sibling entries.  Carry the complete mapping in each
+    // structured (semicolon) assignment.  Opaque application assignments
+    // remain untouched and must carry their own application-level binding.
+    if (!selectedRoleProviders.empty()) {
+      std::string roleProviderFields;
+      for (const auto& [selectedRole, selectedProvider] : selectedRoleProviders) {
+        roleProviderFields += "roleProvider." + selectedRole + "=" +
+                              selectedProvider + ";";
+      }
+      for (auto& participant : selected) {
+        const auto hasStructuredRole =
+          participant.assignmentPayload.size() >= 5 &&
+          std::string(reinterpret_cast<const char*>(participant.assignmentPayload.data()),
+                      participant.assignmentPayload.size()).find("role=") !=
+            std::string::npos;
+        if (!hasStructuredRole) {
+          continue;
+        }
+        participant.assignmentPayload.insert(participant.assignmentPayload.end(),
+                                              roleProviderFields.begin(),
+                                              roleProviderFields.end());
+      }
     }
     if (std::getenv("NDNSF_PY_COLLAB_SELECTION_TRACE") != nullptr) {
       std::cout << "NDNSF_PY_COLLAB_SELECTION candidates=" << candidates.size()

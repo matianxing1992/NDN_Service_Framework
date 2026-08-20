@@ -4209,31 +4209,42 @@ BOOST_AUTO_TEST_CASE(NativeProviderRuntimeReadinessAcceptsCanonicalCpuDeviceId)
   ExecutionEvidence evidence;
   evidence.providerName = "/provider/A";
   evidence.providerBootId = "boot-a";
-  evidence.evidenceEpoch = 1;
+  evidence.evidenceEpoch = 3;
   evidence.runnerKind = RunnerKind::OnnxRuntimeCpu;
   evidence.realCompute = true;
   evidence.deviceKind = "cpu";
   evidence.deviceId = "cpu0";
-  evidence.runtimeVersion = "onnxruntime=cpu";
+  evidence.runtimeVersion = "onnxruntime=1.20.1";
   evidence.modelDigest = "sha256:model";
   evidence.planDigest = "sha256:plan";
-  evidence.artifactDigests["/role"] = "sha256:artifact";
-  evidence.roles = {"/role"};
+  evidence.artifactDigests["stage-0"] = "sha256:stage0";
+  evidence.roles = {"stage-0"};
   evidence.loadCompleted = true;
   evidence.warmupCompleted = true;
-  evidence.createdAtMs = 1;
+  evidence.createdAtMs = 1234;
 
-  BOOST_CHECK(!validateNativeProviderRuntimeReadiness(
-    evidence, "/role", "onnxruntime", "cpu:0", "sha256:artifact"));
+  const auto accepted = validateNativeProviderRuntimeReadiness(
+    evidence, "stage-0", "onnxruntime", "cpu", "sha256:stage0");
+  BOOST_CHECK(!accepted);
 
-  // A producer that records a bare numeric CPU id remains interoperable with
-  // the same canonical Selection device, but unrelated ids must fail closed.
+  evidence.cpuFallbackUsed = true;
+  const auto fallback = validateNativeProviderRuntimeReadiness(
+    evidence, "stage-0", "onnxruntime", "cpu", "sha256:stage0");
+  BOOST_REQUIRE(fallback);
+  BOOST_CHECK_EQUAL(*fallback, "DI_RUNTIME_CPU_FALLBACK_USED");
+
+  evidence.cpuFallbackUsed = false;
+  const auto wrongDevice = validateNativeProviderRuntimeReadiness(
+    evidence, "stage-0", "onnxruntime", "cpu:1", "sha256:stage0");
+  BOOST_REQUIRE(wrongDevice);
+  BOOST_CHECK_EQUAL(*wrongDevice, "DI_RUNTIME_DEVICE_MISMATCH");
+
   evidence.deviceId = "0";
   BOOST_CHECK(!validateNativeProviderRuntimeReadiness(
-    evidence, "/role", "onnxruntime", "cpu:0", "sha256:artifact"));
+    evidence, "stage-0", "onnxruntime", "cpu:0", "sha256:stage0"));
   evidence.deviceId = "cpu1";
   const auto mismatch = validateNativeProviderRuntimeReadiness(
-    evidence, "/role", "onnxruntime", "cpu:0", "sha256:artifact");
+    evidence, "stage-0", "onnxruntime", "cpu:0", "sha256:stage0");
   BOOST_REQUIRE(mismatch);
   BOOST_CHECK_EQUAL(*mismatch, "DI_RUNTIME_DEVICE_MISMATCH");
 }

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import os
 import subprocess
@@ -144,6 +145,62 @@ def load_plan_tracer_module():
 
 
 class RuntimeAwareCampaignTest(unittest.TestCase):
+    def test_native_tracer_default_roles_bind_data_driven_runtime(self) -> None:
+        driver = load_user_driver_module()
+        plan = driver.sample_service_plan("/Inference/NativeTracer")
+        roles = driver.collaboration_roles(plan, plan["service"])
+
+        self.assertEqual(len(roles), 4)
+        for entry in roles:
+            fields = driver.parse_semicolon_fields(entry["app_requirement"])
+            role = entry["role"]
+            digest = "sha256:native-tracer:" + role.strip("/").replace("/", "-")
+            self.assertEqual(fields["executionPolicy"], "DATA_DRIVEN_V2")
+            self.assertEqual(fields["backend"], "onnxruntime")
+            self.assertEqual(fields["device"], "cpu")
+            self.assertEqual(fields["artifactDigest"], digest)
+            self.assertEqual(fields["fragmentDigest"], digest)
+
+    def test_native_tracer_legacy_policy_is_explicit(self) -> None:
+        driver = load_user_driver_module()
+        plan = driver.sample_service_plan("/Inference/NativeTracer")
+        roles = driver.collaboration_roles(
+            plan,
+            plan["service"],
+            execution_policy="LEGACY_READY_SET_V1",
+        )
+        fields = driver.parse_semicolon_fields(roles[0]["app_requirement"])
+        self.assertEqual(fields["executionPolicy"], "LEGACY_READY_SET_V1")
+        self.assertNotIn("backend", fields)
+        self.assertNotIn("artifactDigest", fields)
+
+    def test_native_tracer_manifest_binds_byte_digest_separately_from_fragment(self) -> None:
+        driver = load_user_driver_module()
+        plan = driver.sample_service_plan("/Inference/NativeTracer")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifact = root / "backbone.onnx"
+            artifact.write_bytes(b"stable-native-artifact")
+            manifest = root / "service-manifest.json"
+            manifest.write_text(json.dumps({
+                "services": [{"artifacts": [{
+                    "role": "/Backbone", "path": str(artifact),
+                }]}],
+            }), encoding="utf-8")
+            digests = driver.load_native_artifact_digests(manifest)
+            roles = driver.collaboration_roles(
+                {**plan, "roles": ["/Backbone"]}, plan["service"],
+                artifact_digests=digests,
+            )
+            fields = driver.parse_semicolon_fields(roles[0]["app_requirement"])
+            self.assertEqual(
+                fields["artifactDigest"],
+                "sha256:" + hashlib.sha256(
+                    b"stable-native-artifact").hexdigest().upper(),
+            )
+            self.assertEqual(fields["fragmentDigest"],
+                             "sha256:native-tracer:Backbone")
+
     def test_minindn_static_resource_profiles_are_configured_only(self) -> None:
         harness = load_harness_module()
         fixture = json.loads(harness.RUNTIME_V1_PROVIDER_PROFILES.read_text(
