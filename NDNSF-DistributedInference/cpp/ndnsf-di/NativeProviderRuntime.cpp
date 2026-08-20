@@ -6,8 +6,10 @@
 
 namespace ndnsf::di {
 
-NativeProviderRuntime::NativeProviderRuntime(std::size_t workerCount)
-  : m_worker(workerCount)
+NativeProviderRuntime::NativeProviderRuntime(std::size_t workerCount,
+                                             std::size_t readyQueueCapacity)
+  : m_worker(workerCount, 4, 1024, std::chrono::seconds(120),
+             readyQueueCapacity)
 {
 }
 
@@ -63,6 +65,36 @@ NativeProviderRuntime::executeRoleAsync(std::string sessionId,
                                std::move(io),
                                std::move(runner),
                                std::move(initialInputsByScope));
+}
+
+std::future<ProviderRoleResult>
+NativeProviderRuntime::executePreparedRoleAsync(
+  std::string sessionId,
+  RoleSpec role,
+  std::shared_ptr<DependencyIo> io,
+  ProviderRoleWorker::NativeRunnerPreparation prepareRunner,
+  std::map<std::string, TensorBundle> initialInputsByScope)
+{
+  const auto timelineRequestId = role.requestId.empty()
+    ? "/ndnsf-di/session/" + sessionId
+    : role.requestId;
+  logDiTimelineTrace(
+    "di-provider", "role_validation_start", timelineRequestId,
+    {{"sessionId", sessionId},
+     {"role", role.role},
+     {"attemptEpoch", std::to_string(role.attemptEpoch)}});
+  if (!prepareRunner) {
+    throw std::invalid_argument(
+      "NativeProviderRuntime requires a runner preparation callback");
+  }
+  logDiTimelineTrace(
+    "di-provider", "role_validation_done", timelineRequestId,
+    {{"sessionId", sessionId},
+     {"role", role.role},
+     {"attemptEpoch", std::to_string(role.attemptEpoch)}});
+  return m_worker.executePreparedAsync(
+    std::move(sessionId), std::move(role), std::move(io),
+    std::move(prepareRunner), std::move(initialInputsByScope));
 }
 
 ProviderRoleWorkerSnapshot

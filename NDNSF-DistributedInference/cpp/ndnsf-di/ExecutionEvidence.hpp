@@ -42,6 +42,10 @@ struct ExecutionEvidence
   bool realCompute = false;
   std::string deviceKind;
   std::string deviceId;
+  // A provider may execute different roles on different devices.  Keep the
+  // scalar deviceId for single-device/backward-compatible evidence, and use
+  // deviceIds when the provider aggregate spans more than one device.
+  std::vector<std::string> deviceIds;
   std::string runtimeVersion;
   std::string modelDigest;
   std::string planDigest;
@@ -52,6 +56,7 @@ struct ExecutionEvidence
   bool loadCompleted = false;
   bool warmupCompleted = false;
   std::string gpuUuid;
+  std::vector<std::string> gpuUuids;
   std::string providerProfilePath;
   std::uint64_t createdAtMs = 0;
 

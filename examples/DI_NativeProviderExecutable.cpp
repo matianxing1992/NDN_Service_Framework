@@ -8,8 +8,9 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 
-#include "ndn-service-framework/CertificatePublisher.hpp"
 #include "ndn-service-framework/CertificateBootstrap.hpp"
+#include "ndn-service-framework/CertificatePublisher.hpp"
+#include "ndn-service-framework/HybridMessageCrypto.hpp"
 #include "ndn-service-framework/ServiceProvider.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
 
@@ -81,6 +82,7 @@ struct Options
   std::string groupName = "/NDNSF-DistributeInference/example/group";
   std::string controllerName = "/NDNSF-DistributeInference/example/controller";
   std::string trustSchema = "examples/trust-schema.conf";
+  std::string bootstrapToken;
   std::string roles = "all";
   std::string artifactReferencesPath;
   std::string artifactCacheDir = "/tmp/ndnsf-di-native-artifacts";
@@ -88,6 +90,7 @@ struct Options
   int repoFetchTimeoutMs = 30000;
   int repoAckTimeoutMs = 500;
   int repoPermissionWaitMs = 3000;
+  int permissionWaitMs = 30000;
   std::size_t workers = 1;
   std::size_t handlerThreads = 4;
   std::size_t ackThreads = 2;
@@ -536,6 +539,9 @@ parseArgs(int argc, char** argv)
     else if (arg == "--trust-schema") {
       options.trustSchema = readValue();
     }
+    else if (arg == "--bootstrap-token") {
+      options.bootstrapToken = readValue();
+    }
     else if (arg == "--roles") {
       options.roles = readValue();
     }
@@ -556,6 +562,9 @@ parseArgs(int argc, char** argv)
     }
     else if (arg == "--repo-permission-wait-ms") {
       options.repoPermissionWaitMs = parsePositiveInt(readValue(), "--repo-permission-wait-ms");
+    }
+    else if (arg == "--permission-wait-ms") {
+      options.permissionWaitMs = parsePositiveInt(readValue(), "--permission-wait-ms");
     }
     else if (arg == "--workers") {
       options.workers = parseWorkers(readValue());
@@ -671,11 +680,15 @@ withExecutionEvidenceContext(std::map<std::string, NativeModelRunnerSpec> specs,
       spec.metadata["evidence.gpuUuid"] = gpuUuid;
     }
     if (profileRoot != nullptr && *profileRoot != '\0') {
+      auto provider = options.providerName;
+      std::replace_if(provider.begin(), provider.end(), [] (unsigned char ch) {
+        return !(std::isalnum(ch) || ch == '-' || ch == '_');
+      }, '_');
       auto role = spec.role;
       std::replace_if(role.begin(), role.end(), [] (unsigned char ch) {
         return !(std::isalnum(ch) || ch == '-' || ch == '_');
       }, '_');
-      spec.metadata["providerProfilePrefix"] = std::string(profileRoot) + "-" + role;
+      spec.metadata["providerProfilePrefix"] = std::string(profileRoot) + "-" + provider + "-" + role;
     }
   }
   return specs;
@@ -688,6 +701,31 @@ aggregateExecutionEvidence(const std::vector<ExecutionEvidence>& items)
     throw std::runtime_error("initialized provider runners emitted no execution evidence");
   }
   auto aggregate = items.front();
+  auto appendUnique = [] (std::vector<std::string>& values, const std::string& value) {
+    if (!value.empty() && std::find(values.begin(), values.end(), value) == values.end()) {
+      values.push_back(value);
+    }
+  };
+  auto seedDeviceIds = [&] (const ExecutionEvidence& evidence) {
+    if (!evidence.deviceIds.empty()) {
+      for (const auto& value : evidence.deviceIds) appendUnique(aggregate.deviceIds, value);
+    }
+    else {
+      appendUnique(aggregate.deviceIds, evidence.deviceId);
+    }
+  };
+  auto seedGpuUuids = [&] (const ExecutionEvidence& evidence) {
+    if (!evidence.gpuUuids.empty()) {
+      for (const auto& value : evidence.gpuUuids) appendUnique(aggregate.gpuUuids, value);
+    }
+    else {
+      appendUnique(aggregate.gpuUuids, evidence.gpuUuid);
+    }
+  };
+  aggregate.deviceIds.clear();
+  aggregate.gpuUuids.clear();
+  seedDeviceIds(items.front());
+  seedGpuUuids(items.front());
   for (std::size_t i = 1; i < items.size(); ++i) {
     const auto& item = items[i];
     if (item.providerName != aggregate.providerName ||
@@ -698,21 +736,31 @@ aggregateExecutionEvidence(const std::vector<ExecutionEvidence>& items)
         item.planDigest != aggregate.planDigest ||
         item.runtimeVersion != aggregate.runtimeVersion ||
         item.deviceKind != aggregate.deviceKind ||
-        item.deviceId != aggregate.deviceId ||
-        item.cpuFallbackUsed != aggregate.cpuFallbackUsed ||
-        (!item.gpuUuid.empty() && !aggregate.gpuUuid.empty() &&
-         item.gpuUuid != aggregate.gpuUuid)) {
+        item.cpuFallbackUsed != aggregate.cpuFallbackUsed) {
       throw std::runtime_error("provider runner execution evidence is internally inconsistent");
     }
+    seedDeviceIds(item);
+    seedGpuUuids(item);
     aggregate.roles.insert(aggregate.roles.end(), item.roles.begin(), item.roles.end());
     aggregate.artifactDigests.insert(item.artifactDigests.begin(), item.artifactDigests.end());
     aggregate.nodeProviderAssignments.insert(
       aggregate.nodeProviderAssignments.end(),
       item.nodeProviderAssignments.begin(), item.nodeProviderAssignments.end());
-    if (aggregate.gpuUuid.empty()) aggregate.gpuUuid = item.gpuUuid;
     if (aggregate.providerProfilePath.empty()) {
       aggregate.providerProfilePath = item.providerProfilePath;
     }
+  }
+  if (aggregate.deviceIds.size() == 1) {
+    aggregate.deviceId = aggregate.deviceIds.front();
+  }
+  else if (aggregate.deviceIds.size() > 1) {
+    aggregate.deviceId = "multi";
+  }
+  if (aggregate.gpuUuids.size() == 1) {
+    aggregate.gpuUuid = aggregate.gpuUuids.front();
+  }
+  else if (aggregate.gpuUuids.size() > 1) {
+    aggregate.gpuUuid = "multi";
   }
   std::sort(aggregate.roles.begin(), aggregate.roles.end());
   aggregate.roles.erase(std::unique(aggregate.roles.begin(), aggregate.roles.end()),
@@ -845,10 +893,15 @@ orderedSpecs(const NativeExecutionPlan& plan,
 }
 
 NativeProviderAssignment
-defaultAssignment(const NativeExecutionPlan& plan, const std::string& providerName)
+defaultAssignment(const NativeExecutionPlan& plan,
+                  const std::string& providerName,
+                  const std::vector<std::string>& allowedRoles)
 {
   NativeProviderAssignment assignment;
-  for (const auto& role : plan.roles) {
+  for (const auto& role : allowedRoles) {
+    if (std::find(plan.roles.begin(), plan.roles.end(), role) == plan.roles.end()) {
+      throw std::invalid_argument("provider assignment role is not in native plan: " + role);
+    }
     assignment.providerByRole[role] = providerName;
   }
   return assignment;
@@ -893,10 +946,12 @@ printUsage(const char* program)
     << "--manifest <service-manifest.json> [--service <name>] "
     << "[--provider <identity>] [--workers <n>] (--check-only | --serve) "
     << "[--roles all|role,...] [--group <prefix>] [--controller <prefix>] "
-    << "[--trust-schema <path>] [--artifact-references <json>] "
+    << "[--trust-schema <path>] [--bootstrap-token <token>] "
+    << "[--artifact-references <json>] "
     << "[--artifact-cache-dir <dir>] [--repo-service <service>] "
     << "[--repo-fetch-timeout-ms <ms>] [--repo-ack-timeout-ms <ms>] "
     << "[--repo-permission-wait-ms <ms>] [--wiring-check-only] "
+    << "[--permission-wait-ms <ms>] "
     << "[--tracer-deterministic-runner] [--enable-admission-lease] "
     << "[--require-execution-lease] "
     << "[--execution-policy DATA_DRIVEN_V2|LEGACY_READY_SET_V1] "
@@ -980,7 +1035,11 @@ main(int argc, char** argv)
       if (!options.bootstrapToken.empty()) {
         providerCert = ndn_service_framework::ensureControllerSignedCertificate(
           face, keyChain, controllerIdentity, providerIdentity,
-          options.bootstrapToken);
+          providerIdentity, options.bootstrapToken);
+        std::cout << "NDNSF_DI_NATIVE_PROVIDER_BOOTSTRAP_CERT_READY"
+                  << " provider=" << options.providerName
+                  << " certificate=" << providerCert.getName()
+                  << std::endl;
       }
       keyChain.setDefaultIdentity(keyChain.getPib().getIdentity(providerIdentity));
       std::cout << "NDNSF_DI_NATIVE_PROVIDER_KEYCHAIN_READY providerCert="
@@ -1257,6 +1316,7 @@ main(int argc, char** argv)
          stageServiceTimeObserver,
          executionEvidenceObserver,
          executionLeaseService,
+         &keyChain,
          &provider] () mutable {
           try {
             provisioningState->markInstalling(
@@ -1348,7 +1408,7 @@ main(int argc, char** argv)
 
             NativeProviderHandlerConfig config;
             config.plan = plan;
-            config.assignment = defaultAssignment(plan, options.providerName);
+            config.assignment = defaultAssignment(plan, options.providerName, allowedRoles);
             config.runnerFactory = factory;
             config.runnerSpecs = std::move(runners);
             config.localProviderName = options.providerName;
@@ -1369,6 +1429,72 @@ main(int argc, char** argv)
             config.kvStateStore->setProviderBootId(providerBootId);
             config.stageServiceTimeObserver = stageServiceTimeObserver;
             config.executionEvidenceObserver = executionEvidenceObserver;
+            const bool requiresGroupCapability = std::any_of(
+              plan.dependencies.begin(), plan.dependencies.end(),
+              [] (const NativeDependencySpec& dependency) {
+                return dependency.useNdnsfDataV1;
+              });
+            config.groupCoordinatorFactory =
+              [requiresGroupCapability,
+               localProvider = options.providerName,
+               providerCertName = providerCert.getName(),
+               expectedPlanDigest = config.planDigest,
+               &keyChain] (
+                  ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
+                  const std::map<std::string, std::string>& fields) {
+                const auto field = fields.find("groupCapabilityV1");
+                if (field == fields.end()) {
+                  if (requiresGroupCapability) {
+                    throw std::runtime_error(
+                      "NDNSF_DATA_V1 assignment is missing groupCapabilityV1");
+                  }
+                  return std::shared_ptr<ProviderGroupCoordinator>{};
+                }
+                const auto decodedWire =
+                  ndn_service_framework::selectionGatedUnhex(field->second);
+                auto capability = ProviderGroupCoordinator::decodeCapability(
+                  ProviderGroupBytes(decodedWire.begin(), decodedWire.end()));
+                if (capability.requestId != ctx.sessionId() ||
+                    capability.planDigest != expectedPlanDigest) {
+                  throw std::runtime_error(
+                    "NDNSF_DATA_V1 capability request/plan binding mismatch");
+                }
+                const auto localMember = std::find_if(
+                  capability.orderedMembers.begin(),
+                  capability.orderedMembers.end(),
+                  [&localProvider] (const GroupMemberV1& member) {
+                    return member.provider == localProvider;
+                  });
+                if (localMember == capability.orderedMembers.end() ||
+                    localMember->endpointPrefix.empty()) {
+                  throw std::runtime_error(
+                    "NDNSF_DATA_V1 capability omits the local Provider endpoint");
+                }
+                ProviderGroupCoordinatorOptions groupOptions;
+                groupOptions.localProvider = localProvider;
+                groupOptions.unwrapEpochKey =
+                  [&keyChain, providerCertName, localProvider] (
+                      const std::string& providerName,
+                      const ProviderGroupBytes& wrapped) {
+                    if (providerName != localProvider) {
+                      throw std::runtime_error(
+                        "NDNSF_DATA_V1 wrapped key targets another Provider");
+                    }
+                    const auto plaintext =
+                      ndn_service_framework::unwrapSelectionGatedInputKey(
+                        ndn::Buffer(wrapped.data(), wrapped.size()),
+                        providerCertName,
+                        keyChain);
+                    return ProviderGroupBytes(plaintext.begin(), plaintext.end());
+                  };
+                auto coordinator = std::make_shared<ProviderGroupCoordinator>(
+                  std::move(groupOptions));
+                // Empty plaintext key forces RSA unwrap of exactly the local
+                // Provider's wrapped epoch key.  The default inner
+                // authenticator is request-scoped HMAC-SHA256.
+                coordinator->installCapability(std::move(capability), {}, true);
+                return coordinator;
+              };
             if (options.requireExecutionLease) {
               config.executionLeaseTable = &executionLeaseService->table();
               config.executionLeaseTargetService = options.serviceName;
@@ -1398,6 +1524,7 @@ main(int argc, char** argv)
                 (*executionEvidenceByRole)[role] = item;
               }
             }
+            provisioningState->setExecutionEvidenceByRole(*executionEvidenceByRole);
             auto executionEvidenceMutex = std::make_shared<std::mutex>();
             *executionEvidenceObserver =
               [executionEvidenceByRole, executionEvidenceMutex, provisioningState]
@@ -1413,6 +1540,7 @@ main(int argc, char** argv)
                 }
                 const auto aggregate = aggregateExecutionEvidence(current);
                 provisioningState->setExecutionEvidence(aggregate);
+                provisioningState->setExecutionEvidenceByRole(*executionEvidenceByRole);
                 std::cout << "NDNSF_DI_EXECUTION_EVIDENCE_UPDATE "
                           << executionEvidenceToJson(aggregate)
                           << std::endl;
@@ -1421,6 +1549,22 @@ main(int argc, char** argv)
               std::lock_guard<std::mutex> lock(*readyHandlerMutex);
               *readyHandler = std::move(runtime.handler);
             }
+            const auto permissionDeadline =
+              std::chrono::steady_clock::now() +
+              std::chrono::milliseconds(options.permissionWaitMs);
+            while (!provider.hasProviderPermissionForService(
+                     ndn::Name(options.serviceName))) {
+              if (std::chrono::steady_clock::now() >= permissionDeadline) {
+                throw std::runtime_error(
+                  "provider permission not installed for " + options.serviceName);
+              }
+              std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
+            std::cout << "NDNSF_DI_NATIVE_PROVIDER_PERMISSION_READY"
+                      << " provider=" << options.providerName
+                      << " service=" << options.serviceName
+                      << " policyEpoch=" << provider.getCurrentPolicyEpoch()
+                      << std::endl;
             provider.updateNdnsdMeta("providerBootId", providerBootId);
             std::cout << "NDNSF_DI_PROVIDER_BOOT_READY"
                       << " provider=" << options.providerName
@@ -1491,7 +1635,7 @@ main(int argc, char** argv)
               << std::endl;
     auto io = std::make_shared<PlaceholderDependencyIo>();
     NativeProviderSession session(plan,
-                                  defaultAssignment(plan, options.providerName),
+                                  defaultAssignment(plan, options.providerName, allowedRoles),
                                   io,
                                   factory,
                                   options.workers);

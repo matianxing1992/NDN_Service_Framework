@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import io
+import importlib.util
 from pathlib import Path
 import re
 import subprocess
+import shutil
+import tarfile
 import tempfile
 import unittest
 
@@ -36,10 +41,49 @@ class GithubSealedWorkflowTests(unittest.TestCase):
             self.assertIn(module, gpu)
             self.assertIn(module, layered)
 
+    def _load_preflight(self):
+        spec = importlib.util.spec_from_file_location("ndnsf_preflight", PREFLIGHT)
+        self.assertIsNotNone(spec)
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+        return module
+
     def test_transient_local_seal_is_not_a_git_artifact(self) -> None:
         patterns = set((REPO / ".gitignore").read_text().splitlines())
         self.assertIn(".spec110-build/", patterns)
         self.assertIn(".spec110-build-context/", patterns)
+
+    def test_sealed_archive_revision_and_digest_must_match_lock(self) -> None:
+        module = self._load_preflight()
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        dependencies = {}
+        for name, marker in module.ARCHIVE_MARKERS.items():
+            archive_path = root / "archives" / f"{name}.tar"
+            archive_path.parent.mkdir(parents=True, exist_ok=True)
+            with tarfile.open(archive_path, "w") as archive:
+                info = tarfile.TarInfo(marker)
+                info.size = 1
+                archive.addfile(info, io.BytesIO(b"x"))
+            dependencies[name] = {
+                "archivePath": str(archive_path.relative_to(root)),
+                "archiveBytes": archive_path.stat().st_size,
+                "archiveDigest": "sha256:" + hashlib.sha256(
+                    archive_path.read_bytes()
+                ).hexdigest(),
+                "revision": "a" * 40,
+            }
+        (root / "source-seal.json").write_text(
+            json.dumps({"dependencies": dependencies}), encoding="utf-8"
+        )
+        sources = {name: {"revision": "a" * 40} for name in dependencies}
+        self.assertEqual(module.validate_archives(root, sources), len(dependencies))
+
+        sources["ndn-svs"]["revision"] = "b" * 40
+        with self.assertRaises(module.PreflightError) as error:
+            module.validate_archives(root, sources)
+        self.assertEqual(str(error.exception), "PREFLIGHT_SEAL_REVISION_MISMATCH:ndn-svs")
 
     def test_local_foundation_consumes_only_verified_sealed_archives(self) -> None:
         foundation = (
@@ -63,6 +107,60 @@ class GithubSealedWorkflowTests(unittest.TestCase):
         ndnsd = text.index("cd /src/dependencies/NDNSD")
         self.assertLess(ndn_cxx, ndn_svs)
         self.assertLess(ndn_svs, ndnsd)
+
+    def test_native_di_targets_declare_complete_link_closure(self) -> None:
+        text = (REPO / "examples/wscript").read_text()
+        required = {"BOOST", "NDN_CXX", "NDN_SVS", "ONNXRUNTIME", "DL"}
+        for target in (
+            "di-native-plan-onnx-smoke",
+            "di-native-onnxruntime-smoke",
+            "di-native-provider",
+            "di-native-fault-provider",
+        ):
+            start = text.index(f"bld.program(name='{target}'")
+            end = text.find("\n\n    bld.program", start + 1)
+            block = text[start:] if end < 0 else text[start:end]
+            match = re.search(r"\n\s*use='([^']+)'", block)
+            self.assertIsNotNone(match, target)
+            self.assertTrue(required.issubset(set(match.group(1).split())), target)
+
+    def test_distributed_repo_targets_declare_dl_link_closure(self) -> None:
+        text = (REPO / "NDNSF-DistributedRepo/wscript").read_text()
+        for target in (
+            "DistributedRepoSmoke",
+            "DistributedRepoTieredCacheTest",
+            "DistributedRepoExactPacketTest",
+            "DistributedRepoHaTest",
+        ):
+            start = text.index(f"bld.program(name='{target}'")
+            end = text.find("\n\n    bld.program", start + 1)
+            block = text[start:] if end < 0 else text[start:end]
+            match = re.search(r"\n\s*use='([^']+)'", block)
+            self.assertIsNotNone(match, target)
+            self.assertIn("DL", set(match.group(1).split()), target)
+
+    def test_framework_declares_indirect_dl_link_closure(self) -> None:
+        text = (REPO / "wscript").read_text()
+        block = text.split("libndn_service_framework = dict(", 1)[1].split(
+            "    if bld.env.enable_shared:", 1
+        )[0]
+        match = re.search(r"\n\s*use='([^']+)'", block)
+        self.assertIsNotNone(match)
+        self.assertIn("DL", set(match.group(1).split()))
+
+    def test_ndn_cxx_common_link_closure_declares_dl(self) -> None:
+        text = (REPO / "wscript").read_text()
+        self.assertIn("if 'dl' not in conf.env.LIB_NDN_CXX:", text)
+        self.assertIn("conf.env.LIB_NDN_CXX.append('dl')", text)
+
+    def test_gpu_build_uses_explicit_registry_qualified_bases_and_pip_check(self) -> None:
+        lock = json.loads(
+            (REPO / "packaging/ndnsf-di-container/oci/locks/gpu.lock").read_text()
+        )
+        for name, image in lock["baseImages"].items():
+            self.assertRegex(image, r"^docker\.io/[^@]+@sha256:[0-9a-f]{64}$", name)
+        dockerfile = (REPO / "packaging/ndnsf-di-container/oci/Dockerfile.gpu").read_text()
+        self.assertGreaterEqual(dockerfile.count("python -m pip check"), 2)
 
     def test_ndn_svs_retains_project_boost_171_compatibility(self) -> None:
         lock = json.loads(
@@ -120,7 +218,7 @@ class GithubSealedWorkflowTests(unittest.TestCase):
         self.assertEqual(lock["distributionBase"], "ubuntu20.04-openssl1.1")
         self.assertEqual(
             lock["baseImages"]["foundation"],
-            "ubuntu@sha256:8feb4d8ca5354def3d8fce243717141ce31e2c428701f6682bd2fafe15388214",
+            "docker.io/library/ubuntu@sha256:8feb4d8ca5354def3d8fce243717141ce31e2c428701f6682bd2fafe15388214",
         )
         self.assertEqual(lock["pythonRuntime"], "3.10.18-bullseye-glibc2.31")
         self.assertEqual(

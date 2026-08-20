@@ -197,6 +197,8 @@ makeProviderCapabilityHintJson(const ProviderRoleWorkerSnapshot& capacity,
                                const ndn::Name& providerName,
                                const ndn::Name& serviceName,
                                const std::string& executionEvidenceJson,
+                               const std::map<std::string, ExecutionEvidence>&
+                                 executionEvidenceByRole,
                                const NativeProviderTelemetrySnapshot* telemetry)
 {
   const auto provider = providerName.size() == 0 ? "/" : providerName.toUri();
@@ -314,6 +316,8 @@ makeProviderCapabilityHintJson(const ProviderRoleWorkerSnapshot& capacity,
     }
     json << "],"
          << "\"readyQueue\":" << telemetry->capacity.readyQueueDepth << ","
+         << "\"readyQueueCapacity\":"
+         << telemetry->capacity.readyQueueCapacity << ","
          << "\"waitingDependencies\":"
          << telemetry->capacity.waitingForInputCount << ","
          << "\"activeWorkers\":" << telemetry->capacity.activeWorkerCount << ","
@@ -361,6 +365,18 @@ makeProviderCapabilityHintJson(const ProviderRoleWorkerSnapshot& capacity,
   json << "}";
   if (!executionEvidenceJson.empty()) {
     json << ",\"executionEvidence\":" << executionEvidenceJson;
+  }
+  if (!executionEvidenceByRole.empty()) {
+    json << ",\"executionEvidenceByRole\":{";
+    bool first = true;
+    for (const auto& item : executionEvidenceByRole) {
+      if (!first) {
+        json << ",";
+      }
+      first = false;
+      json << jsonString(item.first) << ":" << executionEvidenceToJson(item.second);
+    }
+    json << "}";
   }
   if (!reasonCode.empty()) {
     json << ",\"negativeAckReason\":" << jsonString(reasonCode);
@@ -627,6 +643,17 @@ NativeProviderReadinessState::setExecutionEvidence(ExecutionEvidence evidence)
   m_executionEvidence = std::move(evidence);
 }
 
+void
+NativeProviderReadinessState::setExecutionEvidenceByRole(
+  std::map<std::string, ExecutionEvidence> evidenceByRole)
+{
+  for (const auto& item : evidenceByRole) {
+    item.second.validate();
+  }
+  std::lock_guard<std::mutex> lock(m_mutex);
+  m_executionEvidenceByRole = std::move(evidenceByRole);
+}
+
 ndn_service_framework::ServiceProvider::AckDecision
 NativeProviderReadinessState::makeAckDecision(const std::string& rolesText,
                                               const ndn::Name& providerName,
@@ -643,6 +670,7 @@ NativeProviderReadinessState::makeAckDecision(const std::string& rolesText,
   TelemetrySnapshotProvider telemetrySnapshotProvider;
   std::optional<NativeProviderTelemetrySnapshot> telemetrySnapshot;
   std::optional<ExecutionEvidence> executionEvidence;
+  std::map<std::string, ExecutionEvidence> executionEvidenceByRole;
   {
     std::lock_guard<std::mutex> lock(m_mutex);
     ready = m_status == Status::Ready;
@@ -655,6 +683,7 @@ NativeProviderReadinessState::makeAckDecision(const std::string& rolesText,
     capacitySnapshotProvider = m_capacitySnapshotProvider;
     telemetrySnapshotProvider = m_telemetrySnapshotProvider;
     executionEvidence = m_executionEvidence;
+    executionEvidenceByRole = m_executionEvidenceByRole;
   }
 
   ProviderRoleWorkerSnapshot capacity;
@@ -700,6 +729,7 @@ NativeProviderReadinessState::makeAckDecision(const std::string& rolesText,
                                                              executionEvidence ?
                                                                executionEvidenceToJson(*executionEvidence) :
                                                                std::string(),
+                                                             executionEvidenceByRole,
                                                              telemetrySnapshot ?
                                                                &*telemetrySnapshot : nullptr);
   std::ostringstream payload;

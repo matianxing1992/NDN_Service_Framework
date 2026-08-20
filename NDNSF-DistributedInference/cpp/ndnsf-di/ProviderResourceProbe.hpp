@@ -55,20 +55,20 @@ struct ProviderResourceSnapshot
   std::uint64_t hostAvailableMemoryBytes = 0;
   std::uint64_t processRssBytes = 0;
   std::string errorCode;
-  // Container-visible device identities.  An empty vector is a legacy probe
-  // that did not expose topology; a populated vector is authoritative for
-  // V3 (including the explicit CPU-only identity).
+  // Container-visible accelerator identities. An empty vector is the
+  // authoritative CPU-only/zero-accelerator result; host CPU/RAM capability
+  // is represented by the other measured fields.
   std::vector<std::string> visibleDevices;
   std::string topologyDigest;
 
   bool
   hasValidTopology() const noexcept
   {
-    if (visibleDevices.empty()) {
+    if (topologyDigest.empty()) {
       return false;
     }
     for (std::size_t i = 0; i < visibleDevices.size(); ++i) {
-      if (visibleDevices[i].empty()) {
+      if (visibleDevices[i].empty() || visibleDevices[i] == "cpu") {
         return false;
       }
       for (std::size_t j = i + 1; j < visibleDevices.size(); ++j) {
@@ -77,7 +77,7 @@ struct ProviderResourceSnapshot
         }
       }
     }
-    return !topologyDigest.empty();
+    return true;
   }
 
   bool

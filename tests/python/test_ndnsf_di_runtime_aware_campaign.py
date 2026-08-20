@@ -448,6 +448,32 @@ class RuntimeAwareCampaignTest(unittest.TestCase):
             "sha256:native-tracer:Backbone",
         )
 
+    def test_plan_tracer_materializes_relative_artifacts_into_bundle(self) -> None:
+        plan_tracer = load_plan_tracer_module()
+        with tempfile.TemporaryDirectory(prefix="spec170-bundle-artifacts-") as tmp:
+            bundle = Path(tmp)
+            plan_tracer.ensure_qwen_artifacts(plan_tracer.CONFIG_FILE)
+            plan_tracer.write_policy_bundle(plan_tracer.CONFIG_FILE, bundle)
+            copied = plan_tracer.materialize_bundle_artifacts(bundle)
+            summary = plan_tracer.validate_bundle(bundle)
+
+            expected = {
+                "qwen-native-tracer-backbone.onnx",
+                "qwen-native-tracer-head0.onnx",
+                "qwen-native-tracer-head1.onnx",
+                "qwen-native-tracer-merge.onnx",
+            }
+            self.assertEqual({Path(path).name for path in copied}, expected)
+            self.assertEqual(
+                {Path(path).name for path in summary["bundleArtifacts"]},
+                expected,
+            )
+            for filename in expected:
+                artifact = bundle / "artifacts" / filename
+                self.assertTrue(artifact.is_file())
+                self.assertTrue(
+                    artifact.with_suffix(artifact.suffix + ".sha256").is_file())
+
     def test_user_driver_loads_role_assignments_from_csv(self) -> None:
         user_driver = load_user_driver_module()
         with tempfile.TemporaryDirectory() as tmp:

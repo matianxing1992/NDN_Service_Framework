@@ -329,6 +329,56 @@ namespace ndn_service_framework
             }
         }
 
+        constexpr size_t TARGETED_TOKEN_BATCH_MIN = 1;
+        constexpr size_t TARGETED_TOKEN_BATCH_DEFAULT = 256;
+        constexpr size_t TARGETED_TOKEN_BATCH_ADAPTIVE_MIN = 8;
+        constexpr size_t TARGETED_TOKEN_BATCH_MAX = 256;
+        constexpr size_t TARGETED_TOKEN_POOL_MAX = 256;
+
+        size_t
+        clampTargetedTokenBatch(size_t value)
+        {
+            return std::clamp(value,
+                              TARGETED_TOKEN_BATCH_MIN,
+                              TARGETED_TOKEN_BATCH_MAX);
+        }
+
+        size_t
+        parseTargetedTokenBatch(const std::string& value,
+                                size_t fallback)
+        {
+            try {
+                size_t parsed = 0;
+                const auto result = std::stoul(value, &parsed);
+                if (parsed != value.size()) {
+                    return fallback;
+                }
+                return clampTargetedTokenBatch(static_cast<size_t>(result));
+            }
+            catch (const std::exception&) {
+                return fallback;
+            }
+        }
+
+        bool
+        targetedTokenBatchAdaptiveEnabled()
+        {
+            // Adaptive refill sizing is deliberately opt-in.  The stable
+            // default is a fixed, explicitly configured batch size so that
+            // request latency and wire size do not depend on early demand
+            // observations.
+            return isTruthyEnv("NDNSF_TARGETED_TOKEN_ADAPTIVE");
+        }
+
+        size_t
+        configuredTargetedTokenBatch()
+        {
+            return clampTargetedTokenBatch(static_cast<size_t>(std::max(
+                static_cast<int>(TARGETED_TOKEN_BATCH_MIN),
+                intEnvOrDefault("NDNSF_TARGETED_TOKEN_BATCH_SIZE",
+                                static_cast<int>(TARGETED_TOKEN_BATCH_DEFAULT)))));
+        }
+
         bool
         envIsSet(const char* name)
         {
@@ -1276,6 +1326,53 @@ namespace ndn_service_framework
         registerNDNSFMessages();
     }
 
+    void
+    ServiceUser::attachLocalMockPubSubForTest(
+        std::shared_ptr<ndn::svs::SVSPubSub> pubSub)
+    {
+        if (pubSub == nullptr) {
+            throw std::invalid_argument(
+                "ServiceUser LocalMock PubSub cannot be null");
+        }
+        if (m_svsps != nullptr) {
+            throw std::logic_error(
+                "ServiceUser PubSub is already initialized");
+        }
+        m_svsps = std::move(pubSub);
+
+        // The LocalMock constructor intentionally skips the production
+        // constructor's Face registrations.  Install the same IMS content
+        // filters here so post-Selection SegmentFetcher Interests can fetch
+        // assignment artifacts from this test user.
+        const ndn::Name ndnsfFilter = ndn::Name(identity.toUri()).append("NDNSF");
+        const ndn::Name ckFilter = ndn::Name(identity.toUri()).append("CK");
+        m_face.setInterestFilter(
+            ndnsfFilter,
+            std::bind(&ServiceUser::onInterest, this, _1, _2),
+            std::bind(&ServiceUser::onPrefixRegisterFailure, this, _1, _2));
+        m_face.setInterestFilter(
+            ckFilter,
+            std::bind(&ServiceUser::onInterest, this, _1, _2),
+            std::bind(&ServiceUser::onPrefixRegisterFailure, this, _1, _2));
+    }
+
+    void
+    ServiceUser::cacheHybridReceiveKeyForTest(const std::string& keyId,
+                                               const std::string& epochId,
+                                               const ndn::Buffer& key)
+    {
+        m_hybridMessageCrypto.cacheReceiveKey(keyId, epochId, key);
+    }
+
+    void
+    ServiceUser::cacheDataForTest(
+        const ndn::Data& data,
+        ndn::time::milliseconds freshness)
+    {
+        std::lock_guard<std::mutex> lock(_cache_mutex);
+        m_IMS.insert(data, freshness);
+    }
+
     ServiceUser::~ServiceUser()
     {
         if (m_svsps != nullptr) {
@@ -1332,6 +1429,11 @@ namespace ndn_service_framework
     void ServiceUser::setRequestPublisher(RequestPublisher publisher)
     {
         m_requestPublisher = std::move(publisher);
+    }
+
+    void ServiceUser::setLocalPublicationHandler(LocalPublicationHandler handler)
+    {
+        m_localPublicationHandler = std::move(handler);
     }
 
     ndn::Buffer ServiceUser::makeGenericAdmissionLeaseSelectionPayload(
@@ -3677,7 +3779,7 @@ namespace ndn_service_framework
         const PreparedServiceRequest& ctx,
         const std::vector<uint8_t>& plaintext,
         const std::string& objectLabel,
-        const ndn::time::milliseconds& freshness)
+        ndn::time::milliseconds freshness)
     {
         LargeDataPublishResult result;
         if (ctx.serviceName.empty()) {
@@ -3788,7 +3890,7 @@ namespace ndn_service_framework
     ndn::Name ServiceUser::publishSignedAppData(
         const ndn::Name& dataName,
         const ndn::Buffer& payload,
-        const ndn::time::milliseconds& freshness)
+        ndn::time::milliseconds freshness)
     {
         ndn::Name allowedPrefix(identity);
         allowedPrefix.append("NDNSF").append("DI");
@@ -3877,7 +3979,7 @@ namespace ndn_service_framework
         const std::string& objectLabel,
         const std::string& objectType,
         size_t thresholdBytes,
-        const ndn::time::milliseconds& freshness)
+        ndn::time::milliseconds freshness)
     {
         LargeDataReferenceRequestResult result;
         if (payload.size() <= thresholdBytes) {
@@ -4036,13 +4138,15 @@ namespace ndn_service_framework
                                            TargetedTokenPair& pair)
     {
         std::lock_guard<std::mutex> lock(m_targetedTokenPoolsMutex);
-        auto poolIt =
-            m_targetedTokenPools.find(makeTargetedTokenPoolKey(providerName, serviceName));
+        const auto poolKey = makeTargetedTokenPoolKey(providerName, serviceName);
+        auto poolIt = m_targetedTokenPools.find(poolKey);
         if (poolIt == m_targetedTokenPools.end() || poolIt->second.empty()) {
             return false;
         }
         pair = poolIt->second.front();
         poolIt->second.pop_front();
+        auto& control = m_targetedTokenPoolControls[poolKey];
+        ++control.consumedSinceStore;
         if (poolIt->second.empty()) {
             m_targetedTokenPools.erase(poolIt);
         }
@@ -4054,16 +4158,28 @@ namespace ndn_service_framework
         const ndn::Name& serviceName,
         const ndn_service_framework::ResponseMessage& responseMessage)
     {
-        if (providerName.empty() || serviceName.empty() || !responseMessage.getStatus()) {
+        if (!m_useTokens || providerName.empty() || serviceName.empty() ||
+            !responseMessage.getStatus()) {
             return;
         }
 
-        std::lock_guard<std::mutex> lock(m_targetedTokenPoolsMutex);
-        auto& pool =
-            m_targetedTokenPools[makeTargetedTokenPoolKey(providerName, serviceName)];
+        // Ordinary responses never carry a targeted token batch.  Avoid
+        // taking the pool mutex or creating an empty per-provider pool on
+        // every normal request; this path is only for bootstrap/refill data.
         const auto& tokens = responseMessage.getTokens();
+        const auto countIt = tokens.find("targeted.count");
+        if (countIt == tokens.end()) {
+            return;
+        }
+
+        const auto poolKey = makeTargetedTokenPoolKey(providerName, serviceName);
+        std::lock_guard<std::mutex> lock(m_targetedTokenPoolsMutex);
+        auto& pool = m_targetedTokenPools[poolKey];
+        auto& control = m_targetedTokenPoolControls[poolKey];
+        const size_t advertisedCount = parseTargetedTokenBatch(countIt->second, 64);
         size_t stored = 0;
-        for (size_t i = 0; i < 64; ++i) {
+        for (size_t i = 0; i < advertisedCount &&
+                            pool.size() < TARGETED_TOKEN_POOL_MAX; ++i) {
             const auto providerKey = "targeted." + std::to_string(i) + ".provider";
             const auto userKey = "targeted." + std::to_string(i) + ".user";
             auto providerIt = tokens.find(providerKey);
@@ -4078,11 +4194,157 @@ namespace ndn_service_framework
             ++stored;
         }
         if (stored > 0) {
+            const auto storedAtUs = nowMicroseconds();
+            if (!control.observed) {
+                control.nextBatch = configuredTargetedTokenBatch();
+            }
+            else if (targetedTokenBatchAdaptiveEnabled() &&
+                     control.lastStoredAtUs != 0 &&
+                     control.consumedSinceStore > 0 &&
+                     storedAtUs > control.lastStoredAtUs) {
+                const double elapsedSeconds =
+                    static_cast<double>(storedAtUs - control.lastStoredAtUs) / 1'000'000.0;
+                const double consumptionRate =
+                    static_cast<double>(control.consumedSinceStore) / elapsedSeconds;
+                const double refillLatencySeconds =
+                    control.refillStartedAtUs != 0 &&
+                    storedAtUs > control.refillStartedAtUs ?
+                    static_cast<double>(storedAtUs - control.refillStartedAtUs) / 1'000'000.0 :
+                    0.0;
+                // Keep at least one second of demand covered, while allowing
+                // the provider-side cap to bound the resulting wire size.
+                const double targetHorizonSeconds =
+                    std::max(1.0, 4.0 * refillLatencySeconds);
+                const auto estimatedBatch = static_cast<size_t>(std::ceil(
+                    std::min<double>(TARGETED_TOKEN_BATCH_MAX,
+                                     consumptionRate * targetHorizonSeconds)));
+                control.nextBatch = clampTargetedTokenBatch(std::max<size_t>(
+                    TARGETED_TOKEN_BATCH_ADAPTIVE_MIN, estimatedBatch));
+            }
+            else if (!targetedTokenBatchAdaptiveEnabled()) {
+                control.nextBatch = configuredTargetedTokenBatch();
+            }
+            control.capacity = clampTargetedTokenBatch(stored);
+            control.observed = true;
+            control.consumedSinceStore = 0;
+            control.lastStoredAtUs = storedAtUs;
+            control.refillStartedAtUs = 0;
+            control.refillInFlight = false;
             NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=TARGETED_TOKEN_BATCH_STORED timestamp_us="
-                      << nowMicroseconds()
+                      << storedAtUs
                       << " providerName=" << providerName.toUri()
                       << " serviceName=" << serviceName.toUri()
-                      << " count=" << stored);
+                      << " count=" << stored
+                      << " nextBatch=" << control.nextBatch
+                      << " poolDepth=" << pool.size());
+        }
+    }
+
+    size_t ServiceUser::getTargetedTokenBatchHint(const ndn::Name& providerName,
+                                                  const ndn::Name& serviceName)
+    {
+        std::lock_guard<std::mutex> lock(m_targetedTokenPoolsMutex);
+        const auto poolKey = makeTargetedTokenPoolKey(providerName, serviceName);
+        auto& control = m_targetedTokenPoolControls[poolKey];
+        if (control.nextBatch == 0) {
+            control.nextBatch = configuredTargetedTokenBatch();
+        }
+        return clampTargetedTokenBatch(control.nextBatch);
+    }
+
+    bool ServiceUser::markTargetedTokenRefillInFlight(const ndn::Name& providerName,
+                                                      const ndn::Name& serviceName,
+                                                      size_t requestedBatch)
+    {
+        std::lock_guard<std::mutex> lock(m_targetedTokenPoolsMutex);
+        auto& control = m_targetedTokenPoolControls[
+            makeTargetedTokenPoolKey(providerName, serviceName)];
+        if (control.refillInFlight) {
+            return false;
+        }
+        if (control.nextBatch == 0) {
+            control.nextBatch = configuredTargetedTokenBatch();
+        }
+        control.nextBatch = clampTargetedTokenBatch(requestedBatch == 0 ?
+                                                    control.nextBatch : requestedBatch);
+        control.refillInFlight = true;
+        control.refillStartedAtUs = nowMicroseconds();
+        return true;
+    }
+
+    void ServiceUser::clearTargetedTokenRefill(const ndn::Name& providerName,
+                                               const ndn::Name& serviceName)
+    {
+        std::lock_guard<std::mutex> lock(m_targetedTokenPoolsMutex);
+        auto& control = m_targetedTokenPoolControls[
+            makeTargetedTokenPoolKey(providerName, serviceName)];
+        control.refillInFlight = false;
+        control.refillStartedAtUs = 0;
+    }
+
+    void ServiceUser::maybeRefillTargetedTokenPool(const ndn::Name& providerName,
+                                                   const ndn::Name& serviceName)
+    {
+        size_t requestedBatch = 0;
+        {
+            std::lock_guard<std::mutex> lock(m_targetedTokenPoolsMutex);
+            const auto poolKey = makeTargetedTokenPoolKey(providerName, serviceName);
+            const auto controlIt = m_targetedTokenPoolControls.find(poolKey);
+            const auto poolIt = m_targetedTokenPools.find(poolKey);
+            if (controlIt == m_targetedTokenPoolControls.end() ||
+                poolIt == m_targetedTokenPools.end() ||
+                !controlIt->second.observed ||
+                controlIt->second.refillInFlight) {
+                return;
+            }
+            const auto capacity = std::max<size_t>(1, controlIt->second.capacity);
+            const auto lowWatermark = std::max<size_t>(
+                1, std::min<size_t>(8, capacity / 4));
+            if (poolIt->second.size() > lowWatermark) {
+                return;
+            }
+            requestedBatch = controlIt->second.nextBatch;
+        }
+
+        if (!markTargetedTokenRefillInFlight(providerName, serviceName, requestedBatch)) {
+            return;
+        }
+
+        RequestMessage refillRequest;
+        refillRequest.setTokens({
+            {"targeted.refill", "1"},
+            {"targeted.batch_hint", std::to_string(requestedBatch)},
+        });
+        try {
+            const auto refillRequestId = RequestServiceTargeted(
+                providerName,
+                serviceName,
+                std::move(refillRequest),
+                5000,
+                [this, providerName, serviceName](const ndn::Name&) {
+                    clearTargetedTokenRefill(providerName, serviceName);
+                },
+                [this, providerName, serviceName](const ResponseMessage&) {
+                    clearTargetedTokenRefill(providerName, serviceName);
+                });
+            if (refillRequestId.empty()) {
+                clearTargetedTokenRefill(providerName, serviceName);
+            }
+            else {
+                NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=TARGETED_TOKEN_REFILL_REQUESTED timestamp_us="
+                          << nowMicroseconds()
+                          << " providerName=" << providerName.toUri()
+                          << " serviceName=" << serviceName.toUri()
+                          << " requestId=" << refillRequestId.toUri()
+                          << " batchHint=" << requestedBatch);
+            }
+        }
+        catch (...) {
+            clearTargetedTokenRefill(providerName, serviceName);
+            NDN_LOG_WARN("[NDNSF_TRACE] role=user event=TARGETED_TOKEN_REFILL_FAILED timestamp_us="
+                         << nowMicroseconds()
+                         << " providerName=" << providerName.toUri()
+                         << " serviceName=" << serviceName.toUri());
         }
     }
 
@@ -4191,8 +4453,13 @@ namespace ndn_service_framework
 
         const ndn::Name requestId = makeRequestId();
         TargetedTokenPair tokenPair;
-        const bool hasCachedTargetedToken =
-            !m_useTokens || popTargetedTokenPair(provider, serviceName, tokenPair);
+        const auto& requestTokens = requestMessage.getTokens();
+        const bool forceRefill = requestTokens.find("targeted.refill") !=
+                                 requestTokens.end();
+        bool refillOwner = false;
+        bool hasCachedTargetedToken =
+            !forceRefill &&
+            (!m_useTokens || popTargetedTokenPair(provider, serviceName, tokenPair));
         if (hasCachedTargetedToken) {
             requestMessage.setRequestMode(ndn_service_framework::tlv::TargetedRequest);
             if (m_useTokens) {
@@ -4201,7 +4468,25 @@ namespace ndn_service_framework
             }
         }
         else {
-            requestMessage.setRequestMode(ndn_service_framework::tlv::TargetedBootstrapRequest);
+            if (m_useTokens && !forceRefill) {
+                refillOwner = markTargetedTokenRefillInFlight(
+                    provider, serviceName, getTargetedTokenBatchHint(provider, serviceName));
+            }
+            if (forceRefill || refillOwner) {
+                requestMessage.setRequestMode(
+                    ndn_service_framework::tlv::TargetedBootstrapRequest);
+                auto bootstrapTokens = requestMessage.getTokens();
+                bootstrapTokens["targeted.batch_hint"] = std::to_string(
+                    getTargetedTokenBatchHint(provider, serviceName));
+                requestMessage.setTokens(bootstrapTokens);
+            }
+            else {
+                // Another bootstrap is already in flight for this pool.  Keep
+                // the request bounded by using the normal one-Provider path
+                // instead of issuing duplicate bootstrap requests.
+                requestMessage.setRequestMode(ndn_service_framework::tlv::NormalRequest);
+                hasCachedTargetedToken = true;
+            }
         }
         requestMessage.setTargetProvider(provider);
         requestMessage.setStrategy(ndn_service_framework::tlv::FirstResponding);
@@ -4219,7 +4504,10 @@ namespace ndn_service_framework
         }
         pendingCall.timeoutHandler = std::move(onTimeout);
         pendingCall.responseHandler = std::move(onResponseHandler);
-        pendingCall.targetedMode = hasCachedTargetedToken;
+        pendingCall.targetedMode = hasCachedTargetedToken &&
+                                   requestMessage.getRequestMode() ==
+                                       ndn_service_framework::tlv::TargetedRequest;
+        const bool requestUsesTargetedFastPath = pendingCall.targetedMode;
         addUniqueName(pendingCall.expectedResponseProviders, provider);
         m_pendingCalls[requestId] = std::move(pendingCall);
 
@@ -4242,7 +4530,21 @@ namespace ndn_service_framework
                               {"providerName", provider.toUri()}});
         }
 
-        admitOrQueuePendingCall(requestId, !hasCachedTargetedToken, false);
+        try {
+            admitOrQueuePendingCall(requestId,
+                                    requestMessage.getRequestMode() !=
+                                        ndn_service_framework::tlv::TargetedRequest,
+                                    false);
+        }
+        catch (...) {
+            if (refillOwner) {
+                clearTargetedTokenRefill(provider, serviceName);
+            }
+            throw;
+        }
+        if (requestUsesTargetedFastPath) {
+            maybeRefillTargetedTokenPool(provider, serviceName);
+        }
         return requestId;
     }
 
@@ -4618,7 +4920,8 @@ namespace ndn_service_framework
         ResponseHandler onFinalResponse,
         TimeoutHandler onTimeout,
         const RequestId& requestedRequestId,
-        CollaborationAckCoverageHandler onAckCoverage)
+        CollaborationAckCoverageHandler onAckCoverage,
+        const RequestCapabilities& requestCapabilities)
     {
         if (!onAckClosed || ackCollectionTimeMs <= 0 ||
             timeoutMs <= ackCollectionTimeMs) {
@@ -4636,6 +4939,9 @@ namespace ndn_service_framework
         auto payload = initialRequest;
         requestMessage.setPayload(payload, payload.size());
         requestMessage.setStrategy(ndn_service_framework::tlv::AllSelected);
+        if (!requestCapabilities.getFields().empty()) {
+            requestMessage.setRequestCapabilities(requestCapabilities);
+        }
 
         PendingCall pendingCall;
         pendingCall.serviceName = service;
@@ -5210,10 +5516,12 @@ namespace ndn_service_framework
         auto decryptError = std::make_shared<std::string>();
         auto plaintext = std::make_shared<ndn::Buffer>();
 
-        auto finishDecrypt = [this, envelope, responseName, serviceName, requestId, providerName,
+        const ndn::Name logicalResponseName =
+            ndn_service_framework::stripTrailingResponseSegments(responseName);
+        auto finishDecrypt = [this, envelope, logicalResponseName, serviceName, requestId, providerName,
                               plaintext, decryptCompleted, decryptMutex, decryptCv, decryptError](
                                  const ndn::Buffer& key) mutable {
-            const auto ad = hybridAssociatedData(responseName,
+            const auto ad = hybridAssociatedData(logicalResponseName,
                                                  envelope.getMessageType(),
                                                  requestId,
                                                  serviceName,
@@ -6731,7 +7039,7 @@ namespace ndn_service_framework
                             reinterpret_cast<const uint8_t*>(text.data()),
                             text.size());
                     }
-                    if (pendingCall.collaborationDeferred) {
+                    if (pendingCall.isCollaboration) {
                         CollaborationAssignmentEnvelope envelope;
                         envelope.role = participant.role;
                         envelope.assignedArtifact = participant.assignedArtifact;
@@ -6798,6 +7106,8 @@ namespace ndn_service_framework
                                 envelope.scopeKeys.emplace(scope, key);
                             }
                         }
+                        // The envelope is framework metadata; the application
+                        // assignment remains opaque and is carried unchanged.
                         envelope.opaquePayload = std::move(assignment);
                         assignment =
                             encodeCollaborationAssignmentEnvelope(envelope);
@@ -7511,7 +7821,9 @@ namespace ndn_service_framework
             "user", "RESPONSE", subscription,
             RequestId, ServiceName, requesterName, providerName);
 
-        const ndn::Name responseName(subscription.name);
+        const ndn::Name wireResponseName(subscription.name);
+        const ndn::Name responseName =
+            ndn_service_framework::stripTrailingResponseSegments(wireResponseName);
         auto responsePending = m_pendingCalls.find(RequestId);
         if (responsePending == m_pendingCalls.end()) {
             ++m_runtimeDiagnostics.callbackSkippedNoPending;
@@ -7582,7 +7894,7 @@ namespace ndn_service_framework
                   << decryptStartUs
                   << " requestId=" << RequestId.toUri()
                   << " responseName=" << responseName.toUri());
-        std::string responseDataName = responseName.toUri();
+        std::string responseDataName = wireResponseName.toUri();
         std::string responseSignerCertificate;
         std::string responseWireDigest = sha256DigestString(
             ndn::Buffer(subscription.data.begin(), subscription.data.end()));
@@ -7932,6 +8244,41 @@ void ServiceUser::finishRequestAckOnEventLoop(
             grant.setField("requestId", requestId.toUri());
             grant.setField("attempt", "1");
             selectionMessage.setSelectionInputKeyGrant(grant);
+        }
+        if (pendingIt != m_pendingCalls.end() &&
+            pendingIt->second.isCollaboration) {
+            // Each collaboration projection contains one local
+            // Provider entry. Keep the complete role binding in
+            // framework-owned shared metadata so every Provider can resolve
+            // cross-Provider dependency names without inspecting opaque
+            // application assignment bytes.
+            std::map<std::string, std::string> roleProviders;
+            for (const auto& [assignmentProvider, payload] :
+                 pendingIt->second.collaborationAssignments) {
+                for (const auto& item : decodeOpaqueAssignmentSet(payload)) {
+                    CollaborationAssignmentEnvelope envelope;
+                    try {
+                        if (decodeCollaborationAssignmentEnvelope(item, envelope) &&
+                            !envelope.role.empty()) {
+                            roleProviders[envelope.role] = assignmentProvider;
+                        }
+                    }
+                    catch (const std::exception&) {
+                        // The Provider will reject an invalid assignment
+                        // envelope during normal selection processing.
+                    }
+                }
+            }
+            if (!roleProviders.empty()) {
+                std::string metadata;
+                for (const auto& [role, assignmentProvider] : roleProviders) {
+                    metadata += "roleProvider." + role + "=" +
+                                assignmentProvider + ";";
+                }
+                selectionMessage.setAssignmentPayload(
+                    ndn::Buffer(reinterpret_cast<const uint8_t*>(metadata.data()),
+                                metadata.size()));
+            }
         }
         selectionMessage.addProviderEntry(providerEntry);
         NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=SELECTION_TOKEN_STATE timestamp_us="
@@ -8803,6 +9150,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
         ndn::Name serviceName;
         ndn::Name requestId;
         ndn::Name senderPrefix;
+        ndn::Name logicalMessageName = messageName;
         if (auto ack = parseRequestAckNameV2(messageName)) {
             serviceName = ack->serviceName;
             requestId = ack->requestId;
@@ -8812,20 +9160,22 @@ void ServiceUser::finishRequestAckOnEventLoop(
             serviceName = response->serviceName;
             requestId = response->requestId;
             senderPrefix = response->providerName;
+            logicalMessageName =
+                ndn_service_framework::stripTrailingResponseSegments(messageName);
         }
         else {
             return false;
         }
 
-        const auto accessAttribute = hybridAccessAttributeForName(messageName, serviceName);
+        const auto accessAttribute = hybridAccessAttributeForName(logicalMessageName, serviceName);
         const auto keyDataName = makeHybridMessageKeyDataName(
             serviceName, senderPrefix, accessAttribute, envelope.getEpochId());
 
-        auto finish = [this, envelope, messageName, serviceName, requestId,
+        auto finish = [this, envelope, logicalMessageName, serviceName, requestId,
                        senderPrefix, decryptEntryUs, onSuccess = std::move(onSuccess),
                        onError = std::move(onError)](const ndn::Buffer& key) mutable {
             const auto keyReadyUs = timelineSteadyMicroseconds();
-            const auto ad = hybridAssociatedData(messageName, envelope.getMessageType(),
+            const auto ad = hybridAssociatedData(logicalMessageName, envelope.getMessageType(),
                                                 requestId, serviceName, senderPrefix,
                                                 envelope.getKeyId(), envelope.getEpochId());
             auto decryptAndPost = [this, key, envelope, ad, requestId, keyReadyUs, decryptEntryUs,
@@ -8953,6 +9303,11 @@ void ServiceUser::finishRequestAckOnEventLoop(
         // log message
         NDN_LOG_DEBUG("PublishMessage: " << messageName.toUri());
         if (m_svsps == nullptr) {
+            if (m_localPublicationHandler) {
+                const auto wireBlock = message.WireEncode();
+                const ndn::Buffer wire(wireBlock.data(), wireBlock.size());
+                m_localPublicationHandler(messageName, wire);
+            }
             NDN_LOG_DEBUG("PublishMessage skipped because SVS publisher is not initialized");
             return;
         }

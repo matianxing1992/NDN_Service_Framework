@@ -87,6 +87,112 @@ struct NativeDependencySpec
   std::size_t expectedBytes = 0;
   std::vector<std::string> tensors;
   SegmentNamingSpec segmentNaming;
+  // Cross-Provider dependencies may opt into the authenticated,
+  // request-scoped NDNSF_DATA_V1 transport. Ordinary dependencies retain the
+  // existing COLLAB-LARGE path.
+  bool useNdnsfDataV1 = false;
+  std::uint64_t collectiveOperationIndex = 0;
+  std::string collectiveProducerRank;
+  std::string collectiveSourceLayoutDigest;
+  std::string collectiveTargetLayoutDigest;
+  std::string collectiveTensorDigest;
+  std::vector<RedistributionSpec> redistributions;
+};
+
+/** One complete request-scoped execution unit. Tensor-parallel ranks are
+ * represented as separate roles; a role is never spread across Providers.
+ */
+struct NativeExecutionRoleV3
+{
+  std::string roleId;
+  std::string stageId;
+  std::uint64_t rank = 0;
+  std::uint64_t layerBegin = 0;
+  std::uint64_t layerEnd = 0;
+  std::string backend;
+  std::string adapterId;
+  std::string adapterVersion;
+};
+
+/** Exact named tensor object authorized by one sealed role dataflow contract. */
+struct NativeTensorEndpointV3
+{
+  std::string producerNamespace;
+  std::string requester;
+  std::string requestId;
+  std::uint64_t attempt = 0;
+  std::string planDigest;
+  std::string groupId;
+  std::string groupEpoch;
+  std::string operation;
+  std::uint64_t round = 0;
+  std::string sourceKind;
+  std::string producerRole;
+  std::uint64_t producerRank = 0;
+  std::string consumerRole;
+  std::vector<std::string> consumerRoles;
+  std::string tensorId;
+  std::string tensorDigest;
+  std::string layoutDigest;
+  std::string targetLayoutDigest;
+  std::uint64_t microbatch = 0;
+  std::size_t segmentCount = 0;
+  std::string manifestDigest;
+  std::string securityProfile;
+  std::uint64_t noProgressDeadlineMs = 0;
+  std::uint64_t hardDeadlineMs = 0;
+  std::string endpointDigest;
+};
+
+/**
+ * Return the immutable base name shared by the manifest and every segment of
+ * one V3 tensor object. Opaque values are encoded as single reversible
+ * components so embedded '/' characters cannot change the grammar.
+ */
+std::string
+tensorObjectNamePrefix(const NativeTensorEndpointV3& endpoint);
+
+/** Exact signed TensorObjectManifest Data name declared by the endpoint. */
+std::string
+tensorObjectManifestName(const NativeTensorEndpointV3& endpoint);
+
+/** Exact segment Data name. The final component is an NDN Segment component. */
+std::string
+tensorObjectSegmentName(const NativeTensorEndpointV3& endpoint,
+                        std::size_t segmentNo);
+
+struct NativeReadinessPredicateV3
+{
+  std::string mode;
+  std::vector<std::string> endpointDigests;
+  std::size_t quorum = 0;
+};
+
+struct NativeRoleDataflowContractV3
+{
+  std::string requestId;
+  std::uint64_t attempt = 0;
+  std::string planDigest;
+  std::string role;
+  std::vector<NativeTensorEndpointV3> mayPublish;
+  std::vector<NativeTensorEndpointV3> mustFetch;
+  std::vector<NativeReadinessPredicateV3> waitFor;
+  bool terminalResponseOwner = false;
+  std::string dataflowDigest;
+};
+
+/** A Provider-local CPU or exactly-one-device binding for one role. */
+struct NativeDeviceBindingV3
+{
+  std::string mode;
+  std::string provider;
+  std::string role;
+  std::string offerDigest;
+  std::string topologyProfileDigest;
+  std::string resourceSnapshotDigest;
+  std::uint64_t resourceSequence = 0;
+  std::string offerScopedDeviceHandle;
+  std::string sharingPolicy;
 };
 
 struct NativeExecutionPlan

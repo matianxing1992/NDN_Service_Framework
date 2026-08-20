@@ -14,7 +14,9 @@ namespace ndnsf::di {
 class NativeProviderRuntime
 {
 public:
-  explicit NativeProviderRuntime(std::size_t workerCount = std::thread::hardware_concurrency());
+  explicit NativeProviderRuntime(
+    std::size_t workerCount = std::thread::hardware_concurrency(),
+    std::size_t readyQueueCapacity = 1024);
 
   void
   registerRunner(std::string role, std::shared_ptr<NativeModelRunner> runner);
@@ -30,6 +32,14 @@ public:
                    RoleSpec role,
                    std::shared_ptr<DependencyIo> io,
                    std::map<std::string, TensorBundle> initialInputsByScope = {});
+
+  std::future<ProviderRoleResult>
+  executePreparedRoleAsync(
+    std::string sessionId,
+    RoleSpec role,
+    std::shared_ptr<DependencyIo> io,
+    ProviderRoleWorker::NativeRunnerPreparation prepareRunner,
+    std::map<std::string, TensorBundle> initialInputsByScope = {});
 
   ProviderRoleWorkerSnapshot
   snapshot() const;

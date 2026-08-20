@@ -67,13 +67,19 @@ timelineRequestId(const std::string& requestId, const std::string& sessionId)
 ProviderRoleWorker::ProviderRoleWorker(std::size_t workerCount,
                                        std::size_t dependencyWaitWorkers,
                                        std::size_t dependencyWaitQueueCapacity,
-                                       std::chrono::milliseconds dependencyWaitTimeout)
+                                       std::chrono::milliseconds dependencyWaitTimeout,
+                                       std::size_t readyQueueCapacity)
   : m_dependencyWaitScheduler(std::make_unique<DependencyWaitScheduler>(
       dependencyWaitWorkers, dependencyWaitQueueCapacity))
   , m_dependencyWaitTimeout(dependencyWaitTimeout)
+  , m_readyQueueCapacity(readyQueueCapacity)
 {
   if (workerCount == 0) {
     workerCount = 1;
+  }
+  if (m_readyQueueCapacity == 0) {
+    throw std::invalid_argument(
+      "ProviderRoleWorker ready queue capacity must be positive");
   }
   m_workers.reserve(workerCount);
   for (std::size_t i = 0; i < workerCount; ++i) {
@@ -103,11 +109,13 @@ ProviderRoleWorker::executeAsync(std::string sessionId,
                                  RoleRunner runner,
                                  std::map<std::string, TensorBundle> initialInputsByScope)
 {
-  return executeAsync(std::move(sessionId),
-                      std::move(role),
-                      std::move(io),
-                      makeNativeModelRunner(std::move(runner)),
-                      std::move(initialInputsByScope));
+  return executeAsyncImpl(std::move(sessionId),
+                          std::move(role),
+                          std::move(io),
+                          makeNativeModelRunner(std::move(runner)),
+                          {},
+                          std::move(initialInputsByScope),
+                          std::nullopt);
 }
 
 std::future<ProviderRoleResult>
@@ -117,14 +125,106 @@ ProviderRoleWorker::executeAsync(std::string sessionId,
                                  std::shared_ptr<NativeModelRunner> runner,
                                  std::map<std::string, TensorBundle> initialInputsByScope)
 {
+  return executeAsyncImpl(std::move(sessionId),
+                          std::move(role),
+                          std::move(io),
+                          std::move(runner),
+                          {},
+                          std::move(initialInputsByScope),
+                          std::nullopt);
+}
+
+std::future<ProviderRoleResult>
+ProviderRoleWorker::executePreparedAsync(
+  std::string sessionId,
+  RoleSpec role,
+  std::shared_ptr<DependencyIo> io,
+  NativeRunnerPreparation prepareRunner,
+  std::map<std::string, TensorBundle> initialInputsByScope)
+{
+  return executeAsyncImpl(std::move(sessionId),
+                          std::move(role),
+                          std::move(io),
+                          nullptr,
+                          std::move(prepareRunner),
+                          std::move(initialInputsByScope),
+                          std::nullopt);
+}
+
+std::future<ProviderRoleResult>
+ProviderRoleWorker::executeCollectiveAsync(
+  std::string sessionId,
+  RoleSpec role,
+  std::shared_ptr<DependencyIo> io,
+  RoleRunner runner,
+  CollectiveExecutionBinding collective,
+  std::map<std::string, TensorBundle> initialInputsByScope)
+{
+  return executeAsyncImpl(std::move(sessionId),
+                          std::move(role),
+                          std::move(io),
+                          makeNativeModelRunner(std::move(runner)),
+                          {},
+                          std::move(initialInputsByScope),
+                          std::move(collective));
+}
+
+std::future<ProviderRoleResult>
+ProviderRoleWorker::executeCollectiveAsync(
+  std::string sessionId,
+  RoleSpec role,
+  std::shared_ptr<DependencyIo> io,
+  std::shared_ptr<NativeModelRunner> runner,
+  CollectiveExecutionBinding collective,
+  std::map<std::string, TensorBundle> initialInputsByScope)
+{
+  return executeAsyncImpl(std::move(sessionId),
+                          std::move(role),
+                          std::move(io),
+                          std::move(runner),
+                          {},
+                          std::move(initialInputsByScope),
+                          std::move(collective));
+}
+
+std::future<ProviderRoleResult>
+ProviderRoleWorker::executeAsyncImpl(
+  std::string sessionId,
+  RoleSpec role,
+  std::shared_ptr<DependencyIo> io,
+  std::shared_ptr<NativeModelRunner> runner,
+  NativeRunnerPreparation prepareRunner,
+  std::map<std::string, TensorBundle> initialInputsByScope,
+  std::optional<CollectiveExecutionBinding> collective)
+{
   if (role.role.empty()) {
     throw std::invalid_argument("ProviderRoleWorker requires a non-empty role");
   }
   if (!io) {
     throw std::invalid_argument("ProviderRoleWorker requires DependencyIo");
   }
-  if (!runner) {
-    throw std::invalid_argument("ProviderRoleWorker requires NativeModelRunner");
+  if (!runner && !prepareRunner) {
+    throw std::invalid_argument(
+      "ProviderRoleWorker requires NativeModelRunner or preparation callback");
+  }
+  if (collective.has_value()) {
+    if (!collective->runtime || collective->rank.empty() ||
+        collective->inputSequence == 0) {
+      throw std::invalid_argument("ProviderRoleWorker requires a valid collective binding");
+    }
+    const auto group = collective->runtime->snapshot();
+    const auto rank = group.ranks.find(collective->rank);
+    if (rank == group.ranks.end()) {
+      throw std::invalid_argument("ProviderRoleWorker collective rank is unknown");
+    }
+    if (!rank->second.authenticated || !rank->second.localReady) {
+      throw std::logic_error(
+        "ProviderRoleWorker collective rank is not authenticated and locally ready");
+    }
+    if (group.state != CollectiveRuntimeState::Pending &&
+        group.state != CollectiveRuntimeState::Running) {
+      throw std::logic_error("ProviderRoleWorker collective is already terminal");
+    }
   }
 
   auto promise = std::make_shared<std::promise<ProviderRoleResult>>();
@@ -134,10 +234,12 @@ ProviderRoleWorker::executeAsync(std::string sessionId,
     std::move(role),
     std::move(io),
     std::move(runner),
+    std::move(prepareRunner),
     std::move(initialInputsByScope),
     {},
     promise,
     std::chrono::steady_clock::now(),
+    std::move(collective),
   };
 
   std::vector<PendingInput> pendingInputs;
@@ -182,6 +284,7 @@ ProviderRoleWorker::executeAsync(std::string sessionId,
     try {
       for (auto& pending : pendingInputs) {
         auto bundle = pending.future.get();
+        validateTensorBundleForEdge(pending.edge, bundle);
 #ifdef NDNSF_DI_EXPERIMENT_FAULTS
         NativeFaultInjection::instance().checkpoint(
           NativeFaultPoint::DependencyFetched, item.role.role, item.sessionId);
@@ -241,6 +344,7 @@ ProviderRoleWorker::scheduleWhenInputsReady(WorkItem item,
             }
           }
           auto bundle = pending.future.get();
+          validateTensorBundleForEdge(pending.edge, bundle);
 #ifdef NDNSF_DI_EXPERIMENT_FAULTS
           NativeFaultInjection::instance().checkpoint(
             NativeFaultPoint::DependencyFetched,
@@ -296,6 +400,10 @@ ProviderRoleWorker::scheduleWhenInputsReady(WorkItem item,
 void
 ProviderRoleWorker::enqueueReady(WorkItem item)
 {
+  if (item.collective.has_value()) {
+    enqueueCollectiveReady(std::move(item));
+    return;
+  }
   item.queuedAt = std::chrono::steady_clock::now();
   logDiTimelineTrace(
     "di-provider", "role_queue_enter",
@@ -311,9 +419,100 @@ ProviderRoleWorker::enqueueReady(WorkItem item)
                     "ProviderRoleWorker is stopping")));
       return;
     }
+    if (m_queue.size() >= m_readyQueueCapacity) {
+      failPromise(item.promise,
+                  std::make_exception_ptr(std::runtime_error(
+                    "ProviderRoleWorker ready queue is full")));
+      return;
+    }
     m_queue.push_back(std::move(item));
   }
   m_cv.notify_one();
+}
+
+std::uint64_t
+ProviderRoleWorker::collectiveNowMs()
+{
+  static const auto origin = std::chrono::steady_clock::now();
+  return static_cast<std::uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - origin).count());
+}
+
+void
+ProviderRoleWorker::enqueueCollectiveReady(WorkItem item)
+{
+  auto& binding = *item.collective;
+  const auto runtime = binding.runtime;
+  const auto nowMs = collectiveNowMs();
+  {
+    std::lock_guard<std::mutex> collectiveLock(m_collectiveMutex);
+    if (!runtime->markInputReady(binding.rank,
+                                 runtime->groupEpoch(),
+                                 binding.inputSequence,
+                                 nowMs)) {
+      failPromise(item.promise,
+                  std::make_exception_ptr(std::runtime_error(
+                    "collective input readiness rejected: " +
+                    runtime->snapshot().lastError)));
+      return;
+    }
+
+    item.queuedAt = std::chrono::steady_clock::now();
+    logDiTimelineTrace(
+      "di-provider", "collective_input_ready",
+      timelineRequestId(item.role.requestId, item.sessionId),
+      {{"sessionId", item.sessionId},
+       {"role", item.role.role},
+       {"rank", binding.rank},
+       {"attemptEpoch", std::to_string(item.role.attemptEpoch)}});
+
+    std::vector<WorkItem> ready;
+    {
+      std::lock_guard<std::mutex> lock(m_mutex);
+      if (m_stopping) {
+        failPromise(item.promise,
+                    std::make_exception_ptr(std::logic_error(
+                      "ProviderRoleWorker is stopping")));
+        return;
+      }
+      auto& pending = m_collectivePending[runtime.get()];
+      pending.push_back(std::move(item));
+
+      if (runtime->state() == CollectiveRuntimeState::Pending) {
+        if (!runtime->start(nowMs)) {
+          const auto state = runtime->snapshot();
+          if (state.lastError != "start:group-not-ready") {
+            for (auto& pendingItem : pending) {
+              failPromise(pendingItem.promise,
+                          std::make_exception_ptr(std::runtime_error(
+                            "collective start rejected: " + state.lastError)));
+            }
+            m_collectivePending.erase(runtime.get());
+          }
+          return;
+        }
+      }
+
+      if (runtime->state() == CollectiveRuntimeState::Running) {
+        ready = std::move(pending);
+        m_collectivePending.erase(runtime.get());
+        for (auto& readyItem : ready) {
+          logDiTimelineTrace(
+            "di-provider", "collective_role_release",
+            timelineRequestId(readyItem.role.requestId, readyItem.sessionId),
+            {{"sessionId", readyItem.sessionId},
+             {"role", readyItem.role.role},
+             {"rank", readyItem.collective->rank},
+             {"attemptEpoch", std::to_string(readyItem.role.attemptEpoch)}});
+          m_queue.push_back(std::move(readyItem));
+        }
+      }
+    }
+    if (!ready.empty()) {
+      m_cv.notify_all();
+    }
+  }
 }
 
 ProviderRoleWorkerSnapshot
@@ -323,6 +522,7 @@ ProviderRoleWorker::snapshot() const
   ProviderRoleWorkerSnapshot snapshot;
   snapshot.workerCount = m_workers.size();
   snapshot.readyQueueDepth = m_queue.size();
+  snapshot.readyQueueCapacity = m_readyQueueCapacity;
   const auto waitSnapshot = m_dependencyWaitScheduler->snapshot();
   snapshot.waitingForInputCount = waitSnapshot.queuedCount + waitSnapshot.activeCount;
   snapshot.dependencyWaitWorkerCount = waitSnapshot.workerCount;
@@ -353,11 +553,12 @@ ProviderRoleWorker::failPromise(const std::shared_ptr<std::promise<ProviderRoleR
 std::string
 ProviderRoleWorker::exactForwardCacheKeyFor(
   const WorkItem& item,
+  const NativeModelRunner* runner,
   const std::map<std::string, TensorBundle>& inputsByScope)
 {
   std::ostringstream os;
   appendString(os, "ndnsf-di-provider-local-exact-forward-cache-v1");
-  appendUint64(os, reinterpret_cast<std::uintptr_t>(item.runner.get()));
+  appendUint64(os, reinterpret_cast<std::uintptr_t>(runner));
   appendString(os, item.role.role);
   appendUint64(os, static_cast<std::uint64_t>(item.role.inputs.size()));
   for (const auto& edge : item.role.inputs) {
@@ -451,10 +652,43 @@ ProviderRoleWorker::workerLoop()
 void
 ProviderRoleWorker::execute(const WorkItem& item)
 {
+  std::atomic<bool> watchdogDone{false};
+  std::thread watchdog;
+  if (item.collective.has_value()) {
+    const auto runtime = item.collective->runtime;
+    const auto tickMs = std::max<std::uint64_t>(
+      1, runtime->snapshot().schedulerTickMs);
+    watchdog = std::thread([this, runtime, tickMs, &watchdogDone] {
+      while (!watchdogDone.load(std::memory_order_acquire)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(tickMs));
+        if (watchdogDone.load(std::memory_order_acquire)) {
+          break;
+        }
+        std::lock_guard<std::mutex> collectiveLock(m_collectiveMutex);
+        runtime->poll(collectiveNowMs());
+      }
+    });
+  }
   try {
-    item.promise->set_value(runReadyRole(item));
+    auto result = runReadyRole(item);
+    watchdogDone.store(true, std::memory_order_release);
+    if (watchdog.joinable()) {
+      watchdog.join();
+    }
+    item.promise->set_value(std::move(result));
   }
   catch (...) {
+    watchdogDone.store(true, std::memory_order_release);
+    if (watchdog.joinable()) {
+      watchdog.join();
+    }
+    if (item.collective.has_value()) {
+      const auto& binding = *item.collective;
+      std::lock_guard<std::mutex> collectiveLock(m_collectiveMutex);
+      binding.runtime->fail(
+        "NDNSF_COLLECTIVE_RANK_FAILURE:" + binding.rank,
+        collectiveNowMs());
+    }
     item.promise->set_exception(std::current_exception());
   }
 }
@@ -462,6 +696,15 @@ ProviderRoleWorker::execute(const WorkItem& item)
 ProviderRoleResult
 ProviderRoleWorker::runReadyRole(const WorkItem& item)
 {
+  if (item.collective.has_value()) {
+    const auto& binding = *item.collective;
+    std::lock_guard<std::mutex> collectiveLock(m_collectiveMutex);
+    const auto state = binding.runtime->snapshot();
+    if (state.state != CollectiveRuntimeState::Running) {
+      throw std::runtime_error(
+        "collective role released outside RUNNING state: " + state.lastError);
+    }
+  }
   const auto workerStartedAt = std::chrono::steady_clock::now();
   const auto requestId = timelineRequestId(item.role.requestId, item.sessionId);
   logDiTimelineTrace(
@@ -470,6 +713,25 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
      {"role", item.role.role},
      {"attemptEpoch", std::to_string(item.role.attemptEpoch)}});
   std::map<std::string, TensorBundle> inputsByScope = item.initialInputsByScope;
+
+  auto runner = item.runner;
+  if (!runner) {
+    logDiTimelineTrace(
+      "di-provider", "role_preparation_start", requestId,
+      {{"sessionId", item.sessionId},
+       {"role", item.role.role},
+       {"attemptEpoch", std::to_string(item.role.attemptEpoch)}});
+    runner = item.prepareRunner();
+    if (!runner) {
+      throw std::runtime_error(
+        "Provider role preparation returned no NativeModelRunner");
+    }
+    logDiTimelineTrace(
+      "di-provider", "role_preparation_done", requestId,
+      {{"sessionId", item.sessionId},
+       {"role", item.role.role},
+       {"attemptEpoch", std::to_string(item.role.attemptEpoch)}});
+  }
 
   ProviderRoleResult result;
   result.timing.role = item.role.role;
@@ -482,8 +744,18 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
   ctx.sessionId = item.sessionId;
   ctx.role = item.role.role;
   ctx.inputsByScope = inputsByScope;
+  for (const auto& edge : item.role.inputs) {
+    const auto input = ctx.inputsByScope.find(edge.scope);
+    if (input == ctx.inputsByScope.end()) {
+      throw std::runtime_error(
+        "Provider role is missing a declared input: " + edge.scope);
+    }
+    validateTensorBundleForEdge(edge, input->second);
+    ctx.inputEdgesByScope.emplace(edge.scope, edge);
+  }
 
-  result.exactForwardCacheKey = exactForwardCacheKeyFor(item, inputsByScope);
+  result.exactForwardCacheKey = exactForwardCacheKeyFor(
+    item, runner.get(), inputsByScope);
   result.outputsByScope = getCachedOutputs(result.exactForwardCacheKey);
   result.exactForwardCacheHit = !result.outputsByScope.empty();
   if (!result.exactForwardCacheHit) {
@@ -496,7 +768,7 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
       {{"sessionId", item.sessionId},
        {"role", item.role.role},
        {"attemptEpoch", std::to_string(item.role.attemptEpoch)}});
-    result.outputsByScope = item.runner->run(ctx);
+    result.outputsByScope = runner->run(ctx);
     logDiTimelineTrace(
       "di-provider", "role_compute_done", requestId,
       {{"sessionId", item.sessionId},
@@ -504,16 +776,24 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
        {"attemptEpoch", std::to_string(item.role.attemptEpoch)}});
     putCachedOutputs(result.exactForwardCacheKey, result.outputsByScope);
   }
-  result.executionEvidence = item.runner->executionEvidenceSnapshot();
+  result.executionEvidence = runner->executionEvidenceSnapshot();
 
   const auto outputReadyAt = std::chrono::steady_clock::now();
-  result.outputTimings.reserve(item.role.outputs.size());
+  std::vector<std::pair<DependencyEdge, TensorBundle>> stagedOutputs;
+  stagedOutputs.reserve(item.role.outputs.size());
   for (const auto& edge : item.role.outputs) {
+    auto bundle = outputForEdge(result.outputsByScope, edge);
+    validateTensorBundleForEdge(edge, bundle, false);
+    stagedOutputs.emplace_back(edge, std::move(bundle));
+  }
+  result.outputTimings.reserve(item.role.outputs.size());
+  for (auto& staged : stagedOutputs) {
+    const auto& edge = staged.first;
 #ifdef NDNSF_DI_EXPERIMENT_FAULTS
     NativeFaultInjection::instance().checkpoint(
       NativeFaultPoint::BeforePublish, item.role.role, item.sessionId);
 #endif
-    auto bundle = outputForEdge(result.outputsByScope, edge);
+    auto& bundle = staged.second;
     result.outputsByScope[edge.scope] = bundle;
     logDiTimelineTrace(
       "di-provider", "dependency_publish_start", requestId,
@@ -543,6 +823,25 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
   }
 
   result.timing.finishedAt = std::chrono::steady_clock::now();
+  if (item.collective.has_value()) {
+    const auto& binding = *item.collective;
+    std::lock_guard<std::mutex> collectiveLock(m_collectiveMutex);
+    if (!binding.runtime->completeRank(binding.rank,
+                                       binding.runtime->groupEpoch(),
+                                       binding.inputSequence,
+                                       collectiveNowMs())) {
+      throw std::runtime_error(
+        "collective rank completion rejected: " +
+        binding.runtime->snapshot().lastError);
+    }
+    logDiTimelineTrace(
+      "di-provider", "collective_rank_complete",
+      requestId,
+      {{"sessionId", item.sessionId},
+       {"role", item.role.role},
+       {"rank", binding.rank},
+       {"attemptEpoch", std::to_string(item.role.attemptEpoch)}});
+  }
   return result;
 }
 

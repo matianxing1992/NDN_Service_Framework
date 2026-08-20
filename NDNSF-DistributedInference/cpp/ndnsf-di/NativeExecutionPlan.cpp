@@ -1,10 +1,94 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
 
+#include <ndn-cxx/name.hpp>
+
+#include <algorithm>
 #include <chrono>
+#include <iterator>
 #include <stdexcept>
 #include <utility>
 
 namespace ndnsf::di {
+namespace {
+
+std::string
+opaqueNameComponent(const std::string& value)
+{
+  static constexpr char HEX[] = "0123456789abcdef";
+  std::string result;
+  result.reserve(value.size() * 2);
+  for (const auto byte : value) {
+    const auto unsignedByte = static_cast<unsigned char>(byte);
+    result.push_back(HEX[unsignedByte >> 4]);
+    result.push_back(HEX[unsignedByte & 0x0f]);
+  }
+  return result;
+}
+
+void
+appendLabelledOpaque(ndn::Name& name,
+                     const char* label,
+                     const std::string& value)
+{
+  if (value.empty()) {
+    throw std::invalid_argument(
+      std::string("empty tensor endpoint component: ") + label);
+  }
+  name.append(label).append(opaqueNameComponent(value));
+}
+
+} // namespace
+
+std::string
+tensorObjectNamePrefix(const NativeTensorEndpointV3& endpoint)
+{
+  if (endpoint.producerNamespace.empty() ||
+      endpoint.producerNamespace.front() != '/' || endpoint.requester.empty() ||
+      endpoint.requestId.empty() || endpoint.attempt == 0 ||
+      endpoint.planDigest.empty() || endpoint.groupId.empty() ||
+      endpoint.groupEpoch.empty() || endpoint.operation.empty() ||
+      endpoint.consumerRole.empty() || endpoint.tensorId.empty() ||
+      endpoint.tensorDigest.empty() || endpoint.segmentCount == 0) {
+    throw std::invalid_argument("incomplete V3 tensor endpoint name binding");
+  }
+  const auto sourceRole = endpoint.producerRole.empty()
+    ? std::string("INPUT") : endpoint.producerRole;
+  ndn::Name name(endpoint.producerNamespace);
+  name.append("NDNSF-DI").append("TENSOR").append("v1");
+  appendLabelledOpaque(name, "REQUESTER", endpoint.requester);
+  appendLabelledOpaque(name, "REQ", endpoint.requestId);
+  name.append("ATTEMPT").appendNumber(endpoint.attempt);
+  appendLabelledOpaque(name, "PLAN", endpoint.planDigest);
+  appendLabelledOpaque(name, "GROUP", endpoint.groupId);
+  appendLabelledOpaque(name, "EPOCH", endpoint.groupEpoch);
+  appendLabelledOpaque(name, "OP", endpoint.operation);
+  name.append("ROUND").appendNumber(endpoint.round);
+  appendLabelledOpaque(name, "SOURCE-ROLE", sourceRole);
+  name.append("RANK").appendNumber(endpoint.producerRank);
+  appendLabelledOpaque(name, "TENSOR", endpoint.tensorId);
+  name.append(opaqueNameComponent(endpoint.tensorDigest));
+  name.append("MICROBATCH").appendNumber(endpoint.microbatch);
+  return name.toUri();
+}
+
+std::string
+tensorObjectManifestName(const NativeTensorEndpointV3& endpoint)
+{
+  return ndn::Name(tensorObjectNamePrefix(endpoint)).append("MANIFEST").toUri();
+}
+
+std::string
+tensorObjectSegmentName(const NativeTensorEndpointV3& endpoint,
+                        std::size_t segmentNo)
+{
+  if (segmentNo >= endpoint.segmentCount) {
+    throw std::out_of_range("tensor segment is outside the declared endpoint");
+  }
+  return ndn::Name(tensorObjectNamePrefix(endpoint))
+    .append("SEG")
+    .appendSegment(segmentNo)
+    .toUri();
+}
 
 DiReservationAuthority::DiReservationAuthority(
   std::string providerBootId,
@@ -430,8 +514,12 @@ roleSpecFor(const NativeExecutionPlan& plan,
       for (const auto& producer : dep.producers) {
         const auto producerProvider = providerForRole(assignment, producer, localProvider);
         const auto expectedSegments = effectiveExpectedSegments(dep);
-        spec.inputs.push_back(DependencyEdge{
-          dep.keyScope,
+        const auto runtimeScope = !dep.redistributions.empty() &&
+                                  dep.producers.size() > 1
+          ? dep.keyScope + "/from/" + trimSlashes(producer)
+          : dep.keyScope;
+        DependencyEdge edge{
+          runtimeScope,
           producer,
           consumer,
           plannedDataNameFromTemplate(dep.objectNameTemplate,
@@ -444,18 +532,57 @@ roleSpecFor(const NativeExecutionPlan& plan,
           expectedSegments,
           dep.expectedBytes,
           dep.tensors,
-        });
+        };
+        edge.useNdnsfDataV1 = dep.useNdnsfDataV1;
+        edge.collectiveOperationIndex = dep.collectiveOperationIndex;
+        edge.collectiveProducerRank = dep.collectiveProducerRank;
+        edge.collectiveSourceLayoutDigest = dep.collectiveSourceLayoutDigest;
+        edge.collectiveTargetLayoutDigest = dep.collectiveTargetLayoutDigest;
+        edge.collectiveTensorDigest = dep.collectiveTensorDigest;
+        edge.redistributions = dep.redistributions;
+        if (!dep.redistributions.empty()) {
+          const auto& redistribution = dep.redistributions.front();
+          const auto producerIndex = static_cast<std::size_t>(
+            std::distance(dep.producers.begin(),
+                          std::find(dep.producers.begin(), dep.producers.end(), producer)));
+          const auto consumerIndex = static_cast<std::size_t>(
+            std::distance(dep.consumers.begin(),
+                          std::find(dep.consumers.begin(), dep.consumers.end(), consumer)));
+          if (producerIndex < redistribution.producerRanks.size()) {
+            edge.redistributionProducerRank =
+              redistribution.producerRanks[producerIndex];
+          }
+          if (consumerIndex < redistribution.consumerRanks.size()) {
+            edge.redistributionConsumerRank =
+              redistribution.consumerRanks[consumerIndex];
+          }
+        }
+        edge.transportScope = dep.keyScope;
+        edge.producerProvider = producerProvider;
+        edge.topicPrefix = dep.topicPrefix;
+        spec.inputs.push_back(std::move(edge));
       }
     }
     for (const auto& producer : dep.producers) {
       if (producer != role) {
         continue;
       }
-      for (const auto& consumer : dep.consumers) {
+      // A redistribution publishes one producer-rank tensor once. All
+      // consumers fetch that immutable object and apply the certified layout
+      // transition locally; publishing once per consumer would create replay-
+      // conflicting DATA_V1 objects for the same operation/rank.
+      const auto outputConsumers = dep.redistributions.empty()
+        ? dep.consumers
+        : std::vector<std::string>{dep.consumers.front()};
+      for (const auto& consumer : outputConsumers) {
         const auto producerProvider = providerForRole(assignment, producer, localProvider);
         const auto expectedSegments = effectiveExpectedSegments(dep);
-        spec.outputs.push_back(DependencyEdge{
-          dep.keyScope,
+        const auto runtimeScope = !dep.redistributions.empty() &&
+                                  dep.producers.size() > 1
+          ? dep.keyScope + "/from/" + trimSlashes(producer)
+          : dep.keyScope;
+        DependencyEdge edge{
+          runtimeScope,
           producer,
           consumer,
           plannedDataNameFromTemplate(dep.objectNameTemplate,
@@ -468,7 +595,35 @@ roleSpecFor(const NativeExecutionPlan& plan,
           expectedSegments,
           dep.expectedBytes,
           dep.tensors,
-        });
+        };
+        edge.useNdnsfDataV1 = dep.useNdnsfDataV1;
+        edge.collectiveOperationIndex = dep.collectiveOperationIndex;
+        edge.collectiveProducerRank = dep.collectiveProducerRank;
+        edge.collectiveSourceLayoutDigest = dep.collectiveSourceLayoutDigest;
+        edge.collectiveTargetLayoutDigest = dep.collectiveTargetLayoutDigest;
+        edge.collectiveTensorDigest = dep.collectiveTensorDigest;
+        edge.redistributions = dep.redistributions;
+        if (!dep.redistributions.empty()) {
+          const auto& redistribution = dep.redistributions.front();
+          const auto producerIndex = static_cast<std::size_t>(
+            std::distance(dep.producers.begin(),
+                          std::find(dep.producers.begin(), dep.producers.end(), producer)));
+          const auto consumerIndex = static_cast<std::size_t>(
+            std::distance(dep.consumers.begin(),
+                          std::find(dep.consumers.begin(), dep.consumers.end(), consumer)));
+          if (producerIndex < redistribution.producerRanks.size()) {
+            edge.redistributionProducerRank =
+              redistribution.producerRanks[producerIndex];
+          }
+          if (consumerIndex < redistribution.consumerRanks.size()) {
+            edge.redistributionConsumerRank =
+              redistribution.consumerRanks[consumerIndex];
+          }
+        }
+        edge.transportScope = dep.keyScope;
+        edge.producerProvider = producerProvider;
+        edge.topicPrefix = dep.topicPrefix;
+        spec.outputs.push_back(std::move(edge));
       }
     }
   }

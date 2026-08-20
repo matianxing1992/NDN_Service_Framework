@@ -88,15 +88,34 @@ RUN test "$(/opt/venv/bin/python -c 'import json; print(",".join(json.load(open(
     rm -f /opt/onnxruntime/lib/libonnxruntime_providers_tensorrt.so /opt/venv/lib/python3.10/site-packages/onnxruntime/capi/libonnxruntime_providers_tensorrt.so && \
     test ! -e /opt/onnxruntime/lib/libonnxruntime_providers_tensorrt.so && \
     test ! -e /opt/venv/lib/python3.10/site-packages/onnxruntime/capi/libonnxruntime_providers_tensorrt.so
-RUN /opt/venv/bin/python /build-contract/verify-python-environment.py \
+RUN /opt/venv/bin/python -m pip check && \
+    /opt/venv/bin/python /build-contract/verify-python-environment.py \
       --lock /build-contract/gpu.lock
+RUN python3.10 -m venv /opt/runtime-venv && \
+    /opt/runtime-venv/bin/pip install --no-cache-dir --upgrade \
+      pip==25.0.1 setuptools==75.8.0 wheel==0.45.1
+RUN python3 - <<'PY' >/tmp/deployment-python-requirements
+import json
+lock=json.load(open('/build-contract/gpu.lock'))
+for name, version in sorted(lock['deploymentPythonPackages'].items()):
+    print(f'{name}=={version}')
+PY
+RUN --mount=type=cache,target=/root/.cache/pip \
+    /opt/runtime-venv/bin/pip install --no-deps --requirement /tmp/deployment-python-requirements && \
+    /opt/runtime-venv/bin/python -m pip check && \
+    /opt/runtime-venv/bin/python /build-contract/verify-python-environment.py \
+      --lock /build-contract/gpu.lock --package-set deploymentPythonPackages && \
+    ! /opt/runtime-venv/bin/python -c 'import torch' && \
+    ! /opt/runtime-venv/bin/python -c 'import transformers'
 
 # Reconfigure only the current workspace against the locally built foundation
 # and the verified ONNX Runtime GPU SDK.  Explicitly install examples whose waf
 # declarations use install_path=None.
 RUN --mount=type=bind,source=.,target=/src/ndnsf,rw \
     set -eu; cd /src/ndnsf; \
-    [[ "$FOUNDATION_SOURCE_REVISION" =~ ^[a-f0-9]{40}$ ]]; \
+    find NDNSF-DistributedInference/packaging/python -type d -name build \
+      -prune -exec rm -rf -- {} +; \
+    printf '%s\n' "$FOUNDATION_SOURCE_REVISION" | grep -Eq '^[a-f0-9]{40}$'; \
     test "$(cat /opt/ndnsf-di/manifest/source-revision)" = "$FOUNDATION_SOURCE_REVISION"; \
     ./waf configure --prefix=$PREFIX --with-examples; \
     ./waf -j"$(nproc)"; ./waf install; \
@@ -110,6 +129,8 @@ RUN --mount=type=bind,source=.,target=/src/ndnsf,rw \
       /opt/venv/bin/pip install --no-deps \
         "./NDNSF-DistributedInference/packaging/python/$profile"; \
     done
+RUN /opt/venv/bin/python /build-contract/verify-python-environment.py \
+      --lock /build-contract/gpu.lock --pip-check
 
 RUN install -D -m 0644 /opt/ndnsf-di/manifest/nfd.conf /etc/ndn/nfd.conf && \
     python3 /build-contract/derive-runtime-packages.py \
@@ -119,7 +140,7 @@ RUN install -D -m 0644 /opt/ndnsf-di/manifest/nfd.conf /etc/ndn/nfd.conf && \
     test -x $PREFIX/bin/App_ServiceController && \
     test -x $PREFIX/bin/di-native-provider && \
     ldd $PREFIX/bin/di-native-provider | grep -F '/opt/onnxruntime/lib/libonnxruntime.so' && \
-    /opt/venv/bin/python -c 'import ndnsf,ndnsf_distributed_inference,ndnsf_distributed_inference.retry,ndnsf_distributed_inference.runtime_v1,ndnsf_distributed_inference.runtime_v1_evidence,torch,onnxruntime,transformers'
+    /opt/venv/bin/python -c 'import ndnsf,ndnsf_distributed_inference,ndnsf_distributed_inference.retry,ndnsf_distributed_inference.runtime_v1,ndnsf_distributed_inference.runtime_v1_evidence,onnxruntime,tokenizers'
 
 FROM ${GPU_RUNTIME_BASE_IMAGE} AS runtime
 ARG SOURCE_REVISION
@@ -151,7 +172,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     rm -rf /var/lib/apt/lists/* /tmp/runtime-system-packages
 COPY --from=gpu-assembler /opt/ndnsf-di /opt/ndnsf-di
 COPY --from=gpu-assembler /opt/onnxruntime /opt/onnxruntime
-COPY --from=gpu-assembler /opt/venv /opt/venv
+COPY --from=gpu-assembler /opt/runtime-venv /opt/venv
 COPY --from=python-runtime /usr/local /usr/local
 COPY packaging/ndnsf-di-container/oci/locks/gpu.lock /opt/ndnsf-di/manifest/gpu.lock
 COPY packaging/ndnsf-di-container/oci/compatibility/gpu-matrix.yaml /opt/ndnsf-di/manifest/gpu-matrix.yaml
@@ -184,7 +205,11 @@ RUN chmod 0755 /usr/local/bin/ndnsf-di-container-entrypoint \
       --root /opt/ndnsf-di --root /opt/onnxruntime --root /opt/venv \
       --root /usr/local/bin --root /usr/local/lib/python3.10 && \
     /opt/venv/bin/python /usr/local/bin/verify-python-environment.py \
-      --lock /opt/ndnsf-di/manifest/gpu.lock && \
+      --lock /opt/ndnsf-di/manifest/gpu.lock \
+      --package-set deploymentPythonPackages --pip-check && \
+    /opt/venv/bin/python -c 'import onnxruntime,tokenizers' && \
+    ! /opt/venv/bin/python -c 'import torch' && \
+    ! /opt/venv/bin/python -c 'import transformers' && \
     test ! -e /root/.ssh && test ! -e /root/.cache/huggingface
 ENV PATH=/opt/venv/bin:/opt/ndnsf-di/current/bin:${PATH} \
     LD_LIBRARY_PATH=/opt/ndnsf-di/current/lib:/opt/onnxruntime/lib \
@@ -198,7 +223,7 @@ ENV PATH=/opt/venv/bin:/opt/ndnsf-di/current/bin:${PATH} \
 USER 65532:65532
 WORKDIR /run/ndnsf-di
 RUN nfd --version && nfdc --version && \
-    /usr/local/bin/ndnsf-di-probe-runtime --mode static
+    /opt/venv/bin/python /usr/local/bin/ndnsf-di-probe-runtime --mode static
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 CMD ["/usr/local/bin/ndnsf-di-probe-runtime", "--mode", "static"]
 ENTRYPOINT ["/usr/local/bin/ndnsf-di-container-entrypoint"]
 CMD ["exec", "/usr/local/bin/ndnsf-di-probe-runtime", "--mode", "static"]

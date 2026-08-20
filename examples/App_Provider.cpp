@@ -509,8 +509,32 @@ main(int argc, char** argv)
         return 2;
       }
 
-      const auto result =
-        provider.fetchAndDecryptLargeData(ndn::Name(largeDataNameText), "/HELLO");
+      // fetchPermissionsFromController() is asynchronous, and
+      // fetchAndDecryptLargeData() waits for Face callbacks while doing a
+      // synchronous application-level fetch.  Run the fetch off the Face
+      // thread and keep the Face event loop alive so this CLI exercises the
+      // same callback path as a real provider instead of timing out before
+      // transport or NAC-ABE can run.
+      std::mutex fetchMutex;
+      std::atomic<bool> fetchDone{false};
+      ndn_service_framework::LargeDataFetchResult fetchResult;
+      std::thread fetchThread([&] {
+        std::this_thread::sleep_for(std::chrono::seconds(3));
+        try {
+          fetchResult = provider.fetchAndDecryptLargeData(
+            ndn::Name(largeDataNameText), "/HELLO");
+        }
+        catch (const std::exception& e) {
+          std::lock_guard<std::mutex> lock(fetchMutex);
+          fetchResult.errorMessage = e.what();
+        }
+        fetchDone.store(true);
+      });
+      while (!fetchDone.load()) {
+        face.processEvents(ndn::time::milliseconds(100));
+      }
+      fetchThread.join();
+      const auto result = fetchResult;
       if (expectLargeDataFailure) {
         if (!result.success && !result.errorMessage.empty()) {
           NDN_LOG_INFO( "LARGE_DATA_UNAUTHORIZED_FAILURE_CLEAN error="

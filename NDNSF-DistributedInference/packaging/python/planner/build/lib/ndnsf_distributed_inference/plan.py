@@ -11,7 +11,8 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 import hashlib
 import json
-from typing import Optional
+from types import MappingProxyType
+from typing import Mapping, Optional
 
 from ndnsf import CollaborationDependency, CollaborationRole
 from .repo_reference import large_data_reference_from_repo_manifest
@@ -444,10 +445,15 @@ class DistributedInferencePlan:
     metadata: dict = field(default_factory=dict)
     planner: PlannerDescriptor = field(default_factory=PlannerDescriptor)
     contention_retry: ContentionRetryPolicy = field(default_factory=ContentionRetryPolicy)
+    result_contract: object | None = None
 
     def dependency_execution(self, *, request_id: str, attempt: int,
                              plan_digest: str, terminal_role: str = "",
-                             evidence_verifier=lambda _fields: True):
+                             evidence_verifier=lambda _fields: True,
+                             role_bindings=None, generation: int = 1,
+                             deadline_ms: int = (1 << 63) - 1,
+                             result_contract=None,
+                             start_callback=None, response_callback=None):
         """Create the maintained R1 local/direct-predecessor authority."""
         from .core import DependencyDrivenExecution
         roles = {role.role for role in self.roles}
@@ -457,10 +463,20 @@ class DistributedInferencePlan:
         terminal = terminal_role or (next(iter(sinks)) if len(sinks) == 1 else "")
         if terminal not in roles:
             raise ValueError("R1 plan requires one explicit terminal role")
+        sealed_result = (
+            result_contract if result_contract is not None
+            else self.result_contract)
+        if role_bindings is not None and sealed_result is None:
+            raise ValueError(
+                "V2 dependency execution requires one sealed ResultContract")
         return DependencyDrivenExecution(
             request_id=request_id, attempt=attempt, plan_digest=plan_digest,
             roles=roles, edges=edges, terminal_role=terminal,
-            evidence_verifier=evidence_verifier)
+            evidence_verifier=evidence_verifier,
+            role_bindings=role_bindings, generation=generation,
+            deadline_ms=deadline_ms, result_contract=sealed_result,
+            start_callback=start_callback,
+            response_callback=response_callback)
 
     def role_map(self) -> dict[str, InferenceRole]:
         return {role.role: role for role in self.roles}
@@ -526,3 +542,100 @@ class DistributedInferencePlan:
 
     def ndnsf_dependencies(self) -> list[CollaborationDependency]:
         return [dep.ndnsf_dependency() for dep in self.dependencies]
+
+
+@dataclass(frozen=True)
+class SealedCollaborationPlan:
+    """Validated DI plan projected onto the generic Collaboration carrier."""
+
+    ack_closed_digest: str
+    placement_input_digest: str
+    placement_decision_digest: str
+    roles: tuple[CollaborationRole, ...]
+    dependencies: tuple[CollaborationDependency, ...]
+    key_scopes: Mapping[str, tuple[str, ...]]
+    role_scopes: Mapping[str, tuple[str, ...]]
+    providers_by_role: Mapping[str, str]
+    artifact_data_names: Mapping[str, str]
+    scope_key_data_names: Mapping[str, str]
+    assignment_payloads_by_role: Mapping[str, bytes]
+
+    def __post_init__(self) -> None:
+        for name in (
+                "ack_closed_digest", "placement_input_digest",
+                "placement_decision_digest"):
+            value = getattr(self, name)
+            if (not isinstance(value, str) or len(value) != 71
+                    or not value.startswith("sha256:")):
+                raise ValueError(f"{name} must be a canonical sha256 digest")
+        roles = tuple(self.roles)
+        role_names = tuple(role.role for role in roles)
+        if (not roles or len(set(role_names)) != len(role_names)
+                or set(self.providers_by_role) != set(role_names)
+                or set(self.assignment_payloads_by_role) != set(role_names)):
+            raise ValueError("sealed collaboration plan does not cover every role")
+        for dependency in self.dependencies:
+            if (not set(dependency.producers).issubset(set(role_names))
+                    or not set(dependency.consumers).issubset(set(role_names))):
+                raise ValueError("sealed dependency references an unknown role")
+        object.__setattr__(self, "roles", roles)
+        object.__setattr__(self, "dependencies", tuple(self.dependencies))
+        for name in (
+                "key_scopes", "role_scopes", "providers_by_role",
+                "artifact_data_names", "scope_key_data_names",
+                "assignment_payloads_by_role"):
+            value = getattr(self, name)
+            if name in ("key_scopes", "role_scopes"):
+                normalized = {
+                    str(key): tuple(items) for key, items in value.items()
+                }
+            elif name == "assignment_payloads_by_role":
+                normalized = {
+                    str(key): bytes(item) for key, item in value.items()
+                }
+            else:
+                normalized = {
+                    str(key): str(item) for key, item in value.items()
+                }
+            object.__setattr__(self, name, MappingProxyType(normalized))
+
+    @property
+    def plan_digest(self) -> str:
+        plain = {
+            "ack_closed_digest": self.ack_closed_digest,
+            "placement_input_digest": self.placement_input_digest,
+            "placement_decision_digest": self.placement_decision_digest,
+            "roles": [{
+                "role": role.role,
+                "service": role.service,
+                "artifact": role.artifact,
+                "dynamic": role.allow_dynamic_provisioning,
+                "timeout_ms": role.provisioning_timeout_ms,
+                "min": role.min_providers,
+                "max": role.max_providers,
+            } for role in self.roles],
+            "dependencies": [{
+                "producers": list(dep.producers),
+                "consumers": list(dep.consumers),
+                "key_scope": dep.key_scope,
+                "topic_prefix": dep.topic_prefix,
+                "required": dep.required,
+            } for dep in self.dependencies],
+            "key_scopes": {
+                key: list(value) for key, value in self.key_scopes.items()
+            },
+            "role_scopes": {
+                key: list(value) for key, value in self.role_scopes.items()
+            },
+            "providers_by_role": dict(self.providers_by_role),
+            "artifact_data_names": dict(self.artifact_data_names),
+            "scope_key_data_names": dict(self.scope_key_data_names),
+            "assignment_payloads": {
+                key: value.hex()
+                for key, value in self.assignment_payloads_by_role.items()
+            },
+        }
+        wire = json.dumps(
+            plain, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")
+        return "sha256:" + hashlib.sha256(wire).hexdigest()

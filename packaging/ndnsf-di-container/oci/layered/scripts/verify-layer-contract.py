@@ -54,7 +54,26 @@ def run(workspace: Path) -> dict[str, object]:
         platform["baseImages"]["gpuBuild"] == platform["baseImages"]["gpuRuntime"],
         "UNNECESSARY_CUDA_DEVEL_BASE",
     )
-    require(ml["pythonPackages"] == old["pythonPackages"], "ML_PYTHON_LOCK_DRIFT")
+    # The layered ML lock owns only the ML layer.  The legacy GPU lock also
+    # carries the foundation's crypto wheel closure, so exact dictionary
+    # equality would falsely reject the intentional layer split.  Shared
+    # package versions must still be byte-for-byte equal.
+    for name, version in ml["pythonPackages"].items():
+        require(old["pythonPackages"].get(name) == version,
+                f"ML_PYTHON_LOCK_VERSION_DRIFT:{name}")
+    require(
+        set(old["pythonPackages"]) - set(ml["pythonPackages"])
+        == {"cffi", "cryptography", "pycparser"},
+        "ML_PYTHON_LOCK_OWNER_SPLIT_INVALID",
+    )
+    deployment = {name.lower() for name in ml.get("deploymentPythonPackages", {})}
+    require({"onnxruntime-gpu", "tokenizers"} <= deployment,
+            "ML_DEPLOYMENT_PYTHON_CLOSURE_INCOMPLETE")
+    require(not deployment.intersection({"torch", "transformers"}),
+            "ML_DEPLOYMENT_FORBIDDEN_PYTHON_PRESENT")
+    exporter = {name.lower() for name in ml.get("offlineExporterPackages", {})}
+    require({"torch", "transformers"} <= exporter,
+            "ML_OFFLINE_EXPORTER_CONTRACT_INCOMPLETE")
     require(
         ml["pythonSystemProvidedPackages"] == old["pythonSystemProvidedPackages"],
         "ML_SYSTEM_CUDA_LOCK_DRIFT",
@@ -112,6 +131,11 @@ def run(workspace: Path) -> dict[str, object]:
         "FROM ${GPU_RUNTIME_BASE_IMAGE} AS ml-runtime",
         "verify-python-environment.py",
         "verify-runtime-closure.py",
+        "deploymentPythonPackages",
+        "/opt/runtime-venv",
+        "import onnxruntime,tokenizers",
+        "import torch",
+        "import transformers",
         "models-included=\"false\"",
     ):
         require(marker in docker_ml, f"ML_DOCKER_MARKER_MISSING:{marker}")

@@ -99,12 +99,19 @@ NdnsfIntegrationEnvironment::NdnsfIntegrationEnvironment(BootstrapProfile profil
       makeSecurityOptions(*m_keyChain));
   m_svsOptions.useTimestamp = false;
 
+  // Production ServiceUser appends a numeric process session to its SVS
+  // producer node.  Keep that shape in the in-process fixture so the real
+  // provider freshness gate exercises the same contract.
+  auto userSvsNode = m_profile.userNode;
+  userSvsNode.append("0");
   m_userPubSub = std::make_unique<ndn::svs::SVSPubSub>(
-      m_profile.syncPrefix, m_profile.userNode, *m_userFace,
+      m_profile.syncPrefix, userSvsNode, *m_userFace,
       [] (const std::vector<ndn::svs::MissingDataInfo>&) {},
       m_svsOptions, *m_securityOptions);
+  auto providerSvsNode = m_profile.providerNode;
+  providerSvsNode.append("0");
   m_providerPubSub = std::make_unique<ndn::svs::SVSPubSub>(
-      m_profile.syncPrefix, m_profile.providerNode, *m_providerFace,
+      m_profile.syncPrefix, providerSvsNode, *m_providerFace,
       [] (const std::vector<ndn::svs::MissingDataInfo>&) {},
       m_svsOptions, *m_securityOptions);
 
@@ -117,12 +124,19 @@ NdnsfIntegrationEnvironment::NdnsfIntegrationEnvironment(BootstrapProfile profil
   m_provider = std::make_unique<ServiceProvider>(
       ServiceProvider::LocalMockTag{}, *m_providerFace, m_profile.groupPrefix,
       providerCert, aaCert, m_profile.trustSchemaPath);
+  m_provider->useSigningKeyChainForTest(*m_keyChain);
+  // Collaboration handlers can wait for dependency work posted to the Face
+  // io_context. Run them off that event loop, as the production constructor
+  // does, while keeping generic LocalMockTag unit tests deterministic/inline.
+  m_provider->setHandlerThreads(1);
+  m_provider->setAckThreads(1);
 
   const auto providerCount = std::max<size_t>(1, m_profile.providerCount);
   for (size_t index = 1; index < providerCount; ++index) {
     auto face = std::make_unique<ndn::DummyClientFace>(
         m_providerIo, *m_keyChain, faceOptions);
-    const auto node = indexedName(m_profile.providerNode, index);
+    auto node = indexedName(m_profile.providerNode, index);
+    node.append("0");
     m_extraProviderPubSubs.push_back(std::make_unique<ndn::svs::SVSPubSub>(
         m_profile.syncPrefix, node, *face,
         [] (const std::vector<ndn::svs::MissingDataInfo>&) {},
@@ -132,6 +146,9 @@ NdnsfIntegrationEnvironment::NdnsfIntegrationEnvironment(BootstrapProfile profil
     m_extraProviders.push_back(std::make_unique<ServiceProvider>(
         ServiceProvider::LocalMockTag{}, *face, m_profile.groupPrefix,
         certificate, aaCert, m_profile.trustSchemaPath));
+    m_extraProviders.back()->useSigningKeyChainForTest(*m_keyChain);
+    m_extraProviders.back()->setHandlerThreads(1);
+    m_extraProviders.back()->setAckThreads(1);
     m_extraProviderFaces.push_back(std::move(face));
   }
 
@@ -175,6 +192,32 @@ NdnsfIntegrationEnvironment::NdnsfIntegrationEnvironment(BootstrapProfile profil
 }
 
 NdnsfIntegrationEnvironment::~NdnsfIntegrationEnvironment() = default;
+
+void
+NdnsfIntegrationEnvironment::enableProviderProductionIngressForTest()
+{
+  auto attach = [] (ServiceProvider& provider, ndn::svs::SVSPubSub& pubSub) {
+    auto nonOwning = std::shared_ptr<ndn::svs::SVSPubSub>(
+        &pubSub, [] (ndn::svs::SVSPubSub*) {});
+    provider.attachLocalMockPubSubForTest(std::move(nonOwning));
+    provider.init();
+  };
+
+  attach(*m_provider, *m_providerPubSub);
+  for (size_t index = 1; index < providerCount(); ++index) {
+    attach(*m_extraProviders[index - 1], *m_extraProviderPubSubs[index - 1]);
+  }
+}
+
+void
+NdnsfIntegrationEnvironment::enableProductionIngressForTest()
+{
+  auto userPubSub = std::shared_ptr<ndn::svs::SVSPubSub>(
+      m_userPubSub.get(), [] (ndn::svs::SVSPubSub*) {});
+  m_user->attachLocalMockPubSubForTest(std::move(userPubSub));
+  m_user->init();
+  enableProviderProductionIngressForTest();
+}
 
 void
 NdnsfIntegrationEnvironment::installPermissions()

@@ -7,7 +7,7 @@ native adapters; policy and model semantics do not belong here.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field, fields as dataclass_fields, is_dataclass
+from dataclasses import dataclass, field, fields as dataclass_fields, is_dataclass
 from enum import Enum
 import base64
 import hashlib
@@ -40,7 +40,13 @@ def to_plain(value: Any) -> Any:
     if isinstance(value, Enum):
         return value.value
     if is_dataclass(value):
-        return {key: to_plain(item) for key, item in asdict(value).items()}
+        # Avoid dataclasses.asdict(): it deep-copies MappingProxyType fields
+        # used by sealed V3 contracts and therefore fails before canonical
+        # serialization. Walk fields directly, as the SDK serializer does.
+        return {
+            item.name: to_plain(getattr(value, item.name))
+            for item in dataclass_fields(value)
+        }
     if isinstance(value, Mapping):
         return {str(key): to_plain(item) for key, item in value.items()}
     if isinstance(value, (tuple, list, set, frozenset)):

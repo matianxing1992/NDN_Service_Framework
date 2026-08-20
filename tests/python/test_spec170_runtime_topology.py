@@ -21,6 +21,8 @@ class Spec170RuntimeTopologyTest(unittest.TestCase):
             DeviceTopologyProfile("p", ("cuda:0", "cuda:0"), "cuda")
         with self.assertRaises(ValueError):
             DeviceTopologyProfile("p", ("gpu0",), "cuda")
+        with self.assertRaises(ValueError):
+            DeviceTopologyProfile("p", ("cpu",), "cpu")
 
     def test_resource_snapshot_is_bounded(self):
         with self.assertRaises(ValueError):

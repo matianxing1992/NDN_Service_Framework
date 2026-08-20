@@ -34,6 +34,8 @@ from ...splitter import (
     TensorEdgeView,
     canonical_contract_digest,
 )
+from ...core.hybrid_contracts import RedistributionEdge
+from .parallel import seal_qwen_hybrid_plan
 
 
 QWEN36_27B_MODEL = "Qwen/Qwen3.6-27B"
@@ -86,11 +88,15 @@ class QwenThreeStageSplitter:
     artifact_digests_by_role: Mapping[str, str]
     weight_bytes_by_role: Mapping[str, int]
     layer_ranges: tuple[tuple[int, int], ...]
+    tensor_degrees: tuple[int, ...] = (1, 1, 1)
+    rank_artifact_digests_by_role: Mapping[str, tuple[str, ...]] | None = None
+    redistributions: tuple[RedistributionEdge, ...] = ()
     roles: tuple[str, ...] = QWEN36_STAGE_ROLES
 
     def __post_init__(self) -> None:
         ranges = tuple((int(start), int(end))
                        for start, end in self.layer_ranges)
+        degrees = tuple(int(value) for value in self.tensor_degrees)
         if (len(ranges) != len(self.roles) or not ranges
                 or ranges[0][0] != 0
                 or any(start < 0 or end <= start for start, end in ranges)
@@ -99,7 +105,38 @@ class QwenThreeStageSplitter:
                 or set(self.artifact_digests_by_role) != set(self.roles)
                 or set(self.weight_bytes_by_role) != set(self.roles)):
             raise ValueError("Qwen stage ranges and artifacts are inconsistent")
+        if (len(degrees) != len(self.roles)
+                or any(value < 1 for value in degrees)):
+            raise ValueError("Qwen tensor-degree cover is incomplete")
+        rank_artifacts = {
+            str(role): tuple(values)
+            for role, values in (self.rank_artifact_digests_by_role or {}).items()
+        }
+        if not rank_artifacts:
+            if any(value != 1 for value in degrees):
+                raise ValueError("Qwen hybrid ranks require explicit artifacts")
+            rank_artifacts = {
+                role: (str(self.artifact_digests_by_role[role]),)
+                for role in self.roles
+            }
+        if set(rank_artifacts) != set(self.roles):
+            raise ValueError("Qwen rank-artifact role cover is incomplete")
+        for role, degree in zip(self.roles, degrees):
+            values = rank_artifacts[role]
+            if (len(values) != degree or len(set(values)) != len(values)
+                    or values[0] != self.artifact_digests_by_role[role]):
+                raise ValueError("Qwen rank-artifact cover is incomplete")
+            for value in values:
+                _normalize_digest(value)
         object.__setattr__(self, "layer_ranges", ranges)
+        object.__setattr__(self, "tensor_degrees", degrees)
+        object.__setattr__(self, "rank_artifact_digests_by_role", rank_artifacts)
+        object.__setattr__(self, "redistributions", tuple(self.redistributions))
+        hybrid_plan = seal_qwen_hybrid_plan(
+            tensor_degrees=degrees,
+            redistributions=self.redistributions,
+        )
+        object.__setattr__(self, "_hybrid_plan", hybrid_plan)
 
     def enumerate_candidates(
         self, model: ModelDescriptor, graph: ModelGraphSnapshot,
@@ -126,12 +163,15 @@ class QwenThreeStageSplitter:
             for index in range(len(self.roles) - 1)
         )
         artifacts = {
-            role: (_normalize_digest(self.artifact_digests_by_role[role]),)
+            role: tuple(_normalize_digest(value) for value in
+                        self.rank_artifact_digests_by_role[role])
             for role in self.roles
         }
         requirements = {
             role: RoleResourceRequirement(
-                backends=("transformers", "cuda", "transformers-cpu"),
+                # The role requests the model-agnostic ONNX Runtime family;
+                # ACK offers bind the concrete CPU or CUDA execution provider.
+                backends=("onnxruntime",),
                 weight_bytes=int(self.weight_bytes_by_role[role]),
                 workspace_bytes=1024 * 1024 * 1024,
                 kv_bytes=0,
@@ -159,10 +199,14 @@ class QwenThreeStageSplitter:
             cross_partition_tensors=cut_edges,
             estimated_costs={
                 "role_count": len(self.roles),
+                "rank_count": sum(self.tensor_degrees),
                 "decoder_layers": decoder_layers,
                 "known_transfer_bytes": 0,
                 "unknown_transfer_tensors": 2,
             },
+            tensor_degrees_by_role=dict(zip(self.roles, self.tensor_degrees)),
+            rank_artifact_digests_by_role=artifacts,
+            hybrid_plan=self._hybrid_plan,
         )
         candidate.validate_against(graph)
         return (candidate,)
@@ -175,6 +219,9 @@ def build_qwen_three_stage_adapter(
     layer_ranges: tuple[tuple[int, int], ...],
     artifact_digests_by_role: Mapping[str, str],
     weight_bytes_by_role: Mapping[str, int],
+    tensor_degrees: tuple[int, ...] = (1, 1, 1),
+    rank_artifact_digests_by_role: Mapping[str, tuple[str, ...]] | None = None,
+    redistributions: tuple[RedistributionEdge, ...] = (),
     precision: str = "bfloat16",
     adapter_name: str = "qwen-three-stage-pipeline",
 ) -> ModelFamilyAdapter:
@@ -203,9 +250,9 @@ def build_qwen_three_stage_adapter(
         version="1.0.0",
         state_digest=_digest("adapter-state"),
         abi="python-v1",
-        model_formats=("transformers-stage-package",),
+        model_formats=("onnx",),
         tasks=("text-generation",),
-        backends=("transformers", "cuda", "transformers-cpu"),
+        backends=("onnxruntime-cuda", "onnxruntime-cpu"),
         precisions=(precision,),
         input_schema_digest=input_schema,
         options_schema_digest=options_schema,
@@ -276,6 +323,9 @@ def build_qwen_three_stage_adapter(
         dict(artifact_digests_by_role),
         {role: int(value) for role, value in weight_bytes_by_role.items()},
         ranges,
+        tuple(tensor_degrees),
+        rank_artifact_digests_by_role,
+        tuple(redistributions),
     )
     task = BytesGenerationTaskAdapter(
         AdapterPortDescriptor(

@@ -37,7 +37,8 @@ def sha256(path: Path) -> str:
 
 def build_command(
         label: str, system: str, provider_scope: str, output_dir: Path,
-        trace: Path, build_dir: Path, seed: int) -> list[str]:
+        trace: Path, build_dir: Path, seed: int,
+        ndnsf_response_retry: bool = False) -> list[str]:
     command = [
         "sudo", "-n", "env", f"NDNSF_MOBILITY_BUILD_DIR={build_dir}",
         sys.executable, str(HARNESS),
@@ -65,7 +66,7 @@ def build_command(
         "--campaign-id", f"spec171-provider-transition-{label}",
         "--output-dir", str(output_dir),
     ]
-    if system == "ndnsf":
+    if system == "ndnsf" and ndnsf_response_retry:
         command.append("--ndnsf-response-retry")
     if provider_scope:
         command.extend(("--provider-scope", provider_scope))
@@ -74,7 +75,7 @@ def build_command(
 
 def build_manifest(
         output_root: Path, trace: Path, build_dir: Path, seed: int,
-        replay: int) -> dict:
+        replay: int, ndnsf_response_retry: bool = False) -> dict:
     replay_root = output_root / f"replay-{replay}"
     cells = []
     for label, system, scope in CELLS:
@@ -86,10 +87,11 @@ def build_manifest(
                 "ucla", "wustl", "uiuc", "arizona"],
             "output_dir": str(cell_dir.resolve()),
             "command": build_command(
-                label, system, scope, cell_dir, trace, build_dir, seed),
+                label, system, scope, cell_dir, trace, build_dir, seed,
+                ndnsf_response_retry),
         })
     return {
-        "schema": "spec171-provider-transition-campaign-v1",
+        "schema": "spec171-provider-transition-campaign-v2",
         "replay": replay,
         "seed": seed,
         "trace": str(trace.resolve()),
@@ -106,6 +108,7 @@ def build_manifest(
             "health_routing": False,
             "admission_control": False,
             "block_network": True,
+            "ndnsf_response_retry": bool(ndnsf_response_retry),
         },
         "cells": cells,
     }
@@ -113,10 +116,11 @@ def build_manifest(
 
 def run_replay(
         output_root: Path, trace: Path, build_dir: Path, seed: int,
-        replay: int) -> int:
+        replay: int, ndnsf_response_retry: bool = False) -> int:
     replay_root = output_root / f"replay-{replay}"
     replay_root.mkdir(parents=True, exist_ok=True)
-    manifest = build_manifest(output_root, trace, build_dir, seed, replay)
+    manifest = build_manifest(
+        output_root, trace, build_dir, seed, replay, ndnsf_response_retry)
     manifest_path = replay_root / "campaign-manifest.json"
     if manifest_path.exists():
         retained = json.loads(manifest_path.read_text())
@@ -153,10 +157,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=REPO / "build-new-svs-20260808")
     parser.add_argument("--seed", type=int, default=171)
     parser.add_argument("--replay", type=int, required=True)
+    parser.add_argument(
+        "--ndnsf-response-retry", action="store_true",
+        help="explicitly enable bounded NDNSF Response-timeout reselection",
+    )
     args = parser.parse_args(argv)
     return run_replay(
         args.output_root.resolve(), args.trace.resolve(),
-        args.build_dir.resolve(), args.seed, args.replay)
+        args.build_dir.resolve(), args.seed, args.replay,
+        args.ndnsf_response_retry)
 
 
 if __name__ == "__main__":

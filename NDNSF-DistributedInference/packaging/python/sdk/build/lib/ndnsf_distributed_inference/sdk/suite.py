@@ -12,7 +12,7 @@ from .contracts import POLICY_KINDS
 
 class OptimizationSuite:
     def __init__(self, policies: dict[str, Any], *, name: str, version: str,
-                 state_digest: str) -> None:
+                 state_digest: str, placement_strategy=None) -> None:
         unknown = set(policies) - set(POLICY_KINDS)
         if unknown:
             raise ValueError(f"unknown policy kinds: {sorted(unknown)}")
@@ -22,6 +22,7 @@ class OptimizationSuite:
         self.name = name
         self.version = version
         self.state_digest = state_digest
+        self._placement_strategy = placement_strategy
 
     @classmethod
     def defaults(cls) -> "OptimizationSuiteBuilder":
@@ -30,6 +31,12 @@ class OptimizationSuite:
 
     def policy_names(self) -> tuple[str, ...]:
         return tuple(kind for kind in POLICY_KINDS if kind in self._policies)
+
+    def joint_placement_strategy(self):
+        """Return the V2 authority; ten-policy suites are compatibility only."""
+        if self._placement_strategy is None:
+            raise KeyError("suite has no joint placement strategy")
+        return self._placement_strategy
 
     def policy(self, kind: str) -> Any:
         if kind not in POLICY_KINDS:
@@ -51,7 +58,8 @@ class OptimizationSuite:
                 used_default[kind] = True
         return OptimizationSuite(
             merged, name=self.name, version=self.version,
-            state_digest=self.state_digest), used_default
+            state_digest=self.state_digest,
+            placement_strategy=self._placement_strategy), used_default
 
     def descriptor(self) -> dict[str, Any]:
         return {

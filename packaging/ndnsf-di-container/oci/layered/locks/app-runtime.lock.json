@@ -23,7 +23,7 @@
   "buildCompatibilityPatches": {
     "ndn-svs-boost-1.71": {
       "path": "packaging/ndnsf-di-container/oci/layered/patches/ndn-svs-boost-1.71.patch",
-      "sha256": "bf35cc763bc8339a17e57896b390d3f855335439d1480e410c7fd847437e5653",
+      "sha256": "5f43f4d797c80ee3afaf80820f7bc395f362b84aebd892b785d5c7fbca6d3aed",
       "scope": "build-only sealed ndn-svs wscript compatibility",
       "allowedChanges": [
         "BOOST_VERSION_NUMBER < 107400 -> BOOST_VERSION_NUMBER < 107100",

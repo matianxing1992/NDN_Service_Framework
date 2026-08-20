@@ -25,7 +25,7 @@ GRAPH = "sha256:" + "2" * 64
 
 
 def offer(*, disposition=ExecutionDisposition.ACCEPT_IF_EXACT_REUSE,
-          status=True, preparation=False, devices=("cpu",), residency=True):
+          status=True, preparation=False, devices=(), residency=True):
     topology = DeviceTopologyProfile("p0", devices, "cpu")
     proof = ()
     if residency:
