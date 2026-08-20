@@ -27,6 +27,14 @@ ROOT = Path(__file__).resolve().parents[2]
 RUNNER = ROOT / "Experiments/NDNSF_DI_LlmPipeline_Minindn.py"
 NATIVE_TRACER_RUNNER = ROOT / "Experiments/NDNSF_DI_NativeTracer_Minindn.py"
 SPEC170_EVIDENCE = ROOT / "specs/170-reusable-layer-artifacts/evidence"
+SPEC174_WORKLOAD_FIXTURES = {
+    "spec170-d0-current-sif-workload.sh": (
+        ROOT / "tests/fixtures/spec174/spec174-d0-sif-workload.sh"
+    ),
+    "spec170-d1-current-sif-workload.sh": (
+        ROOT / "tests/fixtures/spec174/spec174-d1-sif-workload.sh"
+    ),
+}
 DEFAULT_APPTAINER = "/opt/apptainer/1.5.3/bin/apptainer"
 
 
@@ -111,7 +119,7 @@ class RealMiniNdnGateTest(unittest.TestCase):
         for workload_name in (
                 "spec170-d0-current-sif-workload.sh",
                 "spec170-d1-current-sif-workload.sh"):
-            source = (SPEC170_EVIDENCE / workload_name).read_text(
+            source = SPEC174_WORKLOAD_FIXTURES[workload_name].read_text(
                 encoding="utf-8")
             self.assertIn('cd "$BUNDLE"', source)
             self.assertIn('exec env "$provider_pib" "$provider_tpm"', source)
@@ -160,7 +168,7 @@ class RealMiniNdnGateTest(unittest.TestCase):
         self.assertTrue(source_bundle.is_dir(),
                         f"missing exact SIF bundle: {source_bundle}")
         apptainer = self._assert_exact_sif_apptainer_version()
-        workload = SPEC170_EVIDENCE / workload_name
+        workload = SPEC174_WORKLOAD_FIXTURES[workload_name]
         self.assertTrue(workload.is_file(), f"missing workload: {workload}")
 
         with tempfile.TemporaryDirectory(
@@ -270,7 +278,8 @@ class RealMiniNdnGateTest(unittest.TestCase):
         self._run_exact_sif_dependency_workload(
             "spec170-d1-current-sif-workload.sh", "d1-current-incontainer")
 
-    def _run_real_native_tracer(self, assignment: str) -> None:
+    def _run_real_native_tracer(
+            self, assignment: str, *, retain_dir: Path | None = None) -> dict:
         """Run the production NativeTracer path, not a fixture-only harness.
 
         This gate intentionally uses the real ORT CPU runner.  The
@@ -305,6 +314,7 @@ class RealMiniNdnGateTest(unittest.TestCase):
                 "--overload-fast-fail-timeout-ms", "15000",
             ])
         command.extend(["--out", str(output_dir)])
+        summary: dict = {}
         try:
             result = subprocess.run(
                 command, cwd=ROOT, text=True, capture_output=True,
@@ -427,7 +437,26 @@ class RealMiniNdnGateTest(unittest.TestCase):
                 "sudo", "-n", "chown", "-R",
                 f"{os.getuid()}:{os.getgid()}", str(workspace),
             ], check=False, capture_output=True)
+            if retain_dir is not None and workspace.exists():
+                retain_dir.mkdir(parents=True, exist_ok=True)
+                for relative in (
+                        Path("summary.json"),
+                        Path("assignment.csv"),
+                        Path("policy-bundle/native-execution-plan.json"),
+                        Path("policy-bundle/service-manifest.json")):
+                    source = workspace / "run" / relative
+                    if source.is_file():
+                        destination = retain_dir / relative
+                        destination.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(source, destination)
+                source_logs = workspace / "run" / "logs"
+                if source_logs.is_dir():
+                    destination_logs = retain_dir / "logs"
+                    destination_logs.mkdir(parents=True, exist_ok=True)
+                    for source in source_logs.glob("*.log"):
+                        shutil.copy2(source, destination_logs / source.name)
             shutil.rmtree(workspace, ignore_errors=True)
+        return summary
 
     @unittest.skipUnless(
         os.environ.get("SPEC170_RUN_REAL_NATIVE_MININDN") == "1",
