@@ -98,7 +98,6 @@ struct Options
   bool serve = false;
   bool noServeCertificates = false;
   bool disableTokens = false;
-  std::string bootstrapToken;
   bool wiringCheckOnly = false;
   bool tracerDeterministicRunner = false;
   bool enableAdmissionLease = false;
@@ -1415,6 +1414,12 @@ main(int argc, char** argv)
             config.providerBootId = providerBootId;
             config.planDigest = sha256File(options.planPath);
             config.executionPolicy = plan.executionPolicy;
+            // The NativeTracer workload currently seals the V3 role payload
+            // against artifacts materialized before Provider startup. Keep
+            // this explicit rollback path enabled for that existing runner;
+            // request-scoped assembly remains the normal path whenever a
+            // runnerPreparationFactory is installed.
+            config.allowPreassembledV3Compatibility = true;
             config.requireExecutionAttemptBinding = options.requireExecutionLease;
             // Execution leases bind the attempt and resources. They are not a
             // global ReadySet barrier: DATA_DRIVEN_V2 roles start after local

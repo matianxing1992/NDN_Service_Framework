@@ -615,8 +615,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--controller", default=CONTROLLER)
     parser.add_argument("--user", default=USER)
     parser.add_argument("--trust-schema", default="examples/trust-schema.conf")
-    parser.add_argument("--bootstrap-token", default="",
-                        help="Controller bootstrap token for this user identity")
     parser.add_argument("--ack-timeout-ms", type=int, default=1200)
     parser.add_argument("--timeout-ms", type=int, default=20000)
     parser.add_argument("--permission-wait-ms", type=int, default=2500)
