@@ -82,7 +82,7 @@ def dirty_entries(repo: Path) -> list[tuple[str, str]]:
 def is_excluded(path: str) -> bool:
     parts = Path(path).parts
     name = Path(path).name.lower()
-    if path.startswith(("docs/", "specs/", ".specify/")):
+    if path.startswith(("docs/", "specs/", ".specify/")) or "/docs/" in path:
         return True
     if any(part.startswith(".") for part in Path(path).parts):
         return True
