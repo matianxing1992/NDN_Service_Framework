@@ -65,6 +65,10 @@ from ndnsf_distributed_inference.sdk.placement import (
     ProviderSelectionProjectionV3,
     RoleAssemblySpec,
     RoleDataflowContract,
+    ReadinessMode,
+    ReadinessPredicate,
+    TensorEndpoint,
+    TensorEndpointSource,
 )
 
 
@@ -708,7 +712,10 @@ def parse_semicolon_fields(payload: bytes | str) -> dict[str, str]:
 
 def execution_lease_plan_digest(plan_path: str) -> str:
     """Use the exact native-plan file identity advertised by Providers."""
-    return "sha256:" + hashlib.sha256(Path(plan_path).read_bytes()).hexdigest().upper()
+    # TensorObjectManifestV1 uses the canonical lowercase ``sha256:`` form
+    # for every request-scoped digest.  Keeping this identity lowercase also
+    # makes the lease, V3 endpoint, and signed manifest authorities identical.
+    return "sha256:" + hashlib.sha256(Path(plan_path).read_bytes()).hexdigest()
 
 
 def execution_activation_fields(
@@ -1033,6 +1040,160 @@ def _v3_dependency_contracts(service_plan: Mapping[str, Any]) -> tuple[dict, ...
     return tuple(contracts)
 
 
+def _static_v3_dataflow_contracts(
+    *,
+    service_plan: Mapping[str, Any],
+    provider_by_role: Mapping[str, str],
+    request_id: str,
+    attempt: int,
+    plan_digest: str,
+    deadline_ms: int,
+    no_progress_ms: int,
+) -> dict[str, RoleDataflowContract]:
+    """Build the per-role DATA_V1 authority carried by static V3 Selection.
+
+    The static MiniNDN harness still uses the production V3 projection path.
+    Therefore it must carry the same consumer-pull dataflow authority as the
+    automatic planner: producers receive ``may_publish`` endpoints and
+    consumers receive the corresponding ``must_fetch`` endpoints.  Leaving
+    these lists empty silently turns a valid multi-role plan into a set of
+    isolated roles because the native Provider intentionally does not infer
+    wire outputs from the global plan after a V3 projection is selected.
+    """
+
+    if not request_id or not plan_digest or attempt <= 0:
+        raise ValueError("static V3 dataflow identity is incomplete")
+    if deadline_ms <= 0 or no_progress_ms <= 0:
+        raise ValueError("static V3 dataflow deadlines must be positive")
+
+    dependencies = _v3_dependency_contracts(service_plan)
+    role_names = tuple(str(item) for item in service_plan.get("roles", ()))
+    if set(provider_by_role) != set(role_names):
+        raise ValueError("static V3 dataflow roles do not match the plan")
+    if any(not str(provider_by_role[role]) for role in role_names):
+        raise ValueError("static V3 dataflow provider assignment is incomplete")
+
+    may_publish: dict[str, list[TensorEndpoint]] = {
+        role: [] for role in role_names
+    }
+    must_fetch: dict[str, list[TensorEndpoint]] = {
+        role: [] for role in role_names
+    }
+    outgoing_roles: set[str] = set()
+    now_ms = int(time.time() * 1000)
+    requester = request_id if request_id.startswith("/") else "/" + request_id
+    for index, dependency in enumerate(dependencies):
+        redistributions = tuple(dependency.get("redistributions", ()))
+        redistribution = dict(redistributions[0]) if redistributions else {}
+        operation = str(redistribution.get("operation", "PIPELINE"))
+        dependency_tensors = tuple(
+            str(item) for item in dependency.get("tensors", ()) if str(item))
+        tensor_id = str(redistribution.get(
+            "tensor", dependency_tensors[0] if dependency_tensors
+            else dependency["key_scope"]))
+        tensor_digest = str(redistribution.get(
+            "integrityDigest",
+            canonical_digest(dependency.get("tensors", ())),
+        ))
+        layout_digest = str(redistribution.get(
+            "sourceLayoutDigest",
+            canonical_digest({
+                "scope": dependency["key_scope"],
+                "layout": "adapter-certified-opaque",
+            }),
+        ))
+        target_layout_digest = str(redistribution.get(
+            "targetLayoutDigest", layout_digest))
+        group_id = str(dependency.get("groupId", dependency["key_scope"]))
+        group_epoch = str(dependency.get(
+            "groupEpoch", redistribution.get("epoch", f"attempt-{attempt}")))
+        round_id = int(dependency.get("collectiveOperationIndex", index))
+        consumers = tuple(str(role) for role in dependency["consumers"])
+        for producer in tuple(str(role) for role in dependency["producers"]):
+            outgoing_roles.add(producer)
+            if producer not in may_publish:
+                raise ValueError("V3 dependency references an unknown producer")
+            # Native tracer service plans use role names as the role list and
+            # carry rank metadata separately.  Keep rank deterministic for
+            # these static fixtures; runtime plans may override it below.
+            role_metadata = dict(service_plan.get("roleMetadata", {}).get(
+                producer, {}) or {})
+            producer_rank = int(role_metadata.get("rank", 0))
+            producer_namespace = str(provider_by_role[producer])
+            producer_endpoint: TensorEndpoint | None = None
+            for consumer in consumers:
+                if consumer not in must_fetch:
+                    raise ValueError("V3 dependency references an unknown consumer")
+                manifest_digest = canonical_digest({
+                    "requestId": request_id,
+                    "attempt": attempt,
+                    "planDigest": plan_digest,
+                    "group": group_id,
+                    "epoch": group_epoch,
+                    "operation": operation,
+                    "round": round_id,
+                    "producer": producer,
+                    "consumers": consumers,
+                    "tensor": tensor_id,
+                    "tensorDigest": tensor_digest,
+                })
+                endpoint = TensorEndpoint(
+                    producer_namespace=producer_namespace,
+                    requester=requester,
+                    request_id=request_id,
+                    attempt=attempt,
+                    plan_digest=plan_digest,
+                    group_id=group_id,
+                    group_epoch=group_epoch,
+                    operation=operation,
+                    round=round_id,
+                    source_kind=TensorEndpointSource.ROLE,
+                    producer_role=producer,
+                    producer_rank=producer_rank,
+                    consumer_role=consumer,
+                    tensor_id=tensor_id,
+                    tensor_digest=tensor_digest,
+                    layout_digest=layout_digest,
+                    microbatch=0,
+                    segment_count=_DATA_V1_MAX_SEGMENTS,
+                    manifest_digest=manifest_digest,
+                    security_profile="NDNSF_DATA_V1",
+                    no_progress_deadline_ms=no_progress_ms,
+                    hard_deadline_ms=max(1, deadline_ms - now_ms),
+                    consumer_roles=consumers,
+                    target_layout_digest=target_layout_digest,
+                )
+                if producer_endpoint is None:
+                    producer_endpoint = endpoint
+                must_fetch[consumer].append(endpoint)
+            if producer_endpoint is not None:
+                may_publish[producer].append(producer_endpoint)
+
+    terminal_roles = sorted(set(role_names) - outgoing_roles)
+    if len(terminal_roles) != 1:
+        raise ValueError("V3 plan must have exactly one terminal Response owner")
+    contracts: dict[str, RoleDataflowContract] = {}
+    for role in role_names:
+        fetches = tuple(must_fetch[role])
+        wait_for = (() if not fetches else (
+            ReadinessPredicate(
+                mode=ReadinessMode.ALL,
+                endpoint_digests=tuple(item.endpoint_digest for item in fetches),
+            ),
+        ))
+        contracts[role] = RoleDataflowContract(
+            request_id=request_id,
+            attempt=attempt,
+            plan_digest=plan_digest,
+            role=role,
+            may_publish=tuple(may_publish[role]),
+            must_fetch=fetches,
+            wait_for=wait_for,
+            terminal_response_owner=(role == terminal_roles[0]),
+        )
+    return contracts
+
+
 def _validated_data_v1_key_offer(candidate, provider: str) -> tuple[bytes, str]:
     fields = dict(getattr(candidate, "selection_input_key_offer", {}) or {})
     required = {
@@ -1192,7 +1353,20 @@ def build_static_v3_selection_commit(
             plan_digest=plan_digest,
         )
 
+    configured_no_progress_ms = (
+        2000 if no_progress_ms is None else int(no_progress_ms))
+    if configured_no_progress_ms <= 0:
+        raise ValueError("NDNSF_DATA_V1 no-progress bound must be positive")
     dependencies = _v3_dependency_contracts(service_plan)
+    dataflow_contracts = _static_v3_dataflow_contracts(
+        service_plan=service_plan,
+        provider_by_role=provider_by_role,
+        request_id=str(closed.request_id),
+        attempt=1,
+        plan_digest=plan_digest,
+        deadline_ms=deadline_ms,
+        no_progress_ms=configured_no_progress_ms,
+    )
     data_v1_dependencies = tuple(
         (index, dependency)
         for index, dependency in enumerate(dependencies)
@@ -1250,10 +1424,6 @@ def build_static_v3_selection_commit(
         })
 
     wrapper = group_epoch_key_wrapper or _native_group_epoch_key_wrapper
-    configured_no_progress_ms = (
-        2000 if no_progress_ms is None else int(no_progress_ms))
-    if configured_no_progress_ms <= 0:
-        raise ValueError("NDNSF_DATA_V1 no-progress bound must be positive")
     capability_by_provider: dict[str, str] = {}
     remaining_ms = max(1, int(deadline_ms) - int(time.time() * 1000))
     for component_index, member_set in enumerate(sorted(
@@ -1371,9 +1541,7 @@ def build_static_v3_selection_commit(
             layer_end=assembly.layer_end, backend=assembly.backend,
             adapter_id=assembly.adapter_id,
             adapter_version=assembly.adapter_version)
-        dataflow = RoleDataflowContract(
-            request_id=str(closed.request_id), attempt=1,
-            plan_digest=plan_digest, role=assembly.role)
+        dataflow = dataflow_contracts[assembly.role]
         cpu = assembly.backend.endswith("-cpu")
         device_binding = DeviceBinding(
             mode=(DeviceBindingMode.CPU if cpu

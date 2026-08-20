@@ -40,6 +40,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <numeric>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -150,7 +151,11 @@ sha256File(const std::string& path)
         reinterpret_cast<const uint8_t*>(buffer.data()), static_cast<std::size_t>(count)));
     }
   }
-  return "sha256:" + digest.toString();
+  auto hex = digest.toString();
+  std::transform(hex.begin(), hex.end(), hex.begin(), [] (unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
+  });
+  return "sha256:" + hex;
 }
 
 ndn::Buffer
@@ -278,14 +283,41 @@ makeTracerDeterministicRunner(const NativeModelRunnerSpec& spec)
       }
       std::vector<NamedTensor> outputs;
       outputs.reserve(outputNames.size());
+      std::vector<std::int64_t> outputShape{1, 1};
+      if (spec.role == "/Backbone") {
+        outputShape = {1, 16};
+      }
+      else if (spec.role.find("/Head/") != std::string::npos) {
+        outputShape = {1, 8};
+      }
+      else if (spec.role == "/Merge") {
+        outputShape = {1, 4};
+      }
       float value = 1.0f;
       for (const auto& name : outputNames) {
-        outputs.push_back(makeFloat32Tensor(name, {1, 1}, float32Payload({value})));
+        const auto elementCount = static_cast<std::size_t>(
+          std::accumulate(outputShape.begin(), outputShape.end(), std::int64_t{1},
+                          [] (std::int64_t total, std::int64_t dimension) {
+                            return total * dimension;
+                          }));
+        std::vector<float> values(elementCount, value);
+        outputs.push_back(makeFloat32Tensor(name, outputShape, float32Payload(values)));
         value += 1.0f;
       }
+      const bool forceEncodedOutput =
+        spec.metadata.find("forceOutputBundle") != spec.metadata.end();
       std::map<std::string, TensorBundle> byScope;
       for (const auto& scope : outputScopesFromMetadata(spec)) {
-        byScope.emplace(scope, makeEncodedTensorBundle(scope, outputs));
+        if (outputs.size() == 1 && !forceEncodedOutput) {
+          TensorBundle bundle;
+          bundle.name = outputs.front().name;
+          bundle.payload = outputs.front().payload;
+          bundle.expectedBytes = bundle.payload.size();
+          byScope.emplace(scope, std::move(bundle));
+        }
+        else {
+          byScope.emplace(scope, makeEncodedTensorBundle(scope, outputs));
+        }
       }
       return byScope;
     });

@@ -83,7 +83,7 @@ services:
         topic_prefix: /activation
         object_name_template: "{producerProvider}/NDNSF/DI/ACTIVATION/{sessionId}/{keyScope}/{producerRole}/bundle/{sequence}"
         expected_segments: 1
-        expected_bytes: 256
+        expected_bytes: 120
         tensors: [features]
       - producers: [/Backbone]
         consumers: [/Head/Shard/1]
@@ -91,7 +91,7 @@ services:
         topic_prefix: /activation
         object_name_template: "{producerProvider}/NDNSF/DI/ACTIVATION/{sessionId}/{keyScope}/{producerRole}/bundle/{sequence}"
         expected_segments: 1
-        expected_bytes: 256
+        expected_bytes: 120
         tensors: [features]
       - producers: [/Head/Shard/0]
         consumers: [/Merge]
@@ -99,7 +99,7 @@ services:
         topic_prefix: /activation
         object_name_template: "{producerProvider}/NDNSF/DI/ACTIVATION/{sessionId}/{keyScope}/{producerRole}/bundle/{sequence}"
         expected_segments: 1
-        expected_bytes: 128
+        expected_bytes: 32
         tensors: [detections0]
       - producers: [/Head/Shard/1]
         consumers: [/Merge]
@@ -107,7 +107,7 @@ services:
         topic_prefix: /activation
         object_name_template: "{producerProvider}/NDNSF/DI/ACTIVATION/{sessionId}/{keyScope}/{producerRole}/bundle/{sequence}"
         expected_segments: 1
-        expected_bytes: 128
+        expected_bytes: 32
         tensors: [detections1]
     artifacts:
       - role: /Backbone
