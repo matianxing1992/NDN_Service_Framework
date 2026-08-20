@@ -1326,6 +1326,53 @@ namespace ndn_service_framework
         registerNDNSFMessages();
     }
 
+    void
+    ServiceUser::attachLocalMockPubSubForTest(
+        std::shared_ptr<ndn::svs::SVSPubSub> pubSub)
+    {
+        if (pubSub == nullptr) {
+            throw std::invalid_argument(
+                "ServiceUser LocalMock PubSub cannot be null");
+        }
+        if (m_svsps != nullptr) {
+            throw std::logic_error(
+                "ServiceUser PubSub is already initialized");
+        }
+        m_svsps = std::move(pubSub);
+
+        // The LocalMock constructor intentionally skips the production
+        // constructor's Face registrations.  Install the same IMS content
+        // filters here so post-Selection SegmentFetcher Interests can fetch
+        // assignment artifacts from this test user.
+        const ndn::Name ndnsfFilter = ndn::Name(identity.toUri()).append("NDNSF");
+        const ndn::Name ckFilter = ndn::Name(identity.toUri()).append("CK");
+        m_face.setInterestFilter(
+            ndnsfFilter,
+            std::bind(&ServiceUser::onInterest, this, _1, _2),
+            std::bind(&ServiceUser::onPrefixRegisterFailure, this, _1, _2));
+        m_face.setInterestFilter(
+            ckFilter,
+            std::bind(&ServiceUser::onInterest, this, _1, _2),
+            std::bind(&ServiceUser::onPrefixRegisterFailure, this, _1, _2));
+    }
+
+    void
+    ServiceUser::cacheHybridReceiveKeyForTest(const std::string& keyId,
+                                               const std::string& epochId,
+                                               const ndn::Buffer& key)
+    {
+        m_hybridMessageCrypto.cacheReceiveKey(keyId, epochId, key);
+    }
+
+    void
+    ServiceUser::cacheDataForTest(
+        const ndn::Data& data,
+        ndn::time::milliseconds freshness)
+    {
+        std::lock_guard<std::mutex> lock(_cache_mutex);
+        m_IMS.insert(data, freshness);
+    }
+
     ServiceUser::~ServiceUser()
     {
         if (m_svsps != nullptr) {
@@ -1382,6 +1429,11 @@ namespace ndn_service_framework
     void ServiceUser::setRequestPublisher(RequestPublisher publisher)
     {
         m_requestPublisher = std::move(publisher);
+    }
+
+    void ServiceUser::setLocalPublicationHandler(LocalPublicationHandler handler)
+    {
+        m_localPublicationHandler = std::move(handler);
     }
 
     ndn::Buffer ServiceUser::makeGenericAdmissionLeaseSelectionPayload(
@@ -3727,7 +3779,7 @@ namespace ndn_service_framework
         const PreparedServiceRequest& ctx,
         const std::vector<uint8_t>& plaintext,
         const std::string& objectLabel,
-        const ndn::time::milliseconds& freshness)
+        ndn::time::milliseconds freshness)
     {
         LargeDataPublishResult result;
         if (ctx.serviceName.empty()) {
@@ -3838,7 +3890,7 @@ namespace ndn_service_framework
     ndn::Name ServiceUser::publishSignedAppData(
         const ndn::Name& dataName,
         const ndn::Buffer& payload,
-        const ndn::time::milliseconds& freshness)
+        ndn::time::milliseconds freshness)
     {
         ndn::Name allowedPrefix(identity);
         allowedPrefix.append("NDNSF").append("DI");
@@ -3927,7 +3979,7 @@ namespace ndn_service_framework
         const std::string& objectLabel,
         const std::string& objectType,
         size_t thresholdBytes,
-        const ndn::time::milliseconds& freshness)
+        ndn::time::milliseconds freshness)
     {
         LargeDataReferenceRequestResult result;
         if (payload.size() <= thresholdBytes) {
@@ -4868,7 +4920,8 @@ namespace ndn_service_framework
         ResponseHandler onFinalResponse,
         TimeoutHandler onTimeout,
         const RequestId& requestedRequestId,
-        CollaborationAckCoverageHandler onAckCoverage)
+        CollaborationAckCoverageHandler onAckCoverage,
+        const RequestCapabilities& requestCapabilities)
     {
         if (!onAckClosed || ackCollectionTimeMs <= 0 ||
             timeoutMs <= ackCollectionTimeMs) {
@@ -4886,6 +4939,9 @@ namespace ndn_service_framework
         auto payload = initialRequest;
         requestMessage.setPayload(payload, payload.size());
         requestMessage.setStrategy(ndn_service_framework::tlv::AllSelected);
+        if (!requestCapabilities.getFields().empty()) {
+            requestMessage.setRequestCapabilities(requestCapabilities);
+        }
 
         PendingCall pendingCall;
         pendingCall.serviceName = service;
@@ -5460,10 +5516,12 @@ namespace ndn_service_framework
         auto decryptError = std::make_shared<std::string>();
         auto plaintext = std::make_shared<ndn::Buffer>();
 
-        auto finishDecrypt = [this, envelope, responseName, serviceName, requestId, providerName,
+        const ndn::Name logicalResponseName =
+            ndn_service_framework::stripTrailingResponseSegments(responseName);
+        auto finishDecrypt = [this, envelope, logicalResponseName, serviceName, requestId, providerName,
                               plaintext, decryptCompleted, decryptMutex, decryptCv, decryptError](
                                  const ndn::Buffer& key) mutable {
-            const auto ad = hybridAssociatedData(responseName,
+            const auto ad = hybridAssociatedData(logicalResponseName,
                                                  envelope.getMessageType(),
                                                  requestId,
                                                  serviceName,
@@ -6981,7 +7039,7 @@ namespace ndn_service_framework
                             reinterpret_cast<const uint8_t*>(text.data()),
                             text.size());
                     }
-                    if (pendingCall.collaborationDeferred) {
+                    if (pendingCall.isCollaboration) {
                         CollaborationAssignmentEnvelope envelope;
                         envelope.role = participant.role;
                         envelope.assignedArtifact = participant.assignedArtifact;
@@ -7048,6 +7106,8 @@ namespace ndn_service_framework
                                 envelope.scopeKeys.emplace(scope, key);
                             }
                         }
+                        // The envelope is framework metadata; the application
+                        // assignment remains opaque and is carried unchanged.
                         envelope.opaquePayload = std::move(assignment);
                         assignment =
                             encodeCollaborationAssignmentEnvelope(envelope);
@@ -7761,7 +7821,9 @@ namespace ndn_service_framework
             "user", "RESPONSE", subscription,
             RequestId, ServiceName, requesterName, providerName);
 
-        const ndn::Name responseName(subscription.name);
+        const ndn::Name wireResponseName(subscription.name);
+        const ndn::Name responseName =
+            ndn_service_framework::stripTrailingResponseSegments(wireResponseName);
         auto responsePending = m_pendingCalls.find(RequestId);
         if (responsePending == m_pendingCalls.end()) {
             ++m_runtimeDiagnostics.callbackSkippedNoPending;
@@ -7832,7 +7894,7 @@ namespace ndn_service_framework
                   << decryptStartUs
                   << " requestId=" << RequestId.toUri()
                   << " responseName=" << responseName.toUri());
-        std::string responseDataName = responseName.toUri();
+        std::string responseDataName = wireResponseName.toUri();
         std::string responseSignerCertificate;
         std::string responseWireDigest = sha256DigestString(
             ndn::Buffer(subscription.data.begin(), subscription.data.end()));
@@ -8182,6 +8244,41 @@ void ServiceUser::finishRequestAckOnEventLoop(
             grant.setField("requestId", requestId.toUri());
             grant.setField("attempt", "1");
             selectionMessage.setSelectionInputKeyGrant(grant);
+        }
+        if (pendingIt != m_pendingCalls.end() &&
+            pendingIt->second.isCollaboration) {
+            // Each collaboration projection contains one local
+            // Provider entry. Keep the complete role binding in
+            // framework-owned shared metadata so every Provider can resolve
+            // cross-Provider dependency names without inspecting opaque
+            // application assignment bytes.
+            std::map<std::string, std::string> roleProviders;
+            for (const auto& [assignmentProvider, payload] :
+                 pendingIt->second.collaborationAssignments) {
+                for (const auto& item : decodeOpaqueAssignmentSet(payload)) {
+                    CollaborationAssignmentEnvelope envelope;
+                    try {
+                        if (decodeCollaborationAssignmentEnvelope(item, envelope) &&
+                            !envelope.role.empty()) {
+                            roleProviders[envelope.role] = assignmentProvider;
+                        }
+                    }
+                    catch (const std::exception&) {
+                        // The Provider will reject an invalid assignment
+                        // envelope during normal selection processing.
+                    }
+                }
+            }
+            if (!roleProviders.empty()) {
+                std::string metadata;
+                for (const auto& [role, assignmentProvider] : roleProviders) {
+                    metadata += "roleProvider." + role + "=" +
+                                assignmentProvider + ";";
+                }
+                selectionMessage.setAssignmentPayload(
+                    ndn::Buffer(reinterpret_cast<const uint8_t*>(metadata.data()),
+                                metadata.size()));
+            }
         }
         selectionMessage.addProviderEntry(providerEntry);
         NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=SELECTION_TOKEN_STATE timestamp_us="
@@ -9053,6 +9150,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
         ndn::Name serviceName;
         ndn::Name requestId;
         ndn::Name senderPrefix;
+        ndn::Name logicalMessageName = messageName;
         if (auto ack = parseRequestAckNameV2(messageName)) {
             serviceName = ack->serviceName;
             requestId = ack->requestId;
@@ -9062,20 +9160,22 @@ void ServiceUser::finishRequestAckOnEventLoop(
             serviceName = response->serviceName;
             requestId = response->requestId;
             senderPrefix = response->providerName;
+            logicalMessageName =
+                ndn_service_framework::stripTrailingResponseSegments(messageName);
         }
         else {
             return false;
         }
 
-        const auto accessAttribute = hybridAccessAttributeForName(messageName, serviceName);
+        const auto accessAttribute = hybridAccessAttributeForName(logicalMessageName, serviceName);
         const auto keyDataName = makeHybridMessageKeyDataName(
             serviceName, senderPrefix, accessAttribute, envelope.getEpochId());
 
-        auto finish = [this, envelope, messageName, serviceName, requestId,
+        auto finish = [this, envelope, logicalMessageName, serviceName, requestId,
                        senderPrefix, decryptEntryUs, onSuccess = std::move(onSuccess),
                        onError = std::move(onError)](const ndn::Buffer& key) mutable {
             const auto keyReadyUs = timelineSteadyMicroseconds();
-            const auto ad = hybridAssociatedData(messageName, envelope.getMessageType(),
+            const auto ad = hybridAssociatedData(logicalMessageName, envelope.getMessageType(),
                                                 requestId, serviceName, senderPrefix,
                                                 envelope.getKeyId(), envelope.getEpochId());
             auto decryptAndPost = [this, key, envelope, ad, requestId, keyReadyUs, decryptEntryUs,
@@ -9203,6 +9303,11 @@ void ServiceUser::finishRequestAckOnEventLoop(
         // log message
         NDN_LOG_DEBUG("PublishMessage: " << messageName.toUri());
         if (m_svsps == nullptr) {
+            if (m_localPublicationHandler) {
+                const auto wireBlock = message.WireEncode();
+                const ndn::Buffer wire(wireBlock.data(), wireBlock.size());
+                m_localPublicationHandler(messageName, wire);
+            }
             NDN_LOG_DEBUG("PublishMessage skipped because SVS publisher is not initialized");
             return;
         }

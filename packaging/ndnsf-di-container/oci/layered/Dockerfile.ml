@@ -81,7 +81,7 @@ RUN printf '%s\n' \
       '' \
       'Name: onnxruntime' \
       'Description: ONNX Runtime GPU C++ API' \
-      'Version: 1.20.1' \
+      'Version: 1.20.0' \
       'Libs: -L${libdir} -lonnxruntime' \
       'Cflags: -I${includedir}' \
       >/opt/onnxruntime/lib/pkgconfig/onnxruntime.pc
@@ -111,6 +111,21 @@ RUN /opt/venv/bin/python /build-contract/verify-python-environment.py \
       --lock /build-contract/ml-runtime.lock.json && \
     /opt/venv/bin/python -c \
       'import onnxruntime,torch,transformers; print(torch.__version__,onnxruntime.__version__,transformers.__version__)'
+RUN python3.10 -m venv /opt/runtime-venv && \
+    /opt/runtime-venv/bin/pip install --no-cache-dir --upgrade \
+      pip==25.0.1 setuptools==75.8.0 wheel==0.45.1
+RUN python3 - <<'PY' >/tmp/deployment-python-requirements
+import json
+lock=json.load(open('/build-contract/ml-runtime.lock.json'))
+for name, version in sorted(lock['deploymentPythonPackages'].items()):
+    print(f'{name}=={version}')
+PY
+RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+    /opt/runtime-venv/bin/pip install --no-deps --requirement /tmp/deployment-python-requirements && \
+    /opt/runtime-venv/bin/python /build-contract/verify-python-environment.py \
+      --lock /build-contract/ml-runtime.lock.json --package-set deploymentPythonPackages && \
+    ! /opt/runtime-venv/bin/python -c 'import torch' && \
+    ! /opt/runtime-venv/bin/python -c 'import transformers'
 RUN install -d /opt/ndnsf-di-ml/manifest && \
     install -m 0644 /build-contract/platform.lock.json \
       /build-contract/ml-runtime.lock.json /opt/ndnsf-di-ml/manifest/ && \
@@ -127,7 +142,7 @@ ARG PLATFORM_LOCK_DIGEST
 ARG ML_LOCK_DIGEST
 ARG DEBIAN_FRONTEND=noninteractive
 COPY --from=python-runtime /usr/local /usr/local
-COPY --from=ml-devel /opt/venv /opt/venv
+COPY --from=ml-devel /opt/runtime-venv /opt/venv
 COPY --from=ml-devel /opt/onnxruntime /opt/onnxruntime
 COPY --from=ml-devel /opt/ndnsf-di-ml /opt/ndnsf-di-ml
 COPY packaging/ndnsf-di-container/oci/scripts/verify-python-environment.py /usr/local/bin/verify-python-environment.py
@@ -151,8 +166,11 @@ ENV PATH=/opt/venv/bin:${PATH} \
     PYTHONNOUSERSITE=1 \
     PYTHONDONTWRITEBYTECODE=1
 RUN /opt/venv/bin/python /usr/local/bin/verify-python-environment.py \
-      --lock /opt/ndnsf-di-ml/manifest/ml-runtime.lock.json && \
-    /opt/venv/bin/python -c 'import onnxruntime,torch,transformers' && \
+      --lock /opt/ndnsf-di-ml/manifest/ml-runtime.lock.json \
+      --package-set deploymentPythonPackages && \
+    /opt/venv/bin/python -c 'import onnxruntime,tokenizers' && \
+    ! /opt/venv/bin/python -c 'import torch' && \
+    ! /opt/venv/bin/python -c 'import transformers' && \
     python3 /usr/local/bin/verify-runtime-closure.py \
       --root /opt/venv --root /opt/onnxruntime \
       --root /usr/local/bin --root /usr/local/lib/python3.10 && \

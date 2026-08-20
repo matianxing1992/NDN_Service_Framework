@@ -546,8 +546,10 @@ def _validate_selection_timing_window(
 
 
 def _preflight_qwen_runtime(args) -> None:
+    selection_dataflow_v2 = bool(getattr(args, "selection_dataflow_v2", False))
+    selection_dataflow_v3 = bool(getattr(args, "selection_dataflow_v3", False))
     if (args.runtime != QWEN_TRANSFORMERS_RUNTIME
-            or not (args.selection_dataflow_v2 or args.selection_dataflow_v3)):
+            or not (selection_dataflow_v2 or selection_dataflow_v3)):
         return
     model_type = str(args.selection_model_type or "")
     if not model_type:
@@ -564,7 +566,9 @@ def _selection_v2_for_qwen(
     model_cache_lock: Lock,
     local_artifacts: dict[str, dict] | None = None,
 ) -> dict:
-    if not (args.selection_dataflow_v2 or args.selection_dataflow_v3):
+    selection_dataflow_v2 = bool(getattr(args, "selection_dataflow_v2", False))
+    selection_dataflow_v3 = bool(getattr(args, "selection_dataflow_v3", False))
+    if not (selection_dataflow_v2 or selection_dataflow_v3):
         return {}
     required = (
         args.provider_identity,
@@ -1526,15 +1530,16 @@ def _selection_v2_for_qwen(
     )
 
     return {
-        "selection_offer_issuer": issuer if args.selection_dataflow_v2 else None,
-        "selection_offer_issuer_v3": issuer_v3 if args.selection_dataflow_v3 else None,
-        "selection_participant": participant if args.selection_dataflow_v2 else None,
-        "selection_wal_path": args.selection_wal_path if args.selection_dataflow_v2 else None,
-        "selection_storage_key": storage_key if args.selection_dataflow_v2 else None,
-        "selection_storage_key_epoch": core_boot_epoch if args.selection_dataflow_v2 else "",
+        "selection_offer_issuer": issuer if selection_dataflow_v2 else None,
+        "selection_offer_issuer_v3": (
+            issuer_v3 if selection_dataflow_v3 else None),
+        "selection_participant": participant if selection_dataflow_v2 else None,
+        "selection_wal_path": args.selection_wal_path if selection_dataflow_v2 else None,
+        "selection_storage_key": storage_key if selection_dataflow_v2 else None,
+        "selection_storage_key_epoch": core_boot_epoch if selection_dataflow_v2 else "",
         "selection_max_prepare_ms": args.selection_max_prepare_ms,
-        "selection_cached_shards": cached_shards if args.selection_dataflow_v2 else None,
-        "selection_reusable_state": reusable_state_v3 if args.selection_dataflow_v3 else None,
+        "selection_cached_shards": cached_shards if selection_dataflow_v2 else None,
+        "selection_reusable_state": reusable_state_v3 if selection_dataflow_v3 else None,
         # V3 is the normal request-first path.  Its ACK is observational and
         # does not hold resources, so a selected role must still be able to
         # run the same assignment-bound preparation callback when the offer
@@ -1543,7 +1548,7 @@ def _selection_v2_for_qwen(
         # never load its selected artifact.
         "runtime_preparer": (
             runtime_preparer
-            if (args.selection_dataflow_v2 or args.selection_dataflow_v3)
+                if (selection_dataflow_v2 or selection_dataflow_v3)
             else None
         ),
     }

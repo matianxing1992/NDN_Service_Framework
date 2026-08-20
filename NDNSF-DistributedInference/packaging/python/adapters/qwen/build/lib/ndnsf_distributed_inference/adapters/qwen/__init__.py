@@ -1,11 +1,17 @@
-"""Qwen adapter and lazy candidate registration."""
+"""Qwen model-family adapters."""
 
-def register_candidates(**kwargs):
-    from ...llm_stub_planner import qwen_model_candidates
-    return qwen_model_candidates(**kwargs)
+from .placement import (
+    QWEN36_27B_LAYER_RANGES,
+    QWEN36_27B_MODEL,
+    QWEN36_27B_REVISION,
+    QWEN36_STAGE_ROLES,
+    build_qwen36_27b_three_stage_adapter,
+)
 
-def load_pilot():
-    from . import pilot
-    return pilot
-
-__all__ = ["load_pilot", "register_candidates"]
+__all__ = [
+    "QWEN36_27B_LAYER_RANGES",
+    "QWEN36_27B_MODEL",
+    "QWEN36_27B_REVISION",
+    "QWEN36_STAGE_ROLES",
+    "build_qwen36_27b_three_stage_adapter",
+]

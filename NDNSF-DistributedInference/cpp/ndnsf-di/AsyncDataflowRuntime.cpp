@@ -22,6 +22,46 @@ DependencyEdge::DependencyEdge(std::string scope,
 {
 }
 
+void
+validateTensorBundleForEdge(const DependencyEdge& edge,
+                            const TensorBundle& bundle,
+                            bool requireReconstructed)
+{
+  if (edge.scope.empty()) {
+    throw std::invalid_argument("tensor dependency scope is empty");
+  }
+  if (bundle.expectedBytes != 0 &&
+      bundle.expectedBytes != bundle.payload.size()) {
+    throw std::runtime_error(
+      "tensor bundle byte count does not match its verified manifest: " +
+      edge.scope);
+  }
+  if (edge.declaredByV3 && edge.expectedBytes != 0 &&
+      edge.expectedBytes != bundle.payload.size()) {
+    throw std::runtime_error(
+      "tensor bundle byte count does not match the sealed edge: " +
+      edge.scope);
+  }
+  if (edge.declaredByV3 && edge.expectedSegments != 0 &&
+      bundle.expectedSegments != 0 &&
+      edge.expectedSegments != bundle.expectedSegments) {
+    throw std::runtime_error(
+      "tensor bundle segment count does not match the sealed edge: " +
+      edge.scope);
+  }
+  if (edge.maxSegments != 0 && bundle.expectedSegments > edge.maxSegments) {
+    throw std::runtime_error(
+      "tensor bundle exceeds the sealed segment bound: " + edge.scope);
+  }
+  if (requireReconstructed && edge.declaredByV3 &&
+      (bundle.payload.empty() || bundle.expectedSegments == 0 ||
+       bundle.expectedBytes != bundle.payload.size() ||
+       bundle.expectedSegments > edge.maxSegments)) {
+    throw std::runtime_error(
+      "V3 tensor bundle is not completely reconstructed: " + edge.scope);
+  }
+}
+
 AsyncDataflowRuntime::AsyncDataflowRuntime(std::size_t workerCount)
 {
   if (workerCount == 0) {
@@ -125,6 +165,7 @@ AsyncDataflowRuntime::makeContext(const RunState& state, const RoleSpec& role)
     if (found == state.availableByScope.end()) {
       throw std::logic_error("role scheduled before input was available: " + role.role);
     }
+    validateTensorBundleForEdge(edge, found->second);
     ctx.inputsByScope.emplace(edge.scope, found->second);
   }
   return ctx;
@@ -180,16 +221,19 @@ AsyncDataflowRuntime::execute(const WorkItem& item)
   auto state = item.state;
   RoleSpec role;
   RoleExecutionContext ctx;
-  {
+  try {
     std::lock_guard<std::mutex> stateLock(state->mutex);
     const auto found = state->roles.find(item.role);
     if (found == state->roles.end()) {
-      failRun(*state, std::make_exception_ptr(
-        std::logic_error("scheduled unknown role: " + item.role)));
-      return;
+      throw std::logic_error("scheduled unknown role: " + item.role);
     }
     role = found->second;
     ctx = makeContext(*state, role);
+  }
+  catch (...) {
+    std::lock_guard<std::mutex> stateLock(state->mutex);
+    failRun(*state, std::current_exception());
+    return;
   }
 
   RoleTiming timing;
@@ -212,6 +256,8 @@ AsyncDataflowRuntime::execute(const WorkItem& item)
   std::vector<std::string> newlyReady;
   {
     std::lock_guard<std::mutex> stateLock(state->mutex);
+    std::vector<std::pair<DependencyEdge, TensorBundle>> stagedOutputs;
+    stagedOutputs.reserve(role.outputs.size());
     for (const auto& edge : role.outputs) {
       const auto found = outputs.find(edge.scope);
       if (found == outputs.end()) {
@@ -219,7 +265,18 @@ AsyncDataflowRuntime::execute(const WorkItem& item)
           std::logic_error("runner did not publish output scope: " + edge.scope)));
         return;
       }
-      publishToRun(*state, edge.scope, found->second);
+      try {
+        validateTensorBundleForEdge(edge, found->second, false);
+      }
+      catch (...) {
+        failRun(*state, std::current_exception());
+        return;
+      }
+      stagedOutputs.emplace_back(edge, found->second);
+    }
+    for (const auto& staged : stagedOutputs) {
+      const auto& edge = staged.first;
+      publishToRun(*state, edge.scope, staged.second);
       const auto consumers = state->consumersByScope.find(edge.scope);
       if (consumers != state->consumersByScope.end()) {
         newlyReady.insert(newlyReady.end(), consumers->second.begin(), consumers->second.end());

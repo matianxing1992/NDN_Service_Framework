@@ -1484,13 +1484,19 @@ def _run_qwen_transformer_generation_campaign(client, args, campaign: dict) -> i
         raise RuntimeError(
             "--qwen-tokenizer-dir is required for a generation campaign")
 
-    from transformers import AutoTokenizer
+    # Deployment images intentionally contain no PyTorch/Transformers.  The
+    # tokenizer is therefore a standalone, hash-bound tokenizer.json produced
+    # with the model artifact and decoded through the Rust-backed tokenizers
+    # package.  Prompt token IDs remain part of the campaign manifest; this
+    # path only needs deterministic output decoding.
+    from tokenizers import Tokenizer
 
-    tokenizer = AutoTokenizer.from_pretrained(
-        args.qwen_tokenizer_dir,
-        local_files_only=True,
-        trust_remote_code=False,
-    )
+    tokenizer_path = Path(args.qwen_tokenizer_dir) / "tokenizer.json"
+    if not tokenizer_path.is_file():
+        raise RuntimeError(
+            "qwen tokenizer directory must contain tokenizer.json; "
+            "Transformers AutoTokenizer is offline-export only")
+    tokenizer = Tokenizer.from_file(str(tokenizer_path))
     decoder = lambda values: tokenizer.decode(
         list(values), skip_special_tokens=True)
     output_path = Path(args.generation_jsonl)

@@ -9,6 +9,8 @@ from .placement import (
     build_qwen_three_stage_adapter,
     build_qwen36_27b_three_stage_adapter,
 )
+from .parallel import seal_qwen_hybrid_plan
+from .tokenizer import StandaloneQwenTokenizer
 
 __all__ = [
     "QWEN36_27B_LAYER_RANGES",
@@ -18,4 +20,6 @@ __all__ = [
     "QwenThreeStageSplitter",
     "build_qwen_three_stage_adapter",
     "build_qwen36_27b_three_stage_adapter",
+    "seal_qwen_hybrid_plan",
+    "StandaloneQwenTokenizer",
 ]

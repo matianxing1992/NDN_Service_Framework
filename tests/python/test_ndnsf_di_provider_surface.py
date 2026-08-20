@@ -85,7 +85,7 @@ class ProviderSurfaceTest(unittest.TestCase):
             assignment=SimpleNamespace(
                 role="prefill", service="/LLM/Test",
                 selection_digest=selection,
-                assignment_payload=b"",
+                assignment_payload=b"executionPolicy=LEGACY_READY_SET_V1;",
                 role_providers={
                     "prefill": "/provider/a", "decode": "/provider/b"}),
             local_provider="/provider/a",
@@ -116,7 +116,7 @@ class ProviderSurfaceTest(unittest.TestCase):
             assignment=SimpleNamespace(
                 role="prefill", service="/LLM/Test",
                 selection_digest=selection,
-                assignment_payload=b"",
+                assignment_payload=b"executionPolicy=LEGACY_READY_SET_V1;",
                 role_providers={
                     "prefill": "/provider/a", "decode": "/provider/b"}),
             local_provider="/provider/a", publish=lambda *args: None,

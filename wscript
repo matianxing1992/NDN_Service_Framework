@@ -7,6 +7,76 @@ VERSION = '0.1.0'
 APPNAME = 'ndn-service-framework'
 GIT_TAG_PREFIX = 'ndn-service-framework-'
 
+
+def _resolve_compiler_toolchain(cxx, env=None, expected_root='/usr/bin'):
+    """Resolve one compiler/binutils closure, independent of ``PATH``."""
+    compiler = os.path.realpath(cxx)
+    compiler_dir = os.path.dirname(compiler)
+    toolchain_root = os.path.realpath(expected_root)
+    if os.path.commonpath([toolchain_root, compiler]) != toolchain_root:
+        raise RuntimeError(
+            f'configured compiler {compiler} is outside the required toolchain '
+            f'root {toolchain_root}; set CXX explicitly or use '
+            f'--toolchain-root for an intentional alternate toolchain')
+
+    search_flag = f'-B{toolchain_root}'
+    resolved = {
+        'compiler_dir': compiler_dir,
+        'toolchain_root': toolchain_root,
+        'search_flag': search_flag,
+    }
+
+    for tool in ('ld', 'ar', 'ranlib', 'nm'):
+        result = subprocess.run(
+            [compiler, search_flag, f'-print-prog-name={tool}'],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True)
+        tool_path = result.stdout.strip()
+        if not os.path.isabs(tool_path):
+            tool_path = os.path.join(compiler_dir, tool_path)
+        tool_path = os.path.realpath(tool_path)
+        if not os.path.isfile(tool_path) or not os.access(tool_path, os.X_OK):
+            raise RuntimeError(
+                f'{compiler} resolved {tool} to a non-executable path: {tool_path}')
+        if os.path.commonpath([toolchain_root, tool_path]) != toolchain_root:
+            raise RuntimeError(
+                f'{compiler} resolved {tool} outside its required toolchain root: '
+                f'{tool_path} (expected under {toolchain_root})')
+        resolved[tool] = tool_path
+
+    return resolved
+
+
+def _pin_compiler_toolchain(conf):
+    cxx = list(conf.env.CXX or [])
+    if not cxx:
+        conf.fatal('The C++ compiler was not configured')
+
+    try:
+        tools = _resolve_compiler_toolchain(
+            cxx[0], env=os.environ.copy(),
+            expected_root=conf.options.toolchain_root)
+    except (OSError, subprocess.SubprocessError, RuntimeError) as error:
+        conf.fatal(f'Unable to establish a closed C++ toolchain: {error}')
+
+    search_flag = tools['search_flag']
+    conf.env.CXX = cxx + [search_flag] if search_flag not in cxx else cxx
+    link_cxx = list(conf.env.LINK_CXX or cxx)
+    conf.env.LINK_CXX = (
+        link_cxx + [search_flag] if search_flag not in link_cxx else link_cxx)
+    conf.env.AR = [tools['ar']]
+    conf.env.RANLIB = [tools['ranlib']]
+    conf.env.NM = [tools['nm']]
+    conf.env.LD = [tools['ld']]
+    conf.env.NDNSF_TOOLCHAIN_ROOT = tools['toolchain_root']
+    conf.env.NDNSF_LINKER = tools['ld']
+
+    conf.msg('Closed C++ toolchain',
+             f'{os.path.realpath(cxx[0])} -> {tools["ld"]}')
+
 def options(opt):
     opt.load(['compiler_cxx', 'gnu_dirs'])
     opt.load(['default-compiler-flags',
@@ -30,6 +100,8 @@ def options(opt):
                       help='Build examples')
     optgrp.add_option('--with-tests', action='store_true', default=False,
                       help='Build unit tests')
+    optgrp.add_option('--toolchain-root', default='/usr/bin',
+                      help='Required compiler/binutils root (default: /usr/bin)')
 
 
 def configure(conf):
@@ -50,9 +122,21 @@ def configure(conf):
     if not conf.options.enable_shared and not conf.options.enable_static:
         conf.fatal('Either static library or shared library must be enabled')
 
-    conf.load(['compiler_cxx', 'gnu_dirs',
-               'default-compiler-flags', 'boost',
-               'doxygen'])
+    conf.load(['compiler_cxx', 'gnu_dirs'])
+
+    # GCC otherwise searches for ld through the build-time PATH even when CXX
+    # is an absolute path.  A Linuxbrew directory ahead of /usr/bin can then
+    # mix Homebrew ld with system GTK/UAV libraries.  Pin the compiler driver
+    # and every binutils program to one directory and fail during configure if
+    # that closure cannot be established.
+    _pin_compiler_toolchain(conf)
+    conf.check(fragment='int main() { return 0; }',
+               features='cxx cxxprogram',
+               msg='Checking closed C++ linker toolchain')
+
+    # Compiler-flag and dependency tools execute their own link probes, so
+    # load them only after the compiler/binutils closure has been pinned.
+    conf.load(['default-compiler-flags', 'boost', 'doxygen'])
 
     conf.env.WITH_EXAMPLES = conf.options.with_examples
     conf.env.WITH_TESTS = conf.options.with_tests
@@ -84,6 +168,14 @@ def configure(conf):
     conf.check_cfg(package='libndn-cxx', args=['libndn-cxx >= 0.8.0', '--cflags', '--libs'],
                    uselib_store='NDN_CXX', pkg_config_path=pkg_config_path)
 
+    # The Boost stacktrace/OpenSSL combination used by the pinned Ubuntu
+    # toolchain exposes libdl symbols through libndn-cxx's transitive
+    # dependencies.  The pkg-config file does not propagate that system
+    # library to every executable, so make it part of the common NDN_CXX
+    # closure instead of relying on each target to remember it.
+    if 'dl' not in conf.env.LIB_NDN_CXX:
+        conf.env.LIB_NDN_CXX.append('dl')
+
     
     conf.check_cfg(package='libndn-svs', args=['libndn-svs >= 0.1.0', '--cflags', '--libs'],
                        uselib_store='NDN_SVS', pkg_config_path=pkg_config_path)
@@ -98,6 +190,18 @@ def configure(conf):
     conf.env.INCLUDES_NDN_CXX = svs_includes + [
         path for path in list(conf.env.INCLUDES_NDN_CXX or [])
         if path not in svs_includes
+    ]
+    # The selected SVS prefix may coexist with an older libndn-svs under the
+    # same local prefix used by ndn-cxx.  Waf concatenates uselib library
+    # paths in ``use`` order; most targets list NDN_CXX before NDN_SVS, so an
+    # older ``.local-boost171/lib/libndn-svs.so`` could satisfy ``-lndn-svs``
+    # before the selected Experimental library was considered.  Put the
+    # selected SVS directory at the front of the common NDN_CXX path set so
+    # every target resolves the header/library pair consistently.
+    svs_libpaths = list(conf.env.LIBPATH_NDN_SVS or [])
+    conf.env.LIBPATH_NDN_CXX = svs_libpaths + [
+        path for path in list(conf.env.LIBPATH_NDN_CXX or [])
+        if path not in svs_libpaths
     ]
     svs_rpaths = [f'-Wl,-rpath,{path}' for path in list(conf.env.LIBPATH_NDN_SVS or [])]
     conf.env.LINKFLAGS = svs_rpaths + [
@@ -201,7 +305,7 @@ def build(bld):
         vnum=VERSION,
         cnum=VERSION,
         source=bld.path.ant_glob('ndn-service-framework/**/*.cpp'),
-        use='NDN_CXX NDN_SVS BOOST PROTOBUF NAC-ABE OPENSSL',
+        use='NDN_SVS NDN_CXX BOOST PROTOBUF NAC-ABE OPENSSL DL',
         includes='ndn-service-framework .',
         export_includes='ndn-service-framework .',
         install_path='${LIBDIR}')

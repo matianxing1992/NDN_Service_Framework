@@ -32,6 +32,18 @@ from .runtime_journal import RuntimeJournal, RuntimeJournalUnsafeRootError
 from .status import RevisionState
 
 
+LEGACY_SELECTION_LOADS_CAPABILITY = "SELECTION_LOADS_V1"
+DATAFLOW_SELECTION_CAPABILITY = "SELECTION_DATAFLOW_V2"
+
+
+def require_legacy_deployment_selection(capability: str) -> None:
+    """Keep the synchronous deployment-era Selection path quarantined."""
+    if capability != LEGACY_SELECTION_LOADS_CAPABILITY:
+        raise ValueError(
+            "APPDeployment accepts only quarantined SELECTION_LOADS_V1; "
+            "SELECTION_DATAFLOW_V2 must use the opaque Selection participant")
+
+
 class APPDeploymentLifecycleStore:
     def __init__(self) -> None:
         self._records: dict[str, DeploymentLifecycleRecord] = {}

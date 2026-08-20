@@ -9,8 +9,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import json
 from io import BytesIO
 from pathlib import Path
+import re
+import tempfile
 from threading import Lock
 from time import perf_counter, time
 from typing import Mapping, Sequence
@@ -24,6 +27,302 @@ from ...app_sdk.facades import ProviderRuntimeContext
 _SESSION_CACHE_LOCK = Lock()
 _SESSION_CACHE: dict[tuple[int, str], ort.InferenceSession] = {}
 _DIGEST_CACHE: dict[tuple[str, int, int], str] = {}
+_SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
+_ONNX_DTYPE_NAMES = {
+    1: "float32", 2: "uint8", 3: "int8", 4: "uint16", 5: "int16",
+    6: "int32", 7: "int64", 9: "bool", 10: "float16", 11: "float64",
+    12: "uint32", 13: "uint64", 16: "bfloat16",
+}
+
+
+def _require_sha256(value: str, field: str) -> None:
+    if not isinstance(value, str) or not _SHA256.fullmatch(value):
+        raise ValueError(f"{field} must be a canonical sha256 digest")
+
+
+@dataclass(frozen=True)
+class CertifiedOnnxAssemblyRecipe:
+    """Digest-pinned adapter certificate for one Provider-local role slice."""
+
+    model_manifest_digest: str
+    artifact_profile_digest: str
+    graph_digest: str
+    canonical_initializer_digest: str
+    adapter_descriptor_digest: str
+    assembler_descriptor_digest: str
+    backend_abi: str
+    role_kind: str
+    layer_begin: int
+    layer_end: int
+    node_indices: tuple[int, ...]
+    input_names: tuple[str, ...]
+    output_names: tuple[str, ...]
+    expected_inputs: tuple[Mapping[str, object], ...]
+    expected_outputs: tuple[Mapping[str, object], ...]
+    precision: str
+    quantization: str = "none"
+    layout: str = "native"
+    padding: str = "none"
+    max_source_bytes: int = 8 * 1024**3
+    max_assembled_bytes: int = 8 * 1024**3
+    max_nodes: int = 1_000_000
+    schema: str = "ndnsf-di-certified-onnx-assembly-v1"
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "model_manifest_digest", "artifact_profile_digest", "graph_digest",
+            "canonical_initializer_digest",
+            "adapter_descriptor_digest", "assembler_descriptor_digest",
+        ):
+            _require_sha256(getattr(self, field_name), field_name)
+        if (self.schema != "ndnsf-di-certified-onnx-assembly-v1"
+                or not self.backend_abi or not self.role_kind
+                or self.layer_begin < 0 or self.layer_end <= self.layer_begin
+                or not self.input_names or not self.output_names
+                or len(set(self.input_names)) != len(self.input_names)
+                or len(set(self.output_names)) != len(self.output_names)
+                or self.max_source_bytes <= 0 or self.max_assembled_bytes <= 0
+                or self.max_nodes <= 0):
+            raise ValueError("invalid certified ONNX assembly recipe")
+        indices = tuple(int(index) for index in self.node_indices)
+        if (not indices or any(index < 0 for index in indices)
+                or indices != tuple(sorted(set(indices)))):
+            raise ValueError("certified ONNX node cover is missing or overlapping")
+        object.__setattr__(self, "node_indices", indices)
+        object.__setattr__(self, "input_names", tuple(self.input_names))
+        object.__setattr__(self, "output_names", tuple(self.output_names))
+        for field_name, names in (
+            ("expected_inputs", self.input_names),
+            ("expected_outputs", self.output_names),
+        ):
+            contracts = tuple(dict(item) for item in getattr(self, field_name))
+            if {str(item.get("name", "")) for item in contracts} != set(names):
+                raise ValueError(f"{field_name} does not cover exact ONNX names")
+            for item in contracts:
+                if not item.get("dtype") or not isinstance(item.get("shape"), (list, tuple)):
+                    raise ValueError(f"{field_name} contains an invalid tensor contract")
+            object.__setattr__(self, field_name, contracts)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema": self.schema,
+            "modelManifestDigest": self.model_manifest_digest,
+            "artifactProfileDigest": self.artifact_profile_digest,
+            "graphDigest": self.graph_digest,
+            "canonicalInitializerDigest": self.canonical_initializer_digest,
+            "adapterDescriptorDigest": self.adapter_descriptor_digest,
+            "assemblerDescriptorDigest": self.assembler_descriptor_digest,
+            "backendAbi": self.backend_abi,
+            "roleKind": self.role_kind,
+            "layerBegin": self.layer_begin,
+            "layerEnd": self.layer_end,
+            "nodeIndices": list(self.node_indices),
+            "inputNames": list(self.input_names),
+            "outputNames": list(self.output_names),
+            "expectedInputs": [dict(item) for item in self.expected_inputs],
+            "expectedOutputs": [dict(item) for item in self.expected_outputs],
+            "precision": self.precision,
+            "quantization": self.quantization,
+            "layout": self.layout,
+            "padding": self.padding,
+            "maxSourceBytes": self.max_source_bytes,
+            "maxAssembledBytes": self.max_assembled_bytes,
+            "maxNodes": self.max_nodes,
+        }
+
+    @property
+    def digest(self) -> str:
+        wire = json.dumps(
+            self.to_dict(), sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False).encode("utf-8")
+        return "sha256:" + hashlib.sha256(wire).hexdigest()
+
+    def validate_role_spec(self, role_spec) -> None:
+        if (role_spec.recipe_digest != self.digest
+                or role_spec.layer_begin != self.layer_begin
+                or role_spec.layer_end != self.layer_end
+                or role_spec.role_kind != self.role_kind
+                or tuple(getattr(role_spec, "node_indices", ()))
+                != self.node_indices):
+            raise ValueError("RoleAssemblySpec does not match certified recipe")
+        exact_bindings = {
+            "model_manifest_digest": self.model_manifest_digest,
+            "artifact_profile_digest": self.artifact_profile_digest,
+            "graph_digest": self.graph_digest,
+            "canonical_initializer_digest": self.canonical_initializer_digest,
+            "adapter_descriptor_digest": self.adapter_descriptor_digest,
+            "assembler_descriptor_digest": self.assembler_descriptor_digest,
+            "backend_abi": self.backend_abi,
+            "precision": self.precision,
+            "quantization": self.quantization,
+            "layout": self.layout,
+            "padding": self.padding,
+        }
+        labels = {
+            "model_manifest_digest": "model manifest",
+            "artifact_profile_digest": "artifact profile",
+            "graph_digest": "graph",
+            "canonical_initializer_digest": "canonical initializer",
+            "adapter_descriptor_digest": "adapter descriptor",
+            "assembler_descriptor_digest": "assembler descriptor",
+            "backend_abi": "backend ABI",
+            "precision": "precision",
+            "quantization": "quantization",
+            "layout": "layout",
+            "padding": "padding",
+        }
+        for name, value in exact_bindings.items():
+            if getattr(role_spec, name, "") != value:
+                raise ValueError(f"RoleAssemblySpec {labels[name]} mismatch")
+        def normalize_contracts(values):
+            return tuple({
+                "name": str(item["name"]),
+                "dtype": str(item["dtype"]),
+                "shape": tuple(item["shape"]),
+            } for item in values)
+
+        if (normalize_contracts(role_spec.expected_inputs)
+                != normalize_contracts(self.expected_inputs)
+                or normalize_contracts(role_spec.expected_outputs)
+                != normalize_contracts(self.expected_outputs)):
+            raise ValueError("RoleAssemblySpec I/O contract mismatch")
+        envelope = dict(role_spec.resource_envelope)
+        if envelope != {
+                "maxSourceBytes": self.max_source_bytes,
+                "maxAssembledBytes": self.max_assembled_bytes,
+                "maxNodes": self.max_nodes,
+        }:
+            raise ValueError("RoleAssemblySpec resource envelope mismatch")
+
+
+@dataclass(frozen=True)
+class CertifiedOnnxAssembly:
+    model_bytes: bytes
+    input_names: tuple[str, ...]
+    output_names: tuple[str, ...]
+    node_count: int
+    model_digest: str
+
+
+def assemble_certified_onnx_model(
+    canonical_model: bytes,
+    *,
+    role_spec,
+    recipe: CertifiedOnnxAssemblyRecipe,
+) -> CertifiedOnnxAssembly:
+    """Extract, check, and load one certified role from canonical ONNX bytes."""
+    recipe.validate_role_spec(role_spec)
+    source = bytes(canonical_model)
+    if not source or len(source) > recipe.max_source_bytes:
+        raise ValueError("canonical ONNX source exceeds its resource envelope")
+    try:
+        import onnx
+    except ImportError as exc:  # pragma: no cover - deployment gate covers this
+        raise RuntimeError("Provider-local assembly requires onnx") from exc
+
+    with tempfile.TemporaryDirectory(prefix="ndnsf-onnx-assembly-") as directory:
+        root = Path(directory)
+        source_path = root / "canonical.onnx"
+        output_path = root / "assembled.onnx"
+        source_path.write_bytes(source)
+        try:
+            encoded_model = onnx.load_model_from_string(source)
+            for initializer in encoded_model.graph.initializer:
+                if initializer.data_location == onnx.TensorProto.EXTERNAL:
+                    locations = [
+                        item.value for item in initializer.external_data
+                        if item.key == "location"
+                    ]
+                    if (len(locations) != 1 or locations[0] != "model.onnx.data"
+                            or Path(locations[0]).is_absolute()
+                            or ".." in Path(locations[0]).parts):
+                        raise ValueError("unsafe ONNX external-data location")
+            model = onnx.load(str(source_path), load_external_data=True)
+            onnx.checker.check_model(model, full_check=True)
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise ValueError("canonical ONNX model validation failed") from exc
+        if len(model.graph.node) > recipe.max_nodes:
+            raise ValueError("canonical ONNX graph exceeds its node envelope")
+        if recipe.layer_end > len(model.graph.node):
+            raise ValueError("certified ONNX node cover escapes the graph")
+        from .graph import canonical_onnx_identity
+        canonical_identity = canonical_onnx_identity(source_path)
+        if canonical_identity.graph_digest != recipe.graph_digest:
+            raise ValueError("canonical ONNX graph digest mismatch")
+        if (canonical_identity.normalized_initializer_content_digest
+                != recipe.canonical_initializer_digest):
+            raise ValueError("canonical ONNX initializer digest mismatch")
+        try:
+            onnx.utils.extract_model(
+                str(source_path), str(output_path),
+                list(recipe.input_names), list(recipe.output_names),
+                check_model=True,
+            )
+            assembled = onnx.load(str(output_path), load_external_data=True)
+            onnx.checker.check_model(assembled, full_check=True)
+        except Exception as exc:
+            raise ValueError("adapter-certified ONNX extraction failed") from exc
+        if len(assembled.graph.node) != len(recipe.node_indices):
+            raise ValueError("assembled ONNX node cover differs from the certificate")
+        original_nodes = [
+            model.graph.node[index].SerializeToString(deterministic=True)
+            for index in recipe.node_indices
+        ]
+        assembled_nodes = [
+            node.SerializeToString(deterministic=True)
+            for node in assembled.graph.node
+        ]
+        if assembled_nodes != original_nodes:
+            raise ValueError("assembled ONNX contains uncertified graph nodes")
+
+        def contract(value_info) -> dict[str, object]:
+            tensor = value_info.type.tensor_type
+            shape = []
+            for dimension in tensor.shape.dim:
+                shape.append(
+                    int(dimension.dim_value) if dimension.HasField("dim_value")
+                    else str(dimension.dim_param))
+            return {
+                "name": value_info.name,
+                "dtype": _ONNX_DTYPE_NAMES.get(
+                    int(tensor.elem_type), str(int(tensor.elem_type))),
+                "shape": shape,
+            }
+
+        actual_inputs = {item.name: contract(item) for item in assembled.graph.input}
+        actual_outputs = {item.name: contract(item) for item in assembled.graph.output}
+        for expected, actual, field_name in (
+            (recipe.expected_inputs, actual_inputs, "input"),
+            (recipe.expected_outputs, actual_outputs, "output"),
+        ):
+            for item in expected:
+                observed = actual.get(str(item["name"]))
+                if observed is None:
+                    raise ValueError(f"assembled ONNX is missing expected {field_name}")
+                expected_dtype = _ONNX_DTYPE_NAMES.get(
+                    int(item["dtype"]), str(item["dtype"])) \
+                    if str(item["dtype"]).isdigit() else str(item["dtype"])
+                if (expected_dtype != str(observed["dtype"])
+                        or list(item["shape"]) != list(observed["shape"])):
+                    raise ValueError(f"assembled ONNX {field_name} dtype/shape mismatch")
+        try:
+            wire = assembled.SerializeToString(deterministic=True)
+        except TypeError:  # pragma: no cover
+            wire = assembled.SerializeToString()
+        if not wire or len(wire) > recipe.max_assembled_bytes:
+            raise ValueError("assembled ONNX exceeds its resource envelope")
+        # Loading the exact bytes through the deployment runtime is the final
+        # validation boundary; no PyTorch/Transformers path is involved.
+        ort.InferenceSession(wire, providers=["CPUExecutionProvider"])
+        return CertifiedOnnxAssembly(
+            model_bytes=wire,
+            input_names=tuple(recipe.input_names),
+            output_names=tuple(recipe.output_names),
+            node_count=len(assembled.graph.node),
+            model_digest="sha256:" + hashlib.sha256(wire).hexdigest(),
+        )
 
 
 @dataclass(frozen=True)

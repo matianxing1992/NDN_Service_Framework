@@ -7,7 +7,7 @@ from typing import Any, Mapping
 
 
 REQUIRED_BINARIES = ("nfd", "nfdc", "App_ServiceController", "di-native-provider")
-REQUIRED_IMPORTS = ("ndnsf", "ndnsf_distributed_inference", "torch", "transformers", "onnxruntime")
+REQUIRED_IMPORTS = ("ndnsf", "ndnsf_distributed_inference", "onnxruntime", "tokenizers")
 MINIMUM_DRIVER = (550, 54, 14)
 
 
@@ -27,9 +27,9 @@ def _version(value: object, field: str) -> tuple[int, ...]:
 
 def evaluate_runtime_facts(value: Mapping[str, object]) -> dict[str, Any]:
     required = {
-        "binaries", "imports", "missingLibraries", "driverVersion", "torchCudaAvailable",
-        "torchCudaVersion", "torchCudnnMajor", "ortProviders", "ortCudaVersion",
-        "ortCudnnMajor", "profileProviders", "allocatedGpuUuid", "torchGpuUuid", "ortGpuUuid",
+        "binaries", "imports", "missingLibraries", "driverVersion", "ortProviders",
+        "ortCudaVersion", "ortCudnnMajor", "profileProviders", "allocatedGpuUuid",
+        "ortGpuUuid",
     }
     if not isinstance(value, Mapping) or set(value) != required:
         _fail("FAIL_RUNTIME_FACT_FIELDS")
@@ -43,15 +43,10 @@ def evaluate_runtime_facts(value: Mapping[str, object]) -> dict[str, Any]:
         _fail("FAIL_RUNTIME_LIBRARY_MISSING")
     if _version(value["driverVersion"], "driverVersion") < MINIMUM_DRIVER:
         _fail("FAIL_DRIVER_TOO_OLD")
-    if value["torchCudaAvailable"] is not True:
-        _fail("FAIL_PYTORCH_CUDA_UNAVAILABLE")
-    torch_cuda = _version(value["torchCudaVersion"], "torchCudaVersion")
     ort_cuda = _version(value["ortCudaVersion"], "ortCudaVersion")
-    if torch_cuda[0] != ort_cuda[0]:
-        _fail("FAIL_PYTORCH_ORT_CUDA_MISMATCH")
-    if torch_cuda[0] != 12 or ort_cuda[0] != 12:
+    if ort_cuda[0] != 12:
         _fail("FAIL_CUDA_MAJOR_MISMATCH")
-    if value["torchCudnnMajor"] != 9 or value["ortCudnnMajor"] != 9:
+    if value["ortCudnnMajor"] != 9:
         _fail("FAIL_CUDNN_MAJOR_MISMATCH")
     if "CUDAExecutionProvider" not in value["ortProviders"]:
         _fail("FAIL_ORT_CUDA_PROVIDER_MISSING")
@@ -59,7 +54,7 @@ def evaluate_runtime_facts(value: Mapping[str, object]) -> dict[str, Any]:
     if not isinstance(providers, list) or not providers or any(item != "CUDAExecutionProvider" for item in providers):
         _fail("FAIL_ORT_CPU_FALLBACK")
     allocated = value["allocatedGpuUuid"]
-    if not allocated or value["torchGpuUuid"] != allocated or value["ortGpuUuid"] != allocated:
+    if not allocated or value["ortGpuUuid"] != allocated:
         _fail("FAIL_GPU_UUID_MISMATCH")
     return {
         "status": "PASS", "driverVersion": value["driverVersion"],

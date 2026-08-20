@@ -1,6 +1,7 @@
 #include "ndn-service-framework/CertificatePublisher.hpp"
 #include "ndn-service-framework/CertificateBootstrap.hpp"
 #include "ndn-service-framework/ExecutionLease.hpp"
+#include "ndn-service-framework/HybridMessageCrypto.hpp"
 #include "ndn-service-framework/ServiceProvider.hpp"
 #include "ndn-service-framework/ServiceController.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
@@ -230,6 +231,16 @@ largeDataReferenceToDict(const nsf::LargeDataReference& reference)
 }
 
 py::dict
+stringMapToDict(const std::map<std::string, std::string>& fields)
+{
+  py::dict output;
+  for (const auto& field : fields) {
+    output[field.first.c_str()] = field.second;
+  }
+  return output;
+}
+
+py::dict
 networkTelemetrySnapshotToDict(const nsf::NetworkTelemetrySnapshot& snapshot)
 {
   py::dict output;
@@ -333,6 +344,7 @@ struct PyAckCandidate
   std::string message;
   py::bytes payload;
   py::object telemetry = py::none();
+  py::object selectionInputKeyOffer = py::none();
 };
 
 struct PyCollaborationAckClosure
@@ -1897,6 +1909,7 @@ struct PyCollaborationAssignment
   int provisioningTimeoutMs = 0;
   std::string selectionDigest;
   py::bytes assignmentPayload;
+  std::map<std::string, std::string> roleProviders;
 };
 
 struct PyCollaborationData
@@ -2326,6 +2339,10 @@ ackCandidatesToPyList(const std::vector<nsf::AckCandidate>& candidates)
     item.status = candidate.ack.getStatus();
     item.message = candidate.ack.getMessage();
     item.payload = toPyBytes(candidate.ack.getPayload());
+    if (candidate.ack.hasSelectionInputKeyOffer()) {
+      item.selectionInputKeyOffer = stringMapToDict(
+        candidate.ack.getSelectionInputKeyOffer().getFields());
+    }
     if (candidate.telemetry) {
       item.telemetry = networkTelemetrySnapshotToDict(*candidate.telemetry);
     }
@@ -2347,6 +2364,10 @@ ackCandidatesToPyVector(const std::vector<nsf::AckCandidate>& candidates)
     item.status = candidate.ack.getStatus();
     item.message = candidate.ack.getMessage();
     item.payload = toPyBytes(candidate.ack.getPayload());
+    if (candidate.ack.hasSelectionInputKeyOffer()) {
+      item.selectionInputKeyOffer = stringMapToDict(
+        candidate.ack.getSelectionInputKeyOffer().getFields());
+    }
     if (candidate.telemetry) {
       item.telemetry = networkTelemetrySnapshotToDict(*candidate.telemetry);
     }
@@ -2477,9 +2498,70 @@ public:
           assignment += "leaseId=" + leaseId + ";";
         }
         const auto resourceBindingProof =
-          fieldFromText(ackPayloadText, "resourceBindingProof");
+            fieldFromText(ackPayloadText, "resourceBindingProof");
         if (!resourceBindingProof.empty()) {
           assignment += "resourceBindingProof=" + resourceBindingProof + ";";
+        }
+
+        // DATA_DRIVEN_V2 providers fail closed unless the Selection carries
+        // the exact runtime tuple they advertised in their typed capability
+        // ACK.  Keep this metadata request-scoped: it is copied from the
+        // selected Provider's evidence, never inferred from a global default.
+        if (const auto capability = providerCapabilityFromAckPayload(
+                best->ack.getPayload())) {
+          const auto appendRuntimeMetadata = [&assignment, &role](
+              const boost::property_tree::ptree& evidence) {
+            const auto runnerKind = evidence.get<std::string>(
+              "runnerKind", "");
+            const auto deviceKind = evidence.get<std::string>(
+              "device.kind", evidence.get<std::string>("deviceKind", ""));
+            const auto deviceId = evidence.get<std::string>(
+              "device.id", evidence.get<std::string>("deviceId", ""));
+            const std::string backend = runnerKind.find("cuda") != std::string::npos
+              ? "onnxruntime-cuda" : "onnxruntime";
+            if (!runnerKind.empty()) {
+              assignment += "backend=" + backend + ";";
+            }
+            if (!deviceKind.empty() && !deviceId.empty()) {
+              assignment += "device=" + deviceKind + ":" + deviceId + ";";
+            }
+            if (const auto artifacts =
+                    evidence.get_child_optional("artifactDigests")) {
+              for (const auto& item : *artifacts) {
+                if (item.first == role.role) {
+                  const auto digest = item.second.get_value<std::string>();
+                  if (!digest.empty()) {
+                    assignment += "artifactDigest=" + digest + ";";
+                  }
+                  break;
+                }
+              }
+            }
+          };
+          bool appendedRoleEvidence = false;
+          if (const auto byRole =
+                  capability->get_child_optional("executionEvidenceByRole")) {
+            for (const auto& item : *byRole) {
+              if (item.first == role.role) {
+                appendRuntimeMetadata(item.second);
+                appendedRoleEvidence = true;
+                break;
+              }
+            }
+          }
+          if (!appendedRoleEvidence) {
+            if (const auto evidence =
+                    capability->get_child_optional("executionEvidence")) {
+              appendRuntimeMetadata(*evidence);
+            }
+            else if (const auto servicePayload =
+                       capability->get_child_optional("servicePayload")) {
+              if (const auto evidence =
+                      servicePayload->get_child_optional("executionEvidence")) {
+                appendRuntimeMetadata(*evidence);
+              }
+            }
+          }
         }
       }
 
@@ -2556,6 +2638,9 @@ public:
     assignment.provisioningTimeoutMs = native.provisioningTimeoutMs;
     assignment.selectionDigest = native.selectionDigest;
     assignment.assignmentPayload = toPyBytes(native.assignmentPayload);
+    for (const auto& [role, provider] : native.roleProviders) {
+      assignment.roleProviders.emplace(role, provider.toUri());
+    }
     return assignment;
   }
 
@@ -4225,7 +4310,9 @@ public:
                      int ackTimeoutMs,
                      int timeoutMs,
                      const std::string& requestedRequestId = "",
-                     py::object ackCoveragePredicate = py::none())
+                     py::object ackCoveragePredicate = py::none(),
+                     const std::optional<nsf::RequestCapabilities>&
+                       requestCapabilities = std::nullopt)
   {
     start();
     auto payload = toBuffer(initialPayload);
@@ -4249,6 +4336,7 @@ public:
        responseCallback = std::move(responseCallback),
        timeoutCallback = std::move(timeoutCallback),
        ackCoverageCallback = std::move(ackCoverageCallback),
+       requestCapabilities,
        actualRequestId, &mutex, &cv, &submitted, &submissionError]() mutable {
         try {
           const auto requestId = m_user->BeginCollaboration(
@@ -4314,7 +4402,8 @@ public:
                 PyErr_WriteUnraisable(error.value().ptr());
               }
               return false;
-            });
+            },
+            requestCapabilities.value_or(nsf::RequestCapabilities()));
           {
             std::lock_guard<std::mutex> lock(mutex);
             *actualRequestId = requestId.toUri();
@@ -6219,7 +6308,9 @@ PYBIND11_MODULE(_ndnsf, m)
     .def_readwrite("status", &PyAckCandidate::status)
     .def_readwrite("message", &PyAckCandidate::message)
     .def_readwrite("payload", &PyAckCandidate::payload)
-    .def_readwrite("telemetry", &PyAckCandidate::telemetry);
+    .def_readwrite("telemetry", &PyAckCandidate::telemetry)
+    .def_readwrite("selection_input_key_offer",
+                   &PyAckCandidate::selectionInputKeyOffer);
 
   py::class_<PyCollaborationAckClosure>(m, "CollaborationAckClosure")
     .def(py::init<>())
@@ -6254,7 +6345,8 @@ PYBIND11_MODULE(_ndnsf, m)
     .def_readwrite("requires_provisioning", &PyCollaborationAssignment::requiresProvisioning)
     .def_readwrite("provisioning_timeout_ms", &PyCollaborationAssignment::provisioningTimeoutMs)
     .def_readwrite("selection_digest", &PyCollaborationAssignment::selectionDigest)
-    .def_readwrite("assignment_payload", &PyCollaborationAssignment::assignmentPayload);
+    .def_readwrite("assignment_payload", &PyCollaborationAssignment::assignmentPayload)
+    .def_readwrite("role_providers", &PyCollaborationAssignment::roleProviders);
 
   py::class_<PyCollaborationData>(m, "CollaborationData")
     .def(py::init<>())
@@ -6382,6 +6474,14 @@ PYBIND11_MODULE(_ndnsf, m)
         py::arg("mapping_root"),
         py::arg("mapping_version"),
         py::arg("sequence"));
+
+  m.def("wrap_selection_gated_input_key",
+        [] (const py::bytes& key, const py::bytes& recipientPublicKey) {
+          return toPyBytes(nsf::wrapSelectionGatedInputKey(
+            toBuffer(key), toBuffer(recipientPublicKey)));
+        },
+        py::arg("key"),
+        py::arg("recipient_public_key"));
 
   m.def("decode_data_packet",
         &decodeDataPacket,
@@ -6719,7 +6819,8 @@ PYBIND11_MODULE(_ndnsf, m)
          py::arg("on_ack_closed"), py::arg("on_response"),
          py::arg("on_timeout"), py::arg("ack_timeout_ms") = 300,
          py::arg("timeout_ms") = 10000, py::arg("request_id") = "",
-         py::arg("ack_coverage_predicate") = py::none())
+         py::arg("ack_coverage_predicate") = py::none(),
+         py::arg("request_capabilities") = std::nullopt)
     .def("commit_collaboration_plan",
          &NativeServiceUser::commitCollaborationPlan,
          py::arg("service"), py::arg("request_id"),

@@ -40,6 +40,18 @@ namespace ndn_service_framework{
     using Topic = ndn::Name;
     using SessionId = std::string;
 
+    /**
+     * Optional request-scoped binding used while discovering NDNSF_DATA_V1
+     * segments.  The transport always checks the request id carried by the
+     * CollaborationContext; callers that have a signed capability should
+     * additionally bind the remaining capability fields before accepting a
+     * catch-up publication from the shared SVS stream.
+     */
+    struct DataV1SegmentNameFilter
+    {
+        std::function<bool(const ndn::Name&)> predicate;
+    };
+
     struct LargeDataFetchResult
     {
         bool success = false;
@@ -413,6 +425,55 @@ namespace ndn_service_framework{
                                                       KeyScope keyScope,
                                                       int timeoutMs,
                                                       std::size_t expectedSegments);
+                /**
+                 * Publish request-scoped NDNSF_DATA_V1 segments through the
+                 * SVSPubSub data path.  Each pair contains the complete
+                 * segment Data name and the already-authenticated segment
+                 * wire bytes; the transport must not wrap them in a second
+                 * large-object envelope.
+                 */
+                bool publishDataV1Segments(
+                    KeyScope keyScope,
+                    const std::vector<std::pair<ndn::Name, ndn::Buffer>>& segments,
+                    int freshnessMs = 60000);
+                /**
+                 * Fetch request-scoped NDNSF_DATA_V1 segment wires from a
+                 * Provider's SVS publication stream.  The returned vector is
+                 * ordered by segment number and contains no plaintext.
+                 * ``expectedSegments == 0`` enables bounded in-subscription
+                 * discovery: the caller-supplied decoder reads segment zero's
+                 * authenticated manifest count, after which this same fetch
+                 * waits for the exact complete segment set.
+                 */
+                std::optional<std::vector<ndn::Buffer>> fetchDataV1Segments(
+                    KeyScope keyScope,
+                    const ndn::Name& producerPrefix,
+                    std::uint64_t operationIndex,
+                    const std::string& producerRank,
+                    const std::string& tensorDigest,
+                    std::size_t expectedSegments,
+                    std::size_t maxSegments,
+                    int timeoutMs,
+                    std::function<std::size_t(const ndn::Buffer&)>
+                        segmentCountDecoder = {},
+                    DataV1SegmentNameFilter nameFilter = {});
+                /** Publish only the exact signed Data names authorized by a
+                 * sealed V3 mayPublish contract. No SVS notification or
+                 * process-local sequence is introduced. */
+                bool publishSignedExactData(
+                    KeyScope keyScope,
+                    const std::vector<std::pair<ndn::Name, ndn::Buffer>>& objects,
+                    int freshnessMs = 60000);
+                /** Express and, on timeout/Nack, re-express the same exact
+                 * Interest name until the bounded deadline. The returned
+                 * content is released only after trust-schema and expected
+                 * producer-identity validation. */
+                std::optional<ndn::Buffer> fetchSignedExactData(
+                    KeyScope keyScope,
+                    const ndn::Name& dataName,
+                    const ndn::Name& expectedProducer,
+                    int timeoutMs,
+                    std::function<bool()> shouldCancel = {});
                 void subscribe(KeyScope keyScope,
                                Topic topicPrefix,
                                std::function<void(const CollaborationData&)> onData);
@@ -451,6 +512,12 @@ namespace ndn_service_framework{
             using CollaborationHandler =
                 std::function<void(CollaborationContext& ctx,
                                    const RequestMessage& initialRequest)>;
+
+            // Test-only publication boundary for LocalMockTag integration
+            // fixtures. Production instances publish through SVSPubSub.
+            using LocalPublicationHandler =
+                std::function<void(const ndn::Name& messageName,
+                                   const ndn::Buffer& wire)>;
 
             enum class ProviderRequestLifecycleState
             {
@@ -517,6 +584,53 @@ namespace ndn_service_framework{
 
             void init();
 
+            /**
+             * Install an SVSPubSub instance on a LocalMock provider.
+             *
+             * This is intentionally restricted to the LocalMock construction
+             * path so in-process integration tests can exercise the same
+             * production collaboration transport without entering NAC-ABE
+             * bootstrap. Normal providers create their SVS instance during
+             * construction and must not call this hook.
+             */
+            void attachLocalMockPubSubForTest(
+                std::shared_ptr<ndn::svs::SVSPubSub> pubSub);
+
+            /**
+             * Seed a receive key for a LocalMock integration test.  This keeps
+             * the test on the real HybridMessageEnvelope ingress while
+             * intentionally omitting the controller/NAC bootstrap from the
+             * transport gate.
+             */
+            void cacheHybridReceiveKeyForTest(const std::string& keyId,
+                                              const std::string& epochId,
+                                              const ndn::Buffer& key);
+
+            /**
+             * Prime one LocalMock outbound epoch and return the matching key to
+             * the integration fixture.  The fixture installs it in the peer's
+             * receive cache, modelling a completed NAC-ABE MessageKey exchange
+             * while retaining the real encrypted ACK/Response wire path.
+             */
+            HybridMessageKey prepareHybridSendKeyForTest(
+                const ndn::Name& serviceName,
+                const std::string& messageType);
+
+            /**
+             * Mark the LocalMock response epoch as already wrapped.  The
+             * in-process transport gate has no controller/NAC-ABE producer,
+             * so this lets it verify the real encrypted Response publication
+             * without silently replacing the post-Selection path with a
+             * plaintext callback.
+             */
+            void markHybridResponseKeyWrappedForTest(
+                const ndn::Name& serviceName);
+
+            /** Bind LocalMock signing to the fixture KeyChain that owns the
+             * supplied certificate and private key. Production providers keep
+             * using their process KeyChain. */
+            void useSigningKeyChainForTest(ndn::KeyChain& keyChain);
+
             ndn::Name getName();
 
             /** Public names of the certificate used for Provider-signed Data.
@@ -535,6 +649,13 @@ namespace ndn_service_framework{
 
             void fetchPermissionsFromController(const ndn::Name& controllerPrefix);
             void applyPermissionResponse(const PermissionResponse& response);
+            /**
+             * Return whether the current provider authorization table contains
+             * permission for the requested service.  This is a runtime
+             * readiness query, not an authorization bypass; request handling
+             * still performs its own permission check.
+             */
+            bool hasProviderPermissionForService(const ndn::Name& serviceName) const;
             size_t getCurrentPolicyEpoch() const;
             static bool handlePermissionResponseData(const ndn::Data& data,
                                                      const ndn::Name& identity,
@@ -665,6 +786,8 @@ namespace ndn_service_framework{
             void setAckStrategyHandler(const ndn::Name& serviceName,
                                        AckStrategyHandler ackHandler);
 
+            void setLocalPublicationHandler(LocalPublicationHandler handler);
+
             void setLegacyAckStrategyHandler(const ndn::Name& serviceName,
                                              LegacyAckStrategyHandler ackHandler);
 
@@ -743,7 +866,7 @@ namespace ndn_service_framework{
                 const ndn::Name& requestId,
                 ResponseMessage response,
                 size_t thresholdBytes = 0,
-                const ndn::time::milliseconds& freshness = ndn::DEFAULT_FRESHNESS_PERIOD);
+                ndn::time::milliseconds freshness = ndn::DEFAULT_FRESHNESS_PERIOD);
 
             ResponseMessage dispatchRequest(const ndn::Name& requesterIdentity,
                                             const ndn::Name& providerName,
@@ -1049,12 +1172,43 @@ namespace ndn_service_framework{
                 const ndn::Name& dataName,
                 int timeoutMs,
                 std::size_t expectedSegments = 0);
+            bool publishCollaborationDataV1Segments(
+                const ndn::Name& requestId,
+                const std::string& keyScope,
+                const std::vector<std::pair<ndn::Name, ndn::Buffer>>& segments,
+                int freshnessMs);
+            std::optional<std::vector<ndn::Buffer>> fetchCollaborationDataV1Segments(
+                const ndn::Name& requestId,
+                const std::string& keyScope,
+                const ndn::Name& producerPrefix,
+                std::uint64_t operationIndex,
+                const std::string& producerRank,
+                const std::string& tensorDigest,
+                std::size_t expectedSegments,
+                std::size_t maxSegments,
+                int timeoutMs,
+                std::function<std::size_t(const ndn::Buffer&)>
+                    segmentCountDecoder = {},
+                DataV1SegmentNameFilter nameFilter = {});
+            bool publishCollaborationSignedExactData(
+                const ndn::Name& requestId,
+                const std::string& keyScope,
+                const std::vector<std::pair<ndn::Name, ndn::Buffer>>& objects,
+                int freshnessMs);
+            std::optional<ndn::Buffer> fetchCollaborationSignedExactData(
+                const ndn::Name& requestId,
+                const std::string& keyScope,
+                const ndn::Name& dataName,
+                const ndn::Name& expectedProducer,
+                int timeoutMs,
+                std::function<bool()> shouldCancel = {});
             void publishCollaborationFinalResponse(
                 const ndn::Name& requesterName,
                 const ndn::Name& serviceName,
                 const ndn::Name& requestId,
                 const RequestMessage& requestMessage,
-                const ndn::Buffer& payload);
+                const ndn::Buffer& payload,
+                const std::string& selectionDigest);
             void onCollaborationDataMessage(
                 const ndn::svs::SVSPubSub::SubscriptionData& subscription);
             void deliverCollaborationData(const CollaborationData& data);
@@ -1096,7 +1250,9 @@ namespace ndn_service_framework{
             ndn::Scheduler m_scheduler;
             ndn::Name identity;
             ndn::KeyChain m_keyChain;
+            ndn::KeyChain* m_testSigningKeyChain = nullptr;
             std::shared_ptr<ndn::svs::SVSPubSub> m_svsps;
+            LocalPublicationHandler m_localPublicationHandler;
             std::shared_ptr<MessageValidator> validator;
             std::vector<std::string> m_serviceNames;
 
