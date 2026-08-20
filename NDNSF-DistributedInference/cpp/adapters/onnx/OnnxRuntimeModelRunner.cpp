@@ -108,6 +108,7 @@ resolveOnnxRuntimeProviderSelection(const NativeModelRunnerSpec& spec,
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <dlfcn.h>
 #include <iomanip>
 #include <iostream>
 #include <map>
@@ -149,6 +150,70 @@ makeSessionOptions(const OnnxRuntimeProviderSelection& selection,
     options.AppendExecutionProvider_CUDA(cudaOptions);
   }
   return options;
+}
+
+void
+requireCudaDevice(const OnnxRuntimeProviderSelection& selection)
+{
+  int requestedDevice = 0;
+  try {
+    requestedDevice = std::stoi(selection.deviceId);
+  }
+  catch (const std::exception&) {
+    throw std::invalid_argument(
+      "invalid ONNX Runtime CUDA device ID: " + selection.deviceId);
+  }
+  if (requestedDevice < 0) {
+    throw std::invalid_argument(
+      "invalid ONNX Runtime CUDA device ID: " + selection.deviceId);
+  }
+
+  void* runtime = nullptr;
+  for (const char* library : {"libcudart.so.12", "libcudart.so"}) {
+    runtime = dlopen(library, RTLD_NOW | RTLD_LOCAL);
+    if (runtime != nullptr) {
+      break;
+    }
+  }
+  if (runtime == nullptr) {
+    throw std::runtime_error(
+      "required ONNX Runtime CUDA device unavailable: CUDA runtime could not be loaded");
+  }
+
+  using CudaGetDeviceCount = int (*)(int*);
+  auto* getDeviceCount = reinterpret_cast<CudaGetDeviceCount>(
+    dlsym(runtime, "cudaGetDeviceCount"));
+  if (getDeviceCount == nullptr) {
+    dlclose(runtime);
+    throw std::runtime_error(
+      "required ONNX Runtime CUDA device unavailable: cudaGetDeviceCount is unavailable");
+  }
+
+  int deviceCount = 0;
+  const int status = getDeviceCount(&deviceCount);
+  dlclose(runtime);
+  if (status != 0 || deviceCount <= requestedDevice) {
+    std::ostringstream message;
+    message << "required ONNX Runtime CUDA device unavailable: requested device "
+            << requestedDevice << ", visible device count " << deviceCount
+            << ", cuda status " << status;
+    throw std::runtime_error(message.str());
+  }
+}
+
+OnnxRuntimeProviderSelection
+resolveRuntimeProviderSelection(const NativeModelRunnerSpec& spec)
+{
+  auto selection = resolveOnnxRuntimeProviderSelection(spec, Ort::GetAvailableProviders());
+  if (selection.selectedProvider == "cuda") {
+    // Ort reports CUDAExecutionProvider when its shared libraries are present,
+    // even on a CPU-only node.  Probe the actual visible CUDA device before
+    // constructing an Ort::Session; otherwise ORT may terminate the process
+    // while initializing the CUDA provider instead of returning an admission
+    // error to the native Provider.
+    requireCudaDevice(selection);
+  }
+  return selection;
 }
 
 std::vector<int64_t>
@@ -447,7 +512,7 @@ class OnnxRuntimeModelRunner::Impl
 {
 public:
   explicit Impl(const NativeModelRunnerSpec& spec)
-    : selection(resolveOnnxRuntimeProviderSelection(spec, Ort::GetAvailableProviders()))
+    : selection(resolveRuntimeProviderSelection(spec))
     , sessionOptions(makeSessionOptions(selection, spec))
     , session(ortEnv(), spec.path.c_str(), sessionOptions)
     , profilingEnabled(!runnerMetadataValue(

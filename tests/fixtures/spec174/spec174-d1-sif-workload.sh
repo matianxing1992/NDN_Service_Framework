@@ -168,12 +168,18 @@ fi
     --bootstrap-token single0001 \
     --artifact-cache-dir "$ROOT/cache-provider" \
     --serve
-) >"$LOG/provider.log" 2>&1 & PIDS+=("$!")
+  ) >"$LOG/provider.log" 2>&1 & PIDS+=("$!")
+provider_pid="${PIDS[$(( ${#PIDS[@]} - 1 ))]}"
 
 provider_ready=0
-for _ in $(seq 1 600); do
+for _ in $(seq 1 3000); do
   if grep -q 'NDNSF_DI_NATIVE_PROVIDER_READY' "$LOG/provider.log" 2>/dev/null; then
     provider_ready=1
+    break
+  fi
+  if ! kill -0 "$provider_pid" 2>/dev/null; then
+    echo SPEC170_D1_CURRENT_PROVIDER_EXITED_BEFORE_READY
+    tail -240 "$LOG/provider.log" 2>/dev/null || true
     break
   fi
   sleep 0.1
