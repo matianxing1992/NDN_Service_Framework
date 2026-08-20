@@ -98,14 +98,20 @@ def is_excluded(path: str) -> bool:
     return bool(parts and parts[0] in {"docs", "specs"})
 
 
-def dependency_records(repo: Path, lock: dict) -> dict:
+def dependency_records(
+    repo: Path, lock: dict, dependency_root: Path | None = None
+) -> dict:
     records: dict[str, dict[str, object]] = {}
+    root = (dependency_root or repo.parent).resolve()
     locations = {
-        "ndn-cxx": repo.parent / "ndn-cxx",
-        "NFD": repo.parent / "NFD",
-        "NDNSD": repo.parent / "NDNSD",
-        "ndn-svs": repo.parent / "ndn-svs",
-        "NAC-ABE": repo.parent / "NAC-ABE",
+        "ndn-cxx": root / "ndn-cxx",
+        "NFD": root / "NFD",
+        "NDNSD": root / "NDNSD",
+        "ndn-svs": root / "ndn-svs",
+        "NAC-ABE": root / "NAC-ABE",
+        "openabe": root / "openabe",
+        "relic": root / "relic",
+        "websocketpp": root / "websocketpp",
     }
     for name, expected in sorted(lock["sourceRepositories"].items()):
         path = locations.get(name)
@@ -131,7 +137,7 @@ def dependency_records(repo: Path, lock: dict) -> dict:
     return records
 
 
-def build(repo: Path) -> dict:
+def build(repo: Path, dependency_root: Path | None = None) -> dict:
     feature = json.loads((repo / FEATURE).read_text(encoding="utf-8"))
     if feature.get("feature_directory") != str(SPEC_ROOT):
         raise SystemExit("SPEC174_FEATURE_POINTER_MISMATCH")
@@ -167,7 +173,7 @@ def build(repo: Path) -> dict:
             "dirtyInScope": in_scope,
             "dirtyExcluded": excluded,
         },
-        "dependencies": dependency_records(repo, lock),
+        "dependencies": dependency_records(repo, lock, dependency_root),
         "toolchain": {
             "compiler": command("c++", "--version").splitlines()[0],
             "linker": command("ld", "--version").splitlines()[0],
@@ -183,11 +189,15 @@ def build(repo: Path) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo", type=Path, default=Path.cwd())
+    parser.add_argument("--dependency-root", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     repo = args.repo.resolve()
     output = args.output if args.output.is_absolute() else repo / args.output
-    body = build(repo)
+    dependency_root = (
+        args.dependency_root.resolve() if args.dependency_root else None
+    )
+    body = build(repo, dependency_root)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(body, indent=2, sort_keys=True) + "\n",
                       encoding="utf-8")
