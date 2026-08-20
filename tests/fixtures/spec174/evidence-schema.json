@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Spec 174 bounded evidence bundle",
+  "type": "object",
+  "required": [
+    "schemaVersion", "source", "fixture", "run", "lifecycle",
+    "completeRows", "negativeRows", "transport"
+  ],
+  "properties": {
+    "schemaVersion": {"const": "spec174-evidence-v1"},
+    "source": {
+      "type": "object",
+      "required": ["revision", "tree", "manifestSha256"],
+      "properties": {
+        "revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "tree": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "manifestSha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    },
+    "fixture": {
+      "type": "object",
+      "required": ["manifestSha256", "oracleSha256", "configSha256"],
+      "properties": {
+        "manifestSha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "oracleSha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "configSha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    },
+    "run": {
+      "type": "object",
+      "required": ["case", "processId", "status", "firstFailure"],
+      "properties": {
+        "case": {"type": "string", "minLength": 1},
+        "processId": {"type": "string", "minLength": 1},
+        "status": {"enum": ["PASS", "FAIL", "BLOCK"]},
+        "firstFailure": {"type": ["string", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "lifecycle": {"type": "array", "minItems": 1, "items": {"type": "object"}},
+    "completeRows": {"type": "array", "items": {"type": "object"}},
+    "negativeRows": {"type": "array", "items": {"type": "object"}},
+    "transport": {
+      "type": "object",
+      "required": ["hiddenTransport", "cpuFallback", "namesObserved"],
+      "properties": {
+        "hiddenTransport": {"const": false},
+        "cpuFallback": {"const": false},
+        "namesObserved": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
