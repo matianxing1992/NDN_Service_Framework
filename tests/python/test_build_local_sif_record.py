@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import subprocess
+import tarfile
 from pathlib import Path
 
 
@@ -52,6 +53,40 @@ Stage: final
 {extra_labels}"""
 
 
+def write_source_seal(root: Path) -> Path:
+    source = root / "sealed-source.txt"
+    source.write_text("sealed source\n", encoding="utf-8")
+    archive = root / "workspace.tar"
+    with tarfile.open(archive, "w") as stream:
+        stream.add(source, arcname="sealed-source.txt")
+    row = {
+        "path": "sealed-source.txt",
+        "bytes": source.stat().st_size,
+        "sha256": "sha256:" + hashlib.sha256(source.read_bytes()).hexdigest(),
+    }
+    body = {
+        "schemaVersion": "spec170-local-sif-source-v1",
+        "sourceRevision": "test-revision",
+        "sourceMode": "sealed-current-worktree-files",
+        "workspace": str(root),
+        "archive": {
+            "path": str(archive.resolve()),
+            "bytes": archive.stat().st_size,
+            "sha256": "sha256:" + hashlib.sha256(archive.read_bytes()).hexdigest(),
+        },
+        "fileCount": 1,
+        "files": [row],
+        "compiledPayloadCount": 0,
+    }
+    body["sealDigest"] = "sha256:" + hashlib.sha256(
+        json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    seal = root / "source-seal.json"
+    seal.write_text(json.dumps(body, indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8")
+    return seal
+
+
 def test_localimage_base_is_hash_bound_in_build_record(tmp_path):
     tools = tmp_path / "tools"
     tools.mkdir()
@@ -79,8 +114,7 @@ def test_localimage_base_is_hash_bound_in_build_record(tmp_path):
         valid_definition(base, source),
         encoding="utf-8",
     )
-    source_seal = tmp_path / "source-seal.json"
-    source_seal.write_text('{"status":"PASS"}\n', encoding="utf-8")
+    source_seal = write_source_seal(tmp_path)
     candidate = tmp_path / "runtime.sif"
     record = tmp_path / "build-record.json"
 
@@ -145,8 +179,7 @@ def test_r13_style_host_binaries_are_rejected_before_apptainer_build(tmp_path):
         "/opt/venv/lib/python3.10/site-packages/ndnsf\n",
         encoding="utf-8",
     )
-    source_seal = tmp_path / "source-seal.json"
-    source_seal.write_text('{"status":"PASS"}\n', encoding="utf-8")
+    source_seal = write_source_seal(tmp_path)
     candidate = tmp_path / "runtime.sif"
     record = tmp_path / "build-record.json"
 
@@ -207,8 +240,7 @@ def test_declared_release_label_mismatch_rejects_candidate(tmp_path):
         valid_definition(base, source, "    org.ndnsf.di.release new\n"),
         encoding="utf-8",
     )
-    source_seal = tmp_path / "source-seal.json"
-    source_seal.write_text('{"status":"PASS"}\n', encoding="utf-8")
+    source_seal = write_source_seal(tmp_path)
     candidate = tmp_path / "runtime.sif"
     record = tmp_path / "build-record.json"
     env = os.environ.copy()

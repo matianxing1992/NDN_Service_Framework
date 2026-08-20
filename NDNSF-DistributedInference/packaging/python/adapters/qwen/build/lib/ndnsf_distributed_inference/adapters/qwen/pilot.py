@@ -10,7 +10,7 @@ from typing import Callable, Iterable, Sequence, TypeVar
 
 
 MAX_INPUT_TOKENS = 512
-MAX_OUTPUT_TOKENS = 32
+MAX_OUTPUT_TOKENS = 64
 GenerationResult = TypeVar("GenerationResult")
 
 
@@ -149,7 +149,7 @@ class QwenPilotRequest:
         if len(self.input_token_ids) > MAX_INPUT_TOKENS:
             raise ValueError("Qwen pilot input exceeds 512 tokens")
         if self.max_new_tokens < 1 or self.max_new_tokens > MAX_OUTPUT_TOKENS:
-            raise ValueError("Qwen pilot output must be between 1 and 32 tokens")
+            raise ValueError("Qwen pilot output must be between 1 and 64 tokens")
         if any(not isinstance(token, int) or token < 0 for token in self.input_token_ids):
             raise ValueError("Qwen pilot token IDs must be non-negative integers")
 
@@ -158,7 +158,7 @@ def greedy_decode_fixture(logit_steps: Iterable[Sequence[float]],
                           max_new_tokens: int) -> list[int]:
     """Deterministic argmax oracle used by bounded correctness fixtures."""
     if max_new_tokens < 1 or max_new_tokens > MAX_OUTPUT_TOKENS:
-        raise ValueError("max_new_tokens must be between 1 and 32")
+        raise ValueError("max_new_tokens must be between 1 and 64")
     result: list[int] = []
     for logits in logit_steps:
         if len(result) == max_new_tokens:

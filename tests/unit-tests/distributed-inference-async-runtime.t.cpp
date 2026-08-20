@@ -20,6 +20,7 @@
 #include "ndn-service-framework/NegativeAckReason.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -472,6 +473,28 @@ BOOST_AUTO_TEST_CASE(AsyncDataflowRuntimeRejectsMissingDeclaredOutput)
     std::logic_error);
 }
 
+BOOST_AUTO_TEST_CASE(AsyncDataflowRuntimeRejectsIncompleteV3InputBeforeRunner)
+{
+  DependencyEdge input{"v3-input", "/Producer", "/Consumer",
+                       "/provider/NDNSF-DI/TENSOR/v1/object", 0, 0};
+  input.declaredByV3 = true;
+  input.maxSegments = 4;
+  const std::vector<RoleSpec> roles = {
+    RoleSpec{"/Consumer", {input}, {}},
+  };
+  TensorBundle incomplete = bundle("v3-input", "partial");
+  bool runnerCalled = false;
+  AsyncDataflowRuntime runtime(1);
+  BOOST_CHECK_THROW(
+    runtime.run("v3-incomplete", roles, {{"v3-input", incomplete}},
+                [&] (const RoleExecutionContext&) {
+                  runnerCalled = true;
+                  return std::map<std::string, TensorBundle>{};
+                }),
+    std::runtime_error);
+  BOOST_CHECK(!runnerCalled);
+}
+
 BOOST_AUTO_TEST_CASE(ProviderRoleWorkerPrefetchesAllInputsBeforeRunningRole)
 {
   RoleSpec role{
@@ -530,6 +553,48 @@ BOOST_AUTO_TEST_CASE(ProviderRoleWorkerPrefetchesAllInputsBeforeRunningRole)
   BOOST_REQUIRE_EQUAL(result.outputTimings[0].plannedSegmentNames.size(), 1);
   BOOST_CHECK_EQUAL(result.outputTimings[0].plannedSegmentNames[0],
                     plannedSegmentName("/run/3/merge/bundle/0", 0));
+}
+
+BOOST_AUTO_TEST_CASE(ProviderRoleWorkerRejectsIncompleteV3FetchBeforeRunner)
+{
+  DependencyEdge input{"v3-input", "/Producer", "/Consumer",
+                       "/provider/NDNSF-DI/TENSOR/v1/object", 0, 0};
+  input.declaredByV3 = true;
+  input.maxSegments = 4;
+  RoleSpec role{"/Consumer", {input}, {}};
+  auto io = std::make_shared<ImmediateDependencyIo>();
+  ProviderRoleWorker worker(1);
+  bool runnerCalled = false;
+  auto future = worker.executeAsync(
+    "v3-incomplete-worker", role, io,
+    [&] (const RoleExecutionContext&) {
+      runnerCalled = true;
+      return std::map<std::string, TensorBundle>{};
+    });
+  BOOST_CHECK_THROW(future.get(), std::runtime_error);
+  BOOST_CHECK(!runnerCalled);
+}
+
+BOOST_AUTO_TEST_CASE(ProviderRoleWorkerStagesAllOutputsBeforePublishingAny)
+{
+  RoleSpec role{
+    "/Producer", {},
+    {DependencyEdge{"first", "/Producer", "/First", "/first", 1},
+     DependencyEdge{"second", "/Producer", "/Second", "/second", 1}},
+  };
+  auto io = std::make_shared<FakeDependencyIo>();
+  ProviderRoleWorker worker(1);
+  auto future = worker.executeAsync(
+    "atomic-output-stage", role, io,
+    [] (const RoleExecutionContext&) {
+      return std::map<std::string, TensorBundle>{
+        {"first", bundle("first", "would-have-been-partial")},
+        {"debug", bundle("debug", "not-the-second-output")},
+      };
+    });
+  BOOST_CHECK_THROW(future.get(), std::logic_error);
+  std::lock_guard<std::mutex> lock(io->mutex);
+  BOOST_CHECK(io->publishedByScope.empty());
 }
 
 BOOST_AUTO_TEST_CASE(ProviderRoleWorkerDoesNotOccupyComputeWorkerWhileWaitingForInputs)
@@ -762,12 +827,160 @@ BOOST_AUTO_TEST_CASE(ProviderRoleWorkerSnapshotReportsActiveAndQueuedWork)
   BOOST_CHECK_EQUAL(snapshot.workerCount, 1);
   BOOST_CHECK_EQUAL(snapshot.activeWorkerCount, 1);
   BOOST_CHECK_GE(snapshot.readyQueueDepth, 1);
+  BOOST_CHECK_EQUAL(snapshot.readyQueueCapacity, 1024);
   BOOST_CHECK_GE(snapshot.pendingWorkCount(), 2);
   BOOST_CHECK_EQUAL(snapshot.idleWorkerCount(), 0);
 
   releasePromise.set_value();
   BOOST_CHECK_EQUAL(payloadText(first.get().outputsByScope.at("final-response")), "ok");
   BOOST_CHECK_EQUAL(payloadText(second.get().outputsByScope.at("final-response")), "ok");
+}
+
+BOOST_AUTO_TEST_CASE(ProviderRoleWorkerReadyQueueIsBounded)
+{
+  RoleSpec role{"/SlowRole", {}, {}};
+  auto io = std::make_shared<FakeDependencyIo>();
+  ProviderRoleWorker worker(
+    1, 4, 1024, std::chrono::seconds(120), 1);
+  std::promise<void> started;
+  std::promise<void> releasePromise;
+  auto release = releasePromise.get_future().share();
+
+  auto first = worker.executeAsync(
+    "bounded-first", role, io,
+    [&] (const RoleExecutionContext&) {
+      started.set_value();
+      release.wait();
+      return std::map<std::string, TensorBundle>{};
+    });
+  started.get_future().wait();
+  auto second = worker.executeAsync(
+    "bounded-second", role, io,
+    [] (const RoleExecutionContext&) {
+      return std::map<std::string, TensorBundle>{};
+    });
+  BOOST_REQUIRE_EQUAL(worker.snapshot().readyQueueDepth, 1);
+  auto rejected = worker.executeAsync(
+    "bounded-rejected", role, io,
+    [] (const RoleExecutionContext&) {
+      return std::map<std::string, TensorBundle>{};
+    });
+  BOOST_REQUIRE(rejected.wait_for(std::chrono::milliseconds(100)) ==
+                std::future_status::ready);
+  BOOST_CHECK_THROW(rejected.get(), std::runtime_error);
+
+  releasePromise.set_value();
+  BOOST_CHECK_NO_THROW(first.get());
+  BOOST_CHECK_NO_THROW(second.get());
+}
+
+BOOST_AUTO_TEST_CASE(ProviderRoleWorkerPreparesRunnerOnlyAfterBoundedQueueAdmission)
+{
+  RoleSpec role{"/PreparedRole", {}, {}};
+  auto io = std::make_shared<FakeDependencyIo>();
+  ProviderRoleWorker worker(
+    1, 4, 1024, std::chrono::seconds(120), 1);
+  std::promise<void> started;
+  std::promise<void> releasePromise;
+  auto release = releasePromise.get_future().share();
+
+  auto blocking = worker.executeAsync(
+    "prepared-blocking", role, io,
+    [&] (const RoleExecutionContext&) {
+      started.set_value();
+      release.wait();
+      return std::map<std::string, TensorBundle>{};
+    });
+  started.get_future().wait();
+
+  std::atomic<std::size_t> preparationCalls{0};
+  auto prepared = worker.executePreparedAsync(
+    "prepared-after-selection", role, io,
+    [&] {
+      ++preparationCalls;
+      return makeNativeModelRunner(
+        [] (const RoleExecutionContext&) {
+          return std::map<std::string, TensorBundle>{
+            {"final-response", bundle("prepared", "ok")},
+          };
+        });
+    });
+  BOOST_CHECK_EQUAL(preparationCalls.load(), 0);
+  BOOST_CHECK_EQUAL(worker.snapshot().readyQueueDepth, 1);
+
+  releasePromise.set_value();
+  BOOST_CHECK_NO_THROW(blocking.get());
+  const auto result = prepared.get();
+  BOOST_CHECK_EQUAL(preparationCalls.load(), 1);
+  BOOST_CHECK_EQUAL(
+    payloadText(result.outputsByScope.at("final-response")), "ok");
+}
+
+BOOST_AUTO_TEST_CASE(NativePreparedRunnerSpecBindsExactSealedAssembly)
+{
+  const auto digest = [] (char value) {
+    return "sha256:" + std::string(64, value);
+  };
+  NativeSelectionProjectionV3 projection;
+  projection.assembly.selectedRole = "/Stage0";
+  projection.assembly.backend = "onnxruntime-cpu";
+  projection.assembly.artifactDigest = digest('a');
+  projection.assembly.recipeDigest = digest('b');
+  projection.assembly.modelManifestDigest = digest('c');
+  projection.assembly.artifactProfileDigest = digest('d');
+  projection.assembly.graphDigest = digest('e');
+  projection.assembly.canonicalInitializerDigest = digest('2');
+  projection.assembly.adapterDescriptorDigest = digest('f');
+  projection.assembly.assemblerDescriptorDigest = digest('1');
+  projection.assembly.backendAbi = "onnxruntime-1.26-cpu";
+  projection.assembly.nodeIndices = {0, 1};
+  projection.assembly.expectedInputs = {{"x", "float32", {"1", "4"}}};
+  projection.assembly.expectedOutputs = {{"y", "float32", {"1", "4"}}};
+  projection.assembly.precision = "fp32";
+  projection.assembly.quantization = "none";
+  projection.assembly.layout = "native";
+  projection.assembly.padding = "none";
+  projection.assembly.maxSourceBytes = 4096;
+  projection.assembly.maxAssembledBytes = 2048;
+  projection.assembly.maxNodes = 2;
+
+  NativeModelRunnerSpec spec;
+  spec.role = "/Stage0";
+  spec.backend = "onnxruntime-cpu";
+  spec.path = "/var/tmp/ndnsf/assembled/model.onnx";
+  spec.metadata = {
+    {"fragmentDigest", projection.assembly.artifactDigest},
+    {"recipeDigest", projection.assembly.recipeDigest},
+    {"modelManifestDigest", projection.assembly.modelManifestDigest},
+    {"artifactProfileDigest", projection.assembly.artifactProfileDigest},
+    {"graphDigest", projection.assembly.graphDigest},
+    {"canonicalInitializerDigest",
+     projection.assembly.canonicalInitializerDigest},
+    {"adapterDescriptorDigest", projection.assembly.adapterDescriptorDigest},
+    {"assemblerDescriptorDigest", projection.assembly.assemblerDescriptorDigest},
+    {"backendAbi", projection.assembly.backendAbi},
+    {"precision", projection.assembly.precision},
+    {"quantization", projection.assembly.quantization},
+    {"layout", projection.assembly.layout},
+    {"padding", projection.assembly.padding},
+    {"maxSourceBytes", std::to_string(projection.assembly.maxSourceBytes)},
+    {"maxAssembledBytes",
+     std::to_string(projection.assembly.maxAssembledBytes)},
+    {"maxNodes", std::to_string(projection.assembly.maxNodes)},
+  };
+  BOOST_CHECK(!validateNativePreparedRunnerSpec(projection, spec));
+
+  auto wrongPath = spec;
+  wrongPath.path = "../model.onnx";
+  BOOST_REQUIRE(validateNativePreparedRunnerSpec(projection, wrongPath));
+  BOOST_CHECK_EQUAL(*validateNativePreparedRunnerSpec(projection, wrongPath),
+                    "DI_PROVIDER_ASSEMBLY_PATH_UNSAFE");
+
+  auto wrongAdapter = spec;
+  wrongAdapter.metadata["adapterDescriptorDigest"] = digest('9');
+  BOOST_REQUIRE(validateNativePreparedRunnerSpec(projection, wrongAdapter));
+  BOOST_CHECK_EQUAL(*validateNativePreparedRunnerSpec(projection, wrongAdapter),
+                    "DI_PROVIDER_ASSEMBLY_METADATA_MISMATCH");
 }
 
 BOOST_AUTO_TEST_CASE(NativeProviderHandlerRejectsMissingRunnerFactory)
@@ -851,6 +1064,36 @@ BOOST_AUTO_TEST_CASE(NativeProviderHandlerExtractsOnlyFinalRoleResponse)
   BOOST_CHECK(!disabledPayload.has_value());
 }
 
+BOOST_AUTO_TEST_CASE(NativeProviderLocalPlanDoesNotRequireCurrentRoleToBeFinal)
+{
+  NativeExecutionPlan plan;
+  plan.roles = {"/Backbone", "/Head/Shard/0", "/Head/Shard/1", "/Merge"};
+
+  NativeProviderAssignment assignment;
+  for (const auto& role : plan.roles) {
+    assignment.providerByRole[role] = "/provider/single";
+  }
+
+  // The first callback normally arrives for /Backbone, which has dependency
+  // outputs.  Those outputs are precisely why the full local plan must be
+  // selected; only the assignment determines locality.
+  RoleSpec backbone{
+    "/Backbone",
+    {},
+    {DependencyEdge{"backbone-to-head0", "/Backbone", "/Head/Shard/0", "", 1}},
+  };
+  BOOST_CHECK(nativeProviderShouldExecuteLocalPlan(
+    plan, assignment, backbone, "/provider/single"));
+
+  assignment.providerByRole["/Merge"] = "/provider/other";
+  BOOST_CHECK(!nativeProviderShouldExecuteLocalPlan(
+    plan, assignment, backbone, "/provider/single"));
+
+  assignment.providerByRole.erase("/Merge");
+  BOOST_CHECK(!nativeProviderShouldExecuteLocalPlan(
+    plan, assignment, backbone, "/provider/single"));
+}
+
 BOOST_AUTO_TEST_CASE(NativeProviderAssignmentPayloadValidatesRoleAndFragment)
 {
   NativeModelRunnerSpec mergeSpec;
@@ -864,6 +1107,13 @@ BOOST_AUTO_TEST_CASE(NativeProviderAssignmentPayloadValidatesRoleAndFragment)
     reinterpret_cast<const uint8_t*>(okText),
     std::strlen(okText));
   BOOST_CHECK(!validateNativeProviderAssignmentPayload(specs, "/Merge", okPayload));
+
+  const char* upperDigestText = "role=/Merge;fragmentDigest=SHA256:MERGE;";
+  const auto upperDigestPayload = ndn::Buffer(
+    reinterpret_cast<const uint8_t*>(upperDigestText),
+    std::strlen(upperDigestText));
+  BOOST_CHECK(!validateNativeProviderAssignmentPayload(
+    specs, "/Merge", upperDigestPayload));
 
   const char* wrongRoleText = "role=/Backbone;fragmentDigest=sha256:merge;";
   const auto wrongRolePayload = ndn::Buffer(
@@ -890,6 +1140,604 @@ BOOST_AUTO_TEST_CASE(NativeProviderAssignmentPayloadValidatesRoleAndFragment)
     legacySpecs,
     "/Merge",
     wrongFragmentPayload));
+}
+
+std::string
+completeProviderProjectionJson(const std::string& logicalRole,
+                               const std::string& roleKey,
+                               std::uint64_t rank,
+                               const std::string& provider,
+                               const std::string& requestId,
+                               const std::string& backend,
+                               const std::string& device,
+                               const std::string& executionBindings = {},
+                               bool duplicateRole = false)
+{
+  const auto d = "sha256:" + std::string(64, 'a');
+  const bool cpu = backend == "cpu" ||
+                   (backend.size() > 4 &&
+                    backend.compare(backend.size() - 4, 4, "-cpu") == 0);
+  const auto deviceSet = cpu ? std::string("[]")
+                             : std::string("[\"") + device + "\"]";
+  const auto role =
+    std::string("{\"adapter_id\":\"onnx\",\"adapter_version\":\"1\",") +
+    "\"artifact_digest\":\"" + d + "\",\"backend\":\"" + backend +
+    "\",\"device_set\":" + deviceSet +
+    ",\"layer_begin\":0,\"layer_end\":4,\"rank\":" +
+    std::to_string(rank) + ",\"required_device_memory_mb\":0," +
+    "\"recipe_digest\":\"" + d +
+    "\",\"role\":\"" + logicalRole +
+    "\",\"role_kind\":\"PIPELINE_RANGE\"}";
+  return std::string("{\"ack_closed_digest\":\"") + d +
+    "\",\"assembly\":" + role +
+    ",\"attempt\":2,\"dataflow\":{\"attempt\":2," +
+    "\"dataflow_digest\":\"" + d +
+    "\",\"may_publish\":[],\"must_fetch\":[],\"plan_digest\":\"" + d +
+    "\",\"request_id\":\"" + requestId + "\",\"role\":\"" + roleKey +
+    "\",\"terminal_response_owner\":true,\"wait_for\":[]}," +
+    "\"deadline_ms\":9999,\"dependencies\":[],\"device_binding\":{" +
+    "\"mode\":\"" + (cpu ? "CPU" : "SINGLE_DEVICE") +
+    "\",\"offer_digest\":\"" + d +
+    "\",\"offer_scoped_device_handle\":\"" + (cpu ? "" : device) +
+    "\",\"provider\":\"" + provider +
+    "\",\"resource_sequence\":1,\"resource_snapshot_digest\":\"" + d +
+    "\",\"role\":\"" + roleKey +
+    "\",\"sharing_policy\":\"EXCLUSIVE_ROLE\"," +
+    "\"topology_profile_digest\":\"" + d + "\"}," +
+    (executionBindings.empty()
+      ? std::string()
+      : "\"execution_bindings\":" + executionBindings + ",") +
+    "\"execution_role\":{\"adapter_id\":\"onnx\",\"adapter_version\":\"1\"," +
+    "\"backend\":\"" + backend +
+    "\",\"layer_begin\":0,\"layer_end\":4,\"rank\":" +
+    std::to_string(rank) + ",\"role_id\":\"" + roleKey +
+    "\",\"stage_id\":\"" + logicalRole + "\"}," +
+    "\"group_capability_v1\":\"aabbcc\",\"offer_digest\":\"" + d +
+    "\",\"plan_core_digest\":\"" + d +
+    "\",\"plan_digest\":\"" + d + "\",\"provider\":\"" + provider +
+    "\",\"request_id\":\"" + requestId + "\",\"roles\":[" + role +
+    (duplicateRole ? "," + role : "") +
+    "],\"schema\":\"ndnsf-di-selection-v3\",\"schema_version\":3," +
+    "\"security_policy_snapshot_digest\":\"" + d + "\"}";
+}
+
+BOOST_AUTO_TEST_CASE(NativeProviderAssignmentParsesCanonicalV3Projection)
+{
+  const auto text = completeProviderProjectionJson(
+    "/Backbone", "/Backbone", 0, "/provider/a", "/request/7",
+    "onnxruntime-cpu", "");
+  const ndn::Buffer payload(
+    reinterpret_cast<const uint8_t*>(text.data()), text.size());
+
+  const auto fields = parseNativeProviderAssignmentFields(payload, "/Backbone");
+  BOOST_CHECK_EQUAL(fields.at("provider"), "/provider/a");
+  BOOST_CHECK_EQUAL(fields.at("executionRequestId"), "/request/7");
+  BOOST_CHECK_EQUAL(fields.at("executionAttemptEpoch"), "2");
+  BOOST_CHECK_EQUAL(fields.at("executionPlanDigest"),
+                    "sha256:" + std::string(64, 'a'));
+  BOOST_CHECK_EQUAL(fields.at("groupCapabilityV1"), "aabbcc");
+  BOOST_CHECK_EQUAL(fields.at("role"), "/Backbone");
+  BOOST_CHECK_EQUAL(fields.at("rank"), "0");
+  BOOST_CHECK_EQUAL(fields.at("backend"), "onnxruntime-cpu");
+  BOOST_CHECK_EQUAL(fields.at("device"), "cpu:0");
+  BOOST_CHECK_EQUAL(fields.at("artifactDigest"),
+                    "sha256:" + std::string(64, 'a'));
+  BOOST_CHECK_EQUAL(fields.at("fragmentDigest"),
+                    "sha256:" + std::string(64, 'a'));
+}
+
+BOOST_AUTO_TEST_CASE(NativeProviderAssignmentRejectsMultiRoleV3Projection)
+{
+  const auto text = completeProviderProjectionJson(
+    "/Backbone", "/Backbone", 0, "/provider/a", "/request/7",
+    "onnxruntime-cpu", "", {}, true);
+  const ndn::Buffer payload(
+    reinterpret_cast<const uint8_t*>(text.data()), text.size());
+  BOOST_CHECK_THROW(parseNativeProviderAssignmentFields(payload, "/Backbone"),
+                    std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(NativeProviderAssignmentParsesRankSpecificV3Projection)
+{
+  // Provider projections contain only the ranks assigned to that Provider.
+  // The collaboration role nevertheless remains the global role#rank key, so
+  // the native decoder must not infer uniqueness from this local subset.
+  const auto text = completeProviderProjectionJson(
+    "/Stage/1", "/Stage/1#1", 1, "/provider/b", "/request/hybrid",
+    "onnxruntime-cpu", "");
+  const ndn::Buffer payload(
+    reinterpret_cast<const uint8_t*>(text.data()), text.size());
+
+  const auto fields = parseNativeProviderAssignmentFields(payload, "/Stage/1#1");
+  BOOST_CHECK_EQUAL(fields.at("role"), "/Stage/1#1");
+  BOOST_CHECK_EQUAL(fields.at("rank"), "1");
+  BOOST_CHECK_EQUAL(fields.at("backend"), "onnxruntime-cpu");
+  BOOST_CHECK_EQUAL(fields.at("device"), "cpu:0");
+  BOOST_CHECK_EQUAL(fields.at("artifactDigest"),
+                    "sha256:" + std::string(64, 'a'));
+}
+
+BOOST_AUTO_TEST_CASE(NativeProviderAssignmentParsesPerRoleExecutionBinding)
+{
+  const auto text = completeProviderProjectionJson(
+    "S0R0", "S0R0", 0, "/provider/a", "/request/lease",
+    "onnxruntime-cpu", "",
+    R"({"S0R0":{"activation_digest":"sha256:activation","activation_local_member":"member-s0","activation_members":"member-s0,member-s1","lease_binding_proof":"proof-s0","lease_epoch":"epoch-s0","lease_id":"lease-s0","lease_plan_digest":"sha256:plan","lease_provider_role_count":"2","provider_boot_id":"boot-s0"}})");
+  const ndn::Buffer payload(
+    reinterpret_cast<const uint8_t*>(text.data()), text.size());
+
+  const auto fields = parseNativeProviderAssignmentFields(payload, "S0R0");
+  BOOST_CHECK_EQUAL(fields.at("executionProviderBootId"), "boot-s0");
+  BOOST_CHECK_EQUAL(fields.at("executionLeaseId"), "lease-s0");
+  BOOST_CHECK_EQUAL(fields.at("executionLeaseEpoch"), "epoch-s0");
+  BOOST_CHECK_EQUAL(fields.at("executionLeasePlanDigest"), "sha256:plan");
+  BOOST_CHECK_EQUAL(fields.at("executionLeaseBindingProof"), "proof-s0");
+  BOOST_CHECK_EQUAL(fields.at("executionLeaseProviderRoleCount"), "2");
+  BOOST_CHECK_EQUAL(fields.at("executionActivationDigest"), "sha256:activation");
+  BOOST_CHECK_EQUAL(fields.at("executionActivationMembers"),
+                    "member-s0,member-s1");
+  BOOST_CHECK_EQUAL(fields.at("executionActivationLocalMember"), "member-s0");
+  BOOST_CHECK_EQUAL(fields.at("groupCapabilityV1"), "aabbcc");
+}
+
+BOOST_AUTO_TEST_CASE(NativeSelectionProjectionBuildsRequestScopedHybridPlan)
+{
+  const std::string digestA = "sha256:" + std::string(64, 'a');
+  const std::string digestB = "sha256:" + std::string(64, 'B');
+  const std::string digestC = "sha256:" + std::string(64, 'c');
+  const std::string localRole =
+    std::string("{\"adapter_id\":\"qwen\",\"adapter_version\":\"1\",") +
+    "\"artifact_digest\":\"" + digestC +
+    "\",\"backend\":\"onnxruntime-cpu\",\"device_set\":[]," +
+    "\"layer_begin\":4,\"layer_end\":8,\"rank\":1," +
+    "\"recipe_digest\":\"" + digestA +
+    "\",\"role\":\"/Stage/1\",\"role_kind\":\"TENSOR_RANK\"}";
+  const std::string text =
+    std::string("{\"ack_closed_digest\":\"") + digestA +
+    "\",\"assembly\":" + localRole +
+    ",\"attempt\":3,\"deadline_ms\":12000,\"dependencies\":[{" +
+    "\"consumers\":[\"/Stage/1#0\",\"/Stage/1#1\"]," +
+    "\"key_scope\":\"tensor-0\"," +
+    "\"object_name_template\":\"{producerProvider}/NDNSF/DI/DATA/{sessionId}/{keyScope}/{producerRole}\"," +
+    "\"producers\":[\"/Stage/0\"],\"required\":true," +
+    "\"topic_prefix\":\"/activation\",\"transportProfile\":\"NDNSF_DATA_V1\"," +
+    "\"collectiveOperationIndex\":7,\"collectiveProducerRank\":\"0\"," +
+    "\"collectiveSourceLayoutDigest\":\"" + digestA + "\"," +
+    "\"collectiveTargetLayoutDigest\":\"" + digestB + "\"," +
+    "\"collectiveTensorDigest\":\"" + digestC + "\"," +
+    "\"tensors\":[\"activation-0\"],\"redistributions\":[{" +
+    "\"producerRanks\":[0],\"consumerRanks\":[1,2]," +
+    "\"tensor\":\"activation-0\",\"operation\":\"SCATTER\"," +
+    "\"epoch\":\"epoch-3\",\"integrityDigest\":\"" + digestC + "\"," +
+    "\"sourceLayoutDigest\":\"" + digestA + "\"," +
+    "\"targetLayoutDigest\":\"" + digestB + "\"," +
+    "\"temporaryMemoryBytes\":4096,\"completeOutput\":true}]}]," +
+    "\"device_binding\":{\"mode\":\"CPU\",\"offer_digest\":\"" +
+    digestA +
+    "\",\"offer_scoped_device_handle\":\"\",\"provider\":\"/provider/b\"," +
+    "\"resource_sequence\":1,\"resource_snapshot_digest\":\"" +
+    digestA +
+    "\",\"role\":\"/Stage/1#1\",\"sharing_policy\":\"EXCLUSIVE_ROLE\"," +
+    "\"topology_profile_digest\":\"" + digestA + "\"}," +
+    "\"execution_role\":{\"adapter_id\":\"qwen\",\"adapter_version\":\"1\"," +
+    "\"backend\":\"onnxruntime-cpu\",\"layer_begin\":4,\"layer_end\":8," +
+    "\"rank\":1,\"role_id\":\"/Stage/1#1\",\"stage_id\":\"/Stage/1\"}," +
+    "\"group_capability_v1\":\"aabb\",\"plan_core_digest\":\"" + digestA +
+    "\",\"plan_digest\":\"" + digestB +
+    "\",\"offer_digest\":\"" + digestA +
+    "\",\"provider\":\"/provider/b\",\"request_id\":\"/request/hybrid\"," +
+    "\"dataflow\":{\"attempt\":3,\"dataflow_digest\":\"" + digestC +
+    "\",\"may_publish\":[],\"must_fetch\":[],\"plan_digest\":\"" +
+    digestB +
+    "\",\"request_id\":\"/request/hybrid\",\"role\":\"/Stage/1#1\"," +
+    "\"terminal_response_owner\":true,\"wait_for\":[]}," +
+    "\"roles\":[" + localRole + "]," +
+    "\"schema\":\"ndnsf-di-selection-v3\",\"schema_version\":3," +
+    "\"security_policy_snapshot_digest\":\"" + digestA + "\"}";
+
+  std::istringstream input(text);
+  const auto projection = nativeSelectionProjectionV3FromJson(
+    input, "/Stage/1#1");
+  BOOST_CHECK_EQUAL(projection.provider, "/provider/b");
+  BOOST_CHECK_EQUAL(projection.requestId, "/request/hybrid");
+  BOOST_CHECK_EQUAL(projection.attempt, 3U);
+  BOOST_CHECK_EQUAL(projection.selectedRole.selectedRole, "/Stage/1#1");
+  BOOST_CHECK_EQUAL(projection.selectedRole.rank, 1U);
+  BOOST_CHECK_EQUAL(projection.plan.roles.size(), 3U);
+  BOOST_REQUIRE_EQUAL(projection.plan.dependencies.size(), 1U);
+  const auto& dependency = projection.plan.dependencies.front();
+  BOOST_CHECK_EQUAL(dependency.keyScope, "tensor-0");
+  BOOST_CHECK_EQUAL(dependency.objectNameTemplate,
+                    "{producerProvider}/NDNSF/DI/DATA/{sessionId}/{keyScope}/{producerRole}");
+  BOOST_CHECK(dependency.useNdnsfDataV1);
+  BOOST_REQUIRE_EQUAL(dependency.redistributions.size(), 1U);
+  const auto& redistribution = dependency.redistributions.front();
+  BOOST_CHECK_EQUAL(redistribution.operation, "SCATTER");
+  BOOST_CHECK_EQUAL(redistribution.producerRanks.front(), 0U);
+  BOOST_CHECK_EQUAL(redistribution.consumerRanks.back(), 2U);
+  BOOST_CHECK_EQUAL(redistribution.temporaryMemoryBytes, 4096U);
+  BOOST_CHECK(redistribution.completeOutput);
+}
+
+BOOST_AUTO_TEST_CASE(NativeSelectionProjectionRejectsMissingRequiredRedistribution)
+{
+  const std::string digest = "sha256:" + std::string(64, 'a');
+  const std::string text =
+    std::string("{\"attempt\":1,\"deadline_ms\":12000,\"dependencies\":[{") +
+    "\"consumers\":[\"S1R0\",\"S1R1\"]," +
+    "\"key_scope\":\"boundary-0\"," +
+    "\"object_name_template\":\"{producerProvider}/NDNSF/DI/DATA/{sessionId}/{keyScope}/{producerRole}\"," +
+    "\"producers\":[\"S0R0\"],\"required\":true," +
+    "\"topic_prefix\":\"/activation\"," +
+    "\"transportProfile\":\"NDNSF_DATA_V1\"," +
+    "\"collectiveSourceLayoutDigest\":\"" + digest + "\"," +
+    "\"collectiveTargetLayoutDigest\":\"" + digest + "\"," +
+    "\"collectiveTensorDigest\":\"" + digest + "\"," +
+    "\"tensors\":[\"activation\"],\"redistributions\":[]}]," +
+    "\"group_capability_v1\":\"aabb\",\"plan_core_digest\":\"" + digest +
+    "\",\"plan_digest\":\"" + digest +
+    "\",\"provider\":\"/provider/a\",\"request_id\":\"/request/missing-redistribution\"," +
+    "\"roles\":[{\"adapter_id\":\"qwen\",\"adapter_version\":\"1\"," +
+    "\"artifact_digest\":\"" + digest +
+    "\",\"backend\":\"onnxruntime\",\"device_set\":[\"cpu:0\"]," +
+    "\"layer_begin\":0,\"layer_end\":4,\"rank\":0," +
+    "\"recipe_digest\":\"" + digest +
+    "\",\"role\":\"S0R0\",\"role_kind\":\"TENSOR_RANK\"}]," +
+    "\"schema\":\"ndnsf-di-selection-v3\",\"schema_version\":3}";
+
+  std::istringstream input(text);
+  BOOST_CHECK_THROW(
+    nativeSelectionProjectionV3FromJson(input, "S0R0"),
+    std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(NativeSelectionProjectionRejectsDuplicateRedistribution)
+{
+  const std::string digest = "sha256:" + std::string(64, 'b');
+  const std::string redistribution =
+    std::string("{\"producerRanks\":[0],\"consumerRanks\":[1,2],") +
+    "\"tensor\":\"activation\",\"operation\":\"SCATTER\"," +
+    "\"epoch\":\"epoch-1\",\"integrityDigest\":\"" + digest + "\"," +
+    "\"sourceLayoutDigest\":\"" + digest + "\"," +
+    "\"targetLayoutDigest\":\"" + digest + "\"," +
+    "\"temporaryMemoryBytes\":1024,\"completeOutput\":true}";
+  const std::string text =
+    std::string("{\"attempt\":1,\"deadline_ms\":12000,\"dependencies\":[{") +
+    "\"consumers\":[\"S1R0\",\"S1R1\"]," +
+    "\"key_scope\":\"boundary-0\"," +
+    "\"object_name_template\":\"{producerProvider}/NDNSF/DI/DATA/{sessionId}/{keyScope}/{producerRole}\"," +
+    "\"producers\":[\"S0R0\"],\"required\":true," +
+    "\"topic_prefix\":\"/activation\"," +
+    "\"transportProfile\":\"NDNSF_DATA_V1\"," +
+    "\"collectiveSourceLayoutDigest\":\"" + digest + "\"," +
+    "\"collectiveTargetLayoutDigest\":\"" + digest + "\"," +
+    "\"collectiveTensorDigest\":\"" + digest + "\"," +
+    "\"tensors\":[\"activation\"],\"redistributions\":[" +
+    redistribution + "," + redistribution + "]}]," +
+    "\"group_capability_v1\":\"aabb\",\"plan_core_digest\":\"" + digest +
+    "\",\"plan_digest\":\"" + digest +
+    "\",\"provider\":\"/provider/a\",\"request_id\":\"/request/duplicate-redistribution\"," +
+    "\"roles\":[{\"adapter_id\":\"qwen\",\"adapter_version\":\"1\"," +
+    "\"artifact_digest\":\"" + digest +
+    "\",\"backend\":\"onnxruntime\",\"device_set\":[\"cpu:0\"]," +
+    "\"layer_begin\":0,\"layer_end\":4,\"rank\":0," +
+    "\"recipe_digest\":\"" + digest +
+    "\",\"role\":\"S0R0\",\"role_kind\":\"TENSOR_RANK\"}]," +
+    "\"schema\":\"ndnsf-di-selection-v3\",\"schema_version\":3}";
+
+  std::istringstream input(text);
+  BOOST_CHECK_THROW(
+    nativeSelectionProjectionV3FromJson(input, "S0R0"),
+    std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(NativeSelectionProjectionRejectsWrongRedistributionOperation)
+{
+  const std::string digest = "sha256:" + std::string(64, 'c');
+  const std::string text =
+    std::string("{\"attempt\":1,\"deadline_ms\":12000,\"dependencies\":[{") +
+    "\"consumers\":[\"S1R0\",\"S1R1\"]," +
+    "\"key_scope\":\"boundary-0\"," +
+    "\"object_name_template\":\"{producerProvider}/NDNSF/DI/DATA/{sessionId}/{keyScope}/{producerRole}\"," +
+    "\"producers\":[\"S0R0\"],\"required\":true," +
+    "\"topic_prefix\":\"/activation\"," +
+    "\"transportProfile\":\"NDNSF_DATA_V1\"," +
+    "\"collectiveSourceLayoutDigest\":\"" + digest + "\"," +
+    "\"collectiveTargetLayoutDigest\":\"" + digest + "\"," +
+    "\"collectiveTensorDigest\":\"" + digest + "\"," +
+    "\"tensors\":[\"activation\"],\"redistributions\":[{" +
+    "\"producerRanks\":[0],\"consumerRanks\":[1,2]," +
+    "\"tensor\":\"activation\",\"operation\":\"GATHER\"," +
+    "\"epoch\":\"epoch-1\",\"integrityDigest\":\"" + digest + "\"," +
+    "\"sourceLayoutDigest\":\"" + digest + "\"," +
+    "\"targetLayoutDigest\":\"" + digest + "\"," +
+    "\"temporaryMemoryBytes\":1024,\"completeOutput\":true}]}]," +
+    "\"group_capability_v1\":\"aabb\",\"plan_core_digest\":\"" + digest +
+    "\",\"plan_digest\":\"" + digest +
+    "\",\"provider\":\"/provider/a\",\"request_id\":\"/request/wrong-operation\"," +
+    "\"roles\":[{\"adapter_id\":\"qwen\",\"adapter_version\":\"1\"," +
+    "\"artifact_digest\":\"" + digest +
+    "\",\"backend\":\"onnxruntime\",\"device_set\":[\"cpu:0\"]," +
+    "\"layer_begin\":0,\"layer_end\":4,\"rank\":0," +
+    "\"recipe_digest\":\"" + digest +
+    "\",\"role\":\"S0R0\",\"role_kind\":\"TENSOR_RANK\"}]," +
+    "\"schema\":\"ndnsf-di-selection-v3\",\"schema_version\":3}";
+
+  std::istringstream input(text);
+  BOOST_CHECK_THROW(
+    nativeSelectionProjectionV3FromJson(input, "S0R0"),
+    std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(NativeSelectionProjectionRejectsRedistributionRankCountMismatch)
+{
+  const std::string sourceDigest = "sha256:" + std::string(64, 'd');
+  const std::string targetDigest = "sha256:" + std::string(64, 'e');
+  const std::string tensorDigest = "sha256:" + std::string(64, 'f');
+  const std::string text =
+    std::string("{\"attempt\":1,\"deadline_ms\":12000,\"dependencies\":[{") +
+    "\"consumers\":[\"S1R0\"],\"key_scope\":\"boundary-0\"," +
+    "\"object_name_template\":\"{producerProvider}/NDNSF/DI/DATA/{sessionId}/{keyScope}/{producerRole}\"," +
+    "\"producers\":[\"S0R0\",\"S0R1\"],\"required\":true," +
+    "\"topic_prefix\":\"/activation\",\"transportProfile\":\"NDNSF_DATA_V1\"," +
+    "\"collectiveSourceLayoutDigest\":\"" + sourceDigest +
+    "\",\"collectiveTargetLayoutDigest\":\"" + targetDigest +
+    "\",\"collectiveTensorDigest\":\"" + tensorDigest +
+    "\",\"tensors\":[\"activation\"],\"redistributions\":[{" +
+    "\"producerRanks\":[0,1,9],\"consumerRanks\":[2]," +
+    "\"tensor\":\"activation\",\"operation\":\"GATHER\"," +
+    "\"epoch\":\"epoch-1\",\"integrityDigest\":\"" + tensorDigest +
+    "\",\"sourceLayoutDigest\":\"" + sourceDigest +
+    "\",\"targetLayoutDigest\":\"" + targetDigest +
+    "\",\"axis\":1,\"temporaryMemoryBytes\":1024," +
+    "\"completeOutput\":true}]}],\"group_capability_v1\":\"aabb\"," +
+    "\"plan_core_digest\":\"" + sourceDigest +
+    "\",\"plan_digest\":\"" + targetDigest +
+    "\",\"provider\":\"/provider/a\",\"request_id\":\"/request/rank-mismatch\"," +
+    "\"roles\":[{\"adapter_id\":\"qwen\",\"adapter_version\":\"1\"," +
+    "\"artifact_digest\":\"" + tensorDigest +
+    "\",\"backend\":\"onnxruntime\",\"device_set\":[\"cpu:0\"]," +
+    "\"layer_begin\":0,\"layer_end\":4,\"rank\":0," +
+    "\"recipe_digest\":\"" + sourceDigest +
+    "\",\"role\":\"S1R0\",\"role_kind\":\"TENSOR_RANK\"}]," +
+    "\"schema\":\"ndnsf-di-selection-v3\",\"schema_version\":3}";
+
+  std::istringstream input(text);
+  BOOST_CHECK_THROW(
+    nativeSelectionProjectionV3FromJson(input, "S1R0"),
+    std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(HybridRoleProjectionPublishesOnceAndKeepsGatherInputsDistinct)
+{
+  const auto digest = "sha256:" + std::string(64, 'a');
+  const auto redistribution = [&] (std::vector<std::uint64_t> producers,
+                                   std::vector<std::uint64_t> consumers,
+                                   std::string operation) {
+    RedistributionSpec spec;
+    spec.producerRanks = std::move(producers);
+    spec.consumerRanks = std::move(consumers);
+    spec.tensor = "activation";
+    spec.operation = std::move(operation);
+    spec.epoch = "epoch-1";
+    spec.integrityDigest = digest;
+    spec.sourceLayoutDigest = digest;
+    spec.targetLayoutDigest = digest;
+    spec.temporaryMemoryBytes = 1024;
+    spec.completeOutput = true;
+    return spec;
+  };
+
+  NativeDependencySpec scatter(
+    {"S0R0"}, {"S1R0", "S1R1"}, "boundary-0", "/activation",
+    "{producerProvider}/NDNSF/DI/DATA/{sessionId}/{keyScope}/{producerRole}");
+  scatter.redistributions = {redistribution({0}, {1, 2}, "SCATTER")};
+  NativeDependencySpec gather(
+    {"S1R0", "S1R1"}, {"S2R0"}, "boundary-1", "/activation",
+    "{producerProvider}/NDNSF/DI/DATA/{sessionId}/{keyScope}/{producerRole}");
+  gather.redistributions = {redistribution({1, 2}, {3}, "GATHER")};
+
+  NativeExecutionPlan plan;
+  plan.roles = {"S0R0", "S1R0", "S1R1", "S2R0"};
+  plan.dependencies = {scatter, gather};
+  NativeProviderAssignment assignment;
+  assignment.providerByRole = {
+    {"S0R0", "/p0"}, {"S1R0", "/p0"},
+    {"S1R1", "/p1"}, {"S2R0", "/p1"},
+  };
+
+  const auto stage0 = roleSpecFor(plan, "S0R0", "/request/1", assignment, "/p0");
+  BOOST_REQUIRE_EQUAL(stage0.outputs.size(), 1U);
+  BOOST_CHECK_EQUAL(stage0.outputs.front().scope, "boundary-0");
+
+  const auto rank0 = roleSpecFor(plan, "S1R0", "/request/1", assignment, "/p0");
+  BOOST_REQUIRE_EQUAL(rank0.outputs.size(), 1U);
+  BOOST_CHECK_EQUAL(rank0.outputs.front().scope, "boundary-1/from/S1R0");
+  BOOST_CHECK_EQUAL(rank0.outputs.front().transportScope, "boundary-1");
+
+  const auto rank1 = roleSpecFor(plan, "S1R1", "/request/1", assignment, "/p1");
+  BOOST_REQUIRE_EQUAL(rank1.outputs.size(), 1U);
+  BOOST_CHECK_EQUAL(rank1.outputs.front().scope, "boundary-1/from/S1R1");
+
+  const auto stage2 = roleSpecFor(plan, "S2R0", "/request/1", assignment, "/p1");
+  BOOST_REQUIRE_EQUAL(stage2.inputs.size(), 2U);
+  BOOST_CHECK_NE(stage2.inputs[0].scope, stage2.inputs[1].scope);
+  BOOST_CHECK_EQUAL(stage2.inputs[0].transportScope, "boundary-1");
+  BOOST_CHECK_EQUAL(stage2.inputs[1].transportScope, "boundary-1");
+  BOOST_CHECK_EQUAL(stage2.inputs[0].redistributions.front().operation, "GATHER");
+}
+
+BOOST_AUTO_TEST_CASE(CertifiedRedistributionScattersActivationForConsumerRank)
+{
+  NamedTensor activation;
+  activation.name = "activation";
+  activation.elementType = TensorElementType::Float32;
+  activation.shape = {1, 4};
+  activation.payload = rawTensorPayload<float>({1.0F, 2.0F, 3.0F, 4.0F});
+
+  RoleExecutionContext context;
+  context.sessionId = "/request/scatter";
+  context.role = "S1R1";
+  context.inputsByScope.emplace(
+    "boundary-0", makeEncodedTensorBundle("activation", {activation}));
+
+  RedistributionSpec redistribution;
+  redistribution.producerRanks = {0};
+  redistribution.consumerRanks = {1, 2};
+  redistribution.tensor = "activation";
+  redistribution.operation = "SCATTER";
+  redistribution.axis = 1;
+  redistribution.epoch = "epoch-1";
+  redistribution.integrityDigest = "sha256:" + std::string(64, 'a');
+  redistribution.sourceLayoutDigest = "sha256:" + std::string(64, 'b');
+  redistribution.targetLayoutDigest = "sha256:" + std::string(64, 'c');
+  redistribution.temporaryMemoryBytes = activation.payload.size();
+  redistribution.completeOutput = true;
+
+  DependencyEdge edge;
+  edge.scope = "boundary-0";
+  edge.transportScope = "boundary-0";
+  edge.producerRole = "S0R0";
+  edge.consumerRole = "S1R1";
+  edge.redistributionProducerRank = 0;
+  edge.redistributionConsumerRank = 2;
+  edge.redistributions = {redistribution};
+  context.inputEdgesByScope.emplace("boundary-0", edge);
+
+  const auto transformed = applyCertifiedTensorRedistributions(context);
+  BOOST_REQUIRE_EQUAL(transformed.size(), 1U);
+  const auto tensors = decodeTensorBundle(transformed.at("boundary-0").payload);
+  BOOST_REQUIRE_EQUAL(tensors.size(), 1U);
+  BOOST_CHECK_EQUAL(tensors.front().shape.size(), 2U);
+  BOOST_CHECK_EQUAL(tensors.front().shape[0], 1);
+  BOOST_CHECK_EQUAL(tensors.front().shape[1], 2);
+  BOOST_REQUIRE_EQUAL(tensors.front().payload.size(), 2U * sizeof(float));
+  std::array<float, 2> values{};
+  std::memcpy(values.data(), tensors.front().payload.data(),
+              tensors.front().payload.size());
+  BOOST_CHECK_CLOSE(values[0], 3.0F, 0.001);
+  BOOST_CHECK_CLOSE(values[1], 4.0F, 0.001);
+}
+
+BOOST_AUTO_TEST_CASE(CertifiedRedistributionGathersEveryProducerRankInOrder)
+{
+  const auto shard = [] (std::initializer_list<float> values) {
+    NamedTensor activation;
+    activation.name = "activation";
+    activation.elementType = TensorElementType::Float32;
+    activation.shape = {1, 2};
+    activation.payload = rawTensorPayload<float>(values);
+    return makeEncodedTensorBundle("activation", {activation});
+  };
+
+  RoleExecutionContext context;
+  context.sessionId = "/request/gather";
+  context.role = "S2R0";
+  context.inputsByScope.emplace(
+    "boundary-1/from/S1R0", shard({1.0F, 2.0F}));
+  context.inputsByScope.emplace(
+    "boundary-1/from/S1R1", shard({3.0F, 4.0F}));
+
+  RedistributionSpec redistribution;
+  redistribution.producerRanks = {1, 2};
+  redistribution.consumerRanks = {3};
+  redistribution.tensor = "activation";
+  redistribution.operation = "GATHER";
+  redistribution.axis = 1;
+  redistribution.epoch = "epoch-1";
+  redistribution.integrityDigest = "sha256:" + std::string(64, 'a');
+  redistribution.sourceLayoutDigest = "sha256:" + std::string(64, 'b');
+  redistribution.targetLayoutDigest = "sha256:" + std::string(64, 'c');
+  redistribution.temporaryMemoryBytes = 4U * sizeof(float);
+  redistribution.completeOutput = true;
+
+  for (const auto& rankAndRole :
+       std::vector<std::pair<std::uint64_t, std::string>>{
+         {1, "S1R0"}, {2, "S1R1"}}) {
+    DependencyEdge edge;
+    edge.scope = "boundary-1/from/" + rankAndRole.second;
+    edge.transportScope = "boundary-1";
+    edge.producerRole = rankAndRole.second;
+    edge.consumerRole = "S2R0";
+    edge.redistributionProducerRank = rankAndRole.first;
+    edge.redistributionConsumerRank = 3;
+    edge.redistributions = {redistribution};
+    context.inputEdgesByScope.emplace(edge.scope, edge);
+  }
+
+  const auto transformed = applyCertifiedTensorRedistributions(context);
+  BOOST_REQUIRE_EQUAL(transformed.size(), 1U);
+  const auto tensors = decodeTensorBundle(transformed.at("boundary-1").payload);
+  BOOST_REQUIRE_EQUAL(tensors.size(), 1U);
+  BOOST_CHECK_EQUAL(tensors.front().shape[0], 1);
+  BOOST_CHECK_EQUAL(tensors.front().shape[1], 4);
+  BOOST_REQUIRE_EQUAL(tensors.front().payload.size(), 4U * sizeof(float));
+  std::array<float, 4> values{};
+  std::memcpy(values.data(), tensors.front().payload.data(),
+              tensors.front().payload.size());
+  BOOST_CHECK_CLOSE(values[0], 1.0F, 0.001);
+  BOOST_CHECK_CLOSE(values[1], 2.0F, 0.001);
+  BOOST_CHECK_CLOSE(values[2], 3.0F, 0.001);
+  BOOST_CHECK_CLOSE(values[3], 4.0F, 0.001);
+}
+
+BOOST_AUTO_TEST_CASE(CertifiedRedistributionReshardsAcrossUnequalRankGroups)
+{
+  const auto shard = [] (std::initializer_list<float> values) {
+    NamedTensor activation;
+    activation.name = "activation";
+    activation.elementType = TensorElementType::Float32;
+    activation.shape = {1, 4};
+    activation.payload = rawTensorPayload<float>(values);
+    return makeEncodedTensorBundle("activation", {activation});
+  };
+
+  RoleExecutionContext context;
+  context.sessionId = "/request/reshard";
+  context.role = "S1R3";
+  context.inputsByScope.emplace(
+    "boundary/from/S0R0", shard({1.0F, 2.0F, 3.0F, 4.0F}));
+  context.inputsByScope.emplace(
+    "boundary/from/S0R1", shard({5.0F, 6.0F, 7.0F, 8.0F}));
+
+  RedistributionSpec redistribution;
+  redistribution.producerRanks = {0, 1};
+  redistribution.consumerRanks = {2, 3, 4, 5};
+  redistribution.tensor = "activation";
+  redistribution.operation = "RESHARD";
+  redistribution.axis = 1;
+  redistribution.epoch = "epoch-1";
+  redistribution.integrityDigest = "sha256:" + std::string(64, 'a');
+  redistribution.sourceLayoutDigest = "sha256:" + std::string(64, 'b');
+  redistribution.targetLayoutDigest = "sha256:" + std::string(64, 'c');
+  redistribution.temporaryMemoryBytes = 8U * sizeof(float);
+  redistribution.completeOutput = true;
+
+  for (const auto& rankAndRole :
+       std::vector<std::pair<std::uint64_t, std::string>>{
+         {0, "S0R0"}, {1, "S0R1"}}) {
+    DependencyEdge edge;
+    edge.scope = "boundary/from/" + rankAndRole.second;
+    edge.transportScope = "boundary";
+    edge.producerRole = rankAndRole.second;
+    edge.consumerRole = "S1R3";
+    edge.redistributionProducerRank = rankAndRole.first;
+    edge.redistributionConsumerRank = 5;
+    edge.redistributions = {redistribution};
+    context.inputEdgesByScope.emplace(edge.scope, edge);
+  }
+
+  const auto transformed = applyCertifiedTensorRedistributions(context);
+  BOOST_REQUIRE_EQUAL(transformed.size(), 1U);
+  const auto tensors = decodeTensorBundle(transformed.at("boundary").payload);
+  BOOST_REQUIRE_EQUAL(tensors.size(), 1U);
+  BOOST_CHECK_EQUAL(tensors.front().shape[0], 1);
+  BOOST_CHECK_EQUAL(tensors.front().shape[1], 2);
+  std::array<float, 2> values{};
+  std::memcpy(values.data(), tensors.front().payload.data(),
+              tensors.front().payload.size());
+  BOOST_CHECK_CLOSE(values[0], 7.0F, 0.001);
+  BOOST_CHECK_CLOSE(values[1], 8.0F, 0.001);
 }
 
 BOOST_AUTO_TEST_CASE(NativeModelRunnerFactoryCreatesRuntimeRunnerFromSpec)
@@ -2906,6 +3754,7 @@ BOOST_AUTO_TEST_CASE(NativeProviderReadinessAckControlsSelectionEligibility)
   readinessEvidence.roles = {"/Backbone"};
   readinessEvidence.createdAtMs = 1;
   readiness.setExecutionEvidence(readinessEvidence);
+  readiness.setExecutionEvidenceByRole({{"/Backbone", readinessEvidence}});
   auto readyAck = readiness.makeAckDecision("/Backbone,/Merge");
   BOOST_CHECK(readyAck.status);
   BOOST_CHECK(readiness.isReady());
@@ -2917,6 +3766,8 @@ BOOST_AUTO_TEST_CASE(NativeProviderReadinessAckControlsSelectionEligibility)
               std::string::npos);
   BOOST_CHECK(readyJson.find("\"hasModel\":true") != std::string::npos);
   BOOST_CHECK(readyJson.find("\"executionEvidence\"") != std::string::npos);
+  BOOST_CHECK(readyJson.find("\"executionEvidenceByRole\"") != std::string::npos);
+  BOOST_CHECK(readyJson.find("\"/Backbone\"") != std::string::npos);
   BOOST_CHECK(readyJson.find("\"runnerKind\":\"onnxruntime-cuda\"") != std::string::npos);
   BOOST_CHECK(readyJson.find("\"queue\":0") != std::string::npos);
   BOOST_CHECK(readyJson.find("\"workers\":0") != std::string::npos);
@@ -2982,8 +3833,11 @@ BOOST_AUTO_TEST_CASE(ProviderResourceSnapshotV3TopologyIsExplicit)
   BOOST_CHECK(!snapshot.hasValidTopology());
   snapshot.visibleDevices = {"cpu"};
   snapshot.topologyDigest = "sha256:cpu";
-  BOOST_CHECK(snapshot.hasValidTopology());
+  BOOST_CHECK(!snapshot.hasValidTopology());
   snapshot.visibleDevices.clear();
+  snapshot.topologyDigest = "sha256:zero-accelerators";
+  BOOST_CHECK(snapshot.hasValidTopology());
+  snapshot.topologyDigest.clear();
   BOOST_CHECK(!snapshot.hasValidTopology());
 }
 
@@ -3246,7 +4100,8 @@ BOOST_AUTO_TEST_CASE(ExecutionEvidenceRoundTripsAndExcludesSecrets)
   evidence.runnerKind = RunnerKind::OnnxRuntimeCuda;
   evidence.realCompute = true;
   evidence.deviceKind = "cuda";
-  evidence.deviceId = "GPU-1";
+  evidence.deviceId = "multi";
+  evidence.deviceIds = {"GPU-0", "GPU-1"};
   evidence.runtimeVersion = "onnxruntime=1;cuda=1";
   evidence.modelDigest = "sha256:model";
   evidence.planDigest = "sha256:plan";
@@ -3254,6 +4109,8 @@ BOOST_AUTO_TEST_CASE(ExecutionEvidenceRoundTripsAndExcludesSecrets)
   evidence.roles = {"/LLM/Stage/0"};
   evidence.loadCompleted = true;
   evidence.warmupCompleted = true;
+  evidence.gpuUuid = "multi";
+  evidence.gpuUuids = {"GPU-uuid-0", "GPU-uuid-1"};
   evidence.createdAtMs = 1234;
   const auto json = executionEvidenceToJson(evidence);
   BOOST_CHECK(json.find("token") == std::string::npos);
@@ -3261,6 +4118,11 @@ BOOST_AUTO_TEST_CASE(ExecutionEvidenceRoundTripsAndExcludesSecrets)
   const auto decoded = executionEvidenceFromJson(json);
   BOOST_CHECK_EQUAL(decoded.providerBootId, "boot-a");
   BOOST_CHECK(decoded.runnerKind == RunnerKind::OnnxRuntimeCuda);
+  BOOST_CHECK_EQUAL(decoded.deviceId, "multi");
+  BOOST_REQUIRE_EQUAL(decoded.deviceIds.size(), 2);
+  BOOST_CHECK_EQUAL(decoded.deviceIds.at(1), "GPU-1");
+  BOOST_CHECK_EQUAL(decoded.gpuUuid, "multi");
+  BOOST_REQUIRE_EQUAL(decoded.gpuUuids.size(), 2);
   BOOST_CHECK_EQUAL(decoded.artifactDigests.at("/LLM/Stage/0"), "sha256:stage0");
   BOOST_CHECK(decoded.loadCompleted);
   BOOST_CHECK(decoded.warmupCompleted);
@@ -3291,6 +4153,9 @@ BOOST_AUTO_TEST_CASE(NativeProviderRuntimeReadinessRequiresExactCudaLoadAndWarmu
   const auto accepted = validateNativeProviderRuntimeReadiness(
     validEvidence(), "stage-0", "onnxruntime-cuda", "cuda:0", "sha256:stage0");
   BOOST_CHECK(!accepted);
+  const auto acceptedUppercaseDigest = validateNativeProviderRuntimeReadiness(
+    validEvidence(), "stage-0", "onnxruntime-cuda", "cuda:0", "SHA256:STAGE0");
+  BOOST_CHECK(!acceptedUppercaseDigest);
 
   auto expectReason = [&] (ExecutionEvidence evidence,
                            const std::string& backend,
@@ -3337,6 +4202,40 @@ BOOST_AUTO_TEST_CASE(NativeProviderRuntimeReadinessRequiresExactCudaLoadAndWarmu
     evidence, "stage-0", "onnxruntime-cuda", "cuda:0", "sha256:stage0");
   BOOST_REQUIRE(invalid);
   BOOST_CHECK_EQUAL(*invalid, "DI_RUNTIME_EVIDENCE_INVALID");
+}
+
+BOOST_AUTO_TEST_CASE(NativeProviderRuntimeReadinessAcceptsCanonicalCpuDeviceId)
+{
+  ExecutionEvidence evidence;
+  evidence.providerName = "/provider/A";
+  evidence.providerBootId = "boot-a";
+  evidence.evidenceEpoch = 1;
+  evidence.runnerKind = RunnerKind::OnnxRuntimeCpu;
+  evidence.realCompute = true;
+  evidence.deviceKind = "cpu";
+  evidence.deviceId = "cpu0";
+  evidence.runtimeVersion = "onnxruntime=cpu";
+  evidence.modelDigest = "sha256:model";
+  evidence.planDigest = "sha256:plan";
+  evidence.artifactDigests["/role"] = "sha256:artifact";
+  evidence.roles = {"/role"};
+  evidence.loadCompleted = true;
+  evidence.warmupCompleted = true;
+  evidence.createdAtMs = 1;
+
+  BOOST_CHECK(!validateNativeProviderRuntimeReadiness(
+    evidence, "/role", "onnxruntime", "cpu:0", "sha256:artifact"));
+
+  // A producer that records a bare numeric CPU id remains interoperable with
+  // the same canonical Selection device, but unrelated ids must fail closed.
+  evidence.deviceId = "0";
+  BOOST_CHECK(!validateNativeProviderRuntimeReadiness(
+    evidence, "/role", "onnxruntime", "cpu:0", "sha256:artifact"));
+  evidence.deviceId = "cpu1";
+  const auto mismatch = validateNativeProviderRuntimeReadiness(
+    evidence, "/role", "onnxruntime", "cpu:0", "sha256:artifact");
+  BOOST_REQUIRE(mismatch);
+  BOOST_CHECK_EQUAL(*mismatch, "DI_RUNTIME_DEVICE_MISMATCH");
 }
 
 BOOST_AUTO_TEST_CASE(ExecutionEvidenceRejectsMissingUnknownAndSecretFields)

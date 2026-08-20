@@ -62,10 +62,18 @@ local_version=$("$apptainer_bin" version)
 apptainer_sha256=$(sha256sum "$apptainer_bin" | awk '{print $1}')
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 boundary_validator="$script_dir/../../../lib/spec170_sif_build_boundary.py"
+source_validator="$script_dir/validate-local-sif-source.py"
 [ -f "$boundary_validator" ] || {
   echo LOCAL_SIF_BUILD_BOUNDARY_VALIDATOR_MISSING >&2
   exit 4
 }
+[ -f "$source_validator" ] || {
+  echo LOCAL_SIF_SOURCE_VALIDATOR_MISSING >&2
+  exit 4
+}
+if ! source_validation_json=$(python3 "$source_validator" --source-seal "$source_seal"); then
+  exit 4
+fi
 if ! boundary_json=$(python3 "$boundary_validator" --definition "$definition"); then
   exit 4
 fi
@@ -153,7 +161,8 @@ sif_sha256=$(sha256sum "$sif" | awk '{print $1}')
 python3 - "$record_partial" "$definition" "$definition_sha256" "$source_seal" \
   "$source_seal_sha256" "$sif" "$sif_sha256" "$local_version" "$expected_version" \
   "$base_sif" "$base_sif_sha256" "$base_sif_bytes" "$ndnsf_labels_json" \
-  "$apptainer_bin" "$apptainer_sha256" "$boundary_json" <<'PY'
+  "$apptainer_bin" "$apptainer_sha256" "$boundary_json" \
+  "$source_validation_json" <<'PY'
 import hashlib
 import json
 import os
@@ -162,7 +171,7 @@ import sys
 (path, definition, definition_sha, source_seal, source_sha,
  sif, sif_sha, local_version, expected_version,
  base_sif, base_sif_sha, base_sif_bytes, labels_json,
- apptainer_bin, apptainer_sha, boundary_json) = sys.argv[1:]
+ apptainer_bin, apptainer_sha, boundary_json, source_validation_json) = sys.argv[1:]
 build_input = {
     "definition": {"path": definition, "sha256": "sha256:" + definition_sha},
     "method": "local-apptainer-definition",
@@ -178,6 +187,7 @@ body = {
     "status": "PASS",
     "buildInput": build_input,
     "sourceSeal": {"path": source_seal, "sha256": "sha256:" + source_sha},
+    "sourceValidation": json.loads(source_validation_json),
     "sif": {"path": sif, "sha256": "sha256:" + sif_sha,
             "bytes": os.path.getsize(sif)},
     "labels": json.loads(labels_json),

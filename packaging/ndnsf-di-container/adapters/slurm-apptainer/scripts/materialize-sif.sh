@@ -1,4 +1,10 @@
 #!/bin/sh
+# HISTORICAL COMPATIBILITY TOOL — NOT THE CURRENT SPEC170 ROUTE.
+#
+# This script materializes a SIF from a digest-pinned OCI reference for the
+# older Spec108/110 workflows and their regression tests. Current Spec170 work
+# must start with build-local-sif.sh on the local host and must not invoke this
+# script, pull docker://..., or build on TigerCluster.
 set -eu
 
 usage(){ echo "usage: $0 --oci-reference REF@sha256:HEX --sif PATH --record PATH" >&2; exit 2; }

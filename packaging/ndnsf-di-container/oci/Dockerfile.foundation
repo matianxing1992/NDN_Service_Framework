@@ -88,11 +88,11 @@ RUN set -eu; cd /src/dependencies/NDNSD; \
 RUN set -eu; cd /src/dependencies/NFD; \
     ./waf configure --prefix=$PREFIX; ./waf -j"$(nproc)"; ./waf install; \
     test -f $PREFIX/etc/ndn/nfd.conf.sample
-RUN set -eu; cd /src/dependencies/openabe; \
+RUN /bin/bash -lc 'set -eu; cd /src/dependencies/openabe; \
     export LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}; . ./env; \
     make -C deps/relic relic-toolkit-0.5.0/.built; \
     NO_DEPS=1 BISON="$(command -v bison)" make; \
-    make test; make INSTALL_PREFIX=$PREFIX install
+    make test; make INSTALL_PREFIX=$PREFIX install'
 RUN set -eu; cd /src/dependencies/NAC-ABE; \
     cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
       -DHAVE_TESTS=TRUE \

@@ -15,8 +15,18 @@ from .contracts import (
     SchedulingResult,
 )
 from .executor import BoundedPolicyExecutor, PolicyExecutionTimeout
-from .loader import discover_optimizers, distribution_record_digest
+from .loader import (
+    PlacementStrategyAllowlistEntry, discover_optimizers,
+    discover_placement_strategies, distribution_record_digest,
+    select_placement_strategy,
+)
 from .observer import ObserverRegistry
+from .placement import (
+    ArtifactPreparationMode, DIProviderOfferV2, ModelPlacementStrategy,
+    PlacementDecision,
+    PlacementRequest, ProviderAssignment, ProviderPlanningView,
+    build_provider_planning_view, evaluate_placement_strategy,
+)
 from .registry import PolicyRegistry, RegisteredPolicy
 from .suite import OptimizationSuite, OptimizationSuiteBuilder
 from .worker import (
@@ -26,19 +36,26 @@ from .worker import (
 
 __all__ = [
     "AdmissionPolicy", "AdmissionRequest", "AdmissionResult",
+    "ArtifactPreparationMode",
     "BoundedPolicyExecutor", "CachePolicy", "CacheRequest", "CacheResult",
     "DeploymentPolicy", "DeploymentRequest", "DeploymentResult",
     "ExecutionTargetPolicy", "ExecutionTargetRequest", "ExecutionTargetResult",
     "ExecutionTuningPolicy", "ExecutionTuningRequest", "ExecutionTuningResult",
     "FORBIDDEN_INPUT_KEYS", "ModelVariantPolicy", "ModelVariantRequest",
-    "ModelVariantResult", "ObserverRegistry", "OptimizationObserver",
+    "ModelVariantResult", "ModelPlacementStrategy", "ObserverRegistry",
+    "OptimizationObserver",
     "OptimizationSuite", "OptimizationSuiteBuilder", "POLICY_KINDS",
     "PartitionPlanner", "PartitionRequest", "PartitionResult",
-    "PolicyExecutionTimeout", "PolicyRegistry", "ProviderAssignmentPolicy",
+    "PlacementDecision", "PlacementRequest", "PolicyExecutionTimeout",
+    "PolicyRegistry", "ProviderAssignment", "ProviderAssignmentPolicy",
     "ProviderAssignmentRequest", "ProviderAssignmentResult", "RecoveryPolicy",
-    "RecoveryRequest", "RecoveryResult", "RegisteredPolicy", "RunnerAdapter",
+    "ProviderPlanningView", "RecoveryRequest", "RecoveryResult",
+    "RegisteredPolicy", "RunnerAdapter",
     "RunnerAdapterRegistry", "SchedulingPolicy", "SchedulingRequest",
     "SchedulingResult", "decode_worker_envelope", "discover_optimizers",
     "distribution_record_digest", "encode_worker_envelope",
-    "least_input_projection",
+    "DIProviderOfferV2", "build_provider_planning_view",
+    "evaluate_placement_strategy", "least_input_projection",
+    "PlacementStrategyAllowlistEntry", "discover_placement_strategies",
+    "select_placement_strategy",
 ]

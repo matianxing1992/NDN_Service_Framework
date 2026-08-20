@@ -32,7 +32,9 @@ configuredDevices(const ProviderResourceProbeConfig& config)
   }
   const char* raw = std::getenv("CUDA_VISIBLE_DEVICES");
   if (raw == nullptr || *raw == '\0') {
-    return {"cpu"};
+    // ``visibleDevices`` enumerates accelerators only. CPU capability is
+    // represented by the host resource fields and an empty accelerator set.
+    return {};
   }
   std::vector<std::string> result;
   std::string token;
@@ -50,7 +52,12 @@ configuredDevices(const ProviderResourceProbeConfig& config)
   if (!token.empty()) {
     result.push_back("cuda:" + token);
   }
-  return result.empty() ? std::vector<std::string>{"cpu"} : result;
+  if (result.size() == 1 &&
+      (result.front() == "cuda:-1" || result.front() == "cuda:void" ||
+       result.front() == "cuda:NoDevFiles")) {
+    return {};
+  }
+  return result;
 }
 
 std::string

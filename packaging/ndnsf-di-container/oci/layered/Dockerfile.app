@@ -142,7 +142,6 @@ COPY packaging/ndnsf-di-container/oci/scripts/probe-runtime.py /usr/local/bin/nd
 COPY packaging/ndnsf-di-container/oci/scripts/verify-runtime-closure.py /usr/local/bin/verify-runtime-closure.py
 COPY packaging/ndnsf-di-container/lib/gpu_compatibility.py /usr/local/lib/ndnsf-di/gpu_compatibility.py
 COPY packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/run-ndnsf-qwen.sh /opt/ndnsf/bin/run-ndnsf-qwen.sh
-COPY packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/run-qwen-reference.py /opt/ndnsf/bin/run-qwen-reference.py
 COPY packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/sample-qwen-resources.py /opt/ndnsf/bin/sample-qwen-resources.py
 RUN for test_data in \
       /opt/venv/lib/python3.10/site-packages/onnx/backend/test/data \
@@ -156,7 +155,6 @@ RUN chmod 0755 /usr/local/bin/ndnsf-di-container-entrypoint \
       /usr/local/bin/ndnsf-di-probe-runtime \
       /usr/local/bin/verify-runtime-closure.py \
       /opt/ndnsf/bin/run-ndnsf-qwen.sh \
-      /opt/ndnsf/bin/run-qwen-reference.py \
       /opt/ndnsf/bin/sample-qwen-resources.py && \
     install -d -m 0755 /etc/ndn && \
     install -m 0644 /opt/ndn-base/manifest/nfd.conf /etc/ndn/nfd.conf && \
@@ -175,8 +173,10 @@ ENV PATH=/opt/venv/bin:/opt/ndnsf-app/bin:/opt/ndn-base/bin:${PATH} \
     NDNSF_ALLOW_CPU_FALLBACK=0
 RUN python3 /usr/local/bin/verify-runtime-closure.py --root /opt/ndnsf-app && \
     /opt/venv/bin/python -c \
-      'import ndnsf,ndnsf_distributed_inference,ndnsf_distributed_inference.core,ndnsf_distributed_inference.sdk,ndnsf_distributed_inference.app_sdk,ndnsf_distributed_inference.app_sdk.provider,ndnsf_distributed_inference.app_sdk.client,ndnsf_distributed_inference.app_sdk.controller,ndnsf_distributed_inference.planner,ndnsf_distributed_inference.ops,ndnsf_distributed_inference.adapters.onnx,ndnsf_distributed_inference.adapters.qwen,torch,onnxruntime,transformers' && \
-    test ! -e /src && test ! -e /root/.ssh && test ! -e /root/.cache/huggingface
+      'import ndnsf,ndnsf_distributed_inference,ndnsf_distributed_inference.core,ndnsf_distributed_inference.sdk,ndnsf_distributed_inference.app_sdk,ndnsf_distributed_inference.app_sdk.provider,ndnsf_distributed_inference.app_sdk.client,ndnsf_distributed_inference.app_sdk.controller,ndnsf_distributed_inference.planner,ndnsf_distributed_inference.ops,ndnsf_distributed_inference.adapters.onnx,ndnsf_distributed_inference.adapters.qwen,onnxruntime,tokenizers' && \
+    ! /opt/venv/bin/python -c 'import torch' && \
+    ! /opt/venv/bin/python -c 'import transformers' && \
+      test ! -e /src && test ! -e /root/.ssh && test ! -e /root/.cache/huggingface
 LABEL org.opencontainers.image.title="NDNSF-DI layered local GPU runtime" \
       org.ndnsf.di.layer="app-runtime" \
       org.ndnsf.di.app-lock="${APP_LOCK_DIGEST}" \

@@ -1,4 +1,10 @@
-"""Slurm plus Apptainer adapter with fail-closed, exactly-once submission."""
+"""Legacy Slurm/Apptainer adapter with fail-closed submission.
+
+The ``materialize`` method belongs to the older Spec108/110 OCI-to-SIF
+workflow. Current Spec170 releases do not enter through this adapter: they
+start with the repository's local ``build-local-sif.sh`` command, then pass a
+hash-verified SIF directly to TigerCluster for execution.
+"""
 from __future__ import annotations
 import importlib.util,json,os,re,subprocess,sys,time
 from pathlib import Path
@@ -68,6 +74,8 @@ class SlurmApptainerAdapter(Adapter):
     def preflight(self,profile):
         _profile.validate_profile(profile);r=self._run(['sinfo','-h','-p',profile['slurm']['partition'],'-o','%P|%N|%G|%T']);return {'status':'PASS','sinfo':r.stdout}
     def materialize(self,profile):
+        # Kept for Spec108/110 compatibility and regression tests only.  The
+        # current Spec170 route never calls this OCI-to-SIF operation.
         release=_release.load_release_manifest(profile['releaseManifest']);image=next(iter(release['images'].values()));sif=profile['storage']['imageRoot']+'/'+release['releaseId']+'.sif';record=sif+'.json';script=Path(__file__).resolve().parents[2]/'adapters/slurm-apptainer/scripts/materialize-sif.sh';self._run([str(script),'--oci-reference',image['reference'],'--sif',sif,'--record',record]);return json.load(open(record))
     def validate_release(self,release_record,materialization,cluster_snapshot):return validate_runtime_release(release_record,materialization,cluster_snapshot)
     def submit(self,profile,*,preflight=True,materialize=True):

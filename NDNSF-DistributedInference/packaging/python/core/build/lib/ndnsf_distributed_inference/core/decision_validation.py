@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import math
+import io
+import os
+import socket
+from enum import Enum
 from typing import Any, Iterable, Mapping
 from dataclasses import fields, is_dataclass
 
@@ -17,6 +21,14 @@ from .ports import (
 FORBIDDEN_POLICY_FIELDS = frozenset({
     "prompt", "payload", "tensor", "token", "secret", "credential",
     "privatekey", "decryptedpolicy", "crosstenantdata",
+})
+
+FORBIDDEN_PLACEMENT_FIELDS = frozenset({
+    "prompt", "payload", "rawinput", "inputbytes", "tensor", "token",
+    "usertoken", "providertoken", "secret", "credential", "privatekey",
+    "decryptedpolicy", "crosstenantdata", "callback", "networkhandle",
+    "devicehandle", "filehandle", "workingdirectory", "writablepath",
+    "mountpath", "repositoryhandle",
 })
 
 
@@ -100,6 +112,77 @@ def reject_sensitive(value: Any) -> None:
             if key in FORBIDDEN_POLICY_FIELDS:
                 raise ValueError("policy result contains sensitive payload")
             reject_sensitive(getattr(value, field.name))
+
+
+def reject_placement_sensitive(value: Any, *, _field: str = "") -> None:
+    """Enforce the data-only least-authority placement boundary.
+
+    The planner receives canonical values and digests, never raw application
+    bytes, tokens, mutable paths, callbacks, open file/network/device handles,
+    or opaque runtime objects.
+    """
+
+    normalized = _field.replace("_", "").lower()
+    if (normalized in FORBIDDEN_PLACEMENT_FIELDS
+            or normalized.endswith("callback")
+            or normalized.endswith("handle")
+            or normalized.endswith("writablepath")):
+        raise ValueError("placement strategy boundary contains authority or sensitive data")
+    if isinstance(value, (bytes, bytearray, memoryview, os.PathLike,
+                          io.IOBase, socket.socket)) or callable(value):
+        raise ValueError("placement strategy boundary contains authority or sensitive data")
+    if value is None or isinstance(value, (str, bool, int, float, Enum)):
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ValueError("placement strategy boundary contains non-finite data")
+        return
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            reject_placement_sensitive(item, _field=str(key))
+        return
+    if isinstance(value, (tuple, list)):
+        for item in value:
+            reject_placement_sensitive(item)
+        return
+    if is_dataclass(value):
+        for field in fields(value):
+            reject_placement_sensitive(
+                getattr(value, field.name), _field=field.name)
+        return
+    raise ValueError("placement strategy boundary contains an unsupported runtime object")
+
+
+def validate_joint_placement(request: Any, decision: Any) -> None:
+    """Validate role coverage and every selected Provider offer envelope."""
+
+    providers = tuple(request.providers)
+    by_name = {item.provider: item for item in providers}
+    if len(by_name) != len(providers):
+        raise ValueError("placement request contains duplicate Provider views")
+    assigned_roles = tuple(item.role for item in decision.assignments)
+    if (len(set(assigned_roles)) != len(assigned_roles)
+            or set(assigned_roles) != set(request.required_roles)):
+        raise ValueError("placement decision does not cover every role exactly once")
+    aggregate_gpu: dict[str, int] = {}
+    for assignment in decision.assignments:
+        provider = by_name.get(assignment.provider)
+        if provider is None:
+            raise ValueError("placement decision selected a Provider outside the ACK set")
+        if assignment.role not in provider.accepted_roles:
+            raise ValueError("placement role is outside the Provider offer")
+        if assignment.backend not in provider.backends:
+            raise ValueError("placement backend is outside the Provider offer")
+        aggregate_gpu[assignment.provider] = (
+            aggregate_gpu.get(assignment.provider, 0)
+            + assignment.required_gpu_memory_mb)
+    for provider_name, required_mb in aggregate_gpu.items():
+        if required_mb > by_name[provider_name].usable_gpu_memory_mb:
+            raise ValueError("placement aggregate GPU memory exceeds Provider offer")
+    allowed = set(by_name)
+    for role, fallbacks in decision.fallback_order.items():
+        if role not in set(request.required_roles):
+            raise ValueError("placement fallback references an unknown role")
+        if len(fallbacks) != len(set(fallbacks)) or not set(fallbacks).issubset(allowed):
+            raise ValueError("placement fallback is outside the ACK set")
 
 
 def validate_scheduling(value: SchedulingProposal, allowed_items: Iterable[str]) -> None:

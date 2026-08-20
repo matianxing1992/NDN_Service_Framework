@@ -727,6 +727,120 @@ namespace ndn_service_framework
             return svs->publish(name, content);
         }
 
+        ndn::svs::SeqNo
+        publishSvsBytes(const std::shared_ptr<ndn::svs::SVSPubSub>& svs,
+                        const ndn::Name& name,
+                        const ndn::Buffer& content,
+                        int freshnessMs)
+        {
+            if (svs == nullptr || content.empty()) {
+                return 0;
+            }
+            const auto freshness = ndn::time::milliseconds(
+                freshnessMs <= 0 ? 60000 : freshnessMs);
+            const ndn::span<const uint8_t> bytes(content.data(), content.size());
+            if (useAsyncSvsPublish()) {
+                return svs->publishAsync(name, bytes, ndn::Name(), freshness);
+            }
+            return svs->publish(name, bytes, ndn::Name(), freshness);
+        }
+
+        bool
+        nameFieldMatches(const ndn::Name& name,
+                         const std::string& marker,
+                         const ndn::Name& expected)
+        {
+            if (marker.empty() || expected.empty()) {
+                return false;
+            }
+            bool found = false;
+            for (std::size_t i = 0; i < name.size(); ++i) {
+                if (name.get(i).toUri() != marker) {
+                    continue;
+                }
+                if (found || i + 1 + expected.size() > name.size()) {
+                    return false;
+                }
+                for (std::size_t j = 0; j < expected.size(); ++j) {
+                    if (name.get(i + 1 + j) != expected.get(j)) {
+                        return false;
+                    }
+                }
+                found = true;
+                i += expected.size();
+            }
+            return found;
+        }
+
+        std::optional<std::size_t>
+        parseDataV1SegmentNumber(const ndn::Name& name,
+                                 const ndn::Name& producerPrefix,
+                                 const ndn::Name& requestId,
+                                 std::uint64_t operationIndex,
+                                 const std::string& producerRank,
+                                 const std::string& tensorDigest,
+                                 std::size_t maxSegments)
+        {
+            if (!producerPrefix.isPrefixOf(name) ||
+                name.size() <= producerPrefix.size() || maxSegments == 0) {
+                return std::nullopt;
+            }
+            // SVS catch-up is shared by all requests.  Filter by request id
+            // before collecting a segment, otherwise an older request with
+            // the same operation/rank/tensor can fill the slot and only fail
+            // much later in ProviderGroupCoordinator's capability check.
+            if (!nameFieldMatches(name, "REQ", requestId)) {
+                return std::nullopt;
+            }
+            bool operationMatched = false;
+            bool rankMatched = false;
+            bool tensorMatched = false;
+            const auto matchesComponent = [] (const ndn::name::Component& actual,
+                                               const std::string& expected) {
+                if (expected.empty()) {
+                    return true;
+                }
+                const ndn::Name expectedName(expected);
+                return expectedName.size() == 1 && actual == expectedName.get(0);
+            };
+            std::optional<std::size_t> segmentNumber;
+            for (std::size_t i = producerPrefix.size(); i + 1 < name.size(); ++i) {
+                const auto marker = name.get(i).toUri();
+                const auto value = name.get(i + 1).toUri();
+                if (marker == "OP") {
+                    try {
+                        operationMatched =
+                          std::stoull(value) == operationIndex;
+                    }
+                    catch (const std::exception&) {
+                        return std::nullopt;
+                    }
+                }
+                else if (marker == "RANK") {
+                    rankMatched = matchesComponent(name.get(i + 1), producerRank);
+                }
+                else if (marker == "TENSOR") {
+                    tensorMatched = matchesComponent(name.get(i + 1), tensorDigest);
+                }
+                else if (marker == "SEG") {
+                    try {
+                        const auto parsed = std::stoull(value);
+                        if (parsed >= maxSegments) {
+                            return std::nullopt;
+                        }
+                        segmentNumber = static_cast<std::size_t>(parsed);
+                    }
+                    catch (const std::exception&) {
+                        return std::nullopt;
+                    }
+                }
+            }
+            if (!operationMatched || !rankMatched || !tensorMatched || !segmentNumber) {
+                return std::nullopt;
+            }
+            return segmentNumber;
+        }
+
         ndn::Buffer
         blockToPayloadBuffer(const ndn::Block& block)
         {
@@ -1066,7 +1180,8 @@ namespace ndn_service_framework
         interest.setCanBePrefix(false);
         interest.setInterestLifetime(ndn::time::milliseconds(500));
         interest.setApplicationParameters(ready.WireEncode());
-        m_keyChain.sign(interest, m_signingInfo);
+        (m_testSigningKeyChain ? *m_testSigningKeyChain : m_keyChain)
+            .sign(interest, m_signingInfo);
         m_face.expressInterest(
             interest,
             [this, requesterIdentity, ready, statusHandle](const ndn::Interest&,
@@ -1130,7 +1245,8 @@ namespace ndn_service_framework
                 ndn::Data data(validated.getName());
                 data.setFreshnessPeriod(ndn::time::milliseconds(250));
                 data.setContent(ack.WireEncode());
-                m_keyChain.sign(data, m_signingInfo);
+                (m_testSigningKeyChain ? *m_testSigningKeyChain : m_keyChain)
+                    .sign(data, m_signingInfo);
                 m_face.put(data);
             },
             [](const ndn::Interest&, const ndn::security::ValidationError& error) {
@@ -1216,12 +1332,17 @@ namespace ndn_service_framework
         // Serve NDNSF and ck messages using IMS
         const ndn::Name ndnsfFilter = ndn::Name(identity.toUri()).append("NDNSF");
         const ndn::Name ckFilter = ndn::Name(identity.toUri()).append("CK");
+        const ndn::Name diDataFilter =
+            ndn::Name(identity.toUri()).append("NDNSF-DI");
         NDN_LOG_INFO("[ServiceProvider] registered service content prefix="
                   << ndnsfFilter.toUri());
         m_face.setInterestFilter(ndnsfFilter,
             std::bind(&ServiceProvider::onInterest, this, _1, _2),
             std::bind(&ServiceProvider::onPrefixRegisterFailure, this, _1, _2));
         m_face.setInterestFilter(ckFilter,
+            std::bind(&ServiceProvider::onInterest, this, _1, _2),
+            std::bind(&ServiceProvider::onPrefixRegisterFailure, this, _1, _2));
+        m_face.setInterestFilter(diDataFilter,
             std::bind(&ServiceProvider::onInterest, this, _1, _2),
             std::bind(&ServiceProvider::onPrefixRegisterFailure, this, _1, _2));
         NDN_LOG_WARN("NDNSF_PROVIDER_INIT_STAGE stage=content_filters_registered provider="
@@ -1447,7 +1568,80 @@ namespace ndn_service_framework
         if (!isRsaCertificate(encryptionCert)) {
             throw std::invalid_argument("ServiceProvider encryptionCert must be RSA for NAC-ABE");
         }
+        // LocalMockTag is the deterministic unit-test boundary. Keep handlers
+        // inline by default so selection callbacks have stable synchronous
+        // postconditions. Integration fixtures that exercise production-like
+        // dependency waits explicitly enable worker threads after construction.
+        m_handlerPool.setThreadCount(0);
+        m_ackPool.setThreadCount(0);
         m_signingInfo = ndn::security::signingByCertificate(signingCert);
+    }
+
+    void
+    ServiceProvider::attachLocalMockPubSubForTest(
+        std::shared_ptr<ndn::svs::SVSPubSub> pubSub)
+    {
+        if (pubSub == nullptr) {
+            throw std::invalid_argument(
+                "ServiceProvider LocalMock PubSub cannot be null");
+        }
+        if (m_svsps != nullptr) {
+            throw std::logic_error(
+                "ServiceProvider PubSub is already initialized");
+        }
+        m_svsps = std::move(pubSub);
+        const ndn::Name diDataFilter =
+            ndn::Name(identity.toUri()).append("NDNSF-DI");
+        m_face.setInterestFilter(
+            diDataFilter,
+            std::bind(&ServiceProvider::onInterest, this, _1, _2),
+            std::bind(&ServiceProvider::onPrefixRegisterFailure, this, _1, _2));
+    }
+
+    void
+    ServiceProvider::useSigningKeyChainForTest(ndn::KeyChain& keyChain)
+    {
+        // Fail at fixture setup instead of much later during publication.
+        const auto identity = keyChain.getPib().getIdentity(signingCert.getIdentity());
+        const auto key = identity.getKey(signingCert.getKeyName());
+        (void)key.getCertificate(signingCert.getName());
+        m_testSigningKeyChain = &keyChain;
+    }
+
+    void
+    ServiceProvider::cacheHybridReceiveKeyForTest(const std::string& keyId,
+                                                  const std::string& epochId,
+                                                  const ndn::Buffer& key)
+    {
+        m_hybridMessageCrypto.cacheReceiveKey(keyId, epochId, key);
+    }
+
+    HybridMessageKey
+    ServiceProvider::prepareHybridSendKeyForTest(
+        const ndn::Name& serviceName,
+        const std::string& messageType)
+    {
+        if (messageType != "ACK" && messageType != "RESPONSE") {
+            throw std::invalid_argument(
+                "LocalMock outbound Hybrid key must be ACK or RESPONSE");
+        }
+        const auto accessAttribute = std::string("/PERMISSION") +
+                                      serviceName.toUri();
+        auto key = m_hybridMessageCrypto.getOrCreateSendKey(
+            serviceName,
+            identity,
+            accessAttribute,
+            messageType,
+            m_hybridCryptoCounters);
+        m_hybridMessageCrypto.markSendKeyWrapped(key.keyId);
+        return key;
+    }
+
+    void
+    ServiceProvider::markHybridResponseKeyWrappedForTest(
+        const ndn::Name& serviceName)
+    {
+        prepareHybridSendKeyForTest(serviceName, "RESPONSE");
     }
 
     void ServiceProvider::init()
@@ -2645,6 +2839,66 @@ namespace ndn_service_framework
                                                       expectedSegments);
     }
 
+    bool
+    ServiceProvider::CollaborationContext::publishDataV1Segments(
+        KeyScope keyScope,
+        const std::vector<std::pair<ndn::Name, ndn::Buffer>>& segments,
+        int freshnessMs)
+    {
+        return m_provider.publishCollaborationDataV1Segments(
+            m_requestId, std::move(keyScope), segments, freshnessMs);
+    }
+
+    std::optional<std::vector<ndn::Buffer>>
+    ServiceProvider::CollaborationContext::fetchDataV1Segments(
+        KeyScope keyScope,
+        const ndn::Name& producerPrefix,
+        std::uint64_t operationIndex,
+        const std::string& producerRank,
+        const std::string& tensorDigest,
+        std::size_t expectedSegments,
+        std::size_t maxSegments,
+        int timeoutMs,
+        std::function<std::size_t(const ndn::Buffer&)> segmentCountDecoder,
+        DataV1SegmentNameFilter nameFilter)
+    {
+        return m_provider.fetchCollaborationDataV1Segments(
+            m_requestId,
+            std::move(keyScope),
+            producerPrefix,
+            operationIndex,
+            producerRank,
+            tensorDigest,
+            expectedSegments,
+            maxSegments,
+            timeoutMs,
+            std::move(segmentCountDecoder),
+            std::move(nameFilter));
+    }
+
+    bool
+    ServiceProvider::CollaborationContext::publishSignedExactData(
+        KeyScope keyScope,
+        const std::vector<std::pair<ndn::Name, ndn::Buffer>>& objects,
+        int freshnessMs)
+    {
+        return m_provider.publishCollaborationSignedExactData(
+            m_requestId, std::move(keyScope), objects, freshnessMs);
+    }
+
+    std::optional<ndn::Buffer>
+    ServiceProvider::CollaborationContext::fetchSignedExactData(
+        KeyScope keyScope,
+        const ndn::Name& dataName,
+        const ndn::Name& expectedProducer,
+        int timeoutMs,
+        std::function<bool()> shouldCancel)
+    {
+        return m_provider.fetchCollaborationSignedExactData(
+            m_requestId, std::move(keyScope), dataName,
+            expectedProducer, timeoutMs, std::move(shouldCancel));
+    }
+
     void ServiceProvider::CollaborationContext::subscribe(
         KeyScope keyScope,
         Topic topicPrefix,
@@ -2724,7 +2978,8 @@ namespace ndn_service_framework
                                                      m_assignment.service,
                                                      m_requestId,
                                                      m_requestMessage,
-                                                     payload);
+                                                     payload,
+                                                     m_assignment.selectionDigest);
     }
 
     void ServiceProvider::setAckStrategyHandler(const ndn::Name& serviceName,
@@ -2736,6 +2991,11 @@ namespace ndn_service_framework
             m_serviceNames.end()) {
             m_serviceNames.push_back(serviceUri);
         }
+    }
+
+    void ServiceProvider::setLocalPublicationHandler(LocalPublicationHandler handler)
+    {
+        m_localPublicationHandler = std::move(handler);
     }
 
     void ServiceProvider::setLegacyAckStrategyHandler(
@@ -3131,10 +3391,12 @@ namespace ndn_service_framework
         data->setFreshnessPeriod(ndn::time::milliseconds(1000));
         data->setContent(payload);
         if (m_svsps == nullptr) {
-            m_keyChain.sign(*data, ndn::security::signingWithSha256());
+            (m_testSigningKeyChain ? *m_testSigningKeyChain : m_keyChain)
+                .sign(*data, ndn::security::signingWithSha256());
         }
         else {
-            m_keyChain.sign(*data, m_signingInfo);
+            (m_testSigningKeyChain ? *m_testSigningKeyChain : m_keyChain)
+                .sign(*data, m_signingInfo);
         }
         m_face.put(*data);
         return true;
@@ -3867,7 +4129,7 @@ namespace ndn_service_framework
         const ndn::Name& requestId,
         ResponseMessage response,
         size_t thresholdBytes,
-        const ndn::time::milliseconds& freshness)
+        ndn::time::milliseconds freshness)
     {
         LargeDataReferenceResponseResult result;
         const auto threshold = thresholdBytes == 0 ?
@@ -4456,6 +4718,464 @@ namespace ndn_service_framework
                       << " segments=" << segments.size()
                       << " activePut=" << activePut);
         return dataName;
+    }
+
+    bool
+    ServiceProvider::publishCollaborationDataV1Segments(
+        const ndn::Name& requestId,
+        const std::string& keyScope,
+        const std::vector<std::pair<ndn::Name, ndn::Buffer>>& segments,
+        int freshnessMs)
+    {
+        if (m_svsps == nullptr || segments.empty()) {
+            NDN_LOG_ERROR("NDNSF_DATA_V1 SVS publication unavailable or empty"
+                          << " requestId=" << requestId.toUri()
+                          << " keyScope=" << keyScope);
+            return false;
+        }
+        const auto freshness = freshnessMs <= 0 ? 60000 : freshnessMs;
+        for (const auto& publication : segments) {
+            if (publication.first.empty() || publication.second.empty()) {
+                NDN_LOG_ERROR("NDNSF_DATA_V1 SVS publication contains an empty"
+                              << " name or segment requestId=" << requestId.toUri());
+                return false;
+            }
+            if (publishSvsBytes(m_svsps, publication.first, publication.second,
+                                freshness) == 0) {
+                NDN_LOG_ERROR("NDNSF_DATA_V1 SVS publication failed"
+                              << " requestId=" << requestId.toUri()
+                              << " dataName=" << publication.first.toUri());
+                return false;
+            }
+            NDN_LOG_DEBUG("NDNSF_DATA_V1_SVS_SEGMENT_PUBLISHED"
+                          << " requestId=" << requestId.toUri()
+                          << " dataName=" << publication.first.toUri()
+                          << " bytes=" << publication.second.size());
+        }
+        NDN_LOG_DEBUG("NDNSF_DATA_V1_SVS_PUBLISHED"
+                      << " requestId=" << requestId.toUri()
+                      << " keyScope=" << keyScope
+                      << " segments=" << segments.size());
+        return true;
+    }
+
+    std::optional<std::vector<ndn::Buffer>>
+    ServiceProvider::fetchCollaborationDataV1Segments(
+        const ndn::Name& requestId,
+        const std::string& keyScope,
+        const ndn::Name& producerPrefix,
+        std::uint64_t operationIndex,
+        const std::string& producerRank,
+        const std::string& tensorDigest,
+        std::size_t expectedSegments,
+        std::size_t maxSegments,
+        int timeoutMs,
+        std::function<std::size_t(const ndn::Buffer&)> segmentCountDecoder,
+        DataV1SegmentNameFilter nameFilter)
+    {
+        const bool manifestProbe = expectedSegments == 0;
+        if (m_svsps == nullptr || producerPrefix.empty() || maxSegments == 0 ||
+            (manifestProbe && !segmentCountDecoder) ||
+            expectedSegments > maxSegments) {
+            NDN_LOG_ERROR("NDNSF_DATA_V1 SVS fetch arguments are invalid"
+                          << " requestId=" << requestId.toUri()
+                          << " producer=" << producerPrefix.toUri()
+                          << " expectedSegments=" << expectedSegments
+                          << " maxSegments=" << maxSegments);
+            return std::nullopt;
+        }
+
+        struct FetchState
+        {
+            std::vector<ndn::Buffer> wires;
+            std::vector<bool> received;
+            std::size_t targetSegments = 0;
+            std::size_t remaining = 0;
+            bool targetKnown = false;
+            uint32_t subscriptionHandle = 0;
+            std::atomic<bool> failed{false};
+        };
+
+        const int fetchTimeoutMs = timeoutMs <= 0 ? 5000 : timeoutMs;
+        const auto configuredCatchUpPublications = static_cast<std::size_t>(
+            std::clamp(intEnvOrDefault(
+                           "NDNSF_DATA_V1_SVS_CATCH_UP_PUBLICATIONS", 64),
+                       1, 4096));
+        const auto catchUpPublications = std::max(
+            configuredCatchUpPublications,
+            std::min<std::size_t>(expectedSegments, 4096));
+        const int catchUpAgeMs = std::clamp(
+            intEnvOrDefault("NDNSF_DATA_V1_SVS_CATCH_UP_AGE_MS", 5000),
+            1, std::min(fetchTimeoutMs, 30000));
+        auto state = std::make_shared<FetchState>();
+        state->targetSegments = manifestProbe ? 0 : expectedSegments;
+        state->remaining = state->targetSegments;
+        state->targetKnown = !manifestProbe;
+        state->wires.resize(manifestProbe ? maxSegments : expectedSegments);
+        state->received.resize(state->wires.size(), false);
+        auto completed = std::make_shared<std::atomic<bool>>(false);
+        auto mutex = std::make_shared<std::mutex>();
+        auto cv = std::make_shared<std::condition_variable>();
+        auto result = std::make_shared<std::vector<ndn::Buffer>>();
+
+        auto finish = [this, state, completed, mutex, cv, result] {
+            if (state->failed || !state->targetKnown || state->remaining != 0 ||
+                completed->load()) {
+                return;
+            }
+            if (state->subscriptionHandle != 0) {
+                m_svsps->unsubscribe(state->subscriptionHandle);
+                state->subscriptionHandle = 0;
+            }
+            {
+                std::lock_guard<std::mutex> lock(*mutex);
+                result->assign(
+                    state->wires.begin(),
+                    state->wires.begin() +
+                      static_cast<std::ptrdiff_t>(state->targetSegments));
+                completed->store(true);
+            }
+            cv->notify_one();
+        };
+
+        boost::asio::post(m_face.getIoContext(),
+            [this, state, completed, cv, finish, requestId, keyScope,
+             producerPrefix, operationIndex, producerRank, tensorDigest,
+             maxSegments, manifestProbe, catchUpPublications, catchUpAgeMs,
+             segmentCountDecoder = std::move(segmentCountDecoder),
+             nameFilter = std::move(nameFilter)] {
+                state->subscriptionHandle = m_svsps->subscribeToProducerWithCatchUp(
+                    producerPrefix,
+                    [state, completed, finish, requestId, keyScope,
+                     producerPrefix, operationIndex, producerRank, tensorDigest,
+                     maxSegments, manifestProbe, segmentCountDecoder, nameFilter]
+                    (const ndn::svs::SVSPubSub::SubscriptionData& publication) {
+                        if (state->failed || completed->load() || publication.data.empty()) {
+                            return;
+                        }
+                        try {
+                            const ndn::Name publicationName(publication.name);
+                            if (nameFilter.predicate &&
+                                !nameFilter.predicate(publicationName)) {
+                                return;
+                            }
+                            const std::vector<std::uint8_t> wire(
+                                publication.data.begin(), publication.data.end());
+                            const auto segmentNumber = parseDataV1SegmentNumber(
+                                publicationName,
+                                producerPrefix,
+                                requestId,
+                                operationIndex,
+                                producerRank,
+                                tensorDigest,
+                                maxSegments);
+                            if (!segmentNumber) {
+                                return;
+                            }
+                            const auto index = *segmentNumber;
+                            if (index >= state->wires.size()) {
+                                state->failed = true;
+                                return;
+                            }
+                            if (state->targetKnown && index >= state->targetSegments) {
+                                state->failed = true;
+                                return;
+                            }
+                            if (state->received[index]) {
+                                if (state->wires[index] != wire) {
+                                    state->failed = true;
+                                }
+                                return;
+                            }
+                            state->wires[index] = ndn::Buffer(wire.begin(), wire.end());
+                            state->received[index] = true;
+                            if (manifestProbe && index == 0 && !state->targetKnown) {
+                                const auto discovered = segmentCountDecoder(
+                                    state->wires[index]);
+                                if (discovered == 0 || discovered > maxSegments) {
+                                    state->failed = true;
+                                    return;
+                                }
+                                state->targetSegments = discovered;
+                                state->targetKnown = true;
+                                state->remaining = discovered;
+                                for (std::size_t segment = 0;
+                                     segment < discovered; ++segment) {
+                                    if (state->received[segment]) {
+                                        --state->remaining;
+                                    }
+                                }
+                                for (std::size_t segment = discovered;
+                                     segment < state->received.size(); ++segment) {
+                                    if (state->received[segment]) {
+                                        state->failed = true;
+                                        return;
+                                    }
+                                }
+                            }
+                            else if (state->targetKnown && index < state->targetSegments &&
+                                     state->remaining > 0) {
+                                --state->remaining;
+                            }
+                            finish();
+                        }
+                        catch (const std::exception&) {
+                            // The producer subscription is shared by all
+                            // collaboration traffic.  Non-V1 or unrelated
+                            // publications are ignored; matching packets are
+                            // authenticated by ProviderGroupCoordinator after
+                            // this transport stage completes.
+                        }
+                    },
+                    catchUpPublications,
+                    ndn::time::milliseconds(catchUpAgeMs),
+                    true,
+                    false);
+                NDN_LOG_DEBUG("NDNSF_DATA_V1_SVS_FETCH_SUBSCRIBED"
+                              << " requestId=" << requestId.toUri()
+                              << " keyScope=" << keyScope
+                              << " producer=" << producerPrefix.toUri()
+                              << " operation=" << operationIndex
+                              << " maxSegments=" << maxSegments
+                              << " catchUpPublications=" << catchUpPublications
+                              << " catchUpAgeMs=" << catchUpAgeMs);
+            });
+
+        std::unique_lock<std::mutex> lock(*mutex);
+        if (!cv->wait_for(lock, std::chrono::milliseconds(fetchTimeoutMs),
+                          [completed] { return completed->load(); })) {
+            boost::asio::post(m_face.getIoContext(), [this, state, completed] {
+                state->failed = true;
+                if (state->subscriptionHandle != 0) {
+                    m_svsps->unsubscribe(state->subscriptionHandle);
+                    state->subscriptionHandle = 0;
+                }
+                completed->store(true);
+            });
+            NDN_LOG_ERROR("NDNSF_DATA_V1 SVS fetch timed out"
+                          << " requestId=" << requestId.toUri()
+                          << " keyScope=" << keyScope
+                          << " producer=" << producerPrefix.toUri());
+            return std::nullopt;
+        }
+        if (state->failed || result->empty()) {
+            NDN_LOG_ERROR("NDNSF_DATA_V1 SVS fetch failed"
+                          << " requestId=" << requestId.toUri()
+                          << " keyScope=" << keyScope
+                          << " producer=" << producerPrefix.toUri());
+            return std::nullopt;
+        }
+        return *result;
+    }
+
+    bool
+    ServiceProvider::publishCollaborationSignedExactData(
+        const ndn::Name& requestId,
+        const std::string& keyScope,
+        const std::vector<std::pair<ndn::Name, ndn::Buffer>>& objects,
+        int freshnessMs)
+    {
+        if (objects.empty()) {
+            NDN_LOG_ERROR("Exact collaboration publication is empty"
+                          << " requestId=" << requestId.toUri()
+                          << " keyScope=" << keyScope);
+            return false;
+        }
+        const auto freshness = ndn::time::milliseconds(
+            freshnessMs <= 0 ? 60000 : freshnessMs);
+        std::set<std::string> names;
+        for (const auto& object : objects) {
+            if (object.first.empty() || object.second.empty() ||
+                !names.insert(object.first.toUri()).second) {
+                NDN_LOG_ERROR("Exact collaboration publication contains an"
+                              " empty or duplicated object"
+                              << " requestId=" << requestId.toUri()
+                              << " keyScope=" << keyScope
+                              << " dataName=" << object.first.toUri());
+                return false;
+            }
+        }
+        for (const auto& object : objects) {
+            // ndn-cxx IMS retains Data through enable_shared_from_this; a
+            // stack-allocated Data triggers std::bad_weak_ptr in insert().
+            auto data = std::make_shared<ndn::Data>(object.first);
+            data->setFreshnessPeriod(freshness);
+            data->setContent(object.second);
+            (m_testSigningKeyChain ? *m_testSigningKeyChain : m_keyChain)
+                .sign(*data, m_signingInfo);
+            insertDataIntoIMS(*data, freshness);
+            NDN_LOG_DEBUG("NDNSF_DI_EXACT_DATA_PUBLISHED"
+                          << " requestId=" << requestId.toUri()
+                          << " keyScope=" << keyScope
+                          << " dataName=" << object.first.toUri()
+                          << " bytes=" << object.second.size());
+        }
+        return true;
+    }
+
+    std::optional<ndn::Buffer>
+    ServiceProvider::fetchCollaborationSignedExactData(
+        const ndn::Name& requestId,
+        const std::string& keyScope,
+        const ndn::Name& dataName,
+        const ndn::Name& expectedProducer,
+        int timeoutMs,
+        std::function<bool()> shouldCancel)
+    {
+        if (dataName.empty() || expectedProducer.empty() || timeoutMs <= 0) {
+            NDN_LOG_ERROR("Exact collaboration fetch arguments are invalid"
+                          << " requestId=" << requestId.toUri()
+                          << " keyScope=" << keyScope
+                          << " dataName=" << dataName.toUri()
+                          << " producer=" << expectedProducer.toUri());
+            return std::nullopt;
+        }
+
+        struct ExactFetchState
+        {
+            std::atomic<bool> completed{false};
+            std::mutex mutex;
+            std::condition_variable cv;
+            ndn::Buffer content;
+            std::string error;
+            std::size_t attempts = 0;
+            std::chrono::steady_clock::time_point deadline;
+        };
+        auto state = std::make_shared<ExactFetchState>();
+        state->deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(timeoutMs);
+        const int interestLifetimeMs = std::max(
+            50, std::min(timeoutMs,
+                         intEnvOrDefault(
+                           "NDNSF_DI_EXACT_INTEREST_LIFETIME_MS", 500)));
+
+        auto finish = [state](ndn::Buffer content, std::string error) {
+            if (state->completed.exchange(true)) {
+                return;
+            }
+            {
+                std::lock_guard<std::mutex> lock(state->mutex);
+                state->content = std::move(content);
+                state->error = std::move(error);
+            }
+            state->cv.notify_one();
+        };
+        auto express = std::make_shared<std::function<void()>>();
+        auto retry = std::make_shared<std::function<void(const char*)>>();
+        *retry = [this, state, finish, express, dataName,
+                  shouldCancel](const char* reason) {
+            if (state->completed.load()) {
+                return;
+            }
+            if (shouldCancel && shouldCancel()) {
+                finish({}, "cancelled while fetching " + dataName.toUri());
+                return;
+            }
+            if (std::chrono::steady_clock::now() >= state->deadline) {
+                finish({}, std::string(reason) + " for " + dataName.toUri());
+                return;
+            }
+            m_scheduler.schedule(ndn::time::milliseconds(5),
+                                 [express] { (*express)(); });
+        };
+        *express = [this, state, finish, retry, dataName, expectedProducer,
+                    interestLifetimeMs, shouldCancel] {
+            if (state->completed.load()) {
+                return;
+            }
+            if (shouldCancel && shouldCancel()) {
+                finish({}, "cancelled while fetching " + dataName.toUri());
+                return;
+            }
+            if (std::chrono::steady_clock::now() >= state->deadline) {
+                finish({}, "hard deadline for " + dataName.toUri());
+                return;
+            }
+            ++state->attempts;
+            ndn::Interest interest(dataName);
+            interest.setCanBePrefix(false);
+            interest.setMustBeFresh(true);
+            interest.setInterestLifetime(
+                ndn::time::milliseconds(interestLifetimeMs));
+            m_face.expressInterest(
+                interest,
+                [this, state, finish, dataName, expectedProducer]
+                (const ndn::Interest&, const ndn::Data& data) {
+                    if (state->completed.load()) {
+                        return;
+                    }
+                    if (data.getName() != dataName) {
+                        finish({}, "exact Data name mismatch for " +
+                                   dataName.toUri());
+                        return;
+                    }
+                    validator->validate(
+                        data,
+                        [finish, dataName, expectedProducer]
+                        (const ndn::Data& validated) {
+                            if (validated.getName() != dataName ||
+                                !isSignedByIdentity(validated,
+                                                    expectedProducer)) {
+                                finish({}, "exact Data signer mismatch for " +
+                                           dataName.toUri());
+                                return;
+                            }
+                            const auto& content = validated.getContent();
+                            finish(ndn::Buffer(content.value_begin(),
+                                               content.value_end()), {});
+                        },
+                        [finish, dataName]
+                        (const ndn::Data&,
+                         const ndn::security::ValidationError& error) {
+                            finish({}, "exact Data signature validation failed for " +
+                                       dataName.toUri() + ": " + error.getInfo());
+                        });
+                },
+                [retry](const ndn::Interest&, const ndn::lp::Nack&) {
+                    (*retry)("Nack");
+                },
+                [retry](const ndn::Interest&) {
+                    (*retry)("timeout");
+                });
+        };
+
+        auto cancelPoll = std::make_shared<std::function<void()>>();
+        std::weak_ptr<std::function<void()>> weakCancelPoll = cancelPoll;
+        *cancelPoll = [this, state, finish, shouldCancel, dataName,
+                       weakCancelPoll] {
+            if (state->completed.load() || !shouldCancel) {
+                return;
+            }
+            if (shouldCancel()) {
+                finish({}, "cancelled while fetching " + dataName.toUri());
+                return;
+            }
+            m_scheduler.schedule(ndn::time::milliseconds(10),
+                                 [weakCancelPoll] {
+                if (const auto poll = weakCancelPoll.lock()) {
+                    (*poll)();
+                }
+            });
+        };
+        boost::asio::post(m_face.getIoContext(), [express, cancelPoll] {
+            (*express)();
+            (*cancelPoll)();
+        });
+        std::unique_lock<std::mutex> lock(state->mutex);
+        state->cv.wait_for(lock, std::chrono::milliseconds(timeoutMs + 50),
+                           [state] { return state->completed.load(); });
+        if (!state->completed.load() || !state->error.empty() ||
+            state->content.empty()) {
+            NDN_LOG_ERROR("Exact collaboration fetch failed"
+                          << " requestId=" << requestId.toUri()
+                          << " keyScope=" << keyScope
+                          << " dataName=" << dataName.toUri()
+                          << " attempts=" << state->attempts
+                          << " error=" << (state->error.empty() ?
+                                             "deadline" : state->error));
+            return std::nullopt;
+        }
+        return state->content;
     }
 
     std::optional<ndn::Buffer>
@@ -5213,7 +5933,8 @@ namespace ndn_service_framework
         const ndn::Name& serviceName,
         const ndn::Name& requestId,
         const RequestMessage& requestMessage,
-        const ndn::Buffer& payload)
+        const ndn::Buffer& payload,
+        const std::string& selectionDigest)
     {
         if (isTruthyEnv("NDNSF_COLLAB_ASSIGNMENT_FETCH_TRACE")) {
             NDN_LOG_WARN("NDNSF_COLLAB_FINAL_RESPONSE"
@@ -5236,13 +5957,15 @@ namespace ndn_service_framework
              serviceName,
              requestId,
              requestMessage,
+             selectionDigest,
              response = std::move(response)]() mutable {
                 finishRequestExecutionOnEventLoop(requesterName,
                                                   identity,
                                                   serviceName,
                                                   requestId,
                                                   requestMessage,
-                                                  std::move(response));
+                                                  std::move(response),
+                                                  selectionDigest);
             });
     }
 
@@ -5925,6 +6648,7 @@ namespace ndn_service_framework
             return assignment;
         }
 
+        ndn::Buffer fieldPayload = payload;
         CollaborationAssignmentEnvelope envelope;
         if (decodeCollaborationAssignmentEnvelope(payload, envelope)) {
             assignment.role = std::move(envelope.role);
@@ -5940,16 +6664,71 @@ namespace ndn_service_framework
             assignment.scopeKeyDataNames = std::move(envelope.scopeKeyDataNames);
             assignment.assignmentPayload =
                 std::move(envelope.opaquePayload);
-            return assignment;
+            fieldPayload = assignment.assignmentPayload;
+        }
+        else {
+            // A single Provider may be selected for several collaboration
+            // roles.  ServiceUser groups those per-role envelopes into one
+            // canonical OpaqueAssignmentSet before publishing Selection.
+            // Parse the first envelope as the execution context and retain
+            // the scope-key material from every local role.  The native DI
+            // handler executes the complete local plan once; treating the
+            // container TLV as a semicolon assignment would otherwise leave
+            // role set unresolved and fall back to the service name.
+            std::vector<ndn::Buffer> assignmentItems;
+            try {
+                assignmentItems = decodeOpaqueAssignmentSet(payload);
+            }
+            catch (const std::exception&) {
+                // Preserve the existing fail-closed fallback for malformed
+                // or non-canonical containers.
+                assignmentItems.clear();
+            }
+            if (assignmentItems.size() > 1) {
+                CollaborationAssignmentEnvelope first;
+                bool haveEnvelope = false;
+                for (const auto& item : assignmentItems) {
+                    CollaborationAssignmentEnvelope itemEnvelope;
+                    if (!decodeCollaborationAssignmentEnvelope(item, itemEnvelope)) {
+                        continue;
+                    }
+                    if (!haveEnvelope) {
+                        first = std::move(itemEnvelope);
+                        haveEnvelope = true;
+                        continue;
+                    }
+                    for (const auto& entry : itemEnvelope.scopeKeys) {
+                        first.scopeKeys.emplace(entry.first, entry.second);
+                    }
+                    for (const auto& entry : itemEnvelope.scopeKeyDataNames) {
+                        first.scopeKeyDataNames.emplace(entry.first, entry.second);
+                    }
+                }
+                if (haveEnvelope) {
+                    assignment.role = first.role;
+                    assignment.assignedArtifact = first.assignedArtifact;
+                    assignment.requiresProvisioning = first.requiresProvisioning;
+                    assignment.provisioningTimeoutMs = static_cast<int>(
+                        std::min<uint64_t>(
+                            first.provisioningTimeoutMs,
+                            static_cast<uint64_t>(std::numeric_limits<int>::max())));
+                    assignment.scopeKeys = std::move(first.scopeKeys);
+                    assignment.scopeKeyDataNames = std::move(first.scopeKeyDataNames);
+                    assignment.assignmentPayload = std::move(first.opaquePayload);
+                    fieldPayload = assignment.assignmentPayload;
+                }
+            }
         }
 
-        const auto fields = parseSemicolonFields(payload);
+        const auto fields = parseSemicolonFields(fieldPayload);
         auto readField = [&fields](const std::string& key) {
             auto it = fields.find(key);
             return it == fields.end() ? std::string() : it->second;
         };
 
-        assignment.role = readField("role");
+        if (assignment.role.empty()) {
+            assignment.role = readField("role");
+        }
         if (assignment.role.empty()) {
             assignment.role = serviceName.toUri();
         }
@@ -5961,8 +6740,10 @@ namespace ndn_service_framework
         if (!artifactDataName.empty()) {
             assignment.artifactDataName = ndn::Name(artifactDataName);
         }
-        assignment.requiresProvisioning =
-            readField("requiresProvisioning") == "1";
+        if (fields.find("requiresProvisioning") != fields.end()) {
+            assignment.requiresProvisioning =
+                readField("requiresProvisioning") == "1";
+        }
         const auto timeout = readField("provisioningTimeoutMs");
         if (!timeout.empty()) {
             try {
@@ -6729,6 +7510,13 @@ namespace ndn_service_framework
         // log message
         NDN_LOG_DEBUG("PublishMessage: " << messageName.toUri());
 
+        if (m_svsps == nullptr && m_localPublicationHandler) {
+            const auto wireBlock = message.WireEncode();
+            const ndn::Buffer wire(wireBlock.data(), wireBlock.size());
+            m_localPublicationHandler(messageName, wire);
+            return;
+        }
+
         auto results = ndn_service_framework::GetAttributesByName(messageName);
         if (!results)
         {
@@ -7368,7 +8156,28 @@ void ServiceProvider::finishDecodedRequestOnEventLoop(
             (!requestTokenHash.empty() &&
              m_recentProviderRequestTokenHashes.find(requestTokenHash) !=
                  m_recentProviderRequestTokenHashes.end())) {
-            NDN_LOG_DEBUG("Ignore duplicate V2 request for " << pendingKey.toUri());
+            const bool duplicateRequest =
+                m_recentProviderRequests.find(pendingKey) != m_recentProviderRequests.end();
+            const bool duplicateToken =
+                !requestTokenHash.empty() &&
+                m_recentProviderRequestTokenHashes.find(requestTokenHash) !=
+                    m_recentProviderRequestTokenHashes.end();
+            NDN_LOG_WARN("NDNSF_PROVIDER_REPLAY_REJECTED provider=" << identity.toUri()
+                         << " requester=" << requesterIdentity.toUri()
+                         << " service=" << serviceName.toUri()
+                         << " requestId=" << requestId.toUri()
+                         << " reason="
+                         << (duplicateRequest && duplicateToken ? "duplicate-request-and-token" :
+                             duplicateRequest ? "duplicate-request" : "duplicate-token"));
+            std::cout << "NDNSF_PROVIDER_REPLAY_REJECTED"
+                      << " provider=" << identity.toUri()
+                      << " requester=" << requesterIdentity.toUri()
+                      << " service=" << serviceName.toUri()
+                      << " requestId=" << requestId.toUri()
+                      << " reason="
+                      << (duplicateRequest && duplicateToken ? "duplicate-request-and-token" :
+                          duplicateRequest ? "duplicate-request" : "duplicate-token")
+                      << std::endl;
             return;
         }
         m_recentProviderRequests.insert(pendingKey);
@@ -8035,7 +8844,19 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             return result;
         }
 
-        auto fetchLegacyNacAbe = [this, &encryptedDataName, &serviceName]() {
+        // The transport and legacy NAC-ABE paths share one request budget.
+        // Without a common deadline, a missing object waits once for the
+        // SegmentFetcher and then waits again for the legacy fallback, making
+        // a single failed lookup consume roughly two full timeout periods.
+        const int fetchTimeoutMs = std::max(
+            100, intEnvOrDefault("NDNSF_REQUEST_LARGE_FETCH_TIMEOUT_MS", 30000));
+        const auto overallDeadline = std::chrono::steady_clock::now() +
+                                     std::chrono::milliseconds(fetchTimeoutMs);
+        const int interestLifetimeMs = std::max(
+            50, std::min(4000, fetchTimeoutMs));
+
+        auto fetchLegacyNacAbe = [this, &encryptedDataName, &serviceName,
+                                  overallDeadline, interestLifetimeMs]() {
             LargeDataFetchResult legacyResult;
             auto completed = std::make_shared<std::atomic<bool>>(false);
             auto mutex = std::make_shared<std::mutex>();
@@ -8044,11 +8865,13 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             auto plaintext = std::make_shared<ndn::Buffer>();
 
             boost::asio::post(m_face.getIoContext(),
-                [this, encryptedDataName, completed, mutex, cv, error, plaintext] {
+                [this, encryptedDataName, completed, mutex, cv, error, plaintext,
+                 interestLifetimeMs] {
                 ndn::Interest interest(encryptedDataName);
                 interest.setCanBePrefix(true);
                 interest.setMustBeFresh(true);
-                interest.setInterestLifetime(ndn::time::seconds(4));
+                interest.setInterestLifetime(
+                    ndn::time::milliseconds(interestLifetimeMs));
 
                 try {
                     nacConsumer.consume(
@@ -8080,9 +8903,9 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                 }
             });
 
-            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
             std::unique_lock<std::mutex> lock(*mutex);
-            cv->wait_until(lock, deadline, [&completed] { return completed->load(); });
+            cv->wait_until(lock, overallDeadline,
+                           [&completed] { return completed->load(); });
 
             if (!completed->load()) {
                 legacyResult.errorMessage = "large-data fetch timed out or data not found";
@@ -8105,11 +8928,14 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         auto error = std::make_shared<std::string>();
         auto encodedEnvelope = std::make_shared<ndn::Buffer>();
 
-        boost::asio::post(m_face.getIoContext(), [this, encryptedDataName, completed, mutex, cv, error, encodedEnvelope] {
+        boost::asio::post(m_face.getIoContext(), [this, encryptedDataName, completed, mutex, cv,
+                                                  error, encodedEnvelope, interestLifetimeMs,
+                                                  fetchTimeoutMs] {
             ndn::Interest interest(encryptedDataName);
             interest.setCanBePrefix(true);
             interest.setMustBeFresh(true);
-            interest.setInterestLifetime(ndn::time::seconds(4));
+            interest.setInterestLifetime(
+                ndn::time::milliseconds(interestLifetimeMs));
 
             try {
                 ndn::SegmentFetcher::Options options;
@@ -8117,8 +8943,9 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                 options.useConstantCwnd = true;
                 options.initCwnd = static_cast<double>(
                     std::max(1, intEnvOrDefault("NDNSF_REQUEST_LARGE_FETCH_INIT_CWND", 8)));
-                options.maxTimeout = ndn::time::seconds(10);
-                options.interestLifetime = ndn::time::seconds(4);
+                options.maxTimeout = ndn::time::milliseconds(
+                    std::min(10000, fetchTimeoutMs));
+                options.interestLifetime = ndn::time::milliseconds(interestLifetimeMs);
                 auto transportValidator = std::make_shared<ndn::security::ValidatorNull>();
                 auto fetcher = ndn::SegmentFetcher::start(m_face,
                                                            interest,
@@ -8154,9 +8981,9 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             }
         });
 
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
         std::unique_lock<std::mutex> lock(*mutex);
-        cv->wait_until(lock, deadline, [&completed] { return completed->load(); });
+        cv->wait_until(lock, overallDeadline,
+                       [&completed] { return completed->load(); });
 
         if (!completed->load()) {
             return fetchLegacyNacAbe();
@@ -8280,10 +9107,8 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                 });
         }
 
-        const auto decryptDeadline =
-            std::chrono::steady_clock::now() + std::chrono::seconds(30);
         std::unique_lock<std::mutex> decryptLock(*decryptMutex);
-        decryptCv->wait_until(decryptLock, decryptDeadline,
+        decryptCv->wait_until(decryptLock, overallDeadline,
                               [&decryptCompleted] { return decryptCompleted->load(); });
         if (!decryptCompleted->load()) {
             result.errorMessage = "large-data hybrid decrypt timed out for " +
@@ -8382,7 +9207,9 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             ((sourceRequest->getRequestCapabilities().hasField("SelectionGatedInputV1") &&
               sourceRequest->getRequestCapabilities().getField("SelectionGatedInputV1") == "required") ||
              (sourceRequest->getRequestCapabilities().hasField("DIReservationSelectionV1") &&
-              sourceRequest->getRequestCapabilities().getField("DIReservationSelectionV1") == "required")) &&
+              sourceRequest->getRequestCapabilities().getField("DIReservationSelectionV1") == "required") ||
+             (sourceRequest->getRequestCapabilities().hasField("NDNSF_DATA_V1") &&
+              sourceRequest->getRequestCapabilities().getField("NDNSF_DATA_V1") == "required")) &&
             !requestAckMessage.hasSelectionInputKeyOffer()) {
             const auto publicKey = identityCert.getPublicKey();
             ndn::Buffer publicKeyBuffer(publicKey.begin(), publicKey.end());
@@ -8394,6 +9221,9 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             offer.setField("recipientCertDigest", sha256DigestString(publicKeyBuffer));
             offer.setField("providerBootEpoch",
                            identity.toUri() + ":" + std::to_string(m_processStartedAtUs));
+            // Exact tensor Interests are routed to the Provider identity, not
+            // to the unrelated SVS node identifier used by legacy PubSub.
+            offer.setField("ndnsfDataV1EndpointPrefix", identity.toUri());
             requestAckMessage.setSelectionInputKeyOffer(offer);
         }
         if (!payload.empty()) {
@@ -9045,6 +9875,11 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         }
     }
 
+    bool ServiceProvider::hasProviderPermissionForService(const ndn::Name& serviceName) const
+    {
+        return hasProviderPermission(identity, serviceName, m_authorizations);
+    }
+
     size_t ServiceProvider::getCurrentPolicyEpoch() const
     {
         return m_currentPolicyEpoch;
@@ -9171,16 +10006,103 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         std::string derivedRoleProviderFields;
         std::string receivedProviderToken = message.getProviderToken();
         std::string receivedProviderTokenProofHash;
+        const auto rolesFromAssignmentPayload = [](const ndn::Buffer& payload) {
+            std::vector<std::string> roles;
+            std::vector<ndn::Buffer> assignmentItems;
+            try {
+                assignmentItems = decodeOpaqueAssignmentSet(payload);
+            }
+            catch (const std::exception&) {
+                return roles;
+            }
+            for (const auto& item : assignmentItems) {
+                CollaborationAssignmentEnvelope envelope;
+                try {
+                    if (decodeCollaborationAssignmentEnvelope(item, envelope)) {
+                        if (!envelope.role.empty()) {
+                            roles.push_back(envelope.role);
+                        }
+                        continue;
+                    }
+                }
+                catch (const std::exception&) {
+                    // Selection metadata derivation is best-effort. The
+                    // common assignment parser will reject malformed
+                    // envelopes before execution.
+                }
+                const auto fields = parseSemicolonFields(item);
+                const auto roleIt = fields.find("role");
+                if (roleIt != fields.end() && !roleIt->second.empty()) {
+                    roles.push_back(roleIt->second);
+                }
+            }
+            return roles;
+        };
+        const auto hasStructuredAssignmentEnvelope =
+            [](const ndn::Buffer& payload) {
+                std::vector<ndn::Buffer> assignmentItems;
+                try {
+                    assignmentItems = decodeOpaqueAssignmentSet(payload);
+                }
+                catch (const std::exception&) {
+                    return false;
+                }
+                for (const auto& item : assignmentItems) {
+                    CollaborationAssignmentEnvelope envelope;
+                    try {
+                        if (decodeCollaborationAssignmentEnvelope(item, envelope)) {
+                            return true;
+                        }
+                    }
+                    catch (const std::exception&) {
+                        // Ignore malformed items here; the main parser owns
+                        // the fail-closed validation path.
+                    }
+                }
+                return false;
+            };
+        const auto isStructuredAssignmentPayload =
+            [](const ndn::Buffer& payload) {
+                std::vector<ndn::Buffer> assignmentItems;
+                try {
+                    assignmentItems = decodeOpaqueAssignmentSet(payload);
+                }
+                catch (const std::exception&) {
+                    return false;
+                }
+                if (assignmentItems.empty()) {
+                    return false;
+                }
+                for (const auto& item : assignmentItems) {
+                    CollaborationAssignmentEnvelope envelope;
+                    try {
+                        if (!decodeCollaborationAssignmentEnvelope(item,
+                                                                     envelope)) {
+                            return false;
+                        }
+                    }
+                    catch (const std::exception&) {
+                        return false;
+                    }
+                }
+                return true;
+            };
+        // One or more CollaborationAssignmentEnvelope values are already
+        // canonical binary metadata. Do not route a single-envelope Provider
+        // projection through the legacy semicolon-field merge below either:
+        // appending text would corrupt the outer TLV and make parsing fall
+        // back to the service name instead of the first role.
+        bool structuredAssignmentPayload = false;
         if (!message.getProviderEntries().empty()) {
             bool hasLocalProviderEntry = false;
             for (const auto& entry : message.getProviderEntries()) {
-                if (!hasOpaqueParticipant) {
-                    const auto entryFields =
-                        parseSemicolonFields(entry.assignmentPayload);
-                    const auto roleIt = entryFields.find("role");
-                    if (roleIt != entryFields.end() && !roleIt->second.empty()) {
+                const auto entryRoles =
+                    rolesFromAssignmentPayload(entry.assignmentPayload);
+                if ((!hasOpaqueParticipant ||
+                     hasStructuredAssignmentEnvelope(entry.assignmentPayload))) {
+                    for (const auto& entryRole : entryRoles) {
                         derivedRoleProviderFields +=
-                            "roleProvider." + roleIt->second + "=" +
+                            "roleProvider." + entryRole + "=" +
                             entry.providerName.toUri() + ";";
                     }
                 }
@@ -9190,6 +10112,8 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                 hasLocalProviderEntry = true;
                 receivedProviderTokenProofHash = entry.providerTokenHash;
                 effectiveAssignmentPayload = entry.assignmentPayload;
+                structuredAssignmentPayload =
+                    isStructuredAssignmentPayload(effectiveAssignmentPayload);
                 break;
             }
             if (!hasLocalProviderEntry) {
@@ -9209,52 +10133,106 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                 return;
             }
         }
-        if (!hasOpaqueParticipant && !sharedAssignmentPayload.empty() &&
+        if (!structuredAssignmentPayload && !hasOpaqueParticipant &&
+            !sharedAssignmentPayload.empty() &&
             !message.getProviderEntries().empty()) {
-            const std::string sharedAssignmentText(
-                reinterpret_cast<const char*>(sharedAssignmentPayload.data()),
-                sharedAssignmentPayload.size());
-            const std::string entryAssignmentText(
-                reinterpret_cast<const char*>(effectiveAssignmentPayload.data()),
-                effectiveAssignmentPayload.size());
-            const std::string mergedAssignment = sharedAssignmentText + entryAssignmentText;
-            effectiveAssignmentPayload =
-                ndn::Buffer(reinterpret_cast<const uint8_t*>(mergedAssignment.data()),
-                            mergedAssignment.size());
+            CollaborationAssignmentEnvelope envelope;
+            if (decodeCollaborationAssignmentEnvelope(
+                    effectiveAssignmentPayload, envelope)) {
+                const std::string sharedAssignmentText(
+                    reinterpret_cast<const char*>(sharedAssignmentPayload.data()),
+                    sharedAssignmentPayload.size());
+                const std::string opaqueText(
+                    reinterpret_cast<const char*>(envelope.opaquePayload.data()),
+                    envelope.opaquePayload.size());
+                std::string mergedOpaque = opaqueText;
+                if (!sharedAssignmentText.empty()) {
+                    if (!mergedOpaque.empty() && mergedOpaque.back() != ';') {
+                        mergedOpaque.push_back(';');
+                    }
+                    mergedOpaque += sharedAssignmentText;
+                }
+                envelope.opaquePayload = ndn::Buffer(
+                    reinterpret_cast<const uint8_t*>(mergedOpaque.data()),
+                    mergedOpaque.size());
+                effectiveAssignmentPayload =
+                    encodeCollaborationAssignmentEnvelope(envelope);
+            }
+            else {
+                const std::string sharedAssignmentText(
+                    reinterpret_cast<const char*>(sharedAssignmentPayload.data()),
+                    sharedAssignmentPayload.size());
+                const std::string entryAssignmentText(
+                    reinterpret_cast<const char*>(effectiveAssignmentPayload.data()),
+                    effectiveAssignmentPayload.size());
+                const std::string mergedAssignment =
+                    sharedAssignmentText + entryAssignmentText;
+                effectiveAssignmentPayload = ndn::Buffer(
+                    reinterpret_cast<const uint8_t*>(mergedAssignment.data()),
+                    mergedAssignment.size());
+            }
         }
-        if (hasOpaqueParticipant && !sharedAssignmentPayload.empty() &&
+        if ((hasOpaqueParticipant || structuredAssignmentPayload) &&
+            !sharedAssignmentPayload.empty() &&
             !message.getProviderEntries().empty()) {
             const auto sharedFields =
                 parseSemicolonFields(sharedAssignmentPayload);
-            const bool onlyScopeKeyReferences =
+            const bool onlyBoundedSharedMetadata =
                 !sharedFields.empty() &&
                 std::all_of(
                     sharedFields.begin(), sharedFields.end(),
                     [](const auto& field) {
-                        static const std::string prefix = "scopeKeyData.";
-                        return field.first.rfind(prefix, 0) == 0 &&
-                               !field.first.substr(prefix.size()).empty() &&
+                        static const std::string scopePrefix = "scopeKeyData.";
+                        static const std::string roleProviderPrefix =
+                            "roleProvider.";
+                        const bool isScopeKey =
+                            field.first.rfind(scopePrefix, 0) == 0 &&
+                            !field.first.substr(scopePrefix.size()).empty();
+                        const bool isRoleProvider =
+                            field.first.rfind(roleProviderPrefix, 0) == 0 &&
+                            !field.first.substr(roleProviderPrefix.size()).empty();
+                        return (isScopeKey || isRoleProvider) &&
                                !field.second.empty();
                     });
-            if (!onlyScopeKeyReferences) {
+            if (!onlyBoundedSharedMetadata) {
                 updateSelectionExecutionStatus(
                     selectionDigest, SelectionExecutionState::Rejected,
                     providerName, serviceName, msgId,
-                    "opaque Selection shared metadata is not a bounded "
+                    "structured Selection shared metadata is not a bounded "
                     "scope-key reference set");
                 clearSelectionDecryptInFlight();
                 return;
             }
         }
-        if (!hasOpaqueParticipant && !derivedRoleProviderFields.empty()) {
-            const std::string assignmentText(
-                reinterpret_cast<const char*>(effectiveAssignmentPayload.data()),
-                effectiveAssignmentPayload.size());
-            if (assignmentText.find("roleProvider.") == std::string::npos) {
-                std::string mergedAssignment = assignmentText + derivedRoleProviderFields;
+        if (!structuredAssignmentPayload && !hasOpaqueParticipant &&
+            !derivedRoleProviderFields.empty()) {
+            CollaborationAssignmentEnvelope envelope;
+            if (decodeCollaborationAssignmentEnvelope(
+                    effectiveAssignmentPayload, envelope)) {
+                std::string mergedOpaque(
+                    reinterpret_cast<const char*>(envelope.opaquePayload.data()),
+                    envelope.opaquePayload.size());
+                if (!mergedOpaque.empty() && mergedOpaque.back() != ';') {
+                    mergedOpaque.push_back(';');
+                }
+                mergedOpaque += derivedRoleProviderFields;
+                envelope.opaquePayload = ndn::Buffer(
+                    reinterpret_cast<const uint8_t*>(mergedOpaque.data()),
+                    mergedOpaque.size());
                 effectiveAssignmentPayload =
-                    ndn::Buffer(reinterpret_cast<const uint8_t*>(mergedAssignment.data()),
-                            mergedAssignment.size());
+                    encodeCollaborationAssignmentEnvelope(envelope);
+            }
+            else {
+                const std::string assignmentText(
+                    reinterpret_cast<const char*>(effectiveAssignmentPayload.data()),
+                    effectiveAssignmentPayload.size());
+                if (assignmentText.find("roleProvider.") == std::string::npos) {
+                    std::string mergedAssignment =
+                        assignmentText + derivedRoleProviderFields;
+                    effectiveAssignmentPayload = ndn::Buffer(
+                        reinterpret_cast<const uint8_t*>(mergedAssignment.data()),
+                        mergedAssignment.size());
+                }
             }
         }
         // Deferred collaboration keeps generic role/provisioning metadata in a
@@ -10082,6 +11060,16 @@ opaque_selection_committed:
                 auto assignment =
                     parseCollaborationAssignment(serviceName,
                                                  effectiveAssignmentPayload);
+                // The Provider-entry projection is Core-owned metadata.  It
+                // remains available even when the application registers an
+                // opaque Selection participant; the participant still sees
+                // only its exact envelope opaquePayload below.
+                for (const auto& entry : message.getProviderEntries()) {
+                    for (const auto& entryRole :
+                         rolesFromAssignmentPayload(entry.assignmentPayload)) {
+                        assignment.roleProviders[entryRole] = entry.providerName;
+                    }
+                }
                 // Structured deferred assignments carry the exact
                 // provider-scoped scope-key references in their envelope.
                 // The compact Selection metadata is a legacy fallback for
@@ -10089,15 +11077,29 @@ opaque_selection_committed:
                 // structured assignment would reintroduce every peer's key
                 // and make the provider attempt to decrypt data for another
                 // role with the wrong key.
-                if (hasOpaqueParticipant && !sharedAssignmentPayload.empty() &&
-                    assignment.scopeKeys.empty() &&
-                    assignment.scopeKeyDataNames.empty()) {
+                if ((hasOpaqueParticipant || structuredAssignmentPayload) &&
+                    !sharedAssignmentPayload.empty()) {
                     for (const auto& field :
                          parseSemicolonFields(sharedAssignmentPayload)) {
                         static const std::string prefix = "scopeKeyData.";
-                        assignment.scopeKeyDataNames[
-                            field.first.substr(prefix.size())] =
-                                ndn::Name(field.second);
+                        static const std::string roleProviderPrefix =
+                            "roleProvider.";
+                        if (field.first.rfind(roleProviderPrefix, 0) == 0 &&
+                            !field.first.substr(roleProviderPrefix.size()).empty() &&
+                            !field.second.empty()) {
+                            assignment.roleProviders[
+                                field.first.substr(roleProviderPrefix.size())] =
+                                    ndn::Name(field.second);
+                        }
+                        else if (assignment.scopeKeys.empty() &&
+                                 assignment.scopeKeyDataNames.empty() &&
+                                 field.first.rfind(prefix, 0) == 0 &&
+                            !field.first.substr(prefix.size()).empty() &&
+                            !field.second.empty()) {
+                            assignment.scopeKeyDataNames[
+                                field.first.substr(prefix.size())] =
+                                    ndn::Name(field.second);
+                        }
                     }
                 }
                 assignment.selectionDigest = selectionDigest;

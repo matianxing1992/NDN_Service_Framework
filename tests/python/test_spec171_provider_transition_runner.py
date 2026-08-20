@@ -35,7 +35,13 @@ class Spec171ProviderTransitionRunnerTest(unittest.TestCase):
                 "ndnsf", "ndnsf", "", root / "ndnsf",
                 root / "trace.csv", root / "build", 171)
             self.assertNotIn("--provider-scope", command)
-            self.assertIn("--ndnsf-response-retry", command)
+            self.assertNotIn("--ndnsf-response-retry", command)
+
+            retry_command = MODULE.build_command(
+                "ndnsf", "ndnsf", "", root / "ndnsf-retry",
+                root / "trace.csv", root / "build", 171,
+                ndnsf_response_retry=True)
+            self.assertIn("--ndnsf-response-retry", retry_command)
 
 
 if __name__ == "__main__":

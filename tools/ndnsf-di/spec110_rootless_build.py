@@ -25,13 +25,17 @@ DEFAULT_PROBE_BASE = (
     "docker.io/library/alpine@sha256:"
     "c64c687cbea9300178b30c95835354e34c4e4febc4badfe27102879de0483b5e"
 )
+DEFAULT_FOUNDATION_IMAGE = (
+    "docker.io/library/ubuntu@sha256:"
+    "8feb4d8ca5354def3d8fce243717141ce31e2c428701f6682bd2fafe15388214"
+)
 DEFAULT_GPU_BUILD_BASE = (
-    "nvidia/cuda@sha256:"
-    "0a1cb6e7bd047a1067efe14efdf0276352d5ca643dfd77963dab1a4f05a003a4"
+    "docker.io/nvidia/cuda@sha256:"
+    "f18cf1a9ac2842e59f13b0d0729594da8cbd68cadd2379308cdd98c0374dbd80"
 )
 DEFAULT_GPU_RUNTIME_BASE = (
-    "nvidia/cuda@sha256:"
-    "0bb88834d973ca1b450fcc2a05333c6fe45510bee289912a5391274c351c4a4d"
+    "docker.io/nvidia/cuda@sha256:"
+    "a6a8417cb56c9a5d30c4d8c78ad18bc9b75ffe4453fe1c04b3149b3741518b06"
 )
 DEFAULT_BUILDER_OCI = (
     "quay.io/buildah/stable@sha256:"
@@ -78,6 +82,7 @@ def render_rootless_build_job(
     cpus: int = 4,
     memory: str = "8G",
     probe_base: str = DEFAULT_PROBE_BASE,
+    foundation_image: str = DEFAULT_FOUNDATION_IMAGE,
     gpu_build_base: str = DEFAULT_GPU_BUILD_BASE,
     gpu_runtime_base: str = DEFAULT_GPU_RUNTIME_BASE,
     builder_mode: str = "auto",
@@ -101,6 +106,7 @@ def render_rootless_build_job(
         raise RootlessBuildError("ROOTLESS_BUILD_RESOURCES_INVALID")
     for label, value in (
         ("PROBE_BASE", probe_base),
+        ("FOUNDATION_IMAGE", foundation_image),
         ("GPU_BUILD_BASE", gpu_build_base),
         ("GPU_RUNTIME_BASE", gpu_runtime_base),
         ("BUILDER_OCI", builder_oci),
@@ -170,6 +176,7 @@ def render_rootless_build_job(
         "RELEASE_ID": release_id,
         "EVIDENCE_DIR": shlex.quote(str(evidence)),
         "PROBE_BASE": shlex.quote(probe_base),
+        "FOUNDATION_IMAGE": shlex.quote(foundation_image),
         "GPU_BUILD_BASE": shlex.quote(gpu_build_base),
         "GPU_RUNTIME_BASE": shlex.quote(gpu_runtime_base),
         "BUILDER_MODE": builder_mode,
@@ -234,6 +241,7 @@ def render_rootless_build_job(
 
 __all__ = [
     "DEFAULT_BUILDER_OCI",
+    "DEFAULT_FOUNDATION_IMAGE",
     "DEFAULT_GPU_BUILD_BASE",
     "DEFAULT_GPU_RUNTIME_BASE",
     "DEFAULT_PROBE_BASE",

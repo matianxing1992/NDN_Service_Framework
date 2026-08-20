@@ -1434,6 +1434,10 @@ def initialize_example_keychains(ndn, args, output_dir):
         "/example/hello/provider",
         "/example/hello/user",
     ] + ["/example/hello/provider/{}".format(pid) for pid in selected_provider_ids(args)]
+    # Protocol-only gates may opt in an identity whose policy deliberately
+    # lacks the tested service.  The normal performance harness leaves this
+    # list unchanged.
+    identities += list(getattr(args, "extra_identities", []))
 
     for node in ndn.net.hosts:
         for identity in [root_identity] + identities:

@@ -51,6 +51,39 @@ def archive_measure(repo: Path, revision: str) -> dict[str, object]:
     return {"archiveDigest": "sha256:" + digest.hexdigest(), "archiveBytes": count}
 
 
+def archive_to_file(repo: Path, revision: str, output: Path) -> dict[str, object]:
+    """Materialize the measured workspace archive for Git-free compute nodes."""
+    try:
+        descriptor = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o640)
+    except FileExistsError as exc:
+        raise SealError("SOURCE_SEAL_WORKSPACE_ARCHIVE_EXISTS") from exc
+    digest = hashlib.sha256()
+    count = 0
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            process = subprocess.Popen(
+                ["git", "-C", str(repo), *ARCHIVE_CONFIG, "archive", "--format=tar", revision],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            assert process.stdout is not None
+            for chunk in iter(lambda: process.stdout.read(1024 * 1024), b""):
+                digest.update(chunk)
+                count += len(chunk)
+                stream.write(chunk)
+            stderr = process.stderr.read() if process.stderr is not None else b""
+            if process.wait() != 0:
+                raise SealError(
+                    f"SOURCE_SEAL_ARCHIVE_FAILED:{repo.name}:{stderr.decode(errors='replace')}"
+                )
+            stream.flush()
+            os.fsync(stream.fileno())
+    except Exception:
+        output.unlink(missing_ok=True)
+        raise
+    return {"archiveDigest": "sha256:" + digest.hexdigest(), "archiveBytes": count}
+
+
 def repo_record(repo: Path, expected: str | None = None) -> dict[str, object]:
     revision = run(repo, "rev-parse", "HEAD")
     if expected is not None and revision != expected:
@@ -97,6 +130,16 @@ def main() -> int:
     manifest = Path(args.manifest).resolve() if args.manifest else source_root / "source-seal.json"
     measured = evaluate(source_root, lock)
     if args.action == "create":
+        workspace_archive = source_root / "workspace.tar"
+        measured_workspace_archive = archive_to_file(
+            source_root / "workspace", measured["workspace"]["revision"], workspace_archive
+        )
+        expected_workspace_archive = {
+            key: measured["workspace"][key]
+            for key in ("archiveDigest", "archiveBytes")
+        }
+        if measured_workspace_archive != expected_workspace_archive:
+            raise SealError("SOURCE_SEAL_WORKSPACE_ARCHIVE_MISMATCH")
         body = {
             "schemaVersion": SCHEMA,
             "createdAt": dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -123,6 +166,19 @@ def main() -> int:
     for field in ("workspace", "dependencies", "lockDigest"):
         if value.get(field) != measured[field]:
             raise SealError(f"SOURCE_SEAL_CONTENT_MISMATCH:{field}")
+    workspace_archive = source_root / "workspace.tar"
+    if not workspace_archive.is_file():
+        raise SealError("SOURCE_SEAL_WORKSPACE_ARCHIVE_MISSING")
+    measured_workspace_archive = {
+        "archiveDigest": "sha256:" + hashlib.sha256(workspace_archive.read_bytes()).hexdigest(),
+        "archiveBytes": workspace_archive.stat().st_size,
+    }
+    expected_workspace_archive = {
+        key: measured["workspace"][key]
+        for key in ("archiveDigest", "archiveBytes")
+    }
+    if measured_workspace_archive != expected_workspace_archive:
+        raise SealError("SOURCE_SEAL_WORKSPACE_ARCHIVE_MISMATCH")
     print(digest)
     return 0
 

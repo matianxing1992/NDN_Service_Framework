@@ -1,25 +1,174 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
+
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/DistributedExecutionConsistency.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 
 #include "ndn-service-framework/utils.hpp"
 
 #include <algorithm>
+#include <boost/property_tree/json_parser.hpp>
+#include <boost/property_tree/ptree.hpp>
 #include <cctype>
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
 #include <future>
+#include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <map>
 #include <mutex>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <thread>
 #include <utility>
 
 namespace ndnsf::di {
+
+std::map<std::string, std::string>
+parseNativeProviderAssignmentFields(const ndn::Buffer& payload,
+                                    const std::string& selectedRole)
+{
+  std::map<std::string, std::string> fields;
+  const std::string text(reinterpret_cast<const char*>(payload.data()),
+                         payload.size());
+  const auto first = text.find_first_not_of(" \t\r\n");
+  if (first != std::string::npos && text[first] == '{') {
+    boost::property_tree::ptree root;
+    try {
+      std::istringstream input(text);
+      boost::property_tree::read_json(input, root);
+    }
+    catch (const boost::property_tree::json_parser::json_parser_error& exc) {
+      throw std::invalid_argument(
+        std::string("malformed V3 Selection projection: ") + exc.what());
+    }
+    if (root.get<std::string>("schema", "") != "ndnsf-di-selection-v3" ||
+        root.get<int>("schema_version", 0) != 3) {
+      throw std::invalid_argument("V3 Selection projection schema mismatch");
+    }
+    std::istringstream projectionInput(text);
+    const auto projection = nativeSelectionProjectionV3FromJson(
+      projectionInput, selectedRole);
+    const auto assign = [&] (const char* outputName, const char* inputName) {
+      const auto value = root.get_optional<std::string>(inputName);
+      if (value && !value->empty()) {
+        fields[outputName] = *value;
+      }
+    };
+    assign("provider", "provider");
+    assign("executionRequestId", "request_id");
+    assign("planCoreDigest", "plan_core_digest");
+    assign("executionPlanDigest", "plan_digest");
+    assign("securityPolicySnapshotDigest",
+           "security_policy_snapshot_digest");
+    assign("groupCapabilityV1", "group_capability_v1");
+    const auto attempt = root.get_optional<std::uint64_t>("attempt");
+    if (attempt) {
+      fields["executionAttemptEpoch"] = std::to_string(*attempt);
+    }
+    const auto deadline = root.get_optional<std::uint64_t>("deadline_ms");
+    if (deadline) {
+      fields["deadlineMs"] = std::to_string(*deadline);
+    }
+
+    const auto& selected = projection.selectedRole;
+    fields["role"] = selected.selectedRole;
+    fields["backend"] = selected.backend;
+    fields["artifactDigest"] = selected.artifactDigest;
+    fields["fragmentDigest"] = selected.artifactDigest;
+    fields["recipeDigest"] = selected.recipeDigest;
+    fields["roleKind"] = selected.roleKind;
+    fields["adapterId"] = selected.adapterId;
+    fields["adapterVersion"] = selected.adapterVersion;
+    fields["modelManifestDigest"] = selected.modelManifestDigest;
+    fields["artifactProfileDigest"] = selected.artifactProfileDigest;
+    fields["protectionEpoch"] = selected.protectionEpoch;
+    if (projection.hasGrantBinding) {
+      fields["grantName"] = projection.grantName;
+      fields["grantDigest"] = projection.grantDigest;
+    }
+    fields["graphDigest"] = selected.graphDigest;
+    fields["canonicalInitializerDigest"] = selected.canonicalInitializerDigest;
+    fields["adapterDescriptorDigest"] = selected.adapterDescriptorDigest;
+    fields["assemblerDescriptorDigest"] = selected.assemblerDescriptorDigest;
+    fields["backendAbi"] = selected.backendAbi;
+    fields["precision"] = selected.precision;
+    fields["quantization"] = selected.quantization;
+    fields["layout"] = selected.layout;
+    fields["padding"] = selected.padding;
+    fields["maxSourceBytes"] = std::to_string(selected.maxSourceBytes);
+    fields["maxAssembledBytes"] = std::to_string(selected.maxAssembledBytes);
+    fields["maxNodes"] = std::to_string(selected.maxNodes);
+    fields["rank"] = std::to_string(selected.rank);
+    if (selected.deviceSet.size() == 1) {
+      fields["device"] = selected.deviceSet.front();
+    }
+    else if (projection.deviceBinding.mode == "CPU") {
+      fields["device"] = "cpu:0";
+    }
+
+    // A DATA_V1 Selection may also carry execution-lease and activation
+    // bindings. These are scoped to the projection's single local role. Do
+    // not fall back to the legacy semicolon assignment for this path.
+    if (const auto executionBindings =
+          root.get_child_optional("execution_bindings")) {
+        const auto& bindingRole = selected.selectedRole;
+        const boost::property_tree::ptree* binding = nullptr;
+        for (const auto& item : *executionBindings) {
+          if (item.first == bindingRole) {
+            if (binding != nullptr) {
+              throw std::invalid_argument(
+                "V3 Selection projection contains duplicate execution binding");
+            }
+            binding = &item.second;
+          }
+        }
+        if (binding == nullptr) {
+          throw std::invalid_argument(
+            "V3 Selection projection is missing current execution binding");
+        }
+        const auto assignBinding = [&] (const char* outputName,
+                                        const char* inputName) {
+          const auto value = binding->get_optional<std::string>(inputName);
+          if (value && !value->empty()) {
+            fields[outputName] = *value;
+          }
+        };
+        assignBinding("executionProviderBootId", "provider_boot_id");
+        assignBinding("executionLeaseId", "lease_id");
+        assignBinding("executionLeaseEpoch", "lease_epoch");
+        assignBinding("executionLeasePlanDigest", "lease_plan_digest");
+        assignBinding("executionLeaseBindingProof", "lease_binding_proof");
+        assignBinding("executionLeaseProviderRoleCount",
+                      "lease_provider_role_count");
+        assignBinding("executionActivationDigest", "activation_digest");
+        assignBinding("executionActivationMembers", "activation_members");
+        assignBinding("executionActivationLocalMember",
+                      "activation_local_member");
+        assignBinding("executionFencingToken", "fencing_token");
+    }
+    return fields;
+  }
+
+  std::size_t pos = 0;
+  while (pos < text.size()) {
+    const auto eq = text.find('=', pos);
+    if (eq == std::string::npos) {
+      break;
+    }
+    const auto end = text.find(';', eq + 1);
+    fields[text.substr(pos, eq - pos)] =
+      text.substr(eq + 1, (end == std::string::npos ? text.size() : end) - eq - 1);
+    if (end == std::string::npos) {
+      break;
+    }
+    pos = end + 1;
+  }
+  return fields;
+}
 
 NativeProviderExecutionBindingResult
 validateNativeProviderExecutionBinding(
@@ -176,6 +325,17 @@ runtimeTimingEnabled()
            text == "off" || text == "OFF");
 }
 
+// Runtime timing records are parsed as line-oriented evidence.  Several role
+// workers can finish concurrently, so serialise the complete diagnostic block
+// rather than allowing individual operator<< calls from different records to
+// interleave and produce fields belonging to different edges.
+std::mutex&
+runtimeTimingOutputMutex()
+{
+  static std::mutex mutex;
+  return mutex;
+}
+
 bool
 nativeTraceEnabled()
 {
@@ -280,7 +440,7 @@ public:
     , runnerSpecs(config.runnerSpecs)
     , runnerFactory(config.runnerFactory)
     , localProviderName(config.localProviderName)
-    , runtime(config.workerCount)
+    , runtime(config.workerCount, config.workerQueueCapacity)
     , executionLeaseTable(config.executionLeaseTable)
     , executionLeaseCleanupIntervalMs(config.executionLeaseCleanupIntervalMs)
   {
@@ -288,14 +448,16 @@ public:
       throw std::invalid_argument(
         "NativeProviderHandlerState requires NativeModelRunnerFactory");
     }
-    for (const auto& spec : runnerSpecs) {
-      logFragmentInventoryEvent("DISK_RESIDENT", spec, localProviderName);
-      auto runner = runnerFactory->create(spec);
-      if (auto evidence = runner->executionEvidenceSnapshot()) {
-        executionEvidence.push_back(std::move(*evidence));
+    if (!config.runnerPreparationFactory) {
+      for (const auto& spec : runnerSpecs) {
+        logFragmentInventoryEvent("DISK_RESIDENT", spec, localProviderName);
+        auto runner = runnerFactory->create(spec);
+        if (auto evidence = runner->executionEvidenceSnapshot()) {
+          executionEvidence.push_back(std::move(*evidence));
+        }
+        runtime.registerRunner(spec.role, std::move(runner));
+        logFragmentInventoryEvent(loadedResidencyFor(spec).c_str(), spec, localProviderName);
       }
-      runtime.registerRunner(spec.role, std::move(runner));
-      logFragmentInventoryEvent(loadedResidencyFor(spec).c_str(), spec, localProviderName);
     }
     if (executionLeaseTable != nullptr && executionLeaseCleanupIntervalMs > 0) {
       executionLeaseCleanupThread = std::thread([this] {
@@ -332,8 +494,10 @@ public:
         std::max<long long>(0, epochMs()));
       executionLeaseTable->cleanupExpired(now);
     }
-    for (const auto& spec : runnerSpecs) {
-      logFragmentInventoryEvent("EVICTED", spec, localProviderName);
+    if (!runnerSpecs.empty()) {
+      for (const auto& spec : runnerSpecs) {
+        logFragmentInventoryEvent("EVICTED", spec, localProviderName);
+      }
     }
   }
 
@@ -399,6 +563,7 @@ logProviderTiming(const std::string& sessionId,
   if (!runtimeTimingEnabled()) {
     return;
   }
+  std::lock_guard<std::mutex> outputLock(runtimeTimingOutputMutex());
 
   const auto workerQueueWaitMs = durationMs(result.timing.queuedAt,
                                             result.timing.workerStartedAt);
@@ -515,6 +680,7 @@ logProviderCapacity(const std::string& sessionId,
   if (!nativeTraceEnabled()) {
     return;
   }
+  std::lock_guard<std::mutex> outputLock(runtimeTimingOutputMutex());
   std::cout << "\nNDNSF_DI_PROVIDER_CAPACITY"
             << " event=" << event
             << " session=" << sessionId
@@ -614,7 +780,13 @@ allPlanRolesAssignedToLocal(const NativeExecutionPlan& plan,
     return false;
   }
   for (const auto& role : plan.roles) {
-    if (providerForRole(assignment, role, localProvider) != localProvider) {
+    // A missing mapping is not evidence that this provider owns the role.
+    // Treating it as local (via providerForRole's fallback) can make a
+    // distributed request enter the local full-plan path and ask a provider
+    // that only hosts /Merge to execute /Backbone as well.
+    const auto found = assignment.providerByRole.find(role);
+    if (found == assignment.providerByRole.end() ||
+        found->second != localProvider) {
       return false;
     }
   }
@@ -710,34 +882,48 @@ injectCachedKvInputs(std::map<std::string, TensorBundle>& inputs,
 std::optional<std::vector<uint8_t>>
 executeLocalPlanAndFinalPayload(NativeProviderHandlerState& state,
                                 const NativeProviderHandlerConfig& config,
+                                const NativeExecutionPlan& plan,
                                 const std::string& sessionId,
                                 const NativeProviderAssignment& assignment,
                                 const std::string& localProvider,
                                 const std::map<std::string, TensorBundle>& initialInputs,
                                 std::chrono::steady_clock::time_point submittedSteady,
-                                long long submittedEpoch)
+                                long long submittedEpoch,
+                                ProviderRoleWorker::NativeRunnerPreparation
+                                  prepareRunner = {})
 {
   auto io = std::make_shared<LocalDependencyIo>();
   std::vector<std::pair<std::string, std::future<ProviderRoleResult>>> futures;
-  futures.reserve(state.plan.roles.size());
-  for (const auto& role : state.plan.roles) {
-    auto roleSpec = roleSpecFor(state.plan,
+  futures.reserve(plan.roles.size());
+  for (const auto& role : plan.roles) {
+    auto roleSpec = roleSpecFor(plan,
                                 role,
                                 sessionId,
                                 assignment,
                                 localProvider);
-    futures.emplace_back(
-      role,
-      state.runtime.executeRoleAsync(
-        sessionId,
-        roleSpec,
-        io,
-        roleSpec.inputs.empty() ? initialInputs : std::map<std::string, TensorBundle>{}));
+    auto roleInputs = roleSpec.inputs.empty()
+      ? initialInputs : std::map<std::string, TensorBundle>{};
+    if (prepareRunner) {
+      if (plan.roles.size() != 1) {
+        throw std::runtime_error(
+          "post-Selection runner preparation requires one local role");
+      }
+      futures.emplace_back(
+        role,
+        state.runtime.executePreparedRoleAsync(
+          sessionId, roleSpec, io, prepareRunner, std::move(roleInputs)));
+    }
+    else {
+      futures.emplace_back(
+        role,
+        state.runtime.executeRoleAsync(
+          sessionId, roleSpec, io, std::move(roleInputs)));
+    }
   }
 
   std::optional<std::vector<uint8_t>> finalPayload;
   for (auto& item : futures) {
-    auto roleSpec = roleSpecFor(state.plan,
+    auto roleSpec = roleSpecFor(plan,
                                 item.first,
                                 sessionId,
                                 assignment,
@@ -779,6 +965,21 @@ nativeProviderFinalResponsePayload(const RoleSpec& roleSpec,
     return found->second.payload;
   }
   return std::nullopt;
+}
+
+bool
+nativeProviderShouldExecuteLocalPlan(const NativeExecutionPlan& plan,
+                                     const NativeProviderAssignment& assignment,
+                                     const RoleSpec& currentRole,
+                                     const std::string& localProvider)
+{
+  // An intermediate role (for example /Backbone) normally has outputs.  Its
+  // output edges describe the dataflow graph; they must not force the handler
+  // back into the one-role network path when every role is assigned locally.
+  if (currentRole.role.empty()) {
+    return false;
+  }
+  return allPlanRolesAssignedToLocal(plan, assignment, localProvider);
 }
 
 void
@@ -826,9 +1027,22 @@ validateNativeProviderRuntimeReadiness(
   catch (const std::exception&) {
     return "DI_RUNTIME_EVIDENCE_INVALID";
   }
-  if (!evidence.realCompute || evidence.runnerKind != RunnerKind::OnnxRuntimeCuda ||
-      evidence.deviceKind != "cuda" || evidence.cpuFallbackUsed) {
-    return "DI_RUNTIME_CUDA_REQUIRED";
+  const bool expectsCuda = expectedDevice.rfind("cuda:", 0) == 0;
+  const bool expectsCpu = expectedDevice.rfind("cpu:", 0) == 0;
+  if (expectsCuda) {
+    if (!evidence.realCompute || evidence.runnerKind != RunnerKind::OnnxRuntimeCuda ||
+        evidence.deviceKind != "cuda" || evidence.cpuFallbackUsed) {
+      return "DI_RUNTIME_CUDA_REQUIRED";
+    }
+  }
+  else if (expectsCpu) {
+    if (!evidence.realCompute || evidence.runnerKind != RunnerKind::OnnxRuntimeCpu ||
+        evidence.deviceKind != "cpu" || evidence.cpuFallbackUsed) {
+      return "DI_RUNTIME_CPU_REQUIRED";
+    }
+  }
+  else {
+    return "DI_RUNTIME_DEVICE_MISMATCH";
   }
   if (!evidence.loadCompleted) {
     return "DI_RUNTIME_MODEL_NOT_LOADED";
@@ -841,6 +1055,7 @@ validateNativeProviderRuntimeReadiness(
     return "DI_RUNTIME_ROLE_MISMATCH";
   }
   if (expectedBackend != "onnxruntime" &&
+      expectedBackend != "onnxruntime-cpu" &&
       expectedBackend != "onnxruntime-cuda") {
     return "DI_RUNTIME_BACKEND_MISMATCH";
   }
@@ -848,14 +1063,150 @@ validateNativeProviderRuntimeReadiness(
   if (expectedDeviceId.rfind("cuda:", 0) == 0) {
     expectedDeviceId = expectedDeviceId.substr(5);
   }
-  if (expectedDevice.rfind("cuda:", 0) != 0 ||
-      expectedDeviceId.empty() || evidence.deviceId != expectedDeviceId) {
+  else if (expectedDeviceId.rfind("cpu:", 0) == 0) {
+    expectedDeviceId = expectedDeviceId.substr(4);
+  }
+  // The selection contract uses `cpu:<id>`, while the ONNX Runtime adapter
+  // records the canonical CPU identity as `cpu<id>` (for example `cpu0`).
+  // Accept only those two equivalent spellings; do not weaken CUDA/device
+  // matching or accept an arbitrary aggregate device.
+  const bool deviceIdMatches = expectedDeviceId.empty() ? false :
+    (evidence.deviceId == expectedDeviceId ||
+     (expectsCpu && evidence.deviceId == "cpu" + expectedDeviceId));
+  if (!deviceIdMatches) {
     return "DI_RUNTIME_DEVICE_MISMATCH";
   }
   const auto artifact = evidence.artifactDigests.find(expectedRole);
   if (artifact == evidence.artifactDigests.end() ||
-      artifact->second != expectedArtifactDigest) {
+      !nativeProviderDigestEquals(artifact->second, expectedArtifactDigest)) {
     return "DI_RUNTIME_ARTIFACT_MISMATCH";
+  }
+  return std::nullopt;
+}
+
+std::optional<std::string>
+validateNativePreparedRunnerSpec(
+  const NativeSelectionProjectionV3& projection,
+  const NativeModelRunnerSpec& spec)
+{
+  const auto& assembly = projection.assembly;
+  if (assembly.modelManifestDigest.empty() ||
+      assembly.artifactProfileDigest.empty() || assembly.graphDigest.empty() ||
+      assembly.canonicalInitializerDigest.empty() ||
+      assembly.adapterDescriptorDigest.empty() ||
+      assembly.assemblerDescriptorDigest.empty() || assembly.backendAbi.empty() ||
+      assembly.nodeIndices.empty() || assembly.expectedInputs.empty() ||
+      assembly.expectedOutputs.empty() || assembly.precision.empty() ||
+      assembly.quantization.empty() || assembly.layout.empty() ||
+      assembly.padding.empty() || assembly.maxSourceBytes == 0 ||
+      assembly.maxAssembledBytes == 0 || assembly.maxNodes == 0) {
+    return "DI_PROVIDER_ASSEMBLY_IDENTITY_INCOMPLETE";
+  }
+  if (spec.role != assembly.selectedRole || spec.backend != assembly.backend ||
+      spec.path.empty()) {
+    return "DI_PROVIDER_ASSEMBLY_RUNNER_MISMATCH";
+  }
+  const std::filesystem::path modelPath(spec.path);
+  if (!modelPath.is_absolute() || modelPath.filename() != "model.onnx") {
+    return "DI_PROVIDER_ASSEMBLY_PATH_UNSAFE";
+  }
+  for (const auto& part : modelPath) {
+    if (part == "..") {
+      return "DI_PROVIDER_ASSEMBLY_PATH_UNSAFE";
+    }
+  }
+  const auto matches = [&spec] (
+    std::initializer_list<const char*> keys, const std::string& expected) {
+    const auto actual = metadataValue(spec, keys);
+    return !actual.empty() && actual == expected;
+  };
+  if (!matches({"fragmentDigest", "fragment_digest"},
+               assembly.artifactDigest) ||
+      !matches({"recipeDigest", "recipe_digest"}, assembly.recipeDigest) ||
+      !matches({"modelManifestDigest", "model_manifest_digest"},
+               assembly.modelManifestDigest) ||
+      !matches({"artifactProfileDigest", "artifact_profile_digest"},
+               assembly.artifactProfileDigest) ||
+      !matches({"graphDigest", "graph_digest"}, assembly.graphDigest) ||
+      !matches({"canonicalInitializerDigest", "canonical_initializer_digest"},
+               assembly.canonicalInitializerDigest) ||
+      !matches({"adapterDescriptorDigest", "adapter_descriptor_digest"},
+               assembly.adapterDescriptorDigest) ||
+      !matches({"assemblerDescriptorDigest", "assembler_descriptor_digest"},
+               assembly.assemblerDescriptorDigest) ||
+      !matches({"backendAbi", "backend_abi"}, assembly.backendAbi) ||
+      !matches({"precision"}, assembly.precision) ||
+      !matches({"quantization"}, assembly.quantization) ||
+      !matches({"layout"}, assembly.layout) ||
+      !matches({"padding"}, assembly.padding) ||
+      !matches({"maxSourceBytes", "max_source_bytes"},
+               std::to_string(assembly.maxSourceBytes)) ||
+      !matches({"maxAssembledBytes", "max_assembled_bytes"},
+               std::to_string(assembly.maxAssembledBytes)) ||
+      !matches({"maxNodes", "max_nodes"},
+               std::to_string(assembly.maxNodes))) {
+    return "DI_PROVIDER_ASSEMBLY_METADATA_MISMATCH";
+  }
+  return std::nullopt;
+}
+
+std::optional<std::string>
+validateProtectedRuntimeBinding(
+  const NativeSelectionProjectionV3& projection,
+  const ProtectedRuntime& runtime,
+  const std::shared_ptr<ProviderGroupCoordinator>& groupCoordinator,
+  const std::string& expectedProviderBootId,
+  const std::string& expectedFencingToken)
+{
+  const auto& binding = runtime.binding();
+  std::set<std::string> mayPublish;
+  std::set<std::string> mustFetch;
+  std::map<std::string, std::string> mayPublishConsumers;
+  std::map<std::string, std::string> mustFetchProducers;
+  for (const auto& endpoint : projection.dataflow.mayPublish) {
+    mayPublish.insert(endpoint.endpointDigest);
+    mayPublishConsumers[endpoint.endpointDigest] = endpoint.consumerRole;
+  }
+  for (const auto& endpoint : projection.dataflow.mustFetch) {
+    mustFetch.insert(endpoint.endpointDigest);
+    mustFetchProducers[endpoint.endpointDigest] = endpoint.producerRole;
+  }
+  if (!projection.hasGrantBinding || expectedProviderBootId.empty() ||
+      expectedFencingToken.empty() || binding.provider != projection.provider ||
+      binding.role != projection.executionRole.roleId ||
+      binding.requestId != projection.requestId ||
+      binding.attempt != projection.attempt ||
+      binding.planCoreDigest != projection.planCoreDigest ||
+      binding.planDigest != projection.planDigest ||
+      binding.securityPolicySnapshotDigest !=
+        projection.securityPolicySnapshotDigest ||
+      binding.protectionEpoch != projection.selectedRole.protectionEpoch ||
+      binding.grantName != projection.grantName ||
+      binding.grantDigest != projection.grantDigest ||
+      binding.providerBootId != expectedProviderBootId ||
+      binding.fencingToken != expectedFencingToken ||
+      binding.mayPublishEndpointDigests != mayPublish ||
+      binding.mustFetchEndpointDigests != mustFetch ||
+      binding.mayPublishConsumerByEndpoint != mayPublishConsumers ||
+      binding.mustFetchProducerByEndpoint != mustFetchProducers) {
+    return "DI_PROTECTED_RUNTIME_BINDING_MISMATCH";
+  }
+  if (groupCoordinator && groupCoordinator->hasCapability()) {
+    const auto& capability = groupCoordinator->capability();
+    if (binding.capabilityDigest != capability.capabilityDigest ||
+        binding.groupId != capability.groupId ||
+        binding.groupEpoch != capability.epoch ||
+        binding.epochKeyId != capability.epochKeyId ||
+        capability.requestId != projection.requestId ||
+        capability.attemptId !=
+          "attempt-" + std::to_string(projection.attempt) ||
+        capability.planDigest != projection.planDigest) {
+      return "DI_PROTECTED_CAPABILITY_BINDING_MISMATCH";
+    }
+  }
+  else if (!binding.capabilityDigest.empty() || !binding.groupId.empty() ||
+           binding.groupEpoch != 0 || !binding.epochKeyId.empty()) {
+    return "DI_PROTECTED_CAPABILITY_BINDING_MISMATCH";
   }
   return std::nullopt;
 }
@@ -884,6 +1235,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
     std::string activatedRole;
     std::size_t expectedProviderRoles = 1;
     bool completedLocalPlan = false;
+    std::shared_ptr<ProtectedRuntime> protectedRuntime;
     auto completeExecutionLease = [&] {
       state->completeExecutionLease(config.executionLeaseTable,
                                     activatedLeaseId,
@@ -920,15 +1272,81 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         assignment.providerByRole[ctx.role()] = ctx.localProvider().toUri();
       }
 
+      const auto role = ctx.role();
+      const auto assignmentFields = parseNativeProviderAssignmentFields(
+        ctx.assignment().assignmentPayload, role);
+      std::optional<NativeSelectionProjectionV3> selectionProjection;
+      const std::string assignmentText(
+        reinterpret_cast<const char*>(ctx.assignment().assignmentPayload.data()),
+        ctx.assignment().assignmentPayload.size());
+      const auto assignmentFirst = assignmentText.find_first_not_of(" \t\r\n");
+      if (assignmentFirst != std::string::npos &&
+          assignmentText[assignmentFirst] == '{') {
+        std::istringstream projectionInput(assignmentText);
+        selectionProjection = nativeSelectionProjectionV3FromJson(
+          projectionInput, role);
+        if (selectionProjection->provider != ctx.localProvider().toUri()) {
+          ctx.fail("DI_SELECTION_PROVIDER_MISMATCH");
+          return;
+        }
+        if (selectionProjection->requestId != ctx.sessionId()) {
+          ctx.fail("DI_SELECTION_REQUEST_MISMATCH");
+          return;
+        }
+        if (!config.runnerPreparationFactory &&
+            !config.allowPreassembledV3Compatibility) {
+          ctx.fail("DI_PROVIDER_ASSEMBLY_FACTORY_MISSING");
+          return;
+        }
+        // Model/backend allow-lists remain Provider configuration.  The
+        // request-scoped roles and dependency graph come only from the sealed
+        // Selection projection, as required by Placement V3.
+        selectionProjection->plan.serviceName = state->plan.serviceName;
+        selectionProjection->plan.modelName = state->plan.modelName;
+        selectionProjection->plan.modelFamily = state->plan.modelFamily;
+        selectionProjection->plan.modelFormat = state->plan.modelFormat;
+        selectionProjection->plan.plannerKind = state->plan.plannerKind;
+      }
+      const NativeExecutionPlan& executionPlan = selectionProjection
+        ? selectionProjection->plan : state->plan;
+      const std::string requestPlanDigest = selectionProjection
+        ? selectionProjection->planDigest : config.planDigest;
+      auto groupCoordinator = config.groupCoordinator;
+      if (config.groupCoordinatorFactory) {
+        groupCoordinator = config.groupCoordinatorFactory(ctx, assignmentFields);
+      }
+      if (selectionProjection &&
+          selectionProjection->selectedRole.protectionEpoch != "plaintext-v1") {
+        if (!config.protectedRuntimeFactory) {
+          ctx.fail("DI_PROTECTED_RUNTIME_FACTORY_MISSING");
+          return;
+        }
+        protectedRuntime = config.protectedRuntimeFactory(
+          ctx, *selectionProjection, groupCoordinator);
+        if (!protectedRuntime ||
+            protectedRuntime->state() == ProtectedRuntimeState::NoGrant ||
+            protectedRuntime->state() == ProtectedRuntimeState::FailedClosed) {
+          ctx.fail("DI_PROTECTED_GRANT_NOT_VERIFIED");
+          return;
+        }
+        const auto fencingToken = nativeProviderFieldValue(
+          assignmentFields,
+          {"executionFencingToken", "fencingToken", "admissionFencingToken"});
+        if (const auto error = validateProtectedRuntimeBinding(
+              *selectionProjection, *protectedRuntime, groupCoordinator,
+              config.providerBootId, fencingToken)) {
+          protectedRuntime->cancel(*error);
+          ctx.fail(*error);
+          return;
+        }
+      }
       auto io = std::make_shared<NdnsfCollaborationDependencyIo>(
         ctx,
         collaborationFetchTimeoutMs(config.fetchTimeoutMs),
         config.maxSegmentSize,
-        config.freshnessMs);
-
-      const auto role = ctx.role();
-      const auto assignmentFields = parseNativeProviderAssignmentFields(
-        ctx.assignment().assignmentPayload);
+        config.freshnessMs,
+        groupCoordinator,
+        protectedRuntime);
       const auto assignmentExecutionPolicy = nativeProviderFieldValue(
         assignmentFields, {"executionPolicy"});
       const bool legacyPolicy =
@@ -944,7 +1362,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         auto binding = validateNativeProviderExecutionBinding(
           assignmentFields,
           config.providerBootId,
-          config.planDigest,
+          requestPlanDigest,
           state->attemptAuthority);
         if (!binding.status) {
           std::cout << "\nNDNSF_DI_EXECUTION_ATTEMPT"
@@ -1026,10 +1444,11 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           }
         }
       }
-      const auto bindingError =
-        validateNativeProviderAssignmentPayload(state->runnerSpecs,
-                                                role,
-                                                ctx.assignment().assignmentPayload);
+      const auto bindingError = (selectionProjection &&
+                                 config.runnerPreparationFactory)
+        ? std::optional<std::string>{}
+        : validateNativeProviderAssignmentPayload(
+            state->runnerSpecs, role, ctx.assignment().assignmentPayload);
       if (bindingError) {
         if (nativeTraceEnabled()) {
           std::cout << "\nNDNSF_DI_RESOURCE_BINDING_REJECTED"
@@ -1045,17 +1464,20 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
       const auto executionSessionId = executionAttempt
         ? executionAttempt->scopedSessionId()
         : ctx.sessionId();
-      const auto roleSpec = executionAttempt
-        ? roleSpecFor(state->plan,
-                      role,
-                      *executionAttempt,
-                      assignment,
-                      ctx.localProvider().toUri())
-        : roleSpecFor(state->plan,
-                      role,
-                      executionSessionId,
-                      assignment,
-                      ctx.localProvider().toUri());
+      const auto roleSpec = selectionProjection
+        ? roleSpecFromSelectionProjectionV3(
+            *selectionProjection, ctx.localProvider().toUri())
+        : (executionAttempt
+            ? roleSpecFor(executionPlan,
+                          role,
+                          *executionAttempt,
+                          assignment,
+                          ctx.localProvider().toUri())
+            : roleSpecFor(executionPlan,
+                          role,
+                          executionSessionId,
+                          assignment,
+                          ctx.localProvider().toUri()));
       const auto* readinessRunnerSpec = runnerSpecForRole(state->runnerSpecs, role);
       const auto deploymentRevision = nativeProviderFieldValue(
         assignmentFields, {"deploymentRevision", "revision", "planRevision"});
@@ -1087,7 +1509,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         status.detailsSchema = "ndnsf-di-preparation-progress-v1";
         const auto details = std::string("{\"phase\":\"") + phase +
           "\",\"deploymentRevision\":\"" +
-          (deploymentRevision.empty() ? config.planDigest : deploymentRevision) +
+              (deploymentRevision.empty() ? requestPlanDigest : deploymentRevision) +
           "\",\"adapter\":\"" + adapterIdentity + "\"}";
         status.detailsPayload = ndn::Buffer(
           reinterpret_cast<const std::uint8_t*>(details.data()), details.size());
@@ -1097,6 +1519,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         ctx.assignment().selectionDigest + ":" + role + ":readiness";
       const auto executionOperationId =
         ctx.assignment().selectionDigest + ":" + role + ":execution";
+      ProviderRoleWorker::NativeRunnerPreparation prepareRunner;
       if (config.executionPolicy == "DATA_DRIVEN_V2") {
         const auto expectedBackend = nativeProviderFieldValue(
           assignmentFields, {"backend", "executionBackend"});
@@ -1105,29 +1528,62 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         const auto expectedArtifact = nativeProviderFieldValue(
           assignmentFields,
           {"artifactDigest", "fragmentDigest", "modelFragmentDigest"});
-        const auto evidence = std::find_if(
-          state->executionEvidence.begin(), state->executionEvidence.end(),
-          [&role] (const ExecutionEvidence& item) {
-            return std::find(item.roles.begin(), item.roles.end(), role) !=
-              item.roles.end();
-          });
-        if (evidence == state->executionEvidence.end()) {
-          completeExecutionLease();
-          ctx.fail("DI_RUNTIME_EVIDENCE_MISSING");
-          return;
+        if (selectionProjection && config.runnerPreparationFactory) {
+          const auto projection = *selectionProjection;
+          const auto preparationFactory = config.runnerPreparationFactory;
+          const auto runnerFactory = state->runnerFactory;
+          prepareRunner = [projection, preparationFactory, runnerFactory,
+                           expectedBackend, expectedDevice, expectedArtifact,
+                           role, reportStatus, readinessOperationId] {
+            auto spec = preparationFactory(projection);
+            if (const auto error = validateNativePreparedRunnerSpec(
+                  projection, spec)) {
+              throw std::runtime_error(*error);
+            }
+            auto runner = runnerFactory->create(spec);
+            const auto evidence = runner->executionEvidenceSnapshot();
+            if (!evidence) {
+              throw std::runtime_error("DI_RUNTIME_EVIDENCE_MISSING");
+            }
+            if (const auto error = validateNativeProviderRuntimeReadiness(
+                  *evidence, role, expectedBackend, expectedDevice,
+                  expectedArtifact)) {
+              throw std::runtime_error(*error);
+            }
+            reportStatus(readinessOperationId, "ensure-deployment", "DONE",
+                         1, 1.0, "READY");
+            return runner;
+          };
         }
-        const auto readinessError = validateNativeProviderRuntimeReadiness(
-          *evidence, role, expectedBackend, expectedDevice, expectedArtifact);
-        if (readinessError) {
-          completeExecutionLease();
-          ctx.fail(*readinessError);
-          return;
+        else {
+          const auto evidence = std::find_if(
+            state->executionEvidence.begin(), state->executionEvidence.end(),
+            [&role] (const ExecutionEvidence& item) {
+              return std::find(item.roles.begin(), item.roles.end(), role) !=
+                item.roles.end();
+            });
+          if (evidence == state->executionEvidence.end()) {
+            completeExecutionLease();
+            ctx.fail("DI_RUNTIME_EVIDENCE_MISSING");
+            return;
+          }
+          const auto readinessError = validateNativeProviderRuntimeReadiness(
+            *evidence, role, expectedBackend, expectedDevice, expectedArtifact);
+          if (readinessError) {
+            completeExecutionLease();
+            ctx.fail(*readinessError);
+            return;
+          }
+          // Preassembled compatibility is READY before queue execution because
+          // its configured runner was already loaded and warmed at startup.
+          reportStatus(readinessOperationId, "ensure-deployment", "DONE", 1,
+                       1.0, "READY");
         }
       }
-      // READY is truthful only after the runner proves exact artifact load,
-      // CUDA placement, no CPU fallback, and a real warmup execution.
-      reportStatus(readinessOperationId, "ensure-deployment", "DONE", 1, 1.0,
-                   "READY");
+      else {
+        reportStatus(readinessOperationId, "ensure-deployment", "DONE", 1,
+                     1.0, "READY");
+      }
 
       // Readiness status is observational.  Before entering any runner, every
       // selected role rendezvous over one request-scoped encrypted
@@ -1208,9 +1664,9 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           : (declaredBound ? declaredBindingDigest
                            : ctx.assignment().selectionDigest);
         const auto effectiveRevision = deploymentRevision.empty()
-          ? config.planDigest : deploymentRevision;
-        const auto effectivePlanDigest = config.planDigest.empty()
-          ? effectiveRevision : config.planDigest;
+          ? requestPlanDigest : deploymentRevision;
+        const auto effectivePlanDigest = requestPlanDigest.empty()
+          ? effectiveRevision : requestPlanDigest;
         const auto attemptEpoch = executionAttempt
           ? executionAttempt->attemptEpoch : 1;
         const auto artifactDigest = readinessRunnerSpec == nullptr
@@ -1337,6 +1793,11 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
       std::optional<TensorBundle> cachedKvState;
       const auto kvMode = nativeProviderFieldValue(assignmentFields, {"kvMode"});
       if (!kvMode.empty()) {
+        if (prepareRunner) {
+          completeExecutionLease();
+          ctx.fail("KV_STATE_POST_SELECTION_PREPARATION_UNSUPPORTED");
+          return;
+        }
         const auto* runnerSpec = runnerSpecForRole(state->runnerSpecs, role);
         if (runnerSpec == nullptr || !config.kvStateStore) {
           completeExecutionLease();
@@ -1379,11 +1840,11 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           return;
         }
       }
-      const bool localFullPlan =
-        roleSpec.outputs.empty() &&
-        allPlanRolesAssignedToLocal(state->plan,
-                                    assignment,
-                                    ctx.localProvider().toUri());
+      const bool localFullPlan = nativeProviderShouldExecuteLocalPlan(
+        executionPlan,
+        assignment,
+        roleSpec,
+        ctx.localProvider().toUri());
       completedLocalPlan = localFullPlan;
       auto initialInputs = initialInputsFromRequest(ctx, request);
       if (cachedKvState) {
@@ -1407,12 +1868,14 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
       if (localFullPlan) {
         finalPayload = executeLocalPlanAndFinalPayload(*state,
                                                        config,
+                                                       executionPlan,
                                                        executionSessionId,
                                                        assignment,
                                                        ctx.localProvider().toUri(),
                                                        initialInputs,
                                                        submittedSteady,
-                                                       submittedEpoch);
+                                                       submittedEpoch,
+                                                       prepareRunner);
         if (config.stageServiceTimeObserver && *config.stageServiceTimeObserver) {
           const auto elapsed = std::max(
             std::chrono::milliseconds(1),
@@ -1422,75 +1885,148 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         }
       }
       else {
-        auto result = state->runtime.executeRoleAsync(
-          executionSessionId,
-          roleSpec,
-          std::move(io),
-          std::move(initialInputs)).get();
-        if (result.executionEvidence && config.executionEvidenceObserver &&
-            *config.executionEvidenceObserver) {
-          (*config.executionEvidenceObserver)(*result.executionEvidence);
-        }
-        if (kvBinding && config.kvStateStore) {
-          auto kvOutput = result.outputsByScope.find(config.kvOutputScope);
-          if (kvOutput == result.outputsByScope.end()) {
-            kvOutput = std::find_if(
-              result.outputsByScope.begin(), result.outputsByScope.end(), [] (const auto& item) {
-                return isEncodedTensorBundle(item.second.payload);
-              });
+        std::vector<RoleSpec> localRoleSpecs;
+        for (const auto& plannedRole : executionPlan.roles) {
+          const auto assigned = assignment.providerByRole.find(plannedRole);
+          if (assigned == assignment.providerByRole.end() ||
+              assigned->second != ctx.localProvider().toUri()) {
+            continue;
           }
-          auto storedBinding = *kvBinding;
-          const auto nextEpoch = nativeProviderFieldValue(
-            assignmentFields, {"kvNextContextEpoch"});
-          if (!nextEpoch.empty()) {
-            try {
-              std::size_t consumed = 0;
-              storedBinding.contextEpoch = std::stoull(nextEpoch, &consumed);
-              if (consumed != nextEpoch.size() ||
-                  storedBinding.contextEpoch <= kvBinding->contextEpoch) {
-                throw std::invalid_argument("invalid next epoch");
-              }
+          if (selectionProjection) {
+            if (plannedRole != selectionProjection->executionRole.roleId) {
+              throw std::invalid_argument(
+                "V3 Selection cannot execute an undeclared local role");
             }
-            catch (const std::exception&) {
-              completeExecutionLease();
-              ctx.fail("KV_BINDING_MISMATCH");
-              return;
-            }
+            localRoleSpecs.push_back(roleSpecFromSelectionProjectionV3(
+              *selectionProjection, ctx.localProvider().toUri()));
           }
-          if (kvOutput != result.outputsByScope.end() &&
-              !config.kvStateStore->put(std::move(storedBinding), kvOutput->second)) {
-            completeExecutionLease();
-            ctx.fail("KV_STATE_CAPACITY_EXCEEDED");
-            return;
-          }
-          if (kvOutput != result.outputsByScope.end()) {
-            std::cout << "\nNDNSF_DI_KV_STATE event=store"
-                      << " session=" << kvBinding->sessionId
-                      << " role=" << role
-                      << " context_epoch="
-                      << (nextEpoch.empty() ? kvBinding->contextEpoch : std::stoull(nextEpoch))
-                      << " bytes=" << kvOutput->second.payload.size()
-                      << std::endl;
+          else {
+            localRoleSpecs.push_back(
+              executionAttempt
+                ? roleSpecFor(executionPlan,
+                              plannedRole,
+                              *executionAttempt,
+                              assignment,
+                              ctx.localProvider().toUri())
+                : roleSpecFor(executionPlan,
+                              plannedRole,
+                              executionSessionId,
+                              assignment,
+                              ctx.localProvider().toUri()));
           }
         }
-        logProviderTiming(ctx.sessionId(), role, result, submittedSteady, submittedEpoch);
-        if (config.stageServiceTimeObserver && *config.stageServiceTimeObserver) {
-          const auto elapsed = std::max(
-            std::chrono::milliseconds(1),
-            std::chrono::duration_cast<std::chrono::milliseconds>(
-              result.timing.finishedAt - result.timing.startedAt));
-          (*config.stageServiceTimeObserver)(elapsed);
+        // Register every local consumer's dependency wait before a colocated
+        // source can publish.  SVSPubSub subscriptions are prospective; this
+        // ordering removes a same-Provider source/consumer startup race while
+        // preserving the plan's data dependencies and concurrent execution.
+        std::stable_sort(
+          localRoleSpecs.begin(), localRoleSpecs.end(),
+          [] (const RoleSpec& lhs, const RoleSpec& rhs) {
+            return !lhs.inputs.empty() && rhs.inputs.empty();
+          });
+        std::vector<std::pair<RoleSpec, std::future<ProviderRoleResult>>> localRoles;
+        for (auto& localRoleSpec : localRoleSpecs) {
+          auto roleInputs = localRoleSpec.inputs.empty()
+            ? initialInputs : std::map<std::string, TensorBundle>{};
+          if (prepareRunner) {
+            if (localRoleSpecs.size() != 1 || localRoleSpec.role != role) {
+              throw std::runtime_error(
+                "post-Selection runner preparation requires one local role");
+            }
+            localRoles.emplace_back(
+              localRoleSpec,
+              state->runtime.executePreparedRoleAsync(
+                executionSessionId, localRoleSpec, io, prepareRunner,
+                std::move(roleInputs)));
+          }
+          else {
+            localRoles.emplace_back(
+              localRoleSpec,
+              state->runtime.executeRoleAsync(
+                executionSessionId, localRoleSpec, io,
+                std::move(roleInputs)));
+          }
+        }
+        if (localRoles.empty()) {
+          throw std::runtime_error(
+            "V3 Selection projection assigns no executable role to Provider");
         }
 
-        finalPayload = nativeProviderFinalResponsePayload(
-          roleSpec,
-          result,
-          config.finalResponseScope);
+        for (auto& localRole : localRoles) {
+          auto result = localRole.second.get();
+          const auto& executedRoleSpec = localRole.first;
+          if (result.executionEvidence && config.executionEvidenceObserver &&
+              *config.executionEvidenceObserver) {
+            (*config.executionEvidenceObserver)(*result.executionEvidence);
+          }
+          if (kvBinding && config.kvStateStore) {
+            auto kvOutput = result.outputsByScope.find(config.kvOutputScope);
+            if (kvOutput == result.outputsByScope.end()) {
+              kvOutput = std::find_if(
+                result.outputsByScope.begin(), result.outputsByScope.end(), [] (const auto& item) {
+                  return isEncodedTensorBundle(item.second.payload);
+                });
+            }
+            auto storedBinding = *kvBinding;
+            const auto nextEpoch = nativeProviderFieldValue(
+              assignmentFields, {"kvNextContextEpoch"});
+            if (!nextEpoch.empty()) {
+              try {
+                std::size_t consumed = 0;
+                storedBinding.contextEpoch = std::stoull(nextEpoch, &consumed);
+                if (consumed != nextEpoch.size() ||
+                    storedBinding.contextEpoch <= kvBinding->contextEpoch) {
+                  throw std::invalid_argument("invalid next epoch");
+                }
+              }
+              catch (const std::exception&) {
+                completeExecutionLease();
+                ctx.fail("KV_BINDING_MISMATCH");
+                return;
+              }
+            }
+            if (kvOutput != result.outputsByScope.end() &&
+                !config.kvStateStore->put(std::move(storedBinding), kvOutput->second)) {
+              completeExecutionLease();
+              ctx.fail("KV_STATE_CAPACITY_EXCEEDED");
+              return;
+            }
+            if (kvOutput != result.outputsByScope.end()) {
+              std::cout << "\nNDNSF_DI_KV_STATE event=store"
+                        << " session=" << kvBinding->sessionId
+                        << " role=" << executedRoleSpec.role
+                        << " context_epoch="
+                        << (nextEpoch.empty() ? kvBinding->contextEpoch : std::stoull(nextEpoch))
+                        << " bytes=" << kvOutput->second.payload.size()
+                        << std::endl;
+            }
+          }
+          logProviderTiming(ctx.sessionId(), executedRoleSpec.role,
+                            result, submittedSteady, submittedEpoch);
+          if (config.stageServiceTimeObserver && *config.stageServiceTimeObserver) {
+            const auto elapsed = std::max(
+              std::chrono::milliseconds(1),
+              std::chrono::duration_cast<std::chrono::milliseconds>(
+                result.timing.finishedAt - result.timing.startedAt));
+            (*config.stageServiceTimeObserver)(elapsed);
+          }
+
+          auto localFinalPayload = nativeProviderFinalResponsePayload(
+            executedRoleSpec,
+            result,
+            config.finalResponseScope);
+          if (localFinalPayload) {
+            finalPayload = std::move(localFinalPayload);
+          }
+        }
       }
       logProviderCapacity(ctx.sessionId(),
                           role,
                           "after_complete",
                           state->runtime.snapshot());
+      if (protectedRuntime) {
+        protectedRuntime->complete();
+      }
       if (executionAttempt && !state->attemptAuthority.complete(*executionAttempt)) {
         std::cout << "\nNDNSF_DI_EXECUTION_ATTEMPT"
                   << " decision=reject"
@@ -1511,9 +2047,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                   << " role=" << role
                   << " role_outputs=" << roleSpec.outputs.size()
                   << " local_full_plan="
-                  << (allPlanRolesAssignedToLocal(state->plan,
-                                                  assignment,
-                                                  ctx.localProvider().toUri()) ?
+                  << (localFullPlan ?
                       "true" : "false")
                   << " final_scope=" << config.finalResponseScope
                   << " has_payload=" << (finalPayload ? "true" : "false");
@@ -1524,6 +2058,14 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
       }
     }
 	    catch (const std::exception& exc) {
+	      if (protectedRuntime) {
+	        try {
+	          protectedRuntime->cancel(exc.what());
+	        }
+	        catch (...) {
+	          // The runtime remains FailedClosed; preserve the original failure.
+	        }
+	      }
 	      completeExecutionLease();
 	      ctx.fail(exc.what());
 	    }

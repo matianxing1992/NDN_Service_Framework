@@ -136,6 +136,10 @@ public:
   ndn::svs::SVSPubSub& userPubSub();
   ndn::svs::SVSPubSub& providerPubSub();
   ndn::svs::SVSPubSub& providerPubSub(size_t index);
+  /** Attach User and Providers to in-process SVS and register production regexes. */
+  void enableProductionIngressForTest();
+  /** Backward-compatible name for callers that only need Provider ingress. */
+  void enableProviderProductionIngressForTest();
   ServiceUser& user();
   ServiceProvider& provider();
   ServiceProvider& provider(size_t index);

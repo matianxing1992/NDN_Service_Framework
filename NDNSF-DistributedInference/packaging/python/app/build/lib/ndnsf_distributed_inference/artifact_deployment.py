@@ -511,6 +511,44 @@ class ExecutionContext:
         return path
 
 
+def build_output_object_manifest(
+    *, payload: bytes, object_name: str, request_id: str, attempt: int,
+    plan_digest: str, producer_role: str, producer_provider: str,
+    producer_boot_epoch: str, generation: int,
+    consumer_roles: tuple[str, ...], lineage_digests: tuple[str, ...],
+    schema_digest: str, segment_count: int, aead_algorithm: str,
+    key_grant_digest: str, signer_key_id: str, signature: str,
+    captured_at_ms: int, expires_at_ms: int,
+):
+    """Build the complete authenticated identity carried with a DAG object."""
+
+    from .core.execution import InputOutputObjectManifest
+
+    wire = bytes(payload)
+    return InputOutputObjectManifest(
+        object_name=object_name,
+        request_id=request_id,
+        attempt=attempt,
+        plan_digest=plan_digest,
+        producer_role=producer_role,
+        producer_provider=producer_provider,
+        producer_boot_epoch=producer_boot_epoch,
+        generation=generation,
+        consumer_roles=tuple(consumer_roles),
+        lineage_digests=tuple(lineage_digests),
+        schema_digest=schema_digest,
+        segment_count=segment_count,
+        total_bytes=len(wire),
+        payload_digest="sha256:" + hashlib.sha256(wire).hexdigest(),
+        aead_algorithm=aead_algorithm,
+        key_grant_digest=key_grant_digest,
+        signer_key_id=signer_key_id,
+        signature=signature,
+        captured_at_ms=captured_at_ms,
+        expires_at_ms=expires_at_ms,
+    )
+
+
 def publish_execution_artifact_spec(
     user: Any,
     service: str,

@@ -334,6 +334,7 @@ class APPClient:
         canonical_artifact_ensurer=None,
         budget=None,
         ack_timeout_ms: int = 300,
+        data_v1_no_progress_ms: int = 2000,
         ack_coverage_roles=(),
         ack_coverage_predicate=None,
     ):
@@ -373,6 +374,7 @@ class APPClient:
             catalog_snapshot_provider=snapshot_provider,
             budget=budget,
             ack_timeout_ms=ack_timeout_ms,
+            data_v1_no_progress_ms=data_v1_no_progress_ms,
             ack_coverage_roles=tuple(ack_coverage_roles),
             ack_coverage_predicate=ack_coverage_predicate,
         )

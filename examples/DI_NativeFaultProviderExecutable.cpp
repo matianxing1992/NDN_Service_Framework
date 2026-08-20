@@ -36,9 +36,13 @@ main(int argc, char** argv)
         forwarded.push_back(argv[index]);
       }
     }
+    // Keep the conventional argv[argc] sentinel for the embedded provider
+    // entry point.  The normal parser receives argc, but a few dependency
+    // parsers still inspect the sentinel while processing an argv vector.
+    forwarded.push_back(nullptr);
     ndnsf::di::NativeFaultInjection::instance().configure(std::move(fault));
     std::cout << "NDNSF_DI_EXPERIMENT_FAULT_PROVIDER_READY" << std::endl;
-    return ndnsfDiNormalProviderMain(static_cast<int>(forwarded.size()),
+    return ndnsfDiNormalProviderMain(static_cast<int>(forwarded.size() - 1),
                                      forwarded.data());
   }
   catch (const std::exception& error) {

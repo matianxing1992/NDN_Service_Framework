@@ -14,7 +14,9 @@ from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 
-from ..client import InferenceResult
+from ..client import (
+    InferenceResult, SelectionAcceptanceTracker,
+)
 from .contracts import (
     DeploymentProgress,
     DeploymentStatus,
@@ -47,7 +49,8 @@ class RequestRecoveryError(RuntimeError):
 class APPClient:
     def __init__(self, journal: RuntimeJournal, *, executor=None, engine=None,
                  observers=None, intent_coordinator=None, network_client=None,
-                 requester_identity: str = "", execution_control_transport=None):
+                 requester_identity: str = "", execution_control_transport=None,
+                 automatic_planner=None):
         if not journal.has_envelope_key:
             raise RuntimeJournalKeyError(
                 "APPClient requires an owner-injected request-envelope key provider")
@@ -57,8 +60,11 @@ class APPClient:
         self.observers = observers
         self._network_client = network_client
         self._execution_control_transport = execution_control_transport
+        self._automatic_planner = automatic_planner
         self._network_futures = {}
         self._result_cache: dict[str, bytes] = {}
+        self._selection_acceptance_trackers: dict[
+            tuple[str, int], SelectionAcceptanceTracker] = {}
         self.requester_identity = requester_identity or journal.root.name
         self.intent_coordinator = intent_coordinator or ExecutionIntentCoordinator()
         self._request_handles: dict[str, RequestHandle] = {}
@@ -85,6 +91,7 @@ class APPClient:
         envelope_key_provider: RequestEnvelopeKeyProvider | None = None,
         envelope_key_file: str | Path | None = None,
         test_only_allow_ephemeral_state_root: bool = False,
+        automatic_planner=None,
         **network_options,
     ) -> "APPClient":
         """Construct the canonical client over the existing NDNSF runtime.
@@ -133,6 +140,7 @@ class APPClient:
             engine=network_client.optimization_engine,
             network_client=network_client,
             requester_identity=requester,
+            automatic_planner=automatic_planner,
         )
 
     @classmethod
@@ -204,6 +212,95 @@ class APPClient:
         if self.engine is None:
             raise RuntimeError("APPClient requires an explicit optimization engine")
         return self.engine.run_decision_graph(requests)
+
+    def request(
+        self,
+        *,
+        model,
+        task,
+        input,
+        timeout_ms: int,
+        options=None,
+        objective=None,
+        constraints=None,
+        request_id: str = "",
+    ):
+        """Run the canonical model/task-first deferred-planning lifecycle."""
+        if self._automatic_planner is None:
+            raise RuntimeError(
+                "APPClient requires an AutomaticPlanningCoordinator")
+        return self._automatic_planner.request(
+            model=model,
+            task=task,
+            input=input,
+            timeout_ms=timeout_ms,
+            options=options,
+            objective=objective,
+            constraints=constraints,
+            request_id=request_id,
+        )
+
+    def configure_automatic_planning(
+        self,
+        *,
+        service_name: str,
+        adapters,
+        strategy,
+        catalog_snapshot_provider,
+        verify_offer_signature,
+        split_materializer=None,
+        artifact_publisher=None,
+        budget=None,
+        ack_timeout_ms: int = 300,
+    ):
+        """Attach the canonical deferred planner after the network client exists."""
+        if self._network_client is None:
+            raise RuntimeError("automatic planning requires a network client")
+        from .placement import (
+            AutomaticPlanningCoordinator,
+            CatalogSnapshotArtifactPublisher,
+            RejectGeneratedSplitMaterializer,
+            v2_provider_view_factory,
+        )
+        snapshot_provider = catalog_snapshot_provider or (lambda: ())
+        coordinator = AutomaticPlanningCoordinator(
+            service_user=self._network_client.service_user,
+            service_name=service_name,
+            adapters={
+                adapter.descriptor.name: adapter for adapter in adapters
+            },
+            strategy=strategy,
+            provider_view_factory=v2_provider_view_factory(
+                verify_offer_signature),
+            split_materializer=(
+                split_materializer or RejectGeneratedSplitMaterializer()),
+            artifact_publisher=(
+                artifact_publisher
+                or CatalogSnapshotArtifactPublisher(snapshot_provider)),
+            catalog_snapshot_provider=snapshot_provider,
+            budget=budget,
+            ack_timeout_ms=ack_timeout_ms,
+        )
+        self._automatic_planner = coordinator
+        return coordinator
+
+    def track_selection_acceptance(
+        self, *, request_id: str, attempt: int, deadline_ms: int,
+        encryption_key: bytes,
+    ) -> SelectionAcceptanceTracker:
+        """Create/reuse the encrypted V2 final-Selection control journal."""
+        key = (request_id, int(attempt))
+        current = self._selection_acceptance_trackers.get(key)
+        if current is not None:
+            if current.deadline_ms != int(deadline_ms):
+                raise ValueError(
+                    "Selection acceptance tracker deadline is immutable")
+            return current
+        tracker = SelectionAcceptanceTracker(
+            request_id=request_id, attempt=attempt,
+            deadline_ms=deadline_ms, encryption_key=encryption_key)
+        self._selection_acceptance_trackers[key] = tracker
+        return tracker
 
     def prepare_intent(self, intent, validator=lambda value: None):
         prepared = self.intent_coordinator.prepare(intent)

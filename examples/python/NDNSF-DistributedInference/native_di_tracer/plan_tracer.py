@@ -8,6 +8,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -404,6 +405,53 @@ def ensure_qwen_artifacts(config_path: Path) -> None:
     )
 
 
+def materialize_bundle_artifacts(out_dir: Path) -> list[str]:
+    """Copy verified relative model artifacts into the generated bundle.
+
+    The policy manifest intentionally records paths relative to the provider's
+    bundle root.  ``write_policy_bundle`` writes only metadata, so a generated
+    bundle must materialize those files before a Provider is launched with
+    ``cd <bundle>``.  Copy the source sidecars as well; this keeps the bundle
+    self-checking and prevents a stale or host-relative artifact from being
+    mistaken for a valid deployment input.
+    """
+
+    out_dir = out_dir.resolve()
+    manifest_path = out_dir / "service-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    copied: list[str] = []
+    for service in manifest.get("services", []):
+        for artifact in service.get("artifacts", []):
+            raw_path = str(artifact.get("path", ""))
+            if not raw_path:
+                raise RuntimeError("artifact manifest entry has an empty path")
+            source = resolve_artifact_path(raw_path)
+            if not source.is_file():
+                raise RuntimeError(f"missing source tracer artifact: {source}")
+            verify_sidecar(source)
+
+            relative_path = Path(raw_path)
+            if relative_path.is_absolute():
+                # Absolute paths are already self-contained and are not copied
+                # into the bundle.  They still must pass the source hash gate.
+                copied.append(str(source))
+                continue
+            target = (out_dir / relative_path).resolve()
+            try:
+                target.relative_to(out_dir)
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"artifact path escapes bundle root: {raw_path}") from exc
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+            source_sidecar = source.with_suffix(source.suffix + ".sha256")
+            target_sidecar = target.with_suffix(target.suffix + ".sha256")
+            shutil.copy2(source_sidecar, target_sidecar)
+            verify_sidecar(target)
+            copied.append(str(target))
+    return copied
+
+
 def validate_bundle(out_dir: Path) -> dict:
     manifest_path = out_dir / "service-manifest.json"
     plan_path = out_dir / "native-execution-plan.json"
@@ -455,10 +503,26 @@ def validate_bundle(out_dir: Path) -> dict:
     artifact_roles = {item["role"] for item in artifacts}
     if artifact_roles != REQUIRED_ROLES:
         raise RuntimeError(f"unexpected artifact roles: {sorted(artifact_roles)}")
+    bundle_artifacts: list[str] = []
     for artifact in artifacts:
-        path = resolve_artifact_path(artifact["path"])
-        if not path.exists():
-            raise RuntimeError(f"missing tracer artifact: {path}")
+        source_path = resolve_artifact_path(artifact["path"])
+        if not source_path.exists():
+            raise RuntimeError(f"missing tracer artifact: {source_path}")
+        verify_sidecar(source_path)
+        path = Path(artifact["path"])
+        if not path.is_absolute():
+            bundle_path = (out_dir.resolve() / path).resolve()
+            try:
+                bundle_path.relative_to(out_dir.resolve())
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"artifact path escapes bundle root: {artifact['path']}") from exc
+            if not bundle_path.is_file():
+                raise RuntimeError(f"missing bundled tracer artifact: {bundle_path}")
+            verify_sidecar(bundle_path)
+            bundle_artifacts.append(str(bundle_path))
+        else:
+            bundle_artifacts.append(str(source_path))
         metadata = dict(artifact.get("metadata") or {})
         if artifact["role"] == FINAL_RESPONSE_ROLE and FINAL_RESPONSE_SCOPE not in metadata.values():
             raise RuntimeError("merge artifact metadata must expose final-response scope")
@@ -474,6 +538,7 @@ def validate_bundle(out_dir: Path) -> dict:
         "roles": len(roles),
         "dependencies": len(dependencies),
         "artifacts": len(artifacts),
+        "bundleArtifacts": bundle_artifacts,
         "manifest": str(manifest_path),
         "nativePlan": str(plan_path),
         "manifestSha256": sha256_file(manifest_path),
@@ -570,6 +635,7 @@ def main(argv: list[str] | None = None) -> int:
     out_dir = Path(args.out)
     ensure_qwen_artifacts(Path(args.config))
     deployment = write_policy_bundle(args.config, out_dir)
+    materialize_bundle_artifacts(out_dir)
     apply_runtime_fragment_metadata(out_dir)
     apply_activation_padding(out_dir, args.activation_pad_bytes)
     apply_role_execution_delay(out_dir, args.role_execution_delay_ms)

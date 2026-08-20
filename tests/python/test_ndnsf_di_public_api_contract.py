@@ -72,6 +72,41 @@ class PublicApiContractTest(unittest.TestCase):
         self.assertIs(factory.call_args.kwargs["optimization"], suite)
         self.assertEqual(len(authorized), 1)
 
+    def test_application_uses_presplit_first_as_the_unmodified_v3_default(self):
+        from ndnsf_distributed_inference.app_sdk.application import (
+            InferenceApplication,
+        )
+        from ndnsf_distributed_inference.planner.presplit_first import (
+            PreSplitFirstStrategy,
+        )
+
+        configured = {}
+        core = SimpleNamespace(
+            requester_identity="/app/creator",
+            configure_automatic_planning=lambda **kwargs: configured.update(kwargs),
+        )
+        client = SimpleNamespace(
+            _core=core,
+            deployments=SimpleNamespace(authorize_application=lambda *_: None),
+        )
+        runtime = {
+            "application": {"identity": "/app/creator"},
+            "controller": "/controller", "service": "/Inference/Generate",
+        }
+        with tempfile.TemporaryDirectory() as root, patch(
+                "ndnsf_distributed_inference.policy.load_config",
+                return_value=runtime), patch(
+                "ndnsf_distributed_inference.app_sdk.client.InferenceClient.from_application_config",
+                return_value=client):
+            InferenceApplication.from_config(
+                "app.yaml", state_root=root, adapters=(object(),),
+                verify_offer_signature=lambda _offer: True,
+            )
+
+        self.assertIs(type(configured["strategy"]), PreSplitFirstStrategy)
+        self.assertEqual(configured["strategy"].placement_profile,
+                         "DI_PLACEMENT_V3")
+
 
 if __name__ == "__main__":
     unittest.main()

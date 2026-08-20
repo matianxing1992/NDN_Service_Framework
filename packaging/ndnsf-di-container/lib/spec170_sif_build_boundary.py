@@ -182,6 +182,14 @@ def validate_definition(path: Path | str) -> dict[str, object]:
         if marker not in transfer:
             _fail(f"WRONG_BUILD_BOUNDARY_{code}")
 
+    # The experiment-only fault provider is optional for a normal runtime, but
+    # if a candidate builds it, it must cross the same sealed builder boundary
+    # and be installed from that exact stage.  This prevents a test job from
+    # silently falling back to a host or stale base executable.
+    if "di-native-fault-provider" in builder_post:
+        if "/opt/ndnsf-stage/bin/di-native-fault-provider" not in transfer:
+            _fail("WRONG_BUILD_BOUNDARY_FAULT_PROVIDER_TRANSFER_MISSING")
+
     # A qualified dependency base may contain an older application build.
     # Require the final stage to remove that build before installing the one
     # builder-stage output set, and to prove that only one extension remains.
@@ -203,6 +211,11 @@ def validate_definition(path: Path | str) -> dict[str, object]:
     for marker, code in required_replacement_markers.items():
         if marker not in final_post:
             _fail(f"WRONG_BUILD_BOUNDARY_{code}")
+    if "di-native-fault-provider" in builder_post:
+        if "rm -f /opt/ndnsf-di/current/bin/di-native-fault-provider" not in final_post:
+            _fail("WRONG_BUILD_BOUNDARY_FAULT_PROVIDER_STALE_REMOVAL_MISSING")
+        if "install -m 0755 /opt/ndnsf-candidate/bin/di-native-fault-provider" not in final_post:
+            _fail("WRONG_BUILD_BOUNDARY_FAULT_PROVIDER_INSTALL_MISSING")
 
     final_labels = final.sections.get("labels", "")
     if "org.ndnsf.di.build-boundary container-runtime-in-sif" not in final_labels:

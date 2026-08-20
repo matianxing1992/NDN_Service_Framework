@@ -230,29 +230,42 @@ namespace ndn_service_framework
         return responseName;
     }
 
+    ndn::Name stripTrailingResponseSegments(const ndn::Name& responseName)
+    {
+        std::size_t componentCount = responseName.size();
+        while (componentCount > 0 &&
+               (responseName[componentCount - 1].isSegment() ||
+                responseName[componentCount - 1].isVersion())) {
+            --componentCount;
+        }
+        return componentCount == responseName.size()
+          ? responseName : responseName.getPrefix(componentCount);
+    }
+
     std::optional<ResponseNameV2> parseResponseNameV2(const ndn::Name& responseName)
     {
-        auto marker = findNdnsfMessageMarker(responseName, "RESPONSE");
+        const auto baseName = stripTrailingResponseSegments(responseName);
+        auto marker = findNdnsfMessageMarker(baseName, "RESPONSE");
         if (!marker) {
             return std::nullopt;
         }
 
         const size_t index = *marker + 2;
-        if (index + 3 > responseName.size()) {
+        if (index + 3 > baseName.size()) {
             return std::nullopt;
         }
-        auto requesterName = parseNameUriComponent(responseName, index);
+        auto requesterName = parseNameUriComponent(baseName, index);
         if (!requesterName) {
             return std::nullopt;
         }
         const size_t serviceIndex = index + 1;
-        const size_t serviceComponentCount = responseName.size() - serviceIndex - 1;
+        const size_t serviceComponentCount = baseName.size() - serviceIndex - 1;
 
         return ResponseNameV2{
-            getSubNameByComponentCount(responseName, 0, *marker),
+            getSubNameByComponentCount(baseName, 0, *marker),
             *requesterName,
-            getSubNameByComponentCount(responseName, serviceIndex, serviceComponentCount),
-            getSubNameByComponentCount(responseName, responseName.size() - 1, 1)};
+            getSubNameByComponentCount(baseName, serviceIndex, serviceComponentCount),
+            getSubNameByComponentCount(baseName, baseName.size() - 1, 1)};
     }
 
     ndn::Name makeRequestAckNameV2(const ndn::Name& providerName,

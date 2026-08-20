@@ -171,8 +171,8 @@ class InferenceApplication:
                     "automatic planning requires Provider offer verification")
             if strategy is None:
                 import time
-                from ..planner.layer_reuse_first import LayerReuseFirstStrategy
-                strategy = LayerReuseFirstStrategy(
+                from ..planner.presplit_first import PreSplitFirstStrategy
+                strategy = PreSplitFirstStrategy(
                     at_ms=int(time.time() * 1000))
             client._core.configure_automatic_planning(
                 service_name=runtime.service,

@@ -15,8 +15,9 @@ import time
 from typing import Callable, Mapping
 
 from ..sdk.placement import (
-    ExecutionDisposition, PlacementPlanCoreV3, ProviderOfferV3,
-    ProviderSelectionProjectionV3, RoleAssemblySpec,
+    DeviceBinding, DeviceBindingMode, ExecutionDisposition,
+    PlacementPlanCoreV3, ProviderOfferV3, ProviderSelectionProjectionV3,
+    RoleAssemblySpec, canonical_digest, is_cpu_backend,
 )
 
 
@@ -55,6 +56,7 @@ class V3QueueRecord:
     attempt: int
     provider: str
     roles: tuple[RoleAssemblySpec, ...]
+    device_binding: DeviceBinding | None = None
     state: V3LifecycleState = V3LifecycleState.SELECTION_VALIDATED
     device_set: tuple[str, ...] = ()
     fencing_token: V3FencingToken | None = None
@@ -66,12 +68,14 @@ class V3AdmissionController:
     """Fail-closed V3 lifecycle with no ACK-time reservation side effects."""
 
     def __init__(self, provider: str, *, boot_epoch: str,
-                 visible_devices: tuple[str, ...] = ()) -> None:
-        if not provider or not boot_epoch:
+                 visible_devices: tuple[str, ...] = (),
+                 max_queue_records: int = 1024) -> None:
+        if not provider or not boot_epoch or max_queue_records <= 0:
             raise ValueError("provider and boot epoch are required")
         self.provider = provider
         self.boot_epoch = boot_epoch
         self.visible_devices = tuple(visible_devices)
+        self.max_queue_records = int(max_queue_records)
         self._resource_sequence = 0
         self._records: dict[tuple[str, int], V3QueueRecord] = {}
         self._held: set[str] = set()
@@ -101,8 +105,19 @@ class V3AdmissionController:
             raise ValueError("V3 Selection Provider binding mismatch")
         if (projection.request_id != plan.request_id
                 or projection.attempt != plan.attempt
-                or projection.plan_core_digest != plan.plan_core_digest):
+                or projection.plan_core_digest != plan.plan_core_digest
+                or projection.ack_closed_digest != plan.ack_closed_digest):
             raise ValueError("V3 Selection plan binding mismatch")
+        if (offer.provider != self.provider
+                or offer.request_id != plan.request_id
+                or offer.attempt != plan.attempt
+                or projection.offer_digest != offer.digest()):
+            raise ValueError("V3 Selection offer binding mismatch")
+        if (projection.device_binding.topology_profile_digest
+                != offer.topology.digest()
+                or projection.device_binding.resource_snapshot_digest
+                != canonical_digest(offer.resources)):
+            raise ValueError("V3 Selection resource binding mismatch")
         role_names = tuple(item.role for item in projection.roles)
         roles = tuple(
             role for role in projection.roles
@@ -124,8 +139,19 @@ class V3AdmissionController:
         key = (plan.request_id, plan.attempt)
         if key in self._records:
             return self._records[key]
-        record = V3QueueRecord(plan.request_id, plan.attempt, self.provider, roles,
-                               state=V3LifecycleState.QUEUE_ACCEPTED)
+        active = sum(
+            record.state not in {
+                V3LifecycleState.COMPLETED,
+                V3LifecycleState.CANCELLED,
+                V3LifecycleState.FAILED,
+            }
+            for record in self._records.values())
+        if active >= self.max_queue_records:
+            raise ValueError("V3 Selection queue is full")
+        record = V3QueueRecord(
+            plan.request_id, plan.attempt, self.provider, roles,
+            device_binding=projection.device_binding,
+            state=V3LifecycleState.QUEUE_ACCEPTED)
         self._records[key] = record
         self.events.append((plan.request_id, "QUEUE_ACCEPTED"))
         return record
@@ -149,8 +175,18 @@ class V3AdmissionController:
                                 V3LifecycleState.QUEUE_ACCEPTED}:
             raise ValueError("V3 device admission requires host readiness")
         devices = tuple(device_set)
-        if (not devices and any(role.backend != "cpu" for role in record.roles)):
-            raise ValueError("GPU role cannot be admitted without devices")
+        if len(record.roles) != 1 or record.device_binding is None:
+            raise ValueError("V3 admission requires one sealed role/device binding")
+        binding = record.device_binding
+        if resource_sequence != binding.resource_sequence:
+            raise ValueError("V3 device resource snapshot is stale")
+        if binding.mode is DeviceBindingMode.CPU:
+            if devices or not is_cpu_backend(record.roles[0].backend):
+                raise ValueError("V3 CPU admission cannot use an accelerator")
+        elif (devices != (binding.offer_scoped_device_handle,)
+              or is_cpu_backend(record.roles[0].backend)):
+            raise ValueError(
+                "V3 single-device admission requires its exact offer handle")
         if any(device not in self.visible_devices for device in devices):
             raise ValueError("V3 device set is not visible")
         if set(devices) & self._held:

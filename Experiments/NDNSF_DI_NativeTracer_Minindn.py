@@ -47,10 +47,16 @@ from minindn.helpers.nfdc import Nfdc  # noqa: E402
 from minindn.minindn import Minindn  # noqa: E402
 from minindn.util import getPopen  # noqa: E402
 
+try:  # Package import versus direct experiment-script execution.
+    from .spec170_dependency_evidence import collect_dependency_execution_evidence
+except ImportError:  # pragma: no cover - direct CLI path
+    from spec170_dependency_evidence import collect_dependency_execution_evidence
+
 TOPO = REPO / "Experiments/Topology/AI_Lab.conf"
 TRACER_DIR = REPO / "examples/python/NDNSF-DistributedInference/native_di_tracer"
 PLAN_TRACER = TRACER_DIR / "plan_tracer.py"
 LLM_BUNDLE_GENERATOR = TRACER_DIR / "generate_llm_proportional_native_bundle.py"
+HYBRID_BUNDLE_GENERATOR = TRACER_DIR / "generate_spec170_hybrid_native_bundle.py"
 RUNTIME_V1_MODEL_SPEC = TRACER_DIR / "llm_model_spec_qwen_tiny_proportional.json"
 RUNTIME_V1_PROVIDER_PROFILES = TRACER_DIR / "llm_provider_profiles_2_4_8.json"
 RUNTIME_AWARE_FIXTURES = TRACER_DIR / "runtime_aware_fixtures"
@@ -839,6 +845,23 @@ def run_llm_proportional_bundle(policy_dir: Path,
     return json.loads(summary_path.read_text(encoding="utf-8"))
 
 
+def run_spec170_hybrid_bundle(policy_dir: Path,
+                              out_dir: Path,
+                              logs_dir: Path,
+                              env: dict[str, str],
+                              profile: str,
+                              role_execution_delay_ms: float = 0.0) -> dict[str, object]:
+    summary_path = out_dir / "policy-summary.json"
+    run_logged("generate-spec170-hybrid-bundle", [
+        "python3", str(HYBRID_BUNDLE_GENERATOR),
+        "--out", str(policy_dir.resolve()),
+        "--profile", profile,
+        "--role-execution-delay-ms", str(role_execution_delay_ms),
+        "--summary-json", str(summary_path.resolve()),
+    ], logs_dir, env)
+    return json.loads(summary_path.read_text(encoding="utf-8"))
+
+
 def grouped_provider_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
     grouped: dict[tuple[str, str], dict[str, str]] = {}
     for row in rows:
@@ -881,6 +904,7 @@ def validate_prerequisites(topology_file: Path = TOPO) -> None:
             topology_file,
             PLAN_TRACER,
             LLM_BUNDLE_GENERATOR,
+            HYBRID_BUNDLE_GENERATOR,
             USER_DRIVER,
             PROVIDER_EXE,
             PLAN_SCHEMA_EXE,
@@ -1055,7 +1079,7 @@ def provider_check_command(row: dict[str, str],
         "--provider", row["provider"],
         "--group", GROUP,
         "--controller", CONTROLLER,
-        "--trust-schema", "examples/trust-schema.conf",
+        "--trust-schema", str(policy_dir / "trust-schema.conf"),
         "--roles", row.get("roles", row["role"]),
         "--workers", "1",
         "--check-only",
@@ -1064,7 +1088,7 @@ def provider_check_command(row: dict[str, str],
     ]
     if deterministic_runner:
         args.append("--tracer-deterministic-runner")
-    return f"cd {perf.shell_quote(str(TRACER_DIR))} && exec {shell_join(args)}"
+    return f"cd {perf.shell_quote(str(policy_dir))} && exec {shell_join(args)}"
 
 
 def provider_serve_command(row: dict[str, str],
@@ -1094,7 +1118,7 @@ def provider_serve_command(row: dict[str, str],
         args.extend(["--enable-admission-lease", "--admission-lease-ttl-ms", "60000"])
     if require_execution_lease:
         args.append("--require-execution-lease")
-    return f"cd {perf.shell_quote(str(TRACER_DIR))} && exec {shell_join(args)}"
+    return f"cd {perf.shell_quote(str(policy_dir))} && exec {shell_join(args)}"
 
 
 def controller_command(policy_dir: Path, assignment_rows: list[dict[str, str]]) -> str:
@@ -1117,7 +1141,11 @@ def user_driver_command(policy_dir: Path,
                         concurrency: int,
                         submission_spacing_ms: int,
                         assignment_csv: Optional[Path] = None,
+                        ack_timeout_ms: int = 8000,
                         timeout_ms: int = 60000,
+                        lease_timeout_ms: int = 5000,
+                        cancellation_delay_ms: int = 0,
+                        data_v1_no_progress_ms: int = 2000,
                         overload_fast_fail_timeout_ms: int = 0,
                         target_rps: float = 0.0,
                         open_loop_duration_s: float = 0.0,
@@ -1138,8 +1166,10 @@ def user_driver_command(policy_dir: Path,
         "--controller", CONTROLLER,
         "--user", USER,
         "--trust-schema", str(policy_dir / "trust-schema.conf"),
-        "--ack-timeout-ms", "8000",
+        "--ack-timeout-ms", str(ack_timeout_ms),
+        "--lease-timeout-ms", str(lease_timeout_ms),
         "--timeout-ms", str(timeout_ms),
+        "--data-v1-no-progress-ms", str(data_v1_no_progress_ms),
         "--permission-wait-ms", "8000",
         "--requests", str(requests),
         "--concurrency", str(concurrency),
@@ -1171,6 +1201,8 @@ def user_driver_command(policy_dir: Path,
         args.append("--execution-leases")
     if execution_cancellation_gate:
         args.append("--execution-cancellation-gate")
+        if cancellation_delay_ms > 0:
+            args.extend(["--cancellation-delay-ms", str(cancellation_delay_ms)])
     return f"cd {perf.shell_quote(str(REPO))} && exec {shell_join(args)}"
 
 
@@ -1228,6 +1260,72 @@ def parse_user_execution(log_path: Path) -> dict[str, object]:
         if line.startswith(prefix):
             return json.loads(line[len(prefix):])
     raise RuntimeError(f"user driver log did not contain execution JSON: {log_path}")
+
+
+def evaluate_user_numerical_oracle(
+        user_result: dict[str, object],
+        final_tensor: str,
+        expected_output: list[float],
+        *,
+        absolute_tolerance: float = 1e-6) -> dict[str, object]:
+    """Compare every successful request's final tensor with the sealed oracle."""
+
+    requests = user_result.get("requests", [])
+    failures: list[str] = []
+    actual_outputs: list[list[float]] = []
+    maximum_error = 0.0
+    if not isinstance(requests, list) or not requests:
+        failures.append("user execution did not retain request-level results")
+        requests = []
+    for index, request in enumerate(requests):
+        if not isinstance(request, dict):
+            failures.append(f"request {index} result is not an object")
+            continue
+        bundle = request.get("tensorBundle")
+        if not isinstance(bundle, dict) or bundle.get("encoded") is not True:
+            failures.append(f"request {index} has no decoded tensor bundle")
+            continue
+        tensors = bundle.get("tensors", [])
+        tensor = next(
+            (item for item in tensors
+             if isinstance(item, dict) and item.get("name") == final_tensor),
+            None,
+        )
+        if tensor is None:
+            failures.append(
+                f"request {index} has no final tensor named {final_tensor}")
+            continue
+        if tensor.get("valuesTruncated") is True:
+            failures.append(f"request {index} final tensor values are truncated")
+            continue
+        values = tensor.get("values")
+        if not isinstance(values, list) or len(values) != len(expected_output):
+            failures.append(
+                f"request {index} final tensor length does not match oracle")
+            continue
+        actual = [float(value) for value in values]
+        actual_outputs.append(actual)
+        errors = [
+            abs(observed - float(expected))
+            for observed, expected in zip(actual, expected_output)
+        ]
+        if errors:
+            maximum_error = max(maximum_error, max(errors))
+        if any(not math.isfinite(value) for value in actual):
+            failures.append(f"request {index} final tensor contains non-finite values")
+        elif any(error > absolute_tolerance for error in errors):
+            failures.append(
+                f"request {index} final tensor exceeds absolute tolerance")
+    return {
+        "status": "PASS" if not failures else "FAIL",
+        "finalTensor": final_tensor,
+        "expectedOutput": [float(value) for value in expected_output],
+        "actualOutputs": actual_outputs,
+        "checkedRequestCount": len(actual_outputs),
+        "absoluteTolerance": absolute_tolerance,
+        "maxAbsoluteError": maximum_error,
+        "failures": failures,
+    }
 
 
 def user_execution_measurement_fields(user_result: dict[str, object]) -> dict[str, object]:
@@ -2580,6 +2678,7 @@ def write_summary(out_dir: Path, summary: dict[str, object]) -> None:
         f"runnerMode={summary['runnerMode']}",
         f"activationPadBytes={summary.get('activationPadBytes', 0)}",
         f"roleExecutionDelayMs={summary.get('roleExecutionDelayMs', 0.0)}",
+        f"dataV1NoProgressMs={summary.get('dataV1NoProgressMs', 2000)}",
         f"requestCount={summary.get('requestCount', 1)}",
         f"concurrency={summary.get('concurrency', 1)}",
         f"providerAdmissionPolicy={summary.get('providerAdmissionPolicy', {})}",
@@ -2748,6 +2847,7 @@ def build_base_summary(args, out_dir: Path, policy_dir: Path, logs_dir: Path) ->
         "assignmentResolved": args.assignment,
         "activationPadBytes": args.activation_pad_bytes,
         "roleExecutionDelayMs": args.role_execution_delay_ms,
+        "dataV1NoProgressMs": args.data_v1_no_progress_ms,
         "requestCount": args.requests,
         "concurrency": args.concurrency,
         "failureReason": "",
@@ -2807,6 +2907,7 @@ def main() -> int:
                         choices=[
                             "default", "alternate", "single-provider",
                             "capacity-pool", "auto", "llm-proportional",
+                            "hybrid-121", "hybrid-212",
                         ],
                         default=default_value(profile_defaults, "assignment", "default"))
     parser.add_argument("--policy-bundle",
@@ -2915,6 +3016,17 @@ def main() -> int:
                         help="Require NativeTracer generic admission leases before selected role execution")
     parser.add_argument("--enable-execution-leases", action="store_true",
                         help="Acquire fail-closed provider execution leases before collaboration")
+    parser.add_argument("--ack-timeout-ms", type=int, default=8000,
+                        help="ACK collection window passed to the user driver")
+    parser.add_argument(
+        "--data-v1-no-progress-ms", type=int, default=2000,
+        help=("NDNSF_DATA_V1 group no-progress watchdog passed to the user "
+              "driver; increase explicitly for injected stage delays"),
+    )
+    parser.add_argument("--lease-timeout-ms", type=int, default=5000,
+                        help="Timeout for each authenticated execution-lease request")
+    parser.add_argument("--cancellation-delay-ms", type=int, default=0,
+                        help="Delay before post-certificate CANCEL; 0 uses user-driver default")
     parser.add_argument(
         "--spec111-fault",
         choices=("", "requester-loss-after-prepare",
@@ -2940,6 +3052,14 @@ def main() -> int:
         raise SystemExit("--requests must be positive")
     if args.concurrency <= 0:
         raise SystemExit("--concurrency must be positive")
+    if args.lease_timeout_ms <= 0:
+        raise SystemExit("--lease-timeout-ms must be positive")
+    if args.ack_timeout_ms <= 0:
+        raise SystemExit("--ack-timeout-ms must be positive")
+    if args.data_v1_no_progress_ms <= 0:
+        raise SystemExit("--data-v1-no-progress-ms must be positive")
+    if args.cancellation_delay_ms < 0:
+        raise SystemExit("--cancellation-delay-ms must be non-negative")
     if args.concurrency > args.requests:
         args.concurrency = args.requests
     if args.target_rps < 0.0:
@@ -3018,6 +3138,9 @@ def main() -> int:
                 args.concurrency,
                 args.submission_spacing_ms if args.concurrency > 1 else 0,
                 assignment_csv=Path(args.out) / "assignment.csv",
+                ack_timeout_ms=args.ack_timeout_ms,
+                lease_timeout_ms=args.lease_timeout_ms,
+                data_v1_no_progress_ms=args.data_v1_no_progress_ms,
                 overload_fast_fail_timeout_ms=args.overload_fast_fail_timeout_ms,
                 target_rps=args.target_rps,
                 open_loop_duration_s=args.open_loop_duration_s,
@@ -3026,7 +3149,8 @@ def main() -> int:
                 runtime_aware_replan_reasons=args.runtime_aware_replan_reasons,
                 execution_leases=args.enable_execution_leases,
                 execution_cancellation_gate=(
-                    args.spec111_fault == "post-certificate-cancellation")),
+                    args.spec111_fault == "post-certificate-cancellation"),
+                cancellation_delay_ms=args.cancellation_delay_ms),
         }, indent=2, sort_keys=True))
         return 0
 
@@ -3072,6 +3196,10 @@ def main() -> int:
         validate_prerequisites(topology_file)
         requested_assignment = args.assignment
         resolved_assignment = args.assignment
+        hybrid_profile = (
+            requested_assignment[len("hybrid-"):]
+            if requested_assignment in {"hybrid-121", "hybrid-212"} else ""
+        )
         auto_recommended_candidate = ""
         auto_recommended_estimated_ms = None
         policy_summary = None
@@ -3095,6 +3223,10 @@ def main() -> int:
                 args.llm_stage_execution_delay_scale,
                 args.target_rps,
                 1)
+        elif hybrid_profile:
+            policy_summary = run_spec170_hybrid_bundle(
+                policy_dir, out_dir, logs_dir, env, hybrid_profile,
+                args.role_execution_delay_ms)
         elif requested_assignment == "auto":
             probe_dir = out_dir / "policy-bundle-auto-probe"
             probe_dir.mkdir(parents=True, exist_ok=True)
@@ -3127,7 +3259,7 @@ def main() -> int:
                 "resolvedAssignment": resolved_assignment,
             }
 
-        if args.policy_bundle == "llm-proportional":
+        if args.policy_bundle == "llm-proportional" or hybrid_profile:
             active_assignment = assignment_from_rows(
                 list(policy_summary.get("assignmentRows", [])))
         else:
@@ -3166,6 +3298,15 @@ def main() -> int:
                     policy_summary.get("summary", {}).get("maxPredictedUtilization", 0.0)),
                 "predictionLimitKind": (
                     policy_summary.get("summary", {}).get("predictionLimitKind", "")),
+            }
+        elif hybrid_profile:
+            summary["optimizationEvidence"] = {
+                "status": "sealed-hybrid-profile",
+                "profile": hybrid_profile,
+                "transportProfile": policy_summary["transportProfile"],
+                "finalTensor": policy_summary["finalTensor"],
+                "expectedOutput": policy_summary["expectedOutput"],
+                "physicalGpuEvidence": False,
             }
         else:
             final_policy_recommended = policy_summary.get(
@@ -3231,7 +3372,7 @@ def main() -> int:
 
         roles = load_plan_roles(policy_dir / "native-execution-plan.json")
         assignment_csv = out_dir / "assignment.csv"
-        if args.policy_bundle == "llm-proportional":
+        if args.policy_bundle == "llm-proportional" or hybrid_profile:
             primary_assignment_rows = list(policy_summary.get("assignmentRows", []))
             assignment_rows = write_assignment_csv_rows(
                 assignment_csv,
@@ -3296,6 +3437,7 @@ def main() -> int:
                 policy_summary=policy_summary,
             )
         local_execution_assignment = (
+            "llm-proportional" if hybrid_profile else
             "default" if resolved_assignment == "capacity-pool" else
             resolved_assignment)
         model_family = str(policy_summary.get("modelFamily", "yolo-onnx"))
@@ -3311,7 +3453,9 @@ def main() -> int:
             model_family=model_family,
             model_format=model_format,
             planner_kind=planner_kind,
-            assignment_csv=assignment_csv if args.policy_bundle == "llm-proportional" else None)
+            assignment_csv=(assignment_csv if (
+                args.policy_bundle == "llm-proportional" or hybrid_profile
+            ) else None))
         summary["dependencyExecution"] = {
             "status": "local-baseline-executed",
             "reason": (
@@ -3451,6 +3595,9 @@ def main() -> int:
                                     args.concurrency,
                                     args.submission_spacing_ms if args.concurrency > 1 else 0,
                                     assignment_csv=assignment_csv,
+                                    ack_timeout_ms=args.ack_timeout_ms,
+                                    lease_timeout_ms=args.lease_timeout_ms,
+                                    data_v1_no_progress_ms=args.data_v1_no_progress_ms,
                                     overload_fast_fail_timeout_ms=args.overload_fast_fail_timeout_ms,
                                     target_rps=args.target_rps,
                                     open_loop_duration_s=args.open_loop_duration_s,
@@ -3464,7 +3611,8 @@ def main() -> int:
                                     execution_leases=args.enable_execution_leases,
                                     execution_cancellation_gate=(
                                         args.spec111_fault ==
-                                        "post-certificate-cancellation"))
+                                        "post-certificate-cancellation"),
+                                    cancellation_delay_ms=args.cancellation_delay_ms)
             user_proc, user_log = start_node_command(
                 ndn.net["memphis"], "user-driver", user_command,
                 logs_dir, env, procs)
@@ -3630,7 +3778,7 @@ def main() -> int:
                     safe = (
                         isinstance(cancellation_gate, dict)
                         and cancellation_gate.get("status") == "PASS"
-                        and set(cancellation_gate.get("certifiedProviders", ())) ==
+                        and set(cancellation_gate.get("activatedProviders", ())) ==
                         expected_providers
                         and cancellation_gate.get("acceptedTerminalPreserved") is True
                         and cancellation_gate.get("survivors") == []
@@ -3664,6 +3812,17 @@ def main() -> int:
                 raise RuntimeError(
                     f"NativeTracer user execution failed rc={user_proc.returncode} "
                     f"result={user_result}; see {user_log}")
+            if hybrid_profile:
+                numerical_oracle = evaluate_user_numerical_oracle(
+                    user_result,
+                    str(policy_summary["finalTensor"]),
+                    [float(value) for value in policy_summary["expectedOutput"]],
+                )
+                summary["numericalOracle"] = numerical_oracle
+                if numerical_oracle["status"] != "PASS":
+                    raise RuntimeError(
+                        "NativeTracer numerical oracle failed: "
+                        f"{numerical_oracle}")
             roles = observed_role_timings(provider_logs)
             expected_roles = set(load_plan_roles(policy_dir / "native-execution-plan.json"))
             missing_roles = sorted(expected_roles - roles)
@@ -3687,11 +3846,13 @@ def main() -> int:
                 "status": "executed",
                 "reason": "ServiceController and user/provider permission fetch path ran during full-network execution",
             }
-            summary["dependencyExecution"] = {
-                "status": "executed",
-                "reason": "all NativeTracer roles emitted provider handler timing in serve mode",
-                "roles": sorted(roles),
-            }
+            dependency_evidence = collect_dependency_execution_evidence(
+                provider_logs, policy_dir / "native-execution-plan.json")
+            summary["dependencyExecution"] = dependency_evidence
+            if dependency_evidence["status"] != "executed":
+                raise RuntimeError(
+                    "NativeTracer dependency lifecycle incomplete: "
+                    f"{dependency_evidence}")
             summary["status"] = "SUCCESS"
             return 0
 

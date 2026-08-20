@@ -155,6 +155,24 @@ Stage: final
             ):
                 build_boundary.validate_definition(definition)
 
+    def test_fault_provider_must_cross_builder_boundary_when_declared(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            definition = root / "candidate.def"
+            source = root / "source.tar"
+            source.write_bytes(b"sealed source")
+            text = self.valid_definition(root / "base.sif", source)
+            text = text.replace(
+                "./waf --targets=di-native-provider",
+                "./waf --targets=di-native-provider,di-native-fault-provider",
+            )
+            definition.write_text(text, encoding="utf-8")
+            with self.assertRaisesRegex(
+                build_boundary.Spec170BuildBoundaryError,
+                "WRONG_BUILD_BOUNDARY_FAULT_PROVIDER_TRANSFER_MISSING",
+            ):
+                build_boundary.validate_definition(definition)
+
     def test_single_stage_definition_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             definition = Path(directory) / "candidate.def"

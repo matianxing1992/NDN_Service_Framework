@@ -139,7 +139,12 @@ initialInputsFor(const RoleSpec& role)
 
   TensorBundle input;
   input.name = "images";
-  input.payload = floatPayload(1 * 3 * 32 * 32);
+  // The bundled native-tracer Backbone model is intentionally tiny and
+  // declares an input shape of 1x3x2x2.  Keep the smoke input aligned with
+  // the generated manifest instead of silently creating a shape-mismatched
+  // tensor (the previous 32x32 placeholder made the smoke fail before any
+  // provider/dataflow behavior was exercised).
+  input.payload = floatPayload(1 * 3 * 2 * 2);
   input.expectedBytes = input.payload.size();
   return {{"images", std::move(input)}};
 }
@@ -201,7 +206,8 @@ main(int argc, char** argv)
           ++encodedBundleOutputs;
         }
         if (item.first == "predictions" || item.first == "output" ||
-            item.first == "onnx-output-bundle") {
+            item.first == "onnx-output-bundle" ||
+            item.first == "final-response") {
           sawFinalOutput = true;
         }
       }
