@@ -11,6 +11,8 @@ from pathlib import Path
 import sys
 from typing import Any
 
+from wire_sizes import encoded_tensor_bundle_size
+
 
 SERVICE = "/Inference/NativeTracer"
 MODEL = "/Model/NativeTracer/Qwen2.5-0.5B-Minimal/v1"
@@ -453,21 +455,21 @@ def candidate_templates(edges: list[dict[str, Any]],
             "scope": "backbone-to-head0",
             "producer": ROLE_BACKBONE,
             "consumer": ROLE_HEAD0,
-            "expectedBytes": 256,
+            "expectedBytes": encoded_tensor_bundle_size("features", (1, 16), 16 * 4),
             "expectedSegments": 1,
         },
         {
             "scope": "head0-to-head1",
             "producer": ROLE_HEAD0,
             "consumer": ROLE_HEAD1,
-            "expectedBytes": 128,
+            "expectedBytes": 8 * 4,
             "expectedSegments": 1,
         },
         {
             "scope": "head1-to-merge",
             "producer": ROLE_HEAD1,
             "consumer": ROLE_MERGE,
-            "expectedBytes": 128,
+            "expectedBytes": 8 * 4,
             "expectedSegments": 1,
         },
     ]

@@ -404,9 +404,12 @@ class RealMiniNdnGateTest(unittest.TestCase):
             provider_logs = sorted((output_dir / "logs").glob(
                 "provider-serve-*.log"))
             self.assertTrue(provider_logs)
+            # The multi-Provider and hybrid paths launch one process per
+            # complete role (121 -> 4, 212 -> 5).  D1 is the explicit
+            # single-Provider baseline and intentionally hosts the pipeline
+            # roles in one process.
             expected_provider_count = (
-                4 if assignment == "default" else
-                2 if assignment.startswith("hybrid-") else 1)
+                1 if assignment == "single-provider" else len(expected_roles))
             self.assertEqual(len(provider_logs), expected_provider_count)
             for provider_log in provider_logs:
                 text = provider_log.read_text(encoding="utf-8",

@@ -1425,7 +1425,16 @@ def collect_dependency_object_counters(logs_dir: Path) -> dict[str, object]:
                 continue
             observed_line_count += 1
             fields = parse_trace_fields(line)
-            direction = fields.get("direction", "")
+            raw_direction = fields.get("direction", "")
+            # NDNSF_DATA_V1 traces identify the exact transport operation
+            # (publish-exact-ndn/fetch-exact-ndn), while campaign summaries
+            # intentionally aggregate by lifecycle direction.  Normalize the
+            # concrete wire mode here instead of treating valid V3 evidence
+            # as a parse error.
+            direction = {
+                "publish-exact-ndn": "publish",
+                "fetch-exact-ndn": "fetch",
+            }.get(raw_direction, raw_direction)
             status = fields.get("status", "")
             try:
                 required = (
@@ -1435,7 +1444,8 @@ def collect_dependency_object_counters(logs_dir: Path) -> dict[str, object]:
                 if any(not fields.get(key, "") for key in required):
                     raise ValueError("dependency trace is missing required fields")
                 if direction not in {"fetch", "publish"}:
-                    raise ValueError(f"invalid dependency direction: {direction}")
+                    raise ValueError(
+                        f"invalid dependency direction: {raw_direction}")
                 if status != "ok":
                     raise ValueError(f"invalid dependency status: {status}")
                 payload_bytes = int(fields["payload_bytes"])
@@ -1464,6 +1474,7 @@ def collect_dependency_object_counters(logs_dir: Path) -> dict[str, object]:
                     "session": fields.get("session", ""),
                     "scope": fields.get("scope", ""),
                     "direction": direction,
+                    "wireMode": raw_direction,
                     "payloadBytes": payload_bytes,
                     "status": status,
                     "plannedName": fields.get("planned_name", ""),

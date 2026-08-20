@@ -734,6 +734,31 @@ class RuntimeAwareCampaignTest(unittest.TestCase):
         self.assertEqual(summary["parseErrorCount"], 1)
         self.assertEqual(len(summary["parseErrors"]), 1)
 
+    def test_dependency_collection_accepts_data_v1_exact_wire_modes(self) -> None:
+        harness = load_harness_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "provider.log"
+            log_path.write_text(
+                "NDNSF_DI_DEPENDENCY_OBJECT session=/s/1 scope=edge "
+                "producer=/A consumer=/B direction=publish-exact-ndn "
+                "payload_bytes=65 planned_name=/data/1 status=ok\n"
+                "NDNSF_DI_DEPENDENCY_OBJECT session=/s/1 scope=edge "
+                "producer=/A consumer=/B direction=fetch-exact-ndn "
+                "payload_bytes=65 planned_name=/data/1 status=ok\n",
+                encoding="utf-8",
+            )
+
+            summary = harness.collect_dependency_object_counters(Path(tmp))
+
+        self.assertEqual(summary["eventCount"], 2)
+        self.assertEqual(summary["parseErrorCount"], 0)
+        self.assertEqual(summary["directionCounters"],
+                         {"fetch": 1, "publish": 1})
+        self.assertEqual(
+            {item["wireMode"] for item in summary["examples"]},
+            {"fetch-exact-ndn", "publish-exact-ndn"},
+        )
+
     def test_user_driver_builds_ack_candidate_snapshot(self) -> None:
         user_driver = load_user_driver_module()
 

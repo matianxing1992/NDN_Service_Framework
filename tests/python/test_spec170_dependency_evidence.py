@@ -113,3 +113,36 @@ def test_dependency_evidence_matches_runtime_scope_for_redistribution(
     assert result["completeEdgeCount"] == 2
     assert [edge["scope"] for edge in result["edges"]] == [
         "boundary-1/from/S1R0", "boundary-1/from/S1R1"]
+
+
+def test_dependency_evidence_accepts_logical_producer_scope_for_redistribution(
+        tmp_path: Path) -> None:
+    plan = tmp_path / "plan.json"
+    log = tmp_path / "provider.log"
+    plan.write_text(json.dumps({
+        "services": [{
+            "service": "/Inference/NativeTracer",
+            "dependencies": [{
+                "keyScope": "boundary-1",
+                "producers": ["S1R0", "S1R1"],
+                "consumers": ["S2R0"],
+                "redistributions": [{"kind": "gather"}],
+            }],
+        }],
+    }), encoding="utf-8")
+    log.write_text(
+        "NDNSF_DI_DEPENDENCY_OUTPUT_TIMING producer=S1R0 "
+        "scope=boundary-1 planned_name=/x0 bytes=8\n"
+        "NDNSF_DI_DEPENDENCY_INPUT_TIMING role=S2R0 producer=S1R0 "
+        "scope=boundary-1/from/S1R0 planned_name=/x0 bytes=8\n"
+        "NDNSF_DI_DEPENDENCY_OUTPUT_TIMING producer=S1R1 "
+        "scope=boundary-1 planned_name=/x1 bytes=8\n"
+        "NDNSF_DI_DEPENDENCY_INPUT_TIMING role=S2R0 producer=S1R1 "
+        "scope=boundary-1/from/S1R1 planned_name=/x1 bytes=8\n",
+        encoding="utf-8",
+    )
+
+    result = collect_dependency_execution_evidence([log], plan)
+
+    assert result["status"] == "executed"
+    assert result["missingPublications"] == []

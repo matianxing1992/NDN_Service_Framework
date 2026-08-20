@@ -59,13 +59,13 @@ makeOptions()
 }
 
 GroupOperationV1
-makeOperation()
+makeOperation(const std::string& consumerRank)
 {
   GroupOperationV1 operation;
   operation.operationIndex = 7;
   operation.kind = "ALL_GATHER";
   operation.producerRanks = {"0", "1"};
-  operation.consumerRanks = {"receiver"};
+  operation.consumerRanks = {consumerRank};
   operation.tensorLayoutDigest = "layout-v1";
   operation.maxBytes = 32;
   operation.maxSegments = 2;
@@ -193,11 +193,12 @@ BOOST_AUTO_TEST_CASE(IndependentSegmentsUseSvsMappingRepairAndReplayFence)
                                              nullptr, nullptr, nullptr);
 
   ProviderGroupCoordinator p0(makeOptions());
-  const auto operation = makeOperation();
+  const auto operation = makeOperation("2");
   const auto capability = p0.createCapability(
     "/request/svs", "attempt-1", "plan-svs", "group-svs", 3,
     {{p0Node.toUri(), 0, "offer-p0", p0Node.toUri()},
-     {p1Node.toUri(), 1, "offer-p1", p1Node.toUri()}},
+     {p1Node.toUri(), 1, "offer-p1", p1Node.toUri()},
+     {receiverNode.toUri(), 2, "offer-receiver", receiverNode.toUri()}},
     {operation}, 64, 1000, 5000);
   const auto epochKey = p0.epochKeyForProvider(p0Node.toUri());
   ProviderGroupCoordinator p1(makeOptions());
@@ -344,7 +345,7 @@ BOOST_AUTO_TEST_CASE(ProductionProviderContextUsesSvsSegments)
       [&] (const ndn::Data& data) { producerFace.receive(data); });
 
   ProviderGroupCoordinator producerCoordinator(makeOptions());
-  const auto operation = makeOperation();
+  const auto operation = makeOperation("1");
   const auto capability = producerCoordinator.createCapability(
       "/request/provider-context", "attempt-1", "plan-provider-context",
       "group-provider-context", 3,

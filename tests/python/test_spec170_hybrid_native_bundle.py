@@ -344,7 +344,7 @@ class Spec170HybridNativeBundleTest(unittest.TestCase):
         plan_digest = (
             "sha256:" + hashlib.sha256(
                 (root / "native-execution-plan.json").read_bytes()
-            ).hexdigest().upper()
+            ).hexdigest()
         )
 
         closed = fake_ack_closed(summary, plan_digest)
@@ -394,7 +394,7 @@ class Spec170HybridNativeBundleTest(unittest.TestCase):
         plan_digest = (
             "sha256:" + hashlib.sha256(
                 (root / "native-execution-plan.json").read_bytes()
-            ).hexdigest().upper()
+            ).hexdigest()
         )
         closed = fake_ack_closed(summary, plan_digest)
         original_sealer = user_driver.seal_group_capability_v1
@@ -441,7 +441,7 @@ class Spec170HybridNativeBundleTest(unittest.TestCase):
         plan_digest = (
             "sha256:" + hashlib.sha256(
                 (root / "native-execution-plan.json").read_bytes()
-            ).hexdigest().upper()
+            ).hexdigest()
         )
         closed = fake_ack_closed(summary, plan_digest)
 

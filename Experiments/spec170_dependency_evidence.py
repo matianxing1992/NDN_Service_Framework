@@ -118,6 +118,13 @@ def collect_dependency_execution_evidence(
     for edge in expected:
         label = f"{edge['producer']}->{edge['consumer']}:{edge['scope']}"
         output = published.get((edge["producer"], edge["scope"]))
+        # A producer publishes the shared object under the logical transport
+        # scope.  Consumers of a multi-producer redistribution use the
+        # producer-qualified runtime scope to keep their local endpoint
+        # authorities distinct.  Match both representations while comparing
+        # the actual Data name below.
+        if output is None:
+            output = published.get((edge["producer"], edge["transportScope"]))
         input_record = fetched.get(
             (edge["consumer"], edge["producer"], edge["scope"]))
         if output is None:

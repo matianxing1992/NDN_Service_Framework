@@ -29,6 +29,7 @@ from runtime_aware_fixtures.loader import (
     load_provider_ack_metadata,
     load_provider_network_matrix,
 )
+from wire_sizes import encoded_tensor_bundle_size, padded_tensor_payload_bytes
 
 
 SERVICE = "/Inference/NativeTracer"
@@ -343,7 +344,12 @@ def apply_activation_padding(out_dir: Path, activation_pad_bytes: int) -> None:
         if PADDING_TENSOR not in tensors:
             tensors.append(PADDING_TENSOR)
         dep["tensors"] = tensors
-        expected_bytes = int(dep.get("expectedBytes", 0) or 0) + activation_pad_bytes
+        padding_payload_bytes = padded_tensor_payload_bytes(activation_pad_bytes)
+        padding_wire_bytes = 0
+        if padding_payload_bytes:
+            padding_wire_bytes = encoded_tensor_bundle_size(
+                PADDING_TENSOR, (padding_payload_bytes // 4,), padding_payload_bytes)
+        expected_bytes = int(dep.get("expectedBytes", 0) or 0) + padding_wire_bytes
         dep["expectedBytes"] = expected_bytes
         dep["expectedSegments"] = padded_expected_segments(expected_bytes)
         dep["segmentNaming"] = {
