@@ -523,6 +523,154 @@ BOOST_AUTO_TEST_CASE(
   std::filesystem::remove_all(root);
 }
 
+BOOST_AUTO_TEST_CASE(
+    ServiceProviderPreservesStructuredAssignmentSetForCollaborationHandler)
+{
+  ndn::security::KeyChain keyChain(
+      "pib-memory:structured-assignment-provider",
+      "tpm-memory:structured-assignment-provider");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name requester("/test/user/structured-assignment");
+  const ndn::Name providerName("/test/provider/structured-assignment");
+  const ndn::Name service("/Inference/NativeTracer");
+  const ndn::Name requestId("request-structured-assignment-1");
+  auto providerCert = makeRsaIdentity(keyChain, providerName);
+  auto authorityCert = makeRsaIdentity(
+      keyChain, ndn::Name("/test/structured-assignment-authority"));
+  LocalServiceProvider provider(
+      face, ndn::Name("/test/group"), providerCert, authorityCert,
+      "examples/trust-any.conf");
+
+  std::atomic<bool> handlerCalled{false};
+  std::string observedRole;
+  size_t observedRoleProviderCount = 0;
+  provider.addCollaborationHandler(
+      service,
+      [&](ServiceProvider::CollaborationContext& context,
+          const RequestMessage&) {
+        handlerCalled = true;
+        observedRole = context.role();
+        observedRoleProviderCount = context.assignment().roleProviders.size();
+      });
+
+  RequestMessage request;
+  auto requestPayload = bytes("request");
+  request.setPayload(requestPayload, requestPayload.size());
+  provider.addPendingRequestForTokenTest(
+      requester, service, requestId, request, "provider-token");
+  provider.schedulePendingRequestCleanupForTest(
+      requester, service, requestId, ndn::time::seconds(5));
+
+  std::vector<ndn::Buffer> assignments;
+  for (const auto& role : {"/Inference/NativeTracer",
+                           "/Inference/NativeTracer/Head",
+                           "/Inference/NativeTracer/Shard/0",
+                           "/Inference/NativeTracer/Merge"}) {
+    CollaborationAssignmentEnvelope envelope;
+    envelope.role = role;
+    envelope.opaquePayload = bytes(std::string("role=") + role + ";");
+    assignments.push_back(encodeCollaborationAssignmentEnvelope(envelope));
+  }
+
+  SelectionProviderEntry entry;
+  entry.providerName = providerName;
+  entry.providerTokenHash = computeSelectionProviderTokenProofHash(
+      requester, providerName, service, "provider-token");
+  entry.assignmentPayload = encodeOpaqueAssignmentSet(assignments);
+  ServiceSelectionMessage selection;
+  selection.setAttempt(1);
+  selection.setRequestIDs({requestId.toUri()});
+  selection.setProviderToken("provider-token");
+  selection.addProviderEntry(entry);
+  const auto wire = selection.WireEncode();
+
+  provider.OnServiceSelectionMessageDecryptionSuccessCallbackV2(
+      requester, providerName, service, requestId,
+      ndn::Buffer(wire.data(), wire.size()));
+
+  for (size_t i = 0; i < 100 && !handlerCalled.load(); ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  BOOST_CHECK(handlerCalled.load());
+  BOOST_CHECK_EQUAL(observedRole, "/Inference/NativeTracer");
+  BOOST_CHECK_EQUAL(observedRoleProviderCount, assignments.size());
+}
+
+BOOST_AUTO_TEST_CASE(
+    ServiceProviderPreservesSingleStructuredAssignmentWithSharedRoleMetadata)
+{
+  ndn::security::KeyChain keyChain(
+      "pib-memory:single-structured-assignment-provider",
+      "tpm-memory:single-structured-assignment-provider");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name requester("/test/user/single-structured-assignment");
+  const ndn::Name providerName("/test/provider/single-structured-assignment");
+  const ndn::Name peerProvider("/test/provider/single-structured-peer");
+  const ndn::Name service("/Inference/NativeTracer");
+  const ndn::Name requestId("request-single-structured-assignment-1");
+  auto providerCert = makeRsaIdentity(keyChain, providerName);
+  auto authorityCert = makeRsaIdentity(
+      keyChain, ndn::Name("/test/single-structured-assignment-authority"));
+  LocalServiceProvider provider(
+      face, ndn::Name("/test/group"), providerCert, authorityCert,
+      "examples/trust-any.conf");
+
+  std::atomic<bool> handlerCalled{false};
+  ndn::Buffer observedAssignmentPayload;
+  std::map<std::string, ndn::Name> observedRoleProviders;
+  provider.addCollaborationHandler(
+      service,
+      [&](ServiceProvider::CollaborationContext& context,
+          const RequestMessage&) {
+        handlerCalled = true;
+        observedAssignmentPayload = context.assignment().assignmentPayload;
+        observedRoleProviders = context.assignment().roleProviders;
+      });
+
+  RequestMessage request;
+  auto requestPayload = bytes("request");
+  request.setPayload(requestPayload, requestPayload.size());
+  provider.addPendingRequestForTokenTest(
+      requester, service, requestId, request, "provider-token");
+  provider.schedulePendingRequestCleanupForTest(
+      requester, service, requestId, ndn::time::seconds(5));
+
+  const std::string canonicalAssignment =
+      R"({"attempt":1,"provider":"/test/provider/single-structured-assignment","schema":"ndnsf-di-selection-assignment-v3"})";
+  CollaborationAssignmentEnvelope envelope;
+  envelope.role = "Head";
+  envelope.opaquePayload = bytes(canonicalAssignment);
+
+  SelectionProviderEntry entry;
+  entry.providerName = providerName;
+  entry.providerTokenHash = computeSelectionProviderTokenProofHash(
+      requester, providerName, service, "provider-token");
+  entry.assignmentPayload = encodeCollaborationAssignmentEnvelope(envelope);
+
+  const std::string sharedRoleMetadata =
+      "roleProvider.Head=" + providerName.toUri() + ";" +
+      "roleProvider.Shard=" + peerProvider.toUri() + ";";
+  ServiceSelectionMessage selection;
+  selection.setAttempt(1);
+  selection.setRequestIDs({requestId.toUri()});
+  selection.setAssignmentPayload(bytes(sharedRoleMetadata));
+  selection.addProviderEntry(entry);
+  const auto wire = selection.WireEncode();
+
+  provider.OnServiceSelectionMessageDecryptionSuccessCallbackV2(
+      requester, providerName, service, requestId,
+      ndn::Buffer(wire.data(), wire.size()));
+
+  for (size_t i = 0; i < 100 && !handlerCalled.load(); ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  BOOST_REQUIRE(handlerCalled.load());
+  BOOST_CHECK(observedAssignmentPayload == bytes(canonicalAssignment));
+  BOOST_REQUIRE_EQUAL(observedRoleProviders.size(), 2);
+  BOOST_CHECK(observedRoleProviders.at("Head") == providerName);
+  BOOST_CHECK(observedRoleProviders.at("Shard") == peerProvider);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 } // namespace ndn_service_framework::test

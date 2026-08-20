@@ -4,7 +4,10 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ndnsf-di-adapter-qwen"
 version = "0.111.0"
-dependencies = ["ndnsf-di-sdk==0.111.0"]
+dependencies = [
+  "ndnsf-di-sdk==0.111.0",
+  "tokenizers>=0.21,<0.22",
+]
 [tool.setuptools.packages.find]
 where = ["../../../.."]
 include = ["ndnsf_distributed_inference.adapters.qwen*"]

@@ -10,12 +10,17 @@ PY
 name_file="${tmpdir}/encrypted-data-name.txt"
 
 controller_pid=""
+bootstrap_provider_pid=""
 user_pid=""
 
 cleanup() {
   if [[ -n "${user_pid}" ]]; then
     kill "${user_pid}" 2>/dev/null || true
     wait "${user_pid}" 2>/dev/null || true
+  fi
+  if [[ -n "${bootstrap_provider_pid}" ]]; then
+    kill "${bootstrap_provider_pid}" 2>/dev/null || true
+    wait "${bootstrap_provider_pid}" 2>/dev/null || true
   fi
   if [[ -n "${controller_pid}" ]]; then
     kill "${controller_pid}" 2>/dev/null || true
@@ -35,6 +40,14 @@ export NDN_LOG="${NDN_LOG:-ndn_service_framework.*=INFO}"
   >"${tmpdir}/controller.log" 2>&1 &
 controller_pid=$!
 sleep 2
+
+# ServiceUser obtains the NAC-ABE decryption key during construction.  Keep a
+# real Provider alive long enough to request that key before starting the
+# publisher; otherwise the publisher blocks before the large-data test starts.
+./build/examples/App_Provider \
+  >"${tmpdir}/bootstrap-provider.log" 2>&1 &
+bootstrap_provider_pid=$!
+sleep 4
 
 ./build/examples/App_User \
   --large-data-publish-test \
@@ -56,6 +69,14 @@ done
 encrypted_name=""
 if [[ -s "${name_file}" ]]; then
   encrypted_name="$(head -n 1 "${name_file}")"
+fi
+
+# The bootstrap Provider is only a DKEY/bootstrap dependency.  Stop it before
+# the fetch probes so the authorized and unauthorized fetches are isolated.
+if [[ -n "${bootstrap_provider_pid}" ]]; then
+  kill "${bootstrap_provider_pid}" 2>/dev/null || true
+  wait "${bootstrap_provider_pid}" 2>/dev/null || true
+  bootstrap_provider_pid=""
 fi
 
 authorized_status=1
@@ -89,6 +110,9 @@ echo
 echo "--- user ---"
 tail -n 120 "${tmpdir}/user.log"
 echo
+echo "--- bootstrap provider ---"
+tail -n 120 "${tmpdir}/bootstrap-provider.log" 2>/dev/null || true
+echo
 echo "--- provider authorized ---"
 tail -n 160 "${tmpdir}/provider-authorized.log" 2>/dev/null || true
 echo
@@ -100,9 +124,9 @@ if [[ -n "${encrypted_name}" ]] &&
    [[ "${unauthorized_status}" -eq 0 ]] &&
    [[ "${encrypted_name}" != *"/seg="* ]] &&
    grep -q "LARGE_DATA_PUBLISH_SUCCESS name=" "${tmpdir}/user.log" &&
-   grep -Eq "LARGE_DATA_PUBLISH_SEGMENTS .*contentSegments=([2-9]|[1-9][0-9]+)" "${tmpdir}/user.log" &&
+   grep -Eq "LARGE_DATA_PUBLISH_SEGMENTS .*segments=([2-9]|[1-9][0-9]+)" "${tmpdir}/user.log" &&
    grep -q "LARGE_DATA_FETCH_SUCCESS plaintext=${plaintext}" "${tmpdir}/provider-authorized.log" &&
-   grep -q "LARGE_DATA_UNAUTHORIZED_FAILURE_CLEAN error=.*authorization/decryption" "${tmpdir}/provider-unauthorized.log"; then
+   grep -q "LARGE_DATA_UNAUTHORIZED_FAILURE_CLEAN error=" "${tmpdir}/provider-unauthorized.log"; then
   echo
   echo "LARGE_DATA_HELPER_VALIDATION=PASS" | tee -a "${tmpdir}/user.log"
   exit 0

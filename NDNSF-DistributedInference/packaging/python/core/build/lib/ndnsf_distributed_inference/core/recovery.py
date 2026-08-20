@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, fields as dataclass_fields
 from enum import Enum
 import json
 import logging
@@ -10,7 +10,10 @@ import random
 from threading import RLock
 from typing import Any, Callable, Iterable, Mapping
 
-from .contracts import AssignmentContext, OrphanCleanupRecord, ResultRendezvousRecord
+from .contracts import (
+    AssignmentContext, OrphanCleanupRecord, ResultRendezvousRecord,
+    canonical_digest,
+)
 from .ports import CheckpointRecord, ProgressRecord, RecoveryProposal
 from .decision_validation import validate_recovery
 
@@ -110,6 +113,432 @@ class RecoveryAction:
     terminal_reason: RecoveryReason | None = None
     full_context_required: bool = False
     control_payloads: tuple[dict[str, object], ...] = ()
+
+
+def _require_recovery_digest(value: str, field: str) -> None:
+    if (not isinstance(value, str) or len(value) != 71
+            or not value.startswith("sha256:")):
+        raise ValueError(f"{field} must be a canonical sha256 digest")
+    try:
+        int(value[7:], 16)
+    except ValueError as exc:
+        raise ValueError(
+            f"{field} must be a canonical sha256 digest") from exc
+
+
+class _ExactTargetControlV2:
+    SCHEMA = ""
+
+    def to_bytes(self) -> bytes:
+        value = {
+            **asdict(self),
+            "schema": self.SCHEMA,
+            "schema_version": 2,
+            "canonical_encoding_version": "canonical-json-v1",
+            "control_version": "DI_EXACT_TARGET_CONTROL_V2",
+        }
+        return json.dumps(
+            value, sort_keys=True, separators=(",", ":")).encode()
+
+    def digest(self) -> str:
+        return "sha256:" + __import__("hashlib").sha256(
+            self.to_bytes()).hexdigest()
+
+    def signing_digest(self) -> str:
+        value = asdict(self)
+        value.pop("signature", None)
+        value["schema"] = self.SCHEMA
+        value["schema_version"] = 2
+        value["canonical_encoding_version"] = "canonical-json-v1"
+        value["control_version"] = "DI_EXACT_TARGET_CONTROL_V2"
+        encoded = json.dumps(
+            value, sort_keys=True, separators=(",", ":")).encode()
+        return "sha256:" + __import__("hashlib").sha256(encoded).hexdigest()
+
+    def validate_target(
+        self, *, now_ms: int, requester: str, target_provider: str,
+        attempt_deadline_ms: int,
+        verify_signature: Callable[["_ExactTargetControlV2"], bool],
+    ) -> None:
+        if (self.requester != requester
+                or self.target_provider != target_provider
+                or now_ms >= self.expires_at_ms
+                or self.expires_at_ms > attempt_deadline_ms
+                or not verify_signature(self)):
+            raise PermissionError(
+                "DI exact-target control is unauthorized or expired")
+
+    @classmethod
+    def from_bytes(cls, wire: bytes):
+        if len(bytes(wire)) > 64 * 1024:
+            raise ValueError("DI exact-target control exceeds size bound")
+        try:
+            value = json.loads(bytes(wire).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("malformed DI exact-target control") from exc
+        if (not isinstance(value, dict)
+                or bytes(wire) != json.dumps(
+                    value, sort_keys=True,
+                    separators=(",", ":")).encode()):
+            raise ValueError("DI exact-target control is not canonical")
+        metadata = {
+            "schema": cls.SCHEMA,
+            "schema_version": 2,
+            "canonical_encoding_version": "canonical-json-v1",
+            "control_version": "DI_EXACT_TARGET_CONTROL_V2",
+        }
+        expected = {item.name for item in dataclass_fields(cls)} | set(metadata)
+        if set(value) != expected or any(
+                value.get(key) != expected_value
+                for key, expected_value in metadata.items()):
+            raise ValueError(
+                "DI exact-target control version/field mismatch")
+        for key in metadata:
+            value.pop(key)
+        return cls(**value)
+
+
+@dataclass(frozen=True)
+class DICancelAttemptV2(_ExactTargetControlV2):
+    SCHEMA = "ndnsf-di-cancel-attempt-v2"
+    request_id: str
+    attempt: int
+    plan_digest: str
+    requester: str
+    target_provider: str
+    reason_code: str
+    issued_at_ms: int
+    expires_at_ms: int
+    nonce: str
+    signer_key_id: str
+    signature: str
+
+    def __post_init__(self) -> None:
+        if (not self.request_id or self.attempt <= 0 or not self.requester
+                or not self.target_provider or not self.reason_code
+                or self.issued_at_ms < 0
+                or self.expires_at_ms <= self.issued_at_ms
+                or not self.nonce or not self.signer_key_id
+                or not self.signature):
+            raise ValueError("invalid DICancelAttemptV2")
+        _require_recovery_digest(self.plan_digest, "plan_digest")
+
+
+@dataclass(frozen=True)
+class DIReleaseOfferV2(_ExactTargetControlV2):
+    SCHEMA = "ndnsf-di-release-offer-v2"
+    request_id: str
+    attempt: int
+    offer_digest: str
+    requester: str
+    target_provider: str
+    reason_code: str
+    issued_at_ms: int
+    expires_at_ms: int
+    nonce: str
+    signer_key_id: str
+    signature: str
+
+    def __post_init__(self) -> None:
+        if (not self.request_id or self.attempt <= 0 or not self.requester
+                or not self.target_provider or not self.reason_code
+                or self.issued_at_ms < 0
+                or self.expires_at_ms <= self.issued_at_ms
+                or not self.nonce or not self.signer_key_id
+                or not self.signature):
+            raise ValueError("invalid DIReleaseOfferV2")
+        _require_recovery_digest(self.offer_digest, "offer_digest")
+
+
+@dataclass(frozen=True)
+class DIStatusQueryV2(_ExactTargetControlV2):
+    SCHEMA = "ndnsf-di-status-query-v2"
+    request_id: str
+    attempt: int
+    transaction_id: str
+    requester: str
+    target_provider: str
+    issued_at_ms: int
+    expires_at_ms: int
+    nonce: str
+    signer_key_id: str
+    signature: str
+
+    def __post_init__(self) -> None:
+        if (not self.request_id or self.attempt <= 0
+                or not self.transaction_id or not self.requester
+                or not self.target_provider or self.issued_at_ms < 0
+                or self.expires_at_ms <= self.issued_at_ms
+                or not self.nonce or not self.signer_key_id
+                or not self.signature):
+            raise ValueError("invalid DIStatusQueryV2")
+
+
+@dataclass(frozen=True)
+class AdoptedInputEvidence:
+    request_id: str
+    old_attempt: int
+    new_attempt: int
+    old_lineage_digest: str
+    new_lineage_digest: str
+    old_semantic_digest: str
+    new_semantic_digest: str
+    old_schema_digest: str
+    new_schema_digest: str
+    old_segment_contract_digest: str
+    new_segment_contract_digest: str
+    authorization_digest: str
+    consumer_role: str
+    authorized_requester: str
+    captured_at_ms: int
+    expires_at_ms: int
+    signer_key_id: str
+    signature: str
+
+    def __post_init__(self) -> None:
+        if (not self.request_id or self.old_attempt <= 0
+                or self.new_attempt != self.old_attempt + 1
+                or not self.consumer_role or not self.authorized_requester
+                or self.captured_at_ms < 0
+                or self.expires_at_ms <= self.captured_at_ms
+                or not self.signer_key_id or not self.signature):
+            raise ValueError("invalid AdoptedInputEvidence")
+        for item in dataclass_fields(self):
+            if item.name.endswith("_digest"):
+                _require_recovery_digest(
+                    getattr(self, item.name), item.name)
+
+    def digest(self) -> str:
+        return canonical_digest(self)
+
+    def validate(
+        self, *, request_id: str, old_attempt: int, new_attempt: int,
+        requester: str, consumer_role: str, lineage_digest: str,
+        authorization_digest: str,
+        at_ms: int, verify_signature: Callable[["AdoptedInputEvidence"], bool],
+    ) -> None:
+        if (self.request_id != request_id
+                or self.old_attempt != old_attempt
+                or self.new_attempt != new_attempt
+                or self.authorized_requester != requester
+                or self.consumer_role != consumer_role
+                or self.old_lineage_digest != lineage_digest
+                or self.authorization_digest != authorization_digest
+                or self.old_lineage_digest != self.new_lineage_digest
+                or self.old_semantic_digest != self.new_semantic_digest
+                or self.old_schema_digest != self.new_schema_digest
+                or self.old_segment_contract_digest
+                != self.new_segment_contract_digest
+                or at_ms >= self.expires_at_ms
+                or not verify_signature(self)):
+            raise ValueError("cross-attempt input adoption is unsafe")
+
+
+@dataclass(frozen=True)
+class AttemptTransition:
+    request_id: str
+    attempt: int
+    plan_digest: str
+    token_digest: str
+    adopted_input_digests: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ControlDispatchResult:
+    sent: int
+    acknowledged: int
+    pending: int
+
+
+class AttemptCompensationController:
+    """Requester-local bounded compensation; no distributed atomicity claim."""
+
+    def __init__(
+        self, *, request_id: str, requester: str, deadline_ms: int,
+        authorization_digest: str,
+        verify_signature: Callable[[AdoptedInputEvidence], bool],
+        signer_key_id: str = "requester-control-key",
+        sign_control: Callable[[str], str] | None = None,
+    ) -> None:
+        if (not request_id or not requester or deadline_ms <= 0
+                or not callable(verify_signature) or not signer_key_id):
+            raise ValueError("invalid attempt compensation controller")
+        _require_recovery_digest(
+            authorization_digest, "authorization_digest")
+        self.request_id = request_id
+        self.requester = requester
+        self.deadline_ms = int(deadline_ms)
+        self.authorization_digest = authorization_digest
+        self._verify_signature = verify_signature
+        self._signer_key_id = signer_key_id
+        self._sign_control = sign_control or (
+            lambda value: "requester-signature:" + value)
+        self._attempt = 0
+        self._plan_digest = ""
+        self._token_digest = ""
+        self._providers: dict[str, str] = {}
+        self._pending: dict[str, _ExactTargetControlV2] = {}
+        self._terminal = ""
+        self._lock = RLock()
+
+    def begin(
+        self, *, plan_digest: str, token_digest: str,
+        providers: Mapping[str, str],
+    ) -> AttemptTransition:
+        with self._lock:
+            if self._attempt or not providers:
+                raise ValueError("attempt compensation begins exactly once")
+            _require_recovery_digest(plan_digest, "plan_digest")
+            _require_recovery_digest(token_digest, "token_digest")
+            for value in providers.values():
+                _require_recovery_digest(value, "offer_digest")
+            self._attempt = 1
+            self._plan_digest = plan_digest
+            self._token_digest = token_digest
+            self._providers = dict(providers)
+            return AttemptTransition(
+                self.request_id, 1, plan_digest, token_digest, ())
+
+    def _sign(self, value) -> str:
+        unsigned = value.signing_digest()
+        signature = str(self._sign_control(unsigned))
+        if not signature:
+            raise ValueError("control signer returned no signature")
+        return signature
+
+    def replan(
+        self, *, at_ms: int, new_plan_digest: str, new_token_digest: str,
+        providers: Mapping[str, str],
+        required_inputs: Iterable[tuple[str, str]],
+        adopted_inputs: Iterable[AdoptedInputEvidence],
+        fallback_complete: bool,
+    ) -> AttemptTransition:
+        with self._lock:
+            if (not self._attempt or self._terminal
+                    or at_ms >= self.deadline_ms or not providers):
+                raise RuntimeError("replan is unavailable or expired")
+            _require_recovery_digest(new_plan_digest, "new_plan_digest")
+            _require_recovery_digest(new_token_digest, "new_token_digest")
+            if (new_plan_digest == self._plan_digest
+                    or new_token_digest == self._token_digest):
+                raise ValueError("replan requires fresh plan and token")
+            for value in providers.values():
+                _require_recovery_digest(value, "offer_digest")
+            new_attempt = self._attempt + 1
+            required = set(required_inputs)
+            adopted: dict[tuple[str, str], AdoptedInputEvidence] = {}
+            for item in adopted_inputs:
+                key = (item.consumer_role, item.old_lineage_digest)
+                if key in adopted:
+                    raise ValueError("duplicate AdoptedInputEvidence")
+                item.validate(
+                    request_id=self.request_id,
+                    old_attempt=self._attempt,
+                    new_attempt=new_attempt,
+                    requester=self.requester,
+                    consumer_role=key[0], lineage_digest=key[1],
+                    authorization_digest=self.authorization_digest,
+                    at_ms=at_ms, verify_signature=self._verify_signature)
+                adopted[key] = item
+            if not required <= set(adopted) and not fallback_complete:
+                self._terminal = "ABORTED"
+                raise ValueError(
+                    "replan lacks safe adoption or complete fallback cover")
+            old_attempt = self._attempt
+            old_plan = self._plan_digest
+            for index, (provider, offer_digest) in enumerate(
+                    sorted(self._providers.items())):
+                cancel = DICancelAttemptV2(
+                    self.request_id, old_attempt, old_plan, self.requester,
+                    provider, "REPLAN", at_ms, self.deadline_ms,
+                    f"cancel-{old_attempt}-{index}", self._signer_key_id,
+                    "pending")
+                cancel = DICancelAttemptV2(
+                    **{**asdict(cancel), "signature": self._sign(cancel)})
+                release = DIReleaseOfferV2(
+                    self.request_id, old_attempt, offer_digest,
+                    self.requester, provider, "REPLAN", at_ms,
+                    self.deadline_ms, f"release-{old_attempt}-{index}",
+                    self._signer_key_id, "pending")
+                release = DIReleaseOfferV2(
+                    **{**asdict(release), "signature": self._sign(release)})
+                self._pending.setdefault(cancel.digest(), cancel)
+                self._pending.setdefault(release.digest(), release)
+            self._attempt = new_attempt
+            self._plan_digest = new_plan_digest
+            self._token_digest = new_token_digest
+            self._providers = dict(providers)
+            return AttemptTransition(
+                self.request_id, new_attempt, new_plan_digest,
+                new_token_digest,
+                tuple(sorted(item.digest() for item in adopted.values())))
+
+    def enqueue_status_query(
+        self, *, provider: str, transaction_id: str, at_ms: int,
+    ) -> DIStatusQueryV2:
+        with self._lock:
+            if (self._terminal or at_ms >= self.deadline_ms
+                    or not provider or not transaction_id):
+                raise RuntimeError("status query is unavailable or expired")
+            query = DIStatusQueryV2(
+                self.request_id, self._attempt, transaction_id,
+                self.requester, provider, at_ms, self.deadline_ms,
+                f"status-{self._attempt}-{len(self._pending)}",
+                self._signer_key_id, "pending")
+            query = DIStatusQueryV2(
+                **{**asdict(query), "signature": self._sign(query)})
+            self._pending.setdefault(query.digest(), query)
+            return query
+
+    def dispatch_pending(
+        self, *, at_ms: int,
+        sender: Callable[[_ExactTargetControlV2], bool],
+    ) -> ControlDispatchResult:
+        with self._lock:
+            if at_ms >= self.deadline_ms:
+                self._terminal = self._terminal or "EXPIRED"
+                return ControlDispatchResult(0, 0, len(self._pending))
+            sent = acknowledged = 0
+            for key, value in tuple(self._pending.items()):
+                sent += 1
+                if sender(value):
+                    acknowledged += 1
+                    self._pending.pop(key, None)
+            return ControlDispatchResult(
+                sent, acknowledged, len(self._pending))
+
+    def accept_event(self, *, attempt: int, at_ms: int) -> bool:
+        with self._lock:
+            return (
+                not self._terminal and at_ms < self.deadline_ms
+                and int(attempt) == self._attempt)
+
+    def accept_response(self, *, attempt: int, at_ms: int) -> bool:
+        with self._lock:
+            if not self.accept_event(attempt=attempt, at_ms=at_ms):
+                return False
+            self._terminal = "RESPONSE"
+            return True
+
+    def cancel(self, *, at_ms: int, reason: str) -> bool:
+        del reason
+        with self._lock:
+            if self._terminal or at_ms >= self.deadline_ms:
+                return False
+            self._terminal = "CANCELLED"
+            return True
+
+    def expire(self, *, at_ms: int) -> bool:
+        with self._lock:
+            if self._terminal or at_ms < self.deadline_ms:
+                return False
+            self._terminal = "EXPIRED"
+            return True
+
+    @property
+    def terminal_outcome(self) -> str:
+        with self._lock:
+            return self._terminal
 
 
 class BoundedRecoveryController:

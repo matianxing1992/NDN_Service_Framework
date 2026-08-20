@@ -85,6 +85,37 @@ def validate_assignment(proposal: AssignmentProposal, roles: Iterable[str],
     return proposal
 
 
+def validate_one_to_one_role_provider(
+    provider_by_role: Mapping[str, str],
+    *,
+    expected_roles: Iterable[str] = (),
+) -> None:
+    """Validate the V3 invariant: one role per Provider per Attempt.
+
+    This is intentionally separate from the legacy generic assignment
+    validator.  Explicit V2 compatibility can preserve its historical
+    placement shape, while every V3 proposal, sealed core, and Selection set
+    calls this core-owned invariant.
+    """
+
+    assignments = {
+        str(role): str(provider)
+        for role, provider in provider_by_role.items()
+    }
+    expected = tuple(str(role) for role in expected_roles)
+    if (not assignments
+            or any(not role or not provider
+                   for role, provider in assignments.items())):
+        raise ValueError("V3 role/Provider assignment is incomplete")
+    if expected and (len(set(expected)) != len(expected)
+                     or set(assignments) != set(expected)):
+        raise ValueError(
+            "V3 role/Provider assignment does not cover each role exactly once")
+    providers = tuple(assignments.values())
+    if len(set(providers)) != len(providers):
+        raise ValueError("V3 role/Provider assignment must be one-to-one")
+
+
 def validate_policy_result(result: PolicyResult, *, expected_kind: str,
                            snapshot_epoch: int) -> PolicyResult:
     if result.policy_kind != expected_kind:

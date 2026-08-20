@@ -25,7 +25,12 @@ PATTERNS = {
         br"(?:[\"']?(?:password|passwd|passphrase|mfa)[\"']?\s*[:=]\s*[\"'][^\"'\r\n]{4,}[\"'])"
         br"|(?:\b(?:PASSWORD|PASSWD|PASSPHRASE|MFA)\s*=\s*[^\s\"']{4,})"
     ),
-    "ndnsf-token-material": re.compile(br"(?:userToken|providerToken)\s*[\"']?\s*[:=]\s*[\"'][^\"']+", re.I),
+    # Require a compact literal token value.  C++ trace streams such as
+    # ``userToken=" << userToken`` are field labels, not embedded credentials.
+    "ndnsf-token-material": re.compile(
+        br"(?:userToken|providerToken)\s*[\"']?\s*[:=]\s*[\"'][A-Za-z0-9+/=_-]{8,}[\"']",
+        re.I,
+    ),
 }
 PAYLOAD_PATTERNS = {
     "raw-prompt": re.compile(br"[\"']prompt[\"']\s*:\s*[\"'][^\"']+[\"']", re.I),

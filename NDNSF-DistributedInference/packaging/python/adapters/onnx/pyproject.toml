@@ -4,7 +4,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ndnsf-di-adapter-onnx"
 version = "0.111.0"
-dependencies = ["ndnsf-di-sdk==0.111.0"]
+dependencies = [
+  "ndnsf-di-sdk==0.111.0",
+  "onnx>=1.17,<1.18",
+]
+[project.optional-dependencies]
+cpu = ["onnxruntime>=1.20,<2"]
+gpu = ["onnxruntime-gpu>=1.20,<2"]
 [tool.setuptools.packages.find]
 where = ["../../../.."]
 include = ["ndnsf_distributed_inference.adapters.onnx*"]

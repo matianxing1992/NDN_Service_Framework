@@ -1,8 +1,8 @@
-"""Default exact-reuse-first joint split and Provider placement strategy."""
+"""ACK-driven V3 PreSplitFirst policy and isolated V2 compatibility policy."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import IntEnum
 import hashlib
 import json
@@ -10,8 +10,10 @@ import math
 from typing import Any, Mapping
 
 from ..sdk.placement import (
-    ArtifactPreparationMode, ModelPlacementStrategy, PlacementDecision, PlacementRequest,
-    ProviderAssignment, canonical_digest, is_cpu_backend,
+    ArtifactPreparationMode, ExecutionDisposition, ModelPlacementStrategy,
+    PlacementDecision, PlacementProposalV3, PlacementRequest,
+    ProviderAssignment, ProviderPlanningViewV3, RoleAssemblySpec,
+    ResidencyClassV3, ResidencyTierV3, canonical_digest, is_cpu_backend,
 )
 from ..splitter import SplitCandidate, SplitSource
 
@@ -74,16 +76,14 @@ def _cache_fields(value: Any) -> Mapping[str, Any]:
     return value
 
 
-class PreSplitFirstStrategy(ModelPlacementStrategy):
-    """Prefer exact verified shards, then a capacity-safe graph candidate."""
+class PreassembledPartitionV2Strategy(ModelPlacementStrategy):
+    """Explicit legacy V2 preassembled-partition compatibility strategy."""
 
-    name = "pre-split-first"
+    name = "preassembled-partition-v2"
     version = "2"
     state_digest = "sha256:" + hashlib.sha256(
         b"ndnsf-di-pre-split-first-v2").hexdigest()
-    # Compatibility callers explicitly selecting this strategy stay on the
-    # legacy V2 request envelope. Spec 170's LayerReuseFirstStrategy overrides
-    # this marker with DI_PLACEMENT_V3.
+    # This profile is never selected implicitly by the normal application path.
     placement_profile = "DI_PLACEMENT_V2"
     deterministic = True
 
@@ -484,7 +484,237 @@ class PreSplitFirstStrategy(ModelPlacementStrategy):
         return best
 
 
+class PreSplitFirstStrategy(PreassembledPartitionV2Strategy):
+    """Default V3 policy over adapter-certified candidates and ACK offers.
+
+    Feasibility and one-to-one role ownership are controlling. Exact canonical
+    or assembled residency is a subordinate cost signal after a Provider is
+    proven feasible; it never creates topology or permits one Provider to own
+    several roles in the same Attempt.
+    """
+
+    name = "pre-split-first"
+    version = "3"
+    placement_profile = "DI_PLACEMENT_V3"
+    state_digest = "sha256:" + hashlib.sha256(
+        b"ndnsf-di-pre-split-first-v3").hexdigest()
+
+    def __init__(
+        self,
+        *,
+        at_ms: int = 1,
+        security_domain: str = "",
+        maximum_cache_age_ms: int = 30_000,
+        clock_ms=None,
+    ) -> None:
+        super().__init__(
+            at_ms=at_ms,
+            security_domain=security_domain,
+            maximum_cache_age_ms=maximum_cache_age_ms,
+            clock_ms=clock_ms,
+        )
+
+    def propose_v3(
+        self,
+        *,
+        request_id: str,
+        attempt: int,
+        model_digest: str,
+        graph_digest: str,
+        roles: tuple[RoleAssemblySpec, ...],
+        providers: tuple[ProviderPlanningViewV3, ...],
+        ack_closed_digest: str,
+    ) -> PlacementProposalV3:
+        """Return a pure one-role-per-Provider proposal from ACK_CLOSED."""
+
+        if not providers:
+            raise ValueError("V3 strategy requires Provider offers")
+        if not roles:
+            raise ValueError("V3 strategy requires at least one role")
+        ranks_by_role: dict[str, set[int]] = {}
+        for role in roles:
+            ranks_by_role.setdefault(role.role, set()).add(role.rank)
+        for role_name, ranks in ranks_by_role.items():
+            count = sum(1 for role in roles if role.role == role_name)
+            if len(ranks) != count or ranks != set(range(count)):
+                raise ValueError(
+                    f"V3 role rank cover is incomplete for {role_name}")
+
+        assignments: dict[str, str] = {}
+        selected_roles: list[RoleAssemblySpec] = []
+        used_providers: set[str] = set()
+        role_counts = {
+            item.role: sum(1 for candidate in roles
+                           if candidate.role == item.role)
+            for item in roles
+        }
+        for role in sorted(roles, key=lambda item: (item.role, item.rank)):
+            ranked = []
+            for view in providers:
+                if view.provider in used_providers:
+                    continue
+                if role.role not in view.accepted_roles:
+                    continue
+                compatible_backends = set(view.backends)
+                if (role.backend not in compatible_backends
+                        and f"{role.backend}-cpu" not in compatible_backends
+                        and f"{role.backend}-cuda" not in compatible_backends):
+                    continue
+                selected_backend = role.backend
+                available_devices = tuple(view.topology.devices)
+                if (not available_devices and (
+                        is_cpu_backend(role.backend)
+                        or f"{role.backend}-cpu" in compatible_backends)):
+                    available_devices = ("cpu",)
+                if role.device_set:
+                    available_devices = tuple(
+                        item for item in available_devices
+                        if item in role.device_set)
+                if not available_devices:
+                    continue
+
+                resource_by_device = {
+                    item.device: item for item in view.resources
+                }
+                available_devices = tuple(
+                    device for device in available_devices
+                    if ((device == "cpu" and (
+                            is_cpu_backend(role.backend)
+                            or f"{role.backend}-cpu" in compatible_backends))
+                        or (device != "cpu"
+                            and (role.backend in compatible_backends
+                                 or f"{role.backend}-cuda"
+                                 in compatible_backends)
+                            and device in resource_by_device
+                            and resource_by_device[device].free_memory_mb
+                            >= role.required_device_memory_mb))
+                )
+                if not available_devices:
+                    continue
+
+                for selected_device in available_devices:
+                    selected_backend = role.backend
+                    if (selected_device == "cpu"
+                            and f"{role.backend}-cpu" in compatible_backends):
+                        selected_backend = f"{role.backend}-cpu"
+                    elif (selected_device.startswith("cuda:")
+                          and f"{role.backend}-cuda" in compatible_backends):
+                        selected_backend = f"{role.backend}-cuda"
+                    elif (selected_device.startswith("cuda:")
+                          and role.backend not in compatible_backends
+                          and "cuda" in compatible_backends):
+                        selected_backend = "cuda"
+
+                    # Reuse affects cost only after capability/device
+                    # feasibility. Score every feasible device so an exact hit
+                    # on cuda:1 is not hidden by lexical preference for cuda:0.
+                    reuse = self._v3_reuse_cost(
+                        role, view, selected_device=selected_device,
+                        selected_backend=selected_backend)
+                    exact = reuse[0] <= 1
+                    if (view.execution_disposition
+                            == ExecutionDisposition.ACCEPT_IF_EXACT_REUSE
+                            and not exact):
+                        continue
+                    if (not exact and view.execution_disposition
+                            != ExecutionDisposition.ACCEPT_WITH_PREPARATION):
+                        continue
+                    ranked.append((
+                        *reuse,
+                        view.queue_depth,
+                        view.estimated_wait_ms,
+                        view.rtt_ms,
+                        -view.bandwidth_mbps,
+                        view.provider,
+                        selected_device,
+                        selected_backend,
+                    ))
+            if not ranked:
+                raise ValueError(
+                    f"no distinct feasible Provider for V3 role {role.role}#{role.rank}")
+            selected = min(ranked)
+            provider = selected[8]
+            key = (role.role if role_counts[role.role] == 1
+                   else f"{role.role}#{role.rank}")
+            assignments[key] = provider
+            used_providers.add(provider)
+            selected_roles.append(replace(
+                role,
+                backend=selected[10],
+                # CPU is represented by an empty accelerator set; the final
+                # DeviceBinding carries CPU versus SINGLE_DEVICE explicitly.
+                device_set=(() if selected[9] == "cpu" else (selected[9],))))
+
+        return PlacementProposalV3(
+            request_id=request_id,
+            attempt=attempt,
+            model_digest=model_digest,
+            graph_digest=graph_digest,
+            roles=tuple(selected_roles),
+            provider_by_role=assignments,
+            strategy_name=self.name,
+            strategy_version=self.version,
+            strategy_state_digest=self.state_digest,
+        )
+
+    @staticmethod
+    def _v3_reuse_cost(
+        role: RoleAssemblySpec,
+        view: ProviderPlanningViewV3,
+        *, selected_device: str,
+        selected_backend: str,
+    ) -> tuple[int, int, float, float]:
+        """Rank exact loaded, assembled, canonical, then cold residency.
+
+        The tuple is a subordinate cost only. It cannot make an infeasible
+        Provider feasible or change the role topology.
+        """
+
+        best = (3, 2**63 - 1, math.inf, math.inf)
+        for proof in view.residency:
+            if proof.role != role.role or proof.rank != role.rank:
+                continue
+            common = (
+                (not role.model_manifest_digest
+                 or proof.model_manifest_digest == role.model_manifest_digest)
+                and (not role.artifact_profile_digest
+                     or proof.artifact_profile_digest
+                     == role.artifact_profile_digest)
+                and proof.graph_digest
+                == (role.graph_digest or view.graph_digest)
+                and proof.protection_epoch == role.protection_epoch
+            )
+            if not common:
+                continue
+            if proof.residency_class is ResidencyClassV3.CANONICAL:
+                if proof.tier is not ResidencyTierV3.CANONICAL:
+                    continue
+                best = min(best, (
+                    2, proof.missing_verified_bytes,
+                    proof.estimated_assembly_ms, proof.estimated_load_ms))
+                continue
+            if (proof.artifact_digest != role.artifact_digest
+                    or proof.assembly_spec_digest != role.recipe_digest
+                    or not proof.is_exact_reuse_proof()):
+                continue
+            if proof.residency_class is ResidencyClassV3.ASSEMBLED_FRAGMENT:
+                if proof.backend not in {role.backend, selected_backend}:
+                    continue
+                best = min(best, (
+                    1, 0, 0.0, proof.estimated_load_ms))
+                continue
+            expected_devices = (() if selected_device == "cpu"
+                                else (selected_device,))
+            if (proof.backend != selected_backend
+                    or proof.device_set != expected_devices
+                    or proof.boot_epoch != view.boot_epoch
+                    or proof.topology_digest != view.topology.digest()):
+                continue
+            best = min(best, (0, 0, 0.0, 0.0))
+        return best
+
+
 __all__ = [
-    "PreSplitFirstStrategy", "ResidencyTier", "ReusableStateView",
-    "SplitSpecification",
+    "PreassembledPartitionV2Strategy", "PreSplitFirstStrategy",
+    "ResidencyTier", "ReusableStateView", "SplitSpecification",
 ]

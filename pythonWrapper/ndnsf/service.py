@@ -131,6 +131,7 @@ class AckCandidate:
     message: str = ""
     payload: bytes = b""
     telemetry: Optional[Mapping[str, Any]] = None
+    selection_input_key_offer: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -767,6 +768,13 @@ class CollaborationContext:
     def assignment(self) -> CollaborationAssignment:
         native = self._native.assignment
         assignment_payload = bytes(native.assignment_payload)
+        native_role_providers = getattr(native, "role_providers", None)
+        role_providers = (
+            {str(role): str(provider)
+             for role, provider in dict(native_role_providers).items()}
+            if native_role_providers is not None
+            else _parse_role_providers(assignment_payload)
+        )
         return CollaborationAssignment(
             role=str(native.role),
             service=str(native.service),
@@ -776,7 +784,7 @@ class CollaborationContext:
             provisioning_timeout_ms=int(native.provisioning_timeout_ms),
             selection_digest=str(native.selection_digest),
             assignment_payload=assignment_payload,
-            role_providers=_parse_role_providers(assignment_payload),
+            role_providers=role_providers,
         )
 
     def fetch_artifact(self, artifact_name: str, timeout_ms: int = 5000) -> bool:
@@ -1164,6 +1172,11 @@ def _from_native_ack_candidate(candidate) -> AckCandidate:
         message=str(candidate.message),
         payload=bytes(candidate.payload),
         telemetry=telemetry,
+        selection_input_key_offer=(
+            {} if getattr(candidate, "selection_input_key_offer", None) is None
+            else _freeze_collaboration_value(
+                dict(candidate.selection_input_key_offer))
+        ),
     )
 
 
@@ -2288,6 +2301,9 @@ class ServiceUser:
         ack_coverage_predicate: Optional[
             Callable[[tuple[AckCandidate, ...]], bool]
         ] = None,
+        request_capabilities: Optional[
+            Union[Mapping[str, str], _ndnsf.NativeRequestCapabilities]
+        ] = None,
     ) -> CollaborationInvocation:
         """Publish one generic Request and defer plan choice until ACK_CLOSED.
 
@@ -2337,15 +2353,21 @@ class ServiceUser:
             service, bytes(payload), on_ack_closed, on_response, on_timeout,
             ack_timeout_ms, timeout_ms, request_id,
         )
-        if native_ack_coverage is None:
-            actual_request_id = self._native.begin_collaboration(*native_args)
-        else:
-            try:
-                actual_request_id = self._native.begin_collaboration(
-                    *native_args,
-                    ack_coverage_predicate=native_ack_coverage,
-                )
-            except TypeError as exc:
+        native_kwargs = {}
+        if native_ack_coverage is not None:
+            native_kwargs["ack_coverage_predicate"] = native_ack_coverage
+        if request_capabilities is not None:
+            native_kwargs["request_capabilities"] = (
+                _native_request_capabilities(request_capabilities))
+        try:
+            actual_request_id = self._native.begin_collaboration(
+                *native_args, **native_kwargs)
+        except TypeError as exc:
+            if request_capabilities is not None:
+                raise RuntimeError(
+                    "native runtime does not support deferred collaboration "
+                    "request capabilities") from exc
+            if native_ack_coverage is not None:
                 # A sealed runtime image may contain the pre-early-close
                 # native binding.  Keep the durable FULL invocation usable
                 # without weakening the new binding: the callback is an
@@ -2353,6 +2375,8 @@ class ServiceUser:
                 if "ack_coverage_predicate" not in str(exc):
                     raise
                 actual_request_id = self._native.begin_collaboration(*native_args)
+            else:
+                raise
         return CollaborationInvocation(
             native=self._native,
             state=state,

@@ -46,6 +46,15 @@ class RootlessBuildRenderTests(unittest.TestCase):
             self.assertNotIn("sbatch ", text)
             self.assertIn("--mode diagnostic", text)
             self.assertIn("--builder-mode auto", text)
+            self.assertIn("--foundation-image docker.io/library/ubuntu@sha256:", text)
+            self.assertIn(
+                "--gpu-build-base docker.io/nvidia/cuda@sha256:f18cf1a9ac2842e59f13b0d0729594da8cbd68cadd2379308cdd98c0374dbd80",
+                text,
+            )
+            self.assertIn(
+                "--gpu-runtime-base docker.io/nvidia/cuda@sha256:a6a8417cb56c9a5d30c4d8c78ad18bc9b75ffe4453fe1c04b3149b3741518b06",
+                text,
+            )
             self.assertIn("quay.io/buildah/stable@sha256:", text)
             self.assertEqual(record["builder"]["requestedMode"], "auto")
             self.assertRegex(record["builder"]["ociDigest"], r"^sha256:[a-f0-9]{64}$")

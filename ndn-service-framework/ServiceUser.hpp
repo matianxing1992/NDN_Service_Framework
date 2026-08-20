@@ -310,6 +310,12 @@ namespace ndn_service_framework{
                                    const ndn_service_framework::RequestMessage& requestMessage,
                                    size_t strategy)>;
 
+            // Test-only publication boundary for LocalMockTag integration
+            // fixtures. Production instances publish through SVSPubSub.
+            using LocalPublicationHandler =
+                std::function<void(const ndn::Name& messageName,
+                                   const ndn::Buffer& wire)>;
+
             struct LocalMockTag
             {
             };
@@ -338,6 +344,26 @@ namespace ndn_service_framework{
             virtual ~ServiceUser();
             void init();
 
+            /**
+             * Install an SVSPubSub instance on a LocalMock user.
+             *
+             * This test-only hook lets the in-process integration fixture run
+             * the same SVS publication and subscription path as production
+             * without performing the controller/NAC bootstrap.
+             */
+            void attachLocalMockPubSubForTest(
+                std::shared_ptr<ndn::svs::SVSPubSub> pubSub);
+
+            /** Seed a receive key for a LocalMock ingress test. */
+            void cacheHybridReceiveKeyForTest(const std::string& keyId,
+                                              const std::string& epochId,
+                                              const ndn::Buffer& key);
+
+            /** Cache a pre-built Data packet for LocalMock fetcher tests. */
+            void cacheDataForTest(
+                const ndn::Data& data,
+                ndn::time::milliseconds freshness = ndn::DEFAULT_FRESHNESS_PERIOD);
+
             ndn::Name getName();
 
             /** Open a validated semantic-name live stream on this user's Face. */
@@ -363,6 +389,7 @@ namespace ndn_service_framework{
                                                      ndn::KeyChain& keyChain,
                                                      ServiceAuthorizationTable& permissionTable);
             void setRequestPublisher(RequestPublisher publisher);
+            void setLocalPublicationHandler(LocalPublicationHandler handler);
             static ndn::Buffer makeGenericAdmissionLeaseSelectionPayload(
                 const std::string& leaseId,
                 const ndn::Buffer& resourceBindingProof = ndn::Buffer());
@@ -456,7 +483,7 @@ namespace ndn_service_framework{
                 const PreparedServiceRequest& ctx,
                 const std::vector<uint8_t>& plaintext,
                 const std::string& objectLabel = "",
-                const ndn::time::milliseconds& freshness = ndn::DEFAULT_FRESHNESS_PERIOD);
+                ndn::time::milliseconds freshness = ndn::DEFAULT_FRESHNESS_PERIOD);
 
             using SignedAppDataHandler = std::function<void(const ndn::Data&)>;
             using SignedAppDataFailureHandler =
@@ -472,7 +499,7 @@ namespace ndn_service_framework{
             ndn::Name publishSignedAppData(
                 const ndn::Name& dataName,
                 const ndn::Buffer& payload,
-                const ndn::time::milliseconds& freshness = ndn::DEFAULT_FRESHNESS_PERIOD);
+                ndn::time::milliseconds freshness = ndn::DEFAULT_FRESHNESS_PERIOD);
 
             /** Fetch and validate one exact-name APP record.
              *
@@ -492,7 +519,7 @@ namespace ndn_service_framework{
                 const std::string& objectLabel = "",
                 const std::string& objectType = "",
                 size_t thresholdBytes = 1024,
-                const ndn::time::milliseconds& freshness = ndn::DEFAULT_FRESHNESS_PERIOD);
+                ndn::time::milliseconds freshness = ndn::DEFAULT_FRESHNESS_PERIOD);
 
             ndn::Name RequestService(const PreparedServiceRequest& ctx,
                                  ndn_service_framework::RequestMessage requestMessage,
@@ -621,7 +648,9 @@ namespace ndn_service_framework{
                                          ResponseHandler onFinalResponse,
                                          TimeoutHandler onTimeout,
                                          const RequestId& requestId,
-                                         CollaborationAckCoverageHandler onAckCoverage);
+                                         CollaborationAckCoverageHandler onAckCoverage,
+                                         const RequestCapabilities& requestCapabilities =
+                                             RequestCapabilities());
 
             bool CommitCollaborationPlan(const RequestId& requestId,
                                          const std::string& ackClosedDigest,
@@ -1005,6 +1034,17 @@ namespace ndn_service_framework{
                 std::string userToken;
             };
 
+            struct TargetedTokenPoolControl
+            {
+                size_t nextBatch = 0;
+                size_t capacity = 0;
+                size_t consumedSinceStore = 0;
+                uint64_t lastStoredAtUs = 0;
+                uint64_t refillStartedAtUs = 0;
+                bool observed = false;
+                bool refillInFlight = false;
+            };
+
             struct PendingCallTraceRecord
             {
                 uint64_t createdAtUs = 0;
@@ -1111,6 +1151,15 @@ namespace ndn_service_framework{
             void storeTargetedTokenPairs(const ndn::Name& providerName,
                                          const ndn::Name& serviceName,
                                          const ndn_service_framework::ResponseMessage& responseMessage);
+            size_t getTargetedTokenBatchHint(const ndn::Name& providerName,
+                                             const ndn::Name& serviceName);
+            bool markTargetedTokenRefillInFlight(const ndn::Name& providerName,
+                                                 const ndn::Name& serviceName,
+                                                 size_t requestedBatch);
+            void clearTargetedTokenRefill(const ndn::Name& providerName,
+                                          const ndn::Name& serviceName);
+            void maybeRefillTargetedTokenPool(const ndn::Name& providerName,
+                                              const ndn::Name& serviceName);
 
             static const StoredAck* findStoredAck(
                 const PendingCall& pendingCall,
@@ -1214,6 +1263,8 @@ namespace ndn_service_framework{
             std::map<ndn::Name, PendingCall> m_pendingCalls;
             std::mutex m_targetedTokenPoolsMutex;
             std::map<std::string, std::deque<TargetedTokenPair>> m_targetedTokenPools;
+            std::map<std::string, TargetedTokenPoolControl>
+                m_targetedTokenPoolControls;
             std::map<ndn::Name, std::map<std::string, uint64_t>>
                 m_recentAckProvidersByService;
             std::map<ndn::Name, PendingCallTraceRecord> m_pendingCallTraceHistory;
@@ -1222,6 +1273,7 @@ namespace ndn_service_framework{
             AdmissionControlWarningHandler m_admissionControlWarningHandler;
             AdmissionControlRejectHandler m_admissionControlRejectHandler;
             RequestPublisher m_requestPublisher;
+            LocalPublicationHandler m_localPublicationHandler;
             ndn::time::milliseconds m_pendingCallTimeoutGrace{500};
             ResponseRetryOptions m_responseRetryOptions;
             bool m_performanceMode = false;

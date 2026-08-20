@@ -142,6 +142,10 @@ namespace ndn_service_framework
     ndn::Name makeResponseNameWithoutPrefixV2(const ndn::Name& requesterName,
                                               const ndn::Name& serviceName,
                                               const ndn::Name& requestId);
+    // SegmentFetcher may append version/segment components to a response Data
+    // name. Logical response matching and hybrid-message AAD use the
+    // unsegmented V2 name.
+    ndn::Name stripTrailingResponseSegments(const ndn::Name& responseName);
     std::optional<ResponseNameV2> parseResponseNameV2(const ndn::Name& responseName);
 
     ndn::Name makeRequestAckNameV2(const ndn::Name& providerName,

@@ -56,10 +56,8 @@ def static_probe() -> dict[str, object]:
         "ndnsf_distributed_inference.ops",
         "ndnsf_distributed_inference.adapters.onnx",
         "ndnsf_distributed_inference.adapters.qwen",
-        "transformers.models.qwen3",
-        "transformers.models.qwen3.configuration_qwen3",
-        "torch",
-        "transformers",
+        "cryptography",
+        "tokenizers",
         "onnxruntime",
     ):
         loaded = importlib.import_module(module)
@@ -87,13 +85,6 @@ def allocated_gpu_probe() -> dict[str, object]:
     import numpy as np
     import onnx
     import onnxruntime as ort
-    import torch
-    if not torch.cuda.is_available():
-        fail("FAIL_PYTORCH_CUDA_UNAVAILABLE")
-    device = torch.device("cuda:0")
-    torch_result = (torch.ones(32, device=device) * 2).sum().item()
-    if torch_result != 64.0:
-        fail("FAIL_PYTORCH_CUDA_KERNEL")
     if "CUDAExecutionProvider" not in ort.get_available_providers():
         fail("FAIL_ORT_CUDA_PROVIDER_MISSING")
     with tempfile.TemporaryDirectory(prefix="spec110-ort-") as tmp:
@@ -137,21 +128,16 @@ def allocated_gpu_probe() -> dict[str, object]:
         "imports": {name: True for name in static["imports"]},
         "missingLibraries": missing_libraries,
         "driverVersion": driver_version,
-        "torchCudaAvailable": torch.cuda.is_available(),
-        "torchCudaVersion": str(torch.version.cuda),
-        "torchCudnnMajor": int(torch.backends.cudnn.version() // 10000),
         "ortProviders": ort.get_available_providers(),
         "ortCudaVersion": "12.4",
         "ortCudnnMajor": 9,
         "profileProviders": providers,
         "allocatedGpuUuid": gpu_uuid,
-        "torchGpuUuid": gpu_uuid,
         "ortGpuUuid": gpu_uuid,
     }
     compatibility = evaluate_runtime_facts(facts)
     return {
         "status": "PASS", "mode": "allocated-gpu", "slurmJobId": os.environ["SLURM_JOB_ID"],
-        "torchCuda": torch.version.cuda, "torchDevice": torch.cuda.get_device_name(0),
         "ortProviders": session.get_providers(), "profileProviders": providers,
         "gpuObservation": {"uuid": gpu_uuid, "name": gpu_name, "driver": driver_version},
         "compatibility": compatibility, "cpuFallback": False,

@@ -45,7 +45,7 @@ from ndnsf_distributed_inference.sdk.placement import (
     ProviderPlanningView,
 )
 from ndnsf_distributed_inference.planner.presplit_first import (
-    PreSplitFirstStrategy,
+    PreassembledPartitionV2Strategy,
 )
 from ndnsf_distributed_inference.splitter import SplitSource
 
@@ -329,6 +329,37 @@ class AutomaticCollaborationPlanTest(unittest.TestCase):
         self.user = object.__new__(ServiceUser)
         self.user._native = self.native
         self.events = []
+
+    def test_data_v1_no_progress_bound_is_explicit_and_positive(self):
+        coordinator = AutomaticPlanningCoordinator(
+            service_user=object(),
+            service_name="/inference",
+            adapters={"test": object()},
+            strategy=object(),
+            provider_view_factory=lambda *args: None,
+            split_materializer=SimpleNamespace(materialize=lambda *args, **kwargs: None),
+            artifact_publisher=SimpleNamespace(
+                publish=lambda *args, **kwargs: None,
+                resolve_existing=lambda *args, **kwargs: None,
+            ),
+            data_v1_no_progress_ms=12000,
+        )
+        self.assertEqual(coordinator.data_v1_no_progress_ms, 12000)
+        with self.assertRaises(ValueError):
+            AutomaticPlanningCoordinator(
+                service_user=object(),
+                service_name="/inference",
+                adapters={"test": object()},
+                strategy=object(),
+                provider_view_factory=lambda *args: None,
+                split_materializer=SimpleNamespace(
+                    materialize=lambda *args, **kwargs: None),
+                artifact_publisher=SimpleNamespace(
+                    publish=lambda *args, **kwargs: None,
+                    resolve_existing=lambda *args, **kwargs: None,
+                ),
+                data_v1_no_progress_ms=0,
+            )
 
     def test_seal_accepts_transformers_cpu_assignment_from_signed_offer(self):
         """The final seal must preserve the strategy's CPU backend binding."""
@@ -806,7 +837,7 @@ class AutomaticCollaborationPlanTest(unittest.TestCase):
             service_user=service_user,
             service_name="/inference",
             adapters={adapter.descriptor.name: adapter},
-            strategy=PreSplitFirstStrategy(at_ms=1),
+            strategy=PreassembledPartitionV2Strategy(at_ms=1),
             provider_view_factory=provider_view,
             split_materializer=_Materializer(events, fail=True),
             artifact_publisher=_Publisher(events),

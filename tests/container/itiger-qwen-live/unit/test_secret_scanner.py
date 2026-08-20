@@ -45,6 +45,21 @@ class SecretScannerTests(unittest.TestCase):
             report = scanner.scan([path], scope="source")
             self.assertEqual(report["status"], "PASS")
 
+    def test_cpp_trace_token_field_is_not_embedded_token_material(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "trace.cpp"
+            path.write_text('stream << " userToken=" << userToken;\n')
+            report = scanner.scan([path], scope="source")
+            self.assertEqual(report["status"], "PASS")
+
+    def test_literal_token_material_is_still_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "token.cpp"
+            path.write_text('const char* userToken = "0123456789abcdef";\n')
+            report = scanner.scan([path], scope="source")
+            self.assertEqual(report["status"], "FAIL")
+            self.assertEqual(report["findings"][0]["kind"], "ndnsf-token-material")
+
     def test_quoted_password_literal_is_redacted(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.json"

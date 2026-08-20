@@ -9,7 +9,7 @@ USER 0:0
 # same; this makes the image/runtime choice explicit and digestable.
 RUN /opt/venv/bin/python3 -m pip uninstall -y onnxruntime-gpu \
     && /opt/venv/bin/python3 -m pip install --no-cache-dir \
-        onnxruntime==1.20.1 \
+        onnxruntime==1.20.0 \
     && /opt/venv/bin/python3 - <<'PY'
 import onnxruntime as ort
 assert "CPUExecutionProvider" in ort.get_available_providers()

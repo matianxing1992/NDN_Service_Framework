@@ -17,7 +17,7 @@ import tempfile
 import stat
 import threading
 import time
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Mapping, Optional
 
 from ndnsf import (
     AckDecision,
@@ -73,6 +73,207 @@ class ProviderAssemblyResult:
     path: Path
     object_digest: str
     artifact: Any
+
+
+class CanonicalCatalogEnsurer:
+    """Concrete V3 canonical-ensure port backed by one ACTIVE catalog.
+
+    The first post-ACK plan publishes the immutable object/layer/root sequence.
+    Later placements only verify their component cover and reuse that exact root;
+    they never generate or republish role-specific model bytes.
+    """
+
+    def __init__(self, catalog, publish_object, *, publisher: str,
+                 assembler_descriptor_digest: str = "",
+                 backend_abi: str = "onnxruntime-runtime") -> None:
+        from .app_sdk.canonical_artifacts import CanonicalLayerCatalog
+        if not isinstance(catalog, CanonicalLayerCatalog):
+            raise TypeError("canonical ensurer requires a CanonicalLayerCatalog")
+        if not callable(publish_object) or not str(publisher).startswith("/"):
+            raise ValueError("canonical ensurer requires a Repo publisher identity")
+        self._catalog = catalog
+        self._publish_object = publish_object
+        self._publisher = str(publisher)
+        self._assembler_descriptor_digest = (
+            str(assembler_descriptor_digest)
+            or "sha256:" + hashlib.sha256(
+                b"ndnsf-di-certified-onnx-assembler-v1").hexdigest())
+        if (not self._assembler_descriptor_digest.startswith("sha256:")
+                or len(self._assembler_descriptor_digest) != 71
+                or not backend_abi):
+            raise ValueError("canonical ensurer assembler identity is invalid")
+        self._backend_abi = str(backend_abi)
+        self._lock = threading.Lock()
+        self._published_root_name = ""
+        self._published_root_digest = ""
+
+    def describe(self, candidate=None):
+        """Return immutable catalog facts without publishing or mutating it."""
+        from .app_sdk.canonical_artifacts import CanonicalArtifactBinding
+        root = self._catalog.active_manifest
+        if candidate is not None and candidate.graph_digest != root.model_identity.graph_digest:
+            raise ValueError("candidate graph does not match canonical model root")
+        return CanonicalArtifactBinding(
+            model_manifest_digest=root.digest,
+            artifact_profile_digest=root.artifact_profile.digest,
+            graph_digest=root.model_identity.graph_digest,
+            canonical_initializer_digest=(
+                root.model_identity.normalized_initializer_content_digest
+                or root.model_identity.source_content_digest),
+            adapter_descriptor_digest=root.artifact_profile.adapter_descriptor_digest,
+            assembler_descriptor_digest=self._assembler_descriptor_digest,
+            backend_abi=self._backend_abi,
+            canonical_source_bytes=self._catalog.total_object_bytes,
+        )
+
+    def ensure(self, candidate, role_specs, *, deadline_ms: int):
+        from .app_sdk.placement import PublishedSplit
+        if int(time.time() * 1000) >= int(deadline_ms):
+            raise TimeoutError("canonical ensure deadline expired")
+        specs = tuple(role_specs)
+        if not specs:
+            raise ValueError("canonical ensure requires role assembly specs")
+        role_counts = {
+            spec.role: sum(other.role == spec.role for other in specs)
+            for spec in specs
+        }
+        digests: dict[str, str] = {}
+        for spec in specs:
+            # Coverage validation is deliberately independent of Provider and
+            # request/attempt. Those identities belong to Selection, not the
+            # canonical model namespace.
+            self._catalog.select_components(
+                role_kind=spec.role_kind,
+                layer_begin=spec.layer_begin,
+                layer_end=spec.layer_end,
+            )
+            key = (spec.role if role_counts[spec.role] == 1
+                   else f"{spec.role}#{spec.rank}")
+            if key in digests:
+                raise ValueError("canonical ensure role/rank key is duplicated")
+            digests[key] = spec.artifact_digest
+
+        root = self._catalog.active_manifest
+        with self._lock:
+            if self._published_root_name:
+                if self._published_root_digest != root.digest:
+                    raise ValueError("canonical ensurer root changed after publication")
+                root_name = self._published_root_name
+            else:
+                root_name = self._catalog.publish_via(
+                    self._publish_object, publisher=self._publisher,
+                    deadline_ms=deadline_ms)
+                self._published_root_name = root_name
+                self._published_root_digest = root.digest
+        return PublishedSplit(
+            candidate_digest=candidate.candidate_digest,
+            artifact_digests_by_role=digests,
+            artifact_data_names_by_role={key: root_name for key in digests},
+        )
+
+
+def assemble_onnx_role_v3(
+    *,
+    role_spec,
+    recipe,
+    canonical_model: bytes,
+    model_name: str,
+    model_digest: str,
+    profile_digest: str,
+    provider: str,
+    signature: str,
+    cache_dir: str | Path,
+    verify_signature=None,
+) -> ProviderAssemblyResult:
+    """Build and atomically activate one Provider-owned ONNX role bundle.
+
+    The caller supplies one sealed ``RoleAssemblySpec`` and its matching
+    digest-pinned adapter certificate.  The Provider performs extraction,
+    checker validation, exact I/O validation, and ONNX Runtime loading locally;
+    it never accepts a requester-selected filesystem path or executable.
+    """
+    from .adapters.onnx.executor import (
+        CertifiedOnnxAssemblyRecipe, assemble_certified_onnx_model,
+    )
+    from .app_sdk.canonical_artifacts import AssembledOnnxArtifactV1
+    if not isinstance(recipe, CertifiedOnnxAssemblyRecipe):
+        raise TypeError("V3 ONNX assembly requires a certified recipe")
+    if not provider or not str(provider).startswith("/") or not signature:
+        raise ValueError("V3 ONNX assembly requires Provider signing identity")
+    for name, value in (
+        ("model_digest", model_digest), ("profile_digest", profile_digest),
+    ):
+        if (not isinstance(value, str) or not value.startswith("sha256:")
+                or len(value) != 71):
+            raise ValueError(f"{name} must be a canonical digest")
+    if (getattr(role_spec, "model_manifest_digest", "")
+            and role_spec.model_manifest_digest != recipe.model_manifest_digest):
+        raise ValueError("RoleAssemblySpec model manifest mismatch")
+    if (getattr(role_spec, "artifact_profile_digest", "")
+            and role_spec.artifact_profile_digest != profile_digest):
+        raise ValueError("RoleAssemblySpec artifact profile mismatch")
+    if getattr(role_spec, "graph_digest", "") != recipe.graph_digest:
+        raise ValueError("RoleAssemblySpec graph mismatch")
+
+    assembled = assemble_certified_onnx_model(
+        canonical_model, role_spec=role_spec, recipe=recipe)
+    entries = {"model.onnx": assembled.model_bytes}
+    manifest = {
+        "schema": "ndnsf-di-assembled-onnx-v1",
+        "modelName": str(model_name),
+        "modelDigest": str(model_digest),
+        "modelManifestDigest": recipe.model_manifest_digest,
+        "artifactProfileDigest": str(profile_digest),
+        "graphDigest": recipe.graph_digest,
+        "role": str(role_spec.role),
+        "roleKind": str(role_spec.role_kind),
+        "rank": int(role_spec.rank),
+        "layerBegin": int(role_spec.layer_begin),
+        "layerEnd": int(role_spec.layer_end),
+        "recipeDigest": recipe.digest,
+        "adapterDescriptorDigest": recipe.adapter_descriptor_digest,
+        "assemblerDescriptorDigest": recipe.assembler_descriptor_digest,
+        "backendAbi": recipe.backend_abi,
+        "precision": recipe.precision,
+        "quantization": recipe.quantization,
+        "layout": recipe.layout,
+        "padding": recipe.padding,
+        "inputNames": list(assembled.input_names),
+        "outputNames": list(assembled.output_names),
+        "nodeCount": assembled.node_count,
+        "entryDigests": {"model.onnx": assembled.model_digest},
+        "entryLengths": {"model.onnx": len(assembled.model_bytes)},
+        "onnxChecker": "PASS",
+        "onnxRuntimeLoad": "PASS",
+        "signer": str(provider),
+        "layoutMode": "INLINE_ONNX",
+    }
+    artifact = AssembledOnnxArtifactV1(
+        manifest=manifest, entries=entries,
+        signer=str(provider), signature=str(signature))
+    artifact.verify_provider(str(provider), verify_signature=verify_signature)
+    root = Path(cache_dir).expanduser().resolve()
+    target_dir = root / "assembled"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    digest_hex = (artifact.object_digest[7:]
+                  if artifact.object_digest.startswith("sha256:")
+                  else artifact.object_digest)
+    target = target_dir / (digest_hex + ".ndnsf-onnx-artifact")
+    if target.is_symlink():
+        raise ValueError("assembled artifact target must not be a symlink")
+    wire = artifact.to_bytes()
+    if target.exists():
+        if not target.is_file() or target.read_bytes() != wire:
+            raise ValueError("assembled content-addressed path conflict")
+    else:
+        artifact.write_atomic(target)
+    checked = AssembledOnnxArtifactV1.from_bytes(target.read_bytes())
+    checked.verify_provider(str(provider), verify_signature=verify_signature)
+    if checked.object_digest != artifact.object_digest:
+        raise ValueError("activated assembled artifact identity changed")
+    return ProviderAssemblyResult(
+        role=str(role_spec.role), path=target,
+        object_digest=artifact.object_digest, artifact=checked)
 
 
 def assemble_onnx_role(
@@ -599,6 +800,159 @@ class ExecutionContext:
         return path
 
 
+def _require_residency_digest(value: str, field_name: str) -> str:
+    value = str(value)
+    if len(value) != 71 or not value.startswith("sha256:"):
+        raise ValueError(f"{field_name} must be a canonical sha256 digest")
+    try:
+        int(value[7:], 16)
+    except ValueError as exc:
+        raise ValueError(
+            f"{field_name} must be a canonical sha256 digest") from exc
+    return value
+
+
+def _residency_identity_digest(values: Mapping[str, Any]) -> str:
+    wire = json.dumps(dict(values), sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=False).encode("utf-8")
+    return "sha256:" + hashlib.sha256(wire).hexdigest()
+
+
+@dataclass(frozen=True)
+class CanonicalResidencyIdentity:
+    """Placement-independent identity for one verified canonical object."""
+
+    model_manifest_digest: str
+    artifact_profile_digest: str
+    graph_digest: str
+    object_digest: str
+    protection_epoch: str = "plaintext-v1"
+
+    def __post_init__(self) -> None:
+        for name in (
+                "model_manifest_digest", "artifact_profile_digest",
+                "graph_digest", "object_digest"):
+            _require_residency_digest(getattr(self, name), name)
+        if not self.protection_epoch:
+            raise ValueError("canonical residency protection epoch is required")
+
+    @property
+    def digest(self) -> str:
+        return _residency_identity_digest({
+            "class": "CANONICAL", **self.__dict__,
+        })
+
+    @property
+    def content_digest(self) -> str:
+        return self.object_digest
+
+
+@dataclass(frozen=True)
+class AssembledFragmentIdentity:
+    """Exact portable identity for one Provider-assembled ONNX fragment."""
+
+    model_manifest_digest: str
+    artifact_profile_digest: str
+    graph_digest: str
+    assembly_spec_digest: str
+    artifact_digest: str
+    adapter_descriptor_digest: str
+    assembler_descriptor_digest: str
+    backend_abi: str
+    precision: str
+    quantization: str
+    layout: str
+    padding: str
+    protection_epoch: str = "plaintext-v1"
+
+    def __post_init__(self) -> None:
+        for name in (
+                "model_manifest_digest", "artifact_profile_digest",
+                "graph_digest", "assembly_spec_digest", "artifact_digest",
+                "adapter_descriptor_digest", "assembler_descriptor_digest"):
+            _require_residency_digest(getattr(self, name), name)
+        if not all((self.backend_abi, self.precision, self.quantization,
+                    self.layout, self.padding, self.protection_epoch)):
+            raise ValueError("assembled fragment residency identity is incomplete")
+
+    @property
+    def digest(self) -> str:
+        return _residency_identity_digest({
+            "class": "ASSEMBLED_FRAGMENT", **self.__dict__,
+        })
+
+    @property
+    def content_digest(self) -> str:
+        return self.artifact_digest
+
+
+@dataclass(frozen=True)
+class LoadedRuntimeIdentity:
+    """Exact live-runtime identity; equality is required for zero reload."""
+
+    assembled_identity_digest: str
+    artifact_digest: str
+    backend: str
+    runtime_version: str
+    driver_abi: str
+    kernel_profile_digest: str
+    device_set: tuple[str, ...]
+    topology_digest: str
+    provider_boot_epoch: str
+    process_epoch: str
+    runtime_generation: int
+    fencing_token: str
+    protection_epoch: str = "plaintext-v1"
+    reusable_state_contract_digest: str = ""
+
+    def __post_init__(self) -> None:
+        for name in (
+                "assembled_identity_digest", "artifact_digest",
+                "kernel_profile_digest", "topology_digest"):
+            _require_residency_digest(getattr(self, name), name)
+        if self.reusable_state_contract_digest:
+            _require_residency_digest(
+                self.reusable_state_contract_digest,
+                "reusable_state_contract_digest")
+        devices = tuple(str(item) for item in self.device_set)
+        object.__setattr__(self, "device_set", devices)
+        if (not all((self.backend, self.runtime_version, self.driver_abi,
+                     self.provider_boot_epoch, self.process_epoch,
+                     self.fencing_token, self.protection_epoch))
+                or self.runtime_generation <= 0
+                or len(set(devices)) != len(devices)
+                or any(not item.startswith("cuda:") for item in devices)
+                or (devices and self.backend.endswith("-cpu"))):
+            raise ValueError("loaded runtime residency identity is incomplete")
+
+    @property
+    def digest(self) -> str:
+        return _residency_identity_digest({
+            "class": "LOADED_RUNTIME",
+            **{**self.__dict__, "device_set": list(self.device_set)},
+        })
+
+
+@dataclass(frozen=True)
+class ExactResidencyHit:
+    identity_digest: str
+    residency_class: str
+    path: Path | None
+    size: int
+    resource: Any = field(compare=False, repr=False, default=None)
+
+
+@dataclass
+class _ExactResidencyEntry:
+    identity: Any
+    residency_class: str
+    size: int
+    path: Path | None = None
+    resource: Any = None
+    owners: set[str] = field(default_factory=set)
+    last_used_sequence: int = 0
+
+
 @dataclass(frozen=True)
 class ProviderResidencyHit:
     identity: ProviderResidencyIdentity
@@ -632,17 +986,273 @@ class ProviderResidencyLedger:
         "repoUniqueBytes", "repoWireBytes", "duplicatePayloadBytes",
         "ramLoadCount", "deviceLoadCount", "diskHitCount", "ramHitCount",
         "gpuHitCount", "evictionCount", "invalidationCount",
+        "canonicalAdmitCount", "assembledBuildCount", "runtimeLoadCount",
+        "canonicalHitCount", "assembledHitCount", "loadedHitCount",
+        "assemblyBuiltBytes", "runtimeLoadedBytes",
     )
 
-    def __init__(self, root: str | Path, *, provider_boot_epoch: str):
+    def __init__(
+        self, root: str | Path, *, provider_boot_epoch: str,
+        max_canonical_entries: int = 128,
+        max_assembled_entries: int = 64,
+        max_loaded_entries: int = 16,
+    ):
         if not provider_boot_epoch:
             raise ValueError("provider_boot_epoch is required")
+        if min(max_canonical_entries, max_assembled_entries,
+               max_loaded_entries) <= 0:
+            raise ValueError("residency bounds must be positive")
         self.root = Path(root).expanduser().resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.provider_boot_epoch = str(provider_boot_epoch)
         self._entries: dict[tuple[str, ...], _ProviderResidencyEntry] = {}
+        self._exact_entries: dict[str, dict[str, _ExactResidencyEntry]] = {
+            "CANONICAL": {}, "ASSEMBLED_FRAGMENT": {}, "LOADED_RUNTIME": {},
+        }
+        self._exact_bounds = {
+            "CANONICAL": int(max_canonical_entries),
+            "ASSEMBLED_FRAGMENT": int(max_assembled_entries),
+            "LOADED_RUNTIME": int(max_loaded_entries),
+        }
+        self._sequence = 0
         self._counters = {name: 0 for name in self._COUNTERS}
         self._lock = threading.RLock()
+
+    def admit_canonical(
+        self, identity: CanonicalResidencyIdentity, path: str | Path, *,
+        size: int, unique_bytes: int = 0, wire_bytes: int = 0,
+    ) -> ExactResidencyHit:
+        hit, created = self._admit_exact_file(
+            "CANONICAL", identity, path, size=size)
+        with self._lock:
+            if created:
+                self._counters["canonicalAdmitCount"] += 1
+                self._counters["repoUniqueBytes"] += int(unique_bytes)
+                self._counters["repoWireBytes"] += int(wire_bytes)
+        return hit
+
+    def admit_assembled(
+        self, identity: AssembledFragmentIdentity, path: str | Path, *,
+        size: int, built_bytes: int,
+    ) -> ExactResidencyHit:
+        hit, created = self._admit_exact_file(
+            "ASSEMBLED_FRAGMENT", identity, path, size=size)
+        with self._lock:
+            if created:
+                self._counters["assembledBuildCount"] += 1
+                self._counters["assemblyBuiltBytes"] += int(built_bytes)
+        return hit
+
+    def admit_loaded(
+        self, identity: LoadedRuntimeIdentity, resource: Any, *,
+        bytes_loaded: int, load_completed: bool, warmup_completed: bool,
+        cpu_fallback_count: int,
+    ) -> ExactResidencyHit:
+        if (resource is None or int(bytes_loaded) <= 0 or not load_completed
+                or not warmup_completed or int(cpu_fallback_count) != 0):
+            raise ValueError(
+                "loaded residency requires verified load/warmup and no fallback")
+        with self._lock:
+            if identity.provider_boot_epoch != self.provider_boot_epoch:
+                raise ValueError("loaded residency uses a stale Provider boot epoch")
+            fragments = self._exact_entries["ASSEMBLED_FRAGMENT"]
+            fragment = fragments.get(identity.assembled_identity_digest)
+            if (fragment is None
+                    or fragment.identity.artifact_digest
+                    != identity.artifact_digest):
+                raise RuntimeError(
+                    "exact assembled residency is required before runtime load")
+            self._sequence += 1
+            entry = _ExactResidencyEntry(
+                identity=identity, residency_class="LOADED_RUNTIME",
+                size=int(bytes_loaded), path=fragment.path, resource=resource,
+                last_used_sequence=self._sequence)
+            actual, created = self._insert_exact(entry)
+            if created:
+                self._counters["runtimeLoadCount"] += 1
+                self._counters["runtimeLoadedBytes"] += int(bytes_loaded)
+            return self._exact_hit(actual)
+
+    def lookup_canonical(
+        self, identity: CanonicalResidencyIdentity,
+    ) -> ExactResidencyHit | None:
+        return self._lookup_exact("CANONICAL", identity.digest)
+
+    def lookup_assembled(
+        self, identity: AssembledFragmentIdentity,
+    ) -> ExactResidencyHit | None:
+        return self._lookup_exact("ASSEMBLED_FRAGMENT", identity.digest)
+
+    def lookup_loaded(
+        self, identity: LoadedRuntimeIdentity,
+    ) -> ExactResidencyHit | None:
+        if identity.provider_boot_epoch != self.provider_boot_epoch:
+            return None
+        return self._lookup_exact("LOADED_RUNTIME", identity.digest)
+
+    def acquire_exact(
+        self, identity: Any, *, owner: str,
+    ) -> ExactResidencyHit:
+        if not owner:
+            raise ValueError("residency owner is required")
+        if isinstance(identity, CanonicalResidencyIdentity):
+            kind, digest = "CANONICAL", identity.digest
+        elif isinstance(identity, AssembledFragmentIdentity):
+            kind, digest = "ASSEMBLED_FRAGMENT", identity.digest
+        elif isinstance(identity, LoadedRuntimeIdentity):
+            kind, digest = "LOADED_RUNTIME", identity.digest
+        else:
+            raise TypeError("unsupported exact residency identity")
+        with self._lock:
+            hit = self._lookup_exact(kind, digest)
+            if hit is None:
+                raise KeyError("exact compatible residency is unavailable")
+            self._exact_entries[kind][digest].owners.add(str(owner))
+            self._counters[{
+                "CANONICAL": "canonicalHitCount",
+                "ASSEMBLED_FRAGMENT": "assembledHitCount",
+                "LOADED_RUNTIME": "loadedHitCount",
+            }[kind]] += 1
+            return hit
+
+    def make_residency_proof_v3(
+        self, identity: Any, *, role: str, rank: int,
+        process_epoch: str, topology_digest: str,
+        captured_at_ms: int, expires_at_ms: int,
+        backend: str = "", missing_verified_bytes: int = 0,
+        estimated_assembly_ms: float = 0.0,
+        estimated_load_ms: float = 0.0,
+    ):
+        """Project one exact ledger entry into a bounded signed-offer view."""
+
+        from .sdk.placement import (
+            ResidencyClassV3, ResidencyProofV3, ResidencyTierV3,
+        )
+        if not role or rank < 0 or not process_epoch or not topology_digest:
+            raise ValueError("residency proof projection context is incomplete")
+        if self.lookup_canonical(identity) is not None:
+            return ResidencyProofV3(
+                artifact_digest=identity.object_digest, role=role, rank=rank,
+                tier=ResidencyTierV3.CANONICAL,
+                boot_epoch=self.provider_boot_epoch,
+                process_epoch=process_epoch, topology_digest=topology_digest,
+                captured_at_ms=captured_at_ms, expires_at_ms=expires_at_ms,
+                residency_class=ResidencyClassV3.CANONICAL,
+                identity_digest=identity.digest,
+                model_manifest_digest=identity.model_manifest_digest,
+                artifact_profile_digest=identity.artifact_profile_digest,
+                graph_digest=identity.graph_digest, backend=backend,
+                protection_epoch=identity.protection_epoch,
+                missing_verified_bytes=missing_verified_bytes,
+                estimated_assembly_ms=estimated_assembly_ms,
+                estimated_load_ms=estimated_load_ms)
+        if self.lookup_assembled(identity) is not None:
+            if not backend:
+                raise ValueError("assembled residency proof requires backend")
+            return ResidencyProofV3(
+                artifact_digest=identity.artifact_digest, role=role, rank=rank,
+                tier=ResidencyTierV3.DISK,
+                boot_epoch=self.provider_boot_epoch,
+                process_epoch=process_epoch, topology_digest=topology_digest,
+                captured_at_ms=captured_at_ms, expires_at_ms=expires_at_ms,
+                residency_class=ResidencyClassV3.ASSEMBLED_FRAGMENT,
+                identity_digest=identity.digest,
+                assembly_spec_digest=identity.assembly_spec_digest,
+                model_manifest_digest=identity.model_manifest_digest,
+                artifact_profile_digest=identity.artifact_profile_digest,
+                graph_digest=identity.graph_digest, backend=backend,
+                protection_epoch=identity.protection_epoch,
+                estimated_load_ms=estimated_load_ms)
+        if self.lookup_loaded(identity) is not None:
+            with self._lock:
+                fragment = self._exact_entries["ASSEMBLED_FRAGMENT"].get(
+                    identity.assembled_identity_digest)
+            if fragment is None:
+                raise RuntimeError("loaded proof lost its assembled identity")
+            assembled = fragment.identity
+            return ResidencyProofV3(
+                artifact_digest=identity.artifact_digest, role=role, rank=rank,
+                tier=(ResidencyTierV3.GPU if identity.device_set
+                      else ResidencyTierV3.RAM),
+                device_set=identity.device_set,
+                boot_epoch=identity.provider_boot_epoch,
+                process_epoch=identity.process_epoch,
+                topology_digest=identity.topology_digest,
+                captured_at_ms=captured_at_ms, expires_at_ms=expires_at_ms,
+                residency_class=ResidencyClassV3.LOADED_RUNTIME,
+                identity_digest=identity.digest,
+                assembly_spec_digest=assembled.assembly_spec_digest,
+                model_manifest_digest=assembled.model_manifest_digest,
+                artifact_profile_digest=assembled.artifact_profile_digest,
+                graph_digest=assembled.graph_digest, backend=identity.backend,
+                protection_epoch=identity.protection_epoch,
+                runtime_generation=identity.runtime_generation,
+                fencing_token=identity.fencing_token)
+        raise KeyError("exact residency is unavailable for proof projection")
+
+    def release_exact(self, identity: Any, *, owner: str) -> None:
+        kind = ("CANONICAL" if isinstance(identity, CanonicalResidencyIdentity)
+                else "ASSEMBLED_FRAGMENT"
+                if isinstance(identity, AssembledFragmentIdentity)
+                else "LOADED_RUNTIME"
+                if isinstance(identity, LoadedRuntimeIdentity) else "")
+        if not kind:
+            raise TypeError("unsupported exact residency identity")
+        with self._lock:
+            entry = self._exact_entries[kind].get(identity.digest)
+            if entry is not None:
+                entry.owners.discard(str(owner))
+
+    def invalidate_exact_context(
+        self, *, provider_boot_epoch: str, process_epoch: str,
+        topology_digest: str, fencing_token: str, protection_epoch: str,
+        runtime_generation: int,
+    ) -> tuple[str, ...]:
+        """Invalidate identities that cannot survive the current runtime fence."""
+
+        if (not all((provider_boot_epoch, process_epoch, topology_digest,
+                     fencing_token, protection_epoch))
+                or int(runtime_generation) <= 0):
+            raise ValueError("exact residency invalidation context is incomplete")
+        removed: list[str] = []
+        with self._lock:
+            invalid_entries: list[tuple[str, str, _ExactResidencyEntry]] = []
+            for kind, entries in self._exact_entries.items():
+                for digest, entry in tuple(entries.items()):
+                    identity = entry.identity
+                    invalid = identity.protection_epoch != protection_epoch
+                    if kind == "LOADED_RUNTIME":
+                        invalid = invalid or any((
+                            identity.provider_boot_epoch != provider_boot_epoch,
+                            identity.process_epoch != process_epoch,
+                            identity.topology_digest != topology_digest,
+                            identity.fencing_token != fencing_token,
+                            identity.runtime_generation
+                            != int(runtime_generation),
+                        ))
+                    if invalid:
+                        invalid_entries.append((kind, digest, entry))
+            if any(entry.owners for _, _, entry in invalid_entries):
+                raise RuntimeError(
+                    "cannot invalidate residency owned by an active request")
+            self.provider_boot_epoch = str(provider_boot_epoch)
+            for kind, digest, _entry in invalid_entries:
+                self._exact_entries[kind].pop(digest)
+                removed.append(digest)
+            if removed:
+                self._counters["invalidationCount"] += len(removed)
+        return tuple(sorted(removed))
+
+    def evict_exact(self, identity: Any) -> None:
+        kind = ("CANONICAL" if isinstance(identity, CanonicalResidencyIdentity)
+                else "ASSEMBLED_FRAGMENT"
+                if isinstance(identity, AssembledFragmentIdentity)
+                else "LOADED_RUNTIME"
+                if isinstance(identity, LoadedRuntimeIdentity) else "")
+        if not kind:
+            raise TypeError("unsupported exact residency identity")
+        with self._lock:
+            self._evict_exact_digest(kind, identity.digest)
 
     def content_path(
         self, identity: ProviderResidencyIdentity, filename: str,
@@ -804,7 +1414,12 @@ class ProviderResidencyLedger:
         with self._lock:
             if provider_boot_epoch == self.provider_boot_epoch:
                 return
+            loaded = self._exact_entries["LOADED_RUNTIME"]
+            if any(entry.owners for entry in loaded.values()):
+                raise RuntimeError(
+                    "cannot rebind boot epoch with active loaded residency")
             self.provider_boot_epoch = str(provider_boot_epoch)
+            loaded.clear()
             for entry in self._entries.values():
                 entry.ram_resource = None
                 entry.ram_boot_epoch = ""
@@ -836,8 +1451,115 @@ class ProviderResidencyLedger:
                 "schema": "ndnsf-di.provider-residency.v1",
                 "providerBootEpoch": self.provider_boot_epoch,
                 "records": records,
+                "exactResidency": {
+                    kind: [self._exact_record(entries[digest])
+                           for digest in sorted(entries)]
+                    for kind, entries in self._exact_entries.items()
+                },
                 "counters": dict(self._counters),
             }
+
+    def _admit_exact_file(
+        self, kind: str, identity: Any, path: str | Path, *, size: int,
+    ) -> tuple[ExactResidencyHit, bool]:
+        target = Path(path).expanduser().resolve()
+        if (int(size) <= 0 or not target.is_file()
+                or target.stat().st_size != int(size)):
+            raise ValueError("exact residency file size is invalid")
+        try:
+            target.relative_to(self.root)
+        except ValueError as exc:
+            raise ValueError("exact residency path is outside the cache root") from exc
+        if self._digest_file(target) != identity.content_digest:
+            raise ValueError("exact residency content digest mismatch")
+        with self._lock:
+            self._sequence += 1
+            entry = _ExactResidencyEntry(
+                identity=identity, residency_class=kind, size=int(size),
+                path=target, last_used_sequence=self._sequence)
+            actual, created = self._insert_exact(entry)
+            return self._exact_hit(actual), created
+
+    def _insert_exact(
+        self, entry: _ExactResidencyEntry,
+    ) -> tuple[_ExactResidencyEntry, bool]:
+        entries = self._exact_entries[entry.residency_class]
+        digest = entry.identity.digest
+        existing = entries.get(digest)
+        if existing is not None:
+            if (existing.identity != entry.identity or existing.size != entry.size
+                    or existing.path != entry.path):
+                raise ValueError("exact residency identity conflict")
+            if (entry.resource is not None and existing.resource is not None
+                    and existing.resource is not entry.resource):
+                raise ValueError("exact loaded runtime identity conflict")
+            existing.last_used_sequence = self._sequence
+            if entry.resource is not None:
+                existing.resource = entry.resource
+            return existing, False
+        entries[digest] = entry
+        try:
+            while len(entries) > self._exact_bounds[entry.residency_class]:
+                candidates = [item for item in entries.values()
+                              if not item.owners and item is not entry]
+                if not candidates:
+                    raise RuntimeError(
+                        "exact residency bound is full of active entries")
+                victim = min(candidates,
+                             key=lambda item: item.last_used_sequence)
+                self._evict_exact_digest(
+                    entry.residency_class, victim.identity.digest)
+        except Exception:
+            entries.pop(digest, None)
+            raise
+        return entry, True
+
+    def _lookup_exact(
+        self, kind: str, identity_digest: str,
+    ) -> ExactResidencyHit | None:
+        with self._lock:
+            entry = self._exact_entries[kind].get(identity_digest)
+            if entry is None:
+                return None
+            if entry.path is not None and not entry.path.is_file():
+                self._exact_entries[kind].pop(identity_digest, None)
+                self._counters["invalidationCount"] += 1
+                return None
+            self._sequence += 1
+            entry.last_used_sequence = self._sequence
+            return self._exact_hit(entry)
+
+    @staticmethod
+    def _exact_hit(entry: _ExactResidencyEntry) -> ExactResidencyHit:
+        return ExactResidencyHit(
+            identity_digest=entry.identity.digest,
+            residency_class=entry.residency_class,
+            path=entry.path, size=entry.size, resource=entry.resource)
+
+    def _evict_exact_digest(self, kind: str, identity_digest: str) -> None:
+        entry = self._exact_entries[kind].get(identity_digest)
+        if entry is None:
+            return
+        if entry.owners:
+            raise RuntimeError("residency is owned by active requests")
+        self._exact_entries[kind].pop(identity_digest)
+        self._counters["evictionCount"] += 1
+
+    @staticmethod
+    def _exact_record(entry: _ExactResidencyEntry) -> dict[str, Any]:
+        identity = {
+            str(name): (list(value) if isinstance(value, tuple) else value)
+            for name, value in entry.identity.__dict__.items()
+        }
+        return {
+            "identityDigest": entry.identity.digest,
+            "residencyClass": entry.residency_class,
+            "identity": identity,
+            "size": entry.size,
+            "path": str(entry.path or ""),
+            "owners": sorted(entry.owners),
+            "lastUsedSequence": entry.last_used_sequence,
+        }
 
     def _require_current_boot(self, identity: ProviderResidencyIdentity) -> None:
         if identity.provider_boot_epoch != self.provider_boot_epoch:

@@ -32,9 +32,9 @@ env:
   IMAGE_REPOSITORY: ghcr.io/matianxing1992/ndnsf-di-spec170
   RESULT_ROOT: results/spec170-itiger-qwen-live/release-build
   RELEASE_ID: ${{ inputs.release_id || format('spec170-runtime-{0}', github.sha) }}
-  GPU_BUILD_BASE: nvidia/cuda@sha256:f18cf1a9ac2842e59f13b0d0729594da8cbd68cadd2379308cdd98c0374dbd80
-  GPU_RUNTIME_BASE: nvidia/cuda@sha256:a6a8417cb56c9a5d30c4d8c78ad18bc9b75ffe4453fe1c04b3149b3741518b06
-  PYTHON_BASE: python@sha256:b3061b93c8df9809c3783a4f17bbf2520425ec6b40bd3e5e7538870e21ba7209
+  GPU_BUILD_BASE: docker.io/nvidia/cuda@sha256:f18cf1a9ac2842e59f13b0d0729594da8cbd68cadd2379308cdd98c0374dbd80
+  GPU_RUNTIME_BASE: docker.io/nvidia/cuda@sha256:a6a8417cb56c9a5d30c4d8c78ad18bc9b75ffe4453fe1c04b3149b3741518b06
+  PYTHON_BASE: docker.io/library/python@sha256:b3061b93c8df9809c3783a4f17bbf2520425ec6b40bd3e5e7538870e21ba7209
   FOUNDATION_IMAGE: ${{ inputs.foundation_image }}
   FOUNDATION_SOURCE_REVISION: ${{ inputs.foundation_source_revision }}
 

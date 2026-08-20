@@ -11,8 +11,9 @@ from concurrent.futures import Future, ThreadPoolExecutor
 import base64
 import hashlib
 import json
+import time
 from typing import Any, Callable, Iterable, Mapping
-from threading import RLock
+from threading import Event, RLock
 
 from .contracts import (
     DISelectionAcceptanceV2, DISelectionAssignmentV2, DIRoleAssignmentV2,
@@ -105,6 +106,230 @@ class ShardPreparationPipeline:
         self.callbacks.load_to_ram(artifact_digest)
         self.callbacks.load_to_gpu(artifact_digest)
         return "GPU_LOADED"
+
+
+@dataclass
+class _SingleFlightState:
+    completed: Event = field(default_factory=Event)
+    result: Any = None
+    error: BaseException | None = None
+
+
+@dataclass(frozen=True)
+class SingleFlightResult:
+    value: Any
+    leader: bool
+
+
+class BoundedSingleFlight:
+    """Share equal work while bounding distinct concurrent preparation keys."""
+
+    def __init__(self, *, max_inflight: int = 8) -> None:
+        if max_inflight <= 0:
+            raise ValueError("single-flight bound must be positive")
+        self.max_inflight = int(max_inflight)
+        self._flights: dict[tuple[str, str], _SingleFlightState] = {}
+        self._lock = RLock()
+
+    def run(
+        self, *, phase: str, identity_digest: str,
+        work: Callable[[], Any], deadline_ms: int = 0,
+    ) -> SingleFlightResult:
+        if phase not in {"FETCH", "BUILD", "LOAD"} or not identity_digest:
+            raise ValueError("single-flight key is invalid")
+        if not callable(work):
+            raise TypeError("single-flight work must be callable")
+        key = (phase, identity_digest)
+        with self._lock:
+            flight = self._flights.get(key)
+            leader = flight is None
+            if leader:
+                if len(self._flights) >= self.max_inflight:
+                    raise RuntimeError("single-flight distinct-work bound exceeded")
+                flight = _SingleFlightState()
+                self._flights[key] = flight
+        assert flight is not None
+        if leader:
+            try:
+                flight.result = work()
+            except BaseException as exc:
+                flight.error = exc
+            finally:
+                flight.completed.set()
+                with self._lock:
+                    self._flights.pop(key, None)
+        else:
+            timeout = None
+            if deadline_ms:
+                timeout = max(0.0, (int(deadline_ms)
+                                    - int(time.time() * 1000)) / 1000.0)
+            if not flight.completed.wait(timeout):
+                raise TimeoutError("single-flight preparation deadline expired")
+        if flight.error is not None:
+            raise flight.error
+        return SingleFlightResult(flight.result, leader)
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "maxInflight": self.max_inflight,
+                "inflight": tuple(sorted(
+                    f"{phase}:{digest}" for phase, digest in self._flights)),
+            }
+
+
+@dataclass(frozen=True)
+class CanonicalFetchResult:
+    path: Any
+    size: int
+    unique_bytes: int
+    wire_bytes: int
+
+
+@dataclass(frozen=True)
+class FragmentBuildResult:
+    path: Any
+    size: int
+    built_bytes: int
+
+
+@dataclass(frozen=True)
+class RuntimeLoadResult:
+    resource: Any = field(compare=False, repr=False)
+    bytes_loaded: int = 0
+    load_completed: bool = True
+    warmup_completed: bool = True
+    cpu_fallback_count: int = 0
+
+
+@dataclass(frozen=True)
+class ExactPreparationCallbacks:
+    fetch_canonical: Callable[[Any], CanonicalFetchResult]
+    build_fragment: Callable[[Any, Any], FragmentBuildResult]
+    load_runtime: Callable[[Any, Any], RuntimeLoadResult]
+
+
+@dataclass(frozen=True)
+class ExactPreparationOutcome:
+    hit: Any = field(compare=False, repr=False)
+    transferred_bytes: int = 0
+    built_bytes: int = 0
+    loaded_bytes: int = 0
+    exact_warm_hit: bool = False
+
+
+class ExactArtifactPreparationPipeline:
+    """Three-level exact residency with bounded fetch/build/load sharing."""
+
+    def __init__(self, *, ledger: Any, callbacks: ExactPreparationCallbacks,
+                 flights: BoundedSingleFlight | None = None) -> None:
+        self.ledger = ledger
+        self.callbacks = callbacks
+        self.flights = flights or BoundedSingleFlight()
+
+    def ensure_loaded(
+        self, *, canonical_identity: Any, fragment_identity: Any,
+        loaded_identity: Any, owner: str, deadline_ms: int = 0,
+    ) -> ExactPreparationOutcome:
+        try:
+            hit = self.ledger.acquire_exact(loaded_identity, owner=owner)
+            return ExactPreparationOutcome(hit=hit, exact_warm_hit=True)
+        except KeyError:
+            pass
+
+        transferred = built = loaded = 0
+        fragment_hit = self.ledger.lookup_assembled(fragment_identity)
+        if fragment_hit is None:
+            canonical_hit = self.ledger.lookup_canonical(canonical_identity)
+            if canonical_hit is None:
+                def fetch_work():
+                    existing = self.ledger.lookup_canonical(canonical_identity)
+                    if existing is not None:
+                        return CanonicalFetchResult(
+                            existing.path, existing.size, 0, 0)
+                    result = self.callbacks.fetch_canonical(canonical_identity)
+                    if not isinstance(result, CanonicalFetchResult):
+                        raise TypeError("canonical fetch returned no verified result")
+                    self.ledger.admit_canonical(
+                        canonical_identity, result.path, size=result.size,
+                        unique_bytes=result.unique_bytes,
+                        wire_bytes=result.wire_bytes)
+                    return result
+
+                fetched = self.flights.run(
+                    phase="FETCH", identity_digest=canonical_identity.digest,
+                    work=fetch_work, deadline_ms=deadline_ms)
+                if fetched.leader:
+                    transferred += int(fetched.value.wire_bytes)
+                canonical_hit = self.ledger.lookup_canonical(canonical_identity)
+            if canonical_hit is None:
+                raise RuntimeError("canonical single-flight produced no residency")
+
+            # Another equal request may have completed assembly while this
+            # caller waited for canonical fetch. Revalidate before creating a
+            # new BUILD flight.
+            fragment_hit = self.ledger.lookup_assembled(fragment_identity)
+            if fragment_hit is not None:
+                pass
+            else:
+                def build_work():
+                    existing = self.ledger.lookup_assembled(fragment_identity)
+                    if existing is not None:
+                        return FragmentBuildResult(
+                            existing.path, existing.size, 0)
+                    result = self.callbacks.build_fragment(
+                        canonical_hit, fragment_identity)
+                    if not isinstance(result, FragmentBuildResult):
+                        raise TypeError("fragment build returned no verified result")
+                    self.ledger.admit_assembled(
+                        fragment_identity, result.path, size=result.size,
+                        built_bytes=result.built_bytes)
+                    return result
+
+                assembled = self.flights.run(
+                    phase="BUILD", identity_digest=fragment_identity.digest,
+                    work=build_work, deadline_ms=deadline_ms)
+                if assembled.leader:
+                    built += int(assembled.value.built_bytes)
+                fragment_hit = self.ledger.lookup_assembled(fragment_identity)
+        if fragment_hit is None:
+            raise RuntimeError("assembly single-flight produced no residency")
+
+        # The exact loaded identity may have appeared while this caller waited
+        # for BUILD. Revalidate before starting a LOAD flight.
+        existing_loaded = self.ledger.lookup_loaded(loaded_identity)
+        if existing_loaded is not None:
+            hit = self.ledger.acquire_exact(loaded_identity, owner=owner)
+            return ExactPreparationOutcome(
+                hit=hit, transferred_bytes=transferred,
+                built_bytes=built, loaded_bytes=0,
+                exact_warm_hit=(transferred == 0 and built == 0))
+
+        def load_work():
+            existing = self.ledger.lookup_loaded(loaded_identity)
+            if existing is not None:
+                return RuntimeLoadResult(existing.resource, 0)
+            result = self.callbacks.load_runtime(fragment_hit, loaded_identity)
+            if not isinstance(result, RuntimeLoadResult):
+                raise TypeError("runtime load returned no verified result")
+            self.ledger.admit_loaded(
+                loaded_identity, result.resource,
+                bytes_loaded=result.bytes_loaded,
+                load_completed=result.load_completed,
+                warmup_completed=result.warmup_completed,
+                cpu_fallback_count=result.cpu_fallback_count)
+            return result
+
+        runtime = self.flights.run(
+            phase="LOAD", identity_digest=loaded_identity.digest,
+            work=load_work, deadline_ms=deadline_ms)
+        if runtime.leader:
+            loaded += int(runtime.value.bytes_loaded)
+        hit = self.ledger.acquire_exact(loaded_identity, owner=owner)
+        return ExactPreparationOutcome(
+            hit=hit, transferred_bytes=transferred,
+            built_bytes=built, loaded_bytes=loaded,
+            exact_warm_hit=False)
 
 
 @dataclass

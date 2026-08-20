@@ -84,7 +84,7 @@ class T009LiveSourceBundleTests(unittest.TestCase):
         inner = RANK_INNER_SCRIPT.read_text(encoding="utf-8")
         self.assertNotIn("\nsleep 30\n", inner)
         self.assertIn(
-            "the first planning trigger; model publication happens after ACK_CLOSED",
+            "the first planning trigger; certificates are fetched on demand",
             inner,
         )
 

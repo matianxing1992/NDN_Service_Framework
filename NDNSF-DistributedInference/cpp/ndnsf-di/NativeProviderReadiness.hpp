@@ -8,6 +8,7 @@
 #include "ndn-service-framework/ServiceProvider.hpp"
 
 #include <functional>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <memory>
@@ -82,6 +83,8 @@ public:
   void setCapacitySnapshotProvider(CapacitySnapshotProvider provider);
   void setTelemetrySnapshotProvider(TelemetrySnapshotProvider provider);
   void setExecutionEvidence(ExecutionEvidence evidence);
+  void setExecutionEvidenceByRole(
+    std::map<std::string, ExecutionEvidence> evidenceByRole);
 
   ndn_service_framework::ServiceProvider::AckDecision
   makeAckDecision(const std::string& rolesText,
@@ -103,6 +106,7 @@ private:
   CapacitySnapshotProvider m_capacitySnapshotProvider;
   TelemetrySnapshotProvider m_telemetrySnapshotProvider;
   std::optional<ExecutionEvidence> m_executionEvidence;
+  std::map<std::string, ExecutionEvidence> m_executionEvidenceByRole;
 };
 
 } // namespace ndnsf::di

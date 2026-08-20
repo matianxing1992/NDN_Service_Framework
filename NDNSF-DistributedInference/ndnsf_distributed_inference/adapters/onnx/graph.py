@@ -10,9 +10,10 @@ edges with the tensor names that cross each chunk boundary.
 from __future__ import annotations
 
 import json
+import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from ...plan import InferenceDependency
 from ...core.ports import CandidateBudget, PlanCandidate, PlanCandidateSet
@@ -134,6 +135,150 @@ class OnnxGraphSummary:
                 for name, indices in sorted(self.tensor_consumers.items())
             },
         }
+
+
+@dataclass(frozen=True)
+class CanonicalOnnxIdentity:
+    """Packing-independent ONNX graph and initializer identity facts."""
+
+    normalized_tensor_map_digest: str
+    normalized_initializer_content_digest: str
+    parameter_config_digest: str
+    execution_semantics_digest: str
+    graph_digest: str
+    tensor_index: tuple[dict[str, Any], ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "normalizedTensorMapDigest": self.normalized_tensor_map_digest,
+            "normalizedInitializerContentDigest":
+                self.normalized_initializer_content_digest,
+            "parameterConfigDigest": self.parameter_config_digest,
+            "executionSemanticsDigest": self.execution_semantics_digest,
+            "graphDigest": self.graph_digest,
+            "tensorIndex": list(self.tensor_index),
+        }
+
+
+def _sha256_canonical(value: Any) -> str:
+    wire = json.dumps(
+        value, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(wire).hexdigest()
+
+
+def canonical_onnx_identity(
+    path: str | Path,
+    *,
+    parameter_config: Mapping[str, Any] | None = None,
+) -> CanonicalOnnxIdentity:
+    """Normalize graph, initializer, and tensor identity from one ONNX model.
+
+    Source filenames, archive order, protobuf field order, and external-data
+    packing are excluded.  Initializers are instead hashed by normalized name,
+    dtype, shape, little-endian contiguous bytes, and shared-content reference.
+    PyTorch and Transformers are neither imported nor required.
+    """
+
+    try:
+        import numpy as np  # type: ignore
+        import onnx  # type: ignore
+        from onnx import numpy_helper  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError(
+            "canonical ONNX identity requires onnx and numpy") from exc
+
+    model = onnx.load(str(Path(path)), load_external_data=True)
+
+    def proto_hex(value: Any) -> str:
+        try:
+            wire = value.SerializeToString(deterministic=True)
+        except TypeError:  # pragma: no cover - old protobuf compatibility
+            wire = value.SerializeToString()
+        return wire.hex()
+
+    tensor_index: list[dict[str, Any]] = []
+    content_to_names: dict[str, list[str]] = {}
+    for initializer in sorted(model.graph.initializer, key=lambda item: item.name):
+        if not initializer.name:
+            raise ValueError("ONNX initializer has no stable tensor name")
+        array = np.asarray(numpy_helper.to_array(initializer))
+        if array.dtype.byteorder == ">" or (
+                array.dtype.byteorder == "=" and not np.little_endian):
+            array = array.byteswap().view(array.dtype.newbyteorder("<"))
+        array = np.ascontiguousarray(array)
+        content_digest = "sha256:" + hashlib.sha256(array.tobytes(order="C")).hexdigest()
+        content_to_names.setdefault(content_digest, []).append(initializer.name)
+        tensor_index.append({
+            "tensorName": initializer.name,
+            "dtype": str(array.dtype.newbyteorder("<")),
+            "shape": [int(value) for value in array.shape],
+            "byteOrder": "little" if array.dtype.itemsize > 1 else "na",
+            "contentDigest": content_digest,
+            "byteLength": int(array.nbytes),
+        })
+    for item in tensor_index:
+        aliases = sorted(content_to_names[item["contentDigest"]])
+        item["sharedReference"] = aliases[0] if len(aliases) > 1 else ""
+
+    opsets = sorted(
+        ({"domain": str(item.domain), "version": int(item.version)}
+         for item in model.opset_import),
+        key=lambda item: (item["domain"], item["version"]),
+    )
+    nodes = []
+    for index, node in enumerate(model.graph.node):
+        nodes.append({
+            "index": index,
+            "domain": str(node.domain),
+            "opType": str(node.op_type),
+            "inputs": list(node.input),
+            "outputs": list(node.output),
+            "attributes": [
+                {"name": attribute.name, "wire": proto_hex(attribute)}
+                for attribute in sorted(node.attribute, key=lambda item: item.name)
+            ],
+        })
+    value_contracts = {
+        "inputs": [proto_hex(item) for item in model.graph.input],
+        "outputs": [proto_hex(item) for item in model.graph.output],
+        "valueInfo": sorted(proto_hex(item) for item in model.graph.value_info),
+    }
+    initializer_layout = [
+        {key: value for key, value in item.items() if key != "contentDigest"}
+        for item in tensor_index
+    ]
+    graph_facts = {
+        "irVersion": int(model.ir_version),
+        "opsets": opsets,
+        "nodes": nodes,
+        "values": value_contracts,
+        "initializerLayout": initializer_layout,
+        "functions": sorted(proto_hex(item) for item in model.functions),
+    }
+    semantics_facts = {
+        "opsets": opsets,
+        "nodes": nodes,
+        "functions": graph_facts["functions"],
+    }
+    if parameter_config is None:
+        parameter_config = {
+            str(item.key): str(item.value)
+            for item in model.metadata_props
+        }
+    return CanonicalOnnxIdentity(
+        normalized_tensor_map_digest=_sha256_canonical(tensor_index),
+        normalized_initializer_content_digest=_sha256_canonical([
+            {"tensorName": item["tensorName"],
+             "contentDigest": item["contentDigest"]}
+            for item in tensor_index
+        ]),
+        parameter_config_digest=_sha256_canonical(dict(parameter_config)),
+        execution_semantics_digest=_sha256_canonical(semantics_facts),
+        graph_digest=_sha256_canonical(graph_facts),
+        tensor_index=tuple(tensor_index),
+    )
 
 
 @dataclass(frozen=True)

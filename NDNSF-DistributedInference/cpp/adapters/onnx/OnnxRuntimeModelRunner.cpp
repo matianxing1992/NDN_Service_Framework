@@ -525,6 +525,8 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
     }
   }
   const auto collectStart = std::chrono::steady_clock::now();
+  RoleExecutionContext effectiveContext = ctx;
+  effectiveContext.inputsByScope = applyCertifiedTensorRedistributions(ctx);
   Ort::AllocatorWithDefaultOptions allocator;
   Ort::MemoryInfo memoryInfo = Ort::MemoryInfo::CreateCpu(
     OrtAllocatorType::OrtArenaAllocator,
@@ -555,7 +557,7 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
     auto typeInfo = m_impl->session.GetInputTypeInfo(i);
     auto tensorInfo = typeInfo.GetTensorTypeAndShapeInfo();
     inputShapes.push_back(shapeForInput(m_spec, inputName, i, tensorInfo.GetShape()));
-    const auto& bundle = inputBundleFor(ctx, m_spec, inputName, i);
+    const auto& bundle = inputBundleFor(effectiveContext, m_spec, inputName, i);
     auto tensor = tensorForInput(bundle, inputName, inputShapes.back());
     validateNamedTensor(tensor);
     const auto onnxType = toOnnxElementType(tensor.elementType);
@@ -661,7 +663,7 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
         return tensor.name == name;
       });
     if (duplicate == namedOutputs.end()) {
-      namedOutputs.push_back(passthroughTensorFor(ctx, name));
+      namedOutputs.push_back(passthroughTensorFor(effectiveContext, name));
     }
   }
 

@@ -28,6 +28,22 @@ struct TensorBundle
   std::size_t expectedBytes = 0;
 };
 
+/** Adapter-certified tensor-layout transition at one pipeline boundary. */
+struct RedistributionSpec
+{
+  std::vector<std::uint64_t> producerRanks;
+  std::vector<std::uint64_t> consumerRanks;
+  std::string tensor;
+  std::string operation;
+  std::string epoch;
+  std::string integrityDigest;
+  std::string sourceLayoutDigest;
+  std::string targetLayoutDigest;
+  std::int64_t axis = -1;
+  std::size_t temporaryMemoryBytes = 0;
+  bool completeOutput = false;
+};
+
 struct DependencyEdge
 {
   DependencyEdge() = default;
@@ -43,13 +59,57 @@ struct DependencyEdge
   std::string scope;
   std::string producerRole;
   std::string consumerRole;
+  std::vector<std::string> consumerRoles;
   std::string plannedDataName;
   std::size_t expectedSegments = 0;
   std::size_t expectedBytes = 0;
   std::vector<std::string> tensors;
   std::string requestId;
   std::uint64_t attemptEpoch = 0;
+  // Cross-Provider edges opt into the authenticated NDNSF_DATA_V1 profile.
+  // Ordinary pipeline dependencies remain on the existing COLLAB-LARGE path.
+  bool useNdnsfDataV1 = false;
+  std::uint64_t collectiveOperationIndex = 0;
+  std::string collectiveProducerRank;
+  std::string collectiveSourceLayoutDigest;
+  std::string collectiveTargetLayoutDigest;
+  std::string collectiveTensorDigest;
+  std::vector<RedistributionSpec> redistributions;
+  // Rank identifiers from the adapter-certified redistribution edge for this
+  // exact producer/consumer role projection.
+  std::optional<std::uint64_t> redistributionProducerRank;
+  std::optional<std::uint64_t> redistributionConsumerRank;
+  // Request-scoped V3 projections use the ordinary Collaboration naming
+  // contract when no explicit plannedDataName is sealed.
+  std::string transportScope;
+  std::string producerProvider;
+  std::string topicPrefix;
+  // Exact Placement V3 tensor-object authority. `expectedSegments` is the
+  // concrete count only after the signed manifest is verified; maxSegments is
+  // the plan-time allocation/fetch bound.
+  bool declaredByV3 = false;
+  std::string manifestDataName;
+  std::size_t maxSegments = 0;
+  std::string endpointDigest;
+  std::string planDigest;
+  std::string manifestContractDigest;
+  std::string tensorDigest;
+  std::string layoutDigest;
+  std::string securityProfile;
+  std::string operationKind;
+  std::uint64_t round = 0;
+  std::uint64_t microbatch = 0;
+  std::uint64_t noProgressDeadlineMs = 0;
+  std::uint64_t hardDeadlineMs = 0;
 };
+
+/** Fail closed unless a dependency bundle is complete for its sealed edge.
+ * V3 uses the runtime manifest's concrete segment/byte counts, while legacy
+ * edges may retain zero as an unspecified count. */
+void
+validateTensorBundleForEdge(const DependencyEdge& edge,
+                            const TensorBundle& bundle,
+                            bool requireReconstructed = true);
 
 struct RoleSpec
 {
@@ -80,6 +140,10 @@ struct RoleExecutionContext
   std::string sessionId;
   std::string role;
   std::map<std::string, TensorBundle> inputsByScope;
+  // Exact request-scoped dependency and redistribution contracts corresponding
+  // to inputsByScope. Adapter runners use these to apply GATHER/SCATTER/RESHARD
+  // rather than guessing layout semantics from tensor names.
+  std::map<std::string, DependencyEdge> inputEdgesByScope;
 };
 
 using RoleRunner = std::function<std::map<std::string, TensorBundle>(

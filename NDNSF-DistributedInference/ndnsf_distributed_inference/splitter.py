@@ -48,6 +48,45 @@ def canonical_contract_digest(value: Any) -> str:
     return _digest(value)
 
 
+def canonical_hybrid_rank_labels(
+    tensor_degrees: tuple[int, ...] | list[int],
+) -> tuple[str, ...]:
+    """Return the only legal stage/rank labels for a hybrid degree vector."""
+
+    degrees = tuple(int(value) for value in tensor_degrees)
+    if not degrees or any(value < 1 for value in degrees):
+        raise ValueError("hybrid tensor degrees must all be positive")
+    return tuple(
+        f"S{stage}R{rank}"
+        for stage, degree in enumerate(degrees)
+        for rank in range(degree)
+    )
+
+
+def seal_hybrid_plan(
+    *,
+    tensor_degrees: tuple[int, ...] | list[int],
+    redistributions: tuple[Any, ...] | list[Any] = (),
+):
+    """Seal a deterministic hybrid plan from explicit adapter certificates.
+
+    This common splitter helper deliberately does not infer a redistribution
+    operation from adjacent rank counts.  The model adapter supplies the
+    certified redistribution edges; :class:`HybridPlan` validates their rank
+    cover and forward stage topology before producing its stable digest.
+    """
+
+    from .core.hybrid_contracts import HybridPlan
+
+    degrees = tuple(int(value) for value in tensor_degrees)
+    return HybridPlan(
+        stages=len(degrees),
+        tensor_degrees=degrees,
+        rank_labels=canonical_hybrid_rank_labels(degrees),
+        redistributions=tuple(redistributions),
+    )
+
+
 def _frozen_mapping(value: Mapping[str, Any]) -> Mapping[str, Any]:
     return MappingProxyType({
         str(key): item for key, item in value.items()
@@ -310,6 +349,10 @@ class SplitCandidate:
     requirements_by_role: Mapping[str, RoleResourceRequirement]
     cross_partition_tensors: tuple[str, ...]
     estimated_costs: Mapping[str, int | float | None]
+    tensor_degrees_by_role: Mapping[str, int] = field(default_factory=dict)
+    rank_artifact_digests_by_role: Mapping[str, tuple[str, ...]] = field(
+        default_factory=dict)
+    hybrid_plan: Any | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "source", SplitSource(self.source))
@@ -332,6 +375,20 @@ class SplitCandidate:
         )
         object.__setattr__(
             self, "estimated_costs", _frozen_mapping(self.estimated_costs))
+        object.__setattr__(
+            self, "tensor_degrees_by_role",
+            _frozen_mapping({
+                str(role): int(value)
+                for role, value in self.tensor_degrees_by_role.items()
+            }),
+        )
+        object.__setattr__(
+            self, "rank_artifact_digests_by_role",
+            _frozen_mapping({
+                str(role): tuple(values)
+                for role, values in self.rank_artifact_digests_by_role.items()
+            }),
+        )
         _require_digest(self.graph_digest, "candidate graph_digest")
         roles = set(self.execution_plan.roles)
         if (set(self.fragments_by_role) != roles
@@ -348,6 +405,34 @@ class SplitCandidate:
         if len(set(self.cross_partition_tensors)) != len(
                 self.cross_partition_tensors):
             raise ValueError("split candidate duplicates a tensor edge")
+        if self.tensor_degrees_by_role:
+            if (set(self.tensor_degrees_by_role) != roles
+                    or any(value < 1
+                           for value in self.tensor_degrees_by_role.values())):
+                raise ValueError("hybrid candidate tensor-degree cover is incomplete")
+            rank_artifacts = self.rank_artifact_digests_by_role
+            if set(rank_artifacts) != roles:
+                raise ValueError("hybrid candidate rank-artifact cover is incomplete")
+            for role, degree in self.tensor_degrees_by_role.items():
+                values = rank_artifacts[role]
+                if len(values) != degree or len(set(values)) != len(values):
+                    raise ValueError("hybrid candidate rank artifacts are incomplete")
+                for value in values:
+                    _require_digest(value, "rank artifact digest")
+                if not set(values).issubset(set(self.artifacts_by_role[role])):
+                    raise ValueError("hybrid rank artifact is absent from its role")
+            from .core.hybrid_contracts import HybridPlan
+            if not isinstance(self.hybrid_plan, HybridPlan):
+                raise ValueError("hybrid candidate requires a sealed hybrid plan")
+            expected_degrees = tuple(
+                self.tensor_degrees_by_role[role]
+                for role in self.execution_plan.roles)
+            if self.hybrid_plan.tensor_degrees != expected_degrees:
+                raise ValueError("hybrid candidate degree vector mismatches its plan")
+        elif self.rank_artifact_digests_by_role:
+            raise ValueError("rank artifacts require explicit tensor degrees")
+        elif self.hybrid_plan is not None:
+            raise ValueError("hybrid plan requires explicit tensor degrees")
 
     @property
     def candidate_digest(self) -> str:

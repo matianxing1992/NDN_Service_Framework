@@ -277,6 +277,7 @@ BOOST_AUTO_TEST_CASE(MultipleLargeDataObjectsUseOnePreparedRequestScope)
 
 BOOST_AUTO_TEST_CASE(MissingLargeDataFetchFailsCleanly)
 {
+  ScopedEnvironmentValue fetchTimeout("NDNSF_REQUEST_LARGE_FETCH_TIMEOUT_MS", "100");
   ndn::security::KeyChain keyChain("pib-memory:missing-large-data",
                                    "tpm-memory:missing-large-data");
   ndn::DummyClientFace face(keyChain);
@@ -289,10 +290,14 @@ BOOST_AUTO_TEST_CASE(MissingLargeDataFetchFailsCleanly)
                                 aaCert,
                                 "examples/trust-any.conf");
 
+  const auto started = std::chrono::steady_clock::now();
   const auto result =
     provider.fetchAndDecryptLargeData(ndn::Name("/missing/large/data"), "/HELLO");
+  const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::steady_clock::now() - started).count();
   BOOST_CHECK(!result.success);
   BOOST_CHECK(!result.errorMessage.empty());
+  BOOST_CHECK_LT(elapsed, 1000);
 }
 
 BOOST_AUTO_TEST_CASE(LargeDataReferencePayloadRoundTrips)
@@ -499,6 +504,15 @@ BOOST_AUTO_TEST_CASE(V2RequestAndResponseNames)
   BOOST_CHECK_EQUAL(parsedResponse->requesterName, requester);
   BOOST_CHECK_EQUAL(parsedResponse->serviceName, serviceName);
   BOOST_CHECK_EQUAL(parsedResponse->requestId, requestId);
+
+  auto segmentedResponseName = responseName;
+  segmentedResponseName.appendVersion(0).appendSegment(0);
+  const auto parsedSegmentedResponse = parseResponseNameV2(segmentedResponseName);
+  BOOST_REQUIRE(parsedSegmentedResponse);
+  BOOST_CHECK_EQUAL(parsedSegmentedResponse->providerName, provider);
+  BOOST_CHECK_EQUAL(parsedSegmentedResponse->requesterName, requester);
+  BOOST_CHECK_EQUAL(parsedSegmentedResponse->serviceName, serviceName);
+  BOOST_CHECK_EQUAL(parsedSegmentedResponse->requestId, requestId);
 
   const auto compactSelectionName =
     makeCompactServiceSelectionNameV2(requester, serviceName, requestId);

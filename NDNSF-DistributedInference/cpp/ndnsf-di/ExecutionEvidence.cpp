@@ -4,6 +4,7 @@
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
 
+#include <algorithm>
 #include <set>
 #include <fstream>
 #include <sstream>
@@ -125,6 +126,12 @@ void ExecutionEvidence::validate() const
   if (runnerKind == RunnerKind::OnnxRuntimeCuda && deviceId.empty()) {
     throw std::invalid_argument("CUDA execution evidence missing device id");
   }
+  if (deviceId == "multi" && deviceIds.empty()) {
+    throw std::invalid_argument("multi-device evidence missing device id list");
+  }
+  if (gpuUuid == "multi" && gpuUuids.empty()) {
+    throw std::invalid_argument("multi-device evidence missing GPU UUID list");
+  }
   if (warmupCompleted && !loadCompleted) {
     throw std::invalid_argument(
       "execution evidence cannot warm before model load");
@@ -143,6 +150,9 @@ std::string executionEvidenceToJson(const ExecutionEvidence& evidence)
   root.put("realCompute", evidence.realCompute);
   root.put("device.kind", evidence.deviceKind);
   root.put("device.id", evidence.deviceId);
+  if (!evidence.deviceIds.empty()) {
+    root.add_child("device.ids", stringArray(evidence.deviceIds));
+  }
   root.put("runtimeVersion", evidence.runtimeVersion);
   root.put("modelDigest", evidence.modelDigest);
   root.put("planDigest", evidence.planDigest);
@@ -164,6 +174,9 @@ std::string executionEvidenceToJson(const ExecutionEvidence& evidence)
   root.put("loadCompleted", evidence.loadCompleted);
   root.put("warmupCompleted", evidence.warmupCompleted);
   root.put("gpuUuid", evidence.gpuUuid);
+  if (!evidence.gpuUuids.empty()) {
+    root.add_child("gpuUuids", stringArray(evidence.gpuUuids));
+  }
   root.put("providerProfilePath", evidence.providerProfilePath);
   root.put("createdAtMs", evidence.createdAtMs);
   return writeJson(root);
@@ -183,6 +196,7 @@ ExecutionEvidence executionEvidenceFromJson(const std::string& json)
   evidence.realCompute = root.get<bool>("realCompute", false);
   evidence.deviceKind = root.get<std::string>("device.kind", "");
   evidence.deviceId = root.get<std::string>("device.id", "");
+  evidence.deviceIds = readStringArray(root, "device.ids");
   evidence.runtimeVersion = root.get<std::string>("runtimeVersion", "");
   evidence.modelDigest = root.get<std::string>("modelDigest", "");
   evidence.planDigest = root.get<std::string>("planDigest", "");
@@ -206,6 +220,7 @@ ExecutionEvidence executionEvidenceFromJson(const std::string& json)
   evidence.loadCompleted = root.get<bool>("loadCompleted", false);
   evidence.warmupCompleted = root.get<bool>("warmupCompleted", false);
   evidence.gpuUuid = root.get<std::string>("gpuUuid", "");
+  evidence.gpuUuids = readStringArray(root, "gpuUuids");
   evidence.providerProfilePath = root.get<std::string>("providerProfilePath", "");
   evidence.createdAtMs = root.get<std::uint64_t>("createdAtMs", 0);
   evidence.validate();
@@ -243,6 +258,9 @@ applyOnnxRuntimeProviderProfile(ExecutionEvidence& evidence,
   evidence.nodeProviderAssignments = std::move(assignments);
   evidence.cpuFallbackUsed = cpuFallbackUsed;
   evidence.gpuUuid = gpuUuid;
+  if (!gpuUuid.empty()) {
+    evidence.gpuUuids = {gpuUuid};
+  }
   evidence.providerProfilePath = profilePath;
 }
 
@@ -265,6 +283,9 @@ ExecutionEvidence executionEvidenceFromRunnerSpec(const NativeModelRunnerSpec& s
   evidence.realCompute = isRealRunner(kind);
   evidence.deviceKind = std::move(deviceKind);
   evidence.deviceId = std::move(deviceId);
+  if (!evidence.deviceId.empty()) {
+    evidence.deviceIds = {evidence.deviceId};
+  }
   evidence.runtimeVersion = std::move(runtimeVersion);
   evidence.modelDigest = metadata("evidence.modelDigest");
   evidence.planDigest = metadata("evidence.planDigest");
@@ -275,6 +296,11 @@ ExecutionEvidence executionEvidenceFromRunnerSpec(const NativeModelRunnerSpec& s
   evidence.roles = {spec.role};
   evidence.createdAtMs = static_cast<std::uint64_t>(
     std::stoull(metadata("evidence.createdAtMs").empty() ? "0" : metadata("evidence.createdAtMs")));
+  const auto gpuUuid = metadata("evidence.gpuUuid");
+  if (!gpuUuid.empty()) {
+    evidence.gpuUuid = gpuUuid;
+    evidence.gpuUuids = {gpuUuid};
+  }
   evidence.validate();
   return evidence;
 }

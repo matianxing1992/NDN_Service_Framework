@@ -24,13 +24,20 @@ from ..core.contracts import (
     DATA_DRIVEN_V2, DIDataDependencyV2, DIRequestEnvelopeV2, DIRoleAssignmentV2,
     DISelectionAssignmentV2,
 )
+from ..core.group_capability import (
+    GroupMemberV1, GroupOperationV1, seal_group_capability_v1,
+)
 from ..plan import SealedCollaborationPlan
 from ..sdk.placement import (
     ArtifactPreparationMode,
     DIProviderOfferV2,
     DI_PLACEMENT_V3,
     UNBOUND_GRAPH_DIGEST_V3,
+    DeviceBinding,
+    DeviceBindingMode,
+    ExecutionRole,
     ExecutionDisposition,
+    GrantBindingV1,
     ModelPlacementStrategy,
     PlacementDecision,
     PlacementProposalV3,
@@ -40,13 +47,18 @@ from ..sdk.placement import (
     ProviderGrantViewV1,
     ProviderOfferV3,
     ProviderPlanningViewV3,
-    ProviderSelectionProjectionV3,
     ProviderPlanningView,
+    ReadinessMode,
+    ReadinessPredicate,
     RoleAssemblySpec,
+    RoleDataflowContract,
+    TensorEndpoint,
+    TensorEndpointSource,
     canonical_digest,
     build_provider_planning_view,
     evaluate_placement_strategy,
     is_cpu_backend,
+    validate_role_dataflow_contracts,
 )
 from ..splitter import SplitCandidate, SplitSource, canonical_contract_digest
 
@@ -80,6 +92,25 @@ def normalize_request_id_component(request_id: str) -> str:
     if not component or "/" in component:
         raise ValueError("request_id must encode to one NameComponent")
     return "/" + component
+
+
+_DATA_V1_MAX_BYTES = 64 << 20
+_DATA_V1_MAX_SEGMENTS = 1 << 20
+
+
+def _native_group_epoch_key_wrapper(
+    recipient_public_key: bytes,
+    epoch_key: bytes,
+) -> bytes:
+    """Wrap one epoch key with the Core RSA-OAEP implementation."""
+
+    try:
+        from ndnsf import _ndnsf
+        wrapper = _ndnsf.wrap_selection_gated_input_key
+    except (ImportError, AttributeError) as exc:
+        raise RuntimeError(
+            "NDNSF native binding lacks wrap_selection_gated_input_key") from exc
+    return bytes(wrapper(bytes(epoch_key), bytes(recipient_public_key)))
 
 
 @dataclass(frozen=True, init=False)
@@ -242,6 +273,7 @@ ProviderViewFactory = Callable[
     [Any, str, int], ProviderPlanningView
 ]
 CatalogSnapshotProvider = Callable[[], Tuple[Any, ...]]
+GrantBindingProvider = Callable[[ProviderGrantViewV1, int], GrantBindingV1]
 
 
 @dataclass(frozen=True)
@@ -334,6 +366,22 @@ class PublishedSplit:
             self, "artifact_data_names_by_role", MappingProxyType(names))
 
 
+def _candidate_artifacts_by_execution_key(
+    candidate: SplitCandidate,
+) -> dict[str, str]:
+    """Flatten logical roles into the exact role/rank key space."""
+
+    flattened: dict[str, str] = {}
+    for role in candidate.execution_plan.roles:
+        degree = int(candidate.tensor_degrees_by_role.get(role, 1))
+        values = candidate.rank_artifact_digests_by_role.get(
+            role, (candidate.artifacts_by_role[role][0],))
+        for rank, digest in enumerate(values):
+            key = role if degree == 1 else f"{role}#{rank}"
+            flattened[key] = digest
+    return flattened
+
+
 class SplitMaterializer(Protocol):
     """Trusted side-effect port that creates bytes for a generated split."""
 
@@ -424,22 +472,21 @@ class CatalogSnapshotArtifactPublisher:
         if len(matches) != 1:
             raise ValueError("exact active pre-split publication is not unique")
         snapshot = matches[0]
-        names = {
-            role: tuple(snapshot.artifact_data_names[role])
-            for role in candidate.execution_plan.roles
-        }
-        if any(len(values) != 1 for values in names.values()):
-            raise ValueError("automatic planning currently requires one artifact per role")
+        expected = _candidate_artifacts_by_execution_key(candidate)
+        names: dict[str, str] = {}
+        for role in candidate.execution_plan.roles:
+            values = tuple(snapshot.artifact_data_names[role])
+            degree = int(candidate.tensor_degrees_by_role.get(role, 1))
+            if len(values) != degree:
+                raise ValueError(
+                    "pre-split publication does not cover every role rank")
+            for rank, data_name in enumerate(values):
+                key = role if degree == 1 else f"{role}#{rank}"
+                names[key] = data_name
         return PublishedSplit(
             candidate_digest=candidate.candidate_digest,
-            artifact_digests_by_role={
-                role: candidate.artifacts_by_role[role][0]
-                for role in candidate.execution_plan.roles
-            },
-            artifact_data_names_by_role={
-                role: names[role][0]
-                for role in candidate.execution_plan.roles
-            },
+            artifact_digests_by_role=expected,
+            artifact_data_names_by_role=names,
         )
 
 
@@ -519,8 +566,11 @@ class AutomaticPlanningCoordinator:
         catalog_snapshot_provider: CatalogSnapshotProvider | None = None,
         budget: CandidateBudget | None = None,
         ack_timeout_ms: int = 300,
+        data_v1_no_progress_ms: int = 2000,
         ack_coverage_roles: tuple[str, ...] = (),
         ack_coverage_predicate: Callable[[tuple[Any, ...]], bool] | None = None,
+        group_epoch_key_wrapper: Callable[[bytes, bytes], bytes] | None = None,
+        grant_binding_provider: GrantBindingProvider | None = None,
     ) -> None:
         if not service_name or not adapters:
             raise ValueError("automatic planning coordinator is incomplete")
@@ -533,6 +583,8 @@ class AutomaticPlanningCoordinator:
                 "artifact_publisher does not implement publish/resolve_existing")
         if ack_timeout_ms <= 0:
             raise ValueError("ACK collection timeout must be positive")
+        if data_v1_no_progress_ms <= 0:
+            raise ValueError("NDNSF_DATA_V1 no-progress bound must be positive")
         self.service_user = service_user
         self.service_name = str(service_name)
         self.adapters = MappingProxyType(dict(adapters))
@@ -550,6 +602,7 @@ class AutomaticPlanningCoordinator:
         self.budget = budget or CandidateBudget(
             max_candidates=16, max_policy_ms=100)
         self.ack_timeout_ms = int(ack_timeout_ms)
+        self.data_v1_no_progress_ms = int(data_v1_no_progress_ms)
         self.ack_coverage_roles = tuple(str(role) for role in ack_coverage_roles)
         if (len(set(self.ack_coverage_roles)) != len(self.ack_coverage_roles)
                 or any(not role for role in self.ack_coverage_roles)):
@@ -558,6 +611,260 @@ class AutomaticPlanningCoordinator:
                 and not callable(ack_coverage_predicate)):
             raise TypeError("ack_coverage_predicate must be callable")
         self.ack_coverage_predicate = ack_coverage_predicate
+        if (group_epoch_key_wrapper is not None
+                and not callable(group_epoch_key_wrapper)):
+            raise TypeError("group_epoch_key_wrapper must be callable")
+        self.group_epoch_key_wrapper = (
+            group_epoch_key_wrapper or _native_group_epoch_key_wrapper)
+        if (grant_binding_provider is not None
+                and not callable(grant_binding_provider)):
+            raise TypeError("grant_binding_provider must be callable")
+        self.grant_binding_provider = grant_binding_provider
+
+    @staticmethod
+    def _validated_data_v1_key_offer(
+        ack: Any,
+        provider_offer: ProviderOfferV3,
+    ) -> tuple[bytes, str]:
+        fields = dict(
+            getattr(ack, "selection_input_key_offer", {}) or {})
+        required = {
+            "schemaVersion", "recipient", "recipientCertName",
+            "recipientPublicKey", "recipientCertDigest",
+            "providerBootEpoch", "ndnsfDataV1EndpointPrefix",
+        }
+        if not required.issubset(fields):
+            raise ValueError(
+                f"Provider {provider_offer.provider} omitted NDNSF_DATA_V1 key offer")
+        if (fields["schemaVersion"] != "1"
+                or fields["recipient"] != provider_offer.provider
+                or not fields["recipientCertName"]
+                or fields["providerBootEpoch"] != provider_offer.boot_epoch
+                or not fields["ndnsfDataV1EndpointPrefix"]):
+            raise ValueError(
+                f"Provider {provider_offer.provider} returned a mismatched key offer")
+        endpoint_prefix = str(fields["ndnsfDataV1EndpointPrefix"]).rstrip("/")
+        provider_prefix = str(provider_offer.provider).rstrip("/")
+        if (endpoint_prefix != provider_prefix
+                and not endpoint_prefix.startswith(provider_prefix + "/")):
+            raise ValueError(
+                f"Provider {provider_offer.provider} advertised an endpoint "
+                "outside its signed identity namespace")
+        public_key_hex = str(fields["recipientPublicKey"])
+        if (not public_key_hex or len(public_key_hex) % 2 != 0
+                or public_key_hex != public_key_hex.lower()):
+            raise ValueError(
+                f"Provider {provider_offer.provider} returned an invalid key offer")
+        try:
+            public_key = bytes.fromhex(public_key_hex)
+        except ValueError as exc:
+            raise ValueError(
+                f"Provider {provider_offer.provider} returned an invalid key offer") from exc
+        expected_digest = "sha256:" + hashlib.sha256(public_key).hexdigest()
+        if str(fields["recipientCertDigest"]).lower() != expected_digest:
+            raise ValueError(
+                f"Provider {provider_offer.provider} key offer digest mismatch")
+        return public_key, endpoint_prefix
+
+    def _seal_v3_group_capabilities(
+        self,
+        *,
+        request_id: str,
+        proposal: PlacementProposalV3,
+        dependencies: tuple[Any, ...],
+        provider_views: Mapping[str, ProviderPlanningViewV3],
+        provider_offers: Mapping[str, ProviderOfferV3],
+        provider_acks: Mapping[str, Any],
+        plan_digest: str,
+        deadline_ms: int,
+    ) -> tuple[dict[str, str], dict[int, Mapping[str, Any]]]:
+        """Seal one least-privilege capability per connected Provider group."""
+
+        role_counts = {
+            item.role: sum(other.role == item.role for other in proposal.roles)
+            for item in proposal.roles
+        }
+        providers_by_role: dict[str, set[str]] = {}
+        for role in proposal.roles:
+            key = (role.role if role_counts[role.role] == 1
+                   else f"{role.role}#{role.rank}")
+            providers_by_role.setdefault(role.role, set()).add(
+                str(proposal.provider_by_role[key]))
+
+        parent: dict[str, str] = {}
+
+        def find(item: str) -> str:
+            parent.setdefault(item, item)
+            while parent[item] != item:
+                parent[item] = parent[parent[item]]
+                item = parent[item]
+            return item
+
+        def union(left: str, right: str) -> None:
+            left_root, right_root = find(left), find(right)
+            if left_root != right_root:
+                parent[max(left_root, right_root)] = min(left_root, right_root)
+
+        cross_dependencies: list[
+            tuple[
+                int, Any, tuple[str, ...], tuple[str, ...], str,
+                dict[str, Any],
+            ]
+        ] = []
+        for index, dependency in enumerate(dependencies):
+            dependency_contract = (
+                dict(proposal.dependencies[index])
+                if index < len(proposal.dependencies) else {})
+            producers = tuple(sorted(providers_by_role.get(
+                str(dependency.producer), set())))
+            consumers = tuple(sorted(providers_by_role.get(
+                str(dependency.consumer), set())))
+            if not producers or not consumers:
+                raise ValueError("V3 dependency references an unassigned role")
+            members = tuple(sorted(set(producers) | set(consumers)))
+            if len(members) < 2 or not any(
+                    producer != consumer for producer in producers
+                    for consumer in consumers):
+                continue
+            for member in members[1:]:
+                union(members[0], member)
+            layout_digest = canonical_digest(dependency_contract or {
+                "producer": dependency.producer,
+                "consumer": dependency.consumer,
+                "tensors": tuple(dependency.tensor_edges),
+            })
+            cross_dependencies.append(
+                (index, dependency, producers, consumers, layout_digest,
+                 dependency_contract))
+
+        if not cross_dependencies:
+            return {}, {}
+
+        components: dict[str, set[str]] = {}
+        for provider in parent:
+            components.setdefault(find(provider), set()).add(provider)
+        capability_by_provider: dict[str, str] = {}
+        dependency_metadata: dict[int, Mapping[str, Any]] = {}
+        remaining_ms = max(1, deadline_ms - int(time.time() * 1000))
+        no_progress_ms = min(self.data_v1_no_progress_ms, remaining_ms)
+
+        for component_index, members_set in enumerate(
+                sorted(components.values(), key=lambda values: tuple(sorted(values)))):
+            member_names = tuple(sorted(members_set))
+            member_rank = {
+                provider: rank for rank, provider in enumerate(member_names)}
+            public_keys: dict[str, bytes] = {}
+            members: list[GroupMemberV1] = []
+            for provider in member_names:
+                offer = provider_offers.get(provider)
+                ack = provider_acks.get(provider)
+                view = provider_views.get(provider)
+                if offer is None or ack is None or view is None:
+                    raise ValueError(
+                        f"Provider {provider} is missing its ACK-bound key offer")
+                public_key, endpoint_prefix = self._validated_data_v1_key_offer(
+                    ack, offer)
+                public_keys[provider] = public_key
+                members.append(GroupMemberV1(
+                    provider=provider, rank=member_rank[provider],
+                    offer_digest=view.offer_digest,
+                    endpoint_prefix=endpoint_prefix,
+                ))
+
+            operations: list[GroupOperationV1] = []
+            for (index, dependency, producers, consumers, layout_digest,
+                 dependency_contract) in (
+                    cross_dependencies):
+                involved = set(producers) | set(consumers)
+                if not involved.issubset(members_set):
+                    continue
+                producer_ranks = tuple(str(member_rank[item]) for item in producers)
+                consumer_ranks = tuple(str(member_rank[item]) for item in consumers)
+                redistributions = tuple(
+                    dependency_contract.get("redistributions", ()))
+                operation_kind = (
+                    str(redistributions[0].get("operation", ""))
+                    if redistributions else "PIPELINE_TRANSFER")
+                operation_index = int(dependency_contract.get(
+                    "collectiveOperationIndex", index))
+                source_layout_digest = str(dependency_contract.get(
+                    "collectiveSourceLayoutDigest", layout_digest))
+                target_layout_digest = str(dependency_contract.get(
+                    "collectiveTargetLayoutDigest", layout_digest))
+                tensor_digest = str(dependency_contract.get(
+                    "collectiveTensorDigest",
+                    canonical_digest(tuple(dependency.tensor_edges))))
+                operations.append(GroupOperationV1(
+                    operation_index=operation_index,
+                    kind=operation_kind,
+                    producer_ranks=producer_ranks,
+                    consumer_ranks=consumer_ranks,
+                    tensor_layout_digest=canonical_digest({
+                        "source": source_layout_digest,
+                        "target": target_layout_digest,
+                    }),
+                    max_bytes=_DATA_V1_MAX_BYTES,
+                    max_segments=_DATA_V1_MAX_SEGMENTS,
+                ))
+                dependency_metadata[index] = MappingProxyType({
+                    "transportProfile": "NDNSF_DATA_V1",
+                    "collectiveOperationIndex": operation_index,
+                    "collectiveProducerRank": str(dependency_contract.get(
+                        "collectiveProducerRank", producer_ranks[0])),
+                    "collectiveSourceLayoutDigest": source_layout_digest,
+                    "collectiveTargetLayoutDigest": target_layout_digest,
+                    "collectiveTensorDigest": tensor_digest,
+                })
+
+            group_id = "group-" + canonical_digest({
+                "plan": plan_digest,
+                "component": component_index,
+                "members": member_names,
+            })[7:39]
+            capability = seal_group_capability_v1(
+                request_id=request_id,
+                attempt_id=f"attempt-{proposal.attempt}",
+                plan_digest=plan_digest,
+                group_id=group_id,
+                epoch=1,
+                ordered_members=members,
+                permitted_operations=operations,
+                max_inflight_bytes=_DATA_V1_MAX_BYTES,
+                no_progress_ms=no_progress_ms,
+                hard_deadline_ms=remaining_ms,
+                wrap_epoch_key=lambda provider, key: self.group_epoch_key_wrapper(
+                    public_keys[provider], key),
+            )
+            endpoint_prefixes = {
+                item.provider: item.endpoint_prefix for item in members
+            }
+            for index, *_ in cross_dependencies:
+                current = dependency_metadata.get(index)
+                if current is None:
+                    continue
+                involved_providers = set()
+                dependency = dependencies[index]
+                involved_providers.update(
+                    providers_by_role.get(str(dependency.producer), set()))
+                involved_providers.update(
+                    providers_by_role.get(str(dependency.consumer), set()))
+                if not involved_providers.issubset(members_set):
+                    continue
+                dependency_metadata[index] = MappingProxyType({
+                    **dict(current),
+                    "groupId": group_id,
+                    "groupEpoch": str(capability.epoch),
+                    "noProgressMs": capability.no_progress_ms,
+                    "hardDeadlineMs": capability.hard_deadline_ms,
+                    "producerEndpointPrefixes": {
+                        provider: endpoint_prefixes[provider]
+                        for provider in sorted(involved_providers)
+                    },
+                })
+            for provider in member_names:
+                capability_by_provider[provider] = (
+                    capability.project_for_provider(provider).to_bytes().hex())
+        return capability_by_provider, dependency_metadata
 
     def _resolve_adapter(
         self,
@@ -945,6 +1252,7 @@ class AutomaticPlanningCoordinator:
             self.service_name, request_payload, mode="DEFERRED",
             ack_timeout_ms=self.ack_timeout_ms, timeout_ms=timeout_ms,
             request_id=request_id, fail_fast_terminal_selection=True,
+            request_capabilities={"NDNSF_DATA_V1": "required"},
             **({"ack_coverage_predicate": ack_coverage_predicate}
                if ack_coverage_predicate is not None else {}),
         )
@@ -974,6 +1282,8 @@ class AutomaticPlanningCoordinator:
             raise ValueError("adapter returned an invalid V3 candidate set")
 
         providers: list[ProviderPlanningViewV3] = []
+        provider_offers: dict[str, ProviderOfferV3] = {}
+        provider_acks: dict[str, Any] = {}
         for ack in tuple(closed.candidates):
             if not bool(getattr(ack, "status", False)):
                 continue
@@ -985,7 +1295,12 @@ class AutomaticPlanningCoordinator:
                     "V3 provider view factory must accept graph_digest") from exc
             if not isinstance(view, ProviderPlanningViewV3):
                 raise TypeError("V3 ACK did not produce ProviderPlanningViewV3")
+            offer = ProviderOfferV3.from_bytes(bytes(ack.payload))
+            if offer.provider != view.provider or view.provider in provider_acks:
+                raise ValueError("V3 ACK Provider identity is ambiguous")
             providers.append(view)
+            provider_offers[view.provider] = offer
+            provider_acks[view.provider] = ack
         if not providers:
             raise ValueError("ACK_CLOSED contains no valid V3 Provider offer")
 
@@ -1045,6 +1360,99 @@ class AutomaticPlanningCoordinator:
                 "V3 strategy found no feasible graph candidate"
                 + (f" ({detail})" if detail else ""))
 
+        # The placement strategy chooses feasible Provider ownership from the
+        # ACK set using draft role requirements.  Only after that choice do we
+        # bind each role to the immutable ACTIVE canonical root and to an exact
+        # adapter-certified ONNX assembly recipe.  No Provider path or locally
+        # assembled file is selected by the User.
+        if (self.canonical_artifact_ensurer is not None
+                and callable(getattr(
+                    self.canonical_artifact_ensurer, "describe", None))):
+            binding = self.canonical_artifact_ensurer.describe(selected_candidate)
+            proposal = replace(
+                proposal,
+                roles=self._certify_v3_role_specs(
+                    selected_candidate, graph, proposal.roles, binding),
+            )
+
+        proposal_role_counts = {
+            item.role: sum(other.role == item.role for other in proposal.roles)
+            for item in proposal.roles
+        }
+
+        def proposal_role_key(spec: RoleAssemblySpec) -> str:
+            return (spec.role if proposal_role_counts[spec.role] == 1
+                    else f"{spec.role}#{spec.rank}")
+
+        role_keys_by_name: dict[str, tuple[str, ...]] = {}
+        for logical_role in selected_candidate.execution_plan.roles:
+            role_keys_by_name[logical_role] = tuple(
+                proposal_role_key(spec) for spec in proposal.roles
+                if spec.role == logical_role)
+            if not role_keys_by_name[logical_role]:
+                raise ValueError(
+                    f"V3 proposal omitted role {logical_role}")
+
+        dependency_dicts: list[dict[str, Any]] = []
+        redistribution_by_boundary: dict[int, list[dict[str, Any]]] = {}
+        if selected_candidate.hybrid_plan is not None:
+            rank_stage: dict[int, int] = {}
+            rank_cursor = 0
+            for stage, degree in enumerate(
+                    selected_candidate.hybrid_plan.tensor_degrees):
+                for rank in range(rank_cursor, rank_cursor + degree):
+                    rank_stage[rank] = stage
+                rank_cursor += degree
+            for edge in selected_candidate.hybrid_plan.redistributions:
+                boundary = rank_stage[edge.producer_ranks[0]]
+                redistribution_by_boundary.setdefault(boundary, []).append({
+                    "producerRanks": list(edge.producer_ranks),
+                    "consumerRanks": list(edge.consumer_ranks),
+                    "tensor": edge.tensor,
+                    "operation": edge.operation,
+                    "epoch": edge.epoch,
+                    "integrityDigest": edge.integrity_digest,
+                    "sourceLayoutDigest": edge.source_layout_digest,
+                    "targetLayoutDigest": edge.target_layout_digest,
+                    "temporaryMemoryBytes": edge.temporary_memory_bytes,
+                    "completeOutput": edge.complete_output,
+                    "axis": edge.axis,
+                })
+        for index, dependency in enumerate(
+                selected_candidate.execution_plan.dependencies):
+            scope = f"tensor-{index}-{canonical_digest(dependency)[7:23]}"
+            dependency_contract = {
+                "producers": list(role_keys_by_name[dependency.producer]),
+                "consumers": list(role_keys_by_name[dependency.consumer]),
+                "key_scope": scope,
+                "topic_prefix": "/activation",
+                # Native Providers must derive the same immutable object name
+                # without relying on the producer's process-local sequence.
+                "object_name_template": (
+                    "{producerProvider}/NDNSF/DI/DATA/{sessionId}/"
+                    "{keyScope}/{producerRole}"
+                ),
+                "required": True,
+                "tensors": list(dependency.tensor_edges),
+            }
+            if redistribution_by_boundary.get(index):
+                dependency_contract["redistributions"] = (
+                    redistribution_by_boundary[index])
+                first = redistribution_by_boundary[index][0]
+                dependency_contract.update({
+                    "transportProfile": "NDNSF_DATA_V1",
+                    "collectiveOperationIndex": index,
+                    "collectiveProducerRank": str(first["producerRanks"][0]),
+                    "collectiveSourceLayoutDigest": first["sourceLayoutDigest"],
+                    "collectiveTargetLayoutDigest": first["targetLayoutDigest"],
+                    "collectiveTensorDigest": first["integrityDigest"],
+                })
+            dependency_dicts.append(dependency_contract)
+        # Dependencies are part of the proposal/core digest.  Adding them only
+        # to Provider projections after sealing would let a rank edge change
+        # without changing the selected plan identity.
+        proposal = replace(proposal, dependencies=tuple(dependency_dicts))
+
         # Use the strategy's sealed role specs (including rank/device choices)
         # as the canonical-ensure input; the candidate-derived tuple is only
         # the strategy's initial proposal input.
@@ -1099,65 +1507,82 @@ class AutomaticPlanningCoordinator:
             "request_id": collaboration.request_id,
             "attempt": 1,
         })
-        grants = tuple(
-            PlanSealerV3.grant_view(
-                core, provider, {item.provider: item for item in providers}[provider],
-                security_policy_digest)
-            for provider in sorted(set(core.provider_by_role.values()))
-        )
+        provider_views = {item.provider: item for item in providers}
+        role_names = tuple(item.role for item in core.roles)
+        protected_providers = {
+            core.provider_by_role[
+                role.role if role_names.count(role.role) == 1
+                else f"{role.role}#{role.rank}"]
+            for role in core.roles
+            if role.protection_epoch != "plaintext-v1"
+        }
+        if protected_providers and self.grant_binding_provider is None:
+            raise RuntimeError(
+                "protected placement requires an ArtifactPolicyAuthority grant provider")
+        grant_bindings_by_provider: dict[str, GrantBindingV1] = {}
+        for provider in sorted(protected_providers):
+            grant_view = PlanSealerV3.grant_view(
+                core, provider, provider_views[provider], security_policy_digest)
+            binding = self.grant_binding_provider(grant_view, deadline_ms)
+            if not isinstance(binding, GrantBindingV1):
+                raise TypeError("grant provider did not return GrantBindingV1")
+            grant_bindings_by_provider[provider] = binding
+        grants = tuple(grant_bindings_by_provider.values())
         plan_digest = PlanSealerV3.finalize_security(
             core, grants, security_policy_digest)
-        provider_views = {item.provider: item for item in providers}
 
         dependencies: list[CollaborationDependency] = []
         committed_dependencies: list[DIDataDependencyV2] = []
         key_scopes: dict[str, tuple[str, ...]] = {}
+        all_role_keys = tuple(
+            proposal_role_key(spec) for spec in proposal.roles)
         role_scopes: dict[str, list[str]] = {
-            role: [] for role in selected_candidate.execution_plan.roles
+            role: [] for role in all_role_keys
         }
         input_scopes: dict[str, list[str]] = {
-            role: [] for role in selected_candidate.execution_plan.roles
+            role: [] for role in all_role_keys
         }
-        dependency_dicts: list[dict[str, Any]] = []
-        for index, dependency in enumerate(selected_candidate.execution_plan.dependencies):
-            scope = f"tensor-{index}-{canonical_digest(dependency)[7:23]}"
-            dependency_dict = {
-                "producers": [dependency.producer],
-                "consumers": [dependency.consumer],
-                "key_scope": scope,
-                "topic_prefix": "/activation",
-                "required": True,
-                "tensors": list(dependency.tensor_edges),
-            }
-            dependency_dicts.append(dependency_dict)
+        for dependency_dict, dependency in zip(
+                dependency_dicts,
+                selected_candidate.execution_plan.dependencies):
+            scope = str(dependency_dict["key_scope"])
+            producer_roles = tuple(str(item)
+                                   for item in dependency_dict["producers"])
+            consumer_roles = tuple(str(item)
+                                   for item in dependency_dict["consumers"])
             dependencies.append(CollaborationDependency(
-                producers=[dependency.producer], consumers=[dependency.consumer],
+                producers=list(producer_roles), consumers=list(consumer_roles),
                 key_scope=scope, topic_prefix="/activation", required=True,
             ))
             committed_dependencies.append(DIDataDependencyV2(
-                producers=(dependency.producer,), consumers=(dependency.consumer,),
+                producers=producer_roles, consumers=consumer_roles,
                 key_scope=scope, topic_prefix="/activation", required=True,
                 tensors=tuple(dependency.tensor_edges),
             ))
-            key_scopes[scope] = (dependency.producer, dependency.consumer)
-            role_scopes[dependency.producer].append(scope)
-            role_scopes[dependency.consumer].append(scope)
-            input_scopes[dependency.consumer].append(scope)
+            key_scopes[scope] = producer_roles + consumer_roles
+            for role in producer_roles + consumer_roles:
+                role_scopes[role].append(scope)
+            for role in consumer_roles:
+                input_scopes[role].append(scope)
         if str(generation_mode).upper() == "FULL":
-            key_scopes[GENERATION_CONTROL_SCOPE] = tuple(
-                selected_candidate.execution_plan.roles)
-            for role in selected_candidate.execution_plan.roles:
+            key_scopes[GENERATION_CONTROL_SCOPE] = all_role_keys
+            for role in all_role_keys:
                 role_scopes[role].append(GENERATION_CONTROL_SCOPE)
 
-        role_specs_by_name = {item.role: item for item in proposal.roles}
         artifact_names: dict[str, str] = {}
         roles: list[CollaborationRole] = []
-        for role in selected_candidate.execution_plan.roles:
-            spec = role_specs_by_name[role]
+        for spec in proposal.roles:
+            role = proposal_role_key(spec)
             artifact_name = (
-                canonical_published.artifact_data_names_by_role[role]
+                canonical_published.artifact_data_names_by_role.get(
+                    role,
+                    canonical_published.artifact_data_names_by_role.get(
+                        spec.role, ""))
                 if canonical_published is not None
                 else self._v3_artifact_name(model, graph, spec, adapter))
+            if not artifact_name:
+                raise ValueError(
+                    f"published split omitted rank artifact {role}")
             artifact_names[role] = artifact_name
             roles.append(CollaborationRole(
                 role=role, service=self.service_name, artifact=artifact_name,
@@ -1166,6 +1591,198 @@ class AutomaticPlanningCoordinator:
 
         assignment_payloads: dict[str, bytes] = {}
         providers_by_role = dict(proposal.provider_by_role)
+        group_capabilities, dependency_metadata = (
+            self._seal_v3_group_capabilities(
+                request_id=collaboration.request_id,
+                proposal=proposal,
+                dependencies=tuple(selected_candidate.execution_plan.dependencies),
+                provider_views=provider_views,
+                provider_offers=provider_offers,
+                provider_acks=provider_acks,
+                plan_digest=plan_digest,
+                deadline_ms=deadline_ms,
+            ))
+        for index, metadata in dependency_metadata.items():
+            dependency_dicts[index].update(dict(metadata))
+
+        specs_by_role = {
+            proposal_role_key(spec): spec for spec in proposal.roles
+        }
+        execution_roles = {
+            role: ExecutionRole(
+                role_id=role,
+                stage_id=spec.role,
+                rank=spec.rank,
+                layer_begin=spec.layer_begin,
+                layer_end=spec.layer_end,
+                backend=spec.backend,
+                adapter_id=spec.adapter_id,
+                adapter_version=spec.adapter_version,
+            )
+            for role, spec in specs_by_role.items()
+        }
+        may_publish: dict[str, list[TensorEndpoint]] = {
+            role: [] for role in specs_by_role
+        }
+        must_fetch: dict[str, list[TensorEndpoint]] = {
+            role: [] for role in specs_by_role
+        }
+        outgoing_roles: set[str] = set()
+        for index, dependency in enumerate(dependency_dicts):
+            redistributions = tuple(dependency.get("redistributions", ()))
+            redistribution = (
+                dict(redistributions[0]) if redistributions else {})
+            operation = str(
+                redistribution.get("operation", "PIPELINE"))
+            tensor_id = str(
+                redistribution.get("tensor", dependency["key_scope"]))
+            tensor_digest = str(
+                redistribution.get(
+                    "integrityDigest",
+                    canonical_digest(dependency.get("tensors", ())),
+                ))
+            layout_digest = str(
+                redistribution.get(
+                    "sourceLayoutDigest",
+                    canonical_digest({
+                        "scope": dependency["key_scope"],
+                        "layout": "adapter-certified-opaque",
+                    }),
+                ))
+            target_layout_digest = str(
+                redistribution.get("targetLayoutDigest", layout_digest))
+            group_id = str(dependency.get(
+                "groupId", dependency["key_scope"]))
+            group_epoch = str(dependency.get(
+                "groupEpoch",
+                redistribution.get("epoch", f"attempt-{core.attempt}")))
+            round_id = int(dependency.get(
+                "collectiveOperationIndex", index))
+            for producer_role in dependency["producers"]:
+                producer = str(producer_role)
+                outgoing_roles.add(producer)
+                if producer not in specs_by_role:
+                    raise ValueError(
+                        "V3 dependency references an unknown producer role")
+                producer_spec = specs_by_role[producer]
+                producer_provider = providers_by_role.get(producer)
+                if producer_provider is None:
+                    raise ValueError("V3 dependency producer has no Provider")
+                endpoint_prefixes = dict(
+                    dependency.get("producerEndpointPrefixes", {}))
+                producer_namespace = str(
+                    endpoint_prefixes.get(producer_provider, producer_provider))
+                dependency_consumers = tuple(
+                    str(role) for role in dependency["consumers"])
+                producer_endpoint: TensorEndpoint | None = None
+                for consumer_role in dependency_consumers:
+                    consumer = str(consumer_role)
+                    if consumer not in specs_by_role:
+                        raise ValueError(
+                            "V3 dependency references an unknown consumer role")
+                    manifest_digest = canonical_digest({
+                        "requestId": collaboration.request_id,
+                        "attempt": core.attempt,
+                        "planDigest": plan_digest,
+                        "group": group_id,
+                        "epoch": group_epoch,
+                        "operation": operation,
+                        "round": round_id,
+                        "producer": producer,
+                        "consumers": dependency_consumers,
+                        "tensor": tensor_id,
+                        "tensorDigest": tensor_digest,
+                    })
+                    endpoint = TensorEndpoint(
+                        producer_namespace=producer_namespace,
+                        requester=(collaboration.request_id
+                                   if collaboration.request_id.startswith("/")
+                                   else "/" + collaboration.request_id),
+                        request_id=collaboration.request_id,
+                        attempt=core.attempt,
+                        plan_digest=plan_digest,
+                        group_id=group_id,
+                        group_epoch=group_epoch,
+                        operation=operation,
+                        round=round_id,
+                        source_kind=TensorEndpointSource.ROLE,
+                        producer_role=producer,
+                        producer_rank=producer_spec.rank,
+                        consumer_role=consumer,
+                        tensor_id=tensor_id,
+                        tensor_digest=tensor_digest,
+                        layout_digest=layout_digest,
+                        microbatch=0,
+                        # Plan-time upper bound. The signed runtime manifest
+                        # supplies the concrete segment count after execution.
+                        segment_count=_DATA_V1_MAX_SEGMENTS,
+                        manifest_digest=manifest_digest,
+                        security_profile="NDNSF_DATA_V1",
+                        no_progress_deadline_ms=int(dependency.get(
+                            "noProgressMs", self.data_v1_no_progress_ms)),
+                        hard_deadline_ms=int(dependency.get(
+                            "hardDeadlineMs",
+                            max(1, deadline_ms - int(time.time() * 1000)))),
+                        consumer_roles=dependency_consumers,
+                        target_layout_digest=target_layout_digest,
+                    )
+                    if producer_endpoint is None:
+                        producer_endpoint = endpoint
+                    must_fetch[consumer].append(endpoint)
+                if producer_endpoint is not None:
+                    may_publish[producer].append(producer_endpoint)
+
+        terminal_roles = sorted(set(specs_by_role) - outgoing_roles)
+        if len(terminal_roles) != 1:
+            raise ValueError(
+                "V3 plan must have exactly one terminal Response owner")
+        dataflow_contracts = {}
+        for role in sorted(specs_by_role):
+            fetches = tuple(must_fetch[role])
+            wait_for = (() if not fetches else (
+                ReadinessPredicate(
+                    ReadinessMode.ALL,
+                    tuple(item.endpoint_digest for item in fetches),
+                ),
+            ))
+            dataflow_contracts[role] = RoleDataflowContract(
+                request_id=collaboration.request_id,
+                attempt=core.attempt,
+                plan_digest=plan_digest,
+                role=role,
+                may_publish=tuple(may_publish[role]),
+                must_fetch=fetches,
+                wait_for=wait_for,
+                terminal_response_owner=(role == terminal_roles[0]),
+            )
+        validate_role_dataflow_contracts(
+            tuple(execution_roles.values()),
+            tuple(dataflow_contracts.values()),
+        )
+
+        device_bindings = {}
+        for role, spec in specs_by_role.items():
+            provider = providers_by_role[role]
+            view = provider_views[provider]
+            cpu = is_cpu_backend(spec.backend)
+            if not cpu and len(spec.device_set) != 1:
+                raise ValueError(
+                    "V3 accelerator role requires one selected device")
+            resource_sequence = max(
+                (item.resource_sequence for item in view.resources),
+                default=1,
+            )
+            device_bindings[role] = DeviceBinding(
+                mode=(DeviceBindingMode.CPU if cpu
+                      else DeviceBindingMode.SINGLE_DEVICE),
+                provider=provider,
+                role=role,
+                offer_digest=view.offer_digest,
+                topology_profile_digest=view.topology.digest(),
+                resource_snapshot_digest=canonical_digest(view.resources),
+                resource_sequence=resource_sequence,
+                offer_scoped_device_handle=("" if cpu else spec.device_set[0]),
+            )
         for provider in sorted(set(providers_by_role.values())):
             provider_roles = tuple(
                 spec for spec in proposal.roles
@@ -1173,25 +1790,28 @@ class AutomaticPlanningCoordinator:
                     spec.role if sum(item.role == spec.role for item in proposal.roles) == 1
                     else f"{spec.role}#{spec.rank}"] == provider
             )
-            projection = ProviderSelectionProjectionV3(
-                provider=provider, request_id=collaboration.request_id,
-                attempt=1, plan_core_digest=core.plan_core_digest or core.digest(),
-                plan_digest=plan_digest, roles=provider_roles,
+            projection = PlanSealerV3.project(
+                core,
+                plan_digest=plan_digest,
+                provider=provider,
+                offer=provider_views[provider],
+                security_policy_snapshot_digest=security_policy_digest,
+                execution_role=execution_roles[proposal_role_key(provider_roles[0])],
+                assembly=provider_roles[0],
+                dataflow=dataflow_contracts[proposal_role_key(provider_roles[0])],
+                device_binding=device_bindings[proposal_role_key(provider_roles[0])],
                 dependencies=tuple(dependency_dicts), deadline_ms=deadline_ms,
+                group_capability_v1=group_capabilities.get(provider, ""),
+                grant_binding=grant_bindings_by_provider.get(provider),
             )
             payload = projection.to_bytes()
-            role_counts = {
-                item.role: sum(other.role == item.role for other in proposal.roles)
-                for item in provider_roles
-            }
             for spec in provider_roles:
                 # ``provider_by_role`` uses a stable role#rank key whenever
                 # one logical role has multiple ranks.  Keep the assignment
                 # payload map in that same key space; using ``spec.role``
                 # here silently overwrote rank 0 with rank 1 and left the
                 # sealed plan with an incomplete per-role projection.
-                key = (spec.role if role_counts[spec.role] == 1
-                       else f"{spec.role}#{spec.rank}")
+                key = proposal_role_key(spec)
                 assignment_payloads[key] = payload
 
         scope_key_data_names = self._publish_scope_keys(key_scopes, deadline_ms)
@@ -1212,8 +1832,7 @@ class AutomaticPlanningCoordinator:
         assignments = []
         exact_all = True
         for spec in proposal.roles:
-            key = (spec.role if sum(item.role == spec.role for item in proposal.roles) == 1
-                   else f"{spec.role}#{spec.rank}")
+            key = proposal_role_key(spec)
             provider = providers_by_role[key]
             view = provider_views[provider]
             requirement = selected_candidate.requirements_by_role[spec.role]
@@ -1222,7 +1841,7 @@ class AutomaticPlanningCoordinator:
             device = spec.device_set[0] if len(spec.device_set) == 1 else (
                 "cpu" if is_cpu_backend(spec.backend) else "")
             assignments.append(ProviderAssignment(
-                role=spec.role, provider=provider,
+                role=key, provider=provider,
                 required_gpu_memory_mb=required_mib,
                 backend=spec.backend, device=device,
             ))
@@ -1308,21 +1927,143 @@ class AutomaticPlanningCoordinator:
                 ]
                 begin = 0
                 end = max(1, len(owned))
-            recipe_digest = canonical_digest({
-                "candidate": candidate.candidate_digest,
-                "role": role, "begin": begin, "end": end,
-                "backends": requirement.backends,
-            })
-            specs.append(RoleAssemblySpec(
-                role=role, rank=0, layer_begin=int(begin), layer_end=int(end),
-                recipe_digest=recipe_digest,
-                artifact_digest=candidate.artifacts_by_role[role][0],
-                backend=str(requirement.backends[0]),
-                adapter_id=str(candidate.model.adapter.name),
-                adapter_version=str(candidate.model.adapter.version),
-                role_kind=role_kind(role),
-            ))
+            degree = int(candidate.tensor_degrees_by_role.get(role, 1))
+            rank_artifacts = candidate.rank_artifact_digests_by_role.get(
+                role, (candidate.artifacts_by_role[role][0],))
+            for rank in range(degree):
+                recipe_digest = canonical_digest({
+                    "candidate": candidate.candidate_digest,
+                    "role": role, "rank": rank, "tensorDegree": degree,
+                    "begin": begin, "end": end,
+                    "backends": requirement.backends,
+                })
+                specs.append(RoleAssemblySpec(
+                    role=role, rank=rank, layer_begin=int(begin),
+                    layer_end=int(end), recipe_digest=recipe_digest,
+                    artifact_digest=rank_artifacts[rank],
+                    backend=str(requirement.backends[0]),
+                    required_device_memory_mb=int(math.ceil(
+                        (requirement.estimated_peak_gpu_memory_bytes or 0)
+                        / (1024 * 1024))),
+                    adapter_id=str(candidate.model.adapter.name),
+                    adapter_version=str(candidate.model.adapter.version),
+                    role_kind=("HYBRID_RANK" if degree > 1 else role_kind(role)),
+                ))
         return tuple(specs)
+
+    @staticmethod
+    def _certify_v3_role_specs(
+        candidate: SplitCandidate,
+        graph: Any,
+        role_specs: tuple[RoleAssemblySpec, ...],
+        binding: Any,
+    ) -> tuple[RoleAssemblySpec, ...]:
+        """Seal exact Provider-local ONNX recipes after ACK-driven placement."""
+
+        from ..adapters.onnx.executor import CertifiedOnnxAssemblyRecipe
+        from .canonical_artifacts import CanonicalArtifactBinding
+
+        if not isinstance(binding, CanonicalArtifactBinding):
+            raise TypeError("canonical ensurer returned an invalid binding")
+        if (binding.graph_digest != graph.graph_digest
+                or binding.adapter_descriptor_digest
+                != graph.adapter.descriptor_digest):
+            raise ValueError("canonical root does not match the selected adapter graph")
+
+        edge_by_name = {edge.edge_id: edge for edge in graph.edges}
+        model_inputs = {item.name: item for item in graph.model_inputs}
+        model_outputs = {item.name: item for item in graph.model_outputs}
+        order = {node: index for index, node in enumerate(graph.topological_order)}
+
+        def contract(item: Any) -> dict[str, Any]:
+            return {
+                "name": str(getattr(item, "name", getattr(item, "edge_id", ""))),
+                "dtype": str(item.dtype),
+                "shape": list(item.shape),
+            }
+
+        certified: list[RoleAssemblySpec] = []
+        for spec in role_specs:
+            owned = tuple(sorted(
+                order[node] for node, owner
+                in candidate.execution_plan.node_roles.items()
+                if owner == spec.role))
+            if not owned:
+                raise ValueError(f"role {spec.role} owns no canonical graph nodes")
+            incoming = tuple(
+                edge for dependency in candidate.execution_plan.dependencies
+                if dependency.consumer == spec.role
+                for edge in dependency.tensor_edges)
+            outgoing = tuple(
+                edge for dependency in candidate.execution_plan.dependencies
+                if dependency.producer == spec.role
+                for edge in dependency.tensor_edges)
+            input_contracts = {
+                name: contract(edge_by_name[name]) for name in incoming
+                if name in edge_by_name
+            }
+            output_contracts = {
+                name: contract(edge_by_name[name]) for name in outgoing
+                if name in edge_by_name
+            }
+            if not incoming:
+                input_contracts.update(
+                    {name: contract(item) for name, item in model_inputs.items()})
+            if not outgoing:
+                output_contracts.update(
+                    {name: contract(item) for name, item in model_outputs.items()})
+            if not input_contracts or not output_contracts:
+                raise ValueError(
+                    f"role {spec.role} has an incomplete ONNX I/O boundary")
+
+            max_source = int(binding.canonical_source_bytes)
+            recipe = CertifiedOnnxAssemblyRecipe(
+                model_manifest_digest=binding.model_manifest_digest,
+                artifact_profile_digest=binding.artifact_profile_digest,
+                graph_digest=binding.graph_digest,
+                canonical_initializer_digest=binding.canonical_initializer_digest,
+                adapter_descriptor_digest=binding.adapter_descriptor_digest,
+                assembler_descriptor_digest=binding.assembler_descriptor_digest,
+                backend_abi=binding.backend_abi,
+                role_kind=spec.role_kind,
+                layer_begin=spec.layer_begin,
+                layer_end=spec.layer_end,
+                node_indices=owned,
+                input_names=tuple(sorted(input_contracts)),
+                output_names=tuple(sorted(output_contracts)),
+                expected_inputs=tuple(
+                    input_contracts[name] for name in sorted(input_contracts)),
+                expected_outputs=tuple(
+                    output_contracts[name] for name in sorted(output_contracts)),
+                precision=str(candidate.model.precision),
+                max_source_bytes=max_source,
+                max_assembled_bytes=max_source,
+                max_nodes=len(graph.nodes),
+            )
+            certified.append(replace(
+                spec,
+                recipe_digest=recipe.digest,
+                model_manifest_digest=binding.model_manifest_digest,
+                artifact_profile_digest=binding.artifact_profile_digest,
+                graph_digest=binding.graph_digest,
+                canonical_initializer_digest=binding.canonical_initializer_digest,
+                adapter_descriptor_digest=binding.adapter_descriptor_digest,
+                assembler_descriptor_digest=binding.assembler_descriptor_digest,
+                backend_abi=binding.backend_abi,
+                node_indices=recipe.node_indices,
+                expected_inputs=recipe.expected_inputs,
+                expected_outputs=recipe.expected_outputs,
+                precision=recipe.precision,
+                quantization=recipe.quantization,
+                layout=recipe.layout,
+                padding=recipe.padding,
+                resource_envelope={
+                    "maxSourceBytes": recipe.max_source_bytes,
+                    "maxAssembledBytes": recipe.max_assembled_bytes,
+                    "maxNodes": recipe.max_nodes,
+                },
+            ))
+        return tuple(certified)
 
     @staticmethod
     def _v3_artifact_name(
@@ -1457,10 +2198,7 @@ class AutomaticPlanningCoordinator:
     def _validate_published_split(
         candidate: SplitCandidate, published: PublishedSplit,
     ) -> None:
-        expected = {
-            role: candidate.artifacts_by_role[role][0]
-            for role in candidate.execution_plan.roles
-        }
+        expected = _candidate_artifacts_by_execution_key(candidate)
         if (published.candidate_digest != candidate.candidate_digest
                 or dict(published.artifact_digests_by_role) != expected
                 or set(published.artifact_data_names_by_role) != set(expected)):
@@ -1499,10 +2237,7 @@ class AutomaticPlanningCoordinator:
                 f"candidateDigest={candidate.candidate_digest}",
                 flush=True,
             )
-            expected = {
-                role: candidate.artifacts_by_role[role][0]
-                for role in candidate.execution_plan.roles
-            }
+            expected = _candidate_artifacts_by_execution_key(candidate)
             if (materialized.candidate_digest != candidate.candidate_digest
                     or dict(materialized.artifact_digests_by_role) != expected):
                 raise ValueError(
