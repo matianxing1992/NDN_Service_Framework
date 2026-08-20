@@ -2,7 +2,7 @@
   "schema": "spec174-t0-network-block-v1",
   "candidate": "spec174-local-candidate-2f8aeab5",
   "status": "BLOCKED_BEFORE_PROMOTION",
-  "reason": "The Cisco VPN tunnel reaches Tiger but the path is lossy and high-latency; no remote workload was submitted.",
+  "reason": "Tiger login and a bounded compute-node probe are reachable, but the Cisco VPN path remains lossy/high-latency and exact-candidate promotion is not yet reliable; no remote workload was submitted.",
   "target": "itiger.memphis.edu (10.41.41.31)",
   "observations": {
     "vpn": {
@@ -28,6 +28,38 @@
       "pingRttMsAvg": 538.946,
       "sshResult": "did not complete within 30 seconds"
     },
+    "latestReadOnlyRemoteProbe": {
+      "observedAt": "2026-08-20T18:52:52-05:00",
+      "loginNode": "itiger",
+      "loginApptainer": "1.3.4-1.el9",
+      "computeNode": "itiger07",
+      "computeJob": "201856",
+      "computeApptainer": "1.5.3-1.el9",
+      "gpu": "GPU-25e44831-503d-7227-29f7-d2346fbb1d80",
+      "gpuModel": "NVIDIA RTX 5000 Ada Generation",
+      "cudaVisibleDevices": "0",
+      "driver": "560.28.03",
+      "result": "bounded compute preflight passed; no workload submitted"
+    },
+    "promotionTransferProbe": {
+      "localSifBytes": 3650547712,
+      "singleStreamBytes": 8388608,
+      "singleStreamElapsedSeconds": 76.94,
+      "singleStreamApproxBytesPerSecond": 108982,
+      "dualStreamBytes": 16777216,
+      "dualStreamElapsedSeconds": 67.89,
+      "quadStreamBytes": 33554432,
+      "quadStreamElapsedSeconds": 108.43,
+      "result": "transfer path is too slow/unstable for unmonitored full promotion"
+    },
+    "remoteReleaseObserved": {
+      "remoteSifBytes": 3650555904,
+      "remoteSifSha256": "sha256:846837ce0d5d87b6d42655438073b77566aaea70a23c61d384d3709df6505453",
+      "exactCandidateMatch": false,
+      "candidatePrefixPartialMatch": true,
+      "partialBytes": 4685824,
+      "partialSha256": "sha256:35e08004e02e29e65e93f727e94076bf15049903193f3cc653c06e1b8bdaa009"
+    },
     "reverseTransferProbe": {
       "direction": "Tiger pulls 1 MiB over a temporary HTTP probe",
       "receivedBytesBeforeTimeout": 12480,
@@ -39,7 +71,9 @@
     "remoteRelease": "/project/tma1/ndnsf-di/releases/spec174-local-candidate-2f8aeab5",
     "remoteSifHashVerified": false,
     "jobsSubmitted": 0,
-    "partialTransferPreserved": true
+    "partialTransferPreserved": true,
+    "computePreflightPassed": true,
+    "exactCandidatePromoted": false
   },
   "nextAction": "After the VPN path is stable, rerun read-only T0, upload the exact local SIF, compare SHA-256, and only then submit T1."
 }
