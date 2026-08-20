@@ -1,0 +1,129 @@
+{
+  "schema": "spec174-local-gates-v1",
+  "status": "PASS_LOCAL_TIGER_BLOCKED",
+  "source": {
+    "revision": "2f8aeab5d7fc1f3ec8c0c1693aa3cb3b54dcf51c",
+    "tree": "207afaa4cab0d194cb4526621f3bf0d47d9a261f",
+    "unitBinarySha256": "sha256:31d2ee397c9446f89c7af8593b58887fa5a907faaefece0c44854c0832c1fcc1",
+    "integrationBinarySha256": "sha256:45137d6ce4655f5dcf2b89882e69637603e1659637da4c48b19db70ba1a3afd2",
+    "buildConfigSha256": "sha256:808b540d092fd6e3232524fe77a2c6b4d07285e46475adb076f87ea0471a06cb"
+  },
+  "fixture": {
+    "manifestSha256": "sha256:ed2903cfa655eae02cf1777432f471570efc1eba668936293e779558b1e99c58e",
+    "oracleSha256": "sha256:7f2430738e657b19b7522072dd441f7d541622d98fdeb3e0474a5f4768c16864",
+    "evidenceSchemaSha256": "sha256:e3d9d80aab8657d97c7f9a24498f523024a8844599b808fc85ea6111285a3d81"
+  },
+  "ownerTasks": [
+    {
+      "task": "T004",
+      "classification": "conforming-reused",
+      "proof": [
+        "integration Spec170NdnsfDiCoreFlow: 28/28 passed",
+        "Python placement/native-plan owner tests: 24/24 passed",
+        "Gate U full native suite: 527 cases, RC 0"
+      ]
+    },
+    {
+      "task": "T005",
+      "classification": "conforming-reused",
+      "proof": [
+        "Spec170NativePostSelection integration: 4/4 passed",
+        "native plan, role-worker, ORT, and artifact tests included in Gate U",
+        "exact local SIF D0/D1 CPU workload: 2/2 passed"
+      ]
+    },
+    {
+      "task": "T006",
+      "classification": "conforming-reused",
+      "proof": [
+        "Gate U includes retry, cancellation, stale-attempt, terminal-result, and fencing cases",
+        "integration missing-output/deadline/cancellation cases passed",
+        "no accepted partial response reported"
+      ]
+    },
+    {
+      "task": "T007",
+      "classification": "conforming-reused",
+      "proof": [
+        "NdnsfDataV1SvsFlow integration cases passed",
+        "cross-provider manifest/segment, reorder, duplicate, and replay suites passed",
+        "Gate U full native suite RC 0"
+      ]
+    },
+    {
+      "task": "T008",
+      "classification": "conforming-reused",
+      "proof": [
+        "DistributedInferenceCollectiveRuntime: 9/9 passed",
+        "DistributedInferenceCrossProviderGroup: 13/13 passed",
+        "four-provider and hybrid production integration cases passed"
+      ]
+    },
+    {
+      "task": "T009",
+      "classification": "conforming-reused",
+      "proof": [
+        "protected-runtime and group-capability rejection cases passed",
+        "GenericDynamicApi CryptoAndAuthorization: 15/15 passed",
+        "token/replay and zeroization cases are included in Gate U"
+      ]
+    }
+  ],
+  "gateU": {
+    "status": "PASS",
+    "nativeCases": 527,
+    "nativeLogSha256": "sha256:7787c264107dc5afd8cfce69a40d772d8494eef15dfb83c3d3b4634a8fd89895",
+    "pythonCases": 12,
+    "pythonLogSha256": "sha256:8d2090a3d3066434a8ee9c4394b391c158b21cddcd0503d4ac5144edc9f235c8",
+    "pythonSkipped": 0
+  },
+  "gateI": {
+    "status": "PASS",
+    "processes": 3,
+    "casesPerProcess": 36,
+    "logSha256": [
+      "sha256:b72005df234143423ebb0796468f08107a2ee00fe4292461f572f916429a994d",
+      "sha256:72e6c3655df5cc7522453db2293472a658533464cae39963d59de4543705f7f0",
+      "sha256:f0af7e1e504e539a51f37d4e30c87703505c0b2e85b9ad5add0ea9bcf3ac3dec"
+    ],
+    "productionSuite": "Spec170NdnsfDiCoreFlow + Spec170NativePostSelection"
+  },
+  "gateM": {
+    "status": "PASS",
+    "assignments": ["default", "single-provider", "hybrid-121", "hybrid-212"],
+    "repeatsPerAssignment": 3,
+    "rows": 12,
+    "allStatus": "SUCCESS",
+    "runnerMode": "onnxruntime-cpu",
+    "dependencyStatus": "executed",
+    "reportSha256": "sha256:ff51506ba8cedb4b2aeac6aee8e15d29c4c849230740cda00e532cb0a0a905a0"
+  },
+  "gateC": {
+    "status": "PASS",
+    "sifSha256": "sha256:e0f798e18dc2132998d2a3aa384022eb489875fa1ee97306445c271660785b40",
+    "sifBytes": 3650547712,
+    "sourceRevision": "2f8aeab5d7fc1f3ec8c0c1693aa3cb3b54dcf51c",
+    "sourceSealDigest": "sha256:adffeacef4b1983354cefafe94d2db551809a87242ae64d4f456c74469e5cfca",
+    "sourceSealFileSha256": "sha256:a955ecebfbc1e0ff61b76f71b70a98e5b1247fb40c2f84a97d35eada6e31b187",
+    "buildRecordSha256": "sha256:c2a3ccde54be5a0792d0e141c489929cb60c48a597b35deba6ad70296a732af1",
+    "buildRecordValidator": "PASS",
+    "sourceValidator": "PASS",
+    "apptainer": "1.5.3",
+    "ortProviders": ["TensorrtExecutionProvider", "CUDAExecutionProvider", "CPUExecutionProvider"],
+    "pythonImport": "PASS",
+    "torchPresent": false,
+    "transformersPresent": false,
+    "exactCpuWorkload": {
+      "status": "PASS",
+      "cases": 2,
+      "logSha256": "sha256:a1fe59896671a6083b122a637c35302431f56aec70380726de5f7f87d3d4393b"
+    }
+  },
+  "gateT": {
+    "status": "BLOCK",
+    "firstBlockedStage": "T0",
+    "jobsSubmitted": 0,
+    "reason": "VPN/SSH path remains lossy and high-latency; exact SIF promotion was not attempted",
+    "evidence": "specs/174-ndnsf-di-verified-delivery/evidence/t0-network-block-20260820.json"
+  }
+}

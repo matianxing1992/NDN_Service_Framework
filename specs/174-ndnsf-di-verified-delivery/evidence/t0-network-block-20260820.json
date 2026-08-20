@@ -1,0 +1,45 @@
+{
+  "schema": "spec174-t0-network-block-v1",
+  "candidate": "spec174-local-candidate-2f8aeab5",
+  "status": "BLOCKED_BEFORE_PROMOTION",
+  "reason": "The Cisco VPN tunnel reaches Tiger but the path is lossy and high-latency; no remote workload was submitted.",
+  "target": "itiger.memphis.edu (10.41.41.31)",
+  "observations": {
+    "vpn": {
+      "client": "Cisco Secure Client 5.1.9.113",
+      "state": "Connected",
+      "server": "141.225.250.140",
+      "tunnel": "cscotun0",
+      "clientAddress": "10.228.110.175",
+      "mtu": 1300
+    },
+    "lastStableProbe": {
+      "pingPackets": 4,
+      "pingReceived": 3,
+      "pingLossPercent": 25,
+      "pingRttMsAvg": 483.144,
+      "sshElapsedSeconds": 4.48,
+      "sshResult": "login node reachable; Apptainer 1.3.4"
+    },
+    "latestProbe": {
+      "pingPackets": 8,
+      "pingReceived": 4,
+      "pingLossPercent": 50,
+      "pingRttMsAvg": 538.946,
+      "sshResult": "did not complete within 30 seconds"
+    },
+    "reverseTransferProbe": {
+      "direction": "Tiger pulls 1 MiB over a temporary HTTP probe",
+      "receivedBytesBeforeTimeout": 12480,
+      "timeoutSeconds": 60,
+      "result": "timed out"
+    }
+  },
+  "promotion": {
+    "remoteRelease": "/project/tma1/ndnsf-di/releases/spec174-local-candidate-2f8aeab5",
+    "remoteSifHashVerified": false,
+    "jobsSubmitted": 0,
+    "partialTransferPreserved": true
+  },
+  "nextAction": "After the VPN path is stable, rerun read-only T0, upload the exact local SIF, compare SHA-256, and only then submit T1."
+}
