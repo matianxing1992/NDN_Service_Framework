@@ -62,6 +62,15 @@ class NativeServiceResponseBindingTest(unittest.TestCase):
                 f"sync and async collaboration callbacks must copy {field}",
             )
 
+    def test_multi_provider_role_selection_carries_complete_provider_mapping(self) -> None:
+        """Per-provider Selection projections must preserve dependency routing."""
+        source = (REPO / "pythonWrapper/src/ndnsf/_ndnsf.cpp").read_text()
+        selector = source[source.index("class RoleAssignmentSelectionPolicy"):
+                          source.index("class NativeServiceUser")]
+        self.assertIn("selectedRoleProviders", selector)
+        self.assertIn('"roleProvider."', selector)
+        self.assertIn("participant.assignmentPayload.insert", selector)
+
     def test_sync_request_does_not_capture_submit_local_callbacks_by_reference(self) -> None:
         """The native runtime retains callbacks after the submit lambda returns."""
         source = (REPO / "pythonWrapper/src/ndnsf/_ndnsf.cpp").read_text()

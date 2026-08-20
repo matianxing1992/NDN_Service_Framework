@@ -45,11 +45,25 @@ def validate(
         for item in plan_services
         if item.get("executionPolicy")
     }
-    if "DATA_DRIVEN_V2" in policies and "LEGACY_READY_SET_V1" in user_text:
-        errors.append(
-            "DATA_DRIVEN_V2 plan is paired with a driver that emits "
-            "LEGACY_READY_SET_V1"
+    if "DATA_DRIVEN_V2" in policies:
+        # The native driver may retain an explicit legacy compatibility branch,
+        # but its default assignment must be data-driven and must bind the
+        # runtime fields required by NativeProviderHandler.
+        required_data_driver_markers = (
+            'DEFAULT_EXECUTION_POLICY = "DATA_DRIVEN_V2"',
+            'f"executionPolicy={execution_policy}"',
+            "artifactDigest=",
+            "fragmentDigest=",
+            "backend=",
+            "device=",
         )
+        missing = [marker for marker in required_data_driver_markers
+                   if marker not in user_text]
+        if missing:
+            errors.append(
+                "DATA_DRIVEN_V2 plan is paired with a driver missing "
+                "data-driven assignment fields: " + ", ".join(missing)
+            )
     if require_v3:
         required_user_markers = (
             "begin_collaboration", "acks_closed", "commit_plan",

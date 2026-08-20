@@ -1021,28 +1021,43 @@ validateNativeProviderRuntimeReadiness(
       expectedDevice.empty() || expectedArtifactDigest.empty()) {
     return "DI_RUNTIME_ASSIGNMENT_INCOMPLETE";
   }
+  const bool deviceRequestsCuda = expectedDevice.rfind("cuda:", 0) == 0;
+  const bool backendRequestsCuda = expectedBackend == "onnxruntime-cuda";
+  const bool backendRequestsCpu = expectedBackend == "cpu" ||
+                                  expectedBackend == "onnxruntime-cpu";
+  const bool backendIsGenericOnnx = expectedBackend == "onnxruntime";
+  if (!backendRequestsCuda && !backendRequestsCpu && !backendIsGenericOnnx) {
+    return "DI_RUNTIME_BACKEND_MISMATCH";
+  }
+  const bool expectsCuda = backendRequestsCuda ||
+                           (backendIsGenericOnnx && deviceRequestsCuda);
+  const bool expectsCpu = backendRequestsCpu ||
+                          (backendIsGenericOnnx && !deviceRequestsCuda);
   try {
     evidence.validate();
   }
   catch (const std::exception&) {
     return "DI_RUNTIME_EVIDENCE_INVALID";
   }
-  const bool expectsCuda = expectedDevice.rfind("cuda:", 0) == 0;
-  const bool expectsCpu = expectedDevice.rfind("cpu:", 0) == 0;
   if (expectsCuda) {
-    if (!evidence.realCompute || evidence.runnerKind != RunnerKind::OnnxRuntimeCuda ||
+    if (!evidence.realCompute ||
+        evidence.runnerKind != RunnerKind::OnnxRuntimeCuda ||
         evidence.deviceKind != "cuda" || evidence.cpuFallbackUsed) {
       return "DI_RUNTIME_CUDA_REQUIRED";
     }
   }
-  else if (expectsCpu) {
-    if (!evidence.realCompute || evidence.runnerKind != RunnerKind::OnnxRuntimeCpu ||
-        evidence.deviceKind != "cpu" || evidence.cpuFallbackUsed) {
+  else {
+    // CPU/no-GPU is a first-class V3 execution mode. It must still be a real
+    // ONNX Runtime CPU execution and may not be advertised as a silent
+    // CUDA-to-CPU fallback.
+    if (evidence.cpuFallbackUsed) {
+      return "DI_RUNTIME_CPU_FALLBACK_USED";
+    }
+    if (!evidence.realCompute ||
+        evidence.runnerKind != RunnerKind::OnnxRuntimeCpu ||
+        evidence.deviceKind != "cpu") {
       return "DI_RUNTIME_CPU_REQUIRED";
     }
-  }
-  else {
-    return "DI_RUNTIME_DEVICE_MISMATCH";
   }
   if (!evidence.loadCompleted) {
     return "DI_RUNTIME_MODEL_NOT_LOADED";
@@ -1054,27 +1069,26 @@ validateNativeProviderRuntimeReadiness(
       evidence.roles.end()) {
     return "DI_RUNTIME_ROLE_MISMATCH";
   }
-  if (expectedBackend != "onnxruntime" &&
-      expectedBackend != "onnxruntime-cpu" &&
-      expectedBackend != "onnxruntime-cuda") {
-    return "DI_RUNTIME_BACKEND_MISMATCH";
+  if (expectsCuda) {
+    auto expectedDeviceId = expectedDevice;
+    if (expectedDeviceId.rfind("cuda:", 0) == 0) {
+      expectedDeviceId = expectedDeviceId.substr(5);
+    }
+    if (expectedDevice.rfind("cuda:", 0) != 0 ||
+        expectedDeviceId.empty() || evidence.deviceId != expectedDeviceId) {
+      return "DI_RUNTIME_DEVICE_MISMATCH";
+    }
   }
-  auto expectedDeviceId = expectedDevice;
-  if (expectedDeviceId.rfind("cuda:", 0) == 0) {
-    expectedDeviceId = expectedDeviceId.substr(5);
-  }
-  else if (expectedDeviceId.rfind("cpu:", 0) == 0) {
-    expectedDeviceId = expectedDeviceId.substr(4);
-  }
-  // The selection contract uses `cpu:<id>`, while the ONNX Runtime adapter
-  // records the canonical CPU identity as `cpu<id>` (for example `cpu0`).
-  // Accept only those two equivalent spellings; do not weaken CUDA/device
-  // matching or accept an arbitrary aggregate device.
-  const bool deviceIdMatches = expectedDeviceId.empty() ? false :
-    (evidence.deviceId == expectedDeviceId ||
-     (expectsCpu && evidence.deviceId == "cpu" + expectedDeviceId));
-  if (!deviceIdMatches) {
-    return "DI_RUNTIME_DEVICE_MISMATCH";
+  else if (expectedDevice != "cpu") {
+    auto expectedDeviceId = expectedDevice;
+    if (expectedDeviceId.rfind("cpu:", 0) == 0) {
+      expectedDeviceId = expectedDeviceId.substr(4);
+    }
+    if (expectedDeviceId.empty() ||
+        (evidence.deviceId != expectedDeviceId &&
+         evidence.deviceId != "cpu" + expectedDeviceId)) {
+      return "DI_RUNTIME_DEVICE_MISMATCH";
+    }
   }
   const auto artifact = evidence.artifactDigests.find(expectedRole);
   if (artifact == evidence.artifactDigests.end() ||
