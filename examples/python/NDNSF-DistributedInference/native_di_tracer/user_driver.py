@@ -381,14 +381,16 @@ def collaboration_roles(
     service_plan: dict,
     service: str,
     *,
-    execution_policy: str = DEFAULT_EXECUTION_POLICY,
+    execution_policy: str | None = None,
     execution_backend: str = DEFAULT_EXECUTION_BACKEND,
     execution_device: str = DEFAULT_EXECUTION_DEVICE,
     artifact_digests: dict[str, str] | None = None,
 ) -> list[dict]:
     role_names = list(service_plan["roles"])
     execution_policy = str(
-        service_plan.get("executionPolicy", "DATA_DRIVEN_V2")).strip()
+        service_plan.get("executionPolicy", DEFAULT_EXECUTION_POLICY)
+        if execution_policy is None else execution_policy
+    ).strip()
     if execution_policy not in {"DATA_DRIVEN_V2", "LEGACY_READY_SET_V1"}:
         raise ValueError(
             f"unsupported execution policy in native plan: {execution_policy}")
