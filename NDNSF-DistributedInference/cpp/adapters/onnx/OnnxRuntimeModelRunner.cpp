@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 
 #include <stdexcept>
@@ -719,6 +720,7 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
   }
   const auto packageDone = std::chrono::steady_clock::now();
   if (runtimeTimingEnabled()) {
+    std::lock_guard<std::mutex> outputLock(runtimeTimingOutputMutex());
     std::cout << std::fixed << std::setprecision(3)
               << "\nNDNSF_DI_ONNX_TIMING"
               << " session=" << ctx.sessionId

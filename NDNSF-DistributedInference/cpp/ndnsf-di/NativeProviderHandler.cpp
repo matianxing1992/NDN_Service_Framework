@@ -2,6 +2,7 @@
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/DistributedExecutionConsistency.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 
 #include "ndn-service-framework/utils.hpp"
@@ -323,17 +324,6 @@ runtimeTimingEnabled()
   const std::string text(value);
   return !(text.empty() || text == "0" || text == "false" || text == "FALSE" ||
            text == "off" || text == "OFF");
-}
-
-// Runtime timing records are parsed as line-oriented evidence.  Several role
-// workers can finish concurrently, so serialise the complete diagnostic block
-// rather than allowing individual operator<< calls from different records to
-// interleave and produce fields belonging to different edges.
-std::mutex&
-runtimeTimingOutputMutex()
-{
-  static std::mutex mutex;
-  return mutex;
 }
 
 bool
