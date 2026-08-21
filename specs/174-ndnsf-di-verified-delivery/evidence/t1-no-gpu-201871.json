@@ -1,0 +1,29 @@
+{
+  "schema": "spec174-t1-no-gpu-v1",
+  "status": "PASS_EXPECTED_REJECTION",
+  "candidate": "spec174-local-candidate-2f8aeab5",
+  "sifSha256": "sha256:e0f798e18dc2132998d2a3aa384022eb489875fa1ee97306445c271660785b40",
+  "bundleManifestSha256": "sha256:d66ba974fef222383191b80f7d4e92f133fed4db7c8d6fbc5e053d5af2129a08",
+  "job": {
+    "id": "201871",
+    "state": "COMPLETED",
+    "exitCode": "0:0",
+    "elapsed": "00:05:42",
+    "node": "itiger05",
+    "scriptSha256": "sha256:ced456bd241cffb336c0c7b8904f167ebec3f5cc8f9f1930739022e335295189"
+  },
+  "resourceProfile": {
+    "gpuRequested": false,
+    "cudaVisibleDevices": "",
+    "runnerKind": "onnxruntime-cuda"
+  },
+  "observed": {
+    "providerFailure": "required ONNX Runtime CUDA device unavailable: requested device 0, visible device count 0, cuda status 35",
+    "failureBeforeAcceptedResponse": true,
+    "networkPassMarkers": 0,
+    "cpuFallbackMarkers": 0,
+    "providerLogSha256": "sha256:67ebe951f97243eae86e29ad95079f238453739c94cf5c2a23d34b7aa1ec06f0"
+  },
+  "evidenceRoot": "/project/tma1/ndnsf-di/releases/spec174-local-candidate-2f8aeab5/evidence/t1-no-gpu-20260820",
+  "nextStage": "T2"
+}
