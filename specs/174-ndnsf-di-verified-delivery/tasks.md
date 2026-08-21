@@ -175,7 +175,7 @@ If a task discovers a new wire field, name component, role type, transport, auth
 
 ### T014 — Enforce remote admission, hash promotion, and staged stop rules
 
-- [ ] T014 [US4] Extend current Slurm/Apptainer profiles, login/compute/storage/scratch/network preflights, `run-container.sh`, templates, and promotion evidence so Tiger refuses work without exact Gate C PASS.
+- [X] T014 [US4] Extend current Slurm/Apptainer profiles, login/compute/storage/scratch/network preflights, `run-container.sh`, templates, and promotion evidence so Tiger refuses work without exact Gate C PASS.
   - **Precondition**: VPN/login available and T013 candidate `PROMOTABLE`; otherwise record truthful BLOCK without submitting a job.
   - **Read-only T0**: account/partition/QoS, nodes, storage/scratch, Apptainer, driver/GPU/ORT compatibility, inter-node routes, artifact/identity paths, cwd, process map, resource/time bounds.
   - **Promotion**: upload exact SIF/config/input/oracle/manifests, verify remote hashes before allocation, and render an immutable job script. No rebuild, package install, mutable overlay, or library replacement.

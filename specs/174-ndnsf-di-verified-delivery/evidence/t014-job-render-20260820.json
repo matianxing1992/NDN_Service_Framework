@@ -1,0 +1,32 @@
+{
+  "schema": "spec174-t014-job-render-v1",
+  "candidate": "spec174-local-candidate-2f8aeab5",
+  "sif": {
+    "remotePath": "/project/tma1/ndnsf-di/releases/spec174-local-candidate-2f8aeab5/runtime-exact.sif",
+    "sha256": "sha256:e0f798e18dc2132998d2a3aa384022eb489875fa1ee97306445c271660785b40"
+  },
+  "bundle": {
+    "remotePath": "/project/tma1/ndnsf-di/releases/spec174-local-candidate-2f8aeab5/bundle-gpu-v9-20260820",
+    "manifestSha256": "sha256:d66ba974fef222383191b80f7d4e92f133fed4db7c8d6fbc5e053d5af2129a08",
+    "files": 35
+  },
+  "jobs": {
+    "t1NoGpu": {
+      "path": "/project/tma1/ndnsf-di/releases/spec174-local-candidate-2f8aeab5/jobs/t1-no-gpu-20260820.sbatch",
+      "sha256": "sha256:ced456bd241cffb336c0c7b8904f167ebec3f5cc8f9f1930739022e335295189",
+      "expectedResult": "provider rejection rc=11; no CPU fallback"
+    },
+    "t2SingleGpu": {
+      "path": "/project/tma1/ndnsf-di/releases/spec174-local-candidate-2f8aeab5/jobs/t2-single-gpu-20260820.sbatch",
+      "sha256": "sha256:db017695a2541e35e35a1b0f89d9c991a01d8c672d345a613cec15d4e2be0014",
+      "expectedResult": "complete frozen oracle; ORT CUDA; rc=0"
+    }
+  },
+  "admission": {
+    "sourceGateC": "PASS",
+    "remoteHashVerified": true,
+    "remoteRebuild": false,
+    "mutableOverlay": false,
+    "workloadSubmitted": false
+  }
+}
