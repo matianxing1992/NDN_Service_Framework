@@ -186,7 +186,7 @@ If a task discovers a new wire field, name component, role type, transport, auth
 
 ### T015 — Qualify CPU/no-GPU rejection and single-GPU complete reference
 
-- [ ] T015 [US4] Run staged T1/T2 with the exact candidate through existing Tiger runner/provider/user binaries and evidence finalizer.
+- [X] T015 [US4] Run staged T1/T2 with the exact candidate through existing Tiger runner/provider/user binaries and evidence finalizer.
   - **T1 negative**: a GPU-required configuration on CPU/no-GPU resources fails closed with explicit provider/admission cause and zero CPU fallback or accepted response. An explicitly CPU-configured control may run separately and cannot satisfy T2.
   - **T2 positive**: one Provider owns one complete role, uses the intended ORT GPU execution provider, produces the complete application result, and exactly matches the frozen oracle.
   - **Resource evidence**: GPU identity, process-to-device assignment, ORT provider selection, bounded memory/host usage, no CPU fallback; resource observations are evidence, not correctness oracle.

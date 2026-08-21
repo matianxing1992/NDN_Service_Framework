@@ -12,10 +12,11 @@ one owner, regression input, delivery task, proof obligation, and explicit
 status for each row. The current local closure evidence is
 `evidence/local-gates-2f8aeab5.json` at Experimental commit
 `2f8aeab5d7fc1f3ec8c0c1693aa3cb3b54dcf51c`. It records T004–T013 as
-conforming/reused and executed through the local gates; T014's exact-candidate
-promotion is recorded separately, while T1/T2 and T016 remain external Tiger
-stages. T017 remains open until the workload stages and final audit are
-complete. No local evidence is promoted to a Tiger workload PASS.
+conforming/reused and executed through the local gates. T014's exact-candidate
+promotion and T015's staged Tiger evidence are recorded separately; T016
+remains the only unexecuted workload stage. T017 remains open until T016 and
+the final audit are complete. No local evidence is promoted to a Tiger
+workload PASS.
 
 ## Current local closure
 
@@ -27,8 +28,12 @@ MiniNDN+CPU processes), and Gate C (one source-sealed local Apptainer SIF).
 The T0 login/compute preflight and exact-candidate promotion are now recorded
 in `evidence/t014-promotion-20260820.json`: the remote
 `runtime-exact.sif` SHA-256 matches the local Gate C SIF and all 35 bundle files
-match. T1/T2/T3 remain external and unexecuted; the older login-node
-`runtime.sif` is deliberately preserved and is not a candidate.
+match. T1's expected no-GPU rejection and T2's three fresh single-GPU
+qualification runs are recorded in
+`evidence/t1-no-gpu-201871.json` and
+`evidence/t2-qualification-20260821.json`. T3 remains external and
+unexecuted; the older login-node `runtime.sif` is deliberately preserved and
+is not a candidate.
 
 ## Functional Requirements
 
@@ -75,7 +80,7 @@ match. T1/T2/T3 remain external and unexecuted; the older login-node
 | SC-005 | T010–T012 | bounded negative cases with first failure and no accepted result |
 | SC-006 | T013, T014 | promotion guard consumes exact U/I/M/C PASS chain |
 | SC-007 | T014 | `evidence/t014-promotion-20260820.json`: local/remote exact SIF and 35-file bundle hashes match; no remote rebuild/library replacement |
-| SC-008 | T015 | complete single-GPU oracle, intended ORT provider, zero CPU fallback |
+| SC-008 | T015 | `evidence/t2-qualification-20260821.json`: three complete single-GPU responses, intended ORT CUDA provider, zero CPU fallback |
 | SC-009 | T016 | cross-Provider rank roles, exact NDN edges, complete GPU oracle |
 | SC-010 | T003, T010–T017 | bounded manifests and retention classification for every failure |
 | SC-011 | T002, T017 | owner/reuse justification for every production change; prior regressions pass; no parallel runtime |
