@@ -1,0 +1,159 @@
+{
+  "schema": "spec174-t3-qualification-v1",
+  "status": "PASS",
+  "candidate": "spec174-local-candidate-2f8aeab5",
+  "sourceRevision": "2f8aeab5d7fc1f3ec8c0c1693aa3cb3b54dcf51c",
+  "sifSha256": "sha256:e0f798e18dc2132998d2a3aa384022eb489875fa1ee97306445c271660785b40",
+  "bundleManifestSha256": "sha256:d66ba974fef222383191b80f7d4e92f133fed4db7c8d6fbc5e053d5af2129a08",
+  "fixtureOracleSha256": "sha256:7f2430738e657b19b7522072dd441f7d541622d98fdeb3e0474a5f4768c16864",
+  "outerScriptSha256": "sha256:f82c5d3cc06c91228ead4fc1ecb07e98a3a9fbc2a88e2b9c239606046c594954",
+  "workloadScriptSha256": "sha256:df43433e3e8ca1e1c0cc81cfc88e4b1bdf74891182d9fb1a9cf490e95585eba9",
+  "profile": {
+    "providerCount": 4,
+    "roleProviderBijection": {
+      "/Backbone": "/NDNSF-DI/Tracer/provider/backbone",
+      "/Head/Shard/0": "/NDNSF-DI/Tracer/provider/head0",
+      "/Head/Shard/1": "/NDNSF-DI/Tracer/provider/head1",
+      "/Merge": "/NDNSF-DI/Tracer/provider/merge"
+    },
+    "gpuCount": 2,
+    "runnerKind": "onnxruntime-cuda",
+    "ortRuntimeVersion": "1.20.0",
+    "sameNode": true,
+    "node": "itiger07",
+    "cudaVisibleDevices": "0,1",
+    "crossProviderEdges": [
+      "backbone-to-head0",
+      "backbone-to-head1",
+      "head0-to-merge",
+      "head1-to-merge"
+    ],
+    "requiredRuns": 3,
+    "independentFreshProcesses": true,
+    "negativeControl": "not run; not part of the frozen qualification profile"
+  },
+  "runs": [
+    {
+      "jobId": "201972",
+      "state": "COMPLETED",
+      "exitCode": "0:0",
+      "elapsed": "00:06:37",
+      "node": "itiger07",
+      "slurmJobGpus": "4,5",
+      "cudaVisibleDevices": "0,1",
+      "gpuUuids": [
+        "GPU-25e44831-503d-7227-29f7-d2346fbb1d80",
+        "GPU-6c20c99e-ea8d-4407-f9fc-6505826abc8d"
+      ],
+      "providerGpuMap": {
+        "backbone": "cuda:0",
+        "head0": "cuda:0",
+        "head1": "cuda:1",
+        "merge": "cuda:1"
+      },
+      "userRc": 0,
+      "selectionOk": 1,
+      "dependencyOk": 1,
+      "responseOk": 1,
+      "networkPassMarkers": 1,
+      "cpuFallbackMarkers": 0,
+      "ortCudaMarkers": 8,
+      "dependencyTimingLines": 8,
+      "responsePayloadSha256": "sha256:7f87e6ca9b2cbe008077bb411a0b0ea95dfad10071d9c406c3d41abdf9c214c0",
+      "providerLogSha256": {
+        "backbone": "sha256:d641b4b82b93a4d1a2728fea29ec4a57ccbc4d5e7a2efb6534dc06401e59b01e",
+        "head0": "sha256:4c050d2626d99c113f38da211a873f0782cd491e6113e4689b5c80ccef48cc06",
+        "head1": "sha256:9303ef1b35e4cf55f07c158b52d51d988c257c938aaffc0a19d8f468aba83722",
+        "merge": "sha256:34e217d2ab97d4bf85be3ea0daf5f4fd6aefaf65c6281aa995c8c4ba32b9208e"
+      },
+      "userLogSha256": "sha256:9ddc1c0f746b915498fe944728c6b8b471b925005a0ce53c9c65d2e27986297b",
+      "terminalCheckSha256": "sha256:f34a8ae4d498cbcf668962f2d6a62d46b2b7d321f98850b83f1a2193b2779aef",
+      "hostGpuSha256": "sha256:da444653a287172f05e4bb13cc2b4f3a6858e00d2bbfd88985e467173483bd15",
+      "allocationSha256": "sha256:fec3bb50955f2cd53dbef5a1b19bccf4249423e37b440e58b3d07def8a5ab3e1"
+    },
+    {
+      "jobId": "201974",
+      "state": "COMPLETED",
+      "exitCode": "0:0",
+      "elapsed": "00:06:32",
+      "node": "itiger07",
+      "slurmJobGpus": "4,5",
+      "cudaVisibleDevices": "0,1",
+      "gpuUuids": [
+        "GPU-25e44831-503d-7227-29f7-d2346fbb1d80",
+        "GPU-6c20c99e-ea8d-4407-f9fc-6505826abc8d"
+      ],
+      "providerGpuMap": {
+        "backbone": "cuda:0",
+        "head0": "cuda:0",
+        "head1": "cuda:1",
+        "merge": "cuda:1"
+      },
+      "userRc": 0,
+      "selectionOk": 1,
+      "dependencyOk": 1,
+      "responseOk": 1,
+      "networkPassMarkers": 1,
+      "cpuFallbackMarkers": 0,
+      "ortCudaMarkers": 8,
+      "dependencyTimingLines": 8,
+      "responsePayloadSha256": "sha256:7f87e6ca9b2cbe008077bb411a0b0ea95dfad10071d9c406c3d41abdf9c214c0",
+      "providerLogSha256": {
+        "backbone": "sha256:bf085aba6cd084a3d8ad7acb2aaba80209bd90044f28f2959a8802430ba9ebbf",
+        "head0": "sha256:02ca7398944132118b99da53b4b6245b533e621ee45c0d159b6584a745cfdd99",
+        "head1": "sha256:9fdf7d9afefcb586df60eaf54dbb7db21ae7753d6ffc752cb9540b55e0692222",
+        "merge": "sha256:e3f5501a661796b5ce0619889a73eabd6cdae8298637453f2118311412d7e62f"
+      },
+      "userLogSha256": "sha256:e0776dd1cf8c018b5bbc656d1eea393484bca8937e7626685644687ab6e56594",
+      "terminalCheckSha256": "sha256:f34a8ae4d498cbcf668962f2d6a62d46b2b7d321f98850b83f1a2193b2779aef",
+      "hostGpuSha256": "sha256:da444653a287172f05e4bb13cc2b4f3a6858e00d2bbfd88985e467173483bd15",
+      "allocationSha256": "sha256:d2b370130f1e404cbe3ef25de43a7e569bdae204625c27c029174b6b6c6f8f18"
+    },
+    {
+      "jobId": "201975",
+      "state": "COMPLETED",
+      "exitCode": "0:0",
+      "elapsed": "00:06:22",
+      "node": "itiger07",
+      "slurmJobGpus": "4,5",
+      "cudaVisibleDevices": "0,1",
+      "gpuUuids": [
+        "GPU-25e44831-503d-7227-29f7-d2346fbb1d80",
+        "GPU-6c20c99e-ea8d-4407-f9fc-6505826abc8d"
+      ],
+      "providerGpuMap": {
+        "backbone": "cuda:0",
+        "head0": "cuda:0",
+        "head1": "cuda:1",
+        "merge": "cuda:1"
+      },
+      "userRc": 0,
+      "selectionOk": 1,
+      "dependencyOk": 1,
+      "responseOk": 1,
+      "networkPassMarkers": 1,
+      "cpuFallbackMarkers": 0,
+      "ortCudaMarkers": 8,
+      "dependencyTimingLines": 8,
+      "responsePayloadSha256": "sha256:7f87e6ca9b2cbe008077bb411a0b0ea95dfad10071d9c406c3d41abdf9c214c0",
+      "providerLogSha256": {
+        "backbone": "sha256:e17df8a64d0f8ff28ca526a4b6ed2ba18dd8222ce95a7ba4b72970c349981bd3",
+        "head0": "sha256:7a2b8e57bd643160a20ded8af4ac009d6990e016b0d8bf6c8293fa075aa4060d",
+        "head1": "sha256:4f1ca4a7b57d1d913422c908a0fa3daf51e6201de7ac44d782b831ff28f8d63d",
+        "merge": "sha256:98206a4a2397aacc2acfb50219e5ff68176fe1e5e81a98e6b16fe53d933ba2b2"
+      },
+      "userLogSha256": "sha256:7edb91f79734d3bc66e93789b161a9215217473336ce964651065910bae406be",
+      "terminalCheckSha256": "sha256:f34a8ae4d498cbcf668962f2d6a62d46b2b7d321f98850b83f1a2193b2779aef",
+      "hostGpuSha256": "sha256:da444653a287172f05e4bb13cc2b4f3a6858e00d2bbfd88985e467173483bd15",
+      "allocationSha256": "sha256:e3cabf4f0f7c6247007bc7d166c77275eccf29618bbb4ccb9633276117af9910"
+    }
+  ],
+  "diagnosticRunsNotCounted": [
+    {
+      "jobIds": ["201969"],
+      "reason": "initial T3 workload used identities /provider/p0 and /provider/p1, which were absent from the frozen controller policy; Providers remained in DKEY wait and the job was cancelled. No qualification result was counted."
+    }
+  ],
+  "evidenceRoot": "/project/tma1/ndnsf-di/releases/spec174-local-candidate-2f8aeab5/evidence",
+  "result": "All three fresh T3 jobs returned the complete accepted response using four role-specific Providers, two allocated GPUs, exact cross-Provider NDN activation edges, ORT CUDA execution, zero CPU-fallback markers, and the same response payload digest."
+}

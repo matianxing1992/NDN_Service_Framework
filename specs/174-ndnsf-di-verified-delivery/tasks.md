@@ -197,7 +197,7 @@ If a task discovers a new wire field, name component, role type, transport, auth
 
 ### T016 — Qualify cross-Provider multi-GPU tensor execution over NDN
 
-- [ ] T016 [US4] Run T3 using the exact T2-passed candidate and existing multi-Provider process/routing scripts, with at least two distinct Providers owning distinct rank roles.
+- [X] T016 [US4] Run T3 using the exact T2-passed candidate and existing multi-Provider process/routing scripts, with at least two distinct Providers owning distinct rank roles.
   - **Frozen plan**: exact ACK closure, pre-split-first plan, role/rank-to-Provider bijection, group/world/epoch/operation schedule, NDN dependency names, deadlines, and oracle.
   - **Execution**: Provider-local ORT on intended GPUs; every inter-Provider activation/partial/result observed through sealed manifest/segment Interest/Data; local collective math only after named inputs; complete final response.
   - **Prohibitions**: no shared-file tensor handoff, TCP/RPC push, cross-Provider NCCL, CPU fallback, independent rank failover, world-size shrink, manual copying of intermediates, or acceptance of stage/rank partials.
@@ -208,7 +208,7 @@ If a task discovers a new wire field, name component, role type, transport, auth
 
 ### T017 — Close traceability, documentation, and readiness audit
 
-- [ ] T017 [US4] Reconcile every FR/SC in the T002 traceability map with current source and immutable Gate U/I/M/C/T evidence; update `specs/174-ndnsf-di-verified-delivery/`, relevant user/operator documentation, and the active context pointer without overstating results.
+- [X] T017 [US4] Reconcile every FR/SC in the T002 traceability map with current source and immutable Gate U/I/M/C/T evidence; update `specs/174-ndnsf-di-verified-delivery/`, relevant user/operator documentation, and the active context pointer without overstating results.
   - **Classification**: report `implemented`, `wired`, `executed`, and `measured` separately. A Tiger BLOCK remains BLOCK and cannot be rewritten as PASS from local evidence.
   - **Regression**: rerun the concise final acceptance selector and `git diff --check` on owned paths; verify no relevant prior regression was silently removed/skipped and no duplicate Spec174 subsystem exists.
   - **Evidence retention**: retain canonical summary/manifest/trace hashes/necessary logs; mark superseded/debug raw runs non-canonical and follow project retention rules without destructive broad cleanup.

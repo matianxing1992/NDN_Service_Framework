@@ -1,6 +1,6 @@
 # Planning Traceability Matrix: Spec 174
 
-This matrix fixes requirement ownership before implementation. `Planned` means the named current owner and regression are the first reuse candidates; it is not a claim that the behavior has passed. T002 verified the owners against current source and the current local gate evidence; Tiger-only rows remain explicitly external and unexecuted.
+This matrix fixes requirement ownership before implementation. `Planned` means the named current owner and regression are the first reuse candidates; it is not a claim that the behavior has passed. T002 verified the owners against current source and the current local gate evidence; the staged Tiger rows are closed only by their candidate-bound T0–T3 evidence below.
 
 ## T002 Current-session verification record
 
@@ -13,10 +13,9 @@ status for each row. The current local closure evidence is
 `evidence/local-gates-2f8aeab5.json` at Experimental commit
 `2f8aeab5d7fc1f3ec8c0c1693aa3cb3b54dcf51c`. It records T004–T013 as
 conforming/reused and executed through the local gates. T014's exact-candidate
-promotion and T015's staged Tiger evidence are recorded separately; T016
-remains the only unexecuted workload stage. T017 remains open until T016 and
-the final audit are complete. No local evidence is promoted to a Tiger
-workload PASS.
+promotion, T015's staged Tiger evidence, and T016's three-run cross-Provider
+qualification are recorded separately. T017 closes the documentation and
+audit chain; no local evidence is substituted for a Tiger workload result.
 
 ## Current local closure
 
@@ -31,9 +30,18 @@ in `evidence/t014-promotion-20260820.json`: the remote
 match. T1's expected no-GPU rejection and T2's three fresh single-GPU
 qualification runs are recorded in
 `evidence/t1-no-gpu-201871.json` and
-`evidence/t2-qualification-20260821.json`. T3 remains external and
-unexecuted; the older login-node `runtime.sif` is deliberately preserved and
-is not a candidate.
+`evidence/t2-qualification-20260821.json`. T3's three fresh same-node,
+two-GPU qualification runs are recorded in
+`evidence/t3-qualification-20260821.json`. They use four role-specific
+Providers, exact role/provider bijection, ORT CUDA, and four cross-Provider NDN
+activation edges; all three complete with the same response digest and zero
+CPU-fallback markers. Job 201969 is retained only as a diagnostic record for
+an invalid identity/policy configuration and is not counted. The older
+login-node `runtime.sif` is deliberately preserved and is not a candidate.
+The final T017 closure and post-implementation audit are recorded in
+`evidence/t017-closure-20260821.json`; the optional negative-control workload
+was not part of the frozen T3 qualification profile, and inter-node behavior
+remains future evaluation work.
 
 ## Functional Requirements
 
@@ -81,7 +89,7 @@ is not a candidate.
 | SC-006 | T013, T014 | promotion guard consumes exact U/I/M/C PASS chain |
 | SC-007 | T014 | `evidence/t014-promotion-20260820.json`: local/remote exact SIF and 35-file bundle hashes match; no remote rebuild/library replacement |
 | SC-008 | T015 | `evidence/t2-qualification-20260821.json`: three complete single-GPU responses, intended ORT CUDA provider, zero CPU fallback |
-| SC-009 | T016 | cross-Provider rank roles, exact NDN edges, complete GPU oracle |
+| SC-009 | T016 | `evidence/t3-qualification-20260821.json`: three fresh complete GPU responses, four role-specific Providers, exact cross-Provider NDN edges, identical response digest, zero CPU fallback |
 | SC-010 | T003, T010–T017 | bounded manifests and retention classification for every failure |
 | SC-011 | T002, T017 | owner/reuse justification for every production change; prior regressions pass; no parallel runtime |
 

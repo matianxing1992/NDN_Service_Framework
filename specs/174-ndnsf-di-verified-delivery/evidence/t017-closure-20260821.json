@@ -1,0 +1,72 @@
+{
+  "schema": "spec174-t017-closure-v1",
+  "status": "PASS",
+  "branch": "Experimental",
+  "candidate": "spec174-local-candidate-2f8aeab5",
+  "sourceRevision": "2f8aeab5d7fc1f3ec8c0c1693aa3cb3b54dcf51c",
+  "sifSha256": "sha256:e0f798e18dc2132998d2a3aa384022eb489875fa1ee97306445c271660785b40",
+  "requirementCoverage": {
+    "functionalRequirements": 29,
+    "successCriteria": 11,
+    "traceabilityRows": 40,
+    "unmappedRequirements": 0,
+    "mandatoryUnresolvedBlocks": 0
+  },
+  "gateChain": {
+    "gateU": "PASS",
+    "gateI": "PASS",
+    "gateM": "PASS",
+    "gateC": "PASS",
+    "t0": "PASS",
+    "t1": "PASS",
+    "t2": "PASS",
+    "t3": "PASS"
+  },
+  "verificationCommands": [
+    {
+      "command": ".specify/scripts/bash/check-prerequisites.sh --json --require-tasks --include-tasks",
+      "result": "PASS"
+    },
+    {
+      "command": "strict Spec Kit structure audit for specs/174-ndnsf-di-verified-delivery",
+      "result": "PASS: 29 FR, 11 SC, 17 tasks, 16 complete before T017 closure"
+    },
+    {
+      "command": "PYTHONPATH=. python3 -m pytest -q --tb=short tests/python/test_spec174_traceability.py",
+      "result": "PASS: 3 passed"
+    },
+    {
+      "command": "PYTHONPATH=. python3 -m pytest -q --tb=short tests/container/contract/test_evidence_schema.py tests/python/test_spec174_fixture.py",
+      "result": "PASS: 6 passed"
+    },
+    {
+      "command": "PYTHONPATH=. python3 -m pytest -q --tb=short tests/python/test_spec174_exact_bundle.py",
+      "result": "PASS: 2 passed"
+    },
+    {
+      "command": "PYTHONPATH=. python3 tools/spec174_traceability.py --repo . --status not-executed --output /tmp/spec174-traceability-final.json",
+      "result": "PASS: 29 FR, 11 SC, 40 rows; manifest sha256:16f340a6cf04bd83efb33c8b916bee53f7d298a364dde79c88f59a4918ffd230"
+    },
+    {
+      "command": "python3 scripts/context_mode_guard.py health --project-root .; python3 scripts/context_mode_guard.py health --scope active --project-root .",
+      "result": "PASS"
+    },
+    {
+      "command": "git diff --check -- specs/174-ndnsf-di-verified-delivery",
+      "result": "PASS"
+    }
+  ],
+  "auditVerdict": {
+    "structure": "PASS",
+    "codeReality": "PASS: current ProviderRoleWorker/native dependency owners and production NDN dataflow were verified with CodeGraph; no parallel Spec174 runtime was added",
+    "evidence": "PASS: U/I/M/C/T evidence is candidate-bound; T3 has three fresh complete runs",
+    "limitations": [
+      "The optional T3 negative-control workload was not run because it is outside the frozen qualification profile.",
+      "T3 uses one node with two GPUs; cross-provider NDN routing is exercised, but inter-node network behavior remains future work."
+    ]
+  },
+  "diagnosticRunsNotCounted": {
+    "201969": "invalid /provider/p0,/provider/p1 identities absent from controller.policies; DKEY wait and cancellation, not a candidate/runtime failure"
+  },
+  "result": "Spec174 mandatory requirements and staged acceptance gates are closed on Experimental for the exact candidate. Main remains unchanged; no unrelated worktree changes were staged."
+}
