@@ -33,6 +33,14 @@ actual=$(sha256sum "$SPEC175_SIF" | awk '{print $1}')
   echo SPEC175_SIF_DIGEST_MISMATCH >&2
   exit 4
 }
+python3 - "$SPEC175_MODEL_MANIFEST" "sha256:$actual" <<'PY'
+import json
+import sys
+
+manifest = json.loads(open(sys.argv[1], encoding="utf-8").read())
+if manifest.get("runtimeSifSha256") != sys.argv[2]:
+    raise SystemExit("SPEC175_MODEL_SIF_BINDING_MISMATCH")
+PY
 mkdir -p "$SPEC175_OUTPUT"
 cache_root="${SLURM_TMPDIR:-/tmp/$USER/ndnsf-di/$SLURM_JOB_ID}/model-cache"
 mkdir -p "$cache_root"
