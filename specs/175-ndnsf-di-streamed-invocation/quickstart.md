@@ -27,18 +27,26 @@ dirty inputs and excludes unrelated paths.
 ## 1. G0 contract gate
 
 ```bash
+export SPEC175_RUN_ID="<candidate-id>"
+export SPEC175_SOURCE_SEAL="$PWD/results/spec175/g0/source-seal-${SPEC175_RUN_ID}.json"
+
+python3 scripts/spec175_source_seal.py \
+  --project-root "$PWD" \
+  --output "$SPEC175_SOURCE_SEAL"
+
 python3 scripts/spec175_contract_gate.py \
+  --project-root "$PWD" \
   --feature-dir specs/175-ndnsf-di-streamed-invocation \
-  --output results/spec175/g0/qualification-manifest-v1.json
+  --source-seal "$SPEC175_SOURCE_SEAL" \
+  --output "results/spec175/g0/qualification-manifest-${SPEC175_RUN_ID}.json"
 ```
 
-During development the retained expected-negative run is `BLOCKED_EXPECTED`.
-The current accepted G0 record is
-`results/spec175/g0/qualification-manifest-final-20260825.json`; it has no
-placeholders/TLV collisions/default drift/runtime Transformers dependency, and
-records the service-only Normal API, shared collaboration owner,
-selected-Provider-only event grants, complete 58-FR/12-SC mapping, and the
-current source seal.
+During development an unsealed run may be retained as `BLOCKED_EXPECTED`, but
+it cannot qualify a candidate. The accepted G0 record must have no
+placeholders, TLV collisions, default drift, or runtime Transformers
+dependency, and must record the service-only Normal API, shared collaboration
+owner, selected-Provider-only event grants, complete 73-FR/16-SC mapping, and
+the exact source-seal digest consumed later by G1--G3.
 
 ## 2. Configure and build one host toolchain
 
@@ -46,8 +54,9 @@ current source seal.
 ./waf configure --with-tests --toolchain-root=/usr/bin \
   --ndn-svs-source-tree=/home/tianxing/NDN/ndn-svs \
   --ndn-svs-build-tree=/home/tianxing/NDN/ndn-svs/build
-./waf build --target=unit-tests -j2
+./waf build --targets=unit-tests,integration-tests -j2
 ldd build/unit-tests
+ldd build/integration-tests
 ```
 
 Do not mix Linuxbrew and system linker/library closures. The configure probe
@@ -66,8 +75,8 @@ candidate SIF; that extension is built inside the candidate/sealed builder.
 build/unit-tests --log_level=test_suite
 
 python3 scripts/run_spec175_python_gate.py \
-  --source-seal results/spec175/g0/source-seal-final-20260825.json \
-  --output results/spec175/g1/qualification-manifest-final-20260825.json
+  --source-seal "$SPEC175_SOURCE_SEAL" \
+  --output "results/spec175/g1/qualification-manifest-${SPEC175_RUN_ID}.json"
 ```
 
 Expected: complete native binary and the bounded Spec175/shared-contract Python
@@ -88,8 +97,8 @@ python3 scripts/run_spec175_integration_gate.py \
   --cases I01-I03,I15-I18 \
   --healthy-repeats 3 \
   --seed 1750001 \
-  --source-seal results/spec175/g0/source-seal-final-20260825.json \
-  --output results/spec175/g2/qualification-manifest-final-20260825.json
+  --source-seal "$SPEC175_SOURCE_SEAL" \
+  --output "results/spec175/g2/qualification-subset-${SPEC175_RUN_ID}.json"
 ```
 
 The complete gate remains:
@@ -100,8 +109,8 @@ python3 scripts/run_spec175_integration_gate.py \
   --cases I01-I20 \
   --healthy-repeats 3 \
   --seed 1750001 \
-  --source-seal results/spec175/g0/source-seal-final-20260825.json \
-  --output results/spec175/g2/qualification-manifest-final-20260825.json
+  --source-seal "$SPEC175_SOURCE_SEAL" \
+  --output "results/spec175/g2/qualification-manifest-${SPEC175_RUN_ID}.json"
 ```
 
 Current historical registered-subset result: I01-I15 pass, every selected Provider
