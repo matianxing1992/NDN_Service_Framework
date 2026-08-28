@@ -100,6 +100,31 @@ def verify_file(path: Path, declared: str, label: str) -> int:
     return path.stat().st_size
 
 
+def verify_artifact_checksums(root: Path) -> int:
+    """Verify the promoted artifact checksum ledger after node-local copy."""
+    ledger = root / "artifact-checksums.sha256"
+    if not ledger.is_file():
+        fail("QWEN_STAGE_ARTIFACT_CHECKSUM_LEDGER_MISSING")
+    verified = 0
+    for raw in ledger.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        fields = line.split(maxsplit=1)
+        if len(fields) != 2 or len(fields[0]) != 64:
+            fail("QWEN_STAGE_ARTIFACT_CHECKSUM_LEDGER_INVALID")
+        relative = fields[1].lstrip(" *")
+        path = (root / relative).resolve()
+        if root.resolve() not in path.parents or not path.is_file():
+            fail("QWEN_STAGE_ARTIFACT_CHECKSUM_PATH_INVALID")
+        if sha256_file(path) != fields[0]:
+            fail("QWEN_STAGE_ARTIFACT_CHECKSUM_MISMATCH:" + relative)
+        verified += 1
+    if verified == 0:
+        fail("QWEN_STAGE_ARTIFACT_CHECKSUM_LEDGER_EMPTY")
+    return verified
+
+
 def stage_model(model_root: Path, cache_root: Path, manifest: dict) -> tuple[Path, dict]:
     """Copy the external artifact tree once and publish an atomic cache marker."""
     source = model_root.resolve()
@@ -146,6 +171,7 @@ def stage_model(model_root: Path, cache_root: Path, manifest: dict) -> tuple[Pat
             raise
     artifact_dir = cache / "qwen-onnx-stage-artifacts"
     tokenizer_dir = cache / "qwen-onnx-tokenizer"
+    checksum_entries = verify_artifact_checksums(cache)
     bytes_verified = 0
     for index, stage in enumerate(manifest["stages"]):
         filename = Path(str(stage.get("filename") or stage.get("path", ""))).name
@@ -159,6 +185,7 @@ def stage_model(model_root: Path, cache_root: Path, manifest: dict) -> tuple[Pat
         "stageCount": len(manifest["stages"]),
         "stageBytesVerified": bytes_verified,
         "tokenizerBytesVerified": tokenizer_bytes,
+        "artifactChecksumEntries": checksum_entries,
     }
     if not marker.is_file():
         marker.write_text(json.dumps(complete, sort_keys=True) + "\n", encoding="utf-8")
@@ -166,6 +193,7 @@ def stage_model(model_root: Path, cache_root: Path, manifest: dict) -> tuple[Pat
         "cacheRoot": str(cache),
         "stageBytesVerified": bytes_verified,
         "tokenizerBytesVerified": tokenizer_bytes,
+        "artifactChecksumEntries": checksum_entries,
         "stagingMs": (time.perf_counter() - started) * 1000.0,
         "cacheHit": cache_hit,
     }
