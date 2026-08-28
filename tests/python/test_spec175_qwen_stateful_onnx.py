@@ -53,6 +53,18 @@ def load_stage_manifest_builder():
     return module
 
 
+def load_artifact_copier():
+    path = ROOT / (
+        "specs/175-ndnsf-di-streamed-invocation/jobs/"
+        "copy-qwen-onnx-artifact.py")
+    spec = importlib.util.spec_from_file_location(
+        "spec175_qwen_artifact_copier", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def load_reference_generator():
     path = ROOT / (
         "specs/175-ndnsf-di-streamed-invocation/jobs/"
@@ -99,6 +111,32 @@ def bundle(token_epoch: int = 0) -> DecodeStateBundleV1:
 
 
 class Spec175StatefulOnnxTests(unittest.TestCase):
+    def test_artifact_promotion_rewrites_partial_manifest_paths(self) -> None:
+        copier = load_artifact_copier()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "output"
+            stages = output / "qwen-onnx-stage-artifacts"
+            tokenizer = output / "qwen-onnx-tokenizer"
+            stages.mkdir(parents=True)
+            tokenizer.mkdir()
+            stage = stages / "stage-0-qwen.onnx"
+            stage.write_bytes(b"stage")
+            (tokenizer / "tokenizer.json").write_text("{}")
+            (output / "qwen-onnx-service-manifest.json").write_text(
+                json.dumps({"stages": [{"path": str(stage)}]}))
+            artifact = root / ".candidate.partial"
+            with patch.object(sys, "argv", [
+                    "copy-qwen-onnx-artifact.py", str(output), str(artifact)]):
+                copier.main()
+            manifest = json.loads(
+                (artifact / "qwen-onnx-service-manifest.json").read_text())
+            self.assertEqual(manifest["artifactRoot"], str(artifact))
+            self.assertEqual(
+                manifest["stages"][0]["path"],
+                str(artifact / "qwen-onnx-stage-artifacts" / stage.name))
+            self.assertTrue(Path(manifest["stages"][0]["path"]).is_file())
+
     def test_qwen_head_dim_uses_explicit_projection_width(self) -> None:
         from llm_pipeline.llm_pipeline_lib import _qwen_head_dim
 
