@@ -463,6 +463,7 @@ class Spec175StatefulOnnxTests(unittest.TestCase):
                 "positionInputPolicy": "qwen-causal-position-v1",
                 "contextLength": 96,
                 "promptLength": 20,
+                "promptIds": [1] * 20,
                 "padTokenId": 0,
                 "layerCount": 64,
                 "layerRanges": [s["layerRange"] for s in stages],
@@ -529,6 +530,7 @@ class Spec175StatefulOnnxTests(unittest.TestCase):
                 "positionInputPolicy": "qwen-causal-position-v1",
                 "contextLength": 96,
                 "promptLength": 20,
+                "promptIds": [1] * 20,
                 "padTokenId": 0,
                 "layerCount": 64,
                 "layerRanges": [[0, 21], [21, 42], [42, 64]],
@@ -553,6 +555,18 @@ class Spec175StatefulOnnxTests(unittest.TestCase):
             manifest = json.loads(output.read_text())
             self.assertTrue(all(stage["sha256"].startswith("sha256:")
                                 for stage in manifest["stages"]))
+
+    def test_stage_readiness_runner_is_onnx_only_and_paired(self) -> None:
+        runner = ROOT / (
+            "specs/175-ndnsf-di-streamed-invocation/jobs/"
+            "run-qwen-stage-readiness.py")
+        text = runner.read_text(encoding="utf-8")
+        self.assertIn("onnxruntime", text)
+        self.assertIn("io_binding", text)
+        self.assertIn("pair_order", text)
+        self.assertIn("pairCount", text)
+        self.assertNotIn("import transformers", text.lower())
+        self.assertNotIn("import torch", text.lower())
 
     def test_pinned_qwen_profile_is_fp16_text_only_single_token(self) -> None:
         adapter = build_qwen36_27b_three_stage_adapter(

@@ -80,6 +80,11 @@ def main() -> int:
     sequence_policy = str(source.get("sequencePolicy", ""))
     context_length = int(source.get("contextLength", 0) or 0)
     prompt_length = int(source.get("promptLength", 0) or 0)
+    prompt_ids = source.get("promptIds")
+    if (not isinstance(prompt_ids, list) or len(prompt_ids) != prompt_length
+            or any(not isinstance(value, int) or value < 0
+                   for value in prompt_ids)):
+        raise SystemExit("QWEN_ONNX_PROMPT_IDS_REQUIRED")
     pad_token_id = source.get("padTokenId")
     if sequence_policy != SEQUENCE_POLICY:
         raise SystemExit("QWEN_ONNX_SEQUENCE_POLICY_REQUIRED")
@@ -186,6 +191,7 @@ def main() -> int:
         "thinkingMode": THINKING_MODE,
         "graphComponents": [str(component) for component in components],
         "promptLength": prompt_length,
+        "promptIds": [int(value) for value in prompt_ids],
         "contextLength": context_length,
         "padTokenId": int(pad_token_id),
         "quantization": "none",
