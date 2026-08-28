@@ -130,6 +130,10 @@ def main() -> int:
             raise SystemExit("QWEN_ONNX_POSITION_INPUT_POLICY_REQUIRED")
         contracts = dict(item.get("tensorContracts", {}))
         for family in STATE_FAMILIES:
+            if (f"{family}_in" not in contracts
+                    or f"{family}_out" not in contracts):
+                raise SystemExit(
+                    "QWEN_ONNX_STATE_CONTRACT_MISSING:" + family)
             state_input = contracts.get(f"{family}_in", {})
             state_output = contracts.get(f"{family}_out", {})
             if (state_input.get("elementType")

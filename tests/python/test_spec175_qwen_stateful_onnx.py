@@ -525,6 +525,10 @@ class Spec175StatefulOnnxTests(unittest.TestCase):
                     "outputNames": ["hidden_states_out", *state_out],
                     "stateInputNames": state_in,
                     "stateOutputNames": state_out,
+                    "tensorContracts": {
+                        name: {"elementType": 10, "shape": [1, 1]}
+                        for name in (*state_in, *state_out)
+                    },
                 })
             service = root / "qwen-onnx-service-manifest.json"
             service.write_text(json.dumps({
@@ -577,6 +581,7 @@ class Spec175StatefulOnnxTests(unittest.TestCase):
         self.assertNotIn("copy_outputs_to_cpu", text)
         self.assertIn("pair_order", text)
         self.assertIn("pairCount", text)
+        self.assertIn("QWEN_STAGE_STATE_DTYPE", text)
         self.assertNotIn("import transformers", text.lower())
         self.assertNotIn("import torch", text.lower())
 
