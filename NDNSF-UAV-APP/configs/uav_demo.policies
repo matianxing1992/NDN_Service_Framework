@@ -18,6 +18,8 @@ provider-policies
             /example/uav/drone/A/UAV/MAVLink/ParameterEdit
             /example/uav/drone/A/UAV/MAVLink/AnalyzeSnapshot
             /example/uav/drone/A/UAV/Preflight/Checklist
+            /UAV/Incident/Analyze
+            /UAV/Incident/Analyze/ROLE/EvidenceSource
         }
     }
 
@@ -37,6 +39,8 @@ provider-policies
             /example/uav/drone/B/UAV/MAVLink/ParameterEdit
             /example/uav/drone/B/UAV/MAVLink/AnalyzeSnapshot
             /example/uav/drone/B/UAV/Preflight/Checklist
+            /UAV/Incident/Analyze
+            /UAV/Incident/Analyze/ROLE/EvidenceSource
         }
     }
 
@@ -56,6 +60,8 @@ provider-policies
             /example/uav/drone/C/UAV/MAVLink/ParameterEdit
             /example/uav/drone/C/UAV/MAVLink/AnalyzeSnapshot
             /example/uav/drone/C/UAV/Preflight/Checklist
+            /UAV/Incident/Analyze
+            /UAV/Incident/Analyze/ROLE/DetectorReporter
         }
     }
 
@@ -65,6 +71,8 @@ provider-policies
         allow
         {
             /UAV/GS/ObjectDetection
+            /UAV/Incident/Analyze
+            /UAV/Incident/Analyze/ROLE/DetectorReporter
             /UAV/GS/OperatorAuthority/Lease
             /UAV/GS/OperatorAuthority/Revocation
             /UAV/GS/OperatorAuthority/Audit
@@ -105,6 +113,7 @@ user-policies
             /example/uav/drone/C/UAV/MAVLink/AnalyzeSnapshot
             /example/uav/drone/C/UAV/Preflight/Checklist
             /UAV/GS/ObjectDetection
+            /UAV/Incident/Analyze
             /UAV/GS/OperatorAuthority/Lease
             /UAV/GS/OperatorAuthority/Revocation
             /UAV/GS/OperatorAuthority/Audit
@@ -117,6 +126,7 @@ user-policies
         allow
         {
             /UAV/GS/ObjectDetection
+            /UAV/Incident/Analyze
             /UAV/GS/OperatorAuthority/Lease
             /UAV/GS/OperatorAuthority/Revocation
             /UAV/GS/OperatorAuthority/Audit
@@ -129,6 +139,7 @@ user-policies
         allow
         {
             /UAV/GS/ObjectDetection
+            /UAV/Incident/Analyze
             /UAV/GS/OperatorAuthority/Lease
             /UAV/GS/OperatorAuthority/Revocation
             /UAV/GS/OperatorAuthority/Audit

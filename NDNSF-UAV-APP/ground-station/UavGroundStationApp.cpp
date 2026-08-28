@@ -2,6 +2,10 @@
 #include "../shared/UavProtocol.hpp"
 #include "../shared/UavVideoPipeline.hpp"
 #include "../shared/UavSensorStreams.hpp"
+#include "../shared/UavMissionSession.hpp"
+#include "../shared/UavDetectorProvider.hpp"
+#include "../shared/UavCollaborationPolicy.hpp"
+#include "UavIncidentCoordinator.hpp"
 #include "GroundStationRuntimeState.hpp"
 #include "ndn-service-framework/CertificatePublisher.hpp"
 #include "ndn-service-framework/HybridMessageCrypto.hpp"
@@ -15,6 +19,7 @@
 #include <ndn-cxx/interest.hpp>
 #include <ndn-cxx/security/key-chain.hpp>
 #include <ndn-cxx/security/key-params.hpp>
+#include <ndn-cxx/util/sha256.hpp>
 #include <ndn-cxx/util/logger.hpp>
 
 #include <boost/asio/post.hpp>
@@ -416,6 +421,17 @@ main(int argc, char** argv)
     const bool autoSingleMissionStartTest = getConfigBool(argc, argv, appConfig, "--auto-single-mission-start-test", "auto-single-mission-start-test", false);
     const bool autoLoadedMissionPlanTest = getConfigBool(argc, argv, appConfig, "--auto-loaded-mission-plan-test", "auto-loaded-mission-plan-test", false);
     const bool autoRepeatStopTest = getConfigBool(argc, argv, appConfig, "--auto-repeat-stop-test", "auto-repeat-stop-test", false);
+    const bool autoIncidentCollaborationTest = getConfigBool(
+      argc, argv, appConfig, "--auto-incident-collaboration-test",
+      "auto-incident-collaboration-test", false);
+    const bool autoSpec176SitlTest = getConfigBool(
+      argc, argv, appConfig, "--auto-spec176-sitl-test",
+      "auto-spec176-sitl-test", false);
+    const int incidentCollaborationTimeoutSeconds = std::stoi(getConfigOption(
+      argc, argv, appConfig, "--incident-collaboration-timeout-seconds",
+      "incident-collaboration-timeout-seconds", "30"));
+    const std::string spec176FailureCase = getConfigOption(
+      argc, argv, appConfig, "--spec176-failure-case", "spec176-failure-case", "");
     const int autoStopSeconds = std::stoi(getConfigOption(argc, argv, appConfig, "--auto-stop-seconds", "auto-stop-seconds", "10"));
     const int autoStartDelayMs = std::stoi(getConfigOption(argc, argv, appConfig, "--auto-start-delay-ms", "auto-start-delay-ms", "3000"));
     const std::string targetDroneId = getConfigOption(argc, argv, appConfig, "--target-drone", "target-drone", "A");
@@ -570,6 +586,7 @@ main(int argc, char** argv)
                                   autoAuthorityAuditQueryTest ||
                                   autoApplyBitrateTest ||
                                   autoPatrolTest || autoSingleMissionTest ||
+                                  autoSpec176SitlTest ||
                                   autoLoadedMissionPlanTest);
     if (interactiveGui && !hasFlag(argc, argv, "--no-cert-dialog") &&
         !hasOption(argc, argv, "--ground-station-identity")) {
@@ -585,6 +602,9 @@ main(int argc, char** argv)
       videoBitratePolicy, videoBitrateAutoPressureMs, missionPlanFile,
       operatorId, operatorLeaseDrone, operatorLeaseScope, operatorLeaseTtlMs,
       operatorAuthorityStateFile, operatorAdminIds, operatorAuthorityRefreshIntervalMs);
+    runtime->setStatusCallback([] (std::string status) {
+      std::cerr << "GS_RUNTIME_STATUS status=" << status << std::endl;
+    });
     runtime->start();
     if (!runtime->waitUntilReady(std::chrono::seconds(30))) {
       throw std::runtime_error("ground-station NDNSF runtime did not become ready");
@@ -604,6 +624,21 @@ main(int argc, char** argv)
       const bool ok = runtime->runLoadedMissionPlanUploadTest(std::chrono::seconds(45),
                                                               missionPlanFile);
       std::cout << "GS_LOADED_MISSION_PLAN_EXIT ok=" << (ok ? "true" : "false") << std::endl;
+      return ok ? 0 : 2;
+    }
+    if (autoIncidentCollaborationTest) {
+      const bool ok = runtime->runIncidentCollaborationTest(
+        std::chrono::seconds(std::max(1, incidentCollaborationTimeoutSeconds)),
+        spec176FailureCase);
+      std::cout << "GS_INCIDENT_COLLABORATION_EXIT ok="
+                << (ok ? "true" : "false") << std::endl;
+      return ok ? 0 : 2;
+    }
+    if (autoSpec176SitlTest) {
+      const bool ok = runtime->runSpec176SitlAcceptance(
+        std::chrono::seconds(std::max(1, incidentCollaborationTimeoutSeconds)));
+      std::cout << "GS_SPEC176_SITL_EXIT ok="
+                << (ok ? "true" : "false") << std::endl;
       return ok ? 0 : 2;
     }
     if (autoRepoCatalogBrowseTest) {

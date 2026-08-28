@@ -492,6 +492,21 @@ namespace ndn_service_framework{
         }
 
         /**
+         * @brief Return the configured ndn-cxx validator used by the normal
+         *        trust-schema validation path.
+         *
+         * SegmentFetcher accepts ndn::security::Validator rather than the
+         * ndn-svs BaseValidator interface implemented by MessageValidator.
+         * Exposing this reference keeps segmented retrieval on the same
+         * configured trust schema instead of falling back to ValidatorNull.
+         */
+        ndn::security::Validator&
+        getConfiguredValidatorForSegmentFetcher() noexcept
+        {
+            return m_validator;
+        }
+
+        /**
          * @brief Asynchronously validate @p data
          *
          * @note @p successCb and @p failureCb must not be nullptr

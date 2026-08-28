@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -15,6 +16,208 @@
 namespace ndnsf::examples::uav {
 
 using Fields = std::map<std::string, std::string>;
+
+// Spec 176 application-owned lifecycle records.  These types intentionally
+// stay outside NDNSF Core wire messages: the application carries compact
+// correlation and exact named-data references through the existing generic
+// request/collaboration payloads.
+enum class UavMissionSessionState
+{
+  Planned,
+  Starting,
+  Active,
+  Degraded,
+  Compensating,
+  Cancelling,
+  Recovering,
+  Completed,
+  Cancelled,
+  Failed,
+};
+
+const char*
+to_string(UavMissionSessionState state) noexcept;
+
+std::optional<UavMissionSessionState>
+parseUavMissionSessionState(const std::string& value);
+
+enum class UavMissionPartState
+{
+  Pending,
+  Accepted,
+  Executing,
+  Completed,
+  Missing,
+  Compensated,
+};
+
+const char*
+to_string(UavMissionPartState state) noexcept;
+
+std::optional<UavMissionPartState>
+parseUavMissionPartState(const std::string& value);
+
+enum class UavCollaborationJobState
+{
+  Created,
+  AckCollecting,
+  AckClosed,
+  PlanCommitted,
+  Selected,
+  EvidenceReady,
+  Executing,
+  Reporting,
+  Succeeded,
+  Failed,
+  TimedOut,
+  Cancelled,
+};
+
+const char*
+to_string(UavCollaborationJobState state) noexcept;
+
+std::optional<UavCollaborationJobState>
+parseUavCollaborationJobState(const std::string& value);
+
+struct UavStreamBinding
+{
+  std::string streamId;
+  ndn::Name producerIdentity;
+  uint64_t sessionEpoch = 0;
+  uint64_t firstCursor = 0;
+  uint64_t lastCursor = 0;
+  bool active = false;
+};
+
+struct UavEvidenceReference
+{
+  ndn::Name producerIdentity;
+  std::string streamId;
+  uint64_t streamSessionEpoch = 0;
+  uint64_t firstSequence = 0;
+  uint64_t lastSequence = 0;
+  uint64_t windowStartMs = 0;
+  uint64_t windowEndMs = 0;
+  ndn::Name exactDataName;
+  uint64_t version = 0;
+  std::string contentDigest;
+  std::string contentType;
+  uint64_t retentionDeadlineMs = 0;
+
+  bool isValid(std::string* reason = nullptr) const;
+  Fields toFields(const std::string& prefix = {}) const;
+};
+
+/**
+ * Build the bounded, deterministic manifest published by an EvidenceSource.
+ * The manifest is application content carried in producer-owned signed Data;
+ * its digest is stored in UavEvidenceReference and is intentionally not
+ * repeated inside the content to avoid a self-referential hash.
+ */
+ndn::Buffer
+makeUavIncidentEvidenceContent(const std::string& missionId,
+                               const std::string& incidentId,
+                               const UavEvidenceReference& evidence);
+
+struct UavMissionPartRecord
+{
+  std::string partId;
+  std::string sector;
+  std::string waypointDigest;
+  std::string attemptId;
+  ndn::Name assignedProvider;
+  UavMissionPartState state = UavMissionPartState::Pending;
+  std::vector<uint64_t> completedWaypoints;
+  std::string responseDigest;
+  std::string authoritativeVehicleState;
+};
+
+struct UavIncidentRecord
+{
+  std::string incidentId;
+  std::string missionId;
+  std::string triggerKind;
+  uint64_t triggerTimeMs = 0;
+  std::string location;
+  std::string requestedCapability;
+  std::vector<UavEvidenceReference> evidence;
+  std::string currentAttemptId;
+  std::string acceptedTerminalReportDigest;
+};
+
+struct UavProviderCapabilitySnapshot
+{
+  ndn::Name providerIdentity;
+  std::string modelId;
+  std::string modelDigest;
+  std::string qualityProfile;
+  std::string deviceClass;
+  bool ready = false;
+  uint64_t queueDepth = 0;
+  uint64_t estimatedStartMs = 0;
+  bool evidenceAccess = false;
+  uint64_t snapshotTimeMs = 0;
+};
+
+struct UavRoleAssignment
+{
+  std::string role;
+  ndn::Name providerIdentity;
+  bool terminalResponseOwner = false;
+  std::vector<UavEvidenceReference> evidence;
+};
+
+struct UavCollaborationJobRecord
+{
+  ndn::Name requestId;
+  std::string missionId;
+  std::string incidentId;
+  std::string attemptId;
+  uint64_t ackDeadlineMs = 0;
+  uint64_t globalDeadlineMs = 0;
+  std::string planDigest;
+  std::vector<UavRoleAssignment> assignments;
+  ndn::Name terminalOwner;
+  UavCollaborationJobState state = UavCollaborationJobState::Created;
+  std::string failureStage;
+  std::string failureReason;
+  std::string fallbackMode = "disabled";
+  std::string terminalReportDigest;
+};
+
+struct UavTerminalReport
+{
+  std::string missionId;
+  std::string incidentId;
+  std::string attemptId;
+  ndn::Name requestId;
+  std::string planDigest;
+  ndn::Name terminalOwner;
+  ndn::Name selectedProvider;
+  std::string modelId;
+  std::string modelDigest;
+  std::vector<UavEvidenceReference> evidence;
+  ndn::Name reportName;
+  std::string resultDigest;
+  std::string status;
+
+  bool isValid(std::string* reason = nullptr) const;
+};
+
+struct UavMissionSessionRecord
+{
+  std::string missionId;
+  std::string planDigest;
+  ndn::Name operatorIdentity;
+  UavMissionSessionState state = UavMissionSessionState::Planned;
+  uint64_t createdAtMs = 0;
+  uint64_t deadlineMs = 0;
+  uint64_t updatedAtMs = 0;
+  std::vector<UavMissionPartRecord> parts;
+  std::vector<UavStreamBinding> streams;
+  std::vector<UavIncidentRecord> incidents;
+  std::vector<UavCollaborationJobRecord> jobs;
+};
 
 inline constexpr size_t UAV_VIDEO_MAX_NAME_RESERVATIONS = 65536;
 inline constexpr uint64_t UAV_VIDEO_LIVE_RETENTION_MS = 10000;
@@ -1453,6 +1656,9 @@ buildMavlinkParamSetFrame(const std::string& paramName, float value,
 
 std::vector<uint8_t>
 buildMavlinkMissionCountFrame(uint16_t count, const Fields& params = {});
+
+std::vector<uint8_t>
+buildMavlinkMissionClearAllFrame(const Fields& params = {});
 
 std::vector<uint8_t>
 buildMavlinkMissionItemIntFrame(uint16_t seq, double latitude, double longitude,

@@ -93,7 +93,12 @@ main(int argc, char** argv)
     std::unique_ptr<ndn_service_framework::CertificatePublisher> certPublisher;
     if (serveCertificates) {
       certPublisher = std::make_unique<ndn_service_framework::CertificatePublisher>(
-        face, keyChain, controllerCert.getName());
+        // Pass the identity name rather than the certificate name.  The
+        // publisher accepts either form, but resolving an already-known
+        // identity avoids forcing the current ndn-cxx PIB implementation
+        // through its certificate-name exception path during isolated
+        // MiniNDN startup.
+        face, keyChain, controllerPrefix);
     }
 
     ndn_service_framework::ServiceController controller(

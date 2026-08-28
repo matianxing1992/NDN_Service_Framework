@@ -196,12 +196,27 @@ struct VehicleRuntimeState
 
 struct GroundStationRuntimeState
 {
+  struct CollaborationView
+  {
+    std::string missionId;
+    std::string incidentId;
+    std::string attemptId;
+    std::string requestId;
+    std::string stage = "idle";
+    std::string selectedProvider;
+    std::string terminalOwner;
+    std::string failureStage;
+    std::string fallbackMode = "disabled";
+    uint64_t deadlineMs = 0;
+  };
+
   std::string selectedDroneId = "unknown";
   bool selectedDroneLocked = false;
   std::map<std::string, VehicleRuntimeState> drones;
   std::optional<MissionPlan> missionPlan;
   std::optional<MissionProgressState> missionProgress;
   std::vector<OperatorAuthorityAlert> operatorAuthorityAlerts;
+  CollaborationView collaboration;
   uint64_t updatedMs = 0;
 
   const VehicleRuntimeState*

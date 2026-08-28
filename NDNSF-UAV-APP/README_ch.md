@@ -11,6 +11,88 @@ container，承载控制客户端、图传播放、任务协同、telemetry 显�
 object detection 等服务。container 进程负责 identity、trust schema、policy fetch、GUI 和
 本地硬件适配；每个 named NDNSF service 仍然是独立可寻址、独立受权限控制的服务。
 
+## 开发分支
+
+当前 UAV 应用开发统一在长期保留的 `UAV-Experimental` 分支上进行。UAV 功能、
+测试和证据应合并回该分支；只有验证完成并另行明确决定后，才可以晋升到
+`Experimental` 或 `main`。Spec 176 把下一阶段多 UAV 协作明确设计为“长期应用层
+MissionSession + 有界的事件级 NDNSF CollaborationJob”，而不是让整个巡逻共用一个
+`RequestCollaboration()`。
+
+该应用契约采用 NDN 意义上的 **data-centric service transaction**：证据、manifest 和
+保留的 report 都是 producer-owned、签名的、在 versioned name 下不可变的 Data，由
+Interest 按名字获取并用 digest 绑定。这里的 “data-driven” 不是 analytics/ML 意义的
+术语，也不是单独的创新点。Request 只携带紧凑的名字和元数据，不携带 IP/host/port/
+socket endpoint，也不塞入原始帧 bytes。MissionSession 是本地有界状态，不是 NDN
+连接。标准流程是 `EvidenceSource` -> named evidence -> `DetectorReporter` -> 一个
+terminal report；Ground Station detection 只能作为显式 fallback。两个角色共用
+`/UAV/Incident/Analyze`。Ground Station 的 selector 只消费通过 validator 接受的
+ACK closure 中的 capability metadata，并在选择前检查 model、quality、device、readiness、
+queue 和 freshness，因此 plan 不携带 transport endpoint 或角色专用地址。
+EvidenceSource 还必须与 evidence reference 中的 producer identity 相同，不能替其他
+provider 的命名空间背书。
+从运行语义看，只有在 ACK capability metadata 和签名 named evidence 均验证后，
+协作流程才是有限意义上的 evidence-driven；这不是通用 data-driven/ML 声明。
+ACK/SVS 可以帮助 bootstrap 逻辑名字或可用性提示，但这本身不等于官方意义的
+incomplete-name discovery；消费者仍然必须用有界 Interest 获取 exact Data。
+精确对象获取对同一对象只保持一个在途 Interest，stream/segmented prefetch 窗口也必须有界。
+Evidence descriptor 不能直接作为 detector 输入：`UavEvidenceReference` 在对应
+Data 的精确名字、producer certificate/signature 和 content digest 通过验证前，
+仍然只是元数据。Detector 只接受验证后生成的 `UavVerifiedEvidence`；descriptor
+和未经验证的 raw bytes 都必须在这一边界被拒绝。
+当前 CPU slice 会对裸 Data 验证调用方提供的 producer certificate；选中的 Drone
+collaboration participant 也会通过 `CollaborationContext::fetchSignedExactData` 完成精确
+name 与 expected producer 检查，再把内容交给 detector。Core 多段大数据 fetch 已接入
+配置的 NDNSF/ndn-cxx validator，但仍需真实 MiniNDN/SITL 多段运行验证后才能计入部署证据。
+
+### Spec176 验收启动器
+
+固定的四节点 MiniNDN 拓扑记录在
+`examples/ndnsf/uav-collaboration/topology.conf`。启动 campaign 前先运行只读预检：
+
+```bash
+python3 examples/ndnsf/uav-collaboration/minindn_uav_collaboration.py
+python3 examples/ndnsf/uav-collaboration/minindn_failure_matrix.py
+```
+
+只有在 UAV 二进制已构建且主机安装 MiniNDN 时，才使用
+`--run --output <目录>` 启动真实进程。启动器会写入绑定候选版本的 manifest 和日志；
+仅仅成功启动不能替代 named-Data 验证证据。PX4 SITL 是独立 gate，必须显式设置
+`PX4_SITL_ROOT`：
+
+```bash
+NDNSF-UAV-APP/tools/run_uav_collaboration_probe.sh <输出目录>
+```
+
+该 probe 现在委托给候选版本绑定的
+`tools/run_uav_px4_sitl_scenario.py` adapter。它使用 PX4 标准的
+`Tools/simulation/jmavsim/jmavsim_run.sh`，启动三个真实 UDP SITL drone
+（`A`、`B`、`C`），并且在缺少 root、PX4 目录或任一已构建二进制时直接拒绝启动。
+adapter 会记录预检 hash，并检查 stream、patrol/compensation、incident 成功、
+incident 失败和 command reconciliation 的阶段 marker；不会回退到 mock backend。
+例如：
+
+```bash
+sudo -n env PX4_SITL_ROOT=/home/tianxing/PX4-Autopilot \
+  NDNSF_UAV_FLIGHT_CONTROLLER=udp \
+  NDNSF-UAV-APP/tools/run_uav_collaboration_probe.sh <输出目录>
+```
+
+当前保留的 Spec 176 nominal 证据记录在
+`specs/176-uav-two-lifecycle-collaboration/evidence/minindn-nominal-20260828.md`：
+固定四进程拓扑、60 秒 MissionSession、两个有限 incident job，以及第二个 consumer
+按 exact name 重新获取同一个 immutable object。Ground Station 会先启动真实 predictive
+stream，并在两个 job 执行后记录 `SPEC176_STREAM_FINAL ok=true` 且 fetched chunk 数增加，
+因此 stream 独立性是实测结果，不是推断。十个 failure case 单独记录在
+`specs/176-uav-two-lifecycle-collaboration/evidence/minindn-failure-matrix-20260828.md`。
+这些结果只支持 NDN data-centric、有限 evidence-driven 的验收结论：应用使用
+producer-owned Data、bounded Interest 和 validator；“data-driven”不是通用 ML 或框架级
+创新声明。这是 **NDN-compatible application-boundary** 的声明，不是完整实现 NDN
+协议；ACK/SVS 提示之后仍使用 exact-name Interest，正式的 incomplete-name discovery
+不属于 Spec 176。最终 capability selector 的 candidate-consistent nominal rerun 已记录
+`SPEC176_CAPABILITY_SELECTION`，十个 failure case 也已在同一 candidate 上重跑通过。
+PX4 SITL 仍是独立 gate，不能从 MiniNDN 结果中推断已经通过。
+
 ## 为什么需要这个应用
 
 直接基于 IP 开发 UAV network application 时，应用经常要处理很多本不属于任务逻辑的网络问题：
@@ -864,8 +946,9 @@ telemetry、camera frame 和 mission assignment。core 现在提供了通用的
 
 ## 开发路线
 
-当前应用已经可以作为 MiniNDN 和 SITL 演示系统使用，并且已经接入多项面向部署的能力。
-下面内容应该被理解为当前 checkpoint 与后续加固方向，而不是全部尚未完成的计划：
+当前应用已经有通过的 MiniNDN 演示路径，并提供 SITL launcher/preflight 路径；但 PX4 SITL
+验收仍未完成。应用已经接入多项面向部署的能力。下面内容应该被理解为当前 checkpoint
+与后续加固方向，而不是全部尚未完成的计划：
 
 1. **收束状态模型。** 现在 telemetry、readiness、mission、video、command 和 safety state
    已经驱动主要飞控按钮、selected-drone action model、selected-drone view-state gate reason、
@@ -1513,8 +1596,9 @@ nfdc strategy set /example/uav/group /localhost/nfd/strategy/multicast
 
 ## 当前 checkpoint 与后续方向
 
-当前应用已经可以作为 MiniNDN/SITL demonstrator 使用，并且已经接入多项面向部署的能力。
-下面这些内容应该被理解为“已完成的稳定化工作 + 后续加固方向”，不是全部都尚未开始：
+当前应用已经有通过的 MiniNDN demonstrator 路径，并提供 SITL launcher/preflight 路径；
+但 PX4 SITL 验收仍未完成。下面这些内容应该被理解为“已完成的稳定化工作 + 后续加固方向”，
+不是全部都尚未开始：
 
 1. 继续把 OpenStreetMap tile + marker overlay 打磨成更完整 map widget：缓存/离线 tile、
    waypoint 操作和多无人机 marker 图层已经有基础，后续重点是更完整的 mission tools。
