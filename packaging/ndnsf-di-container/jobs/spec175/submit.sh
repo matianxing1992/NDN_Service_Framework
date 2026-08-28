@@ -38,7 +38,10 @@ import json
 import pathlib
 import sys
 
-closure, sif, expected, workload = map(pathlib.Path, sys.argv[1:5])
+closure = pathlib.Path(sys.argv[1])
+sif = pathlib.Path(sys.argv[2])
+expected = sys.argv[3]
+workload = pathlib.Path(sys.argv[4])
 model = pathlib.Path(sys.argv[5]) if sys.argv[5] else None
 gate = sys.argv[6]
 doc = json.loads(closure.read_text())
