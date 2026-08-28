@@ -1,0 +1,7 @@
+{
+  "active": false,
+  "destinationVisible": false,
+  "error": "artifact-manifest-digest-mismatch: chunk payload length or digest does not match manifest",
+  "scenario": "corruption",
+  "status": "CORRUPTION_REJECTED"
+}

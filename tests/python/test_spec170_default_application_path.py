@@ -237,7 +237,7 @@ class DefaultApplicationPathTest(unittest.TestCase):
         self.assertFalse(strategy.legacy_plan_called)
         self.assertEqual(user.collaboration.commits, [])
 
-    def test_qwen_hybrid_commit_preserves_every_rank_and_dependency(self):
+    def test_qwen_streaming_commit_binds_feedback_and_generation_contract(self):
         def digest(label):
             return "sha256:" + hashlib.sha256(label.encode()).hexdigest()
 
@@ -267,7 +267,14 @@ class DefaultApplicationPathTest(unittest.TestCase):
             redistributions=edges,
         )
         task = InferenceTaskRef.from_adapter(adapter)
-        app_input = adapter.task.encode_input(b"prompt", {})
+        app_input = adapter.task.encode_input(b"prompt", {
+            "useCache": True,
+            "outputMode": "TOKEN_STREAMING",
+            "greedy": True,
+            "maxNewTokens": 4,
+            "eosTokenIds": [2],
+            "tokenizerDigest": digest("qwen-test-tokenizer"),
+        })
         model = ModelRef(
             "Qwen/test", digest("model"), digest("semantics"),
             source_revision="immutable-test-revision")
@@ -288,9 +295,19 @@ class DefaultApplicationPathTest(unittest.TestCase):
             ack_timeout_ms=100,
             group_epoch_key_wrapper=lambda _public_key, _epoch_key: b"wrapped",
         )
-        coordinator.generate(GenerationRequest(
+        coordinator.request_streaming(
             model=model, task=task, input=app_input, timeout_ms=5000,
-            request_id="spec170-v3-hybrid"))
+            request_id="spec170-v3-hybrid",
+            stream_options={
+                "mode": "Normal",
+                "allow_replacement": False,
+                "max_replacements": 0,
+                "generation_id": "a" * 32,
+            },
+            on_event=lambda _payload: None,
+            on_complete=lambda _payload: None,
+            on_error=lambda _error: None,
+        )
         commit = user.collaboration.commits[0]
         expected_roles = {
             f"{QWEN36_STAGE_ROLES[0]}",
@@ -317,6 +334,17 @@ class DefaultApplicationPathTest(unittest.TestCase):
         self.assertEqual(
             projection.dependencies[1]["redistributions"][0]["operation"],
             "GATHER")
+        feedback = [
+            dependency for dependency in projection.dependencies
+            if dependency.get("operationKind") == "TOKEN_FEEDBACK"
+        ]
+        self.assertEqual(len(feedback), 1)
+        self.assertIsNotNone(projection.generation_contract)
+        self.assertEqual(
+            projection.generation_contract.streaming_operation_stride,
+            len(projection.dependencies),
+        )
+        self.assertEqual(projection.generation_contract.max_generated_tokens, 4)
 
     def test_default_presplit_strategy_uses_v3_and_provider_assembly(self):
         adapter = build_object_detection_adapter()

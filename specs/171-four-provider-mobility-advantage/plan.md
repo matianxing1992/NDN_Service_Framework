@@ -273,3 +273,59 @@ reselection, with no timeout after reselection. SC-011 is closed and the
 matrix-expansion gate is open.
 The parallel environment variables remain diagnostic opt-ins and are not
 paper-evidence defaults.
+
+## Provider-discovery and opportunity-window evidence
+
+The next evidence slice separates two claims that aggregate mobility success
+cannot establish. First, a request-level analyzer joins the frozen trace,
+deterministic request schedule, baseline endpoint rotation, gRPC attempt log,
+and NDNSF lifecycle log. It assigns `NONE_REACHABLE`, `INITIAL_REACHABLE`, or
+`SWITCH_REQUIRED` without exposing coverage to any client. For the key
+`SWITCH_REQUIRED` state it reports user-observed latency where the log contains
+it, NDNSF Request-to-Selection cost, gRPC time spent in failed attempts before
+the winning RPC, success, and execution count. Seed is the inference unit;
+paired seed bootstrap intervals are computed with a fixed analysis seed. The
+analyzer must reconcile request totals and validate every reconstructed
+aggregate against the frozen cell summary before issuing a claim.
+
+Second, a deterministic 60-second Provider-transition trace makes Provider D
+unreachable initially, overlaps it briefly with Providers A--C, and then makes
+D the only reachable Provider. NDNSF receives only `/HELLO`; its runtime
+command must contain no Provider identity or address list. Static gRPC/NSC
+controls are configured with A--C, while capacity controls pre-register A--D.
+The comparison therefore distinguishes NDNSF's service-namespace discovery
+from a baseline supplied with an endpoint list. It does not claim that gRPC or
+NSC cannot implement dynamic discovery: an external resolver or configuration
+update can do so, and that dependency must be stated explicitly.
+
+The publication figure uses two panels: (a) configuration and post-retirement
+success, including configured endpoint count and external update requirement;
+and (b) paired `SWITCH_REQUIRED` distributions for success, switching cost,
+and attempts/executions. Unconditional 50 m and 100 m results remain alongside
+the conditional panel so opportunity filtering cannot hide negative controls.
+
+## Boundary-safe confirmatory opportunity holdout
+
+The frozen seeds 62--71 established a conditional pre-execution mechanism but
+lacked NDNSF/NSC per-request user latency. They also scheduled requests on the
+same 100 ms epochs that update four independent network gates. The confirmatory
+holdout therefore uses new seeds 72--81, retains the established 100 m / 2 m/s
+condition, and shifts the common request phase from 4.00 to 4.05 seconds. This
+places 5-RPS requests midway between alternate trace updates without changing
+the mobility trace, coverage geometry, or request rate.
+
+NDNSF, gRPC, and NSC now emit actual monotonic publication times with their
+request-result records. The analyzer reconstructs the applied gate state at
+that instant for every cell, excludes non-atomic transition observations, and
+requires the three paired cells to agree before assigning a request to
+`SWITCH_REQUIRED`. End-to-end request latency is compared on the same rows;
+seed remains the unit of inference and the analysis is frozen before execution.
+The original results remain immutable and are not pooled into the holdout.
+
+The completed holdout passed SC-015. Across 1,312 agreed `SWITCH_REQUIRED`
+requests, the registered seed-level p95 difference was -596.55 ms versus gRPC
+(95% CI [-992.18, -200.11]) and -2,618.32 ms versus NSC
+(95% CI [-2,916.27, -2,315.09]). Aggregate success was 99.92% for NDNSF,
+98.86% for gRPC, and 98.78% for NSC; the secondary paired success-rate interval
+versus gRPC included zero, so the accepted claim is lower conditional tail
+latency with comparable success, not universally higher success.

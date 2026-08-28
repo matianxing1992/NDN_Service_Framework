@@ -129,6 +129,53 @@ class DelegateBackend:
 
 
 class CollaborationArtifactBackendTests(unittest.TestCase):
+    def test_from_config_refreshes_until_repo_service_permission_is_ready(self):
+        service_name = "/NDNSF/DistributedRepo/Artifact/v2/STORE"
+
+        class FakeServiceUser:
+            instance = None
+
+            def __init__(self, **_kwargs):
+                self.refresh_count = 0
+                self.pump_calls = []
+                FakeServiceUser.instance = self
+
+            def get_allowed_services(self):
+                if self.refresh_count == 0:
+                    return []
+                return [SimpleNamespace(service=service_name)]
+
+            def refresh_permissions(self):
+                self.refresh_count += 1
+
+            def pump(self, milliseconds):
+                self.pump_calls.append(milliseconds)
+
+        deployment = SimpleNamespace(
+            deployment=SimpleNamespace(
+                group="/group",
+                controller="/controller",
+                trust_schema="trust-schema.conf",
+            )
+        )
+        with tempfile.TemporaryDirectory() as temporary, mock.patch(
+            "ndnsf.ServiceUser", FakeServiceUser
+        ), mock.patch(
+            "ndnsf_distributed_inference.app.APPDeployment.from_config",
+            return_value=deployment,
+        ):
+            backend = CollaborationArtifactApiBackend.from_config(
+                "policy.yaml",
+                generated_policy_dir=Path(temporary) / "generated",
+                state_root=Path(temporary) / "state",
+                user="/example/user",
+                bootstrap_token="token",
+            )
+
+        self.assertIsNotNone(backend)
+        self.assertEqual(FakeServiceUser.instance.refresh_count, 1)
+        self.assertEqual(FakeServiceUser.instance.pump_calls, [6000])
+
     def test_insufficient_store_cover_reports_capacity_exclusion(self):
         artifact = artifact_reference_from_dict({
             "logicalName": "/artifact/spec168/diagnostic",

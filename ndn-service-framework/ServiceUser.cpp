@@ -33,6 +33,27 @@ namespace ndn_service_framework
 
     namespace
     {
+        // A positive Face::processEvents timeout is implemented by stopping
+        // the io_context from a scheduled callback.  During NAC-ABE startup a
+        // SegmentFetcher can keep that context alive while its first DKEY
+        // Interest is unresolved, so the call can outlive the intended
+        // retry interval.  Pump non-blockingly in a wall-clock bounded loop;
+        // this lets certificate/DKEY callbacks run without allowing one
+        // transient miss to pin the ServiceUser constructor indefinitely.
+        void
+        pumpFaceFor(ndn::Face& face, std::chrono::milliseconds duration)
+        {
+            const auto deadline = std::chrono::steady_clock::now() + duration;
+            do {
+                face.processEvents(ndn::time::milliseconds(-1));
+                if (std::chrono::steady_clock::now() >= deadline) {
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            while (true);
+        }
+
         void
         configureSvsProtocol(ndn::svs::SVSPubSubOptions& options)
         {
@@ -772,6 +793,25 @@ namespace ndn_service_framework
                          << " providerName=" << providerName.toUri());
         }
 
+        ndn::Buffer
+        userCollaborationAssociatedData(
+            const ndn::Name& dataName,
+            const ndn::Name& requestId,
+            const CollaborationDataMessage& message,
+            const std::string& keyId,
+            const std::string& epochId)
+        {
+            const auto wireKeyId = hybridCompactKeyId(keyId);
+            const std::string text =
+                dataName.toUri() + "|COLLAB|" + requestId.toUri() + "|" +
+                message.getKeyScope() + "|" + message.getTopic().toUri() + "|" +
+                message.getProducerRole() + "|" +
+                std::to_string(message.getSequence()) + "|" + wireKeyId + "|" +
+                epochId;
+            return ndn::Buffer(
+                reinterpret_cast<const uint8_t*>(text.data()), text.size());
+        }
+
         void
         appendDigestField(std::string& output, const std::string& value)
         {
@@ -852,6 +892,8 @@ namespace ndn_service_framework
                 appendDigestBuffer(canonical, role.assignmentPayload);
                 appendDigestField(canonical, std::to_string(role.minProviders));
                 appendDigestField(canonical, std::to_string(role.maxProviders));
+                appendDigestField(canonical,
+                                  role.terminalResponseOwner ? "1" : "0");
             }
             appendDigestField(canonical, std::to_string(plan.keyScopes.size()));
             for (const auto& scope : plan.keyScopes) {
@@ -1068,6 +1110,7 @@ namespace ndn_service_framework
           trustSchemaPath, group_prefix, &face)),
         identityCert(encryptionCert),
         signingCert(signingCert),
+        attrAuthorityCertificate(attrAuthorityCertificate),
         // nac_validator(std::move(ndn::security::ValidatorNull())),
         nacConsumer(m_face, m_keyChain, nac_validator, encryptionCert, attrAuthorityCertificate),
         nacProducer(m_face, m_keyChain, nac_validator, encryptionCert, attrAuthorityCertificate),
@@ -1099,9 +1142,6 @@ namespace ndn_service_framework
         }
 
         nac_validator.load(trustSchemaPath);
-
-        nacConsumer.obtainDecryptionKey();
-
 
         // Serve NDNSF and ck messages using IMS
         m_face.setInterestFilter(ndn::Name(identity.toUri()).append("NDNSF"),
@@ -1270,7 +1310,7 @@ namespace ndn_service_framework
             // log waiting for decryption key
             nacConsumer.obtainDecryptionKey();
             NDN_LOG_INFO("Waiting for decryption key");
-            face.processEvents(ndn::time::milliseconds(1000));
+            pumpFaceFor(face, std::chrono::milliseconds(1000));
         }
 
 
@@ -1309,6 +1349,7 @@ namespace ndn_service_framework
         nac_validator(m_face),
         identityCert(encryptionCert),
         signingCert(signingCert),
+        attrAuthorityCertificate(attrAuthorityCertificate),
         nacConsumer(m_face, m_keyChain, nac_validator, encryptionCert, attrAuthorityCertificate),
         nacProducer(m_face, m_keyChain, nac_validator, encryptionCert, attrAuthorityCertificate),
         m_IMS(50000),
@@ -1318,6 +1359,10 @@ namespace ndn_service_framework
         if (!isRsaCertificate(encryptionCert)) {
             throw std::invalid_argument("ServiceUser encryptionCert must be RSA for NAC-ABE");
         }
+        // LocalMockTag still owns real NAC-ABE Consumer/Producer instances.
+        // Load the same trust schema as the production constructor before the
+        // fixture pumps their constructor-time public-parameter Interests.
+        nac_validator.load(trustSchemaPath);
         m_signingInfo = ndn::security::signingByCertificate(signingCert);
     }
 
@@ -1357,11 +1402,50 @@ namespace ndn_service_framework
     }
 
     void
+    ServiceUser::useSigningKeyChainForTest(ndn::KeyChain& keyChain)
+    {
+        const auto identity = keyChain.getPib().getIdentity(signingCert.getIdentity());
+        const auto key = identity.getKey(signingCert.getKeyName());
+        (void)key.getCertificate(signingCert.getName());
+        m_testSigningKeyChain = &keyChain;
+        m_testNacConsumer = std::make_unique<ndn::nacabe::Consumer>(
+            m_face, keyChain, nac_validator, identityCert,
+            attrAuthorityCertificate);
+        m_testNacConsumer->obtainDecryptionKey();
+        m_testNacProducer = std::make_unique<ndn::nacabe::CacheProducer>(
+            m_face, keyChain, nac_validator, identityCert,
+            attrAuthorityCertificate);
+    }
+
+    bool
+    ServiceUser::isNacConsumerReadyForTest()
+    {
+        return activeNacConsumer().readyForDecryption();
+    }
+
+    void
     ServiceUser::cacheHybridReceiveKeyForTest(const std::string& keyId,
                                                const std::string& epochId,
                                                const ndn::Buffer& key)
     {
         m_hybridMessageCrypto.cacheReceiveKey(keyId, epochId, key);
+    }
+
+    HybridMessageKey
+    ServiceUser::prepareHybridSendKeyForTest(const ndn::Name& serviceName,
+                                              const std::string& messageType)
+    {
+        if (messageType != "REQUEST" && messageType != "SELECTION" &&
+            messageType != "REQUEST-LARGE") {
+            throw std::invalid_argument(
+                "LocalMock user outbound Hybrid key must be REQUEST, "
+                "REQUEST-LARGE, or SELECTION");
+        }
+        const auto accessAttribute = std::string("/SERVICE") + serviceName.toUri();
+        auto key = m_hybridMessageCrypto.getOrCreateSendKey(
+            serviceName, identity, accessAttribute, messageType, m_hybridCryptoCounters);
+        m_hybridMessageCrypto.markSendKeyWrapped(key.keyId);
+        return key;
     }
 
     void
@@ -1565,6 +1649,42 @@ namespace ndn_service_framework
     size_t ServiceUser::getPendingCallCount() const
     {
         return m_pendingCalls.size();
+    }
+
+    std::shared_ptr<StreamInvocationLifecycle>
+    ServiceUser::attachStreamLifecycle(const ndn::Name& requestId,
+                                       bool deferredCollaboration)
+    {
+        auto pending = m_pendingCalls.find(requestId);
+        if (pending == m_pendingCalls.end()) {
+            throw std::invalid_argument(
+                "cannot attach streamed lifecycle to an unknown request");
+        }
+
+        auto& call = pending->second;
+        if (deferredCollaboration &&
+            !(call.isCollaboration && call.collaborationDeferred)) {
+            throw std::invalid_argument(
+                "deferred streamed lifecycle requires an existing deferred collaboration");
+        }
+        if (!call.streamLifecycle) {
+            call.streamLifecycle =
+                std::make_shared<StreamInvocationLifecycle>(deferredCollaboration);
+        }
+        else if (call.streamLifecycle->isDeferredCollaboration() !=
+                 deferredCollaboration) {
+            throw std::logic_error(
+                "stream lifecycle attachment mode cannot change");
+        }
+        return call.streamLifecycle;
+    }
+
+    std::shared_ptr<StreamInvocationLifecycle>
+    ServiceUser::getStreamLifecycle(const ndn::Name& requestId) const
+    {
+        const auto pending = m_pendingCalls.find(requestId);
+        return pending == m_pendingCalls.end() ? nullptr :
+                                                    pending->second.streamLifecycle;
     }
 
     ServiceUser::RuntimeDiagnostics ServiceUser::consumeRuntimeDiagnostics()
@@ -3818,7 +3938,7 @@ namespace ndn_service_framework
                 ndn::nacabe::SPtrVector<ndn::Data> contentData;
                 ndn::nacabe::SPtrVector<ndn::Data> ckData;
                 std::tie(contentData, ckData) =
-                    nacProducer.produce(key.keyName,
+                    (m_testNacProducer ? *m_testNacProducer : nacProducer).produce(key.keyName,
                                         attributes,
                                         ndn::span<const uint8_t>(key.key.data(), key.key.size()),
                                         m_signingInfo);
@@ -3848,7 +3968,9 @@ namespace ndn_service_framework
             auto envelopeBlock = envelope.WireEncode();
             ndn::Buffer encoded(envelopeBlock.begin(), envelopeBlock.end());
 
-            ndn::Segmenter segmenter(m_keyChain, m_signingInfo);
+            ndn::Segmenter segmenter(
+                m_testSigningKeyChain ? *m_testSigningKeyChain : m_keyChain,
+                m_signingInfo);
             auto segments = segmenter.segment(
                 ndn::span<const uint8_t>(encoded.data(), encoded.size()),
                 encryptedDataName,
@@ -3907,7 +4029,8 @@ namespace ndn_service_framework
         auto data = std::make_shared<ndn::Data>(dataName);
         data->setFreshnessPeriod(freshness);
         data->setContent(payload);
-        m_keyChain.sign(*data, m_signingInfo);
+        (m_testSigningKeyChain ? *m_testSigningKeyChain : m_keyChain)
+            .sign(*data, m_signingInfo);
         {
             std::lock_guard<std::mutex> lock(_cache_mutex);
             m_IMS.insert(*data, freshness);
@@ -3915,6 +4038,78 @@ namespace ndn_service_framework
         NDN_LOG_INFO("Published signed APP Data name=" << dataName
                      << " bytes=" << payload.size());
         return dataName;
+    }
+
+    bool ServiceUser::publishCollaborationData(
+        const ndn::Name& targetProvider,
+        const ndn::Name& requestId,
+        const KeyScope& keyScope,
+        const ndn::Name& topic,
+        const ndn::Buffer& payload)
+    {
+        if (targetProvider.empty() || requestId.empty() || keyScope.empty() ||
+            topic.empty() || payload.empty() || payload.size() > 16 * 1024 ||
+            m_svsps == nullptr) {
+            return false;
+        }
+
+        ndn::Buffer scopeKey;
+        {
+            std::lock_guard<std::mutex> lock(m_verifiedCollaborationMutex);
+            const auto requestIt =
+                m_userCollaborationScopeKeys.find(requestId);
+            if (requestIt == m_userCollaborationScopeKeys.end()) {
+                return false;
+            }
+            const auto keyIt = requestIt->second.find(keyScope);
+            if (keyIt == requestIt->second.end() ||
+                keyIt->second.size() != HybridMessageCrypto::MESSAGE_KEY_SIZE) {
+                return false;
+            }
+            scopeKey = keyIt->second;
+        }
+
+        const uint64_t sequence =
+            m_collaborationSequence.fetch_add(1, std::memory_order_relaxed);
+        CollaborationDataMessage message;
+        message.setKeyScope(keyScope);
+        message.setTopic(topic);
+        message.setProducerRole("user-control-v1");
+        message.setSequence(sequence);
+
+        const ndn::Name dataName = makeCollaborationDataName(
+            identity, targetProvider, requestId, keyScope, topic, sequence);
+        const std::string keyId =
+            "collab|" + requestId.toUri() + "|" + keyScope;
+        const std::string epochId = "session";
+        const auto associatedData = userCollaborationAssociatedData(
+            dataName, requestId, message, keyId, epochId);
+        const auto encrypted = hybridAesGcmEncrypt(
+            scopeKey,
+            ndn::span<const uint8_t>(payload.data(), payload.size()),
+            ndn::span<const uint8_t>(associatedData.data(), associatedData.size()));
+
+        HybridMessageEnvelope envelope;
+        envelope.setKeyId(keyId);
+        envelope.setEpochId(epochId);
+        envelope.setMessageType("COLLAB");
+        envelope.setNonce(encrypted.nonce);
+        envelope.setCipherText(encrypted.ciphertext);
+        envelope.setAuthTag(encrypted.tag);
+        const auto envelopeBlock = envelope.WireEncode();
+        message.setPayload(ndn::Buffer(envelopeBlock.begin(), envelopeBlock.end()));
+        const auto messageBlock = message.WireEncode();
+        const ndn::Buffer encoded(messageBlock.begin(), messageBlock.end());
+
+        boost::asio::post(m_face.getIoContext(),
+            [this, dataName, encoded] {
+                if (m_svsps == nullptr) {
+                    return;
+                }
+                ndn::Block block(encoded);
+                publishSvs(m_svsps, dataName, block);
+            });
+        return true;
     }
 
     void ServiceUser::fetchSignedAppData(
@@ -4073,7 +4268,37 @@ namespace ndn_service_framework
             std::max(1, pendingCall.selectionStatusOptions.queryIntervalMs);
         pendingCall.selectionStatusOptions.queryTimeoutMs =
             std::max(1, pendingCall.selectionStatusOptions.queryTimeoutMs);
+        auto streamKeyIt = m_streamEventKeysPending.find(requestId);
+        if (streamKeyIt != m_streamEventKeysPending.end()) {
+            pendingCall.streamEventKey = std::move(streamKeyIt->second);
+            m_streamEventKeysPending.erase(streamKeyIt);
+        }
+        if (requestMessage.hasStreamRequestOptions()) {
+            pendingCall.streamOptions = requestMessage.getStreamRequestOptions();
+        }
         m_pendingCalls[requestId] = std::move(pendingCall);
+        if (requestMessage.hasStreamRequestOptions()) {
+            attachStreamLifecycle(requestId, false);
+            if (requestMessage.getRequestMode() == tlv::TargetedRequest &&
+                providers.size() == 1 &&
+                requestMessage.getStreamRequestOptions().eventKeyGrant) {
+                ServiceSelectionMessage targetedBinding;
+                targetedBinding.setRequestIDs({requestId.toUri()});
+                targetedBinding.setPolicyEpoch(requestMessage.getPolicyEpoch());
+                targetedBinding.setStreamEventKeyGrant(
+                    *requestMessage.getStreamRequestOptions().eventKeyGrant);
+                SelectionProviderEntry providerEntry;
+                providerEntry.providerName = providers.front();
+                targetedBinding.addProviderEntry(providerEntry);
+                if (!initializeStreamConsumer(
+                        providers.front(), serviceName, requestId,
+                        computeSelectionDigest(targetedBinding))) {
+                    m_pendingCalls.erase(requestId);
+                    throw std::runtime_error(
+                        "failed to initialize Targeted streamed consumer");
+                }
+            }
+        }
         updateRequestLifecycleState(requestId, RequestLifecycleState::QUEUED_LOCAL);
         NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=REQUEST_CREATED timestamp_us="
                   << nowMicroseconds()
@@ -4086,6 +4311,198 @@ namespace ndn_service_framework
 
         admitOrQueuePendingCall(requestId, false, false);
         return requestId;
+    }
+
+    std::shared_ptr<StreamedInvocationSharedState>
+    ServiceUser::requestServiceStreamingBytes(
+        const ndn::Name& serviceName,
+        const ndn::Name& targetProvider,
+        ndn::Buffer requestPayload,
+        StreamedInvocationOptions options,
+        StreamBytesCallback onEvent,
+        StreamBytesCallback onComplete,
+        std::function<void(const StreamedInvocationError&)> onError,
+        size_t strategy)
+    {
+        if (serviceName.empty() ||
+            (options.mode == InvocationMode::Normal && !targetProvider.empty()) ||
+            (options.mode == InvocationMode::Targeted && targetProvider.empty())) {
+            if (onError) onError({StreamedInvocationErrorCode::InvalidOptions,
+                                  "invalid streamed service/target binding"});
+            return nullptr;
+        }
+        if (options.generationId == StreamGenerationId{}) {
+            ndn::Buffer generation(sizeof(options.generationId));
+            ndn::random::generateSecureBytes(
+                ndn::span<uint8_t>(generation.data(), generation.size()));
+            std::copy(generation.begin(), generation.end(), options.generationId.begin());
+        }
+        if (options.streamEpoch == 0) options.streamEpoch = 1;
+        if (options.deadlineEpochMs == 0) {
+            options.deadlineEpochMs = nowMilliseconds() + 30000;
+        }
+        const auto requestId = makeRequestId();
+        ndn::Buffer eventKey(32);
+        ndn::random::generateSecureBytes(
+            ndn::span<uint8_t>(eventKey.data(), eventKey.size()));
+        options.eventKeyCommitment = computeStreamSha256(
+            ndn::span<const uint8_t>(eventKey.data(), eventKey.size()));
+
+        TargetedTokenPair targetedTokenPair;
+        bool targetedFastPath = false;
+        if (options.mode == InvocationMode::Targeted) {
+            if (!hasUserPermissionForProvider(targetProvider, serviceName)) {
+                if (onError) onError({StreamedInvocationErrorCode::Unauthorized,
+                                      "targeted streamed request lacks user permission"});
+                return nullptr;
+            }
+
+            TargetedStreamOffer streamOffer;
+            {
+                const auto poolKey = makeTargetedTokenPoolKey(targetProvider, serviceName);
+                std::lock_guard<std::mutex> lock(m_targetedTokenPoolsMutex);
+                const auto offerIt = m_targetedStreamOffers.find(poolKey);
+                if (offerIt != m_targetedStreamOffers.end()) {
+                    streamOffer = offerIt->second;
+                }
+            }
+            const bool hasStreamOffer =
+                !streamOffer.providerBootEpoch.empty() &&
+                !streamOffer.recipientCertName.empty() &&
+                !streamOffer.recipientCertDigest.empty() &&
+                !streamOffer.recipientPublicKey.empty();
+            bool hasStreamToken = !m_useTokens;
+            if (hasStreamOffer && m_useTokens) {
+                hasStreamToken = popTargetedTokenPair(
+                    targetProvider, serviceName, targetedTokenPair);
+            }
+
+            // A cache miss is represented by one bounded
+            // TargetedBootstrapRequest. Its ACK/Selection produces the
+            // recipient offer and token batch; the same stream request then
+            // receives the selected Provider's event grant.
+            targetedFastPath = hasStreamOffer && hasStreamToken;
+            if (!targetedFastPath && !m_useTokens) {
+                if (onError) onError({StreamedInvocationErrorCode::Unauthorized,
+                                      "targeted streamed bootstrap requires tokens"});
+                return nullptr;
+            }
+
+            if (targetedFastPath) {
+                StreamBinding grantBinding;
+                grantBinding.requestId = requestId;
+                grantBinding.requester = identity;
+                grantBinding.serviceName = serviceName;
+                grantBinding.producer = targetProvider;
+                grantBinding.producerBootId = streamOffer.providerBootEpoch;
+                grantBinding.attemptEpoch = options.attemptEpoch;
+                grantBinding.planDigest.fill(0);
+                grantBinding.generationId = options.generationId;
+                grantBinding.streamEpoch = options.streamEpoch;
+                grantBinding.eventKeyCommitment = options.eventKeyCommitment;
+                grantBinding.userToken = ndn::Buffer(
+                    reinterpret_cast<const uint8_t*>(targetedTokenPair.userToken.data()),
+                    targetedTokenPair.userToken.size());
+                grantBinding.policyEpoch = m_currentPolicyEpoch;
+                grantBinding.deadlineEpochMs = options.deadlineEpochMs;
+                try {
+                    grantBinding.validate();
+                    const auto recipientPublicKey =
+                        selectionGatedUnhex(streamOffer.recipientPublicKey);
+                    if (recipientPublicKey.empty()) throw std::invalid_argument(
+                        "empty targeted stream recipient key");
+                    const auto wrapped = wrapSelectionGatedInputKey(
+                        eventKey, recipientPublicKey);
+                    HybridMessageEnvelope grant;
+                    // The grant keyId carries the complete 256-bit binding
+                    // digest; V2 compact IDs are not sufficient here.
+                    grant.setVersion(1);
+                    grant.setAlgorithm("RSA-OAEP");
+                    const auto grantDigest = computeStreamGrantBindingDigest(grantBinding);
+                    grant.setKeyId(selectionGatedHex(ndn::span<const uint8_t>(
+                        grantDigest.data(), grantDigest.size())));
+                    grant.setEpochId(std::to_string(options.streamEpoch));
+                    grant.setMessageType("STREAM-GRANT");
+                    grant.setWrappedMessageKey(wrapped);
+                    options.eventKeyGrant = grant.WireEncode();
+                }
+                catch (const std::exception& error) {
+                    if (onError) onError({StreamedInvocationErrorCode::Unauthorized,
+                                          std::string("failed to prepare targeted stream grant: ") +
+                                              error.what()});
+                    return nullptr;
+                }
+            }
+        }
+        options.validate();
+
+        RequestMessage requestMessage;
+        requestMessage.setPayload(requestPayload, requestPayload.size());
+        requestMessage.setStrategy(strategy);
+        requestMessage.setStreamRequestOptions(options);
+        requestMessage.setPolicyEpoch(m_currentPolicyEpoch);
+        const auto requestMode = options.mode == InvocationMode::Targeted ?
+            (targetedFastPath ? tlv::TargetedRequest : tlv::TargetedBootstrapRequest) :
+            tlv::NormalRequest;
+        requestMessage.setRequestMode(requestMode);
+        if (!targetProvider.empty()) requestMessage.setTargetProvider(targetProvider);
+        if (options.mode == InvocationMode::Targeted && targetedFastPath && m_useTokens) {
+            requestMessage.setUserToken(targetedTokenPair.userToken);
+            requestMessage.setProviderToken(targetedTokenPair.providerToken);
+        }
+        else if (options.mode == InvocationMode::Targeted && !targetedFastPath) {
+            requestMessage.setTokens({
+                {"targeted.batch_hint", std::to_string(
+                    getTargetedTokenBatchHint(targetProvider, serviceName))},
+            });
+        }
+        m_streamEventKeysPending.emplace(requestId, eventKey);
+        auto state = std::make_shared<StreamedInvocationSharedState>();
+        state->requestId = requestId;
+        state->status = StreamedInvocationStatus::Requesting;
+        state->onEvent = std::move(onEvent);
+        state->onComplete = std::move(onComplete);
+        state->onError = std::move(onError);
+        // StreamedInvocationHandle::cancel() may be called by a Python
+        // callback or another application thread.  ServiceUser's stream
+        // maps and consumer lifecycle are owned by the Face/io_context
+        // thread, so never mutate them directly from the caller thread.
+        state->cancel = [this, requestId] {
+            boost::asio::post(m_face.getIoContext(), [this, requestId] {
+                cancelStreamRequest(requestId);
+            });
+        };
+        m_streamStates[requestId] = state;
+
+        TimeoutHandler timeout = [state](const ndn::Name&) {
+            std::function<void(const StreamedInvocationError&)> onError;
+            {
+                std::lock_guard<std::mutex> lock(state->mutex);
+                if (state->status == StreamedInvocationStatus::Completed ||
+                    state->status == StreamedInvocationStatus::Cancelled) return;
+                state->status = StreamedInvocationStatus::Failed;
+                onError = state->onError;
+            }
+            if (onError) onError({StreamedInvocationErrorCode::Deadline,
+                                  "streamed invocation deadline expired"});
+        };
+        ResponseHandler response = [](const ResponseMessage&) {};
+        try {
+            startRequestServiceWithRequestId(
+                requestId,
+                targetProvider.empty() ? std::vector<ndn::Name>{}
+                                       : std::vector<ndn::Name>{targetProvider},
+                serviceName, std::move(requestMessage), 5000,
+                std::move(timeout), std::move(response), strategy);
+        }
+        catch (const std::exception& error) {
+            m_streamEventKeysPending.erase(requestId);
+            m_streamStates.erase(requestId);
+            if (state->onError) state->onError({StreamedInvocationErrorCode::SelectionFailed,
+                                                error.what()});
+            return nullptr;
+        }
+        return state;
     }
 
     bool ServiceUser::hasUserPermissionForProvider(
@@ -4174,6 +4591,18 @@ namespace ndn_service_framework
 
         const auto poolKey = makeTargetedTokenPoolKey(providerName, serviceName);
         std::lock_guard<std::mutex> lock(m_targetedTokenPoolsMutex);
+        const auto publicKeyIt = tokens.find("targeted.recipientPublicKey");
+        const auto certNameIt = tokens.find("targeted.recipientCertName");
+        const auto certDigestIt = tokens.find("targeted.recipientCertDigest");
+        const auto bootEpochIt = tokens.find("targeted.providerBootEpoch");
+        if (publicKeyIt != tokens.end() && certNameIt != tokens.end() &&
+            certDigestIt != tokens.end() && bootEpochIt != tokens.end() &&
+            !publicKeyIt->second.empty() && !certNameIt->second.empty() &&
+            !certDigestIt->second.empty() && !bootEpochIt->second.empty()) {
+            m_targetedStreamOffers[poolKey] = TargetedStreamOffer{
+                bootEpochIt->second, certNameIt->second,
+                certDigestIt->second, publicKeyIt->second};
+        }
         auto& pool = m_targetedTokenPools[poolKey];
         auto& control = m_targetedTokenPoolControls[poolKey];
         const size_t advertisedCount = parseTargetedTokenBatch(countIt->second, 64);
@@ -4921,7 +5350,11 @@ namespace ndn_service_framework
         TimeoutHandler onTimeout,
         const RequestId& requestedRequestId,
         CollaborationAckCoverageHandler onAckCoverage,
-        const RequestCapabilities& requestCapabilities)
+        const RequestCapabilities& requestCapabilities,
+        const std::optional<StreamRequestOptions>& requestedStreamOptions,
+        std::function<void(const ndn::Buffer&)> onStreamEvent,
+        std::function<void(const ndn::Buffer&)> onStreamComplete,
+        std::function<void(const StreamedInvocationError&)> onStreamError)
     {
         if (!onAckClosed || ackCollectionTimeMs <= 0 ||
             timeoutMs <= ackCollectionTimeMs) {
@@ -4943,6 +5376,38 @@ namespace ndn_service_framework
             requestMessage.setRequestCapabilities(requestCapabilities);
         }
 
+        // A streamed collaboration carries the same request-scoped stream
+        // options as the ordinary streaming API.  Allocate its event-key
+        // commitment before the one Request enters admission so the deferred
+        // planner can commit a Selection without creating a second request.
+        std::optional<StreamRequestOptions> streamOptions = requestedStreamOptions;
+        ndn::Buffer streamEventKey;
+        if (streamOptions) {
+            if (streamOptions->mode != InvocationMode::Normal) {
+                throw std::invalid_argument(
+                    "deferred collaboration streaming currently requires Normal mode");
+            }
+            if (streamOptions->generationId == StreamGenerationId{}) {
+                ndn::Buffer generation(sizeof(streamOptions->generationId));
+                ndn::random::generateSecureBytes(
+                    ndn::span<uint8_t>(generation.data(), generation.size()));
+                std::copy(generation.begin(), generation.end(),
+                          streamOptions->generationId.begin());
+            }
+            if (streamOptions->streamEpoch == 0) streamOptions->streamEpoch = 1;
+            if (streamOptions->deadlineEpochMs == 0) {
+                streamOptions->deadlineEpochMs = nowMilliseconds() +
+                    static_cast<uint64_t>(timeoutMs);
+            }
+            streamEventKey.resize(32);
+            ndn::random::generateSecureBytes(
+                ndn::span<uint8_t>(streamEventKey.data(), streamEventKey.size()));
+            streamOptions->eventKeyCommitment = computeStreamSha256(
+                ndn::span<const uint8_t>(streamEventKey.data(), streamEventKey.size()));
+            streamOptions->validate();
+            requestMessage.setStreamRequestOptions(*streamOptions);
+        }
+
         PendingCall pendingCall;
         pendingCall.serviceName = service;
         pendingCall.requestMessage = std::move(requestMessage);
@@ -4962,7 +5427,28 @@ namespace ndn_service_framework
         pendingCall.collaborationAckCoverageHandler = std::move(onAckCoverage);
         pendingCall.trackSelectionStatus = true;
         pendingCall.selectionStatusOptions = SelectionStatusOptions();
+        if (streamOptions) {
+            pendingCall.streamOptions = *streamOptions;
+            pendingCall.streamEventKey = streamEventKey;
+        }
         m_pendingCalls[requestId] = std::move(pendingCall);
+
+        if (streamOptions) {
+            auto lifecycle = attachStreamLifecycle(requestId, true);
+            (void) lifecycle;
+            auto state = std::make_shared<StreamedInvocationSharedState>();
+            state->requestId = requestId;
+            state->status = StreamedInvocationStatus::Requesting;
+            state->onEvent = std::move(onStreamEvent);
+            state->onComplete = std::move(onStreamComplete);
+            state->onError = std::move(onStreamError);
+            state->cancel = [this, requestId] {
+                boost::asio::post(m_face.getIoContext(), [this, requestId] {
+                    cancelStreamRequest(requestId);
+                });
+            };
+            m_streamStates[requestId] = std::move(state);
+        }
 
         updateRequestLifecycleState(
             requestId, RequestLifecycleState::QUEUED_LOCAL);
@@ -5004,6 +5490,17 @@ namespace ndn_service_framework
         if (!plan.participantSelector || plan.roles.empty()) {
             throw std::invalid_argument(
                 "collaboration plan is incomplete");
+        }
+        if (call.streamOptions) {
+            const auto terminalRoleCount = static_cast<size_t>(std::count_if(
+                plan.roles.begin(), plan.roles.end(),
+                [](const CollaborationRoleSpec& role) {
+                    return role.terminalResponseOwner;
+                }));
+            if (terminalRoleCount != 1) {
+                throw std::invalid_argument(
+                    "streamed collaboration requires exactly one terminal response owner");
+            }
         }
         if (plan.ackCollectionTimeMs != call.ackTimeoutMs ||
             plan.timeoutMs != call.timeoutMs) {
@@ -5082,6 +5579,11 @@ namespace ndn_service_framework
         call.collaborationCommittedParticipants = selected;
         call.collaborationCommittedPlanDigest = commitDigest;
         call.collaborationPlanCommitted = true;
+        {
+            std::lock_guard<std::mutex> lock(m_verifiedCollaborationMutex);
+            m_userCollaborationScopeKeys[requestId] =
+                call.collaborationScopeKeys;
+        }
         NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=COLLAB_PLAN_COMMITTED"
                   << " timestamp_us=" << nowMicroseconds()
                   << " requestId=" << requestId.toUri()
@@ -5282,6 +5784,55 @@ namespace ndn_service_framework
                                 pendingCall->second.serviceName,
                                 responseMessage);
         pendingCall->second.responseValidatedAtUs = nowMicroseconds();
+        if (pendingCall->second.streamOptions) {
+            if (!responseMessage.getStatus()) {
+                // A provider-side stream failure is still a valid, encrypted
+                // Response.  Route it through the streaming error callback
+                // instead of treating it as a unary response (the latter
+                // would leave the stream handle in Requesting/Streaming).
+                const auto stateIt = m_streamStates.find(requestId);
+                if (stateIt != m_streamStates.end()) {
+                    const auto state = stateIt->second;
+                    std::function<void(const StreamedInvocationError&)> onError;
+                    {
+                        std::lock_guard<std::mutex> lock(state->mutex);
+                        if (state->status != StreamedInvocationStatus::Completed &&
+                            state->status != StreamedInvocationStatus::Cancelled) {
+                            state->status = StreamedInvocationStatus::Failed;
+                            onError = state->onError;
+                        }
+                    }
+                    try {
+                        if (pendingCall->second.streamLifecycle) {
+                            pendingCall->second.streamLifecycle->user().fail();
+                        }
+                    }
+                    catch (const std::logic_error&) {
+                    }
+                    m_streamConsumers.erase(requestId);
+                    if (onError) {
+                        onError(StreamedInvocationError{
+                            StreamedInvocationErrorCode::ProviderFailure,
+                            responseMessage.getErrorInfo().empty() ?
+                                "provider failed streamed invocation" :
+                                responseMessage.getErrorInfo(),
+                            requestId, 0, providerName});
+                    }
+                }
+                releaseResponseDecryptInFlight();
+                handleResponse(requestId, providerName, responseMessage);
+                return true;
+            }
+
+            const auto consumer = m_streamConsumers.find(requestId);
+            if (consumer == m_streamConsumers.end() ||
+                !consumer->second->acceptResponse(responseMessage)) {
+                NDN_LOG_ERROR("Reject streamed Response before End closure requestId="
+                              << requestId.toUri());
+                releaseResponseDecryptInFlight();
+                return false;
+            }
+        }
         handleResponse(requestId, providerName, responseMessage);
         return true;
     }
@@ -5558,7 +6109,7 @@ namespace ndn_service_framework
                         serviceName, providerName,
                         std::string("/PERMISSION") + serviceName.toUri(),
                         envelope.getEpochId());
-                    nacConsumer.consume(
+                    activeNacConsumer().consume(
                         keyDataName,
                         makeNacInlineContentBlock(envelope.getWrappedMessageKey()),
                         [this, envelope, finishDecrypt](const ndn::Buffer& unwrappedKey) mutable {
@@ -5586,7 +6137,7 @@ namespace ndn_service_framework
                         serviceName, providerName,
                         std::string("/PERMISSION") + serviceName.toUri(),
                         envelope.getEpochId());
-                    nacConsumer.consume(
+                    activeNacConsumer().consume(
                         keyDataName,
                         [this, envelope, finishDecrypt](const ndn::Buffer& unwrappedKey) mutable {
                             m_hybridMessageCrypto.cacheReceiveKey(envelope.getKeyId(),
@@ -6965,6 +7516,101 @@ namespace ndn_service_framework
         return true;
     }
 
+    ndn::Buffer ServiceUser::externalizeLargeCollaborationAssignment(
+        const ndn::Name& providerName,
+        const ndn::Name& serviceName,
+        const ndn::Name& requestId,
+        const ndn::Buffer& assignmentPayload)
+    {
+        // A Selection is one SVS publication and ultimately one NDN Data
+        // packet. Keep room for the token, stream grant, shared role metadata,
+        // and hybrid envelope. Large opaque projections use the existing
+        // segmented, service-authorized Data path; the SVS piggyback limit is
+        // intentionally not a correctness or performance repair mechanism.
+        static constexpr size_t INLINE_OPAQUE_LIMIT = 4096;
+        static constexpr size_t MAX_EXTERNAL_ASSIGNMENT_BYTES = 4 * 1024 * 1024;
+        static const std::string OBJECT_TYPE =
+            "application/vnd.ndnsf.collaboration-assignment-v1";
+
+        std::vector<ndn::Buffer> assignmentItems;
+        try {
+            assignmentItems = decodeOpaqueAssignmentSet(assignmentPayload);
+        }
+        catch (const std::exception& error) {
+            throw std::runtime_error(
+                std::string("cannot inspect collaboration assignment set: ") +
+                error.what());
+        }
+
+        bool externalized = false;
+        for (auto& item : assignmentItems) {
+            CollaborationAssignmentEnvelope envelope;
+            bool structured = false;
+            try {
+                structured = decodeCollaborationAssignmentEnvelope(item, envelope);
+            }
+            catch (const std::exception& error) {
+                throw std::runtime_error(
+                    std::string("invalid collaboration assignment envelope: ") +
+                    error.what());
+            }
+            if (!structured) {
+                if (item.size() > INLINE_OPAQUE_LIMIT) {
+                    throw std::length_error(
+                        "large collaboration assignment lacks a structured envelope");
+                }
+                continue;
+            }
+            if (parseLargeDataReferencePayload(envelope.opaquePayload) ||
+                envelope.opaquePayload.size() <= INLINE_OPAQUE_LIMIT) {
+                continue;
+            }
+            if (envelope.opaquePayload.size() > MAX_EXTERNAL_ASSIGNMENT_BYTES) {
+                throw std::length_error(
+                    "collaboration assignment exceeds external Data bound");
+            }
+
+            PreparedServiceRequest context;
+            context.serviceName = serviceName;
+            context.requestId = requestId;
+            const std::string digest = sha256DigestString(envelope.opaquePayload);
+            std::vector<uint8_t> plaintext(envelope.opaquePayload.begin(),
+                                           envelope.opaquePayload.end());
+            const auto published = publishEncryptedLargeData(
+                context,
+                plaintext,
+                "selection-assignment-" + providerName.toUri() + "-" +
+                    envelope.role + "-" + digest.substr(7, 16));
+            if (!published.success) {
+                throw std::runtime_error(
+                    "failed to externalize collaboration assignment: " +
+                    published.errorMessage);
+            }
+
+            LargeDataReference reference;
+            reference.dataName = published.encryptedDataName;
+            reference.objectType = OBJECT_TYPE;
+            reference.objectId = published.objectId;
+            reference.plaintextSize = envelope.opaquePayload.size();
+            reference.encrypted = true;
+            reference.digest = digest;
+            envelope.opaquePayload = encodeLargeDataReferencePayload(reference);
+            item = encodeCollaborationAssignmentEnvelope(envelope);
+            externalized = true;
+            NDN_LOG_INFO("NDNSF_COLLAB_ASSIGNMENT_EXTERNALIZED requestId="
+                         << requestId.toUri()
+                         << " providerName=" << providerName.toUri()
+                         << " serviceName=" << serviceName.toUri()
+                         << " role=" << envelope.role
+                         << " plaintextBytes=" << reference.plaintextSize
+                         << " referenceBytes=" << envelope.opaquePayload.size()
+                         << " dataName=" << reference.dataName.toUri());
+        }
+
+        return externalized ? encodeOpaqueAssignmentSet(assignmentItems) :
+                              assignmentPayload;
+    }
+
     bool ServiceUser::evaluateCustomAckSelection(PendingCall& pendingCall)
     {
         pendingCall.customSelectedAcks.clear();
@@ -7207,8 +7853,9 @@ namespace ndn_service_framework
             // The timeout-closure path publishes one exact-target decision
             // for every reservation-bearing positive ACK.
         }
-        else if (pendingCall.isCollaboration &&
-            pendingCall.customSelectedAcks.size() > 1) {
+        else if (pendingCall.customSelectedAcks.size() > 1 &&
+            (pendingCall.isCollaboration ||
+             !pendingCall.selectionAssignmentPayloads.empty())) {
             // A collaboration assignment is an independently authorized
             // provider projection.  Combining every opaque assignment into
             // one hybrid/SVS publication can exceed NDN's single-packet wire
@@ -7720,7 +8367,7 @@ namespace ndn_service_framework
                                                     ackV2->requestId,
                                                     "invalid hybrid ACK envelope");
                 return;
-                nacConsumer.consume(
+                activeNacConsumer().consume(
                             ndn::Name(subscription.name),
                             makeNacInlineContentBlock(subscription.data),
                             [this, providerName = ackV2->providerName,
@@ -7761,7 +8408,7 @@ namespace ndn_service_framework
                             });
             }else{
                 const auto decryptStartUs = nowMicroseconds();
-                nacConsumer.consume(
+                activeNacConsumer().consume(
                             ndn::Name(subscription.name),
                             [this, providerName = ackV2->providerName,
                              serviceName = ackV2->serviceName,
@@ -8010,13 +8657,13 @@ namespace ndn_service_framework
             }
             onError("invalid hybrid response envelope");
             return;
-            nacConsumer.consume(
+            activeNacConsumer().consume(
                         ndn::Name(subscription.name),
                         makeNacInlineContentBlock(subscription.data),
                         onSuccess,
                         onError);
         }else{
-            nacConsumer.consume(
+            activeNacConsumer().consume(
                         ndn::Name(subscription.name),
                         onSuccess,
                         onError);
@@ -8185,17 +8832,21 @@ void ServiceUser::finishRequestAckOnEventLoop(
                 selectionMessage.setDeploymentPlan(plan);
                 pendingIt->second.deploymentPlan = plan;
             }
+            bool collaborationAssignmentAttached = false;
             auto assignmentIt =
                 pendingIt->second.collaborationAssignments.find(providerName.toUri());
             if (assignmentIt != pendingIt->second.collaborationAssignments.end()) {
+                try {
+                    assignmentIt->second = externalizeLargeCollaborationAssignment(
+                        providerName, serviceName, requestId, assignmentIt->second);
+                }
+                catch (const std::exception& error) {
+                    NDN_LOG_ERROR("Cannot publish collaboration Selection for "
+                                  << requestId.toUri() << ": " << error.what());
+                    return;
+                }
                 providerEntry.assignmentPayload = assignmentIt->second;
-                NDN_LOG_INFO("NDNSF_SELECTION_ASSIGNMENT_ATTACHED requestId="
-                             << requestId.toUri()
-                             << " providerName=" << providerName.toUri()
-                             << " serviceName=" << serviceName.toUri()
-                             << " payloadBytes="
-                             << providerEntry.assignmentPayload.size()
-                             << " compact=0");
+                collaborationAssignmentAttached = true;
             }
             auto genericAssignmentIt =
                 pendingIt->second.selectionAssignmentPayloads.find(providerName.toUri());
@@ -8209,6 +8860,34 @@ void ServiceUser::finishRequestAckOnEventLoop(
                           << " providerName=" << providerName.toUri()
                           << " serviceName=" << serviceName.toUri()
                           << " payloadBytes=" << providerEntry.assignmentPayload.size());
+            }
+            if (!providerEntry.assignmentPayload.empty() &&
+                !collaborationAssignmentAttached) {
+                try {
+                    providerEntry.assignmentPayload =
+                        externalizeLargeCollaborationAssignment(
+                            providerName, serviceName, requestId,
+                            providerEntry.assignmentPayload);
+                    if (genericAssignmentIt !=
+                        pendingIt->second.selectionAssignmentPayloads.end()) {
+                        genericAssignmentIt->second =
+                            providerEntry.assignmentPayload;
+                    }
+                }
+                catch (const std::exception& error) {
+                    NDN_LOG_ERROR("Cannot publish structured Selection assignment for "
+                                  << requestId.toUri() << ": " << error.what());
+                    return;
+                }
+            }
+            if (!providerEntry.assignmentPayload.empty()) {
+                NDN_LOG_INFO("NDNSF_SELECTION_ASSIGNMENT_ATTACHED requestId="
+                             << requestId.toUri()
+                             << " providerName=" << providerName.toUri()
+                             << " serviceName=" << serviceName.toUri()
+                             << " payloadBytes="
+                             << providerEntry.assignmentPayload.size()
+                             << " compact=0");
             }
         }
         if (pendingIt != m_pendingCalls.end() &&
@@ -8244,6 +8923,96 @@ void ServiceUser::finishRequestAckOnEventLoop(
             grant.setField("requestId", requestId.toUri());
             grant.setField("attempt", "1");
             selectionMessage.setSelectionInputKeyGrant(grant);
+        }
+        bool isStreamGrantRecipient = true;
+        if (pendingIt != m_pendingCalls.end() &&
+            pendingIt->second.isCollaboration) {
+            isStreamGrantRecipient = false;
+            const auto participant = std::find_if(
+                pendingIt->second.collaborationCommittedParticipants.begin(),
+                pendingIt->second.collaborationCommittedParticipants.end(),
+                [&providerName] (const SelectedParticipant& selected) {
+                    return selected.provider.equals(providerName);
+                });
+            if (participant !=
+                pendingIt->second.collaborationCommittedParticipants.end()) {
+                const auto role = std::find_if(
+                    pendingIt->second.collaborationPlan.roles.begin(),
+                    pendingIt->second.collaborationPlan.roles.end(),
+                    [&participant] (const CollaborationRoleSpec& candidate) {
+                        return candidate.role == participant->role;
+                    });
+                isStreamGrantRecipient =
+                    role != pendingIt->second.collaborationPlan.roles.end() &&
+                    role->terminalResponseOwner;
+            }
+        }
+        if (pendingIt != m_pendingCalls.end() &&
+            pendingIt->second.streamOptions &&
+            !pendingIt->second.streamEventKey.empty() &&
+            isStreamGrantRecipient) {
+            const auto ackIt = std::find_if(
+                pendingIt->second.requestAcks.begin(),
+                pendingIt->second.requestAcks.end(),
+                [&providerName] (const StoredAck& ack) {
+                    return ack.providerName.equals(providerName);
+                });
+            if (ackIt == pendingIt->second.requestAcks.end() ||
+                !ackIt->message.hasSelectionInputKeyOffer()) {
+                throw std::runtime_error(
+                    "stream Selection requires a Provider key offer");
+            }
+            const auto& offer = ackIt->message.getSelectionInputKeyOffer();
+            if (!offer.hasField("recipient") ||
+                offer.getField("recipient") != providerName.toUri() ||
+                !offer.hasField("recipientCertName") ||
+                !offer.hasField("recipientPublicKey") ||
+                !offer.hasField("recipientCertDigest") ||
+                !offer.hasField("providerBootEpoch") ||
+                offer.getField("providerBootEpoch").empty()) {
+                throw std::runtime_error("invalid streamed key offer binding");
+            }
+            StreamBinding grantBinding;
+            grantBinding.requestId = requestId;
+            grantBinding.requester = identity;
+            grantBinding.serviceName = serviceName;
+            grantBinding.producer = providerName;
+            grantBinding.producerBootId = offer.getField("providerBootEpoch");
+            grantBinding.attemptEpoch =
+                pendingIt->second.streamOptions->attemptEpoch;
+            // The grant is itself part of the Selection message, so including
+            // the final Selection digest here would be circular.  Bind all
+            // pre-selection identity, token, policy, epoch, and deadline
+            // fields; the Provider additionally checks the final accepted
+            // Selection digest when it constructs the stream binding.
+            grantBinding.planDigest.fill(0);
+            grantBinding.generationId = pendingIt->second.streamOptions->generationId;
+            grantBinding.streamEpoch = pendingIt->second.streamOptions->streamEpoch;
+            grantBinding.eventKeyCommitment =
+                pendingIt->second.streamOptions->eventKeyCommitment;
+            grantBinding.userToken = ndn::Buffer(
+                reinterpret_cast<const uint8_t*>(
+                    pendingIt->second.requestMessage.getUserToken().data()),
+                pendingIt->second.requestMessage.getUserToken().size());
+            grantBinding.policyEpoch = selectionMessage.getPolicyEpoch();
+            grantBinding.deadlineEpochMs =
+                pendingIt->second.streamOptions->deadlineEpochMs;
+            const auto grantBindingDigest = computeStreamGrantBindingDigest(grantBinding);
+            const auto wrapped = wrapSelectionGatedInputKey(
+                pendingIt->second.streamEventKey,
+                selectionGatedUnhex(offer.getField("recipientPublicKey")));
+            HybridMessageEnvelope grant;
+            // A stream grant binds the full SHA-256 pre-Selection digest.
+            // V2 compact key IDs are only for ordinary message-key lookup.
+            grant.setVersion(1);
+            grant.setAlgorithm("RSA-OAEP");
+            grant.setKeyId(selectionGatedHex(ndn::span<const uint8_t>(
+                grantBindingDigest.data(), grantBindingDigest.size())));
+            grant.setEpochId(std::to_string(
+                pendingIt->second.streamOptions->streamEpoch));
+            grant.setMessageType("STREAM-GRANT");
+            grant.setWrappedMessageKey(wrapped);
+            selectionMessage.setStreamEventKeyGrant(grant.WireEncode());
         }
         if (pendingIt != m_pendingCalls.end() &&
             pendingIt->second.isCollaboration) {
@@ -8315,6 +9084,42 @@ void ServiceUser::finishRequestAckOnEventLoop(
             makeServiceSelectionNameWithoutPrefixV2(providerName,
                                                     serviceName, requestId);
         const std::string selectionDigest = computeSelectionDigest(selectionMessage);
+
+        if (pendingIt != m_pendingCalls.end() &&
+            pendingIt->second.streamOptions) {
+            bool initializeForProvider = true;
+            if (pendingIt->second.isCollaboration) {
+                // A multi-role streamed collaboration has one terminal role.
+                // Every selected Provider still receives its own Selection,
+                // but only that role owns the user-side event/End consumer.
+                initializeForProvider = false;
+                const auto& plan = pendingIt->second.collaborationPlan;
+                for (const auto& participant :
+                     pendingIt->second.collaborationCommittedParticipants) {
+                    if (!participant.provider.equals(providerName)) {
+                        continue;
+                    }
+                    const auto roleIt = std::find_if(
+                        plan.roles.begin(), plan.roles.end(),
+                        [&participant](const CollaborationRoleSpec& role) {
+                            return role.role == participant.role &&
+                                   role.service == participant.service;
+                        });
+                    if (roleIt == plan.roles.end()) {
+                        throw std::runtime_error(
+                            "streamed collaboration participant role is not in plan");
+                    }
+                    initializeForProvider = roleIt->terminalResponseOwner;
+                    break;
+                }
+            }
+            if (initializeForProvider &&
+                !initializeStreamConsumer(providerName, serviceName, requestId,
+                                           selectionDigest)) {
+                throw std::runtime_error(
+                    "failed to initialize streamed event consumer");
+            }
+        }
 
         NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=SELECTION_PUBLISH_ATTEMPT timestamp_us="
                   << nowMicroseconds()
@@ -8473,6 +9278,16 @@ void ServiceUser::finishRequestAckOnEventLoop(
                 pendingIt->second.collaborationAssignments.find(
                     selectedAck.providerName.toUri());
             if (assignmentIt != pendingIt->second.collaborationAssignments.end()) {
+                try {
+                    assignmentIt->second = externalizeLargeCollaborationAssignment(
+                        selectedAck.providerName, serviceName, requestId,
+                        assignmentIt->second);
+                }
+                catch (const std::exception& error) {
+                    NDN_LOG_ERROR("Cannot publish compact collaboration Selection for "
+                                  << requestId.toUri() << ": " << error.what());
+                    return;
+                }
                 entry.assignmentPayload = assignmentIt->second;
                 NDN_LOG_INFO("NDNSF_SELECTION_ASSIGNMENT_ATTACHED requestId="
                              << requestId.toUri()
@@ -8717,7 +9532,8 @@ void ServiceUser::finishRequestAckOnEventLoop(
                 ndn::Data data(validated.getName());
                 data.setFreshnessPeriod(ndn::time::milliseconds(250));
                 data.setContent(ack.WireEncode());
-                m_keyChain.sign(data, m_signingInfo);
+                (m_testSigningKeyChain ? *m_testSigningKeyChain : m_keyChain)
+                    .sign(data, m_signingInfo);
                 m_face.put(data);
                 if (accepted && pending != nullptr) {
                     maybeActivateReadyDeployment(requestId, *pending);
@@ -8798,7 +9614,8 @@ void ServiceUser::finishRequestAckOnEventLoop(
         command.setCanBePrefix(false);
         command.setInterestLifetime(ndn::time::milliseconds(500));
         command.setApplicationParameters(activation.WireEncode());
-        m_keyChain.sign(command, m_signingInfo);
+        (m_testSigningKeyChain ? *m_testSigningKeyChain : m_keyChain)
+            .sign(command, m_signingInfo);
         auto retry = [this, provider, controlHandle, activation, attempt] {
             m_scheduler.schedule(ndn::time::milliseconds(100 * (attempt + 1)),
                 [this, provider, controlHandle, activation, attempt] {
@@ -8927,7 +9744,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
             const auto wrapStartUs = timelineSteadyMicroseconds();
             ndn::nacabe::SPtrVector<ndn::Data> contentData, ckData;
             std::tie(contentData, ckData) =
-                nacProducer.produce(key.keyName,
+                (m_testNacProducer ? *m_testNacProducer : nacProducer).produce(key.keyName,
                                     std::vector<std::string>{accessAttribute},
                                     ndn::span<const uint8_t>(key.key.data(), key.key.size()),
                                     m_signingInfo);
@@ -9079,7 +9896,8 @@ void ServiceUser::finishRequestAckOnEventLoop(
                             std::max(100, intEnvOrDefault("NDNSF_SELECTION_TARGETED_FRESHNESS_MS", 10000))));
                         directSelectionData.setContent(
                             ndn::span<const uint8_t>(buffer.data(), buffer.size()));
-                        m_keyChain.sign(directSelectionData, m_signingInfo);
+                        (m_testSigningKeyChain ? *m_testSigningKeyChain : m_keyChain)
+                            .sign(directSelectionData, m_signingInfo);
                         m_face.put(directSelectionData);
                         NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=SELECTION_DIRECT_PUT timestamp_us="
                                       << nowMicroseconds()
@@ -9162,6 +9980,11 @@ void ServiceUser::finishRequestAckOnEventLoop(
             senderPrefix = response->providerName;
             logicalMessageName =
                 ndn_service_framework::stripTrailingResponseSegments(messageName);
+        }
+        else if (auto event = parseInvocationEventName(messageName)) {
+            serviceName = event->serviceName;
+            requestId = event->requestId;
+            senderPrefix = event->producer;
         }
         else {
             return false;
@@ -9282,12 +10105,13 @@ void ServiceUser::finishRequestAckOnEventLoop(
                                     }
                                 };
             if (envelope.hasWrappedMessageKey()) {
-                nacConsumer.consume(keyDataName,
+                activeNacConsumer().consume(keyDataName,
                                     makeNacInlineContentBlock(envelope.getWrappedMessageKey()),
                                     std::move(onKey), std::move(onKeyError));
             }
             else {
-                nacConsumer.consume(keyDataName, std::move(onKey), std::move(onKeyError));
+                activeNacConsumer().consume(
+                    keyDataName, std::move(onKey), std::move(onKeyError));
             }
         }
         catch (const std::exception& e) {
@@ -9431,7 +10255,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
                   << " plaintextBytes=" << plaintext.size());
         try {
             std::tie(contentData, ckData) =
-                nacProducer.produce(
+                (m_testNacProducer ? *m_testNacProducer : nacProducer).produce(
                     messageNameWithoutPrefix,
                     *results,
                     ndn::span<const uint8_t>(plaintext.data(), plaintext.size()),
@@ -9551,7 +10375,662 @@ void ServiceUser::finishRequestAckOnEventLoop(
         m_svsps->subscribeWithRegex(ndn::Regex(regex_str2),
                                     std::bind(&ServiceUser::OnResponse, this, _1),
                                     true, false);
+        const std::string eventRegex = "^(<>*)<NDNSF><EVENT>(<>*)$";
+        m_svsps->subscribeWithRegex(ndn::Regex(eventRegex),
+                                    std::bind(&ServiceUser::onStreamEvent, this, _1),
+                                    true, true);
+        const std::string collaborationRegex =
+            "^(<>*)<NDNSF><COLLAB>(<>*)$";
+        m_svsps->subscribeWithRegex(
+            ndn::Regex(collaborationRegex),
+            std::bind(&ServiceUser::OnCollaborationData, this, _1),
+            true, true);
 
+    }
+
+    void ServiceUser::OnCollaborationData(
+        const ndn::svs::SVSPubSub::SubscriptionData& subscription)
+    {
+        const bool collaborationAuthTrace =
+            isTruthyEnv("NDNSF_COLLAB_AUTH_TRACE");
+        if (collaborationAuthTrace) {
+            NDN_LOG_WARN("NDNSF_COLLAB_AUTH_TRACE event=receive_seen"
+                         << " user=" << identity.toUri()
+                         << " dataName=" << subscription.name.toUri()
+                         << " producer=" << subscription.producerPrefix.toUri());
+        }
+        if (!isFresh(subscription)) {
+            if (collaborationAuthTrace) {
+                NDN_LOG_WARN("NDNSF_COLLAB_AUTH_TRACE event=receive_rejected"
+                             << " reason=stale"
+                             << " dataName=" << subscription.name.toUri());
+            }
+            return;
+        }
+
+        const auto parsed = parseCollaborationDataName(subscription.name);
+        if (!parsed || !parsed->requesterName.equals(identity) ||
+            !subscription.packet ||
+            subscription.packet->getName() != subscription.name) {
+            if (collaborationAuthTrace) {
+                NDN_LOG_WARN("NDNSF_COLLAB_AUTH_TRACE event=receive_rejected"
+                             << " reason=name_binding"
+                             << " dataName=" << subscription.name.toUri());
+            }
+            return;
+        }
+
+        const auto signatureType = subscription.packet->getSignatureType();
+        if ((signatureType != ndn::tlv::SignatureSha256WithRsa &&
+             signatureType != ndn::tlv::SignatureSha256WithEcdsa) ||
+            !subscription.packet->getSignatureInfo().hasKeyLocator() ||
+            subscription.packet->getSignatureInfo().getKeyLocator().getType() !=
+                ndn::tlv::Name) {
+            if (collaborationAuthTrace) {
+                NDN_LOG_WARN("NDNSF_COLLAB_AUTH_TRACE event=receive_rejected"
+                             << " reason=signature_shape"
+                             << " dataName=" << subscription.name.toUri());
+            }
+            return;
+        }
+        try {
+            if (!isSignedByIdentity(*subscription.packet,
+                                    parsed->producerName)) {
+                if (collaborationAuthTrace) {
+                    NDN_LOG_WARN("NDNSF_COLLAB_AUTH_TRACE event=receive_rejected"
+                                 << " reason=signature_identity"
+                                 << " dataName=" << subscription.name.toUri());
+                }
+                return;
+            }
+        }
+        catch (const std::exception&) {
+            if (collaborationAuthTrace) {
+                NDN_LOG_WARN("NDNSF_COLLAB_AUTH_TRACE event=receive_rejected"
+                             << " reason=signature_exception"
+                             << " dataName=" << subscription.name.toUri());
+            }
+            return;
+        }
+
+        CollaborationDataMessage message;
+        try {
+            ndn::Block block(subscription.data);
+            if (!message.WireDecode(block)) {
+                return;
+            }
+        }
+        catch (const std::exception&) {
+            if (collaborationAuthTrace) {
+                NDN_LOG_WARN("NDNSF_COLLAB_AUTH_TRACE event=receive_rejected"
+                             << " reason=message_decode"
+                             << " dataName=" << subscription.name.toUri());
+            }
+            return;
+        }
+
+        if (message.getKeyScope() != parsed->keyScope ||
+            message.getTopic() != parsed->topic ||
+            message.getSequence() != parsed->sequence ||
+            message.getProducerRole().empty()) {
+            if (collaborationAuthTrace) {
+                NDN_LOG_WARN("NDNSF_COLLAB_AUTH_TRACE event=receive_rejected"
+                             << " reason=message_binding"
+                             << " dataName=" << subscription.name.toUri());
+            }
+            return;
+        }
+
+        ndn::Buffer scopeKey;
+        {
+            std::lock_guard<std::mutex> lock(m_verifiedCollaborationMutex);
+            const auto requestIt =
+                m_userCollaborationScopeKeys.find(parsed->requestId);
+            if (requestIt == m_userCollaborationScopeKeys.end()) {
+                if (collaborationAuthTrace) {
+                    NDN_LOG_WARN("NDNSF_COLLAB_AUTH_TRACE event=receive_rejected"
+                                 << " reason=scope_key_request_missing"
+                                 << " dataName=" << subscription.name.toUri());
+                }
+                return;
+            }
+            const auto keyIt = requestIt->second.find(parsed->keyScope);
+            if (keyIt == requestIt->second.end() ||
+                keyIt->second.size() !=
+                    HybridMessageCrypto::MESSAGE_KEY_SIZE) {
+                if (collaborationAuthTrace) {
+                    NDN_LOG_WARN("NDNSF_COLLAB_AUTH_TRACE event=receive_rejected"
+                                 << " reason=scope_key_missing"
+                                 << " dataName=" << subscription.name.toUri()
+                                 << " keyScope=" << parsed->keyScope);
+                }
+                return;
+            }
+            scopeKey = keyIt->second;
+        }
+
+        HybridMessageEnvelope envelope;
+        try {
+            ndn::Block envelopeBlock(message.getPayload());
+            if (!envelope.WireDecode(envelopeBlock)) {
+                return;
+            }
+        }
+        catch (const std::exception&) {
+            if (collaborationAuthTrace) {
+                NDN_LOG_WARN("NDNSF_COLLAB_AUTH_TRACE event=receive_rejected"
+                             << " reason=envelope_decode"
+                             << " dataName=" << subscription.name.toUri());
+            }
+            return;
+        }
+
+        // Envelope v2 carries the compact eight-byte key identifier on the
+        // wire.  Collaboration encryption and its associated data are still
+        // bound to the canonical request-scoped key id; accept either form
+        // at the binding boundary and use the canonical id for AEAD AD.
+        const std::string expectedKeyId =
+            "collab|" + parsed->requestId.toUri() + "|" +
+            parsed->keyScope;
+        const std::string compactExpectedKeyId =
+            hybridCompactKeyId(expectedKeyId);
+        if (envelope.getMessageType() != "COLLAB" ||
+            (envelope.getKeyId() != expectedKeyId &&
+             envelope.getKeyId() != compactExpectedKeyId) ||
+            envelope.getEpochId() != "session" ||
+            envelope.hasWrappedMessageKey()) {
+            if (collaborationAuthTrace) {
+                NDN_LOG_WARN("NDNSF_COLLAB_AUTH_TRACE event=receive_rejected"
+                             << " reason=envelope_binding"
+                             << " dataName=" << subscription.name.toUri());
+            }
+            return;
+        }
+
+        ndn::Buffer plaintext;
+        const auto associatedData = userCollaborationAssociatedData(
+            subscription.name, parsed->requestId, message,
+            expectedKeyId, envelope.getEpochId());
+        if (!hybridAesGcmDecrypt(
+                scopeKey, envelope,
+                ndn::span<const uint8_t>(associatedData.data(),
+                                         associatedData.size()),
+                plaintext)) {
+            if (collaborationAuthTrace) {
+                NDN_LOG_WARN("NDNSF_COLLAB_AUTH_TRACE event=receive_rejected"
+                             << " reason=decrypt"
+                             << " dataName=" << subscription.name.toUri());
+            }
+            return;
+        }
+
+        VerifiedCollaborationData verified;
+        verified.dataName = subscription.name;
+        verified.requestId = parsed->requestId;
+        verified.keyScope = parsed->keyScope;
+        verified.topic = parsed->topic;
+        verified.producer = parsed->producerName;
+        verified.producerRole = message.getProducerRole();
+        verified.sequence = parsed->sequence;
+        verified.payload = std::move(plaintext);
+        verified.signerCertificate =
+            subscription.packet->getSignatureInfo()
+                .getKeyLocator().getName().toUri();
+        const auto wire = subscription.packet->wireEncode();
+        verified.wireDigest = sha256DigestString(
+            ndn::Buffer(wire.data(), wire.data() + wire.size()));
+
+        {
+            std::lock_guard<std::mutex> lock(m_verifiedCollaborationMutex);
+            auto& records =
+                m_verifiedCollaborationData[parsed->requestId];
+            const auto duplicate = std::find_if(
+                records.begin(), records.end(),
+                [&verified] (const auto& candidate) {
+                    return candidate.dataName == verified.dataName;
+                });
+            if (duplicate != records.end()) {
+                return;
+            }
+            records.push_back(std::move(verified));
+        }
+        if (collaborationAuthTrace) {
+            NDN_LOG_WARN("NDNSF_COLLAB_AUTH_TRACE event=verified"
+                         << " user=" << identity.toUri()
+                         << " requestId=" << parsed->requestId.toUri()
+                         << " dataName=" << subscription.name.toUri()
+                         << " keyScope=" << parsed->keyScope
+                         << " topic=" << parsed->topic.toUri()
+                         << " producerRole=" << message.getProducerRole()
+                         << " payloadBytes=" << plaintext.size());
+        }
+        m_verifiedCollaborationCv.notify_all();
+    }
+
+    std::vector<VerifiedCollaborationData>
+    ServiceUser::waitForVerifiedCollaborationData(
+        const RequestId& requestId,
+        const KeyScope& keyScope,
+        const ndn::Name& topicPrefix,
+        size_t minCount,
+        int timeoutMs,
+        bool consume)
+    {
+        if (minCount == 0) {
+            throw std::invalid_argument(
+                "verified collaboration minimum count must be positive");
+        }
+        if (timeoutMs <= 0) {
+            throw std::invalid_argument(
+                "verified collaboration timeout must be positive");
+        }
+
+        auto matches = [this, &requestId, &keyScope, &topicPrefix] {
+            std::vector<VerifiedCollaborationData> result;
+            const auto requestIt =
+                m_verifiedCollaborationData.find(requestId);
+            if (requestIt == m_verifiedCollaborationData.end()) {
+                return result;
+            }
+            for (const auto& record : requestIt->second) {
+                if (record.keyScope == keyScope &&
+                    topicPrefix.isPrefixOf(record.topic)) {
+                    result.push_back(record);
+                }
+            }
+            return result;
+        };
+
+        std::unique_lock<std::mutex> lock(m_verifiedCollaborationMutex);
+        auto result = matches();
+        if (result.size() < minCount) {
+            m_verifiedCollaborationCv.wait_for(
+                lock, std::chrono::milliseconds(timeoutMs), [&] {
+                    result = matches();
+                    return result.size() >= minCount;
+                });
+        }
+
+        if (consume && result.size() >= minCount) {
+            auto requestIt = m_verifiedCollaborationData.find(requestId);
+            if (requestIt != m_verifiedCollaborationData.end()) {
+                auto& records = requestIt->second;
+                records.erase(
+                    std::remove_if(
+                        records.begin(), records.end(),
+                        [&keyScope, &topicPrefix] (const auto& record) {
+                            return record.keyScope == keyScope &&
+                                   topicPrefix.isPrefixOf(record.topic);
+                        }),
+                    records.end());
+                if (records.empty()) {
+                    m_verifiedCollaborationData.erase(requestIt);
+                }
+            }
+        }
+        return result;
+    }
+
+    void ServiceUser::clearVerifiedCollaborationData(
+        const RequestId& requestId, const KeyScope& keyScope)
+    {
+        std::lock_guard<std::mutex> lock(m_verifiedCollaborationMutex);
+        auto recordsIt = m_verifiedCollaborationData.find(requestId);
+        if (recordsIt != m_verifiedCollaborationData.end()) {
+            auto& records = recordsIt->second;
+            records.erase(
+                std::remove_if(
+                    records.begin(), records.end(),
+                    [&keyScope] (const auto& record) {
+                        return record.keyScope == keyScope;
+                    }),
+                records.end());
+            if (records.empty()) {
+                m_verifiedCollaborationData.erase(recordsIt);
+            }
+        }
+        auto keysIt = m_userCollaborationScopeKeys.find(requestId);
+        if (keysIt != m_userCollaborationScopeKeys.end()) {
+            keysIt->second.erase(keyScope);
+            if (keysIt->second.empty()) {
+                m_userCollaborationScopeKeys.erase(keysIt);
+            }
+        }
+    }
+
+    void ServiceUser::armStreamInactivityTimer(
+        const ndn::Name& requestId,
+        uint64_t interestLifetimeMs)
+    {
+        uint64_t epoch = 0;
+        {
+            std::lock_guard<std::mutex> lock(m_streamInactivityMutex);
+            epoch = ++m_streamInactivityEpochs[requestId];
+        }
+        m_scheduler.schedule(
+            ndn::time::milliseconds(interestLifetimeMs),
+            [this, requestId, epoch] {
+                {
+                    std::lock_guard<std::mutex> lock(m_streamInactivityMutex);
+                    const auto timer = m_streamInactivityEpochs.find(requestId);
+                    if (timer == m_streamInactivityEpochs.end() ||
+                        timer->second != epoch) {
+                        return;
+                    }
+                    m_streamInactivityEpochs.erase(timer);
+                }
+                const auto consumer = m_streamConsumers.find(requestId);
+                const auto state = m_streamStates.find(requestId);
+                if (consumer == m_streamConsumers.end() ||
+                    state == m_streamStates.end()) {
+                    return;
+                }
+                {
+                    std::lock_guard<std::mutex> lock(state->second->mutex);
+                    if (state->second->status != StreamedInvocationStatus::Streaming) {
+                        return;
+                    }
+                }
+                consumer->second->onInactivityTimeout(
+                    std::chrono::steady_clock::now());
+            });
+    }
+
+    void ServiceUser::disarmStreamInactivityTimer(const ndn::Name& requestId)
+    {
+        std::lock_guard<std::mutex> lock(m_streamInactivityMutex);
+        m_streamInactivityEpochs.erase(requestId);
+    }
+
+    bool ServiceUser::initializeStreamConsumer(const ndn::Name& providerName,
+                                               const ndn::Name& serviceName,
+                                               const ndn::Name& requestId,
+                                               const std::string& selectionDigest)
+    {
+        auto pending = m_pendingCalls.find(requestId);
+        if (pending == m_pendingCalls.end() || !pending->second.streamOptions ||
+            pending->second.streamEventKey.empty()) return false;
+        const auto& options = *pending->second.streamOptions;
+        std::string providerBootId;
+        for (const auto& ack : pending->second.requestAcks) {
+            if (!ack.providerName.equals(providerName) ||
+                !ack.message.hasSelectionInputKeyOffer()) continue;
+            const auto& offer = ack.message.getSelectionInputKeyOffer();
+            if (offer.hasField("providerBootEpoch")) {
+                providerBootId = offer.getField("providerBootEpoch");
+            }
+            break;
+        }
+        if (providerBootId.empty() &&
+            pending->second.requestMessage.getRequestMode() == tlv::TargetedRequest) {
+            const auto poolKey = makeTargetedTokenPoolKey(providerName, serviceName);
+            std::lock_guard<std::mutex> lock(m_targetedTokenPoolsMutex);
+            const auto offerIt = m_targetedStreamOffers.find(poolKey);
+            if (offerIt != m_targetedStreamOffers.end()) {
+                providerBootId = offerIt->second.providerBootEpoch;
+            }
+        }
+        if (providerBootId.empty()) providerBootId = providerName.toUri();
+
+        StreamBinding binding;
+        binding.requestId = requestId;
+        binding.requester = identity;
+        binding.serviceName = serviceName;
+        binding.producer = providerName;
+        binding.producerBootId = providerBootId;
+        binding.attemptEpoch = options.attemptEpoch;
+        binding.planDigest = computeStreamSha256(
+            ndn::span<const uint8_t>(reinterpret_cast<const uint8_t*>(selectionDigest.data()),
+                                     selectionDigest.size()));
+        binding.generationId = options.generationId;
+        binding.streamEpoch = options.streamEpoch;
+        binding.eventKeyCommitment = options.eventKeyCommitment;
+        binding.userToken = ndn::Buffer(
+            reinterpret_cast<const uint8_t*>(pending->second.requestMessage.getUserToken().data()),
+            pending->second.requestMessage.getUserToken().size());
+        binding.policyEpoch = m_currentPolicyEpoch;
+        binding.deadlineEpochMs = options.deadlineEpochMs;
+        try { binding.validate(); }
+        catch (const std::exception&) { return false; }
+
+        auto lifecycle = pending->second.streamLifecycle;
+        if (!lifecycle) lifecycle = attachStreamLifecycle(requestId, false);
+        std::shared_ptr<StreamedInvocationSharedState> state;
+        const auto stateIt = m_streamStates.find(requestId);
+        if (stateIt != m_streamStates.end()) {
+            // requestServiceStreamingBytes installs the callbacks before the
+            // request enters the normal selection machinery.  Reuse that
+            // owner rather than replacing it at ACK/Targeted initialization.
+            state = stateIt->second;
+        }
+        else {
+            state = std::make_shared<StreamedInvocationSharedState>();
+            state->requestId = requestId;
+            state->cancel = [this, requestId] {
+                boost::asio::post(m_face.getIoContext(), [this, requestId] {
+                    cancelStreamRequest(requestId);
+                });
+            };
+            m_streamStates[requestId] = state;
+        }
+        {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            state->status = StreamedInvocationStatus::Streaming;
+        }
+        auto consumerSlot = std::make_shared<std::weak_ptr<StreamEventConsumer>>();
+        auto consumer = std::make_shared<StreamEventConsumer>(
+            binding, options, pending->second.streamEventKey, lifecycle,
+            [providerName] (const ndn::Data& data) {
+                const auto type = data.getSignatureType();
+                if ((type != ndn::tlv::SignatureSha256WithRsa &&
+                     type != ndn::tlv::SignatureSha256WithEcdsa) ||
+                    !data.getSignatureInfo().hasKeyLocator() ||
+                    data.getSignatureInfo().getKeyLocator().getType() != ndn::tlv::Name) {
+                    return false;
+                }
+                try {
+                    return ndn::security::extractIdentityFromCertName(
+                        data.getSignatureInfo().getKeyLocator().getName()) == providerName;
+                }
+                catch (const std::exception&) {
+                    return false;
+                }
+            },
+            [this, state, requestId,
+             interestLifetimeMs = options.interestLifetimeMs](
+                const InvocationEventMessage& event) {
+                StreamBytesCallback onEvent;
+                {
+                    std::lock_guard<std::mutex> lock(state->mutex);
+                    if (state->status != StreamedInvocationStatus::Streaming) {
+                        return;
+                    }
+                    onEvent = state->onEvent;
+                    ++state->metrics.deliveredEvents;
+                }
+                if (onEvent) onEvent(event.payload);
+                boost::asio::post(
+                    m_face.getIoContext(),
+                    [this, requestId, interestLifetimeMs] {
+                        armStreamInactivityTimer(requestId, interestLifetimeMs);
+                    });
+            },
+            [this, state, requestId](const ResponseMessage& response) {
+                StreamBytesCallback onComplete;
+                {
+                    std::lock_guard<std::mutex> lock(state->mutex);
+                    if (state->status == StreamedInvocationStatus::Cancelled ||
+                        state->status == StreamedInvocationStatus::Completed ||
+                        state->status == StreamedInvocationStatus::Failed) {
+                        return;
+                    }
+                    state->status = StreamedInvocationStatus::Completed;
+                    onComplete = state->onComplete;
+                }
+                disarmStreamInactivityTimer(requestId);
+                if (onComplete) onComplete(response.getPayload());
+            },
+            [this, state, requestId](const StreamedInvocationError& error) {
+                std::function<void(const StreamedInvocationError&)> onError;
+                {
+                    std::lock_guard<std::mutex> lock(state->mutex);
+                    if (state->status == StreamedInvocationStatus::Cancelled ||
+                        state->status == StreamedInvocationStatus::Completed ||
+                        state->status == StreamedInvocationStatus::Failed) {
+                        return;
+                    }
+                    state->status = StreamedInvocationStatus::Failed;
+                    onError = state->onError;
+                }
+                disarmStreamInactivityTimer(requestId);
+                if (onError) onError(error);
+            },
+            [this, consumerSlot, state,
+             interestLifetimeMs = options.interestLifetimeMs](const ndn::Name& name) {
+                // A retry can be requested from inside the timeout callback of
+                // the previous exact Interest. Defer the same-name expression
+                // by one io_context turn so Face finishes removing the old
+                // pending Interest before the replacement is registered.
+                boost::asio::post(
+                    m_face.getIoContext(),
+                    [this, consumerSlot, state, interestLifetimeMs, name] {
+                        if (!consumerSlot->lock()) {
+                            if (std::getenv("SPEC175_TRACE") != nullptr) {
+                                std::cerr << "SPEC175_TRACE stream-retry-owner-expired "
+                                          << name << std::endl;
+                            }
+                            return;
+                        }
+                        ndn::Interest interest(name);
+                        interest.setCanBePrefix(false);
+                        interest.setMustBeFresh(true);
+                        interest.setInterestLifetime(
+                            ndn::time::milliseconds(interestLifetimeMs));
+                        if (std::getenv("SPEC175_TRACE") != nullptr) {
+                            std::cerr << "SPEC175_TRACE stream-retry-express "
+                                      << name << " lifetimeMs="
+                                      << interestLifetimeMs << std::endl;
+                        }
+                        m_face.expressInterest(
+                            interest,
+                            [this, consumerSlot](const ndn::Interest&,
+                                                 const ndn::Data& data) {
+                                auto consumer = consumerSlot->lock();
+                                if (!consumer) return;
+                                validator->validateData(
+                                    data,
+                                    [consumer](const ndn::Data& validated) {
+                                        consumer->accept(validated);
+                                    },
+                                    [consumer](
+                                        const ndn::Data&,
+                                        const ndn::security::ValidationError&) {
+                                        consumer->reject(
+                                            StreamedInvocationErrorCode::InvalidSignature,
+                                            "stream event signature validation failed");
+                                    });
+                            },
+                            [](const ndn::Interest&, const ndn::lp::Nack&) {},
+                            [consumerSlot](const ndn::Interest& timedOut) {
+                                if (std::getenv("SPEC175_TRACE") != nullptr) {
+                                    std::cerr << "SPEC175_TRACE stream-retry-timeout "
+                                              << timedOut.getName() << std::endl;
+                                }
+                                if (auto consumer = consumerSlot->lock()) {
+                                    consumer->onRetryTimeout(
+                                        timedOut.getName(),
+                                        std::chrono::steady_clock::now());
+                                }
+                            });
+                    });
+            },
+            [state](const ndn::Name&) {
+                std::lock_guard<std::mutex> lock(state->mutex);
+                ++state->metrics.retryCount;
+            });
+        *consumerSlot = consumer;
+        consumer->start();
+        m_streamConsumers[requestId] = consumer;
+        // Prime the bounded exact-name window before the Provider can publish
+        // the first event.  This is an initial fetch, not a retry, and must
+        // not consume maxEventRetries or wait for the inactivity timer.
+        consumer->prefetchWindow();
+        // The initial exact Interests already have authoritative NDN timeout
+        // callbacks.  Do not arm a second inactivity timer here: before the
+        // first event arrives it would race those callbacks and consume the
+        // same cursor's bounded retry budget twice.  The event callback above
+        // arms inactivity monitoring again after every delivered event.
+        return true;
+    }
+
+    void ServiceUser::onStreamEvent(
+        const ndn::svs::SVSPubSub::SubscriptionData& subscription)
+    {
+        if (!subscription.packet) return;
+        const auto parsed = parseInvocationEventName(subscription.packet->getName());
+        if (!parsed || !parsed->requester.equals(identity)) return;
+        auto consumerIt = m_streamConsumers.find(parsed->requestId);
+        if (consumerIt == m_streamConsumers.end()) return;
+        const auto consumer = consumerIt->second;
+        // Signature verification and any certificate fetch stay on the
+        // configured validator path.  Only validated Data enters the bounded
+        // reorder/decrypt consumer.
+        validator->validateData(
+            *subscription.packet,
+            [consumer](const ndn::Data& data) { consumer->accept(data); },
+            [consumer](const ndn::Data&, const ndn::security::ValidationError&) {
+                consumer->reject(StreamedInvocationErrorCode::InvalidSignature,
+                                 "stream event signature validation failed");
+            });
+    }
+
+    void ServiceUser::cancelStreamRequest(const ndn::Name& requestId)
+    {
+        disarmStreamInactivityTimer(requestId);
+        auto consumer = m_streamConsumers.find(requestId);
+        if (consumer != m_streamConsumers.end()) {
+            auto lifecycle = getStreamLifecycle(requestId);
+            if (lifecycle) lifecycle->user().cancel();
+            m_streamConsumers.erase(consumer);
+        }
+        auto state = m_streamStates.find(requestId);
+        if (state != m_streamStates.end()) {
+            std::lock_guard<std::mutex> lock(state->second->mutex);
+            state->second->status = StreamedInvocationStatus::Cancelled;
+        }
+    }
+
+    void ServiceUser::cancelStreamRequestForTest(const ndn::Name& requestId)
+    {
+        cancelStreamRequest(requestId);
+    }
+
+    StreamedInvocationMetrics
+    ServiceUser::getStreamMetricsForTest(const ndn::Name& requestId) const
+    {
+        const auto state = m_streamStates.find(requestId);
+        if (state == m_streamStates.end()) {
+            throw std::runtime_error("stream request metrics are unavailable");
+        }
+        std::lock_guard<std::mutex> lock(state->second->mutex);
+        return state->second->metrics;
+    }
+
+    bool ServiceUser::hasStreamStateForTest(const ndn::Name& requestId) const
+    {
+        const auto pending = m_pendingCalls.find(requestId);
+        return m_streamStates.count(requestId) != 0 ||
+               m_streamConsumers.count(requestId) != 0 ||
+               (pending != m_pendingCalls.end() &&
+                static_cast<bool>(pending->second.streamLifecycle));
+    }
+
+    size_t ServiceUser::streamCallbackQueueHighWaterMarkForTest(
+        const ndn::Name& requestId) const
+    {
+        const auto consumer = m_streamConsumers.find(requestId);
+        return consumer == m_streamConsumers.end() ? 0 :
+               consumer->second->callbackHighWaterMark();
     }
     void ServiceUser::requestForServiceInfo()
     {

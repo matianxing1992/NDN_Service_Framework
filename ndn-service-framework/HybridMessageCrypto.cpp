@@ -352,7 +352,7 @@ hybridMessageTypeForName(const ndn::Name& name)
     for (const auto& component : name) {
         const auto text = component.toUri();
         if (text == "REQUEST" || text == "ACK" ||
-            text == "SELECTION" || text == "RESPONSE") {
+            text == "SELECTION" || text == "RESPONSE" || text == "EVENT") {
             return text;
         }
     }

@@ -288,6 +288,42 @@ processes terminate when the Slurm allocation ends.
   and image under `/project/$USER/ndnsf-di`; Actions artifacts MUST retain only
   manifests, SBOM, signatures, checksums, and logs, never the OCI image or model
   weights.
+- **FR-038**: Any iTiger execution after Spec 111 MUST use a new source/candidate,
+  OCI digest and SIF digest containing the implemented Spec 111 APP/Core
+  contracts. The current/pre-Spec-111 release MAY prove substrate compatibility
+  but MUST NOT be relabeled as post-separation deployment evidence.
+- **FR-039**: Docker/OCI MUST remain a build/distribution source only. iTiger
+  compute execution MUST occur through Slurm and `apptainer exec --nv` from an
+  exact SIF; no Docker daemon, login-node workload or persistent public-IP
+  service is permitted.
+- **FR-040**: A `RuntimeAllocationHandoff` MUST bind candidate/offline-gate,
+  DeploymentRevision, OCI/SIF, model/artifact, process-map/network, identity/
+  state and explicit-authorization digests before render. Scheduler state MUST
+  use a distinct `InfrastructureAllocationHandle` and MUST NOT imply APP
+  READY/ACTIVE or request success.
+- **FR-041**: The canonical runner MUST bind release/model/artifact/exact-role
+  identity read-only, identity-partitioned Spec 111 state root read-write, and
+  selected scratch/node-run paths read-write. Broad writable project, cross-role
+  identity/state and host-only project executable access MUST fail closed.
+- **FR-042**: A new allocation process-map schema MUST derive Provider/role
+  cardinality from the immutable revision, preserve frozen v1 fixtures/evidence,
+  and run every NFD/controller/deployment-coordinator/provider/client project
+  command inside the same exact SIF with per-Provider Slurm GPU UUID binding.
+- **FR-043**: The post-Spec-111 supervisor MUST enforce allocation/SIF/bind/GPU
+  preflight, one NFD per node and routes, controller, generic Provider boot,
+  exact-revision apply and signed READY/ACTIVE, client request, drain/INACTIVE,
+  zero-survivor teardown and atomic evidence promotion in that order.
+- **FR-044**: Slurm TERM/preemption/time-limit handling MUST request bounded APP
+  drain before the scheduler grace deadline when possible. Forced termination
+  relies on leases/boot epochs/orphan cleanup and MUST NOT auto-resubmit or forge
+  APP terminal state; any replacement uses a new allocation handle.
+- **FR-045**: Post-Spec-111 live validation MUST pass one single-node small-Qwen
+  APP apply/submit/drain candidate before multi-node. Multi-node remains blocked
+  until the exact selected-transport probe and one-NFD-per-node route evidence
+  pass.
+- **FR-046**: Model weights/tokenizers/exports MUST remain external under
+  `/project`, mounted read-only and admitted per size. Size changes resource/
+  placement/artifact identity, never the base SIF or RuntimeJournal payload.
 - **FR-005**: Secrets and private identity material MUST be excluded from OCI/SIF
   and bound read-only at runtime with minimal scope and redacted evidence.
 - **FR-006**: Live partition, account, QOS, GRES, node, quota, Apptainer,
@@ -380,6 +416,11 @@ processes terminate when the Slurm allocation ends.
   secret scan, and source revision.
 - **Allocation Topology**: Slurm request/allocation, nodes, addresses, NFDs,
   faces/routes, identities, provider roles, GPU mappings, and teardown.
+- **RuntimeAllocationHandoff**: Immutable post-Spec-111 bridge binding candidate/
+  revision to OCI/SIF, process map, model, identity/state, network and submission
+  authorization evidence.
+- **InfrastructureAllocationHandle**: Slurm allocation identity and scheduler
+  state that cannot substitute for APP deployment or request state.
 - **Distributed Candidate**: Immutable model, stages, interfaces, security,
   topology, placement, workload, and code binding.
 - **Generation Session**: Request, token epochs, KV ownership, stage attempts,
@@ -424,6 +465,29 @@ processes terminate when the Slurm allocation ends.
   persistently on the login node.
 - **SC-013**: Final summary reports every size, placement, and repetition without
   censoring failures and leaves physical-production authority with Spec 106.
+- **SC-014**: Handoff mutation tests reject 100% of pre-Spec-111, mutable-tag,
+  wrong-revision, wrong-SIF, wrong-model/process-map/network/state or unauthorized
+  records before `sbatch`.
+- **SC-015**: Bind tests reject 100% of broad writable project, writable model/
+  artifact/identity, missing `/state`, cross-role state, missing shared node-run
+  and host project executable cases.
+- **SC-016**: Process-map v2 tests derive exact revision role cardinality, run
+  100% of project commands through the pinned SIF and reject every undeclared
+  duplicate/missing Provider GPU UUID mapping while retaining v1 fixture hashes.
+- **SC-017**: Scheduler fixture tests preserve PENDING/RUNNING/PREEMPTED/TIMEOUT/
+  CANCELLED/COMPLETED separately from all deployment/request states and exercise
+  bounded drain plus forced-termination recovery without automatic resubmit.
+- **SC-018**: One offline end-to-end render reaches zero side effects and proves
+  the complete preflight-to-zero-survivor order, explicit binds and exact
+  handoff/process command digests.
+- **SC-019**: One newly authorized post-Spec-111 single-node small-Qwen run
+  records actual SIF, GPU UUID, CUDA/ONNX provider, revision READY/ACTIVE,
+  certified request result, drain/INACTIVE and zero-survivor evidence.
+- **SC-020**: No post-Spec-111 multi-node run becomes eligible until SC-019 and
+  the exact selected-transport network/security probe PASS; an eligible run
+  records real cross-node NFD dependency traffic.
+- **SC-021**: Static and runtime evidence contains zero Docker-daemon dependency,
+  zero Qwen weights in OCI/SIF/journal and zero always-on/public-service claim.
 
 ## Assumptions and dependencies
 
@@ -435,11 +499,16 @@ processes terminate when the Slurm allocation ends.
   multi-node candidate readiness.
 - Qwen licenses and immutable revisions permit the planned downloads and use.
 - Additional `/project` quota may be required before 32B/72B staging/export.
+- Spec 111 must complete its Core/APP workflow and offline runtime-handoff gate
+  before a new post-Spec-111 OCI/SIF candidate is eligible for live execution;
+  the pre-Spec-111 T213 image remains runtime-substrate evidence only.
 
 ## Out of scope
 
 - Persistent public inference service or bypassing Slurm.
 - Docker daemon execution on iTiger compute nodes.
+- Treating OCI publication, SIF materialization or Slurm `RUNNING` as proof that
+  a Spec 111 deployment reached `READY`/`ACTIVE` or a request succeeded.
 - Real UAV, radio, field-network, production-security, or 24-hour soak approval.
 - Treating a single-process, standalone, fixture, CPU fallback, or GPU-visibility
   probe as distributed NDNSF-DI inference; single-node acceptance still requires

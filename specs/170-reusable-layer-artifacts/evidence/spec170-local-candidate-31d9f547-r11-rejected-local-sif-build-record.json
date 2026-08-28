@@ -1,0 +1,32 @@
+{
+  "apptainer": {
+    "local": "1.3.4",
+    "remote": "1.3.4-1.el9"
+  },
+  "buildHostOnly": true,
+  "buildInput": {
+    "baseSif": {
+      "bytes": 4416319488,
+      "path": "/tmp/spec170-qualified-base-31d9f547-r10-bd949732.sif",
+      "sha256": "sha256:bd949732fc89bb10ef48e92b51fb4557fb33819797882765bd629c73da43748c"
+    },
+    "definition": {
+      "path": "specs/170-reusable-layer-artifacts/evidence/spec170-local-candidate-31d9f547-r11.def",
+      "sha256": "sha256:6c1e0b4c0de63030b0b4d651f03ca4b2cd8b67417a394471f989469276043971"
+    },
+    "method": "local-apptainer-definition"
+  },
+  "recordDigest": "sha256:90396164fec36dd1dedde5081d26043f62b110926643b51f044841c56e8cd5ca",
+  "schemaVersion": "ndnsf-local-sif-build-v2",
+  "sif": {
+    "bytes": 4398850048,
+    "path": "/tmp/spec170-local-candidate-31d9f547-20260817-r11/runtime.sif",
+    "sha256": "sha256:d2794b62f536ed8b3dcad4bf916ac3db0023928ba4546be537de0c20f812031b"
+  },
+  "sourceSeal": {
+    "path": "specs/170-reusable-layer-artifacts/evidence/spec170-local-candidate-31d9f547-r11-source-seal.json",
+    "sha256": "sha256:98ac77367b02cc73fa9c0a7b17a269581d152a1246ee22a37e4d637d2aab8702"
+  },
+  "status": "PASS",
+  "tigerAction": "verify-hash-and-execute-only"
+}

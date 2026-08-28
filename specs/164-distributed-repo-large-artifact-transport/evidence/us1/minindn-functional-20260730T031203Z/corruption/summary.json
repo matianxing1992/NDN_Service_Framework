@@ -1,0 +1,14 @@
+{
+  "consumer": null,
+  "elapsedMs": 5650.986,
+  "performanceClaim": false,
+  "repo": {
+    "active": false,
+    "destinationVisible": false,
+    "error": "artifact-manifest-digest-mismatch: chunk payload length or digest does not match manifest",
+    "scenario": "corruption",
+    "status": "CORRUPTION_REJECTED"
+  },
+  "scenario": "corruption",
+  "verdict": "PASS"
+}

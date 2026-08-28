@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ndnsf.example/spec164/phase-resource-sample.schema.json",
+  "title": "Spec 164 repository phase resource sample",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "timestamp", "monotonicNs", "operationId", "phase",
+    "pid", "cpuUserSeconds", "cpuSystemSeconds", "rssBytes",
+    "peakRssBytes", "readBytes", "writeBytes"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 2},
+    "timestamp": {"type": "string", "format": "date-time"},
+    "monotonicNs": {"type": "integer", "minimum": 0},
+    "operationId": {"type": "string", "minLength": 1},
+    "phase": {"enum": ["discovery", "ackCollection", "planning", "queueWait", "sessionStart", "transfer", "verification", "persistence", "replication", "commit", "activation"]},
+    "pid": {"type": "integer", "minimum": 1},
+    "cpuUserSeconds": {"type": "number", "minimum": 0},
+    "cpuSystemSeconds": {"type": "number", "minimum": 0},
+    "rssBytes": {"type": "integer", "minimum": 0},
+    "peakRssBytes": {"type": "integer", "minimum": 0},
+    "readBytes": {"type": "integer", "minimum": 0},
+    "writeBytes": {"type": "integer", "minimum": 0}
+  }
+}

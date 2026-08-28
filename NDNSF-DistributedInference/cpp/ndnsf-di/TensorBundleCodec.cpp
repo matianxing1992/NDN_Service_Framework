@@ -21,11 +21,20 @@ constexpr std::uint64_t MAX_TENSOR_PAYLOAD_BYTES = 512ULL * 1024ULL * 1024ULL;
 constexpr std::size_t MAX_MANIFEST_STRING_BYTES = 1U << 20;
 constexpr std::size_t MAX_MANIFEST_SEGMENTS = 1U << 20;
 constexpr std::size_t MAX_MANIFEST_WIRE_BYTES = 64U << 20;
+constexpr std::size_t MAX_LINEAGE_STRING_BYTES = 4096;
+constexpr std::size_t MAX_LINEAGE_WIRE_BYTES = 64U * 1024U;
 
 const std::string&
 tensorBundleMagic()
 {
   static const std::string magic = "NDITB001";
+  return magic;
+}
+
+const std::string&
+generationLineageMagic()
+{
+  static const std::string magic = "NDIGEL01";
   return magic;
 }
 
@@ -159,7 +168,114 @@ isSha256Digest(const std::string& value)
   });
 }
 
+void
+validateLineageString(const std::string& value, const char* field)
+{
+  if (value.empty() || value.size() > MAX_LINEAGE_STRING_BYTES) {
+    throw std::invalid_argument(
+      std::string("GenerationEpochLineageV1 invalid ") + field);
+  }
+}
+
+std::vector<std::uint8_t>
+encodeGenerationEpochLineage(const GenerationEpochLineageV1& lineage)
+{
+  lineage.validate();
+  std::vector<std::uint8_t> output;
+  const auto& magic = generationLineageMagic();
+  appendBytes(output, reinterpret_cast<const std::uint8_t*>(magic.data()), magic.size());
+  appendString(output, lineage.requestId);
+  appendScalar<std::uint64_t>(output, lineage.attemptEpoch);
+  appendString(output, lineage.planDigest);
+  appendString(output, lineage.generationId);
+  appendScalar<std::uint64_t>(output, lineage.streamEpoch);
+  appendScalar<std::uint64_t>(output, lineage.inferenceEpoch);
+  appendString(output, lineage.transitionKind);
+  appendString(output, lineage.logicalPrefixDigest);
+  appendScalar<std::uint32_t>(output, lineage.logicalPrefixTokenCount);
+  appendString(output, lineage.positionDigest);
+  appendString(output, lineage.producerRole);
+  appendString(output, lineage.consumerRole);
+  appendScalar<std::uint64_t>(output, lineage.operationIndex);
+  if (output.size() > MAX_LINEAGE_WIRE_BYTES) {
+    throw std::invalid_argument("GenerationEpochLineageV1 wire exceeds bound");
+  }
+  return output;
+}
+
+GenerationEpochLineageV1
+decodeGenerationEpochLineage(const std::vector<std::uint8_t>& wire)
+{
+  const auto& magic = generationLineageMagic();
+  if (wire.size() < magic.size() || wire.size() > MAX_LINEAGE_WIRE_BYTES ||
+      std::memcmp(wire.data(), magic.data(), magic.size()) != 0) {
+    throw std::invalid_argument("invalid GenerationEpochLineageV1 wire");
+  }
+  std::size_t offset = magic.size();
+  GenerationEpochLineageV1 lineage;
+  lineage.requestId = readString(wire, offset);
+  lineage.attemptEpoch = readScalar<std::uint64_t>(wire, offset);
+  lineage.planDigest = readString(wire, offset);
+  lineage.generationId = readString(wire, offset);
+  lineage.streamEpoch = readScalar<std::uint64_t>(wire, offset);
+  lineage.inferenceEpoch = readScalar<std::uint64_t>(wire, offset);
+  lineage.transitionKind = readString(wire, offset);
+  lineage.logicalPrefixDigest = readString(wire, offset);
+  lineage.logicalPrefixTokenCount = readScalar<std::uint32_t>(wire, offset);
+  lineage.positionDigest = readString(wire, offset);
+  lineage.producerRole = readString(wire, offset);
+  lineage.consumerRole = readString(wire, offset);
+  lineage.operationIndex = readScalar<std::uint64_t>(wire, offset);
+  if (offset != wire.size()) {
+    throw std::invalid_argument("GenerationEpochLineageV1 has trailing bytes");
+  }
+  lineage.validate();
+  return lineage;
+}
+
 } // namespace
+
+void
+GenerationEpochLineageV1::validate() const
+{
+  validateLineageString(requestId, "requestId");
+  validateLineageString(planDigest, "planDigest");
+  validateLineageString(generationId, "generationId");
+  validateLineageString(transitionKind, "transitionKind");
+  validateLineageString(producerRole, "producerRole");
+  validateLineageString(consumerRole, "consumerRole");
+  if (attemptEpoch == 0 || streamEpoch == 0 || logicalPrefixTokenCount == 0 ||
+      !isSha256Digest(planDigest) || !isSha256Digest(logicalPrefixDigest) ||
+      !isSha256Digest(positionDigest) ||
+      (transitionKind != GenerationEpochLineageV1::PREFILL &&
+       transitionKind != GenerationEpochLineageV1::DECODE &&
+       transitionKind != GenerationEpochLineageV1::CHECKPOINT_FINALIZE) ||
+      (transitionKind == GenerationEpochLineageV1::PREFILL && inferenceEpoch != 0) ||
+      (transitionKind != GenerationEpochLineageV1::PREFILL && inferenceEpoch == 0)) {
+    throw std::invalid_argument("GenerationEpochLineageV1 core identity is invalid");
+  }
+}
+
+bool
+GenerationEpochLineageV1::sameGenerationState(
+  const GenerationEpochLineageV1& other) const noexcept
+{
+  return requestId == other.requestId && attemptEpoch == other.attemptEpoch &&
+         planDigest == other.planDigest && generationId == other.generationId &&
+         streamEpoch == other.streamEpoch && inferenceEpoch == other.inferenceEpoch &&
+         transitionKind == other.transitionKind &&
+         logicalPrefixDigest == other.logicalPrefixDigest &&
+         logicalPrefixTokenCount == other.logicalPrefixTokenCount &&
+         positionDigest == other.positionDigest;
+}
+
+bool
+GenerationEpochLineageV1::operator==(
+  const GenerationEpochLineageV1& other) const noexcept
+{
+  return sameGenerationState(other) && producerRole == other.producerRole &&
+         consumerRole == other.consumerRole && operationIndex == other.operationIndex;
+}
 
 std::string
 sha256TensorBytes(const std::vector<std::uint8_t>& bytes)
@@ -342,6 +458,8 @@ tensorElementByteSize(TensorElementType elementType)
     case TensorElementType::Int64:
       return 8;
     case TensorElementType::Bool:
+      return 1;
+    case TensorElementType::UInt8:
       return 1;
   }
   throw std::invalid_argument("unsupported tensor element type");
@@ -542,6 +660,84 @@ selectTensorBundle(std::string name,
   }
   auto selected = selectTensors(decodeTensorBundle(bundle.payload), tensorNames);
   return makeEncodedTensorBundle(std::move(name), selected);
+}
+
+const std::string&
+generationEpochLineageTensorName()
+{
+  static const std::string name = "__ndnsf_generation_epoch_lineage_v1";
+  return name;
+}
+
+TensorBundle
+attachGenerationEpochLineage(const TensorBundle& bundle,
+                             const GenerationEpochLineageV1& lineage)
+{
+  if (!isEncodedTensorBundle(bundle.payload)) {
+    throw std::invalid_argument(
+      "generation lineage requires an encoded tensor bundle");
+  }
+  auto tensors = decodeTensorBundle(bundle.payload);
+  const auto& reserved = generationEpochLineageTensorName();
+  if (std::any_of(tensors.begin(), tensors.end(), [&] (const auto& tensor) {
+        return tensor.name == reserved;
+      })) {
+    throw std::invalid_argument("generation lineage tensor is duplicated");
+  }
+  auto wire = encodeGenerationEpochLineage(lineage);
+  tensors.push_back(NamedTensor{
+    reserved, TensorElementType::UInt8,
+    {static_cast<std::int64_t>(wire.size())}, std::move(wire)});
+  auto result = makeEncodedTensorBundle(bundle.name, tensors);
+  result.expectedSegments = bundle.expectedSegments;
+  return result;
+}
+
+std::optional<GenerationEpochLineageV1>
+extractGenerationEpochLineage(const TensorBundle& bundle)
+{
+  if (!isEncodedTensorBundle(bundle.payload)) {
+    return std::nullopt;
+  }
+  const auto tensors = decodeTensorBundle(bundle.payload);
+  const auto& reserved = generationEpochLineageTensorName();
+  const auto found = std::find_if(tensors.begin(), tensors.end(), [&] (const auto& tensor) {
+    return tensor.name == reserved;
+  });
+  if (found == tensors.end()) {
+    return std::nullopt;
+  }
+  if (std::find_if(std::next(found), tensors.end(), [&] (const auto& tensor) {
+        return tensor.name == reserved;
+      }) != tensors.end() || found->elementType != TensorElementType::UInt8 ||
+      found->shape.size() != 1 ||
+      static_cast<std::uint64_t>(found->shape.front()) != found->payload.size()) {
+    throw std::invalid_argument("generation lineage tensor is malformed");
+  }
+  return decodeGenerationEpochLineage(found->payload);
+}
+
+TensorBundle
+stripGenerationEpochLineage(const TensorBundle& bundle)
+{
+  if (!isEncodedTensorBundle(bundle.payload)) {
+    return bundle;
+  }
+  auto tensors = decodeTensorBundle(bundle.payload);
+  const auto& reserved = generationEpochLineageTensorName();
+  const auto originalSize = tensors.size();
+  tensors.erase(std::remove_if(tensors.begin(), tensors.end(), [&] (const auto& tensor) {
+                  return tensor.name == reserved;
+                }), tensors.end());
+  if (tensors.size() == originalSize) {
+    return bundle;
+  }
+  if (tensors.empty()) {
+    throw std::invalid_argument("generation lineage cannot be the only tensor");
+  }
+  auto result = makeEncodedTensorBundle(bundle.name, tensors);
+  result.expectedSegments = bundle.expectedSegments;
+  return result;
 }
 
 namespace {

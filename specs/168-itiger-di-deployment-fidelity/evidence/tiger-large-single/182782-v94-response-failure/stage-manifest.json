@@ -1,0 +1,118 @@
+{
+  "capacityDecisionSha256": "7a289e8c6434d756d443c831b69899d83a1c07fab8a5c26361c1376a794a36a2",
+  "cpuFallbackAllowed": false,
+  "dtype": "bfloat16",
+  "layerCount": 64,
+  "layerRanges": [
+    [
+      0,
+      21
+    ],
+    [
+      21,
+      42
+    ],
+    [
+      42,
+      64
+    ]
+  ],
+  "minimumGpuHeadroomBytes": 1073741824,
+  "modelDigest": "sha256:81a39eaabb93592d1d48d051f01607bcecd8f94133f29fcd50b27e340397d1fa",
+  "policy": {
+    "bytes": 14369,
+    "path": "/project/tma1/ndnsf-di/artifacts/spec162/qwen36/spec162-submission-t009-qwen36-runtime-rebind-1f616fa7-003/policy.yaml",
+    "sha256": "c49be4d4673f38b32ae65dc1b00a7e102bb2588044cd5955f1b97ee14da88c6e"
+  },
+  "quantization": "none",
+  "reference": {
+    "bytes": 22685,
+    "path": "/project/tma1/ndnsf-di/artifacts/spec162/qwen36/spec162-submission-t009-qwen36-runtime-rebind-1f616fa7-003/reference.json",
+    "sha256": "3ee52f5553405556d95f5e8166de88a166b2a3f4a1452c1e0b208e0cf003c1e5"
+  },
+  "repository": "Qwen/Qwen3.6-27B",
+  "revision": "6a9e13bd6fc8f0983b9b99948120bc37f49c13e9",
+  "runtimeSifSha256": "1f616fa773df4f8d821339cb7b0a3d62332b9f2197055bdb4e9f3dd081518368",
+  "schemaVersion": "ndnsf-di-qwen36-stage-manifest-v1",
+  "sourceBundleSha256": "0942772394ff777fc4ae17128185d0169ec696feade272a25d7d2617472ee61f",
+  "stages": [
+    {
+      "bytes": 18530194174,
+      "cpuFallback": false,
+      "cudaDevice": "cuda:0",
+      "cudaValidated": true,
+      "dtype": "bfloat16",
+      "filename": "stage-0-qwen-transformers.pt",
+      "forwardValidated": true,
+      "gpuTotalBytes": 33826537472,
+      "layerCount": 64,
+      "layerRange": {
+        "endExclusive": 21,
+        "start": 0
+      },
+      "path": "/project/tma1/ndnsf-di/artifacts/spec162/qwen36/spec162-submission-t009-qwen36-runtime-rebind-1f616fa7-003/qwen-transformers-stage-artifacts/stage-0-qwen-transformers.pt",
+      "peakAllocatedBytes": 18571388928,
+      "peakReservedBytes": 18595446784,
+      "role": "/LLM/Pipeline/Stage/0",
+      "runtime": "qwen-transformers",
+      "sha256": "98deea14968104ab6a0d742e8d3fd04477de2058b048d1603a0ee43f02f123d1",
+      "stageCount": 3,
+      "stageIndex": 0,
+      "validationGpuName": "NVIDIA RTX 5000 Ada Generation"
+    },
+    {
+      "bytes": 15987396002,
+      "cpuFallback": false,
+      "cudaDevice": "cuda:1",
+      "cudaValidated": true,
+      "dtype": "bfloat16",
+      "filename": "stage-1-qwen-transformers.pt",
+      "forwardValidated": true,
+      "gpuTotalBytes": 33826537472,
+      "layerCount": 64,
+      "layerRange": {
+        "endExclusive": 42,
+        "start": 21
+      },
+      "path": "/project/tma1/ndnsf-di/artifacts/spec162/qwen36/spec162-submission-t009-qwen36-runtime-rebind-1f616fa7-003/qwen-transformers-stage-artifacts/stage-1-qwen-transformers.pt",
+      "peakAllocatedBytes": 16027543552,
+      "peakReservedBytes": 18291359744,
+      "role": "/LLM/Pipeline/Stage/1",
+      "runtime": "qwen-transformers",
+      "sha256": "1ec7bf3bfa40f4f2006b8924c53efa914750fe5cd1e2ab65c1dd6492b78bb176",
+      "stageCount": 3,
+      "stageIndex": 1,
+      "validationGpuName": "NVIDIA RTX 5000 Ada Generation"
+    },
+    {
+      "bytes": 19274718182,
+      "cpuFallback": false,
+      "cudaDevice": "cuda:2",
+      "cudaValidated": true,
+      "dtype": "bfloat16",
+      "filename": "stage-2-qwen-transformers.pt",
+      "forwardValidated": true,
+      "gpuTotalBytes": 33826537472,
+      "layerCount": 64,
+      "layerRange": {
+        "endExclusive": 64,
+        "start": 42
+      },
+      "path": "/project/tma1/ndnsf-di/artifacts/spec162/qwen36/spec162-submission-t009-qwen36-runtime-rebind-1f616fa7-003/qwen-transformers-stage-artifacts/stage-2-qwen-transformers.pt",
+      "peakAllocatedBytes": 19314467840,
+      "peakReservedBytes": 19342032896,
+      "role": "/LLM/Pipeline/Stage/2",
+      "runtime": "qwen-transformers",
+      "sha256": "07175d19041e309eca09533a63d63481c23d76e4bdb0831c7238da93d5755f39",
+      "stageCount": 3,
+      "stageIndex": 2,
+      "validationGpuName": "NVIDIA RTX 5000 Ada Generation"
+    }
+  ],
+  "submissionId": "spec162-submission-t009-qwen36-prep-0942772394ff-001",
+  "tokenizer": {
+    "digest": "sha256:a36f68afb38af8f2f095094c6acc62d16945a710692435c8efda89142b296884",
+    "manifestSha256": "337f23ed25c159ba6fe73b78493f4ad4f708ede23970e2a36b8f1d3998d53e1d",
+    "path": "/project/tma1/ndnsf-di/artifacts/spec162/qwen36/spec162-submission-t009-qwen36-runtime-rebind-1f616fa7-003/tokenizer"
+  }
+}

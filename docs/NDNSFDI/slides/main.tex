@@ -32,14 +32,14 @@
 \setbeamertemplate{footline}{%
   \leavevmode\hbox{%
     \begin{beamercolorbox}[wd=.78\paperwidth,ht=2.6ex,dp=1.15ex,leftskip=1.2em]{author in head/foot}%
-      \scriptsize NDNSF-DI: target architecture and verified boundary
+      \scriptsize NDNSF-DI: distributed inference over NDN
     \end{beamercolorbox}%
     \begin{beamercolorbox}[wd=.22\paperwidth,ht=2.6ex,dp=1.15ex,rightskip=1.2em plus1fil]{date in head/foot}%
       \scriptsize \insertframenumber/\inserttotalframenumber
     \end{beamercolorbox}}}
 
 \newcommand{\pill}[2]{\tikz[baseline=(n.base)]\node[rounded corners=2pt,fill=#1!14,text=#1,inner xsep=4pt,inner ysep=2pt,font=\scriptsize\bfseries](n){#2};}
-\newcommand{\claim}[1]{\begin{block}{Invariant}#1\end{block}}
+\newcommand{\claim}[1]{\begin{block}{Key point}#1\end{block}}
 \newcommand{\nextline}[1]{\vfill\hfill{\scriptsize\color{Gray}Next: #1}}
 \newcommand{\smallgap}{\vspace{.25em}}
 
@@ -57,8 +57,8 @@
 \title{NDNSF-DI}
 \subtitle{ACK-driven ONNX placement and NDN pull-based distributed inference}
 \author{}
-\institute{NDNSF Project}
-\date{Target design and current verification boundary --- August 2026}
+\institute{}
+\date{}
 
 \begin{document}
 
@@ -136,7 +136,7 @@
 
 \begin{frame}{Core Vocabulary and Immutable Identities}
 \small
-\begin{tabularx}{\textwidth}{>{\bfseries}p{2.8cm}X}
+\begin{tabularx}{\textwidth}{>{\bfseries\raggedright\arraybackslash}p{3.4cm}>{\raggedright\arraybackslash}X}
 \toprule
 Invocation & One application-visible operation with one handle and terminal result.\\
 Attempt & One bounded network decision generation inside an invocation.\\
@@ -150,29 +150,57 @@ Generation & Role execution epoch that fences late data and superseded work.\\
 \nextline{start from the public application call}
 \end{frame}
 
-\begin{frame}[fragile]{Public Application Call: Intent Only}
-\begin{lstlisting}[language=Python]
-handle = automatic_coordinator.request(
-    model=ModelRef(
-        model_name="Qwen/Qwen3-0.6B",
-        content_digest="sha256:<signed-model-manifest>",
-        semantics_digest="sha256:<tokenizer-and-preprocess>",
-    ),
-    task=InferenceTaskRef("text-generation"),
-    input=ApplicationInput.text("Explain named-data networking."),
-    options=GenerationOptions(max_new_tokens=64, temperature=0.0),
-    objective=OptimizationObjective.LOWEST_END_TO_END_LATENCY,
-    timeout_ms=120_000,
-)
-\end{lstlisting}
-\smallgap
+\begin{frame}{Single-Pass and Autoregressive Models Use Different Flows}
+\scriptsize
+\begin{columns}[T,onlytextwidth]
+\column{.48\textwidth}
+\textbf{Single-pass model (for example, YOLO)}
+\begin{center}
+\begin{tikzpicture}[node distance=.16cm,
+ b/.style={rounded corners,draw=Navy,fill=Light,minimum width=.88cm,minimum height=.55cm,align=center,font=\tiny\bfseries},
+ a/.style={-{Stealth},thick,Navy}]
+\node[b] (r) {input};
+\node[b,right=of r] (p0) {P0\\Stage0};
+\node[b,right=of p0] (p1) {P1\\Stage1};
+\node[b,right=of p1] (p2) {P2\\Stage2};
+\node[b,right=of p2] (o) {result};
+\draw[a] (r)--(p0);\draw[a] (p0)--(p1);\draw[a] (p1)--(p2);\draw[a] (p2)--(o);
+\end{tikzpicture}
+\end{center}
 \begin{itemize}
-  \item No Provider list, stage map, preloaded deployment, or precomputed split is required.
-  \item The implemented model/task-first surface is
-        \texttt{AutomaticPlanningCoordinator.request()}.
+  \item One invocation moves from P0 to P2 once. P2 returns the final result.
+  \item No output feeds back into another model pass.
 \end{itemize}
-\nextline{separate human-readable model names from reuse authority}
+\column{.50\textwidth}
+\textbf{Autoregressive LLM generation}
+\begin{center}
+\begin{tikzpicture}[node distance=.14cm,
+ b/.style={rounded corners,draw=Navy,fill=Light,minimum width=.88cm,minimum height=.55cm,align=center,font=\tiny\bfseries},
+ a/.style={-{Stealth},thick,Navy},
+ f/.style={-{Stealth},thick,Orange},
+ e/.style={-{Stealth},thick,Cyan}]
+\node[b] (r) {prompt};
+\node[b,right=of r] (p0) {P0\\Stage0};
+\node[b,right=of p0] (p1) {P1\\Stage1};
+\node[b,right=of p1] (p2) {P2\\Stage2};
+\node[b,right=of p2] (t) {next\\token};
+\node[b,fill=Cyan!10,below=.42cm of t] (u) {send to\\application};
+\draw[a] (r)--(p0);\draw[a] (p0)--(p1);\draw[a] (p1)--(p2);\draw[a] (p2)--(t);
+\draw[e] (t)--(u);
+\draw[f] (t) to[out=105,in=75,looseness=1.5]
+  node[above,font=\tiny,align=center] {if not finished: return token to P0} (p0);
+\end{tikzpicture}
+\end{center}
+\begin{itemize}
+  \item Prefill sends the full prompt from P0 to P2 once.
+  \item P2 publishes each new token to the application and feeds it back to P0. The token then passes through P0, P1, and P2 again.
+\end{itemize}
+\end{columns}
+\vspace{-1.1em}
+\claim{A single-pass invocation crosses the pipeline once. Autoregressive generation repeats the pipeline for each new token.}
 \end{frame}
+
+\input{prefill-decode-frames.tex}
 
 \begin{frame}{Model Identity: Name Is Discovery, Digests Are Authority}
 \begin{itemize}
@@ -201,25 +229,6 @@ Runner & execute accepted ONNX role & changing the plan or cross-Provider transp
 \smallgap
 The deployed runtime uses ONNX Runtime; PyTorch/Transformers are confined to a sealed offline exporter.
 \claim{An opaque model may expose one atomic node; it remains runnable but is never falsely split.}
-\nextline{derive placement structure from a real model graph}
-\end{frame}
-
-\begin{frame}{Target API: One Core, Two Delivery Lifecycles}
-\scriptsize
-\begin{tabularx}{\textwidth}{>{\bfseries}p{2.7cm}XX}
-\toprule
-Dimension & Unary service (for example, one YOLO image) & Streamed generation (for example, an LLM)\\
-\midrule
-Operation & one durable invocation & one durable invocation\\
-Control plane & one ACK closure, plan commit, and Selection & the same; never repeated per token\\
-Execution & one bounded forward pass & one prefill followed by bounded decode epochs\\
-Visible delivery & no partial result; one terminal Response & ordered Event Data during execution, then one terminal Response\\
-Provider state & short-lived inputs and outputs & persistent ORT session, exact local KV, sampler, and stream cursor\\
-Public surface & \texttt{RequestService<Req,Resp>} & \texttt{RequestServiceStreaming}\newline\texttt{<Req,Event,Resp>}\\
-\bottomrule
-\end{tabularx}
-\smallgap
-\claim{Separate public entry points make lifetime and backpressure explicit; both remain one NDNSF invocation with the same discovery, authorization, placement, and terminal-result rules.}
 \nextline{derive placement structure from a real model graph}
 \end{frame}
 
@@ -281,36 +290,6 @@ Public surface & \texttt{RequestService<Req,Resp>} & \texttt{RequestServiceStrea
 \end{itemize}
 \claim{No preparation-commit round and no global readiness barrier exist.}
 \nextline{inspect the request and offer phases}
-\end{frame}
-
-\begin{frame}{Target LLM Streaming: One Plan, Many Decode Epochs}
-\scriptsize
-\begin{center}
-\begin{tikzpicture}[node distance=.25cm,
- b/.style={rounded corners,draw=Navy,fill=Light,minimum height=.56cm,align=center,font=\tiny\bfseries},
- a/.style={-{Stealth},thick,Navy},
- e/.style={-{Stealth},thick,Cyan}]
-\node[b] (r) {Request};
-\node[b,right=of r] (p) {ACK close\\plan + Selection};
-\node[b,right=of p] (f) {Prefill once};
-\node[b,right=of f] (d) {Decode epoch $e$};
-\node[b,right=of d] (s) {sample token $e$};
-\node[b,right=of s] (t) {EOS / stop?};
-\node[b,fill=Cyan!10,below=.68cm of s] (u) {TokenEvent$(e)$ $\rightarrow$ User};
-\node[b,fill=Green!10,below=.68cm of t] (z) {EndEvent + final Response};
-\draw[a] (r)--(p);\draw[a] (p)--(f);\draw[a] (f)--(d);\draw[a] (d)--(s);\draw[a] (s)--(t);
-\draw[e] (s)--(u);
-\draw[a] (t)-- node[right,font=\tiny] {yes} (z);
-\draw[a] (s) to[out=100,in=80,looseness=1.45] node[above,font=\tiny] {exact feedback Data launches $e{+}1$} (d);
-\end{tikzpicture}
-\end{center}
-\vspace{-.35em}
-\begin{itemize}
-  \item The last-stage role publishes internal feedback to Stage~0 and separately authorized Event Data to the User.
-  \item Pre-expressed exact Interests and \texttt{tokenEpoch} provide ordered, duplicate-safe, resumable delivery; no control-plane round repeats per token.
-  \item EOS, stop, bound, cancellation, or failure closes the stream; replanning creates a new attempt and stream epoch, and exactly one final Response wins.
-\end{itemize}
-\claim{Autoregression is a bounded feedback loop inside one fixed plan, not one NDNSF request or placement decision per token.}
 \end{frame}
 
 \begin{frame}{Request Envelope: Signed Intent and Bounded Work}
@@ -430,6 +409,7 @@ $>$ \pill{Red}{COLD ASSEMBLY}
 \end{frame}
 
 \begin{frame}{Pre-Split Catalog and Distributed Repository}
+\small
 \begin{columns}[T,onlytextwidth]
 \column{.48\textwidth}
 \textbf{Catalog owns}
@@ -575,15 +555,31 @@ I = exact-name Interest issued by the consumer role; D = signed tensor Data retu
 \nextline{separate durable intent from bounded retransmission}
 \end{frame}
 
-\begin{frame}{Invocation and Attempt: Why Retries Exist}
+\begin{frame}{One Plan Governs Each Generation Attempt}
+\scriptsize
+\begin{center}
+\begin{tikzpicture}[node distance=.55cm,
+ b/.style={rounded corners,draw=Navy,fill=Light,text width=5.0cm,minimum height=2.0cm,align=left,font=\scriptsize},
+ a/.style={-{Stealth},very thick,Navy}]
+\node[b] (setup) {\textbf{Setup once}\\[.2em]
+1. Send one Request.\\
+2. Collect Provider ACKs.\\
+3. Choose Providers and layer ranges.\\
+4. Send Selection to assign the work.};
+\node[b,right=of setup] (repeat) {\textbf{Repeat for each decode epoch}\\[.2em]
+1. Read the newest input and saved state.\\
+2. Generate one token.\\
+3. Send the token to the application.\\
+4. Continue, or finish with End and Response.};
+\draw[a] (setup)--(repeat);
+\end{tikzpicture}
+\end{center}
 \begin{itemize}
-  \item \textbf{Invocation}: the user's one durable call and public outcome.
-  \item \textbf{Attempt}: one candidate snapshot, plan, Selection set, and generation namespace.
-  \item Lost Request/ACK/Selection retries identically; tensor loss re-expresses the same Interest name.
-  \item A different Provider assignment or split requires a new attempt.
-  \item At most one terminal result wins for the invocation.
+  \item One healthy attempt keeps the same request ID, accepted ACK set, and plan for the whole generation.
+  \item Every Data name identifies the attempt, role, and decode epoch. Lost Data is requested again by the same exact name; late or wrong-step Data is rejected.
+  \item A different Provider assignment creates one new attempt inside the same application invocation. At most one terminal result wins.
 \end{itemize}
-\claim{A second attempt is recovery inside the same call; it is not a second application request.}
+\claim{Discovery and placement happen once per attempt, not once per token. Recovery does not create a second application request.}
 \nextline{compose independent state machines}
 \end{frame}
 
@@ -672,18 +668,141 @@ Result mismatch & reject Response; terminal failure or new attempt\\
   \item deny cross-tenant inference-state reuse by default.
 \end{itemize}
 \claim{The placement policy receives enough evidence to decide, but not enough authority to inspect or mutate Provider state.}
-\nextline{treat KV as one exact state profile}
+\nextline{quantify the model state kept by each Provider}
 \end{frame}
 
-\begin{frame}{KV Cache Support Without an LLM-Bound API}
+\begin{frame}{Model-State Memory for One Context on Each Provider}
+\scriptsize
+\textbf{Qwen3.6-27B; fixed three-Provider split; batch size 1}
+\par
+\smallgap
+{\footnotesize Context = prompt tokens + generated tokens still kept in memory.}
+\smallgap
+\begin{center}
+\begin{tabular}{lccc}
+\toprule
+Provider and layers & 10K-token context & 100K-token context & 256K-token context\\
+\midrule
+P0: Stage0 $[0,21)$ & 245 MiB & 1.96 GiB & 5.05 GiB\\
+P1: Stage1 $[21,42)$ & 245 MiB & 1.96 GiB & 5.05 GiB\\
+P2: Stage2 $[42,64)$ & 284 MiB & 2.34 GiB & 6.05 GiB\\
+\bottomrule
+\end{tabular}
+\end{center}
+\vspace{.15em}
 \begin{itemize}
-  \item KV is one \texttt{EXACT\_PREFIX\_REUSABLE} state profile.
-  \item Identity binds model/semantics, adapter/runner, split/layers, exact prefix tokens, positions, layout, precision, ABI, security domain, and epochs.
-  \item Prefill consumes the full prompt once; each decode epoch consumes one new token and the exact Provider-local KV state.
-  \item Missing or incompatible coverage falls back to clean recomputation in a new fenced attempt.
-  \item Cross-Provider migration is disabled unless an adapter supplies an explicit encrypted migration contract.
+  \item State grows with context: P0/P1 have 5 full-attention layers; P2 has 6.
+  \item At 256K, FP16 weights plus state need about 22.3 GiB on P0, 19.9 GiB on P1, and 24.0 GiB on P2.
+  \item A 32 GiB RTX 5000 Ada fits these static totals, but P2 leaves about 8 GiB for runtime memory. It is suitable for short-context validation; full 256K remains unverified.
 \end{itemize}
-\claim{State reuse may reduce work; it may never change the accepted result.}
+{\tiny 256K means the native 262,144-token limit; the YaRN extension is not evaluated. Each concurrent sequence needs its own state.}
+
+{\tiny\color{Gray}Estimate assumes batch size 1, FP16 KV/convolution state, FP32 recurrent state, and the shown 21/21/22-layer split.}
+\nextline{explain why each Provider must keep saved state}
+\end{frame}
+
+\begin{frame}{Why Saved State Matters}
+\scriptsize
+\begin{columns}[T,onlytextwidth]
+\column{.49\textwidth}
+\begin{block}{Without saved state}
+To generate token $n$, process the prompt and all earlier tokens again.
+\end{block}
+\begin{center}
+\begin{tikzpicture}[x=.56cm,y=.42cm]
+\foreach \x/\h in {1/1,2/2,3/3,4/4,5/5,6/6}{
+  \fill[Orange!55] (\x,0) rectangle +(0.68,\h/2.2);
+  \node[font=\tiny,below] at (\x+.34,0) {\x};
+}
+\node[rotate=90,font=\tiny] at (.4,1.4) {tokens processed};
+\end{tikzpicture}
+\end{center}
+Repeated work grows after every new token.
+\column{.49\textwidth}
+\begin{block}{With saved state}
+Process the prompt once. Each later round uses one new token and the saved state.
+\end{block}
+\begin{center}
+\begin{tikzpicture}[x=.56cm,y=.42cm]
+\foreach \x in {1,...,6}{
+  \fill[Green!55] (\x,0) rectangle +(0.68,.45);
+  \node[font=\tiny,below] at (\x+.34,0) {\x};
+}
+\node[rotate=90,font=\tiny] at (.4,1.4) {new input};
+\draw[-{Stealth},thick,Green] (1.35,1.05)--(6.35,1.05) node[midway,above,font=\tiny] {reuse and update saved state};
+\end{tikzpicture}
+\end{center}
+Earlier tokens still affect the result through the saved state.
+\end{columns}
+\vspace{-.25em}
+\begin{itemize}
+  \item Each Provider keeps the attention KV, recurrent, and convolution state produced by its own layers.
+  \item New state is committed only after the Provider successfully publishes its output; a failed step discards it.
+\end{itemize}
+\claim{Saved state avoids rebuilding earlier model state; it does not remove the LLM's dependence on earlier tokens.}
+\nextline{show what moves between Providers and what stays local}
+\end{frame}
+
+\begin{frame}{What Moves Between Providers---and What Stays Local}
+\scriptsize
+\begin{center}
+\begin{tikzpicture}[node distance=.48cm,
+ p/.style={rounded corners,draw=Navy,fill=Light,minimum width=2.75cm,minimum height=.9cm,align=center,font=\scriptsize\bfseries},
+ k/.style={rounded corners,draw=Green,fill=Green!10,minimum width=2.1cm,minimum height=.42cm,align=center,font=\tiny\bfseries},
+ a/.style={-{Stealth},thick,Cyan},
+ f/.style={-{Stealth},thick,Orange}]
+\node[p] (p0) {Provider P0\\Stage 0 ORT};
+\node[p,right=of p0] (p1) {Provider P1\\Stage 1 ORT};
+\node[p,right=of p1] (p2) {Provider P2\\Stage 2 ORT + sample};
+\node[k,below=.08cm of p0] (k0) {P0 state: layers 0--20};
+\node[k,below=.08cm of p1] (k1) {P1 state: layers 21--41};
+\node[k,below=.08cm of p2] (k2) {P2 state: layers 42--63};
+\node[rounded corners,draw=Orange,fill=Orange!10,below=.5cm of k1,minimum width=4.2cm,minimum height=.42cm,font=\tiny\bfseries] (fb) {next token + proof of the shared token history};
+\draw[a] (p0)--(p1);
+\draw[a] (p1)--(p2);
+\draw[f] (p2.east) -- ++(.25,0) |- (fb.east);
+\draw[f] (fb.west) -| ([xshift=-.25cm]p0.west) -- (p0.west);
+\end{tikzpicture}
+\end{center}
+\begin{itemize}
+  \item Each Provider keeps the state produced by its own model layers. These three states are different and cannot replace one another.
+  \item All roles verify the same token-history digest, token count, and next position. Their local state tensors remain different.
+  \item NDN carries authenticated activation and token-feedback Data. It does not carry the large saved-state tensors.
+  \item P2 publishes the external token Event and the internal feedback Data separately.
+\end{itemize}
+\claim{A shared proof of token history keeps three different Provider states synchronized without transferring those states over NDN.}
+\nextline{show when saved state is safe to reuse}
+\end{frame}
+
+\begin{frame}{When Saved State Can Be Reused Safely}
+\scriptsize
+\begin{columns}[T,onlytextwidth]
+\column{.45\textwidth}
+\textbf{Reuse state only when all conditions match}
+\begin{itemize}
+  \item model artifact and tensor layout;
+  \item Provider process and assigned layers;
+  \item runtime and security context;
+  \item request attempt and token prefix;
+  \item exact previous decode epoch.
+\end{itemize}
+\column{.53\textwidth}
+\textbf{One safe token-generation step}
+\begin{center}
+\begin{tikzpicture}[node distance=.25cm,
+ b/.style={rounded corners,draw=Navy,fill=Light,minimum width=2.5cm,minimum height=.5cm,align=center,font=\tiny\bfseries},
+ a/.style={-{Stealth},thick,Navy}]
+\node[b] (l) {find the exact previous state};
+\node[b,below=of l] (p) {hold it and run ONNX};
+\node[b,below=of p] (s) {prepare new state};
+\node[b,below=of s] (o) {publish output and control Data};
+\node[b,below=of o] (c) {commit the new state};
+\draw[a] (l)--(p);\draw[a] (p)--(s);\draw[a] (s)--(o);\draw[a] (o)--(c);
+\draw[-{Stealth},thick,Red] (o.east) -- ++(.75,0) node[right,font=\tiny,align=left] {failure:\\discard new state};
+\end{tikzpicture}
+\end{center}
+\end{columns}
+\claim{A failed step discards its new state. Completion, cancellation, deadline, or Provider restart makes old request state unusable and removes it.}
 \nextline{separate perceived latency from decode throughput}
 \end{frame}
 
@@ -706,13 +825,13 @@ Result mismatch & reject Response; terminal failure or new attempt\\
 \textbf{Optimization order}
 \begin{enumerate}
   \item keep ORT sessions, device buffers, and I/O bindings resident;
-  \item prefill once; decode one token with exact local KV;
+  \item prefill once; decode one token with the exact local saved state;
   \item pre-express exact activation, feedback, and Event Interests;
   \item sign/publish through a bounded asynchronous queue with backpressure;
   \item grant one stream content key, then protect events symmetrically---no per-token ABE bootstrap.
 \end{enumerate}
 \end{columns}
-\claim{Streaming improves perceived latency; only incremental KV decode and a shorter per-epoch path improve tokens/s. This is a target, not current performance evidence.}
+\claim{Streaming improves perceived latency; only incremental stateful decode and a shorter per-epoch path improve tokens/s. This is a target, not current performance evidence.}
 \end{frame}
 
 \begin{frame}{Observability: Evidence for Decisions and Execution}
@@ -724,28 +843,6 @@ Result mismatch & reject Response; terminal failure or new attempt\\
   \item \texttt{report\_operation\_status()} reports authenticated progress, not execution authority.
 \end{itemize}
 \nextline{show the implemented generic carrier calls}
-\end{frame}
-
-\begin{frame}[fragile]{Implemented Carrier API}
-\begin{lstlisting}[language=Python,basicstyle=\ttfamily\tiny]
-invocation = service_user.begin_collaboration(
-    service_name, opaque_request,
-    mode="DEFERRED",
-    ack_timeout_ms=ack_ms, timeout_ms=total_ms,
-)
-closed = await invocation.acks_closed()
-decision = coordinator.plan(closed)
-sealed = await coordinator.validate_materialize_and_seal(decision)
-await invocation.commit_plan(
-    ack_closed_digest=closed.digest,
-    roles=sealed.roles,
-    dependencies=sealed.dependencies,
-    provider_assignments=sealed.providers_by_role,
-    assignment_payloads=sealed.role_assembly_and_dataflow_contracts,
-)
-\end{lstlisting}
-\claim{The compatibility method name does not imply User-side role materialization: Providers assemble ONNX roles from sealed contracts.}
-\nextline{show operator configuration}
 \end{frame}
 
 \begin{frame}[fragile]{Operator Configuration: Policy, Not Deployment}
@@ -771,7 +868,7 @@ cache:
 \nextline{map the design to current code}
 \end{frame}
 
-\begin{frame}{Target Surface and Current Migration Boundary}
+\begin{frame}{Implemented Surface and Current Qualification Boundary}
 \scriptsize
 \begin{tabularx}{\textwidth}{>{\bfseries}p{3.4cm}>{\raggedright\arraybackslash}X}
 \toprule
@@ -782,8 +879,8 @@ Planning & common graph/candidate values, read-only catalog snapshot, external a
 Adapters & composed graph/split/task/state/runner ports with digest pins\\
 Artifacts & canonical ONNX graph/initializer manifests; repository store/fetch; Provider-local assembly\\
 Execution & one role per Provider; Interest pull; manifest/segment and collective-round gates\\
-State & exact prefix-KV identity, local reuse binding, clean-compute/replan fallback\\
-Delivery & unary terminal Response exists; request-scoped ordered Event Data plus one terminal Response is the target streaming extension\\
+State & exact prefix-and-epoch identity, local reuse binding, clean-compute/replan fallback\\
+Delivery & unary terminal Response and request-scoped ordered Event Data plus one terminal Response are implemented\\
 Recovery/security & durable selection transaction, generations, cancellation, tokens, NAC-ABE\\
 \bottomrule
 \end{tabularx}
@@ -803,28 +900,64 @@ Recovery/security & durable selection transaction, generations, cancellation, to
 \nextline{report the accepted local evidence}
 \end{frame}
 
-\begin{frame}{Current Evidence and the Remaining Protocol Gap}
-\footnotesize
+\begin{frame}{CPU Check: Reuse State Instead of Reprocessing Old Tokens}
+\small
+\begin{center}
+\textbf{Fixture: 1-token input context (token \texttt{3}) $\rightarrow$ 8 generated tokens.}\\
+Both paths generated \texttt{4, 5, 6, 7, 8, 9, 10, 2}.
+\end{center}
+\smallgap
 \begin{columns}[T,onlytextwidth]
-\column{.49\textwidth}
-\textbf{Already exercised}
-\begin{itemize}
-  \item deferred collaboration and immutable ACK closure;
-  \item one Provider / one role commit and Selection checks;
-  \item exact tensor names, signed manifest/segments, and same-name retry;
-  \item verified-input runtime gates and protected grant/capability/zeroization negatives;
-\end{itemize}
-\column{.49\textwidth}
-\textbf{Must still be closed}
-\begin{itemize}
-  \item one full four-Provider/four-role lifecycle;
-  \item deterministic drop/reorder/duplicate/replay/cancel packet matrix;
-  \item exact-SIF CPU small-ONNX and MiniNDN gates;
-  \item request-scoped event ordering, backpressure, resume, cancellation, and final-Response integration;
-  \item CUDA/Qwen correctness and performance evidence.
-\end{itemize}
+\column{.48\textwidth}
+\begin{block}{Reuse saved state}
+Prefill reads the 1-token prompt; seven decode rounds each read one new token.\\[.5em]
+\centering\large
+$1+(7\times1)=\mathbf{8}$
+\end{block}
+\column{.48\textwidth}
+\begin{alertblock}{Recompute the full history}
+The complete prefix grows from 1 to 8 tokens.\\[.5em]
+\centering\large
+$1+2+3+4+5+6+7+8=\mathbf{36}$
+\end{alertblock}
 \end{columns}
-\claim{T011--T014 are locally green; network, full-lifecycle, and physical evidence remain separate gates.}
+\vspace{.35em}
+\claim{For this 1-token context, saved state avoided 28 repeated token-position computations: $36-8=28$.}
+\vspace{.25em}
+{\footnotesize This is a correctness check with a tiny CPU ONNX model. It does not measure speed, GPU memory, or Qwen3.6-27B throughput.}
+\nextline{separate verified behavior from remaining deployment work}
+\end{frame}
+
+\begin{frame}{Current Evidence Boundary}
+\scriptsize
+\begin{block}{Verified with the tiny CPU ONNX model}
+\begin{itemize}
+  \item one Request and plan produce ordered token Events, End, and one final Response;
+  \item focused one-, two-, and four-Provider flows cover cancellation, deadline, tamper/replay rejection, and cleanup;
+  \item Provider-owned state produces the same output as full-prefix recomputation while avoiding 28 prior-token positions.
+\end{itemize}
+\end{block}
+\begin{alertblock}{Not yet verified}
+\begin{itemize}
+  \item GPU-resident KV/model state: the current ORT path still copies saved state into CPU buffers;
+  \item a real Python application running across separate processes;
+  \item Qwen3.6-27B GPU correctness, memory use, latency, and throughput.
+\end{itemize}
+\end{alertblock}
+\vspace{-.55em}
+\begin{center}
+\begin{tikzpicture}[node distance=.22cm,
+ s/.style={rounded corners,draw=Navy,fill=Light,minimum width=2.55cm,minimum height=.62cm,align=center,font=\tiny\bfseries},
+ a/.style={-{Stealth},thick,Navy}]
+\node[s] (a) {CUDA I/O binding};
+\node[s,right=of a] (b) {rerun local gates};
+\node[s,right=of b] (c) {build and qualify SIF};
+\node[s,right=of c] (d) {Tiger 27B tests};
+\draw[a] (a)--(b); \draw[a] (b)--(c); \draw[a] (c)--(d);
+\end{tikzpicture}
+\end{center}
+\vspace{-.35em}
+\claim{CPU tests validate semantics; GPU tests must validate device residency and performance.}
 \end{frame}
 
 \begin{frame}{Remaining Physical Requalification Boundary}
@@ -929,23 +1062,26 @@ Model artifacts are durable and content-addressed. Intermediate tensors are atte
 \nextline{close the corrected protocol before large-model performance claims}
 \end{frame}
 
-\begin{frame}{Final Takeaway}
+\begin{frame}{How the Complete Request Runs}
 \begin{center}
-\begin{tikzpicture}[node distance=.45cm,
- b/.style={rounded corners,draw=Navy,fill=Light,minimum width=12.5cm,minimum height=.72cm,align=center,font=\small\bfseries},
+\begin{tikzpicture}[node distance=.28cm,
+ b/.style={rounded corners,draw=Navy,fill=Light,text width=11.7cm,minimum height=.56cm,align=center,font=\scriptsize\bfseries},
  a/.style={-{Stealth},thick,Navy}]
-\node[b] (a) {Application expresses immutable model, task, input, objective, and deadline};
-\node[b,below=of a] (b) {Authenticated ACK closure supplies the only admissible planning snapshot};
-\node[b,below=of b] (c) {PreSplitFirst assigns each complete execution role to one Provider};
-\node[b,below=of c] (d) {Selection binds local ONNX assembly and exact publish/fetch/wait contracts};
-\node[b,below=of d] (e) {Consumers pull every cross-Provider tensor with deterministic NDN Interests};
+\node[b] (a) {The application starts one unary or streaming request};
+\node[b,below=of a] (b) {NDNSF collects authenticated ACKs and\\assigns one complete role to each selected Provider};
+\node[b,below=of b] (c) {Each Provider assembles and runs its local ONNX role};
+\node[b,below=of c] (d) {Providers exchange named, authenticated activation Data;\\LLM roles keep their own saved state};
+\node[b,below=of d] (e) {Unary calls return one Response; streaming calls return\\ordered Events, End, and one final Response};
 \draw[a] (a)--(b);\draw[a] (b)--(c);\draw[a] (c)--(d);\draw[a] (d)--(e);
 \end{tikzpicture}
 \end{center}
 \vspace{.15em}
 \begin{center}
-\color{Navy}\Large\bfseries One Provider/role; ONNX local compute; NDN pull across Providers.
+\color{Navy}\large\bfseries One request. One plan per attempt.\\
+ONNX state stays local; exact NDN Data moves between roles.
 \end{center}
 \end{frame}
+
+\input{kv-cache-tiering-discussion.tex}
 
 \end{document}

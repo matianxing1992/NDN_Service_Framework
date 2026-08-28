@@ -217,3 +217,24 @@ ssh itiger.memphis.edu '
 
 Never remove an accepted bundle, active job, identity set, sealed model,
 referenced stage, or current/prior release from a cleanup dry-run.
+
+## 11. Post-Spec-111 deployment path
+
+Do not reuse the current image or submit while Spec 111/T219-T229 are open.
+First run the offline handoff gate with a frozen Spec 111 revision fixture:
+
+```text
+revision/candidate -> RuntimeAllocationHandoff -> exact SIF/binds/process-map
+-> rendered sbatch only (zero submission)
+```
+
+Inspect that every project command uses the exact SIF, `/models`, `/artifacts`
+and role identity are read-only, `/state` is identity-partitioned persistent
+read-write, scratch/node-run are allocation-local, Provider roles/GPU UUIDs
+derive from the revision, and Slurm/APP/request states are separate.
+
+Only after Spec 111 T201, substrate T216 and offline T228 PASS may T229 create a
+new OCI/SIF. T230 is the first eligible live single-node APP apply/submit/drain
+run. T231 additionally requires T064 selected-transport PASS. Every external
+publication/materialization/submission uses a fresh immutable identity and the
+existing explicit authorization rule.

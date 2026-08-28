@@ -147,13 +147,15 @@ changes. A fragment alone also cannot prove that a live device runtime is reusab
 separates generic willingness from new model preparation:
 `ACCEPT_IF_EXACT_REUSE` and `ACCEPT_WITH_PREPARATION` are positive ACKs;
 `REJECT` is the only negative/unselectable ACK. Final
-Selection atomically accepts the complete Provider projection into a bounded
-queue without holding a device. Host-side fetch/assembly may proceed under
-disk/RAM/network preparation bounds only when the bound offer accepted
-preparation; exact reuse skips that work. Immediately before device load, independent
-single-device roles use per-device ledgers and a `DEVICE_SET` plus all local
-ranks acquires one complete resource-vector lease/fencing token or acquires
-nothing.
+Selection atomically accepts the complete one-role Provider projection into a
+bounded queue without holding a device. Host-side fetch/assembly may proceed
+under disk/RAM/network preparation bounds only when the bound offer accepted
+preparation; exact reuse skips that work. Immediately before device load, the
+Provider uses its per-device ledger to acquire one complete CPU or
+single-device resource-vector lease/fencing token for that role, or acquires
+nothing. A tensor-parallel stage is represented by distinct rank roles on
+distinct Providers; it is never collapsed into a multi-device Provider-local
+role.
 
 **Rationale**: Provider-level summation admits impossible placements; acquiring
 GPU 0 while waiting for GPU 1 creates hold-and-wait deadlock.
@@ -165,8 +167,9 @@ GPU 0 while waiting for GPU 1 creates hold-and-wait deadlock.
 - Select a Provider after an overall negative ACK: rejected because it bypasses
   authenticated willingness. Reuse-only acceptance is an explicit positive
   disposition instead.
-- Sequential device acquisition: rejected because partial admission is not a
-  valid collective state.
+- Assigning several ranks of one Attempt to one Provider: rejected because it
+  hides role ownership and collective dataflow behind Provider-local device
+  state. Each rank is planned and admitted as an independent role.
 - Device reservation at Selection/queue acceptance: rejected because long Repo
   fetch/assembly would hold scarce GPUs and suppress concurrency.
 
@@ -217,31 +220,38 @@ Loading strategy code from a request or network artifact is unsupported. A
 future adversarial-plugin profile would require out-of-process CPU/memory/time/
 I/O isolation and is not implied by this contract.
 
-## Decision 12: Stage Provider-local and cross-Provider tensor groups separately
+## Decision 12: Validate one complete role before cross-Provider tensor groups
 
-**Decision**: First close one logical role across a device set owned by one
-Provider. Then close one logical tensor group whose ranks live in multiple
-Provider-local bundles. Only after both pass should heterogeneous pipeline/
-tensor vectors combine these forms.
+**Decision**: First close one complete execution role on one Provider with one
+CPU or single-device binding. Then close one logical tensor group whose rank
+roles live on distinct Providers and exchange every collective input through
+the sealed NDN Interest/Data contract. Only after both pass should heterogeneous
+pipeline/tensor vectors combine these role forms.
 
-**Rationale**: Provider-local multi-GPU execution uses one admission transaction
-and local communicator scope. Cross-Provider execution adds authenticated
-rendezvous, transport, independent local admission, peer failure, and distributed
-epoch handling; treating them as one gate hides distinct failure modes.
+**Rationale**: Provider-local assembly and execution establish the smallest
+admissible runtime unit. Cross-Provider execution then adds authenticated named
+tensor rendezvous, independent local admission, peer failure, and distributed
+epoch handling. Keeping these gates separate localizes failures without
+changing the one-role/one-Provider ownership model.
 
 **Alternatives considered**:
 
-- One combined multi-GPU milestone: rejected because a local NCCL success would
-  not prove distributed rank semantics.
+- A Provider-local multi-rank/NCCL milestone: rejected because it collapses
+  several execution roles into one Provider and cannot prove the cross-Provider
+  NDN dataflow contract.
 - One global cross-Provider `DeviceBinding`: rejected because device handles are
-  meaningful only inside their signed Provider offers.
+  meaningful only inside their signed Provider offers and a role never spans
+  Providers.
 
 ## Resolved Technical Baseline
 
 - Python package baseline: Python >=3.8.
-- Exact GPU container baseline currently pins PyTorch 2.6, CUDA 12.4, ONNX
-  Runtime GPU 1.20.1, and NCCL 2.21.5; implementation must bind actual lock-file
-  identities rather than rely on these descriptive versions alone.
+- The deployed Provider/application container baseline is ONNX Runtime plus the
+  model-family-neutral runtime dependencies required by certified adapters.
+  PyTorch, Transformers, and exporter-only tooling belong to a separately
+  sealed offline exporter/conformance environment and are forbidden in the
+  deployed runtime. Exact versions remain lock-file and SIF-manifest facts, not
+  prose defaults.
 - Current V2 seams include `DIProviderOfferV2`, `ProviderPlanningView`,
   `ProviderAssignment`, `DIRoleAssignmentV2`, `DISelectionAssignmentV2`,
   `validate_joint_placement`, `GpuMiBAdmissionLedger`, `RoleExecutionPlan`,

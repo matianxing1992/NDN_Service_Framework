@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <iostream>
+#include <cstdlib>
 #include <chrono>
 #include <iostream>
 #include <map>
@@ -41,45 +43,6 @@ memberForRank(const GroupCapabilityV1& capability,
              std::to_string(item.rank) == producerRank;
     });
   return member == capability.orderedMembers.end() ? nullptr : &*member;
-}
-
-bool
-dataV1NameFieldMatches(const ndn::Name& name,
-                       const std::string& marker,
-                       const ndn::Name& expected)
-{
-  if (marker.empty() || expected.empty()) {
-    return false;
-  }
-  bool found = false;
-  for (std::size_t i = 0; i < name.size(); ++i) {
-    if (name.get(i).toUri() != marker) {
-      continue;
-    }
-    if (found || i + 1 + expected.size() > name.size()) {
-      return false;
-    }
-    for (std::size_t j = 0; j < expected.size(); ++j) {
-      if (name.get(i + 1 + j) != expected.get(j)) {
-        return false;
-      }
-    }
-    found = true;
-    i += expected.size();
-  }
-  return found;
-}
-
-bool
-dataV1NameMatchesCapability(const ndn::Name& name,
-                            const GroupCapabilityV1& capability)
-{
-  return dataV1NameFieldMatches(name, "REQ", ndn::Name(capability.requestId)) &&
-         dataV1NameFieldMatches(name, "ATTEMPT", ndn::Name(capability.attemptId)) &&
-         dataV1NameFieldMatches(name, "PLAN", ndn::Name(capability.planDigest)) &&
-         dataV1NameFieldMatches(name, "GROUP", ndn::Name(capability.groupId)) &&
-         dataV1NameFieldMatches(name, "EPOCH",
-                                ndn::Name(std::to_string(capability.epoch)));
 }
 
 std::string
@@ -409,30 +372,73 @@ NdnsfCollaborationDependencyIo::prefetchInput(const std::string& sessionId,
         }
       }
       else {
-        const auto capabilityNameFilter =
-          ndn_service_framework::DataV1SegmentNameFilter{
-          [capability](const ndn::Name& publicationName) {
-            return dataV1NameMatchesCapability(publicationName, capability);
-          }};
-        encodedSegments = m_ctx.fetchDataV1Segments(
-          edge.transportScope.empty() ? edge.scope : edge.transportScope,
-          *producerPrefix,
-          edge.collectiveOperationIndex,
-          producerRank,
-          tensorDigest,
-          expectedSegments,
-          static_cast<std::size_t>(operation.maxSegments),
-          m_fetchTimeoutMs,
-          [] (const ndn::Buffer& wire) {
-            const auto decoded = ProviderGroupCoordinator::decodeSegment(
-              std::vector<std::uint8_t>(wire.begin(), wire.end()));
-            return static_cast<std::size_t>(decoded.manifest.segmentCount);
-          },
-          capabilityNameFilter);
+        if (producerMember == nullptr) {
+          throw std::runtime_error(
+            "NDNSF_DATA_V1 producer identity is not present in the capability");
+        }
+        CollectiveOperationManifestV1 nameBinding;
+        nameBinding.requestId = capability.requestId;
+        nameBinding.attemptId = capability.attemptId;
+        nameBinding.planDigest = capability.planDigest;
+        nameBinding.groupId = capability.groupId;
+        nameBinding.epoch = capability.epoch;
+        nameBinding.operationIndex = edge.collectiveOperationIndex;
+        nameBinding.producerRank = producerRank;
+        nameBinding.tensorDigest = tensorDigest;
+        const auto deadline = std::chrono::steady_clock::now() +
+          std::chrono::milliseconds(m_fetchTimeoutMs);
+        auto fetchExactSegment = [this, &edge, &capability, &nameBinding,
+                                  &deadline, producerMember](std::size_t index) {
+          if (m_groupCoordinator->terminal()) {
+            throw std::runtime_error(
+              "NDNSF_DATA_V1 group is terminal before exact segment fetch");
+          }
+          const auto remaining = remainingDeadlineMs(deadline);
+          if (remaining == 0) {
+            throw std::runtime_error(
+              "NDNSF_DATA_V1 exact segment fetch deadline expired");
+          }
+          const auto name = ndn::Name(ProviderGroupCoordinator::makeDataName(
+            capability, nameBinding, index));
+          auto content = m_ctx.fetchSignedExactData(
+            edge.transportScope.empty() ? edge.scope : edge.transportScope,
+            name,
+            ndn::Name(producerMember->provider),
+            static_cast<int>(std::min<std::uint64_t>(
+              remaining, static_cast<std::uint64_t>(m_fetchTimeoutMs))),
+            [coordinator = m_groupCoordinator] {
+              return coordinator->terminal();
+            });
+          if (!content) {
+            throw std::runtime_error(
+              "failed to fetch signed exact NDNSF_DATA_V1 segment: " +
+              name.toUri());
+          }
+          return *content;
+        };
+
+        std::vector<ndn::Buffer> fetched;
+        std::size_t segmentCount = expectedSegments;
+        if (segmentCount == 0) {
+          fetched.push_back(fetchExactSegment(0));
+          const auto first = ProviderGroupCoordinator::decodeSegment(
+            std::vector<std::uint8_t>(fetched.front().begin(),
+                                      fetched.front().end()));
+          segmentCount = static_cast<std::size_t>(first.manifest.segmentCount);
+        }
+        if (segmentCount == 0 || segmentCount > operation.maxSegments) {
+          throw std::runtime_error(
+            "NDNSF_DATA_V1 exact segment count exceeds the capability");
+        }
+        fetched.reserve(segmentCount);
+        for (std::size_t index = fetched.size(); index < segmentCount; ++index) {
+          fetched.push_back(fetchExactSegment(index));
+        }
+        encodedSegments = std::move(fetched);
       }
       if (!encodedSegments) {
         throw std::runtime_error(
-          "failed to fetch NDNSF_DATA_V1 SVS segments for: " + edge.plannedDataName);
+          "failed to fetch NDNSF_DATA_V1 segments for: " + edge.plannedDataName);
       }
       if (expectedSegments == 0) {
         expectedSegments = encodedSegments->size();
@@ -484,6 +490,15 @@ NdnsfCollaborationDependencyIo::prefetchInput(const std::string& sessionId,
       logDependencyObject(sessionId, edge, "fetch-ndnsf-data-v1",
                           bundle.payload.size(), "ok");
       return bundle;
+    }
+    if (const auto* trace = std::getenv("NDNSF_DI_RUNTIME_TIMING");
+        trace != nullptr && *trace != '\0' && *trace != '0') {
+      std::cout << "NDNSF_DI_DEPENDENCY_FETCH_BEGIN session=" << sessionId
+                << " scope=" << edge.scope
+                << " key_scope=" << edge.transportScope
+                << " planned_name=" << edge.plannedDataName
+                << " use_data_v1=" << (edge.useNdnsfDataV1 ? 1 : 0)
+                << std::endl;
     }
     auto payload = m_ctx.fetchLarge(
       ndn::Name(edge.plannedDataName),
@@ -664,10 +679,11 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
         ndn::Name(segment.dataName),
         ndn::Buffer(wire.begin(), wire.end()));
     }
-    if (!m_ctx.publishDataV1Segments(
+    if (!m_ctx.publishSignedExactData(
           edge.transportScope.empty() ? edge.scope : edge.transportScope,
           publications, m_freshnessMs)) {
-      throw std::runtime_error("failed to publish NDNSF_DATA_V1 SVS segments");
+      throw std::runtime_error(
+        "failed to publish signed exact NDNSF_DATA_V1 segments");
     }
     const auto tensorDigest = edge.collectiveTensorDigest.empty() ?
       edge.scope : edge.collectiveTensorDigest;

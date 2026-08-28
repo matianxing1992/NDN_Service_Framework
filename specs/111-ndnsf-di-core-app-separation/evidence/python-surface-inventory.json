@@ -1,0 +1,2164 @@
+{
+  "modules": [
+    {
+      "callers": [
+        "Experiments/NDNSF_DI_AppApi_Smoke.py",
+        "Experiments/NDNSF_DI_GUI.py",
+        "Experiments/NDNSF_DI_LlamaServer_Smoke.py",
+        "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
+        "Experiments/NDNSF_DI_LlmPipeline_Smoke.py",
+        "Experiments/NDNSF_DI_NativeTracer_Minindn.py",
+        "Experiments/NDNSF_DI_OnnxExecutor_Smoke.py",
+        "Experiments/NDNSF_DI_RuntimeCompatibility_Smoke.py",
+        "Experiments/NDNSF_DI_TransformersPipeline_LocalSmoke.py",
+        "Experiments/spec105_telemetry_plan_cells.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/app.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/artifact_deployment.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/backends/onnxruntime.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/client.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/deployment.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/experimental/semantic_cache/__init__.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/experimental/semantic_cache/implementation.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/gui.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/llm_runtime.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/llm_stub_planner.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/onnx_executor.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/onnx_graph.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/plan.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/planner_registry.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/policy.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/provider.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/release_gate.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/runtime_compatibility.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/runtime_v1.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/runtime_v1_evidence.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/splitter.py",
+        "NDNSF-DistributedRepo/pythonWrapper/py_repoclient/orchestration.py",
+        "examples/python/NDNSF-DistributedInference/llama_server/controller.py",
+        "examples/python/NDNSF-DistributedInference/llama_server/deploy_artifacts.py",
+        "examples/python/NDNSF-DistributedInference/llama_server/llama_server_lib.py",
+        "examples/python/NDNSF-DistributedInference/llama_server/provider.py",
+        "examples/python/NDNSF-DistributedInference/llama_server/run_semantic_cache_selection_campaign.py",
+        "examples/python/NDNSF-DistributedInference/llama_server/user.py",
+        "examples/python/NDNSF-DistributedInference/llm_pipeline/llm_pipeline_lib.py",
+        "examples/python/NDNSF-DistributedInference/llm_pipeline/provider.py",
+        "examples/python/NDNSF-DistributedInference/llm_pipeline/user.py",
+        "examples/python/NDNSF-DistributedInference/llm_semantic_cache_demo.py",
+        "examples/python/NDNSF-DistributedInference/llm_stub/plan_stub.py",
+        "examples/python/NDNSF-DistributedInference/native_di_tracer/generate_llm_proportional_native_bundle.py",
+        "examples/python/NDNSF-DistributedInference/native_di_tracer/plan_llm_resource_aware.py",
+        "examples/python/NDNSF-DistributedInference/native_di_tracer/plan_tracer.py",
+        "examples/python/NDNSF-DistributedInference/native_di_tracer/run_runtime_v1_cache_pressure_smoke.py",
+        "examples/python/NDNSF-DistributedInference/native_di_tracer/run_runtime_v1_long_context_smoke.py",
+        "examples/python/NDNSF-DistributedInference/native_di_tracer/run_runtime_v1_profile_campaign.py",
+        "examples/python/NDNSF-DistributedInference/native_di_tracer/runtime_aware_fixtures/loader.py",
+        "examples/python/NDNSF-DistributedInference/native_di_tracer/user_driver.py",
+        "examples/python/NDNSF-DistributedInference/pytorch_eager_2x2/controller.py",
+        "examples/python/NDNSF-DistributedInference/pytorch_eager_2x2/provider.py",
+        "examples/python/NDNSF-DistributedInference/pytorch_eager_2x2/pytorch_2x2_lib.py",
+        "examples/python/NDNSF-DistributedInference/pytorch_eager_2x2/user.py",
+        "examples/python/NDNSF-DistributedInference/yolo_2x2/controller.py",
+        "examples/python/NDNSF-DistributedInference/yolo_2x2/plan_example.py",
+        "examples/python/NDNSF-DistributedInference/yolo_2x2/provider.py",
+        "examples/python/NDNSF-DistributedInference/yolo_2x2/repo_client.py",
+        "examples/python/NDNSF-DistributedInference/yolo_2x2/repo_node.py",
+        "examples/python/NDNSF-DistributedInference/yolo_2x2/user.py",
+        "examples/python/NDNSF-DistributedInference/yolo_2x2/yolo_2x2_lib.py",
+        "examples/python/NDNSF-DistributedInference/yolo_split/controller.py",
+        "examples/python/NDNSF-DistributedInference/yolo_split/provider.py",
+        "examples/python/NDNSF-DistributedInference/yolo_split/user.py",
+        "examples/python/NDNSF-DistributedInference/yolo_split/yolo_split_lib.py",
+        "examples/python/NDNSF-DistributedRepo/generic_object_store/catalog_sync.py",
+        "examples/python/NDNSF-DistributedRepo/generic_object_store/client.py",
+        "examples/python/NDNSF-DistributedRepo/generic_object_store/controller.py",
+        "examples/python/NDNSF-DistributedRepo/generic_object_store/repo_campaign.py",
+        "examples/python/NDNSF-DistributedRepo/generic_object_store/repo_node.py",
+        "tests/python/test_ndnsf_app_core_envelope_migration.py",
+        "tests/python/test_ndnsf_core_admission_metadata.py",
+        "tests/python/test_ndnsf_core_boundary_imports.py",
+        "tests/python/test_ndnsf_deployment_ack_core_readiness.py",
+        "tests/python/test_ndnsf_deployment_operation_status.py",
+        "tests/python/test_ndnsf_di_deployment_readiness.py",
+        "tests/python/test_ndnsf_di_execution_lease_codec.py",
+        "tests/python/test_ndnsf_di_execution_lease_fallback.py",
+        "tests/python/test_ndnsf_di_execution_lease_restart.py",
+        "tests/python/test_ndnsf_di_execution_lease_stress.py",
+        "tests/python/test_ndnsf_di_execution_lease_transaction.py",
+        "tests/python/test_ndnsf_di_gui_visual_smoke.py",
+        "tests/python/test_ndnsf_di_policy_isolation.py",
+        "tests/python/test_ndnsf_di_runtime_aware_campaign.py",
+        "tests/python/test_ndnsf_di_runtime_aware_planner.py",
+        "tests/python/test_ndnsf_di_runtime_v1.py",
+        "tests/python/test_ndnsf_di_scenarios.py",
+        "tests/python/test_ndnsf_di_spec107_faults.py",
+        "tests/python/test_ndnsf_di_spec107_release_gate.py",
+        "tests/python/test_ndnsf_di_tk_gui.py",
+        "tests/python/test_ndnsf_di_tk_widgets.py",
+        "tests/python/test_ndnsf_negative_ack_reasons.py",
+        "tools/ndnsf-di/build_spec107_release_bundle.py",
+        "tools/ndnsf-di/run_spec107_live_faults.py",
+        "tools/ndnsf-di/spec107_fault_controller.py"
+      ],
+      "currentOwner": "mixed-package",
+      "module": "ndnsf_distributed_inference",
+      "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
+      "proposedCanonicalOwner": "core",
+      "publicSymbols": []
+    },
+    {
+      "callers": [
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
+        "NDNSF-DistributedRepo/pythonWrapper/py_repoclient/orchestration.py"
+      ],
+      "currentOwner": "mixed-package",
+      "module": "ndnsf_distributed_inference.app",
+      "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/app.py",
+      "proposedCanonicalOwner": "app_sdk",
+      "publicSymbols": [
+        {
+          "kind": "ClassDef",
+          "name": "APPClient"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "APPController"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "APPDeployment"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "APPProvider"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "InferencePlanBuilder"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "ModelPart"
+        }
+      ]
+    },
+    {
+      "callers": [
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/client.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/llm_runtime.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/provider.py",
+        "tests/python/test_ndnsf_app_core_envelope_migration.py",
+        "tests/python/test_ndnsf_negative_ack_reasons.py"
+      ],
+      "currentOwner": "mixed-package",
+      "module": "ndnsf_distributed_inference.artifact_deployment",
+      "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/artifact_deployment.py",
+      "proposedCanonicalOwner": "core",
+      "publicSymbols": [
+        {
+          "kind": "ClassDef",
+          "name": "ArtifactProvisioningState"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "ExecutionArtifact"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "ExecutionArtifactSpec"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "ExecutionContext"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "MaterializedArtifact"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "RepoDataName"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "artifact_references_need_repo_client"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "default_large_data_interest_lifetime_ms"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "load_artifact_references"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "materialize_role_artifacts"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "materialized_path"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "prepare_execution"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "publish_execution_artifact_spec"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "role_artifact_entries"
+        }
+      ]
+    },
+    {
+      "callers": [],
+      "currentOwner": "mixed-package",
+      "module": "ndnsf_distributed_inference.backends",
+      "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/backends/__init__.py",
+      "proposedCanonicalOwner": "adapter-llama",
+      "publicSymbols": []
+    },
+    {
+      "callers": [],
+      "currentOwner": "mixed-package",
+      "module": "ndnsf_distributed_inference.backends.onnxruntime",
+      "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/backends/onnxruntime.py",
+      "proposedCanonicalOwner": "adapter-onnx",
+      "publicSymbols": [
+        {
+          "kind": "constant",
+          "name": "RUNTIME_NAME"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "build_runner_script"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "run_downloaded_runner"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "runtime_spec"
+        }
+      ]
+    },
+    {
+      "callers": [
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/app.py"
+      ],
+      "currentOwner": "mixed-package",
+      "module": "ndnsf_distributed_inference.client",
+      "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/client.py",
+      "proposedCanonicalOwner": "core",
+      "publicSymbols": [
+        {
+          "kind": "ClassDef",
+          "name": "DeploymentSession"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "DistributedInferenceClient"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "InferenceResult"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "PublishedPlanReferences"
+        }
+      ]
+    },
+    {
+      "callers": [
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/app.py"
+      ],
+      "currentOwner": "mixed-package",
+      "module": "ndnsf_distributed_inference.controller",
+      "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/controller.py",
+      "proposedCanonicalOwner": "app_sdk",
+      "publicSymbols": [
+        {
+          "kind": "ClassDef",
+          "name": "DistributedInferenceController"
+        }
+      ]
+    },
+    {
+      "callers": [
+        "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/gui.py",
+        "examples/python/NDNSF-DistributedInference/native_di_tracer/user_driver.py",
+        "tests/python/test_ndnsf_deployment_ack_core_readiness.py",
+        "tests/python/test_ndnsf_deployment_operation_status.py",
+        "tests/python/test_ndnsf_di_deployment_readiness.py",
+        "tests/python/test_ndnsf_di_execution_lease_codec.py",
+        "tests/python/test_ndnsf_di_execution_lease_fallback.py",
+        "tests/python/test_ndnsf_di_execution_lease_restart.py",
+        "tests/python/test_ndnsf_di_execution_lease_stress.py",
+        "tests/python/test_ndnsf_di_execution_lease_transaction.py",
+        "tests/python/test_ndnsf_di_runtime_aware_planner.py"
+      ],
+      "currentOwner": "mixed-package",
+      "module": "ndnsf_distributed_inference.deployment",
+      "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/deployment.py",
+      "proposedCanonicalOwner": "core",
+      "publicSymbols": [
+        {
+          "kind": "ClassDef",
+          "name": "BoundedRecoveryController"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "CommittedProviderLease"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "DeploymentRecord"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "DistributedLeaseSet"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "DistributedLeaseTransaction"
+        },
+        {
+          "kind": "constant",
+          "name": "LEASE_CODEC_SCHEMA"
+        },
+        {
+          "kind": "constant",
+          "name": "LEASE_SERVICE_NAME"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "LeaseOperation"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "LeaseOperationRequest"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "LeaseOperationResponse"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "LeaseTransactionError"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "LeaseTransport"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "NdnsfLeaseTransport"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "PlanRevalidationError"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "ProviderLeaseAssignment"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "ProviderTelemetryRegistry"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "PythonExecutionLeaseProviderAdapter"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "RecoveryAction"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "RecoveryAttempt"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "RecoveryReason"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "deployment_operation_status"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "deployment_role_provider_preference"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "deployment_roles_from_ack_candidate"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "deployment_sort_key"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "discover_deployments"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "get_deployment"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "register_python_execution_lease_service"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "request_collaboration_with_deployment"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "wait_deployment"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "with_deployment_operation_status"
+        }
+      ]
+    },
+    {
+      "callers": [
+        "examples/python/NDNSF-DistributedInference/llama_server/provider.py",
+        "examples/python/NDNSF-DistributedInference/llama_server/run_semantic_cache_selection_campaign.py",
+        "examples/python/NDNSF-DistributedInference/llm_semantic_cache_demo.py",
+        "tests/python/test_ndnsf_di_policy_isolation.py",
+        "tests/python/test_ndnsf_di_runtime_v1.py"
+      ],
+      "currentOwner": "mixed-package",
+      "module": "ndnsf_distributed_inference.experimental",
+      "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/experimental/__init__.py",
+      "proposedCanonicalOwner": "core",
+      "publicSymbols": []
+    },
+    {
+      "callers": [
+        "examples/python/NDNSF-DistributedInference/llama_server/provider.py",
+        "examples/python/NDNSF-DistributedInference/llama_server/run_semantic_cache_selection_campaign.py",
+        "examples/python/NDNSF-DistributedInference/llm_semantic_cache_demo.py",
+        "tests/python/test_ndnsf_di_policy_isolation.py",
+        "tests/python/test_ndnsf_di_runtime_v1.py"
+      ],
+      "currentOwner": "mixed-package",
+      "module": "ndnsf_distributed_inference.experimental.semantic_cache",
+      "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/experimental/semantic_cache/__init__.py",
+      "proposedCanonicalOwner": "core",
+      "publicSymbols": []
+    },
+    {
+      "callers": [],
+      "currentOwner": "mixed-package",
+      "module": "ndnsf_distributed_inference.experimental.semantic_cache.implementation",
+      "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/experimental/semantic_cache/implementation.py",
+      "proposedCanonicalOwner": "core",
+      "publicSymbols": [
+        {
+          "kind": "ClassDef",
+          "name": "SemanticCacheAckHint"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "SemanticCacheDisposition"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "SemanticPatternMeta"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "SemanticPatternRank"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "SemanticServiceCacheEntry"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "SemanticServiceCacheKey"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "SemanticServiceCacheManager"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "choose_semantic_cache_provider"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "parse_semantic_cache_ack_hint"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "rank_semantic_patterns"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "semantic_cache_ack_fields"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "semantic_cache_token_saving_ratio"
+        }
+      ]
+    },
+    {
+      "callers": [
+        "Experiments/NDNSF_DI_GUI.py",
+        "tests/python/test_ndnsf_di_gui_visual_smoke.py",
+        "tests/python/test_ndnsf_di_tk_gui.py",
+        "tests/python/test_ndnsf_di_tk_widgets.py"
+      ],
+      "currentOwner": "mixed-package",
+      "module": "ndnsf_distributed_inference.gui",
+      "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/gui.py",
+      "proposedCanonicalOwner": "app_sdk",
+      "publicSymbols": [
+        {
+          "kind": "ClassDef",
+          "name": "CertificateTab"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "ControllerCertificateFrame"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "ControllerDirectTab"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "ControllerTabConfig"
+        },
+        {
+          "kind": "constant",
+          "name": "DEFAULT_POLICY"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "DirectRoleTab"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "DistributedInferenceGui"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "EnvOverlay"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "FakeRuntime"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "FakeRuntimeFactory"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "JsonTextPane"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "ModelSplitTab"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "NdnsfSvsEnvConfig"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "ParticipantCertificateFrame"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "PolicyEditorTab"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "ProviderDirectTab"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "ProviderTabConfig"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "QwenMiniNdnExperimentTab"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "RealRuntimeFactory"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "RegressionRunnerTab"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "RoleProcessState"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "RoleRuntimeController"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "RuntimeFactory"
+        },
+        {
+          "kind": "constant",
+          "name": "SECRET_KEYS"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "SharedNdnsfConfig"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "TextPane"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "ThreeRoleGuiProfile"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "UserDirectTab"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "UserRequestConfig"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "UserTabConfig"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "WizardTab"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "apply_role_config_file"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "build_arg_parser"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "build_qwen_minindn_command"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "format_core_envelope_summary"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "load_headless_profile"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "load_policy_text"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "load_three_role_profile"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "main"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "make_basic_policy"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "parse_int_field"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "parse_json_field"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "payload_from_request"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "policy_service_names"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "policy_to_yaml"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "read_text_file"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "redact_mapping"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "redact_secret"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "repo_root"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "run_command"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "run_headless"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "run_headless_qwen_minindn"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "split_extra_args"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "summarize_policy_file"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "write_policy_text"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "write_text_file"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "write_three_role_profile"
+        }
+      ]
+    },
+    {
+      "callers": [
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
+        "examples/python/NDNSF-DistributedInference/llama_server/llama_server_lib.py",
+        "examples/python/NDNSF-DistributedInference/llama_server/provider.py"
+      ],
+      "currentOwner": "mixed-package",
+      "module": "ndnsf_distributed_inference.llm_runtime",
+      "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/llm_runtime.py",
+      "proposedCanonicalOwner": "adapter-llama",
+      "publicSymbols": [
+        {
+          "kind": "ClassDef",
+          "name": "ManagedLlamaServerRuntime"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "OpenAIChatRequest"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "OpenAICompatibleChatRuntime"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "call_openai_chat_runtime"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "decode_openai_chat_response"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "encode_openai_chat_request"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "materialize_llm_runtime_artifacts"
+        }
+      ]
+    },
+    {
+      "callers": [
+        "Experiments/NDNSF_DI_LlmPipeline_Smoke.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py"
+      ],
+      "currentOwner": "mixed-package",
+      "module": "ndnsf_distributed_inference.llm_stub_planner",
+      "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/llm_stub_planner.py",
+      "proposedCanonicalOwner": "planner",
+      "publicSymbols": [
+        {
+          "kind": "constant",
+          "name": "DEFAULT_LLM_CONTROLLER"
+        },
+        {
+          "kind": "constant",
+          "name": "DEFAULT_LLM_GROUP"
+        },
+        {
+          "kind": "constant",
+          "name": "DEFAULT_LLM_PROVIDER_PREFIX"
+        },
+        {
+          "kind": "constant",
+          "name": "DEFAULT_LLM_SERVICE"
+        },
+        {
+          "kind": "constant",
+          "name": "DEFAULT_LLM_USER"
+        },
+        {
+          "kind": "constant",
+          "name": "LLM_RUNTIME_COMPATIBILITY"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "LlmPlannerShape"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "default_llm_runtime_backend"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "llm_planner_registry"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "llm_planner_request"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "llm_splitter_output_from_result"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "llm_stub_plan_from_request"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "llm_supported_runtime_backends"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "validate_llm_runtime_compatibility"
+        }
+      ]
+    },
+    {
+      "callers": [
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py"
+      ],
+      "currentOwner": "mixed-package",
+      "module": "ndnsf_distributed_inference.onnx_executor",
+      "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/onnx_executor.py",
+      "proposedCanonicalOwner": "adapter-onnx",
+      "publicSymbols": [
+        {
+          "kind": "ClassDef",
+          "name": "CachedSession"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "OnnxExecutionResult"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "PrefetchedDependency"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "decode_tensor_bundle"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "encode_tensor_bundle"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "execute_onnx_dependency_chunk"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "load_npz_payload"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "npz_payload"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "prefetch_dependency_inputs"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "role_topic_token"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "select_tensor_payload"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "verify_tensor_payload"
+        }
+      ]
+    },
+    {
+      "callers": [
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/gui.py",
+        "examples/python/NDNSF-DistributedInference/pytorch_eager_2x2/pytorch_2x2_lib.py"
+      ],
+      "currentOwner": "mixed-package",
+      "module": "ndnsf_distributed_inference.onnx_graph",
+      "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/onnx_graph.py",
+      "proposedCanonicalOwner": "adapter-onnx",
+      "publicSymbols": [
+        {
+          "kind": "ClassDef",
+          "name": "OnnxChunkDependency"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "OnnxChunkSpec"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "OnnxGraphSummary"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "OnnxNodeInfo"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "OnnxSplitCandidate"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "OnnxTensorInfo"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "analyze_onnx_graph"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "build_chunk_dependencies"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "build_sequential_chunk_dependencies"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "estimate_split_candidates"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "write_onnx_graph_summary"
+        }
+      ]
+    },
+    {
+      "callers": [
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/runtime_v1.py"
+      ],
+      "currentOwner": "mixed-package",
+      "module": "ndnsf_distributed_inference.operations",
+      "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/operations.py",
+      "proposedCanonicalOwner": "ops",
+      "publicSymbols": [
+        {
+          "kind": "ClassDef",
+          "name": "MetricsSnapshot"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "atomic_export_metrics"
+        }
+      ]
+    },
+    {
+      "callers": [
+        "Experiments/NDNSF_DI_LlmPipeline_Smoke.py",
+        "Experiments/NDNSF_DI_TransformersPipeline_LocalSmoke.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/app.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/backends/onnxruntime.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/client.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/llm_stub_planner.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/onnx_graph.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/planner_registry.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/policy.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/provider.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/runtime_compatibility.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/splitter.py",
+        "examples/python/NDNSF-DistributedInference/yolo_2x2/yolo_2x2_lib.py"
+      ],
+      "currentOwner": "mixed-package",
+      "module": "ndnsf_distributed_inference.plan",
+      "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/plan.py",
+      "proposedCanonicalOwner": "core",
+      "publicSymbols": [
+        {
+          "kind": "ClassDef",
+          "name": "ArtifactSpec"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "DependencyEdge"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "DependencyGraph"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "DistributedInferencePlan"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "InferenceDependency"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "InferenceRole"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "ModelFamily"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "ModelFormat"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "PlannerDescriptor"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "PlannerKind"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "RoleDependencyView"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "RuntimeSpec"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "normalize_model_family"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "normalize_model_format"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "normalize_planner_kind"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "nxm_stage_frontier_dependencies"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "nxm_stage_roles"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "stage_shard_role"
+        }
+      ]
+    },
+    {
+      "callers": [
+        "tests/python/test_ndnsf_di_scenarios.py"
+      ],
+      "currentOwner": "mixed-package",
+      "module": "ndnsf_distributed_inference.plan_security",
+      "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/plan_security.py",
+      "proposedCanonicalOwner": "core",
+      "publicSymbols": [
+        {
+          "kind": "ClassDef",
+          "name": "PlanSignature"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "PlanState"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "make_plan_id"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "now_ms"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "plan_content_digest"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "validate_plan_namespace"
+        }
+      ]
+    },
+    {
+      "callers": [
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/llm_stub_planner.py",
+        "examples/python/NDNSF-DistributedInference/yolo_2x2/yolo_2x2_lib.py",
+        "tests/python/test_ndnsf_di_policy_isolation.py"
+      ],
+      "currentOwner": "mixed-package",
+      "module": "ndnsf_distributed_inference.planner_registry",
+      "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/planner_registry.py",
+      "proposedCanonicalOwner": "planner",
+      "publicSymbols": [
+        {
+          "kind": "ClassDef",
+          "name": "PlannerBackend"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "PlannerBackendRegistry"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "PlannerRequest"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "PlannerResult"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "default_planner_registry"
+        }
+      ]
+    },
+    {
+      "callers": [
+        "Experiments/NDNSF_DI_LlmPipeline_Smoke.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/app.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/gui.py",
+        "NDNSF-DistributedRepo/pythonWrapper/py_repoclient/orchestration.py",
+        "examples/python/NDNSF-DistributedInference/native_di_tracer/generate_llm_proportional_native_bundle.py"
+      ],
+      "currentOwner": "mixed-package",
+      "module": "ndnsf_distributed_inference.policy",
+      "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/policy.py",
+      "proposedCanonicalOwner": "planner",
+      "publicSymbols": [
+        {
+          "kind": "ClassDef",
+          "name": "ArtifactPolicy"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "ArtifactSecurityPolicy"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "DistributedInferenceDeployment"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "ProviderPolicy"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "SandboxPolicy"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "ServicePolicy"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "app_roots"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "canonical_service_manifest_payload"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "explain_policy"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "generate_controller_policy"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "generate_trust_schema"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "load_config"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "load_or_generate_deployment"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "main"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "native_execution_plan_spec"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "parse_artifact_security"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "parse_services"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "service_manifest"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "trust_anchor_file"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "validate_runtime_user_authorization"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "validate_service_provider_role_coverage"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "validate_service_runtime_compatibility"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "write_native_execution_plan"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "write_policy_bundle"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "write_service_manifest"
+        }
+      ]
+    },
+    {
+      "callers": [
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/app.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/onnx_executor.py",
+        "tests/python/test_ndnsf_negative_ack_reasons.py"
+      ],
+      "currentOwner": "mixed-package",
+      "module": "ndnsf_distributed_inference.provider",
+      "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/provider.py",
+      "proposedCanonicalOwner": "core",
+      "publicSymbols": [
+        {
+          "kind": "ClassDef",
+          "name": "DependencyPrefetcher"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "DistributedInferenceProvider"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "LargePrefetchResult"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "ProviderAdmissionPolicy"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "ProviderRuntimeContext"
+        }
+      ]
+    },
+    {
+      "callers": [
+        "examples/python/NDNSF-DistributedInference/llm_pipeline/user.py",
+        "tests/python/test_ndnsf_di_deployment_readiness.py"
+      ],
+      "currentOwner": "mixed-package",
+      "module": "ndnsf_distributed_inference.qwen_pilot",
+      "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/qwen_pilot.py",
+      "proposedCanonicalOwner": "adapter-qwen",
+      "publicSymbols": [
+        {
+          "kind": "ClassDef",
+          "name": "BoundedGenerationScheduler"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "CacheResolution"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "GenerationQueueFull"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "GenerationSchedulerSnapshot"
+        },
+        {
+          "kind": "constant",
+          "name": "MAX_INPUT_TOKENS"
+        },
+        {
+          "kind": "constant",
+          "name": "MAX_OUTPUT_TOKENS"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "QwenPilotOrchestrator"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "QwenPilotRequest"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "QwenPilotTerminalError"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "compare_token_sequences"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "greedy_decode_fixture"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "resolve_cache_request"
+        }
+      ]
+    },
+    {
+      "callers": [
+        "tests/python/test_ndnsf_di_deployment_readiness.py",
+        "tests/python/test_ndnsf_di_spec107_release_gate.py",
+        "tools/ndnsf-di/build_spec107_release_bundle.py"
+      ],
+      "currentOwner": "mixed-package",
+      "module": "ndnsf_distributed_inference.release_gate",
+      "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/release_gate.py",
+      "proposedCanonicalOwner": "ops",
+      "publicSymbols": [
+        {
+          "kind": "constant",
+          "name": "DIMENSIONS"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "build_release_gate"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "build_spec107_release_gate"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "main"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "verify_evidence_manifest"
+        }
+      ]
+    },
+    {
+      "callers": [
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/app.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/artifact_deployment.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/plan.py",
+        "examples/python/NDNSF-DistributedInference/llama_server/llama_server_lib.py",
+        "examples/python/NDNSF-DistributedInference/yolo_2x2/controller.py",
+        "examples/python/NDNSF-DistributedInference/yolo_2x2/yolo_2x2_lib.py"
+      ],
+      "currentOwner": "mixed-package",
+      "module": "ndnsf_distributed_inference.repo_reference",
+      "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/repo_reference.py",
+      "proposedCanonicalOwner": "core",
+      "publicSymbols": [
+        {
+          "kind": "FunctionDef",
+          "name": "large_data_reference_from_repo_manifest"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "repo_artifact_reference"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "repo_manifest_from_artifact_reference"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "repo_manifest_from_large_data_reference"
+        }
+      ]
+    },
+    {
+      "callers": [
+        "examples/python/NDNSF-DistributedInference/native_di_tracer/user_driver.py",
+        "tests/python/test_ndnsf_core_boundary_imports.py",
+        "tests/python/test_ndnsf_di_policy_isolation.py",
+        "tests/python/test_ndnsf_di_scenarios.py"
+      ],
+      "currentOwner": "mixed-package",
+      "module": "ndnsf_distributed_inference.retry",
+      "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/retry.py",
+      "proposedCanonicalOwner": "core",
+      "publicSymbols": [
+        {
+          "kind": "ClassDef",
+          "name": "RetryPolicy"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "RetryReason"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "retry_call"
+        }
+      ]
+    },
+    {
+      "callers": [
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/llm_stub_planner.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/planner_registry.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/policy.py"
+      ],
+      "currentOwner": "mixed-package",
+      "module": "ndnsf_distributed_inference.runtime_compatibility",
+      "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/runtime_compatibility.py",
+      "proposedCanonicalOwner": "core",
+      "publicSymbols": [
+        {
+          "kind": "constant",
+          "name": "RUNTIME_COMPATIBILITY"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "default_runtime_backend"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "supported_runtime_backends"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "validate_runtime_compatibility"
+        }
+      ]
+    },
+    {
+      "callers": [
+        "Experiments/NDNSF_DI_NativeTracer_Minindn.py",
+        "Experiments/spec105_telemetry_plan_cells.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/deployment.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/experimental/semantic_cache/implementation.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/provider.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/release_gate.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/runtime_v1_evidence.py",
+        "examples/python/NDNSF-DistributedInference/native_di_tracer/plan_llm_resource_aware.py",
+        "examples/python/NDNSF-DistributedInference/native_di_tracer/run_runtime_v1_cache_pressure_smoke.py",
+        "examples/python/NDNSF-DistributedInference/native_di_tracer/run_runtime_v1_long_context_smoke.py",
+        "examples/python/NDNSF-DistributedInference/native_di_tracer/run_runtime_v1_profile_campaign.py",
+        "examples/python/NDNSF-DistributedInference/native_di_tracer/runtime_aware_fixtures/loader.py",
+        "examples/python/NDNSF-DistributedInference/native_di_tracer/user_driver.py",
+        "tests/python/test_ndnsf_app_core_envelope_migration.py",
+        "tests/python/test_ndnsf_core_admission_metadata.py",
+        "tests/python/test_ndnsf_di_deployment_readiness.py",
+        "tests/python/test_ndnsf_di_execution_lease_restart.py",
+        "tests/python/test_ndnsf_di_execution_lease_transaction.py",
+        "tests/python/test_ndnsf_di_runtime_aware_campaign.py",
+        "tests/python/test_ndnsf_di_runtime_aware_planner.py",
+        "tests/python/test_ndnsf_di_runtime_v1.py",
+        "tests/python/test_ndnsf_di_scenarios.py",
+        "tests/python/test_ndnsf_negative_ack_reasons.py"
+      ],
+      "currentOwner": "mixed-package",
+      "module": "ndnsf_distributed_inference.runtime_v1",
+      "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/runtime_v1.py",
+      "proposedCanonicalOwner": "core",
+      "publicSymbols": [
+        {
+          "kind": "ClassDef",
+          "name": "BoundedDependencyTransferQueues"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "CacheEventKind"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "CachePlacementDecision"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "ContextObjectKind"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "ContextStateObject"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "DependencyTransferItem"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "DependencyTransferSnapshot"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "Deployment"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "DiFragmentRuntimeState"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "DiLeaseResourceBinding"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "DiProviderRuntimeState"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "ExactForwardCacheEntry"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "ExactForwardCacheKey"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "ExactForwardCacheKind"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "ExactForwardCacheManager"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "ExecutionAttemptV1"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "ExecutionEvidenceV1"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "FailureAction"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "FallbackPlan"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "FragmentResidency"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "KvCacheTelemetry"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "LongContextManager"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "MeasuredTelemetrySnapshotV1"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "ModelFragmentKey"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "ModelManifestV1"
+        },
+        {
+          "kind": "constant",
+          "name": "PLACEMENT_STRATEGY_PRESETS"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "PlanCache"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "PlanDependency"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "PlanFeasibilityDecisionV1"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "PlanFeasibilityRequirementsV1"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "PlanKeyV1"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "PlanLeaseBindingsV1"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "PlanLeaseV1"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "PlanPredicateResultV1"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "PlanRole"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "PlanTemplate"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "PrefillDecodeResult"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "ProviderCapabilityV3"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "ProviderFragmentInventoryEntry"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "ProviderFragmentInventoryManager"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "ProviderProfileV1"
+        },
+        {
+          "kind": "constant",
+          "name": "REAL_RUNNER_KINDS"
+        },
+        {
+          "kind": "constant",
+          "name": "RESIDENCY_READY_COST_MS"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "ReplanRecord"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "RetryPolicy"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "RolePipelineScheduler"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "RoleWorkItem"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "RoleWorkSnapshot"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "RoleWorkStatus"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "RunnerKind"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "RuntimeAssignment"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "RuntimeTelemetryV1"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "StageDefinitionV1"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "TerminalReasonV1"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "TransferQueueKind"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "adaptive_segment_size"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "build_local_llm_plan"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "choose_bounded_replan_assignment"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "choose_cache_placement"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "choose_edge_aware_runtime_assignment"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "choose_runtime_assignment"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "classify_execution_evidence"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "compress_payload"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "encode_ack_metadata"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "evaluate_plan_feasibility"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "exact_forward_cache_key_for_stage"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "exact_token_prefix_digest"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "export_telemetry_csv"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "filter_feasible_providers"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "generate_fallback_plans"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "generation_chunk"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "kv_block"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "lease_from_dict"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "load_provider_profiles"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "main"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "make_plan_lease"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "now_ms"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "parse_ack_metadata"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "pick_optimal_placement"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "prefix_state"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "prompt_chunk"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "proportional_layer_allocation"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "read_json"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "residency_ready_cost_ms"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "runtime_v1_smoke"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "score_provider_candidates"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "score_runtime_candidate"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "session_state"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "simulate_prefill_decode"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "stable_digest"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "stable_json"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "stage_definition_from_plan_stage"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "to_plain"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "validate_linear_llm_plan"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "write_json"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "write_runtime_report"
+        }
+      ]
+    },
+    {
+      "callers": [
+        "Experiments/NDNSF_DI_NativeTracer_Minindn.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/release_gate.py",
+        "tests/python/test_ndnsf_di_runtime_v1.py",
+        "tests/python/test_ndnsf_di_spec107_faults.py",
+        "tests/python/test_ndnsf_di_spec107_release_gate.py",
+        "tools/ndnsf-di/run_spec107_live_faults.py",
+        "tools/ndnsf-di/spec107_fault_controller.py"
+      ],
+      "currentOwner": "mixed-package",
+      "module": "ndnsf_distributed_inference.runtime_v1_evidence",
+      "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/runtime_v1_evidence.py",
+      "proposedCanonicalOwner": "ops",
+      "publicSymbols": [
+        {
+          "kind": "ClassDef",
+          "name": "FaultCleanupV1"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "LiveFaultRecordV1"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "OwnedProcessV1"
+        },
+        {
+          "kind": "constant",
+          "name": "SPEC107_RELEASE_DIMENSIONS"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "Spec107EvidenceBindingV1"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "evaluate_spec107_release_input"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "write_minindn_runtime_v1_evidence"
+        }
+      ]
+    },
+    {
+      "callers": [
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
+        "examples/python/NDNSF-DistributedInference/pytorch_eager_2x2/pytorch_2x2_lib.py"
+      ],
+      "currentOwner": "mixed-package",
+      "module": "ndnsf_distributed_inference.split_planner",
+      "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/split_planner.py",
+      "proposedCanonicalOwner": "planner",
+      "publicSymbols": [
+        {
+          "kind": "ClassDef",
+          "name": "ProviderProfile"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "SequentialSplitCandidate"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "SplitPlanRecommendation"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "SplitPlannerWeights"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "homogeneous_provider_profiles"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "recommend_sequential_splits"
+        }
+      ]
+    },
+    {
+      "callers": [
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/llm_stub_planner.py",
+        "examples/python/NDNSF-DistributedInference/pytorch_eager_2x2/pytorch_2x2_lib.py",
+        "examples/python/NDNSF-DistributedInference/yolo_2x2/yolo_2x2_lib.py",
+        "examples/python/NDNSF-DistributedInference/yolo_split/yolo_split_lib.py"
+      ],
+      "currentOwner": "mixed-package",
+      "module": "ndnsf_distributed_inference.splitter",
+      "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/splitter.py",
+      "proposedCanonicalOwner": "planner",
+      "publicSymbols": [
+        {
+          "kind": "ClassDef",
+          "name": "SplitArtifact"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "SplitServiceSpec"
+        },
+        {
+          "kind": "ClassDef",
+          "name": "SplitterOutput"
+        },
+        {
+          "kind": "FunctionDef",
+          "name": "authorization_summary"
+        }
+      ]
+    }
+  ],
+  "rootExports": [
+    "APPClient",
+    "APPController",
+    "APPDeployment",
+    "APPProvider",
+    "ArtifactProvisioningState",
+    "ArtifactSecurityPolicy",
+    "ArtifactSpec",
+    "BoundedRecoveryController",
+    "CommittedProviderLease",
+    "DependencyEdge",
+    "DependencyGraph",
+    "DeploymentRecord",
+    "DeploymentSession",
+    "DistributedInferenceClient",
+    "DistributedInferenceController",
+    "DistributedInferenceDeployment",
+    "DistributedInferencePlan",
+    "DistributedInferenceProvider",
+    "DistributedLeaseSet",
+    "DistributedLeaseTransaction",
+    "ExecutionArtifact",
+    "ExecutionArtifactSpec",
+    "ExecutionContext",
+    "GenericRepoClient",
+    "InferenceDependency",
+    "InferencePlanBuilder",
+    "InferenceResult",
+    "InferenceRole",
+    "LEASE_CODEC_SCHEMA",
+    "LEASE_SERVICE_NAME",
+    "LLM_RUNTIME_COMPATIBILITY",
+    "LeaseOperation",
+    "LeaseOperationRequest",
+    "LeaseOperationResponse",
+    "LeaseTransactionError",
+    "ManagedLlamaServerRuntime",
+    "MaterializedArtifact",
+    "ModelFamily",
+    "ModelFormat",
+    "ModelPart",
+    "NdnsfLeaseTransport",
+    "OnnxChunkSpec",
+    "OnnxExecutionResult",
+    "OnnxGraphSummary",
+    "OnnxSplitCandidate",
+    "OpenAIChatRequest",
+    "OpenAICompatibleChatRuntime",
+    "PlanRevalidationError",
+    "PlannerBackend",
+    "PlannerBackendRegistry",
+    "PlannerDescriptor",
+    "PlannerKind",
+    "PlannerRequest",
+    "PlannerResult",
+    "ProviderAdmissionPolicy",
+    "ProviderLeaseAssignment",
+    "ProviderProfile",
+    "ProviderRuntimeContext",
+    "ProviderTelemetryRegistry",
+    "PythonExecutionLeaseProviderAdapter",
+    "RUNTIME_COMPATIBILITY",
+    "RecoveryAction",
+    "RecoveryAttempt",
+    "RecoveryReason",
+    "RoleDependencyView",
+    "RuntimeSpec",
+    "SandboxPolicy",
+    "SequentialSplitCandidate",
+    "SplitArtifact",
+    "SplitPlanRecommendation",
+    "SplitPlannerWeights",
+    "SplitServiceSpec",
+    "SplitterOutput",
+    "analyze_onnx_graph",
+    "artifact_references_need_repo_client",
+    "build_chunk_dependencies",
+    "build_sequential_chunk_dependencies",
+    "call_openai_chat_runtime",
+    "decode_openai_chat_response",
+    "decode_tensor_bundle",
+    "default_llm_runtime_backend",
+    "default_planner_registry",
+    "default_runtime_backend",
+    "deployment_role_provider_preference",
+    "discover_deployments",
+    "encode_openai_chat_request",
+    "encode_tensor_bundle",
+    "estimate_split_candidates",
+    "execute_onnx_dependency_chunk",
+    "get_deployment",
+    "homogeneous_provider_profiles",
+    "llm_planner_registry",
+    "llm_planner_request",
+    "llm_splitter_output_from_result",
+    "llm_stub_plan_from_request",
+    "llm_supported_runtime_backends",
+    "load_artifact_references",
+    "load_config",
+    "load_npz_payload",
+    "load_or_generate_deployment",
+    "materialize_llm_runtime_artifacts",
+    "materialize_role_artifacts",
+    "materialized_path",
+    "native_execution_plan_spec",
+    "npz_payload",
+    "nxm_stage_frontier_dependencies",
+    "nxm_stage_roles",
+    "prefetch_dependency_inputs",
+    "prepare_execution",
+    "publish_execution_artifact_spec",
+    "recommend_sequential_splits",
+    "register_python_execution_lease_service",
+    "request_collaboration_with_deployment",
+    "role_artifact_entries",
+    "role_topic_token",
+    "select_tensor_payload",
+    "stage_shard_role",
+    "supported_runtime_backends",
+    "validate_llm_runtime_compatibility",
+    "validate_runtime_compatibility",
+    "verify_tensor_payload",
+    "wait_deployment",
+    "write_onnx_graph_summary",
+    "write_policy_bundle"
+  ],
+  "schemaVersion": 1,
+  "sourceCommit": "4d695ce8b7ffe2c79465dc1f3db649a5a65806a6"
+}

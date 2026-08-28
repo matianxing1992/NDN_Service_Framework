@@ -1,0 +1,37 @@
+{
+  "compatChildNativeEvidenceCount": 3,
+  "globalPreparationBarrier": false,
+  "modelWorkCount": 0,
+  "nativeCoreDigest": "sha256:50c059bef41a9f66ee898e50a9f420430a4bb85cd432406d9e21116ace5bf904",
+  "nativeExtensionDigest": "sha256:f0e072c98c75b5b8ee7e8eedcef98122561c9cfa2995c1d4a31624f6eab11c0f",
+  "providerCount": 3,
+  "providerProjectionCount": 3,
+  "providers": [
+    {
+      "handlerRunning": true,
+      "log": "specs/168-itiger-di-deployment-fidelity/evidence/tiger-small-single/182515-v87-child-native-closure/raw/node-0/provider-0.log",
+      "logDigest": "sha256:e0204d952dd7a2b2a8e44a09ee8a0bba791d271ac277a67dfa8cd8be5aa2a614",
+      "rank": 0,
+      "selectionAccepted": true
+    },
+    {
+      "handlerRunning": true,
+      "log": "specs/168-itiger-di-deployment-fidelity/evidence/tiger-small-single/182515-v87-child-native-closure/raw/node-1/provider-1.log",
+      "logDigest": "sha256:4fcfd1c77e67d08c7a06296380381bc739c23508502080d2d3115162a60a2e89",
+      "rank": 1,
+      "selectionAccepted": true
+    },
+    {
+      "handlerRunning": true,
+      "log": "specs/168-itiger-di-deployment-fidelity/evidence/tiger-small-single/182515-v87-child-native-closure/raw/node-2/provider-2.log",
+      "logDigest": "sha256:e2a192fbd31ac00b7de362f0bd107775020b660842340e0214027c6ef8017cc9",
+      "rank": 2,
+      "selectionAccepted": true
+    }
+  ],
+  "requestId": "85044a7fd00144719cd0b8f11a780fea",
+  "responseSchema": "ndnsf-di-llm-pipeline-response-v1",
+  "responseStageCount": 3,
+  "schema": "ndnsf-di.spec168-control-plane-canary.v1",
+  "status": "PASS"
+}

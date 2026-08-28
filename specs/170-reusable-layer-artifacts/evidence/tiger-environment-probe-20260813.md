@@ -1,6 +1,10 @@
 # TigerCluster environment probe (2026-08-13)
 
-**Status**: environment discovery only; no Spec170 gate was executed.
+**Status**: historical environment discovery only; no Spec170 gate was
+executed. This 2026-08-13 snapshot is not the active toolchain contract and
+must not be used to select an Apptainer version or a build route. The active
+2026-08-17 route is the locally built SIF recorded in
+`evidence/local-sif-build-route-20260817.md`.
 
 The probe jobs were deliberately CPU-only and did not run NDNSF, Apptainer, a
 model, or inference. Both jobs used the staged candidate directory
@@ -29,12 +33,11 @@ capability. The active iTiger operations contract forbids using the login node
 for builds or inference, so the rootless host-tool fallback is stopped at this
 probe rather than retried under a different identity.
 
-## Consequence for Spec170
+## Historical consequence (superseded)
 
-The remote project still has no Spec170 SIF. The available releases are older
-Spec160--Spec168 images, which cannot substitute for the current candidate.
-The next valid path is an immutable foundation/OCI build through the sealed
-release route (or an administrator-provided, separately qualified builder),
-followed by Slurm CPU SIF materialization, exact-SIF parity, T029 freeze, and
-only then D0 → D1 → D2a/D2b → D2h.
-
+At that time the remote project still had no Spec170 SIF, so the next path was
+recorded as a remote materialization route. That plan is superseded: Spec170
+now starts with a locally built application SIF, followed by local closure
+checks, one hash-verified upload, and TigerCluster execution only. The observed
+`1.5.3-1.el9` Apptainer value remains historical diagnostic data and is not an
+active release input.

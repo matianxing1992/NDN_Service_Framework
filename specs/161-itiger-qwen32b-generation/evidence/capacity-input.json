@@ -1,0 +1,15 @@
+{
+  "cleanupCandidates": [],
+  "currentUsageBytes": 71924419072,
+  "durablePromotionBytes": 69793218560,
+  "evidenceBytes": 1073741824,
+  "quotaAuthority": "University of Memphis HPC Storage policy: /project/$USER initial quota 1 TB (https://www.memphis.edu/hpc/current-faculty-students.php)",
+  "reserveBytes": 21474836480,
+  "runtimeBytes": 0,
+  "scratchCapacityAuthority": "Slurm job 174363: /project/tma1/ndnsf-di/evidence/spec161/capacity/spec161-capacity-20260728T091249Z-2675b7cf/scratch-capacity.json",
+  "scratchFreeBytes": 15251694034944,
+  "scratchPath": "/tmp/tma1/ndnsf-di/spec161-174363",
+  "scratchTemporaryPeakBytes": 158119221002,
+  "scratchWritable": true,
+  "verifiedQuotaBytes": 1000000000000
+}

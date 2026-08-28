@@ -29,7 +29,8 @@ from .placement import (
     DI_PLACEMENT_V3, UNBOUND_GRAPH_DIGEST_V3, ExecutionDisposition, ResidencyTierV3,
     DeviceTopologyProfile, DeviceResourceSnapshot, ResidencyProofV3,
     ProviderOfferV3, ProviderPlanningViewV3, RoleAssemblySpec,
-    PlacementProposalV3, PlacementPlanCoreV3, ProviderGrantViewV1,
+    PlacementProposalV3, PlacementPlanCoreV3, GenerationExecutionContractV1,
+    ProviderGrantViewV1,
     ProviderSelectionProjectionV3, PlanSealerV3, decode_placement_wire,
 )
 from .registry import PolicyRegistry, RegisteredPolicy
@@ -64,7 +65,8 @@ __all__ = [
     "DI_PLACEMENT_V3", "UNBOUND_GRAPH_DIGEST_V3", "ExecutionDisposition", "ResidencyTierV3",
     "DeviceTopologyProfile", "DeviceResourceSnapshot", "ResidencyProofV3",
     "ProviderOfferV3", "ProviderPlanningViewV3", "RoleAssemblySpec",
-    "PlacementProposalV3", "PlacementPlanCoreV3", "ProviderGrantViewV1",
+    "PlacementProposalV3", "PlacementPlanCoreV3", "GenerationExecutionContractV1",
+    "ProviderGrantViewV1",
     "ProviderSelectionProjectionV3", "PlanSealerV3", "decode_placement_wire",
     "PlacementStrategyAllowlistEntry", "discover_placement_strategies",
     "select_placement_strategy",

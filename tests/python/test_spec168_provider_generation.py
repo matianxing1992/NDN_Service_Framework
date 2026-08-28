@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import base64
 import json
 from pathlib import Path
 import sys
@@ -19,6 +20,7 @@ from ndnsf_distributed_inference.artifact_deployment import (
 )
 from ndnsf_distributed_inference.core import (
     DIDataDependencyV2,
+    DIRequestEnvelopeV2,
     DIRoleAssignmentV2,
     DISelectionAssignmentV2,
     canonical_digest,
@@ -34,6 +36,7 @@ from ndnsf_distributed_inference.provider import (
     DistributedInferenceProvider,
     ProviderRuntimeContext,
 )
+from ndnsf_distributed_inference.conversation import ConversationContinuation
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -149,6 +152,105 @@ class _CollaborationContext:
 
 
 class Spec168ProviderGenerationTest(unittest.TestCase):
+    def _streaming_generation_envelope(self, *, use_cache: bool) -> bytes:
+        options = json.dumps({
+            "maxNewTokens": 8,
+            "eosTokenIds": [2],
+            "outputMode": "TOKEN_STREAMING",
+            "useCache": use_cache,
+            "tokenizerDigest": "sha256:" + "7" * 64,
+        }, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return DIRequestEnvelopeV2(
+            invocation_id="invocation:175",
+            request_id="request-175",
+            attempt=1,
+            service="/LLM/Qwen",
+            model_name="Qwen3.6-27B",
+            model_identity_hash="sha256:" + "1" * 64,
+            task_kind="generation",
+            input_manifest_digest="sha256:" + "2" * 64,
+            input_payload_b64="",
+            options_payload_b64=base64.b64encode(options).decode("ascii"),
+            plan_deadline_ms=9_999_999_999_999,
+            security_domain="tenant",
+            task={"name": "generation", "generation_mode": "TOKEN_STREAMING"},
+        ).to_bytes()
+
+    def test_python_provider_rejects_native_streaming_contract(self) -> None:
+        with self.assertRaisesRegex(ValueError, "requires useCache=true"):
+            self.pipeline_provider._qwen_generation_spec(
+                self._streaming_generation_envelope(use_cache=False))
+        spec = self.pipeline_provider._qwen_generation_spec(
+            self._streaming_generation_envelope(use_cache=True))
+        self.assertEqual(spec["generation_mode"], "TOKEN_STREAMING")
+        self.assertTrue(spec["use_cache"])
+        with self.assertRaisesRegex(
+                RuntimeError, "native stateful ONNX Provider runtime"):
+            self.pipeline_provider._require_python_qwen_generation_mode(spec)
+
+    def test_final_response_mode_matches_delivery_mode(self) -> None:
+        self.assertEqual(
+            self.pipeline_provider._qwen_response_generation_mode(True),
+            "TOKEN_STREAMING")
+        self.assertEqual(
+            self.pipeline_provider._qwen_response_generation_mode(False),
+            "FULL")
+
+    def test_python_provider_validates_conversation_contract_before_runner(self) -> None:
+        payload = b"conversation-turn"
+        input_digest = sha256(payload)
+        continuation = ConversationContinuation(
+            "c" * 32,
+            turn_input_digest=input_digest,
+        )
+        continuation = ConversationContinuation(
+            **{
+                **continuation.__dict__,
+                "request_contract_digest": continuation.request_contract(
+                    input_digest=input_digest),
+            })
+        options = json.dumps({
+            "maxNewTokens": 8,
+            "eosTokenIds": [2],
+            "outputMode": "TOKEN_STREAMING",
+            "useCache": True,
+            "tokenizerDigest": "sha256:" + "7" * 64,
+        }, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        envelope = DIRequestEnvelopeV2(
+            invocation_id="invocation:conversation",
+            request_id="request-conversation",
+            attempt=1,
+            service="/LLM/Qwen",
+            model_name="Qwen3.6-27B",
+            model_identity_hash="sha256:" + "1" * 64,
+            task_kind="generation",
+            input_manifest_digest="sha256:" + "2" * 64,
+            input_payload_b64=base64.b64encode(payload).decode("ascii"),
+            options_payload_b64=base64.b64encode(options).decode("ascii"),
+            plan_deadline_ms=9_999_999_999_999,
+            security_domain="tenant",
+            task={
+                "name": "generation",
+                "generation_mode": "TOKEN_STREAMING",
+                "conversation": continuation.to_dict(),
+            },
+        )
+        spec = self.pipeline_provider._qwen_generation_spec(envelope.to_bytes())
+        self.assertEqual(spec["conversation"]["conversationId"], "c" * 32)
+
+        changed = continuation.to_dict()
+        changed["turnInputDigest"] = sha256(b"tampered")
+        invalid = DIRequestEnvelopeV2(
+            **{
+                **envelope.__dict__,
+                "task": {
+                    **envelope.task,
+                    "conversation": changed,
+                },
+            })
+        with self.assertRaisesRegex(ValueError, "conversation continuation"):
+            self.pipeline_provider._qwen_generation_spec(invalid.to_bytes())
+
     def test_qwen_residency_template_requires_complete_partition_identity(self):
         digest = sha256(b"identity")
         template = {
@@ -510,9 +612,11 @@ class Spec168ProviderGenerationTest(unittest.TestCase):
 
             def __init__(self):
                 self.responses = []
+                self.published = []
                 self.tokens = iter((7, 2))
 
-            def publish_large_reference(self, *_args, **_kwargs):
+            def publish_large_reference(self, *args, **_kwargs):
+                self.published.append(bytes(args[3]))
                 return "/dependency/hidden"
 
             def wait_one(self, *_args, **_kwargs):
@@ -552,27 +656,215 @@ class Spec168ProviderGenerationTest(unittest.TestCase):
             },
             stage_runner=lambda payload, _delay: b"hidden:" + payload[:8],
         )
-        self.assertEqual(len(ndnsf.responses), 1)
-        response = json.loads(ndnsf.responses[0])
-        self.assertEqual(response["requestId"], "request-168-full")
-        self.assertEqual(response["inputTokenIds"], [10, 11])
-        self.assertEqual(response["generatedTokenIds"], [7, 2])
-        self.assertEqual(response["wireRequestCount"], 1)
-        self.assertEqual(response["tokenRequestCount"], 0)
-        self.assertEqual(response["tokenCompletionClock"], "CLOCK_MONOTONIC")
-        completion_times = response["tokenCompletionMonotonicMs"]
+        self.assertEqual(ndnsf.responses, [])
+        stop = json.loads(ndnsf.published[-1])
+        self.assertEqual(stop["kind"], "STOP")
+        self.assertEqual(stop["inputTokenIds"], [10, 11])
+        self.assertEqual(stop["generatedTokenIds"], [7, 2])
+        self.assertEqual(stop["stopReason"], "EOS")
+        completion_times = stop["tokenCompletionMonotonicMs"]
         self.assertEqual(len(completion_times), 2)
         self.assertLessEqual(completion_times[0], completion_times[1])
-        self.assertEqual(
-            [item["tokenIndex"] for item in response["tokenEvidence"]],
-            [0, 1],
+
+    def test_full_generation_terminal_role_owns_events_and_response(self) -> None:
+        from concurrent.futures import Future
+
+        class Edge:
+            key_scope = "tensor-0"
+            producer_role = "stage-1"
+
+            @staticmethod
+            def topic(suffix=""):
+                return "/activation/" + str(suffix)
+
+        edge = Edge()
+
+        class Dependencies:
+            inputs = (edge,)
+            outputs = ()
+
+            @staticmethod
+            def input(_scope=""):
+                return edge
+
+        stop = self.pipeline_provider._generation_step_control(
+            "STOP", 2,
+            inputTokenIds=[10, 11],
+            generatedTokenIds=[7, 2],
+            stopReason="EOS",
+            tokenCompletionMonotonicMs=[1.0, 2.0],
         )
-        self.assertEqual(
-            {item["requestId"] for item in response["tokenEvidence"]},
-            {"request-168-full"},
+
+        class Prefetcher:
+            def __init__(self):
+                self.values = iter((b"hidden-0", b"hidden-1", stop))
+
+            def prefetch_large(self, *_args, **_kwargs):
+                future = Future()
+                future.set_result(SimpleNamespace(payload=next(self.values)))
+                return future
+
+        class Ndnsf:
+            session_id = "request-168-recovery"
+
+            def __init__(self):
+                self.feedback = []
+
+            def publish(self, _scope, _topic, payload):
+                self.feedback.append(bytes(payload))
+
+        class Writer:
+            def __init__(self):
+                self.events = []
+                self.completions = []
+
+            def publish_event(self, payload, **_kwargs):
+                self.events.append(bytes(payload))
+                return len(self.events)
+
+            def finish_stream(self, payload, **kwargs):
+                self.completions.append((bytes(payload), kwargs))
+                return True
+
+        ndnsf = Ndnsf()
+        writer = Writer()
+        context = ProviderRuntimeContext(
+            ndnsf=ndnsf, execution=object(), request=b"request-envelope",
+            role="stage-2", dependencies=Dependencies(),
+            prefetcher=Prefetcher(), stream_writer=writer,
+            deadline_ms=9_000_000_000_000,
         )
-        with self.assertRaisesRegex(RuntimeError, "terminal Response"):
-            context.publish_final_response(b"duplicate")
+        tokens = iter((7, 2))
+        self.pipeline_provider._handle_qwen_transformer_full_generation(
+            context, model=object(), stages=3, stage_index=2,
+            compute_delay_ms=0.0,
+            spec={
+                "max_new_tokens": 3, "eos_token_ids": (2,),
+                "session_id": "invocation-168",
+                "committed_prefix_token_ids": (7,),
+            },
+            stage_runner=lambda _payload, _delay: json.dumps({
+                "topToken": next(tokens),
+            }).encode(),
+        )
+
+        self.assertEqual(len(writer.events), 1)
+        event = json.loads(writer.events[0])
+        self.assertEqual(event["tokenEpoch"], 2)
+        self.assertEqual(event["tokenId"], 2)
+        self.assertEqual(len(writer.completions), 1)
+        response = json.loads(writer.completions[0][0])
+        self.assertEqual(response["requestId"], "request-168-recovery")
+        self.assertEqual(response["tokenIds"], [7, 2])
+        self.assertEqual(response["generatedTokenIds"], [7, 2])
+        self.assertEqual(response["stopReason"], "EOS")
+        self.assertEqual(len(ndnsf.feedback), 2)
+
+    def test_full_generation_middle_role_forwards_complete_stop_transcript(self) -> None:
+        """A middle role must not strip terminal STOP evidence while forwarding."""
+        from concurrent.futures import Future
+
+        class Edge:
+            key_scope = "tensor-0"
+            producer_role = "stage-0"
+
+            @staticmethod
+            def topic(suffix=""):
+                return "/activation/" + str(suffix)
+
+        input_edge = Edge()
+        output_edge = SimpleNamespace(
+            key_scope="tensor-1",
+            producer_role="stage-1",
+            topic=lambda suffix="": "/activation/" + str(suffix),
+        )
+
+        class Dependencies:
+            inputs = (input_edge,)
+            outputs = (output_edge,)
+
+            @staticmethod
+            def input(_scope=""):
+                return input_edge
+
+            @staticmethod
+            def output(_scope=""):
+                return output_edge
+
+        stop = self.pipeline_provider._generation_step_control(
+            "STOP", 1,
+            inputTokenIds=[10, 11],
+            generatedTokenIds=[7, 2],
+            stopReason="EOS",
+            tokenCompletionMonotonicMs=[1.0, 2.0],
+        )
+
+        class Prefetcher:
+            def __init__(self):
+                self.values = iter((b"hidden-0", stop))
+
+            def prefetch_input_large(self, *_args, **_kwargs):
+                future = Future()
+                future.set_result(SimpleNamespace(payload=next(self.values)))
+                return future
+
+        class Ndnsf:
+            def __init__(self):
+                self.feedback = []
+                self.tokens = iter((7,))
+
+            def wait_one(self, *_args, **_kwargs):
+                return SimpleNamespace(payload=self.pipeline_provider._generation_step_control(
+                    "TOKEN", 0, token=next(self.tokens)))
+
+            def publish(self, _scope, _topic, payload):
+                self.feedback.append(bytes(payload))
+
+        class Context:
+            request_id = "request-168-middle"
+            role = "stage-1"
+            stream_writer = None
+
+            def __init__(self):
+                self.dependencies = Dependencies()
+                self.prefetcher = Prefetcher()
+                self.ndnsf = Ndnsf()
+                self.published = []
+
+            def dependency_timeout_ms(self, fallback_ms=30000):
+                return fallback_ms
+
+            def prefetch_input_large(self, **kwargs):
+                return self.prefetcher.prefetch_input_large(**kwargs)
+
+            def wait_prefetched_input_large(self, future, **_kwargs):
+                return future.result().payload
+
+            def publish_output_large_reference(self, payload, **_kwargs):
+                self.published.append(bytes(payload))
+                return "/dependency/output"
+
+        # Use a closure instead of importing the module as a global in the
+        # nested fake classes; the test remains independent of host imports.
+        context = Context()
+        context.ndnsf.pipeline_provider = self.pipeline_provider
+        self.pipeline_provider._handle_qwen_transformer_full_generation(
+            context,
+            model=object(),
+            stages=3,
+            stage_index=1,
+            compute_delay_ms=0.0,
+            spec={
+                "max_new_tokens": 3,
+                "eos_token_ids": (2,),
+                "session_id": "invocation-168-middle",
+            },
+            stage_runner=lambda _payload, _delay: b"hidden-1",
+        )
+
+        self.assertEqual(json.loads(context.published[-1]), json.loads(stop))
+        self.assertEqual(
+            json.loads(context.published[-1])["generatedTokenIds"], [7, 2])
 
     def test_causal_provider_markers_carry_monotonic_timestamps(self) -> None:
         source = (PIPELINE_DIR / "provider.py").read_text(encoding="utf-8")

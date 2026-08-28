@@ -1198,3 +1198,17 @@ class APPProvider:
 
     def stop(self) -> int:
         return self._provider.stop()
+
+    def set_stream_publication_interceptor_for_test(self, callback) -> None:
+        """Install an integration-only interceptor on the real Core Provider."""
+        self._provider.provider.set_stream_publication_interceptor_for_test(
+            callback)
+
+    def set_stream_retention_interceptor_for_test(self, callback) -> None:
+        """Install an integration-only retention hook on the real Core Provider."""
+        self._provider.provider.set_stream_retention_interceptor_for_test(
+            callback)
+
+    def publish_stream_packet_for_test(self, wire: bytes) -> None:
+        """Re-publish signed stream Data through the real Core SVS endpoint."""
+        self._provider.provider.publish_stream_packet_for_test(wire)

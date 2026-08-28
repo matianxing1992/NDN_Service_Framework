@@ -102,3 +102,35 @@ the paper or slides until the claim contract is satisfied. The current
 screening numbers are diagnostic only: the four-Provider smoke was 25/25 for
 all systems, while one stale-health 25-request run was 25/25 NDNSF, 24/25
 gRPC-HC-4, and 22/25 NSC-4. Those counts have no confidence bound.
+
+## Provider-discovery and switching evidence
+
+Rebuild the request-level opportunity analysis from the frozen 100 m campaign:
+
+```bash
+python3 Experiments/analyze_spec171_opportunity_windows.py \
+  --campaign-root results/spec171-burnin300-100-150m-2ms-seeds62-71-20260808 \
+  --output-dir specs/171-four-provider-mobility-advantage/evidence/opportunity-analysis-20260809
+```
+
+The registered Provider-transition runner compares NDNSF configured with only
+the service name against static three-endpoint and pre-registered four-endpoint
+gRPC/NSC controls. The exact commands and retained result root are recorded in
+`evidence/provider-transition-results-20260809/README.md`; do not rerun or
+replace the three accepted replays merely to improve a result.
+
+Generate the publication-safe PNG/PDF/SVG from the two machine-readable
+summaries:
+
+```bash
+python3 Experiments/plot_spec171_provider_evidence.py \
+  --transition-summary specs/171-four-provider-mobility-advantage/evidence/provider-transition-results-20260809/transition-summary.json \
+  --opportunity-summary specs/171-four-provider-mobility-advantage/evidence/opportunity-analysis-20260809/opportunity-summary.json \
+  --output-dir specs/171-four-provider-mobility-advantage/evidence/provider-evidence-figure-20260809
+```
+
+This evidence supports a scoped claim only: NDNSF internalizes discovery of an
+already authorized and routed Provider without a client endpoint list, and it
+can reduce sequential retry cost in `SWITCH_REQUIRED` windows. It does not
+establish an unconditional success/latency advantage, arbitrary Provider join,
+or superiority over gRPC coupled to an external resolver/control plane.

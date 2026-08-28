@@ -142,3 +142,17 @@ standaloneOracle, distributedCandidate, and physicalProduction dimensions.
    placement overhead without the matched single-node NDNSF-DI cell.
 5. No scratch deletion before atomic durable promotion verifies.
 6. No physical-production PASS from Spec 110.
+
+## 13. RuntimeAllocationHandoff
+
+Immutable post-Spec-111 bridge containing candidate/offline-gate and deployment-
+revision digests; OCI/SIF/release; model/artifact; Slurm profile/process-map/
+selected-network; identity/persistent-state/evidence references; and render/
+submission authorization identity. Any changed field creates a new handoff.
+
+## 14. InfrastructureAllocationHandle
+
+Operations-owned adapter, handoff and Slurm job/allocation identity with
+requested/observed resources, scheduler state/reason and event/log cursor. It
+may link to APP deployment/request handles only after those exist; scheduler
+PENDING/RUNNING/COMPLETED never implies READY/ACTIVE/request success.

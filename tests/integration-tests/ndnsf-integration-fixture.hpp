@@ -3,8 +3,10 @@
 #include "ndn-service-framework/ServiceProvider.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
 
+#include <nac-abe/attribute-authority.hpp>
 #include <ndn-cxx/security/certificate.hpp>
 #include <ndn-cxx/security/key-chain.hpp>
+#include <ndn-cxx/security/validator-null.hpp>
 #include <ndn-cxx/util/dummy-client-face.hpp>
 #include <ndn-cxx/util/signal.hpp>
 #include <ndn-svs/security-options.hpp>
@@ -51,6 +53,20 @@ struct FaultProfile
   bool dropPackets = false;
   bool duplicatePackets = false;
   bool reorderPackets = false;
+  // Cursor-scoped stream faults are applied only to exact NDNSF EVENT
+  // Interest/Data packets in the named direction.  They coexist with the
+  // legacy whole-request flags above so formal Spec175 cases can perturb one
+  // event without corrupting ACK/Selection or internal activation traffic.
+  uint64_t dropStreamDataCursor = 0;
+  size_t dropStreamDataCount = 0;
+  uint64_t duplicateStreamDataCursor = 0;
+  size_t duplicateStreamDataCount = 0;
+  uint64_t tamperStreamDataCursor = 0;
+  size_t tamperStreamDataCount = 0;
+  uint64_t reorderStreamDataCursor = 0;
+  uint64_t dropStreamInterestCursor = 0;
+  size_t dropStreamInterestCount = 0;
+  std::function<bool(const ndn::Interest&)> dropStreamInterestPredicate;
 };
 
 struct PacketBridgeStats
@@ -60,6 +76,11 @@ struct PacketBridgeStats
   size_t droppedPackets = 0;
   size_t duplicatedPackets = 0;
   size_t reorderedPackets = 0;
+  size_t droppedStreamDataPackets = 0;
+  size_t duplicatedStreamDataPackets = 0;
+  size_t tamperedStreamDataPackets = 0;
+  size_t reorderedStreamDataPairs = 0;
+  size_t droppedStreamInterests = 0;
   std::string firstDroppedName;
   std::string firstPendingName;
 };
@@ -143,6 +164,10 @@ public:
   ServiceUser& user();
   ServiceProvider& provider();
   ServiceProvider& provider(size_t index);
+  /** Detach one Provider's user-facing transport for live-loss tests. */
+  void disconnectProviderTransportForTest(size_t index);
+  /** Detach the default Provider-to-Provider mesh before installing a fault link. */
+  void disconnectProviderPeerTransportForTest();
   size_t providerCount() const { return 1 + m_extraProviderFaces.size(); }
 
 private:
@@ -165,9 +190,13 @@ private:
 
   boost::asio::io_context m_userIo;
   boost::asio::io_context m_providerIo;
+  boost::asio::io_context m_attributeAuthorityIo;
   std::unique_ptr<ndn::KeyChain> m_keyChain;
   std::unique_ptr<ndn::DummyClientFace> m_userFace;
   std::unique_ptr<ndn::DummyClientFace> m_providerFace;
+  std::unique_ptr<ndn::DummyClientFace> m_attributeAuthorityFace;
+  std::unique_ptr<ndn::security::ValidatorNull> m_attributeAuthorityValidator;
+  std::unique_ptr<ndn::nacabe::KpAttributeAuthority> m_attributeAuthority;
   std::unique_ptr<ndn::svs::SecurityOptions> m_securityOptions;
   ndn::svs::SVSPubSubOptions m_svsOptions;
   std::unique_ptr<ndn::svs::SVSPubSub> m_userPubSub;
@@ -181,16 +210,25 @@ private:
   ndn::signal::ScopedConnection m_providerInterestBridge;
   ndn::signal::ScopedConnection m_userDataBridge;
   ndn::signal::ScopedConnection m_providerDataBridge;
+  ndn::signal::ScopedConnection m_userAttributeAuthorityInterestBridge;
+  ndn::signal::ScopedConnection m_providerAttributeAuthorityInterestBridge;
+  ndn::signal::ScopedConnection m_attributeAuthorityDataBridge;
   std::vector<ndn::signal::ScopedConnection> m_extraProviderInterestBridges;
   std::vector<ndn::signal::ScopedConnection> m_extraProviderDataBridges;
   std::vector<ndn::signal::ScopedConnection> m_extraUserInterestBridges;
   std::vector<ndn::signal::ScopedConnection> m_extraUserDataBridges;
+  std::vector<ndn::signal::ScopedConnection> m_extraProviderAttributeAuthorityInterestBridges;
+  std::vector<ndn::signal::ScopedConnection> m_providerPeerInterestBridges;
+  std::vector<ndn::signal::ScopedConnection> m_providerPeerDataBridges;
+  size_t m_attributeAuthorityPublicParameterInterests = 0;
+  size_t m_attributeAuthorityPublicParameterData = 0;
   FaultProfile m_activeFaults;
   PacketBridgeStats m_bridgeStats;
   std::optional<ndn::Interest> m_pendingUserInterest;
   std::optional<ndn::Interest> m_pendingProviderInterest;
   std::optional<ndn::Data> m_pendingUserData;
   std::optional<ndn::Data> m_pendingProviderData;
+  std::optional<ndn::Data> m_pendingStreamProviderData;
   std::optional<std::string> m_activeRequestId;
 };
 

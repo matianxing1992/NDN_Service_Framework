@@ -1,0 +1,42 @@
+{
+  "schema": "ndnsf-di.spec168-gate-e-schedule-input.v1",
+  "job": "gate-e-small-repeated.sbatch",
+  "jobDigest": "sha256:0c1cce42261f051f200741a61f4586933880f33f5df6e994fc76089195ce3ed8",
+  "analyzer": "spec168-cold-warm-analyzer.py",
+  "analyzerDigest": "sha256:906f1e60398cf8323de9434ca4cb53c5c1e98fdcc183d298f2657f7617bbcf2e",
+  "phase": "remote-small-repeated",
+  "submissionCount": 1,
+  "automaticRetry": false,
+  "resources": {
+    "partition": "bigTiger",
+    "nodes": 3,
+    "tasks": 3,
+    "tasksPerNode": 1,
+    "gpuPerNode": "rtx_5000:1",
+    "memoryPerNode": "32G",
+    "wallTime": "02:00:00"
+  },
+  "workload": {
+    "promptSetDigest": "sha256:5a87c5645c74ac52b7e2ab728e7297d49c42fa849ce47d163c8fec5838d9dd75",
+    "selectedPromptCount": 5,
+    "warmupPerPrompt": 1,
+    "measuredPerPrompt": 5,
+    "totalRequestCount": 30,
+    "maxNewTokens": 64,
+    "wireRequestCountPerGeneration": 1,
+    "tokenRequestCountPerGeneration": 0,
+    "sequential": true
+  },
+  "causalReuseAcceptance": {
+    "coldGeneratedCount": 1,
+    "warmReuseCachedCount": 29,
+    "repoFetchCompletePerProvider": 1,
+    "deviceLoadCountPerProvider": 1,
+    "warmRepoByteGrowth": 0,
+    "warmDeviceLoadGrowth": 0,
+    "gpuHitCountIncreasePerWarmRequest": 1,
+    "latencyAloneIsReuseProof": false
+  },
+  "failurePolicy": "retain immutable evidence and close identity; repair locally under a linked replacement identity",
+  "secretRetentionPolicy": "the EXIT trap removes every key, token, privkey, and bootstrap-tokens.txt before retaining PASS or FAIL evidence"
+}

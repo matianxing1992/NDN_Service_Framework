@@ -1,0 +1,683 @@
+{
+  "dirtyFiles": {
+    "Experiments/NDNSF_DI_StreamedGeneration_Minindn.py": {
+      "sha256": "sha256:a6b4ccc05218c925655c72bfe421c8a81bb1496fe3afd1a4fcbee6569e0e759f",
+      "status": "??"
+    },
+    "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.cpp": {
+      "sha256": "sha256:eabb78c771f78af9c6c3a68d46ac3139cda0b72037a6cd09aa667ad29d7394fc",
+      "status": " M"
+    },
+    "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp": {
+      "sha256": "sha256:f3c79b408b3ac36d10b19f2986e1fc78f22f07303a0675c9a0eb2ac9b8da2b3d",
+      "status": " M"
+    },
+    "NDNSF-DistributedInference/cpp/adapters/qwen/QwenGenerationSession.cpp": {
+      "sha256": "sha256:82bb6d00a6057580871ca9ff3b0eda5292ffe9fae023fb393826aae67ace748c",
+      "status": " M"
+    },
+    "NDNSF-DistributedInference/cpp/adapters/qwen/QwenGenerationSession.hpp": {
+      "sha256": "sha256:c3ca1f25401a733339364c7d5961fc75af5e4b077983a6600fe5a84efb7800f7",
+      "status": " M"
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp": {
+      "sha256": "sha256:3d311bc70f14880a9fbef9d2523fa423297cc5e376751325e3ed7e94e3b44820",
+      "status": " M"
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/ConversationStateBinding.hpp": {
+      "sha256": "sha256:279f4defa4d6ce32a4c602c835cf8b9f9bf9eaf05ab6990ccdbdcef4d17c4ad6",
+      "status": "??"
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/DecodeStateIdentity.hpp": {
+      "sha256": "sha256:aa950231fca0b48537faa726685541b7933685e676a03d0b5ca784525c303a4c",
+      "status": "??"
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/GenerationEpochLineage.hpp": {
+      "sha256": "sha256:1ab8f1c41430812d9ca864d4b33b6cae052ae96ab85c8e092a983a22df976d87",
+      "status": "??"
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.cpp": {
+      "sha256": "sha256:7e5ca51231e5aca79276902f4c07eb225d2339d71e3e36724db80071582636bf",
+      "status": "??"
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp": {
+      "sha256": "sha256:345ca074e66f9fe29c2e8463ff67718c5d371b41366ec2b921e7c0e78be2d086",
+      "status": "??"
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.cpp": {
+      "sha256": "sha256:c91cd34042bd2cc6d944813273cf9b9eae53430d9735460b872aeb449bb3f4b3",
+      "status": " M"
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp": {
+      "sha256": "sha256:ce154d474a0800fdbf88dbeb4c97b56713feafcb001f75b25e4de803ae17f322",
+      "status": " M"
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.cpp": {
+      "sha256": "sha256:42793dd6336aadbeb126294a3107d9884a37870def1a460686346b18453a05da",
+      "status": " M"
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp": {
+      "sha256": "sha256:34e7cd2cead9687ade77fe02112230a39dba72bfc3d918c4a0e3397dce0e4c00",
+      "status": " M"
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.cpp": {
+      "sha256": "sha256:849967423b97e64aaa7da3f72c5bded2243604645df9e7acc54edc9c090cedc0",
+      "status": " M"
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp": {
+      "sha256": "sha256:bf85c6bb2bdccd15afa357004f76d637aa1e610d3cc9346d7637c8f32a76d495",
+      "status": " M"
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.cpp": {
+      "sha256": "sha256:045fd8bca3470139773e85045fe2c9a237376298f4877e567367603f60c486de",
+      "status": " M"
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp": {
+      "sha256": "sha256:78a55ee6ae9af6bc0fb477cf8c9ad23a19d90f3450148555279f0bf1a61fc756",
+      "status": " M"
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.cpp": {
+      "sha256": "sha256:0593a173111af7699fe77bd77f7fb1814de7af721c890d16c8e9be91bd4c1fb1",
+      "status": " M"
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp": {
+      "sha256": "sha256:58285f970c0f40d7a3fb2fea9ff0c5d7946d5e0309efa9a0261313d82fa0e225",
+      "status": " M"
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.cpp": {
+      "sha256": "sha256:53baf67a7249a6ca93499fd7980ee5c17d0ca63338dd0b51f6df988a4e9d181e",
+      "status": " M"
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.hpp": {
+      "sha256": "sha256:7ff728f8f475698a0a6a0cafc0f11d483f92ba97da618fb4d79db2274ce4889f",
+      "status": " M"
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.cpp": {
+      "sha256": "sha256:e5cef66a054a24cc63fc147eae65bfc320e5fe47987633c47229bea1e9d183d8",
+      "status": " M"
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.cpp": {
+      "sha256": "sha256:b6b4ce3683ecbdff274a4ea9eed0379cbe502fa759659f8d3ee9cdccb4c082f2",
+      "status": " M"
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.cpp": {
+      "sha256": "sha256:72f86ef7f093ca04d80731ae61526bdb1e16ddd089da0abeb4b542150149c673",
+      "status": " M"
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp": {
+      "sha256": "sha256:7adfb5fda9dab2bb4a1191a5194f85f3df0580419891b8a181b7fde467333ee3",
+      "status": " M"
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.cpp": {
+      "sha256": "sha256:e11b1ad81eeb9bd30d87ef8390384136b3eb030952f04542cb92e3fa5926b6c7",
+      "status": " M"
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp": {
+      "sha256": "sha256:f355f3d8de7584dd343e38ca4f5ba2c3e853a36611072cca29f78f0a4ea22925",
+      "status": " M"
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/qwen/__init__.py": {
+      "sha256": "sha256:660f77f30eba43b54a929c8443749a96f5ac5e0dbfa685e8164743e351310361",
+      "status": " M"
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/qwen/generation.py": {
+      "sha256": "sha256:f549e43f6fbe5e6ffcf08b657a31bed67cc888000b44f0f2111fa39a74f64b5f",
+      "status": "??"
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/qwen/placement.py": {
+      "sha256": "sha256:c09cdd794e6a5eb6c5ad6106d49526d5011aad4a0b13f43fcc8327dce6951aa5",
+      "status": " M"
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/qwen/stateful_onnx.py": {
+      "sha256": "sha256:de53daae9ad27ba9b09577390c57f4ea0a357790681b980949a0607dfdef1dbd",
+      "status": "??"
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/__init__.py": {
+      "sha256": "sha256:18d5d4a9e2e61b0eba1fc358ae2d115250f9b19504298bdde2e59425d56dfa4e",
+      "status": " M"
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/client.py": {
+      "sha256": "sha256:5e735fa2d73d64afd9c5f6b5b8a62761f0954a1dd8c569aa0947b5acbf4d4bb8",
+      "status": " M"
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/controller.py": {
+      "sha256": "sha256:7506a1ca60bbb4c0796066d72c6648d8a6d44680ae8997cff195ca09fbf728a7",
+      "status": " M"
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/facades.py": {
+      "sha256": "sha256:95c7de56c77f01298cfdac10d3dcc0a5b3c07e41f36c3fd4c5fb8167e9cc8181",
+      "status": " M"
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/placement.py": {
+      "sha256": "sha256:0ca63c66f14810fda016cd0adce7cc07304a0f805a88e6b90cde96b7f9c84040",
+      "status": " M"
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/provider.py": {
+      "sha256": "sha256:f6accbf1d08305dabe24f0449ad17899f476010b0a2c672ed013ea6ca16db7e5",
+      "status": " M"
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/runtime_journal.py": {
+      "sha256": "sha256:9c63fa6fa7225a40396a3edc7309b587d094df36720e60c292978685c28a4c60",
+      "status": " M"
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/conversation.py": {
+      "sha256": "sha256:036ec73941ed7c4095b5736cfedc2315bad37a90c40d430e76ef2dedf0708633",
+      "status": "??"
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/core/__init__.py": {
+      "sha256": "sha256:4805fa4f5fa93fc52c2171ef1d246dac44f9081d06c098a7cfd3064497b42076",
+      "status": " M"
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/core/contracts.py": {
+      "sha256": "sha256:0d100fcccc4b0ca6f3e851851b9687be678c1fc5075de35066436170f69dcea3",
+      "status": " M"
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/provider.py": {
+      "sha256": "sha256:157d834b18650d05310a1508e8eeb73c78d845234d66195aed5c66a491fa5202",
+      "status": " M"
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/runtime_v1_evidence.py": {
+      "sha256": "sha256:31023c46d60d07b55e82ea30247bb34221b6b57e689a116a84401f4c2e5928ac",
+      "status": " M"
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/__init__.py": {
+      "sha256": "sha256:9ef113c3f3ca87612441dfed098a872c0b32cf67f810fc1aaaa462979d032493",
+      "status": " M"
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py": {
+      "sha256": "sha256:7751b9dd9d6eaf003079a196b6cbbef26e95bcdcb92684c6c78efa1ea2dce601",
+      "status": " M"
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/splitter.py": {
+      "sha256": "sha256:cd257520b039290227b1026cdc9c484c3027218f241d3d1d059290b7764b77cf",
+      "status": " M"
+    },
+    "NDNSF-DistributedRepo/README.md": {
+      "sha256": "sha256:63227a4f3e984c25f8647519e3f55b715ee6b4ef7c7a2f915daa34bc7015beb5",
+      "status": " M"
+    },
+    "NDNSF-DistributedRepo/README_ch.md": {
+      "sha256": "sha256:5444f31b9bd659a7f803e68fe47e6646797c36c6737b2d8c0d8eac85bfea974e",
+      "status": " M"
+    },
+    "NDNSF-DistributedRepo/pythonWrapper/README.md": {
+      "sha256": "sha256:72f9be9e9a3cbbe128335706c585bb7dfb9262b6a52acd7f8cc295062220a3e0",
+      "status": " M"
+    },
+    "NDNSF-DistributedRepo/pythonWrapper/py_repoclient/network_artifact_backend.py": {
+      "sha256": "sha256:316386f50fe57e22de32352be5f89558d862c54f9f331899dffdc74bfc8a723c",
+      "status": " M"
+    },
+    "examples/python/NDNSF-DistributedInference/llm_pipeline/llm_pipeline_lib.py": {
+      "sha256": "sha256:21f2c8f1996385324ad2f70daa45eeff1b121097c122910daca3d49220c601b0",
+      "status": " M"
+    },
+    "examples/python/NDNSF-DistributedInference/llm_pipeline/plan_pipeline.py": {
+      "sha256": "sha256:8ec8576f80bacea31c567b6942fda11bd41bed3d2aefea0b94fe03951d1790d9",
+      "status": " M"
+    },
+    "examples/python/NDNSF-DistributedInference/llm_pipeline/provider.py": {
+      "sha256": "sha256:5938c33007af03f914b6e44bc35d02a44e5cbbdba29833f027e576e82217c402",
+      "status": " M"
+    },
+    "examples/python/NDNSF-DistributedInference/llm_pipeline/user.py": {
+      "sha256": "sha256:8869f510d467b19dc269d9d16f3b1912d12df8c6a807f3ff62c2a76e33b9385a",
+      "status": " M"
+    },
+    "ndn-service-framework/HybridMessageCrypto.cpp": {
+      "sha256": "sha256:a8c951070b95545d5cac372df70fe0863acbf25eda42926fc22632ec86690b55",
+      "status": " M"
+    },
+    "ndn-service-framework/InvocationStream.cpp": {
+      "sha256": "sha256:f5fd338aa089851197de5ed06a728a144c0eef2bd03b34a7d31a02249ece6167",
+      "status": "??"
+    },
+    "ndn-service-framework/InvocationStream.hpp": {
+      "sha256": "sha256:ca678b5ae273f02418764ce977ebcd67df5ef00fb7599a974b12c18bab9ae680",
+      "status": "??"
+    },
+    "ndn-service-framework/NDNSFMessages.cpp": {
+      "sha256": "sha256:ec2b4de69ec6c4472104c395dc011fa53393c472c8b393a2f6f01b91c28fea00",
+      "status": " M"
+    },
+    "ndn-service-framework/NDNSFMessages.hpp": {
+      "sha256": "sha256:e798d3fac5f24d5102d7231c1faae9e8d1762231f4904f81275aedc55afbfc0d",
+      "status": " M"
+    },
+    "ndn-service-framework/ServiceProvider.cpp": {
+      "sha256": "sha256:d93263f4662f6804b4a32e6f2ef9778e12aaa094dc44ba816fb3df04d4584fb3",
+      "status": " M"
+    },
+    "ndn-service-framework/ServiceProvider.hpp": {
+      "sha256": "sha256:048da14725f95115171be6221fb8d84648c697af80bc5b18dbc5e85cf3636679",
+      "status": " M"
+    },
+    "ndn-service-framework/ServiceUser.cpp": {
+      "sha256": "sha256:6b06e95c2e23e324af305597890340cce38e9b697bfdb1d906fea2120b7033e1",
+      "status": " M"
+    },
+    "ndn-service-framework/ServiceUser.hpp": {
+      "sha256": "sha256:ca9fd3402b03e6f1af8ad8f78024561bacf7326a4a77bbde7333d66341afc17d",
+      "status": " M"
+    },
+    "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/build-local-sif.sh": {
+      "sha256": "sha256:3b4f77a803bebbef320051364a69ee3d7700cc687d41e22b8a6273b498c37dd7",
+      "status": " M"
+    },
+    "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/prepare-local-sif-source.py": {
+      "sha256": "sha256:9838452fb108689cfe23a4d5854dfeec25e94378bc4ee5039bcc4dc4072b0113",
+      "status": " M"
+    },
+    "packaging/ndnsf-di-container/bin/ndnsf-di-pre-tiger-checklist": {
+      "sha256": "sha256:535c55bcbf3018237ff74b705fb7ca44f867e8724cef02f5cc0036fee314edc3",
+      "status": "??"
+    },
+    "packaging/ndnsf-di-container/bin/ndnsf-di-spec175-preflight": {
+      "sha256": "sha256:3419b055f0a5bcf1595f091c8ba6ecc3aa4c4a65d6f3f4cb663ecedbb164f9b3",
+      "status": "??"
+    },
+    "packaging/ndnsf-di-container/bin/spec175-host-substrate-preflight": {
+      "sha256": "sha256:abd6b04667cd45af53a199854b48d2c5b0772b2cbe245c4af78ee927fe619965",
+      "status": "??"
+    },
+    "packaging/ndnsf-di-container/docs/itiger-qwen-evidence.md": {
+      "sha256": "sha256:1b4fd6df2c1415e236765092a9bdb3084a228a778f2619e3746e1928aacb3d06",
+      "status": " M"
+    },
+    "packaging/ndnsf-di-container/docs/itiger-qwen-models.md": {
+      "sha256": "sha256:f2f1072d47b7ffe411243d1e66b1ed9f0e1b7f620775390c4c94010a272df810",
+      "status": " M"
+    },
+    "packaging/ndnsf-di-container/docs/layered-build.md": {
+      "sha256": "sha256:f924e1a74db08ea11acefc351cd820c2dcf410fc92376bb3c4059e30eb82b982",
+      "status": " M"
+    },
+    "packaging/ndnsf-di-container/jobs/spec175/qualify-control.sbatch": {
+      "sha256": "sha256:09179841aa9108f6d8e0840399b49d0c4f9afc4c075a28b5c0e46534fd7e3fda",
+      "status": "??"
+    },
+    "packaging/ndnsf-di-container/jobs/spec175/qualify-conversation-residency.sbatch": {
+      "sha256": "sha256:c76dcc0cc345926f7e19277d1286b7718da735cd86d692635a10d9593c0841b8",
+      "status": "??"
+    },
+    "packaging/ndnsf-di-container/jobs/spec175/qualify-multiprovider.sbatch": {
+      "sha256": "sha256:719cef53ce310d85169e8898fb022eff47c6448bb5b2b8f6b31adf9a98129ca7",
+      "status": "??"
+    },
+    "packaging/ndnsf-di-container/jobs/spec175/qualify-performance.sbatch": {
+      "sha256": "sha256:dbbc42700413f08e06aa27f658d270a3da383effa5b63baebdbc85f54175f10e",
+      "status": "??"
+    },
+    "packaging/ndnsf-di-container/jobs/spec175/qualify-stage-readiness.sbatch": {
+      "sha256": "sha256:ab12fe2f0acdadca60491ba7971346492b0ec397d95ad603de8759aec616126a",
+      "status": "??"
+    },
+    "packaging/ndnsf-di-container/jobs/spec175/replay-exact-sif.py": {
+      "sha256": "sha256:baa2958b5f6c630b4d0d95409b742bdbd42f41921e7188eb7a73abc487ce9ddb",
+      "status": "??"
+    },
+    "packaging/ndnsf-di-container/jobs/spec175/run-streamed-generation.sh": {
+      "sha256": "sha256:b8931bc2ba98f97caf8ea8ef26da217978e0b6dcd9fdecdc75b63492ed952fe1",
+      "status": "??"
+    },
+    "packaging/ndnsf-di-container/jobs/spec175/submit.sh": {
+      "sha256": "sha256:1ae18b21bc8eea940c3641cb0820bf5b1d279208880d411ef2791dd49a0a6dcb",
+      "status": "??"
+    },
+    "packaging/ndnsf-di-container/jobs/spec175/workload.json": {
+      "sha256": "sha256:420299721682c76ae6538e05583a9f891fb05be3264cf56d635a278b771aa90d",
+      "status": "??"
+    },
+    "packaging/ndnsf-di-container/lib/spec170_sif_build_boundary.py": {
+      "sha256": "sha256:42be03e416c7dc2f8fff6dc5b9a255a02141717d749555776ac6fe87dc5a8b7b",
+      "status": " M"
+    },
+    "packaging/ndnsf-di-container/lib/spec175_host_gate.py": {
+      "sha256": "sha256:f5fbcf664c39536240376192b2ed2237549865f763511efbd3ebcc3a6a6953c0",
+      "status": "??"
+    },
+    "pythonWrapper/README.md": {
+      "sha256": "sha256:47c4683d193dfa5d78a9bfa576620022d3cdc7dc6610df5d5bf328ad30c1f593",
+      "status": " M"
+    },
+    "pythonWrapper/ndnsf/__init__.py": {
+      "sha256": "sha256:60110c2159ed701b88c6df7da8dbf6adc6b3f545c24d033ff9d3565506c9103a",
+      "status": " M"
+    },
+    "pythonWrapper/ndnsf/service.py": {
+      "sha256": "sha256:59e1fdeba5bf4a290d3f4450d81f11c24faf2c9b6a63d602d427a5b2fc56dcc5",
+      "status": " M"
+    },
+    "pythonWrapper/setup.py": {
+      "sha256": "sha256:98daa649fd0927f9fd5ea098f2d747287bcd81a1b76b5f8430d5fffb6712b0df",
+      "status": " M"
+    },
+    "pythonWrapper/src/ndnsf/_ndnsf.cpp": {
+      "sha256": "sha256:384e80dd7915e2e4f903023728686b822238d3d46171bd142790ec3e3b841361",
+      "status": " M"
+    },
+    "scripts/run_spec175_integration_gate.py": {
+      "sha256": "sha256:f230e32bcec5a39f55ebdb162b957a88ac3fd3b92e0639f87aa5191e8f61ecd2",
+      "status": "??"
+    },
+    "scripts/spec175_contract_gate.py": {
+      "sha256": "sha256:b2abc501a22faf126c67ddc28e4e0de8f101fbe8adc1d6414a5fe6e9f6f8cdcc",
+      "status": "??"
+    },
+    "specs/175-ndnsf-di-streamed-invocation/audit.md": {
+      "sha256": "sha256:a70a4617ef0181d31a8ca7bab99de7c1744c33ebcc76b08192b177615884079a",
+      "status": "??"
+    },
+    "specs/175-ndnsf-di-streamed-invocation/checklists/requirements.md": {
+      "sha256": "sha256:8fed71c30ab751c860da43a4d7c2d313c2b4d1e9a2a012a9cea3ce58fc1fda3f",
+      "status": " M"
+    },
+    "specs/175-ndnsf-di-streamed-invocation/contracts/api-contract.md": {
+      "sha256": "sha256:a56b59010955b560f59b86466075ca5902e43fc78f4fafdc6cf1ea8aeb4539e6",
+      "status": " M"
+    },
+    "specs/175-ndnsf-di-streamed-invocation/contracts/generation-state-machine-v1.md": {
+      "sha256": "sha256:70a1cb5d5b1fa14651180efe59dfe89e33033ae5d866670815724d568ad7eedf",
+      "status": " M"
+    },
+    "specs/175-ndnsf-di-streamed-invocation/contracts/native-epoch-coordinator-v1.md": {
+      "sha256": "sha256:091e3b775981e3dd722d6d9ff9d16af1ac9cd6858fdf8c072cd2925e241a683c",
+      "status": "??"
+    },
+    "specs/175-ndnsf-di-streamed-invocation/contracts/validation-contract.md": {
+      "sha256": "sha256:aa7832abf19e51e13469c0c9440b6b8fd715e9de4c6f3636c146073c10ccaf6c",
+      "status": " M"
+    },
+    "specs/175-ndnsf-di-streamed-invocation/contracts/wire-protocol-v1.md": {
+      "sha256": "sha256:aac98fa22c172338beda67db9404d14440d8a88d16abc77662a9c106a4630277",
+      "status": " M"
+    },
+    "specs/175-ndnsf-di-streamed-invocation/data-model.md": {
+      "sha256": "sha256:5bb30541e58c45a1e3f95bed8e45d39080d1b0e63565aa2955fc6df5491760b4",
+      "status": " M"
+    },
+    "specs/175-ndnsf-di-streamed-invocation/experiment-plan.md": {
+      "sha256": "sha256:ca7d9535f79153a78086509cb53c402830e706fb9e241373b59255978feb229e",
+      "status": " M"
+    },
+    "specs/175-ndnsf-di-streamed-invocation/jobs/build-qwen-onnx-stage-manifest.py": {
+      "sha256": "sha256:4a6fa9eff9ff4eb3e50f1419c0de21e348a7c2bece1e17a702531afb125892c2",
+      "status": "??"
+    },
+    "specs/175-ndnsf-di-streamed-invocation/jobs/copy-qwen-onnx-artifact.py": {
+      "sha256": "sha256:7e532628f51547170797fb7979cfde026f2b2c701f4090650666ae6d548dda71",
+      "status": "??"
+    },
+    "specs/175-ndnsf-di-streamed-invocation/jobs/generate-qwen-onnx-reference.py": {
+      "sha256": "sha256:f971168929668723ea5fafa2724c2d0fb9833faaf35985f5b5188c159368842a",
+      "status": "??"
+    },
+    "specs/175-ndnsf-di-streamed-invocation/jobs/select-tiger-scratch.sh": {
+      "sha256": "sha256:7b121da471e2ae5cefafe723611cd91a86349519bc78e4068e4759265ed91571",
+      "status": "??"
+    },
+    "specs/175-ndnsf-di-streamed-invocation/plan.md": {
+      "sha256": "sha256:e260569dc94193a4d0ed1dad67889d1312a98b3569b587565f0a7f4b2fbec910",
+      "status": " M"
+    },
+    "specs/175-ndnsf-di-streamed-invocation/quickstart.md": {
+      "sha256": "sha256:2e4ea9aa916e11932e0f35728977b14ac6464e3fe3fe7494e9f72d09f864b611",
+      "status": " M"
+    },
+    "specs/175-ndnsf-di-streamed-invocation/research.md": {
+      "sha256": "sha256:400933f305eeb6ae04d9b29ebb284dfdb8bf8b59e94e222ea59867e697e756f1",
+      "status": " M"
+    },
+    "specs/175-ndnsf-di-streamed-invocation/spec.md": {
+      "sha256": "sha256:19ab18f595f4850924e7fb8d8bbbcda66af8de603b3caee28bb2749f05fec2f6",
+      "status": " M"
+    },
+    "specs/175-ndnsf-di-streamed-invocation/tasks.md": {
+      "sha256": "sha256:b7b59cb2c22779497289da714be46dbd3e24a0158cadc56aae1ad3e11cd04dc8",
+      "status": " M"
+    },
+    "specs/175-ndnsf-di-streamed-invocation/traceability.md": {
+      "sha256": "sha256:f239efc6534ee5a7d24f741a5bfd3a760f30899364f83c7a85ea5685cab51239",
+      "status": " M"
+    },
+    "tests/conftest.py": {
+      "sha256": "sha256:01a57b58c4ad1b807e7aa84212666e914dc52246b95c611ba88f60ff54a4d1bf",
+      "status": "??"
+    },
+    "tests/container/unit/test_spec170_exact_sif_gate.py": {
+      "sha256": "sha256:76498732ab7deb481d19c827554486cb734ee19090a5eff771be5f940393ed6f",
+      "status": " M"
+    },
+    "tests/fixtures/spec175/build_tiny_causal_onnx.py": {
+      "sha256": "sha256:5a0c89b75becf79357f27cb2c43fecdb21dbfd0dd64d89f5a566bc41e1ea23a4",
+      "status": "??"
+    },
+    "tests/fixtures/spec175/tiny-causal-lm-v1/manifest.json": {
+      "sha256": "sha256:b3d72cf67c9cfed2a3621208c1fd0bc9bb4689e535acd87ce68e9df5ddbf3e84",
+      "status": "??"
+    },
+    "tests/fixtures/spec175/tiny-causal-lm-v1/prompts.json": {
+      "sha256": "sha256:f3808d88821abeed37addbe8465382bb2207cec9904fe86a565283fdaae2bb30",
+      "status": "??"
+    },
+    "tests/fixtures/spec175/tiny-causal-lm-v1/tokenizer.json": {
+      "sha256": "sha256:87e7e9653a645297f0b9ae6d51b1c497781219f56c094d8224d5500c7d44fd65",
+      "status": "??"
+    },
+    "tests/integration-tests/invocation-stream-flow.t.cpp": {
+      "sha256": "sha256:a7f4c047d21d6f196fcf6890b6e30fde81a4185016057fd8002f994f780862cc",
+      "status": "??"
+    },
+    "tests/integration-tests/ndnsf-data-v1-svs-flow.t.cpp": {
+      "sha256": "sha256:7e8f681a04bb70409dcc20a84b66af7c832e115a9a771447b9fdf67668eb1bcd",
+      "status": " M"
+    },
+    "tests/integration-tests/ndnsf-di-core-flow.t.cpp": {
+      "sha256": "sha256:afa7e16e48287a2dc5481c3bd15b1b6fef27484b691f71def6cf174045dd05a3",
+      "status": " M"
+    },
+    "tests/integration-tests/ndnsf-integration-fixture.cpp": {
+      "sha256": "sha256:526256e39bb1a8b973d570fc3ed38f5a694c804cb2d4b2ad1010ea9f26dee1b6",
+      "status": " M"
+    },
+    "tests/integration-tests/ndnsf-integration-fixture.hpp": {
+      "sha256": "sha256:785f03de63a5c97a8ccb87c04fd5a80fa349e5c0ea11c4802ecd66b58669c1a6",
+      "status": " M"
+    },
+    "tests/python/test_build_local_sif_record.py": {
+      "sha256": "sha256:78b86eba91739fe79cf559fe4f557e8c1c1764fc568a434b4227464d19b1bb16",
+      "status": " M"
+    },
+    "tests/python/test_context_mode_guard.py": {
+      "sha256": "sha256:1436d20be68bf99c3565d099f5d4232d975b8a2472da38bd88d8fdd2dd41be8c",
+      "status": "??"
+    },
+    "tests/python/test_ndnsf_di_automatic_collaboration_plan.py": {
+      "sha256": "sha256:6de77bb847899f13199571ab081a7a195065ff72fa2c1d2b75b355d47dd7a583",
+      "status": " M"
+    },
+    "tests/python/test_ndnsf_di_split_candidate_contract.py": {
+      "sha256": "sha256:1f1df94de3d07856bca26386065eea32c5328c62fc391e2809bf07b6da387898",
+      "status": " M"
+    },
+    "tests/python/test_prepare_local_sif_source.py": {
+      "sha256": "sha256:e999cae0954babeb74b000cb8c5c4953f905de8ed8e64068a9fb7b77108c82e5",
+      "status": " M"
+    },
+    "tests/python/test_spec161_qwen_generation.py": {
+      "sha256": "sha256:add7c21b3fd3738be44694b17266dc64394baa171e5ad609b6140dfae0853c1e",
+      "status": " M"
+    },
+    "tests/python/test_spec164_collaboration_artifact_backend.py": {
+      "sha256": "sha256:9683b068f4222125426d6eeb6f398350cd70d492177afd35d69e39dec751e254",
+      "status": " M"
+    },
+    "tests/python/test_spec166_qwen_onnx_cuda.py": {
+      "sha256": "sha256:0e447b9c59dcb4e4dd788855500539a269256347e11f4eb193811b411952a069",
+      "status": " M"
+    },
+    "tests/python/test_spec168_provider_generation.py": {
+      "sha256": "sha256:0dc48c89509ead328dad3631f7a6b713951a18b2fadaec8f63298157a66d1cef",
+      "status": " M"
+    },
+    "tests/python/test_spec168_tiny_qwen_fixture.py": {
+      "sha256": "sha256:c6a9400cc0b37da304d2176d31f0d1dbca586be4de982b47b07f7c524bc4063f",
+      "status": " M"
+    },
+    "tests/python/test_spec170_default_application_path.py": {
+      "sha256": "sha256:3f48cc7c2242faefc97a7f9522d3035f1aef2a7052220e98472dfaa096f8b4aa",
+      "status": " M"
+    },
+    "tests/python/test_spec170_plan_sealer.py": {
+      "sha256": "sha256:6779d5714df1bf6907809dfa65d2695188e10cf26d2909843d580ffd524e5012",
+      "status": " M"
+    },
+    "tests/python/test_spec170_qwen_onnx_stage_runner.py": {
+      "sha256": "sha256:516c784c37186b8260085b2a44391c484e5986a41ae85a2a43a46924f6e815ba",
+      "status": " M"
+    },
+    "tests/python/test_spec175_contract_gate.py": {
+      "sha256": "sha256:0908f3c0455f32d2cf8921865f30e817fcfcac1b60611de691f068428e26406a",
+      "status": "??"
+    },
+    "tests/python/test_spec175_conversation.py": {
+      "sha256": "sha256:813294ba750b091b2c9cb438a92074a9be54d5055f3925943d643553c5dac733",
+      "status": "??"
+    },
+    "tests/python/test_spec175_cpu_fixture.py": {
+      "sha256": "sha256:d2d3344abf1183b26659e11888ac10a07337a286c001887b84945c1f54ab1bd0",
+      "status": "??"
+    },
+    "tests/python/test_spec175_evidence.py": {
+      "sha256": "sha256:0a2e5a5235c806d50bfb329412cd01e17802b3106d11e9e5c5514a3306c790ec",
+      "status": "??"
+    },
+    "tests/python/test_spec175_gate_provenance.py": {
+      "sha256": "sha256:4311c52dec1d53d0fd483608cf35ca138acdfeec6b39cc493419e1c50074eff7",
+      "status": "??"
+    },
+    "tests/python/test_spec175_integration_gate.py": {
+      "sha256": "sha256:f1747ff0c951edc4748f126a4e060d07fbef7f199c986724c41c8674fc08201e",
+      "status": "??"
+    },
+    "tests/python/test_spec175_minindn_layout.py": {
+      "sha256": "sha256:57c71e0b48c44d3abe8dea0463bef11b90221b8159bb51003dc373bba694f893",
+      "status": "??"
+    },
+    "tests/python/test_spec175_onnx_deployment_boundary.py": {
+      "sha256": "sha256:3de1ea8c04d86eb8eb9afcbadd1403f8a2c3de53832e17eb7255f99cd6a1cc90",
+      "status": "??"
+    },
+    "tests/python/test_spec175_qwen_generation.py": {
+      "sha256": "sha256:2aaccb9b1ac0d4dd83d59bbdae1ac00ff834a36fff016c532575feeb84b2ba30",
+      "status": "??"
+    },
+    "tests/python/test_spec175_qwen_stateful_onnx.py": {
+      "sha256": "sha256:7e93f56726edafad6151f49cf16b4069c37626d7695fade5a61063b4cbcdab6d",
+      "status": "??"
+    },
+    "tests/python/test_spec175_real_minindn_gate.py": {
+      "sha256": "sha256:81867f13a96bf695901bb7f530b9f185b7ed55515b6c1556bb3b0e5d642a5705",
+      "status": "??"
+    },
+    "tests/python/test_spec175_repo_bootstrap.py": {
+      "sha256": "sha256:7840bb5d9a8f14f319f2e7ee668ec515d93bc7081a3bac07db663387fa5f145c",
+      "status": "??"
+    },
+    "tests/python/test_spec175_sif_preflight.py": {
+      "sha256": "sha256:6545de9385b4f3bd7fc51783c5718c35493aa51c7f7004a25b4f7c34f143ce14",
+      "status": "??"
+    },
+    "tests/python/test_spec175_streamed_generation.py": {
+      "sha256": "sha256:2816c83bb38736cce5fa974c8a31a8252327c051f288377f3455978704e25135",
+      "status": "??"
+    },
+    "tests/python/test_spec175_tiger_checklist.py": {
+      "sha256": "sha256:690d378898c2446ddff435427e2ef418ff943aee6451c62561084fa275205628",
+      "status": "??"
+    },
+    "tests/python/test_spec175_tiny_onnx_runtime.py": {
+      "sha256": "sha256:1cc1defb60500741aef2b656899dde078f4cf6c6429dcd6debdbe227788ce1cd",
+      "status": "??"
+    },
+    "tests/python/test_spec175_workload.py": {
+      "sha256": "sha256:ead7586036cbe03f1ee5d2917d99f287e697560382416d6e37b49eab69a1438a",
+      "status": "??"
+    },
+    "tests/python/test_streamed_invocation_api.py": {
+      "sha256": "sha256:e305ad6083a2a25f01f09cbaedca0d61d8ad8615676cd3b293ba7e668910f031",
+      "status": "??"
+    },
+    "tests/unit-tests/di-onnxruntime-gpu-evidence.t.cpp": {
+      "sha256": "sha256:d8ed3d7d5f334f179f5a3686b6dacd48346329679ffdcd482a4a4819d31fa3fb",
+      "status": " M"
+    },
+    "tests/unit-tests/di-qwen-generation-session.t.cpp": {
+      "sha256": "sha256:64b3a08a27a5c7559013b98e012714f520da02409605770b5f9a9ecdd37c1a68",
+      "status": " M"
+    },
+    "tests/unit-tests/distributed-inference-async-runtime.t.cpp": {
+      "sha256": "sha256:2cd200dc10dde2989106d7e657a32de89d807d0b1c9f76f39c0944221e883230",
+      "status": " M"
+    },
+    "tests/unit-tests/distributed-inference-native-plan.t.cpp": {
+      "sha256": "sha256:e369ba33a2cafc9bf22ab49b7972c9bd2ba070641fb62f671244eda2efe5b31f",
+      "status": " M"
+    },
+    "tests/unit-tests/generic-dynamic-api-collaboration-status.t.cpp": {
+      "sha256": "sha256:1df8c91b6398ae8eab93156adfac58dc5fa3f085054b8efc548fb516dde0b733",
+      "status": " M"
+    },
+    "tests/unit-tests/generic-dynamic-api-crypto-auth.t.cpp": {
+      "sha256": "sha256:b0f6768828deac231530ed82b57dad4a057119fe9f7b0393ce677636ff9f8c56",
+      "status": " M"
+    },
+    "tests/unit-tests/generic-dynamic-api-fixture.hpp": {
+      "sha256": "sha256:3429e1dc517e6d331495c8241746bb05101a1d325727b120a6e4a44ff8e21d20",
+      "status": " M"
+    },
+    "tests/unit-tests/generic-dynamic-api-workers.t.cpp": {
+      "sha256": "sha256:3e5ace79d8af3ed056c11bf291036bf8913460b66306049430679dfd0c3c9e2e",
+      "status": " M"
+    },
+    "tests/unit-tests/invocation-stream-lifecycle.t.cpp": {
+      "sha256": "sha256:7dcb32ff2185055f7d367d02eeb15a2c8db3834599f93f75076f15b4e2556fcc",
+      "status": "??"
+    },
+    "tests/unit-tests/invocation-stream-message.t.cpp": {
+      "sha256": "sha256:862ab113743c29fb26aa4bc2a7d619cf08b4885b0a749451fe12adf7dd35f5c2",
+      "status": "??"
+    },
+    "tests/unit-tests/stream-facade.t.cpp": {
+      "sha256": "sha256:a733ec7add44f8ca0531c121a7c73191aa0f1da6e38dcda9f1307c79c5f651d1",
+      "status": " M"
+    },
+    "tests/unit-tests/stream.t.cpp": {
+      "sha256": "sha256:608d07b8bb64d5034cd293f3a1bf9eec0ed26b7992cfb57070237a554ec2f477",
+      "status": " M"
+    },
+    "tests/unit-tests/uav-protocol-state.t.cpp": {
+      "sha256": "sha256:853f8182d69b6863f7a1d8fec91e80640aed8edc85c83a2cd57ea35b2165d302",
+      "status": " M"
+    },
+    "tests/wscript": {
+      "sha256": "sha256:c0840794c3bb6090a9baeb9277c69249bdcec7a804fbb0a6f3bfc70d02c1cc2b",
+      "status": " M"
+    },
+    "tools/ndnsf-di/export_spec175_qwen36_stateful_onnx.py": {
+      "sha256": "sha256:62daa7d84c027732ca717a66f1b5d9c64ff4894b32c28f158d5137802fb14a47",
+      "status": "??"
+    },
+    "tools/ndnsf-di/spec168_real_model_gate.py": {
+      "sha256": "sha256:6dc2ef1416ffb65033abd0d182ce7754ec0f3e446a62262f9ce64f8b42d17a1e",
+      "status": " M"
+    },
+    "wscript": {
+      "sha256": "sha256:e88e0e95e7df363ebbe5fa2d4cbb9c71172287b13bbd996c18463c4434b5b8da",
+      "status": " M"
+    }
+  },
+  "generatedAt": "2026-08-27T21:34:42.792291+00:00",
+  "schemaVersion": "spec175-source-seal-v1",
+  "sourceRevision": "8350cad1c5a0b013c56f9f79450b3eb3686b4e21"
+}

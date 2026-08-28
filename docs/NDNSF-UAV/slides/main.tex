@@ -98,7 +98,7 @@
 \begin{itemize}
   \item Safety-sensitive commands need authorization and prompt failure.
   \item Telemetry and readiness must stay tied to the selected vehicle.
-  \item Live video is continuous; recordings and logs are durable objects.
+  \item Live video and retained playback share canonical Data; exported files and logs are durable objects.
   \item Multiple mobile drones may be busy, disconnected, or replaceable.
 \end{itemize}
 \end{column}
@@ -132,15 +132,15 @@
 \begin{tikzpicture}[node distance=0.3cm]
   \node[orangebox,minimum width=11.7cm,minimum height=1.15cm] (app) {
     \textbf{NDNSF-UAV-APP: vehicle and operator meaning}\\
-    MAVLink, readiness and safety, missions, camera/H264, XOR FEC, bitrate policy, GUI
+    MAVLink, readiness and safety, missions, semantic video names, H264, AES-GCM, bitrate, GUI
   };
   \node[greenbox,below=0.22cm of app,minimum width=11.7cm,minimum height=1.05cm] (repo) {
     \textbf{NDNSF-DistributedRepo: durable named data products}\\
-    recording chunks, manifests, catalog, persistence, exact-name retrieval
+    canonical stream Data, manifests, catalog, persistence, exact-name retrieval
   };
   \node[strongbox,below=0.22cm of repo,minimum width=11.7cm,minimum height=1.15cm] (core) {
     \textbf{NDNSF Core: reusable communication mechanisms}\\
-    invocation, selection, Targeted calls, permissions, NAC-ABE, tokens, status, stream envelopes
+    invocation, permissions, Targeted calls, signed Mapping, exact-name prefetch, bounded retry/FEC
   };
   \draw[flow] ([xshift=-4.7cm]core.north) -- ([xshift=-4.7cm]repo.south);
   \draw[flow] ([xshift=4.7cm]repo.north) -- ([xshift=4.7cm]app.south);
@@ -148,8 +148,8 @@
 \end{center}
 
 \vspace{0.25em}
-\bluebox{Core provides generic envelopes and security; the UAV application remains responsible for flight semantics and policy.}
-\evidence{docs/ndnsf-core-app-boundary.md; specs/070-uav-qgc-parity-boundary}
+\bluebox{Core transports opaque bytes under application names; UAV owns video meaning and encryption, while Core owns the reusable live network loop.}
+\evidence{docs/ndnsf-core-app-boundary.md; Spec 118/119 ownership contracts}
 \end{frame}
 
 \begin{frame}{Three Runtime Roles}
@@ -244,7 +244,7 @@
 /<drone>/UAV/Camera/Video & normal & provider-specific Start/Stop control \\
 /<drone>/UAV/MAVLink/\newline Parameters & normal & vehicle capability and parameter snapshot \\
 /<drone>/UAV/Preflight/\newline Checklist & normal & typed operator readiness details \\
-/<drone>/UAV/Camera/\newline Recording/Manifest & normal & discover durable recording chunks \\
+/<drone>/UAV/Camera/\newline Recording/Manifest & normal & discover retained canonical stream Data \\
 /UAV/GS/ObjectDetection & normal & drone-to-ground-station compute callback \\
 \bottomrule
 \end{tabularx}
@@ -532,102 +532,313 @@
 \evidence{VehicleParameterEditRequest/Result; PreflightCheckItem; UavAnalyzeSnapshot}
 \end{frame}
 
-\begin{frame}{Live Video: Control and Data Are Separate}
+\begin{frame}{Live Video: Service Control Opens an Independent Stream}
 \footnotesize
 \begin{center}
 \begin{tikzpicture}[node distance=0.45cm]
   \node[strongbox,minimum width=2.8cm] (gs) {Ground Station};
   \node[orangebox,right=7.4cm of gs,minimum width=2.8cm] (drone) {Drone camera};
-  \node[box,above=0.65cm of $(gs)!0.5!(drone)$,minimum width=4.0cm] (control) {NDNSF video-control service};
-  \node[greenbox,below=0.65cm of $(gs)!0.5!(drone)$,minimum width=4.0cm] (data) {signed NDN video Data};
-  \draw[flow] (gs) -- node[above,font=\tiny] {Start: bitrate, width} (control);
-  \draw[flow] (control) -- node[above,font=\tiny] {stream id, prefix, accepted settings} (drone);
-  \draw[backflow] (gs) -- node[below,font=\tiny] {Interests for /<stream>/0, /1, /2, ...} (data);
-  \draw[backflow] (data) -- node[below,font=\tiny] {H264 packets} (drone);
+  \node[box,above=0.72cm of $(gs)!0.5!(drone)$,text width=4.6cm] (control) {
+    \textbf{NDNSF camera-control service}\\[-0.1em]
+    \scriptsize Start request $\rightarrow$ readiness $\rightarrow$ protected descriptor/key};
+  \node[greenbox,below=0.72cm of $(gs)!0.5!(drone)$,text width=4.6cm] (data) {
+    \textbf{Independent NDNSF LiveStream}\\[-0.1em]
+    \scriptsize Mapping + future exact Interests $\leftrightarrow$ semantic signed Data};
+  \draw[<->,very thick,draw=MemphisBlue] (gs) |- (control);
+  \draw[<->,very thick,draw=MemphisBlue] (control) -| (drone);
+  \draw[<->,very thick,draw=AccentGreen] (gs) |- (data);
+  \draw[<->,very thick,draw=AccentGreen] (data) -| (drone);
 \end{tikzpicture}
 \end{center}
 
-\vspace{0.75em}
+\vspace{0.55em}
 \begin{itemize}
-  \item The service response starts or stops a session; it does not carry the video stream.
-  \item Packet names are predictable and monotonically increasing within a stream.
-  \item Stop is idempotent; late Interests and packets from the stopped session are ignored.
+  \item Drone uses \texttt{createLiveStream}; Ground Station uses \texttt{openLiveStream}.
+  \item The response authorizes one Stream and returns its descriptor/key; video remains a separate named-data path.
+  \item Application lifecycle owns start/stop; Core stop is idempotent and suppresses retired-session callbacks.
 \end{itemize}
-\evidence{VideoPublisher::start/stop; startVideoAttempt; README Video Streaming Design}
+\evidence{ServiceProvider::createLiveStream; ServiceUser::openLiveStream; Spec 118 camera-start contract}
 \end{frame}
 
-\begin{frame}{Stream Packet and Session Model}
+\begin{frame}{How Prefetch Preserves Meaningful Data Names}
+\scriptsize
+\begin{center}
+\begin{tikzpicture}[node distance=0.32cm]
+  \node[strongbox,text width=2.2cm] (reserve) {APP reserves\\future semantic name};
+  \node[box,right=0.42cm of reserve,text width=2.4cm] (map) {Core publishes signed\\predictable Mapping};
+  \node[greenbox,right=0.42cm of map,text width=2.4cm] (resolve) {Consumer resolves\\cursor $\rightarrow$ name};
+  \node[orangebox,right=0.42cm of resolve,text width=2.4cm] (interest) {exact Interest waits\\before production};
+  \draw[flow] (reserve) -- (map);
+  \draw[flow] (map) -- (resolve);
+  \draw[flow] (resolve) -- (interest);
+
+  \node[box,below=0.65cm of map,text width=2.4cm] (produce) {APP encrypts and\\materializes payload};
+  \node[greenbox,right=0.42cm of produce,text width=2.4cm] (return) {signed Data satisfies\\the pending Interest};
+  \draw[flow] (reserve) |- (produce);
+  \draw[flow] (produce) -- (return);
+  \draw[flow] (interest) |- (return);
+\end{tikzpicture}
+\end{center}
+
+\vspace{0.1em}
+\begin{itemize}
+  \item Only Mapping names are sequential and constructible; cursor is an internal ordering key.
+  \item Payload Data keeps its immutable application name; Mapping carries names, never nested payload Data.
+  \item Late Mapping earns no prefetch credit.
+\end{itemize}
+\bluebox{Predict Mapping, then issue the real semantic-name Interest early: no selector discovery or Data-in-Data encapsulation.}
+\evidence{StreamNameMapBlock/Resolver; LiveStreamPublisher::reserveAhead; Spec 119 FR-001/FR-026}
+\end{frame}
+
+\begin{frame}{Semantic Name, Encryption, and Session Model}
 \footnotesize
 \begin{columns}[T]
-\begin{column}{0.52\textwidth}
+\begin{column}{0.50\textwidth}
 \begin{center}
 \begin{tikzpicture}[node distance=0.18cm]
-  \node[strongbox,minimum width=5.5cm] (name) {\texttt{/<drone>/video/<stream>/<seq>}};
-  \node[box,below=of name,minimum width=5.5cm] (session) {streamId + sessionEpoch + seq};
-  \node[box,below=of session,minimum width=5.5cm] (frame) {frameId + first/last seq + segment index/count};
-  \node[greenbox,below=of frame,minimum width=5.5cm] (payload) {contentType + captureMs + keyChunk + H264 payload};
-  \node[orangebox,below=of payload,minimum width=5.5cm] (fec) {optional codec-neutral FEC metadata};
+  \node[strongbox,text width=4.4cm,font=\tiny] (map) {\texttt{/STREAM-MAP/<id>/v=<V>/seq=<block>}};
+  \node[box,below=of map,text width=4.4cm] (binding) {cursor $\rightarrow$ original semantic Data name};
+  \node[box,below=of binding,text width=4.4cm,font=\tiny] (name) {\texttt{.../video/<stream>/v=<V>/.../seg=<S>}};
+  \node[greenbox,below=of name,text width=4.4cm] (payload) {Provider-signed Data: AES-GCM envelope of VideoPacket};
+  \node[orangebox,below=of payload,text width=4.4cm] (fec) {optional semantic repair Data over ciphertext};
 \end{tikzpicture}
 \end{center}
 \end{column}
-\begin{column}{0.44\textwidth}
+\begin{column}{0.42\textwidth}
 \textbf{Consumer guards}
 \begin{itemize}
-  \item reject an old stream id or session epoch
-  \item suppress duplicate packet sequence numbers
-  \item reorder chunks before decoder input
-  \item skip a late missing delta chunk to keep playback live
+  \item validate descriptor, Mapping chain, exact name, and expected Provider
+  \item authenticate AES-GCM name/session/cursor binding before decode
+  \item reject replay, stale session, wrong signer, tag, digest, or nonce
+  \item accept recovered opaque bytes only through the same AEAD gate
 \end{itemize}
 
-\bluebox{\texttt{VideoPacket} maps to core \texttt{StreamChunk} semantics without changing the existing UAV wire format.}
+\bluebox{Core never receives the key or plaintext; the cursor never replaces the payload's NDN name.}
 \end{column}
 \end{columns}
-\evidence{Stream.hpp; VideoPacket; videoPacketToStreamChunk; isCurrentVideoSessionPacket}
+\evidence{UavVideoAad; HybridMessageEnvelope; StreamNameMapBlock; Spec 118}
 \end{frame}
 
-\begin{frame}{Adaptive Receiver Control Loop}
-\footnotesize
+\begin{frame}{Paper-Guided Prefetch: Four Receiver Phases}
+\scriptsize
 \begin{center}
-\begin{tikzpicture}[node distance=0.45cm]
-  \node[strongbox,text width=3.0cm,minimum height=1.15cm] (observe) {
-    Observe\\[-0.15em]
-    \normalfont RTT, timeout/Nack, loss, duplicate, future probe, decoder backlog
-  };
-  \node[orangebox,right=0.75cm of observe,text width=3.2cm,minimum height=1.15cm] (policy) {
-    Policy\\[-0.15em]
-    \normalfont dominant pressure + reason
-  };
-  \node[greenbox,right=0.75cm of policy,text width=3.2cm,minimum height=1.15cm] (adapt) {
-    Adapt fetch\\[-0.15em]
-    \normalfont window, lookahead, lifetime, probe backoff, missing timeout
-  };
-  \draw[flow] (observe) -- (policy);
-  \draw[flow] (policy) -- (adapt);
-  \draw[flow] (adapt.south) -- ++(0,-0.55cm) -| node[below,pos=0.25,font=\tiny] {new samples} (observe.south);
+\begin{tikzpicture}[node distance=0.28cm]
+  \node[strongbox,text width=2.35cm,minimum height=1.15cm] (boot) {
+    1. Bootstrap\\[-0.12em]
+    \normalfont obtain the signed descriptor and a decoder-safe latest cursor};
+  \node[orangebox,right=0.36cm of boot,text width=2.35cm,minimum height=1.15cm] (chase) {
+    2. Chasing\\[-0.12em]
+    \normalfont burst exact Interests over already mapped names};
+  \node[box,right=0.36cm of chase,text width=2.35cm,minimum height=1.15cm] (adjust) {
+    3. Adjusting\\[-0.12em]
+    \normalfont detect the live edge and reduce excess outstanding work};
+  \node[greenbox,right=0.36cm of adjust,text width=2.35cm,minimum height=1.15cm] (fetch) {
+    4. Fetching\\[-0.12em]
+    \normalfont keep the measured number of future exact Interests pending};
+  \draw[flow] (boot) -- (chase);
+  \draw[flow] (chase) -- (adjust);
+  \draw[flow] (adjust) -- (fetch);
+\end{tikzpicture}
+\end{center}
 
-  \node[box,below=1.05cm of policy,minimum width=4.2cm] (advice) {bitrate recommendation};
-  \draw[dashflow] (policy) -- (advice);
+\vspace{0.55em}
+\begin{columns}[T]
+\begin{column}{0.48\textwidth}
+\textbf{Paper's demand estimate}
+\[
+  D_{sample}=\left\lceil\frac{DRD}{T}\right\rceil
+\]
+\begin{itemize}
+  \item $DRD$: exact Interest expression to matching Data reception
+  \item $T$: measured sample production period
+\end{itemize}
+\end{column}
+\begin{column}{0.48\textwidth}
+\textbf{NDNSF translation}
+\[
+  D_{packet}=D_{sample}\!\times\!itemsPerSample+reserve
+\]
+\begin{itemize}
+  \item phase window controls the real cursor horizon
+  \item segmented/FEC media keeps one bounded source-group reserve
+\end{itemize}
+\end{column}
+\end{columns}
+\evidence{Gusev et al. 2016; LiveStreamPrefetchController; StreamFetchDecision; Spec 123}
+\end{frame}
+
+\begin{frame}{The Interest Pipeline Stays Full Before APP Processing}
+\scriptsize
+\begin{center}
+\begin{tikzpicture}[node distance=0.26cm]
+  \node[strongbox,text width=2.0cm] (express) {express exact\\semantic-name Interest};
+  \node[greenbox,right=0.34cm of express,text width=1.8cm] (receive) {matching Data\\arrives};
+  \node[orangebox,right=0.34cm of receive,text width=1.85cm] (refill) {record DRD, free\\network slot};
+  \node[greenbox,right=0.34cm of refill,text width=1.85cm] (next) {schedule next\\future Interest};
+  \node[box,right=0.34cm of next,text width=2.1cm] (process) {validate, decrypt,\\FEC/reorder, callback};
+  \draw[flow] (express) -- (receive);
+  \draw[flow] (receive) -- (refill);
+  \draw[flow] (refill) -- (next);
+  \draw[flow] (next) -- (process);
+\end{tikzpicture}
+\end{center}
+
+\vspace{0.45em}
+\begin{columns}[T]
+\begin{column}{0.49\textwidth}
+\textbf{Two independent bounded owners}
+\begin{itemize}
+  \item network in-flight: consumes Interest capacity
+  \item payload processing: owns received cursors until APP completion
+  \item both sets reject duplicates and drain on stop
+\end{itemize}
+\end{column}
+\begin{column}{0.47\textwidth}
+\textbf{Why this matters}
+\begin{itemize}
+  \item signature validation, decryption, decoding, and GUI work cannot stall Interest refill
+  \item a pending exact Interest lets newly produced Data return immediately---approximately one-way network delay, not an extra RTT
+\end{itemize}
+\end{column}
+\end{columns}
+\bluebox{Reception refills the network pipeline before APP processing. Prefetch succeeds only when the Provider sees the exact Interest before materializing that Data.}
+\evidence{LiveStreamConsumerHandle::schedule; m\_payloadProcessing; payload expression timestamps; Spec 123}
+\end{frame}
+
+\begin{frame}{How UAV Video Uses the Generic NDNSF Stream}
+\scriptsize
+\begin{center}
+\begin{tikzpicture}[node distance=0.23cm]
+  \node[strongbox,text width=1.55cm] (capture) {camera\\H264 access unit};
+  \node[box,right=0.28cm of capture,text width=1.65cm] (protect) {AES-GCM\\encrypt once};
+  \node[orangebox,right=0.28cm of protect,text width=1.85cm] (split) {split into 12 source\\+ 1 XOR repair};
+  \node[box,right=0.28cm of split,text width=1.75cm] (reserve) {reserve semantic\\Data names};
+  \node[greenbox,right=0.28cm of reserve,text width=1.8cm] (publish) {publish Mapping,\\then signed Data};
+  \draw[flow] (capture) -- (protect);
+  \draw[flow] (protect) -- (split);
+  \draw[flow] (split) -- (reserve);
+  \draw[flow] (reserve) -- (publish);
+
+  \node[greenbox,below=0.75cm of publish,text width=1.75cm] (fetch) {future exact-name\\Interest};
+  \node[box,left=0.28cm of fetch,text width=1.75cm] (verify) {validate signer/name,\\decrypt, recover};
+  \node[orangebox,left=0.28cm of verify,text width=1.8cm] (assemble) {reassemble one\\access unit};
+  \node[box,left=0.28cm of assemble,text width=1.65cm] (decode) {GStreamer\\decode};
+  \node[strongbox,left=0.28cm of decode,text width=1.55cm] (display) {ground-station\\GUI};
+  \draw[flow] (publish) -- (fetch);
+  \draw[flow] (fetch) -- (verify);
+  \draw[flow] (verify) -- (assemble);
+  \draw[flow] (assemble) -- (decode);
+  \draw[flow] (decode) -- (display);
 \end{tikzpicture}
 \end{center}
 
 \vspace{0.35em}
-\bluebox{Fetch adaptation is automatic. A producer bitrate change is explicit: Stop the old session, then Start a coherent new session with the requested bitrate.}
-\evidence{VideoAdaptivePolicyInput/Decision; requestVideoLane; restartVideoWithBitrateAfterStop}
+\begin{itemize}
+  \item UAV APP owns H264, 3600-byte packetization, AES-GCM keys/AAD, 12+1 FEC, frame assembly, decoder, and GUI.
+  \item NDNSF Core owns signed 32-name Mapping blocks, cursor resolution, exact-name Interests, DRD, phase/window control, bounded retry, ordering, and opaque-byte recovery.
+  \item The application Data name remains semantic and Provider-signed; Mapping contains only cursor-to-name bindings, never video payload.
+\end{itemize}
+\evidence{UavGroundStationApp; UavVideoPipeline; StreamNameMapBlock; LiveStreamPublisher/ConsumerHandle}
 \end{frame}
 
-\begin{frame}{One-Loss XOR Forward Error Correction}
+\begin{frame}{What Was Wrong---and What Changed}
+\tiny
+\renewcommand{\arraystretch}{1.08}
+\begin{tabularx}{\textwidth}{p{3.25cm} Y Y}
+\toprule
+\textbf{Problem} & \textbf{Old behavior} & \textbf{Corrected behavior} \\
+\midrule
+Delay feedback & capture age treated as network RTT & exact Interest-to-Data DRD only \\
+Pipeline refill & waited for validation/decrypt/APP callback & refill immediately on Data reception \\
+Phase control & phase/window changed diagnostics only & Chasing/Adjusting window changes actual issued cursors \\
+Media demand & one extra packet reserved & one complete 12-packet source group reserved \\
+Publisher lifecycle & evicted Data could look ``not produced'' & materialized history distinguishes evicted from future \\
+Mapping work & 16 names per signed block & 32 names per block, still about 4.3 KiB \\
+Measurement & per-packet DEBUG trace perturbed latency & sampled frame trace retained; packet trace independently disabled \\
+\bottomrule
+\end{tabularx}
+
+\vspace{0.25em}
+\bluebox{This historical Spec 123 failure was prefetch underfill. It is distinct from the later Spec 156 inverse FPS/latency trend, which the next stage-level diagnostic localizes before network fetch/reassembly.}
+\evidence{Stream.cpp; TimelineTrace.cpp; Spec 123 evidence sequence}
+\end{frame}
+
+\begin{frame}{Corrected 60-Second MiniNDN Result}
+\scriptsize
+\begin{columns}[T]
+\begin{column}{0.52\textwidth}
+\renewcommand{\arraystretch}{1.18}
+\begin{tabularx}{\linewidth}{Y r}
+\toprule
+\textbf{Original UAV workload} & \textbf{Measured} \\
+\midrule
+Video / packetization & 8 Mbps, 3600 B, 12+1 \\
+Decoded frames & 1,830 \\
+Exact sampled identities & 174/174 (100\%) \\
+Decoder startup & 18 ms \\
+Capture $\rightarrow$ decode p50 & 142.654 ms \\
+Capture $\rightarrow$ decode p95 & 205.946 ms \\
+Capture $\rightarrow$ decode p99 & 269.402 ms \\
+Decode $\rightarrow$ widget p95 & 4.076 ms \\
+\bottomrule
+\end{tabularx}
+\end{column}
+\begin{column}{0.44\textwidth}
+\textbf{Network and safety evidence}
+\begin{itemize}
+  \item Provider future hits: 7,153/7,153
+  \item Mapping + payload work: 13.435 Interests/frame
+  \item only 3.35\% above the configured 13 stream items/frame
+  \item FEC recovered 11 opaque items
+  \item rejected correlations: 0
+  \item security failures: 0
+  \item pending/in-flight at stop: 0/0
+\end{itemize}
+\end{column}
+\end{columns}
+
+\vspace{0.35em}
+\bluebox{The original high-packet-rate UAV stream now stays near the live edge; the earlier 1,052 ms result is superseded for this corrected zero-loss configuration.}
+\evidence{results/spec123-paper-prefetch-sample-reserve-20260719-060053; Spec 123 completion summary}
+\end{frame}
+
+\begin{frame}{Why Higher FPS Shows Lower Latency}
+\scriptsize
+\begin{columns}[T]
+\begin{column}{0.66\textwidth}
+  \centering
+  \includegraphics[width=\linewidth]{assets/spec157-stage-latency.pdf}
+\end{column}
+\begin{column}{0.31\textwidth}
+\textbf{Strict per-frame replay}
+\begin{itemize}
+  \item 15,969/15,969 exact timelines; 100\% coverage
+  \item 10$\rightarrow$60 FPS mean end-to-end reduction: 81.923 ms
+  \item capture/encode + materialization explain 99.392\% of that reduction
+  \item source segments/frame: 24.045$\rightarrow$5.103
+  \item materialized$\rightarrow$decoder input: 2.320$\rightarrow$2.884 ms
+\end{itemize}
+\end{column}
+\end{columns}
+
+\vspace{0.25em}
+\bluebox{The inverse FPS/latency trend is not evidence of insufficient future Interests: fetch/reassembly does not improve. At fixed bitrate, higher FPS produces smaller frames and less pre-network work per frame.}
+\evidence{Spec 157; immutable offline replay of the six Spec 156 cells; no MiniNDN rerun}
+\end{frame}
+
+\begin{frame}{Optional XOR Recovery over Opaque Ciphertext}
 \footnotesize
 \begin{columns}[T]
 \begin{column}{0.62\textwidth}
 \begin{center}
 \begin{tikzpicture}[node distance=0.35cm]
-  \node[greenbox,minimum width=1.2cm] (d0) {$D_0$};
-  \node[greenbox,right=of d0,minimum width=1.2cm] (d1) {$D_1$};
-  \node[redbox,right=of d1,minimum width=1.2cm] (d2) {$D_2$ lost};
-  \node[greenbox,right=of d2,minimum width=1.2cm] (d3) {$D_3$};
+  \node[greenbox,minimum width=1.2cm] (d0) {$E_0$};
+  \node[greenbox,right=of d0,minimum width=1.2cm] (d1) {$E_1$};
+  \node[redbox,right=of d1,minimum width=1.2cm] (d2) {$E_2$ lost};
+  \node[greenbox,right=of d2,minimum width=1.2cm] (d3) {$E_3$};
   \node[orangebox,right=0.55cm of d3,minimum width=1.45cm] (p) {$P$};
   \node[strongbox,below=0.8cm of d2,minimum width=5.6cm] (recover) {
-    $D_2 = P \oplus D_0 \oplus D_1 \oplus D_3$
+    $E_2 = P \oplus E_0 \oplus E_1 \oplus E_3$
   };
   \draw[flow] (d0) -- (recover);
   \draw[flow] (d1) -- (recover);
@@ -637,46 +848,44 @@
 \end{center}
 \end{column}
 \begin{column}{0.34\textwidth}
-\textbf{Current behavior}
+\textbf{Contract v1}
 \begin{itemize}
-  \item one parity shard per frame by default
-  \item original lengths carried in metadata
-  \item recover before decoder insertion
-  \item more than one missing data shard is not recoverable
+  \item disabled by default; at most one XOR repair item
+  \item Core sees encrypted opaque bytes, not H264 plaintext
+  \item signed metadata binds Provider, names, lengths, and digests
+  \item recovered bytes are AEAD-checked and never cached as original Data
 \end{itemize}
 \end{column}
 \end{columns}
 
 \vspace{0.55em}
-\bluebox{FEC reduces retransmission delay for a single hole; reorder and stale-frame skipping preserve liveness when recovery is impossible.}
-\evidence{VideoPublisher::publishCurrentFrame; processFecChunk; attemptAndRecoverFrame}
+\bluebox{One-loss recovery is deterministically correct, but current MiniNDN runs showed no recovery event or performance gain.}
+\evidence{LiveStreamFecOptions; publishGroup; FecRecovered provenance; Spec 118/119 evidence}
 \end{frame}
 
-\begin{frame}{Recording Is a Named Object, Not a Live Stream}
+\begin{frame}{One Canonical Video Stream, Two Uses}
 \footnotesize
 \begin{center}
 \begin{tikzpicture}[node distance=0.35cm]
-  \node[strongbox,minimum width=2.35cm] (camera) {camera capture};
-  \node[greenbox,above right=0.55cm and 0.8cm of camera,minimum width=3.1cm] (live) {live H264 stream};
-  \node[orangebox,below right=0.55cm and 0.8cm of camera,minimum width=3.1cm] (record) {local recording};
-  \node[box,right=0.7cm of live,minimum width=3.0cm] (consumer) {adaptive stream consumer};
-  \node[box,right=0.7cm of record,minimum width=3.0cm] (repo) {embedded RepoCore + SQLite};
-  \node[greenbox,right=0.55cm of repo,minimum width=2.0cm] (playback) {GS playback};
-  \draw[flow] (camera) -- (live);
-  \draw[flow] (camera) -- (record);
-  \draw[flow] (live) -- node[above,font=\tiny] {ongoing seq} (consumer);
-  \draw[flow] (record) -- node[above,font=\tiny] {AES-256-GCM chunks} (repo);
-  \draw[flow] (repo) -- node[above,font=\tiny] {manifest + exact names} (playback);
+  \node[strongbox,minimum width=2.2cm] (camera) {camera capture};
+  \node[greenbox,right=0.55cm of camera,minimum width=3.0cm] (publish) {encode + encrypt + sign once};
+  \node[box,above right=0.5cm and 0.7cm of publish,minimum width=2.8cm] (viewer) {live consumer};
+  \node[orangebox,below right=0.5cm and 0.7cm of publish,minimum width=2.8cm] (repo) {immutable feed $\rightarrow$ Repo};
+  \node[greenbox,right=0.6cm of repo,minimum width=2.1cm] (playback) {stream replay};
+  \draw[flow] (camera) -- (publish);
+  \draw[flow] (publish) -- (viewer);
+  \draw[flow] (publish) -- (repo);
+  \draw[flow] (repo) -- (playback);
 \end{tikzpicture}
 \end{center}
 
 \vspace{0.65em}
 \begin{itemize}
-  \item Capture, recording, and viewing have independent lifecycles.
-  \item The manifest and catalog discover durable chunks under publisher-owned names.
-  \item Playback fetches and decrypts named chunks; it does not continue the live stream session.
+  \item Viewer and retention lifecycles are independent; the media representation is not.
+  \item Repo stores the original semantic name, ciphertext, signature, and wire digest unchanged.
+  \item Historical playback reuses normal LiveStream validation, decryption, ordering, and decoding.
 \end{itemize}
-\evidence{VideoPublisher recording path; RepoCore; Ground Station recording playback}
+\evidence{Core PublishedPacketFeed; CanonicalVideoRecordingManifest; Spec 120 acceptance evidence}
 \end{frame}
 
 \begin{frame}{Ground-Station Object Detection Callback}
@@ -750,7 +959,7 @@
 \end{frame}
 
 \begin{frame}{Implemented Foundation and Current Boundary}
-\footnotesize
+\scriptsize
 \begin{columns}[T]
 \begin{column}{0.49\textwidth}
 \textbf{Implemented foundation}
@@ -759,7 +968,7 @@
   \item Targeted command path and typed control state
   \item operator authority and safety gates
   \item multi-drone mission assignment and compensation
-  \item adaptive H264 delivery with session guards and XOR FEC
+  \item semantic-name LiveStream: AES-GCM, signed Mapping, bounded prefetch, optional XOR
   \item encrypted recording discovery and playback
 \end{itemize}
 \end{column}
@@ -775,9 +984,9 @@
 \end{column}
 \end{columns}
 
-\vspace{0.65em}
-\bluebox{Next: use repeated real-device campaigns to harden safety and recovery, while moving only genuinely app-neutral mechanisms back into NDNSF Core.}
-\evidence{NDNSF-UAV-APP/README.md: Current Boundary and Comparison With QGroundControl}
+\vspace{0.25em}
+\bluebox{Next: run paired zero-loss and realistic loss/jitter matrices before promoting the corrected future-prefetch profile to the runtime default.}
+\evidence{NDNSF-UAV-APP/README.md; Spec 118/119 contracts; Spec 123 completion summary and audit}
 \end{frame}
 
 \end{document}

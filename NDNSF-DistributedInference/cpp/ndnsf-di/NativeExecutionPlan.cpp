@@ -493,6 +493,17 @@ roleSpecFor(const NativeExecutionPlan& plan,
             const NativeProviderAssignment& assignment,
             const std::string& localProvider)
 {
+  return roleSpecFor(plan, role, sessionId, assignment, localProvider, 0);
+}
+
+RoleSpec
+roleSpecFor(const NativeExecutionPlan& plan,
+            const std::string& role,
+            const std::string& sessionId,
+            const NativeProviderAssignment& assignment,
+            const std::string& localProvider,
+            std::size_t sequence)
+{
   RoleSpec spec;
   spec.role = role;
   bool knownRole = false;
@@ -505,6 +516,19 @@ roleSpecFor(const NativeExecutionPlan& plan,
   if (!knownRole) {
     throw std::out_of_range("NativeExecutionPlan has no role: " + role);
   }
+
+  const auto operationIndexFor = [&plan, sequence] (
+                                  const NativeDependencySpec& dependency) {
+    if (!dependency.useNdnsfDataV1 || sequence == 0) {
+      return dependency.collectiveOperationIndex;
+    }
+    if (plan.streamingOperationStride == 0) {
+      throw std::invalid_argument(
+        "streamed NDNSF_DATA_V1 plan is missing operation stride");
+    }
+    return dependency.collectiveOperationIndex +
+           sequence * plan.streamingOperationStride;
+  };
 
   for (const auto& dep : plan.dependencies) {
     for (const auto& consumer : dep.consumers) {
@@ -526,15 +550,16 @@ roleSpecFor(const NativeExecutionPlan& plan,
                                       sessionId,
                                       dep.keyScope,
                                       producer,
-                                      producer,
+                                      consumer,
                                       dep.topicPrefix,
-                                      producerProvider),
+                                      producerProvider,
+                                      sequence),
           expectedSegments,
           dep.expectedBytes,
           dep.tensors,
         };
         edge.useNdnsfDataV1 = dep.useNdnsfDataV1;
-        edge.collectiveOperationIndex = dep.collectiveOperationIndex;
+        edge.collectiveOperationIndex = operationIndexFor(dep);
         edge.collectiveProducerRank = dep.collectiveProducerRank;
         edge.collectiveSourceLayoutDigest = dep.collectiveSourceLayoutDigest;
         edge.collectiveTargetLayoutDigest = dep.collectiveTargetLayoutDigest;
@@ -560,6 +585,8 @@ roleSpecFor(const NativeExecutionPlan& plan,
         edge.transportScope = dep.keyScope;
         edge.producerProvider = producerProvider;
         edge.topicPrefix = dep.topicPrefix;
+        edge.operationKind = dep.operationKind;
+        edge.round = sequence;
         spec.inputs.push_back(std::move(edge));
       }
     }
@@ -591,13 +618,14 @@ roleSpecFor(const NativeExecutionPlan& plan,
                                       producer,
                                       consumer,
                                       dep.topicPrefix,
-                                      producerProvider),
+                                      producerProvider,
+                                      sequence),
           expectedSegments,
           dep.expectedBytes,
           dep.tensors,
         };
         edge.useNdnsfDataV1 = dep.useNdnsfDataV1;
-        edge.collectiveOperationIndex = dep.collectiveOperationIndex;
+        edge.collectiveOperationIndex = operationIndexFor(dep);
         edge.collectiveProducerRank = dep.collectiveProducerRank;
         edge.collectiveSourceLayoutDigest = dep.collectiveSourceLayoutDigest;
         edge.collectiveTargetLayoutDigest = dep.collectiveTargetLayoutDigest;
@@ -623,6 +651,8 @@ roleSpecFor(const NativeExecutionPlan& plan,
         edge.transportScope = dep.keyScope;
         edge.producerProvider = producerProvider;
         edge.topicPrefix = dep.topicPrefix;
+        edge.operationKind = dep.operationKind;
+        edge.round = sequence;
         spec.outputs.push_back(std::move(edge));
       }
     }

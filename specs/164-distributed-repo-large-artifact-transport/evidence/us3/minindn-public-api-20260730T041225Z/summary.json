@@ -1,0 +1,50 @@
+{
+  "artifact": {
+    "contentDigest": "88fffae5577874838ab0eb22aedf2085e5481338f7ad405e508c44734347175a",
+    "digestAlgorithm": "sha256",
+    "formatVersion": "artifact-manifest-v2",
+    "logicalName": "/spec164/publisher/artifact",
+    "policyEpoch": "spec164-policy-1",
+    "publisherIdentity": "/spec164/publisher",
+    "rootManifestName": "/spec164/publisher/artifact/root",
+    "sizeBytes": 32768
+  },
+  "elapsedMs": 7120.29,
+  "fetch": {
+    "destinationVisible": true,
+    "operationId": "artifact-61831519cab4c0e5ea84c438c1e7241c8a1a4a9dcef258cd71bbf6646c09d756",
+    "reusedBytes": 0,
+    "sourceReplicas": [
+      "/spec164/repo"
+    ],
+    "transferredBytes": 32768
+  },
+  "network": {
+    "publicationMetrics": {
+      "interestCount": 8,
+      "logicalBytes": 32768,
+      "retransmissionCount": 0,
+      "segments": 8,
+      "wireBytes": 35992
+    },
+    "retrievalMetrics": {
+      "interestCount": 8,
+      "logicalBytes": 32768,
+      "retransmissionCount": 0,
+      "segments": 8,
+      "wireBytes": 35912
+    }
+  },
+  "performanceClaim": false,
+  "progressEvents": 3,
+  "publish": {
+    "achievedReplicas": 1,
+    "operationId": "artifact-b1beafd5ae79c8afeb4776c154b74c90b0a78215bdb9377269e304913046843d",
+    "receiptIds": [
+      "receipt-a20533532eb9ba55e92674b720cda26f0f3a65f714d7e69cc4ffbdb9bc3594e4"
+    ],
+    "requestedReplicas": 1
+  },
+  "schema": "ndnsf-repo-spec164-public-api-minindn-v1",
+  "verdict": "PASS"
+}

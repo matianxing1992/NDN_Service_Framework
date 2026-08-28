@@ -1,6 +1,10 @@
 #ifndef NDNSF_DISTRIBUTED_INFERENCE_ASYNC_DATAFLOW_RUNTIME_HPP
 #define NDNSF_DISTRIBUTED_INFERENCE_ASYNC_DATAFLOW_RUNTIME_HPP
 
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/DecodeStateIdentity.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/ConversationStateBinding.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/GenerationEpochLineage.hpp"
+
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -133,17 +137,70 @@ struct RoleSpec
   std::vector<DependencyEdge> outputs;
   std::string requestId;
   std::uint64_t attemptEpoch = 0;
+  // Request-scoped inference epoch. Epoch zero is prefill; every later epoch
+  // must consume the Provider-owned state committed by its direct predecessor.
+  std::uint64_t inferenceEpoch = 0;
+  // Canonical model-token lineage shared by every role in this inference
+  // epoch. The worker binds edge-local producer/consumer fields before
+  // publishing it inside the encrypted dependency payload.
+  std::optional<GenerationEpochLineageV1> generationLineage;
+  std::vector<std::string> stateInputNames;
+  std::vector<std::string> stateOutputNames;
+  // Exact adapter-certified state identities for this transition. Prefill has
+  // no predecessor; every decode epoch carries both values. The Provider
+  // runtime compares the predecessor before invoking the runner and stages the
+  // candidate only after execution succeeds.
+  std::optional<DecodeStateIdentityV1> predecessorDecodeStateIdentity;
+  std::optional<DecodeStateIdentityV1> candidateDecodeStateIdentity;
+  // A resumed conversation Request may explicitly restore one exact
+  // Provider-local state entry.  This is separate from the request-local
+  // predecessor/candidate transition above: the binding names the retained
+  // prior state, while the candidate identity must belong to this fresh
+  // request/generation.  The runtime injects the restored bundle only after
+  // exact lookup succeeds; callers may not provide the internal scope.
+  std::optional<ConversationStateBinding> conversationStateBinding;
+  std::uint64_t conversationStateLookupNowMs = 0;
+  // The ordinary role path commits state after worker publication.  The epoch
+  // coordinator defers this commit until its token/feedback publication has
+  // also been accepted.
+  bool deferStateCommit = false;
 };
 
 struct RoleExecutionContext
 {
+  using StreamEventSink = std::function<bool(const std::vector<std::uint8_t>&)>;
+
   std::string sessionId;
   std::string role;
+  std::string requestId;
+  std::uint64_t attemptEpoch = 0;
+  std::uint64_t inferenceEpoch = 0;
+  // Set only while a stateful adapter owns an entire streamed decode loop.
+  // CUDA state outputs remain in the adapter's persistent device bindings for
+  // intermediate epochs; the adapter exports one final state bundle only
+  // after the stream has reached a terminal token so Provider state
+  // bookkeeping can commit the request atomically.
+  bool streamingStateExecution = false;
+  // Authenticated logical token lineage for this exact role/epoch.  Adapter
+  // runners use it only to materialize graph-declared positional inputs; it
+  // is copied from the sealed RoleSpec and never inferred from activation
+  // tensor shape or application-controlled metadata.
+  std::optional<GenerationEpochLineageV1> generationLineage;
+  // Number of newly admitted logical tokens represented by this invocation.
+  // This is derived from exact predecessor/candidate state identities by the
+  // Provider worker.  It lets downstream stages create position/mask inputs
+  // even though they receive activations rather than input_ids.
+  std::uint32_t generationInputTokenCount = 0;
   std::map<std::string, TensorBundle> inputsByScope;
   // Exact request-scoped dependency and redistribution contracts corresponding
   // to inputsByScope. Adapter runners use these to apply GATHER/SCATTER/RESHARD
   // rather than guessing layout semantics from tensor names.
   std::map<std::string, DependencyEdge> inputEdgesByScope;
+  // Set only for the request's terminal streamed role.  Native adapters may
+  // publish an already serialized application event through this sink while
+  // executing incremental decode; the worker/handler owns Core admission and
+  // terminal End/Response, and dependency transport never carries events.
+  StreamEventSink streamEventSink;
 };
 
 using RoleRunner = std::function<std::map<std::string, TensorBundle>(

@@ -1,0 +1,511 @@
+{
+  "files": [
+    {
+      "bytes": 1441,
+      "path": "specs/107-ndnsf-di-minindn-gate-recovery/checklists/requirements.md",
+      "sha256": "sha256:681724bfb37ed577011113ddbc5851f6e7550ef2cb462078724ff5dc1c357742"
+    },
+    {
+      "bytes": 4182,
+      "path": "specs/107-ndnsf-di-minindn-gate-recovery/contracts/candidate-lineage.md",
+      "sha256": "sha256:9e373497b0bd30d57e4319d95a8ed83350c0eefa83859e89805e6c1d64177669"
+    },
+    {
+      "bytes": 991,
+      "path": "specs/107-ndnsf-di-minindn-gate-recovery/contracts/generation-session.md",
+      "sha256": "sha256:ba958cafec9da2cb0642d91fd246eb70cf186d3818dd60c3fcf25fb42347f3c0"
+    },
+    {
+      "bytes": 773,
+      "path": "specs/107-ndnsf-di-minindn-gate-recovery/contracts/live-fault-record.md",
+      "sha256": "sha256:69afeea6acd41ef03fc0ad72ad419febed4b30b206036ad10d7fcd54b5a990e6"
+    },
+    {
+      "bytes": 894,
+      "path": "specs/107-ndnsf-di-minindn-gate-recovery/contracts/successor-release-gate.md",
+      "sha256": "sha256:66ee58c0eeb988ef7ecba3e703b54a269cbe3dd3a6ef6018353dafa3f0525458"
+    },
+    {
+      "bytes": 770,
+      "path": "specs/107-ndnsf-di-minindn-gate-recovery/contracts/timing-and-bottleneck.md",
+      "sha256": "sha256:d841b0830d8ea5b5623d91ccbdc01cab3704604fdbafe284ce9f6adfce561e26"
+    },
+    {
+      "bytes": 5153,
+      "path": "specs/107-ndnsf-di-minindn-gate-recovery/data-model.md",
+      "sha256": "sha256:01b29af14bca2fab1c4dd535b177bbecfee8e73a325ccc218fb4953066aace99"
+    },
+    {
+      "bytes": 413,
+      "path": "specs/107-ndnsf-di-minindn-gate-recovery/diagnostic-campaign-profile.json",
+      "sha256": "sha256:e2c0ef96e27f33cd36793f4e0b7c4947f68dbcd18fae9e2edcdb3173511cb44b"
+    },
+    {
+      "bytes": 2373,
+      "path": "specs/107-ndnsf-di-minindn-gate-recovery/diagnostic-command-profile.json",
+      "sha256": "sha256:487ab9820f068eb907da3ffdb4633ca8e8b74fb5df1d52016a9b561c1f0cb622"
+    },
+    {
+      "bytes": 897,
+      "path": "specs/107-ndnsf-di-minindn-gate-recovery/diagnostic-workload.json",
+      "sha256": "sha256:567607c7096dc96928acc56c0a7311928c2c530680399ad862579b07e34432f2"
+    },
+    {
+      "bytes": 7453,
+      "path": "specs/107-ndnsf-di-minindn-gate-recovery/evidence/artifact-reuse-preflight.md",
+      "sha256": "sha256:90f2df5b359370bfc9749816664898388e7befe4430ad2aca8051683d688ec1d"
+    },
+    {
+      "bytes": 2082,
+      "path": "specs/107-ndnsf-di-minindn-gate-recovery/evidence/fault-tests.md",
+      "sha256": "sha256:d4c547b050ffdcd40da9caa9635ec6f1395e20858a10951aaa0bc7255e4f9207"
+    },
+    {
+      "bytes": 2218,
+      "path": "specs/107-ndnsf-di-minindn-gate-recovery/evidence/foundation-tests.md",
+      "sha256": "sha256:bf757ffbabfa72dbba02a4f06518e65f5ca130c12f3352fc6cb7b3642886c45a"
+    },
+    {
+      "bytes": 1635,
+      "path": "specs/107-ndnsf-di-minindn-gate-recovery/evidence/lineage-baseline.md",
+      "sha256": "sha256:a309988efe16103bb1c7dfb0da258dbdbe7690e1418d9ab67adff1a1271dfbe0"
+    },
+    {
+      "bytes": 5479,
+      "path": "specs/107-ndnsf-di-minindn-gate-recovery/evidence/pre-implementation-audit.md",
+      "sha256": "sha256:427f62fee55ff82d729d5bb8d95254f1c6282831971bcc020e245dec74ef688e"
+    },
+    {
+      "bytes": 5187,
+      "path": "specs/107-ndnsf-di-minindn-gate-recovery/experiment-plan.md",
+      "sha256": "sha256:eceaba123e08e5442f8109b2d6fce0aff9e8e6ab497dcd33b298eee1ac0091aa"
+    },
+    {
+      "bytes": 1263,
+      "path": "specs/107-ndnsf-di-minindn-gate-recovery/lineage-lock.json",
+      "sha256": "sha256:1c5f7c4b5e2c47b4b27662ecf677903b9b04349e57fb8c8fe601546c636556ae"
+    },
+    {
+      "bytes": 18885,
+      "path": "specs/107-ndnsf-di-minindn-gate-recovery/plan.md",
+      "sha256": "sha256:f53bfa7ab637eae24ab6bb55792bf1329823319ee86ae8db10c53627937bc226"
+    },
+    {
+      "bytes": 11502,
+      "path": "specs/107-ndnsf-di-minindn-gate-recovery/quickstart.md",
+      "sha256": "sha256:249e15dc4aa5ef3b118fbd75e7eb138f456a59ebfb2cbe58b8c4f62b7457b376"
+    },
+    {
+      "bytes": 5662,
+      "path": "specs/107-ndnsf-di-minindn-gate-recovery/research.md",
+      "sha256": "sha256:11c805fe84aa853fa2e5817a2c1637e5f9c7f33556f388bf8847595f83b9cacc"
+    },
+    {
+      "bytes": 21384,
+      "path": "specs/107-ndnsf-di-minindn-gate-recovery/spec.md",
+      "sha256": "sha256:f7266d50f4f8ffdc36632f718de5c609cdf4d073adf78c8fa43ee9d34ea99cb6"
+    },
+    {
+      "bytes": 19538,
+      "path": "specs/107-ndnsf-di-minindn-gate-recovery/tasks.md",
+      "sha256": "sha256:7b661310979610a487662c00baa12311d0f1ad44c0318e708e5ff3123057ec3e"
+    },
+    {
+      "bytes": 2537,
+      "path": "specs/107-ndnsf-di-minindn-gate-recovery/traceability.md",
+      "sha256": "sha256:632070dbb4a993a18df375b5af96c0a821a070e400c23a958e426f12dc6f38ab"
+    },
+    {
+      "bytes": 2556,
+      "path": "specs/109-ndnsf-di-itiger-qwen-scaling/baselines/code-reality.md",
+      "sha256": "sha256:9766c5a33c0f6e736116f8bdb2c7a3496de5ed6abcf169351a9352ff2d0c0ee4"
+    },
+    {
+      "bytes": 6265,
+      "path": "specs/109-ndnsf-di-itiger-qwen-scaling/baselines/predecessor-lock.json",
+      "sha256": "sha256:f53ce66cd62ea829f99aee93cfdcf327454da640fa02bbc257932837e9db4e56"
+    },
+    {
+      "bytes": 569,
+      "path": "specs/109-ndnsf-di-itiger-qwen-scaling/baselines/source-snapshot.json",
+      "sha256": "sha256:ee74b75f525784b5456fa5a554c47099f9b9ba1c1bf63ec7316c30c3111ed2f9"
+    },
+    {
+      "bytes": 1292,
+      "path": "specs/109-ndnsf-di-itiger-qwen-scaling/checklists/audit-remediation.md",
+      "sha256": "sha256:f4bc0082f6ad4d2a9f1d3f74a008dedb9c3af1d97115a04451af766cfc6cab29"
+    },
+    {
+      "bytes": 10138,
+      "path": "specs/109-ndnsf-di-itiger-qwen-scaling/checklists/post-implementation-audit.md",
+      "sha256": "sha256:687396e1a738f8399f1ab9ef3720b6166b224ec1daa0a9bf2e69b163a36b6e2e"
+    },
+    {
+      "bytes": 4866,
+      "path": "specs/109-ndnsf-di-itiger-qwen-scaling/checklists/pre-implementation-audit.md",
+      "sha256": "sha256:c6514da6278db800f906d857099b84da1eb61c2146192cc68a857ae11f00aa18"
+    },
+    {
+      "bytes": 1364,
+      "path": "specs/109-ndnsf-di-itiger-qwen-scaling/checklists/requirements.md",
+      "sha256": "sha256:db7e4e58709151ddfe73a8af1e14f8f142b4acb9a5159aee61a3821d3292be30"
+    },
+    {
+      "bytes": 6741,
+      "path": "specs/109-ndnsf-di-itiger-qwen-scaling/completion-summary.md",
+      "sha256": "sha256:32fd54c31951db35a53cdcf6df37fd052a454dd5c19a544eac7a88e5bcf0c5c9"
+    },
+    {
+      "bytes": 2043,
+      "path": "specs/109-ndnsf-di-itiger-qwen-scaling/contracts/operator-cli.md",
+      "sha256": "sha256:e9f6219cc07370fbbf1becdab39afca1c15be7ffcb1a839ee5dac3039b8f07a3"
+    },
+    {
+      "bytes": 1835,
+      "path": "specs/109-ndnsf-di-itiger-qwen-scaling/contracts/predecessor-gate.schema.json",
+      "sha256": "sha256:37fe964fb31d43fc745966da9cd918ec0955c9eef54fe1b429aa6d15204f87fc"
+    },
+    {
+      "bytes": 11425,
+      "path": "specs/109-ndnsf-di-itiger-qwen-scaling/contracts/qwen-experiment-evidence.schema.json",
+      "sha256": "sha256:41960d8de63bd4c2cae2b61cd524de7d417732dbafb2dc36982887cf3997ff49"
+    },
+    {
+      "bytes": 3744,
+      "path": "specs/109-ndnsf-di-itiger-qwen-scaling/contracts/qwen-experiment-profile.schema.json",
+      "sha256": "sha256:29a8226eb5e21b3f31f173d18589894bb5824c7b01babcf29976d2d2b681a6aa"
+    },
+    {
+      "bytes": 3589,
+      "path": "specs/109-ndnsf-di-itiger-qwen-scaling/contracts/scale-matrix.schema.json",
+      "sha256": "sha256:8a413efe08aa1dadd4541e3b56c4255d360f85e323578f532f581aa6e523552a"
+    },
+    {
+      "bytes": 1952,
+      "path": "specs/109-ndnsf-di-itiger-qwen-scaling/contracts/semantic-validator.md",
+      "sha256": "sha256:10238cafd3aabeec3e5866ffe22f25009ec723255049e39040d84af821d48e9e"
+    },
+    {
+      "bytes": 1753,
+      "path": "specs/109-ndnsf-di-itiger-qwen-scaling/contracts/source-snapshot.schema.json",
+      "sha256": "sha256:657c4f23c0709a8193b1e6647053cbc02cf040e725c8fbf382cd3f36f6891e54"
+    },
+    {
+      "bytes": 6319,
+      "path": "specs/109-ndnsf-di-itiger-qwen-scaling/data-model.md",
+      "sha256": "sha256:e3935cf11c3fb869eb7a275796fe091140ca6b4d8f0cb7311fcd373d3536a590"
+    },
+    {
+      "bytes": 3335,
+      "path": "specs/109-ndnsf-di-itiger-qwen-scaling/erratum.md",
+      "sha256": "sha256:25ec5e6107a96853356963fcadaebfd4e88c22849610c73bdf5c83ecd3e084d7"
+    },
+    {
+      "bytes": 1955,
+      "path": "specs/109-ndnsf-di-itiger-qwen-scaling/evidence/0.5b-candidate-verdict.md",
+      "sha256": "sha256:cf1a085c9f7373247f1401f49b319a2ce9549ef237a4885fc90703ab565403fe"
+    },
+    {
+      "bytes": 1761,
+      "path": "specs/109-ndnsf-di-itiger-qwen-scaling/evidence/0.5b-reference-verdict.md",
+      "sha256": "sha256:59ae9f9e73d2324df76c4163336597963671519a63b09ae9a0526b832fdf9d4f"
+    },
+    {
+      "bytes": 1306,
+      "path": "specs/109-ndnsf-di-itiger-qwen-scaling/evidence/capacity-report.md",
+      "sha256": "sha256:83da834a90e0f7ec3d96c02040a8d54457cad1966f70edfe4317a2f6e7ab3762"
+    },
+    {
+      "bytes": 1634,
+      "path": "specs/109-ndnsf-di-itiger-qwen-scaling/evidence/large-model-capacity.md",
+      "sha256": "sha256:33f329b47a9579076900f1496f19b8ab17d6f7711e2433e3c9e587169e9eedae"
+    },
+    {
+      "bytes": 908,
+      "path": "specs/109-ndnsf-di-itiger-qwen-scaling/evidence/preflight-0.5b.md",
+      "sha256": "sha256:19a565085e4b71faf7f39051549d0ec12b7a567a49195ee6ff800a49a96dd314"
+    },
+    {
+      "bytes": 1342,
+      "path": "specs/109-ndnsf-di-itiger-qwen-scaling/evidence/scaling-report.md",
+      "sha256": "sha256:11ba1fcdff4e03298fc4719a0e4c5d8feb9389ee50e0d918aa7534156ee06a29"
+    },
+    {
+      "bytes": 2481,
+      "path": "specs/109-ndnsf-di-itiger-qwen-scaling/evidence/storage-verdict.md",
+      "sha256": "sha256:a22787ccb34730b3c9965cdbc0cb6639b76e8ba765cbd297ebfc4644d155494a"
+    },
+    {
+      "bytes": 1509,
+      "path": "specs/109-ndnsf-di-itiger-qwen-scaling/evidence/transfer-path.md",
+      "sha256": "sha256:6614d6b13d546b52049935820caa0ab164fb94ac59877c27f03bd5cde33273b6"
+    },
+    {
+      "bytes": 1512,
+      "path": "specs/109-ndnsf-di-itiger-qwen-scaling/experiment/0.5b-reference.json",
+      "sha256": "sha256:fb30c0ec080ba4c4f8e3f6e401a3741b7d42c7c952737ef6afa71e619eefd555"
+    },
+    {
+      "bytes": 15234,
+      "path": "specs/109-ndnsf-di-itiger-qwen-scaling/plan.md",
+      "sha256": "sha256:616f3c7b4cc604f45ce1c62f75de0af045cc5680d9d9d03135e91976643e8fcb"
+    },
+    {
+      "bytes": 5559,
+      "path": "specs/109-ndnsf-di-itiger-qwen-scaling/quickstart.md",
+      "sha256": "sha256:14ad8962497dcc46601d2e48ddc707d93a8eceeb73a1e74ab00475b244967ee3"
+    },
+    {
+      "bytes": 970,
+      "path": "specs/109-ndnsf-di-itiger-qwen-scaling/release-gate.json",
+      "sha256": "sha256:b5dc4dd31d2708aebf1262063aa29e458ba71c90822d650085fb87e9bad59011"
+    },
+    {
+      "bytes": 9375,
+      "path": "specs/109-ndnsf-di-itiger-qwen-scaling/research.md",
+      "sha256": "sha256:44cd139a36231f2792cbbdad535f150b80ddbf024cb9f5727a6d263466ef5393"
+    },
+    {
+      "bytes": 22787,
+      "path": "specs/109-ndnsf-di-itiger-qwen-scaling/spec.md",
+      "sha256": "sha256:68aa61b686ab463abb3c60bef0a14cbb5808b4fc4108fd11907cf501805947e4"
+    },
+    {
+      "bytes": 33497,
+      "path": "specs/109-ndnsf-di-itiger-qwen-scaling/tasks.md",
+      "sha256": "sha256:b802b1abb9ec782ad057956b04709fc00cc1ea50c8fcc90171e87448ef4b8b44"
+    },
+    {
+      "bytes": 7893,
+      "path": "specs/109-ndnsf-di-itiger-qwen-scaling/traceability.md",
+      "sha256": "sha256:d2fcba01392fca577e6e8392e732b7193c396950b966759d4bff04831e7ace1d"
+    },
+    {
+      "bytes": 11692,
+      "path": "specs/110-itiger-qwen-live-inference/checklists/pre-implementation-audit.md",
+      "sha256": "sha256:bc97400e1b1c2edae1174dede11d74aea4de0491b3ced06dc8adacc28f228133"
+    },
+    {
+      "bytes": 2075,
+      "path": "specs/110-itiger-qwen-live-inference/checklists/requirements.md",
+      "sha256": "sha256:97dc7276520b5ec04759e3fa4b1d5e2c290a891d6b662fe3c9f3965325223609"
+    },
+    {
+      "bytes": 4624,
+      "path": "specs/110-itiger-qwen-live-inference/contracts/allocation-topology.md",
+      "sha256": "sha256:b571287c1f45ba246eb52876aaa000465200316851a0e49b9bda46ff3873bf49"
+    },
+    {
+      "bytes": 2480,
+      "path": "specs/110-itiger-qwen-live-inference/contracts/execution-state.md",
+      "sha256": "sha256:be1a0660ff62176b3d582b0104fa05b3c33844d35ed43c52c41b588be1c2c0c2"
+    },
+    {
+      "bytes": 3803,
+      "path": "specs/110-itiger-qwen-live-inference/contracts/operator-cli.md",
+      "sha256": "sha256:66348ba98b57a58ce0ce92877788f42896b37eed2f794d7bc6f11ff383d90945"
+    },
+    {
+      "bytes": 14820,
+      "path": "specs/110-itiger-qwen-live-inference/contracts/run-evidence.schema.json",
+      "sha256": "sha256:8bd65077aeff4c0e18dcb3c29f198ce48f271ac39a6165dfb1d011e06b8b1c98"
+    },
+    {
+      "bytes": 7064,
+      "path": "specs/110-itiger-qwen-live-inference/contracts/runtime-release.md",
+      "sha256": "sha256:35faaa2dd443539ba920c812bbf1df432ec10e1abf76caa12365f11f10b6ee47"
+    },
+    {
+      "bytes": 6457,
+      "path": "specs/110-itiger-qwen-live-inference/data-model.md",
+      "sha256": "sha256:e6150bd6b7d4455697b6494443e20b24057e6879491f16ccf5177743a131d59f"
+    },
+    {
+      "bytes": 1966,
+      "path": "specs/110-itiger-qwen-live-inference/evidence/builder-sif-offline-gate.md",
+      "sha256": "sha256:5c191af87e0c2d70a8c147ba782521d80fb6e612c4c8a3672dcbfbbd43765c24"
+    },
+    {
+      "bytes": 1712,
+      "path": "specs/110-itiger-qwen-live-inference/evidence/builder-sif-replacement-candidate.md",
+      "sha256": "sha256:99efd17d6d5d54faa3d09b4f027033a36fdb98da2effd09e52ae592a025e9017"
+    },
+    {
+      "bytes": 2380,
+      "path": "specs/110-itiger-qwen-live-inference/evidence/foundation-gate.md",
+      "sha256": "sha256:968469d33c441ef745398c00856d98e3c1aa30b5ca0cf7ea83648a773a7b9de1"
+    },
+    {
+      "bytes": 3569,
+      "path": "specs/110-itiger-qwen-live-inference/evidence/github-run-29283330479-verdict.md",
+      "sha256": "sha256:63539a55a6879880d1af60fc1f09a7622c69563aa0f17f34e4d5027f207e40bd"
+    },
+    {
+      "bytes": 3178,
+      "path": "specs/110-itiger-qwen-live-inference/evidence/github-run-29285142648-verdict.md",
+      "sha256": "sha256:4b26235f498482df87aa746ed80781bc6bb49f669989ffd3bd13323ff047e751"
+    },
+    {
+      "bytes": 5444,
+      "path": "specs/110-itiger-qwen-live-inference/evidence/github-run-29297628957-verdict.md",
+      "sha256": "sha256:7dd2dd9720d774f1dfd467c451a1ffc86e6587604249bb18fd557a07ba165c0d"
+    },
+    {
+      "bytes": 6031,
+      "path": "specs/110-itiger-qwen-live-inference/evidence/github-run-29306588187-verdict.md",
+      "sha256": "sha256:456fd54a57e54aa6132d78df7d1bb270530f7c1706ae40e9ca0aba032829600e"
+    },
+    {
+      "bytes": 7071,
+      "path": "specs/110-itiger-qwen-live-inference/evidence/github-run-29309152207-verdict.md",
+      "sha256": "sha256:5fa6eb202c91dc421dc4a551dd6df3a2e3bde25d6bd7718e421ea037d5f25fc8"
+    },
+    {
+      "bytes": 3781,
+      "path": "specs/110-itiger-qwen-live-inference/evidence/github-sealed-route-gate.md",
+      "sha256": "sha256:605191b9dc42a1f80b014712f4a0dd3b809425c8b95de4fbbec117a645de061d"
+    },
+    {
+      "bytes": 16475,
+      "path": "specs/110-itiger-qwen-live-inference/evidence/image-contract-convergence.md",
+      "sha256": "sha256:45fe531c7e21dafe6c0689be5123e8538f963f1a2c5243997eff4e8820361e54"
+    },
+    {
+      "bytes": 21984,
+      "path": "specs/110-itiger-qwen-live-inference/evidence/local-foundation-route-revision.md",
+      "sha256": "sha256:d616a6076e744c65aa412b43dabb2be8e892f0603cbf4ec7570ea84daa75b6ed"
+    },
+    {
+      "bytes": 1732,
+      "path": "specs/110-itiger-qwen-live-inference/evidence/minindn-packaged-verdict.md",
+      "sha256": "sha256:be1427a3ca6fc3cc485b83f4bdd4dd2ecba8fd00e6278ed81c5439a0f394b195"
+    },
+    {
+      "bytes": 2142,
+      "path": "specs/110-itiger-qwen-live-inference/evidence/network-offline-gate.md",
+      "sha256": "sha256:c12cd83126a8f3a219a9a8f95e6b4e6388fd061572775973d4e7f660f75c47af"
+    },
+    {
+      "bytes": 2146,
+      "path": "specs/110-itiger-qwen-live-inference/evidence/rootless-build-probe-render.md",
+      "sha256": "sha256:da98d84cdc1c623ff73ac90b3a2c59f2d905284c9d09be4983fc325a0bf82d10"
+    },
+    {
+      "bytes": 2027,
+      "path": "specs/110-itiger-qwen-live-inference/evidence/rootless-build-probe-verdict.md",
+      "sha256": "sha256:cf867ebfa0e70afc6315249f53b5aee816b960d24e8b7a83f027542a08d8694f"
+    },
+    {
+      "bytes": 3593,
+      "path": "specs/110-itiger-qwen-live-inference/evidence/runtime-build-route-revision.md",
+      "sha256": "sha256:3e61e77991da187f28aeb8ae998de8958b762bf20b281fb516ed95e12a4e2f90"
+    },
+    {
+      "bytes": 1495,
+      "path": "specs/110-itiger-qwen-live-inference/evidence/runtime-offline-gate.md",
+      "sha256": "sha256:4e9151bf2164d5a6f17c496a91e5665ba86b27e1eb22d6461ecfa845a5dc7479"
+    },
+    {
+      "bytes": 3777,
+      "path": "specs/110-itiger-qwen-live-inference/evidence/runtime-release-1a320e5-authorization.md",
+      "sha256": "sha256:11f58e67d0e941e074820fcf768be1dbfd661c048e1fada164150e59304a731d"
+    },
+    {
+      "bytes": 107,
+      "path": "specs/110-itiger-qwen-live-inference/evidence/runtime-release-1a320e5-authorization.md.sha256",
+      "sha256": "sha256:d263118085bc48e1ffe2e3326e1e9018076ef8df40fc813b633266f693d644f0"
+    },
+    {
+      "bytes": 3398,
+      "path": "specs/110-itiger-qwen-live-inference/evidence/runtime-release-1a320e5-itiger-materialization.md",
+      "sha256": "sha256:cf7c42270c35e9a03bc074a6c9294a29fe7ba6f63a603b30491ba258ac7be252"
+    },
+    {
+      "bytes": 116,
+      "path": "specs/110-itiger-qwen-live-inference/evidence/runtime-release-1a320e5-itiger-materialization.md.sha256",
+      "sha256": "sha256:f07897f17d170999e75b98c9b5e5779e417df713d8dada052ab5d768af92f276"
+    },
+    {
+      "bytes": 2681,
+      "path": "specs/110-itiger-qwen-live-inference/evidence/runtime-release-1a320e5-itiger07-preflight.md",
+      "sha256": "sha256:dcabe2fe6c092f29f80a60ff045fb8b08f8287bdde118f0deec0410837796c6e"
+    },
+    {
+      "bytes": 112,
+      "path": "specs/110-itiger-qwen-live-inference/evidence/runtime-release-1a320e5-itiger07-preflight.md.sha256",
+      "sha256": "sha256:47bc8b0ed2f93b95e7acec856e38039c0c8878cae8e509bb229279809a6b46d2"
+    },
+    {
+      "bytes": 2612,
+      "path": "specs/110-itiger-qwen-live-inference/evidence/runtime-release-1a320e5-publication.md",
+      "sha256": "sha256:f8ca64f5d1d0401b3b2d3f7f3aabb96a19e2e1e67730125697adf70922865592"
+    },
+    {
+      "bytes": 151,
+      "path": "specs/110-itiger-qwen-live-inference/evidence/runtime-release-1a320e5-publication.md.sha256",
+      "sha256": "sha256:aec95b75fd6dd6af3930225dd9804828059c925098f5d9801240d7af9d493f15"
+    },
+    {
+      "bytes": 1573,
+      "path": "specs/110-itiger-qwen-live-inference/evidence/source-baseline.md",
+      "sha256": "sha256:4db1fe3daea3bd503cae95620c589b1128ee484774ff8361ff41d5b68852280f"
+    },
+    {
+      "bytes": 1774,
+      "path": "specs/110-itiger-qwen-live-inference/evidence/spec107-capability-gap.md",
+      "sha256": "sha256:0f84e28c670e1d805433dc94d8d258976ed3e01d0f68a05892f659282a40bcc6"
+    },
+    {
+      "bytes": 1780,
+      "path": "specs/110-itiger-qwen-live-inference/evidence/spec108-capability-gap.md",
+      "sha256": "sha256:b5475eb0823cf14414614efa9463e8f9bb9e80221632d8ca757e079c5a6982bb"
+    },
+    {
+      "bytes": 1671,
+      "path": "specs/110-itiger-qwen-live-inference/experiment/campaign-v1.json",
+      "sha256": "sha256:3f66e9225db04a2bba8f5afcbaad17f2c3dfb8dbfde2e3250d2118eac3bb1aee"
+    },
+    {
+      "bytes": 3884,
+      "path": "specs/110-itiger-qwen-live-inference/handoffs/spec111-separation.md",
+      "sha256": "sha256:123401efc7312f4642b402fb8389f0c8670a22cd44e1717c421fd418d0b79e57"
+    },
+    {
+      "bytes": 18736,
+      "path": "specs/110-itiger-qwen-live-inference/plan.md",
+      "sha256": "sha256:fbfdabf87dc1ee45ce27fcb8760fad1d07dfd73a53901274a7f901a5fe637521"
+    },
+    {
+      "bytes": 10143,
+      "path": "specs/110-itiger-qwen-live-inference/quickstart.md",
+      "sha256": "sha256:61c541ab6f94b55dd23914373f5ec57465ac3b2bb19a4c1ca4c0a64d7b242595"
+    },
+    {
+      "bytes": 10429,
+      "path": "specs/110-itiger-qwen-live-inference/research.md",
+      "sha256": "sha256:b4948fccd1ccfb7cf1d696cc9d46fc00f32ae8744b66326fde68a899045f7723"
+    },
+    {
+      "bytes": 31142,
+      "path": "specs/110-itiger-qwen-live-inference/spec.md",
+      "sha256": "sha256:d4575f6698863237cf32a1a3fca66efe438f0ad46d1b4f2fb4b199777602b3bb"
+    },
+    {
+      "bytes": 64008,
+      "path": "specs/110-itiger-qwen-live-inference/tasks.md",
+      "sha256": "sha256:588aafe4a5d9778082c26eb9e469ee8eb14bfc376daf8aac518d613738189dc7"
+    },
+    {
+      "bytes": 8213,
+      "path": "specs/110-itiger-qwen-live-inference/traceability.md",
+      "sha256": "sha256:10ae4d5445504907294ad9518b56b065579845c6473afdd202a06722fff964cd"
+    }
+  ],
+  "schemaVersion": 1,
+  "scope": [
+    "specs/107-*",
+    "specs/109-*",
+    "specs/110-*"
+  ],
+  "sourceCommit": "4d695ce8b7ffe2c79465dc1f3db649a5a65806a6"
+}

@@ -1,0 +1,551 @@
+{
+  "decisions": [
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:BoundedDependencyTransferQueues",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:CachePlacementDecision",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:ContextObjectKind",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:ContextStateObject",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:DependencyTransferItem",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:DependencyTransferSnapshot",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:ExactForwardCacheEntry",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:ExactForwardCacheKey",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:ExactForwardCacheKind",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:FailureAction",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:FallbackPlan",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:KvCacheTelemetry",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:LongContextManager",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:ModelManifestV1",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:PlanCache",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:PlanKeyV1",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:PlanLeaseBindingsV1",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:PlanLeaseV1",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:ProviderProfileV1",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:RolePipelineScheduler",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:RoleWorkItem",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:RoleWorkSnapshot",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:RoleWorkStatus",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:RuntimeTelemetryV1",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:TransferQueueKind",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:adaptive_segment_size",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:build_local_llm_plan",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:choose_cache_placement",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:compress_payload",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:encode_ack_metadata",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:exact_forward_cache_key_for_stage",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:exact_token_prefix_digest",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:export_telemetry_csv",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:generate_fallback_plans",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:generation_chunk",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:kv_block",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:load_provider_profiles",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:make_plan_lease",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:parse_ack_metadata",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:prefix_state",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:prompt_chunk",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:proportional_layer_allocation",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:runtime_v1_smoke",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:session_state",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:simulate_prefill_decode",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:stage_definition_from_plan_stage",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:validate_linear_llm_plan",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1_evidence",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:write_minindn_runtime_v1_evidence",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:write_runtime_report",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.runtime_v1",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-export:ExactForwardCacheManager",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.core.contracts",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-legacy-import:runtime_v1.core-plan-assignment-evidence",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.core.runtime_contracts",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-legacy-import:runtime_v1.runtime-contracts",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.core.eligibility",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-legacy-import:runtime_v1.eligibility",
+      "twoZeroCallerSnapshots": true
+    },
+    {
+      "currentOwner": "ndnsf_distributed_inference.core.state",
+      "eligible": false,
+      "externalMigrationOrApprovedExpiry": false,
+      "performanceGate": true,
+      "remainingExitCondition": "external migration evidence or explicit user-approved expiry",
+      "rollbackAvailable": true,
+      "surfaceId": "python-legacy-import:runtime_v1.state-binding",
+      "twoZeroCallerSnapshots": true
+    }
+  ],
+  "eligibleCount": 0,
+  "eligibleSurfaceIds": [],
+  "evaluatedCompatibilityEntryCount": 54,
+  "performanceGate": true,
+  "schema": "ndnsf-di-spec111-compatibility-exit-gate-v1",
+  "twoConsecutiveZeroCallerSnapshots": true,
+  "verdict": "RETAIN_ALL"
+}

@@ -1,0 +1,119 @@
+{
+  "claimBoundary": "single-node exact-SIF CUDA environment preflight only",
+  "completedEpochMs": 1785837497228,
+  "cuda": {
+    "actualTopToken": 8065,
+    "cudaVersion": "12.4",
+    "expectedTopToken": 8065,
+    "gpuName": "NVIDIA RTX 5000 Ada Generation",
+    "gpuTotalBytes": 33826537472,
+    "response": {
+      "finalRole": "/LLM/Pipeline/Stage/2",
+      "layerCount": 28,
+      "layerRanges": [
+        [
+          0,
+          9
+        ],
+        [
+          9,
+          18
+        ],
+        [
+          18,
+          28
+        ]
+      ],
+      "logitsShape": [
+        1,
+        39,
+        151936
+      ],
+      "runtime": "qwen-transformers",
+      "schema": "ndnsf-di-qwen-transformer-response-v1",
+      "stageCount": 3,
+      "topToken": 8065
+    },
+    "stageResults": [
+      {
+        "cpuFallback": false,
+        "device": "cuda:0",
+        "forwardMs": 51.749,
+        "loadMs": 4777.667,
+        "peakAllocatedBytes": 603832320,
+        "peakReservedBytes": 629145600,
+        "role": "/LLM/Pipeline/Stage/0",
+        "stageIndex": 0,
+        "warmupMs": 483.283
+      },
+      {
+        "cpuFallback": false,
+        "device": "cuda:0",
+        "forwardMs": 9.976,
+        "loadMs": 785.726,
+        "peakAllocatedBytes": 292667392,
+        "peakReservedBytes": 316669952,
+        "role": "/LLM/Pipeline/Stage/1",
+        "stageIndex": 1,
+        "warmupMs": 11.44
+      },
+      {
+        "cpuFallback": false,
+        "device": "cuda:0",
+        "forwardMs": 27.567,
+        "loadMs": 1536.059,
+        "peakAllocatedBytes": 647075840,
+        "peakReservedBytes": 662700032,
+        "role": "/LLM/Pipeline/Stage/2",
+        "stageIndex": 2,
+        "warmupMs": 12.805
+      }
+    ],
+    "torchVersion": "2.6.0+cu124"
+  },
+  "modelDigest": "sha256:a317ec50b9a20ebf83a96379016e227dbe83c0b7116e97cfffdfc0bcee4c86db",
+  "revision": "e6de91484c29aa9480d55605af694f39b081c455",
+  "runtimeSifDigest": "sha256:1f616fa773df4f8d821339cb7b0a3d62332b9f2197055bdb4e9f3dd081518368",
+  "schema": "ndnsf-di.spec168-exact-sif-cuda-preflight.v1",
+  "sourceBundleDigest": "sha256:ecf6635e945f34395839b5b3407dfe0f59532100eaaea56b18c88a37fbae8a99",
+  "sourceDigest": "sha256:dcaebe692b1c1dd6cd4d0935b7268c38965698db2fdc805962b748d2cfe3e36e",
+  "stageManifestDigest": "sha256:8d8475db33efab5398014d0aac9570cda90bae5d50fd0128bed7b0215d0156f5",
+  "startedEpochMs": 1785837485299,
+  "status": "PASS",
+  "validationMode": "EXACT_SIF_CUDA",
+  "verifiedStages": [
+    {
+      "bytes": 594357850,
+      "layerRange": {
+        "endExclusive": 9,
+        "start": 0
+      },
+      "path": "/project/tma1/ndnsf-di/artifacts/spec162/qwen3-0.6b/spec162-submission-t009-qwen3small-runtime1f616-pathbound-20260802T231200Z-001/qwen-transformers-stage-artifacts/stage-0-qwen-transformers.pt",
+      "role": "/LLM/Pipeline/Stage/0",
+      "sha256": "7f40b96b2831087e846127fcb682369582017f28a44f761cc80f65a8af8a627f",
+      "stageIndex": 0
+    },
+    {
+      "bytes": 283192711,
+      "layerRange": {
+        "endExclusive": 18,
+        "start": 9
+      },
+      "path": "/project/tma1/ndnsf-di/artifacts/spec162/qwen3-0.6b/spec162-submission-t009-qwen3small-runtime1f616-pathbound-20260802T231200Z-001/qwen-transformers-stage-artifacts/stage-1-qwen-transformers.pt",
+      "role": "/LLM/Pipeline/Stage/1",
+      "sha256": "072d9a6a787bfa5f085b829d972992c09c186dc82f235a04fca71915bd3126b5",
+      "stageIndex": 1
+    },
+    {
+      "bytes": 625825930,
+      "layerRange": {
+        "endExclusive": 28,
+        "start": 18
+      },
+      "path": "/project/tma1/ndnsf-di/artifacts/spec162/qwen3-0.6b/spec162-submission-t009-qwen3small-runtime1f616-pathbound-20260802T231200Z-001/qwen-transformers-stage-artifacts/stage-2-qwen-transformers.pt",
+      "role": "/LLM/Pipeline/Stage/2",
+      "sha256": "4cceadede2cf8b1270a73d302a117181028e32bd3079ea7fd705100f71f8acc6",
+      "stageIndex": 2
+    }
+  ]
+}

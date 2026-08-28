@@ -1,0 +1,38 @@
+{
+  "assetReferences": {
+    "exactSifPreflight": "content-addressed:sha256:860771ff5ef2cf7f9386587e3f05b7f0719ca46cde5d578ea5899140269f0d76",
+    "localFixtureStageManifest": "content-addressed:sha256:1c2fec771854f2bc2a5ccc82a8d897ee3426335d3cf37cbb64a6d303b3588adf",
+    "localGateManifest": "content-addressed:sha256:f5f633c8ded4c0b56070ea876124f2a5401a4962c9b9869a87383a51f626f31b",
+    "remoteLargeStageManifest": "/project/tma1/ndnsf-di/artifacts/spec162/qwen36/spec162-submission-t009-qwen36-runtime-rebind-1f616fa7-003/stage-manifest.json",
+    "remoteSmallStageManifest": "/project/tma1/ndnsf-di/artifacts/spec162/qwen3-0.6b/spec162-submission-t009-qwen3small-runtime1f616-pathbound-20260802T231200Z-001/stage-manifest.json",
+    "runtimeSif": "/project/tma1/ndnsf-di/releases/spec167-native-file-producer-0f834dbaad7496628fb31bfcdfc87f6ead0874a03db65329c5536d8b1da63d92/runtime.sif",
+    "sourceBundle": "content-addressed:sha256:7703964b4813502835c1b39c8106dd0795596988e74af18ed992d82ba24b2a8c"
+  },
+  "automaticRemoteSubmission": false,
+  "bindingDigests": {
+    "analyzerDigest": "sha256:953263123b2f4078ee36768c6de5dcf64a774cc33d1d6563b0540f3d47dcf208",
+    "baselineDigest": "sha256:e2afc0dfbe6464648425d8d3f75ceb3b8b140610a78956e2052eb0f192a0640d",
+    "exactSifPreflightDigest": "sha256:860771ff5ef2cf7f9386587e3f05b7f0719ca46cde5d578ea5899140269f0d76",
+    "localFixtureManifestDigest": "sha256:1c2fec771854f2bc2a5ccc82a8d897ee3426335d3cf37cbb64a6d303b3588adf",
+    "localGateManifestDigest": "sha256:f5f633c8ded4c0b56070ea876124f2a5401a4962c9b9869a87383a51f626f31b",
+    "promptSetDigest": "sha256:5a87c5645c74ac52b7e2ab728e7297d49c42fa849ce47d163c8fec5838d9dd75",
+    "remoteLargeStageManifestDigest": "sha256:16de41986564c436a33cd6a292f17f4bd939d0a893c441441022e3b389737f6f",
+    "remoteSmallStageManifestDigest": "sha256:8d8475db33efab5398014d0aac9570cda90bae5d50fd0128bed7b0215d0156f5",
+    "routeDigest": "sha256:04ca3bfb8137d813e5c3e8b0e36ce84c8b006f2373eeb6bc4a05e86fa970be3f",
+    "runtimeSifDigest": "sha256:1f616fa773df4f8d821339cb7b0a3d62332b9f2197055bdb4e9f3dd081518368",
+    "scheduleDigest": "sha256:4ccadcd09aa4f715095285e9d39d28dc1bbefc6a5cad2ecacd633b147337d578",
+    "sourceBundleDigest": "sha256:7703964b4813502835c1b39c8106dd0795596988e74af18ed992d82ba24b2a8c",
+    "sourceDigest": "sha256:1e192ca033600a6c4b10ad1e2393172989d08ff129956aaf551712d5e06b1949",
+    "strategyDigest": "sha256:35ee4bba4bc56b2bcdadfca8f1992486f7263dac43deb9cb9f5a8fb95a395af8"
+  },
+  "campaignDigest": "sha256:7e2aa03c9e7e9797afb92ec890aec96b39b3bf21cc3dcc950f1684c07ea491d9",
+  "campaignId": "spec168-campaign-v3-cc950f1684c07ea491d9",
+  "candidateDigest": "sha256:2a5e212a3620ee488f735eb1eda29fff45bc9b5594fa1d8f0332c94ac3abf337",
+  "candidateId": "spec168-candidate-v3-1d8f0332c94ac3abf337",
+  "experimentManifest": "experiment-manifest.json",
+  "scheduleManifest": "schedule-manifest.json",
+  "scheduleManifestDigest": "sha256:dfc145f9aa8402d3a4519b0091d415899226428f7e7fc58715e5994ed9285a4f",
+  "schema": "ndnsf-di.spec168-campaign.v3",
+  "state": "FROZEN",
+  "submissionPolicy": "at-most-once-no-auto-resubmit"
+}

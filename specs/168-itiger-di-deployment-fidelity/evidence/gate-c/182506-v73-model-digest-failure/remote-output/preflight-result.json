@@ -1,0 +1,14 @@
+{
+  "claimBoundary": "single-node exact-SIF CUDA environment preflight only",
+  "completedEpochMs": 1785846639788,
+  "error": "MODEL_DIGEST_MISMATCH",
+  "errorType": "PreflightError",
+  "modelDigest": "sha256:a317ec50b68c46f15d4490748317dba81684c7a571ee7a079680048cce8fb60f",
+  "revision": "e6de91484c29aa9480d55605af694f39b081c455",
+  "runtimeSifDigest": "sha256:1f616fa773df4f8d821339cb7b0a3d62332b9f2197055bdb4e9f3dd081518368",
+  "schema": "ndnsf-di.spec168-exact-sif-cuda-preflight.v1",
+  "sourceBundleDigest": "sha256:82eb1997cbc12b1b28214afff8cee04f36825e35dad6214b8b730f90be5f0243",
+  "sourceDigest": "sha256:b7e662c12591e9fabac30966649df24162e822e56ea95e56e1bcdde17bd622b9",
+  "startedEpochMs": 1785846639786,
+  "status": "FAIL"
+}

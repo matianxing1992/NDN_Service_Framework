@@ -1,0 +1,8 @@
+{
+  "input": "/project/tma1/ndnsf-di/artifacts/spec162/qwen3-0.6b/spec162-submission-t009-qwen3small-runtime1f616-pathbound-20260802T231200Z-001/policy.yaml",
+  "inputSha256": "187658c3443f208cb19407a41ffd3f12152966ddda80ec6a5c242987b8c2543d",
+  "output": "/shared/policy.yaml",
+  "outputSha256": "5f7213c028932586ad75224203527321596bad4b348edf89cbaeed1b73254739",
+  "schemaVersion": "spec162-candidate-policy-provenance-v1",
+  "transform": "_add_distributed_repo_services;_align_qwen_dynamic_dependencies"
+}

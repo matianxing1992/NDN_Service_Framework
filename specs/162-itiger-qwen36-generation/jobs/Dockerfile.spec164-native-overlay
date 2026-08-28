@@ -1,0 +1,64 @@
+# syntax=docker/dockerfile:1.7
+
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE} AS native-builder
+
+USER 0:0
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+ENV PATH=/opt/venv/bin:/opt/ndnsf-app/bin:/opt/ndn-base/bin:${PATH} \
+    LD_LIBRARY_PATH=/opt/ndnsf-app/lib:/opt/ndn-base/lib:/opt/onnxruntime/lib \
+    PKG_CONFIG_PATH=/opt/ndnsf-app/lib/pkgconfig:/opt/ndn-base/lib/pkgconfig:/opt/onnxruntime/lib/pkgconfig \
+    NDNSF_LIBRARY_DIR=/opt/ndnsf-app/lib
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+      build-essential libboost-all-dev libgtkmm-3.0-dev libprotobuf-dev \
+      libsqlite3-dev libssl-dev pkg-config protobuf-compiler python3 \
+      zlib1g-dev
+RUN --mount=type=cache,target=/root/.cache/pip \
+    /opt/venv/bin/pip install --no-deps pybind11==3.0.4
+
+COPY . /src/ndnsf
+WORKDIR /src/ndnsf
+ARG BUILD_JOBS=2
+RUN set -eu; \
+    ./waf configure --prefix=/opt/ndnsf-app --with-examples; \
+    ./waf -j"$BUILD_JOBS" \
+      --targets=ndn-service-framework,libndn-service-framework.pc; \
+    install -m 0755 build/libndn-service-framework.so \
+      /opt/ndnsf-app/lib/libndn-service-framework.so.0.1.0; \
+    ln -sfn libndn-service-framework.so.0.1.0 \
+      /opt/ndnsf-app/lib/libndn-service-framework.so; \
+    install -m 0644 build/libndn-service-framework.pc \
+      /opt/ndnsf-app/lib/pkgconfig/libndn-service-framework.pc
+RUN set -eu; \
+    rm -rf /opt/ndnsf-app/python/ndnsf \
+      /opt/ndnsf-app/python/py_repoclient \
+      /opt/ndnsf-app/python/ndnsf_distributed_inference; \
+    CFLAGS="-O1 -g0" CXXFLAGS="-O1 -g0" \
+      /opt/venv/bin/pip install --no-deps --no-build-isolation \
+      --target /opt/ndnsf-app/python ./pythonWrapper; \
+    CFLAGS="-O1 -g0" CXXFLAGS="-O1 -g0" \
+      /opt/venv/bin/pip install --no-deps --no-build-isolation \
+      --target /opt/ndnsf-app/python \
+      ./NDNSF-DistributedRepo/pythonWrapper; \
+    cp -a ./NDNSF-DistributedInference/ndnsf_distributed_inference \
+      /opt/ndnsf-app/python/ndnsf_distributed_inference; \
+    HOME=/tmp /opt/venv/bin/python -c \
+      'import inspect; from ndnsf import FileSegmentedObjectProducer, fetch_adaptive_segmented_data_packets; from py_repoclient import AdaptiveArtifactTransfer, ArtifactRepositoryApi; from ndnsf_distributed_inference.app import APPDeployment; assert APPDeployment.__module__ == "ndnsf_distributed_inference.app_sdk.deployment"; assert "state_root" in inspect.signature(APPDeployment.from_config).parameters; print("SPEC164_NATIVE_RUNTIME_PASS")'
+
+FROM ${BASE_IMAGE}
+USER 0:0
+ARG BASE_IMAGE
+ARG SOURCE_MANIFEST_SHA256
+LABEL org.ndnsf.di.spec164.native-overlay="true" \
+      org.ndnsf.di.spec164.source-manifest-sha256="${SOURCE_MANIFEST_SHA256}" \
+      org.ndnsf.di.spec164.base-image="${BASE_IMAGE}" \
+      org.ndnsf.di.models-included="false"
+COPY --from=native-builder /opt/ndnsf-app/lib/ /opt/ndnsf-app/lib/
+COPY --from=native-builder /opt/ndnsf-app/python/ /opt/ndnsf-app/python/
+RUN ldconfig && \
+    HOME=/tmp /opt/venv/bin/python -c \
+      'import inspect; from ndnsf import FileSegmentedObjectProducer, fetch_adaptive_segmented_data_packets; from py_repoclient import AdaptiveArtifactTransfer, ArtifactRepositoryApi; from ndnsf_distributed_inference.app import APPDeployment; assert APPDeployment.__module__ == "ndnsf_distributed_inference.app_sdk.deployment"; assert "state_root" in inspect.signature(APPDeployment.from_config).parameters; print("SPEC164_NATIVE_RUNTIME_PASS")'
+USER 65532:65532

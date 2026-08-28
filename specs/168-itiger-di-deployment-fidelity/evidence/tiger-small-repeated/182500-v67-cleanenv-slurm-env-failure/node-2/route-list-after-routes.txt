@@ -1,0 +1,16 @@
+prefix=/NDNSF/DistributedRepo nexthop=259 origin=client cost=0 flags=child-inherit expires=never
+prefix=/NDNSF/DistributedRepo nexthop=266 origin=client cost=0 flags=child-inherit expires=never
+prefix=/localhost/nfd nexthop=256 origin=app cost=0 flags=child-inherit expires=never
+prefix=/activation/llm nexthop=259 origin=client cost=0 flags=child-inherit expires=never
+prefix=/activation/llm nexthop=266 origin=client cost=0 flags=child-inherit expires=never
+prefix=/NDNSF-DistributeInference/example nexthop=259 origin=client cost=0 flags=child-inherit expires=never
+prefix=/NDNSF-DistributeInference/example nexthop=266 origin=client cost=0 flags=child-inherit expires=never
+prefix=/NDNSF-DistributeInference/example/user nexthop=259 origin=autoconf cost=0 flags=child-inherit expires=never
+prefix=/NDNSF-DistributeInference/example/user/user/0 nexthop=259 origin=67 cost=0 flags=child-inherit expires=never
+prefix=/NDNSF-DistributeInference/example/group nexthop=259 origin=client cost=0 flags=child-inherit expires=never
+prefix=/NDNSF-DistributeInference/example/group nexthop=266 origin=client cost=0 flags=child-inherit expires=never
+prefix=/NDNSF-DistributeInference/example/provider nexthop=259 origin=autoconf cost=0 flags=child-inherit expires=never
+prefix=/NDNSF-DistributeInference/example/provider/1 nexthop=266 origin=autoconf cost=0 flags=child-inherit expires=never
+prefix=/NDNSF-DistributeInference/example/provider/NDNSF-ARTIFACT nexthop=259 origin=68 cost=0 flags=child-inherit expires=never
+prefix=/NDNSF-DistributeInference/example/controller nexthop=259 origin=autoconf cost=0 flags=child-inherit expires=never
+prefix=/NDNSF-DistributeInference/example/controller/DKEY nexthop=259 origin=69 cost=0 flags=child-inherit expires=never

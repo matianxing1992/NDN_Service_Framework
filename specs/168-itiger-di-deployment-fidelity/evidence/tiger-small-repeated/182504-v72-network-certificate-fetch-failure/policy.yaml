@@ -1,0 +1,445 @@
+application: llm-pipeline-qwen3-0.6b-spec162
+controller: /NDNSF-DistributeInference/example/controller
+group: /NDNSF-DistributeInference/example/group
+runtime:
+  user_identity: /NDNSF-DistributeInference/example/user
+  provider_prefix: /NDNSF-DistributeInference/example/provider
+trust:
+  app_roots:
+  - /example
+artifact_security:
+  allowlist: []
+  sandbox: {}
+authorization_summary:
+  users:
+  - identity: /NDNSF-DistributeInference/example/user
+    services:
+    - /AI/LLM/Pipeline/Fake
+  providers:
+  - identity: /NDNSF-DistributeInference/example/provider
+    services:
+    - service: /AI/LLM/Pipeline/Fake
+      roles: all
+  - identity: /NDNSF-DistributeInference/example/provider/1
+    services:
+    - service: /AI/LLM/Pipeline/Fake
+      roles: all
+  - identity: /NDNSF-DistributeInference/example/provider/2
+    services:
+    - service: /AI/LLM/Pipeline/Fake
+      roles: all
+services:
+- name: /AI/LLM/Pipeline/Fake
+  model: Qwen/Qwen3-0.6B
+  users:
+  - /NDNSF-DistributeInference/example/user
+  providers:
+  - identity: /NDNSF-DistributeInference/example/provider
+    roles:
+    - /LLM/Pipeline/Stage/0
+  - identity: /NDNSF-DistributeInference/example/provider/1
+    roles:
+    - /LLM/Pipeline/Stage/1
+  - identity: /NDNSF-DistributeInference/example/provider/2
+    roles:
+    - /LLM/Pipeline/Stage/2
+  roles:
+  - /LLM/Pipeline/Stage/0
+  - /LLM/Pipeline/Stage/1
+  - /LLM/Pipeline/Stage/2
+  dependencies:
+  - producers:
+    - /LLM/Pipeline/Stage/0
+    consumers:
+    - /LLM/Pipeline/Stage/1
+    key_scope: tensor-0-dfb7e82149ba03ac
+    topic_prefix: /activation
+    required: true
+    tensors:
+    - hidden-layer-20-to-21
+    object_name_template: ''
+  - producers:
+    - /LLM/Pipeline/Stage/1
+    consumers:
+    - /LLM/Pipeline/Stage/2
+    key_scope: tensor-1-aa6de4efc3538d07
+    topic_prefix: /activation
+    required: true
+    tensors:
+    - hidden-layer-41-to-42
+    object_name_template: ''
+  artifacts:
+  - role: /LLM/Pipeline/Stage/0
+    path: /project/tma1/ndnsf-di/artifacts/spec162/qwen3-0.6b/spec162-submission-t009-qwen3small-runtime1f616-pathbound-20260802T231200Z-001/qwen-transformers-stage-artifacts/stage-0-qwen-transformers.pt
+    artifact: /Model/LLM/Pipeline/qwen3-0.6b/LLM/Pipeline/Stage/0
+    filename: stage-0-qwen-transformers.pt
+    kind: llm-stage-weights
+    backend: transformers
+    metadata:
+      runtime: qwen-transformers
+      stageIndex: 0
+      stageCount: 3
+      layerCount: 28
+      layerRange:
+        start: 0
+        endExclusive: 9
+      modelFamily: llm
+      runtimeBackend: transformers
+      modelRevision: e6de91484c29aa9480d55605af694f39b081c455
+      modelDigest: sha256:a317ec50b9a20ebf83a96379016e227dbe83c0b7116e97cfffdfc0bcee4c86db
+      dtype: bfloat16
+      cpuFallbackAllowed: false
+  - role: /LLM/Pipeline/Stage/1
+    path: /project/tma1/ndnsf-di/artifacts/spec162/qwen3-0.6b/spec162-submission-t009-qwen3small-runtime1f616-pathbound-20260802T231200Z-001/qwen-transformers-stage-artifacts/stage-1-qwen-transformers.pt
+    artifact: /Model/LLM/Pipeline/qwen3-0.6b/LLM/Pipeline/Stage/1
+    filename: stage-1-qwen-transformers.pt
+    kind: llm-stage-weights
+    backend: transformers
+    metadata:
+      runtime: qwen-transformers
+      stageIndex: 1
+      stageCount: 3
+      layerCount: 28
+      layerRange:
+        start: 9
+        endExclusive: 18
+      modelFamily: llm
+      runtimeBackend: transformers
+      modelRevision: e6de91484c29aa9480d55605af694f39b081c455
+      modelDigest: sha256:a317ec50b9a20ebf83a96379016e227dbe83c0b7116e97cfffdfc0bcee4c86db
+      dtype: bfloat16
+      cpuFallbackAllowed: false
+  - role: /LLM/Pipeline/Stage/2
+    path: /project/tma1/ndnsf-di/artifacts/spec162/qwen3-0.6b/spec162-submission-t009-qwen3small-runtime1f616-pathbound-20260802T231200Z-001/qwen-transformers-stage-artifacts/stage-2-qwen-transformers.pt
+    artifact: /Model/LLM/Pipeline/qwen3-0.6b/LLM/Pipeline/Stage/2
+    filename: stage-2-qwen-transformers.pt
+    kind: llm-stage-weights
+    backend: transformers
+    metadata:
+      runtime: qwen-transformers
+      stageIndex: 2
+      stageCount: 3
+      layerCount: 28
+      layerRange:
+        start: 18
+        endExclusive: 28
+      modelFamily: llm
+      runtimeBackend: transformers
+      modelRevision: e6de91484c29aa9480d55605af694f39b081c455
+      modelDigest: sha256:a317ec50b9a20ebf83a96379016e227dbe83c0b7116e97cfffdfc0bcee4c86db
+      dtype: bfloat16
+      cpuFallbackAllowed: false
+  input:
+    codec: llm-token-reference
+    implemented: false
+  output:
+    codec: llm-token-stream-reference
+    implemented: false
+  metadata:
+    model_family: llm
+    model_format: custom
+    planner_kind: llm-pipeline
+    execution_plan_schema_version: 2
+    executionMode: pipeline-parallel
+    roleMetadata:
+      /LLM/Pipeline/Stage/0:
+        roleKind: llm-pipeline-stage
+        executionMode: pipeline-parallel
+        stageIndex: 0
+        stageCount: 3
+        layerRange:
+          known: true
+          start: 0
+          endExclusive: 9
+        inputKind: prompt-tokens
+        outputKind: hidden-state
+        stateful: true
+      /LLM/Pipeline/Stage/1:
+        roleKind: llm-pipeline-stage
+        executionMode: pipeline-parallel
+        stageIndex: 1
+        stageCount: 3
+        layerRange:
+          known: true
+          start: 9
+          endExclusive: 18
+        inputKind: hidden-state
+        outputKind: hidden-state
+        stateful: true
+      /LLM/Pipeline/Stage/2:
+        roleKind: llm-pipeline-stage
+        executionMode: pipeline-parallel
+        stageIndex: 2
+        stageCount: 3
+        layerRange:
+          known: true
+          start: 18
+          endExclusive: 28
+        inputKind: hidden-state
+        outputKind: token-logits
+        stateful: true
+    llmPipeline:
+      stageCount: 3
+      layerCount: 28
+      sequentialStages: true
+    planner:
+      modelFamily: llm
+      modelFormat: custom
+      runtimeBackend: custom
+      plannerKind: llm-pipeline
+      schemaVersion: 2
+      scoreSummary:
+        roleCount: 3
+        dependencyCount: 2
+        modelFormat: custom
+        runtimeBackend: custom
+        executionImplemented: false
+        executionMode: pipeline-parallel
+        stageCount: 3
+        layerCount: 28
+      selectedCandidate:
+        mode: llm-pipeline
+        selected: true
+      stub: true
+      executionMode: pipeline-parallel
+    execution_implemented: true
+    runtime_backend: custom
+    description: abstract LLM pipeline parallel plan
+    runtime: qwen-transformers
+    model: Qwen/Qwen3-0.6B
+    modelRevision: e6de91484c29aa9480d55605af694f39b081c455
+    modelDigest: sha256:a317ec50b9a20ebf83a96379016e227dbe83c0b7116e97cfffdfc0bcee4c86db
+    dtype: bfloat16
+    cpuFallbackAllowed: false
+- name: /NDNSF/DistributedRepo/Object/v1/INSERT
+  model: /NDNSF/DistributedRepo/Object/v1/INSERT
+  users:
+  - /NDNSF-DistributeInference/example/user
+  - /NDNSF-DistributeInference/example/provider
+  - /NDNSF-DistributeInference/example/provider/1
+  - /NDNSF-DistributeInference/example/provider/2
+  - /NDNSF-DistributeInference/example/repo
+  - /NDNSF-DistributeInference/example/repo/1
+  - /NDNSF-DistributeInference/example/repo/2
+  providers:
+  - identity: /NDNSF-DistributeInference/example/repo
+    roles: []
+  - identity: /NDNSF-DistributeInference/example/repo/1
+    roles: []
+  - identity: /NDNSF-DistributeInference/example/repo/2
+    roles: []
+  roles: []
+  dependencies: []
+- name: /NDNSF/DistributedRepo/Object/v1/MANIFEST
+  model: /NDNSF/DistributedRepo/Object/v1/MANIFEST
+  users:
+  - /NDNSF-DistributeInference/example/user
+  - /NDNSF-DistributeInference/example/provider
+  - /NDNSF-DistributeInference/example/provider/1
+  - /NDNSF-DistributeInference/example/provider/2
+  - /NDNSF-DistributeInference/example/repo
+  - /NDNSF-DistributeInference/example/repo/1
+  - /NDNSF-DistributeInference/example/repo/2
+  providers:
+  - identity: /NDNSF-DistributeInference/example/repo
+    roles: []
+  - identity: /NDNSF-DistributeInference/example/repo/1
+    roles: []
+  - identity: /NDNSF-DistributeInference/example/repo/2
+    roles: []
+  roles: []
+  dependencies: []
+- name: /NDNSF/DistributedRepo/Object/v1/FETCH
+  model: /NDNSF/DistributedRepo/Object/v1/FETCH
+  users:
+  - /NDNSF-DistributeInference/example/user
+  - /NDNSF-DistributeInference/example/provider
+  - /NDNSF-DistributeInference/example/provider/1
+  - /NDNSF-DistributeInference/example/provider/2
+  - /NDNSF-DistributeInference/example/repo
+  - /NDNSF-DistributeInference/example/repo/1
+  - /NDNSF-DistributeInference/example/repo/2
+  providers:
+  - identity: /NDNSF-DistributeInference/example/repo
+    roles: []
+  - identity: /NDNSF-DistributeInference/example/repo/1
+    roles: []
+  - identity: /NDNSF-DistributeInference/example/repo/2
+    roles: []
+  roles: []
+  dependencies: []
+- name: /NDNSF/DistributedRepo/Object/v1/INVENTORY
+  model: /NDNSF/DistributedRepo/Object/v1/INVENTORY
+  users:
+  - /NDNSF-DistributeInference/example/user
+  - /NDNSF-DistributeInference/example/provider
+  - /NDNSF-DistributeInference/example/provider/1
+  - /NDNSF-DistributeInference/example/provider/2
+  - /NDNSF-DistributeInference/example/repo
+  - /NDNSF-DistributeInference/example/repo/1
+  - /NDNSF-DistributeInference/example/repo/2
+  providers:
+  - identity: /NDNSF-DistributeInference/example/repo
+    roles: []
+  - identity: /NDNSF-DistributeInference/example/repo/1
+    roles: []
+  - identity: /NDNSF-DistributeInference/example/repo/2
+    roles: []
+  roles: []
+  dependencies: []
+- name: /NDNSF/DistributedRepo/Object/v1/STATUS
+  model: /NDNSF/DistributedRepo/Object/v1/STATUS
+  users:
+  - /NDNSF-DistributeInference/example/user
+  - /NDNSF-DistributeInference/example/provider
+  - /NDNSF-DistributeInference/example/provider/1
+  - /NDNSF-DistributeInference/example/provider/2
+  - /NDNSF-DistributeInference/example/repo
+  - /NDNSF-DistributeInference/example/repo/1
+  - /NDNSF-DistributeInference/example/repo/2
+  providers:
+  - identity: /NDNSF-DistributeInference/example/repo
+    roles: []
+  - identity: /NDNSF-DistributeInference/example/repo/1
+    roles: []
+  - identity: /NDNSF-DistributeInference/example/repo/2
+    roles: []
+  roles: []
+  dependencies: []
+- name: /NDNSF/DistributedRepo/Object/v1/DELETE
+  model: /NDNSF/DistributedRepo/Object/v1/DELETE
+  users:
+  - /NDNSF-DistributeInference/example/user
+  - /NDNSF-DistributeInference/example/provider
+  - /NDNSF-DistributeInference/example/provider/1
+  - /NDNSF-DistributeInference/example/provider/2
+  - /NDNSF-DistributeInference/example/repo
+  - /NDNSF-DistributeInference/example/repo/1
+  - /NDNSF-DistributeInference/example/repo/2
+  providers:
+  - identity: /NDNSF-DistributeInference/example/repo
+    roles: []
+  - identity: /NDNSF-DistributeInference/example/repo/1
+    roles: []
+  - identity: /NDNSF-DistributeInference/example/repo/2
+    roles: []
+  roles: []
+  dependencies: []
+- name: /NDNSF/DistributedRepo/Object/v1/CATALOG_QUERY
+  model: /NDNSF/DistributedRepo/Object/v1/CATALOG_QUERY
+  users:
+  - /NDNSF-DistributeInference/example/user
+  - /NDNSF-DistributeInference/example/provider
+  - /NDNSF-DistributeInference/example/provider/1
+  - /NDNSF-DistributeInference/example/provider/2
+  - /NDNSF-DistributeInference/example/repo
+  - /NDNSF-DistributeInference/example/repo/1
+  - /NDNSF-DistributeInference/example/repo/2
+  providers:
+  - identity: /NDNSF-DistributeInference/example/repo
+    roles: []
+  - identity: /NDNSF-DistributeInference/example/repo/1
+    roles: []
+  - identity: /NDNSF-DistributeInference/example/repo/2
+    roles: []
+  roles: []
+  dependencies: []
+- name: /NDNSF/DistributedRepo/Internal/v1/REPLICA_COMMIT
+  model: /NDNSF/DistributedRepo/Internal/v1/REPLICA_COMMIT
+  users:
+  - /NDNSF-DistributeInference/example/user
+  - /NDNSF-DistributeInference/example/provider
+  - /NDNSF-DistributeInference/example/provider/1
+  - /NDNSF-DistributeInference/example/provider/2
+  - /NDNSF-DistributeInference/example/repo
+  - /NDNSF-DistributeInference/example/repo/1
+  - /NDNSF-DistributeInference/example/repo/2
+  providers:
+  - identity: /NDNSF-DistributeInference/example/repo
+    roles: []
+  - identity: /NDNSF-DistributeInference/example/repo/1
+    roles: []
+  - identity: /NDNSF-DistributeInference/example/repo/2
+    roles: []
+  roles: []
+  dependencies: []
+- name: /NDNSF/DistributedRepo/Internal/v1/CATALOG_MERGE
+  model: /NDNSF/DistributedRepo/Internal/v1/CATALOG_MERGE
+  users:
+  - /NDNSF-DistributeInference/example/user
+  - /NDNSF-DistributeInference/example/provider
+  - /NDNSF-DistributeInference/example/provider/1
+  - /NDNSF-DistributeInference/example/provider/2
+  - /NDNSF-DistributeInference/example/repo
+  - /NDNSF-DistributeInference/example/repo/1
+  - /NDNSF-DistributeInference/example/repo/2
+  providers:
+  - identity: /NDNSF-DistributeInference/example/repo
+    roles: []
+  - identity: /NDNSF-DistributeInference/example/repo/1
+    roles: []
+  - identity: /NDNSF-DistributeInference/example/repo/2
+    roles: []
+  roles: []
+  dependencies: []
+- name: /NDNSF/DistributedRepo/Internal/v1/CATALOG_DIGEST
+  model: /NDNSF/DistributedRepo/Internal/v1/CATALOG_DIGEST
+  users:
+  - /NDNSF-DistributeInference/example/user
+  - /NDNSF-DistributeInference/example/provider
+  - /NDNSF-DistributeInference/example/provider/1
+  - /NDNSF-DistributeInference/example/provider/2
+  - /NDNSF-DistributeInference/example/repo
+  - /NDNSF-DistributeInference/example/repo/1
+  - /NDNSF-DistributeInference/example/repo/2
+  providers:
+  - identity: /NDNSF-DistributeInference/example/repo
+    roles: []
+  - identity: /NDNSF-DistributeInference/example/repo/1
+    roles: []
+  - identity: /NDNSF-DistributeInference/example/repo/2
+    roles: []
+  roles: []
+  dependencies: []
+- name: /NDNSF/DistributedRepo/Internal/v1/REPAIR
+  model: /NDNSF/DistributedRepo/Internal/v1/REPAIR
+  users:
+  - /NDNSF-DistributeInference/example/user
+  - /NDNSF-DistributeInference/example/provider
+  - /NDNSF-DistributeInference/example/provider/1
+  - /NDNSF-DistributeInference/example/provider/2
+  - /NDNSF-DistributeInference/example/repo
+  - /NDNSF-DistributeInference/example/repo/1
+  - /NDNSF-DistributeInference/example/repo/2
+  providers:
+  - identity: /NDNSF-DistributeInference/example/repo
+    roles: []
+  - identity: /NDNSF-DistributeInference/example/repo/1
+    roles: []
+  - identity: /NDNSF-DistributeInference/example/repo/2
+    roles: []
+  roles: []
+  dependencies: []
+- name: /NDNSF/DistributedRepo/Artifact/v2/STORE
+  model: /NDNSF/DistributedRepo/Artifact/v2/STORE
+  users:
+  - /NDNSF-DistributeInference/example/user
+  - /NDNSF-DistributeInference/example/provider
+  - /NDNSF-DistributeInference/example/provider/1
+  - /NDNSF-DistributeInference/example/provider/2
+  - /NDNSF-DistributeInference/example/repo
+  - /NDNSF-DistributeInference/example/repo/1
+  - /NDNSF-DistributeInference/example/repo/2
+  providers:
+  - identity: /NDNSF-DistributeInference/example/repo
+    roles:
+    - artifact-replica-0
+  - identity: /NDNSF-DistributeInference/example/repo/1
+    roles:
+    - artifact-replica-0
+  - identity: /NDNSF-DistributeInference/example/repo/2
+    roles:
+    - artifact-replica-0
+  roles:
+  - artifact-replica-0
+  dependencies: []

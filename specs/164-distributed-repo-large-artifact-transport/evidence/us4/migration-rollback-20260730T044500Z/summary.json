@@ -1,0 +1,18 @@
+{
+  "artifactFormat": "artifact-manifest-v2",
+  "automaticMigrationDestructive": false,
+  "capabilityWithdrawalVerified": true,
+  "catalogFormatIdentityVerified": true,
+  "databaseSchemaGeneration": 12,
+  "exactPacketTrustSemanticsChanged": false,
+  "gcFormatIdentityVerified": true,
+  "legacyGeneration": 11,
+  "nativeBackendCasesPassed": 5,
+  "pythonMigrationCasesPassed": 5,
+  "receiptFormatIdentityVerified": true,
+  "rollbackCommittedBytesPreserved": true,
+  "rollbackNewV2WritesRejected": true,
+  "rollbackReadsVerified": true,
+  "unknownFutureGenerationFailsClosed": true,
+  "verdict": "PASS"
+}

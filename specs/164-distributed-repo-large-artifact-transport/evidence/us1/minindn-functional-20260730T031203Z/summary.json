@@ -1,0 +1,98 @@
+{
+  "materialPassport": {
+    "originDate": "2026-07-30",
+    "originMode": "run",
+    "originSkill": "experiment-agent",
+    "verificationStatus": "VERIFIED",
+    "versionLabel": "spec164_t008_functional_v1"
+  },
+  "payloadSize": 65536,
+  "performanceClaim": false,
+  "quickSmoke": false,
+  "scenarios": [
+    {
+      "consumer": {
+        "contentDigest": "d8f32a3b4c195f65444e342b0c61bdaf114802e84ab7821a1f88e3f66ea15100",
+        "destination": "/home/tianxing/NDN/ndn-service-framework/specs/164-distributed-repo-large-artifact-transport/evidence/us1/minindn-functional-20260730T031203Z/success/consumer/artifact.bin",
+        "destinationVisible": true,
+        "manifestDigestVerifications": 1,
+        "receiptAuthenticated": true,
+        "retrievalMetrics": {
+          "interestCount": 16,
+          "logicalBytes": 65536,
+          "retransmissionCount": 0,
+          "segments": 16,
+          "wireBytes": 71664
+        },
+        "rootAsymmetricVerifications": 1,
+        "scenario": "success",
+        "status": "SUCCESS"
+      },
+      "elapsedMs": 5753.173,
+      "performanceClaim": false,
+      "repo": {
+        "active": true,
+        "lifecycle": [
+          "RESERVED",
+          "RECEIVING",
+          "VERIFIED",
+          "COMMITTED",
+          "ACTIVE"
+        ],
+        "publicationMetrics": {
+          "interestCount": 16,
+          "logicalBytes": 65536,
+          "retransmissionCount": 0,
+          "segments": 16,
+          "wireBytes": 71824
+        },
+        "receipt": {
+          "authenticationAlgorithm": "hmac-sha256",
+          "receipt": {
+            "artifact": {
+              "contentDigest": "d8f32a3b4c195f65444e342b0c61bdaf114802e84ab7821a1f88e3f66ea15100",
+              "digestAlgorithm": "sha256",
+              "formatVersion": "artifact-manifest-v2",
+              "logicalName": "/spec164/publisher/artifact",
+              "policyEpoch": "spec164-policy-1",
+              "publisherIdentity": "/spec164/publisher",
+              "rootManifestName": "/spec164/publisher/artifact/root",
+              "sizeBytes": 65536
+            },
+            "committedAtMs": 3300,
+            "operationId": "spec164-success-publication",
+            "policyEpoch": "spec164-policy-1",
+            "receiptId": "receipt-6817c7aa5cabe0cbfaf62c20c61af6c9533f5cd3d9be5bbf888e43bccf9a9e37",
+            "repoNode": "/spec164/repo",
+            "state": "COMMITTED",
+            "storageGeneration": 1
+          },
+          "schema": "ndnsf-repo-authenticated-replica-receipt-v1",
+          "signatureHex": "3c929cdf97dd785e986bd2d93571686996d814ef148690191bef7cd87fa6b20e",
+          "signerKeyId": "/spec164/repo/KEY/receipt-1"
+        },
+        "scenario": "success",
+        "status": "ACTIVE"
+      },
+      "scenario": "success",
+      "verdict": "PASS"
+    },
+    {
+      "consumer": null,
+      "elapsedMs": 5650.986,
+      "performanceClaim": false,
+      "repo": {
+        "active": false,
+        "destinationVisible": false,
+        "error": "artifact-manifest-digest-mismatch: chunk payload length or digest does not match manifest",
+        "scenario": "corruption",
+        "status": "CORRUPTION_REJECTED"
+      },
+      "scenario": "corruption",
+      "verdict": "PASS"
+    }
+  ],
+  "schema": "ndnsf-repo-spec164-functional-minindn-v1",
+  "topology": "/home/tianxing/NDN/ndn-service-framework/Experiments/Topology/spec164-artifact-linear.conf",
+  "verdict": "PASS"
+}

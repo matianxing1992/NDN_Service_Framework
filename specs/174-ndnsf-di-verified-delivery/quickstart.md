@@ -1,0 +1,187 @@
+# Spec 174 Execution Quickstart
+
+This is the planned operator path. It deliberately reuses current build, regression, MiniNDN, SIF, and Tiger tooling. Commands marked **planned interface** become valid only after the owning task implements and tests the Spec174 profile. Do not substitute an ad hoc command or advance to a later section.
+
+## 0. Confirm Authority And Worktree
+
+```bash
+cd /home/tianxing/NDN/ndn-service-framework
+sha256sum docs/NDNSFDI/slides/main.pdf
+jq -r .feature_directory .specify/feature.json
+git status --short
+```
+
+Required PDF digest:
+
+```text
+5a1096e5d9d5cf3899de7c305c7b98ea7981c56986118253d63feb91043bd668
+```
+
+Stop if the PDF or active feature differs. The worktree may be dirty, but the gate manifest must list/hash every in-scope dirty input and exclude unrelated user changes. Never use `git add -A`, reset, clean, or an implicit stash.
+
+## 1. Generate The Owner/Gap Inventory
+
+**Planned interface owned by Task T001**:
+
+```bash
+python3 scripts/spec174_traceability.py \
+  --spec specs/174-ndnsf-di-verified-delivery/spec.md \
+  --plan specs/174-ndnsf-di-verified-delivery/plan.md \
+  --output results/spec174/traceability.json
+```
+
+The output must classify every FR/SC mapping as `conforming`, `partial`, `conflicting`, or `unverified`, name existing owner symbols/files/tests, and identify the smallest gap. No production task begins with an unresolved owner.
+
+`scripts/spec174_traceability.py` is a planning/evidence utility, not a new runtime. It must call or import current source/evidence helpers rather than reimplementing their parsing and identity rules.
+
+## 2. Configure And Build The Current Runtime
+
+Use one consistent dependency environment. Do not mix Linuxbrew and system linkers/libraries or a host ABI with the SIF ABI.
+
+```bash
+./waf configure --with-tests
+./waf build -j4
+```
+
+Record compiler, linker, Boost, ndn-cxx, NDN-SVS, ORT, Python/SOABI, configure command, and linked-library closure. A successful compile does not close Gate U.
+
+## 3. Gate U — Unit
+
+Focused native suites first:
+
+```bash
+build/unit-tests --log_level=test_suite
+```
+
+This full binary includes the current `DistributedInferenceCollectiveRuntime` and `DistributedInferenceCrossProviderGroup` suites plus distributed-inference cases registered at the repository test-module level. Task-level development uses focused selectors, but Gate U uses the complete binary so globally registered cases are not omitted.
+
+Run the existing Python regression baseline plus new Spec174 contracts:
+
+```bash
+PYTHONPATH=pythonWrapper:NDNSF-DistributedRepo/pythonWrapper:NDNSF-DistributedInference:Experiments \
+  python3 -m pytest -q --tb=short \
+  tests/python/test_spec170_*.py \
+  tests/python/test_spec174_*.py
+```
+
+The old tests are reusable regressions; their prior historical status is not a pass. Gate U passes only when the generated manifest names all mandatory suites and zero required cases are skipped.
+
+## 4. Gate I — In-Process Integration
+
+Run the production-path integration binary, not a Python-only simulation:
+
+```bash
+build/integration-tests \
+  --run_test='Spec174NdnsfDiVerifiedDelivery/*' \
+  --log_level=test_suite
+```
+
+**Planned suite**: Task T011 adds/registers `Spec174NdnsfDiVerifiedDelivery` by extending `tests/integration-tests/ndnsf-di-core-flow.t.cpp` and the existing fixture. It must reuse current production codecs and handlers. Do not create a separate Spec174 fixture when `ndnsf-integration-fixture.*` can be extended.
+
+The gate runner repeats pipeline, tensor, hybrid, and packet-fault cases in three fresh processes and writes one summary manifest. A single Boost.Test process repeating internal cases is not three-process evidence.
+
+## 5. Gate M — Real MiniNDN + CPU
+
+Existing entry points to extend:
+
+- `Experiments/NDNSF_DI_LlmPipeline_Minindn.py`
+- `Experiments/NDNSF_DI_Run_Minindn_Regressions.py`
+- `tests/python/test_spec170_real_minindn_gate.py`
+
+**Planned Spec174 profile**:
+
+```bash
+sudo -E env \
+  PYTHONPATH=pythonWrapper:NDNSF-DistributedRepo/pythonWrapper:NDNSF-DistributedInference:Experiments \
+  SPEC174_RUN_REAL_MININDN=1 \
+  python3 -m pytest -q --tb=short \
+  tests/python/test_spec174_real_minindn_gate.py
+```
+
+Task T012 must make the profile run:
+
+1. one-role baseline;
+2. four-Provider pipeline;
+3. two-Provider/two-rank tensor group;
+4. four-Provider hybrid `[1,2,1]`;
+5. selected deterministic packet/process negative cases.
+
+Each case uses separate Provider processes and per-node NFD in real MiniNDN. The harness must record exact manifest/segment Interest/Data names and complete oracle results, enforce process-tree teardown, and run three independent clean repetitions. Stop after the first failed mandatory case; do not start SIF or Tiger work.
+
+## 6. Gate C — Build And Qualify Exact Local SIF
+
+Use the current normal entry point, not legacy archive/Docker/remote materialization:
+
+The Gate C candidate manifest is generated by T013 and is the single source of these paths:
+
+```bash
+: "${SPEC174_CANDIDATE_MANIFEST:?set the frozen Gate C candidate manifest}"
+SPEC174_DEFINITION=$(jq -er '.build.definition' "$SPEC174_CANDIDATE_MANIFEST")
+SPEC174_SIF=$(jq -er '.build.outputSif' "$SPEC174_CANDIDATE_MANIFEST")
+SPEC174_BUILD_RECORD=$(jq -er '.build.record' "$SPEC174_CANDIDATE_MANIFEST")
+SPEC174_SOURCE_SEAL=$(jq -er '.build.sourceSeal' "$SPEC174_CANDIDATE_MANIFEST")
+SPEC174_APPTAINER=$(jq -er '.build.apptainer' "$SPEC174_CANDIDATE_MANIFEST")
+SPEC174_APPTAINER_VERSION=$(jq -er '.build.expectedApptainerVersion' "$SPEC174_CANDIDATE_MANIFEST")
+
+packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/build-local-sif.sh \
+  --definition "$SPEC174_DEFINITION" \
+  --sif "$SPEC174_SIF" \
+  --record "$SPEC174_BUILD_RECORD" \
+  --source-seal "$SPEC174_SOURCE_SEAL" \
+  --apptainer "$SPEC174_APPTAINER" \
+  --expected-apptainer "$SPEC174_APPTAINER_VERSION"
+```
+
+The placeholders must be resolved from one frozen Gate C candidate manifest; they are not chosen interactively during the build. Existing `validate-local-sif-source.py` and `validate-local-sif-build-record.py` are extended/migrated to the Spec174 schema rather than duplicated.
+
+Mandatory local checks:
+
+```bash
+python3 packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/validate-local-sif-source.py \
+  --source-seal "$SPEC174_SOURCE_SEAL"
+
+python3 packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/validate-local-sif-build-record.py \
+  --record "$SPEC174_BUILD_RECORD"
+
+sha256sum "$SPEC174_SIF"
+```
+
+Then run the same Gate M CPU profile inside the exact SIF with `--cleanenv`, verified cwd and bind mounts. Gate C must also verify real Python extension import, SOABI, `ldd`/RPATH, ORT providers, Boost/NDN/SVS linkage, NFD/MiniNDN entry points, no required PyTorch/Transformers, no unresolved host leakage, and exact result oracle.
+
+## 7. Gate T — TigerCluster
+
+Tiger commands remain disabled until Gate C emits `PROMOTABLE` for one SIF digest.
+
+Required preparation:
+
+1. run existing login preflight;
+2. obtain a bounded compute-node probe for Apptainer/driver/GPU compatibility;
+3. upload exact SIF and manifests to project storage;
+4. verify remote SHA-256 before `sbatch`;
+5. render the existing Slurm/Apptainer profile/template from the frozen candidate config.
+
+Current reusable entry points:
+
+```text
+packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/preflight-login.sh
+packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/preflight-compute.sh
+packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/run-container.sh
+packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/run-ndnsf-qwen.sh
+packaging/ndnsf-di-container/adapters/slurm-apptainer/templates/ndnsf-qwen.sbatch.in
+```
+
+The staged Tiger runner must perform T0 preflight, T1 CPU/no-GPU negative, T2 single-GPU complete reference, and T3 cross-Provider multi-GPU complete tensor result. Every stage consumes exact SIF/source/config/input/oracle hashes and stops later stages on failure. Tiger never rebuilds the SIF or replaces runtime libraries.
+
+## 8. Completion Check
+
+Spec 174 is complete only when the traceability report shows every FR/SC satisfied and the immutable chain is:
+
+```text
+Gate U PASS
+  -> Gate I PASS (3 fresh runs)
+  -> Gate M PASS (3 fresh runs per required case)
+  -> Gate C PASS (exact SIF digest)
+  -> Gate T T0–T3 PASS (same digest)
+```
+
+“Implemented,” “compiled,” “unit test passed,” “SIF built,” “model loaded,” “GPU used,” or “one stage completed” are intermediate facts, not feature completion.

@@ -1,0 +1,122 @@
+{
+  "answer": "NDN 按内容名称转发与 IP 按主机地址转发的核心区别在于：前者基于内容（如文件、消息等）进行转发，而后者基于网络地址（如IP地址）进行转发。",
+  "campaignId": "spec168-campaign-v3-f3c87c4005a001189547",
+  "cpuFallbackCount": 0,
+  "generatedTokenCount": 47,
+  "generatedTokenIds": [
+    8065,
+    45,
+    6567,
+    234,
+    231,
+    43815,
+    29991,
+    108942,
+    57218,
+    6790,
+    6567,
+    234,
+    231,
+    110293,
+    46477,
+    108942,
+    104867,
+    102665,
+    101321,
+    5122,
+    110176,
+    104210,
+    43815,
+    9909,
+    29524,
+    26898,
+    5373,
+    64205,
+    49567,
+    7552,
+    71817,
+    108942,
+    3837,
+    68536,
+    107184,
+    104210,
+    71356,
+    46477,
+    9909,
+    29524,
+    3298,
+    46477,
+    7552,
+    71817,
+    108942,
+    1773,
+    151645
+  ],
+  "gpus": [
+    {
+      "name": "NVIDIA RTX 5000 Ada Generation",
+      "node": "itiger07",
+      "rank": 0,
+      "uuid": "GPU-5f8bd6b3-bf24-f79d-c267-4a70120e1b5d"
+    },
+    {
+      "name": "NVIDIA RTX 5000 Ada Generation",
+      "node": "itiger08",
+      "rank": 1,
+      "uuid": "GPU-02a0a0b8-a1e9-95f6-c368-c00c992c65c6"
+    },
+    {
+      "name": "NVIDIA RTX 5000 Ada Generation",
+      "node": "itiger09",
+      "rank": 2,
+      "uuid": "GPU-3f595d39-8716-4cf6-cb53-caaaec7d51f8"
+    }
+  ],
+  "modelIdentityDigest": "sha256:a317ec50b9a20ebf83a96379016e227dbe83c0b7116e97cfffdfc0bcee4c86db",
+  "nodes": [
+    "itiger07",
+    "itiger08",
+    "itiger09"
+  ],
+  "planDigest": "sha256:0190314b01004e99a041ceb802f96719a9e46985a46136315ee4d5f54aba2340",
+  "providers": [
+    {
+      "gpuUuid": "GPU-5f8bd6b3-bf24-f79d-c267-4a70120e1b5d",
+      "logDigest": "sha256:cc70c2cb8aa3bfb52814ce1758b0bc6bf8e7468d76bc290d2b9b10f6b4382d4d",
+      "node": "itiger07",
+      "rank": 0,
+      "role": "/LLM/Pipeline/Stage/0",
+      "routeDigest": "sha256:5c9d68a12b46b14fb7fffff8a81ab16cc65dbddfb74ff715c28adbd0c5a32d8a"
+    },
+    {
+      "gpuUuid": "GPU-02a0a0b8-a1e9-95f6-c368-c00c992c65c6",
+      "logDigest": "sha256:1b339002ddce08766e3ab5bfa76f1f237ee13fac198805f190eb2239eced4dc9",
+      "node": "itiger08",
+      "rank": 1,
+      "role": "/LLM/Pipeline/Stage/1",
+      "routeDigest": "sha256:b865e540597e3f5b98a62f439c3d016b29ef1a83afc45bcca7665252b5631b70"
+    },
+    {
+      "gpuUuid": "GPU-3f595d39-8716-4cf6-cb53-caaaec7d51f8",
+      "logDigest": "sha256:96725835aba12d76f58bb866d933e8a3575df6b9f00541c77177e4899112a08a",
+      "node": "itiger09",
+      "rank": 2,
+      "role": "/LLM/Pipeline/Stage/2",
+      "routeDigest": "sha256:3b964ac888e54d23c186e0304e33b7092303567a58a7989a3fd2e50e98cbd677"
+    }
+  ],
+  "readiness": "REQUEST_FIRST_DATA_DRIVEN_V2",
+  "requestId": "/spec168-f3c87c4005a001189547-single",
+  "responseCount": 1,
+  "runtimeSifDigest": "sha256:1f616fa773df4f8d821339cb7b0a3d62332b9f2197055bdb4e9f3dd081518368",
+  "schema": "ndnsf-di.spec168-three-node-analysis.v1",
+  "securityVerdict": "PASS",
+  "sourceBundleDigest": "sha256:0134b5d0f47b3de1cbf84ab5b256408392e5532a2a873368f9b4df9cf683360a",
+  "sourceDigest": "sha256:d9815ff11485b4395afa9eee3cb29253e0f6524a9c7b7b1c77d3817ae7de9b6a",
+  "stageManifestDigest": "sha256:8d8475db33efab5398014d0aac9570cda90bae5d50fd0128bed7b0215d0156f5",
+  "status": "PASS",
+  "stopReason": "EOS",
+  "tokenRequestCount": 0,
+  "wireRequestCount": 1,
+  "workloadDigest": "sha256:5a87c5645c74ac52b7e2ab728e7297d49c42fa849ce47d163c8fec5838d9dd75"
+}

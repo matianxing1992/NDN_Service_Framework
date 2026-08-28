@@ -299,6 +299,33 @@ BOOST_AUTO_TEST_CASE(HybridV2EnvelopeAndStandardMessagesStayWithinPiggybackLimit
   checkMessage("SELECTION", makeServiceSelectionNameV2(user, provider, service, requestId),
                user, "/SERVICE/HELLO",
                ndn::Buffer(selectionWire.value(), selectionWire.value_size()));
+
+  StreamBinding streamBinding;
+  streamBinding.requestId = requestId;
+  streamBinding.requester = user;
+  streamBinding.serviceName = service;
+  streamBinding.producer = provider;
+  streamBinding.producerBootId = "boot-1";
+  streamBinding.attemptEpoch = 1;
+  streamBinding.planDigest.fill(0x11);
+  streamBinding.generationId.fill(0x22);
+  streamBinding.streamEpoch = 1;
+  streamBinding.eventKeyCommitment.fill(0x33);
+  streamBinding.userToken = ndn::Buffer(
+    reinterpret_cast<const uint8_t*>("user-token-000001"), 17);
+  streamBinding.policyEpoch = 1;
+  streamBinding.deadlineEpochMs = 999999999999ULL;
+  InvocationEventMessage event;
+  event.bindingDigest = computeStreamBindingDigest(streamBinding);
+  event.cursor = 1;
+  event.publishedAtUs = 1;
+  event.userToken = streamBinding.userToken;
+  ndn::Buffer eventPayload(reinterpret_cast<const uint8_t*>("token-1"), 7);
+  event.setPayload(eventPayload);
+  const auto eventWire = event.wireEncode();
+  checkMessage("EVENT", makeInvocationEventName(streamBinding, event.cursor),
+               provider, "/PERMISSION/HELLO",
+               ndn::Buffer(eventWire.value(), eventWire.value_size()));
 }
 
 BOOST_AUTO_TEST_CASE(HybridKeyEpochRotatesByUsesAndNonceIsUnique)

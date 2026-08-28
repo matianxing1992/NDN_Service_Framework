@@ -1,0 +1,28 @@
+{
+  "assetReferences": {
+    "exactSifPreflight": "content-addressed:sha256:16f73b7d25e14a08815f710b4c720a8472111430020dce62997c6eb1acd35636",
+    "localFixtureStageManifest": "content-addressed:sha256:1c2fec771854f2bc2a5ccc82a8d897ee3426335d3cf37cbb64a6d303b3588adf",
+    "localGateManifest": "content-addressed:sha256:25ed6cb5504df2beb4599292e825541166eca4f510576f81b7fa8c1e0e6f81b9",
+    "remoteLargeStageManifest": "/project/tma1/ndnsf-di/artifacts/spec162/qwen36/spec162-submission-t009-qwen36-runtime-rebind-1f616fa7-003/stage-manifest.json",
+    "remoteSmallStageManifest": "/project/tma1/ndnsf-di/artifacts/spec162/qwen3-0.6b/spec162-submission-t009-qwen3small-runtime1f616-pathbound-20260802T231200Z-001/stage-manifest.json",
+    "runtimeSif": "/project/tma1/ndnsf-di/releases/spec167-native-file-producer-0f834dbaad7496628fb31bfcdfc87f6ead0874a03db65329c5536d8b1da63d92/runtime.sif",
+    "sourceBundle": "content-addressed:sha256:2254a9c1158ac4ae55038d9a232782c93f1b1b3e7734a0ead9c8ca9e6b67bc1d"
+  },
+  "bindingDigests": {
+    "baselineDigest": "sha256:e2afc0dfbe6464648425d8d3f75ceb3b8b140610a78956e2052eb0f192a0640d",
+    "exactSifPreflightDigest": "sha256:16f73b7d25e14a08815f710b4c720a8472111430020dce62997c6eb1acd35636",
+    "localFixtureManifestDigest": "sha256:1c2fec771854f2bc2a5ccc82a8d897ee3426335d3cf37cbb64a6d303b3588adf",
+    "localGateManifestDigest": "sha256:25ed6cb5504df2beb4599292e825541166eca4f510576f81b7fa8c1e0e6f81b9",
+    "remoteLargeStageManifestDigest": "sha256:16de41986564c436a33cd6a292f17f4bd939d0a893c441441022e3b389737f6f",
+    "remoteSmallStageManifestDigest": "sha256:8d8475db33efab5398014d0aac9570cda90bae5d50fd0128bed7b0215d0156f5",
+    "runtimeSifDigest": "sha256:1f616fa773df4f8d821339cb7b0a3d62332b9f2197055bdb4e9f3dd081518368",
+    "sourceBundleDigest": "sha256:2254a9c1158ac4ae55038d9a232782c93f1b1b3e7734a0ead9c8ca9e6b67bc1d",
+    "sourceDigest": "sha256:115c3da6195d92e579b56864757ee8d42c9d58b7c6daf6acf0d337bc639a9454",
+    "strategyDigest": "sha256:38de9d3a2b37df6e17f3bcd2e5ecabdb6b97ee440ccf1326d02a9858aee5c65d"
+  },
+  "candidateDigest": "sha256:53ebd55826aa79e682b96a0f0263da3ed58d4984673710ad7f3b5ee3d8994af3",
+  "candidateId": "spec168-candidate-v3-10ad7f3b5ee3d8994af3",
+  "payloadPolicy": "content-addressed-references-only",
+  "schema": "ndnsf-di.spec168-experiment.v3",
+  "state": "FROZEN"
+}

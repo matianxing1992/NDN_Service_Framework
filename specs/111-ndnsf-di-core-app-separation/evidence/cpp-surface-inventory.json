@@ -1,0 +1,457 @@
+{
+  "headers": [
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp",
+      "proposedCanonicalOwner": "core"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/DependencyWaitScheduler.hpp",
+      "proposedCanonicalOwner": "core"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/DiTimelineTrace.hpp",
+      "proposedCanonicalOwner": "core"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionEvidence.hpp",
+      "proposedCanonicalOwner": "core"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionLeaseService.hpp",
+      "proposedCanonicalOwner": "core"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactMaterializer.hpp",
+      "proposedCanonicalOwner": "core"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp",
+      "proposedCanonicalOwner": "core"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp",
+      "proposedCanonicalOwner": "core"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeFaultInjection.hpp",
+      "proposedCanonicalOwner": "core"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp",
+      "proposedCanonicalOwner": "core"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp",
+      "proposedCanonicalOwner": "core"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderReadiness.hpp",
+      "proposedCanonicalOwner": "core"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp",
+      "proposedCanonicalOwner": "core"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.hpp",
+      "proposedCanonicalOwner": "core"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeServiceManifest.hpp",
+      "proposedCanonicalOwner": "core"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.hpp",
+      "proposedCanonicalOwner": "core"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.hpp",
+      "proposedCanonicalOwner": "adapter-onnx"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderResourceProbe.hpp",
+      "proposedCanonicalOwner": "core"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp",
+      "proposedCanonicalOwner": "core"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/QwenGenerationSession.hpp",
+      "proposedCanonicalOwner": "adapter-qwen"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp",
+      "proposedCanonicalOwner": "core"
+    }
+  ],
+  "includeCallers": {
+    "NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp": [
+      "NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.cpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp",
+      "tests/unit-tests/distributed-inference-async-runtime.t.cpp"
+    ],
+    "NDNSF-DistributedInference/cpp/ndnsf-di/DependencyWaitScheduler.hpp": [
+      "NDNSF-DistributedInference/cpp/ndnsf-di/DependencyWaitScheduler.cpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp",
+      "tests/sanitizer/dependency-wait-scheduler-sanitizer.cpp",
+      "tests/unit-tests/distributed-inference-async-runtime.t.cpp"
+    ],
+    "NDNSF-DistributedInference/cpp/ndnsf-di/DiTimelineTrace.hpp": [
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.cpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.cpp"
+    ],
+    "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionEvidence.hpp": [
+      "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionEvidence.cpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderReadiness.hpp",
+      "tests/unit-tests/di-onnxruntime-gpu-evidence.t.cpp",
+      "tests/unit-tests/distributed-inference-async-runtime.t.cpp"
+    ],
+    "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionLeaseService.hpp": [
+      "examples/DI_NativeProviderExecutable.cpp",
+      "tests/unit-tests/di-execution-lease-service.t.cpp"
+    ],
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactMaterializer.hpp": [
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactMaterializer.cpp",
+      "examples/DI_NativeProviderExecutable.cpp",
+      "tests/unit-tests/distributed-inference-async-runtime.t.cpp"
+    ],
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp": [
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.cpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.cpp",
+      "tests/unit-tests/distributed-inference-async-runtime.t.cpp"
+    ],
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp": [
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.cpp",
+      "examples/DI_NativePlanManifestSmoke.cpp",
+      "examples/DI_NativePlanOnnxSmoke.cpp",
+      "examples/DI_NativePlanSchemaSmoke.cpp",
+      "examples/DI_NativeProviderExecutable.cpp",
+      "tests/unit-tests/distributed-inference-async-runtime.t.cpp"
+    ],
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeFaultInjection.hpp": [
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeFaultInjection.cpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.cpp",
+      "examples/DI_NativeFaultProviderExecutable.cpp",
+      "tests/unit-tests/di-native-fault-injection.t.cpp"
+    ],
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp": [
+      "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionEvidence.cpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactMaterializer.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.cpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeServiceManifest.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp"
+    ],
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp": [
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.cpp",
+      "examples/DI_NativeProviderExecutable.cpp",
+      "examples/DI_NativeProviderSessionSmoke.cpp",
+      "tests/unit-tests/distributed-inference-async-runtime.t.cpp"
+    ],
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderReadiness.hpp": [
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderReadiness.cpp",
+      "examples/DI_NativeProviderExecutable.cpp",
+      "tests/unit-tests/distributed-inference-async-runtime.t.cpp"
+    ],
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp": [
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.cpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.hpp",
+      "tests/unit-tests/distributed-inference-async-runtime.t.cpp"
+    ],
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.hpp": [
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.cpp",
+      "examples/DI_NativePlanManifestSmoke.cpp",
+      "examples/DI_NativePlanOnnxSmoke.cpp",
+      "examples/DI_NativeProviderExecutable.cpp",
+      "examples/DI_NativeProviderSessionSmoke.cpp",
+      "tests/unit-tests/distributed-inference-async-runtime.t.cpp"
+    ],
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeServiceManifest.hpp": [
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeServiceManifest.cpp",
+      "examples/DI_NativePlanManifestSmoke.cpp",
+      "examples/DI_NativePlanOnnxSmoke.cpp",
+      "examples/DI_NativeProviderExecutable.cpp",
+      "tests/unit-tests/distributed-inference-async-runtime.t.cpp"
+    ],
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.hpp": [
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.cpp",
+      "tests/unit-tests/distributed-inference-async-runtime.t.cpp"
+    ],
+    "NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.hpp": [
+      "NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.cpp",
+      "examples/DI_NativeOnnxRuntimeSmoke.cpp",
+      "examples/DI_NativePlanOnnxSmoke.cpp",
+      "examples/DI_NativeProviderExecutable.cpp",
+      "tests/unit-tests/di-onnxruntime-gpu-evidence.t.cpp",
+      "tests/unit-tests/distributed-inference-async-runtime.t.cpp"
+    ],
+    "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderResourceProbe.hpp": [
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderReadiness.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderResourceProbe.cpp",
+      "tests/unit-tests/distributed-inference-async-runtime.t.cpp"
+    ],
+    "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp": [
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderReadiness.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.cpp",
+      "tests/unit-tests/distributed-inference-async-runtime.t.cpp"
+    ],
+    "NDNSF-DistributedInference/cpp/ndnsf-di/QwenGenerationSession.hpp": [
+      "NDNSF-DistributedInference/cpp/ndnsf-di/QwenGenerationSession.cpp",
+      "tests/unit-tests/di-qwen-generation-session.t.cpp",
+      "tests/unit-tests/distributed-inference-async-runtime.t.cpp"
+    ],
+    "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp": [
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.cpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.cpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.cpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.cpp",
+      "examples/DI_NativePlanManifestSmoke.cpp",
+      "examples/DI_NativePlanOnnxSmoke.cpp",
+      "examples/DI_NativeProviderExecutable.cpp",
+      "tests/unit-tests/di-qwen-onnx-gpu.t.cpp",
+      "tests/unit-tests/distributed-inference-async-runtime.t.cpp"
+    ],
+    "ndnsf-distributed-repo/RepoClient.hpp": [
+      "NDNSF-DistributedRepo/examples/DistributedRepoExactPacketTest.cpp",
+      "NDNSF-DistributedRepo/examples/DistributedRepoSmoke.cpp",
+      "NDNSF-DistributedRepo/pythonWrapper/src/py_repoclient/_py_repoclient.cpp",
+      "NDNSF-DistributedRepo/src/RepoClient.cpp"
+    ],
+    "ndnsf-distributed-repo/RepoCore.hpp": [
+      "NDNSF-DistributedRepo/examples/DistributedRepoSmoke.cpp",
+      "NDNSF-DistributedRepo/examples/DistributedRepoTieredCacheTest.cpp",
+      "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp",
+      "NDNSF-DistributedRepo/src/RepoCore.cpp",
+      "NDNSF-UAV-APP/drone/UavDroneApp.cpp"
+    ],
+    "ndnsf-distributed-repo/RepoNode.hpp": [
+      "NDNSF-DistributedRepo/examples/DistributedRepoExactPacketTest.cpp",
+      "NDNSF-DistributedRepo/examples/DistributedRepoSmoke.cpp",
+      "NDNSF-DistributedRepo/src/RepoClient.cpp",
+      "NDNSF-DistributedRepo/src/RepoNode.cpp"
+    ],
+    "ndnsf-distributed-repo/RepoProtocol.hpp": [
+      "NDNSF-DistributedRepo/examples/DistributedRepoHaTest.cpp",
+      "NDNSF-DistributedRepo/examples/DistributedRepoTieredCacheTest.cpp",
+      "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp",
+      "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp",
+      "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp",
+      "NDNSF-DistributedRepo/pythonWrapper/src/py_repoclient/_py_repoclient.cpp",
+      "NDNSF-DistributedRepo/src/RepoProtocol.cpp",
+      "NDNSF-DistributedRepo/src/RepoTypes.cpp"
+    ],
+    "ndnsf-distributed-repo/RepoTypes.hpp": [
+      "NDNSF-DistributedRepo/examples/DistributedRepoHaTest.cpp",
+      "NDNSF-DistributedRepo/examples/DistributedRepoSmoke.cpp",
+      "NDNSF-DistributedRepo/examples/DistributedRepoTieredCacheTest.cpp",
+      "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp",
+      "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp",
+      "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp",
+      "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoProtocol.hpp",
+      "NDNSF-DistributedRepo/pythonWrapper/src/py_repoclient/_py_repoclient.cpp",
+      "NDNSF-DistributedRepo/src/RepoTypes.cpp"
+    ]
+  },
+  "schemaVersion": 1,
+  "sourceCommit": "4d695ce8b7ffe2c79465dc1f3db649a5a65806a6",
+  "sources": [
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.cpp",
+      "proposedCanonicalOwner": "core"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/DependencyWaitScheduler.cpp",
+      "proposedCanonicalOwner": "core"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionEvidence.cpp",
+      "proposedCanonicalOwner": "core"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionLeaseService.cpp",
+      "proposedCanonicalOwner": "core"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactMaterializer.cpp",
+      "proposedCanonicalOwner": "core"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.cpp",
+      "proposedCanonicalOwner": "core"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.cpp",
+      "proposedCanonicalOwner": "core"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeFaultInjection.cpp",
+      "proposedCanonicalOwner": "core"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.cpp",
+      "proposedCanonicalOwner": "core"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.cpp",
+      "proposedCanonicalOwner": "core"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderReadiness.cpp",
+      "proposedCanonicalOwner": "core"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.cpp",
+      "proposedCanonicalOwner": "core"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.cpp",
+      "proposedCanonicalOwner": "core"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeServiceManifest.cpp",
+      "proposedCanonicalOwner": "core"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.cpp",
+      "proposedCanonicalOwner": "core"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.cpp",
+      "proposedCanonicalOwner": "adapter-onnx"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderResourceProbe.cpp",
+      "proposedCanonicalOwner": "core"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.cpp",
+      "proposedCanonicalOwner": "core"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/QwenGenerationSession.cpp",
+      "proposedCanonicalOwner": "adapter-qwen"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.cpp",
+      "proposedCanonicalOwner": "core"
+    }
+  ],
+  "targets": [
+    {
+      "target": "AI_DistributedCollaborationProvider",
+      "wscript": "examples/wscript"
+    },
+    {
+      "target": "AI_DistributedCollaborationProvider",
+      "wscript": "examples/wscript"
+    },
+    {
+      "target": "DistributedRepoExactPacketTest",
+      "wscript": "NDNSF-DistributedRepo/wscript"
+    },
+    {
+      "target": "DistributedRepoExactPacketTest",
+      "wscript": "NDNSF-DistributedRepo/wscript"
+    },
+    {
+      "target": "DistributedRepoHaTest",
+      "wscript": "NDNSF-DistributedRepo/wscript"
+    },
+    {
+      "target": "DistributedRepoHaTest",
+      "wscript": "NDNSF-DistributedRepo/wscript"
+    },
+    {
+      "target": "DistributedRepoSmoke",
+      "wscript": "NDNSF-DistributedRepo/wscript"
+    },
+    {
+      "target": "DistributedRepoSmoke",
+      "wscript": "NDNSF-DistributedRepo/wscript"
+    },
+    {
+      "target": "DistributedRepoTieredCacheTest",
+      "wscript": "NDNSF-DistributedRepo/wscript"
+    },
+    {
+      "target": "DistributedRepoTieredCacheTest",
+      "wscript": "NDNSF-DistributedRepo/wscript"
+    },
+    {
+      "target": "di-native-fault-provider",
+      "wscript": "examples/wscript"
+    },
+    {
+      "target": "di-native-fault-provider",
+      "wscript": "examples/wscript"
+    },
+    {
+      "target": "di-native-onnxruntime-smoke",
+      "wscript": "examples/wscript"
+    },
+    {
+      "target": "di-native-onnxruntime-smoke",
+      "wscript": "examples/wscript"
+    },
+    {
+      "target": "di-native-plan-manifest-smoke",
+      "wscript": "examples/wscript"
+    },
+    {
+      "target": "di-native-plan-manifest-smoke",
+      "wscript": "examples/wscript"
+    },
+    {
+      "target": "di-native-plan-onnx-smoke",
+      "wscript": "examples/wscript"
+    },
+    {
+      "target": "di-native-plan-onnx-smoke",
+      "wscript": "examples/wscript"
+    },
+    {
+      "target": "di-native-plan-schema-smoke",
+      "wscript": "examples/wscript"
+    },
+    {
+      "target": "di-native-plan-schema-smoke",
+      "wscript": "examples/wscript"
+    },
+    {
+      "target": "di-native-provider",
+      "wscript": "examples/wscript"
+    },
+    {
+      "target": "di-native-provider",
+      "wscript": "examples/wscript"
+    },
+    {
+      "target": "di-native-provider-session-smoke",
+      "wscript": "examples/wscript"
+    },
+    {
+      "target": "di-native-provider-session-smoke",
+      "wscript": "examples/wscript"
+    },
+    {
+      "target": "ndnsf-distributed-repo",
+      "wscript": "NDNSF-DistributedRepo/wscript"
+    },
+    {
+      "target": "ndnsf-distributed-repo",
+      "wscript": "NDNSF-DistributedRepo/wscript"
+    }
+  ]
+}

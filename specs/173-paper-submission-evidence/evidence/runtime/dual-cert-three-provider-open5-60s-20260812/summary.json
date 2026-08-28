@@ -1,0 +1,520 @@
+{
+  "achieved_offered_ratio": 1.0,
+  "achieved_rate_warning": "",
+  "ack_count_per_provider": {},
+  "ack_p95_ms": 0.0,
+  "actual_requests_per_second": 5.0,
+  "actual_successful_responses_per_second": 5.0,
+  "adaptive_window_max": 16,
+  "adaptive_window_min": 16,
+  "adaptive_window_p50": 16.0,
+  "adaptive_window_p95": 16.0,
+  "admission_control_rejects": 0,
+  "admission_control_warnings": 0,
+  "admission_queue_pause_events": 0,
+  "admission_queue_pause_resumes": 0,
+  "admission_queue_pause_skips": 0,
+  "admission_recommended_rate_final": 32.0,
+  "admission_recommended_rate_max": 0.0,
+  "admission_recommended_rate_min": 0.0,
+  "admission_recommended_rate_skips": 0,
+  "admission_reject_resume_queue_depth": 6,
+  "admission_warning_resume_queue_depth": 12,
+  "app_interval_ms": 200,
+  "app_user_exit_status": 0,
+  "app_user_terminated_after_duration": false,
+  "average_latency_ms": 68.63712,
+  "bottleneck_classification": {
+    "all": [
+      "network/SVS delivery limited"
+    ],
+    "primary": "network/SVS delivery limited",
+    "reasons": [
+      "only 0.000 ACK log entries per sent request"
+    ]
+  },
+  "completed_count": 300,
+  "completion_throughput_rps": 5.0,
+  "controller_node": "controller",
+  "crypto_diagnostics": {
+    "csv": "/tmp/ndnsf-dual-cert-open5-3p-60s-20260812/crypto_diagnostics.csv",
+    "json": "/tmp/ndnsf-dual-cert-open5-3p-60s-20260812/crypto_diagnostics_summary.json",
+    "summary": {}
+  },
+  "diagnostic_only": false,
+  "diagnostic_plaintext_ack": false,
+  "diagnostic_plaintext_response": false,
+  "drain_seconds": 10,
+  "duration_s": 60,
+  "failed_request_count": 0,
+  "failure_breakdown": {
+    "ack_selection_bottleneck": false,
+    "provider_selection_concentrated_on_C": false,
+    "request_generation_skipped": 0,
+    "request_timeout": 0,
+    "response_received_too_late": 0
+  },
+  "first_request_sent_ts": null,
+  "hard_inflight_limit": 16,
+  "in_flight_max": 2,
+  "in_flight_p50": 1.0,
+  "in_flight_p95": 1.0,
+  "interval_ms": 200,
+  "last_request_sent_ts": null,
+  "late_response_count": 0,
+  "max_outstanding": 16,
+  "max_outstanding_requests": 2,
+  "median_outstanding_requests": 1.0,
+  "offered_rate_rps": 5.0,
+  "output_dir": "/tmp/ndnsf-dual-cert-open5-3p-60s-20260812",
+  "outstanding_limit_skip_count": 0,
+  "outstanding_limit_skips": 0,
+  "p50_latency_ms": 63.84,
+  "p95_latency_ms": 83.639,
+  "p95_outstanding_requests": 1.0,
+  "p99_latency_ms": 118.17,
+  "pause_count": 0,
+  "pause_reason_counters": "",
+  "paused_state_transitions": 0,
+  "pending_at_shutdown": 0,
+  "perf_request_sent_count": 0,
+  "post_ack_pipeline": {
+    "csv": "/tmp/ndnsf-dual-cert-open5-3p-60s-20260812/post_ack_pipeline.csv",
+    "json": "/tmp/ndnsf-dual-cert-open5-3p-60s-20260812/post_ack_pipeline_summary.json",
+    "summary": {
+      "ack_match_attempt": 0,
+      "ack_match_attempt_decoded": 0,
+      "ack_match_attempt_pre_decrypt": 0,
+      "ack_match_failed_expired_call": 0,
+      "ack_match_failed_no_pending": 0,
+      "ack_match_failed_request_id_mismatch": 0,
+      "ack_match_skipped_pre_decrypt": 0,
+      "ack_matched_pending_call": 0,
+      "bucket_10_real_network_svs_nac_loss_or_timeout": 0,
+      "bucket_1_request_never_created_pending_call": 0,
+      "bucket_2_pending_call_created_but_erased_before_ack": 0,
+      "bucket_3_ack_received_but_skipped_pre_decrypt": 0,
+      "bucket_4_ack_decoded_but_no_pending_call_matched": 0,
+      "bucket_5_ack_matched_pending_call_but_no_provider_selected": 0,
+      "bucket_6_provider_selected_but_selection_not_scheduled": 0,
+      "bucket_7_selection_scheduled_but_not_published": 0,
+      "bucket_8_selection_published_but_provider_did_not_execute_respond": 0,
+      "bucket_9_response_published_but_user_callback_not_triggered": 0,
+      "callback_skipped_no_pending": 0,
+      "callback_skipped_timeout": 0,
+      "failed_request_count_classified": 0,
+      "failure_buckets": {
+        "10_real_network_svs_nac_loss_or_timeout": {
+          "count": 0,
+          "percent_of_failed": 0.0
+        },
+        "1_request_never_created_pending_call": {
+          "count": 0,
+          "percent_of_failed": 0.0
+        },
+        "2_pending_call_created_but_erased_before_ack": {
+          "count": 0,
+          "percent_of_failed": 0.0
+        },
+        "3_ack_received_but_skipped_pre_decrypt": {
+          "count": 0,
+          "percent_of_failed": 0.0
+        },
+        "4_ack_decoded_but_no_pending_call_matched": {
+          "count": 0,
+          "percent_of_failed": 0.0
+        },
+        "5_ack_matched_pending_call_but_no_provider_selected": {
+          "count": 0,
+          "percent_of_failed": 0.0
+        },
+        "6_provider_selected_but_selection_not_scheduled": {
+          "count": 0,
+          "percent_of_failed": 0.0
+        },
+        "7_selection_scheduled_but_not_published": {
+          "count": 0,
+          "percent_of_failed": 0.0
+        },
+        "8_selection_published_but_provider_did_not_execute_respond": {
+          "count": 0,
+          "percent_of_failed": 0.0
+        },
+        "9_response_published_but_user_callback_not_triggered": {
+          "count": 0,
+          "percent_of_failed": 0.0
+        }
+      },
+      "pending_created": 0,
+      "request_count": 0,
+      "request_pending_completed": 0,
+      "request_pending_erased": 0,
+      "request_pending_timeout": 0,
+      "requests_timed_out_after_selection_before_selection": 0,
+      "requests_timed_out_before_selection": 0,
+      "requests_with_no_selection": 0,
+      "selection_attempted": 0,
+      "selection_completed": 0,
+      "selection_invoked": 0,
+      "selection_no_pending": 0,
+      "selection_publish_failed": 0,
+      "selection_published": 0,
+      "selection_rejected": 0,
+      "selection_scheduled": 0,
+      "selection_skipped": 0
+    }
+  },
+  "provider_ack_admission_checked_count": 0,
+  "provider_ack_published_count": 0,
+  "provider_ack_suppressed_count": 0,
+  "provider_ack_suppression_count": 0,
+  "provider_ack_suppression_reasons": {},
+  "provider_certificate_runtime": [
+    {
+      "aa_cert_interest_seen": false,
+      "app_certificate_publisher": false,
+      "cert_data_served": false,
+      "cert_file": "/tmp/ndnsf-dual-cert-open5-3p-60s-20260812/security/identity-3.cert",
+      "cert_name": "/example/hello/provider/A/KEY/%95%0B%D7%AB~b%12i/ROOT/v=1786572302793",
+      "data_count": 0,
+      "identity": "/example/hello/provider/A",
+      "interest_count": 0,
+      "log_tail": "[MiniNDN Harness] event=provider_process_start timestamp_us=1786572306085349 node=provider1 name=provider-A provider_id=A\n[MiniNDN Harness] configured SVS group prefix=/example/hello/group\n[MiniNDN Harness] actual ndn-svs sync prefix=/example/hello/group\n[MiniNDN Harness] node/session name=/example/hello/provider/A/provider / sessionBase=1787401977\n[MiniNDN Harness] data prefix=/example/hello/provider/A/provider/example/hello/group\n[MiniNDN Harness] signing identity=/example/hello/provider/A\n[MiniNDN Harness] validator config path=examples/trust-schema.conf\n[MiniNDN Harness] HOME=/tmp/minindn/provider1\n[MiniNDN Harness] PIB=/tmp/minindn/provider1/.ndn/pib\n[MiniNDN Harness] TPM=/tmp/minindn/provider1/.ndn/ndnsec-key-file\n1786572306.108709  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=constructor_begin provider=/example/hello/provider/A\n1786572306.108744  WARN: [ndn_service_framework.ServiceProvider] NDNSF_CERT_SELECTION role=provider identity=/example/hello/provider/A encryptionCert=/example/hello/provider/A/KEY/%95%0B%D7%AB~b%12i/ROOT/v=1786572302793 signingCert=/example/hello/provider/A/KEY/%FD%17%D7%9C%23%06%E0z/ECDSA/v=1786572302825 splitSigning=true\n1786572306.109768  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=validator_loaded provider=/example/hello/provider/A\n1786572306.109867  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=dkey_initial_interest_issued provider=/example/hello/provider/A\n1786572306.110976  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=content_filters_registered provider=/example/hello/provider/A\n1786572306.111016  WARN: [ndn_service_framework.ServiceProvider] NDNSF_SVS_PUBLICATION_FETCH_CONFIG role=provider retries=2 innerRetries=2 lifetimeMs=500 backoffMs=50 maxBackoffMs=2000 window=32 expectedRps=5 explicitWindow=false\n1786572306.113180  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=svs_pubsub_ready provider=/example/hello/provider/A\n1786572307.119908  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=dkey_wait_iteration provider=/example/hello/provider/A\n1786572307.119972  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=constructor_done provider=/example/hello/provider/A\n1786572307.120020  WARN: [ndn_service_framework.ServiceProvider] UserToken/ProviderToken runtime mode: enabled\n1786572307.120101  WARN: [ndn_service_framework.ServiceProvider] [ServiceProvider] registered service prefix=/HELLO\n1786572307.120104  WARN: [ndn_service_framework.ServiceProvider] Registered service handler for /HELLO invocation-mode=NormalAndTargeted\n1786572307.120110  WARN: [ndn_service_framework.ServiceProvider] Register NDNSF Messages in ndn-svs\n1786572307.120135  WARN: [ndn_service_framework.ServiceProvider] [ServiceProvider] SVS request subscription regex=^(<>*)<NDNSF><REQUEST><HELLO>(<>)$\n1786572307.138237  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/A/HELLO service=/HELLO policyEpoch=1707423688319323254\n1786572307.138270  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/A/NDNSF/DistributedRepo/Artifact/v2/STORE service=/NDNSF/DistributedRepo/Artifact/v2/STORE policyEpoch=1707423688319323254\n1786572307.138273  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/A/NDNSF/DistributedRepo/Artifact/v2/STORE/ROLE/artifact-replica-0 service=/NDNSF/DistributedRepo/Artifact/v2/STORE/ROLE/artifact-replica-0 policyEpoch=1707423688319323254\n1786572307.138274  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/A/NDNSF/DistributedRepo/Store service=/NDNSF/DistributedRepo/Store policyEpoch=1707423688319323254\n1786572307.138276  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/A/NDNSF/DistributedRepo/Store/ROLE/artifact-replica-0 service=/NDNSF/DistributedRepo/Store/ROLE/artifact-replica-0 policyEpoch=1707423688319323254",
+      "provider_id": "A",
+      "server_log": "/tmp/ndnsf-dual-cert-open5-3p-60s-20260812/cert-server-A.log",
+      "server_ready": false
+    },
+    {
+      "aa_cert_interest_seen": false,
+      "app_certificate_publisher": false,
+      "cert_data_served": false,
+      "cert_file": "/tmp/ndnsf-dual-cert-open5-3p-60s-20260812/security/identity-4.cert",
+      "cert_name": "/example/hello/provider/B/KEY/%5E%CC%00%1Cyf%D2%7C/ROOT/v=1786572302939",
+      "data_count": 0,
+      "identity": "/example/hello/provider/B",
+      "interest_count": 0,
+      "log_tail": "[MiniNDN Harness] event=provider_process_start timestamp_us=1786572308323214 node=provider2 name=provider-B provider_id=B\n[MiniNDN Harness] configured SVS group prefix=/example/hello/group\n[MiniNDN Harness] actual ndn-svs sync prefix=/example/hello/group\n[MiniNDN Harness] node/session name=/example/hello/provider/B/provider / sessionBase=1787401977\n[MiniNDN Harness] data prefix=/example/hello/provider/B/provider/example/hello/group\n[MiniNDN Harness] signing identity=/example/hello/provider/B\n[MiniNDN Harness] validator config path=examples/trust-schema.conf\n[MiniNDN Harness] HOME=/tmp/minindn/provider2\n[MiniNDN Harness] PIB=/tmp/minindn/provider2/.ndn/pib\n[MiniNDN Harness] TPM=/tmp/minindn/provider2/.ndn/ndnsec-key-file\n1786572308.345147  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=constructor_begin provider=/example/hello/provider/B\n1786572308.345187  WARN: [ndn_service_framework.ServiceProvider] NDNSF_CERT_SELECTION role=provider identity=/example/hello/provider/B encryptionCert=/example/hello/provider/B/KEY/%5E%CC%00%1Cyf%D2%7C/ROOT/v=1786572302939 signingCert=/example/hello/provider/B/KEY/%99%60%99%1B%C8%0B%14%99/ECDSA/v=1786572302972 splitSigning=true\n1786572308.346390  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=validator_loaded provider=/example/hello/provider/B\n1786572308.346529  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=dkey_initial_interest_issued provider=/example/hello/provider/B\n1786572308.347694  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=content_filters_registered provider=/example/hello/provider/B\n1786572308.347746  WARN: [ndn_service_framework.ServiceProvider] NDNSF_SVS_PUBLICATION_FETCH_CONFIG role=provider retries=2 innerRetries=2 lifetimeMs=500 backoffMs=50 maxBackoffMs=2000 window=32 expectedRps=5 explicitWindow=false\n1786572308.349986  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=svs_pubsub_ready provider=/example/hello/provider/B\n1786572309.359572  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=dkey_wait_iteration provider=/example/hello/provider/B\n1786572309.359662  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=constructor_done provider=/example/hello/provider/B\n1786572309.359708  WARN: [ndn_service_framework.ServiceProvider] UserToken/ProviderToken runtime mode: enabled\n1786572309.359799  WARN: [ndn_service_framework.ServiceProvider] [ServiceProvider] registered service prefix=/HELLO\n1786572309.359804  WARN: [ndn_service_framework.ServiceProvider] Registered service handler for /HELLO invocation-mode=NormalAndTargeted\n1786572309.359810  WARN: [ndn_service_framework.ServiceProvider] Register NDNSF Messages in ndn-svs\n1786572309.359842  WARN: [ndn_service_framework.ServiceProvider] [ServiceProvider] SVS request subscription regex=^(<>*)<NDNSF><REQUEST><HELLO>(<>)$\n1786572309.389027  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/B/HELLO service=/HELLO policyEpoch=1707423688319323254\n1786572309.389073  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/B/NDNSF/DistributedRepo/Artifact/v2/STORE service=/NDNSF/DistributedRepo/Artifact/v2/STORE policyEpoch=1707423688319323254\n1786572309.389077  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/B/NDNSF/DistributedRepo/Store service=/NDNSF/DistributedRepo/Store policyEpoch=1707423688319323254\n1786572309.389078  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/B/NDNSF/DistributedRepo/Store/ROLE/artifact-replica-0 service=/NDNSF/DistributedRepo/Store/ROLE/artifact-replica-0 policyEpoch=1707423688319323254",
+      "provider_id": "B",
+      "server_log": "/tmp/ndnsf-dual-cert-open5-3p-60s-20260812/cert-server-B.log",
+      "server_ready": false
+    },
+    {
+      "aa_cert_interest_seen": false,
+      "app_certificate_publisher": false,
+      "cert_data_served": false,
+      "cert_file": "/tmp/ndnsf-dual-cert-open5-3p-60s-20260812/security/identity-5.cert",
+      "cert_name": "/example/hello/provider/C/KEY/%8D%C2N%BAe%9B%83%24/ROOT/v=1786572303044",
+      "data_count": 0,
+      "identity": "/example/hello/provider/C",
+      "interest_count": 0,
+      "log_tail": "[MiniNDN Harness] event=provider_process_start timestamp_us=1786572310588407 node=provider3 name=provider-C provider_id=C\n[MiniNDN Harness] configured SVS group prefix=/example/hello/group\n[MiniNDN Harness] actual ndn-svs sync prefix=/example/hello/group\n[MiniNDN Harness] node/session name=/example/hello/provider/C/provider / sessionBase=1787401977\n[MiniNDN Harness] data prefix=/example/hello/provider/C/provider/example/hello/group\n[MiniNDN Harness] signing identity=/example/hello/provider/C\n[MiniNDN Harness] validator config path=examples/trust-schema.conf\n[MiniNDN Harness] HOME=/tmp/minindn/provider3\n[MiniNDN Harness] PIB=/tmp/minindn/provider3/.ndn/pib\n[MiniNDN Harness] TPM=/tmp/minindn/provider3/.ndn/ndnsec-key-file\n1786572310.610569  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=constructor_begin provider=/example/hello/provider/C\n1786572310.610603  WARN: [ndn_service_framework.ServiceProvider] NDNSF_CERT_SELECTION role=provider identity=/example/hello/provider/C encryptionCert=/example/hello/provider/C/KEY/%8D%C2N%BAe%9B%83%24/ROOT/v=1786572303044 signingCert=/example/hello/provider/C/KEY/%3ASA%E4%F9%BE%11y/ECDSA/v=1786572303078 splitSigning=true\n1786572310.611682  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=validator_loaded provider=/example/hello/provider/C\n1786572310.611773  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=dkey_initial_interest_issued provider=/example/hello/provider/C\n1786572310.612873  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=content_filters_registered provider=/example/hello/provider/C\n1786572310.612912  WARN: [ndn_service_framework.ServiceProvider] NDNSF_SVS_PUBLICATION_FETCH_CONFIG role=provider retries=2 innerRetries=2 lifetimeMs=500 backoffMs=50 maxBackoffMs=2000 window=32 expectedRps=5 explicitWindow=false\n1786572310.615013  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=svs_pubsub_ready provider=/example/hello/provider/C\n1786572311.625996  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=dkey_wait_iteration provider=/example/hello/provider/C\n1786572311.626051  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=constructor_done provider=/example/hello/provider/C\n1786572311.626088  WARN: [ndn_service_framework.ServiceProvider] UserToken/ProviderToken runtime mode: enabled\n1786572311.626154  WARN: [ndn_service_framework.ServiceProvider] [ServiceProvider] registered service prefix=/HELLO\n1786572311.626160  WARN: [ndn_service_framework.ServiceProvider] Registered service handler for /HELLO invocation-mode=NormalAndTargeted\n1786572311.626166  WARN: [ndn_service_framework.ServiceProvider] Register NDNSF Messages in ndn-svs\n1786572311.626184  WARN: [ndn_service_framework.ServiceProvider] [ServiceProvider] SVS request subscription regex=^(<>*)<NDNSF><REQUEST><HELLO>(<>)$\n1786572311.660591  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/C/HELLO service=/HELLO policyEpoch=1707423688319323254\n1786572311.660637  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/C/NDNSF/DistributedRepo/Store service=/NDNSF/DistributedRepo/Store policyEpoch=1707423688319323254\n1786572311.660641  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/C/NDNSF/DistributedRepo/Store/ROLE/artifact-replica-0 service=/NDNSF/DistributedRepo/Store/ROLE/artifact-replica-0 policyEpoch=1707423688319323254",
+      "provider_id": "C",
+      "server_log": "/tmp/ndnsf-dual-cert-open5-3p-60s-20260812/cert-server-C.log",
+      "server_ready": false
+    }
+  ],
+  "provider_certificates": [
+    {
+      "cert_file": "/tmp/ndnsf-dual-cert-open5-3p-60s-20260812/security/identity-3.cert",
+      "cert_name": "/example/hello/provider/A/KEY/%95%0B%D7%AB~b%12i/ROOT/v=1786572302793",
+      "identity": "/example/hello/provider/A",
+      "provider_id": "A",
+      "signing_cert_file": "/tmp/ndnsf-dual-cert-open5-3p-60s-20260812/security/identity-3-ecdsa.cert",
+      "signing_cert_name": "/example/hello/provider/A/KEY/%FD%17%D7%9C%23%06%E0z/ECDSA/v=1786572302825"
+    },
+    {
+      "cert_file": "/tmp/ndnsf-dual-cert-open5-3p-60s-20260812/security/identity-4.cert",
+      "cert_name": "/example/hello/provider/B/KEY/%5E%CC%00%1Cyf%D2%7C/ROOT/v=1786572302939",
+      "identity": "/example/hello/provider/B",
+      "provider_id": "B",
+      "signing_cert_file": "/tmp/ndnsf-dual-cert-open5-3p-60s-20260812/security/identity-4-ecdsa.cert",
+      "signing_cert_name": "/example/hello/provider/B/KEY/%99%60%99%1B%C8%0B%14%99/ECDSA/v=1786572302972"
+    },
+    {
+      "cert_file": "/tmp/ndnsf-dual-cert-open5-3p-60s-20260812/security/identity-5.cert",
+      "cert_name": "/example/hello/provider/C/KEY/%8D%C2N%BAe%9B%83%24/ROOT/v=1786572303044",
+      "identity": "/example/hello/provider/C",
+      "provider_id": "C",
+      "signing_cert_file": "/tmp/ndnsf-dual-cert-open5-3p-60s-20260812/security/identity-5-ecdsa.cert",
+      "signing_cert_name": "/example/hello/provider/C/KEY/%3ASA%E4%F9%BE%11y/ECDSA/v=1786572303078"
+    }
+  ],
+  "provider_final_response_count": {},
+  "provider_lifecycle_counts": {},
+  "provider_nodes": [
+    "provider1",
+    "provider2",
+    "provider3"
+  ],
+  "provider_pending_max": 0,
+  "provider_pending_p50": 0.0,
+  "provider_pending_p95": 0.0,
+  "provider_readiness_status": {
+    "providers": {
+      "A": {
+        "checks": {
+          "provider_permission_installed": true,
+          "service_registered": true,
+          "split_signing_ecdsa": true,
+          "svs_initialized_or_subscribed": true
+        },
+        "log_path": "/tmp/ndnsf-dual-cert-open5-3p-60s-20260812/provider-A.log",
+        "ready": true
+      },
+      "B": {
+        "checks": {
+          "provider_permission_installed": true,
+          "service_registered": true,
+          "split_signing_ecdsa": true,
+          "svs_initialized_or_subscribed": true
+        },
+        "log_path": "/tmp/ndnsf-dual-cert-open5-3p-60s-20260812/provider-B.log",
+        "ready": true
+      },
+      "C": {
+        "checks": {
+          "provider_permission_installed": true,
+          "service_registered": true,
+          "split_signing_ecdsa": true,
+          "svs_initialized_or_subscribed": true
+        },
+        "log_path": "/tmp/ndnsf-dual-cert-open5-3p-60s-20260812/provider-C.log",
+        "ready": true
+      }
+    },
+    "ready": true
+  },
+  "provider_ready_wait_seconds": 2,
+  "provider_request_observed_count": 0,
+  "provider_response_published_count": 0,
+  "provider_selection_no_pending_count": 0,
+  "provider_selection_skew": {
+    "concentrated_on_C": false,
+    "dominant_provider": "/example/hello/provider/A",
+    "dominant_share": 0.3333333333333333,
+    "skewed": false
+  },
+  "providers": 3,
+  "rate_rps": 5.0,
+  "request_timeout_ms": 5000,
+  "request_timestamp_span_s": 0.0,
+  "requests_csv": "/tmp/ndnsf-dual-cert-open5-3p-60s-20260812/requests.csv",
+  "sampling_duration_s": 60.0,
+  "selected_provider_distribution": {
+    "/example/hello/provider/A": 100,
+    "/example/hello/provider/B": 100,
+    "/example/hello/provider/C": 100
+  },
+  "sent_count": 300,
+  "startup_timestamps_us": {
+    "controller_ready": 1786572304083810,
+    "first_ack_published": null,
+    "first_ack_received_by_user": null,
+    "first_response_received": null,
+    "first_selection_sent": null,
+    "provider_route_registered": 1786572311846605,
+    "providers": {
+      "A": {
+        "first_ack_published": null,
+        "provider_cert_server_ready": null,
+        "provider_process_start": 1786572306085349,
+        "provider_service_registered": 1786572307120104,
+        "provider_svs_ready": 1786572307120110
+      },
+      "B": {
+        "first_ack_published": null,
+        "provider_cert_server_ready": null,
+        "provider_process_start": 1786572308323214,
+        "provider_service_registered": 1786572309359804,
+        "provider_svs_ready": 1786572309359810
+      },
+      "C": {
+        "first_ack_published": null,
+        "provider_cert_server_ready": null,
+        "provider_process_start": 1786572310588407,
+        "provider_service_registered": 1786572311626160,
+        "provider_svs_ready": 1786572311626166
+      }
+    },
+    "startup_barrier": {
+      "all_provider_certificates_advertised": false,
+      "all_provider_routes_registered": true,
+      "all_providers_ready": true,
+      "barrier_ready": false,
+      "label": "pre-user",
+      "provider_certificate_runtime": [
+        {
+          "aa_cert_interest_seen": false,
+          "app_certificate_publisher": false,
+          "cert_data_served": false,
+          "cert_file": "/tmp/ndnsf-dual-cert-open5-3p-60s-20260812/security/identity-3.cert",
+          "cert_name": "/example/hello/provider/A/KEY/%95%0B%D7%AB~b%12i/ROOT/v=1786572302793",
+          "data_count": 0,
+          "identity": "/example/hello/provider/A",
+          "interest_count": 0,
+          "log_tail": "[MiniNDN Harness] event=provider_process_start timestamp_us=1786572306085349 node=provider1 name=provider-A provider_id=A\n[MiniNDN Harness] configured SVS group prefix=/example/hello/group\n[MiniNDN Harness] actual ndn-svs sync prefix=/example/hello/group\n[MiniNDN Harness] node/session name=/example/hello/provider/A/provider / sessionBase=1787401977\n[MiniNDN Harness] data prefix=/example/hello/provider/A/provider/example/hello/group\n[MiniNDN Harness] signing identity=/example/hello/provider/A\n[MiniNDN Harness] validator config path=examples/trust-schema.conf\n[MiniNDN Harness] HOME=/tmp/minindn/provider1\n[MiniNDN Harness] PIB=/tmp/minindn/provider1/.ndn/pib\n[MiniNDN Harness] TPM=/tmp/minindn/provider1/.ndn/ndnsec-key-file\n1786572306.108709  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=constructor_begin provider=/example/hello/provider/A\n1786572306.108744  WARN: [ndn_service_framework.ServiceProvider] NDNSF_CERT_SELECTION role=provider identity=/example/hello/provider/A encryptionCert=/example/hello/provider/A/KEY/%95%0B%D7%AB~b%12i/ROOT/v=1786572302793 signingCert=/example/hello/provider/A/KEY/%FD%17%D7%9C%23%06%E0z/ECDSA/v=1786572302825 splitSigning=true\n1786572306.109768  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=validator_loaded provider=/example/hello/provider/A\n1786572306.109867  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=dkey_initial_interest_issued provider=/example/hello/provider/A\n1786572306.110976  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=content_filters_registered provider=/example/hello/provider/A\n1786572306.111016  WARN: [ndn_service_framework.ServiceProvider] NDNSF_SVS_PUBLICATION_FETCH_CONFIG role=provider retries=2 innerRetries=2 lifetimeMs=500 backoffMs=50 maxBackoffMs=2000 window=32 expectedRps=5 explicitWindow=false\n1786572306.113180  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=svs_pubsub_ready provider=/example/hello/provider/A\n1786572307.119908  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=dkey_wait_iteration provider=/example/hello/provider/A\n1786572307.119972  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=constructor_done provider=/example/hello/provider/A\n1786572307.120020  WARN: [ndn_service_framework.ServiceProvider] UserToken/ProviderToken runtime mode: enabled\n1786572307.120101  WARN: [ndn_service_framework.ServiceProvider] [ServiceProvider] registered service prefix=/HELLO\n1786572307.120104  WARN: [ndn_service_framework.ServiceProvider] Registered service handler for /HELLO invocation-mode=NormalAndTargeted\n1786572307.120110  WARN: [ndn_service_framework.ServiceProvider] Register NDNSF Messages in ndn-svs\n1786572307.120135  WARN: [ndn_service_framework.ServiceProvider] [ServiceProvider] SVS request subscription regex=^(<>*)<NDNSF><REQUEST><HELLO>(<>)$\n1786572307.138237  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/A/HELLO service=/HELLO policyEpoch=1707423688319323254\n1786572307.138270  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/A/NDNSF/DistributedRepo/Artifact/v2/STORE service=/NDNSF/DistributedRepo/Artifact/v2/STORE policyEpoch=1707423688319323254\n1786572307.138273  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/A/NDNSF/DistributedRepo/Artifact/v2/STORE/ROLE/artifact-replica-0 service=/NDNSF/DistributedRepo/Artifact/v2/STORE/ROLE/artifact-replica-0 policyEpoch=1707423688319323254\n1786572307.138274  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/A/NDNSF/DistributedRepo/Store service=/NDNSF/DistributedRepo/Store policyEpoch=1707423688319323254\n1786572307.138276  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/A/NDNSF/DistributedRepo/Store/ROLE/artifact-replica-0 service=/NDNSF/DistributedRepo/Store/ROLE/artifact-replica-0 policyEpoch=1707423688319323254",
+          "provider_id": "A",
+          "server_log": "/tmp/ndnsf-dual-cert-open5-3p-60s-20260812/cert-server-A.log",
+          "server_ready": false
+        },
+        {
+          "aa_cert_interest_seen": false,
+          "app_certificate_publisher": false,
+          "cert_data_served": false,
+          "cert_file": "/tmp/ndnsf-dual-cert-open5-3p-60s-20260812/security/identity-4.cert",
+          "cert_name": "/example/hello/provider/B/KEY/%5E%CC%00%1Cyf%D2%7C/ROOT/v=1786572302939",
+          "data_count": 0,
+          "identity": "/example/hello/provider/B",
+          "interest_count": 0,
+          "log_tail": "[MiniNDN Harness] event=provider_process_start timestamp_us=1786572308323214 node=provider2 name=provider-B provider_id=B\n[MiniNDN Harness] configured SVS group prefix=/example/hello/group\n[MiniNDN Harness] actual ndn-svs sync prefix=/example/hello/group\n[MiniNDN Harness] node/session name=/example/hello/provider/B/provider / sessionBase=1787401977\n[MiniNDN Harness] data prefix=/example/hello/provider/B/provider/example/hello/group\n[MiniNDN Harness] signing identity=/example/hello/provider/B\n[MiniNDN Harness] validator config path=examples/trust-schema.conf\n[MiniNDN Harness] HOME=/tmp/minindn/provider2\n[MiniNDN Harness] PIB=/tmp/minindn/provider2/.ndn/pib\n[MiniNDN Harness] TPM=/tmp/minindn/provider2/.ndn/ndnsec-key-file\n1786572308.345147  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=constructor_begin provider=/example/hello/provider/B\n1786572308.345187  WARN: [ndn_service_framework.ServiceProvider] NDNSF_CERT_SELECTION role=provider identity=/example/hello/provider/B encryptionCert=/example/hello/provider/B/KEY/%5E%CC%00%1Cyf%D2%7C/ROOT/v=1786572302939 signingCert=/example/hello/provider/B/KEY/%99%60%99%1B%C8%0B%14%99/ECDSA/v=1786572302972 splitSigning=true\n1786572308.346390  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=validator_loaded provider=/example/hello/provider/B\n1786572308.346529  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=dkey_initial_interest_issued provider=/example/hello/provider/B\n1786572308.347694  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=content_filters_registered provider=/example/hello/provider/B\n1786572308.347746  WARN: [ndn_service_framework.ServiceProvider] NDNSF_SVS_PUBLICATION_FETCH_CONFIG role=provider retries=2 innerRetries=2 lifetimeMs=500 backoffMs=50 maxBackoffMs=2000 window=32 expectedRps=5 explicitWindow=false\n1786572308.349986  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=svs_pubsub_ready provider=/example/hello/provider/B\n1786572309.359572  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=dkey_wait_iteration provider=/example/hello/provider/B\n1786572309.359662  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=constructor_done provider=/example/hello/provider/B\n1786572309.359708  WARN: [ndn_service_framework.ServiceProvider] UserToken/ProviderToken runtime mode: enabled\n1786572309.359799  WARN: [ndn_service_framework.ServiceProvider] [ServiceProvider] registered service prefix=/HELLO\n1786572309.359804  WARN: [ndn_service_framework.ServiceProvider] Registered service handler for /HELLO invocation-mode=NormalAndTargeted\n1786572309.359810  WARN: [ndn_service_framework.ServiceProvider] Register NDNSF Messages in ndn-svs\n1786572309.359842  WARN: [ndn_service_framework.ServiceProvider] [ServiceProvider] SVS request subscription regex=^(<>*)<NDNSF><REQUEST><HELLO>(<>)$\n1786572309.389027  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/B/HELLO service=/HELLO policyEpoch=1707423688319323254\n1786572309.389073  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/B/NDNSF/DistributedRepo/Artifact/v2/STORE service=/NDNSF/DistributedRepo/Artifact/v2/STORE policyEpoch=1707423688319323254\n1786572309.389077  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/B/NDNSF/DistributedRepo/Store service=/NDNSF/DistributedRepo/Store policyEpoch=1707423688319323254\n1786572309.389078  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/B/NDNSF/DistributedRepo/Store/ROLE/artifact-replica-0 service=/NDNSF/DistributedRepo/Store/ROLE/artifact-replica-0 policyEpoch=1707423688319323254",
+          "provider_id": "B",
+          "server_log": "/tmp/ndnsf-dual-cert-open5-3p-60s-20260812/cert-server-B.log",
+          "server_ready": false
+        },
+        {
+          "aa_cert_interest_seen": false,
+          "app_certificate_publisher": false,
+          "cert_data_served": false,
+          "cert_file": "/tmp/ndnsf-dual-cert-open5-3p-60s-20260812/security/identity-5.cert",
+          "cert_name": "/example/hello/provider/C/KEY/%8D%C2N%BAe%9B%83%24/ROOT/v=1786572303044",
+          "data_count": 0,
+          "identity": "/example/hello/provider/C",
+          "interest_count": 0,
+          "log_tail": "[MiniNDN Harness] event=provider_process_start timestamp_us=1786572310588407 node=provider3 name=provider-C provider_id=C\n[MiniNDN Harness] configured SVS group prefix=/example/hello/group\n[MiniNDN Harness] actual ndn-svs sync prefix=/example/hello/group\n[MiniNDN Harness] node/session name=/example/hello/provider/C/provider / sessionBase=1787401977\n[MiniNDN Harness] data prefix=/example/hello/provider/C/provider/example/hello/group\n[MiniNDN Harness] signing identity=/example/hello/provider/C\n[MiniNDN Harness] validator config path=examples/trust-schema.conf\n[MiniNDN Harness] HOME=/tmp/minindn/provider3\n[MiniNDN Harness] PIB=/tmp/minindn/provider3/.ndn/pib\n[MiniNDN Harness] TPM=/tmp/minindn/provider3/.ndn/ndnsec-key-file\n1786572310.610569  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=constructor_begin provider=/example/hello/provider/C\n1786572310.610603  WARN: [ndn_service_framework.ServiceProvider] NDNSF_CERT_SELECTION role=provider identity=/example/hello/provider/C encryptionCert=/example/hello/provider/C/KEY/%8D%C2N%BAe%9B%83%24/ROOT/v=1786572303044 signingCert=/example/hello/provider/C/KEY/%3ASA%E4%F9%BE%11y/ECDSA/v=1786572303078 splitSigning=true\n1786572310.611682  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=validator_loaded provider=/example/hello/provider/C\n1786572310.611773  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=dkey_initial_interest_issued provider=/example/hello/provider/C\n1786572310.612873  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=content_filters_registered provider=/example/hello/provider/C\n1786572310.612912  WARN: [ndn_service_framework.ServiceProvider] NDNSF_SVS_PUBLICATION_FETCH_CONFIG role=provider retries=2 innerRetries=2 lifetimeMs=500 backoffMs=50 maxBackoffMs=2000 window=32 expectedRps=5 explicitWindow=false\n1786572310.615013  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=svs_pubsub_ready provider=/example/hello/provider/C\n1786572311.625996  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=dkey_wait_iteration provider=/example/hello/provider/C\n1786572311.626051  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=constructor_done provider=/example/hello/provider/C\n1786572311.626088  WARN: [ndn_service_framework.ServiceProvider] UserToken/ProviderToken runtime mode: enabled\n1786572311.626154  WARN: [ndn_service_framework.ServiceProvider] [ServiceProvider] registered service prefix=/HELLO\n1786572311.626160  WARN: [ndn_service_framework.ServiceProvider] Registered service handler for /HELLO invocation-mode=NormalAndTargeted\n1786572311.626166  WARN: [ndn_service_framework.ServiceProvider] Register NDNSF Messages in ndn-svs\n1786572311.626184  WARN: [ndn_service_framework.ServiceProvider] [ServiceProvider] SVS request subscription regex=^(<>*)<NDNSF><REQUEST><HELLO>(<>)$\n1786572311.660591  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/C/HELLO service=/HELLO policyEpoch=1707423688319323254\n1786572311.660637  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/C/NDNSF/DistributedRepo/Store service=/NDNSF/DistributedRepo/Store policyEpoch=1707423688319323254\n1786572311.660641  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/C/NDNSF/DistributedRepo/Store/ROLE/artifact-replica-0 service=/NDNSF/DistributedRepo/Store/ROLE/artifact-replica-0 policyEpoch=1707423688319323254",
+          "provider_id": "C",
+          "server_log": "/tmp/ndnsf-dual-cert-open5-3p-60s-20260812/cert-server-C.log",
+          "server_ready": false
+        }
+      ],
+      "provider_readiness": [
+        {
+          "checks": {
+            "provider_permission_installed": true,
+            "service_registered": true,
+            "split_signing_ecdsa": true,
+            "svs_initialized_or_subscribed": true
+          },
+          "diagnostics": {
+            "dkey_data_received": false,
+            "dkey_decrypt_success": false,
+            "dkey_interest_expressed": false,
+            "provider_permission_installed": true,
+            "provider_permission_interest_expressed": false
+          },
+          "log_path": "/tmp/ndnsf-dual-cert-open5-3p-60s-20260812/provider-A.log",
+          "log_tail": "[MiniNDN Harness] event=provider_process_start timestamp_us=1786572306085349 node=provider1 name=provider-A provider_id=A\n[MiniNDN Harness] configured SVS group prefix=/example/hello/group\n[MiniNDN Harness] actual ndn-svs sync prefix=/example/hello/group\n[MiniNDN Harness] node/session name=/example/hello/provider/A/provider / sessionBase=1787401977\n[MiniNDN Harness] data prefix=/example/hello/provider/A/provider/example/hello/group\n[MiniNDN Harness] signing identity=/example/hello/provider/A\n[MiniNDN Harness] validator config path=examples/trust-schema.conf\n[MiniNDN Harness] HOME=/tmp/minindn/provider1\n[MiniNDN Harness] PIB=/tmp/minindn/provider1/.ndn/pib\n[MiniNDN Harness] TPM=/tmp/minindn/provider1/.ndn/ndnsec-key-file\n1786572306.108709  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=constructor_begin provider=/example/hello/provider/A\n1786572306.108744  WARN: [ndn_service_framework.ServiceProvider] NDNSF_CERT_SELECTION role=provider identity=/example/hello/provider/A encryptionCert=/example/hello/provider/A/KEY/%95%0B%D7%AB~b%12i/ROOT/v=1786572302793 signingCert=/example/hello/provider/A/KEY/%FD%17%D7%9C%23%06%E0z/ECDSA/v=1786572302825 splitSigning=true\n1786572306.109768  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=validator_loaded provider=/example/hello/provider/A\n1786572306.109867  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=dkey_initial_interest_issued provider=/example/hello/provider/A\n1786572306.110976  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=content_filters_registered provider=/example/hello/provider/A\n1786572306.111016  WARN: [ndn_service_framework.ServiceProvider] NDNSF_SVS_PUBLICATION_FETCH_CONFIG role=provider retries=2 innerRetries=2 lifetimeMs=500 backoffMs=50 maxBackoffMs=2000 window=32 expectedRps=5 explicitWindow=false\n1786572306.113180  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=svs_pubsub_ready provider=/example/hello/provider/A\n1786572307.119908  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=dkey_wait_iteration provider=/example/hello/provider/A\n1786572307.119972  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=constructor_done provider=/example/hello/provider/A\n1786572307.120020  WARN: [ndn_service_framework.ServiceProvider] UserToken/ProviderToken runtime mode: enabled\n1786572307.120101  WARN: [ndn_service_framework.ServiceProvider] [ServiceProvider] registered service prefix=/HELLO\n1786572307.120104  WARN: [ndn_service_framework.ServiceProvider] Registered service handler for /HELLO invocation-mode=NormalAndTargeted\n1786572307.120110  WARN: [ndn_service_framework.ServiceProvider] Register NDNSF Messages in ndn-svs\n1786572307.120135  WARN: [ndn_service_framework.ServiceProvider] [ServiceProvider] SVS request subscription regex=^(<>*)<NDNSF><REQUEST><HELLO>(<>)$\n1786572307.138237  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/A/HELLO service=/HELLO policyEpoch=1707423688319323254\n1786572307.138270  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/A/NDNSF/DistributedRepo/Artifact/v2/STORE service=/NDNSF/DistributedRepo/Artifact/v2/STORE policyEpoch=1707423688319323254\n1786572307.138273  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/A/NDNSF/DistributedRepo/Artifact/v2/STORE/ROLE/artifact-replica-0 service=/NDNSF/DistributedRepo/Artifact/v2/STORE/ROLE/artifact-replica-0 policyEpoch=1707423688319323254\n1786572307.138274  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/A/NDNSF/DistributedRepo/Store service=/NDNSF/DistributedRepo/Store policyEpoch=1707423688319323254\n1786572307.138276  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/A/NDNSF/DistributedRepo/Store/ROLE/artifact-replica-0 service=/NDNSF/DistributedRepo/Store/ROLE/artifact-replica-0 policyEpoch=1707423688319323254",
+          "provider_id": "A",
+          "ready": true,
+          "timeout_s": 20,
+          "timestamps_us": {
+            "provider_process_start": 1786572306085349,
+            "provider_service_registered": 1786572307120104,
+            "provider_svs_ready": 1786572307120110
+          }
+        },
+        {
+          "checks": {
+            "provider_permission_installed": true,
+            "service_registered": true,
+            "split_signing_ecdsa": true,
+            "svs_initialized_or_subscribed": true
+          },
+          "diagnostics": {
+            "dkey_data_received": false,
+            "dkey_decrypt_success": false,
+            "dkey_interest_expressed": false,
+            "provider_permission_installed": true,
+            "provider_permission_interest_expressed": false
+          },
+          "log_path": "/tmp/ndnsf-dual-cert-open5-3p-60s-20260812/provider-B.log",
+          "log_tail": "[MiniNDN Harness] event=provider_process_start timestamp_us=1786572308323214 node=provider2 name=provider-B provider_id=B\n[MiniNDN Harness] configured SVS group prefix=/example/hello/group\n[MiniNDN Harness] actual ndn-svs sync prefix=/example/hello/group\n[MiniNDN Harness] node/session name=/example/hello/provider/B/provider / sessionBase=1787401977\n[MiniNDN Harness] data prefix=/example/hello/provider/B/provider/example/hello/group\n[MiniNDN Harness] signing identity=/example/hello/provider/B\n[MiniNDN Harness] validator config path=examples/trust-schema.conf\n[MiniNDN Harness] HOME=/tmp/minindn/provider2\n[MiniNDN Harness] PIB=/tmp/minindn/provider2/.ndn/pib\n[MiniNDN Harness] TPM=/tmp/minindn/provider2/.ndn/ndnsec-key-file\n1786572308.345147  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=constructor_begin provider=/example/hello/provider/B\n1786572308.345187  WARN: [ndn_service_framework.ServiceProvider] NDNSF_CERT_SELECTION role=provider identity=/example/hello/provider/B encryptionCert=/example/hello/provider/B/KEY/%5E%CC%00%1Cyf%D2%7C/ROOT/v=1786572302939 signingCert=/example/hello/provider/B/KEY/%99%60%99%1B%C8%0B%14%99/ECDSA/v=1786572302972 splitSigning=true\n1786572308.346390  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=validator_loaded provider=/example/hello/provider/B\n1786572308.346529  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=dkey_initial_interest_issued provider=/example/hello/provider/B\n1786572308.347694  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=content_filters_registered provider=/example/hello/provider/B\n1786572308.347746  WARN: [ndn_service_framework.ServiceProvider] NDNSF_SVS_PUBLICATION_FETCH_CONFIG role=provider retries=2 innerRetries=2 lifetimeMs=500 backoffMs=50 maxBackoffMs=2000 window=32 expectedRps=5 explicitWindow=false\n1786572308.349986  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=svs_pubsub_ready provider=/example/hello/provider/B\n1786572309.359572  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=dkey_wait_iteration provider=/example/hello/provider/B\n1786572309.359662  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=constructor_done provider=/example/hello/provider/B\n1786572309.359708  WARN: [ndn_service_framework.ServiceProvider] UserToken/ProviderToken runtime mode: enabled\n1786572309.359799  WARN: [ndn_service_framework.ServiceProvider] [ServiceProvider] registered service prefix=/HELLO\n1786572309.359804  WARN: [ndn_service_framework.ServiceProvider] Registered service handler for /HELLO invocation-mode=NormalAndTargeted\n1786572309.359810  WARN: [ndn_service_framework.ServiceProvider] Register NDNSF Messages in ndn-svs\n1786572309.359842  WARN: [ndn_service_framework.ServiceProvider] [ServiceProvider] SVS request subscription regex=^(<>*)<NDNSF><REQUEST><HELLO>(<>)$\n1786572309.389027  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/B/HELLO service=/HELLO policyEpoch=1707423688319323254\n1786572309.389073  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/B/NDNSF/DistributedRepo/Artifact/v2/STORE service=/NDNSF/DistributedRepo/Artifact/v2/STORE policyEpoch=1707423688319323254\n1786572309.389077  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/B/NDNSF/DistributedRepo/Store service=/NDNSF/DistributedRepo/Store policyEpoch=1707423688319323254\n1786572309.389078  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/B/NDNSF/DistributedRepo/Store/ROLE/artifact-replica-0 service=/NDNSF/DistributedRepo/Store/ROLE/artifact-replica-0 policyEpoch=1707423688319323254",
+          "provider_id": "B",
+          "ready": true,
+          "timeout_s": 20,
+          "timestamps_us": {
+            "provider_process_start": 1786572308323214,
+            "provider_service_registered": 1786572309359804,
+            "provider_svs_ready": 1786572309359810
+          }
+        },
+        {
+          "checks": {
+            "provider_permission_installed": true,
+            "service_registered": true,
+            "split_signing_ecdsa": true,
+            "svs_initialized_or_subscribed": true
+          },
+          "diagnostics": {
+            "dkey_data_received": false,
+            "dkey_decrypt_success": false,
+            "dkey_interest_expressed": false,
+            "provider_permission_installed": true,
+            "provider_permission_interest_expressed": false
+          },
+          "log_path": "/tmp/ndnsf-dual-cert-open5-3p-60s-20260812/provider-C.log",
+          "log_tail": "[MiniNDN Harness] event=provider_process_start timestamp_us=1786572310588407 node=provider3 name=provider-C provider_id=C\n[MiniNDN Harness] configured SVS group prefix=/example/hello/group\n[MiniNDN Harness] actual ndn-svs sync prefix=/example/hello/group\n[MiniNDN Harness] node/session name=/example/hello/provider/C/provider / sessionBase=1787401977\n[MiniNDN Harness] data prefix=/example/hello/provider/C/provider/example/hello/group\n[MiniNDN Harness] signing identity=/example/hello/provider/C\n[MiniNDN Harness] validator config path=examples/trust-schema.conf\n[MiniNDN Harness] HOME=/tmp/minindn/provider3\n[MiniNDN Harness] PIB=/tmp/minindn/provider3/.ndn/pib\n[MiniNDN Harness] TPM=/tmp/minindn/provider3/.ndn/ndnsec-key-file\n1786572310.610569  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=constructor_begin provider=/example/hello/provider/C\n1786572310.610603  WARN: [ndn_service_framework.ServiceProvider] NDNSF_CERT_SELECTION role=provider identity=/example/hello/provider/C encryptionCert=/example/hello/provider/C/KEY/%8D%C2N%BAe%9B%83%24/ROOT/v=1786572303044 signingCert=/example/hello/provider/C/KEY/%3ASA%E4%F9%BE%11y/ECDSA/v=1786572303078 splitSigning=true\n1786572310.611682  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=validator_loaded provider=/example/hello/provider/C\n1786572310.611773  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=dkey_initial_interest_issued provider=/example/hello/provider/C\n1786572310.612873  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=content_filters_registered provider=/example/hello/provider/C\n1786572310.612912  WARN: [ndn_service_framework.ServiceProvider] NDNSF_SVS_PUBLICATION_FETCH_CONFIG role=provider retries=2 innerRetries=2 lifetimeMs=500 backoffMs=50 maxBackoffMs=2000 window=32 expectedRps=5 explicitWindow=false\n1786572310.615013  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=svs_pubsub_ready provider=/example/hello/provider/C\n1786572311.625996  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=dkey_wait_iteration provider=/example/hello/provider/C\n1786572311.626051  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=constructor_done provider=/example/hello/provider/C\n1786572311.626088  WARN: [ndn_service_framework.ServiceProvider] UserToken/ProviderToken runtime mode: enabled\n1786572311.626154  WARN: [ndn_service_framework.ServiceProvider] [ServiceProvider] registered service prefix=/HELLO\n1786572311.626160  WARN: [ndn_service_framework.ServiceProvider] Registered service handler for /HELLO invocation-mode=NormalAndTargeted\n1786572311.626166  WARN: [ndn_service_framework.ServiceProvider] Register NDNSF Messages in ndn-svs\n1786572311.626184  WARN: [ndn_service_framework.ServiceProvider] [ServiceProvider] SVS request subscription regex=^(<>*)<NDNSF><REQUEST><HELLO>(<>)$\n1786572311.660591  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/C/HELLO service=/HELLO policyEpoch=1707423688319323254\n1786572311.660637  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/C/NDNSF/DistributedRepo/Store service=/NDNSF/DistributedRepo/Store policyEpoch=1707423688319323254\n1786572311.660641  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/C/NDNSF/DistributedRepo/Store/ROLE/artifact-replica-0 service=/NDNSF/DistributedRepo/Store/ROLE/artifact-replica-0 policyEpoch=1707423688319323254",
+          "provider_id": "C",
+          "ready": true,
+          "timeout_s": 20,
+          "timestamps_us": {
+            "provider_process_start": 1786572310588407,
+            "provider_service_registered": 1786572311626160,
+            "provider_svs_ready": 1786572311626166
+          }
+        }
+      ],
+      "provider_ready_wait_seconds": 2,
+      "route_checks": [
+        {
+          "node": "provider1",
+          "provider_id": "A",
+          "provider_prefix": "/example/hello/provider/A",
+          "route_registered": true,
+          "svs_group_route_registered": true,
+          "timestamp_us": 1786572311846605
+        },
+        {
+          "node": "provider2",
+          "provider_id": "B",
+          "provider_prefix": "/example/hello/provider/B",
+          "route_registered": true,
+          "svs_group_route_registered": true,
+          "timestamp_us": 1786572311861412
+        },
+        {
+          "node": "provider3",
+          "provider_id": "C",
+          "provider_prefix": "/example/hello/provider/C",
+          "route_registered": true,
+          "svs_group_route_registered": true,
+          "timestamp_us": 1786572311876013
+        }
+      ],
+      "timestamp_us": 1786572311876431,
+      "user_start_release_timestamp_us": 1786572313885286
+    },
+    "user_first_request_sent": null,
+    "user_process_start": 1786572313886322
+  },
+  "strategy": "custom-selection",
+  "success_rate": 1.0,
+  "timed_out_count": 0,
+  "timeout_count": 0,
+  "total_admission_queue_paused_ms": 0,
+  "total_paused_ms": 0,
+  "total_requests_sent": 300,
+  "total_successful_responses": 300,
+  "user_delayed_publications": 0,
+  "user_node": "user",
+  "user_queued_task_max": 1,
+  "user_queued_task_p50": 0.0,
+  "user_queued_task_p95": 1.0,
+  "workload_mode": "open-loop",
+  "workload_notes": [
+    "App_User sends on a fixed rate schedule and does not wait for previous requests to finish.",
+    "Multiple pending calls are tracked by request id; responses are drained after sending stops.",
+    "Use actual_requests_per_second and outstanding_limit_skips to confirm generated load.",
+    "50/100/150 rps are real offered rates only when actual_requests_per_second is close to offered_rate_rps.",
+    "Low success rate at high rps means saturation/timeout, not necessarily protocol correctness failure."
+  ]
+}

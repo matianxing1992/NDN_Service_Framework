@@ -111,7 +111,7 @@ its immutable evidence supports only the documented single-request capability.
 
 | Claim | Minimum evidence |
 |---|---|
-| Runtime binding works | local Docker security smoke plus single-node SIF operation-status smoke |
+| Runtime binding works | local application-SIF control smoke plus single-node SIF operation-status smoke |
 | Cross-node transport works | allocated-node TCP/UDP NFD probe |
 | Stage artifacts are valid | exact ranges, digests, CUDA loads, no fallback, oracle equivalence |
 | NDNSF-DI layer pipeline works | three physical stage receipts, two dependency digest chains, secured final response |

@@ -207,6 +207,12 @@ def validate_definition(path: Path | str) -> dict[str, object]:
         "_ndnsf*.so": "ACTIVE_EXTENSION_PATTERN_MISSING",
         "sha256sum": "FINAL_HASH_CHECK_MISSING",
         "container-native-build.json": "FINAL_MANIFEST_CHECK_MISSING",
+        # Spec175 deployment is ONNX Runtime-only.  A base image can retain
+        # functorch even when torch itself is absent, so the final stage must
+        # remove it explicitly; otherwise the runtime preflight will reject
+        # every rebuilt candidate for the same residue.
+        "/opt/venv/lib/python3.10/site-packages/functorch*":
+            "FUNCTORCH_REMOVAL_MISSING",
     }
     for marker, code in required_replacement_markers.items():
         if marker not in final_post:

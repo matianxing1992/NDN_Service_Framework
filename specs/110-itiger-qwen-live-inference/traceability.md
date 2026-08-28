@@ -12,6 +12,7 @@
 | Test every requested Qwen size under the controlled placement | US4 | FR-012-FR-017, FR-033 | T085-T105 | SC-005 |
 | Measure speed and overhead with matched contrasts | US5 | FR-022-FR-026 | T106-T123 | SC-006-SC-009 |
 | Preserve storage, failures, operations, and authority evidence | US6 | FR-027-FR-036 | T124-T147 | SC-010-SC-013 |
+| Deploy the completed Spec 111 workflow through OCI-to-SIF and Slurm without conflating infrastructure/APP/request authority | US1, US3, US6 | FR-038-FR-046 | T219-T232 | SC-014-SC-021 |
 
 ## Functional requirement coverage
 
@@ -54,6 +55,15 @@
 | FR-034 | ownership table | T002-T003, T031-T073 | T073, T134-T142 |
 | FR-035 | authority boundary | T014-T015 | T133, T144, T146 |
 | FR-036 | operator CLI safety | T021-T023, T044 | T045-T048, T060-T061, T125, T130 |
+| FR-038 | Spec 111 handoff and replacement identity | T219, T223, T229 | T228-T232 |
+| FR-039 | runtime-release host/runtime split; Spec 111 iTiger handoff | T224-T226, T229 | T220, T228, T230-T232 |
+| FR-040 | `RuntimeAllocationHandoff` and distinct infrastructure handle | T219, T223, T226 | T228-T232 |
+| FR-041 | least-privilege state/model/identity/node-run binds | T220, T224 | T228, T230-T232 |
+| FR-042 | revision-derived same-SIF process-map v2 | T221, T223-T225 | T228, T230-T232 |
+| FR-043 | post-Spec-111 readiness/lifecycle order | T221, T225-T227 | T228, T230-T232 |
+| FR-044 | scheduler drain/forced-termination/recovery | T222, T227 | T228, T230-T232 |
+| FR-045 | single-node-before-multi-node admission | T226 | T230-T232, T064 |
+| FR-046 | external per-size models and immutable base SIF | T220, T224, T229 | T228, T230-T232 |
 
 ## Success criteria evidence
 
@@ -72,12 +82,24 @@
 | SC-011 | T018-T020, T131 | storage admission and protected cleanup bundle |
 | SC-012 | T053, T127-T128 | allocation teardown/process audit |
 | SC-013 | T133, T139-T147 | release gate, traceability, handoff, and completion summary |
+| SC-014 | T219, T228 | `evidence/spec111-handoff-offline-gate.md` |
+| SC-015 | T220, T224, T228 | bind inventory in `evidence/spec111-handoff-offline-gate.md` |
+| SC-016 | T221, T223-T225, T228 | v1 hash preservation and process-map v2 evidence |
+| SC-017 | T222, T227-T228 | scheduler/APP/request state and termination evidence |
+| SC-018 | T228 | zero-side-effect offline handoff render |
+| SC-019 | T229-T230 | post-Spec-111 single-node candidate bundle |
+| SC-020 | T064, T230-T231 | selected-transport and multi-node candidate bundle |
+| SC-021 | T220, T228-T232 | image/bind/runtime scan and final handoff verdict |
 
 ## Authority progression
 
 ```text
 runtime probe PASS
   -> substrate only
+Spec 111 completion + offline handoff PASS + new OCI/SIF
+  -> post-separation single-node candidate eligible
+post-separation single-node PASS + selected-transport PASS
+  -> post-separation multi-node candidate eligible
 single-node 0.5B three-provider/three-GPU PASS/FAIL
   -> first distributed candidate experiment evidence
 selected-transport network probe PASS + single-node 0.5B PASS

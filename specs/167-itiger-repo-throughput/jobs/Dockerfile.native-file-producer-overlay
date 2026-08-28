@@ -1,0 +1,56 @@
+# syntax=docker/dockerfile:1.7
+
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE} AS native-builder
+
+USER 0:0
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+ENV LD_LIBRARY_PATH=/opt/ndnsf-app/lib:/opt/ndn-base/lib:/usr/lib/x86_64-linux-gnu
+
+# The base runtime intentionally has no compiler.  This builder stage is
+# disposable: the final image copies only the rebuilt extension, so neither
+# the foundation/CUDA layers nor model artifacts are regenerated.
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+         g++ make libboost-dev libboost-chrono-dev libboost-date-time-dev \
+         libboost-log-dev libboost-stacktrace-dev libboost-system-dev \
+         libboost-thread-dev ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY src/ /tmp/native-src/
+COPY ndn-service-framework/ /tmp/ndn-service-framework/
+COPY pybind11/ /tmp/pybind11/
+
+RUN set -eux; \
+    mkdir -p /tmp/build; \
+    g++ -std=c++17 -O2 -fPIC -c /tmp/native-src/ndnsf/_ndnsf.cpp \
+      -I/tmp \
+      -I/tmp/ndn-service-framework \
+      -I/opt/ndn-base/include \
+      -I/opt/ndnsf-app/include \
+      -I/usr/local/include/python3.10 \
+      -I/tmp/pybind11/include \
+      -I/usr/include \
+      -o /tmp/build/_ndnsf.o; \
+    g++ -shared /tmp/build/_ndnsf.o \
+      -L/opt/ndnsf-app/lib -L/opt/ndn-base/lib -L/usr/lib/x86_64-linux-gnu \
+      -Wl,--disable-new-dtags \
+      -Wl,-rpath,/opt/ndnsf-app/lib -Wl,-rpath,/opt/ndn-base/lib \
+      -lndn-service-framework -lndn-svs -lnac-abe -lndn-cxx \
+      -l:libboost_chrono.so.1.71.0 -l:libboost_date_time.so.1.71.0 \
+      -l:libboost_log.so.1.71.0 -l:libboost_thread.so.1.71.0 \
+      -l:libboost_stacktrace_backtrace.so.1.71.0 \
+      -l:libcrypto.so.1.1 -l:libssl.so.1.1 -l:libsqlite3.so.0 -lrt -lpthread -lndnsd \
+      -o /tmp/build/_ndnsf.cpython-310-x86_64-linux-gnu.so
+
+FROM ${BASE_IMAGE}
+USER 0:0
+ARG SOURCE_CPP_SHA256
+LABEL org.ndnsf.di.spec167.native-file-producer="persistent-file-stream" \
+      org.ndnsf.di.spec167.source-cpp-sha256="${SOURCE_CPP_SHA256}" \
+      org.ndnsf.di.models-included="false"
+COPY --from=native-builder \
+  /tmp/build/_ndnsf.cpython-310-x86_64-linux-gnu.so \
+  /opt/ndnsf-app/python/ndnsf/_ndnsf.cpython-310-x86_64-linux-gnu.so
+RUN chmod 0555 /opt/ndnsf-app/python/ndnsf/_ndnsf.cpython-310-x86_64-linux-gnu.so
+USER 65532:65532

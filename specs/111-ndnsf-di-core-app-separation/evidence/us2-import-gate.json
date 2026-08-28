@@ -1,0 +1,9 @@
+{
+  "schema": "ndnsf-di-spec111-us2-import-gate-v1",
+  "date": "2026-07-14",
+  "verdict": "PASS",
+  "loadedModules": ["ndnsf_distributed_inference.core", "ndnsf_distributed_inference.core.contracts", "ndnsf_distributed_inference.core.decision_validation", "ndnsf_distributed_inference.core.eligibility", "ndnsf_distributed_inference.core.execution", "ndnsf_distributed_inference.core.native", "ndnsf_distributed_inference.core.placement", "ndnsf_distributed_inference.core.ports", "ndnsf_distributed_inference.core.recovery", "ndnsf_distributed_inference.core.runtime_contracts", "ndnsf_distributed_inference.core.state"],
+  "forbiddenPrefixes": ["ndnsf_distributed_inference.planner", "ndnsf_distributed_inference.app_sdk", "ndnsf_distributed_inference.adapters", "ndnsf_distributed_inference.ops", "onnx", "onnxruntime", "transformers", "llama_cpp", "tkinter"],
+  "forbiddenModules": [],
+  "forbiddenCount": 0
+}

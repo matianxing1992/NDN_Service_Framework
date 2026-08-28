@@ -1,0 +1,17 @@
+{
+  "status": "FAIL",
+  "bundle": "/project/tma1/ndnsf-di/releases/spec170-runtime-07738d70-gpu-20260816-r8b/network-bundle-d1-cuda",
+  "baselineBundle": "/project/tma1/ndnsf-di/releases/spec170-runtime-07738d70-gpu-20260816-r8b/d0-current-v2",
+  "service": "/Inference/NativeTracer",
+  "roles": ["/Backbone", "/Head/Shard/0", "/Head/Shard/1", "/Merge"],
+  "errors": [
+    "BUNDLE_HASH_MISMATCH:service-manifest.json:8a2598fcabc758e721bead197f7c204861542dc9894464cd7302cc7b5f21037c:10f10ee5533e55f7a18f89b40eaee4401cdfa397602cb22f4e656786848dfc0d",
+    "BUNDLE_HASH_MISMATCH:user_driver.py:207969a1c4b5b8888be897461e3d8f74c8eacd51e8e9ff4ac37947e8f8446c0b:cfb9284d39e1a39da751833e198687a39072d7b3e49b5f42d76207ea73457e12",
+    "SINGLE_PROVIDER_ROLE_MAP_MISSING",
+    "SINGLE_PROVIDER_ROLE_MISSING:/Backbone",
+    "SINGLE_PROVIDER_ROLE_MISSING:/Head/Shard/0",
+    "SINGLE_PROVIDER_ROLE_MISSING:/Head/Shard/1",
+    "SINGLE_PROVIDER_ROLE_MISSING:/Merge"
+  ],
+  "note": "This is a retrospective pre-dispatch check of the exact r8b D1 bundle used by jobs 197164-197167. It proves that the workload should have been rejected before Slurm allocation."
+}

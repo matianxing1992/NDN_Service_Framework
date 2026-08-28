@@ -41,3 +41,11 @@ latency reduction relative to the first request in the same process. It does
 not yet prove Provider-local canonical ONNX assembly, V3 Selection, GPU
 residency, Repo retrieval, or the required three cold/warm statistical blocks;
 those remain blocking work before TigerCluster qualification.
+
+## Retention update (2026-08-16)
+
+The three local model objects and `index-v1.json` were diagnostic cache data,
+not the candidate release.  They are no longer retained locally; the
+historical measurements and this description remain the evidence record.  A
+future run must materialize a new content-addressed cache from its sealed
+model manifest rather than assume these local files exist.

@@ -1,0 +1,92 @@
+{
+  "artifact": {
+    "contentDigest": "d8f32a3b4c195f65444e342b0c61bdaf114802e84ab7821a1f88e3f66ea15100",
+    "digestAlgorithm": "sha256",
+    "formatVersion": "artifact-manifest-v2",
+    "logicalName": "/spec164/publisher/artifact",
+    "policyEpoch": "spec164-policy-1",
+    "publisherIdentity": "/spec164/publisher",
+    "rootManifestName": "/spec164/publisher/artifact/root",
+    "sizeBytes": 65536
+  },
+  "capability": {
+    "digestAlgorithms": [
+      "sha256"
+    ],
+    "formatVersions": [
+      "artifact-manifest-v2"
+    ],
+    "maxArtifactBytes": 1073741824,
+    "maxChunkBytes": 67108864,
+    "maxManifestDepth": 16,
+    "maxPageEncodedBytes": 4194304,
+    "maxPageEntries": 65536,
+    "maxRootEncodedBytes": 65536,
+    "policyEpoch": "spec164-policy-1",
+    "repoNode": "/spec164/repo",
+    "signatureAlgorithms": [
+      "rsa-sha256"
+    ]
+  },
+  "chunk": {
+    "digest": "e472b1853aae125f387328381e25fb9581d3436fc73c2d82bba61edc3b4ec11e",
+    "digestAlgorithm": "sha256",
+    "finalSegment": 3,
+    "firstSegment": 0,
+    "index": 0,
+    "lengthBytes": 16384,
+    "offsetBytes": 0
+  },
+  "chunks": [
+    {
+      "digest": "e472b1853aae125f387328381e25fb9581d3436fc73c2d82bba61edc3b4ec11e",
+      "digestAlgorithm": "sha256",
+      "finalSegment": 3,
+      "firstSegment": 0,
+      "index": 0,
+      "lengthBytes": 16384,
+      "offsetBytes": 0
+    },
+    {
+      "digest": "e472b1853aae125f387328381e25fb9581d3436fc73c2d82bba61edc3b4ec11e",
+      "digestAlgorithm": "sha256",
+      "finalSegment": 3,
+      "firstSegment": 0,
+      "index": 1,
+      "lengthBytes": 16384,
+      "offsetBytes": 16384
+    },
+    {
+      "digest": "e472b1853aae125f387328381e25fb9581d3436fc73c2d82bba61edc3b4ec11e",
+      "digestAlgorithm": "sha256",
+      "finalSegment": 3,
+      "firstSegment": 0,
+      "index": 2,
+      "lengthBytes": 16384,
+      "offsetBytes": 32768
+    },
+    {
+      "digest": "e472b1853aae125f387328381e25fb9581d3436fc73c2d82bba61edc3b4ec11e",
+      "digestAlgorithm": "sha256",
+      "finalSegment": 3,
+      "firstSegment": 0,
+      "index": 3,
+      "lengthBytes": 16384,
+      "offsetBytes": 49152
+    }
+  ],
+  "packetPayloadBytes": 4096,
+  "policy": {
+    "allowedDigestAlgorithms": [
+      "sha256"
+    ],
+    "allowedSignatureAlgorithms": [
+      "rsa-sha256"
+    ],
+    "evaluationTimeMs": 2000,
+    "policyEpoch": "spec164-policy-1",
+    "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA5gWFJIzwXFuLOySdeLi+\n0mhUB8clSVtLpju808aa0xepZeZ9Z4SGRlwJMmk/Yv3LgxkSQT6qwUDKO/GjAPU1\nXjvhnEZlIi6F+2vTmoDdtN64KmCkRBgG4yomb5nE5q0E7GS71xaC6n/Rpk7fMYR4\ndzyfusjZafZUyyTMkazU28CdAasim8dQt+jfy62d3tAsj+ATJ/69o7H5OTeZDFPS\nrZyDJ+G0oRqodq3L/CSPVQJho8tNSx66y/kSPs60Hw1WaV7X27Yiy6JheOkJI6ON\nsiiSjmxTv6qax6yBWwNf26+z4cSkeBmqAFXRO0uT3rVPQcI0CtWyH4U5YlJktseg\nCQIDAQAB\n-----END PUBLIC KEY-----\n",
+    "trustedKeyLocator": "/spec164/publisher/KEY/root-1",
+    "trustedPublisherIdentity": "/spec164/publisher"
+  }
+}

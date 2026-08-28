@@ -1,0 +1,40 @@
+{
+  "schemaVersion": "ndnsf-di-qwen-prompt-set-v1",
+  "chatFormat": {
+    "addGenerationPrompt": true,
+    "enableThinking": false,
+    "messages": [
+      {
+        "role": "user",
+        "contentField": "text"
+      }
+    ]
+  },
+  "prompts": [
+    {
+      "promptId": "ndn-vs-ip",
+      "language": "zh",
+      "text": "请用不超过两句话解释：NDN 按内容名称转发与 IP 按主机地址转发的核心区别是什么？"
+    },
+    {
+      "promptId": "sensor-storage",
+      "language": "zh",
+      "text": "一个传感器持续产生 12 MiB/s 的数据。请计算 5 分钟产生多少 GiB，并用不超过两句话写出计算过程和结果。"
+    },
+    {
+      "promptId": "pipeline-vs-tensor",
+      "language": "en",
+      "text": "In at most two sentences, explain the difference between pipeline parallelism and tensor parallelism for large-model inference."
+    },
+    {
+      "promptId": "stage-timeout",
+      "language": "zh",
+      "text": "三阶段分布式推理中，中间阶段超时。请用一个简短句子给出三个安全处置步骤，不要假设请求已经成功。"
+    },
+    {
+      "promptId": "evidence-summary",
+      "language": "en",
+      "text": "A run used three distinct GPUs, transferred two checksum-matched hidden states, produced an EOS-terminated answer, and had zero CPU fallback. Summarize what this proves and one thing it does not prove in at most two sentences."
+    }
+  ]
+}

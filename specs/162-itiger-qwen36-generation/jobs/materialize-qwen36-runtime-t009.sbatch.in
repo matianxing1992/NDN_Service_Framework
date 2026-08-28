@@ -1,0 +1,242 @@
+#!/bin/bash
+#SBATCH --partition=bigTiger
+#SBATCH --account=devs
+#SBATCH --qos=normal
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=22G
+#SBATCH --gres=gpu:rtx_5000:1
+#SBATCH --time=00:30:00
+#SBATCH --output=/project/tma1/ndnsf-di/evidence/spec162/materialization/slurm-%j.out
+#SBATCH --error=/project/tma1/ndnsf-di/evidence/spec162/materialization/slurm-%j.err
+
+set -Eeuo pipefail
+umask 077
+
+readonly SOURCE_REFERENCE='@SOURCE_REFERENCE@'
+readonly SOURCE_DIGEST='@SOURCE_DIGEST@'
+readonly SOURCE_HEX='@SOURCE_HEX@'
+readonly IMAGE_ID='@IMAGE_ID@'
+readonly IMAGE_HEX='@IMAGE_HEX@'
+readonly ARCHIVE='@ARCHIVE_PATH@'
+readonly ARCHIVE_SHA256='@ARCHIVE_SHA256@'
+readonly ARCHIVE_BYTES='@ARCHIVE_BYTES@'
+readonly PLAN_ROOT='@PLAN_ROOT@'
+readonly SOURCE_MANIFEST="${PLAN_ROOT}/source-manifest.json"
+readonly SUBMISSION_PLAN="${PLAN_ROOT}/submission-plan.json"
+readonly RELEASE_ID='@RELEASE_ID@'
+readonly RELEASE_DIR="/project/tma1/ndnsf-di/releases/${RELEASE_ID}"
+readonly SUBMISSION_ID='@MATERIALIZE_SUBMISSION_ID@'
+readonly RUN_ID='@MATERIALIZE_RUN_ID@'
+readonly EVIDENCE_PARENT='/project/tma1/ndnsf-di/evidence/spec162/materialization'
+
+: "${SLURM_JOB_ID:?SLURM_JOB_ID_REQUIRED}"
+comment=$(scontrol show job "$SLURM_JOB_ID" -o |
+  tr ' ' '\n' |
+  sed -n 's/^Comment=//p')
+test "$comment" = "spec162:${SUBMISSION_ID}" || {
+  echo SUBMISSION_COMMENT_INVALID >&2
+  exit 4
+}
+
+partial="${EVIDENCE_PARENT}/.${SUBMISSION_ID}.partial"
+final="${EVIDENCE_PARENT}/${SUBMISSION_ID}"
+test ! -e "$partial"
+test ! -e "$final"
+test ! -e "$RELEASE_DIR"
+mkdir -p "$partial"
+
+scratch=''
+terminal_state='FAIL'
+finish()
+{
+  rc=$?
+  trap - EXIT INT TERM
+  test -z "$scratch" || test ! -d "$scratch" || rm -rf -- "$scratch"
+  python3 - "$partial/result.json" "$terminal_state" "$rc" \
+    "$SLURM_JOB_ID" "$SUBMISSION_ID" "$RUN_ID" <<'PY' || true
+import json
+import sys
+
+path, state, rc, job, submission, run = sys.argv[1:]
+with open(path, "w", encoding="utf-8") as stream:
+    json.dump(
+        {
+            "schemaVersion": "spec162-slurm-terminal-v1",
+            "state": state,
+            "exitCode": int(rc),
+            "jobId": job,
+            "submissionId": submission,
+            "runId": run,
+        },
+        stream,
+        indent=2,
+        sort_keys=True,
+    )
+    stream.write("\n")
+PY
+  if test "$terminal_state" = PASS && test "$rc" -eq 0; then
+    mv "$partial" "$final"
+  fi
+  exit "$rc"
+}
+trap finish EXIT INT TERM
+
+test -f "$SOURCE_MANIFEST"
+test -f "$SUBMISSION_PLAN"
+test -f "$ARCHIVE"
+test "$(stat -c %s "$ARCHIVE")" -eq "$ARCHIVE_BYTES"
+printf '%s  %s\n' "$SOURCE_HEX" "$SOURCE_MANIFEST" |
+  sha256sum -c - > "$partial/source-manifest-sha256.log"
+printf '%s  %s\n' "$ARCHIVE_SHA256" "$ARCHIVE" |
+  sha256sum -c - > "$partial/archive-sha256.log"
+
+python3 - "$SUBMISSION_PLAN" "$SOURCE_REFERENCE" "$SOURCE_DIGEST" \
+  "$IMAGE_ID" "$SUBMISSION_ID" <<'PY'
+import json
+import sys
+
+path, source_reference, source_digest, image_id, submission_id = sys.argv[1:]
+with open(path, encoding="utf-8") as stream:
+    plan = json.load(stream)
+assert plan["status"] == "READY_FOR_EXPLICIT_AUTHORIZATION"
+assert plan["submitted"] is False
+assert plan["sourceKind"] == "sealed-docker-archive"
+assert plan["sourceReference"] == source_reference
+assert plan["sourceManifestDigest"] == source_digest
+assert plan["sourceManifestSha256"] == source_digest
+assert plan["localImageId"] == image_id
+assert plan["materialization"]["submissionId"] == submission_id
+PY
+
+base="${SLURM_TMPDIR:-/tmp/$USER}"
+case "$(realpath -m "$base")" in
+  /home|/home/*|/project|/project/*) base="/tmp/$USER" ;;
+esac
+mkdir -p "$base"
+test "$(df -Pk "$base" | awk 'NR==2 {print $4}')" -ge 26214400
+scratch=$(mktemp -d "$base/spec162-t009-sif-${SLURM_JOB_ID}.XXXXXX")
+export APPTAINER_CACHEDIR="$scratch/cache"
+export APPTAINER_TMPDIR="$scratch/tmp"
+export TMPDIR="$scratch/tmp"
+mkdir -p "$APPTAINER_CACHEDIR" "$APPTAINER_TMPDIR" "$scratch/home"
+
+{
+  echo "host=$(hostname)"
+  echo "jobId=$SLURM_JOB_ID"
+  echo "submissionId=$SUBMISSION_ID"
+  echo "runId=$RUN_ID"
+  echo "sourceReference=$SOURCE_REFERENCE"
+  echo "sourceDigest=$SOURCE_DIGEST"
+  echo "localImageId=$IMAGE_ID"
+  echo "archive=$ARCHIVE"
+  echo "archiveSha256=sha256:$ARCHIVE_SHA256"
+  echo "archiveBytes=$ARCHIVE_BYTES"
+  echo "modelsIncluded=false"
+  id
+  apptainer version
+  stat -c 'planRootMode=%a planRootOwner=%U:%G' "$PLAN_ROOT"
+  df -Pk "$scratch"
+} > "$partial/environment.txt"
+
+gzip -t "$ARCHIVE"
+gzip -dc "$ARCHIVE" > "$scratch/candidate.tar"
+tar -tf "$scratch/candidate.tar" > "$partial/archive-members.txt"
+grep -Eq \
+  "(^|/)${IMAGE_HEX}(\\.json)?$|blobs/sha256/${IMAGE_HEX}$" \
+  "$partial/archive-members.txt"
+
+apptainer build "$scratch/runtime.sif" \
+  "docker-archive:$scratch/candidate.tar" \
+  > "$partial/materialize.log" 2>&1
+test -s "$scratch/runtime.sif"
+
+apptainer exec --cleanenv --containall \
+  --home "$scratch/home:/home/tma1" \
+  "$scratch/runtime.sif" \
+  /usr/local/bin/ndnsf-di-verify-qwen36-runtime \
+  --lock /opt/ndnsf-di/locks/qwen36-overlay.lock.json \
+  > "$partial/qwen36-runtime-probe.json"
+grep -Fq '"status": "PASS"' "$partial/qwen36-runtime-probe.json"
+
+apptainer exec --cleanenv --containall \
+  --home "$scratch/home:/home/tma1" \
+  "$scratch/runtime.sif" \
+  /opt/venv/bin/python -c \
+  'import inspect; from ndnsf import FileSegmentedObjectProducer, fetch_adaptive_segmented_data_packets; from py_repoclient import AdaptiveArtifactTransfer, ArtifactRepositoryApi; from ndnsf_distributed_inference.app import APPDeployment; assert APPDeployment.__module__ == "ndnsf_distributed_inference.app_sdk.deployment"; assert "state_root" in inspect.signature(APPDeployment.from_config).parameters; print("SPEC164_NATIVE_RUNTIME_PASS")' \
+  > "$partial/spec164-native-runtime-probe.txt"
+grep -Fxq 'SPEC164_NATIVE_RUNTIME_PASS' \
+  "$partial/spec164-native-runtime-probe.txt"
+
+apptainer inspect "$scratch/runtime.sif" > "$partial/apptainer-inspect.json"
+sif_sha=$(sha256sum "$scratch/runtime.sif" | awk '{print $1}')
+printf '%s  %s\n' "$sif_sha" "$scratch/runtime.sif" \
+  > "$partial/runtime.sif.sha256"
+
+mkdir "$RELEASE_DIR"
+cp "$scratch/runtime.sif" \
+  "$RELEASE_DIR/.runtime.sif.${SLURM_JOB_ID}.partial"
+chmod 0444 "$RELEASE_DIR/.runtime.sif.${SLURM_JOB_ID}.partial"
+sync "$RELEASE_DIR/.runtime.sif.${SLURM_JOB_ID}.partial"
+mv "$RELEASE_DIR/.runtime.sif.${SLURM_JOB_ID}.partial" \
+  "$RELEASE_DIR/runtime.sif"
+
+python3 - "$RELEASE_DIR/materialization.json" "$sif_sha" \
+  "$SLURM_JOB_ID" "$SOURCE_REFERENCE" "$SOURCE_DIGEST" "$IMAGE_ID" \
+  "$ARCHIVE_SHA256" "$ARCHIVE_BYTES" "$RELEASE_DIR/runtime.sif" \
+  "$SUBMISSION_ID" "$RUN_ID" <<'PY'
+import json
+import sys
+
+(
+    path,
+    sif_sha,
+    job,
+    source_reference,
+    source_digest,
+    image_id,
+    archive_sha,
+    archive_bytes,
+    sif_path,
+    submission,
+    run,
+) = sys.argv[1:]
+with open(path, "x", encoding="utf-8") as stream:
+    json.dump(
+        {
+            "schemaVersion": "spec162-sif-promotion-v3",
+            "sourceKind": "sealed-docker-archive",
+            "sourceReference": source_reference,
+            "sourceManifestDigest": source_digest,
+            "sourceManifestVerified": True,
+            "localImageId": image_id,
+            "sealedArchiveSha256": "sha256:" + archive_sha,
+            "sealedArchiveBytes": int(archive_bytes),
+            "sifPath": sif_path,
+            "sifSha256": "sha256:" + sif_sha,
+            "submissionId": submission,
+            "runId": run,
+            "slurmJobId": job,
+            "verified": True,
+            "builtInAllocationScratch": True,
+            "atomicPromotion": True,
+            "modelsIncluded": False,
+        },
+        stream,
+        indent=2,
+        sort_keys=True,
+    )
+    stream.write("\n")
+PY
+chmod 0444 "$RELEASE_DIR/materialization.json"
+cp "$RELEASE_DIR/materialization.json" "$partial/materialization.json"
+sha256sum "$RELEASE_DIR/runtime.sif" \
+  > "$partial/durable-runtime.sif.sha256"
+(
+  cd "$partial"
+  find . -maxdepth 1 -type f ! -name checksums.sha256 -print0 |
+    sort -z |
+    xargs -0 sha256sum
+) > "$partial/checksums.sha256"
+terminal_state='PASS'

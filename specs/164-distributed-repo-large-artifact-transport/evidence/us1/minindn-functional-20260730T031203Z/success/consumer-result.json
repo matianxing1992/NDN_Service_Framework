@@ -1,0 +1,17 @@
+{
+  "contentDigest": "d8f32a3b4c195f65444e342b0c61bdaf114802e84ab7821a1f88e3f66ea15100",
+  "destination": "/home/tianxing/NDN/ndn-service-framework/specs/164-distributed-repo-large-artifact-transport/evidence/us1/minindn-functional-20260730T031203Z/success/consumer/artifact.bin",
+  "destinationVisible": true,
+  "manifestDigestVerifications": 1,
+  "receiptAuthenticated": true,
+  "retrievalMetrics": {
+    "interestCount": 16,
+    "logicalBytes": 65536,
+    "retransmissionCount": 0,
+    "segments": 16,
+    "wireBytes": 71664
+  },
+  "rootAsymmetricVerifications": 1,
+  "scenario": "success",
+  "status": "SUCCESS"
+}

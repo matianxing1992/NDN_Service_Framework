@@ -29,6 +29,16 @@ public:
   virtual std::map<std::string, TensorBundle>
   run(const RoleExecutionContext& ctx) = 0;
 
+  /**
+   * Execute one request-scoped incremental generation on the same native
+   * runner/session.  The default is deliberately unsupported: ordinary role
+   * runners remain one-shot and ProviderRoleWorker falls back to run().  A
+   * streaming adapter must return the final role outputs only after every
+   * externally visible event has been accepted by ctx.streamEventSink.
+   */
+  virtual std::optional<std::map<std::string, TensorBundle>>
+  runStreamed(const RoleExecutionContext& ctx);
+
   virtual const std::optional<ExecutionEvidence>&
   executionEvidence() const;
 

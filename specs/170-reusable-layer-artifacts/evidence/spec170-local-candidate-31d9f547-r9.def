@@ -1,0 +1,30 @@
+Bootstrap: localimage
+From: /home/tianxing/.local/share/Trash/files/ndnsf-spec170-route-cleanup-20260817/spec170-runtime-8beaa9cd-r3.sif
+
+%files
+    /tmp/spec170-local-candidate-31d9f547-20260817-r9-inputs/di-native-provider /opt/ndnsf-di/current/bin/di-native-provider
+    /tmp/spec170-local-candidate-31d9f547-20260817-r9-inputs/libndn-service-framework.so /opt/ndnsf-di/candidate-lib/libndn-service-framework.so
+    /tmp/spec170-local-candidate-31d9f547-20260817-r9-inputs/ndnsf /opt/ndnsf-di/candidate-python/ndnsf
+    /home/tianxing/NDN/ndn-service-framework/specs/170-reusable-layer-artifacts/evidence/spec170-local-candidate-31d9f547-r9-source-seal.json /opt/ndnsf-di/manifest/spec170-local-source-seal.json
+    /home/tianxing/NDN/ndn-service-framework/specs/170-reusable-layer-artifacts/evidence/spec170-local-candidate-31d9f547-r9-library-lock-v2.json /opt/ndnsf-di/manifest/library-lock-v2.json
+
+%post
+    set -eu
+    chmod 0755 /opt/ndnsf-di/current/bin/di-native-provider
+    rm -f /opt/ndnsf-di/current/lib/libndn-service-framework.so /opt/ndnsf-di/current/lib/libndn-service-framework.so.0.1.0
+    mkdir -p /opt/ndnsf-di/current/lib
+    cp /opt/ndnsf-di/candidate-lib/libndn-service-framework.so /opt/ndnsf-di/current/lib/libndn-service-framework.so.0.1.0
+    chmod 0644 /opt/ndnsf-di/current/lib/libndn-service-framework.so.0.1.0
+    ln -s libndn-service-framework.so.0.1.0 /opt/ndnsf-di/current/lib/libndn-service-framework.so
+    mkdir -p /opt/venv/lib/python3.10/site-packages/ndnsf
+    cp -a /opt/ndnsf-di/candidate-python/ndnsf/. /opt/venv/lib/python3.10/site-packages/ndnsf/
+    chmod 0755 /opt/venv/lib/python3.10/site-packages/ndnsf/_ndnsf.cpython-310-x86_64-linux-gnu.so
+    ln -sfn libnac-abe.so /opt/ndnsf-di/current/lib/libnac-abe.so.0.1.0
+    rm -rf /opt/ndnsf-di/candidate-lib
+    rm -rf /opt/ndnsf-di/candidate-python
+
+%labels
+    org.ndnsf.di.release spec170-runtime-31d9f547-post-selection-v7-20260817
+    org.ndnsf.di.source 31d9f547a32f941ab948f005f583c429d23bacbb
+    org.ndnsf.di.runtime-rpath /opt/ndnsf-di/current/lib:/opt/onnxruntime/lib
+    org.ndnsf.di.tiger-action verify-hash-and-execute-only

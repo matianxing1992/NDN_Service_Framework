@@ -1,0 +1,54 @@
+application: spec160-local-operation-status-smoke
+controller: /NDNSF-DistributeInference/example/controller
+group: /NDNSF-DistributeInference/example/group
+runtime:
+  user_identity: /NDNSF-DistributeInference/example/user
+  provider_prefix: /NDNSF-DistributeInference/example/provider
+trust:
+  app_roots:
+    - /example
+artifact_security:
+  allowlist: []
+  sandbox: {}
+authorization_summary:
+  users:
+    - identity: /NDNSF-DistributeInference/example/user
+      services:
+        - /AI/LLM/Pipeline/Fake
+  providers:
+    - identity: /NDNSF-DistributeInference/example/provider
+      services:
+        - service: /AI/LLM/Pipeline/Fake
+          roles: all
+services:
+  - name: /AI/LLM/Pipeline/Fake
+    model: ""
+    users:
+      - /NDNSF-DistributeInference/example/user
+    providers:
+      - identity: /NDNSF-DistributeInference/example/provider
+        roles:
+          - /LLM/Pipeline/Stage/0
+    roles:
+      - /LLM/Pipeline/Stage/0
+    dependencies: []
+    artifacts: []
+    input:
+      codec: opaque-bytes
+      implemented: true
+    output:
+      codec: opaque-bytes
+      implemented: true
+    metadata:
+      model_family: llm
+      model_format: custom
+      planner_kind: llm-pipeline
+      execution_plan_schema_version: 2
+      executionMode: pipeline-parallel
+      execution_implemented: true
+      runtime_backend: custom
+      runtime: custom
+      llmPipeline:
+        stageCount: 1
+        layerCount: 0
+        sequentialStages: true

@@ -1,0 +1,126 @@
+{
+  "ndnsf_user_latency_available": false,
+  "opportunity_metric_note": {
+    "grpc": "sum of failed RPC attempt durations before the successful RPC",
+    "ndnsf": "request-id timestamp to selected Provider SELECTION_RECEIVED"
+  },
+  "opportunity_seeds": [
+    {
+      "grpc_failed_attempt_cost_p95_ms": 1004.893,
+      "ndnsf_selection_cost_p95_ms": 56.1518669128418,
+      "seed": 62,
+      "switch_required": 207
+    },
+    {
+      "grpc_failed_attempt_cost_p95_ms": 1005.486,
+      "ndnsf_selection_cost_p95_ms": 57.209014892578125,
+      "seed": 63,
+      "switch_required": 208
+    },
+    {
+      "grpc_failed_attempt_cost_p95_ms": 1712.5780000000002,
+      "ndnsf_selection_cost_p95_ms": 67.40713119506836,
+      "seed": 64,
+      "switch_required": 129
+    },
+    {
+      "grpc_failed_attempt_cost_p95_ms": 1005.821,
+      "ndnsf_selection_cost_p95_ms": 65.01197814941406,
+      "seed": 65,
+      "switch_required": 192
+    },
+    {
+      "grpc_failed_attempt_cost_p95_ms": 0.615,
+      "ndnsf_selection_cost_p95_ms": 62.814950942993164,
+      "seed": 66,
+      "switch_required": 150
+    },
+    {
+      "grpc_failed_attempt_cost_p95_ms": 0.9319999999999999,
+      "ndnsf_selection_cost_p95_ms": 63.0030632019043,
+      "seed": 67,
+      "switch_required": 153
+    },
+    {
+      "grpc_failed_attempt_cost_p95_ms": 1.049,
+      "ndnsf_selection_cost_p95_ms": 59.767961502075195,
+      "seed": 68,
+      "switch_required": 181
+    },
+    {
+      "grpc_failed_attempt_cost_p95_ms": 1006.865,
+      "ndnsf_selection_cost_p95_ms": 54.0618896484375,
+      "seed": 69,
+      "switch_required": 225
+    },
+    {
+      "grpc_failed_attempt_cost_p95_ms": 0.982,
+      "ndnsf_selection_cost_p95_ms": 62.54386901855469,
+      "seed": 70,
+      "switch_required": 152
+    },
+    {
+      "grpc_failed_attempt_cost_p95_ms": 1.119,
+      "ndnsf_selection_cost_p95_ms": 63.02499771118164,
+      "seed": 71,
+      "switch_required": 150
+    }
+  ],
+  "paired_seed_p95_reduction_ms": {
+    "ci95_high": 886.2699548904419,
+    "ci95_low": 140.50213458862305,
+    "mean": 512.9343276824951,
+    "repetitions": 20000,
+    "seed": 171
+  },
+  "post_retirement_systems": {
+    "grpc-preregistered-4": {
+      "attempts_or_executions": 888,
+      "configured_provider_count": 4,
+      "median_replay_p95_latency_ms": 3030.0150000000003,
+      "provider_d_successes": 357,
+      "requests": 357,
+      "success": 357,
+      "success_rate_pct": 100.0
+    },
+    "grpc-static-3": {
+      "attempts_or_executions": 1071,
+      "configured_provider_count": 3,
+      "median_replay_p95_latency_ms": null,
+      "provider_d_successes": 0,
+      "requests": 357,
+      "success": 0,
+      "success_rate_pct": 0.0
+    },
+    "ndnsf": {
+      "attempts_or_executions": 357,
+      "configured_provider_count": 0,
+      "median_replay_p95_latency_ms": 107.259,
+      "provider_d_successes": 357,
+      "requests": 357,
+      "success": 357,
+      "success_rate_pct": 100.0
+    },
+    "nsc-preregistered-4": {
+      "attempts_or_executions": 888,
+      "configured_provider_count": 4,
+      "median_replay_p95_latency_ms": 3047.0,
+      "provider_d_successes": 357,
+      "requests": 357,
+      "success": 357,
+      "success_rate_pct": 100.0
+    },
+    "nsc-static-3": {
+      "attempts_or_executions": 1071,
+      "configured_provider_count": 3,
+      "median_replay_p95_latency_ms": null,
+      "provider_d_successes": 0,
+      "requests": 357,
+      "success": 0,
+      "success_rate_pct": 0.0
+    }
+  },
+  "schema": "spec171-provider-evidence-figure-data-v1",
+  "switch_required_requests": 1747,
+  "transition_replays": 3
+}

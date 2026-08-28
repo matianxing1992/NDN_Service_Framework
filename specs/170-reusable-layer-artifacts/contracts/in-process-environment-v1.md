@@ -96,7 +96,7 @@ dropped/pending name; `resetRequest()` rejects an unflushed reordered packet.
 DummyFaces, SVSPubSub nodes, identities, and permission tables; the integration
 target now verifies a three-Provider READY/request boundary and a timeout-driven
 custom-selection response projection. The full L1/L2 request matrix,
-corruption/replay rules, and protected `NDNSF_DATA_V1` cases are still
+corruption/replay rules, and protected tensor Interest/Data cases are still
 follow-up work, not silently counted as implemented coverage.
 
 ## Bootstrap lane

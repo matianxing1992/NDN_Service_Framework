@@ -44,6 +44,20 @@ uintArrayFromJson(const boost::property_tree::ptree& node, const std::string& ke
   return values;
 }
 
+std::vector<std::int64_t>
+int64ArrayFromJson(const boost::property_tree::ptree& node, const std::string& key)
+{
+  std::vector<std::int64_t> values;
+  const auto child = node.get_child_optional(key);
+  if (!child) {
+    return values;
+  }
+  for (const auto& item : *child) {
+    values.push_back(item.second.get_value<std::int64_t>());
+  }
+  return values;
+}
+
 std::vector<NativeAssemblyTensorContractV3>
 assemblyTensorContractsFromJson(const boost::property_tree::ptree& node,
                                 const std::string& key)
@@ -90,6 +104,16 @@ isSha256Digest(const std::string& value)
   return value.size() == 71 && value.rfind("sha256:", 0) == 0 &&
          std::all_of(value.begin() + 7, value.end(), [] (unsigned char ch) {
            return std::isxdigit(ch) != 0;
+         });
+}
+
+bool
+isGenerationId(const std::string& value)
+{
+  return value.size() == 32 &&
+         std::all_of(value.begin(), value.end(), [] (unsigned char ch) {
+           return (ch >= '0' && ch <= '9') ||
+                  (ch >= 'a' && ch <= 'f');
          });
 }
 
@@ -545,6 +569,8 @@ dependencyFromV3Json(const boost::property_tree::ptree& dep)
   spec.expectedSegments = dep.get<std::size_t>("expected_segments", 0);
   spec.expectedBytes = dep.get<std::size_t>("expected_bytes", 0);
   spec.tensors = stringArrayFromJson(dep, "tensors");
+  spec.operationKind = dep.get<std::string>("operationKind",
+                                             dep.get<std::string>("operation_kind", ""));
   spec.useNdnsfDataV1 =
     dep.get<std::string>("transportProfile", "COLLAB_LARGE_V1") ==
     "NDNSF_DATA_V1";
@@ -666,6 +692,9 @@ nativeExecutionPlansByServiceFromJson(std::istream& input)
     plan.plannerKind = service.get<std::string>("plannerKind", "onnx-dag");
     plan.executionPolicy = service.get<std::string>(
       "executionPolicy", "DATA_DRIVEN_V2");
+    plan.streamingOperationStride = service.get<std::uint64_t>(
+      "streamingOperationStride", service.get<std::uint64_t>(
+        "streaming_operation_stride", 0));
     if (plan.executionPolicy != "DATA_DRIVEN_V2" &&
         plan.executionPolicy != "LEGACY_READY_SET_V1") {
       throw std::invalid_argument(
@@ -697,6 +726,8 @@ nativeExecutionPlansByServiceFromJson(std::istream& input)
           dep.get<std::string>("collectiveTargetLayoutDigest", "");
         spec.collectiveTensorDigest =
           dep.get<std::string>("collectiveTensorDigest", "");
+        spec.operationKind = dep.get<std::string>("operationKind",
+                                                   dep.get<std::string>("operation_kind", ""));
         if (const auto redistributions = dep.get_child_optional("redistributions")) {
           for (const auto& item : *redistributions) {
             spec.redistributions.push_back(redistributionFromV3Json(item.second));
@@ -753,6 +784,8 @@ nativeSelectionProjectionV3FromJson(std::istream& input,
   projection.offerDigest = root.get<std::string>("offer_digest", "");
   projection.securityPolicySnapshotDigest =
     root.get<std::string>("security_policy_snapshot_digest", "");
+  projection.requestContractDigest =
+    root.get<std::string>("request_contract_digest", "");
   projection.deadlineMs = root.get<std::uint64_t>("deadline_ms", 0);
   projection.groupCapabilityV1 =
     root.get<std::string>("group_capability_v1", "");
@@ -762,7 +795,9 @@ nativeSelectionProjectionV3FromJson(std::istream& input,
       !isSha256Digest(projection.planDigest) ||
       !isSha256Digest(projection.ackClosedDigest) ||
       !isSha256Digest(projection.offerDigest) ||
-      !isSha256Digest(projection.securityPolicySnapshotDigest)) {
+      !isSha256Digest(projection.securityPolicySnapshotDigest) ||
+      (!projection.requestContractDigest.empty() &&
+       !isSha256Digest(projection.requestContractDigest))) {
     throw std::invalid_argument("V3 Selection projection binding is incomplete");
   }
 
@@ -786,6 +821,78 @@ nativeSelectionProjectionV3FromJson(std::istream& input,
       }
       projection.plan.dependencies.push_back(std::move(dependency));
     }
+  }
+
+  if (const auto generation = root.get_child_optional("generation_contract")) {
+    auto& contract = projection.generationContract;
+    contract.enabled = true;
+    contract.mode = generation->get<std::string>("mode", "");
+    contract.maxGeneratedTokens = generation->get<std::size_t>(
+      "max_generated_tokens", 0);
+    contract.tokenInputName = generation->get<std::string>(
+      "token_input_name", "");
+    contract.stateInputNames = stringArrayFromJson(
+      *generation, "state_input_names");
+    contract.stateOutputNames = stringArrayFromJson(
+      *generation, "state_output_names");
+    contract.eosTokenIds = int64ArrayFromJson(*generation, "eos_token_ids");
+    contract.samplingDigest = generation->get<std::string>(
+      "sampling_digest", "");
+    contract.tokenizerDigest = generation->get<std::string>(
+      "tokenizer_digest", "");
+    contract.generationId = generation->get<std::string>(
+      "generation_id", "");
+    contract.committedPrefixTokenIds = int64ArrayFromJson(
+      *generation, "committed_prefix_token_ids");
+    contract.streamingOperationStride = generation->get<std::uint64_t>(
+      "streaming_operation_stride", 0);
+    const std::set<std::string> uniqueInputs(
+      contract.stateInputNames.begin(), contract.stateInputNames.end());
+    const std::set<std::string> uniqueOutputs(
+      contract.stateOutputNames.begin(), contract.stateOutputNames.end());
+    const auto feedbackCount = std::count_if(
+      projection.plan.dependencies.begin(), projection.plan.dependencies.end(),
+      [] (const auto& dependency) {
+        return dependency.operationKind == "TOKEN_FEEDBACK";
+      });
+    if (contract.mode != "TOKEN_STREAMING" ||
+        contract.maxGeneratedTokens == 0 || contract.maxGeneratedTokens > 64 ||
+        contract.tokenInputName.empty() || contract.stateInputNames.empty() ||
+        contract.stateInputNames.size() != contract.stateOutputNames.size() ||
+        uniqueInputs.size() != contract.stateInputNames.size() ||
+        uniqueOutputs.size() != contract.stateOutputNames.size() ||
+        contract.eosTokenIds.empty() ||
+        std::any_of(contract.eosTokenIds.begin(), contract.eosTokenIds.end(),
+                    [] (std::int64_t value) { return value < 0; }) ||
+        !isSha256Digest(contract.samplingDigest) ||
+        !isSha256Digest(contract.tokenizerDigest) ||
+        (!contract.generationId.empty() &&
+         !isGenerationId(contract.generationId)) ||
+        contract.streamingOperationStride != projection.plan.dependencies.size() ||
+        contract.committedPrefixTokenIds.size() >= contract.maxGeneratedTokens ||
+        std::any_of(
+          contract.committedPrefixTokenIds.begin(),
+          contract.committedPrefixTokenIds.end(),
+          [&contract] (std::int64_t value) {
+            return value < 0 || std::find(
+              contract.eosTokenIds.begin(), contract.eosTokenIds.end(), value) !=
+              contract.eosTokenIds.end();
+          }) ||
+        feedbackCount != 1) {
+      throw std::invalid_argument(
+        "V3 Selection generation contract is incomplete");
+    }
+    projection.plan.streamingOperationStride =
+      contract.streamingOperationStride;
+  }
+  else if (std::any_of(
+             projection.plan.dependencies.begin(),
+             projection.plan.dependencies.end(),
+             [] (const auto& dependency) {
+               return dependency.operationKind == "TOKEN_FEEDBACK";
+             })) {
+    throw std::invalid_argument(
+      "V3 Selection TOKEN_FEEDBACK requires a generation contract");
   }
 
   const auto roles = root.get_child_optional("roles");
@@ -822,6 +929,91 @@ nativeSelectionProjectionV3FromJson(std::istream& input,
   projection.assembly = selectionRoleFromV3Json(*assembly, planRole);
   projection.dataflow = dataflowFromV3Json(*dataflow);
   projection.deviceBinding = deviceBindingFromV3Json(*deviceBinding);
+
+  if (const auto stateReference =
+        root.get_child_optional("conversation_state_reference")) {
+    ConversationStateReferenceV1 reference;
+    reference.conversationId = stateReference->get<std::string>(
+      "conversation_id", "");
+    reference.contextEpoch = stateReference->get<std::uint64_t>(
+      "context_epoch", 0);
+    reference.serviceName = stateReference->get<std::string>(
+      "service_name", "");
+    reference.planRoleMapDigest = stateReference->get<std::string>(
+      "plan_role_map_digest", "");
+    reference.checkpointDigest = stateReference->get<std::string>(
+      "checkpoint_digest", "");
+    reference.roleName = stateReference->get<std::string>(
+      "role_name", "");
+    reference.roleReceiptDigest = stateReference->get<std::string>(
+      "role_receipt_digest", "");
+    reference.expiresAtMs = stateReference->get<std::uint64_t>(
+      "expires_at_ms", 0);
+    if (stateReference->get<std::string>("schema", "") !=
+          "ndnsf-di-conversation-state-reference-v1" ||
+        stateReference->get<int>("version", 0) != 1) {
+      throw std::invalid_argument(
+        "V3 Selection conversation state reference schema mismatch");
+    }
+    reference.validate();
+    projection.conversationStateReference = std::move(reference);
+  }
+
+  if (const auto turnBinding =
+        root.get_child_optional("conversation_turn_binding")) {
+    if (turnBinding->get<std::string>("schema", "") !=
+          "ndnsf-di-conversation-turn-binding-v1" ||
+        turnBinding->get<int>("version", 0) != 1) {
+      throw std::invalid_argument(
+        "V3 Selection conversation turn binding schema mismatch");
+    }
+    ConversationTurnBindingV1 binding;
+    binding.conversationId = turnBinding->get<std::string>(
+      "conversation_id", "");
+    binding.parentContextEpoch = turnBinding->get<std::uint64_t>(
+      "parent_context_epoch", 0);
+    binding.successorContextEpoch = turnBinding->get<std::uint64_t>(
+      "successor_context_epoch", 0);
+    binding.serviceName = turnBinding->get<std::string>(
+      "service_name", "");
+    binding.planRoleMapDigest = turnBinding->get<std::string>(
+      "plan_role_map_digest", "");
+    binding.requestContractDigest = turnBinding->get<std::string>(
+      "request_contract_digest", "");
+    binding.retentionDeadlineMs = turnBinding->get<std::uint64_t>(
+      "retention_deadline_ms", 0);
+    binding.parentCheckpointDigest = turnBinding->get<std::string>(
+      "parent_checkpoint_digest", "");
+    binding.validate();
+    if (projection.requestContractDigest.empty() ||
+        binding.requestContractDigest != projection.requestContractDigest) {
+      throw std::invalid_argument(
+        "V3 Selection conversation/request contract mismatch");
+    }
+    projection.conversationTurnBinding = std::move(binding);
+  }
+  if (projection.conversationStateReference) {
+    if (!projection.conversationTurnBinding ||
+        projection.conversationStateReference->conversationId !=
+          projection.conversationTurnBinding->conversationId ||
+        projection.conversationStateReference->contextEpoch !=
+          projection.conversationTurnBinding->parentContextEpoch ||
+        projection.conversationStateReference->serviceName !=
+          projection.conversationTurnBinding->serviceName ||
+        projection.conversationStateReference->planRoleMapDigest !=
+          projection.conversationTurnBinding->planRoleMapDigest ||
+        projection.conversationStateReference->checkpointDigest !=
+          projection.conversationTurnBinding->parentCheckpointDigest) {
+      throw std::invalid_argument(
+        "V3 Selection conversation parent/turn binding mismatch");
+    }
+  }
+  if (projection.conversationTurnBinding &&
+      projection.conversationTurnBinding->parentContextEpoch > 0 &&
+      !projection.conversationStateReference) {
+    throw std::invalid_argument(
+      "V3 Selection append turn is missing its role-local parent state");
+  }
 
   const auto grantBinding = root.get_child_optional("grant_binding");
   const bool isProtected =
@@ -880,6 +1072,8 @@ nativeSelectionProjectionV3FromJson(std::istream& input,
       projection.deviceBinding.provider != projection.provider ||
       projection.deviceBinding.role != planRole ||
       projection.deviceBinding.offerDigest != projection.offerDigest ||
+      (projection.conversationStateReference &&
+       projection.conversationStateReference->roleName != planRole) ||
       (isCpuBackend(projection.selectedRole.backend) &&
        projection.deviceBinding.mode != "CPU") ||
       (!isCpuBackend(projection.selectedRole.backend) &&

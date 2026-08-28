@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+"""Validate the host substrate for the Spec175 host-orchestrated G4 replay.
+
+This gate intentionally does not inspect the candidate SIF.  It verifies the
+host-only MiniNDN/Mininet/OVS/NLSR layer and the launcher that will invoke the
+SIF.  The exact-SIF runtime gate is a separate command.
+"""
+
+from __future__ import annotations
+
+import argparse
+import importlib.util
+import json
+import os
+import re
+import shutil
+import subprocess
+from pathlib import Path
+
+
+HOST_COMMANDS = (
+    "mn",
+    "mnexec",
+    "ovs-vswitchd",
+    "ovs-vsctl",
+    "ip",
+    "nlsr",
+)
+HOST_IMPORTS = ("minindn", "mininet")
+
+
+def load_host_gate(path: Path):
+    module_path = path.parent.parent / "lib" / "spec175_host_gate.py"
+    spec = importlib.util.spec_from_file_location("spec175_host_gate", module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("HOST_GATE_VALIDATOR_UNAVAILABLE")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def version(path: str) -> str:
+    result = subprocess.run([path, "version"], text=True,
+                            capture_output=True, check=False)
+    if result.returncode != 0:
+        result = subprocess.run([path, "--version"], text=True,
+                                capture_output=True, check=False)
+    return (result.stdout or result.stderr).strip()
+
+
+def normalized_version(value: str) -> str:
+    match = re.search(r"(\d+\.\d+\.\d+)", value)
+    return match.group(1) if match else ""
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--host-gate-manifest", required=True, type=Path)
+    parser.add_argument("--repository-root", required=True, type=Path)
+    parser.add_argument("--topology-file", required=True, type=Path)
+    parser.add_argument("--replay-driver", required=True, type=Path)
+    parser.add_argument("--apptainer", required=True)
+    parser.add_argument("--expected-apptainer", default="1.5.3")
+    parser.add_argument("--output", required=True, type=Path)
+    args = parser.parse_args()
+
+    root = args.repository_root.resolve()
+    checks: dict[str, object] = {}
+    errors: list[str] = []
+
+    try:
+        validator = load_host_gate(Path(__file__).resolve())
+        checks["hostGate"] = validator.validate_host_gate(
+            args.host_gate_manifest.resolve(), root)
+    except Exception as exc:
+        checks["hostGate"] = {"status": "FAIL", "error": str(exc)}
+        errors.append("HOST_GATE_MANIFEST_INVALID")
+
+    command_paths = {name: shutil.which(name) or "" for name in HOST_COMMANDS}
+    checks["commands"] = command_paths
+    errors.extend("HOST_COMMAND_MISSING:" + name
+                  for name, path in command_paths.items() if not path)
+
+    imports = {}
+    for name in HOST_IMPORTS:
+        spec = importlib.util.find_spec(name)
+        imports[name] = spec.origin if spec and spec.origin else ""
+    checks["pythonImports"] = imports
+    errors.extend("HOST_IMPORT_MISSING:" + name
+                  for name, path in imports.items() if not path)
+
+    topology = args.topology_file.resolve()
+    checks["topology"] = {"path": str(topology), "exists": topology.is_file()}
+    if not topology.is_file():
+        errors.append("HOST_TOPOLOGY_MISSING")
+
+    driver = args.replay_driver.resolve()
+    driver_text = driver.read_text(encoding="utf-8") if driver.is_file() else ""
+    production_runner = (args.repository_root.resolve() /
+                         "Experiments/NDNSF_DI_LlmPipeline_Minindn.py")
+    production_text = (production_runner.read_text(encoding="utf-8")
+                       if production_runner.is_file() else "")
+    driver_checks = {
+        "path": str(driver),
+        "exists": driver.is_file(),
+        "productionRunner": str(production_runner),
+        "productionRunnerExists": production_runner.is_file(),
+        "usesApptainer": (
+            "sif_exec_prefix" in production_text and
+            "--cleanenv" in production_text and
+            "SPEC175_SIF_HOST_PROCESS_FALLBACK" in production_text
+        ),
+        "usesExactSif": "SPEC175_RUNTIME_SIF" in driver_text,
+        "doesNotEmbedMiniNdn": "replay_root" not in driver_text,
+        "usesThreeRepetitions": "REPETITIONS = 3" in driver_text,
+        "requiresThirtyEntries": "len(entries) == 30" in driver_text,
+    }
+    checks["replayDriver"] = driver_checks
+    for key, value in driver_checks.items():
+        if key != "path" and not value:
+            errors.append("HOST_REPLAY_DRIVER_INVALID:" + key)
+
+    apptainer = Path(args.apptainer)
+    actual = version(str(apptainer)) if apptainer.is_file() else ""
+    checks["apptainer"] = {
+        "path": str(apptainer),
+        "exists": apptainer.is_file(),
+        "version": actual,
+        "expected": args.expected_apptainer,
+    }
+    if not apptainer.is_file():
+        errors.append("HOST_APPTAINER_MISSING")
+    elif normalized_version(actual) != normalized_version(args.expected_apptainer):
+        errors.append("HOST_APPTAINER_VERSION_MISMATCH")
+
+    checks["namespacePrivileges"] = {"uid": os.geteuid(), "root": os.geteuid() == 0}
+    if os.geteuid() != 0:
+        errors.append("HOST_NAMESPACE_PRIVILEGE_MISSING")
+
+    result = {
+        "schema": "spec175-host-substrate-preflight-v1",
+        "layer": "host-substrate",
+        "status": "PASS" if not errors else "FAIL",
+        "errors": errors,
+        "checks": checks,
+    }
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n",
+                           encoding="utf-8")
+    print(json.dumps(result, sort_keys=True))
+    return 0 if not errors else 4
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,19 @@
+{
+  "schema": "ndnsf-di-spec111-us4-workflow-gate-v2",
+  "status": "PASS",
+  "network": "MiniNDN",
+  "controllerProviderUser": true,
+  "initialRevision": "sha256:56f658b57fea7a085d660591868d832fb3c6348e5a594d6c43eba9f20f6314f4",
+  "rollbackRevision": "sha256:19b0be638acd8dd4253e1cf6bab92a61603351da701075dc99b38384e74714bc",
+  "rollbackEpoch": 2,
+  "terminalDeploymentState": "DELETED",
+  "wireRequestCount": 22,
+  "artifacts": [
+    {"path": "results/spec111-deployment-workflow-smoke-20260714-retry2/deployment-workflow-summary.json", "digest": "sha256:d421321db298ef83a8512173b7acd986fd2ed1b12b60d6dda0038e8ccb0bbbb0", "bytes": 1259},
+    {"path": "results/spec111-deployment-workflow-smoke-20260714-retry2/llm-pipeline-user.log", "digest": "sha256:bdf1d0eff5b1847e944120c3480c5073aa80a472d3cfc958ec6106d9fd5f4575", "bytes": 6267},
+    {"path": "results/spec111-deployment-workflow-smoke-20260714-retry2/controller.log", "digest": "sha256:31be3a1b4f5a4515af30aa86092342385121c49d02e0758d0f363a1cb8306160", "bytes": 17},
+    {"path": "results/spec111-deployment-workflow-smoke-20260714-retry2/stage0-provider.log", "digest": "sha256:1e250482f4c7e08c8748fdc66a261747c93f41dc1316449eb020bf53916ce9cd", "bytes": 8049},
+    {"path": "results/spec111-deployment-workflow-smoke-20260714-retry2/stage1-provider.log", "digest": "sha256:a225694871ede47bf0ab7edd76c2bbe3004bc679038f6b98982a09508e3a6da0", "bytes": 8083},
+    {"path": "results/spec111-deployment-workflow-smoke-20260714-retry2/stage2-provider.log", "digest": "sha256:594510e404383c78ce89121d06cf72dc4534d3fe63a9fdebfc8fb94e019f3427", "bytes": 8061}
+  ]
+}

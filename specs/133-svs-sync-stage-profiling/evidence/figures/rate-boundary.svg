@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 560" role="img" aria-labelledby="title desc">
+  <title id="title">Spec 133 throughput boundary</title>
+  <desc id="desc">Target, attempted, and delivered publications per second per peer at five tested rates. Attempted and delivered rates collapse at 800 publications per second.</desc>
+  <rect width="1000" height="560" fill="#ffffff"/>
+  <text x="500" y="34" text-anchor="middle" font-family="sans-serif" font-size="23" font-weight="700" fill="#172033">Throughput boundary: collapse begins at 800 pps per peer</text>
+  <rect x="665" y="58" width="285" height="414" fill="#fff0f0"/>
+  <text x="807" y="84" text-anchor="middle" font-family="sans-serif" font-size="14" font-weight="700" fill="#a12626">Overload region</text>
+
+  <g stroke="#d8dde8" stroke-width="1">
+    <line x1="90" y1="470" x2="950" y2="470"/>
+    <line x1="90" y1="390" x2="950" y2="390"/>
+    <line x1="90" y1="310" x2="950" y2="310"/>
+    <line x1="90" y1="230" x2="950" y2="230"/>
+    <line x1="90" y1="150" x2="950" y2="150"/>
+    <line x1="90" y1="70" x2="950" y2="70"/>
+  </g>
+  <g font-family="sans-serif" font-size="13" fill="#4b5568" text-anchor="end">
+    <text x="78" y="475">0</text>
+    <text x="78" y="395">200</text>
+    <text x="78" y="315">400</text>
+    <text x="78" y="235">600</text>
+    <text x="78" y="155">800</text>
+    <text x="78" y="75">1000</text>
+  </g>
+  <line x1="90" y1="70" x2="90" y2="470" stroke="#596273" stroke-width="2"/>
+  <line x1="90" y1="470" x2="950" y2="470" stroke="#596273" stroke-width="2"/>
+  <text transform="translate(24 270) rotate(-90)" text-anchor="middle" font-family="sans-serif" font-size="15" fill="#30394b">Measured pps per peer</text>
+
+  <g font-family="sans-serif" font-size="13" fill="#4b5568" text-anchor="middle">
+    <text x="140" y="495">200</text>
+    <text x="330" y="495">400</text>
+    <text x="520" y="495">600</text>
+    <text x="710" y="495">800</text>
+    <text x="900" y="495">1000</text>
+  </g>
+  <text x="520" y="526" text-anchor="middle" font-family="sans-serif" font-size="15" fill="#30394b">Target publication rate per peer</text>
+
+  <polyline points="140,390 330,310 520,230 710,150 900,70" fill="none" stroke="#747b89" stroke-width="3" stroke-dasharray="9 7"/>
+  <polyline points="140,390.2 330,310.8 520,232.6 710,284.5 900,256.1" fill="none" stroke="#1769aa" stroke-width="4"/>
+  <polyline points="140,390.2 330,310.8 520,232.6 710,385.0 900,469.7" fill="none" stroke="#d65a1f" stroke-width="4"/>
+
+  <g fill="#1769aa" stroke="#ffffff" stroke-width="2">
+    <circle cx="140" cy="390.2" r="6"/><circle cx="330" cy="310.8" r="6"/><circle cx="520" cy="232.6" r="6"/><circle cx="710" cy="284.5" r="6"/><circle cx="900" cy="256.1" r="6"/>
+  </g>
+  <g fill="#d65a1f" stroke="#ffffff" stroke-width="2">
+    <circle cx="140" cy="390.2" r="6"/><circle cx="330" cy="310.8" r="6"/><circle cx="520" cy="232.6" r="6"/><circle cx="710" cy="385.0" r="6"/><circle cx="900" cy="469.7" r="6"/>
+  </g>
+
+  <g font-family="sans-serif" font-size="12" font-weight="700">
+    <text x="710" y="271" text-anchor="middle" fill="#1769aa">463.84</text>
+    <text x="710" y="405" text-anchor="middle" fill="#d65a1f">212.56</text>
+    <text x="900" y="243" text-anchor="middle" fill="#1769aa">534.66</text>
+    <text x="900" y="453" text-anchor="middle" fill="#d65a1f">0.66</text>
+  </g>
+
+  <g font-family="sans-serif" font-size="13">
+    <line x1="118" y1="47" x2="153" y2="47" stroke="#747b89" stroke-width="3" stroke-dasharray="8 6"/>
+    <text x="160" y="52" fill="#30394b">Target</text>
+    <line x1="235" y1="47" x2="270" y2="47" stroke="#1769aa" stroke-width="4"/>
+    <text x="277" y="52" fill="#30394b">Attempted</text>
+    <line x1="375" y1="47" x2="410" y2="47" stroke="#d65a1f" stroke-width="4"/>
+    <text x="417" y="52" fill="#30394b">Delivered</text>
+  </g>
+</svg>

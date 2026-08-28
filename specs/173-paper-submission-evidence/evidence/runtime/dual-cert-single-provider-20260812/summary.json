@@ -1,0 +1,356 @@
+{
+  "achieved_offered_ratio": 1.0,
+  "achieved_rate_warning": "",
+  "ack_count_per_provider": {},
+  "ack_p95_ms": 0.0,
+  "actual_requests_per_second": 5.0,
+  "actual_successful_responses_per_second": 5.0,
+  "adaptive_window_max": 16,
+  "adaptive_window_min": 16,
+  "adaptive_window_p50": 16.0,
+  "adaptive_window_p95": 16.0,
+  "admission_control_rejects": 0,
+  "admission_control_warnings": 0,
+  "admission_queue_pause_events": 0,
+  "admission_queue_pause_resumes": 0,
+  "admission_queue_pause_skips": 0,
+  "admission_recommended_rate_final": 32.0,
+  "admission_recommended_rate_max": 0.0,
+  "admission_recommended_rate_min": 0.0,
+  "admission_recommended_rate_skips": 0,
+  "admission_reject_resume_queue_depth": 6,
+  "admission_warning_resume_queue_depth": 12,
+  "app_interval_ms": 200,
+  "app_user_exit_status": 0,
+  "app_user_terminated_after_duration": false,
+  "average_latency_ms": 71.06792,
+  "bottleneck_classification": {
+    "all": [
+      "network/SVS delivery limited",
+      "provider selection skew"
+    ],
+    "primary": "network/SVS delivery limited",
+    "reasons": [
+      "only 0.000 ACK log entries per sent request",
+      "provider /example/hello/provider/A handled 100.00% of selections"
+    ]
+  },
+  "completed_count": 300,
+  "completion_throughput_rps": 5.0,
+  "controller_node": "controller",
+  "crypto_diagnostics": {
+    "csv": "/tmp/ndnsf-dual-cert-open5-60s-20260812/crypto_diagnostics.csv",
+    "json": "/tmp/ndnsf-dual-cert-open5-60s-20260812/crypto_diagnostics_summary.json",
+    "summary": {}
+  },
+  "diagnostic_only": false,
+  "diagnostic_plaintext_ack": false,
+  "diagnostic_plaintext_response": false,
+  "drain_seconds": 10,
+  "duration_s": 60,
+  "failed_request_count": 0,
+  "failure_breakdown": {
+    "ack_selection_bottleneck": false,
+    "provider_selection_concentrated_on_C": false,
+    "request_generation_skipped": 0,
+    "request_timeout": 0,
+    "response_received_too_late": 0
+  },
+  "first_request_sent_ts": null,
+  "hard_inflight_limit": 16,
+  "in_flight_max": 2,
+  "in_flight_p50": 1.0,
+  "in_flight_p95": 1.0,
+  "interval_ms": 200,
+  "last_request_sent_ts": null,
+  "late_response_count": 0,
+  "max_outstanding": 16,
+  "max_outstanding_requests": 2,
+  "median_outstanding_requests": 1.0,
+  "offered_rate_rps": 5.0,
+  "output_dir": "/tmp/ndnsf-dual-cert-open5-60s-20260812",
+  "outstanding_limit_skip_count": 0,
+  "outstanding_limit_skips": 0,
+  "p50_latency_ms": 66.038,
+  "p95_latency_ms": 85.124,
+  "p95_outstanding_requests": 1.0,
+  "p99_latency_ms": 93.604,
+  "pause_count": 0,
+  "pause_reason_counters": "",
+  "paused_state_transitions": 0,
+  "pending_at_shutdown": 0,
+  "perf_request_sent_count": 0,
+  "post_ack_pipeline": {
+    "csv": "/tmp/ndnsf-dual-cert-open5-60s-20260812/post_ack_pipeline.csv",
+    "json": "/tmp/ndnsf-dual-cert-open5-60s-20260812/post_ack_pipeline_summary.json",
+    "summary": {
+      "ack_match_attempt": 600,
+      "ack_match_attempt_decoded": 300,
+      "ack_match_attempt_pre_decrypt": 300,
+      "ack_match_failed_expired_call": 0,
+      "ack_match_failed_no_pending": 0,
+      "ack_match_failed_request_id_mismatch": 0,
+      "ack_match_skipped_pre_decrypt": 0,
+      "ack_matched_pending_call": 300,
+      "ack_processed": 300,
+      "bucket_10_real_network_svs_nac_loss_or_timeout": 0,
+      "bucket_1_request_never_created_pending_call": 0,
+      "bucket_2_pending_call_created_but_erased_before_ack": 0,
+      "bucket_3_ack_received_but_skipped_pre_decrypt": 0,
+      "bucket_4_ack_decoded_but_no_pending_call_matched": 0,
+      "bucket_5_ack_matched_pending_call_but_no_provider_selected": 0,
+      "bucket_6_provider_selected_but_selection_not_scheduled": 0,
+      "bucket_7_selection_scheduled_but_not_published": 0,
+      "bucket_8_selection_published_but_provider_did_not_execute_respond": 0,
+      "bucket_9_response_published_but_user_callback_not_triggered": 0,
+      "callback_skipped_no_pending": 0,
+      "callback_skipped_timeout": 0,
+      "failed_request_count_classified": 0,
+      "failure_buckets": {
+        "10_real_network_svs_nac_loss_or_timeout": {
+          "count": 0,
+          "percent_of_failed": 0.0
+        },
+        "1_request_never_created_pending_call": {
+          "count": 0,
+          "percent_of_failed": 0.0
+        },
+        "2_pending_call_created_but_erased_before_ack": {
+          "count": 0,
+          "percent_of_failed": 0.0
+        },
+        "3_ack_received_but_skipped_pre_decrypt": {
+          "count": 0,
+          "percent_of_failed": 0.0
+        },
+        "4_ack_decoded_but_no_pending_call_matched": {
+          "count": 0,
+          "percent_of_failed": 0.0
+        },
+        "5_ack_matched_pending_call_but_no_provider_selected": {
+          "count": 0,
+          "percent_of_failed": 0.0
+        },
+        "6_provider_selected_but_selection_not_scheduled": {
+          "count": 0,
+          "percent_of_failed": 0.0
+        },
+        "7_selection_scheduled_but_not_published": {
+          "count": 0,
+          "percent_of_failed": 0.0
+        },
+        "8_selection_published_but_provider_did_not_execute_respond": {
+          "count": 0,
+          "percent_of_failed": 0.0
+        },
+        "9_response_published_but_user_callback_not_triggered": {
+          "count": 0,
+          "percent_of_failed": 0.0
+        }
+      },
+      "pending_created": 300,
+      "request_count": 300,
+      "request_pending_completed": 300,
+      "request_pending_erased": 0,
+      "request_pending_timeout": 0,
+      "requests_timed_out_after_selection_before_selection": 0,
+      "requests_timed_out_before_selection": 0,
+      "requests_with_no_selection": 0,
+      "selection_attempted": 0,
+      "selection_completed": 300,
+      "selection_invoked": 300,
+      "selection_no_pending": 0,
+      "selection_publish_failed": 0,
+      "selection_published": 300,
+      "selection_rejected": 0,
+      "selection_scheduled": 0,
+      "selection_skipped": 0
+    }
+  },
+  "provider_ack_admission_checked_count": 300,
+  "provider_ack_published_count": 300,
+  "provider_ack_suppressed_count": 0,
+  "provider_ack_suppression_count": 0,
+  "provider_ack_suppression_reasons": {},
+  "provider_certificate_runtime": [
+    {
+      "aa_cert_interest_seen": true,
+      "app_certificate_publisher": true,
+      "cert_data_served": true,
+      "cert_file": "/tmp/ndnsf-dual-cert-open5-60s-20260812/security/identity-3.cert",
+      "cert_name": "/example/hello/provider/A/KEY/c%AD%F2%19%9E%5B%B1%E8/ROOT/v=1786571908293",
+      "data_count": 1,
+      "identity": "/example/hello/provider/A",
+      "interest_count": 1,
+      "log_tail": "1786571977.067520 DEBUG: [ndn_service_framework.MessageValidator] MessageValidator Data validated on ordered worker name=/example/hello/user/NDNSF/REQUEST/HELLO/20260812T215937.021893-7400b04fb540bdf7 cert=/example/hello/user/KEY/m%3E8%D7%7B%8A2%B6/ECDSA/v=1786571908222\n1786571977.067591 DEBUG: [ndn_service_framework.MessageValidator] MessageValidator Data validated on ordered worker name=/example/hello/user/NDNSF/SELECTION/%2Fexample%2Fhello%2Fprovider%2FA/HELLO/20260812T215937.021893-7400b04fb540bdf7 cert=/example/hello/user/KEY/m%3E8%D7%7B%8A2%B6/ECDSA/v=1786571908222\n1786571977.067656  INFO: [ndn_service_framework.ServiceProvider] NDNSF_PUBLICATION_AUDIT role=provider type=SELECTION validated=true packetPresent=true packetName=/example/hello/user/NDNSF/SELECTION/%2Fexample%2Fhello%2Fprovider%2FA/HELLO/20260812T215937.021893-7400b04fb540bdf7 producerPrefix=/example/hello/user/user/1787397663 seqNo=600 signerKeyLocator=/example/hello/user/KEY/m%3E8%D7%7B%8A2%B6/ECDSA/v=1786571908222 wireDigest=sha256:AA12CDE2BA35AC647E430A5B5A4340D7AFFC8886B6CA2B2AEAC40B0B22C0F1FC requestId=/20260812T215937.021893-7400b04fb540bdf7 serviceName=/HELLO requesterName=/example/hello/user providerName=/example/hello/provider/A\n1786571977.067676 DEBUG: [ndn_service_framework.ServiceProvider] Received Service Selection Message: /example/hello/user/NDNSF/SELECTION/%2Fexample%2Fhello%2Fprovider%2FA/HELLO/20260812T215937.021893-7400b04fb540bdf7\n1786571977.067681 DEBUG: [ndn_service_framework.ServiceProvider] [ServiceProvider] selection received timestampMs=1786571977067 requestId=/20260812T215937.021893-7400b04fb540bdf7 providerName=/example/hello/provider/A requesterName=/example/hello/user serviceName=/HELLO\n1786571977.067708 TRACE: [ndn_service_framework.ServiceProvider] [NDNSF_TRACE] role=provider event=SELECTION_DECRYPT_START timestamp_us=1786571977067707 requestId=/20260812T215937.021893-7400b04fb540bdf7 requesterName=/example/hello/user providerName=/example/hello/provider/A serviceName=/HELLO selectionName=/example/hello/user/NDNSF/SELECTION/%2Fexample%2Fhello%2Fprovider%2FA/HELLO/20260812T215937.021893-7400b04fb540bdf7\n1786571977.067849 DEBUG: [ndn_service_framework.MessageValidator] MessageValidator Data validated on ordered worker name=/example/hello/user/NDNSF/SELECTION/%2Fexample%2Fhello%2Fprovider%2FA/HELLO/20260812T215936.820896-8305b2fadf86c7f7 cert=/example/hello/user/KEY/m%3E8%D7%7B%8A2%B6/ECDSA/v=1786571908222\n1786571977.067890 TRACE: [ndn_service_framework.ServiceProvider] [NDNSF_TRACE] role=provider event=SELECTION_DECRYPT_DONE timestamp_us=1786571977067888 requestId=/20260812T215937.021893-7400b04fb540bdf7 requesterName=/example/hello/user providerName=/example/hello/provider/A serviceName=/HELLO selectionName=/example/hello/user/NDNSF/SELECTION/%2Fexample%2Fhello%2Fprovider%2FA/HELLO/20260812T215937.021893-7400b04fb540bdf7 payloadBytes=156 durationUs=181\n1786571977.067913 DEBUG: [ndn_service_framework.ServiceProvider] OnServiceSelectionMessageDecryptionSuccessCallbackV2: /example/hello/user/example/hello/provider/A/HELLO/20260812T215937.021893-7400b04fb540bdf7\n1786571977.067919 TRACE: [ndn_service_framework.ServiceProvider] [NDNSF_TRACE] role=provider event=SELECTION_RECEIVED timestamp_us=1786571977067920 requestId=/20260812T215937.021893-7400b04fb540bdf7 serviceName=/HELLO requesterName=/example/hello/user providerName=/example/hello/provider/A\n1786571977.067930 TRACE: [ndn_service_framework.ServiceProvider] [NDNSF_TRACE] role=provider event=PROVIDER_LIFECYCLE_STATE timestamp_us=1786571977067923 requestId=/20260812T215937.021893-7400b04fb540bdf7 serviceName=/HELLO providerName=/example/hello/provider/A state=SELECTION_RECEIVED suppressionReason=- pendingAtDecision=0 selectionLagUs=30909 finalStatus=-\n1786571977.067957  INFO: [ndn_service_framework.ServiceProvider] NDNSF_SELECTION_STATUS digest=66900D485F21BA71147B9C421F6BBB9E78907531C20999E8DB4A348FFB28BFA5 state=1 provider=/example/hello/provider/A service=/HELLO requestId=/20260812T215937.021893-7400b04fb540bdf7 message=selection received\n1786571977.068010 TRACE: [ndn_service_framework.ServiceProvider] [NDNSF_TRACE] role=provider event=PROVIDER_EXECUTE_START timestamp_us=1786571977068011 requestId=/20260812T215937.021893-7400b04fb540bdf7 serviceName=/HELLO requesterName=/example/hello/user providerName=/example/hello/provider/A\n1786571977.068029 TRACE: [ndn_service_framework.ServiceProvider] [NDNSF_TRACE] role=provider event=PROVIDER_LIFECYCLE_STATE timestamp_us=1786571977068026 requestId=/20260812T215937.021893-7400b04fb540bdf7 serviceName=/HELLO providerName=/example/hello/provider/A state=EXECUTION_STARTED suppressionReason=- pendingAtDecision=0 selectionLagUs=30909 finalStatus=-\n1786571977.068038  INFO: [ndn_service_framework.ServiceProvider] NDNSF_SELECTION_STATUS digest=66900D485F21BA71147B9C421F6BBB9E78907531C20999E8DB4A348FFB28BFA5 state=2 provider=/example/hello/provider/A service=/HELLO requestId=/20260812T215937.021893-7400b04fb540bdf7 message=handler queued\n1786571977.068122  INFO: [ndn_service_framework.ServiceProvider] NDNSF_SELECTION_STATUS digest=66900D485F21BA71147B9C421F6BBB9E78907531C20999E8DB4A348FFB28BFA5 state=3 provider=/example/hello/provider/A service=/HELLO requestId=/20260812T215937.021893-7400b04fb540bdf7 message=handler running\n1786571977.068198 TRACE: [ndn_service_framework.ServiceProvider] [NDNSF_TRACE] role=provider event=PROVIDER_EXECUTE_DONE timestamp_us=1786571977068203 requestId=/20260812T215937.021893-7400b04fb540bdf7 serviceName=/HELLO requesterName=/example/hello/user providerName=/example/hello/provider/A status=true handlerQueueDepth=0\n1786571977.068230 TRACE: [ndn_service_framework.ServiceProvider] [NDNSF_TRACE] role=provider event=PROVIDER_LIFECYCLE_STATE timestamp_us=1786571977068226 requestId=/20260812T215937.021893-7400b04fb540bdf7 serviceName=/HELLO providerName=/example/hello/provider/A state=EXECUTION_DONE suppressionReason=- pendingAtDecision=0 selectionLagUs=30909 finalStatus=-\n1786571977.068243 TRACE: [ndn_service_framework.ServiceProvider] [NDNSF_TRACE] role=provider event=RESPONSE_DISPATCHED timestamp_us=1786571977068244 requestId=/20260812T215937.021893-7400b04fb540bdf7 serviceName=/HELLO requesterName=/example/hello/user providerName=/example/hello/provider/A status=true\n1786571977.068255 TRACE: [ndn_service_framework.ServiceProvider] [NDNSF_TRACE] role=provider event=RESPONSE_PUBLISH_ATTEMPT timestamp_us=1786571977068256 requestId=/20260812T215937.021893-7400b04fb540bdf7 serviceName=/HELLO responseName=/example/hello/provider/A/NDNSF/RESPONSE/%2Fexample%2Fhello%2Fuser/HELLO/20260812T215937.021893-7400b04fb540bdf7\n1786571977.068262 DEBUG: [ndn_service_framework.ServiceProvider] PublishMessage: /example/hello/provider/A/NDNSF/RESPONSE/%2Fexample%2Fhello%2Fuser/HELLO/20260812T215937.021893-7400b04fb540bdf7\n1786571977.068302 DEBUG: [ndn_service_framework.ServiceProvider] GetAttributesByName: messageName=/example/hello/provider/A/NDNSF/RESPONSE/%2Fexample%2Fhello%2Fuser/HELLO/20260812T215937.021893-7400b04fb540bdf7 attributes=/PERMISSION/HELLO\n1786571977.068327 TRACE: [ndn_service_framework.ServiceProvider] [NDNSF_TRACE] role=provider event=RESPONSE_PUBLISHED timestamp_us=1786571977068329 requestId=/20260812T215937.021893-7400b04fb540bdf7 serviceName=/HELLO responseName=/example/hello/provider/A/NDNSF/RESPONSE/%2Fexample%2Fhello%2Fuser/HELLO/20260812T215937.021893-7400b04fb540bdf7\n1786571977.068338 TRACE: [ndn_service_framework.ServiceProvider] [NDNSF_TRACE] role=provider event=PROVIDER_LIFECYCLE_STATE timestamp_us=1786571977068334 requestId=/20260812T215937.021893-7400b04fb540bdf7 serviceName=/HELLO providerName=/example/hello/provider/A state=RESPONSE_PUBLISHED suppressionReason=- pendingAtDecision=0 selectionLagUs=30909 finalStatus=response_published\n1786571977.068349  INFO: [ndn_service_framework.ServiceProvider] NDNSF_SELECTION_STATUS digest=66900D485F21BA71147B9C421F6BBB9E78907531C20999E8DB4A348FFB28BFA5 state=4 provider=/example/hello/provider/A service=/HELLO requestId=/20260812T215937.021893-7400b04fb540bdf7 message=response published\n1786571977.068477 DEBUG: [ndn_service_framework.ServiceProvider] [NDNSF_HYBRID] role=provider event=HYBRID_PUBLISH messageName=/example/hello/provider/A/NDNSF/RESPONSE/%2Fexample%2Fhello%2Fuser/HELLO/20260812T215937.021893-7400b04fb540bdf7 messageType=RESPONSE keyId=/NDNSF/HYBRID-KEY/HELLO/SENDER/example/hello/provider/A/ATTRIBUTE/PERMISSION/HELLO/a8a9c6c1c539013d epochId=a8a9c6c1c539013d wrappedKeyAttached=false ciphertextBytes=57\n1786571977.068497 TRACE: [ndn_service_framework.ServiceProvider] [NDNSF_TRACE] role=provider event=SVS_PUBLISH_BEGIN timestamp_us=1786571977068497 providerName=/example/hello/provider/A messageName=/example/hello/provider/A/NDNSF/RESPONSE/%2Fexample%2Fhello%2Fuser/HELLO/20260812T215937.021893-7400b04fb540bdf7 contentBytes=120 eventLoopLagUs=22 mode=hybrid-message-crypto\n1786571977.068690 TRACE: [ndn_service_framework.ServiceProvider] [NDNSF_TRACE] role=provider event=SVS_PUBLISH_DONE timestamp_us=1786571977068693 requestId=/20260812T215937.021893-7400b04fb540bdf7 providerName=/example/hello/provider/A messageName=/example/hello/provider/A/NDNSF/RESPONSE/%2Fexample%2Fhello%2Fuser/HELLO/20260812T215937.021893-7400b04fb540bdf7 seqNo=600 mode=hybrid-message-crypto\n1786571977.068866 DEBUG: [ndn_service_framework.MessageValidator] MessageValidator Data validation begin name=/example/hello/group/v=3 sigType=3 keyLocator=/example/hello/provider/A/KEY/%2F%F6%E8%8D%AC%03~Q/ECDSA/v=1786571908325\n1786571977.069017 DEBUG: [ndn_service_framework.MessageValidator] MessageValidator Data validated on ordered worker name=/example/hello/group/v=3 cert=/example/hello/provider/A/KEY/%2F%F6%E8%8D%AC%03~Q/ECDSA/v=1786571908325\n1786571977.069494 DEBUG: [ndn_service_framework.MessageValidator] MessageValidator Data validation begin name=/example/hello/provider/A/NDNSF/RESPONSE/%2Fexample%2Fhello%2Fuser/HELLO/20260812T215937.021893-7400b04fb540bdf7 sigType=3 keyLocator=/example/hello/provider/A/KEY/%2F%F6%E8%8D%AC%03~Q/ECDSA/v=1786571908325\n1786571977.069536 DEBUG: [ndn_service_framework.MessageValidator] MessageValidator Data validation begin name=/example/hello/provider/A/NDNSF/ACK/%2Fexample%2Fhello%2Fuser/HELLO/20260812T215937.021893-7400b04fb540bdf7 sigType=3 keyLocator=/example/hello/provider/A/KEY/%2F%F6%E8%8D%AC%03~Q/ECDSA/v=1786571908325\n1786571977.069663 DEBUG: [ndn_service_framework.MessageValidator] MessageValidator Data validation begin name=/example/hello/provider/A/NDNSF/RESPONSE/%2Fexample%2Fhello%2Fuser/HELLO/20260812T215936.820896-8305b2fadf86c7f7 sigType=3 keyLocator=/example/hello/provider/A/KEY/%2F%F6%E8%8D%AC%03~Q/ECDSA/v=1786571908325\n1786571977.069707 DEBUG: [ndn_service_framework.MessageValidator] MessageValidator Data validated on ordered worker name=/example/hello/provider/A/NDNSF/RESPONSE/%2Fexample%2Fhello%2Fuser/HELLO/20260812T215937.021893-7400b04fb540bdf7 cert=/example/hello/provider/A/KEY/%2F%F6%E8%8D%AC%03~Q/ECDSA/v=1786571908325\n1786571977.069772 DEBUG: [ndn_service_framework.MessageValidator] MessageValidator Data validated on ordered worker name=/example/hello/provider/A/NDNSF/ACK/%2Fexample%2Fhello%2Fuser/HELLO/20260812T215937.021893-7400b04fb540bdf7 cert=/example/hello/provider/A/KEY/%2F%F6%E8%8D%AC%03~Q/ECDSA/v=1786571908325\n1786571977.069815 DEBUG: [ndn_service_framework.MessageValidator] MessageValidator Data validated on ordered worker name=/example/hello/provider/A/NDNSF/RESPONSE/%2Fexample%2Fhello%2Fuser/HELLO/20260812T215936.820896-8305b2fadf86c7f7 cert=/example/hello/provider/A/KEY/%2F%F6%E8%8D%AC%03~Q/ECDSA/v=1786571908325\n1786571977.098165 DEBUG: [ndn_service_framework.MessageValidator] MessageValidator Data validation begin name=/example/hello/user/user/1787397663/example/hello/group/t=1786571914000000/seq=600 sigType=3 keyLocator=/example/hello/user/KEY/m%3E8%D7%7B%8A2%B6/ECDSA/v=1786571908222\n1786571977.098473 DEBUG: [ndn_service_framework.MessageValidator] MessageValidator Data validated on ordered worker name=/example/hello/user/user/1787397663/example/hello/group/t=1786571914000000/seq=600 cert=/example/hello/user/KEY/m%3E8%D7%7B%8A2%B6/ECDSA/v=1786571908222\n1786571977.098520 DEBUG: [ndn_service_framework.MessageValidator] MessageValidator Data validation begin name=/example/hello/user/NDNSF/SELECTION/%2Fexample%2Fhello%2Fprovider%2FA/HELLO/20260812T215937.021893-7400b04fb540bdf7 sigType=3 keyLocator=/example/hello/user/KEY/m%3E8%D7%7B%8A2%B6/ECDSA/v=1786571908222\n1786571977.098710 DEBUG: [ndn_service_framework.MessageValidator] MessageValidator Data validated on ordered worker name=/example/hello/user/NDNSF/SELECTION/%2Fexample%2Fhello%2Fprovider%2FA/HELLO/20260812T215937.021893-7400b04fb540bdf7 cert=/example/hello/user/KEY/m%3E8%D7%7B%8A2%B6/ECDSA/v=1786571908222",
+      "provider_id": "A",
+      "server_log": "/tmp/ndnsf-dual-cert-open5-60s-20260812/cert-server-A.log",
+      "server_ready": true
+    }
+  ],
+  "provider_certificates": [
+    {
+      "cert_file": "/tmp/ndnsf-dual-cert-open5-60s-20260812/security/identity-3.cert",
+      "cert_name": "/example/hello/provider/A/KEY/c%AD%F2%19%9E%5B%B1%E8/ROOT/v=1786571908293",
+      "identity": "/example/hello/provider/A",
+      "provider_id": "A",
+      "signing_cert_file": "/tmp/ndnsf-dual-cert-open5-60s-20260812/security/identity-3-ecdsa.cert",
+      "signing_cert_name": "/example/hello/provider/A/KEY/%2F%F6%E8%8D%AC%03~Q/ECDSA/v=1786571908325"
+    }
+  ],
+  "provider_final_response_count": {},
+  "provider_lifecycle_counts": {
+    "ACK_ADMISSION_CHECKED": 300,
+    "ACK_PUBLISHED": 300,
+    "EXECUTION_DONE": 300,
+    "EXECUTION_STARTED": 300,
+    "REQUEST_OBSERVED": 300,
+    "RESPONSE_PUBLISHED": 300,
+    "SELECTION_RECEIVED": 300
+  },
+  "provider_nodes": [
+    "provider1"
+  ],
+  "provider_pending_max": 1,
+  "provider_pending_p50": 0,
+  "provider_pending_p95": 0,
+  "provider_readiness_status": {
+    "providers": {
+      "A": {
+        "checks": {
+          "provider_permission_installed": true,
+          "service_registered": true,
+          "split_signing_ecdsa": true,
+          "svs_initialized_or_subscribed": true
+        },
+        "log_path": "/tmp/ndnsf-dual-cert-open5-60s-20260812/provider-A.log",
+        "ready": true
+      }
+    },
+    "ready": true
+  },
+  "provider_ready_wait_seconds": 2,
+  "provider_request_observed_count": 300,
+  "provider_response_published_count": 300,
+  "provider_selection_no_pending_count": 0,
+  "provider_selection_skew": {
+    "concentrated_on_C": false,
+    "dominant_provider": "/example/hello/provider/A",
+    "dominant_share": 1.0,
+    "skewed": true
+  },
+  "providers": 1,
+  "rate_rps": 5.0,
+  "request_timeout_ms": 5000,
+  "request_timestamp_span_s": 0.0,
+  "requests_csv": "/tmp/ndnsf-dual-cert-open5-60s-20260812/requests.csv",
+  "sampling_duration_s": 60.0,
+  "selected_provider_distribution": {
+    "/example/hello/provider/A": 300
+  },
+  "sent_count": 300,
+  "startup_timestamps_us": {
+    "controller_ready": 1786571908920455,
+    "first_ack_published": 1786571917339498,
+    "first_ack_received_by_user": 1786571917456543,
+    "first_response_received": 1786571917547343,
+    "first_selection_sent": 1786571917457747,
+    "provider_route_registered": 1786571912180931,
+    "providers": {
+      "A": {
+        "first_ack_published": 1786571917339498,
+        "provider_cert_server_ready": 1786571910944115,
+        "provider_process_start": 1786571910924316,
+        "provider_service_registered": 1786571911954769,
+        "provider_svs_ready": 1786571911954777
+      }
+    },
+    "startup_barrier": {
+      "all_provider_certificates_advertised": true,
+      "all_provider_routes_registered": true,
+      "all_providers_ready": true,
+      "barrier_ready": true,
+      "label": "pre-user",
+      "provider_certificate_runtime": [
+        {
+          "aa_cert_interest_seen": true,
+          "app_certificate_publisher": true,
+          "cert_data_served": true,
+          "cert_file": "/tmp/ndnsf-dual-cert-open5-60s-20260812/security/identity-3.cert",
+          "cert_name": "/example/hello/provider/A/KEY/c%AD%F2%19%9E%5B%B1%E8/ROOT/v=1786571908293",
+          "data_count": 1,
+          "identity": "/example/hello/provider/A",
+          "interest_count": 1,
+          "log_tail": "1786571910.949951  WARN: [ndn_service_framework.ServiceProvider] NDNSF_SVS_PUBLICATION_FETCH_CONFIG role=provider retries=2 innerRetries=2 lifetimeMs=500 backoffMs=50 maxBackoffMs=2000 window=32 expectedRps=5 explicitWindow=false\n1786571910.951857  INFO: [ndn_service_framework.ServiceProvider] NDNSF_SVS_PROTOCOL role=provider version=3 lifetimeMs=1000 suppressionMs=1 periodicMs=30000\n1786571910.951877  INFO: [ndn_service_framework.ServiceProvider] NDNSF_SVS_ASYNC_PUBLISH role=provider disabled\n1786571910.951880  INFO: [ndn_service_framework.ServiceProvider] NDNSF_SVS_PARALLEL_SYNC disabled role=provider reason=explicit-opt-in-required\n1786571910.952040  INFO: [ndn_service_framework.ServiceProvider] NDNSF_SVS_PARALLEL_PRODUCTION enabled role=provider workers=4 queue=256 signInWorker=false extraBlockInWorker=true\n1786571910.952085  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=svs_pubsub_ready provider=/example/hello/provider/A\n1786571910.952110  INFO: [ndn_service_framework.ServiceProvider] DK_INTEREST_EXPRESSED prefix=/example/hello/controller/DKEY provider=/example/hello/provider/A\n1786571910.952130  INFO: [ndn_service_framework.ServiceProvider] Waiting for decryption key\n1786571910.952965  INFO: [ndn_service_framework.CertificatePublisher] NDNSF_CERT_PUBLISHER_REGISTERED prefix=/example/hello/provider/A/KEY/%2F%F6%E8%8D%AC%03~Q\n1786571910.953532  INFO: [ndn_service_framework.CertificatePublisher] NDNSF_CERT_PUBLISHER_REGISTERED prefix=/example/hello/provider/A/KEY/c%AD%F2%19%9E%5B%B1%E8\n1786571911.000526  INFO: [ndn_service_framework.CertificatePublisher] NDNSF_CERT_PUBLISHER_INTEREST interest=/example/hello/provider/A/KEY/c%AD%F2%19%9E%5B%B1%E8 cert=/example/hello/provider/A/KEY/c%AD%F2%19%9E%5B%B1%E8/ROOT/v=1786571908293 certCount=2\n1786571911.000603  INFO: [ndn_service_framework.CertificatePublisher] NDNSF_CERT_PUBLISHER_DATA interest=/example/hello/provider/A/KEY/c%AD%F2%19%9E%5B%B1%E8 cert=/example/hello/provider/A/KEY/c%AD%F2%19%9E%5B%B1%E8/ROOT/v=1786571908293 bytes=733\n1786571911.055121 DEBUG: [ndn_service_framework.MessageValidator] MessageValidator Data validation begin name=/example/hello/group/v=3 sigType=3 keyLocator=/example/hello/provider/A/KEY/%2F%F6%E8%8D%AC%03~Q/ECDSA/v=1786571908325\n1786571911.055536 DEBUG: [ndn_service_framework.MessageValidator] MessageValidator Data validated on ordered worker name=/example/hello/group/v=3 cert=/example/hello/provider/A/KEY/%2F%F6%E8%8D%AC%03~Q/ECDSA/v=1786571908325\n1786571911.954613  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=dkey_wait_iteration provider=/example/hello/provider/A\n1786571911.954670  INFO: [ndn_service_framework.ServiceProvider] DK_DECRYPT_SUCCESS provider=/example/hello/provider/A\n1786571911.954675  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=constructor_done provider=/example/hello/provider/A\n1786571911.954701  WARN: [ndn_service_framework.ServiceProvider] UserToken/ProviderToken runtime mode: enabled\n1786571911.954756  WARN: [ndn_service_framework.ServiceProvider] [ServiceProvider] registered service prefix=/HELLO\n1786571911.954769  WARN: [ndn_service_framework.ServiceProvider] Registered service handler for /HELLO invocation-mode=NormalAndTargeted\n1786571911.954773  INFO: [ndn_service_framework.ServiceProvider] No provider service info registration configured for /example/hello/provider/A\n1786571911.954777  WARN: [ndn_service_framework.ServiceProvider] Register NDNSF Messages in ndn-svs\n1786571911.954790  INFO: [ndn_service_framework.utils] <HELLO>\n1786571911.954794  WARN: [ndn_service_framework.ServiceProvider] [ServiceProvider] SVS request subscription regex=^(<>*)<NDNSF><REQUEST><HELLO>(<>)$\n1786571911.954796 DEBUG: [ndn_service_framework.ServiceProvider] ^(<>*)<NDNSF><REQUEST><HELLO>(<>)$\n1786571911.954831 DEBUG: [ndn_service_framework.ServiceProvider] ^(<>*)<NDNSF><SELECTION>(<>*)$\n1786571911.954858 DEBUG: [ndn_service_framework.ServiceProvider] ^(<>*)<NDNSF><COLLAB>(<>*)$\n1786571911.954880  INFO: [ndn_service_framework.ServiceProvider] Fetch policy manifest: /example/hello/controller/NDNSF/POLICY-MANIFEST attempt=1/20\n1786571911.954910  INFO: [ndn_service_framework.ServiceProvider] Fetch provider permissions: /example/hello/controller/NDNSF/PERMISSIONS/PROVIDER/example/hello/provider/A attempt=1/20\n1786571911.954915  INFO: [ndn_service_framework.AppProvider] Provider A registered service /HELLO\n1786571911.995107 DEBUG: [ndn_service_framework.MessageValidator] MessageValidator Data validation begin name=/example/hello/controller/NDNSF/POLICY-MANIFEST sigType=3 keyLocator=/example/hello/controller/KEY/%A1%8D6y%1E%AD%5E%60/ECDSA/v=1786571907950\n1786571911.995145 DEBUG: [ndn_service_framework.MessageValidator] MessageValidator controller bootstrap Data accepted by hierarchical name/key-locator relation name=/example/hello/controller/NDNSF/POLICY-MANIFEST signer=/example/hello/controller\n1786571911.995169  INFO: [ndn_service_framework.ServiceProvider] Installed PolicyManifest PolicyManifest{policyEpoch=1707423688319323254, validFromMs=0, gracePeriodMs=0, requiredKeyEpoch=1707423688319323254}\n1786571911.995193 DEBUG: [ndn_service_framework.MessageValidator] MessageValidator Data validation begin name=/example/hello/controller/NDNSF/PERMISSIONS/PROVIDER/example/hello/provider/A/t=1786571911980124 sigType=3 keyLocator=/example/hello/controller/KEY/%A1%8D6y%1E%AD%5E%60/ECDSA/v=1786571907950\n1786571911.995200 DEBUG: [ndn_service_framework.MessageValidator] MessageValidator controller bootstrap Data accepted by hierarchical name/key-locator relation name=/example/hello/controller/NDNSF/PERMISSIONS/PROVIDER/example/hello/provider/A/t=1786571911980124 signer=/example/hello/controller\n1786571911.995882  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/A/HELLO service=/HELLO policyEpoch=1707423688319323254\n1786571911.995901  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/A/NDNSF/DistributedRepo/Artifact/v2/STORE service=/NDNSF/DistributedRepo/Artifact/v2/STORE policyEpoch=1707423688319323254\n1786571911.995903  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/A/NDNSF/DistributedRepo/Artifact/v2/STORE/ROLE/artifact-replica-0 service=/NDNSF/DistributedRepo/Artifact/v2/STORE/ROLE/artifact-replica-0 policyEpoch=1707423688319323254\n1786571911.995905  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/A/NDNSF/DistributedRepo/Store service=/NDNSF/DistributedRepo/Store policyEpoch=1707423688319323254\n1786571911.995906  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/A/NDNSF/DistributedRepo/Store/ROLE/artifact-replica-0 service=/NDNSF/DistributedRepo/Store/ROLE/artifact-replica-0 policyEpoch=1707423688319323254",
+          "provider_id": "A",
+          "server_log": "/tmp/ndnsf-dual-cert-open5-60s-20260812/cert-server-A.log",
+          "server_ready": true
+        }
+      ],
+      "provider_readiness": [
+        {
+          "checks": {
+            "provider_permission_installed": true,
+            "service_registered": true,
+            "split_signing_ecdsa": true,
+            "svs_initialized_or_subscribed": true
+          },
+          "diagnostics": {
+            "dkey_data_received": false,
+            "dkey_decrypt_success": true,
+            "dkey_interest_expressed": true,
+            "provider_permission_installed": true,
+            "provider_permission_interest_expressed": true
+          },
+          "log_path": "/tmp/ndnsf-dual-cert-open5-60s-20260812/provider-A.log",
+          "log_tail": "[MiniNDN Harness] event=provider_process_start timestamp_us=1786571910924316 node=provider1 name=provider-A provider_id=A\n[MiniNDN Harness] configured SVS group prefix=/example/hello/group\n[MiniNDN Harness] actual ndn-svs sync prefix=/example/hello/group\n[MiniNDN Harness] node/session name=/example/hello/provider/A/provider / sessionBase=1787397663\n[MiniNDN Harness] data prefix=/example/hello/provider/A/provider/example/hello/group\n[MiniNDN Harness] signing identity=/example/hello/provider/A\n[MiniNDN Harness] validator config path=examples/trust-schema.conf\n[MiniNDN Harness] HOME=/tmp/minindn/provider1\n[MiniNDN Harness] PIB=/tmp/minindn/provider1/.ndn/pib\n[MiniNDN Harness] TPM=/tmp/minindn/provider1/.ndn/ndnsec-key-file\n1786571910.941787  INFO: [ndn_service_framework.AppProvider] [App_Provider] provider identity=/example/hello/provider/A providerId=A benchmark=true performanceMode=true tokenMode=enabled hybridMessageCrypto=enabled timelineTrace=false adaptiveProviderAck=false providerAckMaxPending=1000 providerAckMaxEventLoopLagMs=0 providerAckMaxSelectionLagMs=0 handlerThreads=-1 providerRequestDelayMs=0 dkBootstrapOnly=false serveCertificates=true ackStatus=true ackPayload=queue=3;gpu=idle;rank=1 responsePayload=HELLO_FROM_A\n1786571910.944115  INFO: [ndn_service_framework.CertificatePublisher] Serving certificate name=/example/hello/provider/A/KEY/c%AD%F2%19%9E%5B%B1%E8/ROOT/v=1786571908293 prefix=/example/hello/provider/A/KEY/c%AD%F2%19%9E%5B%B1%E8\n1786571910.944172  INFO: [ndn_service_framework.CertificatePublisher] NDNSF_CERT_PUBLISHER_READY prefix=/example/hello/provider/A/KEY/c%AD%F2%19%9E%5B%B1%E8 name=/example/hello/provider/A/KEY/c%AD%F2%19%9E%5B%B1%E8/ROOT/v=1786571908293 certCount=2\n1786571910.947495  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=constructor_begin provider=/example/hello/provider/A\n1786571910.947523  WARN: [ndn_service_framework.ServiceProvider] NDNSF_CERT_SELECTION role=provider identity=/example/hello/provider/A encryptionCert=/example/hello/provider/A/KEY/c%AD%F2%19%9E%5B%B1%E8/ROOT/v=1786571908293 signingCert=/example/hello/provider/A/KEY/%2F%F6%E8%8D%AC%03~Q/ECDSA/v=1786571908325 splitSigning=true\n1786571910.947687  INFO: [ndn_service_framework.ServiceProvider] NDNSF_HANDLER_THREADS role=provider workers=2\n1786571910.947703  INFO: [ndn_service_framework.ServiceProvider] NDNSF_ACK_THREADS role=provider workers=2\n1786571910.948598  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=validator_loaded provider=/example/hello/provider/A\n1786571910.948678  INFO: [ndn_service_framework.ServiceProvider] [ServiceProvider] NAC_ABE_BOOTSTRAP provider=/example/hello/provider/A authority=/example/hello/controller dkPrefix=/example/hello/controller/DKEY\n1786571910.948762  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=dkey_initial_interest_issued provider=/example/hello/provider/A\n1786571910.948788  INFO: [ndn_service_framework.ServiceProvider] [ServiceProvider] registered service content prefix=/example/hello/provider/A/NDNSF\n1786571910.949905  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=content_filters_registered provider=/example/hello/provider/A\n1786571910.949943  INFO: [ndn_service_framework.ServiceProvider] NDNSF_SVS_OPTIONS role=provider maxApplicationParametersSize=4096 maxPiggyDataSize=800\n1786571910.949951  WARN: [ndn_service_framework.ServiceProvider] NDNSF_SVS_PUBLICATION_FETCH_CONFIG role=provider retries=2 innerRetries=2 lifetimeMs=500 backoffMs=50 maxBackoffMs=2000 window=32 expectedRps=5 explicitWindow=false\n1786571910.951857  INFO: [ndn_service_framework.ServiceProvider] NDNSF_SVS_PROTOCOL role=provider version=3 lifetimeMs=1000 suppressionMs=1 periodicMs=30000\n1786571910.951877  INFO: [ndn_service_framework.ServiceProvider] NDNSF_SVS_ASYNC_PUBLISH role=provider disabled\n1786571910.951880  INFO: [ndn_service_framework.ServiceProvider] NDNSF_SVS_PARALLEL_SYNC disabled role=provider reason=explicit-opt-in-required\n1786571910.952040  INFO: [ndn_service_framework.ServiceProvider] NDNSF_SVS_PARALLEL_PRODUCTION enabled role=provider workers=4 queue=256 signInWorker=false extraBlockInWorker=true\n1786571910.952085  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=svs_pubsub_ready provider=/example/hello/provider/A\n1786571910.952110  INFO: [ndn_service_framework.ServiceProvider] DK_INTEREST_EXPRESSED prefix=/example/hello/controller/DKEY provider=/example/hello/provider/A\n1786571910.952130  INFO: [ndn_service_framework.ServiceProvider] Waiting for decryption key\n1786571910.952965  INFO: [ndn_service_framework.CertificatePublisher] NDNSF_CERT_PUBLISHER_REGISTERED prefix=/example/hello/provider/A/KEY/%2F%F6%E8%8D%AC%03~Q\n1786571910.953532  INFO: [ndn_service_framework.CertificatePublisher] NDNSF_CERT_PUBLISHER_REGISTERED prefix=/example/hello/provider/A/KEY/c%AD%F2%19%9E%5B%B1%E8\n1786571911.000526  INFO: [ndn_service_framework.CertificatePublisher] NDNSF_CERT_PUBLISHER_INTEREST interest=/example/hello/provider/A/KEY/c%AD%F2%19%9E%5B%B1%E8 cert=/example/hello/provider/A/KEY/c%AD%F2%19%9E%5B%B1%E8/ROOT/v=1786571908293 certCount=2\n1786571911.000603  INFO: [ndn_service_framework.CertificatePublisher] NDNSF_CERT_PUBLISHER_DATA interest=/example/hello/provider/A/KEY/c%AD%F2%19%9E%5B%B1%E8 cert=/example/hello/provider/A/KEY/c%AD%F2%19%9E%5B%B1%E8/ROOT/v=1786571908293 bytes=733\n1786571911.055121 DEBUG: [ndn_service_framework.MessageValidator] MessageValidator Data validation begin name=/example/hello/group/v=3 sigType=3 keyLocator=/example/hello/provider/A/KEY/%2F%F6%E8%8D%AC%03~Q/ECDSA/v=1786571908325\n1786571911.055536 DEBUG: [ndn_service_framework.MessageValidator] MessageValidator Data validated on ordered worker name=/example/hello/group/v=3 cert=/example/hello/provider/A/KEY/%2F%F6%E8%8D%AC%03~Q/ECDSA/v=1786571908325\n1786571911.954613  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=dkey_wait_iteration provider=/example/hello/provider/A\n1786571911.954670  INFO: [ndn_service_framework.ServiceProvider] DK_DECRYPT_SUCCESS provider=/example/hello/provider/A\n1786571911.954675  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=constructor_done provider=/example/hello/provider/A\n1786571911.954701  WARN: [ndn_service_framework.ServiceProvider] UserToken/ProviderToken runtime mode: enabled\n1786571911.954756  WARN: [ndn_service_framework.ServiceProvider] [ServiceProvider] registered service prefix=/HELLO\n1786571911.954769  WARN: [ndn_service_framework.ServiceProvider] Registered service handler for /HELLO invocation-mode=NormalAndTargeted\n1786571911.954773  INFO: [ndn_service_framework.ServiceProvider] No provider service info registration configured for /example/hello/provider/A\n1786571911.954777  WARN: [ndn_service_framework.ServiceProvider] Register NDNSF Messages in ndn-svs\n1786571911.954790  INFO: [ndn_service_framework.utils] <HELLO>\n1786571911.954794  WARN: [ndn_service_framework.ServiceProvider] [ServiceProvider] SVS request subscription regex=^(<>*)<NDNSF><REQUEST><HELLO>(<>)$\n1786571911.954796 DEBUG: [ndn_service_framework.ServiceProvider] ^(<>*)<NDNSF><REQUEST><HELLO>(<>)$\n1786571911.954831 DEBUG: [ndn_service_framework.ServiceProvider] ^(<>*)<NDNSF><SELECTION>(<>*)$\n1786571911.954858 DEBUG: [ndn_service_framework.ServiceProvider] ^(<>*)<NDNSF><COLLAB>(<>*)$\n1786571911.954880  INFO: [ndn_service_framework.ServiceProvider] Fetch policy manifest: /example/hello/controller/NDNSF/POLICY-MANIFEST attempt=1/20\n1786571911.954910  INFO: [ndn_service_framework.ServiceProvider] Fetch provider permissions: /example/hello/controller/NDNSF/PERMISSIONS/PROVIDER/example/hello/provider/A attempt=1/20\n1786571911.954915  INFO: [ndn_service_framework.AppProvider] Provider A registered service /HELLO\n1786571911.995107 DEBUG: [ndn_service_framework.MessageValidator] MessageValidator Data validation begin name=/example/hello/controller/NDNSF/POLICY-MANIFEST sigType=3 keyLocator=/example/hello/controller/KEY/%A1%8D6y%1E%AD%5E%60/ECDSA/v=1786571907950\n1786571911.995145 DEBUG: [ndn_service_framework.MessageValidator] MessageValidator controller bootstrap Data accepted by hierarchical name/key-locator relation name=/example/hello/controller/NDNSF/POLICY-MANIFEST signer=/example/hello/controller\n1786571911.995169  INFO: [ndn_service_framework.ServiceProvider] Installed PolicyManifest PolicyManifest{policyEpoch=1707423688319323254, validFromMs=0, gracePeriodMs=0, requiredKeyEpoch=1707423688319323254}\n1786571911.995193 DEBUG: [ndn_service_framework.MessageValidator] MessageValidator Data validation begin name=/example/hello/controller/NDNSF/PERMISSIONS/PROVIDER/example/hello/provider/A/t=1786571911980124 sigType=3 keyLocator=/example/hello/controller/KEY/%A1%8D6y%1E%AD%5E%60/ECDSA/v=1786571907950\n1786571911.995200 DEBUG: [ndn_service_framework.MessageValidator] MessageValidator controller bootstrap Data accepted by hierarchical name/key-locator relation name=/example/hello/controller/NDNSF/PERMISSIONS/PROVIDER/example/hello/provider/A/t=1786571911980124 signer=/example/hello/controller\n1786571911.995882  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/A/HELLO service=/HELLO policyEpoch=1707423688319323254\n1786571911.995901  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/A/NDNSF/DistributedRepo/Artifact/v2/STORE service=/NDNSF/DistributedRepo/Artifact/v2/STORE policyEpoch=1707423688319323254\n1786571911.995903  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/A/NDNSF/DistributedRepo/Artifact/v2/STORE/ROLE/artifact-replica-0 service=/NDNSF/DistributedRepo/Artifact/v2/STORE/ROLE/artifact-replica-0 policyEpoch=1707423688319323254\n1786571911.995905  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/A/NDNSF/DistributedRepo/Store service=/NDNSF/DistributedRepo/Store policyEpoch=1707423688319323254\n1786571911.995906  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/A/NDNSF/DistributedRepo/Store/ROLE/artifact-replica-0 service=/NDNSF/DistributedRepo/Store/ROLE/artifact-replica-0 policyEpoch=1707423688319323254",
+          "provider_id": "A",
+          "ready": true,
+          "timeout_s": 20,
+          "timestamps_us": {
+            "provider_cert_server_ready": 1786571910944115,
+            "provider_process_start": 1786571910924316,
+            "provider_service_registered": 1786571911954769,
+            "provider_svs_ready": 1786571911954777
+          }
+        }
+      ],
+      "provider_ready_wait_seconds": 2,
+      "route_checks": [
+        {
+          "node": "provider1",
+          "provider_id": "A",
+          "provider_prefix": "/example/hello/provider/A",
+          "route_registered": true,
+          "svs_group_route_registered": true,
+          "timestamp_us": 1786571912180931
+        }
+      ],
+      "timestamp_us": 1786571912181177,
+      "user_start_release_timestamp_us": 1786571914184059
+    },
+    "user_first_request_sent": 1786571917220413,
+    "user_process_start": 1786571914184854
+  },
+  "strategy": "custom-selection",
+  "success_rate": 1.0,
+  "timed_out_count": 0,
+  "timeout_count": 0,
+  "total_admission_queue_paused_ms": 0,
+  "total_paused_ms": 0,
+  "total_requests_sent": 300,
+  "total_successful_responses": 300,
+  "user_delayed_publications": 0,
+  "user_node": "user",
+  "user_queued_task_max": 1,
+  "user_queued_task_p50": 0.0,
+  "user_queued_task_p95": 1.0,
+  "workload_mode": "open-loop",
+  "workload_notes": [
+    "App_User sends on a fixed rate schedule and does not wait for previous requests to finish.",
+    "Multiple pending calls are tracked by request id; responses are drained after sending stops.",
+    "Use actual_requests_per_second and outstanding_limit_skips to confirm generated load.",
+    "50/100/150 rps are real offered rates only when actual_requests_per_second is close to offered_rate_rps.",
+    "Low success rate at high rps means saturation/timeout, not necessarily protocol correctness failure."
+  ]
+}

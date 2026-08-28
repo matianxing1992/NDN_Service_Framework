@@ -1,0 +1,24 @@
+{
+  "schemaVersion": "ndnsf-spec170-workload-release-v1",
+  "releaseId": "spec170-runtime-dd5c11cc-localfix-20260817-r2-controller-start-race",
+  "parentReleaseId": "spec170-runtime-dd5c11cc-localfix-20260817-r1",
+  "sourceRevision": "dd5c11cc6cf7cef09c3f4a1bc1bf8d215d61962c",
+  "sourceSeal": "sha256:110745a2d7c3676af952d5a27e2302a0cfe2f96cbe2714791e6d1881453bee24",
+  "sif": {
+    "sha256": "sha256:f6521a8226190279cb961f2e100245d783c8ba90723a4b004f1f773df71b5874",
+    "bytes": 4398788608,
+    "construction": "reused immutable SIF bytes from parent release; no rebuild"
+  },
+  "workload": {
+    "path": "network-bundle-d1-cuda-current/spec170-d1-current-sif-workload.sh",
+    "sha256": "sha256:980d50bd649f7d9b6bdd41dfb6d9907f1800ab8710e9e7a19c84719dfb180531",
+    "change": "wait for ServiceController started marker before ndnsec cert-dump to avoid Controller PIB startup race"
+  },
+  "tools": {
+    "d1SbatchSha256": "sha256:bc73facae0893777e0e98a59b13d5b2722716e88156846dccbf57165066540cf",
+    "networkBundlePreflightSha256": "sha256:32f2be5879b9d003d649a5bfe7186bc5ae4bdcb0d6b6d17ceb166de25b4a2e47",
+    "isolatedPibPreflightSha256": "sha256:a51507bb667d93a839330716b4a0f9898f34bfb32fc25e1d4001d7ae91fb149e"
+  },
+  "tigerAction": "verify-hash-and-execute-only",
+  "parentFailure": "197399 Controller PIB startup race; no Provider request was attempted"
+}

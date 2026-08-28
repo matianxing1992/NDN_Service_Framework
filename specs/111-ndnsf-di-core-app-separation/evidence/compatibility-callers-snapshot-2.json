@@ -1,0 +1,14 @@
+{
+  "matches": [],
+  "productionCallerCount": 0,
+  "roots": [
+    "examples/python/NDNSF-DistributedInference",
+    "Experiments",
+    "packaging"
+  ],
+  "scannedPythonFiles": 2403,
+  "scannerDigest": "sha256:a601d088cd8568a7e2d79b4f38be322b80ac5b145f1e99f002c6c94b3be99cc7",
+  "schema": "ndnsf-di-spec111-compatibility-callers-v1",
+  "snapshotId": "snapshot-2",
+  "verdict": "PASS"
+}

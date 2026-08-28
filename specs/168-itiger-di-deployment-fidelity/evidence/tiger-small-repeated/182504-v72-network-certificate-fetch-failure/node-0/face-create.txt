@@ -1,0 +1,2 @@
+face-created id=260 local=tcp4://172.16.0.17:54650 remote=tcp4://172.16.0.18:22504 persistency=persistent reliability=off congestion-marking=on congestion-marking-interval=100ms default-congestion-threshold=65536B mtu=8800
+face-created id=267 local=tcp4://172.16.0.17:53154 remote=tcp4://172.16.0.19:22504 persistency=persistent reliability=off congestion-marking=on congestion-marking-interval=100ms default-congestion-threshold=65536B mtu=8800

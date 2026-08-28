@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 620" role="img" aria-labelledby="title desc">
+  <title id="title">NDN-SVS overload flow at 1000 publications per second per peer</title>
+  <desc id="desc">The synchronous publication API remains microsecond scale, while Mapping and Payload fallback fetch queues grow to approximately fourteen seconds.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#5e6675"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="620" fill="#ffffff"/>
+  <text x="600" y="35" text-anchor="middle" font-family="sans-serif" font-size="23" font-weight="700" fill="#172033">1000 pps: CPU stages stay small, fallback queues dominate</text>
+
+  <g font-family="sans-serif">
+    <rect x="45" y="85" width="180" height="85" rx="10" fill="#eaf4ff" stroke="#1769aa" stroke-width="2"/>
+    <text x="135" y="112" text-anchor="middle" font-size="16" font-weight="700" fill="#174f7a">Application release</text>
+    <text x="135" y="138" text-anchor="middle" font-size="14" fill="#30445a">Target: 1000 pps</text>
+    <text x="135" y="158" text-anchor="middle" font-size="14" fill="#30445a">Attempted: 534.66 pps</text>
+
+    <rect x="285" y="85" width="200" height="85" rx="10" fill="#eaf4ff" stroke="#1769aa" stroke-width="2"/>
+    <text x="385" y="112" text-anchor="middle" font-size="16" font-weight="700" fill="#174f7a">Synchronous publish</text>
+    <text x="385" y="138" text-anchor="middle" font-size="14" fill="#30445a">Total mean: 62.07 us</text>
+    <text x="385" y="158" text-anchor="middle" font-size="14" fill="#30445a">API p95: 121.02 us</text>
+
+    <rect x="545" y="85" width="205" height="85" rx="10" fill="#eef5ff" stroke="#4778b8" stroke-width="2"/>
+    <text x="647" y="112" text-anchor="middle" font-size="16" font-weight="700" fill="#294f7e">Sync processing</text>
+    <text x="647" y="138" text-anchor="middle" font-size="14" fill="#30445a">Mapping candidate encode</text>
+    <text x="647" y="158" text-anchor="middle" font-size="14" fill="#30445a">7.24 us per call</text>
+
+    <line x1="225" y1="127" x2="280" y2="127" stroke="#5e6675" stroke-width="3" marker-end="url(#arrow)"/>
+    <line x1="485" y1="127" x2="540" y2="127" stroke="#5e6675" stroke-width="3" marker-end="url(#arrow)"/>
+
+    <rect x="815" y="65" width="320" height="125" rx="12" fill="#fff4df" stroke="#d38a16" stroke-width="2"/>
+    <text x="975" y="102" text-anchor="middle" font-size="17" font-weight="700" fill="#8d5908">Piggyback capacity exhausted</text>
+    <text x="975" y="130" text-anchor="middle" font-size="14" fill="#57462b">Mapping fallback: 21.4-23.6%</text>
+    <text x="975" y="154" text-anchor="middle" font-size="14" fill="#57462b">Payload fallback: 97.1-98.6%</text>
+    <text x="975" y="176" text-anchor="middle" font-size="14" font-weight="700" fill="#8d5908">Fetcher window: 10 Interests</text>
+    <line x1="750" y1="127" x2="810" y2="127" stroke="#5e6675" stroke-width="3" marker-end="url(#arrow)"/>
+
+    <text x="315" y="240" text-anchor="middle" font-size="17" font-weight="700" fill="#5a346b">Mapping fallback branch</text>
+    <rect x="55" y="265" width="190" height="82" rx="10" fill="#f4eeff" stroke="#78549a" stroke-width="2"/>
+    <text x="150" y="295" text-anchor="middle" font-size="15" font-weight="700" fill="#563a74">Mapping CPU</text>
+    <text x="150" y="320" text-anchor="middle" font-size="14" fill="#4c4356">Range lookup: 28.09 us</text>
+    <text x="150" y="339" text-anchor="middle" font-size="14" fill="#4c4356">Encode: 4.47 us</text>
+
+    <rect x="300" y="255" width="225" height="102" rx="10" fill="#ffe8e8" stroke="#c83b3b" stroke-width="3"/>
+    <text x="412" y="290" text-anchor="middle" font-size="17" font-weight="700" fill="#9e2525">Mapping fetch queue</text>
+    <text x="412" y="326" text-anchor="middle" font-size="24" font-weight="700" fill="#9e2525">14.35 s</text>
+
+    <rect x="580" y="265" width="200" height="82" rx="10" fill="#f4eeff" stroke="#78549a" stroke-width="2"/>
+    <text x="680" y="295" text-anchor="middle" font-size="15" font-weight="700" fill="#563a74">Mapping network</text>
+    <text x="680" y="325" text-anchor="middle" font-size="21" font-weight="700" fill="#563a74">425.87 ms</text>
+
+    <line x1="245" y1="306" x2="295" y2="306" stroke="#5e6675" stroke-width="3" marker-end="url(#arrow)"/>
+    <line x1="525" y1="306" x2="575" y2="306" stroke="#5e6675" stroke-width="3" marker-end="url(#arrow)"/>
+
+    <text x="315" y="420" text-anchor="middle" font-size="17" font-weight="700" fill="#5a346b">Payload fallback branch</text>
+    <rect x="55" y="445" width="190" height="82" rx="10" fill="#f4eeff" stroke="#78549a" stroke-width="2"/>
+    <text x="150" y="475" text-anchor="middle" font-size="15" font-weight="700" fill="#563a74">Payload CPU</text>
+    <text x="150" y="500" text-anchor="middle" font-size="14" fill="#4c4356">Store find: 7.53 us</text>
+    <text x="150" y="519" text-anchor="middle" font-size="14" fill="#4c4356">Decode: 0.90 us</text>
+
+    <rect x="300" y="435" width="225" height="102" rx="10" fill="#ffe8e8" stroke="#c83b3b" stroke-width="3"/>
+    <text x="412" y="470" text-anchor="middle" font-size="17" font-weight="700" fill="#9e2525">Payload fetch queue</text>
+    <text x="412" y="506" text-anchor="middle" font-size="24" font-weight="700" fill="#9e2525">14.26 s</text>
+
+    <rect x="580" y="445" width="200" height="82" rx="10" fill="#f4eeff" stroke="#78549a" stroke-width="2"/>
+    <text x="680" y="475" text-anchor="middle" font-size="15" font-weight="700" fill="#563a74">Payload network</text>
+    <text x="680" y="505" text-anchor="middle" font-size="21" font-weight="700" fill="#563a74">160.65 ms</text>
+
+    <rect x="865" y="345" width="260" height="105" rx="12" fill="#fff0f0" stroke="#c83b3b" stroke-width="2"/>
+    <text x="995" y="378" text-anchor="middle" font-size="17" font-weight="700" fill="#9e2525">Observed outcome</text>
+    <text x="995" y="407" text-anchor="middle" font-size="14" fill="#684040">Delivered: 0.66 pps per peer</text>
+    <text x="995" y="431" text-anchor="middle" font-size="14" fill="#684040">Delivery ratio: 0.123%</text>
+
+    <line x1="245" y1="486" x2="295" y2="486" stroke="#5e6675" stroke-width="3" marker-end="url(#arrow)"/>
+    <line x1="525" y1="486" x2="575" y2="486" stroke="#5e6675" stroke-width="3" marker-end="url(#arrow)"/>
+    <line x1="780" y1="306" x2="860" y2="380" stroke="#5e6675" stroke-width="3" marker-end="url(#arrow)"/>
+    <line x1="780" y1="486" x2="860" y2="420" stroke="#5e6675" stroke-width="3" marker-end="url(#arrow)"/>
+
+    <text x="600" y="584" text-anchor="middle" font-size="13" fill="#596273">Queue and network values are separately observed completed waits; they are not summed into one end-to-end latency.</text>
+  </g>
+</svg>

@@ -1,0 +1,56 @@
+{
+  "schema": "spec171-opportunity-holdout-analysis-v1",
+  "verification_status": "ANALYZED",
+  "analysis_date": "2026-08-19",
+  "source_data": {
+    "root": "results/spec171-opportunity-holdout-100m-2ms-seeds72-81-20260809",
+    "registration_sha256": "94ebb4d02ddd6c9d100d3ff90688188f0ba37015af9c10c64e332b8370b46cd9",
+    "aggregate_sha256": "23d359db8127e888ac54564e5cf6f7eb6dc81cc7fd174797d84e13a96759f24c",
+    "analysis_script": "Experiments/analyze_spec171_opportunity_holdout.py",
+    "analysis_script_sha256": "6a3404a21926aff8dc32b9e1118aa8c512b1d653215666f7c2741dee9c6ab7b9"
+  },
+  "design": {
+    "seeds": [72, 73, 74, 75, 76, 77, 78, 79, 80, 81],
+    "range_m": 100.0,
+    "speed_mps": 2.0,
+    "providers": 4,
+    "requests_per_seed": 300,
+    "attempt_timeout_ms": 1000,
+    "global_deadline_ms": 5000,
+    "block_network": true,
+    "grpc_health_routing": "disabled",
+    "ndnsf_strategy": "first-responding",
+    "ndnsf_response_retry": true
+  },
+  "opportunity_partition": {
+    "switch_required_requests": 1312,
+    "transition_boundary_requests": 28,
+    "state_disagreement_requests": 7
+  },
+  "all_request_summary": {
+    "ndnsf": {"success": 2334, "requests": 3000, "success_rate": 0.778, "mean_success_latency_ms": 106.33862039417309},
+    "grpc": {"success": 2317, "requests": 3000, "success_rate": 0.7723333333333333, "mean_success_latency_ms": 98.77431031506258},
+    "nsc": {"success": 2357, "requests": 3000, "success_rate": 0.7856666666666666, "mean_success_latency_ms": 1008.3014611794654}
+  },
+  "switch_required_p95_paired_bootstrap": {
+    "bootstrap_repetitions": 20000,
+    "bootstrap_seed": 171,
+    "ndnsf_minus_grpc_ms": {
+      "mean": -596.5542,
+      "ci95_low": -992.1832,
+      "ci95_high": -200.1058
+    },
+    "ndnsf_minus_nsc_ms": {
+      "mean": -2618.3198,
+      "ci95_low": -2916.273,
+      "ci95_high": -2315.0883
+    }
+  },
+  "verdict": "CONDITIONAL_SWITCH_WINDOW_P95_ADVANTAGE_ONLY",
+  "claim_boundary": "The holdout supports a lower NDNSF p95 within the predeclared switch-required subset at 100 m and 2 m/s. It does not establish an overall latency advantage, a success-rate advantage, or a global optimum across ranges, speeds, or policies.",
+  "fallacy_scan": {
+    "checked": 11,
+    "caution": ["selection of switch-required subset", "successful-latency survivorship", "single range/speed holdout"],
+    "red_flags": []
+  }
+}

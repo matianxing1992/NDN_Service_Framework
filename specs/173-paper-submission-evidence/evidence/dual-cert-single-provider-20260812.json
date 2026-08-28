@@ -1,0 +1,101 @@
+{
+  "schemaVersion": 1,
+  "kind": "runtime-validation",
+  "runId": "dual-cert-single-provider-open5-60s-20260812",
+  "generatedAt": "2026-08-12T17:01:37-05:00",
+  "status": "pass",
+  "interpretation": "Implementation validation only; not evidence of a multi-Provider advantage or a paper comparison.",
+  "source": {
+    "repository": "/home/tianxing/NDN/ndn-service-framework",
+    "branch": "spec170-wip",
+    "head": "0d4a1340641f76be1e8eebd8d3c2a43ba58f498c",
+    "workingTree": "dirty",
+    "ndnSvsLibrarySha256": "f13759e45cc7c741cce9e857b3fef0f8da8e10123add05f683d787dd137af336"
+  },
+  "command": "sudo -n python3 Experiments/NDNSF_NewAPI_Minindn_Perf.py --workload-mode open-loop --rate-rps 5 --duration 60 --warmup 0 --interval-ms 200 --providers 1 --strategy custom-selection --max-outstanding 16 --request-timeout-ms 5000 --drain-seconds 10 --pacing-jitter-us 0 --performance-mode --debug-ack --disable-adaptive-admission-control --output-dir /tmp/ndnsf-dual-cert-open5-60s-20260812 --controller-settle-seconds 2 --provider-start-gap-seconds 1 --post-ready-settle-seconds 2 --startup-settle-seconds 1 --provider-ready-timeout-seconds 20 --nfd-log-level WARN --skip-post-run-diagnostics",
+  "configuration": {
+    "environment": "MiniNDN",
+    "providers": 1,
+    "workloadMode": "open-loop",
+    "offeredRateRps": 5,
+    "durationSeconds": 60,
+    "ackTimeoutMs": 1000,
+    "globalTimeoutMs": 5000,
+    "admissionControl": false,
+    "strategy": "custom-selection",
+    "maxOutstanding": 16,
+    "svsMaxPiggyDataBytes": 800,
+    "certificates": {
+      "encryption": "RSA",
+      "signing": "ECDSA"
+    }
+  },
+  "result": {
+    "samplingDurationSeconds": 60.0,
+    "sent": 300,
+    "completed": 300,
+    "successfulResponses": 300,
+    "successRate": 1.0,
+    "actualRequestsPerSecond": 5.0,
+    "actualSuccessfulResponsesPerSecond": 5.0,
+    "averageLatencyMs": 71.06792,
+    "p50LatencyMs": 66.038,
+    "p95LatencyMs": 85.124,
+    "p99LatencyMs": 93.604,
+    "timedOut": 0,
+    "outstandingLimitSkips": 0,
+    "selectedProviderCounts": {
+      "/example/hello/provider/A": 300
+    }
+  },
+  "authOverhead": {
+    "hybridKeyEpochs": 2,
+    "abeWraps": 2,
+    "abeUnwraps": 2,
+    "symmetricEncrypts": 600,
+    "symmetricDecrypts": 600,
+    "keyCacheHits": 598,
+    "keyCacheMisses": 2,
+    "decryptFailures": 0
+  },
+  "svsDelivery": {
+    "publicationData": 600,
+    "publicationFallbacks": 600,
+    "piggyReceived": 3594,
+    "piggyDelivered": 0,
+    "publicationRetries": 0,
+    "note": "The 800-byte safety bound caused direct publication fallback in this run; correctness remained 300/300. This is not a piggyback-performance claim."
+  },
+  "evidenceFiles": {
+    "summaryJson": {
+      "path": "specs/173-paper-submission-evidence/evidence/runtime/dual-cert-single-provider-20260812/summary.json",
+      "sha256": "f811f7d8654309a63565ed35dce1587b1f5474425b2a26f4ebf864dd6082fb6d"
+    },
+    "requestsCsv": {
+      "path": "specs/173-paper-submission-evidence/evidence/runtime/dual-cert-single-provider-20260812/requests.csv",
+      "sha256": "8c2a7ce78eafdbc9003fb562bf55214748361a86ea31a02900ac598c2649ccac"
+    },
+    "postAckPipelineSummary": {
+      "path": "specs/173-paper-submission-evidence/evidence/runtime/dual-cert-single-provider-20260812/post_ack_pipeline_summary.json",
+      "sha256": "e060de3f26b525a2d673f1ab74f65e0dc1ab5fd0fb3db7025c2f537420cf7f52"
+    },
+    "userLog": {
+      "path": "/tmp/ndnsf-dual-cert-open5-60s-20260812/user.log",
+      "sha256": "bc42ccfaff764773d79a11efafbca07ec1c13a10e28edf28da877b937d9a24ce"
+    },
+    "providerLog": {
+      "path": "/tmp/ndnsf-dual-cert-open5-60s-20260812/provider-A.log",
+      "sha256": "5819aef954e2d5fd363f16b8e0f75175182c6355298222261bc2353b031ea4e6"
+    },
+    "controllerLog": {
+      "path": "/tmp/ndnsf-dual-cert-open5-60s-20260812/controller.log",
+      "sha256": "168f8bebb5101ff2a131573efdbbf052b2a949898ba97a83f95d04051d5d990d"
+    }
+  },
+  "buildArtifacts": {
+    "App_User": "2394972ee638e392bd686ab563d3a6fd9a838704b55ddd09b82cc37e3d14c5eb",
+    "App_Provider": "c39837d5f5cd4471e13dc87dd37e4dedcb90494fe20d770b850e05eb8cfc8c26",
+    "App_ServiceController": "c0f34b7c2324f07c5f830c37c7ffd814ccb969894bd4950225600d8268aa1d3f",
+    "ndnsfSharedLibrary": "4dcf073ce21497ccb96a33be88e1405e27fd86f7470085f0f9c3ae9ebdf9185b"
+  }
+}

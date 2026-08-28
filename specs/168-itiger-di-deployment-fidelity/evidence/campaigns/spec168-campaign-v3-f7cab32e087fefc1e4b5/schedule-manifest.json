@@ -1,0 +1,93 @@
+{
+  "analyzerDigest": "sha256:953263123b2f4078ee36768c6de5dcf64a774cc33d1d6563b0540f3d47dcf208",
+  "automaticRetry": false,
+  "candidateId": "spec168-candidate-v3-6451e1258f8d2c2976d5",
+  "manualRemoteSubmissionOnly": true,
+  "phases": [
+    {
+      "onFailure": "CLOSE_IDENTITY_AND_RETURN_TO_LOCAL_REPAIR",
+      "ownerTask": "T003",
+      "phase": "focused",
+      "remote": false,
+      "requires": []
+    },
+    {
+      "onFailure": "CLOSE_IDENTITY_AND_RETURN_TO_LOCAL_REPAIR",
+      "ownerTask": "T004",
+      "phase": "real-minindn",
+      "remote": false,
+      "requires": [
+        "focused"
+      ]
+    },
+    {
+      "onFailure": "CLOSE_IDENTITY_AND_RETURN_TO_LOCAL_REPAIR",
+      "ownerTask": "T004",
+      "phase": "exact-container-overlay",
+      "remote": false,
+      "requires": [
+        "real-minindn"
+      ]
+    },
+    {
+      "onFailure": "CLOSE_IDENTITY_AND_RETURN_TO_LOCAL_REPAIR",
+      "ownerTask": "T004",
+      "phase": "exact-sif-cuda-preflight",
+      "remote": true,
+      "requires": [
+        "exact-container-overlay"
+      ]
+    },
+    {
+      "onFailure": "CLOSE_IDENTITY_AND_RETURN_TO_LOCAL_REPAIR",
+      "ownerTask": "T004",
+      "phase": "candidate-audit",
+      "remote": false,
+      "requires": [
+        "exact-sif-cuda-preflight"
+      ]
+    },
+    {
+      "onFailure": "CLOSE_IDENTITY_AND_RETURN_TO_LOCAL_REPAIR",
+      "ownerTask": "T008",
+      "phase": "remote-small-single",
+      "remote": true,
+      "requires": [
+        "candidate-audit"
+      ]
+    },
+    {
+      "onFailure": "CLOSE_IDENTITY_AND_RETURN_TO_LOCAL_REPAIR",
+      "ownerTask": "T011",
+      "phase": "remote-small-repeated",
+      "remote": true,
+      "requires": [
+        "remote-small-single"
+      ]
+    },
+    {
+      "onFailure": "CLOSE_IDENTITY_AND_RETURN_TO_LOCAL_REPAIR",
+      "ownerTask": "T015",
+      "phase": "remote-large-single",
+      "remote": true,
+      "requires": [
+        "remote-small-repeated"
+      ]
+    },
+    {
+      "onFailure": "CLOSE_IDENTITY_AND_RETURN_TO_LOCAL_REPAIR",
+      "ownerTask": "T016",
+      "phase": "clean-reproduction",
+      "remote": true,
+      "requires": [
+        "remote-large-single"
+      ]
+    }
+  ],
+  "promptSetDigest": "sha256:5a87c5645c74ac52b7e2ab728e7297d49c42fa849ce47d163c8fec5838d9dd75",
+  "replacementPolicy": "new-linked-source-and-campaign-identity",
+  "routeDigest": "sha256:21a6eb509f682e54fa6d2fd9eb4349ad83744968450e8c32322ad19db4b0090c",
+  "scheduleInputDigest": "sha256:4ccadcd09aa4f715095285e9d39d28dc1bbefc6a5cad2ecacd633b147337d578",
+  "scheduleManifestDigest": "sha256:eb5974bd86b1d9b2688179f5ce8a6038f1eaaf8d050f56d39eef76e9b2d8551a",
+  "schema": "ndnsf-di.spec168-schedule.v3"
+}

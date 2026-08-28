@@ -1,0 +1,22 @@
+# syntax=docker/dockerfile:1.7
+
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE} AS sdk-source
+USER 0:0
+COPY NDNSF-DistributedInference/ndnsf_distributed_inference \
+  /runtime/ndnsf_distributed_inference
+
+FROM ${BASE_IMAGE}
+USER 0:0
+ARG BASE_IMAGE
+ARG SOURCE_MANIFEST_SHA256
+LABEL org.ndnsf.di.spec164.sdk-closure-overlay="true" \
+      org.ndnsf.di.spec164.sdk-source-manifest-sha256="${SOURCE_MANIFEST_SHA256}" \
+      org.ndnsf.di.spec164.sdk-base-image="${BASE_IMAGE}" \
+      org.ndnsf.di.models-included="false"
+RUN rm -rf /opt/ndnsf-app/python/ndnsf_distributed_inference
+COPY --from=sdk-source /runtime/ndnsf_distributed_inference \
+  /opt/ndnsf-app/python/ndnsf_distributed_inference
+RUN HOME=/tmp /opt/venv/bin/python -c \
+  'import inspect; from ndnsf import FileSegmentedObjectProducer, fetch_adaptive_segmented_data_packets; from py_repoclient import AdaptiveArtifactTransfer, ArtifactRepositoryApi; from ndnsf_distributed_inference.app import APPDeployment; assert APPDeployment.__module__ == "ndnsf_distributed_inference.app_sdk.deployment"; assert "state_root" in inspect.signature(APPDeployment.from_config).parameters; print("SPEC164_SDK_CLOSURE_RUNTIME_PASS")'
+USER 65532:65532

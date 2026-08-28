@@ -40,9 +40,24 @@ def test_source_archive_excludes_host_binaries_and_build_output(tmp_path):
     assert "examples/App_ServiceController.cpp" in names
     assert "NDNSF-DistributedRepo/wscript" in names
     assert "libndn-service-framework.pc.in" in names
+    assert "packaging/ndnsf-di-container/jobs/spec175/workload.json" in names
+    assert "scripts/build_spec175_workload.py" in names
+    assert "examples/trust-schema.conf" in names
+    assert "examples/python/NDNSF-DistributedInference/llm_pipeline/user.py" in names
+    assert "examples/python/NDNSF-DistributedInference/llm_pipeline/provider.py" in names
+    assert "specs/162-itiger-qwen36-generation/jobs/run-repo-node.py" in names
     assert not any(name.endswith((".so", ".a", ".o", ".pyc")) for name in names)
     assert not any("/build/" in f"/{name}/" for name in names)
     assert not any("/__pycache__/" in f"/{name}/" for name in names)
+
+
+def test_source_sealer_does_not_define_host_substrate_dependency_archives():
+    text = SCRIPT.read_text(encoding="utf-8")
+    for option in ("--mini-ndn-workspace", "--nlsr-workspace",
+                   "--ndn-tools-workspace", "--infoedit-workspace"):
+        assert option not in text
+    for dependency in ("miniNdn", "nlsr", "ndnTools", "infoedit"):
+        assert f'dependency_reports["{dependency}"]' not in text
 
 
 def test_source_archive_is_deterministic(tmp_path):
@@ -112,7 +127,7 @@ def test_source_archive_seals_ndn_svs_source_without_host_binaries(tmp_path):
     report = json.loads(result.stdout)
     seal = json.loads((output / "source-seal.json").read_text(encoding="utf-8"))
     dependency = seal["dependencies"]["ndnSvs"]
-    assert report["ndnSvsArchive"]["sha256"] == dependency["archive"]["sha256"]
+    assert report["dependencyArchives"]["ndnSvs"]["sha256"] == dependency["archive"]["sha256"]
     assert dependency["compiledPayloadCount"] == 0
     with tarfile.open(output / "ndn-svs.tar", "r") as archive:
         names = archive.getnames()
@@ -120,7 +135,6 @@ def test_source_archive_seals_ndn_svs_source_without_host_binaries(tmp_path):
     assert "ndn-svs/svspubsub.cpp" in names
     assert "build/libndn-svs.so" not in names
     assert not any(name.endswith((".so", ".a", ".o", ".pyc")) for name in names)
-
 
 def test_source_seal_validator_accepts_exact_archives(tmp_path):
     output = tmp_path / "sealed"

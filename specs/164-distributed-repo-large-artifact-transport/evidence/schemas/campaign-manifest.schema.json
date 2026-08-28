@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ndnsf.example/spec164/campaign-manifest.schema.json",
+  "title": "Spec 164 immutable performance campaign manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "campaignId", "createdAt", "quickSmoke",
+    "performanceClaim", "measurementWindowSeconds", "repetitions",
+    "packetPayloadBytes", "timelineSampleRate", "subjects", "phases",
+    "topology", "admissibility", "cells", "randomizationSeed",
+    "runSchedule", "materialPassport"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 2},
+    "campaignId": {"type": "string", "minLength": 1},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "quickSmoke": {"type": "boolean"},
+    "performanceClaim": {"type": "boolean"},
+    "measurementWindowSeconds": {"type": "number", "exclusiveMinimum": 0},
+    "repetitions": {"type": "integer", "minimum": 1},
+    "packetPayloadBytes": {"const": 4096},
+    "timelineSampleRate": {"type": "number", "minimum": 0, "maximum": 1},
+    "subjects": {
+      "type": "array",
+      "items": {"enum": ["physical-network", "raw-segmented-ndn", "legacy-exact-packet", "digest-only", "signed-manifest"]},
+      "uniqueItems": true
+    },
+    "phases": {
+      "type": "array",
+      "items": {"enum": ["discovery", "ackCollection", "planning", "queueWait", "sessionStart", "transfer", "verification", "persistence", "replication", "commit", "activation"]},
+      "uniqueItems": true
+    },
+    "topology": {"type": "object"},
+    "admissibility": {"type": "object"},
+    "cells": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["cellId", "pairId", "subject", "payloadBytes", "replicas", "concurrency", "pairedRawCellId"]
+      }
+    },
+    "randomizationSeed": {"type": "integer", "minimum": 0},
+    "runSchedule": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["runId", "cellId", "pairId", "subject", "repetition", "warmup", "blockIndex", "orderInBlock"]
+      }
+    },
+    "materialPassport": {"type": "object"}
+  }
+}

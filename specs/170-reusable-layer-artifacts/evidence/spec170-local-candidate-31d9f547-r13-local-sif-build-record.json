@@ -1,0 +1,41 @@
+{
+  "apptainer": {
+    "computeExpected": "1.5.3-1.el9",
+    "local": "1.5.3",
+    "path": "/opt/apptainer/1.5.3/bin/apptainer",
+    "remote": "1.5.3-1.el9",
+    "sha256": "sha256:f491c4f4f8d17dccd4a540a5a40d84880e95a3d122b784aaf754c2faaf469f9b"
+  },
+  "buildHostOnly": true,
+  "buildInput": {
+    "baseSif": {
+      "bytes": 4416319488,
+      "path": "/tmp/spec170-qualified-base-31d9f547-r10-bd949732.sif",
+      "sha256": "sha256:bd949732fc89bb10ef48e92b51fb4557fb33819797882765bd629c73da43748c"
+    },
+    "definition": {
+      "path": "specs/170-reusable-layer-artifacts/evidence/spec170-local-candidate-31d9f547-r13.def",
+      "sha256": "sha256:52d1fbb51c4c6616432fc6cfd9da554f3d5d4ebb000460ef643f6158b30949ea"
+    },
+    "method": "local-apptainer-definition"
+  },
+  "labels": {
+    "org.ndnsf.di.release": "spec170-runtime-31d9f547-post-selection-v11-20260817",
+    "org.ndnsf.di.runtime-rpath": "/opt/ndnsf-di/current/lib:/opt/onnxruntime/lib",
+    "org.ndnsf.di.source": "31d9f547a32f941ab948f005f583c429d23bacbb",
+    "org.ndnsf.di.tiger-action": "verify-hash-and-execute-only"
+  },
+  "recordDigest": "sha256:e47de4576feacfe2ab73df29ff47c84dbf3a676fbc79700ee510fe0238dd35f3",
+  "schemaVersion": "ndnsf-local-sif-build-v2",
+  "sif": {
+    "bytes": 4398850048,
+    "path": "/tmp/spec170-local-candidate-31d9f547-20260817-r13/runtime.sif",
+    "sha256": "sha256:4e29b0fdc14eba8172fb927dcea07676e807f1b577ea76a82b786b407cbc2840"
+  },
+  "sourceSeal": {
+    "path": "specs/170-reusable-layer-artifacts/evidence/spec170-local-candidate-31d9f547-r13-source-seal.json",
+    "sha256": "sha256:aee2ea8106b01208754a43f340d1d0ee4a25102bcd48c362a0a5bff546def53e"
+  },
+  "status": "PASS",
+  "tigerAction": "verify-hash-and-execute-only"
+}

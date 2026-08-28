@@ -1,0 +1,78 @@
+{
+  "base": "a93724758aca71a4ea327574ef7af46770a81a40",
+  "sourceHead": "a965ad6c847ee86c90289ef3bab00a49ae042396",
+  "finalHead": "ee4e174b0e5f188f4e48608c60898649c8021bc9",
+  "finalTree": "7b7acd4581caf20da81b6c628d7ca18497a75d9e",
+  "owners": [
+    {
+      "order": 1,
+      "commit": "815bd627fc14a372948ed4118b713542d0b81a5d",
+      "changeGroup": "pubsub-selection-name-only",
+      "sourceCommits": ["d4301b1"],
+      "boundary": "public-api"
+    },
+    {
+      "order": 2,
+      "commit": "3b709b4a1c612fd109814608caa9154a10639065",
+      "changeGroup": "bounded-piggyback-delivery",
+      "sourceCommits": ["9e9d4e8", "70de9ff", "6a8eb83:piggyback-tests"],
+      "boundary": "mapping-data-delivery-cache"
+    },
+    {
+      "order": 3,
+      "commit": "cfc6270547a9564f41f32f8799d3e6496963ed11",
+      "changeGroup": "parallel-sync-receive",
+      "sourceCommits": ["2bd49fc"],
+      "boundary": "receive-worker-batching"
+    },
+    {
+      "order": 4,
+      "commit": "e7cd98ea48ff03d322dbe9db2f9d00ea7608c35c",
+      "changeGroup": "ordered-async-production",
+      "sourceCommits": ["5908110", "70de9ff:async-adaptation", "6a8eb83:async-test"],
+      "boundary": "production-worker-ordered-commit"
+    },
+    {
+      "order": 5,
+      "commit": "ee9632d76272c6b2bf7a748bcfd1a47533596e38",
+      "changeGroup": "v2-interest-signer",
+      "sourceCommits": ["5b30e1a"],
+      "boundary": "v2-security-encoding"
+    },
+    {
+      "order": 6,
+      "commit": "9f679bdb1bbaaa0c351c3179fa25beaef881ef84",
+      "changeGroup": "official-v3-protocol",
+      "sourceCommits": ["e8b360e", "a965ad6:v2-profile-propagation"],
+      "boundary": "standards-wire-protocol"
+    },
+    {
+      "order": 7,
+      "commit": "c7675606cc062a9dbd774e2705094ca98019e566",
+      "changeGroup": "sparse-mapping-recovery",
+      "sourceCommits": ["be731fb"],
+      "boundary": "mapping-query-retry"
+    },
+    {
+      "order": 8,
+      "commit": "79d830a368a7e2cf73f4b8d6db295c1d404554dc",
+      "changeGroup": "failure-atomic-segmented-publication",
+      "sourceCommits": ["7e2ab35:producer"],
+      "boundary": "reservation-staging-commit-visibility-rollback"
+    },
+    {
+      "order": 9,
+      "commit": "ee4e174b0e5f188f4e48608c60898649c8021bc9",
+      "changeGroup": "bounded-segmented-fetch-repair",
+      "sourceCommits": ["7e2ab35:receiver", "a965ad6:extension-transaction"],
+      "boundary": "fetch-deadline-retry-validation-repair"
+    }
+  ],
+  "externalHarness": {
+    "owner": "NDNSF",
+    "paths": [
+      "examples/interop/ndn-svs-v3",
+      "Experiments/NDN_SVS_V3_Interop_Minindn.py"
+    ]
+  }
+}

@@ -702,6 +702,10 @@ class ProviderRuntimeContext:
     assignment_context: AssignmentContext | None = None
     deadline_ms: int = 0
     on_dependency_ready: Callable[[object], None] | None = None
+    # Present only for a streamed invocation.  The object is intentionally
+    # duck-typed so the DI layer remains independent of the Python binding;
+    # it exposes publish_event(), finish_stream(), and fail().
+    stream_writer: object | None = None
     _terminal_response_guard: _TerminalResponseGuard = field(
         default_factory=_TerminalResponseGuard,
         compare=False, repr=False,
@@ -723,6 +727,99 @@ class ProviderRuntimeContext:
         """Publish exactly one complete authenticated terminal Response."""
         self._terminal_response_guard.claim()
         self.ndnsf.publish_final_response(bytes(payload))
+
+    def publish_event(self, payload: bytes, *, event_type: str = "application") -> int:
+        """Publish one ordered event and return its committed 1-based cursor.
+
+        Invocation streams currently admit application events only.  Keeping
+        the type explicit at this boundary prevents an adapter from silently
+        manufacturing an End event or a second terminal state.
+        """
+        writer = self.stream_writer
+        if writer is None or not (hasattr(writer, "publish_event") or
+                                  hasattr(writer, "publish_stream_event")):
+            raise RuntimeError("stream writer is not attached to this invocation")
+        if str(event_type) != "application":
+            raise ValueError("NDNSF-DI streamed events must use event_type=application")
+        try:
+            publish = getattr(writer, "publish_event", None)
+            if publish is None:
+                publish = writer.publish_stream_event
+            cursor = publish(bytes(payload), event_type="application")
+        except TypeError:
+            # Keep small test doubles and pre-T010 adapters source-compatible;
+            # the native binding accepts the keyword and returns the cursor.
+            publish = getattr(writer, "publish_event", None)
+            if publish is None:
+                publish = writer.publish_stream_event
+            cursor = publish(bytes(payload))
+        if isinstance(cursor, bool):
+            cursor = 1 if cursor else 0
+        cursor = int(cursor)
+        if cursor <= 0:
+            raise RuntimeError("stream event was rejected by lifecycle or deadline")
+        return cursor
+
+    def finish_stream(
+        self, payload: bytes = b"", *, finish_reason: str | int = "application_complete",
+        reason: int | None = None,
+    ) -> None:
+        """Claim the streamed terminal and carry the complete final result."""
+        writer = self.stream_writer
+        if writer is None or not hasattr(writer, "finish_stream"):
+            # Preserve the unary context contract for legacy handlers.
+            self.publish_final_response(bytes(payload))
+            return
+        # The DI context and the Core writer share one logical terminal claim.
+        # Claim before crossing the binding so a concurrent legacy
+        # publish_final_response cannot win after the stream has started.
+        self._terminal_response_guard.claim()
+        if reason is not None:
+            finish_reason = reason
+        if isinstance(finish_reason, str):
+            reason_codes = {
+                "eos": 1,
+                "stop_sequence": 2,
+                "max_tokens": 3,
+                "application_complete": 4,
+                "deadline": 5,
+                "cancelled": 6,
+                "failed": 7,
+            }
+            try:
+                finish_reason = reason_codes[finish_reason.strip().lower()]
+            except KeyError as exc:
+                raise ValueError("unknown streamed finish reason") from exc
+        try:
+            accepted = writer.finish_stream(bytes(payload), reason=int(finish_reason))
+        except TypeError:
+            accepted = writer.finish_stream(bytes(payload), int(finish_reason))
+        if not accepted:
+            raise RuntimeError("stream terminal was already claimed or fenced")
+
+    def stream_cancelled(self) -> bool:
+        """Return the current Core-owned cancellation/fence state."""
+        writer = self.stream_writer
+        if writer is None:
+            return False
+        value = getattr(writer, "cancelled", False)
+        if callable(value):
+            value = value()
+        return bool(value)
+
+    def run_streamed_generation(self, loop, prompt):
+        """Run one adapter-owned generation loop on this invocation.
+
+        The loop must already be bound to this request ID and owns only the
+        selected plan's prefill/decode callbacks.  This helper deliberately
+        does not expose a request or provider list, so an adapter cannot turn
+        one streamed generation into per-token discovery calls.
+        """
+        if self.stream_writer is None:
+            raise RuntimeError("stream writer is not attached to this invocation")
+        if str(getattr(loop, "request_id", "")) != self.request_id:
+            raise ValueError("generation loop request binding mismatch")
+        return loop.run(prompt)
 
     def remaining_deadline_ms(
         self,
@@ -1339,6 +1436,8 @@ class DistributedInferenceProvider:
                     prefetcher=prefetcher,
                     deadline_ms=_assignment_deadline_ms(
                         bytes(ctx.assignment.assignment_payload)),
+                    stream_writer=(ctx if getattr(ctx, "is_streamed", False)
+                                   else None),
                 ))
             finally:
                 prefetcher.shutdown()
@@ -1861,6 +1960,14 @@ class DistributedInferenceProvider:
                     if decoded_projection.provider != ctx.local_provider:
                         ctx.fail("V3 Selection Provider binding mismatch")
                         return
+                    request_contract_digest = (
+                        "sha256:" + __import__("hashlib").sha256(
+                            bytes(request)).hexdigest())
+                    if (decoded_projection.request_contract_digest
+                            and decoded_projection.request_contract_digest
+                            != request_contract_digest):
+                        ctx.fail("V3 Selection request contract mismatch")
+                        return
                     matching = [
                         item for item in decoded_projection.roles
                         if item.role == ctx.assignment.role
@@ -1911,8 +2018,25 @@ class DistributedInferenceProvider:
                     return getattr(ctx, name)
 
                 def publish_final_response(self, payload: bytes) -> None:
-                    release_selection_reservation("RESPONSE_PUBLISHED")
                     ctx.publish_final_response(payload)
+                    release_selection_reservation("RESPONSE_PUBLISHED")
+
+                def finish_stream(self, payload: bytes = b"", *, reason=4,
+                                  **kwargs) -> bool:
+                    # The Core writer remains the sole terminal authority.
+                    # Release the selection reservation only after it accepts
+                    # the terminal, so a rejected/fenced write is accounted
+                    # for by the handler/failure path instead of being
+                    # mislabeled as a published Response.
+                    try:
+                        accepted = ctx.finish_stream(
+                            payload, reason=reason, **kwargs)
+                    except TypeError:
+                        accepted = ctx.finish_stream(payload, reason)
+                    release_selection_reservation("RESPONSE_PUBLISHED")
+                    return accepted
+
+            terminal_context = TerminalAwareContext()
 
             self._report_preparation(
                 ctx, phase="ACCEPTED", sequence=sequence, progress=0.0)
@@ -2014,6 +2138,7 @@ class DistributedInferenceProvider:
                             "selectionRequestId": v3_projection.request_id,
                             "selectionAttempt": v3_projection.attempt,
                             "planDigest": v3_projection.plan_digest,
+                            "selectionPlanDigest": v3_projection.plan_digest,
                             "planCoreDigest": v3_projection.plan_core_digest,
                             "selectionArtifactDigest": v3_role_spec.artifact_digest,
                             "selectionRecipeDigest": v3_role_spec.recipe_digest,
@@ -2026,6 +2151,25 @@ class DistributedInferenceProvider:
                                 v3_role_spec.layer_begin,
                                 v3_role_spec.layer_end),
                             "selectionRank": v3_role_spec.rank,
+                            # Conversation bindings are authenticated by the
+                            # V3 Selection projection.  Keep the compact
+                            # data-only forms in the adapter metadata so a
+                            # Python Provider can implement the same receipt
+                            # lifecycle as the native handler without
+                            # re-parsing an untrusted side channel.
+                            "conversationTurnBinding": (
+                                v3_projection.conversation_turn_binding.to_dict()
+                                if v3_projection.conversation_turn_binding
+                                is not None else None),
+                            "conversationStateReference": (
+                                v3_projection.conversation_state_reference.to_dict()
+                                if v3_projection.conversation_state_reference
+                                is not None else None),
+                            "generationId": (
+                                v3_projection.generation_contract.generation_id
+                                if v3_projection.generation_contract is not None
+                                else ""),
+                            "securityDomain": "requester-default",
                         },
                     ))
                 if selection_participant is not None:
@@ -2109,7 +2253,7 @@ class DistributedInferenceProvider:
             prefetcher = DependencyPrefetcher(ctx)
             try:
                 self._run_handler(handler, ProviderRuntimeContext(
-                    ndnsf=TerminalAwareContext(),
+                    ndnsf=terminal_context,
                     execution=execution,
                     request=request,
                     role=ctx.assignment.role,
@@ -2125,6 +2269,8 @@ class DistributedInferenceProvider:
                     prefetcher=prefetcher,
                     deadline_ms=_assignment_deadline_ms(assignment_payload),
                     on_dependency_ready=dependency_ready,
+                    stream_writer=(terminal_context if getattr(ctx, "is_streamed", False)
+                                   else None),
                 ))
             finally:
                 prefetcher.shutdown()

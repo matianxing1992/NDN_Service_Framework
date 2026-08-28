@@ -1,0 +1,27 @@
+{
+  "apptainer": {
+    "local": "1.3.4",
+    "remote": "1.3.4"
+  },
+  "buildHostOnly": true,
+  "buildInput": {
+    "definition": {
+      "path": "specs/170-reusable-layer-artifacts/evidence/spec170-local-candidate-31d9f547-r8b.def",
+      "sha256": "sha256:c281035a7229345bc5f02fd9c80c2f0783bb5d2cb4be790ce24d7beff9016c72"
+    },
+    "method": "local-apptainer-definition"
+  },
+  "recordDigest": "sha256:565985c402e795761b6c23d5bf256d9c804dc87d6d543d74699348384b82df01",
+  "schemaVersion": "ndnsf-local-sif-build-v2",
+  "sif": {
+    "bytes": 4416315392,
+    "path": "/tmp/spec170-local-candidate-31d9f547-20260817-r8b/runtime.sif",
+    "sha256": "sha256:4e89e1b8edd04163c0056ee861aa277a74972dc76aafddedadcd3f539e48d8a2"
+  },
+  "sourceSeal": {
+    "path": "specs/170-reusable-layer-artifacts/evidence/spec170-local-candidate-31d9f547-r8b-source-seal.json",
+    "sha256": "sha256:6a701891bf956f62c830405905115fcbf7d1035e21d4e9baeb2023d4d39a03fd"
+  },
+  "status": "PASS",
+  "tigerAction": "verify-hash-and-execute-only"
+}

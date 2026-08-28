@@ -1,0 +1,107 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-08-11T22:34:00-05:00",
+  "records": [
+    {
+      "evidenceId": "loss-1pct-20260628",
+      "kind": "historical-transport-robustness",
+      "sourcePath": "results/_summaries/legacy-before-20260725/structured-results.tar.gz#ndnsf_svs_repair_memphis_ucla_loss1_clean_20260628/summary.json",
+      "archiveSha256": "4e4d57ef105f2c8ab890de41d964abe7326d58d5473445a585a00c51dc84c74c",
+      "memberSha256": "0d83d6239f8cdacc0cd3958b73bd231c9bbcb5424fd58f6ff8fa08c3465a8d35",
+      "sourceRevision": "not-recorded-in-archive",
+      "conditions": {"lossPercent": 1, "durationSeconds": 60, "rateRps": 10, "requestTimeoutMs": 5000, "strategy": "first-responding"},
+      "results": {"successRate": 0.9983333333333333, "timeoutCount": 1, "meanLatencyMs": 218.48064106844743, "p50LatencyMs": 205.44, "p95LatencyMs": 310.523},
+      "disposition": "qualified",
+      "limitation": "The exact summary bytes are recoverable, but the archived package does not record the Git revision or independent repetitions; retain only as bounded historical NDNSF loss behavior."
+    },
+    {
+      "evidenceId": "loss-3pct-20260628",
+      "kind": "historical-transport-robustness",
+      "sourcePath": "results/_summaries/legacy-before-20260725/structured-results.tar.gz#ndnsf_svs_adaptive_memphis_ucla_loss3_rps10_20260628/summary.json",
+      "archiveSha256": "4e4d57ef105f2c8ab890de41d964abe7326d58d5473445a585a00c51dc84c74c",
+      "memberSha256": "4a1f5c510d871c287641f5efdf95acdea65cf414e1c6aac971f790ee06974d01",
+      "sourceRevision": "not-recorded-in-archive",
+      "conditions": {"lossPercent": 3, "durationSeconds": 60, "rateRps": 10, "requestTimeoutMs": 5000, "strategy": "first-responding"},
+      "results": {"successRate": 0.9966666666666667, "timeoutCount": 2, "meanLatencyMs": 248.2583060200669, "p50LatencyMs": 215.963, "p95LatencyMs": 419.277},
+      "disposition": "qualified",
+      "limitation": "The exact summary bytes are recoverable, but the archived package does not record the Git revision or independent repetitions; retain only as bounded historical NDNSF loss behavior."
+    },
+    {
+      "evidenceId": "loss-10pct-20260628",
+      "kind": "historical-transport-robustness",
+      "sourcePath": "results/_summaries/legacy-before-20260725/structured-results.tar.gz#ndnsf_svs_matrix_w32_r4_i2_l500_b20_mb500_t5_20260628/summary.json",
+      "archiveSha256": "4e4d57ef105f2c8ab890de41d964abe7326d58d5473445a585a00c51dc84c74c",
+      "memberSha256": "51504e7a05e959090064d713a1be4d2e18d3b7e6f402fd38c3707e486f79b1c0",
+      "sourceRevision": "not-recorded-in-archive",
+      "conditions": {"lossPercent": 10, "durationSeconds": 60, "rateRps": 10, "requestTimeoutMs": 5000, "strategy": "first-responding"},
+      "results": {"successRate": 0.8983333333333333, "timeoutCount": 61, "meanLatencyMs": 597.2270315398887, "p50LatencyMs": 410.226, "p95LatencyMs": 1720.792},
+      "disposition": "qualified",
+      "limitation": "The exact summary bytes are recoverable, but the archived package does not record the Git revision or independent repetitions; retain only as bounded historical NDNSF loss behavior."
+    },
+    {
+      "evidenceId": "authorization-spec172",
+      "kind": "authorization-correctness-onboarding-cost",
+      "sourceRevision": "ndnsf-revision-not-recorded; ndn-svs=6bb34545b4f89f1f6c265a68c18f1a40ade413eb+patch-d7956527ae161f71378611cbcb3890eafddac0f68dc26d078eb98a5f0e955ca5",
+      "sourcePaths": [
+        "results/spec172_authorization_minindn/",
+        "results/spec172_authorization_overhead/",
+        "results/spec172_authorization_smoke/",
+        "results/spec172_onboarding/",
+        "results/spec172_publication_audit_20260811_canonical_v2/",
+        "specs/172-data-centric-authorization-evaluation/contracts/claim-evidence-matrix.md"
+      ],
+      "artifactSha256": {
+        "minindnManifest": "ce580f98e5c0384a7a953c2e5f163bab1886dd3b18b5fa6cb75866b9736192b9",
+        "minindnSummary": "a7e14e135aa955c11b1642de926871d3e588c1a8e65b175145c2469c54d5d84a",
+        "overheadManifest": "be0eaa9ad68a83e6674080a38366ed019c107071fdb7fceafe5278d735892d9f",
+        "overheadSummary": "ac1618d2071d2e43ab56c8aad01b29fce19fc130ab261b7a0618a3455e6f43cf",
+        "smokeManifest": "df1e5038dd1352dac732d9624b71760433b80f027437e3045a884a173e15040b",
+        "smokeSummary": "b5c6883014cdd1df0c1a428d6141c8f7359d43f42f4bd916d598b56dd5630f63",
+        "onboardingManifest": "3dbee3e6a1ff7d4378cc59773c0e1b34e2122252a47632ec03ee9dc249a5d09a",
+        "onboardingSummary": "c8c34798e467f1531a433192faf9df558cf44f504b0bcf66fd42f1e664cb3869",
+        "publicationManifest": "184b46fc08c7f8ae6f813773d983638d49b1a3c24010f29c404778dce998ad5b",
+        "publicationSummary": "eeb35ebde40aeae3f40267ade5503821ce23cfbe949df8c9c9e70cd52494bc11",
+        "claimMatrix": "fb4b7287bc188fca224f3e550b38d4e6b08ec4f34952ef691c227c56d1404b79"
+      },
+      "disposition": "supported",
+      "scope": "Controller-authorized ABE-backed service-semantic authorization, runtime denial/enforcement, unchanged-provider onboarding, and bounded measured control cost.",
+      "limitation": "The canonical publication audit records exact NDNSF source and executable hashes plus the NDN-SVS head/dirty patch, but not an NDNSF Git head; provenance is therefore byte-level rather than commit-only."
+    },
+    {
+      "evidenceId": "mobility-switch-holdout-spec171",
+      "kind": "registered-mobility-holdout",
+      "sourceRevision": "git-revision-not-recorded; frozen harness=34511d610e78c5e8c57d7f1e3aaab2e920e65e7818eda4c7504fb82ac5b74d13",
+      "sourcePaths": [
+        "specs/171-four-provider-mobility-advantage/evidence/opportunity-holdout-registration-20260809/registration.json",
+        "specs/171-four-provider-mobility-advantage/evidence/opportunity-holdout-results-20260809/holdout-summary.json",
+        "specs/171-four-provider-mobility-advantage/evidence/opportunity-holdout-results-20260809/descriptive-summary.json",
+        "specs/171-four-provider-mobility-advantage/evidence/opportunity-holdout-results-20260809/README.md"
+      ],
+      "artifactSha256": {
+        "registration": "0f2b9c07788d966d5175ec872d1598a40cf197c1d898572290fbfb9f08e1b5cd",
+        "holdoutSummary": "efd9dec6c4a8e5c78b386f1bab12323c47beb09c660c123f2e090f178412bd38",
+        "descriptiveSummary": "56b4467746bde3c00de91c21465fba5e9bcf82e5a3111a697a34f0bbe71b1e76",
+        "readme": "bf362d263d73ccbf80feae8b091141f3a76b59a07155ad2f8ed12dc4e8d23468"
+      },
+      "results": {"seeds": 10, "switchRequiredRequests": 1312, "ndnsfMinusGrpcP95Ms": -596.5542, "ndnsfMinusNscP95Ms": -2618.3198},
+      "disposition": "supported",
+      "limitation": "Supports a conditional switching-window tail-latency claim, not universal success-rate or all-request superiority."
+    },
+    {
+      "evidenceId": "four-provider-work-efficiency-spec171",
+      "kind": "confirmatory-provider-work",
+      "sourceRevision": "0d4a1340641f76be1e8eebd8d3c2a43ba58f498c; tree=1aca4f7bf02d84f523edfdd82eca013b4833d6fe",
+      "sourcePaths": [
+        "specs/171-four-provider-mobility-advantage/evidence/work-efficiency-comparison-20260806/README.md",
+        "results/four_provider_work_efficiency_confirmatory_20260806/combined-six-seed-aggregate.json"
+      ],
+      "artifactSha256": {
+        "readme": "abcdb4862348a98fce92c5820c891dbedc34c19523c0cf011aa9f4e04aa017ca",
+        "aggregate": "1acd731d05229171c139358a08d17c365c1d00cc0586877fa7d701344b4284dd"
+      },
+      "results": {"seeds": 6, "requestsPerSystem": 1800, "ndnsfProviderExecutions": 1800, "grpcParallelProviderExecutions": 7180, "ndnsfToGrpcExecutionRatio": 0.2506963788},
+      "disposition": "supported",
+      "limitation": "Supports execution-work efficiency against parallel gRPC only; no latency advantage is claimed from this package."
+    }
+  ]
+}

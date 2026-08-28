@@ -1,0 +1,367 @@
+#!/usr/bin/env python3
+"""Fail-closed preflight for the Spec175 local SIF candidate.
+
+This command is intentionally source/manifest based.  It does not materialize
+OCI images and it never treats a host-built Python extension as a valid SIF
+payload.  The final candidate must be built by the local Apptainer definition;
+this check only proves that the sealed inputs and (when supplied) the SIF
+identity are the expected ones.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import importlib.util
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[3]
+WORKLOAD_SCHEMA = "ndnsf-di-spec175-workload-v1"
+FORBIDDEN_RUNTIME = re.compile(r"(?:^|[/_.-])(torch|pytorch|transformers)(?:[/_.-]|$)", re.I)
+FORBIDDEN_OVERLAY = re.compile(r"(?:/|^)\.(?:so|a|o)$|(?:_ndnsf\.so|di-native-provider)$")
+
+
+class PreflightError(RuntimeError):
+    pass
+
+
+def fail(code: str, detail: object = "") -> None:
+    suffix = f":{detail}" if detail else ""
+    raise PreflightError(code + suffix)
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
+
+
+def load_source_validator():
+    path = ROOT / "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/validate-local-sif-source.py"
+    spec = importlib.util.spec_from_file_location("spec175_source_validator", path)
+    if spec is None or spec.loader is None:
+        fail("SPEC175_SOURCE_VALIDATOR_UNAVAILABLE")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def validate_workload(path: Path) -> dict:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        fail("SPEC175_WORKLOAD_INVALID", type(exc).__name__)
+    if value.get("schema") != WORKLOAD_SCHEMA:
+        fail("SPEC175_WORKLOAD_SCHEMA_MISMATCH")
+    model = value.get("model")
+    generation = value.get("generation")
+    tokenizer = value.get("tokenizer")
+    if not isinstance(model, dict) or model.get("repository") != "Qwen/Qwen3.6-27B":
+        fail("SPEC175_WORKLOAD_MODEL_MISMATCH")
+    if model.get("revision") != "6a9e13bd6fc8f0983b9b99948120bc37f49c13e9":
+        fail("SPEC175_WORKLOAD_REVISION_MISMATCH")
+    if model.get("modality") != "text-only" or model.get("mtpEnabled") is not False:
+        fail("SPEC175_WORKLOAD_ARTIFACT_SCOPE_INVALID")
+    expected = {
+        "doSample": False,
+        "maxEvents": 65,
+        "maxGeneratedTokens": 64,
+        "samplingMode": "greedy",
+        "thinkingMode": "disabled",
+    }
+    if not isinstance(generation, dict) or any(generation.get(k) != v for k, v in expected.items()):
+        fail("SPEC175_WORKLOAD_GENERATION_MISMATCH")
+    if not isinstance(tokenizer, dict) or tokenizer.get("implementation") != "standalone-tokenizers+jinja2":
+        fail("SPEC175_WORKLOAD_TOKENIZER_RUNTIME_INVALID")
+    files = tokenizer.get("files")
+    if not isinstance(files, dict) or set(files) != {"tokenizer.json", "tokenizer_config.json", "chat_template.jinja"}:
+        fail("SPEC175_WORKLOAD_TOKENIZER_FILES_INVALID")
+    return value
+
+
+def validate_source(seal: Path, workload: Path) -> dict:
+    validator = load_source_validator()
+    try:
+        result = validator.validate(seal)
+    except Exception as exc:  # keep the stable preflight error namespace
+        fail("SPEC175_SOURCE_SEAL_INVALID", str(exc))
+    if result.get("status") != "PASS":
+        fail("SPEC175_SOURCE_SEAL_NOT_PASS")
+    try:
+        seal_json = json.loads(seal.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        fail("SPEC175_SOURCE_SEAL_INVALID", type(exc).__name__)
+    dependencies = seal_json.get("dependencies", {})
+    if not isinstance(dependencies, dict):
+        fail("SPEC175_SOURCE_DEPENDENCIES_INVALID")
+    forbidden_dependencies = {"miniNdn", "nlsr", "ndnTools", "infoedit"}
+    leaked = sorted(forbidden_dependencies.intersection(dependencies))
+    if leaked:
+        fail("SPEC175_SOURCE_HOST_SUBSTRATE_DEPENDENCY", ",".join(leaked))
+    rows = {row["path"]: row for row in seal_json.get("files", [])}
+    rel = workload.resolve().relative_to(ROOT.resolve()).as_posix()
+    if rel not in rows:
+        fail("SPEC175_WORKLOAD_NOT_SEALED", rel)
+    if rows[rel]["sha256"] != sha256(workload):
+        fail("SPEC175_WORKLOAD_SEAL_DIGEST_MISMATCH")
+    for name in rows:
+        if FORBIDDEN_RUNTIME.search(name) or FORBIDDEN_OVERLAY.search(name):
+            fail("SPEC175_SEALED_RUNTIME_OVERLAY", name)
+    seal_json_digest = str(seal_json.get("sealDigest", ""))
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", seal_json_digest):
+        fail("SPEC175_SOURCE_SEAL_DIGEST_MISSING")
+    return {
+        "source": result,
+        "sourceSealDigest": seal_json_digest,
+        "workload": {"path": rel, "sha256": sha256(workload)},
+    }
+
+
+_RUNTIME_PROBE = r'''
+import importlib.util
+import json
+import os
+import subprocess
+import sys
+
+def module_path(name):
+    spec = importlib.util.find_spec(name)
+    return str(spec.origin) if spec and spec.origin else ""
+
+def ldd(path):
+    if not path or not os.path.exists(path):
+        return {"path": path, "state": "MISSING", "notFound": []}
+    result = subprocess.run(["ldd", path], text=True, capture_output=True,
+                            check=False)
+    missing = [line.strip() for line in result.stdout.splitlines()
+               if "not found" in line]
+    return {"path": path, "returncode": result.returncode,
+            "notFound": missing, "state": "PASS" if result.returncode == 0 and not missing else "FAIL"}
+
+extension = module_path("ndnsf._ndnsf")
+import_error = ""
+try:
+    import ndnsf._ndnsf as native
+    extension = str(getattr(native, "__file__", extension))
+except Exception as exc:
+    import_error = type(exc).__name__ + ":" + str(exc)
+
+forbidden = {name: module_path(name) for name in ("torch", "transformers", "functorch")}
+forbidden = {key: value for key, value in forbidden.items() if value}
+host_substrate_modules = {name: module_path(name) for name in ("minindn", "mininet")}
+host_substrate_modules = {key: value for key, value in host_substrate_modules.items() if value}
+ort_version = ""
+ort_providers = []
+ort_error = ""
+try:
+    import onnxruntime as ort
+    ort_version = str(getattr(ort, "__version__", ""))
+    ort_providers = list(ort.get_available_providers())
+except Exception as exc:
+    ort_error = type(exc).__name__ + ":" + str(exc)
+
+def command_path(*names):
+    for name in names:
+        if os.path.isabs(name) and os.path.isfile(name):
+            return name
+        for directory in os.environ.get("PATH", "").split(os.pathsep):
+            candidate = os.path.join(directory, name)
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+    return ""
+
+
+# SIF-owned commands only. MiniNDN/Mininet/OVS/NLSR/mnexec/ip are host
+# substrate dependencies and are checked by the separate host preflight.
+runtime_commands = {
+    "nfd": command_path("nfd"),
+    "nfdc": command_path("nfdc"),
+    "ndnsec": command_path("ndnsec"),
+    "controller": command_path(
+        "/opt/ndnsf-di/current/bin/App_ServiceController",
+        "App_ServiceController"),
+    "provider": command_path(
+        "/opt/ndnsf-di/current/bin/di-native-provider", "di-native-provider"),
+}
+runtime_commands_status = {
+    name: bool(path) for name, path in runtime_commands.items()
+}
+host_substrate_commands = {
+    name: command_path(name)
+    for name in ("mn", "mnexec", "ovs-vswitchd", "ovs-vsctl", "ip", "nlsr")
+}
+host_substrate_commands = {
+    key: value for key, value in host_substrate_commands.items() if value
+}
+runtime_imports = {
+    name: module_path(name)
+    for name in ("ndnsf", "py_repoclient", "ndnsf_distributed_inference")
+}
+runtime_imports_status = {
+    name: bool(path) for name, path in runtime_imports.items()
+}
+runtime_files = {
+    "repoBootstrap": "/opt/ndnsf-di/replay/repo/Experiments/spec175_repo_bootstrap.py",
+    "trustSchema": "/opt/ndnsf-di/replay/repo/examples/trust-schema.conf",
+    "provider": "/opt/ndnsf-di/replay/repo/examples/python/NDNSF-DistributedInference/llm_pipeline/provider.py",
+    "user": "/opt/ndnsf-di/replay/repo/examples/python/NDNSF-DistributedInference/llm_pipeline/user.py",
+    "repoNode": "/opt/ndnsf-di/replay/repo/specs/162-itiger-qwen36-generation/jobs/run-repo-node.py",
+    "repoRegistration": "/opt/ndnsf-di/replay/repo/specs/162-itiger-qwen36-generation/jobs/register-qwen36-repo.py",
+}
+runtime_files_status = {
+    name: os.path.isfile(path) for name, path in runtime_files.items()
+}
+
+result = {
+    "python": sys.version.split()[0],
+    "soabi": getattr(sys, "abiflags", "") + "-" + sys.implementation.cache_tag,
+    "extension": extension,
+    "extensionImportError": import_error,
+    "forbiddenModules": forbidden,
+    "hostSubstrateModules": host_substrate_modules,
+    "hostSubstrateCommands": host_substrate_commands,
+    "onnxruntime": {"version": ort_version, "providers": ort_providers,
+                    "error": ort_error},
+    "runtimeCommands": runtime_commands,
+    "runtimeCommandsStatus": runtime_commands_status,
+    "runtimeImports": runtime_imports,
+    "runtimeImportsStatus": runtime_imports_status,
+    "runtimeFiles": runtime_files,
+    "runtimeFilesStatus": runtime_files_status,
+    "ldd": {
+        "extension": ldd(extension),
+        "provider": ldd("/opt/ndnsf-di/current/bin/di-native-provider"),
+    },
+}
+result["status"] = "PASS" if (
+    result["python"].startswith("3.10.")
+    and "cpython-310" in extension
+    and not import_error
+    and not forbidden
+    and not host_substrate_modules
+    and not host_substrate_commands
+    and "CUDAExecutionProvider" in ort_providers
+    and all(runtime_commands_status.values())
+    and all(runtime_imports_status.values())
+    and all(runtime_files_status.values())
+    and result["ldd"]["extension"]["state"] == "PASS"
+    and result["ldd"]["provider"]["state"] == "PASS"
+) else "FAIL"
+print(json.dumps(result, sort_keys=True))
+'''
+
+
+def validate_sif(sif: Path, apptainer: str | None, expected_sha: str | None,
+                 source_seal_digest: str | None = None) -> dict:
+    if not sif.is_file() or sif.stat().st_size == 0:
+        fail("SPEC175_SIF_MISSING", str(sif))
+    actual = sha256(sif)
+    actual_hex = actual.split(":", 1)[1]
+    if expected_sha and expected_sha not in {actual, actual_hex, "sha256:" + actual_hex}:
+        fail("SPEC175_SIF_DIGEST_MISMATCH", actual)
+    record = {"path": str(sif.resolve()), "sha256": actual, "bytes": sif.stat().st_size}
+    if apptainer:
+        try:
+            result = subprocess.run([apptainer, "inspect", "--json", str(sif)], text=True,
+                                    capture_output=True, check=False)
+        except OSError as exc:
+            fail("SPEC175_APPTAINER_UNAVAILABLE", exc)
+        if result.returncode != 0:
+            fail("SPEC175_SIF_INSPECT_FAILED", result.stderr.strip())
+        try:
+            inspect = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            fail("SPEC175_SIF_INSPECT_INVALID")
+        labels = inspect.get("data", {}).get("attributes", {}).get("labels", {})
+        if not isinstance(labels, dict):
+            fail("SPEC175_SIF_LABELS_MISSING")
+        record["labels"] = labels
+        if labels.get("org.ndnsf.di.build-boundary") != "container-runtime-in-sif":
+            fail("SPEC175_SIF_BUILD_BOUNDARY_INVALID")
+        if source_seal_digest and labels.get("org.ndnsf.di.source-seal") != source_seal_digest:
+            fail("SPEC175_SIF_SOURCE_SEAL_LABEL_MISMATCH",
+                 f"expected={source_seal_digest} actual={labels.get('org.ndnsf.di.source-seal')}")
+        probe = subprocess.run(
+            [apptainer, "exec", "--cleanenv", str(sif), "python3", "-c", _RUNTIME_PROBE],
+            text=True, capture_output=True, check=False,
+        )
+        if probe.returncode != 0:
+            fail("SPEC175_SIF_RUNTIME_PROBE_FAILED", probe.stderr.strip())
+        try:
+            runtime = json.loads(probe.stdout)
+        except json.JSONDecodeError:
+            fail("SPEC175_SIF_RUNTIME_PROBE_INVALID")
+        record["runtime"] = runtime
+        if runtime.get("status") != "PASS":
+            fail("SPEC175_SIF_RUNTIME_INVALID", runtime)
+    return record
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--candidate-manifest", type=Path)
+    parser.add_argument("--source-seal", type=Path)
+    parser.add_argument("--workload", type=Path)
+    parser.add_argument("--sif", type=Path)
+    parser.add_argument("--apptainer", default=os.environ.get("SPEC175_APPTAINER", ""))
+    parser.add_argument("--expected-sif-sha256")
+    parser.add_argument("--output", type=Path)
+    args = parser.parse_args()
+    try:
+        if args.candidate_manifest:
+            try:
+                candidate = json.loads(args.candidate_manifest.resolve().read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                fail("SPEC175_CANDIDATE_MANIFEST_INVALID", type(exc).__name__)
+            source_info = candidate.get("source", {}).get("candidateSeal", {})
+            sif_info = candidate.get("sif", {})
+            if args.source_seal is None:
+                args.source_seal = Path(source_info.get("path", ""))
+            if args.sif is None:
+                args.sif = Path(sif_info.get("path", ""))
+            if not args.expected_sif_sha256:
+                args.expected_sif_sha256 = sif_info.get("sha256")
+        if args.source_seal is None or args.workload is None:
+            if args.workload is None:
+                args.workload = ROOT / "packaging/ndnsf-di-container/jobs/spec175/workload.json"
+        if args.source_seal is None or not args.source_seal:
+            fail("SPEC175_SOURCE_SEAL_REQUIRED")
+        workload_path = args.workload.resolve()
+        source_seal_path = args.source_seal.resolve()
+        workload = validate_workload(workload_path)
+        source = validate_source(source_seal_path, workload_path)
+        source_seal_digest = source.get("sourceSealDigest")
+        sif = validate_sif(
+            args.sif.resolve(), args.apptainer or None, args.expected_sif_sha256,
+            source_seal_digest,
+        ) if args.sif else None
+    except PreflightError as exc:
+        print(str(exc), file=sys.stderr)
+        return 4
+    output = {
+        "schemaVersion": "spec175-sif-preflight-v1",
+        "status": "PASS",
+        "workload": workload,
+        "source": source,
+    }
+    if sif:
+        output["sif"] = sif
+    rendered = json.dumps(output, sort_keys=True)
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(output, indent=2, sort_keys=True) + "\n",
+                               encoding="utf-8")
+    print(rendered)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

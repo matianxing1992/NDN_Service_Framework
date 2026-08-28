@@ -1,0 +1,192 @@
+{
+  "schemaVersion": "spec130-boundary-repair-v1",
+  "status": "design-frozen-before-implementation",
+  "automaticRetry": false,
+  "rerunAllowed": false,
+  "expectedExpandedCellCount": 16,
+  "spec129Policy": "hash-only-never-invoke-never-modify",
+  "centralCoordinatorAllowed": false,
+  "requiredActorIsolation": {
+    "distinctMiniNdnHostPerRequester": true,
+    "distinctMiniNdnHostPerProvider": true,
+    "oneNfdPerHost": true,
+    "recordIdentityPidRouteMap": true
+  },
+  "acceptedFaultMechanisms": [
+    "provider-publish-delay",
+    "tc-netem-or-routing",
+    "production-publication-suppression",
+    "process-signal-or-restart"
+  ],
+  "prohibitedEvidence": [
+    "assigned-expected-counter",
+    "deterministic-local-probe-as-live-cell",
+    "shared-host-or-shared-nfd-distributed-claim",
+    "automatic-or-selective-rerun",
+    "spec129-runner-invocation"
+  ],
+  "acceptanceRules": {
+    "maximumDoubleOwnership": 0,
+    "maximumLateAckWithoutTerminalDecision": 0,
+    "maximumRetryWithLivePriorReservation": 0,
+    "maximumExecutingPinReleasedBeforeStopOrComplete": 0,
+    "maximumUnauthorizedDownstreamExecution": 0,
+    "maximumGenericCoreDiPolicyReferences": 0,
+    "requiredInvocationCountPerCell": 1,
+    "failedUnavailableAndHarnessInvalidRemain": true
+  },
+  "analysis": {
+    "statisticalClaim": "none",
+    "retryProgress": "descriptive-only-no-fairness-claim",
+    "requiredMetricFamilies": [
+      "payload",
+      "mapping",
+      "new-mapping-information-ratio",
+      "ack",
+      "selected",
+      "not-selected",
+      "decision-receipt",
+      "retry",
+      "timeout",
+      "nack-or-rejection",
+      "reservation",
+      "pin",
+      "release",
+      "stage-data",
+      "execution",
+      "safety",
+      "availability",
+      "terminal-cause"
+    ]
+  },
+  "cells": [
+    {
+      "cell": 1,
+      "id": "late-ack-on-time-control",
+      "family": "late-ack",
+      "actors": {"requesters": 1, "providers": 2},
+      "fault": "none",
+      "assertion": "normal window closes every positive reservation"
+    },
+    {
+      "cell": 2,
+      "id": "late-ack-after-other-selected",
+      "family": "late-ack",
+      "actors": {"requesters": 1, "providers": 2},
+      "fault": "provider-publish-delay",
+      "assertion": "late provider receives exact NOT_SELECTED after another provider is selected"
+    },
+    {
+      "cell": 3,
+      "id": "late-ack-duplicate-after-response",
+      "family": "late-ack",
+      "actors": {"requesters": 1, "providers": 2},
+      "fault": "provider-publish-delay-and-duplicate-reorder",
+      "assertion": "tombstone closes one logical liability idempotently without reopening response"
+    },
+    {
+      "cell": 4,
+      "id": "two-requester-disjoint",
+      "family": "concurrency",
+      "actors": {"requesters": 2, "providers": 2},
+      "fault": "none",
+      "assertion": "disjoint progress overlaps with no central order event"
+    },
+    {
+      "cell": 5,
+      "id": "two-requester-one-resource",
+      "family": "concurrency",
+      "actors": {"requesters": 2, "providers": 1},
+      "fault": "concurrent-start",
+      "assertion": "one local reservation owner and no double execution"
+    },
+    {
+      "cell": 6,
+      "id": "two-requester-complementary-partial",
+      "family": "concurrency",
+      "actors": {"requesters": 2, "providers": 2},
+      "fault": "concurrent-partial-reservations",
+      "assertion": "all partial offers close before either fresh attempt"
+    },
+    {
+      "cell": 7,
+      "id": "long-pin-crosses-lease",
+      "family": "execution-pin",
+      "actors": {"requesters": 2, "providers": 1},
+      "fault": "long-running-handler",
+      "assertion": "contender cannot reserve until first role completes"
+    },
+    {
+      "cell": 8,
+      "id": "long-pin-renewal-loss",
+      "family": "execution-pin",
+      "actors": {"requesters": 2, "providers": 1},
+      "fault": "production-publication-suppression",
+      "assertion": "renewal loss causes stop-before-release, never timer-only release"
+    },
+    {
+      "cell": 9,
+      "id": "long-pin-cancel-abort",
+      "family": "execution-pin",
+      "actors": {"requesters": 2, "providers": 1},
+      "fault": "process-cancel-or-signal",
+      "assertion": "confirmed stop precedes release and later contender succeeds"
+    },
+    {
+      "cell": 10,
+      "id": "production-jitter-eventual-success",
+      "family": "retry",
+      "actors": {"requesters": 2, "providers": 2},
+      "fault": "seedless-production-collision",
+      "assertion": "maintained client samples bounded non-fixed jitter and one attempt succeeds"
+    },
+    {
+      "cell": 11,
+      "id": "production-jitter-bounded-exhaustion",
+      "family": "retry",
+      "actors": {"requesters": 2, "providers": 2},
+      "fault": "repeated-production-collision",
+      "assertion": "attempt or absolute deadline bound terminates with no carried reservation"
+    },
+    {
+      "cell": 12,
+      "id": "dependency-three-stage-chain",
+      "family": "dependency",
+      "actors": {"requesters": 1, "providers": 3},
+      "fault": "none",
+      "assertion": "real stage payload crosses every provider and gates direct successor"
+    },
+    {
+      "cell": 13,
+      "id": "dependency-four-stage-fork-join",
+      "family": "dependency",
+      "actors": {"requesters": 1, "providers": 4},
+      "fault": "none",
+      "assertion": "two successor branches overlap and join runs once after both"
+    },
+    {
+      "cell": 14,
+      "id": "dependency-predecessor-data-loss",
+      "family": "dependency",
+      "actors": {"requesters": 1, "providers": 3},
+      "fault": "tc-netem-or-production-publication-suppression",
+      "assertion": "missing predecessor prevents downstream execution and closes resources"
+    },
+    {
+      "cell": 15,
+      "id": "ordinary-ndnsf-nonreserving",
+      "family": "ownership-boundary",
+      "actors": {"requesters": 1, "providers": 1},
+      "fault": "none",
+      "assertion": "ordinary positive ACK implies no reservation or mandatory negative selection"
+    },
+    {
+      "cell": 16,
+      "id": "ndnsf-di-application-owned-secure-path",
+      "family": "ownership-boundary",
+      "actors": {"requesters": 1, "providers": 2},
+      "fault": "source-and-import-negative-scan",
+      "assertion": "DI adapter owns semantics and generic Core has zero DI policy references"
+    }
+  ]
+}

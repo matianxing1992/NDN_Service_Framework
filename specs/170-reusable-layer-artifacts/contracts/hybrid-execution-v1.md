@@ -15,10 +15,12 @@ Total ranks:     sum(M_i)
 
 There is no mandatory global tensor degree.
 
-- `M_i = 1`: stage `i` is one unsplit pipeline role with no tensor collective.
-- `M_i > 1`: stage `i` is one logical role implemented by `M_i` ranks.
+- `M_i = 1`: stage `i` is one unsplit execution role with no tensor collective.
+- `M_i > 1`: stage `i` creates `M_i` distinct execution roles, one per rank.
 - Collective-group count equals the number of stages whose degree exceeds one,
   unless an adapter explicitly certifies a more specialized grouping contract.
+- every execution role is owned by exactly one Provider, and every selected
+  Provider owns exactly one role in the Attempt.
 
 ## Tensor Distribution Within a Sharded Stage
 
@@ -36,39 +38,39 @@ The recipe must cover every required parameter/state/input/output exactly once
 under its declared semantics. Unsupported tensors make the stage recipe
 infeasible.
 
-## Global and Provider-Local Assignment
+## Role Ownership and Assignment
 
 ```text
-LogicalRole
-  -> RankAssignment[]                 # global rank map
-  -> ProviderLocalRoleBundle[]        # one subset per selected Provider
-       -> DeviceBinding               # handles valid in that Provider offer
+PipelineStageRank
+  -> ExecutionRole
+       -> one Provider
+       -> one CPU or SINGLE_DEVICE binding
+       -> one RoleAssemblySpec
+       -> one RoleDataflowContract
 ```
 
-A device handle has meaning only inside its Provider offer/profile. Therefore a
-global logical role spanning Providers cannot own one global `DeviceBinding`.
-Final Selection projects all bundles for one Provider into one authenticated
-Provider-specific assignment.
+A device handle has meaning only inside its Provider offer/profile. An execution
+role never spans Providers, and one Provider never owns multiple roles in one
+Attempt. Tensor parallelism is expressed by several roles joined by one group;
+it is not expressed by a global role or a Provider-local rank bundle.
 
-`ProviderLocalRoleBundle` fields:
+Each Provider-specific Selection contains:
 
-- Provider, logical role, and local rank IDs;
-- local CPU/device-set binding and per-rank resource envelopes;
-- assembly specifications and tensor distributions;
-- collective/redistribution endpoints;
+- Provider and one execution role/stage/rank ID;
+- one local CPU or single-device binding and resource envelope;
+- one `RoleAssemblySpec` and tensor distribution;
+- one `RoleDataflowContract` with exact `mayPublish[]`, `mustFetch[]`, and
+  `waitFor[]` entries;
 - offer/profile/snapshot/sequence digests;
-- atomic local admission group.
+- one local admission fence.
 
-All local resources in one bundle are validated and admitted/enqueued together.
+The complete role is validated and admitted/enqueued atomically.
 
-### Provider-local and cross-Provider groups
+### Cross-Provider groups
 
-- A Provider-local tensor group places all ranks in one
-  `ProviderLocalRoleBundle`, uses one ordered local device set, and admits that
-  set atomically.
-- A cross-Provider tensor group places ranks in two or more local bundles. Each
-  Provider independently validates/admit its own bundle; no Provider can admit
-  or address another Provider's device.
+- Every tensor group with degree greater than one uses two or more Providers,
+  one per rank role. Each Provider independently validates and admits its role;
+  no Provider can admit or address another Provider's device.
 - Cross-Provider rendezvous binds peer identities, authenticated endpoints,
   request/attempt/plan/group/epoch, layouts, operation order, and failure rules.
 - The collective becomes runnable only when every member of that group and its
@@ -77,12 +79,14 @@ All local resources in one bundle are validated and admitted/enqueued together.
 - Missing or lost membership fails the complete affected epoch. Replacement
   requires a new sealed plan generation.
 
-## Cross-Provider Transport Profile: NDNSF_DATA_V1
+## Cross-Provider Consumer-Pull NDN Dataflow
 
 Spec 170 chooses one mandatory cross-Provider payload profile; it does not leave
-the transport as an implementation-time decision. Provider-local ranks may use
-an adapter-certified local collective backend, but every cross-Provider
-collective or redistribution edge uses authenticated NDNSF named segmented Data.
+transport as an implementation-time decision. Every pipeline activation,
+collective operand/result, and redistribution edge crosses Providers as
+consumer-pull NDN Interest/Data. No Provider pushes payloads to another Provider,
+and raw TCP/RPC/RDMA/NCCL channels or shared files cannot substitute for this
+path.
 
 ### Capability and epoch establishment
 
@@ -96,13 +100,16 @@ GroupCapabilityV1 {
   permittedOperations[] {operationIndex, kind, producerRanks, consumerRanks,
                           tensorLayoutDigest, maxBytes, maxSegments}
   maxInflightBytes / noProgressMs / hardDeadline
-  epochKeyId / wrappedEpochKeyByProvider[]
+  epochKeyId / wrappedEpochKeyDigestByProvider[]
+  wrappedEpochKeyByProvider[0..1]  # local Provider entry in its projection
   capabilityDigest / sealerSignature
 }
 ```
 
-Every Provider-specific Selection carries the same capability digest and only
-that Provider's wrapped epoch key. The key is encrypted to its Provider identity.
+Every Provider-specific Selection carries the same capability digest and the
+same signed commitments to all member envelopes, but discloses only that
+Provider's wrapped epoch key. The key is encrypted to its Provider identity and
+must hash to the corresponding committed envelope digest.
 The endpoint prefix is an NDNSF-DI namespace, not a raw socket address. A peer
 must validate Selection, group membership, offer binding, capability signature,
 epoch, and local key unwrap before declaring rendezvous ready.
@@ -116,15 +123,18 @@ group epoch always generates a new key; nonce/key reuse across epochs is invalid
 Provider plaintext keys live in the protected runtime registry and are zeroized
 on completion, cancellation, expiry, restart, or epoch replacement.
 
-### Operation manifest and Data names
+### Tensor object manifest and Data names
 
-The producer publishes a signed root manifest before consumers accept segments:
+The producer makes a signed root manifest available under the exact name declared
+in every matching consumer's `mustFetch`. The consumer first expresses an
+Interest for that manifest and then expresses bounded Interests for its segments:
 
 ```text
-CollectiveOperationManifestV1 {
+TensorObjectManifestV1 {
   capabilityDigest / epochKeyId
-  requestId / attemptId / planDigest / groupId / epoch
-  operationIndex / operationKind / producerRank
+  requester / requestId / attemptId / planDigest / groupId / epoch
+  operationIndex / round / operationKind / producerRole / producerRank
+  consumerRoles[] / microbatch
   sourceLayoutDigest / targetLayoutDigest / tensorDigest
   totalBytes / segmentSize / segmentCount
   orderedSegmentDigests[]
@@ -132,17 +142,23 @@ CollectiveOperationManifestV1 {
   producerSignature
 }
 
-/<producer>/NDNSF-DI/COLLECTIVE/v1
-  /REQ/<request-id>/ATTEMPT/<attempt-id>/PLAN/<plan-digest>
-  /GROUP/<group-id>/EPOCH/<epoch>/OP/<operation-index>
-  /RANK/<producer-rank>/TENSOR/<tensor-digest>
-  /SEG/<segment-number>
+/<producer>/NDNSF-DI/TENSOR/v1
+  /REQUESTER/<requester-component>/REQ/<request-id>
+  /ATTEMPT/<attempt-id>/PLAN/<plan-digest>
+  /GROUP/<group-id>/EPOCH/<epoch>
+  /OP/<operation-index>/ROUND/<round>
+  /SOURCE-ROLE/<role-component>/RANK/<producer-rank>
+  /TENSOR/<tensor-id>/<tensor-digest>/MICROBATCH/<microbatch>
+  /MANIFEST
+
+/<same-prefix>/SEG/<segment-number>
 ```
 
 Each segment content is AEAD-encrypted with a per-operation key derived from the
 group epoch key by HKDF. Its nonce is uniquely derived from capability digest,
-epoch, operation index, producer rank, and segment number; reuse is rejected.
-The full Data name plus operation-manifest digest is AEAD associated data. The
+epoch, operation index, round, producer role/rank, tensor and manifest digests,
+the full immutable Data name, microbatch, and segment number; reuse is rejected.
+The full Data name plus tensor-object-manifest digest is also AEAD associated data. The
 NDN Data uses an epoch HMAC signature so a consumer avoids per-segment public-key
 verification after validating the signed manifest/capability. Consumers verify
 all identity components, declared bounds, AEAD tag, HMAC, ciphertext segment
@@ -166,9 +182,8 @@ redistribution operator. No partial tensor is a dependency-ready event.
   downstream readiness event. Restart/replacement requires a new plan/group
   epoch and epoch key.
 - Raw TCP, RDMA, or NCCL payload channels between Providers are out of scope for
-  this baseline. Adding one requires a versioned transport contract with peer
-  authentication, confidentiality/integrity, replay, bounds, cancellation, and
-  matched evidence; it cannot silently replace `NDNSF_DATA_V1`.
+  this baseline. A retransmission re-expresses an Interest for the same immutable
+  name; it never allocates a new sequence identity or asks the producer to push.
 
 ## Intra-Stage Collective Contract
 

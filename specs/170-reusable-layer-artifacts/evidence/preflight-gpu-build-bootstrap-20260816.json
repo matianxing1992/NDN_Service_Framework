@@ -1,0 +1,10 @@
+{
+  "archiveCount": 0,
+  "nativeTargetCount": 32,
+  "pythonPackageCount": 41,
+  "repoTargetCount": 4,
+  "schemaVersion": "spec110-gpu-build-preflight-v1",
+  "sourceCount": 8,
+  "status": "PASS",
+  "systemCudaRequirementCount": 11
+}

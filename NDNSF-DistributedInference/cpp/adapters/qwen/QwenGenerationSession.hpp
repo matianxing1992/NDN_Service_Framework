@@ -1,10 +1,14 @@
 #ifndef NDNSF_DISTRIBUTED_INFERENCE_QWEN_GENERATION_SESSION_HPP
 #define NDNSF_DISTRIBUTED_INFERENCE_QWEN_GENERATION_SESSION_HPP
 
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/DecodeStateIdentity.hpp"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
+#include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -17,6 +21,41 @@ struct QwenRoleBinding
   std::string providerBootId;
 };
 
+struct DecodeStateComponentV1
+{
+  std::string name;
+  std::string dtype;
+  std::vector<std::int64_t> shape;
+  std::string digest;
+
+  void validate() const;
+};
+
+/** Hybrid Qwen state: full-attention KV plus recurrent/convolution state. */
+struct DecodeStateBundleV1
+{
+  DecodeStateIdentityV1 identity;
+  std::vector<DecodeStateComponentV1> fullAttentionKv;
+  std::vector<DecodeStateComponentV1> recurrentConvolution;
+  std::uint32_t tokenEpoch = 0;
+
+  void validate() const;
+  std::string digest() const;
+};
+
+class DecodeStateTransactionV1
+{
+public:
+  explicit DecodeStateTransactionV1(DecodeStateBundleV1 committed);
+
+  const DecodeStateBundleV1& committed() const noexcept;
+  void apply(const DecodeStateBundleV1& candidate,
+             std::function<bool(const DecodeStateBundleV1&)> admit = {});
+
+private:
+  DecodeStateBundleV1 m_committed;
+};
+
 struct QwenGenerationSessionSpec
 {
   std::string schema = "ndnsf-di-qwen-generation-session-v1";
@@ -27,7 +66,7 @@ struct QwenGenerationSessionSpec
   std::string logicalSessionId;
   std::string requestId;
   std::string serviceName;
-  std::uint64_t attemptEpoch = 0;
+  std::uint64_t attemptEpoch = 1;
   std::uint32_t tokenEpoch = 0;
   std::uint32_t inputTokenCount = 0;
   std::uint32_t maxGeneratedTokens = 0;
@@ -49,11 +88,25 @@ enum class QwenGenerationState
 {
   Created,
   Selecting,
-  Active,
-  Rebuilding,
+  Preparing,
+  Prefilling,
+  Decoding,
+  Draining,
+  // Kept as a source-level spelling for older callers; it aliases the
+  // decoding state and is not a separate lifecycle state.
+  Active = Decoding,
+  Rebuilding = 6,
   Completed,
   Terminal,
   Cancelled,
+};
+
+enum class QwenGenerationFinishReason
+{
+  Eos,
+  StopSequence,
+  MaxTokens,
+  ApplicationComplete,
 };
 
 enum class QwenGenerationTerminal
@@ -70,6 +123,7 @@ enum class QwenGenerationTerminal
 
 const char* toString(QwenGenerationState state) noexcept;
 const char* toString(QwenGenerationTerminal reason) noexcept;
+const char* toString(QwenGenerationFinishReason reason) noexcept;
 
 class QwenGenerationSessionStateMachine
 {
@@ -78,16 +132,21 @@ public:
 
   QwenGenerationState state() const noexcept;
   QwenGenerationTerminal terminalReason() const noexcept;
+  QwenGenerationFinishReason finishReason() const noexcept;
   std::uint64_t attemptEpoch() const noexcept;
   std::uint32_t generatedTokenCount() const noexcept;
   bool isTerminal() const noexcept;
 
   void beginSelection();
   void activate();
+  void completePrefill();
   std::uint32_t completeTokenEpoch();
   std::uint32_t completeTokenEpoch(std::uint64_t attemptEpoch);
+  void observeEosToken();
+  void observeStopSequence();
+  void beginDrain(QwenGenerationFinishReason reason);
   void beginReplacement();
-  void complete();
+  void complete(QwenGenerationFinishReason reason);
   void terminate(QwenGenerationTerminal reason);
   void cancel();
   bool expireIfDeadlineReached(std::uint64_t nowEpochMs);
@@ -102,6 +161,10 @@ private:
   QwenGenerationTerminal m_terminalReason = QwenGenerationTerminal::None;
   std::uint64_t m_attemptEpoch = 0;
   std::uint32_t m_generatedTokenCount = 0;
+  bool m_eosObserved = false;
+  bool m_stopSequenceObserved = false;
+  QwenGenerationFinishReason m_finishReason =
+      QwenGenerationFinishReason::ApplicationComplete;
   bool m_terminalResponseClaimed = false;
 };
 
@@ -174,4 +237,3 @@ private:
 } // namespace ndnsf::di
 
 #endif // NDNSF_DISTRIBUTED_INFERENCE_QWEN_GENERATION_SESSION_HPP
-

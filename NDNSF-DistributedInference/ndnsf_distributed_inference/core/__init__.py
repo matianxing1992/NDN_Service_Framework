@@ -3,6 +3,7 @@
 from .contracts import (
     DATA_DRIVEN_V2, LEGACY_READY_SET_V1, DI_PLACEMENT_V3, placement_wire_schema,
     DIDataDependencyV2, DIRequestEnvelopeV2, DIRoleAssignmentV2,
+    GenerationRecoveryV1,
     DISelectionAssignmentV2,
     DISelectionAcceptanceV2, ExactPrefixKvKeyV1, StateReuseBindingV2,
     ShardResidencyEvidenceV2, ProviderResidencyIdentity,

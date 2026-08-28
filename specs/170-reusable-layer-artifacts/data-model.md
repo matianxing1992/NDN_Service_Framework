@@ -220,21 +220,24 @@ Fields:
 `M_i = 1` creates one ordinary unsplit stage role. The degree vector may vary by
 stage.
 
-### LogicalRole
+### ExecutionRole
 
-Semantic execution unit independent of rank count.
+Complete executable unit for one pipeline-stage/rank pair.
 
 Fields:
 
-- logical role ID and stage ID;
+- role ID, stage ID, and rank ID;
 - graph/layer coverage;
 - task/adapter/backend requirements;
 - expected input/output and terminal semantics;
-- rank count equal to the owning stage's `M_i`.
+- exactly one owning Provider and one CPU/single-device target.
+
+A stage with degree `M_i` contains exactly `M_i` distinct execution roles. A
+collective group references those roles but is not itself a cross-Provider role.
 
 ### TensorDistribution
 
-Per-tensor rule inside a logical role/rank group.
+Per-tensor rule for one execution role within a stage/rank group.
 
 Modes:
 
@@ -248,16 +251,17 @@ sharded.
 
 ### RankAssignment
 
-One logical-role rank's sealed assignment.
+One execution role's sealed assignment.
 
 Fields:
 
-- logical role and rank ID;
+- execution role, stage, and rank ID;
 - Provider identity;
 - offer-scoped device handle or CPU binding;
 - tensor-distribution references and layer selectors;
 - phase-specific resource envelope;
 - assembly-specification digest;
+- role-dataflow-contract digest;
 - collective-group membership;
 - input/output and redistribution endpoints.
 
@@ -283,41 +287,25 @@ Modes:
 ```text
 CPU
 SINGLE_DEVICE
-DEVICE_SET
 ```
 
-`DeviceBinding` is Provider-local because its handles exist only in one signed
-Provider offer namespace. A logical role spanning Providers therefore uses:
+`DeviceBinding` is Provider-local because its handle exists only in one signed
+Provider offer namespace. The ownership relation is:
 
 ```text
-LogicalRole -> RankAssignment[] -> ProviderLocalRoleBundle[] -> DeviceBinding
+PipelineStageRank -> ExecutionRole -> one Provider -> one DeviceBinding
 ```
 
 Fields:
 
-- ordered local `RankAssignment[]` targets;
-- Provider-local bundle identity;
+- one role/rank assignment;
+- Provider identity;
 - offer, topology-profile, resource-snapshot, and resource-sequence digests;
 - sharing/admission policy;
-- atomic-admission group ID;
-- collective/communicator identity where applicable.
+- collective/group references where applicable.
 
-### ProviderLocalRoleBundle
-
-Groups all ranks of one logical role assigned to one Provider.
-
-Fields:
-
-- Provider and logical-role identity;
-- local rank IDs and their rank-assignment digests;
-- one CPU/single-device/device-set binding;
-- local assembly specifications and dependency/collective endpoints;
-- complete local resource vector and atomic-admission group;
-- offer/profile/snapshot/resource-sequence bindings.
-
-One final Provider-specific Selection may carry several local bundles. Their
-resources are validated/admitted as one local transaction, while each logical
-role still prepares and executes from its own data dependencies.
+Within one Attempt, the role-to-Provider map is one-to-one. Multi-role Provider
+projections and roles spanning Providers are invalid.
 
 ### RoleAssemblySpec
 
@@ -336,6 +324,31 @@ Fields:
 
 Providers execute only locally installed, digest-pinned adapter/assembler code.
 
+### RoleDataflowContract
+
+Sealed consumer-pull NDN dataflow for exactly one execution role.
+
+Fields:
+
+- request, attempt, plan digest, and role identity;
+- `mayPublish[]` tensor endpoints;
+- `mustFetch[]` tensor endpoints;
+- `waitFor[]` readiness predicates;
+- final-Response ownership;
+- dataflow-contract digest.
+
+Each tensor endpoint binds one producer role and the complete authorized
+consumer-role set, group/epoch,
+operation/round, tensor identity/layout/digest, microbatch, deterministic NDN
+name template, signed `TensorObjectManifest`, segment bounds, protection,
+deadlines, and completion semantics. Consumers express Interests; producers
+return immutable Data. One producer output that feeds multiple roles is one
+shared immutable NDN object: every consumer projection names the same manifest
+and segments, while the manifest lists the full authorized consumer set. It is
+not republished once per consumer. The endpoint segment count is a plan-time
+upper bound; the signed runtime manifest supplies the concrete count and ordered
+ciphertext digests. Partial segment sets never satisfy readiness.
+
 ### CollectiveGroup
 
 Fields:
@@ -347,12 +360,10 @@ Fields:
 - readiness, timeout, cancellation, and whole-group failure rules;
 - communicator/runtime compatibility digest.
 
-For a Provider-local group, every rank belongs to one
-`ProviderLocalRoleBundle` and admission covers the complete local device set.
-For a cross-Provider group, each Provider retains its own local bundle and
-`DeviceBinding`; the group additionally binds authenticated rendezvous,
-transport endpoints, peer identities, readiness evidence, and whole-epoch
-failure propagation. It never pools remote devices into one global binding.
+Every member is a distinct execution role on a distinct Provider. Each Provider
+retains its own `DeviceBinding`; the group binds authenticated NDN endpoints,
+peer identities, readiness evidence, and whole-epoch failure propagation. It
+never pools remote devices into one global binding.
 
 ### RedistributionEdge
 
@@ -408,7 +419,7 @@ Responsibilities:
 Trusted immutable output of `PlanSealerV3.sealCore`. It contains all fields and
 validated invariants of the placement decision except grant references and the
 final plan digest. Its canonical bytes bind request/attempt, ACK_CLOSED, model,
-profile, graph, strategy, offers, roles/ranks/bundles, assembly, dependencies,
+profile, graph, strategy, role/rank assignments, assembly, dataflow, dependencies,
 collectives, device bindings, resource estimates, and every Provider's
 protection requirement. `planCoreDigest` is the digest of those canonical
 bytes. Grant requests bind this digest, preventing a circular dependency on the
@@ -423,8 +434,8 @@ Fields:
 - public request ID, attempt/generation, deadline;
 - ACK_CLOSED, model, profile, graph, strategy, and offer digests;
 - ordered `PipelineStageSpec[]` and tensor-degree vector;
-- `LogicalRole[]`, `RankAssignment[]`, `ProviderLocalRoleBundle[]`, and
-  `RoleAssemblySpec[]`;
+- `ExecutionRole[]`, `RankAssignment[]`, `RoleAssemblySpec[]`, and
+  `RoleDataflowContract[]`;
 - `DeviceBinding[]`, collective groups, normal dependencies, and
   redistribution edges;
 - resource/transfer/cost estimates and decision evidence;
@@ -458,7 +469,8 @@ Validation invariants:
   redistribution path;
 - every selected handle belongs to the bound offer/profile/snapshot;
 - per-device resource envelopes fit without Provider-level memory pooling;
-- each device-set admission group is complete and atomically admissible;
+- the role/Provider assignment is one-to-one and every role's single binding is
+  atomically admissible;
 - dependency flow is acyclic outside explicit ordered collective epochs.
 
 ## Residency and Preparation
@@ -496,10 +508,19 @@ allocations and cannot become an untracked persistent cache.
 
 ### LoadedRuntimeIdentity
 
-Adds exact ordered device set, topology profile, device architecture, driver/
+Adds the exact CPU/single-device binding, topology profile, device architecture, driver/
 runtime/kernel profile, Provider boot/process/runtime generation, communicator
-epoch, and reusable-state contract. It is invalid if any member disappears or
-changes incompatibly.
+epoch, and reusable-state contract. It is invalid if the bound device disappears
+or changes incompatibly.
+
+The Provider projects these three inventories into distinct bounded
+`ResidencyProofV3` records. A proof contains a digest reference to its complete
+identity plus the fields needed by the trusted sealer. An artifact digest alone
+is never an exact-reuse proof. Feasible placement scoring orders exact loaded
+runtime, exact assembled fragment, canonical residency, then cold preparation;
+this ordering cannot create a role, change its Provider, or combine capacity
+across devices. CPU loaded-runtime identity uses an empty accelerator set;
+accelerator identity uses the exact selected `cuda:*` handle and topology.
 
 ### PreparationProgress
 
@@ -536,13 +557,10 @@ or admission fencing token.
 
 ### DeviceAdmissionLease
 
-Created only when a queued/host-ready assignment reaches the execution-admission
+Created only when a queued/host-ready role reaches the execution-admission
 boundary. It binds the current topology/profile/snapshot/resource sequence,
-complete Provider-local per-device phase vector, ordered device set, sharing/
-failure domains, monotonic fencing token, and lease/release timestamps.
-
-Independent single-device assignments use per-device transactions. A device-set
-assignment uses the same two-stage state machine with an atomic complete vector:
+one CPU/single-device phase envelope, sharing/failure domain, monotonic fencing
+token, and lease/release timestamps.
 
 ```text
 PROPOSED -> SELECTION_VALIDATED -> QUEUE_ACCEPTED
@@ -555,9 +573,8 @@ DEVICE_ADMISSION_PENDING -> DEVICE_ADMITTED(fencingToken)
 DEVICE_ADMITTED -> LOADING -> ACTIVE -> RELEASED | FAILED_GROUP
 ```
 
-No state before `DEVICE_ADMITTED` holds device capacity. No intermediate state
-may hold a strict subset of a requested `DEVICE_SET`. Every load/execution/release
-operation rejects a stale fencing token.
+No state before `DEVICE_ADMITTED` holds device capacity. Every
+load/execution/release operation rejects a stale fencing token.
 
 ## Protected Artifact Runtime
 

@@ -78,3 +78,45 @@ pre-registered paired condition satisfies SC-005 or SC-005a, with `gRPC-SEQ-4`
 plus NSC-4 as the sequential baselines and the all-unreachable fraction,
 retry/control cost, and latency reported. Otherwise the aggregate MUST use
 `NO_DEMONSTRATED_ADVANTAGE` or `INCONCLUSIVE_MISSING_CELL`.
+
+### Provider discovery claim
+
+The campaign may state that NDNSF avoids client-side Provider endpoint
+pre-registration only when the retained NDNSF runtime command contains no
+Provider identities or addresses and a Provider omitted from the client's
+configuration executes successful post-transition requests. The corresponding
+static baseline command and endpoint count MUST be shown. The report MUST say
+that gRPC/NSC can add dynamic discovery through an external resolver or
+configuration-update control plane; the measured distinction is whether that
+machinery is required by the evaluated application.
+
+### Opportunity-window schema
+
+Each row uses one stable `(condition, seed, logical_request_id)` key and records:
+
+```text
+publication_trace_s
+publication_monotonic_s
+applied_gate_state
+initial_provider
+reachable_providers
+opportunity_state = NONE_REACHABLE | INITIAL_REACHABLE | SWITCH_REQUIRED
+terminal_status
+user_latency_ms | null
+pre_execution_switch_cost_ms | null
+failed_attempt_time_ms | null
+attempts_or_provider_executions
+failure_stage | null
+```
+
+Opportunity state is analysis-only and MUST NOT be passed to a client. A
+service-side or Provider-side timestamp is a lifecycle proxy, not user latency.
+All opportunity states and their request counts remain in the output.
+
+For the seeds 72--81 confirmatory holdout, `publication_monotonic_s` and the
+cell's applied `mobility_trace.csv` are authoritative. A row is paired only
+when all three systems have a complete four-Provider gate state and agree on
+the registered opportunity class. Requests observed during sequential gate
+application are retained as `TRANSITION_BOUNDARY` controls and excluded from
+the conditional latency estimate. Planned trace time alone is insufficient for
+holdout classification.

@@ -42,9 +42,32 @@ DEFAULT_GROUP = "/NDNSF-DistributeInference/example/group"
 DEFAULT_USER = "/NDNSF-DistributeInference/example/user"
 DEFAULT_PROVIDER_PREFIX = "/NDNSF-DistributeInference/example/provider"
 TINY_TRANSFORMERS_RUNTIME = "tiny-transformers"
+TINY_ONNX_RUNTIME = "tiny-onnx"
 QWEN_TRANSFORMERS_RUNTIME = "qwen-transformers"
 QWEN_ONNX_RUNTIME = "qwen-onnx"
 MAX_QWEN_GENERATED_TOKENS = 64
+
+
+def _onnx_input_numpy_dtype(type_name: str, default):
+    """Map an ORT tensor type without silently coercing BF16 to FP32."""
+    import numpy as np
+
+    normalized = str(type_name or "").lower()
+    if "bfloat16" in normalized:
+        raise RuntimeError(
+            "QWEN_ONNX_BFLOAT16_UNSUPPORTED: export FP16 or provide an "
+            "explicit packed-bfloat16 binding")
+    if "float16" in normalized:
+        return np.float16
+    if "float" in normalized:
+        return np.float32
+    if "int64" in normalized:
+        return np.int64
+    if "int32" in normalized:
+        return np.int32
+    if "bool" in normalized:
+        return np.bool_
+    return default
 
 
 def _sha256_file(path: Path) -> str:
@@ -836,6 +859,107 @@ def with_tiny_transformer_artifacts(
     )
 
 
+def with_tiny_onnx_artifacts(
+    splitter: SplitterOutput,
+    *,
+    fixture_root: str | Path,
+    stages: int,
+) -> SplitterOutput:
+    """Bind the checked-in deterministic ONNX fixture to pipeline roles.
+
+    The fixture is deliberately referenced read-only from the repository. It
+    is small enough for the host/MiniNDN gate and exercises the same ORT
+    session loading and stateful stage boundary as the later sealed runtime.
+    No framework model package is imported by this path.
+    """
+    root = Path(fixture_root).expanduser().resolve()
+    manifest_path = root / "manifest.json"
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"tiny ONNX fixture manifest is missing: {manifest_path}")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    fixture_schema = str(manifest.get("schemaVersion", manifest.get("schema", "")))
+    if fixture_schema != "spec175-tiny-causal-lm-v1":
+        raise ValueError("unsupported Spec175 tiny ONNX fixture schema")
+    partition_name = {1: "one-role", 2: "two-role", 4: "four-role"}.get(int(stages), "")
+    partition = (manifest.get("partitions", {}) or {}).get(partition_name)
+    if not isinstance(partition, list) or len(partition) != int(stages):
+        raise ValueError("tiny ONNX fixture does not provide the requested stage count")
+    by_role = {str(row["role"]): dict(row) for row in partition}
+    services: list[SplitServiceSpec] = []
+    for service in splitter.services:
+        if service.name != SERVICE:
+            services.append(service)
+            continue
+        artifacts: list[SplitArtifact] = []
+        for role in service.roles:
+            row = by_role.get(str(role))
+            if row is None:
+                raise ValueError(f"tiny ONNX fixture lacks role {role}")
+            relative = Path(str(row["path"]))
+            path = (root / relative).resolve()
+            try:
+                path.relative_to(root)
+            except ValueError as exc:
+                raise ValueError("tiny ONNX fixture path escaped fixture root") from exc
+            expected = str(row.get("sha256", manifest.get("content", {}).get(str(row["path"]), "")))
+            if expected.startswith("sha256:"):
+                expected = expected[7:]
+            actual = _sha256_file(path) if path.is_file() else ""
+            if not path.is_file() or (expected and actual != expected):
+                raise ValueError(f"tiny ONNX fixture digest mismatch for {role}")
+            artifacts.append(SplitArtifact(
+                role=str(role),
+                path=str(path),
+                artifact_name=f"/Model/LLM/Pipeline/TinyOnnx/{str(role).strip('/')}",
+                filename=path.name,
+                kind="onnx-model",
+                backend="onnxruntime",
+                metadata={
+                    "runtime": TINY_ONNX_RUNTIME,
+                    "runtimeBackend": "onnxruntime",
+                    "modelFormat": "onnx",
+                    "fixtureSchema": fixture_schema,
+                    "fixtureRoot": str(root),
+                    "stageIndex": int(row["role"].rsplit("/", 1)[-1]),
+                    "stageCount": int(stages),
+                    "sha256": actual,
+                    "stateful": True,
+                },
+            ))
+        services.append(SplitServiceSpec(
+            name=service.name,
+            model_name=service.model_name,
+            roles=list(service.roles),
+            dependencies=list(service.dependencies),
+            artifacts=artifacts,
+            input_schema={**dict(service.input_schema), "codec": "tiny-onnx-context-v1"},
+            output_schema={**dict(service.output_schema), "codec": "tiny-onnx-stream-v1"},
+            users=list(service.users),
+            providers=list(service.providers),
+            metadata={
+                **dict(service.metadata),
+                "execution_implemented": True,
+                "runtime": TINY_ONNX_RUNTIME,
+                "runtimeBackend": "onnxruntime",
+                "fixtureSchema": fixture_schema,
+            },
+        ))
+    return SplitterOutput(
+        application=splitter.application,
+        controller=splitter.controller,
+        group=splitter.group,
+        user=splitter.user,
+        provider_prefix=splitter.provider_prefix,
+        services=services,
+        provider_identities=list(splitter.provider_identities),
+        trust_app_roots=list(splitter.trust_app_roots),
+        trust_anchor_file=splitter.trust_anchor_file,
+        artifact_allowlist=list(splitter.artifact_allowlist),
+        artifact_sandbox=dict(splitter.artifact_sandbox),
+        metadata={**dict(splitter.metadata), "runtime": TINY_ONNX_RUNTIME},
+    )
+
+
 def qwen_transformer_stage_spec(*, role: str,
                                 stages: int,
                                 layer_count: int,
@@ -933,6 +1057,25 @@ def _position_ids_for_nested(value: Any) -> Any:
     return list(range(len(serializable)))
 
 
+def _qwen_position_ids_for_nested(value: Any, model_type: str) -> Any:
+    """Build the serialized position-id contract for a Qwen model family.
+
+    Qwen3.5 is a hybrid text/vision architecture.  Its text model still
+    expects the four-plane ``[4, batch, seq]`` position contract even for a
+    text-only request; the first plane is used by the decoder and the other
+    three are consumed by the rotary embedding.  Qwen2/Qwen3 retain the
+    ordinary ``[batch, seq]`` contract.
+    """
+    rows = _position_ids_for_nested(value)
+    if model_type != "qwen3_5":
+        return rows
+    if not rows:
+        return rows
+    if isinstance(rows[0], list):
+        return [[list(row) for row in rows] for _ in range(4)]
+    return [[list(rows)] for _ in range(4)]
+
+
 def encode_qwen_pipeline_context(
     input_ids: Any,
     *,
@@ -942,6 +1085,7 @@ def encode_qwen_pipeline_context(
     session_id: str = "",
     context_epoch: int = 0,
     generation: Mapping[str, Any] | None = None,
+    model_type: str = "qwen2",
 ) -> bytes:
     """Encode the formal Qwen ONNX full-context input object.
 
@@ -959,7 +1103,7 @@ def encode_qwen_pipeline_context(
     serializable_position = (
         _serializable_tensor(position_ids)
         if position_ids is not None else
-        _position_ids_for_nested(serializable_ids)
+        _qwen_position_ids_for_nested(serializable_ids, str(model_type))
     )
     return json.dumps({
         "schema": "ndnsf-di-qwen-pipeline-context-v1",
@@ -1536,14 +1680,278 @@ def _utf8_text_tensor(value: str) -> Any:
 
 def _onnx_stage_wrapper(model: Any):
     import torch
+    import torch.nn.functional as F
     from torch import nn
 
     stage_index = int(getattr(model, "ndnsf_stage_index"))
     stage_count = int(getattr(model, "ndnsf_stage_count"))
     start = int(getattr(model, "ndnsf_stage_start"))
     end = int(getattr(model, "ndnsf_stage_end"))
+    model_type = str(
+        getattr(model, "ndnsf_model_type", "")
+        or getattr(getattr(model, "config", None), "model_type", "")
+        or "qwen2"
+    )
+    if model_type == "qwen3_5_text":
+        model_type = "qwen3_5"
 
     layer_indices = list(range(start, end))
+
+    def _onnx_qwen35_rotary_embeddings(hidden_states, position_ids):
+        """Functional Qwen3.5 MRoPE encoding for the ONNX graph.
+
+        ``Qwen3_5TextRotaryEmbedding.apply_interleaved_mrope`` writes the
+        height/width slices into the temporal slice in place.  The exporter
+        lowers those writes to ScatterND; ORT CUDA warns about the resulting
+        duplicate-index contract.  Selective ``where`` updates are equivalent
+        and keep the positional encoding mutation-free.
+        """
+        rotary = model.model.rotary_emb
+        if position_ids.ndim == 2:
+            position_ids = position_ids[None, ...].expand(3, position_ids.shape[0], -1)
+        inv_freq = rotary.inv_freq
+        inv_freq_expanded = (
+            inv_freq[None, None, :, None]
+            .float()
+            .expand(3, position_ids.shape[1], -1, 1)
+            .to(hidden_states.device)
+        )
+        position_ids_expanded = position_ids[:, :, None, :].float()
+        freqs = (
+            inv_freq_expanded.float() @ position_ids_expanded.float()
+        ).transpose(2, 3)
+        freqs_t = freqs[0]
+        indices = torch.arange(
+            freqs_t.shape[-1], device=freqs_t.device, dtype=torch.long)
+        for dim, offset in enumerate((1, 2), start=1):
+            length = int(rotary.mrope_section[dim]) * 3
+            selected = (
+                (indices >= offset)
+                & (indices < length)
+                & (((indices - offset) % 3) == 0)
+            ).view(1, 1, -1)
+            freqs_t = torch.where(selected, freqs[dim], freqs_t)
+        emb = torch.cat((freqs_t, freqs_t), dim=-1)
+        cos = emb.cos() * rotary.attention_scaling
+        sin = emb.sin() * rotary.attention_scaling
+        return cos.to(dtype=hidden_states.dtype), sin.to(dtype=hidden_states.dtype)
+
+    def _onnx_chunk_gated_delta_rule(
+        query,
+        key,
+        value,
+        g,
+        beta,
+        chunk_size=64,
+        initial_state=None,
+        output_final_state=False,
+        use_qk_l2norm_in_kernel=False,
+        **kwargs,
+    ):
+        """Functional Qwen3.5 recurrent attention path for ONNX export.
+
+        Transformers' reference fallback updates two tensors in place while
+        resolving the within-chunk recurrence.  The legacy exporter lowers
+        those writes to ScatterND.  On the large FP16 graph ORT CUDA warns
+        about potentially duplicated indices and produced a different first
+        token, even though the PyTorch stage pipeline was exact.  Building
+        the rows/chunks with concatenation and stacking expresses the same
+        recurrence without mutation or ScatterND updates.
+        """
+        # Qwen3.5 applies the two-dimensional padding mask before the
+        # projections, but the recurrent kernel itself also has to ignore
+        # masked suffix tokens.  Without this, a fixed-context export treats
+        # the zeroed suffix as real time steps (the conv bias and recurrent
+        # decay still update state), which changes the first generated token.
+        attention_mask = kwargs.pop("attention_mask", None)
+        initial_dtype = query.dtype
+        if use_qk_l2norm_in_kernel:
+            query = query * torch.rsqrt(
+                (query * query).sum(dim=-1, keepdim=True) + 1e-6)
+            key = key * torch.rsqrt(
+                (key * key).sum(dim=-1, keepdim=True) + 1e-6)
+        query, key, value, beta, g = [
+            item.transpose(1, 2).contiguous().to(torch.float32)
+            for item in (query, key, value, beta, g)
+        ]
+
+        if attention_mask is not None:
+            mask = attention_mask.to(query.dtype)
+            query = query * mask[:, None, :, None]
+            key = key * mask[:, None, :, None]
+            value = value * mask[:, None, :, None]
+            beta = beta * mask[:, None, :]
+            g = g * mask[:, None, :]
+
+        batch_size, num_heads, sequence_length, key_dim = key.shape
+        value_dim = value.shape[-1]
+        pad_size = (chunk_size - sequence_length % chunk_size) % chunk_size
+        if pad_size:
+            query = F.pad(query, (0, 0, 0, pad_size))
+            key = F.pad(key, (0, 0, 0, pad_size))
+            value = F.pad(value, (0, 0, 0, pad_size))
+            beta = F.pad(beta, (0, pad_size))
+            g = F.pad(g, (0, pad_size))
+        total_sequence_length = sequence_length + pad_size
+        query = query * (1.0 / (key_dim ** 0.5))
+        v_beta = value * beta.unsqueeze(-1)
+        k_beta = key * beta.unsqueeze(-1)
+        query, key, value, k_beta, v_beta = [
+            item.reshape(item.shape[0], item.shape[1], -1, chunk_size, item.shape[-1])
+            for item in (query, key, value, k_beta, v_beta)
+        ]
+        g = g.reshape(g.shape[0], g.shape[1], -1, chunk_size)
+        g = g.cumsum(dim=-1)
+        decay_mask = (
+            (g.unsqueeze(-1) - g.unsqueeze(-2)).tril().exp().float()
+        ).tril()
+
+        causal = torch.triu(
+            torch.ones(chunk_size, chunk_size, dtype=torch.bool, device=query.device),
+            diagonal=0,
+        )
+        attn = -(
+            (k_beta @ key.transpose(-1, -2)) * decay_mask
+        ).masked_fill(causal, 0)
+
+        # Resolve the triangular recurrence without in-place indexed writes.
+        rows = [attn[..., 0, :].unsqueeze(-2)]
+        for row_index in range(1, chunk_size):
+            row = attn[..., row_index, :row_index]
+            sub = torch.cat(rows, dim=-2)[..., :row_index, :row_index]
+            updated = row + (row.unsqueeze(-1) * sub).sum(-2)
+            rows.append(torch.cat([
+                updated,
+                torch.zeros(
+                    (*updated.shape[:-1], chunk_size - row_index),
+                    dtype=updated.dtype,
+                    device=updated.device,
+                ),
+            ], dim=-1).unsqueeze(-2))
+        attn = torch.cat(rows, dim=-2) + torch.eye(
+            chunk_size, dtype=attn.dtype, device=attn.device)
+        value = attn @ v_beta
+        k_cumdecay = attn @ (k_beta * g.exp().unsqueeze(-1))
+        last_recurrent_state = (
+            torch.zeros(
+                batch_size,
+                num_heads,
+                key_dim,
+                value_dim,
+                dtype=value.dtype,
+                device=value.device,
+            )
+            if initial_state is None else initial_state.to(value)
+        )
+        output_chunks = []
+        for chunk_index in range(total_sequence_length // chunk_size):
+            q_i, k_i, v_i = (
+                query[:, :, chunk_index],
+                key[:, :, chunk_index],
+                value[:, :, chunk_index],
+            )
+            local_attn = q_i @ k_i.transpose(-1, -2) * decay_mask[:, :, chunk_index]
+            v_prime = k_cumdecay[:, :, chunk_index] @ last_recurrent_state
+            v_new = v_i - v_prime
+            attn_inter = (
+                q_i * g[:, :, chunk_index, :, None].exp()
+            ) @ last_recurrent_state
+            output_chunks.append(attn_inter + local_attn @ v_new)
+            last_recurrent_state = (
+                last_recurrent_state * g[:, :, chunk_index, -1, None, None].exp()
+                + (
+                    k_i
+                    * (
+                        g[:, :, chunk_index, -1, None]
+                        - g[:, :, chunk_index]
+                    ).exp()[..., None]
+                ).transpose(-1, -2) @ v_new
+            )
+        core_attn_out = torch.cat(output_chunks, dim=-2)
+        core_attn_out = core_attn_out[:, :, :sequence_length]
+        core_attn_out = core_attn_out.transpose(1, 2).contiguous().to(initial_dtype)
+        if not output_final_state:
+            last_recurrent_state = None
+        return core_attn_out, last_recurrent_state
+
+    def _onnx_qwen35_gated_delta_forward(
+        module,
+        hidden_states,
+        cache_params=None,
+        attention_mask=None,
+        **kwargs,
+    ):
+        """Export-only Qwen3.5 linear-attention forward.
+
+        The stock Qwen3.5 module forwards attention_mask only to
+        apply_mask_to_padding_states and not to the chunk kernel.  That is
+        sufficient for ordinary variable-length inputs, but not for the
+        fixed-context ONNX contract: masked suffix positions would still
+        advance the recurrent state.  This no-cache export path preserves
+        the model equations while passing the mask to the functional kernel
+        above.  It is installed only on the temporary export wrapper; the
+        Transformers model implementation is not modified for deployment.
+        """
+        if cache_params is not None:
+            raise ValueError("Qwen3.5 ONNX export does not support cache_params")
+        if attention_mask is not None:
+            hidden_states = hidden_states * attention_mask.to(
+                hidden_states.dtype
+            ).unsqueeze(-1)
+        batch_size, sequence_length, _ = hidden_states.shape
+        mixed_qkv = module.in_proj_qkv(hidden_states).transpose(1, 2)
+        z = module.in_proj_z(hidden_states)
+        z = z.reshape(batch_size, sequence_length, -1, module.head_v_dim)
+        b = module.in_proj_b(hidden_states)
+        a = module.in_proj_a(hidden_states)
+
+        if module.causal_conv1d_fn is not None:
+            mixed_qkv = module.causal_conv1d_fn(
+                x=mixed_qkv,
+                weight=module.conv1d.weight.squeeze(1),
+                bias=module.conv1d.bias,
+                activation=module.activation,
+                seq_idx=kwargs.get("seq_idx"),
+            )
+        else:
+            mixed_qkv = torch.nn.functional.silu(
+                module.conv1d(mixed_qkv)[:, :, :mixed_qkv.shape[-1]]
+            )
+        mixed_qkv = mixed_qkv.transpose(1, 2)
+        query, key, value = torch.split(
+            mixed_qkv,
+            [module.key_dim, module.key_dim, module.value_dim],
+            dim=-1,
+        )
+        query = query.reshape(batch_size, sequence_length, -1, module.head_k_dim)
+        key = key.reshape(batch_size, sequence_length, -1, module.head_k_dim)
+        value = value.reshape(batch_size, sequence_length, -1, module.head_v_dim)
+        beta = b.sigmoid()
+        g = -module.A_log.float().exp() * torch.nn.functional.softplus(
+            a.float() + module.dt_bias
+        )
+        if module.num_v_heads // module.num_k_heads > 1:
+            repeat = module.num_v_heads // module.num_k_heads
+            query = query.repeat_interleave(repeat, dim=2)
+            key = key.repeat_interleave(repeat, dim=2)
+
+        core_attn_out, _ = module.chunk_gated_delta_rule(
+            query,
+            key,
+            value,
+            g=g,
+            beta=beta,
+            initial_state=None,
+            output_final_state=False,
+            use_qk_l2norm_in_kernel=True,
+            cu_seqlens=kwargs.get("cu_seq_lens_q"),
+            attention_mask=attention_mask,
+        )
+        core_attn_out = core_attn_out.reshape(-1, module.head_v_dim)
+        z = z.reshape(-1, module.head_v_dim)
+        core_attn_out = module.norm(core_attn_out, z)
+        core_attn_out = core_attn_out.reshape(batch_size, sequence_length, -1)
+        return module.out_proj(core_attn_out)
 
     class _ExportCache:
         def __init__(self, values):
@@ -1564,6 +1972,23 @@ def _onnx_stage_wrapper(model: Any):
         def __init__(self):
             super().__init__()
             self.model = model
+            if model_type == "qwen3_5":
+                # Keep the normal Transformers implementation untouched.  The
+                # export wrapper alone uses the functional form above.
+                for layer in self.model.model.layers:
+                    linear_attention = getattr(layer, "linear_attn", None)
+                    if linear_attention is not None:
+                        linear_attention.chunk_gated_delta_rule = (
+                            _onnx_chunk_gated_delta_rule
+                        )
+                        # The stock module does not pass its padding mask into
+                        # the recurrent kernel.  Bind this export-only method
+                        # to the temporary stage model.
+                        import types
+                        linear_attention.forward = types.MethodType(
+                            _onnx_qwen35_gated_delta_forward,
+                            linear_attention,
+                        )
 
         def forward(self, input_ids, attention_mask, hidden_states, position_ids, *past_values):
             base = self.model.model
@@ -1586,17 +2011,38 @@ def _onnx_stage_wrapper(model: Any):
             ).unsqueeze(0).unsqueeze(0)
             padding_mask = (1 - attention_mask.to(hidden_states.dtype)).unsqueeze(1).unsqueeze(1)
             causal_mask = causal_mask + padding_mask * minimum
-            position_embeddings = _rotary_embeddings(base, hidden_states, position_ids)
+            layer_position_ids, rotary_position_ids = (
+                _qwen_layer_position_inputs(position_ids, model_type)
+            )
+            if model_type == "qwen3_5":
+                # Qwen3.5 has two token mixers.  Full-attention layers use the
+                # usual causal mask; linear-attention layers only need the
+                # 2-D padding mask (an all-one mask is semantically a no-op).
+                layer_attention_mask = {
+                    "full_attention": causal_mask,
+                    "linear_attention": attention_mask,
+                }
+            else:
+                layer_attention_mask = causal_mask
+            if model_type == "qwen3_5":
+                position_embeddings = _onnx_qwen35_rotary_embeddings(
+                    hidden_states, rotary_position_ids)
+            else:
+                position_embeddings = _rotary_embeddings(
+                    base, hidden_states, rotary_position_ids)
             for layer in list(base.layers):
+                attention_for_layer = _qwen_attention_mask_for_layer(
+                    layer_attention_mask, layer)
                 output = _call_with_supported_kwargs(
                     layer.forward,
                     hidden_states=hidden_states,
-                    position_ids=position_ids,
+                    position_ids=layer_position_ids,
                     position_embeddings=position_embeddings,
-                    attention_mask=causal_mask,
-                    past_key_value=cache,
-                    use_cache=True,
-                    cache_position=position_ids[0],
+                    attention_mask=attention_for_layer,
+                    past_key_value=(None if model_type == "qwen3_5" else cache),
+                    past_key_values=(None if model_type == "qwen3_5" else cache),
+                    use_cache=(model_type != "qwen3_5"),
+                    cache_position=layer_position_ids[0],
                     output_attentions=False,
                 )
                 hidden_states = output[0] if isinstance(output, tuple) else output
@@ -1618,24 +2064,49 @@ def _onnx_stage_wrapper(model: Any):
 
 
 def _export_qwen_onnx_stage(model: Any, onnx_path: Path,
-                            *, sample_input_ids: Any) -> dict[str, Any]:
+                            *, sample_input_ids: Any,
+                            export_dtype: str = "auto",
+                            fixed_context: bool = False) -> dict[str, Any]:
     import torch
 
     wrapper, stage_index, stage_count, start, end = _onnx_stage_wrapper(model)
     hidden_size = int(model.config.hidden_size)
     seq_len = int(sample_input_ids.shape[1])
+    model_type = str(
+        getattr(model, "ndnsf_model_type", "")
+        or getattr(getattr(model, "config", None), "model_type", "")
+        or "qwen2"
+    )
+    if model_type == "qwen3_5_text":
+        model_type = "qwen3_5"
+    if export_dtype == "float16":
+        tensor_dtype = torch.float16
+    elif export_dtype == "float32":
+        tensor_dtype = torch.float32
+    else:
+        tensor_dtype = next(
+            (parameter.dtype for parameter in model.parameters()
+             if parameter.is_floating_point()),
+            torch.float32,
+        )
+        if tensor_dtype not in (torch.float16, torch.float32, torch.bfloat16):
+            tensor_dtype = torch.float32
     dummy_hidden = torch.zeros(
         (int(sample_input_ids.shape[0]), seq_len, hidden_size),
-        dtype=torch.float32,
+        dtype=tensor_dtype,
     )
     position_ids = torch.arange(seq_len, dtype=torch.long).unsqueeze(0)
+    if model_type == "qwen3_5":
+        position_ids = position_ids.view(1, 1, -1).expand(
+            4, int(sample_input_ids.shape[0]), -1
+        )
     layer_indices = list(range(start, end))
     kv_heads = int(getattr(model.config, "num_key_value_heads",
                            model.config.num_attention_heads))
     head_dim = int(hidden_size // model.config.num_attention_heads)
     past_values = tuple(
         torch.empty((int(sample_input_ids.shape[0]), kv_heads, 0, head_dim),
-                    dtype=torch.float32)
+                    dtype=tensor_dtype)
         for _ in range(len(layer_indices) * 2)
     )
     attention_mask = torch.ones(
@@ -1648,18 +2119,27 @@ def _export_qwen_onnx_stage(model: Any, onnx_path: Path,
         name for layer in layer_indices
         for name in (f"present_key.{layer}", f"present_value.{layer}")
     ]
-    dynamic_axes = {
-        "input_ids": {1: "seq"},
-        "hidden_states": {1: "seq"},
-        "position_ids": {1: "seq"},
-        "attention_mask": {1: "total_seq"},
-        output_names[0]: {1: "seq"},
-    }
-    for layer in layer_indices:
-        dynamic_axes[f"past_key.{layer}"] = {2: "past_seq"}
-        dynamic_axes[f"past_value.{layer}"] = {2: "past_seq"}
-        dynamic_axes[f"present_key.{layer}"] = {2: "total_seq"}
-        dynamic_axes[f"present_value.{layer}"] = {2: "total_seq"}
+    # Qwen3.5's linear-attention implementation specializes chunk/padding
+    # branches during tracing.  A fixed-context export must therefore keep
+    # every sequence dimension static; runtime padding alone is insufficient
+    # because a dynamic ONNX axis still permits the traced 20-token branch.
+    dynamic_axes = None
+    if not fixed_context:
+        dynamic_axes = {
+            "input_ids": {1: "seq"},
+            "hidden_states": {1: "seq"},
+            "position_ids": (
+                {1: "batch", 2: "seq"}
+                if model_type == "qwen3_5" else {1: "seq"}
+            ),
+            "attention_mask": {1: "total_seq"},
+            output_names[0]: {1: "seq"},
+        }
+        for layer in layer_indices:
+            dynamic_axes[f"past_key.{layer}"] = {2: "past_seq"}
+            dynamic_axes[f"past_value.{layer}"] = {2: "past_seq"}
+            dynamic_axes[f"present_key.{layer}"] = {2: "total_seq"}
+            dynamic_axes[f"present_value.{layer}"] = {2: "total_seq"}
     onnx_path.parent.mkdir(parents=True, exist_ok=True)
     torch.onnx.export(
         wrapper,
@@ -1669,7 +2149,11 @@ def _export_qwen_onnx_stage(model: Any, onnx_path: Path,
         output_names=output_names,
         dynamic_axes=dynamic_axes,
         opset_version=17,
-        do_constant_folding=True,
+        # Qwen3.5's hybrid linear-attention graph contains exporter-side
+        # scalar expressions that Torch 2.6 may misclassify as ComplexDouble
+        # during legacy constant folding.  Leave folding to ONNX Runtime,
+        # which also keeps the exported graph faithful to the runtime path.
+        do_constant_folding=False,
     )
     import onnx
 
@@ -1689,6 +2173,7 @@ def _export_qwen_onnx_stage(model: Any, onnx_path: Path,
     return {
         "stageIndex": stage_index,
         "stageCount": stage_count,
+        "modelType": model_type,
         "layerRange": {"start": start, "endExclusive": end},
         "inputNames": actual_input_names,
         "outputNames": actual_output_names,
@@ -1713,7 +2198,15 @@ def _validate_qwen_onnx_stages(artifacts: list[SplitArtifact], *,
     )
     ids = input_ids.detach().cpu().numpy().astype(np.int64)
     mask = attention_mask.detach().cpu().numpy().astype(np.int64)
+    model_type = str(getattr(config, "model_type", "qwen2"))
+    if model_type == "qwen3_5_text":
+        model_type = "qwen3_5"
     position_ids = np.arange(ids.shape[1], dtype=np.int64).reshape(1, -1)
+    if model_type == "qwen3_5":
+        position_ids = np.broadcast_to(
+            position_ids.reshape(1, 1, -1),
+            (4, int(ids.shape[0]), int(ids.shape[1])),
+        )
     kv_heads = int(getattr(config, "num_key_value_heads", config.num_attention_heads))
     head_dim = int(config.hidden_size // config.num_attention_heads)
     stage_records = []
@@ -1730,12 +2223,18 @@ def _validate_qwen_onnx_stages(artifacts: list[SplitArtifact], *,
             elif item.name == "attention_mask":
                 feed[item.name] = mask
             elif item.name == "hidden_states":
-                feed[item.name] = hidden
+                feed[item.name] = hidden.astype(
+                    _onnx_input_numpy_dtype(getattr(item, "type", ""), np.float32),
+                    copy=False,
+                )
             elif item.name == "position_ids":
                 feed[item.name] = position_ids
             elif item.name.startswith(("past_key.", "past_value.")):
                 feed[item.name] = np.empty(
-                    (ids.shape[0], kv_heads, 0, head_dim), dtype=np.float32)
+                    (ids.shape[0], kv_heads, 0, head_dim),
+                    dtype=_onnx_input_numpy_dtype(
+                        getattr(item, "type", ""), np.float32),
+                )
             else:
                 raise RuntimeError(f"unrecognized exported Qwen input: {item.name}")
         outputs = session.run(None, feed)
@@ -1784,6 +2283,14 @@ def write_qwen_onnx_stage_artifacts(
         local_files_only=local_files_only,
         trust_remote_code=True,
     )
+    tokenizer_dir = Path(output_dir) / "qwen-onnx-tokenizer"
+    tokenizer_dir.mkdir(parents=True, exist_ok=True)
+    tokenizer.save_pretrained(str(tokenizer_dir))
+    tokenizer_json = tokenizer_dir / "tokenizer.json"
+    if not tokenizer_json.is_file():
+        raise RuntimeError(
+            "Qwen ONNX export must produce standalone tokenizer.json; "
+            f"missing {tokenizer_json}")
     full_model = AutoModelForCausalLM.from_pretrained(
         model_name,
         revision=model_revision,
@@ -1866,6 +2373,7 @@ def write_qwen_onnx_stage_artifacts(
             stage_model,
             onnx_path,
             sample_input_ids=sample_input_ids,
+            export_dtype=dtype,
         )
         artifacts.append(SplitArtifact(
             role=role,
@@ -1891,6 +2399,10 @@ def write_qwen_onnx_stage_artifacts(
                 "tensorContracts": export_info["tensorContracts"],
             },
         ))
+        # Stage packages are exporter-only inputs.  Never leave them beside
+        # the canonical ONNX artifacts where a deployment packager could
+        # accidentally promote a Transformers/PyTorch dependency.
+        pt_path.unlink(missing_ok=True)
         del stage_model
         gc.collect()
     if prompt:
@@ -1933,7 +2445,8 @@ def write_qwen_onnx_stage_artifacts(
         "model": model_name,
         "modelRevision": resolved_revision,
         "dtype": dtype,
-        "tokenizer": str(getattr(tokenizer, "name_or_path", model_name)),
+        "tokenizer": str(tokenizer_dir),
+        "tokenizerSha256": _sha256_file(tokenizer_json),
         "stageCount": stages,
         "layerCount": layer_count,
         "expectedTopToken": expected_top_token,
@@ -3088,10 +3601,19 @@ def run_qwen_onnx_stage(
     else:
         record("artificial_delay_ms", 0.0)
     stage_index = int(metadata.get("stageIndex", role_index(role)))
+    model_type = str(metadata.get("modelType", "qwen2"))
+    if model_type == "qwen3_5_text":
+        model_type = "qwen3_5"
     layer_range = dict(metadata.get("layerRange", {}) or {})
     start = int(layer_range.get("start", 0))
     end = int(layer_range.get("endExclusive", 0))
     stage_count = int(metadata.get("stageCount", stages))
+    context_length = int(metadata.get("contextLength", 0) or 0)
+    pad_token_id = metadata.get("padTokenId")
+    if context_length < 0:
+        raise ValueError("Qwen ONNX contextLength must be non-negative")
+    if context_length and (not isinstance(pad_token_id, int) or pad_token_id < 0):
+        raise ValueError("Qwen ONNX fixed-context metadata lacks padTokenId")
     hidden_size = 0
     request_id = ""
 
@@ -3121,7 +3643,8 @@ def run_qwen_onnx_stage(
                 input_ids = np.asarray([token_values], dtype=np.int64)
                 request_id = ""
             attention_mask = np.ones_like(input_ids, dtype=np.int64)
-            position_ids = np.arange(input_ids.shape[1], dtype=np.int64).reshape(1, -1)
+            position_ids = np.arange(
+                input_ids.shape[1], dtype=np.int64).reshape(1, -1)
             session_id = ""
             context_epoch = 0
         hidden_size = int(metadata.get("hiddenSize", 0) or 0)
@@ -3150,6 +3673,52 @@ def run_qwen_onnx_stage(
         request_id = _safe_array_text(incoming.get("request_id", ""))
         session_id = _safe_array_text(incoming.get("session_id", ""))
         context_epoch = int(incoming.get("context_epoch", np.asarray([0])).reshape(-1)[0])
+
+    # Qwen3.5's exported hybrid linear-attention graph contains Python shape
+    # branches (chunk padding and chunk count).  Dynamic ONNX axes do not
+    # make those branches dynamic: exporting a 20-token sample specializes a
+    # 64-token padded chunk, then a 21-token request fails inside the gated
+    # norm.  The Spec175 manifest therefore declares one fixed context window
+    # and the runtime pads its active prefix with an explicit attention mask.
+    # This keeps every stage's internal shape stable while preserving the
+    # logits at the last active token.
+    active_length = int(attention_mask[0].sum()) if attention_mask.size else 0
+    if context_length:
+        if input_ids.ndim != 2 or attention_mask.ndim != 2:
+            raise ValueError("Qwen ONNX fixed-context tensors must be rank 2")
+        if input_ids.shape[0] != attention_mask.shape[0]:
+            raise ValueError("Qwen ONNX input/mask batch mismatch")
+        if active_length <= 0 or active_length > context_length:
+            raise ValueError(
+                "Qwen ONNX active context exceeds declared contextLength")
+        if input_ids.shape[1] > context_length:
+            raise ValueError(
+                "Qwen ONNX input sequence exceeds declared contextLength")
+        padded_ids = np.full(
+            (int(input_ids.shape[0]), context_length),
+            int(pad_token_id), dtype=np.int64)
+        padded_mask = np.zeros_like(padded_ids, dtype=np.int64)
+        padded_ids[:, :input_ids.shape[1]] = input_ids
+        padded_mask[:, :attention_mask.shape[1]] = attention_mask
+        input_ids = padded_ids
+        attention_mask = padded_mask
+        if hidden_states.shape[1] != context_length:
+            padded_hidden = np.zeros(
+                (int(hidden_states.shape[0]), context_length,
+                 int(hidden_states.shape[2])),
+                dtype=hidden_states.dtype)
+            padded_hidden[:, :hidden_states.shape[1], :] = hidden_states
+            hidden_states = padded_hidden
+        position_rows = np.arange(context_length, dtype=np.int64)
+        if model_type == "qwen3_5":
+            position_ids = np.broadcast_to(
+                position_rows.reshape(1, 1, -1),
+                (4, int(input_ids.shape[0]), context_length),
+            )
+        else:
+            position_ids = position_rows.reshape(1, -1)
+    elif active_length <= 0:
+        raise ValueError("Qwen ONNX attention mask has no active token")
     record("decode_ms", (time.perf_counter() - decode_start) * 1000.0)
     record("embed_ms", 0.0)
     if expected_start != start:
@@ -3158,12 +3727,24 @@ def run_qwen_onnx_stage(
     record("request_id", request_id)
     run_start = time.perf_counter()
     available_inputs = {item.name for item in session.get_inputs()}
+    input_types = {
+        item.name: getattr(item, "type", "")
+        for item in session.get_inputs()
+    }
     feed = {}
     if "input_ids" in available_inputs:
         feed["input_ids"] = input_ids
     if "hidden_states" in available_inputs:
-        feed["hidden_states"] = hidden_states
+        hidden_type = str(input_types.get("hidden_states", ""))
+        hidden_dtype = _onnx_input_numpy_dtype(hidden_type, np.float32)
+        feed["hidden_states"] = hidden_states.astype(
+            hidden_dtype, copy=False)
     if "position_ids" in available_inputs:
+        if model_type == "qwen3_5" and position_ids.ndim == 2:
+            position_ids = np.broadcast_to(
+                position_ids.reshape(1, *position_ids.shape),
+                (4, int(position_ids.shape[0]), int(position_ids.shape[1])),
+            )
         feed["position_ids"] = position_ids
     if "attention_mask" in available_inputs:
         feed["attention_mask"] = attention_mask
@@ -3175,7 +3756,7 @@ def run_qwen_onnx_stage(
             raise ValueError(f"unsupported Qwen KV input shape for {item.name}: {shape}")
         feed[item.name] = np.empty(
             (int(input_ids.shape[0]), int(shape[1]), 0, int(shape[3])),
-            dtype=np.float32,
+            dtype=_onnx_input_numpy_dtype(getattr(item, "type", ""), np.float32),
         )
     output_names = tuple(item.name for item in session.get_outputs())
     output_values = session.run(None, feed)
@@ -3209,7 +3790,7 @@ def run_qwen_onnx_stage(
         record("total_ms", (time.perf_counter() - total_start) * 1000.0)
         return payload
     logits = np.asarray(outputs[primary_name])
-    top_token = int(np.argmax(logits[:, -1, :], axis=-1)[0])
+    top_token = int(np.argmax(logits[:, active_length - 1, :], axis=-1)[0])
     record("final_head_ms", 0.0)
     encode_start = time.perf_counter()
     payload = json.dumps({
@@ -3224,6 +3805,112 @@ def run_qwen_onnx_stage(
     record("encode_ms", (time.perf_counter() - encode_start) * 1000.0)
     record("total_ms", (time.perf_counter() - total_start) * 1000.0)
     return payload
+
+
+def run_tiny_onnx_stage(
+    input_payload: bytes,
+    *,
+    role: str,
+    stages: int,
+    session: Any,
+    state_cache: dict[tuple[str, int], dict[str, Any]],
+    request_id: str,
+    compute_delay_ms: float = 0.0,
+) -> bytes:
+    """Run one stateful step of the checked-in Spec175 tiny ONNX graph."""
+    import base64
+    import io
+    import numpy as np
+    from ndnsf_distributed_inference.adapters.qwen.stateful_onnx import (
+        DecodeStateContractError,
+        StatefulOnnxIOContractV1,
+    )
+
+    stage_index = role_index(role)
+    if stage_index >= int(stages):
+        raise ValueError("tiny ONNX role is outside the requested stage count")
+    if compute_delay_ms > 0:
+        time.sleep(float(compute_delay_ms) / 1000.0)
+    key = (str(request_id), int(stage_index))
+    state = state_cache.setdefault(key, {})
+    # The tiny fixture is the CPU executable of the same stateful contract
+    # used by the native Provider.  Validate the graph signature on every
+    # direct adapter call as well as on the long-lived Provider session.  This
+    # prevents an orphaned ``*_out`` tensor or a missing recurrent state from
+    # being silently treated as a valid next-token transition.
+    raw_session = getattr(session, "session", session)
+    contract = getattr(session, "contract", None)
+    if contract is None:
+        contract = StatefulOnnxIOContractV1.from_session(raw_session)
+    else:
+        contract.validate()
+    inputs = {value.name: value for value in raw_session.get_inputs()}
+    feed: dict[str, Any] = {}
+    if stage_index == 0:
+        context = decode_qwen_pipeline_context(input_payload)
+        rows = context.get("inputIds")
+        if not isinstance(rows, list) or not rows:
+            raise ValueError("tiny ONNX context has no inputIds")
+        token = int((rows[0] if isinstance(rows[0], list) else rows)[-1])
+        feed["input_ids"] = np.asarray([[token]], dtype=np.int64)
+    else:
+        doc = json.loads(bytes(input_payload).decode("utf-8"))
+        if doc.get("schema") != "ndnsf-di-tiny-onnx-hidden-v1":
+            raise ValueError("tiny ONNX stage received an invalid hidden payload")
+        raw = base64.b64decode(str(doc["hidden"]).encode("ascii"), validate=True)
+        with io.BytesIO(raw) as stream:
+            hidden = np.load(stream, allow_pickle=False)
+        feed["hidden_in"] = np.asarray(hidden, dtype=np.float32)
+    for name in contract.state_input_names:
+        value = inputs[name]
+        if name != "hidden_in":
+            if name not in state:
+                shape = tuple(int(d) for d in value.shape)
+                if any(d <= 0 for d in shape):
+                    raise ValueError(f"tiny ONNX state shape is not static: {name}")
+                state[name] = np.zeros(shape, dtype=np.float32)
+            feed[name] = state[name]
+    names = list(contract.output_names)
+    if hasattr(session, "run") and hasattr(session, "contract"):
+        outputs = session.run(feed, incremental=bool(state))
+    else:
+        values = raw_session.run(names, feed)
+        if len(values) != len(names):
+            raise DecodeStateContractError(
+                "stateful ONNX output count does not match the contract")
+        outputs = dict(zip(names, values))
+    for name in contract.state_output_names:
+        value = outputs.get(name)
+        if value is None:
+            raise DecodeStateContractError(
+                "stateful ONNX output is missing: " + name)
+        state[name[:-4] + "_in"] = np.asarray(value)
+    if stage_index == int(stages) - 1:
+        logits = outputs.get("logits")
+        if logits is None:
+            raise ValueError("tiny ONNX final role did not produce logits")
+        token = int(np.argmax(np.asarray(logits)[0, -1]))
+        return json.dumps({
+            "schema": "ndnsf-di-tiny-onnx-response-v1",
+            "runtime": TINY_ONNX_RUNTIME,
+            "topToken": token,
+            "stageIndex": stage_index,
+            "stageCount": int(stages),
+        }, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    hidden = outputs.get("hidden_out")
+    if hidden is None:
+        raise ValueError("tiny ONNX non-final role did not produce hidden_out")
+    with io.BytesIO() as stream:
+        np.save(stream, np.asarray(hidden, dtype=np.float32), allow_pickle=False)
+        encoded = base64.b64encode(stream.getvalue()).decode("ascii")
+    return json.dumps({
+        "schema": "ndnsf-di-tiny-onnx-hidden-v1",
+        "runtime": TINY_ONNX_RUNTIME,
+        "requestId": str(request_id),
+        "stageIndex": stage_index,
+        "stageCount": int(stages),
+        "hidden": encoded,
+    }, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
 def run_local_tiny_transformer_pipeline(
@@ -3409,14 +4096,15 @@ def write_policy(
     qwen_artifact_store: str = "",
     qwen_service_manifest: str = "",
     qwen_runtime_manifest: str = "",
+    tiny_onnx_fixture_root: str = "",
 ) -> Path:
     output_dir = Path(path).parent
     request = llm_planner_request(
         planner_kind=PlannerKind.LLM_PIPELINE,
         model_path=model,
         output_dir=output_dir,
-        model_format="custom",
-        runtime_backend="custom",
+        model_format=("onnx" if runtime == TINY_ONNX_RUNTIME else "custom"),
+        runtime_backend=("onnxruntime" if runtime == TINY_ONNX_RUNTIME else "custom"),
         service=service,
         stages=stages,
         layers=layers,
@@ -3437,6 +4125,14 @@ def write_policy(
             stages=stages,
             layer_count=transformer_layers,
             content_store=qwen_content_store,
+        )
+    elif runtime == TINY_ONNX_RUNTIME:
+        if not tiny_onnx_fixture_root:
+            raise ValueError("tiny-onnx runtime requires --tiny-onnx-fixture-root")
+        splitter = with_tiny_onnx_artifacts(
+            splitter,
+            fixture_root=tiny_onnx_fixture_root,
+            stages=stages,
         )
     elif runtime == QWEN_TRANSFORMERS_RUNTIME:
         splitter = with_qwen_transformer_artifacts(

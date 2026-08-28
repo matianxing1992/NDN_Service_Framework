@@ -76,6 +76,46 @@ class Spec170QwenOnnxStageRunnerTest(unittest.TestCase):
         self.assertEqual(decoded["request_id"].tolist(),
                          list(b"spec170-output-name"))
 
+    def test_qwen35_fixed_context_padding_preserves_active_prefix(self):
+        hidden = np.zeros((1, 8, 4), dtype=np.float32)
+        present_key = np.zeros((1, 1, 8, 2), dtype=np.float32)
+        present_value = np.ones((1, 1, 8, 2), dtype=np.float32)
+        session = _FakeSession(
+            ("present_key.0", "hidden_states_out", "present_value.0"),
+            (present_key, hidden, present_value),
+        )
+        payload = encode_qwen_pipeline_context(
+            [[11, 12, 13]],
+            attention_mask=[[1, 1, 1]],
+            model_type="qwen3_5",
+            request_id="spec170-fixed-context",
+        )
+
+        result = run_qwen_onnx_stage(
+            payload,
+            role="/LLM/Pipeline/Stage/0",
+            stages=3,
+            session=session,
+            metadata={
+                "stageIndex": 0,
+                "stageCount": 3,
+                "layerRange": {"start": 0, "endExclusive": 1},
+                "hiddenSize": 4,
+                "modelType": "qwen3_5",
+                "contextLength": 8,
+                "padTokenId": 0,
+            },
+        )
+
+        self.assertEqual(session.feed["input_ids"].shape, (1, 8))
+        self.assertEqual(session.feed["input_ids"].tolist(),
+                         [[11, 12, 13, 0, 0, 0, 0, 0]])
+        self.assertEqual(session.feed["attention_mask"].tolist(),
+                         [[1, 1, 1, 0, 0, 0, 0, 0]])
+        self.assertEqual(session.feed["position_ids"].shape, (4, 1, 8))
+        decoded = _decode_native_tensor_bundle(result)
+        self.assertEqual(decoded["hidden_states"].shape, (1, 8, 4))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,49 @@
+{
+  "eosTokenId": 2,
+  "promptTokens": {
+    "early-eos": [
+      13
+    ],
+    "max-eight": [
+      19
+    ],
+    "normal": [
+      3
+    ]
+  },
+  "schemaVersion": "spec175-tiny-tokenizer-v1",
+  "vocabulary": {
+    "0": "token-0",
+    "1": "token-1",
+    "10": "token-10",
+    "11": "token-11",
+    "12": "token-12",
+    "13": "token-13",
+    "14": "token-14",
+    "15": "token-15",
+    "16": "token-16",
+    "17": "token-17",
+    "18": "token-18",
+    "19": "token-19",
+    "2": "token-2",
+    "20": "token-20",
+    "21": "token-21",
+    "22": "token-22",
+    "23": "token-23",
+    "24": "token-24",
+    "25": "token-25",
+    "26": "token-26",
+    "27": "token-27",
+    "28": "token-28",
+    "29": "token-29",
+    "3": "token-3",
+    "30": "token-30",
+    "31": "token-31",
+    "4": "token-4",
+    "5": "token-5",
+    "6": "token-6",
+    "7": "token-7",
+    "8": "token-8",
+    "9": "token-9"
+  }
+}

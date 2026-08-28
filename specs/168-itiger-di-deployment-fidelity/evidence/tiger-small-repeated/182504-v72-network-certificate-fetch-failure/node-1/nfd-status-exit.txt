@@ -1,0 +1,102 @@
+General NFD status:
+                version=24.07
+              startTime=20260804T121503.184000
+            currentTime=20260804T121913.396000
+                 uptime=250 seconds
+       nNameTreeEntries=68
+            nFibEntries=24
+            nPitEntries=13
+   nMeasurementsEntries=0
+             nCsEntries=114
+           nInInterests=746
+          nOutInterests=905
+                nInData=204
+               nOutData=200
+               nInNacks=0
+              nOutNacks=0
+    nSatisfiedInterests=199
+  nUnsatisfiedInterests=175
+Channels:
+  tcp4://0.0.0.0:22504
+  unix:///scratch/run/nfd.sock
+  dev://enp226s0f0
+  dev://enp226s0f1
+  udp4://0.0.0.0:22504
+Faces:
+  faceid=1 remote=internal:// local=internal:// congestion={base-marking-interval=100ms default-threshold=65536B} mtu=8800 counters={in={0i 151d 0n 47450B} out={161i 0d 0n 33887B}} flags={local permanent point-to-point local-fields}
+  faceid=254 remote=contentstore:// local=contentstore:// mtu=8800 counters={in={0i 0d 0n 0B} out={0i 0d 0n 0B}} flags={local permanent point-to-point}
+  faceid=255 remote=null:// local=null:// mtu=8800 counters={in={0i 0d 0n 0B} out={0i 0d 0n 0B}} flags={local permanent point-to-point}
+  faceid=256 remote=fd://19 local=unix:///scratch/run/nfd.sock congestion={base-marking-interval=100ms default-threshold=65536B} mtu=8800 counters={in={130i 29d 0n 41203B} out={30i 124d 0n 50223B}} flags={local on-demand point-to-point local-fields congestion-marking}
+  faceid=258 remote=tcp4://172.16.0.19:36012 local=tcp4://172.16.0.18:22504 congestion={base-marking-interval=100ms default-threshold=65536B} mtu=8800 counters={in={238i 0d 0n 120486B} out={0i 4d 0n 3016B}} flags={non-local on-demand point-to-point congestion-marking}
+  faceid=259 remote=tcp4://172.16.0.17:54650 local=tcp4://172.16.0.18:22504 congestion={base-marking-interval=100ms default-threshold=65536B} mtu=8800 counters={in={236i 0d 0n 120340B} out={0i 2d 0n 1562B}} flags={non-local on-demand point-to-point congestion-marking}
+  faceid=261 remote=tcp4://172.16.0.17:22504 local=tcp4://172.16.0.18:42152 congestion={base-marking-interval=100ms default-threshold=65536B} mtu=8800 counters={in={0i 18d 0n 26828B} out={244i 0d 0n 121462B}} flags={non-local persistent point-to-point congestion-marking}
+  faceid=268 remote=tcp4://172.16.0.19:22504 local=tcp4://172.16.0.18:59304 congestion={base-marking-interval=100ms default-threshold=65536B} mtu=8800 counters={in={0i 4d 0n 3016B} out={236i 0d 0n 120340B}} flags={non-local persistent point-to-point congestion-marking}
+  faceid=289 remote=fd://26 local=unix:///scratch/run/nfd.sock congestion={base-marking-interval=100ms default-threshold=65536B} mtu=8800 counters={in={37i 1d 0n 17461B} out={86i 13d 0n 56681B}} flags={local on-demand point-to-point congestion-marking}
+  faceid=290 remote=fd://22 local=unix:///scratch/run/nfd.sock congestion={base-marking-interval=100ms default-threshold=65536B} mtu=8800 counters={in={7i 0d 0n 312B} out={0i 0d 0n 0B}} flags={local on-demand point-to-point congestion-marking}
+FIB:
+  /NDNSF-DistributeInference/example/user/user/0 nexthops={faceid=261 (cost=0), faceid=268 (cost=0)}
+  /activation/llm nexthops={faceid=261 (cost=0), faceid=268 (cost=0)}
+  /localhost/nfd/rib nexthops={faceid=256 (cost=0)}
+  /NDNSF-DistributeInference/example/provider/1/CK nexthops={faceid=289 (cost=0), faceid=261 (cost=0), faceid=268 (cost=0)}
+  /NDNSF-DistributeInference/example/provider/2 nexthops={faceid=268 (cost=0), faceid=261 (cost=0)}
+  /NDNSF-DistributeInference/example/provider/NDNSF-ARTIFACT nexthops={faceid=261 (cost=0), faceid=268 (cost=0)}
+  /NDNSF-DistributeInference/example/repo/1/NDNSF/REPO-SERVING nexthops={faceid=261 (cost=0), faceid=268 (cost=0)}
+  /NDNSF/DistributedRepo nexthops={faceid=261 (cost=0), faceid=268 (cost=0)}
+  /NDNSF-DistributeInference/example/repo/1/CK nexthops={faceid=261 (cost=0), faceid=268 (cost=0)}
+  /NDNSF-DistributeInference/example nexthops={faceid=261 (cost=0), faceid=268 (cost=0)}
+  /NDNSF-DistributeInference/example/provider nexthops={faceid=261 (cost=0), faceid=268 (cost=0)}
+  /NDNSF-DistributeInference/example/provider/1/KEY/1%90%D8%FA%EC%83%FC%C5 nexthops={faceid=289 (cost=0), faceid=261 (cost=0), faceid=268 (cost=0)}
+  /NDNSF-DistributeInference/example/repo/1/KEY/%EE%9Ay%AB%C1%24%8B%CB nexthops={faceid=261 (cost=0), faceid=268 (cost=0)}
+  /NDNSF-DistributeInference/example/provider/1/provider/0/NDNSF-DistributeInference/example/group/MAPPING nexthops={faceid=289 (cost=0), faceid=261 (cost=0), faceid=268 (cost=0)}
+  /localhost/nfd nexthops={faceid=1 (cost=0)}
+  /NDNSF-DistributeInference/example/controller/DKEY nexthops={faceid=261 (cost=0), faceid=268 (cost=0)}
+  /NDNSF-DistributeInference/example/provider/1/provider/0/NDNSF-DistributeInference/example/group nexthops={faceid=289 (cost=0), faceid=261 (cost=0), faceid=268 (cost=0)}
+  /NDNSF-DistributeInference/example/group nexthops={faceid=261 (cost=0), faceid=268 (cost=0), faceid=289 (cost=0)}
+  /NDNSF-DistributeInference/example/provider/1/NDNSF nexthops={faceid=289 (cost=0), faceid=261 (cost=0), faceid=268 (cost=0)}
+  /NDNSF-DistributeInference/example/controller nexthops={faceid=261 (cost=0), faceid=268 (cost=0)}
+  /NDNSF-DistributeInference/example/repo/1/NDNSF nexthops={faceid=261 (cost=0), faceid=268 (cost=0)}
+  /NDNSF-DistributeInference/example/repo/1/provider/0/NDNSF-DistributeInference/example/group nexthops={faceid=261 (cost=0), faceid=268 (cost=0)}
+  /NDNSF-DistributeInference/example/repo/1/provider/0/NDNSF-DistributeInference/example/group/MAPPING nexthops={faceid=261 (cost=0), faceid=268 (cost=0)}
+  /NDNSF-DistributeInference/example/user nexthops={faceid=261 (cost=0), faceid=268 (cost=0)}
+RIB:
+  /NDNSF/DistributedRepo routes={nexthop=261 origin=client cost=0 flags=child-inherit expires=never, nexthop=268 origin=client cost=0 flags=child-inherit expires=never}
+  /localhost/nfd routes={nexthop=256 origin=app cost=0 flags=child-inherit expires=never}
+  /activation/llm routes={nexthop=261 origin=client cost=0 flags=child-inherit expires=never, nexthop=268 origin=client cost=0 flags=child-inherit expires=never}
+  /NDNSF-DistributeInference/example routes={nexthop=261 origin=client cost=0 flags=child-inherit expires=never, nexthop=268 origin=client cost=0 flags=child-inherit expires=never}
+  /NDNSF-DistributeInference/example/repo/1/CK routes={nexthop=287 origin=app cost=0 flags=child-inherit expires=never}
+  /NDNSF-DistributeInference/example/repo/1/KEY/%EE%9Ay%AB%C1%24%8B%CB routes={nexthop=287 origin=app cost=0 flags=child-inherit expires=never}
+  /NDNSF-DistributeInference/example/repo/1/NDNSF routes={nexthop=287 origin=app cost=0 flags=child-inherit expires=never}
+  /NDNSF-DistributeInference/example/repo/1/NDNSF/REPO-SERVING routes={nexthop=288 origin=app cost=0 flags=child-inherit expires=never}
+  /NDNSF-DistributeInference/example/repo/1/provider/0/NDNSF-DistributeInference/example/group routes={nexthop=287 origin=app cost=0 flags=child-inherit expires=never}
+  /NDNSF-DistributeInference/example/repo/1/provider/0/NDNSF-DistributeInference/example/group/MAPPING routes={nexthop=287 origin=app cost=0 flags=child-inherit expires=never}
+  /NDNSF-DistributeInference/example/user routes={nexthop=261 origin=autoconf cost=0 flags=child-inherit expires=never}
+  /NDNSF-DistributeInference/example/user/user/0 routes={nexthop=261 origin=67 cost=0 flags=child-inherit expires=never}
+  /NDNSF-DistributeInference/example/group routes={nexthop=261 origin=client cost=0 flags=child-inherit expires=never, nexthop=268 origin=client cost=0 flags=child-inherit expires=never, nexthop=287 origin=app cost=0 flags=child-inherit expires=never, nexthop=289 origin=app cost=0 flags=child-inherit expires=never}
+  /NDNSF-DistributeInference/example/provider routes={nexthop=261 origin=autoconf cost=0 flags=child-inherit expires=never}
+  /NDNSF-DistributeInference/example/provider/1/CK routes={nexthop=289 origin=app cost=0 flags=child-inherit expires=never}
+  /NDNSF-DistributeInference/example/provider/1/KEY/1%90%D8%FA%EC%83%FC%C5 routes={nexthop=289 origin=app cost=0 flags=child-inherit expires=never}
+  /NDNSF-DistributeInference/example/provider/1/NDNSF routes={nexthop=289 origin=app cost=0 flags=child-inherit expires=never}
+  /NDNSF-DistributeInference/example/provider/1/provider/0/NDNSF-DistributeInference/example/group routes={nexthop=289 origin=app cost=0 flags=child-inherit expires=never}
+  /NDNSF-DistributeInference/example/provider/1/provider/0/NDNSF-DistributeInference/example/group/MAPPING routes={nexthop=289 origin=app cost=0 flags=child-inherit expires=never}
+  /NDNSF-DistributeInference/example/provider/2 routes={nexthop=268 origin=autoconf cost=0 flags=child-inherit expires=never}
+  /NDNSF-DistributeInference/example/provider/NDNSF-ARTIFACT routes={nexthop=261 origin=68 cost=0 flags=child-inherit expires=never}
+  /NDNSF-DistributeInference/example/controller routes={nexthop=261 origin=autoconf cost=0 flags=child-inherit expires=never}
+  /NDNSF-DistributeInference/example/controller/DKEY routes={nexthop=261 origin=69 cost=0 flags=child-inherit expires=never}
+CS information:
+  capacity=1024
+     admit=on
+     serve=on
+  nEntries=114
+     nHits=2
+   nMisses=445
+Strategy choices:
+  prefix=/ strategy=/localhost/nfd/strategy/best-route/v=5
+  prefix=/activation/llm strategy=/localhost/nfd/strategy/multicast/v=5
+  prefix=/NDNSF-DistributeInference/example/provider/NDNSF-ARTIFACT strategy=/localhost/nfd/strategy/best-route/v=5
+  prefix=/NDNSF/DistributedRepo strategy=/localhost/nfd/strategy/multicast/v=5
+  prefix=/NDNSF-DistributeInference/example strategy=/localhost/nfd/strategy/multicast/v=5
+  prefix=/localhost strategy=/localhost/nfd/strategy/multicast/v=5
+  prefix=/spec162 strategy=/localhost/nfd/strategy/best-route/v=5
+  prefix=/localhost/nfd strategy=/localhost/nfd/strategy/best-route/v=5
+  prefix=/NDNSF-DistributeInference/example/controller/DKEY strategy=/localhost/nfd/strategy/best-route/v=5
+  prefix=/NDNSF-DistributeInference/example/group strategy=/localhost/nfd/strategy/multicast/v=5

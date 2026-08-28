@@ -164,3 +164,15 @@ CodeGraph status: up to date; 7,295 files, 160,816 nodes
 4. In parallel after T049, qualify the selected cross-node transport T050-T064;
    only T064 PASS plus T084 PASS unlocks T088-T089.
 5. Continue the seven-size single-node ladder T090-T105 before performance.
+
+## Post-Spec-111 amendment checklist
+
+- [x] Docker/OCI is build/distribution only; iTiger compute uses exact SIF with Slurm/Apptainer
+- [x] Current/pre-Spec-111 release is substrate evidence only and cannot prove the new APP workflow
+- [x] Infrastructure allocation, APPDeployment and request handles/states are distinct
+- [x] Runtime handoff binds revision, OCI/SIF, model, process-map/network, identity/state and authorization digests
+- [x] Models/artifacts/identities are read-only; RuntimeJournal state is identity-partitioned persistent read-write
+- [x] Generic process-map v2 derives Provider roles from the revision and preserves frozen v1 evidence
+- [x] Every project process runs inside the same exact SIF with shared node-run and per-Provider GPU mapping
+- [x] Single-node post-Spec-111 PASS precedes selected-transport multi-node use
+- [x] No live job is authorized by this document revision; T219-T232 remain future work

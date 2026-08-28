@@ -1,4 +1,12 @@
-# Reusable Layered NDNSF-DI Container Build
+# Reusable Layered NDNSF-DI Container Build (historical Spec158/local OCI path)
+
+> **Not the current Spec170 TigerCluster route.** This document describes the
+> older local OCI/Docker development workflow owned by Spec158. It is retained
+> for provenance and local development only. A current Spec170 release starts
+> with `adapters/slurm-apptainer/scripts/build-local-sif.sh`, builds the complete
+> application SIF with local Apptainer, and sends only that hash-verified SIF to
+> TigerCluster. Do not use the Docker, OCI archive, registry, or Tiger-side
+> materialization commands below for Spec170.
 
 This is the local development build path for NDNSF-DI. It separates expensive,
 slow-changing dependencies from frequently changed application code:
@@ -14,8 +22,8 @@ The five products are independent local OCI images:
 
 | Product | Owns | Rebuild when |
 |---|---|---|
-| `ndnsf-di-ml:*‑devel` | Python, PyTorch, Transformers, ONNX Runtime GPU Python/C++ | CUDA, Python, ML, or ONNX Runtime lock changes |
-| `ndnsf-di-ml:*‑runtime` | Runtime-only copy of the ML closure | Same as ML devel |
+| `ndnsf-di-ml:*‑devel` | Offline exporter/conformance Python (PyTorch/Transformers) plus ONNX Runtime tooling | CUDA, Python, ML, or ONNX Runtime lock changes |
+| `ndnsf-di-ml:*‑runtime` | Deployment-only ONNX Runtime and standalone-tokenizer closure; no PyTorch/Transformers | Same as ML devel |
 | `ndnsf-di-ndn:*‑devel` | ndn-cxx, NFD, OpenABE/RELIC, NAC-ABE, websocketpp headers/tools | Stable NDN/security lock changes |
 | `ndnsf-di-ndn:*‑runtime` | Runtime-only stable NDN/security closure | Same as NDN devel |
 | `ndnsf-di:spec158-*` | ndn-svs, NDNSD, NDNSF, bindings, NDNSF-DI, native adapters | Any application source or App lock changes |

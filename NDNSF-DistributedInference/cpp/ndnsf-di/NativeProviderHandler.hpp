@@ -4,17 +4,20 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp"
 
 #include "ndn-service-framework/ServiceProvider.hpp"
 #include "ndn-service-framework/ExecutionLease.hpp"
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <functional>
 #include <initializer_list>
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -32,6 +35,10 @@ struct NativeProviderHandlerConfig
     ndn_service_framework::ServiceProvider::CollaborationContext&,
     const NativeSelectionProjectionV3&,
     const std::shared_ptr<ProviderGroupCoordinator>&)>;
+  using EpochCoordinatorCompletionObserver = std::function<void(
+    const std::string&, const NativeEpochCoordinatorResult&)>;
+  using NativeFailureObserver = std::function<void(
+    const std::string&, const std::string&)>;
 
   NativeExecutionPlan plan;
   NativeProviderAssignment assignment;
@@ -50,6 +57,23 @@ struct NativeProviderHandlerConfig
   // dependency-driven execution; V1 is rollback-only and must be paired with
   // both legacy activation switches plus an exact assignment field.
   std::string executionPolicy = "DATA_DRIVEN_V2";
+  // Request-scoped streamed pipeline mode.  Each local role executes once per
+  // prefill/decode epoch through NativeModelRunner::run(); the terminal role
+  // owns token events and the final response.  Disabled for legacy/unary
+  // handlers unless the plan explicitly contains TOKEN_FEEDBACK edges.
+  bool enableNativeEpochCoordinator = false;
+  std::size_t maxGenerationEpochs = 0;
+  std::string generationTokenInputName = "input_ids";
+  std::vector<std::string> generationStateInputNames;
+  std::vector<std::string> generationStateOutputNames;
+  std::set<std::int64_t> generationEosTokenIds;
+  std::string generationSamplingDigest;
+  std::vector<std::int64_t> generationCommittedPrefixTokenIds;
+  // User-generated request scope shared only with the selected Provider roles
+  // and retained by the requester. Provider conversation Ready/receipt records
+  // use this scope so the outer Data is Provider-signed and the payload remains
+  // requester-encrypted without introducing a new NDNSF Core message type.
+  std::string conversationStateKeyScope = "ndnsf-di-conversation-state-v1";
   bool requireExecutionAttemptBinding = false;
   int fetchTimeoutMs = 30000;
   std::size_t maxSegmentSize = 7000;
@@ -87,6 +111,13 @@ struct NativeProviderHandlerConfig
     stageServiceTimeObserver;
   std::shared_ptr<std::function<void(const ExecutionEvidence&)>>
     executionEvidenceObserver;
+  // Optional observability seams. They do not participate in execution or
+  // error handling; tests and operators may use them to require every local
+  // epoch coordinator to terminate cleanly instead of accepting a final-role
+  // Response while an upstream role fails asynchronously.
+  std::shared_ptr<EpochCoordinatorCompletionObserver>
+    epochCoordinatorCompletionObserver;
+  std::shared_ptr<NativeFailureObserver> nativeFailureObserver;
 };
 
 struct NativeProviderExecutionBindingResult
@@ -162,6 +193,10 @@ std::map<std::string, std::string>
 parseNativeProviderAssignmentFields(const ndn::Buffer& payload,
                                     const std::string& selectedRole = "");
 
+bool
+nativeRequestContractDigestMatches(const std::string& expectedDigest,
+                                   const ndn::Buffer& requestPayload);
+
 inline std::string
 nativeProviderFieldValue(const std::map<std::string, std::string>& fields,
                          std::initializer_list<const char*> names)
@@ -229,6 +264,8 @@ struct NativeProviderCollaborationRuntime
 {
   ndn_service_framework::ServiceProvider::CollaborationHandler handler;
   std::function<ProviderRoleWorkerSnapshot()> capacitySnapshot;
+  std::function<ProviderDecodeStateSnapshot()> decodeStateSnapshot;
+  std::function<ConversationStateSnapshot()> conversationStateSnapshot;
   std::vector<ExecutionEvidence> executionEvidence;
 };
 

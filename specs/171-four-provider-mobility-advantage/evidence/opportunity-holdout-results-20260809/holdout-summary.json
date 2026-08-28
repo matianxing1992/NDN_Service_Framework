@@ -1,0 +1,336 @@
+{
+  "paired_ndnsf_minus_baseline_p95_ms": {
+    "grpc": {
+      "ci95_high": -200.1058,
+      "ci95_low": -992.1831999999999,
+      "mean": -596.5542,
+      "per_seed": [
+        -904.9970000000001,
+        94.24000000000001,
+        98.14699999999999,
+        105.506,
+        -907.0400000000001,
+        -887.143,
+        102.45800000000001,
+        -1867.5649999999998,
+        -904.0320000000002,
+        -895.1159999999999
+      ],
+      "repetitions": 20000,
+      "seed": 171
+    },
+    "nsc": {
+      "ci95_high": -2315.0883,
+      "ci95_low": -2916.273,
+      "mean": -2618.3198,
+      "per_seed": [
+        -2920.403,
+        -2931.009,
+        -1924.435,
+        -1918.113,
+        -2919.112,
+        -2933.428,
+        -2905.462,
+        -1896.059,
+        -2925.085,
+        -2910.092
+      ],
+      "repetitions": 20000,
+      "seed": 171
+    }
+  },
+  "per_seed": [
+    {
+      "grpc": {
+        "attempts_or_executions": 235,
+        "mean_success_latency_ms": 318.9032134831461,
+        "p95_success_latency_ms": 1035.594,
+        "requests": 89,
+        "success": 89
+      },
+      "ndnsf": {
+        "attempts_or_executions": 89,
+        "mean_success_latency_ms": 97.83879545454546,
+        "p95_success_latency_ms": 130.597,
+        "requests": 89,
+        "success": 88
+      },
+      "nsc": {
+        "attempts_or_executions": 242,
+        "mean_success_latency_ms": 1633.037037037037,
+        "p95_success_latency_ms": 3051.0,
+        "requests": 89,
+        "success": 81
+      },
+      "seed": 72,
+      "state_disagreement": 0,
+      "switch_required": 89,
+      "transition_boundary": 0
+    },
+    {
+      "grpc": {
+        "attempts_or_executions": 420,
+        "mean_success_latency_ms": 24.51065,
+        "p95_success_latency_ms": 32.751,
+        "requests": 140,
+        "success": 140
+      },
+      "ndnsf": {
+        "attempts_or_executions": 140,
+        "mean_success_latency_ms": 99.29611428571428,
+        "p95_success_latency_ms": 126.991,
+        "requests": 140,
+        "success": 140
+      },
+      "nsc": {
+        "attempts_or_executions": 420,
+        "mean_success_latency_ms": 2041.6142857142856,
+        "p95_success_latency_ms": 3058.0,
+        "requests": 140,
+        "success": 140
+      },
+      "seed": 73,
+      "state_disagreement": 0,
+      "switch_required": 140,
+      "transition_boundary": 3
+    },
+    {
+      "grpc": {
+        "attempts_or_executions": 379,
+        "mean_success_latency_ms": 36.206834437086094,
+        "p95_success_latency_ms": 32.418,
+        "requests": 151,
+        "success": 151
+      },
+      "ndnsf": {
+        "attempts_or_executions": 151,
+        "mean_success_latency_ms": 105.53561589403974,
+        "p95_success_latency_ms": 130.565,
+        "requests": 151,
+        "success": 151
+      },
+      "nsc": {
+        "attempts_or_executions": 379,
+        "mean_success_latency_ms": 1548.0993377483444,
+        "p95_success_latency_ms": 2055.0,
+        "requests": 151,
+        "success": 151
+      },
+      "seed": 74,
+      "state_disagreement": 0,
+      "switch_required": 151,
+      "transition_boundary": 0
+    },
+    {
+      "grpc": {
+        "attempts_or_executions": 187,
+        "mean_success_latency_ms": 23.2954,
+        "p95_success_latency_ms": 34.381,
+        "requests": 61,
+        "success": 55
+      },
+      "ndnsf": {
+        "attempts_or_executions": 61,
+        "mean_success_latency_ms": 106.92280327868852,
+        "p95_success_latency_ms": 139.887,
+        "requests": 61,
+        "success": 61
+      },
+      "nsc": {
+        "attempts_or_executions": 154,
+        "mean_success_latency_ms": 1563.016393442623,
+        "p95_success_latency_ms": 2058.0,
+        "requests": 61,
+        "success": 61
+      },
+      "seed": 75,
+      "state_disagreement": 3,
+      "switch_required": 61,
+      "transition_boundary": 3
+    },
+    {
+      "grpc": {
+        "attempts_or_executions": 472,
+        "mean_success_latency_ms": 248.56980459770116,
+        "p95_success_latency_ms": 1034.928,
+        "requests": 174,
+        "success": 174
+      },
+      "ndnsf": {
+        "attempts_or_executions": 174,
+        "mean_success_latency_ms": 95.69529885057472,
+        "p95_success_latency_ms": 127.888,
+        "requests": 174,
+        "success": 174
+      },
+      "nsc": {
+        "attempts_or_executions": 475,
+        "mean_success_latency_ms": 1767.1954022988505,
+        "p95_success_latency_ms": 3047.0,
+        "requests": 174,
+        "success": 174
+      },
+      "seed": 76,
+      "state_disagreement": 0,
+      "switch_required": 174,
+      "transition_boundary": 0
+    },
+    {
+      "grpc": {
+        "attempts_or_executions": 588,
+        "mean_success_latency_ms": 87.71825247524752,
+        "p95_success_latency_ms": 1013.715,
+        "requests": 202,
+        "success": 202
+      },
+      "ndnsf": {
+        "attempts_or_executions": 202,
+        "mean_success_latency_ms": 96.9439108910891,
+        "p95_success_latency_ms": 126.572,
+        "requests": 202,
+        "success": 202
+      },
+      "nsc": {
+        "attempts_or_executions": 582,
+        "mean_success_latency_ms": 1920.1435643564357,
+        "p95_success_latency_ms": 3060.0,
+        "requests": 202,
+        "success": 202
+      },
+      "seed": 77,
+      "state_disagreement": 0,
+      "switch_required": 202,
+      "transition_boundary": 3
+    },
+    {
+      "grpc": {
+        "attempts_or_executions": 223,
+        "mean_success_latency_ms": 22.697736263736264,
+        "p95_success_latency_ms": 34.08,
+        "requests": 95,
+        "success": 91
+      },
+      "ndnsf": {
+        "attempts_or_executions": 95,
+        "mean_success_latency_ms": 94.6977052631579,
+        "p95_success_latency_ms": 136.538,
+        "requests": 95,
+        "success": 95
+      },
+      "nsc": {
+        "attempts_or_executions": 218,
+        "mean_success_latency_ms": 1330.3894736842105,
+        "p95_success_latency_ms": 3042.0,
+        "requests": 95,
+        "success": 95
+      },
+      "seed": 78,
+      "state_disagreement": 1,
+      "switch_required": 95,
+      "transition_boundary": 6
+    },
+    {
+      "grpc": {
+        "attempts_or_executions": 279,
+        "mean_success_latency_ms": 334.66306956521737,
+        "p95_success_latency_ms": 2024.5059999999999,
+        "requests": 115,
+        "success": 115
+      },
+      "ndnsf": {
+        "attempts_or_executions": 115,
+        "mean_success_latency_ms": 120.6206,
+        "p95_success_latency_ms": 156.941,
+        "requests": 115,
+        "success": 115
+      },
+      "nsc": {
+        "attempts_or_executions": 273,
+        "mean_success_latency_ms": 1412.3826086956522,
+        "p95_success_latency_ms": 2053.0,
+        "requests": 115,
+        "success": 115
+      },
+      "seed": 79,
+      "state_disagreement": 0,
+      "switch_required": 115,
+      "transition_boundary": 4
+    },
+    {
+      "grpc": {
+        "attempts_or_executions": 465,
+        "mean_success_latency_ms": 256.42186486486486,
+        "p95_success_latency_ms": 1032.9470000000001,
+        "requests": 153,
+        "success": 148
+      },
+      "ndnsf": {
+        "attempts_or_executions": 153,
+        "mean_success_latency_ms": 98.23750326797385,
+        "p95_success_latency_ms": 128.915,
+        "requests": 153,
+        "success": 153
+      },
+      "nsc": {
+        "attempts_or_executions": 466,
+        "mean_success_latency_ms": 2033.0413793103448,
+        "p95_success_latency_ms": 3054.0,
+        "requests": 153,
+        "success": 145
+      },
+      "seed": 80,
+      "state_disagreement": 3,
+      "switch_required": 153,
+      "transition_boundary": 3
+    },
+    {
+      "grpc": {
+        "attempts_or_executions": 341,
+        "mean_success_latency_ms": 167.1409696969697,
+        "p95_success_latency_ms": 1034.024,
+        "requests": 132,
+        "success": 132
+      },
+      "ndnsf": {
+        "attempts_or_executions": 132,
+        "mean_success_latency_ms": 109.93276515151516,
+        "p95_success_latency_ms": 138.908,
+        "requests": 132,
+        "success": 132
+      },
+      "nsc": {
+        "attempts_or_executions": 339,
+        "mean_success_latency_ms": 1605.7348484848485,
+        "p95_success_latency_ms": 3049.0,
+        "requests": 132,
+        "success": 132
+      },
+      "seed": 81,
+      "state_disagreement": 0,
+      "switch_required": 132,
+      "transition_boundary": 6
+    }
+  ],
+  "schema": "spec171-opportunity-holdout-v1",
+  "seeds": [
+    72,
+    73,
+    74,
+    75,
+    76,
+    77,
+    78,
+    79,
+    80,
+    81
+  ],
+  "state_disagreement_requests": 7,
+  "switch_required_requests": 1312,
+  "systems": [
+    "ndnsf",
+    "grpc",
+    "nsc"
+  ],
+  "transition_boundary_requests": 28,
+  "verdict": "HOLDOUT_CONFIRMS_CONDITIONAL_END_TO_END_ADVANTAGE"
+}

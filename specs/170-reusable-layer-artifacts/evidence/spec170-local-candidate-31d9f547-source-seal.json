@@ -1,0 +1,22 @@
+{
+  "schemaVersion": "spec170-local-source-seal-v1",
+  "status": "PASS",
+  "sourceRevision": "31d9f547a32f941ab948f005f583c429d23bacbb",
+  "sourceDiff": {
+    "path": "/tmp/spec170-local-candidate-31d9f547-20260817-r2/source-diff.patch",
+    "sha256": "sha256:3f37caf36543393b61584dbfb8bd3efe3dd017eef6ba9a6b6f7eb3d304fdfb43"
+  },
+  "buildInputs": {
+    "provider": "build/examples/di-native-provider",
+    "framework": "build/libndn-service-framework.so",
+    "pythonExtension": "pythonWrapper/ndnsf/_ndnsf.cpython-310-x86_64-linux-gnu.so",
+    "integrationTests": "build/integration-tests",
+    "unitTests": "build/unit-tests"
+  },
+  "localGates": {
+    "integration": "21 cases / 288 assertions",
+    "unit": "487 cases / 57132 assertions",
+    "pythonSpec170": "59 passed / 2 skipped"
+  },
+  "tigerAction": "verify-hash-and-execute-only"
+}

@@ -1,119 +1,19 @@
-# Spec 170 Gate C Evidence (current checkpoint)
+# Spec 170 Gate C Evidence (historical checkpoint)
 
-**Verdict: PARTIAL PASS.** The current immutable OCI candidate passed its
-GitHub build, runtime probe, signature, SBOM, anonymous pull, and
-release-manifest checks. It has been materialized to an exact SIF with
-matching local/project hashes, and the same SIF has passed the no-GPU static
-probe, allocated-GPU CUDA/ONNX preflight, sealed four-Provider CPU D0
-execution, and a direct four-Provider CUDA V3 diagnostic. Full Gate C and
-Tiger D1/D2 completion remain unclaimed until the pre-freeze closure and sole
-candidate freeze are complete.
+> **Superseded.** This ledger records earlier Tiger-side build attempts and
+> must not be used to select a new runtime. The current Gate-C release pointer
+> is the locally built and verified SIF recorded in
+> `local-sif-build-route-20260817.md` and `evidence/README.md`:
+> `spec170-runtime-dd5c11cc-localfix-20260817-r1`, SHA-256
+> `f6521a8226190279cb961f2e100245d783c8ba90723a4b004f1f773df71b5874`.
+> Tiger now verifies and executes that locally built SIF only; it does not
+> build it. The older SIF below is historical negative evidence.
 
-## Current candidate binding (2026-08-14)
-
-All new Tiger evidence below binds the same source/OCI/SIF tuple:
-
-```text
-source: db1601ab8614677107ba65a001cb1a029363e555
-OCI: ghcr.io/matianxing1992/ndnsf-di-spec170@sha256:29e51b62e0165b1d05c4dc5c7627da741f9d196a935bf85d76abd4f75cf28c34
-SIF: /project/tma1/ndnsf-di/releases/spec170-runtime-db1601ab8614677107ba65a001cb1a029363e555/runtime.sif
-SIF SHA-256: 431c2721cecd209a713ced5c9b8e8c0aa22cf8af35934f717e6824db3846a091
-```
-
-Static job `189476` passed on `itiger05` with all native binaries, all V3
-Python imports, ONNX Runtime `1.20.0`, Torch `2.6.0+cu124`, Transformers
-`4.51.0`, and Qwen3 imports. It reported `modelWeightsIncluded: false`, as
-required for the content-addressed external model contract. Allocated-GPU
-job `189477` passed on `itiger02` with one RTX 6000 Ada, CUDA 12.4,
-`CUDAExecutionProvider`, and `cpuFallback=false`.
-
-The same candidate then passed the candidate-bound CPU/no-GPU D0 gate as job
-`189483`; the result is recorded in `tiger-d0.md`. The direct CUDA V3 network
-diagnostic job `189475` also completed with four Providers using
-`CUDAExecutionProvider`, four execution markers, ACK/Selection, and a final
-Merge response. These are current-candidate checks; they do not substitute
-for T025/T026/T028 pre-freeze closure or for the frozen D1/D2 gates.
-
-## Current-candidate Qwen reference
-
-The first attempt (`189484`) was discarded because the remotely staged job
-script hard-coded the old `runtime-85d7aa...` candidate.  It is not mixed into
-the current result.  After staging the parameterized script, job `189485`
-completed on `itiger02` with the current SIF and one GPU:
-
-```text
-candidate: runtime-db1601ab8614677107ba65a001cb1a029363e555
-job: 189485
-state: COMPLETED, exit 0:0
-elapsed: 00:00:14
-SIF SHA-256: 431c2721cecd209a713ced5c9b8e8c0aa22cf8af35934f717e6824db3846a091
-prompt SHA-256: d0ba0089a42d3f617369547844f0179b848a92c2315159c687c2869e10622d7b
-job script SHA-256: ecd2dd019c057a36f2287172b66e12bf0d5b9a5d6d3fab19c54361e5162d0b56
-result SHA-256: 5ad88fccaf6a824f3e40250de62635fbc525f080ce60b13b9e64945be0be0b63
-```
-
-The external content-addressed Qwen model produced one greedy two-token row
-with output token IDs `[3555, 374]`, input digest
-`sha256:723029d4d90b3c7b8d6cfe74fcf9a1c11f4d6d3cb904eb090c3986efd4f4bc88`,
-output digest
-`sha256:d6e7e388458351e97bb8987d7798ab29d034d0a0fdfe24212cfafe0e07d57b18`,
-and measured elapsed time `0.832749 s`.  This proves current-candidate
-single-GPU model execution only; it is not a distributed multi-Provider
-generation result or final T031 evidence.
-
-The current Qwen3-compatible candidate is documented in
-`tiger-qwen3-sif-materialization-20260814.md` and
-`tiger-qwen3-runtime-probes-20260814.md`. The earlier SIF below remains a
-diagnostic-only runtime and must not be mixed with this candidate.
-
-## Latest Qwen3-compatible OCI/SIF checkpoint (2026-08-14)
-
-```text
-OCI:
-  ghcr.io/matianxing1992/ndnsf-di-spec170@sha256:f1c8288e26d3dd7700b9519e51296fc3ed17027c60780fac4b361f470c628a26
-source:
-  a46abe9110ff816145a42b42e9b365d847e41135
-SIF:
-  /project/tma1/ndnsf-di/releases/spec170-runtime-a46abe9110ff816145a42b42e9b365d847e41135/runtime.sif
-SIF SHA-256:
-  sha256:5e556c17492957d07cde1debad5f7d93d794d43f87b3186914065d53e812fb4c
-materialization record digest:
-  sha256:9ab379c74ef7952c9eee825a75b69b2c2e832f1b8539dffe1e9ea556f9ee34aa
-```
-
-The release artifact checksums and the canonical materialization record verify.
-Job `189293` reached a valid promoted SIF but ended `127` after the record had
-been written because an optional helper was not staged; that failure and its
-promotion-failure record are retained in the dedicated evidence file. The
-artifact is accepted as an exact-SIF input for the next probe, not as a clean
-Slurm orchestration PASS.
-
-## Latest Qwen3 runtime probes (2026-08-14)
-
-Against the exact SIF above, job `189302` passed the static probe on `itiger01`;
-it found `transformers==4.51.0` and both Qwen3 import modules. Jobs `189303`
-and `189304` are retained launch failures: the first used the invalid mode
-`cuda`, and the second stripped the required `SLURM_JOB_ID` with
-`--cleanenv`. Job `189305` passed the declared `allocated-gpu` mode on
-`itiger09` after forwarding only that scheduler variable. It observed an RTX
-5000 Ada, CUDA 12.4, `CUDAExecutionProvider`, and `cpuFallback=false`.
-
-Job `189306` then loaded the external content-addressed Qwen3-0.6B model and
-completed one greedy two-token reference row on the same SIF/GPU path. Prompt,
-output, result hashes, and the non-fatal deterministic-CuBLAS warnings are
-recorded in `tiger-qwen3-runtime-probes-20260814.md`.
-
-## Immutable OCI checkpoint (2026-08-13)
-
-The accepted OCI candidate and its evidence are recorded in
-`gpu-release-20260813.md`:
-
-```text
-ghcr.io/matianxing1992/ndnsf-di-spec170@sha256:94ce0cc847d453df90fc1aab74fade597f45e3199274ad782094fb45dd9bf916
-```
-
-The exact SIF materialization and static probe are recorded below. No mutable
-tag or old Spec110/Spec168 image was substituted.
+**Verdict: CONDITIONAL — exact SIF verified; clean wrapper materialization still
+open.** The original no-SIF record below is retained as a historical
+preflight. The current r5 SIF is real and hash-verified, but its rootless build
+wrapper exited nonzero while cleaning Buildah scratch, so this is not a clean
+rootless-build PASS.
 
 ## Local exact-SIF availability check (2026-08-05)
 
@@ -172,49 +72,36 @@ c7263f2bdce939689ce654fc7e54857698cdc8139137c6c751dd7b9ec0a3bc88  specs/170-reus
 7b18323a045b17fe063c39199ce81807c339118ab50d9da8e379be0dd74d7bb2  tests/container/unit/test_spec170_exact_sif_gate.py
 ```
 
-## Exact SIF materialization and no-GPU static probe (2026-08-14)
+## Current r5 materialization and exact-SIF verification (2026-08-16)
 
-The accepted OCI release was materialized once on TigerCluster compute node
-`itiger05` by Slurm job `189255` using the local-scratch build path. The job
-completed with exit code 0, peak RSS `25588064K`, and no OOM. The local SIF and
-the promoted project copy were byte-identical:
+The sealed source identity is `0142d4ee2310de056aa391d954f2c3db8fb62023` with
+source seal `sha256:0b2ea4a56713d4a2b4e36bdc47edba568cfcb7c4dab7e1db3b2bf198d5ac5462`.
+Tiger job `196525` produced the final OCI and SIF and passed the static probe,
+but returned `ROOTLESS_BUILD_SCRATCH_CLEANUP_FAILED` while removing its
+rootless Buildah graphroot.  The release is therefore classified as
+`artifact-ready / orchestration-failed`, not as a clean build-wrapper PASS:
 
 ```text
-OCI:
-  ghcr.io/matianxing1992/ndnsf-di-spec170@sha256:94ce0cc847d453df90fc1aab74fade597f45e3199274ad782094fb45dd9bf916
-SIF:
-  /project/tma1/ndnsf-di/releases/spec170-runtime-e23d759bb61159c8b3093e599fe301599d8c043f/runtime.sif
-SIF SHA-256:
-  sha256:525c4b890c4012d3f36653d0209f7decec508635818e5b0829250ef06d012af1
-materialization:
-  schema ndnsf-sif-materialization-v2; verified=true
-  recordDigest sha256:0f9ca6b32fd58861496ac4b9f326d20b76bed840ece07ac88cb1d4c760562612
+release: /project/tma1/ndnsf-di/releases/spec170-runtime-0142d4-gpu-20260816-r5
+runtime.sif bytes: 4397842432
+runtime.sif sha256: 490ff5fbf20ef3be56caf398478f457efc2a786fdeaf41e90d1ccbbc9addafb6
+runtime.oci.tar sha256: bf2c73d5086bbec15d4a6c2e85e0e6d7bed136c2d75dfa42aa93cf378dd96422
+static probe: PASS
+build wrapper: FAIL (scratch cleanup only; payload was produced)
 ```
 
-The exact SIF was then executed without `--nv` in Slurm job `189260` on
-`itiger05`, with Apptainer `1.5.3-1.el9`, `--cleanenv --containall --home /tmp`,
-and `/usr/local/bin/ndnsf-di-probe-runtime --mode static`. The probe exited 0
-and reported `status: PASS`, all required native binaries, all required Python
-imports, `torch 2.6.0+cu124`, and `onnxruntime 1.20.0`. It intentionally reports
-`modelWeightsIncluded: false`; this is a runtime-image probe, not a model
-execution result.
+Independent Tiger job `196669` then verified the exact SIF by path and hash
+without rebuilding it.  It passed the runtime probe, Python imports, ORT 1.20.0
+and Torch 2.6.0+cu124 checks, and recorded
+`SPEC170_SIF_VERIFY_PASS jobId=196669`.  This closes exact-SIF availability and
+static runtime integrity, but it does not claim the D0/D1/D2a/D2b/D2h network
+features; those still require current-SIF request/ACK/Selection/Response
+workloads.
 
-Three bounded probe attempts before the final invocation are retained as
-negative launch evidence in `tiger-sif-static-probe-20260814.md`; they exposed
-only missing/overridden container HOME and working-directory setup, not a SIF
-digest or runtime-content failure.
+The current r5 SIF was rehashed after the targeted Tiger storage cleanup and
+still matches the value above.  Superseded SIFs, old Spec162 duplicate model
+stages, and rebuildable Apptainer cache were removed separately; current r5
+release metadata, hashes, source seals, and failure evidence remain retained.
 
-Gate C remains open until the exact candidate is checked for the full T027
-native/Python V3 parity and bounded CUDA-preflight contract without rebuilding.
-
-## Bounded CUDA preflight (2026-08-14)
-
-The same immutable SIF passed the bounded allocated-GPU probe in Slurm job
-`189262` on `itiger01` with one `--gres=gpu:1` allocation and Apptainer
-`--nv`. The probe reported `status: PASS`, `cpuFallback: false`, one UUID
-(`GPU-90597ffb-6498-9a24-ca98-18fbdc33c447`), NVIDIA H100 80GB HBM3,
-driver `560.35.03`, Torch CUDA `12.4`, and ONNX Runtime providers
-`CUDAExecutionProvider` plus `CPUExecutionProvider`; the ONNX profile observed
-CUDA execution. Non-fatal ONNX Runtime thread-affinity warnings were emitted
-by the constrained Slurm CPU mask, but the CUDA kernel/provider and UUID checks
-passed. This is only the bounded runtime preflight, not a frozen D1 workload.
+Gate C is therefore open for the next bounded current-SIF CPU/no-GPU network
+smoke, while the scratch-cleanup wrapper defect remains a packaging follow-up.

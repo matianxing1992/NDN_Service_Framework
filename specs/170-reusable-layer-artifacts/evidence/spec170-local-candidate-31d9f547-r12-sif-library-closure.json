@@ -1,0 +1,573 @@
+{
+  "checkedAt": "2026-08-17T20:57:21.678070+00:00",
+  "failures": [],
+  "libraries": [
+    {
+      "needed": [
+        "libndn-cxx.so.0.9.0",
+        "libboost_log.so.1.71.0",
+        "libboost_stacktrace_backtrace.so.1.71.0",
+        "libpthread.so.0",
+        "libopenabe.so",
+        "libstdc++.so.6",
+        "libm.so.6",
+        "libgcc_s.so.1",
+        "libc.so.6"
+      ],
+      "path": "/opt/ndnsf-di/current/lib/libnac-abe.so",
+      "resolvedPath": "/opt/ndnsf-di/current/lib/libnac-abe.so",
+      "sha256": "31438f1a0d138f134097bdb379d3b59a19b7d1591a9442ccf27987bbd4fc610d",
+      "soname": "libnac-abe.so"
+    },
+    {
+      "needed": [
+        "libndn-cxx.so.0.9.0",
+        "libboost_log.so.1.71.0",
+        "libboost_stacktrace_backtrace.so.1.71.0",
+        "libpthread.so.0",
+        "libopenabe.so",
+        "libstdc++.so.6",
+        "libm.so.6",
+        "libgcc_s.so.1",
+        "libc.so.6"
+      ],
+      "path": "/opt/ndnsf-di/current/lib/libnac-abe.so.0.1.0",
+      "resolvedPath": "/opt/ndnsf-di/current/lib/libnac-abe.so",
+      "sha256": "31438f1a0d138f134097bdb379d3b59a19b7d1591a9442ccf27987bbd4fc610d",
+      "soname": "libnac-abe.so"
+    },
+    {
+      "needed": [
+        "libboost_chrono.so.1.71.0",
+        "libboost_date_time.so.1.71.0",
+        "libboost_log.so.1.71.0",
+        "libboost_thread.so.1.71.0",
+        "libboost_stacktrace_backtrace.so.1.71.0",
+        "libcrypto.so.1.1",
+        "libsqlite3.so.0",
+        "libpthread.so.0",
+        "libstdc++.so.6",
+        "libm.so.6",
+        "libgcc_s.so.1",
+        "libc.so.6",
+        "ld-linux-x86-64.so.2"
+      ],
+      "path": "/opt/ndnsf-di/current/lib/libndn-cxx.so",
+      "resolvedPath": "/opt/ndnsf-di/current/lib/libndn-cxx.so.0.9.0",
+      "sha256": "1d12d5234de42e55820f534aa00b80d3dfac11aaec895c2ea7ee0a26f0170f3c",
+      "soname": "libndn-cxx.so.0.9.0"
+    },
+    {
+      "needed": [
+        "libboost_chrono.so.1.71.0",
+        "libboost_date_time.so.1.71.0",
+        "libboost_log.so.1.71.0",
+        "libboost_thread.so.1.71.0",
+        "libboost_stacktrace_backtrace.so.1.71.0",
+        "libcrypto.so.1.1",
+        "libsqlite3.so.0",
+        "libpthread.so.0",
+        "libstdc++.so.6",
+        "libm.so.6",
+        "libgcc_s.so.1",
+        "libc.so.6",
+        "ld-linux-x86-64.so.2"
+      ],
+      "path": "/opt/ndnsf-di/current/lib/libndn-cxx.so.0.9.0",
+      "resolvedPath": "/opt/ndnsf-di/current/lib/libndn-cxx.so.0.9.0",
+      "sha256": "1d12d5234de42e55820f534aa00b80d3dfac11aaec895c2ea7ee0a26f0170f3c",
+      "soname": "libndn-cxx.so.0.9.0"
+    },
+    {
+      "needed": [
+        "libndn-svs.so.0.1.0",
+        "libndn-cxx.so.0.9.0",
+        "libboost_log.so.1.71.0",
+        "libcrypto.so.1.1",
+        "libpthread.so.0",
+        "libnac-abe.so.0.1.0",
+        "libstdc++.so.6",
+        "libm.so.6",
+        "libgcc_s.so.1",
+        "libc.so.6",
+        "ld-linux-x86-64.so.2"
+      ],
+      "path": "/opt/ndnsf-di/current/lib/libndn-service-framework.so",
+      "resolvedPath": "/opt/ndnsf-di/current/lib/libndn-service-framework.so.0.1.0",
+      "sha256": "2efdadd8534b54053eb52a423aaf300276587f3ecb0436faf5eb29faa46039b9",
+      "soname": "libndn-service-framework.so.0.1.0"
+    },
+    {
+      "needed": [
+        "libndn-svs.so.0.1.0",
+        "libndn-cxx.so.0.9.0",
+        "libboost_log.so.1.71.0",
+        "libcrypto.so.1.1",
+        "libpthread.so.0",
+        "libnac-abe.so.0.1.0",
+        "libstdc++.so.6",
+        "libm.so.6",
+        "libgcc_s.so.1",
+        "libc.so.6",
+        "ld-linux-x86-64.so.2"
+      ],
+      "path": "/opt/ndnsf-di/current/lib/libndn-service-framework.so.0.1.0",
+      "resolvedPath": "/opt/ndnsf-di/current/lib/libndn-service-framework.so.0.1.0",
+      "sha256": "2efdadd8534b54053eb52a423aaf300276587f3ecb0436faf5eb29faa46039b9",
+      "soname": "libndn-service-framework.so.0.1.0"
+    },
+    {
+      "needed": [
+        "libndn-cxx.so.0.9.0",
+        "libboost_log.so.1.71.0",
+        "libboost_stacktrace_backtrace.so.1.71.0",
+        "libpthread.so.0",
+        "libstdc++.so.6",
+        "libm.so.6",
+        "libgcc_s.so.1",
+        "libc.so.6",
+        "ld-linux-x86-64.so.2"
+      ],
+      "path": "/opt/ndnsf-di/current/lib/libndn-svs.so",
+      "resolvedPath": "/opt/ndnsf-di/current/lib/libndn-svs.so.0.1.0",
+      "sha256": "70378a10887c8896ac6253c2955214a1d8e02c13e0d47b8091faafda7914cf80",
+      "soname": "libndn-svs.so.0.1.0"
+    },
+    {
+      "needed": [
+        "libndn-cxx.so.0.9.0",
+        "libboost_log.so.1.71.0",
+        "libboost_stacktrace_backtrace.so.1.71.0",
+        "libpthread.so.0",
+        "libstdc++.so.6",
+        "libm.so.6",
+        "libgcc_s.so.1",
+        "libc.so.6",
+        "ld-linux-x86-64.so.2"
+      ],
+      "path": "/opt/ndnsf-di/current/lib/libndn-svs.so.0.1.0",
+      "resolvedPath": "/opt/ndnsf-di/current/lib/libndn-svs.so.0.1.0",
+      "sha256": "70378a10887c8896ac6253c2955214a1d8e02c13e0d47b8091faafda7914cf80",
+      "soname": "libndn-svs.so.0.1.0"
+    },
+    {
+      "needed": [
+        "libndn-cxx.so.0.9.0",
+        "libboost_log.so.1.71.0",
+        "libpthread.so.0",
+        "libndn-svs.so.0.1.0",
+        "libstdc++.so.6",
+        "libgcc_s.so.1",
+        "libc.so.6"
+      ],
+      "path": "/opt/ndnsf-di/current/lib/libndnsd.so",
+      "resolvedPath": "/opt/ndnsf-di/current/lib/libndnsd.so.0.1.0",
+      "sha256": "f9ae37d5153c8ffd7211c50da7da8ffc0538de2242b7550f6c967e12b6b50cd8",
+      "soname": "libndnsd.so.0.1.0"
+    },
+    {
+      "needed": [
+        "libndn-cxx.so.0.9.0",
+        "libboost_log.so.1.71.0",
+        "libpthread.so.0",
+        "libndn-svs.so.0.1.0",
+        "libstdc++.so.6",
+        "libgcc_s.so.1",
+        "libc.so.6"
+      ],
+      "path": "/opt/ndnsf-di/current/lib/libndnsd.so.0.1.0",
+      "resolvedPath": "/opt/ndnsf-di/current/lib/libndnsd.so.0.1.0",
+      "sha256": "f9ae37d5153c8ffd7211c50da7da8ffc0538de2242b7550f6c967e12b6b50cd8",
+      "soname": "libndnsd.so.0.1.0"
+    },
+    {
+      "needed": [
+        "librelic.so",
+        "librelic_ec.so",
+        "libssl.so.1.1",
+        "libcrypto.so.1.1",
+        "libstdc++.so.6",
+        "libgcc_s.so.1",
+        "libc.so.6"
+      ],
+      "path": "/opt/ndnsf-di/current/lib/libopenabe.so",
+      "resolvedPath": "/opt/ndnsf-di/current/lib/libopenabe.so",
+      "sha256": "f41c4aa7159e3f1bbddba631d0b71fe6e470559c703b2b5ff46111d3cba4dc1d",
+      "soname": null
+    },
+    {
+      "needed": [
+        "libpthread.so.0",
+        "libc.so.6",
+        "ld-linux-x86-64.so.2"
+      ],
+      "path": "/opt/ndnsf-di/current/lib/librelic.so",
+      "resolvedPath": "/opt/ndnsf-di/current/lib/librelic.so",
+      "sha256": "54f0f5a193886b4a13a8ba3a0baac011df3550c27e7b30d55f8df28b7aa390bc",
+      "soname": "librelic.so"
+    },
+    {
+      "needed": [
+        "libgmp.so.10",
+        "libpthread.so.0",
+        "libc.so.6",
+        "ld-linux-x86-64.so.2"
+      ],
+      "path": "/opt/ndnsf-di/current/lib/librelic_ec.so",
+      "resolvedPath": "/opt/ndnsf-di/current/lib/librelic_ec.so",
+      "sha256": "96502c5ae9ec847af9fdae655aa79f5cca01941c2b25ee552b80b91d86af6a30",
+      "soname": "librelic_ec.so"
+    },
+    {
+      "needed": [
+        "libdl.so.2",
+        "librt.so.1",
+        "libpthread.so.0",
+        "libstdc++.so.6",
+        "libm.so.6",
+        "libgcc_s.so.1",
+        "libc.so.6",
+        "ld-linux-x86-64.so.2"
+      ],
+      "path": "/opt/onnxruntime/lib/libonnxruntime.so",
+      "resolvedPath": "/opt/onnxruntime/lib/libonnxruntime.so.1.20.0",
+      "sha256": "f433692f47ec671ab385384e186dae8ea870ae093331fbd2a44413285bf43e71",
+      "soname": "libonnxruntime.so.1"
+    },
+    {
+      "needed": [
+        "libdl.so.2",
+        "librt.so.1",
+        "libpthread.so.0",
+        "libstdc++.so.6",
+        "libm.so.6",
+        "libgcc_s.so.1",
+        "libc.so.6",
+        "ld-linux-x86-64.so.2"
+      ],
+      "path": "/opt/onnxruntime/lib/libonnxruntime.so.1",
+      "resolvedPath": "/opt/onnxruntime/lib/libonnxruntime.so.1.20.0",
+      "sha256": "f433692f47ec671ab385384e186dae8ea870ae093331fbd2a44413285bf43e71",
+      "soname": "libonnxruntime.so.1"
+    },
+    {
+      "needed": [
+        "libdl.so.2",
+        "librt.so.1",
+        "libpthread.so.0",
+        "libstdc++.so.6",
+        "libm.so.6",
+        "libgcc_s.so.1",
+        "libc.so.6",
+        "ld-linux-x86-64.so.2"
+      ],
+      "path": "/opt/onnxruntime/lib/libonnxruntime.so.1.20.0",
+      "resolvedPath": "/opt/onnxruntime/lib/libonnxruntime.so.1.20.0",
+      "sha256": "f433692f47ec671ab385384e186dae8ea870ae093331fbd2a44413285bf43e71",
+      "soname": "libonnxruntime.so.1"
+    },
+    {
+      "needed": [
+        "libcublasLt.so.12",
+        "libcublas.so.12",
+        "libcurand.so.10",
+        "libcufft.so.11",
+        "libcudart.so.12",
+        "libcudnn.so.9",
+        "libcudnn_adv.so.9",
+        "libcudnn_ops.so.9",
+        "libcudnn_cnn.so.9",
+        "libcudnn_graph.so.9",
+        "libcudnn_engines_runtime_compiled.so.9",
+        "libcudnn_engines_precompiled.so.9",
+        "libcudnn_heuristic.so.9",
+        "libdl.so.2",
+        "librt.so.1",
+        "libnvrtc.so.12",
+        "libpthread.so.0",
+        "libstdc++.so.6",
+        "libm.so.6",
+        "libgcc_s.so.1",
+        "libc.so.6",
+        "ld-linux-x86-64.so.2"
+      ],
+      "path": "/opt/onnxruntime/lib/libonnxruntime_providers_cuda.so",
+      "resolvedPath": "/opt/onnxruntime/lib/libonnxruntime_providers_cuda.so",
+      "sha256": "6d6debcef9837fcc85c9600941f6db6c32fceec3b86a640fb79cdbbd0abdb8dd",
+      "soname": null
+    },
+    {
+      "needed": [
+        "libstdc++.so.6",
+        "libm.so.6",
+        "libgcc_s.so.1",
+        "libc.so.6"
+      ],
+      "path": "/opt/onnxruntime/lib/libonnxruntime_providers_shared.so",
+      "resolvedPath": "/opt/onnxruntime/lib/libonnxruntime_providers_shared.so",
+      "sha256": "f9400f9550e63513760f33a5c259b69fe93373865933fea5823b74c0036c4d2a",
+      "soname": "libonnxruntime_providers_shared.so"
+    }
+  ],
+  "schemaVersion": "itiger-sif-library-closure-v3",
+  "sif": "/tmp/spec170-local-candidate-31d9f547-20260817-r12/runtime.sif",
+  "sifBytes": 4398850048,
+  "status": "PASS",
+  "targets": {
+    "/opt/ndnsf-di/current/bin/di-native-provider": {
+      "dynamic": {
+        "needed": [
+          "libonnxruntime.so.1",
+          "libndn-cxx.so.0.9.0",
+          "libboost_log.so.1.71.0",
+          "libcrypto.so.1.1",
+          "libpthread.so.0",
+          "libndn-svs.so.0.1.0",
+          "libnac-abe.so.0.1.0",
+          "libndnsd.so.0.1.0",
+          "libstdc++.so.6",
+          "libm.so.6",
+          "libgcc_s.so.1",
+          "libc.so.6",
+          "ld-linux-x86-64.so.2"
+        ],
+        "rpath": [
+          "/opt/ndnsf-di/current/lib",
+          "/opt/onnxruntime/lib"
+        ],
+        "soname": null
+      },
+      "ldd": [
+        {
+          "name": "libonnxruntime.so.1",
+          "path": "/opt/onnxruntime/lib/libonnxruntime.so.1"
+        },
+        {
+          "name": "libndn-cxx.so.0.9.0",
+          "path": "/opt/ndnsf-di/current/lib/libndn-cxx.so.0.9.0"
+        },
+        {
+          "name": "libboost_log.so.1.71.0",
+          "path": "/lib/x86_64-linux-gnu/libboost_log.so.1.71.0"
+        },
+        {
+          "name": "libcrypto.so.1.1",
+          "path": "/lib/x86_64-linux-gnu/libcrypto.so.1.1"
+        },
+        {
+          "name": "libpthread.so.0",
+          "path": "/lib/x86_64-linux-gnu/libpthread.so.0"
+        },
+        {
+          "name": "libndn-svs.so.0.1.0",
+          "path": "/opt/ndnsf-di/current/lib/libndn-svs.so.0.1.0"
+        },
+        {
+          "name": "libnac-abe.so.0.1.0",
+          "path": "/opt/ndnsf-di/current/lib/libnac-abe.so.0.1.0"
+        },
+        {
+          "name": "libndnsd.so.0.1.0",
+          "path": "/opt/ndnsf-di/current/lib/libndnsd.so.0.1.0"
+        },
+        {
+          "name": "libstdc++.so.6",
+          "path": "/lib/x86_64-linux-gnu/libstdc++.so.6"
+        },
+        {
+          "name": "libm.so.6",
+          "path": "/lib/x86_64-linux-gnu/libm.so.6"
+        },
+        {
+          "name": "libgcc_s.so.1",
+          "path": "/lib/x86_64-linux-gnu/libgcc_s.so.1"
+        },
+        {
+          "name": "libc.so.6",
+          "path": "/lib/x86_64-linux-gnu/libc.so.6"
+        },
+        {
+          "name": "ld-linux-x86-64.so.2",
+          "path": "/lib64/ld-linux-x86-64.so.2"
+        },
+        {
+          "name": "libdl.so.2",
+          "path": "/lib/x86_64-linux-gnu/libdl.so.2"
+        },
+        {
+          "name": "librt.so.1",
+          "path": "/lib/x86_64-linux-gnu/librt.so.1"
+        },
+        {
+          "name": "libboost_chrono.so.1.71.0",
+          "path": "/lib/x86_64-linux-gnu/libboost_chrono.so.1.71.0"
+        },
+        {
+          "name": "libboost_date_time.so.1.71.0",
+          "path": "/lib/x86_64-linux-gnu/libboost_date_time.so.1.71.0"
+        },
+        {
+          "name": "libboost_thread.so.1.71.0",
+          "path": "/lib/x86_64-linux-gnu/libboost_thread.so.1.71.0"
+        },
+        {
+          "name": "libboost_stacktrace_backtrace.so.1.71.0",
+          "path": "/lib/x86_64-linux-gnu/libboost_stacktrace_backtrace.so.1.71.0"
+        },
+        {
+          "name": "libsqlite3.so.0",
+          "path": "/lib/x86_64-linux-gnu/libsqlite3.so.0"
+        },
+        {
+          "name": "libboost_filesystem.so.1.71.0",
+          "path": "/lib/x86_64-linux-gnu/libboost_filesystem.so.1.71.0"
+        },
+        {
+          "name": "libopenabe.so",
+          "path": "/opt/ndnsf-di/current/lib/libopenabe.so"
+        },
+        {
+          "name": "librelic.so",
+          "path": "/opt/ndnsf-di/current/lib/librelic.so"
+        },
+        {
+          "name": "librelic_ec.so",
+          "path": "/opt/ndnsf-di/current/lib/librelic_ec.so"
+        },
+        {
+          "name": "libssl.so.1.1",
+          "path": "/lib/x86_64-linux-gnu/libssl.so.1.1"
+        },
+        {
+          "name": "libgmp.so.10",
+          "path": "/lib/x86_64-linux-gnu/libgmp.so.10"
+        }
+      ]
+    },
+    "/opt/venv/lib/python3.10/site-packages/ndnsf/_ndnsf.cpython-310-x86_64-linux-gnu.so": {
+      "dynamic": {
+        "needed": [
+          "libndn-service-framework.so.0.1.0",
+          "libndn-cxx.so.0.9.0",
+          "libpthread.so.0",
+          "libnac-abe.so.0.1.0",
+          "libndnsd.so.0.1.0",
+          "libstdc++.so.6",
+          "libgcc_s.so.1",
+          "libc.so.6",
+          "ld-linux-x86-64.so.2"
+        ],
+        "rpath": [
+          "/opt/ndnsf-di/current/lib"
+        ],
+        "soname": null
+      },
+      "ldd": [
+        {
+          "name": "libndn-service-framework.so.0.1.0",
+          "path": "/opt/ndnsf-di/current/lib/libndn-service-framework.so.0.1.0"
+        },
+        {
+          "name": "libndn-cxx.so.0.9.0",
+          "path": "/opt/ndnsf-di/current/lib/libndn-cxx.so.0.9.0"
+        },
+        {
+          "name": "libpthread.so.0",
+          "path": "/lib/x86_64-linux-gnu/libpthread.so.0"
+        },
+        {
+          "name": "libnac-abe.so.0.1.0",
+          "path": "/opt/ndnsf-di/current/lib/libnac-abe.so.0.1.0"
+        },
+        {
+          "name": "libndnsd.so.0.1.0",
+          "path": "/opt/ndnsf-di/current/lib/libndnsd.so.0.1.0"
+        },
+        {
+          "name": "libstdc++.so.6",
+          "path": "/lib/x86_64-linux-gnu/libstdc++.so.6"
+        },
+        {
+          "name": "libgcc_s.so.1",
+          "path": "/lib/x86_64-linux-gnu/libgcc_s.so.1"
+        },
+        {
+          "name": "libc.so.6",
+          "path": "/lib/x86_64-linux-gnu/libc.so.6"
+        },
+        {
+          "name": "ld-linux-x86-64.so.2",
+          "path": "/lib64/ld-linux-x86-64.so.2"
+        },
+        {
+          "name": "libndn-svs.so.0.1.0",
+          "path": "/opt/ndnsf-di/current/lib/libndn-svs.so.0.1.0"
+        },
+        {
+          "name": "libboost_log.so.1.71.0",
+          "path": "/lib/x86_64-linux-gnu/libboost_log.so.1.71.0"
+        },
+        {
+          "name": "libcrypto.so.1.1",
+          "path": "/lib/x86_64-linux-gnu/libcrypto.so.1.1"
+        },
+        {
+          "name": "libm.so.6",
+          "path": "/lib/x86_64-linux-gnu/libm.so.6"
+        },
+        {
+          "name": "libboost_chrono.so.1.71.0",
+          "path": "/lib/x86_64-linux-gnu/libboost_chrono.so.1.71.0"
+        },
+        {
+          "name": "libboost_date_time.so.1.71.0",
+          "path": "/lib/x86_64-linux-gnu/libboost_date_time.so.1.71.0"
+        },
+        {
+          "name": "libboost_thread.so.1.71.0",
+          "path": "/lib/x86_64-linux-gnu/libboost_thread.so.1.71.0"
+        },
+        {
+          "name": "libboost_stacktrace_backtrace.so.1.71.0",
+          "path": "/lib/x86_64-linux-gnu/libboost_stacktrace_backtrace.so.1.71.0"
+        },
+        {
+          "name": "libsqlite3.so.0",
+          "path": "/lib/x86_64-linux-gnu/libsqlite3.so.0"
+        },
+        {
+          "name": "libopenabe.so",
+          "path": "/opt/ndnsf-di/current/lib/libopenabe.so"
+        },
+        {
+          "name": "libboost_filesystem.so.1.71.0",
+          "path": "/lib/x86_64-linux-gnu/libboost_filesystem.so.1.71.0"
+        },
+        {
+          "name": "librt.so.1",
+          "path": "/lib/x86_64-linux-gnu/librt.so.1"
+        },
+        {
+          "name": "libdl.so.2",
+          "path": "/lib/x86_64-linux-gnu/libdl.so.2"
+        },
+        {
+          "name": "librelic.so",
+          "path": "/opt/ndnsf-di/current/lib/librelic.so"
+        },
+        {
+          "name": "librelic_ec.so",
+          "path": "/opt/ndnsf-di/current/lib/librelic_ec.so"
+        },
+        {
+          "name": "libssl.so.1.1",
+          "path": "/lib/x86_64-linux-gnu/libssl.so.1.1"
+        },
+        {
+          "name": "libgmp.so.10",
+          "path": "/lib/x86_64-linux-gnu/libgmp.so.10"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "kind": "multi-provider-pilot",
+  "runId": "dual-cert-three-provider-open5-60s-20260812",
+  "generatedAt": "2026-08-12T17:08:00-05:00",
+  "status": "pass",
+  "interpretation": "Current-runtime NDNSF correctness and selection pilot only; not a matched gRPC/NSC comparison and not a mobility advantage claim.",
+  "source": {
+    "repository": "/home/tianxing/NDN/ndn-service-framework",
+    "branch": "spec170-wip",
+    "head": "0d4a1340641f76be1e8eebd8d3c2a43ba58f498c",
+    "workingTree": "dirty",
+    "ndnSvsLibrarySha256": "f13759e45cc7c741cce9e857b3fef0f8da8e10123add05f683d787dd137af336"
+  },
+  "command": "sudo -n python3 Experiments/NDNSF_NewAPI_Minindn_Perf.py --workload-mode open-loop --rate-rps 5 --duration 60 --warmup 0 --interval-ms 200 --providers 3 --strategy custom-selection --max-outstanding 16 --request-timeout-ms 5000 --drain-seconds 10 --pacing-jitter-us 0 --performance-mode --disable-adaptive-admission-control --output-dir /tmp/ndnsf-dual-cert-open5-3p-60s-20260812 --controller-settle-seconds 2 --provider-start-gap-seconds 1 --post-ready-settle-seconds 2 --startup-settle-seconds 1 --provider-ready-timeout-seconds 20 --nfd-log-level WARN --skip-post-run-diagnostics",
+  "configuration": {
+    "environment": "MiniNDN",
+    "providers": 3,
+    "workloadMode": "open-loop",
+    "offeredRateRps": 5,
+    "durationSeconds": 60,
+    "ackTimeoutMs": 1000,
+    "globalTimeoutMs": 5000,
+    "admissionControl": false,
+    "strategy": "custom-selection",
+    "maxOutstanding": 16,
+    "svsMaxPiggyDataBytes": 800,
+    "certificates": {
+      "encryption": "RSA",
+      "signing": "ECDSA"
+    }
+  },
+  "readiness": {
+    "providerA": "splitSigning=true, service_registered=true, provider_permission_installed=true, svs_initialized_or_subscribed=true",
+    "providerB": "splitSigning=true, service_registered=true, provider_permission_installed=true, svs_initialized_or_subscribed=true",
+    "providerC": "splitSigning=true, service_registered=true, provider_permission_installed=true, svs_initialized_or_subscribed=true",
+    "user": "splitSigning=true",
+    "admission": "disabled"
+  },
+  "result": {
+    "samplingDurationSeconds": 60.0,
+    "sent": 300,
+    "completed": 300,
+    "successfulResponses": 300,
+    "successRate": 1.0,
+    "actualRequestsPerSecond": 5.0,
+    "averageLatencyMs": 68.63712,
+    "p50LatencyMs": 63.84,
+    "p95LatencyMs": 83.639,
+    "p99LatencyMs": 118.17,
+    "timedOut": 0,
+    "outstandingLimitSkips": 0,
+    "selectedProviderCounts": {
+      "/example/hello/provider/A": 100,
+      "/example/hello/provider/B": 100,
+      "/example/hello/provider/C": 100
+    },
+    "providerSelectionSkew": false
+  },
+  "evidenceFiles": {
+    "summaryJson": {
+      "path": "specs/173-paper-submission-evidence/evidence/runtime/dual-cert-three-provider-open5-60s-20260812/summary.json",
+      "sha256": "652e8249d4aa72aeaa06c5bc754848b6a21a6f9e98adcd55bfe4d8754805aaa2"
+    },
+    "requestsCsv": {
+      "path": "specs/173-paper-submission-evidence/evidence/runtime/dual-cert-three-provider-open5-60s-20260812/requests.csv",
+      "sha256": "eb7196b1350af468b330ba6406039efae7941a244fe14bc1ef7333cb7b643cfc"
+    },
+    "rawSummarySha256": "652e8249d4aa72aeaa06c5bc754848b6a21a6f9e98adcd55bfe4d8754805aaa2",
+    "rawLogs": {
+      "controller": "653b2eb9e14cd1a294313743d95d4114f6efbe9422b656d4670fb22b1592c8c2",
+      "providerA": "57c4860d8218ff484d83b1e10804095cc1ad814a289fc467a8f02a243e3a7106",
+      "providerB": "07e1fb1a602bb46c3d1e01ee6d05f8951ad6bc234cb998ec15b58fa5a83c097c",
+      "providerC": "ef1ea4fadb63bbd68c0eb8ae5a1bc4b46e4d3f11f26fac29f581916efd48e379",
+      "user": "2ffda8e5d957fd216fee21a2b6021148f1c87a0ac2b631f7b8a55213edcd5145"
+    }
+  }
+}

@@ -15,6 +15,12 @@ because iTiger must not receive a registry secret. An iTiger CPU allocation
 materializes the final digest as SIF; iTiger does not require or run a Docker
 daemon.
 
+The OCI image published before Spec 111 is a runtime-substrate candidate only.
+It cannot prove the post-Spec-111 APP/Core deployment workflow. After Spec 111
+implementation and the offline handoff gate pass, Spec 110 MUST seal a new
+source/candidate identity, build a new OCI digest, materialize a new exact SIF
+checksum and preserve the old release evidence unchanged.
+
 The ABI base is Ubuntu 20.04 with OpenSSL 1.1.1, matching the measured working
 local OpenABE/NAC-ABE installation. Foundation, CUDA devel, and CUDA runtime
 images are pinned to Ubuntu 20.04 digests; mixing an Ubuntu 22.04/OpenSSL 3 base
@@ -86,10 +92,22 @@ release.
 | Slurm allocation | all project applications/libraries |
 | Apptainer executable | exact Python and C++ runtime |
 | NVIDIA kernel driver/devices | CUDA user-space, PyTorch, ORT GPU |
-| project filesystem and selected compute scratch | entrypoints/config templates |
+| project filesystem, identity-partitioned persistent state, node-local run directory and selected compute scratch | entrypoints/config templates |
 
 Invocation is `apptainer exec --nv` with a clean environment and explicit bind
 allowlist. NVIDIA Container Toolkit is neither required nor installed on iTiger.
+
+For post-Spec-111 runs, the bind allowlist contains the exact SIF/release,
+model/artifact and role identity inputs read-only; an identity-partitioned
+`/state` root and job-unique node-run/scratch/evidence staging paths writable.
+It rejects a broad writable `/project`, writable weights/artifacts/identity,
+cross-role state and host-side project executable paths. Qwen weights remain in
+`/project` and are mounted into the SIF; they are never copied into an OCI layer.
+
+Docker is therefore the portable OCI build and distribution format, not the
+iTiger runtime or a public service endpoint. The accepted iTiger lifecycle is a
+bounded Slurm allocation executing the SIF with Apptainer. Persistent or public
+inference service operation remains outside this release contract.
 
 ## Forbidden image content
 

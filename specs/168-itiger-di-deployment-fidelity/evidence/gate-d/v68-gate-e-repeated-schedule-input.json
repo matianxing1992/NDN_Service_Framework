@@ -1,0 +1,44 @@
+{
+  "schema": "ndnsf-di.spec168-gate-e-schedule-input.v1",
+  "job": "gate-e-small-repeated.sbatch",
+  "jobDigest": "sha256:9314d897c8c3e7e37fb88bb9f1ec73506060a0ae80d930adfde745cbabb56ab1",
+  "analyzer": "spec168-cold-warm-analyzer.py",
+  "analyzerDigest": "sha256:e4f6b3613882c299147285ec40d1a6879b1b6d000ad44462301abba5bb3c3206",
+  "formalContractDigest": "sha256:5ce5aecc2d1e44a568c5e15ed27be924efb7f63cee31513cc299e7284627d73f",
+  "phase": "remote-small-repeated",
+  "submissionCount": 1,
+  "automaticRetry": false,
+  "resources": {
+    "partition": "bigTiger",
+    "nodes": 3,
+    "tasks": 3,
+    "tasksPerNode": 1,
+    "gpuPerNode": "rtx_5000:1",
+    "memoryPerNode": "32G",
+    "wallTime": "02:00:00"
+  },
+  "workload": {
+    "promptSetDigest": "sha256:5a87c5645c74ac52b7e2ab728e7297d49c42fa849ce47d163c8fec5838d9dd75",
+    "formalManifestDigest": "sha256:d106b82508e1714f8cf542f83ac8c1af06e56376408534422ea71f7dce105001",
+    "selectedPromptCount": 5,
+    "warmupPerPrompt": 1,
+    "measuredPerPrompt": 5,
+    "sequential": true,
+    "totalRequestCount": 30,
+    "maxNewTokens": 64,
+    "wireRequestCountPerGeneration": 1,
+    "tokenRequestCountPerGeneration": 0
+  },
+  "causalReuseAcceptance": {
+    "coldGeneratedCount": 1,
+    "warmReuseCachedCount": 29,
+    "repoFetchCompletePerProvider": 1,
+    "deviceLoadCountPerProvider": 1,
+    "warmRepoByteGrowth": 0,
+    "warmDeviceLoadGrowth": 0,
+    "gpuHitCountIncreasePerWarmRequest": 1,
+    "latencyAloneIsReuseProof": false
+  },
+  "failurePolicy": "retain immutable evidence and close identity; repair locally under a linked replacement identity",
+  "secretRetentionPolicy": "the EXIT trap removes every key, token, privkey, and bootstrap-tokens.txt before retaining PASS or FAIL evidence"
+}

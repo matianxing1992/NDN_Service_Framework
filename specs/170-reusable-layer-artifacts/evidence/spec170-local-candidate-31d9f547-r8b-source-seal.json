@@ -1,0 +1,50 @@
+{
+  "artifactHashes": {
+    "framework": "sha256:c846cace5cbb1b25ea70fd078dcb18f4fc2ea051f06818eb2a3bd4f80a7ff2f9",
+    "provider": "sha256:eddc368712c2f8794d104f18526991549dae3ba09c91a28e3d8ce89c097adfe7",
+    "pythonExtension": "sha256:c938d5dd443d744000d7e9c906b904020172241dd133c89bff512eba8760d7d8"
+  },
+  "buildInputs": {
+    "framework": "build/libndn-service-framework.so",
+    "integrationTests": "build/integration-tests",
+    "provider": "build/examples/di-native-provider",
+    "pythonExtension": "pythonWrapper/ndnsf/_ndnsf.cpython-310-x86_64-linux-gnu.so",
+    "pythonGate": "tests/python/test_spec170_real_minindn_gate.py"
+  },
+  "localGates": {
+    "cppIntegration": "23 cases and 300 assertions passed",
+    "nativeTracer": "D0 four-provider and D1 single-provider real ORT CPU paths passed",
+    "python": "59 passed, 4 skipped"
+  },
+  "release": "spec170-runtime-31d9f547-post-selection-v4-20260817",
+  "schemaVersion": "spec170-local-source-seal-v1",
+  "sourceDiff": {
+    "path": "/home/tianxing/NDN/ndn-service-framework/specs/170-reusable-layer-artifacts/evidence/spec170-local-candidate-31d9f547-r8b-source-diff.patch",
+    "sha256": "sha256:977c1816775e0af68fcd8204560824f3d73f13a3faa7c31fef3dfa88ea98a3c6"
+  },
+  "sourceFiles": {
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.cpp": "sha256:46d25eb2521543401b2d7b25f1d0914bdea65d48b76670a0a9701b7588c1b090",
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp": "sha256:d8e8ea033d3c3425dbfc97c95a153eaad4a87638ef7a36a22ea85f89e4d0efea",
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderReadiness.cpp": "sha256:78d9e2df37c4e9e1d13aba490e5adda9de987dfe1a2f6960c5b229a0214fa848",
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderReadiness.hpp": "sha256:cbf4e95ce842ec42e73fbf4407c40b6b787d7b83f7e712108758bd90be031fa5",
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.cpp": "sha256:3767d82fb4c2320cc302ce109cf70b92ac126a1dd8529e561ba950553721ac32",
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.hpp": "sha256:71230b68932ba940f8632bfd9ad75008fea0613d68321de87172598343938e52",
+    "examples/DI_NativeProviderExecutable.cpp": "sha256:67ce60358be4e04cec28e0aeb4d87a60c67281a464e1e97d3893d08945a3c6d1",
+    "ndn-service-framework/ServiceProvider.cpp": "sha256:ec64b247ff4669f70cdeb87dd9e9b62cdeceecf80e15788ef0b2d94e02291a2b",
+    "ndn-service-framework/ServiceProvider.hpp": "sha256:23b5c164fbccb3b3f51c5ff0151ac54351c13d5c9c9212d6093a79051d76ad6c",
+    "ndn-service-framework/ServiceUser.cpp": "sha256:d7b1ecc9559ee4677f72e593ac0527c279b746a5345d33bbaf458025227023cf",
+    "ndn-service-framework/ServiceUser.hpp": "sha256:a15739c22a277fdf378100e6ca275dc0abe24a4316c0ab4096f48a5ff1c4498f",
+    "pythonWrapper/src/ndnsf/_ndnsf.cpp": "sha256:295ae247a1795ec390f5c8594ab3127dc36bb038ea019ee1ec2e1bb866ad1f92",
+    "tests/integration-tests/ndnsf-di-core-flow.t.cpp": "sha256:927f9c3f86c4f2234bf20cde57704dcfc7bad3b5dcd88be215f367a10bddd97a",
+    "tests/integration-tests/ndnsf-integration-fixture.cpp": "sha256:5a5ed3028d312712cc8972e7a92d665d769409db31a5d8fb3b395f891aff3f80",
+    "tests/integration-tests/ndnsf-integration-fixture.hpp": "sha256:99ae89d0c7272f3d8af92ebde275ee756841ae35f0c1605cee2d508ac549ccf4",
+    "tests/python/test_spec170_real_minindn_gate.py": "sha256:0514624e4fbb2ffbd6cc3b7a8f16a45c8264b1452b4b9872791ec4a796382b00"
+  },
+  "sourceRevision": "31d9f547a32f941ab948f005f583c429d23bacbb",
+  "status": "PASS",
+  "tigerAction": "verify-hash-and-execute-only",
+  "worktreeStatus": {
+    "path": "/home/tianxing/NDN/ndn-service-framework/specs/170-reusable-layer-artifacts/evidence/spec170-local-candidate-31d9f547-r8b-worktree-status.txt",
+    "sha256": "sha256:7ed7375b5729b8040a3b278ac93df5436e557ea3651b9a3f5b5bbbf4ff86b84a"
+  }
+}

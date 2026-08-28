@@ -1,0 +1,16 @@
+{
+  "analyzerDigest": "sha256:906f1e60398cf8323de9434ca4cb53c5c1e98fdcc183d298f2657f7617bbcf2e",
+  "baselineDigest": "sha256:e2afc0dfbe6464648425d8d3f75ceb3b8b140610a78956e2052eb0f192a0640d",
+  "exactSifPreflightDigest": "sha256:790da54596674b02c865269707c1d6fe8b880f51ce0817b7de17a65990018198",
+  "localFixtureManifestDigest": "sha256:1c2fec771854f2bc2a5ccc82a8d897ee3426335d3cf37cbb64a6d303b3588adf",
+  "localGateManifestDigest": "sha256:34b9eca6993255e1c967c5be693d3237b95e05f08afb14e63c5707190bc5c811",
+  "promptSetDigest": "sha256:5a87c5645c74ac52b7e2ab728e7297d49c42fa849ce47d163c8fec5838d9dd75",
+  "remoteLargeStageManifestDigest": "sha256:16de41986564c436a33cd6a292f17f4bd939d0a893c441441022e3b389737f6f",
+  "remoteSmallStageManifestDigest": "sha256:8d8475db33efab5398014d0aac9570cda90bae5d50fd0128bed7b0215d0156f5",
+  "routeDigest": "sha256:04ca3bfb8137d813e5c3e8b0e36ce84c8b006f2373eeb6bc4a05e86fa970be3f",
+  "runtimeSifDigest": "sha256:1f616fa773df4f8d821339cb7b0a3d62332b9f2197055bdb4e9f3dd081518368",
+  "scheduleDigest": "sha256:3d1102ef3295ca968b0183b32c6bcb3823a28782d5606c4e336f5caf67f8d8c9",
+  "sourceBundleDigest": "sha256:f07fe849c3539e359a303a1214f9aca77de3e67de93d7189f3d8ef0a016eadec",
+  "sourceDigest": "sha256:ff5def8625958b5a594213a00dd72fd5f8c47fc55f6cce7a457d5eb2782bf13b",
+  "strategyDigest": "sha256:38de9d3a2b37df6e17f3bcd2e5ecabdb6b97ee440ccf1326d02a9858aee5c65d"
+}

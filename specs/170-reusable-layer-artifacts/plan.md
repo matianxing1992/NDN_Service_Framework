@@ -4,8 +4,8 @@
 
 **Input**: Feature specification from `specs/170-reusable-layer-artifacts/spec.md`
 
-**Status**: Planning complete; this document does not authorize implementation
-or a TigerCluster submission until tasks and the preceding gates exist.
+**Status**: Active correction; superseded multi-role Provider and role-spanning-
+Provider work is not accepted evidence until the corrected local gates pass.
 
 ## Summary
 
@@ -15,8 +15,10 @@ exact fragment required by a sealed post-ACK placement plan. Introduce a
 versioned NDNSF-DI placement contract that treats a Provider as a security and
 local-scheduling domain containing zero, one, or multiple compute devices.
 Signed ACK offers describe the actual container-visible topology and mutable
-capacity; `LayerReuseFirstStrategy` selects CPU, single-device, or device-set
-bindings without reserving resources during ACK collection.
+capacity. The default `PreSplitFirstStrategy` creates adapter-certified feasible
+split candidates after `ACK_CLOSED`, assigns every role to one distinct Provider,
+and uses layer/runtime reuse only as a cost signal. ACK collection reserves no
+resources.
 
 Hybrid inference uses a heterogeneous topology `N x {M_i}`, not a compulsory
 rectangular `N x M`: the model has `N` pipeline stages and every stage `i`
@@ -27,11 +29,11 @@ layout changes has an adapter-certified gather, scatter, or reshard contract.
 
 Implementation proceeds through four behavioral phases:
 
-1. canonical layer artifacts plus CPU/no-GPU and one-GPU compatibility;
-2. one Provider executing multiple independent single-GPU roles;
-3. one logical role spanning multiple GPUs and heterogeneous hybrid execution;
-4. deployment-faithful MiniNDN/exact-SIF gates followed by TigerCluster 0/1/2
-   GPU qualification.
+1. corrected V3 contracts/default strategy and one-to-one role ownership;
+2. Provider-local canonical ONNX assembly plus ONNX Runtime execution;
+3. pipeline/tensor/hybrid execution over sealed consumer-pull NDN dataflow;
+4. CPU integrated/MiniNDN/exact-SIF gates followed by bounded TigerCluster GPU
+   qualification.
 
 Each phase is blocked by complete-output, identity, admission, security, and
 failure-injection evidence. V2 role-scoped pre-split assignments remain an
@@ -44,20 +46,24 @@ the new contract.
 for native Provider/resource/dataflow execution
 
 **Primary Dependencies**: NDNSF Collaboration API, ndn-cxx/NFD, MiniNDN,
-NDNSF-DistributedRepo, ONNX graph metadata, PyTorch 2.6, CUDA 12.4, NCCL 2.21,
-Qwen/transformers adapters, Apptainer, and Slurm
+NDNSF-DistributedRepo, canonical ONNX graph/initializer metadata, ONNX Runtime,
+standalone `tokenizers`, CUDA 12.4, model-family adapters,
+Apptainer, and Slurm. PyTorch/Transformers are restricted to the offline
+conversion and conformance environment; they are not deployment-runtime
+dependencies.
 
 **Storage**: Content-addressed canonical model/layer manifests and objects in
 NDNSF-DistributedRepo; Provider-local assembled fragments on disk/RAM; exact
-loaded-runtime identities bound to a process, device set, and topology epoch
+loaded-runtime identities bound to a process, one CPU/device binding, and topology epoch
 
 **Testing**: pytest unit/contract/integration tests, C++ unit/regression tests,
-real MiniNDN multi-process gates, exact OCI/SIF parity, and bounded Slurm jobs
+real MiniNDN multi-process gates, exact local-SIF closure, and bounded Slurm jobs
 for TigerCluster 0/1/2-GPU visibility and inference qualification
 
 **Target Platform**: Linux; local CPU/MiniNDN within the 8-GiB development-host
 budget, exact Apptainer SIFs, and TigerCluster Slurm allocations with zero, one,
-or two GPUs visible to one Provider process
+or multiple GPUs visible for truthful capability reporting; one Attempt still
+uses at most one role and one device per Provider
 
 **Project Type**: C++ framework plus Python SDK, distributed-inference extension,
 model-family adapters, immutable artifact repository, container/deployment
@@ -66,23 +72,36 @@ tooling, and experiment/evidence analyzers
 **Performance Goals**: Correctness gates take precedence over headline
 throughput. An exact loaded-runtime warm hit transfers zero model bytes, performs
 zero fragment assembly, and performs zero model reload. Equal canonical layers
-are published once across placement changes. Cold/warm distributions retain
-TTFT, total latency, per-token latency, tokens/s, transfer bytes, assembly/load
-events, and per-device utilization.
+are published once across placement changes. ACK-driven request-scoped placement
+must be measured separately from Provider-local ONNX assembly and execution;
+whether this route is faster than a monolithic baseline is a hypothesis, not an
+assumption. Cold/warm distributions retain TTFT, total latency, per-token
+latency, tokens/s, transfer bytes, assembly/load events, and per-device
+utilization.
 
 **Constraints**: NDNSF Core remains model-neutral; all model, topology, rank,
 collective, and redistribution semantics stay in NDNSF-DI. ACKs do not reserve
-GPU resources. Device-set admission is atomic. CPU fallback is explicit, never
+GPU resources. One complete role is admitted atomically. CPU fallback is explicit, never
 silent. Provider configuration can only restrict the scheduler/container-visible
 device set. No global model-ready barrier or second start command is allowed.
 No phase assumes a uniform tensor degree, and no TigerCluster model campaign is
 admitted before local and exact-container gates pass.
 
 **Scale/Scope**: Canonical artifacts for a minimal real Qwen model; zero/one/two
-visible GPUs; one Provider with multiple local device bindings; pipeline-only,
+visible GPUs with one role/device selected per Provider/Attempt; pipeline-only,
 tensor-only, and heterogeneous hybrid degree vectors including `[1,2,1]` and
 `[2,1,2]`; repeated cold/warm requests and concurrent admission; large-model
 qualification remains outside the first Spec 170 closure.
+
+**Request-scoped model assembly**: The User first closes the ACK window and
+derives a sealed placement/partition proposal from the signed Provider offers.
+The User shares the signed `RoleAssemblySpec` and shard tasks with the selected
+Providers. Providers then retrieve the required canonical ONNX graph,
+initializers, and tokenizer objects by digest/range and assemble their own
+stage/shard locally before ONNX Runtime execution. Offline tooling may use
+PyTorch/Transformers to convert and validate a model family, but it must emit
+canonical ONNX plus adapter/conformance metadata; it must not precompute a final
+request-independent role layout or leak those libraries into the deployment SIF.
 
 ## Constitution Check
 
@@ -126,14 +145,16 @@ Generic NDNSF Collaboration
 NDNSF-DI planning plane
   graph + canonical catalog + Provider offers
   -> PipelineStageSpec[N] with independent tensor_degree M_i
-  -> LogicalRole + RankAssignment + ProviderLocalRoleBundle + RoleAssemblySpec
-  -> CPU / SINGLE_DEVICE / DEVICE_SET bindings
+  -> one ExecutionRole for every stage/rank
+  -> one-to-one Provider assignment
+  -> RoleAssemblySpec + RoleDataflowContract
+  -> CPU / SINGLE_DEVICE binding
       |
 NDNSF-DI Provider plane
   verify -> bounded queue acceptance without device hold
   -> fetch missing canonical objects -> assemble host-side
   -> just-in-time atomic device admission -> load -> local-ready
-  -> dependency/collective-driven execute
+  -> consumer-pull NDN dependency/collective execution
       |
 NDNSF-DistributedRepo
   immutable manifest/object publication and verified segmented/range fetch
@@ -145,15 +166,16 @@ Ownership is strict:
 - **Provider resource probe** observes the actual runtime-visible CPU, memory,
   storage, accelerators, connectivity, health, and allocation sequence.
 - **NDNSF-DI placement strategy** is operator-installed Requester code and sees
-  only validated, sanitized planning views. It proposes Providers, pipeline
-  boundaries, per-stage tensor degrees, ranks, devices, collective groups, and
+  only validated, sanitized planning views. `PreSplitFirstStrategy` proposes
+  adapter-certified pipeline boundaries, per-stage tensor degrees, one distinct
+  role per rank, one distinct Provider per role, devices, group metadata, and
   redistribution edges from the immutable ACK_CLOSED snapshot; its output is
-  declarative and untrusted.
+  declarative and untrusted. Reuse affects cost, not role ownership.
 - **NDNSF-DI plan sealer** independently resolves, canonicalizes, and validates
   that proposal against certified catalogs and offers, then alone creates the
   sealed plan and Provider-specific Selection projections.
 - **Provider-local scheduler** admits, queues, executes, or rejects the sealed
-  binding; it cannot change global cuts, ranks, device-set membership, or
+  role binding; it cannot change global cuts, ranks, role ownership, or
   collective semantics.
 - **Model adapters** certify legal layer/tensor partitions, layouts, collective
   operators, and cross-stage degree/layout transitions.
@@ -166,12 +188,12 @@ Spec 170 is a migration of the real default path, not a parallel prototype:
 
 | Current source fact | Required V3 change | Closing task |
 |---|---|---|
-| `app_sdk/application.py` defaults to `PreSplitFirstStrategy` | Default normal calls to `LayerReuseFirstStrategy`; require explicit V2 profile for PreSplitFirst | T010 |
-| `app_sdk/client.py` constructs the placement coordinator/materializer/publisher path | Dispatch V3 canonical ensure versus explicit V2 role-split preparation | T010 |
-| `app_sdk/placement.py::_prepare_artifacts()` materializes and publishes the selected role split | V3 bypasses role-split materialization, seals `RoleAssemblySpec`, and publishes only canonical layers; V2 retains old path | T010 |
+| `app_sdk/application.py` defaults to `PreSplitFirstStrategy`, while later Spec170 code routes normal V3 through `LayerReuseFirstStrategy` | Restore `PreSplitFirstStrategy` as the normal ACK-driven V3 default; keep reuse as subordinate scoring and isolate the explicit V2 materializer | T004 |
+| `app_sdk/client.py` constructs the placement coordinator/materializer/publisher path | Dispatch V3 canonical ensure versus explicit V2 role-split preparation | T004-T005 |
+| `app_sdk/placement.py::_prepare_artifacts()` materializes and publishes the selected role split | V3 bypasses role-split materialization, seals one `RoleAssemblySpec` plus one `RoleDataflowContract` per Provider, and publishes only canonical layers; V2 retains old path | T005 |
 | `provider.py::attach_negotiated_reservation()` can create ACK-time reservation leases | Branch on placement profile: V3 signed offer is side-effect-free; only explicit V2 retains compatibility behavior | T005 |
 | `NativeProviderReadinessState::makeAckDecision` and `ProviderResourceProbe` feed the native ACK | Serialize the same V3 offer/no-reservation fields as Python and wire them into executable/build/install/SIF paths | T003 |
-| Provider handlers consume role artifacts prepared by the Requester | Python/native handlers consume `ProviderSelectionProjectionV3`, assemble canonical layers locally, and use queue/JIT admission | T009-T011 |
+| Provider handlers consume role artifacts prepared by the Requester | Python/native handlers consume a one-role `ProviderSelectionProjectionV3`, assemble canonical ONNX content locally, and use queue/JIT admission | T006-T009 |
 
 Generated `build/lib` and packaging build-copy trees are never edited directly.
 The owning source, build declaration, package manifest, and rebuild/check command
@@ -185,14 +207,14 @@ The new contract is a versioned NDNSF-DI placement profile, conceptually
 - V3 offers carry a `DeviceTopologyProfile`, a `DeviceResourceSnapshot`, bounded
   exact residency evidence, role-capability predicates, and an explicit
   `ACCEPT_IF_EXACT_REUSE | ACCEPT_WITH_PREPARATION | REJECT` disposition.
-- V3 plans separate `LogicalRole` from `RankAssignment[]`, carry canonical model
-  and assembly references, and bind every rank to an exact device/resource
-  envelope.
+- V3 plans make every stage/rank pair a distinct `ExecutionRole`, carry canonical
+  model, assembly, and dataflow references, bind every role to one exact
+  Provider/device/resource envelope, and reject Provider reuse within an Attempt.
 - V2 remains an explicit supported profile named
   `PREASSEMBLED_PARTITION_SINGLE_DEVICE`. It does not gain device-set or
   heterogeneous-rank meaning through optional fields and is never an automatic
   V3 fallback. Its future removal requires a separate breaking-change spec.
-- A V2 Provider cannot be selected into a V3 device-set or hybrid collective.
+- A V2 Provider cannot be selected into a V3 hybrid collective.
   Mixed-version plans fail before Selection.
 - Rollback starts a new attempt using an explicitly supported older profile; it
   never mutates a committed V3 plan or reuses a V3 loaded-runtime identity as V2.
@@ -287,8 +309,10 @@ once as canonical layers and selected Providers assemble their own fragments.
 - Introduce CPU and single-device topology/profile/snapshot contracts. Remove the
   assumption that a valid inference-capable Provider must advertise positive GPU
   memory, while requiring explicit accelerator policy for each task/role.
-- Implement `LayerReuseFirstStrategy` over immutable graph, ACK offers, canonical
-  layer inventory, assembled-fragment residency, and loaded-runtime residency.
+- Implement `PreSplitFirstStrategy` over the immutable graph and ACK offers. It
+  generates only adapter-certified candidates, enforces one role per Provider
+  and one Provider per role, then scores feasible candidates using canonical,
+  assembled-fragment, and loaded-runtime residency.
 - Replace the normal Application/APPClient coordinator wiring so the above
   strategy and canonical ensure path are the actual V3 default; retain the
   Requester-side selected-role materializer only in the explicit V2 branch.
@@ -314,92 +338,77 @@ once as canonical layers and selected Providers assemble their own fragments.
 - existing V2 single-device regressions remain green under their explicit
   compatibility profile.
 
-### Phase 2 - One Provider, multiple independent single-GPU roles
+### Phase 2 - Provider-local canonical ONNX assembly and execution
 
-**Behavioral outcome**: A Provider with several visible devices acts as one
-security/service endpoint and local scheduling domain while independently
-running multiple roles or requests on distinct GPUs.
+**Behavioral outcome**: Each selected Provider receives one complete role,
+fetches its canonical ONNX graph/initializer components, assembles and validates
+that role locally, and executes it with ONNX Runtime only.
 
-- Enumerate each device and interconnect/failure domain separately; never replace
-  topology with GPU count plus summed memory.
-- Extend placement output so multiple assignments may select the same Provider
-  as distinct `ProviderLocalRoleBundle` objects with disjoint or capacity-safe
-  `SINGLE_DEVICE` bindings.
-- Replace Provider-level aggregate admission with per-device resource ledgers and
-  an atomic local assignment transaction; ACK remains side-effect-free.
-- Key GPU-loaded runtime residency and model caches by exact device identity,
-  boot/process/runtime generation, topology digest, assembly identity, and
-  reusable-state contract so GPU 0 and GPU 1 do not overwrite each other.
-- Add bounded queueing, cancellation, eviction, and concurrency evidence without
-  holding a global GPU lock during Repo fetch or assembly.
+- Seal one `RoleAssemblySpec` per selected Provider after `ACK_CLOSED`.
+- Implement adapter-certified ONNX graph/initializer slicing and assembly without
+  importing PyTorch or Transformers in the deployed runtime.
+- Bind the assembled artifact and loaded runtime to exact model, graph, adapter,
+  role, backend ABI, precision, device, and topology identities.
+- Preserve truthful multi-device discovery, but bind one Attempt's selected role
+  to one CPU or single device; other devices may serve independent requests.
+- Add bounded queueing, JIT admission, cancellation, eviction, and exact warm
+  reuse without ACK-time holds.
 
 **Exit gate**:
 
-- a two-device topology concurrently executes two independent roles and three
-  concurrent requests without overlapping device budgets or ACK-time holds;
-- `2 x 12 GiB` is rejected for one unsplittable 20-GiB role but accepted for two
-  independent roles that each fit one device;
-- device loss, renumbering, sharing/failure-domain mismatch, and stale residency
-  invalidate only the exact affected bindings and never silently remap them;
-- single-flight evidence proves equal object fetches/builds occur once per
-  Provider while distinct loaded runtime instances remain per device.
+- a CPU small-model pipeline and a single-device case both match the unsplit ONNX
+  oracle under declared tolerance;
+- no Provider receives two roles from one Attempt and no role spans Providers;
+- mutation tests reject mechanical/uncertified slicing, missing initializers,
+  wrong graph/adapter/ABI/dtype/device bindings, and silent CPU fallback;
+- the deployed-runtime dependency scan/import probe finds ONNX Runtime and finds
+  neither PyTorch nor Transformers.
 
-### Phase 3 - Multi-GPU logical roles and heterogeneous hybrid execution
+### Phase 3 - Consumer-pull NDN pipeline, tensor, and hybrid execution
 
-**Behavioral outcome**: One logical role may span a device set, and only the
-pipeline stages that need tensor parallelism are horizontally split.
+**Behavioral outcome**: Tensor parallelism creates one execution role per rank on
+one distinct Provider, and every cross-Provider tensor follows the sealed NDN
+Interest/Data dataflow.
 
-#### Phase 3A - One Provider-local logical role across multiple GPUs
+#### Phase 3A - Role ownership and sealed dataflow
 
-- Separate `LogicalRole` from `RankAssignment[]`; remove validators that require
-  every logical role to appear exactly once as a single-device assignment.
-- First bind every rank to one `ProviderLocalRoleBundle` and one ordered local
-  `DEVICE_SET`; device handles remain scoped to that Provider's signed offer.
-- Add adapter-certified tensor partition recipes, per-rank assembly selectors,
-  ordered device sets, collective group/member/rank/epoch identities, and
-  Provider-local authenticated rendezvous.
-- Treat `M_i` as the participant count, not a command to split every tensor;
-  adapter recipes classify each tensor as sharded, replicated, owner-only, or
-  locally derived and prove complete non-conflicting coverage.
-- Admit/enqueue all local members of a `DEVICE_SET` atomically. Never hold one
-  device while waiting for another; rank loss aborts the complete affected
-  collective epoch.
+- Generate one `ExecutionRole` for every stage/rank pair and enforce a one-to-one
+  role/Provider map in candidate generation, sealing, projection, and admission.
+- Seal one `RoleDataflowContract` per role with exact `mayPublish[]`,
+  `mustFetch[]`, and `waitFor[]` entries and exactly one terminal Response owner.
+- Prove every consumer endpoint has one producer endpoint and that all names bind
+  requester/request ID, attempt, plan, group/epoch, operation/round, source role,
+  tensor, microbatch, digest, and segment.
 
 **Phase 3A exit gate**:
 
-- one Provider with two visible GPUs executes one certified logical role with
-  two complete local ranks and matches the corresponding unsplit stage oracle;
-- duplicate/missing/orphan ranks, illegal tensor coverage, partial admission,
-  collective reordering, stale group epoch, and rank loss are rejected or fail
-  the complete group deterministically;
-- an unsupported device/link/collective topology is rejected before Selection.
+- validators reject duplicate Provider ownership, cross-Provider roles, missing
+  producer/consumer matches, cycles, undeclared names, and multiple terminal
+  owners before Selection;
+- each Provider projection contains exactly one assembly spec and one dataflow
+  contract.
 
-#### Phase 3B - One logical tensor group across multiple Providers
+#### Phase 3B - NDN tensor object transport and execution
 
-- Partition the global `RankAssignment[]` into one
-  `ProviderLocalRoleBundle` per selected Provider; never construct one global
-  `DeviceBinding` from handles belonging to different offers.
-- Send each Provider one authenticated Selection projection. Each Provider
-  revalidates and atomically admits only its local resource vector; ACK
-  collection still reserves nothing.
-- Bind peer identity, transport endpoint, request/attempt/plan/group/epoch,
-  tensor layout, communicator compatibility, and timeout/cancellation into the
-  authenticated cross-Provider rendezvous contract.
-- Activate the tensor group when all of that group's ranks and its direct input
-  are ready. This group-local readiness is required by the collective but is
-  not a global model-ready barrier and does not block unrelated stages.
-- Propagate missing/rejected/stale/lost ranks to the complete affected epoch and
-  replan generation; never silently replace a member in a live group.
+- Implement consumer Interest expression for manifest and segments, immutable
+  producer Data publication, same-name retransmission, bounded in-flight state,
+  signature/digest/protection validation, cancellation, and no-progress/hard
+  deadlines.
+- Implement signed `TensorObjectManifest` plus deterministic names for pipeline
+  activations, collective operands/results, and redistribution objects.
+- Expose a dependency as ready only after the complete verified tensor is
+  reconstructed. Raw TCP/RPC/RDMA/NCCL, shared files, or unnamed side channels
+  between Providers are forbidden.
+- Activate a tensor group only when all role-local readiness and direct inputs are
+  complete; failure of one member aborts the epoch with zero partial output.
 
 **Phase 3B exit gate**:
 
-- one certified two-rank logical role spanning two Providers produces an output
-  matching the same unsplit oracle and records both Provider-local bundles;
-- wrong peer/offer/epoch, incomplete membership, partial Provider admission,
-  rendezvous replay, transport loss, and member failure terminate the exact
-  group without a partial downstream output;
-- the same role executed Provider-locally and across Providers has equivalent
-  numerical semantics but distinct, correctly bound transport/admission traces.
+- a two-rank stage on two Providers matches the unsplit ONNX oracle and its trace
+  shows every manifest/segment Interest and Data name;
+- drop, reorder, duplicate, replay, corrupt segment, wrong role/plan/epoch,
+  cancellation, and missing-member cases terminate deterministically;
+- instrumentation observes zero undeclared cross-Provider transport.
 
 #### Phase 3C - Heterogeneous pipeline/tensor hybrid
 
@@ -425,7 +434,7 @@ pipeline stages that need tensor parallelism are horizontally split.
   duplicate redistribution, or omitted redistribution fail before unsafe
   execution or terminate the exact boundary/group deterministically;
 - data-driven execution has no global model-ready barrier: an unsplit stage or a
-  complete local tensor group starts as soon as its own preparation and direct
+  complete tensor group starts as soon as its own preparation and direct
   authenticated inputs are ready.
 
 ### Phase 4 - MiniNDN/exact-SIF closure and TigerCluster 0/1/2-GPU gate
@@ -443,11 +452,21 @@ inference agree for zero, one, and two GPUs without changing application logic.
   concurrency, cold/warm, queue/JIT admission, progress, and data-driven
   execution paths. Simulated device topology proves control logic; it is not
   CUDA evidence.
-- Gate C: build the candidate OCI/SIF once, then before formal freeze run that
-  exact SIF in CPU/no-GPU mode and bounded CUDA preflights, proving that the
-  container has no hidden test-only defaults and the native offer path is wired.
+- Gate C: drive the candidate application-SIF build once from the local host,
+  but compile `_ndnsf.so` and every other container-bound Python extension
+  inside the SIF build stage (or a sealed ABI-identical builder rootfs), never
+  against host Python headers, virtual environments, site-packages, or native
+  libraries. Before formal freeze, run that exact SIF in CPU/no-GPU mode and
+  bounded CUDA preflights, proving that the container has no hidden test-only
+  defaults and the native offer path is wired. Record and compare build/runtime
+  Python version, `SOABI`, `EXT_SUFFIX`, include root, compiler/glibc, extension
+  hash, and native-library closure.
+  The paired `ndnsf-local-sif-build-v3` record is a pre-staging release gate:
+  formal D0/D1/D2 jobs must pass `validate-local-sif-build-record.py` with the
+  exact SIF hash; legacy records and non-empty host binary inputs are rejected
+  before the image is copied to node-local scratch.
 - After every executable source/security/build/harness change and Gate A/B/C
-  result is complete, freeze one source, OCI, SIF, dependency-lock, model,
+  result is complete, freeze one source, local SIF, dependency-lock, model,
   canonical-artifact, prompt/workload, security-policy, and route identity.
   After this cut, tasks may execute the candidate and write evidence/docs only.
   Any executable or harness change invalidates the freeze and returns to the
@@ -458,23 +477,17 @@ inference agree for zero, one, and two GPUs without changing application logic.
 - Gate D1: request one GPU and launch with `--nv`; require one offered/selected
   device, one complete minimal-model response, and no CPU fallback.
 - Gate D2a: request two GPUs for one Provider task and launch with `--nv`;
-  require both and only allocated devices in the offer, then validate two
-  independent single-GPU roles and one Provider-local two-rank logical role.
+  require both and only allocated devices in the offer, validate one selected
+  role per Attempt, and use separate concurrent requests to exercise both devices.
 - Gate D2b: within a separately declared two-GPU allocation/topology, launch two
-  Provider runtimes with one allocated GPU each and validate one two-rank
-  logical role across their authenticated Provider-local bundles. Record this
+  Provider runtimes with one allocated GPU each and validate one two-rank tensor
+  group as two roles, one per Provider, over named NDN tensor objects. Record this
   separately from D2a; a D2a success is not cross-Provider evidence.
-- Gate D2h: after D2a and D2b close, run the heterogeneous `[1,2,1]` and
-  `[2,1,2]` profiles on the frozen two-Provider/two-GPU mapping below and retain
-  separate rank/collective/redistribution/oracle evidence. If the resource or
-  topology envelope is insufficient, the real-CUDA hybrid claim remains
-  `BLOCK`; local emulation or combining D2a/D2b evidence is not a substitute.
-- D2h mapping is fixed before the run. For `[1,2,1]`,
-  `P0/G0={S0R0,S1R0}` and `P1/G1={S1R1,S2R0}`. For `[2,1,2]`,
-  `P0/G0={S0R0,S1R0,S2R0}` and `P1/G1={S0R1,S2R1}`. Multiple ranks on one GPU
-  are members of one plan-local `EXCLUSIVE_PLAN` admission vector with summed
-  phase peaks; this is not MPS or multi-tenant sharing. A different mapping,
-  missing envelope, or insufficient memory is `BLOCK`, not an adaptive rewrite.
+- Gate D2h follows only after CPU integrated/MiniNDN hybrid closure. `[1,2,1]`
+  requires four distinct Provider runtimes and `[2,1,2]` requires five, one per
+  stage/rank role. When equivalent GPU resources are unavailable, retain the CPU
+  correctness result and label the GPU-scale row `BLOCK`; never collapse several
+  roles onto one Provider to fit the allocation.
 - In one unchanged accepted allocation, measure five real prompts, each with one
   warmup and five measured requests. Retain complete answers, TTFT, per-token and
   total latency, tokens/s, Repo bytes, assembly/load events, device/rank mapping,
@@ -490,7 +503,7 @@ inference agree for zero, one, and two GPUs without changing application logic.
 - all admitted correctness profiles return complete authenticated answers and
   satisfy the local numerical oracle and lifecycle invariants;
 - repeated exact-runtime requests demonstrate zero model transfer/assembly/load,
-  while incompatible device sets correctly fall back only to valid lower-level
+  while incompatible device bindings correctly fall back only to valid lower-level
   disk/RAM reuse;
 - any formal failure closes that candidate identity and returns to its owning
   local phase; no blind remote retry or in-place source mutation is allowed.
@@ -501,8 +514,8 @@ inference agree for zero, one, and two GPUs without changing application logic.
 |---|---|---|
 | Contract integrity | Canonical serialization/digests, V2/V3 rejection matrix, negative tests | all runtime work; pre-freeze |
 | CPU/single-device | Real MiniNDN complete response, explicit accelerator policy, warm reuse | Phase 2; pre-freeze |
-| Per-device/three-Provider concurrency | Independent roles, per-device budgets, no ACK holds, device-specific residency | Phase 3; pre-freeze |
-| Multi-rank/hybrid | Local oracle equivalence for heterogeneous degree vectors, collective/redistribution faults | freeze; pre-freeze |
+| Role ownership | One role per Provider, one Provider per role, per-device budgets, no ACK holds | Phase 3; pre-freeze |
+| Multi-rank/hybrid | CPU integrated/MiniNDN oracle equivalence, complete NDN Interest/Data traces, collective/redistribution faults | freeze; pre-freeze |
 | Exact SIF | Same code/config/contracts, native ACK path, and truthful visibility | freeze; pre-freeze |
 | Candidate freeze | All executable/harness/security/build hashes plus Gate A/B/C closure | every formal TigerCluster run |
 | TigerCluster | Immutable campaign bundle and complete retained rows | implementation-complete claim |
@@ -522,8 +535,10 @@ hypotheses are:
 1. the same Provider artifact reports and obeys exact 0/1/2 runtime-visible
    device sets;
 2. per-device placement prevents aggregate-memory and partial-admission errors;
-3. one Provider safely executes independent roles on different GPUs;
-4. one logical role and heterogeneous `N x {M_i}` plans match an unsplit oracle;
+3. each Attempt preserves one-to-one role/Provider ownership even when a Provider
+   exposes multiple GPUs;
+4. tensor and heterogeneous `N x {M_i}` plans match an unsplit oracle while all
+   cross-Provider tensors use declared NDN Interest/Data;
 5. exact loaded-runtime reuse removes model transfer, assembly, and reload from
    subsequent matching requests.
 
@@ -565,7 +580,7 @@ NDNSF-DistributedInference/
 │   ├── app_sdk/placement.py            # canonical ensure versus legacy split
 │   ├── sdk/placement.py              # offer/strategy/assignment V3 SDK
 │   ├── splitter.py                   # logical stages, ranks and graph coverage
-│   ├── planner/                      # LayerReuseFirstStrategy and compatibility
+│   ├── planner/                      # PreSplitFirst default plus reuse scoring
 │   ├── core/contracts.py             # signed DI plan/residency contracts
 │   ├── core/runtime_contracts.py     # topology/runtime capability contracts
 │   ├── core/decision_validation.py   # per-device/rank/coverage validation
@@ -579,14 +594,14 @@ NDNSF-DistributedInference/
 │   ├── ProviderResourceProbe.*       # actual runtime-visible resource discovery
 │   ├── NativeProviderReadiness.*     # native V3 ACK serialization
 │   ├── ProtectedRuntime.*            # protected plaintext lifecycle
-│   ├── NdnsfCollectiveControl.*      # NDNSF_DATA_V1 transport
+│   ├── NdnsfCollectiveControl.*      # consumer-pull NDN tensor transport
 │   └── ProviderRoleWorker.*          # local scheduling/data-driven execution
 └── experiments/                      # MiniNDN and campaign orchestration
 
 examples/python/NDNSF-DistributedInference/llm_pipeline/
                                         # reference end-to-end adapter path
 NDNSF-DistributedRepo/                   # existing immutable artifact APIs
-packaging/ndnsf-di-container/            # OCI/SIF and Slurm exposure/evidence
+packaging/ndnsf-di-container/            # local SIF and Slurm exposure/evidence
 tests/python/                             # unit, contract, integration gates
 tests/container/                          # exact-container and allocation gates
 specs/170-reusable-layer-artifacts/       # retained design/evidence authority

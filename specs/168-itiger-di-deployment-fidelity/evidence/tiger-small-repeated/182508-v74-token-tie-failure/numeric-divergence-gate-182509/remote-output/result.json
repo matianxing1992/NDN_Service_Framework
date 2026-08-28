@@ -1,0 +1,206 @@
+{
+  "attentionImplementation": "sdpa",
+  "classification": "NUMERICALLY_EQUIVALENT_DIVERGENCE",
+  "device": "cuda:0",
+  "dtype": "bfloat16",
+  "firstDivergence": {
+    "fullModelSelectedTokenId": 34859,
+    "referenceTokenId": 104399,
+    "stagedTokenId": 34859,
+    "tieEpsilon": 0.125,
+    "tokenIndex": 4,
+    "topCandidates": [
+      {
+        "logit": 17.75,
+        "tokenId": 34859
+      },
+      {
+        "logit": 17.75,
+        "tokenId": 104399
+      },
+      {
+        "logit": 17.5,
+        "tokenId": 71356
+      },
+      {
+        "logit": 16.875,
+        "tokenId": 71304
+      },
+      {
+        "logit": 16.5,
+        "tokenId": 62926
+      }
+    ],
+    "topTwoMargin": 0.0
+  },
+  "fullModelSteps": [
+    {
+      "selectedTokenId": 16,
+      "tokenIndex": 0,
+      "topCandidates": [
+        {
+          "logit": 23.875,
+          "tokenId": 16
+        },
+        {
+          "logit": 19.125,
+          "tokenId": 12
+        },
+        {
+          "logit": 19.0,
+          "tokenId": 18493
+        },
+        {
+          "logit": 19.0,
+          "tokenId": 39165
+        },
+        {
+          "logit": 17.25,
+          "tokenId": 100155
+        }
+      ],
+      "topTwoMargin": 4.75
+    },
+    {
+      "selectedTokenId": 13,
+      "tokenIndex": 1,
+      "topCandidates": [
+        {
+          "logit": 28.625,
+          "tokenId": 13
+        },
+        {
+          "logit": 20.25,
+          "tokenId": 30543
+        },
+        {
+          "logit": 17.75,
+          "tokenId": 8
+        },
+        {
+          "logit": 15.0,
+          "tokenId": 7552
+        },
+        {
+          "logit": 14.6875,
+          "tokenId": 5373
+        }
+      ],
+      "topTwoMargin": 8.375
+    },
+    {
+      "selectedTokenId": 3070,
+      "tokenIndex": 2,
+      "topCandidates": [
+        {
+          "logit": 22.375,
+          "tokenId": 3070
+        },
+        {
+          "logit": 22.125,
+          "tokenId": 10236
+        },
+        {
+          "logit": 21.875,
+          "tokenId": 6567
+        },
+        {
+          "logit": 21.375,
+          "tokenId": 220
+        },
+        {
+          "logit": 20.0,
+          "tokenId": 74866
+        }
+      ],
+      "topTwoMargin": 0.25
+    },
+    {
+      "selectedTokenId": 101071,
+      "tokenIndex": 3,
+      "topCandidates": [
+        {
+          "logit": 22.0,
+          "tokenId": 101071
+        },
+        {
+          "logit": 20.5,
+          "tokenId": 104078
+        },
+        {
+          "logit": 19.125,
+          "tokenId": 107276
+        },
+        {
+          "logit": 19.0,
+          "tokenId": 104814
+        },
+        {
+          "logit": 18.625,
+          "tokenId": 105853
+        }
+      ],
+      "topTwoMargin": 1.5
+    },
+    {
+      "selectedTokenId": 34859,
+      "tokenIndex": 4,
+      "topCandidates": [
+        {
+          "logit": 17.75,
+          "tokenId": 34859
+        },
+        {
+          "logit": 17.75,
+          "tokenId": 104399
+        },
+        {
+          "logit": 17.5,
+          "tokenId": 71356
+        },
+        {
+          "logit": 16.875,
+          "tokenId": 71304
+        },
+        {
+          "logit": 16.5,
+          "tokenId": 62926
+        }
+      ],
+      "topTwoMargin": 0.0
+    }
+  ],
+  "fullModelTokens": [
+    16,
+    13,
+    3070,
+    101071,
+    34859
+  ],
+  "modelDigest": "sha256:a317ec50b9a20ebf83a96379016e227dbe83c0b7116e97cfffdfc0bcee4c86db",
+  "promptId": "stage-timeout",
+  "referenceDigest": "sha256:f3a835be2de33dfe720513b5d725d4274ea97f7590b763b823f9d4e67f5dd7ca",
+  "referenceTokens": [
+    16,
+    13,
+    3070,
+    101071,
+    104399
+  ],
+  "revision": "e6de91484c29aa9480d55605af694f39b081c455",
+  "schema": "ndnsf-di.spec168-qwen-numeric-divergence.v1",
+  "stageManifestDigest": "sha256:8d8475db33efab5398014d0aac9570cda90bae5d50fd0128bed7b0215d0156f5",
+  "stagePackageDigests": [
+    "sha256:7f40b96b2831087e846127fcb682369582017f28a44f761cc80f65a8af8a627f",
+    "sha256:072d9a6a787bfa5f085b829d972992c09c186dc82f235a04fca71915bd3126b5",
+    "sha256:4cceadede2cf8b1270a73d302a117181028e32bd3079ea7fd705100f71f8acc6"
+  ],
+  "stagedTokens": [
+    16,
+    13,
+    3070,
+    101071,
+    34859
+  ],
+  "status": "PASS"
+}

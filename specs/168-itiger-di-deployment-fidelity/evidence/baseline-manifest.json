@@ -1,0 +1,195 @@
+{
+  "schema": "ndnsf-di.spec168-baseline.v1",
+  "createdAtUtc": "2026-08-03T07:48:18Z",
+  "claimBoundaryReauditedAtUtc": "2026-08-03T19:08:00Z",
+  "purpose": "read-only lineage and reusable-material inventory; not a new candidate or campaign",
+  "workspaceObservation": {
+    "head": "f60385a23a6845b094233f34e32ad283664cbbab",
+    "tree": "6e7ce5559418ee609ab5848fea7a760e435a9bb1",
+    "worktreeEntries": 170,
+    "trackedModified": 87,
+    "untracked": 83,
+    "candidateState": "NOT_FROZEN_DIRTY",
+    "candidateUseAllowed": false
+  },
+  "runtime": {
+    "host": "itiger",
+    "path": "/project/tma1/ndnsf-di/releases/spec167-native-file-producer-0f834dbaad7496628fb31bfcdfc87f6ead0874a03db65329c5536d8b1da63d92/runtime.sif",
+    "sha256": "1f616fa773df4f8d821339cb7b0a3d62332b9f2197055bdb4e9f3dd081518368",
+    "bytes": 4367683584,
+    "mode": "0444",
+    "inode": 136033254,
+    "verifiedBy": "fresh remote sha256sum and stat",
+    "verifiedAtUtc": "2026-08-03T07:48:18Z"
+  },
+  "smallModelControl": {
+    "model": "Qwen/Qwen3-0.6B",
+    "revision": "e6de91484c29aa9480d55605af694f39b081c455",
+    "modelDigest": "sha256:a317ec50b9a20ebf83a96379016e227dbe83c0b7116e97cfffdfc0bcee4c86db",
+    "stageManifestPath": "/project/tma1/ndnsf-di/artifacts/spec162/qwen3-0.6b/spec162-submission-t009-qwen3small-runtime1f616-pathbound-20260802T231200Z-001/stage-manifest.json",
+    "stageManifestSha256": "8d8475db33efab5398014d0aac9570cda90bae5d50fd0128bed7b0215d0156f5",
+    "sourceBundleSha256": "ed6a7e0168c3d63720dbfe4f58c4fa2e6ccb796550cbd5721268c7dabbc02513",
+    "job": 181948,
+    "submission": "spec162-submission-t009-full-20260803T044700Z-003",
+    "rawEvidencePath": "/project/tma1/ndnsf-di/evidence/spec162/qwen3-0.6b-smoke/.spec162-submission-t009-full-20260803T044700Z-003.partial",
+    "terminalVerdict": "MEASURED_COMPLETE_RESPONSE_WITH_FAILED_CAMPAIGN",
+    "slurmState": "FAILED",
+    "slurmElapsed": "00:07:16",
+    "batchExitCode": "1:0",
+    "userExitCode": 0,
+    "resultState": "FAIL",
+    "resultExitCode": 1,
+    "retainedAnalyzerVerdict": "FAIL",
+    "retainedAnalyzerError": "provider 0 lacks immutable artifact readiness",
+    "claim": "one durable FULL Request produced one exact 47-token EOS Response across three CUDA stages with no observed CPU fallback; this is a successful inference sub-result, not an overall campaign PASS",
+    "covered": [
+      "one NDNSF_DI_AUTOPLANNING_REQUEST_SENT marker and one final Response marker",
+      "47 generated tokens and EOS with exact reference match",
+      "three distinct RTX 5000 nodes entered FULL stage execution",
+      "all three Providers completed Repo fetch and terminal release",
+      "all three Provider logs report cpuFallback=false and no cpuFallback=true",
+      "User process exited 0 under the recorded immutable identities"
+    ],
+    "notCovered": [
+      "overall Slurm job, batch step, wrapper, or retained analyzer PASS",
+      "current exact-SIF admission and immutable-artifact readiness schema",
+      "current request-first ACK-driven dynamic split and role planning",
+      "dynamic DistributedRepo publication and fetch inside one durable invocation",
+      "progress-driven deadlines without fixed settle waits",
+      "cold-start versus cache-reuse latency across multiple measured requests",
+      "current full-chain requestId, model, role, dependency, Provider-session, and Response consistency"
+    ],
+    "stages": [
+      {
+        "role": "/LLM/Pipeline/Stage/0",
+        "path": "/project/tma1/ndnsf-di/artifacts/spec162/qwen3-0.6b/spec162-submission-t009-qwen3small-runtime1f616-pathbound-20260802T231200Z-001/qwen-transformers-stage-artifacts/stage-0-qwen-transformers.pt",
+        "bytes": 594357850,
+        "sha256": "7f40b96b2831087e846127fcb682369582017f28a44f761cc80f65a8af8a627f",
+        "inode": 79673440,
+        "linkCount": 3,
+        "mode": "0400"
+      },
+      {
+        "role": "/LLM/Pipeline/Stage/1",
+        "path": "/project/tma1/ndnsf-di/artifacts/spec162/qwen3-0.6b/spec162-submission-t009-qwen3small-runtime1f616-pathbound-20260802T231200Z-001/qwen-transformers-stage-artifacts/stage-1-qwen-transformers.pt",
+        "bytes": 283192711,
+        "sha256": "072d9a6a787bfa5f085b829d972992c09c186dc82f235a04fca71915bd3126b5",
+        "inode": 79675228,
+        "linkCount": 3,
+        "mode": "0400"
+      },
+      {
+        "role": "/LLM/Pipeline/Stage/2",
+        "path": "/project/tma1/ndnsf-di/artifacts/spec162/qwen3-0.6b/spec162-submission-t009-qwen3small-runtime1f616-pathbound-20260802T231200Z-001/qwen-transformers-stage-artifacts/stage-2-qwen-transformers.pt",
+        "bytes": 625825930,
+        "sha256": "4cceadede2cf8b1270a73d302a117181028e32bd3079ea7fd705100f71f8acc6",
+        "inode": 79682434,
+        "linkCount": 3,
+        "mode": "0400"
+      }
+    ]
+  },
+  "largeModelNegativeControl": {
+    "model": "Qwen/Qwen3.6-27B",
+    "revision": "6a9e13bd6fc8f0983b9b99948120bc37f49c13e9",
+    "modelDigest": "sha256:81a39eaabb93592d1d48d051f01607bcecd8f94133f29fcd50b27e340397d1fa",
+    "stageManifestPath": "/project/tma1/ndnsf-di/artifacts/spec162/qwen36/spec162-submission-t009-qwen36-runtime-rebind-1f616fa7-003/stage-manifest.json",
+    "stageManifestSha256": "16de41986564c436a33cd6a292f17f4bd939d0a893c441441022e3b389737f6f",
+    "sourceBundleSha256": "eaab5cdc085e5b89a532dc76746ee6b072c1c7bad95c9be6099c0bbfdb6a4f0d",
+    "job": 181951,
+    "submission": "spec162-submission-t009-full-qwen36-20260803T0615Z-002",
+    "rawEvidencePath": "/project/tma1/ndnsf-di/evidence/spec162/qwen36-smoke/.spec162-submission-t009-full-qwen36-20260803T0615Z-002.partial",
+    "terminalVerdict": "MEASURED_REPO_FETCH_FAILURE",
+    "claim": "Stage 1 segmented fetch exhausted after 630800 bytes before CUDA load; no complete inference Response",
+    "stages": [
+      {
+        "role": "/LLM/Pipeline/Stage/0",
+        "path": "/project/tma1/ndnsf-di/artifacts/spec162/qwen36/spec162-submission-t009-qwen36-runtime-rebind-1f616fa7-003/qwen-transformers-stage-artifacts/stage-0-qwen-transformers.pt",
+        "bytes": 18530194174,
+        "sha256": "98deea14968104ab6a0d742e8d3fd04477de2058b048d1603a0ee43f02f123d1",
+        "inode": 79613668,
+        "linkCount": 2,
+        "mode": "0400"
+      },
+      {
+        "role": "/LLM/Pipeline/Stage/1",
+        "path": "/project/tma1/ndnsf-di/artifacts/spec162/qwen36/spec162-submission-t009-qwen36-runtime-rebind-1f616fa7-003/qwen-transformers-stage-artifacts/stage-1-qwen-transformers.pt",
+        "bytes": 15987396002,
+        "sha256": "1ec7bf3bfa40f4f2006b8924c53efa914750fe5cd1e2ab65c1dd6492b78bb176",
+        "inode": 79613399,
+        "linkCount": 2,
+        "mode": "0400"
+      },
+      {
+        "role": "/LLM/Pipeline/Stage/2",
+        "path": "/project/tma1/ndnsf-di/artifacts/spec162/qwen36/spec162-submission-t009-qwen36-runtime-rebind-1f616fa7-003/qwen-transformers-stage-artifacts/stage-2-qwen-transformers.pt",
+        "bytes": 19274718182,
+        "sha256": "07175d19041e309eca09533a63d63481c23d76e4bdb0831c7238da93d5755f39",
+        "inode": 79613414,
+        "linkCount": 2,
+        "mode": "0400"
+      }
+    ]
+  },
+  "localContractsAndJobs": [
+    {
+      "path": "specs/162-itiger-qwen36-generation/contracts/prompt-set.json",
+      "bytes": 1449,
+      "sha256": "5a87c5645c74ac52b7e2ab728e7297d49c42fa849ce47d163c8fec5838d9dd75",
+      "use": "five pinned real prompts"
+    },
+    {
+      "path": "specs/162-itiger-qwen36-generation/jobs/analyze-generation-full-smoke.py",
+      "bytes": 8929,
+      "sha256": "b793eff42c75acb9cd8ec7bb766ec7b4b946f69b2eed1822c0f92ff97b47f422",
+      "use": "current post-hoc single-request analyzer; job 181948 revalidation used sealed bundle 3cee5d3d87cc9e0c48a322c4f0bf9b6f6f3bf9dc9d1450a6f5e89fe02b858194"
+    },
+    {
+      "path": "specs/162-itiger-qwen36-generation/jobs/analyze-generation-formal.py",
+      "bytes": 20982,
+      "sha256": "1292c53e0888ff78595d0e2067ba3a51087fee4284e8c9da96bd180c933de989",
+      "use": "unexecuted five-prompt formal schedule analyzer"
+    },
+    {
+      "path": "specs/162-itiger-qwen36-generation/jobs/generation-smoke.sbatch",
+      "bytes": 14660,
+      "sha256": "8c49f4fc81b5b85c64d4da41e9867403b52d6f1dd43acd9905c302db93c7ecd7",
+      "use": "existing Slurm launcher input; not automatically admitted"
+    },
+    {
+      "path": "specs/162-itiger-qwen36-generation/jobs/generation-rank-inner.sh",
+      "bytes": 19285,
+      "sha256": "544d89cfa9d2ca9966e37bc194565636bc935552d3b7b9f11577c9baf0044a48",
+      "use": "existing rank/process/route launcher input; not automatically admitted"
+    }
+  ],
+  "priorEvidence": [
+    {
+      "path": "specs/162-itiger-qwen36-generation/evidence/t009-full-invocation-20260803.md",
+      "sha256": "47d65d5af484888d034d8b5cabf6941485155f3ff25d90d2d4fd81b9e900db49",
+      "classification": "measured complete-inference sub-result inside failed Slurm campaign"
+    },
+    {
+      "path": "specs/162-itiger-qwen36-generation/evidence/t009-qwen36-smoke-181951.md",
+      "sha256": "e107fd6cd2493a5abfbf5b20d9b814c711900de88b8f33560096d7ee47698338",
+      "classification": "measured immutable negative control"
+    },
+    {
+      "path": "specs/167-itiger-repo-throughput/evidence/source-013-freeze.md",
+      "sha256": "7e87c3a5641bb488cb9552a23ccfb1a9b9c9ec94675ced715ffc4fb0d0a403d2",
+      "classification": "repository candidate/campaign authority, job 181822"
+    },
+    {
+      "path": "specs/167-itiger-repo-throughput/evidence/performance-report.md",
+      "sha256": "347ccbe1a17ae1c7acea4701d51dfc843f7d771e37f2ce7412ac461662c1c874",
+      "classification": "repository-only transport measurements; not end-to-end inference latency"
+    }
+  ],
+  "prohibitions": [
+    "do not copy or reprepare model payloads for T001/T002",
+    "do not rebuild the foundation SIF when the recorded identity is reused",
+    "do not modify or replace jobs 181948, 181951, or 181822 evidence",
+    "do not call the current dirty workspace a frozen remote candidate",
+    "do not infer DistributedRepo throughput from inference job wall time"
+  ]
+}

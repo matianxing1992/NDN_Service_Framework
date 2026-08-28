@@ -99,6 +99,7 @@ projectionJson(std::uint64_t dataflowAttempt = 1,
     "\",\"plan_core_digest\":\"" + d +
     "\",\"plan_digest\":\"" + d +
     "\",\"provider\":\"/provider/0\",\"request_id\":\"/request/1\"," +
+    "\"request_contract_digest\":\"" + digest('9') + "\"," +
     "\"roles\":[" + role + (duplicateLocalRole ? "," + role : "") +
     "],\"schema\":\"ndnsf-di-selection-v3\",\"schema_version\":3," +
     "\"security_policy_snapshot_digest\":\"" + d + "\"}";
@@ -109,6 +110,72 @@ parseProjection(const std::string& wire)
 {
   std::istringstream input(wire);
   return nativeSelectionProjectionV3FromJson(input, "S0R0");
+}
+
+std::string
+streamingProjectionJson()
+{
+  auto wire = projectionJson();
+  const auto dependencies = wire.find("\"dependencies\":[]");
+  if (dependencies == std::string::npos) {
+    throw std::logic_error("projection fixture has no dependencies field");
+  }
+  wire.replace(
+    dependencies, std::string("\"dependencies\":[]").size(),
+    "\"dependencies\":[{\"producers\":[\"S0R0\"],"
+    "\"consumers\":[\"S0R0\"],\"key_scope\":\"token-feedback\","
+    "\"topic_prefix\":\"/feedback\",\"object_name_template\":"
+    "\"{producerProvider}/{sessionId}/{sequence}\","
+    "\"tensors\":[\"input_ids\"],\"operationKind\":\"TOKEN_FEEDBACK\","
+    "\"transportProfile\":\"NDNSF_DATA_V1\","
+    "\"collectiveOperationIndex\":0}]");
+  const auto insertion = wire.find("\"group_capability_v1\"");
+  if (insertion == std::string::npos) {
+    throw std::logic_error("projection fixture has no capability field");
+  }
+  wire.insert(
+    insertion,
+    "\"generation_contract\":{\"mode\":\"TOKEN_STREAMING\","
+    "\"max_generated_tokens\":8,\"token_input_name\":\"input_ids\","
+    "\"state_input_names\":[\"attention_kv_in\",\"recurrent_state_in\","
+    "\"convolution_state_in\"],\"state_output_names\":["
+    "\"attention_kv_out\",\"recurrent_state_out\","
+    "\"convolution_state_out\"],\"eos_token_ids\":[2],"
+    "\"sampling_digest\":\"" + digest('7') + "\","
+    "\"tokenizer_digest\":\"" + digest('8') + "\","
+    "\"committed_prefix_token_ids\":[],"
+    "\"streaming_operation_stride\":1},");
+  return wire;
+}
+
+std::string
+conversationProjectionJson()
+{
+  auto wire = projectionJson();
+  const auto insertion = wire.find("\"group_capability_v1\"");
+  if (insertion == std::string::npos) {
+    throw std::logic_error("projection fixture has no capability field");
+  }
+  wire.insert(
+    insertion,
+    "\"conversation_turn_binding\":{"
+    "\"schema\":\"ndnsf-di-conversation-turn-binding-v1\","
+    "\"version\":1,\"conversation_id\":\"0123456789abcdef0123456789abcdef\","
+    "\"parent_context_epoch\":2,\"successor_context_epoch\":3,"
+    "\"service_name\":\"/LLM/Qwen\","
+    "\"plan_role_map_digest\":\"" + digest('2') + "\","
+    "\"request_contract_digest\":\"" + digest('9') + "\","
+    "\"retention_deadline_ms\":120000,"
+    "\"parent_checkpoint_digest\":\"" + digest('3') + "\"},"
+    "\"conversation_state_reference\":{"
+    "\"schema\":\"ndnsf-di-conversation-state-reference-v1\","
+    "\"version\":1,\"conversation_id\":\"0123456789abcdef0123456789abcdef\","
+    "\"context_epoch\":2,\"service_name\":\"/LLM/Qwen\","
+    "\"plan_role_map_digest\":\"" + digest('2') + "\","
+    "\"checkpoint_digest\":\"" + digest('3') + "\","
+    "\"role_name\":\"S0R0\",\"role_receipt_digest\":\"" +
+      digest('4') + "\",\"expires_at_ms\":120000},");
+  return wire;
 }
 
 NativeTensorEndpointV3
@@ -188,6 +255,68 @@ BOOST_AUTO_TEST_CASE(NativeV3ProjectionDecodesCompleteSingleRoleContract)
   BOOST_CHECK_EQUAL(value.dataflow.role, "S0R0");
   BOOST_CHECK(value.dataflow.terminalResponseOwner);
   BOOST_CHECK_EQUAL(value.deviceBinding.mode, "CPU");
+  BOOST_CHECK_EQUAL(value.requestContractDigest, digest('9'));
+}
+
+BOOST_AUTO_TEST_CASE(NativeV3ProjectionBindsStreamedGenerationContract)
+{
+  const auto value = parseProjection(streamingProjectionJson());
+  BOOST_CHECK(value.generationContract.enabled);
+  BOOST_CHECK_EQUAL(value.generationContract.maxGeneratedTokens, 8);
+  BOOST_CHECK_EQUAL(value.generationContract.stateInputNames.size(), 3);
+  BOOST_CHECK_EQUAL(value.plan.streamingOperationStride, 1);
+  BOOST_REQUIRE_EQUAL(value.plan.dependencies.size(), 1);
+  BOOST_CHECK_EQUAL(value.plan.dependencies.front().operationKind,
+                    "TOKEN_FEEDBACK");
+
+  auto missing = streamingProjectionJson();
+  const auto begin = missing.find("\"generation_contract\"");
+  const auto end = missing.find("\"group_capability_v1\"", begin);
+  BOOST_REQUIRE_NE(begin, std::string::npos);
+  BOOST_REQUIRE_NE(end, std::string::npos);
+  missing.erase(begin, end - begin);
+  BOOST_CHECK_THROW(parseProjection(missing), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(NativeV3ProjectionBindsRoleLocalConversationReference)
+{
+  const auto value = parseProjection(conversationProjectionJson());
+  BOOST_REQUIRE(value.conversationStateReference);
+  BOOST_REQUIRE(value.conversationTurnBinding);
+  BOOST_CHECK_EQUAL(value.conversationStateReference->roleName, "S0R0");
+  BOOST_CHECK_EQUAL(value.conversationStateReference->contextEpoch, 2);
+  BOOST_CHECK_EQUAL(value.conversationStateReference->roleReceiptDigest,
+                    digest('4'));
+  BOOST_CHECK_EQUAL(value.conversationTurnBinding->successorContextEpoch, 3);
+
+  auto wrongRole = conversationProjectionJson();
+  const auto role = wrongRole.find("\"role_name\":\"S0R0\"");
+  BOOST_REQUIRE_NE(role, std::string::npos);
+  wrongRole.replace(role, std::string("\"role_name\":\"S0R0\"").size(),
+                    "\"role_name\":\"S1R0\"");
+  BOOST_CHECK_THROW(parseProjection(wrongRole), std::invalid_argument);
+
+  auto invalidReceipt = conversationProjectionJson();
+  const auto receipt = invalidReceipt.find(digest('4'));
+  BOOST_REQUIRE_NE(receipt, std::string::npos);
+  invalidReceipt.replace(receipt, digest('4').size(), "not-a-digest");
+  BOOST_CHECK_THROW(parseProjection(invalidReceipt), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(NativeRequestContractDigestBindsExactPayload)
+{
+  const std::string prompt = "prompt";
+  const ndn::Buffer payload(
+    reinterpret_cast<const std::uint8_t*>(prompt.data()), prompt.size());
+  const auto expected = std::string("sha256:") +
+    "cf07194ee232eb531e15f690000d19846dea69cf05504782658afcfacb9228a2";
+  BOOST_CHECK(nativeRequestContractDigestMatches(expected, payload));
+
+  auto changed = payload;
+  changed.back() ^= 0x01;
+  BOOST_CHECK(!nativeRequestContractDigestMatches(expected, changed));
+  BOOST_CHECK(!nativeRequestContractDigestMatches(digest('A'), payload));
+  BOOST_CHECK(!nativeRequestContractDigestMatches("", payload));
 }
 
 BOOST_AUTO_TEST_CASE(NativeV3ProtectedProjectionRequiresExactGrantBinding)

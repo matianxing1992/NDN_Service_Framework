@@ -1,0 +1,66 @@
+general
+{
+}
+log
+{
+  default_level WARN
+}
+tables
+{
+  cs_max_packets 4096
+  cs_policy lru
+  cs_unsolicited_policy drop-all
+  strategy_choice
+  {
+    / /localhost/nfd/strategy/best-route
+    /localhost /localhost/nfd/strategy/multicast
+    /localhost/nfd /localhost/nfd/strategy/best-route
+  }
+}
+face_system
+{
+  unix
+  {
+    path @@NFD_SOCKET@@
+  }
+  tcp
+  {
+    listen yes
+    port @@TCP_PORT@@
+    enable_v4 yes
+    enable_v6 no
+  }
+  udp
+  {
+    listen no
+  }
+  ether
+  {
+    listen no
+    mcast no
+  }
+}
+authorizations
+{
+  authorize
+  {
+    certfile any
+    privileges
+    {
+      faces
+      fib
+      strategy-choice
+    }
+  }
+}
+rib
+{
+  localhost_security
+  {
+    trust-anchor
+    {
+      type any
+    }
+  }
+}
+; Spec 167 rank @@NODE_RANK@@

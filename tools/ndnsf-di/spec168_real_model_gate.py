@@ -48,10 +48,17 @@ def validate_real_model_binding(args) -> None:
         raise ValueError(
             f"--require-real-model stage manifest is invalid: {manifest_path}"
         ) from error
-    expected_stage_runtime = (
-        "qwen-onnx" if args.runtime == "qwen-onnx-cpu-native"
-        else args.runtime
-    )
+    # The command-line runtime names describe the user/provider launcher, but
+    # the immutable stage manifest records the actual deployment backend.  A
+    # Qwen ONNX and native-ONNX run therefore both bind to ``onnxruntime``;
+    # requiring the launcher spelling here would reject a valid exported
+    # manifest before MiniNDN can start.
+    if args.runtime == "qwen-transformers":
+        expected_stage_runtime = "qwen-transformers"
+    elif args.runtime in {"qwen-onnx", "qwen-onnx-cpu-native"}:
+        expected_stage_runtime = "onnxruntime"
+    else:
+        expected_stage_runtime = args.runtime
     stages = manifest.get("stages")
     mismatches = []
     if manifest.get("repository") != args.qwen_model:
@@ -90,11 +97,18 @@ def expected_stage_completion_marker(
     stages: int,
     full_generation: bool,
 ) -> str:
-    if full_generation and runtime in {"qwen-transformers", "qwen-onnx"}:
+    if full_generation and runtime in {
+            "qwen-transformers", "qwen-onnx", "tiny-transformers",
+            "tiny-onnx"}:
+        # Stage 0 owns the autoregressive loop and publishes the complete STOP
+        # transcript; only the terminal stage emits the final user Response.
+        # Middle stages forward hidden activations and the final stage's token
+        # markers.  Keep the runner's completion check aligned with the actual
+        # provider markers instead of treating Stage 0 as terminal.
         if stage_index == 0:
-            return "LLM_PIPELINE_QWEN_FULL_GENERATION_FINAL"
+            return "LLM_PIPELINE_QWEN_FULL_STOP_PUBLISHED"
         if stage_index == stages - 1:
-            return "LLM_PIPELINE_QWEN_FULL_TOKEN_PUBLISHED"
+            return "LLM_PIPELINE_QWEN_FULL_GENERATION_FINAL"
         return "LLM_PIPELINE_QWEN_FULL_HIDDEN_PUBLISHED"
     if runtime == "qwen-onnx-cpu-native":
         return "NDNSF_DI_ONNX_TIMING"

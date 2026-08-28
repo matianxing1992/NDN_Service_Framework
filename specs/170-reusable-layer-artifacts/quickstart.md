@@ -51,6 +51,15 @@ verifies the same SHA-256, and executes it with Apptainer. Keep one current
 candidate release; older images and failed builds remain evidence only and
 must not be selected for a new run.
 
+The SIF hash is not sufficient provenance. Every formal Tiger job must also
+receive the exact `local-sif-build-record.json` produced by this command as
+`SPEC170_RUNTIME_BUILD_RECORD`. The record validator rejects pre-v3 records
+(including revoked r13), records without `containerNativeBuild=true`, any
+non-empty `hostBinaryInputs`, and any record whose SIF size or SHA-256 differs
+from `SPEC170_RUNTIME_SIF`. This check runs before node-local SIF staging, so a
+legacy image cannot consume a cluster allocation merely because its import or
+`ldd` output happens to pass.
+
 The repository entry point is:
 
 ```bash
@@ -104,6 +113,21 @@ The host-side exact-SIF test driver must remain pure Python until
 directly or indirectly; native workload imports belong inside the candidate
 SIF. This prevents host ABI drift from blocking or falsely qualifying Gate C.
 
+Before promotion, validate the paired artifacts directly as a release check:
+
+```bash
+python3 packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/validate-local-sif-build-record.py \
+  --record /path/to/release/local-sif-build-record.json \
+  --sif /path/to/release/runtime.sif \
+  --expected-sha256 sha256:<64-hex-digits>
+```
+
+The Slurm/Apptainer runner uses the same validator in two stages.  It first
+performs a metadata-only check on shared project storage, then stages the
+immutable SIF to node-local storage and hashes that staged copy immediately
+before `apptainer exec`.  This avoids an unbounded shared-filesystem read before
+every task while retaining the exact digest gate at execution time.
+
 The active sequence is always:
 
 ```text
@@ -120,8 +144,9 @@ sealed source + locks
 Planned focused entry points:
 
 ```bash
+PYTHONPATH=pythonWrapper:NDNSF-DistributedRepo/pythonWrapper \
 python3 -m pytest -q \
-  tests/python/test_spec170_canonical_artifacts.py \
+  tests/python/test_spec170_canonical_layers.py \
   tests/python/test_spec170_runtime_topology.py \
   tests/python/test_spec170_placement_v3.py \
   tests/python/test_spec170_hybrid_execution.py \
@@ -153,7 +178,7 @@ The unit/property suites should be followed by the L1/L2 integrated harness in
 [`contracts/in-process-integration-tests-v1.md`](contracts/in-process-integration-tests-v1.md).
 It uses real NDNSF packet handlers over ndn-cxx `DummyClientFace` and real
 ndn-svs `SVSPubSub`/`SVSync` nodes with a bounded event loop. Run lifecycle,
-canonical-reuse, `NDNSF_DATA_V1`, and protected-artifact cases before Gate B:
+canonical-reuse, consumer-pull NDN tensor-data, and protected-artifact cases before Gate B:
 
 Each process creates one `NdnsfIntegrationEnvironment`, runs its measured
 `bootstrap()` lane once, and starts request timing only after the shared
@@ -170,7 +195,7 @@ build/integration-tests --run_test='Spec170NdnsfDiCoreFlow/*'
 
 The current target contains the SVS/NDNSF packet cases and native DI core cases;
 `tests/python/test_spec170_integrated_flows.py` adds V3 lifecycle, canonical
-assembly/reuse, `NDNSF_DATA_V1`, protected artifacts, and multi-device cases.
+assembly/reuse, named tensor Interest/Data, protected artifacts, and device cases.
 Together they catch most packet, TLV, token, replay, repair, deadline,
 artifact, and partial-output wiring defects without NFD or MiniNDN. They cannot
 prove routing, process isolation, deployment security, or GPU behavior, so they
@@ -260,7 +285,7 @@ sudo -n timeout 240s env HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
 
 This diagnostic passed on 2026-08-04 (three measured responses, p50
 416.57 ms; three content-addressed stage objects). It is recorded in
-`evidence/content-addressed-minindn-20260804.md`; it does **not** close T026
+`evidence/content-addressed-minindn-20260804.md`; it does **not** close T017-T019
 because the normal-default V3 Selection/Provider-assembly and the required
 three cold/warm statistical blocks are still separate acceptance conditions.
 
@@ -313,7 +338,7 @@ Boost is accepted only when its SONAME major/minor equals the locked version.
 
 ## Freeze Cut - Required Between Gate C and Gate D
 
-After Gate A, Gate B, and Gate C pass, create T029's frozen-candidate manifest.
+After Gate A, Gate B, and Gate C pass, create T022's frozen-candidate manifest.
 It binds source, the local SIF, dependencies, native/Python installed files, every job
 file, model/canonical payload, prompt corpus, security, routes, schedule, and the
 three local gate reports. Run the mismatch self-test before submission.
@@ -366,10 +391,11 @@ cluster allocation.
 
 - request exactly two GPUs for one task/Provider process;
 - launch with `--nv`;
-- require both and only allocated devices in probe/offer/Selection;
-- first execute two independent single-device roles;
-- then execute one Provider-local two-rank role supported by the frozen
-  candidate.
+- require both and only allocated devices in the probe/offer;
+- run separate concurrent requests so each may select one complete role on one
+  device;
+- reject any one-Attempt Selection that assigns two roles to this Provider or
+  hides a two-rank role inside a local device set.
 
 Two single-GPU Providers do not satisfy D2a. If the allocation cannot expose two
 GPUs to one Provider process, record `BLOCK` rather than changing the claim.
@@ -378,28 +404,26 @@ GPUs to one Provider process, record `BLOCK` rather than changing the claim.
 
 - use a separately declared two-GPU topology and launch two Provider runtimes,
   each restricted to one allocated GPU;
-- require two Provider-local offers/bundles and no cross-offer device binding;
-- execute one authenticated two-rank logical role across the Providers;
-- retain rendezvous, peer, group/epoch, local admission, transport, and complete
+- require two offers and two execution roles, one role per Provider;
+- execute one authenticated two-rank tensor group whose roles communicate only
+  through their sealed NDN tensor names;
+- retain Interest/Data, peer, group/epoch, local admission, and complete
   output/failure evidence.
 
 D2a and D2b are separate claims. Neither may be substituted for the other.
 
 ### D2h: heterogeneous hybrid qualification
 
-- after D2a and D2b close, run the `[1,2,1]` and `[2,1,2]` profiles on a
-  fixed two-Provider/two-GPU placement using the same frozen candidate;
-- require `[1,2,1]` mapping `P0/G0={S0R0,S1R0}` and
-  `P1/G1={S1R1,S2R0}`, and `[2,1,2]` mapping
-  `P0/G0={S0R0,S1R0,S2R0}` and `P1/G1={S0R1,S2R1}`;
-- treat all ranks co-resident on one GPU as one plan-local `EXCLUSIVE_PLAN`
-  admission vector with summed phase peaks, not as MPS/multi-tenant sharing;
+- after CPU integrated/MiniNDN hybrid closure, run `[1,2,1]` with four
+  Providers and `[2,1,2]` with five Providers using the same frozen candidate;
+- map one Provider to each stage/rank role and reject all Provider reuse within
+  an Attempt;
 - require separate rank, collective, redistribution, data-driven activation,
   oracle, and failure evidence rather than combining D2a and D2b summaries;
 - reuse an unchanged accepted allocation only when its topology and resource
   envelopes satisfy the sealed hybrid plan; otherwise use a new immutable job
   identity;
-- if the two-GPU resource/topology envelope cannot support the profile, record
+- if the required distinct Provider/GPU resources are unavailable, record
   the hardware hybrid claim as `BLOCK`; MiniNDN emulation, D2a, or D2b cannot
   substitute for it.
 

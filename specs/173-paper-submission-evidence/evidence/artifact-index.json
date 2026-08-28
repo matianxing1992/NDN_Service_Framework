@@ -1,0 +1,209 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-08-12T13:35:40-05:00",
+  "manuscript": {
+    "texPath": "docs/PAPER/named-data-network-service-framework-paper/NDNSF.tex",
+    "pdfPath": "docs/PAPER/named-data-network-service-framework-paper/NDNSF.pdf",
+    "sourceRevision": "0d4a1340641f76be1e8eebd8d3c2a43ba58f498c",
+    "pdfSha256": "950e4d4d97e37766ba7d76aaf6ffcdc350efc49efe06d80bc718836781e22756"
+  },
+  "entries": [
+    {
+      "manuscriptId": "fig:ndnsf-overview",
+      "location": "sections/design.tex:NDNSF overview",
+      "claim": "The architecture separates Controller-managed policy from direct User/Provider service transactions.",
+      "status": "supported",
+      "evidenceIds": ["current-architecture-overview"],
+      "analysisPath": "docs/PAPER/named-data-network-service-framework-paper/sections/design.tex",
+      "reason": "The diagram is explanatory architecture, not a quantitative result.",
+      "artifactPaths": ["docs/PAPER/named-data-network-service-framework-paper/figures/drones.png"]
+    },
+    {
+      "manuscriptId": "fig:service-controller",
+      "location": "sections/design.tex:Controller onboarding path",
+      "claim": "The evaluated Controller distributes signed, target-encrypted permission material and ABE policy state.",
+      "status": "supported",
+      "evidenceIds": ["authorization-spec172-controller-flow"],
+      "analysisPath": "specs/172-data-centric-authorization-evaluation/contracts/claim-evidence-matrix.md",
+      "reason": "Spec 172 exercises the Controller permission and onboarding path.",
+      "artifactPaths": ["docs/PAPER/named-data-network-service-framework-paper/figures/NDNSF_ServiceController.png"]
+    },
+    {
+      "manuscriptId": "tab:security-properties",
+      "location": "sections/design.tex:Security properties",
+      "claim": "NDNSF separates producer authentication, service authorization, confidentiality, transaction integrity, execution authority, replay protection, and resource protection.",
+      "status": "supported",
+      "evidenceIds": ["authorization-spec172-security-boundaries"],
+      "analysisPath": "specs/172-data-centric-authorization-evaluation/contracts/claim-evidence-matrix.md",
+      "reason": "The table summarizes design invariants and explicitly states residual boundaries."
+    },
+    {
+      "manuscriptId": "tab:data-centric-transaction",
+      "location": "sections/design.tex:Data-centric transaction",
+      "claim": "Request, ACK, Selection, and Response use producer-scoped names and distinct authorization/transaction roles.",
+      "status": "supported",
+      "evidenceIds": ["current-v2-naming-contract"],
+      "analysisPath": "specs/172-data-centric-authorization-evaluation/contracts/claim-evidence-matrix.md",
+      "reason": "The current protocol contract and publication audit cover the four signed Data objects."
+    },
+    {
+      "manuscriptId": "fig:selection-policies",
+      "location": "sections/design.tex:Provider-selection policies",
+      "claim": "FirstResponding, RandomSelection, AllSelected, and application-defined selection differ in decision time and selected responders; only token-bound Selection authorizes execution.",
+      "status": "supported",
+      "evidenceIds": ["current-first-responding-contract", "current-selection-policy-contract"],
+      "analysisPath": "docs/PAPER/named-data-network-service-framework-paper/sections/design.tex",
+      "reason": "The diagram summarizes current source-verified selection semantics rather than measured performance.",
+      "artifactPaths": ["docs/PAPER/named-data-network-service-framework-paper/figures/provider-selection-policies.tex"]
+    },
+    {
+      "manuscriptId": "fig:runtime-roles",
+      "location": "sections/design.tex:End-to-end runtime ownership",
+      "claim": "Controller, ServiceUser, ServiceProvider, NDN-SVS, and optional NDNSD discovery have distinct runtime responsibilities; response recovery reselects only from validated ACKs.",
+      "status": "supported",
+      "evidenceIds": ["current-runtime-ownership-contract"],
+      "analysisPath": "docs/PAPER/named-data-network-service-framework-paper/sections/design.tex",
+      "reason": "The diagram is verified against current ServiceUser, ServiceProvider, and Controller source behavior.",
+      "artifactPaths": ["docs/PAPER/named-data-network-service-framework-paper/figures/runtime-roles.tex"]
+    },
+    {
+      "manuscriptId": "table:Comparison",
+      "location": "sections/evaluation.tex:Framework comparison",
+      "claim": "NDNSF, NSC, and gRPC expose different discovery, Provider-binding, and authorization boundaries.",
+      "status": "supported",
+      "evidenceIds": ["current-baseline-boundary-audit"],
+      "analysisPath": "docs/PAPER/named-data-network-service-framework-paper/sections/evaluation.tex",
+      "reason": "The table discloses comparison semantics and does not report a quantitative outcome."
+    },
+    {
+      "manuscriptId": "fig:wired-topology",
+      "location": "sections/evaluation.tex:Wired topology",
+      "claim": "Wired MiniNDN experiments use the shown Memphis-centered NDN testbed subset and configured link delays.",
+      "status": "supported",
+      "evidenceIds": ["current-minindn-topology"],
+      "analysisPath": "Experiments/Topology/testbed(loss=0%).conf",
+      "reason": "The figure is a topology visualization of the experiment configuration.",
+      "artifactPaths": ["docs/PAPER/named-data-network-service-framework-paper/figures/testbed_topo.png"]
+    },
+    {
+      "manuscriptId": "tab:authorization-planned-results",
+      "location": "sections/evaluation.tex:ABE-backed authorization evidence",
+      "claim": "The implemented authorization path enforces service-semantic policy, admits a newly authorized user without Provider reconfiguration, and has bounded measured control cost.",
+      "status": "supported",
+      "evidenceIds": ["authorization-spec172"],
+      "analysisPath": "specs/172-data-centric-authorization-evaluation/contracts/claim-evidence-matrix.md",
+      "reason": "All registered correctness, denial, onboarding, publication, and cost evidence is present with manifests and hashes.",
+      "artifactPaths": ["specs/173-paper-submission-evidence/evidence/historical/recovered-evidence.json"],
+      "limitations": "NAC-ABE is the evaluated realization; the framework design is ABE-backed rather than NAC-ABE-exclusive, and overhead measurements retain their declared local-NFD scope."
+    },
+    {
+      "manuscriptId": "loss-recovery-prose",
+      "location": "removed from sections/evaluation.tex",
+      "claim": "No loss-recovery result is claimed in the live manuscript.",
+      "status": "removed",
+      "evidenceIds": [],
+      "analysisPath": "",
+      "reason": "The historical points lack an exact Git revision and independent repetitions, and their archived run names indicate nonuniform tuning; they are retained only as diagnostic history.",
+      "artifactPaths": [],
+      "limitations": "A future loss claim requires a matched, registered, multi-repetition campaign from one pinned implementation and configuration family."
+    },
+    {
+      "manuscriptId": "fig:mobility_two_layer_evidence",
+      "location": "sections/evaluation.tex:Matched Mobility and Request-Scoped Provider Selection",
+      "claim": "In the registered Provider-switching holdout, NDNSF reduces seed-level p95 successful-response latency relative to gRPC-SEQ-4 and the evaluated NSC-SEQ-4 harness.",
+      "status": "supported",
+      "evidenceIds": ["mobility-switch-holdout-spec171"],
+      "analysisPath": "specs/171-four-provider-mobility-advantage/evidence/opportunity-holdout-results-20260809/holdout-summary.json",
+      "reason": "The frozen ten-seed holdout, bootstrap interval, and matched per-seed evidence are retained.",
+      "artifactPaths": [
+        "specs/171-four-provider-mobility-advantage/evidence/opportunity-holdout-results-20260809/README.md",
+        "docs/PAPER/named-data-network-service-framework-paper/figures/mobility-two-layer-evidence.png",
+        "scripts/generate_paper_mobility_two_layer_figure.py"
+      ],
+      "limitations": "The claim is conditional on switch-required requests and does not assert universal success-rate or all-request advantage."
+    },
+    {
+      "manuscriptId": "tab:provider_transition_discovery",
+      "location": "sections/evaluation.tex:Post-transition discovery",
+      "claim": "In the registered transition, NDNSF's service-name path reaches Provider D without caller pre-registration; static A--C harnesses fail, while pre-registering A--D lets both baselines recover.",
+      "status": "supported",
+      "evidenceIds": ["mobility-switch-holdout-spec171"],
+      "analysisPath": "specs/171-four-provider-mobility-advantage/evidence/opportunity-holdout-results-20260809/descriptive-summary.json",
+      "reason": "The transition subset is derived from the registered matched holdout.",
+      "artifactPaths": ["specs/171-four-provider-mobility-advantage/evidence/opportunity-holdout-results-20260809/README.md"],
+      "limitations": "Interpret as the evaluated service-namespace path versus static target sets, not as evidence that gRPC or NSC lacks configurable discovery or shared-name mechanisms."
+    },
+    {
+      "manuscriptId": "tab:four_provider_work_efficiency",
+      "location": "sections/evaluation.tex:Provider-Work Efficiency",
+      "claim": "NDNSF achieves comparable observed request success with one selected Provider execution per request while deliberately eager parallel gRPC starts nearly four Provider handlers per request.",
+      "status": "supported",
+      "evidenceIds": ["four-provider-work-efficiency-spec171"],
+      "analysisPath": "results/four_provider_work_efficiency_confirmatory_20260806/combined-six-seed-aggregate.json",
+      "reason": "Six retained seeds directly count NDNSF selected executions and gRPC Provider-handler invocations.",
+      "artifactPaths": ["specs/171-four-provider-mobility-advantage/evidence/work-efficiency-comparison-20260806/README.md"],
+      "limitations": "The counters measure application-work initiation, not equal CPU-time or wire-message units; the evidence supports work efficiency only and does not provide directly comparable p95 latency."
+    },
+    {
+      "manuscriptId": "tab:single-provider-latency",
+      "location": "sections/evaluation.tex:Lossless one-Provider baseline",
+  "claim": "At 10 RPS, the matched one-Provider configurations complete every scheduled request, with gRPC, NSC, NDNSF normal, and the contextual NDNSF targeted path reported across three process repetitions.",
+      "status": "supported",
+      "evidenceIds": [
+    "spec173-confirmatory-v2-one-provider-10rps",
+    "spec173-table5-matched-current",
+    "spec173-table5-matched-fixed"
+      ],
+  "analysisPath": "specs/173-paper-submission-evidence/evidence/runtime/table5-matched-fixed-20260813/manifest.json",
+  "artifactPaths": [
+    "results/spec173-paper-submission-confirmatory-v2/analysis/aggregate-statistics.json",
+    "specs/173-paper-submission-evidence/evidence/runtime/table5-matched-current-20260813/manifest.json",
+    "specs/173-paper-submission-evidence/evidence/runtime/table5-matched-fixed-20260813/manifest.json"
+  ],
+  "reason": "The frozen gRPC/NSC rows and corrected current NDNSF normal/targeted rows use the same wired topology, workload, and three-process repetition design; the fixed-batch manifest supersedes the earlier default-adaptive rows.",
+  "limitations": "The 100-RPS NDNSF cells failed the registered offered-load threshold and are excluded. Targeted is a known-Provider token fast path, not multi-Provider discovery evidence. The table is contextual and makes no protocol-isolated superiority claim."
+    },
+    {
+      "manuscriptId": "tab:admission-control",
+      "location": "sections/evaluation.tex:Runtime Selection Controls",
+      "claim": "Admission control is an optional resource-protection mechanism, not a capacity or performance contribution.",
+      "status": "removed",
+      "evidenceIds": [],
+      "analysisPath": "",
+      "reason": "The unsupported exact table was removed; only a bounded qualitative mechanism statement remains.",
+      "limitations": "No quantitative admission-control advantage is claimed."
+    },
+    {
+      "manuscriptId": "selective-ack-prose",
+      "location": "sections/evaluation.tex:Runtime Selection Controls",
+      "claim": "An overloaded Provider can suppress willingness and only selected Providers execute the final response.",
+      "status": "supported",
+      "evidenceIds": [
+        "spec173-selective-ack-correctness"
+      ],
+      "analysisPath": "results/spec173-paper-submission-confirmatory-v2/runs/selective-ack-correctness--r1--rps-none/attempt-0001/regression/summary.json",
+      "reason": "The unsupported percentage and selection-count table was removed; the frozen correctness regression passes and supports only the remaining mechanism statement.",
+      "limitations": "Spec 173 admits the registered regression as correctness evidence only, not a performance comparison."
+    },
+    {
+      "manuscriptId": "tab:custom-selection",
+      "location": "removed from sections/evaluation.tex",
+      "claim": "No custom-selection performance result is claimed in the live manuscript.",
+      "status": "removed",
+      "evidenceIds": [],
+      "analysisPath": "",
+      "reason": "The fixed 100-ms ACK window dominated completion, so the comparison did not isolate custom policy quality from ACK-path timing.",
+      "limitations": "The registered Selective-ACK/custom-selection regression remains as correctness evidence only."
+    },
+    {
+      "manuscriptId": "tab:physical-integration",
+      "location": "sections/evaluation.tex:Physical-Node Smoke Test",
+      "claim": "The framework was exercised across heterogeneous physical nodes, without a cross-framework performance claim.",
+      "status": "removed",
+      "evidenceIds": [],
+      "analysisPath": "",
+      "reason": "The exact table was removed because only commit-history precision is available and the comparison assigns unequal Provider sets.",
+      "limitations": "The remaining prose is an integration statement only; it cannot establish comparative performance."
+    }
+  ]
+}

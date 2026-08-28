@@ -258,3 +258,74 @@ baseline.
   proposal wording so the cross-seed median is not presented as a typical
   request. Evidence:
   `evidence/random-waypoint-burnin-100m-latency-mechanism-20260809.md`.
+
+## Phase 14: Provider-discovery and switching-opportunity evidence
+
+- [x] T022 [US3] Implement and test a request-level opportunity analyzer for
+  FR-022/FR-024, then apply it to the frozen 100 m seeds 62--71. Reconcile all
+  request totals and reconstructed aggregates, retain all opportunity states,
+  compute fixed-seed paired bootstrap intervals with mobility seed as the
+  inference unit, and write the machine-readable table plus evidence report.
+  Lifecycle-stage proxies must be labelled and may not be substituted for
+  unavailable user-observed latency. The frozen ten-seed analysis classified
+  1,747 `SWITCH_REQUIRED` requests; NDNSF and gRPC each completed 1,745. The
+  paired seed-p95 switching-cost reduction was 512.93 ms with a fixed-seed
+  bootstrap 95% interval of 140.50--886.27 ms. Evidence:
+  `evidence/opportunity-analysis-20260809/`.
+- [x] T023 [US3] Implement the deterministic Provider-transition profile and
+  its manifest/contract tests, then run one 60-second NDNSF, gRPC-static-3,
+  gRPC-preregistered-4, NSC-static-3, and NSC-preregistered-4 pilot. If setup,
+  timing, and per-window accounting pass, run three independent replays and
+  freeze runtime commands, endpoint counts, Provider-D executions,
+  post-retirement success, latency, and attempts/executions. Apply SC-014 and
+  retain a negative result without automatic reruns. Three independent
+  process replays passed all gates. After excluding the two non-atomic trace
+  transition-boundary requests in every replay, the 357 steady
+  post-retirement requests show that NDNSF configured zero Provider endpoints
+  and completed 357/357 through D; both static three-target controls completed
+  0/357, while both pre-registered four-target controls completed 357/357.
+  Evidence:
+  `evidence/provider-transition-results-20260809/`.
+- [x] T024 [US3] Generate the two-panel discovery/opportunity figure and final
+  evidence narrative from T022--T023, retain unconditional 50 m/100 m controls,
+  and restrict the paper/slide claim to the exact supported condition. The
+  generated PNG/PDF/SVG, machine-readable figure data, and exact publication
+  wording are retained in
+  `evidence/provider-evidence-figure-20260809/`.
+
+### Phase 14 traceability
+
+| Requirement | Implementing task | Verification artifact |
+|---|---|---|
+| FR-022, FR-024, SC-013 | T022 | opportunity CSV/JSON, reconciliation receipt, paired seed-bootstrap report |
+| FR-023, SC-014 | T023 | transition manifests, runtime commands, per-window summaries, three replay receipts |
+| Publication wording | T024 | generated figure and evidence narrative with unconditional controls |
+
+## Phase 15: Boundary-safe confirmatory opportunity holdout
+
+- [x] T025 [US3] Register and execute the 100 m / 2 m/s seeds 72--81
+  confirmatory holdout under FR-025, using the shared 4.05-second request phase,
+  actual per-request monotonic publication timestamps, applied-gate-state
+  classification, exactly-once 30-cell execution, and seed-level paired
+  bootstrap inference. Retain any negative result, reconcile every terminal
+  summary, and apply SC-015 before updating the paper claim. Registration:
+  `evidence/opportunity-holdout-registration-20260809/`. Completed 2026-08-09:
+  all 30 cells finished exactly once and produced 1,312 agreed
+  `SWITCH_REQUIRED` rows. The registered seed-level p95 difference was
+  -596.55 ms versus gRPC (95% CI [-992.18, -200.11]) and -2,618.32 ms versus
+  NSC (95% CI [-2,916.27, -2,315.09]), so SC-015 passed. Success rates were
+  99.92%, 98.86%, and 98.78%, respectively, but the post-hoc paired success
+  interval versus gRPC included zero; no significant success-rate advantage is
+  claimed. Result: `evidence/opportunity-holdout-results-20260809/`.
+  Publication integration completed 2026-08-09: the NDNSF manuscript now
+  presents the unconditional coverage controls, the registered conditional
+  tail-latency result, and the T023 native-discovery boundary as separate
+  evidence layers; the active English proposal and speaker notes use the same
+  scoped claim. Both manuscript and proposal PDFs rebuild without undefined
+  references.
+
+### Phase 15 traceability
+
+| Requirement | Implementing task | Verification artifact |
+|---|---|---|
+| FR-025, SC-015 | T025 | registration manifest, 30 terminal cells, actual-state opportunity table, paired holdout CI |

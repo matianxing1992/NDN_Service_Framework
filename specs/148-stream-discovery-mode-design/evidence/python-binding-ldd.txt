@@ -1,0 +1,7 @@
+	libndn-service-framework.so.0.1.0 => /home/tianxing/NDN/ndn-service-framework/build/libndn-service-framework.so.0.1.0 (0x00007fec80895000)
+	libboost_log.so.1.71.0 => /lib/x86_64-linux-gnu/libboost_log.so.1.71.0 (0x00007fec7faa3000)
+	libboost_stacktrace_backtrace.so.1.71.0 => /lib/x86_64-linux-gnu/libboost_stacktrace_backtrace.so.1.71.0 (0x00007fec7f59a000)
+	libboost_chrono.so.1.71.0 => /lib/x86_64-linux-gnu/libboost_chrono.so.1.71.0 (0x00007fec7f4bd000)
+	libboost_date_time.so.1.71.0 => /lib/x86_64-linux-gnu/libboost_date_time.so.1.71.0 (0x00007fec7f4a9000)
+	libboost_thread.so.1.71.0 => /lib/x86_64-linux-gnu/libboost_thread.so.1.71.0 (0x00007fec7f47b000)
+	libboost_filesystem.so.1.71.0 => /lib/x86_64-linux-gnu/libboost_filesystem.so.1.71.0 (0x00007fec7f334000)

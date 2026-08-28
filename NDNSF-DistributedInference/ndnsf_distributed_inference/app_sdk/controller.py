@@ -50,11 +50,12 @@ class DistributedInferenceController:
             bootstrap_token_file=bootstrap_token_file,
         ))
 
-    def start(self) -> None:
-        self._controller.start()
-
     def run(self) -> int:
         return self._controller.run()
+
+    def start(self) -> None:
+        """Register controller Interest handlers before dependent roles start."""
+        self._controller.start()
 
     def stop(self) -> int:
         return self._controller.stop()
@@ -95,6 +96,14 @@ class APPController:
 
     def run(self) -> int:
         return self._controller.run()
+
+    def start(self) -> None:
+        """Register controller handlers before dependent roles start."""
+        self._controller.start()
+
+    def start_background(self) -> threading.Thread:
+        """Start the controller event loop before dependent roles are launched."""
+        return self._controller.start_background()
 
     def stop(self) -> int:
         return self._controller.stop()

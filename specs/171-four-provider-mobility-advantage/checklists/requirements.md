@@ -24,6 +24,11 @@
 
 - [x] Each user story has an independent acceptance gate
 - [x] Four-Provider, sequential-retry, multi-AP, and speed dimensions are covered
+- [x] Client endpoint pre-registration and external discovery dependencies are explicit
+- [x] Opportunity-window conditioning retains unconditional negative controls
+- [x] Lifecycle proxies are distinguished from user-observed latency
+- [x] The confirmatory holdout freezes new seeds, request phase, actual-gate-state classification, and paired inference before execution
+- [x] Non-atomic gate-transition requests are retained but excluded from steady-state and opportunity claims
 - [x] Smoke and formal evidence are separated
 - [x] Historical Spec169 evidence is protected
 
@@ -31,3 +36,5 @@
 
 This specification is ready for technical planning. The implementation plan
 must preserve the no-oracle and no-automatic-rerun constraints.
+The 2026-08-09 amendment adds testable discovery and `SWITCH_REQUIRED`
+acceptance gates without changing the registered client fairness policy.

@@ -1,0 +1,71 @@
+{
+  "schema": "spec171-opportunity-holdout-descriptive-v1",
+  "source_schema": "spec171-opportunity-holdout-v1",
+  "source_verdict": "HOLDOUT_CONFIRMS_CONDITIONAL_END_TO_END_ADVANTAGE",
+  "scope": "agreed SWITCH_REQUIRED rows",
+  "status": "post-hoc descriptive; not part of the registered confirmation gate",
+  "aggregate": {
+    "ndnsf": {
+      "requests": 1312,
+      "successes": 1311,
+      "success_rate_pct": 99.92378048780488,
+      "attempts_or_executions": 1312,
+      "attempts_or_executions_per_request": 1.0
+    },
+    "grpc": {
+      "requests": 1312,
+      "successes": 1297,
+      "success_rate_pct": 98.85670731707317,
+      "attempts_or_executions": 3589,
+      "attempts_or_executions_per_request": 2.7355182926829267
+    },
+    "nsc": {
+      "requests": 1312,
+      "successes": 1296,
+      "success_rate_pct": 98.78048780487805,
+      "attempts_or_executions": 3548,
+      "attempts_or_executions_per_request": 2.7042682926829267
+    }
+  },
+  "paired_ndnsf_minus_baseline_success_rate_percentage_points": {
+    "grpc": {
+      "mean": 1.6190970240151137,
+      "ci95_low": -0.028385570668244497,
+      "ci95_high": 3.792924935289043,
+      "seed": 171,
+      "repetitions": 20000,
+      "per_seed": [
+        -1.1235955056179803,
+        0.0,
+        0.0,
+        9.836065573770492,
+        0.0,
+        0.0,
+        4.210526315789476,
+        0.0,
+        3.26797385620915,
+        0.0
+      ]
+    },
+    "nsc": {
+      "mean": 1.3093926709260484,
+      "ci95_low": 0.0,
+      "ci95_high": 3.141661158845561,
+      "seed": 171,
+      "repetitions": 20000,
+      "per_seed": [
+        7.86516853932584,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        5.228758169934644,
+        0.0
+      ]
+    }
+  },
+  "count_semantics": "NDNSF counts selected Provider executions; gRPC and NSC count sequential endpoint attempts. These expose mechanism cost but are not identical wire-message units."
+}

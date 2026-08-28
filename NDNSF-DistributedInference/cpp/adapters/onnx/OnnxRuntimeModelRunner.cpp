@@ -8,7 +8,10 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cstring>
 #include <mutex>
+#include <optional>
+#include <set>
 
 namespace ndnsf::di {
 namespace {
@@ -95,6 +98,77 @@ resolveOnnxRuntimeProviderSelection(const NativeModelRunnerSpec& spec,
   return result;
 }
 
+void
+CausalPositionInputContractV1::validate(const StatefulOnnxIoContractV1& io) const
+{
+  if (policy != "qwen-causal-position-v1" ||
+      attentionMaskInputName.empty() || positionIdsInputName.empty()) {
+    throw std::invalid_argument(
+      "stateful ONNX causal position policy is incomplete");
+  }
+  const auto contains = [&io] (const std::string& name) {
+    return std::find(io.inputNames.begin(), io.inputNames.end(), name) !=
+           io.inputNames.end();
+  };
+  if (!contains(attentionMaskInputName) || !contains(positionIdsInputName) ||
+      (!cachePositionInputName.empty() && !contains(cachePositionInputName))) {
+    throw std::invalid_argument(
+      "stateful ONNX causal position inputs do not match the graph signature");
+  }
+}
+
+std::map<std::string, TensorBundle>
+materializeCausalPositionInputsV1(
+  const CausalPositionInputContractV1& contract,
+  const StatefulOnnxIoContractV1& io,
+  const GenerationEpochLineageV1& lineage,
+  std::uint32_t newTokenCount)
+{
+  contract.validate(io);
+  lineage.validate();
+  if (newTokenCount == 0 ||
+      lineage.logicalPrefixTokenCount < newTokenCount) {
+    throw std::invalid_argument(
+      "causal position materialization has invalid logical token extent");
+  }
+  const auto current = static_cast<std::int64_t>(
+    lineage.logicalPrefixTokenCount);
+  const auto first = current - static_cast<std::int64_t>(newTokenCount);
+  const auto makeInt64 = [] (const std::string& name,
+                             std::vector<std::int64_t> shape,
+                             const std::vector<std::int64_t>& values) {
+    NamedTensor tensor;
+    tensor.name = name;
+    tensor.elementType = TensorElementType::Int64;
+    tensor.shape = std::move(shape);
+    tensor.payload.resize(values.size() * sizeof(std::int64_t));
+    std::memcpy(tensor.payload.data(), values.data(), tensor.payload.size());
+    return makeEncodedTensorBundle(name, {std::move(tensor)});
+  };
+  std::vector<std::int64_t> positions(newTokenCount);
+  for (std::uint32_t index = 0; index < newTokenCount; ++index) {
+    positions[index] = first + static_cast<std::int64_t>(index);
+  }
+  std::vector<std::int64_t> attention(
+    lineage.logicalPrefixTokenCount, 1);
+  std::map<std::string, TensorBundle> result;
+  result.emplace(
+    contract.attentionMaskInputName,
+    makeInt64(contract.attentionMaskInputName,
+              {1, current}, attention));
+  result.emplace(
+    contract.positionIdsInputName,
+    makeInt64(contract.positionIdsInputName,
+              {1, static_cast<std::int64_t>(newTokenCount)}, positions));
+  if (!contract.cachePositionInputName.empty()) {
+    result.emplace(
+      contract.cachePositionInputName,
+      makeInt64(contract.cachePositionInputName,
+                {static_cast<std::int64_t>(newTokenCount)}, positions));
+  }
+  return result;
+}
+
 } // namespace ndnsf
 
 #ifdef NDNSF_DI_ENABLE_ONNXRUNTIME_CPP
@@ -104,6 +178,8 @@ resolveOnnxRuntimeProviderSelection(const NativeModelRunnerSpec& spec,
 #pragma GCC diagnostic ignored "-Wpedantic"
 #include <onnxruntime_cxx_api.h>
 #pragma GCC diagnostic pop
+
+#include <ndn-cxx/util/sha256.hpp>
 
 #include <chrono>
 #include <cstdlib>
@@ -198,6 +274,64 @@ requireCudaDevice(const OnnxRuntimeProviderSelection& selection)
             << requestedDevice << ", visible device count " << deviceCount
             << ", cuda status " << status;
     throw std::runtime_error(message.str());
+  }
+}
+
+/**
+ * Copy an ORT tensor into a host-owned buffer without depending on the
+ * post-1.20 Ort::Env::CopyTensor wrapper.  The exact SIF currently carries
+ * ONNX Runtime 1.20, whose C++ API exposes tensor memory information but not
+ * Env::CopyTensor.  Keeping the CUDA call dynamically loaded preserves the
+ * CPU-only build and avoids adding a hard CUDA toolkit link dependency.
+ */
+void
+copyOrtTensorToHost(const Ort::Value& source, void* destination, std::size_t bytes)
+{
+  if (bytes == 0) {
+    return;
+  }
+  if (destination == nullptr || source.GetTensorRawData() == nullptr) {
+    throw std::runtime_error("cannot copy an empty ONNX Runtime tensor buffer");
+  }
+
+  const auto memoryInfo = source.GetTensorMemoryInfo();
+  if (memoryInfo.GetDeviceType() == OrtMemoryInfoDeviceType_CPU) {
+    std::memcpy(destination, source.GetTensorRawData(), bytes);
+    return;
+  }
+  if (memoryInfo.GetDeviceType() != OrtMemoryInfoDeviceType_GPU) {
+    throw std::runtime_error(
+      "unsupported ONNX Runtime tensor device for host export");
+  }
+
+  void* runtime = nullptr;
+  for (const char* library : {"libcudart.so.12", "libcudart.so"}) {
+    runtime = dlopen(library, RTLD_NOW | RTLD_LOCAL);
+    if (runtime != nullptr) {
+      break;
+    }
+  }
+  if (runtime == nullptr) {
+    throw std::runtime_error(
+      "CUDA tensor export requires a loadable CUDA runtime");
+  }
+
+  using CudaMemcpy = int (*)(void*, const void*, std::size_t, int);
+  auto* cudaMemcpyFn = reinterpret_cast<CudaMemcpy>(dlsym(runtime, "cudaMemcpy"));
+  if (cudaMemcpyFn == nullptr) {
+    dlclose(runtime);
+    throw std::runtime_error("CUDA tensor export requires cudaMemcpy");
+  }
+  // cudaMemcpyDeviceToHost from cuda_runtime_api.h.  Do not include the CUDA
+  // toolkit header here: CPU-only builds must remain independent of it.
+  constexpr int cudaMemcpyDeviceToHost = 2;
+  const int status = cudaMemcpyFn(
+    destination, source.GetTensorRawData(), bytes, cudaMemcpyDeviceToHost);
+  dlclose(runtime);
+  if (status != 0) {
+    throw std::runtime_error(
+      "failed to copy CUDA ONNX tensor to host (cudaMemcpy status " +
+      std::to_string(status) + ")");
   }
 }
 
@@ -308,6 +442,15 @@ metadataSizeValue(const NativeModelRunnerSpec& spec,
   }
 }
 
+bool
+isSha256Digest(const std::string& value)
+{
+  return value.size() == 71 && value.compare(0, 7, "sha256:") == 0 &&
+         std::all_of(value.begin() + 7, value.end(), [] (unsigned char ch) {
+           return std::isxdigit(ch) != 0;
+         });
+}
+
 double
 metadataDoubleValue(const NativeModelRunnerSpec& spec,
                     const std::vector<std::string>& keys,
@@ -361,6 +504,8 @@ toOnnxElementType(TensorElementType type)
       return ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64;
     case TensorElementType::Bool:
       return ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL;
+    case TensorElementType::UInt8:
+      return ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT8;
   }
   throw std::invalid_argument("unsupported NDNSF tensor element type");
 }
@@ -378,7 +523,9 @@ fromOnnxElementType(ONNXTensorElementDataType type)
     case ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL:
       return TensorElementType::Bool;
     default:
-      throw std::runtime_error("ONNX Runtime tensor dtype is not supported by the pilot codec");
+      throw std::runtime_error(
+        "ONNX Runtime tensor dtype is not supported by the pilot codec: " +
+        std::to_string(static_cast<int>(type)));
   }
 }
 
@@ -449,7 +596,24 @@ inputBundleFor(const RoleExecutionContext& ctx,
   }
 
   if (ctx.inputsByScope.size() == 1) {
-    return ctx.inputsByScope.begin()->second;
+    const auto& only = ctx.inputsByScope.begin()->second;
+    // A single transport scope is not necessarily a bundle for every model
+    // input.  In particular, a request-input bundle may contain only
+    // input_ids while state inputs are intentionally omitted on the first
+    // epoch.  Do not return that bundle and defer the name error to
+    // tensorForInput(), otherwise the state-zero fallback below cannot run.
+    if (!isEncodedTensorBundle(only.payload) ||
+        only.name == inputName) {
+      return only;
+    }
+    try {
+      const auto tensors = decodeTensorBundle(only.payload);
+      (void)findTensor(tensors, inputName);
+      return only;
+    }
+    catch (const std::out_of_range&) {
+      // Continue to the explicit missing-input error below.
+    }
   }
 
   for (const auto& item : ctx.inputsByScope) {
@@ -518,14 +682,115 @@ public:
     , profilingEnabled(!runnerMetadataValue(
         spec, {"providerProfilePrefix", "provider_profile_prefix"}).empty())
   {
+    const auto statefulInputMetadata = metadataNames(
+      spec, {"stateInputNames", "state_input_names",
+             "stateInputTensors", "state_input_tensors"});
+    const auto statefulOutputMetadata = metadataNames(
+      spec, {"stateOutputNames", "state_output_names",
+             "stateOutputTensors", "state_output_tensors"});
+    const bool statefulDeclared = runnerMetadataBool(
+      spec, {"statefulModel", "stateful_model", "stateful"}) ||
+      !statefulInputMetadata.empty() || !statefulOutputMetadata.empty();
+    if (!statefulDeclared) {
+      return;
+    }
+
+    StatefulOnnxIoContractV1 contract;
+    contract.inputNames = metadataNames(
+      spec, {"inputNames", "input_names", "input_tensors", "input_tensor"});
+    contract.outputNames = metadataNames(
+      spec, {"outputNames", "output_names", "output_tensors", "output_tensor"});
+    if (contract.inputNames.empty()) {
+      Ort::AllocatorWithDefaultOptions allocator;
+      for (std::size_t i = 0; i < session.GetInputCount(); ++i) {
+        auto name = session.GetInputNameAllocated(i, allocator);
+        contract.inputNames.emplace_back(name.get());
+      }
+    }
+    if (contract.outputNames.empty()) {
+      Ort::AllocatorWithDefaultOptions allocator;
+      for (std::size_t i = 0; i < session.GetOutputCount(); ++i) {
+        auto name = session.GetOutputNameAllocated(i, allocator);
+        contract.outputNames.emplace_back(name.get());
+      }
+    }
+    contract.stateInputNames = statefulInputMetadata;
+    contract.stateOutputNames = statefulOutputMetadata;
+    if (contract.stateInputNames.empty()) {
+      for (const auto& name : contract.inputNames) {
+        if (name.size() > 3 && name.compare(name.size() - 3, 3, "_in") == 0) {
+          contract.stateInputNames.push_back(name);
+        }
+      }
+    }
+    if (contract.stateOutputNames.empty()) {
+      for (const auto& name : contract.outputNames) {
+        if (name.size() > 4 && name.compare(name.size() - 4, 4, "_out") == 0) {
+          contract.stateOutputNames.push_back(name);
+        }
+      }
+    }
+    contract.validate();
+    const auto sessionNames = [this] (bool inputs) {
+      Ort::AllocatorWithDefaultOptions allocator;
+      std::vector<std::string> names;
+      const auto count = inputs ? session.GetInputCount() : session.GetOutputCount();
+      names.reserve(count);
+      for (std::size_t i = 0; i < count; ++i) {
+        auto name = inputs ? session.GetInputNameAllocated(i, allocator) :
+                             session.GetOutputNameAllocated(i, allocator);
+        names.emplace_back(name.get());
+      }
+      return names;
+    };
+    if (sessionNames(true) != contract.inputNames ||
+        sessionNames(false) != contract.outputNames) {
+      throw std::invalid_argument(
+        "stateful ONNX I/O manifest does not match the graph signature");
+    }
+    const auto positionPolicy = metadataValue(
+      spec, {"positionInputPolicy", "position_input_policy"});
+    const bool graphDeclaresCausalPositions = std::any_of(
+      contract.inputNames.begin(), contract.inputNames.end(),
+      [] (const std::string& name) {
+        return name == "attention_mask" || name == "position_ids" ||
+               name == "cache_position";
+      });
+    if (graphDeclaresCausalPositions && positionPolicy.empty()) {
+      throw std::invalid_argument(
+        "stateful ONNX graph requires an adapter-certified position input policy");
+    }
+    if (!positionPolicy.empty()) {
+      CausalPositionInputContractV1 positions;
+      positions.policy = positionPolicy;
+      positions.attentionMaskInputName = metadataValue(
+        spec, {"attentionMaskInputName", "attention_mask_input_name"});
+      positions.positionIdsInputName = metadataValue(
+        spec, {"positionIdsInputName", "position_ids_input_name"});
+      positions.cachePositionInputName = metadataValue(
+        spec, {"cachePositionInputName", "cache_position_input_name"});
+      positions.validate(contract);
+      causalPositionInputs = std::move(positions);
+    }
+    statefulIo = std::move(contract);
   }
 
   OnnxRuntimeProviderSelection selection;
   Ort::SessionOptions sessionOptions;
   Ort::Session session;
+  std::optional<StatefulOnnxIoContractV1> statefulIo;
+  std::optional<CausalPositionInputContractV1> causalPositionInputs;
   bool profilingEnabled = false;
   std::atomic<bool> profilingCaptured{false};
   mutable std::mutex profileMutex;
+  // A stateful CUDA session keeps the state tensors in ORT-managed device
+  // memory between request-scoped epochs.  The map is keyed by the
+  // request/session identity, so concurrent generations cannot accidentally
+  // consume one another's recurrent state.  Host TensorBundle bytes remain a
+  // diagnostic/transport representation only; they are not used when a
+  // device-resident predecessor is available.
+  mutable std::mutex executionMutex;
+  std::map<std::string, std::map<std::string, Ort::Value>> deviceStateBySession;
 };
 
 OnnxRuntimeModelRunner::OnnxRuntimeModelRunner(NativeModelRunnerSpec spec)
@@ -579,9 +844,19 @@ OnnxRuntimeModelRunner::OnnxRuntimeModelRunner(NativeModelRunnerSpec spec)
 
 OnnxRuntimeModelRunner::~OnnxRuntimeModelRunner() = default;
 
+std::optional<std::map<std::string, TensorBundle>>
+OnnxRuntimeModelRunner::runStreamed(const RoleExecutionContext& ctx)
+{
+  return runStreamedImpl(ctx);
+}
+
 std::map<std::string, TensorBundle>
 OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
 {
+  // The CUDA state map below is part of the persistent session transaction.
+  // Serialize transitions so concurrent requests cannot observe or replace
+  // one another's recurrent state.
+  std::unique_lock<std::mutex> executionLock(m_impl->executionMutex);
   std::unique_lock<std::mutex> firstProfileRunLock;
   if (m_impl->profilingEnabled &&
       !m_impl->profilingCaptured.load(std::memory_order_acquire)) {
@@ -608,6 +883,38 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
       inputNames.emplace_back(name.get());
     }
   }
+  if (m_impl->statefulIo) {
+    inputNames = m_impl->statefulIo->inputNames;
+  }
+  std::map<std::string, TensorBundle> causalPositionInputs;
+  if (m_impl->causalPositionInputs) {
+    if (effectiveContext.sessionId == "native-runtime-warmup") {
+      // Constructor warm-up supplies an explicit graph-shaped zero tensor for
+      // every input and has no request token lineage.
+    }
+    else {
+      if (!effectiveContext.generationLineage ||
+          effectiveContext.generationInputTokenCount == 0) {
+        throw std::invalid_argument(
+          "stateful ONNX execution is missing authenticated generation lineage");
+      }
+      causalPositionInputs = materializeCausalPositionInputsV1(
+        *m_impl->causalPositionInputs,
+        *m_impl->statefulIo,
+        *effectiveContext.generationLineage,
+        effectiveContext.generationInputTokenCount);
+    }
+  }
+
+  const bool deviceResidentState = m_impl->statefulIo.has_value() &&
+    m_impl->selection.selectedProvider == "cuda";
+  if (deviceResidentState && effectiveContext.inferenceEpoch == 0) {
+    // Session reuse is allowed, but state is request-scoped and must not cross
+    // a fresh generation boundary.
+    m_impl->deviceStateBySession.erase(effectiveContext.sessionId);
+  }
+  std::map<std::string, const Ort::Value*> boundDeviceInputs;
+  std::map<std::string, std::size_t> cpuInputIndexes;
 
   std::vector<std::vector<std::uint8_t>> inputBuffers;
   std::vector<std::vector<int64_t>> inputShapes;
@@ -623,8 +930,62 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
     auto typeInfo = m_impl->session.GetInputTypeInfo(i);
     auto tensorInfo = typeInfo.GetTensorTypeAndShapeInfo();
     inputShapes.push_back(shapeForInput(m_spec, inputName, i, tensorInfo.GetShape()));
-    const auto& bundle = inputBundleFor(effectiveContext, m_spec, inputName, i);
-    auto tensor = tensorForInput(bundle, inputName, inputShapes.back());
+    const bool isStateInput = m_impl->statefulIo &&
+      std::find(m_impl->statefulIo->stateInputNames.begin(),
+                m_impl->statefulIo->stateInputNames.end(), inputName) !=
+        m_impl->statefulIo->stateInputNames.end();
+    if (deviceResidentState && isStateInput && effectiveContext.inferenceEpoch > 0) {
+      const auto sessionState = m_impl->deviceStateBySession.find(
+        effectiveContext.sessionId);
+      if (sessionState != m_impl->deviceStateBySession.end()) {
+        const auto deviceState = sessionState->second.find(inputName);
+        if (deviceState != sessionState->second.end()) {
+          // Use the previous output directly on the CUDA device.  The host
+          // state bundle is intentionally not materialized on this path.
+          boundDeviceInputs.emplace(inputName, &deviceState->second);
+          continue;
+        }
+      }
+      // A streamed CUDA epoch must consume the exact device-resident
+      // predecessor produced by the previous epoch.  ``runStreamedImpl``
+      // seeds the first epoch's zero-state entries in the request context;
+      // allowing those entries to satisfy a later lookup would silently
+      // restart the recurrent/KV state after an eviction or failed transfer.
+      // Fail closed before inputBundleFor() can see that bootstrap value.
+      throw std::runtime_error(
+        "stateful ONNX decode is missing Provider-owned device predecessor state: " +
+        inputName);
+    }
+    TensorBundle zeroState;
+    const TensorBundle* inputBundle = nullptr;
+    const auto causalInput = causalPositionInputs.find(inputName);
+    if (causalInput != causalPositionInputs.end()) {
+      inputBundle = &causalInput->second;
+    }
+    else {
+      try {
+        inputBundle = &inputBundleFor(effectiveContext, m_spec, inputName, i);
+      }
+      catch (const std::out_of_range&) {
+        if (!isStateInput) {
+          throw;
+        }
+        if (effectiveContext.inferenceEpoch > 0) {
+          throw std::runtime_error(
+            "stateful ONNX decode is missing Provider-owned predecessor state: " +
+            inputName);
+        }
+        NamedTensor state;
+        state.name = inputName;
+        state.elementType = fromOnnxElementType(tensorInfo.GetElementType());
+        state.shape = inputShapes.back();
+        state.payload.assign(
+          elementCount(state.shape) * tensorElementByteSize(state.elementType), 0);
+        zeroState = makeEncodedTensorBundle(inputName, {std::move(state)});
+        inputBundle = &zeroState;
+      }
+    }
+    auto tensor = tensorForInput(*inputBundle, inputName, inputShapes.back());
     validateNamedTensor(tensor);
     const auto onnxType = toOnnxElementType(tensor.elementType);
     if (tensorInfo.GetElementType() != onnxType) {
@@ -648,6 +1009,7 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
       inputShapes.back().data(),
       inputShapes.back().size(),
       onnxType));
+    cpuInputIndexes.emplace(inputName, inputValues.size() - 1);
   }
 
   std::vector<std::string> outputNames = metadataNames(
@@ -660,21 +1022,65 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
       outputNames.emplace_back(name.get());
     }
   }
-
-  std::vector<const char*> outputNamePtrs;
-  outputNamePtrs.reserve(outputNames.size());
-  for (const auto& name : outputNames) {
-    outputNamePtrs.push_back(name.c_str());
+  if (m_impl->statefulIo) {
+    outputNames = m_impl->statefulIo->outputNames;
   }
 
   const auto runStart = std::chrono::steady_clock::now();
-  auto outputs = m_impl->session.Run(
-    Ort::RunOptions{nullptr},
-    inputNamePtrs.data(),
-    inputValues.data(),
-    inputValues.size(),
-    outputNamePtrs.data(),
-    outputNamePtrs.size());
+  std::vector<Ort::Value> outputs;
+  std::optional<Ort::IoBinding> ioBinding;
+  std::optional<Ort::MemoryInfo> cudaMemoryInfo;
+  std::size_t deviceStateOutputsBound = 0;
+  if (deviceResidentState) {
+    ioBinding.emplace(m_impl->session);
+    cudaMemoryInfo.emplace(
+      "Cuda", OrtAllocatorType::OrtArenaAllocator,
+      std::stoi(m_impl->selection.deviceId), OrtMemTypeDefault);
+    for (const auto& name : inputNames) {
+      const auto deviceInput = boundDeviceInputs.find(name);
+      if (deviceInput != boundDeviceInputs.end()) {
+        ioBinding->BindInput(name.c_str(), *deviceInput->second);
+        continue;
+      }
+      const auto cpuInput = cpuInputIndexes.find(name);
+      if (cpuInput == cpuInputIndexes.end()) {
+        throw std::runtime_error("missing prepared ONNX Runtime input: " + name);
+      }
+      ioBinding->BindInput(name.c_str(), inputValues[cpuInput->second]);
+    }
+    for (const auto& name : outputNames) {
+      const bool stateOutput = std::find(
+        m_impl->statefulIo->stateOutputNames.begin(),
+        m_impl->statefulIo->stateOutputNames.end(), name) !=
+          m_impl->statefulIo->stateOutputNames.end();
+      if (stateOutput) {
+        // Let ORT allocate state outputs on CUDA.  The resulting Ort::Value is
+        // retained in the session map and rebound on the next epoch.
+        ioBinding->BindOutput(name.c_str(), cudaMemoryInfo->GetConst());
+        ++deviceStateOutputsBound;
+      }
+      else {
+        ioBinding->BindOutput(name.c_str(), memoryInfo.GetConst());
+      }
+    }
+    m_impl->session.Run(Ort::RunOptions{nullptr}, *ioBinding);
+    ioBinding->SynchronizeOutputs();
+    outputs = ioBinding->GetOutputValues();
+  }
+  else {
+    std::vector<const char*> outputNamePtrs;
+    outputNamePtrs.reserve(outputNames.size());
+    for (const auto& name : outputNames) {
+      outputNamePtrs.push_back(name.c_str());
+    }
+    outputs = m_impl->session.Run(
+      Ort::RunOptions{nullptr},
+      inputNamePtrs.data(),
+      inputValues.data(),
+      inputValues.size(),
+      outputNamePtrs.data(),
+      outputNamePtrs.size());
+  }
   const auto runDone = std::chrono::steady_clock::now();
   if (m_impl->profilingEnabled &&
       !m_impl->profilingCaptured.load(std::memory_order_relaxed) && m_evidence) {
@@ -700,6 +1106,8 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
 
   std::vector<NamedTensor> namedOutputs;
   namedOutputs.reserve(outputs.size());
+  std::vector<std::vector<std::uint8_t>> outputHostBuffers;
+  outputHostBuffers.reserve(outputs.size());
   for (std::size_t i = 0; i < outputs.size(); ++i) {
     auto& value = outputs[i];
     if (!value.IsTensor()) {
@@ -708,7 +1116,35 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
     auto tensorInfo = value.GetTensorTypeAndShapeInfo();
     const auto elementType = fromOnnxElementType(tensorInfo.GetElementType());
     const auto count = tensorInfo.GetElementCount();
-    const auto* data = static_cast<const std::uint8_t*>(value.GetTensorRawData());
+    const bool stateOutput = deviceResidentState &&
+      std::find(m_impl->statefulIo->stateOutputNames.begin(),
+                m_impl->statefulIo->stateOutputNames.end(), outputNames[i]) !=
+        m_impl->statefulIo->stateOutputNames.end();
+    const void* hostData = value.GetTensorRawData();
+    if (stateOutput) {
+      // The next epoch asks for the corresponding *_in tensor.  Store the
+      // device allocation under that successor input name; retaining it under
+      // *_out makes every lookup miss and silently reintroduces a host upload.
+      const auto successorInput =
+        m_impl->statefulIo->stateInputForOutput(outputNames[i]);
+      m_impl->deviceStateBySession[effectiveContext.sessionId].insert_or_assign(
+        successorInput, std::move(value));
+      if (effectiveContext.streamingStateExecution) {
+        // A streamed decode keeps the complete state on the CUDA device
+        // between token epochs.  Do not materialize a host copy for every
+        // token; runStreamedImpl exports the terminal state once, after the
+        // event/response boundary has accepted the final token.
+        continue;
+      }
+      outputHostBuffers.emplace_back(
+        count * tensorElementByteSize(elementType), 0);
+      copyOrtTensorToHost(
+        m_impl->deviceStateBySession[effectiveContext.sessionId]
+          .at(successorInput), outputHostBuffers.back().data(),
+        outputHostBuffers.back().size());
+      hostData = outputHostBuffers.back().data();
+    }
+    const auto* data = static_cast<const std::uint8_t*>(hostData);
     NamedTensor tensor;
     tensor.name = metadataValue(
       m_spec,
@@ -735,6 +1171,7 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
 
   std::map<std::string, TensorBundle> result;
   const bool forceEncodedOutput =
+    effectiveContext.streamingStateExecution ||
     !metadataValue(m_spec, {"output_tensor", "outputTensor", "forceOutputBundle",
                             "force_output_bundle"}).empty() ||
     metadataValue(m_spec, {"final", "is_final"}) == "true";
@@ -796,9 +1233,259 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
               << " delay_ms=" << elapsedMs(runDone, delayDone)
               << " publish_ms=" << elapsedMs(delayDone, packageDone)
               << " session_cache=hit"
+              << " state_io_binding=" << (deviceResidentState ? "cuda" : "host")
+              << " state_device_inputs=" << boundDeviceInputs.size()
+              << " state_device_outputs=" << deviceStateOutputsBound
               << std::endl;
   }
   return result;
+}
+
+std::optional<std::map<std::string, TensorBundle>>
+OnnxRuntimeModelRunner::runStreamedImpl(const RoleExecutionContext& ctx)
+{
+  if (!runnerMetadataBool(m_spec, {"streamingGeneration", "streaming_generation"}) ||
+      !ctx.streamEventSink) {
+    return std::nullopt;
+  }
+  if (!m_impl->statefulIo) {
+    throw std::invalid_argument(
+      "streaming ONNX generation requires a declared stateful I/O contract");
+  }
+  if (ctx.generationLineage) {
+    throw std::invalid_argument(
+      "authenticated epoch lineage must be driven by NativeEpochCoordinator; "
+      "runStreamed() cannot own a coordinator generation loop");
+  }
+
+  const auto tokenInputName = runnerMetadataValue(
+    m_spec, {"streamTokenInput", "stream_token_input", "tokenInputName"}).empty()
+    ? std::string("input_ids")
+    : runnerMetadataValue(
+        m_spec, {"streamTokenInput", "stream_token_input", "tokenInputName"});
+  const auto maxTokens = metadataSizeValue(
+    m_spec, {"maxGeneratedTokens", "max_generated_tokens"}, 64);
+  if (maxTokens == 0) {
+    throw std::invalid_argument("streaming ONNX generation token bound is zero");
+  }
+  const auto eosText = runnerMetadataValue(
+    m_spec, {"eosTokenIds", "eos_token_ids"});
+  std::set<std::int64_t> eosIds;
+  if (!eosText.empty()) {
+    std::stringstream eosStream(eosText);
+    std::string item;
+    while (std::getline(eosStream, item, ',')) {
+      if (!item.empty()) {
+        try {
+          eosIds.insert(std::stoll(item));
+        }
+        catch (const std::exception&) {
+          throw std::invalid_argument("invalid streaming ONNX EOS token ID: " + item);
+        }
+      }
+    }
+  }
+  const auto samplingDigest = runnerMetadataValue(
+    m_spec, {"samplingDigest", "sampling_digest"});
+  if (samplingDigest.empty()) {
+    throw std::invalid_argument(
+      "streaming ONNX generation requires samplingDigest metadata");
+  }
+  if (!isSha256Digest(samplingDigest)) {
+    throw std::invalid_argument(
+      "streaming ONNX generation requires a canonical sha256 samplingDigest");
+  }
+
+  RoleExecutionContext epochContext = ctx;
+  const bool deviceResidentState =
+    m_impl->selection.selectedProvider == "cuda";
+  struct DeviceStateCleanup
+  {
+    Impl* impl = nullptr;
+    std::string sessionId;
+
+    ~DeviceStateCleanup()
+    {
+      if (impl == nullptr || sessionId.empty()) {
+        return;
+      }
+      std::lock_guard<std::mutex> lock(impl->executionMutex);
+      impl->deviceStateBySession.erase(sessionId);
+    }
+  } deviceStateCleanup{
+    deviceResidentState ? m_impl.get() : nullptr,
+    deviceResidentState ? ctx.sessionId : std::string(),
+  };
+  epochContext.streamingStateExecution = deviceResidentState;
+  const auto makeZeroState = [this] (const std::string& name) {
+    Ort::AllocatorWithDefaultOptions allocator;
+    std::size_t inputIndex = 0;
+    for (; inputIndex < m_impl->session.GetInputCount(); ++inputIndex) {
+      auto allocated = m_impl->session.GetInputNameAllocated(inputIndex, allocator);
+      if (name == allocated.get()) {
+        break;
+      }
+    }
+    if (inputIndex == m_impl->session.GetInputCount()) {
+      throw std::invalid_argument("streaming ONNX state input is not in graph: " + name);
+    }
+    auto typeInfo = m_impl->session.GetInputTypeInfo(inputIndex);
+    auto tensorInfo = typeInfo.GetTensorTypeAndShapeInfo();
+    const auto elementType = fromOnnxElementType(tensorInfo.GetElementType());
+    const auto shape = shapeForInput(
+      m_spec, name, inputIndex, tensorInfo.GetShape());
+    NamedTensor tensor;
+    tensor.name = name;
+    tensor.elementType = elementType;
+    tensor.shape = shape;
+    tensor.payload.assign(
+      elementCount(shape) * tensorElementByteSize(elementType), 0);
+    return makeEncodedTensorBundle(name, {std::move(tensor)});
+  };
+  for (const auto& stateInput : m_impl->statefulIo->stateInputNames) {
+    if (epochContext.inputsByScope.find(stateInput) == epochContext.inputsByScope.end()) {
+      epochContext.inputsByScope.emplace(stateInput, makeZeroState(stateInput));
+    }
+  }
+
+  std::vector<std::int64_t> generated;
+  std::map<std::string, TensorBundle> finalOutputs;
+  std::string finishHint = "MAX_TOKENS";
+  for (std::size_t tokenEpoch = 1; tokenEpoch <= maxTokens; ++tokenEpoch) {
+    // The first iteration is prefill (state epoch 0); each subsequent
+    // iteration is a one-token decode that must consume the preceding
+    // Provider-owned state epoch.  Keeping this field explicit is what lets
+    // the CUDA IoBinding path distinguish a fresh request from a continuation.
+    epochContext.inferenceEpoch = tokenEpoch - 1;
+    const auto outputs = run(epochContext);
+    auto outputBundle = outputs.find("onnx-output-bundle");
+    if (outputBundle == outputs.end()) {
+      outputBundle = std::find_if(
+        outputs.begin(), outputs.end(), [] (const auto& item) {
+          return isEncodedTensorBundle(item.second.payload);
+        });
+    }
+    if (outputBundle == outputs.end()) {
+      throw std::runtime_error("streaming ONNX runner returned no encoded output bundle");
+    }
+    const auto tensors = decodeTensorBundle(outputBundle->second.payload);
+    const auto& logits = findTensor(tensors, "logits");
+    if (logits.elementType != TensorElementType::Float32 || logits.shape.size() < 2) {
+      throw std::invalid_argument(
+        "streaming ONNX runner requires float32 logits with a sequence dimension");
+    }
+    const auto vocabulary = static_cast<std::size_t>(logits.shape.back());
+    if (vocabulary == 0 || logits.payload.size() % (vocabulary * sizeof(float)) != 0) {
+      throw std::invalid_argument("streaming ONNX logits shape is invalid");
+    }
+    const auto sequence = logits.payload.size() / (vocabulary * sizeof(float));
+    const auto* values = reinterpret_cast<const float*>(logits.payload.data());
+    const auto* begin = values + (sequence - 1) * vocabulary;
+    const auto* best = std::max_element(begin, begin + vocabulary);
+    const auto tokenId = static_cast<std::int64_t>(std::distance(begin, best));
+    generated.push_back(tokenId);
+
+    std::ostringstream prefix;
+    for (std::size_t index = 0; index < generated.size(); ++index) {
+      if (index != 0) prefix << ',';
+      prefix << generated[index];
+    }
+    ndn::util::Sha256 prefixDigest;
+    prefixDigest << prefix.str();
+    const bool eos = eosIds.count(tokenId) != 0;
+    const bool atMax = tokenEpoch == maxTokens;
+    finishHint = eos ? "EOS" : atMax ? "MAX_TOKENS" : "NONE";
+    std::ostringstream event;
+    event << "{\"schema\":\"GenerationTokenEventV1\","
+          << "\"tokenId\":" << tokenId
+          << ",\"tokenEpoch\":" << tokenEpoch
+          << ",\"cumulativeTokenCount\":" << tokenEpoch
+          << ",\"textDelta\":\"\","
+          << "\"finishHint\":\"" << finishHint << "\","
+          << "\"samplingDigest\":\"" << samplingDigest << "\","
+          << "\"acceptedPrefixDigest\":\"sha256:" << prefixDigest.toString()
+          << "\"}";
+    const auto eventText = event.str();
+    if (!ctx.streamEventSink(
+          std::vector<std::uint8_t>(eventText.begin(), eventText.end()))) {
+      throw std::runtime_error("streaming ONNX event admission was rejected");
+    }
+
+    if (eos || atMax) {
+      break;
+    }
+
+    if (!deviceResidentState) {
+      for (const auto& stateOutput : m_impl->statefulIo->stateOutputNames) {
+        const auto& tensor = findTensor(tensors, stateOutput);
+        if (stateOutput.size() <= 4 ||
+            stateOutput.compare(stateOutput.size() - 4, 4, "_out") != 0) {
+          throw std::invalid_argument("streaming ONNX state output is not suffixed _out");
+        }
+        const auto nextInput = stateOutput.substr(0, stateOutput.size() - 4) + "_in";
+        epochContext.inputsByScope[nextInput] = makeEncodedTensorBundle(
+          nextInput,
+          {NamedTensor{nextInput, tensor.elementType, tensor.shape, tensor.payload}});
+      }
+    }
+    std::vector<std::uint8_t> tokenBytes(sizeof(tokenId));
+    std::memcpy(tokenBytes.data(), &tokenId, sizeof(tokenId));
+    epochContext.inputsByScope[tokenInputName] = makeEncodedTensorBundle(
+      tokenInputName,
+      {NamedTensor{tokenInputName, TensorElementType::Int64, {1, 1},
+                   std::move(tokenBytes)}});
+  }
+
+  if (deviceResidentState) {
+    std::lock_guard<std::mutex> stateLock(m_impl->executionMutex);
+    const auto found = m_impl->deviceStateBySession.find(ctx.sessionId);
+    if (found == m_impl->deviceStateBySession.end()) {
+      throw std::runtime_error(
+        "streaming ONNX generation completed without device state");
+    }
+    Ort::AllocatorWithDefaultOptions allocator;
+    const auto memoryInfo = Ort::MemoryInfo::CreateCpu(
+      OrtAllocatorType::OrtArenaAllocator, OrtMemTypeDefault);
+    std::vector<NamedTensor> stateTensors;
+    stateTensors.reserve(m_impl->statefulIo->stateOutputNames.size());
+    for (const auto& outputName : m_impl->statefulIo->stateOutputNames) {
+      const auto inputName = m_impl->statefulIo->stateInputForOutput(outputName);
+      const auto state = found->second.find(inputName);
+      if (state == found->second.end() || !state->second.IsTensor()) {
+        throw std::runtime_error(
+          "streaming ONNX generation completed without device state: " +
+          inputName);
+      }
+      const auto info = state->second.GetTensorTypeAndShapeInfo();
+      const auto elementType = fromOnnxElementType(info.GetElementType());
+      const auto count = info.GetElementCount();
+      std::vector<std::uint8_t> host(count * tensorElementByteSize(elementType));
+      const auto shape = info.GetShape();
+      copyOrtTensorToHost(state->second, host.data(), host.size());
+      stateTensors.push_back(NamedTensor{
+        outputName, elementType, shape, std::move(host)});
+    }
+    finalOutputs.emplace(
+      "onnx-state-bundle",
+      makeEncodedTensorBundle("onnx-state-bundle", std::move(stateTensors)));
+  }
+
+  const auto finalText = [&] {
+    std::ostringstream text;
+    text << "{\"schema\":\"NDNSF-DI-FINAL-V1\",\"finishHint\":\""
+         << finishHint << "\",\"tokenIds\":[";
+    for (std::size_t index = 0; index < generated.size(); ++index) {
+      if (index != 0) text << ',';
+      text << generated[index];
+    }
+    text << "]}";
+    return text.str();
+  }();
+  const auto finalBytes = std::vector<std::uint8_t>(finalText.begin(), finalText.end());
+  finalOutputs.emplace(
+    "final-response",
+    TensorBundle{"final-response", finalBytes, 1, finalBytes.size()});
+  return finalOutputs;
 }
 
 void
@@ -856,6 +1543,12 @@ std::map<std::string, TensorBundle>
 OnnxRuntimeModelRunner::run(const RoleExecutionContext&)
 {
   throw std::runtime_error("C++ ONNX Runtime backend is not enabled");
+}
+
+std::optional<std::map<std::string, TensorBundle>>
+OnnxRuntimeModelRunner::runStreamedImpl(const RoleExecutionContext&)
+{
+  return std::nullopt;
 }
 
 void

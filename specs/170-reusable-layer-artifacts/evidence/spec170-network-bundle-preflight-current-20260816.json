@@ -1,0 +1,15 @@
+{
+  "status": "PASS",
+  "bundle": "/project/tma1/ndnsf-di/releases/spec170-runtime-07738d70-gpu-20260816-r8b/network-bundle-d1-current",
+  "baselineBundle": "/project/tma1/ndnsf-di/releases/spec170-runtime-07738d70-gpu-20260816-r8b/d0-current-v2",
+  "service": "/Inference/NativeTracer",
+  "roles": ["/Backbone", "/Head/Shard/0", "/Head/Shard/1", "/Merge"],
+  "hashes": {
+    "native-execution-plan.json": "a31c443ba04da7a66b4457fe859d5b63d2d773e325b991c0036891c8a812d216",
+    "service-manifest.json": "10f10ee5533e55f7a18f89b40eaee4401cdfa397602cb22f4e656786848dfc0d",
+    "user_driver.py": "cfb9284d39e1a39da751833e198687a39072d7b3e49b5f42d76207ea73457e12",
+    "trust-schema.conf": "b667d7b22e37474095869373c556c338b4753029388e867c9af9d01b21848781",
+    "controller.policies": "cfd9b4b0b984e57e3d3b83d9506a4f72e26a26c8c892c061f903a83b71389ca7"
+  },
+  "note": "Fresh source-aligned single-Provider workload; all four roles have an explicit provider preference and all baseline hashes match current D0."
+}

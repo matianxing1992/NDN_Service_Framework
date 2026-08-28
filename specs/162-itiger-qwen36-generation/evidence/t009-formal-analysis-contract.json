@@ -1,0 +1,51 @@
+{
+  "schemaVersion": "ndnsf-di-qwen36-formal-analysis-contract-v1",
+  "createdAt": "2026-07-29T00:00:00Z",
+  "candidateImageId": "sha256:2b4ee488859ffaca908e578f3d60d44579b96f27d48fe19ae4160b39bab28209",
+  "analysisSchemaVersion": "ndnsf-di-qwen36-generation-formal-analysis-v3",
+  "analyzer": {
+    "path": "specs/162-itiger-qwen36-generation/jobs/analyze-generation-formal.py",
+    "sha256": "7030ec6d2b289f9b45e4fa4d31af78133f90aec83947d763f81ad241e4ffd0bb"
+  },
+  "test": {
+    "path": "tests/python/test_spec162_qwen36_formal_analysis.py",
+    "sha256": "9eb26ae9ec551a7c2851d95ed9025d35f700ae64385f7002bedae6b83a220a19",
+    "status": "PASS",
+    "negativeGates": [
+      "missing-request-phase",
+      "invalid-ack-stage-release-order"
+    ]
+  },
+  "requestTimingRequired": [
+    "adapter_graph_split_ms",
+    "request_encode_ms",
+    "request_publish_ms",
+    "ack_collect_ms",
+    "placement_strategy_ms",
+    "artifact_resolve_publish_ms",
+    "plan_seal_ms",
+    "selection_commit_ms",
+    "pre_response_setup_total_ms",
+    "application_input_encode_ms",
+    "client_request_ms",
+    "response_wait_decode_ms",
+    "token_step_total_ms"
+  ],
+  "providerStageTimingRequired": [
+    "prefetch_submit_ms",
+    "input_wait_ms",
+    "input_reference_fetch_ms",
+    "ref_wait_ms",
+    "fetch_ms",
+    "decode_ms",
+    "serialize_ms",
+    "compute_ms",
+    "model_load_ms",
+    "artificial_delay_ms",
+    "runner_total_ms",
+    "publish_ms",
+    "total_ms"
+  ],
+  "orderingInvariant": "ACK_TRUE < STAGE_TIMING < RESERVATION_RELEASED < NEXT_ACK_TRUE",
+  "stagingPolicy": "Stage analyzer and this contract together as a separate read-only analysis bundle; do not mutate the frozen measurement source bundle."
+}

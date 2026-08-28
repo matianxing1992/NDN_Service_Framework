@@ -5,6 +5,13 @@
 **Implementation status**: Not implemented; this audit does not authorize a
 new TigerCluster candidate.
 
+**2026-08-19 correction**: The original multi-role/multi-Provider-role analysis
+below is superseded where it conflicts with the active `spec.md`. The controlling
+architecture now makes every stage/rank pair a complete execution role, maps each
+role to exactly one Provider and each Provider to at most one role per Attempt,
+and carries all cross-Provider tensor exchange through a sealed consumer-pull NDN
+`RoleDataflowContract`. Historical observations remain for audit provenance.
+
 ## Executive Finding
 
 The proposal fixes a real identity-boundary defect: the current design treats a
@@ -145,10 +152,12 @@ live runtime hit on the same valid device set can avoid both.
 
 ## TigerCluster and Provider Device Responsibility
 
-On TigerCluster, the Provider does **not** request GPUs from inside Docker/SIF.
-The Docker/OCI image is first materialized as a SIF; the cluster executes that
-SIF with Apptainer rather than starting a Docker daemon. Therefore the job asks
-Slurm for GPUs, not `docker run --gpus` inside the image.
+On TigerCluster, the Provider does **not** request GPUs from inside a
+container. The application SIF is built and verified on the local host, then
+the cluster executes that immutable SIF with Apptainer rather than starting a
+Docker daemon, pulling an image, or building an image. Therefore the job asks
+Slurm for GPUs, not `docker run --gpus` inside the image. Docker/OCI assembly is
+outside the current Spec170 release contract.
 The deployment stack has five distinct responsibilities:
 
 | Layer | Normative responsibility |
@@ -292,36 +301,25 @@ ProviderResourceTopology
     health + per-device capacity + queue + allocation/resource sequence
 
 PlacementDecision
-  role -> Provider
-  role -> RoleAssemblySpec
-  logical role -> RankAssignment[]
-  rank assignments -> ProviderLocalRoleBundle[]
-  Provider-local bundle -> DeviceBinding(CPU | SINGLE_DEVICE | DEVICE_SET)
+  stage/rank -> ExecutionRole
+  ExecutionRole -> exactly one Provider
+  Provider -> at most one role per Attempt
+  role -> RoleAssemblySpec + RoleDataflowContract
+  role -> DeviceBinding(CPU | SINGLE_DEVICE)
 ```
 
 `ComputeDeviceOffer` carries per-device memory, architecture, runtime/precision
-support, health, and an offer-scoped handle. `DeviceBinding` carries its member
-handles, per-device budgets, local ranks, and the signed topology/resource
-sequence. Handles are scoped to one signed Provider offer, so a cross-Provider
-logical role cannot own one global binding. One Provider may receive multiple
-local role bundles in one Selection; the Provider-local scheduler enforces them
-but cannot invent new shard ranks or change a collective group chosen by the
-sealed global plan.
+support, health, and an offer-scoped handle. Each role chooses one CPU or
+single-device binding from one Provider offer. Tensor-parallel degree creates
+several roles on distinct Providers; a group connects them but does not own a
+global device binding. Each role carries its own shard/slice and phase-specific
+resource envelope for weights/replicas, activation, KV/state, collective
+workspace, and assembly/load transient peak.
 
-The contract must separate a semantic `LogicalRole` from `RankAssignment[]`.
-Tensor-parallel execution may implement one logical role with multiple ranks on
-one or several Providers; validation can no longer assume one assignment per
-role. Each rank needs its own device, shard/slice, and phase-specific resource
-envelope for weights/replicas, activation, KV/state, collective workspace, and
-assembly/load transient peak.
-
-Selection queue acceptance and `DEVICE_SET` admission are distinct atomic
-operations. Queue acceptance holds no device. At just-in-time admission, holding
-device 0 while waiting for device 1 would create a hold-and-wait deadlock across
-concurrent requests, so the Provider must acquire every member/local rank plus a
-fencing token together or acquire nothing. Sharing modes and failure domains need
-explicit representation; an exclusive GPU, MIG slice, MPS context, and
-time-shared GPU are not interchangeable offers.
+Selection queue acceptance holds no device. Just-in-time admission atomically
+acquires the one role binding plus a fencing token or acquires nothing. Sharing
+modes and failure domains still require explicit representation; an exclusive
+GPU, MIG slice, MPS context, and time-shared GPU are not interchangeable offers.
 
 Final Selection can keep NDNSF Core opaque. Each role assignment should carry
 one canonical model-manifest reference plus an opaque NDNSF-DI assembly recipe;

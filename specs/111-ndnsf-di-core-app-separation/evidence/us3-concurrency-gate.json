@@ -1,0 +1,12 @@
+{
+  "schema": "ndnsf-di-spec111-us3-concurrency-gate-v1",
+  "date": "2026-07-14",
+  "verdict": "PASS",
+  "fixture": "tests/fixtures/ndnsf-di-core-app-separation/concurrent-assignments.json",
+  "pairedRepetitions": 100,
+  "workerThreads": 16,
+  "oppositeAssignments": true,
+  "assignmentBleedCount": 0,
+  "environmentMutationCount": 0,
+  "focusedTests": {"count": 48, "failures": 0, "errors": 0, "skipped": 0, "durationSeconds": 2.128}
+}

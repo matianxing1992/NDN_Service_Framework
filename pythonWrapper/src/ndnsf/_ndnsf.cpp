@@ -164,6 +164,186 @@ toPyBytes(const ndn::Buffer& value)
   return py::bytes(reinterpret_cast<const char*>(value.data()), value.size());
 }
 
+/** Python view of the Core-owned streamed response writer.  The view carries
+ * only the shared writer capability; cursor allocation, encryption, signing,
+ * retention, and terminal fencing remain in C++. */
+class PyStreamWriter
+{
+public:
+  explicit PyStreamWriter(std::shared_ptr<nsf::StreamedResponseWriterCore> core)
+    : m_core(std::move(core))
+  {
+    if (!m_core) throw std::invalid_argument("stream writer is unavailable");
+  }
+
+  std::uint64_t publish(const py::bytes& payload)
+  {
+    uint64_t cursor = 0;
+    const auto wire = toBuffer(payload);
+    // Core publication may synchronously wait for the Provider Face event
+    // loop.  The Face-side test interceptors are Python callbacks, so keep
+    // the worker-side binding from holding the GIL while that wait occurs;
+    // otherwise the Face thread deadlocks trying to invoke the interceptor.
+    py::gil_scoped_release release;
+    if (!m_core->publish(wire, cursor)) {
+      return 0;
+    }
+    return cursor;
+  }
+
+  bool finish(const py::bytes& payload, uint64_t reason = 4)
+  {
+    if (reason < 1 || reason > 7) throw std::invalid_argument("invalid stream finish reason");
+    const auto wire = toBuffer(payload);
+    py::gil_scoped_release release;
+    return m_core->finish(wire, static_cast<nsf::StreamFinishReason>(reason));
+  }
+
+  bool fail(uint64_t code, const std::string& message)
+  {
+    if (code < 1 ||
+        code > static_cast<uint64_t>(
+          nsf::StreamedInvocationErrorCode::ReplacementUnavailable)) {
+      throw std::invalid_argument("invalid streamed error code");
+    }
+    py::gil_scoped_release release;
+    return m_core->fail(static_cast<nsf::StreamedInvocationErrorCode>(code), message);
+  }
+
+  bool cancelled() const { return m_core->isCancelled(); }
+
+  int remaining_deadline_ms() const
+  {
+    const auto remaining = m_core->remainingDeadline().count();
+    return static_cast<int>(std::max<int64_t>(0, remaining));
+  }
+
+private:
+  std::shared_ptr<nsf::StreamedResponseWriterCore> m_core;
+};
+
+using PyBufferStreamHandle =
+  nsf::StreamedInvocationHandle<ndn::Buffer, ndn::Buffer>;
+
+std::string
+streamedInvocationStatusToString(nsf::StreamedInvocationStatus status)
+{
+  switch (status) {
+    case nsf::StreamedInvocationStatus::Created: return "Created";
+    case nsf::StreamedInvocationStatus::Requesting: return "Requesting";
+    case nsf::StreamedInvocationStatus::Selecting: return "Selecting";
+    case nsf::StreamedInvocationStatus::Streaming: return "Streaming";
+    case nsf::StreamedInvocationStatus::Draining: return "Draining";
+    case nsf::StreamedInvocationStatus::Completed: return "Completed";
+    case nsf::StreamedInvocationStatus::Failed: return "Failed";
+    case nsf::StreamedInvocationStatus::Cancelled: return "Cancelled";
+  }
+  throw std::logic_error("unknown streamed invocation status");
+}
+
+class PyStreamedInvocationHandle
+{
+public:
+  explicit PyStreamedInvocationHandle(std::shared_ptr<PyBufferStreamHandle> handle)
+    : m_handle(std::move(handle))
+  {
+    if (!m_handle) {
+      throw std::invalid_argument("streamed invocation handle is unavailable");
+    }
+  }
+
+  std::string requestId() const { return m_handle->requestId().toUri(); }
+  std::string status() const
+  {
+    return streamedInvocationStatusToString(m_handle->status());
+  }
+  py::dict metrics() const
+  {
+    const auto value = m_handle->metrics();
+    py::dict output;
+    output["published_events"] = value.publishedEvents;
+    output["delivered_events"] = value.deliveredEvents;
+    output["retry_count"] = value.retryCount;
+    output["duplicate_count"] = value.duplicateCount;
+    return output;
+  }
+  void cancel() { m_handle->cancel(); }
+
+private:
+  std::shared_ptr<PyBufferStreamHandle> m_handle;
+};
+
+nsf::StreamedInvocationOptions
+streamedInvocationOptionsFromPy(const py::dict& fields)
+{
+  nsf::StreamedInvocationOptions options;
+  auto getInt = [&fields](const char* key, uint64_t fallback) {
+    return fields.contains(key) ? fields[key].cast<uint64_t>() : fallback;
+  };
+  auto getBool = [&fields](const char* key, bool fallback) {
+    return fields.contains(key) ? fields[key].cast<bool>() : fallback;
+  };
+  if (fields.contains("mode")) {
+    const auto mode = py::str(fields["mode"]).cast<std::string>();
+    if (mode == "Normal" || mode == "normal" || mode == "0") {
+      options.mode = nsf::InvocationMode::Normal;
+    }
+    else if (mode == "Targeted" || mode == "targeted" || mode == "1") {
+      options.mode = nsf::InvocationMode::Targeted;
+    }
+    else {
+      throw std::invalid_argument("stream mode must be Normal or Targeted");
+    }
+  }
+  options.maxEvents = static_cast<uint32_t>(
+    getInt("max_events", options.maxEvents));
+  options.interestWindow = static_cast<uint16_t>(
+    getInt("interest_window", options.interestWindow));
+  options.interestLifetimeMs = static_cast<uint32_t>(
+    getInt("interest_lifetime_ms", options.interestLifetimeMs));
+  options.maxEventRetries = static_cast<uint8_t>(
+    getInt("max_event_retries", options.maxEventRetries));
+  options.publisherQueueCapacity = static_cast<uint16_t>(
+    getInt("publisher_queue_capacity", options.publisherQueueCapacity));
+  options.callbackQueueCapacity = static_cast<uint16_t>(
+    getInt("callback_queue_capacity", options.callbackQueueCapacity));
+  options.reorderCapacity = static_cast<uint16_t>(
+    getInt("reorder_capacity", options.reorderCapacity));
+  options.retentionMs = static_cast<uint32_t>(
+    getInt("retention_ms", options.retentionMs));
+  options.completionGraceMs = static_cast<uint32_t>(
+    getInt("completion_grace_ms", options.completionGraceMs));
+  options.maxEventWireBytes = static_cast<uint32_t>(
+    getInt("max_event_wire_bytes", options.maxEventWireBytes));
+  options.allowReplacement = getBool(
+    "allow_replacement", options.allowReplacement);
+  options.maxReplacements = static_cast<uint8_t>(
+    getInt("max_replacements", options.maxReplacements));
+  options.attemptEpoch = getInt("attempt_epoch", options.attemptEpoch);
+  options.streamEpoch = getInt("stream_epoch", options.streamEpoch);
+  if (fields.contains("generation_id")) {
+    const auto hex = py::str(fields["generation_id"]).cast<std::string>();
+    if (!hex.empty()) {
+      if (hex.size() != options.generationId.size() * 2 ||
+          std::any_of(hex.begin(), hex.end(), [] (char ch) {
+            return !((ch >= '0' && ch <= '9') ||
+                     (ch >= 'a' && ch <= 'f'));
+          })) {
+        throw std::invalid_argument(
+          "stream generation_id must be exactly 16 bytes of lowercase hex");
+      }
+      const auto nibble = [] (char ch) -> uint8_t {
+        return static_cast<uint8_t>(ch <= '9' ? ch - '0' : ch - 'a' + 10);
+      };
+      for (size_t index = 0; index < options.generationId.size(); ++index) {
+        options.generationId[index] = static_cast<uint8_t>(
+          (nibble(hex[index * 2]) << 4) | nibble(hex[index * 2 + 1]));
+      }
+    }
+  }
+  return options;
+}
+
 py::bytes
 toPyStreamContentDigest(const nsf::StreamContentDigest& value)
 {
@@ -2650,6 +2830,11 @@ public:
     return m_ctx->role();
   }
 
+  std::string requesterName() const
+  {
+    return m_ctx->requesterName().toUri();
+  }
+
   std::string localProvider() const
   {
     return m_ctx->localProvider().toUri();
@@ -2801,7 +2986,9 @@ public:
 
   void publishFinalResponse(const py::bytes& payload)
   {
-    m_ctx->publishFinalResponse(toBuffer(payload));
+    const auto wire = toBuffer(payload);
+    py::gil_scoped_release release;
+    m_ctx->publishFinalResponse(wire);
   }
 
   void reportOperationStatus(const py::dict& payload)
@@ -2840,6 +3027,49 @@ public:
       status.detailsPayload = toBuffer(py::cast<py::bytes>(payload["details_payload"]));
     }
     m_ctx->reportOperationStatus(std::move(status));
+  }
+
+  bool isStreamed() const
+  {
+    return m_ctx->isStreamed();
+  }
+
+  std::uint64_t publishStreamEvent(const py::bytes& payload)
+  {
+    const auto wire = toBuffer(payload);
+    // CollaborationContext publication synchronously commits through the
+    // Provider Face.  Release Python's GIL so Face-side Python test hooks can
+    // run while the handler waits for that commit.
+    py::gil_scoped_release release;
+    return m_ctx->publishStreamEvent(wire);
+  }
+
+  bool finishStream(const py::bytes& payload, std::uint64_t reason = 4)
+  {
+    if (reason < 1 || reason > 7) {
+      throw std::invalid_argument("invalid stream finish reason");
+    }
+    const auto wire = toBuffer(payload);
+    py::gil_scoped_release release;
+    return m_ctx->finishStream(
+      wire, static_cast<nsf::StreamFinishReason>(reason));
+  }
+
+  bool failStream(std::uint64_t code, const std::string& message)
+  {
+    if (code < 1 ||
+        code > static_cast<std::uint64_t>(
+          nsf::StreamedInvocationErrorCode::ReplacementUnavailable)) {
+      throw std::invalid_argument("invalid streamed error code");
+    }
+    py::gil_scoped_release release;
+    return m_ctx->failStream(
+      static_cast<nsf::StreamedInvocationErrorCode>(code), message);
+  }
+
+  bool streamCancelled() const
+  {
+    return m_ctx->streamCancelled();
   }
 
 private:
@@ -3055,6 +3285,55 @@ public:
       throw std::runtime_error("provider is not initialized");
     }
     return m_provider->getSigningCertificateName().toUri();
+  }
+
+  void
+  setStreamPublicationInterceptorForTest(py::function callback)
+  {
+    if (!m_provider) {
+      throw std::runtime_error("provider is not initialized");
+    }
+    auto kept = keepPyFunction(std::move(callback));
+    m_provider->setStreamPublicationInterceptorForTest(
+      [kept = std::move(kept)] (const ndn::Data& data) {
+        py::gil_scoped_acquire gil;
+        const auto wire = data.wireEncode();
+        const auto parsed = nsf::parseInvocationEventName(data.getName());
+        return (*kept)(
+          data.getName().toUri(),
+          parsed ? parsed->cursor : 0,
+          py::bytes(reinterpret_cast<const char*>(wire.data()), wire.size()))
+          .cast<bool>();
+      });
+  }
+
+  void
+  setStreamRetentionInterceptorForTest(py::function callback)
+  {
+    if (!m_provider) {
+      throw std::runtime_error("provider is not initialized");
+    }
+    auto kept = keepPyFunction(std::move(callback));
+    m_provider->setStreamRetentionInterceptorForTest(
+      [kept = std::move(kept)] (const ndn::Data& data) {
+        py::gil_scoped_acquire gil;
+        const auto wire = data.wireEncode();
+        const auto parsed = nsf::parseInvocationEventName(data.getName());
+        return (*kept)(
+          data.getName().toUri(),
+          parsed ? parsed->cursor : 0,
+          py::bytes(reinterpret_cast<const char*>(wire.data()), wire.size()))
+          .cast<bool>();
+      });
+  }
+
+  void
+  publishStreamPacketForTest(const py::bytes& wire)
+  {
+    if (!m_provider) {
+      throw std::runtime_error("provider is not initialized");
+    }
+    m_provider->publishStreamPacketForTest(*dataFromWireBytes(wire));
   }
 
   void
@@ -3344,7 +3623,87 @@ public:
           catch (const py::error_already_set& e) {
             ctx.fail(e.what());
           }
-        }));
+      }));
+  }
+
+  void
+  addStreamingService(const std::string& serviceName, py::function handler)
+  {
+    if (!m_provider) throw std::runtime_error("provider is not initialized");
+    auto callback = keepPyFunction(std::move(handler));
+    m_streamingHandlers[serviceName] = callback;
+    m_provider->addStreamingHandler(
+      ndn::Name(serviceName),
+      [callback](const ndn::Name&, const ndn::Name&, const ndn::Name&,
+                 const ndn::Name&, const nsf::RequestMessage& request,
+                 nsf::StreamedResponseWriter<ndn::Buffer, ndn::Buffer>& writer) {
+        py::gil_scoped_acquire gil;
+        try {
+          PyStreamWriter view(writer.core());
+          py::object result = (*callback)(toPyBytes(request.getPayload()), view);
+          if (py::isinstance<py::bool_>(result) && !result.cast<bool>() &&
+              !writer.isCancelled()) {
+            writer.fail(nsf::StreamedInvocationErrorCode::ApplicationCallbackFailed,
+                        "Python streamed handler returned false");
+          }
+        }
+        catch (const py::error_already_set& error) {
+          if (!writer.isCancelled()) {
+            writer.fail(nsf::StreamedInvocationErrorCode::ApplicationCallbackFailed,
+                        error.what());
+          }
+        }
+        catch (const std::exception& error) {
+          if (!writer.isCancelled()) {
+            writer.fail(nsf::StreamedInvocationErrorCode::ApplicationCallbackFailed,
+                        error.what());
+          }
+        }
+      });
+  }
+
+  void
+  addStreamingContextService(const std::string& serviceName,
+                             py::function handler)
+  {
+    if (!m_provider) throw std::runtime_error("provider is not initialized");
+    auto callback = keepPyFunction(std::move(handler));
+    m_streamingHandlers[serviceName] = callback;
+    m_provider->addStreamingHandler(
+      ndn::Name(serviceName),
+      [callback](const ndn::Name& requester, const ndn::Name& provider,
+                 const ndn::Name& service, const ndn::Name& requestId,
+                 const nsf::RequestMessage& request,
+                 nsf::StreamedResponseWriter<ndn::Buffer, ndn::Buffer>& writer) {
+        py::gil_scoped_acquire gil;
+        try {
+          py::dict context;
+          context["requester"] = requester.toUri();
+          context["provider"] = provider.toUri();
+          context["service"] = service.toUri();
+          context["request_id"] = requestId.toUri();
+          PyStreamWriter view(writer.core());
+          py::object result = (*callback)(
+            context, toPyBytes(request.getPayload()), view);
+          if (py::isinstance<py::bool_>(result) && !result.cast<bool>() &&
+              !writer.isCancelled()) {
+            writer.fail(nsf::StreamedInvocationErrorCode::ApplicationCallbackFailed,
+                        "Python streamed context handler returned false");
+          }
+        }
+        catch (const py::error_already_set& error) {
+          if (!writer.isCancelled()) {
+            writer.fail(nsf::StreamedInvocationErrorCode::ApplicationCallbackFailed,
+                        error.what());
+          }
+        }
+        catch (const std::exception& error) {
+          if (!writer.isCancelled()) {
+            writer.fail(nsf::StreamedInvocationErrorCode::ApplicationCallbackFailed,
+                        error.what());
+          }
+        }
+      });
   }
 
   void
@@ -3383,6 +3742,11 @@ public:
   stop()
   {
     m_running = false;
+    // Close the transport before joining the event thread.  Merely flipping
+    // the loop flag leaves pending Face callbacks alive until Python/C++
+    // teardown, which can release callback-owned native blocks twice.
+    m_face.shutdown();
+    m_face.getIoContext().stop();
     if (m_thread.joinable()) {
       m_thread.join();
     }
@@ -3462,6 +3826,7 @@ private:
   std::unique_ptr<nsf::CertificatePublisher> m_certPublisher;
   std::unique_ptr<nsf::ServiceProvider> m_provider;
   std::map<std::string, py::function> m_handlers;
+  std::map<std::string, std::shared_ptr<py::function>> m_streamingHandlers;
   std::map<std::string, py::function> m_ackHandlers;
   std::map<std::string, py::function> m_collaborationHandlers;
   std::map<std::string, py::function> m_collaborationAckHandlers;
@@ -3671,6 +4036,46 @@ public:
   }
 
   void
+  cancelStreamRequest(const std::string& requestId)
+  {
+    if (!m_user) {
+      throw std::runtime_error("user is not initialized");
+    }
+    const auto id = ndn::Name(requestId);
+    // Python callbacks may request cancellation from a worker thread while
+    // the Face thread is delivering stream events.  ServiceUser owns the
+    // stream maps and consumer lifecycle on the Face thread; calling it
+    // directly here races those maps and can tear down a consumer while a
+    // validation callback still holds it.  Serialize the mutation through
+    // the same io_context used by the Face loop.
+    if (m_running.load()) {
+      boost::asio::post(m_face.getIoContext(), [this, id] {
+        if (m_user) {
+          m_user->cancelStreamRequest(id);
+        }
+      });
+      return;
+    }
+    std::lock_guard<std::mutex> lock(m_callMutex);
+    m_user->cancelStreamRequest(id);
+  }
+
+  py::dict
+  streamMetricsForTest(const std::string& requestId) const
+  {
+    if (!m_user) {
+      throw std::runtime_error("user is not initialized");
+    }
+    const auto metrics = m_user->getStreamMetricsForTest(ndn::Name(requestId));
+    py::dict result;
+    result["published_events"] = metrics.publishedEvents;
+    result["delivered_events"] = metrics.deliveredEvents;
+    result["retry_count"] = metrics.retryCount;
+    result["duplicate_count"] = metrics.duplicateCount;
+    return result;
+  }
+
+  void
   start()
   {
     if (m_running.exchange(true)) {
@@ -3693,10 +4098,22 @@ public:
   void
   stop()
   {
-    m_running = false;
-    if (m_thread.joinable()) {
-      m_thread.join();
-    }
+    // Stop is called both explicitly by the Python client and from this
+    // object's destructor.  Make the transition one-shot, and let the Face
+    // polling thread leave before touching Face shutdown state.  Calling
+    // Face::shutdown() concurrently with processEvents() races ndn-cxx's
+    // pending-callback teardown; that race was observable as an intermittent
+    // SIGSEGV after the Spec175 cancellation oracle had already completed.
+    std::call_once(m_stopOnce, [this] {
+      m_running = false;
+      if (m_thread.joinable()) {
+        m_thread.join();
+      }
+      // No thread can be dispatching a callback at this point.  Shutdown now
+      // cancels any callbacks left in the queue before ServiceUser is freed.
+      m_face.shutdown();
+      m_face.getIoContext().stop();
+    });
   }
 
   void
@@ -4160,6 +4577,10 @@ public:
       if (maxIt != entry.end()) {
         role.maxProviders = py::cast<size_t>(maxIt->second);
       }
+      auto terminalIt = entry.find("terminal_response_owner");
+      if (terminalIt != entry.end()) {
+        role.terminalResponseOwner = py::cast<bool>(terminalIt->second);
+      }
       auto reqIt = entry.find("app_requirement");
       if (reqIt != entry.end() && !reqIt->second.is_none()) {
         role.appRequirement = toBuffer(reqIt->second.cast<py::bytes>());
@@ -4349,7 +4770,11 @@ public:
                      const std::string& requestedRequestId = "",
                      py::object ackCoveragePredicate = py::none(),
                      const std::optional<nsf::RequestCapabilities>&
-                       requestCapabilities = std::nullopt)
+                       requestCapabilities = std::nullopt,
+                     py::object streamOptionsObject = py::none(),
+                     py::object onStreamEvent = py::none(),
+                     py::object onStreamComplete = py::none(),
+                     py::object onStreamError = py::none())
   {
     start();
     auto payload = toBuffer(initialPayload);
@@ -4360,6 +4785,73 @@ public:
     if (!ackCoveragePredicate.is_none()) {
       ackCoverageCallback = keepPyFunction(
         ackCoveragePredicate.cast<py::function>());
+    }
+    const bool streamed = !streamOptionsObject.is_none();
+    PyFunctionPtr streamEventCallback;
+    PyFunctionPtr streamCompleteCallback;
+    PyFunctionPtr streamErrorCallback;
+    std::optional<nsf::StreamRequestOptions> streamOptions;
+    if (streamed) {
+      if (!py::isinstance<py::dict>(streamOptionsObject)) {
+        throw std::invalid_argument("stream_options must be a mapping");
+      }
+      const auto fields = streamOptionsObject.cast<py::dict>();
+      nsf::StreamRequestOptions options;
+      auto getInt = [&fields](const char* key, uint64_t fallback) {
+        return fields.contains(key) ? fields[key].cast<uint64_t>() : fallback;
+      };
+      auto getBool = [&fields](const char* key, bool fallback) {
+        return fields.contains(key) ? fields[key].cast<bool>() : fallback;
+      };
+      if (fields.contains("mode")) {
+        const auto mode = py::str(fields["mode"]).cast<std::string>();
+        if (mode == "Targeted" || mode == "targeted" || mode == "1")
+          options.mode = nsf::InvocationMode::Targeted;
+      }
+      options.maxEvents = static_cast<uint32_t>(getInt("max_events", options.maxEvents));
+      options.interestWindow = static_cast<uint16_t>(getInt("interest_window", options.interestWindow));
+      options.interestLifetimeMs = static_cast<uint32_t>(getInt("interest_lifetime_ms", options.interestLifetimeMs));
+      options.maxEventRetries = static_cast<uint8_t>(getInt("max_event_retries", options.maxEventRetries));
+      options.publisherQueueCapacity = static_cast<uint16_t>(getInt("publisher_queue_capacity", options.publisherQueueCapacity));
+      options.callbackQueueCapacity = static_cast<uint16_t>(getInt("callback_queue_capacity", options.callbackQueueCapacity));
+      options.reorderCapacity = static_cast<uint16_t>(getInt("reorder_capacity", options.reorderCapacity));
+      options.retentionMs = static_cast<uint32_t>(getInt("retention_ms", options.retentionMs));
+      options.completionGraceMs = static_cast<uint32_t>(getInt("completion_grace_ms", options.completionGraceMs));
+      options.maxEventWireBytes = static_cast<uint32_t>(getInt("max_event_wire_bytes", options.maxEventWireBytes));
+      options.allowReplacement = getBool("allow_replacement", options.allowReplacement);
+      options.maxReplacements = static_cast<uint8_t>(getInt("max_replacements", options.maxReplacements));
+      options.attemptEpoch = getInt("attempt_epoch", options.attemptEpoch);
+      options.streamEpoch = getInt("stream_epoch", options.streamEpoch);
+      if (fields.contains("generation_id")) {
+        const auto generationHex = py::str(fields["generation_id"]).cast<std::string>();
+        if (!generationHex.empty()) {
+          if (generationHex.size() != options.generationId.size() * 2 ||
+              std::any_of(generationHex.begin(), generationHex.end(), [] (char ch) {
+                return !((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'));
+              })) {
+            throw std::invalid_argument(
+              "stream generation_id must be exactly 16 bytes of lowercase hex");
+          }
+          const auto nibble = [] (char ch) -> uint8_t {
+            return static_cast<uint8_t>(ch <= '9' ? ch - '0' : ch - 'a' + 10);
+          };
+          for (size_t index = 0; index < options.generationId.size(); ++index) {
+            options.generationId[index] = static_cast<uint8_t>(
+              (nibble(generationHex[index * 2]) << 4) |
+              nibble(generationHex[index * 2 + 1]));
+          }
+        }
+      }
+      if (!fields.contains("on_event") && onStreamEvent.is_none()) {
+        throw std::invalid_argument("streamed collaboration requires on_stream_event");
+      }
+      if (onStreamEvent.is_none() || onStreamComplete.is_none() || onStreamError.is_none()) {
+        throw std::invalid_argument("streamed collaboration requires all stream callbacks");
+      }
+      streamEventCallback = keepPyFunction(onStreamEvent.cast<py::function>());
+      streamCompleteCallback = keepPyFunction(onStreamComplete.cast<py::function>());
+      streamErrorCallback = keepPyFunction(onStreamError.cast<py::function>());
+      streamOptions = options;
     }
     auto actualRequestId = std::make_shared<std::string>();
     std::mutex mutex;
@@ -4374,6 +4866,10 @@ public:
        timeoutCallback = std::move(timeoutCallback),
        ackCoverageCallback = std::move(ackCoverageCallback),
        requestCapabilities,
+       streamOptions,
+       streamEventCallback = std::move(streamEventCallback),
+       streamCompleteCallback = std::move(streamCompleteCallback),
+       streamErrorCallback = std::move(streamErrorCallback),
        actualRequestId, &mutex, &cv, &submitted, &submissionError]() mutable {
         try {
           const auto requestId = m_user->BeginCollaboration(
@@ -4440,7 +4936,46 @@ public:
               }
               return false;
             },
-            requestCapabilities.value_or(nsf::RequestCapabilities()));
+            requestCapabilities.value_or(nsf::RequestCapabilities()),
+            streamOptions,
+            [streamEventCallback](const ndn::Buffer& value) {
+              if (!streamEventCallback) return;
+              py::gil_scoped_acquire gil;
+              try {
+                (*streamEventCallback)(toPyBytes(value));
+              }
+              catch (py::error_already_set& error) {
+                const std::string message = error.what();
+                error.restore();
+                PyErr_Clear();
+                throw std::runtime_error(
+                  "Python stream event callback failed: " + message);
+              }
+            },
+            [streamCompleteCallback](const ndn::Buffer& value) {
+              if (!streamCompleteCallback) return;
+              py::gil_scoped_acquire gil;
+              try { (*streamCompleteCallback)(toPyBytes(value)); }
+              catch (const py::error_already_set& error) {
+                PyErr_WriteUnraisable(error.value().ptr());
+              }
+            },
+            [streamErrorCallback](const nsf::StreamedInvocationError& error) {
+              if (!streamErrorCallback) return;
+              py::gil_scoped_acquire gil;
+              try {
+                py::dict value;
+                value["code"] = static_cast<uint8_t>(error.code);
+                value["message"] = error.message;
+                value["requestId"] = error.requestId.toUri();
+                value["expectedCursor"] = error.expectedCursor;
+                value["providerName"] = error.providerName.toUri();
+                (*streamErrorCallback)(value);
+              }
+              catch (const py::error_already_set& exception) {
+                PyErr_WriteUnraisable(exception.value().ptr());
+              }
+            });
           {
             std::lock_guard<std::mutex> lock(mutex);
             *actualRequestId = requestId.toUri();
@@ -4523,6 +5058,73 @@ public:
       throw std::runtime_error(error);
     }
     return result;
+  }
+
+  py::list
+  waitForVerifiedCollaborationData(const std::string& requestId,
+                                   const std::string& keyScope,
+                                   const std::string& topicPrefix,
+                                   size_t minCount,
+                                   int timeoutMs,
+                                   bool consume)
+  {
+    if (!m_user) {
+      throw std::runtime_error("user is not initialized");
+    }
+    start();
+    std::vector<nsf::VerifiedCollaborationData> records;
+    {
+      py::gil_scoped_release release;
+      records = m_user->waitForVerifiedCollaborationData(
+        ndn::Name(requestId), keyScope, ndn::Name(topicPrefix),
+        minCount, timeoutMs, consume);
+    }
+
+    py::list result;
+    for (const auto& record : records) {
+      py::dict value;
+      value["data_name"] = record.dataName.toUri();
+      value["request_id"] = record.requestId.toUri();
+      value["key_scope"] = record.keyScope;
+      value["topic"] = record.topic.toUri();
+      value["producer"] = record.producer.toUri();
+      value["producer_role"] = record.producerRole;
+      value["sequence"] = record.sequence;
+      value["payload"] = toPyBytes(record.payload);
+      value["signer_certificate"] = record.signerCertificate;
+      value["wire_digest"] = record.wireDigest;
+      result.append(std::move(value));
+    }
+    return result;
+  }
+
+  void
+  clearVerifiedCollaborationData(const std::string& requestId,
+                                 const std::string& keyScope)
+  {
+    if (!m_user) {
+      throw std::runtime_error("user is not initialized");
+    }
+    start();
+    m_user->clearVerifiedCollaborationData(ndn::Name(requestId), keyScope);
+  }
+
+  bool
+  publishCollaborationData(const std::string& targetProvider,
+                           const std::string& requestId,
+                           const std::string& keyScope,
+                           const std::string& topic,
+                           const py::bytes& payload)
+  {
+    if (!m_user) {
+      throw std::runtime_error("user is not initialized");
+    }
+    start();
+    const auto value = toBuffer(payload);
+    py::gil_scoped_release release;
+    return m_user->publishCollaborationData(
+      ndn::Name(targetProvider), ndn::Name(requestId), keyScope,
+      ndn::Name(topic), value);
   }
 
   void
@@ -4835,6 +5437,22 @@ public:
     }
   }
 
+  void
+  refreshPermissions()
+  {
+    if (!m_user) {
+      throw std::runtime_error("user is not initialized");
+    }
+    if (m_running.load()) {
+      m_face.getIoContext().post([this] {
+        m_user->fetchPermissionsFromController(m_controller);
+      });
+      return;
+    }
+    std::lock_guard<std::mutex> callLock(m_callMutex);
+    m_user->fetchPermissionsFromController(m_controller);
+  }
+
   std::vector<std::tuple<std::string, std::string, size_t>>
   getAllowedServices() const
   {
@@ -5060,6 +5678,140 @@ public:
     return m_user->subscribeStream(descriptor, std::move(options));
   }
 
+  PyStreamedInvocationHandle requestServiceStreamingHandle(
+      const std::string& serviceName,
+      const py::bytes& requestPayload,
+      const std::string& providerName,
+      const py::dict& optionFields,
+      const std::string& strategy,
+      py::function onEvent,
+      py::function onComplete,
+      py::function onError)
+  {
+    start();
+    struct SubmitState {
+      std::mutex mutex;
+      std::condition_variable cv;
+      std::shared_ptr<PyBufferStreamHandle> handle;
+      std::string error;
+      bool done = false;
+    };
+    auto state = std::make_shared<SubmitState>();
+    const auto payload = toBuffer(requestPayload);
+    auto eventCallback = keepPyFunction(std::move(onEvent));
+    auto completeCallback = keepPyFunction(std::move(onComplete));
+    auto errorCallback = keepPyFunction(std::move(onError));
+    const auto parsedOptions = streamedInvocationOptionsFromPy(optionFields);
+    size_t nativeStrategy = nsf::tlv::FirstResponding;
+    if (strategy == "random-selection") {
+      nativeStrategy = nsf::tlv::RandomSelection;
+    }
+    else if (strategy == "all-selected") {
+      nativeStrategy = nsf::tlv::AllSelected;
+    }
+    else if (strategy != "first-responding") {
+      throw std::invalid_argument("unsupported streamed selection strategy");
+    }
+    auto submit = [this, serviceName, providerName, payload, state,
+                   parsedOptions, nativeStrategy,
+                   eventCallback, completeCallback, errorCallback]() mutable {
+      try {
+        auto options = parsedOptions;
+        const auto expectedMode = providerName.empty() ? nsf::InvocationMode::Normal
+                                                        : nsf::InvocationMode::Targeted;
+        if (options.mode != expectedMode) {
+          throw std::invalid_argument(
+            providerName.empty() ?
+              "Targeted streamed invocation requires one provider" :
+              "Normal streamed invocation rejects provider");
+        }
+        auto event = [eventCallback](const ndn::Buffer& value) {
+          py::gil_scoped_acquire gil;
+          try {
+            (*eventCallback)(toPyBytes(value));
+          }
+          catch (py::error_already_set& error) {
+            const std::string message = error.what();
+            error.restore();
+            PyErr_Clear();
+            throw std::runtime_error(
+              "Python stream event callback failed: " + message);
+          }
+        };
+        auto complete = [completeCallback](const ndn::Buffer& value) {
+          py::gil_scoped_acquire gil;
+          try { (*completeCallback)(toPyBytes(value)); }
+          catch (const py::error_already_set& error) { PyErr_WriteUnraisable(error.value().ptr()); }
+        };
+        auto failed = [errorCallback](const nsf::StreamedInvocationError& error) {
+          py::gil_scoped_acquire gil;
+          try {
+            py::dict value;
+            value["code"] = static_cast<uint8_t>(error.code);
+            value["message"] = error.message;
+            value["requestId"] = error.requestId.toUri();
+            value["expectedCursor"] = error.expectedCursor;
+            value["providerName"] = error.providerName.toUri();
+            (*errorCallback)(value);
+          }
+          catch (const py::error_already_set& exception) { PyErr_WriteUnraisable(exception.value().ptr()); }
+        };
+        std::shared_ptr<nsf::StreamedInvocationHandle<ndn::Buffer, ndn::Buffer>> handle;
+        if (providerName.empty()) {
+          handle = m_user->RequestServiceStreaming<ndn::Buffer, ndn::Buffer, ndn::Buffer>(
+            ndn::Name(serviceName), payload, std::move(options), event, complete, failed,
+            nativeStrategy);
+        }
+        else {
+          handle = m_user->RequestServiceStreaming<ndn::Buffer, ndn::Buffer, ndn::Buffer>(
+            ndn::Name(providerName), ndn::Name(serviceName), payload,
+            std::move(options), event, complete, failed);
+        }
+        if (!handle) throw std::runtime_error("streamed request was rejected");
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->handle = std::move(handle);
+      }
+      catch (const std::exception& error) {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->error = error.what();
+      }
+      {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->done = true;
+      }
+      state->cv.notify_one();
+    };
+    if (m_running.load()) {
+      boost::asio::post(m_face.getIoContext(), std::move(submit));
+      py::gil_scoped_release release;
+      std::unique_lock<std::mutex> lock(state->mutex);
+      state->cv.wait_for(lock, std::chrono::seconds(5), [state] { return state->done; });
+    }
+    else {
+      std::lock_guard<std::mutex> callLock(m_callMutex);
+      submit();
+    }
+    if (!state->error.empty()) throw std::runtime_error(state->error);
+    if (!state->handle) throw std::runtime_error("streamed request did not allocate handle");
+    return PyStreamedInvocationHandle(state->handle);
+  }
+
+  ndn::Name requestServiceStreaming(
+      const std::string& serviceName,
+      const py::bytes& requestPayload,
+      const std::string& providerName,
+      py::function onEvent,
+      py::function onComplete,
+      py::function onError)
+  {
+    py::dict options;
+    options["mode"] = providerName.empty() ? "Normal" : "Targeted";
+    auto handle = requestServiceStreamingHandle(
+      serviceName, requestPayload, providerName, options, "first-responding",
+      std::move(onEvent), std::move(onComplete), std::move(onError));
+    return ndn::Name(handle.requestId());
+  }
+
 private:
   ndn::Face m_face;
   ndn::KeyChain m_keyChain;
@@ -5074,6 +5826,7 @@ private:
   std::unique_ptr<nsf::ServiceUser> m_user;
   std::atomic<bool> m_running{false};
   std::thread m_thread;
+  std::once_flag m_stopOnce;
   std::mutex m_callMutex;
   std::mutex m_errorMutex;
   std::string m_error;
@@ -6627,6 +7380,7 @@ PYBIND11_MODULE(_ndnsf, m)
   py::class_<PyCollaborationContext>(m, "CollaborationContext")
     .def_property_readonly("session_id", &PyCollaborationContext::sessionId)
     .def_property_readonly("role", &PyCollaborationContext::role)
+    .def_property_readonly("requester_name", &PyCollaborationContext::requesterName)
     .def_property_readonly("local_provider", &PyCollaborationContext::localProvider)
     .def_property_readonly("assignment", &PyCollaborationContext::assignment)
     .def("fetch_artifact", &PyCollaborationContext::fetchArtifact,
@@ -6679,7 +7433,15 @@ PYBIND11_MODULE(_ndnsf, m)
     .def("report_operation_status", &PyCollaborationContext::reportOperationStatus,
          py::arg("status"))
     .def("publish_final_response", &PyCollaborationContext::publishFinalResponse,
-         py::arg("payload"));
+         py::arg("payload"))
+    .def_property_readonly("is_streamed", &PyCollaborationContext::isStreamed)
+    .def("publish_stream_event", &PyCollaborationContext::publishStreamEvent,
+         py::arg("payload"))
+    .def("finish_stream", &PyCollaborationContext::finishStream,
+         py::arg("payload"), py::arg("reason") = 4)
+    .def("fail_stream", &PyCollaborationContext::failStream,
+         py::arg("code"), py::arg("message"))
+    .def_property_readonly("stream_cancelled", &PyCollaborationContext::streamCancelled);
 
   py::class_<NativeServiceController>(m, "NativeServiceController")
     .def(py::init<const std::string&,
@@ -6697,6 +7459,22 @@ PYBIND11_MODULE(_ndnsf, m)
     .def("start", &NativeServiceController::start)
     .def("run", &NativeServiceController::run, py::call_guard<py::gil_scoped_release>())
     .def("stop", &NativeServiceController::stop);
+
+  py::class_<PyStreamWriter>(m, "StreamWriter")
+    .def("publish_event", &PyStreamWriter::publish, py::arg("payload"))
+    .def("finish_stream", &PyStreamWriter::finish,
+         py::arg("payload") = py::bytes(), py::arg("reason") = 4)
+    .def("fail", &PyStreamWriter::fail,
+         py::arg("code"), py::arg("message"))
+    .def_property_readonly("cancelled", &PyStreamWriter::cancelled)
+    .def_property_readonly("remaining_deadline_ms",
+                           &PyStreamWriter::remaining_deadline_ms);
+
+  py::class_<PyStreamedInvocationHandle>(m, "NativeStreamedInvocationHandle")
+    .def_property_readonly("request_id", &PyStreamedInvocationHandle::requestId)
+    .def_property_readonly("status", &PyStreamedInvocationHandle::status)
+    .def_property_readonly("metrics", &PyStreamedInvocationHandle::metrics)
+    .def("cancel", &PyStreamedInvocationHandle::cancel);
 
   py::class_<NativeServiceProvider>(m, "NativeServiceProvider")
     .def(py::init<const std::string&,
@@ -6723,6 +7501,11 @@ PYBIND11_MODULE(_ndnsf, m)
          py::arg("ack_handler") = std::optional<py::function>(),
          py::arg("include_request_context") = false,
          py::arg("include_ack_context") = false)
+    .def("add_streaming_service", &NativeServiceProvider::addStreamingService,
+         py::arg("service"), py::arg("handler"))
+    .def("add_streaming_context_service",
+         &NativeServiceProvider::addStreamingContextService,
+         py::arg("service"), py::arg("handler"))
     .def("set_deployment_prepare_handler",
          &NativeServiceProvider::setDeploymentPrepareHandler,
          py::arg("handler"))
@@ -6734,6 +7517,15 @@ PYBIND11_MODULE(_ndnsf, m)
          &NativeServiceProvider::providerSigningKeyName)
     .def_property_readonly("provider_signing_certificate_name",
          &NativeServiceProvider::providerSigningCertificateName)
+    .def("set_stream_publication_interceptor_for_test",
+         &NativeServiceProvider::setStreamPublicationInterceptorForTest,
+         py::arg("callback"))
+    .def("set_stream_retention_interceptor_for_test",
+         &NativeServiceProvider::setStreamRetentionInterceptorForTest,
+         py::arg("callback"))
+    .def("publish_stream_packet_for_test",
+         &NativeServiceProvider::publishStreamPacketForTest,
+         py::arg("wire"))
     .def("configure_opaque_selection_store",
          &NativeServiceProvider::configureOpaqueSelectionStore,
          py::arg("wal_path"), py::arg("storage_key"),
@@ -6847,6 +7639,19 @@ PYBIND11_MODULE(_ndnsf, m)
          py::arg("on_response"),
          py::arg("on_timeout"),
          py::arg("timeout_ms") = 5000)
+    .def("request_service_streaming", &NativeServiceUser::requestServiceStreaming,
+         py::arg("service"), py::arg("payload"),
+         py::arg("provider"), py::arg("on_event"),
+         py::arg("on_complete"), py::arg("on_error"))
+    .def("request_service_streaming_handle",
+         &NativeServiceUser::requestServiceStreamingHandle,
+         py::arg("service"), py::arg("payload"), py::arg("provider"),
+         py::arg("options"), py::arg("strategy"), py::arg("on_event"),
+         py::arg("on_complete"), py::arg("on_error"))
+    .def("cancel_stream_request", &NativeServiceUser::cancelStreamRequest,
+         py::arg("request_id"))
+    .def("stream_metrics_for_test", &NativeServiceUser::streamMetricsForTest,
+         py::arg("request_id"))
     .def("publish_encrypted_large_data", &NativeServiceUser::publishEncryptedLargeData,
          py::arg("service"),
          py::arg("payload"),
@@ -6878,7 +7683,11 @@ PYBIND11_MODULE(_ndnsf, m)
          py::arg("on_timeout"), py::arg("ack_timeout_ms") = 300,
          py::arg("timeout_ms") = 10000, py::arg("request_id") = "",
          py::arg("ack_coverage_predicate") = py::none(),
-         py::arg("request_capabilities") = std::nullopt)
+         py::arg("request_capabilities") = std::nullopt,
+         py::arg("stream_options") = py::none(),
+         py::arg("on_stream_event") = py::none(),
+         py::arg("on_stream_complete") = py::none(),
+         py::arg("on_stream_error") = py::none())
     .def("commit_collaboration_plan",
          &NativeServiceUser::commitCollaborationPlan,
          py::arg("service"), py::arg("request_id"),
@@ -6889,6 +7698,18 @@ PYBIND11_MODULE(_ndnsf, m)
          py::arg("timeout_ms") = 10000,
          py::arg("role_provider_assignments") =
            std::map<std::string, std::string>{})
+    .def("wait_for_verified_collaboration_data",
+         &NativeServiceUser::waitForVerifiedCollaborationData,
+         py::arg("request_id"), py::arg("key_scope"),
+         py::arg("topic_prefix"), py::arg("min_count"),
+         py::arg("timeout_ms"), py::arg("consume") = true)
+    .def("clear_verified_collaboration_data",
+         &NativeServiceUser::clearVerifiedCollaborationData,
+         py::arg("request_id"), py::arg("key_scope"))
+    .def("publish_collaboration_data",
+         &NativeServiceUser::publishCollaborationData,
+         py::arg("target_provider"), py::arg("request_id"),
+         py::arg("key_scope"), py::arg("topic"), py::arg("payload"))
     .def("request_collaboration_async", &NativeServiceUser::requestCollaborationAsync,
          py::arg("service"),
          py::arg("payload"),
@@ -6913,6 +7734,7 @@ PYBIND11_MODULE(_ndnsf, m)
     .def("start", &NativeServiceUser::start)
     .def("stop", &NativeServiceUser::stop)
     .def("get_allowed_services", &NativeServiceUser::getAllowedServices)
+    .def("refresh_permissions", &NativeServiceUser::refreshPermissions)
     .def("get_ndnsd_services", &NativeServiceUser::getNdnsdServices)
     .def("pump", &NativeServiceUser::pump);
 }

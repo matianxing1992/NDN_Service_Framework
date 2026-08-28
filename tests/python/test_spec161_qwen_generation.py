@@ -606,6 +606,73 @@ class QwenGenerationTest(unittest.TestCase):
             "campaign-prompt-m0-token-0",
         )
 
+    def test_automatic_streaming_requires_native_cached_token_mode(self) -> None:
+        captured = {}
+
+        class TaskAdapter:
+            @staticmethod
+            def encode_input(payload, options):
+                captured["context"] = self_outer.pipeline.decode_qwen_pipeline_context(
+                    payload)
+                captured["options"] = dict(options)
+                return b"application-input"
+
+        class Handle:
+            planning_timings_ms = {"planning": 1.0}
+            decision = types.SimpleNamespace(
+                artifact_preparation=types.SimpleNamespace(value="GENERATED"),
+                evidence_digest="sha256:" + "1" * 64,
+            )
+
+            @staticmethod
+            def response(_timeout_ms):
+                return types.SimpleNamespace(
+                    request_id="request-175-native",
+                    payload=json.dumps({
+                        "schema": "NDNSF-DI-FINAL-V1",
+                        "finishHint": "eos",
+                        "tokenIds": [7, 2],
+                    }).encode("utf-8"),
+                )
+
+        class Client:
+            @staticmethod
+            def request_streaming(**kwargs):
+                captured["request"] = dict(kwargs)
+                return Handle()
+
+        self_outer = self
+        args = types.SimpleNamespace(
+            max_new_tokens=64,
+            timeout_ms=1000,
+            diagnostic_token_loop=False,
+            automatic_planning_manifest="/sealed/automatic-plan.json",
+            _automatic_adapter=types.SimpleNamespace(task=TaskAdapter()),
+            _automatic_model=object(),
+            _automatic_task=object(),
+            _qwen_model_type="qwen3",
+        )
+        result = self.user._run_qwen_transformer_generation_sample(
+            Client(),
+            args,
+            prompt_case={
+                "formattedInputIds": [10, 11],
+                "referenceGeneratedTokenIds": [7, 2],
+                "eosTokenIds": [2],
+            },
+            generation_id="campaign-prompt-m0",
+            request_id="request-175-native",
+            decoder=lambda values: "answer" if list(values) == [7, 2] else "",
+        )
+        self.assertEqual(result.status, "OK")
+        self.assertEqual(captured["options"]["useCache"], True)
+        self.assertEqual(captured["options"]["outputMode"], "TOKEN_STREAMING")
+        self.assertEqual(
+            captured["context"]["generation"]["outputMode"],
+            "TOKEN_STREAMING",
+        )
+        self.assertIn("on_event", captured["request"])
+
     def test_requester_campaign_writes_one_warmup_and_five_measured_per_prompt(
         self,
     ) -> None:
@@ -634,15 +701,14 @@ class QwenGenerationTest(unittest.TestCase):
 
         class Tokenizer:
             @staticmethod
+            def from_file(path):
+                self_outer.assertTrue(path.endswith("tokenizer.json"))
+                return Tokenizer()
+
+            @staticmethod
             def decode(values, skip_special_tokens=True):
                 self_outer.assertTrue(skip_special_tokens)
                 return "answer" if values == [7, 2] else ""
-
-        class AutoTokenizer:
-            @staticmethod
-            def from_pretrained(*_args, **kwargs):
-                self_outer.assertTrue(kwargs["local_files_only"])
-                return Tokenizer()
 
         self_outer = self
         campaign = {
@@ -661,16 +727,19 @@ class QwenGenerationTest(unittest.TestCase):
             ],
         }
         client = Client()
-        original_transformers = sys.modules.get("transformers")
-        sys.modules["transformers"] = types.SimpleNamespace(
-            AutoTokenizer=AutoTokenizer)
+        original_tokenizers = sys.modules.get("tokenizers")
+        sys.modules["tokenizers"] = types.SimpleNamespace(Tokenizer=Tokenizer)
         try:
             with tempfile.TemporaryDirectory() as tmp:
+                tokenizer_dir = Path(tmp) / "tokenizer"
+                tokenizer_dir.mkdir()
+                (tokenizer_dir / "tokenizer.json").write_text(
+                    "{}", encoding="utf-8")
                 output = Path(tmp) / "samples.jsonl"
                 args = types.SimpleNamespace(
                     max_new_tokens=64,
                     generation_jsonl=str(output),
-                    qwen_tokenizer_dir="/frozen/tokenizer",
+                    qwen_tokenizer_dir=str(tokenizer_dir),
                     deployment_revision="sha256:test",
                     ack_timeout_ms=100,
                     timeout_ms=1000,
@@ -683,10 +752,10 @@ class QwenGenerationTest(unittest.TestCase):
                     for line in output.read_text(encoding="utf-8").splitlines()
                 ]
         finally:
-            if original_transformers is None:
-                sys.modules.pop("transformers", None)
+            if original_tokenizers is None:
+                sys.modules.pop("tokenizers", None)
             else:
-                sys.modules["transformers"] = original_transformers
+                sys.modules["tokenizers"] = original_tokenizers
 
         self.assertEqual(rc, 0)
         self.assertEqual(client.calls, 60)

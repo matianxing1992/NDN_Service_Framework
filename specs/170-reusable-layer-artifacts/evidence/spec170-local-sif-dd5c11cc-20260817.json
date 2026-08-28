@@ -1,0 +1,42 @@
+{
+  "schemaVersion": "ndnsf-local-sif-build-v2",
+  "status": "PASS",
+  "releaseId": "spec170-runtime-dd5c11cc-localfix-20260817-r1",
+  "source": {
+    "revision": "dd5c11cc6cf7cef09c3f4a1bc1bf8d215d61962c",
+    "sealDigest": "sha256:110745a2d7c3676af952d5a27e2302a0cfe2f96cbe2714791e6d1881453bee24",
+    "patchSha256": "sha256:821589beb9bf3fd343a4c40c3cd6da49fbd45ee346fc564af3cb25b267b597c2"
+  },
+  "baseSif": {
+    "path": "/home/tianxing/.local/share/Trash/files/ndnsf-spec170-route-cleanup-20260817/spec170-runtime-8beaa9cd-r3.sif",
+    "sha256": "sha256:4e5e56ef4893eb6f4f4e87c8b9d8f2c62621f3f04df8965ae4323545fa46d816"
+  },
+  "sif": {
+    "path": "/tmp/spec170-runtime-dd5c11cc-localfix-20260817-r1.sif",
+    "sha256": "sha256:f6521a8226190279cb961f2e100245d783c8ba90723a4b004f1f773df71b5874",
+    "bytes": 4398788608
+  },
+  "replacedRuntime": {
+    "path": "/opt/ndnsf-di/current/bin/di-native-provider",
+    "sha256": "sha256:3dcfaa94fabfaebff967c191c7abea3b9d69be9360267a49f72167f216d2a6d4",
+    "rpath": "/opt/ndnsf-di/current/lib:/opt/onnxruntime/lib"
+  },
+  "ndnSvs": {
+    "revision": "1d432a5b1ffde64544963a86fda9163ccc26610e",
+    "sha256": "sha256:a484df6422ce43f9d4ee351f47683cae8027d243f7d1b1674e653f00a51f0379"
+  },
+  "apptainer": {
+    "local": "1.3.4",
+    "tiger": "1.3.4-1.el9"
+  },
+  "method": "local-apptainer-localimage-refresh",
+  "tigerAction": "verify-hash-and-execute-only",
+  "localChecks": {
+    "sealedSourceRoot": "PASS",
+    "staticRuntimeProbe": "PASS",
+    "pythonImport": "PASS",
+    "runnerHelp": "PASS",
+    "providerHash": "PASS",
+    "providerLddClosure": "PASS"
+  }
+}

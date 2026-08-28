@@ -289,6 +289,23 @@ class APPProvider:
         self.drain()
         return 0
 
+    def set_stream_publication_interceptor_for_test(self, callback) -> None:
+        if self._network_provider is None:
+            raise RuntimeError("network Provider is not configured")
+        self._network_provider.set_stream_publication_interceptor_for_test(
+            callback)
+
+    def set_stream_retention_interceptor_for_test(self, callback) -> None:
+        if self._network_provider is None:
+            raise RuntimeError("network Provider is not configured")
+        self._network_provider.set_stream_retention_interceptor_for_test(
+            callback)
+
+    def publish_stream_packet_for_test(self, wire: bytes) -> None:
+        if self._network_provider is None:
+            raise RuntimeError("network Provider is not configured")
+        self._network_provider.publish_stream_packet_for_test(wire)
+
     def register_agent(self, *, boot_epoch: str, capabilities=(),
                        capacity_by_role=None, permission_ready: bool = True):
         if not boot_epoch or self.registration is not None:

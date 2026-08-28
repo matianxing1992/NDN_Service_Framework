@@ -1,0 +1,45 @@
+{
+  "status": "FROZEN_INTERIM_EVIDENCE_SUPERSEDED_BY_SPEC122",
+  "baseline": {
+    "result": "results/spec121-attribution-corrected-candidate2-20260718",
+    "decodedFrames": 1800,
+    "decoderStartupMs": 917,
+    "decoderOutputIntervalP99Ms": 1066,
+    "decoderCallbackToGuiP95Ms": 30,
+    "dataPutToReceiveP95Ms": 23.107,
+    "futureInterests": 357,
+    "futureHits": 357,
+    "userCpuSeconds": 51.591323,
+    "systemCpuSeconds": 14.201821,
+    "maxRssKiB": 254820,
+    "maxPitEntries": 36
+  },
+  "candidate": {
+    "result": "results/spec121-bounded-provider-batching-candidate3-20260718",
+    "change": "posix encoder pipe read plus 20 ms bounded partial packetization",
+    "rollback": "NDNSF_UAV_ENCODER_PIPE_READ_MODE=stdio-batched",
+    "decodedFrames": 1842,
+    "decoderStartupMs": 87,
+    "decoderOutputIntervalP99Ms": 142,
+    "decoderCallbackToGuiP95Ms": 19,
+    "dataPutToReceiveP95Ms": 14.643,
+    "futureInterests": 2951,
+    "futureHits": 2951,
+    "userCpuSeconds": 55.466522,
+    "systemCpuSeconds": 13.996053,
+    "maxRssKiB": 254612,
+    "maxPitEntries": 35
+  },
+  "measurementBoundary": {
+    "sourceToDecoderOutput": "unavailable-h264-group-to-frame-cardinality-ambiguous",
+    "crossHostOneWay": "unavailable-without-offset-uncertainty",
+    "miniNdnSharedClock": true
+  },
+  "acceptanceClaim": "none",
+  "supersededAcceptance": {
+    "reason": "exact camera-source-to-decoded-frame identity unavailable",
+    "owner": "Spec 122 T009",
+    "reuseExploratoryCells": false
+  },
+  "remainingTask": null
+}

@@ -1,0 +1,8 @@
+{
+  "schema": "ndnsf-di-spec111-historical-evidence-verification-v1",
+  "baselineSha256": "sha256:a219f3084c823d8b63874f7cbed108572cbc272e4c9272a7b867695482d4197c",
+  "checked": 100,
+  "mismatches": [],
+  "mismatchCount": 0,
+  "verdict": "PASS"
+}

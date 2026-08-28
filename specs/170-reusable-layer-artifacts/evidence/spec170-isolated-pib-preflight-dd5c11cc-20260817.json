@@ -1,0 +1,10 @@
+{
+  "policy": "/project/tma1/ndnsf-di/releases/spec170-runtime-dd5c11cc-localfix-20260817-r1/network-bundle-d1-cuda-current/controller.policies",
+  "job": "/project/tma1/ndnsf-di/releases/spec170-runtime-dd5c11cc-localfix-20260817-r1/network-bundle-d1-cuda-current/spec170-d1-current-sif-workload.sh",
+  "user_driver": "/project/tma1/ndnsf-di/releases/spec170-runtime-dd5c11cc-localfix-20260817-r1/network-bundle-d1-cuda-current/user_driver.py",
+  "isolated_pib_detected": false,
+  "service": "/Inference/NativeTracer",
+  "user_identity": "/NDNSF-DI/Tracer/user",
+  "provider_identity_prefix": "/NDNSF-DI/Tracer/provider/",
+  "failures": []
+}

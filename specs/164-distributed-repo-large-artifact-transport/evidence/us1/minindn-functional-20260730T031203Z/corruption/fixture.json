@@ -1,0 +1,54 @@
+{
+  "artifact": {
+    "contentDigest": "d8f32a3b4c195f65444e342b0c61bdaf114802e84ab7821a1f88e3f66ea15100",
+    "digestAlgorithm": "sha256",
+    "formatVersion": "artifact-manifest-v2",
+    "logicalName": "/spec164/publisher/artifact",
+    "policyEpoch": "spec164-policy-1",
+    "publisherIdentity": "/spec164/publisher",
+    "rootManifestName": "/spec164/publisher/artifact/root",
+    "sizeBytes": 65536
+  },
+  "capability": {
+    "digestAlgorithms": [
+      "sha256"
+    ],
+    "formatVersions": [
+      "artifact-manifest-v2"
+    ],
+    "maxArtifactBytes": 1073741824,
+    "maxChunkBytes": 67108864,
+    "maxManifestDepth": 16,
+    "maxPageEncodedBytes": 4194304,
+    "maxPageEntries": 65536,
+    "maxRootEncodedBytes": 65536,
+    "policyEpoch": "spec164-policy-1",
+    "repoNode": "/spec164/repo",
+    "signatureAlgorithms": [
+      "rsa-sha256"
+    ]
+  },
+  "chunk": {
+    "digest": "d8f32a3b4c195f65444e342b0c61bdaf114802e84ab7821a1f88e3f66ea15100",
+    "digestAlgorithm": "sha256",
+    "finalSegment": 15,
+    "firstSegment": 0,
+    "index": 0,
+    "lengthBytes": 65536,
+    "offsetBytes": 0
+  },
+  "packetPayloadBytes": 4096,
+  "policy": {
+    "allowedDigestAlgorithms": [
+      "sha256"
+    ],
+    "allowedSignatureAlgorithms": [
+      "rsa-sha256"
+    ],
+    "evaluationTimeMs": 2000,
+    "policyEpoch": "spec164-policy-1",
+    "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArnYA8jXwhElwUiz3/wqY\n0yI/JYi+jVOHBQrNTeiTUpj+5EuNdWz/i4PMAUf3rgExqiUe5nxdGj9MXyDigspC\nZB2U3eqhYzb5Z0P13gPyjIz30DD7Fqh5gXwzQAmPIyq9VOQ+mnVEykYRUvXjnfVq\nMMz1PMNnt4rK52+39gNXgASOGFZoFcC/t6FApckAVQ17kZpKkrhBRfHDAY3dUvGE\n68HaUfY4squ6lSve2NWxPGJ0hSZ4xOFBRwWBL0pY/jHJFa05vbW9o7WLvWj/3FPJ\nkyrV8c1SLOEw9hwnFY58X3t3c0nq+/j1b2Vyvns4wt4BjL4z8SB6N8lJVNodTI9U\n5QIDAQAB\n-----END PUBLIC KEY-----\n",
+    "trustedKeyLocator": "/spec164/publisher/KEY/root-1",
+    "trustedPublisherIdentity": "/spec164/publisher"
+  }
+}

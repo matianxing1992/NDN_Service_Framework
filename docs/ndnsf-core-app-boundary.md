@@ -334,3 +334,16 @@ Follow-up work:
   workload-specific follow-up work.
 Follow-up changes should remain workload-scoped and retain matched regression
 and MiniNDN gates.
+# Spec 111 completed boundary
+
+Decision order: deployment → model variant → partition → Provider assignment →
+scheduling/admission → tuning/cache → execution target → validated atomic
+intent. Recovery selects only a transition; Core preserves the original
+deadline, attempt/output epochs, certificate membership and exactly-one visible
+result. Cache policy may emit affinity but never final compute placement.
+
+The ten policy ports are `ModelVariantPolicy`, `PartitionPlanner`,
+`DeploymentPolicy`, `ProviderAssignmentPolicy`, `SchedulingPolicy`,
+`AdmissionPolicy`, `ExecutionTuningPolicy`, `CachePolicy`, `RecoveryPolicy` and
+`ExecutionTargetPolicy`. `RunnerAdapter` is separate. The aggregate
+`ndnsf-distributed-inference` package is compatibility-only.

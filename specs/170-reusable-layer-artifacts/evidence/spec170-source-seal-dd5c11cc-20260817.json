@@ -1,0 +1,73 @@
+{
+  "createdAt": "2026-08-17T03:48:47.079370+00:00",
+  "dependencies": {
+    "NAC-ABE": {
+      "archiveBytes": 532480,
+      "archiveDigest": "sha256:5062730c30bf2c09933a6db815a4fa18e23d1b0c36c9d4fe4ddf03774007f36f",
+      "archivePath": "archives/NAC-ABE.tar",
+      "revision": "390e9001a8611e04c90f3a5866d09c3136c885d0"
+    },
+    "NDNSD": {
+      "archiveBytes": 1290240,
+      "archiveDigest": "sha256:85776653fe3cf1880da77ce506244c0dbf939e03a09d9d3a78aed79f0172dd43",
+      "archivePath": "archives/NDNSD.tar",
+      "revision": "25f7ad9d2f8848c10025e71358e3dafd62c348c0"
+    },
+    "NFD": {
+      "archiveBytes": 3911680,
+      "archiveDigest": "sha256:7dfade7d7f8ba0cf282f4c28c88095f4d7c695a846ba5329d54811afdac640c7",
+      "archivePath": "archives/NFD.tar",
+      "revision": "2b43d675e3fba37b5362fab0001ba542bb07b43b"
+    },
+    "ndn-cxx": {
+      "archiveBytes": 4526080,
+      "archiveDigest": "sha256:9e76a7a0dec4f461546eaeff13fa4537beef3a2d67d118635041e1a0dd5629c0",
+      "archivePath": "archives/ndn-cxx.tar",
+      "revision": "8296fc9462c7ef9635b7c45468c067fd39514e31"
+    },
+    "ndn-svs": {
+      "archiveBytes": 634880,
+      "archiveDigest": "sha256:3ed93e3a66e5fc6aa0be4b233d8a6d3dbca8d25c14e05e28f6bbe822debbd2e5",
+      "archivePath": "archives/ndn-svs.tar",
+      "revision": "1d432a5b1ffde64544963a86fda9163ccc26610e"
+    },
+    "openabe": {
+      "archiveBytes": 2355200,
+      "archiveDigest": "sha256:b229d4f143275790a3afad291d27e1017f617c0ae8b0cabe628e6426293c3f9f",
+      "archivePath": "archives/openabe.tar",
+      "revision": "b8f9d3c8a2620c1185ca972248f7af39c1eae68c"
+    },
+    "relic": {
+      "archiveBytes": 4341760,
+      "archiveDigest": "sha256:d6f648e532f99226fcfb825213ff5ac150d3092e071f209f67785d45caf46719",
+      "archivePath": "archives/relic.tar",
+      "revision": "b984e901ba78c83ea4093ea96addd13628c8c2d0"
+    },
+    "websocketpp": {
+      "archiveBytes": 3727360,
+      "archiveDigest": "sha256:bdc0e6413c8e19a0b8b93763f9755e3afe99b9414cf433fdd984b0e474b71d56",
+      "archivePath": "archives/websocketpp.tar",
+      "revision": "ac4e021333675fc80b96eb7be45d218581c897e2"
+    }
+  },
+  "lockDigest": "sha256:7533e345fc7b1db0af4d98a9dcfee516ce14cabb37168bdf5b6fd5d041932868",
+  "modelWeightsIncluded": false,
+  "ndnsfDiOwnerProfiles": [
+    "core",
+    "sdk",
+    "app",
+    "planner",
+    "adapters/onnx",
+    "adapters/qwen",
+    "adapters/llama",
+    "ops",
+    "compat"
+  ],
+  "schemaVersion": "spec110-oci-source-seal-v1",
+  "sealDigest": "sha256:110745a2d7c3676af952d5a27e2302a0cfe2f96cbe2714791e6d1881453bee24",
+  "workspace": {
+    "archiveBytes": 76615680,
+    "archiveDigest": "sha256:6eee02bdece9e87e516109d504ae0e9d1459466e535ca1d05ee0560a070202e2",
+    "revision": "dd5c11cc6cf7cef09c3f4a1bc1bf8d215d61962c"
+  }
+}

@@ -170,6 +170,37 @@ As a paper author, I can decide whether NDNSF has a mobility advantage using
   the unchanged global deadline. This Response-path mechanism SHALL be
   implemented and evaluated separately. Merely increasing a timeout does not
   satisfy either recovery requirement.
+- **FR-022**: The paired analysis SHALL classify every logical request at its
+  registered publication time into mutually exclusive opportunity states:
+  `NONE_REACHABLE`, `INITIAL_REACHABLE`, or `SWITCH_REQUIRED`. The initial
+  Provider is the endpoint that the deterministic sequential baseline would
+  try first for that logical request. `SWITCH_REQUIRED` means that endpoint is
+  unreachable while at least one later endpoint is reachable. Classification
+  SHALL use only the shared trace and registered endpoint order after the run;
+  no client may consume this state as an oracle.
+- **FR-023**: A deterministic Provider-availability transition experiment
+  SHALL separate client-side discovery from pre-registration. The NDNSF user
+  SHALL receive a service name but no Provider identity or address list. A
+  newly reachable, already authorized and routed Provider SHALL become the
+  only reachable Provider after the initial Providers retire. Static gRPC and
+  NSC controls SHALL omit that Provider, while pre-registered controls SHALL
+  include it before measurement. Reports SHALL state that gRPC or NSC can gain
+  equivalent dynamic discovery only through an external resolver or
+  configuration-update mechanism, which is outside the static controls.
+- **FR-024**: Opportunity-window evidence SHALL report logical success,
+  user-observed request latency when available, pre-execution switching cost,
+  sequential failed-attempt time, attempt or Provider-execution count, and the
+  first terminal failure stage. A lifecycle-stage proxy SHALL be labelled as a
+  proxy and SHALL not be presented as end-to-end user latency.
+- **FR-025**: A confirmatory opportunity holdout SHALL use previously unmeasured
+  RandomWaypoint seeds 72--81 at 100 m and 2 m/s. All three systems SHALL use
+  the same 300-second-burn-in trace per seed, 60-second/5-RPS workload,
+  1-second attempt/ACK timeout, 5-second global deadline, disabled admission
+  and gRPC health routing, and NDNSF FirstResponding with bounded Response
+  reselection. Request publication SHALL be phase-shifted to 4.05 seconds so
+  it occurs between 100 ms trace-gate epochs. Every client SHALL retain its
+  actual monotonic publication time, and the analysis SHALL exclude any
+  request whose observed gates are incomplete or disagree across paired cells.
 
 ## Non-Functional Requirements
 
@@ -250,6 +281,32 @@ As a paper author, I can decide whether NDNSF has a mobility advantage using
   reachable-Provider coverage, and seed-level p95 latency. Pre-repair and
   no-burn-in 50 m results SHALL remain diagnostic and SHALL NOT be pooled with
   this extension.
+- **SC-013**: The frozen 100 m seeds 62--71 SHALL yield a reproducible
+  request-level opportunity table whose request counts reconcile with every
+  cell summary and whose `SWITCH_REQUIRED` rows use the same trace-relative
+  request index for NDNSF, gRPC, and NSC. A conditional switching-cost claim is
+  accepted only when at least five seeds contain such requests and a paired
+  seed bootstrap shows a positive reduction in the registered tail-cost metric
+  for NDNSF versus `gRPC-SEQ-4`; unconditional success and latency remain the
+  primary results and all other opportunity states remain visible controls.
+- **SC-014**: In three independent 60-second Provider-transition replays, the
+  NDNSF client configuration SHALL contain zero Provider identities and zero
+  Provider addresses, and NDNSF SHALL complete at least 95% of requests in the
+  post-retirement window through the newly reachable Provider. Static
+  three-endpoint gRPC and NSC controls SHALL record zero executions at that
+  Provider and fail after their configured Providers retire. Pre-registered
+  four-endpoint controls SHALL recover, demonstrating that their recovery
+  depends on prior endpoint configuration rather than unavailable service
+  capacity. Every replay SHALL retain runtime commands and per-window counts.
+- **SC-015**: The seeds 72--81 holdout SHALL be accepted only if all 30 cells
+  finish exactly once, every seed has one trace hash shared by the three
+  systems, all request/result markers reconcile with each terminal summary,
+  and paired opportunity classification uses actual publication time and
+  applied gate state. The conditional switching-cost claim is confirmed only
+  if the paired seed bootstrap 95% intervals for the registered NDNSF-minus-
+  gRPC and NDNSF-minus-NSC end-to-end p95 differences are both below zero
+  within `SWITCH_REQUIRED` rows.
+  Otherwise the result SHALL be retained and the claim narrowed or rejected.
 
 ## Key Entities
 

@@ -44,6 +44,7 @@ from .runtime_journal import (
     RuntimeJournalUnsafeRootError,
 )
 from .status import RequestEvent, RequestState
+from ..conversation import ConversationContinuation, ConversationCoordinator
 
 
 class RequestRecoveryError(RuntimeError):
@@ -74,6 +75,11 @@ class APPClient:
         self._request_handles: dict[str, RequestHandle] = {}
         self._request_events_by_id: dict[str, list[dict]] = {}
         self._result_rendezvous_by_id: dict[str, dict] = {}
+        # Conversation state is deliberately a separate owner from the
+        # request-handle table.  A later request can use only an authenticated
+        # checkpoint; it can never look up a terminated request-local entry.
+        self._conversation_coordinator = ConversationCoordinator(
+            journal=journal, requester_identity=self.requester_identity)
         for record in self.journal.records():
             payload = record["payload"]
             if record["kind"] in {"request-handle", "request-handle-update"}:
@@ -268,6 +274,25 @@ class APPClient:
     def optimization_engine(self):
         return self.engine
 
+    @property
+    def conversation_coordinator(self) -> ConversationCoordinator:
+        return self._conversation_coordinator
+
+    def begin_conversation_turn(
+        self, continuation: ConversationContinuation, *, input_payload: bytes,
+        canonical_token_ids=None,
+    ) -> dict[str, object]:
+        """Validate an explicit full/delta turn before any network request."""
+        if not isinstance(continuation, ConversationContinuation):
+            raise TypeError("continuation must be ConversationContinuation")
+        return self._conversation_coordinator.begin_turn(
+            continuation, input_payload=bytes(input_payload),
+            canonical_token_ids=canonical_token_ids)
+
+    def commit_conversation_turn(self, request_id: str, **kwargs):
+        """Atomically publish a successor result and opaque checkpoint."""
+        return self._conversation_coordinator.commit_turn(request_id, **kwargs)
+
     def __getattr__(self, name):
         network_client = self.__dict__.get("_network_client")
         if network_client is not None:
@@ -309,6 +334,135 @@ class APPClient:
         if strategy is not None:
             request_args["strategy"] = strategy
         return self._automatic_planner.request(**request_args)
+
+    def request_streaming(
+        self,
+        *,
+        model,
+        task,
+        input,
+        timeout_ms: int,
+        options=None,
+        stream_options=None,
+        on_event=None,
+        on_complete=None,
+        on_error=None,
+        conversation: ConversationContinuation | None = None,
+        canonical_token_ids=None,
+        objective=None,
+        constraints=None,
+        request_id: str = "",
+        strategy=None,
+    ):
+        """Run one model/task-first plan and expose its verified event stream.
+
+        A conversation turn is registered before the first network Request is
+        published. ``canonical_token_ids`` is adapter-derived metadata (not a
+        Provider/cache handle) and is required for APPEND_DELTA so the owner
+        can prove the exact parent prefix. The returned handle retains the
+        pending turn and exposes a checkpoint only after receipt commit.
+        """
+        if self._automatic_planner is None:
+            raise RuntimeError(
+                "APPClient requires an AutomaticPlanningCoordinator")
+        conversation_turn = None
+        planner_request_id = str(request_id or "")
+        if conversation is not None:
+            if not isinstance(conversation, ConversationContinuation):
+                raise TypeError("conversation must be ConversationContinuation")
+            # The native Name representation is absolute (``/id``), while
+            # callers commonly supply the human-readable component (``id``).
+            # Normalize once before registering the conversation turn so the
+            # owner journal, native Request, and verified collaboration
+            # records compare the same identity.
+            from .placement import normalize_request_id_component
+            planner_request_id = normalize_request_id_component(
+                planner_request_id or ("ndnsf-di-" + uuid.uuid4().hex))
+            generation_id = ""
+            if stream_options is not None:
+                if callable(getattr(stream_options, "as_dict", None)):
+                    generation_id = str(getattr(
+                        stream_options, "generation_id", "") or "")
+                elif isinstance(stream_options, dict):
+                    generation_id = str(
+                        stream_options.get("generation_id", "") or "")
+            generation_id = generation_id or uuid.uuid4().hex
+            if (len(generation_id) != 32
+                    or generation_id != generation_id.lower()
+                    or any(char not in "0123456789abcdef"
+                           for char in generation_id)):
+                raise ValueError(
+                    "conversation generation identity must be 16-byte lowercase hex")
+            if stream_options is None:
+                stream_options = {"generation_id": generation_id}
+            elif callable(getattr(stream_options, "as_dict", None)):
+                try:
+                    stream_options = replace(
+                        stream_options, generation_id=generation_id)
+                except TypeError as exc:
+                    raise TypeError(
+                        "stream_options must expose a replaceable generation_id"
+                    ) from exc
+            elif isinstance(stream_options, dict):
+                stream_options = dict(stream_options)
+                stream_options["generation_id"] = generation_id
+            else:
+                raise TypeError(
+                    "stream_options must be a mapping or options object")
+            conversation_turn = self._conversation_coordinator.begin_turn(
+                conversation,
+                input_payload=bytes(input.payload),
+                canonical_token_ids=canonical_token_ids,
+                request_id=planner_request_id,
+                generation_id=generation_id,
+            )
+            # ``begin_turn`` fills the digest fields that bind the signed
+            # continuation to this exact application input.  Pass that
+            # normalized value into the planner; forwarding the caller's
+            # digest-less convenience object would make the Provider reject
+            # the request even though the turn was registered successfully.
+            input_digest = "sha256:" + hashlib.sha256(
+                bytes(input.payload)).hexdigest()
+            conversation = replace(
+                conversation,
+                turn_input_digest=input_digest,
+                request_contract_digest=str(
+                    conversation_turn["requestContractDigest"]),
+            )
+        elif canonical_token_ids is not None:
+            raise ValueError(
+                "canonical_token_ids requires an explicit conversation turn")
+        request_args = dict(
+            model=model,
+            task=task,
+            input=input,
+            timeout_ms=timeout_ms,
+            options=options,
+            stream_options=stream_options,
+            on_event=on_event,
+            on_complete=on_complete,
+            on_error=on_error,
+            conversation=conversation,
+            objective=objective,
+            constraints=constraints,
+            request_id=planner_request_id,
+        )
+        if strategy is not None:
+            request_args["strategy"] = strategy
+        try:
+            handle = self._automatic_planner.request_streaming(**request_args)
+            if conversation_turn is not None:
+                attach = getattr(handle, "_attach_conversation", None)
+                if not callable(attach):
+                    raise RuntimeError(
+                        "streaming handle cannot retain conversation turn ownership")
+                attach(self._conversation_coordinator, conversation_turn)
+            return handle
+        except BaseException:
+            if conversation_turn is not None:
+                self._conversation_coordinator.abort_turn(
+                    str(conversation_turn["requestId"]))
+            raise
 
     def generate(self, request):
         """Submit one complete-generation request through one invocation.

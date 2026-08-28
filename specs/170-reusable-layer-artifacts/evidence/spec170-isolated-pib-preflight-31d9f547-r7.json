@@ -1,0 +1,10 @@
+{
+  "policy": "/tmp/spec170-r7-bundle-full/controller.policies",
+  "job": "/tmp/spec170-r7-bundle-full/spec170-d1-current-sif-workload.sh",
+  "user_driver": "/tmp/spec170-r7-bundle-full/user_driver.py",
+  "isolated_pib_detected": false,
+  "service": "/Inference/NativeTracer",
+  "user_identity": "/NDNSF-DI/Tracer/user",
+  "provider_identity_prefix": "/NDNSF-DI/Tracer/provider/",
+  "failures": []
+}

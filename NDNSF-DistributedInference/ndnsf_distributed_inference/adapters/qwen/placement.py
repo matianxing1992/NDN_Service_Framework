@@ -41,6 +41,11 @@ from .parallel import seal_qwen_hybrid_plan
 QWEN36_27B_MODEL = "Qwen/Qwen3.6-27B"
 QWEN36_27B_REVISION = "6a9e13bd6fc8f0983b9b99948120bc37f49c13e9"
 QWEN36_27B_LAYER_RANGES = ((0, 21), (21, 42), (42, 64))
+QWEN36_27B_PRECISION = "float16"
+QWEN36_27B_DECODE_MODE = "single-token-autoregressive"
+QWEN36_27B_MODALITY = "text-only"
+QWEN36_27B_MTP_ENABLED = False
+QWEN36_27B_THINKING_MODE = "disabled"
 QWEN36_STAGE_ROLES = tuple(
     f"/LLM/Pipeline/Stage/{index}" for index in range(3)
 )
@@ -181,6 +186,28 @@ class QwenThreeStageSplitter:
             )
             for role in self.roles
         }
+        state_inputs = (
+            TensorContract(
+                "attention_kv_in", model.precision,
+                ("layers", "heads", "sequence", "head-dimension"), None),
+            TensorContract(
+                "recurrent_state_in", model.precision,
+                ("layers", "hidden"), None),
+            TensorContract(
+                "convolution_state_in", model.precision,
+                ("layers", "channels", "kernel"), None),
+        )
+        state_outputs = (
+            TensorContract(
+                "attention_kv_out", model.precision,
+                ("layers", "heads", "sequence", "head-dimension"), None),
+            TensorContract(
+                "recurrent_state_out", model.precision,
+                ("layers", "hidden"), None),
+            TensorContract(
+                "convolution_state_out", model.precision,
+                ("layers", "channels", "kernel"), None),
+        )
         candidate = SplitCandidate(
             source=SplitSource.PRE_SPLIT,
             splitter=self.splitter_descriptor,
@@ -206,6 +233,10 @@ class QwenThreeStageSplitter:
             },
             tensor_degrees_by_role=dict(zip(self.roles, self.tensor_degrees)),
             rank_artifact_digests_by_role=artifacts,
+            role_state_inputs_by_role={
+                role: state_inputs for role in self.roles},
+            role_state_outputs_by_role={
+                role: state_outputs for role in self.roles},
             hybrid_plan=self._hybrid_plan,
         )
         candidate.validate_against(graph)
@@ -224,22 +255,25 @@ def build_qwen_three_stage_adapter(
     redistributions: tuple[RedistributionEdge, ...] = (),
     precision: str = "bfloat16",
     adapter_name: str = "qwen-three-stage-pipeline",
+    stage_roles: tuple[str, ...] = QWEN36_STAGE_ROLES,
 ) -> ModelFamilyAdapter:
     """Build one content-bound Qwen dependency graph from model metadata.
 
     The graph is a dependency graph, not a hard-coded provider assignment.
     Provider placement still happens only after ACK_CLOSED.
     """
-    if (set(artifact_digests_by_role) != set(QWEN36_STAGE_ROLES)
-            or set(weight_bytes_by_role) != set(QWEN36_STAGE_ROLES)
+    stage_roles = tuple(str(role) for role in stage_roles)
+    if (not stage_roles
+            or set(artifact_digests_by_role) != set(stage_roles)
+            or set(weight_bytes_by_role) != set(stage_roles)
             or not model_name or not revision or not precision):
-        raise ValueError("Qwen adapter requires one exact three-stage model")
+        raise ValueError("pipeline adapter requires one exact role set")
     ranges = tuple((int(start), int(end)) for start, end in layer_ranges)
-    if (len(ranges) != 3 or ranges[0][0] != 0
+    if (len(ranges) != len(stage_roles) or ranges[0][0] != 0
             or any(start < 0 or end <= start for start, end in ranges)
             or any(ranges[index][1] != ranges[index + 1][0]
-                   for index in range(2))):
-        raise ValueError("Qwen adapter requires three contiguous layer ranges")
+                   for index in range(len(ranges) - 1))):
+        raise ValueError("pipeline adapter requires contiguous layer ranges")
     decoder_layers = ranges[-1][1]
 
     input_schema = _digest("pipeline-input-v1")
@@ -258,7 +292,7 @@ def build_qwen_three_stage_adapter(
         options_schema_digest=options_schema,
         result_schema_digest=result_schema,
         graph_schema_digest=_digest("decoder-dependency-graph-v1"),
-        split_schema_digest=_digest("three-stage-split-v1"),
+        split_schema_digest=_digest(f"{len(stage_roles)}-stage-split-v1"),
         state_schema_digest=_digest("request-and-exact-prefix-state-v1"),
         graph_inspectable=True,
         splittable=True,
@@ -291,6 +325,11 @@ def build_qwen_three_stage_adapter(
     graph_digest = canonical_contract_digest({
         "model": model_name,
         "revision": revision,
+        "precision": precision,
+        "decode_mode": QWEN36_27B_DECODE_MODE,
+        "modality": QWEN36_27B_MODALITY,
+        "mtp_enabled": QWEN36_27B_MTP_ENABLED,
+        "thinking_mode": QWEN36_27B_THINKING_MODE,
         "layer_ranges": ranges,
         "nodes": node_ids,
         "edges": tuple(edge.edge_id for edge in edges),
@@ -304,7 +343,7 @@ def build_qwen_three_stage_adapter(
         topological_order=node_ids,
         legal_cut_edges=tuple(edge.edge_id for edge in edges),
         model_inputs=(TensorContract(
-            "token-ids", "int64", ("batch", "sequence"), None),),
+            "input_ids", "int64", ("batch", "sequence"), None),),
         model_outputs=(TensorContract(
             "logits", precision, ("batch", "sequence", "vocabulary"), None),),
     )
@@ -326,6 +365,7 @@ def build_qwen_three_stage_adapter(
         tuple(tensor_degrees),
         rank_artifact_digests_by_role,
         tuple(redistributions),
+        roles=stage_roles,
     )
     task = BytesGenerationTaskAdapter(
         AdapterPortDescriptor(
@@ -365,7 +405,7 @@ def build_qwen36_27b_three_stage_adapter(
         layer_ranges=QWEN36_27B_LAYER_RANGES,
         artifact_digests_by_role=artifact_digests_by_role,
         weight_bytes_by_role=weight_bytes_by_role,
-        precision="bfloat16",
+        precision=QWEN36_27B_PRECISION,
         adapter_name="qwen36-27b-pipeline",
     )
 
@@ -373,7 +413,9 @@ def build_qwen36_27b_three_stage_adapter(
 __all__ = [
     "QWEN36_27B_LAYER_RANGES",
     "QWEN36_27B_MODEL",
+    "QWEN36_27B_PRECISION",
     "QWEN36_27B_REVISION",
+    "QWEN36_27B_THINKING_MODE",
     "QWEN36_STAGE_ROLES",
     "QwenThreeStageSplitter",
     "build_qwen_three_stage_adapter",

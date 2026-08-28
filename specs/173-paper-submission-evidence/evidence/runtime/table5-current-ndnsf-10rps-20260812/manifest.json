@@ -1,0 +1,90 @@
+{
+  "schemaVersion": 1,
+  "runId": "table5-current-ndnsf-10rps-20260812",
+  "status": "pass",
+  "purpose": "Replacement NDNSF rows for Table V; current dual-certificate and epoch-level MessageKey-cache build",
+  "environment": "MiniNDN",
+  "configuration": {
+    "providers": 1,
+    "workloadMode": "open-loop",
+    "offeredRateRps": 10,
+    "warmupSeconds": 10,
+    "measurementSeconds": 60,
+    "intervalMs": 100,
+    "ackTimeoutMs": 1000,
+    "globalTimeoutMs": 5000,
+    "maxOutstanding": 512,
+    "admissionControl": false,
+    "strategy": "first-responding",
+    "svsMaxPiggyDataBytes": 800,
+    "encryptionCertificate": "RSA",
+    "signingCertificate": "ECDSA",
+    "tokens": "enabled"
+  },
+  "commandTemplate": "sudo -n python3 Experiments/NDNSF_NewAPI_Minindn_Perf.py --workload-mode open-loop --rate-rps 10 --duration 60 --warmup 10 --interval-ms 100 --providers 1 --strategy first-responding --max-outstanding 512 --request-timeout-ms 5000 --ack-timeout-ms 1000 --drain-seconds 10 --pacing-jitter-us 0 --performance-mode --disable-adaptive-admission-control --output-dir <run-dir> --controller-settle-seconds 2 --provider-start-gap-seconds 1 --post-ready-settle-seconds 2 --startup-settle-seconds 1 --provider-ready-timeout-seconds 20 --nfd-log-level WARN --skip-post-run-diagnostics",
+  "repetitions": [
+    {
+      "id": "r1",
+      "summary": "r1/summary.json",
+      "requests": "r1/requests.csv",
+      "sent": 700,
+      "measuredCompleted": 600,
+      "successfulResponses": 600,
+      "successRate": 1.0,
+      "meanLatencyMs": 28.716833333333333,
+      "p50LatencyMs": 27.674,
+      "p95LatencyMs": 34.764,
+      "p99LatencyMs": 42.389
+    },
+    {
+      "id": "r2",
+      "summary": "r2/summary.json",
+      "requests": "r2/requests.csv",
+      "sent": 700,
+      "measuredCompleted": 600,
+      "successfulResponses": 600,
+      "successRate": 1.0,
+      "meanLatencyMs": 27.479606666666667,
+      "p50LatencyMs": 27.151,
+      "p95LatencyMs": 29.44,
+      "p99LatencyMs": 31.72
+    },
+    {
+      "id": "r3",
+      "summary": "r3/summary.json",
+      "requests": "r3/requests.csv",
+      "sent": 700,
+      "measuredCompleted": 600,
+      "successfulResponses": 600,
+      "successRate": 1.0,
+      "meanLatencyMs": 28.45214,
+      "p50LatencyMs": 27.587,
+      "p95LatencyMs": 34.759,
+      "p99LatencyMs": 45.433
+    }
+  ],
+  "aggregate": {
+    "independentUnit": "process-repetition",
+    "completionPercentMean": 100.0,
+    "completionPercentSampleSd": 0.0,
+    "meanLatencyMsMean": 28.216193333333333,
+    "meanLatencyMsSampleSd": 0.6514872050248663,
+    "p50LatencyMsMean": 27.470666666666666,
+    "p50LatencyMsSampleSd": 0.28023620988968084,
+    "p95LatencyMsMean": 32.98766666666667,
+    "p95LatencyMsSampleSd": 3.072370474622703,
+    "p99LatencyMsMean": 39.84733333333333,
+    "p99LatencyMsSampleSd": 7.201155763718304
+  },
+  "build": {
+    "gitHead": "0d4a1340641f76be1e8eebd8d3c2a43ba58f498c",
+    "relevantDirtyDiffSha256": "934967217bd0bf4702c68e064054cf129983f87228a1671d7745684a2c64c167",
+    "App_UserSha256": "2394972ee638e392bd686ab563d3a6fd9a838704b55ddd09b82cc37e3d14c5eb",
+    "App_ProviderSha256": "c39837d5f5cd4471e13dc87dd37e4dedcb90494fe20d770b850e05eb8cfc8c26",
+    "App_ServiceControllerSha256": "c0f34b7c2324f07c5f830c37c7ffd814ccb969894bd4950225600d8268aa1d3f",
+    "ndnsfSharedLibrarySha256": "4dcf073ce21497ccb96a33be88e1405e27fd86f7470085f0f9c3ae9ebdf9185b",
+    "unitTestsSha256": "844f628dae87efb2ff1d6c84d6ccb8f90b8731c446f732c40719d45b724fd178"
+  },
+  "interpretation": "This is a replacement diagnostic for the NDNSF row in Table V. It is not a complete three-system replacement table until matched current gRPC and NSC rows are verified. The old 403.93 ms NDNSF row is superseded because it came from the pre-epoch-cache, splitSigning=false build. Warm-up requests are excluded from the measured-window completion percentage.",
+  "traceCaveat": "A separate timeline-trace run increased the observed mean to 59.956 ms; trace-enabled measurements are excluded from this table replacement."
+}

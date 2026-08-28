@@ -4,10 +4,13 @@
 #include <boost/property_tree/ptree.hpp>
 
 #include <algorithm>
+#include <iomanip>
 #include <regex>
 #include <set>
 #include <sstream>
 #include <stdexcept>
+
+#include <openssl/sha.h>
 
 namespace ndnsf::di {
 namespace {
@@ -78,6 +81,121 @@ kindIndex(QwenResourceKind kind)
 } // namespace
 
 void
+DecodeStateComponentV1::validate() const
+{
+  if (name.empty() || dtype.empty() || shape.empty() ||
+      std::any_of(shape.begin(), shape.end(), [] (std::int64_t value) {
+        return value < 0;
+      }) || !std::regex_match(digest, DIGEST_RE)) {
+    throw std::invalid_argument("invalid decode state component");
+  }
+}
+
+void
+DecodeStateBundleV1::validate() const
+{
+  identity.validate();
+  if (fullAttentionKv.empty() || recurrentConvolution.empty()) {
+    throw std::invalid_argument(
+      "decode state requires attention KV and recurrent/convolution state");
+  }
+  std::set<std::string> names;
+  std::vector<std::string> digests;
+  for (const auto* family : {&fullAttentionKv, &recurrentConvolution}) {
+    for (const auto& component : *family) {
+      component.validate();
+      if (!names.insert(component.name).second) {
+        throw std::invalid_argument("duplicate decode state component");
+      }
+      digests.push_back(component.digest);
+    }
+  }
+  if (digests != identity.stateComponentDigests ||
+      tokenEpoch != identity.prefixTokenCount) {
+    throw std::invalid_argument("decode state component/epoch binding mismatch");
+  }
+}
+
+std::string
+DecodeStateBundleV1::digest() const
+{
+  validate();
+  std::ostringstream input;
+  input << identity.modelDigest << '|' << identity.graphSemanticDigest << '|'
+        << identity.artifactDigest << '|' << identity.roleName << '|'
+        << identity.layerBegin << ':' << identity.layerEnd << '|'
+        << identity.prefixDigest << '|' << identity.prefixTokenCount << '|'
+        << identity.positionDigest << '|' << identity.stateSchemaDigest << '|'
+        << tokenEpoch;
+  for (const auto& component : fullAttentionKv) {
+    input << '|' << component.name << ':' << component.digest;
+  }
+  for (const auto& component : recurrentConvolution) {
+    input << '|' << component.name << ':' << component.digest;
+  }
+  std::array<unsigned char, SHA256_DIGEST_LENGTH> hash{};
+  const auto text = input.str();
+  SHA256(reinterpret_cast<const unsigned char*>(text.data()), text.size(), hash.data());
+  std::ostringstream output;
+  output << "sha256:" << std::hex << std::setfill('0');
+  for (const auto byte : hash) output << std::setw(2) << static_cast<unsigned int>(byte);
+  return output.str();
+}
+
+DecodeStateTransactionV1::DecodeStateTransactionV1(DecodeStateBundleV1 committed)
+  : m_committed(std::move(committed))
+{
+  m_committed.validate();
+}
+
+const DecodeStateBundleV1&
+DecodeStateTransactionV1::committed() const noexcept
+{
+  return m_committed;
+}
+
+void
+DecodeStateTransactionV1::apply(
+  const DecodeStateBundleV1& candidate,
+  std::function<bool(const DecodeStateBundleV1&)> admit)
+{
+  candidate.validate();
+  const auto& current = m_committed.identity;
+  const auto& next = candidate.identity;
+  if (next.modelDigest != current.modelDigest ||
+      next.graphSemanticDigest != current.graphSemanticDigest ||
+      next.artifactDigest != current.artifactDigest ||
+      next.adapterDigest != current.adapterDigest ||
+      next.tokenizerDigest != current.tokenizerDigest ||
+      next.runnerDigest != current.runnerDigest || next.roleName != current.roleName ||
+      next.roleSplitDigest != current.roleSplitDigest ||
+      next.layerBegin != current.layerBegin || next.layerEnd != current.layerEnd ||
+      next.positionDigest != current.positionDigest || next.precision != current.precision ||
+      next.layoutDigest != current.layoutDigest ||
+      next.stateSchemaDigest != current.stateSchemaDigest ||
+      next.stateComponentDigests != current.stateComponentDigests ||
+      next.runtimeAbiDigest != current.runtimeAbiDigest ||
+      next.securityDomainDigest != current.securityDomainDigest ||
+      next.providerIdentity != current.providerIdentity ||
+      next.providerBootId != current.providerBootId ||
+      next.requestId != current.requestId || next.attemptEpoch != current.attemptEpoch ||
+      next.generationId != current.generationId) {
+    throw std::invalid_argument("decode state immutable binding mismatch");
+  }
+  if (next.prefixTokenCount != current.prefixTokenCount + 1 ||
+      candidate.tokenEpoch != m_committed.tokenEpoch + 1) {
+    throw std::invalid_argument("decode state prefix is not contiguous");
+  }
+  if (next.cacheEpoch < current.cacheEpoch) {
+    throw std::invalid_argument("decode state cache epoch regressed");
+  }
+  if (admit && !admit(candidate)) {
+    throw std::invalid_argument("decode state downstream admission rejected");
+  }
+  m_committed = candidate;
+}
+
+void
 QwenGenerationSessionSpec::validate() const
 {
   require(schema == "ndnsf-di-qwen-generation-session-v1",
@@ -93,10 +211,11 @@ QwenGenerationSessionSpec::validate() const
           "qwen generation session identity missing");
   require(!serviceName.empty() && serviceName.front() == '/',
           "invalid qwen generation service name");
-  require(attemptEpoch <= 1, "qwen generation attempt bound exceeded");
+  require(attemptEpoch >= 1 && attemptEpoch <= 2,
+          "qwen generation attempt bound exceeded");
   require(inputTokenCount >= 1 && inputTokenCount <= 512,
           "qwen generation input token bound exceeded");
-  require(maxGeneratedTokens >= 1 && maxGeneratedTokens <= 32,
+  require(maxGeneratedTokens >= 1 && maxGeneratedTokens <= 64,
           "qwen generation output token bound exceeded");
   require(tokenEpoch < maxGeneratedTokens, "qwen generation token epoch out of range");
   require(deadlineEpochMs > 0, "qwen generation deadline missing");
@@ -104,7 +223,7 @@ QwenGenerationSessionSpec::validate() const
           "qwen generation object reference missing");
   require(roles.size() == 3, "qwen generation requires exactly three roles");
   const std::array<std::string, 3> expectedRoles{
-    "/LLM/Stage/0", "/LLM/Stage/1", "/LLM/Stage/2",
+    "/LLM/Pipeline/Stage/0", "/LLM/Pipeline/Stage/1", "/LLM/Pipeline/Stage/2",
   };
   std::set<std::string> providers;
   for (std::size_t index = 0; index < roles.size(); ++index) {
@@ -189,11 +308,27 @@ toString(QwenGenerationState state) noexcept
   switch (state) {
     case QwenGenerationState::Created: return "CREATED";
     case QwenGenerationState::Selecting: return "SELECTING";
-    case QwenGenerationState::Active: return "ACTIVE";
+    case QwenGenerationState::Preparing: return "PREPARING";
+    case QwenGenerationState::Prefilling: return "PREFILLING";
+    case QwenGenerationState::Decoding: return "DECODING";
+    case QwenGenerationState::Draining: return "DRAINING";
     case QwenGenerationState::Rebuilding: return "REBUILDING";
     case QwenGenerationState::Completed: return "COMPLETED";
     case QwenGenerationState::Terminal: return "TERMINAL";
     case QwenGenerationState::Cancelled: return "CANCELLED";
+  }
+  return "UNKNOWN";
+}
+
+const char*
+toString(QwenGenerationFinishReason reason) noexcept
+{
+  switch (reason) {
+    case QwenGenerationFinishReason::Eos: return "EOS";
+    case QwenGenerationFinishReason::StopSequence: return "STOP_SEQUENCE";
+    case QwenGenerationFinishReason::MaxTokens: return "MAX_TOKENS";
+    case QwenGenerationFinishReason::ApplicationComplete:
+      return "APPLICATION_COMPLETE";
   }
   return "UNKNOWN";
 }
@@ -235,6 +370,12 @@ QwenGenerationTerminal
 QwenGenerationSessionStateMachine::terminalReason() const noexcept
 {
   return m_terminalReason;
+}
+
+QwenGenerationFinishReason
+QwenGenerationSessionStateMachine::finishReason() const noexcept
+{
+  return m_finishReason;
 }
 
 std::uint64_t
@@ -282,7 +423,14 @@ QwenGenerationSessionStateMachine::activate()
       m_state != QwenGenerationState::Rebuilding) {
     throw std::logic_error("invalid qwen generation transition for activate");
   }
-  m_state = QwenGenerationState::Active;
+  m_state = QwenGenerationState::Prefilling;
+}
+
+void
+QwenGenerationSessionStateMachine::completePrefill()
+{
+  requireState(QwenGenerationState::Prefilling, "completePrefill");
+  m_state = QwenGenerationState::Decoding;
 }
 
 std::uint32_t
@@ -294,7 +442,7 @@ QwenGenerationSessionStateMachine::completeTokenEpoch()
 std::uint32_t
 QwenGenerationSessionStateMachine::completeTokenEpoch(std::uint64_t attemptEpoch)
 {
-  requireState(QwenGenerationState::Active, "completeTokenEpoch");
+  requireState(QwenGenerationState::Decoding, "completeTokenEpoch");
   if (attemptEpoch != m_attemptEpoch) {
     throw std::logic_error("stale qwen generation attempt epoch");
   }
@@ -305,10 +453,51 @@ QwenGenerationSessionStateMachine::completeTokenEpoch(std::uint64_t attemptEpoch
 }
 
 void
+QwenGenerationSessionStateMachine::observeEosToken()
+{
+  requireState(QwenGenerationState::Decoding, "observeEosToken");
+  m_eosObserved = true;
+}
+
+void
+QwenGenerationSessionStateMachine::observeStopSequence()
+{
+  requireState(QwenGenerationState::Decoding, "observeStopSequence");
+  m_stopSequenceObserved = true;
+}
+
+void
+QwenGenerationSessionStateMachine::beginDrain(QwenGenerationFinishReason reason)
+{
+  requireState(QwenGenerationState::Decoding, "beginDrain");
+  switch (reason) {
+    case QwenGenerationFinishReason::Eos:
+      if (!m_eosObserved) {
+        throw std::logic_error("EOS drain lacks EOS evidence");
+      }
+      break;
+    case QwenGenerationFinishReason::StopSequence:
+      if (!m_stopSequenceObserved) {
+        throw std::logic_error("stop drain lacks stop-sequence evidence");
+      }
+      break;
+    case QwenGenerationFinishReason::MaxTokens:
+      if (m_generatedTokenCount != m_spec.maxGeneratedTokens) {
+        throw std::logic_error("max-token drain before exact token count");
+      }
+      break;
+    case QwenGenerationFinishReason::ApplicationComplete:
+      break;
+  }
+  m_finishReason = reason;
+  m_state = QwenGenerationState::Draining;
+}
+
+void
 QwenGenerationSessionStateMachine::beginReplacement()
 {
-  requireState(QwenGenerationState::Active, "beginReplacement");
-  if (m_attemptEpoch >= 1) {
+  requireState(QwenGenerationState::Decoding, "beginReplacement");
+  if (m_attemptEpoch >= 2) {
     throw std::logic_error("qwen generation replacement bound exceeded");
   }
   ++m_attemptEpoch;
@@ -316,11 +505,11 @@ QwenGenerationSessionStateMachine::beginReplacement()
 }
 
 void
-QwenGenerationSessionStateMachine::complete()
+QwenGenerationSessionStateMachine::complete(QwenGenerationFinishReason reason)
 {
-  requireState(QwenGenerationState::Active, "complete");
-  if (m_generatedTokenCount != m_spec.maxGeneratedTokens) {
-    throw std::logic_error("qwen generation completion before exact token count");
+  requireState(QwenGenerationState::Draining, "complete");
+  if (reason != m_finishReason) {
+    throw std::logic_error("qwen generation completion reason mismatch");
   }
   m_state = QwenGenerationState::Completed;
 }
@@ -473,4 +662,3 @@ QwenGenerationResourceLedger::snapshot(QwenResourceKind kind) const
 }
 
 } // namespace ndnsf::di
-

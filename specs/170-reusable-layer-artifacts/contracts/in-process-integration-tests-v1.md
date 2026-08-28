@@ -24,7 +24,7 @@ multi-process timing. Those remain Gate B/C/D obligations.
 |---|---|---|---|
 | L0 | Existing Python/C++ unit fixtures | Pure schema, digest, mutation, and state-machine errors | Cross-component packet wiring |
 | L1 | Two or more real NDNSF runtimes over `ndn::DummyClientFace` | Interest/Data names, TLV round trips, ACK_CLOSED -> Selection -> Response, tokens, replay, deadline, and response completeness | NFD routing and process isolation |
-| L2 | Three or more `DummyClientFace` nodes with real `SVSPubSub`/`SVSync` | Mapping, piggyback, fetch, repair, duplicate suppression, segmentation, cancellation, and `NDNSF_DATA_V1` framing | Kernel/network loss and production NFD behavior |
+| L2 | Three or more `DummyClientFace` nodes with real `SVSPubSub`/`SVSync` | Mapping, Interest/Data fetch, repair, duplicate suppression, tensor segmentation, cancellation, and production framing | Kernel/network loss and production NFD behavior |
 | L3 (optional) | Real binaries with an explicit loopback/in-process transport adapter | Executable wiring, configuration, and cross-thread shutdown | NFD topology, namespaces, and MiniNDN deployment |
 | L4 | Existing MiniNDN Gate B | Real routing, security/process lifecycle, Repo, and deployment-faithful cold/warm workload | TigerCluster hardware unless run there |
 
@@ -86,7 +86,7 @@ to close while a reorder hold remains. `BootstrapProfile.providerCount` also
 constructs additional real Provider runtimes, faces, SVSPubSub nodes, and
 permission tables; the integration target verifies a three-Provider READY
 boundary. The complete three-Provider request projection, corruption/replay,
-and protected `NDNSF_DATA_V1` cases remain open T025 work. The existing smoke
+and protected tensor Interest/Data cases remain open T016 work. The existing smoke
 cases remain compatibility coverage until they are migrated onto it.
 
 ### Bounded event loop
@@ -149,6 +149,9 @@ Recommended cases:
 | `SelectionReplayAndStalePlan` | duplicate or stale digest | no execution and no second Response |
 | `CustomSelectionTimeout` | delayed ACKs | strategy runs once after timeout with full status/message/payload matching |
 | `ThreeProviderConcurrency` | three simultaneous requests | independent request IDs, single-flight per artifact, no cross-request token use |
+| `FourProviderRoleSplitCollaboration` | four Providers, one role each | every Provider receives a real request, stores pending state, parses its Selection assignment, executes, and returns a Response |
+| `RejectSameProviderMultiRole` | two roles assigned to one Provider | sealer rejects before Selection with zero Provider queue/admission side effects |
+| `RejectRoleSpanningProviders` | one role assigned to two Providers | sealer rejects before Selection with zero Provider queue/admission side effects |
 
 ### L1 canonical artifact and reuse
 
@@ -168,12 +171,12 @@ Cases must cover:
 - V2 names/bytes never decoding as V3 and no request-dependent filesystem path
   derived from an NDN name.
 
-### L2 SVS and `NDNSF_DATA_V1`
+### L2 SVS and consumer-pull NDN tensor dataflow
 
 Instantiate one real `SVSPubSub` per producer/receiver with separate
 `DummyClientFace` instances and a bounded packet bridge. Subscribe the receiver
 to the NDNSF application prefix, publish a signed/encrypted
-`NDNSF_DATA_V1` segment stream, and drive the normal mapping, fetch, and repair
+tensor manifest/segment stream, and drive the normal Interest, Data, mapping, fetch, and repair
 callbacks. Exercise both piggyback and explicit repair; use the same sequence,
 segment, epoch, nonce, AEAD/HMAC, and duplicate rules as the production path.
 
@@ -236,11 +239,12 @@ PYTHONPATH=pythonWrapper:NDNSF-DistributedRepo/pythonWrapper \
 pytest -q tests/python/test_spec170_integrated_flows.py
 ```
 
-The baseline currently contains two SVS/NDNSF packet cases, nine native
-DI/fixture cases (including deterministic drop/duplicate/reorder bridge
-coverage, a three-Provider bootstrap case, a generic Request/ACK/Response
-case, and a timeout-driven three-Provider custom-selection case), and five
-Python cross-module cases. Run L1/L2 on every local Gate A pass.
+The current baseline contains four SVS/NDNSF packet cases, fourteen native
+  DI/fixture cases (including deterministic drop/duplicate/reorder bridge
+  coverage, production-ingress D0/D1 Request-to-Response gates, the
+  four-Provider role-split projection, strict ownership negatives, and the
+compatibility cases), and the Python cross-module cases. Run L1/L2 on every
+local Gate A pass.
 Preserve the command, source/library
 hashes, packet trace, complete negative rows, and timeout diagnostics in
 `specs/170-reusable-layer-artifacts/evidence/gate-a.md`. A passing integrated
@@ -274,9 +278,12 @@ TigerCluster submission.
 |  | `PreconfiguredEnvironmentAppliesDeterministicPacketFaults` | signed Data drop, duplicate, pairwise reorder, counters, and reset guard |
 |  | `PreconfiguredEnvironmentBootstrapsThreeProviders` | three real Provider faces, SVSPubSub nodes, identities, permissions, and indexed access |
 |  | `PreconfiguredEnvironmentRunsGenericRequestLifecycle` | fixture Request → SVS publication → Provider handler → ACK → Response → typed callback |
-| Python `test_spec170_integrated_flows.py` | V3 lifecycle, canonical/assembled reuse, DATA_V1, protected grant/lease, multi-device | ACK_CLOSED → Selection → JIT admission, artifact root-last/assembly, epoch/MAC/replay, revocation/zeroization, atomic device admission |
+|  | `PreconfiguredEnvironmentRunsFourProviderRoleSplitCollaboration` | four real Providers, one role per Provider, real request admission/pending state, Selection assignment, and final Responses |
+|  | `PreconfiguredEnvironmentRejectsSameProviderMultiRoleCollaboration` | sealer rejects a same-Attempt multi-role Provider assignment before Selection |
+|  | `PreconfiguredEnvironmentRejectsRoleSpanningProviders` | sealer rejects one role projected to multiple Providers before Selection |
+| Python `test_spec170_integrated_flows.py` | V3 lifecycle, canonical/assembled reuse, consumer-pull tensor Data, protected grant/lease, device binding | ACK_CLOSED → one-role Selection → JIT admission, artifact root-last/assembly, named tensor Interest/Data, epoch/MAC/replay, revocation/zeroization |
 
 This is a broad pre-MiniNDN contract net, not a claim that all deployment
 behavior is covered. The remaining required expansion is explicit packet fault
-injection for multi-Provider `NDNSF_DATA_V1` over the bridge and real Repo/
+injection for multi-Provider consumer-pull NDN tensor Data over the bridge and real Repo/
 security/process behavior in MiniNDN Gate B.

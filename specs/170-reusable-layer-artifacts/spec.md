@@ -4,7 +4,9 @@
 
 **Created**: 2026-08-04
 
-**Status**: Design-only draft — no implementation or experiment is authorized by this specification
+**Status**: Active architecture correction — implementation and evidence produced
+under the superseded multi-role/multi-Provider-role interpretation are not
+closure evidence until revalidated against this specification
 
 **Input**: Replace request-specific, role-scoped model-shard publication with a
 stable model-layer artifact plane. The Requester makes an immutable model
@@ -74,6 +76,25 @@ only as aliases:
 - A **Provider runtime** discovers the resources actually exposed by its host,
   scheduler, and container boundary. Its configuration may restrict that set;
   it does not allocate cluster devices or advertise resources outside that set.
+
+### ONNX deployment-runtime boundary
+
+The deployed NDNSF-DI application runtime uses ONNX Runtime as its model
+execution backend. PyTorch and Transformers are permitted only in a separately
+sealed, offline exporter/conformance environment that converts a pinned source
+model into canonical ONNX graph, initializer, tokenizer, and adapter metadata.
+They MUST NOT be installed, importable, or copied into the final application
+SIF/runtime. The runtime may use standalone ONNX graph/initializer tooling and
+the `tokenizers` library for model-family tokenization.
+
+Partitioning remains request-scoped. After the immutable ACK_CLOSED snapshot,
+the trusted placement strategy chooses a complete `RoleAssemblySpec` from the
+actual Provider offers and shares the sealed projection with the selected
+Providers. Each Provider then fetches only the canonical ONNX layers/tensors it
+needs, performs adapter-certified graph/initializer assembly locally, verifies
+the resulting ONNX artifact, and executes it with ONNX Runtime. A precomputed
+role/stage layout is not required by the public call and is not a substitute
+for ACK-driven planning.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -209,10 +230,11 @@ only topology-feasible device bindings.
    Provider, **then** the Provider starts in CPU-only mode, advertises zero
    accelerators without a dummy device or fake GPU memory, and remains eligible
    only for roles whose task/adapter policy permits CPU execution.
-2. **Given** two visible GPUs, **when** the strategy considers one Provider,
-   **then** it may assign two independent single-GPU roles or one adapter-
-   certified multi-GPU role, but it MUST account for memory and concurrency per
-   device and MUST NOT treat the two memories as one unsplittable allocation.
+2. **Given** two visible GPUs, **when** the strategy considers one Provider for
+   one Attempt, **then** it selects at most one complete role and binds that role
+   to one exact CPU or single-device target. The other device remains available
+   for another request/Attempt; the strategy MUST NOT turn local devices into
+   hidden tensor ranks or treat their memories as one allocation.
 3. **Given** an explicit configuration that names an unavailable device,
    **when** the Provider starts or reloads configuration, **then** the
    configuration transaction fails. Under `AUTO`, a device absent from the
@@ -226,10 +248,11 @@ only topology-feasible device bindings.
 
 ### User Story 5 - Prefer exact reusable state without overcommitting ACKs (Priority: P2)
 
-The default strategy ranks Providers using signed ACK information about exact
-loaded-runtime residency, assembled-fragment residency, canonical-layer
-residency, capacity, queue state, RTT, bandwidth, supported assembly axes, and
-runtime compatibility.
+The default `PreSplitFirstStrategy` first constructs feasible adapter-certified
+role topologies from the immutable ACK snapshot. Within those feasible plans it
+uses signed information about exact loaded-runtime residency, assembled-fragment
+residency, canonical-layer residency, capacity, queue state, RTT, bandwidth,
+supported assembly axes, and runtime compatibility as cost signals.
 
 **Why this priority**: A later invocation should become much faster when the
 right Provider already holds the exact fragment, while an ACK remains a bounded
@@ -305,8 +328,9 @@ execution with the original request identity and last valid progress checkpoint.
   memory, peer-access, interconnect, or NUMA locality.
 - Two 12-GiB devices are visible but one unsplittable role requires 20 GiB on a
   single device. Aggregate free memory does not make that assignment feasible.
-- A Provider can run two independent roles on separate devices, but one role
-  spanning both devices lacks an adapter-certified partition/collective recipe.
+- A strategy attempts to assign two roles from one Attempt to a multi-device
+  Provider, or attempts to split one role across Providers; both violate the
+  one-to-one Provider-role invariant even when aggregate capacity is sufficient.
 - Accelerator visibility, MIG partitioning, driver generation, or device health
   changes after ACK but before Selection or loaded-runtime reuse.
 - A strategy emits overlapping/gapped pipeline coverage, incompatible tensor
@@ -434,6 +458,31 @@ execution with the original request identity and last valid progress checkpoint.
   be disabled unless an explicit operator trust rule authorizes signer,
   adapter/assembler, protection domain, and ABI. The NDN name
   MUST NOT be used directly as an unsafe filesystem path.
+- **FR-072**: The final deployed NDNSF-DI application SIF MUST contain ONNX
+  Runtime and the declared standalone runtime support libraries, but MUST NOT
+  contain or expose importable PyTorch or Transformers distributions/modules.
+  PyTorch and Transformers MAY appear only in a separately sealed offline
+  exporter/conformance environment and MUST NOT be copied from that environment
+  into the application runtime. Runtime probes and release manifests MUST
+  fail closed when either forbidden dependency is present.
+- **FR-073**: After ACK_CLOSED, the trusted placement strategy MUST derive a
+  complete request-scoped `RoleAssemblySpec` from the validated Provider offers
+  and publish a Provider-specific sealed projection. The public application
+  call MUST NOT require a precomputed stage or tensor-shard layout, and a
+  Provider MUST be able to fetch canonical ONNX content and assemble its own
+  selected fragment after Selection.
+- **FR-074**: Provider-local pipeline and tensor partitioning MUST operate on
+  the canonical ONNX graph, initializers, tensor index, and adapter-certified
+  input/output/collective contracts. A Provider MUST reject mechanical or
+  uncertified slicing, mismatched graph contracts, and unsupported layouts
+  before activating an assembled artifact. Runtime partition/assembly code
+  MUST NOT import PyTorch or Transformers.
+- **FR-075**: Every supported ONNX model family MUST provide an offline
+  conversion/conformance record that binds source model identity, ONNX graph
+  digest, initializer/tensor index digest, tokenizer identity, adapter/assembly
+  descriptor, and numerical/token parity evidence. The record MUST be separate
+  from the deployed runtime lock and MUST NOT be used as evidence that the
+  deployed runtime contains the exporter toolchain.
 - **FR-020**: Providers MUST advertise canonical-layer, assembled-fragment, and
   loaded-runtime residency separately, including verified identity, storage or
   device tier, exact device-set identity where applicable, usable bytes,
@@ -457,19 +506,21 @@ execution with the original request identity and last valid progress checkpoint.
   a Provider that can serve only from an existing cache still reports
   `status=true, executionDisposition=ACCEPT_IF_EXACT_REUSE,
   preparationAccepted=false`.
-- **FR-021**: The default reuse-first strategy MUST rank a feasible exact loaded
-  runtime first, then exact host-memory/disk assembled fragments, then canonical
-  layer/profile reuse, and finally minimize missing verified bytes,
-  transfer/queue/assembly/load time, and resource risk. It MUST fail closed on
-  unknown mandatory peaks or unsupported execution semantics.
-- **FR-022**: Existing role-scoped pre-split catalogs MAY remain only as the
-  explicit, permanently named `PREASSEMBLED_PARTITION_SINGLE_DEVICE` V2
-  compatibility profile. `PreSplitFirstStrategy` MUST be selectable only through
-  that explicit profile, MUST never be an automatic fallback from V3, and MUST
-  NOT mix with canonical-layer equality. `LayerReuseFirstStrategy` MUST be the
-  default for every normal public V3 invocation. Removing the explicit V2
-  profile is outside Spec 170 and requires a future breaking-change spec; it is
-  not governed by an undefined "conversion complete" condition.
+- **FR-021**: After feasibility and graph-cover validation, the default strategy
+  MUST use reuse as a cost signal: prefer an exact loaded runtime, then an exact
+  host-memory/disk assembled fragment, then canonical layer/profile residency,
+  and finally minimize missing verified bytes, transfer/queue/assembly/load time,
+  and resource risk. Reuse MUST NOT define role topology, override the one-role-
+  per-Provider invariant, or admit unsupported execution semantics.
+- **FR-022**: `PreSplitFirstStrategy` MUST be the default for every normal public
+  V3 invocation. Here "pre-split" means that the trusted Requester creates and
+  validates adapter-certified split candidates *after* `ACK_CLOSED`; it does not
+  mean that the application supplies a layout or that role-specific model files
+  were published in advance. `LayerReuseFirstStrategy` MAY remain only as a
+  subordinate cost scorer or migration implementation detail and MUST NOT be a
+  public default or independently own topology. The explicit
+  `PREASSEMBLED_PARTITION_SINGLE_DEVICE` V2 profile remains isolated; V3 failure
+  never falls back to it and V2/V3 artifact identities never compare equal.
 - **FR-023**: After Selection, each Provider MUST independently validate and
   queue its Provider-specific projection and verify model and assignment
   provenance. An exact-reuse Selection MUST pin and revalidate the catalog entry
@@ -481,6 +532,13 @@ execution with the original request identity and last valid progress checkpoint.
   per-device resource vector; only then may it load and declare the role locally
   ready. CPU-only roles use the same state machine with a CPU/RAM admission
   vector.
+- **FR-023a**: A Provider-specific Selection carrying a structured assignment
+  MUST preserve the canonical binary container through encryption, decryption,
+  and local parsing. It contains exactly one `RoleAssemblySpec` and exactly one
+  `RoleDataflowContract` for that Provider and Attempt. The Provider MUST NOT
+  append legacy semicolon metadata (`scopeKeyData.*` or `roleProvider.*`) or
+  accept a same-Provider multi-role container; malformed, duplicate-role, or
+  mixed containers MUST fail closed.
 - **FR-024**: Provider-local preparation MUST expose monotonic progress and the
   last verified checkpoint for manifest resolution, fetch, verification,
   assembly, load, and readiness. Progress-capable work MUST use hard and
@@ -633,21 +691,22 @@ execution with the original request identity and last valid progress checkpoint.
   adapter-certified CPU execution roles. Accelerator-required roles MUST
   exclude it, and CPU fallback MUST be an explicit task/plan policy rather than
   a silent runtime substitution.
-- **FR-050**: Every Provider-local bundle of a selected role MUST carry a
-  declarative `DeviceBinding` with mode `CPU`, `SINGLE_DEVICE`, or `DEVICE_SET`,
-  the offer-scoped member handles, per-device resource envelopes, local ranks,
-  and the exact signed offer, topology, and resource-sequence digests against
-  which the assignment was planned. A cross-Provider logical role MUST NOT use
-  one global device binding because handles are scoped to Provider offers.
-- **FR-051**: A placement strategy MAY assign several independent roles to one
-  multi-device Provider, with disjoint or capacity-safe device bindings. It MAY
-  assign one role across a device set only when the model adapter, backend, and
-  collective contract certify that intra-Provider sharding mode and define all
-  ranks, slices, ordering, and failure semantics.
+- **FR-050**: Every selected role MUST carry one declarative Provider-local
+  `DeviceBinding` with mode `CPU` or `SINGLE_DEVICE`, its offer-scoped handle
+  when applicable, one phase-specific resource envelope, and the exact signed
+  offer, topology, and resource-sequence digests used by planning. A role MUST
+  NOT span Providers or hide several tensor ranks in a `DEVICE_SET` binding.
+- **FR-051**: Within one request Attempt, Provider-role assignment MUST be
+  one-to-one: every execution role is owned in full by exactly one Provider and
+  every selected Provider owns exactly one role. A tensor-parallel stage with
+  degree `M_i` therefore creates `M_i` distinct roles (for example `S0R0` and
+  `S0R1`) and requires `M_i` distinct Providers. A Provider with several visible
+  devices may use the unused devices for other concurrent requests/Attempts,
+  but not for additional roles in the same Attempt.
 - **FR-052**: Feasibility and admission MUST be evaluated per device and per
   link, not by summing accelerator memory. Multiple devices MUST NOT satisfy one
-  unsplittable single-device peak, and a device set lacking required peer access
-  or collective connectivity MUST NOT satisfy that role.
+  unsplittable single-device peak. Inter-Provider network capability and the
+  sealed NDN dataflow bounds MUST independently satisfy every group edge.
 - **FR-053**: Before admission, preparation, and loaded-runtime reuse, a Provider
   MUST revalidate the `DeviceBinding` against current visibility, health,
   resource sequence, and topology digest. Device loss, MIG/topology change, or
@@ -663,18 +722,15 @@ execution with the original request identity and last valid progress checkpoint.
   and execution within that binding, but MUST NOT independently change global
   shard ranks, device-set membership, dependency edges, or collective semantics
   chosen by the sealed placement plan.
-- **FR-056**: Planning MUST distinguish a logical role from its rank
-  assignments. One logical role MAY have multiple ranks on one or several
-  Providers, and each rank MUST bind an exact device, shard/slice, resource
-  envelope, and collective membership. Ranks MUST be grouped into Provider-local
-  bundles before Selection projection and admission. Validation MUST prove
-  logical-role and graph coverage without assuming that every logical role
-  appears in exactly one single-device assignment.
-- **FR-057**: Admission of a `DEVICE_SET` and all local ranks of one collective
-  epoch MUST be atomic: the Provider admits/enqueues the complete resource
-  vector or rejects it. It MUST NOT hold one member device while waiting for
-  another, and any admitted member failure MUST abort the affected group epoch
-  under the sealed failure policy.
+- **FR-056**: Planning MUST represent every pipeline stage/rank pair as a
+  distinct execution role. Each role binds one Provider, one CPU or single-
+  device target, one exact shard/slice, one resource envelope, and its group and
+  dependency membership. A collective group is metadata connecting several
+  roles; it is not a logical role that spans Providers.
+- **FR-057**: Selection and just-in-time admission are atomic for one complete
+  role on one Provider. Collective readiness is group-local protocol state and
+  MUST NOT reserve or pool remote Provider resources. Failure of any required
+  member aborts the affected group epoch and prevents partial downstream output.
 - **FR-058**: Each device offer MUST declare its sharing and failure/isolation
   domain, including exclusive device, MIG partition, MPS, or time-shared mode
   where supported, plus parent-device relationships. The initial compatibility
@@ -736,8 +792,9 @@ execution with the original request identity and last valid progress checkpoint.
   by successful device admission MUST bind every subsequent load, collective,
   execution, release, and failure record.
 - **FR-066**: The normal `Application`/`APPClient` V3 path MUST instantiate
-  `LayerReuseFirstStrategy`, ensure only canonical model/layer artifacts on the
-  Requester, and carry declarative `RoleAssemblySpec` values in final Selection.
+  `PreSplitFirstStrategy`, ensure only canonical model/layer artifacts on the
+  Requester, and carry one declarative `RoleAssemblySpec` plus one
+  `RoleDataflowContract` in each Provider-specific final Selection.
   It MUST NOT invoke the legacy Requester-side selected-role split materializer.
   Provider Python and native handlers MUST consume the same sealed projection and
   perform assembly locally. The legacy `_prepare_artifacts()` role-split path MAY
@@ -747,18 +804,27 @@ execution with the original request identity and last valid progress checkpoint.
   predicates, and `ackReservation=false` semantics. `NativeProviderReadiness`,
   the native executable entry point, build/install manifests, and exact SIF MUST
   use the real runtime probe rather than fixture-only JSON or Python-only wiring.
-- **FR-068**: Cross-Provider collective and redistribution payloads in the Spec
-  170 baseline MUST use `NDNSF_DATA_V1`: confidential authenticated NDNSF named
-  segmented Data rooted in a signed operation manifest. Names, AEAD associated
-  data, and integrity cover request,
-  attempt, plan, group, epoch, operation index, producer rank, tensor digest, and
-  segment number. A Selection-delivered group capability and wrapped epoch key
-  MUST bind
-  permitted peers and operations; bounded segment count/bytes/in-flight state,
-  duplicate/replay handling, no-progress deadline, cancellation, and whole-epoch
-  failure are mandatory. Raw NCCL/socket payload transport across Providers is
-  outside this baseline; Provider-local collectives may use an adapter-certified
-  local backend.
+  Every compiled Python extension shipped in the SIF MUST be built inside the
+  candidate SIF build stage, or a sealed builder rootfs proven ABI-identical to
+  it, using the target Python executable, headers, `SOABI`, `EXT_SUFFIX`,
+  compiler/glibc, and native dependency roots. Host Python headers, virtual
+  environments, site-packages, or native libraries MUST NOT satisfy this build.
+- **FR-068**: Every cross-Provider pipeline, tensor, redistribution, and
+  collective payload MUST use consumer-pull NDN Interest/Data. Each selected
+  role receives a sealed `RoleDataflowContract` containing exact `mayPublish[]`,
+  `mustFetch[]`, and `waitFor[]` entries. Tensor names and signed manifests bind
+  producer namespace, requester/request ID, attempt, plan digest, group/epoch,
+  operation/round, source role, tensor identity/digest, microbatch, and segment.
+  A producer output shared by multiple roles MUST have one immutable object
+  identity and one publication; its manifest binds the complete authorized
+  consumer-role set, and every consumer projection fetches that same name.
+  Consumers express Interests only for their declared `mustFetch` names;
+  producers publish Data only under `mayPublish`. Large tensors use a signed
+  `TensorObjectManifest` and bounded segmented Data, and retransmission reuses
+  the same name. Authentication/confidentiality, duplicate/replay handling,
+  no-progress deadline, cancellation, and whole-epoch failure are mandatory.
+  Raw TCP/RPC/RDMA/NCCL payload channels, shared files, and unnamed side channels
+  between Providers are forbidden.
 - **FR-069**: Protected runtime state MUST follow the auditable state machine
   `NO_GRANT -> GRANT_VERIFIED -> HOST_PLAINTEXT_LEASED ->
   DEVICE_PLAINTEXT_LEASED -> DRAINING -> ZEROIZED`, with failure transitions to
@@ -821,8 +887,9 @@ Application
        execution disposition: exact-reuse-only | accepts-preparation | reject
   -> ACK_CLOSED (immutable)
   -> NDNSF-DI inspects the pinned dependency graph
-  -> LayerReuseFirstStrategy chooses role topology, Providers, RoleAssemblySpecs,
-       logical-role/rank assignments, and CPU/single-device/device-set bindings
+  -> PreSplitFirstStrategy creates feasible adapter-certified split candidates,
+       then chooses one-to-one role/Provider assignments using reuse as a cost
+       signal; every tensor rank is a distinct role
   -> Requester-side layerizer ensures one compatible canonical artifact profile
        and model/layer set in Repo
        existing verified objects: reuse
@@ -832,21 +899,23 @@ Application
        strategy + offers
   -> for protected Providers, acquire KeyGrants bound to planCoreDigest
   -> finalize planDigest from core + sorted grant bindings + policy snapshot
-  -> final Selection carries each Provider's exact assignment and, for a
-       protected profile, only an authorization-bound KeyGrant reference
+  -> final Selection carries each Provider's one RoleAssemblySpec and one
+       RoleDataflowContract and, for a protected profile, only an
+       authorization-bound KeyGrant reference
   -> each Provider independently
        validates the complete projection and atomically accepts it into a bounded
        queue without acquiring GPU/device capacity
        verifies assignment/manifests/key grant, then reuses an exact local
        fragment or, only when the offer accepted preparation, fetches missing
        layers and assembles one immutable role/rank ONNX artifact bundle host-side
-       immediately before device load, revalidates handles/topology/resource
-       sequence and atomically admits the complete local resource vector
+       immediately before device load, revalidates its single CPU/device binding
+       and atomically admits the complete role resource vector
        loads under the admission fencing token and reports monotonic progress
   -> pipeline role starts when local-ready AND authenticated inputs are ready
   -> tensor group starts one collective epoch when all group ranks and its
        authenticated input are ready; no unrelated/global readiness barrier
-  -> pipeline edges and tensor collective/merge edges drive execution
+  -> every cross-Provider edge runs as declared consumer-pull NDN Interest/Data;
+       no hidden socket, shared-file, or push channel is permitted
   -> one authenticated Response
   -> verified layers/fragments and eligible live runtimes remain cached and
        appear separately in later ACK offers
@@ -884,19 +953,19 @@ Application
   is required, preferred, allowed, or forbidden; it prevents silent CPU/GPU
   substitution.
 - **PartitionPlan**: Complete pipeline/tensor/hybrid role topology and evidence.
-- **LogicalRole**: One semantic unit in the execution graph independent of how
-  many local or remote ranks implement it.
-- **RankAssignment**: One logical-role rank's Provider, device handle,
-  shard/slice, resource envelope, and collective membership.
+- **ExecutionRole**: One complete executable pipeline-stage/rank unit. A tensor
+  rank is a role, not part of a role spanning several Providers.
+- **RankAssignment**: The rank metadata of one execution role, including its one
+  Provider, device handle, shard/slice, resource envelope, and group membership.
 - **RoleAssemblySpec**: Exact deterministic recipe selecting canonical layers
   and tensor slices for one role, including backend and collective contracts.
-- **DeviceBinding**: Selection-time CPU, single-device, or device-set assignment
-  with rank assignments, offer-scoped handles, phase-specific per-device
-  budgets, sharing policy, and the bound offer/topology/resource digests.
-- **ProviderLocalRoleBundle**: All ranks of one logical role assigned to one
-  Provider, carrying that Provider's device binding, local preparation/dependency
-  endpoints, and atomic resource vector. One Provider Selection may carry
-  multiple bundles whose execution remains data-driven.
+- **DeviceBinding**: Selection-time CPU or single-device assignment for one role,
+  with an offer-scoped handle, phase-specific budget, sharing policy, and bound
+  offer/topology/resource digests.
+- **RoleDataflowContract**: The sealed per-role list of exact tensors the role may
+  publish, must fetch, and must wait for, including NDN names, producers,
+  consumers, group/epoch/operation identities, manifests, segmentation, security,
+  deadlines, and completion rules.
 - **AssembledFragmentIdentity**: Exact derivation key and meaningful NDN catalog
   name for Provider-local reusable bytes before a live runtime/device binding;
   the ONNX baseline maps it safely to one immutable assembled bundle with an
@@ -961,7 +1030,16 @@ Application
   identities, single assembled-bundle inline/large-external-data layouts,
   adapter/assembler ABI
   checks, scratch cleanup, explicit persistent-cache-mount behavior, and failure
-  behavior before remote execution.
+  behavior before remote execution. It also records matching build/runtime
+  Python ABI facts and rejects host-built or host-mounted Python extensions,
+  including extensions whose filename tag appears compatible but whose build
+  environment is outside the sealed candidate.
+- **SC-011a**: A formal Tiger release is accepted only when the SIF is paired
+  with a `ndnsf-local-sif-build-v3` record whose boundary report states
+  `containerNativeBuild=true`, `hostBinaryInputs=[]`, and stale-base
+  replacement, and whose recorded SIF size and SHA-256 match the promoted
+  bytes. The record gate runs before node-local staging; a legacy record or a
+  later import/`ldd` pass cannot qualify a host-built extension.
 - **SC-012**: Repacking the same normalized tensor map with different checkpoint
   filenames or archive order leaves ModelIdentity unchanged, while changing the
   canonical artifact profile changes profile/layer-object identities without
@@ -974,16 +1052,16 @@ Application
   two runtime-visible accelerators; each signed offer reports exactly that
   visible set, while `NONE` and `EXPLICIT_SUBSET` configurations only reduce it.
 - **SC-015**: In 100% of feasibility tests, two 12-GiB devices do not satisfy an
-  unsplittable 20-GiB single-device role, while two independent roles that each
-  fit one device can be assigned concurrently without capacity overlap.
-- **SC-016**: A two-device Provider executes one role across both devices only
-  for an adapter-certified device-set/collective recipe; the same topology is
-  rejected for an unsupported recipe or missing required peer connectivity.
+  unsplittable 20-GiB single-device role. Two roles for the same Attempt are not
+  assigned to that one Provider merely because both devices are visible.
+- **SC-016**: A tensor degree of two produces two execution roles on two distinct
+  Providers. Mutation tests that assign both roles to one Provider or one role
+  to two Providers are rejected before Selection.
 - **SC-017**: Removing, renumbering, degrading, or changing one selected device
   after ACK causes the stale Selection or affected collective group to fail
   closed in every injected test, with no silent remap or CPU fallback.
-- **SC-018**: An exact loaded-runtime warm hit occurs only when the complete
-  device set, topology digest, boot/process/runtime generations, assembly, and
+- **SC-018**: An exact loaded-runtime warm hit occurs only when the exact
+  CPU/single-device binding, topology digest, boot/process/runtime generations, assembly, and
   reusable-state contract match; otherwise only the still-valid disk/RAM
   artifact level may be reused. Tests also prove that
   `ACCEPT_IF_EXACT_REUSE` with `preparationAccepted=false` succeeds only for an
@@ -993,14 +1071,14 @@ Application
   TigerCluster prove that Slurm allocations of zero, one, and two GPUs produce
   matching Provider offers inside the container and that unallocated devices
   are never advertised or selected.
-- **SC-020**: Under concurrent requests, every multi-device assignment is
-  admitted or queued as one complete resource vector; fault injection observes
-  no partial member-device hold, hold-and-wait deadlock, or partial collective
-  epoch.
-- **SC-021**: Validation accepts one logical role implemented by multiple ranks
-  only when all required shards and collective members form exact coverage, and
-  rejects duplicate, missing, incompatible, or orphan rank assignments in 100%
-  of negative cases.
+- **SC-020**: Under concurrent requests, each Provider admits at most one complete
+  role per Attempt and never holds a partial role or remote resource; fault
+  injection observes no hold-and-wait deadlock or partial collective epoch.
+- **SC-021**: Validation accepts a tensor group only when every rank is a distinct
+  role, every role maps to a distinct Provider, and all authenticated NDN
+  dataflow/group contracts form exact coverage. It rejects duplicate, missing,
+  incompatible, orphan, multi-role-Provider, and cross-Provider-role assignments
+  in 100% of negative cases.
 - **SC-022**: Exclusive, MIG, MPS, and time-shared device offers are never
   treated as interchangeable. Any sharing mode outside the admitted
   compatibility profile is rejected before Selection, and parent/failure-domain
@@ -1043,13 +1121,14 @@ Application
   V2 tests retain their former reservation behavior without making it reachable
   from a V3 invocation.
 - **SC-030**: An unmodified normal public Application call selects
-  `LayerReuseFirstStrategy`, publishes/ensures only canonical artifacts on the
+  `PreSplitFirstStrategy`, publishes/ensures only canonical artifacts on the
   Requester, and causes every selected Provider to fetch/assemble/load its own
   projection. Instrumentation observes zero calls to the legacy Requester-side
   role-split materializer for V3 and observes that path only in an explicit V2
   compatibility test.
-- **SC-031**: Cross-Provider `NDNSF_DATA_V1` collective tests accept every valid
-  signed manifest/segment sequence and reject wrong peer/capability/epoch,
+- **SC-031**: Cross-Provider consumer-pull NDN dataflow tests accept every valid
+  signed manifest/segment sequence and reject undeclared publish/fetch names,
+  wrong peer/capability/epoch,
   key/nonce reuse, plaintext wire content, replayed or conflicting segment,
   oversized declaration, operation reordering, no-progress, and cancellation
   mutations with zero partial downstream output
@@ -1070,13 +1149,30 @@ Application
   paired estimand/effect size, equivalence margin, Holm comparison family, and
   exact failure intervals. Fewer than three complete blocks is labelled
   exploratory and cannot close the criterion.
-- **SC-035**: D2h executes the frozen rank mapping for both vectors on two
-  one-GPU Provider runtimes: `[1,2,1]` maps
-  `P0/G0={S0R0,S1R0}`, `P1/G1={S1R1,S2R0}`; `[2,1,2]` maps
-  `P0/G0={S0R0,S1R0,S2R0}`, `P1/G1={S0R1,S2R1}`. Co-resident ranks belong to one
-  `EXCLUSIVE_PLAN` admission vector with summed phase peaks. Any remapping,
-  undeclared sharing mode, insufficient envelope, or incomplete rank/collective
-  cover leaves D2h `BLOCK`.
+- **SC-035**: Hybrid tests execute the frozen role vectors with one distinct
+  Provider per stage/rank role: `[1,2,1]` uses four Providers for
+  `{S0R0,S1R0,S1R1,S2R0}` and `[2,1,2]` uses five Providers for
+  `{S0R0,S0R1,S1R0,S2R0,S2R1}`. Every cross-Provider activation,
+  redistribution, and collective tensor is fetched through its declared NDN
+  name. Any Provider reuse within one Attempt, role spanning Providers,
+  undeclared channel, insufficient envelope, or incomplete role/dataflow cover
+  leaves the claim `BLOCK`.
+- **SC-036**: The final application SIF passes both a static file/distribution
+  scan and an in-container import probe showing that PyTorch and Transformers
+  are absent, while ONNX Runtime and standalone tokenization remain usable. The
+  same negative result is required from the local build gate and the exact SIF
+  gate; an exporter/development image does not qualify as deployment evidence.
+- **SC-037**: For two different authenticated ACK snapshots, the placement
+  layer produces different request-scoped `RoleAssemblySpec` values when
+  Provider capabilities differ, while canonical model/object identities remain
+  unchanged. Selected Providers fetch only the ranges named by their sealed
+  specs and locally assemble valid ONNX stages; no precomputed final role layout
+  is treated as the V3 default.
+- **SC-038**: Each supported ONNX model family has an offline conversion and
+  conformance record binding its source revision to graph, initializer,
+  tokenizer, and adapter digests, plus output/token parity evidence. This record
+  is separate from the deployment lock and cannot be replaced by a fixture-only
+  ONNX smoke or a Transformers runtime result.
 
 ## Assumptions and Dependencies
 
@@ -1105,10 +1201,10 @@ Application
   TigerCluster, Slurm selects the GPU count/type and Apptainer exposes the
   allocation to the SIF; NDNSF-DI observes and plans over that view but does not
   request new GPUs from inside the Provider.
-- A single Provider identity may own multiple visible devices. The first
-  implementation milestone may support multiple independent single-device
-  roles before enabling one role across a device set; both use the same signed
-  topology and `DeviceBinding` contract.
+- A single Provider identity may own multiple visible devices, but one Attempt
+  may select only one complete role on that Provider. The selected role uses one
+  CPU or single-device binding; other devices remain available for independent
+  requests rather than becoming hidden roles or ranks.
 - Validation defaults to a minimal real Qwen model under real MiniNDN plus
   exact-container parity. TigerCluster is a later deployment-fidelity gate;
   larger models are not the first correctness test.

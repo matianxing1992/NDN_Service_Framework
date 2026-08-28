@@ -1,0 +1,44 @@
+{
+  "active": true,
+  "lifecycle": [
+    "RESERVED",
+    "RECEIVING",
+    "VERIFIED",
+    "COMMITTED",
+    "ACTIVE"
+  ],
+  "publicationMetrics": {
+    "interestCount": 8,
+    "logicalBytes": 32768,
+    "retransmissionCount": 0,
+    "segments": 8,
+    "wireBytes": 35992
+  },
+  "receipt": {
+    "authenticationAlgorithm": "hmac-sha256",
+    "receipt": {
+      "artifact": {
+        "contentDigest": "88fffae5577874838ab0eb22aedf2085e5481338f7ad405e508c44734347175a",
+        "digestAlgorithm": "sha256",
+        "formatVersion": "artifact-manifest-v2",
+        "logicalName": "/spec164/publisher/artifact",
+        "policyEpoch": "spec164-policy-1",
+        "publisherIdentity": "/spec164/publisher",
+        "rootManifestName": "/spec164/publisher/artifact/root",
+        "sizeBytes": 32768
+      },
+      "committedAtMs": 3300,
+      "operationId": "spec164-success-publication",
+      "policyEpoch": "spec164-policy-1",
+      "receiptId": "receipt-a20533532eb9ba55e92674b720cda26f0f3a65f714d7e69cc4ffbdb9bc3594e4",
+      "repoNode": "/spec164/repo",
+      "state": "COMMITTED",
+      "storageGeneration": 1
+    },
+    "schema": "ndnsf-repo-authenticated-replica-receipt-v1",
+    "signatureHex": "04369ff18b72a612f8b5e0101b70484c016488359b473cbc2edb5916965298c5",
+    "signerKeyId": "/spec164/repo/KEY/receipt-1"
+  },
+  "scenario": "success",
+  "status": "ACTIVE"
+}

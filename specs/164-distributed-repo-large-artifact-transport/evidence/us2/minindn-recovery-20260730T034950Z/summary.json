@@ -1,0 +1,71 @@
+{
+  "cases": [
+    {
+      "case": "publisher-repository-consumer-interruption",
+      "consumerProcessCount": 2,
+      "destinationVisible": true,
+      "finalState": "ACTIVE",
+      "publicationFirstBytes": 16384,
+      "publicationResumeBytes": 49152,
+      "publisherRestartCount": 1,
+      "repositoryProcessCount": 2,
+      "retrievalFirstBytes": 16384,
+      "retrievalResumeBytes": 49152,
+      "verdict": "PASS"
+    },
+    {
+      "active": false,
+      "case": "lease-expiry",
+      "error": "repo-resume-session-not-open: operation cannot proceed",
+      "expired": true,
+      "status": "LEASE_EXPIRED",
+      "transferredBytes": 0,
+      "verdict": "PASS",
+      "workRejected": true
+    },
+    {
+      "case": "changed-identity-and-concurrency",
+      "changedIdentityRejected": true,
+      "differentDigestConcurrentOperations": 2,
+      "differentDigestIsolated": true,
+      "errors": [],
+      "sameDigestConcurrentOperations": 2,
+      "sameDigestLogicalBytes": 131072,
+      "sameDigestNetworkBytes": 65536,
+      "sameDigestSecondMissingChunks": [],
+      "status": "PASS",
+      "verdict": "PASS"
+    },
+    {
+      "achievedReplicas": 2,
+      "case": "three-replica-partial-commit",
+      "distinctReceiptIds": [
+        "receipt-e4521aacffdbec143450026d8f7b2e183186d95ba08f1268bdef32dcb838fd20",
+        "receipt-e74d2a9017855fc32f3d6a85378ff6e347ce28170bc11feddfea0d1e94556971"
+      ],
+      "replicaStates": {
+        "repo1": "ACTIVE",
+        "repo2": "ACTIVE",
+        "repo3": "FAILED"
+      },
+      "repo3Error": "repo-capacity-insufficient: reservation exceeds safe configured or filesystem capacity",
+      "requestedReplicas": 3,
+      "verdict": "PASS"
+    }
+  ],
+  "chunkBytes": 16384,
+  "elapsedMs": 8452.074,
+  "materialPassport": {
+    "originDate": "2026-07-30",
+    "originMode": "run",
+    "originSkill": "experiment-agent",
+    "verificationStatus": "VERIFIED",
+    "versionLabel": "spec164_t011_recovery_v1"
+  },
+  "payloadSize": 65536,
+  "performanceClaim": false,
+  "quickSmoke": false,
+  "schema": "ndnsf-repo-spec164-recovery-minindn-v1",
+  "topology": "/home/tianxing/NDN/ndn-service-framework/Experiments/Topology/spec164-artifact-recovery.conf",
+  "verdict": "PASS"
+}

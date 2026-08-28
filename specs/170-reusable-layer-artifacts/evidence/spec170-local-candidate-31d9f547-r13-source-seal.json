@@ -1,0 +1,75 @@
+{
+  "artifactHashes": {
+    "baseSif": "sha256:bd949732fc89bb10ef48e92b51fb4557fb33819797882765bd629c73da43748c",
+    "framework": "sha256:2efdadd8534b54053eb52a423aaf300276587f3ecb0436faf5eb29faa46039b9",
+    "provider": "sha256:156ae2457c3259cf56e0752b2d84621dd2eba552b5d119101e1482c7f913f0cc",
+    "pythonExtension": "sha256:0e1b62491cdac55cc94aaeb9f141f0f4e7fefbcc48abcf503838aeb5c3a09a37"
+  },
+  "artifactRpath": {
+    "method": "patchelf-on-sealed-input-copy",
+    "providerFramework": "/opt/ndnsf-di/current/lib:/opt/onnxruntime/lib",
+    "pythonExtension": "/opt/ndnsf-di/current/lib"
+  },
+  "buildInputs": {
+    "baseSif": "/tmp/spec170-qualified-base-31d9f547-r10-bd949732.sif",
+    "framework": "build/libndn-service-framework.so",
+    "integrationTests": "build/integration-tests",
+    "provider": "build/examples/di-native-provider",
+    "python310Header": {
+      "path": "/tmp/python310-headers/python3.10/Python.h",
+      "sha256": "sha256:70b04c40833bdfcdd72b0d3771afe67c74340ff2683b7d26b0dc8e95289263a7"
+    },
+    "pythonExtension": "/tmp/spec170-local-candidate-31d9f547-20260817-r13-inputs/ndnsf/_ndnsf.cpython-310-x86_64-linux-gnu.so",
+    "pythonGate": "tests/python/test_spec170_real_minindn_gate.py"
+  },
+  "localGates": {
+    "cppIntegration": "25 cases and 354 assertions passed",
+    "cppUnit": "471 cases and 56906 assertions passed",
+    "nativeTracer": "source/build D0 four-provider and D1 single-provider real ORT CPU paths passed; exact r13 SIF gate pending",
+    "python": "59 passed and 7 skipped",
+    "python310Import": "rebuilt extension import passed against the byte-identical sealed r13 framework input"
+  },
+  "release": "spec170-runtime-31d9f547-post-selection-v11-20260817",
+  "schemaVersion": "spec170-local-source-seal-v1",
+  "sourceDiff": {
+    "path": "/home/tianxing/NDN/ndn-service-framework/specs/170-reusable-layer-artifacts/evidence/spec170-local-candidate-31d9f547-r13-source-diff.patch",
+    "sha256": "sha256:9dd0a739279c7cc0bbcee8c0b7b08fbf4d91c2c5f9b461394681dd2766dd14bf"
+  },
+  "sourceFiles": {
+    "Experiments/NDNSF_DI_NativeTracer_Minindn.py": "sha256:4475d4b58ef4806a972132faf0428403dd2795926dbbab079fb7cba0117a2c85",
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.cpp": "sha256:46d25eb2521543401b2d7b25f1d0914bdea65d48b76670a0a9701b7588c1b090",
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp": "sha256:d8e8ea033d3c3425dbfc97c95a153eaad4a87638ef7a36a22ea85f89e4d0efea",
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderReadiness.cpp": "sha256:78d9e2df37c4e9e1d13aba490e5adda9de987dfe1a2f6960c5b229a0214fa848",
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderReadiness.hpp": "sha256:cbf4e95ce842ec42e73fbf4407c40b6b787d7b83f7e712108758bd90be031fa5",
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.cpp": "sha256:3767d82fb4c2320cc302ce109cf70b92ac126a1dd8529e561ba950553721ac32",
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.hpp": "sha256:71230b68932ba940f8632bfd9ad75008fea0613d68321de87172598343938e52",
+    "examples/DI_NativeProviderExecutable.cpp": "sha256:67ce60358be4e04cec28e0aeb4d87a60c67281a464e1e97d3893d08945a3c6d1",
+    "ndn-service-framework/ServiceProvider.cpp": "sha256:0a3a41267ec403a4067b9069a00ca639d210b3353edcb2559e78dc5d6e89cfd2",
+    "ndn-service-framework/ServiceProvider.hpp": "sha256:6421fdfcb18bff5d359fec5b716f94f840a12ebaaa3c2eca3b8c88f7e6a473a9",
+    "ndn-service-framework/ServiceUser.cpp": "sha256:0a354aa5a5daed98d811fd8d667861a8c77824dfad8bbc895e607e27df68150a",
+    "ndn-service-framework/ServiceUser.hpp": "sha256:984a5bfad67fa8f183513246f68abc124addc97641b4ed1c371f7a89b356439d",
+    "README.md": "sha256:f2399fd02f698b9927b06e1e9cb73a1e1529a5a2c42f5b389142bd7772fb6cff",
+    "packaging/ndnsf-di-container/README.md": "sha256:e7c171cfa1a37202715d844aab4bd583c4bb2ce64b513534d3a7c56f1c79858b",
+    "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/build-local-sif.sh": "sha256:4c916d29bcbb0653e9ba5399b7164c68702a848ce41883a8d88e2f873d144d54",
+    "pythonWrapper/src/ndnsf/_ndnsf.cpp": "sha256:295ae247a1795ec390f5c8594ab3127dc36bb038ea019ee1ec2e1bb866ad1f92",
+    "tests/integration-tests/ndnsf-data-v1-svs-flow.t.cpp": "sha256:0aafa123817e14ef3bb057b4a0cc1deb40fcfe6e4088812f7367541728ed7fc8",
+    "tests/integration-tests/ndnsf-di-core-flow.t.cpp": "sha256:5c97da71828fa23440df5b49d30aacbdfe48cea4dd64c6d81c1970337507e5c0",
+    "tests/integration-tests/ndnsf-integration-fixture.cpp": "sha256:5a5ed3028d312712cc8972e7a92d665d769409db31a5d8fb3b395f891aff3f80",
+    "tests/integration-tests/ndnsf-integration-fixture.hpp": "sha256:99ae89d0c7272f3d8af92ebde275ee756841ae35f0c1605cee2d508ac549ccf4",
+    "specs/170-reusable-layer-artifacts/quickstart.md": "sha256:73afca08e6993ff9d40d069d65d524c4d66ad5c7ac8181924530d02dee2c9bab",
+    "tests/python/test_build_local_sif_record.py": "sha256:94b902b1c081c9237a0f4caa02ce7e09cad91c58a2d9200e3acd9c30416cbfb3",
+    "tests/python/test_cpp_test_target_partition.py": "sha256:ee73a2ed9ea466360f322ea3fa1f8f7263454885c285344bd509a809bb33730e",
+    "tests/python/test_spec170_integrated_flows.py": "sha256:c0cb983c8d278654460624335aa2ada592e89a320d873110b6c7e3abe489be87",
+    "tests/python/test_spec170_real_minindn_gate.py": "sha256:09ec207200f3dffa466e3aa17fddb083150a599c1c22d544f202cfc9d6419b72",
+    "tests/python/test_waf_toolchain_consistency.py": "sha256:b4c1b75c309830dbbe6c72d7f2eb6f947b6f998f6fc0df897f0affbd7c94309a",
+    "tests/wscript": "sha256:38b6db2dedd0aedbe70314933c42e1f327a57bb01e69265da969ede162a293b4",
+    "wscript": "sha256:9625c54bfbee180023ac207ca1b7c1518d2fdcca5a24a40f2d7e3bedabfeebbb"
+  },
+  "sourceRevision": "31d9f547a32f941ab948f005f583c429d23bacbb",
+  "status": "PASS",
+  "tigerAction": "verify-hash-and-execute-only",
+  "worktreeStatus": {
+    "path": "/home/tianxing/NDN/ndn-service-framework/specs/170-reusable-layer-artifacts/evidence/spec170-local-candidate-31d9f547-r13-worktree-status.txt",
+    "sha256": "sha256:332a528ce719b2183c42d2984e9090a251c3b066cec74786cc4c3712c17a8f20"
+  }
+}

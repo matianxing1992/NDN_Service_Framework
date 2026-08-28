@@ -1,0 +1,29 @@
+{
+  "schema": "ndnsf-di.spec168-local-gate-preflight.v1",
+  "gate": "C",
+  "status": "BLOCK",
+  "executed": false,
+  "automaticRetry": false,
+  "candidate": "spec165-prepared-run-20260731T074249Z-1edd6ad0",
+  "candidateEvidenceDigest": "sha256:226fdbf591b893d87a551d1019039efdb768997676f572adc72c4f9299e3536a",
+  "artifactRetentionDigest": "sha256:8aae32053dfc0e5af16a87acacb32be5f281ca60aa108d632034d1eeadf234a5",
+  "blockingFindings": [
+    "ANALYZER_CONTAINER_IDENTITY_MISMATCH",
+    "ANALYZER_REPO_TRANSPORT_MISSING",
+    "ANALYZER_SHARED_FILESYSTEM_PAYLOAD_INJECTION",
+    "ANALYZER_FIXED_SETTLE_WAIT_FORBIDDEN",
+    "ANALYZER_TEST_ONLY_IDENTITIES",
+    "ANALYZER_INVOCATION_FRAGMENTED",
+    "ANALYZER_CPU_FALLBACK_POLICY_INVALID",
+    "ANALYZER_LIFECYCLE_MISSING"
+  ],
+  "observations": {
+    "containerRuntime": "docker",
+    "exactSifDigest": null,
+    "allowCpuFallback": true,
+    "providerStageArtifacts": "host workspace shared-filesystem mount/symlink",
+    "testOnlyEphemeralAppState": true,
+    "tokenRequestCount": 64
+  },
+  "decision": "Do not rebuild or rerun the Docker predecessor. Gate C requires the frozen Apptainer SIF and the same admitted Spec 168 runtime contract as Gate B."
+}

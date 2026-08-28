@@ -1,0 +1,83 @@
+{
+  "ack_match_attempt": 600,
+  "ack_match_attempt_decoded": 300,
+  "ack_match_attempt_pre_decrypt": 300,
+  "ack_match_failed_expired_call": 0,
+  "ack_match_failed_no_pending": 0,
+  "ack_match_failed_request_id_mismatch": 0,
+  "ack_match_skipped_pre_decrypt": 0,
+  "ack_matched_pending_call": 300,
+  "ack_processed": 300,
+  "bucket_10_real_network_svs_nac_loss_or_timeout": 0,
+  "bucket_1_request_never_created_pending_call": 0,
+  "bucket_2_pending_call_created_but_erased_before_ack": 0,
+  "bucket_3_ack_received_but_skipped_pre_decrypt": 0,
+  "bucket_4_ack_decoded_but_no_pending_call_matched": 0,
+  "bucket_5_ack_matched_pending_call_but_no_provider_selected": 0,
+  "bucket_6_provider_selected_but_selection_not_scheduled": 0,
+  "bucket_7_selection_scheduled_but_not_published": 0,
+  "bucket_8_selection_published_but_provider_did_not_execute_respond": 0,
+  "bucket_9_response_published_but_user_callback_not_triggered": 0,
+  "callback_skipped_no_pending": 0,
+  "callback_skipped_timeout": 0,
+  "failed_request_count_classified": 0,
+  "failure_buckets": {
+    "10_real_network_svs_nac_loss_or_timeout": {
+      "count": 0,
+      "percent_of_failed": 0.0
+    },
+    "1_request_never_created_pending_call": {
+      "count": 0,
+      "percent_of_failed": 0.0
+    },
+    "2_pending_call_created_but_erased_before_ack": {
+      "count": 0,
+      "percent_of_failed": 0.0
+    },
+    "3_ack_received_but_skipped_pre_decrypt": {
+      "count": 0,
+      "percent_of_failed": 0.0
+    },
+    "4_ack_decoded_but_no_pending_call_matched": {
+      "count": 0,
+      "percent_of_failed": 0.0
+    },
+    "5_ack_matched_pending_call_but_no_provider_selected": {
+      "count": 0,
+      "percent_of_failed": 0.0
+    },
+    "6_provider_selected_but_selection_not_scheduled": {
+      "count": 0,
+      "percent_of_failed": 0.0
+    },
+    "7_selection_scheduled_but_not_published": {
+      "count": 0,
+      "percent_of_failed": 0.0
+    },
+    "8_selection_published_but_provider_did_not_execute_respond": {
+      "count": 0,
+      "percent_of_failed": 0.0
+    },
+    "9_response_published_but_user_callback_not_triggered": {
+      "count": 0,
+      "percent_of_failed": 0.0
+    }
+  },
+  "pending_created": 300,
+  "request_count": 300,
+  "request_pending_completed": 300,
+  "request_pending_erased": 0,
+  "request_pending_timeout": 0,
+  "requests_timed_out_after_selection_before_selection": 0,
+  "requests_timed_out_before_selection": 0,
+  "requests_with_no_selection": 0,
+  "selection_attempted": 0,
+  "selection_completed": 300,
+  "selection_invoked": 300,
+  "selection_no_pending": 0,
+  "selection_publish_failed": 0,
+  "selection_published": 300,
+  "selection_rejected": 0,
+  "selection_scheduled": 0,
+  "selection_skipped": 0
+}

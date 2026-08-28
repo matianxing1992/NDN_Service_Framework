@@ -1,0 +1,121 @@
+{
+  "candidate": "spec170-runtime-31d9f547-post-selection-v4-20260817",
+  "libraries": [
+    {
+      "path": "/opt/ndnsf-di/current/lib/libnac-abe.so",
+      "sha256": "31438f1a0d138f134097bdb379d3b59a19b7d1591a9442ccf27987bbd4fc610d",
+      "soname": "libnac-abe.so",
+      "version": "sealed-build:edd1e096"
+    },
+    {
+      "path": "/opt/ndnsf-di/current/lib/libnac-abe.so.0.1.0",
+      "sha256": "31438f1a0d138f134097bdb379d3b59a19b7d1591a9442ccf27987bbd4fc610d",
+      "soname": "libnac-abe.so",
+      "version": "0.1.0"
+    },
+    {
+      "path": "/opt/ndnsf-di/current/lib/libndn-cxx.so",
+      "sha256": "1d12d5234de42e55820f534aa00b80d3dfac11aaec895c2ea7ee0a26f0170f3c",
+      "soname": "libndn-cxx.so.0.9.0",
+      "version": "0.9.0"
+    },
+    {
+      "path": "/opt/ndnsf-di/current/lib/libndn-cxx.so.0.9.0",
+      "sha256": "1d12d5234de42e55820f534aa00b80d3dfac11aaec895c2ea7ee0a26f0170f3c",
+      "soname": "libndn-cxx.so.0.9.0",
+      "version": "0.9.0"
+    },
+    {
+      "path": "/opt/ndnsf-di/current/lib/libndn-service-framework.so",
+      "sha256": "c846cace5cbb1b25ea70fd078dcb18f4fc2ea051f06818eb2a3bd4f80a7ff2f9",
+      "soname": "libndn-service-framework.so.0.1.0",
+      "version": "0.1.0-current-build"
+    },
+    {
+      "path": "/opt/ndnsf-di/current/lib/libndn-service-framework.so.0.1.0",
+      "sha256": "c846cace5cbb1b25ea70fd078dcb18f4fc2ea051f06818eb2a3bd4f80a7ff2f9",
+      "soname": "libndn-service-framework.so.0.1.0",
+      "version": "0.1.0-current-build"
+    },
+    {
+      "path": "/opt/ndnsf-di/current/lib/libndn-svs.so",
+      "sha256": "70378a10887c8896ac6253c2955214a1d8e02c13e0d47b8091faafda7914cf80",
+      "soname": "libndn-svs.so.0.1.0",
+      "version": "0.1.0"
+    },
+    {
+      "path": "/opt/ndnsf-di/current/lib/libndn-svs.so.0.1.0",
+      "sha256": "70378a10887c8896ac6253c2955214a1d8e02c13e0d47b8091faafda7914cf80",
+      "soname": "libndn-svs.so.0.1.0",
+      "version": "0.1.0"
+    },
+    {
+      "path": "/opt/ndnsf-di/current/lib/libndnsd.so",
+      "sha256": "f9ae37d5153c8ffd7211c50da7da8ffc0538de2242b7550f6c967e12b6b50cd8",
+      "soname": "libndnsd.so.0.1.0",
+      "version": "0.1.0"
+    },
+    {
+      "path": "/opt/ndnsf-di/current/lib/libndnsd.so.0.1.0",
+      "sha256": "f9ae37d5153c8ffd7211c50da7da8ffc0538de2242b7550f6c967e12b6b50cd8",
+      "soname": "libndnsd.so.0.1.0",
+      "version": "0.1.0"
+    },
+    {
+      "path": "/opt/ndnsf-di/current/lib/libopenabe.so",
+      "sha256": "f41c4aa7159e3f1bbddba631d0b71fe6e470559c703b2b5ff46111d3cba4dc1d",
+      "soname": null,
+      "version": "sealed-build:edd1e096"
+    },
+    {
+      "path": "/opt/ndnsf-di/current/lib/librelic.so",
+      "sha256": "54f0f5a193886b4a13a8ba3a0baac011df3550c27e7b30d55f8df28b7aa390bc",
+      "soname": "librelic.so",
+      "version": "sealed-build:edd1e096"
+    },
+    {
+      "path": "/opt/ndnsf-di/current/lib/librelic_ec.so",
+      "sha256": "96502c5ae9ec847af9fdae655aa79f5cca01941c2b25ee552b80b91d86af6a30",
+      "soname": "librelic_ec.so",
+      "version": "sealed-build:edd1e096"
+    },
+    {
+      "path": "/opt/onnxruntime/lib/libonnxruntime.so",
+      "sha256": "f433692f47ec671ab385384e186dae8ea870ae093331fbd2a44413285bf43e71",
+      "soname": "libonnxruntime.so.1",
+      "version": "1.20.0"
+    },
+    {
+      "path": "/opt/onnxruntime/lib/libonnxruntime.so.1",
+      "sha256": "f433692f47ec671ab385384e186dae8ea870ae093331fbd2a44413285bf43e71",
+      "soname": "libonnxruntime.so.1",
+      "version": "1.20.0"
+    },
+    {
+      "path": "/opt/onnxruntime/lib/libonnxruntime.so.1.20.0",
+      "sha256": "f433692f47ec671ab385384e186dae8ea870ae093331fbd2a44413285bf43e71",
+      "soname": "libonnxruntime.so.1",
+      "version": "1.20.0"
+    },
+    {
+      "path": "/opt/onnxruntime/lib/libonnxruntime_providers_cuda.so",
+      "sha256": "6d6debcef9837fcc85c9600941f6db6c32fceec3b86a640fb79cdbbd0abdb8dd",
+      "soname": null,
+      "version": "sealed-build:edd1e096"
+    },
+    {
+      "path": "/opt/onnxruntime/lib/libonnxruntime_providers_shared.so",
+      "sha256": "f9400f9550e63513760f33a5c259b69fe93373865933fea5823b74c0036c4d2a",
+      "soname": "libonnxruntime_providers_shared.so",
+      "version": "sealed-build:edd1e096"
+    }
+  ],
+  "schemaVersion": "ndnsf-sif-library-lock-v2",
+  "source": "31d9f547",
+  "toolchain": {
+    "apptainer": "1.3.4",
+    "boost": "1.71",
+    "onnxruntime": "1.20.0",
+    "python": "3.10"
+  }
+}

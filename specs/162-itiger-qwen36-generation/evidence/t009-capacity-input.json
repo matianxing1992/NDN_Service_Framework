@@ -1,0 +1,19 @@
+{
+  "cleanupCandidates": [],
+  "currentUsageBytes": 151061877345,
+  "durableCapacityAuthority": "user-authorized:df-B1:nfs4:itigercage-ibnet:/project:2026-07-30",
+  "durableCapacityBytes": 923294737891328,
+  "durableCapacityMode": "global-filesystem-free",
+  "durablePromotionBytes": 75161927680,
+  "evidenceBytes": 2147483648,
+  "quotaAuthority": "",
+  "reserveBytes": 21474836480,
+  "runtimeBytes": 5368709120,
+  "scratchCapacityAuthority": "slurm-allocation:job-177155",
+  "scratchFreeBytes": 15251694301184,
+  "scratchPath": "/tmp/tma1/ndnsf-di/spec162-177155",
+  "scratchTemporaryPeakBytes": 171798691840,
+  "scratchWritable": true,
+  "userAuthorizedGlobalCapacity": true,
+  "verifiedQuotaBytes": 0
+}

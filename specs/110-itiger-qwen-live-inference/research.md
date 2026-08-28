@@ -182,3 +182,20 @@ generalization.
   inference evidence.
 - Recorded cluster partitions, GPU GRES, quotas, and versions are mutable and
   must be rediscovered before submission.
+
+## Decision 13: Rebuild and bridge after Spec 111 instead of reusing the current image
+
+**Decision**: Treat the current Spec 110 OCI and any resulting SIF as substrate
+evidence only. After Spec 111 completes, create a new OCI/SIF candidate and map
+its immutable DeploymentRevision through a versioned Slurm/Apptainer handoff.
+
+**Why**: The current image cannot contain code that does not yet exist. The
+basic Slurm adapter renders one workload, allocation topology v1 fixes three
+Providers, canonical container binds omit persistent Spec 111 state/node-run
+paths, and current project commands are not guaranteed to execute inside the
+same SIF. Reusing the image or equating job RUNNING with READY would be evidence
+relabeling and authority conflation.
+
+**Rejected**: direct Docker on iTiger; Slurm submission inside APPDeployment;
+fixed-three generic topology; public persistent NFD service; writable whole-
+project mount; inherited pre-Spec-111 job/authorization/evidence identity.

@@ -1,0 +1,165 @@
+{
+  "artifacts": [
+    {
+      "achievedReplicas": 1,
+      "artifactReference": {
+        "contentDigest": "7f40b96b2831087e846127fcb682369582017f28a44f761cc80f65a8af8a627f",
+        "digestAlgorithm": "sha256",
+        "formatVersion": "artifact-manifest-v2",
+        "logicalName": "/NDNSF-DistributeInference/example/user/NDNSF-DISTRIBUTED-REPO/OBJECT/QWEN36/stage-0-7f40b96b2831087e846127fcb682369582017f28a44f761cc80f65a8af8a627f",
+        "policyEpoch": "sha256:a317ec50b9a20ebf83a96379016e227dbe83c0b7116e97cfffdfc0bcee4c86db",
+        "publisherIdentity": "/NDNSF-DistributeInference/example/user",
+        "rootManifestName": "/NDNSF-DistributeInference/example/user/NDNSF-DISTRIBUTED-REPO/OBJECT/QWEN36/stage-0-7f40b96b2831087e846127fcb682369582017f28a44f761cc80f65a8af8a627f/root",
+        "sizeBytes": 594357850
+      },
+      "fileBytes": 594357850,
+      "fileSha256": "sha256:7f40b96b2831087e846127fcb682369582017f28a44f761cc80f65a8af8a627f",
+      "objectName": "/NDNSF-DistributeInference/example/repo/NDNSF-ARTIFACT/sha256/7f40b96b2831087e846127fcb682369582017f28a44f761cc80f65a8af8a627f",
+      "operationId": "artifact-df9f8823ed80f9d13b343ad4f00472bc3cf05d8ae49e73e9caa3bfd68a110856",
+      "publishMs": 14525.404922664165,
+      "receipts": [
+        {
+          "authenticationAlgorithm": "hmac-sha256",
+          "dataName": "/NDNSF-DistributeInference/example/repo/NDNSF-ARTIFACT/sha256/7f40b96b2831087e846127fcb682369582017f28a44f761cc80f65a8af8a627f",
+          "receipt": {
+            "artifact": {
+              "contentDigest": "7f40b96b2831087e846127fcb682369582017f28a44f761cc80f65a8af8a627f",
+              "digestAlgorithm": "sha256",
+              "formatVersion": "artifact-manifest-v2",
+              "logicalName": "/NDNSF-DistributeInference/example/user/NDNSF-DISTRIBUTED-REPO/OBJECT/QWEN36/stage-0-7f40b96b2831087e846127fcb682369582017f28a44f761cc80f65a8af8a627f",
+              "policyEpoch": "sha256:a317ec50b9a20ebf83a96379016e227dbe83c0b7116e97cfffdfc0bcee4c86db",
+              "publisherIdentity": "/NDNSF-DistributeInference/example/user",
+              "rootManifestName": "/NDNSF-DistributeInference/example/user/NDNSF-DISTRIBUTED-REPO/OBJECT/QWEN36/stage-0-7f40b96b2831087e846127fcb682369582017f28a44f761cc80f65a8af8a627f/root",
+              "sizeBytes": 594357850
+            },
+            "committedAtMs": 1785839999678,
+            "operationId": "artifact-df9f8823ed80f9d13b343ad4f00472bc3cf05d8ae49e73e9caa3bfd68a110856",
+            "policyEpoch": "sha256:a317ec50b9a20ebf83a96379016e227dbe83c0b7116e97cfffdfc0bcee4c86db",
+            "receiptId": "receipt-81a3fc54a8562907dffe950050241a2521b3e44a29cd80e44b14f69e6620adbb",
+            "repoNode": "/NDNSF-DistributeInference/example/repo",
+            "state": "COMMITTED",
+            "storageGeneration": 1
+          },
+          "schema": "ndnsf-repo-authenticated-replica-receipt-v1",
+          "signatureHex": "913969c7d803f3fe7897c1db9062792a228ddf5c95980ce97d92d72aae85b5b4",
+          "signerKeyId": "/NDNSF-DistributeInference/example/repo/KEY/artifact-receipt"
+        }
+      ],
+      "requestedReplicas": 1,
+      "role": "/LLM/Pipeline/Stage/0",
+      "stageIndex": 0
+    },
+    {
+      "achievedReplicas": 1,
+      "artifactReference": {
+        "contentDigest": "072d9a6a787bfa5f085b829d972992c09c186dc82f235a04fca71915bd3126b5",
+        "digestAlgorithm": "sha256",
+        "formatVersion": "artifact-manifest-v2",
+        "logicalName": "/NDNSF-DistributeInference/example/user/NDNSF-DISTRIBUTED-REPO/OBJECT/QWEN36/stage-1-072d9a6a787bfa5f085b829d972992c09c186dc82f235a04fca71915bd3126b5",
+        "policyEpoch": "sha256:a317ec50b9a20ebf83a96379016e227dbe83c0b7116e97cfffdfc0bcee4c86db",
+        "publisherIdentity": "/NDNSF-DistributeInference/example/user",
+        "rootManifestName": "/NDNSF-DistributeInference/example/user/NDNSF-DISTRIBUTED-REPO/OBJECT/QWEN36/stage-1-072d9a6a787bfa5f085b829d972992c09c186dc82f235a04fca71915bd3126b5/root",
+        "sizeBytes": 283192711
+      },
+      "fileBytes": 283192711,
+      "fileSha256": "sha256:072d9a6a787bfa5f085b829d972992c09c186dc82f235a04fca71915bd3126b5",
+      "objectName": "/NDNSF-DistributeInference/example/repo/NDNSF-ARTIFACT/sha256/072d9a6a787bfa5f085b829d972992c09c186dc82f235a04fca71915bd3126b5",
+      "operationId": "artifact-25f20ef7aa3d233d462a05c6b0ef0a40a69bf80cd05a13c7524dfc745c624224",
+      "publishMs": 8707.67426956445,
+      "receipts": [
+        {
+          "authenticationAlgorithm": "hmac-sha256",
+          "dataName": "/NDNSF-DistributeInference/example/repo/NDNSF-ARTIFACT/sha256/072d9a6a787bfa5f085b829d972992c09c186dc82f235a04fca71915bd3126b5",
+          "receipt": {
+            "artifact": {
+              "contentDigest": "072d9a6a787bfa5f085b829d972992c09c186dc82f235a04fca71915bd3126b5",
+              "digestAlgorithm": "sha256",
+              "formatVersion": "artifact-manifest-v2",
+              "logicalName": "/NDNSF-DistributeInference/example/user/NDNSF-DISTRIBUTED-REPO/OBJECT/QWEN36/stage-1-072d9a6a787bfa5f085b829d972992c09c186dc82f235a04fca71915bd3126b5",
+              "policyEpoch": "sha256:a317ec50b9a20ebf83a96379016e227dbe83c0b7116e97cfffdfc0bcee4c86db",
+              "publisherIdentity": "/NDNSF-DistributeInference/example/user",
+              "rootManifestName": "/NDNSF-DistributeInference/example/user/NDNSF-DISTRIBUTED-REPO/OBJECT/QWEN36/stage-1-072d9a6a787bfa5f085b829d972992c09c186dc82f235a04fca71915bd3126b5/root",
+              "sizeBytes": 283192711
+            },
+            "committedAtMs": 1785840008779,
+            "operationId": "artifact-25f20ef7aa3d233d462a05c6b0ef0a40a69bf80cd05a13c7524dfc745c624224",
+            "policyEpoch": "sha256:a317ec50b9a20ebf83a96379016e227dbe83c0b7116e97cfffdfc0bcee4c86db",
+            "receiptId": "receipt-1956f2d9961b328c255df6be667bd38c560a72cea4fe34480ad794b82e161d16",
+            "repoNode": "/NDNSF-DistributeInference/example/repo",
+            "state": "COMMITTED",
+            "storageGeneration": 1
+          },
+          "schema": "ndnsf-repo-authenticated-replica-receipt-v1",
+          "signatureHex": "9682ffed0dc7d4a8f15f74708f4a2c81641cb49ffdf26d8f08b28338ef91db7e",
+          "signerKeyId": "/NDNSF-DistributeInference/example/repo/KEY/artifact-receipt"
+        }
+      ],
+      "requestedReplicas": 1,
+      "role": "/LLM/Pipeline/Stage/1",
+      "stageIndex": 1
+    },
+    {
+      "achievedReplicas": 1,
+      "artifactReference": {
+        "contentDigest": "4cceadede2cf8b1270a73d302a117181028e32bd3079ea7fd705100f71f8acc6",
+        "digestAlgorithm": "sha256",
+        "formatVersion": "artifact-manifest-v2",
+        "logicalName": "/NDNSF-DistributeInference/example/user/NDNSF-DISTRIBUTED-REPO/OBJECT/QWEN36/stage-2-4cceadede2cf8b1270a73d302a117181028e32bd3079ea7fd705100f71f8acc6",
+        "policyEpoch": "sha256:a317ec50b9a20ebf83a96379016e227dbe83c0b7116e97cfffdfc0bcee4c86db",
+        "publisherIdentity": "/NDNSF-DistributeInference/example/user",
+        "rootManifestName": "/NDNSF-DistributeInference/example/user/NDNSF-DISTRIBUTED-REPO/OBJECT/QWEN36/stage-2-4cceadede2cf8b1270a73d302a117181028e32bd3079ea7fd705100f71f8acc6/root",
+        "sizeBytes": 625825930
+      },
+      "fileBytes": 625825930,
+      "fileSha256": "sha256:4cceadede2cf8b1270a73d302a117181028e32bd3079ea7fd705100f71f8acc6",
+      "objectName": "/NDNSF-DistributeInference/example/repo/NDNSF-ARTIFACT/sha256/4cceadede2cf8b1270a73d302a117181028e32bd3079ea7fd705100f71f8acc6",
+      "operationId": "artifact-dd1c8ab6f491098006c9c07b3a7eea26a10a8e93888b2f91c31386242477ae93",
+      "publishMs": 15106.858202256262,
+      "receipts": [
+        {
+          "authenticationAlgorithm": "hmac-sha256",
+          "dataName": "/NDNSF-DistributeInference/example/repo/NDNSF-ARTIFACT/sha256/4cceadede2cf8b1270a73d302a117181028e32bd3079ea7fd705100f71f8acc6",
+          "receipt": {
+            "artifact": {
+              "contentDigest": "4cceadede2cf8b1270a73d302a117181028e32bd3079ea7fd705100f71f8acc6",
+              "digestAlgorithm": "sha256",
+              "formatVersion": "artifact-manifest-v2",
+              "logicalName": "/NDNSF-DistributeInference/example/user/NDNSF-DISTRIBUTED-REPO/OBJECT/QWEN36/stage-2-4cceadede2cf8b1270a73d302a117181028e32bd3079ea7fd705100f71f8acc6",
+              "policyEpoch": "sha256:a317ec50b9a20ebf83a96379016e227dbe83c0b7116e97cfffdfc0bcee4c86db",
+              "publisherIdentity": "/NDNSF-DistributeInference/example/user",
+              "rootManifestName": "/NDNSF-DistributeInference/example/user/NDNSF-DISTRIBUTED-REPO/OBJECT/QWEN36/stage-2-4cceadede2cf8b1270a73d302a117181028e32bd3079ea7fd705100f71f8acc6/root",
+              "sizeBytes": 625825930
+            },
+            "committedAtMs": 1785840023448,
+            "operationId": "artifact-dd1c8ab6f491098006c9c07b3a7eea26a10a8e93888b2f91c31386242477ae93",
+            "policyEpoch": "sha256:a317ec50b9a20ebf83a96379016e227dbe83c0b7116e97cfffdfc0bcee4c86db",
+            "receiptId": "receipt-e5ebd9a3ff4d5a256f8b9f6962843ab64fe6b489a4eace2780e1cf1af5645c0e",
+            "repoNode": "/NDNSF-DistributeInference/example/repo",
+            "state": "COMMITTED",
+            "storageGeneration": 1
+          },
+          "schema": "ndnsf-repo-authenticated-replica-receipt-v1",
+          "signatureHex": "11f33132512096030c2dffa7818feab83810ee521150c4cc24b14863c4cd0897",
+          "signerKeyId": "/NDNSF-DistributeInference/example/repo/KEY/artifact-receipt"
+        }
+      ],
+      "requestedReplicas": 1,
+      "role": "/LLM/Pipeline/Stage/2",
+      "stageIndex": 2
+    }
+  ],
+  "chunkMiB": 16,
+  "completedAtUnixMs": 1785840024266,
+  "controlMode": "normal",
+  "modelDigest": "sha256:a317ec50b9a20ebf83a96379016e227dbe83c0b7116e97cfffdfc0bcee4c86db",
+  "publisher": "/NDNSF-DistributeInference/example/user",
+  "replicationFactor": 1,
+  "repositoryReadiness": {
+    "control": "begin_collaboration->ACK_CLOSED->commit_plan",
+    "reservation": "none",
+    "service": "/NDNSF/DistributedRepo/Artifact/v2/STORE"
+  },
+  "revision": "e6de91484c29aa9480d55605af694f39b081c455",
+  "schemaVersion": "ndnsf-di-qwen36-repo-registration-v1",
+  "stageManifestSha256": "sha256:8d8475db33efab5398014d0aac9570cda90bae5d50fd0128bed7b0215d0156f5"
+}

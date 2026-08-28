@@ -17,6 +17,7 @@ enum class TensorElementType : std::uint32_t
   Float16 = 2,
   Int64 = 3,
   Bool = 4,
+  UInt8 = 5,
 };
 
 struct NamedTensor
@@ -120,6 +121,20 @@ TensorBundle
 selectTensorBundle(std::string name,
                    const TensorBundle& bundle,
                    const std::vector<std::string>& tensorNames);
+
+/** Reserved tensor name used for authenticated generation-lineage metadata. */
+const std::string&
+generationEpochLineageTensorName();
+
+TensorBundle
+attachGenerationEpochLineage(const TensorBundle& bundle,
+                             const GenerationEpochLineageV1& lineage);
+
+std::optional<GenerationEpochLineageV1>
+extractGenerationEpochLineage(const TensorBundle& bundle);
+
+TensorBundle
+stripGenerationEpochLineage(const TensorBundle& bundle);
 
 /** Apply adapter-certified GATHER/SCATTER/RESHARD transitions to role inputs. */
 std::map<std::string, TensorBundle>

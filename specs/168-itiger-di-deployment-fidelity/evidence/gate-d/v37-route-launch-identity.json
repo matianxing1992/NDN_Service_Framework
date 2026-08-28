@@ -1,0 +1,27 @@
+{
+  "schema": "ndnsf-di.spec168-route-launch-identity.v1",
+  "topology": "three-distinct-nodes-full-mesh",
+  "faceScheme": "tcp4",
+  "requestMode": "REQUEST_FIRST",
+  "executionMode": "DATA_DRIVEN_V2",
+  "fixedProviderSettleMs": 0,
+  "rankFailureMode": "SHARED_ABORT",
+  "files": {
+    "spec168-three-node-rank.sh": "sha256:a10e3b3b73819672c14c532b48fc441faad14c7456983b8e8a7e555e11894160",
+    "spec168-three-node-rank-inner.sh": "sha256:79c4ffd5c4af41de8badfaa2e34b5746a7946ae2fddef686a831d418ac4fb519",
+    "compat-spec162-generation-rank-inner.sh": "sha256:8e93cb5c031e327d79c56e55c1e6d55da8aa8adfc43a6fce25ece647e7be54e6",
+    "build-generation-policy.py": "sha256:5e9f496effc65163127b8235f706edfda90adec91521424f8d467031ae5d8286",
+    "build-automatic-planning-manifest.py": "sha256:cf8ddd89442c5ffcf29ca34efe33796be87d8084dbb966761220cdc0e7f5867d",
+    "run-repo-node.py": "sha256:803391421ab33d707345f714ec442306e889886ef0f3d2735b23c97892291971",
+    "prepare-qwen36.py": "sha256:667984809c7142a8662800d9900822345f0c7f9fa8c4e97ba9b569e58ca323fd",
+    "register-qwen36-repo.py": "sha256:207823ebbc23612158d6bc75f69f6c9b3cfe39717f91475fc68d186aa7841479",
+    "nfd.conf.in": "sha256:7cad4bd8729c424688aaa9147c5db2bef3cf391cab4dbcdc5badc0adb2c841d0"
+  },
+  "requiredEvidence": [
+    "three node hostnames",
+    "three distinct RTX 5000 GPU UUIDs",
+    "per-node face and route snapshots",
+    "per-node provider logs",
+    "one user log and one generation row"
+  ]
+}

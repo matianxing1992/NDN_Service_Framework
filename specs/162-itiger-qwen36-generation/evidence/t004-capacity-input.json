@@ -1,0 +1,15 @@
+{
+  "cleanupCandidates": [],
+  "currentUsageBytes": 81003067904,
+  "durablePromotionBytes": 75161927680,
+  "evidenceBytes": 2147483648,
+  "quotaAuthority": "",
+  "reserveBytes": 21474836480,
+  "runtimeBytes": 0,
+  "scratchCapacityAuthority": "slurm-allocation:job-174610",
+  "scratchFreeBytes": 15251694170112,
+  "scratchPath": "/tmp/tma1/ndnsf-di/spec162-174610",
+  "scratchTemporaryPeakBytes": 171798691840,
+  "scratchWritable": true,
+  "verifiedQuotaBytes": 0
+}

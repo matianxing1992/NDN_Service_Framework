@@ -213,6 +213,14 @@ df3e884159b6dd7682a2c32ae69aba269eb23aa2b63aa92fd21274d26bd28efb  results/spec17
 This remains diagnostic evidence, not a Gate B PASS; TigerCluster D gates are
 still prohibited until a clean small-model campaign satisfies T026.
 
+## Local payload retention (2026-08-16)
+
+The repeated root-owned model payload trees under the original run directory
+are stale diagnostic copies and are not part of the candidate identity.  The
+run directory's logs, JSON manifests, and failure evidence are retained; the
+payload copies require administrator cleanup as recorded in
+`storage-cleanup-20260816.md`.
+
 ## Pre-decrypt role-scope filter diagnostic (2026-08-05)
 
 The ten out-of-role authentication failures were fixed by adding a
@@ -477,4 +485,82 @@ Retained interrupted-run hashes:
 a9f4f5b71abe44e7ab7bfb587a471f0a2833b56de10dc2602cb26ec3cf71fd1a  results/spec170-qwen-runtime-v514-t026-block3-formal-20260805T/stage0-provider.log
 0fb70d525f7bed7584f5a95727a3da9fcf5069da20eab6de5992591d1736ab17028a  results/spec170-qwen-runtime-v514-t026-block3-formal-20260805T/stage1-provider.log
 2ee6db6a030c4659f8addba7a5c59dab8a584f54a040a22940a3cfab032cda3b  results/spec170-qwen-runtime-v514-t026-block3-formal-20260805T/stage2-provider.log
+```
+
+## Native tracer Gate-B closure after multi-Provider mapping fix (2026-08-16)
+
+The short CPU MiniNDN Gate-B fixture was rerun with the current build and the
+four-provider `native-tracer` plan.  The first two diagnostic reruns showed
+that immediate collaboration assignments were not wrapped in the Core
+assignment envelope, so the User could not construct the complete
+role-to-Provider map.  The fix applies the same envelope to every
+collaboration projection (deferred and immediate), while leaving the
+application assignment bytes opaque.
+
+Command configuration was unchanged apart from the diagnostic environment
+variables: one request, one worker per Provider, ONNX Runtime 1.26 CPU, the
+real MiniNDN network, and the existing 10-second overload-fail bound.  The
+successful run is retained at:
+
+```text
+results/spec170-di-gate-b-minindn-20260816-fixed11/
+```
+
+Result:
+
+```text
+status=SUCCESS
+runnerClassification=onnxruntime-cpu
+requestCount=1
+userExecution=executed
+dependencyExecution=executed
+failureBreakdown=timeouts:0;other:0;negativeAckEvents:0
+dependencyObjectCounters=events:8;directions:{fetch:4,publish:4};statuses:{ok:8}
+```
+
+Every Provider logged the same complete mapping:
+
+```text
+/Backbone       => /NDNSF-DI/Tracer/provider/backbone
+/Head/Shard/0   => /NDNSF-DI/Tracer/provider/head0
+/Head/Shard/1   => /NDNSF-DI/Tracer/provider/head1
+/Merge          => /NDNSF-DI/Tracer/provider/merge
+```
+
+The dependency trace confirms that Head 0 and Head 1 fetched the Backbone
+objects from the Backbone namespace, then published their outputs under their
+own namespaces, and Merge fetched both Head outputs.  This closes the local
+real-network Gate-B dataflow check for the current CPU native-tracer fixture;
+it does not by itself qualify the TigerCluster SIF or the GPU/Qwen campaigns.
+
+Immutable evidence hashes:
+
+```text
+36cc66fd81308ca2ba4860f14b7c237e3294935b4090755d53007040acf213d7  results/spec170-di-gate-b-minindn-20260816-fixed11/summary.txt
+e59db0986189af47ea8fca88a66b6ccfbc9a5d487c4375ab93791bed7881da7b  results/spec170-di-gate-b-minindn-20260816-fixed11/summary.json
+ed972bb5236bc65f542a7cedb1505f9a1ec7217d5d9d47c55211d2cf2a9072a2  results/spec170-di-gate-b-minindn-20260816-fixed11/dependency_object_counters.json
+```
+
+The same Gate-B fixture was rerun after removing the diagnostic-only logging,
+with no trace environment variables enabled.  This clean regression also
+passed and is the preferred evidence directory:
+
+```text
+results/spec170-di-gate-b-minindn-20260816-fixed12/
+status=SUCCESS
+runnerClassification=onnxruntime-cpu
+userExecution=executed
+dependencyExecution=executed
+failureBreakdown=timeouts:0;other:0;negativeAckEvents:0
+dependencyObjectCounters=events:8;directions:{fetch:4,publish:4};statuses:{ok:8}
+```
+
+The clean trace shows Backbone publishing both Backbone-to-Head objects,
+Head 0/1 fetching them and publishing their Head-to-Merge objects, and Merge
+fetching both Head objects under the correct producer namespaces.  Hashes:
+
+```text
+20cdf452573b347acd64a93263bc5a62ebec048d67e17f653878a5a3870e8e90  results/spec170-di-gate-b-minindn-20260816-fixed12/summary.txt
+9414ed9b3eb91aff2405130941d7a7ef5f974c24257f9dcf505fef53bb09b874  results/spec170-di-gate-b-minindn-20260816-fixed12/summary.json
+f0d7ae09e189b52566f11498965d6f7258cee502292ecda690113d1a95ae3ffc  results/spec170-di-gate-b-minindn-20260816-fixed12/dependency_object_counters.json
 ```

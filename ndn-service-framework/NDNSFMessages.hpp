@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 #include "common.hpp"
+#include "InvocationStream.hpp"
 
 namespace ndn_service_framework {
 
@@ -228,12 +229,21 @@ public:
     void setDeploymentIntent(const DeploymentIntent& intent);
     void setRequestCapabilities(const RequestCapabilities& capabilities);
     void setEncryptedRequestInput(const EncryptedRequestInput& input);
+    void setStreamRequestOptions(const StreamRequestOptions& options);
+    void clearStreamRequestOptions();
+    void setConversationContinuation(
+      const ConversationContinuationOptions& continuation);
+    void clearConversationContinuation();
     bool hasDeploymentIntent() const;
     bool hasRequestCapabilities() const;
     bool hasEncryptedRequestInput() const;
+    bool hasStreamRequestOptions() const;
+    bool hasConversationContinuation() const;
     const DeploymentIntent& getDeploymentIntent() const;
     const RequestCapabilities& getRequestCapabilities() const;
     const EncryptedRequestInput& getEncryptedRequestInput() const;
+    const StreamRequestOptions& getStreamRequestOptions() const;
+    const ConversationContinuationOptions& getConversationContinuation() const;
     const std::map<std::string, std::string>& getTokens() const;
     const std::string& getUserToken() const;
     const std::string& getProviderToken() const;
@@ -261,6 +271,8 @@ private:
     std::optional<DeploymentIntent> deploymentIntent_;
     std::optional<RequestCapabilities> requestCapabilities_;
     std::optional<EncryptedRequestInput> encryptedRequestInput_;
+    std::optional<StreamRequestOptions> streamRequestOptions_;
+    std::optional<ConversationContinuationOptions> conversationContinuation_;
     mutable std::shared_ptr<const ndn::Block> m_wire;
 };
 
@@ -280,6 +292,8 @@ public:
     void setAuthenticatedTransportEvidence(const std::string& dataName,
                                            const std::string& signerCertificate,
                                            const std::string& wireDigest);
+    void setStreamCompletion(const StreamCompletion& completion);
+    void clearStreamCompletion();
     bool getStatus() const;
     const std::string& getErrorInfo() const;
     const std::map<std::string, std::string>& getTokens() const;
@@ -291,6 +305,8 @@ public:
     const std::string& getDataName() const;
     const std::string& getSignerCertificate() const;
     const std::string& getWireDigest() const;
+    bool hasStreamCompletion() const;
+    const StreamCompletion& getStreamCompletion() const;
     void Clear() override;
     ndn::Block WireEncode() const override;
     bool WireDecode(const ndn::Block& block) override;
@@ -308,6 +324,7 @@ private:
     std::string dataName_;
     std::string signerCertificate_;
     std::string wireDigest_;
+    std::optional<StreamCompletion> streamCompletion_;
     mutable std::shared_ptr<const ndn::Block> m_wire;
 };
 
@@ -421,14 +438,20 @@ public:
     void setDeploymentPlan(const DeploymentPlan& plan);
     void setSelectionDecision(const SelectionDecision& decision);
     void setSelectionInputKeyGrant(const SelectionInputKeyGrant& grant);
+    /** Set the provider-specific streamed event-key grant. The block must
+     * contain exactly one HybridMessageEnvelope and is emitted only in the
+     * selected Provider's Selection projection. */
+    void setStreamEventKeyGrant(const ndn::Block& grant);
     void setRecipientEncryptedAssignment(const RecipientEncryptedAssignment& assignment);
     bool hasDeploymentPlan() const;
     bool hasSelectionDecision() const;
     bool hasSelectionInputKeyGrant() const;
+    bool hasStreamEventKeyGrant() const;
     bool hasRecipientEncryptedAssignment() const;
     const DeploymentPlan& getDeploymentPlan() const;
     const SelectionDecision& getSelectionDecision() const;
     const SelectionInputKeyGrant& getSelectionInputKeyGrant() const;
+    const ndn::Block& getStreamEventKeyGrant() const;
     const RecipientEncryptedAssignment& getRecipientEncryptedAssignment() const;
     const std::vector<std::string>& getRequestIDs() const;
     const std::string& getProviderToken() const;
@@ -450,6 +473,7 @@ private:
     std::optional<DeploymentPlan> deploymentPlan_;
     std::optional<SelectionDecision> selectionDecision_;
     std::optional<SelectionInputKeyGrant> selectionInputKeyGrant_;
+    std::optional<ndn::Block> streamEventKeyGrant_;
     std::optional<RecipientEncryptedAssignment> recipientEncryptedAssignment_;
     mutable ndn::Block m_wire;
 };

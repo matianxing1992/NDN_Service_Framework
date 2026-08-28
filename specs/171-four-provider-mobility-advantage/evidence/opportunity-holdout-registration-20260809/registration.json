@@ -1,0 +1,96 @@
+{
+  "config": {
+    "ack_timeout_ms": 1000,
+    "ap_layout": "single",
+    "attempt_timeout_ms": 1000,
+    "block_network": true,
+    "duration_s": 60,
+    "global_deadline_ms": 5000,
+    "grpc_health_oracle": "disabled-primary",
+    "grpc_health_oracle_implementation": "NDNSFBaseline/Health application RPC; not grpc.health.v1",
+    "grpc_no_health_routing": true,
+    "grpc_parallel": false,
+    "health_interval_ms": 1000,
+    "mobility_warmup_s": 300.0,
+    "ndnsf_first_responding_semantics": "ackTimeoutMs does not delay first successful ACK selection; FirstResponding publishes selection immediately",
+    "ndnsf_response_retry": true,
+    "ndnsf_strategy": "first-responding",
+    "processing_delay_ms": 5,
+    "profile": "four-provider-single-ap",
+    "providers": [
+      "ucla",
+      "wustl",
+      "uiuc",
+      "arizona"
+    ],
+    "ranges_m": [
+      100.0
+    ],
+    "rate_rps": 5.0,
+    "registered_ranges_m": [
+      35.0,
+      40.0,
+      50.0,
+      70.0,
+      75.0,
+      80.0,
+      90.0,
+      100.0,
+      110.0,
+      120.0,
+      150.0
+    ],
+    "seeds": [
+      72,
+      73,
+      74,
+      75,
+      76,
+      77,
+      78,
+      79,
+      80,
+      81
+    ],
+    "service_workers": 4,
+    "settle_seconds": 5,
+    "single_provider": "ucla",
+    "speeds_mps": [
+      2.0
+    ],
+    "systems": [
+      "ndnsf",
+      "grpc",
+      "nsc"
+    ],
+    "timeout_condition": "primary-1s-attempt-5s-global",
+    "trace_profile": "random-waypoint",
+    "traffic_phase_tolerance_s": 0.05,
+    "traffic_start_delay_s": 4.05
+  },
+  "disk_preflight": {
+    "free_gib": 26.51,
+    "minimum_free_gib": 20.0,
+    "path": "/home/tianxing/NDN/ndn-service-framework/specs/171-four-provider-mobility-advantage/evidence"
+  },
+  "harness": "/home/tianxing/NDN/ndn-service-framework/Experiments/WifiRouterMobilityReliability.py",
+  "harness_sha256": "34511d610e78c5e8c57d7f1e3aaab2e920e65e7818eda4c7504fb82ac5b74d13",
+  "registration_contract": {
+    "grpc": "four static targets; sequential one-at-a-time failover is the primary; custom health RPC is explicit opt-in only",
+    "grpc-single": "one fixed gRPC target; single-provider mode forbids failover",
+    "ndnsf": "no static endpoint list; runtime NDN namespace plus permission/token bootstrap",
+    "nsc": "four static Provider prefixes; sequential 1 s attempt timeout",
+    "nsc-single": "one fixed NSC Provider prefix; no retry/failover to other Providers"
+  },
+  "registered_analysis": {
+    "path": "Experiments/analyze_spec171_opportunity_holdout.py",
+    "sha256": "6a3404a21926aff8dc32b9e1118aa8c512b1d653215666f7c2741dee9c6ab7b9",
+    "bootstrap_seed": 171,
+    "bootstrap_repetitions": 20000,
+    "inference_unit": "mobility seed",
+    "primary_metric": "paired NDNSF-minus-baseline seed-p95 successful end-to-end latency within agreed SWITCH_REQUIRED rows",
+    "confirmation_gate": "both gRPC and NSC bootstrap 95% upper bounds below zero"
+  },
+  "schema": "ndnsf-single-ap-range-speed-registration-v1",
+  "wrapper_sha256": "eacf227f179df4e880c420948ad7d0c457d5f56a31df751d9e40ff703c6de0e4"
+}

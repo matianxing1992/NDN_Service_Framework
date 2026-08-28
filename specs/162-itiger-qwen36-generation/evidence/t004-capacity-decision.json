@@ -1,0 +1,22 @@
+{
+  "allowed": false,
+  "blockReasons": [
+    "DURABLE_QUOTA_UNVERIFIED"
+  ],
+  "cleanupAuthorized": false,
+  "cleanupInventory": [],
+  "currentUsageBytes": 81003067904,
+  "durablePromotionBytes": 75161927680,
+  "evidenceBytes": 2147483648,
+  "projectedDurableBytes": 158312479232,
+  "projectedDurableWithReserveBytes": 179787315712,
+  "quotaAuthority": "",
+  "reserveBytes": 21474836480,
+  "runtimeBytes": 0,
+  "schemaVersion": "ndnsf-di-qwen36-capacity-decision-v1",
+  "scratchCapacityAuthority": "slurm-allocation:job-174610",
+  "scratchFreeBytes": 15251694170112,
+  "scratchPath": "/tmp/tma1/ndnsf-di/spec162-174610",
+  "scratchTemporaryPeakBytes": 171798691840,
+  "verifiedQuotaBytes": 0
+}

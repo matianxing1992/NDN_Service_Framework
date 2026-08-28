@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ndnsf.example/spec172/experiment-manifest.schema.json",
+  "title": "NDNSF Authorization Experiment Manifest",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "manifest_id",
+    "subject",
+    "command",
+    "configuration",
+    "source_hashes",
+    "started_at",
+    "completed_at",
+    "terminal_status",
+    "artifacts"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "manifest_id": {"type": "string", "minLength": 1},
+    "subject": {"type": "string", "minLength": 1},
+    "command": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+    "configuration": {"type": "object"},
+    "source_hashes": {
+      "type": "object",
+      "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+    },
+    "started_at": {"type": "string"},
+    "completed_at": {"type": "string"},
+    "terminal_status": {"enum": ["success", "failure", "timeout", "invalid"]},
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "bytes", "sha256"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "bytes": {"type": "integer", "minimum": 0},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": true
+}

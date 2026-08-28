@@ -399,8 +399,19 @@ BOOST_AUTO_TEST_CASE(ProductionProviderContextUsesSvsSegments)
       staleSealed.segments[0].dataName,
       ProviderGroupCoordinator::encodeSegment(
           staleSealed.manifest, staleSealed.segments[0]));
-  BOOST_REQUIRE(producerContext.publishDataV1Segments(
-      "/scope/provider-context", publications, 60000));
+  // Production collaboration handlers call this synchronous facade from a
+  // worker while the Face loop owns SVSPubSub. Exercise that ownership model:
+  // calling it on this test's Face thread before pumping the io_context would
+  // wait on work that the same blocked thread must dispatch.
+  auto publication = std::async(std::launch::async, [&] {
+    return producerContext.publishDataV1Segments(
+      "/scope/provider-context", publications, 60000);
+  });
+  pump({&producerFace, &receiverFace}, [&] {
+    return publication.wait_for(std::chrono::milliseconds(0)) ==
+           std::future_status::ready;
+  });
+  BOOST_REQUIRE(publication.get());
 
   // Reproduce the production ordering: both publications are synchronized
   // before the downstream Provider posts its dependency subscription.

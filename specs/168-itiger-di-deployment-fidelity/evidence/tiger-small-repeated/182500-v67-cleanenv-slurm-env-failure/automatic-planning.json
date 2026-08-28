@@ -1,0 +1,118 @@
+{
+  "adapterCompositionDigest": "sha256:c72b307a2f5a6b9a04bf4cd0d7d57efd388628bba1330f0a72a79b8e32af0bce",
+  "adapterDescriptorDigest": "sha256:7d87a4934b5cd9517c729995ede7d8f8188476a72956d933065474c8b6fd71ee",
+  "adapterId": "qwen-three-stage-pipeline",
+  "adapterVersion": "1.0.0",
+  "candidateDigest": "sha256:0190314b01004e99a041ceb802f96719a9e46985a46136315ee4d5f54aba2340",
+  "dtype": "bfloat16",
+  "graphDigest": "sha256:1591ddd605db55a6d6642e9eade7f246cc7bb3793a0854e55751522f2bffb7de",
+  "layerRanges": [
+    [
+      0,
+      9
+    ],
+    [
+      9,
+      18
+    ],
+    [
+      18,
+      28
+    ]
+  ],
+  "model": {
+    "contentDigest": "sha256:a317ec50b9a20ebf83a96379016e227dbe83c0b7116e97cfffdfc0bcee4c86db",
+    "name": "Qwen/Qwen3-0.6B",
+    "revision": "e6de91484c29aa9480d55605af694f39b081c455",
+    "semanticsDigest": "sha256:1d05c7681cd2ef17edf61956bcbe8f5c93eb26e6637382594eaca549d050b818"
+  },
+  "preSplitCatalog": {
+    "alias": "qwen-qwen3-0.6b-three-stage",
+    "candidateDigest": "sha256:0190314b01004e99a041ceb802f96719a9e46985a46136315ee4d5f54aba2340",
+    "createdAtMs": 1785842077226,
+    "manifestDigest": "sha256:b85e1abd6af9578e05b3980940ef66c81ed9fb01cd8fa695b7fc172fdb5c89c1",
+    "publicationState": "REQUIRES_DISTRIBUTED_REPO_REGISTRATION",
+    "registrationDigest": ""
+  },
+  "schemaVersion": "ndnsf-di-spec162-automatic-planning-v1",
+  "stages": [
+    {
+      "bytes": 594357850,
+      "cpuFallback": false,
+      "cudaDevice": "cuda:0",
+      "cudaValidated": true,
+      "dataName": "/NDNSF-DistributeInference/example/user/NDNSF-DISTRIBUTED-REPO/OBJECT/QWEN36/segments/7f40b96b2831087e846127fcb682369582017f28a44f761cc80f65a8af8a627f",
+      "dtype": "bfloat16",
+      "filename": "stage-0-qwen-transformers.pt",
+      "forwardValidated": true,
+      "gpuTotalBytes": 33826537472,
+      "layerCount": 28,
+      "layerRange": {
+        "endExclusive": 9,
+        "start": 0
+      },
+      "path": "/project/tma1/ndnsf-di/artifacts/spec162/qwen3-0.6b/spec162-submission-t009-qwen3small-runtime1f616-pathbound-20260802T231200Z-001/qwen-transformers-stage-artifacts/stage-0-qwen-transformers.pt",
+      "peakAllocatedBytes": 603049984,
+      "peakReservedBytes": 618659840,
+      "requiredGpuMiB": 2877,
+      "role": "/LLM/Pipeline/Stage/0",
+      "runtime": "qwen-transformers",
+      "sha256": "sha256:7f40b96b2831087e846127fcb682369582017f28a44f761cc80f65a8af8a627f",
+      "stageCount": 3,
+      "stageIndex": 0,
+      "validationGpuName": "NVIDIA RTX 5000 Ada Generation"
+    },
+    {
+      "bytes": 283192711,
+      "cpuFallback": false,
+      "cudaDevice": "cuda:1",
+      "cudaValidated": true,
+      "dataName": "/NDNSF-DistributeInference/example/user/NDNSF-DISTRIBUTED-REPO/OBJECT/QWEN36/segments/072d9a6a787bfa5f085b829d972992c09c186dc82f235a04fca71915bd3126b5",
+      "dtype": "bfloat16",
+      "filename": "stage-1-qwen-transformers.pt",
+      "forwardValidated": true,
+      "gpuTotalBytes": 33826537472,
+      "layerCount": 28,
+      "layerRange": {
+        "endExclusive": 18,
+        "start": 9
+      },
+      "path": "/project/tma1/ndnsf-di/artifacts/spec162/qwen3-0.6b/spec162-submission-t009-qwen3small-runtime1f616-pathbound-20260802T231200Z-001/qwen-transformers-stage-artifacts/stage-1-qwen-transformers.pt",
+      "peakAllocatedBytes": 291885056,
+      "peakReservedBytes": 316669952,
+      "requiredGpuMiB": 2550,
+      "role": "/LLM/Pipeline/Stage/1",
+      "runtime": "qwen-transformers",
+      "sha256": "sha256:072d9a6a787bfa5f085b829d972992c09c186dc82f235a04fca71915bd3126b5",
+      "stageCount": 3,
+      "stageIndex": 1,
+      "validationGpuName": "NVIDIA RTX 5000 Ada Generation"
+    },
+    {
+      "bytes": 625825930,
+      "cpuFallback": false,
+      "cudaDevice": "cuda:2",
+      "cudaValidated": true,
+      "dataName": "/NDNSF-DistributeInference/example/user/NDNSF-DISTRIBUTED-REPO/OBJECT/QWEN36/segments/4cceadede2cf8b1270a73d302a117181028e32bd3079ea7fd705100f71f8acc6",
+      "dtype": "bfloat16",
+      "filename": "stage-2-qwen-transformers.pt",
+      "forwardValidated": true,
+      "gpuTotalBytes": 33826537472,
+      "layerCount": 28,
+      "layerRange": {
+        "endExclusive": 28,
+        "start": 18
+      },
+      "path": "/project/tma1/ndnsf-di/artifacts/spec162/qwen3-0.6b/spec162-submission-t009-qwen3small-runtime1f616-pathbound-20260802T231200Z-001/qwen-transformers-stage-artifacts/stage-2-qwen-transformers.pt",
+      "peakAllocatedBytes": 636780544,
+      "peakReservedBytes": 650117120,
+      "requiredGpuMiB": 2910,
+      "role": "/LLM/Pipeline/Stage/2",
+      "runtime": "qwen-transformers",
+      "sha256": "sha256:4cceadede2cf8b1270a73d302a117181028e32bd3079ea7fd705100f71f8acc6",
+      "stageCount": 3,
+      "stageIndex": 2,
+      "validationGpuName": "NVIDIA RTX 5000 Ada Generation"
+    }
+  ]
+}

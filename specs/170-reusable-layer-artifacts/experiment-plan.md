@@ -43,29 +43,26 @@ Response.
 
 ### H3 - Multiple independent devices under one Provider
 
-One Provider safely maps independent logical roles/requests to different GPUs
-with per-device accounting.
+One Provider truthfully exposes several devices and safely maps independent
+requests to different GPUs with per-device accounting, while each Attempt still
+selects at most one role on that Provider.
 
 Block if `2 x 12 GiB` satisfies one unsplittable 20-GiB role, if two individually
-feasible roles overlap capacity, if one device's runtime/cache aliases another,
+feasible requests overlap capacity, if one device's runtime/cache aliases another,
 if ACK creates any reservation/queue/resource hold, or if Selection queue
 acceptance acquires device capacity before just-in-time admission.
 
-### H4 - One logical role across devices
+### H4 - One-to-one role ownership and NDN tensor dataflow
 
-A device-set role is feasible only with complete adapter-certified ranks,
-partition recipes, topology, collectives, and atomic admission.
-
-Two distinct variants are tested: (a) every rank/device is inside one
-Provider-local bundle and one local admission transaction; (b) ranks span
-multiple Provider-local bundles with authenticated cross-Provider rendezvous,
-independent local admission, and whole-epoch failure propagation. Evidence from
-one variant cannot satisfy the other.
+Every pipeline-stage/rank pair is a distinct execution role. Every role has one
+Provider, every selected Provider has one role per Attempt, and every cross-
+Provider tensor follows its sealed consumer-pull NDN dataflow contract.
 
 Block on partial member admission/hold, incomplete rank cover, unsupported link
 or layout acceptance, collective ordering/epoch error, deadlock, silent member
-replacement, non-group failure propagation, or any cross-Provider payload that
-bypasses the `NDNSF_DATA_V1` capability/manifest/segment contract.
+replacement, non-group failure propagation, same-Provider multi-role assignment,
+role spanning Providers, or any cross-Provider payload that bypasses the declared
+Interest/Data manifest/segment contract.
 
 ### H5 - Heterogeneous hybrid correctness
 
@@ -108,10 +105,10 @@ and last verified progress checkpoint.
 Block if a known boundary collapses into generic-timeout-only evidence or an
 unsafe partial artifact/runtime is advertised as reusable.
 
-### H9 - Exact-SIF parity
+### H9 - Exact local-SIF closure
 
-One sealed OCI/SIF identity exhibits consistent source/contracts and truthful
-0/1/2-GPU visibility under Slurm/Apptainer.
+One sealed source/local-SIF identity exhibits consistent source/contracts and
+truthful 0/1/2-GPU visibility under Slurm/Apptainer.
 
 Block if local/container/remote identities differ, unallocated GPUs appear, a
 one-Provider/two-GPU conclusion is produced from two single-GPU Providers, or a
@@ -225,25 +222,25 @@ judge.
 - Verify security, request ID, canonical publication, Provider-local assembly,
   data-driven start, full multi-token Response, and cold/warm reuse.
 
-### P2 - One Provider, two independent roles
+### P2 - Multi-device Provider visibility without role collapse
 
 - Use a simulated two-device topology plus real MiniNDN control/data paths.
-- Bind role A to device 0 and role B to device 1; vary concurrency and queueing.
+- Use independent requests to bind one role to device 0 or device 1; vary
+  concurrency and queueing while rejecting two roles for one Attempt/Provider.
 - Test asymmetric envelopes and the `2 x 12 GiB` versus 20-GiB trap.
 - Actual dual-GPU CUDA evidence remains a TigerCluster requirement.
 
-### P3 - One logical role, two ranks/devices
+### P3 - Two tensor-rank roles on two Providers
 
 - Use a deterministic tensor adapter and collective emulator locally.
-- Verify complete rank/tensor coverage, atomic group admission, operation order,
+- Verify complete rank/tensor coverage, independent role admission, operation order,
   timeout/cancellation, and rank-loss propagation.
-- Run a Provider-local variant with one two-device bundle and a cross-Provider
-  variant with two one-device bundles; compare both with the same unsplit oracle
-  while retaining distinct admission/rendezvous traces.
-- The cross-Provider variant uses `NDNSF_DATA_V1` and exercises signed operation
-  manifests, HMAC-bound segments, bounded inflight state, exact duplicate versus
+- Run two roles on two Providers and compare with the same unsplit oracle while
+  retaining both admission and named Interest/Data traces.
+- The dataflow exercises signed tensor manifests, HMAC-bound segments, bounded
+  inflight state, exact duplicate versus
   conflicting replay, no-progress cancellation, and zero partial output.
-- Actual NCCL/P2P behavior remains a TigerCluster requirement.
+- Raw NCCL/P2P is not a valid cross-Provider path or requirement.
 
 ### P4 - Heterogeneous hybrid
 
@@ -257,7 +254,7 @@ judge.
 ### P5 - TigerCluster exact-SIF
 
 P0-P4, the real three-Provider MiniNDN repeated-request gate, protected/security
-mutations, and exact-SIF CPU/native parity must pass before the sole T029 freeze.
+mutations, and exact-SIF CPU/native parity must pass before the sole T022 freeze.
 P5 executes only that frozen candidate. Any source/build/job/model/workload hash
 mismatch is `INVALID_CANDIDATE`, not a remote diagnostic retry.
 
@@ -267,18 +264,15 @@ Run separate immutable Slurm allocation blocks:
   and CPU-allowed result or GPU-required rejection.
 - **1 GPU**: request one GPU, use Apptainer `--nv`, and require one exact device
   in probe/offer/Selection plus complete small-model GPU output.
-- **2 GPUs, D2a**: request two GPUs for one Provider task, use `--nv`, and
-  require both and only allocated devices. Run independent roles and one
-  Provider-local two-rank role.
+- **2 GPUs, D2a**: request two GPUs for one Provider task, use `--nv`, require
+  both and only allocated devices, and run independent requests with one role per
+  Attempt. Reject multi-role same-Attempt projections.
 - **2 GPUs, D2b**: use a separately declared allocation/topology with two
-  Provider runtimes restricted to one allocated GPU each. Run one two-rank
-  cross-Provider role and require two local bundles plus authenticated
-  rendezvous/transport/epoch evidence.
-- **2 GPUs, D2h**: after D2a/D2b, run `[1,2,1]` and `[2,1,2]` as separate
-  heterogeneous-hybrid profiles on this frozen mapping:
-  `[1,2,1]`: `P0/G0={S0R0,S1R0}`, `P1/G1={S1R1,S2R0}`;
-  `[2,1,2]`: `P0/G0={S0R0,S1R0,S2R0}`, `P1/G1={S0R1,S2R1}`. Co-resident ranks
-  use one `EXCLUSIVE_PLAN` local admission vector with summed phase peaks. Retain
+  Provider runtimes restricted to one allocated GPU each. Run two rank roles,
+  one per Provider, and require authenticated NDN dataflow/epoch evidence.
+- **Hybrid GPU**: after CPU integrated/MiniNDN closure, run `[1,2,1]` with four
+  Providers and `[2,1,2]` with five Providers when those distinct resources are
+  available. Retain
   per-stage ranks, collectives, redistribution, activation, oracle, and failure
   rows. Insufficient resources produce `BLOCK`, not an inferred hardware claim.
 
@@ -427,7 +421,7 @@ For every request:
 ## Evidence and Retention
 
 Retain only canonical reproduction runs and the latest distinct diagnostic case.
-Each formal bundle binds source/OCI/SIF/model/artifact/profile/prompt/security/
+Each formal bundle binds source/local-SIF/model/artifact/profile/prompt/security/
 route/schedule identities, full result rows, lifecycle traces, resource samples,
 and failure classification. Never replace negative rows with a later successful
 run or infer large-model readiness from this minimal-model qualification.

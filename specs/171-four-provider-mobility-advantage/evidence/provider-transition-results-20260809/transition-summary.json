@@ -1,0 +1,699 @@
+{
+  "completed_replays": 3,
+  "pilot_passed": true,
+  "replays": [
+    {
+      "cells": {
+        "grpc-preregistered-4": {
+          "client_command": "cd /home/tianxing/NDN/ndn-service-framework && exec python3 /home/tianxing/NDN/ndn-service-framework/Experiments/gRPC/greeter_failover_client.py --target ucla=10.0.0.2:50051 --target wustl=10.0.0.3:50051 --target uiuc=10.0.0.4:50051 --target arizona=10.0.0.5:50051 --rate-rps 5.0 --duration-s 60 --global-deadline-s 5.0 --attempt-timeout-s 1.0 --health-interval-s 1.0 --health-timeout-s 1.0 --health-stale-s 2.0 --measurement-start-monotonic-s 285153.618400663 --measurement-start-tolerance-s 0.05 --warmup-s 0 --quiet --disable-health-routing",
+          "configured_provider_count": 4,
+          "phase_assignment": "nominal_index_with_transition_boundary_excluded",
+          "phases": {
+            "initial": {
+              "attempts_or_executions": 100,
+              "mean_success_latency_ms": 23.918625,
+              "p95_success_latency_ms": 29.751,
+              "provider_d_successes": 0,
+              "requests": 80,
+              "success": 80,
+              "success_rate": 1.0
+            },
+            "overlap": {
+              "attempts_or_executions": 99,
+              "mean_success_latency_ms": 15.604474747474747,
+              "p95_success_latency_ms": 27.138,
+              "provider_d_successes": 25,
+              "requests": 99,
+              "success": 99,
+              "success_rate": 1.0
+            },
+            "post_retirement": {
+              "attempts_or_executions": 296,
+              "mean_success_latency_ms": 609.8663529411765,
+              "p95_success_latency_ms": 3031.471,
+              "provider_d_successes": 119,
+              "requests": 119,
+              "success": 119,
+              "success_rate": 1.0
+            },
+            "transition_boundary": {
+              "attempts_or_executions": 2,
+              "mean_success_latency_ms": 8.356,
+              "p95_success_latency_ms": 9.091,
+              "provider_d_successes": 0,
+              "requests": 2,
+              "success": 2,
+              "success_rate": 1.0
+            }
+          }
+        },
+        "grpc-static-3": {
+          "client_command": "cd /home/tianxing/NDN/ndn-service-framework && exec python3 /home/tianxing/NDN/ndn-service-framework/Experiments/gRPC/greeter_failover_client.py --target ucla=10.0.0.2:50051 --target wustl=10.0.0.3:50051 --target uiuc=10.0.0.4:50051 --rate-rps 5.0 --duration-s 60 --global-deadline-s 5.0 --attempt-timeout-s 1.0 --health-interval-s 1.0 --health-timeout-s 1.0 --health-stale-s 2.0 --measurement-start-monotonic-s 285066.488329603 --measurement-start-tolerance-s 0.05 --warmup-s 0 --quiet --disable-health-routing",
+          "configured_provider_count": 3,
+          "phase_assignment": "nominal_index_with_transition_boundary_excluded",
+          "phases": {
+            "initial": {
+              "attempts_or_executions": 80,
+              "mean_success_latency_ms": 15.902425000000001,
+              "p95_success_latency_ms": 26.966,
+              "provider_d_successes": 0,
+              "requests": 80,
+              "success": 80,
+              "success_rate": 1.0
+            },
+            "overlap": {
+              "attempts_or_executions": 99,
+              "mean_success_latency_ms": 16.272,
+              "p95_success_latency_ms": 30.563,
+              "provider_d_successes": 0,
+              "requests": 99,
+              "success": 99,
+              "success_rate": 1.0
+            },
+            "post_retirement": {
+              "attempts_or_executions": 357,
+              "mean_success_latency_ms": null,
+              "p95_success_latency_ms": null,
+              "provider_d_successes": 0,
+              "requests": 119,
+              "success": 0,
+              "success_rate": 0.0
+            },
+            "transition_boundary": {
+              "attempts_or_executions": 4,
+              "mean_success_latency_ms": 7.425,
+              "p95_success_latency_ms": 7.425,
+              "provider_d_successes": 0,
+              "requests": 2,
+              "success": 1,
+              "success_rate": 0.5
+            }
+          }
+        },
+        "ndnsf": {
+          "client_command": "cd /home/tianxing/NDN/ndn-service-framework && exec /home/tianxing/NDN/ndn-service-framework/build-new-svs-20260808/examples/App_WifiMobilityUser --rate-rps 5.0 --duration-ms 60000 --ack-timeout-ms 1000 --timeout-ms 5000 --strategy first-responding --startup-delay-ms 0 --measurement-start-monotonic-ms 284956313 --response-retry --response-attempt-timeout-ms 1000 --response-max-attempts 4",
+          "configured_provider_count": 0,
+          "phase_assignment": "nominal_index_with_transition_boundary_excluded",
+          "phases": {
+            "initial": {
+              "attempts_or_executions": 80,
+              "mean_success_latency_ms": 110.1937375,
+              "p95_success_latency_ms": 336.656,
+              "provider_d_successes": 0,
+              "requests": 80,
+              "success": 80,
+              "success_rate": 1.0
+            },
+            "overlap": {
+              "attempts_or_executions": 99,
+              "mean_success_latency_ms": 183.6970707070707,
+              "p95_success_latency_ms": 414.387,
+              "provider_d_successes": 16,
+              "requests": 99,
+              "success": 99,
+              "success_rate": 1.0
+            },
+            "post_retirement": {
+              "attempts_or_executions": 119,
+              "mean_success_latency_ms": 82.11996638655462,
+              "p95_success_latency_ms": 107.259,
+              "provider_d_successes": 119,
+              "requests": 119,
+              "success": 119,
+              "success_rate": 1.0
+            },
+            "transition_boundary": {
+              "attempts_or_executions": 2,
+              "mean_success_latency_ms": 80.61699999999999,
+              "p95_success_latency_ms": 94.761,
+              "provider_d_successes": 1,
+              "requests": 2,
+              "success": 2,
+              "success_rate": 1.0
+            }
+          }
+        },
+        "nsc-preregistered-4": {
+          "client_command": "cd /home/tianxing/NDN/ndn-service-framework && exec /home/tianxing/NDN/ndn-service-framework/Experiments/NDN_NSC/consumer /muas/memphis /muas/ucla,/muas/wustl,/muas/uiuc,/muas/arizona /FlightControl /ManualControl 200 300 wifi-171-100-227cc91c 0 5000 1000 285339143 50",
+          "configured_provider_count": 4,
+          "phase_assignment": "nominal_index_with_transition_boundary_excluded",
+          "phases": {
+            "initial": {
+              "attempts_or_executions": 100,
+              "mean_success_latency_ms": 279.9375,
+              "p95_success_latency_ms": 1042.0,
+              "provider_d_successes": 0,
+              "requests": 80,
+              "success": 80,
+              "success_rate": 1.0
+            },
+            "overlap": {
+              "attempts_or_executions": 99,
+              "mean_success_latency_ms": 27.11111111111111,
+              "p95_success_latency_ms": 42.0,
+              "provider_d_successes": 25,
+              "requests": 99,
+              "success": 99,
+              "success_rate": 1.0
+            },
+            "post_retirement": {
+              "attempts_or_executions": 296,
+              "mean_success_latency_ms": 1517.1932773109243,
+              "p95_success_latency_ms": 3047.0,
+              "provider_d_successes": 119,
+              "requests": 119,
+              "success": 119,
+              "success_rate": 1.0
+            },
+            "transition_boundary": {
+              "attempts_or_executions": 5,
+              "mean_success_latency_ms": 1531.0,
+              "p95_success_latency_ms": 3051.0,
+              "provider_d_successes": 1,
+              "requests": 2,
+              "success": 2,
+              "success_rate": 1.0
+            }
+          }
+        },
+        "nsc-static-3": {
+          "client_command": "cd /home/tianxing/NDN/ndn-service-framework && exec /home/tianxing/NDN/ndn-service-framework/Experiments/NDN_NSC/consumer /muas/memphis /muas/ucla,/muas/wustl,/muas/uiuc /FlightControl /ManualControl 200 300 wifi-171-100-7c34a84b 0 5000 1000 285243631 50",
+          "configured_provider_count": 3,
+          "phase_assignment": "nominal_index_with_transition_boundary_excluded",
+          "phases": {
+            "initial": {
+              "attempts_or_executions": 80,
+              "mean_success_latency_ms": 30.9375,
+              "p95_success_latency_ms": 46.0,
+              "provider_d_successes": 0,
+              "requests": 80,
+              "success": 80,
+              "success_rate": 1.0
+            },
+            "overlap": {
+              "attempts_or_executions": 99,
+              "mean_success_latency_ms": 29.80808080808081,
+              "p95_success_latency_ms": 46.0,
+              "provider_d_successes": 0,
+              "requests": 99,
+              "success": 99,
+              "success_rate": 1.0
+            },
+            "post_retirement": {
+              "attempts_or_executions": 357,
+              "mean_success_latency_ms": null,
+              "p95_success_latency_ms": null,
+              "provider_d_successes": 0,
+              "requests": 119,
+              "success": 0,
+              "success_rate": 0.0
+            },
+            "transition_boundary": {
+              "attempts_or_executions": 4,
+              "mean_success_latency_ms": 19.0,
+              "p95_success_latency_ms": 19.0,
+              "provider_d_successes": 0,
+              "requests": 2,
+              "success": 1,
+              "success_rate": 0.5
+            }
+          }
+        }
+      },
+      "passed": true,
+      "passes": {
+        "grpc_preregistered_post_success_ge_95pct": true,
+        "grpc_static_post_fails_without_d": true,
+        "ndnsf_post_success_ge_95pct": true,
+        "ndnsf_post_uses_provider_d": true,
+        "ndnsf_zero_provider_configuration": true,
+        "nsc_preregistered_post_success_ge_95pct": true,
+        "nsc_static_post_fails_without_d": true
+      },
+      "replay": 1
+    },
+    {
+      "cells": {
+        "grpc-preregistered-4": {
+          "client_command": "cd /home/tianxing/NDN/ndn-service-framework && exec python3 /home/tianxing/NDN/ndn-service-framework/Experiments/gRPC/greeter_failover_client.py --target ucla=10.0.0.2:50051 --target wustl=10.0.0.3:50051 --target uiuc=10.0.0.4:50051 --target arizona=10.0.0.5:50051 --rate-rps 5.0 --duration-s 60 --global-deadline-s 5.0 --attempt-timeout-s 1.0 --health-interval-s 1.0 --health-timeout-s 1.0 --health-stale-s 2.0 --measurement-start-monotonic-s 285728.524651095 --measurement-start-tolerance-s 0.05 --warmup-s 0 --quiet --disable-health-routing",
+          "configured_provider_count": 4,
+          "phase_assignment": "nominal_index_with_transition_boundary_excluded",
+          "phases": {
+            "initial": {
+              "attempts_or_executions": 100,
+              "mean_success_latency_ms": 20.384574999999998,
+              "p95_success_latency_ms": 26.744,
+              "provider_d_successes": 0,
+              "requests": 80,
+              "success": 80,
+              "success_rate": 1.0
+            },
+            "overlap": {
+              "attempts_or_executions": 99,
+              "mean_success_latency_ms": 14.539090909090909,
+              "p95_success_latency_ms": 30.43,
+              "provider_d_successes": 25,
+              "requests": 99,
+              "success": 99,
+              "success_rate": 1.0
+            },
+            "post_retirement": {
+              "attempts_or_executions": 296,
+              "mean_success_latency_ms": 588.8892689075631,
+              "p95_success_latency_ms": 3018.719,
+              "provider_d_successes": 119,
+              "requests": 119,
+              "success": 119,
+              "success_rate": 1.0
+            },
+            "transition_boundary": {
+              "attempts_or_executions": 5,
+              "mean_success_latency_ms": 1522.6264999999999,
+              "p95_success_latency_ms": 3037.7889999999998,
+              "provider_d_successes": 1,
+              "requests": 2,
+              "success": 2,
+              "success_rate": 1.0
+            }
+          }
+        },
+        "grpc-static-3": {
+          "client_command": "cd /home/tianxing/NDN/ndn-service-framework && exec python3 /home/tianxing/NDN/ndn-service-framework/Experiments/gRPC/greeter_failover_client.py --target ucla=10.0.0.2:50051 --target wustl=10.0.0.3:50051 --target uiuc=10.0.0.4:50051 --rate-rps 5.0 --duration-s 60 --global-deadline-s 5.0 --attempt-timeout-s 1.0 --health-interval-s 1.0 --health-timeout-s 1.0 --health-stale-s 2.0 --measurement-start-monotonic-s 285640.856878986 --measurement-start-tolerance-s 0.05 --warmup-s 0 --quiet --disable-health-routing",
+          "configured_provider_count": 3,
+          "phase_assignment": "nominal_index_with_transition_boundary_excluded",
+          "phases": {
+            "initial": {
+              "attempts_or_executions": 80,
+              "mean_success_latency_ms": 16.0182125,
+              "p95_success_latency_ms": 26.023,
+              "provider_d_successes": 0,
+              "requests": 80,
+              "success": 80,
+              "success_rate": 1.0
+            },
+            "overlap": {
+              "attempts_or_executions": 99,
+              "mean_success_latency_ms": 15.198272727272727,
+              "p95_success_latency_ms": 26.057,
+              "provider_d_successes": 0,
+              "requests": 99,
+              "success": 99,
+              "success_rate": 1.0
+            },
+            "post_retirement": {
+              "attempts_or_executions": 357,
+              "mean_success_latency_ms": null,
+              "p95_success_latency_ms": null,
+              "provider_d_successes": 0,
+              "requests": 119,
+              "success": 0,
+              "success_rate": 0.0
+            },
+            "transition_boundary": {
+              "attempts_or_executions": 4,
+              "mean_success_latency_ms": 19.196,
+              "p95_success_latency_ms": 19.196,
+              "provider_d_successes": 0,
+              "requests": 2,
+              "success": 1,
+              "success_rate": 0.5
+            }
+          }
+        },
+        "ndnsf": {
+          "client_command": "cd /home/tianxing/NDN/ndn-service-framework && exec /home/tianxing/NDN/ndn-service-framework/build-new-svs-20260808/examples/App_WifiMobilityUser --rate-rps 5.0 --duration-ms 60000 --ack-timeout-ms 1000 --timeout-ms 5000 --strategy first-responding --startup-delay-ms 0 --measurement-start-monotonic-ms 285553815 --response-retry --response-attempt-timeout-ms 1000 --response-max-attempts 4",
+          "configured_provider_count": 0,
+          "phase_assignment": "nominal_index_with_transition_boundary_excluded",
+          "phases": {
+            "initial": {
+              "attempts_or_executions": 80,
+              "mean_success_latency_ms": 112.6876,
+              "p95_success_latency_ms": 332.868,
+              "provider_d_successes": 0,
+              "requests": 80,
+              "success": 80,
+              "success_rate": 1.0
+            },
+            "overlap": {
+              "attempts_or_executions": 99,
+              "mean_success_latency_ms": 158.95829292929292,
+              "p95_success_latency_ms": 384.704,
+              "provider_d_successes": 17,
+              "requests": 99,
+              "success": 99,
+              "success_rate": 1.0
+            },
+            "post_retirement": {
+              "attempts_or_executions": 119,
+              "mean_success_latency_ms": 78.08152100840336,
+              "p95_success_latency_ms": 106.388,
+              "provider_d_successes": 119,
+              "requests": 119,
+              "success": 119,
+              "success_rate": 1.0
+            },
+            "transition_boundary": {
+              "attempts_or_executions": 2,
+              "mean_success_latency_ms": 69.8065,
+              "p95_success_latency_ms": 77.157,
+              "provider_d_successes": 1,
+              "requests": 2,
+              "success": 2,
+              "success_rate": 1.0
+            }
+          }
+        },
+        "nsc-preregistered-4": {
+          "client_command": "cd /home/tianxing/NDN/ndn-service-framework && exec /home/tianxing/NDN/ndn-service-framework/Experiments/NDN_NSC/consumer /muas/memphis /muas/ucla,/muas/wustl,/muas/uiuc,/muas/arizona /FlightControl /ManualControl 200 300 wifi-171-100-46fc27a3 0 5000 1000 285913320 50",
+          "configured_provider_count": 4,
+          "phase_assignment": "nominal_index_with_transition_boundary_excluded",
+          "phases": {
+            "initial": {
+              "attempts_or_executions": 100,
+              "mean_success_latency_ms": 278.275,
+              "p95_success_latency_ms": 1037.0,
+              "provider_d_successes": 0,
+              "requests": 80,
+              "success": 80,
+              "success_rate": 1.0
+            },
+            "overlap": {
+              "attempts_or_executions": 99,
+              "mean_success_latency_ms": 26.444444444444443,
+              "p95_success_latency_ms": 39.0,
+              "provider_d_successes": 25,
+              "requests": 99,
+              "success": 99,
+              "success_rate": 1.0
+            },
+            "post_retirement": {
+              "attempts_or_executions": 296,
+              "mean_success_latency_ms": 1516.546218487395,
+              "p95_success_latency_ms": 3052.0,
+              "provider_d_successes": 119,
+              "requests": 119,
+              "success": 119,
+              "success_rate": 1.0
+            },
+            "transition_boundary": {
+              "attempts_or_executions": 5,
+              "mean_success_latency_ms": 1526.5,
+              "p95_success_latency_ms": 3038.0,
+              "provider_d_successes": 1,
+              "requests": 2,
+              "success": 2,
+              "success_rate": 1.0
+            }
+          }
+        },
+        "nsc-static-3": {
+          "client_command": "cd /home/tianxing/NDN/ndn-service-framework && exec /home/tianxing/NDN/ndn-service-framework/Experiments/NDN_NSC/consumer /muas/memphis /muas/ucla,/muas/wustl,/muas/uiuc /FlightControl /ManualControl 200 300 wifi-171-100-a564b794 0 5000 1000 285817999 50",
+          "configured_provider_count": 3,
+          "phase_assignment": "nominal_index_with_transition_boundary_excluded",
+          "phases": {
+            "initial": {
+              "attempts_or_executions": 80,
+              "mean_success_latency_ms": 28.65,
+              "p95_success_latency_ms": 42.0,
+              "provider_d_successes": 0,
+              "requests": 80,
+              "success": 80,
+              "success_rate": 1.0
+            },
+            "overlap": {
+              "attempts_or_executions": 99,
+              "mean_success_latency_ms": 28.151515151515152,
+              "p95_success_latency_ms": 41.0,
+              "provider_d_successes": 0,
+              "requests": 99,
+              "success": 99,
+              "success_rate": 1.0
+            },
+            "post_retirement": {
+              "attempts_or_executions": 357,
+              "mean_success_latency_ms": null,
+              "p95_success_latency_ms": null,
+              "provider_d_successes": 0,
+              "requests": 119,
+              "success": 0,
+              "success_rate": 0.0
+            },
+            "transition_boundary": {
+              "attempts_or_executions": 4,
+              "mean_success_latency_ms": 15.0,
+              "p95_success_latency_ms": 15.0,
+              "provider_d_successes": 0,
+              "requests": 2,
+              "success": 1,
+              "success_rate": 0.5
+            }
+          }
+        }
+      },
+      "passed": true,
+      "passes": {
+        "grpc_preregistered_post_success_ge_95pct": true,
+        "grpc_static_post_fails_without_d": true,
+        "ndnsf_post_success_ge_95pct": true,
+        "ndnsf_post_uses_provider_d": true,
+        "ndnsf_zero_provider_configuration": true,
+        "nsc_preregistered_post_success_ge_95pct": true,
+        "nsc_static_post_fails_without_d": true
+      },
+      "replay": 2
+    },
+    {
+      "cells": {
+        "grpc-preregistered-4": {
+          "client_command": "cd /home/tianxing/NDN/ndn-service-framework && exec python3 /home/tianxing/NDN/ndn-service-framework/Experiments/gRPC/greeter_failover_client.py --target ucla=10.0.0.2:50051 --target wustl=10.0.0.3:50051 --target uiuc=10.0.0.4:50051 --target arizona=10.0.0.5:50051 --rate-rps 5.0 --duration-s 60 --global-deadline-s 5.0 --attempt-timeout-s 1.0 --health-interval-s 1.0 --health-timeout-s 1.0 --health-stale-s 2.0 --measurement-start-monotonic-s 286218.575784013 --measurement-start-tolerance-s 0.05 --warmup-s 0 --quiet --disable-health-routing",
+          "configured_provider_count": 4,
+          "phase_assignment": "nominal_index_with_transition_boundary_excluded",
+          "phases": {
+            "initial": {
+              "attempts_or_executions": 100,
+              "mean_success_latency_ms": 23.3176375,
+              "p95_success_latency_ms": 31.623,
+              "provider_d_successes": 0,
+              "requests": 80,
+              "success": 80,
+              "success_rate": 1.0
+            },
+            "overlap": {
+              "attempts_or_executions": 99,
+              "mean_success_latency_ms": 16.330121212121213,
+              "p95_success_latency_ms": 30.679,
+              "provider_d_successes": 25,
+              "requests": 99,
+              "success": 99,
+              "success_rate": 1.0
+            },
+            "post_retirement": {
+              "attempts_or_executions": 296,
+              "mean_success_latency_ms": 591.3770840336134,
+              "p95_success_latency_ms": 3030.0150000000003,
+              "provider_d_successes": 119,
+              "requests": 119,
+              "success": 119,
+              "success_rate": 1.0
+            },
+            "transition_boundary": {
+              "attempts_or_executions": 5,
+              "mean_success_latency_ms": 1513.6204999999998,
+              "p95_success_latency_ms": 3019.9999999999995,
+              "provider_d_successes": 1,
+              "requests": 2,
+              "success": 2,
+              "success_rate": 1.0
+            }
+          }
+        },
+        "grpc-static-3": {
+          "client_command": "cd /home/tianxing/NDN/ndn-service-framework && exec python3 /home/tianxing/NDN/ndn-service-framework/Experiments/gRPC/greeter_failover_client.py --target ucla=10.0.0.2:50051 --target wustl=10.0.0.3:50051 --target uiuc=10.0.0.4:50051 --rate-rps 5.0 --duration-s 60 --global-deadline-s 5.0 --attempt-timeout-s 1.0 --health-interval-s 1.0 --health-timeout-s 1.0 --health-stale-s 2.0 --measurement-start-monotonic-s 286131.479847433 --measurement-start-tolerance-s 0.05 --warmup-s 0 --quiet --disable-health-routing",
+          "configured_provider_count": 3,
+          "phase_assignment": "nominal_index_with_transition_boundary_excluded",
+          "phases": {
+            "initial": {
+              "attempts_or_executions": 80,
+              "mean_success_latency_ms": 16.319075,
+              "p95_success_latency_ms": 30.729,
+              "provider_d_successes": 0,
+              "requests": 80,
+              "success": 80,
+              "success_rate": 1.0
+            },
+            "overlap": {
+              "attempts_or_executions": 99,
+              "mean_success_latency_ms": 15.660616161616161,
+              "p95_success_latency_ms": 30.348,
+              "provider_d_successes": 0,
+              "requests": 99,
+              "success": 99,
+              "success_rate": 1.0
+            },
+            "post_retirement": {
+              "attempts_or_executions": 357,
+              "mean_success_latency_ms": null,
+              "p95_success_latency_ms": null,
+              "provider_d_successes": 0,
+              "requests": 119,
+              "success": 0,
+              "success_rate": 0.0
+            },
+            "transition_boundary": {
+              "attempts_or_executions": 4,
+              "mean_success_latency_ms": 31.4,
+              "p95_success_latency_ms": 31.4,
+              "provider_d_successes": 0,
+              "requests": 2,
+              "success": 1,
+              "success_rate": 0.5
+            }
+          }
+        },
+        "ndnsf": {
+          "client_command": "cd /home/tianxing/NDN/ndn-service-framework && exec /home/tianxing/NDN/ndn-service-framework/build-new-svs-20260808/examples/App_WifiMobilityUser --rate-rps 5.0 --duration-ms 60000 --ack-timeout-ms 1000 --timeout-ms 5000 --strategy first-responding --startup-delay-ms 0 --measurement-start-monotonic-ms 286044526 --response-retry --response-attempt-timeout-ms 1000 --response-max-attempts 4",
+          "configured_provider_count": 0,
+          "phase_assignment": "nominal_index_with_transition_boundary_excluded",
+          "phases": {
+            "initial": {
+              "attempts_or_executions": 80,
+              "mean_success_latency_ms": 122.200275,
+              "p95_success_latency_ms": 334.134,
+              "provider_d_successes": 0,
+              "requests": 80,
+              "success": 80,
+              "success_rate": 1.0
+            },
+            "overlap": {
+              "attempts_or_executions": 99,
+              "mean_success_latency_ms": 167.13536363636365,
+              "p95_success_latency_ms": 371.271,
+              "provider_d_successes": 18,
+              "requests": 99,
+              "success": 99,
+              "success_rate": 1.0
+            },
+            "post_retirement": {
+              "attempts_or_executions": 119,
+              "mean_success_latency_ms": 78.22863865546219,
+              "p95_success_latency_ms": 107.535,
+              "provider_d_successes": 119,
+              "requests": 119,
+              "success": 119,
+              "success_rate": 1.0
+            },
+            "transition_boundary": {
+              "attempts_or_executions": 2,
+              "mean_success_latency_ms": 577.178,
+              "p95_success_latency_ms": 1088.304,
+              "provider_d_successes": 1,
+              "requests": 2,
+              "success": 2,
+              "success_rate": 1.0
+            }
+          }
+        },
+        "nsc-preregistered-4": {
+          "client_command": "cd /home/tianxing/NDN/ndn-service-framework && exec /home/tianxing/NDN/ndn-service-framework/Experiments/NDN_NSC/consumer /muas/memphis /muas/ucla,/muas/wustl,/muas/uiuc,/muas/arizona /FlightControl /ManualControl 200 300 wifi-171-100-e080220e 0 5000 1000 286403838 50",
+          "configured_provider_count": 4,
+          "phase_assignment": "nominal_index_with_transition_boundary_excluded",
+          "phases": {
+            "initial": {
+              "attempts_or_executions": 100,
+              "mean_success_latency_ms": 280.4125,
+              "p95_success_latency_ms": 1039.0,
+              "provider_d_successes": 0,
+              "requests": 80,
+              "success": 80,
+              "success_rate": 1.0
+            },
+            "overlap": {
+              "attempts_or_executions": 99,
+              "mean_success_latency_ms": 28.353535353535353,
+              "p95_success_latency_ms": 42.0,
+              "provider_d_successes": 25,
+              "requests": 99,
+              "success": 99,
+              "success_rate": 1.0
+            },
+            "post_retirement": {
+              "attempts_or_executions": 296,
+              "mean_success_latency_ms": 1518.0084033613446,
+              "p95_success_latency_ms": 3044.0,
+              "provider_d_successes": 119,
+              "requests": 119,
+              "success": 119,
+              "success_rate": 1.0
+            },
+            "transition_boundary": {
+              "attempts_or_executions": 5,
+              "mean_success_latency_ms": 1532.5,
+              "p95_success_latency_ms": 3051.0,
+              "provider_d_successes": 1,
+              "requests": 2,
+              "success": 2,
+              "success_rate": 1.0
+            }
+          }
+        },
+        "nsc-static-3": {
+          "client_command": "cd /home/tianxing/NDN/ndn-service-framework && exec /home/tianxing/NDN/ndn-service-framework/Experiments/NDN_NSC/consumer /muas/memphis /muas/ucla,/muas/wustl,/muas/uiuc /FlightControl /ManualControl 200 300 wifi-171-100-fdd4a1f7 0 5000 1000 286308345 50",
+          "configured_provider_count": 3,
+          "phase_assignment": "nominal_index_with_transition_boundary_excluded",
+          "phases": {
+            "initial": {
+              "attempts_or_executions": 80,
+              "mean_success_latency_ms": 28.3125,
+              "p95_success_latency_ms": 42.0,
+              "provider_d_successes": 0,
+              "requests": 80,
+              "success": 80,
+              "success_rate": 1.0
+            },
+            "overlap": {
+              "attempts_or_executions": 99,
+              "mean_success_latency_ms": 26.151515151515152,
+              "p95_success_latency_ms": 41.0,
+              "provider_d_successes": 0,
+              "requests": 99,
+              "success": 99,
+              "success_rate": 1.0
+            },
+            "post_retirement": {
+              "attempts_or_executions": 357,
+              "mean_success_latency_ms": null,
+              "p95_success_latency_ms": null,
+              "provider_d_successes": 0,
+              "requests": 119,
+              "success": 0,
+              "success_rate": 0.0
+            },
+            "transition_boundary": {
+              "attempts_or_executions": 4,
+              "mean_success_latency_ms": 13.0,
+              "p95_success_latency_ms": 13.0,
+              "provider_d_successes": 0,
+              "requests": 2,
+              "success": 1,
+              "success_rate": 0.5
+            }
+          }
+        }
+      },
+      "passed": true,
+      "passes": {
+        "grpc_preregistered_post_success_ge_95pct": true,
+        "grpc_static_post_fails_without_d": true,
+        "ndnsf_post_success_ge_95pct": true,
+        "ndnsf_post_uses_provider_d": true,
+        "ndnsf_zero_provider_configuration": true,
+        "nsc_preregistered_post_success_ge_95pct": true,
+        "nsc_static_post_fails_without_d": true
+      },
+      "replay": 3
+    }
+  ],
+  "sc014_passed": true,
+  "schema": "spec171-provider-transition-analysis-v1",
+  "verdict": "PROVIDER_DISCOVERY_EVIDENCE_PASSED"
+}

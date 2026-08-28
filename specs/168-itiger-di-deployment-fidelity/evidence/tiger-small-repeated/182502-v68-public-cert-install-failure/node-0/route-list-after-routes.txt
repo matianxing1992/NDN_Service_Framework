@@ -1,0 +1,11 @@
+prefix=/NDNSF/DistributedRepo nexthop=260 origin=client cost=0 flags=child-inherit expires=never
+prefix=/NDNSF/DistributedRepo nexthop=268 origin=client cost=0 flags=child-inherit expires=never
+prefix=/localhost/nfd nexthop=256 origin=app cost=0 flags=child-inherit expires=never
+prefix=/activation/llm nexthop=260 origin=client cost=0 flags=child-inherit expires=never
+prefix=/activation/llm nexthop=268 origin=client cost=0 flags=child-inherit expires=never
+prefix=/NDNSF-DistributeInference/example nexthop=260 origin=client cost=0 flags=child-inherit expires=never
+prefix=/NDNSF-DistributeInference/example nexthop=268 origin=client cost=0 flags=child-inherit expires=never
+prefix=/NDNSF-DistributeInference/example/group nexthop=260 origin=client cost=0 flags=child-inherit expires=never
+prefix=/NDNSF-DistributeInference/example/group nexthop=268 origin=client cost=0 flags=child-inherit expires=never
+prefix=/NDNSF-DistributeInference/example/provider/1 nexthop=260 origin=autoconf cost=0 flags=child-inherit expires=never
+prefix=/NDNSF-DistributeInference/example/provider/2 nexthop=268 origin=autoconf cost=0 flags=child-inherit expires=never

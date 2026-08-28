@@ -1,0 +1,115 @@
+{
+  "analysisSeed": 11195,
+  "baselineCompletedRequests": 600,
+  "baselineFailedRequests": 0,
+  "bootstrapRepetitions": 10000,
+  "candidateId": "spec111-local-8c7197afab1d-08b7f38b88ec",
+  "gate": {
+    "correctnessCompletion": true,
+    "latencyP50": true,
+    "latencyP95": true,
+    "pass": true,
+    "throughput": true
+  },
+  "metrics": {
+    "p50Ms": {
+      "baselineMedian": 117.31450000000001,
+      "bootstrap95": [
+        -0.08039508731758743,
+        0.04506093888889129
+      ],
+      "medianPairedRelativeChange": 0.0010106903085959074,
+      "pairedRelativeChanges": [
+        -0.06892746926883098,
+        0.02675283278751306,
+        0.018538271359942016,
+        0.08274991339860338,
+        -0.17479137957433777,
+        -0.000892631130177568,
+        -0.019249812196954097,
+        0.0029140117473693827,
+        -0.14154036243822077,
+        0.07158360641784056
+      ],
+      "treatmentMedian": 116.83225
+    },
+    "p95Ms": {
+      "baselineMedian": 141.17807499999998,
+      "bootstrap95": [
+        -0.07298363701697663,
+        0.04010983573008664
+      ],
+      "medianPairedRelativeChange": 0.01037043050429487,
+      "pairedRelativeChanges": [
+        -0.07298363701697663,
+        0.05296368099425752,
+        0.020649667862920884,
+        0.027255990465915758,
+        -0.08400611911785172,
+        0.11706750022470103,
+        -0.01482760193410737,
+        0.03822848080111885,
+        -0.0999349754788097,
+        9.119314566885528e-05
+      ],
+      "treatmentMedian": 137.95094999999998
+    },
+    "peakProcessTreeRssKiB": {
+      "baselineMedian": 858158.0,
+      "bootstrap95": [
+        -0.1742993657268993,
+        -0.1717697617726982
+      ],
+      "medianPairedRelativeChange": -0.172883555004611,
+      "pairedRelativeChanges": [
+        -0.17167928568429602,
+        -0.17490262505177046,
+        -0.17284140691701544,
+        -0.1742993657268993,
+        -0.17373884198952683,
+        -0.1725677741730992,
+        -0.17292570309220656,
+        -0.17453465032994775,
+        -0.1717697617726982,
+        -0.17027895544455174
+      ],
+      "treatmentMedian": 709370.0
+    },
+    "throughputRps": {
+      "baselineMedian": 1.0,
+      "bootstrap95": [
+        0.0,
+        0.0
+      ],
+      "medianPairedRelativeChange": 0.0,
+      "pairedRelativeChanges": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "treatmentMedian": 1.0
+    }
+  },
+  "nonRegressionMargin": 0.05,
+  "pairCount": 10,
+  "queue": {
+    "baseline": {
+      "medianMaxObserved": null,
+      "sampleCount": 0
+    },
+    "treatment": {
+      "medianMaxObserved": null,
+      "sampleCount": 0
+    }
+  },
+  "schema": "ndnsf-di-spec111-paired-analysis-v1",
+  "treatmentCompletedRequests": 600,
+  "treatmentFailedRequests": 0
+}

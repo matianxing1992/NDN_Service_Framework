@@ -30,9 +30,11 @@ The implementation boundary is normative, not illustrative:
 app_sdk/application.py
   normal request, no explicit legacy profile
     -> app_sdk/client.py constructs V3 placement coordinator
-    -> LayerReuseFirstStrategy (default)
+    -> PreSplitFirstStrategy (default, ACK-driven candidate generation)
+    -> reuse/cost scoring only after feasibility
     -> Requester canonical-artifact ensure only
-    -> app_sdk/placement.py seals RoleAssemblySpec values
+    -> app_sdk/placement.py seals one RoleAssemblySpec and
+       one RoleDataflowContract per selected Provider
     -> final ProviderSelectionProjectionV3
     -> provider.py / NativeProviderHandler consume projection
     -> Provider-local fetch, assembly, JIT admission, load, execution
@@ -41,8 +43,11 @@ app_sdk/application.py
 For V3, `app_sdk/placement.py::_prepare_artifacts()` MUST NOT materialize or
 publish a selected role-specific split. That legacy behavior is dispatched only
 when the application explicitly selects
-`PREASSEMBLED_PARTITION_SINGLE_DEVICE`; it then uses `PreSplitFirstStrategy` and
-V2 wire/cache identities. A V3 planning or preparation failure never selects V2.
+`PREASSEMBLED_PARTITION_SINGLE_DEVICE`; it uses the isolated V2 materializer and
+V2 wire/cache identities. The shared strategy name does not mix V2/V3 data:
+normal V3 `PreSplitFirstStrategy` creates candidates after `ACK_CLOSED`, whereas
+V2 consumes an explicitly selected preassembled profile. A V3 planning or
+preparation failure never selects V2.
 
 ## Provider Configuration
 
@@ -215,11 +220,11 @@ or strategy-supplied executable code.
 `PlacementProposalV3` is an untrusted declarative candidate containing:
 
 - pipeline stages with independent `tensorDegree M_i`;
-- logical roles and rank assignments;
-- Provider-local role bundles that group ranks whose device handles share one
-  Provider offer namespace;
+- one execution role for every pipeline-stage/rank pair;
+- a one-to-one execution-role/Provider assignment;
 - Provider and device bindings;
 - role assembly specifications;
+- per-role `RoleDataflowContract` values;
 - normal dependencies, collective groups, and redistribution edges;
 - per-device resource/transfer estimates;
 - fallback/replan ordering where permitted;
@@ -300,65 +305,99 @@ wrapped key, grant reference, final `planDigest`, device admission result, or
 executable object. `GrantRequestV1` binds its digest; the authority independently
 resolves the signed core/offer references before issuing a grant.
 
+## Per-Role Assembly and Dataflow
+
+Every selected Provider projection contains exactly one complete execution role:
+
+```text
+ProviderSelectionProjectionV3 {
+  role: ExecutionRoleId                 # stage/rank pair
+  assembly: RoleAssemblySpec
+  dataflow: RoleDataflowContract
+  deviceBinding: DeviceBinding
+}
+
+RoleDataflowContract {
+  requestId / attempt / planDigest / role
+  mayPublish[]: TensorEndpoint
+  mustFetch[]: TensorEndpoint
+  waitFor[]: ReadinessPredicate
+  terminalResponseOwner: bool
+  dataflowDigest
+}
+```
+
+Each `TensorEndpoint` binds the exact producer and consumer roles, group/epoch,
+operation/round, tensor identity and layout digest, microbatch, signed object
+manifest, segment bounds, security profile, no-progress deadline, hard deadline,
+and deterministic NDN name template. A Provider may publish only declared
+`mayPublish` objects and may fetch only declared `mustFetch` objects. `waitFor`
+is satisfied only by fully verified Data or an authenticated terminal failure;
+receipt of an ACK, manifest alone, or partial segment set is not readiness.
+
+The sealer validates that every non-input `mustFetch` entry has exactly one
+matching producer `mayPublish` entry, all role/dataflow identities are bound to
+the same attempt and plan, the graph is acyclic outside ordered group epochs,
+and exactly one role owns the final Response.
+
 ## Device Binding
 
 ```text
 DeviceBinding {
-  mode: CPU | SINGLE_DEVICE | DEVICE_SET
+  mode: CPU | SINGLE_DEVICE
   provider
-  providerLocalBundle
-  localRankTargets[]
+  role
+  offerScopedDeviceHandle?
   offerDigest
   topologyProfileDigest
   resourceSnapshotDigest
   resourceSequence
-  atomicAdmissionGroup
   sharingPolicy
 }
 
 RankAssignment {
+  role
   rank
-  providerLocalBundle
+  provider
   offerScopedDeviceHandle?
   assemblySpecDigest
+  dataflowContractDigest
   tensorDistributionDigest
   resourceEnvelope
   collectiveGroup?
 }
 ```
 
-Global and local relationships are:
+The ownership relationship is:
 
 ```text
-LogicalRole
-  -> RankAssignment[]
-  -> ProviderLocalRoleBundle[]
-       -> DeviceBinding
+PipelineStageRank -> ExecutionRole -> one Provider -> one DeviceBinding
+CollectiveGroup   -> several ExecutionRole references
 ```
 
-A cross-Provider logical role cannot own one global `DeviceBinding`, because an
-offer-scoped device handle is meaningful only within its Provider's signed offer.
+An execution role never spans Providers. Tensor parallelism creates several
+roles connected by a group contract; it does not create one global role or
+global device binding.
 
 Rules:
 
 - `CPU` has no accelerator handle and requires adapter/task CPU permission.
-- `SINGLE_DEVICE` has exactly one device and one local rank for that binding.
-- `DEVICE_SET` has a complete ordered member/rank set and is admitted atomically.
+- `SINGLE_DEVICE` has exactly one device and one execution role for that binding.
 - every handle must occur in the exact bound Provider offer/profile/snapshot;
 - physical runtime locators such as `cuda:0` are not stable wire identities;
-- several independent role bindings may select distinct devices under one
-  Provider;
+- one Attempt may assign at most one role to a Provider;
+- one role may be assigned to exactly one Provider;
 - Provider memory is never pooled to satisfy one unsplittable device peak.
 
 ## Selection and Admission
 
 Final Selection carries one Provider-specific opaque V3 projection containing
-all `ProviderLocalRoleBundle` objects for that Provider. On receipt the Provider:
+exactly one `RoleAssemblySpec` and one `RoleDataflowContract`. On receipt the Provider:
 
 1. verifies request, attempt, ACK_CLOSED, plan, offer, topology, snapshot, and
    Selection authenticity;
-2. validates model/adapter/assembly declarations, hard bounds, queue policy, and
-   complete Provider-local cover;
+2. validates model/adapter/assembly/dataflow declarations, hard bounds, queue
+   policy, and the one-role/one-Provider invariant;
 3. atomically creates one bounded queue record for the complete projection or
    rejects it; this record contains no device reservation or capacity lease;
 4. if the sealed path is exact reuse, pins the verified catalog entry without
@@ -369,8 +408,8 @@ all `ProviderLocalRoleBundle` objects for that Provider. On receipt the Provider
 5. when the queue policy permits device work, re-probes/revalidates device
    visibility, health, resource sequence, sharing/failure domain, and complete
    per-device phase envelope;
-6. atomically acquires every required local device resource and emits one
-   monotonically increasing `admissionFencingToken`, or acquires nothing;
+6. atomically acquires the role's one CPU/single-device resource envelope and
+   emits one monotonically increasing `admissionFencingToken`, or acquires nothing;
 7. loads, reaches local-ready, and executes only while that fencing token remains
    current.
 
@@ -383,7 +422,7 @@ SELECTION_RECEIVED
   -> HOST_PREPARING
   -> HOST_READY
   -> DEVICE_ADMISSION_PENDING
-  -> DEVICE_ADMITTED(fencingToken)  # atomic complete local vector
+  -> DEVICE_ADMITTED(fencingToken)  # atomic complete role envelope
   -> LOADING
   -> LOCAL_READY
   -> EXECUTING
@@ -395,19 +434,18 @@ releases only disk/RAM preparation state. Queue deadline expiry becomes
 `QUEUE_EXPIRED`; stale topology/capacity at admission becomes
 `REPLAN_REQUIRED`; policy rejection becomes `SELECTION_REJECTED`; preparation
 failure becomes its narrow lifecycle class. After admission, cancellation,
-device loss, or epoch failure fences the token, aborts the complete affected
-local group, releases every member resource, and reports one terminal outcome.
-No state may hold a strict subset of a `DEVICE_SET`.
+device loss, or epoch failure fences the token, aborts the affected role/group
+epoch, releases the local role resource, and reports one terminal outcome.
 
 A retained loaded runtime may consume evictable cache memory between requests,
 but it is not an exclusive per-request reservation and confers no execution
 slot. Reuse still passes queue acceptance and JIT admission, which validates the
-runtime/device fence and atomically acquires the execution resource vector.
+runtime/device fence and atomically acquires the role's execution resource.
 Canonical layers and assembled ONNX files follow the bounded disk-cache policy;
 container scratch is removed at exit, while any cross-container cache requires
 an explicit bounded persistent mount.
 
-Each bundle executes independently when local-ready and its own authenticated
+Each role executes independently when local-ready and its own authenticated
 dependencies are ready. Queue acceptance and device admission are not global
 model-ready barriers and no second execution-start message exists.
 
@@ -421,9 +459,11 @@ External strategies implement the same pure declarative port. They may choose
 among adapter-certified recipes but cannot introduce slicing code, collective
 implementations, device probes, or executable artifacts.
 
-The default `LayerReuseFirstStrategy` ranks only feasible decisions, then prefers:
+The default `PreSplitFirstStrategy` constructs adapter-certified feasible split
+candidates from the immutable ACK snapshot and enforces one Provider per role
+and one role per Provider. It then uses reuse/cost scoring to prefer:
 
-1. exact compatible loaded runtime on the exact device set;
+1. exact compatible loaded runtime on the exact CPU/single-device binding;
 2. exact assembled fragment in host memory/disk;
 3. verified canonical layer/profile reuse;
 4. minimum missing bytes, queue/transfer/assembly/load cost, and resource risk.

@@ -1,0 +1,124 @@
+{
+  "candidate": "spec170-local-candidate-r16",
+  "libraries": [
+    {
+      "path": "/opt/ndnsf-di/current/lib/libnac-abe.so",
+      "sha256": "31438f1a0d138f134097bdb379d3b59a19b7d1591a9442ccf27987bbd4fc610d",
+      "soname": "libnac-abe.so",
+      "version": "sealed-build:edd1e096"
+    },
+    {
+      "path": "/opt/ndnsf-di/current/lib/libndn-cxx.so",
+      "sha256": "1d12d5234de42e55820f534aa00b80d3dfac11aaec895c2ea7ee0a26f0170f3c",
+      "soname": "libndn-cxx.so.0.9.0",
+      "version": "0.9.0"
+    },
+    {
+      "path": "/opt/ndnsf-di/current/lib/libndn-cxx.so.0.9.0",
+      "sha256": "1d12d5234de42e55820f534aa00b80d3dfac11aaec895c2ea7ee0a26f0170f3c",
+      "soname": "libndn-cxx.so.0.9.0",
+      "version": "0.9.0"
+    },
+    {
+      "path": "/opt/ndnsf-di/current/lib/libndn-service-framework.so",
+      "sha256": "f34bfb174eef3aaeaa655b221e9f832772358142f3fbe17d4d4d62d09a125008",
+      "soname": "libndn-service-framework.so.0.1.0",
+      "version": "0.1.0-r16-container-native-build"
+    },
+    {
+      "path": "/opt/ndnsf-di/current/lib/libndn-service-framework.so.0.1.0",
+      "sha256": "f34bfb174eef3aaeaa655b221e9f832772358142f3fbe17d4d4d62d09a125008",
+      "soname": "libndn-service-framework.so.0.1.0",
+      "version": "0.1.0-r16-container-native-build"
+    },
+    {
+      "path": "/opt/ndnsf-di/current/lib/libndn-svs.so",
+      "sha256": "70378a10887c8896ac6253c2955214a1d8e02c13e0d47b8091faafda7914cf80",
+      "soname": "libndn-svs.so.0.1.0",
+      "version": "0.1.0"
+    },
+    {
+      "path": "/opt/ndnsf-di/current/lib/libndn-svs.so.0.1.0",
+      "sha256": "70378a10887c8896ac6253c2955214a1d8e02c13e0d47b8091faafda7914cf80",
+      "soname": "libndn-svs.so.0.1.0",
+      "version": "0.1.0"
+    },
+    {
+      "path": "/opt/ndnsf-di/current/lib/libndnsd.so",
+      "sha256": "f9ae37d5153c8ffd7211c50da7da8ffc0538de2242b7550f6c967e12b6b50cd8",
+      "soname": "libndnsd.so.0.1.0",
+      "version": "0.1.0"
+    },
+    {
+      "path": "/opt/ndnsf-di/current/lib/libndnsd.so.0.1.0",
+      "sha256": "f9ae37d5153c8ffd7211c50da7da8ffc0538de2242b7550f6c967e12b6b50cd8",
+      "soname": "libndnsd.so.0.1.0",
+      "version": "0.1.0"
+    },
+    {
+      "path": "/opt/ndnsf-di/current/lib/libopenabe.so",
+      "sha256": "f41c4aa7159e3f1bbddba631d0b71fe6e470559c703b2b5ff46111d3cba4dc1d",
+      "soname": null,
+      "version": "sealed-build:edd1e096"
+    },
+    {
+      "path": "/opt/ndnsf-di/current/lib/librelic.so",
+      "sha256": "54f0f5a193886b4a13a8ba3a0baac011df3550c27e7b30d55f8df28b7aa390bc",
+      "soname": "librelic.so",
+      "version": "sealed-build:edd1e096"
+    },
+    {
+      "path": "/opt/ndnsf-di/current/lib/librelic_ec.so",
+      "sha256": "96502c5ae9ec847af9fdae655aa79f5cca01941c2b25ee552b80b91d86af6a30",
+      "soname": "librelic_ec.so",
+      "version": "sealed-build:edd1e096"
+    },
+    {
+      "path": "/opt/onnxruntime/lib/libonnxruntime.so",
+      "sha256": "f433692f47ec671ab385384e186dae8ea870ae093331fbd2a44413285bf43e71",
+      "soname": "libonnxruntime.so.1",
+      "version": "1.20.0"
+    },
+    {
+      "path": "/opt/onnxruntime/lib/libonnxruntime.so.1",
+      "sha256": "f433692f47ec671ab385384e186dae8ea870ae093331fbd2a44413285bf43e71",
+      "soname": "libonnxruntime.so.1",
+      "version": "1.20.0"
+    },
+    {
+      "path": "/opt/onnxruntime/lib/libonnxruntime.so.1.20.0",
+      "sha256": "f433692f47ec671ab385384e186dae8ea870ae093331fbd2a44413285bf43e71",
+      "soname": "libonnxruntime.so.1",
+      "version": "1.20.0"
+    },
+    {
+      "path": "/opt/onnxruntime/lib/libonnxruntime_providers_cuda.so",
+      "sha256": "6d6debcef9837fcc85c9600941f6db6c32fceec3b86a640fb79cdbbd0abdb8dd",
+      "soname": null,
+      "version": "sealed-build:edd1e096"
+    },
+    {
+      "path": "/opt/onnxruntime/lib/libonnxruntime_providers_shared.so",
+      "sha256": "f9400f9550e63513760f33a5c259b69fe93373865933fea5823b74c0036c4d2a",
+      "soname": "libonnxruntime_providers_shared.so",
+      "version": "sealed-build:edd1e096"
+    }
+  ],
+  "schemaVersion": "ndnsf-sif-library-lock-v2",
+  "source": "31d9f547+sealed-current-worktree-r16",
+  "toolchain": {
+    "apptainer": "1.5.3",
+    "apptainerBinarySha256": "f491c4f4f8d17dccd4a540a5a40d84880e95a3d122b784aaf754c2faaf469f9b",
+    "baseSifSha256": "4e5e56ef4893eb6f4f4e87c8b9d8f2c62621f3f04df8965ae4323545fa46d816",
+    "boost": "1.71",
+    "buildBoundary": "container-runtime-in-sif",
+    "candidateSifSha256": "9aaa54b5dac68acbd9636d834f6774d4553609d0dad080fc2726bbf562066b99",
+    "definitionSha256": "dabc7f6985de01ad0d56dac18405cf00e57fd46ffb93305ac0d177a55b47d09b",
+    "gcc": "9.4.0",
+    "linker": "/usr/bin/x86_64-linux-gnu-ld.bfd",
+    "onnxruntime": "1.20.0",
+    "python": "3.10",
+    "python310HeaderSha256": "70b04c40833bdfcdd72b0d3771afe67c74340ff2683b7d26b0dc8e95289263a7",
+    "sourceSealSha256": "952d45f607e85760af2a72ddaeae7e47e17231ed69c576b438fa4697cfced8f6"
+  }
+}

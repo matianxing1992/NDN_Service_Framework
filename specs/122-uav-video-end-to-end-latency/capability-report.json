@@ -1,0 +1,19 @@
+{
+  "status": "PASS",
+  "selectedBackend": "gstreamer",
+  "gstreamerVersion": "1.16.3",
+  "available": true,
+  "preservesRelativePts": true,
+  "accessUnitAligned": true,
+  "headlessAppsink": true,
+  "gtkGlPluginAvailable": true,
+  "startStopCycles": 5,
+  "maxStopMs": 1,
+  "fallbackProbeExecuted": false,
+  "fallbackProbeReason": "GStreamer capability gate passed",
+  "commands": [
+    "python3 tests/python/test_uav_video_pipeline_probe.py",
+    "./waf build --targets=uav-video-pipeline-probe -j2",
+    "./build/uav-video-pipeline-probe"
+  ]
+}

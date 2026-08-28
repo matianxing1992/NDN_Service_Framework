@@ -1,0 +1,21 @@
+{
+  "artifact": {
+    "contentDigest": "8a39d2abd3999ab73c34db2476849cddf303ce389b35826850f9a700589b4a90",
+    "digestAlgorithm": "sha256",
+    "formatVersion": "artifact-manifest-v2",
+    "logicalName": "/examples/spec164/public-local",
+    "policyEpoch": "example-epoch-1",
+    "publisherIdentity": "/example/artifact/publisher",
+    "rootManifestName": "/examples/spec164/public-local/root",
+    "sizeBytes": 262144
+  },
+  "destination": "specs/164-distributed-repo-large-artifact-transport/evidence/us3/local-public-api-20260730T041350Z/work/destination.bin",
+  "operationId": "artifact-60d14e46764ed8293a8be140fe3b0885fb9f689355c1a7824199cf6fd2c222f7",
+  "progressEvents": 1,
+  "reusedBytes": 0,
+  "schema": "ndnsf-repo-public-artifact-fetch-v1",
+  "sourceReplicas": [
+    "/local/filesystem-repo"
+  ],
+  "transferredBytes": 262144
+}

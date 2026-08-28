@@ -1,0 +1,255 @@
+schemaVersion: 1
+registrationId: ndnsf-paper-submission-evidence-v1
+frozenAt: "2026-08-11T21:18:41-05:00"
+status: refrozen-after-preimplementation-audit
+
+scope:
+  purpose: >-
+    Replace missing supporting performance artifacts with a compact, matched
+    MiniNDN campaign. The campaign is not designed to force an NDNSF ranking.
+  excluded:
+    - physical-machine quantitative recreation
+    - a new mobility range-by-speed matrix
+    - Selective-ACK population performance claims
+
+software:
+  ndnsfRevision: recorded-at-run
+  ndnSvsRevision: recorded-at-run
+  boostVersion: "1.71"
+  finalNetworkEnvironment: MiniNDN
+  hostNfdAllowedForFinalEvidence: false
+  freezeRule: >-
+    Before pilot execution, retain the exact Git revisions, dirty diff snapshots
+    and their hashes, executable/library hashes, ldd resolution, and this
+    registration's SHA-256 in the evidence toolchain package. Every run must
+    reference that manifest hash; a changed registration or toolchain starts a
+    new campaign root.
+
+commonConditions:
+  topologyFile: Experiments/Topology/testbed(loss=0%).conf
+  userNode: memphis
+  providerNodes:
+    - ucla
+    - csu
+    - pku
+  controllerNode: arizona
+  workloadMode: open-loop
+  warmupSeconds: 10
+  measuredSeconds: 60
+  drainSeconds: 10
+  serviceDelayMs: 5
+  serviceDelayMapping:
+    ndnsf: --provider-request-delay-ms-series 5
+    grpc: --delay-ms 5
+    nsc: --service-delay-ms 5
+  globalDeadlineMs: 5000
+  requestTimeoutMs: 5000
+  maxOutstanding: 512
+  failureProbability: 0.0
+  repetitions:
+    - id: r1
+      seed: 17301
+    - id: r2
+      seed: 17302
+    - id: r3
+      seed: 17303
+  order: deterministic-block-shuffle-by-seed
+  measurementBoundary:
+    warmup: >-
+      Each client schedules a 10-second warm-up after its readiness gate and
+      starts the measured schedule at the end of that interval; warm-up requests
+      are excluded from all measured outcomes and may not be counted as successes.
+    generation: >-
+      The measured generation window is 60 seconds. Scheduled count is
+      round(rateRps * 60); only requests assigned to this window are measured.
+    completion: >-
+      A request is successful only if its application response arrives within
+      that request's 5000 ms deadline. The drain interval permits those already
+      scheduled requests to finish and never creates additional measured work.
+    denominator: >-
+      Report scheduled, issued/published, admitted when applicable, successful,
+      and timed-out counts. successRateIssued is successful/issued;
+      completionRateScheduled is successful/scheduled. Primary throughput is
+      successful/60 seconds. Never substitute successful count for offered load.
+  comparabilityDisclosure: >-
+    The three systems execute one request and one 5 ms application handler per
+    workload item, but their wire protocols, security work, and implementation
+    concurrency differ. The one-Provider table is contextual and does not claim
+    protocol-isolated superiority.
+
+comparisons:
+  - id: one-provider-baseline
+    question: >-
+      Under the same one-Provider path and offered load, what throughput,
+      success rate, and successful-response latency does each framework expose?
+    interpretation: contextual-comparison-not-superiority-proof
+    systems:
+      - ndnsf
+      - grpc
+      - nsc
+    providerCount: 1
+    providerNode: ucla
+    ratesRps:
+      - 10
+      - 100
+    ndnsf:
+      strategy: first-responding
+      adaptiveAdmissionControl: false
+      ackTimeoutMs: 1000
+    primaryOutcome: successfulRequestsPerMeasuredSecond
+    secondaryOutcomes:
+      - successRate
+      - meanSuccessfulResponseLatencyMs
+      - p50SuccessfulResponseLatencyMs
+      - p95SuccessfulResponseLatencyMs
+
+  - id: admission-control
+    question: >-
+      Does NDNSF admission control bound queueing and tail latency under overload,
+      and what throughput or completion tradeoff does it introduce?
+    systems:
+      - ndnsf-admission-disabled
+      - ndnsf-admission-enabled
+    providerCount: 1
+    providerNode: ucla
+    ratesRps:
+      - 70
+      - 100
+    ndnsf:
+      strategy: first-responding
+      ackTimeoutMs: 1000
+    primaryOutcome: p95SuccessfulResponseLatencyMs
+    secondaryOutcomes:
+      - successfulRequestsPerMeasuredSecond
+      - successRate
+      - admittedRequests
+      - generatedRequests
+      - admissionPauseEvents
+      - maximumQueueDepth
+
+  - id: custom-selection
+    question: >-
+      With heterogeneous Provider service delays, does ACK-metadata-based custom
+      selection change completion and Provider work distribution relative to
+      FirstResponding?
+    systems:
+      - ndnsf-first-responding
+      - ndnsf-custom-selection
+    providerCount: 3
+    providerNodes:
+      - ucla
+      - csu
+      - pku
+    ratesRps:
+      - 30
+    providerRequestDelayMs:
+      - 100
+      - 20
+      - 5
+    adaptiveAdmissionControl: false
+    customAckCollectionMs: 100
+    selectionPolicy: >-
+      Select the successful ACK with the lowest live queue value, then lowest
+      live backlog; when both tie, choose the Provider with the fewest prior
+      selections. The current selector parses rank but does not use it.
+      Processing delay is not advertised directly; it can affect later ACK
+      backlog only through outstanding work. If backlogs never diverge, report
+      tie balancing and do not claim that metadata identified the fastest Provider.
+    primaryOutcome: successfulRequestsPerMeasuredSecond
+    secondaryOutcomes:
+      - successRate
+      - meanSuccessfulResponseLatencyMs
+      - p95SuccessfulResponseLatencyMs
+      - providerSelectionCounts
+      - providerExecutionCounts
+
+  - id: selective-ack-correctness
+    question: >-
+      Do rejecting Providers remain unselected while the accepted Provider
+      produces the response and does custom selection run after the ACK window?
+    command: examples/run_selective_ack_custom_selection_regression.sh
+    repetitions: 1
+    primaryOutcome: regressionPass
+    interpretation: correctness-only
+
+pilot:
+  measuredSeconds: 60
+  manuscriptEligible: false
+  cells:
+    - comparison: one-provider-baseline
+      rateRps: 10
+      systems: [ndnsf, grpc, nsc]
+      repetition: r1
+    - comparison: admission-control
+      rateRps: 100
+      systems: [ndnsf-admission-enabled]
+      repetition: r1
+    - comparison: custom-selection
+      rateRps: 30
+      systems: [ndnsf-custom-selection]
+      repetition: r1
+    - comparison: selective-ack-correctness
+      systems: [regression]
+      repetition: r1
+  gate: >-
+    Proceed only if all executors create parseable summaries, scheduled/issued
+    counts reconcile, the admission counters exist, the selection distribution
+    exists, and the correctness regression passes. Do not use ranking in the
+    go/no-go decision.
+
+invalidityRules:
+  common:
+    - MiniNDN or NFD startup/readiness gate fails
+    - a required process exits before the measured window completes
+    - outcome counts do not reconcile
+    - the run manifest or required summary is missing
+    - the executed command differs from the frozen cell without a disclosed revision
+  offeredLoad:
+    appliesTo:
+      - one-provider-baseline
+      - custom-selection
+      - admission-control/disabled
+    rule: issuedRequests >= 0.80 * scheduledRequests
+  admissionEnabled:
+    appliesTo:
+      - admission-control/enabled
+    rule: >-
+      Do not invalidate because admitted or published throughput is below the
+      offered rate; throttling is part of the mechanism. Require the workload
+      scheduler's intended tick count and admission counters to be present.
+  rerunPolicy: >-
+    Rerun the entire matched comparison block for that repetition after an
+    infrastructure-invalid run. Never rerun only a system because of its ranking.
+
+resumePolicy:
+  reusableRun: >-
+    Reuse only a run whose status is valid and whose registration SHA-256,
+    toolchain-manifest SHA-256, exact command, expected cell identity, required
+    summaries, and retained hashes all match. Running, partial, failed, or
+    invalid runs are never silently promoted or overwritten.
+  behavior: >-
+    --resume skips verified valid cells, reports every skip, and continues from
+    the first incomplete matched block. An infrastructure-invalid member marks
+    its whole comparison/repetition block for a new attempt directory.
+  overwrite: forbidden
+
+analysis:
+  independentUnit: process-repetition
+  retainEveryRepetition: true
+  requestedStatistics:
+    - arithmeticMean
+    - sampleStandardDeviation
+    - minimum
+    - maximum
+  latencyPopulation: successfulResponsesOnly
+  packetLevelSignificanceTests: forbidden
+  significanceClaimWithThreeRepetitions: forbidden
+  missingData: report-and-do-not-impute
+  rankingPolicy: report-neutral-or-negative-results
+
+admissionToManuscript:
+  requirements:
+    - every retained number resolves through artifact-index.json
+    - every new result has registration, run manifest, summary, and hashes
+    - pilot and invalid runs are excluded and visibly labeled
+    - limitations state that three repetitions provide descriptive variation only

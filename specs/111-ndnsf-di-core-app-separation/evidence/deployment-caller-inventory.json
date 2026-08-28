@@ -1,0 +1,2165 @@
+{
+  "entries": [
+    {
+      "categories": [
+        "minindn"
+      ],
+      "path": "Experiments/GoExperiment_AutoConfig.py"
+    },
+    {
+      "categories": [
+        "minindn"
+      ],
+      "path": "Experiments/NDNSFAdhoc.py"
+    },
+    {
+      "categories": [
+        "minindn"
+      ],
+      "path": "Experiments/NDNSFAdhoc_Mobility.py"
+    },
+    {
+      "categories": [
+        "minindn"
+      ],
+      "path": "Experiments/NDNSFAdhoc_Mobility_1Drone.py"
+    },
+    {
+      "categories": [
+        "minindn"
+      ],
+      "path": "Experiments/NDNSFExperiment.py"
+    },
+    {
+      "categories": [
+        "minindn"
+      ],
+      "path": "Experiments/NDNSFExperiment_AutoConfig.py"
+    },
+    {
+      "categories": [
+        "minindn"
+      ],
+      "path": "Experiments/NDNSFExperiment_NEW.py"
+    },
+    {
+      "categories": [
+        "minindn"
+      ],
+      "path": "Experiments/NDNSF_AI_Collaboration_Minindn.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "systemd"
+      ],
+      "path": "Experiments/NDNSF_DI_AppApi_Smoke.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "Experiments/NDNSF_DI_Compare_Yolo_Plans.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "Experiments/NDNSF_DI_GUI.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "Experiments/NDNSF_DI_GUI_Minindn.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "Experiments/NDNSF_DI_LlamaServer_Minindn.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "Experiments/NDNSF_DI_LlamaServer_Smoke.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "Experiments/NDNSF_DI_LlmPipeline_Minindn.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "systemd"
+      ],
+      "path": "Experiments/NDNSF_DI_LlmPipeline_Smoke.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "systemd"
+      ],
+      "path": "Experiments/NDNSF_DI_LlmStubNativePlan_Smoke.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "Experiments/NDNSF_DI_NativeTracer_Minindn.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "Experiments/NDNSF_DI_OnnxExecutor_Smoke.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "Experiments/NDNSF_DI_PyTorch2x2_Minindn.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "Experiments/NDNSF_DI_QwenFull_OnnxVsTransformers_LocalBenchmark.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "Experiments/NDNSF_DI_QwenPipeline_LocalProof.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "Experiments/NDNSF_DI_Run_Minindn_Regressions.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "Experiments/NDNSF_DI_RuntimeCompatibility_Smoke.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "Experiments/NDNSF_DI_TransformersPipeline_LocalSmoke.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "Experiments/NDNSF_DI_Yolo2x2_LocalBenchmark.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "Experiments/NDNSF_DI_Yolo2x2_Minindn.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "Experiments/NDNSF_DI_Yolo2x2_Repo_Minindn.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "Experiments/NDNSF_DI_YoloLayout_Smoke.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "Experiments/NDNSF_DI_YoloSplit_Minindn.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "Experiments/NDNSF_DistributedRepo_Generic_Minindn.py"
+    },
+    {
+      "categories": [
+        "minindn"
+      ],
+      "path": "Experiments/NDNSF_NegativeAck_Minindn.py"
+    },
+    {
+      "categories": [
+        "minindn"
+      ],
+      "path": "Experiments/NDNSF_NewAPI_Minindn_Perf.py"
+    },
+    {
+      "categories": [
+        "minindn"
+      ],
+      "path": "Experiments/NDNSF_Python_Hello_Minindn.py"
+    },
+    {
+      "categories": [
+        "minindn"
+      ],
+      "path": "Experiments/NDNSF_Python_Minindn_Perf.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "Experiments/NDNSF_Run_Minindn_Quick_Checks.py"
+    },
+    {
+      "categories": [
+        "minindn"
+      ],
+      "path": "Experiments/NDNSF_TextToImage_Status_Minindn.py"
+    },
+    {
+      "categories": [
+        "minindn"
+      ],
+      "path": "Experiments/NDNSF_TokenBootstrap_Minindn.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "Experiments/NDNSF_Transfer_Boundary_Documentation_Regression.py"
+    },
+    {
+      "categories": [
+        "minindn"
+      ],
+      "path": "Experiments/NDNSF_UAV_Documentation_Regression.py"
+    },
+    {
+      "categories": [
+        "minindn"
+      ],
+      "path": "Experiments/NDNSF_UAV_GUI_Minindn.py"
+    },
+    {
+      "categories": [
+        "minindn"
+      ],
+      "path": "Experiments/NDNSF_UAV_GUI_Minindn_Release.py"
+    },
+    {
+      "categories": [
+        "minindn"
+      ],
+      "path": "Experiments/NDNSF_UAV_Stream_Control_Isolation_Campaign.py"
+    },
+    {
+      "categories": [
+        "minindn"
+      ],
+      "path": "Experiments/NDNSF_UAV_Stream_Parity_Campaign.py"
+    },
+    {
+      "categories": [
+        "minindn"
+      ],
+      "path": "Experiments/NDNSF_intermit_provider_failure.py"
+    },
+    {
+      "categories": [
+        "minindn"
+      ],
+      "path": "Experiments/NSCAdhoc.py"
+    },
+    {
+      "categories": [
+        "minindn"
+      ],
+      "path": "Experiments/NSCExperiment.py"
+    },
+    {
+      "categories": [
+        "minindn"
+      ],
+      "path": "Experiments/NSC_memphis_ucla_latency.py"
+    },
+    {
+      "categories": [
+        "minindn"
+      ],
+      "path": "Experiments/PubSub_AutoConfig.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "Experiments/Topology/AI_Lab_RuntimeAwarePeerMetrics.json"
+    },
+    {
+      "categories": [
+        "minindn"
+      ],
+      "path": "Experiments/WifiRouterMobilityReliability.py"
+    },
+    {
+      "categories": [
+        "minindn"
+      ],
+      "path": "Experiments/aggregate_repo_ha_campaigns.py"
+    },
+    {
+      "categories": [
+        "minindn"
+      ],
+      "path": "Experiments/gRPC.py"
+    },
+    {
+      "categories": [
+        "minindn"
+      ],
+      "path": "Experiments/gRPC_memphis_ucla_latency.py"
+    },
+    {
+      "categories": [
+        "minindn"
+      ],
+      "path": "Experiments/ndnping.py"
+    },
+    {
+      "categories": [
+        "minindn"
+      ],
+      "path": "Experiments/run_crypto_isolation_matrix.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "Experiments/run_deployment_lifecycle_experiment.sh"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "Experiments/spec105_local_canary_preflight.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "Experiments/spec105_telemetry_plan_cells.py"
+    },
+    {
+      "categories": [
+        "container",
+        "slurm",
+        "systemd"
+      ],
+      "path": "Experiments/sync-demo"
+    },
+    {
+      "categories": [
+        "container",
+        "slurm",
+        "systemd"
+      ],
+      "path": "Experiments/syncps"
+    },
+    {
+      "categories": [
+        "container"
+      ],
+      "path": "Experiments/syncps.go"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/DI_NativeFaultProviderExecutable.cpp"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/DI_NativeOnnxRuntimeSmoke.cpp"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/DI_NativePlanManifestSmoke.cpp"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/DI_NativePlanOnnxSmoke.cpp"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/DI_NativePlanSchemaSmoke.cpp"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/DI_NativeProviderExecutable.cpp"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/DI_NativeProviderSessionSmoke.cpp"
+    },
+    {
+      "categories": [
+        "container",
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "examples/README.md"
+    },
+    {
+      "categories": [
+        "container"
+      ],
+      "path": "examples/ServiceContainer_LocalHelper.cpp"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "examples/di-native-tracer.runtime.json"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/ndnsf-di-qwen-pilot-faults.campaign.json"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "examples/ndnsf-di-qwen-pilot.campaign.json"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/ndnsf-di-qwen-pilot.model.json"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/README.md"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/gui_controller_hello.config"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/gui_provider_hello.config"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/gui_three_role_profile.json"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/gui_user_hello.config"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/llama_server/controller.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/llama_server/deploy_artifacts.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/llama_server/download_llama_server.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/llama_server/download_qwen_gguf.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/llama_server/llama_server_lib.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "systemd"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/llama_server/plan_llama_server.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/llama_server/provider.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/llama_server/run_semantic_cache_network_smoke.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/llama_server/run_semantic_cache_provider_smoke.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/llama_server/run_semantic_cache_selection_campaign.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/llama_server/user.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/llm_pipeline/llm_pipeline_lib.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "systemd"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/llm_pipeline/plan_pipeline.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/llm_pipeline/provider.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/llm_pipeline/user.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/llm_semantic_cache_demo.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "systemd"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/llm_stub/plan_stub.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/native_di_tracer/artifacts/backbone.onnx.placeholder"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/native_di_tracer/artifacts/head-shard-0.onnx.placeholder"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/native_di_tracer/artifacts/head-shard-1.onnx.placeholder"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/native_di_tracer/artifacts/merge.onnx.placeholder"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/native_di_tracer/compare_layout_results.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/native_di_tracer/export_network_telemetry_profile.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/native_di_tracer/generate_llm_proportional_native_bundle.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/native_di_tracer/generate_qwen_native_tracer_artifacts.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/native_di_tracer/llm_ack_candidates_2_4_8.json"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/native_di_tracer/llm_ack_candidates_sample.json"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/native_di_tracer/llm_model_spec_qwen_small.json"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/native_di_tracer/llm_model_spec_qwen_tiny_proportional.json"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/native_di_tracer/llm_provider_profiles.json"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/native_di_tracer/llm_provider_profiles_2_4_8.json"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/native_di_tracer/native_tracer_policy.yaml"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/native_di_tracer/optimize_native_tracer_plan.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/native_di_tracer/plan_llm_resource_aware.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/native_di_tracer/plan_tracer.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/native_di_tracer/run_auto_assignment_campaign.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/native_di_tracer/run_layout_campaign.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/native_di_tracer/run_llm_full_network_campaign.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/native_di_tracer/run_llm_proportional_rps_search.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/native_di_tracer/run_minindn_tracer.sh"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/native_di_tracer/run_provider_admission_campaign.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/native_di_tracer/run_rate_sweep_campaign.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/native_di_tracer/run_runtime_v1_cache_pressure_smoke.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/native_di_tracer/run_runtime_v1_long_context_smoke.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/native_di_tracer/run_runtime_v1_profile_campaign.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/native_di_tracer/runtime_aware_fixtures/loader.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/native_di_tracer/runtime_aware_fixtures/multi_user_requests.json"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/native_di_tracer/runtime_aware_fixtures/provider_fragments.json"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/native_di_tracer/runtime_aware_fixtures/provider_network_matrix.json"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/native_di_tracer/runtime_v1_minindn_profiles.json"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "systemd"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/native_di_tracer/user_driver.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/pytorch_eager_2x2/controller.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/pytorch_eager_2x2/provider.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/pytorch_eager_2x2/pytorch_2x2_lib.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/pytorch_eager_2x2/pytorch_policy.yaml"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "systemd"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/pytorch_eager_2x2/split_model.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/pytorch_eager_2x2/user.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/runtime_v1_schemas/execution-attempt-v1.json"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/runtime_v1_schemas/execution-evidence-v1.json"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/runtime_v1_schemas/plan-validation-v1.json"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/runtime_v1_schemas/provider-telemetry-v1.json"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/runtime_v1_schemas/release-gate-v1.json"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/yolo_2x2/controller.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/yolo_2x2/plan_example.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/yolo_2x2/provider.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/yolo_2x2/repo_client.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/yolo_2x2/repo_node.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "systemd"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/yolo_2x2/split_model.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/yolo_2x2/user.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/yolo_2x2/yolo_2x2_lib.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/yolo_2x2/yolo_policy.yaml"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/yolo_split/controller.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/yolo_split/provider.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "systemd"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/yolo_split/split_model.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/yolo_split/user.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/yolo_split/yolo_policy.yaml"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedInference/yolo_split/yolo_split_lib.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "examples/python/NDNSF-DistributedRepo/generic_object_store/README.md"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "examples/python/NDNSF-DistributedRepo/generic_object_store/README_ch.md"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedRepo/generic_object_store/catalog_sync.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "examples/python/NDNSF-DistributedRepo/generic_object_store/client.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedRepo/generic_object_store/controller.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedRepo/generic_object_store/repo_campaign.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedRepo/generic_object_store/repo_node.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/NDNSF-DistributedRepo/generic_object_store/repo_policy.yaml"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn",
+        "systemd"
+      ],
+      "path": "examples/python/README.md"
+    },
+    {
+      "categories": [
+        "minindn"
+      ],
+      "path": "examples/python/hello_rate_user.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/yolo_split_controller.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/yolo_split_lib.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/yolo_split_provider.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "examples/python/yolo_split_user.py"
+    },
+    {
+      "categories": [
+        "minindn"
+      ],
+      "path": "examples/run_svs_latency_minindn.sh"
+    },
+    {
+      "categories": [
+        "container",
+        "distributed-inference"
+      ],
+      "path": "examples/wscript"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference",
+        "slurm",
+        "systemd"
+      ],
+      "path": "packaging/ndnsf-di-container/README.md"
+    },
+    {
+      "categories": [
+        "container",
+        "distributed-inference"
+      ],
+      "path": "packaging/ndnsf-di-container/adapters/docker-compose/compose.yaml"
+    },
+    {
+      "categories": [
+        "container",
+        "distributed-inference"
+      ],
+      "path": "packaging/ndnsf-di-container/adapters/docker-compose/profiles/cloud-cpu.yaml"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "packaging/ndnsf-di-container/adapters/slurm-apptainer/profiles/itiger-h100.yaml"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "packaging/ndnsf-di-container/adapters/slurm-apptainer/profiles/itiger-rtx5000.yaml"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "packaging/ndnsf-di-container/adapters/slurm-apptainer/profiles/itiger-rtx6000.yaml"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/check-scratch.py"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/check-storage.py"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/collect-gpu.py"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/configure-allocation-routes.sh"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/discover-itiger-qwen.sh"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/finalize-evidence.sh"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/finalize-qwen-model.py"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/inspect-oci-archive.py"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/materialize-sif.sh"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/preflight-compute.sh"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/preflight-login.sh"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/prepare-qwen-project.sh"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/probe-multinode-network.sh"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/probe-ndnsf-security.sh"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/rootless-build.sh"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/run-allocation-topology.sh"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/run-container.sh"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/run-ndnsf-qwen.sh"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/run-qwen-reference.py"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/sample-qwen-resources.py"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/seal-rootless-source.py"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/stage-qwen-model.py"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "packaging/ndnsf-di-container/adapters/slurm-apptainer/templates/ndnsf-di.sbatch.in"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "packaging/ndnsf-di-container/adapters/slurm-apptainer/templates/ndnsf-qwen.sbatch.in"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "packaging/ndnsf-di-container/adapters/slurm-apptainer/templates/nfd.conf.in"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "packaging/ndnsf-di-container/adapters/slurm-apptainer/templates/process-map.yaml.in"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "packaging/ndnsf-di-container/adapters/slurm-apptainer/templates/qwen-oracle.sbatch.in"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "packaging/ndnsf-di-container/adapters/slurm-apptainer/templates/qwen-staged-baseline.sbatch.in"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "packaging/ndnsf-di-container/adapters/slurm-apptainer/templates/qwen-transfer.sbatch.in"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "packaging/ndnsf-di-container/adapters/slurm-apptainer/templates/rootless-build.sbatch.in"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "packaging/ndnsf-di-container/bin/ndnsf-di-deploy"
+    },
+    {
+      "categories": [
+        "container",
+        "distributed-inference"
+      ],
+      "path": "packaging/ndnsf-di-container/bin/ndnsf-di-qwen"
+    },
+    {
+      "categories": [
+        "container",
+        "distributed-inference",
+        "minindn",
+        "slurm"
+      ],
+      "path": "packaging/ndnsf-di-container/docs/itiger-qwen-evidence.md"
+    },
+    {
+      "categories": [
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "packaging/ndnsf-di-container/docs/itiger-qwen-models.md"
+    },
+    {
+      "categories": [
+        "container",
+        "distributed-inference"
+      ],
+      "path": "packaging/ndnsf-di-container/lib/adapters/__init__.py"
+    },
+    {
+      "categories": [
+        "container",
+        "distributed-inference"
+      ],
+      "path": "packaging/ndnsf-di-container/lib/adapters/base.py"
+    },
+    {
+      "categories": [
+        "container",
+        "distributed-inference"
+      ],
+      "path": "packaging/ndnsf-di-container/lib/adapters/docker_compose.py"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "packaging/ndnsf-di-container/lib/adapters/slurm_apptainer.py"
+    },
+    {
+      "categories": [
+        "container",
+        "distributed-inference"
+      ],
+      "path": "packaging/ndnsf-di-container/lib/allocation_topology.py"
+    },
+    {
+      "categories": [
+        "container",
+        "distributed-inference"
+      ],
+      "path": "packaging/ndnsf-di-container/lib/evidence.py"
+    },
+    {
+      "categories": [
+        "container",
+        "distributed-inference"
+      ],
+      "path": "packaging/ndnsf-di-container/lib/gpu_compatibility.py"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "packaging/ndnsf-di-container/lib/profile.py"
+    },
+    {
+      "categories": [
+        "container",
+        "distributed-inference"
+      ],
+      "path": "packaging/ndnsf-di-container/lib/redaction.py"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "packaging/ndnsf-di-container/lib/release.py"
+    },
+    {
+      "categories": [
+        "container",
+        "distributed-inference"
+      ],
+      "path": "packaging/ndnsf-di-container/lib/schema_utils.py"
+    },
+    {
+      "categories": [
+        "container",
+        "distributed-inference"
+      ],
+      "path": "packaging/ndnsf-di-container/oci/.dockerignore"
+    },
+    {
+      "categories": [
+        "container",
+        "distributed-inference"
+      ],
+      "path": "packaging/ndnsf-di-container/oci/Dockerfile.cpu"
+    },
+    {
+      "categories": [
+        "container",
+        "distributed-inference"
+      ],
+      "path": "packaging/ndnsf-di-container/oci/Dockerfile.foundation"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "packaging/ndnsf-di-container/oci/Dockerfile.gpu"
+    },
+    {
+      "categories": [
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "packaging/ndnsf-di-container/oci/compatibility/gpu-matrix.yaml"
+    },
+    {
+      "categories": [
+        "container",
+        "distributed-inference"
+      ],
+      "path": "packaging/ndnsf-di-container/oci/locks/common.lock"
+    },
+    {
+      "categories": [
+        "container",
+        "distributed-inference"
+      ],
+      "path": "packaging/ndnsf-di-container/oci/locks/cpu.lock"
+    },
+    {
+      "categories": [
+        "container",
+        "distributed-inference"
+      ],
+      "path": "packaging/ndnsf-di-container/oci/locks/gpu.lock"
+    },
+    {
+      "categories": [
+        "container",
+        "distributed-inference"
+      ],
+      "path": "packaging/ndnsf-di-container/oci/scripts/build-foundation-local.sh"
+    },
+    {
+      "categories": [
+        "container",
+        "distributed-inference"
+      ],
+      "path": "packaging/ndnsf-di-container/oci/scripts/build-image.sh"
+    },
+    {
+      "categories": [
+        "container",
+        "distributed-inference"
+      ],
+      "path": "packaging/ndnsf-di-container/oci/scripts/build-release.sh"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference"
+      ],
+      "path": "packaging/ndnsf-di-container/oci/scripts/derive-runtime-packages.py"
+    },
+    {
+      "categories": [
+        "container",
+        "distributed-inference"
+      ],
+      "path": "packaging/ndnsf-di-container/oci/scripts/entrypoint.sh"
+    },
+    {
+      "categories": [
+        "container",
+        "distributed-inference"
+      ],
+      "path": "packaging/ndnsf-di-container/oci/scripts/healthcheck.sh"
+    },
+    {
+      "categories": [
+        "container",
+        "distributed-inference"
+      ],
+      "path": "packaging/ndnsf-di-container/oci/scripts/preflight-gpu-build.py"
+    },
+    {
+      "categories": [
+        "container",
+        "distributed-inference"
+      ],
+      "path": "packaging/ndnsf-di-container/oci/scripts/prepare-openabe-relic.py"
+    },
+    {
+      "categories": [
+        "container",
+        "distributed-inference"
+      ],
+      "path": "packaging/ndnsf-di-container/oci/scripts/prepare-rootfs.sh"
+    },
+    {
+      "categories": [
+        "container",
+        "distributed-inference"
+      ],
+      "path": "packaging/ndnsf-di-container/oci/scripts/prepare-sealed-context.py"
+    },
+    {
+      "categories": [
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "packaging/ndnsf-di-container/oci/scripts/probe-runtime.py"
+    },
+    {
+      "categories": [
+        "container",
+        "distributed-inference"
+      ],
+      "path": "packaging/ndnsf-di-container/oci/scripts/scan-release.sh"
+    },
+    {
+      "categories": [
+        "container",
+        "distributed-inference"
+      ],
+      "path": "packaging/ndnsf-di-container/oci/scripts/scan-secrets.py"
+    },
+    {
+      "categories": [
+        "container",
+        "distributed-inference"
+      ],
+      "path": "packaging/ndnsf-di-container/oci/scripts/verify-python-environment.py"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference"
+      ],
+      "path": "packaging/ndnsf-di-container/oci/scripts/verify-runtime-closure.py"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "packaging/ndnsf-di-container/schemas/deployment-evidence.schema.json"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "packaging/ndnsf-di-container/schemas/deployment-profile.schema.json"
+    },
+    {
+      "categories": [
+        "container",
+        "distributed-inference"
+      ],
+      "path": "packaging/ndnsf-di-container/schemas/oci-release.schema.json"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn",
+        "systemd"
+      ],
+      "path": "packaging/ndnsf-di-systemd/README.md"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn",
+        "systemd"
+      ],
+      "path": "packaging/ndnsf-di-systemd/README_ch.md"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "systemd"
+      ],
+      "path": "packaging/ndnsf-di-systemd/config/bench.env.example"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "systemd"
+      ],
+      "path": "packaging/ndnsf-di-systemd/config/controller.env.example"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn",
+        "systemd"
+      ],
+      "path": "packaging/ndnsf-di-systemd/config/deployment.example.json"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "systemd"
+      ],
+      "path": "packaging/ndnsf-di-systemd/config/ndnsf-di.logrotate"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "systemd"
+      ],
+      "path": "packaging/ndnsf-di-systemd/config/ndnsf-di.tmpfiles.conf"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "systemd"
+      ],
+      "path": "packaging/ndnsf-di-systemd/config/provider-0.env.example"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "systemd"
+      ],
+      "path": "packaging/ndnsf-di-systemd/config/repo-0.env.example"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "systemd"
+      ],
+      "path": "packaging/ndnsf-di-systemd/create-release.sh"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "systemd"
+      ],
+      "path": "packaging/ndnsf-di-systemd/install.sh"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "systemd"
+      ],
+      "path": "packaging/ndnsf-di-systemd/rollback.sh"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "systemd"
+      ],
+      "path": "packaging/ndnsf-di-systemd/run-local-supervised.sh"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "systemd"
+      ],
+      "path": "packaging/ndnsf-di-systemd/staging/nfd.service"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "systemd"
+      ],
+      "path": "packaging/ndnsf-di-systemd/uninstall.sh"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "systemd"
+      ],
+      "path": "packaging/ndnsf-di-systemd/units/ndnsf-di-bench.service"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "systemd"
+      ],
+      "path": "packaging/ndnsf-di-systemd/units/ndnsf-di-controller.service"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "systemd"
+      ],
+      "path": "packaging/ndnsf-di-systemd/units/ndnsf-di-controller.target"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "systemd"
+      ],
+      "path": "packaging/ndnsf-di-systemd/units/ndnsf-di-provider@.service"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "systemd"
+      ],
+      "path": "packaging/ndnsf-di-systemd/units/ndnsf-di-providers.target"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "systemd"
+      ],
+      "path": "packaging/ndnsf-di-systemd/units/ndnsf-di-repo@.service"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "systemd"
+      ],
+      "path": "packaging/ndnsf-di-systemd/validate-staging.sh"
+    },
+    {
+      "categories": [
+        "minindn"
+      ],
+      "path": "packaging/uav-release/README.md"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "tools/maintenance/ndnsf_occam_audit.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "tools/ndnsf-di/build_spec107_release_bundle.py"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "tools/ndnsf-di/ndnsf-di-itiger-qwen"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "tools/ndnsf-di/ndnsf-di-qwen"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "tools/ndnsf-di/record_spec109_terminal.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "tools/ndnsf-di/run_spec107_attribution.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "tools/ndnsf-di/run_spec107_live_faults.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "tools/ndnsf-di/run_spec107_operations.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "tools/ndnsf-di/run_spec109_analysis.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "tools/ndnsf-di/run_spec109_ladder.py"
+    },
+    {
+      "categories": [
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "tools/ndnsf-di/run_spec110_offline_tests.py"
+    },
+    {
+      "categories": [
+        "container",
+        "distributed-inference"
+      ],
+      "path": "tools/ndnsf-di/scan_spec109_evidence.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "tools/ndnsf-di/spec107_artifacts.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "tools/ndnsf-di/spec107_candidate.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "tools/ndnsf-di/spec107_fault_controller.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "tools/ndnsf-di/spec107_identity.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "tools/ndnsf-di/spec107_lineage.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "tools/ndnsf-di/spec107_local_supervisor.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "tools/ndnsf-di/spec107_preflight.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "tools/ndnsf-di/spec107_timing.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "tools/ndnsf-di/spec109_candidate.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "tools/ndnsf-di/spec109_job.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "tools/ndnsf-di/spec109_matrix.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "tools/ndnsf-di/spec109_model_registry.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "tools/ndnsf-di/spec109_predecessors.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "tools/ndnsf-di/spec109_source.py"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "distributed-inference"
+      ],
+      "path": "tools/ndnsf-di/spec109_storage.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "tools/ndnsf-di/spec110_candidate.py"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "distributed-inference"
+      ],
+      "path": "tools/ndnsf-di/spec110_cluster.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "tools/ndnsf-di/spec110_evidence.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "tools/ndnsf-di/spec110_execution_proof.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "tools/ndnsf-di/spec110_operator.py"
+    },
+    {
+      "categories": [
+        "apptainer",
+        "container",
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "tools/ndnsf-di/spec110_rootless_build.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "tools/ndnsf-di/spec110_state.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "tools/ndnsf-di/spec110_storage.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "slurm"
+      ],
+      "path": "tools/ndnsf-di/spec110_submission.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "tools/ndnsf-di/spec110_workload.py"
+    },
+    {
+      "categories": [
+        "distributed-inference"
+      ],
+      "path": "tools/ndnsf-di/validate_spec109.py"
+    },
+    {
+      "categories": [
+        "container",
+        "distributed-inference"
+      ],
+      "path": "tools/ndnsf-di/validate_spec110_foundation.py"
+    },
+    {
+      "categories": [
+        "distributed-inference",
+        "minindn"
+      ],
+      "path": "tools/ndnsf_runtime.py"
+    }
+  ],
+  "schemaVersion": 1,
+  "sourceCommit": "4d695ce8b7ffe2c79465dc1f3db649a5a65806a6"
+}

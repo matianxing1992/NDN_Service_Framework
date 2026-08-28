@@ -1,0 +1,27 @@
+{
+  "schema": "ndnsf-di.spec168-gate-e-schedule-input.v1",
+  "job": "gate-e-small-single.sbatch",
+  "jobDigest": "sha256:17e5d0e1aa3dd82c71c5da14141e0811308dea1b9c4fb6a389d695caab2ccf92",
+  "phase": "remote-small-single",
+  "submissionCount": 1,
+  "automaticRetry": false,
+  "resources": {
+    "partition": "bigTiger",
+    "nodes": 3,
+    "tasks": 3,
+    "tasksPerNode": 1,
+    "gpuPerNode": "rtx_5000:1",
+    "memoryPerNode": "32G",
+    "wallTime": "02:00:00"
+  },
+  "workload": {
+    "promptSetDigest": "sha256:5a87c5645c74ac52b7e2ab728e7297d49c42fa849ce47d163c8fec5838d9dd75",
+    "selectedPromptCount": 1,
+    "warmupPerPrompt": 0,
+    "measuredPerPrompt": 1,
+    "maxNewTokens": 64,
+    "wireRequestCount": 1,
+    "tokenRequestCount": 0
+  },
+  "failurePolicy": "retain immutable evidence and close identity; repair locally under a linked replacement identity"
+}

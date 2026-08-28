@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "measuredWindowSeconds": 60,
+  "physicalPresentation": "unavailable",
+  "cells": [
+    {
+      "cell": "baseline-legacy-stdio",
+      "result": "INVALID_IDENTITY",
+      "decodedFrames": 1840,
+      "exactIdentityCoverage": 0.0,
+      "interestWorkPerDecodedFrame": 4.9,
+      "providerFutureHitRatio": 1.0,
+      "processSampleCpuP95Percent": 14.1,
+      "maxObservedProcessRssKiB": 148568,
+      "evidence": "results/spec122-baselines-20260719/baseline-legacy-stdio"
+    },
+    {
+      "cell": "baseline-provisional-posix",
+      "result": "INVALID_IDENTITY",
+      "decodedFrames": 1836,
+      "exactIdentityCoverage": 0.0,
+      "interestWorkPerDecodedFrame": 5.008,
+      "providerFutureHitRatio": 1.0,
+      "processSampleCpuP95Percent": 14.9,
+      "maxObservedProcessRssKiB": 149772,
+      "evidence": "results/spec122-baselines-20260719/baseline-provisional-posix"
+    },
+    {
+      "cell": "candidate-gstreamer-exact-mapped-pressure",
+      "result": "INVALID_IDENTITY",
+      "decodedFrames": 41,
+      "decoderStartupMs": 270,
+      "exactIdentityCoverage": 0.0,
+      "interestWorkPerDecodedFrame": 15.366,
+      "providerFutureHitRatio": 0.0,
+      "processSampleCpuP95Percent": 41.0,
+      "maxObservedProcessRssKiB": 250812,
+      "evidence": "results/spec122-gstreamer-exact-20260719/candidate-gstreamer-exact"
+    },
+    {
+      "cell": "candidate-gstreamer-exact-future-on",
+      "result": "INVALID_IDENTITY",
+      "decodedFrames": 725,
+      "producedFrames": 1830,
+      "decoderStartupMs": 54,
+      "exactIdentityCoverage": 0.37244897959183676,
+      "captureToWidgetP95Ms": 1053.178017,
+      "captureToWidgetP99Ms": 1310.454339,
+      "captureToDecodeP95Ms": 1052.030017,
+      "decodeToWidgetP95Ms": 8.797,
+      "decoderOutputGapP99Ms": 1070.634,
+      "interestWorkPerDecodedFrame": 14.091,
+      "providerFutureHitRatio": 0.8896,
+      "processSampleCpuP95Percent": 55.0,
+      "maxObservedProcessRssKiB": 251552,
+      "evidence": "results/spec122-gstreamer-future-on-20260719/candidate-gstreamer-future-on"
+    }
+  ],
+  "rankedBottlenecks": [
+    "Stream retrieval and continuity before decoder input",
+    "Decoder output cadence under incomplete delivery",
+    "Decoder startup only in the mapped-pressure failure cell",
+    "GTK widget submission is not dominant"
+  ],
+  "decision": {
+    "acceptedDefault": null,
+    "retainLegacyDefault": true,
+    "gstreamerStatus": "experimental-negative",
+    "reason": "No exact candidate reached 99 percent identity/completion coverage; future-on exceeded the hard two-times Interest-work gate and remained below the 99 percent future-hit gate.",
+    "confirmatoryPairsExecuted": 0,
+    "confirmatoryPairsReason": "No admissible exploratory candidate; Spec 122 forbids manufacturing confirmatory cells."
+  }
+}

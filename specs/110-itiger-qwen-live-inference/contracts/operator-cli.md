@@ -30,6 +30,26 @@ ndnsf-di-itiger-qwen aggregate --campaign <campaign.json> --output <report.json>
 ndnsf-di-itiger-qwen cleanup --project <root> --dry-run
 ```
 
+## Post-Spec-111 handoff commands
+
+The operations adapter MAY add versioned render/read-only commands equivalent
+to:
+
+```text
+ndnsf-di-itiger-qwen handoff validate --handoff <handoff.json>
+ndnsf-di-itiger-qwen handoff render --handoff <handoff.json> --output <job.sbatch>
+ndnsf-di-itiger-qwen allocation status --allocation <handle.json>
+ndnsf-di-itiger-qwen deployment status --deployment <id> --revision <id>
+ndnsf-di-itiger-qwen request status --request <id> --attempt <epoch>
+```
+
+The immutable handoff binds the candidate, Spec 111 revision, exact OCI/SIF,
+process-map version, external model/artifact references, identities, persistent
+state partitions, network mode and explicit submission authorization. Rendering
+has zero submission side effects. Allocation, deployment and request status are
+separate schemas: Slurm `PENDING`, `RUNNING` or `COMPLETED` MUST NOT be mapped to
+APP `READY`/`ACTIVE` or request success.
+
 ## Exit codes
 
 | Code | Meaning |

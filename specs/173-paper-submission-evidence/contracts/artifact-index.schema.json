@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ndnsf.local/spec173/artifact-index.schema.json",
+  "title": "NDNSF manuscript artifact index",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "generatedAt", "manuscript", "entries"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "generatedAt": {"type": "string", "format": "date-time"},
+    "manuscript": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["texPath", "pdfPath", "sourceRevision"],
+      "properties": {
+        "texPath": {"type": "string", "minLength": 1},
+        "pdfPath": {"type": "string", "minLength": 1},
+        "sourceRevision": {"type": "string", "minLength": 1},
+        "pdfSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "entries": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/entry"}
+    }
+  },
+  "$defs": {
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "manuscriptId", "location", "claim", "status", "evidenceIds",
+        "analysisPath", "reason"
+      ],
+      "properties": {
+        "manuscriptId": {"type": "string", "minLength": 1},
+        "location": {"type": "string", "minLength": 1},
+        "claim": {"type": "string", "minLength": 1},
+        "status": {"enum": ["supported", "qualified", "replaced", "removed", "pending"]},
+        "evidenceIds": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "analysisPath": {"type": "string"},
+        "reason": {"type": "string", "minLength": 1},
+        "artifactPaths": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "limitations": {"type": "string"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"status": {"const": "supported"}}},
+          "then": {
+            "properties": {
+              "evidenceIds": {"minItems": 1},
+              "analysisPath": {"minLength": 1}
+            }
+          }
+        }
+      ]
+    }
+  }
+}

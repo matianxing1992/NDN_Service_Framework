@@ -348,3 +348,30 @@ NDNSF security, generation, NFD routing, or Slurm adapters.
 | One NFD per unique allocation node | Prevents duplicate listeners/state and proves selected inter-node transport | One NFD per container conflicts on same-node placements |
 | Two matched contrasts | Separates framework overhead from network placement overhead | One local staged baseline cannot match a multi-node topology |
 | Digest-bound state/evidence | Prevents blocked or mutated runs becoming PASS | Human task checkboxes failed in Spec 109 |
+
+## Post-Spec-111 runtime bridge amendment
+
+Spec 111 adds immutable deployment revisions, APPDeployment lifecycle,
+RuntimeJournal and durable request handles. A pre-Spec-111 release cannot prove
+those capabilities. Phase 28 therefore creates a fresh candidate and consumes
+the normative handoff at
+`../111-ndnsf-di-core-app-separation/contracts/itiger-slurm-apptainer-handoff.md`.
+
+The concrete sequence is:
+
+```text
+Spec 111 T201 + Spec 110 substrate PASS
+  -> offline handoff/bind/process-map v2 gate T219-T228
+  -> new post-Spec-111 OCI/SIF T229
+  -> single-node APP apply/submit/drain T230
+  -> selected-transport PASS + optional multi-node T231
+  -> bounded verdict T232
+```
+
+Docker/OCI remains the build source; all compute processes use exact SIF through
+Slurm/Apptainer. The operations adapter owns allocation/process launch and a
+distinct infrastructure handle. APPDeployment owns only revision/model lifecycle
+after generic Provider agents start. Provider cardinality derives from the
+revision, state is persistently mounted by identity, node-local NFD sockets are
+explicitly shared, and scheduler/APP/request states never substitute for each
+other. This amendment preserves every existing candidate, job and v1 fixture.

@@ -1,0 +1,7 @@
+faceid=1 remote=internal:// local=internal:// congestion={base-marking-interval=100ms default-threshold=65536B} mtu=8800 counters={in={0i 102d 0n 20518B} out={102i 0d 0n 11337B}} flags={local permanent point-to-point local-fields}
+faceid=254 remote=contentstore:// local=contentstore:// mtu=8800 counters={in={0i 0d 0n 0B} out={0i 0d 0n 0B}} flags={local permanent point-to-point}
+faceid=255 remote=null:// local=null:// mtu=8800 counters={in={0i 0d 0n 0B} out={0i 0d 0n 0B}} flags={local permanent point-to-point}
+faceid=256 remote=fd://19 local=unix:///scratch/run/nfd.sock congestion={base-marking-interval=100ms default-threshold=65536B} mtu=8800 counters={in={77i 15d 0n 11004B} out={15i 77d 0n 17180B}} flags={local on-demand point-to-point local-fields congestion-marking}
+faceid=259 remote=tcp4://172.16.0.17:22500 local=tcp4://172.16.0.19:49766 congestion={base-marking-interval=100ms default-threshold=65536B} mtu=8800 counters={in={0i 0d 0n 0B} out={0i 0d 0n 0B}} flags={non-local persistent point-to-point congestion-marking}
+faceid=266 remote=tcp4://172.16.0.18:22500 local=tcp4://172.16.0.19:50336 congestion={base-marking-interval=100ms default-threshold=65536B} mtu=8800 counters={in={0i 0d 0n 0B} out={0i 0d 0n 0B}} flags={non-local persistent point-to-point congestion-marking}
+faceid=283 remote=fd://20 local=unix:///scratch/run/nfd.sock congestion={base-marking-interval=100ms default-threshold=65536B} mtu=8800 counters={in={1i 0d 0n 43B} out={0i 0d 0n 0B}} flags={local on-demand point-to-point congestion-marking}

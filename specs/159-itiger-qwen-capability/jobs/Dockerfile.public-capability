@@ -1,0 +1,6 @@
+FROM ndnsf-di:spec158-app-reuse-proof
+
+LABEL org.opencontainers.image.source="https://github.com/matianxing1992/NDN_Service_Framework" \
+      org.opencontainers.image.description="Spec 159 public no-secret iTiger capability candidate" \
+      org.ndnsf.di.base-local-image-id="sha256:8f8d2a0b219dc6ee0216c43a3ead9d65125850431f30cc26b7aa4b88c0f2f6e4" \
+      org.ndnsf.di.authority="development-capability-only"

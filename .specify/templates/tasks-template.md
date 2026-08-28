@@ -9,15 +9,46 @@ description: "Task list template for feature implementation"
 
 **Prerequisites**: plan.md (required), spec.md (required for user stories), research.md, data-model.md, contracts/
 
-**Tests**: The examples below include test tasks. Tests are OPTIONAL - only include them if explicitly requested in the feature specification.
+**Tests**: The examples below include test-first work inside behavioral tasks.
+Tests are OPTIONAL - include them only when the feature specification requests
+them.
 
-**Organization**: Tasks are grouped by user story to enable independent implementation and testing of each story.
+**Organization**: Tasks are grouped by user story and expressed as cohesive,
+reviewable behavioral outcomes. Do not optimize for a high task count.
 
 ## Format: `[ID] [P?] [Story] Description`
 
 - **[P]**: Can run in parallel (different files, no dependencies)
 - **[Story]**: Which user story this task belongs to (e.g., US1, US2, US3)
 - Include exact file paths in descriptions
+
+## Task Cohesion Rule
+
+A task is the smallest independently reviewable outcome, not the smallest
+possible action. Keep test-first work, implementation, focused validation, and
+evidence together when they close one behavior under one acceptance gate.
+
+Split work only when the resulting tasks are independently assignable and
+mergeable, establish a real prerequisite, carry materially different risk, or
+produce independently meaningful acceptance evidence. Do not create separate
+tasks merely to:
+
+- edit different files for the same behavior;
+- write a test, implement its behavior, run that test, and record its result;
+- run multiple commands that form one validation gate;
+- update a contract and its directly corresponding implementation.
+
+Example:
+
+```text
+# Avoid mechanical fragmentation
+- [ ] T010 [US1] Add failing contract test for token expiry in tests/contract/test_tokens.py
+- [ ] T011 [US1] Implement token expiry in src/services/token_service.py
+- [ ] T012 [US1] Run the token test and record evidence in evidence/token-expiry.md
+
+# Prefer one cohesive behavioral task
+- [ ] T010 [US1] Enforce token expiry by adding the failing contract case, implementing the service behavior, and recording the passing focused gate in tests/contract/test_tokens.py, src/services/token_service.py, and evidence/token-expiry.md
+```
 
 ## Path Conventions
 
@@ -40,6 +71,10 @@ description: "Task list template for feature implementation"
   - Implemented independently
   - Tested independently
   - Delivered as an MVP increment
+
+  Before writing the final list, coalesce items that share the same behavior,
+  owner, dependency position, and acceptance gate. Do not generate one task per
+  file, test case, shell command, or evidence artifact.
 
   DO NOT keep these sample tasks in the generated tasks.md file.
   ============================================================================
@@ -80,21 +115,13 @@ Examples of foundational tasks (adjust based on your project):
 
 **Independent Test**: [How to verify this story works on its own]
 
-### Tests for User Story 1 (OPTIONAL - only if tests requested) ⚠️
+### Behavioral Tasks for User Story 1
 
-> **NOTE: Write these tests FIRST, ensure they FAIL before implementation**
+> **NOTE**: When tests are requested, each behavioral task states the required
+> failing test first, then implementation and the focused passing gate.
 
-- [ ] T010 [P] [US1] Contract test for [endpoint] in tests/contract/test_[name].py
-- [ ] T011 [P] [US1] Integration test for [user journey] in tests/integration/test_[name].py
-
-### Implementation for User Story 1
-
-- [ ] T012 [P] [US1] Create [Entity1] model in src/models/[entity1].py
-- [ ] T013 [P] [US1] Create [Entity2] model in src/models/[entity2].py
-- [ ] T014 [US1] Implement [Service] in src/services/[service].py (depends on T012, T013)
-- [ ] T015 [US1] Implement [endpoint/feature] in src/[location]/[file].py
-- [ ] T016 [US1] Add validation and error handling
-- [ ] T017 [US1] Add logging for user story 1 operations
+- [ ] T010 [P] [US1] Deliver [independent behavior A] with a failing contract case, implementation, and focused validation in tests/contract/test_[name].py and src/[location]/[file].py
+- [ ] T011 [US1] Deliver [independent behavior B], including its model/service changes, error handling, diagnostics, and integration gate in src/models/[entity].py, src/services/[service].py, and tests/integration/test_[name].py
 
 **Checkpoint**: At this point, User Story 1 should be fully functional and testable independently
 
@@ -106,17 +133,10 @@ Examples of foundational tasks (adjust based on your project):
 
 **Independent Test**: [How to verify this story works on its own]
 
-### Tests for User Story 2 (OPTIONAL - only if tests requested) ⚠️
+### Behavioral Tasks for User Story 2
 
-- [ ] T018 [P] [US2] Contract test for [endpoint] in tests/contract/test_[name].py
-- [ ] T019 [P] [US2] Integration test for [user journey] in tests/integration/test_[name].py
-
-### Implementation for User Story 2
-
-- [ ] T020 [P] [US2] Create [Entity] model in src/models/[entity].py
-- [ ] T021 [US2] Implement [Service] in src/services/[service].py
-- [ ] T022 [US2] Implement [endpoint/feature] in src/[location]/[file].py
-- [ ] T023 [US2] Integrate with User Story 1 components (if needed)
+- [ ] T012 [P] [US2] Deliver [independent behavior] with its test-first contract, model/service implementation, and focused evidence in tests/[name].py, src/models/[entity].py, and src/services/[service].py
+- [ ] T013 [US2] Integrate [behavior] at the established US1 boundary and close the independent story gate in src/[location]/[file].py and tests/integration/test_[name].py
 
 **Checkpoint**: At this point, User Stories 1 AND 2 should both work independently
 
@@ -128,16 +148,9 @@ Examples of foundational tasks (adjust based on your project):
 
 **Independent Test**: [How to verify this story works on its own]
 
-### Tests for User Story 3 (OPTIONAL - only if tests requested) ⚠️
+### Behavioral Tasks for User Story 3
 
-- [ ] T024 [P] [US3] Contract test for [endpoint] in tests/contract/test_[name].py
-- [ ] T025 [P] [US3] Integration test for [user journey] in tests/integration/test_[name].py
-
-### Implementation for User Story 3
-
-- [ ] T026 [P] [US3] Create [Entity] model in src/models/[entity].py
-- [ ] T027 [US3] Implement [Service] in src/services/[service].py
-- [ ] T028 [US3] Implement [endpoint/feature] in src/[location]/[file].py
+- [ ] T014 [US3] Deliver [independent behavior] across its model, service, endpoint, test-first coverage, and focused acceptance gate in src/ and tests/
 
 **Checkpoint**: All user stories should now be independently functional
 
@@ -179,10 +192,9 @@ Examples of foundational tasks (adjust based on your project):
 
 ### Within Each User Story
 
-- Tests (if included) MUST be written and FAIL before implementation
-- Models before services
-- Services before endpoints
-- Core implementation before integration
+- Within a behavioral task, tests (if included) MUST be written and fail before implementation
+- Respect model, service, endpoint, and integration dependencies inside the task
+- Split those steps into separate tasks only when they meet the Task Cohesion Rule
 - Story complete before moving to next priority
 
 ### Parallel Opportunities
@@ -199,13 +211,9 @@ Examples of foundational tasks (adjust based on your project):
 ## Parallel Example: User Story 1
 
 ```bash
-# Launch all tests for User Story 1 together (if tests requested):
-Task: "Contract test for [endpoint] in tests/contract/test_[name].py"
-Task: "Integration test for [user journey] in tests/integration/test_[name].py"
-
-# Launch all models for User Story 1 together:
-Task: "Create [Entity1] model in src/models/[entity1].py"
-Task: "Create [Entity2] model in src/models/[entity2].py"
+# Launch independent behavioral outcomes together:
+Task: "Deliver [behavior A] with test-first coverage, implementation, and focused gate"
+Task: "Deliver [behavior B] with test-first coverage, implementation, and focused gate"
 ```
 
 ---
@@ -249,4 +257,4 @@ With multiple developers:
 - Verify tests fail before implementing
 - Commit after each task or logical group
 - Stop at any checkpoint to validate story independently
-- Avoid: vague tasks, same file conflicts, cross-story dependencies that break independence
+- Avoid: vague tasks, same file conflicts, cross-story dependencies that break independence, and mechanical test/implementation/evidence fragmentation

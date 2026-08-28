@@ -1,0 +1,276 @@
+{
+  "campaign": "/home/tianxing/NDN/ndn-service-framework/results/spec142-svs-ndnsf-runtime-profile/campaign-20260724T012559Z",
+  "cells": [
+    {
+      "cellId": "01-face-inline-rsa-400",
+      "loadErrors": [],
+      "mode": "face-inline-rsa",
+      "outcome": "COMPLETE",
+      "peers": [
+        {
+          "attempted": 24000,
+          "attemptedPps": 400.0,
+          "delivered": 24000,
+          "deliveredPps": 400.0,
+          "deliveryRatio": 1.0,
+          "latency": {
+            "meanNs": 362664692,
+            "p50Ns": 109076348,
+            "p95Ns": 2042327814,
+            "p99Ns": 2666399794
+          },
+          "mappingFetch": {
+            "dataAtDrainEnd": 18,
+            "dispatchedAtDrainEnd": 18,
+            "nacksDuringMeasure": 0,
+            "retriesDuringMeasure": 0,
+            "timeoutsDuringMeasure": 0
+          },
+          "outcome": "COMPLETE",
+          "peer": "peer-a",
+          "piggyback": {
+            "delivered": 27772,
+            "eligible": 28000,
+            "fallback": 228,
+            "ineligible": 0,
+            "received": 167469,
+            "sent": 83997
+          },
+          "publicationFetch": {
+            "dataAtDrainEnd": 226,
+            "dispatchedAtDrainEnd": 245,
+            "nacksDuringMeasure": 0,
+            "retriesDuringMeasure": 17,
+            "timeoutsDuringMeasure": 19
+          },
+          "resources": {
+            "faceDispatchPendingAtMeasureEnd": 1,
+            "maxRssKiB": 636296,
+            "workerMaxPending": 0
+          },
+          "rsa": {
+            "dataInvalid": 0,
+            "dataSignCalls": 84068,
+            "dataValid": 56297,
+            "syncEnvelopeSignatureType": 1
+          },
+          "sampleCount": 24000,
+          "samplePath": "/home/tianxing/NDN/ndn-service-framework/results/spec142-svs-ndnsf-runtime-profile/campaign-20260724T012559Z/01-face-inline-rsa-400/peer-a-delivery-latency.csv",
+          "sampleSha256": "76c6ef63709e1c7ab3952bd69aef4b2d218dd9abe826f7f7c9ad7401cc8f5611",
+          "signedPublicationWireBytesMax": 639,
+          "signedPublicationWireBytesMean": 638.9908928571429,
+          "summaryPath": "/home/tianxing/NDN/ndn-service-framework/results/spec142-svs-ndnsf-runtime-profile/campaign-20260724T012559Z/01-face-inline-rsa-400/peer-a-summary.json",
+          "summarySha256": "e39986d0ae016bfc21498c100c30a6984d60be84bd2f9f2a03ec940647a9eb01",
+          "survivorDistribution": false,
+          "validity": "PROFILE_INVALID"
+        },
+        {
+          "attempted": 24000,
+          "attemptedPps": 400.0,
+          "delivered": 23698,
+          "deliveredPps": 394.96666666666664,
+          "deliveryRatio": 0.9874166666666667,
+          "latency": {
+            "meanNs": 399789896,
+            "p50Ns": 93741750,
+            "p95Ns": 2279096009,
+            "p99Ns": 3294541907
+          },
+          "mappingFetch": {
+            "dataAtDrainEnd": 40,
+            "dispatchedAtDrainEnd": 67,
+            "nacksDuringMeasure": 0,
+            "retriesDuringMeasure": 0,
+            "timeoutsDuringMeasure": 20
+          },
+          "outcome": "COMPLETE",
+          "peer": "peer-b",
+          "piggyback": {
+            "delivered": 27313,
+            "eligible": 28000,
+            "fallback": 385,
+            "ineligible": 0,
+            "received": 165969,
+            "sent": 83997
+          },
+          "publicationFetch": {
+            "dataAtDrainEnd": 374,
+            "dispatchedAtDrainEnd": 423,
+            "nacksDuringMeasure": 0,
+            "retriesDuringMeasure": 38,
+            "timeoutsDuringMeasure": 49
+          },
+          "resources": {
+            "faceDispatchPendingAtMeasureEnd": 0,
+            "maxRssKiB": 633308,
+            "workerMaxPending": 0
+          },
+          "rsa": {
+            "dataInvalid": 0,
+            "dataSignCalls": 84019,
+            "dataValid": 56115,
+            "syncEnvelopeSignatureType": 1
+          },
+          "sampleCount": 23698,
+          "samplePath": "/home/tianxing/NDN/ndn-service-framework/results/spec142-svs-ndnsf-runtime-profile/campaign-20260724T012559Z/01-face-inline-rsa-400/peer-b-delivery-latency.csv",
+          "sampleSha256": "e8a7b5d5e88deccfe3dcf04caf15be92e749aba29fbd6a6e06109f32672db315",
+          "signedPublicationWireBytesMax": 639,
+          "signedPublicationWireBytesMean": 638.9908928571429,
+          "summaryPath": "/home/tianxing/NDN/ndn-service-framework/results/spec142-svs-ndnsf-runtime-profile/campaign-20260724T012559Z/01-face-inline-rsa-400/peer-b-summary.json",
+          "summarySha256": "da97dc1112f3b9d2099f8ecb1cb64ff740d264c13f5d5c77d0e2a9737d27282e",
+          "survivorDistribution": true,
+          "validity": "PROFILE_INVALID"
+        }
+      ],
+      "profileErrors": [
+        "PROFILE_INVALID:peer-a:publicationFetchRetriesDuringMeasure=17 expected=0",
+        "PROFILE_INVALID:peer-a:publicationFetchTimeoutsDuringMeasure=19 expected=0",
+        "PROFILE_INVALID:peer-b:publicationFetchRetriesDuringMeasure=38 expected=0",
+        "PROFILE_INVALID:peer-b:publicationFetchTimeoutsDuringMeasure=49 expected=0",
+        "PROFILE_INVALID:peer-b:mappingFetchTimeoutsDuringMeasure=20 expected=0"
+      ],
+      "ratePerPeer": 400,
+      "terminalPath": "/home/tianxing/NDN/ndn-service-framework/results/spec142-svs-ndnsf-runtime-profile/campaign-20260724T012559Z/01-face-inline-rsa-400/terminal.json",
+      "terminalSha256": "cb184f4605f461574a371c5e90c2b4b748e950c9cd0a7d8ae4f9ca2b21297011",
+      "validity": "PROFILE_INVALID"
+    },
+    {
+      "cellId": "02-worker-rsa-400",
+      "loadErrors": [],
+      "mode": "worker-rsa",
+      "outcome": "COMPLETE",
+      "peers": [
+        {
+          "attempted": 24000,
+          "attemptedPps": 400.0,
+          "delivered": 24000,
+          "deliveredPps": 400.0,
+          "deliveryRatio": 1.0,
+          "latency": {
+            "meanNs": 145699356,
+            "p50Ns": 20155952,
+            "p95Ns": 623534084,
+            "p99Ns": 1633623266
+          },
+          "mappingFetch": {
+            "dataAtDrainEnd": 0,
+            "dispatchedAtDrainEnd": 0,
+            "nacksDuringMeasure": 0,
+            "retriesDuringMeasure": 0,
+            "timeoutsDuringMeasure": 0
+          },
+          "outcome": "COMPLETE",
+          "peer": "peer-a",
+          "piggyback": {
+            "delivered": 27825,
+            "eligible": 28000,
+            "fallback": 175,
+            "ineligible": 0,
+            "received": 167949,
+            "sent": 83976
+          },
+          "publicationFetch": {
+            "dataAtDrainEnd": 171,
+            "dispatchedAtDrainEnd": 231,
+            "nacksDuringMeasure": 0,
+            "retriesDuringMeasure": 56,
+            "timeoutsDuringMeasure": 60
+          },
+          "resources": {
+            "faceDispatchPendingAtMeasureEnd": 0,
+            "maxRssKiB": 629868,
+            "workerMaxPending": 17
+          },
+          "rsa": {
+            "dataInvalid": 0,
+            "dataSignCalls": 84001,
+            "dataValid": 56344,
+            "syncEnvelopeSignatureType": 1
+          },
+          "sampleCount": 24000,
+          "samplePath": "/home/tianxing/NDN/ndn-service-framework/results/spec142-svs-ndnsf-runtime-profile/campaign-20260724T012559Z/02-worker-rsa-400/peer-a-delivery-latency.csv",
+          "sampleSha256": "561f2686653371cdcee5d4a22cad9ed762748c2483d84caa3187bad0ef6986eb",
+          "signedPublicationWireBytesMax": 639,
+          "signedPublicationWireBytesMean": 638.9908928571429,
+          "summaryPath": "/home/tianxing/NDN/ndn-service-framework/results/spec142-svs-ndnsf-runtime-profile/campaign-20260724T012559Z/02-worker-rsa-400/peer-a-summary.json",
+          "summarySha256": "abba75793fd03a79308cfba821fbef92225dd0afe754812fe4d4f8ddca80fdd8",
+          "survivorDistribution": false,
+          "validity": "PROFILE_INVALID"
+        },
+        {
+          "attempted": 24000,
+          "attemptedPps": 400.0,
+          "delivered": 24000,
+          "deliveredPps": 400.0,
+          "deliveryRatio": 1.0,
+          "latency": {
+            "meanNs": 121577106,
+            "p50Ns": 20298163,
+            "p95Ns": 582707138,
+            "p99Ns": 1509893146
+          },
+          "mappingFetch": {
+            "dataAtDrainEnd": 0,
+            "dispatchedAtDrainEnd": 0,
+            "nacksDuringMeasure": 0,
+            "retriesDuringMeasure": 0,
+            "timeoutsDuringMeasure": 0
+          },
+          "outcome": "COMPLETE",
+          "peer": "peer-b",
+          "piggyback": {
+            "delivered": 27796,
+            "eligible": 28000,
+            "fallback": 204,
+            "ineligible": 0,
+            "received": 167949,
+            "sent": 83973
+          },
+          "publicationFetch": {
+            "dataAtDrainEnd": 204,
+            "dispatchedAtDrainEnd": 251,
+            "nacksDuringMeasure": 0,
+            "retriesDuringMeasure": 47,
+            "timeoutsDuringMeasure": 47
+          },
+          "resources": {
+            "faceDispatchPendingAtMeasureEnd": 0,
+            "maxRssKiB": 630176,
+            "workerMaxPending": 29
+          },
+          "rsa": {
+            "dataInvalid": 0,
+            "dataSignCalls": 84001,
+            "dataValid": 56410,
+            "syncEnvelopeSignatureType": 1
+          },
+          "sampleCount": 24000,
+          "samplePath": "/home/tianxing/NDN/ndn-service-framework/results/spec142-svs-ndnsf-runtime-profile/campaign-20260724T012559Z/02-worker-rsa-400/peer-b-delivery-latency.csv",
+          "sampleSha256": "48ae0924f300a83e6384d1bfbde8b308968ef29967f5e90b297fe21364f215a9",
+          "signedPublicationWireBytesMax": 639,
+          "signedPublicationWireBytesMean": 638.9908928571429,
+          "summaryPath": "/home/tianxing/NDN/ndn-service-framework/results/spec142-svs-ndnsf-runtime-profile/campaign-20260724T012559Z/02-worker-rsa-400/peer-b-summary.json",
+          "summarySha256": "022375bc285896a4a534baa6ad6d5d380bcf6e844c89b0700fc34678a6ace1b6",
+          "survivorDistribution": false,
+          "validity": "PROFILE_INVALID"
+        }
+      ],
+      "profileErrors": [
+        "PROFILE_INVALID:peer-a:publicationFetchRetriesDuringMeasure=56 expected=0",
+        "PROFILE_INVALID:peer-a:publicationFetchTimeoutsDuringMeasure=60 expected=0",
+        "PROFILE_INVALID:peer-b:publicationFetchRetriesDuringMeasure=47 expected=0",
+        "PROFILE_INVALID:peer-b:publicationFetchTimeoutsDuringMeasure=47 expected=0"
+      ],
+      "ratePerPeer": 400,
+      "terminalPath": "/home/tianxing/NDN/ndn-service-framework/results/spec142-svs-ndnsf-runtime-profile/campaign-20260724T012559Z/02-worker-rsa-400/terminal.json",
+      "terminalSha256": "0d0dec2d316a373a2ab311cb77ffd931fda6d2d2a6de57f84d48a859c7234fbd",
+      "validity": "PROFILE_INVALID"
+    }
+  ],
+  "formalComparisonAuthorized": false,
+  "manifestPath": "/home/tianxing/NDN/ndn-service-framework/results/spec142-svs-ndnsf-runtime-profile/campaign-20260724T012559Z/runtime-profile-manifest.json",
+  "manifestSha256": "e0d80d5725d809089397c4916a4155ca4d928d408da580c3aef6a7cd60c51895",
+  "qualificationStatus": "FAIL",
+  "schema": "spec142.analysis.v1",
+  "validPairs": []
+}

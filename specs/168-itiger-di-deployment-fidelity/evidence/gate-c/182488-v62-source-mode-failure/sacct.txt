@@ -1,0 +1,3 @@
+182488|spec168-v62-gate-c|FAILED|00:01:34|1:0|itiger07|spec168:spec168-v62-gate-c-001
+182488.batch|batch|FAILED|00:01:34|1:0|itiger07|
+182488.extern|extern|COMPLETED|00:01:34|0:0|itiger07|

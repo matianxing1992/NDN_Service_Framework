@@ -1,0 +1,34 @@
+{
+  "schema": "ndnsf-di-spec111-core-import-gate-v1",
+  "candidate": "working-tree-after-us1-consistency-gate",
+  "command": "PYTHONPATH=$PWD/NDNSF-DistributedInference:$PWD/pythonWrapper python3 <isolated core import inventory>",
+  "loadedModules": [
+    "ndnsf_distributed_inference",
+    "ndnsf_distributed_inference.compatibility",
+    "ndnsf_distributed_inference.compatibility.exports",
+    "ndnsf_distributed_inference.core",
+    "ndnsf_distributed_inference.core.contracts",
+    "ndnsf_distributed_inference.core.eligibility",
+    "ndnsf_distributed_inference.core.execution",
+    "ndnsf_distributed_inference.core.native",
+    "ndnsf_distributed_inference.core.recovery",
+    "ndnsf_distributed_inference.core.runtime_contracts",
+    "ndnsf_distributed_inference.core.state"
+  ],
+  "forbiddenPrefixes": [
+    "ndnsf_distributed_inference.app",
+    "ndnsf_distributed_inference.policy",
+    "ndnsf_distributed_inference.planner",
+    "ndnsf_distributed_inference.adapters",
+    "ndnsf_distributed_inference.ops",
+    "onnx",
+    "onnxruntime",
+    "transformers",
+    "llama_cpp",
+    "tkinter"
+  ],
+  "forbiddenModules": [],
+  "forbiddenCount": 0,
+  "publicSymbolCount": 58,
+  "verdict": "PASS"
+}

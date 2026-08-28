@@ -235,3 +235,77 @@ The native filter is additionally exercised by the root-run MiniNDN fake
 three-Provider diagnostic recorded in Gate B. This is still Gate A evidence
 only; protected `NDNSF_DATA_V1`, the complete T025 matrix, and the security
 corpus remain open.
+
+## 2026-08-16 post-mapping-fix local rerun
+
+After the provider-role assignment envelope fix, the current build passed the
+full local regression without diagnostic environment variables:
+
+```text
+./build/unit-tests --report_level=short --log_level=message
+480 test cases / 480 passed
+55,502 assertions / 55,502 passed
+
+./build/integration-tests --report_level=short --log_level=message
+13 test cases / 13 passed
+145 assertions / 145 passed
+
+python3 -m pytest -q tests/python/test_spec170_*.py
+58 passed, 2 skipped, 1 warning in 5.59s
+```
+
+The two Python skips remain explicit real-environment/model gates. The warning
+is the existing PyTorch `torch.load(weights_only=False)` future warning. The
+integration run includes the SVS/NDNSF packet flow, preconfigured fixture
+bootstrap/reset, fault forwarding, and three-Provider custom-selection cases.
+The clean Gate-B fixed12 run is recorded separately in
+[`gate-b-minindn.md`](gate-b-minindn.md); its final status is `SUCCESS` with
+four dependency fetches and four dependency publications.
+
+Durable logs and hashes for this rerun are retained in
+`results/spec170-gate-a-20260816/`:
+
+```text
+dccdc0b4da3f2c496f93e75fcf5e0f3dfebc690ff79b880c43a7abf8de0b97c9  unit.log
+50f955c5166f42ec749e12ff9c9fed8272872580a6d3008e468d6b37ad754395  integration.log
+81e6b232a192721c557054ce5e6d323031eb8c86dd877fc5a11e4c2b2050a43a  python.log
+```
+
+This improves the local Gate-A evidence but does not change the verdict to
+PASS: the remaining T025 schema/security/fault-corpus rows, exact-SIF parity,
+and Tiger deployment gates still require closure.
+
+## 2026-08-18 full compiled integration target
+
+The current compiled target was rerun after the D2h workload/API fixes:
+
+```text
+./build/integration-tests --log_level=test_suite
+29 test cases; *** No errors detected
+log sha256: bbbaca0b26f187161cd05ccf5caa3814170c31ef3295a2ca75284f5338bb8306
+integration executable sha256: d362d4eb185b9ec65b4d8488d5258b283f59662783eeaaa52c0e6796ac464cff
+```
+
+The run covers the production post-Selection path, SVS/`NDNSF_DATA_V1`,
+native D2a/D2b/D2h positive paths, four-Provider and same-Provider role
+collaboration, preconfigured bootstrap/request separation, and the missing
+Backbone cancellation negative. Details are in
+[`local-integration-20260818.md`](local-integration-20260818.md).
+
+This is stronger local integration evidence, but it does not close the full
+T025 security/mutation corpus or convert the Tiger results into frozen T029
+evidence.
+
+The same checkpoint's Python lane was rerun with the required repository
+import roots:
+
+```text
+PYTHONPATH=pythonWrapper:NDNSF-DistributedRepo/pythonWrapper:NDNSF-DistributedInference \
+  python3 -m pytest -q tests/python/test_spec170_*.py
+98 passed, 9 skipped, 1 warning in 9.85s
+log sha256: bf9c4907abe74f206e7554b49c5b075085a8bc894f30f41c54b7d38164b1f7d2
+```
+
+The skipped tests remain the explicit real-environment/model gates. This
+closes the currently runnable Python contract lane, but does not close the
+remaining real-model, security-corpus, freeze, or Tiger negative rows.

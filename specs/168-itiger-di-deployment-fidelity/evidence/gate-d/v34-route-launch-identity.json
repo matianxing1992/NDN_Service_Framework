@@ -1,0 +1,24 @@
+{
+  "schema": "ndnsf-di.spec168-route-launch-identity.v1",
+  "topology": "three-distinct-nodes-full-mesh",
+  "faceScheme": "tcp4",
+  "requestMode": "REQUEST_FIRST",
+  "executionMode": "DATA_DRIVEN_V2",
+  "fixedProviderSettleMs": 0,
+  "files": {
+    "spec168-three-node-rank.sh": "sha256:245ff76c2b74e2155e009341342a33cff5017690c669a14ccbf3a5e7fdd87e20",
+    "spec168-three-node-rank-inner.sh": "sha256:79c4ffd5c4af41de8badfaa2e34b5746a7946ae2fddef686a831d418ac4fb519",
+    "compat-spec162-generation-rank-inner.sh": "sha256:9a02974ff1d26c5d86f321fb7147e7defccc07eb4e7a774d166553a9624b391e",
+    "build-generation-policy.py": "sha256:5e9f496effc65163127b8235f706edfda90adec91521424f8d467031ae5d8286",
+    "build-automatic-planning-manifest.py": "sha256:cf8ddd89442c5ffcf29ca34efe33796be87d8084dbb966761220cdc0e7f5867d",
+    "run-repo-node.py": "sha256:803391421ab33d707345f714ec442306e889886ef0f3d2735b23c97892291971",
+    "nfd.conf.in": "sha256:7cad4bd8729c424688aaa9147c5db2bef3cf391cab4dbcdc5badc0adb2c841d0"
+  },
+  "requiredEvidence": [
+    "three node hostnames",
+    "three distinct RTX 5000 GPU UUIDs",
+    "per-node face and route snapshots",
+    "per-node provider logs",
+    "one user log and one generation row"
+  ]
+}

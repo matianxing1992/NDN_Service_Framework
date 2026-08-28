@@ -1,0 +1,10 @@
+{
+  "schema": "ndnsf-di-spec111-us2-policy-gate-v1",
+  "date": "2026-07-14",
+  "verdict": "PASS",
+  "tests": {"count": 86, "failures": 0, "errors": 0, "skipped": 0, "durationSeconds": 1.612},
+  "policyPorts": ["model_variant", "partition", "provider_assignment", "scheduling", "admission", "execution_tuning", "cache", "deployment", "recovery", "execution_target"],
+  "accepted": ["bounded exact model candidate", "fixed and cost provider assignments", "request-DAG and provider-local scheduling", "declared tuning families", "epoch-bound cache proposals", "selected adapter creation", "idempotent observer delivery", "partial suite with named defaults"],
+  "rejected": ["candidate budget overflow", "stale estimate or policy epoch", "exact-semantic replacement", "cross-scope admission or scheduling", "adapter-incompatible batch", "torn execution intent", "unsafe scale, drain, or unload", "invalid output or checkpoint epoch", "undeclared tuning or assignment bypass", "sensitive prompt, tensor, secret, or cross-tenant projection", "observer mutation of the current request"],
+  "decisionPointInventory": {"closedEntries": 12, "nativeOnly": 0}
+}

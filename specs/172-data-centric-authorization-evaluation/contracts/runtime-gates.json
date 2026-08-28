@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-08-11",
+  "gates": {
+    "response_acceptance": {
+      "source_path": "ndn-service-framework/ServiceUser.cpp",
+      "source_symbol": "ServiceUser response validation and terminal callback path",
+      "boost_test_selector": "GenericDynamicApi/CryptoAndAuthorization/ProviderRequiresPermissionAndUserToken"
+    },
+    "user_authorization": {
+      "source_path": "ndn-service-framework/ServiceUser.cpp",
+      "source_symbol": "ServiceUser request publication permission gate",
+      "boost_test_selector": "GenericDynamicApi/CryptoAndAuthorization/RequestServiceRequiresUserPermissionBeforePublication"
+    },
+    "provider_authorization": {
+      "source_path": "ndn-service-framework/ServiceProvider.cpp",
+      "source_symbol": "ServiceProvider provider service-permission check",
+      "boost_test_selector": "GenericDynamicApi/CryptoAndAuthorization/ProviderRequiresPermissionAndUserToken"
+    },
+    "policy_epoch": {
+      "source_path": "ndn-service-framework/ServiceProvider.cpp",
+      "source_symbol": "ServiceProvider stale policy-epoch rejection",
+      "boost_test_selector": "GenericDynamicApi/CryptoAndAuthorization/StalePolicyEpochRejectsProviderRequestBeforeHandlers"
+    },
+    "signature_trust": {
+      "source_path": "ndn-service-framework/common.hpp",
+      "source_symbol": "MessageValidator::validate",
+      "boost_test_selector": "EncryptedPermissionResponse/PermissionResponseValidationRejectsUnsupportedSignatureAndControllerMismatch"
+    },
+    "user_token": {
+      "source_path": "ndn-service-framework/ServiceUser.cpp",
+      "source_symbol": "ServiceUser UserToken match",
+      "boost_test_selector": "GenericDynamicApi/TokensAndReplay/TokenHandshakeNegativeRegression"
+    },
+    "provider_token": {
+      "source_path": "ndn-service-framework/ServiceProvider.cpp",
+      "source_symbol": "ServiceProvider ProviderToken match",
+      "boost_test_selector": "GenericDynamicApi/TokensAndReplay/TokenHandshakeNegativeRegression"
+    },
+    "user_token_replay": {
+      "source_path": "ndn-service-framework/ServiceUser.cpp",
+      "source_symbol": "ServiceUser duplicate transaction suppression",
+      "boost_test_selector": "GenericDynamicApi/TokensAndReplay/ReplayedRuntimeMessagesOnlyTakeEffectOnce"
+    },
+    "provider_token_replay": {
+      "source_path": "ndn-service-framework/ServiceProvider.cpp",
+      "source_symbol": "ServiceProvider consumed ProviderToken rejection",
+      "boost_test_selector": "GenericDynamicApi/TokensAndReplay/ProviderTokenAdversarialRejectionAndRestartBehavior"
+    }
+  },
+  "baseline_source_hashes": {
+    "Experiments/analyze_authorization_evaluation.py": "757190903285ef6067079d73e7230df65829b8c62e2a0f858e59041167533783",
+    "Experiments/run_authorization_evaluation.py": "951d69e36cbb99071082ff827ae400c93ce6d3be633de23b980e227f42021a7c",
+    "Experiments/Topology/AI_Lab.conf": "c849907bbfaa5230c1729e1a40e8b48657f083d545fa9f15a519143c93956601",
+    "examples/App_Provider.cpp": "50b930a82a9069ca98bfffa9bc4c47af375991ccfb95fc7543930c78a0de1325",
+    "examples/App_ServiceController.cpp": "6e7fe00e79dd5fafac1b1a2c2c423e91b8f4ce2370b9d3fd5ac51243f1a73826",
+    "examples/App_User.cpp": "a109bd608bc2aaaf5a9ff05ad0b06db850538fce2d0be8c96164f5961d702819",
+    "examples/hello.policies": "bc6bd5d113b7c0a7416c6d989a47f8eb79cc6fbd153782b04572aeffa3241418",
+    "examples/trust-schema.conf": "ed0fcc780756ba7ed4171530c74df2a74fc60eb740b2c5fed4e402ee5d61614c",
+    "examples/run_hello_ack_payload_regression.sh": "b9d8ddd9fff7473241fd03e8f2bb0f73d5f6c8bc057d8df5aea1ff0033ad3b10",
+    "examples/run_hello_auth_regression.sh": "73c3763f9c4d1c09d735bcc6f37b0f354a427940e023cca16f0d3d94a6bf98e7",
+    "examples/run_nac_abe_attribute_routing_regression.sh": "315bade945eb7c4163e9556f7e828d771e9180c7b81627908490ca5e5db2c7a4",
+    "examples/run_security_regressions.sh": "13f3cec3a3af06ab4f51563564a9d33b2657aa1214eaf992714935a5a29b0b10",
+    "examples/run_selective_ack_custom_selection_regression.sh": "7612b585188188fcf01d82e5accced61104c2ff12ea4b9143a278c5b8c431f3d",
+    "examples/run_token_certificate_bootstrap_regression.sh": "5942546ee7a5172982d36a450b4a686b25878c215020fd7d961b2255dfb97117",
+    "examples/run_token_handshake_negative_regression.sh": "67885df0335c8d25575e140ff8e190cdfc87c69039ffab3f8cefa59cd5c33c12",
+    "ndn-service-framework/ServiceController.cpp": "8582ec83bd1e9ef27b25a49fb5b921c74ff0b8245daaf7b8ec3d77aa0e621da2",
+    "ndn-service-framework/ServiceProvider.cpp": "9aa510f2bed476e0ea3db3b63f429104fb033c89d0532c322b8d815f7f011c28",
+    "ndn-service-framework/ServiceProvider.hpp": "daa05d60f29d537911d98ca15bb547c7e0cb555a2519d9c3eb8ebdc8a5cd42f1",
+    "ndn-service-framework/ServiceUser.cpp": "186a69421f5da2de925ea8acf8ebb8c8f429f758b38e7283552aff8a4acb0054",
+    "ndn-service-framework/ServiceUser.hpp": "8b653237d3295c27222a100ee2cd3b0a8ff7f80909f2ee99845c9351d13ee0e4",
+    "ndn-service-framework/common.hpp": "59166a423372fb52d30f5f331bf4b5d392cac726699b6246bbfc93885678790b",
+    "ndn-service-framework/utils.cpp": "a35db9ecd914fb499b4f075d06052a97d861b43d72057f74f21887f9251390ee",
+    "tests/unit-tests/encrypted-permission-response.t.cpp": "ced1e828f26b157639aa2adeb0c4e7259ddc1e4527bf99e3e9c1a111a7eef1e3",
+    "tests/unit-tests/generic-dynamic-api-crypto-auth.t.cpp": "fcab48db856c5112a03a5cfabf4878eb70f2a88b2254faa9b7c8fe0968602530",
+    "tests/unit-tests/generic-dynamic-api-tokens-replay.t.cpp": "5ddb9578aa31e25a1434cc758f99b91d390885b423a50c0d74f7e86e4ca935db",
+    "tests/unit-tests/service-authorization-table.t.cpp": "38a43fc29a3ea85a2038bc87569ca4a2ec9f340a1703200acde2688449016f72",
+    "tests/python/test_authorization_evaluation.py": "746bd0112ca77812737c8b908a629388293229cac6fbb5ec4b41b7fadf40367d",
+    "specs/172-data-centric-authorization-evaluation/contracts/authorization-cases.yaml": "3fc02095449328bd6cb4ce2eea06d4be2447b3592ad62e9e2462fd840b397618",
+    "specs/172-data-centric-authorization-evaluation/contracts/experiment-manifest.schema.json": "9f37d1ea970bf03d38364d54e00caae6d0d737dd6ff1b4873df92ab67a28a963"
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "artifactHashes": {
+    "framework": "sha256:f927dc8766719be5ed271693439a380156b6fa8581194ec0c0e0b2ec3ae9d6a4",
+    "provider": "sha256:057a1658dbe4106f0e4197a413d157ded7fb1e6462cb2f5666333bdb7e018437",
+    "pythonExtension": "sha256:1dffeb574c56f13a0bfa2a9085869cd394c2c90225c3fec270f7f5931045268d"
+  },
+  "artifactRpath": {
+    "method": "patchelf-on-sealed-input-copy",
+    "providerFramework": "/opt/ndnsf-di/current/lib:/opt/onnxruntime/lib",
+    "pythonExtension": "/opt/ndnsf-di/current/lib"
+  },
+  "buildInputs": {
+    "framework": "build/libndn-service-framework.so",
+    "integrationTests": "build/integration-tests",
+    "provider": "build/examples/di-native-provider",
+    "pythonExtension": "pythonWrapper/ndnsf/_ndnsf.cpython-310-x86_64-linux-gnu.so",
+    "pythonGate": "tests/python/test_spec170_real_minindn_gate.py"
+  },
+  "localGates": {
+    "cppIntegration": "24 cases and 323 assertions passed",
+    "nativeTracer": "D0 four-provider and D1 single-provider real ORT CPU paths passed",
+    "python": "59 passed, 5 skipped"
+  },
+  "release": "spec170-runtime-31d9f547-post-selection-v8-20260817",
+  "schemaVersion": "spec170-local-source-seal-v1",
+  "sourceDiff": {
+    "path": "/home/tianxing/NDN/ndn-service-framework/specs/170-reusable-layer-artifacts/evidence/spec170-local-candidate-31d9f547-r10-source-diff.patch",
+    "sha256": "sha256:6f60d33af86055142bc63518f158520ad175351adc5bdab3451244065e39733b"
+  },
+  "sourceFiles": {
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.cpp": "sha256:46d25eb2521543401b2d7b25f1d0914bdea65d48b76670a0a9701b7588c1b090",
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp": "sha256:d8e8ea033d3c3425dbfc97c95a153eaad4a87638ef7a36a22ea85f89e4d0efea",
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderReadiness.cpp": "sha256:78d9e2df37c4e9e1d13aba490e5adda9de987dfe1a2f6960c5b229a0214fa848",
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderReadiness.hpp": "sha256:cbf4e95ce842ec42e73fbf4407c40b6b787d7b83f7e712108758bd90be031fa5",
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.cpp": "sha256:3767d82fb4c2320cc302ce109cf70b92ac126a1dd8529e561ba950553721ac32",
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.hpp": "sha256:71230b68932ba940f8632bfd9ad75008fea0613d68321de87172598343938e52",
+    "examples/DI_NativeProviderExecutable.cpp": "sha256:67ce60358be4e04cec28e0aeb4d87a60c67281a464e1e97d3893d08945a3c6d1",
+    "ndn-service-framework/ServiceProvider.cpp": "sha256:adcec06f607a93ac4c0be6aa7e434d492ee364dab1cd83417b1d261e90fb1ea6",
+    "ndn-service-framework/ServiceProvider.hpp": "sha256:e71bedb84cf8b10e156d713994fca7c1d10f908fb97b4a6da0ebc8ee81ae541d",
+    "ndn-service-framework/ServiceUser.cpp": "sha256:d7b1ecc9559ee4677f72e593ac0527c279b746a5345d33bbaf458025227023cf",
+    "ndn-service-framework/ServiceUser.hpp": "sha256:a15739c22a277fdf378100e6ca275dc0abe24a4316c0ab4096f48a5ff1c4498f",
+    "pythonWrapper/src/ndnsf/_ndnsf.cpp": "sha256:295ae247a1795ec390f5c8594ab3127dc36bb038ea019ee1ec2e1bb866ad1f92",
+    "tests/integration-tests/ndnsf-di-core-flow.t.cpp": "sha256:833efc946d9d2cd0632f1cc819ff06984e60441b84b0c8ed349455a36e667499",
+    "tests/integration-tests/ndnsf-integration-fixture.cpp": "sha256:5a5ed3028d312712cc8972e7a92d665d769409db31a5d8fb3b395f891aff3f80",
+    "tests/integration-tests/ndnsf-integration-fixture.hpp": "sha256:99ae89d0c7272f3d8af92ebde275ee756841ae35f0c1605cee2d508ac549ccf4",
+    "tests/python/test_spec170_real_minindn_gate.py": "sha256:0514624e4fbb2ffbd6cc3b7a8f16a45c8264b1452b4b9872791ec4a796382b00"
+  },
+  "sourceRevision": "31d9f547a32f941ab948f005f583c429d23bacbb",
+  "status": "PASS",
+  "tigerAction": "verify-hash-and-execute-only",
+  "worktreeStatus": {
+    "path": "/home/tianxing/NDN/ndn-service-framework/specs/170-reusable-layer-artifacts/evidence/spec170-local-candidate-31d9f547-r10-worktree-status.txt",
+    "sha256": "sha256:5565aea222b9123cdeca8f3442d8a45a9ce81a91730f15ccff427c869a3f0022"
+  }
+}
