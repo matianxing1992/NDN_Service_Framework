@@ -17,12 +17,15 @@ the earlier promotion sequence without invalidating its diagnostic results:
 2. the newest passing G1/G2 manifests were generated after the source seal used
    by the 42/42 G3 matrix. G1/G2 and G3 therefore describe different subjects.
 
-Those gate files are restored to the versioned subject and their focused tests
-pass 26/26. T020 has now reclosed on revision `fe0b09fc` with clean G0, native
-unit 600/600, Python 219/219, and G2 38/38 bound to one source seal. T022 remains
-open. The old G3 matrix remains strong historical regression evidence, but it
-cannot authorize a SIF. The required order is now: rerun the unchanged 42-case
-G3 matrix against the T020 seal, and only then enter T023/G4.
+Those gate files are restored to the versioned subject. A later G3 attempt then
+exposed an independent repository-startup race: the publisher could issue its
+first Store request before the Repo Provider installed the Store handler and
+permission. Revision `f5f2cab9` adds a one-shot, token-checked publication
+barrier while preserving concurrent DKEY bootstrap. The focused M07 process and
+195 Spec175 Python tests pass. T020 has reclosed on that revision with clean G0,
+native unit PASS, Python 222/222, and G2 38/38 bound to one source seal. T022
+remains open while the fresh 42-case G3 matrix runs. The old G3 matrix remains
+strong historical regression evidence but cannot authorize a SIF.
 
 ## Executive finding
 

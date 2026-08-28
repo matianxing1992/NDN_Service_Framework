@@ -4,18 +4,13 @@
 
 **Created**: 2026-08-21
 
-**Status**: Implementation phase; 22 of 34 tasks currently satisfy their named
-acceptance gates. Formal qualification is paused. The next work is to complete
-the remaining implementation tasks (T014--T015 and T030--T031), with
-focused development tests for each behavior and with the request-local versus
-conversation-scoped cache boundary kept explicit. Only after that implementation
-queue closes may T020/T022/T023 and T025--T028/T034 run as one qualification
-sequence. The previous G0--G4 manifests, MiniNDN matrices,
-M09 signal exit, and SIF candidates are historical diagnostic evidence; they
-MUST NOT drive more campaign reruns while the implementation subject is still
-changing. After all implementation tasks close, one current-source G0--G3
-qualification sequence may begin, followed by one final SIF and the serial
-Tiger gates.
+**Status**: Local implementation and G0--G2 qualification complete; 27 of 34
+tasks satisfy their named gates. T022 is running the same-seal M01--M14 host/CPU
+MiniNDN matrix. T023, T025--T028, and T034 remain blocked behind that G3 result.
+The previous G0--G4 manifests, MiniNDN matrices, M09 signal exit, and SIF
+candidates remain historical diagnostic evidence and cannot qualify the current
+subject. After T022 passes 42/42 with no hidden process failure, freeze that
+subject, build one final SIF, and proceed through the serial G4--G7/Tiger gates.
 
 **Input**: Extend the verified NDNSF-DI design so a selected multi-Provider ONNX
 plan can produce a local-LLM-like ordered token stream and can continue an
@@ -105,23 +100,19 @@ compatible promoted entry. The checkpoint authorizes and identifies the
 continuation; it never carries or substitutes for the KV/recurrent/convolution
 state itself.
 
-### Current Evidence Boundary and Execution Priority (2026-08-26)
+### Current Evidence Boundary and Execution Priority (2026-08-27)
 
-The current objective is implementation completion, not qualification repair.
-Focused unit/integration checks are required while implementing each behavior,
-but repeated multi-process G0--G3 campaigns, MiniNDN matrix closure, SIF work,
-and Tiger work are deferred until the complete implementation subject is
-frozen. A failure recorded by an older subject remains useful diagnostic
-evidence, but it is not an active work item unless it still reproduces after
-the implementation freeze.
+The implementation queue is closed. The current committed source passed one
+coherent G0--G2 sequence; the only authorized next work is its same-seal G3
+matrix. A failure in that matrix is classified and reduced before any SIF is
+built. Historical failures remain diagnostic evidence but never substitute for
+the current result.
 
-- **Completed tasks**: T001--T013, T016--T019, T021, T024, T029, T032, and T033
-  satisfy their named acceptance gates (22 of 34). T014--T015, T020, T022--T023,
-  T025--T028, T030--T031, and T034 remain open in
-  dependency order; focused evidence for those tasks is not a formal
-  qualification pass. T021 closes the builder/preflight implementation, not a
-  promotable candidate. No further source change is allowed after the final SIF
-  candidate is frozen without returning to G0.
+- **Completed tasks**: T001--T021, T024, and T029--T033 satisfy their named
+  gates (27 of 34). T022--T023, T025--T028, and T034 remain open in dependency
+  order. T021 closes the builder/preflight implementation, not a promotable
+  candidate. No source change is allowed after the final SIF candidate is
+  frozen without returning to G0.
 - **Core streamed path**: production C++ Request/ACK/Selection/event/End/Response
   transport, Normal and Targeted entry points, exact-Interest recovery, bounded
   Provider/callback queues, final-role-only event-key projection, and the low-
@@ -161,9 +152,9 @@ the implementation freeze.
   cases; the broader Spec175/168/170 regression passes 349 cases with 10
   expected skips and remains regression evidence rather than a formal
   qualification gate;
-  the dedicated conversation regression passes 36 cases. These remain
-  implementation evidence: native network cross-request hits,
-  CUDA residency, and formal qualification remain open under T030/T031/T020.
+  the dedicated conversation regression passes 36 cases. T030/T031 now close
+  the implementation boundary; CUDA residency and post-G3 qualification remain
+  open under T022/T025.
 - **Provider receipt/control checkpoint (2026-08-26)**: the native Provider now
   emits a Provider-authored conversation receipt only after a finalized role
   state is staged, and retains that candidate as `COMMITTING` until the User
@@ -175,9 +166,9 @@ the implementation freeze.
   expiry cleanup, and the completion-before-attachment race. Real host/CPU
   MiniNDN checkpoints now cover M11--M14 with four independent Providers,
   including restart/fallback and Provider-side prefetch-cancellation controls.
-  They close neither the repeated source-sealed matrix nor the CUDA residency
-  and current-source G0--G3 gates required by T030/T031/T020; the M11--M14
-  harness implementation itself is closed by T033.
+  They close neither the current same-seal G3 matrix nor CUDA residency; the
+  M11--M14 implementation itself is closed by T030--T033 and its repeated host
+  qualification is owned by T022.
 - **Incremental generation**: the tiny ONNX fixture, exact decode-state identity,
   persistent CPU ORT sessions, one-plan loop, exact activation/feedback names,
   and one-/two-/four-role Python oracle pass. Native NDNSF-DI I01-I03/I15 now
@@ -222,9 +213,8 @@ the implementation freeze.
   This closes CPU cache-effectiveness semantics together with the completed
   mutation, concurrency, attempt/restart, cancellation/deadline,
   publication-failure, and capacity matrix. It makes no timing, CUDA-residency,
-  or Qwen3.6-27B claim. T014/T015 remain open for the automatic Python
-  model/task-first workload and process qualification, followed by a new
-  source-bound G2 seal; exact Qwen3.6 CUDA residency is owned by T025.
+  or Qwen3.6-27B claim. T014/T015 and the replacement source-bound G2 seal are
+  closed; exact Qwen3.6 CUDA residency remains owned by T025.
 - **Coordinator/runner boundary correction (2026-08-27)**: an authenticated
   generation lineage is owned by `NativeEpochCoordinator`, which invokes one
   unary Provider-role transition per inference epoch. `ProviderRoleWorker` no
@@ -234,23 +224,17 @@ the implementation freeze.
   compatible. The explicit `PREFILL`, `DECODE`, and bounded
   `CHECKPOINT_FINALIZE` transition kinds are validated before execution, so a
   finalization lineage cannot accidentally enter ordinary decode. Focused
-  native regressions and the full 600-case unit suite cover this boundary;
-  production Python automatic multi-role execution and real Qwen3.6/CUDA
-  qualification remain open under T014/T015/T020/T025.
-- **Gate boundary**: the G0/G1/G2 runners, source sealing, loader checks, and
-  complete unit/integration inventories are implemented. The last G0/G1/G2
-  manifests share one historical source-seal digest and G2 records the exact
-  integration-binary SHA-256, but they do not test the corrected automatic
-  Provider-state boundary and therefore no longer close T020. The full repository
-  Python run remains diagnostic because it contains historical Spec127--Spec173
-  frozen-source drift. Native tiny-ONNX cases I01-I13/I15 now pass together in
-  one focused 14-case process, including bounded reorder/loss repair, cancel,
-  tamper rejection, callback containment, backpressure, controlled opt-in I12
-  replacement, default-disabled I13, and the I15 role-map permutation. This is
-  not a replacement for the registered multi-process G2 manifest. G0--G2 must
-  be run once after T005--T019, T024, and T029--T033 close. The historical M09
-  signal exit is retained for regression coverage, but its old campaign is not
-  debugged independently before that freeze. G3--G7 remain unpassed.
+  native regressions and the full unit suite cover this boundary. Production
+  Python automatic multi-role execution is closed by T014/T015; real
+  Qwen3.6/CUDA qualification remains open under T025.
+- **Gate boundary**: revision `f5f2cab9` passed G0 with zero blockers, native
+  unit tests, the 222-pass Python gate, and all 38 registered G2 processes under
+  one source seal. This closes T020 for the corrected automatic Provider-state
+  and repository-startup subject. The full repository Python run remains
+  diagnostic because it contains historical Spec127--Spec173 frozen-source
+  drift. The historical M09 signal exit and old G3/SIF subjects remain explicit
+  regression evidence. G3--G7 remain unpassed until T022 and its successors
+  produce current manifests.
 - **Host MiniNDN checkpoint (2026-08-25)**: the selected current-source matrix
   contains 30 PASS processes across M01--M10 with the frozen four-Provider
   configuration. An additional M09 process reached the registered

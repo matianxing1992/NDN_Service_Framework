@@ -740,16 +740,15 @@ point, or a diagnostic SIF may be recorded as an implementation checkpoint, but
 it does not close the task unless the task's current-source repetition,
 manifest, and cleanup requirements pass. This is intentional: the previous
 20/28 display overstated progress while T005--T019 still had partial or stale
-evidence. The automatic Provider-state correction reopens T020; after the
-focused T005--T008 and T016--T019 closures, plus the completed T013, T024,
- T029, T032, and T033 contract/gate work, the current baseline is 22/34 accepted
-tasks. The
-earlier G0-G2 manifests remain historical until the
-extended state-wiring gates pass from one new source seal.
+evidence. The automatic Provider-state and repository-readiness corrections
+reopened T020 and invalidated their predecessor seals. The corrected committed
+subject has now passed one new source-bound G0--G2 sequence. The current
+baseline is therefore 27/34 accepted tasks: the implementation queue and T020
+are closed, while T022 and the post-G3 release gates remain open.
 
-After T005--T019, T024, and T029--T033 complete the Core/runtime/API,
-conversation, and pre-frozen harness/launcher implementation, T020 reseals the
-cheap G0/G1/G2 gates once. T022 then executes the host gate as strict packets: (A)
+After T005--T019, T024, and T029--T033 completed the Core/runtime/API,
+conversation, and pre-frozen harness/launcher implementation, T020 resealed the
+cheap G0/G1/G2 gates once. T022 now executes the host gate as strict packets: (A)
 localize any post-Selection exact-event fetch race without changing retry
 parameters, (B) obtain three clean M01 processes, (C) run M02--M14 three times
 each with one registered fault/continuation dimension, (D) seal the 42/42 manifest, and (E) classify
