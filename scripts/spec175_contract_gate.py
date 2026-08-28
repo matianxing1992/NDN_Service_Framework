@@ -544,12 +544,13 @@ def _is_in_scope_status(line: str) -> bool:
 def _is_source_subject_path(path: str) -> bool:
     """Return whether a path is an input to the sealed build subject.
 
-    Feature evidence is intentionally excluded from the source seal: G0
-    writes document digests for evidence, while later gate results may append
-    new evidence without changing the compiled source subject.
+    Feature documents are intentionally excluded from the build source seal:
+    G0 writes their individual digests into its own manifest, while task-state
+    and evidence updates must not invalidate already built native artifacts.
+    The candidate binds both the source seal and the G0 manifest.
     """
     excluded = (
-        f"specs/{FEATURE_BASENAME}/evidence/",
+        f"specs/{FEATURE_BASENAME}/",
         "packaging/ndnsf-di-container/docs/",
     )
     return _is_in_scope_status("?? " + path) and not path.startswith(excluded)
