@@ -112,6 +112,17 @@ def validate(path: Path) -> dict[str, object]:
             fail("SPEC175_MODEL_POSITION_INPUTS_REQUIRED", str(index))
         if not STATE_INPUTS.issubset(input_names) or not STATE_OUTPUTS.issubset(output_names):
             fail("SPEC175_MODEL_STATE_IO_NOT_IN_GRAPH", str(index))
+        contracts = metadata.get("tensorContracts")
+        if not isinstance(contracts, dict):
+            fail("SPEC175_MODEL_TENSOR_CONTRACTS_REQUIRED", str(index))
+        for family in ("attention_kv", "recurrent_state", "convolution_state"):
+            state_input = contracts.get(f"{family}_in")
+            state_output = contracts.get(f"{family}_out")
+            if (not isinstance(state_input, dict)
+                    or not isinstance(state_output, dict)
+                    or state_input.get("elementType")
+                    != state_output.get("elementType")):
+                fail("SPEC175_MODEL_STATE_DTYPE_MISMATCH", f"{index}:{family}")
     return {
         "status": "PASS",
         "schemaVersion": SCHEMA,
