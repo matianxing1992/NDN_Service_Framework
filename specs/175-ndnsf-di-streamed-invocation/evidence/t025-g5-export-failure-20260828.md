@@ -215,3 +215,59 @@ single follow-up candidate, Job `206563`, uses source bundle
 `7a04a18147ea8679172fc8cd558c1e36b073360bd4e9064087892fab265b6203`, and it
 retains the r10 exporter SHA-256.  No additional GPU candidate will be
 submitted until `206563` reaches a terminal state.
+
+## 206563 stateful Qwen3.6-27B export result
+
+Job `206563` reached `COMPLETED` with exit `0:0` after `00:31:32` on
+`itiger04`.  The job used the exact exporter SIF (sidecar SHA-256
+`9bbc6e43fb509d957d0aa597ea8b66f5b74982d1ef741884857018b1f6fc4eba`,
+`8307560448` bytes), three `NVIDIA RTX 6000 Ada Generation` GPUs, and the
+`source-stateful-r11` bundle.  The source hashes recorded by the job are
+preserved in the remote evidence directory.
+
+The full reference and staged Transformer paths produced the expected tokens
+`332` (prefill) and `7812` (decode).  All three stateful ONNX stages then
+exported and passed the exporter-side CPU-ORT numerical checks:
+
+```text
+stage 0: prefill maxAbs=0.125, decode maxAbs=0.015625, bytes=1032239
+stage 1: prefill maxAbs=0.125, decode maxAbs=0.03125,  bytes=1030786
+stage 2: prefill maxAbs=0.05859375, decode maxAbs=0.03125, bytes=1085732
+SPEC175_ONNX_EXPORT_COMPLETE
+SPEC175_MANIFEST_OK 7812
+```
+
+The promoted artifact is
+`/project/tma1/ndnsf-di/artifacts/spec175/qwen36-stateful/`
+`spec175-qwen36-stateful-rtx6000-206563` and is about 24 GiB.  Its manifest
+identifies `Qwen/Qwen3.6-27B@6a9e13bd6fc8f0983b9b99948120bc37f49c13e9`,
+`stateful-prefill-decode-v1`, `single-token-autoregressive`, `text-only`,
+MTP disabled, and `qwen-causal-position-v1`.  Every stage exposes exactly the
+canonical state vectors:
+
+```text
+attention_kv_in, recurrent_state_in, convolution_state_in
+attention_kv_out, recurrent_state_out, convolution_state_out
+```
+
+No `.pt` file is present.  During promotion, a packaging defect was found:
+the first manifest and checksum file still contained the temporary
+`.partial` absolute root.  The original files are retained in the evidence
+directory as `manifest-before-path-repair.json` and
+`artifact-checksums-before-path-repair.sha256`.  The final manifest was
+rewritten to the atomic final root, its stage paths were verified to exist,
+and a relative-path checksum file was regenerated.  The final verification
+contains 316 entries with zero failures.  The final manifest SHA-256 is
+`1b7d540508d088eaa21d6b3ed64c60227030a6f431ff410ce487ab927471fd30` and the
+final checksum-file SHA-256 is
+`ffb0bbb2478bd3715043db953fcc23c8594d5db513a43d43689b9052de1bae5e`; both
+are also copied into the remote evidence directory.  The tracked
+copier now performs this path rewrite before returning, and a local regression
+covers the partial-to-final promotion case.
+
+This closes the source-bound 27B stateful export and artifact-integrity
+correction, but it does **not** close T025 G5: the exporter-side ONNX checks
+used CPU ORT.  The exact promoted candidate must still pass the pre-frozen
+current-SIF control and the registered CUDA-ORT stage-readiness checks,
+including device-resident prefill/decode state and cache-effectiveness
+evidence, before T025 can be marked complete or G6 can start.
