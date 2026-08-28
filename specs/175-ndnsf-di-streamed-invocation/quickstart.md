@@ -215,7 +215,7 @@ The candidate must also embed the exact sealed framework/application source and
 workload used by the gates. Do not qualify a SIF by bind-mounting a newer
 checkout, `_ndnsf.so`, Python package, or workload over it.
 
-Before starting the 30-entry replay, run one bounded M01 launcher smoke with
+Before starting the 42-entry replay, run one bounded M01 launcher smoke with
 the exact candidate. Inspect the generated commands and require Apptainer
 1.5.3 `--home <node-home>:<node-home>` mappings (not `--env HOME=...`),
 distinct HOME/PIB paths, successful Controller-to-repository bootstrap
@@ -249,7 +249,7 @@ sudo -E env \
 
 Until T023 implements and tests this tracked host driver, no existing pytest or
 dry-run may be reported as G4. The driver must create the host MiniNDN topology,
-invoke the exact SIF for every NFD/application process, and emit a 30-entry G4
+invoke the exact SIF for every NFD/application process, and emit a 42-entry G4
 manifest. It must never start MiniNDN inside the SIF. Expected:
 M01-M14 each pass in three clean processes (42/42), exact tiny-model
 tokens/final results, real controller/NFD/SVS/role processes, complete Interest/
