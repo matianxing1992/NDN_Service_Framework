@@ -18,8 +18,8 @@ the earlier promotion sequence without invalidating its diagnostic results:
    by the 42/42 G3 matrix. G1/G2 and G3 therefore describe different subjects.
 
 Those gate files are restored to the versioned subject and their focused tests
-pass 25/25. T020 has now reclosed on revision `451654fc` with clean G0, native
-unit 600/600, Python 218/218, and G2 38/38 bound to one source seal. T022 remains
+pass 26/26. T020 has now reclosed on revision `fe0b09fc` with clean G0, native
+unit 600/600, Python 219/219, and G2 38/38 bound to one source seal. T022 remains
 open. The old G3 matrix remains strong historical regression evidence, but it
 cannot authorize a SIF. The required order is now: rerun the unchanged 42-case
 G3 matrix against the T020 seal, and only then enter T023/G4.
@@ -115,7 +115,7 @@ completed so far:
   three-repeat healthy-case run recorded 38/38 results with no failures.
   Those manifests predate the current source corrections and therefore cannot
   serve as the current T020 seal. A later subject passes G0 with zero blockers,
-  G1 with 218 passed and zero failed/skipped, and G2 with 38/38 registered
+  G1 with 219 passed and zero failed/skipped, and G2 with 38/38 registered
   results across I01--I20, but that subject was not used for the 42/42 G3 run.
 - The real MiniNDN launcher now removes only explicitly named, unowned stale
   `/run/nfd/<node>.sock` entries after `nfd-stop`; active listeners are a hard
