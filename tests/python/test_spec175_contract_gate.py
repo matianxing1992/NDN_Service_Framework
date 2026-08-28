@@ -228,6 +228,8 @@ def test_dirty_scope_records_but_does_not_block_unrelated_research_paths() -> No
         "?? specs/170-reusable-layer-artifacts/evidence/historical.md")
     assert not gate._is_source_subject_path(
         "packaging/ndnsf-di-container/docs/itiger-qwen-models.md")
+    assert not gate._is_source_subject_path(
+        "specs/175-ndnsf-di-streamed-invocation/tasks.md")
 
 
 def test_content_bound_source_seal_admits_a_controlled_dirty_subject(
