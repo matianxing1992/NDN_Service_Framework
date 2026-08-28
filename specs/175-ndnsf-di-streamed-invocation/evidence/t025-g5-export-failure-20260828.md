@@ -84,6 +84,27 @@ The local regression suite after this correction is:
 17 passed, 1 skipped
 ```
 
+## Current-source packaging verification
+
+The corrected exporter source was copied to a new immutable
+`source-stateful-r3` directory.  The local and remote source hashes are
+identical (`llm_pipeline_lib.py` SHA-256
+`622cd0e1a458d9343f555798d85372c040dfbd90b992e9dff5644a127dec5cda`).
+
+Tiger Job `206400` used that source with the same exporter SIF and exported a
+21-layer graph at the actual Qwen3.6 dimensions.  The export produced the
+graph plus its external weight files beside it; its diagnostic checker then
+failed only because an in-memory `ModelProto` was checked without its graph
+directory.  This was a validation-script error, not an exporter error.
+
+Job `206408` reused the unchanged `206400` output and checked the graph by
+filename from inside the container.  It passed path-based ONNX checker and
+loaded in ORT with six inputs and four outputs.  The job used 64 GB RAM,
+completed in 2m49s, and reported `R3_ORT_LOAD_PASS 6 4`; the only stderr
+messages were non-fatal ORT thread-affinity warnings.  This closes the
+current-source external-data packaging check, but it is not a Qwen3.6-27B
+three-stage CUDA export and does not close G5.
+
 These probes and the local regression close the diagnosis and implementation
 correction only.  T025 G5 remains open until a new source-bound exporter
 bundle produces all three Qwen3.6-27B stages and passes the registered CUDA
