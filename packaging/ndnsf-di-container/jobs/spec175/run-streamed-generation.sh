@@ -19,6 +19,8 @@ mkdir -p "$SPEC175_OUTPUT"
 # cannot resolve against the scheduler's submit directory.
 set +e
 apptainer exec --cleanenv \
+  --env "SLURM_JOB_ID=${SLURM_JOB_ID:-spec175-local}" \
+  --env "SPEC175_GATE=${SPEC175_GATE}" \
   --bind "$SPEC175_BUNDLE:/bundle:ro,$SPEC175_OUTPUT:/evidence" \
   "$SPEC175_SIF" /bin/bash -lc '
     cd /bundle
