@@ -55,7 +55,8 @@ def digest(path):
             value.update(chunk)
     return value.hexdigest()
 
-if expected.removeprefix("sha256:") != digest(sif):
+expected_digest = expected[7:] if expected.startswith("sha256:") else expected
+if expected_digest != digest(sif):
     raise SystemExit("SPEC175_LOCAL_SIF_DIGEST_MISMATCH")
 if not workload.is_file() or (gate != "control" and (model is None or not model.is_file())):
     raise SystemExit("SPEC175_SUBMISSION_INPUT_MISSING")
