@@ -107,7 +107,12 @@ def stage_model(model_root: Path, cache_root: Path, manifest: dict) -> tuple[Pat
         fail("QWEN_STAGE_MODEL_ROOT_MISSING")
     cache_root = cache_root.resolve()
     cache_root.mkdir(parents=True, exist_ok=True)
-    cache = cache_root / "qwen36-stage-cache-v1"
+    model_digest = str(manifest.get("modelDigest", ""))
+    if not model_digest.startswith("sha256:"):
+        fail("QWEN_STAGE_MODEL_DIGEST_MISSING")
+    # The digest is part of the directory name, so a job cannot accidentally
+    # reuse another model's node-local stage tree.
+    cache = cache_root / ("qwen36-stage-cache-" + model_digest[7:])
     marker = cache / ".complete.json"
     started = time.perf_counter()
     cache_hit = marker.is_file()
@@ -116,7 +121,7 @@ def stage_model(model_root: Path, cache_root: Path, manifest: dict) -> tuple[Pat
             previous = json.loads(marker.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             previous = {}
-        if previous.get("modelDigest") != manifest.get("modelDigest"):
+        if previous.get("modelDigest") != model_digest:
             fail("QWEN_STAGE_CACHE_IDENTITY_MISMATCH")
     else:
         temporary = Path(tempfile.mkdtemp(
@@ -131,7 +136,7 @@ def stage_model(model_root: Path, cache_root: Path, manifest: dict) -> tuple[Pat
             shutil.copytree(source, temporary, symlinks=False)
             temporary_marker = temporary / ".complete.json"
             temporary_marker.write_text(
-                json.dumps({"modelDigest": manifest.get("modelDigest")}, sort_keys=True) + "\n",
+                json.dumps({"modelDigest": model_digest}, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
             temporary.rename(cache)
@@ -150,7 +155,7 @@ def stage_model(model_root: Path, cache_root: Path, manifest: dict) -> tuple[Pat
     tokenizer_bytes = verify_file(
         tokenizer_path, str(manifest["tokenizer"]["digest"]), "tokenizer")
     complete = {
-        "modelDigest": manifest.get("modelDigest"),
+        "modelDigest": model_digest,
         "stageCount": len(manifest["stages"]),
         "stageBytesVerified": bytes_verified,
         "tokenizerBytesVerified": tokenizer_bytes,
