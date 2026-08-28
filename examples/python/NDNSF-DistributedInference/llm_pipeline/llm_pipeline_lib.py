@@ -1678,7 +1678,7 @@ def _utf8_text_tensor(value: str) -> Any:
         np.int64)
 
 
-def _onnx_stage_wrapper(model: Any):
+def _onnx_stage_wrapper(model: Any, *, stateful: bool = False):
     import torch
     import torch.nn.functional as F
     from torch import nn
@@ -1696,6 +1696,18 @@ def _onnx_stage_wrapper(model: Any):
         model_type = "qwen3_5"
 
     layer_indices = list(range(start, end))
+    layer_by_index = {
+        index: layer
+        for index, layer in zip(layer_indices, list(model.model.layers))
+    }
+    full_layer_indices = [
+        index for index in layer_indices
+        if getattr(layer_by_index[index], "block_type", "") == "full_attention"
+    ]
+    linear_layer_indices = [
+        index for index in layer_indices
+        if getattr(layer_by_index[index], "block_type", "") == "linear_attention"
+    ]
 
     def _onnx_qwen35_rotary_embeddings(hidden_states, position_ids):
         """Functional Qwen3.5 MRoPE encoding for the ONNX graph.
@@ -1874,6 +1886,52 @@ def _onnx_stage_wrapper(model: Any):
             last_recurrent_state = None
         return core_attn_out, last_recurrent_state
 
+    def _stateful_recurrent_rule(query, key, value, g, beta, initial_state):
+        """Dynamic-length recurrent rule used by stateful ONNX exports.
+
+        The legacy chunk implementation specializes Python padding/chunk
+        branches to the sample length.  A scripted loop lowers the recurrence
+        as an ONNX ``Loop`` so the same stage accepts prompt prefill and
+        one-token cached decode.
+        """
+        initial_dtype = query.dtype
+        batch_size, sequence_length, num_heads, key_dim = query.shape
+        value_dim = value.shape[-1]
+        last_recurrent_state = initial_state.to(torch.float32)
+        output_steps = torch.jit.annotate(list[torch.Tensor], [])
+        for index in range(sequence_length):
+            q_t = query[:, index]
+            k_t = key[:, index]
+            v_t = value[:, index]
+            q_t = q_t * torch.rsqrt(
+                (q_t * q_t).sum(dim=-1, keepdim=True) + 1e-6)
+            k_t = k_t * torch.rsqrt(
+                (k_t * k_t).sum(dim=-1, keepdim=True) + 1e-6)
+            q_t = q_t.to(torch.float32) * (1.0 / (key_dim ** 0.5))
+            k_t = k_t.to(torch.float32)
+            v_t = v_t.to(torch.float32)
+            g_t = g[:, index].to(torch.float32).exp().unsqueeze(-1).unsqueeze(-1)
+            beta_t = beta[:, index].to(torch.float32).unsqueeze(-1)
+            last_recurrent_state = last_recurrent_state * g_t
+            kv_mem = (last_recurrent_state * k_t.unsqueeze(-1)).sum(dim=-2)
+            delta = (v_t - kv_mem) * beta_t
+            last_recurrent_state = (
+                last_recurrent_state
+                + k_t.unsqueeze(-1) * delta.unsqueeze(-2)
+            )
+            output_steps.append((
+                last_recurrent_state * q_t.unsqueeze(-1)
+            ).sum(dim=-2))
+        core_attn_out = torch.stack(output_steps, dim=2)
+        return (
+            core_attn_out.transpose(1, 2).contiguous().to(initial_dtype),
+            last_recurrent_state,
+        )
+
+    stateful_recurrent_rule = (
+        torch.jit.script(_stateful_recurrent_rule) if stateful else None
+    )
+
     def _onnx_qwen35_gated_delta_forward(
         module,
         hidden_states,
@@ -1892,20 +1950,49 @@ def _onnx_stage_wrapper(model: Any):
         above.  It is installed only on the temporary export wrapper; the
         Transformers model implementation is not modified for deployment.
         """
-        if cache_params is not None:
+        if cache_params is not None and not stateful:
             raise ValueError("Qwen3.5 ONNX export does not support cache_params")
         if attention_mask is not None:
             hidden_states = hidden_states * attention_mask.to(
                 hidden_states.dtype
             ).unsqueeze(-1)
         batch_size, sequence_length, _ = hidden_states.shape
+        use_precomputed_states = stateful and cache_params is not None
+        if use_precomputed_states:
+            conv_state = cache_params.layers[module.layer_idx].conv_states[0]
+            recurrent_state = cache_params.layers[
+                module.layer_idx
+            ].recurrent_states[0]
         mixed_qkv = module.in_proj_qkv(hidden_states).transpose(1, 2)
         z = module.in_proj_z(hidden_states)
         z = z.reshape(batch_size, sequence_length, -1, module.head_v_dim)
         b = module.in_proj_b(hidden_states)
         a = module.in_proj_a(hidden_states)
 
-        if module.causal_conv1d_fn is not None:
+        if use_precomputed_states:
+            # Always include the cached left context.  This is equivalent to
+            # the stock single-token fast path for a one-token decode while
+            # also supporting a variable-length prefill in the same graph.
+            mixed_qkv = torch.cat((conv_state, mixed_qkv), dim=-1)
+            new_conv_state = F.pad(
+                mixed_qkv,
+                (module.conv_kernel_size - mixed_qkv.shape[-1], 0),
+            )
+            cache_params.update_conv_state(new_conv_state, module.layer_idx)
+            if module.causal_conv1d_fn is not None:
+                mixed_qkv = module.causal_conv1d_fn(
+                    x=mixed_qkv,
+                    weight=module.conv1d.weight.squeeze(1),
+                    bias=module.conv1d.bias,
+                    activation=module.activation,
+                    seq_idx=kwargs.get("seq_idx"),
+                )
+            else:
+                mixed_qkv = torch.nn.functional.silu(
+                    module.conv1d(mixed_qkv)[:, :, :mixed_qkv.shape[-1]]
+                )
+            mixed_qkv = mixed_qkv[:, :, -sequence_length:]
+        elif module.causal_conv1d_fn is not None:
             mixed_qkv = module.causal_conv1d_fn(
                 x=mixed_qkv,
                 weight=module.conv1d.weight.squeeze(1),
@@ -1935,18 +2022,26 @@ def _onnx_stage_wrapper(model: Any):
             query = query.repeat_interleave(repeat, dim=2)
             key = key.repeat_interleave(repeat, dim=2)
 
-        core_attn_out, _ = module.chunk_gated_delta_rule(
-            query,
-            key,
-            value,
-            g=g,
-            beta=beta,
-            initial_state=None,
-            output_final_state=False,
-            use_qk_l2norm_in_kernel=True,
-            cu_seqlens=kwargs.get("cu_seq_lens_q"),
-            attention_mask=attention_mask,
-        )
+        if use_precomputed_states:
+            if stateful_recurrent_rule is None:
+                raise RuntimeError("stateful recurrent rule was not initialized")
+            core_attn_out, last_recurrent_state = stateful_recurrent_rule(
+                query, key, value, g, beta, recurrent_state)
+            cache_params.update_recurrent_state(
+                last_recurrent_state, module.layer_idx)
+        else:
+            core_attn_out, _ = module.chunk_gated_delta_rule(
+                query,
+                key,
+                value,
+                g=g,
+                beta=beta,
+                initial_state=None,
+                output_final_state=False,
+                use_qk_l2norm_in_kernel=True,
+                cu_seqlens=kwargs.get("cu_seq_lens_q"),
+                attention_mask=attention_mask,
+            )
         core_attn_out = core_attn_out.reshape(-1, module.head_v_dim)
         z = z.reshape(-1, module.head_v_dim)
         core_attn_out = module.norm(core_attn_out, z)
@@ -1967,6 +2062,81 @@ def _onnx_stage_wrapper(model: Any):
             present_value = torch.cat((past_value, value_states), dim=2)
             self.values[int(layer_idx)] = [present_key, present_value]
             return present_key, present_value
+
+    class _StatefulLayerView:
+        def __init__(self, convolution_state, recurrent_state):
+            self.conv_states = {0: convolution_state}
+            self.recurrent_states = {0: recurrent_state}
+
+    class _StatefulExportCache:
+        """Pure tensor cache bridge for one exported stage.
+
+        Transformers' runtime cache mutates CUDA buffers in place.  During
+        export we instead replace tensor references and return the complete
+        successor state as graph outputs.  The deployment adapter owns the
+        equivalent state transitions after ONNX Runtime execution.
+        """
+
+        def __init__(self, attention_kv, recurrent_state, convolution_state):
+            if len(full_layer_indices) == 0 or len(linear_layer_indices) == 0:
+                raise ValueError("Qwen3.5 stateful stage must contain both layer types")
+            self.values = {}
+            self.layers = {}
+            for cursor, layer in enumerate(full_layer_indices):
+                self.values[layer] = [
+                    attention_kv[0, cursor], attention_kv[1, cursor]
+                ]
+            for cursor, layer in enumerate(linear_layer_indices):
+                self.layers[layer] = _StatefulLayerView(
+                    convolution_state[cursor], recurrent_state[cursor]
+                )
+
+        def has_previous_state(self, layer_idx=None, state_idx=None):
+            del state_idx
+            if layer_idx is None:
+                return True
+            return int(layer_idx) in self.layers
+
+        def update(self, key_states, value_states, layer_idx, cache_kwargs=None):
+            del cache_kwargs
+            past_key, past_value = self.values[int(layer_idx)]
+            present_key = torch.cat((past_key, key_states), dim=2)
+            present_value = torch.cat((past_value, value_states), dim=2)
+            self.values[int(layer_idx)] = [present_key, present_value]
+            return present_key, present_value
+
+        def update_conv_state(self, convolution_state, layer_idx,
+                             state_idx=0, **kwargs):
+            del kwargs
+            view = self.layers[int(layer_idx)]
+            kernel = view.conv_states[state_idx].shape[-1]
+            successor = convolution_state[..., -kernel:]
+            view.conv_states[state_idx] = successor
+            return successor
+
+        def update_recurrent_state(self, recurrent_state, layer_idx,
+                                   state_idx=0, **kwargs):
+            del kwargs
+            view = self.layers[int(layer_idx)]
+            view.recurrent_states[state_idx] = recurrent_state
+            return recurrent_state
+
+        def state_outputs(self):
+            attention = torch.stack([
+                torch.stack([
+                    self.values[layer][0], self.values[layer][1]
+                ], dim=0)
+                for layer in full_layer_indices
+            ], dim=1)
+            recurrent = torch.stack([
+                self.layers[layer].recurrent_states[0]
+                for layer in linear_layer_indices
+            ], dim=0)
+            convolution = torch.stack([
+                self.layers[layer].conv_states[0]
+                for layer in linear_layer_indices
+            ], dim=0)
+            return attention, recurrent, convolution
 
     class _QwenOnnxStage(nn.Module):
         def __init__(self):
@@ -1990,13 +2160,22 @@ def _onnx_stage_wrapper(model: Any):
                             linear_attention,
                         )
 
-        def forward(self, input_ids, attention_mask, hidden_states, position_ids, *past_values):
+        def forward(self, input_ids, attention_mask, hidden_states, position_ids, *state_values):
             base = self.model.model
             if stage_index == 0:
                 hidden_states = base.embed_tokens(input_ids)
-            cache = _ExportCache(past_values)
+            if stateful:
+                if len(state_values) != 3:
+                    raise ValueError(
+                        "stateful Qwen3.5 stages require three state tensors")
+                cache = _StatefulExportCache(*state_values)
+            else:
+                cache = _ExportCache(state_values)
             query_length = hidden_states.shape[1]
-            past_length = past_values[0].shape[2]
+            past_length = (
+                state_values[0].shape[4] if stateful
+                else state_values[0].shape[2]
+            )
             key_length = past_length + query_length
             query_positions = past_length + torch.arange(
                 query_length, device=hidden_states.device)
@@ -2018,9 +2197,12 @@ def _onnx_stage_wrapper(model: Any):
                 # Qwen3.5 has two token mixers.  Full-attention layers use the
                 # usual causal mask; linear-attention layers only need the
                 # 2-D padding mask (an all-one mask is semantically a no-op).
+                linear_mask = attention_mask
+                if stateful:
+                    linear_mask = attention_mask[:, -query_length:]
                 layer_attention_mask = {
                     "full_attention": causal_mask,
-                    "linear_attention": attention_mask,
+                    "linear_attention": linear_mask,
                 }
             else:
                 layer_attention_mask = causal_mask
@@ -2039,8 +2221,14 @@ def _onnx_stage_wrapper(model: Any):
                     position_ids=layer_position_ids,
                     position_embeddings=position_embeddings,
                     attention_mask=attention_for_layer,
-                    past_key_value=(None if model_type == "qwen3_5" else cache),
-                    past_key_values=(None if model_type == "qwen3_5" else cache),
+                    past_key_value=(
+                        cache if (model_type == "qwen3_5" and stateful)
+                        else (None if model_type == "qwen3_5" else cache)
+                    ),
+                    past_key_values=(
+                        cache if (model_type == "qwen3_5" and stateful)
+                        else (None if model_type == "qwen3_5" else cache)
+                    ),
                     use_cache=(model_type != "qwen3_5"),
                     cache_position=layer_position_ids[0],
                     output_attentions=False,
@@ -2051,6 +2239,8 @@ def _onnx_stage_wrapper(model: Any):
                 primary = hidden_states
             else:
                 primary = self.model.lm_head(base.norm(hidden_states))
+            if stateful:
+                return (primary, *cache.state_outputs())
             cache_outputs = tuple(
                 value
                 for layer in layer_indices
@@ -2066,10 +2256,12 @@ def _onnx_stage_wrapper(model: Any):
 def _export_qwen_onnx_stage(model: Any, onnx_path: Path,
                             *, sample_input_ids: Any,
                             export_dtype: str = "auto",
-                            fixed_context: bool = False) -> dict[str, Any]:
+                            fixed_context: bool = False,
+                            stateful: bool = False) -> dict[str, Any]:
     import torch
 
-    wrapper, stage_index, stage_count, start, end = _onnx_stage_wrapper(model)
+    wrapper, stage_index, stage_count, start, end = _onnx_stage_wrapper(
+        model, stateful=stateful)
     hidden_size = int(model.config.hidden_size)
     seq_len = int(sample_input_ids.shape[1])
     model_type = str(
@@ -2104,21 +2296,66 @@ def _export_qwen_onnx_stage(model: Any, onnx_path: Path,
     kv_heads = int(getattr(model.config, "num_key_value_heads",
                            model.config.num_attention_heads))
     head_dim = int(hidden_size // model.config.num_attention_heads)
-    past_values = tuple(
-        torch.empty((int(sample_input_ids.shape[0]), kv_heads, 0, head_dim),
-                    dtype=tensor_dtype)
-        for _ in range(len(layer_indices) * 2)
-    )
+    layer_by_index = {
+        index: layer
+        for index, layer in zip(layer_indices, list(model.model.layers))
+    }
+    full_layers = [
+        index for index in layer_indices
+        if getattr(layer_by_index[index], "block_type", "") == "full_attention"
+    ]
+    linear_layers = [
+        index for index in layer_indices
+        if getattr(layer_by_index[index], "block_type", "") == "linear_attention"
+    ]
+    if stateful:
+        if model_type != "qwen3_5":
+            raise ValueError("stateful ONNX export requires Qwen3.5")
+        linear_heads = int(model.config.linear_num_value_heads)
+        linear_key_dim = int(model.config.linear_key_head_dim)
+        linear_value_dim = int(model.config.linear_value_head_dim)
+        linear_conv_dim = (
+            int(model.config.linear_num_key_heads) * linear_key_dim * 2
+            + linear_heads * linear_value_dim
+        )
+        state_values = (
+            torch.empty(
+                (2, len(full_layers), int(sample_input_ids.shape[0]), kv_heads,
+                 0, head_dim), dtype=tensor_dtype
+            ),
+            torch.zeros(
+                (len(linear_layers), int(sample_input_ids.shape[0]),
+                 linear_heads, linear_key_dim, linear_value_dim),
+                dtype=tensor_dtype,
+            ),
+            torch.zeros(
+                (len(linear_layers), int(sample_input_ids.shape[0]),
+                 linear_conv_dim, int(model.config.linear_conv_kernel_dim)),
+                dtype=tensor_dtype,
+            ),
+        )
+    else:
+        state_values = tuple(
+            torch.empty((int(sample_input_ids.shape[0]), kv_heads, 0, head_dim),
+                        dtype=tensor_dtype)
+            for _ in range(len(layer_indices) * 2)
+        )
     attention_mask = torch.ones(
         (int(sample_input_ids.shape[0]), seq_len), dtype=torch.long)
-    input_names = ["input_ids", "attention_mask", "hidden_states", "position_ids"] + [
-        name for layer in layer_indices
-        for name in (f"past_key.{layer}", f"past_value.{layer}")
-    ]
-    output_names = ["logits" if stage_index == stage_count - 1 else "hidden_states_out"] + [
-        name for layer in layer_indices
-        for name in (f"present_key.{layer}", f"present_value.{layer}")
-    ]
+    input_names = ["input_ids", "attention_mask", "hidden_states", "position_ids"]
+    output_names = ["logits" if stage_index == stage_count - 1 else "hidden_states_out"]
+    if stateful:
+        input_names += ["attention_kv_in", "recurrent_state_in", "convolution_state_in"]
+        output_names += ["attention_kv_out", "recurrent_state_out", "convolution_state_out"]
+    else:
+        input_names += [
+            name for layer in layer_indices
+            for name in (f"past_key.{layer}", f"past_value.{layer}")
+        ]
+        output_names += [
+            name for layer in layer_indices
+            for name in (f"present_key.{layer}", f"present_value.{layer}")
+        ]
     # Qwen3.5's linear-attention implementation specializes chunk/padding
     # branches during tracing.  A fixed-context export must therefore keep
     # every sequence dimension static; runtime padding alone is insufficient
@@ -2135,15 +2372,19 @@ def _export_qwen_onnx_stage(model: Any, onnx_path: Path,
             "attention_mask": {1: "total_seq"},
             output_names[0]: {1: "seq"},
         }
-        for layer in layer_indices:
-            dynamic_axes[f"past_key.{layer}"] = {2: "past_seq"}
-            dynamic_axes[f"past_value.{layer}"] = {2: "past_seq"}
-            dynamic_axes[f"present_key.{layer}"] = {2: "total_seq"}
-            dynamic_axes[f"present_value.{layer}"] = {2: "total_seq"}
+        if stateful:
+            dynamic_axes["attention_kv_in"] = {4: "past_seq"}
+            dynamic_axes["attention_kv_out"] = {4: "total_seq"}
+        else:
+            for layer in layer_indices:
+                dynamic_axes[f"past_key.{layer}"] = {2: "past_seq"}
+                dynamic_axes[f"past_value.{layer}"] = {2: "past_seq"}
+                dynamic_axes[f"present_key.{layer}"] = {2: "total_seq"}
+                dynamic_axes[f"present_value.{layer}"] = {2: "total_seq"}
     onnx_path.parent.mkdir(parents=True, exist_ok=True)
     torch.onnx.export(
         wrapper,
-        (sample_input_ids, attention_mask, dummy_hidden, position_ids, *past_values),
+        (sample_input_ids, attention_mask, dummy_hidden, position_ids, *state_values),
         str(onnx_path),
         input_names=input_names,
         output_names=output_names,
@@ -2157,7 +2398,50 @@ def _export_qwen_onnx_stage(model: Any, onnx_path: Path,
     )
     import onnx
 
-    graph = onnx.load(str(onnx_path), load_external_data=False).graph
+    if stateful:
+        # PyTorch 2.6's legacy exporter may emit TorchScript Loop-body nodes
+        # out of dependency order when a scripted recurrence captures tensor
+        # intermediates.  ORT accepts the top-level graph but rejects the
+        # body at execution time (typically ``Missing Input: <id>``).  Sort
+        # each exported subgraph without changing operators or tensors.
+        def sort_subgraphs(graph):
+            produced = {output for node in graph.node for output in node.output}
+            known = {value.name for value in graph.input}
+            known.update(value.name for value in graph.initializer)
+            remaining = list(graph.node)
+            ordered = []
+            while remaining:
+                ready = [
+                    node for node in remaining
+                    if all(
+                        not value
+                        or value in known
+                        or value not in produced
+                        for value in node.input
+                    )
+                ]
+                if not ready:
+                    raise RuntimeError(
+                        "stateful ONNX export produced a cyclic subgraph")
+                for node in ready:
+                    ordered.append(node)
+                    known.update(value for value in node.output if value)
+                    remaining.remove(node)
+            graph.ClearField("node")
+            graph.node.extend(ordered)
+            for node in graph.node:
+                for attribute in node.attribute:
+                    if attribute.type == onnx.AttributeProto.GRAPH:
+                        sort_subgraphs(attribute.g)
+                    elif attribute.type == onnx.AttributeProto.GRAPHS:
+                        for subgraph in attribute.graphs:
+                            sort_subgraphs(subgraph)
+
+    onnx_model = onnx.load(str(onnx_path), load_external_data=False)
+    if stateful:
+        sort_subgraphs(onnx_model.graph)
+        onnx.save(onnx_model, str(onnx_path))
+    graph = onnx_model.graph
     actual_input_names = [value.name for value in graph.input]
     actual_output_names = [value.name for value in graph.output]
 
@@ -2179,6 +2463,13 @@ def _export_qwen_onnx_stage(model: Any, onnx_path: Path,
         "outputNames": actual_output_names,
         "cacheInputs": [name for name in actual_input_names if name.startswith("past_")],
         "cacheOutputs": [name for name in actual_output_names if name.startswith("present_")],
+        "stateInputNames": [name for name in actual_input_names if name.endswith("_in")],
+        "stateOutputNames": [name for name in actual_output_names if name.endswith("_out")],
+        "sequencePolicy": (
+            "stateful-prefill-decode-v1" if stateful
+            else "fixed-context-padded-v1" if fixed_context
+            else "dynamic-past-key-v1"
+        ),
         "tensorContracts": {
             value.name: contract(value)
             for value in [*graph.input, *graph.output]

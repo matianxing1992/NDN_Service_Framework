@@ -98,6 +98,127 @@ def bundle(token_epoch: int = 0) -> DecodeStateBundleV1:
 
 
 class Spec175StatefulOnnxTests(unittest.TestCase):
+    def test_tiny_qwen_stateful_export_matches_eager_prefill_and_decode(self) -> None:
+        """Exercise one graph for variable-length prefill and one-token decode.
+
+        The host test environment used by the ordinary Python suite may not
+        carry the adapter-certified Qwen3.5 Transformers release.  In that
+        case this remains an explicit skip; the same test is executed inside
+        the exporter SIF where the Qwen3.5 implementation is available.
+        """
+        try:
+            import torch
+            from transformers.models.qwen3_5.configuration_qwen3_5 import (
+                Qwen3_5TextConfig,
+            )
+            from transformers.models.qwen3_5.modeling_qwen3_5 import (
+                Qwen3_5ForCausalLM,
+            )
+            from llm_pipeline.llm_pipeline_lib import (  # noqa: WPS433
+                _export_qwen_onnx_stage,
+                _onnx_stage_wrapper,
+            )
+        except (ImportError, ModuleNotFoundError) as error:
+            self.skipTest(f"Qwen3.5 exporter dependencies unavailable: {error}")
+
+        config = Qwen3_5TextConfig(
+            vocab_size=128,
+            hidden_size=64,
+            intermediate_size=128,
+            num_hidden_layers=4,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            head_dim=16,
+            layer_types=[
+                "linear_attention", "linear_attention",
+                "linear_attention", "full_attention",
+            ],
+            linear_key_head_dim=8,
+            linear_value_head_dim=8,
+            linear_num_key_heads=2,
+            linear_num_value_heads=4,
+            linear_conv_kernel_dim=4,
+            tie_word_embeddings=False,
+        )
+        model = Qwen3_5ForCausalLM(config).eval()
+        model.ndnsf_stage_index = 0
+        model.ndnsf_stage_count = 1
+        model.ndnsf_stage_start = 0
+        model.ndnsf_stage_end = 4
+        model.ndnsf_model_type = "qwen3_5"
+        wrapper, *_ = _onnx_stage_wrapper(model, stateful=True)
+
+        input_ids = torch.tensor([[1, 2, 3]], dtype=torch.long)
+        attention_mask = torch.ones((1, 3), dtype=torch.long)
+        position_ids = torch.arange(3, dtype=torch.long).view(1, 1, -1).expand(
+            4, 1, -1)
+        hidden_states = torch.zeros((1, 3, 64), dtype=torch.float32)
+        initial_state = (
+            torch.empty((2, 1, 1, 2, 0, 16), dtype=torch.float32),
+            torch.zeros((3, 1, 4, 8, 8), dtype=torch.float32),
+            torch.zeros((3, 1, 64, 4), dtype=torch.float32),
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "tiny-qwen35-stateful.onnx"
+            info = _export_qwen_onnx_stage(
+                model,
+                path,
+                sample_input_ids=input_ids,
+                export_dtype="float32",
+                stateful=True,
+            )
+            self.assertEqual(info["sequencePolicy"], "stateful-prefill-decode-v1")
+            session = ort.InferenceSession(
+                str(path), providers=["CPUExecutionProvider"])
+
+            eager_prefill = wrapper(
+                input_ids, attention_mask, hidden_states, position_ids,
+                *initial_state)
+            feed = {
+                "input_ids": input_ids.numpy(),
+                "attention_mask": attention_mask.numpy(),
+                "position_ids": position_ids.numpy(),
+                "hidden_states": hidden_states.numpy(),
+                "attention_kv_in": initial_state[0].numpy(),
+                "recurrent_state_in": initial_state[1].numpy(),
+                "convolution_state_in": initial_state[2].numpy(),
+            }
+            feed = {
+                value.name: feed[value.name]
+                for value in session.get_inputs()
+            }
+            ort_prefill = session.run(None, feed)
+            for expected, actual in zip(eager_prefill, ort_prefill):
+                np.testing.assert_allclose(
+                    expected.detach().numpy(), actual, rtol=2e-5, atol=2e-6)
+
+            decode_ids = torch.tensor([[4]], dtype=torch.long)
+            decode_mask = torch.ones((1, 4), dtype=torch.long)
+            decode_positions = torch.full((4, 1, 1), 3, dtype=torch.long)
+            decode_hidden = torch.zeros((1, 1, 64), dtype=torch.float32)
+            decode_state = tuple(torch.from_numpy(value) for value in ort_prefill[1:])
+            eager_decode = wrapper(
+                decode_ids, decode_mask, decode_hidden, decode_positions,
+                *decode_state)
+            decode_feed = {
+                "input_ids": decode_ids.numpy(),
+                "attention_mask": decode_mask.numpy(),
+                "position_ids": decode_positions.numpy(),
+                "hidden_states": decode_hidden.numpy(),
+                "attention_kv_in": decode_state[0].numpy(),
+                "recurrent_state_in": decode_state[1].numpy(),
+                "convolution_state_in": decode_state[2].numpy(),
+            }
+            decode_feed = {
+                value.name: decode_feed[value.name]
+                for value in session.get_inputs()
+            }
+            ort_decode = session.run(None, decode_feed)
+            for expected, actual in zip(eager_decode, ort_decode):
+                np.testing.assert_allclose(
+                    expected.detach().numpy(), actual, rtol=2e-5, atol=2e-6)
+
     def test_reference_generator_carries_all_state_families_incrementally(self) -> None:
         reference = load_reference_generator()
 
