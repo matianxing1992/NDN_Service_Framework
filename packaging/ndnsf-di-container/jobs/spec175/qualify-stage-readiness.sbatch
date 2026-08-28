@@ -3,7 +3,9 @@
 #SBATCH --partition=bigTiger
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --gres=gpu:rtx_5000:1
+# One GPU owns each complete pipeline stage.  Loading all three 27B stages on
+# one GPU is not a valid readiness test and can exhaust the CUDA arena.
+#SBATCH --gres=gpu:rtx_5000:3
 #SBATCH --time=00:20:00
 #SBATCH --output=%x-%j.out
 #SBATCH --error=%x-%j.err
@@ -61,7 +63,7 @@ apptainer exec --nv --cleanenv \
     --model-root /model \
     --cache-root /cache \
     --output /evidence/tiger-stage-readiness.json \
-    --device-id "${SPEC175_CUDA_DEVICE_ID:-0}" \
+    --stage-device-ids "${SPEC175_STAGE_DEVICE_IDS:-0,1,2}" \
     --max-new-tokens 8
 status=$?
 set -e
