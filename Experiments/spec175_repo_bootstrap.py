@@ -49,6 +49,20 @@ def build_parser() -> argparse.ArgumentParser:
               "collaboration; distinct from the streamed invocation deadline"),
     )
     parser.add_argument(
+        "--publication-start-barrier-file",
+        help=("Optional one-shot file barrier. The publisher initializes its "
+              "NDNSF user first, then waits for the exact token before "
+              "publishing the first repository request."),
+    )
+    parser.add_argument(
+        "--publication-start-barrier-token",
+        help="Exact token required in --publication-start-barrier-file",
+    )
+    parser.add_argument(
+        "--publication-start-timeout-s", type=float, default=60.0,
+        help="Bounded wait for the optional publication start barrier",
+    )
+    parser.add_argument(
         "--test-only-allow-ephemeral-app-state", action="store_true",
         help=("Allow the named volatile state root only for an explicit "
               "real-MiniNDN test; production use must provide persistent state"),
@@ -92,6 +106,40 @@ def receipts_for_publish_result(backend, result) -> list[dict]:
     ]
 
 
+def wait_for_publication_start(args: argparse.Namespace) -> None:
+    """Wait until the already-initialized publisher may issue its first request."""
+    barrier_value = getattr(args, "publication_start_barrier_file", None)
+    expected = str(
+        getattr(args, "publication_start_barrier_token", None) or "")
+    if not barrier_value and not expected:
+        return
+    if not barrier_value or not expected:
+        raise ValueError(
+            "publication start barrier file and token must be provided together")
+    timeout_s = float(getattr(args, "publication_start_timeout_s", 60.0))
+    if timeout_s <= 0:
+        raise ValueError("publication start timeout must be positive")
+
+    barrier = Path(str(barrier_value))
+    print(
+        "NDNSF_DI_SPEC175_REPO_PUBLISHER_WAITING",
+        f"barrier={barrier}", flush=True)
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if barrier.is_file():
+            actual = barrier.read_text(encoding="utf-8").strip()
+            if actual != expected:
+                raise RuntimeError(
+                    "Spec175 Repo publication start barrier token mismatch")
+            print(
+                "NDNSF_DI_SPEC175_REPO_PUBLISHER_RELEASED",
+                f"barrier={barrier}", flush=True)
+            return
+        time.sleep(0.05)
+    raise TimeoutError(
+        f"Spec175 Repo publication start barrier timed out: {barrier}")
+
+
 def publish(args: argparse.Namespace) -> int:
     if not args.stage_manifest:
         raise RuntimeError("publish requires --stage-manifest")
@@ -107,6 +155,11 @@ def publish(args: argparse.Namespace) -> int:
     api = ArtifactRepositoryApi(
         backend, publisher_identity=args.user,
         default_timeout_ms=args.timeout_ms)
+    # Creating the backend starts the native ServiceUser and completes its
+    # permission bootstrap.  Wait only after that initialization so the User
+    # and Repo Provider can acquire controller state concurrently, while the
+    # first SVS publication is held until the Repo handler is actually ready.
+    wait_for_publication_start(args)
     artifacts = []
     for stage in stages:
         path = Path(str(stage["path"]))
