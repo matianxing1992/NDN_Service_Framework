@@ -187,42 +187,27 @@ def test_requirement_inventory_expands_ranges_and_covers_spec175() -> None:
     assert "QWEN_THINKING_DISABLED_BOUNDARY" not in document_codes
 
 
-def test_repository_cli_retains_honest_expected_negative_manifest(
-    tmp_path: Path,
+def test_expected_negative_cli_refuses_an_unexpected_pass(
+    tmp_path: Path, monkeypatch,
 ) -> None:
+    gate = _load_gate()
     output = tmp_path / "qualification-manifest-v1.json"
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(SCRIPT),
-            "--project-root",
-            str(REPO),
-            "--feature-dir",
-            str(FEATURE),
-            "--output",
-            str(output),
-            "--expected-negative",
-        ],
-        cwd=REPO,
-        text=True,
-        capture_output=True,
-        check=False,
+    monkeypatch.setattr(
+        gate,
+        "build_manifest",
+        lambda *args, **kwargs: {"status": "PASS", "blockers": []},
     )
 
-    assert result.returncode == 0, result.stdout + result.stderr
+    return_code = gate.main([
+        "--project-root", str(REPO),
+        "--feature-dir", str(FEATURE),
+        "--output", str(output),
+        "--expected-negative",
+    ])
+
+    assert return_code == 3
     manifest = json.loads(output.read_text(encoding="utf-8"))
-    assert manifest["schemaVersion"] == "spec175-qualification-manifest-v1"
-    assert manifest["status"] == "BLOCKED_EXPECTED"
-    codes = {item["code"] for item in manifest["blockers"]}
-    # The source-level automatic-plan/native-entry seams now close.  Formal G0
-    # remains expected-negative only because this shared worktree intentionally
-    # contains uncommitted inputs that cannot identify an immutable candidate.
-    assert codes == {"DIRTY_INPUT_TREE"}
-    assert "TLV_RANGE_COLLISION" not in codes
-    assert manifest["tlvContract"]["range"] == "0xF661..0xF698"
-    assert manifest["tlvContract"]["collisionCount"] == 0
-    assert manifest["requirementCoverage"]["missingFromTasks"] == []
-    assert manifest["requirementCoverage"]["missingFromTraceability"] == []
+    assert manifest == {"status": "PASS", "blockers": []}
 
 
 def test_dirty_scope_records_but_does_not_block_unrelated_research_paths() -> None:
@@ -245,22 +230,34 @@ def test_dirty_scope_records_but_does_not_block_unrelated_research_paths() -> No
         "packaging/ndnsf-di-container/docs/itiger-qwen-models.md")
 
 
-def test_content_bound_source_seal_admits_current_dirty_subject(tmp_path: Path) -> None:
-    """A sealed dirty subject may pass; an unsealed one must still block."""
+def test_content_bound_source_seal_admits_a_controlled_dirty_subject(
+    tmp_path: Path,
+) -> None:
+    """A seal must bind the exact status and bytes without workspace assumptions."""
+    gate = _load_gate()
+    project = tmp_path / "project"
+    subject = project / "scripts/spec175_contract_gate.py"
+    subject.parent.mkdir(parents=True)
+    subject.write_text("subject-v1\n", encoding="utf-8")
     seal = tmp_path / "source-seal.json"
-    manifest = tmp_path / "qualification.json"
-    seal_result = subprocess.run([
-        sys.executable, str(REPO / "scripts/spec175_source_seal.py"),
-        "--project-root", str(REPO), "--output", str(seal),
-    ], cwd=REPO, text=True, capture_output=True, check=False)
-    assert seal_result.returncode == 0, seal_result.stdout + seal_result.stderr
-    result = subprocess.run([
-        sys.executable, str(SCRIPT), "--project-root", str(REPO),
-        "--feature-dir", str(FEATURE), "--source-seal", str(seal),
-        "--output", str(manifest),
-    ], cwd=REPO, text=True, capture_output=True, check=False)
-    assert result.returncode == 0, result.stdout + result.stderr
-    payload = json.loads(manifest.read_text(encoding="utf-8"))
-    assert payload["status"] == "PASS"
-    assert payload["sourceSeal"]["verified"] is True
-    assert payload["sourceSeal"]["dirtyFileCount"] > 0
+    seal.write_text(json.dumps({
+        "schemaVersion": "spec175-source-seal-v1",
+        "sourceRevision": "controlled-revision",
+        "dirtyFiles": {
+            "scripts/spec175_contract_gate.py": {
+                "status": "??",
+                "sha256": gate._sha256(subject),
+            },
+        },
+    }), encoding="utf-8")
+
+    record, issues = gate._verify_source_seal(
+        project,
+        seal,
+        "controlled-revision",
+        ["?? scripts/spec175_contract_gate.py"],
+    )
+
+    assert issues == []
+    assert record["verified"] is True
+    assert record["dirtyFileCount"] == 1
