@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+"""Fail-closed preflight for the Spec175 Qwen stage manifest.
+
+This check is intentionally metadata-only and runs before SSH/upload or Slurm
+allocation.  It rejects legacy fixed-context/past-key-only exports before an
+operator can mistake them for the stateful Qwen3.6 subject.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+import re
+import sys
+
+
+SCHEMA = "ndnsf-di-qwen36-onnx-stage-manifest-v1"
+MODEL = "Qwen/Qwen3.6-27B"
+REVISION = "6a9e13bd6fc8f0983b9b99948120bc37f49c13e9"
+SEQUENCE_POLICY = "stateful-prefill-decode-v1"
+DECODE_MODE = "single-token-autoregressive"
+STATE_INPUTS = {"attention_kv_in", "recurrent_state_in", "convolution_state_in"}
+STATE_OUTPUTS = {"attention_kv_out", "recurrent_state_out", "convolution_state_out"}
+RANGES = ((0, 21), (21, 42), (42, 64))
+FORBIDDEN = re.compile(r"vision|image|video|mtp|speculative", re.IGNORECASE)
+
+
+def fail(code: str, detail: str = "") -> "NoReturn":
+    suffix = f":{detail}" if detail else ""
+    print(code + suffix, file=sys.stderr)
+    raise SystemExit(2)
+
+
+def _digest(value: object, label: str) -> None:
+    if not isinstance(value, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", value):
+        fail("SPEC175_MODEL_DIGEST_INVALID", label)
+
+
+def validate(path: Path) -> dict[str, object]:
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        fail("SPEC175_MODEL_MANIFEST_INVALID", type(exc).__name__)
+    if not isinstance(document, dict):
+        fail("SPEC175_MODEL_MANIFEST_INVALID", "root")
+    if document.get("schemaVersion") != SCHEMA:
+        fail("SPEC175_MODEL_SCHEMA_REQUIRED")
+    if document.get("repository") != MODEL:
+        fail("SPEC175_MODEL_REPOSITORY_MISMATCH")
+    if document.get("revision") != REVISION:
+        fail("SPEC175_MODEL_REVISION_MISMATCH")
+    if document.get("modelType") != "qwen3_5":
+        fail("SPEC175_MODEL_TYPE_MISMATCH")
+    if document.get("dtype") not in {"float16", "float32"}:
+        fail("SPEC175_MODEL_DTYPE_UNSUPPORTED")
+    if document.get("sequencePolicy") != SEQUENCE_POLICY:
+        fail("SPEC175_MODEL_STATEFUL_SEQUENCE_REQUIRED")
+    if document.get("decodeMode") != DECODE_MODE:
+        fail("SPEC175_MODEL_DECODE_MODE_REQUIRED")
+    if document.get("modality") != "text-only":
+        fail("SPEC175_MODEL_MODALITY_REQUIRED")
+    if document.get("mtpEnabled") is not False:
+        fail("SPEC175_MODEL_MTP_MUST_BE_DISABLED")
+    if document.get("thinkingMode") != "disabled":
+        fail("SPEC175_MODEL_THINKING_MODE_REQUIRED")
+    components = document.get("graphComponents")
+    if (not isinstance(components, list) or not components
+            or any(not isinstance(item, str) or not item for item in components)):
+        fail("SPEC175_MODEL_GRAPH_COMPONENTS_REQUIRED")
+    if any(FORBIDDEN.search(item) for item in components):
+        fail("SPEC175_MODEL_FORBIDDEN_GRAPH_COMPONENT")
+    if document.get("layerCount") != 64 or document.get("layerRanges") != [list(item) for item in RANGES]:
+        fail("SPEC175_MODEL_LAYER_LAYOUT_MISMATCH")
+    _digest(document.get("modelDigest"), "modelDigest")
+    tokenizer = document.get("tokenizer")
+    if not isinstance(tokenizer, dict):
+        fail("SPEC175_MODEL_TOKENIZER_REQUIRED")
+    _digest(tokenizer.get("digest"), "tokenizer.digest")
+    stages = document.get("stages")
+    if not isinstance(stages, list) or len(stages) != 3:
+        fail("SPEC175_MODEL_STAGE_COUNT_REQUIRED")
+    for index, stage in enumerate(stages):
+        if not isinstance(stage, dict):
+            fail("SPEC175_MODEL_STAGE_INVALID", str(index))
+        if stage.get("stageIndex") != index:
+            fail("SPEC175_MODEL_STAGE_INDEX_MISMATCH", str(index))
+        if stage.get("role") != f"/LLM/Pipeline/Stage/{index}":
+            fail("SPEC175_MODEL_STAGE_ROLE_MISMATCH", str(index))
+        if stage.get("layerRange") != {"start": RANGES[index][0], "endExclusive": RANGES[index][1]}:
+            fail("SPEC175_MODEL_STAGE_RANGE_MISMATCH", str(index))
+        _digest(stage.get("sha256"), f"stage[{index}].sha256")
+        metadata = stage.get("metadata")
+        if not isinstance(metadata, dict):
+            fail("SPEC175_MODEL_STAGE_METADATA_REQUIRED", str(index))
+        input_names = set(metadata.get("inputNames", ()))
+        output_names = set(metadata.get("outputNames", ()))
+        state_inputs = set(metadata.get("stateInputNames", ()))
+        state_outputs = set(metadata.get("stateOutputNames", ()))
+        if not STATE_INPUTS.issubset(state_inputs):
+            fail("SPEC175_MODEL_STATE_INPUTS_INCOMPLETE", str(index))
+        if not STATE_OUTPUTS.issubset(state_outputs):
+            fail("SPEC175_MODEL_STATE_OUTPUTS_INCOMPLETE", str(index))
+        if not {"attention_mask", "position_ids"}.issubset(input_names):
+            fail("SPEC175_MODEL_POSITION_INPUTS_REQUIRED", str(index))
+        if not STATE_INPUTS.issubset(input_names) or not STATE_OUTPUTS.issubset(output_names):
+            fail("SPEC175_MODEL_STATE_IO_NOT_IN_GRAPH", str(index))
+    return {
+        "status": "PASS",
+        "schemaVersion": SCHEMA,
+        "model": MODEL,
+        "revision": REVISION,
+        "sequencePolicy": SEQUENCE_POLICY,
+        "stageCount": len(stages),
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--manifest", required=True, type=Path)
+    args = parser.parse_args()
+    result = validate(args.manifest.expanduser().resolve())
+    print(json.dumps(result, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
