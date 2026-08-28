@@ -92,10 +92,16 @@ class Spec175SifPreflightTests(unittest.TestCase):
                      "qualify-conversation-residency.sbatch",
                      "qualify-performance.sbatch"):
             text = (SPEC175_JOBS / name).read_text(encoding="utf-8")
-            self.assertIn("run-streamed-generation.sh", text)
             self.assertIn("SPEC175_SIF_SHA256", text)
             self.assertIn("SPEC175_JOB_ROOT", text)
             self.assertNotIn('dirname "$0"', text)
+            if name == "qualify-stage-readiness.sbatch":
+                self.assertIn("run-qwen-stage-readiness.py", text)
+                self.assertIn("SPEC175_MODEL_MANIFEST", text)
+                self.assertIn("SPEC175_REMOTE_MODEL_ROOT", text)
+                self.assertNotIn("run-streamed-generation.sh", text)
+            else:
+                self.assertIn("run-streamed-generation.sh", text)
 
     def test_repository_checklist_validator_is_home_independent(self):
         self.assertTrue(os.access(CHECKLIST_VALIDATOR, os.X_OK))
@@ -156,6 +162,8 @@ class Spec175SifPreflightTests(unittest.TestCase):
                 "graphComponents": ["text_embedding", "hybrid_decoder", "lm_head"],
                 "layerCount": 64,
                 "layerRanges": [[0, 21], [21, 42], [42, 64]],
+                "promptLength": 2,
+                "promptIds": [1, 2],
                 "modelDigest": "sha256:" + "b" * 64,
                 "tokenizer": {"digest": "sha256:" + "c" * 64},
                 "stages": stages,

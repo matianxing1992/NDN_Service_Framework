@@ -64,6 +64,13 @@ def validate(path: Path) -> dict[str, object]:
         fail("SPEC175_MODEL_MTP_MUST_BE_DISABLED")
     if document.get("thinkingMode") != "disabled":
         fail("SPEC175_MODEL_THINKING_MODE_REQUIRED")
+    prompt_ids = document.get("promptIds")
+    if (not isinstance(prompt_ids, list) or not prompt_ids
+            or any(not isinstance(value, int) or value < 0
+                   for value in prompt_ids)):
+        fail("SPEC175_MODEL_PROMPT_IDS_REQUIRED")
+    if document.get("promptLength") != len(prompt_ids):
+        fail("SPEC175_MODEL_PROMPT_LENGTH_MISMATCH")
     components = document.get("graphComponents")
     if (not isinstance(components, list) or not components
             or any(not isinstance(item, str) or not item for item in components)):
