@@ -1,5 +1,71 @@
 # iTiger NDNSF-DI Qwen operations runbook
 
+For source updates and SIF regeneration, start with the repository
+[`docs/NDNSF-DI-runtime-workflow.md`](../../../docs/NDNSF-DI-runtime-workflow.md).
+This Qwen runbook covers model/runtime operations after the immutable SIF
+candidate has passed that update cycle.
+
+## Current Spec170 local-SIF checkpoint (2026-08-19)
+
+The normal route is now unambiguous: build the complete application SIF on the
+local host with Apptainer, verify it locally, then let TigerCluster verify the
+hash and execute it. Do not introduce Docker, Buildah, OCI archives, registry
+pulls, or Tiger-side SIF materialization into this route. Build `_ndnsf.so` and
+all container-bound native code inside the SIF build stage (or a sealed
+ABI-identical builder); a host Python 3.8/3.10 mismatch is a build-boundary
+failure, not a host-package installation task.
+
+Before every new candidate: audit every `examples/wscript` target (including
+both ONNX smoke targets and both Provider targets) for explicit
+`BOOST NDN_CXX NDN_SVS ONNXRUNTIME DL` closure; build the full target set; then
+run exact-SIF import, runner, hash, RPATH/`ldd`, internal-library-lock, and
+MiniNDN request-path checks. If artifacts are relative, each Provider must
+`cd "$BUNDLE"` before opening them. Start Controller → bootstrap Provider →
+User when NAC-ABE DKEY setup is required. Separate every Provider's HOME/PIB,
+identity, and model/cache paths.
+
+The last bounded-verification snapshot is `runtime-r23.sif`, Apptainer `1.5.3`,
+SHA-256
+`5b8bd6baaaf7288b3b593538b7c7bfa086feeca91276bef56d7b6c03e5ae9eeb`, paired
+with `build-record-r23.json` (`containerNativeBuild=true`,
+`hostBinaryInputs=[]`). It is usable only for the source sealed into r23:
+ProviderRoleWorker/collective-runtime source changes landed afterward, so r23
+must not be promoted for the current source. Any source, lock, native-binding,
+or definition change requires a new release identity and SIF. The host
+currently has about 51 GB free, so do not create another multi-gigabyte SIF or
+model copy without an explicit retention decision.
+
+The recurring failure shields are also maintained in an operator-local
+reference; this runbook and the active Spec170 ledger remain the repository
+authority, and runtime tooling must not depend on that local reference.
+
+### Current update checklist
+
+When NDNSF-DI source, dependencies, native bindings, or the definition changes,
+use this order and stop at the first failure:
+
+1. Compare the source seal with the SIF record; an old import or old Tiger
+   smoke does not qualify a changed working tree.
+2. Check disk and exact disposable paths, query Apptainer on the target
+   compute node, and require the local/compute `1.5.3` pair.
+3. Run the complete Waf target census. Every Provider and ONNX target must
+   explicitly close `BOOST NDN_CXX NDN_SVS ONNXRUNTIME DL`.
+4. Build one complete SIF locally through `build-local-sif.sh`. Build
+   `_ndnsf.so` and all native code inside the image's Python ABI; never copy a
+   host `cpXY` extension or install host Python headers.
+5. Run exact-SIF census/import/runner/`ldd`/library-lock checks, the enabled
+   deterministic CPU ONNX collective fixture, full local tests, and the
+   MiniNDN Request → ACK_CLOSED → Selection → Response plus negative cases.
+6. Promote one hash-bound SIF. Tiger only verifies, stages once, and executes;
+   each Provider enters `cd "$BUNDLE"` with isolated HOME/PIB and the ordered
+   Controller → bootstrap Provider → User startup.
+
+The recurring failures are configuration failures, not reasons to extend a
+remote job: wrong build ABI, incomplete sibling target dependencies, stale
+base artifacts, wrong Provider cwd, shared PIB/bootstrap races, stopped Face
+event loops, and Docker/OCI or duplicate-SIF disk pressure. Preserve the
+failed record, repair the owning step, and create a new candidate identity.
+
 > **Spec170 note:** this runbook retains older Spec160/Spec110 Docker smoke and
 > remote-materialization procedures for historical Qwen campaigns. For current
 > Spec170 work, start with a locally built and locally verified application SIF;
@@ -140,9 +206,12 @@ the Apache-2.0 classification used by most other sizes.
 
 ### 5. Build one coherent runtime
 
-The SIF must contain a mutually compatible native stack: NFD/NDNSF libraries,
-Python bindings, PyTorch/Transformers, CUDA user-space libraries, and the
-application code. The host supplies the NVIDIA driver and allocated devices.
+The deployment SIF must contain a mutually compatible native stack: NFD/NDNSF
+libraries, Python bindings, ONNX Runtime, standalone tokenization, CUDA
+user-space libraries, and the application code. PyTorch/Transformers belong
+only to the separately identified offline exporter/conformance stage; they must
+not be copied into or imported by the deployment runtime. The host supplies the
+NVIDIA driver and allocated devices.
 
 The host drives Apptainer but does not supply the SIF's Python build ABI. Build
 `_ndnsf.so` and every other container-bound extension inside the candidate SIF
