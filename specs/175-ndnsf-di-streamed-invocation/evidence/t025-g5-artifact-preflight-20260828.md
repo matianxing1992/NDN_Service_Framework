@@ -49,3 +49,9 @@ bundle may be staged beside the already-qualified runtime SIF.
 
 No Tiger model allocation was requested for this preflight, and no existing
 artifact was modified or deleted.
+
+After this preflight, commit `49f90553` added the same fail-closed metadata
+check to the tracked `submit.sh` path.  The previously qualified SIF/control
+record remains valid as historical control evidence, but a future G5 candidate
+must regenerate its source seal/SIF closure so the new pre-allocation check is
+part of the submitted interface.
