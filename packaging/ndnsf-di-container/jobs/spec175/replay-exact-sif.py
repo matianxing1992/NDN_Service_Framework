@@ -25,9 +25,10 @@ RUNNER = ROOT / "Experiments/NDNSF_DI_StreamedGeneration_Minindn.py"
 PRODUCTION_RUNNER = ROOT / "Experiments/NDNSF_DI_LlmPipeline_Minindn.py"
 TOPOLOGY = ROOT / "Experiments/Topology/spec175-host-gate.conf"
 HOST_PREFLIGHT = ROOT / "packaging/ndnsf-di-container/bin/spec175-host-substrate-preflight"
-CASES = tuple(f"M{i:02d}" for i in range(1, 11))
+CASES = tuple(f"M{i:02d}" for i in range(1, 15))
 WORKLOAD_SEED = 1750001
 REPETITIONS = 3
+EXPECTED_ENTRIES = len(CASES) * REPETITIONS
 
 
 def digest(path: Path) -> str:
@@ -68,8 +69,8 @@ def load_manifest(path: Path, sif: Path) -> dict:
         result = load_host_gate().validate_host_gate(path, ROOT)
     except Exception as exc:
         fail("HOST_GATE_NOT_PASS:" + str(exc))
-    if result.get("total") != 30 or result.get("passed") != 30:
-        fail("HOST_GATE_NOT_30_OF_30")
+    if result.get("total") != EXPECTED_ENTRIES or result.get("passed") != EXPECTED_ENTRIES:
+        fail(f"HOST_GATE_NOT_{EXPECTED_ENTRIES}_OF_{EXPECTED_ENTRIES}")
     return result
 
 
@@ -188,7 +189,7 @@ def main() -> int:
     passed = sum(entry.get("status") == "PASS" for entry in entries)
     result = {
         "schema": "spec175-g4-host-orchestrated-replay-v1",
-        "status": "PASS" if not args.dry_run and len(entries) == 30 and passed == 30 else "FAIL",
+        "status": "PASS" if not args.dry_run and len(entries) == EXPECTED_ENTRIES and passed == EXPECTED_ENTRIES else "FAIL",
         "layer": "host-substrate-plus-exact-sif-runtime",
         "repetitionsPerCase": REPETITIONS,
         "hostGate": host,

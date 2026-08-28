@@ -113,7 +113,7 @@ def main() -> int:
         "usesExactSif": "SPEC175_RUNTIME_SIF" in driver_text,
         "doesNotEmbedMiniNdn": "replay_root" not in driver_text,
         "usesThreeRepetitions": "REPETITIONS = 3" in driver_text,
-        "requiresThirtyEntries": "len(entries) == 30" in driver_text,
+        "requiresFortyTwoEntries": "len(entries) == EXPECTED_ENTRIES" in driver_text,
     }
     checks["replayDriver"] = driver_checks
     for key, value in driver_checks.items():

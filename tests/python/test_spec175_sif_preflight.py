@@ -167,7 +167,7 @@ class Spec175SifPreflightTests(unittest.TestCase):
         self.assertIn("WORKLOAD_SEED = 1750001", text)
         self.assertIn("REPETITIONS = 3", text)
         self.assertIn("range(1, REPETITIONS + 1)", text)
-        self.assertIn('len(entries) == 30', text)
+        self.assertIn('len(entries) == EXPECTED_ENTRIES', text)
         self.assertIn('"repetition": repetition', text)
         self.assertIn('parser.add_argument("--source-seal", required=True', text)
         self.assertIn("complete candidate source seal", text)
