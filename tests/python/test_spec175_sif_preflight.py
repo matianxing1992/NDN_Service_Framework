@@ -84,6 +84,7 @@ class Spec175SifPreflightTests(unittest.TestCase):
         self.assertIn("SPEC175_SIF_CONTROL_ENTRYPOINT_MISSING", runner)
         self.assertIn("spec175-sif-control-v1", runner)
         self.assertIn("SPEC175_SIF_DIGEST_MISMATCH", runner)
+        self.assertIn('SPEC175_JOB_ROOT', submit)
         for name in ("qualify-control.sbatch",
                      "qualify-stage-readiness.sbatch",
                      "qualify-multiprovider.sbatch",
@@ -92,6 +93,8 @@ class Spec175SifPreflightTests(unittest.TestCase):
             text = (SPEC175_JOBS / name).read_text(encoding="utf-8")
             self.assertIn("run-streamed-generation.sh", text)
             self.assertIn("SPEC175_SIF_SHA256", text)
+            self.assertIn("SPEC175_JOB_ROOT", text)
+            self.assertNotIn('dirname "$0"', text)
 
     def test_repository_checklist_validator_is_home_independent(self):
         self.assertTrue(os.access(CHECKLIST_VALIDATOR, os.X_OK))

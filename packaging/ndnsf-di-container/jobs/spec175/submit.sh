@@ -82,6 +82,7 @@ PY
 command -v sbatch >/dev/null || { echo "SPEC175_SBATCH_UNAVAILABLE" >&2; exit 4; }
 export SPEC175_LOCAL_SIF="$SIF"
 export SPEC175_LOCAL_SIF_SHA256="${SIF_SHA256#sha256:}"
+export SPEC175_JOB_ROOT="$ROOT/packaging/ndnsf-di-container/jobs/spec175"
 export SPEC175_REMOTE_SIF="$REMOTE_SIF"
 export SPEC175_REMOTE_SIF_SHA256="${REMOTE_SIF_SHA256#sha256:}"
 export SPEC175_WORKLOAD="$WORKLOAD"
