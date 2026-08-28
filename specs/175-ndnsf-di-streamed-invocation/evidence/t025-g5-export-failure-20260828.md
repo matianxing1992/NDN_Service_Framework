@@ -105,6 +105,44 @@ messages were non-fatal ORT thread-affinity warnings.  This closes the
 current-source external-data packaging check, but it is not a Qwen3.6-27B
 three-stage CUDA export and does not close G5.
 
+## Actual-model graph diagnosis
+
+Tiger Job `206445` used the current `source-stateful-r4` exporter bundle and
+the same exporter SIF, model revision, three-GPU allocation, and staged
+PyTorch parity checks.  Model download, reference loading, all three stage
+package writes, and staged token parity passed.  Stage 0 then failed at ORT
+load with:
+
+```text
+Unsuported type proto value case.
+```
+
+The diagnostic census printed before the exception was:
+
+```text
+externalCount=222 externalMissing=0 graphBytes=995166 nodeCount=6186
+typeCounts={"sequence_type":32,"tensor_type":90}
+stage=0
+```
+
+Thus the actual Qwen graph had no missing or escaping external weight and the
+failure was not caused by SIF, CUDA, temporary storage, or the Qwen head
+dimension.  The 32 sequence TypeProto values came from the scripted recurrent
+rule's tensor-list accumulator (`SequenceConstruct`/`SequenceAt`), which the
+deployment ORT 1.20 baseline rejects while loading.  Job `206445` ended
+`FAILED` after `00:14:15` with `MaxRSS=161587772K`; no artifact was promoted
+and G5 remains open.
+
+The correction replaces that scripted list with tensor concatenation and adds
+an exporter guard that rejects any future non-tensor graph value with the
+explicit `QWEN_ONNX_NON_TENSOR_TYPE` error.  Local focused tests remain
+`17 passed, 1 skipped`.  A bounded CPU SIF probe using the corrected source
+(Tiger Job `206466`, 32 GB, 22 s) exported the 21-layer stateful graph with
+`bad=[]`, passed ONNX checker, and loaded in ORT; its graph census contained
+only tensor value types.  This is a correction/probe result, not a 27B G5
+qualification; a new source-bound 27B export is required before any CUDA
+artifact or downstream G6 work.
+
 These probes and the local regression close the diagnosis and implementation
 correction only.  T025 G5 remains open until a new source-bound exporter
 bundle produces all three Qwen3.6-27B stages and passes the registered CUDA

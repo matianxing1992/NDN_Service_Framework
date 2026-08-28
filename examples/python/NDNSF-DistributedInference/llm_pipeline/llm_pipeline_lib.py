@@ -1939,7 +1939,16 @@ def _onnx_stage_wrapper(model: Any, *, stateful: bool = False):
         batch_size, sequence_length, num_heads, key_dim = query.shape
         value_dim = value.shape[-1]
         last_recurrent_state = initial_state.to(torch.float32)
-        output_steps = torch.jit.annotate(list[torch.Tensor], [])
+        # Accumulate into a tensor rather than a TorchScript list.  A list of
+        # tensors lowers to ONNX SequenceConstruct/SequenceAt values.  The
+        # deployment ORT baseline (1.20) intentionally accepts tensor-only
+        # state contracts and rejects those sequence TypeProto values while
+        # loading an otherwise valid Qwen graph.
+        output_steps = torch.zeros(
+            (batch_size, num_heads, value_dim, 0),
+            dtype=torch.float32,
+            device=query.device,
+        )
         for index in range(sequence_length):
             q_t = query[:, index]
             k_t = key[:, index]
@@ -1960,10 +1969,10 @@ def _onnx_stage_wrapper(model: Any, *, stateful: bool = False):
                 last_recurrent_state
                 + k_t.unsqueeze(-1) * delta.unsqueeze(-2)
             )
-            output_steps.append((
-                last_recurrent_state * q_t.unsqueeze(-1)
-            ).sum(dim=-2))
-        core_attn_out = torch.stack(output_steps, dim=2)
+            output_step = (last_recurrent_state * q_t.unsqueeze(-1)).sum(dim=-2)
+            output_steps = torch.cat(
+                (output_steps, output_step.unsqueeze(-1)), dim=-1)
+        core_attn_out = output_steps
         return (
             core_attn_out.transpose(1, 2).contiguous().to(initial_dtype),
             last_recurrent_state,
@@ -2511,6 +2520,25 @@ def _export_qwen_onnx_stage(model: Any, onnx_path: Path,
             for attribute in node.attribute:
                 if attribute.type == onnx.AttributeProto.TENSOR:
                     yield attribute.t
+
+    # The deployed stateful contract is tensor-only.  In particular, a
+    # scripted recurrence must not leak a Python list into the graph: Torch
+    # lowers such a list to SequenceConstruct/SequenceAt and ORT 1.20 rejects
+    # the resulting Sequence TypeProto while loading the model.  Fail with a
+    # precise exporter error if a future model/wrapper reintroduces one.
+    non_tensor_types = []
+    for graph in iter_graphs(onnx_model.graph):
+        for values in (graph.input, graph.output, graph.value_info):
+            for value in values:
+                value_case = value.type.WhichOneof("value")
+                if value_case not in (None, "tensor_type"):
+                    non_tensor_types.append(f"{value.name}:{value_case}")
+    if non_tensor_types:
+        raise RuntimeError(
+            "QWEN_ONNX_NON_TENSOR_TYPE: "
+            + ",".join(non_tensor_types[:8])
+            + ("..." if len(non_tensor_types) > 8 else "")
+        )
 
     external_locations = []
     missing_external = []

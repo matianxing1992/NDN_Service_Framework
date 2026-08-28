@@ -243,6 +243,22 @@ class Spec175StatefulOnnxTests(unittest.TestCase):
                 stateful=True,
             )
             self.assertEqual(info["sequencePolicy"], "stateful-prefill-decode-v1")
+            document = onnx.load(str(path), load_external_data=False)
+
+            def non_tensor_values(graph):
+                values = [*graph.input, *graph.output, *graph.value_info]
+                for value in values:
+                    if value.type.WhichOneof("value") != "tensor_type":
+                        yield value.name
+                for node in graph.node:
+                    for attribute in node.attribute:
+                        if attribute.type == onnx.AttributeProto.GRAPH:
+                            yield from non_tensor_values(attribute.g)
+                        elif attribute.type == onnx.AttributeProto.GRAPHS:
+                            for subgraph in attribute.graphs:
+                                yield from non_tensor_values(subgraph)
+
+            self.assertEqual(list(non_tensor_values(document.graph)), [])
             session = ort.InferenceSession(
                 str(path), providers=["CPUExecutionProvider"])
 
