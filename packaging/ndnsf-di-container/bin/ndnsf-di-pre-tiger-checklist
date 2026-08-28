@@ -1,0 +1,253 @@
+#!/usr/bin/env python3
+"""Fail-closed, repository-owned Spec175 Tiger pre-submit validator.
+
+The validator intentionally has no dependency on the user's home directory or
+on any operator-local skill installation. It checks the candidate-bound checklist and
+then applies the extra source/candidate/SIF binding required by Spec175.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+from pathlib import Path
+from typing import Any
+
+
+SCHEMA = "ndnsf-itiger-pre-submit-checklist-v1"
+GATES = {"control", "stage-readiness", "functional", "performance"}
+COMMON_CHECKS = {
+    "release-identity",
+    "local-sif-route",
+    "cluster-substrate",
+    "target-apptainer-parity",
+    "container-abi-provenance",
+    "complete-target-link-closure",
+    "exact-sif-library-entrypoint",
+    "bundle-cwd-artifact-mount",
+    "isolated-home-pib-bootstrap",
+    "lower-gates-native-exits",
+    "wrapper-config-child-status",
+    "resource-envelope",
+    "promotion-hash-config-delta",
+    "credential-secret-scan",
+}
+MODEL_CHECKS = {
+    "current-sif-tiger-control",
+    "onnx-model-runtime-compatibility",
+    "cuda-no-fallback",
+    "routes-stage-dataflow",
+}
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _digest(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    value = value.lower()
+    if value.startswith("sha256:"):
+        value = value[7:]
+    if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
+        return None
+    return value
+
+
+def _path(value: Any, base: Path, label: str, errors: list[str]) -> Path | None:
+    if not isinstance(value, str) or not value.strip():
+        errors.append(f"{label}: path must be a nonempty string")
+        return None
+    result = Path(value).expanduser()
+    if not result.is_absolute():
+        result = base / result
+    result = result.resolve()
+    if not result.is_file():
+        errors.append(f"{label}: missing regular file: {result}")
+        return None
+    if result.stat().st_size == 0:
+        errors.append(f"{label}: evidence file is empty: {result}")
+        return None
+    return result
+
+
+def _bound(record: Any, base: Path, label: str, errors: list[str]) -> dict[str, Any] | None:
+    if not isinstance(record, dict):
+        errors.append(f"{label}: expected object with path and sha256")
+        return None
+    path = _path(record.get("path"), base, label, errors)
+    expected = _digest(record.get("sha256"))
+    if expected is None:
+        errors.append(f"{label}: invalid or missing sha256")
+        return None
+    if path is None:
+        return None
+    actual = _sha256(path)
+    if actual != expected:
+        errors.append(f"{label}: sha256 mismatch for {path}")
+    return {"path": str(path), "size": path.stat().st_size, "sha256": actual}
+
+
+def _candidate_fields(document: dict[str, Any]) -> tuple[str | None, str | None, str | None]:
+    candidate = document.get("candidate")
+    candidate = candidate if isinstance(candidate, dict) else {}
+    candidate_id = (document.get("candidateId") or candidate.get("candidateId")
+                    or candidate.get("id") or document.get("id"))
+    status = document.get("status")
+    sif_path = candidate.get("sifPath") or candidate.get("sif")
+    if isinstance(sif_path, dict):
+        sif_path = sif_path.get("path")
+    sif_sha = (candidate.get("sifSha256") or candidate.get("sifSHA256")
+               or candidate.get("sifDigest"))
+    if isinstance(sif_sha, dict):
+        sif_sha = sif_sha.get("sha256")
+    if sif_path is None:
+        sif_path = document.get("sifPath")
+    if sif_sha is None:
+        sif_sha = document.get("sifSha256") or document.get("sifDigest")
+    return (str(candidate_id) if candidate_id is not None else None,
+            str(sif_path) if sif_path is not None else None,
+            str(sif_sha) if sif_sha is not None else None)
+
+
+def validate(
+    manifest_path: Path,
+    expected_gate: str,
+    *,
+    candidate_manifest: Path | None = None,
+    expected_sif: Path | None = None,
+    expected_sif_sha256: str | None = None,
+) -> dict[str, Any]:
+    errors: list[str] = []
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {"schema": SCHEMA, "status": "FAIL", "errors": [f"cannot read manifest: {exc}"]}
+    if not isinstance(payload, dict):
+        return {"schema": SCHEMA, "status": "FAIL", "errors": ["manifest root must be an object"]}
+    if payload.get("schema") != SCHEMA:
+        errors.append(f"schema must equal {SCHEMA}")
+    if expected_gate not in GATES:
+        errors.append(f"unknown expected gate: {expected_gate}")
+    if payload.get("gate") != expected_gate:
+        errors.append(f"manifest gate {payload.get('gate')!r} does not match {expected_gate!r}")
+    candidate_id = payload.get("candidateId")
+    if not isinstance(candidate_id, str) or not candidate_id.strip():
+        errors.append("candidateId must be a nonempty string")
+
+    base = manifest_path.parent.resolve()
+    sif = _bound(payload.get("sif"), base, "sif", errors)
+    required = set(COMMON_CHECKS)
+    if expected_gate != "control":
+        required.update(MODEL_CHECKS)
+    checks = payload.get("checks")
+    if not isinstance(checks, dict):
+        checks = {}
+        errors.append("checks must be an object")
+    observed: dict[str, list[dict[str, Any]]] = {}
+    for check_id in sorted(required):
+        row = checks.get(check_id)
+        if not isinstance(row, dict):
+            errors.append(f"{check_id}: missing required check object")
+            continue
+        if row.get("status") != "PASS":
+            errors.append(f"{check_id}: status must be PASS")
+        evidence = row.get("evidence")
+        if not isinstance(evidence, list) or not evidence:
+            errors.append(f"{check_id}: evidence must be a nonempty list")
+            continue
+        bound: list[dict[str, Any]] = []
+        for index, item in enumerate(evidence):
+            item_result = _bound(item, base, f"{check_id}.evidence[{index}]", errors)
+            if item_result is not None:
+                bound.append(item_result)
+        observed[check_id] = bound
+    unknown = sorted(set(checks) - COMMON_CHECKS - MODEL_CHECKS)
+    if unknown:
+        errors.append("unknown checklist row(s): " + ", ".join(unknown))
+
+    binding: dict[str, Any] = {"candidateManifest": None, "expectedSif": None}
+    if candidate_manifest is not None:
+        candidate_manifest = candidate_manifest.expanduser().resolve()
+        binding["candidateManifest"] = str(candidate_manifest)
+        try:
+            closure = json.loads(candidate_manifest.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            errors.append(f"candidate manifest cannot be read: {exc}")
+        else:
+            if not isinstance(closure, dict):
+                errors.append("candidate manifest root must be an object")
+            else:
+                closure_id, closure_sif, closure_digest = _candidate_fields(closure)
+                binding.update({"candidateId": closure_id, "closureStatus": closure.get("status")})
+                if closure.get("status") not in {"PASS", "PROMOTABLE"}:
+                    errors.append("candidate manifest status must be PASS or PROMOTABLE")
+                if closure_id != candidate_id:
+                    errors.append("candidateId does not match closure manifest")
+                if closure_sif and sif and Path(closure_sif).expanduser().resolve() != Path(sif["path"]).resolve():
+                    errors.append("closure candidate SIF path does not match checklist SIF")
+                if closure_digest and sif and _digest(closure_digest) != sif["sha256"]:
+                    errors.append("closure candidate SIF digest does not match checklist SIF")
+
+    if expected_sif is not None:
+        expected_sif = expected_sif.expanduser().resolve()
+        binding["expectedSif"] = str(expected_sif)
+        if sif is None or Path(sif["path"]).resolve() != expected_sif:
+            errors.append("checklist SIF path does not match submit input")
+        if not expected_sif.is_file():
+            errors.append(f"submit SIF is missing: {expected_sif}")
+        elif sif is not None and sif["sha256"] != _sha256(expected_sif):
+            errors.append("checklist SIF digest differs from submit SIF")
+    expected_digest = _digest(expected_sif_sha256)
+    if expected_sif_sha256 is not None and expected_digest is None:
+        errors.append("submit SIF digest is invalid")
+    if expected_digest is not None and (sif is None or sif["sha256"] != expected_digest):
+        errors.append("checklist SIF digest does not match submit digest")
+
+    result = {
+        "schema": SCHEMA,
+        "status": "PASS" if not errors else "FAIL",
+        "gate": expected_gate,
+        "candidateId": candidate_id,
+        "manifest": str(manifest_path.expanduser().resolve()),
+        "manifestSha256": _sha256(manifest_path),
+        "requiredChecks": sorted(required),
+        "observedEvidence": observed,
+        "sif": sif,
+        "binding": binding,
+        "errors": errors,
+    }
+    return result
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--manifest", required=True, type=Path)
+    parser.add_argument("--gate", required=True, choices=sorted(GATES))
+    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--candidate-manifest", type=Path)
+    parser.add_argument("--expected-sif", type=Path)
+    parser.add_argument("--expected-sif-sha256")
+    args = parser.parse_args()
+    result = validate(
+        args.manifest.expanduser().resolve(), args.gate,
+        candidate_manifest=args.candidate_manifest,
+        expected_sif=args.expected_sif,
+        expected_sif_sha256=args.expected_sif_sha256,
+    )
+    rendered = json.dumps(result, indent=2, sort_keys=True) + "\n"
+    output = args.output.expanduser().resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(rendered, encoding="utf-8")
+    print(rendered, end="")
+    return 0 if result["status"] == "PASS" else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
