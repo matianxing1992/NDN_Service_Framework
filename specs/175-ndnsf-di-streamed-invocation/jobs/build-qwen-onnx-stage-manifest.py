@@ -128,6 +128,14 @@ def main() -> int:
                 or "attention_mask" not in input_names
                 or "position_ids" not in input_names):
             raise SystemExit("QWEN_ONNX_POSITION_INPUT_POLICY_REQUIRED")
+        contracts = dict(item.get("tensorContracts", {}))
+        for family in STATE_FAMILIES:
+            state_input = contracts.get(f"{family}_in", {})
+            state_output = contracts.get(f"{family}_out", {})
+            if (state_input.get("elementType")
+                    != state_output.get("elementType")):
+                raise SystemExit(
+                    "QWEN_ONNX_STATE_DTYPE_MISMATCH:" + family)
         role = f"/LLM/Pipeline/Stage/{index}"
         rows.append({
             "role": role,
@@ -165,7 +173,7 @@ def main() -> int:
                 "positionIdsInputName": "position_ids",
                 "cachePositionInputName": (
                     "cache_position" if "cache_position" in input_names else ""),
-                "tensorContracts": dict(item.get("tensorContracts", {})),
+                "tensorContracts": contracts,
             },
         })
 

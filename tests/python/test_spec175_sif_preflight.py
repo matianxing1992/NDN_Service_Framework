@@ -148,6 +148,10 @@ class Spec175SifPreflightTests(unittest.TestCase):
                         "outputNames": ["hidden_states_out", *state_out],
                         "stateInputNames": state_in,
                         "stateOutputNames": state_out,
+                        "tensorContracts": {
+                            name: {"elementType": 10, "shape": [1, 1]}
+                            for name in (*state_in, *state_out)
+                        },
                     },
                 })
             path.write_text(json.dumps({

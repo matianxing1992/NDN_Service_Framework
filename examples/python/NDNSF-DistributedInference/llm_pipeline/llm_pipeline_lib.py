@@ -2130,6 +2130,12 @@ def _onnx_stage_wrapper(model: Any, *, stateful: bool = False):
         def __init__(self, attention_kv, recurrent_state, convolution_state):
             if len(full_layer_indices) == 0 or len(linear_layer_indices) == 0:
                 raise ValueError("Qwen3.5 stateful stage must contain both layer types")
+            # The recurrent update is accumulated in float32 for numerical
+            # stability, but the public state boundary must retain the
+            # exported model dtype.  Otherwise a FP16 graph emits a FP32
+            # recurrent_state_out that cannot be fed to recurrent_state_in on
+            # the next decode epoch.
+            self.state_dtype = attention_kv.dtype
             self.values = {}
             self.layers = {}
             for cursor, layer in enumerate(full_layer_indices):
@@ -2181,11 +2187,11 @@ def _onnx_stage_wrapper(model: Any, *, stateful: bool = False):
             recurrent = torch.stack([
                 self.layers[layer].recurrent_states[0]
                 for layer in linear_layer_indices
-            ], dim=0)
+            ], dim=0).to(self.state_dtype)
             convolution = torch.stack([
                 self.layers[layer].conv_states[0]
                 for layer in linear_layer_indices
-            ], dim=0)
+            ], dim=0).to(self.state_dtype)
             return attention, recurrent, convolution
 
     class _QwenOnnxStage(nn.Module):
@@ -2613,6 +2619,19 @@ def _export_qwen_onnx_stage(model: Any, onnx_path: Path,
                 int(dim.dim_value) if dim.HasField("dim_value") else str(dim.dim_param)
             )
         return {"elementType": int(tensor.elem_type), "shape": dimensions}
+
+    if stateful:
+        contracts_by_name = {
+            value.name: contract(value)
+            for value in [*graph.input, *graph.output]
+        }
+        for input_name, output_name in zip(
+                canonical_state_inputs, canonical_state_outputs):
+            if (contracts_by_name[input_name]["elementType"]
+                    != contracts_by_name[output_name]["elementType"]):
+                raise RuntimeError(
+                    "QWEN_ONNX_STATE_DTYPE_MISMATCH: "
+                    f"{input_name}!={output_name}")
 
     return {
         "stageIndex": stage_index,

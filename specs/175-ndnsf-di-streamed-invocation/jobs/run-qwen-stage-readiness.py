@@ -83,6 +83,11 @@ def load_manifest(path: Path) -> dict:
             fail(f"QWEN_STAGE_STATE_INPUTS:{index}")
         if tuple(metadata.get("stateOutputNames", ())) != STATE_OUTPUTS:
             fail(f"QWEN_STAGE_STATE_OUTPUTS:{index}")
+        contracts = dict(metadata.get("tensorContracts", {}))
+        for family in STATE_FAMILIES:
+            if (contracts.get(f"{family}_in", {}).get("elementType")
+                    != contracts.get(f"{family}_out", {}).get("elementType")):
+                fail(f"QWEN_STAGE_STATE_DTYPE:{index}:{family}")
         if metadata.get("positionInputPolicy") != "qwen-causal-position-v1":
             fail(f"QWEN_STAGE_POSITION_POLICY:{index}")
         names = set(metadata.get("inputNames", ()))

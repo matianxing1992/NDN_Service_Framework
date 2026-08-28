@@ -289,6 +289,13 @@ class Spec175StatefulOnnxTests(unittest.TestCase):
             )
             self.assertEqual(info["sequencePolicy"], "stateful-prefill-decode-v1")
             document = onnx.load(str(path), load_external_data=False)
+            graph_types = {
+                value.name: value.type.tensor_type.elem_type
+                for value in [*document.graph.input, *document.graph.output]
+            }
+            for family in ("attention_kv", "recurrent_state", "convolution_state"):
+                self.assertEqual(graph_types[f"{family}_in"],
+                                 graph_types[f"{family}_out"])
 
             def non_tensor_values(graph):
                 values = [*graph.input, *graph.output, *graph.value_info]
