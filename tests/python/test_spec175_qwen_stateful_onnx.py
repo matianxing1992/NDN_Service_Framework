@@ -566,6 +566,7 @@ class Spec175StatefulOnnxTests(unittest.TestCase):
         self.assertIn("stage-device-ids", text)
         self.assertIn("one distinct GPU per stage", text)
         self.assertIn('"cuda" if output_name in STATE_OUTPUTS else "cpu"', text)
+        self.assertIn("attribute() if callable(attribute) else attribute", text)
         self.assertNotIn("copy_outputs_to_cpu", text)
         self.assertIn("pair_order", text)
         self.assertIn("pairCount", text)
