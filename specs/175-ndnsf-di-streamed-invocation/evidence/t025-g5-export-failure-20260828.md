@@ -42,3 +42,14 @@ runtime SIF, workload, GPU class, and exporter command with only the corrected
 source bundle.  It is pending allocation at the time of this record.  Its
 result must be checked before G5 can be marked complete.
 
+Job `206269` passed staged PyTorch parity and then failed while loading
+`stage-0-qwen.onnx` in ORT with `Unsupported type proto value case`.  A small
+probe using the same exporter SIF, FP16, Qwen3.5 stateful wrapper, and the
+actual non-divisible attention dimensions passed ONNX checker, ORT load, and
+ORT execution.  The remaining distinguishing condition was the
+`--containall` temporary filesystem: the same actual-dimension probe failed
+with `ENOSPC` until `TMPDIR` was explicitly bound to a writable project path.
+
+The next controlled retry, Job `206330`, therefore adds only a bound
+`/work/tmp` and `TMPDIR=/work/tmp` for exporter temporary files.  It must still
+produce a full stateful bundle before any G5 claim is made.
