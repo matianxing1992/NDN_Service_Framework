@@ -987,7 +987,8 @@ def qwen_transformer_stage_spec(*, role: str,
 def qwen_onnx_stage_spec(*, role: str,
                          stages: int,
                          layer_count: int,
-                         model_name: str) -> dict[str, Any]:
+                         model_name: str,
+                         stateful: bool = False) -> dict[str, Any]:
     spec = qwen_transformer_stage_spec(
         role=role,
         stages=stages,
@@ -1002,31 +1003,51 @@ def qwen_onnx_stage_spec(*, role: str,
     })
     start = int(spec["layerRange"]["start"])
     end = int(spec["layerRange"]["endExclusive"])
-    cache_inputs = [
-        name
-        for layer in range(start, end)
-        for name in (f"past_key.{layer}", f"past_value.{layer}")
-    ]
-    cache_outputs = [
-        name
-        for layer in range(start, end)
-        for name in (f"present_key.{layer}", f"present_value.{layer}")
-    ]
     primary_inputs = (
         ["input_ids", "attention_mask", "position_ids"]
         if int(spec["stageIndex"]) == 0
         else ["attention_mask", "hidden_states", "position_ids"]
     )
-    spec.update({
-        "inputNames": [*primary_inputs, *cache_inputs],
-        "outputNames": [
-            "logits" if int(spec["stageIndex"]) == int(spec["stageCount"]) - 1
-            else "hidden_states_out",
-            *cache_outputs,
-        ],
-        "cacheInputs": cache_inputs,
-        "cacheOutputs": cache_outputs,
-    })
+    primary_output = (
+        "logits" if int(spec["stageIndex"]) == int(spec["stageCount"]) - 1
+        else "hidden_states_out"
+    )
+    if stateful:
+        state_inputs = [
+            "attention_kv_in", "recurrent_state_in", "convolution_state_in",
+        ]
+        state_outputs = [
+            "attention_kv_out", "recurrent_state_out", "convolution_state_out",
+        ]
+        spec.update({
+            "inputNames": [*primary_inputs, *state_inputs],
+            "outputNames": [primary_output, *state_outputs],
+            "cacheInputs": [],
+            "cacheOutputs": [],
+            "stateInputNames": state_inputs,
+            "stateOutputNames": state_outputs,
+            "sequencePolicy": "stateful-prefill-decode-v1",
+        })
+    else:
+        cache_inputs = [
+            name
+            for layer in range(start, end)
+            for name in (f"past_key.{layer}", f"past_value.{layer}")
+        ]
+        cache_outputs = [
+            name
+            for layer in range(start, end)
+            for name in (f"present_key.{layer}", f"present_value.{layer}")
+        ]
+        spec.update({
+            "inputNames": [*primary_inputs, *cache_inputs],
+            "outputNames": [primary_output, *cache_outputs],
+            "cacheInputs": cache_inputs,
+            "cacheOutputs": cache_outputs,
+            "stateInputNames": [],
+            "stateOutputNames": [],
+            "sequencePolicy": "dynamic-past-key-v1",
+        })
     return spec
 
 
@@ -2479,7 +2500,8 @@ def _export_qwen_onnx_stage(model: Any, onnx_path: Path,
 
 def _validate_qwen_onnx_stages(artifacts: list[SplitArtifact], *,
                                input_ids: Any, attention_mask: Any,
-                               config: Any) -> dict[str, Any]:
+                               config: Any,
+                               stateful: bool = False) -> dict[str, Any]:
     import numpy as np
     import onnxruntime as ort
 
@@ -2507,6 +2529,33 @@ def _validate_qwen_onnx_stages(artifacts: list[SplitArtifact], *,
         options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_BASIC
         session = ort.InferenceSession(
             artifact.path, sess_options=options, providers=["CPUExecutionProvider"])
+        metadata = dict(artifact.metadata or {})
+        artifact_stateful = bool(
+            stateful
+            or metadata.get("stateInputNames")
+            or metadata.get("sequencePolicy") == "stateful-prefill-decode-v1"
+        )
+
+        def state_shape(value):
+            dimensions = []
+            for axis, dimension in enumerate(getattr(value, "shape", ())):
+                if isinstance(dimension, int):
+                    dimensions.append(dimension)
+                    continue
+                text = str(dimension)
+                if text.isdigit():
+                    dimensions.append(int(text))
+                elif text in {"batch", "B"}:
+                    dimensions.append(int(ids.shape[0]))
+                elif text in {"seq", "total_seq"}:
+                    dimensions.append(int(ids.shape[1]))
+                elif text in {"past", "past_seq"}:
+                    dimensions.append(0)
+                else:
+                    raise RuntimeError(
+                        f"unresolved exported Qwen state dimension: {value.name}:{dimension}")
+            return tuple(dimensions)
+
         feed = {}
         for item in session.get_inputs():
             if item.name == "input_ids":
@@ -2520,6 +2569,15 @@ def _validate_qwen_onnx_stages(artifacts: list[SplitArtifact], *,
                 )
             elif item.name == "position_ids":
                 feed[item.name] = position_ids
+            elif artifact_stateful and item.name in {
+                    "attention_kv_in", "recurrent_state_in",
+                    "convolution_state_in"}:
+                shape = state_shape(item)
+                dtype = _onnx_input_numpy_dtype(
+                    getattr(item, "type", ""), np.float32)
+                feed[item.name] = np.empty(shape, dtype=dtype)
+                if item.name != "attention_kv_in":
+                    feed[item.name].fill(0)
             elif item.name.startswith(("past_key.", "past_value.")):
                 feed[item.name] = np.empty(
                     (ids.shape[0], kv_heads, 0, head_dim),
@@ -2537,7 +2595,14 @@ def _validate_qwen_onnx_stages(artifacts: list[SplitArtifact], *,
         stage_records.append({
             "role": artifact.role,
             "primaryShape": list(primary.shape),
-            "cacheOutputCount": len(outputs) - 1,
+            "cacheOutputCount": (
+                0 if artifact_stateful else len(outputs) - 1),
+            "stateOutputCount": (
+                len(outputs) - 1 if artifact_stateful else 0),
+            "sequencePolicy": metadata.get(
+                "sequencePolicy",
+                "stateful-prefill-decode-v1" if artifact_stateful
+                else "dynamic-past-key-v1"),
         })
         del session
     if logits is None:
@@ -2559,6 +2624,7 @@ def write_qwen_onnx_stage_artifacts(
     prompt: str = "",
     allow_download: bool = False,
     dtype: str = "float32",
+    stateful: bool = False,
 ) -> list[SplitArtifact]:
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -2630,6 +2696,7 @@ def write_qwen_onnx_stage_artifacts(
             stages=stages,
             layer_count=layer_count,
             model_name=model_name,
+            stateful=stateful,
         )
         pt_path = root / f"stage-{spec['stageIndex']}-qwen-onnx-export.pt"
         package = {
@@ -2665,6 +2732,7 @@ def write_qwen_onnx_stage_artifacts(
             onnx_path,
             sample_input_ids=sample_input_ids,
             export_dtype=dtype,
+            stateful=stateful,
         )
         artifacts.append(SplitArtifact(
             role=role,
@@ -2687,6 +2755,9 @@ def write_qwen_onnx_stage_artifacts(
                 "outputNames": export_info["outputNames"],
                 "cacheInputs": export_info["cacheInputs"],
                 "cacheOutputs": export_info["cacheOutputs"],
+                "stateInputNames": export_info["stateInputNames"],
+                "stateOutputNames": export_info["stateOutputNames"],
+                "sequencePolicy": export_info["sequencePolicy"],
                 "tensorContracts": export_info["tensorContracts"],
             },
         ))
@@ -2706,6 +2777,7 @@ def write_qwen_onnx_stage_artifacts(
             input_ids=input_ids,
             attention_mask=attention_mask,
             config=model_config,
+            stateful=stateful,
         )
         if validation["topToken"] != expected_top_token:
             raise RuntimeError(
@@ -2742,6 +2814,9 @@ def write_qwen_onnx_stage_artifacts(
         "layerCount": layer_count,
         "expectedTopToken": expected_top_token,
         "stagedValidation": validation,
+        "sequencePolicy": (
+            "stateful-prefill-decode-v1" if stateful
+            else "dynamic-past-key-v1"),
         "stages": [],
     }
     for artifact in artifacts:
@@ -2757,6 +2832,9 @@ def write_qwen_onnx_stage_artifacts(
             "outputNames": artifact.metadata["outputNames"],
             "cacheInputs": artifact.metadata["cacheInputs"],
             "cacheOutputs": artifact.metadata["cacheOutputs"],
+            "stateInputNames": artifact.metadata["stateInputNames"],
+            "stateOutputNames": artifact.metadata["stateOutputNames"],
+            "sequencePolicy": artifact.metadata["sequencePolicy"],
             "tensorContracts": artifact.metadata["tensorContracts"],
         })
     (Path(output_dir) / "qwen-onnx-service-manifest.json").write_text(
@@ -2774,6 +2852,7 @@ def with_qwen_onnx_artifacts(
     prompt: str = "",
     allow_download: bool = False,
     dtype: str = "float32",
+    stateful: bool = False,
 ) -> SplitterOutput:
     services: list[SplitServiceSpec] = []
     for service in splitter.services:
@@ -2794,6 +2873,7 @@ def with_qwen_onnx_artifacts(
                 prompt=prompt,
                 allow_download=allow_download,
                 dtype=dtype,
+                stateful=stateful,
             ),
             input_schema=dict(service.input_schema),
             output_schema=dict(service.output_schema),
@@ -2917,6 +2997,11 @@ def reuse_qwen_onnx_stage_artifacts(
                 "outputNames": list(metadata_row["outputNames"]),
                 "cacheInputs": list(metadata_row["cacheInputs"]),
                 "cacheOutputs": list(metadata_row["cacheOutputs"]),
+                "stateInputNames": list(metadata_row.get("stateInputNames", [])),
+                "stateOutputNames": list(metadata_row.get("stateOutputNames", [])),
+                "sequencePolicy": metadata_row.get(
+                    "sequencePolicy", service_manifest.get(
+                        "sequencePolicy", "dynamic-past-key-v1")),
                 "tensorContracts": dict(metadata_row["tensorContracts"]),
             },
         ))
@@ -4383,6 +4468,7 @@ def write_policy(
     qwen_prompt: str = "",
     qwen_allow_download: bool = False,
     qwen_dtype: str = "float32",
+    qwen_stateful: bool = False,
     qwen_content_store: str = "",
     qwen_artifact_store: str = "",
     qwen_service_manifest: str = "",
@@ -4461,6 +4547,7 @@ def write_policy(
                 prompt=qwen_prompt,
                 allow_download=qwen_allow_download,
                 dtype=qwen_dtype,
+                stateful=qwen_stateful,
             )
     policy = Path(path)
     splitter.write_policy_config(policy)

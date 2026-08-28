@@ -44,6 +44,13 @@ def main() -> int:
     parser.add_argument("--qwen-prompt", default="")
     parser.add_argument("--qwen-allow-download", action="store_true")
     parser.add_argument("--qwen-dtype", choices=("float32", "float16", "auto"), default="float32")
+    parser.add_argument(
+        "--qwen-stateful",
+        action="store_true",
+        help=(
+            "Export the Qwen3.5/3.6 stateful prefill/decode contract with "
+            "persistent attention, recurrent, and convolution state."),
+    )
     parser.add_argument("--qwen-content-store", default="")
     parser.add_argument("--qwen-artifact-store", default="")
     parser.add_argument("--qwen-service-manifest", default="")
@@ -69,6 +76,7 @@ def main() -> int:
         qwen_prompt=args.qwen_prompt,
         qwen_allow_download=args.qwen_allow_download,
         qwen_dtype=args.qwen_dtype,
+        qwen_stateful=args.qwen_stateful,
         qwen_content_store=args.qwen_content_store,
         qwen_artifact_store=args.qwen_artifact_store,
         qwen_service_manifest=args.qwen_service_manifest,
