@@ -742,9 +742,11 @@ manifest, and cleanup requirements pass. This is intentional: the previous
 20/28 display overstated progress while T005--T019 still had partial or stale
 evidence. The automatic Provider-state and repository-readiness corrections
 reopened T020 and invalidated their predecessor seals. The corrected committed
-subject has now passed one new source-bound G0--G3 sequence. The current
-baseline is therefore 28/34 accepted tasks: the implementation queue, T020,
-and T022 are closed, while T023 and the post-G4 release gates remain open.
+subject passed one new source-bound G0--G3 sequence, and its exact local SIF
+passed both layer-specific preflights plus an auditable 42-entry G4 aggregate
+with one explicitly recorded replacement. The current baseline is therefore
+29/34 accepted tasks: the implementation queue, T020, T022, and T023 are
+closed, while the post-G4 release gates remain open.
 
 After T005--T019, T024, and T029--T033 completed the Core/runtime/API,
 conversation, and pre-frozen harness/launcher implementation, T020 resealed the
@@ -753,9 +755,10 @@ localize any post-Selection exact-event fetch race without changing retry
 parameters, (B) obtain three clean M01 processes, (C) run M02--M14 three times
 each with one registered fault/continuation dimension, (D) seal the 42/42 manifest, and (E) classify
 every same-subject native exit. The resulting clean D/E closure passed G3.
-T021 owns the already implemented builder/preflight machinery; T023 may now
-use it to build one final SIF from the frozen G0--G3 subject. This keeps the cheap
-debugging loop separate from the expensive release-candidate path.
+T021 owns the already implemented builder/preflight machinery; T023 used it to
+build one final SIF and qualify the host-orchestrated exact-SIF replay. T025 is
+now the next gate; this keeps the cheap debugging loop separate from the
+expensive Tiger release-candidate path.
 
 The promotion gates are preceded by a development-toolchain closure check. C++
 work must compile and link against one explicit NDN-SVS `Experimental`

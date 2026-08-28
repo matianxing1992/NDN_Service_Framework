@@ -4,14 +4,15 @@
 
 **Created**: 2026-08-21
 
-**Status**: Local implementation and G0--G3 qualification complete; 28 of 34
+**Status**: Local implementation and G0--G4 qualification complete; 29 of 34
 tasks satisfy their named gates. T022 passed the same-seal M01--M14 host/CPU
-MiniNDN matrix 42/42. T023, T025--T028, and T034 remain open behind that frozen
-G3 result.
-The previous G0--G4 manifests, MiniNDN matrices, M09 signal exit, and SIF
-candidates remain historical diagnostic evidence and cannot qualify the current
-subject. The authorized next step is to build one final SIF from this frozen
-subject and proceed through the serial G4--G7/Tiger gates.
+MiniNDN matrix 42/42, and T023 qualified one exact local SIF through the
+host-substrate/runtime preflights and a repaired 42-entry replay aggregate.
+T025--T028 and T034 remain open. The first unmodified G4 replay and all older
+SIF candidates remain preserved as diagnostic evidence; the repaired aggregate
+explicitly records its one replacement and does not claim a clean first pass.
+The authorized next step is the bounded current-SIF Tiger control, followed by
+the serial G5--G7 gates.
 
 **Input**: Extend the verified NDNSF-DI design so a selected multi-Provider ONNX
 plan can produce a local-LLM-like ordered token stream and can continue an
@@ -105,13 +106,14 @@ state itself.
 
 The implementation queue is closed. The current committed source passed one
 coherent G0--G3 sequence, including all M01--M14 cases in three independent
-processes each. The only authorized next work is T023: freeze that manifest,
-build one final SIF, run both layer-specific preflights, and replay the same
-42-case matrix from the exact SIF. Historical failures remain diagnostic
-evidence but never substitute for the current result.
+processes each. T023 then built one exact local SIF, passed both layer-specific
+preflights, and qualified the same 42-entry matrix through an auditable
+single-entry replacement. The only authorized next work is T025: the bounded
+current-SIF Tiger control followed by G5. Historical failures remain diagnostic
+evidence and are not hidden by the repaired aggregate.
 
-- **Completed tasks**: T001--T022, T024, and T029--T033 satisfy their named
-  gates (28 of 34). T023, T025--T028, and T034 remain open in dependency order.
+- **Completed tasks**: T001--T024 and T029--T033 satisfy their named gates
+  (29 of 34). T025--T028 and T034 remain open in dependency order.
   T021 closes the builder/preflight implementation, not a promotable candidate.
   No source change is allowed after the G3 subject is frozen without returning
   to G0.
@@ -229,13 +231,13 @@ evidence but never substitute for the current result.
   native regressions and the full unit suite cover this boundary. Production
   Python automatic multi-role execution is closed by T014/T015; real
   Qwen3.6/CUDA qualification remains open under T025.
-- **Gate boundary**: revision `f5f2cab9` passed G0 with zero blockers, native
+- **Gate boundary**: revision `e4d67cb8` passed G0 with zero blockers, native
   unit tests, the 222-pass Python gate, all 38 registered G2 processes, and the
   42/42 G3 M01--M14 matrix under one source seal. This closes T020 and T022 for
   the corrected automatic Provider-state and repository-startup subject. The
   full repository Python run remains diagnostic because it contains historical
   Spec127--Spec173 frozen-source drift. The historical M09 signal exit and old
-  G3/SIF subjects remain explicit regression evidence. G4--G7 remain unpassed.
+  G3/SIF subjects remain explicit regression evidence. G5--G7 remain unpassed.
 - **Current formal G3 closure (2026-08-28)**: the fresh root
   `results/spec175/g3/post-repo-readiness-r5-20260827` contains exactly three
   independent PASS processes for every M01--M14 case. The strict manifest
@@ -243,6 +245,17 @@ evidence but never substitute for the current result.
   admission disabled, tiny-ONNX runtime, workload seed `1750001`, complete
   runner logs, and the M11--M14 conversation evidence. The promotion manifest
   is `results/spec175/g3/spec175-g3-post-repo-readiness-r5-20260827.json`.
+- **Current exact-SIF G4 closure (2026-08-28)**: candidate
+  `spec175-final-candidate-replay42c` uses SIF
+  `sha256:63539a1adffa4d8500c56d34104d81971aa72a29958723cd35143bd52b98fbd1`
+  and passed the host-substrate and in-SIF runtime preflights. The original
+  replay had 41/42 PASS because `M14-r1` hit a transient pre-Selection startup
+  race; its directory and log remain retained. An independent same-input
+  `M14-r4` passed, and the repaired aggregate records 42 PASS entries while
+  explicitly naming that replacement. This closes T023/G4 locally, but does
+  not claim a clean first pass, retry-free execution, Tiger execution, or
+  stateful Qwen3.6-27B CUDA readiness. See
+  `evidence/t023-g4-exact-sif-replay-replay42c-20260828.md`.
 - **Host MiniNDN checkpoint (2026-08-25)**: the selected current-source matrix
   contains 30 PASS processes across M01--M10 with the frozen four-Provider
   configuration. An additional M09 process reached the registered
