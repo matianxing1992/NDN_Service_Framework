@@ -5,11 +5,7 @@
 - source revision: `f5f2cab9983d41a8e9f6d867fedf7b3e2a4a9d07`;
 - source seal: `results/spec175/g0/source-seal-post-repo-readiness-r5-20260827.json`;
 - source-seal SHA-256:
-  `194b9742442c1eba9353f8c96faf5b50dc846c83e146a3eddbad7b0409e15a93`;
-- final post-document G0 manifest:
-  `results/spec175/g0/qualification-manifest-post-repo-readiness-final-r5-20260827.json`;
-- final post-document G0 manifest SHA-256:
-  `5fea41a2ed07af1d4f676cfc4737dde32be043d699ea4c54498be081f7b52ad4`.
+  `194b9742442c1eba9353f8c96faf5b50dc846c83e146a3eddbad7b0409e15a93`.
 
 ## Formal G3 execution
 
