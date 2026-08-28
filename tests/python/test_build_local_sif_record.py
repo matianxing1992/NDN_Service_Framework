@@ -12,7 +12,7 @@ BUILD_LOCAL_SIF = (
     / "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts"
     / "build-local-sif.sh"
 )
-HOST_GATE = ROOT / "results/spec175/g3/host-minindn-manifest-final-20260825.json"
+HOST_GATE = ROOT / "results/spec175/g3/spec175-g3-post-repo-readiness-r5-20260827.json"
 
 
 def valid_definition(base: Path, source: Path, extra_labels: str = "") -> str:
@@ -59,7 +59,7 @@ Stage: final
 {extra_labels}"""
 
 
-def write_source_seal(root: Path) -> Path:
+def write_source_seal(root: Path, *, source_revision: str = "test-revision") -> Path:
     source = root / "sealed-source.txt"
     source.write_text("sealed source\n", encoding="utf-8")
     archive = root / "workspace.tar"
@@ -82,7 +82,7 @@ def write_source_seal(root: Path) -> Path:
     ]
     body = {
         "schemaVersion": "spec170-local-sif-source-v1",
-        "sourceRevision": "test-revision",
+        "sourceRevision": source_revision,
         "sourceMode": "sealed-current-worktree-files",
         "workspace": str(root),
         "archive": {
@@ -133,7 +133,10 @@ def test_localimage_base_is_hash_bound_in_build_record(tmp_path):
         valid_definition(base, source),
         encoding="utf-8",
     )
-    source_seal = write_source_seal(tmp_path)
+    source_revision = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True,
+    ).strip()
+    source_seal = write_source_seal(tmp_path, source_revision=source_revision)
     seal_digest = json.loads(source_seal.read_text(encoding="utf-8"))["sealDigest"]
     apptainer.write_text(
         apptainer.read_text(encoding="utf-8").replace(
@@ -433,8 +436,5 @@ def test_spec175_strict_host_source_identity_rejects_stale_g3(tmp_path):
         cwd=ROOT, capture_output=True, text=True,
     )
     assert result.returncode == 4
-    assert (
-        "LOCAL_SIF_HOST_GATE_SOURCE_REVISION_MISMATCH" in result.stderr
-        or "LOCAL_SIF_HOST_GATE_SOURCE_FILE_MISMATCH" in result.stderr
-    )
+    assert "LOCAL_SIF_HOST_GATE_SOURCE_SEAL_INVALID" in result.stderr
     assert invocation_log.read_text(encoding="utf-8").splitlines() == ["version"]

@@ -155,43 +155,78 @@ PY
 fi
 # The host G3 manifest is a qualification of the exact source identity being
 # built.  A structurally valid 30/30 manifest from an older source seal must
-# not be silently reused for a newer SIF candidate.
+# not be silently reused for a source-different SIF candidate.  The Spec175
+# source seal intentionally permits descendant document-only commits and may
+# be clean (``dirtyFiles`` is then empty), so requiring a dirty-file overlap
+# would reject the normal clean-tree build.
 if [ "$strict_host_source_seal" = 1 ] && ! python3 - "$host_gate_json" "$source_seal" "$repository_root" <<'PY'
+import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 
 host = json.loads(sys.argv[1])
-current = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+local_source_path = Path(sys.argv[2])
+local_source = json.loads(local_source_path.read_text(encoding="utf-8"))
 repository_root = Path(sys.argv[3])
 host_path = Path(host["sourceSealPath"])
 if not host_path.is_absolute():
     host_path = repository_root / host_path
-previous = json.loads(host_path.read_text(encoding="utf-8"))
-if previous.get("sourceRevision") != current.get("sourceRevision"):
+try:
+    gate_path = repository_root / "scripts/spec175_contract_gate.py"
+    spec = importlib.util.spec_from_file_location("spec175_contract_gate", gate_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("SPEC175_CONTRACT_GATE_IMPORT_FAILED")
+    gate = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gate)
+    current_revision, all_dirty = gate._git_state(repository_root)
+    host_record, issues = gate._verify_source_seal(
+        repository_root, host_path, current_revision, all_dirty)
+except Exception as error:
+    print(f"LOCAL_SIF_HOST_GATE_SOURCE_SEAL_CHECK_FAILED error={error}", file=sys.stderr)
+    raise SystemExit(4)
+if issues:
+    issue = issues[0]
     print(
-        "LOCAL_SIF_HOST_GATE_SOURCE_REVISION_MISMATCH "
-        f"expected={current.get('sourceRevision')} manifest={previous.get('sourceRevision')}",
+        "LOCAL_SIF_HOST_GATE_SOURCE_SEAL_INVALID "
+        f"code={issue.get('code', 'UNKNOWN')} detail={issue.get('detail', '')}",
         file=sys.stderr,
     )
     raise SystemExit(4)
-current_rows = {row["path"]: row.get("sha256") for row in current.get("files", [])}
-overlap = 0
+
+local_revision = str(local_source.get("sourceRevision", ""))
+if not local_revision:
+    print("LOCAL_SIF_SOURCE_SEAL_REVISION_MISSING", file=sys.stderr)
+    raise SystemExit(4)
+source_changes = gate._source_changes_between(
+    repository_root, local_revision, current_revision)
+if source_changes is None:
+    print(
+        "LOCAL_SIF_SOURCE_SEAL_REVISION_NOT_ANCESTOR "
+        f"archive={local_revision} current={current_revision}",
+        file=sys.stderr,
+    )
+    raise SystemExit(4)
+if source_changes:
+    print(
+        "LOCAL_SIF_SOURCE_SEAL_SOURCE_DRIFT "
+        + ", ".join(source_changes[:12]),
+        file=sys.stderr,
+    )
+    raise SystemExit(4)
+
+previous = json.loads(host_path.read_text(encoding="utf-8"))
+local_rows = {row["path"]: row.get("sha256") for row in local_source.get("files", [])}
 for path, row in previous.get("dirtyFiles", {}).items():
-    recorded = row.get("sha256")
-    if not recorded or path not in current_rows:
-        continue
-    overlap += 1
-    if current_rows[path] != recorded:
+    expected = row.get("sha256")
+    if expected and local_rows.get(path) != expected:
         print(
             "LOCAL_SIF_HOST_GATE_SOURCE_FILE_MISMATCH "
-            f"path={path} expected={current_rows[path]} manifest={recorded}",
+            f"path={path} expected={expected} archive={local_rows.get(path)}",
             file=sys.stderr,
         )
         raise SystemExit(4)
-if overlap == 0:
-    print("LOCAL_SIF_HOST_GATE_SOURCE_OVERLAP_EMPTY", file=sys.stderr)
-    raise SystemExit(4)
 PY
 then
   exit 4
