@@ -96,6 +96,13 @@ def test_checklist_validator_accepts_candidate_bound_control(tmp_path: Path) -> 
     assert json.loads((tmp_path / "validation.json").read_text())["status"] == "PASS"
 
 
+def test_submit_digest_parser_is_python39_compatible() -> None:
+    text = SUBMIT.read_text(encoding="utf-8")
+    assert "expected = sys.argv[3]" in text
+    assert 'expected.startswith("sha256:")' in text
+    assert "map(pathlib.Path, sys.argv[1:5])" not in text
+
+
 def test_checklist_validator_requires_model_rows_for_functional_gate(tmp_path: Path) -> None:
     subject = make_subject(tmp_path, "functional")
     payload = json.loads(subject["checklist"].read_text())

@@ -1,0 +1,50 @@
+1787937553.274084  INFO: [ndn_service_framework.CertificatePublisher] Serving certificate name=/example/hello/provider/A/KEY/%04%D36%BD%1F%06%E1i/self/v=1787937552297 prefix=/example/hello/provider/A/KEY/%04%D36%BD%1F%06%E1i
+1787937553.274146  INFO: [ndn_service_framework.CertificatePublisher] NDNSF_CERT_PUBLISHER_READY prefix=/example/hello/provider/A/KEY/%04%D36%BD%1F%06%E1i name=/example/hello/provider/A/KEY/%04%D36%BD%1F%06%E1i/self/v=1787937552297 certCount=1
+1787937553.278403  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=constructor_begin provider=/example/hello/provider/A
+1787937553.278426  WARN: [ndn_service_framework.ServiceProvider] NDNSF_CERT_SELECTION role=provider identity=/example/hello/provider/A encryptionCert=/example/hello/provider/A/KEY/%04%D36%BD%1F%06%E1i/self/v=1787937552297 signingCert=/example/hello/provider/A/KEY/%04%D36%BD%1F%06%E1i/self/v=1787937552297 splitSigning=false
+1787937553.278574  INFO: [ndn_service_framework.ServiceProvider] NDNSF_HANDLER_THREADS role=provider workers=2
+1787937553.278591  INFO: [ndn_service_framework.ServiceProvider] NDNSF_ACK_THREADS role=provider workers=2
+1787937553.279642  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=validator_loaded provider=/example/hello/provider/A
+1787937553.279654  INFO: [ndn_service_framework.ServiceProvider] [ServiceProvider] NAC_ABE_BOOTSTRAP provider=/example/hello/provider/A authority=/example/hello/controller dkPrefix=/example/hello/controller/DKEY
+1787937553.279674  INFO: [ndn_service_framework.ServiceProvider] [ServiceProvider] registered service content prefix=/example/hello/provider/A/NDNSF
+1787937553.281621  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=content_filters_registered provider=/example/hello/provider/A
+1787937553.283191  INFO: [ndn_service_framework.ServiceProvider] NDNSF_SVS_OPTIONS role=provider maxApplicationParametersSize=4096 maxPiggyDataSize=800
+1787937553.283201  WARN: [ndn_service_framework.ServiceProvider] NDNSF_SVS_PUBLICATION_FETCH_CONFIG role=provider retries=2 innerRetries=2 lifetimeMs=500 backoffMs=50 maxBackoffMs=2000 window=10 expectedRps=0 explicitWindow=false
+1787937553.283224 ERROR: [ndn_service_framework.ConfigManager] Cannot open config file: /etc/ndn/ndnsf.conf
+1787937553.287043  INFO: [ndn_service_framework.ServiceProvider] NDNSF_SVS_PROTOCOL role=provider version=3 lifetimeMs=1000 suppressionMs=200 periodicMs=30000
+1787937553.287058  INFO: [ndn_service_framework.ServiceProvider] NDNSF_SVS_PERIODIC_SYNC_MS role=provider value=100
+1787937553.287060  INFO: [ndn_service_framework.ServiceProvider] NDNSF_SVS_ASYNC_PUBLISH role=provider disabled
+1787937553.287062  INFO: [ndn_service_framework.ServiceProvider] NDNSF_SVS_PARALLEL_SYNC disabled role=provider reason=explicit-opt-in-required
+1787937553.287064  INFO: [ndn_service_framework.ServiceProvider] NDNSF_SVS_PARALLEL_PRODUCTION disabled role=provider reason=explicit-opt-in-required
+1787937553.287070  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=svs_pubsub_ready provider=/example/hello/provider/A
+1787937553.287078  INFO: [ndn_service_framework.ServiceProvider] DK_INTEREST_EXPRESSED prefix=/example/hello/controller/DKEY provider=/example/hello/provider/A
+1787937553.287127  INFO: [ndn_service_framework.ServiceProvider] Waiting for decryption key
+1787937553.291717  INFO: [ndn_service_framework.CertificatePublisher] NDNSF_CERT_PUBLISHER_REGISTERED prefix=/example/hello/provider/A/KEY/%04%D36%BD%1F%06%E1i
+1787937554.295860  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=dkey_wait_iteration provider=/example/hello/provider/A
+1787937554.295895  INFO: [ndn_service_framework.ServiceProvider] DK_DECRYPT_SUCCESS provider=/example/hello/provider/A
+1787937554.295901  WARN: [ndn_service_framework.ServiceProvider] NDNSF_PROVIDER_INIT_STAGE stage=constructor_done provider=/example/hello/provider/A
+1787937554.295962  WARN: [ndn_service_framework.ServiceProvider] UserToken/ProviderToken runtime mode: enabled
+1787937554.296274  WARN: [ndn_service_framework.ServiceProvider] NDNSF provider worker threads: 4
+1787937554.296475  WARN: [ndn_service_framework.ServiceProvider] NDNSF provider ACK worker threads: 2
+1787937554.297889  WARN: [ndn_service_framework.ServiceProvider] [ServiceProvider] registered service prefix=/HELLO
+1787937554.297912  WARN: [ndn_service_framework.ServiceProvider] Registered service handler for /HELLO invocation-mode=NormalAndTargeted
+1787937554.297964  INFO: [ndn_service_framework.ServiceProvider] No provider service info registration configured for /example/hello/provider/A
+1787937554.297979  WARN: [ndn_service_framework.ServiceProvider] Register NDNSF Messages in ndn-svs
+1787937554.298003  INFO: [ndn_service_framework.utils] <HELLO>
+1787937554.298015  WARN: [ndn_service_framework.ServiceProvider] [ServiceProvider] SVS request subscription regex=^(<>*)<NDNSF><REQUEST><HELLO>(<>)$
+1787937554.299152  INFO: [ndn_service_framework.ServiceProvider] Fetch policy manifest: /example/hello/controller/NDNSF/POLICY-MANIFEST attempt=1/20
+1787937554.299293  INFO: [ndn_service_framework.ServiceProvider] Fetch provider permissions: /example/hello/controller/NDNSF/PERMISSIONS/PROVIDER/example/hello/provider/A attempt=1/20
+1787937554.302019  INFO: [ndn_service_framework.ServiceProvider] Installed PolicyManifest PolicyManifest{policyEpoch=8017320604359500226, validFromMs=0, gracePeriodMs=0, requiredKeyEpoch=8017320604359500226}
+1787937554.303091  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/A/HELLO service=/HELLO policyEpoch=8017320604359500226
+1787937554.303113  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/A/NDNSF/DistributedRepo/Artifact/v2/STORE service=/NDNSF/DistributedRepo/Artifact/v2/STORE policyEpoch=8017320604359500226
+1787937554.303124  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/A/NDNSF/DistributedRepo/Artifact/v2/STORE/ROLE/artifact-replica-0 service=/NDNSF/DistributedRepo/Artifact/v2/STORE/ROLE/artifact-replica-0 policyEpoch=8017320604359500226
+1787937554.303133  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/A/NDNSF/DistributedRepo/Store service=/NDNSF/DistributedRepo/Store policyEpoch=8017320604359500226
+1787937554.303142  WARN: [ndn_service_framework.ServiceProvider] Installed provider permission provider=/example/hello/provider/A/NDNSF/DistributedRepo/Store/ROLE/artifact-replica-0 service=/NDNSF/DistributedRepo/Store/ROLE/artifact-replica-0 policyEpoch=8017320604359500226
+NDNSF_DI_NATIVE_PROVIDER_READY provider=/example/hello/provider/A
+1787937564.146967  INFO: [ndn_service_framework.ServiceProvider] NDNSF_PUBLICATION_AUDIT role=provider type=REQUEST validated=true packetPresent=true packetName=/example/hello/user/NDNSF/REQUEST/HELLO/20260828T171924.137163-7192eef03f0168ac producerPrefix=/example/hello/user/user/0 seqNo=1 signerKeyLocator=/example/hello/user/KEY/%7D%CF%83%84%E0%1E%1A2/self/v=1787937552479 wireDigest=sha256:A8355E50FCD7F5AE13B0C40DB89B45194D8A03C17CDA3D44687B7506E3D70596 requestId=/20260828T171924.137163-7192eef03f0168ac serviceName=/HELLO requesterName=/example/hello/user providerName=/example/hello/provider/A
+1787937569.144298  INFO: [ndn_service_framework.ServiceProvider] NDNSF_PUBLICATION_AUDIT role=provider type=SELECTION validated=true packetPresent=true packetName=/example/hello/user/NDNSF/SELECTION/%2Fexample%2Fhello%2Fprovider%2FA/HELLO/20260828T171924.137163-7192eef03f0168ac producerPrefix=/example/hello/user/user/0 seqNo=2 signerKeyLocator=/example/hello/user/KEY/%7D%CF%83%84%E0%1E%1A2/self/v=1787937552479 wireDigest=sha256:D46395E621F48D405EA7CB8D7CBFB20188609603A4B47E4C98F44863C369CF86 requestId=/20260828T171924.137163-7192eef03f0168ac serviceName=/HELLO requesterName=/example/hello/user providerName=/example/hello/provider/A
+1787937569.146843  INFO: [ndn_service_framework.ServiceProvider] NDNSF_SELECTION_STATUS digest=E6BEE85AA5718C858D994DF88FD5D33C588C073722455CFB5A11C378515AEE1F state=1 provider=/example/hello/provider/A service=/HELLO requestId=/20260828T171924.137163-7192eef03f0168ac message=selection received
+1787937569.146992  INFO: [ndn_service_framework.ServiceProvider] NDNSF_SELECTION_STATUS digest=E6BEE85AA5718C858D994DF88FD5D33C588C073722455CFB5A11C378515AEE1F state=2 provider=/example/hello/provider/A service=/HELLO requestId=/20260828T171924.137163-7192eef03f0168ac message=handler queued
+NDNSF_DI_PROVIDER_RESPONSE provider=A
+1787937569.147075  INFO: [ndn_service_framework.ServiceProvider] NDNSF_SELECTION_STATUS digest=E6BEE85AA5718C858D994DF88FD5D33C588C073722455CFB5A11C378515AEE1F state=3 provider=/example/hello/provider/A service=/HELLO requestId=/20260828T171924.137163-7192eef03f0168ac message=handler running
+1787937569.147908  INFO: [ndn_service_framework.ServiceProvider] NDNSF_SELECTION_STATUS digest=E6BEE85AA5718C858D994DF88FD5D33C588C073722455CFB5A11C378515AEE1F state=4 provider=/example/hello/provider/A service=/HELLO requestId=/20260828T171924.137163-7192eef03f0168ac message=response published

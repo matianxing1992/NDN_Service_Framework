@@ -1,0 +1,5 @@
+NFD version 24.07 starting
+Built with GNU C++ version 9.4.0, with GNU libstdc++ version 20210601, with Boost version 1.71.0, with libpcap version 1.9.1 (with TPACKET_V3), with WebSocket++ version 0.8.1, with ndn-cxx version 0.9.0
+1787937551.721068  WARN: [nfd.CommandAuthenticator] 'certfile any' is intended for demo purposes only and SHOULD NOT be used in production environments
+1787937551.722808  WARN: [nfd.CommandAuthenticator] 'certfile any' is intended for demo purposes only and SHOULD NOT be used in production environments
+1787937551.731697  WARN: [nfd.UdpFactory] Cannot create multicast face on fe80::7656:3cff:febc:8ed1%enp226s0f0: Cannot bind multicast rx socket to enp226s0f0
