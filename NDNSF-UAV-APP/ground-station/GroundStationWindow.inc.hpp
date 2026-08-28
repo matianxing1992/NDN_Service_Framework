@@ -2832,6 +2832,14 @@ private:
     appendInspectorRow(missionDetail, "State", mission ? mission->phase : (missionProgress ?
                        missionProgress->phase : (missionPart ? missionPart->statusLine() : "idle")));
     appendInspectorRow(missionDetail, "Parts", std::to_string(missionPlan ? missionPlan->parts.size() : 0));
+    const auto& collaboration = snapshot.collaboration;
+    appendInspectorRow(missionDetail, "Collaboration", collaboration.stage.empty() ? "idle" : collaboration.stage);
+    appendInspectorRow(missionDetail, "Incident", collaboration.incidentId.empty() ? "none" : collaboration.incidentId);
+    appendInspectorRow(missionDetail, "Provider", collaboration.selectedProvider.empty() ? "none" : collaboration.selectedProvider);
+    appendInspectorRow(missionDetail, "Fallback", collaboration.fallbackMode.empty() ? "disabled" : collaboration.fallbackMode);
+    if (!collaboration.failureStage.empty()) {
+      appendInspectorRow(missionDetail, "Failure stage", collaboration.failureStage);
+    }
     if (missionPlan && !missionPlan->returnHomePlanned) {
       appendInspectorRow(missionDetail, "Return home", "no");
     }

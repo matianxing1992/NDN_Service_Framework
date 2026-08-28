@@ -80,6 +80,7 @@ using ndnsf::examples::uav::decodeVideoStreamDescriptorStrict;
 using ndnsf::examples::uav::decodeUavVideoEnvelopeStrict;
 using ndnsf::examples::uav::deriveUavVideoNonce;
 using ndnsf::examples::uav::encodeFields;
+using ndnsf::examples::uav::decodeFields;
 using ndnsf::examples::uav::encodeVideoPacket;
 using ndnsf::examples::uav::encodeVideoStreamDescriptor;
 using ndnsf::examples::uav::loadMissionPlanDocument;
@@ -98,6 +99,20 @@ using ndnsf::examples::uav::unprotectUavVideoPacket;
 using ndnsf::examples::uav::videoPacketToStreamChunk;
 using ndnsf::examples::uav::applyCoreLiveStreamDescriptor;
 using ndnsf::examples::uav::applyCoreLiveStreamStatus;
+
+BOOST_AUTO_TEST_CASE(ApplicationFieldsPreserveMalformedPercentEscapes)
+{
+  // External Provider payloads are application data.  A literal or malformed
+  // percent escape must not throw from the shared decoder and kill the face
+  // thread that is delivering an otherwise valid response.
+  const auto fields = decodeFields("reason=load%busy;detail=truncated%2;ok=true");
+  BOOST_CHECK_EQUAL(fields.at("reason"), "load%busy");
+  BOOST_CHECK_EQUAL(fields.at("detail"), "truncated%2");
+  BOOST_CHECK_EQUAL(fields.at("ok"), "true");
+
+  const auto canonical = decodeFields(encodeFields({{"value", "a%b;c=d"}}));
+  BOOST_CHECK_EQUAL(canonical.at("value"), "a%b;c=d");
+}
 
 BOOST_AUTO_TEST_CASE(LiveVideoRetentionUsesDurationAndRemainsBounded)
 {

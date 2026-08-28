@@ -381,6 +381,41 @@ public:
   executeMissionWaypoints(const std::vector<std::pair<std::string, std::string>>& waypoints,
                           const Fields& missionFields) override
   {
+    // A compensation attempt is a bounded reassignment.  Clear PX4's prior
+    // mission transaction before starting a fresh upload; otherwise PX4 may
+    // reject a second MISSION_COUNT while the previous transaction state is
+    // still retained.  This keeps the retry a real flight-controller action,
+    // rather than treating an application response as proof of execution.
+    if (fieldOr(missionFields, "mission_mode", "") == "compensation-goto") {
+      const auto clearFrame = buildMavlinkMissionClearAllFrame(missionFields);
+      if (sendFrameLocked(clearFrame) == static_cast<ssize_t>(clearFrame.size())) {
+        NDN_LOG_INFO("UDP_FC_MISSION_CLEAR_ALL drone=" << m_droneId);
+        const auto clearDeadline = std::chrono::steady_clock::now() +
+          std::chrono::milliseconds(1000);
+        while (std::chrono::steady_clock::now() < clearDeadline) {
+          std::array<pollfd, 2> pfds{};
+          nfds_t fdCount = 0;
+          pfds[fdCount].fd = m_socket;
+          pfds[fdCount].events = POLLIN;
+          ++fdCount;
+          if (m_listenSocket >= 0) {
+            pfds[fdCount].fd = m_listenSocket;
+            pfds[fdCount].events = POLLIN;
+            ++fdCount;
+          }
+          const int pollRc = poll(pfds.data(), fdCount, 100);
+          if (pollRc <= 0) {
+            continue;
+          }
+          const auto clearEvent = drainMissionUploadPackets(pfds.data(), fdCount);
+          if (clearEvent.type == MissionUploadEvent::Type::Ack) {
+            NDN_LOG_INFO("UDP_FC_MISSION_CLEAR_ACK drone=" << m_droneId
+                         << " result=" << clearEvent.ackResult);
+            break;
+          }
+        }
+      }
+    }
     std::lock_guard<std::mutex> guard(m_socketMutex);
     if (!ensureConnected()) {
       return {
@@ -4221,7 +4256,16 @@ public:
     , m_configurePx4SitlDemoParams(configurePx4SitlDemoParams)
     , m_cameraOptions(std::move(cameraOptions))
   {
-    KeyChainInitLock lock(("/tmp/ndnsf-uav-keychain-" + std::to_string(getuid()) + ".lock").c_str());
+    // MiniNDN/SITL may start several Drone processes under one UID (and a
+    // rootless user namespace maps every node to UID 0).  Scope the
+    // initialization lock to the process HOME so independent node keychains
+    // cannot block one another while still serializing initialization of the
+    // same node.
+    const char* home = std::getenv("HOME");
+    const auto lockPath = home != nullptr && *home != '\0' ?
+      std::string(home) + "/.ndnsf-keychain-init.lock" :
+      "/tmp/ndnsf-uav-keychain-" + std::to_string(getuid()) + ".lock";
+    KeyChainInitLock lock(lockPath.c_str());
     m_providerCert = getOrCreateIdentity(m_keyChain, m_identity);
     m_controllerCert = getOrCreateIdentity(m_keyChain, m_config.controllerPrefix);
     m_keyChain.setDefaultIdentity(m_keyChain.getPib().getIdentity(m_identity));
@@ -4249,30 +4293,49 @@ public:
   {
     m_faceThread = std::thread([this] {
       try {
+        publishStatus("NDNSF startup stage=face-thread");
         if (m_serveCertificates) {
+          publishStatus("NDNSF startup stage=certificate-publisher");
           m_certPublisher = std::make_unique<ndn_service_framework::CertificatePublisher>(
             m_face, m_keyChain, m_providerCert.getName());
         }
+        publishStatus("NDNSF startup stage=provider-construct");
         auto provider = std::make_unique<ndn_service_framework::ServiceProvider>(
           m_face, m_config.groupPrefix, m_providerCert, m_controllerCert, m_config.trustSchema);
         auto videoPublisher = std::make_unique<VideoPublisher>(
           *provider, m_face, m_keyChain, m_coreContainer.localRegistry(), localArchivedPacketServiceName(),
-          m_config, m_droneId, m_videoPath, m_cameraOptions);
+            m_config, m_droneId, m_videoPath, m_cameraOptions);
+        publishStatus("NDNSF startup stage=provider-constructed");
         {
           std::lock_guard<std::mutex> guard(m_containerMutex);
           m_provider = std::move(provider);
           m_videoPublisher = std::move(videoPublisher);
         }
+        m_incidentDetector = std::make_unique<UavDetectorProvider>(
+          UavDetectorProviderConfig{
+            m_identity,
+            "detector-hq",
+            "sha256:uav-detector-hq",
+            "high",
+            m_droneId == "C" ? "gpu" : "cpu",
+            m_available && m_droneId == "C"});
+        publishStatus("NDNSF startup stage=detector-constructed");
         m_coreContainer.useProvider("drone-services", *m_provider);
         m_user = std::make_unique<ndn_service_framework::ServiceUser>(
           m_face, m_config.groupPrefix, m_providerCert, m_controllerCert, m_config.trustSchema);
         m_user->setHandlerThreads(1);
+        publishStatus("NDNSF startup stage=service-install");
         m_coreContainer.useUser("drone-user", *m_user);
         installServiceInstances();
+        publishStatus("NDNSF startup stage=provider-init");
         m_provider->init();
+        publishStatus("NDNSF startup stage=provider-permissions");
         m_provider->fetchPermissionsFromController(m_config.controllerPrefix);
+        publishStatus("NDNSF startup stage=user-init");
         m_user->init();
+        publishStatus("NDNSF startup stage=user-permissions");
         m_user->fetchPermissionsFromController(m_config.controllerPrefix);
+        publishStatus("NDNSF startup stage=core-start");
         m_coreContainer.start();
         m_containerReady = true;
         publishStatus("NDNSF runtime ready");
@@ -5030,6 +5093,17 @@ private:
             publishStatus("mission response delayed part=" + partId +
                           " attempt=" + attemptId);
             std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+            // The injected no-response case models a provider whose request
+            // never reaches flight-control execution.  Do not perform a late
+            // mission upload after the user deadline: that would create an
+            // unobserved side effect and make compensation race stale state.
+            return makeResponse(false, encodeFields({
+              {"accepted", "false"},
+              {"reason", "simulated-response-timeout"},
+              {"drone_id", m_droneId},
+              {"part_id", partId},
+              {"attempt_id", attemptId},
+            }), "simulated response timeout");
           }
 
           {
@@ -5051,6 +5125,7 @@ private:
             {"altitude_m", fieldOr(fields, "altitude_m", "15")},
             {"target_system", fieldOr(fields, "target_system", "1")},
             {"target_component", fieldOr(fields, "target_component", "1")},
+            {"mission_mode", attemptId == "1" ? "initial-upload" : "compensation-goto"},
           });
           if (waypointPairs.empty()) {
             backend->sendMavlink(buildMockMavlinkFrame("mission-waypoints", {
@@ -5100,7 +5175,248 @@ private:
           return makeResponse(missionAccepted, encodeFields(responseFields),
                               missionAccepted ? "No error" : "flight controller did not accept mission");
         }),
+      // A known single-drone assignment may use the Targeted fast path, while
+      // compensation and discovery still use the ordinary ACK/Selection path.
+      // Register both ingress modes with the same application handler so the
+      // transport cannot fan a single-provider assignment out to every drone.
+      ServiceInvocationMode::NormalAndTargeted);
+
+    // Incident analysis accepts only a named evidence reference.  The
+    // request is intentionally small: evidence bytes are fetched through the
+    // collaboration Data path by the selected participant, never embedded in
+    // this service payload or inferred from a transport endpoint.
+    auto incidentAckHandler = [this](const ndn_service_framework::RequestMessage&) {
+      ndn_service_framework::ServiceProvider::AckDecision decision;
+      const bool detectorReady = m_incidentDetector && m_incidentDetector->ready();
+      // The incident service has one shared discovery name.  Capability
+      // metadata distinguishes a source-only UAV from the detector-capable
+      // UAV; role selection remains request-scoped and never relies on an
+      // endpoint or a hard-coded provider address.
+      const bool evidenceSourceReady = m_available && !detectorReady;
+      decision.status = detectorReady || evidenceSourceReady;
+      decision.message = detectorReady ? "detector ready" :
+                         (evidenceSourceReady ? "evidence source ready" :
+                          "incident participant unavailable");
+      if (detectorReady) {
+        const auto capability = m_incidentDetector->capability(nowMilliseconds(), 0, true);
+        decision.payload = bufferFromString(encodeFields({
+          {"capability_role", "detector-reporter"},
+          {"provider", capability.providerIdentity.toUri()},
+          {"model_id", capability.modelId},
+          {"model_digest", capability.modelDigest},
+          {"quality", capability.qualityProfile},
+          {"device", capability.deviceClass},
+          {"ready", capability.ready ? "true" : "false"},
+          {"evidence_access", capability.evidenceAccess ? "true" : "false"},
+          {"queue_depth", std::to_string(capability.queueDepth)},
+          {"snapshot_ms", std::to_string(capability.snapshotTimeMs)},
+        }));
+      }
+      else {
+        decision.payload = bufferFromString(encodeFields({
+          {"capability_role", evidenceSourceReady ? "evidence-source" : "unavailable"},
+          {"provider", m_identity.toUri()},
+          {"ready", evidenceSourceReady ? "true" : "false"},
+          {"evidence_access", evidenceSourceReady ? "true" : "false"},
+          {"device", "camera"},
+          {"snapshot_ms", std::to_string(nowMilliseconds())},
+        }));
+      }
+      return decision;
+    };
+    auto parseIncidentEvidence = [](const Fields& fields,
+                                    UavEvidenceReference& evidence,
+                                    std::string* reason) {
+      try {
+        evidence.producerIdentity = ndn::Name(fieldOr(fields, "evidence_producer", ""));
+        evidence.streamId = fieldOr(fields, "evidence_stream_id", "");
+        evidence.streamSessionEpoch = std::stoull(fieldOr(fields, "evidence_stream_session", "0"));
+        evidence.firstSequence = std::stoull(fieldOr(fields, "evidence_first_sequence", "0"));
+        evidence.lastSequence = std::stoull(fieldOr(fields, "evidence_last_sequence", "0"));
+        evidence.windowStartMs = std::stoull(fieldOr(fields, "evidence_window_start_ms", "0"));
+        evidence.windowEndMs = std::stoull(fieldOr(fields, "evidence_window_end_ms", "0"));
+        evidence.exactDataName = ndn::Name(fieldOr(fields, "evidence_name", ""));
+        evidence.version = std::stoull(fieldOr(fields, "evidence_version", "0"));
+        evidence.contentDigest = fieldOr(fields, "evidence_digest", "");
+        evidence.contentType = fieldOr(fields, "evidence_content_type", "");
+        evidence.retentionDeadlineMs = std::stoull(
+          fieldOr(fields, "evidence_retention_deadline_ms", "0"));
+      }
+      catch (const std::exception& error) {
+        if (reason) *reason = std::string("invalid evidence metadata: ") + error.what();
+        return false;
+      }
+      return evidence.isValid(reason) &&
+             evidence.exactDataName.toUri().find("://") == std::string::npos;
+    };
+    m_provider->addService(
+      m_config.serviceIncidentAnalyze,
+      ndn_service_framework::ServiceProvider::AckStrategyHandler(incidentAckHandler),
+      ndn_service_framework::ServiceProvider::SimpleRequestHandler(
+        [this](const ndn_service_framework::RequestMessage& request) {
+          const auto fields = decodeFields(payloadToString(request));
+          const auto missionId = fieldOr(fields, "mission_id", "");
+          const auto incidentId = fieldOr(fields, "incident_id", "");
+          const auto attemptId = fieldOr(fields, "attempt_id", "");
+          const auto evidenceName = ndn::Name(fieldOr(fields, "evidence_name", ""));
+          const auto evidenceDigest = fieldOr(fields, "evidence_digest", "");
+          if (!m_incidentDetector || !m_incidentDetector->ready() || missionId.empty() ||
+              incidentId.empty() || attemptId.empty() || evidenceName.empty() ||
+              evidenceDigest.rfind("sha256:", 0) != 0 ||
+              evidenceName.toUri().find("://") != std::string::npos) {
+            return makeResponse(false, encodeFields({
+              {"accepted", "false"}, {"reason", "named-evidence-reference-required"},
+              {"drone_id", m_droneId}}), "named evidence reference required");
+          }
+          {
+            std::lock_guard<std::mutex> guard(m_incidentQueueMutex);
+            if (!m_incidentQueue.tryPush(missionId + "/" + incidentId + "/" + attemptId)) {
+              return makeResponse(false, encodeFields({
+                {"accepted", "false"}, {"reason", "detector-queue-overloaded"},
+                {"queue_dropped", std::to_string(m_incidentQueue.dropped())},
+                {"drone_id", m_droneId}}), "detector queue overloaded");
+            }
+            (void)m_incidentQueue.tryPop();
+          }
+          ndn::util::Sha256 resultDigest;
+          resultDigest << missionId << incidentId << attemptId << evidenceName.toUri()
+                       << evidenceDigest << m_incidentDetector->config().modelDigest;
+          const auto reportName = makeUavReportName(
+            m_identity, missionId, incidentId, attemptId, 1);
+          return makeResponse(true, encodeFields({
+            {"accepted", "true"},
+            {"drone_id", m_droneId},
+            {"model_id", m_incidentDetector->config().modelId},
+            {"model_digest", m_incidentDetector->config().modelDigest},
+            {"report_name", reportName.toUri()},
+            {"result_digest", "sha256:" + resultDigest.toString()},
+            {"evidence_name", evidenceName.toUri()},
+            {"evidence_digest", evidenceDigest},
+          }));
+        }),
       ServiceInvocationMode::NormalOnly);
+    m_provider->addCollaborationHandler(
+      m_config.serviceIncidentAnalyze,
+      std::vector<ndn_service_framework::CollaborationRole>{
+        "EvidenceSource", "DetectorReporter"},
+      ndn_service_framework::ServiceProvider::AckStrategyHandler(incidentAckHandler),
+      [this, parseIncidentEvidence](ndn_service_framework::ServiceProvider::CollaborationContext& context,
+                                    const ndn_service_framework::RequestMessage& request) {
+        const char* injectedFailure = std::getenv("NDNSF_SPEC176_FAILURE_CASE");
+        const std::string failureCase = injectedFailure == nullptr ?
+          std::string() : std::string(injectedFailure);
+        const auto fields = decodeFields(payloadToString(request));
+        const auto missionId = fieldOr(fields, "mission_id", "");
+        const auto incidentId = fieldOr(fields, "incident_id", "");
+        const auto attemptId = fieldOr(fields, "attempt_id", "");
+        UavEvidenceReference evidence;
+        std::string reason;
+        if (missionId.empty() || incidentId.empty() || attemptId.empty() ||
+            !parseIncidentEvidence(fields, evidence, &reason)) {
+          context.fail(reason.empty() ? "named evidence reference required" : reason);
+          return;
+        }
+
+        if (context.role() == "EvidenceSource") {
+          if (!m_available || m_identity != evidence.producerIdentity) {
+            context.fail("evidence source is not the declared producer");
+            return;
+          }
+          try {
+            const auto content = makeUavIncidentEvidenceContent(missionId, incidentId, evidence);
+            ndn::util::Sha256 digest;
+            if (!content.empty()) {
+              digest << std::string(reinterpret_cast<const char*>(content.data()), content.size());
+            }
+            if (evidence.contentDigest != "sha256:" + digest.toString()) {
+              context.fail("evidence manifest digest does not match declared reference");
+              return;
+            }
+            const int freshnessMs = failureCase == "evidence-expiry" ? 1 : 60000;
+            if (!context.publishSignedExactData(
+                  "uav-incident", {{evidence.exactDataName, content}}, freshnessMs)) {
+              context.fail("evidence manifest publication failed");
+              return;
+            }
+            NDN_LOG_INFO("UAV_INCIDENT_EVIDENCE_PUBLISHED provider=" << m_identity
+                         << " name=" << evidence.exactDataName
+                         << " digest=" << evidence.contentDigest);
+            if (failureCase == "evidence-expiry") {
+              // Let the one-millisecond freshness window expire before the
+              // detector's MustBeFresh exact Interest is issued.
+              std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            context.completeRole();
+          }
+          catch (const std::exception& error) {
+            context.fail(std::string("evidence source failed: ") + error.what());
+          }
+          return;
+        }
+
+        if (!m_incidentDetector || !m_incidentDetector->ready()) {
+          context.fail("detector unavailable");
+          return;
+        }
+        if (failureCase == "bounded-queue-overload") {
+          context.fail("detector queue overloaded");
+          return;
+        }
+        {
+          std::lock_guard<std::mutex> guard(m_incidentQueueMutex);
+          if (!m_incidentQueue.tryPush(missionId + "/" + incidentId + "/" + attemptId)) {
+            context.fail("detector queue overloaded");
+            return;
+          }
+        }
+        const auto content = context.fetchSignedExactData(
+          "uav-incident", evidence.exactDataName, evidence.producerIdentity, 1000);
+        {
+          std::lock_guard<std::mutex> guard(m_incidentQueueMutex);
+          (void)m_incidentQueue.tryPop();
+        }
+        if (!content) {
+          context.fail("evidence Data fetch or validation failed");
+          return;
+        }
+        if (failureCase == "evidence-expiry") {
+          context.fail("evidence Data expired");
+          return;
+        }
+        const auto verified = m_incidentDetector->acceptValidatedContent(
+          evidence, *content, evidence.producerIdentity, &reason);
+        if (!verified) {
+          context.fail(reason.empty() ? "evidence digest verification failed" : reason);
+          return;
+        }
+        const auto execution = m_incidentDetector->execute(*verified);
+        if (!execution.success) {
+          context.fail(execution.detail);
+          return;
+        }
+        if (failureCase == "terminal-delivery-loss") {
+          context.fail("terminal response delivery intentionally lost");
+          return;
+        }
+        if (failureCase == "delayed-older-result") {
+          std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+        }
+        const auto responseAttemptId = failureCase == "delayed-older-result" ?
+          std::string("attempt-older") : attemptId;
+        const auto reportName = makeUavReportName(
+          m_identity, missionId, incidentId, attemptId, 1);
+        context.publishFinalResponse(bufferFromString(encodeFields({
+          {"accepted", "true"},
+          {"drone_id", m_droneId},
+          {"attempt_id", responseAttemptId},
+          {"model_id", m_incidentDetector->config().modelId},
+          {"model_digest", m_incidentDetector->config().modelDigest},
+          {"report_name", reportName.toUri()},
+          {"result_digest", execution.resultDigest},
+          {"evidence_name", evidence.exactDataName.toUri()},
+          {"evidence_digest", evidence.contentDigest},
+        })));
+      });
   }
 
   ndn::Name
@@ -5247,6 +5563,9 @@ private:
   std::unique_ptr<ndn_service_framework::CertificatePublisher> m_certPublisher;
   std::unique_ptr<ndn_service_framework::ServiceProvider> m_provider;
   std::unique_ptr<ndn_service_framework::ServiceUser> m_user;
+  std::unique_ptr<UavDetectorProvider> m_incidentDetector;
+  mutable std::mutex m_incidentQueueMutex;
+  UavBoundedWorkQueue m_incidentQueue{32};
   std::unique_ptr<VideoPublisher> m_videoPublisher;
   std::shared_ptr<FlightControllerBackend> m_backend;
   mutable std::mutex m_containerMutex;

@@ -318,6 +318,13 @@ namespace ndn_service_framework
         std::string
         userScopedLockPath(const std::string& base)
         {
+            // Keep per-node SVS registration independent when several
+            // MiniNDN applications share one UID or rootless namespace.
+            if (const char* home = std::getenv("HOME"); home != nullptr && *home != '\0') {
+                const auto slash = base.find_last_of('/');
+                const auto name = slash == std::string::npos ? base : base.substr(slash + 1);
+                return std::string(home) + "/." + name + "-" + std::to_string(getuid()) + ".lock";
+            }
             return base + "-" + std::to_string(getuid()) + ".lock";
         }
 
@@ -1478,31 +1485,10 @@ namespace ndn_service_framework
 	                         << " productionStale=" << stats.syncProductionJobsStale
 	                         << " productionQueueDepth=" << stats.syncProductionWorkerQueueDepth);
 	            const auto rejection = m_svsps->getSVSync().getCore().getSyncRejectionStats();
-	            const auto mapping = m_svsps->getMappingFetchStats();
-	            const auto publication = m_svsps->getPublicationFetchStats();
-	            const auto piggy = m_svsps->getPiggybackStats();
 	            NDN_LOG_INFO("NDNSF_SVS_DELIVERY_STATS role=user"
 	                         << " malformed=" << rejection.malformedEnvelope
 	                         << " signaturePolicy=" << rejection.signaturePolicy
-	                         << " vectorDecode=" << rejection.vectorDecode
-	                         << " mappingQueued=" << mapping.queued
-	                         << " mappingPending=" << mapping.pending
-	                         << " mappingDispatched=" << mapping.dispatched
-	                         << " mappingData=" << mapping.data
-	                         << " mappingNacks=" << mapping.nacks
-	                         << " mappingTimeouts=" << mapping.timeouts
-	                         << " mappingRetries=" << mapping.retries
-	                         << " publicationQueued=" << publication.queued
-	                         << " publicationPending=" << publication.pending
-	                         << " publicationDispatched=" << publication.dispatched
-	                         << " publicationData=" << publication.data
-	                         << " publicationNacks=" << publication.nacks
-	                         << " publicationTimeouts=" << publication.timeouts
-	                         << " publicationRetries=" << publication.retries
-	                         << " piggyReceived=" << piggy.received
-	                         << " piggyDelivered=" << piggy.delivered
-	                         << " publicationFallbacks=" << piggy.publicationFetchFallbacks
-	                         << " publicationRetryActivations=" << piggy.publicationRetryActivations);
+	                         << " vectorDecode=" << rejection.vectorDecode);
 	            m_svsps.reset();
         }
         m_cryptoProduceQueue.shutdown();
