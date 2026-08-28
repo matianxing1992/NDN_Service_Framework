@@ -114,6 +114,10 @@ def main() -> int:
         "doesNotEmbedMiniNdn": "replay_root" not in driver_text,
         "usesThreeRepetitions": "REPETITIONS = 3" in driver_text,
         "requiresFortyTwoEntries": "len(entries) == EXPECTED_ENTRIES" in driver_text,
+        "forwardsControllerCertificate": (
+            'NDNSF_CONTROLLER_CERT_FILE="${NDNSF_CONTROLLER_CERT_FILE:-}"'
+            in production_text
+        ),
     }
     checks["replayDriver"] = driver_checks
     for key, value in driver_checks.items():
