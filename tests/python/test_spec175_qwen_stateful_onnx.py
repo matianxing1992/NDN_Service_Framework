@@ -14,6 +14,7 @@ import onnxruntime as ort
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "NDNSF-DistributedInference"))
+sys.path.insert(0, str(ROOT / "examples/python/NDNSF-DistributedInference"))
 
 from ndnsf_distributed_inference.adapters.qwen.stateful_onnx import (  # noqa: E402
     DecodeStateBundleV1,
@@ -98,6 +99,15 @@ def bundle(token_epoch: int = 0) -> DecodeStateBundleV1:
 
 
 class Spec175StatefulOnnxTests(unittest.TestCase):
+    def test_qwen_head_dim_uses_explicit_projection_width(self) -> None:
+        from llm_pipeline.llm_pipeline_lib import _qwen_head_dim
+
+        # Qwen3.6-27B has hidden_size=5120 and 24 attention heads, but its
+        # projection/cache width is explicitly 256 (not integer division 213).
+        config = argparse.Namespace(
+            hidden_size=5120, num_attention_heads=24, head_dim=256)
+        self.assertEqual(_qwen_head_dim(config), 256)
+
     def test_tiny_qwen_stateful_export_matches_eager_prefill_and_decode(self) -> None:
         """Exercise one graph for variable-length prefill and one-token decode.
 
