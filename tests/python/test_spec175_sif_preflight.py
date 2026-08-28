@@ -184,6 +184,15 @@ class Spec175SifPreflightTests(unittest.TestCase):
         self.assertNotIn('"--env", perf.shell_quote(f"HOME=', text)
         self.assertNotIn("--env 'HOME=${HOME:-/tmp/minindn}'", text)
 
+    def test_sif_launcher_forwards_node_scoped_controller_certificate(self):
+        text = (ROOT / "Experiments/NDNSF_DI_LlmPipeline_Minindn.py").read_text(
+            encoding="utf-8")
+        self.assertIn(
+            'NDNSF_CONTROLLER_CERT_FILE="${NDNSF_CONTROLLER_CERT_FILE:-}"',
+            text,
+        )
+        self.assertIn("node_env[REPOSITORY_NODE]", text)
+
     def test_workload_mutation_is_rejected(self):
         module = load_module()
         with tempfile.TemporaryDirectory() as directory:

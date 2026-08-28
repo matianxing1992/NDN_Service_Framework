@@ -884,6 +884,12 @@ def sif_exec_prefix(base_env: dict[str, str] | None = None,
     pieces.extend([
         "--env", 'NDN_CLIENT_CONF="${NDN_CLIENT_CONF:-}"',
         "--env", 'NDN_CLIENT_TRANSPORT="${NDN_CLIENT_TRANSPORT:-}"',
+        # Controller certificate is installed per MiniNDN node after the
+        # shared prefix is built.  Forward the node-scoped value through the
+        # SIF boundary; otherwise CertificateBootstrap falls back to creating
+        # a new local /controller identity and the real controller cannot
+        # decrypt the RSA-wrapped AES bootstrap key.
+        "--env", 'NDNSF_CONTROLLER_CERT_FILE="${NDNSF_CONTROLLER_CERT_FILE:-}"',
         perf.shell_quote(SIF_RUNTIME_SIF),
     ])
     return " ".join(pieces)
