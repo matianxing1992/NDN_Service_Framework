@@ -161,3 +161,15 @@ correction only.  T025 G5 remains open until a new source-bound exporter
 bundle produces all three Qwen3.6-27B stages and passes the registered CUDA
 prefill/decode checks.  Jobs `206269` and `206330` remain preserved as failed
 evidence; neither is a G5, G6, or performance result.
+
+After the axis-order correction, the current source was rerun through the
+aggregate Python regression boundary:
+
+```text
+PYTHONPATH=. pytest -q tests/python/test_spec175_*.py \
+  tests/python/test_spec168_provider_generation.py
+217 passed, 1 skipped
+```
+
+This is a local source regression result only; it does not promote the pending
+Tiger Job `206503` or close the Qwen3.6-27B CUDA gate.
