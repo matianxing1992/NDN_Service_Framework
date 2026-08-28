@@ -19,6 +19,7 @@ EXAMPLES_WSCRIPT = ROOT / "examples/wscript"
 SPEC175_JOBS = ROOT / "packaging/ndnsf-di-container/jobs/spec175"
 REPLAY_DRIVER = SPEC175_JOBS / "replay-exact-sif.py"
 CHECKLIST_VALIDATOR = ROOT / "packaging/ndnsf-di-container/bin/ndnsf-di-pre-tiger-checklist"
+MODEL_PREFLIGHT = ROOT / "packaging/ndnsf-di-container/bin/ndnsf-di-spec175-model-preflight"
 HOST_GATE = ROOT / "results/spec175/g3/spec175-g3-current-20260827.json"
 HOST_GATE_MODULE = ROOT / "packaging/ndnsf-di-container/lib/spec175_host_gate.py"
 
@@ -111,6 +112,60 @@ class Spec175SifPreflightTests(unittest.TestCase):
         self.assertIn('MODEL_MANIFEST', model_block)
         self.assertIn('fi', model_block)
         self.assertIn('if [[ "$CHECKLIST_GATE" != control ]]; then', submit)
+
+    def test_model_preflight_rejects_legacy_manifest_before_allocation(self):
+        self.assertTrue(os.access(MODEL_PREFLIGHT, os.X_OK))
+        result = subprocess.run(
+            [str(MODEL_PREFLIGHT), "--manifest", str(ROOT / "packaging/ndnsf-di-container/jobs/spec175/workload.json")],
+            cwd=ROOT, text=True, capture_output=True, check=False,
+        )
+        assert result.returncode != 0
+        assert "SPEC175_MODEL_SCHEMA_REQUIRED" in result.stderr
+
+    def test_model_preflight_accepts_complete_stateful_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stateful-stage-manifest.json"
+            state_in = ["attention_kv_in", "recurrent_state_in", "convolution_state_in"]
+            state_out = ["attention_kv_out", "recurrent_state_out", "convolution_state_out"]
+            stages = []
+            ranges = ((0, 21), (21, 42), (42, 64))
+            for index, (start, end) in enumerate(ranges):
+                stages.append({
+                    "stageIndex": index,
+                    "role": f"/LLM/Pipeline/Stage/{index}",
+                    "layerRange": {"start": start, "endExclusive": end},
+                    "sha256": "sha256:" + "a" * 64,
+                    "metadata": {
+                        "inputNames": ["input_ids", "attention_mask", "position_ids", *state_in],
+                        "outputNames": ["hidden_states_out", *state_out],
+                        "stateInputNames": state_in,
+                        "stateOutputNames": state_out,
+                    },
+                })
+            path.write_text(json.dumps({
+                "schemaVersion": "ndnsf-di-qwen36-onnx-stage-manifest-v1",
+                "repository": "Qwen/Qwen3.6-27B",
+                "revision": "6a9e13bd6fc8f0983b9b99948120bc37f49c13e9",
+                "modelType": "qwen3_5",
+                "dtype": "float16",
+                "sequencePolicy": "stateful-prefill-decode-v1",
+                "decodeMode": "single-token-autoregressive",
+                "modality": "text-only",
+                "mtpEnabled": False,
+                "thinkingMode": "disabled",
+                "graphComponents": ["text_embedding", "hybrid_decoder", "lm_head"],
+                "layerCount": 64,
+                "layerRanges": [[0, 21], [21, 42], [42, 64]],
+                "modelDigest": "sha256:" + "b" * 64,
+                "tokenizer": {"digest": "sha256:" + "c" * 64},
+                "stages": stages,
+            }), encoding="utf-8")
+            result = subprocess.run(
+                [str(MODEL_PREFLIGHT), "--manifest", str(path)],
+                cwd=ROOT, text=True, capture_output=True, check=False,
+            )
+            assert result.returncode == 0, result.stderr
+            assert json.loads(result.stdout)["status"] == "PASS"
 
     def test_direct_native_targets_keep_stream_and_epoch_sources(self):
         text = EXAMPLES_WSCRIPT.read_text(encoding="utf-8")

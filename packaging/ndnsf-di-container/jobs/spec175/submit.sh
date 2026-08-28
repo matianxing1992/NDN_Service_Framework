@@ -24,6 +24,9 @@ esac
 if [[ "$CHECKLIST_GATE" != control ]]; then
   : "${MODEL_MANIFEST:?set MODEL_MANIFEST to the external content-addressed model manifest}"
   : "${REMOTE_MODEL_ROOT:?set REMOTE_MODEL_ROOT to the external model root}"
+  MODEL_PREFLIGHT="$ROOT/packaging/ndnsf-di-container/bin/ndnsf-di-spec175-model-preflight"
+  [[ -x "$MODEL_PREFLIGHT" ]] || { echo "SPEC175_MODEL_PREFLIGHT_MISSING" >&2; exit 4; }
+  "$MODEL_PREFLIGHT" --manifest "$MODEL_MANIFEST"
 fi
 
 PRE_TIGER_CHECKLIST="${PRE_TIGER_CHECKLIST:-${SPEC175_PRE_TIGER_CHECKLIST:-}}"
