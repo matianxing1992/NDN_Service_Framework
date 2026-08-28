@@ -41,6 +41,12 @@ def fail(message: str) -> "NoReturn":
     raise RuntimeError(message)
 
 
+def device_name(value: object) -> str:
+    """Return the device name across ORT versions (method or property)."""
+    attribute = getattr(value, "device_name", "")
+    return str(attribute() if callable(attribute) else attribute)
+
+
 def numpy_dtype(type_name: str):
     value = str(type_name).lower()
     if "float16" in value:
@@ -272,7 +278,7 @@ def run_stage(session, metadata: dict, *, arrays: dict[str, np.ndarray], state: 
     binding = session.io_binding()
     for item in session.get_inputs():
         name = str(item.name)
-        if name in state and hasattr(state[name], "device_name"):
+        if name in state and callable(getattr(state[name], "device_name", None)):
             binding.bind_ortvalue_input(name, state[name])
             continue
         if name in state:
@@ -305,7 +311,7 @@ def run_stage(session, metadata: dict, *, arrays: dict[str, np.ndarray], state: 
         value = outputs.get(output_name)
         if value is None:
             fail(f"QWEN_STAGE_STATE_OUTPUT_MISSING:{output_name}")
-        if getattr(value, "device_name", "") != "cuda":
+        if device_name(value).lower() != "cuda":
             fail(f"QWEN_STAGE_STATE_NOT_DEVICE_RESIDENT:{output_name}")
         next_state[input_name] = value
     return outputs, next_state, (time.perf_counter() - started) * 1000.0
@@ -341,7 +347,7 @@ def run_chain(sessions: list[ort.InferenceSession], stages: list[dict], prompt: 
             states[index] = successor
             stage_times[index].append(elapsed)
             state_device_checks[index] = state_device_checks[index] or all(
-                getattr(value, "device_name", "") == "cuda" for value in successor.values())
+                device_name(value).lower() == "cuda" for value in successor.values())
             hidden = host_output(outputs, (), terminal=index == len(sessions) - 1)
         token = int(np.argmax(hidden[:, -1, :], axis=-1)[0])
         generated.append(token)
