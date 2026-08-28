@@ -18,10 +18,11 @@ the earlier promotion sequence without invalidating its diagnostic results:
    by the 42/42 G3 matrix. G1/G2 and G3 therefore describe different subjects.
 
 Those gate files are restored to the versioned subject and their focused tests
-pass 24/24. T020 and T022 are reopened. The old G3 matrix remains strong
-historical regression evidence, but it cannot authorize a SIF. The required
-order is now: commit one coherent source, regenerate G0/G1/G2 from that exact
-seal, rerun the unchanged 42-case G3 matrix, and only then enter T023/G4.
+pass 25/25. T020 has now reclosed on revision `451654fc` with clean G0, native
+unit 600/600, Python 218/218, and G2 38/38 bound to one source seal. T022 remains
+open. The old G3 matrix remains strong historical regression evidence, but it
+cannot authorize a SIF. The required order is now: rerun the unchanged 42-case
+G3 matrix against the T020 seal, and only then enter T023/G4.
 
 ## Executive finding
 
@@ -36,8 +37,8 @@ prefill, and the existing automatic autoregressive decode loop.
 
 The documents and host/CPU implementation are close to the final SIF path, but
 the feature is not ready to claim completion, build a candidate, or promote a
-SIF. T023 remains blocked until T020 and T022 close again under one source
-seal. The current
+SIF. T020 is closed again, but T023 remains blocked until T022 closes under the
+same source seal. The current
 source exposes the additive conversation API, protected checkpoint transaction,
 Provider-local state stores, the native receipt/control seam, and M11--M14
 host-gate entry points. This audit records the remaining production gaps that
@@ -90,7 +91,7 @@ reproduce in that historical subject.
 | User stories | 5 |
 | Functional requirements | 73 identifiers, including FR-030a and FR-032a |
 | Success criteria | 16 |
-| Tasks | 34 total; 26 accepted, 8 open |
+| Tasks | 34 total; 27 accepted, 7 open |
 | Requirement traceability | 73/73 mapped |
 | Structural audit | PASS |
 | Spec Kit prerequisites | PASS |
@@ -122,7 +123,7 @@ completed so far:
   launcher gate).
 - `tests/python/test_spec175_conversation.py`: 36 passed (including failed
   prefetch recovery, stale-flight cancellation, and Provider-boot cleanup).
-- strict Spec Kit structural audit: PASS (73 requirements, 34 tasks, 26
+- strict Spec Kit structural audit: PASS (73 requirements, 34 tasks, 27
   accepted tasks).
 - Four fresh root MiniNDN probes against the corrected source now pass on the
   tiny four-Provider fixture: M01 healthy, M02 reordered publication, M03
@@ -353,7 +354,7 @@ T013 complete state/position/device source wiring
   -> T032 G0/G1/G2 and pre-frozen G6C gate implementation [complete]
   -> T033 M11-M14 real-Provider harness implementation [complete]
   -> T024 pre-frozen Tiger interface/checklist implementation [complete]
-  -> T020 coherent committed-source G0/G1/G2 seal (I01-I20) [open]
+  -> T020 coherent committed-source G0/G1/G2 seal (I01-I20) [complete]
   -> T022 same-seal G3 replay (M01-M14, 42/42, no hidden exit) [open]
   -> T023 one final SIF and exact-SIF 42-case replay
   -> T025 G5
@@ -365,9 +366,9 @@ T013 complete state/position/device source wiring
 
 No SIF build, upload, Slurm allocation, or Tiger run is authorized before the
 same-seal expanded G3 pass. T032 has frozen the lower-gate/G6C launcher
-contracts and T033's harness implementation is complete. T020 and T022 must
-now regenerate current-source PASS inventories, while T014/T015/T030/T031
-remain closed implementation boundaries.
+contracts and T033's harness implementation is complete. T020 now has a clean
+current-source PASS inventory; T022 must regenerate the matching G3 inventory,
+while T014/T015/T030/T031 remain closed implementation boundaries.
 
 ## Final audit decision
 
@@ -375,6 +376,7 @@ Spec175 is sufficiently explicit to finish local qualification, but not yet to
 enter the final SIF/promotion path. T014--T015 and T030--T031 close their
 implementation boundaries, and T024's pre-frozen interface/checklist boundary
 is complete. Do not reuse either the historical 30/30 result or the now-stale
-42/42 result as the current expanded G3 pass. The next actions are T020 on one
-coherent committed source, T022 against that exact seal, and only then T023 to
-build exactly one final SIF and run the exact-SIF replay before Tiger.
+42/42 result as the current expanded G3 pass. T020 is now closed on one
+coherent committed source. The next action is T022 against that exact seal,
+and only then T023 to build exactly one final SIF and run the exact-SIF replay
+before Tiger.

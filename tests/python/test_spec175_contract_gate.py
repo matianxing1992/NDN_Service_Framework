@@ -263,3 +263,61 @@ def test_content_bound_source_seal_admits_a_controlled_dirty_subject(
     assert issues == []
     assert record["verified"] is True
     assert record["dirtyFileCount"] == 1
+
+
+def test_source_seal_survives_only_descendant_document_commits(
+    tmp_path: Path,
+) -> None:
+    gate = _load_gate()
+    project = tmp_path / "project"
+    source = project / "scripts/spec175_contract_gate.py"
+    progress = project / "specs/175-ndnsf-di-streamed-invocation/tasks.md"
+    source.parent.mkdir(parents=True)
+    progress.parent.mkdir(parents=True)
+    source.write_text("source-v1\n", encoding="utf-8")
+    progress.write_text("- [ ] task\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    subprocess.run(["git", "add", "."], cwd=project, check=True)
+    subprocess.run([
+        "git", "-c", "user.name=Spec175 Test",
+        "-c", "user.email=spec175@example.invalid",
+        "commit", "-q", "-m", "source",
+    ], cwd=project, check=True)
+    sealed_revision = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=project, text=True).strip()
+    seal = project / "source-seal.json"
+    seal.write_text(json.dumps({
+        "schemaVersion": "spec175-source-seal-v1",
+        "sourceRevision": sealed_revision,
+        "dirtyFiles": {},
+    }), encoding="utf-8")
+
+    progress.write_text("- [x] task\n", encoding="utf-8")
+    subprocess.run(["git", "add", str(progress)], cwd=project, check=True)
+    subprocess.run([
+        "git", "-c", "user.name=Spec175 Test",
+        "-c", "user.email=spec175@example.invalid",
+        "commit", "-q", "-m", "progress",
+    ], cwd=project, check=True)
+    document_revision = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=project, text=True).strip()
+
+    record, issues = gate._verify_source_seal(
+        project, seal, document_revision, [])
+    assert issues == []
+    assert record["revisionAdvancedWithoutSourceChange"] is True
+
+    source.write_text("source-v2\n", encoding="utf-8")
+    subprocess.run(["git", "add", str(source)], cwd=project, check=True)
+    subprocess.run([
+        "git", "-c", "user.name=Spec175 Test",
+        "-c", "user.email=spec175@example.invalid",
+        "commit", "-q", "-m", "source change",
+    ], cwd=project, check=True)
+    source_revision = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=project, text=True).strip()
+
+    _, issues = gate._verify_source_seal(project, seal, source_revision, [])
+    assert {item["code"] for item in issues} == {
+        "SOURCE_SEAL_REVISION_SOURCE_CHANGE"
+    }

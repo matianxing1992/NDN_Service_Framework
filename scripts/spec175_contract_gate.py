@@ -564,6 +564,46 @@ def _sha256(path: Path) -> str:
     return "sha256:" + digest.hexdigest()
 
 
+def _source_changes_between(
+    project_root: Path,
+    sealed_revision: str,
+    current_revision: str,
+) -> list[str] | None:
+    """Return sealed-source paths changed by descendant commits.
+
+    Progress and evidence commits may advance HEAD after a binary subject is
+    sealed. They are allowed only when the sealed revision is an ancestor and
+    no path owned by the build subject changed in between.
+    """
+    try:
+        ancestor = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", sealed_revision,
+             current_revision],
+            cwd=project_root,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        if ancestor.returncode != 0:
+            return None
+        output = subprocess.check_output(
+            ["git", "diff", "--name-status", "--find-renames",
+             f"{sealed_revision}..{current_revision}"],
+            cwd=project_root,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    changed: set[str] = set()
+    for line in output.splitlines():
+        fields = line.split("\t")
+        for path in fields[1:]:
+            if _is_source_subject_path(path):
+                changed.add(path)
+    return sorted(changed)
+
+
 def _verify_source_seal(
     project_root: Path,
     seal_path: Path,
@@ -572,10 +612,10 @@ def _verify_source_seal(
 ) -> tuple[dict[str, object], list[dict[str, str]]]:
     """Verify a content-bound seal for an intentionally dirty worktree.
 
-    A dirty tree is not promotion evidence by itself.  A seal is accepted only
-    when it binds the exact HEAD, exact in-scope status set, and current hash of
-    every changed file.  This keeps local source work reproducible without
-    weakening the default clean-tree requirement.
+    A dirty tree is not promotion evidence by itself. A seal binds its source
+    revision, exact source-subject status set, and current bytes of every dirty
+    source file. HEAD may advance only through descendant commits that do not
+    change a source-subject path; G0 separately binds feature-document digests.
     """
     issues: list[dict[str, str]] = []
     try:
@@ -584,12 +624,26 @@ def _verify_source_seal(
         return {}, [_issue("SOURCE_SEAL_INVALID", str(error), str(seal_path))]
     if payload.get("schemaVersion") != "spec175-source-seal-v1":
         issues.append(_issue("SOURCE_SEAL_SCHEMA", "unsupported source seal schema", str(seal_path)))
-    if str(payload.get("sourceRevision", "")) != revision:
-        issues.append(_issue(
-            "SOURCE_SEAL_REVISION",
-            "source seal HEAD differs from the current repository HEAD",
-            str(seal_path),
-        ))
+    sealed_revision = str(payload.get("sourceRevision", ""))
+    revision_advanced = False
+    if sealed_revision != revision:
+        source_changes = _source_changes_between(
+            project_root, sealed_revision, revision)
+        if source_changes is None:
+            issues.append(_issue(
+                "SOURCE_SEAL_REVISION",
+                "sealed revision is not a verifiable ancestor of current HEAD",
+                str(seal_path),
+            ))
+        elif source_changes:
+            issues.append(_issue(
+                "SOURCE_SEAL_REVISION_SOURCE_CHANGE",
+                "sealed-source paths changed after the seal: "
+                + ", ".join(source_changes[:12]),
+                str(seal_path),
+            ))
+        else:
+            revision_advanced = True
     current_dirty = [
         line for line in all_dirty
         if _is_in_scope_status(line)
@@ -628,6 +682,8 @@ def _verify_source_seal(
         "path": str(seal_path),
         "schemaVersion": payload.get("schemaVersion"),
         "sourceRevision": payload.get("sourceRevision"),
+        "currentRevision": revision,
+        "revisionAdvancedWithoutSourceChange": revision_advanced,
         "dirtyFileCount": len(sealed_paths),
         "verified": not issues,
     }, issues
