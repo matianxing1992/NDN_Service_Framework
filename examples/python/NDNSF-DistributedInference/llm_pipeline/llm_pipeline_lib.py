@@ -2425,21 +2425,33 @@ def _export_qwen_onnx_stage(model: Any, onnx_path: Path,
                 dynamic_axes[f"past_value.{layer}"] = {2: "past_seq"}
                 dynamic_axes[f"present_key.{layer}"] = {2: "total_seq"}
                 dynamic_axes[f"present_value.{layer}"] = {2: "total_seq"}
+    # The legacy Torch exporter writes external-data files relative to the
+    # process cwd rather than the directory containing ``f``.  A large stage
+    # therefore looked valid but left its weight files beside the launcher;
+    # ORT resolves external locations relative to the ONNX file and could not
+    # load the resulting stage.  Export from the artifact directory and pass
+    # only the basename so every external tensor is colocated with its graph.
+    onnx_path = onnx_path.resolve()
     onnx_path.parent.mkdir(parents=True, exist_ok=True)
-    torch.onnx.export(
-        wrapper,
-        (sample_input_ids, attention_mask, dummy_hidden, position_ids, *state_values),
-        str(onnx_path),
-        input_names=input_names,
-        output_names=output_names,
-        dynamic_axes=dynamic_axes,
-        opset_version=17,
-        # Qwen3.5's hybrid linear-attention graph contains exporter-side
-        # scalar expressions that Torch 2.6 may misclassify as ComplexDouble
-        # during legacy constant folding.  Leave folding to ONNX Runtime,
-        # which also keeps the exported graph faithful to the runtime path.
-        do_constant_folding=False,
-    )
+    previous_cwd = Path.cwd()
+    try:
+        os.chdir(onnx_path.parent)
+        torch.onnx.export(
+            wrapper,
+            (sample_input_ids, attention_mask, dummy_hidden, position_ids, *state_values),
+            onnx_path.name,
+            input_names=input_names,
+            output_names=output_names,
+            dynamic_axes=dynamic_axes,
+            opset_version=17,
+            # Qwen3.5's hybrid linear-attention graph contains exporter-side
+            # scalar expressions that Torch 2.6 may misclassify as ComplexDouble
+            # during legacy constant folding.  Leave folding to ONNX Runtime,
+            # which also keeps the exported graph faithful to the runtime path.
+            do_constant_folding=False,
+        )
+    finally:
+        os.chdir(previous_cwd)
     import onnx
 
     if stateful:
@@ -2482,6 +2494,54 @@ def _export_qwen_onnx_stage(model: Any, onnx_path: Path,
                             sort_subgraphs(subgraph)
 
     onnx_model = onnx.load(str(onnx_path), load_external_data=False)
+
+    def iter_graphs(graph):
+        yield graph
+        for node in graph.node:
+            for attribute in node.attribute:
+                if attribute.type == onnx.AttributeProto.GRAPH:
+                    yield from iter_graphs(attribute.g)
+                elif attribute.type == onnx.AttributeProto.GRAPHS:
+                    for subgraph in attribute.graphs:
+                        yield from iter_graphs(subgraph)
+
+    def iter_tensors(graph):
+        yield from graph.initializer
+        for node in graph.node:
+            for attribute in node.attribute:
+                if attribute.type == onnx.AttributeProto.TENSOR:
+                    yield attribute.t
+
+    external_locations = []
+    missing_external = []
+    artifact_dir = onnx_path.parent.resolve()
+    for graph in iter_graphs(onnx_model.graph):
+        for tensor in iter_tensors(graph):
+            if tensor.data_location != onnx.TensorProto.EXTERNAL:
+                continue
+            location = next(
+                (entry.value for entry in tensor.external_data
+                 if entry.key == "location"),
+                "",
+            )
+            if not location:
+                missing_external.append(f"{tensor.name}:empty-location")
+                continue
+            resolved = (artifact_dir / location).resolve()
+            try:
+                resolved.relative_to(artifact_dir)
+            except ValueError:
+                missing_external.append(f"{tensor.name}:path-escape:{location}")
+                continue
+            external_locations.append(location)
+            if not resolved.is_file() or resolved.stat().st_size == 0:
+                missing_external.append(f"{tensor.name}:{location}")
+    if missing_external:
+        raise RuntimeError(
+            "QWEN_ONNX_EXTERNAL_DATA_MISSING: "
+            + ",".join(missing_external[:8])
+            + ("..." if len(missing_external) > 8 else "")
+        )
     if stateful:
         sort_subgraphs(onnx_model.graph)
         onnx.save(onnx_model, str(onnx_path))
