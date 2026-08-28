@@ -1699,6 +1699,26 @@ def _utf8_text_tensor(value: str) -> Any:
         np.int64)
 
 
+def _qwen_head_dim(config: Any) -> int:
+    """Return the model-declared attention projection width.
+
+    Qwen3.5-27B deliberately has a non-divisible hidden size (5120) and
+    attention-head count (24); deriving this value by integer division yields
+    213 instead of the configured 256 and corrupts the persistent KV contract.
+    """
+    configured = getattr(config, "head_dim", None)
+    if configured is not None:
+        value = int(configured)
+        if value <= 0:
+            raise ValueError("Qwen attention head_dim must be positive")
+        return value
+    hidden_size = int(config.hidden_size)
+    heads = int(config.num_attention_heads)
+    if heads <= 0 or hidden_size % heads:
+        raise ValueError("Qwen config has no valid attention head dimension")
+    return hidden_size // heads
+
+
 def _onnx_stage_wrapper(model: Any, *, stateful: bool = False):
     import torch
     import torch.nn.functional as F
@@ -2316,7 +2336,10 @@ def _export_qwen_onnx_stage(model: Any, onnx_path: Path,
     layer_indices = list(range(start, end))
     kv_heads = int(getattr(model.config, "num_key_value_heads",
                            model.config.num_attention_heads))
-    head_dim = int(hidden_size // model.config.num_attention_heads)
+    # Qwen3.5 configurations may use a head dimension that is not equal to
+    # hidden_size // num_attention_heads (Qwen3.6-27B uses 5120/24 != 256).
+    # The explicit configuration value is the projection/cache contract.
+    head_dim = _qwen_head_dim(model.config)
     layer_by_index = {
         index: layer
         for index, layer in zip(layer_indices, list(model.model.layers))
@@ -2521,7 +2544,7 @@ def _validate_qwen_onnx_stages(artifacts: list[SplitArtifact], *,
             (4, int(ids.shape[0]), int(ids.shape[1])),
         )
     kv_heads = int(getattr(config, "num_key_value_heads", config.num_attention_heads))
-    head_dim = int(config.hidden_size // config.num_attention_heads)
+    head_dim = _qwen_head_dim(config)
     stage_records = []
     logits = None
     for artifact in artifacts:
