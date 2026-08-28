@@ -108,6 +108,70 @@ class Spec175StatefulOnnxTests(unittest.TestCase):
             hidden_size=5120, num_attention_heads=24, head_dim=256)
         self.assertEqual(_qwen_head_dim(config), 256)
 
+    def test_stateful_export_colocates_external_data_with_graph(self) -> None:
+        import types
+        import torch
+        import onnx
+        import llm_pipeline.llm_pipeline_lib as llm_lib
+
+        config = types.SimpleNamespace(
+            hidden_size=8,
+            num_attention_heads=2,
+            num_key_value_heads=1,
+            head_dim=4,
+            linear_num_value_heads=1,
+            linear_key_head_dim=2,
+            linear_value_head_dim=2,
+            linear_num_key_heads=1,
+            linear_conv_kernel_dim=2,
+        )
+        model = types.SimpleNamespace(
+            config=config,
+            ndnsf_stage_index=0,
+            ndnsf_stage_count=2,
+            ndnsf_stage_start=0,
+            ndnsf_stage_end=2,
+            ndnsf_model_type="qwen3_5",
+            model=types.SimpleNamespace(layers=[
+                types.SimpleNamespace(block_type="full_attention"),
+                types.SimpleNamespace(block_type="linear_attention"),
+            ]),
+            parameters=lambda: iter((torch.zeros(1, dtype=torch.float32),)),
+        )
+        seen = {}
+
+        def fake_export(_wrapper, _args, filename, **_kwargs):
+            seen["cwd"] = Path.cwd()
+            seen["filename"] = filename
+            inputs = [
+                onnx.helper.make_tensor_value_info(name, onnx.TensorProto.FLOAT, [1])
+                for name in _kwargs["input_names"]
+            ]
+            outputs = [
+                onnx.helper.make_tensor_value_info(name, onnx.TensorProto.FLOAT, [1])
+                for name in _kwargs["output_names"]
+            ]
+            nodes = [onnx.helper.make_node(
+                "Identity", ["hidden_states"], [name])
+                for name in _kwargs["output_names"]]
+            graph = onnx.helper.make_graph(nodes, "test", inputs, outputs)
+            onnx.save(onnx.helper.make_model(
+                graph, opset_imports=[onnx.helper.make_opsetid("", 17)]), filename)
+
+        original_cwd = Path.cwd()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "nested" / "stage.onnx"
+            with patch.object(llm_lib, "_onnx_stage_wrapper",
+                              return_value=(object(), 0, 2, 0, 2)), \
+                 patch.object(torch.onnx, "export", side_effect=fake_export):
+                info = llm_lib._export_qwen_onnx_stage(
+                    model, path, sample_input_ids=torch.ones((1, 1), dtype=torch.long),
+                    export_dtype="float32", stateful=True)
+            self.assertEqual(seen["cwd"], path.parent.resolve())
+            self.assertEqual(seen["filename"], path.name)
+            self.assertEqual(Path.cwd(), original_cwd)
+            self.assertEqual(info["sequencePolicy"], "stateful-prefill-decode-v1")
+
     def test_tiny_qwen_stateful_export_matches_eager_prefill_and_decode(self) -> None:
         """Exercise one graph for variable-length prefill and one-token decode.
 
