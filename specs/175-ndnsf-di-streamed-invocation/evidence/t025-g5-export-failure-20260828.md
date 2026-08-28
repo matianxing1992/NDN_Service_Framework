@@ -173,3 +173,28 @@ PYTHONPATH=. pytest -q tests/python/test_spec175_*.py \
 
 This is a local source regression result only; it does not promote the pending
 Tiger Job `206503` or close the Qwen3.6-27B CUDA gate.
+
+## 206503 exporter-script failure and bounded retry
+
+Tiger Job `206503` used the same SIF and current `llm_pipeline_lib.py`.  It
+passed the three-GPU check, model acquisition, full-model reference load,
+three staged Transformer package writes, and staged prefill/decode parity
+(`332` and `7812`).  Stage 0 ONNX prefill also passed (`maxAbs=0.125`, token
+`3994`).  The job then failed before ONNX decode parity because the staged
+loop overwrote the shared `decode_ids` with a CUDA tensor; the later CPU-ORT
+check called `.numpy()` and raised:
+
+```text
+TypeError: can't convert cuda:2 device type tensor to numpy. Use Tensor.cpu()
+to copy the tensor to the host first.
+SPEC175_EXPORT_RC:1
+```
+
+The failure is an exporter-script state-isolation defect, not a model, SIF,
+CUDA, or ONNX graph failure.  The script now keeps canonical decode IDs on
+CPU and creates a per-stage device view.  The bounded retry is Job `206555`,
+using source bundle `source-stateful-r10`; its exporter SHA-256 is
+`59492deaf93be75bcfe75460999879d16b7914dbe2c02572a42b5d243c7ba836`, while
+the library SHA-256 remains
+`a6cae91ad0c7694e554a3d4cacc77ea4d31376c1e0c9326c2fcee95b4f5ca2d5`.
+Job `206555` must finish before any further candidate is submitted.
