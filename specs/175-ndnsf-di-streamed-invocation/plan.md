@@ -742,19 +742,19 @@ manifest, and cleanup requirements pass. This is intentional: the previous
 20/28 display overstated progress while T005--T019 still had partial or stale
 evidence. The automatic Provider-state and repository-readiness corrections
 reopened T020 and invalidated their predecessor seals. The corrected committed
-subject has now passed one new source-bound G0--G2 sequence. The current
-baseline is therefore 27/34 accepted tasks: the implementation queue and T020
-are closed, while T022 and the post-G3 release gates remain open.
+subject has now passed one new source-bound G0--G3 sequence. The current
+baseline is therefore 28/34 accepted tasks: the implementation queue, T020,
+and T022 are closed, while T023 and the post-G4 release gates remain open.
 
 After T005--T019, T024, and T029--T033 completed the Core/runtime/API,
 conversation, and pre-frozen harness/launcher implementation, T020 resealed the
-cheap G0/G1/G2 gates once. T022 now executes the host gate as strict packets: (A)
+cheap G0/G1/G2 gates once. T022 executed the host gate as strict packets: (A)
 localize any post-Selection exact-event fetch race without changing retry
 parameters, (B) obtain three clean M01 processes, (C) run M02--M14 three times
 each with one registered fault/continuation dimension, (D) seal the 42/42 manifest, and (E) classify
-every same-subject native exit. Only a clean D/E closure passes G3. T021 owns
-the already implemented builder/preflight machinery; T023 may use it to build
-one final SIF only after the new G0--G3 seal passes. This keeps the cheap
+every same-subject native exit. The resulting clean D/E closure passed G3.
+T021 owns the already implemented builder/preflight machinery; T023 may now
+use it to build one final SIF from the frozen G0--G3 subject. This keeps the cheap
 debugging loop separate from the expensive release-candidate path.
 
 The promotion gates are preceded by a development-toolchain closure check. C++

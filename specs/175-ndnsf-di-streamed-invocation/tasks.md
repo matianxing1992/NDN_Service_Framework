@@ -73,14 +73,14 @@ queue below is closed.
 11. Mark a task complete only after its named acceptance gate passes. `compiled`,
    `wired`, or `one smoke ran` is not completion.
 
-**Current progress correction (2026-08-27 audit)**: exactly 27 of 34 tasks
-satisfy their named gates: T001--T021, T024, and T029--T033. T022--T023,
+**Current progress correction (2026-08-28 audit)**: exactly 28 of 34 tasks
+satisfy their named gates: T001--T022, T024, and T029--T033. T023,
 T025--T028, and T034 remain open. The previous G0/G1/G2 manifests, the selected 30/30
 M01--M10 matrix, its additional M09 `returncode=-11`, and every existing SIF
 candidate are historical subjects. They remain preserved as regression inputs,
 but they do not qualify the corrected source. The implementation queue is
-closed and T020's current-source G0/G1/G2 qualification is closed. T022's
-42-process G3 matrix is the active gate; T023 cannot start before it passes.
+closed, T020's current-source G0/G1/G2 qualification is closed, and T022's
+same-seal 42-process G3 matrix passed. T023 is now the active gate.
 No focused test, stale manifest, or
 diagnostic SIF waives an open qualification or promotion gate.
 
@@ -88,7 +88,7 @@ diagnostic SIF waives an open qualification or promotion gate.
 production-ingress mapping test, candidate-only V3 role-spec compatibility, and
 CPU topology identity regressions were fixed and revalidated. T033's M11--M14
 harness implementation is closed; its clean-source repeated qualification is
-now recorded by T020/T022. Current-source G0--G7, SIF, CUDA, and Tiger gates
+now recorded by T020/T022. Current-source G4--G7, SIF, CUDA, and Tiger gates
 remain open as listed below. See
 `evidence/current-local-regression-20260827.md` and
 `evidence/t020-repo-readiness-reseal-20260827.md`.
@@ -127,7 +127,7 @@ Frozen harness/launcher source:    T033 -> T024 [closed]
 The formal promotion sequence is now:
 
 ```text
-T020 (G0--G2) [closed] -> T022 (G3 M01--M14) [open] -> T023 (one final SIF + G4)
+T020 (G0--G2) [closed] -> T022 (G3 M01--M14) [closed] -> T023 (one final SIF + G4)
 -> T025 (current-SIF control + G5) -> T026 (G6) -> T034 (G6C)
 -> T027 (G7) -> T028 (closure)
 ```
@@ -383,11 +383,11 @@ current subject; the current replacement manifests are recorded under T020.
 
 ## Current Qualification Task Definitions (Priority: P3)
 
-T020--T028 preserve their published task/evidence IDs. The implementation
-queue is closed, so T020 is now the current execution phase. T021 is already
-closed as builder/preflight source implementation, and T024's source/interface
-and mutation boundary is also closed. T022 and every later gate remain ordered
-behind their explicit predecessor.
+T020--T028 preserve their published task/evidence IDs. The implementation queue
+and T020--T022 are closed. T021 is already closed as builder/preflight source
+implementation, T024's source/interface and mutation boundary is also closed,
+and T023 is now the active release-candidate phase. Every later gate remains
+ordered behind its explicit predecessor.
 
 **Goal**: Make local gates exercise the same signed model/runtime/network path,
 then promote one immutable SIF to bounded Tiger functional and performance runs.
@@ -418,10 +418,11 @@ candidate retains one hash through G3-G7 and emits the registered verdict.
   - **Partial checkpoint (2026-08-23)**: `ndnsf-di-spec175-preflight` is executable, validates the frozen workload/model/tokenizer identity, requires the workload in the source seal, rejects compiled/runtime overlay names, and is invoked by `build-local-sif.sh`; its PASS record is embedded in the build record. Unit and local-builder regressions pass. Candidate-SIF ABI/loader/toolchain/runtime checks and one promotable SIF remain open.
   - **Pass**: mutation tests reject stale host `_ndnsf.so`, wrong cwd, missing asset/library/provider, ABI/version/hash drift, fallback, secret, and runtime Transformers; the in-SIF manifest does not require MiniNDN/Mininet/OVS/NLSR; and the separate host-substrate preflight owns those checks. The implemented builder and both preflights are ready to consume a future post-G3 seal in T023; T021 neither builds nor marks a current candidate `PROMOTABLE`.
 
-- [ ] T022 [US4] Execute and close the host/CPU real MiniNDN star topology and M01-M14 cases for FR-051..FR-052, FR-070..FR-071, SC-003..SC-006, and SC-013..SC-015 in `Experiments/NDNSF_DI_StreamedGeneration_Minindn.py`, `tests/python/test_spec175_real_minindn_gate.py`, and the existing MiniNDN process/security helpers, using one controller, repository, user, four separate Providers, router, 100 Mbit/s/10 ms links, real NFD/SVS/ABE, disabled admission, and the frozen tiny ONNX bundle. T033 owns the M11--M14 harness implementation and focused contract tests; this gate runs the complete matrix against the corrected same-source native/Python build only after T020 passes and before any SIF build. Its sealed manifest is the input to the later exact-SIF replay rather than a substitute for it.
-  - **Reopened evidence boundary (2026-08-25, extended 2026-08-27)**: all earlier M01--M14 manifests predate either the production Provider-cache/conversation contract or the latest repository-readiness fix. They remain historical transport/protocol evidence. The required fresh 42/42 matrix and Provider lifecycle counters are not current until the active same-seal replay completes.
+- [x] T022 [US4] Execute and close the host/CPU real MiniNDN star topology and M01-M14 cases for FR-051..FR-052, FR-070..FR-071, SC-003..SC-006, and SC-013..SC-015 in `Experiments/NDNSF_DI_StreamedGeneration_Minindn.py`, `tests/python/test_spec175_real_minindn_gate.py`, and the existing MiniNDN process/security helpers, using one controller, repository, user, four separate Providers, router, 100 Mbit/s/10 ms links, real NFD/SVS/ABE, disabled admission, and the frozen tiny ONNX bundle. T033 owns the M11--M14 harness implementation and focused contract tests; this gate runs the complete matrix against the corrected same-source native/Python build only after T020 passes and before any SIF build. Its sealed manifest is the input to the later exact-SIF replay rather than a substitute for it.
+  - **Current formal closure (2026-08-28)**: source revision `f5f2cab9983d41a8e9f6d867fedf7b3e2a4a9d07` passed every M01--M14 case in three independent root MiniNDN processes from one fresh output root. The strict G3 validator accepted 42/42 entries with no missing result or runner log, fixed seed `1750001`, four Providers, disabled admission, tiny-ONNX runtime, and complete M11--M14 conversation evidence. The manifest is `results/spec175/g3/spec175-g3-post-repo-readiness-r5-20260827.json` with SHA-256 `19b656b91e9ee65740061c7fab14d49f84a813c0f3d510bd76a461ce0446fe81`; it binds source-seal SHA-256 `194b9742442c1eba9353f8c96faf5b50dc846c83e146a3eddbad7b0409e15a93`. The earlier M09 signal exit and stale matrices remain historical negative/regression evidence and were not pooled into this subject. See `evidence/t022-post-repo-readiness-g3-20260828.md`.
+  - **Historical evidence boundary (2026-08-25, extended 2026-08-27)**: all earlier M01--M14 manifests predate either the production Provider-cache/conversation contract or the latest repository-readiness fix. They remain historical transport/protocol evidence; the 2026-08-28 current formal closure above supersedes them for promotion.
   - **Historical G3 closure invalidated by later source fixes (2026-08-27)**: a fresh output root ran every M01--M14 case three times with the then-current T020 source seal, fixed workload seed `1750001`, four Providers, and admission control disabled. All 42 processes returned `0` with case-result status `PASS`; the strict validator accepted 42/42 entries, including the M11--M14 conversation evidence and complete Provider timing records. The durable manifest is `results/spec175/g3/spec175-g3-current-20260827.json`; the source seal is `results/spec175/g0/source-seal-current-20260827.json`. Subsequent ONNX-copy/cancellation and qualification-source corrections changed the subject, so this matrix remains valid historical regression evidence but no longer closes T022 or authorizes a SIF build. After T020 reseals, rerun the unchanged 42-case matrix once from a fresh output root.
-  - **Layout checkpoint (2026-08-24)**: the production MiniNDN runner accepts a controlled 2--4 stage layout; four-stage mode assigns `ucla`, `arizona`, `wustl`, and `neu` to distinct Provider and repository identities and rejects unsupported sizes before MiniNDN startup. The frozen Spec175 path now drives the checked-in tiny-ONNX fixture through the real repository-backed four-Provider topology. The layout and preparation contracts are covered by `tests/python/test_spec175_minindn_layout.py` and `tests/python/test_spec175_repo_bootstrap.py`; final execution acceptance now requires the expanded 42/42 matrix below.
+  - **Layout checkpoint (2026-08-24)**: the production MiniNDN runner accepts a controlled 2--4 stage layout; four-stage mode assigns `ucla`, `arizona`, `wustl`, and `neu` to distinct Provider and repository identities and rejects unsupported sizes before MiniNDN startup. The frozen Spec175 path now drives the checked-in tiny-ONNX fixture through the real repository-backed four-Provider topology. The layout and preparation contracts are covered by `tests/python/test_spec175_minindn_layout.py` and `tests/python/test_spec175_repo_bootstrap.py`; the current formal closure satisfies the expanded 42/42 execution requirement.
   - **Implemented host-gate boundary (2026-08-24)**: G3 is a separate, cheap qualification subject that consumes `tests/fixtures/spec175/tiny-causal-lm-v1` and the current host build. It does not require a Qwen3.6 stage manifest, a 27B artifact, a SIF, or a Tiger allocation. Dry-run and topology assertions remain preparation evidence only and cannot substitute for the real M01-M14 executions.
   - **Historical matrix checkpoint (2026-08-25)**: the prior source passed all 30 required fresh host/CPU processes: M01--M06 in `results/spec175/g3/replay1-M01..M06-*-20260825` and M07--M10 in `results/spec175/g3/replay2-M07..M10-*-20260825`, three repetitions per case. Every result has four Providers, real NFD/SVS/ABE, tiny ONNX runtime, disabled admission, user return code 0, and clean MiniNDN teardown. M10 records the required rotated Provider-role map `[1,2,3,0]`; M07 records the deferred-cancel terminal path; M08/M09 record the deadline/provider-failure terminal paths. Because the runner and preflight source changed afterward, this manifest is historical evidence and cannot unlock a new SIF; the earlier cursor-1 and setup-only runs remain retained as excluded diagnostics and are not pooled.
   - **Preparation correction**: repository publication uses an explicit 5000 ms ACK-collection timeout and a unique one-shot start barrier. The publisher and Repo Provider still initialize concurrently for DKEY delivery, but the first Store request is released only after the publisher is waiting and the exact Repo Store permission is installed. Registered streamed request/ACK/event deadlines and retry budgets are unchanged. A zero-candidate repository closure remains a setup failure, never an M01--M14 result; see `evidence/t020-repo-readiness-reseal-20260827.md`.
@@ -430,8 +431,8 @@ candidate retains one hash through G3-G7 and emits the registered verdict.
     1. **T022-A — localize the fetch race**: run one fresh healthy M01 with exact Interest-arrival, IMS hit/miss, pending-Interest, and `face.put` tracing only if a clean post-diagnostic M01 reproduction still fails. Do not change retry/lifetime/deadline values. If setup fails before Selection, record it separately as a preparation failure and rerun; it is not an M01 result.
     2. **T022-B — close healthy M01**: after the owning fix, obtain three independent clean M01 processes with exact cursors, one End/Response, packet lineage, and leak-free teardown. A 2/3 set is diagnostic only. **Completed 2026-08-24** by `t022b-clean-20260824j/k/l`.
     3. **T022-C — run fault matrix**: completed M02--M10 with three clean processes each, one registered fault dimension per case, with no parameter changes or pooled configurations.
-    4. **T022-D — seal G3**: the historical seal completed with `results/spec175/g3/host-minindn-manifest-final-20260825.json`. The current selected manifest is `results/spec175/g3/host-minindn-manifest-current-20260825n.json`, but it cannot close promotion while an additional same-subject signal exit remains unclassified.
-    5. **T022-E — classify every current-subject native exit**: retain the historical failed `replay4-M09-r3-20260825n` process and passing isolated rerun as regression inputs. After the implementation queue closes, run the fresh M09 triplet from the frozen T020 subject. If the signal reproduces, reduce its owner, add a focused lifetime/teardown regression, and restart from T020; if it does not reproduce, preserve both the historical failure and the complete fresh triplet in the manifest. Retrying until three selected PASS rows exist is not acceptance.
+    4. **T022-D — seal G3**: completed by `results/spec175/g3/spec175-g3-post-repo-readiness-r5-20260827.json`; older seal files remain historical only.
+    5. **T022-E — classify every current-subject native exit**: the historical failed `replay4-M09-r3-20260825n` process and passing isolated rerun remain regression inputs. The fresh frozen-subject M09 triplet passed without an unclassified exit, and all three entries are included in the current manifest; no retry-selected rows were pooled.
   - **Visible T022 sub-progress (not independent acceptance gates)**:
     - [x] Freeze and validate the eight-node star topology, four distinct Provider identities, tiny-ONNX four-stage assignment, disabled admission, and `NDNSF_SELECTION_TARGETED_PREFETCH=0` baseline.
     - [x] Publish all four stage artifacts through the real DistributedRepo path and make each Provider fetch its exact assigned artifact; repair manifest indexing, receipt scoping, and permission-readiness regressions with focused tests.
@@ -439,7 +440,7 @@ candidate retains one hash through G3-G7 and emits the registered verdict.
     - [x] Repair and regress the post-Selection public event fetch race: publication now commits on the Face loop; the current 30/30 matrix has no cursor-1 loss. Historical c/e processes remain retained negative evidence.
     - [x] Pass M01 in three fresh post-diagnostic processes with exact tokens, final Response, and clean teardown (`t022b-clean-20260824j/k/l`; historical c/e failures retained separately).
     - [x] Pass M02-M10 in 27 fresh processes with one registered fault dimension per case.
-    - [ ] Against the current T020 seal, run and classify the complete fresh M01--M14 subject, including M09, and seal a promotion-eligible 42/42 G3 manifest with no hidden same-subject crash.
+    - [x] Against the current T020 seal, run and classify the complete fresh M01--M14 subject, including M09, and seal a promotion-eligible 42/42 G3 manifest with no hidden same-subject crash.
   - **Fixed matrix**: three clean processes for each M01-M14 (42/42); seed 1750001, fault seed 1750002; one fault dimension per fault case; M10 permutes signed Provider capacity/cache residency and requires a different ACK-driven role map than M04; M11--M14 are frozen by T033.
   - **Pass**: exact tokens/final result, Request-to-Response packet lineage, bounded queues/retries, no host NFD/fake transport, and clean process-tree teardown under the host-build manifest digest.
 

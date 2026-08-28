@@ -52,5 +52,7 @@ The diagnostic is not part of the formal G3 sample.
 - G2: PASS, 38/38 registered processes, manifest SHA-256
   `2fc1d67d26bf95f4ffc9409a75f36bc04f283a37757085adfcb9fbcb81f288ad`.
 
-T020 is closed for this source seal. T022 must use the same seal and a fresh
-M01--M14 three-repeat root before T023 may build a SIF.
+T020 is closed for this source seal. T022 subsequently used the same seal and a
+fresh M01--M14 three-repeat root, producing the 42/42 PASS manifest recorded in
+`t022-post-repo-readiness-g3-20260828.md`. T023 may now build exactly one final
+SIF from that frozen subject.

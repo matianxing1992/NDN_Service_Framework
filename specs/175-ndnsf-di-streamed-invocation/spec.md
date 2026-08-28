@@ -4,13 +4,14 @@
 
 **Created**: 2026-08-21
 
-**Status**: Local implementation and G0--G2 qualification complete; 27 of 34
-tasks satisfy their named gates. T022 is running the same-seal M01--M14 host/CPU
-MiniNDN matrix. T023, T025--T028, and T034 remain blocked behind that G3 result.
+**Status**: Local implementation and G0--G3 qualification complete; 28 of 34
+tasks satisfy their named gates. T022 passed the same-seal M01--M14 host/CPU
+MiniNDN matrix 42/42. T023, T025--T028, and T034 remain open behind that frozen
+G3 result.
 The previous G0--G4 manifests, MiniNDN matrices, M09 signal exit, and SIF
 candidates remain historical diagnostic evidence and cannot qualify the current
-subject. After T022 passes 42/42 with no hidden process failure, freeze that
-subject, build one final SIF, and proceed through the serial G4--G7/Tiger gates.
+subject. The authorized next step is to build one final SIF from this frozen
+subject and proceed through the serial G4--G7/Tiger gates.
 
 **Input**: Extend the verified NDNSF-DI design so a selected multi-Provider ONNX
 plan can produce a local-LLM-like ordered token stream and can continue an
@@ -100,19 +101,20 @@ compatible promoted entry. The checkpoint authorizes and identifies the
 continuation; it never carries or substitutes for the KV/recurrent/convolution
 state itself.
 
-### Current Evidence Boundary and Execution Priority (2026-08-27)
+### Current Evidence Boundary and Execution Priority (2026-08-28)
 
 The implementation queue is closed. The current committed source passed one
-coherent G0--G2 sequence; the only authorized next work is its same-seal G3
-matrix. A failure in that matrix is classified and reduced before any SIF is
-built. Historical failures remain diagnostic evidence but never substitute for
-the current result.
+coherent G0--G3 sequence, including all M01--M14 cases in three independent
+processes each. The only authorized next work is T023: freeze that manifest,
+build one final SIF, run both layer-specific preflights, and replay the same
+42-case matrix from the exact SIF. Historical failures remain diagnostic
+evidence but never substitute for the current result.
 
-- **Completed tasks**: T001--T021, T024, and T029--T033 satisfy their named
-  gates (27 of 34). T022--T023, T025--T028, and T034 remain open in dependency
-  order. T021 closes the builder/preflight implementation, not a promotable
-  candidate. No source change is allowed after the final SIF candidate is
-  frozen without returning to G0.
+- **Completed tasks**: T001--T022, T024, and T029--T033 satisfy their named
+  gates (28 of 34). T023, T025--T028, and T034 remain open in dependency order.
+  T021 closes the builder/preflight implementation, not a promotable candidate.
+  No source change is allowed after the G3 subject is frozen without returning
+  to G0.
 - **Core streamed path**: production C++ Request/ACK/Selection/event/End/Response
   transport, Normal and Targeted entry points, exact-Interest recovery, bounded
   Provider/callback queues, final-role-only event-key projection, and the low-
@@ -228,13 +230,19 @@ the current result.
   Python automatic multi-role execution is closed by T014/T015; real
   Qwen3.6/CUDA qualification remains open under T025.
 - **Gate boundary**: revision `f5f2cab9` passed G0 with zero blockers, native
-  unit tests, the 222-pass Python gate, and all 38 registered G2 processes under
-  one source seal. This closes T020 for the corrected automatic Provider-state
-  and repository-startup subject. The full repository Python run remains
-  diagnostic because it contains historical Spec127--Spec173 frozen-source
-  drift. The historical M09 signal exit and old G3/SIF subjects remain explicit
-  regression evidence. G3--G7 remain unpassed until T022 and its successors
-  produce current manifests.
+  unit tests, the 222-pass Python gate, all 38 registered G2 processes, and the
+  42/42 G3 M01--M14 matrix under one source seal. This closes T020 and T022 for
+  the corrected automatic Provider-state and repository-startup subject. The
+  full repository Python run remains diagnostic because it contains historical
+  Spec127--Spec173 frozen-source drift. The historical M09 signal exit and old
+  G3/SIF subjects remain explicit regression evidence. G4--G7 remain unpassed.
+- **Current formal G3 closure (2026-08-28)**: the fresh root
+  `results/spec175/g3/post-repo-readiness-r5-20260827` contains exactly three
+  independent PASS processes for every M01--M14 case. The strict manifest
+  validator accepted all 42 results with the frozen topology, four Providers,
+  admission disabled, tiny-ONNX runtime, workload seed `1750001`, complete
+  runner logs, and the M11--M14 conversation evidence. The promotion manifest
+  is `results/spec175/g3/spec175-g3-post-repo-readiness-r5-20260827.json`.
 - **Host MiniNDN checkpoint (2026-08-25)**: the selected current-source matrix
   contains 30 PASS processes across M01--M10 with the frozen four-Provider
   configuration. An additional M09 process reached the registered

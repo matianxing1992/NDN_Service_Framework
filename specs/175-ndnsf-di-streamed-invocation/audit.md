@@ -1,11 +1,11 @@
 # Spec 175 Audit: Streamed Invocation and Conversation Continuation
 
-**Audit date**: 2026-08-27  
+**Audit date**: 2026-08-28
 **Scope**: `spec.md`, `plan.md`, `tasks.md`, `research.md`, `data-model.md`,
 `quickstart.md`, `experiment-plan.md`, `traceability.md`, all versioned
 contracts, and current implementation seams inspected through CodeGraph.  
 **Document verdict**: **CONDITIONAL PASS**  
-**Current implementation/promotion verdict**: **BLOCK (formal qualification and promotion)**
+**Current implementation/promotion verdict**: **LOCAL G3 PASS; BLOCK (G4--G7/Tiger unqualified)**
 
 ## Re-audit correction after the Experimental checkpoint
 
@@ -23,9 +23,10 @@ first Store request before the Repo Provider installed the Store handler and
 permission. Revision `f5f2cab9` adds a one-shot, token-checked publication
 barrier while preserving concurrent DKEY bootstrap. The focused M07 process and
 195 Spec175 Python tests pass. T020 has reclosed on that revision with clean G0,
-native unit PASS, Python 222/222, and G2 38/38 bound to one source seal. T022
-remains open while the fresh 42-case G3 matrix runs. The old G3 matrix remains
-strong historical regression evidence but cannot authorize a SIF.
+native unit PASS, Python 222/222, and G2 38/38 bound to one source seal. The
+fresh same-seal G3 matrix then passed all 42 independent M01--M14 processes,
+including M09 and the M11--M14 conversation evidence. The old G3 matrix remains
+historical regression evidence; only the new manifest authorizes T023.
 
 ## Executive finding
 
@@ -38,10 +39,10 @@ an opaque authenticated parent checkpoint, protected User-side transcript
 state, exact same Provider-role placement, Provider-local role state, delta
 prefill, and the existing automatic autoregressive decode loop.
 
-The documents and host/CPU implementation are close to the final SIF path, but
-the feature is not ready to claim completion, build a candidate, or promote a
-SIF. T020 is closed again, but T023 remains blocked until T022 closes under the
-same source seal. The current
+The documents and host/CPU implementation have passed the final pre-SIF gate,
+but the feature is not ready to claim completion or promote a SIF. T020 and
+T022 are closed under one source seal; T023 may now build exactly one final SIF
+and must prove its exact-SIF replay before promotion. The current
 source exposes the additive conversation API, protected checkpoint transaction,
 Provider-local state stores, the native receipt/control seam, and M11--M14
 host-gate entry points. This audit records the remaining production gaps that
@@ -76,16 +77,16 @@ must stay visible:
    now exercise real independent Providers for receipts, promotion,
    cross-request lookup, restart/fallback, and prefetch cancellation. T033's
    harness/case implementation boundary is now closed; the previous
-   source-sealed repetitions are retained as historical evidence and must not
-   be substituted for the required same-seal T020/T022 rerun.
+   source-sealed repetitions are retained as historical evidence, while the
+   current same-seal T020/T022 rerun supplies the formal host/CPU evidence.
 
 The 2026-08-26 source-seal-v5 G0--G2 manifests (I01--I20, 38/38) remain useful
 development evidence, but the code correction above changed the source subject.
 They are historical rather than the final T020 seal. M11--M14 have host/CPU
-real-Provider checkpoints, and the previous T022 subject classified all 14
-cases across 42/42 fresh processes. Later source corrections mean that result
-must be repeated before promotion. The earlier M09 native signal exit did not
-reproduce in that historical subject.
+real-Provider checkpoints. The current T022 subject classified all 14 cases
+across 42/42 fresh processes under the final T020 source seal. The earlier M09
+native signal exit did not reproduce in the current three-process M09 set and
+remains preserved as historical negative evidence.
 
 ## Audit inventory
 
@@ -94,7 +95,7 @@ reproduce in that historical subject.
 | User stories | 5 |
 | Functional requirements | 73 identifiers, including FR-030a and FR-032a |
 | Success criteria | 16 |
-| Tasks | 34 total; 27 accepted, 7 open |
+| Tasks | 34 total; 28 accepted, 6 open |
 | Requirement traceability | 73/73 mapped |
 | Structural audit | PASS |
 | Spec Kit prerequisites | PASS |
@@ -157,12 +158,18 @@ completed so far:
   `results/spec175/g3/spec175-g3-current-20260827.json`; its immutable SHA-256
   is recorded in `evidence/t020-t022-current-gates-20260827.md`. Later source
   fixes make this historical regression evidence rather than current closure.
-- After the receipt-scope correction, the current source was resealed and the
+- After the receipt-scope correction, an intermediate source was resealed and the
   native G2 runner passed all 20 registered I01--I20 cases once with no missing
   case. The immutable source-seal, contract-manifest, and G2-manifest hashes
   are recorded together in
-  `evidence/current-g2-one-repeat-integrity-20260827.md`; this is still below
-  the required three healthy repetitions.
+  `evidence/current-g2-one-repeat-integrity-20260827.md`; that intermediate
+  checkpoint was later superseded by the final T020/T022 closure.
+- The final repository-readiness subject passed G0, native unit, Python 222/222,
+  G2 38/38, and G3 42/42 under source-seal SHA-256
+  `194b9742442c1eba9353f8c96faf5b50dc846c83e146a3eddbad7b0409e15a93`.
+  The G3 manifest is
+  `results/spec175/g3/spec175-g3-post-repo-readiness-r5-20260827.json`; see
+  `evidence/t022-post-repo-readiness-g3-20260828.md`.
 
 The repository-wide Python suite remains diagnostic: 2,078 passed, 54 failed,
 and 18 skipped in the current run. The failures are in historical Spec127--173
@@ -319,18 +326,18 @@ queue closes.
 
 | ID | Severity | Finding | Required owner |
 |---|---|---|---|
-| A175-01 | CLOSED (implementation); FORMAL REPLAY OPEN | The native readiness/receipt/control seam is implemented and the historical 42/42 matrix exercised the four-Provider Ready/receipt/commit paths, fresh Requests, exact later-request lookup, delta prefill, and atomic conversation epochs. The current committed subject still needs the same-seal replay. | T020/T022 |
+| A175-01 | CLOSED (host/CPU replay) | The native readiness/receipt/control seam and current same-seal 42/42 matrix exercise the four-Provider Ready/receipt/commit paths, fresh Requests, exact later-request lookup, delta prefill, and atomic conversation epochs. Exact-SIF/CUDA replay remains separately gated. | T022/T023/T025 |
 | A175-02 | HIGH | CUDA `*_out -> *_in` mapping and adapter-owned causal position materialization are implemented, and the streamed adapter suppresses per-token complete-state host copies. The explicit request generation identity now reaches the V3 contract and readiness record; terminal/error cleanup now removes the session-keyed device state. The exact Qwen3.6 CUDA graph and the unary multi-role transaction's zero-host-round-trip proof remain unqualified. | T025 |
-| A175-03 | HIGH | The prior host/CPU matrix contains exactly three fresh PASS processes for every M01--M14 case (42/42), but it does not share the post-fix G1/G2 source seal. | T020/T022 same-seal rerun |
+| A175-03 | CLOSED | The current host/CPU matrix contains exactly three fresh PASS processes for every M01--M14 case (42/42) and binds the same post-fix source seal as G0--G2. | T022 G3 manifest |
 | A175-04 | BLOCKER | No exact final candidate includes the corrected source; no G4/G5/G6/G6C/G7 evidence exists for it. | T023, T025--T027, and T034 |
-| A175-05 | CLOSED (local implementation) | The production Python User drives the real four-Provider native path through the model/task-first streamed API; the historical matrix repeated it, while current formal replay remains T022. | request-ID regression; T022 |
+| A175-05 | CLOSED (host/CPU replay) | The production Python User drives the real four-Provider native path through the model/task-first streamed API, and the current same-seal matrix repeats it. | request-ID regression; T022 |
 | A175-06 | MEDIUM | Appended-input tokenization must be proved prefix-stable for the exact Qwen tokenizer/chat template; a delta assembled only from message text is insufficient. The generic/tiny implementation boundary is closed, but the exact Qwen qualification remains open. | T025/T034 |
 | A175-07 | MEDIUM | Actual GPU-host-GPU state movement cannot be established by CPU tier emulation. | T034/G6C |
 | A175-08 | CLOSED | The flaky `ConversationStateStoreSeparatesCrossRequestState` test observed transient PREFETCHING state after waiting for completion. It now asserts the final single-transfer state and passed 100 repetitions. | native unit regression |
 | A175-09 | LOW | T029--T034 IDs were appended after older evidence references, so visual task-number order differs from execution order. | Follow the dependency graph; do not execute file order |
-| A175-10 | CLOSED (local regression) | Production conversation checkpoints use purpose- and identity-separated journal-derived authentication keys; bounded previous-key verification and real Provider-signed Ready/receipt Data passed the historical M11--M14 matrix. | Python security regression; T022 replay |
-| A175-11 | CLOSED (historical replay); CURRENT REPLAY OPEN | M11--M14 formal mode fails closed on test-only emulation, and all 12 historical real Provider conversation processes passed the receipt, promotion, commit-ack, lookup, isolation, restart, and cancellation schema. | T022 same-seal replay |
-| A175-12 | CLOSED (local transaction); CURRENT REPLAY OPEN | The production coordinator previews/signs the exact checkpoint, publishes role-bound COMMIT controls before persistence, and rolls back on failure; historical M11--M14 execution confirmed the network path. | local transaction regression; T022 replay |
+| A175-10 | CLOSED (host/CPU replay) | Production conversation checkpoints use purpose- and identity-separated journal-derived authentication keys; bounded previous-key verification and real Provider-signed Ready/receipt Data passed the current same-seal M11--M14 matrix. | Python security regression; T022 |
+| A175-11 | CLOSED (host/CPU replay) | M11--M14 formal mode fails closed on test-only emulation, and all 12 current real Provider conversation processes passed the receipt, promotion, commit-ack, lookup, isolation, restart, and cancellation schema. | T022 G3 manifest |
+| A175-12 | CLOSED (host/CPU transaction) | The production coordinator previews/signs the exact checkpoint, publishes role-bound COMMIT controls before persistence, and rolls back on failure; current M11--M14 execution confirmed the network path. | local transaction regression; T022 |
 | A175-13 | CLOSED (local boundary) | The native staged-promotion commits now reject a non-empty binding checkpoint on the legacy no-checkpoint overload, and the authenticated two-argument overload rejects a non-empty binding checkpoint that differs from the aggregate checkpoint supplied by the COMMIT control. This closes caller-mismatch paths without changing the staged binding shape used by the current control protocol. | `ConversationStateStoreResolvesOnlyExactSelectionCommitment`; native unit regression |
 | A175-14 | CLOSED (local boundary) | Both V2 and V3 `AutomaticInferenceHandle` conversation metadata now carry the exact sealed `plan_digest` consumed by the asynchronous promotion path. A completed streamed turn can therefore pass the plan-binding check instead of failing after the final response with a missing metadata field. | Spec175 Python/API regression (174 passed) |
 | A175-15 | CLOSED (host/CPU boundary) | The Python Provider-state bridge restores failed prefetches to a retryable state, fences stale cancelled workers, and releases aliased state views during Provider-boot invalidation. Native Provider binding clears stale staged-promotion side-index entries and rejects mismatched or unauthenticated binding digests. Repeated M11--M14 closes real Provider-process ownership on CPU; CUDA residency remains A175-02/T034. | conversation regression; T022 G3 manifest |
@@ -340,7 +347,7 @@ queue closes.
 | A175-19 | CLOSED (local execution boundary) | A lineage-bearing coordinator epoch could previously enter a runner's complete `runStreamed()` loop, duplicating token events and advancing state more than once per epoch. The worker now selects one-shot `run()` for coordinator-owned epochs, and standalone ONNX `runStreamed()` rejects authenticated lineage rather than reusing stale prefix positions. | `ProviderRoleWorker`; `OnnxRuntimeModelRunner`; native unit 600; integration suite |
 | A175-20 | CLOSED (local evidence boundary) | Conversation continuation restored a promoted parent state but reported zero `prefixWorkAvoided` at request epoch zero. The coordinator now records the exact promoted parent prefix length while keeping conversation and request-local hit metrics distinct; the three-token parent regression reports three avoided tokens. | `NativeEpochCoordinator`; `NativeEpochCoordinatorRestoresConversationStateAndExtendsPrefix`; native unit 600 |
 | A175-21 | CLOSED (launcher hygiene; execution still privilege-gated) | `nfd-stop` can leave a per-node Unix socket path behind. The Spec175 launcher now probes only the exact topology-owned paths, removes a path only after an unowned connection refusal, and rejects an active listener. When an unprivileged launcher cannot unlink a root-owned stale path it records an explicit deferred cleanup instead of claiming removal; a root MiniNDN start remains required for execution. | `cleanup_unused_nfd_sockets`; focused real-MiniNDN launcher regression (35 passed) |
-| A175-22 | CLOSED (historical host/CPU observation) | `AutomaticStreamingHandle` records monotonic event/terminal/error timestamps and exposes a metadata-only `timing_summary`; the launcher emits strict per-role Provider handler spans. The prior T022 subject repeated the real native-Provider timing evidence across M01--M14; current replay remains open and performance qualification remains T027. | timing-summary regression; T022/T027 |
+| A175-22 | CLOSED (host/CPU observation) | `AutomaticStreamingHandle` records monotonic event/terminal/error timestamps and exposes a metadata-only `timing_summary`; the launcher emits strict per-role Provider handler spans. The current T022 subject repeated the real native-Provider timing evidence across M01--M14; performance qualification remains T027. | timing-summary regression; T022/T027 |
 | A175-23 | CLOSED (local fail-closed boundary) | Direct `ConversationCoordinator.commit_turn()` callers now receive the same origin request/generation/service/requester/security-domain checks as `prepare_checkpoint()`, so a mismatched receipt cannot bypass the normal lineage contract. `AutomaticStreamingHandle` also contains user error-callback exceptions so they cannot escape the delivery thread or replace the original terminal error. | `conversation.py`, `app_sdk/placement.py`; correction regression 71 passed |
 | A175-24 | CLOSED (local authorization-scope boundary) | `prepare_checkpoint()` and `commit_turn()` now require every receipt to share one non-empty service, requester identity, security-domain digest, and per-role model digest. A coordinator with blank constructor scope can no longer let the first receipt implicitly authorize a mixed receipt set. | `conversation.py`; `test_checkpoint_rejects_mixed_receipt_scope_when_coordinator_scope_is_blank` (3 parameterized cases) |
 
@@ -358,7 +365,7 @@ T013 complete state/position/device source wiring
   -> T033 M11-M14 real-Provider harness implementation [complete]
   -> T024 pre-frozen Tiger interface/checklist implementation [complete]
   -> T020 coherent committed-source G0/G1/G2 seal (I01-I20) [complete]
-  -> T022 same-seal G3 replay (M01-M14, 42/42, no hidden exit) [open]
+  -> T022 same-seal G3 replay (M01-M14, 42/42, no hidden exit) [complete]
   -> T023 one final SIF and exact-SIF 42-case replay
   -> T025 G5
   -> T026 G6
@@ -367,19 +374,18 @@ T013 complete state/position/device source wiring
   -> T028 closure
 ```
 
-No SIF build, upload, Slurm allocation, or Tiger run is authorized before the
-same-seal expanded G3 pass. T032 has frozen the lower-gate/G6C launcher
-contracts and T033's harness implementation is complete. T020 now has a clean
-current-source PASS inventory; T022 must regenerate the matching G3 inventory,
-while T014/T015/T030/T031 remain closed implementation boundaries.
+The same-seal expanded G3 pass now authorizes exactly one local SIF build under
+T023. Upload, Slurm allocation, and Tiger remain prohibited until the candidate
+passes the host-substrate and exact-SIF G4 replay. T032 has frozen the lower-
+gate/G6C launcher contracts, T033's harness implementation is complete, and
+T014/T015/T030/T031 remain closed implementation boundaries.
 
 ## Final audit decision
 
-Spec175 is sufficiently explicit to finish local qualification, but not yet to
-enter the final SIF/promotion path. T014--T015 and T030--T031 close their
-implementation boundaries, and T024's pre-frozen interface/checklist boundary
-is complete. Do not reuse either the historical 30/30 result or the now-stale
-42/42 result as the current expanded G3 pass. T020 is now closed on one
-coherent committed source. The next action is T022 against that exact seal,
-and only then T023 to build exactly one final SIF and run the exact-SIF replay
-before Tiger.
+Spec175 has finished local host/CPU qualification but has not finished release
+qualification. T014--T015 and T030--T031 close their implementation boundaries,
+T024's pre-frozen interface/checklist boundary is complete, and the current
+same-seal G0--G3 sequence passes. Historical 30/30 and stale 42/42 results remain
+diagnostic only. The next action is T023: build exactly one final SIF from the
+frozen subject, run both preflights, and complete the exact-SIF 42-case replay
+before any Tiger submission.
