@@ -80,6 +80,14 @@ dependency dataflow, prefetch, worker dispatch, and future ONNX Runtime
 execution should run in native C++ and call NDNSF Core directly. Python should
 remain a thin API, deployment, GUI, and experiment layer.
 
+For model/task-first streamed requests, `APPClient.request_streaming(...)`
+returns one `AutomaticStreamingHandle`. Its `timing_summary` is a
+metadata-only view of the real monotonic event and terminal callbacks: it
+reports TTFT, each inter-token interval, terminal/error time, and bounded
+attempt/replacement counts without exposing prompt, token, logits, or state
+payloads. Per-role lifecycle attribution still belongs to the Spec175 evidence
+recorder and qualification gates; do not infer it from this aggregate view.
+
 The repository therefore contains two layers today:
 
 ```text

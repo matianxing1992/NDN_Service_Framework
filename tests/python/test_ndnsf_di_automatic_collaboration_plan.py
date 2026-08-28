@@ -4,6 +4,7 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 import copy
+import hashlib
 import json
 import unittest
 
@@ -37,6 +38,7 @@ from ndnsf_distributed_inference.core.contracts import (
     DATA_DRIVEN_V2,
     DISelectionAssignmentV2,
 )
+from ndnsf_distributed_inference.conversation import ConversationContinuation
 from ndnsf_distributed_inference.sdk.placement import (
     ArtifactPreparationMode,
     ModelPlacementStrategy,
@@ -850,6 +852,12 @@ class AutomaticCollaborationPlanTest(unittest.TestCase):
             task=task,
             input=application_input,
             timeout_ms=1000,
+            conversation=ConversationContinuation(
+                conversation_id="automatic-v2-conversation-0001",
+                turn_input_digest=(
+                    "sha256:" + hashlib.sha256(
+                        application_input.payload).hexdigest()),
+            ),
         )
         self.assertIs(
             handle.decision.artifact_preparation,
@@ -857,6 +865,10 @@ class AutomaticCollaborationPlanTest(unittest.TestCase):
         )
         self.assertEqual(events, ["resolve-existing", "commit"])
         self.assertEqual(len(service_user.collaboration.commits), 1)
+        self.assertEqual(
+            handle.conversation_metadata["plan_digest"],
+            handle.sealed_plan.plan_digest,
+        )
 
     def test_request_is_published_before_graph_and_split_planning(self):
         base_adapter = build_object_detection_adapter()

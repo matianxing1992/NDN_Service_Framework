@@ -9,9 +9,14 @@ sys.path.insert(0, str(ROOT / "NDNSF-DistributedInference"))
 from ndnsf_distributed_inference.sdk.placement import (  # noqa: E402
     DeviceBinding, DeviceBindingMode, DeviceTopologyProfile, ExecutionDisposition,
     ExecutionRole, GrantBindingV1, PlanSealerV3,
+    GenerationExecutionContractV1,
     PlacementProposalV3, ProviderOfferV3, ProviderPlanningViewV3,
     ProviderSelectionProjectionV3, RoleAssemblySpec, RoleDataflowContract,
     ResidencyClassV3, ResidencyProofV3, ResidencyTierV3, canonical_digest,
+)
+from ndnsf_distributed_inference.conversation import (  # noqa: E402
+    ConversationStateReferenceV1,
+    ConversationTurnBindingV1,
 )
 
 
@@ -61,6 +66,115 @@ def proposal(provider: str = "p0") -> PlacementProposalV3:
 
 
 class Spec170PlanSealerTest(unittest.TestCase):
+    def test_projection_carries_only_role_local_conversation_commitment(self):
+        provider_view = view("p0")
+        core = PlanSealerV3.seal_core(
+            {"request_id": "req-1", "ack_closed_digest": S}, proposal(),
+            {"p0": provider_view})
+        final = PlanSealerV3.finalize_security(core, (), S)
+        reference = ConversationStateReferenceV1(
+            conversation_id="0123456789abcdef0123456789abcdef",
+            context_epoch=2, service_name="/LLM/Qwen",
+            plan_role_map_digest="sha256:" + "a" * 64,
+            checkpoint_digest="sha256:" + "b" * 64,
+            role_name="stage0",
+            role_receipt_digest="sha256:" + "c" * 64,
+            expires_at_ms=10_000,
+        )
+        turn_binding = ConversationTurnBindingV1(
+            conversation_id=reference.conversation_id,
+            parent_context_epoch=reference.context_epoch,
+            successor_context_epoch=reference.context_epoch + 1,
+            service_name=reference.service_name,
+            plan_role_map_digest=reference.plan_role_map_digest,
+            request_contract_digest="sha256:" + "d" * 64,
+            retention_deadline_ms=10_000,
+            parent_checkpoint_digest=reference.checkpoint_digest,
+        )
+        projection = PlanSealerV3.project(
+            core, plan_digest=final, provider="p0", offer=provider_view,
+            security_policy_snapshot_digest=S,
+            execution_role=ExecutionRole(
+                "stage0", "stage0", 0, 0, 2, "cpu"),
+            assembly=core.roles[0],
+            dataflow=RoleDataflowContract(
+                "req-1", 1, final, "stage0", terminal_response_owner=True),
+            device_binding=DeviceBinding(
+                DeviceBindingMode.CPU, "p0", "stage0",
+                provider_view.offer_digest, provider_view.topology.digest(),
+                canonical_digest(provider_view.resources), 1),
+            deadline_ms=100,
+            conversation_state_reference=reference,
+            conversation_turn_binding=turn_binding,
+        )
+        wire = projection.to_bytes()
+        self.assertEqual(
+            ProviderSelectionProjectionV3.from_bytes(
+                wire).conversation_state_reference,
+            reference)
+        self.assertEqual(
+            ProviderSelectionProjectionV3.from_bytes(
+                wire).conversation_turn_binding,
+            turn_binding)
+        self.assertNotIn(b"state_component_digests", wire)
+        self.assertNotIn(b"signature", wire)
+
+    def test_generation_contract_is_core_bound_and_projection_round_trips(self):
+        provider_view = view("p0")
+        feedback = {
+            "producers": ["stage0"], "consumers": ["stage0"],
+            "key_scope": "token-feedback", "topic_prefix": "/feedback",
+            "object_name_template": "{producerProvider}/{sessionId}/{sequence}",
+            "required": True, "tensors": ["input_ids"],
+            "operationKind": "TOKEN_FEEDBACK",
+            "transportProfile": "NDNSF_DATA_V1",
+            "collectiveOperationIndex": 0,
+        }
+        streaming_proposal = PlacementProposalV3(
+            **{**proposal().__dict__, "dependencies": (feedback,)})
+        generation = GenerationExecutionContractV1(
+            mode="TOKEN_STREAMING", max_generated_tokens=8,
+            token_input_name="input_ids",
+            state_input_names=("attention_kv_in", "recurrent_state_in",
+                               "convolution_state_in"),
+            state_output_names=("attention_kv_out", "recurrent_state_out",
+                                "convolution_state_out"),
+            eos_token_ids=(2,), sampling_digest="sha256:" + "a" * 64,
+            tokenizer_digest="sha256:" + "b" * 64,
+            generation_id="01" * 16,
+            streaming_operation_stride=1,
+        )
+        core = PlanSealerV3.seal_core(
+            {"request_id": "req-1", "ack_closed_digest": S,
+             "generation_contract": generation},
+            streaming_proposal, {"p0": provider_view})
+        self.assertEqual(core.generation_contract, generation)
+        final = PlanSealerV3.finalize_security(core, (), S)
+        role = core.roles[0]
+        projection = PlanSealerV3.project(
+            core, plan_digest=final, provider="p0", offer=provider_view,
+            security_policy_snapshot_digest=S,
+            execution_role=ExecutionRole(
+                "stage0", "stage0", 0, 0, 2, "cpu"),
+            assembly=role,
+            dataflow=RoleDataflowContract(
+                "req-1", 1, final, "stage0", terminal_response_owner=True),
+            device_binding=DeviceBinding(
+                DeviceBindingMode.CPU, "p0", "stage0",
+                provider_view.offer_digest, provider_view.topology.digest(),
+                canonical_digest(provider_view.resources), 1),
+            dependencies=(feedback,), deadline_ms=100,
+        )
+        decoded = ProviderSelectionProjectionV3.from_bytes(
+            projection.to_bytes())
+        self.assertEqual(decoded.generation_contract, generation)
+        self.assertIn(b'"generation_id":"01010101010101010101010101010101"',
+                      projection.to_bytes())
+        with self.assertRaisesRegex(ValueError, "generation execution contract"):
+            PlanSealerV3.seal_core(
+                {"request_id": "req-1", "ack_closed_digest": S},
+                streaming_proposal, {"p0": provider_view})
+
     def test_security_finalization_requires_real_grants_only_for_protected_roles(self):
         provider_view = view("p0")
         plaintext_core = PlanSealerV3.seal_core(
@@ -146,8 +260,10 @@ class Spec170PlanSealerTest(unittest.TestCase):
 
     def test_projection_carries_complete_offer_and_security_binding(self):
         provider_view = view("p0")
+        request_contract_digest = "sha256:" + "a" * 64
         core = PlanSealerV3.seal_core(
-            {"request_id": "req-1", "ack_closed_digest": S}, proposal(),
+            {"request_id": "req-1", "ack_closed_digest": S,
+             "request_contract_digest": request_contract_digest}, proposal(),
             {"p0": provider_view})
         final = PlanSealerV3.finalize_security(core, (), S)
         role = core.roles[0]
@@ -172,6 +288,14 @@ class Spec170PlanSealerTest(unittest.TestCase):
         self.assertEqual(decoded.security_policy_snapshot_digest, S)
         self.assertEqual(decoded.device_binding.offer_digest,
                          decoded.offer_digest)
+        self.assertEqual(decoded.request_contract_digest,
+                         request_contract_digest)
+
+        changed = PlanSealerV3.seal_core(
+            {"request_id": "req-1", "ack_closed_digest": S,
+             "request_contract_digest": "sha256:" + "b" * 64}, proposal(),
+            {"p0": provider_view})
+        self.assertNotEqual(core.plan_core_digest, changed.plan_core_digest)
 
     def test_external_proposal_rejects_opaque_runtime_content(self):
         base = proposal()

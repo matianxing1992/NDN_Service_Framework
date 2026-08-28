@@ -1,3 +1,16 @@
+<!--
+Sync Impact Report
+- Version: 1.0.0 -> 1.1.0
+- Added principle: VI. Cohesive, Outcome-Based Tasks
+- Modified guidance: Spec-driven work and development workflow now require a
+  task-cohesion review before implementation.
+- Updated templates:
+  - [updated] .specify/templates/plan-template.md
+  - [reviewed, no change required] .specify/templates/spec-template.md
+  - [updated] .specify/templates/tasks-template.md
+- Removed sections: none
+- Deferred items: none
+-->
 # NDNSF Constitution
 
 ## Core Principles
@@ -44,6 +57,19 @@ performance regressions should use MiniNDN by default; host NFD is only a
 temporary diagnostic path unless the user asks otherwise. Performance short
 tests should keep a 60-second measured window unless explicitly changed.
 
+### VI. Cohesive, Outcome-Based Tasks
+
+Spec Kit tasks MUST represent reviewable behavioral outcomes, not mechanical
+file operations or workflow bookkeeping. When one behavior has one owner and
+one acceptance gate, its test-first work, implementation, focused validation,
+and evidence update MUST remain one task unless a real dependency boundary
+requires separation. A task MAY be split only when a part is independently
+assignable and mergeable, blocks later work, carries materially different risk,
+or has an independently meaningful acceptance result. Task count is not a
+quality metric. Reviews MUST flag repeated chains such as “write test”,
+“implement”, “run test”, and “record evidence” as over-fragmentation when those
+steps only close the same behavior.
+
 ## Project Constraints
 
 Use resumable workflow tooling for long-running, multi-phase, unclear, or
@@ -63,7 +89,9 @@ when both exist.
 1. Check the working tree before edits and never revert unrelated user changes.
 2. For code work, start with CodeGraph unless the task is a literal text/doc
    lookup.
-3. Use Spec Kit before implementing durable feature or architecture work.
+3. Use Spec Kit before implementing durable feature or architecture work, and
+   verify that its tasks are cohesive behavioral units rather than mechanically
+   split file or process steps.
 4. Use GSD for multi-phase work that needs explicit state, verification, or
    recovery.
 5. Prefer MiniNDN for final NDNSF network/security/performance validation.
@@ -78,4 +106,4 @@ security invariants, and required validation gates. Local development
 instructions must not override NDNSF runtime/security rules. Amend this
 constitution when those project rules change.
 
-**Version**: 1.0.0 | **Ratified**: 2026-06-24 | **Last Amended**: 2026-06-24
+**Version**: 1.1.0 | **Ratified**: 2026-06-24 | **Last Amended**: 2026-07-16

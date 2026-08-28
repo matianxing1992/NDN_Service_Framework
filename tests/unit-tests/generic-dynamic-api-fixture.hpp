@@ -499,6 +499,19 @@ public:
   {
     m_pendingCalls[requestId].ackCandidatesHandler = std::move(ackCandidatesHandler);
   }
+
+  std::shared_ptr<StreamInvocationLifecycle>
+  attachStreamLifecycleForTest(const ndn::Name& requestId,
+                               bool deferredCollaboration)
+  {
+    return attachStreamLifecycle(requestId, deferredCollaboration);
+  }
+
+  std::shared_ptr<StreamInvocationLifecycle>
+  getStreamLifecycleForTest(const ndn::Name& requestId) const
+  {
+    return getStreamLifecycle(requestId);
+  }
 };
 
 class LocalServiceProvider : public ServiceProvider
@@ -525,6 +538,19 @@ public:
   }
 
   void
+  prepareCollaborationAssignmentForTest(
+      const ndn::Name& requesterName,
+      const ndn::Name& requestId,
+      CollaborationAssignment assignment,
+      std::function<void(bool, std::string, CollaborationAssignment)> onReady)
+  {
+    prepareCollaborationAssignmentAsync(requesterName,
+                                        requestId,
+                                        std::move(assignment),
+                                        std::move(onReady));
+  }
+
+  void
   addPendingRequestForTokenTest(const ndn::Name& requesterName,
                                 const ndn::Name& serviceName,
                                 const ndn::Name& requestId,
@@ -536,6 +562,26 @@ public:
     std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
     pendingRequests[key] = std::make_shared<RequestMessage>(requestMessage);
     pendingProviderTokens[key] = providerToken;
+  }
+
+  std::shared_ptr<StreamInvocationLifecycle>
+  attachStreamLifecycleForTest(const ndn::Name& requesterName,
+                               const ndn::Name& serviceName,
+                               const ndn::Name& requestId)
+  {
+    ndn::Name key(requesterName);
+    key.append(serviceName).append(requestId);
+    return attachStreamLifecycle(key);
+  }
+
+  std::shared_ptr<StreamInvocationLifecycle>
+  getStreamLifecycleForTest(const ndn::Name& requesterName,
+                            const ndn::Name& serviceName,
+                            const ndn::Name& requestId) const
+  {
+    ndn::Name key(requesterName);
+    key.append(serviceName).append(requestId);
+    return getStreamLifecycle(key);
   }
 
   void

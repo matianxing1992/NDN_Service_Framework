@@ -587,6 +587,120 @@ sudo -n python3 Experiments/NDNSF_DistributedRepo_Generic_Minindn.py \
 backing read、第二次读取 hit 且不增加 backing read、LRU eviction、SQLite fallback、
 digest 一致，以及 `usedBytes <= budgetBytes`。
 
+## 大文件公开 Python API（`artifact-manifest-v2`）
+
+应用通过 `ArtifactRepositoryApi`（或 `RepoClient` 上的同名方法）发布和获取
+不可变文件，不再自行构造 packet batch、访问私有字段选择副本或调用副本内部控制
+操作。最小的本地持久化示例如下：
+
+```python
+from py_repoclient import ArtifactRepositoryApi, FilesystemArtifactApiBackend
+
+api = ArtifactRepositoryApi(
+    FilesystemArtifactApiBackend("/var/lib/ndnsf-artifacts"),
+    publisher_identity="/example/publisher",
+)
+published = api.publish_file(
+    "model.onnx",
+    name="/models/example",
+    expected_sha256="0123456789abcdef" * 4,
+    replicas=1,
+)
+fetched = api.fetch_file(published.reference, "cache/model.onnx")
+```
+
+`FilesystemArtifactApiBackend` 是供开发和本地运行使用的单副本、崩溃安全后端。
+部署后的 NDNSF runtime 应安装 `ArtifactApiBackend` adapter，并默认使用普通
+NDNSF Collaboration；只有已知 provider 的显式优化才使用
+`ArtifactControlOptions(mode=TARGETED, targeted_provider="/repo/A")`。Targeted
+不会绕过 NDNSF 授权、一次性 token、重放保护、manifest 验证或持久 receipt 检查。
+
+维护中的命令行应用位于
+`examples/python/NDNSF-DistributedRepo/artifact_api/publish_file.py` 和
+`examples/python/NDNSF-DistributedRepo/artifact_api/fetch_file.py`。二者支持同步、
+`--async` 和 `--advanced` session 模式。高级流程分别是
+`begin_upload -> upload_file -> commit` 与
+`begin_fetch -> transfer -> commit`；调用
+`abort(preserve_progress=True)` 会保留经过验证的 staging 状态，供同一个
+idempotency key 精确续传。
+
+### 发布参数
+
+| 参数 | 含义 |
+|---|---|
+| `path` | 已存在的普通源文件。 |
+| `name` | 绝对逻辑 NDN 名称；完整身份还包括 SHA-256、大小、格式、publisher 和 policy epoch。 |
+| `expected_sha256` | 必需的 SHA-256 断言；不匹配时在传输前失败。 |
+| `replicas` | 正整数的目标持久副本数。 |
+| `verification` | `artifact-manifest-v2` 必须使用 `signed-manifest`。 |
+| `resume` | 中断后保留并验证属于同一 operation 的 staging 前缀。 |
+| `on_progress` | 可选、有界、单调的 `ArtifactProgress` observer；慢 observer 不会阻塞传输。 |
+| `idempotency_key` | 稳定的重试身份；省略时由逻辑名和 digest 推导。 |
+| `policy_epoch` | 绑定到 `ArtifactReference` 的信任策略版本。 |
+| `timeout_ms` | 正数的总 operation deadline；省略时使用 API 默认值。 |
+| `control` | `ArtifactControlOptions`：默认 Collaboration，或显式 Targeted provider。 |
+| `cancellation` | 可选 `ArtifactCancellationToken`；异步 task 取消会传播到该 token。 |
+
+`ArtifactPublishResult` 返回 `reference`、`operation_id`、
+`requested_replicas`、`achieved_replicas`、逐副本 state/receipt、
+`deduplicated`、`resumed`、`total_duration_ms` 和各阶段耗时。实际 durability
+始终等于不同且通过认证的 `COMMITTED` receipt 数量。
+
+### 获取参数
+
+| 参数 | 含义 |
+|---|---|
+| `reference` | 完整、不可变的 `ArtifactReference`；仅有逻辑名称不够。 |
+| `destination` | 最终本地路径；只有完整验证并原子 rename 后才可见。 |
+| `resume` | 只复用属于同一 operation/reference 且已经验证的前缀。 |
+| `verify` | 验证重组后的不可变 digest；部署的 v2 backend 还必须验证签名 manifest。 |
+| `replace` | 允许原子替换冲突的已有 destination；默认明确失败。 |
+| `on_progress` | 可选、有界、单调的进度 observer。 |
+| `idempotency_key` | 稳定的重试身份；默认由 digest 和 destination 绝对路径推导。 |
+| `timeout_ms` | 正数的总 operation deadline。 |
+| `control` | 默认 Collaboration，或显式 Targeted provider。 |
+| `cancellation` | 可选取消 token。 |
+
+`ArtifactFetchResult` 返回 `reference`、`operation_id`、`destination`、
+`reused_bytes`、`transferred_bytes`、源副本、总耗时和各阶段耗时。
+`reused_bytes + transferred_bytes` 必须等于不可变大小。同步和异步调用返回相同
+类型的结果：
+
+```python
+published = await api.publish_file_async(
+    source, name=name, expected_sha256=digest)
+fetched = await api.fetch_file_async(published.reference, destination)
+```
+
+所有公开错误都是 `ArtifactApiError`，稳定 `code` 只能是：
+`INVALID_ARGUMENT`、`UNSUPPORTED_CAPABILITY`、`AUTHORIZATION_FAILED`、
+`TRUST_VALIDATION_FAILED`、`MANIFEST_INVALID`、`CONTENT_DIGEST_MISMATCH`、
+`LEASE_EXPIRED`、`CAPACITY_UNAVAILABLE`、`TRANSFER_TIMEOUT`、`CANCELLED`、
+`REPLICA_COMMIT_FAILED`、`DURABILITY_NOT_ACHIEVED`、
+`DESTINATION_CONFLICT`、`RECOVERY_REQUIRED` 或 `INTERNAL_ERROR`。异常还携带
+有界 message、operation ID、已知时的 artifact reference 和已实现副本数，不会
+暴露由 peer 控制的原始诊断文本。
+
+`exact-packet-v1` 继续作为显式兼容 API，供必须保留应用签名 Data 原始 wire bytes
+的调用方使用。上述文件 API 不会静默选择或重新解释它。
+
+### Artifact schema 迁移与回滚
+
+Artifact 元数据使用持久 schema generation 12。启动时只执行增量
+roll-forward，并在 active catalog、认证 receipt 和 GC claim 中显式保存
+`formatVersion` 与 `digestAlgorithm`；不会重写已提交 payload bytes，也不会
+改写旧的 exact-packet wire。
+
+`RepoNodeApp(..., artifact_writes_enabled=False)` 可显式禁止新的 v2 发布。
+`artifact_max_write_schema_generation=N` 在数据库代际高于 `N` 时也会使节点进入
+只读回滚模式；数据库代际高于当前 runtime 时同样自动 fail closed。已提交 v2
+对象仍可读取，但新的 v2 lifecycle、resume、finalization、reservation 和 GC
+修改都会以 `repo-artifact-writes-disabled` 失败。
+
+ACK 和 `CAPABILITY` payload 会提供有界的 `artifactMigration` 诊断。只读节点会
+从能力广告中撤回 `artifact-manifest-v2`、resume 和 durable receipt 支持，使
+能力协商在传输前拒绝该节点。`exact-packet-v1` 仍独立广告，其信任语义不变。
+
 ## Python Binding
 
 `NDNSF-DistributedRepo/pythonWrapper` 安装一个名为 `py_repoclient` 的可导入包。它暴露与 C++ API 相同的通用概念：
@@ -627,16 +741,20 @@ NDNSF Core
 
 持久 Repo 使用 SQLite 作为权威存储，并使用有容量上限的内存 LRU 作为加速层。
 写请求携带可幂等重放的 operation ID，并返回每个副本的持久 write receipt；
-`ONE`、`QUORUM` 和 `ALL` 决定必须收集的 receipt 数量。容量 reservation 防止
-并发写入超卖空间。placement cache 会过期；过载、超时、容量不足或完整性失败
-会使对应节点的缓存选择失效，并让节点进入短暂的健康冷却期。
+`ONE`、`QUORUM` 和 `ALL` 决定必须收集的 receipt 数量。正 ACK 只是当时的容量
+与队列快照，不预留任何字节；Selection 才分配任务，Provider 随后将任务加入有界
+执行队列，并在真正开始执行时完成最终容量检查。placement cache 会过期；过载、
+超时、容量不足或完整性失败会使对应节点的缓存选择失效，并让节点进入短暂的健康
+冷却期。
 
 Repo Data 由每个进程一个长期运行的 producer 提供。应用签名的精确 Data wire
 按原始完整名称存储和返回，不改名、不重新签名。普通大对象仍使用
 SegmentFetcher；连续发布属于 stream 语义，不属于 Repo 对象 API。
 
-Catalog journal、tombstone、peer watermark、membership heartbeat、repair job 和
-capacity reservation 都能跨重启恢复。Bucket digest 用于有界 anti-entropy。
+Catalog journal、tombstone、peer watermark、membership heartbeat 和 repair job
+都能跨重启恢复。旧版本升级后的数据库可以为回滚保留只读
+`capacity_reservations` 表；当前 ACK、placement 和 write 路径既不读取也不修改它。
+Bucket digest 用于有界 anti-entropy。
 同一 generation 的在线副本若 content digest 不同，会明确报告 `CONFLICT`，
 repair scheduler 不会静默选择其中一个。Repair job 支持幂等、lease、退避重试和
 周期扫描，不再依赖 sidecar 进程生命周期内的抑制集合。
@@ -648,19 +766,22 @@ command wire 兼容属于未来 adapter，不应成为第二套内部策略实�
 ## Targeted 并行控制面
 
 当副本集合已知时，Repo 控制操作在完成标准认证 token bootstrap 后使用 NDNSF
-Targeted 调用。容量预留、预留释放和副本存储通过同一个 `ServiceUser` 异步提交，
-并共享一个总截止时间。如果某个副本失败，其他副本已经返回的成功 receipt 仍会
-保留；最终写入仍必须满足请求的 `ONE`、`QUORUM` 或 `ALL` 一致性级别。
+Targeted 调用。副本存储分配通过同一个 `ServiceUser` 异步提交并共享一个总截止
+时间，之前不再有 reserve/release 往返。如果某个副本失败，其他副本已经返回的
+成功 receipt 仍会保留；最终写入仍必须满足请求的 `ONE`、`QUORUM` 或 `ALL`
+一致性级别。
 
 Targeted 只是优化，不是安全绕过。权限检查、NAC-ABE 保护、一次性 provider
 token、重放保护、operation ID、receipt 验证和写一致性检查都继续生效。可选的
 有界 fallback 使旧的 Normal-only provider 仍可使用，并在控制指标中单独统计。
 
 `NetworkDistributedRepoClient` 接受 `control_mode="normal"` 或
-`control_mode="targeted"`，并提供 `control_metrics()`。Campaign lifecycle CSV
-包含 `reserveMs` 和 `storeMs`；summary JSON 记录 Targeted、normal、timeout、
-fallback、fan-out 和最大并发计数。Targeted token batch 可通过
-`NDNSF_TARGETED_TOKEN_BATCH_SIZE` 调整，范围 1--256，默认值为 8。
+`control_mode="targeted"`，并提供 `control_metrics()`。当前 campaign lifecycle
+记录使用 `planningMs`、`queueWaitMs`、`sessionStartMs` 和 `storeMs`；读取器只为
+兼容旧证据把历史 `reserveMs` 归一化为 `sessionStartMs`，不会恢复 reservation
+协议。summary JSON 记录 Targeted、normal、timeout、fallback、fan-out 和最大
+并发计数。Targeted token batch 可通过 `NDNSF_TARGETED_TOKEN_BATCH_SIZE`
+调整，范围 1--256，默认值为 8。
 
 RF=2、W=ALL 的匹配 60 秒 MiniNDN 实验结果如下：
 
@@ -683,10 +804,10 @@ NAC-ABE 现在把所有 OpenABE 操作串行调度到同一个进程级专用线
 `replicationFactor=3` 供后续 repair 使用，`confirmedReplicaNodes` 只列出真正
 返回 receipt 的节点。W=ALL 仍然要求三个 receipt。
 
-容量 reservation 使用相同阈值。启用 reservation 时，store 只发送给成功返回
-有效 reservation 的 provider。Targeted 和 fallback 结果会更新 provider health；
-如果 Targeted 和 Normal fallback 都失败，该 provider 会进入比“Targeted 暂态失败
-但 fallback 成功”更强的 cooldown。
+Selection assignment 给出期望副本，而 receipt 阈值决定结果能否提交；两者之间
+不创建容量 reservation。Targeted 和 fallback 结果会更新 provider health；如果
+Targeted 和 Normal fallback 都失败，该 provider 会进入比“Targeted 暂态失败但
+fallback 成功”更强的 cooldown。
 
 在匹配的 60 秒 RF=3/W=QUORUM MiniNDN 实验中，RepoA 在第 20 秒被停止。
 故障后的 19 个请求全部成功，其中 17 个 write 都恰好获得两个 receipt；故障后
@@ -762,3 +883,151 @@ inline merge，没有 fallback。最初两个 37/39-entry delta 都只使用一�
 而不是各 16 个 batch。Merge 总耗时从 5,200.463 ms 降至 3,038.567 ms；重启后
 首次 repair 从 10.587 秒改善到 9.033 秒；请求 p95 基本稳定在 1,779.222 ms。
 详见 `specs/083-repo-catalog-merge-large-data/results.md`。
+
+## Spec 164 可扩展制品路径与当前验收边界
+
+可扩展路径已经实现为 `artifact-manifest-v2`，其责任边界是：
+
+```text
+应用 / NDNSF-DI
+  -> ArtifactRepositoryApi
+  -> 普通 NDNSF Collaboration 控制
+  -> 选中的 Repo providers
+  -> 分段 NDN Data 传输
+  -> 权威 payload store 与 metadata store
+```
+
+NDNSF 负责 Request/ACK/Selection 授权、NAC-ABE 路由、一次性 token、重放保护和
+Collaboration 生命周期。Repo 负责制品能力协商、lease、manifest、分段传输、副本
+receipt、原子可见性、断点续传、恢复与垃圾回收。NDNSF-DI 提供模型相关制品身份并
+调用公开 Repo API；模型分割和推理调度不属于 Repo。
+
+公开应用表面同时支持同步、异步与可恢复 session：
+
+```python
+published = repo.publish_file(
+    source,
+    name="/models/qwen/stage-0",
+    expected_sha256=digest,
+    replicas=3,
+)
+
+fetched = repo.fetch_file(
+    published.reference,
+    destination,
+    verify=True,
+)
+
+upload = repo.begin_upload(descriptor)
+upload.upload_file(source)
+published = upload.commit()
+```
+
+`ArtifactReference` 是不可变复用身份：逻辑名称、完整内容 digest、字节数、已签名
+root manifest 名称、publisher identity 和 policy epoch。只有逻辑名称不够。部署
+默认控制模式是普通 Collaboration；Targeted 只是已知 provider 优化，不绕过授权、
+token、manifest 校验或持久 receipt 检查。
+
+信任组合有意避免为每个 Data packet 做一次公钥验证。一个 publisher 签名的 root
+绑定制品身份和内容寻址 manifest 层级；Data packet 与 chunk 使用有界 digest 工作
+校验；激活前校验完整 payload digest；每个已提交副本返回认证 receipt。HMAC
+receipt 是同一个 NDNSF 授权域内的高效证据，不是相互不信任管理域之间的公开
+不可否认性证明。
+
+Payload 以流方式写入内容寻址文件；metadata、journal、lease、receipt 和 catalog
+保持事务化。临时与 verified 数据在持久 metadata commit 和 activation 之前都不可见。
+启动恢复、精确身份 resume、generation fence、容量预留和 GC ownership 规则共同防止
+部分内容、迟到 retry 或无主临时文件被公开。`exact-packet-v1` 继续作为显式兼容格式，
+不会被静默解释为 v2。未来 schema generation 或操作员禁止写入时进入只读模式，而不
+重写已有 bytes。
+
+### 冻结的 MiniNDN 结果
+
+第一轮冻结 campaign 保留在：
+
+```text
+results/spec164-artifact-campaign-20260730T050211Z
+campaignId: spec164-artifact-20260730T050307Z
+manifestSha256: 1ec7305d0b2f6b563ac7a65bf3858a82d3e64fdee57fab91c3202ec36f3636b2
+```
+
+Preflight 的 96 个候选 cell 中 24 个可接受；24 次 warmup 和 120 次 measured 全部
+保留；物理瓶颈为 659.613 Mbit/s。120 次 measured 全部通过；一个 warmup 副本超时
+仍保留在 ledger 中。
+
+这些证据**没有**关闭 Spec 164 性能验收：
+
+- SC-002 结论不足：64 MiB digest/raw median 为 0.992，但五样本 bootstrap 区间为
+  `[0.364, 1.191]`。
+- SC-003 失败：r1/c16 与 r3/c4 的 signed/digest median 分别为 0.893 和 0.825。
+- SC-007 结论不足，因为没有测量 cold retrieval/read amplification。
+- Campaign 测量 NDN Data 传输、信任和持久化，但没有走完整公开 Collaboration 发布
+  路径，因此不能建立 SC-004 或完整 request latency。
+
+不可变分析复现命令：
+
+```bash
+python3 Experiments/analyze_distributed_repo_artifact.py \
+  --campaign results/spec164-artifact-campaign-20260730T050211Z \
+  --output-json results/spec164-artifact-campaign-20260730T050211Z/derived-results.json \
+  --output-markdown \
+    specs/164-distributed-repo-large-artifact-transport/evidence/performance-report.md
+```
+
+下一轮 MiniNDN campaign 必须先使用公开 Collaboration 控制路径，消除已测得的
+signed-manifest 并发瓶颈，加入 matched cold fetch，并分别统计 payload store、
+metadata store、Data wire 与 Interest wire bytes。现有 campaign 是不可变证据，
+不得调参、覆盖或删除负面样本。
+
+TigerCluster 只是在本地阻塞项关闭之后的外部有效性门禁。它的大 Qwen 测试必须复用
+相同的不可变 `ArtifactReference`、普通 NDNSF Collaboration assignment、Repo
+publish/fetch 与持久证据绑定。当前任何 Spec 164 制品结果都不是 TigerCluster 或
+大模型验收结果。
+
+### 2026-08-01 TigerCluster Qwen3.6 运维经验
+
+Spec 162 的首次明确授权运行已经在三台 RTX 5000 节点上走过真实的
+NDNSF-DI/DistributedRepo 发布路径。Qwen3.6-27B 的三个内容寻址 stage 共
+53,792,308,358 bytes；manifest 为
+`sha256:cd9bb9c37dd2b7780cf76a2b3080d2b58fa27a4e16b22e5b6f377ee70e50e787`。
+这组运行保留了 181527、181528、181530、181531、181532 五个失败 identity；
+181532 在第一 token 的 Selection 阶段因 Provider/Core 的 boot epoch 不一致而被
+拒绝，不能表述为完整生成 PASS。
+
+这次运行明确了 Repo 观测必须分成四段：
+
+1. NDN chunk 发布；
+2. root-manifest 注册与 catalog `ACTIVE` 提交；
+3. Provider 获取、校验、内存/GPU 准备与缓存命中；
+4. NDNSF-DI 协作、依赖数据流和推理响应。
+
+stage 文件全部出现并不代表 catalog 已经可用。53.79 GB 冷发布在观测中还要
+等待约 19–22 分钟才出现 registration record；这是包含调度、控制消息和提交延迟
+的诊断观察，不是 Repo 吞吐率。Spec 167 必须用受控 payload、匹配的节点对、冷
+发布/冷获取/热复用和独立物理带宽上限来测吞吐，不能把 Qwen 作业总耗时当成 Repo
+性能。
+
+故障经验也属于协议边界：容器内只能使用 `/shared/<basename>` 映射后的 campaign
+路径；tokenizer 必须来自绑定的 artifact 目录；`user.py` 与
+`llm_pipeline_lib.py` 必须是同一封存版本；原生 SIF 缺少符号时必须先修复运行时
+闭包。live-003 的 Provider 日志还记录了 Repo STORE 控制选择期间的多次
+`ProviderToken mismatch`；即使发布最终完成，也必须把它当作控制面安全/关联诊断，
+不能静默忽略。详细 identity、证据路径和修复规则见
+`docs/NDNSFDI/tigercluster-qwen36-operational-lessons.md`。
+
+live-006 和 live-007 两个诊断 identity 保留不变：live-006 证明终态
+Selection fail-fast 不能对通用 Repo STORE 协作默认启用；live-007 发现封存
+运行时缺少 `DISelectionAssignmentV2` 的显式导入。Repo ACK 现在会按 artifact
+大小设置有界的 `pending_state_ttl_ms`（保守按 8 MiB/s 估计并增加五分钟，最长一
+小时），避免大对象拉取、校验和 finalize 期间 Core 提前清理已消费的
+ProviderToken。这只保护请求状态生命周期；Repo 仍然以队列执行，不引入存储锁或
+容量 reservation。fix-009 source manifest 为
+`ec8212dbe219f492d0e4474837bdb0208fdf2a079ab42c2409a0c0393e65850d`。
+
+后续 identity 仍分别保留：live-009（181538）发现 `AckDecision` 是冻结对象，
+`pending_state_ttl_ms` 必须在构造时传入；live-011（181539）证明修正后的 Repo
+ACK 和 DI assignment 已覆盖，但必须绑定当前 DI provider 模块；live-012
+（181541）暴露错误的 `DIRoleAssignmentV2.artifact` cache-key 访问；live-013
+（181543）随后暴露 Selection 阶段重复进行 DI GPU admission。fix-014 对相同
+request/attempt/model/roles/backends 绑定复用未过期 offer；live-014（181544）
+是该修复后的复验。这些是源码/运行时闭包与准备修复，不是 Repo 吞吐率结论。

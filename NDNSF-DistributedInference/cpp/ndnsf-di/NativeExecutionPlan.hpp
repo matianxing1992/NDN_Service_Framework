@@ -86,6 +86,10 @@ struct NativeDependencySpec
   std::size_t expectedSegments = 0;
   std::size_t expectedBytes = 0;
   std::vector<std::string> tensors;
+  // Internal request-scoped control edges (for example TOKEN_FEEDBACK) are
+  // still ordinary signed Data dependencies, but they do not change which
+  // role owns the user-facing final response.
+  std::string operationKind;
   SegmentNamingSpec segmentNaming;
   // Cross-Provider dependencies may opt into the authenticated,
   // request-scoped NDNSF_DATA_V1 transport. Ordinary dependencies retain the
@@ -204,6 +208,9 @@ struct NativeExecutionPlan
   std::string modelFormat = "unknown";
   std::string plannerKind = "onnx-dag";
   std::string executionPolicy = "DATA_DRIVEN_V2";
+  // Signed stride for request-scoped streamed DATA_V1 operation indexes.
+  // Zero means the plan is not authorized for multi-epoch DATA_V1 execution.
+  std::uint64_t streamingOperationStride = 0;
   std::vector<std::string> roles;
   std::vector<NativeDependencySpec> dependencies;
 };
@@ -346,6 +353,20 @@ roleSpecFor(const NativeExecutionPlan& plan,
             const std::string& sessionId,
             const NativeProviderAssignment& assignment,
             const std::string& localProvider = "");
+
+/**
+ * Build one request-scoped role projection for a streamed inference epoch.
+ * `sequence` is substituted into `{sequence}` in every dependency name and
+ * is recorded as the edge round.  The legacy overload above remains the
+ * sequence-zero projection used by unary and pre-streaming callers.
+ */
+RoleSpec
+roleSpecFor(const NativeExecutionPlan& plan,
+            const std::string& role,
+            const std::string& sessionId,
+            const NativeProviderAssignment& assignment,
+            const std::string& localProvider,
+            std::size_t sequence);
 
 RoleSpec
 roleSpecFor(const NativeExecutionPlan& plan,

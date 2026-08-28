@@ -6,6 +6,7 @@ when that dependency is installed; value contracts are always available.
 """
 
 from .contracts import *
+from ..conversation import *
 from .status import *
 from ..planner.compatibility import *
 from ..sdk.loader import (

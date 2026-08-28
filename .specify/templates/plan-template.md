@@ -42,6 +42,10 @@
 
 [Gates determined based on constitution file]
 
+The plan MUST identify cohesive behavioral slices and their acceptance gates.
+It MUST NOT prescribe a future task for every file, function, test command, or
+evidence document when those actions jointly deliver one behavior.
+
 ## Project Structure
 
 ### Documentation (this feature)

@@ -367,6 +367,12 @@ Data 能匹配这个 Interest 时，provider 会立即回复。这是 large-data
 repo object 和 distributed-inference activation object 的传输优化。它不改变
 Request/ACK/Selection/Response 协议、Data 名字、签名、加密或应用 callback。
 
+通用 exact-name large-data retrieval 默认使用一个共享的 30 秒 request budget
+（`NDNSF_REQUEST_LARGE_FETCH_TIMEOUT_MS`）。该 budget 同时覆盖 segmented transport
+尝试、legacy NAC-ABE fallback 和 message-key 解密，因此缺失对象不会为每条路径各自
+等待一个完整 timeout。负例测试可以显式降低这个值；需要更长 cold transfer 时再显式
+提高它。
+
 Provider collaboration large-data fetch 默认使用 30 秒 Interest lifetime
 （`NDNSF_COLLAB_LARGE_INTEREST_LIFETIME_MS`）。这个默认值刻意比普通低延迟命令
 timeout 更长，因为 distributed-inference role 可能会在上游 role 完成 segments

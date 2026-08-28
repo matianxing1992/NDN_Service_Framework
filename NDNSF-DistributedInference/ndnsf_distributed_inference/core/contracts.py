@@ -121,6 +121,56 @@ def _strict_v2_decode(
 
 
 @dataclass(frozen=True)
+class GenerationRecoveryV1(CanonicalContract):
+    """Sealed attempt-2 recompute contract; it never carries live KV state."""
+
+    SCHEMA: ClassVar[str] = "ndnsf-di-generation-recovery-v1"
+    logical_generation_id: str
+    original_request_id: str
+    recovery_request_id: str
+    attempt: int
+    original_input_manifest_digest: str
+    prior_plan_digest: str
+    failed_provider: str
+    committed_token_ids: tuple[int, ...]
+    committed_token_count: int
+    committed_prefix_digest: str
+
+    def __post_init__(self) -> None:
+        token_ids = tuple(int(value) for value in self.committed_token_ids)
+        object.__setattr__(self, "committed_token_ids", token_ids)
+        expected_prefix = "sha256:" + hashlib.sha256(
+            ",".join(str(value) for value in token_ids).encode("ascii")
+        ).hexdigest()
+        if (len(self.logical_generation_id) != 32
+                or any(ch not in "0123456789abcdef"
+                       for ch in self.logical_generation_id)
+                or not self.original_request_id
+                or not self.recovery_request_id
+                or self.original_request_id == self.recovery_request_id
+                or self.attempt != 2
+                or not self.failed_provider.startswith("/")
+                or self.committed_token_count != len(token_ids)
+                or len(token_ids) > 4094
+                or any(value < 0 or value >= 2**63 for value in token_ids)
+                or self.committed_prefix_digest != expected_prefix):
+            raise ValueError("invalid GenerationRecoveryV1")
+        _require_sha256(
+            self.original_input_manifest_digest,
+            "original_input_manifest_digest")
+        _require_sha256(self.prior_plan_digest, "prior_plan_digest")
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "GenerationRecoveryV1":
+        payload = dict(value)
+        if payload.pop("schema", cls.SCHEMA) != cls.SCHEMA:
+            raise ValueError("unsupported generation recovery schema")
+        payload["committed_token_ids"] = tuple(
+            payload.get("committed_token_ids", ()))
+        return cls(**payload)
+
+
+@dataclass(frozen=True)
 class DIRequestEnvelopeV2(CanonicalContract):
     SCHEMA: ClassVar[str] = "ndnsf-di-request-envelope-v2"
     invocation_id: str
@@ -163,6 +213,18 @@ class DIRequestEnvelopeV2(CanonicalContract):
                 or model.get("identity_hash") != self.model_identity_hash
                 or task.get("name") != self.task_kind):
             raise ValueError("DI request model/task compatibility view mismatch")
+        recovery = task.get("generation_recovery")
+        if recovery is not None:
+            recovery = (recovery if isinstance(recovery, GenerationRecoveryV1)
+                        else GenerationRecoveryV1.from_dict(recovery))
+            if (self.attempt != 2
+                    or recovery.recovery_request_id != self.request_id
+                    or recovery.original_input_manifest_digest
+                    != self.input_manifest_digest):
+                raise ValueError(
+                    "DI request generation recovery binding mismatch")
+            task["generation_recovery"] = recovery.to_dict()
+            object.__setattr__(self, "task", task)
         _require_sha256(self.model_identity_hash, "model_identity_hash")
         _require_sha256(
             self.input_manifest_digest, "input_manifest_digest")
@@ -455,6 +517,7 @@ class DISelectionAssignmentV2(CanonicalContract):
     deadline_ms: int
     generation: int
     state_reuse_binding: StateReuseBindingV2 | None = None
+    generation_recovery: GenerationRecoveryV1 | None = None
     execution_policy: str = DATA_DRIVEN_V2
     schema_version: int = 2
     canonical_encoding_version: str = "canonical-json-v1"
@@ -497,6 +560,15 @@ class DISelectionAssignmentV2(CanonicalContract):
                 "plan_digest", "offer_digest", "artifact_set_digest",
                 "dependency_graph_digest"):
             _require_sha256(getattr(self, name), name)
+        if self.generation_recovery is not None:
+            recovery = self.generation_recovery
+            if not isinstance(recovery, GenerationRecoveryV1):
+                recovery = GenerationRecoveryV1.from_dict(recovery)
+                object.__setattr__(self, "generation_recovery", recovery)
+            if (self.attempt != 2
+                    or recovery.recovery_request_id != self.request_id):
+                raise ValueError(
+                    "DI Selection generation recovery binding mismatch")
 
     def required_gpu_mib(self) -> int:
         return sum(item.required_gpu_mib for item in self.roles)
@@ -530,6 +602,12 @@ class DISelectionAssignmentV2(CanonicalContract):
             if not isinstance(binding, dict):
                 raise ValueError("state reuse binding must be an object")
             payload["state_reuse_binding"] = StateReuseBindingV2(**binding)
+        recovery = payload.get("generation_recovery")
+        if recovery is not None:
+            if not isinstance(recovery, dict):
+                raise ValueError("generation recovery must be an object")
+            payload["generation_recovery"] = GenerationRecoveryV1.from_dict(
+                recovery)
         return cls(**payload)
 
 

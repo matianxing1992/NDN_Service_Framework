@@ -24,6 +24,10 @@ from ..core.decision_validation import (
 )
 from ..core.hybrid_contracts import validate_role_dataflow_contracts
 from .executor import BoundedPolicyExecutor, PolicyExecutionTimeout
+from ..conversation import (
+    ConversationStateReferenceV1,
+    ConversationTurnBindingV1,
+)
 
 
 def _plain(value: Any) -> Any:
@@ -539,7 +543,11 @@ class DeviceTopologyProfile:
         object.__setattr__(self, "devices", devices)
         if not self.provider or len(set(devices)) != len(devices):
             raise ValueError("invalid V3 device topology")
-        if any(not item or not item.startswith("cuda:") for item in devices):
+        if any(
+                not item
+                or item == "cpu"
+                or not item.startswith("cuda:")
+                for item in devices):
             raise ValueError("invalid V3 device identity")
         if not self.backend:
             raise ValueError("V3 topology backend is required")
@@ -1416,6 +1424,66 @@ class PlacementProposalV3:
 
 
 @dataclass(frozen=True)
+class GenerationExecutionContractV1:
+    """Digest-bound request-scoped native autoregressive execution contract."""
+
+    mode: str
+    max_generated_tokens: int
+    token_input_name: str
+    state_input_names: Tuple[str, ...]
+    state_output_names: Tuple[str, ...]
+    eos_token_ids: Tuple[int, ...]
+    sampling_digest: str
+    # Digest of the exact tokenizer/vocabulary configuration admitted for this
+    # request. KV identity must not substitute a model or manifest digest here.
+    tokenizer_digest: str
+    # Request-scoped generation identity.  Older diagnostic callers may omit
+    # this field; live TOKEN_STREAMING requests populate it so every Provider
+    # observes the same identity as the User-side conversation transaction.
+    generation_id: str = ""
+    committed_prefix_token_ids: Tuple[int, ...] = ()
+    streaming_operation_stride: int = 0
+
+    def __post_init__(self) -> None:
+        if self.mode != "TOKEN_STREAMING":
+            raise ValueError("generation execution mode must be TOKEN_STREAMING")
+        if self.max_generated_tokens < 1 or self.max_generated_tokens > 64:
+            raise ValueError("max_generated_tokens must be between 1 and 64")
+        if not self.token_input_name or self.streaming_operation_stride <= 0:
+            raise ValueError("generation token input/operation stride is incomplete")
+        inputs = tuple(str(value) for value in self.state_input_names)
+        outputs = tuple(str(value) for value in self.state_output_names)
+        eos = tuple(int(value) for value in self.eos_token_ids)
+        prefix = tuple(int(value) for value in self.committed_prefix_token_ids)
+        if (not inputs or len(inputs) != len(outputs)
+                or len(set(inputs)) != len(inputs)
+                or len(set(outputs)) != len(outputs)
+                or any(not value for value in inputs + outputs)):
+            raise ValueError("generation state input/output names are incomplete")
+        if not eos or any(value < 0 for value in eos):
+            raise ValueError("generation EOS token IDs are incomplete")
+        _require_digest(self.sampling_digest, "sampling_digest")
+        _require_digest(self.tokenizer_digest, "tokenizer_digest")
+        if self.generation_id and (
+                len(self.generation_id) != 32
+                or self.generation_id != self.generation_id.lower()
+                or any(ch not in "0123456789abcdef"
+                       for ch in self.generation_id)):
+            raise ValueError(
+                "generation_id must be 16-byte lowercase hex")
+        if (len(prefix) >= self.max_generated_tokens
+                or any(value < 0 or value in eos for value in prefix)):
+            raise ValueError("generation committed prefix is invalid")
+        object.__setattr__(self, "state_input_names", inputs)
+        object.__setattr__(self, "state_output_names", outputs)
+        object.__setattr__(self, "eos_token_ids", eos)
+        object.__setattr__(self, "committed_prefix_token_ids", prefix)
+
+    def digest(self) -> str:
+        return canonical_digest(self)
+
+
+@dataclass(frozen=True)
 class PlacementPlanCoreV3:
     request_id: str
     attempt: int
@@ -1428,6 +1496,11 @@ class PlacementPlanCoreV3:
     strategy_digest: str
     plan_core_digest: str = ""
     candidate_digest: str = ""
+    # Digest of the exact encrypted-request plaintext contract (the canonical
+    # DIRequestEnvelopeV2 bytes).  For attempt 2 this indirectly seals the
+    # complete GenerationRecoveryV1 prefix into the accepted plan.
+    request_contract_digest: str = ""
+    generation_contract: GenerationExecutionContractV1 | None = None
 
     def __post_init__(self) -> None:
         _require_digest(self.model_digest, "model_digest")
@@ -1436,9 +1509,28 @@ class PlacementPlanCoreV3:
         _require_digest(self.strategy_digest, "strategy_digest")
         if self.candidate_digest:
             _require_digest(self.candidate_digest, "candidate_digest")
+        if self.request_contract_digest:
+            _require_digest(
+                self.request_contract_digest, "request_contract_digest")
+        if (self.generation_contract is not None
+                and not isinstance(
+                    self.generation_contract, GenerationExecutionContractV1)):
+            raise ValueError("invalid generation execution contract")
         object.__setattr__(self, "roles", tuple(self.roles))
         object.__setattr__(self, "provider_by_role", _freeze(self.provider_by_role))
         object.__setattr__(self, "dependencies", tuple(_freeze(self.dependencies)))
+        feedback_count = sum(
+            str(item.get("operationKind", "")) == "TOKEN_FEEDBACK"
+            for item in self.dependencies)
+        if self.generation_contract is not None:
+            if (feedback_count != 1
+                    or self.generation_contract.streaming_operation_stride
+                    != len(self.dependencies)):
+                raise ValueError(
+                    "generation contract does not match the TOKEN_FEEDBACK plan")
+        elif feedback_count:
+            raise ValueError(
+                "TOKEN_FEEDBACK plan requires a generation execution contract")
         role_names = tuple(item.role for item in self.roles)
         role_keys = tuple(
             name if role_names.count(name) == 1 else f"{name}#{item.rank}"
@@ -1546,6 +1638,14 @@ class ProviderSelectionProjectionV3:
     # documented by the native Provider parser.
     execution_bindings: Mapping[str, Mapping[str, str]] = field(
         default_factory=dict)
+    request_contract_digest: str = ""
+    generation_contract: GenerationExecutionContractV1 | None = None
+    # Compact role-local commitment for one retained parent-conversation
+    # state. The complete signed receipt remains requester-encrypted.
+    conversation_state_reference: ConversationStateReferenceV1 | None = None
+    # Request-scoped successor commitment shared by every Provider projection.
+    # It authorizes creation of a conversation epoch but contains no state.
+    conversation_turn_binding: ConversationTurnBindingV1 | None = None
     schema: str = "ndnsf-di-selection-v3"
     schema_version: int = 3
 
@@ -1559,6 +1659,35 @@ class ProviderSelectionProjectionV3:
              self.security_policy_snapshot_digest),
         ):
             _require_digest(value, name)
+        if self.request_contract_digest:
+            _require_digest(
+                self.request_contract_digest, "request_contract_digest")
+        if (self.generation_contract is not None
+                and not isinstance(
+                    self.generation_contract, GenerationExecutionContractV1)):
+            raise ValueError("invalid generation execution contract")
+        if (self.conversation_state_reference is not None
+                and (not isinstance(self.conversation_state_reference,
+                                    ConversationStateReferenceV1)
+                     or self.conversation_state_reference.role_name
+                     != self.execution_role.role_id)):
+            raise ValueError("invalid conversation state reference")
+        if (self.conversation_turn_binding is not None
+                and not isinstance(self.conversation_turn_binding,
+                                   ConversationTurnBindingV1)):
+            raise ValueError("invalid conversation turn binding")
+        if (self.conversation_state_reference is not None
+                and (self.conversation_turn_binding is None
+                     or self.conversation_state_reference.conversation_id
+                     != self.conversation_turn_binding.conversation_id
+                     or self.conversation_state_reference.context_epoch
+                     != self.conversation_turn_binding.parent_context_epoch
+                     or self.conversation_state_reference.plan_role_map_digest
+                     != self.conversation_turn_binding.plan_role_map_digest
+                     or self.conversation_state_reference.checkpoint_digest
+                     != self.conversation_turn_binding.parent_checkpoint_digest)):
+            raise ValueError(
+                "conversation parent reference/turn binding mismatch")
         if not self.provider or not self.request_id or self.attempt <= 0:
             raise ValueError("invalid V3 Selection projection")
         if len(self.roles) != 1:
@@ -1645,6 +1774,18 @@ class ProviderSelectionProjectionV3:
             raise ValueError("invalid V3 Selection projection schema")
         object.__setattr__(self, "roles", tuple(self.roles))
         object.__setattr__(self, "dependencies", tuple(_freeze(self.dependencies)))
+        feedback_count = sum(
+            str(item.get("operationKind", "")) == "TOKEN_FEEDBACK"
+            for item in self.dependencies)
+        if self.generation_contract is not None:
+            if (feedback_count != 1
+                    or self.generation_contract.streaming_operation_stride
+                    != len(self.dependencies)):
+                raise ValueError(
+                    "generation projection does not match TOKEN_FEEDBACK")
+        elif feedback_count:
+            raise ValueError(
+                "TOKEN_FEEDBACK projection requires a generation contract")
         object.__setattr__(self, "execution_bindings", _freeze(bindings))
 
     def to_bytes(self) -> bytes:
@@ -1658,6 +1799,18 @@ class ProviderSelectionProjectionV3:
             payload.pop("execution_bindings", None)
         if self.grant_binding is None:
             payload.pop("grant_binding", None)
+        if not self.request_contract_digest:
+            payload.pop("request_contract_digest", None)
+        if self.generation_contract is None:
+            payload.pop("generation_contract", None)
+        elif not self.generation_contract.generation_id:
+            # Preserve the first-draft wire shape for old diagnostic callers;
+            # live streamed requests always carry the explicit identity.
+            payload.get("generation_contract", {}).pop("generation_id", None)
+        if self.conversation_state_reference is None:
+            payload.pop("conversation_state_reference", None)
+        if self.conversation_turn_binding is None:
+            payload.pop("conversation_turn_binding", None)
         return canonical_bytes(payload)
 
     @classmethod
@@ -1687,6 +1840,17 @@ class ProviderSelectionProjectionV3:
             if payload.get("grant_binding") is not None:
                 payload["grant_binding"] = GrantBindingV1(
                     **payload["grant_binding"])
+            if payload.get("generation_contract") is not None:
+                payload["generation_contract"] = GenerationExecutionContractV1(
+                    **payload["generation_contract"])
+            if payload.get("conversation_state_reference") is not None:
+                payload["conversation_state_reference"] = (
+                    ConversationStateReferenceV1.from_dict(
+                        payload["conversation_state_reference"]))
+            if payload.get("conversation_turn_binding") is not None:
+                payload["conversation_turn_binding"] = (
+                    ConversationTurnBindingV1.from_dict(
+                        payload["conversation_turn_binding"]))
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("malformed V3 role projection") from exc
         if "execution_bindings" in payload:
@@ -1755,6 +1919,9 @@ class PlanSealerV3:
                 "name": proposal.strategy_name, "version": proposal.strategy_version,
                 "state": proposal.strategy_state_digest}),
             candidate_digest=proposal.candidate_digest,
+            request_contract_digest=str(
+                request.get("request_contract_digest", "") or ""),
+            generation_contract=request.get("generation_contract"),
         )
         return PlacementPlanCoreV3(
             request_id=core.request_id, attempt=core.attempt,
@@ -1762,7 +1929,9 @@ class PlanSealerV3:
             roles=core.roles, provider_by_role=core.provider_by_role,
             dependencies=core.dependencies, ack_closed_digest=core.ack_closed_digest,
             strategy_digest=core.strategy_digest, candidate_digest=core.candidate_digest,
-            plan_core_digest=core.digest())
+            plan_core_digest=core.digest(),
+            request_contract_digest=core.request_contract_digest,
+            generation_contract=core.generation_contract)
 
     @staticmethod
     def grant_view(core: PlacementPlanCoreV3, provider: str,
@@ -1842,6 +2011,8 @@ class PlanSealerV3:
         dependencies: Tuple[Mapping[str, Any], ...] = (),
         group_capability_v1: str = "",
         grant_binding: GrantBindingV1 | None = None,
+        conversation_state_reference: ConversationStateReferenceV1 | None = None,
+        conversation_turn_binding: ConversationTurnBindingV1 | None = None,
     ) -> ProviderSelectionProjectionV3:
         """Create one complete, non-executable Provider Selection projection."""
 
@@ -1876,6 +2047,10 @@ class PlanSealerV3:
             device_binding=device_binding,
             group_capability_v1=group_capability_v1,
             grant_binding=grant_binding,
+            request_contract_digest=core.request_contract_digest,
+            generation_contract=core.generation_contract,
+            conversation_state_reference=conversation_state_reference,
+            conversation_turn_binding=conversation_turn_binding,
         )
 
 

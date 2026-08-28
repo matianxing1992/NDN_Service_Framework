@@ -125,7 +125,7 @@ class Spec168TinyQwenFixtureTest(unittest.TestCase):
         self.assertEqual(expected_stage_completion_marker(
             "qwen-transformers", stage_index=0, stages=3,
             full_generation=True,
-        ), "LLM_PIPELINE_QWEN_FULL_GENERATION_FINAL")
+        ), "LLM_PIPELINE_QWEN_FULL_STOP_PUBLISHED")
         self.assertEqual(expected_stage_completion_marker(
             "qwen-transformers", stage_index=1, stages=3,
             full_generation=True,
@@ -133,7 +133,45 @@ class Spec168TinyQwenFixtureTest(unittest.TestCase):
         self.assertEqual(expected_stage_completion_marker(
             "qwen-transformers", stage_index=2, stages=3,
             full_generation=True,
-        ), "LLM_PIPELINE_QWEN_FULL_TOKEN_PUBLISHED")
+        ), "LLM_PIPELINE_QWEN_FULL_GENERATION_FINAL")
+        self.assertEqual(expected_stage_completion_marker(
+            "tiny-onnx", stage_index=0, stages=4,
+            full_generation=True,
+        ), "LLM_PIPELINE_QWEN_FULL_STOP_PUBLISHED")
+        self.assertEqual(expected_stage_completion_marker(
+            "tiny-onnx", stage_index=3, stages=4,
+            full_generation=True,
+        ), "LLM_PIPELINE_QWEN_FULL_GENERATION_FINAL")
+
+    def test_onnx_launcher_names_bind_to_onnxruntime_stage_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            tokenizer = root / "tokenizer"
+            tokenizer.mkdir()
+            (tokenizer / "tokenizer.json").write_text("{}")
+            (tokenizer / "tokenizer_config.json").write_text("{}")
+            digest = "sha256:" + "3" * 64
+            manifest = root / "stage-manifest.json"
+            manifest.write_text(json.dumps({
+                "repository": "Qwen/Qwen3.6-27B",
+                "revision": "6a9e13bd6fc8f0983b9b99948120bc37f49c13e9",
+                "modelDigest": digest,
+                "stages": [{"runtime": "onnxruntime"} for _ in range(3)],
+            }))
+            common = dict(
+                qwen_stage_manifest=str(manifest),
+                generation_campaign_manifest=str(root / "campaign.json"),
+                generation_jsonl=str(root / "generation.jsonl"),
+                qwen_tokenizer_dir=str(tokenizer),
+                workload_digest="sha256:" + "4" * 64,
+                model_identity_digest=digest,
+                qwen_model="Qwen/Qwen3.6-27B",
+                qwen_revision="6a9e13bd6fc8f0983b9b99948120bc37f49c13e9",
+                stages=3,
+            )
+            for runtime in ("qwen-onnx", "qwen-onnx-cpu-native"):
+                validate_real_model_binding(
+                    SimpleNamespace(runtime=runtime, **common))
 
 
 if __name__ == "__main__":

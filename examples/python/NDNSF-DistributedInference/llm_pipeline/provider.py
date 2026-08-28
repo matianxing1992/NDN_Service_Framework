@@ -5,14 +5,17 @@ from __future__ import annotations
 
 import base64
 import builtins
+import copy
 import hashlib
 import hmac
 import json
 import os
+import re
 import time
 from pathlib import Path
-from threading import Lock
+from threading import Lock, RLock, Thread
 from types import SimpleNamespace
+from typing import Any, Mapping
 
 from ndnsf import parse_large_data_reference_payload
 from ndnsf_distributed_inference.app_sdk.provider import (
@@ -26,6 +29,16 @@ from ndnsf_distributed_inference.artifact_deployment import (
 from ndnsf_distributed_inference.core.contracts import (
     DIRequestEnvelopeV2,
     DISelectionAssignmentV2,
+    GenerationRecoveryV1,
+)
+from ndnsf_distributed_inference.conversation import (
+    ConversationContinuation,
+    ConversationCheckpointInvalid,
+    ConversationStateReferenceV1,
+    ConversationStateUnavailable,
+    ConversationTurnBindingV1,
+    ProviderConversationStateManager,
+    ProviderConversationStateReceiptV1,
 )
 from ndnsf_distributed_inference.core.deployment_control import (
     DISelectionParticipant,
@@ -34,6 +47,9 @@ from ndnsf_distributed_inference.core.deployment_control import (
 )
 from ndnsf_distributed_inference.provider import (
     DIProviderOfferIssuer, DIProviderOfferIssuerV3, ProviderRuntimeContext,
+)
+from ndnsf_distributed_inference.adapters.qwen.generation import (
+    accepted_prefix_digest,
 )
 from ndnsf_distributed_inference.sdk.placement import (
     DeviceResourceSnapshot, ResidencyProofV3, ResidencyTierV3,
@@ -49,6 +65,7 @@ from llm_pipeline_lib import (
     QWEN_ONNX_RUNTIME,
     QWEN_TRANSFORMERS_RUNTIME,
     SERVICE,
+    TINY_ONNX_RUNTIME,
     TINY_TRANSFORMERS_RUNTIME,
     create_tiny_transformer_model,
     decode_payload,
@@ -64,6 +81,7 @@ from llm_pipeline_lib import (
     role_index,
     run_qwen_transformer_stage,
     run_qwen_onnx_stage,
+    run_tiny_onnx_stage,
     run_tiny_transformer_stage,
     tiny_transformer_model_from_execution,
     tiny_transformer_model_from_stage_package,
@@ -73,6 +91,101 @@ from llm_pipeline_lib import (
 
 
 _PIPELINE_MARKER_LOCK = Lock()
+_QWEN_CONTEXT_CACHE_LOCK = RLock()
+
+
+def _configure_spec175_stream_fault(provider: APPProvider, case_id: str) -> None:
+    """Install one registered real-SVS fault for the host MiniNDN gate."""
+    case_id = str(case_id or "").upper()
+    if case_id not in {"M02", "M03", "M04", "M05", "M09"}:
+        return
+    lock = Lock()
+    held_wire: list[bytes] = []
+    injected = {"value": False}
+
+    def mark(action: str, cursor: int) -> None:
+        _emit(
+            "NDNSF_DI_SPEC175_FAULT_INJECTED",
+            f"case={case_id}", f"action={action}", f"cursor={cursor}",
+            flush=True,
+        )
+
+    def publication(_name: str, cursor: int, wire: bytes) -> bool:
+        if case_id == "M02":
+            if cursor == 3:
+                with lock:
+                    if not held_wire:
+                        held_wire.append(bytes(wire))
+                        mark("hold-publication", cursor)
+                        return False
+            if cursor == 4:
+                with lock:
+                    delayed = held_wire.pop() if held_wire else b""
+                if delayed:
+                    provider.publish_stream_packet_for_test(delayed)
+                    mark("release-after-cursor-4", cursor)
+            return True
+        if case_id == "M03" and cursor == 4:
+            with lock:
+                if not injected["value"]:
+                    injected["value"] = True
+                    duplicate_wire = bytes(wire)
+                    mark("duplicate-publication", cursor)
+                    # The interceptor runs on the Provider Face event loop.
+                    # Re-entering publish_stream_packet_for_test synchronously
+                    # corrupts the SVS publication transaction and can hide
+                    # even cursor 1 from the consumer.  Replay after the
+                    # current commit returns, preserving duplicate Data
+                    # semantics without Face/SVS reentrancy.
+                    def republish_after_commit() -> None:
+                        time.sleep(0.01)
+                        provider.publish_stream_packet_for_test(duplicate_wire)
+
+                    Thread(target=republish_after_commit, daemon=True).start()
+            return True
+        if case_id == "M09" and cursor == 3:
+            with lock:
+                if not injected["value"]:
+                    injected["value"] = True
+                    mark("provider-exit-after-publication", cursor)
+
+                    def exit_after_publication() -> None:
+                        time.sleep(0.1)
+                        os._exit(86)
+
+                    Thread(target=exit_after_publication, daemon=True).start()
+            return True
+        return True
+
+    def retention(_name: str, cursor: int, _wire: bytes) -> bool:
+        if case_id == "M04" and cursor == 5:
+            with lock:
+                if not injected["value"]:
+                    injected["value"] = True
+                    delayed = bytes(_wire)
+                    mark("drop-once-before-retention", cursor)
+
+                    def republish_after_one_interest_timeout() -> None:
+                        time.sleep(0.35)
+                        provider.publish_stream_packet_for_test(delayed)
+                        mark("bounded-republish", cursor)
+
+                    Thread(
+                        target=republish_after_one_interest_timeout,
+                        daemon=True,
+                    ).start()
+                    return False
+        if case_id == "M05" and cursor == 5:
+            with lock:
+                if not injected["value"]:
+                    injected["value"] = True
+                    mark("suppress-retention", cursor)
+                    return False
+        return True
+
+    provider.set_stream_publication_interceptor_for_test(publication)
+    if case_id in {"M04", "M05"}:
+        provider.set_stream_retention_interceptor_for_test(retention)
 
 
 def _emit(*args, **kwargs) -> None:
@@ -236,13 +349,36 @@ def _qwen_onnx_session(path: str, *, device: str,
         if profile_prefix:
             options.enable_profiling = True
             options.profile_file_prefix = profile_prefix
+        # The exported Qwen graph is already canonicalized.  Disable ORT's
+        # CPU-side graph rewrite: on Tiger, rewriting this large external-data
+        # graph can take minutes before CUDA sessions even load.  Qwen's
+        # dynamic KV-cache graph contains small int64/bool shape-control
+        # subgraphs which CUDA EP intentionally partitions to CPU.  CPU EP is
+        # therefore present only as the shape/control execution partner; the
+        # runtime/profile gate rejects CPU model-compute nodes separately.
+        options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+        options.intra_op_num_threads = 1
+        options.inter_op_num_threads = 1
+        # The fixed-context Qwen3.6 ONNX contract still has large intermediate
+        # tensors.  Keep the memory-pattern planner disabled because the
+        # request shape can vary, but allow ORT to reuse buffers whose
+        # lifetimes do not overlap.  Disabling reuse made the third 27B stage
+        # exhaust a 32-GiB RTX 5000 while allocating a 60-MiB transpose buffer.
+        options.enable_mem_pattern = False
+        options.enable_mem_reuse = True
+        providers = [(
+            "CUDAExecutionProvider",
+            {"device_id": device_id},
+        )]
+        # CUDA EP does not implement every shape/control kernel.  Keep CPU EP
+        # after CUDA so those bounded control tensors can be executed without
+        # moving model compute off the GPU.  `_qwen_onnx_profile_summary`
+        # classifies the actual node providers after warmup.
+        providers.append("CPUExecutionProvider")
         return ort.InferenceSession(
             path,
             sess_options=options,
-            providers=[(
-                "CUDAExecutionProvider",
-                {"device_id": device_id},
-            ), "CPUExecutionProvider"],
+            providers=providers,
         )
     if require_cuda:
         raise RuntimeError(
@@ -258,6 +394,101 @@ def _qwen_onnx_session_placement(session) -> tuple[str, bool]:
     if providers and providers[0] == "CUDAExecutionProvider":
         return "cuda:0", False
     return "cpu", True
+
+
+class _QwenOnnxRuntimeHandle:
+    """Assignment-bound ONNX Runtime object used by Selection preparation.
+
+    The request-first Selection code historically stored a Transformers model
+    here and inspected its execution-device attributes.  Keep that contract
+    for the residency ledger, but make the deployed ONNX path explicit: the
+    actual session remains the object used by the request handler, while this
+    small handle records the verified CUDA/CPU placement and metadata.
+    """
+
+    def __init__(self, session, metadata: dict | None = None) -> None:
+        self.session = session
+        self.metadata = dict(metadata or {})
+        self.ndnsf_execution_device, self.ndnsf_cpu_fallback = (
+            _qwen_onnx_session_placement(session))
+
+
+def _onnx_numpy_dtype(type_name: str, default):
+    import numpy as np
+
+    normalized = str(type_name or "").lower()
+    if "bfloat16" in normalized:
+        raise RuntimeError(
+            "QWEN_ONNX_BFLOAT16_UNSUPPORTED: export FP16 or provide an "
+            "explicit packed-bfloat16 binding")
+    if "float16" in normalized:
+        return np.float16
+    if "float" in normalized:
+        return np.float32
+    if "int64" in normalized:
+        return np.int64
+    if "int32" in normalized:
+        return np.int32
+    if "bool" in normalized:
+        return np.bool_
+    return default
+
+
+def _warm_qwen_onnx_runtime(handle: _QwenOnnxRuntimeHandle) -> bool:
+    """Run one bounded real ORT invocation on the assigned execution provider."""
+    import numpy as np
+
+    session = handle.session
+    model_type = str(handle.metadata.get("modelType", "qwen2"))
+    if model_type == "qwen3_5_text":
+        model_type = "qwen3_5"
+    hidden_size = int(handle.metadata.get("hiddenSize", 0) or 0)
+    if hidden_size <= 0:
+        for item in session.get_inputs():
+            if item.name == "hidden_states" and len(item.shape) >= 3:
+                if isinstance(item.shape[2], int):
+                    hidden_size = int(item.shape[2])
+                    break
+    hidden_size = hidden_size or 896
+    feed = {}
+    for item in session.get_inputs():
+        name = str(item.name)
+        if name in ("input_ids", "attention_mask", "position_ids"):
+            dtype = np.int64
+            shape = ((4, 1, 1) if model_type == "qwen3_5"
+                     and name == "position_ids" else (1, 1))
+            if name == "attention_mask":
+                shape = (1, 1)
+            feed[name] = np.zeros(shape, dtype=dtype)
+            if name == "attention_mask":
+                feed[name].fill(1)
+        elif name == "hidden_states":
+            feed[name] = np.zeros(
+                (1, 1, hidden_size),
+                dtype=_onnx_numpy_dtype(getattr(item, "type", ""), np.float32),
+            )
+        elif name.startswith(("past_key.", "past_value.")):
+            shape = item.shape
+            if len(shape) != 4:
+                raise RuntimeError(
+                    f"unsupported Qwen ONNX KV input shape for {name}: {shape}")
+            dims = [1]
+            for index, dimension in enumerate(shape[1:], start=1):
+                if index == 2:
+                    dims.append(0)
+                elif isinstance(dimension, int) and dimension > 0:
+                    dims.append(int(dimension))
+                else:
+                    dims.append(1)
+            feed[name] = np.empty(
+                tuple(dims),
+                dtype=_onnx_numpy_dtype(
+                    getattr(item, "type", ""), np.float32),
+            )
+        else:
+            raise RuntimeError(f"unrecognized Qwen ONNX input: {name}")
+    session.run(None, feed)
+    return True
 
 
 def _qwen_onnx_profile_summary(session) -> dict:
@@ -391,26 +622,49 @@ def _qwen_onnx_profile_summary(session) -> dict:
 
 def _preload_qwen_onnx_sessions(provider: APPProvider, roles: set[str], *,
                                  device: str = "cpu",
-                                 require_cuda: bool = False) -> dict[str, object]:
+                                 require_cuda: bool = False,
+                                 local_artifacts: dict[str, dict] | None = None
+                                 ) -> dict[str, object]:
     service_policy = provider.deployment.service_policy(SERVICE)
     cache: dict[str, object] = {}
+    configured = dict(local_artifacts or {})
+    entries: list[tuple[str, str, dict]] = []
+    for role, item in configured.items():
+        if role in roles:
+            entries.append((role, str(item.get("path", "")), dict(item)))
     for artifact in service_policy.artifacts:
-        if artifact.role not in roles:
+        if artifact.role not in roles or artifact.role in configured:
             continue
         if artifact.kind != "onnx-model":
             continue
         if (artifact.metadata or {}).get("runtime") != QWEN_ONNX_RUNTIME:
             continue
-        path = artifact.path
+        entries.append((artifact.role, artifact.path, {
+            "kind": artifact.kind,
+            "metadata": dict(artifact.metadata or {}),
+        }))
+    profile_root = os.environ.get("NDNSF_QWEN_ORT_PROFILE_DIR", "").strip()
+    if profile_root:
+        Path(profile_root).mkdir(parents=True, exist_ok=True)
+    for role, path, item in entries:
         if not path:
             continue
+        profile_prefix = None
+        if profile_root:
+            safe_role = re.sub(r"[^A-Za-z0-9_.-]+", "_", role).strip("_")
+            profile_prefix = str(
+                Path(profile_root) / f"qwen-{safe_role or 'stage'}")
         cache[path] = _qwen_onnx_session(
-            path, device=device, require_cuda=require_cuda)
+            path,
+            device=device,
+            require_cuda=require_cuda,
+            profile_prefix=profile_prefix,
+        )
         execution_device, cpu_fallback = _qwen_onnx_session_placement(
             cache[path])
         _emit(
             "LLM_PIPELINE_QWEN_ONNX_STAGE_ARTIFACT_READY",
-            f"role={artifact.role}",
+            f"role={role}",
             f"path={path}",
             f"device={execution_device}",
             f"cpuFallback={str(cpu_fallback).lower()}",
@@ -419,9 +673,48 @@ def _preload_qwen_onnx_sessions(provider: APPProvider, roles: set[str], *,
     return cache
 
 
-def _qwen_onnx_metadata_by_path(provider: APPProvider) -> dict[str, dict]:
+def _finalize_qwen_onnx_profiles(
+    sessions: dict[str, object], metadata_by_path: dict[str, dict],
+) -> None:
+    """Close and validate optional ORT profiles after a real warmup run."""
+    profile_root = os.environ.get("NDNSF_QWEN_ORT_PROFILE_DIR", "").strip()
+    if not profile_root:
+        return
+    root = Path(profile_root)
+    root.mkdir(parents=True, exist_ok=True)
+    for path, session in sessions.items():
+        profile = _qwen_onnx_profile_summary(session)
+        stage_index = metadata_by_path.get(path, {}).get("stageIndex", "unknown")
+        profile_output = root / f"qwen-stage-{stage_index}-summary.json"
+        profile_output.write_text(
+            json.dumps(profile, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        _emit(
+            "LLM_PIPELINE_QWEN_ONNX_PROFILE",
+            f"stage={stage_index}",
+            f"state={profile.get('state')}",
+            f"profile={profile.get('profilePath', '')}",
+            f"summary={profile_output}",
+            flush=True,
+        )
+        if profile.get("state") != "PASS":
+            raise RuntimeError(
+                "QWEN_ONNX_EXECUTION_PROFILE_FAILED:"
+                + ",".join(str(v) for v in profile.get("violations", ())))
+
+
+def _qwen_onnx_metadata_by_path(
+    provider: APPProvider,
+    local_artifacts: dict[str, dict] | None = None,
+) -> dict[str, dict]:
     service_policy = provider.deployment.service_policy(SERVICE)
     result: dict[str, dict] = {}
+    for item in (local_artifacts or {}).values():
+        path = str(item.get("path", ""))
+        metadata = dict(item.get("metadata") or {})
+        if path and metadata.get("runtime") == QWEN_ONNX_RUNTIME:
+            result[path] = metadata
     for artifact in service_policy.artifacts:
         if artifact.path and (artifact.metadata or {}).get("runtime") == QWEN_ONNX_RUNTIME:
             result[artifact.path] = dict(artifact.metadata or {})
@@ -436,7 +729,9 @@ def _artifact_path_by_role(provider: APPProvider) -> dict[str, str]:
     }
 
 
-def _parse_selection_local_artifacts(values: list[str]) -> dict[str, dict]:
+def _parse_selection_local_artifacts(
+    values: list[str], *, runtime: str = QWEN_TRANSFORMERS_RUNTIME,
+) -> dict[str, dict]:
     """Parse explicit preloaded stage paths for the V3 exact-reuse gate.
 
     The deployment policy normally supplies artifact paths.  The real local
@@ -459,8 +754,11 @@ def _parse_selection_local_artifacts(values: list[str]) -> dict[str, dict]:
                 f"--selection-local-artifact path does not exist: {path}")
         result[role] = {
             "path": str(path),
-            "kind": "llm-stage-weights",
-            "metadata": {"runtime": QWEN_TRANSFORMERS_RUNTIME},
+            "kind": (
+                "onnx-model" if runtime == QWEN_ONNX_RUNTIME
+                else "llm-stage-weights"
+            ),
+            "metadata": {"runtime": runtime},
             "filename": path.name,
         }
     return result
@@ -548,6 +846,12 @@ def _validate_selection_timing_window(
 def _preflight_qwen_runtime(args) -> None:
     selection_dataflow_v2 = bool(getattr(args, "selection_dataflow_v2", False))
     selection_dataflow_v3 = bool(getattr(args, "selection_dataflow_v3", False))
+    if (getattr(args, "require_onnx_runtime", False)
+            and args.runtime != QWEN_ONNX_RUNTIME):
+        raise RuntimeError(
+            "deployed Qwen providers must use qwen-onnx; "
+            "qwen-transformers is offline/legacy-only"
+        )
     if (args.runtime != QWEN_TRANSFORMERS_RUNTIME
             or not (selection_dataflow_v2 or selection_dataflow_v3)):
         return
@@ -565,7 +869,14 @@ def _selection_v2_for_qwen(
     model_cache: dict[str, object],
     model_cache_lock: Lock,
     local_artifacts: dict[str, dict] | None = None,
+    runtime_metadata: dict[str, dict] | None = None,
 ) -> dict:
+    runtime = str(getattr(args, "runtime", QWEN_TRANSFORMERS_RUNTIME))
+    if runtime not in (QWEN_TRANSFORMERS_RUNTIME, QWEN_ONNX_RUNTIME):
+        raise RuntimeError(f"unsupported Qwen Selection runtime: {runtime}")
+    onnx_runtime = runtime == QWEN_ONNX_RUNTIME
+    artifact_suffix = ".qwen-onnx.onnx" if onnx_runtime else ".qwen-transformers.pt"
+    runtime_metadata = dict(runtime_metadata or {})
     selection_dataflow_v2 = bool(getattr(args, "selection_dataflow_v2", False))
     selection_dataflow_v3 = bool(getattr(args, "selection_dataflow_v3", False))
     if not (selection_dataflow_v2 or selection_dataflow_v3):
@@ -766,7 +1077,7 @@ def _selection_v2_for_qwen(
             provider_boot_epoch=core_boot_epoch,
         )
         destination = residency_ledger.content_path(
-            identity, artifact_digest[7:] + ".qwen-transformers.pt")
+            identity, artifact_digest[7:] + artifact_suffix)
         destination.parent.mkdir(parents=True, exist_ok=True)
         if not destination.exists():
             try:
@@ -869,7 +1180,7 @@ def _selection_v2_for_qwen(
                 digest_hex = digest[7:] if digest.startswith("sha256:") else digest
                 model_path = str(residency_ledger.content_path(
                     residency_identity,
-                    f"{digest_hex}.qwen-transformers.pt",
+                    f"{digest_hex}{artifact_suffix}",
                 ))
                 destination = Path(model_path)
                 resident = residency_ledger.lookup(residency_identity)
@@ -1019,7 +1330,7 @@ def _selection_v2_for_qwen(
                         f"selected Qwen artifact is unavailable: {model_path}")
                 destination = residency_ledger.content_path(
                     residency_identity,
-                    f"{assigned_digest[7:]}.qwen-transformers.pt",
+                    f"{assigned_digest[7:]}{artifact_suffix}",
                 )
                 resident = residency_ledger.lookup(residency_identity)
                 disk_cache_hit = resident is not None
@@ -1060,11 +1371,22 @@ def _selection_v2_for_qwen(
             if cache_hit:
                 model = resident.resource
             else:
-                model = qwen_transformer_model_from_stage_package(
-                    model_path,
-                    device=context.role.device,
-                    require_cuda=args.require_cuda,
-                )
+                if onnx_runtime:
+                    session = _qwen_onnx_session(
+                        model_path,
+                        device=context.role.device,
+                        require_cuda=args.require_cuda,
+                    )
+                    model = _QwenOnnxRuntimeHandle(
+                        session,
+                        runtime_metadata.get(model_path, {}),
+                    )
+                else:
+                    model = qwen_transformer_model_from_stage_package(
+                        model_path,
+                        device=context.role.device,
+                        require_cuda=args.require_cuda,
+                    )
             model_cache[model_path] = model
             if assignment_key:
                 model_cache[assignment_key] = model
@@ -1374,8 +1696,12 @@ def _selection_v2_for_qwen(
                     raise RuntimeError(
                         "Qwen runtime residency changed before execution")
             else:
-                if warm_qwen_transformer_stage(
-                        model, assigned_device) is not True:
+                warmed = (
+                    _warm_qwen_onnx_runtime(model)
+                    if onnx_runtime
+                    else warm_qwen_transformer_stage(model, assigned_device)
+                )
+                if warmed is not True:
                     raise RuntimeError("Qwen stage warmup did not complete")
                 if assigned_device.startswith("cuda:"):
                     residency_ledger.promote_gpu(
@@ -1452,7 +1778,7 @@ def _selection_v2_for_qwen(
         if resident is None and registration_item is not None:
             digest_hex = artifact_digest[7:]
             model_path = residency_ledger.content_path(
-                identity, f"{digest_hex}.qwen-transformers.pt")
+                identity, f"{digest_hex}{artifact_suffix}")
             if model_path.is_file():
                 residency_ledger.admit_disk(
                     identity,
@@ -1554,6 +1880,52 @@ def _selection_v2_for_qwen(
     }
 
 
+def _selection_v3_for_tiny_onnx(provider: APPProvider, args) -> dict:
+    """Bind the deterministic Spec175 fixture to authenticated V3 offers.
+
+    The tiny fixture is already present in each Provider's immutable policy
+    artifact.  It therefore needs no V2 reservation WAL or deferred Repo
+    materialization; it still must publish a signed V3 offer so the normal
+    automatic planner can create assignment-bound Selection projections.
+    """
+    if not bool(getattr(args, "selection_dataflow_v3", False)):
+        return {}
+    if not str(getattr(args, "provider_identity", "")):
+        raise RuntimeError("tiny ONNX V3 offers require provider identity")
+    key_path = str(getattr(args, "selection_signing_key_file", ""))
+    if not key_path:
+        raise RuntimeError("tiny ONNX V3 offers require signing key file")
+    signing_key = _read_secret(key_path)
+    if len(signing_key) != 32:
+        raise RuntimeError("tiny ONNX V3 offer key must be 32 bytes")
+    try:
+        boot_epoch = provider.provider_boot_epoch
+    except AttributeError:
+        boot_epoch = provider._network_provider._provider.provider.provider_boot_epoch
+    if not boot_epoch:
+        raise RuntimeError("NDNSF Core provider boot epoch is unavailable")
+    # Core exposes the process epoch as a numeric value, while the automatic
+    # DATA_V1 key offer binds it to the Provider identity namespace.
+    boot_epoch = f"{args.provider_identity}:{boot_epoch}"
+    device = "cuda:0" if args.device == "auto" and args.require_cuda else (
+        "cpu" if args.device == "auto" else str(args.device))
+    # V3 represents a CPU-only Provider with an empty device set.  The
+    # topology contract reserves concrete device identities for CUDA devices;
+    # advertising the literal ``cpu`` as a device makes the asynchronous ACK
+    # handler reject an otherwise valid CPU offer before ACK_CLOSED.
+    topology_devices = () if device == "cpu" else (device,)
+    issuer = DIProviderOfferIssuerV3(
+        provider=args.provider_identity,
+        service=SERVICE,
+        boot_epoch=boot_epoch,
+        devices=topology_devices,
+        signer_key_id="sha256:" + hashlib.sha256(signing_key).hexdigest(),
+        sign_offer_digest=lambda digest: hmac.new(
+            signing_key, digest.encode("utf-8"), hashlib.sha256).hexdigest(),
+    )
+    return {"selection_offer_issuer_v3": issuer}
+
+
 def _producer_for_single_input(ctx: ProviderRuntimeContext) -> str:
     edge = ctx.dependencies.input()
     if len(edge.producers) != 1:
@@ -1615,12 +1987,17 @@ def _resolve_qwen_context_request(payload: bytes) -> bytes:
     if mode == "append-delta":
         if not session_id:
             raise RuntimeError("append-delta Qwen context requires a sessionId")
-        base = _QWEN_CONTEXT_CACHE.get(session_id)
+        with _QWEN_CONTEXT_CACHE_LOCK:
+            base = _QWEN_CONTEXT_CACHE.get(session_id)
         if base is None:
             raise RuntimeError(f"append-delta Qwen context has no cached base for {session_id}")
         doc = merge_qwen_pipeline_delta(base, doc)
     if doc.get("contextMode", "full") == "full" and session_id:
-        _QWEN_CONTEXT_CACHE[session_id] = dict(doc)
+        # Keep the existing compatibility cache behavior for ordinary FULL
+        # requests.  Conversation turns additionally replace this entry only
+        # after their authenticated COMMIT (see _conversation_finalize).
+        with _QWEN_CONTEXT_CACHE_LOCK:
+            _QWEN_CONTEXT_CACHE[session_id] = dict(doc)
     return encode_qwen_pipeline_context(
         doc["inputIds"],
         attention_mask=doc.get("attentionMask"),
@@ -1635,8 +2012,19 @@ def _resolve_qwen_context_request(payload: bytes) -> bytes:
 _GENERATION_CONTROL_SCOPE = "generation-control-v1"
 
 
+def _qwen_response_generation_mode(streamed: bool) -> str:
+    """Return the wire mode for the final-role response.
+
+    The final-role implementation is shared by unary and streamed calls.  A
+    streamed callback path must remain visibly streamed in the terminal
+    response; otherwise downstream evidence can mistake a token stream for a
+    unary generation even though the transport delivered events.
+    """
+    return "TOKEN_STREAMING" if bool(streamed) else "FULL"
+
+
 def _qwen_generation_spec(payload: bytes) -> dict | None:
-    """Read the signed DI task/options view for one FULL invocation."""
+    """Read the signed DI task/options view for one unary or streamed generation."""
 
     try:
         envelope = DIRequestEnvelopeV2.from_bytes(bytes(payload))
@@ -1670,8 +2058,12 @@ def _qwen_generation_spec(payload: bytes) -> dict | None:
             "session_id": str(context.get("sessionId", "")),
         }
     mode = str(task.get("generation_mode", options.get("outputMode", ""))).upper()
-    if mode != "FULL":
+    if mode not in {"FULL", "TOKEN_STREAMING"}:
         return None
+    use_cache = options.get("useCache") is True
+    if mode == "TOKEN_STREAMING" and not use_cache:
+        raise ValueError(
+            "TOKEN_STREAMING Qwen generation requires useCache=true")
     try:
         max_new_tokens = int(options.get("maxNewTokens", 0))
     except (TypeError, ValueError):
@@ -1684,12 +2076,55 @@ def _qwen_generation_spec(payload: bytes) -> dict | None:
     eos = tuple(int(item) for item in raw_eos)
     if not eos or any(item < 0 for item in eos):
         raise ValueError("FULL Qwen generation requires non-negative eosTokenIds")
+    recovery = task.get("generation_recovery")
+    if recovery is not None:
+        recovery = GenerationRecoveryV1.from_dict(recovery)
+        if (envelope.attempt != 2
+                or recovery.recovery_request_id != envelope.request_id):
+            raise ValueError("Qwen generation recovery binding mismatch")
+        committed_prefix = recovery.committed_token_ids
+    else:
+        committed_prefix = ()
+    conversation = task.get("conversation")
+    conversation_contract = None
+    if conversation is not None:
+        try:
+            conversation_contract = ConversationContinuation.from_dict(
+                conversation)
+            input_payload = base64.b64decode(
+                envelope.input_payload_b64.encode("ascii"), validate=True)
+            input_digest = "sha256:" + hashlib.sha256(input_payload).hexdigest()
+            if (conversation_contract.turn_input_digest != input_digest or
+                    conversation_contract.request_contract_digest !=
+                    conversation_contract.request_contract(
+                        input_digest=input_digest)):
+                raise ConversationCheckpointInvalid(
+                    "conversation request contract digest mismatch")
+        except (ConversationCheckpointInvalid, ValueError, TypeError) as exc:
+            raise ValueError("Qwen conversation continuation is invalid") from exc
     return {
+        "generation_mode": mode,
+        "use_cache": use_cache,
         "max_new_tokens": max_new_tokens,
         "eos_token_ids": eos,
         "request_id": str(envelope.request_id),
         "session_id": str(envelope.invocation_id),
+        "generation_id": str(
+            options.get("generationId", options.get("generation_id", ""))
+            or task.get("generationId", task.get("generation_id", ""))),
+        "attempt_epoch": int(envelope.attempt),
+        "committed_prefix_token_ids": tuple(committed_prefix),
+        "conversation": (conversation_contract.to_dict()
+                          if conversation_contract is not None else None),
     }
+
+
+def _require_python_qwen_generation_mode(spec: dict) -> None:
+    """Keep the legacy Python role loop out of the native streaming contract."""
+
+    if spec.get("generation_mode") == "TOKEN_STREAMING":
+        raise RuntimeError(
+            "TOKEN_STREAMING requires the native stateful ONNX Provider runtime")
 
 
 def _generation_topic(
@@ -1771,7 +2206,7 @@ def _handle_qwen_transformer_full_generation(
     compute_delay_ms: float,
     spec: dict,
     stage_runner=None,
-) -> None:
+) -> dict[str, tuple[int, ...]]:
     """Run one full autoregressive invocation across the selected stages."""
 
     if stage_runner is None:
@@ -1782,6 +2217,7 @@ def _handle_qwen_transformer_full_generation(
             model=model,
             compute_delay_ms=delay,
         )
+    streamed = getattr(ctx, "stream_writer", None) is not None
     if not ctx.dependencies.outputs and stage_index != stages - 1:
         raise RuntimeError("FULL Qwen stage graph lacks its output dependency")
     if not ctx.dependencies.inputs and stage_index != 0:
@@ -1794,6 +2230,9 @@ def _handle_qwen_transformer_full_generation(
             raise ValueError("FULL Qwen request inputIds must be non-empty")
         sequence = list(input_ids[0] if isinstance(input_ids[0], list) else input_ids)
         generated: list[int] = []
+        committed_prefix = tuple(
+            int(value) for value in spec.get(
+                "committed_prefix_token_ids", ()))
         token_completion_monotonic_ms: list[float] = []
         output_edge = ctx.dependencies.output()
         _emit("LLM_PIPELINE_QWEN_FULL_STAGE_START", f"requestId={ctx.request_id}", f"role={ctx.role}", flush=True)
@@ -1823,6 +2262,10 @@ def _handle_qwen_transformer_full_generation(
             if token < 0:
                 raise RuntimeError("FULL Qwen token result is negative")
             generated.append(token)
+            replaying_prefix = epoch < len(committed_prefix)
+            if replaying_prefix and token != committed_prefix[epoch]:
+                raise RuntimeError(
+                    "Qwen recovery recomputed prefix does not match")
             token_completion_monotonic_ms.append(
                 time.perf_counter() * 1000.0)
             _emit("LLM_PIPELINE_QWEN_FULL_TOKEN_RECEIVED", f"requestId={ctx.request_id}", f"role={ctx.role}", f"epoch={epoch}", f"token={token}", flush=True)
@@ -1836,50 +2279,44 @@ def _handle_qwen_transformer_full_generation(
                 context_epoch=epoch + 1,
             )
         stop_epoch = len(generated)
+        stop_reason = (
+            "EOS" if generated and generated[-1] in spec["eos_token_ids"]
+            else "TOKEN_LIMIT")
         _generation_publish_output(
             ctx,
             output_edge.key_scope,
             stop_epoch,
-            _generation_step_control("STOP", stop_epoch),
+            _generation_step_control(
+                "STOP", stop_epoch,
+                inputTokenIds=list(input_ids[0]
+                                   if isinstance(input_ids[0], list)
+                                   else input_ids),
+                generatedTokenIds=generated,
+                stopReason=stop_reason,
+                tokenCompletionMonotonicMs=token_completion_monotonic_ms,
+            ),
         )
-        response = {
-            "schema": "ndnsf-di-qwen-generation-response-v1",
-            "requestId": ctx.request_id,
-            "inputTokenIds": list(input_ids[0]
-                                  if isinstance(input_ids[0], list)
-                                  else input_ids),
-            "generatedTokenIds": generated,
-            "tokenEvidence": [
-                {
-                    "requestId": ctx.request_id,
-                    "tokenIndex": index,
-                    "contextLength": len(input_ids[0]
-                    if isinstance(input_ids[0], list) else input_ids) + index,
-                    "tokenId": token,
-                }
-                for index, token in enumerate(generated)
-            ],
-            "topToken": generated[-1] if generated else -1,
-            "stopReason": (
-                "EOS" if generated and generated[-1] in spec["eos_token_ids"]
-                else "TOKEN_LIMIT"),
-            "stageCount": stages,
-            "generationMode": "FULL",
-            "wireRequestCount": 1,
-            "tokenRequestCount": 0,
-            "tokenCompletionClock": "CLOCK_MONOTONIC",
-            "tokenCompletionMonotonicMs": token_completion_monotonic_ms,
-        }
-        ctx.publish_final_response(
-            json.dumps(response, sort_keys=True, separators=(",", ":")).encode("utf-8"))
         _emit(
-            "LLM_PIPELINE_QWEN_FULL_GENERATION_FINAL",
+            "LLM_PIPELINE_QWEN_FULL_STOP_SENT",
             f"requestId={ctx.request_id}",
-            f"tokenCount={len(generated)}",
-            f"stopReason={response['stopReason']}",
+            f"role={ctx.role}",
+            f"epoch={stop_epoch}",
             flush=True,
         )
-        return
+        _emit(
+            "LLM_PIPELINE_QWEN_FULL_STOP_PUBLISHED",
+            f"requestId={ctx.request_id}",
+            f"tokenCount={len(generated)}",
+            f"stopReason={stop_reason}",
+            flush=True,
+        )
+        return {
+            "input_token_ids": tuple(
+                int(value) for value in (
+                    input_ids[0] if isinstance(input_ids[0], list)
+                    else input_ids)),
+            "generated_token_ids": tuple(generated),
+        }
 
     input_edge = ctx.dependencies.input()
     if stage_index < stages - 1:
@@ -1894,14 +2331,36 @@ def _handle_qwen_transformer_full_generation(
                 f"monotonicMs={time.perf_counter() * 1000.0:.3f}",
                 flush=True,
             )
-            if _generation_control_doc(incoming):
-                if _generation_control_doc(incoming).get("kind") != "STOP":
+            control = _generation_control_doc(incoming)
+            if control:
+                if control.get("kind") != "STOP":
                     raise RuntimeError("FULL Qwen middle stage received unknown control")
+                # STOP is a signed transcript control record, not a local
+                # stage marker.  Preserve every field published by Stage0
+                # (input identity, generated-token transcript, stop reason,
+                # and completion timestamps) while forwarding it to the next
+                # role.  Rebuilding only {kind, epoch} loses the terminal
+                # evidence required by the final role and makes every
+                # multi-stage run fail at transcript validation.
                 _generation_publish_output(
                     ctx, output_edge.key_scope, epoch,
-                    _generation_step_control("STOP", epoch),
+                    incoming,
                 )
-                return
+                _emit(
+                    "LLM_PIPELINE_QWEN_FULL_STOP_FORWARDED",
+                    f"requestId={ctx.request_id}",
+                    f"role={ctx.role}",
+                    f"epoch={epoch}",
+                    flush=True,
+                )
+                return {
+                    "input_token_ids": tuple(
+                        int(value) for value in control.get(
+                            "inputTokenIds", ())),
+                    "generated_token_ids": tuple(
+                        int(value) for value in control.get(
+                            "generatedTokenIds", ())),
+                }
             output = stage_runner(incoming, compute_delay_ms)
             _generation_publish_output(ctx, output_edge.key_scope, epoch, output)
             _emit(
@@ -1930,6 +2389,10 @@ def _handle_qwen_transformer_full_generation(
         raise RuntimeError("FULL Qwen middle stage exceeded generation limit")
 
     _emit("LLM_PIPELINE_QWEN_FULL_STAGE_START", f"requestId={ctx.request_id}", f"role={ctx.role}", flush=True)
+    generated: list[int] = []
+    committed_prefix = tuple(
+        int(value) for value in spec.get(
+            "committed_prefix_token_ids", ()))
     for epoch in range(int(spec["max_new_tokens"]) + 1):
         incoming = _generation_wait_input(ctx, input_edge.key_scope, epoch)
         _emit(
@@ -1943,12 +2406,104 @@ def _handle_qwen_transformer_full_generation(
         if control:
             if control.get("kind") != "STOP":
                 raise RuntimeError("FULL Qwen final stage received unknown control")
-            return
+            if int(control.get("epoch", -1)) != len(generated):
+                raise RuntimeError("FULL Qwen STOP epoch/transcript mismatch")
+            declared_tokens = tuple(
+                int(value) for value in control.get(
+                    "generatedTokenIds", ()))
+            if declared_tokens != tuple(generated):
+                raise RuntimeError("FULL Qwen STOP token transcript mismatch")
+            input_token_ids = tuple(
+                int(value) for value in control.get("inputTokenIds", ()))
+            if not input_token_ids:
+                raise RuntimeError("FULL Qwen STOP omitted input token identity")
+            stop_reason = str(control.get("stopReason", ""))
+            if stop_reason not in {"EOS", "TOKEN_LIMIT"}:
+                raise RuntimeError("FULL Qwen STOP reason is invalid")
+            completion_times = tuple(
+                float(value) for value in control.get(
+                    "tokenCompletionMonotonicMs", ()))
+            if len(completion_times) != len(generated):
+                raise RuntimeError("FULL Qwen STOP timing transcript mismatch")
+            response = {
+                "schema": "ndnsf-di-qwen-generation-response-v1",
+                "requestId": ctx.request_id,
+                "inputTokenIds": list(input_token_ids),
+                "generatedTokenIds": generated,
+                # The generic streamed handle validates this canonical key.
+                "tokenIds": generated,
+                "tokenEvidence": [
+                    {
+                        "requestId": ctx.request_id,
+                        "tokenIndex": index,
+                        "contextLength": len(input_token_ids) + index,
+                        "tokenId": token,
+                    }
+                    for index, token in enumerate(generated)
+                ],
+                "topToken": generated[-1] if generated else -1,
+                "stopReason": stop_reason,
+                "stageCount": stages,
+                # ``streamed`` is the authoritative delivery mode for this
+                # response.  The same final-role loop supports a compatibility
+                # unary call, but must not label a streamed response as FULL.
+                "generationMode": _qwen_response_generation_mode(streamed),
+                "wireRequestCount": 1,
+                "tokenRequestCount": 0,
+                "tokenCompletionClock": "CLOCK_MONOTONIC",
+                "tokenCompletionMonotonicMs": list(completion_times),
+            }
+            response_payload = json.dumps(
+                response, sort_keys=True,
+                separators=(",", ":")).encode("utf-8")
+            if streamed:
+                ctx.finish_stream(
+                    response_payload,
+                    finish_reason=("eos" if stop_reason == "EOS"
+                                   else "max_tokens"),
+                )
+            else:
+                ctx.publish_final_response(response_payload)
+            _emit(
+                "LLM_PIPELINE_QWEN_FULL_STOP_CONSUMED",
+                f"requestId={ctx.request_id}",
+                f"role={ctx.role}",
+                f"epoch={len(generated)}",
+                flush=True,
+            )
+            _emit(
+                "LLM_PIPELINE_QWEN_FULL_GENERATION_FINAL",
+                f"requestId={ctx.request_id}",
+                f"tokenCount={len(generated)}",
+                f"stopReason={stop_reason}",
+                flush=True,
+            )
+            return {
+                "input_token_ids": tuple(input_token_ids),
+                "generated_token_ids": tuple(generated),
+            }
         output = stage_runner(incoming, compute_delay_ms)
         result = decode_payload(output)
         token = int(result.get("topToken", -1))
         if token < 0:
             raise RuntimeError("FULL Qwen final stage produced no topToken")
+        generated.append(token)
+        replaying_prefix = epoch < len(committed_prefix)
+        if replaying_prefix and token != committed_prefix[epoch]:
+            raise RuntimeError(
+                "Qwen recovery recomputed prefix does not match")
+        if streamed and not replaying_prefix:
+            # Only the terminal role receives the event-key grant and owns
+            # End/Response. It therefore publishes the externally visible
+            # token at the same point where sampling commits it.
+            ctx.publish_event(json.dumps({
+                "type": "GenerationTokenEventV1",
+                "requestId": ctx.request_id,
+                "tokenEpoch": len(generated),
+                "tokenId": token,
+                "textDelta": "",
+                "acceptedPrefixDigest": accepted_prefix_digest(generated),
+            }, sort_keys=True, separators=(",", ":")).encode("utf-8"))
         ctx.ndnsf.publish(
             input_edge.key_scope,
             _generation_topic(ctx, input_edge, epoch),
@@ -2192,6 +2747,7 @@ def handle_qwen_transformer_stage(ctx: ProviderRuntimeContext, *,
 
     full_generation = _qwen_generation_spec(ctx.request)
     if full_generation is not None:
+        _require_python_qwen_generation_mode(full_generation)
         _handle_qwen_transformer_full_generation(
             ctx,
             model=model,
@@ -2420,6 +2976,7 @@ def handle_qwen_onnx_stage(ctx: ProviderRuntimeContext, *,
     stage_index = int(metadata.get("stageIndex", role_index(ctx.role)))
     full_generation = _qwen_generation_spec(ctx.request)
     if full_generation is not None:
+        _require_python_qwen_generation_mode(full_generation)
         _handle_qwen_transformer_full_generation(
             ctx,
             model=session,
@@ -2582,6 +3139,700 @@ def handle_qwen_onnx_stage(ctx: ProviderRuntimeContext, *,
     )
 
 
+_CONVERSATION_STATE_SCOPE = "ndnsf-di-conversation-state-v1"
+_CONVERSATION_RECEIPT_TOPIC = "/ndnsf-di/conversation/receipt"
+_CONVERSATION_READY_TOPIC = "/ndnsf-di/conversation/ready"
+_CONVERSATION_CONTROL_TOPIC = "/ndnsf-di/conversation/control"
+_CONVERSATION_COMMIT_TOPIC = "/ndnsf-di/conversation/commit"
+
+
+def _conversation_digest(value: object) -> str:
+    return canonical_digest(value)
+
+
+def _copy_onnx_state(value: object) -> object:
+    """Copy adapter-owned state without exposing a mutable parent entry."""
+    return copy.deepcopy(value)
+
+
+def _qwen_context_document(payload: bytes) -> dict[str, Any] | None:
+    """Decode the application context without accepting a malformed envelope.
+
+    Conversation state is keyed by the application ``sessionId`` carried in
+    the Qwen context, not by the per-request invocation ID generated by the
+    planner.  Keeping this extraction in one helper prevents a later turn
+    from accidentally creating a second cache namespace.
+    """
+    try:
+        envelope = DIRequestEnvelopeV2.from_bytes(bytes(payload))
+        payload = base64.b64decode(
+            envelope.input_payload_b64.encode("ascii"), validate=True)
+    except (TypeError, ValueError, UnicodeDecodeError):
+        pass
+    try:
+        return decode_qwen_pipeline_context(bytes(payload))
+    except (TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+
+
+def _qwen_context_cache_after_commit(
+        payload: bytes, *, prefix: tuple[int, ...], context_epoch: int) -> None:
+    """Publish the committed full prefix to the Provider-local context index.
+
+    The index contains only the small canonical token/context metadata used to
+    expand a later APPEND_DELTA request.  KV/recurrent tensors remain in the
+    conversation state manager; no state tensor is copied into this cache or
+    onto NDN.  Updating it after COMMIT is essential: a failed/rolled-back
+    turn must not advance the append-delta epoch.
+    """
+    document = _qwen_context_document(payload)
+    if not document:
+        return
+    session_id = str(document.get("sessionId", "") or "")
+    if not session_id or not prefix or int(context_epoch) < 1:
+        return
+    raw_positions = document.get("positionIds")
+    model_type = "qwen3_5" if (
+        isinstance(raw_positions, list) and len(raw_positions) == 4
+    ) else "qwen2"
+    cached = decode_qwen_pipeline_context(
+        encode_qwen_pipeline_context(
+            [list(prefix)],
+            attention_mask=[[1] * len(prefix)],
+            request_id=str(document.get("requestId", "")),
+            session_id=session_id,
+            context_epoch=int(context_epoch),
+            generation=document.get("generation") or {},
+            model_type=model_type,
+        )
+    )
+    with _QWEN_CONTEXT_CACHE_LOCK:
+        _QWEN_CONTEXT_CACHE[session_id] = cached
+
+
+def _conversation_state_bytes(value: object) -> int:
+    total = 0
+    if isinstance(value, Mapping):
+        for item in value.values():
+            total += _conversation_state_bytes(item)
+        return total
+    nbytes = getattr(value, "nbytes", None)
+    if nbytes is not None:
+        try:
+            return max(0, int(nbytes))
+        except (TypeError, ValueError):
+            pass
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return len(value)
+    return 0
+
+
+def _conversation_projection_metadata(ctx: ProviderRuntimeContext) -> tuple[
+        ConversationTurnBindingV1 | None, ConversationStateReferenceV1 | None,
+        Mapping[str, object]]:
+    metadata = dict(getattr(getattr(ctx.execution, "spec", None),
+                            "metadata", {}) or {})
+    raw_binding = metadata.get("conversationTurnBinding")
+    raw_reference = metadata.get("conversationStateReference")
+    binding = (ConversationTurnBindingV1.from_dict(raw_binding)
+               if isinstance(raw_binding, Mapping) else None)
+    reference = (ConversationStateReferenceV1.from_dict(raw_reference)
+                 if isinstance(raw_reference, Mapping) else None)
+    if binding is None:
+        if reference is not None:
+            raise ConversationCheckpointInvalid(
+                "conversation state reference has no turn binding")
+        return None, None, metadata
+    if binding.service_name != SERVICE:
+        raise ConversationCheckpointInvalid(
+            "conversation turn binding service mismatch")
+    if reference is not None and (
+            reference.conversation_id != binding.conversation_id
+            or reference.context_epoch != binding.parent_context_epoch
+            or reference.plan_role_map_digest != binding.plan_role_map_digest
+            or reference.checkpoint_digest != binding.parent_checkpoint_digest
+            or reference.role_name != ctx.role):
+        raise ConversationCheckpointInvalid(
+            "conversation state reference binding mismatch")
+    return binding, reference, metadata
+
+
+def _conversation_continuation(spec: Mapping[str, object],
+                               binding: ConversationTurnBindingV1
+                               ) -> ConversationContinuation:
+    raw = spec.get("conversation")
+    if not isinstance(raw, Mapping):
+        raise ConversationCheckpointInvalid(
+            "conversation turn binding has no continuation")
+    continuation = ConversationContinuation.from_dict(raw)
+    if (continuation.conversation_id != binding.conversation_id
+            or (continuation.mode.value == "append-delta"
+                and continuation.expected_parent_context_epoch
+                != binding.parent_context_epoch)):
+        raise ConversationCheckpointInvalid(
+            "conversation continuation/binding mismatch")
+    if continuation.request_contract_digest != binding.request_contract_digest:
+        raise ConversationCheckpointInvalid(
+            "conversation request contract digest mismatch")
+    return continuation
+
+
+def _conversation_model_digest(ctx: ProviderRuntimeContext,
+                               metadata: Mapping[str, object]) -> str:
+    try:
+        envelope = DIRequestEnvelopeV2.from_bytes(bytes(ctx.request))
+    except (TypeError, ValueError):
+        return _conversation_digest((SERVICE, "tiny-model"))
+    # DIRequestEnvelopeV2 already stores the canonical ``sha256:<64-hex>``
+    # identity.  Do not prepend a second scheme marker; receipts are parsed
+    # by the strict conversation contract validator.
+    return str(envelope.model_identity_hash)
+
+
+def _conversation_state_component_digests(
+        state: Mapping[str, object], *, role: str) -> tuple[str, ...]:
+    names = tuple(sorted(str(name) for name in state))
+    if not names:
+        names = ("state",)
+    return tuple(_conversation_digest({
+        "role": role, "component": name,
+        "shape": list(getattr(state.get(name), "shape", ())),
+        "dtype": str(getattr(state.get(name), "dtype", "")),
+    }) for name in names)
+
+
+def _conversation_receipt(
+        ctx: ProviderRuntimeContext,
+        *,
+        binding: ConversationTurnBindingV1,
+        spec: Mapping[str, object],
+        metadata: Mapping[str, object],
+        transcript: Mapping[str, object],
+        prefix: tuple[int, ...],
+        manager: ProviderConversationStateManager,
+        state: Mapping[str, object],
+        state_reference: ConversationStateReferenceV1 | None,
+        ) -> ProviderConversationStateReceiptV1:
+    provider = str(ctx.ndnsf.local_provider)
+    requester = str(getattr(ctx.ndnsf, "requester_name", "") or
+                    "/example/llm-pipeline/user")
+    origin_generation = str(metadata.get("generationId", "") or
+                            spec.get("generation_id", ""))
+    if (len(origin_generation) != 32 or
+            any(char not in "0123456789abcdef" for char in origin_generation)):
+        origin_generation = hashlib.sha256(
+            f"{ctx.request_id}:{binding.conversation_id}".encode()).hexdigest()[:32]
+    state_schema = _conversation_digest({
+        "schema": "ndnsf-di-tiny-onnx-state-v1",
+        "stage": ctx.role,
+        "components": tuple(sorted(str(name) for name in state)),
+    })
+    role_split = _conversation_digest({
+        "role": ctx.role,
+        "layerRange": metadata.get("selectionLayerRange", ""),
+        "rank": metadata.get("selectionRank", 0),
+    })
+    layout = _conversation_digest({
+        "role": ctx.role,
+        "backend": metadata.get("selectionBackend", metadata.get("selectionDevice", "cpu")),
+        "runtime": TINY_ONNX_RUNTIME,
+    })
+    return ProviderConversationStateReceiptV1(
+        conversation_id=binding.conversation_id,
+        parent_context_epoch=binding.parent_context_epoch,
+        successor_context_epoch=binding.successor_context_epoch,
+        origin_request_id=ctx.request_id,
+        origin_generation_id=origin_generation,
+        service_name=binding.service_name,
+        requester_identity=requester,
+        security_domain_digest=_conversation_digest(
+            metadata.get("securityDomain", "requester-default")),
+        model_digest=_conversation_model_digest(ctx, metadata),
+        graph_semantic_digest=_conversation_digest({
+            "plan": metadata.get("selectionPlanDigest", ""),
+            "core": metadata.get("planCoreDigest", ""),
+            "role": ctx.role,
+        }),
+        adapter_digest=_conversation_digest({
+            "id": metadata.get("selectionAdapterId", "tiny-onnx"),
+            "version": metadata.get("selectionAdapterVersion", "v1"),
+        }),
+        role_name=ctx.role,
+        role_split_digest=role_split,
+        layout_digest=layout,
+        plan_role_map_digest=binding.plan_role_map_digest,
+        provider_identity=provider,
+        provider_boot_id=manager.provider_boot_id,
+        cache_epoch=manager.cache_epoch,
+        prefix_digest=_conversation_digest({
+            "schema": "ndnsf-di-prefix-v1", "tokenIds": list(prefix)}),
+        prefix_token_count=len(prefix),
+        position_digest=_conversation_digest({
+            "role": ctx.role, "prefixLength": len(prefix),
+            "contextEpoch": binding.successor_context_epoch,
+        }),
+        state_schema_digest=state_schema,
+        state_component_digests=_conversation_state_component_digests(
+            state, role=ctx.role),
+        expires_at_ms=min(binding.retention_deadline_ms,
+                          int(time.time() * 1000) + manager.retention_ms),
+    )
+
+
+def _conversation_control_matches(
+        value: object, *, action: str, ctx: ProviderRuntimeContext,
+        binding: ConversationTurnBindingV1,
+        receipt: ProviderConversationStateReceiptV1,
+    ) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    # Treat a malformed control as an unrelated Data packet.  A provider must
+    # never terminate the request merely because an unauthenticated or corrupt
+    # control payload contains a non-integer field.
+    try:
+        parent_epoch = int(value.get("parentContextEpoch", -1))
+        successor_epoch = int(value.get("successorContextEpoch", -1))
+        expires_at_ms = int(value.get("expiresAtMs", 0))
+    except (TypeError, ValueError, OverflowError):
+        return False
+    if expires_at_ms <= int(time.time() * 1000):
+        return False
+    if (value.get("schema") !=
+            "ndnsf-di-conversation-promotion-control-v1" or
+            value.get("action") != action or
+            str(value.get("conversationId", "")) != binding.conversation_id or
+            parent_epoch != binding.parent_context_epoch or
+            successor_epoch != binding.successor_context_epoch or
+            str(value.get("serviceName", "")) != binding.service_name or
+            str(value.get("planRoleMapDigest", "")) !=
+            binding.plan_role_map_digest or
+            str(value.get("roleName", "")) != ctx.role or
+            str(value.get("receiptDigest", "")) != receipt.receipt_digest):
+        return False
+    # COMMIT is only valid when it binds the exact finalized User checkpoint;
+    # ROLLBACK intentionally does not need that field.
+    if action == "COMMIT":
+        checkpoint_digest = str(value.get("checkpointDigest", ""))
+        if not checkpoint_digest:
+            return False
+    return True
+
+
+def _conversation_commit_or_rollback(
+        ctx: ProviderRuntimeContext,
+        *,
+        manager: ProviderConversationStateManager,
+        receipt: ProviderConversationStateReceiptV1,
+        binding: ConversationTurnBindingV1,
+        generation_id: str,
+        attempt_epoch: int,
+        plan_digest: str,
+        ) -> None:
+    """Wait for the requester COMMIT and publish one Provider commit receipt."""
+    ctx.ndnsf.allow_data(_CONVERSATION_STATE_SCOPE,
+                         _CONVERSATION_CONTROL_TOPIC)
+    deadline = time.monotonic() + max(
+        0.001, ctx.remaining_deadline_ms(fallback_ms=30_000,
+                                          safety_margin_ms=0) / 1000.0)
+    while time.monotonic() < deadline:
+        remaining_ms = max(1, int((deadline - time.monotonic()) * 1000))
+        data = ctx.ndnsf.wait_one(
+            _CONVERSATION_STATE_SCOPE, _CONVERSATION_CONTROL_TOPIC,
+            min(remaining_ms, 1000))
+        if data is None:
+            continue
+        try:
+            control = json.loads(bytes(data.payload).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if _conversation_control_matches(
+                control, action="ROLLBACK", ctx=ctx, binding=binding,
+                receipt=receipt):
+            manager.rollback_staged_promotion(receipt)
+            raise RuntimeError("conversation promotion was rolled back")
+        if not _conversation_control_matches(
+                control, action="COMMIT", ctx=ctx, binding=binding,
+                receipt=receipt):
+            continue
+        checkpoint_digest = str(control.get("checkpointDigest", ""))
+        try:
+            manager.commit_staged_promotion(
+                receipt, request_id=ctx.request_id, role=ctx.role,
+                checkpoint_digest=checkpoint_digest)
+        except (ConversationStateUnavailable, ValueError) as exc:
+            raise RuntimeError("conversation promotion commit was not staged") from exc
+        commit = {
+            "schema": "ndnsf-di-conversation-commit-v1",
+            "requestId": ctx.request_id,
+            "attemptEpoch": int(attempt_epoch),
+            "generationId": str(generation_id),
+            "planDigest": str(plan_digest),
+            "conversationId": binding.conversation_id,
+            "parentContextEpoch": binding.parent_context_epoch,
+            "successorContextEpoch": binding.successor_context_epoch,
+            "serviceName": binding.service_name,
+            "planRoleMapDigest": binding.plan_role_map_digest,
+            "roleName": ctx.role,
+            "receiptDigest": receipt.receipt_digest,
+            "checkpointDigest": checkpoint_digest,
+            "providerIdentity": str(ctx.ndnsf.local_provider),
+            "providerBootId": manager.provider_boot_id,
+            "cacheEpoch": manager.cache_epoch,
+            "committed": True,
+        }
+        ctx.ndnsf.publish(
+            _CONVERSATION_STATE_SCOPE,
+            f"{_CONVERSATION_COMMIT_TOPIC}/{ctx.role.strip('/')}",
+            json.dumps(commit, sort_keys=True, separators=(",", ":")).encode(),
+        )
+        return
+    manager.rollback_staged_promotion(receipt)
+    raise TimeoutError("conversation promotion commit control timed out")
+
+
+def _conversation_prepare(
+        ctx: ProviderRuntimeContext,
+        *,
+        spec: Mapping[str, object],
+        metadata: Mapping[str, object],
+        state_cache: dict[tuple[str, int], dict[str, object]],
+        stage_index: int,
+        manager: ProviderConversationStateManager,
+        receipt_store: dict[str, ProviderConversationStateReceiptV1],
+        cancelled: Callable[[], bool] | None = None,
+        ) -> tuple[ConversationTurnBindingV1 | None,
+                   ConversationStateReferenceV1 | None,
+                   ConversationContinuation | None,
+                   object | None]:
+    binding, reference, _ = _conversation_projection_metadata(ctx)
+    if binding is None:
+        return None, None, None, None
+    continuation = _conversation_continuation(spec, binding)
+    if continuation.mode.value != "append-delta":
+        if reference is not None:
+            raise ConversationCheckpointInvalid(
+                "FULL_CONTEXT conversation has a parent state reference")
+        return binding, None, continuation, None
+    if reference is None:
+        raise ConversationCheckpointInvalid(
+            "APPEND_DELTA conversation has no state reference")
+    parent_receipt = receipt_store.get(reference.role_receipt_digest)
+    if parent_receipt is None:
+        raise ConversationStateUnavailable(
+            "conversation parent receipt is not retained by this Provider")
+    if parent_receipt.successor_context_epoch != reference.context_epoch:
+        raise ConversationCheckpointInvalid(
+            "conversation parent receipt epoch mismatch")
+    cancellation_check = cancelled or ctx.stream_cancelled
+    try:
+        acquired = manager.acquire_for_request(
+            continuation, request_id=ctx.request_id, role=ctx.role,
+            receipt=parent_receipt,
+            deadline_ms=ctx.deadline_ms or None,
+            cancelled=cancellation_check,
+        )
+    except ConversationStateUnavailable:
+        if cancellation_check():
+            _emit(
+                "LLM_PIPELINE_SPEC175_M14_PREFETCH_CANCELLED",
+                f"requestId={ctx.request_id}",
+                f"role={ctx.role}",
+                f"conversationId={binding.conversation_id}",
+                f"contextEpoch={reference.context_epoch}",
+                flush=True,
+            )
+        raise
+    if acquired.transfer_bytes > 0:
+        _emit(
+            "LLM_PIPELINE_CONVERSATION_PREFETCHED",
+            f"requestId={ctx.request_id}",
+            f"role={ctx.role}",
+            f"conversationId={binding.conversation_id}",
+            f"contextEpoch={reference.context_epoch}",
+            f"transferBytes={acquired.transfer_bytes}",
+            f"transferLatencyMs={acquired.transfer_latency_ms}",
+            flush=True,
+        )
+    state_cache[(ctx.request_id, stage_index)] = _copy_onnx_state(
+        acquired.opaque_state)
+    ready = {
+        "schema": "ndnsf-di-conversation-ready-v1",
+        "requestId": ctx.request_id,
+        "attemptEpoch": int(spec.get("attempt_epoch", 1)),
+        "generationId": str(metadata.get("generationId", "") or
+                             spec.get("generation_id", "")),
+        "planDigest": str(metadata.get("selectionPlanDigest", "")),
+        "conversationId": binding.conversation_id,
+        "contextEpoch": reference.context_epoch,
+        "serviceName": binding.service_name,
+        "planRoleMapDigest": binding.plan_role_map_digest,
+        "checkpointDigest": reference.checkpoint_digest,
+        "roleName": ctx.role,
+        "roleReceiptDigest": reference.role_receipt_digest,
+        "providerIdentity": str(ctx.ndnsf.local_provider),
+        "providerBootId": manager.provider_boot_id,
+        "cacheEpoch": manager.cache_epoch,
+        "ready": True,
+        "reason": "state-hit",
+        "residency": "GPU_RESIDENT",
+    }
+    ctx.ndnsf.allow_data(_CONVERSATION_STATE_SCOPE, _CONVERSATION_READY_TOPIC)
+    ctx.ndnsf.publish(
+        _CONVERSATION_STATE_SCOPE,
+        f"{_CONVERSATION_READY_TOPIC}/{ctx.role.strip('/')}",
+        json.dumps(ready, sort_keys=True, separators=(",", ":")).encode(),
+    )
+    return binding, reference, continuation, parent_receipt
+
+
+def _conversation_finalize(
+        ctx: ProviderRuntimeContext,
+        *,
+        binding: ConversationTurnBindingV1,
+        continuation: ConversationContinuation,
+        metadata: Mapping[str, object],
+        spec: Mapping[str, object],
+        transcript: Mapping[str, object],
+        state_cache: dict[tuple[str, int], dict[str, object]],
+        stage_index: int,
+        manager: ProviderConversationStateManager,
+        receipt_store: dict[str, ProviderConversationStateReceiptV1],
+        prefix_store: dict[str, tuple[int, ...]],
+        ) -> ProviderConversationStateReceiptV1:
+    input_ids = tuple(int(item) for item in transcript.get(
+        "input_token_ids", ()))
+    generated = tuple(int(item) for item in transcript.get(
+        "generated_token_ids", ()))
+    if not input_ids or not generated:
+        raise RuntimeError("conversation receipt lacks generation transcript")
+    state = state_cache.get((ctx.request_id, stage_index), {})
+    # Provider-local parent state stores the canonical prefix.  APPEND_DELTA
+    # requests add only their authenticated input suffix and newly generated
+    # tokens; the opaque checkpoint itself never substitutes for this state.
+    prefix = tuple(input_ids) + generated
+    if continuation.mode.value == "append-delta":
+        reference = _conversation_projection_metadata(ctx)[1]
+        parent_receipt = (receipt_store.get(reference.role_receipt_digest)
+                          if reference else None)
+        parent_prefix = (prefix_store.get(reference.role_receipt_digest)
+                         if reference else None)
+        if parent_receipt is None or parent_prefix is None:
+            raise ConversationStateUnavailable(
+                "conversation parent prefix is not retained by this Provider")
+        # Stage 0 expands APPEND_DELTA into a full context before execution.
+        # The transcript therefore already contains the committed parent
+        # prefix followed by the authenticated suffix.  Do not prepend the
+        # parent a second time; doing so makes the receipt digest disagree with
+        # the User's canonical token sequence and can only be detected after
+        # all Providers have executed.
+        parent_count = len(parent_prefix)
+        if (len(input_ids) < parent_count
+                or tuple(input_ids[:parent_count]) != tuple(parent_prefix)):
+            raise ConversationCheckpointInvalid(
+                "conversation transcript does not contain committed parent prefix")
+        prefix = tuple(input_ids) + generated
+    receipt = _conversation_receipt(
+        ctx, binding=binding, spec=spec, metadata=metadata,
+        transcript=transcript, prefix=prefix, manager=manager,
+        state=state, state_reference=None)
+    # Keep the token sequence only inside the Provider process.  It is not put
+    # in the signed receipt or any NDN payload, but is needed to form the next
+    # turn's exact canonical prefix.
+    prefix_store[receipt.receipt_digest] = prefix
+    manager.put_request_local(
+        ctx.request_id, ctx.role, _copy_onnx_state(state),
+        logical_bytes=max(1, _conversation_state_bytes(state)))
+    manager.stage_request_local_promotion(
+        request_id=ctx.request_id, role=ctx.role, receipt=receipt,
+        logical_bytes=max(1, _conversation_state_bytes(state)))
+    receipt_store[receipt.receipt_digest] = receipt
+    ctx.ndnsf.allow_data(_CONVERSATION_STATE_SCOPE, _CONVERSATION_RECEIPT_TOPIC)
+    ctx.ndnsf.publish(
+        _CONVERSATION_STATE_SCOPE,
+        f"{_CONVERSATION_RECEIPT_TOPIC}/{ctx.role.strip('/')}",
+        json.dumps(receipt.to_dict(), sort_keys=True, separators=(",", ":")).encode(),
+    )
+    generation_id = str(metadata.get("generationId", "") or ctx.request_id)
+    _conversation_commit_or_rollback(
+        ctx, manager=manager, receipt=receipt, binding=binding,
+        generation_id=generation_id, attempt_epoch=int(
+            metadata.get("selectionAttempt", 1) or 1),
+        plan_digest=str(metadata.get("selectionPlanDigest", "")),
+    )
+    # Advance the small context-expansion index only after the Provider's
+    # staged tensor state was atomically promoted by the authenticated COMMIT.
+    # The opaque state itself remains owned by ProviderConversationStateManager.
+    _qwen_context_cache_after_commit(
+        ctx.request, prefix=prefix,
+        context_epoch=binding.successor_context_epoch,
+    )
+    return receipt
+
+
+def handle_tiny_onnx_stage(ctx: ProviderRuntimeContext, *,
+                           stages: int,
+                           session_cache: dict[str, object],
+                           state_cache: dict[tuple[str, int], dict[str, object]],
+                           compute_delay_ms: float,
+                           conversation_manager: ProviderConversationStateManager | None = None,
+                           conversation_receipts: dict[str, ProviderConversationStateReceiptV1] | None = None,
+                           conversation_prefixes: dict[str, tuple[int, ...]] | None = None,
+                           spec175_host_tier_after_commit: bool = False,
+                           spec175_m13_restart_after_commit: bool = False,
+                           spec175_m14_cancel_prefetch: bool = False,
+                           spec175_m14_prefetch_cancel_after_ms: int = 50) -> None:
+    """Execute the Spec175 tiny fixture through real ORT and stream tokens."""
+    artifact_paths = getattr(ctx.execution, "artifact_paths", {}) or {}
+    model_key = str(artifact_paths.get("model") or "")
+    if not model_key:
+        raise RuntimeError("tiny ONNX stage requires an immutable model artifact")
+    session = session_cache.get(model_key)
+    if session is None:
+        import onnxruntime as ort
+        from ndnsf_distributed_inference.adapters.qwen.stateful_onnx import (
+            PersistentStatefulOnnxSession,
+            StatefulOnnxIOContractV1,
+        )
+        options = ort.SessionOptions()
+        options.intra_op_num_threads = 1
+        options.inter_op_num_threads = 1
+        raw_session = ort.InferenceSession(
+            model_key, sess_options=options, providers=["CPUExecutionProvider"])
+        contract = StatefulOnnxIOContractV1.from_session(raw_session)
+        session = PersistentStatefulOnnxSession(raw_session, contract)
+        session_cache[model_key] = session
+    stage_spec = dict(getattr(ctx.execution.spec, "metadata", {}) or {})
+    stage_index = int(stage_spec.get("stageIndex", role_index(ctx.role)))
+    full_generation = _qwen_generation_spec(ctx.request)
+    if full_generation is not None:
+        binding = None
+        continuation = None
+        parent_receipt = None
+        if conversation_manager is not None:
+            prefetch_started = time.monotonic()
+
+            def cancellation_check() -> bool:
+                if ctx.stream_cancelled():
+                    return True
+                # M14 uses an explicit Provider-side fault control.  Core's
+                # user cancellation is local to the user lifecycle and does
+                # not, by itself, signal a remote Provider; this control makes
+                # the in-flight HOST->GPU cancellation test deterministic
+                # without pretending that a remote cancellation protocol
+                # exists.
+                return (
+                    spec175_m14_cancel_prefetch
+                    and ctx.request_id == "/spec175-m14-cancelled"
+                    and ((time.monotonic() - prefetch_started) * 1000.0
+                         >= spec175_m14_prefetch_cancel_after_ms)
+                )
+
+            binding, _reference, continuation, parent_receipt = _conversation_prepare(
+                ctx,
+                spec=full_generation,
+                metadata=stage_spec,
+                state_cache=state_cache,
+                stage_index=stage_index,
+                manager=conversation_manager,
+                receipt_store=conversation_receipts
+                if conversation_receipts is not None else {},
+                cancelled=cancellation_check,
+            )
+            _emit(
+                "LLM_PIPELINE_CONVERSATION_PREPARED",
+                f"requestId={ctx.request_id}",
+                f"role={ctx.role}",
+                f"bound={str(binding is not None).lower()}",
+                f"mode={continuation.mode.value if continuation is not None else 'none'}",
+                flush=True,
+            )
+        elif stage_spec.get("conversationTurnBinding") is not None:
+            raise RuntimeError("conversation Provider state manager is unavailable")
+        try:
+            transcript = _handle_qwen_transformer_full_generation(
+                ctx,
+                model=session,
+                stages=int(stage_spec.get("stageCount", stages)),
+                stage_index=stage_index,
+                compute_delay_ms=compute_delay_ms,
+                spec=full_generation,
+                stage_runner=lambda payload, delay: run_tiny_onnx_stage(
+                    payload,
+                    role=ctx.role,
+                    stages=int(stage_spec.get("stageCount", stages)),
+                    session=session,
+                    state_cache=state_cache,
+                    request_id=ctx.request_id,
+                    compute_delay_ms=delay,
+                ),
+            )
+            _emit(
+                "LLM_PIPELINE_CONVERSATION_TRANSCRIPT_READY",
+                f"requestId={ctx.request_id}",
+                f"role={ctx.role}",
+                f"bound={str(binding is not None).lower()}",
+                flush=True,
+            )
+            if binding is not None:
+                if conversation_receipts is None or conversation_prefixes is None:
+                    raise RuntimeError("conversation receipt store is unavailable")
+                _emit(
+                    "LLM_PIPELINE_CONVERSATION_FINALIZE_BEGIN",
+                    f"requestId={ctx.request_id}",
+                    f"role={ctx.role}",
+                    flush=True,
+                )
+                finalized_receipt = _conversation_finalize(
+                    ctx, binding=binding, continuation=continuation,
+                    metadata=stage_spec, spec=full_generation,
+                    transcript=transcript, state_cache=state_cache,
+                    stage_index=stage_index, manager=conversation_manager,
+                    receipt_store=conversation_receipts,
+                    prefix_store=conversation_prefixes,
+                )
+                if spec175_host_tier_after_commit:
+                    hosted = conversation_manager.pause_to_host(finalized_receipt)
+                    _emit(
+                        "LLM_PIPELINE_CONVERSATION_HOST_PAUSED",
+                        f"requestId={ctx.request_id}",
+                        f"role={ctx.role}",
+                        f"conversationId={finalized_receipt.conversation_id}",
+                        f"contextEpoch={finalized_receipt.successor_context_epoch}",
+                        f"logicalBytes={hosted.logical_bytes}",
+                        flush=True,
+                    )
+                if spec175_m13_restart_after_commit:
+                    restarted_boot = (
+                        f"{conversation_manager.provider_boot_id}:restarted")
+                    cleared = conversation_manager.invalidate_provider_boot(
+                        restarted_boot)
+                    _emit(
+                        "LLM_PIPELINE_SPEC175_M13_PROVIDER_RESTARTED",
+                        f"requestId={ctx.request_id}",
+                        f"role={ctx.role}",
+                        f"clearedEntries={cleared}",
+                        f"providerBootId={restarted_boot}",
+                        flush=True,
+                    )
+                _emit(
+                    "LLM_PIPELINE_CONVERSATION_FINALIZED",
+                    f"requestId={ctx.request_id}",
+                    f"role={ctx.role}",
+                    flush=True,
+                )
+        finally:
+            if (parent_receipt is not None and continuation is not None):
+                try:
+                    conversation_manager.release_for_request(
+                        continuation, request_id=ctx.request_id,
+                        receipt=parent_receipt)
+                except (ConversationStateUnavailable, ConversationCheckpointInvalid):
+                    pass
+            state_cache.pop((str(ctx.request_id), stage_index), None)
+        return
+    raise RuntimeError("tiny-onnx provider requires TOKEN_STREAMING or FULL generation metadata")
+
+
 def main() -> int:
     parser = parse_common_args("Run validation LLM pipeline provider")
     parser.add_argument("--provider-id", default="")
@@ -2590,7 +3841,8 @@ def main() -> int:
     parser.add_argument("--compute-delay-ms", type=float, default=1.0)
     parser.add_argument(
         "--runtime",
-        choices=("fake", TINY_TRANSFORMERS_RUNTIME, QWEN_TRANSFORMERS_RUNTIME, QWEN_ONNX_RUNTIME),
+        choices=("fake", TINY_TRANSFORMERS_RUNTIME, TINY_ONNX_RUNTIME,
+                 QWEN_TRANSFORMERS_RUNTIME, QWEN_ONNX_RUNTIME),
         default="fake",
     )
     parser.add_argument("--stages", type=int, default=3)
@@ -2598,12 +3850,17 @@ def main() -> int:
     parser.add_argument(
         "--device",
         default="cpu",
-        help="Qwen transformers stage device (cpu, cuda:0, or auto).",
+        help="Qwen stage device for the selected backend (cpu, cuda:0, or auto).",
     )
     parser.add_argument(
         "--require-cuda",
         action="store_true",
         help="Fail before readiness unless the Qwen stage is placed on CUDA.",
+    )
+    parser.add_argument(
+        "--require-onnx-runtime",
+        action="store_true",
+        help="Fail closed unless the deployed Qwen path uses ONNX Runtime.",
     )
     parser.add_argument(
         "--lazy-qwen-load",
@@ -2640,6 +3897,45 @@ def main() -> int:
         "--selection-local-artifact", action="append", default=[],
         help="Explicit immutable preloaded V3 stage binding ROLE=PATH.")
     parser.add_argument("--repo-client-state-root", default="")
+    parser.add_argument(
+        "--spec175-fault-case",
+        choices=("M02", "M03", "M04", "M05", "M09", "M11", "M12", "M13", "M14"),
+        default="",
+        help="Registered host-MiniNDN stream fault; integration use only.",
+    )
+    parser.add_argument(
+        "--spec175-host-tier-after-commit",
+        action="store_true",
+        help="M12 control: move each committed conversation state to HOST_RESIDENT.",
+    )
+    parser.add_argument(
+        "--spec175-m13-restart-after-commit",
+        action="store_true",
+        help=(
+            "M13 control: invalidate Provider conversation state after the "
+            "first committed turn; test-only."),
+    )
+    parser.add_argument(
+        "--spec175-prefetch-delay-ms",
+        type=int,
+        default=0,
+        help=(
+            "Test-only delay inside Provider HOST-to-GPU prefetch; zero in "
+            "production."),
+    )
+    parser.add_argument(
+        "--spec175-m14-cancel-prefetch",
+        action="store_true",
+        help=(
+            "M14 test-only Provider fault: cancel the designated child while "
+            "its HOST-to-GPU prefetch is in flight."),
+    )
+    parser.add_argument(
+        "--spec175-m14-prefetch-cancel-after-ms",
+        type=int,
+        default=50,
+        help="M14 test-only Provider cancellation delay (default: 50 ms).",
+    )
     args = parser.parse_args()
     if args.bootstrap_token and args.bootstrap_token_file:
         raise SystemExit(
@@ -2661,7 +3957,9 @@ def main() -> int:
 
     _preflight_qwen_runtime(args)
     selection_local_artifacts = _parse_selection_local_artifacts(
-        args.selection_local_artifact)
+        args.selection_local_artifact,
+        runtime=args.runtime,
+    )
 
     signer = None
     adapters = None
@@ -2689,6 +3987,7 @@ def main() -> int:
         signer=signer,
         signer_key_id=signer.key_id if signer is not None else "",
     )
+    _configure_spec175_stream_fault(provider, args.spec175_fault_case)
     if args.deployment_control_service:
         control = ProviderDeploymentControl(
             provider,
@@ -2706,6 +4005,11 @@ def main() -> int:
             can_provision=False,
             ready_without_model=True,
         )
+    qwen_models: dict[str, object] = {}
+    qwen_runtime_cache: dict[str, object] = {}
+    conversation_manager: ProviderConversationStateManager | None = None
+    conversation_receipts: dict[str, ProviderConversationStateReceiptV1] = {}
+    conversation_prefixes: dict[str, tuple[int, ...]] = {}
     if args.runtime == TINY_TRANSFORMERS_RUNTIME:
         selection_v2 = {}
         tiny_models = _preload_tiny_stage_models(
@@ -2730,6 +4034,46 @@ def main() -> int:
             backends.append("cuda" if args.require_cuda else "transformers-cpu")
         else:
             backends = ["transformers"]
+    elif args.runtime == TINY_ONNX_RUNTIME:
+        selected_roles = _selected_roles(args.roles, provider)
+        sessions: dict[str, object] = {}
+        state_cache: dict[tuple[str, int], dict[str, object]] = {}
+        try:
+            core_boot_epoch = str(provider.provider_boot_epoch)
+        except AttributeError:
+            core_boot_epoch = str(
+                provider._network_provider._provider.provider.provider_boot_epoch)
+        provider_identity = str(args.provider_identity or provider.provider)
+        if not provider_identity or not core_boot_epoch:
+            raise RuntimeError(
+                "conversation state requires Provider identity and boot epoch")
+        conversation_manager = ProviderConversationStateManager(
+            provider_identity=provider_identity,
+            provider_boot_id=f"{provider_identity}:{core_boot_epoch}",
+            gpu_byte_quota=8 * 1024 * 1024 * 1024,
+            host_byte_quota=8 * 1024 * 1024 * 1024,
+            prefetch_delay_ms=args.spec175_prefetch_delay_ms,
+        )
+        handler = lambda ctx: handle_tiny_onnx_stage(
+            ctx,
+            stages=args.stages,
+            session_cache=sessions,
+            state_cache=state_cache,
+            compute_delay_ms=args.compute_delay_ms,
+            conversation_manager=conversation_manager,
+            conversation_receipts=conversation_receipts,
+            conversation_prefixes=conversation_prefixes,
+            spec175_host_tier_after_commit=args.spec175_host_tier_after_commit,
+            spec175_m13_restart_after_commit=args.spec175_m13_restart_after_commit,
+            spec175_m14_cancel_prefetch=args.spec175_m14_cancel_prefetch,
+            spec175_m14_prefetch_cancel_after_ms=(
+                args.spec175_m14_prefetch_cancel_after_ms),
+        )
+        # The adapter requires the generic ``onnxruntime`` capability; the
+        # signed V3 offer advertises the concrete CPU variant so the planner
+        # can bind a CPU device without pretending it is CUDA-backed.
+        backends = ["onnxruntime-cpu"] if args.device == "cpu" else ["onnxruntime"]
+        selection_v2 = _selection_v3_for_tiny_onnx(provider, args)
     elif args.runtime == QWEN_TRANSFORMERS_RUNTIME:
         qwen_models = (
             {}
@@ -2765,15 +4109,25 @@ def main() -> int:
             local_artifacts=selection_local_artifacts,
         )
     elif args.runtime == QWEN_ONNX_RUNTIME:
-        selection_v2 = {}
         selected_roles = _selected_roles(args.roles, provider)
         qwen_sessions = _preload_qwen_onnx_sessions(
             provider,
             selected_roles,
             device=args.device,
             require_cuda=args.require_cuda,
+            local_artifacts=selection_local_artifacts,
         )
-        qwen_metadata = _qwen_onnx_metadata_by_path(provider)
+        qwen_metadata = _qwen_onnx_metadata_by_path(
+            provider, selection_local_artifacts)
+        qwen_runtime_cache = {
+            path: _QwenOnnxRuntimeHandle(
+                session, qwen_metadata.get(path, {}))
+            for path, session in qwen_sessions.items()
+        }
+        for runtime in qwen_runtime_cache.values():
+            if _warm_qwen_onnx_runtime(runtime) is not True:
+                raise RuntimeError("Qwen ONNX runtime warmup did not complete")
+        _finalize_qwen_onnx_profiles(qwen_sessions, qwen_metadata)
         handler = lambda ctx: handle_qwen_onnx_stage(
             ctx,
             stages=args.stages,
@@ -2784,6 +4138,14 @@ def main() -> int:
             require_cuda=args.require_cuda,
         )
         backends = ["onnxruntime"]
+        selection_v2 = _selection_v2_for_qwen(
+            provider,
+            args,
+            model_cache=qwen_runtime_cache,
+            model_cache_lock=Lock(),
+            local_artifacts=selection_local_artifacts,
+            runtime_metadata=qwen_metadata,
+        )
     else:
         selection_v2 = {}
         handler = lambda ctx: handle_stage(ctx, compute_delay_ms=args.compute_delay_ms)
@@ -2796,7 +4158,12 @@ def main() -> int:
     v3_can_prepare = bool(
         args.selection_dataflow_v3
         and (selection_local_artifacts or args.selection_repo_registration
-             or bool(qwen_models)))
+             or (args.runtime == TINY_ONNX_RUNTIME
+                 and bool(sessions))
+             or (args.runtime == QWEN_ONNX_RUNTIME
+                 and bool(qwen_runtime_cache))
+             or (args.runtime != QWEN_ONNX_RUNTIME
+                 and bool(qwen_models))))
     provider.serve_service(
         service=SERVICE,
         roles=args.roles,

@@ -6,6 +6,7 @@
 
 #include "ServiceAuthorizationTable.hpp"
 #include "NDNSFMessages.hpp"
+#include "InvocationStream.hpp"
 #include "ConfigManager.hpp"
 #include "HybridMessageCrypto.hpp"
 #include "NetworkTelemetry.hpp"
@@ -15,10 +16,13 @@
 #include "StreamFacade.hpp"
 
 #include <functional>
+#include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <deque>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <tuple>
@@ -87,6 +91,10 @@ namespace ndn_service_framework{
         ndn::Buffer assignmentPayload;
         size_t minProviders = 1;
         size_t maxProviders = 1;
+        // A streamed collaboration has exactly one user-facing terminal
+        // owner.  Other selected roles may publish internal data and must
+        // complete without claiming the shared End/Response lifecycle.
+        bool terminalResponseOwner = false;
     };
 
     struct CollaborationKeyScope
@@ -137,6 +145,23 @@ namespace ndn_service_framework{
         // separately from each exact opaque assignment.
         ndn::Buffer sharedAssignmentMetadata;
         std::shared_ptr<const ParticipantSelectionPolicy> participantSelector;
+    };
+
+    /** Provider-signed and request-scope-decrypted collaboration record
+     * observed by the requesting User. The SVS validator authenticates the
+     * outer Data before this value is admitted. */
+    struct VerifiedCollaborationData
+    {
+        ndn::Name dataName;
+        ndn::Name requestId;
+        KeyScope keyScope;
+        ndn::Name topic;
+        ndn::Name producer;
+        CollaborationRole producerRole;
+        uint64_t sequence = 0;
+        ndn::Buffer payload;
+        std::string signerCertificate;
+        std::string wireDigest;
     };
 
     struct CollaborationAckClosure
@@ -354,15 +379,44 @@ namespace ndn_service_framework{
             void attachLocalMockPubSubForTest(
                 std::shared_ptr<ndn::svs::SVSPubSub> pubSub);
 
+            /** Bind all LocalMock signing, including NAC-ABE wrapping, to the
+             * fixture-owned KeyChain that contains the supplied certificate. */
+            void useSigningKeyChainForTest(ndn::KeyChain& keyChain);
+
+            /** Return whether the active LocalMock NAC-ABE Consumer has
+             * obtained its DKEY.  Integration bootstrap uses this as a hard
+             * readiness condition instead of inferring readiness from public
+             * parameter traffic alone. */
+            bool isNacConsumerReadyForTest();
+
             /** Seed a receive key for a LocalMock ingress test. */
             void cacheHybridReceiveKeyForTest(const std::string& keyId,
                                               const std::string& epochId,
                                               const ndn::Buffer& key);
 
+            /** Prepare a deterministic LocalMock outbound key and mark its
+             * wrapped-key state as already bootstrapped.  This is test-only
+             * plumbing; production authorization still uses NAC-ABE. */
+            HybridMessageKey prepareHybridSendKeyForTest(
+                const ndn::Name& serviceName,
+                const std::string& messageType);
+
             /** Cache a pre-built Data packet for LocalMock fetcher tests. */
             void cacheDataForTest(
                 const ndn::Data& data,
                 ndn::time::milliseconds freshness = ndn::DEFAULT_FRESHNESS_PERIOD);
+
+            /** Trigger the real streamed cancellation path from LocalMock
+             * integration fixtures that start through deferred collaboration. */
+            void cancelStreamRequestForTest(const ndn::Name& requestId);
+            /** Cancel callback delivery and terminal acceptance for one active
+             * streamed request, including deferred collaboration requests. */
+            void cancelStreamRequest(const ndn::Name& requestId);
+            StreamedInvocationMetrics getStreamMetricsForTest(
+                const ndn::Name& requestId) const;
+            bool hasStreamStateForTest(const ndn::Name& requestId) const;
+            size_t streamCallbackQueueHighWaterMarkForTest(
+                const ndn::Name& requestId) const;
 
             ndn::Name getName();
 
@@ -427,6 +481,26 @@ namespace ndn_service_framework{
                 std::vector<double> ackLatenciesMs;
             };
             RuntimeDiagnostics consumeRuntimeDiagnostics();
+
+            /** Wait off the Face/io_context thread for validated collaboration
+             * records from the selected Providers. Records are retained until
+             * explicitly consumed so a terminal Response cannot race receipt
+             * delivery. */
+            std::vector<VerifiedCollaborationData>
+            waitForVerifiedCollaborationData(const RequestId& requestId,
+                                             const KeyScope& keyScope,
+                                             const ndn::Name& topicPrefix,
+                                             size_t minCount,
+                                             int timeoutMs,
+                                             bool consume = true);
+
+            /** Release verified collaboration records and the request-scope
+             * key after a multi-step conversation transaction has finished.
+             * Waiting with consume=true removes matching records but keeps the
+             * key alive so a later authenticated control/ack can still use
+             * the same request scope. */
+            void clearVerifiedCollaborationData(const RequestId& requestId,
+                                                const KeyScope& keyScope);
 
             struct AdaptiveAdmissionOptions
             {
@@ -500,6 +574,19 @@ namespace ndn_service_framework{
                 const ndn::Name& dataName,
                 const ndn::Buffer& payload,
                 ndn::time::milliseconds freshness = ndn::DEFAULT_FRESHNESS_PERIOD);
+
+            /** Publish one requester-authenticated collaboration control record.
+             * The payload is encrypted with the request scope key and the
+             * outer SVS Data is signed by this User identity. It is intended
+             * for request-scoped Provider commit/rollback controls, not for
+             * application data or a new invocation mode.
+             */
+            bool publishCollaborationData(
+                const ndn::Name& targetProvider,
+                const ndn::Name& requestId,
+                const KeyScope& keyScope,
+                const ndn::Name& topic,
+                const ndn::Buffer& payload);
 
             /** Fetch and validate one exact-name APP record.
              *
@@ -624,6 +711,79 @@ namespace ndn_service_framework{
                                      TimeoutHandler onTimeout,
                                      const RequestId& requestId = RequestId());
 
+            template<typename RequestT, typename EventT, typename ResponseT>
+            std::shared_ptr<StreamedInvocationHandle<EventT, ResponseT>>
+            RequestServiceStreaming(
+                const ndn::Name& serviceName,
+                const RequestT& request,
+                StreamedInvocationOptions options,
+                std::function<void(const EventT&)> onEvent,
+                std::function<void(const ResponseT&)> onComplete,
+                std::function<void(const StreamedInvocationError&)> onError,
+                size_t strategy = ndn_service_framework::tlv::FirstResponding)
+            {
+                ndn::Buffer requestBytes;
+                try {
+                    requestBytes = serializeStreamValue(request);
+                }
+                catch (const std::exception&) {
+                    return nullptr;
+                }
+                auto state = requestServiceStreamingBytes(
+                    serviceName, ndn::Name(), requestBytes, std::move(options),
+                    [onEvent = std::move(onEvent)](const ndn::Buffer& bytes) {
+                        if (!onEvent) return;
+                        if constexpr (std::is_same<EventT, ndn::Buffer>::value) {
+                            onEvent(bytes);
+                        }
+                        else {
+                            EventT event;
+                            if (event.ParseFromArray(bytes.data(), bytes.size())) onEvent(event);
+                        }
+                    },
+                    [onComplete = std::move(onComplete)](const ndn::Buffer& bytes) {
+                        if (!onComplete) return;
+                        if constexpr (std::is_same<ResponseT, ndn::Buffer>::value) {
+                            onComplete(bytes);
+                        }
+                        else {
+                            ResponseT response;
+                            if (response.ParseFromArray(bytes.data(), bytes.size())) onComplete(response);
+                        }
+                    }, std::move(onError), strategy);
+                return state ? std::make_shared<StreamedInvocationHandle<EventT, ResponseT>>(std::move(state)) : nullptr;
+            }
+
+            template<typename RequestT, typename EventT, typename ResponseT>
+            std::shared_ptr<StreamedInvocationHandle<EventT, ResponseT>>
+            RequestServiceStreaming(
+                const ndn::Name& provider,
+                const ndn::Name& serviceName,
+                const RequestT& request,
+                StreamedInvocationOptions options,
+                std::function<void(const EventT&)> onEvent,
+                std::function<void(const ResponseT&)> onComplete,
+                std::function<void(const StreamedInvocationError&)> onError)
+            {
+                if (options.mode != InvocationMode::Targeted || provider.empty()) return nullptr;
+                ndn::Buffer requestBytes;
+                try { requestBytes = serializeStreamValue(request); }
+                catch (const std::exception&) { return nullptr; }
+                auto state = requestServiceStreamingBytes(
+                    serviceName, provider, requestBytes, std::move(options),
+                    [onEvent = std::move(onEvent)](const ndn::Buffer& bytes) {
+                        if (!onEvent) return;
+                        if constexpr (std::is_same<EventT, ndn::Buffer>::value) onEvent(bytes);
+                        else { EventT event; if (event.ParseFromArray(bytes.data(), bytes.size())) onEvent(event); }
+                    },
+                    [onComplete = std::move(onComplete)](const ndn::Buffer& bytes) {
+                        if (!onComplete) return;
+                        if constexpr (std::is_same<ResponseT, ndn::Buffer>::value) onComplete(bytes);
+                        else { ResponseT response; if (response.ParseFromArray(bytes.data(), bytes.size())) onComplete(response); }
+                    }, std::move(onError), ndn_service_framework::tlv::FirstResponding);
+                return state ? std::make_shared<StreamedInvocationHandle<EventT, ResponseT>>(std::move(state)) : nullptr;
+            }
+
             ndn::Name RequestCollaboration(const ServiceName& service,
                                            const RequestPayload& initialRequest,
                                            CollaborationPlan plan,
@@ -650,7 +810,15 @@ namespace ndn_service_framework{
                                          const RequestId& requestId,
                                          CollaborationAckCoverageHandler onAckCoverage,
                                          const RequestCapabilities& requestCapabilities =
-                                             RequestCapabilities());
+                                             RequestCapabilities(),
+                                         const std::optional<StreamRequestOptions>&
+                                             streamOptions = std::nullopt,
+                                         std::function<void(const ndn::Buffer&)>
+                                             onStreamEvent = {},
+                                         std::function<void(const ndn::Buffer&)>
+                                             onStreamComplete = {},
+                                         std::function<void(const StreamedInvocationError&)>
+                                             onStreamError = {});
 
             bool CommitCollaborationPlan(const RequestId& requestId,
                                          const std::string& ackClosedDigest,
@@ -831,6 +999,8 @@ namespace ndn_service_framework{
                                              ndn_service_framework::RequestAckMessage AckMessage);
 
             virtual void OnResponse(const ndn::svs::SVSPubSub::SubscriptionData &subscription);
+            void OnCollaborationData(
+                const ndn::svs::SVSPubSub::SubscriptionData& subscription);
 
             // ndnsd serviceinfo discovery callback
             void processNDNSDServiceInfoCallback(const ndnsd::discovery::Details& callback);
@@ -1026,6 +1196,11 @@ namespace ndn_service_framework{
                 std::optional<DeploymentPlan> deploymentPlan;
                 std::map<std::string, ProviderReadyMessage> deploymentReadyByMember;
                 bool deploymentActivationSent = false;
+                // Populated only by the streamed API. Unary and legacy
+                // Targeted calls intentionally allocate no stream owner.
+                std::shared_ptr<StreamInvocationLifecycle> streamLifecycle;
+                std::optional<StreamRequestOptions> streamOptions;
+                ndn::Buffer streamEventKey;
             };
 
             struct TargetedTokenPair
@@ -1045,6 +1220,44 @@ namespace ndn_service_framework{
                 bool refillInFlight = false;
             };
 
+            struct TargetedStreamOffer
+            {
+                std::string providerBootEpoch;
+                std::string recipientCertName;
+                std::string recipientCertDigest;
+                std::string recipientPublicKey;
+            };
+
+            /**
+             * Attach streamed delivery to an already-created request. The
+             * public API and local fixtures use this same ownership rule;
+             * attachment cannot manufacture a second request ID or Request.
+             */
+            std::shared_ptr<StreamInvocationLifecycle>
+            attachStreamLifecycle(const ndn::Name& requestId,
+                                  bool deferredCollaboration);
+
+            std::shared_ptr<StreamInvocationLifecycle>
+            getStreamLifecycle(const ndn::Name& requestId) const;
+            using StreamBytesCallback = std::function<void(const ndn::Buffer&)>;
+            std::shared_ptr<StreamedInvocationSharedState>
+            requestServiceStreamingBytes(
+                const ndn::Name& serviceName,
+                const ndn::Name& targetProvider,
+                ndn::Buffer requestPayload,
+                StreamedInvocationOptions options,
+                StreamBytesCallback onEvent,
+                StreamBytesCallback onComplete,
+                std::function<void(const StreamedInvocationError&)> onError,
+                size_t strategy);
+            void onStreamEvent(const ndn::svs::SVSPubSub::SubscriptionData& subscription);
+            bool initializeStreamConsumer(const ndn::Name& providerName,
+                                          const ndn::Name& serviceName,
+                                          const ndn::Name& requestId,
+                                          const std::string& selectionDigest);
+            void armStreamInactivityTimer(const ndn::Name& requestId,
+                                          uint64_t interestLifetimeMs);
+            void disarmStreamInactivityTimer(const ndn::Name& requestId);
             struct PendingCallTraceRecord
             {
                 uint64_t createdAtUs = 0;
@@ -1072,6 +1285,12 @@ namespace ndn_service_framework{
                                               const StoredAck& storedAck);
 
             bool evaluateCustomAckSelection(PendingCall& pendingCall);
+
+            ndn::Buffer externalizeLargeCollaborationAssignment(
+                const ndn::Name& providerName,
+                const ndn::Name& serviceName,
+                const ndn::Name& requestId,
+                const ndn::Buffer& assignmentPayload);
 
             bool evaluateBuiltInAckSelection(PendingCall& pendingCall);
             void recordNegativeAck(PendingCall& pendingCall,
@@ -1215,10 +1434,16 @@ namespace ndn_service_framework{
             bool retryResponseWithNextProvider(const ndn::Name& requestId,
                                                const char* trigger);
 
+            ndn::nacabe::Consumer& activeNacConsumer()
+            {
+                return m_testNacConsumer ? *m_testNacConsumer : nacConsumer;
+            }
+
             ndn::Face& m_face;
             ndn::Scheduler m_scheduler;
             ndn::Name identity;
             ndn::KeyChain m_keyChain;
+            ndn::KeyChain* m_testSigningKeyChain = nullptr;
             std::shared_ptr<ndn::svs::SVSPubSub> m_svsps;
             std::shared_ptr<MessageValidator> validator;
             std::vector<std::string> m_serviceNames;
@@ -1227,10 +1452,13 @@ namespace ndn_service_framework{
             ndn::ValidatorConfig nac_validator{m_face};
             ndn::security::Certificate identityCert;
             ndn::security::Certificate signingCert;
+            ndn::security::Certificate attrAuthorityCertificate;
             
             ndn::nacabe::Consumer nacConsumer;
+            std::unique_ptr<ndn::nacabe::Consumer> m_testNacConsumer;
             //ndn::nacabe::Producer nacProducer;
             ndn::nacabe::CacheProducer nacProducer;
+            std::unique_ptr<ndn::nacabe::CacheProducer> m_testNacProducer;
             ndn::security::SigningInfo m_signingInfo;
             bool m_useTokens = true;
             bool m_timelineTrace = false;
@@ -1261,10 +1489,23 @@ namespace ndn_service_framework{
             std::mutex svs_mutex;
 
             std::map<ndn::Name, PendingCall> m_pendingCalls;
+            std::mutex m_verifiedCollaborationMutex;
+            std::condition_variable m_verifiedCollaborationCv;
+            std::map<ndn::Name, std::map<KeyScope, ndn::Buffer>>
+                m_userCollaborationScopeKeys;
+            std::map<ndn::Name, std::vector<VerifiedCollaborationData>>
+                m_verifiedCollaborationData;
+            std::atomic<uint64_t> m_collaborationSequence{0};
+            std::map<ndn::Name, std::shared_ptr<StreamEventConsumer>> m_streamConsumers;
+            std::map<ndn::Name, std::shared_ptr<StreamedInvocationSharedState>> m_streamStates;
+            std::mutex m_streamInactivityMutex;
+            std::map<ndn::Name, uint64_t> m_streamInactivityEpochs;
+            std::map<ndn::Name, ndn::Buffer> m_streamEventKeysPending;
             std::mutex m_targetedTokenPoolsMutex;
             std::map<std::string, std::deque<TargetedTokenPair>> m_targetedTokenPools;
             std::map<std::string, TargetedTokenPoolControl>
                 m_targetedTokenPoolControls;
+            std::map<std::string, TargetedStreamOffer> m_targetedStreamOffers;
             std::map<ndn::Name, std::map<std::string, uint64_t>>
                 m_recentAckProvidersByService;
             std::map<ndn::Name, PendingCallTraceRecord> m_pendingCallTraceHistory;

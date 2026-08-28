@@ -352,6 +352,10 @@ class SplitCandidate:
     tensor_degrees_by_role: Mapping[str, int] = field(default_factory=dict)
     rank_artifact_digests_by_role: Mapping[str, tuple[str, ...]] = field(
         default_factory=dict)
+    role_state_inputs_by_role: Mapping[str, tuple[TensorContract, ...]] = field(
+        default_factory=dict)
+    role_state_outputs_by_role: Mapping[str, tuple[TensorContract, ...]] = field(
+        default_factory=dict)
     hybrid_plan: Any | None = None
 
     def __post_init__(self) -> None:
@@ -387,6 +391,20 @@ class SplitCandidate:
             _frozen_mapping({
                 str(role): tuple(values)
                 for role, values in self.rank_artifact_digests_by_role.items()
+            }),
+        )
+        object.__setattr__(
+            self, "role_state_inputs_by_role",
+            _frozen_mapping({
+                str(role): tuple(values)
+                for role, values in self.role_state_inputs_by_role.items()
+            }),
+        )
+        object.__setattr__(
+            self, "role_state_outputs_by_role",
+            _frozen_mapping({
+                str(role): tuple(values)
+                for role, values in self.role_state_outputs_by_role.items()
             }),
         )
         _require_digest(self.graph_digest, "candidate graph_digest")
@@ -433,6 +451,23 @@ class SplitCandidate:
             raise ValueError("rank artifacts require explicit tensor degrees")
         elif self.hybrid_plan is not None:
             raise ValueError("hybrid plan requires explicit tensor degrees")
+        state_inputs = self.role_state_inputs_by_role
+        state_outputs = self.role_state_outputs_by_role
+        if bool(state_inputs) != bool(state_outputs):
+            raise ValueError("role state I/O must provide both inputs and outputs")
+        if state_inputs:
+            if set(state_inputs) != roles or set(state_outputs) != roles:
+                raise ValueError("role state I/O does not cover every role")
+            for role in self.execution_plan.roles:
+                inputs = state_inputs[role]
+                outputs = state_outputs[role]
+                if not inputs or not outputs:
+                    raise ValueError("role state I/O must not be empty")
+                input_names = tuple(item.name for item in inputs)
+                output_names = tuple(item.name for item in outputs)
+                if (len(set(input_names)) != len(input_names)
+                        or len(set(output_names)) != len(output_names)):
+                    raise ValueError("role state I/O tensor names must be unique")
 
     @property
     def candidate_digest(self) -> str:

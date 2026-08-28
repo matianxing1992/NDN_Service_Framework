@@ -8,6 +8,8 @@
 #include "ndn-service-framework/utils.hpp"
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
 #include <cctype>
@@ -18,8 +20,10 @@
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <mutex>
+#include <openssl/sha.h>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -171,6 +175,48 @@ parseNativeProviderAssignmentFields(const ndn::Buffer& payload,
   return fields;
 }
 
+bool
+nativeRequestContractDigestMatches(const std::string& expectedDigest,
+                                   const ndn::Buffer& requestPayload)
+{
+  if (expectedDigest.size() != 71 ||
+      expectedDigest.compare(0, 7, "sha256:") != 0 ||
+      !std::all_of(expectedDigest.begin() + 7, expectedDigest.end(),
+                   [] (unsigned char value) {
+                     return (value >= '0' && value <= '9') ||
+                            (value >= 'a' && value <= 'f');
+                   })) {
+    return false;
+  }
+  std::array<unsigned char, SHA256_DIGEST_LENGTH> digest{};
+  SHA256(requestPayload.data(), requestPayload.size(), digest.data());
+  std::ostringstream actual;
+  actual << "sha256:" << std::hex << std::setfill('0');
+  for (const auto byte : digest) {
+    actual << std::setw(2) << static_cast<unsigned int>(byte);
+  }
+  return expectedDigest == actual.str();
+}
+
+bool
+nativeGenerationIdMatchesStreamOptions(
+  const std::string& generationId,
+  const ndn_service_framework::StreamGenerationId& expected)
+{
+  if (generationId.size() != expected.size() * 2) {
+    return false;
+  }
+  static constexpr char digits[] = "0123456789abcdef";
+  for (std::size_t index = 0; index < expected.size(); ++index) {
+    const auto byte = expected[index];
+    if (generationId[index * 2] != digits[(byte >> 4) & 0x0F] ||
+        generationId[index * 2 + 1] != digits[byte & 0x0F]) {
+      return false;
+    }
+  }
+  return true;
+}
+
 NativeProviderExecutionBindingResult
 validateNativeProviderExecutionBinding(
   const std::map<std::string, std::string>& fields,
@@ -288,6 +334,83 @@ epochMs()
 {
   return std::chrono::duration_cast<std::chrono::milliseconds>(
     std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+struct ConversationPromotionControl
+{
+  std::string action;
+  std::string conversationId;
+  std::uint64_t parentContextEpoch = 0;
+  std::uint64_t successorContextEpoch = 0;
+  std::string serviceName;
+  std::string planRoleMapDigest;
+  std::string roleName;
+  std::string receiptDigest;
+  std::string checkpointDigest;
+  std::uint64_t expiresAtMs = 0;
+};
+
+ConversationPromotionControl
+parseConversationPromotionControl(const ndn::Buffer& payload)
+{
+  const std::string text(reinterpret_cast<const char*>(payload.data()),
+                         payload.size());
+  boost::property_tree::ptree root;
+  try {
+    std::istringstream input(text);
+    boost::property_tree::read_json(input, root);
+  }
+  catch (const std::exception& exc) {
+    throw std::invalid_argument(
+      std::string("malformed conversation promotion control: ") + exc.what());
+  }
+  static const std::set<std::string> allowedFields = {
+    "schema", "action", "conversationId", "parentContextEpoch",
+    "successorContextEpoch", "serviceName", "planRoleMapDigest",
+    "roleName", "receiptDigest", "checkpointDigest", "expiresAtMs",
+  };
+  std::set<std::string> seenFields;
+  for (const auto& field : root) {
+    if (!allowedFields.count(field.first) ||
+        !seenFields.insert(field.first).second) {
+      throw std::invalid_argument(
+        "conversation promotion control contains unknown or duplicate fields");
+    }
+  }
+  if (seenFields.size() != allowedFields.size()) {
+    throw std::invalid_argument(
+      "conversation promotion control is missing required fields");
+  }
+  if (root.get<std::string>("schema", "") !=
+        "ndnsf-di-conversation-promotion-control-v1") {
+    throw std::invalid_argument("conversation promotion control schema mismatch");
+  }
+  ConversationPromotionControl control;
+  control.action = root.get<std::string>("action", "");
+  control.conversationId = root.get<std::string>("conversationId", "");
+  control.parentContextEpoch = root.get<std::uint64_t>("parentContextEpoch", 0);
+  control.successorContextEpoch = root.get<std::uint64_t>("successorContextEpoch", 0);
+  control.serviceName = root.get<std::string>("serviceName", "");
+  control.planRoleMapDigest = root.get<std::string>("planRoleMapDigest", "");
+  control.roleName = root.get<std::string>("roleName", "");
+  control.receiptDigest = root.get<std::string>("receiptDigest", "");
+  control.checkpointDigest = root.get<std::string>("checkpointDigest", "");
+  control.expiresAtMs = root.get<std::uint64_t>("expiresAtMs", 0);
+  if (control.action != "COMMIT" && control.action != "ROLLBACK") {
+    throw std::invalid_argument("conversation promotion control action is invalid");
+  }
+  if (control.conversationId.empty() || control.conversationId.find('/') !=
+        std::string::npos || control.successorContextEpoch !=
+        control.parentContextEpoch + 1 || control.serviceName.empty() ||
+      control.serviceName.front() != '/' || control.roleName.empty() ||
+      control.expiresAtMs == 0) {
+    throw std::invalid_argument("conversation promotion control identity is incomplete");
+  }
+  using decode_state_identity_detail::requireDigest;
+  requireDigest(control.planRoleMapDigest, "conversation control plan-role map");
+  requireDigest(control.receiptDigest, "conversation control receipt");
+  requireDigest(control.checkpointDigest, "conversation control checkpoint");
+  return control;
 }
 
 long long
@@ -445,7 +568,7 @@ public:
         if (auto evidence = runner->executionEvidenceSnapshot()) {
           executionEvidence.push_back(std::move(*evidence));
         }
-        runtime.registerRunner(spec.role, std::move(runner));
+        runtime.registerRunner(spec, std::move(runner));
         logFragmentInventoryEvent(loadedResidencyFor(spec).c_str(), spec, localProviderName);
       }
     }
@@ -879,8 +1002,8 @@ executeLocalPlanAndFinalPayload(NativeProviderHandlerState& state,
                                 const std::map<std::string, TensorBundle>& initialInputs,
                                 std::chrono::steady_clock::time_point submittedSteady,
                                 long long submittedEpoch,
-                                ProviderRoleWorker::NativeRunnerPreparation
-                                  prepareRunner = {})
+                                ProviderRoleWorker::NativeRunnerPreparation prepareRunner = {},
+                                RoleExecutionContext::StreamEventSink eventSink = {})
 {
   auto io = std::make_shared<LocalDependencyIo>();
   std::vector<std::pair<std::string, std::future<ProviderRoleResult>>> futures;
@@ -901,13 +1024,15 @@ executeLocalPlanAndFinalPayload(NativeProviderHandlerState& state,
       futures.emplace_back(
         role,
         state.runtime.executePreparedRoleAsync(
-          sessionId, roleSpec, io, prepareRunner, std::move(roleInputs)));
+          sessionId, roleSpec, io, prepareRunner, std::move(roleInputs),
+          roleSpec.outputs.empty() ? eventSink : RoleExecutionContext::StreamEventSink{}));
     }
     else {
       futures.emplace_back(
         role,
         state.runtime.executeRoleAsync(
-          sessionId, roleSpec, io, std::move(roleInputs)));
+          sessionId, roleSpec, io, std::move(roleInputs),
+          roleSpec.outputs.empty() ? eventSink : RoleExecutionContext::StreamEventSink{}));
     }
   }
 
@@ -1021,8 +1146,6 @@ validateNativeProviderRuntimeReadiness(
   }
   const bool expectsCuda = backendRequestsCuda ||
                            (backendIsGenericOnnx && deviceRequestsCuda);
-  const bool expectsCpu = backendRequestsCpu ||
-                          (backendIsGenericOnnx && !deviceRequestsCuda);
   try {
     evidence.validate();
   }
@@ -1154,6 +1277,135 @@ validateNativePreparedRunnerSpec(
   return std::nullopt;
 }
 
+std::string
+digestIdentityFields(const std::string& domain,
+                     const std::vector<std::string>& fields)
+{
+  std::ostringstream canonical;
+  canonical << domain;
+  for (const auto& field : fields) {
+    canonical << "\n" << field.size() << ":" << field;
+  }
+  const auto value = canonical.str();
+  return sha256TensorBytes(
+    std::vector<std::uint8_t>(value.begin(), value.end()));
+}
+
+std::string
+stateTensorContractIdentity(const NativeSelectionRoleV3& assembly,
+                            const std::string& name,
+                            bool input)
+{
+  const auto& contracts = input ? assembly.expectedInputs : assembly.expectedOutputs;
+  const auto found = std::find_if(contracts.begin(), contracts.end(), [&] (const auto& item) {
+    return item.name == name;
+  });
+  if (found == contracts.end() || found->dtype.empty() || found->shape.empty()) {
+    throw std::invalid_argument(
+      "DI_PROVIDER_DECODE_STATE_CONTRACT_INCOMPLETE");
+  }
+  std::ostringstream shape;
+  for (const auto& dimension : found->shape) {
+    shape << dimension.size() << ":" << dimension << ";";
+  }
+  return name + "|" + found->dtype + "|" + shape.str();
+}
+
+struct TrustedDecodeStateTemplate
+{
+  DecodeStateIdentityV1 identity;
+  std::string positionPolicyDigest;
+};
+
+TrustedDecodeStateTemplate
+trustedDecodeStateTemplateFor(
+  const NativeSelectionProjectionV3& projection,
+  const NativeModelRunnerSpec* runnerSpec,
+  const std::string& providerBootId)
+{
+  if (runnerSpec != nullptr) {
+    if (const auto error = validateNativePreparedRunnerSpec(projection, *runnerSpec)) {
+      throw std::invalid_argument(*error);
+    }
+  }
+  const auto& assembly = projection.assembly;
+  const auto& generation = projection.generationContract;
+  if (!generation.enabled || generation.tokenizerDigest.empty() ||
+      generation.stateInputNames.empty() ||
+      generation.stateInputNames.size() != generation.stateOutputNames.size() ||
+      providerBootId.empty() || projection.provider.empty() ||
+      projection.requestId.empty() || projection.attempt == 0 ||
+      projection.executionRole.layerBegin >
+        std::numeric_limits<std::uint32_t>::max() ||
+      projection.executionRole.layerEnd >
+        std::numeric_limits<std::uint32_t>::max()) {
+    throw std::invalid_argument(
+      "DI_PROVIDER_DECODE_STATE_AUTHORITY_INCOMPLETE");
+  }
+
+  std::vector<std::string> stateContracts;
+  std::vector<std::string> stateComponentDigests;
+  stateContracts.reserve(generation.stateInputNames.size() * 2);
+  stateComponentDigests.reserve(generation.stateInputNames.size());
+  for (std::size_t index = 0; index < generation.stateInputNames.size(); ++index) {
+    const auto input = stateTensorContractIdentity(
+      assembly, generation.stateInputNames[index], true);
+    const auto output = stateTensorContractIdentity(
+      assembly, generation.stateOutputNames[index], false);
+    stateContracts.push_back(input);
+    stateContracts.push_back(output);
+    stateComponentDigests.push_back(digestIdentityFields(
+      "NDNSF-DI-STATE-COMPONENT-V1", {input, output}));
+  }
+
+  TrustedDecodeStateTemplate result;
+  auto& identity = result.identity;
+  identity.modelDigest = assembly.modelManifestDigest;
+  identity.graphSemanticDigest = assembly.graphDigest;
+  identity.artifactDigest = assembly.artifactDigest;
+  identity.adapterDigest = assembly.adapterDescriptorDigest;
+  identity.tokenizerDigest = generation.tokenizerDigest;
+  identity.runnerDigest = digestIdentityFields(
+    "NDNSF-DI-RUNNER-V1",
+    {assembly.assemblerDescriptorDigest, assembly.canonicalInitializerDigest,
+     assembly.backend, assembly.backendAbi, assembly.artifactDigest});
+  identity.roleName = projection.executionRole.roleId;
+  identity.roleSplitDigest = assembly.recipeDigest;
+  identity.layerBegin = static_cast<std::uint32_t>(
+    projection.executionRole.layerBegin);
+  identity.layerEnd = static_cast<std::uint32_t>(
+    projection.executionRole.layerEnd);
+  // Prefix/count/position are intentionally unbound in this static template.
+  // NativeEpochCoordinator derives all three from admitted token lineage.
+  identity.prefixDigest.clear();
+  identity.prefixTokenCount = 0;
+  identity.positionDigest.clear();
+  identity.precision = assembly.precision;
+  identity.layoutDigest = assembly.artifactProfileDigest;
+  identity.stateSchemaDigest = digestIdentityFields(
+    "NDNSF-DI-STATE-SCHEMA-V1", stateContracts);
+  identity.stateComponentDigests = std::move(stateComponentDigests);
+  identity.runtimeAbiDigest = digestIdentityFields(
+    "NDNSF-DI-RUNTIME-ABI-V1", {assembly.backend, assembly.backendAbi});
+  identity.securityDomainDigest = projection.securityPolicySnapshotDigest;
+  identity.providerIdentity = projection.provider;
+  identity.providerBootId = providerBootId;
+  identity.stateInferenceEpoch = 0;
+  identity.predecessorInferenceEpoch = std::nullopt;
+  identity.cacheEpoch = 1;
+  identity.requestId = projection.requestId;
+  identity.attemptEpoch = projection.attempt;
+  identity.generationId = generation.generationId.empty()
+    ? projection.requestId + ":generation:" +
+      std::to_string(projection.attempt)
+    : generation.generationId;
+  result.positionPolicyDigest = digestIdentityFields(
+    "NDNSF-DI-POSITION-POLICY-V1",
+    {assembly.adapterDescriptorDigest, generation.tokenInputName,
+     assembly.graphDigest});
+  return result;
+}
+
 std::optional<std::string>
 validateProtectedRuntimeBinding(
   const NativeSelectionProjectionV3& projection,
@@ -1215,6 +1467,48 @@ validateProtectedRuntimeBinding(
   return std::nullopt;
 }
 
+struct NativeAuthenticatedGenerationConfig
+{
+  bool enabled = false;
+  std::size_t maxEpochs = 0;
+  std::string tokenInputName;
+  std::vector<std::string> stateInputNames;
+  std::vector<std::string> stateOutputNames;
+  std::set<std::int64_t> eosTokenIds;
+  std::string samplingDigest;
+  std::vector<std::int64_t> committedPrefixTokenIds;
+};
+
+NativeAuthenticatedGenerationConfig
+generationConfigFromAuthenticatedRequest(
+  const NativeProviderHandlerConfig& base,
+  const std::optional<NativeSelectionProjectionV3>& projection)
+{
+  NativeAuthenticatedGenerationConfig result{
+    base.enableNativeEpochCoordinator,
+    base.maxGenerationEpochs,
+    base.generationTokenInputName,
+    base.generationStateInputNames,
+    base.generationStateOutputNames,
+    base.generationEosTokenIds,
+    base.generationSamplingDigest,
+    base.generationCommittedPrefixTokenIds,
+  };
+  if (projection && projection->generationContract.enabled) {
+    const auto& sealed = projection->generationContract;
+    result.enabled = true;
+    result.maxEpochs = sealed.maxGeneratedTokens;
+    result.tokenInputName = sealed.tokenInputName;
+    result.stateInputNames = sealed.stateInputNames;
+    result.stateOutputNames = sealed.stateOutputNames;
+    result.eosTokenIds = std::set<std::int64_t>(
+      sealed.eosTokenIds.begin(), sealed.eosTokenIds.end());
+    result.samplingDigest = sealed.samplingDigest;
+    result.committedPrefixTokenIds = sealed.committedPrefixTokenIds;
+  }
+  return result;
+}
+
 NativeProviderCollaborationRuntime
 makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
 {
@@ -1229,6 +1523,12 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
   runtime.capacitySnapshot = [state] {
     return state->runtime.snapshot();
   };
+  runtime.decodeStateSnapshot = [state] {
+    return state->runtime.decodeStateSnapshot();
+  };
+  runtime.conversationStateSnapshot = [state] {
+    return state->runtime.conversationStateSnapshot();
+  };
   runtime.executionEvidence = state->executionEvidence;
   runtime.handler = [config = std::move(config), state = std::move(state)] (
 	           ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
@@ -1240,6 +1540,10 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
     std::size_t expectedProviderRoles = 1;
     bool completedLocalPlan = false;
     std::shared_ptr<ProtectedRuntime> protectedRuntime;
+    std::function<void()> waitConversationPromotion;
+    std::function<void()> rollbackConversationPromotion;
+    bool conversationPromotionStaged = false;
+    bool conversationPromotionCommitted = false;
     auto completeExecutionLease = [&] {
       state->completeExecutionLease(config.executionLeaseTable,
                                     activatedLeaseId,
@@ -1297,6 +1601,23 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           ctx.fail("DI_SELECTION_REQUEST_MISMATCH");
           return;
         }
+        if (!selectionProjection->requestContractDigest.empty()) {
+          if (!nativeRequestContractDigestMatches(
+                selectionProjection->requestContractDigest,
+                request.getPayload())) {
+            ctx.fail("DI_SELECTION_REQUEST_CONTRACT_MISMATCH");
+            return;
+          }
+        }
+        if (selectionProjection->generationContract.enabled &&
+            !selectionProjection->generationContract.generationId.empty() &&
+            (!request.hasStreamRequestOptions() ||
+             !nativeGenerationIdMatchesStreamOptions(
+               selectionProjection->generationContract.generationId,
+               request.getStreamRequestOptions().generationId))) {
+          ctx.fail("DI_SELECTION_GENERATION_MISMATCH");
+          return;
+        }
         if (!config.runnerPreparationFactory &&
             !config.allowPreassembledV3Compatibility) {
           ctx.fail("DI_PROVIDER_ASSEMBLY_FACTORY_MISSING");
@@ -1313,6 +1634,8 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
       }
       const NativeExecutionPlan& executionPlan = selectionProjection
         ? selectionProjection->plan : state->plan;
+      const auto authenticatedGeneration =
+        generationConfigFromAuthenticatedRequest(config, selectionProjection);
       const std::string requestPlanDigest = selectionProjection
         ? selectionProjection->planDigest : config.planDigest;
       auto groupCoordinator = config.groupCoordinator;
@@ -1344,7 +1667,8 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           return;
         }
       }
-      auto io = std::make_shared<NdnsfCollaborationDependencyIo>(
+      std::shared_ptr<DependencyIo> io =
+        std::make_shared<NdnsfCollaborationDependencyIo>(
         ctx,
         collaborationFetchTimeoutMs(config.fetchTimeoutMs),
         config.maxSegmentSize,
@@ -1468,7 +1792,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
       const auto executionSessionId = executionAttempt
         ? executionAttempt->scopedSessionId()
         : ctx.sessionId();
-      const auto roleSpec = selectionProjection
+      auto roleSpec = selectionProjection
         ? roleSpecFromSelectionProjectionV3(
             *selectionProjection, ctx.localProvider().toUri())
         : (executionAttempt
@@ -1480,8 +1804,88 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
             : roleSpecFor(executionPlan,
                           role,
                           executionSessionId,
-                          assignment,
-                          ctx.localProvider().toUri()));
+                              assignment,
+                              ctx.localProvider().toUri()));
+      if (selectionProjection && selectionProjection->conversationTurnBinding &&
+          selectionProjection->conversationTurnBinding->serviceName !=
+            ctx.assignment().service.toUri()) {
+        completeExecutionLease();
+        ctx.fail("CONVERSATION_SERVICE_BINDING_MISMATCH");
+        return;
+      }
+      if (selectionProjection &&
+          selectionProjection->conversationStateReference) {
+        if (config.conversationStateKeyScope.empty()) {
+          completeExecutionLease();
+          ctx.fail("PROVIDER_CONVERSATION_READY_SCOPE_MISSING");
+          return;
+        }
+        if (selectionProjection->generationContract.generationId.empty()) {
+          completeExecutionLease();
+          ctx.fail("PROVIDER_CONVERSATION_GENERATION_ID_MISSING");
+          return;
+        }
+        const auto lookupNowMs = static_cast<std::uint64_t>(
+          std::max<long long>(0, epochMs()));
+        auto resolved = state->runtime.resolveConversationState(
+          *selectionProjection->conversationStateReference, lookupNowMs);
+        if (!resolved) {
+          completeExecutionLease();
+          ctx.fail("PROVIDER_CONVERSATION_STATE_MISSING");
+          return;
+        }
+        roleSpec.conversationStateBinding = std::move(*resolved);
+        roleSpec.conversationStateLookupNowMs = lookupNowMs;
+
+        // Readiness is a compact, Provider-authored commitment that the exact
+        // parent state reference was resolved locally.  It deliberately
+        // carries no state bytes; the User may enter delta prefill only after
+        // it has received one verified record from every selected role.
+        boost::property_tree::ptree ready;
+        ready.put("schema", "ndnsf-di-conversation-state-ready-v1");
+        ready.put("requestId", selectionProjection->requestId);
+        ready.put("attemptEpoch", selectionProjection->attempt);
+        ready.put("generationId", selectionProjection->generationContract.generationId);
+        ready.put("planDigest", selectionProjection->planDigest);
+        ready.put("conversationId",
+                  selectionProjection->conversationStateReference->conversationId);
+        ready.put("contextEpoch",
+                  selectionProjection->conversationStateReference->contextEpoch);
+        ready.put("serviceName",
+                  selectionProjection->conversationStateReference->serviceName);
+        ready.put("planRoleMapDigest",
+                  selectionProjection->conversationStateReference->planRoleMapDigest);
+        ready.put("checkpointDigest",
+                  selectionProjection->conversationStateReference->checkpointDigest);
+        ready.put("roleName",
+                  selectionProjection->conversationStateReference->roleName);
+        ready.put("roleReceiptDigest",
+                  selectionProjection->conversationStateReference->roleReceiptDigest);
+        ready.put("providerIdentity", ctx.localProvider().toUri());
+        ready.put("providerBootId", roleSpec.conversationStateBinding->identity.providerBootId);
+        ready.put("cacheEpoch", roleSpec.conversationStateBinding->identity.cacheEpoch);
+        ready.put("ready", true);
+        ready.put("reason", "state-hit");
+        ready.put("residency", "GPU_RESIDENT");
+        std::ostringstream readyWire;
+        boost::property_tree::write_json(readyWire, ready, false);
+        const auto readyPayload = readyWire.str();
+        ctx.publish(
+          config.conversationStateKeyScope,
+          ndn::Name("/ndnsf-di/conversation/ready"),
+          ndn::Buffer(reinterpret_cast<const std::uint8_t*>(readyPayload.data()),
+                      readyPayload.size()));
+        std::cout << "\nNDNSF_DI_CONVERSATION_STATE"
+                  << " event=state-ready-published"
+                  << " requestId=" << selectionProjection->requestId
+                  << " conversationId="
+                  << selectionProjection->conversationStateReference->conversationId
+                  << " contextEpoch="
+                  << selectionProjection->conversationStateReference->contextEpoch
+                  << " role="
+                  << selectionProjection->conversationStateReference->roleName
+                  << std::endl;
+      }
       const auto* readinessRunnerSpec = runnerSpecForRole(state->runnerSpecs, role);
       const auto deploymentRevision = nativeProviderFieldValue(
         assignmentFields, {"deploymentRevision", "revision", "planRevision"});
@@ -1780,7 +2184,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         std::cout << "\nNDNSF_DI_READINESS_BARRIER"
                   << " status=ready"
                   << " session=" << ctx.sessionId()
-                  << " role=" << role
+                  << " role=" << ctx.role()
                   << " observed_roles=" << observed.size()
                   << " revision=" << effectiveRevision
                   << " binding_digest=" << readinessBindingDigest
@@ -1849,6 +2253,14 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         assignment,
         roleSpec,
         ctx.localProvider().toUri());
+      if (authenticatedGeneration.enabled && localFullPlan &&
+          executionPlan.roles.size() == 1) {
+        // A one-role generation has a self TOKEN_FEEDBACK edge. Keep that
+        // exact dependency inside the selected Provider process; an external
+        // SVS publication is not a reliable loopback fetch source and is not
+        // needed to cross a trust boundary.
+        io = std::make_shared<LocalDependencyIo>();
+      }
       completedLocalPlan = localFullPlan;
       auto initialInputs = initialInputsFromRequest(ctx, request);
       if (cachedKvState) {
@@ -1869,7 +2281,28 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                           "before_submit",
                           state->runtime.snapshot());
       std::optional<std::vector<uint8_t>> finalPayload;
-      if (localFullPlan) {
+      std::atomic<std::size_t> streamedEventsPublished{0};
+      RoleExecutionContext::StreamEventSink eventSink;
+      const bool terminalRole = roleSpec.outputs.empty() ||
+        nativeRoleHasOnlyInternalFeedbackOutputs(roleSpec);
+      if (ctx.isStreamed() && terminalRole) {
+        eventSink = [&ctx, &streamedEventsPublished] (
+                      const std::vector<std::uint8_t>& payload) {
+          const auto cursor = ctx.publishStreamEvent(
+            ndn::Buffer(payload.data(), payload.size()));
+          if (cursor != 0) {
+            streamedEventsPublished.fetch_add(1, std::memory_order_relaxed);
+            return true;
+          }
+          return false;
+        };
+      }
+      // Stateful streamed generation must use the same request-scoped epoch
+      // coordinator even when the whole selected plan is local.  The ordinary
+      // one-shot local-plan executor waits for every declared input before its
+      // first run; a self TOKEN_FEEDBACK edge therefore deadlocks at epoch 0
+      // and bypasses Provider-owned state transactions.
+      if (localFullPlan && !authenticatedGeneration.enabled) {
         finalPayload = executeLocalPlanAndFinalPayload(*state,
                                                        config,
                                                        executionPlan,
@@ -1879,13 +2312,336 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                                                        initialInputs,
                                                        submittedSteady,
                                                        submittedEpoch,
-                                                       prepareRunner);
+                                                       prepareRunner,
+                                                       std::move(eventSink));
         if (config.stageServiceTimeObserver && *config.stageServiceTimeObserver) {
           const auto elapsed = std::max(
             std::chrono::milliseconds(1),
             std::chrono::duration_cast<std::chrono::milliseconds>(
               std::chrono::steady_clock::now() - submittedSteady));
           (*config.stageServiceTimeObserver)(elapsed);
+        }
+      }
+      else if (authenticatedGeneration.enabled) {
+        if (authenticatedGeneration.maxEpochs == 0 ||
+            authenticatedGeneration.samplingDigest.empty() ||
+            !selectionProjection) {
+          throw std::runtime_error(
+            "native epoch coordinator authenticated authority is incomplete");
+        }
+        const auto trustedState = trustedDecodeStateTemplateFor(
+          *selectionProjection, readinessRunnerSpec, config.providerBootId);
+        const auto streamAttemptEpoch =
+          request.hasStreamRequestOptions()
+            ? request.getStreamRequestOptions().attemptEpoch
+            : 1;
+        NativeEpochCoordinatorConfig coordinatorConfig{
+          state->runtime, executionPlan, assignment, io};
+        coordinatorConfig.sessionId = executionSessionId;
+        coordinatorConfig.requestId = executionAttempt
+          ? executionAttempt->requestId : ctx.sessionId();
+        coordinatorConfig.attemptEpoch = executionAttempt
+          ? executionAttempt->attemptEpoch : streamAttemptEpoch;
+        coordinatorConfig.streamEpoch = 1;
+        coordinatorConfig.lineagePlanDigest = selectionProjection->planDigest;
+        coordinatorConfig.localProvider = ctx.localProvider().toUri();
+        coordinatorConfig.role = role;
+        coordinatorConfig.initialInputs = std::move(initialInputs);
+        coordinatorConfig.finalResponseScope = config.finalResponseScope;
+        coordinatorConfig.maxEpochs = authenticatedGeneration.maxEpochs;
+        coordinatorConfig.tokenInputName = authenticatedGeneration.tokenInputName;
+        coordinatorConfig.stateInputNames = authenticatedGeneration.stateInputNames;
+        coordinatorConfig.stateOutputNames = authenticatedGeneration.stateOutputNames;
+        coordinatorConfig.stateIdentityTemplate = trustedState.identity;
+        coordinatorConfig.positionPolicyDigest = trustedState.positionPolicyDigest;
+        coordinatorConfig.eosTokenIds = authenticatedGeneration.eosTokenIds;
+        coordinatorConfig.samplingDigest = authenticatedGeneration.samplingDigest;
+        coordinatorConfig.checkpointFinalize =
+          selectionProjection->conversationTurnBinding.has_value();
+        coordinatorConfig.maxCheckpointFinalizeTokens = 32;
+        coordinatorConfig.committedPrefixTokenIds =
+          authenticatedGeneration.committedPrefixTokenIds;
+        coordinatorConfig.conversationStateBinding =
+          roleSpec.conversationStateBinding;
+        coordinatorConfig.conversationStateLookupNowMs =
+          roleSpec.conversationStateLookupNowMs;
+        if (request.hasStreamRequestOptions()) {
+          // Every selected role receives the authenticated absolute stream
+          // deadline, even though only the terminal role owns the external
+          // StreamEventPublisher.  Gate deadline checks on the request
+          // contract, not on publisher ownership.  Cancellation lifecycle is
+          // currently local to the terminal publisher, so observe it only
+          // when this context owned that publisher at coordinator creation.
+          const bool observesStreamCancellation = ctx.isStreamed();
+          coordinatorConfig.stopCheck = [&ctx, observesStreamCancellation] ()
+            -> std::optional<NativeEpochStopReason> {
+            if (ctx.streamRemainingDeadline() <= std::chrono::milliseconds(0)) {
+              return std::optional<NativeEpochStopReason>{
+                NativeEpochStopReason::Deadline};
+            }
+            if (observesStreamCancellation && ctx.streamCancelled()) {
+              return std::optional<NativeEpochStopReason>{
+                NativeEpochStopReason::Cancelled};
+            }
+            return std::nullopt;
+          };
+        }
+        coordinatorConfig.eventSink = std::move(eventSink);
+        coordinatorConfig.resultObserver =
+          [&] (const RoleSpec& executedRole, const ProviderRoleResult& result) {
+            if (result.executionEvidence && config.executionEvidenceObserver &&
+                *config.executionEvidenceObserver) {
+              (*config.executionEvidenceObserver)(*result.executionEvidence);
+            }
+            logProviderTiming(ctx.sessionId(), executedRole.role, result,
+                              submittedSteady, submittedEpoch);
+            if (config.stageServiceTimeObserver && *config.stageServiceTimeObserver) {
+              const auto elapsed = std::max(
+                std::chrono::milliseconds(1),
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                  result.timing.finishedAt - result.timing.startedAt));
+              (*config.stageServiceTimeObserver)(elapsed);
+            }
+          };
+        const auto coordinated = runNativeEpochCoordinator(
+          std::move(coordinatorConfig));
+        if (config.epochCoordinatorCompletionObserver &&
+            *config.epochCoordinatorCompletionObserver) {
+          try {
+            (*config.epochCoordinatorCompletionObserver)(role, coordinated);
+          }
+          catch (...) {
+            // Observability must not alter native execution semantics.
+          }
+        }
+        streamedEventsPublished.store(
+          coordinated.eventsPublished, std::memory_order_relaxed);
+        finalPayload = coordinated.finalPayload;
+        if (selectionProjection->conversationTurnBinding) {
+          if (!coordinated.finalizedRole ||
+              !coordinated.finalizedRole->candidateDecodeStateIdentity) {
+            throw std::runtime_error(
+              "PROVIDER_CONVERSATION_FINAL_STATE_MISSING");
+          }
+          if (ctx.assignment().scopeKeys.count(
+                config.conversationStateKeyScope) == 0) {
+            throw std::runtime_error(
+              "PROVIDER_CONVERSATION_RECEIPT_SCOPE_MISSING");
+          }
+          const auto& turn = *selectionProjection->conversationTurnBinding;
+          const auto& finalized = *coordinated.finalizedRole;
+          const auto& identity = *finalized.candidateDecodeStateIdentity;
+          ProviderConversationStateReceiptV1 receipt;
+          receipt.conversationId = turn.conversationId;
+          receipt.parentContextEpoch = turn.parentContextEpoch;
+          receipt.successorContextEpoch = turn.successorContextEpoch;
+          receipt.originRequestId = identity.requestId;
+          receipt.originGenerationId = identity.generationId;
+          receipt.serviceName = turn.serviceName;
+          receipt.requesterIdentity = ctx.requesterName().toUri();
+          receipt.securityDomainDigest = identity.securityDomainDigest;
+          receipt.modelDigest = identity.modelDigest;
+          receipt.graphSemanticDigest = identity.graphSemanticDigest;
+          receipt.adapterDigest = identity.adapterDigest;
+          receipt.roleName = identity.roleName;
+          receipt.roleSplitDigest = identity.roleSplitDigest;
+          receipt.layoutDigest = identity.layoutDigest;
+          receipt.planRoleMapDigest = turn.planRoleMapDigest;
+          receipt.providerIdentity = identity.providerIdentity;
+          receipt.providerBootId = identity.providerBootId;
+          receipt.cacheEpoch = identity.cacheEpoch;
+          receipt.prefixDigest = identity.prefixDigest;
+          receipt.prefixTokenCount = identity.prefixTokenCount;
+          receipt.positionDigest = identity.positionDigest;
+          receipt.stateSchemaDigest = identity.stateSchemaDigest;
+          receipt.stateComponentDigests = identity.stateComponentDigests;
+          receipt.expiresAtMs = turn.retentionDeadlineMs;
+          receipt.validate();
+
+          ConversationStateBinding conversationBinding;
+          conversationBinding.conversationId = turn.conversationId;
+          conversationBinding.contextEpoch = turn.successorContextEpoch;
+          conversationBinding.serviceName = turn.serviceName;
+          conversationBinding.planRoleMapDigest = turn.planRoleMapDigest;
+          conversationBinding.receiptDigest = receipt.computedDigest();
+          conversationBinding.expiresAtMs = turn.retentionDeadlineMs;
+          conversationBinding.identity = identity;
+          if (!state->runtime.stageDecodeStatePromotion(
+                executionSessionId, finalized, conversationBinding,
+                static_cast<std::uint64_t>(std::max<long long>(0, epochMs())))) {
+            throw std::runtime_error(
+              "PROVIDER_CONVERSATION_PROMOTION_STAGE_FAILED");
+          }
+          // The receipt is only a Provider-authored candidate.  Keep the
+          // candidate invisible until the requester has atomically committed
+          // the complete role set.  The control record uses the existing
+          // encrypted collaboration substrate; it is not a new Core wire
+          // message and is accepted only from this request's requester.
+          // All controls share one request-scoped encrypted topic.  The role
+          // remains an authenticated field in the control payload; using one
+          // canonical topic avoids URI-component ambiguity for role names that
+          // themselves contain slashes.
+          const ndn::Name controlTopic("/ndnsf-di/conversation/control");
+          ctx.subscribe(
+            config.conversationStateKeyScope,
+            controlTopic,
+            [] (const ndn_service_framework::ServiceProvider::CollaborationData&) {});
+          const auto receiptJson = receipt.toJson();
+          ndn::Name receiptTopic("/ndnsf-di/conversation/receipt");
+          receiptTopic.append(ndn::Name(finalized.role));
+          ctx.publish(
+            config.conversationStateKeyScope,
+            std::move(receiptTopic),
+            ndn::Buffer(receiptJson.begin(), receiptJson.end()));
+          std::cout << "\nNDNSF_DI_CONVERSATION_STATE"
+                    << " event=staged-receipt-published"
+                    << " requestId=" << ctx.sessionId()
+                    << " conversationId=" << turn.conversationId
+                    << " contextEpoch=" << turn.successorContextEpoch
+                    << " role=" << finalized.role
+                    << " receiptDigest=" << receipt.computedDigest()
+                    << std::endl;
+
+          conversationPromotionStaged = true;
+          rollbackConversationPromotion = [&] {
+            if (!conversationPromotionStaged || conversationPromotionCommitted) {
+              return;
+            }
+            try {
+              state->runtime.rollbackStagedDecodeStatePromotion(conversationBinding);
+            }
+            catch (...) {
+              // Preserve the original failure; the runtime remains fail-closed.
+            }
+            conversationPromotionStaged = false;
+          };
+          waitConversationPromotion = [&] {
+            if (!conversationPromotionStaged || conversationPromotionCommitted) {
+              return;
+            }
+            const auto nowForControl = static_cast<std::uint64_t>(
+              std::max<long long>(0, epochMs()));
+            const auto waitBudget = static_cast<std::uint64_t>(
+              std::max(1, collaborationFetchTimeoutMs(config.fetchTimeoutMs)));
+            const auto controlDeadline = std::min(
+              turn.retentionDeadlineMs, nowForControl + waitBudget);
+            while (true) {
+              const auto now = static_cast<std::uint64_t>(
+                std::max<long long>(0, epochMs()));
+              if (now >= controlDeadline) {
+                break;
+              }
+              const auto remaining = static_cast<int>(std::max<std::uint64_t>(
+                1, std::min<std::uint64_t>(100, controlDeadline - now)));
+              const auto controls = ctx.waitFor(
+                config.conversationStateKeyScope, controlTopic, 1, remaining);
+              for (const auto& item : controls) {
+                if (!item.producer.equals(ctx.requesterName()) ||
+                    item.producerRole != "user-control-v1") {
+                  continue;
+                }
+                ConversationPromotionControl control;
+                try {
+                  control = parseConversationPromotionControl(item.payload);
+                }
+                catch (const std::exception&) {
+                  continue;
+                }
+                if (control.conversationId != turn.conversationId ||
+                    control.parentContextEpoch != turn.parentContextEpoch ||
+                    control.successorContextEpoch != turn.successorContextEpoch ||
+                    control.serviceName != turn.serviceName ||
+                    control.planRoleMapDigest != turn.planRoleMapDigest ||
+                    control.roleName != finalized.role ||
+                    control.receiptDigest != receipt.computedDigest() ||
+                    control.expiresAtMs > turn.retentionDeadlineMs ||
+                    control.expiresAtMs <= now) {
+                  continue;
+                }
+                ConversationStateReferenceV1 reference;
+                reference.conversationId = control.conversationId;
+                reference.contextEpoch = control.successorContextEpoch;
+                reference.serviceName = control.serviceName;
+                reference.planRoleMapDigest = control.planRoleMapDigest;
+                reference.checkpointDigest = control.checkpointDigest;
+                reference.roleName = control.roleName;
+                reference.roleReceiptDigest = control.receiptDigest;
+                reference.expiresAtMs = control.expiresAtMs;
+                try {
+                  const auto resolved = state->runtime
+                    .resolveStagedConversationState(reference, now);
+                  if (!resolved || resolved->receiptDigest != receipt.computedDigest()) {
+                    continue;
+                  }
+                  if (control.action == "ROLLBACK") {
+                    rollbackConversationPromotion();
+                    throw std::runtime_error(
+                      "PROVIDER_CONVERSATION_PROMOTION_ROLLED_BACK");
+                  }
+                  if (!state->runtime.commitStagedDecodeStatePromotion(
+                        *resolved, control.checkpointDigest)) {
+                    continue;
+                  }
+                  conversationPromotionCommitted = true;
+                  conversationPromotionStaged = false;
+                  // The requester needs an authenticated per-role commit
+                  // acknowledgement.  Receipt publication proves only that
+                  // a candidate was staged; this record is emitted after the
+                  // Provider has atomically committed the successor and
+                  // released its request-local owner.
+                  boost::property_tree::ptree commitAck;
+                  commitAck.put("schema",
+                                "ndnsf-di-provider-conversation-commit-ack-v1");
+                  commitAck.put("requestId", selectionProjection->requestId);
+                  commitAck.put("attemptEpoch", selectionProjection->attempt);
+                  commitAck.put("generationId",
+                                selectionProjection->generationContract.generationId);
+                  commitAck.put("planDigest", selectionProjection->planDigest);
+                  commitAck.put("conversationId", turn.conversationId);
+                  commitAck.put("parentContextEpoch", turn.parentContextEpoch);
+                  commitAck.put("successorContextEpoch", turn.successorContextEpoch);
+                  commitAck.put("serviceName", turn.serviceName);
+                  commitAck.put("planRoleMapDigest", turn.planRoleMapDigest);
+                  commitAck.put("roleName", finalized.role);
+                  commitAck.put("receiptDigest", receipt.computedDigest());
+                  commitAck.put("checkpointDigest", control.checkpointDigest);
+                  commitAck.put("providerIdentity", ctx.localProvider().toUri());
+                  commitAck.put("providerBootId", identity.providerBootId);
+                  commitAck.put("cacheEpoch", identity.cacheEpoch);
+                  commitAck.put("committed", true);
+                  std::ostringstream commitAckWire;
+                  boost::property_tree::write_json(commitAckWire, commitAck, false);
+                  const auto commitAckPayload = commitAckWire.str();
+                  ctx.publish(
+                    config.conversationStateKeyScope,
+                    ndn::Name("/ndnsf-di/conversation/commit"),
+                    ndn::Buffer(commitAckPayload.begin(),
+                                commitAckPayload.end()));
+                  std::cout << "\nNDNSF_DI_CONVERSATION_STATE"
+                            << " event=promotion-committed"
+                            << " requestId=" << ctx.sessionId()
+                            << " conversationId=" << turn.conversationId
+                            << " contextEpoch=" << turn.successorContextEpoch
+                            << " role=" << finalized.role
+                            << " checkpointDigest=" << control.checkpointDigest
+                            << std::endl;
+                  return;
+                }
+                catch (const std::runtime_error&) {
+                  throw;
+                }
+                catch (const std::exception&) {
+                  continue;
+                }
+              }
+            }
+            rollbackConversationPromotion();
+            throw std::runtime_error(
+              "PROVIDER_CONVERSATION_PROMOTION_COMMIT_TIMEOUT");
+          };
+        }
+        if (coordinated.stoppedByUpstream) {
+          completedLocalPlan = false;
         }
       }
       else {
@@ -1905,8 +2661,15 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
               continue;
             }
             selectionRoleMatched = true;
-            localRoleSpecs.push_back(roleSpecFromSelectionProjectionV3(
-              *selectionProjection, ctx.localProvider().toUri()));
+            auto localSpec = roleSpecFromSelectionProjectionV3(
+              *selectionProjection, ctx.localProvider().toUri());
+            if (localSpec.role == roleSpec.role) {
+              localSpec.conversationStateBinding =
+                roleSpec.conversationStateBinding;
+              localSpec.conversationStateLookupNowMs =
+                roleSpec.conversationStateLookupNowMs;
+            }
+            localRoleSpecs.push_back(std::move(localSpec));
           }
           else {
             localRoleSpecs.push_back(
@@ -1949,14 +2712,18 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
               localRoleSpec,
               state->runtime.executePreparedRoleAsync(
                 executionSessionId, localRoleSpec, io, prepareRunner,
-                std::move(roleInputs)));
+                std::move(roleInputs),
+                localRoleSpec.outputs.empty()
+                  ? eventSink : RoleExecutionContext::StreamEventSink{}));
           }
           else {
             localRoles.emplace_back(
               localRoleSpec,
               state->runtime.executeRoleAsync(
                 executionSessionId, localRoleSpec, io,
-                std::move(roleInputs)));
+                std::move(roleInputs),
+                localRoleSpec.outputs.empty()
+                  ? eventSink : RoleExecutionContext::StreamEventSink{}));
           }
         }
         if (localRoles.empty()) {
@@ -2066,10 +2833,49 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         std::cout << std::endl;
       }
       if (finalPayload) {
+        if (ctx.isStreamed() &&
+            streamedEventsPublished.load(std::memory_order_relaxed) == 0) {
+          const ndn::Buffer eventPayload(finalPayload->data(), finalPayload->size());
+          if (ctx.publishStreamEvent(eventPayload) == 0) {
+            ctx.failStream(ndn_service_framework::StreamedInvocationErrorCode::ProviderFailure,
+                           "native streamed event admission failed");
+            return;
+          }
+        }
         ctx.publishFinalResponse(ndn::Buffer(finalPayload->data(), finalPayload->size()));
+        // The response is visible on the wire before the Provider waits for
+        // the User's aggregate checkpoint decision.  This ordering avoids a
+        // circular wait: the User needs the actual result before it can seal
+        // and publish COMMIT controls for every role.
+        if (waitConversationPromotion) {
+          waitConversationPromotion();
+        }
+      }
+      else {
+        if (terminalRole) {
+          // A terminal role that did not produce the sealed final scope is a
+          // failed invocation, not a successful role completion.  Completing
+          // it here would leave the user waiting for an End/Response that can
+          // never be produced.
+          ctx.fail("DI_FINAL_RESPONSE_MISSING");
+        }
+        else {
+          // A non-terminal pipeline role has completed its selected work but
+          // does not own the user-facing End/Response.  Release only this
+          // Provider-side execution slot; terminal ownership remains with the
+          // final role and the shared streamed lifecycle.
+          if (waitConversationPromotion) {
+            waitConversationPromotion();
+          }
+          ctx.completeRole();
+        }
       }
     }
 	    catch (const std::exception& exc) {
+	      if (conversationPromotionStaged && !conversationPromotionCommitted &&
+	          rollbackConversationPromotion) {
+	        rollbackConversationPromotion();
+	      }
 	      if (protectedRuntime) {
 	        try {
 	          protectedRuntime->cancel(exc.what());
@@ -2079,6 +2885,19 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
 	        }
 	      }
 	      completeExecutionLease();
+	      if (config.nativeFailureObserver && *config.nativeFailureObserver) {
+	        try {
+	          (*config.nativeFailureObserver)(ctx.role(), exc.what());
+	        }
+	        catch (...) {
+	          // Observability must never replace the original native failure.
+	        }
+	      }
+	      if (nativeTraceEnabled()) {
+	        std::cout << "\nNDNSF_DI_NATIVE_FAILURE session=" << ctx.sessionId()
+	                  << " role=" << ctx.role()
+	                  << " reason=" << exc.what() << std::endl;
+	      }
 	      ctx.fail(exc.what());
 	    }
 	  };

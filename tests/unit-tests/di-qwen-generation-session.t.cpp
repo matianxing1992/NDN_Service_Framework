@@ -27,7 +27,7 @@ validSpec()
   spec.logicalSessionId = "generation-1";
   spec.requestId = "request-1";
   spec.serviceName = "/AI/LLM/Pipeline/Qwen";
-  spec.attemptEpoch = 0;
+  spec.attemptEpoch = 1;
   spec.tokenEpoch = 0;
   spec.inputTokenCount = 32;
   spec.maxGeneratedTokens = 2;
@@ -35,16 +35,75 @@ validSpec()
   spec.contextReference = "/repo/qwen/context/sha256-abc";
   spec.feedbackTopic = "/AI/LLM/Pipeline/Qwen/feedback/generation-1";
   spec.roles = {
-    {"/LLM/Stage/0", "/provider/0", "boot-0"},
-    {"/LLM/Stage/1", "/provider/1", "boot-1"},
-    {"/LLM/Stage/2", "/provider/2", "boot-2"},
+    {"/LLM/Pipeline/Stage/0", "/provider/0", "boot-0"},
+    {"/LLM/Pipeline/Stage/1", "/provider/1", "boot-1"},
+    {"/LLM/Pipeline/Stage/2", "/provider/2", "boot-2"},
   };
   return spec;
+}
+
+DecodeStateBundleV1
+validDecodeState(std::uint32_t epoch = 0)
+{
+  DecodeStateIdentityV1 identity;
+  identity.modelDigest = digest('1');
+  identity.graphSemanticDigest = digest('2');
+  identity.artifactDigest = digest('3');
+  identity.adapterDigest = digest('4');
+  identity.tokenizerDigest = digest('5');
+  identity.runnerDigest = digest('6');
+  identity.roleName = "/LLM/Pipeline/Stage/0";
+  identity.roleSplitDigest = digest('7');
+  identity.layerBegin = 0;
+  identity.layerEnd = 21;
+  identity.prefixDigest = digest('8');
+  identity.prefixTokenCount = epoch;
+  identity.positionDigest = digest('9');
+  identity.precision = "fp16";
+  identity.layoutDigest = digest('a');
+  identity.stateSchemaDigest = digest('b');
+  identity.runtimeAbiDigest = digest('c');
+  identity.securityDomainDigest = digest('d');
+  identity.providerIdentity = "/provider/0";
+  identity.providerBootId = "boot-0";
+  identity.requestId = "request-1";
+  identity.attemptEpoch = 1;
+  identity.generationId = "generation-1";
+  identity.stateComponentDigests = {digest('e'), digest('f')};
+  DecodeStateBundleV1 bundle;
+  bundle.identity = identity;
+  bundle.fullAttentionKv = {{"attention_kv", "float16", {1, 2}, digest('e')}};
+  bundle.recurrentConvolution = {{"recurrent_state", "float16", {1, 2}, digest('f')}};
+  bundle.tokenEpoch = epoch;
+  return bundle;
 }
 
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(DiQwenGenerationSession)
+
+BOOST_AUTO_TEST_CASE(DecodeStateRequiresBothStateFamiliesAndExactIdentity)
+{
+  auto state = validDecodeState();
+  BOOST_CHECK_NO_THROW(state.validate());
+  BOOST_CHECK(state.digest().find("sha256:") == 0);
+  state.recurrentConvolution.clear();
+  BOOST_CHECK_THROW(state.validate(), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(DecodeStateTransactionAdmitsOnlyContiguousBoundState)
+{
+  DecodeStateTransactionV1 transaction(validDecodeState());
+  auto next = validDecodeState(1);
+  BOOST_CHECK_NO_THROW(transaction.apply(next, [] (const auto&) { return true; }));
+  BOOST_CHECK_EQUAL(transaction.committed().tokenEpoch, 1);
+
+  auto gap = validDecodeState(3);
+  BOOST_CHECK_THROW(transaction.apply(gap), std::invalid_argument);
+  auto changed = validDecodeState(2);
+  changed.identity.providerBootId = "different-boot";
+  BOOST_CHECK_THROW(transaction.apply(changed), std::invalid_argument);
+}
 
 BOOST_AUTO_TEST_CASE(SpecCodecRoundTripPreservesIdentityBindings)
 {
@@ -60,13 +119,13 @@ BOOST_AUTO_TEST_CASE(SpecCodecRoundTripPreservesIdentityBindings)
   BOOST_CHECK_EQUAL(decoded.logicalSessionId, spec.logicalSessionId);
   BOOST_CHECK_EQUAL(decoded.requestId, spec.requestId);
   BOOST_CHECK_EQUAL(decoded.serviceName, spec.serviceName);
-  BOOST_CHECK_EQUAL(decoded.attemptEpoch, 0);
+  BOOST_CHECK_EQUAL(decoded.attemptEpoch, 1);
   BOOST_CHECK_EQUAL(decoded.tokenEpoch, 0);
   BOOST_CHECK_EQUAL(decoded.inputTokenCount, 32);
   BOOST_CHECK_EQUAL(decoded.maxGeneratedTokens, 2);
   BOOST_CHECK_EQUAL(decoded.deadlineEpochMs, 10'000);
   BOOST_REQUIRE_EQUAL(decoded.roles.size(), 3);
-  BOOST_CHECK_EQUAL(decoded.roles[2].role, "/LLM/Stage/2");
+  BOOST_CHECK_EQUAL(decoded.roles[2].role, "/LLM/Pipeline/Stage/2");
   BOOST_CHECK_EQUAL(decoded.roles[2].provider, "/provider/2");
   BOOST_CHECK_EQUAL(decoded.roles[2].providerBootId, "boot-2");
 }
@@ -92,10 +151,10 @@ BOOST_AUTO_TEST_CASE(SpecValidationRejectsUnboundOrUnboundedValues)
   spec.maxGeneratedTokens = 0;
   checkInvalid(spec);
   spec = validSpec();
-  spec.maxGeneratedTokens = 33;
+  spec.maxGeneratedTokens = 65;
   checkInvalid(spec);
   spec = validSpec();
-  spec.attemptEpoch = 2;
+  spec.attemptEpoch = 3;
   checkInvalid(spec);
   spec = validSpec();
   spec.tokenEpoch = spec.maxGeneratedTokens;
@@ -155,18 +214,24 @@ BOOST_AUTO_TEST_CASE(StateMachineAllowsOneBoundedReplacementAndOneTerminal)
   state.beginSelection();
   BOOST_CHECK(state.state() == QwenGenerationState::Selecting);
   state.activate();
-  BOOST_CHECK(state.state() == QwenGenerationState::Active);
+  BOOST_CHECK(state.state() == QwenGenerationState::Prefilling);
+  state.completePrefill();
+  BOOST_CHECK(state.state() == QwenGenerationState::Decoding);
   BOOST_CHECK_EQUAL(state.completeTokenEpoch(), 1);
   BOOST_CHECK_EQUAL(state.generatedTokenCount(), 1);
   state.beginReplacement();
   BOOST_CHECK(state.state() == QwenGenerationState::Rebuilding);
-  BOOST_CHECK_EQUAL(state.attemptEpoch(), 1);
+  BOOST_CHECK_EQUAL(state.attemptEpoch(), 2);
   state.activate();
+  state.completePrefill();
   BOOST_CHECK_EQUAL(state.completeTokenEpoch(), 2);
-  state.complete();
+  state.beginDrain(QwenGenerationFinishReason::MaxTokens);
+  BOOST_CHECK(state.state() == QwenGenerationState::Draining);
+  BOOST_CHECK(state.finishReason() == QwenGenerationFinishReason::MaxTokens);
+  state.complete(QwenGenerationFinishReason::MaxTokens);
   BOOST_CHECK(state.state() == QwenGenerationState::Completed);
   BOOST_CHECK(state.isTerminal());
-  BOOST_CHECK_THROW(state.complete(), std::logic_error);
+  BOOST_CHECK_THROW(state.complete(QwenGenerationFinishReason::MaxTokens), std::logic_error);
   BOOST_CHECK_THROW(state.beginReplacement(), std::logic_error);
 }
 
@@ -177,8 +242,10 @@ BOOST_AUTO_TEST_CASE(StateMachineRejectsInvalidTransitionsAndSecondReplacement)
   BOOST_CHECK_THROW(state.completeTokenEpoch(), std::logic_error);
   state.beginSelection();
   state.activate();
+  state.completePrefill();
   state.beginReplacement();
   state.activate();
+  state.completePrefill();
   BOOST_CHECK_THROW(state.beginReplacement(), std::logic_error);
   state.terminate(QwenGenerationTerminal::NoCompatibleReplacement);
   BOOST_CHECK(state.state() == QwenGenerationState::Terminal);
@@ -192,7 +259,8 @@ BOOST_AUTO_TEST_CASE(CompletionRequiresExactBoundAndCancellationIsTerminal)
   QwenGenerationSessionStateMachine incomplete(validSpec());
   incomplete.beginSelection();
   incomplete.activate();
-  BOOST_CHECK_THROW(incomplete.complete(), std::logic_error);
+  incomplete.completePrefill();
+  BOOST_CHECK_THROW(incomplete.complete(QwenGenerationFinishReason::MaxTokens), std::logic_error);
   incomplete.cancel();
   BOOST_CHECK(incomplete.state() == QwenGenerationState::Cancelled);
   BOOST_CHECK(incomplete.isTerminal());
@@ -200,9 +268,70 @@ BOOST_AUTO_TEST_CASE(CompletionRequiresExactBoundAndCancellationIsTerminal)
   QwenGenerationSessionStateMachine overflow(validSpec());
   overflow.beginSelection();
   overflow.activate();
+  overflow.completePrefill();
   overflow.completeTokenEpoch();
   overflow.completeTokenEpoch();
   BOOST_CHECK_THROW(overflow.completeTokenEpoch(), std::logic_error);
+}
+
+BOOST_AUTO_TEST_CASE(EosAndStopDrainRequireTheirOwnEvidence)
+{
+  auto eos = validSpec();
+  eos.maxGeneratedTokens = 4;
+  QwenGenerationSessionStateMachine eosState(eos);
+  eosState.beginSelection();
+  eosState.activate();
+  eosState.completePrefill();
+  eosState.completeTokenEpoch();
+  BOOST_CHECK_THROW(eosState.beginDrain(QwenGenerationFinishReason::Eos),
+                    std::logic_error);
+  eosState.observeEosToken();
+  eosState.beginDrain(QwenGenerationFinishReason::Eos);
+  BOOST_CHECK_EQUAL(toString(QwenGenerationFinishReason::Eos),
+                    std::string("EOS"));
+  eosState.complete(QwenGenerationFinishReason::Eos);
+
+  auto stop = validSpec();
+  stop.maxGeneratedTokens = 4;
+  QwenGenerationSessionStateMachine stopState(stop);
+  stopState.beginSelection();
+  stopState.activate();
+  stopState.completePrefill();
+  stopState.completeTokenEpoch();
+  BOOST_CHECK_THROW(stopState.beginDrain(QwenGenerationFinishReason::StopSequence),
+                    std::logic_error);
+  stopState.observeStopSequence();
+  stopState.beginDrain(QwenGenerationFinishReason::StopSequence);
+  stopState.complete(QwenGenerationFinishReason::StopSequence);
+}
+
+BOOST_AUTO_TEST_CASE(MaxTokenDrainRejectsEarlyCompletion)
+{
+  QwenGenerationSessionStateMachine state(validSpec());
+  state.beginSelection();
+  state.activate();
+  state.completePrefill();
+  state.completeTokenEpoch();
+  BOOST_CHECK_THROW(state.beginDrain(QwenGenerationFinishReason::MaxTokens),
+                    std::logic_error);
+}
+
+BOOST_AUTO_TEST_CASE(CompletionRejectsReasonThatDiffersFromDrainingEvidence)
+{
+  auto spec = validSpec();
+  spec.maxGeneratedTokens = 4;
+  QwenGenerationSessionStateMachine state(spec);
+  state.beginSelection();
+  state.activate();
+  state.completePrefill();
+  state.completeTokenEpoch();
+  state.observeEosToken();
+  state.beginDrain(QwenGenerationFinishReason::Eos);
+  BOOST_CHECK_THROW(
+    state.complete(QwenGenerationFinishReason::ApplicationComplete),
+    std::logic_error);
+  BOOST_CHECK(state.state() == QwenGenerationState::Draining);
+  state.complete(QwenGenerationFinishReason::Eos);
 }
 
 BOOST_AUTO_TEST_CASE(DeadlineExpiresSessionExactlyAtBound)
@@ -223,26 +352,29 @@ BOOST_AUTO_TEST_CASE(StaleAttemptCannotAdvanceTokenEpochAfterReplacement)
   QwenGenerationSessionStateMachine state(validSpec());
   state.beginSelection();
   state.activate();
-  BOOST_CHECK_EQUAL(state.completeTokenEpoch(0), 1);
+  state.completePrefill();
+  BOOST_CHECK_EQUAL(state.completeTokenEpoch(1), 1);
   state.beginReplacement();
   state.activate();
-  BOOST_CHECK_THROW(state.completeTokenEpoch(0), std::logic_error);
+  state.completePrefill();
+  BOOST_CHECK_THROW(state.completeTokenEpoch(1), std::logic_error);
   BOOST_CHECK_EQUAL(state.generatedTokenCount(), 1);
-  BOOST_CHECK_EQUAL(state.completeTokenEpoch(1), 2);
+  BOOST_CHECK_EQUAL(state.completeTokenEpoch(2), 2);
 }
 
 BOOST_AUTO_TEST_CASE(Spec111GenerationSessionRestoresEpochAndFencesStaleAttempts)
 {
   auto nonInitial = validSpec();
-  nonInitial.attemptEpoch = 1;
+  nonInitial.attemptEpoch = 2;
   BOOST_CHECK_NO_THROW(nonInitial.validate());
 
   QwenGenerationSessionStateMachine state(nonInitial);
-  BOOST_CHECK_EQUAL(state.attemptEpoch(), 1);
+  BOOST_CHECK_EQUAL(state.attemptEpoch(), 2);
   state.beginSelection();
   state.activate();
-  BOOST_CHECK_THROW(state.completeTokenEpoch(0), std::logic_error);
-  BOOST_CHECK_EQUAL(state.completeTokenEpoch(1), 1);
+  state.completePrefill();
+  BOOST_CHECK_THROW(state.completeTokenEpoch(1), std::logic_error);
+  BOOST_CHECK_EQUAL(state.completeTokenEpoch(2), 1);
   BOOST_CHECK_THROW(state.beginReplacement(), std::logic_error);
 }
 
@@ -252,9 +384,11 @@ BOOST_AUTO_TEST_CASE(TerminalResponseCanBeClaimedExactlyOnce)
   BOOST_CHECK_THROW(state.claimTerminalResponse(), std::logic_error);
   state.beginSelection();
   state.activate();
+  state.completePrefill();
   state.completeTokenEpoch();
   state.completeTokenEpoch();
-  state.complete();
+  state.beginDrain(QwenGenerationFinishReason::MaxTokens);
+  state.complete(QwenGenerationFinishReason::MaxTokens);
   BOOST_CHECK(state.claimTerminalResponse());
   BOOST_CHECK(!state.claimTerminalResponse());
 }

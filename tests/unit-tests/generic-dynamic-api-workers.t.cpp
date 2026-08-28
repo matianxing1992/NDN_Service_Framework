@@ -693,6 +693,75 @@ BOOST_AUTO_TEST_CASE(UserResponseCallbackRunsInlineWhenHandlerThreadsAreDisabled
   BOOST_CHECK(pendingGoneBeforeCallback);
 }
 
+BOOST_AUTO_TEST_CASE(StreamLifecycleAttachesToExistingRequestContext)
+{
+  ndn::security::KeyChain keyChain("pib-memory:stream-lifecycle-attachment",
+                                   "tpm-memory:stream-lifecycle-attachment");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name requesterName("/test/user/stream-lifecycle");
+  const ndn::Name providerName("/test/provider/stream-lifecycle");
+  const ndn::Name serviceName("/HELLO");
+  const ndn::Name requestId("/request-stream-lifecycle");
+  auto userCert = makeRsaIdentity(keyChain, requesterName);
+  auto providerCert = makeRsaIdentity(keyChain, providerName);
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-stream-lifecycle"));
+
+  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert,
+                        "examples/trust-any.conf");
+  RequestMessage request;
+  user.addPendingCallForTokenTest(requestId, serviceName, "user-token");
+  size_t publishedRequests = 0;
+  user.setRequestPublisher(
+    [&] (const ndn::Name&, const ndn::Name&, const std::vector<ndn::Name>&,
+         const ndn::Name&, const RequestMessage&, size_t) {
+      ++publishedRequests;
+    });
+
+  const auto userOwner = user.attachStreamLifecycleForTest(requestId, false);
+  const auto sameUserOwner = user.attachStreamLifecycleForTest(requestId, false);
+  BOOST_REQUIRE(userOwner);
+  BOOST_CHECK(userOwner == sameUserOwner);
+  BOOST_CHECK(!userOwner->isDeferredCollaboration());
+  BOOST_CHECK_EQUAL(user.getPendingCallCount(), 1);
+  BOOST_CHECK_EQUAL(publishedRequests, 0);
+  BOOST_CHECK_THROW(user.attachStreamLifecycleForTest(requestId, true),
+                   std::invalid_argument);
+
+  const ndn::Name deferredId("/request-stream-lifecycle-deferred");
+  user.prepareDeferredCollaborationForTest(deferredId, {});
+  const auto deferredOwner = user.attachStreamLifecycleForTest(deferredId, true);
+  BOOST_REQUIRE(deferredOwner);
+  BOOST_CHECK(deferredOwner->isDeferredCollaboration());
+  BOOST_CHECK_THROW(user.attachStreamLifecycleForTest(deferredId, false),
+                   std::logic_error);
+
+  LocalServiceProvider provider(face, ndn::Name("/test/group"), providerCert,
+                                aaCert, "examples/trust-any.conf");
+  request.setUserToken("user-token");
+  provider.addPendingRequestForTokenTest(requesterName, serviceName, requestId,
+                                         request, "provider-token");
+  const auto providerOwner = provider.attachStreamLifecycleForTest(
+    requesterName, serviceName, requestId);
+  const auto sameProviderOwner = provider.attachStreamLifecycleForTest(
+    requesterName, serviceName, requestId);
+  BOOST_REQUIRE(providerOwner);
+  BOOST_CHECK(providerOwner == sameProviderOwner);
+  BOOST_CHECK_EQUAL(provider.getPendingRequestCountForTesting(), 1);
+  BOOST_CHECK(providerOwner->terminalAuthority() ==
+              providerOwner->user().terminalAuthority());
+  BOOST_CHECK(providerOwner->terminalAuthority() ==
+              providerOwner->provider().terminalAuthority());
+
+  provider.cleanupPendingRequestStateForTest(requesterName, serviceName, requestId);
+  BOOST_CHECK(providerOwner->provider().isTerminal());
+  BOOST_CHECK(static_cast<int>(providerOwner->provider().state()) ==
+              static_cast<int>(StreamProviderLifecycleState::Fenced));
+  BOOST_CHECK(providerOwner->terminalAuthority()->isFenced());
+  BOOST_CHECK(!provider.getStreamLifecycleForTest(requesterName, serviceName,
+                                                  requestId));
+  BOOST_CHECK_EQUAL(provider.getPendingRequestCountForTesting(), 0);
+}
+
 
 BOOST_AUTO_TEST_SUITE_END()
 BOOST_AUTO_TEST_SUITE_END()

@@ -59,14 +59,25 @@ makePermissionResponse(const ndn::Name& targetIdentity,
 void
 pumpFaces(ndn::DummyClientFace& userFace,
           const std::vector<ndn::DummyClientFace*>& providerFaces,
+          ndn::DummyClientFace& attributeAuthorityFace,
+          bool pumpAttributeAuthority,
           const std::function<bool()>& done)
 {
   for (int i = 0; i < 200 && !done(); ++i) {
+    // NAC-ABE Producers request the Attribute Authority public parameters as
+    // soon as they are constructed. Process the authority first so its Data is
+    // available before the User/Provider event loops are pumped in this round.
+    if (pumpAttributeAuthority) {
+      attributeAuthorityFace.processEvents(ndn::time::milliseconds(5));
+    }
     userFace.processEvents(ndn::time::milliseconds(5));
     for (auto* providerFace : providerFaces) {
       providerFace->processEvents(ndn::time::milliseconds(5));
     }
     userFace.getIoContext().restart();
+    if (pumpAttributeAuthority) {
+      attributeAuthorityFace.getIoContext().restart();
+    }
     for (auto* providerFace : providerFaces) {
       providerFace->getIoContext().restart();
     }
@@ -95,6 +106,8 @@ NdnsfIntegrationEnvironment::NdnsfIntegrationEnvironment(BootstrapProfile profil
 
   m_userFace = std::make_unique<ndn::DummyClientFace>(m_userIo, *m_keyChain, faceOptions);
   m_providerFace = std::make_unique<ndn::DummyClientFace>(m_providerIo, *m_keyChain, faceOptions);
+  m_attributeAuthorityFace = std::make_unique<ndn::DummyClientFace>(
+      m_attributeAuthorityIo, *m_keyChain, faceOptions);
   m_securityOptions = std::make_unique<ndn::svs::SecurityOptions>(
       makeSecurityOptions(*m_keyChain));
   m_svsOptions.useTimestamp = false;
@@ -118,9 +131,68 @@ NdnsfIntegrationEnvironment::NdnsfIntegrationEnvironment(BootstrapProfile profil
   const auto userCert = makeIdentity(*m_keyChain, m_profile.userIdentity);
   const auto providerCert = makeIdentity(*m_keyChain, m_profile.providerIdentity);
   const auto aaCert = makeIdentity(*m_keyChain, m_profile.attributeAuthority);
+  m_attributeAuthorityValidator = std::make_unique<ndn::security::ValidatorNull>();
+  m_attributeAuthority = std::make_unique<ndn::nacabe::KpAttributeAuthority>(
+      aaCert, *m_attributeAuthorityFace, *m_attributeAuthorityValidator, *m_keyChain);
+
+  // Match ServiceController's production KP-ABE policy projection. Providers
+  // decrypt REQUEST/SELECTION under /SERVICE/<service>; the User decrypts
+  // ACK/RESPONSE under /PERMISSION/<service>.  Public-parameter traffic alone
+  // is not sufficient: without these policies the Authority receives DKEY
+  // Interests but has no private key to issue for either identity.
+  const auto serviceUri = m_profile.serviceName.toUri();
+  m_attributeAuthority->addNewPolicy(
+      userCert, "/PERMISSION" + serviceUri);
+  m_attributeAuthority->addNewPolicy(
+      providerCert, "/SERVICE" + serviceUri);
+  // AttributeAuthority installs the PUBLIC-PARAMS Interest filter from the
+  // asynchronous registerPrefix success callback. Complete that registration
+  // before constructing any User/Provider NAC-ABE Producer; otherwise their
+  // constructor-time Interests can be delivered before the filter exists and
+  // leave an orphaned retry chain that fails a later, longer test.
+  for (int round = 0; round < 4; ++round) {
+    m_attributeAuthorityFace->processEvents(ndn::time::milliseconds(5));
+    m_attributeAuthorityFace->getIoContext().restart();
+  }
+
+  // LocalMockTag skips the production controller process, but its NAC-ABE
+  // Producer is real and immediately fetches public parameters. Route only the
+  // Attribute Authority namespace to a real in-process authority so the
+  // fixture reaches a genuinely ready state instead of leaving a retry timer
+  // that can fail whichever long-running test happens to cross its deadline.
+  const auto isAttributeAuthorityPacket = [this] (const ndn::Name& name) {
+    return m_profile.attributeAuthority.isPrefixOf(name);
+  };
+  m_userAttributeAuthorityInterestBridge = m_userFace->onSendInterest.connect(
+      [this, isAttributeAuthorityPacket] (const ndn::Interest& interest) {
+        if (isAttributeAuthorityPacket(interest.getName())) {
+          ++m_attributeAuthorityPublicParameterInterests;
+          m_attributeAuthorityFace->receive(interest);
+        }
+      });
+  m_providerAttributeAuthorityInterestBridge = m_providerFace->onSendInterest.connect(
+      [this, isAttributeAuthorityPacket] (const ndn::Interest& interest) {
+        if (isAttributeAuthorityPacket(interest.getName())) {
+          ++m_attributeAuthorityPublicParameterInterests;
+          m_attributeAuthorityFace->receive(interest);
+        }
+      });
+  m_attributeAuthorityDataBridge = m_attributeAuthorityFace->onSendData.connect(
+      [this, isAttributeAuthorityPacket] (const ndn::Data& data) {
+        if (!isAttributeAuthorityPacket(data.getName())) {
+          return;
+        }
+        ++m_attributeAuthorityPublicParameterData;
+        m_userFace->receive(data);
+        m_providerFace->receive(data);
+        for (auto& face : m_extraProviderFaces) {
+          face->receive(data);
+        }
+      });
   m_user = std::make_unique<ServiceUser>(
       ServiceUser::LocalMockTag{}, *m_userFace, m_profile.groupPrefix,
       userCert, aaCert, m_profile.trustSchemaPath);
+  m_user->useSigningKeyChainForTest(*m_keyChain);
   m_provider = std::make_unique<ServiceProvider>(
       ServiceProvider::LocalMockTag{}, *m_providerFace, m_profile.groupPrefix,
       providerCert, aaCert, m_profile.trustSchemaPath);
@@ -141,8 +213,18 @@ NdnsfIntegrationEnvironment::NdnsfIntegrationEnvironment(BootstrapProfile profil
         m_profile.syncPrefix, node, *face,
         [] (const std::vector<ndn::svs::MissingDataInfo>&) {},
         m_svsOptions, *m_securityOptions));
+    m_extraProviderAttributeAuthorityInterestBridges.emplace_back(
+        face->onSendInterest.connect(
+            [this, isAttributeAuthorityPacket] (const ndn::Interest& interest) {
+              if (isAttributeAuthorityPacket(interest.getName())) {
+                ++m_attributeAuthorityPublicParameterInterests;
+                m_attributeAuthorityFace->receive(interest);
+              }
+            }));
     const auto identity = indexedName(m_profile.providerIdentity, index);
     const auto certificate = makeIdentity(*m_keyChain, identity);
+    m_attributeAuthority->addNewPolicy(
+        certificate, "/SERVICE" + serviceUri);
     m_extraProviders.push_back(std::make_unique<ServiceProvider>(
         ServiceProvider::LocalMockTag{}, *face, m_profile.groupPrefix,
         certificate, aaCert, m_profile.trustSchemaPath));
@@ -188,6 +270,31 @@ NdnsfIntegrationEnvironment::NdnsfIntegrationEnvironment(BootstrapProfile profil
         [&, extraFace] (const ndn::Data& data) {
           forwardData(*extraFace, data, true);
         }));
+  }
+
+  std::vector<ndn::DummyClientFace*> providerFaces;
+  providerFaces.reserve(1 + m_extraProviderFaces.size());
+  providerFaces.push_back(m_providerFace.get());
+  for (auto& face : m_extraProviderFaces) {
+    providerFaces.push_back(face.get());
+  }
+  for (size_t source = 0; source < providerFaces.size(); ++source) {
+    for (size_t destination = 0; destination < providerFaces.size(); ++destination) {
+      if (source == destination) {
+        continue;
+      }
+      auto* destinationFace = providerFaces[destination];
+      m_providerPeerInterestBridges.emplace_back(
+          providerFaces[source]->onSendInterest.connect(
+              [this, destinationFace] (const ndn::Interest& interest) {
+                forwardInterest(*destinationFace, interest, false);
+              }));
+      m_providerPeerDataBridges.emplace_back(
+          providerFaces[source]->onSendData.connect(
+              [this, destinationFace] (const ndn::Data& data) {
+                forwardData(*destinationFace, data, false);
+              }));
+    }
   }
 }
 
@@ -312,9 +419,34 @@ NdnsfIntegrationEnvironment::bootstrap()
     for (size_t index = 0; index < providerCount(); ++index) {
       providerFaces.push_back(&providerFace(index));
     }
-    pumpFaces(*m_userFace, providerFaces, [&] { return delivered; });
+    pumpFaces(*m_userFace, providerFaces, *m_attributeAuthorityFace, true, [&] {
+      if (!delivered || m_attributeAuthorityPublicParameterData == 0 ||
+          !m_user->isNacConsumerReadyForTest()) {
+        return false;
+      }
+      for (size_t index = 0; index < providerCount(); ++index) {
+        if (!provider(index).isNacConsumerReadyForTest()) {
+          return false;
+        }
+      }
+      return true;
+    });
     if (!delivered) {
       throw std::runtime_error("SVS bootstrap publication was not delivered");
+    }
+    if (m_attributeAuthorityPublicParameterInterests == 0 ||
+        m_attributeAuthorityPublicParameterData == 0) {
+      throw std::runtime_error(
+          "NAC-ABE public-parameter bootstrap was not completed");
+    }
+    if (!m_user->isNacConsumerReadyForTest()) {
+      throw std::runtime_error("User NAC-ABE DKEY bootstrap was not completed");
+    }
+    for (size_t index = 0; index < providerCount(); ++index) {
+      if (!provider(index).isNacConsumerReadyForTest()) {
+        throw std::runtime_error(
+            "Provider NAC-ABE DKEY bootstrap was not completed");
+      }
     }
     if (m_user->getAllowedServices().empty() ||
         m_provider->getCurrentPolicyEpoch() == 0) {
@@ -348,7 +480,10 @@ NdnsfIntegrationEnvironment::pumpUntil(const std::function<bool()>& done)
   for (size_t index = 0; index < providerCount(); ++index) {
     providerFaces.push_back(&providerFace(index));
   }
-  pumpFaces(*m_userFace, providerFaces, done);
+  // Public-parameter bootstrap is complete before READY. Keeping the AA face
+  // in the request pump would add an unrelated 5 ms wait to every round and
+  // perturb the stream timeout/replacement state machine under test.
+  pumpFaces(*m_userFace, providerFaces, *m_attributeAuthorityFace, false, done);
 }
 
 RequestScope
@@ -409,7 +544,8 @@ NdnsfIntegrationEnvironment::resetRequest(RequestScope& scope)
     throw std::logic_error("request reset requires zero request residue");
   }
   if (m_pendingUserInterest || m_pendingProviderInterest ||
-      m_pendingUserData || m_pendingProviderData) {
+      m_pendingUserData || m_pendingProviderData ||
+      m_pendingStreamProviderData) {
     throw std::logic_error("request reset requires reordered packets to be flushed");
   }
   scope.active = false;
@@ -442,6 +578,7 @@ NdnsfIntegrationEnvironment::flushReorderedPackets()
   flushInterest(m_pendingProviderInterest, *m_userFace);
   flushData(m_pendingUserData, *m_providerFace);
   flushData(m_pendingProviderData, *m_userFace);
+  flushData(m_pendingStreamProviderData, *m_userFace);
 }
 
 void
@@ -451,6 +588,7 @@ NdnsfIntegrationEnvironment::clearReorderedPackets()
   m_pendingProviderInterest.reset();
   m_pendingUserData.reset();
   m_pendingProviderData.reset();
+  m_pendingStreamProviderData.reset();
 }
 
 void
@@ -460,6 +598,30 @@ NdnsfIntegrationEnvironment::forwardInterest(ndn::DummyClientFace& destination,
 {
   const bool faultsEnabled = m_status == EnvironmentStatus::RequestActive;
   const auto name = interest.getName().toUri();
+  if (faultsEnabled && userToProvider &&
+      m_activeFaults.dropStreamInterestPredicate &&
+      m_activeFaults.dropStreamInterestPredicate(interest)) {
+    ++m_bridgeStats.droppedPackets;
+    ++m_bridgeStats.droppedStreamInterests;
+    if (m_bridgeStats.firstDroppedName.empty()) {
+      m_bridgeStats.firstDroppedName = name;
+    }
+    return;
+  }
+  if (faultsEnabled && userToProvider &&
+      m_activeFaults.dropStreamInterestCursor != 0 &&
+      m_bridgeStats.droppedStreamInterests <
+        m_activeFaults.dropStreamInterestCount) {
+    const auto parsed = parseInvocationEventName(interest.getName());
+    if (parsed && parsed->cursor == m_activeFaults.dropStreamInterestCursor) {
+      ++m_bridgeStats.droppedPackets;
+      ++m_bridgeStats.droppedStreamInterests;
+      if (m_bridgeStats.firstDroppedName.empty()) {
+        m_bridgeStats.firstDroppedName = name;
+      }
+      return;
+    }
+  }
   if (!faultsEnabled || (!m_activeFaults.dropPackets &&
                          !m_activeFaults.duplicatePackets &&
                          !m_activeFaults.reorderPackets)) {
@@ -511,6 +673,67 @@ NdnsfIntegrationEnvironment::forwardData(ndn::DummyClientFace& destination,
 {
   const bool faultsEnabled = m_status == EnvironmentStatus::RequestActive;
   const auto name = data.getName().toUri();
+  const auto streamEvent = !userToProvider && faultsEnabled
+    ? parseInvocationEventName(data.getName())
+    : std::optional<ParsedInvocationEventName>{};
+  if (streamEvent && m_activeFaults.tamperStreamDataCursor != 0 &&
+      streamEvent->cursor == m_activeFaults.tamperStreamDataCursor &&
+      m_bridgeStats.tamperedStreamDataPackets <
+        m_activeFaults.tamperStreamDataCount) {
+    auto tampered = data;
+    const auto content = tampered.getContent();
+    ndn::Buffer altered(content.value(), content.value_size());
+    if (!altered.empty()) {
+      altered[0] ^= 0x01;
+    }
+    tampered.setContent(altered);
+    destination.receive(tampered);
+    ++m_bridgeStats.forwardedData;
+    ++m_bridgeStats.tamperedStreamDataPackets;
+    return;
+  }
+  if (streamEvent && m_activeFaults.dropStreamDataCursor != 0 &&
+      streamEvent->cursor == m_activeFaults.dropStreamDataCursor &&
+      m_bridgeStats.droppedStreamDataPackets <
+        m_activeFaults.dropStreamDataCount) {
+    ++m_bridgeStats.droppedPackets;
+    ++m_bridgeStats.droppedStreamDataPackets;
+    if (m_bridgeStats.firstDroppedName.empty()) {
+      m_bridgeStats.firstDroppedName = name;
+    }
+    return;
+  }
+  if (streamEvent && m_activeFaults.reorderStreamDataCursor != 0) {
+    const auto heldCursor = m_activeFaults.reorderStreamDataCursor;
+    if (streamEvent->cursor == heldCursor && !m_pendingStreamProviderData) {
+      m_pendingStreamProviderData = data;
+      if (m_bridgeStats.firstPendingName.empty()) {
+        m_bridgeStats.firstPendingName = name;
+      }
+      return;
+    }
+    if (streamEvent->cursor == heldCursor + 1 && m_pendingStreamProviderData) {
+      destination.receive(data);
+      ++m_bridgeStats.forwardedData;
+      destination.receive(*m_pendingStreamProviderData);
+      ++m_bridgeStats.forwardedData;
+      m_pendingStreamProviderData.reset();
+      ++m_bridgeStats.reorderedPackets;
+      ++m_bridgeStats.reorderedStreamDataPairs;
+      return;
+    }
+  }
+  if (streamEvent && m_activeFaults.duplicateStreamDataCursor != 0 &&
+      streamEvent->cursor == m_activeFaults.duplicateStreamDataCursor &&
+      m_bridgeStats.duplicatedStreamDataPackets <
+        m_activeFaults.duplicateStreamDataCount) {
+    destination.receive(data);
+    destination.receive(data);
+    m_bridgeStats.forwardedData += 2;
+    ++m_bridgeStats.duplicatedPackets;
+    ++m_bridgeStats.duplicatedStreamDataPackets;
+    return;
+  }
   if (!faultsEnabled || (!m_activeFaults.dropPackets &&
                          !m_activeFaults.duplicatePackets &&
                          !m_activeFaults.reorderPackets)) {
@@ -625,6 +848,37 @@ NdnsfIntegrationEnvironment::provider(size_t index)
     throw std::out_of_range("Spec170 provider index out of range");
   }
   return *m_extraProviders[index - 1];
+}
+
+void
+NdnsfIntegrationEnvironment::disconnectProviderTransportForTest(size_t index)
+{
+  if (index >= providerCount()) {
+    throw std::out_of_range("Spec170 provider transport index out of range");
+  }
+  if (index == 0) {
+    m_userInterestBridge.disconnect();
+    m_userDataBridge.disconnect();
+    m_providerInterestBridge.disconnect();
+    m_providerDataBridge.disconnect();
+    return;
+  }
+  const auto extraIndex = index - 1;
+  m_extraUserInterestBridges.at(extraIndex).disconnect();
+  m_extraUserDataBridges.at(extraIndex).disconnect();
+  m_extraProviderInterestBridges.at(extraIndex).disconnect();
+  m_extraProviderDataBridges.at(extraIndex).disconnect();
+}
+
+void
+NdnsfIntegrationEnvironment::disconnectProviderPeerTransportForTest()
+{
+  for (auto& connection : m_providerPeerInterestBridges) {
+    connection.disconnect();
+  }
+  for (auto& connection : m_providerPeerDataBridges) {
+    connection.disconnect();
+  }
 }
 
 } // namespace ndn_service_framework::test

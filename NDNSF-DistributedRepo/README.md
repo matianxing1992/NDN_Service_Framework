@@ -687,6 +687,127 @@ and reads `A, A, B, C, A`. The canonical result is written to
 repeat hit without another backing read, LRU eviction, SQLite fallback, digest
 integrity, and `usedBytes <= budgetBytes`.
 
+## Public large-artifact Python API (`artifact-manifest-v2`)
+
+Applications publish and fetch immutable files through `ArtifactRepositoryApi`
+or the same methods on `RepoClient`. They do not build packet batches, select
+replicas through private fields, or invoke replica-internal control operations.
+The simplest local, persistent example is:
+
+```python
+from py_repoclient import ArtifactRepositoryApi, FilesystemArtifactApiBackend
+
+api = ArtifactRepositoryApi(
+    FilesystemArtifactApiBackend("/var/lib/ndnsf-artifacts"),
+    publisher_identity="/example/publisher",
+)
+published = api.publish_file(
+    "model.onnx",
+    name="/models/example",
+    expected_sha256="0123456789abcdef" * 4,
+    replicas=1,
+)
+fetched = api.fetch_file(published.reference, "cache/model.onnx")
+```
+
+`FilesystemArtifactApiBackend` is a single-replica, crash-safe local backend
+for development and local operation. A deployed NDNSF runtime installs an
+`ArtifactApiBackend` adapter that uses normal NDNSF Collaboration by default;
+`ArtifactControlOptions(mode=TARGETED, targeted_provider="/repo/A")` is an
+explicit known-provider optimization and retains NDNSF authorization, tokens,
+replay protection, manifest validation, and durable-receipt checks.
+
+The maintained command-line applications are
+`examples/python/NDNSF-DistributedRepo/artifact_api/publish_file.py` and
+`examples/python/NDNSF-DistributedRepo/artifact_api/fetch_file.py`. They expose
+sync, `--async`, and `--advanced` session modes. The advanced sequence is
+`begin_upload -> upload_file -> commit` or
+`begin_fetch -> transfer -> commit`; `abort(preserve_progress=True)` leaves
+verified staging state for an exact idempotency-key resume.
+
+### Publication arguments
+
+| Argument | Meaning |
+|---|---|
+| `path` | Existing regular source file. |
+| `name` | Absolute logical NDN name; identity is completed by SHA-256, size, format, publisher, and policy epoch. |
+| `expected_sha256` | Required lowercase/uppercase SHA-256 assertion; publication fails before transfer on mismatch. |
+| `replicas` | Positive requested durable replica count. |
+| `verification` | Must be `signed-manifest` for `artifact-manifest-v2`. |
+| `resume` | Preserve and verify an exact-operation staging prefix after interruption. |
+| `on_progress` | Optional bounded observer receiving monotonic `ArtifactProgress`; a slow observer cannot block transfer. |
+| `idempotency_key` | Stable retry identity. If omitted, the facade derives it from logical name and digest. |
+| `policy_epoch` | Trust-policy version bound into `ArtifactReference`. |
+| `timeout_ms` | Positive total operation deadline; otherwise the API default is used. |
+| `control` | `ArtifactControlOptions`: Collaboration by default, or explicit Targeted provider. |
+| `cancellation` | Optional `ArtifactCancellationToken`; async task cancellation propagates to it. |
+
+`ArtifactPublishResult` returns `reference`, `operation_id`,
+`requested_replicas`, `achieved_replicas`, per-replica state/receipt,
+`deduplicated`, `resumed`, `total_duration_ms`, and phase durations. Achieved
+durability always equals the number of distinct authenticated `COMMITTED`
+receipts.
+
+### Retrieval arguments
+
+| Argument | Meaning |
+|---|---|
+| `reference` | Complete immutable `ArtifactReference`; a logical name alone is insufficient. |
+| `destination` | Final local path. It becomes visible only after full validation and atomic rename. |
+| `resume` | Reuse only a verified prefix belonging to the same operation/reference. |
+| `verify` | Verify the reconstructed immutable digest; deployed v2 backends must also validate the signed manifest. |
+| `replace` | Permit atomically replacing a conflicting existing destination; default is hard failure. |
+| `on_progress` | Optional bounded monotonic progress observer. |
+| `idempotency_key` | Stable retry identity; by default it is derived from digest and absolute destination. |
+| `timeout_ms` | Positive total operation deadline. |
+| `control` | Collaboration by default, or explicit Targeted provider. |
+| `cancellation` | Optional cancellation token. |
+
+`ArtifactFetchResult` returns `reference`, `operation_id`, `destination`,
+`reused_bytes`, `transferred_bytes`, source replicas, total duration, and phase
+durations. `reused_bytes + transferred_bytes` must equal the immutable size.
+Sync and async calls return the same typed results:
+
+```python
+published = await api.publish_file_async(
+    source, name=name, expected_sha256=digest)
+fetched = await api.fetch_file_async(published.reference, destination)
+```
+
+All public failures are `ArtifactApiError`. Its stable `code` is one of:
+`INVALID_ARGUMENT`, `UNSUPPORTED_CAPABILITY`, `AUTHORIZATION_FAILED`,
+`TRUST_VALIDATION_FAILED`, `MANIFEST_INVALID`, `CONTENT_DIGEST_MISMATCH`,
+`LEASE_EXPIRED`, `CAPACITY_UNAVAILABLE`, `TRANSFER_TIMEOUT`, `CANCELLED`,
+`REPLICA_COMMIT_FAILED`, `DURABILITY_NOT_ACHIEVED`,
+`DESTINATION_CONFLICT`, `RECOVERY_REQUIRED`, or `INTERNAL_ERROR`. The exception
+also carries a bounded message, operation ID, artifact reference when known,
+and achieved-replica count; peer-controlled raw diagnostics are not exposed.
+
+`exact-packet-v1` remains an explicit compatibility API for callers that must
+preserve application-signed Data wire bytes. It is not silently selected or
+reinterpreted by the file API above.
+
+### Artifact schema migration and rollback
+
+Artifact metadata uses durable schema generation 12. Startup performs only
+additive roll-forward and records explicit `formatVersion` and
+`digestAlgorithm` identity in the active catalog, authenticated receipts, and
+GC claims. It never rewrites committed payload bytes or legacy exact-packet
+wires.
+
+`RepoNodeApp(..., artifact_writes_enabled=False)` explicitly disables new v2
+publication. `artifact_max_write_schema_generation=N` also places a node in
+read-only rollback when its database is newer than `N`; an unknown generation
+newer than the runtime does the same automatically. Committed v2 objects remain
+readable, but all new v2 lifecycle, resume, finalization, reservation, and GC
+mutations fail with `repo-artifact-writes-disabled`.
+
+ACK and `CAPABILITY` payloads expose bounded `artifactMigration` diagnostics.
+A read-only node withdraws `artifact-manifest-v2`, resume, and durable-receipt
+support from its advertisement, so capability negotiation rejects it before
+transfer. `exact-packet-v1` remains separately advertised and its trust
+semantics are unchanged.
+
 ## Python Binding
 
 `NDNSF-DistributedRepo/pythonWrapper` installs an importable package named
@@ -736,8 +857,10 @@ service invocation and normal NDNSF authentication/authorization paths.
 The persistent Repo path uses SQLite as authority and a bounded memory LRU as
 acceleration. Writes carry an idempotent operation ID and return durable
 per-replica receipts; `ONE`, `QUORUM`, and `ALL` determine the required receipt
-count. Capacity reservations prevent concurrent writers from oversubscribing a
-node. Placement cache entries expire, and overload, timeout, capacity, or
+count. A positive ACK is an advisory capacity/queue snapshot and reserves no
+bytes. Selection assigns the task; the provider then admits it to its bounded
+execution queue and performs the definitive capacity check when execution
+starts. Placement cache entries expire, and overload, timeout, capacity, or
 integrity failures invalidate the affected node and place it in a short health
 cooldown.
 
@@ -748,7 +871,9 @@ continuous publication is a stream concern and is not part of the Repo object
 API.
 
 Catalog journal entries, tombstones, peer watermarks, membership heartbeats,
-repair jobs, and capacity reservations survive restart. Bucket digests support
+and repair jobs survive restart. Databases upgraded from older releases may
+retain a read-only `capacity_reservations` table for rollback; current ACK,
+placement, and write paths never consult or mutate it. Bucket digests support
 bounded anti-entropy. Same-generation live entries with different content
 digests are reported as `CONFLICT`; the repair scheduler does not choose one
 silently. Repair jobs are idempotent, leased, retried with backoff, and scanned
@@ -762,9 +887,9 @@ not a second internal policy implementation.
 ## Targeted parallel control plane
 
 When the replica set is already known, Repo control operations use NDNSF
-Targeted invocation after the normal authenticated token bootstrap. Capacity
-reservation, reservation release, and replicated store calls are submitted
-asynchronously through one `ServiceUser` and share one total deadline.
+Targeted invocation after the normal authenticated token bootstrap. Replicated
+store assignments are submitted asynchronously through one `ServiceUser` and
+share one total deadline; there is no preceding reserve/release round trip.
 Successful sibling receipts are retained when another replica fails, and the
 final write still has to satisfy the requested `ONE`, `QUORUM`, or `ALL`
 consistency level.
@@ -776,11 +901,13 @@ An optional bounded fallback keeps older Normal-only providers usable and is
 reported separately in the control metrics.
 
 `NetworkDistributedRepoClient` accepts `control_mode="normal"` or
-`control_mode="targeted"` and exposes `control_metrics()`. Campaign lifecycle
-CSV files include `reserveMs` and `storeMs`; summary JSON records Targeted,
-normal, timeout, fallback, fan-out, and maximum-concurrency counters. The
-Targeted token batch can be tuned with `NDNSF_TARGETED_TOKEN_BATCH_SIZE`
-(1--256, default 8).
+`control_mode="targeted"` and exposes `control_metrics()`. Current campaign
+lifecycle records use `planningMs`, `queueWaitMs`, `sessionStartMs`, and
+`storeMs`; readers normalize the historical `reserveMs` column to
+`sessionStartMs` without reintroducing a reservation protocol. Summary JSON
+records Targeted, normal, timeout, fallback, fan-out, and maximum-concurrency
+counters. The Targeted token batch can be tuned with
+`NDNSF_TARGETED_TOKEN_BATCH_SIZE` (1--256, default 8).
 
 Matched 60-second MiniNDN campaigns with RF=2 and W=ALL produced:
 
@@ -805,11 +932,11 @@ desired Repo is unavailable; its manifest retains `replicationFactor=3` for
 later repair and lists only receipt owners in `confirmedReplicaNodes`. W=ALL
 still requires all three receipts.
 
-Capacity reservation follows the same threshold. When reservation is enabled,
-store requests are sent only to providers that returned valid reservations.
-Targeted and fallback outcomes update provider health; a provider that fails
-both paths enters a stronger cooldown than a transient Targeted failure whose
-Normal fallback succeeds.
+The Selection assignment names the desired replicas, while the receipt
+threshold decides whether the result commits. No capacity reservation is
+created between those steps. Targeted and fallback outcomes update provider
+health; a provider that fails both paths enters a stronger cooldown than a
+transient Targeted failure whose Normal fallback succeeds.
 
 In the matched 60-second RF=3/W=QUORUM MiniNDN run, RepoA was stopped after 20
 seconds. All 19 post-failure requests succeeded, including 17 writes with
@@ -898,3 +1025,200 @@ deltas each required one control request rather than 16 batches. Aggregate
 merge time fell from 5,200.463 to 3,038.567 ms; first repair after restart
 improved from 10.587 to 9.033 seconds, while request p95 remained similar at
 1,779.222 ms. See `specs/083-repo-catalog-merge-large-data/results.md`.
+
+## Spec 164 Scalable Artifact Path and Current Acceptance Boundary
+
+The scalable path is implemented as `artifact-manifest-v2`. Its ownership
+boundary is:
+
+```text
+application / NDNSF-DI
+  -> ArtifactRepositoryApi
+  -> ordinary NDNSF Collaboration control
+  -> selected Repo providers
+  -> segmented NDN Data transfer
+  -> authoritative payload and metadata stores
+```
+
+NDNSF owns Request/ACK/ACK_CLOSED/Selection authorization, NAC-ABE routing,
+one-time tokens, replay protection, and the Collaboration lifecycle. The
+repository owns advisory store offers, bounded task queues, artifact capability
+negotiation, manifests, segmented transfer, replica receipts, atomic
+visibility, resume, recovery, and garbage collection.
+NDNSF-DI supplies model-specific artifact identities and consumes the public
+repository API; model splitting and inference scheduling do not belong in the
+repository.
+
+The default store-control lifecycle deliberately has no ACK-time reservation
+or resource lock:
+
+```text
+Request
+  -> advisory ACK offers
+  -> ACK_CLOSED
+  -> commit_plan with exact store assignments
+  -> Provider bounded task queue
+  -> QUEUED -> RECEIVING -> VERIFIED -> COMMITTED -> ACTIVE
+  -> Response
+```
+
+A positive ACK reports a bounded snapshot such as queue depth/capacity and
+available/max bytes. It says that the Provider is willing and appears able to
+accept the task; it does not promise that those bytes remain reserved. The
+selected Provider enqueues the exact assignment and performs execution-time
+admission when the task reaches the worker. Capacity drift produces an
+explicit task failure, not an ACK-time lock. Legacy upload-lease collaboration
+types remain readable for compatibility and migration only; new publication
+uses `ReplicaTaskCollaborationClient`.
+
+The public application surface is synchronous, asynchronous, and resumable:
+
+```python
+published = repo.publish_file(
+    source,
+    name="/models/qwen/stage-0",
+    expected_sha256=digest,
+    replicas=3,
+)
+
+fetched = repo.fetch_file(
+    published.reference,
+    destination,
+    verify=True,
+)
+
+upload = repo.begin_upload(descriptor)
+upload.upload_file(source)
+published = upload.commit()
+```
+
+`ArtifactReference` is the immutable reuse identity: logical name, full
+content digest, byte size, signed root-manifest name, publisher identity, and
+policy epoch. A logical name alone is insufficient. The default deployed
+control mode is ordinary Collaboration; Targeted is an explicit known-provider
+optimization and does not bypass authorization, tokens, manifest validation,
+or durable receipt checks.
+
+The trust composition deliberately avoids one public-key verification per Data
+packet. One publisher-signed root binds the artifact identity and the
+content-addressed manifest hierarchy. Data packets and chunks are checked with
+bounded digest work, the complete payload digest is checked before activation,
+and each committed replica returns an authenticated receipt. HMAC receipts are
+efficient evidence inside one NDNSF authorization domain; they are not public
+non-repudiation across mutually distrustful administrative domains.
+
+Payload bytes are streamed to content-addressed files. Metadata, journals,
+receipts, and catalog state remain transactional. Temporary and verified data
+stay hidden until durable metadata commit and activation. Restart
+reconciliation, exact-identity resume, generation fencing, execution-time
+capacity validation, exclusive object ownership, and GC ownership rules
+prevent partial content, stale retries, or unowned temporary files from
+becoming visible. These short metadata/object critical sections are not
+resource reservations advertised by ACK. `exact-packet-v1` remains an explicit
+compatibility format and is never silently reinterpreted as v2. Future or
+operator-disabled schema generations become read-only rather than rewriting
+existing bytes.
+
+### Frozen MiniNDN results
+
+The active canonical confirmatory campaign is:
+
+```text
+results/spec164-artifact-confirmatory-campaign-20260730T1030Z
+campaignId: spec164-artifact-20260730T101414Z
+manifestSha256: 0fbcd3d4f77dbadba5e90eaad3a23d8425f9a67e0fbd9fca401cc38aff568996
+```
+
+It admitted 24 of 96 preflight cells and retained 24/24 passing warmups and
+120/120 passing measured runs, with exactly five measured repetitions per
+cell. The predeclared large-artifact domain is 64 MiB and above; every 1 MiB
+diagnostic also remains present and passed.
+
+The determinate gates are:
+
+- SC-002 PASS: 64 MiB digest/raw median `0.975401`, bootstrap interval
+  `[0.925489, 1.015141]`, and complete measured runs.
+- SC-003 PASS: 64 MiB signed/digest median `0.996644`, bootstrap interval
+  `[0.984451, 1.069018]`; completion, point-estimate, and lower-bound gates
+  all pass.
+- SC-004 PASS: a separate public Collaboration smoke observed 2 control
+  operations for 16 publication Data segments.
+- SC-007 PASS: publication and fresh-destination cold retrieval satisfy
+  separate payload/metadata read/write amplification bounds.
+
+Reproduce the immutable analysis:
+
+```bash
+python3 Experiments/analyze_distributed_repo_artifact.py \
+  --campaign results/spec164-artifact-confirmatory-campaign-20260730T1030Z \
+  --output-json \
+    results/spec164-artifact-confirmatory-campaign-20260730T1030Z/derived-results.json \
+  --output-markdown \
+    specs/164-distributed-repo-large-artifact-transport/evidence/remediation/t031-performance-report.md \
+  --control-evidence \
+    results/spec164-public-task-minindn-20260730T0734Z/summary.json
+```
+
+All predecessor campaigns remain immutable, including the third campaign's
+three first-Interest failures and original SC-003 FAIL. The confirmatory run
+did not repeat the predecessor's physical ceiling, so 659.613 Mbit/s remains
+historical environment evidence.
+
+Spec 164 now permits TigerCluster NDNSF-DI + Qwen external-validity work. That
+work must still use immutable `ArtifactReference` values, ordinary NDNSF
+Collaboration assignments, repository publication/fetch, and durable evidence
+bindings, and must pass Specs 162/163's own gates. MiniNDN results are not
+themselves TigerCluster or large-model results.
+
+### TigerCluster Qwen3.6 operational lessons (2026-08-01)
+
+The first explicitly authorized Spec 162 run exercised the real
+NDNSF-DI/DistributedRepo publication path on three RTX 5000 nodes. The three
+content-addressed Qwen3.6-27B stages total 53,792,308,358 bytes and are bound
+to manifest
+`sha256:cd9bb9c37dd2b7780cf76a2b3080d2b58fa27a4e16b22e5b6f377ee70e50e787`.
+Jobs 181527, 181528, 181530, 181531, and 181532 are preserved failed
+identities with pre-generation causes. Job 181532 rejected the first Selection
+because the synthetic Provider boot epoch differed from Core's native epoch.
+None is a complete-generation `PASS` by itself.
+
+The cold path must be instrumented as four phases: (1) NDN chunk publication,
+(2) root-manifest registration and catalog `ACTIVE` commit, (3) Provider
+verification/fetch/GPU preparation and cache state, and (4) secured DI
+execution. Staged files are not an active catalog. In the observed 53.79 GB
+runs, registration became visible only after roughly 19–22 minutes of job
+time. This is diagnostic end-to-end evidence, not a repository-throughput
+measurement; Spec 167 owns controlled payload and matched-network goodput
+claims.
+
+Deployment must also bind the campaign path to `/shared/<basename>`, resolve
+the tokenizer from the bound artifact directory, and seal `user.py` together
+with its matching `llm_pipeline_lib.py`. A missing native SIF symbol is a
+runtime-closure failure, not a repository or model-correctness result. The
+live-003 provider logs also emitted repeated `ProviderToken mismatch` messages
+during Repo STORE control selections; publication completion does not erase
+that authorization/correlation diagnostic, which must remain visible to the
+acceptance analyzer. The
+complete evidence and failure table are maintained in
+`docs/NDNSFDI/tigercluster-qwen36-operational-lessons.md`.
+
+The linked live-006 and live-007 diagnostic identities are preserved: live-006
+showed that terminal-selection fail-fast must not be enabled for generic Repo
+STORE collaborations, while live-007 exposed a missing sealed-runtime
+`DISelectionAssignmentV2` import. The Repo ACK path now sets a bounded,
+size-aware `pending_state_ttl_ms` (conservative 8 MiB/s estimate plus five
+minutes, capped at one hour) so Core does not expire the consumed
+ProviderToken while a large artifact is pulled, verified, and finalized. This
+protects request-state lifetime only; Repo still queues work without a storage
+lock or reservation. The fix-009 source manifest is
+`ec8212dbe219f492d0e4474837bdb0208fdf2a079ab42c2409a0c0393e65850d`.
+
+Follow-up identities remain separate evidence: live-009 (181538) found that
+`AckDecision` is frozen and must receive `pending_state_ttl_ms` in its
+constructor; live-011 (181539) proved corrected Repo ACK and DI assignment
+coverage but required binding the current DI provider module; live-012 (181541)
+exposed invalid `DIRoleAssignmentV2.artifact` cache-key access; live-013
+(181543) then exposed duplicate DI GPU admission on Selection. Fix-014 reuses
+the existing unexpired offer for the same request/attempt/model/roles/backends
+binding; live-014 (181544) is the resulting requalification. These are
+source/runtime closure and preparation fixes, not Repo throughput claims.

@@ -52,7 +52,10 @@ public:
       if (!candidates[i].ack.getStatus()) {
         return {};
       }
-      std::string opaque(2400, static_cast<char>('A' + i));
+      // Keep this above the single-Data safety bound exercised by the real
+      // Spec 175 M01 placement projections. The Selection must carry only a
+      // bounded reference, never these bytes inline.
+      std::string opaque(24 * 1024, static_cast<char>('A' + i));
       opaque.replace(0, roles[i].role.size(), roles[i].role);
       ndn::Buffer payload(
         reinterpret_cast<const uint8_t*>(opaque.data()), opaque.size());
@@ -180,6 +183,9 @@ BOOST_AUTO_TEST_CASE(LargeThreeRoleCollaborationPublishesBoundedProviderProjecti
   LocalServiceUser user(
     face, ndn::Name("/test/group"), userCert, aaCert,
     "examples/trust-any.conf");
+  user.useSigningKeyChainForTest(keyChain);
+  user.prepareHybridSendKeyForTest(
+    ndn::Name("/generic/work"), "REQUEST-LARGE");
   const ndn::Name requestId("/request/large-collab-1");
   size_t closureCount = 0;
   CollaborationAckClosure closed;
@@ -245,9 +251,23 @@ BOOST_AUTO_TEST_CASE(LargeThreeRoleCollaborationPublishesBoundedProviderProjecti
       BOOST_CHECK(envelope.scopeKeyDataNames.count("stage-0-to-1") == 0);
       BOOST_CHECK(envelope.scopeKeyDataNames.count("stage-1-to-2") == 1);
     }
+    BOOST_CHECK_LT(assignment.size(), 4096);
+    const auto reference = parseLargeDataReferencePayload(envelope.opaquePayload);
+    BOOST_REQUIRE(reference);
+    BOOST_CHECK_EQUAL(
+      reference->objectType,
+      "application/vnd.ndnsf.collaboration-assignment-v1");
+    BOOST_CHECK(reference->encrypted);
+    BOOST_CHECK_EQUAL(reference->plaintextSize, 24 * 1024);
+    BOOST_CHECK_EQUAL(reference->digest.size(), 71);
+    BOOST_CHECK_EQUAL(reference->digest.substr(0, 7), "sha256:");
+    ndn::Name expectedPrefix("/user/large-collab/NDNSF/LARGE-DATA");
+    expectedPrefix.append(ndn::Name("/generic/work")).append(requestId);
+    BOOST_CHECK(expectedPrefix.isPrefixOf(reference->dataName));
+    BOOST_CHECK(reference->dataName.get(-1).isVersion());
     combinedAssignmentBytes += assignment.size();
   }
-  BOOST_CHECK(combinedAssignmentBytes > 7 * 1024);
+  BOOST_CHECK(combinedAssignmentBytes < 12 * 1024);
   BOOST_CHECK_EQUAL(distinctDigests.size(), 3);
 
   // Recommitting the identical plan is idempotent: it does not reopen ACKs or
@@ -256,6 +276,55 @@ BOOST_AUTO_TEST_CASE(LargeThreeRoleCollaborationPublishesBoundedProviderProjecti
   BOOST_CHECK_EQUAL(closureCount, 1);
   BOOST_CHECK_EQUAL(user.getSelectionPublishedProviders(requestId).size(), 3);
   BOOST_CHECK(user.getSelectionDigestsByProvider(requestId) == digests);
+}
+
+BOOST_AUTO_TEST_CASE(ExternalCollaborationAssignmentReferenceFailsClosedOnInvalidBinding)
+{
+  ndn::security::KeyChain keyChain(
+    "pib-memory:external-collab-reference", "tpm-memory:external-collab-reference");
+  ndn::DummyClientFace face(keyChain);
+  auto providerCert = makeRsaIdentity(keyChain, ndn::Name("/provider/stage-0"));
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa"));
+  LocalServiceProvider provider(
+    face, ndn::Name("/test/group"), providerCert, aaCert,
+    "examples/trust-any.conf");
+
+  const ndn::Name requester("/user/large-collab");
+  const ndn::Name requestId("/request/external-assignment");
+  ServiceProvider::CollaborationAssignment assignment;
+  assignment.role = "stage-0";
+  assignment.service = ndn::Name("/generic/work");
+
+  LargeDataReference reference;
+  reference.dataName = ndn::Name("/attacker/NDNSF/LARGE-DATA/generic/work")
+                         .append(requestId)
+                         .append("projection")
+                         .appendVersion(1);
+  reference.objectType =
+    "application/vnd.ndnsf.collaboration-assignment-v1";
+  reference.objectId = "projection";
+  reference.plaintextSize = 1024;
+  reference.encrypted = true;
+  reference.digest = "sha256:" + std::string(64, '0');
+  assignment.assignmentPayload = encodeLargeDataReferencePayload(reference);
+
+  bool callbackCalled = false;
+  bool accepted = true;
+  std::string error;
+  provider.prepareCollaborationAssignmentForTest(
+    requester,
+    requestId,
+    assignment,
+    [&](bool ok, std::string reason, ServiceProvider::CollaborationAssignment) {
+      callbackCalled = true;
+      accepted = ok;
+      error = std::move(reason);
+    });
+
+  BOOST_CHECK(callbackCalled);
+  BOOST_CHECK(!accepted);
+  BOOST_CHECK_EQUAL(error,
+                    "invalid external collaboration assignment reference");
 }
 
 BOOST_AUTO_TEST_CASE(DeferredCollaborationTracksAckDecryptBeforeClosure)

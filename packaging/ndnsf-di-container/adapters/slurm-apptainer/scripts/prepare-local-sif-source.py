@@ -30,9 +30,32 @@ FILES = (
     "pythonWrapper/README.md",
     "pythonWrapper/ndnsf",
     "pythonWrapper/src",
+    "NDNSF-DistributedRepo/pythonWrapper",
+    "NDNSF-DistributedRepo/src",
+    "Experiments/NDNSF_DI_StreamedGeneration_Minindn.py",
+    "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
+    "Experiments/NDNSF_NewAPI_Minindn_Perf.py",
+    "Experiments/spec175_repo_bootstrap.py",
+    "Experiments/Topology/spec175-host-gate.conf",
+    "examples/trust-schema.conf",
+    "examples/python/NDNSF-DistributedInference/llm_pipeline",
+    "specs/162-itiger-qwen36-generation/jobs/run-repo-node.py",
+    "specs/162-itiger-qwen36-generation/jobs/register-qwen36-repo.py",
+    "tools/ndnsf-di/spec107_artifacts.py",
+    "tools/ndnsf-di/spec107_fault_controller.py",
+    "tools/ndnsf-di/spec107_identity.py",
+    "tools/ndnsf-di/spec107_lineage.py",
+    "tools/ndnsf-di/spec107_preflight.py",
+    "tools/ndnsf-di/run_spec107_live_faults.py",
+    "tools/ndnsf-di/spec168_real_model_gate.py",
+    "tools/ndnsf-di/spec168_runtime_evidence.py",
+    "tests/fixtures/spec175/tiny-causal-lm-v1",
+    "packaging/ndnsf-di-container/jobs/spec175/replay-exact-sif.py",
     "examples/wscript",
     "examples/App_ServiceController.cpp",
     "NDNSF-DistributedRepo/include",
+    "packaging/ndnsf-di-container/jobs/spec175/workload.json",
+    "scripts/build_spec175_workload.py",
 )
 NDN_SVS_FILES = (
     "waf",
@@ -62,7 +85,7 @@ def selected_files(workspace: Path) -> list[Path]:
             raise SystemExit(f"LOCAL_SIF_SOURCE_MISSING:{relative}")
         candidates = [source] if source.is_file() else source.rglob("*")
         for candidate in candidates:
-            if not candidate.is_file():
+            if candidate.is_symlink() or not candidate.is_file():
                 continue
             rel = candidate.relative_to(workspace)
             if any(part in EXCLUDED_DIRS or part.endswith(".egg-info") for part in rel.parts):
@@ -112,7 +135,7 @@ def selected_dependency_files(workspace: Path, entries: tuple[str, ...]) -> list
             raise SystemExit(f"LOCAL_SIF_DEPENDENCY_SOURCE_MISSING:{relative}")
         candidates = [source] if source.is_file() else source.rglob("*")
         for candidate in candidates:
-            if not candidate.is_file():
+            if candidate.is_symlink() or not candidate.is_file():
                 continue
             rel = candidate.relative_to(workspace)
             if any(part in EXCLUDED_DIRS or part.endswith(".egg-info")
@@ -163,6 +186,41 @@ def canonical_seal_body(body: dict) -> dict:
     return canonical
 
 
+def seal_dependency(output: Path, workspace: Path, name: str,
+                    archive_name: str, entries: tuple[str, ...]) -> dict:
+    """Seal one source-only deployment dependency into the candidate subject."""
+    dependency_workspace = workspace.resolve()
+    dependency_archive = output / archive_name
+    dependency_files = selected_dependency_files(dependency_workspace, entries)
+    with tarfile.open(dependency_archive, "w",
+                      format=tarfile.PAX_FORMAT) as archive:
+        for relative in dependency_files:
+            add_file(archive, dependency_workspace / relative, relative)
+    dependency_rows = [
+        {
+            "path": relative.as_posix(),
+            "bytes": (dependency_workspace / relative).stat().st_size,
+            "sha256": digest(dependency_workspace / relative),
+        }
+        for relative in dependency_files
+    ]
+    return {
+        "sourceRevision": subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=dependency_workspace,
+            text=True).strip(),
+        "sourceMode": "sealed-current-worktree-files",
+        "workspace": str(dependency_workspace),
+        "archive": {
+            "path": str(dependency_archive),
+            "bytes": dependency_archive.stat().st_size,
+            "sha256": digest(dependency_archive),
+        },
+        "fileCount": len(dependency_rows),
+        "files": dependency_rows,
+        "compiledPayloadCount": 0,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--workspace", required=True, type=Path)
@@ -210,40 +268,13 @@ def main() -> int:
         "files": rows,
         "compiledPayloadCount": 0,
     }
-    dependency_report = None
+    dependency_reports: dict[str, dict] = {}
     if args.ndn_svs_workspace is not None:
-        dependency_workspace = args.ndn_svs_workspace.resolve()
-        dependency_archive = output / "ndn-svs.tar"
-        dependency_files = selected_dependency_files(
-            dependency_workspace, NDN_SVS_FILES)
-        with tarfile.open(dependency_archive, "w",
-                          format=tarfile.PAX_FORMAT) as archive:
-            for relative in dependency_files:
-                add_file(archive, dependency_workspace / relative, relative)
-        dependency_rows = [
-            {
-                "path": relative.as_posix(),
-                "bytes": (dependency_workspace / relative).stat().st_size,
-                "sha256": digest(dependency_workspace / relative),
-            }
-            for relative in dependency_files
-        ]
-        dependency_report = {
-            "sourceRevision": subprocess.check_output(
-                ["git", "rev-parse", "HEAD"], cwd=dependency_workspace,
-                text=True).strip(),
-            "sourceMode": "sealed-current-worktree-files",
-            "workspace": str(dependency_workspace),
-            "archive": {
-                "path": str(dependency_archive),
-                "bytes": dependency_archive.stat().st_size,
-                "sha256": digest(dependency_archive),
-            },
-            "fileCount": len(dependency_rows),
-            "files": dependency_rows,
-            "compiledPayloadCount": 0,
-        }
-        body["dependencies"] = {"ndnSvs": dependency_report}
+        dependency_reports["ndnSvs"] = seal_dependency(
+            output, args.ndn_svs_workspace, "ndnSvs", "ndn-svs.tar",
+            NDN_SVS_FILES)
+    if dependency_reports:
+        body["dependencies"] = dependency_reports
     body["sealDigestBasis"] = SEAL_DIGEST_BASIS
     body["sealDigest"] = "sha256:" + hashlib.sha256(
         json.dumps(canonical_seal_body(body), sort_keys=True,
@@ -256,8 +287,10 @@ def main() -> int:
         "archive": str(archive_path),
         "archiveSha256": body["archive"]["sha256"],
         "fileCount": len(rows),
-        "ndnSvsArchive": (
-            dependency_report["archive"] if dependency_report else None),
+        "dependencyArchives": {
+            name: report["archive"]
+            for name, report in sorted(dependency_reports.items())
+        },
         "seal": str(seal_path),
         "sealDigest": body["sealDigest"],
     }, sort_keys=True))

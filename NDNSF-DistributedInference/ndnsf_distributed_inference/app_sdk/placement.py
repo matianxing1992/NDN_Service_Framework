@@ -9,6 +9,7 @@ import json
 import math
 import re
 import secrets
+import threading
 import time
 import uuid
 from types import MappingProxyType
@@ -22,7 +23,7 @@ from .contracts import GenerationConfig, GenerationInput
 from ..core.ports import CandidateBudget
 from ..core.contracts import (
     DATA_DRIVEN_V2, DIDataDependencyV2, DIRequestEnvelopeV2, DIRoleAssignmentV2,
-    DISelectionAssignmentV2,
+    DISelectionAssignmentV2, GenerationRecoveryV1,
 )
 from ..core.group_capability import (
     GroupMemberV1, GroupOperationV1, seal_group_capability_v1,
@@ -37,6 +38,7 @@ from ..sdk.placement import (
     DeviceBindingMode,
     ExecutionRole,
     ExecutionDisposition,
+    GenerationExecutionContractV1,
     GrantBindingV1,
     ModelPlacementStrategy,
     PlacementDecision,
@@ -61,6 +63,15 @@ from ..sdk.placement import (
     validate_role_dataflow_contracts,
 )
 from ..splitter import SplitCandidate, SplitSource, canonical_contract_digest
+from ..conversation import (
+    DEFAULT_RETENTION_MS,
+    ConversationCheckpointV1,
+    ConversationContinuation,
+    ConversationInputMode,
+    ProviderConversationStateReceiptV1,
+    ConversationStateReferenceV1,
+    ConversationTurnBindingV1,
+)
 
 
 def _require_digest(value: str, name: str) -> None:
@@ -92,6 +103,103 @@ def normalize_request_id_component(request_id: str) -> str:
     if not component or "/" in component:
         raise ValueError("request_id must encode to one NameComponent")
     return "/" + component
+
+
+def conversation_state_references_for_placement(
+    conversation: ConversationContinuation | None,
+    *,
+    service_name: str,
+    providers_by_role: Mapping[str, str],
+    execution_roles: Mapping[str, ExecutionRole],
+    now_ms: int,
+) -> Mapping[str, ConversationStateReferenceV1]:
+    """Derive one role-local state commitment from an aggregate checkpoint.
+
+    The input is the finalized one-to-one role map. A changed Provider/role
+    map fails instead of silently migrating retained state.
+    """
+
+    if (conversation is None
+            or conversation.mode is ConversationInputMode.FULL_CONTEXT):
+        return MappingProxyType({})
+    checkpoint = ConversationCheckpointV1.from_bytes(
+        conversation.parent_checkpoint or b"")
+    role_map_digest = canonical_digest(tuple(sorted(
+        (str(role), str(provider))
+        for role, provider in providers_by_role.items())))
+    roles = set(str(role) for role in execution_roles)
+    if (checkpoint.conversation_id != conversation.conversation_id
+            or checkpoint.context_epoch
+            != conversation.expected_parent_context_epoch
+            or checkpoint.service_name != service_name
+            or checkpoint.expires_at_ms <= int(now_ms)
+            or checkpoint.plan_role_map_digest != role_map_digest
+            or set(checkpoint.role_receipt_digests) != roles
+            or set(providers_by_role) != roles):
+        raise ValueError(
+            "conversation parent checkpoint does not match the exact "
+            "Provider-role placement")
+    return MappingProxyType({
+        role: ConversationStateReferenceV1(
+            conversation_id=checkpoint.conversation_id,
+            context_epoch=checkpoint.context_epoch,
+            service_name=checkpoint.service_name,
+            plan_role_map_digest=checkpoint.plan_role_map_digest,
+            checkpoint_digest=checkpoint.checkpoint_digest,
+            role_name=role,
+            role_receipt_digest=checkpoint.role_receipt_digests[role],
+            expires_at_ms=checkpoint.expires_at_ms,
+        )
+        for role in sorted(roles)
+    })
+
+
+def conversation_turn_binding_for_placement(
+    conversation: ConversationContinuation | None,
+    *,
+    service_name: str,
+    providers_by_role: Mapping[str, str],
+    execution_roles: Mapping[str, ExecutionRole],
+    request_contract_digest: str,
+    now_ms: int,
+) -> ConversationTurnBindingV1 | None:
+    """Seal the successor epoch target for every Provider projection."""
+
+    if conversation is None:
+        return None
+    _require_digest(request_contract_digest, "request_contract_digest")
+    roles = set(str(role) for role in execution_roles)
+    if set(providers_by_role) != roles:
+        raise ValueError("conversation turn role map is incomplete")
+    role_map_digest = canonical_digest(tuple(sorted(
+        (str(role), str(provider))
+        for role, provider in providers_by_role.items())))
+    parent_epoch = 0
+    parent_checkpoint_digest = ""
+    if conversation.mode is ConversationInputMode.APPEND_DELTA:
+        checkpoint = ConversationCheckpointV1.from_bytes(
+            conversation.parent_checkpoint or b"")
+        if (checkpoint.conversation_id != conversation.conversation_id
+                or checkpoint.context_epoch
+                != conversation.expected_parent_context_epoch
+                or checkpoint.service_name != service_name
+                or checkpoint.expires_at_ms <= int(now_ms)
+                or checkpoint.plan_role_map_digest != role_map_digest
+                or set(checkpoint.role_receipt_digests) != roles):
+            raise ValueError(
+                "conversation turn does not match the retained placement")
+        parent_epoch = checkpoint.context_epoch
+        parent_checkpoint_digest = checkpoint.checkpoint_digest
+    return ConversationTurnBindingV1(
+        conversation_id=conversation.conversation_id,
+        parent_context_epoch=parent_epoch,
+        successor_context_epoch=parent_epoch + 1,
+        service_name=service_name,
+        plan_role_map_digest=role_map_digest,
+        request_contract_digest=request_contract_digest,
+        retention_deadline_ms=int(now_ms) + DEFAULT_RETENTION_MS,
+        parent_checkpoint_digest=parent_checkpoint_digest,
+    )
 
 
 _DATA_V1_MAX_BYTES = 64 << 20
@@ -241,6 +349,7 @@ class GenerationRequest:
 # acyclic, while the provider handlers may exchange bounded generation control
 # records over this separately authorized scope.
 GENERATION_CONTROL_SCOPE = "generation-control-v1"
+CONVERSATION_STATE_SCOPE = "ndnsf-di-conversation-state-v1"
 
 
 @dataclass(frozen=True)
@@ -251,12 +360,23 @@ class AutomaticInferenceHandle:
     adapter: ModelFamilyAdapter
     planning_timings_ms: Mapping[str, float] = None
     invocation_id: str = ""
+    # Internal owner wiring for conversation continuation.  These fields are
+    # not part of the public handle contract; they let the requester perform
+    # the aggregate receipt/CAS transaction after Providers return signed
+    # receipts without exposing provider-local state or device handles.
+    service_user: Any = None
+    conversation_metadata: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
             self,
             "planning_timings_ms",
             MappingProxyType(dict(self.planning_timings_ms or {})),
+        )
+        object.__setattr__(
+            self,
+            "conversation_metadata",
+            MappingProxyType(dict(self.conversation_metadata or {})),
         )
 
     def response(self, timeout_ms: int | None = None):
@@ -267,6 +387,830 @@ class AutomaticInferenceHandle:
         if not response.status:
             raise RuntimeError(response.error or "distributed inference failed")
         return self.adapter.task.decode_result(response.payload)
+
+
+class AutomaticStreamingHandle:
+    """One public generation handle across one or two fenced NDNSF attempts."""
+
+    def __init__(self, base: AutomaticInferenceHandle | None,
+                 stream_options: Any, *, logical_request_id: str = "",
+                 generation_id: str = "",
+                 deadline_ms: int = 0,
+                 on_event: Callable[[bytes], None] | None = None,
+                 on_complete: Callable[[bytes], None] | None = None,
+                 on_error: Callable[[Mapping[str, Any]], None] | None = None,
+                 conversation_expected: bool = False) -> None:
+        self.stream_options = stream_options
+        self._logical_request_id = str(
+            logical_request_id or (
+                getattr(getattr(base, "collaboration", None), "request_id", "")))
+        self._generation_id = str(generation_id)
+        self._deadline_ms = int(deadline_ms)
+        self._on_event = on_event
+        self._on_complete = on_complete
+        self._on_error = on_error
+        self._condition = threading.Condition(threading.RLock())
+        self._attempts: dict[int, AutomaticInferenceHandle] = {}
+        self._attempt_request_ids: dict[int, str] = {}
+        self._current_attempt = 1
+        self._replacement_count = 0
+        self._replacement_started = False
+        self._events: list[bytes] = []
+        self._token_ids: list[int] = []
+        # Monotonic callback timestamps are intentionally kept separate from
+        # token/event payloads.  They are used only for metadata-only TTFT/ITL
+        # evidence and never leave this process as prompt, token, or state
+        # contents.
+        self._started_timestamp_us = time.monotonic_ns() // 1000
+        self._event_timestamps_us: list[int] = []
+        self._complete_timestamp_us: int | None = None
+        self._error_timestamp_us: int | None = None
+        self._complete_payload: bytes | None = None
+        self._pending_complete_payload: bytes | None = None
+        self._error: dict[str, Any] | None = None
+        self._terminal = False
+        self._conversation_coordinator = None
+        self._conversation_turn: Mapping[str, Any] | None = None
+        self._conversation_expected = bool(conversation_expected)
+        self._conversation_promotion_started = False
+        if base is not None:
+            self._bind_attempt(1, base)
+
+    @property
+    def base(self) -> AutomaticInferenceHandle:
+        with self._condition:
+            base = self._attempts.get(self._current_attempt)
+            if base is None:
+                base = self._attempts.get(1)
+            if base is None:
+                raise RuntimeError("streaming attempt is not bound")
+            return base
+
+    @property
+    def collaboration(self):
+        return self.base.collaboration
+
+    @property
+    def request_id(self) -> str:
+        return self._logical_request_id
+
+    @property
+    def generation_id(self) -> str:
+        return self._generation_id
+
+    @property
+    def attempt_request_ids(self) -> Mapping[int, str]:
+        with self._condition:
+            return MappingProxyType(dict(self._attempt_request_ids))
+
+    @property
+    def replacement_count(self) -> int:
+        with self._condition:
+            return self._replacement_count
+
+    @property
+    def stream_events(self) -> tuple[bytes, ...]:
+        with self._condition:
+            return tuple(self._events)
+
+    @property
+    def stream_complete(self) -> bytes | None:
+        with self._condition:
+            return self._complete_payload
+
+    @property
+    def timing_summary(self) -> Mapping[str, object]:
+        """Return metadata-only TTFT/ITL timing for this stream.
+
+        Timestamps come from the actual verified event/completion callbacks,
+        using one monotonic clock.  The summary deliberately contains no token
+        IDs, prompt text, response bytes, logits, or decode-state material.
+        Missing first/terminal callbacks remain ``None`` instead of being
+        synthesized, so an incomplete trace cannot look like a valid span.
+        """
+        with self._condition:
+            timestamps = tuple(self._event_timestamps_us)
+            started = int(self._started_timestamp_us)
+            completed = self._complete_timestamp_us
+            failed = self._error_timestamp_us
+            attempts = len(self._attempts)
+            replacements = int(self._replacement_count)
+        inter_token_ms = tuple(
+            round((right - left) / 1000.0, 3)
+            for left, right in zip(timestamps, timestamps[1:])
+        )
+        return MappingProxyType({
+            "startedTimestampUs": started,
+            "firstEventTimestampUs": (
+                timestamps[0] if timestamps else None),
+            "completeTimestampUs": completed,
+            "errorTimestampUs": failed,
+            "eventCount": len(timestamps),
+            "ttftMs": (
+                round((timestamps[0] - started) / 1000.0, 3)
+                if timestamps else None),
+            "interTokenMs": inter_token_ms,
+            "totalMs": (
+                round(((completed if completed is not None else failed) - started)
+                      / 1000.0, 3)
+                if (completed is not None or failed is not None) else None),
+            "attemptCount": attempts,
+            "replacementCount": replacements,
+        })
+
+    @property
+    def conversation_turn(self) -> Mapping[str, Any] | None:
+        """Return the pending turn identity, without exposing cache state."""
+        with self._condition:
+            if self._conversation_turn is None:
+                return None
+            return MappingProxyType(dict(self._conversation_turn))
+
+    def _attach_conversation(
+        self, coordinator: Any, turn: Mapping[str, Any],
+    ) -> None:
+        """Bind the user-side transaction created before Request publication."""
+        if coordinator is None or not isinstance(turn, Mapping):
+            raise TypeError("conversation owner binding is invalid")
+        with self._condition:
+            if self._conversation_turn is not None:
+                raise RuntimeError("conversation owner is already attached")
+            self._conversation_coordinator = coordinator
+            self._conversation_turn = dict(turn)
+            if not self._conversation_promotion_started:
+                self._conversation_promotion_started = True
+                threading.Thread(
+                    target=self._promote_conversation,
+                    name="ndnsf-di-conversation-promotion",
+                    daemon=True,
+                ).start()
+
+    def _promote_conversation(self) -> None:
+        """Seal one aggregate conversation turn after all Provider receipts.
+
+        Provider receipts are admitted by the native User only after signature,
+        request/name binding, scope-key lookup, and AEAD verification.  The
+        Python layer validates the role set and common digests, commits the
+        owner checkpoint, then sends one authenticated COMMIT control to each
+        staged Provider.  A missing/invalid receipt never becomes a usable
+        successor state.
+        """
+        committed = False
+        cleanup_user = None
+        cleanup_request_id = ""
+        try:
+            with self._condition:
+                coordinator = self._conversation_coordinator
+                turn = dict(self._conversation_turn or {})
+                base = self._attempts.get(self._current_attempt)
+            if coordinator is None or not turn or base is None:
+                return
+            service_user = getattr(base, "service_user", None)
+            metadata = dict(getattr(base, "conversation_metadata", {}) or {})
+            if service_user is None:
+                raise RuntimeError("conversation service user is unavailable")
+            request_id = str(turn.get("requestId", ""))
+            cleanup_user = service_user
+            cleanup_request_id = request_id
+            conversation_id = str(turn.get("conversationId", ""))
+            roles = tuple(sorted(str(item.role) for item in base.sealed_plan.roles))
+            providers = {
+                str(role): str(provider)
+                for role, provider in base.sealed_plan.providers_by_role.items()
+            }
+            if (not request_id or not conversation_id or not roles
+                    or set(providers) != set(roles)
+                    or len(set(providers.values())) != len(providers)):
+                raise RuntimeError("conversation role/provider map is incomplete")
+            plan_digest = str(metadata.get("plan_role_map_digest", ""))
+            exact_plan_digest = str(metadata.get("plan_digest", ""))
+            model_digest = str(metadata.get("model_contract_digest", ""))
+            tokenizer_digest = str(metadata.get("tokenizer_digest", ""))
+            template_digest = str(metadata.get("chat_template_digest", ""))
+            service_name = str(metadata.get("service_name", ""))
+            for name, value in (
+                    ("plan_digest", exact_plan_digest),
+                    ("plan_role_map_digest", plan_digest),
+                    ("model_contract_digest", model_digest),
+                    ("tokenizer_digest", tokenizer_digest),
+                    ("chat_template_digest", template_digest)):
+                _require_digest(value, name)
+            if not service_name.startswith("/"):
+                raise RuntimeError("conversation service name is unavailable")
+
+            def promotion_timeout_ms(cap_ms: int = 30_000) -> int:
+                """Bound every receipt/control wait by the signed request deadline."""
+                cap = max(1, int(cap_ms))
+                if self._deadline_ms <= 0:
+                    return cap
+                remaining = self._deadline_ms - int(time.time() * 1000)
+                if remaining <= 0:
+                    raise TimeoutError(
+                        "conversation promotion deadline expired")
+                return max(1, min(cap, remaining))
+
+            receipt_records = service_user.wait_for_verified_collaboration_data(
+                request_id,
+                key_scope=CONVERSATION_STATE_SCOPE,
+                topic_prefix="/ndnsf-di/conversation/receipt",
+                min_count=len(roles),
+                timeout_ms=promotion_timeout_ms(),
+                consume=True,
+            )
+            receipts: list[ProviderConversationStateReceiptV1] = []
+            seen_roles: set[str] = set()
+            requester_identity = str(
+                getattr(service_user, "user", "") or
+                getattr(coordinator, "requester_identity", ""))
+            now_ms = int(time.time() * 1000)
+            parent = turn.get("parentCheckpoint")
+            parent_epoch = int(parent.context_epoch) if parent is not None else 0
+            for record in receipt_records:
+                if str(record.request_id) != request_id:
+                    raise RuntimeError("conversation receipt request mismatch")
+                receipt = ProviderConversationStateReceiptV1.from_dict(
+                    json.loads(bytes(record.payload).decode("utf-8")))
+                role = receipt.role_name
+                if (role in seen_roles or role not in roles
+                        or providers.get(role) != receipt.provider_identity
+                        or str(record.producer) != receipt.provider_identity
+                        or str(record.producer_role) != role
+                        or receipt.conversation_id != conversation_id
+                        or receipt.parent_context_epoch != parent_epoch
+                        or receipt.successor_context_epoch != parent_epoch + 1
+                        or receipt.service_name != service_name
+                        or receipt.plan_role_map_digest != plan_digest
+                        or receipt.origin_request_id != request_id
+                        or (str(turn.get("generationId", ""))
+                            and receipt.origin_generation_id
+                            != str(turn.get("generationId", "")))
+                        or (requester_identity and
+                            receipt.requester_identity != requester_identity)
+                        or receipt.expires_at_ms <= now_ms):
+                    raise RuntimeError("conversation receipt identity mismatch")
+                seen_roles.add(role)
+                receipts.append(receipt)
+            if seen_roles != set(roles):
+                raise RuntimeError("conversation receipt set is incomplete")
+
+            # A resumed turn may execute only after every selected Provider
+            # has resolved its role-local parent state.  The readiness record
+            # is signed/encrypted collaboration Data; it contains commitments
+            # and residency metadata, never KV/recurrent/convolution bytes.
+            # The initial FULL_CONTEXT turn has no parent state and therefore
+            # does not wait for this barrier.
+            if parent is not None:
+                ready_records = service_user.wait_for_verified_collaboration_data(
+                    request_id,
+                    key_scope=CONVERSATION_STATE_SCOPE,
+                    topic_prefix="/ndnsf-di/conversation/ready",
+                    min_count=len(roles),
+                    timeout_ms=promotion_timeout_ms(),
+                    consume=True,
+                )
+                ready_keys = {
+                    "schema", "requestId", "attemptEpoch", "generationId",
+                    "planDigest", "conversationId", "contextEpoch",
+                    "serviceName", "planRoleMapDigest", "checkpointDigest",
+                    "roleName", "roleReceiptDigest", "providerIdentity",
+                    "providerBootId", "cacheEpoch", "ready", "reason",
+                    "residency",
+                }
+                seen_ready: set[str] = set()
+                for record in ready_records:
+                    try:
+                        ready = json.loads(bytes(record.payload).decode("utf-8"))
+                    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                        raise RuntimeError(
+                            "conversation state-ready record is malformed") from exc
+                    if not isinstance(ready, dict) or set(ready) != ready_keys:
+                        raise RuntimeError(
+                            "conversation state-ready field set mismatch")
+                    role = str(ready.get("roleName", ""))
+                    provider = str(ready.get("providerIdentity", ""))
+                    expected_generation = str(turn.get("generationId", ""))
+                    expected_attempt = int(turn.get("attemptEpoch", 1))
+                    expected_plan = exact_plan_digest
+                    expected_parent_epoch = int(parent.context_epoch)
+                    if (role in seen_ready or role not in roles
+                            or providers.get(role) != provider
+                            or str(record.producer) != provider
+                            or str(record.producer_role) != role
+                            or str(ready["requestId"]) != request_id
+                            or int(ready["attemptEpoch"]) != expected_attempt
+                            or str(ready["generationId"]) != expected_generation
+                            or str(ready["planDigest"]) != expected_plan
+                            or str(ready["conversationId"]) != conversation_id
+                            or int(ready["contextEpoch"]) != expected_parent_epoch
+                            or str(ready["serviceName"]) != service_name
+                            or str(ready["planRoleMapDigest"]) != plan_digest
+                            or str(ready["checkpointDigest"])
+                            != parent.checkpoint_digest
+                            or str(ready["roleReceiptDigest"])
+                            != str(parent.role_receipt_digests.get(role, ""))
+                            or str(ready["providerBootId"])
+                            != next(item.provider_boot_id for item in receipts
+                                    if item.role_name == role)
+                            or int(ready["cacheEpoch"]) != next(
+                                item.cache_epoch for item in receipts
+                                if item.role_name == role)
+                            or ready["ready"] is not True
+                            or str(ready["reason"]) != "state-hit"
+                            or str(ready["residency"]) != "GPU_RESIDENT"):
+                        raise RuntimeError("conversation state-ready identity mismatch")
+                    seen_ready.add(role)
+                if seen_ready != set(roles):
+                    raise RuntimeError("conversation state-ready set is incomplete")
+
+            with self._condition:
+                # Conversation promotion is part of the same request
+                # transaction.  A fixed 30-second wait could outlive the
+                # caller's authenticated deadline and expose a successor
+                # checkpoint after the request had already expired.
+                remaining_ms = promotion_timeout_ms()
+                deadline = time.monotonic() + max(0, remaining_ms) / 1000.0
+                while self._pending_complete_payload is None and not self._terminal:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    self._condition.wait(remaining)
+                payload = self._pending_complete_payload
+            if payload is None:
+                raise RuntimeError("conversation final response was not received")
+            commit_kwargs = {
+                "result_payload": payload,
+                "receipts": tuple(receipts),
+                "model_contract_digest": model_digest,
+                "plan_role_map_digest": plan_digest,
+                "tokenizer_digest": tokenizer_digest,
+                "chat_template_digest": template_digest,
+                "application_messages": bytes(
+                    turn.get("input", metadata.get("application_messages", b""))),
+                "canonical_token_ids": tuple(
+                    int(item) for item in turn.get("canonicalTokenIds", ())),
+            }
+            # The real ConversationCoordinator supports a prepare/commit
+            # boundary.  Publish Provider controls against the deterministic
+            # checkpoint digest first, then persist the User checkpoint.  Test
+            # doubles and older coordinators retain the legacy commit-first
+            # path so this change is source-compatible without weakening the
+            # production ordering.
+            prepare_checkpoint = getattr(coordinator, "prepare_checkpoint", None)
+            prepared_checkpoint_bytes = None
+            commit_now_ms = int(time.time() * 1000)
+            if callable(prepare_checkpoint):
+                prepared_checkpoint_bytes = prepare_checkpoint(
+                    request_id, **commit_kwargs, now_ms=commit_now_ms)
+                checkpoint = ConversationCheckpointV1.from_bytes(
+                    prepared_checkpoint_bytes)
+                checkpoint_digest = checkpoint.checkpoint_digest
+            else:
+                _, checkpoint_bytes = coordinator.commit_turn(
+                    request_id, **commit_kwargs)
+                committed = True
+                checkpoint = ConversationCheckpointV1.from_bytes(checkpoint_bytes)
+                checkpoint_digest = checkpoint.checkpoint_digest
+            control_topic = "/ndnsf-di/conversation/control"
+            expires_at = min(receipt.expires_at_ms for receipt in receipts)
+            published_receipts: list[ProviderConversationStateReceiptV1] = []
+            try:
+                for receipt in receipts:
+                    control = json.dumps({
+                        "schema": "ndnsf-di-conversation-promotion-control-v1",
+                        "action": "COMMIT",
+                        "conversationId": conversation_id,
+                        "parentContextEpoch": receipt.parent_context_epoch,
+                        "successorContextEpoch": receipt.successor_context_epoch,
+                        "serviceName": service_name,
+                        "planRoleMapDigest": plan_digest,
+                        "roleName": receipt.role_name,
+                        "receiptDigest": receipt.receipt_digest,
+                        "checkpointDigest": checkpoint_digest,
+                        "expiresAtMs": expires_at,
+                    }, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                    if not service_user.publish_collaboration_data(
+                            receipt.provider_identity, request_id,
+                            key_scope=CONVERSATION_STATE_SCOPE,
+                            topic=control_topic, payload=control):
+                        raise RuntimeError("conversation commit control publication failed")
+                    published_receipts.append(receipt)
+                # Queueing an encrypted control is not an acknowledgement that
+                # the Provider accepted it.  Wait for one Provider-authored
+                # commit record per role before making the User checkpoint
+                # visible; this closes the cross-process atomicity gap.
+                commit_ack_wait = getattr(
+                    service_user, "wait_for_verified_collaboration_data", None)
+                commit_ack_cleanup = getattr(
+                    service_user, "clear_verified_collaboration_data", None)
+                commit_ack_supported = callable(commit_ack_wait) and callable(commit_ack_cleanup)
+                if commit_ack_supported:
+                    commit_records = commit_ack_wait(
+                        request_id,
+                        key_scope=CONVERSATION_STATE_SCOPE,
+                        topic_prefix="/ndnsf-di/conversation/commit",
+                        min_count=len(roles),
+                        timeout_ms=promotion_timeout_ms(),
+                        consume=True,
+                    )
+                elif hasattr(service_user, "_native"):
+                    # A production Python ServiceUser always exposes both
+                    # methods; fail closed if an old extension is loaded.
+                    raise RuntimeError(
+                        "conversation commit acknowledgement path is unavailable")
+                else:
+                    # Retain compatibility with tiny unit-test doubles that
+                    # predate the network commit-ack surface.  They do not
+                    # qualify any production conversation result.
+                    commit_records = ()
+                if commit_ack_supported:
+                    commit_keys = {
+                    "schema", "requestId", "attemptEpoch", "generationId",
+                    "planDigest", "conversationId", "parentContextEpoch",
+                    "successorContextEpoch", "serviceName",
+                    "planRoleMapDigest", "roleName", "receiptDigest",
+                    "checkpointDigest", "providerIdentity", "providerBootId",
+                    "cacheEpoch", "committed",
+                    }
+                    seen_commits: set[str] = set()
+                    expected_generation = str(turn.get("generationId", ""))
+                    expected_attempt = int(turn.get("attemptEpoch", 1))
+                    expected_parent_epoch = int(parent.context_epoch) if parent is not None else 0
+                    for record in commit_records:
+                        try:
+                            commit = json.loads(bytes(record.payload).decode("utf-8"))
+                        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                            raise RuntimeError(
+                                "conversation commit acknowledgement is malformed") from exc
+                        role = str(commit.get("roleName", "")) if isinstance(commit, dict) else ""
+                        provider = str(commit.get("providerIdentity", "")) if isinstance(commit, dict) else ""
+                        expected_receipt = next(
+                            (item.receipt_digest for item in receipts if item.role_name == role), "")
+                        if (not isinstance(commit, dict) or set(commit) != commit_keys
+                                or role in seen_commits or role not in roles
+                                or providers.get(role) != provider
+                                or str(record.producer) != provider
+                                or str(record.producer_role) != role
+                                or str(commit["requestId"]) != request_id
+                                or int(commit["attemptEpoch"]) != expected_attempt
+                                or str(commit["generationId"]) != expected_generation
+                                or str(commit["planDigest"]) != exact_plan_digest
+                                or str(commit["conversationId"]) != conversation_id
+                                or int(commit["parentContextEpoch"]) != expected_parent_epoch
+                                or int(commit["successorContextEpoch"]) != expected_parent_epoch + 1
+                                or str(commit["serviceName"]) != service_name
+                                or str(commit["planRoleMapDigest"]) != plan_digest
+                                or str(commit["receiptDigest"]) != expected_receipt
+                                or str(commit["checkpointDigest"]) != checkpoint_digest
+                                or not str(commit["providerBootId"])
+                                or int(commit["cacheEpoch"]) < 0
+                                or commit["committed"] is not True):
+                            raise RuntimeError(
+                                "conversation commit acknowledgement identity mismatch")
+                        seen_commits.add(role)
+                    if seen_commits != set(roles):
+                        raise RuntimeError(
+                            "conversation commit acknowledgement set is incomplete")
+                if prepared_checkpoint_bytes is not None:
+                    _, checkpoint_bytes = coordinator.commit_turn(
+                        request_id, **commit_kwargs, now_ms=commit_now_ms)
+                    if checkpoint_bytes != prepared_checkpoint_bytes:
+                        raise RuntimeError(
+                            "conversation checkpoint changed between prepare and commit")
+                    committed = True
+            except BaseException:
+                # Best-effort rollback fences any Provider that accepted the
+                # preceding COMMIT controls.  The User checkpoint is still
+                # absent until the final commit above succeeds.
+                for receipt in published_receipts:
+                    rollback = json.dumps({
+                        "schema": "ndnsf-di-conversation-promotion-control-v1",
+                        "action": "ROLLBACK",
+                        "conversationId": conversation_id,
+                        "parentContextEpoch": receipt.parent_context_epoch,
+                        "successorContextEpoch": receipt.successor_context_epoch,
+                        "serviceName": service_name,
+                        "planRoleMapDigest": plan_digest,
+                        "roleName": receipt.role_name,
+                        "receiptDigest": receipt.receipt_digest,
+                        "checkpointDigest": checkpoint_digest,
+                        "expiresAtMs": expires_at,
+                    }, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                    try:
+                        service_user.publish_collaboration_data(
+                            receipt.provider_identity, request_id,
+                            key_scope=CONVERSATION_STATE_SCOPE,
+                            topic=control_topic, payload=rollback)
+                    except Exception:
+                        pass
+                raise
+            with self._condition:
+                self._complete_payload = bytes(payload)
+                self._complete_timestamp_us = time.monotonic_ns() // 1000
+                self._terminal = True
+                callback = self._on_complete
+                self._condition.notify_all()
+            if callback is not None:
+                callback(bytes(payload))
+        except BaseException as exc:
+            if not committed:
+                try:
+                    coordinator = getattr(self, "_conversation_coordinator", None)
+                    request_id = str((self._conversation_turn or {}).get("requestId", ""))
+                    if coordinator is not None and request_id:
+                        coordinator.abort_turn(request_id)
+                except Exception:
+                    pass
+            # Replacement may have advanced the public handle to attempt 2
+            # while this promotion worker was waiting for Provider receipts.
+            # Report against the currently active attempt; hard-coding epoch 1
+            # would leave a failed replacement handle waiting forever.
+            with self._condition:
+                failure_attempt = self._current_attempt
+            self._fail(failure_attempt, {
+                "code": "ConversationPromotionFailed",
+                "message": str(exc),
+            })
+        finally:
+            if cleanup_user is not None and cleanup_request_id:
+                try:
+                    cleanup_user.clear_verified_collaboration_data(
+                        cleanup_request_id, key_scope=CONVERSATION_STATE_SCOPE)
+                except Exception:
+                    # Scope cleanup is best effort after the terminal outcome;
+                    # it must not replace the original promotion result.
+                    pass
+
+    def conversation_checkpoint(self, timeout_ms: int | None = None) -> bytes:
+        """Return the committed opaque checkpoint for this completed turn.
+
+        Checkpoint publication is owned by the coordinator after all Provider
+        receipts are accepted.  A streamed result alone never manufactures a
+        checkpoint, so callers observe an explicit unavailable error until the
+        transaction has committed.
+        """
+        from ..conversation import ConversationStateUnavailable
+
+        self._wait_terminal(timeout_ms)
+        with self._condition:
+            if self._error is not None:
+                raise RuntimeError(str(self._error.get(
+                    "message", "streaming invocation failed")))
+            coordinator = self._conversation_coordinator
+            turn = dict(self._conversation_turn or {})
+        if coordinator is None or not turn:
+            raise ConversationStateUnavailable(
+                "stream has no conversation continuation")
+        checkpoint = coordinator.checkpoint(str(turn["conversationId"]))
+        if checkpoint is None:
+            raise ConversationStateUnavailable(
+                "conversation successor checkpoint is not committed")
+        return bytes(checkpoint)
+
+    @property
+    def stream_error(self):
+        with self._condition:
+            return None if self._error is None else dict(self._error)
+
+    def response(self, timeout_ms: int | None = None):
+        self._wait_terminal(timeout_ms)
+        with self._condition:
+            error = None if self._error is None else dict(self._error)
+            base = self._attempts.get(self._current_attempt)
+        if error is not None:
+            raise RuntimeError(str(error.get("message", "streaming invocation failed")))
+        if base is None:
+            raise RuntimeError("terminal streaming attempt is unavailable")
+        return base.response(timeout_ms)
+
+    def result(self, timeout_ms: int | None = None) -> Any:
+        self._wait_terminal(timeout_ms)
+        with self._condition:
+            error = None if self._error is None else dict(self._error)
+            base = self._attempts.get(self._current_attempt)
+        if error is not None:
+            raise RuntimeError(str(error.get("message", "streaming invocation failed")))
+        if base is None:
+            raise RuntimeError("terminal streaming attempt is unavailable")
+        return base.result(timeout_ms)
+
+    def cancel(self) -> None:
+        """Cancel the currently bound NDNSF stream without starting recovery."""
+        with self._condition:
+            if self._terminal:
+                return
+            base = self._attempts.get(self._current_attempt)
+            if base is None:
+                raise RuntimeError("streaming attempt is not bound")
+            self._terminal = True
+            self._condition.notify_all()
+        base.collaboration.cancel()
+
+    @property
+    def stream_metrics_for_test(self) -> Mapping[str, int]:
+        return self.base.collaboration.stream_metrics_for_test
+
+    def _bind_attempt(self, attempt: int, base: AutomaticInferenceHandle) -> None:
+        with self._condition:
+            if attempt not in (1, 2) or attempt in self._attempts:
+                raise RuntimeError("streaming attempt binding is invalid")
+            self._attempts[attempt] = base
+            self._attempt_request_ids[attempt] = str(base.collaboration.request_id)
+            self._condition.notify_all()
+
+    def _wait_attempt(self, attempt: int, deadline_ms: int) -> AutomaticInferenceHandle:
+        with self._condition:
+            while attempt not in self._attempts:
+                remaining = deadline_ms - int(time.time() * 1000)
+                if remaining <= 0:
+                    raise TimeoutError("streaming attempt binding deadline expired")
+                self._condition.wait(remaining / 1000.0)
+            return self._attempts[attempt]
+
+    def _begin_replacement(self, attempt: int) -> tuple[int, ...] | None:
+        with self._condition:
+            if (self._terminal or attempt != 1 or self._current_attempt != 1
+                    or self._replacement_started):
+                return None
+            self._replacement_started = True
+            self._replacement_count = 1
+            self._current_attempt = 2
+            self._condition.notify_all()
+            return tuple(self._token_ids)
+
+    def _accept_event(self, attempt: int, payload: bytes) -> None:
+        wire = bytes(payload)
+        event_request_id = None
+        event_generation_id = None
+        try:
+            event = json.loads(wire.decode("utf-8"))
+            schema = event.get("schema", event.get("type"))
+            token_id = int(event["tokenId"])
+            token_epoch = int(event["tokenEpoch"])
+            prefix_digest = str(event["acceptedPrefixDigest"])
+            if isinstance(event, Mapping):
+                event_request_id = (str(event["requestId"])
+                                    if "requestId" in event else None)
+                event_generation_id = (str(event["generationId"])
+                                       if "generationId" in event else None)
+        except (UnicodeDecodeError, json.JSONDecodeError, KeyError,
+                TypeError, ValueError) as exc:
+            self._fail(attempt, {
+                "code": "InvalidStreamEvent",
+                "message": "invalid GenerationTokenEventV1 payload",
+            })
+            return
+        callback = None
+        callback_error = None
+        timestamp_us = time.monotonic_ns() // 1000
+        with self._condition:
+            if self._terminal or attempt != self._current_attempt:
+                return
+            expected_request_id = self._attempt_request_ids.get(attempt)
+            mismatch = (
+                event_request_id is not None and expected_request_id
+                and event_request_id != expected_request_id
+            ) or (
+                event_generation_id is not None and self._generation_id
+                and event_generation_id != self._generation_id
+            )
+            expected_epoch = len(self._token_ids) + 1
+            expected_digest = "sha256:" + hashlib.sha256(
+                ",".join(str(value) for value in
+                         self._token_ids + [token_id]).encode("ascii")
+            ).hexdigest()
+            if (mismatch or schema != "GenerationTokenEventV1"
+                    or token_id < 0 or token_epoch != expected_epoch
+                    or prefix_digest != expected_digest):
+                value = {
+                    "code": "StreamEventLineageMismatch",
+                    "message": "GenerationTokenEventV1 lineage mismatch",
+                    "attemptEpoch": attempt,
+                }
+                self._error = value
+                self._error_timestamp_us = timestamp_us
+                self._terminal = True
+                callback = self._on_error
+                callback_error = value
+            else:
+                self._token_ids.append(token_id)
+                self._events.append(wire)
+                self._event_timestamps_us.append(timestamp_us)
+                callback = self._on_event
+            self._condition.notify_all()
+        if callback_error is not None:
+            if callback is not None:
+                try:
+                    callback(dict(callback_error))
+                except BaseException:
+                    pass
+            return
+        if callback is not None:
+            try:
+                callback(wire)
+            except BaseException as exc:
+                self._fail(attempt, {
+                    "code": "StreamCallbackFailed",
+                    "message": str(exc) or type(exc).__name__,
+                })
+
+    def _complete(self, attempt: int, payload: bytes) -> None:
+        wire = bytes(payload)
+        validation_error = ""
+        completion_request_id = None
+        completion_generation_id = None
+        try:
+            decoded = json.loads(wire.decode("utf-8"))
+            if isinstance(decoded, Mapping):
+                completion_request_id = (str(decoded["requestId"])
+                                         if "requestId" in decoded else None)
+                completion_generation_id = (str(decoded["generationId"])
+                                            if "generationId" in decoded else None)
+                final_ids = decoded.get("tokenIds")
+                if final_ids is not None and \
+                        tuple(int(value) for value in final_ids) != \
+                        tuple(self._token_ids):
+                    validation_error = "final token transcript mismatch"
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            # Generic streamed services may return an opaque non-JSON result.
+            pass
+        except (TypeError, ValueError):
+            validation_error = "final token transcript is invalid"
+        with self._condition:
+            expected_request_id = self._attempt_request_ids.get(attempt)
+            if (completion_request_id is not None and expected_request_id
+                    and completion_request_id != expected_request_id):
+                validation_error = "final response request identity mismatch"
+            elif (completion_generation_id is not None and self._generation_id
+                  and completion_generation_id != self._generation_id):
+                validation_error = "final response generation identity mismatch"
+        if validation_error:
+            self._fail(attempt, {
+                "code": "TranscriptMismatch",
+                "message": validation_error,
+            })
+            return
+        callback = None
+        timestamp_us = time.monotonic_ns() // 1000
+        with self._condition:
+            if self._terminal or attempt != self._current_attempt:
+                return
+            # The planner can complete before APPClient has a chance to call
+            # _attach_conversation(). Defer every conversation completion,
+            # including that fast path, so the aggregate receipt transaction
+            # cannot race with handle attachment and expose a result without
+            # its successor checkpoint.
+            if self._conversation_expected:
+                self._pending_complete_payload = wire
+                self._condition.notify_all()
+                return
+            self._complete_payload = wire
+            self._complete_timestamp_us = timestamp_us
+            self._terminal = True
+            callback = self._on_complete
+            self._condition.notify_all()
+        if callback is not None:
+            try:
+                callback(wire)
+            except BaseException as exc:
+                self._fail(attempt, {
+                    "code": "StreamCallbackFailed",
+                    "message": str(exc) or type(exc).__name__,
+                })
+
+    def _fail(self, attempt: int, error: Mapping[str, Any]) -> None:
+        callback = None
+        value = dict(error)
+        timestamp_us = time.monotonic_ns() // 1000
+        with self._condition:
+            if self._terminal or attempt != self._current_attempt:
+                return
+            value.setdefault("attemptEpoch", attempt)
+            self._error = value
+            self._error_timestamp_us = timestamp_us
+            self._terminal = True
+            callback = self._on_error
+            self._condition.notify_all()
+        if callback is not None:
+            # Error delivery is best effort.  A user error sink must not
+            # escape the transport/delivery thread or leave the already
+            # terminal handle in an unobservable state.
+            try:
+                callback(dict(value))
+            except BaseException:
+                pass
+
+    def _wait_terminal(self, timeout_ms: int | None) -> None:
+        deadline = None if timeout_ms is None else (
+            time.monotonic() + max(0, int(timeout_ms)) / 1000.0)
+        with self._condition:
+            while not self._terminal:
+                if deadline is None:
+                    self._condition.wait()
+                    continue
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("streaming result deadline expired")
+                self._condition.wait(remaining)
 
 
 ProviderViewFactory = Callable[
@@ -636,13 +1580,26 @@ class AutomaticPlanningCoordinator:
         if not required.issubset(fields):
             raise ValueError(
                 f"Provider {provider_offer.provider} omitted NDNSF_DATA_V1 key offer")
-        if (fields["schemaVersion"] != "1"
-                or fields["recipient"] != provider_offer.provider
-                or not fields["recipientCertName"]
-                or fields["providerBootEpoch"] != provider_offer.boot_epoch
-                or not fields["ndnsfDataV1EndpointPrefix"]):
+        mismatched = []
+        if fields["schemaVersion"] != "1":
+            mismatched.append("schemaVersion")
+        if fields["recipient"] != provider_offer.provider:
+            mismatched.append("recipient")
+        if not fields["recipientCertName"]:
+            mismatched.append("recipientCertName")
+        if fields["providerBootEpoch"] != provider_offer.boot_epoch:
+            mismatched.append("providerBootEpoch")
+        if not fields["ndnsfDataV1EndpointPrefix"]:
+            mismatched.append("ndnsfDataV1EndpointPrefix")
+        if mismatched:
+            diagnostic = ""
+            if "providerBootEpoch" in mismatched:
+                diagnostic = (
+                    f" core={fields['providerBootEpoch']}"
+                    f" offer={provider_offer.boot_epoch}")
             raise ValueError(
-                f"Provider {provider_offer.provider} returned a mismatched key offer")
+                f"Provider {provider_offer.provider} returned a mismatched key offer: "
+                + ",".join(mismatched) + diagnostic)
         endpoint_prefix = str(fields["ndnsfDataV1EndpointPrefix"]).rstrip("/")
         provider_prefix = str(provider_offer.provider).rstrip("/")
         if (endpoint_prefix != provider_prefix
@@ -671,12 +1628,13 @@ class AutomaticPlanningCoordinator:
         *,
         request_id: str,
         proposal: PlacementProposalV3,
-        dependencies: tuple[Any, ...],
+        dependencies: tuple[Mapping[str, Any], ...],
         provider_views: Mapping[str, ProviderPlanningViewV3],
         provider_offers: Mapping[str, ProviderOfferV3],
         provider_acks: Mapping[str, Any],
         plan_digest: str,
         deadline_ms: int,
+        generation_contract: GenerationExecutionContractV1 | None = None,
     ) -> tuple[dict[str, str], dict[int, Mapping[str, Any]]]:
         """Seal one least-privilege capability per connected Provider group."""
 
@@ -688,8 +1646,9 @@ class AutomaticPlanningCoordinator:
         for role in proposal.roles:
             key = (role.role if role_counts[role.role] == 1
                    else f"{role.role}#{role.rank}")
-            providers_by_role.setdefault(role.role, set()).add(
-                str(proposal.provider_by_role[key]))
+            provider = str(proposal.provider_by_role[key])
+            providers_by_role.setdefault(role.role, set()).add(provider)
+            providers_by_role.setdefault(key, set()).add(provider)
 
         parent: dict[str, str] = {}
 
@@ -707,18 +1666,24 @@ class AutomaticPlanningCoordinator:
 
         cross_dependencies: list[
             tuple[
-                int, Any, tuple[str, ...], tuple[str, ...], str,
+                int, Mapping[str, Any], tuple[str, ...], tuple[str, ...], str,
                 dict[str, Any],
             ]
         ] = []
         for index, dependency in enumerate(dependencies):
-            dependency_contract = (
-                dict(proposal.dependencies[index])
-                if index < len(proposal.dependencies) else {})
-            producers = tuple(sorted(providers_by_role.get(
-                str(dependency.producer), set())))
-            consumers = tuple(sorted(providers_by_role.get(
-                str(dependency.consumer), set())))
+            dependency_contract = dict(dependency)
+            producer_roles = tuple(
+                str(value) for value in dependency_contract.get("producers", ()))
+            consumer_roles = tuple(
+                str(value) for value in dependency_contract.get("consumers", ()))
+            producers = tuple(sorted({
+                provider for role in producer_roles
+                for provider in providers_by_role.get(role, set())
+            }))
+            consumers = tuple(sorted({
+                provider for role in consumer_roles
+                for provider in providers_by_role.get(role, set())
+            }))
             if not producers or not consumers:
                 raise ValueError("V3 dependency references an unassigned role")
             members = tuple(sorted(set(producers) | set(consumers)))
@@ -729,9 +1694,9 @@ class AutomaticPlanningCoordinator:
             for member in members[1:]:
                 union(members[0], member)
             layout_digest = canonical_digest(dependency_contract or {
-                "producer": dependency.producer,
-                "consumer": dependency.consumer,
-                "tensors": tuple(dependency.tensor_edges),
+                "producers": producer_roles,
+                "consumers": consumer_roles,
+                "tensors": tuple(dependency_contract.get("tensors", ())),
             })
             cross_dependencies.append(
                 (index, dependency, producers, consumers, layout_digest,
@@ -782,9 +1747,11 @@ class AutomaticPlanningCoordinator:
                 consumer_ranks = tuple(str(member_rank[item]) for item in consumers)
                 redistributions = tuple(
                     dependency_contract.get("redistributions", ()))
-                operation_kind = (
-                    str(redistributions[0].get("operation", ""))
-                    if redistributions else "PIPELINE_TRANSFER")
+                operation_kind = str(dependency_contract.get(
+                    "operationKind",
+                    (redistributions[0].get("operation", "")
+                     if redistributions else "PIPELINE_TRANSFER"),
+                ))
                 operation_index = int(dependency_contract.get(
                     "collectiveOperationIndex", index))
                 source_layout_digest = str(dependency_contract.get(
@@ -793,19 +1760,27 @@ class AutomaticPlanningCoordinator:
                     "collectiveTargetLayoutDigest", layout_digest))
                 tensor_digest = str(dependency_contract.get(
                     "collectiveTensorDigest",
-                    canonical_digest(tuple(dependency.tensor_edges))))
-                operations.append(GroupOperationV1(
-                    operation_index=operation_index,
-                    kind=operation_kind,
-                    producer_ranks=producer_ranks,
-                    consumer_ranks=consumer_ranks,
-                    tensor_layout_digest=canonical_digest({
-                        "source": source_layout_digest,
-                        "target": target_layout_digest,
-                    }),
-                    max_bytes=_DATA_V1_MAX_BYTES,
-                    max_segments=_DATA_V1_MAX_SEGMENTS,
-                ))
+                    canonical_digest(tuple(
+                        dependency_contract.get("tensors", ())))))
+                epoch_count = (
+                    generation_contract.max_generated_tokens + 1
+                    if generation_contract is not None else 1)
+                stride = (
+                    generation_contract.streaming_operation_stride
+                    if generation_contract is not None else 0)
+                for epoch in range(epoch_count):
+                    operations.append(GroupOperationV1(
+                        operation_index=operation_index + epoch * stride,
+                        kind=operation_kind,
+                        producer_ranks=producer_ranks,
+                        consumer_ranks=consumer_ranks,
+                        tensor_layout_digest=canonical_digest({
+                            "source": source_layout_digest,
+                            "target": target_layout_digest,
+                        }),
+                        max_bytes=_DATA_V1_MAX_BYTES,
+                        max_segments=_DATA_V1_MAX_SEGMENTS,
+                    ))
                 dependency_metadata[index] = MappingProxyType({
                     "transportProfile": "NDNSF_DATA_V1",
                     "collectiveOperationIndex": operation_index,
@@ -844,10 +1819,12 @@ class AutomaticPlanningCoordinator:
                     continue
                 involved_providers = set()
                 dependency = dependencies[index]
-                involved_providers.update(
-                    providers_by_role.get(str(dependency.producer), set()))
-                involved_providers.update(
-                    providers_by_role.get(str(dependency.consumer), set()))
+                for role in dependency.get("producers", ()):
+                    involved_providers.update(
+                        providers_by_role.get(str(role), set()))
+                for role in dependency.get("consumers", ()):
+                    involved_providers.update(
+                        providers_by_role.get(str(role), set()))
                 if not involved_providers.issubset(members_set):
                     continue
                 dependency_metadata[index] = MappingProxyType({
@@ -907,17 +1884,41 @@ class AutomaticPlanningCoordinator:
         request_id: str = "",
         generation_mode: str = "TOKEN_DIAGNOSTIC",
         strategy: ModelPlacementStrategy | None = None,
+        stream_options: Any = None,
+        on_stream_event: Callable[[bytes], None] | None = None,
+        on_stream_complete: Callable[[bytes], None] | None = None,
+        on_stream_error: Callable[[Mapping[str, Any]], None] | None = None,
+        conversation: ConversationContinuation | None = None,
+        _attempt: int = 1,
+        _invocation_id: str = "",
+        _deadline_ms: int = 0,
+        _excluded_providers: tuple[str, ...] = (),
+        _generation_recovery: GenerationRecoveryV1 | None = None,
     ) -> AutomaticInferenceHandle:
         request_started = time.perf_counter()
         timings: dict[str, float] = {}
         if timeout_ms <= self.ack_timeout_ms:
             raise ValueError("request timeout must exceed ACK collection")
-        deadline_ms = int(time.time() * 1000) + timeout_ms
+        if int(_attempt) not in (1, 2):
+            raise ValueError("streaming attempt must be 1 or 2")
+        deadline_ms = int(_deadline_ms or (
+            int(time.time() * 1000) + timeout_ms))
+        if deadline_ms <= int(time.time() * 1000):
+            raise TimeoutError("request deadline has expired")
         request_id = normalize_request_id_component(
             request_id or ("ndnsf-di-" + uuid.uuid4().hex))
-        invocation_id = "invocation:" + canonical_digest({
-            "request_id": request_id, "model": model.intent_digest,
-        })[7:39]
+        invocation_id = str(_invocation_id or (
+            "invocation:" + canonical_digest({
+                "request_id": request_id, "model": model.intent_digest,
+            })[7:39]))
+        excluded_providers = frozenset(
+            str(value) for value in _excluded_providers)
+        if any(not value.startswith("/") for value in excluded_providers):
+            raise ValueError("excluded Provider identity must be an absolute name")
+        if (_generation_recovery is not None
+                and (_attempt != 2
+                     or _generation_recovery.recovery_request_id != request_id)):
+            raise ValueError("generation recovery is not request/attempt bound")
         # Validate the application/task contract before putting anything on
         # the wire, but deliberately defer model graph inspection and split
         # candidate enumeration.  The generic Request must reach Providers
@@ -935,12 +1936,24 @@ class AutomaticPlanningCoordinator:
                 options=options, objective=objective, constraints=constraints,
                 request_id=request_id, generation_mode=generation_mode,
                 strategy=active_strategy, adapter=adapter,
+                stream_options=stream_options,
+                on_stream_event=on_stream_event,
+                on_stream_complete=on_stream_complete,
+                on_stream_error=on_stream_error,
+                conversation=conversation,
+                _attempt=_attempt,
+                _invocation_id=invocation_id,
+                _deadline_ms=deadline_ms,
+                _excluded_providers=tuple(excluded_providers),
+                _generation_recovery=_generation_recovery,
             )
         phase_started = time.perf_counter()
         request_payload = self._encode_request(
             model, task, input, options, deadline_ms, request_id,
             self.service_name, invocation_id, generation_mode,
-            placement_profile=placement_profile)
+            placement_profile=placement_profile, attempt=_attempt,
+            generation_recovery=_generation_recovery,
+            conversation=conversation)
         timings["request_encode_ms"] = (
             time.perf_counter() - phase_started) * 1000.0
         phase_started = time.perf_counter()
@@ -952,6 +1965,12 @@ class AutomaticPlanningCoordinator:
                 model_intent_digest=model.intent_digest,
                 deadline_ms=deadline_ms,
             )
+        if ack_coverage_predicate is not None and excluded_providers:
+            base_coverage_predicate = ack_coverage_predicate
+            ack_coverage_predicate = lambda candidates: base_coverage_predicate(
+                tuple(candidate for candidate in candidates
+                      if str(getattr(candidate, "provider_name", ""))
+                      not in excluded_providers))
         collaboration_kwargs = dict(
             mode="DEFERRED",
             ack_timeout_ms=self.ack_timeout_ms,
@@ -961,6 +1980,13 @@ class AutomaticPlanningCoordinator:
         )
         if ack_coverage_predicate is not None:
             collaboration_kwargs["ack_coverage_predicate"] = ack_coverage_predicate
+        if stream_options is not None:
+            collaboration_kwargs.update({
+                "stream_options": stream_options,
+                "on_stream_event": on_stream_event,
+                "on_stream_complete": on_stream_complete,
+                "on_stream_error": on_stream_error,
+            })
         collaboration = self.service_user.begin_collaboration(
             self.service_name,
             request_payload,
@@ -989,7 +2015,8 @@ class AutomaticPlanningCoordinator:
             self.provider_view_factory(
                 ack, model.intent_digest, deadline_ms)
             for ack in closed.candidates
-            if ack.status
+            if ack.status and str(getattr(ack, "provider_name", ""))
+            not in excluded_providers
         )
         if not providers:
             raise ValueError("ACK_CLOSED contains no valid DI Provider offer")
@@ -1023,7 +2050,7 @@ class AutomaticPlanningCoordinator:
         )
         placement = PlacementRequest(
             request_id=collaboration.request_id,
-            attempt=1,
+            attempt=_attempt,
             deadline_ms=deadline_ms,
             model_digest=model_descriptor.model_digest,
             graph_digest=graph.graph_digest,
@@ -1033,7 +2060,14 @@ class AutomaticPlanningCoordinator:
             required_roles=candidates[0].execution_plan.roles,
             budget=self.budget,
             objective=objective,
-            constraints=dict(constraints or {}),
+            constraints={
+                **dict(constraints or {}),
+                **({"generation_recovery_digest":
+                    _generation_recovery.digest()}
+                   if _generation_recovery is not None else {}),
+                **({"excluded_providers": tuple(sorted(excluded_providers))}
+                   if excluded_providers else {}),
+            },
             catalog_snapshot=tuple(self.catalog_snapshot_provider()),
             task_digest=task.task_descriptor_digest,
             state_contracts=adapter.state.contracts,
@@ -1160,7 +2194,8 @@ class AutomaticPlanningCoordinator:
         sealed = self._seal(
             closed.digest, placement, decision, candidate, published,
             invocation_id, strategy_identity_digest,
-            generation_mode=generation_mode)
+            generation_mode=generation_mode,
+            generation_recovery=_generation_recovery)
         timings["plan_seal_ms"] = (
             time.perf_counter() - phase_started) * 1000.0
         phase_started = time.perf_counter()
@@ -1170,6 +2205,11 @@ class AutomaticPlanningCoordinator:
             sealed,
             scope_key_data_names=scope_key_data_names,
         )
+        # Bind conversation metadata to the final post-key-publication plan.
+        # The V2 path has no local ``plan_digest`` variable; using the digest
+        # computed from this sealed object also prevents authenticating a
+        # continuation against a different plan.
+        plan_digest = sealed.plan_digest
         timings["scope_key_publish_ms"] = (
             time.perf_counter() - phase_started) * 1000.0
         phase_started = time.perf_counter()
@@ -1200,7 +2240,304 @@ class AutomaticPlanningCoordinator:
         timings["pre_response_setup_total_ms"] = (
             time.perf_counter() - request_started) * 1000.0
         return AutomaticInferenceHandle(
-            collaboration, decision, sealed, adapter, timings, invocation_id)
+            collaboration, decision, sealed, adapter, timings, invocation_id,
+            service_user=self.service_user,
+            conversation_metadata={
+                "model_contract_digest": model.intent_digest,
+                "tokenizer_digest": model.semantics_digest,
+                "chat_template_digest": str(
+                    input.metadata.get("chat_template_digest",
+                                      input.metadata.get("chatTemplateDigest",
+                                                         model.semantics_digest))),
+                "application_messages": bytes(input.payload),
+                "service_name": self.service_name,
+                "plan_digest": plan_digest,
+                "plan_role_map_digest": canonical_digest(tuple(sorted(
+                    (str(role), str(provider))
+                    for role, provider in sealed.providers_by_role.items()))),
+            })
+
+    def request_streaming(
+        self,
+        *,
+        model: ModelRef,
+        task: InferenceTaskRef,
+        input: ApplicationInput,
+        timeout_ms: int,
+        options: TaskOptions | None = None,
+        stream_options: Any = None,
+        on_event: Callable[[bytes], None] | None = None,
+        on_complete: Callable[[bytes], None] | None = None,
+        on_error: Callable[[Mapping[str, Any]], None] | None = None,
+        conversation: ConversationContinuation | None = None,
+        objective: Any = None,
+        constraints: Mapping[str, Any] | None = None,
+        request_id: str = "",
+        strategy: ModelPlacementStrategy | None = None,
+    ) -> AutomaticStreamingHandle:
+        """Expose one logical stream with one optional fresh Normal recovery."""
+        if not callable(on_event) or not callable(on_complete) or not callable(on_error):
+            raise TypeError("streaming requests require on_event/on_complete/on_error")
+        if conversation is not None and not isinstance(conversation, ConversationContinuation):
+            raise TypeError("conversation must be ConversationContinuation")
+        if conversation is not None:
+            # Validate continuation metadata before the first Request reaches
+            # ACK collection; omission preserves the existing FULL_CONTEXT path.
+            input_digest = "sha256:" + hashlib.sha256(bytes(input.payload)).hexdigest()
+            if conversation.turn_input_digest and conversation.turn_input_digest != input_digest:
+                raise ValueError("conversation turn input digest mismatch")
+            expected_contract = conversation.request_contract(input_digest=input_digest)
+            if conversation.request_contract_digest and conversation.request_contract_digest != expected_contract:
+                raise ValueError("conversation request contract digest mismatch")
+        if stream_options is None:
+            from ndnsf import StreamedInvocationOptions
+            stream_options = StreamedInvocationOptions()
+        raw_options = (stream_options.as_dict()
+                       if callable(getattr(stream_options, "as_dict", None))
+                       else dict(stream_options))
+        mode = str(raw_options.get("mode", "Normal"))
+        allow_replacement = bool(raw_options.get("allow_replacement", False))
+        max_replacements = int(raw_options.get("max_replacements", 0))
+        if int(raw_options.get("attempt_epoch", 1)) != 1:
+            raise ValueError("application streaming starts at attempt epoch 1")
+        if mode.lower() != "normal" and allow_replacement:
+            raise ValueError("Targeted streamed replacement is unsupported")
+        if allow_replacement != (max_replacements == 1):
+            raise ValueError(
+                "replacement must be either disabled/0 or explicitly enabled/1")
+
+        logical_request_id = normalize_request_id_component(
+            request_id or ("ndnsf-di-" + uuid.uuid4().hex))
+        generation_id = str(raw_options.get("generation_id", "")) or secrets.token_hex(16)
+        if (len(generation_id) != 32
+                or any(ch not in "0123456789abcdef" for ch in generation_id)):
+            raise ValueError("stream generation identity must be 16-byte lowercase hex")
+        invocation_id = "invocation:" + canonical_digest({
+            "request_id": logical_request_id,
+            "model": model.intent_digest,
+            "generation_id": generation_id,
+        })[7:39]
+        absolute_deadline_ms = int(time.time() * 1000) + int(timeout_ms)
+        handle = AutomaticStreamingHandle(
+            None, stream_options,
+            logical_request_id=logical_request_id,
+            generation_id=generation_id,
+            deadline_ms=absolute_deadline_ms,
+            on_event=on_event,
+            on_complete=on_complete,
+            on_error=on_error,
+            conversation_expected=conversation is not None,
+        )
+
+        def attempt_options(attempt: int):
+            values = dict(raw_options)
+            values.update({
+                "attempt_epoch": attempt,
+                "generation_id": generation_id,
+                "stream_epoch": attempt,
+                # The public coordinator, not Core, owns the only recovery.
+                "allow_replacement": allow_replacement and attempt == 1,
+                "max_replacements": 1 if allow_replacement and attempt == 1 else 0,
+            })
+            if callable(getattr(stream_options, "as_dict", None)):
+                return replace(stream_options, **{
+                    key: value for key, value in values.items()
+                    if hasattr(stream_options, key)
+                })
+            return values
+
+        def submit_attempt(
+            attempt: int,
+            attempt_request_id: str,
+            recovery: GenerationRecoveryV1 | None = None,
+            excluded: tuple[str, ...] = (),
+        ) -> AutomaticInferenceHandle:
+            remaining_ms = absolute_deadline_ms - int(time.time() * 1000)
+            if remaining_ms <= self.ack_timeout_ms:
+                raise TimeoutError(
+                    "insufficient original deadline for a fresh ACK closure")
+            return self.request(
+                model=model,
+                task=task,
+                input=input,
+                timeout_ms=remaining_ms,
+                options=options,
+                objective=objective,
+                constraints=constraints,
+                request_id=attempt_request_id,
+                generation_mode="TOKEN_STREAMING",
+                strategy=strategy,
+                stream_options=attempt_options(attempt),
+                conversation=conversation,
+                on_stream_event=lambda payload: handle._accept_event(
+                    attempt, payload),
+                on_stream_complete=lambda payload: handle._complete(
+                    attempt, payload),
+                on_stream_error=lambda error: handle_attempt_error(
+                    attempt, error),
+                _attempt=attempt,
+                _invocation_id=invocation_id,
+                _deadline_ms=absolute_deadline_ms,
+                _excluded_providers=excluded,
+                _generation_recovery=recovery,
+            )
+
+        def run_replacement(
+            prefix: tuple[int, ...], original_error: Mapping[str, Any],
+        ) -> None:
+            try:
+                first = handle._wait_attempt(1, absolute_deadline_ms)
+                failed_provider = str(
+                    original_error.get("providerName", ""))
+                if not failed_provider.startswith("/"):
+                    raise ValueError(
+                        "failed Provider identity is unavailable for replacement")
+                recovery_request_id = normalize_request_id_component(
+                    logical_request_id + "-recovery-" + uuid.uuid4().hex)
+                recovery = GenerationRecoveryV1(
+                    logical_generation_id=generation_id,
+                    original_request_id=logical_request_id,
+                    recovery_request_id=recovery_request_id,
+                    attempt=2,
+                    original_input_manifest_digest=(
+                        self._request_input_manifest_digest(input, options)),
+                    prior_plan_digest=first.sealed_plan.plan_digest,
+                    failed_provider=failed_provider,
+                    committed_token_ids=prefix,
+                    committed_token_count=len(prefix),
+                    committed_prefix_digest="sha256:" + hashlib.sha256(
+                        ",".join(str(value) for value in prefix).encode("ascii")
+                    ).hexdigest(),
+                )
+                second = submit_attempt(
+                    2, recovery_request_id, recovery, (failed_provider,))
+                handle._bind_attempt(2, second)
+            except Exception as exc:
+                handle._fail(2, {
+                    "code": "ReplacementUnavailable",
+                    "message": str(exc),
+                    "cause": dict(original_error),
+                })
+
+        def handle_attempt_error(
+            attempt: int, error: Mapping[str, Any],
+        ) -> None:
+            value = dict(error)
+            recoverable_codes = {6, 7, 17}  # gap timeout, retention, Provider failure
+            failed_provider = str(value.get("providerName", ""))
+            if (attempt == 1 and allow_replacement
+                    and value.get("code") in recoverable_codes
+                    and failed_provider.startswith("/")):
+                prefix = handle._begin_replacement(1)
+                if prefix is not None:
+                    threading.Thread(
+                        target=run_replacement,
+                        args=(prefix, value),
+                        name="ndnsf-di-stream-replacement",
+                        daemon=True,
+                    ).start()
+                    return
+            handle._fail(attempt, value)
+
+        first = submit_attempt(1, logical_request_id)
+        handle._bind_attempt(1, first)
+        return handle
+
+    @staticmethod
+    def _generation_execution_contract_v1(
+        *,
+        generation_mode: str,
+        application_input: ApplicationInput,
+        options: TaskOptions | None,
+        generation_id: str,
+        role_specs: tuple[RoleAssemblySpec, ...],
+        streaming_operation_stride: int,
+        generation_recovery: GenerationRecoveryV1 | None,
+    ) -> GenerationExecutionContractV1 | None:
+        if str(generation_mode).upper() != "TOKEN_STREAMING":
+            return None
+        options_payload = (
+            options.payload if options is not None else application_input.options)
+        try:
+            values = json.loads(bytes(options_payload).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                "TOKEN_STREAMING options must be canonical JSON") from exc
+        if (not isinstance(values, dict)
+                or values.get("useCache") is not True
+                or str(values.get("outputMode", "")).upper()
+                != "TOKEN_STREAMING"
+                or values.get("greedy") is not True):
+            raise ValueError(
+                "TOKEN_STREAMING requires useCache=true, outputMode="
+                "TOKEN_STREAMING, and greedy=true")
+        generation_id = str(generation_id or values.get("generationId", "")
+                            or values.get("generation_id", ""))
+        if (len(generation_id) != 32
+                or generation_id != generation_id.lower()
+                or any(ch not in "0123456789abcdef" for ch in generation_id)):
+            raise ValueError(
+                "TOKEN_STREAMING requires the request generation identity")
+        try:
+            max_generated_tokens = int(values["maxNewTokens"])
+            eos_token_ids = tuple(int(value) for value in values["eosTokenIds"])
+            tokenizer_digest = str(values["tokenizerDigest"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                "TOKEN_STREAMING maxNewTokens/eosTokenIds/tokenizerDigest are incomplete") from exc
+
+        token_input_name = str(values.get("tokenInputName", "input_ids"))
+        state_input_names = tuple(str(value) for value in values.get(
+            "stateInputNames", (
+                "attention_kv_in",
+                "recurrent_state_in",
+                "convolution_state_in",
+            )))
+        state_output_names = tuple(str(value) for value in values.get(
+            "stateOutputNames", (
+                "attention_kv_out",
+                "recurrent_state_out",
+                "convolution_state_out",
+            )))
+        if not role_specs:
+            raise ValueError("TOKEN_STREAMING requires at least one role")
+        role_input_names = tuple(
+            {str(item.get("name", "")) for item in spec.expected_inputs}
+            for spec in role_specs)
+        role_output_names = tuple(
+            {str(item.get("name", "")) for item in spec.expected_outputs}
+            for spec in role_specs)
+        if token_input_name not in role_input_names[0]:
+            raise ValueError(
+                "TOKEN_STREAMING first role omits the sealed token input")
+        for index, (inputs, outputs) in enumerate(zip(
+                role_input_names, role_output_names)):
+            if (not set(state_input_names).issubset(inputs)
+                    or not set(state_output_names).issubset(outputs)):
+                raise ValueError(
+                    "TOKEN_STREAMING role state I/O is incomplete at index "
+                    f"{index}")
+        committed_prefix = (
+            tuple(generation_recovery.committed_token_ids)
+            if generation_recovery is not None else ())
+        return GenerationExecutionContractV1(
+            mode="TOKEN_STREAMING",
+            max_generated_tokens=max_generated_tokens,
+            token_input_name=token_input_name,
+            state_input_names=state_input_names,
+            state_output_names=state_output_names,
+            eos_token_ids=eos_token_ids,
+            sampling_digest=canonical_digest({
+                "mode": "Greedy",
+                "temperature": 0,
+                "topK": 1,
+                "topP": 1,
+            }),
+            tokenizer_digest=tokenizer_digest,
+            generation_id=generation_id,
+            committed_prefix_token_ids=committed_prefix,
+            streaming_operation_stride=streaming_operation_stride,
+        )
 
     def _request_v3(
         self,
@@ -1216,6 +2553,16 @@ class AutomaticPlanningCoordinator:
         generation_mode: str,
         strategy: ModelPlacementStrategy,
         adapter: ModelFamilyAdapter,
+        stream_options: Any = None,
+        on_stream_event: Callable[[bytes], None] | None = None,
+        on_stream_complete: Callable[[bytes], None] | None = None,
+        on_stream_error: Callable[[Mapping[str, Any]], None] | None = None,
+        conversation: ConversationContinuation | None = None,
+        _attempt: int = 1,
+        _invocation_id: str = "",
+        _deadline_ms: int = 0,
+        _excluded_providers: tuple[str, ...] = (),
+        _generation_recovery: GenerationRecoveryV1 | None = None,
     ) -> AutomaticInferenceHandle:
         """Run the real V3 request/ACK/plan/Selection composition.
 
@@ -1230,16 +2577,21 @@ class AutomaticPlanningCoordinator:
         timings: dict[str, float] = {}
         if timeout_ms <= self.ack_timeout_ms:
             raise ValueError("request timeout must exceed ACK collection")
-        deadline_ms = int(time.time() * 1000) + int(timeout_ms)
+        deadline_ms = int(_deadline_ms or (
+            int(time.time() * 1000) + int(timeout_ms)))
         request_id = normalize_request_id_component(
             request_id or ("ndnsf-di-" + uuid.uuid4().hex))
-        invocation_id = "invocation:" + canonical_digest({
-            "request_id": request_id, "model": model.intent_digest,
-        })[7:39]
+        invocation_id = str(_invocation_id or (
+            "invocation:" + canonical_digest({
+                "request_id": request_id, "model": model.intent_digest,
+            })[7:39]))
+        excluded_providers = frozenset(_excluded_providers)
         request_payload = self._encode_request(
             model, task, input, options, deadline_ms, request_id,
             self.service_name, invocation_id, generation_mode,
-            placement_profile=DI_PLACEMENT_V3)
+            placement_profile=DI_PLACEMENT_V3, attempt=_attempt,
+            generation_recovery=_generation_recovery,
+            conversation=conversation)
         ack_coverage_predicate = self.ack_coverage_predicate
         if ack_coverage_predicate is None and self.ack_coverage_roles:
             ack_coverage_predicate = AckRoleCoveragePolicy(
@@ -1248,6 +2600,12 @@ class AutomaticPlanningCoordinator:
                 model_intent_digest=model.intent_digest,
                 deadline_ms=deadline_ms,
             )
+        if ack_coverage_predicate is not None and excluded_providers:
+            base_coverage_predicate = ack_coverage_predicate
+            ack_coverage_predicate = lambda candidates: base_coverage_predicate(
+                tuple(candidate for candidate in candidates
+                      if str(getattr(candidate, "provider_name", ""))
+                      not in excluded_providers))
         collaboration = self.service_user.begin_collaboration(
             self.service_name, request_payload, mode="DEFERRED",
             ack_timeout_ms=self.ack_timeout_ms, timeout_ms=timeout_ms,
@@ -1255,6 +2613,11 @@ class AutomaticPlanningCoordinator:
             request_capabilities={"NDNSF_DATA_V1": "required"},
             **({"ack_coverage_predicate": ack_coverage_predicate}
                if ack_coverage_predicate is not None else {}),
+            **({"stream_options": stream_options,
+                "on_stream_event": on_stream_event,
+                "on_stream_complete": on_stream_complete,
+                "on_stream_error": on_stream_error}
+               if stream_options is not None else {}),
         )
         print(
             "NDNSF_DI_AUTOPLANNING_REQUEST_SENT",
@@ -1295,6 +2658,8 @@ class AutomaticPlanningCoordinator:
                     "V3 provider view factory must accept graph_digest") from exc
             if not isinstance(view, ProviderPlanningViewV3):
                 raise TypeError("V3 ACK did not produce ProviderPlanningViewV3")
+            if view.provider in excluded_providers:
+                continue
             offer = ProviderOfferV3.from_bytes(bytes(ack.payload))
             if offer.provider != view.provider or view.provider in provider_acks:
                 raise ValueError("V3 ACK Provider identity is ambiguous")
@@ -1326,11 +2691,11 @@ class AutomaticPlanningCoordinator:
         selected_candidate: SplitCandidate | None = None
         candidate_rejections: list[str] = []
         for candidate in sorted(candidates, key=candidate_order):
-            role_specs = tuple(self._v3_role_specs(candidate))
+            role_specs = tuple(self._v3_role_specs(candidate, graph))
             try:
                 candidate_proposal = strategy.propose_v3(
                     request_id=collaboration.request_id,
-                    attempt=1,
+                    attempt=_attempt,
                     model_digest=descriptor.model_digest,
                     graph_digest=graph.graph_digest,
                     roles=role_specs,
@@ -1448,6 +2813,77 @@ class AutomaticPlanningCoordinator:
                     "collectiveTensorDigest": first["integrityDigest"],
                 })
             dependency_dicts.append(dependency_contract)
+        base_dependency_count = len(dependency_dicts)
+        # The terminal response owner is part of every V3 role contract, not
+        # only TOKEN_STREAMING.  Derive it from the graph dependencies before
+        # entering the optional feedback-edge branch so ordinary unary
+        # Presplit requests cannot observe an unbound local.
+        planned_role_keys = tuple(
+            proposal_role_key(spec) for spec in proposal.roles)
+        producers = {
+            str(role) for item in dependency_dicts
+            for role in item["producers"]
+        }
+        terminal_roles = sorted(set(planned_role_keys) - producers)
+        if len(terminal_roles) != 1:
+            raise ValueError(
+                "V3 plan requires exactly one terminal response role")
+        generation_contract = None
+        if str(generation_mode).upper() == "TOKEN_STREAMING":
+            consumers = {
+                str(role) for item in dependency_dicts
+                for role in item["consumers"]
+            }
+            first_roles = sorted(set(planned_role_keys) - consumers)
+            if len(first_roles) != 1 or len(terminal_roles) != 1:
+                raise ValueError(
+                    "TOKEN_STREAMING requires one pipeline source and one terminal role")
+            feedback_scope = (
+                "token-feedback-" + canonical_digest({
+                    "request": collaboration.request_id,
+                    "attempt": _attempt,
+                    "producer": terminal_roles[0],
+                    "consumer": first_roles[0],
+                })[7:23]
+            )
+            feedback_layout_digest = canonical_digest({
+                "tensor": "input_ids",
+                "layout": "int64[1,1]",
+                "operation": "TOKEN_FEEDBACK",
+            })
+            dependency_dicts.append({
+                "producers": [terminal_roles[0]],
+                "consumers": [first_roles[0]],
+                "key_scope": feedback_scope,
+                "topic_prefix": "/token-feedback",
+                "object_name_template": (
+                    "{producerProvider}/NDNSF/DI/DATA/{sessionId}/"
+                    "{keyScope}/{producerRole}/{sequence}"
+                ),
+                "required": True,
+                "tensors": ["input_ids"],
+                "operationKind": "TOKEN_FEEDBACK",
+                "transportProfile": "NDNSF_DATA_V1",
+                "collectiveOperationIndex": base_dependency_count,
+                "collectiveProducerRank": str(
+                    planned_role_keys.index(terminal_roles[0])),
+                "collectiveSourceLayoutDigest": feedback_layout_digest,
+                "collectiveTargetLayoutDigest": feedback_layout_digest,
+                "collectiveTensorDigest": canonical_digest(("input_ids",)),
+            })
+            generation_contract = self._generation_execution_contract_v1(
+                generation_mode=generation_mode,
+                application_input=input,
+                options=options,
+                generation_id=(
+                    str(getattr(stream_options, "generation_id", "") or "")
+                    if callable(getattr(stream_options, "as_dict", None))
+                    else str((stream_options or {}).get("generation_id", "")
+                             if isinstance(stream_options, Mapping) else "")),
+                role_specs=tuple(proposal.roles),
+                streaming_operation_stride=len(dependency_dicts),
+                generation_recovery=_generation_recovery,
+            )
         # Dependencies are part of the proposal/core digest.  Adding them only
         # to Provider projections after sealing would let a rank edge change
         # without changing the selected plan identity.
@@ -1477,14 +2913,21 @@ class AutomaticPlanningCoordinator:
             )
 
         placement_input = PlacementRequest(
-            request_id=collaboration.request_id, attempt=1,
+            request_id=collaboration.request_id, attempt=_attempt,
             deadline_ms=deadline_ms, model_digest=descriptor.model_digest,
             graph_digest=graph.graph_digest,
             candidate_ids=tuple(item.candidate_digest for item in candidates),
             providers=tuple(providers),
             required_roles=selected_candidate.execution_plan.roles,
             budget=self.budget, objective=objective,
-            constraints=dict(constraints or {}),
+            constraints={
+                **dict(constraints or {}),
+                **({"generation_recovery_digest":
+                    _generation_recovery.digest()}
+                   if _generation_recovery is not None else {}),
+                **({"excluded_providers": tuple(sorted(excluded_providers))}
+                   if excluded_providers else {}),
+            },
             catalog_snapshot=tuple(self.catalog_snapshot_provider()),
             task_digest=task.task_descriptor_digest, state_contracts=adapter.state.contracts,
             model=descriptor, graph=graph, candidates=candidates,
@@ -1496,16 +2939,19 @@ class AutomaticPlanningCoordinator:
         core = PlanSealerV3.seal_core(
             {
                 "request_id": collaboration.request_id,
-                "attempt": 1,
+                "attempt": _attempt,
                 "now_ms": int(time.time() * 1000),
                 "deadline_ms": deadline_ms,
                 "ack_closed_digest": closed.digest,
                 "candidate_digest": selected_candidate.candidate_digest,
+                "request_contract_digest": "sha256:" + hashlib.sha256(
+                    request_payload).hexdigest(),
+                "generation_contract": generation_contract,
             }, proposal, {view.provider: view for view in providers})
         security_policy_digest = canonical_digest({
             "policy": "ndnsf-di-default-v3",
             "request_id": collaboration.request_id,
-            "attempt": 1,
+            "attempt": _attempt,
         })
         provider_views = {item.provider: item for item in providers}
         role_names = tuple(item.role for item in core.roles)
@@ -1568,6 +3014,13 @@ class AutomaticPlanningCoordinator:
             key_scopes[GENERATION_CONTROL_SCOPE] = all_role_keys
             for role in all_role_keys:
                 role_scopes[role].append(GENERATION_CONTROL_SCOPE)
+        if conversation is not None:
+            # The requester owns this one request-scoped key. Providers use it
+            # only to publish their signed role receipts; no model-state bytes
+            # or reusable cache handle crosses the network.
+            key_scopes[CONVERSATION_STATE_SCOPE] = all_role_keys
+            for role in all_role_keys:
+                role_scopes[role].append(CONVERSATION_STATE_SCOPE)
 
         artifact_names: dict[str, str] = {}
         roles: list[CollaborationRole] = []
@@ -1587,6 +3040,7 @@ class AutomaticPlanningCoordinator:
             roles.append(CollaborationRole(
                 role=role, service=self.service_name, artifact=artifact_name,
                 allow_dynamic_provisioning=False,
+                terminal_response_owner=(role == terminal_roles[0]),
             ))
 
         assignment_payloads: dict[str, bytes] = {}
@@ -1595,12 +3049,13 @@ class AutomaticPlanningCoordinator:
             self._seal_v3_group_capabilities(
                 request_id=collaboration.request_id,
                 proposal=proposal,
-                dependencies=tuple(selected_candidate.execution_plan.dependencies),
+                dependencies=tuple(dependency_dicts),
                 provider_views=provider_views,
                 provider_offers=provider_offers,
                 provider_acks=provider_acks,
                 plan_digest=plan_digest,
                 deadline_ms=deadline_ms,
+                generation_contract=generation_contract,
             ))
         for index, metadata in dependency_metadata.items():
             dependency_dicts[index].update(dict(metadata))
@@ -1629,6 +3084,12 @@ class AutomaticPlanningCoordinator:
         }
         outgoing_roles: set[str] = set()
         for index, dependency in enumerate(dependency_dicts):
+            if str(dependency.get("operationKind", "")) == "TOKEN_FEEDBACK":
+                # The feedback edge closes the per-epoch runtime loop but is
+                # deliberately excluded from the acyclic one-epoch V3
+                # readiness projection. NativeEpochCoordinator consumes it
+                # from the separately sealed execution-plan dependency list.
+                continue
             redistributions = tuple(dependency.get("redistributions", ()))
             redistribution = (
                 dict(redistributions[0]) if redistributions else {})
@@ -1759,6 +3220,15 @@ class AutomaticPlanningCoordinator:
             tuple(execution_roles.values()),
             tuple(dataflow_contracts.values()),
         )
+        print(
+            "NDNSF_DI_V3_DATAFLOW_TERMINAL_CHECK",
+            "roles=" + ",".join(sorted(dataflow_contracts)),
+            "terminals=" + ",".join(
+                sorted(role for role, contract in dataflow_contracts.items()
+                       if contract.terminal_response_owner)),
+            "publishers=" + ",".join(sorted(outgoing_roles)),
+            flush=True,
+        )
 
         device_bindings = {}
         for role, spec in specs_by_role.items():
@@ -1783,6 +3253,35 @@ class AutomaticPlanningCoordinator:
                 resource_sequence=resource_sequence,
                 offer_scoped_device_handle=("" if cpu else spec.device_set[0]),
             )
+        conversation_now_ms = int(time.time() * 1000)
+        conversation_state_references = (
+            conversation_state_references_for_placement(
+                conversation,
+                service_name=self.service_name,
+                providers_by_role=providers_by_role,
+                execution_roles=execution_roles,
+                now_ms=conversation_now_ms,
+            ))
+        # The turn binding authenticates the conversation continuation itself,
+        # while ``core.request_contract_digest`` binds the complete encoded
+        # DI request envelope.  These are deliberately different domains:
+        # using the envelope digest here makes every Provider reject an
+        # otherwise valid continuation because the two digests cannot match.
+        conversation_contract_digest = None
+        if conversation is not None:
+            conversation_contract_digest = conversation.request_contract(
+                input_digest="sha256:" + hashlib.sha256(
+                    bytes(input.payload)).hexdigest())
+        conversation_turn_binding = conversation_turn_binding_for_placement(
+            conversation,
+            service_name=self.service_name,
+            providers_by_role=providers_by_role,
+            execution_roles=execution_roles,
+            request_contract_digest=(conversation_contract_digest
+                                     if conversation_contract_digest is not None
+                                     else core.request_contract_digest),
+            now_ms=conversation_now_ms,
+        )
         for provider in sorted(set(providers_by_role.values())):
             provider_roles = tuple(
                 spec for spec in proposal.roles
@@ -1790,6 +3289,8 @@ class AutomaticPlanningCoordinator:
                     spec.role if sum(item.role == spec.role for item in proposal.roles) == 1
                     else f"{spec.role}#{spec.rank}"] == provider
             )
+            local_role = proposal_role_key(provider_roles[0])
+            state_reference = conversation_state_references.get(local_role)
             projection = PlanSealerV3.project(
                 core,
                 plan_digest=plan_digest,
@@ -1803,8 +3304,20 @@ class AutomaticPlanningCoordinator:
                 dependencies=tuple(dependency_dicts), deadline_ms=deadline_ms,
                 group_capability_v1=group_capabilities.get(provider, ""),
                 grant_binding=grant_bindings_by_provider.get(provider),
+                conversation_state_reference=state_reference,
+                conversation_turn_binding=conversation_turn_binding,
             )
             payload = projection.to_bytes()
+            print(
+                "NDNSF_DI_V3_PROJECTION_TERMINAL",
+                f"provider={provider}",
+                f"role={proposal_role_key(provider_roles[0])}",
+                f"terminal={dataflow_contracts[proposal_role_key(provider_roles[0])].terminal_response_owner}",
+                f"wireTerminal={json.loads(payload.decode('utf-8')).get('dataflow', {}).get('terminal_response_owner')}",
+                f"conversationTurnBinding={conversation_turn_binding is not None}",
+                f"conversationStateReference={state_reference is not None}",
+                flush=True,
+            )
             for spec in provider_roles:
                 # ``provider_by_role`` uses a stable role#rank key whenever
                 # one logical role has multiple ranks.  Keep the assignment
@@ -1890,10 +3403,33 @@ class AutomaticPlanningCoordinator:
         timings["pre_response_setup_total_ms"] = (
             time.perf_counter() - request_started) * 1000.0
         return AutomaticInferenceHandle(
-            collaboration, decision, sealed, adapter, timings, invocation_id)
+            collaboration, decision, sealed, adapter, timings, invocation_id,
+            service_user=self.service_user,
+            conversation_metadata={
+                "model_contract_digest": model.intent_digest,
+                "tokenizer_digest": model.semantics_digest,
+                "chat_template_digest": str(
+                    input.metadata.get("chat_template_digest",
+                                      input.metadata.get("chatTemplateDigest",
+                                                         model.semantics_digest))),
+                "application_messages": bytes(input.payload),
+                "service_name": self.service_name,
+                "plan_digest": plan_digest,
+                "plan_role_map_digest": canonical_digest(tuple(sorted(
+                    (str(role), str(provider))
+                    for role, provider in sealed.providers_by_role.items()))),
+            })
 
     @staticmethod
-    def _v3_role_specs(candidate: SplitCandidate) -> tuple[RoleAssemblySpec, ...]:
+    def _v3_role_specs(
+        candidate: SplitCandidate, graph: Any | None = None,
+    ) -> tuple[RoleAssemblySpec, ...]:
+        # Keep the historical candidate-only helper source-compatible.  The
+        # production request path passes the post-ACK graph explicitly and
+        # certification still requires that graph.  A legacy caller has no
+        # graph object to provide, so it receives role/rank/artifact specs
+        # without guessed model I/O contracts; this avoids fabricating graph
+        # metadata while preserving the candidate's exact rank coverage.
         def role_kind(role: str) -> str:
             """Map a Collaboration role to its adapter-defined identity kind.
 
@@ -1915,6 +3451,20 @@ class AutomaticPlanningCoordinator:
             # identity; it must not fall back to the raw role path.
             return "COMPONENT_SET"
 
+        edge_by_name = ({edge.edge_id: edge for edge in graph.edges}
+                        if graph is not None else {})
+        model_inputs = ({item.name: item for item in graph.model_inputs}
+                        if graph is not None else {})
+        model_outputs = ({item.name: item for item in graph.model_outputs}
+                         if graph is not None else {})
+
+        def contract(item: Any) -> dict[str, Any]:
+            return {
+                "name": str(getattr(item, "name", getattr(item, "edge_id", ""))),
+                "dtype": str(item.dtype),
+                "shape": list(item.shape),
+            }
+
         specs = []
         for role in candidate.execution_plan.roles:
             requirement = candidate.requirements_by_role[role]
@@ -1930,6 +3480,36 @@ class AutomaticPlanningCoordinator:
             degree = int(candidate.tensor_degrees_by_role.get(role, 1))
             rank_artifacts = candidate.rank_artifact_digests_by_role.get(
                 role, (candidate.artifacts_by_role[role][0],))
+            incoming = tuple(
+                edge for dependency in candidate.execution_plan.dependencies
+                if dependency.consumer == role
+                for edge in dependency.tensor_edges)
+            outgoing = tuple(
+                edge for dependency in candidate.execution_plan.dependencies
+                if dependency.producer == role
+                for edge in dependency.tensor_edges)
+            input_contracts = {
+                name: contract(edge_by_name[name]) for name in incoming
+                if name in edge_by_name
+            }
+            output_contracts = {
+                name: contract(edge_by_name[name]) for name in outgoing
+                if name in edge_by_name
+            }
+            if not incoming:
+                input_contracts.update(
+                    {name: contract(item) for name, item in model_inputs.items()})
+            if not outgoing:
+                output_contracts.update(
+                    {name: contract(item) for name, item in model_outputs.items()})
+            input_contracts.update({
+                item.name: contract(item)
+                for item in candidate.role_state_inputs_by_role.get(role, ())
+            })
+            output_contracts.update({
+                item.name: contract(item)
+                for item in candidate.role_state_outputs_by_role.get(role, ())
+            })
             for rank in range(degree):
                 recipe_digest = canonical_digest({
                     "candidate": candidate.candidate_digest,
@@ -1948,6 +3528,12 @@ class AutomaticPlanningCoordinator:
                     adapter_id=str(candidate.model.adapter.name),
                     adapter_version=str(candidate.model.adapter.version),
                     role_kind=("HYBRID_RANK" if degree > 1 else role_kind(role)),
+                    expected_inputs=tuple(
+                        input_contracts[name]
+                        for name in sorted(input_contracts)),
+                    expected_outputs=tuple(
+                        output_contracts[name]
+                        for name in sorted(output_contracts)),
                 ))
         return tuple(specs)
 
@@ -2012,6 +3598,14 @@ class AutomaticPlanningCoordinator:
             if not outgoing:
                 output_contracts.update(
                     {name: contract(item) for name, item in model_outputs.items()})
+            input_contracts.update({
+                item.name: contract(item)
+                for item in candidate.role_state_inputs_by_role.get(spec.role, ())
+            })
+            output_contracts.update({
+                item.name: contract(item)
+                for item in candidate.role_state_outputs_by_role.get(spec.role, ())
+            })
             if not input_contracts or not output_contracts:
                 raise ValueError(
                     f"role {spec.role} has an incomplete ONNX I/O boundary")
@@ -2256,6 +3850,22 @@ class AutomaticPlanningCoordinator:
         return published
 
     @staticmethod
+    def _request_input_manifest_digest(
+        application_input: ApplicationInput,
+        options: TaskOptions | None,
+    ) -> str:
+        options_payload = (
+            options.payload if options is not None
+            else application_input.options)
+        return canonical_digest({
+            "input_schema_digest": application_input.input_schema_digest,
+            "options_schema_digest": application_input.options_schema_digest,
+            "input_digest": hashlib.sha256(
+                application_input.payload).hexdigest(),
+            "options_digest": hashlib.sha256(options_payload).hexdigest(),
+        })
+
+    @staticmethod
     def _encode_request(
         model: ModelRef,
         task: InferenceTaskRef,
@@ -2267,21 +3877,55 @@ class AutomaticPlanningCoordinator:
         invocation_id: str,
         generation_mode: str = "TOKEN_DIAGNOSTIC",
         placement_profile: str = "DI_PLACEMENT_V2",
+        attempt: int = 1,
+        generation_recovery: GenerationRecoveryV1 | None = None,
+        conversation: ConversationContinuation | None = None,
     ) -> bytes:
         options_payload = (
             options.payload if options is not None
             else application_input.options)
-        input_manifest_digest = canonical_digest({
-            "input_schema_digest": application_input.input_schema_digest,
-            "options_schema_digest": application_input.options_schema_digest,
-            "input_digest": hashlib.sha256(
-                application_input.payload).hexdigest(),
-            "options_digest": hashlib.sha256(options_payload).hexdigest(),
-        })
+        input_manifest_digest = (
+            AutomaticPlanningCoordinator._request_input_manifest_digest(
+                application_input, options))
+        task_contract = {
+            "name": task.task_name,
+            "adapter": task.adapter_name,
+            "adapter_descriptor_digest":
+                task.adapter_descriptor_digest,
+            "adapter_composition_digest":
+                task.adapter_composition_digest,
+            "task_descriptor_digest": task.task_descriptor_digest,
+            "generation_mode": str(generation_mode),
+            "placement_profile": str(placement_profile),
+        }
+        if generation_recovery is not None:
+            task_contract["generation_recovery"] = (
+                generation_recovery.to_dict())
+        if conversation is not None:
+            if not isinstance(conversation, ConversationContinuation):
+                raise TypeError("conversation must be ConversationContinuation")
+            input_digest = "sha256:" + hashlib.sha256(
+                bytes(application_input.payload)).hexdigest()
+            if conversation.turn_input_digest \
+                    and conversation.turn_input_digest != input_digest:
+                raise ValueError("conversation turn input digest mismatch")
+            contract_digest = conversation.request_contract(
+                input_digest=input_digest)
+            if (conversation.request_contract_digest
+                    and conversation.request_contract_digest != contract_digest):
+                raise ValueError("conversation request contract digest mismatch")
+            # The checkpoint is an opaque authenticated capability.  It is
+            # carried inside the request contract, never interpreted by the
+            # planner and never copied into logs, manifests, or provider
+            # selection input.
+            task_contract["conversation"] = {
+                **conversation.to_dict(),
+                "requestContractDigest": contract_digest,
+            }
         return DIRequestEnvelopeV2(
             invocation_id=invocation_id,
             request_id=request_id,
-            attempt=1,
+            attempt=int(attempt),
             service=service_name,
             model_name=model.model_name,
             model_identity_hash=model.intent_digest,
@@ -2300,17 +3944,7 @@ class AutomaticPlanningCoordinator:
                 "semantics_digest": model.semantics_digest,
                 "source_revision": model.source_revision,
             },
-            task={
-                "name": task.task_name,
-                "adapter": task.adapter_name,
-                "adapter_descriptor_digest":
-                    task.adapter_descriptor_digest,
-                "adapter_composition_digest":
-                    task.adapter_composition_digest,
-                "task_descriptor_digest": task.task_descriptor_digest,
-                "generation_mode": str(generation_mode),
-                "placement_profile": str(placement_profile),
-            },
+            task=task_contract,
         ).to_bytes()
 
     def _seal(
@@ -2323,6 +3957,7 @@ class AutomaticPlanningCoordinator:
         invocation_id: str,
         strategy_identity_digest: str,
         generation_mode: str = "TOKEN_DIAGNOSTIC",
+        generation_recovery: GenerationRecoveryV1 | None = None,
     ) -> SealedCollaborationPlan:
         assignments = {item.role: item for item in decision.assignments}
         roles = []
@@ -2452,6 +4087,7 @@ class AutomaticPlanningCoordinator:
                     candidate.execution_plan),
                 deadline_ms=placement.deadline_ms,
                 generation=1,
+                generation_recovery=generation_recovery,
                 execution_policy=DATA_DRIVEN_V2,
             ).to_bytes()
             for role in provider_roles:

@@ -863,8 +863,13 @@ class CollaborationArtifactApiBackend:
         packet_payload_bytes: int = _DEFAULT_PACKET_PAYLOAD_BYTES,
         chunk_bytes: int = _DEFAULT_CHUNK_BYTES,
         committed_receipts: tuple[dict[str, Any], ...] = (),
+        test_only_allow_ephemeral_state_root: bool = False,
     ) -> "CollaborationArtifactApiBackend":
-        """Construct the public artifact transport from one deployment file."""
+        """Construct the public artifact transport from one deployment file.
+
+        A volatile state root is accepted only when an explicit test caller
+        opts in. Production callers retain the persistent-journal safety gate.
+        """
         from ndnsf import ServiceUser
         from ndnsf_distributed_inference.app import APPDeployment
 
@@ -876,6 +881,8 @@ class CollaborationArtifactApiBackend:
                 + hashlib.sha256(str(user).encode()).hexdigest()[:16]
             ),
             generated_policy_dir=generated_policy_dir,
+            test_only_allow_ephemeral_state_root=(
+                test_only_allow_ephemeral_state_root),
         ).deployment
         service_user = ServiceUser(
             group=deployment.group,
@@ -886,6 +893,22 @@ class CollaborationArtifactApiBackend:
             adaptive_admission=False,
             bootstrap_token=bootstrap_token,
         )
+        for _attempt in range(2):
+            if any(
+                str(permission.service) == str(service_name)
+                for permission in service_user.get_allowed_services()
+            ):
+                break
+            service_user.refresh_permissions()
+            service_user.pump(6000)
+        if not any(
+            str(permission.service) == str(service_name)
+            for permission in service_user.get_allowed_services()
+        ):
+            raise RuntimeError(
+                "artifact backend permission did not become ready for "
+                + str(service_name)
+            )
         return cls(
             None,
             service_user,

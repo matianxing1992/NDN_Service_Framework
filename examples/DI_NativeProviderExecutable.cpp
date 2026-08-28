@@ -1491,8 +1491,11 @@ main(int argc, char** argv)
                   ndn_service_framework::selectionGatedUnhex(field->second);
                 auto capability = ProviderGroupCoordinator::decodeCapability(
                   ProviderGroupBytes(decodedWire.begin(), decodedWire.end()));
+                const auto requestPlan = fields.find("executionPlanDigest");
+                const auto authenticatedPlanDigest =
+                  requestPlan == fields.end() ? expectedPlanDigest : requestPlan->second;
                 if (capability.requestId != ctx.sessionId() ||
-                    capability.planDigest != expectedPlanDigest) {
+                    capability.planDigest != authenticatedPlanDigest) {
                   throw std::runtime_error(
                     "NDNSF_DATA_V1 capability request/plan binding mismatch");
                 }

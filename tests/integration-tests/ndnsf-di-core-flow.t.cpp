@@ -9,9 +9,11 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include "ndn-service-framework/HybridMessageCrypto.hpp"
+#include "ndn-service-framework/InvocationStream.hpp"
 #include "ndnsf-integration-fixture.hpp"
 
 #include <ndn-cxx/security/signing-helpers.hpp>
+#include <ndn-cxx/util/sha256.hpp>
 
 #include <algorithm>
 #include <array>
@@ -21,6 +23,8 @@
 #include <cstring>
 #include <functional>
 #include <future>
+#include <filesystem>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <set>
@@ -1098,24 +1102,10 @@ runNativeMultiRoleIngressCase(bool suppressBackboneOutput = false)
             encodeCollaborationAssignmentEnvelope(assignment));
         }
 
-        ServiceSelectionMessage selection;
-        selection.setRequestIDs({requestId.toUri()});
-        selection.setAttempt(1);
-        SelectionProviderEntry entry;
-        entry.providerName = providerName;
-        entry.assignmentPayload = encodeOpaqueAssignmentSet(assignmentItems);
-        selection.addProviderEntry(entry);
-        const auto selectionName = makeServiceSelectionNameV2(
-          requesterName, providerName, serviceName, requestId);
-        const auto selectionBlock = selection.WireEncode();
-        const auto encrypted = makeTestHybridPublication(
-          selectionName, serviceName, requestId, requesterName, "SELECTION",
-          ndn::Buffer(selectionBlock.data(), selectionBlock.size()));
-        environment.provider().cacheHybridReceiveKeyForTest(
-          encrypted.key.keyId, encrypted.key.epochId, encrypted.key.key);
-        environment.userPubSub().publish(
-          selectionName,
-          ndn::span<const uint8_t>(encrypted.wire.data(), encrypted.wire.size()));
+        BOOST_REQUIRE(
+          environment.user().setSelectionAssignmentPayloadForRequest(
+            requestId, providerName,
+            encodeOpaqueAssignmentSet(assignmentItems)));
         result.selectionPublished = true;
         return candidates;
       }),
@@ -1303,6 +1293,146 @@ public:
   }
 };
 
+/**
+ * Selection policy used by the streamed native D2b gate.  The policy keeps
+ * the planner-owned role-to-Provider map and the exact V3 assignment bytes
+ * separate from the request payload.  CommitCollaborationPlan then wraps
+ * those bytes in the normal framework CollaborationAssignmentEnvelope and
+ * emits the real encrypted Selection, including the streamed event-key grant.
+ */
+class StreamedNativeD2bSelection final : public ParticipantSelectionPolicy
+{
+public:
+  StreamedNativeD2bSelection(
+      std::map<std::string, ndn::Name> roleProviders,
+      std::map<std::string, ndn::Buffer> roleAssignments)
+    : m_roleProviders(std::move(roleProviders))
+    , m_roleAssignments(std::move(roleAssignments))
+  {
+  }
+
+  std::vector<SelectedParticipant>
+  select(const std::vector<AckCandidate>& candidates,
+         const std::vector<CollaborationRoleSpec>& roles) const override
+  {
+    std::vector<SelectedParticipant> selected;
+    selected.reserve(roles.size());
+    for (const auto& role : roles) {
+      const auto providerIt = m_roleProviders.find(role.role);
+      const auto assignmentIt = m_roleAssignments.find(role.role);
+      if (providerIt == m_roleProviders.end() ||
+          assignmentIt == m_roleAssignments.end()) {
+        return {};
+      }
+      const auto candidateIt = std::find_if(
+          candidates.begin(), candidates.end(),
+          [&provider = providerIt->second, &role](const AckCandidate& candidate) {
+            return candidate.providerName == provider &&
+                   candidate.serviceName == role.service &&
+                   candidate.ack.getStatus();
+          });
+      if (candidateIt == candidates.end()) {
+        return {};
+      }
+      selected.push_back(SelectedParticipant{
+          role.role,
+          role.service,
+          candidateIt->providerName,
+          role.requiredArtifact,
+          false,
+          0,
+          assignmentIt->second,
+          *candidateIt});
+    }
+    return selected;
+  }
+
+private:
+  std::map<std::string, ndn::Name> m_roleProviders;
+  std::map<std::string, ndn::Buffer> m_roleAssignments;
+};
+
+/**
+ * Formal Spec175 selection policy: derive the role/provider and opaque
+ * assignment from the successful Provider's ACK capability payload.  The
+ * caller supplies only the requested role contract; it does not carry a
+ * precomputed role-to-Provider map into Selection.
+ */
+class Spec175AckCapabilitySelection final : public ParticipantSelectionPolicy
+{
+public:
+  Spec175AckCapabilitySelection() = default;
+
+  explicit Spec175AckCapabilitySelection(
+      std::map<std::string, ndn::Buffer> selectionAssignmentByProvider,
+      std::map<std::string, ndn::Name> preferredProviderByRole = {})
+    : m_selectionAssignmentByProvider(
+        std::move(selectionAssignmentByProvider))
+    , m_preferredProviderByRole(std::move(preferredProviderByRole))
+  {
+  }
+
+  std::vector<SelectedParticipant>
+  select(const std::vector<AckCandidate>& candidates,
+         const std::vector<CollaborationRoleSpec>& roles) const override
+  {
+    if (std::getenv("NDNSF_DI_RUNTIME_TIMING") != nullptr) {
+      std::cout << "NDNSF_DI_SPEC175_SELECTION candidates=" << candidates.size()
+                << " roles=" << roles.size()
+                << " assignmentProjections="
+                << m_selectionAssignmentByProvider.size() << std::endl;
+    }
+    std::vector<SelectedParticipant> selected;
+    selected.reserve(roles.size());
+    for (const auto& role : roles) {
+      const auto candidateIt = std::find_if(
+          candidates.begin(), candidates.end(),
+          [&, preferred = m_preferredProviderByRole.find(role.role)](
+              const AckCandidate& candidate) {
+            if (!candidate.ack.getStatus()) {
+              return false;
+            }
+            if (preferred != m_preferredProviderByRole.end() &&
+                candidate.providerName != preferred->second) {
+              return false;
+            }
+            const auto payload = candidate.ack.getPayload();
+            if (payload.empty()) {
+              return false;
+            }
+            const std::string text(
+                reinterpret_cast<const char*>(payload.data()), payload.size());
+            const auto roleField = std::string("role=") + role.role + ";";
+            const auto providerField =
+                std::string("provider=") + candidate.providerName.toUri() + ";";
+            return text.find(roleField) != std::string::npos &&
+                   text.find(providerField) != std::string::npos;
+          });
+      if (candidateIt == candidates.end()) {
+        return {};
+      }
+      const auto payload = candidateIt->ack.getPayload();
+      const auto assignment = m_selectionAssignmentByProvider.find(
+        candidateIt->providerName.toUri());
+      selected.push_back(SelectedParticipant{
+          role.role,
+          role.service,
+          candidateIt->providerName,
+          role.requiredArtifact,
+          false,
+          0,
+          assignment == m_selectionAssignmentByProvider.end()
+            ? payload : assignment->second,
+          *candidateIt});
+    }
+    return selected;
+  }
+
+private:
+  std::map<std::string, ndn::Buffer> m_selectionAssignmentByProvider;
+  std::map<std::string, ndn::Name> m_preferredProviderByRole;
+};
+
 ProviderGroupCoordinatorOptions
 makeD2bCoordinatorOptions()
 {
@@ -1447,12 +1577,15 @@ makeV3TensorEndpointJson(const std::string& producerNamespace,
                          const std::string& targetLayoutDigest,
                          const std::string& operation,
                          const std::string& endpointDigest,
-                         const std::string& manifestDigest)
+                         const std::string& manifestDigest,
+                         std::uint64_t attempt = 1)
 {
-  return std::string("{\"attempt\":1,\"consumer_role\":\"") +
+  return std::string("{\"attempt\":") + std::to_string(attempt) +
+    ",\"consumer_role\":\"" +
     consumerRole + "\",\"consumer_roles\":[" + consumerRoles +
     "],\"endpoint_digest\":\"" + endpointDigest +
-    "\",\"group_epoch\":\"1\",\"group_id\":\"" + groupId +
+    "\",\"group_epoch\":\"" + std::to_string(attempt) +
+    "\",\"group_id\":\"" + groupId +
     "\",\"hard_deadline_ms\":8000,\"layout_digest\":\"" +
     layoutDigest + "\",\"manifest_digest\":\"" + manifestDigest +
     "\",\"microbatch\":0,\"no_progress_deadline_ms\":2000,\"operation\":\"" +
@@ -1522,11 +1655,15 @@ makeV3SelectionProjectionJson(const std::string& roleJson,
                               const std::string& dependenciesJson,
                               const std::string& dataflowJson,
                               const std::string& offerDigest,
-                              const std::string& device = "cpu:0")
+                              const std::string& device = "cpu:0",
+                              const std::string& generationContractJson = {},
+                              std::uint64_t layerBegin = 0,
+                              std::uint64_t layerEnd = 1,
+                              std::uint64_t attempt = 1)
 {
   return std::string("{\"ack_closed_digest\":\"") + planDigest +
     "\",\"assembly\":" + roleJson +
-    ",\"attempt\":1,\"dataflow\":" + dataflowJson +
+    ",\"attempt\":" + std::to_string(attempt) + ",\"dataflow\":" + dataflowJson +
     ",\"deadline_ms\":9999999999999,\"dependencies\":" +
     dependenciesJson + ",\"device_binding\":{\"mode\":\"SINGLE_DEVICE\",\"offer_digest\":\"" +
     offerDigest + "\",\"offer_scoped_device_handle\":\"" + device +
@@ -1534,7 +1671,9 @@ makeV3SelectionProjectionJson(const std::string& roleJson,
     "\"resource_snapshot_digest\":\"" + planDigest +
     "\",\"role\":\"" + roleKey +
     "\",\"sharing_policy\":\"EXCLUSIVE_ROLE\",\"topology_profile_digest\":\"" +
-    planDigest + "\"},\"execution_role\":{\"adapter_id\":\"qwen-test\",\"adapter_version\":\"1\",\"backend\":\"onnxruntime\",\"layer_begin\":0,\"layer_end\":1,\"rank\":" +
+    planDigest + "\"},\"execution_role\":{\"adapter_id\":\"qwen-test\",\"adapter_version\":\"1\",\"backend\":\"onnxruntime\",\"layer_begin\":" +
+    std::to_string(layerBegin) + ",\"layer_end\":" +
+    std::to_string(layerEnd) + ",\"rank\":" +
     std::to_string(rank) + ",\"role_id\":\"" + roleKey +
     "\",\"stage_id\":\"" + logicalRole +
     "\"},\"group_capability_v1\":\"" + capabilityHex +
@@ -1543,10 +1682,191 @@ makeV3SelectionProjectionJson(const std::string& roleJson,
     "\",\"plan_digest\":\"" + planDigest +
     "\",\"provider\":\"" + provider +
     "\",\"request_id\":\"" + requestId +
-    "\",\"roles\":[" + roleJson +
+    "\"" + (generationContractJson.empty()
+      ? std::string()
+      : std::string(",\"generation_contract\":") + generationContractJson) +
+    ",\"roles\":[" + roleJson +
     "],\"schema\":\"ndnsf-di-selection-v3\",\"schema_version\":3," +
     "\"security_policy_snapshot_digest\":\"" + planDigest + "\"}";
 }
+
+std::string
+spec175Digest(char value)
+{
+  return "sha256:" + std::string(64, value);
+}
+
+std::string
+makeSpec175TensorContractJson(const std::string& name,
+                              const std::string& dtype,
+                              const std::vector<std::string>& shape)
+{
+  std::string encodedShape;
+  for (const auto& dimension : shape) {
+    if (!encodedShape.empty()) {
+      encodedShape += ',';
+    }
+    encodedShape += "\"" + dimension + "\"";
+  }
+  return "{\"name\":\"" + name + "\",\"dtype\":\"" + dtype +
+    "\",\"shape\":[" + encodedShape + "]}";
+}
+
+std::string
+makeSpec175CertifiedRoleJson(const std::string& role,
+                             std::size_t roleIndex,
+                             std::size_t providerCount,
+                             const std::string& artifactDigest,
+                             const std::string& recipeDigest)
+{
+  if (providerCount == 0 || 4 % providerCount != 0 || roleIndex >= providerCount) {
+    throw std::invalid_argument("invalid Spec175 certified role partition");
+  }
+  const auto stateRows = 4 / providerCount;
+  const auto layerBegin = roleIndex * stateRows;
+  const auto layerEnd = layerBegin + stateRows;
+  const auto stateShape = std::vector<std::string>{
+    std::to_string(stateRows), "8"};
+  std::vector<std::string> inputs;
+  inputs.push_back(makeSpec175TensorContractJson(
+    roleIndex == 0 ? "input_ids" : "hidden_in",
+    roleIndex == 0 ? "int64" : "float32",
+    roleIndex == 0
+      ? std::vector<std::string>{"1", "sequence"}
+      : std::vector<std::string>{"1", "sequence", "8"}));
+  std::vector<std::string> outputs;
+  outputs.push_back(makeSpec175TensorContractJson(
+    roleIndex + 1 == providerCount ? "logits" : "hidden_out", "float32",
+    {"1", "sequence", roleIndex + 1 == providerCount ? "32" : "8"}));
+  for (const auto& name : {"attention_kv", "recurrent_state", "convolution_state"}) {
+    inputs.push_back(makeSpec175TensorContractJson(
+      std::string(name) + "_in", "float32", stateShape));
+    outputs.push_back(makeSpec175TensorContractJson(
+      std::string(name) + "_out", "float32", stateShape));
+  }
+  const auto join = [] (const std::vector<std::string>& values) {
+    std::string result;
+    for (const auto& value : values) {
+      if (!result.empty()) result += ',';
+      result += value;
+    }
+    return result;
+  };
+  std::string nodeIndices;
+  for (std::size_t node = layerBegin; node < layerEnd; ++node) {
+    if (!nodeIndices.empty()) nodeIndices += ',';
+    nodeIndices += std::to_string(node);
+  }
+  return std::string("{\"adapter_id\":\"qwen-test\",") +
+    "\"adapter_version\":\"1\",\"artifact_digest\":\"" + artifactDigest +
+    "\",\"backend\":\"onnxruntime\",\"device_set\":[\"cpu:0\"]," +
+    "\"layer_begin\":" + std::to_string(layerBegin) +
+    ",\"layer_end\":" + std::to_string(layerEnd) +
+    ",\"rank\":" + std::to_string(roleIndex) +
+    ",\"protection_epoch\":\"plaintext-v1\"," +
+    "\"required_device_memory_mb\":0,\"recipe_digest\":\"" + recipeDigest +
+    "\",\"role\":\"" + role + "\",\"role_kind\":\"PIPELINE_RANGE\"," +
+    "\"model_manifest_digest\":\"" + spec175Digest('5') +
+    "\",\"artifact_profile_digest\":\"" + spec175Digest('6') +
+    "\",\"graph_digest\":\"" + spec175Digest(static_cast<char>('a' + roleIndex)) +
+    "\",\"canonical_initializer_digest\":\"" + spec175Digest('e') +
+    "\",\"adapter_descriptor_digest\":\"" + spec175Digest('f') +
+    "\",\"assembler_descriptor_digest\":\"" + spec175Digest('9') +
+    "\",\"backend_abi\":\"onnxruntime-test-cpu-v1\"," +
+    "\"node_indices\":[" + nodeIndices + "],\"expected_inputs\":[" +
+    join(inputs) + "],\"expected_outputs\":[" + join(outputs) + "]," +
+    "\"precision\":\"float32\",\"quantization\":\"none\"," +
+    "\"layout\":\"native\",\"padding\":\"none\"," +
+    "\"resource_envelope\":{\"maxSourceBytes\":4096," +
+    "\"maxAssembledBytes\":4096,\"maxNodes\":" +
+    std::to_string(stateRows) + "}}";
+}
+
+void
+bindSpec175CertifiedRunnerMetadata(NativeModelRunnerSpec& spec,
+                                   std::size_t roleIndex,
+                                   std::size_t providerCount,
+                                   const std::string& artifactDigest,
+                                   const std::string& recipeDigest)
+{
+  spec.metadata["fragmentDigest"] = artifactDigest;
+  spec.metadata["recipeDigest"] = recipeDigest;
+  spec.metadata["modelManifestDigest"] = spec175Digest('5');
+  spec.metadata["artifactProfileDigest"] = spec175Digest('6');
+  spec.metadata["graphDigest"] = spec175Digest(static_cast<char>('a' + roleIndex));
+  spec.metadata["canonicalInitializerDigest"] = spec175Digest('e');
+  spec.metadata["adapterDescriptorDigest"] = spec175Digest('f');
+  spec.metadata["assemblerDescriptorDigest"] = spec175Digest('9');
+  spec.metadata["backendAbi"] = "onnxruntime-test-cpu-v1";
+  spec.metadata["precision"] = "float32";
+  spec.metadata["quantization"] = "none";
+  spec.metadata["layout"] = "native";
+  spec.metadata["padding"] = "none";
+  spec.metadata["maxSourceBytes"] = "4096";
+  spec.metadata["maxAssembledBytes"] = "4096";
+  spec.metadata["maxNodes"] = std::to_string(4 / providerCount);
+}
+
+std::string
+makeSpec175GenerationContractJson(std::size_t maxGeneratedTokens,
+                                  std::size_t operationStride,
+                                  const std::string& samplingDigest,
+                                  const std::string& tokenizerDigest,
+                                  const std::vector<std::int64_t>& committedPrefix = {})
+{
+  std::string committed;
+  for (const auto token : committedPrefix) {
+    if (!committed.empty()) committed += ',';
+    committed += std::to_string(token);
+  }
+  return std::string("{\"mode\":\"TOKEN_STREAMING\",") +
+    "\"max_generated_tokens\":" + std::to_string(maxGeneratedTokens) +
+    ",\"token_input_name\":\"input_ids\"," +
+    "\"state_input_names\":[\"attention_kv_in\",\"recurrent_state_in\"," +
+    "\"convolution_state_in\"],\"state_output_names\":[" +
+    "\"attention_kv_out\",\"recurrent_state_out\",\"convolution_state_out\"]," +
+    "\"eos_token_ids\":[2],\"sampling_digest\":\"" + samplingDigest +
+    "\",\"tokenizer_digest\":\"" + tokenizerDigest +
+    "\",\"committed_prefix_token_ids\":[" + committed +
+    "],\"streaming_operation_stride\":" + std::to_string(operationStride) + "}";
+}
+
+class ScopedSpec175CertifiedModels
+{
+public:
+  explicit ScopedSpec175CertifiedModels(const std::string& caseId)
+  {
+    static std::atomic<std::uint64_t> sequence{0};
+    const auto nonce = sequence.fetch_add(1, std::memory_order_relaxed);
+    m_root = std::filesystem::temp_directory_path() /
+      ("ndnsf-spec175-certified-" + caseId + "-" + std::to_string(nonce));
+    std::filesystem::remove_all(m_root);
+    std::filesystem::create_directories(m_root);
+  }
+
+  ScopedSpec175CertifiedModels(const ScopedSpec175CertifiedModels&) = delete;
+  ScopedSpec175CertifiedModels& operator=(const ScopedSpec175CertifiedModels&) = delete;
+
+  ~ScopedSpec175CertifiedModels()
+  {
+    std::error_code error;
+    std::filesystem::remove_all(m_root, error);
+  }
+
+  std::filesystem::path
+  materialize(const std::filesystem::path& source, std::size_t roleIndex)
+  {
+    const auto directory = m_root / ("role-" + std::to_string(roleIndex));
+    std::filesystem::create_directories(directory);
+    const auto destination = directory / "model.onnx";
+    std::filesystem::copy_file(
+      source, destination, std::filesystem::copy_options::overwrite_existing);
+    return destination;
+  }
+
+private:
+  std::filesystem::path m_root;
+};
 
 } // namespace
 
@@ -2072,8 +2392,9 @@ BOOST_AUTO_TEST_CASE(PreconfiguredEnvironmentAppliesDeterministicPacketFaults)
     environment.providerFace().processEvents(ndn::time::milliseconds(5));
   };
 
-  auto dropped = environment.beginRequest(
-      "fault-drop", ndn_service_framework::test::FaultProfile{true, false, false});
+  ndn_service_framework::test::FaultProfile dropFault;
+  dropFault.dropPackets = true;
+  auto dropped = environment.beginRequest("fault-drop", dropFault);
   environment.markRequestPublished(dropped);
   publishData("drop");
   BOOST_CHECK_GE(environment.bridgeStats().droppedPackets, 1);
@@ -2082,16 +2403,18 @@ BOOST_AUTO_TEST_CASE(PreconfiguredEnvironmentAppliesDeterministicPacketFaults)
                     "/ndnsf/spec170/fault/drop");
   environment.resetRequest(dropped);
 
-  auto duplicated = environment.beginRequest(
-      "fault-duplicate", ndn_service_framework::test::FaultProfile{false, true, false});
+  ndn_service_framework::test::FaultProfile duplicateFault;
+  duplicateFault.duplicatePackets = true;
+  auto duplicated = environment.beginRequest("fault-duplicate", duplicateFault);
   environment.markRequestPublished(duplicated);
   publishData("duplicate");
   BOOST_CHECK_EQUAL(environment.bridgeStats().duplicatedPackets, 1);
   BOOST_CHECK_EQUAL(environment.bridgeStats().forwardedData, 2);
   environment.resetRequest(duplicated);
 
-  auto reordered = environment.beginRequest(
-      "fault-reorder", ndn_service_framework::test::FaultProfile{false, false, true});
+  ndn_service_framework::test::FaultProfile reorderFault;
+  reorderFault.reorderPackets = true;
+  auto reordered = environment.beginRequest("fault-reorder", reorderFault);
   environment.markRequestPublished(reordered);
   publishData("first");
   BOOST_CHECK_EQUAL(environment.bridgeStats().reorderedPackets, 0);
@@ -2125,7 +2448,7 @@ BOOST_AUTO_TEST_CASE(PreconfiguredEnvironmentBootstrapsThreeProviders)
   environment.resetRequest(scope);
 }
 
-BOOST_AUTO_TEST_CASE(PreconfiguredEnvironmentRunsGenericRequestLifecycle)
+BOOST_AUTO_TEST_CASE(Spec175UnaryYoloI14CompletesWithoutStreamState)
 {
   ndn_service_framework::test::NdnsfIntegrationEnvironment environment;
   environment.bootstrap();
@@ -2248,6 +2571,7 @@ BOOST_AUTO_TEST_CASE(PreconfiguredEnvironmentRunsGenericRequestLifecycle)
       std::function<void()>([] { BOOST_FAIL("fixture request unexpectedly timed out"); }),
       1000, tlv::FirstResponding);
   BOOST_REQUIRE(!requestId.empty());
+  BOOST_CHECK(!environment.user().hasStreamStateForTest(requestId));
 
   environment.pumpUntil([&] { return typedCallbackCalled; });
   BOOST_CHECK(requestPublished);
@@ -2257,6 +2581,7 @@ BOOST_AUTO_TEST_CASE(PreconfiguredEnvironmentRunsGenericRequestLifecycle)
   BOOST_CHECK(responsePublished);
   BOOST_CHECK(responseReceived);
   BOOST_CHECK(typedCallbackCalled);
+  BOOST_CHECK(!environment.user().hasStreamStateForTest(requestId));
   environment.updateRequestResidue(scope, {});
   environment.resetRequest(scope);
 }
@@ -3048,6 +3373,7 @@ runProductionD2bDataV1Case(ProductionD2bDataV1Fault fault)
   profile.providerCount = 2;
   test::NdnsfIntegrationEnvironment environment(profile);
   environment.bootstrap();
+  environment.disconnectProviderPeerTransportForTest();
 
   std::atomic<bool> faultApplied{false};
   std::optional<std::string> faultTargetName;
@@ -3061,14 +3387,26 @@ runProductionD2bDataV1Case(ProductionD2bDataV1Fault fault)
       providerPeerBridges.emplace_back(
           environment.providerFace(source).onSendInterest.connect(
               [&environment, destination] (const ndn::Interest& interest) {
-                environment.providerFace(destination).receive(interest);
+                auto packet = interest;
+                auto& destinationFace = environment.providerFace(destination);
+                boost::asio::post(
+                    destinationFace.getIoContext(),
+                    [&environment, destination, packet = std::move(packet)] {
+                      environment.providerFace(destination).receive(packet);
+                    });
               }));
       providerPeerBridges.emplace_back(
           environment.providerFace(source).onSendData.connect(
               [&environment, &faultApplied, &faultTargetName, &delayedData,
                destination, source, fault] (const ndn::Data& data) {
                 auto forward = [&] (const ndn::Data& packet) {
-                  environment.providerFace(destination).receive(packet);
+                  auto copy = packet;
+                  auto& destinationFace = environment.providerFace(destination);
+                  boost::asio::post(
+                      destinationFace.getIoContext(),
+                      [&environment, destination, packet = std::move(copy)] {
+                        environment.providerFace(destination).receive(packet);
+                      });
                 };
                 if (source != 0 || destination != 1 ||
                     fault == ProductionD2bDataV1Fault::None ||
@@ -3178,14 +3516,28 @@ runProductionD2bDataV1Case(ProductionD2bDataV1Fault fault)
   for (const auto& segment : sealed.segments) {
     const auto wire = ProviderGroupCoordinator::encodeSegment(
         sealed.manifest, segment);
-    publications.emplace_back(ndn::Name(segment.dataName),
+    const ndn::Name canonicalDataName(segment.dataName);
+    BOOST_REQUIRE(provider0Name.isPrefixOf(canonicalDataName));
+    // The retired SVS DATA_V1 transport demultiplexes on its producer-node
+    // prefix.  Keep that outer publication locator for this compatibility
+    // test, while the encoded/capability-bound segment retains its canonical
+    // producer-identity Data name used by the Spec175 exact-Data path.
+    ndn::Name transportPublicationName(producerPrefix);
+    transportPublicationName.append(
+        canonicalDataName.getSubName(provider0Name.size()));
+    publications.emplace_back(std::move(transportPublicationName),
                               ndn::Buffer(wire.begin(), wire.end()));
   }
 
   std::atomic<bool> ackObserved{false};
+  std::atomic<bool> planCommitted{false};
+  std::atomic<bool> planCommitFailed{false};
   std::atomic<bool> provider0Published{false};
   std::atomic<bool> provider1HandlerCalled{false};
+  std::atomic<bool> consumerSubscriptionReady{false};
+  std::atomic<bool> fetchCompleted{false};
   std::atomic<bool> timedOut{false};
+  std::string planCommitError;
   auto fetchPromise = std::make_shared<
       std::promise<std::optional<std::vector<ndn::Buffer>>>>();
   auto fetchFuture = fetchPromise->get_future();
@@ -3203,6 +3555,16 @@ runProductionD2bDataV1Case(ProductionD2bDataV1Fault fault)
             context.assignment().role != "producer") {
           return;
         }
+        // The consumer Selection is intentionally committed first, but its
+        // handler runs on another worker.  Do not let a scheduler race turn
+        // the legacy subscribe-before-publish DATA_V1 contract into a flaky
+        // test.  This wait is bounded and never runs on the Face event loop.
+        for (int round = 0; round < 200 && !consumerSubscriptionReady; ++round) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        if (!consumerSubscriptionReady) {
+          return;
+        }
         provider0Published = context.publishDataV1Segments(
             "/scope/d2b", publications, 60000);
       });
@@ -3217,26 +3579,45 @@ runProductionD2bDataV1Case(ProductionD2bDataV1Fault fault)
         provider1HandlerCalled = true;
         auto contextCopy = std::make_shared<ServiceProvider::CollaborationContext>(context);
         fetchThread = std::thread(
-            [contextCopy, fetchPromise, producerPrefix, operation] {
+            [contextCopy, fetchPromise, producerPrefix, operation,
+             &consumerSubscriptionReady, &fetchCompleted] {
               try {
                 fetchPromise->set_value(contextCopy->fetchDataV1Segments(
                     "/scope/d2b", producerPrefix, operation.operationIndex,
-                    "0", "tensor-d2b", 2, operation.maxSegments, 3000));
+                    "0", "tensor-d2b", 2, operation.maxSegments, 3000,
+                    {}, DataV1SegmentNameFilter{
+                      {}, [&consumerSubscriptionReady] {
+                        consumerSubscriptionReady = true;
+                      }}));
+                fetchCompleted = true;
               }
               catch (...) {
                 fetchPromise->set_exception(std::current_exception());
+                fetchCompleted = true;
               }
             });
       });
   environment.enableProductionIngressForTest();
 
+  // CommitCollaborationPlan owns Selection publication.  Route its encrypted
+  // wire through the same user SVS instance as production; do not inject a
+  // second Selection for a Provider that Core has already selected.
+  environment.user().setLocalPublicationHandler(
+      [&environment] (const ndn::Name& messageName, const ndn::Buffer& wire) {
+        if (!parseServiceSelectionNameV2(messageName)) {
+          return;
+        }
+        environment.userPubSub().publish(
+            messageName,
+            ndn::span<const uint8_t>(wire.data(), wire.size()));
+      });
+
   environment.user().setRequestPublisher(
       [&] (const ndn::Name&, const ndn::Name& requestName,
-           const std::vector<ndn::Name>& providers,
+           const std::vector<ndn::Name>&,
            const ndn::Name& publishedService,
            const RequestMessage& request, size_t strategy) {
-        if (providers.size() != 2 || publishedService != serviceName ||
-            strategy != tlv::FirstResponding) {
+        if (publishedService != serviceName || strategy != tlv::AllSelected) {
           return;
         }
         const auto requestBlock = request.WireEncode();
@@ -3251,107 +3632,85 @@ runProductionD2bDataV1Case(ProductionD2bDataV1Fault fault)
             requestName,
             ndn::span<const uint8_t>(encrypted.wire.data(), encrypted.wire.size()));
       });
-
-  // Publish the consumer Selection first. Its handler installs the
-  // request-scoped DATA_V1 subscription before the producer is selected and
-  // publishes the first segment; otherwise an already-published SVS object
-  // would be invisible to this fetch API by design.
-  auto publishSelection = [&] (const ndn::Name& providerName, const char* role) {
-    CollaborationAssignmentEnvelope assignment;
-    assignment.role = role;
-    assignment.assignedArtifact = ndn::Name("/artifact").append(role);
-    const std::string opaque = std::string("rank=") + role + ";";
-    assignment.opaquePayload = ndn::Buffer(
-        reinterpret_cast<const uint8_t*>(opaque.data()), opaque.size());
-    ServiceSelectionMessage selection;
-    selection.setRequestIDs({requestId.toUri()});
-    selection.setAttempt(1);
-    selection.addProviderEntry(SelectionProviderEntry{
-        providerName, {}, encodeCollaborationAssignmentEnvelope(assignment)});
-    const auto selectionName = makeServiceSelectionNameV2(
-        requesterName, providerName, serviceName, requestId);
-    const auto selectionBlock = selection.WireEncode();
-    const auto encrypted = makeTestHybridPublication(
-        selectionName, serviceName, requestId, requesterName, "SELECTION",
-        ndn::Buffer(selectionBlock.data(), selectionBlock.size()));
-    const auto providerIndex = providerName == provider0Name ? 0U : 1U;
-    environment.provider(providerIndex).cacheHybridReceiveKeyForTest(
-        encrypted.key.keyId, encrypted.key.epochId, encrypted.key.key);
-    environment.userPubSub().publish(
-        selectionName,
-        ndn::span<const uint8_t>(encrypted.wire.data(), encrypted.wire.size()));
-  };
-
-  RequestMessage request;
   const std::string requestText = "d2b-payload";
   ndn::Buffer requestPayload(
       reinterpret_cast<const uint8_t*>(requestText.data()), requestText.size());
-  request.setPayload(requestPayload, requestPayload.size());
-  request.setPolicyEpoch(environment.user().getCurrentPolicyEpoch());
-  const auto returnedRequestId = environment.user().RequestService(
-      std::vector<ndn::Name>{provider0Name, provider1Name}, serviceName, request, 200,
-      ServiceUser::AckCandidatesHandler(
-          [&] (const std::vector<AckSelectionCandidate>& candidates) {
-            ackObserved = true;
-            if (candidates.size() != 2) {
-              return candidates;
-            }
-            publishSelection(provider1Name, "consumer");
-            return candidates;
-          }),
-      2000,
-      [&] (const ndn::Name&) { timedOut = true; },
+
+  const auto returnedRequestId = environment.user().BeginCollaboration(
+      serviceName, requestPayload, 200, 5000,
+      [&] (const CollaborationAckClosure& closure) {
+        ackObserved = closure.candidates.size() == 2;
+        if (!ackObserved) {
+          return;
+        }
+
+        CollaborationPlan plan;
+        plan.ackCollectionTimeMs = 200;
+        plan.timeoutMs = 5000;
+        // Consumer first: it installs the request-scoped legacy SVS
+        // subscription before the producer publishes the first segment.
+        for (const auto& role : {std::string("consumer"),
+                                 std::string("producer")}) {
+          CollaborationRoleSpec roleSpec;
+          roleSpec.role = role;
+          roleSpec.service = serviceName;
+          roleSpec.requiredArtifact = ndn::Name("/artifact").append(role);
+          plan.roles.push_back(std::move(roleSpec));
+        }
+
+        std::map<std::string, ndn::Name> roleProviders{
+            {"consumer", provider1Name}, {"producer", provider0Name}};
+        std::map<std::string, ndn::Buffer> roleAssignments;
+        for (const auto& role : {std::string("consumer"),
+                                 std::string("producer")}) {
+          const std::string opaque = "rank=" + role + ";";
+          roleAssignments.emplace(
+              role, ndn::Buffer(
+                  reinterpret_cast<const uint8_t*>(opaque.data()),
+                  opaque.size()));
+        }
+        plan.participantSelector =
+            std::make_shared<StreamedNativeD2bSelection>(
+                std::move(roleProviders), std::move(roleAssignments));
+        try {
+          planCommitted = environment.user().CommitCollaborationPlan(
+              closure.requestId, closure.digest, std::move(plan));
+        }
+        catch (const std::exception& error) {
+          planCommitError = error.what();
+          planCommitFailed = true;
+        }
+      },
       [&] (const ResponseMessage&) {},
-      tlv::FirstResponding,
+      [&] (const ndn::Name&) { timedOut = true; },
       requestId);
   BOOST_REQUIRE_EQUAL(returnedRequestId, requestId);
-
   environment.pumpUntil([&] {
-    bool pending = true;
-    for (size_t index = 0; index < environment.providerCount(); ++index) {
-      pending = pending &&
-          environment.provider(index).getPendingRequestCountForTesting() == 1;
-    }
-    return pending || timedOut;
-  });
-  for (size_t index = 0; index < environment.providerCount(); ++index) {
-    RequestAckMessage ack;
-    ack.setStatus(true);
-    ack.setMessage("d2b-ack-" + std::to_string(index));
-    const auto ackName = makeRequestAckNameV2(
-        environment.provider(index).getName(), requesterName, serviceName, requestId);
-    const auto ackBlock = ack.WireEncode();
-    const auto encrypted = makeTestHybridPublication(
-        ackName, serviceName, requestId, environment.provider(index).getName(), "ACK",
-        ndn::Buffer(ackBlock.data(), ackBlock.size()));
-    environment.user().cacheHybridReceiveKeyForTest(
-        encrypted.key.keyId, encrypted.key.epochId, encrypted.key.key);
-    environment.providerPubSub(index).publish(
-        ackName,
-        ndn::span<const uint8_t>(encrypted.wire.data(), encrypted.wire.size()));
-  }
-
-  environment.pumpUntil([&] {
-    return provider1HandlerCalled || timedOut;
-  });
-  if (provider1HandlerCalled && !timedOut) {
-    publishSelection(provider0Name, "producer");
-  }
-  environment.pumpUntil([&] {
-    return provider0Published || timedOut;
+    // Keep driving every DummyFace until the asynchronous fetch reaches its
+    // terminal state. Waiting on the future after stopping this pump would
+    // prevent the outstanding SVS Interests/Data from making progress.
+    return fetchCompleted ||
+           planCommitFailed || timedOut;
   });
   BOOST_CHECK(ackObserved);
+  BOOST_CHECK_MESSAGE(planCommitted, planCommitError);
   BOOST_CHECK(provider0Published);
   BOOST_CHECK(provider1HandlerCalled);
   BOOST_CHECK(!timedOut);
 
   std::optional<std::vector<ndn::Buffer>> fetched;
   std::exception_ptr fetchError;
-  try {
-    fetched = fetchFuture.get();
+  if (fetchFuture.wait_for(std::chrono::milliseconds(3500)) ==
+      std::future_status::ready) {
+    try {
+      fetched = fetchFuture.get();
+    }
+    catch (...) {
+      fetchError = std::current_exception();
+    }
   }
-  catch (...) {
-    fetchError = std::current_exception();
+  else {
+    BOOST_ERROR("D2b DATA_V1 fetch did not become ready within its bounded deadline");
   }
   if (fetchThread.joinable()) {
     fetchThread.join();
@@ -3443,7 +3802,8 @@ BOOST_AUTO_TEST_CASE(ProductionIngressReordersD2bSvsDataV1)
  * and exactly one final Response publication is produced.
  */
 void
-runProductionNativeD2bCase(bool tamperCapability)
+runProductionNativeD2bCase(bool tamperCapability,
+                            bool streamed = false)
 {
   test::BootstrapProfile profile;
   profile.serviceName = ndn::Name("/Inference/D2bNativeE2e");
@@ -3500,7 +3860,9 @@ runProductionNativeD2bCase(bool tamperCapability)
   plan.serviceName = serviceName.toUri();
   plan.modelName = "d2b-native-e2e";
   plan.executionPolicy = "DATA_DRIVEN_V2";
-  plan.roles = {"/Backbone", "/Aux", "/Head/Shard/0"};
+  plan.roles = streamed
+    ? std::vector<std::string>{"/Backbone", "/Head/Shard/0"}
+    : std::vector<std::string>{"/Backbone", "/Aux", "/Head/Shard/0"};
   NativeDependencySpec dependency(
     {"/Backbone"}, {"/Head/Shard/0"}, "backbone-to-head0",
     "/d2b/features", "/d2b/{sessionId}/features", 1, 0, {"features"});
@@ -3533,6 +3895,7 @@ runProductionNativeD2bCase(bool tamperCapability)
   auto observedOutputs = std::make_shared<
     std::map<std::string, std::map<std::string, std::string>>>();
   std::array<std::atomic<bool>, 2> handlerEntered{};
+  std::array<std::atomic<bool>, 2> streamPublisherObserved{};
   std::array<std::atomic<size_t>, 2> coordinatorFactoryCalls{};
   auto evidenceMutex = std::make_shared<std::mutex>();
   auto observedEvidence = std::make_shared<
@@ -3543,11 +3906,20 @@ runProductionNativeD2bCase(bool tamperCapability)
   std::atomic<size_t> uniqueResponsePublications{0};
   std::atomic<bool> ackObserved{false};
   std::atomic<bool> timedOut{false};
+  std::atomic<bool> streamedPlanCommitted{false};
+  std::atomic<bool> streamedComplete{false};
+  std::atomic<bool> streamedError{false};
+  std::mutex streamedResultMutex;
+  std::vector<std::string> streamedEvents;
+  std::string streamedResult;
+  std::string streamedErrorMessage;
 
   NativeProviderAssignment assignment;
   assignment.providerByRole = {{"/Backbone", provider0Name.toUri()},
-                               {"/Aux", provider0Name.toUri()},
                                {"/Head/Shard/0", provider1Name.toUri()}};
+  if (!streamed) {
+    assignment.providerByRole["/Aux"] = provider0Name.toUri();
+  }
 
   auto makeRunnerSpec = [&] (size_t index, const std::string& role) {
     NativeModelRunnerSpec spec;
@@ -3587,13 +3959,15 @@ runProductionNativeD2bCase(bool tamperCapability)
 
   for (size_t index = 0; index < environment.providerCount(); ++index) {
     auto& provider = environment.provider(index);
-    provider.setUseTokens(false);
+    if (!streamed) {
+      provider.setUseTokens(false);
+    }
     provider.markHybridResponseKeyWrappedForTest(serviceName);
     const std::string role = index == 0 ? "/Backbone" : "/Head/Shard/0";
     std::vector<NativeModelRunnerSpec> runnerSpecs{
       makeRunnerSpec(index, role),
     };
-    if (index == 0) {
+    if (index == 0 && !streamed) {
       runnerSpecs.push_back(makeRunnerSpec(index, "/Aux"));
     }
     NativeProviderHandlerConfig config;
@@ -3651,13 +4025,44 @@ runProductionNativeD2bCase(bool tamperCapability)
           ServiceProvider::CollaborationContext& context,
           const RequestMessage& request) mutable {
         handlerEntered[index] = true;
+        streamPublisherObserved[index] = context.isStreamed();
         selectionDigests[index] = context.assignment().selectionDigest;
         nativeHandler(context, request);
       });
   }
 
   environment.enableProductionIngressForTest();
-  environment.user().setUseTokens(false);
+  if (!streamed) {
+    environment.user().setUseTokens(false);
+    const auto assignmentKey =
+      environment.user().prepareHybridSendKeyForTest(
+        serviceName, "REQUEST-LARGE");
+    for (size_t index = 0; index < environment.providerCount(); ++index) {
+      environment.provider(index).cacheHybridReceiveKeyForTest(
+        assignmentKey.keyId, assignmentKey.epochId, assignmentKey.key);
+    }
+  }
+  else {
+    // The deferred stream binding is cryptographically bound to the
+    // request's one-time UserToken.  Let the real provider ACK path create
+    // and echo its one-time ProviderToken, while pre-installing only the
+    // LocalMock Hybrid keys needed to exercise production encryption.
+    const auto selectionKey = environment.user().prepareHybridSendKeyForTest(
+        serviceName, "SELECTION");
+    for (size_t index = 0; index < environment.providerCount(); ++index) {
+      auto& provider = environment.provider(index);
+      const auto ackKey = provider.prepareHybridSendKeyForTest(
+          serviceName, "ACK");
+      environment.user().cacheHybridReceiveKeyForTest(
+          ackKey.keyId, ackKey.epochId, ackKey.key);
+      const auto responseKey = provider.prepareHybridSendKeyForTest(
+          serviceName, "RESPONSE");
+      environment.user().cacheHybridReceiveKeyForTest(
+          responseKey.keyId, responseKey.epochId, responseKey.key);
+      provider.cacheHybridReceiveKeyForTest(
+          selectionKey.keyId, selectionKey.epochId, selectionKey.key);
+    }
+  }
   for (size_t index = 0; index < environment.providerCount(); ++index) {
     auto providerNode = environment.profile().providerNode;
     if (index > 0) {
@@ -3682,9 +4087,15 @@ runProductionNativeD2bCase(bool tamperCapability)
          const std::vector<ndn::Name>& providers,
          const ndn::Name& publishedService,
          const RequestMessage& request, size_t strategy) {
-      BOOST_REQUIRE_EQUAL(providers.size(), 2U);
+      if (streamed) {
+        BOOST_REQUIRE(providers.empty());
+        BOOST_CHECK_EQUAL(strategy, tlv::AllSelected);
+      }
+      else {
+        BOOST_REQUIRE_EQUAL(providers.size(), 2U);
+        BOOST_CHECK_EQUAL(strategy, tlv::FirstResponding);
+      }
       BOOST_CHECK_EQUAL(publishedService, serviceName);
-      BOOST_CHECK_EQUAL(strategy, tlv::FirstResponding);
       const auto requestBlock = request.WireEncode();
       const auto encrypted = makeTestHybridPublication(
         requestName, serviceName, requestId, requesterName, "REQUEST",
@@ -3698,7 +4109,8 @@ runProductionNativeD2bCase(bool tamperCapability)
         ndn::span<const uint8_t>(encrypted.wire.data(), encrypted.wire.size()));
     });
 
-  auto publishSelection = [&] (size_t index, const std::string& role) {
+  auto makeAssignmentPayload = [&] (
+      size_t index, const std::vector<std::string>& assignedRoles) {
     const auto providerName = environment.provider(index).getName();
     const auto projectedCapability = capability.projectForProvider(
       providerName.toUri());
@@ -3733,6 +4145,7 @@ runProductionNativeD2bCase(bool tamperCapability)
       "\"collectiveTargetLayoutDigest\":\"" + pipelineLayoutDigest + "\"," +
       "\"collectiveTensorDigest\":\"" + featureTensorDigest + "\"}]";
     std::vector<ndn::Buffer> assignmentItems;
+    assignmentItems.reserve(assignedRoles.size());
     const auto addAssignment = [&] (const std::string& assignedRole) {
       const auto roleKind = assignedRole == "/Aux"
         ? "COMPONENT_SET" : "TENSOR_RANK";
@@ -3750,7 +4163,7 @@ runProductionNativeD2bCase(bool tamperCapability)
         "\",\"request_id\":\"" + requestId.toUri() +
         "\",\"role\":\"" + assignedRole +
         "\",\"terminal_response_owner\":" +
-        (assignedRole == "/Aux" ? "true" : "false") +
+        (assignedRole == "/Head/Shard/0" ? "true" : "false") +
         ",\"wait_for\":[]}";
       const auto text = makeV3SelectionProjectionJson(
         roleJson, assignedRole, assignedRole, 0, providerName.toUri(),
@@ -3764,30 +4177,46 @@ runProductionNativeD2bCase(bool tamperCapability)
       assignmentItems.push_back(
         encodeCollaborationAssignmentEnvelope(envelope));
     };
-    addAssignment(role);
-    if (index == 0) {
-      addAssignment("/Aux");
+    for (const auto& assignedRole : assignedRoles) {
+      addAssignment(assignedRole);
     }
-    const auto assignmentPayload = assignmentItems.size() == 1
+    return assignmentItems.size() == 1
       ? assignmentItems.front()
       : encodeOpaqueAssignmentSet(assignmentItems);
-    ServiceSelectionMessage selection;
-    selection.setRequestIDs({requestId.toUri()});
-    selection.setAttempt(1);
-    selection.addProviderEntry(SelectionProviderEntry{
-      providerName, {}, assignmentPayload});
-    const auto selectionName = makeServiceSelectionNameV2(
-      requesterName, providerName, serviceName, requestId);
-    const auto selectionBlock = selection.WireEncode();
-    const auto encrypted = makeTestHybridPublication(
-      selectionName, serviceName, requestId, requesterName, "SELECTION",
-      ndn::Buffer(selectionBlock.data(), selectionBlock.size()));
-    environment.provider(index).cacheHybridReceiveKeyForTest(
-      encrypted.key.keyId, encrypted.key.epochId, encrypted.key.key);
-    environment.userPubSub().publish(
-      selectionName,
-      ndn::span<const uint8_t>(encrypted.wire.data(), encrypted.wire.size()));
   };
+
+  std::map<std::string, ndn::Buffer> streamedRoleAssignments;
+  std::map<std::string, ndn::Name> streamedRoleProviders;
+  if (streamed) {
+    // ParticipantSelectionPolicy returns the application's opaque projection
+    // bytes. CommitCollaborationPlan supplies the framework envelope; passing
+    // an already-enveloped value here would create a nested envelope that the
+    // Provider cannot parse as the V3 JSON projection.
+    for (const auto& [role, providerIndex] :
+         std::map<std::string, size_t>{{"/Backbone", 0},
+                                       {"/Head/Shard/0", 1}}) {
+      const auto enveloped = makeAssignmentPayload(providerIndex, {role});
+      CollaborationAssignmentEnvelope envelope;
+      if (!decodeCollaborationAssignmentEnvelope(enveloped, envelope) ||
+          envelope.role != role || envelope.opaquePayload.empty()) {
+        throw std::runtime_error(
+          "streamed test failed to build opaque V3 assignment projection");
+      }
+      streamedRoleAssignments.emplace(role, std::move(envelope.opaquePayload));
+    }
+    streamedRoleProviders.emplace("/Backbone", provider0Name);
+    streamedRoleProviders.emplace("/Head/Shard/0", provider1Name);
+
+    // CommitCollaborationPlan publishes Selection through this production
+    // local-publication boundary. No test calls the Provider selection
+    // parser directly in the streamed path.
+    environment.user().setLocalPublicationHandler(
+      [&environment] (const ndn::Name& messageName, const ndn::Buffer& wire) {
+        if (!parseServiceSelectionNameV2(messageName)) return;
+        environment.userPubSub().publish(
+          messageName, ndn::span<const uint8_t>(wire.data(), wire.size()));
+      });
+  }
 
   RequestMessage request;
   const std::string requestText = "d2b-native-payload";
@@ -3803,21 +4232,98 @@ runProductionNativeD2bCase(bool tamperCapability)
   }
   request.setPayload(requestPayload, requestPayload.size());
   request.setPolicyEpoch(environment.user().getCurrentPolicyEpoch());
-  const auto returnedRequestId = environment.user().RequestService(
-    std::vector<ndn::Name>{provider0Name, provider1Name}, serviceName, request, 200,
-    ServiceUser::AckCandidatesHandler(
-      [&] (const std::vector<AckSelectionCandidate>& candidates) {
-        ackObserved = candidates.size() == 2;
-        if (candidates.size() == 2) {
-          publishSelection(1, "/Head/Shard/0");
+  ndn::Name returnedRequestId;
+  if (streamed) {
+    StreamRequestOptions streamOptions;
+    streamOptions.maxEvents = 4;
+    streamOptions.interestWindow = 2;
+    streamOptions.reorderCapacity = 2;
+    streamOptions.publisherQueueCapacity = 2;
+    streamOptions.retentionMs = 3000;
+    streamOptions.maxEventWireBytes = 4096;
+
+    returnedRequestId = environment.user().BeginCollaboration(
+      serviceName, requestPayload, 200, 8000,
+      [&] (const CollaborationAckClosure& closure) {
+        ackObserved = closure.candidates.size() == 2;
+        CollaborationPlan streamPlan;
+        streamPlan.ackCollectionTimeMs = 200;
+        streamPlan.timeoutMs = 8000;
+        for (const auto& [role, provider] : streamedRoleProviders) {
+          CollaborationRoleSpec roleSpec;
+          roleSpec.role = role;
+          roleSpec.service = serviceName;
+          roleSpec.requiredArtifact = ndn::Name("/artifact").append(role);
+          roleSpec.terminalResponseOwner = role == "/Head/Shard/0";
+          streamPlan.roles.push_back(std::move(roleSpec));
         }
-        return candidates;
-      }),
-    8000,
-    [&] (const ndn::Name&) { timedOut = true; },
-    [&] (const ResponseMessage&) {},
-    tlv::FirstResponding,
-    requestId);
+        streamPlan.keyScopes.push_back(CollaborationKeyScope{
+          "backbone-to-head0", {"/Backbone", "/Head/Shard/0"}});
+        streamPlan.dependencies.push_back(CollaborationDependency{
+          {"/Backbone"}, {"/Head/Shard/0"}, "backbone-to-head0",
+          ndn::Name("/activation"), true});
+        streamPlan.participantSelector =
+          std::make_shared<StreamedNativeD2bSelection>(
+            streamedRoleProviders, streamedRoleAssignments);
+        try {
+          streamedPlanCommitted = environment.user().CommitCollaborationPlan(
+            closure.requestId, closure.digest, std::move(streamPlan));
+        }
+        catch (const std::exception& error) {
+          std::lock_guard<std::mutex> lock(streamedResultMutex);
+          streamedErrorMessage = error.what();
+          streamedError = true;
+        }
+      },
+      [&] (const ResponseMessage&) {},
+      [&] (const ndn::Name&) { timedOut = true; },
+      requestId,
+      CollaborationAckCoverageHandler(),
+      RequestCapabilities(),
+      std::optional<StreamRequestOptions>(streamOptions),
+      [&] (const ndn::Buffer& event) {
+        std::lock_guard<std::mutex> lock(streamedResultMutex);
+        streamedEvents.emplace_back(
+          reinterpret_cast<const char*>(event.data()), event.size());
+      },
+      [&] (const ndn::Buffer& response) {
+        std::lock_guard<std::mutex> lock(streamedResultMutex);
+        streamedResult.assign(
+          reinterpret_cast<const char*>(response.data()), response.size());
+        streamedComplete = true;
+      },
+      [&] (const StreamedInvocationError& error) {
+        std::lock_guard<std::mutex> lock(streamedResultMutex);
+        streamedErrorMessage = error.message;
+        streamedError = true;
+      });
+  }
+  else {
+    returnedRequestId = environment.user().RequestService(
+      std::vector<ndn::Name>{provider0Name, provider1Name}, serviceName, request, 200,
+      ServiceUser::AckCandidatesHandler(
+        [&] (const std::vector<AckSelectionCandidate>& candidates) {
+          ackObserved = candidates.size() == 2;
+          if (candidates.size() == 2) {
+            BOOST_REQUIRE(environment.user().setSelectionAssignmentPayloadForRequest(
+              requestId,
+              provider0Name,
+              makeAssignmentPayload(
+                0, std::vector<std::string>{"/Backbone", "/Aux"})));
+            BOOST_REQUIRE(environment.user().setSelectionAssignmentPayloadForRequest(
+              requestId,
+              provider1Name,
+              makeAssignmentPayload(
+                1, std::vector<std::string>{"/Head/Shard/0"})));
+          }
+          return candidates;
+        }),
+      8000,
+      [&] (const ndn::Name&) { timedOut = true; },
+      [&] (const ResponseMessage&) {},
+      tlv::FirstResponding,
+      requestId);
+  }
   BOOST_REQUIRE_EQUAL(returnedRequestId, requestId);
 
   environment.pumpUntil([&] {
@@ -3825,10 +4331,31 @@ runProductionNativeD2bCase(bool tamperCapability)
             environment.provider(1).getPendingRequestCountForTesting() == 1) ||
            timedOut;
   });
+  if (!streamed) {
   for (size_t index = 0; index < environment.providerCount(); ++index) {
     RequestAckMessage ack;
     ack.setStatus(true);
     ack.setMessage("d2b-native-ack-" + std::to_string(index));
+    if (streamed) {
+      const auto certificate = environment.keyChain().getPib().getIdentity(
+          environment.provider(index).getName())
+        .getDefaultKey().getDefaultCertificate();
+      const auto publicKey = certificate.getPublicKey();
+      ndn::Buffer publicKeyBuffer(publicKey.begin(), publicKey.end());
+      ndn::util::Sha256 digest;
+      digest << std::string(reinterpret_cast<const char*>(publicKey.data()),
+                            publicKey.size());
+      SelectionInputKeyOffer offer;
+      offer.setField("schemaVersion", "NDNSF-STREAM-GRANT-V1");
+      offer.setField("recipient", environment.provider(index).getName().toUri());
+      offer.setField("recipientCertName", certificate.getName().toUri());
+      offer.setField("recipientPublicKey", selectionGatedHex(publicKeyBuffer));
+      offer.setField("recipientCertDigest", "sha256:" + digest.toString());
+      offer.setField("providerBootEpoch",
+                     environment.provider(index).getName().toUri() + ":" +
+                       environment.provider(index).getProviderBootEpoch());
+      ack.setSelectionInputKeyOffer(offer);
+    }
     const auto ackName = makeRequestAckNameV2(
       environment.provider(index).getName(), requesterName, serviceName, requestId);
     const auto ackBlock = ack.WireEncode();
@@ -3841,14 +4368,12 @@ runProductionNativeD2bCase(bool tamperCapability)
       ackName,
       ndn::span<const uint8_t>(encrypted.wire.data(), encrypted.wire.size()));
   }
+  }
 
-  environment.pumpUntil([&] { return handlerEntered[1] || timedOut; });
-  const auto subscriptionDeadline = std::chrono::steady_clock::now() + 100ms;
-  environment.pumpUntil([&] {
-    return std::chrono::steady_clock::now() >= subscriptionDeadline || timedOut;
-  });
-  if (!timedOut) {
-    publishSelection(0, "/Backbone");
+  if (streamed) {
+    environment.pumpUntil([&] {
+      return streamedPlanCommitted || streamedError || timedOut;
+    });
   }
   const auto selectionFailed = [&] {
     for (size_t index = 0; index < environment.providerCount(); ++index) {
@@ -3865,7 +4390,15 @@ runProductionNativeD2bCase(bool tamperCapability)
     return false;
   };
   environment.pumpUntil([&] {
-    return uniqueResponsePublications.load() == 1 || timedOut ||
+    if (streamed) {
+      // Response publication and the terminal End event are independent SVS
+      // publications.  Do not stop the production gate when the Response is
+      // observed before the consumer has validated End and fired onComplete.
+      return streamedComplete || streamedError || timedOut ||
+             (tamperCapability && selectionFailed());
+    }
+    return uniqueResponsePublications.load() == 1 || streamedComplete ||
+           streamedError || timedOut ||
            (tamperCapability && selectionFailed());
   });
 
@@ -3873,10 +4406,24 @@ runProductionNativeD2bCase(bool tamperCapability)
   if (!tamperCapability) {
     BOOST_CHECK(handlerEntered[0]);
     BOOST_CHECK(handlerEntered[1]);
-    BOOST_CHECK_EQUAL(coordinatorFactoryCalls[0].load(), 2U);
+    BOOST_CHECK_EQUAL(coordinatorFactoryCalls[0].load(), streamed ? 1U : 2U);
     BOOST_CHECK_EQUAL(coordinatorFactoryCalls[1].load(), 1U);
     BOOST_CHECK_EQUAL(uniqueResponsePublications.load(), 1U);
     BOOST_CHECK(!timedOut);
+    if (streamed) {
+      std::lock_guard<std::mutex> lock(streamedResultMutex);
+      BOOST_CHECK(streamedPlanCommitted);
+      BOOST_CHECK(streamedComplete);
+      BOOST_CHECK(!streamedError);
+      // Every selected role receives the streamed Request options, but only
+      // the terminal role receives the Provider-specific event-key grant and
+      // may publish user-facing events.  The Backbone remains data-plane only.
+      BOOST_CHECK(!streamPublisherObserved[0]);
+      BOOST_CHECK(streamPublisherObserved[1]);
+      BOOST_REQUIRE_EQUAL(streamedEvents.size(), 1U);
+      BOOST_CHECK_EQUAL(streamedEvents.front(), "detections0:features:d2b-native-payload");
+      BOOST_CHECK_EQUAL(streamedResult, "detections0:features:d2b-native-payload");
+    }
   }
   else {
     BOOST_CHECK(selectionFailed());
@@ -3886,12 +4433,14 @@ runProductionNativeD2bCase(bool tamperCapability)
   if (!tamperCapability && !useRealOnnx) {
     std::lock_guard<std::mutex> lock(*observedMutex);
     BOOST_CHECK(observedRoles->count("/Backbone") != 0);
-    BOOST_CHECK(observedRoles->count("/Aux") != 0);
     BOOST_CHECK(observedRoles->count("/Head/Shard/0") != 0);
-    BOOST_REQUIRE(observedOutputs->count("/Aux") != 0);
-    BOOST_CHECK_EQUAL(
-      observedOutputs->at("/Aux").at("aux"),
-      "aux:d2b-native-payload");
+    if (!streamed) {
+      BOOST_CHECK(observedRoles->count("/Aux") != 0);
+      BOOST_REQUIRE(observedOutputs->count("/Aux") != 0);
+      BOOST_CHECK_EQUAL(
+        observedOutputs->at("/Aux").at("aux"),
+        "aux:d2b-native-payload");
+    }
     BOOST_REQUIRE(observedInputs->count("/Head/Shard/0") != 0);
     const auto& headInputs = observedInputs->at("/Head/Shard/0");
     BOOST_REQUIRE(headInputs.count("backbone-to-head0") != 0);
@@ -3924,9 +4473,2384 @@ runProductionNativeD2bCase(bool tamperCapability)
   }
 }
 
+struct Spec175NativeTinyStreamResult
+{
+  std::size_t ackCandidates = 0;
+  std::string ackProvider;
+  std::string ackService;
+  bool requestObserved = false;
+  bool ackPublicationObserved = false;
+  std::string requestPublicationName;
+  std::size_t requestPublicationCount = 0;
+  std::string ackPublicationName;
+  bool ackClosed = false;
+  bool recoveryAckClosed = false;
+  bool planCommitted = false;
+  bool timedOut = false;
+  bool completed = false;
+  bool failed = false;
+  bool cancelled = false;
+  bool streamedContext = false;
+  std::size_t streamedProviderCount = 0;
+  std::size_t replacementProviderExecutions = 0;
+  std::size_t replacementEventsPublished = 0;
+  std::size_t providerTransportDetachments = 0;
+  std::size_t unselectedProviderExecutions = 0;
+  std::size_t providerCoordinatorCompletions = 0;
+  std::size_t providerFailures = 0;
+  bool permutedRoleProviderMap = false;
+  std::vector<std::string> events;
+  std::string finalPayload;
+  std::string error;
+  std::string providerFailureError;
+  StreamedInvocationErrorCode errorCode = StreamedInvocationErrorCode::EventTimeout;
+  ndn::Name errorRequestId;
+  ndn::Name errorProviderName;
+  uint64_t errorExpectedCursor = 0;
+  test::PacketBridgeStats bridgeStats;
+  std::size_t retentionSuppressions = 0;
+  std::size_t retentionExpirations = 0;
+  std::size_t publicationSuppressions = 0;
+  std::size_t publicationReorders = 0;
+  std::size_t publicationDuplicates = 0;
+  std::size_t tamperedPublications = 0;
+  std::size_t publisherQueueHighWater = 0;
+  std::size_t callbackQueueHighWater = 0;
+  std::size_t callbackConcurrencyHighWater = 0;
+  std::vector<ProviderDecodeStateSnapshot> decodeStateSnapshots;
+  std::vector<NativeEpochCoordinatorResult::CacheObservation> cacheObservations;
+  std::vector<std::int64_t> fullPrefixControlTokens;
+  std::vector<std::size_t> fullPrefixControlInputExtents;
+};
+
+enum class Spec175NativeTinyFault
+{
+  None,
+  ReorderEvent3After4,
+  DuplicateEvent4,
+  DropFirstEvent5Data,
+  NeverRetainedEvent5,
+  RetentionExpiredEvent5,
+  EndBeforeGapEvent5,
+  CancelAfterThirdEvent,
+  ExpiredDeadline,
+  CallbackThrowsAtThirdEvent,
+  TamperEventOneSignature,
+  SlowConsumerCapacityOne,
+  ProviderUnavailableAfterEvent3,
+  ProviderUnavailableAfterEvent3WithReplacement,
+};
+
+struct Spec175NativeTinyCaseOptions
+{
+  std::string caseId;
+  bool permuteRoleProviders = false;
+  bool extraUnselectedProvider = false;
+  bool allowReplacement = false;
+  bool suppressProviderPeerSyncAfterCommit = false;
+  Spec175NativeTinyFault fault = Spec175NativeTinyFault::None;
+};
+
+std::filesystem::path
+findSpec175TinyOneRoleFixture()
+{
+  const auto relative = std::filesystem::path(
+    "tests/fixtures/spec175/tiny-causal-lm-v1/one-role/role-0.onnx");
+  for (const auto& root : {std::filesystem::current_path(),
+                           std::filesystem::current_path().parent_path(),
+                           std::filesystem::current_path().parent_path().parent_path()}) {
+    const auto candidate = root / relative;
+    if (std::filesystem::exists(candidate)) {
+      return candidate;
+    }
+  }
+  return {};
+}
+
+std::filesystem::path
+findSpec175TinyTwoRoleFixture()
+{
+  const auto relative = std::filesystem::path(
+    "tests/fixtures/spec175/tiny-causal-lm-v1/two-role");
+  for (const auto& root : {std::filesystem::current_path(),
+                           std::filesystem::current_path().parent_path(),
+                           std::filesystem::current_path().parent_path().parent_path()}) {
+    const auto candidate = root / relative;
+    if (std::filesystem::exists(candidate / "role-0.onnx") &&
+        std::filesystem::exists(candidate / "role-1.onnx")) {
+      return candidate;
+    }
+  }
+  return {};
+}
+
+std::filesystem::path
+findSpec175TinyRoleFixture(std::size_t providerCount)
+{
+  if (providerCount == 2) {
+    return findSpec175TinyTwoRoleFixture();
+  }
+  const auto relative = std::filesystem::path(
+    "tests/fixtures/spec175/tiny-causal-lm-v1/four-role");
+  for (const auto& root : {std::filesystem::current_path(),
+                           std::filesystem::current_path().parent_path(),
+                           std::filesystem::current_path().parent_path().parent_path()}) {
+    const auto candidate = root / relative;
+    bool complete = true;
+    for (std::size_t index = 0; index < providerCount; ++index) {
+      complete = complete && std::filesystem::exists(
+        candidate / ("role-" + std::to_string(index) + ".onnx"));
+    }
+    if (complete) {
+      return candidate;
+    }
+  }
+  return {};
+}
+
+ndn::Buffer
+makeSpec175TinyRequestPayload()
+{
+  const std::int64_t token = 3;
+  std::vector<std::uint8_t> bytes(sizeof(token));
+  std::memcpy(bytes.data(), &token, sizeof(token));
+  const auto bundle = ndnsf::di::makeEncodedTensorBundle(
+    "input_ids",
+    {ndnsf::di::NamedTensor{
+      "input_ids", ndnsf::di::TensorElementType::Int64, {1, 1}, std::move(bytes)}});
+  return ndn::Buffer(bundle.payload.data(), bundle.payload.size());
+}
+
+struct Spec175TinyFullPrefixControlResult
+{
+  std::vector<std::int64_t> tokens;
+  std::vector<std::size_t> inputExtents;
+};
+
+Spec175TinyFullPrefixControlResult
+runSpec175TinyFullPrefixControl(const NativeModelRunnerSpec& spec);
+
+Spec175NativeTinyStreamResult
+runSpec175NativeTinyOneRoleCase()
+{
+  Spec175NativeTinyStreamResult result;
+#ifndef NDNSF_DI_ENABLE_ONNXRUNTIME_CPP
+  result.failed = true;
+  result.error = "NDNSF_DI_ENABLE_ONNXRUNTIME_CPP is disabled";
+  return result;
+#else
+  const auto fixture = findSpec175TinyOneRoleFixture();
+  if (fixture.empty()) {
+    result.failed = true;
+    result.error = "Spec175 tiny one-role ONNX fixture is unavailable";
+    return result;
+  }
+  ScopedSpec175CertifiedModels certifiedModels("i01");
+  const auto certifiedModel = certifiedModels.materialize(fixture, 0);
+
+  test::BootstrapProfile profile;
+  profile.serviceName = ndn::Name("/Spec175/Formal/NativeTiny/I01");
+  profile.providerCount = 1;
+  test::NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+
+  const auto serviceName = environment.profile().serviceName;
+  const auto requesterName = environment.user().getName();
+  const auto providerName = environment.provider().getName();
+  const auto requestId = ndn::Name("/spec175-native-tiny-i01");
+  const std::string role = "/LLM/Pipeline/Stage/0";
+  const std::string planDigest = "sha256:" + std::string(64, '1');
+  const std::string artifactDigest = "sha256:" + std::string(64, '2');
+  const std::string modelDigest = "sha256:" + std::string(64, '3');
+  const std::string recipeDigest = "sha256:" + std::string(64, '4');
+  const std::string samplingDigest =
+    "sha256:1750001000000000000000000000000000000000000000000000000000000000";
+  const std::string tokenizerDigest = spec175Digest('8');
+  const std::string providerBootId = "spec175-native-tiny-i01-boot";
+  const auto makeCapabilityAssignment = [&] {
+    return std::string("role=") + role +
+      ";provider=" + providerName.toUri() +
+      ";backend=onnxruntime;device=cpu:0;artifactDigest=" + artifactDigest +
+      ";recipeDigest=" + recipeDigest + ";executionPolicy=DATA_DRIVEN_V2;";
+  };
+
+  NativeExecutionPlan plan;
+  plan.serviceName = serviceName.toUri();
+  plan.modelName = "spec175-tiny-causal-lm-v1";
+  plan.modelFamily = "spec175-tiny-causal-lm";
+  plan.modelFormat = "onnx";
+  plan.plannerKind = "PreSplitFirstStrategy";
+  plan.executionPolicy = "DATA_DRIVEN_V2";
+  plan.roles = {role};
+  NativeDependencySpec feedback;
+  feedback.producers = {role};
+  feedback.consumers = {role};
+  feedback.keyScope = "token-feedback";
+  feedback.topicPrefix = "/Spec175/Formal/NativeTiny/I01/feedback";
+  feedback.objectNameTemplate =
+    "{producerProvider}/NDNSF/DI/FEEDBACK/{sessionId}/{producerRole}/bundle/{sequence}";
+  feedback.operationKind = "TOKEN_FEEDBACK";
+  feedback.useNdnsfDataV1 = true;
+  feedback.collectiveOperationIndex = 0;
+  feedback.collectiveProducerRank = "0";
+  feedback.collectiveSourceLayoutDigest = spec175Digest('c');
+  feedback.collectiveTargetLayoutDigest = feedback.collectiveSourceLayoutDigest;
+  feedback.collectiveTensorDigest = spec175Digest('d');
+  plan.dependencies = {feedback};
+
+  NativeProviderAssignment assignment;
+  assignment.providerByRole.emplace(role, providerName.toUri());
+
+  NativeModelRunnerSpec runnerSpec;
+  runnerSpec.role = role;
+  runnerSpec.kind = "spec175-tiny-stateful-onnx";
+  runnerSpec.backend = "onnxruntime";
+  runnerSpec.path = certifiedModel.string();
+  runnerSpec.metadata["executionProvider"] = "cpu";
+  runnerSpec.metadata["statefulModel"] = "true";
+  runnerSpec.metadata["streamingGeneration"] = "true";
+  runnerSpec.metadata["maxGeneratedTokens"] = "8";
+  runnerSpec.metadata["eosTokenIds"] = "2";
+  runnerSpec.metadata["samplingDigest"] = samplingDigest;
+  runnerSpec.metadata["inputNames"] =
+    "input_ids,attention_kv_in,recurrent_state_in,convolution_state_in";
+  runnerSpec.metadata["outputNames"] =
+    "logits,attention_kv_out,recurrent_state_out,convolution_state_out";
+  runnerSpec.metadata["stateInputNames"] =
+    "attention_kv_in,recurrent_state_in,convolution_state_in";
+  runnerSpec.metadata["stateOutputNames"] =
+    "attention_kv_out,recurrent_state_out,convolution_state_out";
+  runnerSpec.metadata["fragmentDigest"] = artifactDigest;
+  runnerSpec.metadata["evidence.providerName"] = providerName.toUri();
+  runnerSpec.metadata["evidence.providerBootId"] = providerBootId;
+  runnerSpec.metadata["evidence.epoch"] = "1";
+  runnerSpec.metadata["evidence.modelDigest"] = modelDigest;
+  runnerSpec.metadata["evidence.planDigest"] = planDigest;
+  runnerSpec.metadata["evidence.artifactDigest"] = artifactDigest;
+  runnerSpec.metadata["evidence.createdAtMs"] = "1";
+  bindSpec175CertifiedRunnerMetadata(
+    runnerSpec, 0, 1, artifactDigest, recipeDigest);
+
+  std::vector<GroupOperationV1> operations;
+  for (std::uint64_t index = 0; index < 9; ++index) {
+    GroupOperationV1 operation;
+    operation.operationIndex = index;
+    operation.kind = "TOKEN_FEEDBACK";
+    operation.producerRanks = {"0"};
+    operation.consumerRanks = {"0"};
+    operation.tensorLayoutDigest = feedback.collectiveSourceLayoutDigest;
+    operation.maxBytes = 4096;
+    operation.maxSegments = 1;
+    operations.push_back(std::move(operation));
+  }
+  auto providerPrefix = environment.profile().providerNode;
+  providerPrefix.append("0");
+  ProviderGroupCoordinator capabilitySealer(makeD2bCoordinatorOptions());
+  const auto capability = capabilitySealer.createCapability(
+    requestId.toUri(), "attempt-1", planDigest, "group-spec175-i01", 1,
+    {{providerName.toUri(), 0, "offer-p0", providerPrefix.toUri()}},
+    operations, 4096, 2000, 8000);
+  const auto providerCapabilityHex = bytesToHex(
+    ProviderGroupCoordinator::encodeCapability(
+      capability.projectForProvider(providerName.toUri())));
+  const auto publishEndpoint = makeV3TensorEndpointJson(
+    providerPrefix.toUri(), requesterName.toUri(), requestId.toUri(),
+    planDigest, "group-spec175-i01", 0, role, 0, role, "\"" + role + "\"",
+    "input_ids", feedback.collectiveTensorDigest,
+    feedback.collectiveSourceLayoutDigest, feedback.collectiveTargetLayoutDigest,
+    "TOKEN_FEEDBACK", feedback.collectiveTensorDigest,
+    feedback.collectiveTensorDigest);
+  const auto fetchEndpoint = makeV3TensorEndpointJson(
+    providerPrefix.toUri(), requesterName.toUri(), requestId.toUri(),
+    planDigest, "group-spec175-i01", 0, role, 0, role, "\"" + role + "\"",
+    "input_ids", feedback.collectiveTensorDigest,
+    feedback.collectiveSourceLayoutDigest, feedback.collectiveTargetLayoutDigest,
+    "TOKEN_FEEDBACK", spec175Digest('b'), feedback.collectiveTensorDigest);
+  const auto dependenciesJson = std::string("[{\"consumers\":[\"") + role +
+    "\"],\"expected_segments\":0,\"key_scope\":\"token-feedback\"," +
+    "\"object_name_template\":\"{producerProvider}/NDNSF-DI/{sessionId}/" +
+    "{producerRole}/{role}/{sequence}\",\"operationKind\":\"TOKEN_FEEDBACK\"," +
+    "\"producers\":[\"" + role + "\"],\"required\":true," +
+    "\"tensors\":[\"input_ids\"],\"topic_prefix\":\"/Spec175/feedback\"," +
+    "\"transportProfile\":\"NDNSF_DATA_V1\",\"collectiveOperationIndex\":0," +
+    "\"collectiveProducerRank\":\"0\",\"collectiveSourceLayoutDigest\":\"" +
+    feedback.collectiveSourceLayoutDigest +
+    "\",\"collectiveTargetLayoutDigest\":\"" +
+    feedback.collectiveTargetLayoutDigest +
+    "\",\"collectiveTensorDigest\":\"" + feedback.collectiveTensorDigest +
+    "\"}]";
+  const auto roleJson = makeSpec175CertifiedRoleJson(
+    role, 0, 1, artifactDigest, recipeDigest);
+  const auto dataflowJson = std::string("{\"attempt\":1,\"dataflow_digest\":\"") +
+    planDigest + "\",\"may_publish\":[" + publishEndpoint +
+    "],\"must_fetch\":[" + fetchEndpoint + "],\"plan_digest\":\"" + planDigest +
+    "\",\"request_id\":\"" + requestId.toUri() + "\",\"role\":\"" + role +
+    "\",\"terminal_response_owner\":true,\"wait_for\":[]}";
+  const auto projectionJson = makeV3SelectionProjectionJson(
+    roleJson, role, role, 0, providerName.toUri(), requestId.toUri(), planDigest,
+    providerCapabilityHex, dependenciesJson, dataflowJson, artifactDigest, "cpu:0",
+    makeSpec175GenerationContractJson(
+      8, 1, samplingDigest, tokenizerDigest), 0, 4);
+  std::map<std::string, ndn::Buffer> selectionAssignmentByProvider;
+  selectionAssignmentByProvider.emplace(
+    providerName.toUri(),
+    ndn::Buffer(reinterpret_cast<const std::uint8_t*>(projectionJson.data()),
+                projectionJson.size()));
+
+  auto runnerFactory = std::make_shared<RegistryNativeModelRunnerFactory>();
+  registerOnnxRuntimeBackend(*runnerFactory);
+  NativeProviderHandlerConfig handlerConfig;
+  handlerConfig.plan = plan;
+  handlerConfig.assignment = assignment;
+  handlerConfig.runnerFactory = runnerFactory;
+  handlerConfig.runnerSpecs = {runnerSpec};
+  handlerConfig.finalResponseScope = "final-response";
+  handlerConfig.localProviderName = providerName.toUri();
+  handlerConfig.providerBootId = providerBootId;
+  handlerConfig.planDigest = planDigest;
+  handlerConfig.fetchTimeoutMs = 3000;
+  handlerConfig.maxSegmentSize = 4096;
+  handlerConfig.freshnessMs = 60000;
+  handlerConfig.enableNativeEpochCoordinator = true;
+  handlerConfig.maxGenerationEpochs = 8;
+  handlerConfig.generationStateInputNames = {
+    "attention_kv_in", "recurrent_state_in", "convolution_state_in"};
+  handlerConfig.generationStateOutputNames = {
+    "attention_kv_out", "recurrent_state_out", "convolution_state_out"};
+  handlerConfig.generationEosTokenIds = {2};
+  handlerConfig.generationSamplingDigest =
+    runnerSpec.metadata.at("samplingDigest");
+  handlerConfig.allowPreassembledV3Compatibility = true;
+  auto cacheObservations = std::make_shared<
+    std::vector<NativeEpochCoordinatorResult::CacheObservation>>();
+  auto cacheObservationMutex = std::make_shared<std::mutex>();
+  handlerConfig.epochCoordinatorCompletionObserver =
+    std::make_shared<NativeProviderHandlerConfig::EpochCoordinatorCompletionObserver>(
+      [cacheObservations, cacheObservationMutex] (
+          const std::string&, const NativeEpochCoordinatorResult& coordinated) {
+        std::lock_guard<std::mutex> lock(*cacheObservationMutex);
+        *cacheObservations = coordinated.cacheObservations;
+      });
+  handlerConfig.groupCoordinatorFactory =
+    [providerName = providerName.toUri(), planDigest] (
+        ServiceProvider::CollaborationContext& context,
+        const std::map<std::string, std::string>& fields) {
+      const auto field = fields.find("groupCapabilityV1");
+      if (field == fields.end()) {
+        throw std::runtime_error("Spec175 I01 assignment has no GroupCapabilityV1");
+      }
+      auto decoded = ProviderGroupCoordinator::decodeCapability(
+        bytesFromHex(field->second));
+      if (decoded.requestId != context.sessionId() ||
+          decoded.planDigest != planDigest) {
+        throw std::runtime_error("Spec175 I01 GroupCapabilityV1 binding mismatch");
+      }
+      auto options = makeD2bCoordinatorOptions();
+      options.localProvider = providerName;
+      auto coordinator = std::make_shared<ProviderGroupCoordinator>(
+        std::move(options));
+      coordinator->installCapability(std::move(decoded), {}, true);
+      return coordinator;
+    };
+  auto nativeRuntime = makeNativeProviderCollaborationRuntime(
+    std::move(handlerConfig));
+  auto decodeStateSnapshotReader = nativeRuntime.decodeStateSnapshot;
+  auto nativeHandler = std::move(nativeRuntime.handler);
+  const auto capabilityAssignment = makeCapabilityAssignment();
+  environment.provider().addCollaborationHandler(
+    serviceName,
+    [capabilityAssignment] (const RequestMessage&) {
+      ServiceProvider::AckDecision decision;
+      decision.status = true;
+      decision.payload = ndn::Buffer(
+        reinterpret_cast<const std::uint8_t*>(capabilityAssignment.data()),
+        capabilityAssignment.size());
+      return decision;
+    },
+    [&, nativeHandler = std::move(nativeHandler)] (
+          ServiceProvider::CollaborationContext& context,
+          const RequestMessage& request) mutable {
+      result.streamedContext = context.isStreamed();
+      nativeHandler(context, request);
+    });
+
+  environment.enableProductionIngressForTest();
+  environment.provider().markHybridResponseKeyWrappedForTest(serviceName);
+  const auto selectionKey = environment.user().prepareHybridSendKeyForTest(
+    serviceName, "SELECTION");
+  const auto ackKey = environment.provider().prepareHybridSendKeyForTest(
+    serviceName, "ACK");
+  environment.user().cacheHybridReceiveKeyForTest(
+    ackKey.keyId, ackKey.epochId, ackKey.key);
+  const auto responseKey = environment.provider().prepareHybridSendKeyForTest(
+    serviceName, "RESPONSE");
+  environment.user().cacheHybridReceiveKeyForTest(
+    responseKey.keyId, responseKey.epochId, responseKey.key);
+  environment.provider().cacheHybridReceiveKeyForTest(
+    selectionKey.keyId, selectionKey.epochId, selectionKey.key);
+
+  // Observe both production SVS publication boundaries.  These diagnostics
+  // are intentionally independent of the User ACK closure: an empty closure
+  // must tell us whether the Provider never emitted an ACK or the User could
+  // not match/decrypt the emitted ACK.
+  environment.providerPubSub().subscribeToProducer(
+    environment.profile().userNode,
+    [&] (const ndn::svs::SVSPubSub::SubscriptionData& publication) {
+      if (const auto parsed = parseRequestNameV2(publication.name);
+          parsed && parsed->serviceName.equals(serviceName) &&
+          parsed->requestId.equals(requestId)) {
+        result.requestObserved = true;
+        result.requestPublicationName = publication.name.toUri();
+      }
+    },
+    true);
+  auto providerProducer = environment.profile().providerNode;
+  providerProducer.append("0");
+  environment.userPubSub().subscribeToProducer(
+    providerProducer,
+    [&] (const ndn::svs::SVSPubSub::SubscriptionData& publication) {
+      if (const auto parsed = parseRequestAckNameV2(publication.name);
+          parsed && parsed->serviceName.equals(serviceName) &&
+          parsed->requestId.equals(requestId)) {
+        result.ackPublicationObserved = true;
+        result.ackPublicationName = publication.name.toUri();
+      }
+    },
+    true);
+
+  environment.user().setRequestPublisher(
+    [&] (const ndn::Name&, const ndn::Name& requestName,
+         const std::vector<ndn::Name>& providers,
+         const ndn::Name& publishedService,
+         const RequestMessage& request, size_t strategy) {
+      BOOST_REQUIRE(providers.empty());
+      BOOST_CHECK_EQUAL(publishedService, serviceName);
+      BOOST_CHECK_EQUAL(strategy, tlv::AllSelected);
+      result.requestPublicationName = requestName.toUri();
+      const auto requestBlock = request.WireEncode();
+      const auto encrypted = makeTestHybridPublication(
+        requestName, serviceName, requestId, requesterName, "REQUEST",
+        ndn::Buffer(requestBlock.data(), requestBlock.size()));
+      environment.provider().cacheHybridReceiveKeyForTest(
+        encrypted.key.keyId, encrypted.key.epochId, encrypted.key.key);
+      environment.userPubSub().publish(
+        requestName,
+        ndn::span<const uint8_t>(encrypted.wire.data(), encrypted.wire.size()));
+    });
+  environment.user().setLocalPublicationHandler(
+    [&environment] (const ndn::Name& messageName, const ndn::Buffer& wire) {
+      if (parseServiceSelectionNameV2(messageName)) {
+        environment.userPubSub().publish(
+          messageName, ndn::span<const uint8_t>(wire.data(), wire.size()));
+      }
+    });
+
+  const auto requestPayload = makeSpec175TinyRequestPayload();
+  StreamRequestOptions streamOptions;
+  streamOptions.maxEvents = 9;
+  streamOptions.interestWindow = 4;
+  streamOptions.reorderCapacity = 4;
+  streamOptions.publisherQueueCapacity = 4;
+  streamOptions.retentionMs = 3000;
+  streamOptions.maxEventWireBytes = 4096;
+  {
+    const auto returnedRequestId = environment.user().BeginCollaboration(
+      serviceName, requestPayload, 1000, 8000,
+      [&] (const CollaborationAckClosure& closure) {
+        result.ackCandidates = closure.candidates.size();
+        if (!closure.candidates.empty()) {
+          result.ackProvider = closure.candidates.front().providerName.toUri();
+          result.ackService = closure.candidates.front().serviceName.toUri();
+        }
+        result.ackClosed = closure.candidates.size() == 1;
+        CollaborationPlan collaborationPlan;
+        collaborationPlan.ackCollectionTimeMs = 1000;
+        collaborationPlan.timeoutMs = 8000;
+        CollaborationRoleSpec roleSpec;
+        roleSpec.role = role;
+        roleSpec.service = serviceName;
+        roleSpec.requiredArtifact = ndn::Name("/artifact").append(role);
+        roleSpec.terminalResponseOwner = true;
+        collaborationPlan.roles.push_back(std::move(roleSpec));
+        collaborationPlan.participantSelector =
+          std::make_shared<Spec175AckCapabilitySelection>(
+            selectionAssignmentByProvider);
+        try {
+          result.planCommitted = environment.user().CommitCollaborationPlan(
+            closure.requestId, closure.digest, std::move(collaborationPlan));
+        }
+        catch (const std::exception& error) {
+          result.failed = true;
+          result.error = error.what();
+        }
+      },
+      [&] (const ResponseMessage&) {},
+      [&] (const ndn::Name&) { result.timedOut = true; },
+      requestId,
+      CollaborationAckCoverageHandler(),
+      RequestCapabilities(),
+      std::optional<StreamRequestOptions>(streamOptions),
+      [&] (const ndn::Buffer& event) {
+        result.events.emplace_back(
+          reinterpret_cast<const char*>(event.data()), event.size());
+      },
+      [&] (const ndn::Buffer& response) {
+        result.finalPayload.assign(
+          reinterpret_cast<const char*>(response.data()), response.size());
+        result.completed = true;
+      },
+      [&] (const StreamedInvocationError& error) {
+        result.failed = true;
+        result.error = error.message;
+      });
+    BOOST_REQUIRE_EQUAL(returnedRequestId, requestId);
+  }
+
+  const auto terminal = [&] {
+    return result.completed || result.failed || result.timedOut;
+  };
+  for (int round = 0; round < 16 && !terminal(); ++round) {
+    environment.pumpUntil(terminal);
+  }
+  result.decodeStateSnapshots.push_back(decodeStateSnapshotReader());
+  {
+    std::lock_guard<std::mutex> lock(*cacheObservationMutex);
+    result.cacheObservations = *cacheObservations;
+  }
+  const auto fullPrefix = runSpec175TinyFullPrefixControl(runnerSpec);
+  result.fullPrefixControlTokens = fullPrefix.tokens;
+  result.fullPrefixControlInputExtents = fullPrefix.inputExtents;
+  return result;
+#endif
+}
+
+Spec175TinyFullPrefixControlResult
+runSpec175TinyFullPrefixControl(const NativeModelRunnerSpec& spec)
+{
+#ifndef NDNSF_DI_ENABLE_ONNXRUNTIME_CPP
+  throw std::runtime_error("Spec175 full-prefix control requires ONNX Runtime");
+#else
+  RegistryNativeModelRunnerFactory factory;
+  registerOnnxRuntimeBackend(factory);
+  auto runner = factory.create(spec);
+
+  Spec175TinyFullPrefixControlResult result;
+  std::vector<std::int64_t> prefix{3};
+  for (std::size_t epoch = 0; epoch < 8; ++epoch) {
+    RoleExecutionContext context;
+    context.sessionId = "spec175-tiny-full-prefix-control";
+    context.role = spec.role;
+    // This reference deliberately presents no predecessor state. The
+    // production ONNX adapter therefore materializes the certified zero state
+    // and recomputes the complete logical prefix on every call.
+    context.inferenceEpoch = 0;
+    std::vector<std::uint8_t> prefixBytes(
+      prefix.size() * sizeof(std::int64_t));
+    std::memcpy(prefixBytes.data(), prefix.data(), prefixBytes.size());
+    context.inputsByScope.emplace(
+      "input_ids",
+      makeEncodedTensorBundle("input_ids", {NamedTensor{
+      "input_ids", TensorElementType::Int64,
+      {1, static_cast<std::int64_t>(prefix.size())},
+      std::move(prefixBytes)}}));
+    for (const auto* stateName : {
+           "attention_kv_in", "recurrent_state_in", "convolution_state_in"}) {
+      context.inputsByScope.emplace(
+        stateName,
+        makeEncodedTensorBundle(stateName, {NamedTensor{
+          stateName, TensorElementType::Float32, {4, 8},
+          std::vector<std::uint8_t>(4 * 8 * sizeof(float), 0)}}));
+    }
+
+    const auto outputs = runner->run(context);
+    const auto encoded = outputs.find("onnx-output-bundle");
+    if (encoded == outputs.end() ||
+        !isEncodedTensorBundle(encoded->second.payload)) {
+      throw std::runtime_error("Spec175 full-prefix control has no ONNX output");
+    }
+    const auto outputTensors = decodeTensorBundle(encoded->second.payload);
+    const auto& logits = findTensor(outputTensors, "logits");
+    if (logits.elementType != TensorElementType::Float32 ||
+        logits.shape.empty() || logits.shape.back() <= 0 ||
+        logits.payload.size() % sizeof(float) != 0) {
+      throw std::runtime_error("Spec175 full-prefix control logits are invalid");
+    }
+    std::vector<float> values(logits.payload.size() / sizeof(float));
+    std::memcpy(values.data(), logits.payload.data(), logits.payload.size());
+    const auto vocabulary = static_cast<std::size_t>(logits.shape.back());
+    if (values.size() < vocabulary || values.size() % vocabulary != 0) {
+      throw std::runtime_error(
+        "Spec175 full-prefix control logits vocabulary is invalid");
+    }
+    const auto begin = values.end() - static_cast<std::ptrdiff_t>(vocabulary);
+    const auto token = static_cast<std::int64_t>(
+      std::distance(begin, std::max_element(begin, values.end())));
+    result.inputExtents.push_back(prefix.size());
+    result.tokens.push_back(token);
+    prefix.push_back(token);
+    if (token == 2) {
+      break;
+    }
+  }
+  return result;
+#endif
+}
+
+Spec175NativeTinyStreamResult
+runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
+                                      Spec175NativeTinyCaseOptions caseOptions)
+{
+  Spec175NativeTinyStreamResult result;
+  const bool traceEnabled = std::getenv("SPEC175_TRACE") != nullptr;
+  const auto trace = [&] (const std::string& message) {
+    if (traceEnabled) {
+      std::cerr << "SPEC175_TRACE " << caseOptions.caseId << ' '
+                << message << std::endl;
+    }
+  };
+#ifndef NDNSF_DI_ENABLE_ONNXRUNTIME_CPP
+  result.failed = true;
+  result.error = "NDNSF_DI_ENABLE_ONNXRUNTIME_CPP is disabled";
+  return result;
+#else
+  if (providerCount < 2 || providerCount > 4) {
+    result.failed = true;
+    result.error = "Spec175 native tiny case requires 2-4 Providers";
+    return result;
+  }
+  const auto fixture = findSpec175TinyRoleFixture(providerCount);
+  if (fixture.empty()) {
+    result.failed = true;
+    result.error = "Spec175 tiny role ONNX fixture is unavailable";
+    return result;
+  }
+  ScopedSpec175CertifiedModels certifiedModels(caseOptions.caseId);
+
+  test::BootstrapProfile profile;
+  profile.serviceName = ndn::Name("/Spec175/Formal/NativeTiny/").append(
+    caseOptions.caseId);
+  const auto totalProviderCount = providerCount +
+    (caseOptions.extraUnselectedProvider ? 1U : 0U);
+  profile.providerCount = totalProviderCount;
+  test::NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+  trace("bootstrap-ready");
+
+  auto suppressProviderPeerSync = std::make_shared<std::atomic<bool>>(false);
+  const auto providerSyncPrefix = environment.profile().syncPrefix;
+  std::vector<ndn::signal::ScopedConnection> providerPeerBridges;
+  for (std::size_t source = 0; source < environment.providerCount(); ++source) {
+    for (std::size_t destination = 0; destination < environment.providerCount(); ++destination) {
+      if (source == destination) {
+        continue;
+      }
+      providerPeerBridges.emplace_back(
+        environment.providerFace(source).onSendInterest.connect(
+          [&environment, destination, suppressProviderPeerSync,
+           providerSyncPrefix] (const ndn::Interest& interest) {
+            if (suppressProviderPeerSync->load(std::memory_order_acquire) &&
+                providerSyncPrefix.isPrefixOf(interest.getName())) {
+              return;
+            }
+            environment.providerFace(destination).receive(interest);
+          }));
+      providerPeerBridges.emplace_back(
+        environment.providerFace(source).onSendData.connect(
+          [&environment, destination, suppressProviderPeerSync,
+           providerSyncPrefix] (const ndn::Data& data) {
+            if (suppressProviderPeerSync->load(std::memory_order_acquire) &&
+                providerSyncPrefix.isPrefixOf(data.getName())) {
+              return;
+            }
+            environment.providerFace(destination).receive(data);
+          }));
+    }
+  }
+
+  const auto serviceName = environment.profile().serviceName;
+  const auto requesterName = environment.user().getName();
+  std::vector<std::string> roles;
+  roles.reserve(providerCount);
+  for (std::size_t index = 0; index < providerCount; ++index) {
+    roles.push_back("/LLM/Pipeline/Stage/" + std::to_string(index));
+  }
+  const auto& role0 = roles.front();
+  const auto& finalRole = roles.back();
+  std::vector<std::size_t> roleProviderIndex(providerCount);
+  for (std::size_t index = 0; index < providerCount; ++index) {
+    roleProviderIndex[index] = caseOptions.permuteRoleProviders
+      ? (index + 1) % providerCount : index;
+  }
+  NativeExecutionPlan plan;
+  plan.serviceName = serviceName.toUri();
+  plan.modelName = "spec175-tiny-causal-lm-v1";
+  plan.modelFamily = "spec175-tiny-causal-lm";
+  plan.modelFormat = "onnx";
+  plan.plannerKind = "PreSplitFirstStrategy";
+  plan.executionPolicy = "DATA_DRIVEN_V2";
+  plan.streamingOperationStride = providerCount;
+  plan.roles = roles;
+  const auto objectTemplate =
+    "{producerProvider}/NDNSF-DI/{sessionId}/{producerRole}/{role}/{sequence}";
+  for (std::size_t index = 0; index + 1 < providerCount; ++index) {
+    NativeDependencySpec activation(
+      {roles[index]}, {roles[index + 1]}, "activation-" + std::to_string(index),
+      "/Spec175/activation/" + std::to_string(index), objectTemplate,
+      1, 0, {"hidden_in"});
+    activation.operationKind = "ACTIVATION";
+    activation.useNdnsfDataV1 = true;
+    activation.collectiveOperationIndex = index;
+    activation.collectiveProducerRank = std::to_string(index);
+    activation.collectiveSourceLayoutDigest = "sha256:" +
+      std::string(64, static_cast<char>('a' + index));
+    activation.collectiveTargetLayoutDigest = activation.collectiveSourceLayoutDigest;
+    activation.collectiveTensorDigest = "sha256:" +
+      std::string(64, static_cast<char>('b' + index));
+    plan.dependencies.push_back(std::move(activation));
+  }
+  NativeDependencySpec feedback(
+    {finalRole}, {role0}, "token-feedback", "/Spec175/feedback",
+    objectTemplate, 1, 0, {"input_ids"});
+  feedback.operationKind = "TOKEN_FEEDBACK";
+  feedback.useNdnsfDataV1 = true;
+  feedback.collectiveOperationIndex = providerCount - 1;
+  feedback.collectiveProducerRank = std::to_string(providerCount - 1);
+  feedback.collectiveSourceLayoutDigest = "sha256:" + std::string(64, 'c');
+  feedback.collectiveTargetLayoutDigest = feedback.collectiveSourceLayoutDigest;
+  feedback.collectiveTensorDigest = "sha256:" + std::string(64, 'd');
+  plan.dependencies.push_back(std::move(feedback));
+
+  NativeProviderAssignment assignment;
+  for (std::size_t index = 0; index < providerCount; ++index) {
+    assignment.providerByRole.emplace(
+      roles[index], environment.provider(roleProviderIndex[index]).getName().toUri());
+  }
+  result.permutedRoleProviderMap = caseOptions.permuteRoleProviders && std::all_of(
+    roles.begin(), roles.end(), [&] (const auto& role) {
+      const auto roleIndex = static_cast<std::size_t>(
+        std::stoul(role.substr(role.find_last_of('/') + 1)));
+      return assignment.providerByRole.at(role) !=
+        environment.provider(roleIndex).getName().toUri();
+    });
+  const auto planDigest = std::string("sha256:") + std::string(64, '1');
+  const auto recipeDigest = std::string("sha256:") + std::string(64, '4');
+  const auto requestId = ndn::Name("/spec175-native-tiny-" + caseOptions.caseId);
+  BOOST_REQUIRE_EQUAL(requestId.size(), 1U);
+  const auto recoveryRequestId = ndn::Name(
+    "/spec175-native-tiny-" + caseOptions.caseId + "-recovery");
+  BOOST_REQUIRE_EQUAL(recoveryRequestId.size(), 1U);
+  std::optional<test::RequestScope> requestScope;
+  auto retentionExpirations = std::make_shared<std::atomic_size_t>(0);
+  test::FaultProfile transportFaults;
+  switch (caseOptions.fault) {
+    case Spec175NativeTinyFault::ReorderEvent3After4:
+      break;
+    case Spec175NativeTinyFault::DuplicateEvent4:
+      break;
+    case Spec175NativeTinyFault::DropFirstEvent5Data:
+      transportFaults.dropStreamDataCursor = 5;
+      transportFaults.dropStreamDataCount = 1;
+      break;
+    case Spec175NativeTinyFault::RetentionExpiredEvent5:
+      transportFaults.dropStreamInterestPredicate =
+        [retentionExpirations] (const ndn::Interest& interest) {
+          const auto parsed = parseInvocationEventName(interest.getName());
+          return parsed && parsed->cursor == 5 &&
+            retentionExpirations->load(std::memory_order_relaxed) == 0;
+        };
+      break;
+    case Spec175NativeTinyFault::EndBeforeGapEvent5:
+      transportFaults.dropStreamDataCursor = 5;
+      transportFaults.dropStreamDataCount =
+        std::numeric_limits<std::size_t>::max();
+      break;
+    case Spec175NativeTinyFault::ProviderUnavailableAfterEvent3:
+      transportFaults.dropStreamDataCursor = 4;
+      transportFaults.dropStreamDataCount =
+        std::numeric_limits<std::size_t>::max();
+      break;
+    case Spec175NativeTinyFault::ProviderUnavailableAfterEvent3WithReplacement:
+      break;
+    case Spec175NativeTinyFault::CancelAfterThirdEvent:
+    case Spec175NativeTinyFault::ExpiredDeadline:
+    case Spec175NativeTinyFault::CallbackThrowsAtThirdEvent:
+    case Spec175NativeTinyFault::SlowConsumerCapacityOne:
+    case Spec175NativeTinyFault::None:
+    case Spec175NativeTinyFault::NeverRetainedEvent5:
+      break;
+    case Spec175NativeTinyFault::TamperEventOneSignature:
+      transportFaults.tamperStreamDataCursor = 1;
+      transportFaults.tamperStreamDataCount = 1;
+      break;
+  }
+  const auto samplingDigest = std::string("sha256:") +
+    "1750001000000000000000000000000000000000000000000000000000000000";
+  const auto tokenizerDigest = spec175Digest('8');
+
+  std::vector<GroupOperationV1> operations;
+  // The multi-Provider tiny fixture uses a four-token causal run.  The
+  // replacement proof commits three tokens and requires the spare to publish
+  // the fourth token and End; the one-Provider fixture remains eight-token.
+  const std::size_t maxGenerationEpochs =
+    (caseOptions.caseId == "i02" || caseOptions.allowReplacement) ? 4 : 8;
+  operations.reserve((maxGenerationEpochs + 1) * providerCount);
+  for (std::uint64_t index = 0;
+       index < (maxGenerationEpochs + 1) * providerCount; ++index) {
+    const auto edgeOrdinal = static_cast<std::size_t>(index % providerCount);
+    GroupOperationV1 operation;
+    operation.operationIndex = index;
+    operation.kind = edgeOrdinal + 1 == providerCount
+      ? "TOKEN_FEEDBACK" : "ACTIVATION";
+    const auto producerRank = edgeOrdinal + 1 == providerCount
+      ? providerCount - 1 : edgeOrdinal;
+    const auto consumerRank = edgeOrdinal + 1 == providerCount
+      ? 0 : edgeOrdinal + 1;
+    operation.producerRanks = {std::to_string(producerRank)};
+    operation.consumerRanks = {std::to_string(consumerRank)};
+    operation.tensorLayoutDigest = "sha256:" +
+      std::string(64, edgeOrdinal + 1 == providerCount
+        ? 'c' : static_cast<char>('a' + edgeOrdinal));
+    operation.maxBytes = 4096;
+    operation.maxSegments = 1;
+    operations.push_back(std::move(operation));
+  }
+  ProviderGroupCoordinator capabilitySealer(makeD2bCoordinatorOptions());
+  std::vector<GroupMemberV1> members;
+  members.reserve(providerCount);
+  for (std::size_t roleIndex = 0; roleIndex < providerCount; ++roleIndex) {
+    const auto providerIndex = roleProviderIndex[roleIndex];
+    auto providerPrefix = environment.profile().providerNode;
+    if (providerIndex != 0) {
+      providerPrefix.append("p" + std::to_string(providerIndex));
+    }
+    providerPrefix.append("0");
+    members.push_back(GroupMemberV1{
+      environment.provider(providerIndex).getName().toUri(),
+      roleIndex,
+      "offer-p" + std::to_string(providerIndex),
+      providerPrefix.toUri()});
+  }
+  const auto capability = capabilitySealer.createCapability(
+    requestId.toUri(), "attempt-1", planDigest,
+    "group-spec175-" + caseOptions.caseId, 1, members,
+    operations, 4096, 2000, 8000);
+  std::optional<GroupCapabilityV1> replacementCapability;
+  if (caseOptions.allowReplacement) {
+    ProviderGroupCoordinator replacementCapabilitySealer(makeD2bCoordinatorOptions());
+    auto replacementMembers = members;
+    const auto finalRoleIndex = providerCount - 1;
+    auto replacementPrefix = environment.profile().providerNode;
+    replacementPrefix.append("p" + std::to_string(providerCount));
+    replacementPrefix.append("0");
+    replacementMembers[finalRoleIndex] = GroupMemberV1{
+      environment.provider(providerCount).getName().toUri(),
+      finalRoleIndex,
+      "offer-p" + std::to_string(providerCount),
+      replacementPrefix.toUri()};
+    replacementCapability = replacementCapabilitySealer.createCapability(
+      recoveryRequestId.toUri(), "attempt-2", planDigest,
+      "group-spec175-" + caseOptions.caseId + "-recovery", 2,
+      std::move(replacementMembers), operations, 4096, 2000, 8000);
+  }
+
+  auto runnerFactory = std::make_shared<RegistryNativeModelRunnerFactory>();
+  registerOnnxRuntimeBackend(*runnerFactory);
+  const auto makeRunnerSpec = [&] (const std::string& role,
+                                   const std::filesystem::path& path,
+                                   const std::string& providerName) {
+    const auto roleIndex = static_cast<std::size_t>(
+      std::stoul(role.substr(role.find_last_of('/') + 1)));
+    const auto artifactDigest =
+      "sha256:" + std::string(64, static_cast<char>('2' + roleIndex));
+    NativeModelRunnerSpec spec;
+    spec.role = role;
+    spec.kind = "spec175-tiny-stateful-onnx";
+    spec.backend = "onnxruntime";
+    spec.path = path.string();
+    spec.metadata["executionProvider"] = "cpu";
+    spec.metadata["statefulModel"] = "true";
+    spec.metadata["inputNames"] = role == role0
+      ? "input_ids,attention_kv_in,recurrent_state_in,convolution_state_in"
+      : "hidden_in,attention_kv_in,recurrent_state_in,convolution_state_in";
+    spec.metadata["outputNames"] = role == finalRole
+      ? "logits,attention_kv_out,recurrent_state_out,convolution_state_out"
+      : "hidden_out,attention_kv_out,recurrent_state_out,convolution_state_out";
+    spec.metadata["stateInputNames"] =
+      "attention_kv_in,recurrent_state_in,convolution_state_in";
+    spec.metadata["stateOutputNames"] =
+      "attention_kv_out,recurrent_state_out,convolution_state_out";
+    spec.metadata["inputScope.input_ids"] = "request-input";
+    if (role != role0) {
+      const auto roleIndex = static_cast<std::size_t>(
+        std::stoul(role.substr(role.find_last_of('/') + 1)));
+      spec.metadata["inputScope.hidden_in"] =
+        "activation-" + std::to_string(roleIndex - 1);
+    }
+    spec.metadata["outputAlias.hidden_out"] = "hidden_in";
+    spec.metadata["fragmentDigest"] = artifactDigest;
+    spec.metadata["recipeDigest"] = recipeDigest;
+    spec.metadata["evidence.providerName"] = providerName;
+    spec.metadata["evidence.providerBootId"] = providerName + "-boot";
+    spec.metadata["evidence.modelDigest"] = planDigest;
+    spec.metadata["evidence.planDigest"] = planDigest;
+    spec.metadata["evidence.artifactDigest"] = spec.metadata["fragmentDigest"];
+    spec.metadata["evidence.createdAtMs"] = "1";
+    bindSpec175CertifiedRunnerMetadata(
+      spec, roleIndex, providerCount, artifactDigest, recipeDigest);
+    return spec;
+  };
+
+  std::vector<NativeModelRunnerSpec> specs;
+  std::map<std::string, ndn::Buffer> selectionAssignmentByProvider;
+  std::map<std::string, ndn::Buffer> recoverySelectionAssignmentByProvider;
+  auto providerCoordinatorCompletions =
+    std::make_shared<std::atomic_size_t>(0);
+  auto providerFailures = std::make_shared<std::atomic_size_t>(0);
+  auto retentionSuppressions = std::make_shared<std::atomic_size_t>(0);
+  auto publicationSuppressions = std::make_shared<std::atomic_size_t>(0);
+  auto publicationReorders = std::make_shared<std::atomic_size_t>(0);
+  auto publicationDuplicates = std::make_shared<std::atomic_size_t>(0);
+  auto unselectedProviderExecutions = std::make_shared<std::atomic_size_t>(0);
+  auto replacementProviderExecutions = std::make_shared<std::atomic_size_t>(0);
+  auto replacementEventsPublished = std::make_shared<std::atomic_size_t>(0);
+  auto providerTransportDetachments = std::make_shared<std::atomic_size_t>(0);
+  auto streamedContextByRole = std::make_shared<std::vector<bool>>(
+    providerCount, false);
+  auto streamedContextMutex = std::make_shared<std::mutex>();
+  auto callbacksInFlight = std::make_shared<std::atomic_size_t>(0);
+  auto callbackConcurrencyHighWater = std::make_shared<std::atomic_size_t>(0);
+  auto providerFailureMutex = std::make_shared<std::mutex>();
+  auto providerFailureMessage = std::make_shared<std::string>();
+  std::vector<std::function<ProviderDecodeStateSnapshot()>>
+    decodeStateSnapshotReaders;
+  specs.reserve(providerCount);
+  for (std::size_t roleIndex = 0; roleIndex < providerCount; ++roleIndex) {
+    const auto providerIndex = roleProviderIndex[roleIndex];
+    const auto certifiedModel = certifiedModels.materialize(
+      fixture / ("role-" + std::to_string(roleIndex) + ".onnx"), roleIndex);
+    specs.push_back(makeRunnerSpec(
+      roles[roleIndex], certifiedModel,
+      environment.provider(providerIndex).getName().toUri()));
+  }
+  const auto makeProjectionPayload = [&] (
+      std::size_t roleIndex,
+      std::size_t providerIndex,
+      const ndn::Name& projectionRequestId,
+      std::uint64_t attempt,
+      const std::string& projectedCapabilityHex,
+      const std::vector<std::int64_t>& committedPrefix = {}) {
+    std::string dependenciesJson = "[";
+    std::vector<std::string> mayPublish;
+    std::vector<std::string> mustFetch;
+    for (std::size_t edgeIndex = 0; edgeIndex < plan.dependencies.size(); ++edgeIndex) {
+      const auto& dependency = plan.dependencies[edgeIndex];
+      if (edgeIndex != 0) dependenciesJson += ',';
+      dependenciesJson += std::string("{\"consumers\":[\"") +
+        dependency.consumers.front() + "\"],\"expected_segments\":0," +
+        "\"key_scope\":\"" + dependency.keyScope +
+        "\",\"object_name_template\":\"" + dependency.objectNameTemplate +
+        "\",\"operationKind\":\"" + dependency.operationKind +
+        "\",\"producers\":[\"" + dependency.producers.front() +
+        "\"],\"required\":true,\"tensors\":[\"" +
+        dependency.tensors.front() + "\"],\"topic_prefix\":\"" +
+        dependency.topicPrefix +
+        "\",\"transportProfile\":\"NDNSF_DATA_V1\"," +
+        "\"collectiveOperationIndex\":" +
+        std::to_string(dependency.collectiveOperationIndex) +
+        ",\"collectiveProducerRank\":\"" +
+        dependency.collectiveProducerRank +
+        "\",\"collectiveSourceLayoutDigest\":\"" +
+        dependency.collectiveSourceLayoutDigest +
+        "\",\"collectiveTargetLayoutDigest\":\"" +
+        dependency.collectiveTargetLayoutDigest +
+        "\",\"collectiveTensorDigest\":\"" +
+        dependency.collectiveTensorDigest + "\"}";
+      const auto producerRoleIndex = dependency.operationKind == "TOKEN_FEEDBACK"
+        ? providerCount - 1 : edgeIndex;
+      const auto endpoint = makeV3TensorEndpointJson(
+        members[producerRoleIndex].endpointPrefix,
+        requesterName.toUri(), projectionRequestId.toUri(), planDigest,
+        dependency.keyScope, dependency.collectiveOperationIndex,
+        dependency.producers.front(), producerRoleIndex,
+        dependency.consumers.front(),
+        "\"" + dependency.consumers.front() + "\"",
+        dependency.tensors.front(), dependency.collectiveTensorDigest,
+        dependency.collectiveSourceLayoutDigest,
+        dependency.collectiveTargetLayoutDigest, dependency.operationKind,
+        spec175Digest(static_cast<char>('1' + edgeIndex)),
+        dependency.collectiveTensorDigest, attempt);
+      if (dependency.producers.front() == roles[roleIndex]) {
+        mayPublish.push_back(endpoint);
+      }
+      if (dependency.consumers.front() == roles[roleIndex]) {
+        mustFetch.push_back(endpoint);
+      }
+    }
+    dependenciesJson += ']';
+    const auto join = [] (const std::vector<std::string>& values) {
+      std::string result;
+      for (const auto& value : values) {
+        if (!result.empty()) result += ',';
+        result += value;
+      }
+      return result;
+    };
+    const auto& role = roles[roleIndex];
+    const auto dataflowJson = std::string("{\"attempt\":") +
+      std::to_string(attempt) + ",\"dataflow_digest\":\"" + planDigest +
+      "\",\"may_publish\":[" + join(mayPublish) +
+      "],\"must_fetch\":[" + join(mustFetch) +
+      "],\"plan_digest\":\"" + planDigest +
+      "\",\"request_id\":\"" + projectionRequestId.toUri() +
+      "\",\"role\":\"" + role +
+      "\",\"terminal_response_owner\":" +
+      (role == finalRole ? "true" : "false") + ",\"wait_for\":[]}";
+    const auto artifactDigest = specs[roleIndex].metadata.at("fragmentDigest");
+    const auto roleJson = makeSpec175CertifiedRoleJson(
+      role, roleIndex, providerCount, artifactDigest, recipeDigest);
+    const auto stateRows = 4 / providerCount;
+    const auto projection = makeV3SelectionProjectionJson(
+      roleJson, role, role, roleIndex,
+      environment.provider(providerIndex).getName().toUri(),
+      projectionRequestId.toUri(), planDigest, projectedCapabilityHex,
+      dependenciesJson, dataflowJson, artifactDigest, "cpu:0",
+      makeSpec175GenerationContractJson(
+        maxGenerationEpochs, providerCount, samplingDigest,
+        tokenizerDigest, committedPrefix),
+      roleIndex * stateRows, (roleIndex + 1) * stateRows, attempt);
+    return ndn::Buffer(
+      reinterpret_cast<const std::uint8_t*>(projection.data()),
+      projection.size());
+  };
+  for (std::size_t index = 0; index < providerCount; ++index) {
+    const auto roleIt = std::find(
+      roleProviderIndex.begin(), roleProviderIndex.end(), index);
+    if (roleIt == roleProviderIndex.end()) {
+      throw std::runtime_error("I02 role/provider assignment is incomplete");
+    }
+    const auto roleIndex = static_cast<std::size_t>(
+      std::distance(roleProviderIndex.begin(), roleIt));
+    const auto& role = roles[roleIndex];
+    const auto providerName = environment.provider(index).getName().toUri();
+    const auto providerCapabilityHex = bytesToHex(
+      ProviderGroupCoordinator::encodeCapability(
+        capability.projectForProvider(providerName)));
+    NativeProviderHandlerConfig handlerConfig;
+    handlerConfig.plan = plan;
+    handlerConfig.assignment = assignment;
+    handlerConfig.runnerFactory = runnerFactory;
+    handlerConfig.runnerSpecs = {specs[roleIndex]};
+    handlerConfig.finalResponseScope = "final-response";
+    handlerConfig.localProviderName = environment.provider(index).getName().toUri();
+    handlerConfig.providerBootId = environment.provider(index).getName().toUri() + "-boot";
+    handlerConfig.planDigest = planDigest;
+    handlerConfig.fetchTimeoutMs = 6000;
+    handlerConfig.maxSegmentSize = 4096;
+    handlerConfig.freshnessMs = 60000;
+    handlerConfig.enableNativeEpochCoordinator = true;
+    handlerConfig.maxGenerationEpochs = maxGenerationEpochs;
+    handlerConfig.generationStateInputNames = {
+      "attention_kv_in", "recurrent_state_in", "convolution_state_in"};
+    handlerConfig.generationStateOutputNames = {
+      "attention_kv_out", "recurrent_state_out", "convolution_state_out"};
+    handlerConfig.generationEosTokenIds = {2};
+    handlerConfig.generationSamplingDigest = samplingDigest;
+    handlerConfig.allowPreassembledV3Compatibility = true;
+    handlerConfig.epochCoordinatorCompletionObserver =
+      std::make_shared<NativeProviderHandlerConfig::EpochCoordinatorCompletionObserver>(
+        [providerCoordinatorCompletions, trace] (
+            const std::string& role, const NativeEpochCoordinatorResult&) {
+          providerCoordinatorCompletions->fetch_add(1, std::memory_order_relaxed);
+          trace("initial-coordinator-complete role=" + role);
+        });
+    handlerConfig.nativeFailureObserver =
+      std::make_shared<NativeProviderHandlerConfig::NativeFailureObserver>(
+        [providerFailures, providerFailureMutex, providerFailureMessage, trace] (
+            const std::string& role, const std::string& reason) {
+          providerFailures->fetch_add(1, std::memory_order_relaxed);
+          trace("initial-provider-failure role=" + role + " reason=" + reason);
+          std::lock_guard<std::mutex> lock(*providerFailureMutex);
+          if (providerFailureMessage->empty()) {
+            *providerFailureMessage = role + ": " + reason;
+          }
+        });
+    handlerConfig.groupCoordinatorFactory =
+      [&, localProvider = environment.provider(index).getName().toUri()] (
+          ServiceProvider::CollaborationContext& context,
+          const std::map<std::string, std::string>& fields) {
+        const auto field = fields.find("groupCapabilityV1");
+        if (field == fields.end()) {
+          throw std::runtime_error(
+            "Spec175 assignment has no GroupCapabilityV1");
+        }
+        auto decoded = ProviderGroupCoordinator::decodeCapability(
+          bytesFromHex(field->second));
+        if (decoded.requestId != context.sessionId() ||
+            decoded.planDigest != planDigest) {
+          throw std::runtime_error(
+            "Spec175 GroupCapabilityV1 binding mismatch");
+        }
+        auto options = makeD2bCoordinatorOptions();
+        options.localProvider = localProvider;
+        auto coordinator = std::make_shared<ProviderGroupCoordinator>(
+          std::move(options));
+        coordinator->installCapability(std::move(decoded), {}, true);
+        return coordinator;
+      };
+    auto nativeRuntime = makeNativeProviderCollaborationRuntime(
+      std::move(handlerConfig));
+    decodeStateSnapshotReaders.push_back(nativeRuntime.decodeStateSnapshot);
+    auto nativeHandler = std::move(nativeRuntime.handler);
+    const auto ackCapabilityOffer = std::string("role=") + role +
+      ";provider=" + environment.provider(index).getName().toUri() +
+      ";backend=onnxruntime;device=cpu:0;artifactDigest=" +
+      specs[roleIndex].metadata.at("fragmentDigest") +
+      ";recipeDigest=" + recipeDigest + ";executionPolicy=DATA_DRIVEN_V2;";
+    selectionAssignmentByProvider.emplace(
+      providerName, makeProjectionPayload(
+        roleIndex, index, requestId, 1, providerCapabilityHex));
+    if (caseOptions.allowReplacement && index == roleProviderIndex.front()) {
+      const auto recoveryProviderCapabilityHex = bytesToHex(
+        ProviderGroupCoordinator::encodeCapability(
+          replacementCapability->projectForProvider(providerName)));
+      recoverySelectionAssignmentByProvider.emplace(
+        providerName, makeProjectionPayload(
+          roleIndex, index, recoveryRequestId, 2,
+          recoveryProviderCapabilityHex, {4, 5, 6}));
+    }
+    environment.provider(index).addCollaborationHandler(
+      serviceName,
+      [ackCapabilityOffer] (const RequestMessage&) {
+        ServiceProvider::AckDecision decision;
+        decision.status = true;
+        decision.payload = ndn::Buffer(
+          reinterpret_cast<const std::uint8_t*>(ackCapabilityOffer.data()),
+          ackCapabilityOffer.size());
+        return decision;
+      },
+      [nativeHandler = std::move(nativeHandler), &result, roleIndex,
+       streamedContextByRole, streamedContextMutex] (
+          ServiceProvider::CollaborationContext& context,
+          const RequestMessage& request) mutable {
+        {
+          std::lock_guard<std::mutex> lock(*streamedContextMutex);
+          (*streamedContextByRole)[roleIndex] = context.isStreamed();
+        }
+        nativeHandler(context, request);
+      });
+  }
+
+  for (std::size_t index = providerCount; index < totalProviderCount; ++index) {
+    const auto providerName = environment.provider(index).getName().toUri();
+    if (caseOptions.allowReplacement && index == providerCount) {
+      const auto roleIndex = providerCount - 1;
+      const auto& role = roles[roleIndex];
+      const auto providerCapabilityHex = bytesToHex(
+        ProviderGroupCoordinator::encodeCapability(
+          replacementCapability->projectForProvider(providerName)));
+      NativeProviderHandlerConfig handlerConfig;
+      handlerConfig.plan = plan;
+      handlerConfig.assignment = assignment;
+      handlerConfig.assignment.providerByRole[role] = providerName;
+      handlerConfig.runnerFactory = runnerFactory;
+      handlerConfig.runnerSpecs = {makeRunnerSpec(
+        role, specs[roleIndex].path,
+        providerName)};
+      handlerConfig.finalResponseScope = "final-response";
+      handlerConfig.localProviderName = providerName;
+      handlerConfig.providerBootId = providerName + "-boot";
+      handlerConfig.planDigest = planDigest;
+      handlerConfig.fetchTimeoutMs = 6000;
+      handlerConfig.maxSegmentSize = 4096;
+      handlerConfig.freshnessMs = 60000;
+      handlerConfig.enableNativeEpochCoordinator = true;
+      handlerConfig.maxGenerationEpochs = maxGenerationEpochs;
+      handlerConfig.generationStateInputNames = {
+        "attention_kv_in", "recurrent_state_in", "convolution_state_in"};
+      handlerConfig.generationStateOutputNames = {
+        "attention_kv_out", "recurrent_state_out", "convolution_state_out"};
+      handlerConfig.generationEosTokenIds = {2};
+      handlerConfig.generationSamplingDigest = samplingDigest;
+      handlerConfig.generationCommittedPrefixTokenIds = {4, 5, 6};
+      handlerConfig.allowPreassembledV3Compatibility = true;
+      handlerConfig.epochCoordinatorCompletionObserver =
+        std::make_shared<NativeProviderHandlerConfig::EpochCoordinatorCompletionObserver>(
+          [providerCoordinatorCompletions, replacementEventsPublished, trace] (
+              const std::string& role,
+              const NativeEpochCoordinatorResult& coordinatorResult) {
+            providerCoordinatorCompletions->fetch_add(1, std::memory_order_relaxed);
+            replacementEventsPublished->store(
+              coordinatorResult.eventsPublished, std::memory_order_relaxed);
+            trace("replacement-coordinator-complete role=" + role +
+                  " events=" + std::to_string(coordinatorResult.eventsPublished));
+          });
+      handlerConfig.nativeFailureObserver =
+        std::make_shared<NativeProviderHandlerConfig::NativeFailureObserver>(
+          [providerFailures, providerFailureMutex, providerFailureMessage, trace] (
+              const std::string& failureRole, const std::string& reason) {
+            providerFailures->fetch_add(1, std::memory_order_relaxed);
+            trace("replacement-provider-failure role=" + failureRole +
+                  " reason=" + reason);
+            std::lock_guard<std::mutex> lock(*providerFailureMutex);
+            if (providerFailureMessage->empty()) {
+              *providerFailureMessage = failureRole + ": " + reason;
+            }
+          });
+      handlerConfig.groupCoordinatorFactory =
+        [&, localProvider = providerName] (
+            ServiceProvider::CollaborationContext& context,
+            const std::map<std::string, std::string>& fields) {
+          const auto field = fields.find("groupCapabilityV1");
+          if (field == fields.end()) {
+            throw std::runtime_error(
+              "Spec175 replacement assignment has no GroupCapabilityV1");
+          }
+          auto decoded = ProviderGroupCoordinator::decodeCapability(
+            bytesFromHex(field->second));
+          if (decoded.requestId != context.sessionId() ||
+              decoded.planDigest != planDigest) {
+            throw std::runtime_error(
+              "Spec175 replacement GroupCapabilityV1 binding mismatch");
+          }
+          auto options = makeD2bCoordinatorOptions();
+          options.localProvider = localProvider;
+          auto coordinator = std::make_shared<ProviderGroupCoordinator>(
+            std::move(options));
+          coordinator->installCapability(std::move(decoded), {}, true);
+          return coordinator;
+        };
+      auto nativeRuntime = makeNativeProviderCollaborationRuntime(
+        std::move(handlerConfig));
+      decodeStateSnapshotReaders.push_back(nativeRuntime.decodeStateSnapshot);
+      auto nativeHandler = std::move(nativeRuntime.handler);
+      const auto ackCapabilityOffer = std::string("role=") + role +
+        ";provider=" + providerName +
+        ";backend=onnxruntime;device=cpu:0;artifactDigest=" +
+        specs[roleIndex].metadata.at("fragmentDigest") +
+        ";recipeDigest=" + recipeDigest +
+        ";executionPolicy=DATA_DRIVEN_V2;";
+      recoverySelectionAssignmentByProvider.emplace(
+        providerName, makeProjectionPayload(
+          roleIndex, index, recoveryRequestId, 2,
+          providerCapabilityHex, {4, 5, 6}));
+      environment.provider(index).addCollaborationHandler(
+        serviceName,
+        [ackCapabilityOffer] (const RequestMessage&) {
+          ServiceProvider::AckDecision decision;
+          decision.status = true;
+          decision.payload = ndn::Buffer(
+            reinterpret_cast<const std::uint8_t*>(ackCapabilityOffer.data()),
+            ackCapabilityOffer.size());
+          return decision;
+        },
+        [nativeHandler = std::move(nativeHandler), roleIndex,
+         streamedContextByRole, streamedContextMutex,
+         replacementProviderExecutions] (
+            ServiceProvider::CollaborationContext& context,
+            const RequestMessage& request) mutable {
+          {
+            std::lock_guard<std::mutex> lock(*streamedContextMutex);
+            (*streamedContextByRole)[roleIndex] = context.isStreamed();
+          }
+          replacementProviderExecutions->fetch_add(1, std::memory_order_relaxed);
+          nativeHandler(context, request);
+        });
+      continue;
+    }
+    const auto unusedOffer = std::string("role=/LLM/Pipeline/Unused;provider=") +
+      providerName + ";backend=onnxruntime;device=cpu:0;";
+    environment.provider(index).addCollaborationHandler(
+      serviceName,
+      [unusedOffer] (const RequestMessage&) {
+        ServiceProvider::AckDecision decision;
+        decision.status = true;
+        decision.payload = ndn::Buffer(
+          reinterpret_cast<const std::uint8_t*>(unusedOffer.data()),
+          unusedOffer.size());
+        return decision;
+      },
+      [unselectedProviderExecutions] (
+          ServiceProvider::CollaborationContext&, const RequestMessage&) {
+        unselectedProviderExecutions->fetch_add(1, std::memory_order_relaxed);
+      });
+  }
+
+  auto& finalProvider = environment.provider(roleProviderIndex.back());
+  const auto finalProviderIndex = roleProviderIndex.back();
+  auto& finalProviderPubSub = environment.providerPubSub(roleProviderIndex.back());
+  auto& finalProviderIo = environment.providerFace(roleProviderIndex.back()).getIoContext();
+  auto heldPublication = std::make_shared<std::optional<ndn::Data>>();
+  auto heldPublicationMutex = std::make_shared<std::mutex>();
+  if (caseOptions.fault == Spec175NativeTinyFault::NeverRetainedEvent5) {
+    finalProvider.setStreamRetentionInterceptorForTest(
+      [retentionSuppressions] (const ndn::Data& data) {
+        const auto parsed = parseInvocationEventName(data.getName());
+        if (parsed && parsed->cursor == 5) {
+          retentionSuppressions->fetch_add(1, std::memory_order_relaxed);
+          return false;
+        }
+        return true;
+      });
+  }
+  if (caseOptions.fault == Spec175NativeTinyFault::RetentionExpiredEvent5) {
+    finalProvider.setStreamRetentionExpiryObserverForTest(
+      [retentionExpirations] (const ndn::Name& name) {
+        const auto parsed = parseInvocationEventName(name);
+        if (parsed && parsed->cursor == 5) {
+          retentionExpirations->fetch_add(1, std::memory_order_relaxed);
+        }
+      });
+  }
+  if (caseOptions.fault == Spec175NativeTinyFault::ReorderEvent3After4 ||
+      caseOptions.fault == Spec175NativeTinyFault::DuplicateEvent4 ||
+      caseOptions.fault == Spec175NativeTinyFault::DropFirstEvent5Data ||
+      caseOptions.fault == Spec175NativeTinyFault::RetentionExpiredEvent5 ||
+      caseOptions.fault == Spec175NativeTinyFault::EndBeforeGapEvent5 ||
+      caseOptions.fault == Spec175NativeTinyFault::TamperEventOneSignature ||
+      caseOptions.fault == Spec175NativeTinyFault::ProviderUnavailableAfterEvent3 ||
+      caseOptions.fault == Spec175NativeTinyFault::ProviderUnavailableAfterEvent3WithReplacement) {
+    finalProvider.setStreamPublicationInterceptorForTest(
+      [fault = caseOptions.fault, publicationSuppressions,
+       publicationReorders, publicationDuplicates,
+       providerTransportDetachments, heldPublication, &environment,
+       finalProviderIndex,
+       heldPublicationMutex, &finalProviderPubSub,
+       &finalProviderIo] (const ndn::Data& data) {
+        const auto parsed = parseInvocationEventName(data.getName());
+        if (!parsed) {
+          return true;
+        }
+        if (fault == Spec175NativeTinyFault::TamperEventOneSignature &&
+            parsed->cursor == 1) {
+          // Keep the authentic packet in the IMS, suppress its normal SVS
+          // publication, and let the transport fault mutate the exact Data on
+          // the Provider-to-User link. This models one on-path corruption
+          // without racing an untampered duplicate into the callback.
+          publicationSuppressions->fetch_add(1, std::memory_order_relaxed);
+          return false;
+        }
+        if (fault == Spec175NativeTinyFault::ProviderUnavailableAfterEvent3 &&
+            parsed->cursor >= 4) {
+          publicationSuppressions->fetch_add(1, std::memory_order_relaxed);
+          return false;
+        }
+        if (fault == Spec175NativeTinyFault::ProviderUnavailableAfterEvent3WithReplacement &&
+            parsed->cursor >= 4) {
+          publicationSuppressions->fetch_add(1, std::memory_order_relaxed);
+          return false;
+        }
+        if (fault == Spec175NativeTinyFault::ReorderEvent3After4 &&
+            parsed->cursor == 3) {
+          std::lock_guard<std::mutex> lock(*heldPublicationMutex);
+          *heldPublication = data;
+          publicationSuppressions->fetch_add(1, std::memory_order_relaxed);
+          return false;
+        }
+        if (fault == Spec175NativeTinyFault::ReorderEvent3After4 &&
+            parsed->cursor == 4) {
+          std::optional<ndn::Data> held;
+          {
+            std::lock_guard<std::mutex> lock(*heldPublicationMutex);
+            held = std::move(*heldPublication);
+            heldPublication->reset();
+          }
+          if (held) {
+            boost::asio::post(finalProviderIo,
+              [pubSub = &finalProviderPubSub, held = std::move(*held)] () mutable {
+                pubSub->publishPacket(held);
+              });
+            publicationReorders->fetch_add(1, std::memory_order_relaxed);
+          }
+          return true;
+        }
+        if (fault == Spec175NativeTinyFault::DuplicateEvent4 &&
+            parsed->cursor == 4) {
+          boost::asio::post(finalProviderIo,
+            [pubSub = &finalProviderPubSub, duplicate = ndn::Data(data)] () mutable {
+              pubSub->publishPacket(duplicate);
+            });
+          publicationDuplicates->fetch_add(1, std::memory_order_relaxed);
+          return true;
+        }
+        if ((fault == Spec175NativeTinyFault::DropFirstEvent5Data ||
+             fault == Spec175NativeTinyFault::RetentionExpiredEvent5 ||
+             fault == Spec175NativeTinyFault::EndBeforeGapEvent5) &&
+            parsed->cursor == 5) {
+          publicationSuppressions->fetch_add(1, std::memory_order_relaxed);
+          return false;
+        }
+        return true;
+      });
+  }
+
+  environment.enableProductionIngressForTest();
+  for (std::size_t index = 0; index < environment.providerCount(); ++index) {
+    environment.provider(index).markHybridResponseKeyWrappedForTest(serviceName);
+    const auto ackKey = environment.provider(index).prepareHybridSendKeyForTest(
+      serviceName, "ACK");
+    const auto responseKey = environment.provider(index).prepareHybridSendKeyForTest(
+      serviceName, "RESPONSE");
+    environment.user().cacheHybridReceiveKeyForTest(
+      ackKey.keyId, ackKey.epochId, ackKey.key);
+    environment.user().cacheHybridReceiveKeyForTest(
+      responseKey.keyId, responseKey.epochId, responseKey.key);
+  }
+  const auto selectionKey = environment.user().prepareHybridSendKeyForTest(
+    serviceName, "SELECTION");
+  for (std::size_t index = 0; index < environment.providerCount(); ++index) {
+    environment.provider(index).cacheHybridReceiveKeyForTest(
+      selectionKey.keyId, selectionKey.epochId, selectionKey.key);
+  }
+
+  environment.user().setRequestPublisher(
+    [&] (const ndn::Name&, const ndn::Name& requestName,
+         const std::vector<ndn::Name>&, const ndn::Name& publishedService,
+         const RequestMessage& request, size_t) {
+      BOOST_REQUIRE_EQUAL(publishedService, serviceName);
+      result.requestPublicationName = requestName.toUri();
+      ++result.requestPublicationCount;
+      const auto publicationRequestId = parseRequestNameV2(requestName)
+        ? parseRequestNameV2(requestName)->requestId : requestId;
+      const auto requestBlock = request.WireEncode();
+      const auto encrypted = makeTestHybridPublication(
+        requestName, serviceName, publicationRequestId,
+        requesterName, "REQUEST",
+        ndn::Buffer(requestBlock.data(), requestBlock.size()));
+      for (std::size_t index = 0; index < environment.providerCount(); ++index) {
+        environment.provider(index).cacheHybridReceiveKeyForTest(
+          encrypted.key.keyId, encrypted.key.epochId, encrypted.key.key);
+      }
+      if (requestScope && publicationRequestId == requestId &&
+          !requestScope->requestPublished) {
+        environment.markRequestPublished(*requestScope);
+      }
+      environment.userPubSub().publish(
+        requestName,
+        ndn::span<const std::uint8_t>(encrypted.wire.data(), encrypted.wire.size()));
+    });
+  environment.user().setLocalPublicationHandler(
+    [&environment] (const ndn::Name& messageName, const ndn::Buffer& wire) {
+      if (parseServiceSelectionNameV2(messageName)) {
+        environment.userPubSub().publish(
+          messageName, ndn::span<const std::uint8_t>(wire.data(), wire.size()));
+      }
+    });
+
+  StreamRequestOptions streamOptions;
+  streamOptions.maxEvents = 9;
+  streamOptions.interestWindow = 4;
+  streamOptions.reorderCapacity = 4;
+  streamOptions.publisherQueueCapacity = 4;
+  streamOptions.retentionMs = 3000;
+  streamOptions.maxEventWireBytes = 4096;
+  if (caseOptions.fault == Spec175NativeTinyFault::RetentionExpiredEvent5) {
+    streamOptions.retentionMs = 1000;
+    // Keep retrying across the retention boundary. The fixture drops exact
+    // cursor-5 Interests only until the Provider confirms eviction.
+    streamOptions.interestLifetimeMs = 250;
+    streamOptions.maxEventRetries = 8;
+  }
+  if (caseOptions.fault == Spec175NativeTinyFault::SlowConsumerCapacityOne) {
+    streamOptions.publisherQueueCapacity = 1;
+    streamOptions.callbackQueueCapacity = 1;
+    streamOptions.interestWindow = 1;
+  }
+  if (caseOptions.fault == Spec175NativeTinyFault::TamperEventOneSignature) {
+    // Security-negative ordering is intentional: express only cursor 1 so the
+    // tampered first publication is authenticated before later valid cursors
+    // can trigger an exact-name repair that overtakes it from the Provider IMS.
+    streamOptions.interestWindow = 1;
+  }
+  if (caseOptions.fault == Spec175NativeTinyFault::ProviderUnavailableAfterEvent3 ||
+      caseOptions.fault == Spec175NativeTinyFault::ProviderUnavailableAfterEvent3WithReplacement) {
+    // Permit one exact-name retry before declaring the Provider unavailable.
+    // Both cases detach the live Provider transport only after the application
+    // has observed event 3. Their publication/transport interceptors withhold
+    // cursor 4 so the original Interest and its retry fail at that boundary.
+    // The timeout must still exceed normal CPU-ONNX token service time: 100 ms
+    // occasionally declared the Provider dead before the injected third-event
+    // boundary, violating the recovery fixture's committed-prefix contract.
+    streamOptions.maxEventRetries = 1;
+    streamOptions.interestLifetimeMs = 1000;
+  }
+  {
+    ndn::Buffer generation(sizeof(streamOptions.generationId));
+    ndn::random::generateSecureBytes(
+      ndn::span<uint8_t>(generation.data(), generation.size()));
+    std::copy(generation.begin(), generation.end(), streamOptions.generationId.begin());
+  }
+  streamOptions.attemptEpoch = 1;
+  streamOptions.streamEpoch = 1;
+  streamOptions.allowReplacement = caseOptions.allowReplacement;
+  streamOptions.maxReplacements = caseOptions.allowReplacement ? 1 : 0;
+  if (caseOptions.fault == Spec175NativeTinyFault::ExpiredDeadline) {
+    const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
+    streamOptions.deadlineEpochMs = static_cast<std::uint64_t>(now - 1);
+  }
+  const auto requestPayload = makeSpec175TinyRequestPayload();
+  if (caseOptions.fault != Spec175NativeTinyFault::None) {
+    requestScope = environment.beginRequest(requestId.toUri(), transportFaults);
+  }
+  bool replacementStarted = false;
+  std::size_t recoveryEvents = 0;
+  const auto commitPlan = [&] (const CollaborationAckClosure& closure) {
+    trace("ack-closure request=" + closure.requestId.toUri() +
+          " candidates=" + std::to_string(closure.candidates.size()));
+    result.ackCandidates = closure.candidates.size();
+    if (caseOptions.allowReplacement && closure.requestId == recoveryRequestId) {
+      // The disconnected Provider must not be counted during recovery. The
+      // closure is complete when every replacement-plan role is covered.
+      result.recoveryAckClosed = closure.candidates.size() == providerCount;
+    }
+    else {
+      result.ackClosed = closure.candidates.size() == totalProviderCount;
+    }
+    CollaborationPlan collaborationPlan;
+    collaborationPlan.ackCollectionTimeMs = 1000;
+    collaborationPlan.timeoutMs = 8000;
+    for (std::size_t index = 0; index < providerCount; ++index) {
+      CollaborationRoleSpec roleSpec;
+      roleSpec.role = roles[index];
+      roleSpec.service = serviceName;
+      roleSpec.requiredArtifact = ndn::Name("/artifact").append(roles[index]);
+      roleSpec.terminalResponseOwner = roles[index] == finalRole;
+      collaborationPlan.roles.push_back(std::move(roleSpec));
+    }
+    for (std::size_t index = 0; index + 1 < providerCount; ++index) {
+      collaborationPlan.keyScopes.push_back(CollaborationKeyScope{
+        "activation-" + std::to_string(index), roles});
+      collaborationPlan.dependencies.push_back(CollaborationDependency{
+        {roles[index]}, {roles[index + 1]},
+        "activation-" + std::to_string(index),
+        ndn::Name("/Spec175/activation").append(std::to_string(index)), true});
+    }
+    collaborationPlan.keyScopes.push_back(CollaborationKeyScope{
+      "token-feedback", roles});
+    collaborationPlan.dependencies.push_back(CollaborationDependency{
+      {finalRole}, {role0}, "token-feedback", ndn::Name("/Spec175/feedback"), true});
+    std::map<std::string, ndn::Name> preferredProviderByRole;
+    if (caseOptions.allowReplacement) {
+      preferredProviderByRole.emplace(
+        role0, environment.provider(roleProviderIndex.front()).getName());
+      preferredProviderByRole.emplace(
+        finalRole,
+        environment.provider(closure.requestId == recoveryRequestId
+          ? providerCount : roleProviderIndex.back()).getName());
+    }
+    const auto& assignmentMap =
+      caseOptions.allowReplacement && closure.requestId == recoveryRequestId
+        ? recoverySelectionAssignmentByProvider
+        : selectionAssignmentByProvider;
+    collaborationPlan.participantSelector =
+      std::make_shared<Spec175AckCapabilitySelection>(
+        assignmentMap, std::move(preferredProviderByRole));
+    try {
+      result.planCommitted = environment.user().CommitCollaborationPlan(
+        closure.requestId, closure.digest, std::move(collaborationPlan));
+      if (result.planCommitted &&
+          caseOptions.suppressProviderPeerSyncAfterCommit) {
+        suppressProviderPeerSync->store(true, std::memory_order_release);
+        trace("provider-peer-sync-suppressed-after-plan-commit");
+      }
+      trace("plan-commit request=" + closure.requestId.toUri() +
+            " committed=" + std::to_string(result.planCommitted));
+    }
+    catch (const std::exception& error) {
+      result.failed = true;
+      result.error = error.what();
+    }
+  };
+  const auto returnedRequestId = environment.user().BeginCollaboration(
+    serviceName, requestPayload, 1000, 8000,
+    [&] (const CollaborationAckClosure& closure) { commitPlan(closure); },
+    [&] (const ResponseMessage&) {},
+    [&] (const ndn::Name&) { result.timedOut = true; },
+    requestId,
+    CollaborationAckCoverageHandler(),
+    RequestCapabilities(),
+    std::optional<StreamRequestOptions>(streamOptions),
+    [&] (const ndn::Buffer& event) {
+      const auto inFlight = callbacksInFlight->fetch_add(
+        1, std::memory_order_relaxed) + 1;
+      auto observed = callbackConcurrencyHighWater->load(
+        std::memory_order_relaxed);
+      while (inFlight > observed &&
+             !callbackConcurrencyHighWater->compare_exchange_weak(
+               observed, inFlight, std::memory_order_relaxed)) {
+      }
+      result.events.emplace_back(
+        reinterpret_cast<const char*>(event.data()), event.size());
+      trace("event count=" + std::to_string(result.events.size()));
+      if ((caseOptions.fault ==
+             Spec175NativeTinyFault::ProviderUnavailableAfterEvent3 ||
+           caseOptions.fault ==
+             Spec175NativeTinyFault::ProviderUnavailableAfterEvent3WithReplacement) &&
+          result.events.size() == 3 &&
+          providerTransportDetachments->fetch_add(
+            1, std::memory_order_relaxed) == 0) {
+        // Establish the fault boundary at delivery, not publication: cursor
+        // 1-3 are now application-observed, while cursor >=4 remains withheld
+        // by the publication interceptor and exact repair cannot reach the
+        // disconnected Provider.
+        environment.disconnectProviderTransportForTest(finalProviderIndex);
+        trace("provider-transport-detached-after-event-3");
+      }
+      if (caseOptions.fault == Spec175NativeTinyFault::CancelAfterThirdEvent &&
+          result.events.size() == 3) {
+        result.cancelled = true;
+        environment.user().cancelStreamRequestForTest(requestId);
+      }
+      if (caseOptions.fault == Spec175NativeTinyFault::CallbackThrowsAtThirdEvent &&
+          result.events.size() == 3) {
+        callbacksInFlight->fetch_sub(1, std::memory_order_relaxed);
+        throw std::runtime_error("Spec175 I10 callback failure");
+      }
+      if (caseOptions.fault == Spec175NativeTinyFault::SlowConsumerCapacityOne) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      }
+      callbacksInFlight->fetch_sub(1, std::memory_order_relaxed);
+    },
+    [&] (const ndn::Buffer& response) {
+      result.finalPayload.assign(
+        reinterpret_cast<const char*>(response.data()), response.size());
+      result.completed = true;
+      trace("initial-complete");
+    },
+    [&] (const StreamedInvocationError& error) {
+      trace("initial-error code=" +
+            std::to_string(static_cast<int>(error.code)) +
+            " cursor=" + std::to_string(error.expectedCursor));
+      if (caseOptions.allowReplacement && !replacementStarted) {
+        replacementStarted = true;
+        trace("replacement-begin");
+        StreamRequestOptions recoveryOptions = streamOptions;
+        recoveryOptions.attemptEpoch = 2;
+        recoveryOptions.streamEpoch = 2;
+        recoveryOptions.allowReplacement = false;
+        recoveryOptions.maxReplacements = 0;
+        recoveryOptions.maxEventRetries = 8;
+        recoveryOptions.deadlineEpochMs = 0;
+        environment.user().BeginCollaboration(
+          serviceName, requestPayload, 1000, 8000,
+          [&] (const CollaborationAckClosure& closure) { commitPlan(closure); },
+          [&] (const ResponseMessage&) {},
+          [&] (const ndn::Name&) { result.timedOut = true; },
+          recoveryRequestId,
+          CollaborationAckCoverageHandler(),
+          RequestCapabilities(),
+          std::optional<StreamRequestOptions>(recoveryOptions),
+          [&] (const ndn::Buffer& event) {
+            const auto inFlight = callbacksInFlight->fetch_add(
+              1, std::memory_order_relaxed) + 1;
+            auto observed = callbackConcurrencyHighWater->load(
+              std::memory_order_relaxed);
+            while (inFlight > observed &&
+                   !callbackConcurrencyHighWater->compare_exchange_weak(
+                     observed, inFlight, std::memory_order_relaxed)) {
+            }
+            ++recoveryEvents;
+            result.events.emplace_back(
+              reinterpret_cast<const char*>(event.data()), event.size());
+            trace("replacement-event count=" +
+                  std::to_string(recoveryEvents));
+            if (caseOptions.fault == Spec175NativeTinyFault::SlowConsumerCapacityOne) {
+              std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            callbacksInFlight->fetch_sub(1, std::memory_order_relaxed);
+          },
+          [&] (const ndn::Buffer& response) {
+            result.finalPayload.assign(
+              reinterpret_cast<const char*>(response.data()), response.size());
+            result.completed = true;
+            trace("replacement-complete");
+          },
+          [&] (const StreamedInvocationError& recoveryError) {
+            trace("replacement-error code=" +
+                  std::to_string(static_cast<int>(recoveryError.code)) +
+                  " cursor=" +
+                  std::to_string(recoveryError.expectedCursor));
+            result.failed = true;
+            result.error = recoveryError.message;
+            result.errorCode = recoveryError.code;
+            result.errorRequestId = recoveryError.requestId;
+            result.errorProviderName = recoveryError.providerName;
+            result.errorExpectedCursor = recoveryError.expectedCursor;
+          });
+        return;
+      }
+      result.failed = true;
+      result.error = error.message;
+      result.errorCode = error.code;
+      result.errorRequestId = error.requestId;
+      result.errorProviderName = error.providerName;
+      result.errorExpectedCursor = error.expectedCursor;
+    });
+  BOOST_REQUIRE_EQUAL(returnedRequestId, requestId);
+  const auto terminal = [&] {
+    const auto providerDone =
+      providerFailures->load(std::memory_order_relaxed) +
+      providerCoordinatorCompletions->load(std::memory_order_relaxed) >= providerCount;
+    if (caseOptions.fault == Spec175NativeTinyFault::ExpiredDeadline) {
+      return providerDone &&
+        (result.timedOut || result.failed || result.cancelled || result.completed);
+    }
+    return result.timedOut ||
+      ((result.failed || result.cancelled || result.completed) && providerDone);
+  };
+  for (int round = 0; round < 32 && !terminal(); ++round) {
+    trace("pump-begin round=" + std::to_string(round));
+    environment.pumpUntil(terminal);
+    trace("pump-end round=" + std::to_string(round) +
+          " events=" + std::to_string(result.events.size()) +
+          " completed=" + std::to_string(result.completed) +
+          " failed=" + std::to_string(result.failed) +
+          " providerCompletions=" + std::to_string(
+            providerCoordinatorCompletions->load(std::memory_order_relaxed)));
+  }
+  result.providerCoordinatorCompletions =
+    providerCoordinatorCompletions->load(std::memory_order_relaxed);
+  result.providerFailures =
+    providerFailures->load(std::memory_order_relaxed);
+  result.bridgeStats = environment.bridgeStats();
+  result.retentionSuppressions =
+    retentionSuppressions->load(std::memory_order_relaxed);
+  result.retentionExpirations =
+    retentionExpirations->load(std::memory_order_relaxed);
+  result.publicationSuppressions =
+    publicationSuppressions->load(std::memory_order_relaxed);
+  result.publicationReorders =
+    publicationReorders->load(std::memory_order_relaxed);
+  result.publicationDuplicates =
+    publicationDuplicates->load(std::memory_order_relaxed);
+  result.tamperedPublications = result.bridgeStats.tamperedStreamDataPackets;
+  result.publisherQueueHighWater = finalProvider.streamPublisherHighWaterMarkForTest(
+    requesterName, serviceName, requestId);
+  result.callbackQueueHighWater =
+    environment.user().streamCallbackQueueHighWaterMarkForTest(requestId);
+  result.callbackConcurrencyHighWater =
+    callbackConcurrencyHighWater->load(std::memory_order_relaxed);
+  for (const auto& readSnapshot : decodeStateSnapshotReaders) {
+    result.decodeStateSnapshots.push_back(readSnapshot());
+  }
+  result.unselectedProviderExecutions =
+    unselectedProviderExecutions->load(std::memory_order_relaxed);
+  {
+    std::lock_guard<std::mutex> lock(*streamedContextMutex);
+  result.streamedProviderCount = static_cast<std::size_t>(std::count(
+      streamedContextByRole->begin(), streamedContextByRole->end(), true));
+    result.streamedContext = !streamedContextByRole->empty() &&
+      streamedContextByRole->back();
+  }
+  result.replacementProviderExecutions =
+    replacementProviderExecutions->load(std::memory_order_relaxed);
+  result.replacementEventsPublished =
+    replacementEventsPublished->load(std::memory_order_relaxed);
+  result.providerTransportDetachments =
+    providerTransportDetachments->load(std::memory_order_relaxed);
+  if (result.providerFailures != 0 && !result.cancelled) {
+    result.failed = true;
+    std::lock_guard<std::mutex> lock(*providerFailureMutex);
+    result.providerFailureError = *providerFailureMessage;
+    if (result.error.empty()) {
+      result.error = result.providerFailureError;
+    }
+  }
+  else if (result.completed &&
+           result.providerCoordinatorCompletions < providerCount) {
+    result.failed = true;
+    result.error = "not every Provider epoch coordinator terminated cleanly";
+  }
+  finalProvider.setStreamRetentionInterceptorForTest({});
+  finalProvider.setStreamRetentionExpiryObserverForTest({});
+  finalProvider.setStreamPublicationInterceptorForTest({});
+  if (requestScope) {
+    environment.flushReorderedPackets();
+    environment.updateRequestResidue(*requestScope, {});
+    environment.resetRequest(*requestScope);
+  }
+  return result;
+#endif
+}
+
+Spec175NativeTinyStreamResult
+runSpec175NativeTinyTwoProviderCase(
+  std::string caseId = "i02",
+  Spec175NativeTinyFault fault = Spec175NativeTinyFault::None)
+{
+  Spec175NativeTinyCaseOptions options;
+  options.caseId = std::move(caseId);
+  options.fault = fault;
+  return runSpec175NativeTinyMultiProviderCase(2, std::move(options));
+}
+
+Spec175NativeTinyStreamResult
+runSpec175NativeTinyReplacementCase()
+{
+  Spec175NativeTinyCaseOptions options;
+  options.caseId = "i12";
+  options.extraUnselectedProvider = true;
+  options.allowReplacement = true;
+  options.fault = Spec175NativeTinyFault::ProviderUnavailableAfterEvent3WithReplacement;
+  return runSpec175NativeTinyMultiProviderCase(2, std::move(options));
+}
+
+Spec175NativeTinyStreamResult
+runSpec175NativeTinyFourProviderCase(bool permuteRoleProviders)
+{
+  Spec175NativeTinyCaseOptions options;
+  options.caseId = permuteRoleProviders ? "i15" : "i03";
+  options.permuteRoleProviders = permuteRoleProviders;
+  return runSpec175NativeTinyMultiProviderCase(4, std::move(options));
+}
+
 BOOST_AUTO_TEST_CASE(ProductionNativeHandlersRunD2bRequestToFinalResponse)
 {
   runProductionNativeD2bCase(false);
+}
+
+BOOST_AUTO_TEST_CASE(ProductionNativeHandlersRunStreamedD2bRequestToFinalResponse)
+{
+  runProductionNativeD2bCase(false, true);
+}
+
+BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI01OneProvider)
+{
+  const auto result = runSpec175NativeTinyOneRoleCase();
+  BOOST_TEST_MESSAGE("Spec175 I01 ackCandidates=" << result.ackCandidates
+                    << " ackProvider=" << result.ackProvider
+                    << " ackService=" << result.ackService
+                    << " requestObserved=" << result.requestObserved
+                    << " ackPublicationObserved=" << result.ackPublicationObserved
+                    << " requestName=" << result.requestPublicationName
+                    << " ackName=" << result.ackPublicationName
+                    << " ackClosed=" << result.ackClosed
+                    << " planCommitted=" << result.planCommitted
+                    << " streamedContext=" << result.streamedContext
+                    << " completed=" << result.completed
+                    << " failed=" << result.failed
+                    << " timedOut=" << result.timedOut
+                    << " events=" << result.events.size()
+                    << " error=" << result.error);
+  BOOST_REQUIRE(result.ackClosed);
+  BOOST_REQUIRE(result.planCommitted);
+  BOOST_REQUIRE(result.streamedContext);
+  BOOST_REQUIRE(!result.failed);
+  BOOST_REQUIRE(!result.timedOut);
+  BOOST_REQUIRE(result.completed);
+  BOOST_REQUIRE_EQUAL(result.events.size(), 8U);
+  BOOST_REQUIRE_EQUAL(result.decodeStateSnapshots.size(), 1U);
+  const auto& state = result.decodeStateSnapshots.front();
+  BOOST_CHECK_EQUAL(state.commits, 8U);
+  BOOST_CHECK_EQUAL(state.hits, 7U);
+  BOOST_CHECK_EQUAL(state.misses, 0U);
+  BOOST_CHECK_EQUAL(state.entries, 0U);
+  BOOST_CHECK_EQUAL(state.pinnedEntries, 0U);
+  BOOST_CHECK_EQUAL(state.candidates, 0U);
+  BOOST_CHECK_EQUAL(state.cleanups, 1U);
+  BOOST_CHECK(result.events.front().find("\"tokenId\":4") != std::string::npos);
+  BOOST_CHECK(result.events.back().find("\"tokenId\":2") != std::string::npos);
+  BOOST_CHECK(result.events.back().find("\"finishHint\":\"EOS\"") !=
+              std::string::npos);
+  BOOST_CHECK(result.finalPayload.find(
+    "\"tokenIds\":[4,5,6,7,8,9,10,2]") != std::string::npos);
+
+  const std::vector<std::int64_t> expectedTokens{4, 5, 6, 7, 8, 9, 10, 2};
+  std::vector<std::int64_t> cachedTokens;
+  for (const auto& event : result.events) {
+    const auto marker = event.find("\"tokenId\":");
+    BOOST_REQUIRE(marker != std::string::npos);
+    const auto begin = marker + std::string("\"tokenId\":").size();
+    const auto end = event.find(',', begin);
+    BOOST_REQUIRE(end != std::string::npos);
+    cachedTokens.push_back(std::stoll(event.substr(begin, end - begin)));
+  }
+  BOOST_CHECK(cachedTokens == expectedTokens);
+
+  BOOST_REQUIRE_EQUAL(result.cacheObservations.size(), expectedTokens.size());
+  std::size_t totalPrefixWorkAvoided = 0;
+  for (std::size_t epoch = 0; epoch < result.cacheObservations.size(); ++epoch) {
+    const auto& observation = result.cacheObservations[epoch];
+    BOOST_CHECK_EQUAL(observation.inferenceEpoch, epoch);
+    BOOST_CHECK_EQUAL(observation.actualNewInputExtent, 1U);
+    BOOST_CHECK_EQUAL(observation.representedPrefixTokenCount, epoch + 1);
+    BOOST_CHECK_EQUAL(observation.prefixWorkAvoided, epoch);
+    BOOST_CHECK_EQUAL(observation.decodeStateHit, epoch > 0);
+    totalPrefixWorkAvoided += observation.prefixWorkAvoided;
+  }
+  BOOST_CHECK_EQUAL(totalPrefixWorkAvoided, 28U);
+
+  const auto tokenText = [] (const std::vector<std::int64_t>& tokens) {
+    std::ostringstream value;
+    for (const auto token : tokens) {
+      if (value.tellp() > 0) value << ',';
+      value << token;
+    }
+    return value.str();
+  };
+  BOOST_TEST_MESSAGE("Spec175 CPU cache control cached=" << tokenText(cachedTokens)
+                    << " fullPrefix=" << tokenText(result.fullPrefixControlTokens));
+  BOOST_REQUIRE_EQUAL(result.fullPrefixControlTokens.size(), cachedTokens.size());
+  BOOST_CHECK_EQUAL_COLLECTIONS(result.fullPrefixControlTokens.begin(),
+                                result.fullPrefixControlTokens.end(),
+                                cachedTokens.begin(), cachedTokens.end());
+  BOOST_CHECK(result.fullPrefixControlInputExtents ==
+              std::vector<std::size_t>({1, 2, 3, 4, 5, 6, 7, 8}));
+}
+
+BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI02TwoProviderEpochCoordinator)
+{
+  const auto result = runSpec175NativeTinyTwoProviderCase();
+  BOOST_TEST_MESSAGE("Spec175 I02 ackCandidates=" << result.ackCandidates
+                    << " ackClosed=" << result.ackClosed
+                    << " planCommitted=" << result.planCommitted
+                    << " streamedContext=" << result.streamedContext
+                    << " completed=" << result.completed
+                    << " failed=" << result.failed
+                    << " timedOut=" << result.timedOut
+                    << " providerCompletions="
+                    << result.providerCoordinatorCompletions
+                    << " providerFailures=" << result.providerFailures
+                    << " events=" << result.events.size()
+                    << " error=" << result.error
+                    << " providerError=" << result.providerFailureError);
+  BOOST_REQUIRE(result.ackClosed);
+  BOOST_REQUIRE(result.planCommitted);
+  BOOST_REQUIRE(result.streamedContext);
+  BOOST_REQUIRE(!result.failed);
+  BOOST_REQUIRE(!result.timedOut);
+  BOOST_REQUIRE(result.completed);
+  BOOST_REQUIRE_EQUAL(result.providerCoordinatorCompletions, 2U);
+  BOOST_REQUIRE_EQUAL(result.providerFailures, 0U);
+  BOOST_REQUIRE_EQUAL(result.events.size(), 4U);
+  BOOST_REQUIRE_EQUAL(result.decodeStateSnapshots.size(), 2U);
+  for (const auto& state : result.decodeStateSnapshots) {
+    BOOST_CHECK_EQUAL(state.commits, 4U);
+    BOOST_CHECK_EQUAL(state.hits, 3U);
+    BOOST_CHECK_EQUAL(state.misses, 0U);
+    BOOST_CHECK_EQUAL(state.entries, 0U);
+    BOOST_CHECK_EQUAL(state.pinnedEntries, 0U);
+    BOOST_CHECK_EQUAL(state.candidates, 0U);
+    BOOST_CHECK_EQUAL(state.cleanups, 1U);
+  }
+  BOOST_CHECK(result.events.front().find("\"tokenId\":4") != std::string::npos);
+  BOOST_CHECK(result.events.back().find("\"tokenId\":7") != std::string::npos);
+  BOOST_CHECK(result.finalPayload.find(
+    "\"tokenIds\":[4,5,6,7]") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI03FourProviderEpochCoordinator)
+{
+  const auto result = runSpec175NativeTinyFourProviderCase(false);
+  BOOST_TEST_MESSAGE("Spec175 I03 ackCandidates=" << result.ackCandidates
+                    << " ackClosed=" << result.ackClosed
+                    << " planCommitted=" << result.planCommitted
+                    << " streamedContext=" << result.streamedContext
+                    << " completed=" << result.completed
+                    << " failed=" << result.failed
+                    << " timedOut=" << result.timedOut
+                    << " providerCompletions="
+                    << result.providerCoordinatorCompletions
+                    << " providerFailures=" << result.providerFailures
+                    << " events=" << result.events.size()
+                    << " error=" << result.error);
+  BOOST_REQUIRE_EQUAL(result.ackCandidates, 4U);
+  BOOST_REQUIRE(result.ackClosed);
+  BOOST_REQUIRE(result.planCommitted);
+  BOOST_REQUIRE(result.streamedContext);
+  BOOST_REQUIRE(!result.failed);
+  BOOST_REQUIRE(!result.timedOut);
+  BOOST_REQUIRE(result.completed);
+  BOOST_REQUIRE_EQUAL(result.providerCoordinatorCompletions, 4U);
+  BOOST_REQUIRE_EQUAL(result.providerFailures, 0U);
+  BOOST_REQUIRE_EQUAL(result.events.size(), 8U);
+  BOOST_REQUIRE_EQUAL(result.decodeStateSnapshots.size(), 4U);
+  for (const auto& state : result.decodeStateSnapshots) {
+    BOOST_CHECK_EQUAL(state.commits, 8U);
+    BOOST_CHECK_EQUAL(state.hits, 7U);
+    BOOST_CHECK_EQUAL(state.misses, 0U);
+    BOOST_CHECK_EQUAL(state.entries, 0U);
+    BOOST_CHECK_EQUAL(state.pinnedEntries, 0U);
+    BOOST_CHECK_EQUAL(state.candidates, 0U);
+    BOOST_CHECK_EQUAL(state.cleanups, 1U);
+  }
+  BOOST_CHECK(result.events.front().find("\"tokenId\":4") != std::string::npos);
+  BOOST_CHECK(result.events.back().find("\"tokenId\":2") != std::string::npos);
+  BOOST_CHECK(result.finalPayload.find(
+    "\"tokenIds\":[4,5,6,7,8,9,10,2]") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI04ReordersEventThreeAfterFour)
+{
+  const auto result = runSpec175NativeTinyTwoProviderCase(
+    "i04", Spec175NativeTinyFault::ReorderEvent3After4);
+  BOOST_TEST_MESSAGE("Spec175 I04 completed=" << result.completed
+                    << " failed=" << result.failed
+                    << " publicationReorders="
+                    << result.publicationReorders
+                    << " events=" << result.events.size()
+                    << " error=" << result.error);
+  BOOST_REQUIRE(result.ackClosed);
+  BOOST_REQUIRE(result.planCommitted);
+  BOOST_REQUIRE(!result.failed);
+  BOOST_REQUIRE(!result.timedOut);
+  BOOST_REQUIRE(result.completed);
+  BOOST_REQUIRE_EQUAL(result.publicationSuppressions, 1U);
+  BOOST_REQUIRE_EQUAL(result.publicationReorders, 1U);
+  BOOST_REQUIRE_EQUAL(result.events.size(), 8U);
+  BOOST_CHECK(result.events.front().find("\"tokenId\":4") != std::string::npos);
+  BOOST_CHECK(result.events.back().find("\"tokenId\":2") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI05SuppressesDuplicateEventFour)
+{
+  const auto result = runSpec175NativeTinyTwoProviderCase(
+    "i05", Spec175NativeTinyFault::DuplicateEvent4);
+  BOOST_TEST_MESSAGE("Spec175 I05 completed=" << result.completed
+                    << " failed=" << result.failed
+                    << " publicationDuplicates="
+                    << result.publicationDuplicates
+                    << " events=" << result.events.size()
+                    << " error=" << result.error);
+  BOOST_REQUIRE(result.ackClosed);
+  BOOST_REQUIRE(result.planCommitted);
+  BOOST_REQUIRE(!result.failed);
+  BOOST_REQUIRE(!result.timedOut);
+  BOOST_REQUIRE(result.completed);
+  BOOST_REQUIRE_EQUAL(result.publicationDuplicates, 1U);
+  BOOST_REQUIRE_EQUAL(result.events.size(), 8U);
+}
+
+BOOST_AUTO_TEST_CASE(Spec175DataV1ExactDependencySurvivesSuppressedSvsUpdates)
+{
+  Spec175NativeTinyCaseOptions options;
+  options.caseId = "data-v1-exact-without-peer-sync";
+  options.suppressProviderPeerSyncAfterCommit = true;
+  const auto result = runSpec175NativeTinyMultiProviderCase(
+    2, std::move(options));
+  BOOST_TEST_MESSAGE("Spec175 exact dependency completed=" << result.completed
+                    << " failed=" << result.failed
+                    << " events=" << result.events.size()
+                    << " error=" << result.error);
+  BOOST_REQUIRE(result.ackClosed);
+  BOOST_REQUIRE(result.planCommitted);
+  BOOST_REQUIRE(!result.failed);
+  BOOST_REQUIRE(!result.timedOut);
+  BOOST_REQUIRE(result.completed);
+  BOOST_REQUIRE_EQUAL(result.events.size(), 8U);
+}
+
+BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI06RetriesFirstLostEventFive)
+{
+  const auto result = runSpec175NativeTinyTwoProviderCase(
+    "i06", Spec175NativeTinyFault::DropFirstEvent5Data);
+  BOOST_TEST_MESSAGE("Spec175 I06 completed=" << result.completed
+                    << " failed=" << result.failed
+                    << " droppedData="
+                    << result.bridgeStats.droppedStreamDataPackets
+                    << " events=" << result.events.size()
+                    << " error=" << result.error);
+  BOOST_REQUIRE(result.ackClosed);
+  BOOST_REQUIRE(result.planCommitted);
+  BOOST_REQUIRE(!result.failed);
+  BOOST_REQUIRE(!result.timedOut);
+  BOOST_REQUIRE(result.completed);
+  BOOST_REQUIRE_EQUAL(result.publicationSuppressions, 1U);
+  BOOST_REQUIRE_EQUAL(result.bridgeStats.droppedStreamDataPackets, 1U);
+  BOOST_REQUIRE_EQUAL(result.events.size(), 8U);
+  BOOST_CHECK(result.finalPayload.find(
+    "\"tokenIds\":[4,5,6,7,8,9,10,2]") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI07FailsEveryUnavailableEventFiveMode)
+{
+  const auto verifyFailure = [] (const Spec175NativeTinyStreamResult& result,
+                                 const std::string& subcase) {
+    BOOST_TEST_CONTEXT(subcase) {
+      BOOST_REQUIRE(result.ackClosed);
+      BOOST_REQUIRE(result.planCommitted);
+      BOOST_REQUIRE(!result.completed);
+      BOOST_REQUIRE(!result.timedOut);
+      BOOST_REQUIRE(result.failed);
+      BOOST_CHECK(result.errorCode == StreamedInvocationErrorCode::EventTimeout);
+      BOOST_CHECK_EQUAL(result.errorExpectedCursor, 5U);
+      BOOST_CHECK(!result.errorRequestId.empty());
+      BOOST_CHECK(!result.errorProviderName.empty());
+      BOOST_CHECK(result.errorProviderName.toUri().front() == '/');
+      BOOST_CHECK(result.error.find("gap exceeded retry budget") !=
+                  std::string::npos);
+    }
+  };
+
+  const auto neverRetained = runSpec175NativeTinyTwoProviderCase(
+    "i07-never-retained", Spec175NativeTinyFault::NeverRetainedEvent5);
+  BOOST_TEST_MESSAGE("Spec175 I07 never-retained suppressions="
+                    << neverRetained.retentionSuppressions
+                    << " error=" << neverRetained.error);
+  verifyFailure(neverRetained, "never-retained");
+  BOOST_REQUIRE_EQUAL(neverRetained.retentionSuppressions, 1U);
+
+  const auto retentionExpired = runSpec175NativeTinyTwoProviderCase(
+    "i07-retention-expired", Spec175NativeTinyFault::RetentionExpiredEvent5);
+  BOOST_TEST_MESSAGE("Spec175 I07 retention-expired publicationSuppressions="
+                    << retentionExpired.publicationSuppressions
+                    << " retentionExpirations="
+                    << retentionExpired.retentionExpirations
+                    << " droppedInterests="
+                    << retentionExpired.bridgeStats.droppedStreamInterests
+                    << " error=" << retentionExpired.error);
+  verifyFailure(retentionExpired, "retention-expired");
+  BOOST_REQUIRE_EQUAL(retentionExpired.publicationSuppressions, 1U);
+  BOOST_REQUIRE_EQUAL(retentionExpired.retentionExpirations, 1U);
+  BOOST_REQUIRE_GE(retentionExpired.bridgeStats.droppedStreamInterests, 1U);
+
+  const auto endBeforeGap = runSpec175NativeTinyTwoProviderCase(
+    "i07-end-before-gap", Spec175NativeTinyFault::EndBeforeGapEvent5);
+  BOOST_TEST_MESSAGE("Spec175 I07 end-before-gap droppedData="
+                    << endBeforeGap.bridgeStats.droppedStreamDataPackets
+                    << " error=" << endBeforeGap.error);
+  verifyFailure(endBeforeGap, "end-before-gap");
+  BOOST_REQUIRE_EQUAL(endBeforeGap.publicationSuppressions, 1U);
+  BOOST_REQUIRE_GE(endBeforeGap.bridgeStats.droppedStreamDataPackets, 1U);
+}
+
+BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI08CancelsAfterThirdEvent)
+{
+  const auto result = runSpec175NativeTinyTwoProviderCase(
+    "i08", Spec175NativeTinyFault::CancelAfterThirdEvent);
+  BOOST_TEST_MESSAGE("Spec175 I08 cancelled=" << result.cancelled
+                    << " completed=" << result.completed
+                    << " failed=" << result.failed
+                    << " events=" << result.events.size());
+  BOOST_REQUIRE(result.ackClosed);
+  BOOST_REQUIRE(result.planCommitted);
+  BOOST_REQUIRE(result.cancelled);
+  BOOST_REQUIRE(!result.completed);
+  BOOST_REQUIRE(!result.failed);
+  BOOST_REQUIRE(!result.timedOut);
+  BOOST_REQUIRE_GE(result.providerCoordinatorCompletions + result.providerFailures,
+                   2U);
+  // Cancellation is issued synchronously when the third event is delivered;
+  // no fourth event may cross the terminal guard.
+  BOOST_REQUIRE_EQUAL(result.events.size(), 3U);
+  BOOST_REQUIRE_EQUAL(result.decodeStateSnapshots.size(), 2U);
+  for (const auto& state : result.decodeStateSnapshots) {
+    BOOST_CHECK_EQUAL(state.entries, 0U);
+    BOOST_CHECK_EQUAL(state.pinnedEntries, 0U);
+    BOOST_CHECK_EQUAL(state.candidates, 0U);
+    BOOST_CHECK_EQUAL(state.cleanups, 1U);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxExpiredDeadlineCleansProviderState)
+{
+  const auto result = runSpec175NativeTinyTwoProviderCase(
+    "expired-deadline", Spec175NativeTinyFault::ExpiredDeadline);
+  BOOST_TEST_MESSAGE("Spec175 expired deadline ackClosed=" << result.ackClosed
+                    << " planCommitted=" << result.planCommitted
+                    << " timedOut=" << result.timedOut
+                    << " failed=" << result.failed
+                    << " providerFailures=" << result.providerFailures
+                    << " events=" << result.events.size()
+                    << " error=" << result.error);
+  BOOST_REQUIRE(result.ackClosed);
+  BOOST_REQUIRE(result.planCommitted);
+  BOOST_REQUIRE(!result.completed);
+  BOOST_REQUIRE(result.timedOut || result.failed);
+  BOOST_REQUIRE_EQUAL(result.providerFailures, 2U);
+  BOOST_REQUIRE(result.events.empty());
+  BOOST_REQUIRE(result.providerFailureError.find("REQUEST_DEADLINE") !=
+                std::string::npos);
+  BOOST_REQUIRE_EQUAL(result.decodeStateSnapshots.size(), 2U);
+  for (const auto& state : result.decodeStateSnapshots) {
+    BOOST_CHECK_EQUAL(state.commits, 0U);
+    BOOST_CHECK_EQUAL(state.entries, 0U);
+    BOOST_CHECK_EQUAL(state.pinnedEntries, 0U);
+    BOOST_CHECK_EQUAL(state.candidates, 0U);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI09RejectsTamperAndWithholdsUnselectedGrant)
+{
+  Spec175NativeTinyCaseOptions options;
+  options.caseId = "i09";
+  options.extraUnselectedProvider = true;
+  options.fault = Spec175NativeTinyFault::TamperEventOneSignature;
+  const auto result = runSpec175NativeTinyMultiProviderCase(2, std::move(options));
+  BOOST_TEST_MESSAGE("Spec175 I09 ackCandidates=" << result.ackCandidates
+                    << " streamedProviders=" << result.streamedProviderCount
+                    << " unselectedExecutions="
+                    << result.unselectedProviderExecutions
+                    << " tamperedPublications=" << result.tamperedPublications
+                    << " providerCompletions="
+                    << result.providerCoordinatorCompletions
+                    << " providerFailures=" << result.providerFailures
+                    << " error=" << result.error);
+  BOOST_REQUIRE_EQUAL(result.ackCandidates, 3U);
+  BOOST_REQUIRE(result.ackClosed);
+  BOOST_REQUIRE(result.planCommitted);
+  BOOST_REQUIRE(!result.completed);
+  BOOST_REQUIRE(!result.timedOut);
+  BOOST_REQUIRE(result.failed);
+  BOOST_REQUIRE_EQUAL(result.providerCoordinatorCompletions, 2U);
+  BOOST_REQUIRE_EQUAL(result.providerFailures, 0U);
+  BOOST_REQUIRE_EQUAL(result.streamedProviderCount, 1U);
+  BOOST_REQUIRE(result.streamedContext);
+  BOOST_REQUIRE_EQUAL(result.unselectedProviderExecutions, 0U);
+  BOOST_REQUIRE_EQUAL(result.tamperedPublications, 1U);
+  BOOST_REQUIRE(result.events.empty());
+  BOOST_CHECK(result.errorCode == StreamedInvocationErrorCode::DecryptionFailed);
+  BOOST_CHECK_EQUAL(result.errorExpectedCursor, 1U);
+  BOOST_CHECK_EQUAL(result.errorRequestId, ndn::Name("/spec175-native-tiny-i09"));
+}
+
+BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI10ContainsThirdCallbackFailure)
+{
+  const auto result = runSpec175NativeTinyTwoProviderCase(
+    "i10", Spec175NativeTinyFault::CallbackThrowsAtThirdEvent);
+  BOOST_TEST_MESSAGE("Spec175 I10 completed=" << result.completed
+                    << " failed=" << result.failed
+                    << " events=" << result.events.size()
+                    << " error=" << result.error);
+  BOOST_REQUIRE(result.ackClosed);
+  BOOST_REQUIRE(result.planCommitted);
+  BOOST_REQUIRE(!result.completed);
+  BOOST_REQUIRE(!result.timedOut);
+  BOOST_REQUIRE(result.failed);
+  BOOST_REQUIRE_EQUAL(result.providerCoordinatorCompletions, 2U);
+  BOOST_REQUIRE_EQUAL(result.events.size(), 3U);
+  BOOST_CHECK(result.errorCode ==
+              StreamedInvocationErrorCode::ApplicationCallbackFailed);
+  BOOST_CHECK_EQUAL(result.errorExpectedCursor, 4U);
+  BOOST_CHECK_EQUAL(result.errorRequestId, ndn::Name("/spec175-native-tiny-i10"));
+}
+
+BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI11BoundsCapacityOneSlowConsumer)
+{
+  const auto result = runSpec175NativeTinyTwoProviderCase(
+    "i11", Spec175NativeTinyFault::SlowConsumerCapacityOne);
+  BOOST_TEST_MESSAGE("Spec175 I11 completed=" << result.completed
+                    << " events=" << result.events.size()
+                    << " publisherHighWater="
+                    << result.publisherQueueHighWater
+                    << " callbackQueueHighWater="
+                    << result.callbackQueueHighWater
+                    << " callbackConcurrencyHighWater="
+                    << result.callbackConcurrencyHighWater
+                    << " error=" << result.error);
+  BOOST_REQUIRE(result.ackClosed);
+  BOOST_REQUIRE(result.planCommitted);
+  BOOST_REQUIRE(!result.failed);
+  BOOST_REQUIRE(!result.timedOut);
+  BOOST_REQUIRE(result.completed);
+  BOOST_REQUIRE_EQUAL(result.providerCoordinatorCompletions, 2U);
+  BOOST_REQUIRE_EQUAL(result.events.size(), 8U);
+  BOOST_REQUIRE_EQUAL(result.publisherQueueHighWater, 1U);
+  BOOST_REQUIRE_EQUAL(result.callbackQueueHighWater, 1U);
+  BOOST_REQUIRE_EQUAL(result.callbackConcurrencyHighWater, 1U);
+  BOOST_CHECK(result.finalPayload.find(
+    "\"tokenIds\":[4,5,6,7,8,9,10,2]") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI12ProviderUnavailableAfterEvent3WithReplacement)
+{
+  const auto result = runSpec175NativeTinyReplacementCase();
+  BOOST_TEST_MESSAGE("Spec175 I12 requests=" << result.requestPublicationCount
+                    << " completed=" << result.completed
+                    << " failed=" << result.failed
+                    << " events=" << result.events.size()
+                    << " replacementExecutions="
+                    << result.replacementProviderExecutions
+                    << " replacementEventsPublished="
+                    << result.replacementEventsPublished
+                    << " coordinators=" << result.providerCoordinatorCompletions
+                    << " suppressed=" << result.publicationSuppressions
+                    << " errorCode=" << static_cast<int>(result.errorCode)
+                    << " expectedCursor=" << result.errorExpectedCursor
+                    << " errorRequest=" << result.errorRequestId
+                    << " errorProvider=" << result.errorProviderName
+                    << " error=" << result.error);
+  BOOST_REQUIRE_EQUAL(result.requestPublicationCount, 2U);
+  BOOST_REQUIRE(result.ackClosed);
+  BOOST_REQUIRE(result.recoveryAckClosed);
+  BOOST_REQUIRE(result.planCommitted);
+  BOOST_REQUIRE(!result.failed);
+  BOOST_REQUIRE(!result.timedOut);
+  BOOST_REQUIRE(result.completed);
+  // The first consumer is fenced when the terminal Provider disappears;
+  // require a delivered post-reselection event without claiming that the
+  // pre-failure callback prefix was replayed to the application.
+  BOOST_REQUIRE_GE(result.events.size(), 1U);
+  BOOST_REQUIRE_EQUAL(result.replacementProviderExecutions, 1U);
+  BOOST_REQUIRE_EQUAL(result.providerTransportDetachments, 1U);
+  BOOST_REQUIRE_GE(result.providerCoordinatorCompletions, 2U);
+  BOOST_REQUIRE_GE(result.publicationSuppressions, 1U);
+  BOOST_CHECK(result.finalPayload.find(
+    "\"tokenIds\":[4,5,6,7]") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI13ProviderUnavailableAfterEvent3NoReplacement)
+{
+  const auto result = runSpec175NativeTinyTwoProviderCase(
+    "i13", Spec175NativeTinyFault::ProviderUnavailableAfterEvent3);
+  BOOST_TEST_MESSAGE("Spec175 I13 requests=" << result.requestPublicationCount
+                    << " completed=" << result.completed
+                    << " failed=" << result.failed
+                    << " events=" << result.events.size()
+                    << " transportDetachments="
+                    << result.providerTransportDetachments
+                    << " suppressed=" << result.publicationSuppressions
+                    << " droppedData=" << result.bridgeStats.droppedStreamDataPackets
+                    << " droppedInterests=" << result.bridgeStats.droppedStreamInterests
+                    << " error=" << result.error);
+  BOOST_REQUIRE_EQUAL(result.requestPublicationCount, 1U);
+  BOOST_REQUIRE(result.ackClosed);
+  BOOST_REQUIRE(result.planCommitted);
+  BOOST_REQUIRE(!result.completed);
+  BOOST_REQUIRE(result.failed || result.timedOut);
+  BOOST_REQUIRE_EQUAL(result.providerTransportDetachments, 1U);
+  BOOST_REQUIRE_EQUAL(result.events.size(), 3U);
+  if (result.failed) {
+    BOOST_CHECK(result.errorCode == StreamedInvocationErrorCode::EventTimeout);
+    BOOST_CHECK_EQUAL(result.errorExpectedCursor, 4U);
+    BOOST_CHECK_EQUAL(result.errorRequestId,
+                      ndn::Name("/spec175-native-tiny-i13"));
+    BOOST_CHECK(!result.errorProviderName.empty());
+  }
+}
+
+BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI15PermutedRoleProviderMap)
+{
+  const auto result = runSpec175NativeTinyFourProviderCase(true);
+  BOOST_TEST_MESSAGE("Spec175 I15 ackCandidates=" << result.ackCandidates
+                    << " ackClosed=" << result.ackClosed
+                    << " planCommitted=" << result.planCommitted
+                    << " streamedContext=" << result.streamedContext
+                    << " completed=" << result.completed
+                    << " failed=" << result.failed
+                    << " timedOut=" << result.timedOut
+                    << " providerCompletions="
+                    << result.providerCoordinatorCompletions
+                    << " providerFailures=" << result.providerFailures
+                    << " permutedRoleProviderMap="
+                    << result.permutedRoleProviderMap
+                    << " events=" << result.events.size()
+                    << " error=" << result.error);
+  BOOST_REQUIRE_EQUAL(result.ackCandidates, 4U);
+  BOOST_REQUIRE(result.ackClosed);
+  BOOST_REQUIRE(result.planCommitted);
+  BOOST_REQUIRE(result.streamedContext);
+  BOOST_REQUIRE(!result.failed);
+  BOOST_REQUIRE(!result.timedOut);
+  BOOST_REQUIRE(result.completed);
+  BOOST_REQUIRE_EQUAL(result.providerCoordinatorCompletions, 4U);
+  BOOST_REQUIRE_EQUAL(result.providerFailures, 0U);
+  BOOST_REQUIRE(result.permutedRoleProviderMap);
+  BOOST_REQUIRE_EQUAL(result.events.size(), 8U);
+  BOOST_CHECK(result.events.front().find("\"tokenId\":4") != std::string::npos);
+  BOOST_CHECK(result.events.back().find("\"tokenId\":2") != std::string::npos);
+  BOOST_CHECK(result.finalPayload.find(
+    "\"tokenIds\":[4,5,6,7,8,9,10,2]") != std::string::npos);
 }
 
 BOOST_AUTO_TEST_CASE(ProductionNativeHandlersRejectTamperedD2bCapability)
@@ -3981,6 +6905,15 @@ BOOST_AUTO_TEST_CASE(ProductionNativeHandlersRunD2h121ToOracleResponse)
   const std::array<std::vector<std::string>, 2> localRoles{{
     {"S0R0", "S1R0"}, {"S1R1", "S2R0"},
   }};
+  // This legacy D2h compatibility case intentionally colocates dependent
+  // rank roles on each Provider.  The current placement baseline assigns one
+  // role per Provider, but the compatibility gate must still avoid creating
+  // an artificial single-worker deadlock when external assignment fetches
+  // complete out of order.
+  for (size_t provider = 0; provider < localRoles.size(); ++provider) {
+    environment.provider(provider).setHandlerThreads(
+      localRoles[provider].size());
+  }
   NativeProviderAssignment assignment;
   for (size_t provider = 0; provider < localRoles.size(); ++provider) {
     for (const auto& role : localRoles[provider]) {
@@ -4150,6 +7083,12 @@ BOOST_AUTO_TEST_CASE(ProductionNativeHandlersRunD2h121ToOracleResponse)
 
   environment.enableProductionIngressForTest();
   environment.user().setUseTokens(false);
+  const auto assignmentKey = environment.user().prepareHybridSendKeyForTest(
+    serviceName, "REQUEST-LARGE");
+  for (size_t provider = 0; provider < environment.providerCount(); ++provider) {
+    environment.provider(provider).cacheHybridReceiveKeyForTest(
+      assignmentKey.keyId, assignmentKey.epochId, assignmentKey.key);
+  }
   environment.userPubSub().subscribeToProducer(
     provider0Prefix,
     [&] (const ndn::svs::SVSPubSub::SubscriptionData& publication) {
@@ -4266,7 +7205,7 @@ BOOST_AUTO_TEST_CASE(ProductionNativeHandlersRunD2h121ToOracleResponse)
       "\",\"role\":\"" + role + "\",\"terminal_response_owner\":" +
       (terminal ? "true" : "false") + ",\"wait_for\":[]}";
   };
-  const auto publishSelection = [&] (size_t provider) {
+  const auto makeSelectionAssignment = [&] (size_t provider) {
       const auto projectedCapability = capability.projectForProvider(
         providerNames[provider].toUri());
       const auto selectionCapabilityHex = bytesToHex(
@@ -4321,24 +7260,10 @@ BOOST_AUTO_TEST_CASE(ProductionNativeHandlersRunD2h121ToOracleResponse)
         assignmentItems.push_back(
           encodeCollaborationAssignmentEnvelope(envelope));
       }
-      ServiceSelectionMessage selection;
-      selection.setRequestIDs({requestId.toUri()});
-      selection.setAttempt(1);
-      selection.addProviderEntry(SelectionProviderEntry{
-        providerNames[provider], {}, encodeOpaqueAssignmentSet(assignmentItems)});
-      const auto selectionName = makeServiceSelectionNameV2(
-        requesterName, providerNames[provider], serviceName, requestId);
-      const auto selectionBlock = selection.WireEncode();
-      const auto encrypted = makeTestHybridPublication(
-        selectionName, serviceName, requestId, requesterName, "SELECTION",
-        ndn::Buffer(selectionBlock.data(), selectionBlock.size()));
-      environment.provider(provider).cacheHybridReceiveKeyForTest(
-        encrypted.key.keyId, encrypted.key.epochId, encrypted.key.key);
-      environment.userPubSub().publish(
-        selectionName,
-        ndn::span<const uint8_t>(encrypted.wire.data(), encrypted.wire.size()));
+      return encodeOpaqueAssignmentSet(assignmentItems);
   };
-
+  const std::array<ndn::Buffer, 2> selectionAssignments{{
+    makeSelectionAssignment(0), makeSelectionAssignment(1)}};
   RequestMessage request;
   const std::string requestPayloadText = "d2h-121";
   ndn::Buffer requestPayload(
@@ -4354,7 +7279,12 @@ BOOST_AUTO_TEST_CASE(ProductionNativeHandlersRunD2h121ToOracleResponse)
     ServiceUser::AckCandidatesHandler(
       [&] (const std::vector<AckSelectionCandidate>& candidates) {
         if (candidates.size() == 2) {
-          publishSelection(1);
+          for (size_t provider = 0; provider < providerNames.size(); ++provider) {
+            BOOST_REQUIRE(
+              environment.user().setSelectionAssignmentPayloadForRequest(
+                requestId, providerNames[provider],
+                selectionAssignments[provider]));
+          }
         }
         return candidates;
       }),
@@ -4391,14 +7321,6 @@ BOOST_AUTO_TEST_CASE(ProductionNativeHandlersRunD2h121ToOracleResponse)
       ndn::span<const uint8_t>(encrypted.wire.data(), encrypted.wire.size()));
   }
 
-  environment.pumpUntil([&] { return handlerEntered[1] || timedOut; });
-  const auto consumerReadyDeadline = std::chrono::steady_clock::now() + 100ms;
-  environment.pumpUntil([&] {
-    return std::chrono::steady_clock::now() >= consumerReadyDeadline || timedOut;
-  });
-  if (!timedOut) {
-    publishSelection(0);
-  }
   environment.pumpUntil([&] { return responseCallback || timedOut; });
   BOOST_CHECK(handlerEntered[0]);
   BOOST_CHECK(handlerEntered[1]);
@@ -4468,6 +7390,13 @@ BOOST_AUTO_TEST_CASE(ProductionNativeHandlersRunD2h212ToCompleteOracleResponse)
   const std::array<std::vector<std::string>, 2> localRoles{{
     {"S0R0", "S1R0", "S2R0"}, {"S0R1", "S2R1"},
   }};
+  // See the D2h 1-2-1 case above: this retained compatibility topology
+  // colocates dependent rank roles and therefore needs one worker per local
+  // role.  Request-scoped one-role-per-Provider plans do not need this.
+  for (size_t provider = 0; provider < localRoles.size(); ++provider) {
+    environment.provider(provider).setHandlerThreads(
+      localRoles[provider].size());
+  }
   NativeProviderAssignment assignment;
   for (size_t provider = 0; provider < localRoles.size(); ++provider) {
     for (const auto& role : localRoles[provider]) {
@@ -4651,6 +7580,12 @@ BOOST_AUTO_TEST_CASE(ProductionNativeHandlersRunD2h212ToCompleteOracleResponse)
 
   environment.enableProductionIngressForTest();
   environment.user().setUseTokens(false);
+  const auto assignmentKey = environment.user().prepareHybridSendKeyForTest(
+    serviceName, "REQUEST-LARGE");
+  for (size_t provider = 0; provider < environment.providerCount(); ++provider) {
+    environment.provider(provider).cacheHybridReceiveKeyForTest(
+      assignmentKey.keyId, assignmentKey.epochId, assignmentKey.key);
+  }
   for (const auto& prefix : {provider0Prefix, provider1Prefix}) {
     environment.userPubSub().subscribeToProducer(
       prefix,
@@ -4772,7 +7707,7 @@ BOOST_AUTO_TEST_CASE(ProductionNativeHandlersRunD2h212ToCompleteOracleResponse)
       "\",\"role\":\"" + role + "\",\"terminal_response_owner\":" +
       (terminal ? "true" : "false") + ",\"wait_for\":[]}";
   };
-  const auto publishSelection = [&] (size_t provider) {
+  const auto makeSelectionAssignment = [&] (size_t provider) {
     const auto projectedCapability = capability.projectForProvider(
       providerNames[provider].toUri());
     const auto selectionCapabilityHex = bytesToHex(
@@ -4832,24 +7767,10 @@ BOOST_AUTO_TEST_CASE(ProductionNativeHandlersRunD2h212ToCompleteOracleResponse)
         reinterpret_cast<const std::uint8_t*>(text.data()), text.size());
       assignmentItems.push_back(encodeCollaborationAssignmentEnvelope(envelope));
     }
-    ServiceSelectionMessage selection;
-    selection.setRequestIDs({requestId.toUri()});
-    selection.setAttempt(1);
-    selection.addProviderEntry(SelectionProviderEntry{
-      providerNames[provider], {}, encodeOpaqueAssignmentSet(assignmentItems)});
-    const auto selectionName = makeServiceSelectionNameV2(
-      requesterName, providerNames[provider], serviceName, requestId);
-    const auto selectionBlock = selection.WireEncode();
-    const auto encrypted = makeTestHybridPublication(
-      selectionName, serviceName, requestId, requesterName, "SELECTION",
-      ndn::Buffer(selectionBlock.data(), selectionBlock.size()));
-    environment.provider(provider).cacheHybridReceiveKeyForTest(
-      encrypted.key.keyId, encrypted.key.epochId, encrypted.key.key);
-    environment.userPubSub().publish(
-      selectionName,
-      ndn::span<const uint8_t>(encrypted.wire.data(), encrypted.wire.size()));
+    return encodeOpaqueAssignmentSet(assignmentItems);
   };
-
+  const std::array<ndn::Buffer, 2> selectionAssignments{{
+    makeSelectionAssignment(0), makeSelectionAssignment(1)}};
   RequestMessage request;
   const std::string requestPayloadText = "d2h-212";
   ndn::Buffer requestPayload(
@@ -4865,7 +7786,12 @@ BOOST_AUTO_TEST_CASE(ProductionNativeHandlersRunD2h212ToCompleteOracleResponse)
     ServiceUser::AckCandidatesHandler(
       [&] (const std::vector<AckSelectionCandidate>& candidates) {
         if (candidates.size() == 2) {
-          publishSelection(0);
+          for (size_t provider = 0; provider < providerNames.size(); ++provider) {
+            BOOST_REQUIRE(
+              environment.user().setSelectionAssignmentPayloadForRequest(
+                requestId, providerNames[provider],
+                selectionAssignments[provider]));
+          }
         }
         return candidates;
       }),
@@ -4903,14 +7829,6 @@ BOOST_AUTO_TEST_CASE(ProductionNativeHandlersRunD2h212ToCompleteOracleResponse)
       ndn::span<const uint8_t>(encrypted.wire.data(), encrypted.wire.size()));
   }
 
-  environment.pumpUntil([&] { return handlerEntered[0] || timedOut; });
-  const auto consumerReadyDeadline = std::chrono::steady_clock::now() + 100ms;
-  environment.pumpUntil([&] {
-    return std::chrono::steady_clock::now() >= consumerReadyDeadline || timedOut;
-  });
-  if (!timedOut) {
-    publishSelection(1);
-  }
   environment.pumpUntil([&] { return responseCallback || timedOut; });
 
   BOOST_CHECK(handlerEntered[0]);
@@ -5183,7 +8101,13 @@ BOOST_AUTO_TEST_CASE(ProductionIngressRunsFourProviderRoleSplitRequestSelectionR
           const auto expectedRole = "role-" + std::to_string(index);
           BOOST_CHECK_EQUAL(context.assignment().role, expectedRole);
           const auto roleIt = context.assignment().roleProviders.find(expectedRole);
-          BOOST_CHECK(roleIt != context.assignment().roleProviders.end());
+          if (roleIt == context.assignment().roleProviders.end()) {
+            // Keep this asynchronous assertion failure non-fatal.  The old
+            // code dereferenced ``roleIt`` after a failed CHECK and masked
+            // the mapping defect with a process-wide segmentation fault.
+            BOOST_ERROR("production assignment is missing the Provider role");
+            return;
+          }
           BOOST_CHECK_EQUAL(roleIt->second, providerNames[index].toUri());
           handlerCalled[index] = true;
         });
@@ -5239,12 +8163,21 @@ BOOST_AUTO_TEST_CASE(ProductionIngressRunsFourProviderRoleSplitRequestSelectionR
             BOOST_REQUIRE_EQUAL(candidates.size(), providerNames.size());
             for (size_t index = 0; index < candidates.size(); ++index) {
               const auto& candidate = candidates[index];
+              // ACK arrival order is not a Provider identity.  The four
+              // Providers can publish ACKs on different Face turns, so bind
+              // the role to the candidate's Provider name rather than to the
+              // vector position.
+              const auto providerIt = std::find(
+                  providerNames.begin(), providerNames.end(), candidate.providerName);
+              BOOST_REQUIRE(providerIt != providerNames.end());
+              const auto providerIndex = static_cast<size_t>(
+                  std::distance(providerNames.begin(), providerIt));
               CollaborationAssignmentEnvelope assignment;
-              assignment.role = "role-" + std::to_string(index);
+              assignment.role = "role-" + std::to_string(providerIndex);
               assignment.assignedArtifact = ndn::Name(
-                  "/artifact/role-" + std::to_string(index));
+                  "/artifact/role-" + std::to_string(providerIndex));
               const std::string assignmentText =
-                  "device=cpu;rank=" + std::to_string(index) + ";";
+                  "device=cpu;rank=" + std::to_string(providerIndex) + ";";
               assignment.opaquePayload = ndn::Buffer(
                   reinterpret_cast<const uint8_t*>(assignmentText.data()),
                   assignmentText.size());
@@ -5264,11 +8197,6 @@ BOOST_AUTO_TEST_CASE(ProductionIngressRunsFourProviderRoleSplitRequestSelectionR
                   selectionName, serviceName, requestId, requesterName,
                   "SELECTION",
                   ndn::Buffer(selectionBlock.data(), selectionBlock.size()));
-              const auto providerIt = std::find(
-                  providerNames.begin(), providerNames.end(), candidate.providerName);
-              BOOST_REQUIRE(providerIt != providerNames.end());
-              const auto providerIndex = static_cast<size_t>(
-                  std::distance(providerNames.begin(), providerIt));
               environment.provider(providerIndex).cacheHybridReceiveKeyForTest(
                   encrypted.key.keyId, encrypted.key.epochId, encrypted.key.key);
               environment.userPubSub().publish(
@@ -5750,6 +8678,37 @@ BOOST_AUTO_TEST_CASE(PreconfiguredEnvironmentRunsSameProviderMultiRoleCollaborat
   BOOST_CHECK(!timedOut);
   environment.updateRequestResidue(scope, {});
   environment.resetRequest(scope);
+}
+
+BOOST_AUTO_TEST_CASE(Spec175DiWriterExposesCursorAndOneTerminal)
+{
+  std::uint64_t nextCursor = 0;
+  std::vector<std::uint64_t> committed;
+  bool responseFinished = false;
+  auto core = std::make_shared<StreamedResponseWriterCore>(
+    [&] (const ndn::Buffer&, std::uint64_t& cursor) {
+      cursor = ++nextCursor;
+      committed.push_back(cursor);
+      return true;
+    },
+    [&] (const ndn::Buffer&, StreamFinishReason reason) {
+      responseFinished = reason == StreamFinishReason::ApplicationComplete;
+      return responseFinished;
+    },
+    [] (StreamedInvocationErrorCode, const std::string&) { return true; },
+    [] { return false; },
+    [] { return std::chrono::milliseconds(1000); });
+
+  ndn::Buffer event(reinterpret_cast<const uint8_t*>("token"), 5);
+  std::uint64_t cursor = 0;
+  BOOST_CHECK(core->publish(event, cursor));
+  BOOST_CHECK_EQUAL(cursor, 1U);
+  BOOST_REQUIRE_EQUAL(committed.size(), 1U);
+  BOOST_CHECK_EQUAL(committed.front(), 1U);
+  BOOST_CHECK(core->finish(ndn::Buffer(), StreamFinishReason::ApplicationComplete));
+  BOOST_CHECK(responseFinished);
+  BOOST_CHECK(!core->publish(event, cursor));
+  BOOST_CHECK(!core->finish(ndn::Buffer(), StreamFinishReason::ApplicationComplete));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

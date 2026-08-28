@@ -2,8 +2,13 @@
 
 from .placement import (
     QWEN36_27B_LAYER_RANGES,
+    QWEN36_27B_DECODE_MODE,
     QWEN36_27B_MODEL,
+    QWEN36_27B_MODALITY,
+    QWEN36_27B_MTP_ENABLED,
+    QWEN36_27B_PRECISION,
     QWEN36_27B_REVISION,
+    QWEN36_27B_THINKING_MODE,
     QWEN36_STAGE_ROLES,
     QwenThreeStageSplitter,
     build_qwen_three_stage_adapter,
@@ -11,15 +16,58 @@ from .placement import (
 )
 from .parallel import seal_qwen_hybrid_plan
 from .tokenizer import StandaloneQwenTokenizer
+from .generation import (
+    GenerationContractError,
+    GenerationTokenEventV1,
+    OnePlanGenerationLoop,
+    StreamedGenerationResult,
+    activation_data_name,
+    token_feedback_data_name,
+    IncrementalDetokenizer,
+    SamplingConfig,
+    accepted_prefix_digest,
+    sample_token,
+)
+from .stateful_onnx import (
+    DecodeStateBundleV1,
+    DecodeStateContractError,
+    DecodeStateIdentityV1,
+    DecodeStateTransaction,
+    PersistentStatefulOnnxSession,
+    StatefulOnnxIOContractV1,
+    StateComponent,
+)
 
 __all__ = [
     "QWEN36_27B_LAYER_RANGES",
+    "QWEN36_27B_DECODE_MODE",
     "QWEN36_27B_MODEL",
+    "QWEN36_27B_MODALITY",
+    "QWEN36_27B_MTP_ENABLED",
+    "QWEN36_27B_PRECISION",
     "QWEN36_27B_REVISION",
+    "QWEN36_27B_THINKING_MODE",
     "QWEN36_STAGE_ROLES",
     "QwenThreeStageSplitter",
     "build_qwen_three_stage_adapter",
     "build_qwen36_27b_three_stage_adapter",
     "seal_qwen_hybrid_plan",
     "StandaloneQwenTokenizer",
+    "GenerationContractError",
+    "GenerationTokenEventV1",
+    "OnePlanGenerationLoop",
+    "StreamedGenerationResult",
+    "activation_data_name",
+    "token_feedback_data_name",
+    "IncrementalDetokenizer",
+    "SamplingConfig",
+    "accepted_prefix_digest",
+    "sample_token",
+    "DecodeStateBundleV1",
+    "DecodeStateContractError",
+    "DecodeStateIdentityV1",
+    "DecodeStateTransaction",
+    "PersistentStatefulOnnxSession",
+    "StatefulOnnxIOContractV1",
+    "StateComponent",
 ]

@@ -98,3 +98,37 @@ For large objects or APP-signed `Data` segments, higher-level packages such as
 NDNSF-DistributedInference may still use the lower-level segmented Data APIs
 from `ndnsf` and keep `py-repoclient` for manifest/protocol and repo service
 operations.
+
+## Scalable artifact publication
+
+New large-artifact publication uses the ordinary delayed-planning NDNSF
+Collaboration API through `ReplicaTaskCollaborationClient`:
+
+```text
+begin_collaboration
+  -> advisory store-offer ACKs
+  -> ACK_CLOSED
+  -> commit_plan(exact Provider assignments)
+  -> Provider bounded queue
+  -> QUEUED -> RECEIVING -> VERIFIED -> COMMITTED -> ACTIVE
+```
+
+An `ArtifactStoreOffer` reports only bounded advisory metadata:
+`queue_depth`, `queue_capacity`, `available_bytes`, and
+`max_artifact_bytes`. A positive ACK does not reserve storage and does not lock
+a Provider resource. After Selection, the Provider accepts the exact
+`ArtifactStoreAssignment` into its bounded queue and processes tasks according
+to its local worker policy. Execution-time capacity drift must become an
+explicit failed task/response.
+
+`ArtifactUploadLease`, `ReplicaLeaseCollaborationClient`, and the
+`ndnsf-repo-upload-lease-v1` encoder remain compatibility-only surfaces for
+older deployments and evidence. Do not use them for new artifact
+publication.
+
+The immutable application identity is `ArtifactReference`, which binds the
+logical name, complete content digest, byte size, signed root-manifest name,
+publisher identity, format version, and policy epoch. New callers should use
+the high-level `publish_file`/`fetch_file` or resumable
+`begin_upload`/`begin_fetch` surface and must not use a logical name alone as a
+reuse key.

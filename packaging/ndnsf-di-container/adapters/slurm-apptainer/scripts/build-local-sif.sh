@@ -11,6 +11,8 @@ usage() {
   cat >&2 <<'EOF'
 usage: build-local-sif.sh \
   --definition PATH --sif PATH --record PATH --source-seal PATH \
+  --host-gate-manifest PATH \
+  [--strict-host-source-seal] \
   --apptainer PATH --expected-apptainer VERSION
 
 The definition is executed by the local host's Apptainer.  It may bootstrap
@@ -25,6 +27,8 @@ definition=''
 sif=''
 record=''
 source_seal=''
+host_gate_manifest=''
+strict_host_source_seal=0
 apptainer_bin=''
 expected_version=''
 
@@ -34,6 +38,8 @@ while (($#)); do
     --sif) sif=${2:-}; shift 2 ;;
     --record) record=${2:-}; shift 2 ;;
     --source-seal) source_seal=${2:-}; shift 2 ;;
+    --host-gate-manifest) host_gate_manifest=${2:-}; shift 2 ;;
+    --strict-host-source-seal) strict_host_source_seal=1; shift ;;
     --apptainer) apptainer_bin=${2:-}; shift 2 ;;
     --expected-apptainer) expected_version=${2:-}; shift 2 ;;
     *) usage ;;
@@ -42,9 +48,11 @@ done
 
 [ -n "$definition" ] && [ -n "$sif" ] && [ -n "$record" ] && \
   [ -n "$source_seal" ] && [ -n "$apptainer_bin" ] && \
+  [ -n "$host_gate_manifest" ] && \
   [ -n "$expected_version" ] || usage
 [ -f "$definition" ] || { echo LOCAL_SIF_DEFINITION_MISSING >&2; exit 4; }
 [ -f "$source_seal" ] || { echo LOCAL_SIF_SOURCE_SEAL_MISSING >&2; exit 4; }
+[ -f "$host_gate_manifest" ] || { echo LOCAL_SIF_HOST_GATE_MANIFEST_MISSING >&2; exit 4; }
 [ ! -e "$sif" ] || { echo LOCAL_SIF_OUTPUT_EXISTS >&2; exit 4; }
 [ ! -e "$record" ] || { echo LOCAL_SIF_RECORD_EXISTS >&2; exit 4; }
 [ -x "$apptainer_bin" ] || { echo LOCAL_SIF_APPTAINER_NOT_EXECUTABLE >&2; exit 4; }
@@ -61,8 +69,12 @@ local_version=$("$apptainer_bin" version)
 }
 apptainer_sha256=$(sha256sum "$apptainer_bin" | awk '{print $1}')
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+repository_root=$(CDPATH= cd -- "$script_dir/../../../../.." && pwd)
 boundary_validator="$script_dir/../../../lib/spec170_sif_build_boundary.py"
+host_gate_validator="$script_dir/../../../lib/spec175_host_gate.py"
 source_validator="$script_dir/validate-local-sif-source.py"
+spec175_preflight="$script_dir/../../../bin/ndnsf-di-spec175-preflight"
+spec175_workload="$script_dir/../../../jobs/spec175/workload.json"
 [ -f "$boundary_validator" ] || {
   echo LOCAL_SIF_BUILD_BOUNDARY_VALIDATOR_MISSING >&2
   exit 4
@@ -71,7 +83,121 @@ source_validator="$script_dir/validate-local-sif-source.py"
   echo LOCAL_SIF_SOURCE_VALIDATOR_MISSING >&2
   exit 4
 }
+[ -f "$host_gate_validator" ] || {
+  echo SPEC175_HOST_GATE_VALIDATOR_MISSING >&2
+  exit 4
+}
+[ -x "$spec175_preflight" ] || {
+  echo SPEC175_PREFLIGHT_MISSING >&2
+  exit 4
+}
+[ -f "$spec175_workload" ] || {
+  echo SPEC175_WORKLOAD_MISSING >&2
+  exit 4
+}
 if ! source_validation_json=$(python3 "$source_validator" --source-seal "$source_seal"); then
+  exit 4
+fi
+if ! python3 - "$definition" "$source_seal" <<'PY'
+import json
+import sys
+
+definition, source_seal = sys.argv[1:]
+declared = None
+in_labels = False
+with open(definition, encoding="utf-8") as stream:
+    for raw in stream:
+        line = raw.strip()
+        if line == "%labels":
+            in_labels = True
+            continue
+        if line.startswith("%"):
+            in_labels = False
+        if not in_labels or not line or line.startswith("#"):
+            continue
+        fields = line.split(None, 1)
+        if len(fields) == 2 and fields[0] == "org.ndnsf.di.source-seal":
+            declared = fields[1]
+expected = json.loads(open(source_seal, encoding="utf-8").read()).get(
+    "sealDigest", "")
+if declared is not None and declared != expected:
+    print(
+        "LOCAL_SIF_DEFINITION_SOURCE_SEAL_LABEL_MISMATCH "
+        f"expected={expected} actual={declared}",
+        file=sys.stderr,
+    )
+    raise SystemExit(4)
+PY
+then
+  exit 4
+fi
+if ! host_gate_json=$(python3 - "$host_gate_validator" "$host_gate_manifest" "$repository_root" <<'PY'
+import importlib.util
+import sys
+from pathlib import Path
+
+module_path, manifest_path, repository_root = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("spec175_host_gate", module_path)
+if spec is None or spec.loader is None:
+    raise SystemExit("SPEC175_HOST_GATE_VALIDATOR_IMPORT_FAILED")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+try:
+    result = module.validate_host_gate(Path(manifest_path), Path(repository_root))
+except Exception as exc:
+    print(str(exc), file=sys.stderr)
+    raise SystemExit(4)
+import json
+print(json.dumps(result, sort_keys=True))
+PY
+); then
+  exit 4
+fi
+# The host G3 manifest is a qualification of the exact source identity being
+# built.  A structurally valid 30/30 manifest from an older source seal must
+# not be silently reused for a newer SIF candidate.
+if [ "$strict_host_source_seal" = 1 ] && ! python3 - "$host_gate_json" "$source_seal" "$repository_root" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+host = json.loads(sys.argv[1])
+current = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+repository_root = Path(sys.argv[3])
+host_path = Path(host["sourceSealPath"])
+if not host_path.is_absolute():
+    host_path = repository_root / host_path
+previous = json.loads(host_path.read_text(encoding="utf-8"))
+if previous.get("sourceRevision") != current.get("sourceRevision"):
+    print(
+        "LOCAL_SIF_HOST_GATE_SOURCE_REVISION_MISMATCH "
+        f"expected={current.get('sourceRevision')} manifest={previous.get('sourceRevision')}",
+        file=sys.stderr,
+    )
+    raise SystemExit(4)
+current_rows = {row["path"]: row.get("sha256") for row in current.get("files", [])}
+overlap = 0
+for path, row in previous.get("dirtyFiles", {}).items():
+    recorded = row.get("sha256")
+    if not recorded or path not in current_rows:
+        continue
+    overlap += 1
+    if current_rows[path] != recorded:
+        print(
+            "LOCAL_SIF_HOST_GATE_SOURCE_FILE_MISMATCH "
+            f"path={path} expected={current_rows[path]} manifest={recorded}",
+            file=sys.stderr,
+        )
+        raise SystemExit(4)
+if overlap == 0:
+    print("LOCAL_SIF_HOST_GATE_SOURCE_OVERLAP_EMPTY", file=sys.stderr)
+    raise SystemExit(4)
+PY
+then
+  exit 4
+fi
+if ! spec175_input_preflight_json=$(python3 "$spec175_preflight" \
+    --source-seal "$source_seal" --workload "$spec175_workload"); then
   exit 4
 fi
 if ! boundary_json=$(python3 "$boundary_validator" --definition "$definition"); then
@@ -115,11 +241,11 @@ echo "LOCAL_SIF_BUILD_START definition=$definition output=$sif apptainer=$local_
 "$apptainer_bin" build --force "$partial" "$definition"
 [ -s "$partial" ] || { echo LOCAL_SIF_EMPTY >&2; exit 4; }
 inspect_json=$("$apptainer_bin" inspect --json "$partial")
-if ! ndnsf_labels_json=$(python3 - "$definition" "$inspect_json" <<'PY'
+if ! ndnsf_labels_json=$(python3 - "$definition" "$inspect_json" "$source_seal" <<'PY'
 import json
 import sys
 
-definition, inspect_json = sys.argv[1:]
+definition, inspect_json, source_seal = sys.argv[1:]
 expected = {}
 in_labels = False
 with open(definition, encoding="utf-8") as stream:
@@ -150,6 +276,18 @@ if mismatches:
             file=sys.stderr,
         )
     raise SystemExit(4)
+try:
+    seal_digest = json.loads(open(source_seal, encoding="utf-8").read()).get("sealDigest", "")
+except (OSError, json.JSONDecodeError) as error:
+    print(f"LOCAL_SIF_SOURCE_SEAL_READ_FAILED error={error}", file=sys.stderr)
+    raise SystemExit(4)
+if actual.get("org.ndnsf.di.source-seal") != seal_digest:
+    print(
+        "LOCAL_SIF_SOURCE_SEAL_LABEL_MISMATCH "
+        f"expected={seal_digest} actual={actual.get('org.ndnsf.di.source-seal')}",
+        file=sys.stderr,
+    )
+    raise SystemExit(4)
 print(json.dumps({key: actual[key] for key in sorted(expected)}, sort_keys=True))
 PY
 ); then
@@ -158,11 +296,24 @@ fi
 mv "$partial" "$sif"
 sif_sha256=$(sha256sum "$sif" | awk '{print $1}')
 
+# The source-only check above is necessary but insufficient.  Before a build
+# record can be emitted, inspect the actual candidate SIF and execute the
+# native ABI/ONNX probe inside it.  This is the boundary that rejects stale
+# host-built extensions, missing ldd dependencies, CPU-only ORT wheels, and
+# deployment-time PyTorch/Transformers residue.
+if ! spec175_preflight_json=$(python3 "$spec175_preflight" \
+    --source-seal "$source_seal" --workload "$spec175_workload" \
+    --sif "$sif" --apptainer "$apptainer_bin" \
+    --expected-sif-sha256 "$sif_sha256"); then
+  exit 4
+fi
+
 python3 - "$record_partial" "$definition" "$definition_sha256" "$source_seal" \
   "$source_seal_sha256" "$sif" "$sif_sha256" "$local_version" "$expected_version" \
   "$base_sif" "$base_sif_sha256" "$base_sif_bytes" "$ndnsf_labels_json" \
   "$apptainer_bin" "$apptainer_sha256" "$boundary_json" \
-  "$source_validation_json" <<'PY'
+  "$source_validation_json" "$host_gate_json" "$spec175_input_preflight_json" \
+  "$spec175_preflight_json" <<'PY'
 import hashlib
 import json
 import os
@@ -171,7 +322,9 @@ import sys
 (path, definition, definition_sha, source_seal, source_sha,
  sif, sif_sha, local_version, expected_version,
  base_sif, base_sif_sha, base_sif_bytes, labels_json,
- apptainer_bin, apptainer_sha, boundary_json, source_validation_json) = sys.argv[1:]
+ apptainer_bin, apptainer_sha, boundary_json, source_validation_json,
+ host_gate_json, spec175_input_preflight_json,
+ spec175_preflight_json) = sys.argv[1:]
 build_input = {
     "definition": {"path": definition, "sha256": "sha256:" + definition_sha},
     "method": "local-apptainer-definition",
@@ -188,6 +341,9 @@ body = {
     "buildInput": build_input,
     "sourceSeal": {"path": source_seal, "sha256": "sha256:" + source_sha},
     "sourceValidation": json.loads(source_validation_json),
+    "hostGate": json.loads(host_gate_json),
+    "spec175InputPreflight": json.loads(spec175_input_preflight_json),
+    "spec175Preflight": json.loads(spec175_preflight_json),
     "sif": {"path": sif, "sha256": "sha256:" + sif_sha,
             "bytes": os.path.getsize(sif)},
     "labels": json.loads(labels_json),

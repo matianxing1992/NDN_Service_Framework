@@ -1300,11 +1300,10 @@ ProviderGroupCoordinator::makeDataName(const GroupCapabilityV1& capability,
   for (const auto& member : capability.orderedMembers) {
     if (std::to_string(member.rank) == manifest.producerRank ||
         member.provider == manifest.producerRank) {
-      // Data names and SVSPubSub producer subscriptions are routed by the
-      // advertised endpoint prefix.  The Provider identity remains the
-      // authorization/key-wrap subject and is intentionally not assumed to be
-      // the transport prefix.
-      producer = member.endpointPrefix;
+      // Exact dependency Data is producer-owned and is served by the
+      // Provider's registered NDNSF-DI prefix.  endpointPrefix remains the
+      // SVSPubSub transport locator; it must not become the Data namespace.
+      producer = member.provider;
       break;
     }
   }

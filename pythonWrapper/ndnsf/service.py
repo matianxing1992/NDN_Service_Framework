@@ -8,9 +8,12 @@ framework rather than by Python.
 
 from __future__ import annotations
 
+import asyncio
 import base64
+from collections import deque
 from dataclasses import dataclass, field
 import hashlib
+import json
 import os
 import threading
 import time
@@ -100,6 +103,290 @@ class ServiceResponse:
     data_name: str = ""
     signer_certificate: str = ""
     wire_digest: str = ""
+
+
+@dataclass(frozen=True)
+class StreamedInvocationOptions:
+    """Bounded request-scoped stream options shared with the C++ wire API.
+
+    ``max_events`` counts every cursor, including the authenticated End event;
+    therefore an application that may emit N payload events must reserve at
+    least N + 1 cursor slots.
+    """
+
+    mode: str = "Normal"
+    max_events: int = 512
+    interest_window: int = 16
+    interest_lifetime_ms: int = 500
+    max_event_retries: int = 3
+    publisher_queue_capacity: int = 64
+    callback_queue_capacity: int = 64
+    reorder_capacity: int = 64
+    retention_ms: int = 30000
+    completion_grace_ms: int = 5000
+    max_event_wire_bytes: int = 16384
+    allow_replacement: bool = False
+    max_replacements: int = 0
+    # Coordinator-owned attempt identity. Applications normally leave these
+    # values unchanged; AutomaticPlanningCoordinator freezes them before the
+    # first Request and reuses generation_id for the one optional attempt 2.
+    attempt_epoch: int = 1
+    generation_id: str = ""
+    stream_epoch: int = 0
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "mode": str(self.mode),
+            "max_events": int(self.max_events),
+            "interest_window": int(self.interest_window),
+            "interest_lifetime_ms": int(self.interest_lifetime_ms),
+            "max_event_retries": int(self.max_event_retries),
+            "publisher_queue_capacity": int(self.publisher_queue_capacity),
+            "callback_queue_capacity": int(self.callback_queue_capacity),
+            "reorder_capacity": int(self.reorder_capacity),
+            "retention_ms": int(self.retention_ms),
+            "completion_grace_ms": int(self.completion_grace_ms),
+            "max_event_wire_bytes": int(self.max_event_wire_bytes),
+            "allow_replacement": bool(self.allow_replacement),
+            "max_replacements": int(self.max_replacements),
+            "attempt_epoch": int(self.attempt_epoch),
+            "generation_id": str(self.generation_id),
+            "stream_epoch": int(self.stream_epoch),
+        }
+
+
+@dataclass(frozen=True)
+class StreamedInvocationMetrics:
+    """Bounded Core counters for one request-scoped streamed invocation."""
+
+    published_events: int = 0
+    delivered_events: int = 0
+    retry_count: int = 0
+    duplicate_count: int = 0
+
+
+class StreamedInvocationError(RuntimeError):
+    """Terminal streamed-invocation failure reported by the Core runtime."""
+
+    def __init__(
+        self, *, code: int, message: str, request_id: str = "",
+        expected_cursor: int = 0, provider_name: str = "",
+    ) -> None:
+        self.code = int(code)
+        self.message = str(message)
+        self.request_id = str(request_id)
+        self.expected_cursor = int(expected_cursor)
+        self.provider_name = str(provider_name)
+        super().__init__(self.message or f"streamed invocation failed ({self.code})")
+
+    @classmethod
+    def from_native(cls, value: Mapping[str, Any]) -> "StreamedInvocationError":
+        return cls(
+            code=int(value.get("code", 0)),
+            message=str(value.get("message", "streamed invocation failed")),
+            request_id=str(value.get("requestId", value.get("request_id", ""))),
+            expected_cursor=int(value.get(
+                "expectedCursor", value.get("expected_cursor", 0))),
+            provider_name=str(value.get(
+                "providerName", value.get("provider_name", ""))),
+        )
+
+
+_STREAM_ITERATION_END = object()
+
+
+class _StreamedInvocationDelivery:
+    """Thread-safe Python delivery view over the Core-owned stream cursor.
+
+    The Core still owns fetching, ordering, retry, cursor allocation, and
+    terminal authority.  This object only bridges already-ordered callback
+    delivery into one Python callback consumer or one async iterator.
+    """
+
+    def __init__(
+        self, *, queue_capacity: int,
+        event_decoder: Optional[Callable[[bytes], Any]],
+        response_decoder: Optional[Callable[[bytes], Any]],
+        on_event: Optional[Callable[[Any], None]],
+        on_complete: Optional[Callable[[Any], None]],
+        on_error: Optional[Callable[[StreamedInvocationError], None]],
+    ) -> None:
+        if queue_capacity <= 0:
+            raise ValueError("callback_queue_capacity must be positive")
+        self._capacity = int(queue_capacity)
+        self._event_decoder = event_decoder or bytes
+        self._response_decoder = response_decoder or bytes
+        self._on_event = on_event
+        self._on_complete = on_complete
+        self._on_error = on_error
+        self._lock = threading.Lock()
+        self._events = deque()
+        self._event_waiters = deque()
+        self._result_waiters = deque()
+        self._terminal_result: Any = None
+        self._terminal_error: Optional[StreamedInvocationError] = None
+        self._terminal = False
+        self._consumer = "callback" if on_event is not None else ""
+        self._iterator_claimed = False
+
+    @staticmethod
+    def _resolve(loop, future, value=None, error: Optional[BaseException] = None):
+        def finish() -> None:
+            if future.done():
+                return
+            if error is not None:
+                future.set_exception(error)
+            else:
+                future.set_result(value)
+        loop.call_soon_threadsafe(finish)
+
+    def on_native_event(self, payload: bytes) -> None:
+        value = self._event_decoder(bytes(payload))
+        if self._on_event is not None:
+            self._on_event(value)
+            return
+        waiter = None
+        with self._lock:
+            if self._terminal:
+                return
+            if self._event_waiters:
+                waiter = self._event_waiters.popleft()
+            else:
+                if len(self._events) >= self._capacity:
+                    raise RuntimeError("Python streamed event delivery queue is full")
+                self._events.append(value)
+        if waiter is not None:
+            self._resolve(waiter[0], waiter[1], value=value)
+
+    def on_native_complete(self, payload: bytes) -> None:
+        value = self._response_decoder(bytes(payload))
+        event_waiters = []
+        result_waiters = []
+        with self._lock:
+            if self._terminal:
+                return
+            self._terminal = True
+            self._terminal_result = value
+            event_waiters = list(self._event_waiters)
+            self._event_waiters.clear()
+            result_waiters = list(self._result_waiters)
+            self._result_waiters.clear()
+        for loop, future in event_waiters:
+            self._resolve(loop, future, value=_STREAM_ITERATION_END)
+        for loop, future in result_waiters:
+            self._resolve(loop, future, value=value)
+        if self._on_complete is not None:
+            self._on_complete(value)
+
+    def on_native_error(self, value: Mapping[str, Any]) -> None:
+        error = StreamedInvocationError.from_native(value)
+        event_waiters = []
+        result_waiters = []
+        with self._lock:
+            if self._terminal:
+                return
+            self._terminal = True
+            self._terminal_error = error
+            event_waiters = list(self._event_waiters)
+            self._event_waiters.clear()
+            result_waiters = list(self._result_waiters)
+            self._result_waiters.clear()
+        for loop, future in event_waiters:
+            self._resolve(loop, future, error=error)
+        for loop, future in result_waiters:
+            self._resolve(loop, future, error=error)
+        if self._on_error is not None:
+            self._on_error(error)
+
+    def claim_iterator(self) -> "_StreamedInvocationIterator":
+        with self._lock:
+            if self._consumer == "callback" or self._iterator_claimed:
+                raise RuntimeError("streamed invocation already has an event consumer")
+            self._consumer = "iterator"
+            self._iterator_claimed = True
+        return _StreamedInvocationIterator(self)
+
+    async def next_event(self):
+        loop = asyncio.get_running_loop()
+        with self._lock:
+            if self._events:
+                return self._events.popleft()
+            if self._terminal_error is not None:
+                raise self._terminal_error
+            if self._terminal:
+                return _STREAM_ITERATION_END
+            future = loop.create_future()
+            self._event_waiters.append((loop, future))
+        return await future
+
+    async def result(self):
+        loop = asyncio.get_running_loop()
+        with self._lock:
+            if self._terminal_error is not None:
+                raise self._terminal_error
+            if self._terminal:
+                return self._terminal_result
+            future = loop.create_future()
+            self._result_waiters.append((loop, future))
+        return await future
+
+
+class _StreamedInvocationIterator:
+    def __init__(self, delivery: _StreamedInvocationDelivery) -> None:
+        self._delivery = delivery
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        value = await self._delivery.next_event()
+        if value is _STREAM_ITERATION_END:
+            raise StopAsyncIteration
+        return value
+
+
+class StreamedInvocation:
+    """One Python view of a Core-owned streamed invocation lifecycle."""
+
+    def __init__(self, native_handle, delivery: _StreamedInvocationDelivery) -> None:
+        if native_handle is None:
+            raise ValueError("native streamed invocation handle is required")
+        self._native = native_handle
+        self._delivery = delivery
+        self._cancel_lock = threading.Lock()
+        self._cancel_requested = False
+
+    @property
+    def request_id(self) -> str:
+        return str(self._native.request_id)
+
+    @property
+    def status(self):
+        return self._native.status
+
+    @property
+    def metrics(self) -> StreamedInvocationMetrics:
+        value = self._native.metrics
+        return StreamedInvocationMetrics(
+            published_events=int(value.get("published_events", 0)),
+            delivered_events=int(value.get("delivered_events", 0)),
+            retry_count=int(value.get("retry_count", 0)),
+            duplicate_count=int(value.get("duplicate_count", 0)),
+        )
+
+    def __aiter__(self):
+        return self._delivery.claim_iterator()
+
+    async def result(self):
+        return await self._delivery.result()
+
+    async def cancel(self) -> None:
+        with self._cancel_lock:
+            if self._cancel_requested:
+                return
+            self._cancel_requested = True
+        self._native.cancel()
+        await asyncio.sleep(0)
 
 
 @dataclass(frozen=True)
@@ -686,6 +973,7 @@ class CollaborationRole:
     assignment_payload: bytes = b""
     min_providers: int = 1
     max_providers: int = 1
+    terminal_response_owner: bool = False
 
 
 @dataclass(frozen=True)
@@ -719,6 +1007,22 @@ class CollaborationData:
     producer_role: str
     sequence: int
     payload: bytes
+
+
+@dataclass(frozen=True)
+class VerifiedCollaborationData:
+    """Provider-signed collaboration Data admitted by the requesting User."""
+
+    data_name: str
+    request_id: str
+    key_scope: str
+    topic: str
+    producer: str
+    producer_role: str
+    sequence: int
+    payload: bytes
+    signer_certificate: str
+    wire_digest: str
 
 
 def _parse_assignment_fields(payload: bytes) -> dict[str, str]:
@@ -759,6 +1063,11 @@ class CollaborationContext:
     @property
     def role(self) -> str:
         return str(self._native.role)
+
+    @property
+    def requester_name(self) -> str:
+        """Authenticated requester identity bound to this invocation."""
+        return str(getattr(self._native, "requester_name", ""))
 
     @property
     def local_provider(self) -> str:
@@ -1022,6 +1331,26 @@ class CollaborationContext:
     def publish_final_response(self, payload: bytes) -> None:
         self._native.publish_final_response(bytes(payload))
 
+    @property
+    def is_streamed(self) -> bool:
+        return bool(getattr(self._native, "is_streamed", False))
+
+    def publish_stream_event(self, payload: bytes) -> int:
+        cursor = int(self._native.publish_stream_event(bytes(payload)))
+        if cursor <= 0:
+            raise RuntimeError("stream event was rejected by lifecycle or deadline")
+        return cursor
+
+    def finish_stream(self, payload: bytes = b"", *, reason: int = 4) -> bool:
+        return bool(self._native.finish_stream(bytes(payload), int(reason)))
+
+    def fail_stream(self, code: int, message: str) -> bool:
+        return bool(self._native.fail_stream(int(code), str(message)))
+
+    @property
+    def stream_cancelled(self) -> bool:
+        return bool(getattr(self._native, "stream_cancelled", False))
+
 
 def _to_native_response(response: ServiceResponse) -> _ndnsf.ServiceResponse:
     native = _ndnsf.ServiceResponse()
@@ -1121,6 +1450,23 @@ def _from_native_collaboration_data(data) -> CollaborationData:
     )
 
 
+def _from_native_verified_collaboration_data(
+    data: Mapping[str, Any],
+) -> VerifiedCollaborationData:
+    return VerifiedCollaborationData(
+        data_name=str(data["data_name"]),
+        request_id=str(data["request_id"]),
+        key_scope=str(data["key_scope"]),
+        topic=str(data["topic"]),
+        producer=str(data["producer"]),
+        producer_role=str(data["producer_role"]),
+        sequence=int(data["sequence"]),
+        payload=bytes(data["payload"]),
+        signer_certificate=str(data["signer_certificate"]),
+        wire_digest=str(data["wire_digest"]),
+    )
+
+
 def _role_to_dict(role: CollaborationRole | dict) -> dict:
     if isinstance(role, CollaborationRole):
         return {
@@ -1133,6 +1479,7 @@ def _role_to_dict(role: CollaborationRole | dict) -> dict:
             "assignment_payload": role.assignment_payload,
             "min_providers": role.min_providers,
             "max_providers": role.max_providers,
+            "terminal_response_owner": role.terminal_response_owner,
         }
     return dict(role)
 
@@ -1186,6 +1533,9 @@ class _CollaborationInvocationState:
         self.ack_closed: Optional[CollaborationAckClosed] = None
         self.response: Optional[ServiceResponse] = None
         self.timeout_reason = ""
+        self.stream_events: list[bytes] = []
+        self.stream_complete: Optional[bytes] = None
+        self.stream_error: Optional[Mapping[str, Any]] = None
 
     def set_ack_closed(self, value: CollaborationAckClosed) -> None:
         with self.condition:
@@ -1204,6 +1554,23 @@ class _CollaborationInvocationState:
         with self.condition:
             if not self.timeout_reason:
                 self.timeout_reason = str(reason)
+            self.condition.notify_all()
+
+    def add_stream_event(self, value: bytes) -> None:
+        with self.condition:
+            self.stream_events.append(bytes(value))
+            self.condition.notify_all()
+
+    def set_stream_complete(self, value: bytes) -> None:
+        with self.condition:
+            if self.stream_complete is None:
+                self.stream_complete = bytes(value)
+            self.condition.notify_all()
+
+    def set_stream_error(self, value: Mapping[str, Any]) -> None:
+        with self.condition:
+            if self.stream_error is None:
+                self.stream_error = dict(value)
             self.condition.notify_all()
 
 
@@ -1325,6 +1692,32 @@ class CollaborationInvocation:
                         "local wait for collaboration Response expired")
                 self._state.condition.wait(timeout=min(0.25, remaining))
 
+    def cancel(self) -> None:
+        """Cancel local delivery and terminal acceptance for this stream."""
+        self._native.cancel_stream_request(self.request_id)
+
+    @property
+    def stream_metrics_for_test(self) -> Mapping[str, int]:
+        """Return Core stream counters for registered integration gates."""
+        return dict(self._native.stream_metrics_for_test(self.request_id))
+
+    @property
+    def stream_events(self) -> tuple[bytes, ...]:
+        """Snapshot of verified stream events received for this request."""
+        with self._state.condition:
+            return tuple(self._state.stream_events)
+
+    @property
+    def stream_complete(self) -> Optional[bytes]:
+        with self._state.condition:
+            return self._state.stream_complete
+
+    @property
+    def stream_error(self) -> Optional[Mapping[str, Any]]:
+        with self._state.condition:
+            return None if self._state.stream_error is None else dict(
+                self._state.stream_error)
+
     def _terminal_selection_failure(self) -> str:
         """Return a fail-fast reason when every observed selection is terminal.
 
@@ -1442,6 +1835,7 @@ class ServiceProvider:
         self._ack_handlers: dict[str, Callable[[bytes], bool | AckDecision]] = {}
         self._ack_context_handlers: set[str] = set()
         self._collaboration_services: set[str] = set()
+        self._streaming_services: set[str] = set()
 
     def create_live_stream(self, definition):
         """Create the Core-owned publisher; application supplies opaque bytes only."""
@@ -1467,6 +1861,58 @@ class ServiceProvider:
         handler: Callable[[bytes], bytes | ServiceResponse],
     ) -> None:
         self._handlers[service] = handler
+
+    def add_streaming_handler(
+        self,
+        service: str,
+        handler: Callable[[bytes, Any], object],
+    ) -> None:
+        """Register a streamed handler.
+
+        The callback receives the opaque request bytes and a Core-owned
+        ``StreamWriter``.  It must call ``publish_event`` zero or more times
+        and exactly one ``finish_stream`` or ``fail``; the C++ runtime owns
+        event cursors, encryption, signing, retention, and terminal fencing.
+        """
+        if not service or not callable(handler):
+            raise ValueError("service and streaming handler are required")
+        self._native.add_streaming_service(service, handler)
+        self._streaming_services.add(service)
+
+    def add_streaming_context_handler(
+        self,
+        service: str,
+        handler: Callable[[Mapping[str, str], bytes, Any], object],
+    ) -> None:
+        """Register a streamed handler with authenticated invocation names."""
+        if not service or not callable(handler):
+            raise ValueError("service and streaming context handler are required")
+        self._native.add_streaming_context_service(service, handler)
+        self._streaming_services.add(service)
+
+    def set_stream_publication_interceptor_for_test(self, callback) -> None:
+        """Install a real-SVS publication interceptor for an integration test."""
+        self._native.set_stream_publication_interceptor_for_test(callback)
+
+    def set_stream_retention_interceptor_for_test(self, callback) -> None:
+        """Install a real-SVS retention interceptor for an integration test."""
+        self._native.set_stream_retention_interceptor_for_test(callback)
+
+    def publish_stream_packet_for_test(self, wire: bytes) -> None:
+        """Re-publish one already signed stream packet through real SVS."""
+        self._native.publish_stream_packet_for_test(bytes(wire))
+
+    def streaming_handler(self, service: str):
+        def decorator(fn: Callable[[bytes, Any], object]):
+            self.add_streaming_handler(service, fn)
+            return fn
+        return decorator
+
+    def streaming_context_handler(self, service: str):
+        def decorator(fn: Callable[[Mapping[str, str], bytes, Any], object]):
+            self.add_streaming_context_handler(service, fn)
+            return fn
+        return decorator
 
     def handler(self, service: str):
         def decorator(fn: Callable[[bytes], bytes | ServiceResponse]):
@@ -1689,7 +2135,8 @@ class ServiceProvider:
         return decorator
 
     def run(self, service: Optional[str] = None) -> int:
-        if service is None and not self._handlers and self._collaboration_services:
+        if (service is None and not self._handlers and
+                (self._collaboration_services or self._streaming_services)):
             self._native.run()
             return 0
         if service is None:
@@ -1701,6 +2148,8 @@ class ServiceProvider:
             return 0
         if service in self._handlers:
             self._register_service(service)
+        elif service not in self._streaming_services:
+            raise ValueError("service handler is not registered")
         self._native.run()
         return 0
 
@@ -1948,6 +2397,106 @@ class ServiceUser:
         )
         return _from_native_response(response)
 
+    def request_service_streaming(
+        self,
+        service: str,
+        request,
+        *,
+        options: Optional[StreamedInvocationOptions] = None,
+        strategy: str = "first-responding",
+        event_decoder: Optional[Callable[[bytes], Any]] = None,
+        response_decoder: Optional[Callable[[bytes], Any]] = None,
+        on_event: Optional[Callable[[Any], None]] = None,
+        on_complete: Optional[Callable[[Any], None]] = None,
+        on_error: Optional[Callable[[StreamedInvocationError], None]] = None,
+        target_provider: Optional[str] = None,
+    ) -> StreamedInvocation:
+        """Start one Core-owned streamed invocation and return its lifecycle.
+
+        Normal mode accepts no Provider list or target.  Targeted mode accepts
+        exactly one ``target_provider``.  Applications consume events either
+        through ``on_event`` or through ``async for`` on the returned handle.
+        """
+        if not service:
+            raise ValueError("service is required")
+        if options is None:
+            options = StreamedInvocationOptions()
+        if not isinstance(options, StreamedInvocationOptions):
+            raise TypeError("options must be StreamedInvocationOptions")
+        for name, callback in (
+            ("event_decoder", event_decoder),
+            ("response_decoder", response_decoder),
+            ("on_event", on_event),
+            ("on_complete", on_complete),
+            ("on_error", on_error),
+        ):
+            if callback is not None and not callable(callback):
+                raise TypeError(f"{name} must be callable")
+
+        mode = str(options.mode).strip().lower()
+        provider = "" if target_provider is None else str(target_provider)
+        if mode == "normal":
+            if provider:
+                raise ValueError("Normal streamed invocation rejects target_provider")
+        elif mode == "targeted":
+            if not provider:
+                raise ValueError("Targeted streamed invocation requires target_provider")
+        else:
+            raise ValueError("streamed invocation mode must be Normal or Targeted")
+        if strategy not in {
+            "first-responding", "random-selection", "all-selected",
+        }:
+            raise ValueError("unsupported streamed selection strategy")
+
+        if isinstance(request, (bytes, bytearray, memoryview)):
+            payload = bytes(request)
+        elif hasattr(request, "SerializeToString"):
+            payload = bytes(request.SerializeToString())
+        else:
+            raise TypeError("request must be bytes-like or protobuf-compatible")
+
+        delivery = _StreamedInvocationDelivery(
+            queue_capacity=options.callback_queue_capacity,
+            event_decoder=event_decoder,
+            response_decoder=response_decoder,
+            on_event=on_event,
+            on_complete=on_complete,
+            on_error=on_error,
+        )
+        native_handle = self._native.request_service_streaming_handle(
+            service,
+            payload,
+            provider,
+            options.as_dict(),
+            strategy,
+            delivery.on_native_event,
+            delivery.on_native_complete,
+            delivery.on_native_error,
+        )
+        return StreamedInvocation(native_handle, delivery)
+
+    def request_streaming(
+        self,
+        service: str,
+        payload: bytes,
+        *,
+        on_event: Callable[[bytes], None],
+        on_complete: Callable[[bytes], None],
+        on_error: Callable[[Mapping[str, Any]], None],
+        provider: str = "",
+    ) -> str:
+        """Start one request-scoped streamed invocation.
+
+        ``provider`` is empty for Normal selection and identifies exactly one
+        Provider for Targeted mode.  The returned request ID is allocated by
+        the C++ runtime; callbacks receive opaque event/final payload bytes.
+        """
+        if not service or not callable(on_event) or not callable(on_complete) or not callable(on_error):
+            raise ValueError("service and all streaming callbacks are required")
+        return str(self._native.request_service_streaming(
+            service, bytes(payload), str(provider), on_event, on_complete, on_error,
+        ))
+
     def request_service_targeted(
         self,
         provider: str,
@@ -1996,6 +2545,94 @@ class ServiceUser:
         if any(item.request_id != request_id for item in snapshots):
             raise ValueError("collaboration request status binding mismatch")
         return snapshots
+
+    def wait_for_verified_collaboration_data(
+        self,
+        request_id: str,
+        *,
+        key_scope: str,
+        topic_prefix: str,
+        min_count: int,
+        timeout_ms: int,
+        consume: bool = True,
+    ) -> tuple[VerifiedCollaborationData, ...]:
+        """Wait off the Face thread for authenticated Provider publications.
+
+        The C++ User admits a record only after the outer Provider signature,
+        request/name binding, scope metadata, and request-scope AEAD all pass.
+        """
+
+        if min_count <= 0:
+            raise ValueError("min_count must be positive")
+        if timeout_ms <= 0:
+            raise ValueError("timeout_ms must be positive")
+        values = self._native.wait_for_verified_collaboration_data(
+            str(request_id), str(key_scope), str(topic_prefix),
+            int(min_count), int(timeout_ms), bool(consume))
+        records = tuple(
+            _from_native_verified_collaboration_data(dict(value))
+            for value in values
+        )
+        # Keep the fail-closed check, but include only non-sensitive identity
+        # metadata in the diagnostic.  A generic error made it impossible to
+        # distinguish a native record-conversion bug from a real request/scope
+        # mismatch in the multi-Provider conversation path.
+        mismatches = []
+        normalized_prefix = topic_prefix.rstrip("/")
+        for record in records:
+            reasons = []
+            if record.request_id != request_id:
+                reasons.append("requestId")
+            if record.key_scope != key_scope:
+                reasons.append("keyScope")
+            if not (record.topic.startswith(normalized_prefix + "/")
+                    or record.topic == topic_prefix):
+                reasons.append("topic")
+            if reasons:
+                mismatches.append({
+                    "reasons": tuple(reasons),
+                    "requestId": record.request_id,
+                    "keyScope": record.key_scope,
+                    "topic": record.topic,
+                })
+        if mismatches:
+            raise ValueError(
+                "verified collaboration binding mismatch: "
+                + json.dumps(mismatches, sort_keys=True, separators=(",", ":")))
+        return records
+
+    def clear_verified_collaboration_data(
+        self, request_id: str, *, key_scope: str,
+    ) -> None:
+        """Release authenticated collaboration records and their scope key.
+
+        ``wait_for_verified_collaboration_data(..., consume=True)`` consumes
+        records but deliberately keeps the key alive for a subsequent
+        control/ack exchange.  Call this once the transaction is terminal.
+        """
+        if not request_id or not key_scope:
+            raise ValueError("collaboration cleanup binding is required")
+        self._native.clear_verified_collaboration_data(
+            str(request_id), str(key_scope))
+
+    def publish_collaboration_data(
+        self,
+        target_provider: str,
+        request_id: str,
+        *,
+        key_scope: str,
+        topic: str,
+        payload: bytes,
+    ) -> bool:
+        """Publish one requester-owned encrypted collaboration control record."""
+
+        if not target_provider or not request_id or not key_scope or not topic:
+            raise ValueError("collaboration publication binding is required")
+        if not payload:
+            raise ValueError("collaboration publication payload is required")
+        return bool(self._native.publish_collaboration_data(
+            str(target_provider), str(request_id), str(key_scope),
+            str(topic), bytes(payload)))
 
     def watch_collaboration_request(
         self, request_id: str, *, timeout_ms: int = 5000,
@@ -2304,6 +2941,12 @@ class ServiceUser:
         request_capabilities: Optional[
             Union[Mapping[str, str], _ndnsf.NativeRequestCapabilities]
         ] = None,
+        stream_options: Optional[
+            Union[StreamedInvocationOptions, Mapping[str, Any]]
+        ] = None,
+        on_stream_event: Optional[Callable[[bytes], None]] = None,
+        on_stream_complete: Optional[Callable[[bytes], None]] = None,
+        on_stream_error: Optional[Callable[[Mapping[str, Any]], None]] = None,
     ) -> CollaborationInvocation:
         """Publish one generic Request and defer plan choice until ACK_CLOSED.
 
@@ -2340,6 +2983,32 @@ class ServiceUser:
         def on_timeout(reason: str) -> None:
             state.set_timeout(reason)
 
+        if stream_options is not None:
+            stream_dict = (stream_options.as_dict()
+                           if isinstance(stream_options, StreamedInvocationOptions)
+                           else dict(stream_options))
+            if not callable(on_stream_event) or not callable(on_stream_complete) \
+                    or not callable(on_stream_error):
+                raise TypeError(
+                    "streamed collaboration requires all stream callbacks")
+        else:
+            stream_dict = None
+
+        def on_event(value: bytes) -> None:
+            state.add_stream_event(bytes(value))
+            if on_stream_event is not None:
+                on_stream_event(bytes(value))
+
+        def on_complete(value: bytes) -> None:
+            state.set_stream_complete(bytes(value))
+            if on_stream_complete is not None:
+                on_stream_complete(bytes(value))
+
+        def on_error(value: Mapping[str, Any]) -> None:
+            state.set_stream_error(value)
+            if on_stream_error is not None:
+                on_stream_error(dict(value))
+
         native_ack_coverage = None
         if ack_coverage_predicate is not None:
             def native_ack_coverage(native_candidates) -> bool:
@@ -2359,6 +3028,13 @@ class ServiceUser:
         if request_capabilities is not None:
             native_kwargs["request_capabilities"] = (
                 _native_request_capabilities(request_capabilities))
+        if stream_dict is not None:
+            native_kwargs.update({
+                "stream_options": stream_dict,
+                "on_stream_event": on_event,
+                "on_stream_complete": on_complete,
+                "on_stream_error": on_error,
+            })
         try:
             actual_request_id = self._native.begin_collaboration(
                 *native_args, **native_kwargs)
@@ -2517,6 +3193,11 @@ class ServiceUser:
             )
             for provider_service, service, policy_epoch in self._native.get_allowed_services()
         ]
+
+    def refresh_permissions(self) -> None:
+        """Reissue the controller permission fetch for this existing identity."""
+
+        self._native.refresh_permissions()
 
     def get_ndnsd_services(self) -> list[dict[str, Any]]:
         """Return received NDNSD service details from discovered providers.

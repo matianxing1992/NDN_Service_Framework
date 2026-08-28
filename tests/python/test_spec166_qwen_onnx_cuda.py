@@ -116,9 +116,10 @@ class QwenOnnxCudaTests(unittest.TestCase):
             )
         self.assertEqual(
             state["providers"][0][0], "CUDAExecutionProvider")
-        self.assertEqual(state["providers"][1], "CPUExecutionProvider")
-        self.assertNotIn(
-            "session.disable_cpu_ep_fallback", state["options"].entries)
+        self.assertEqual(
+            state["providers"][1], "CPUExecutionProvider")
+        self.assertNotIn("session.disable_cpu_ep_fallback",
+                         state["options"].entries)
         self.assertTrue(state["options"].enable_profiling)
         self.assertEqual(
             state["options"].profile_file_prefix, "/output/stage-0")
@@ -146,6 +147,10 @@ class QwenOnnxCudaTests(unittest.TestCase):
             self.module._qwen_onnx_session_placement(session),
             ("cpu", True),
         )
+
+    def test_bfloat16_is_not_silently_coerced_to_float32(self):
+        with self.assertRaisesRegex(RuntimeError, "BFLOAT16_UNSUPPORTED"):
+            self.module._onnx_numpy_dtype("tensor(bfloat16)", None)
 
     def profile_session(self, events):
         directory = tempfile.TemporaryDirectory()

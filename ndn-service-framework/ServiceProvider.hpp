@@ -7,6 +7,7 @@
 
 #include "ServiceAuthorizationTable.hpp"
 #include "NDNSFMessages.hpp"
+#include "InvocationStream.hpp"
 #include "ConfigManager.hpp"
 #include "HybridMessageCrypto.hpp"
 #include "GenericSelectionTxnStore.hpp"
@@ -16,6 +17,7 @@
 #include "StreamFacade.hpp"
 
 #include <functional>
+#include <chrono>
 #include <cstdint>
 #include <map>
 #include <mutex>
@@ -50,6 +52,11 @@ namespace ndn_service_framework{
     struct DataV1SegmentNameFilter
     {
         std::function<bool(const ndn::Name&)> predicate;
+        /** Optional lifecycle observer invoked on the Face event loop after
+         * the legacy SVS subscription is installed.  It does not affect
+         * admission and exists so callers can coordinate a publisher without
+         * timing sleeps. */
+        std::function<void()> subscriptionReady;
     };
 
     struct LargeDataFetchResult
@@ -272,6 +279,14 @@ namespace ndn_service_framework{
                                               const ndn::Name& serviceName,
                                               const ndn::Name& requestId,
                                               const RequestMessage& requestMessage)>;
+
+            using StreamingHandler =
+                std::function<void(const ndn::Name& requesterIdentity,
+                                   const ndn::Name& providerName,
+                                   const ndn::Name& serviceName,
+                                   const ndn::Name& requestId,
+                                   const RequestMessage& requestMessage,
+                                   StreamedResponseWriter<ndn::Buffer, ndn::Buffer>& writer)>;
 
             /** Application-owned model preparation hook for the generic
              * selection-gated deployment protocol. The Core invokes it only
@@ -501,12 +516,35 @@ namespace ndn_service_framework{
                 void reportOperationStatus(ServiceOperationStatus status);
                 void publishFinalResponse(const ndn::Buffer& payload);
 
+                /** Streamed DI bridge over the already-selected collaboration.
+                 * These methods are valid only when the original Request carried
+                 * StreamRequestOptions and Core attached its publisher after
+                 * Selection; they never allocate another request or plan. */
+                bool isStreamed() const;
+                uint64_t publishStreamEvent(const ndn::Buffer& payload);
+                bool finishStream(const ndn::Buffer& payload,
+                                  StreamFinishReason reason);
+                bool failStream(StreamedInvocationErrorCode code,
+                                const std::string& message);
+                /**
+                 * Mark this selected collaboration role complete without
+                 * publishing a user-facing Response.  This is required for
+                 * non-final streamed DI roles: only the final role owns End
+                 * and the terminal Response, while every other role must
+                 * still release its provider-side pending request/lease.
+                 */
+                bool completeRole();
+                bool streamCancelled() const;
+                std::chrono::milliseconds streamRemainingDeadline() const;
+
             private:
+                std::shared_ptr<StreamEventPublisher> streamPublisher() const;
                 ServiceProvider& m_provider;
                 ndn::Name m_requesterName;
                 ndn::Name m_requestId;
                 RequestMessage m_requestMessage;
                 CollaborationAssignment m_assignment;
+                bool m_streamTerminal = false;
             };
 
             using CollaborationHandler =
@@ -518,6 +556,24 @@ namespace ndn_service_framework{
             using LocalPublicationHandler =
                 std::function<void(const ndn::Name& messageName,
                                    const ndn::Buffer& wire)>;
+
+            /**
+             * Test-only hook at the real streamed-event publication boundary.
+             * Returning false suppresses the SVS publication after the exact
+             * signed Data has been retained in the Provider IMS.  This lets
+             * integration tests exercise the production exact-Interest retry
+             * path without intercepting DummyFace traffic.
+             */
+            using StreamPublicationInterceptorForTest =
+                std::function<bool(const ndn::Data& data)>;
+
+            /** Test-only hook that can suppress retention before publication. */
+            using StreamRetentionInterceptorForTest =
+                std::function<bool(const ndn::Data& data)>;
+
+            /** Test-only observer fired after a retained event is evicted. */
+            using StreamRetentionExpiryObserverForTest =
+                std::function<void(const ndn::Name& eventName)>;
 
             enum class ProviderRequestLifecycleState
             {
@@ -631,6 +687,27 @@ namespace ndn_service_framework{
              * using their process KeyChain. */
             void useSigningKeyChainForTest(ndn::KeyChain& keyChain);
 
+            /** Return whether the active LocalMock NAC-ABE Consumer has
+             * obtained its DKEY. */
+            bool isNacConsumerReadyForTest();
+
+            /** Install or clear the LocalMock streamed-event publication hook. */
+            void setStreamPublicationInterceptorForTest(
+                StreamPublicationInterceptorForTest interceptor);
+            void setStreamRetentionInterceptorForTest(
+                StreamRetentionInterceptorForTest interceptor);
+            void setStreamRetentionExpiryObserverForTest(
+                StreamRetentionExpiryObserverForTest observer);
+            /** Re-publish one already signed streamed Data packet through the
+             * production SVS endpoint.  This is test-only fault-controller
+             * plumbing used to inject duplicate and reordered publications;
+             * it does not re-sign or modify the packet. */
+            void publishStreamPacketForTest(const ndn::Data& data);
+            size_t streamPublisherHighWaterMarkForTest(
+                const ndn::Name& requesterName,
+                const ndn::Name& serviceName,
+                const ndn::Name& requestId);
+
             ndn::Name getName();
 
             /** Public names of the certificate used for Provider-signed Data.
@@ -717,6 +794,41 @@ namespace ndn_service_framework{
             void addService(const ndn::Name& serviceName,
                             AckStrategyHandler ackHandler,
                             RequestHandler requestHandler);
+
+            /** Register a generic streamed handler. The handler receives the
+             * same authenticated Request/Selection context as unary dispatch;
+             * the Core owns cursor, AEAD, signed Data publication and the
+             * terminal Response. */
+            void addStreamingHandler(const ndn::Name& serviceName,
+                                     StreamingHandler handler);
+
+            template<typename RequestT, typename EventT, typename ResponseT>
+            void addStreamingHandler(
+                const ndn::Name& serviceName,
+                std::function<void(const RequestT&,
+                                   StreamedResponseWriter<EventT, ResponseT>&)> handler)
+            {
+                addStreamingHandler(
+                    serviceName,
+                    [handler = std::move(handler)](
+                        const ndn::Name&, const ndn::Name&, const ndn::Name&,
+                        const ndn::Name&, const RequestMessage& request,
+                        StreamedResponseWriter<ndn::Buffer, ndn::Buffer>& writer) {
+                        RequestT typedRequest;
+                        const auto payload = request.getPayload();
+                        if constexpr (std::is_same<RequestT, ndn::Buffer>::value) {
+                            typedRequest = payload;
+                        }
+                        else if (!typedRequest.ParseFromArray(payload.data(), payload.size())) {
+                            writer.fail(StreamedInvocationErrorCode::InvalidOptions,
+                                        "stream request serialization failed");
+                            return;
+                        }
+                        auto core = writer.core();
+                        StreamedResponseWriter<EventT, ResponseT> typedWriter(core);
+                        handler(typedRequest, typedWriter);
+                    });
+            }
 
             void addService(const ndn::Name& serviceName,
                             AckStrategyHandler ackHandler,
@@ -994,6 +1106,7 @@ namespace ndn_service_framework{
                 AckStrategyHandler ackHandler;
                 RequestHandler requestHandler;
                 RequestHandler targetedRequestHandler;
+                StreamingHandler streamingHandler;
                 ServiceMode mode = ServiceMode::Normal;
                 bool selectionStatusQueryable = false;
                 bool genericAdmissionLeaseRequired = false;
@@ -1057,6 +1170,13 @@ namespace ndn_service_framework{
                 ProviderRequestLifecycleState state,
                 const std::string& suppressionReason = "",
                 const std::string& finalStatus = "");
+
+            /** Attach streamed provider state to an existing pending request. */
+            std::shared_ptr<StreamInvocationLifecycle>
+            attachStreamLifecycle(const ndn::Name& pendingKey);
+
+            std::shared_ptr<StreamInvocationLifecycle>
+            getStreamLifecycle(const ndn::Name& pendingKey) const;
             void updateSelectionExecutionStatus(
                 const std::string& selectionDigest,
                 SelectionExecutionState state,
@@ -1116,6 +1236,18 @@ namespace ndn_service_framework{
                 const ndn::Name& requestId,
                 RequestMessage requestMessage,
                 std::string selectionDigest = "");
+            bool initializeStreamPublisher(
+                const ndn::Name& requesterName,
+                const ndn::Name& providerName,
+                const ndn::Name& serviceName,
+                const ndn::Name& requestId,
+                const RequestMessage& requestMessage,
+                const ServiceSelectionMessage& selectionMessage,
+                const std::string& selectionDigest);
+            void publishStreamEventOnFaceEventLoop(
+                PublishedStreamEvent event,
+                uint64_t retentionMs);
+            void onStreamEvent(const ndn::svs::SVSPubSub::SubscriptionData& subscription);
             bool dispatchCollaborationExecutionAsync(
                 const ndn::Name& requesterName,
                 const ndn::Name& providerName,
@@ -1125,9 +1257,11 @@ namespace ndn_service_framework{
                 CollaborationAssignment assignment,
                 std::string selectionDigest = "");
             void prepareCollaborationAssignmentAsync(
+                const ndn::Name& requesterName,
                 const ndn::Name& requestId,
                 CollaborationAssignment assignment,
-                std::function<void(bool, std::string)> onReady);
+                std::function<void(bool, std::string,
+                                   CollaborationAssignment)> onReady);
             void finishRequestExecutionOnEventLoop(
                 const ndn::Name& requesterName,
                 const ndn::Name& providerName,
@@ -1143,6 +1277,12 @@ namespace ndn_service_framework{
                 const ndn::Name& requestId,
                 const RequestMessage& requestMessage,
                 const std::string& error,
+                std::string selectionDigest = "");
+            void completeCollaborationRoleOnEventLoop(
+                const ndn::Name& requesterName,
+                const ndn::Name& providerName,
+                const ndn::Name& serviceName,
+                const ndn::Name& requestId,
                 std::string selectionDigest = "");
             void publishCollaborationData(const ndn::Name& requesterName,
                                           const ndn::Name& requestId,
@@ -1246,6 +1386,10 @@ namespace ndn_service_framework{
             static CollaborationAssignment parseCollaborationAssignment(
                 const ndn::Name& serviceName,
                 const ndn::Buffer& payload);
+            ndn::nacabe::Consumer& activeNacConsumer()
+            {
+                return m_testNacConsumer ? *m_testNacConsumer : nacConsumer;
+            }
             ndn::Face& m_face;
             ndn::Scheduler m_scheduler;
             ndn::Name identity;
@@ -1253,6 +1397,10 @@ namespace ndn_service_framework{
             ndn::KeyChain* m_testSigningKeyChain = nullptr;
             std::shared_ptr<ndn::svs::SVSPubSub> m_svsps;
             LocalPublicationHandler m_localPublicationHandler;
+            mutable std::mutex m_streamPublicationInterceptorMutex;
+            StreamPublicationInterceptorForTest m_streamPublicationInterceptorForTest;
+            StreamRetentionInterceptorForTest m_streamRetentionInterceptorForTest;
+            StreamRetentionExpiryObserverForTest m_streamRetentionExpiryObserverForTest;
             std::shared_ptr<MessageValidator> validator;
             std::vector<std::string> m_serviceNames;
 
@@ -1262,9 +1410,14 @@ namespace ndn_service_framework{
             ndn::security::Certificate signingCert;
             ndn::security::Certificate attrAuthorityCertificate;
             ndn::nacabe::Consumer nacConsumer;
+            std::unique_ptr<ndn::nacabe::Consumer> m_testNacConsumer;
             //ndn::nacabe::Producer nacProducer;
             NetworkTelemetryStore m_networkTelemetry;
             ndn::nacabe::CacheProducer nacProducer;
+            // LocalMock may sign with a fixture-owned in-memory KeyChain.
+            // NAC-ABE Producer stores its KeyChain by reference, so changing
+            // only the direct signing pointer is insufficient.
+            std::unique_ptr<ndn::nacabe::CacheProducer> m_testNacProducer;
             ndn::security::SigningInfo m_signingInfo;
             bool m_timelineTrace = false;
             size_t m_currentPolicyEpoch = 0;
@@ -1294,6 +1447,13 @@ namespace ndn_service_framework{
             */
             std::map<ndn::Name,std::shared_ptr<RequestMessage>> pendingRequests;
             std::map<ndn::Name,std::string> pendingProviderTokens;
+            // Keyed by the existing requester/service/request-id pending key.
+            // Stream attachment never creates a second request identity.
+            std::map<ndn::Name, std::shared_ptr<StreamInvocationLifecycle>>
+                m_streamLifecycles;
+            std::map<ndn::Name, std::shared_ptr<StreamEventPublisher>>
+                m_streamPublishers;
+            std::map<ndn::Name, StreamBinding> m_streamBindings;
             std::map<ndn::Name, ReservationLease> pendingReservationLeases;
             std::set<ndn::Name> m_recentProviderRequests;
             std::set<ndn::Name> m_selectedProviderRequests;

@@ -191,7 +191,8 @@ class SplitCandidateContractTest(unittest.TestCase):
             ),
         )
         candidate.validate_against(self.graph)
-        specs = AutomaticPlanningCoordinator._v3_role_specs(candidate)
+        specs = AutomaticPlanningCoordinator._v3_role_specs(
+            candidate, self.graph)
         self.assertEqual(
             tuple((item.role, item.rank, item.artifact_digest) for item in specs),
             (("stage-0", 0, digest("7")),

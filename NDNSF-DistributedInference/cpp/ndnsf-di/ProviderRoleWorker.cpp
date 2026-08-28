@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <exception>
 #include <future>
 #include <iomanip>
@@ -62,6 +63,27 @@ timelineRequestId(const std::string& requestId, const std::string& sessionId)
   return requestId.empty() ? "/ndnsf-di/session/" + sessionId : requestId;
 }
 
+TensorBundle
+withoutProviderLocalState(const TensorBundle& bundle,
+                          const std::vector<std::string>& stateOutputNames)
+{
+  if (stateOutputNames.empty() || !isEncodedTensorBundle(bundle.payload)) {
+    return bundle;
+  }
+  auto tensors = decodeTensorBundle(bundle.payload);
+  tensors.erase(
+    std::remove_if(tensors.begin(), tensors.end(), [&] (const auto& tensor) {
+      return std::find(stateOutputNames.begin(), stateOutputNames.end(),
+                       tensor.name) != stateOutputNames.end();
+    }),
+    tensors.end());
+  if (tensors.empty()) {
+    throw std::logic_error(
+      "planned dependency output contains only Provider-local decode state");
+  }
+  return makeEncodedTensorBundle(bundle.name, std::move(tensors));
+}
+
 } // namespace
 
 ProviderRoleWorker::ProviderRoleWorker(std::size_t workerCount,
@@ -107,7 +129,8 @@ ProviderRoleWorker::executeAsync(std::string sessionId,
                                  RoleSpec role,
                                  std::shared_ptr<DependencyIo> io,
                                  RoleRunner runner,
-                                 std::map<std::string, TensorBundle> initialInputsByScope)
+                                 std::map<std::string, TensorBundle> initialInputsByScope,
+                                 RoleExecutionContext::StreamEventSink eventSink)
 {
   return executeAsyncImpl(std::move(sessionId),
                           std::move(role),
@@ -115,7 +138,8 @@ ProviderRoleWorker::executeAsync(std::string sessionId,
                           makeNativeModelRunner(std::move(runner)),
                           {},
                           std::move(initialInputsByScope),
-                          std::nullopt);
+                          std::nullopt,
+                          std::move(eventSink));
 }
 
 std::future<ProviderRoleResult>
@@ -123,7 +147,8 @@ ProviderRoleWorker::executeAsync(std::string sessionId,
                                  RoleSpec role,
                                  std::shared_ptr<DependencyIo> io,
                                  std::shared_ptr<NativeModelRunner> runner,
-                                 std::map<std::string, TensorBundle> initialInputsByScope)
+                                 std::map<std::string, TensorBundle> initialInputsByScope,
+                                 RoleExecutionContext::StreamEventSink eventSink)
 {
   return executeAsyncImpl(std::move(sessionId),
                           std::move(role),
@@ -131,7 +156,8 @@ ProviderRoleWorker::executeAsync(std::string sessionId,
                           std::move(runner),
                           {},
                           std::move(initialInputsByScope),
-                          std::nullopt);
+                          std::nullopt,
+                          std::move(eventSink));
 }
 
 std::future<ProviderRoleResult>
@@ -140,7 +166,8 @@ ProviderRoleWorker::executePreparedAsync(
   RoleSpec role,
   std::shared_ptr<DependencyIo> io,
   NativeRunnerPreparation prepareRunner,
-  std::map<std::string, TensorBundle> initialInputsByScope)
+  std::map<std::string, TensorBundle> initialInputsByScope,
+  RoleExecutionContext::StreamEventSink eventSink)
 {
   return executeAsyncImpl(std::move(sessionId),
                           std::move(role),
@@ -148,7 +175,8 @@ ProviderRoleWorker::executePreparedAsync(
                           nullptr,
                           std::move(prepareRunner),
                           std::move(initialInputsByScope),
-                          std::nullopt);
+                          std::nullopt,
+                          std::move(eventSink));
 }
 
 std::future<ProviderRoleResult>
@@ -158,7 +186,8 @@ ProviderRoleWorker::executeCollectiveAsync(
   std::shared_ptr<DependencyIo> io,
   RoleRunner runner,
   CollectiveExecutionBinding collective,
-  std::map<std::string, TensorBundle> initialInputsByScope)
+  std::map<std::string, TensorBundle> initialInputsByScope,
+  RoleExecutionContext::StreamEventSink eventSink)
 {
   return executeAsyncImpl(std::move(sessionId),
                           std::move(role),
@@ -166,7 +195,8 @@ ProviderRoleWorker::executeCollectiveAsync(
                           makeNativeModelRunner(std::move(runner)),
                           {},
                           std::move(initialInputsByScope),
-                          std::move(collective));
+                          std::move(collective),
+                          std::move(eventSink));
 }
 
 std::future<ProviderRoleResult>
@@ -176,7 +206,8 @@ ProviderRoleWorker::executeCollectiveAsync(
   std::shared_ptr<DependencyIo> io,
   std::shared_ptr<NativeModelRunner> runner,
   CollectiveExecutionBinding collective,
-  std::map<std::string, TensorBundle> initialInputsByScope)
+  std::map<std::string, TensorBundle> initialInputsByScope,
+  RoleExecutionContext::StreamEventSink eventSink)
 {
   return executeAsyncImpl(std::move(sessionId),
                           std::move(role),
@@ -184,7 +215,8 @@ ProviderRoleWorker::executeCollectiveAsync(
                           std::move(runner),
                           {},
                           std::move(initialInputsByScope),
-                          std::move(collective));
+                          std::move(collective),
+                          std::move(eventSink));
 }
 
 std::future<ProviderRoleResult>
@@ -195,7 +227,8 @@ ProviderRoleWorker::executeAsyncImpl(
   std::shared_ptr<NativeModelRunner> runner,
   NativeRunnerPreparation prepareRunner,
   std::map<std::string, TensorBundle> initialInputsByScope,
-  std::optional<CollectiveExecutionBinding> collective)
+  std::optional<CollectiveExecutionBinding> collective,
+  RoleExecutionContext::StreamEventSink eventSink)
 {
   if (role.role.empty()) {
     throw std::invalid_argument("ProviderRoleWorker requires a non-empty role");
@@ -236,6 +269,7 @@ ProviderRoleWorker::executeAsyncImpl(
     std::move(runner),
     std::move(prepareRunner),
     std::move(initialInputsByScope),
+    std::move(eventSink),
     {},
     promise,
     std::chrono::steady_clock::now(),
@@ -261,6 +295,26 @@ ProviderRoleWorker::executeAsyncImpl(
          {"role", item.role.role},
          {"scope", edge.scope},
          {"attemptEpoch", std::to_string(item.role.attemptEpoch)}});
+      // A request-scoped epoch coordinator may have fetched and validated an
+      // exact dependency before submitting this role.  Do not express a
+      // second Interest for that same epoch; retaining the edge in the role
+      // preserves the runner's input-edge contract while the pre-satisfied
+      // bundle is consumed directly.
+      const auto existing = item.initialInputsByScope.find(edge.scope);
+      if (existing != item.initialInputsByScope.end()) {
+        validateTensorBundleForEdge(edge, existing->second);
+        timing.fetchCompletedAt = std::chrono::steady_clock::now();
+        timing.bytes = existing->second.payload.size();
+        item.inputTimings.push_back(std::move(timing));
+        logDiTimelineTrace(
+          "di-provider", "dependency_fetch_pre_satisfied",
+          timelineRequestId(item.role.requestId, item.sessionId),
+          {{"sessionId", item.sessionId},
+           {"role", item.role.role},
+           {"scope", edge.scope},
+           {"attemptEpoch", std::to_string(item.role.attemptEpoch)}});
+        continue;
+      }
       pendingInputs.push_back(PendingInput{
         edge,
         item.io->prefetchInput(item.sessionId, edge),
@@ -426,6 +480,9 @@ ProviderRoleWorker::enqueueReady(WorkItem item)
       return;
     }
     m_queue.push_back(std::move(item));
+  }
+  if (std::getenv("NDNSF_DI_RUNTIME_TIMING") != nullptr) {
+    std::cout << "NDNSF_DI_WORKER event=enqueue_ready" << std::endl;
   }
   m_cv.notify_one();
 }
@@ -696,6 +753,10 @@ ProviderRoleWorker::execute(const WorkItem& item)
 ProviderRoleResult
 ProviderRoleWorker::runReadyRole(const WorkItem& item)
 {
+  if (std::getenv("NDNSF_DI_RUNTIME_TIMING") != nullptr) {
+    std::cout << "NDNSF_DI_WORKER event=run_ready role=" << item.role.role
+              << std::endl;
+  }
   if (item.collective.has_value()) {
     const auto& binding = *item.collective;
     std::lock_guard<std::mutex> collectiveLock(m_collectiveMutex);
@@ -743,7 +804,29 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
   RoleExecutionContext ctx;
   ctx.sessionId = item.sessionId;
   ctx.role = item.role.role;
+  ctx.requestId = item.role.requestId;
+  ctx.attemptEpoch = item.role.attemptEpoch;
+  ctx.inferenceEpoch = item.role.inferenceEpoch;
+  ctx.generationLineage = item.role.generationLineage;
+  if (item.role.candidateDecodeStateIdentity) {
+    const auto current =
+      item.role.candidateDecodeStateIdentity->prefixTokenCount;
+    std::uint32_t previous = 0;
+    if (item.role.predecessorDecodeStateIdentity) {
+      previous = item.role.predecessorDecodeStateIdentity->prefixTokenCount;
+    }
+    else if (item.role.conversationStateBinding) {
+      previous =
+        item.role.conversationStateBinding->identity.prefixTokenCount;
+    }
+    if (current <= previous) {
+      throw std::logic_error(
+        "Provider generation input token count is not a strict prefix extension");
+    }
+    ctx.generationInputTokenCount = current - previous;
+  }
   ctx.inputsByScope = inputsByScope;
+  ctx.streamEventSink = item.eventSink;
   for (const auto& edge : item.role.inputs) {
     const auto input = ctx.inputsByScope.find(edge.scope);
     if (input == ctx.inputsByScope.end()) {
@@ -753,10 +836,26 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
     validateTensorBundleForEdge(edge, input->second);
     ctx.inputEdgesByScope.emplace(edge.scope, edge);
   }
+  if (std::getenv("NDNSF_DI_RUNTIME_TIMING") != nullptr) {
+    std::cout << "NDNSF_DI_WORKER event=inputs_validated role=" << item.role.role
+              << std::endl;
+  }
 
   result.exactForwardCacheKey = exactForwardCacheKeyFor(
     item, runner.get(), inputsByScope);
-  result.outputsByScope = getCachedOutputs(result.exactForwardCacheKey);
+  if (std::getenv("NDNSF_DI_RUNTIME_TIMING") != nullptr) {
+    std::cout << "NDNSF_DI_WORKER event=cache_key role=" << item.role.role
+              << std::endl;
+  }
+  // A streamed terminal runner has an externally visible side effect: it
+  // submits token/event payloads through the sink. Reusing only its Tensor
+  // outputs would suppress those events on a retry and could turn a complete
+  // transcript into the legacy single-final-event fallback. Keep this cache
+  // limited to pure dependency-producing executions.
+  const bool hasStreamSideEffect = static_cast<bool>(item.eventSink);
+  if (!hasStreamSideEffect) {
+    result.outputsByScope = getCachedOutputs(result.exactForwardCacheKey);
+  }
   result.exactForwardCacheHit = !result.outputsByScope.empty();
   if (!result.exactForwardCacheHit) {
 #ifdef NDNSF_DI_EXPERIMENT_FAULTS
@@ -768,13 +867,40 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
       {{"sessionId", item.sessionId},
        {"role", item.role.role},
        {"attemptEpoch", std::to_string(item.role.attemptEpoch)}});
-    result.outputsByScope = runner->run(ctx);
+    // The epoch coordinator owns the authenticated generation loop.  Its
+    // lineage-bearing work items represent exactly one epoch, so invoking a
+    // runner's full streamed loop here would generate the whole transcript
+    // once per epoch and duplicate token events.  Direct streamed requests
+    // (which have no coordinator lineage) retain the incremental runner path.
+    const bool coordinatorOwnsStreaming = item.role.generationLineage.has_value();
+    if (hasStreamSideEffect && !coordinatorOwnsStreaming) {
+      if (std::getenv("NDNSF_DI_RUNTIME_TIMING") != nullptr) {
+        std::cout << "NDNSF_DI_WORKER event=runner_streamed role=" << item.role.role
+                  << std::endl;
+      }
+      const auto streamedOutputs = runner->runStreamed(ctx);
+      result.outputsByScope = streamedOutputs.has_value()
+        ? *streamedOutputs : runner->run(ctx);
+    }
+    else {
+      if (std::getenv("NDNSF_DI_RUNTIME_TIMING") != nullptr) {
+        std::cout << "NDNSF_DI_WORKER event=runner_run role=" << item.role.role
+                  << std::endl;
+      }
+      result.outputsByScope = runner->run(ctx);
+    }
+    if (std::getenv("NDNSF_DI_RUNTIME_TIMING") != nullptr) {
+      std::cout << "NDNSF_DI_WORKER event=runner_done role=" << item.role.role
+                << std::endl;
+    }
     logDiTimelineTrace(
       "di-provider", "role_compute_done", requestId,
       {{"sessionId", item.sessionId},
        {"role", item.role.role},
        {"attemptEpoch", std::to_string(item.role.attemptEpoch)}});
-    putCachedOutputs(result.exactForwardCacheKey, result.outputsByScope);
+    if (!hasStreamSideEffect) {
+      putCachedOutputs(result.exactForwardCacheKey, result.outputsByScope);
+    }
   }
   result.executionEvidence = runner->executionEvidenceSnapshot();
 
@@ -782,7 +908,30 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
   std::vector<std::pair<DependencyEdge, TensorBundle>> stagedOutputs;
   stagedOutputs.reserve(item.role.outputs.size());
   for (const auto& edge : item.role.outputs) {
-    auto bundle = outputForEdge(result.outputsByScope, edge);
+    for (const auto& tensor : edge.tensors) {
+      if (std::find(item.role.stateOutputNames.begin(),
+                    item.role.stateOutputNames.end(), tensor) !=
+          item.role.stateOutputNames.end()) {
+        throw std::logic_error(
+          "planned dependency explicitly names Provider-local decode state");
+      }
+    }
+    auto bundle = withoutProviderLocalState(
+      outputForEdge(result.outputsByScope, edge),
+      item.role.stateOutputNames);
+    if (item.role.generationLineage) {
+      auto lineage = *item.role.generationLineage;
+      if (lineage.requestId != item.role.requestId ||
+          lineage.attemptEpoch != item.role.attemptEpoch ||
+          lineage.inferenceEpoch != item.role.inferenceEpoch) {
+        throw std::logic_error(
+          "role generation lineage does not match the execution epoch");
+      }
+      lineage.producerRole = edge.producerRole;
+      lineage.consumerRole = edge.consumerRole;
+      lineage.operationIndex = edge.collectiveOperationIndex;
+      bundle = attachGenerationEpochLineage(bundle, lineage);
+    }
     validateTensorBundleForEdge(edge, bundle, false);
     stagedOutputs.emplace_back(edge, std::move(bundle));
   }

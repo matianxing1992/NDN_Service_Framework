@@ -85,6 +85,11 @@ Stage: final
     rm -f /opt/ndnsf-di/current/bin/di-native-provider
     rm -f /opt/ndnsf-di/current/lib/libndn-service-framework.so*
     rm -f /opt/venv/lib/python3.10/site-packages/ndnsf/_ndnsf*.so
+    for path in /opt/venv/lib/python3.10/site-packages/torch* \\
+                /opt/venv/lib/python3.10/site-packages/transformers* \\
+                /opt/venv/lib/python3.10/site-packages/functorch*; do
+        if [ -e "$path" ]; then rm -rf "$path"; fi
+    done
     find /opt/venv/lib/python3.10/site-packages/ndnsf -name '_ndnsf*.so'
     sha256sum -c /opt/ndnsf-di/current/manifest/container-native-build.json
 

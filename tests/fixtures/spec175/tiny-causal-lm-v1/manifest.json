@@ -1,0 +1,101 @@
+{
+  "blockCount": 4,
+  "content": {
+    "four-role/role-0.onnx": "sha256:121573cfaa1057d0402a5cfc4cc44f4ba28cb2a3f9865f5d0f7a32ef3bf59cdf",
+    "four-role/role-1.onnx": "sha256:389bb9ebc21fcd1329a9efe08dc1ed0fd735c3b662ee6e3c3361b25b195a6f22",
+    "four-role/role-2.onnx": "sha256:a279bfc3ba5e30e2e9ff231111ff0d16163b1be8751171aaa04103e9b0edb68c",
+    "four-role/role-3.onnx": "sha256:523a9b3bccb3f7360bafd0f1c5493d387db9f1fe959019c3c5536d916cb58386",
+    "one-role/role-0.onnx": "sha256:fe41db5c2c8397b62fc8983307b0d755706b7008c56958882cb247ca46594f82",
+    "prompts.json": "sha256:f3808d88821abeed37addbe8465382bb2207cec9904fe86a565283fdaae2bb30",
+    "tokenizer.json": "sha256:87e7e9653a645297f0b9ae6d51b1c497781219f56c094d8224d5500c7d44fd65",
+    "two-role/role-0.onnx": "sha256:c8d25f26406ae99fdd1458d2a60b94760ffd5fe8b39164491579ae0bb0eebf90",
+    "two-role/role-1.onnx": "sha256:bda721aec5ed5fcae0d7bff33989763dd230610468b1f246a4fd7fb91e4192a2"
+  },
+  "eosTokenId": 2,
+  "expectedOutputs": {
+    "early-eos": [
+      14,
+      15,
+      2
+    ],
+    "max-eight": [
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27
+    ],
+    "normal": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      2
+    ]
+  },
+  "hiddenSize": 8,
+  "opset": 17,
+  "partitions": {
+    "four-role": [
+      {
+        "blockEndExclusive": 1,
+        "blockStart": 0,
+        "path": "four-role/role-0.onnx",
+        "role": "/LLM/Pipeline/Stage/0"
+      },
+      {
+        "blockEndExclusive": 2,
+        "blockStart": 1,
+        "path": "four-role/role-1.onnx",
+        "role": "/LLM/Pipeline/Stage/1"
+      },
+      {
+        "blockEndExclusive": 3,
+        "blockStart": 2,
+        "path": "four-role/role-2.onnx",
+        "role": "/LLM/Pipeline/Stage/2"
+      },
+      {
+        "blockEndExclusive": 4,
+        "blockStart": 3,
+        "path": "four-role/role-3.onnx",
+        "role": "/LLM/Pipeline/Stage/3"
+      }
+    ],
+    "one-role": [
+      {
+        "blockEndExclusive": 4,
+        "blockStart": 0,
+        "path": "one-role/role-0.onnx",
+        "role": "/LLM/Pipeline/Stage/0"
+      }
+    ],
+    "two-role": [
+      {
+        "blockEndExclusive": 2,
+        "blockStart": 0,
+        "path": "two-role/role-0.onnx",
+        "role": "/LLM/Pipeline/Stage/0"
+      },
+      {
+        "blockEndExclusive": 4,
+        "blockStart": 2,
+        "path": "two-role/role-1.onnx",
+        "role": "/LLM/Pipeline/Stage/1"
+      }
+    ]
+  },
+  "schemaVersion": "spec175-tiny-causal-lm-v1",
+  "stateFamilies": [
+    "attention-kv",
+    "recurrent",
+    "convolution"
+  ],
+  "vocabularySize": 32
+}

@@ -7,11 +7,13 @@ import argparse
 import csv
 import hashlib
 import json
+import math
 import os
 import pwd
 import re
 import signal
 import shutil
+import socket
 import statistics
 import site
 import subprocess
@@ -27,8 +29,9 @@ MININDN_ROOT = Path("/tmp/minindn")
 # two local Python wrapper trees before loading NDNSF-DI; relying on a globally
 # installed py_repoclient made the MiniNDN gate pass on one host and fail in a
 # sealed candidate container.
-sys.path.insert(0, str(REPO / "NDNSF-DistributedRepo/pythonWrapper"))
-sys.path.insert(1, str(REPO / "pythonWrapper"))
+if os.environ.get("NDNSF_PREFER_INSTALLED_NATIVE") != "1":
+    sys.path.insert(0, str(REPO / "NDNSF-DistributedRepo/pythonWrapper"))
+    sys.path.insert(1, str(REPO / "pythonWrapper"))
 sys.path.insert(0, str(REPO / "Experiments"))
 sys.path.insert(0, str(REPO / "NDNSF-DistributedInference"))
 sys.path.insert(0, str(REPO / "tools/ndnsf-di"))
@@ -68,6 +71,7 @@ from ndnsf_distributed_inference.app_sdk import (  # noqa: E402
 )
 from mininet.log import info, setLogLevel  # noqa: E402
 from minindn.apps.app_manager import AppManager  # noqa: E402
+from minindn.apps.application import Application  # noqa: E402
 from minindn.apps.nfd import Nfd  # noqa: E402
 from minindn.apps.nlsr import Nlsr  # noqa: E402
 from minindn.helpers.ndn_routing_helper import NdnRoutingHelper  # noqa: E402
@@ -91,19 +95,191 @@ REPO_PROVIDER_PREFIX = APP_ROOT + "/repo"
 SERVICE = "/AI/LLM/Pipeline/Fake"
 CONTROLLER_NODE = "memphis"
 USER_NODE = "memphis"
-STAGE_NODES = ["ucla", "arizona", "wustl"]
-STAGE_PROVIDER_IDS = ["", "1", "2"]
-STAGE_IDENTITIES = [
-    PROVIDER_PREFIX,
-    PROVIDER_PREFIX + "/1",
-    PROVIDER_PREFIX + "/2",
-]
-REPO_IDENTITIES = [
-    REPO_PROVIDER_PREFIX,
-    REPO_PROVIDER_PREFIX + "/1",
-    REPO_PROVIDER_PREFIX + "/2",
-]
+REPOSITORY_NODE = ""
+ROUTER_NODE = ""
+REPOSITORY_IDENTITY = APP_ROOT + "/repo"
+# Repository artifact publication is a preparation/control-plane operation.
+# Keep its ACK deadline explicit and separate from the registered streamed
+# invocation ACK/deadline contract so a slow first SVS publication cannot be
+# misclassified as an M01 stream failure.
+SPEC175_REPO_ACK_TIMEOUT_MS = 5_000
+# The three-stage pipeline remains the compatibility default.  Spec175 uses
+# four distinct Provider nodes; the layout is selected once, immediately
+# after argument parsing, so no caller can silently reuse one Provider for two
+# roles.  These are the only topology nodes connected to the User/controller
+# in AI_Lab.conf.
+STAGE_NODE_CANDIDATES = ["ucla", "arizona", "wustl", "neu"]
+STAGE_NODES: list[str] = []
+STAGE_PROVIDER_IDS: list[str] = []
+STAGE_IDENTITIES: list[str] = []
+REPO_IDENTITIES: list[str] = []
 DEPLOYMENT_ARTIFACT_DIGEST = "sha256:" + "a" * 64
+
+# Spec175 G4 is host-orchestrated, but every application process belongs to
+# the exact candidate SIF.  These globals are configured only when the
+# wrapper is invoked with --runtime-sif; ordinary G3/diagnostic runs retain
+# the historical host process path.
+SIF_RUNTIME_SIF: Path | None = None
+SIF_RUNTIME_APPTAINER: Path | None = None
+SIF_RUNTIME_REPO = PurePosixPath("/opt/ndnsf-di/replay/repo")
+SIF_RUNTIME_PYTHON = PurePosixPath("/opt/venv/bin/python")
+SIF_RUNTIME_PYTHONPATH = os.pathsep.join((
+    "/opt/ndnsf-di/replay/repo/examples/python/NDNSF-DistributedInference",
+    "/opt/venv/lib/python3.10/site-packages",
+    "/opt/ndnsf-di/replay/repo/NDNSF-DistributedRepo/pythonWrapper",
+))
+SIF_RUNTIME_WRAPPER_DIR: Path | None = None
+
+
+def cleanup_unused_nfd_sockets(
+        node_names: list[str] | tuple[str, ...],
+        socket_dir: Path | str = "/run/nfd",
+        *,
+        defer_unlink_on_permission_error: bool = False,
+) -> list[str]:
+    """Remove only known, unused MiniNDN NFD sockets before a new run.
+
+    ``Minindn.cleanUp()`` stops NFD/Mininet but does not reliably unlink every
+    per-node management socket.  A leftover path can make
+    ``wait_for_nfd_sockets`` observe a false-positive socket and then spend the
+    whole startup timeout on an unusable endpoint.  Never scan or delete the
+    directory broadly: the caller supplies the exact node names, and a socket
+    is removed only when an AF_UNIX connect proves that no listener remains.
+    An active listener is an error so a second campaign cannot silently share
+    another run's NFD control plane.
+    """
+    root = Path(socket_dir).expanduser().resolve()
+    removed: list[str] = []
+    for node_name in sorted({str(value) for value in node_names if str(value)}):
+        path = root / f"{node_name}.sock"
+        if not path.is_socket():
+            continue
+        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            probe.settimeout(0.2)
+            probe.connect(str(path))
+        except (ConnectionRefusedError, FileNotFoundError):
+            # The filesystem entry survived shutdown, but no process owns it.
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                continue
+            except PermissionError as exc:
+                if defer_unlink_on_permission_error:
+                    # MiniNDN launches NFD inside a root-owned network
+                    # namespace.  A stale socket can therefore be provably
+                    # unused while the unprivileged launcher cannot unlink
+                    # the shared /run/nfd directory entry.  Leave it for NFD
+                    # to replace and keep the permission boundary explicit.
+                    print(
+                        "NFD_SOCKET_CLEANUP_DEFERRED "
+                        f"path={path} reason=unlink-permission",
+                        flush=True,
+                    )
+                    continue
+                raise RuntimeError(
+                    f"stale NFD socket is unused but cannot be unlinked: {path}") from exc
+            removed.append(str(path))
+        except socket.timeout as exc:
+            raise RuntimeError(
+                f"NFD socket is not provably unused; refusing to remove {path}") from exc
+        except OSError as exc:
+            raise RuntimeError(
+                f"cannot determine whether NFD socket is in use: {path}: {exc}") from exc
+        else:
+            raise RuntimeError(
+                f"active NFD socket already exists; refusing to share {path}")
+        finally:
+            probe.close()
+    return removed
+
+
+def uses_full_generation_stage_markers(stage_log: str) -> bool:
+    """Return whether a Provider log belongs to the streamed generation path.
+
+    This marker is emitted by the runtime itself and is also used by the
+    checked-in tiny fixture.  It must not depend on a Qwen campaign manifest:
+    the host/CPU Spec175 gate intentionally uses a small ONNX fixture.
+    """
+    return "LLM_PIPELINE_QWEN_FULL_STAGE_START" in stage_log
+
+
+def configure_stage_layout(stage_count: int) -> None:
+    """Install the one-Provider-per-role layout for this process.
+
+    The function mutates only process-local runner configuration.  It rejects
+    duplicate ownership and unsupported topology sizes before MiniNDN starts,
+    making the stage/provider mapping an explicit input to every manifest and
+    command rather than a hidden three-stage assumption.
+    """
+    if stage_count < 2 or stage_count > len(STAGE_NODE_CANDIDATES):
+        raise ValueError(
+            f"stage count must be in [2, {len(STAGE_NODE_CANDIDATES)}]")
+    nodes = STAGE_NODE_CANDIDATES[:stage_count]
+    provider_ids = ["" if index == 0 else str(index)
+                    for index in range(stage_count)]
+    identities = [PROVIDER_PREFIX if index == 0
+                  else f"{PROVIDER_PREFIX}/{index}"
+                  for index in range(stage_count)]
+    repo_identities = [REPO_PROVIDER_PREFIX if index == 0
+                       else f"{REPO_PROVIDER_PREFIX}/{index}"
+                       for index in range(stage_count)]
+    if len(set(nodes)) != stage_count or len(set(identities)) != stage_count:
+        raise ValueError("stage layout must assign each role exactly once")
+    STAGE_NODES[:] = nodes
+    STAGE_PROVIDER_IDS[:] = provider_ids
+    STAGE_IDENTITIES[:] = identities
+    REPO_IDENTITIES[:] = repo_identities
+
+
+def configure_spec175_host_layout() -> None:
+    """Install the frozen G3 star topology process-to-node mapping."""
+    global CONTROLLER_NODE, USER_NODE, REPOSITORY_NODE, ROUTER_NODE
+    CONTROLLER_NODE = "c"
+    USER_NODE = "u"
+    REPOSITORY_NODE = "repo"
+    ROUTER_NODE = "a"
+    STAGE_NODES[:] = [f"p{index}" for index in range(4)]
+    STAGE_PROVIDER_IDS[:] = ["" if index == 0 else str(index)
+                            for index in range(4)]
+    STAGE_IDENTITIES[:] = [PROVIDER_PREFIX if index == 0
+                           else f"{PROVIDER_PREFIX}/{index}"
+                           for index in range(4)]
+    REPO_IDENTITIES[:] = []
+
+
+def spec175_provider_role_indices(case_id: str, stage_count: int) -> tuple[int, ...]:
+    """Return the frozen Provider-to-role map for one host gate case."""
+    baseline = tuple(range(stage_count))
+    if str(case_id or "").upper() != "M10":
+        return baseline
+    if stage_count < 2:
+        raise ValueError("M10 requires at least two Providers")
+    return tuple((index + 1) % stage_count for index in baseline)
+
+
+def apply_selection_targeted_prefetch_policy(
+        args, base_env: dict[str, str], environment=None) -> bool:
+    """Apply the registered transport policy to every MiniNDN subprocess.
+
+    Spec175 G3 measures the ordinary ACK/Selection transport and therefore
+    forbids the authenticated Targeted prefetch redundancy even when the host
+    shell happens to enable it.  Other campaigns retain their historical
+    environment-controlled behavior.
+    """
+    source = os.environ if environment is None else environment
+    enabled = source.get("NDNSF_SELECTION_TARGETED_PREFETCH", "1") != "0"
+    if args.spec175_case:
+        base_env["NDNSF_SELECTION_TARGETED_PREFETCH"] = "0"
+        return False
+    if (args.selection_dataflow_v2 or args.selection_dataflow_v3) and enabled:
+        base_env["NDNSF_SELECTION_TARGETED_PREFETCH"] = "1"
+    return enabled
+
+
+# Preserve the historical three-stage import-time behavior for helper callers;
+# ``main()`` replaces this with the explicit CLI stage count before startup.
+configure_stage_layout(3)
 
 
 def configure_spec111_deployment_workflow(config_path: Path, out: Path,
@@ -115,7 +291,7 @@ def configure_spec111_deployment_workflow(config_path: Path, out: Path,
     from ndnsf_distributed_inference.app_sdk import ProviderEvidenceSigner
 
     if stages != len(STAGE_IDENTITIES):
-        raise ValueError("Spec 111 deployment workflow currently requires three stages")
+        raise ValueError("stage layout must be configured before deployment workflow")
     controls = [f"/APP/Deployment/Control/Stage/{index}"
                 for index in range(stages)]
     roles = [f"/LLM/Pipeline/Stage/{index}" for index in range(stages)]
@@ -248,11 +424,24 @@ def build_parser() -> argparse.ArgumentParser:
         description="MiniNDN smoke for distributed LLM pipeline inference")
     parser.add_argument("--topology-file", default=str(TOPO))
     parser.add_argument("--output-dir", default=str(OUT))
+    parser.add_argument(
+        "--runtime-sif",
+        default=os.environ.get("SPEC175_RUNTIME_SIF", ""),
+        help=(
+            "Exact Apptainer SIF for host-orchestrated Spec175 G4.  When "
+            "set, every Controller/Repo/Provider/User/NFD process is started "
+            "through the SIF command provider; host source fallback is fatal."),
+    )
+    parser.add_argument(
+        "--runtime-apptainer",
+        default=os.environ.get("SPEC175_APPTAINER", ""),
+        help="Apptainer executable paired with --runtime-sif (normally 1.5.3).",
+    )
     parser.add_argument("--stages", type=int, default=3)
     parser.add_argument("--layers", type=int, default=24)
     parser.add_argument(
         "--runtime",
-        choices=("fake", "tiny-transformers", "qwen-transformers", "qwen-onnx",
+        choices=("fake", "tiny-transformers", "tiny-onnx", "qwen-transformers", "qwen-onnx",
                  "qwen-onnx-cpu-native"),
         default="fake",
     )
@@ -311,6 +500,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--prompt", default="Explain NDNSF-DI pipeline inference.")
     parser.add_argument("--warmup-requests", type=int, default=0)
     parser.add_argument("--measured-requests", type=int, default=1)
+    parser.add_argument(
+        "--seed", type=int, default=0,
+        help=(
+            "Explicit workload seed recorded in Spec175 case evidence; "
+            "the production runner does not silently derive it from a path."),
+    )
     parser.add_argument("--max-new-tokens", type=int, default=1)
     parser.add_argument("--generation-campaign-manifest", default="")
     parser.add_argument("--generation-jsonl", default="")
@@ -349,6 +544,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--qwen-stage-manifest", default="")
     parser.add_argument("--qwen-stage-root", default="")
+    parser.add_argument(
+        "--tiny-onnx-fixture-root",
+        default=str(REPO / "tests/fixtures/spec175/tiny-causal-lm-v1"),
+        help="Checked-in deterministic Spec175 ONNX fixture for the host gate.",
+    )
     parser.add_argument("--repo-object-prefix", default="")
     parser.add_argument("--request-id", default="")
     parser.add_argument("--selection-offer-lease-ms", type=int, default=900000)
@@ -455,6 +655,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--fault-matrix-contract", action="store_true",
         help=("Execute the deterministic eight-cell recovery fault contract and "
               "write fault-matrix-contract.json; this is not network injection"),
+    )
+    parser.add_argument(
+        "--spec175-case",
+        choices=tuple(f"M{index:02d}" for index in range(1, 15)),
+        default="",
+        help="Registered four-Provider host MiniNDN qualification case (M01-M14).",
     )
     return parser
 
@@ -582,6 +788,186 @@ def local_python_subprocess_env() -> dict[str, str]:
     }
 
 
+def sif_runtime_enabled() -> bool:
+    return SIF_RUNTIME_SIF is not None
+
+
+def runtime_source_path(path: Path | str) -> str:
+    """Map a sealed repository source path to its in-SIF replay path.
+
+    Data/configuration paths under ``OUT`` remain host paths and are bound
+    read-write.  Only source paths are translated; binding the host checkout
+    into the SIF is forbidden because it would allow a stale host extension or
+    Python module to replace the sealed runtime.
+    """
+    value = Path(path)
+    if not sif_runtime_enabled():
+        return str(value)
+    try:
+        relative = value.resolve().relative_to(REPO.resolve())
+    except ValueError:
+        return str(value)
+    return str(SIF_RUNTIME_REPO / PurePosixPath(relative.as_posix()))
+
+
+def _sif_bind_args() -> list[str]:
+    if not sif_runtime_enabled():
+        return []
+    # These are data/control-plane trees, not source overlays.  The complete
+    # source/runtime is sealed in the candidate SIF and is never bound here.
+    bind_roots = [OUT, MININDN_ROOT, Path("/run/nfd")]
+    fixture = getattr(_sif_bind_args, "fixture_root", None)
+    if fixture is not None:
+        bind_roots.append(Path(fixture))
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw in bind_roots:
+        path = Path(raw).expanduser().resolve()
+        if not path.exists() or str(path) in seen:
+            continue
+        seen.add(str(path))
+        mode = ":ro" if fixture is not None and path == Path(fixture).resolve() else ""
+        result.extend(["--bind", f"{path}:{path}{mode}"])
+    return result
+
+
+def sif_exec_prefix(base_env: dict[str, str] | None = None,
+                    *, home_dir: str | None = None) -> str:
+    """Return the only approved application command prefix for G4.
+
+    ``--cleanenv`` prevents host Python/ABI state from leaking into the
+    candidate.  The host MiniNDN namespace remains the outer process context;
+    Apptainer supplies only the sealed application runtime inside it.
+    """
+    if not sif_runtime_enabled():
+        return ""
+    assert SIF_RUNTIME_APPTAINER is not None
+    assert SIF_RUNTIME_SIF is not None
+    env = base_env or {}
+    # Apptainer 1.5.3 rejects ``--env HOME=...`` and keeps the host HOME,
+    # which makes nfdc/ndn-cxx read the wrong client.conf inside a MiniNDN
+    # namespace.  Use Apptainer's HOME mapping instead so every node gets its
+    # own PIB, TPM, client.conf, and NFD management socket.
+    pieces = [
+        perf.shell_quote(SIF_RUNTIME_APPTAINER), "exec", "--cleanenv",
+        *_sif_bind_args(),
+    ]
+    if home_dir:
+        selected_home_path = Path(home_dir).expanduser().resolve()
+        pieces.extend(["--home", perf.shell_quote(
+            f"{selected_home_path}:{selected_home_path}")])
+    else:
+        # The command prefix is constructed once and then executed in several
+        # MiniNDN nodes.  Expand HOME in each node shell, not from the host
+        # process that constructed the prefix.
+        pieces.extend([
+            "--home",
+            '"${HOME:-/tmp/minindn}:${HOME:-/tmp/minindn}"',
+        ])
+    pieces.extend([
+        "--pwd", "/opt/ndnsf-di/replay/repo",
+        "--env", perf.shell_quote(
+            "PATH=/opt/venv/bin:/opt/ndnsf-di/current/bin:/usr/local/bin:/usr/bin:/bin"),
+        "--env", perf.shell_quote(
+            "LD_LIBRARY_PATH=/opt/ndnsf-di/current/lib:/opt/onnxruntime/lib"),
+        "--env", perf.shell_quote(f"PYTHONPATH={SIF_RUNTIME_PYTHONPATH}"),
+        "--env", "PYTHONNOUSERSITE=1",
+    ])
+    for key, value in sorted(env.items()):
+        if not (key.startswith("NDNSF_") or key == "NDN_LOG"):
+            continue
+        if key in {"NDNSF_RUNTIME_SIF", "SPEC175_RUNTIME_SIF",
+                   "SPEC175_APPTAINER"}:
+            continue
+        pieces.extend(["--env", perf.shell_quote(f"{key}={value}")])
+    pieces.extend([
+        "--env", 'NDN_CLIENT_CONF="${NDN_CLIENT_CONF:-}"',
+        "--env", 'NDN_CLIENT_TRANSPORT="${NDN_CLIENT_TRANSPORT:-}"',
+        perf.shell_quote(SIF_RUNTIME_SIF),
+    ])
+    return " ".join(pieces)
+
+
+def _install_sif_command_wrappers() -> None:
+    """Route MiniNDN's management/security commands into the exact SIF."""
+    global SIF_RUNTIME_WRAPPER_DIR
+    if not sif_runtime_enabled():
+        return
+    assert SIF_RUNTIME_APPTAINER is not None
+    assert SIF_RUNTIME_SIF is not None
+    wrapper_dir = OUT / "spec175-sif-command-bin"
+    wrapper_dir.mkdir(parents=True, exist_ok=True)
+    commands = (
+        "nfd", "nfdc", "ndnsec", "ndnsec-delete", "ndnsec-key-gen",
+        "ndnsec-cert-gen", "ndnsec-cert-install", "ndnsec-export",
+        "ndnsec-import", "ndnsec-set-default",
+    )
+    prefix = str(SIF_RUNTIME_APPTAINER)
+    sif = str(SIF_RUNTIME_SIF)
+    out = str(OUT)
+    for command in commands:
+        wrapper = wrapper_dir / command
+        wrapper.write_text(
+            "#!/bin/sh\n"
+            "set -eu\n"
+            f"exec {perf.shell_quote(prefix)} exec --cleanenv "
+            f"--bind {perf.shell_quote(out + ':' + out)} "
+            "--bind /tmp/minindn:/tmp/minindn "
+            "--bind /run/nfd:/run/nfd "
+            '--home "${HOME:-/tmp/minindn}:${HOME:-/tmp/minindn}" '
+            "--env 'PATH=/opt/venv/bin:/opt/ndnsf-di/current/bin:/usr/local/bin:/usr/bin:/bin' "
+            "--env 'LD_LIBRARY_PATH=/opt/ndnsf-di/current/lib:/opt/onnxruntime/lib' "
+            "--env 'NDN_CLIENT_CONF=${NDN_CLIENT_CONF:-}' "
+            f"{perf.shell_quote(sif)} {command} \"$@\"\n",
+            encoding="utf-8",
+        )
+        wrapper.chmod(0o755)
+    os.environ["PATH"] = str(wrapper_dir) + os.pathsep + os.environ.get("PATH", "")
+    SIF_RUNTIME_WRAPPER_DIR = wrapper_dir
+
+
+def configure_sif_runtime(args: argparse.Namespace) -> None:
+    global SIF_RUNTIME_SIF, SIF_RUNTIME_APPTAINER
+    if not args.runtime_sif:
+        if args.runtime_apptainer:
+            raise SystemExit("--runtime-apptainer requires --runtime-sif")
+        return
+    if not args.spec175_case:
+        raise SystemExit("--runtime-sif is reserved for the Spec175 G4 replay")
+    if args.runtime != "tiny-onnx" or args.stages != 4:
+        raise SystemExit("Spec175 G4 SIF replay requires four-stage tiny-onnx")
+    sif = Path(args.runtime_sif).expanduser().resolve()
+    apptainer = Path(args.runtime_apptainer or "/opt/apptainer/1.5.3/bin/apptainer").expanduser().resolve()
+    if not sif.is_file() or sif.stat().st_size == 0:
+        raise SystemExit(f"SPEC175_RUNTIME_SIF_MISSING:{sif}")
+    if not apptainer.is_file() or not os.access(apptainer, os.X_OK):
+        raise SystemExit(f"SPEC175_APPTAINER_MISSING:{apptainer}")
+    SIF_RUNTIME_SIF = sif
+    SIF_RUNTIME_APPTAINER = apptainer
+    # The fixture is immutable input data and is bound read-only; it is not a
+    # source/runtime overlay.  Keep its path stable so the signed manifests
+    # and process diagnostics remain directly comparable to G3.
+    _sif_bind_args.fixture_root = Path(args.tiny_onnx_fixture_root).expanduser().resolve()
+    _install_sif_command_wrappers()
+
+
+class Spec175SifNfd(Nfd):
+    """NFD application wrapper for the host-orchestrated exact-SIF replay."""
+
+    def start(self):  # noqa: D401 - MiniNDN Application API
+        if not sif_runtime_enabled():
+            return super().start()
+        command = (
+            sif_exec_prefix({}, home_dir=self.homeDir)
+            + " nfd --config " + perf.shell_quote(self.confFile)
+        )
+        # Application.start splits string commands, which would destroy the
+        # quoted Apptainer command.  Passing a shell argv preserves the command
+        # provider while keeping MiniNDN's normal process/cleanup ownership.
+        Application.start(self, ["bash", "-lc", command], logfile=self.logFile)
+        Minindn.sleep(0.5)
+
+
 def python_process_prefix(base_env: dict[str, str]) -> str:
     """Return a fail-closed Python command prefix for MiniNDN node processes.
 
@@ -590,6 +976,8 @@ def python_process_prefix(base_env: dict[str, str]) -> str:
     library closure on the command line as well as in ``envDict`` so every
     controller, repository, provider, and user resolves the same build.
     """
+    if sif_runtime_enabled():
+        return sif_exec_prefix(base_env) + " " + str(SIF_RUNTIME_PYTHON) + " "
     required = ("PYTHONPATH",)
     missing = [key for key in required if not base_env.get(key)]
     if missing:
@@ -640,6 +1028,10 @@ def command_env(homes: dict[str, Path], host_name: str, base_env: dict[str, str]
 
 def start_process(ndn, host_name: str, label: str, cmd: str,
                   env: dict[str, str], processes: list[tuple[object, object, Path]]):
+    if sif_runtime_enabled() and "apptainer exec" not in cmd:
+        raise RuntimeError(
+            "SPEC175_SIF_HOST_PROCESS_FALLBACK: "
+            f"{label} command does not use the exact SIF command provider")
     log_path = OUT / f"{label}.log"
     log(f"start {label} on {host_name}: {cmd}")
     out = log_path.open("wb")
@@ -862,6 +1254,184 @@ def write_qwen_stage_profile(provider_logs: list[Path],
     return summary_path
 
 
+def write_spec175_provider_timing(provider_logs: list[Path],
+                                  output_dir: Path,
+                                  *,
+                                  required_roles: tuple[str, ...],
+                                  allow_expected_incomplete: bool = False) -> Path:
+    """Persist role-attributed provider spans for the Spec175 result.
+
+    Provider timing markers are deliberately parsed into metadata only.  This
+    report never copies payloads, token IDs, prompts, logits, or state bytes.
+    A missing role, unmatched start/end pair, or negative duration is a hard
+    error so a partial trace cannot be reported as complete evidence.  Fault
+    cases whose contract intentionally terminates while a Provider handler is
+    in flight may opt into ``allow_expected_incomplete``.  Such spans are
+    retained as explicit open-span evidence and the report is marked
+    ``expected-incomplete``; they are never counted as completed timing rows.
+    """
+    def strict_number(fields: dict[str, str], key: str, *,
+                      default: float | None = None) -> float:
+        raw = fields.get(key)
+        if raw is None or raw == "":
+            if default is not None:
+                return float(default)
+            raise RuntimeError(
+                "SPEC175_PROVIDER_TIMING_FIELD_MISSING " f"field={key}")
+        try:
+            value = float(raw)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "SPEC175_PROVIDER_TIMING_FIELD_INVALID " f"field={key}") from exc
+        if not math.isfinite(value) or value < 0:
+            raise RuntimeError(
+                "SPEC175_PROVIDER_TIMING_FIELD_INVALID " f"field={key}")
+        return value
+
+    starts: dict[tuple[str, str], list[dict[str, str]]] = {}
+    rows: list[dict[str, object]] = []
+    open_spans: list[dict[str, object]] = []
+    dependency_inputs: list[dict[str, object]] = []
+    dependency_outputs: list[dict[str, object]] = []
+    seen_roles: set[str] = set()
+    for log_path in provider_logs:
+        for line in log_path.read_text(errors="replace").splitlines():
+            if "NDNSF_DI_PROVIDER_HANDLER_TIMING" not in line and \
+                    "NDNSF_DI_DEPENDENCY_INPUT_TIMING" not in line and \
+                    "NDNSF_DI_DEPENDENCY_OUTPUT_TIMING" not in line:
+                continue
+            fields = _parse_key_values(line)
+            if "NDNSF_DI_PROVIDER_HANDLER_TIMING" not in line:
+                kind = ("input" if "NDNSF_DI_DEPENDENCY_INPUT_TIMING" in line
+                        else "output")
+                session = str(fields.get("session", ""))
+                role = str(fields.get("role", ""))
+                producer = str(fields.get("producer", ""))
+                scope = str(fields.get("scope", ""))
+                if not session or not role or not producer or not scope:
+                    raise RuntimeError(
+                        "SPEC175_PROVIDER_TIMING_MALFORMED_DEPENDENCY "
+                        f"log={log_path.name}")
+                row: dict[str, object] = {
+                    "session": session,
+                    "role": role,
+                    "producer": producer,
+                    "scope": scope,
+                    "providerLog": log_path.name,
+                }
+                for key in (
+                    "future_wait_ms", "ref_wait_ms", "fetch_ms", "decode_ms",
+                    "prefetch_total_ms", "prefetch_overlap_ms", "publish_ms",
+                ):
+                    if key in fields:
+                        row[key] = strict_number(fields, key)
+                for key in ("bytes", "expected_segments", "expected_bytes",
+                            "planned_segment_count"):
+                    if key in fields:
+                        row[key] = int(strict_number(fields, key))
+                (dependency_inputs if kind == "input" else dependency_outputs).append(row)
+                continue
+            event = str(fields.get("event", ""))
+            role = str(fields.get("role", ""))
+            session = str(fields.get("session", ""))
+            if event not in {"start", "end"} or not role or not session:
+                raise RuntimeError(
+                    "SPEC175_PROVIDER_TIMING_MALFORMED_MARKER "
+                    f"log={log_path.name}")
+            key = (session, role)
+            seen_roles.add(role)
+            if event == "start":
+                fields["providerLog"] = log_path.name
+                starts.setdefault(key, []).append(fields)
+                continue
+            pending = starts.get(key, [])
+            if not pending:
+                raise RuntimeError(
+                    "SPEC175_PROVIDER_TIMING_UNMATCHED_END "
+                    f"session={session} role={role}")
+            start = pending.pop(0)
+            if not pending:
+                starts.pop(key, None)
+            start_ms = strict_number(start, "start_epoch_ms")
+            end_ms = strict_number(fields, "end_epoch_ms")
+            duration_ms = strict_number(fields, "handler_ms")
+            if end_ms < start_ms or duration_ms < 0:
+                raise RuntimeError(
+                    "SPEC175_PROVIDER_TIMING_NEGATIVE_SPAN "
+                    f"session={session} role={role}")
+            rows.append({
+                "session": session,
+                "role": role,
+                "providerLog": log_path.name,
+                "startEpochMs": int(start_ms),
+                "endEpochMs": int(end_ms),
+                "queueWaitMs": strict_number(
+                    fields, "queue_wait_ms",
+                    default=strict_number(start, "queue_wait_ms", default=0.0)),
+                "inputFetchWaitMs": strict_number(
+                    fields, "input_fetch_wait_ms",
+                    default=strict_number(start, "input_fetch_wait_ms", default=0.0)),
+                "handlerMs": duration_ms,
+                "totalMs": strict_number(fields, "total_ms", default=duration_ms),
+            })
+    if starts and not allow_expected_incomplete:
+        session, role = next(iter(starts))
+        raise RuntimeError(
+            "SPEC175_PROVIDER_TIMING_UNMATCHED_START "
+            f"session={session} role={role}")
+    if starts:
+        for (session, role), pending_starts in sorted(starts.items()):
+            for start in pending_starts:
+                open_spans.append({
+                    "session": session,
+                    "role": role,
+                    "providerLog": str(start.get("providerLog", "")),
+                    "startEpochMs": int(strict_number(start, "start_epoch_ms")),
+                    "queueWaitMs": strict_number(
+                        start, "queue_wait_ms", default=0.0),
+                    "status": "OPEN_EXPECTED_FAILURE",
+                })
+    missing = sorted(set(required_roles) - seen_roles)
+    if missing or (not rows and not open_spans):
+        raise RuntimeError(
+            "SPEC175_PROVIDER_TIMING_INCOMPLETE "
+            f"missingRoles={','.join(missing)} rows={len(rows)} "
+            f"openSpans={len(open_spans)}")
+
+    by_role: dict[str, list[dict[str, object]]] = {}
+    for row in rows:
+        by_role.setdefault(str(row["role"]), []).append(row)
+    summary: dict[str, object] = {}
+    for role, role_rows in sorted(by_role.items()):
+        values = [float(row["handlerMs"]) for row in role_rows]
+        summary[role] = {
+            "count": len(role_rows),
+            "avgMs": statistics.fmean(values),
+            "p50Ms": statistics.median(values),
+            "p95Ms": _percentile(values, 0.95),
+        }
+    report = {
+        "schema": "ndnsf-di-spec175-provider-timing-v1",
+        "requiredRoles": list(required_roles),
+        "observedRoles": sorted(seen_roles),
+        "spanCount": len(rows),
+        "openSpanCount": len(open_spans),
+        "timingCompleteness": (
+            "expected-incomplete" if open_spans else "complete"),
+        "dependencyInputSpanCount": len(dependency_inputs),
+        "dependencyOutputSpanCount": len(dependency_outputs),
+        "byRole": summary,
+        "dependencyInputs": dependency_inputs,
+        "dependencyOutputs": dependency_outputs,
+        "rows": rows,
+        "openSpans": open_spans,
+    }
+    path = output_dir / "spec175-provider-timing.json"
+    path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8")
+    return path
+
+
 def write_collab_large_fetch_profile(provider_logs: list[Path],
                                      output_dir: Path) -> Path | None:
     rows: list[dict[str, str]] = []
@@ -1065,7 +1635,8 @@ def prepare_policy(stages: int, layers: int, *,
                    qwen_content_store: str = "",
                    qwen_artifact_store: str = "",
                    qwen_service_manifest: str = "",
-                   qwen_runtime_manifest: str = "") -> None:
+                   qwen_runtime_manifest: str = "",
+                   tiny_onnx_fixture_root: str = "") -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     hf_home = os.environ.get("HF_HOME")
     sudo_user = os.environ.get("SUDO_USER")
@@ -1102,6 +1673,8 @@ def prepare_policy(stages: int, layers: int, *,
         "--qwen-dtype", qwen_dtype,
         *( ["--qwen-content-store", qwen_content_store]
            if qwen_content_store else []),
+        *( ["--tiny-onnx-fixture-root", tiny_onnx_fixture_root]
+           if tiny_onnx_fixture_root else []),
         *(["--qwen-artifact-store", qwen_artifact_store]
           if qwen_artifact_store else []),
         *(["--qwen-service-manifest", qwen_service_manifest]
@@ -1113,8 +1686,221 @@ def prepare_policy(stages: int, layers: int, *,
     ], cwd=str(REPO), env=policy_env, check=True)
 
 
+def configure_spec175_repo_policy(path: Path) -> None:
+    """Authorize one dedicated Repo node and all frozen G3 Repo clients."""
+    from py_repoclient.service_names import repo_versioned_services
+
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    users = [USER_IDENTITY, *STAGE_IDENTITIES, REPOSITORY_IDENTITY]
+    artifact_service = "/NDNSF/DistributedRepo/Artifact/v2/STORE"
+    service_names = list(repo_versioned_services())
+    if artifact_service not in service_names:
+        service_names.append(artifact_service)
+    by_name = {
+        str(service.get("name", "")): service
+        for service in document.get("services", ())
+    }
+    for service_name in service_names:
+        roles = ["artifact-replica-0"] if service_name == artifact_service else []
+        service = by_name.get(service_name)
+        if service is None:
+            service = {"name": service_name, "model": service_name}
+            document.setdefault("services", []).append(service)
+            by_name[service_name] = service
+        service.update({
+            "users": list(users),
+            "providers": [{
+                "identity": REPOSITORY_IDENTITY,
+                "roles": list(roles),
+            }],
+            "roles": list(roles),
+            "dependencies": [],
+        })
+    path.write_text(
+        yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+
+
+def configure_spec175_role_policy(
+        path: Path, provider_role_indices: tuple[int, ...]) -> None:
+    """Bind each frozen Provider identity to its registered execution role.
+
+    M10 deliberately rotates the Provider-to-role assignment after ACK-driven
+    placement.  The command line ``--roles`` value and the controller policy
+    must describe the same signed capability; changing only the former makes
+    the controller reject an otherwise valid Selection as unauthorized.
+    """
+    if len(provider_role_indices) != len(STAGE_IDENTITIES):
+        raise ValueError("Spec175 role map does not cover every Provider")
+    expected = tuple(range(len(STAGE_IDENTITIES)))
+    if tuple(sorted(provider_role_indices)) != expected:
+        raise ValueError("Spec175 role map must be a permutation of all roles")
+
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    services = document.get("services", ())
+    service = next(
+        (item for item in services
+         if str(item.get("name", "")) == SERVICE), None)
+    if service is None:
+        raise ValueError(f"Spec175 policy is missing service {SERVICE}")
+
+    roles = [f"/LLM/Pipeline/Stage/{index}" for index in expected]
+    service["roles"] = roles
+    service["providers"] = [
+        {
+            "identity": identity,
+            "roles": [f"/LLM/Pipeline/Stage/{role_index}"],
+        }
+        for identity, role_index in zip(STAGE_IDENTITIES, provider_role_indices)
+    ]
+    path.write_text(
+        yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+
+
+def prepare_tiny_selection_dataflow(args) -> dict[str, object]:
+    """Create a small ACTIVE V3 catalog for the checked-in ONNX fixture."""
+    fixture_root = Path(args.tiny_onnx_fixture_root).expanduser().resolve()
+    source = fixture_root / "manifest.json"
+    document = json.loads(source.read_text(encoding="utf-8"))
+    rows = tuple(document.get("partitions", {}).get("four-role", ()))
+    if len(rows) != int(args.stages):
+        raise RuntimeError("tiny fixture does not provide the requested stages")
+    from ndnsf_distributed_inference.adapters.qwen import (
+        build_qwen_three_stage_adapter,
+    )
+    from ndnsf_distributed_inference.app_sdk.placement import canonical_digest
+    roles = tuple(str(item["role"]) for item in rows)
+    digests = {}
+    bytes_by_role = {}
+    for item in rows:
+        path = fixture_root / str(item["path"])
+        expected = str(document["content"][str(item["path"])])
+        actual = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+        if actual != expected:
+            raise RuntimeError(f"tiny fixture digest mismatch: {path}")
+        digests[str(item["role"])] = expected
+        bytes_by_role[str(item["role"])] = path.stat().st_size
+    model_name = "NDNSF/Spec175TinyCausalLM"
+    revision = "spec175-tiny-causal-lm-v1"
+    model_content_digest = "sha256:" + hashlib.sha256(source.read_bytes()).hexdigest()
+    semantics_digest = canonical_digest({
+        "model": model_name,
+        "revision": revision,
+        "dtype": "float32",
+        "opset": int(document["opset"]),
+        "hiddenSize": int(document["hiddenSize"]),
+        "vocabularySize": int(document["vocabularySize"]),
+        "generation": {"greedy": True, "useCache": True, "eosTokenIds": [2]},
+    })
+    adapter = build_qwen_three_stage_adapter(
+        model_name=model_name,
+        revision=revision,
+        layer_ranges=tuple(
+            (int(item["blockStart"]), int(item["blockEndExclusive"]))
+            for item in rows),
+        artifact_digests_by_role=digests,
+        weight_bytes_by_role=bytes_by_role,
+        tensor_degrees=(1,) * len(rows),
+        precision="float32",
+        adapter_name="spec175-tiny-onnx-pipeline",
+        stage_roles=roles,
+    )
+    model = adapter.describe_model(
+        model_name, model_content_digest, semantics_digest,
+        source_revision=revision)
+    graph = adapter.graph.inspect(model)
+    candidate = adapter.splitter.enumerate_candidates(model, graph)[0]
+    stage_rows = []
+    for item in rows:
+        role = str(item["role"])
+        digest = digests[role]
+        stage_rows.append({
+            **dict(item),
+            "sha256": digest,
+            "bytes": int(bytes_by_role[role]),
+            "dataName": f"{APP_ROOT}/tiny/segments/{digest[7:]}",
+        })
+    catalog_body = {
+        "modelContentDigest": model.content_digest,
+        "semanticsDigest": model.semantics_digest,
+        "graphDigest": graph.graph_digest,
+        "candidateDigest": candidate.candidate_digest,
+        "artifacts": [
+            {"role": item["role"], "digest": item["sha256"],
+             "dataName": item["dataName"], "bytes": item["bytes"]}
+            for item in stage_rows
+        ],
+    }
+    automatic = OUT / "automatic-planning-tiny.json"
+    automatic.write_text(json.dumps({
+        "schemaVersion": "ndnsf-di-spec175-tiny-automatic-planning-v1",
+        "model": {
+            "name": model.model_name,
+            "contentDigest": model.content_digest,
+            "semanticsDigest": model.semantics_digest,
+            "revision": model.source_revision,
+        },
+        "precision": "float32",
+        "graphDigest": graph.graph_digest,
+        "candidateDigest": candidate.candidate_digest,
+        "stages": stage_rows,
+        "preSplitCatalog": {
+            "alias": "spec175-tiny-onnx",
+            "manifestDigest": canonical_digest(catalog_body),
+            "candidateDigest": candidate.candidate_digest,
+            "createdAtMs": int(time.time() * 1000),
+            "publicationState": "ACTIVE",
+        },
+    }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    repo_stage_manifest = OUT / "spec175-tiny-repo-stage-manifest.json"
+    repo_stage_manifest.write_text(json.dumps({
+        "schema": "ndnsf-di-spec175-tiny-repo-stage-manifest-v1",
+        "modelDigest": model.content_digest,
+        "revision": revision,
+        "stages": [
+            {
+                "role": item["role"],
+                "stageIndex": index,
+                "path": str(fixture_root / str(item["path"])),
+                "sha256": item["sha256"],
+                "bytes": int(item["bytes"]),
+            }
+            for index, item in enumerate(stage_rows)
+        ],
+    }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    offer_key_map = {}
+    offer_keys = []
+    for index, provider in enumerate(STAGE_IDENTITIES):
+        key_path = OUT / f"selection-tiny-offer-{index}.key"
+        key_path.write_bytes(os.urandom(32))
+        key_path.chmod(0o600)
+        offer_key_map[provider] = str(key_path)
+        offer_keys.append(str(key_path))
+    offer_map_path = OUT / "selection-tiny-offer-key-map.json"
+    offer_map_path.write_text(
+        json.dumps(offer_key_map, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8")
+    envelope_key = OUT / "request-tiny-envelope.key"
+    envelope_key.write_bytes(os.urandom(32))
+    envelope_key.chmod(0o600)
+    return {
+        "automaticPlanning": str(automatic),
+        "offerKeyMap": str(offer_map_path),
+        "offerKeys": tuple(offer_keys),
+        "envelopeKey": str(envelope_key),
+        "repoStageManifest": str(repo_stage_manifest),
+        "localArtifacts": tuple(
+            f"{item['role']}={fixture_root / str(item['path'])}"
+            for item in stage_rows),
+        "requiredMiB": tuple(1 for _ in stage_rows),
+        "modelType": "spec175-tiny-causal-lm",
+    }
+
+
 def prepare_selection_dataflow_v2(args) -> dict[str, object]:
     """Freeze graph/offer inputs without publishing model bytes before Request."""
+
+    if args.runtime == "tiny-onnx":
+        return prepare_tiny_selection_dataflow(args)
 
     source_stage_manifest = Path(
         args.qwen_stage_manifest).expanduser().resolve()
@@ -1166,10 +1952,20 @@ def prepare_selection_dataflow_v2(args) -> dict[str, object]:
         "--output", str(automatic),
     ], cwd=str(REPO), env=local_python_subprocess_env(), check=True)
     manifest = json.loads(automatic.read_text(encoding="utf-8"))
-    backend = (
-        "transformers" if args.qwen_execution_provider == "cuda"
-        else "transformers-cpu"
-    )
+    if args.runtime == "qwen-transformers":
+        backend = (
+            "transformers" if args.qwen_execution_provider == "cuda"
+            else "transformers-cpu"
+        )
+    elif args.runtime in {"qwen-onnx", "qwen-onnx-cpu-native"}:
+        backend = (
+            "onnxruntime-cuda" if args.qwen_execution_provider == "cuda"
+            else "onnxruntime-cpu"
+        )
+    else:
+        raise RuntimeError(
+            "selection dataflow requires a Qwen Transformers or ONNX runtime"
+        )
     offer_key_map: dict[str, str] = {}
     residency_paths: list[str] = []
     storage_key_paths: list[str] = []
@@ -1613,25 +2409,47 @@ def main() -> int:
         raise SystemExit(
             "--provider-wait-s is no longer supported; provider readiness is "
             "event-driven")
-    if args.stages != 3:
-        raise SystemExit("this MiniNDN smoke currently maps exactly 3 stages")
+    try:
+        if args.spec175_case:
+            configure_spec175_host_layout()
+        else:
+            configure_stage_layout(args.stages)
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
+    provider_role_indices = spec175_provider_role_indices(
+        args.spec175_case, args.stages)
+    if args.spec175_case and (
+            args.runtime != "tiny-onnx" or not args.selection_dataflow_v3
+            or args.stages != 4):
+        raise SystemExit(
+            "--spec175-case requires four-stage tiny-onnx V3 execution")
+    if args.spec175_case and args.seed <= 0:
+        raise SystemExit("--spec175-case requires a positive --seed")
     if args.selection_dataflow_v2 or args.selection_dataflow_v3:
         profile = "selection-dataflow-v3" if args.selection_dataflow_v3 else "selection-dataflow-v2"
-        if args.runtime != "qwen-transformers":
+        if args.runtime == "tiny-onnx":
+            if args.selection_dataflow_v2:
+                raise SystemExit("Spec175 tiny fixture supports V3 only")
+            if not Path(args.tiny_onnx_fixture_root).expanduser().is_dir():
+                raise SystemExit("--selection-dataflow-v3 requires tiny fixture root")
+        elif args.runtime not in {
+                "qwen-transformers", "qwen-onnx", "qwen-onnx-cpu-native"
+        }:
             raise SystemExit(
-                f"--{profile} currently requires qwen-transformers")
-        if not args.qwen_stage_manifest:
-            raise SystemExit(
-                f"--{profile} requires --qwen-stage-manifest")
-        if not Path(args.qwen_stage_manifest).expanduser().is_file():
-            raise SystemExit(
-                "--qwen-stage-manifest does not exist: "
-                f"{args.qwen_stage_manifest}")
-        if (not args.qwen_stage_root
-                or not Path(args.qwen_stage_root).expanduser().is_dir()):
-            raise SystemExit(
-                f"--{profile} requires an existing "
-                "--qwen-stage-root")
+                f"--{profile} requires a Qwen Transformers or ONNX runtime")
+        if args.runtime != "tiny-onnx":
+            if not args.qwen_stage_manifest:
+                raise SystemExit(
+                    f"--{profile} requires --qwen-stage-manifest")
+            if not Path(args.qwen_stage_manifest).expanduser().is_file():
+                raise SystemExit(
+                    "--qwen-stage-manifest does not exist: "
+                    f"{args.qwen_stage_manifest}")
+            if (not args.qwen_stage_root
+                    or not Path(args.qwen_stage_root).expanduser().is_dir()):
+                raise SystemExit(
+                    f"--{profile} requires an existing "
+                    "--qwen-stage-root")
         if not args.request_id:
             raise SystemExit(
                 f"--{profile} requires one explicit --request-id")
@@ -1653,6 +2471,14 @@ def main() -> int:
     sys.argv = [sys.argv[0]]
     setLogLevel("info")
     OUT = Path(args.output_dir).expanduser().resolve()
+    if args.spec175_case and args.app_state_root == "/tmp/ndnsf-di-app-state":
+        # Every Spec175 process is a fresh subject.  A fixed default journal
+        # would let a prior crashed/partial case poison the next process with
+        # ConversationCheckpointInvalid during recovery.  Keep the durable
+        # journal under that run's evidence directory unless the caller
+        # explicitly supplies another root.
+        args.app_state_root = str(OUT / "app-state")
+    configure_sif_runtime(args)
     spec107_candidate_id = ""
     spec107_artifact_store = ""
     spec107_qwen_service_manifest = ""
@@ -1862,8 +2688,12 @@ def main() -> int:
             qwen_artifact_store=spec107_artifact_store,
             qwen_service_manifest=spec107_qwen_service_manifest,
             qwen_runtime_manifest=spec107_qwen_runtime_manifest,
+            tiny_onnx_fixture_root=args.tiny_onnx_fixture_root,
         )
-    if args.selection_dataflow_v2 or args.selection_dataflow_v3:
+        if args.spec175_case:
+            configure_spec175_repo_policy(CONFIG)
+    if ((args.selection_dataflow_v2 or args.selection_dataflow_v3)
+            and args.runtime != "tiny-onnx"):
         repo_policy = OUT / "llm_pipeline_policy.repo.yaml"
         subprocess.run([
             sys.executable,
@@ -1877,6 +2707,12 @@ def main() -> int:
             "--repo-provider-prefix", REPO_PROVIDER_PREFIX,
         ], cwd=str(REPO), env=local_python_subprocess_env(), check=True)
         os.replace(repo_policy, CONFIG)
+    if args.spec175_case:
+        # Keep the signed controller capability map identical to the role map
+        # passed to each Provider process.  This is especially important for
+        # M10, where the ACK-driven placement case intentionally permutes the
+        # four Provider/role assignments.
+        configure_spec175_role_policy(CONFIG, provider_role_indices)
     workflow_bundle = None
     if args.deployment_workflow:
         if args.runtime == "qwen-onnx-cpu-native" or args.spec107_live_fault_cell:
@@ -1898,7 +2734,9 @@ def main() -> int:
         "NDN_LOG": args.ndn_log,
         "NDNSF_RESPONSE_LARGE_DATA_THRESHOLD": "1024",
     }
-    if args.selection_dataflow_v2:
+    selection_targeted_prefetch = apply_selection_targeted_prefetch_policy(
+        args, base_env)
+    if args.selection_dataflow_v2 and selection_targeted_prefetch:
         # A collaboration Selection can be larger than one SVS publication
         # path reliably fans out.  The same authenticated, hybrid-encrypted
         # provider-specific Data is therefore also fetched by its exact V2
@@ -1906,7 +2744,7 @@ def main() -> int:
         # this shared flag; this is transport redundancy, not an authorization
         # bypass or a second collaboration attempt.
         base_env["NDNSF_SELECTION_TARGETED_PREFETCH"] = "1"
-    elif args.selection_dataflow_v3:
+    elif args.selection_dataflow_v3 and selection_targeted_prefetch:
         # V3 retains the same authenticated targeted-prefetch transport guard;
         # only the Selection encoding/version differs from V2.
         base_env["NDNSF_SELECTION_TARGETED_PREFETCH"] = "1"
@@ -1914,7 +2752,7 @@ def main() -> int:
         base_env["NDN_LOG"] = "ndn_service_framework.*=TRACE"
     if args.large_fetch_timing:
         base_env["NDNSF_COLLAB_LARGE_FETCH_TIMING"] = "1"
-    if args.runtime == "qwen-onnx-cpu-native":
+    if args.runtime == "qwen-onnx-cpu-native" or args.spec175_case:
         base_env["NDNSF_DI_RUNTIME_TIMING"] = "1"
     if args.spec107_diagnostic:
         base_env["NDNSF_TIMELINE_TRACE"] = "1"
@@ -1945,6 +2783,14 @@ def main() -> int:
     subprocess.run(["pkill", "-f", "llm_pipeline/(provider|user)\\.py"],
                    check=False)
     Minindn.cleanUp()
+    # ``nfd-stop`` may leave the per-node AF_UNIX path behind.  Remove only
+    # the exact sockets this topology owns, and fail closed if any listener is
+    # still active rather than attaching a campaign to another run.
+    cleanup_unused_nfd_sockets(
+        [CONTROLLER_NODE, USER_NODE, *STAGE_NODES,
+         *( [REPOSITORY_NODE] if REPOSITORY_NODE else [] )],
+        defer_unlink_on_permission_error=True,
+    )
     if args.static_routing_only:
         required = ("nfd", "nfdc", "ndnsec", "infoconv", "mnexec", "ovs-vsctl")
         missing = [name for name in required if shutil.which(name) is None]
@@ -1974,7 +2820,10 @@ def main() -> int:
     try:
         ndn.start()
         normalize_nlsr_link_costs(ndn)
-        AppManager(ndn, ndn.net.hosts, Nfd, logLevel="INFO")
+        AppManager(
+            ndn, ndn.net.hosts,
+            Spec175SifNfd if sif_runtime_enabled() else Nfd,
+            logLevel="INFO")
         if not args.static_routing_only:
             AppManager(ndn, ndn.net.hosts, CleanNlsr, sync="psync", security=False,
                        faceType="udp", nFaces=3, routingType="link-state",
@@ -1988,16 +2837,24 @@ def main() -> int:
              CONTROLLER_IDENTITY + "/KEY", APP_ROOT, APP_ROOT + "/KEY"],
         )
         rh.addOrigin([ndn.net[USER_NODE]], [USER_IDENTITY, USER_IDENTITY + "/KEY"])
-        for node_name, identity, repo_identity in zip(
-                STAGE_NODES, STAGE_IDENTITIES, REPO_IDENTITIES):
+        for node_name, identity in zip(STAGE_NODES, STAGE_IDENTITIES):
             rh.addOrigin(
                 [ndn.net[node_name]],
-                [identity, identity + "/KEY",
-                 repo_identity, repo_identity + "/KEY"],
+                [identity, identity + "/KEY"],
+            )
+        for node_name, repo_identity in zip(STAGE_NODES, REPO_IDENTITIES):
+            rh.addOrigin(
+                [ndn.net[node_name]],
+                [repo_identity, repo_identity + "/KEY"],
             )
             if args.selection_dataflow_v2 or args.selection_dataflow_v3:
-                rh.addOrigin(
-                    [ndn.net[node_name]], ["/NDNSF/DistributedRepo"])
+                rh.addOrigin([ndn.net[node_name]], ["/NDNSF/DistributedRepo"])
+        if REPOSITORY_NODE:
+            rh.addOrigin(
+                [ndn.net[REPOSITORY_NODE]],
+                [REPOSITORY_IDENTITY, REPOSITORY_IDENTITY + "/KEY",
+                 "/NDNSF/DistributedRepo"],
+            )
         rh.addOrigin(ndn.net.hosts, [GROUP_IDENTITY])
         rh.calculateRoutes()
         log(
@@ -2018,6 +2875,8 @@ def main() -> int:
             *list(zip(STAGE_NODES, STAGE_IDENTITIES)),
             *list(zip(STAGE_NODES, REPO_IDENTITIES)),
         ]
+        if REPOSITORY_NODE:
+            node_identities.append((REPOSITORY_NODE, REPOSITORY_IDENTITY))
         identities_by_node: dict[str, str] = {}
         local_identities_by_node: dict[str, list[str]] = {}
         for host_name, identity in node_identities:
@@ -2127,7 +2986,12 @@ def main() -> int:
                 "subprocess.run(['ndnsec','cert-dump','-i',"
                 "'/example/llm-pipeline/controller'],stdout=f,check=True); "
                 "f.close(); "
-                "print('controller ready', flush=True); c.run()"
+                # Register DKEY, policy, permission, and certificate handlers
+                # before the repository/provider bootstrap processes are
+                # released.  Printing readiness before c.run() used to leave
+                # a startup race in which a provider's first DKEY Interest
+                # could be sent before the controller had installed filters.
+                "import time; t=c.start_background(); time.sleep(2.0); print('controller ready', flush=True); t.join()"
             ) + " " + perf.shell_quote(CONFIG)
             + " " + perf.shell_quote(GEN_POLICY)
             + " " + perf.shell_quote(OUT / "bootstrap-tokens.txt")
@@ -2141,7 +3005,148 @@ def main() -> int:
 
         repo_logs = []
         repo_user_bootstrap = None
-        if selection_bundle is not None:
+        if args.spec175_case:
+            if selection_bundle is None or not REPOSITORY_NODE:
+                raise RuntimeError("Spec175 Repo bootstrap configuration is missing")
+            token_file = OUT / "bootstrap-tokens.txt"
+            controller_cert = OUT / "controller.cert"
+            if not token_file.is_file() or not controller_cert.is_file():
+                raise RuntimeError(
+                    "controller did not publish Spec175 Repo bootstrap authority")
+            for env in node_env.values():
+                env["NDNSF_CONTROLLER_CERT_FILE"] = str(controller_cert)
+            repo_bootstrap = write_bootstrap_token(
+                token_file,
+                REPOSITORY_IDENTITY,
+                OUT / "spec175-repo-bootstrap.token",
+            )
+            repo_command = (
+                base
+                + perf.shell_quote(
+                    runtime_source_path(
+                        REPO / "specs/162-itiger-qwen36-generation/jobs/"
+                        "run-repo-node.py"))
+                + " --config " + perf.shell_quote(CONFIG)
+                + " --generated-policy-dir "
+                + perf.shell_quote(OUT / "generated/spec175-repo")
+                + " --provider-prefix "
+                + perf.shell_quote(REPOSITORY_IDENTITY)
+                + " --repo-node /NDNSF/DistributedRepo/Node/0"
+                + " --storage-dir "
+                + perf.shell_quote(OUT / "spec175-repo-store")
+                + " --state-root "
+                + perf.shell_quote(OUT / "spec175-repo-operator-state")
+                + " --test-only-allow-ephemeral-app-state"
+                + " --free-bytes " + str(shutil.disk_usage(OUT).free)
+                + " --bootstrap-token-file "
+                + perf.shell_quote(repo_bootstrap)
+            )
+            repo_proc, repo_log = start_process(
+                ndn, REPOSITORY_NODE, "spec175-repo", repo_command,
+                node_env[REPOSITORY_NODE], processes)
+            repo_logs.append(repo_log)
+
+            # Release the publisher while the repository is coming up rather
+            # than waiting for the repository marker first.  Both processes
+            # must acquire the controller's DKEY/permission state during the
+            # same startup window; serializing them made a publisher miss the
+            # initial DKEY response and block forever before it could publish
+            # the four stage artifacts.  The bounded publish ACK timeout
+            # still gates publication on actual repository readiness.
+            repo_user_bootstrap = write_bootstrap_token(
+                token_file, USER_IDENTITY,
+                OUT / "spec175-repo-user-bootstrap.token")
+            repo_registration = OUT / "spec175-repo-registration.json"
+            publish_command = (
+                base + perf.shell_quote(
+                    runtime_source_path(REPO / "Experiments/spec175_repo_bootstrap.py"))
+                + " publish --config " + perf.shell_quote(CONFIG)
+                + " --generated-policy-dir "
+                + perf.shell_quote(OUT / "generated/spec175-repo-publisher")
+                + " --state-root "
+                + perf.shell_quote(OUT / "spec175-repo-publisher-state")
+                + " --test-only-allow-ephemeral-app-state"
+                + " --user " + perf.shell_quote(USER_IDENTITY)
+                + " --bootstrap-token-file "
+                + perf.shell_quote(repo_user_bootstrap)
+                + " --registration " + perf.shell_quote(repo_registration)
+                + " --stage-manifest "
+                + perf.shell_quote(selection_bundle["repoStageManifest"])
+                + " --ack-timeout-ms "
+                + str(SPEC175_REPO_ACK_TIMEOUT_MS)
+            )
+            publisher_proc, publisher_log = start_process(
+                ndn, USER_NODE, "spec175-repo-publisher", publish_command,
+                node_env[USER_NODE], processes)
+            if not wait_log(
+                    repo_log, "SPEC162_REPO_NODE_STARTING",
+                    args.provider_start_timeout_s, repo_proc):
+                raise RuntimeError(
+                    f"Spec175 Repo node did not start; log={repo_log}")
+            publisher_proc.wait(timeout=max(60.0, args.provider_start_timeout_s))
+            publisher_text = publisher_log.read_text(errors="replace")
+            if (publisher_proc.returncode != 0 or
+                    "NDNSF_DI_SPEC175_REPO_PUBLISH_PASS" not in publisher_text):
+                raise RuntimeError(
+                    f"Spec175 Repo publication failed; log={publisher_log}")
+
+            # Start every Provider fetch before waiting for any one of them.
+            # Waiting inline here serialized certificate/permission discovery;
+            # the last Provider could miss the one-shot repository permission
+            # publication after the earlier fetches consumed the startup
+            # window and remain blocked on its decryption key.  The fetches
+            # are independent and their output is still collected in stage
+            # order below.
+            fetch_jobs = []
+            for stage_index, (node_name, identity) in enumerate(
+                    zip(STAGE_NODES, STAGE_IDENTITIES)):
+                role_index = provider_role_indices[stage_index]
+                role_name = f"/LLM/Pipeline/Stage/{role_index}"
+                provider_bootstrap = write_bootstrap_token(
+                    token_file, identity,
+                    OUT / f"spec175-repo-provider-{stage_index}.token")
+                destination = (
+                    OUT / f"spec175-provider-cache-{stage_index}"
+                    / f"role-{role_index}.onnx")
+                fetch_command = (
+                    base + perf.shell_quote(
+                        runtime_source_path(REPO / "Experiments/spec175_repo_bootstrap.py"))
+                    + " fetch --config " + perf.shell_quote(CONFIG)
+                    + " --generated-policy-dir "
+                    + perf.shell_quote(
+                        OUT / f"generated/spec175-repo-fetch-{stage_index}")
+                    + " --state-root "
+                    + perf.shell_quote(
+                        OUT / f"spec175-repo-fetch-state-{stage_index}")
+                    + " --test-only-allow-ephemeral-app-state"
+                    + " --user " + perf.shell_quote(identity)
+                    + " --bootstrap-token-file "
+                    + perf.shell_quote(provider_bootstrap)
+                    + " --registration " + perf.shell_quote(repo_registration)
+                    + " --role " + perf.shell_quote(role_name)
+                    + " --destination " + perf.shell_quote(destination)
+                    + " --ack-timeout-ms "
+                    + str(SPEC175_REPO_ACK_TIMEOUT_MS)
+                )
+                fetch_proc, fetch_log = start_process(
+                    ndn, node_name, f"spec175-repo-fetch-{stage_index}",
+                    fetch_command, node_env[node_name], processes)
+                fetch_jobs.append((stage_index, role_name, destination,
+                                   fetch_proc, fetch_log))
+
+            fetched_artifacts = []
+            for stage_index, role_name, destination, fetch_proc, fetch_log in fetch_jobs:
+                fetch_proc.wait(timeout=max(60.0, args.provider_start_timeout_s))
+                fetch_text = fetch_log.read_text(errors="replace")
+                if (fetch_proc.returncode != 0 or
+                        "NDNSF_DI_SPEC175_REPO_FETCH_PASS" not in fetch_text):
+                    raise RuntimeError(
+                        "Spec175 Repo Provider fetch failed: "
+                        f"role={role_name} log={fetch_log}")
+                fetched_artifacts.append(f"{role_name}={destination}")
+            selection_bundle["localArtifacts"] = tuple(fetched_artifacts)
+            selection_bundle["repoRegistration"] = str(repo_registration)
+        elif selection_bundle is not None and args.runtime != "tiny-onnx":
             token_file = OUT / "bootstrap-tokens.txt"
             controller_cert = OUT / "controller.cert"
             if not token_file.is_file() or not controller_cert.is_file():
@@ -2164,8 +3169,9 @@ def main() -> int:
                 repo_command = (
                     base
                     + perf.shell_quote(
-                        REPO / "specs/162-itiger-qwen36-generation/jobs/"
-                        "run-repo-node.py")
+                        runtime_source_path(
+                            REPO / "specs/162-itiger-qwen36-generation/jobs/"
+                            "run-repo-node.py"))
                     + " --config " + perf.shell_quote(CONFIG)
                     + " --generated-policy-dir "
                     + perf.shell_quote(OUT / f"generated/repo-{stage_index}")
@@ -2206,6 +3212,40 @@ def main() -> int:
 
         provider_logs = []
         for stage_index, (node_name, provider_id) in enumerate(zip(STAGE_NODES, STAGE_PROVIDER_IDS)):
+            role_index = provider_role_indices[stage_index]
+            provider_compute_delay_ms = (
+                5000.0
+                if args.spec175_case == "M08" and role_index == args.stages - 1
+                else args.compute_delay_ms
+            )
+            spec175_provider_fault_arg = (
+                " --spec175-fault-case " + perf.shell_quote(args.spec175_case)
+                if role_index == args.stages - 1 and args.spec175_case in {
+                    "M02", "M03", "M04", "M05", "M09"
+                }
+                else ""
+            )
+            spec175_m14_prefetch_args = ""
+            if args.spec175_case == "M14" and role_index == 0:
+                # Inject one shared-flight cancellation at Stage 0 only.  If
+                # every Provider is delayed, the four serial stages multiply
+                # the artificial gap and exhaust the stream retry budget.
+                # The other roles still execute the real host-tier path and
+                # are checked for their HOST_PAUSED markers below.
+                spec175_m14_prefetch_args = (
+                    " --spec175-prefetch-delay-ms 1000"
+                    " --spec175-m14-cancel-prefetch"
+                )
+            spec175_conversation_provider_args = (
+                " --spec175-fault-case " + perf.shell_quote(args.spec175_case)
+                + (" --spec175-host-tier-after-commit"
+                   if args.spec175_case in {"M12", "M14"} else "")
+                + (" --spec175-m13-restart-after-commit"
+                   if args.spec175_case == "M13" else "")
+                + spec175_m14_prefetch_args
+                if args.spec175_case in {"M11", "M12", "M13", "M14"}
+                else ""
+            )
             provider_id_arg = (
                 f" --provider-id {provider_id} "
                 if provider_id else
@@ -2229,56 +3269,71 @@ def main() -> int:
                 )
             selection_provider_args = ""
             if selection_bundle is not None:
-                device = (
-                    "cuda:0"
-                    if args.qwen_execution_provider == "cuda" else "cpu"
-                )
-                require_cuda = (
-                    " --require-cuda"
-                    if args.qwen_execution_provider == "cuda" else ""
-                )
-                required_mib = int(
-                    selection_bundle["requiredMiB"][stage_index])
-                selection_provider_args = (
-                    (" --lazy-qwen-load"
-                     if args.selection_dataflow_v2 else "")
-                    + f" --device {perf.shell_quote(device)}{require_cuda}"
-                    " --handler-workers 2"
-                    " --provider-identity "
-                    + perf.shell_quote(STAGE_IDENTITIES[stage_index])
-                    + (" --selection-dataflow-v2"
-                       if args.selection_dataflow_v2
-                       else " --selection-dataflow-v3")
-                    + " --selection-model-type "
-                    + perf.shell_quote(selection_bundle["modelType"])
-                    + f" --selection-gpu-capacity-mib {max(32760, required_mib)}"
-                    f" --selection-offered-gpu-mib {required_mib}"
-                    f" --selection-offer-lease-ms {args.selection_offer_lease_ms}"
-                    f" --selection-max-prepare-ms {args.selection_max_prepare_ms}"
-                    f" --selection-residency-ttl-ms {args.selection_cache_max_age_ms}"
-                    " --selection-wal-path "
-                    + perf.shell_quote(OUT / f"selection-{stage_index}.wal")
-                    + " --selection-storage-key-file "
-                    + perf.shell_quote(
-                        selection_bundle["storageKeys"][stage_index])
-                    + " --selection-signing-key-file "
-                    + perf.shell_quote(
-                        selection_bundle["offerKeys"][stage_index])
-                    + " --selection-residency-json "
-                    + perf.shell_quote(
-                        selection_bundle["residency"][stage_index])
-                    + " --selection-repo-registration "
-                    + perf.shell_quote(selection_bundle["repoRegistration"])
-                    + " --selection-model-cache-dir "
-                    + perf.shell_quote(
-                        OUT / f"provider-model-cache-{stage_index}")
-                    + " --selection-local-artifact "
-                    + perf.shell_quote(
-                        selection_bundle["localArtifacts"][stage_index])
-                    + " --repo-client-state-root "
-                    + perf.shell_quote(
-                        OUT / f"repo-client-state-{stage_index}")
-                )
+                if args.runtime == "tiny-onnx":
+                    selection_provider_args = (
+                        " --device cpu"
+                        " --handler-workers 2"
+                        " --provider-identity "
+                        + perf.shell_quote(STAGE_IDENTITIES[stage_index])
+                        + " --selection-dataflow-v3"
+                        + f" --selection-offer-lease-ms {args.selection_offer_lease_ms}"
+                        + f" --selection-max-prepare-ms {args.selection_max_prepare_ms}"
+                        + " --selection-signing-key-file "
+                        + perf.shell_quote(selection_bundle["offerKeys"][stage_index])
+                        + " --selection-local-artifact "
+                        # localArtifacts is ordered by physical Provider
+                        # process, whereas role_index is the M10-permuted
+                        # logical role.  Using role_index here cross-wires a
+                        # Provider with another role's ONNX file.
+                        + perf.shell_quote(selection_bundle["localArtifacts"][stage_index])
+                        + spec175_provider_fault_arg
+                        + spec175_conversation_provider_args
+                    )
+                else:
+                    device = (
+                        "cuda:0"
+                        if args.qwen_execution_provider == "cuda" else "cpu"
+                    )
+                    require_cuda = (
+                        " --require-cuda"
+                        if args.qwen_execution_provider == "cuda" else ""
+                    )
+                    required_mib = int(
+                        selection_bundle["requiredMiB"][stage_index])
+                    selection_provider_args = (
+                        (" --lazy-qwen-load"
+                         if args.selection_dataflow_v2 else "")
+                        + f" --device {perf.shell_quote(device)}{require_cuda}"
+                        " --handler-workers 2"
+                        " --provider-identity "
+                        + perf.shell_quote(STAGE_IDENTITIES[stage_index])
+                        + (" --selection-dataflow-v2"
+                           if args.selection_dataflow_v2
+                           else " --selection-dataflow-v3")
+                        + " --selection-model-type "
+                        + perf.shell_quote(selection_bundle["modelType"])
+                        + f" --selection-gpu-capacity-mib {max(32760, required_mib)}"
+                        f" --selection-offered-gpu-mib {required_mib}"
+                        f" --selection-offer-lease-ms {args.selection_offer_lease_ms}"
+                        f" --selection-max-prepare-ms {args.selection_max_prepare_ms}"
+                        f" --selection-residency-ttl-ms {args.selection_cache_max_age_ms}"
+                        " --selection-wal-path "
+                        + perf.shell_quote(OUT / f"selection-{stage_index}.wal")
+                        + " --selection-storage-key-file "
+                        + perf.shell_quote(selection_bundle["storageKeys"][stage_index])
+                        + " --selection-signing-key-file "
+                        + perf.shell_quote(selection_bundle["offerKeys"][stage_index])
+                        + " --selection-residency-json "
+                        + perf.shell_quote(selection_bundle["residency"][stage_index])
+                        + " --selection-repo-registration "
+                        + perf.shell_quote(selection_bundle["repoRegistration"])
+                        + " --selection-model-cache-dir "
+                        + perf.shell_quote(OUT / f"provider-model-cache-{stage_index}")
+                        + " --selection-local-artifact "
+                        + perf.shell_quote(selection_bundle["localArtifacts"][stage_index])
+                        + " --repo-client-state-root "
+                        + perf.shell_quote(OUT / f"repo-client-state-{stage_index}")
+                    )
             if args.runtime == "qwen-onnx-cpu-native":
                 if native_plan is None or native_manifest is None:
                     raise RuntimeError("native Qwen plan/manifest were not generated")
@@ -2299,9 +3354,9 @@ def main() -> int:
                     f"--fault-delay-ms 250 "
                     if use_fault_provider else "")
                 provider_command = (
-                    f"cd {perf.shell_quote(REPO)} && exec "
+                    f"cd {perf.shell_quote(runtime_source_path(REPO))} && exec "
                     f"{'setsid ' if args.spec107_live_fault_cell else ''}"
-                    f"{perf.shell_quote(provider_executable)} {fault_args}"
+                    f"{perf.shell_quote(runtime_source_path(provider_executable))} {fault_args}"
                     f"--plan {perf.shell_quote(native_plan)} "
                     f"--manifest {perf.shell_quote(native_manifest)} "
                     f"--service {perf.shell_quote(SERVICE)} "
@@ -2309,19 +3364,19 @@ def main() -> int:
                     f"--roles {perf.shell_quote(f'/LLM/Pipeline/Stage/{stage_index}')} "
                     f"--group {perf.shell_quote(GROUP_IDENTITY)} "
                     f"--controller {perf.shell_quote(CONTROLLER_IDENTITY)} "
-                    f"--trust-schema {perf.shell_quote(REPO / 'examples/trust-schema.conf')} "
+                    f"--trust-schema {perf.shell_quote(runtime_source_path(REPO / 'examples/trust-schema.conf'))} "
                     "--workers 1 --serve"
                 )
                 ready_marker = "NDNSF_DI_NATIVE_PROVIDER_SERVE_READY"
             else:
                 provider_command = (
-                    base + perf.shell_quote(LLM_DIR / "provider.py") + common +
+                    base + perf.shell_quote(runtime_source_path(LLM_DIR / "provider.py")) + common +
                     provider_id_arg +
-                    f"--roles /LLM/Pipeline/Stage/{stage_index} "
+                    f"--roles /LLM/Pipeline/Stage/{role_index} "
                     f"--runtime {args.runtime} "
                     f"--stages {args.stages} "
                     f"--transformer-layers {args.transformer_layers} "
-                    f"--compute-delay-ms {args.compute_delay_ms}" +
+                    f"--compute-delay-ms {provider_compute_delay_ms}" +
                     workflow_provider_args + selection_provider_args
                 )
                 ready_marker = "LLM_PIPELINE_PROVIDER_READY"
@@ -2372,7 +3427,10 @@ def main() -> int:
         durable_user_args = "--app-state-root {} {} {}".format(
             perf.shell_quote(args.app_state_root),
             ("--test-only-allow-ephemeral-app-state"
-             if args.test_only_allow_ephemeral_app_state else ""),
+             if (args.test_only_allow_ephemeral_app_state
+                 or (args.runtime == "tiny-onnx"
+                     and (args.selection_dataflow_v2
+                          or args.selection_dataflow_v3))) else ""),
             (
                 "--durable-app-submit --deployment-revision {}".format(
                     perf.shell_quote(args.deployment_revision))
@@ -2398,43 +3456,65 @@ def main() -> int:
             + perf.shell_quote(OUT / "qwen-pipeline-runtime.json")
             if selection_bundle is None else ""
         )
+        if args.runtime == "tiny-onnx":
+            qwen_summary_user_args = (
+                "--tiny-onnx-fixture-root "
+                + perf.shell_quote(args.tiny_onnx_fixture_root)
+            )
         selection_user_args = ""
         if selection_bundle is not None:
-            if repo_user_bootstrap is None:
+            if args.runtime != "tiny-onnx" and repo_user_bootstrap is None:
                 raise RuntimeError("Repo User bootstrap token is unavailable")
-            selection_user_args = (
-                " --automatic-planning-manifest "
-                + perf.shell_quote(selection_bundle["automaticPlanning"])
-                + " --selection-offer-key-map "
-                + perf.shell_quote(selection_bundle["offerKeyMap"])
-                + f" --selection-cache-max-age-ms {args.selection_cache_max_age_ms}"
-                + " --qwen-stage-manifest "
-                + perf.shell_quote(selection_bundle["stageManifest"])
-                + " --repo-registration-output "
-                + perf.shell_quote(selection_bundle["repoRegistration"])
-                + " --repo-user " + perf.shell_quote(USER_IDENTITY)
-                + " --repo-bootstrap-token-file "
-                + perf.shell_quote(repo_user_bootstrap)
-                + " --repo-object-prefix "
-                + perf.shell_quote(selection_bundle["repoObjectPrefix"])
-                + " --repo-generated-policy-dir "
-                + perf.shell_quote(OUT / "generated/repo-publisher")
-                + " --repo-state-root "
-                + perf.shell_quote(OUT / "repo-publisher-state")
-                + " --test-only-allow-ephemeral-app-state"
-                + " --repo-publisher-script "
-                + perf.shell_quote(
-                    REPO / "specs/162-itiger-qwen36-generation/jobs/"
-                    "register-qwen36-repo.py")
-                + " --request-id " + perf.shell_quote(args.request_id)
-                + " --app-envelope-key-file "
-                + perf.shell_quote(selection_bundle["envelopeKey"])
-                + (" --selection-dataflow-v3"
-                   if args.selection_dataflow_v3 else "")
-            )
-        user_proc = getPopen(
-            ndn.net[USER_NODE],
-            base + perf.shell_quote(LLM_DIR / "user.py") + common +
+            if args.runtime == "tiny-onnx":
+                selection_user_args = (
+                    " --automatic-planning-manifest "
+                    + perf.shell_quote(selection_bundle["automaticPlanning"])
+                    + " --selection-offer-key-map "
+                    + perf.shell_quote(selection_bundle["offerKeyMap"])
+                    + f" --selection-cache-max-age-ms {args.selection_cache_max_age_ms}"
+                    + " --request-id " + perf.shell_quote(args.request_id)
+                    + " --app-envelope-key-file "
+                    + perf.shell_quote(selection_bundle["envelopeKey"])
+                    + " --selection-dataflow-v3"
+                )
+            else:
+                selection_user_args = (
+                    " --automatic-planning-manifest "
+                    + perf.shell_quote(selection_bundle["automaticPlanning"])
+                    + " --selection-offer-key-map "
+                    + perf.shell_quote(selection_bundle["offerKeyMap"])
+                    + f" --selection-cache-max-age-ms {args.selection_cache_max_age_ms}"
+                    + " --qwen-stage-manifest "
+                    + perf.shell_quote(selection_bundle["stageManifest"])
+                    + " --repo-registration-output "
+                    + perf.shell_quote(selection_bundle["repoRegistration"])
+                    + " --repo-user " + perf.shell_quote(USER_IDENTITY)
+                    + " --repo-bootstrap-token-file "
+                    + perf.shell_quote(repo_user_bootstrap)
+                    + " --repo-object-prefix "
+                    + perf.shell_quote(selection_bundle["repoObjectPrefix"])
+                    + " --repo-generated-policy-dir "
+                    + perf.shell_quote(OUT / "generated/repo-publisher")
+                    + " --repo-state-root "
+                    + perf.shell_quote(OUT / "repo-publisher-state")
+                    + " --test-only-allow-ephemeral-app-state"
+                    + " --repo-publisher-script "
+                    + perf.shell_quote(
+                        runtime_source_path(
+                            REPO / "specs/162-itiger-qwen36-generation/jobs/"
+                            "register-qwen36-repo.py"))
+                    + " --request-id " + perf.shell_quote(args.request_id)
+                    + " --app-envelope-key-file "
+                    + perf.shell_quote(selection_bundle["envelopeKey"])
+                    + (" --selection-dataflow-v3"
+                       if args.selection_dataflow_v3 else "")
+                )
+        spec175_user_args = (
+            " --spec175-fault-case " + perf.shell_quote(args.spec175_case)
+            if args.spec175_case else ""
+        )
+        user_command = (
+            base + perf.shell_quote(runtime_source_path(LLM_DIR / "user.py")) + common +
             " --prompt {} --stages {} --compute-delay-ms {} "
             "--runtime {} --transformer-layers {} "
             "{} "
@@ -2445,7 +3525,7 @@ def main() -> int:
             "--native-first-kv-mode {} "
             "--expected-token-ids {} "
             "--measured-duration-s {} --request-interval-ms {} --campaign-id {} "
-            "--metrics-csv {} {} {} {} {} {} {} {}".format(
+            "--metrics-csv {} {} {} {} {} {} {} {} {}".format(
                 perf.shell_quote(args.prompt),
                 args.stages,
                 args.compute_delay_ms,
@@ -2482,7 +3562,16 @@ def main() -> int:
                 durable_user_args,
                 workflow_user_args,
                 selection_user_args,
-            ),
+                spec175_user_args,
+            )
+        )
+        if sif_runtime_enabled() and "apptainer exec" not in user_command:
+            raise RuntimeError(
+                "SPEC175_SIF_HOST_PROCESS_FALLBACK: user command does not "
+                "use the exact SIF command provider")
+        user_proc = getPopen(
+            ndn.net[USER_NODE],
+            user_command,
             envDict=node_env[USER_NODE],
             shell=True,
             stdout=user_out,
@@ -2540,29 +3629,49 @@ def main() -> int:
         ))
         user_text = user_log.read_text(errors="replace")
         print(user_text)
-        expected_user_marker = (
-            "LLM_PIPELINE_GENERATION_CAMPAIGN_PASS"
-            if args.generation_campaign_manifest else
-            "LLM_PIPELINE_OPEN_LOOP_SUMMARY"
-            if args.runtime == "qwen-onnx-cpu-native" and args.measured_duration_s > 0 else
-            "LLM_PIPELINE_USER_RESPONSE"
-        )
+        spec175_expected_terminal_cases = {"M05", "M06", "M07", "M08", "M09"}
+        spec175_conversation_cases = {"M11", "M12", "M13", "M14"}
+        if args.spec175_case in spec175_expected_terminal_cases:
+            expected_user_marker = "LLM_PIPELINE_SPEC175_EXPECTED_TERMINAL"
+        elif args.spec175_case in spec175_conversation_cases:
+            # Conversation cases have their own evidence marker.  They run
+            # through the real streaming path, but intentionally do not emit
+            # the legacy single-request USER_RESPONSE marker.
+            expected_user_marker = "LLM_PIPELINE_SPEC175_CONVERSATION_PASS"
+        else:
+            expected_user_marker = (
+                "LLM_PIPELINE_GENERATION_CAMPAIGN_PASS"
+                if args.generation_campaign_manifest else
+                "LLM_PIPELINE_OPEN_LOOP_SUMMARY"
+                if args.runtime == "qwen-onnx-cpu-native" and args.measured_duration_s > 0 else
+                "LLM_PIPELINE_USER_RESPONSE"
+            )
         if expected_user_marker not in user_text:
             raise RuntimeError(f"LLM pipeline user failed; log={user_log}")
         if (workflow_bundle is not None and
                 "LLM_PIPELINE_DEPLOYMENT_WORKFLOW_PASS" not in user_text):
             raise RuntimeError(
                 f"Spec 111 deployment workflow did not finish; log={user_log}")
+        expected_terminal_case = (
+            args.spec175_case in spec175_expected_terminal_cases)
         user_failed = user_proc.returncode != 0
-        for stage_index, log_path in enumerate(provider_logs):
-            text = log_path.read_text(errors="replace")
-            full_generation = (
-                args.generation_campaign_manifest and
-                "LLM_PIPELINE_QWEN_FULL_STAGE_START" in text
-            )
+        provider_texts = [
+            log_path.read_text(errors="replace") for log_path in provider_logs
+        ]
+        for stage_index, (log_path, text) in enumerate(
+                zip(provider_logs, provider_texts)):
+            role_index = provider_role_indices[stage_index]
+            if args.spec175_case in spec175_expected_terminal_cases:
+                continue
+            # The stage-start marker is the authoritative runtime signal.  The
+            # tiny Spec175 fixture intentionally has no Qwen generation
+            # campaign manifest, but it exercises the same full-generation
+            # state machine and therefore must use STOP_PUBLISHED/
+            # FULL_GENERATION_FINAL rather than the legacy stage-output marker.
+            full_generation = uses_full_generation_stage_markers(text)
             expected = expected_stage_completion_marker(
                 args.runtime,
-                stage_index=stage_index,
+                stage_index=role_index,
                 stages=args.stages,
                 full_generation=full_generation,
             )
@@ -2596,6 +3705,78 @@ def main() -> int:
                     "real-model gate did not select every provider role: "
                     f"expected={sorted(expected_roles)} observed={sorted(selected_roles)}"
                 )
+
+        spec175_assignment_map: dict[str, str] = {}
+        spec175_fault_marker_count = 0
+        if args.spec175_case:
+            assignment_matches = re.findall(
+                r"NDNSF_COLLAB_ASSIGNMENT_SELECTED .*?providerName=([^\s]+)"
+                r".*?role=(/LLM/Pipeline/Stage/\d+)",
+                user_text,
+            )
+            for provider_name, role_name in assignment_matches:
+                if (role_name in spec175_assignment_map and
+                        spec175_assignment_map[role_name] != provider_name):
+                    raise RuntimeError(
+                        "Spec175 role selected more than one Provider: "
+                        f"role={role_name} providers="
+                        f"{spec175_assignment_map[role_name]},{provider_name}")
+                spec175_assignment_map[role_name] = provider_name
+            expected_assignment_map = {
+                f"/LLM/Pipeline/Stage/{role_index}": STAGE_IDENTITIES[stage_index]
+                for stage_index, role_index in enumerate(provider_role_indices)
+            }
+            if spec175_assignment_map != expected_assignment_map:
+                raise RuntimeError(
+                    "Spec175 ACK-driven assignment map mismatch: "
+                    f"expected={expected_assignment_map} "
+                    f"observed={spec175_assignment_map}")
+
+            spec175_fault_marker_count = sum(
+                text.count(
+                    f"NDNSF_DI_SPEC175_FAULT_INJECTED case={args.spec175_case}")
+                for text in provider_texts
+            )
+            if (args.spec175_case in {"M02", "M03", "M04", "M05", "M09"}
+                    and spec175_fault_marker_count < 1):
+                raise RuntimeError(
+                    "Spec175 registered fault was not observed: "
+                    f"case={args.spec175_case}")
+            if args.spec175_case == "M13":
+                restart_markers = sum(
+                    text.count("LLM_PIPELINE_SPEC175_M13_PROVIDER_RESTARTED")
+                    for text in provider_texts)
+                if restart_markers != args.stages:
+                    raise RuntimeError(
+                        "M13 Provider restart control was not observed for "
+                        f"every role: expected={args.stages} observed={restart_markers}")
+            if args.spec175_case == "M14":
+                cancelled_prefetch_markers = sum(
+                    text.count("LLM_PIPELINE_SPEC175_M14_PREFETCH_CANCELLED")
+                    for text in provider_texts)
+                host_pause_markers = sum(
+                    text.count("LLM_PIPELINE_CONVERSATION_HOST_PAUSED")
+                    for text in provider_texts)
+                if cancelled_prefetch_markers < 1 or host_pause_markers < args.stages:
+                    raise RuntimeError(
+                        "M14 Provider prefetch control was not observed: "
+                        f"cancelled={cancelled_prefetch_markers} "
+                        f"hostPause={host_pause_markers}")
+            terminal_case_match = re.search(
+                r"LLM_PIPELINE_SPEC175_EXPECTED_TERMINAL .*?case=([^\s]+)",
+                user_text,
+            )
+            if args.spec175_case in (
+                    spec175_expected_terminal_cases | {"M13", "M14"}):
+                if (terminal_case_match is None or
+                        terminal_case_match.group(1) != args.spec175_case):
+                    raise RuntimeError(
+                        "Spec175 terminal oracle did not identify the active case: "
+                        f"case={args.spec175_case}")
+            elif terminal_case_match is not None:
+                raise RuntimeError(
+                    "Spec175 healthy/recovery case unexpectedly used terminal oracle: "
+                    f"case={args.spec175_case}")
 
         summary_match = re.search(
             r"LLM_PIPELINE_USER_SUMMARY .*?count=([0-9]+).*?local_ms=([0-9.]+)"
@@ -2668,13 +3849,124 @@ def main() -> int:
             (OUT / "spec107-live-fault-control.json").write_text(
                 json.dumps(fault_control, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8")
-        if user_failed:
+        if user_failed and not expected_terminal_case:
             print(
                 "LLM_PIPELINE_MININDN_FAILED "
                 f"returncode={user_proc.returncode} stages={args.stages} "
                 f"runtime={args.runtime} user_log={user_log}"
             )
             return int(user_proc.returncode or 2)
+        if user_failed and expected_terminal_case:
+            # Expected-terminal cases use a deliberate application exit (for
+            # example M06/M07).  A signal is never an expected result: retain
+            # the fail-closed behavior so a native crash cannot be recorded as
+            # a passing negative case.
+            if user_proc.returncode < 0:
+                print(
+                    "LLM_PIPELINE_MININDN_UNEXPECTED_SIGNAL_EXIT "
+                    f"case={args.spec175_case} signal={-user_proc.returncode}"
+                )
+                return 128 + (-int(user_proc.returncode))
+            # M06 intentionally raises from the user callback after emitting
+            # its expected terminal marker.  The non-zero return code is part
+            # of that fault contract; retain it in case-result evidence rather
+            # than treating the expected negative test as a harness failure.
+            print(
+                "LLM_PIPELINE_MININDN_EXPECTED_TERMINAL_EXIT "
+                f"case={args.spec175_case} returncode={user_proc.returncode}"
+            )
+        if args.spec175_case:
+            def evidence_row(path: Path) -> dict[str, object]:
+                return {
+                    "path": path.name,
+                    "bytes": path.stat().st_size,
+                    "sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
+                }
+
+            provider_timing_path = write_spec175_provider_timing(
+                provider_logs,
+                OUT,
+                required_roles=tuple(
+                    f"/LLM/Pipeline/Stage/{index}"
+                    for index in range(args.stages)),
+                allow_expected_incomplete=(
+                    args.spec175_case in (
+                        spec175_expected_terminal_cases | {"M14"})),
+            )
+            spec175_evidence_paths = [
+                user_log,
+                *provider_logs,
+                *repo_logs,
+                OUT / "spec175-repo-registration.json",
+                *sorted(OUT.glob("spec175-repo-*.log")),
+                provider_timing_path,
+            ]
+            conversation_evidence_path = OUT / "spec175-conversation-evidence.json"
+            conversation_evidence = None
+            if conversation_evidence_path.is_file():
+                conversation_evidence = json.loads(
+                    conversation_evidence_path.read_text(encoding="utf-8"))
+                if args.spec175_case == "M12":
+                    provider_text = "\n".join(
+                        path.read_text(errors="replace") for path in provider_logs)
+                    host_pause_markers = provider_text.count(
+                        "LLM_PIPELINE_CONVERSATION_HOST_PAUSED")
+                    prefetch_markers = provider_text.count(
+                        "LLM_PIPELINE_CONVERSATION_PREFETCHED")
+                    if (host_pause_markers != 24 or prefetch_markers != 12):
+                        raise RuntimeError(
+                            "M12 Provider host-tier marker count mismatch: "
+                            f"pause={host_pause_markers} prefetch={prefetch_markers}")
+                    conversation_evidence["providerHostPauseMarkers"] = host_pause_markers
+                    conversation_evidence["providerPrefetchMarkers"] = prefetch_markers
+                spec175_evidence_paths.append(conversation_evidence_path)
+            spec175_evidence_paths = list(dict.fromkeys(spec175_evidence_paths))
+            spec175_result = {
+                "schema": "ndnsf-di-spec175-minindn-case-result-v1",
+                "status": "PASS",
+                "case": args.spec175_case,
+                "seed": int(args.seed),
+                "campaignId": args.campaign_id,
+                "requestId": args.request_id,
+                "runtime": args.runtime,
+                "providerCount": args.stages,
+                "admissionControl": False,
+                "topology": {
+                    "path": str(Path(args.topology_file).resolve()),
+                    "sha256": "sha256:" + hashlib.sha256(
+                        Path(args.topology_file).read_bytes()).hexdigest(),
+                    "controllerNode": CONTROLLER_NODE,
+                    "repositoryNode": REPOSITORY_NODE,
+                    "userNode": USER_NODE,
+                    "routerNode": ROUTER_NODE,
+                    "providerNodes": list(STAGE_NODES),
+                    "accessLinkMbit": 100,
+                    "oneWayDelayMs": 10,
+                    "queuePackets": 1000,
+                    "baselineLossPercent": 0,
+                },
+                "expectedTerminal": (
+                    args.spec175_case in spec175_expected_terminal_cases),
+                "providerRoleIndices": list(provider_role_indices),
+                "assignmentByRole": spec175_assignment_map,
+                "faultMarkerCount": spec175_fault_marker_count,
+                "providerTiming": json.loads(
+                    provider_timing_path.read_text(encoding="utf-8")),
+                **({"conversationEvidence": conversation_evidence}
+                   if args.spec175_case in {"M11", "M12", "M13", "M14"}
+                   else {}),
+                "userReturnCode": int(user_proc.returncode or 0),
+                "artifacts": [evidence_row(path)
+                              for path in spec175_evidence_paths],
+            }
+            spec175_result_path = OUT / "spec175-case-result.json"
+            spec175_result_path.write_text(
+                json.dumps(spec175_result, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            print(
+                "NDNSF_DI_SPEC175_CASE_PASS "
+                f"case={args.spec175_case} result={spec175_result_path}")
         if args.spec168_source_digest:
             security_logs = [user_text]
             security_logs.extend(

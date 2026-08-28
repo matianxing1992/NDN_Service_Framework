@@ -167,6 +167,12 @@ Manual C++-only installation is still possible:
 sudo ./waf install
 ```
 
+Host builds require the compiler and binutils to come from one explicit
+toolchain root (default: `/usr/bin`). This prevents a Linuxbrew `ld`, `ar`, or
+related tool earlier in `PATH` from being combined with system GTK/UAV
+libraries. For an intentional alternate toolchain, set `CXX` explicitly and
+pass its common root with `--toolchain-root`; do not mix roots.
+
 For an 8 GB development VM, keep 4 GB of swap available as an OOM safety net
 (increase a 2 GB swap allocation to 4 GB), and use `./waf build -j2` for routine
 builds. Reduce large dependency builds or memory-heavy link steps to
@@ -454,6 +460,13 @@ inserted, the provider replies immediately. This is a transport optimization
 for large-data references, repo objects, and distributed-inference activation
 objects. It does not change the Request/ACK/Selection/Response protocol, Data
 names, signatures, encryption, or application callbacks.
+
+Generic exact-name large-data retrieval uses one shared 30-second request
+budget by default (`NDNSF_REQUEST_LARGE_FETCH_TIMEOUT_MS`). The budget covers
+the segmented transport attempt, the legacy NAC-ABE fallback, and message-key
+decryption; a missing object therefore cannot consume one full timeout for
+each path. Lower this value for bounded negative tests or raise it explicitly
+for a deployment with a longer cold transfer.
 
 Provider collaboration large-data fetches default to a 30-second Interest
 lifetime (`NDNSF_COLLAB_LARGE_INTEREST_LIFETIME_MS`). This is intentionally

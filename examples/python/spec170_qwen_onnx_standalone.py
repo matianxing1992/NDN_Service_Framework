@@ -15,6 +15,7 @@ import hashlib
 import json
 from pathlib import Path
 import time
+from typing import Any
 
 
 def sha256_file(path: Path) -> str:
@@ -30,6 +31,10 @@ def main() -> int:
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--artifact-root", required=True)
     parser.add_argument("--model", required=True)
+    parser.add_argument(
+        "--tokenizer-dir", default="",
+        help="standalone tokenizer directory; defaults to --model",
+    )
     parser.add_argument("--device", choices=("cpu", "cuda:0"), default="cpu")
     parser.add_argument("--prompt", default="Explain NDNSF in one sentence.")
     parser.add_argument("--max-new-tokens", type=int, default=2)
@@ -40,7 +45,7 @@ def main() -> int:
 
     import numpy as np  # type: ignore
     import onnxruntime as ort  # type: ignore
-    from transformers import AutoTokenizer  # type: ignore
+    from tokenizers import Tokenizer  # type: ignore
 
     manifest_path = Path(args.manifest).resolve()
     artifact_root = Path(args.artifact_root).resolve()
@@ -89,9 +94,31 @@ def main() -> int:
                 f"QWEN_PROVIDER_NOT_SELECTED role={stage['role']} active={active}")
         sessions.append((stage, session))
 
-    tokenizer = AutoTokenizer.from_pretrained(
-        args.model, local_files_only=True, trust_remote_code=True)
-    prompt_ids = tokenizer(args.prompt, return_tensors="np")["input_ids"].astype(np.int64)
+    tokenizer_root = Path(args.tokenizer_dir or args.model)
+    tokenizer_path = tokenizer_root / "tokenizer.json"
+    if not tokenizer_path.is_file():
+        raise RuntimeError(
+            "Qwen ONNX runner requires standalone tokenizer.json: "
+            f"{tokenizer_path}")
+    tokenizer = Tokenizer.from_file(str(tokenizer_path))
+    encoded_prompt = tokenizer.encode(args.prompt)
+    prompt_ids = np.asarray([encoded_prompt.ids], dtype=np.int64)
+
+    def tensor_dtype(contract: dict) -> Any:
+        # ONNX TensorProto: FLOAT=1, FLOAT16=10, BFLOAT16=16.
+        element_type = int(contract.get("elementType", 1))
+        if element_type == 10:
+            return np.float16
+        if element_type == 16:
+            # NumPy has no native bfloat16.  A deployed graph using BF16 must
+            # be converted to a CUDA-supported input contract before this
+            # runner is admitted; silently sending float32 would hide a
+            # model/artifact mismatch.
+            raise RuntimeError("QWEN_BFLOAT16_INPUT_REQUIRES_EXPLICIT_PACKING")
+        if element_type == 1:
+            return np.float32
+        raise RuntimeError(
+            f"QWEN_UNSUPPORTED_CACHE_INPUT_ELEMENT_TYPE:{element_type}")
 
     def decode_once() -> tuple[list[int], list[float]]:
         generated: list[int] = []
@@ -127,9 +154,14 @@ def main() -> int:
                         shape = stage["tensorContracts"][name]["shape"]
                         value = np.empty(
                             (current_ids.shape[0], int(shape[1]), 0, int(shape[3])),
-                            dtype=np.float32,
+                            dtype=tensor_dtype(stage["tensorContracts"][name]),
                         )
                     feed[name] = value
+                if "hidden_states" in feed:
+                    hidden_contract = stage["tensorContracts"].get(
+                        "hidden_states", {})
+                    feed["hidden_states"] = feed["hidden_states"].astype(
+                        tensor_dtype(hidden_contract), copy=False)
                 names = [item.name for item in session.get_outputs()]
                 values = session.run(None, feed)
                 outputs = dict(zip(names, values))

@@ -8,7 +8,8 @@ import json
 from pathlib import Path
 from pathlib import PurePosixPath
 import re
-from typing import Any, Mapping
+import time
+from typing import Any, Iterable, Mapping
 
 from .core.contracts import InvocationSummaryV1
 
@@ -235,6 +236,229 @@ def write_minindn_runtime_v1_evidence(*,
     }
     write_json(summary_path, evidence)
     return evidence
+
+
+# Spec 175 streamed-generation evidence is deliberately a small, independent
+# contract.  It records lifecycle/timing lineage without becoming a second
+# runtime journal or carrying application/model plaintext.
+SPEC175_STREAM_EVIDENCE_SCHEMA = "ndnsf-di-spec175-stream-evidence-v1"
+SPEC175_STREAM_EVENT_TYPES = frozenset({
+    "REQUEST_CREATED",
+    "ACK_CLOSED",
+    "PLAN_COMMITTED",
+    "SELECTION_ACCEPTED",
+    "PREPARATION",
+    "PREFILL",
+    "DECODE_EPOCH",
+    "INTERNAL_FEEDBACK_PUBLISHED",
+    "INTERNAL_FEEDBACK_FETCHED",
+    "EXTERNAL_EVENT_PUBLISHED",
+    "EXTERNAL_EVENT_FETCHED",
+    "EXTERNAL_EVENT_DELIVERED",
+    "END",
+    "RESPONSE",
+    "CANCELLED",
+    "RETRY",
+    "BACKPRESSURE",
+})
+_SPEC175_ROLE_EVENTS = frozenset({
+    "PREPARATION",
+    "PREFILL",
+    "DECODE_EPOCH",
+    "INTERNAL_FEEDBACK_PUBLISHED",
+    "INTERNAL_FEEDBACK_FETCHED",
+})
+_SPEC175_EXTERNAL_EVENTS = frozenset({
+    "EXTERNAL_EVENT_PUBLISHED",
+    "EXTERNAL_EVENT_FETCHED",
+    "EXTERNAL_EVENT_DELIVERED",
+})
+
+
+def validate_spec175_stream_evidence(
+    records: Iterable[Mapping[str, object]],
+    *,
+    request_id: str,
+    expected_event_types: Iterable[str] | None = None,
+    generation_id: str | None = None,
+) -> dict[str, object]:
+    """Validate bounded Spec 175 lifecycle/timing evidence.
+
+    The validator is intentionally independent from transport and model code.
+    Every record is request/attempt/generation bound, sequence and timestamp
+    monotonic, and restricted to metadata/digests.  Callers may provide the
+    exact expected event sequence to make missing, extra, or reordered spans a
+    hard failure rather than silently accepting a partial trace.
+    """
+
+    if not isinstance(request_id, str) or not request_id:
+        raise ValueError("SPEC175_EVIDENCE_REQUEST_ID_INVALID")
+    rows = list(records)
+    if not rows:
+        raise ValueError("SPEC175_EVIDENCE_EMPTY")
+    expected = None if expected_event_types is None else tuple(
+        str(item) for item in expected_event_types)
+    previous_timestamp = -1
+    previous_attempt = None
+    observed_types: list[str] = []
+    observed_generation = generation_id
+    for index, record in enumerate(rows, start=1):
+        if not isinstance(record, Mapping):
+            raise ValueError("SPEC175_EVIDENCE_RECORD_INVALID")
+        _reject_forbidden_evidence_fields(record)
+        if record.get("schema") != SPEC175_STREAM_EVIDENCE_SCHEMA:
+            raise ValueError("SPEC175_EVIDENCE_SCHEMA_INVALID")
+        if record.get("requestId") != request_id:
+            raise ValueError("SPEC175_EVIDENCE_REQUEST_MISMATCH")
+        sequence = record.get("sequence")
+        if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence != index:
+            raise ValueError("SPEC175_EVIDENCE_SEQUENCE_INVALID")
+        event_type = record.get("eventType")
+        if not isinstance(event_type, str) or event_type not in SPEC175_STREAM_EVENT_TYPES:
+            raise ValueError("SPEC175_EVIDENCE_EVENT_TYPE_INVALID")
+        observed_types.append(event_type)
+        timestamp = record.get("timestampUs")
+        if isinstance(timestamp, bool) or not isinstance(timestamp, int) or timestamp < 0:
+            raise ValueError("SPEC175_EVIDENCE_TIMESTAMP_INVALID")
+        if timestamp < previous_timestamp:
+            raise ValueError("SPEC175_EVIDENCE_TIMESTAMP_REORDERED")
+        previous_timestamp = timestamp
+        attempt = record.get("attemptEpoch")
+        if (isinstance(attempt, bool) or not isinstance(attempt, int)
+                or attempt < 1 or attempt > 2):
+            raise ValueError("SPEC175_EVIDENCE_ATTEMPT_INVALID")
+        if previous_attempt is not None and attempt < previous_attempt:
+            raise ValueError("SPEC175_EVIDENCE_ATTEMPT_REORDERED")
+        previous_attempt = attempt
+        current_generation = record.get("generationId")
+        if not isinstance(current_generation, str) or not current_generation:
+            raise ValueError("SPEC175_EVIDENCE_GENERATION_INVALID")
+        if observed_generation is None:
+            observed_generation = current_generation
+        elif current_generation != observed_generation:
+            raise ValueError("SPEC175_EVIDENCE_GENERATION_MISMATCH")
+        if event_type in _SPEC175_ROLE_EVENTS | _SPEC175_EXTERNAL_EVENTS:
+            for key in ("providerIdentity", "roleName"):
+                value = record.get(key)
+                if not isinstance(value, str) or not value:
+                    raise ValueError(f"SPEC175_EVIDENCE_ATTRIBUTION_MISSING:{key}")
+        duration = record.get("durationUs")
+        if duration is not None and (
+            isinstance(duration, bool) or not isinstance(duration, int) or duration < 0
+        ):
+            raise ValueError("SPEC175_EVIDENCE_DURATION_INVALID")
+    if expected is not None and tuple(observed_types) != expected:
+        raise ValueError("SPEC175_EVIDENCE_EVENT_SEQUENCE_MISMATCH")
+    return {
+        "schema": SPEC175_STREAM_EVIDENCE_SCHEMA,
+        "requestId": request_id,
+        "generationId": observed_generation,
+        "eventCount": len(rows),
+        "eventTypes": tuple(observed_types),
+        "startTimestampUs": rows[0]["timestampUs"],
+        "endTimestampUs": rows[-1]["timestampUs"],
+        "decodeEpochCount": observed_types.count("DECODE_EPOCH"),
+    }
+
+
+class Spec175StreamEvidenceRecorder:
+    """Bounded metadata-only recorder for one streamed invocation.
+
+    The recorder is intentionally transport-neutral: an adapter or workload
+    can emit lifecycle and timing spans without exposing prompt, response,
+    token, logits, or state tensors.  ``close`` is the only promotion-facing
+    operation and validates the complete sequence before optionally writing
+    JSONL evidence.
+    """
+
+    def __init__(
+        self,
+        request_id: str,
+        generation_id: str,
+        *,
+        attempt_epoch: int = 1,
+        output_path: str | Path | None = None,
+        max_records: int = 4096,
+    ) -> None:
+        if not request_id or not generation_id:
+            raise ValueError("SPEC175_EVIDENCE_BINDING_INVALID")
+        if (isinstance(attempt_epoch, bool) or attempt_epoch < 1
+                or attempt_epoch > 2):
+            raise ValueError("SPEC175_EVIDENCE_ATTEMPT_INVALID")
+        if isinstance(max_records, bool) or max_records < 1 or max_records > 4096:
+            raise ValueError("SPEC175_EVIDENCE_RECORD_BOUND_INVALID")
+        self.request_id = str(request_id)
+        self.generation_id = str(generation_id)
+        self.attempt_epoch = int(attempt_epoch)
+        self.output_path = Path(output_path) if output_path is not None else None
+        self.max_records = int(max_records)
+        self._records: list[dict[str, object]] = []
+        self._closed = False
+
+    @property
+    def records(self) -> tuple[dict[str, object], ...]:
+        return tuple(self._records)
+
+    def append(
+        self,
+        event_type: str,
+        *,
+        timestamp_us: int | None = None,
+        provider_identity: str | None = None,
+        role_name: str | None = None,
+        duration_us: int | None = None,
+        **metadata: object,
+    ) -> dict[str, object]:
+        if self._closed:
+            raise RuntimeError("SPEC175_EVIDENCE_ALREADY_CLOSED")
+        if len(self._records) >= self.max_records:
+            raise ValueError("SPEC175_EVIDENCE_RECORD_BOUND_EXCEEDED")
+        record: dict[str, object] = {
+            "schema": SPEC175_STREAM_EVIDENCE_SCHEMA,
+            "requestId": self.request_id,
+            "generationId": self.generation_id,
+            "attemptEpoch": self.attempt_epoch,
+            "sequence": len(self._records) + 1,
+            "eventType": str(event_type),
+            "timestampUs": (
+                int(timestamp_us) if timestamp_us is not None
+                else time.monotonic_ns() // 1000
+            ),
+        }
+        if provider_identity is not None:
+            record["providerIdentity"] = str(provider_identity)
+        if role_name is not None:
+            record["roleName"] = str(role_name)
+        if duration_us is not None:
+            record["durationUs"] = int(duration_us)
+        record.update(metadata)
+        _reject_forbidden_evidence_fields(record)
+        # Validate the prefix immediately so an invalid span cannot enter the
+        # recorder and later be mistaken for an accepted trace.
+        validate_spec175_stream_evidence(
+            [*self._records, record], request_id=self.request_id,
+            generation_id=self.generation_id)
+        self._records.append(record)
+        return dict(record)
+
+    def close(self, *, expected_event_types: Iterable[str] | None = None) -> dict[str, object]:
+        if self._closed:
+            raise RuntimeError("SPEC175_EVIDENCE_ALREADY_CLOSED")
+        summary = validate_spec175_stream_evidence(
+            self._records,
+            request_id=self.request_id,
+            expected_event_types=expected_event_types,
+            generation_id=self.generation_id,
+        )
+        if self.output_path is not None:
+            self.output_path.parent.mkdir(parents=True, exist_ok=True)
+            self.output_path.write_text(
+                "".join(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n"
+                        for row in self._records),
+                encoding="utf-8",
+            )
+        self._closed = True
+        return summary
 
 
 # Spec 107 evidence contracts are kept here because this module already owns

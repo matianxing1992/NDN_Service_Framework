@@ -198,6 +198,7 @@ class RuntimeJournal:
         if not identity or identity in {".", ".."} or "/" in identity or "\\" in identity:
             raise ValueError("invalid journal identity namespace")
         root = Path(state_root)
+        self.identity = identity
         if (_is_volatile_state_root(root) and
                 not test_only_allow_ephemeral_state_root):
             raise RuntimeJournalUnsafeRootError(
@@ -286,6 +287,31 @@ class RuntimeJournal:
     @property
     def has_envelope_key(self) -> bool:
         return self._key_ring is not None
+
+    def authentication_key_ring(self, purpose: str) -> tuple[bytes, ...]:
+        """Derive domain-separated authentication keys without reusing AES keys.
+
+        The active request-envelope key produces the first key and retained
+        previous keys follow in verification order.  Callers can therefore
+        authenticate new local state with the active owner key while still
+        verifying state written before a bounded key rotation.  Raw envelope
+        keys are never returned.
+        """
+        if (not purpose or len(purpose) > 128
+                or any(ord(char) < 0x21 or ord(char) > 0x7e
+                       for char in purpose)):
+            raise RuntimeJournalKeyError(
+                "authentication key purpose must be visible ASCII")
+        context = (
+            b"ndnsf-di-runtime-authentication-subkey-v1\x00"
+            + purpose.encode("ascii")
+            + b"\x00"
+            + self.identity.encode("utf-8")
+        )
+        return tuple(
+            hmac.new(item.key_bytes, context, hashlib.sha256).digest()
+            for item in self._required_key_ring().keys
+        )
 
     def append(self, kind: str, payload: dict[str, Any]) -> dict[str, Any]:
         return self.append_many(((kind, payload),))[0]

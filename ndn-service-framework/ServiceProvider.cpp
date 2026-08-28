@@ -10,6 +10,7 @@
 #include <ctime>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <random>
 #include <sstream>
@@ -33,6 +34,24 @@ namespace ndn_service_framework
 
     namespace
     {
+        // Keep NAC-ABE startup retries bounded even when an unresolved DKEY
+        // SegmentFetcher leaves Face::processEvents running past its nominal
+        // timeout.  Non-blocking pumps still dispatch certificate/DKEY
+        // callbacks and let the outer loop re-express the Interest.
+        void
+        pumpFaceFor(ndn::Face& face, std::chrono::milliseconds duration)
+        {
+            const auto deadline = std::chrono::steady_clock::now() + duration;
+            do {
+                face.processEvents(ndn::time::milliseconds(-1));
+                if (std::chrono::steady_clock::now() >= deadline) {
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            while (true);
+        }
+
         void
         configureSvsProtocol(ndn::svs::SVSPubSubOptions& options)
         {
@@ -1287,7 +1306,10 @@ namespace ndn_service_framework
         nacConsumer(m_face, m_keyChain, nac_validator, encryptionCert, attrAuthorityCertificate),
         nacProducer(m_face, m_keyChain, nac_validator, encryptionCert, attrAuthorityCertificate),
         random(ndn::random::getRandomNumberEngine()),
-        m_IMS(50000)
+        // The io_context-aware IMS constructor enforces MustBeFresh. This is
+        // required for streamed-event retention: an exact retry must not
+        // retrieve an event after its advertised retention window.
+        m_IMS(m_face.getIoContext(), 50000)
     {
         ensureSameIdentity(encryptionCert, signingCert, "ServiceProvider");
         if (!isRsaCertificate(encryptionCert)) {
@@ -1325,10 +1347,6 @@ namespace ndn_service_framework
                   << " authority=" << attrAuthorityCertificate.getIdentity().toUri()
                   << " dkPrefix="
                   << ndn::Name(attrAuthorityCertificate.getIdentity()).append("DKEY").toUri());
-
-        nacConsumer.obtainDecryptionKey();
-        NDN_LOG_WARN("NDNSF_PROVIDER_INIT_STAGE stage=dkey_initial_interest_issued provider="
-                     << identity.toUri());
 
         // Serve NDNSF and ck messages using IMS
         const ndn::Name ndnsfFilter = ndn::Name(identity.toUri()).append("NDNSF");
@@ -1515,7 +1533,7 @@ namespace ndn_service_framework
                       << " provider=" << identity.toUri());
             nacConsumer.obtainDecryptionKey();
             NDN_LOG_INFO("Waiting for decryption key");
-            face.processEvents(ndn::time::milliseconds(1000));
+            pumpFaceFor(face, std::chrono::milliseconds(1000));
             NDN_LOG_WARN("NDNSF_PROVIDER_INIT_STAGE stage=dkey_wait_iteration provider="
                          << identity.toUri());
         }
@@ -1562,13 +1580,17 @@ namespace ndn_service_framework
         nacConsumer(m_face, m_keyChain, nac_validator, encryptionCert, attrAuthorityCertificate),
         nacProducer(m_face, m_keyChain, nac_validator, encryptionCert, attrAuthorityCertificate),
         random(ndn::random::getRandomNumberEngine()),
-        m_IMS(50000),
+        m_IMS(m_face.getIoContext(), 50000),
         m_configManager("/tmp/ndnsf-service-provider-local-mock.conf")
     {
         ensureSameIdentity(encryptionCert, signingCert, "ServiceProvider");
         if (!isRsaCertificate(encryptionCert)) {
             throw std::invalid_argument("ServiceProvider encryptionCert must be RSA for NAC-ABE");
         }
+        // LocalMockTag still owns real NAC-ABE Consumer/Producer instances.
+        // Load the same trust schema as the production constructor before the
+        // fixture pumps their constructor-time public-parameter Interests.
+        nac_validator.load(trustSchemaPath);
         // LocalMockTag is the deterministic unit-test boundary. Keep handlers
         // inline by default so selection callbacks have stable synchronous
         // postconditions. Integration fixtures that exercise production-like
@@ -1591,8 +1613,22 @@ namespace ndn_service_framework
                 "ServiceProvider PubSub is already initialized");
         }
         m_svsps = std::move(pubSub);
+        // LocalMock uses the real production onInterest/IMS path for exact
+        // streamed-event retries.  Keep the same content filters that the
+        // normal constructor installs; the SVS attachment alone only covers
+        // publication notifications and cannot answer an exact Interest.
+        const ndn::Name ndnsfFilter = ndn::Name(identity.toUri()).append("NDNSF");
+        const ndn::Name ckFilter = ndn::Name(identity.toUri()).append("CK");
         const ndn::Name diDataFilter =
             ndn::Name(identity.toUri()).append("NDNSF-DI");
+        m_face.setInterestFilter(
+            ndnsfFilter,
+            std::bind(&ServiceProvider::onInterest, this, _1, _2),
+            std::bind(&ServiceProvider::onPrefixRegisterFailure, this, _1, _2));
+        m_face.setInterestFilter(
+            ckFilter,
+            std::bind(&ServiceProvider::onInterest, this, _1, _2),
+            std::bind(&ServiceProvider::onPrefixRegisterFailure, this, _1, _2));
         m_face.setInterestFilter(
             diDataFilter,
             std::bind(&ServiceProvider::onInterest, this, _1, _2),
@@ -1607,6 +1643,70 @@ namespace ndn_service_framework
         const auto key = identity.getKey(signingCert.getKeyName());
         (void)key.getCertificate(signingCert.getName());
         m_testSigningKeyChain = &keyChain;
+        m_testNacConsumer = std::make_unique<ndn::nacabe::Consumer>(
+            m_face, keyChain, nac_validator, identityCert,
+            attrAuthorityCertificate);
+        m_testNacConsumer->obtainDecryptionKey();
+        m_testNacProducer = std::make_unique<ndn::nacabe::CacheProducer>(
+            m_face, keyChain, nac_validator, identityCert,
+            attrAuthorityCertificate);
+    }
+
+    bool
+    ServiceProvider::isNacConsumerReadyForTest()
+    {
+        return activeNacConsumer().readyForDecryption();
+    }
+
+    void
+    ServiceProvider::setStreamPublicationInterceptorForTest(
+        StreamPublicationInterceptorForTest interceptor)
+    {
+        std::lock_guard<std::mutex> lock(m_streamPublicationInterceptorMutex);
+        m_streamPublicationInterceptorForTest = std::move(interceptor);
+    }
+
+    void
+    ServiceProvider::setStreamRetentionInterceptorForTest(
+        StreamRetentionInterceptorForTest interceptor)
+    {
+        std::lock_guard<std::mutex> lock(m_streamPublicationInterceptorMutex);
+        m_streamRetentionInterceptorForTest = std::move(interceptor);
+    }
+
+    void
+    ServiceProvider::setStreamRetentionExpiryObserverForTest(
+        StreamRetentionExpiryObserverForTest observer)
+    {
+        std::lock_guard<std::mutex> lock(m_streamPublicationInterceptorMutex);
+        m_streamRetentionExpiryObserverForTest = std::move(observer);
+    }
+
+    void
+    ServiceProvider::publishStreamPacketForTest(const ndn::Data& data)
+    {
+        if (!m_svsps) {
+            throw std::runtime_error(
+                "stream packet test publication requires production SVS");
+        }
+        boost::asio::post(m_face.getIoContext(),
+            [pubSub = m_svsps, packet = ndn::Data(data)] () mutable {
+                pubSub->publishPacket(packet);
+            });
+    }
+
+    size_t
+    ServiceProvider::streamPublisherHighWaterMarkForTest(
+        const ndn::Name& requesterName,
+        const ndn::Name& serviceName,
+        const ndn::Name& requestId)
+    {
+        const auto pendingKey = ndn::Name(requesterName)
+            .append(serviceName).append(requestId);
+        std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+        const auto found = m_streamPublishers.find(pendingKey);
+        return found == m_streamPublishers.end() ? 0 :
+            found->second->highWaterMark();
     }
 
     void
@@ -1717,6 +1817,53 @@ namespace ndn_service_framework
                    std::move(ackHandler),
                    std::move(requestHandler),
                    ServiceMode::Normal);
+    }
+
+    void ServiceProvider::addStreamingHandler(const ndn::Name& serviceName,
+                                               StreamingHandler handler)
+    {
+        auto& service = m_services[serviceName];
+        service.streamingHandler = std::move(handler);
+        // A Normal streamed request still needs to pass the existing ACK
+        // admission gate, which treats the presence of a normal handler as
+        // service availability.  The real execution branch below dispatches
+        // streamingHandler; this sentinel is never the application callback.
+        if (!service.requestHandler) {
+            service.requestHandler =
+                [] (const ndn::Name&, const ndn::Name&, const ndn::Name&,
+                    const ndn::Name&, const RequestMessage&) {
+                    ResponseMessage response;
+                    response.setStatus(false);
+                    response.setErrorInfo(
+                        "streamed Normal dispatch requires the stream handler");
+                    return response;
+                };
+        }
+        // A streamed request can use either the normal ACK/Selection path or
+        // the cached-token Targeted path.  The Targeted ingress gate requires
+        // a registered targeted handler even though dispatchRequestExecutionAsync
+        // invokes streamingHandler for the actual stream.  Install a small
+        // sentinel so the existing authorization/token path recognizes the
+        // streamed service without inventing a second application callback.
+        if (!service.targetedRequestHandler) {
+            service.targetedRequestHandler =
+                [] (const ndn::Name&, const ndn::Name&, const ndn::Name&,
+                    const ndn::Name&, const RequestMessage&) {
+                    ResponseMessage response;
+                    response.setStatus(false);
+                    response.setErrorInfo(
+                        "streamed Targeted dispatch requires the stream handler");
+                    return response;
+                };
+        }
+        service.mode = ServiceMode::Normal;
+        const auto serviceUri = serviceName.toUri();
+        if (std::find(m_serviceNames.begin(), m_serviceNames.end(), serviceUri) ==
+            m_serviceNames.end()) {
+            m_serviceNames.push_back(serviceUri);
+        }
+        NDN_LOG_WARN("[ServiceProvider] registered streamed service prefix="
+                     << serviceUri);
     }
 
     void ServiceProvider::addService(const ndn::Name& serviceName,
@@ -2975,12 +3122,158 @@ namespace ndn_service_framework
     void ServiceProvider::CollaborationContext::publishFinalResponse(
         const ndn::Buffer& payload)
     {
+        // A streamed collaboration must close through the stream publisher
+        // so the End event and terminal Response share one lifecycle.  Keep
+        // this fallback for legacy/native handlers that still call the unary
+        // method, but never let that call silently bypass stream completion.
+        if (isStreamed()) {
+            if (!finishStream(payload, StreamFinishReason::ApplicationComplete)) {
+                throw std::logic_error("stream terminal was already claimed or fenced");
+            }
+            return;
+        }
         m_provider.publishCollaborationFinalResponse(m_requesterName,
                                                      m_assignment.service,
                                                      m_requestId,
                                                      m_requestMessage,
                                                      payload,
                                                      m_assignment.selectionDigest);
+    }
+
+    std::shared_ptr<StreamEventPublisher>
+    ServiceProvider::CollaborationContext::streamPublisher() const
+    {
+        if (!m_requestMessage.hasStreamRequestOptions()) {
+            return nullptr;
+        }
+        const auto pendingKey = ndn::Name(m_requesterName)
+            .append(m_assignment.service).append(m_requestId);
+        std::lock_guard<std::mutex> lock(m_provider.m_pendingRequestMutex);
+        const auto it = m_provider.m_streamPublishers.find(pendingKey);
+        return it == m_provider.m_streamPublishers.end() ? nullptr : it->second;
+    }
+
+    bool ServiceProvider::CollaborationContext::isStreamed() const
+    {
+        return static_cast<bool>(streamPublisher());
+    }
+
+    uint64_t ServiceProvider::CollaborationContext::publishStreamEvent(
+        const ndn::Buffer& payload)
+    {
+        auto publisher = streamPublisher();
+        if (!publisher) return 0;
+        const auto published = publisher->publish(
+            payload, std::chrono::steady_clock::now() + std::chrono::seconds(30));
+        return published ? published->cursor : 0;
+    }
+
+    bool ServiceProvider::CollaborationContext::finishStream(
+        const ndn::Buffer& payload, StreamFinishReason reason)
+    {
+        auto publisher = streamPublisher();
+        if (!publisher) return false;
+        if (m_streamTerminal) return false;
+        const auto completion = publisher->finish(
+            payload, reason, std::chrono::steady_clock::now() + std::chrono::seconds(30));
+        if (!completion) return false;
+        // The publisher is the authoritative terminal commit point.  Do not
+        // fence the CollaborationContext before it accepts the End event:
+        // a bounded queue/deadline rejection must still be reportable through
+        // failStream instead of leaving the request with neither End nor
+        // failure Response.
+        m_streamTerminal = true;
+        ResponseMessage response;
+        response.setStatus(true);
+        auto finalPayload = payload;
+        response.setPayload(finalPayload, finalPayload.size());
+        response.setStreamCompletion(*completion);
+        boost::asio::post(m_provider.m_face.getIoContext(),
+            [provider = &m_provider,
+             requester = m_requesterName,
+             service = m_assignment.service,
+             requestId = m_requestId,
+             request = m_requestMessage,
+             response = std::move(response),
+             selectionDigest = m_assignment.selectionDigest]() mutable {
+                provider->finishRequestExecutionOnEventLoop(
+                    requester, provider->identity, service, requestId,
+                    request, std::move(response), selectionDigest);
+            });
+        return true;
+    }
+
+    bool ServiceProvider::CollaborationContext::failStream(
+        StreamedInvocationErrorCode, const std::string& message)
+    {
+        auto publisher = streamPublisher();
+        if (!publisher) return false;
+        if (m_streamTerminal) return false;
+        if (!publisher->fail(message)) return false;
+        m_streamTerminal = true;
+        boost::asio::post(m_provider.m_face.getIoContext(),
+            [provider = &m_provider,
+             requester = m_requesterName,
+             service = m_assignment.service,
+             requestId = m_requestId,
+             request = m_requestMessage,
+             message,
+             selectionDigest = m_assignment.selectionDigest]() mutable {
+                provider->publishExecutionFailureOnEventLoop(
+                    requester, provider->identity, service, requestId,
+                    request, message, selectionDigest);
+            });
+        return true;
+    }
+
+    bool ServiceProvider::CollaborationContext::completeRole()
+    {
+        // A role completion is deliberately distinct from stream terminal
+        // ownership.  Non-final roles must release their provider-side
+        // pending request without publishing End or a user-facing Response.
+        if (m_streamTerminal) return false;
+        m_streamTerminal = true;
+        boost::asio::post(m_provider.m_face.getIoContext(),
+            [provider = &m_provider,
+             requester = m_requesterName,
+             service = m_assignment.service,
+             requestId = m_requestId,
+             selectionDigest = m_assignment.selectionDigest]() mutable {
+                provider->completeCollaborationRoleOnEventLoop(
+                    requester, provider->identity, service, requestId,
+                    std::move(selectionDigest));
+            });
+        return true;
+    }
+
+    bool ServiceProvider::CollaborationContext::streamCancelled() const
+    {
+        const auto pendingKey = ndn::Name(m_requesterName)
+            .append(m_assignment.service).append(m_requestId);
+        const auto lifecycle = m_provider.getStreamLifecycle(pendingKey);
+        return !lifecycle || lifecycle->terminalAuthority()->isTerminal() ||
+               lifecycle->terminalAuthority()->isFenced();
+    }
+
+    std::chrono::milliseconds
+    ServiceProvider::CollaborationContext::streamRemainingDeadline() const
+    {
+        if (!m_requestMessage.hasStreamRequestOptions()) {
+            return std::chrono::milliseconds(0);
+        }
+        const auto deadlineMs =
+            m_requestMessage.getStreamRequestOptions().deadlineEpochMs;
+        const auto nowMs = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count());
+        if (deadlineMs <= nowMs) {
+            return std::chrono::milliseconds(0);
+        }
+        const auto delta = deadlineMs - nowMs;
+        using Rep = std::chrono::milliseconds::rep;
+        const auto bounded = std::min<uint64_t>(
+            delta, static_cast<uint64_t>(std::numeric_limits<Rep>::max()));
+        return std::chrono::milliseconds(static_cast<Rep>(bounded));
     }
 
     void ServiceProvider::setAckStrategyHandler(const ndn::Name& serviceName,
@@ -3493,6 +3786,238 @@ namespace ndn_service_framework
                           {"finalStatus", status.finalStatus.empty() ? "-" : status.finalStatus}});
     }
 
+    std::shared_ptr<StreamInvocationLifecycle>
+    ServiceProvider::attachStreamLifecycle(const ndn::Name& pendingKey)
+    {
+        std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+        if (pendingRequests.find(pendingKey) == pendingRequests.end()) {
+            throw std::invalid_argument(
+                "cannot attach streamed lifecycle to an unknown pending request");
+        }
+        auto& lifecycle = m_streamLifecycles[pendingKey];
+        if (!lifecycle) {
+            lifecycle = std::make_shared<StreamInvocationLifecycle>();
+        }
+        return lifecycle;
+    }
+
+    std::shared_ptr<StreamInvocationLifecycle>
+    ServiceProvider::getStreamLifecycle(const ndn::Name& pendingKey) const
+    {
+        std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+        const auto lifecycle = m_streamLifecycles.find(pendingKey);
+        return lifecycle == m_streamLifecycles.end() ? nullptr : lifecycle->second;
+    }
+
+    void
+    ServiceProvider::publishStreamEventOnFaceEventLoop(
+        PublishedStreamEvent event,
+        uint64_t retentionMs)
+    {
+        if (!m_svsps) {
+            throw std::runtime_error("SVS is not attached");
+        }
+
+        // Stream handlers run in the Provider worker pool. Face, Scheduler,
+        // IMS satisfaction, and SVSPubSub sequence/mapping state are all owned
+        // by the Face io_context. Keep the synchronous writer contract while
+        // transferring the complete network-side commit to that owner. Asio
+        // dispatch executes inline when this method is already called by the
+        // Face loop and queues otherwise, so neither path races SVS state.
+        auto completion = std::make_shared<std::promise<void>>();
+        auto future = completion->get_future();
+        m_face.getIoContext().dispatch(
+            [this, completion, event = std::move(event), retentionMs] () mutable {
+                try {
+                    // ndn-cxx's IMS retains Data through enable_shared_from_this;
+                    // keep the decoded packet heap-owned while inserting it.
+                    auto data = std::make_shared<ndn::Data>();
+                    data->wireDecode(ndn::Block(event.signedWire));
+
+                    StreamRetentionInterceptorForTest retentionInterceptor;
+                    {
+                        std::lock_guard<std::mutex> lock(
+                            m_streamPublicationInterceptorMutex);
+                        retentionInterceptor = m_streamRetentionInterceptorForTest;
+                    }
+                    if (retentionInterceptor && !retentionInterceptor(*data)) {
+                        NDN_LOG_INFO("NDNSF_STREAM_TEST_RETENTION_SUPPRESSED name="
+                                     << data->getName());
+                        completion->set_value();
+                        return;
+                    }
+
+                    // Keep the exact signed Data in the Provider IMS for bounded
+                    // retransmission. The IMS is the only source permitted to
+                    // satisfy an exact retry and never re-encrypts or re-signs.
+                    insertDataIntoIMS(
+                        *data,
+                        ndn::time::milliseconds(retentionMs));
+                    const auto retainedEventName = data->getName();
+                    m_scheduler.schedule(
+                        ndn::time::milliseconds(retentionMs),
+                        [this, retainedEventName] {
+                            {
+                                std::lock_guard<std::mutex> lock(_cache_mutex);
+                                m_IMS.erase(retainedEventName);
+                            }
+                            StreamRetentionExpiryObserverForTest observer;
+                            {
+                                std::lock_guard<std::mutex> lock(
+                                    m_streamPublicationInterceptorMutex);
+                                observer = m_streamRetentionExpiryObserverForTest;
+                            }
+                            if (observer) {
+                                observer(retainedEventName);
+                            }
+                            NDN_LOG_INFO("NDNSF_STREAM_RETENTION_EXPIRED name="
+                                         << retainedEventName);
+                        });
+
+                    StreamPublicationInterceptorForTest interceptor;
+                    {
+                        std::lock_guard<std::mutex> lock(
+                            m_streamPublicationInterceptorMutex);
+                        interceptor = m_streamPublicationInterceptorForTest;
+                    }
+                    if (interceptor && !interceptor(*data)) {
+                        NDN_LOG_INFO("NDNSF_STREAM_TEST_PUBLICATION_SUPPRESSED name="
+                                     << data->getName());
+                        completion->set_value();
+                        return;
+                    }
+                    const auto seqNo = m_svsps->publishPacket(*data);
+                    if (seqNo == 0) {
+                        throw std::runtime_error("SVS rejected streamed event publication");
+                    }
+                    if (std::getenv("SPEC175_TRACE") != nullptr) {
+                        NDN_LOG_INFO("SPEC175_TRACE stream-event-committed name="
+                                     << data->getName()
+                                     << " cursor=" << event.cursor
+                                     << " wireBytes=" << event.signedWire.size()
+                                     << " svsSeq=" << seqNo);
+                    }
+                    completion->set_value();
+                }
+                catch (...) {
+                    try {
+                        completion->set_exception(std::current_exception());
+                    }
+                    catch (...) {
+                    }
+                }
+            });
+
+        if (future.wait_for(std::chrono::seconds(5)) !=
+            std::future_status::ready) {
+            throw std::runtime_error(
+                "stream event publication timed out on Provider Face event loop");
+        }
+        future.get();
+    }
+
+    bool
+    ServiceProvider::initializeStreamPublisher(
+        const ndn::Name& requesterName,
+        const ndn::Name& providerName,
+        const ndn::Name& serviceName,
+        const ndn::Name& requestId,
+        const RequestMessage& requestMessage,
+        const ServiceSelectionMessage& selectionMessage,
+        const std::string& selectionDigest)
+    {
+        if (!requestMessage.hasStreamRequestOptions()) return true;
+        // LocalMock fixtures bind their identities to the fixture KeyChain via
+        // useSigningKeyChainForTest().  Use that same TPM for the recipient
+        // unwrap; production providers continue to use their private chain.
+        auto& activeKeyChain = m_testSigningKeyChain ? *m_testSigningKeyChain : m_keyChain;
+        const auto& options = requestMessage.getStreamRequestOptions();
+        ndn::Block grantBlock;
+        if (selectionMessage.hasStreamEventKeyGrant()) {
+            auto wrapper = selectionMessage.getStreamEventKeyGrant();
+            wrapper.parse();
+            if (wrapper.elements().size() != 1) return false;
+            grantBlock = wrapper.elements().front();
+        }
+        else if (options.eventKeyGrant) {
+            grantBlock = *options.eventKeyGrant;
+        }
+        else {
+            NDN_LOG_WARN("Reject streamed selection without Provider-specific key grant requestId="
+                         << requestId.toUri());
+            return false;
+        }
+        HybridMessageEnvelope grant;
+        if (!grant.WireDecode(grantBlock) || grant.getMessageType() != "STREAM-GRANT" ||
+            grant.getAlgorithm() != "RSA-OAEP" || !grant.hasWrappedMessageKey() ||
+            grant.getEpochId() != std::to_string(options.streamEpoch)) {
+            return false;
+        }
+        ndn::Buffer eventKey;
+        try {
+            eventKey = unwrapSelectionGatedInputKey(
+                grant.getWrappedMessageKey(), identityCert.getName(), activeKeyChain);
+        }
+        catch (const std::exception&) {
+            return false;
+        }
+        if (eventKey.size() != 32 ||
+            computeStreamSha256(ndn::span<const uint8_t>(eventKey.data(), eventKey.size())) !=
+                options.eventKeyCommitment) {
+            return false;
+        }
+        StreamBinding binding;
+        binding.requestId = requestId;
+        binding.requester = requesterName;
+        binding.serviceName = serviceName;
+        binding.producer = providerName;
+        binding.producerBootId = providerName.toUri() + ":" +
+                                 std::to_string(m_processStartedAtUs);
+        binding.attemptEpoch = options.attemptEpoch;
+        binding.planDigest = computeStreamSha256(
+            ndn::span<const uint8_t>(reinterpret_cast<const uint8_t*>(selectionDigest.data()),
+                                     selectionDigest.size()));
+        binding.generationId = options.generationId;
+        binding.streamEpoch = options.streamEpoch;
+        binding.eventKeyCommitment = options.eventKeyCommitment;
+        binding.userToken = ndn::Buffer(
+            reinterpret_cast<const uint8_t*>(requestMessage.getUserToken().data()),
+            requestMessage.getUserToken().size());
+        binding.policyEpoch = selectionMessage.getPolicyEpoch();
+        binding.deadlineEpochMs = options.deadlineEpochMs;
+        try { binding.validate(); }
+        catch (const std::exception&) {
+            return false;
+        }
+        const auto expectedGrantBinding = computeStreamGrantBindingDigest(binding);
+        if (grant.getKeyId() != selectionGatedHex(ndn::span<const uint8_t>(
+                expectedGrantBinding.data(), expectedGrantBinding.size()))) {
+            NDN_LOG_WARN("Reject streamed grant with mismatched Provider binding requestId="
+                         << requestId.toUri());
+            return false;
+        }
+
+        const auto pendingKey = ndn::Name(requesterName).append(serviceName).append(requestId);
+        auto lifecycle = getStreamLifecycle(pendingKey);
+        if (!lifecycle) {
+            lifecycle = std::make_shared<StreamInvocationLifecycle>();
+            std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+            m_streamLifecycles[pendingKey] = lifecycle;
+        }
+        auto publisher = std::make_shared<StreamEventPublisher>(
+            binding, options, eventKey, lifecycle, activeKeyChain, m_signingInfo,
+            [this, retentionMs = options.retentionMs](const PublishedStreamEvent& event) {
+                publishStreamEventOnFaceEventLoop(event, retentionMs);
+            });
+        publisher->start();
+        {
+            std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+            m_streamBindings[pendingKey] = binding;
+            m_streamPublishers[pendingKey] = std::move(publisher);
+        }
+        return true;
+    }
+
     bool ServiceProvider::shouldSuppressAdaptiveAck(const ndn::Name& requesterIdentity,
                                                     const ndn::Name& serviceName,
                                                     const ndn::Name& requestId)
@@ -3740,6 +4265,16 @@ namespace ndn_service_framework
             tokenPairCount = parseTargetedTokenBatch(hintIt->second, configuredBatch);
         }
         std::map<std::string, std::string> tokens = response.getTokens();
+        const auto publicKey = identityCert.getPublicKey();
+        ndn::Buffer publicKeyBuffer(publicKey.begin(), publicKey.end());
+        // Targeted streamed calls reuse this recipient offer after the token
+        // bootstrap.  It contains public metadata only; each request still
+        // generates a fresh event key and binding digest.
+        tokens["targeted.recipientPublicKey"] = selectionGatedHex(publicKeyBuffer);
+        tokens["targeted.recipientCertName"] = identityCert.getName().toUri();
+        tokens["targeted.recipientCertDigest"] = sha256DigestString(publicKeyBuffer);
+        tokens["targeted.providerBootEpoch"] =
+            identity.toUri() + ":" + std::to_string(m_processStartedAtUs);
         std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
         for (size_t i = 0; i < tokenPairCount; ++i) {
             const auto providerToken = makeOneTimeToken();
@@ -3866,13 +4401,16 @@ namespace ndn_service_framework
         const bool targetedMode =
             requestMessage.getRequestMode() == tlv::TargetedRequest ||
             requestMessage.getRequestMode() == tlv::TargetedBootstrapRequest;
+        const bool streamedMode = requestMessage.hasStreamRequestOptions() &&
+                                  static_cast<bool>(service->second.streamingHandler);
         auto requestHandler =
             targetedMode
                 ? service->second.targetedRequestHandler
                 : service->second.requestHandler;
-        if (!requestHandler) {
+        if (!requestHandler && !streamedMode) {
             return false;
         }
+        auto streamingHandler = service->second.streamingHandler;
 
         const bool queued = m_handlerPool.post(
             [this,
@@ -3882,6 +4420,9 @@ namespace ndn_service_framework
              requestId,
              requestMessage,
              requestHandler = std::move(requestHandler),
+             streamingHandler = std::move(streamingHandler),
+             targetedMode,
+             streamedMode,
              selectionDigest]() mutable {
                 updateSelectionExecutionStatus(selectionDigest,
                                                SelectionExecutionState::Running,
@@ -3889,6 +4430,128 @@ namespace ndn_service_framework
                                                serviceName,
                                                requestId,
                                                "handler running");
+                if (streamedMode) {
+                    const auto pendingKey = ndn::Name(requesterName)
+                        .append(serviceName).append(requestId);
+                    std::shared_ptr<StreamEventPublisher> publisher;
+                    {
+                        std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+                        const auto it = m_streamPublishers.find(pendingKey);
+                        if (it != m_streamPublishers.end()) publisher = it->second;
+                    }
+                    if (!publisher && targetedMode &&
+                        requestMessage.getStreamRequestOptions().eventKeyGrant) {
+                        // Targeted streaming has no Selection packet.  Reuse
+                        // the exact grant/binding verifier with a synthetic
+                        // one-provider Selection projection so the fast path
+                        // cannot bypass stream authorization or replay checks.
+                        ServiceSelectionMessage targetedBinding;
+                        targetedBinding.setRequestIDs({requestId.toUri()});
+                        targetedBinding.setPolicyEpoch(requestMessage.getPolicyEpoch());
+                        targetedBinding.setStreamEventKeyGrant(
+                            *requestMessage.getStreamRequestOptions().eventKeyGrant);
+                        SelectionProviderEntry providerEntry;
+                        providerEntry.providerName = providerName;
+                        targetedBinding.addProviderEntry(providerEntry);
+                        const auto targetedDigest = computeSelectionDigest(targetedBinding);
+                        if (!initializeStreamPublisher(
+                                requesterName, providerName, serviceName, requestId,
+                                requestMessage, targetedBinding, targetedDigest)) {
+                            publishExecutionFailureOnEventLoop(
+                                requesterName, providerName, serviceName, requestId,
+                                requestMessage, "Targeted stream grant rejected",
+                                std::move(selectionDigest));
+                            return;
+                        }
+                        {
+                            std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+                            const auto it = m_streamPublishers.find(pendingKey);
+                            if (it != m_streamPublishers.end()) publisher = it->second;
+                        }
+                    }
+                    if (!publisher) {
+                        publishExecutionFailureOnEventLoop(
+                            requesterName, providerName, serviceName, requestId,
+                            requestMessage, "stream publisher unavailable",
+                            std::move(selectionDigest));
+                        return;
+                    }
+                    auto lifecycle = getStreamLifecycle(pendingKey);
+                    auto core = std::make_shared<StreamedResponseWriterCore>(
+                        [publisher](const ndn::Buffer& payload, uint64_t& cursor) {
+                            const auto result = publisher->publish(
+                                payload, std::chrono::steady_clock::now() +
+                                         std::chrono::seconds(30));
+                            if (!result) return false;
+                            cursor = result->cursor;
+                            return true;
+                        },
+                        [this, publisher, requesterName, providerName, serviceName,
+                         requestId, requestMessage, selectionDigest]
+                        (const ndn::Buffer& payload, StreamFinishReason reason) {
+                            const auto completion = publisher->finish(
+                                payload, reason, std::chrono::steady_clock::now() +
+                                                   std::chrono::seconds(30));
+                            if (!completion) return false;
+                            ResponseMessage response;
+                            response.setStatus(true);
+                            auto finalPayload = payload;
+                            response.setPayload(finalPayload, finalPayload.size());
+                            response.setStreamCompletion(*completion);
+                            boost::asio::post(m_face.getIoContext(),
+                                [this, requesterName, providerName, serviceName,
+                                 requestId, requestMessage, response = std::move(response),
+                                 selectionDigest]() mutable {
+                                    finishRequestExecutionOnEventLoop(
+                                        requesterName, providerName, serviceName,
+                                        requestId, requestMessage, std::move(response),
+                                        selectionDigest);
+                                });
+                            return true;
+                        },
+                        [this, publisher, requesterName, providerName, serviceName,
+                         requestId, requestMessage, selectionDigest]
+                        (StreamedInvocationErrorCode, const std::string& message) {
+                            publisher->fail(message);
+                            boost::asio::post(m_face.getIoContext(),
+                                [this, requesterName, providerName, serviceName,
+                                 requestId, requestMessage, message, selectionDigest]() mutable {
+                                    publishExecutionFailureOnEventLoop(
+                                        requesterName, providerName, serviceName, requestId,
+                                        requestMessage, message, selectionDigest);
+                                });
+                            return true;
+                        },
+                        [lifecycle] {
+                            return !lifecycle || lifecycle->terminalAuthority()->isTerminal() ||
+                                   lifecycle->terminalAuthority()->isFenced();
+                        },
+                        [] { return std::chrono::milliseconds(30000); });
+                    StreamedResponseWriter<ndn::Buffer, ndn::Buffer> writer(core);
+                    try {
+                        streamingHandler(requesterName, providerName, serviceName,
+                                         requestId, requestMessage, writer);
+                        if (!core->isTerminal() && !writer.isCancelled()) {
+                            core->fail(StreamedInvocationErrorCode::ProviderFailure,
+                                       "stream handler returned without terminal result");
+                        }
+                    }
+                    catch (const std::exception& error) {
+                        if (!core->isTerminal()) {
+                            core->fail(StreamedInvocationErrorCode::ApplicationCallbackFailed,
+                                       error.what());
+                        }
+                    }
+                    catch (...) {
+                        if (!core->isTerminal()) {
+                            core->fail(StreamedInvocationErrorCode::ApplicationCallbackFailed,
+                                       "stream handler threw an unknown exception");
+                        }
+                    }
+                    core->invalidate();
+                    return;
+                }
+
                 ResponseMessage response;
                 try {
                     response = requestHandler(requesterName,
@@ -3989,11 +4652,10 @@ namespace ndn_service_framework
                 selectionDigest);
             return true;
         }
-        auto assignmentForPreparation = assignment;
-        auto assignmentForHandler = std::move(assignment);
         prepareCollaborationAssignmentAsync(
+            requesterName,
             requestId,
-            std::move(assignmentForPreparation),
+            std::move(assignment),
             [this,
              requesterName,
              providerName,
@@ -4001,8 +4663,8 @@ namespace ndn_service_framework
              requestId,
              requestMessage,
              selectionDigest,
-             assignment = std::move(assignmentForHandler),
-             handler](bool ready, std::string error) mutable {
+             handler](bool ready, std::string error,
+                      CollaborationAssignment assignment) mutable {
                 const bool traceAssignmentFetch =
                     isTruthyEnv("NDNSF_COLLAB_ASSIGNMENT_FETCH_TRACE");
                 if (traceAssignmentFetch) {
@@ -4179,7 +4841,7 @@ namespace ndn_service_framework
                 ndn::nacabe::SPtrVector<ndn::Data> contentData;
                 ndn::nacabe::SPtrVector<ndn::Data> ckData;
                 std::tie(contentData, ckData) =
-                    nacProducer.produce(key.keyName,
+                    (m_testNacProducer ? *m_testNacProducer : nacProducer).produce(key.keyName,
                                         std::vector<std::string>{accessAttribute},
                                         ndn::span<const uint8_t>(key.key.data(),
                                                                 key.key.size()),
@@ -4438,6 +5100,43 @@ namespace ndn_service_framework
                                           std::move(selectionDigest));
     }
 
+    void ServiceProvider::completeCollaborationRoleOnEventLoop(
+        const ndn::Name& requesterName,
+        const ndn::Name& providerName,
+        const ndn::Name& serviceName,
+        const ndn::Name& requestId,
+        std::string selectionDigest)
+    {
+        const auto pendingKey = ndn::Name(requesterName)
+            .append(serviceName).append(requestId);
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=COLLAB_ROLE_COMPLETE "
+                      << "timestamp_us=" << nowMicroseconds()
+                      << " requestId=" << requestId.toUri()
+                      << " serviceName=" << serviceName.toUri()
+                      << " providerName=" << providerName.toUri());
+        updateProviderRequestLifecycleState(
+            requestId, serviceName,
+            ProviderRequestLifecycleState::EXECUTION_DONE,
+            {}, "role complete; final response owned by another role");
+        updateSelectionExecutionStatus(
+            selectionDigest,
+            SelectionExecutionState::Completed,
+            providerName,
+            serviceName,
+            requestId,
+            "collaboration role complete; no terminal response");
+        size_t selectedOutstanding =
+            m_selectedOutstandingRequests.load(std::memory_order_relaxed);
+        while (selectedOutstanding > 0 &&
+               !m_selectedOutstandingRequests.compare_exchange_weak(
+                   selectedOutstanding,
+                   selectedOutstanding - 1,
+                   std::memory_order_relaxed,
+                   std::memory_order_relaxed)) {
+        }
+        cleanupPendingRequestState(pendingKey);
+    }
+
     void ServiceProvider::publishCollaborationData(
         const ndn::Name& requesterName,
         const ndn::Name& requestId,
@@ -4478,12 +5177,27 @@ namespace ndn_service_framework
             return;
         }
 
+        const bool collaborationAuthTrace =
+            isTruthyEnv("NDNSF_COLLAB_AUTH_TRACE");
+        if (collaborationAuthTrace) {
+            NDN_LOG_WARN("NDNSF_COLLAB_AUTH_TRACE event=publish_queued"
+                         << " provider=" << identity.toUri()
+                         << " requestId=" << requestId.toUri()
+                         << " dataName=" << name.toUri()
+                         << " keyScope=" << keyScope
+                         << " topic=" << topic.toUri()
+                         << " producerRole=" << producerRole
+                         << " sequence=" << sequence
+                         << " payloadBytes=" << payload.size());
+        }
+
         auto encryptAndPublish = [this,
                                   name,
                                   requestId,
                                   scopeKey = std::move(scopeKey),
                                   plaintext = payload,
-                                  message = std::move(message)]() mutable {
+                                  message = std::move(message),
+                                  collaborationAuthTrace]() mutable {
             HybridMessageEnvelope envelope;
             const std::string keyId = "collab|" + requestId.toUri() + "|" +
                                       message.getKeyScope();
@@ -4522,6 +5236,13 @@ namespace ndn_service_framework
                                                envelopeBlock.end()));
                 auto block = message.WireEncode();
                 encoded = ndn::Buffer(block.begin(), block.end());
+                if (collaborationAuthTrace) {
+                    NDN_LOG_WARN("NDNSF_COLLAB_AUTH_TRACE event=encrypt_done"
+                                 << " provider=" << identity.toUri()
+                                 << " requestId=" << requestId.toUri()
+                                 << " dataName=" << name.toUri()
+                                 << " encodedBytes=" << encoded.size());
+                }
             }
             catch (const std::exception& e) {
                 error = e.what();
@@ -4529,6 +5250,7 @@ namespace ndn_service_framework
 
             boost::asio::post(m_face.getIoContext(),
                 [this, name, encoded = std::move(encoded),
+                 requestId, collaborationAuthTrace,
                  error = std::move(error)]() mutable {
                     if (!error.empty()) {
                         NDN_LOG_ERROR("Collaboration data encryption failed for "
@@ -4536,7 +5258,19 @@ namespace ndn_service_framework
                         return;
                     }
                     ndn::Block block(encoded);
+                    if (collaborationAuthTrace) {
+                        NDN_LOG_WARN("NDNSF_COLLAB_AUTH_TRACE event=svs_publish_begin"
+                                     << " provider=" << identity.toUri()
+                                     << " requestId=" << requestId.toUri()
+                                     << " dataName=" << name.toUri());
+                    }
                     publishSvs(m_svsps, name, block);
+                    if (collaborationAuthTrace) {
+                        NDN_LOG_WARN("NDNSF_COLLAB_AUTH_TRACE event=svs_publish_done"
+                                     << " provider=" << identity.toUri()
+                                     << " requestId=" << requestId.toUri()
+                                     << " dataName=" << name.toUri());
+                    }
                 });
         };
         if (m_handlerPool.getThreadCount() == 0 ||
@@ -4741,23 +5475,62 @@ namespace ndn_service_framework
                               << " name or segment requestId=" << requestId.toUri());
                 return false;
             }
-            if (publishSvsBytes(m_svsps, publication.first, publication.second,
-                                freshness) == 0) {
-                NDN_LOG_ERROR("NDNSF_DATA_V1 SVS publication failed"
-                              << " requestId=" << requestId.toUri()
-                              << " dataName=" << publication.first.toUri());
-                return false;
-            }
-            NDN_LOG_DEBUG("NDNSF_DATA_V1_SVS_SEGMENT_PUBLISHED"
-                          << " requestId=" << requestId.toUri()
-                          << " dataName=" << publication.first.toUri()
-                          << " bytes=" << publication.second.size());
         }
-        NDN_LOG_DEBUG("NDNSF_DATA_V1_SVS_PUBLISHED"
-                      << " requestId=" << requestId.toUri()
-                      << " keyScope=" << keyScope
-                      << " segments=" << segments.size());
-        return true;
+
+        // Collaboration handlers execute on worker threads, while Face and
+        // SVSPubSub state is owned by the Face io_context.  Calling publish()
+        // directly from a handler races the mapping/sync state and previously
+        // made this compatibility path depend on logging-induced timing.
+        // dispatch() executes inline when already on the Face event loop and
+        // queues otherwise; the bounded future keeps the synchronous API.
+        auto completion = std::make_shared<std::promise<bool>>();
+        auto future = completion->get_future();
+        auto publications = segments;
+        m_face.getIoContext().dispatch(
+            [this, completion, publications = std::move(publications),
+             requestId, keyScope, freshness] {
+                try {
+                    for (const auto& publication : publications) {
+                        if (publishSvsBytes(m_svsps, publication.first,
+                                            publication.second, freshness) == 0) {
+                            NDN_LOG_ERROR("NDNSF_DATA_V1 SVS publication failed"
+                                          << " requestId=" << requestId.toUri()
+                                          << " dataName=" << publication.first.toUri());
+                            completion->set_value(false);
+                            return;
+                        }
+                        NDN_LOG_DEBUG("NDNSF_DATA_V1_SVS_SEGMENT_PUBLISHED"
+                                      << " requestId=" << requestId.toUri()
+                                      << " dataName=" << publication.first.toUri()
+                                      << " bytes=" << publication.second.size());
+                    }
+                    NDN_LOG_DEBUG("NDNSF_DATA_V1_SVS_PUBLISHED"
+                                  << " requestId=" << requestId.toUri()
+                                  << " keyScope=" << keyScope
+                                  << " segments=" << publications.size());
+                    completion->set_value(true);
+                }
+                catch (const std::exception& error) {
+                    NDN_LOG_ERROR("NDNSF_DATA_V1 SVS publication threw"
+                                  << " requestId=" << requestId.toUri()
+                                  << " reason=" << error.what());
+                    completion->set_value(false);
+                }
+                catch (...) {
+                    NDN_LOG_ERROR("NDNSF_DATA_V1 SVS publication threw"
+                                  << " requestId=" << requestId.toUri()
+                                  << " reason=unknown");
+                    completion->set_value(false);
+                }
+            });
+        if (future.wait_for(std::chrono::seconds(5)) !=
+            std::future_status::ready) {
+            NDN_LOG_ERROR("NDNSF_DATA_V1 SVS publication event-loop timeout"
+                          << " requestId=" << requestId.toUri()
+                          << " keyScope=" << keyScope);
+            return false;
+        }
+        return future.get();
     }
 
     std::optional<std::vector<ndn::Buffer>>
@@ -4845,11 +5618,12 @@ namespace ndn_service_framework
              maxSegments, manifestProbe, catchUpPublications, catchUpAgeMs,
              segmentCountDecoder = std::move(segmentCountDecoder),
              nameFilter = std::move(nameFilter)] {
-                state->subscriptionHandle = m_svsps->subscribeToProducerWithCatchUp(
+	                state->subscriptionHandle = m_svsps->subscribeToProducerWithCatchUp(
                     producerPrefix,
                     [state, completed, finish, requestId, keyScope,
                      producerPrefix, operationIndex, producerRank, tensorDigest,
-                     maxSegments, manifestProbe, segmentCountDecoder, nameFilter]
+                     maxSegments, manifestProbe,
+                     segmentCountDecoder, nameFilter]
                     (const ndn::svs::SVSPubSub::SubscriptionData& publication) {
                         if (state->failed || completed->load() || publication.data.empty()) {
                             return;
@@ -4932,6 +5706,21 @@ namespace ndn_service_framework
                     ndn::time::milliseconds(catchUpAgeMs),
                     true,
                     false);
+                if (nameFilter.subscriptionReady) {
+                    try {
+                        nameFilter.subscriptionReady();
+                    }
+                    catch (const std::exception& error) {
+                        NDN_LOG_WARN("NDNSF_DATA_V1 subscription-ready observer failed"
+                                     << " requestId=" << requestId.toUri()
+                                     << " reason=" << error.what());
+                    }
+                    catch (...) {
+                        NDN_LOG_WARN("NDNSF_DATA_V1 subscription-ready observer failed"
+                                     << " requestId=" << requestId.toUri()
+                                     << " reason=unknown");
+                    }
+                }
                 NDN_LOG_DEBUG("NDNSF_DATA_V1_SVS_FETCH_SUBSCRIBED"
                               << " requestId=" << requestId.toUri()
                               << " keyScope=" << keyScope
@@ -6138,26 +6927,61 @@ namespace ndn_service_framework
     }
 
     void ServiceProvider::prepareCollaborationAssignmentAsync(
+        const ndn::Name& requesterName,
         const ndn::Name& requestId,
         CollaborationAssignment assignment,
-        std::function<void(bool, std::string)> onReady)
+        std::function<void(bool, std::string,
+                           CollaborationAssignment)> onReady)
     {
         struct FetchState
         {
             ndn::Name requestId;
             CollaborationAssignment assignment;
-            std::function<void(bool, std::string)> onReady;
+            std::function<void(bool, std::string,
+                               CollaborationAssignment)> onReady;
             size_t pending = 0;
             bool failed = false;
             std::string error;
             std::map<KeyScope, ndn::Buffer> fetchedKeys;
             ndn::Buffer fetchedArtifact;
+            std::optional<LargeDataReference> assignmentReference;
         };
 
         auto state = std::make_shared<FetchState>();
         state->requestId = requestId;
         state->assignment = std::move(assignment);
         state->onReady = std::move(onReady);
+
+        if (auto reference = parseLargeDataReferencePayload(
+                state->assignment.assignmentPayload)) {
+            static const std::string OBJECT_TYPE =
+                "application/vnd.ndnsf.collaboration-assignment-v1";
+            static constexpr size_t MAX_EXTERNAL_ASSIGNMENT_BYTES =
+                4 * 1024 * 1024;
+            ndn::Name expectedPrefix(requesterName);
+            expectedPrefix.append("NDNSF")
+                          .append("LARGE-DATA")
+                          .append(state->assignment.service)
+                          .append(requestId);
+            const bool validReference =
+                reference->encrypted &&
+                reference->objectType == OBJECT_TYPE &&
+                reference->plaintextSize > 0 &&
+                reference->plaintextSize <= MAX_EXTERNAL_ASSIGNMENT_BYTES &&
+                reference->digest.rfind("sha256:", 0) == 0 &&
+                reference->digest.size() == 71 &&
+                expectedPrefix.isPrefixOf(reference->dataName) &&
+                reference->dataName.size() >= expectedPrefix.size() + 2 &&
+                reference->dataName.get(-1).isVersion();
+            if (!validReference) {
+                state->failed = true;
+                state->error =
+                    "invalid external collaboration assignment reference";
+            }
+            else {
+                state->assignmentReference = std::move(*reference);
+            }
+        }
 
         {
             std::lock_guard<std::mutex> lock(m_collaborationMutex);
@@ -6203,7 +7027,8 @@ namespace ndn_service_framework
                     state->assignment.assignedArtifact.toUri()) == 0;
         }
 
-        state->pending = keysToFetch.size() + (needsArtifactFetch ? 1 : 0);
+        state->pending = keysToFetch.size() + (needsArtifactFetch ? 1 : 0) +
+                         (state->assignmentReference ? 1 : 0);
 
         auto finishIfReady = [this, state]() mutable {
             if (state->pending != 0) {
@@ -6247,7 +7072,8 @@ namespace ndn_service_framework
                                                 item.message);
             }
 
-            state->onReady(!state->failed, state->error);
+            state->onReady(!state->failed, state->error,
+                           std::move(state->assignment));
         };
 
         auto startFetch = [this, state, finishIfReady](
@@ -6340,6 +7166,25 @@ namespace ndn_service_framework
             startFetch(state->assignment.artifactDataName,
                        [state](const ndn::Buffer& buffer) {
                            state->fetchedArtifact = buffer;
+                       });
+        }
+
+        if (state->assignmentReference) {
+            const auto reference = *state->assignmentReference;
+            startFetch(reference.dataName,
+                       [state, reference](const ndn::Buffer& buffer) {
+                           if (buffer.size() != reference.plaintextSize ||
+                               sha256DigestString(buffer) != reference.digest) {
+                               state->failed = true;
+                               if (!state->error.empty()) {
+                                   state->error += "; ";
+                               }
+                               state->error +=
+                                   "external collaboration assignment size or "
+                                   "digest mismatch";
+                               return;
+                           }
+                           state->assignment.assignmentPayload = buffer;
                        });
         }
 
@@ -6602,6 +7447,17 @@ namespace ndn_service_framework
             }
         }
         catch (const std::exception&) {
+            return;
+        }
+
+        // User-owned COMMIT/ROLLBACK controls are addressed to one exact
+        // Provider in the requester-name component of the collaboration
+        // Data name.  The shared SVS subscription also carries ordinary
+        // Provider-to-Provider data addressed to the original User, so this
+        // recipient check is intentionally restricted to the reserved
+        // user-control producer role.
+        if (message.getProducerRole() == "user-control-v1" &&
+            !parsed->requesterName.equals(identity)) {
             return;
         }
 
@@ -6950,6 +7806,19 @@ namespace ndn_service_framework
         }
         pendingRequests.erase(pendingKey);
         pendingProviderTokens.erase(pendingKey);
+        auto streamIt = m_streamLifecycles.find(pendingKey);
+        if (streamIt != m_streamLifecycles.end()) {
+            auto& lifecycle = *streamIt->second;
+            // Pending-state destruction must not silently abandon an active
+            // streamed invocation.  Fence the provider view before releasing
+            // the map owner; an already terminal shared authority needs no
+            // second terminal claim.
+            if (!lifecycle.terminalAuthority()->isTerminal() &&
+                !lifecycle.terminalAuthority()->isFenced()) {
+                lifecycle.provider().fence();
+            }
+            m_streamLifecycles.erase(streamIt);
+        }
         pendingReservationLeases.erase(pendingKey);
         m_recentProviderRequests.erase(pendingKey);
         m_selectedProviderRequests.erase(pendingKey);
@@ -7007,6 +7876,15 @@ namespace ndn_service_framework
         }
         pendingRequests.erase(pendingKey);
         pendingProviderTokens.erase(pendingKey);
+        auto streamIt = m_streamLifecycles.find(pendingKey);
+        if (streamIt != m_streamLifecycles.end()) {
+            auto& lifecycle = *streamIt->second;
+            if (!lifecycle.terminalAuthority()->isTerminal() &&
+                !lifecycle.terminalAuthority()->isFenced()) {
+                lifecycle.provider().fence();
+            }
+            m_streamLifecycles.erase(streamIt);
+        }
         pendingReservationLeases.erase(pendingKey);
         m_recentProviderRequests.erase(pendingKey);
         m_selectedProviderRequests.erase(pendingKey);
@@ -7054,6 +7932,10 @@ namespace ndn_service_framework
             serviceName = response->serviceName;
             requestId = response->requestId;
         }
+        else if (auto event = parseInvocationEventName(messageName)) {
+            serviceName = event->serviceName;
+            requestId = event->requestId;
+        }
         else {
             NDN_LOG_ERROR("Hybrid publish unsupported message name: " << messageName);
             return;
@@ -7098,7 +7980,7 @@ namespace ndn_service_framework
             const auto wrapStartUs = timelineSteadyMicroseconds();
             ndn::nacabe::SPtrVector<ndn::Data> contentData, ckData;
             std::tie(contentData, ckData) =
-                nacProducer.produce(key.keyName,
+                (m_testNacProducer ? *m_testNacProducer : nacProducer).produce(key.keyName,
                                     std::vector<std::string>{accessAttribute},
                                     ndn::span<const uint8_t>(key.key.data(), key.key.size()),
                                     m_signingInfo);
@@ -7225,6 +8107,10 @@ namespace ndn_service_framework
                         rid = response->requestId;
                         svc = response->serviceName;
                     }
+                    else if (auto event = parseInvocationEventName(messageName)) {
+                        rid = event->requestId;
+                        svc = event->serviceName;
+                    }
                     if (!rid.empty()) {
                         logTimelineTrace("provider", cryptoStageForName(messageName) + "_publish_start",
                                          rid,
@@ -7260,6 +8146,10 @@ namespace ndn_service_framework
                     else if (auto response = parseResponseNameV2(messageName)) {
                         rid = response->requestId;
                         svc = response->serviceName;
+                    }
+                    else if (auto event = parseInvocationEventName(messageName)) {
+                        rid = event->requestId;
+                        svc = event->serviceName;
                     }
                     if (!rid.empty()) {
                         logTimelineTrace("provider", cryptoStageForName(messageName) + "_publish_done",
@@ -7422,12 +8312,13 @@ namespace ndn_service_framework
                                     }
                                 };
             if (envelope.hasWrappedMessageKey()) {
-                nacConsumer.consume(keyDataName,
+                activeNacConsumer().consume(keyDataName,
                                     makeNacInlineContentBlock(envelope.getWrappedMessageKey()),
                                     std::move(onKey), std::move(onKeyError));
             }
             else {
-                nacConsumer.consume(keyDataName, std::move(onKey), std::move(onKeyError));
+                activeNacConsumer().consume(
+                    keyDataName, std::move(onKey), std::move(onKeyError));
             }
         }
         catch (const std::exception& e) {
@@ -7643,7 +8534,7 @@ namespace ndn_service_framework
                       << " plaintextBytes=" << plaintext.size());
             try {
                 std::tie(contentData, ckData) =
-                    nacProducer.produce(
+                    (m_testNacProducer ? *m_testNacProducer : nacProducer).produce(
                         messageNameWithoutPrefix,
                         *results,
                         ndn::span<const uint8_t>(plaintext.data(), plaintext.size()),
@@ -7736,7 +8627,7 @@ namespace ndn_service_framework
                               << " plaintextBytes=" << plaintext.size());
                     try {
                         std::tie(contentData, ckData) =
-                            nacProducer.produce(
+                            (m_testNacProducer ? *m_testNacProducer : nacProducer).produce(
                                 messageNameWithoutPrefix,
                                 attributes,
                                 ndn::span<const uint8_t>(plaintext.data(), plaintext.size()),
@@ -8015,7 +8906,7 @@ namespace ndn_service_framework
                 return;
             }
             else{
-                nacConsumer.consume(subscription.name,
+                activeNacConsumer().consume(subscription.name,
                                     std::bind(&ServiceProvider::OnRequestDecryptionSuccessCallbackV2,
                                               this,
                                               requestV2->requesterName,
@@ -8547,6 +9438,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
 
     bool ServiceProvider::replyFromIMS(const ndn::Interest &interest)
     {
+        const auto streamEvent = parseInvocationEventName(interest.getName());
         std::optional<ndn::Data> dataToSend;
         {
             std::lock_guard<std::mutex> lock(_cache_mutex);
@@ -8556,10 +9448,20 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         }
         if (dataToSend)
         {
+            if (streamEvent && std::getenv("SPEC175_TRACE") != nullptr) {
+                NDN_LOG_INFO("SPEC175_TRACE stream-exact-ims-hit name="
+                             << interest.getName()
+                             << " cursor=" << streamEvent->cursor);
+            }
             NDN_LOG_TRACE("Reply from IMS: " << interest.getName().toUri());
             m_face.put(*dataToSend);
             return true;
         }else{
+            if (streamEvent && std::getenv("SPEC175_TRACE") != nullptr) {
+                NDN_LOG_INFO("SPEC175_TRACE stream-exact-ims-miss name="
+                             << interest.getName()
+                             << " cursor=" << streamEvent->cursor);
+            }
             NDN_LOG_TRACE("Not Found In IMS: " << interest.getName().toUri());
             // for(auto d:m_IMS)
             // {
@@ -8660,7 +9562,19 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         const bool timingEnabled = isTruthyEnv("NDNSF_PENDING_IMS_TIMING");
 
         auto satisfyItem = [&](const PendingImsInterest& item) {
-            if (item.expiresAt <= now || !item.interest.matchesData(insertedData)) {
+            // Streamed events are retained in the IMS with an explicit
+            // retention interval, while the application-signed Data packet
+            // may intentionally omit a wire FreshnessPeriod.  In that case
+            // ndn-cxx's MustBeFresh selector rejects an otherwise exact
+            // same-name event even though the IMS has just marked it fresh.
+            // For an exact streamed-event Interest, same-name equality is
+            // therefore the authoritative match; prefix/general Interests
+            // continue to use the normal selector semantics.
+            const bool exactStreamEvent =
+                item.interest.getName() == insertedData.getName() &&
+                parseInvocationEventName(insertedData.getName()).has_value();
+            if (item.expiresAt <= now ||
+                (!item.interest.matchesData(insertedData) && !exactStreamEvent)) {
                 return false;
             }
             if (timingEnabled) {
@@ -8803,6 +9717,14 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
     }
     void ServiceProvider::onInterest(const ndn::InterestFilter &, const ndn::Interest &interest)
     {
+        const auto streamEvent = parseInvocationEventName(interest.getName());
+        if (streamEvent && std::getenv("SPEC175_TRACE") != nullptr) {
+            NDN_LOG_INFO("SPEC175_TRACE stream-exact-interest name="
+                         << interest.getName()
+                         << " cursor=" << streamEvent->cursor
+                         << " lifetimeMs="
+                         << interest.getInterestLifetime().count());
+        }
         // log interest
         NDN_LOG_DEBUG("Received Interest: " << interest.getName().toUri());
         if (handleExecutionActivateInterest(interest)) {
@@ -8813,6 +9735,11 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         }
         if (!replyFromIMS(interest)) {
             rememberPendingImsInterest(interest);
+            if (streamEvent && std::getenv("SPEC175_TRACE") != nullptr) {
+                NDN_LOG_INFO("SPEC175_TRACE stream-exact-pending name="
+                             << interest.getName()
+                             << " cursor=" << streamEvent->cursor);
+            }
         }
 
     }
@@ -8875,7 +9802,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                     ndn::time::milliseconds(interestLifetimeMs));
 
                 try {
-                    nacConsumer.consume(
+                    activeNacConsumer().consume(
                         interest,
                         [completed, mutex, cv, plaintext](const ndn::Buffer& buffer) {
                             {
@@ -9059,7 +9986,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                         ndn::Name(serviceName), extractLargeDataProducerPrefix(encryptedDataName),
                         std::string("/SERVICE") + serviceName,
                         envelope.getEpochId());
-                    nacConsumer.consume(
+                    activeNacConsumer().consume(
                         keyDataName,
                         makeNacInlineContentBlock(envelope.getWrappedMessageKey()),
                         [this, envelope, finishDecrypt](const ndn::Buffer& unwrappedKey) mutable {
@@ -9087,7 +10014,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                         ndn::Name(serviceName), extractLargeDataProducerPrefix(encryptedDataName),
                         std::string("/SERVICE") + serviceName,
                         envelope.getEpochId());
-                    nacConsumer.consume(
+                    activeNacConsumer().consume(
                         keyDataName,
                         [this, envelope, finishDecrypt](const ndn::Buffer& unwrappedKey) mutable {
                             m_hybridMessageCrypto.cacheReceiveKey(envelope.getKeyId(),
@@ -9225,6 +10152,21 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             // Exact tensor Interests are routed to the Provider identity, not
             // to the unrelated SVS node identifier used by legacy PubSub.
             offer.setField("ndnsfDataV1EndpointPrefix", identity.toUri());
+            requestAckMessage.setSelectionInputKeyOffer(offer);
+        }
+        if (status && sourceRequest != nullptr &&
+            sourceRequest->hasStreamRequestOptions() &&
+            !requestAckMessage.hasSelectionInputKeyOffer()) {
+            const auto publicKey = identityCert.getPublicKey();
+            ndn::Buffer publicKeyBuffer(publicKey.begin(), publicKey.end());
+            SelectionInputKeyOffer offer;
+            offer.setField("schemaVersion", "NDNSF-STREAM-GRANT-V1");
+            offer.setField("recipient", identity.toUri());
+            offer.setField("recipientCertName", identityCert.getName().toUri());
+            offer.setField("recipientPublicKey", selectionGatedHex(publicKeyBuffer));
+            offer.setField("recipientCertDigest", sha256DigestString(publicKeyBuffer));
+            offer.setField("providerBootEpoch",
+                           identity.toUri() + ":" + std::to_string(m_processStartedAtUs));
             requestAckMessage.setSelectionInputKeyOffer(offer);
         }
         if (!payload.empty()) {
@@ -9634,7 +10576,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                     selectionV2->requestId,
                     "invalid hybrid selection envelope");
                 return;
-                nacConsumer.consume(subscription.name,
+                activeNacConsumer().consume(subscription.name,
                                     makeNacInlineContentBlock(subscription.data),
                                     [this, requesterName = selectionV2->requesterName,
                                      providerName = selectionV2->providerName,
@@ -9703,7 +10645,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                           << " providerName=" << selectionV2->providerName.toUri()
                           << " serviceName=" << selectionV2->serviceName.toUri()
                           << " selectionName=" << subscription.name.toUri());
-                nacConsumer.consume(subscription.name,
+                activeNacConsumer().consume(subscription.name,
                                     [this, requesterName = selectionV2->requesterName,
                                      providerName = selectionV2->providerName,
                                      serviceName = selectionV2->serviceName,
@@ -10842,6 +11784,29 @@ opaque_selection_committed:
             ++m_tokenConsumeCount;
         }
 
+        // A streamed collaboration grants the event key only to its terminal
+        // role. A selected nonterminal role still executes its structured
+        // assignment, but has no authority to publish user-facing events.
+        // Ordinary streamed selections and any unstructured assignment remain
+        // fail-closed when the grant is absent.
+        const bool missingRequiredStreamGrant =
+            selectedRequest.hasStreamRequestOptions() &&
+            !message.hasStreamEventKeyGrant() &&
+            !structuredAssignmentPayload;
+        const bool rejectedStreamGrant =
+            selectedRequest.hasStreamRequestOptions() &&
+            message.hasStreamEventKeyGrant() &&
+            !initializeStreamPublisher(requesterName, providerName, serviceName,
+                                       msgId, selectedRequest, message,
+                                       selectionDigest);
+        if (missingRequiredStreamGrant || rejectedStreamGrant) {
+            updateSelectionExecutionStatus(selectionDigest,
+                                           SelectionExecutionState::Rejected,
+                                           providerName, serviceName, msgId,
+                                           "stream event-key grant binding rejected");
+            return;
+        }
+
         // Deployment-capable requests take the additive selection-gated path.
         // Legacy V2 requests (no DeploymentIntent) continue directly to the
         // existing handler path below.
@@ -11070,13 +12035,23 @@ opaque_selection_committed:
                         CollaborationAssignmentEnvelope envelope;
                         if (decodeCollaborationAssignmentEnvelope(item, envelope)) {
                             rolePayloads.push_back(item);
-                            const auto first = std::string(
+                            const auto opaqueText = std::string(
                                 reinterpret_cast<const char*>(
                                   envelope.opaquePayload.data()),
-                                envelope.opaquePayload.size()).find_first_not_of(
-                                  " \t\r\n");
-                            if (first == std::string::npos ||
-                                envelope.opaquePayload[first] != '{') {
+                                envelope.opaquePayload.size());
+                            const auto first = opaqueText.find_first_not_of(
+                                " \t\r\n");
+                            const auto reference =
+                                parseLargeDataReferencePayload(
+                                    envelope.opaquePayload);
+                            const bool inlineV3 =
+                                first != std::string::npos &&
+                                opaqueText[first] == '{';
+                            const bool externalV3 =
+                                reference && reference->encrypted &&
+                                reference->objectType ==
+                                  "application/vnd.ndnsf.collaboration-assignment-v1";
+                            if (!inlineV3 && !externalV3) {
                                 v3AssignmentSet = false;
                             }
                         }
@@ -11193,6 +12168,17 @@ opaque_selection_committed:
 
     }
 
+    void ServiceProvider::onStreamEvent(
+        const ndn::svs::SVSPubSub::SubscriptionData& subscription)
+    {
+        if (!subscription.packet) return;
+        const auto parsed = parseInvocationEventName(subscription.packet->getName());
+        if (!parsed || !parsed->producer.equals(identity)) return;
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=STREAM_EVENT_OBSERVED "
+                      << "requestId=" << parsed->requestId.toUri()
+                      << " cursor=" << parsed->cursor);
+    }
+
     void ServiceProvider::registerNDNSFMessages()
     {
         // log register
@@ -11226,6 +12212,13 @@ opaque_selection_committed:
         m_svsps->subscribeWithRegex(ndn::Regex(collabRegex),
                                     std::bind(&ServiceProvider::onCollaborationDataMessage, this, _1),
                                     true, false);
+        // Stream events are already signed Data packets. Providers subscribe
+        // with packet delivery enabled so an exact-name retry can be serviced
+        // from the retained publisher without decoding a synthetic payload.
+        std::string eventRegex = "^(<>*)<NDNSF><EVENT>(<>*)$";
+        m_svsps->subscribeWithRegex(ndn::Regex(eventRegex),
+                                    std::bind(&ServiceProvider::onStreamEvent, this, _1),
+                                    true, true);
     }
 
     bool ServiceProvider::isFresh(const ndn::svs::SVSPubSub::SubscriptionData& subscription)

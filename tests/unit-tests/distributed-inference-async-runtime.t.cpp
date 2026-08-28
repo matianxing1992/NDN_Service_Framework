@@ -7,6 +7,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderReadiness.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp"
@@ -49,6 +50,86 @@ bundle(std::string name, std::string text)
     std::vector<uint8_t>(text.begin(), text.end()),
     1,
   };
+}
+
+std::string
+stateDigest(char value)
+{
+  return "sha256:" + std::string(64, value);
+}
+
+DecodeStateIdentityV1
+exactStateIdentity(std::string requestId = "request-a",
+                   std::uint64_t attemptEpoch = 1,
+                   std::string generationId = "generation-a",
+                   std::uint64_t stateInferenceEpoch = 0,
+                   std::optional<std::uint64_t> predecessorInferenceEpoch =
+                     std::nullopt)
+{
+  DecodeStateIdentityV1 identity;
+  identity.modelDigest = stateDigest('1');
+  identity.graphSemanticDigest = stateDigest('2');
+  identity.artifactDigest = stateDigest('3');
+  identity.adapterDigest = stateDigest('4');
+  identity.tokenizerDigest = stateDigest('5');
+  identity.runnerDigest = stateDigest('6');
+  identity.roleName = "/Stage/0";
+  identity.roleSplitDigest = stateDigest('7');
+  identity.layerBegin = 0;
+  identity.layerEnd = 4;
+  identity.prefixDigest = stateDigest('8');
+  identity.prefixTokenCount = 3;
+  identity.positionDigest = stateDigest('9');
+  identity.precision = "fp32";
+  identity.layoutDigest = stateDigest('a');
+  identity.stateSchemaDigest = stateDigest('b');
+  identity.stateComponentDigests = {stateDigest('c'), stateDigest('d')};
+  identity.runtimeAbiDigest = stateDigest('e');
+  identity.securityDomainDigest = stateDigest('f');
+  identity.providerIdentity = "/provider/A";
+  identity.providerBootId = "boot-a";
+  identity.cacheEpoch = 7;
+  identity.stateInferenceEpoch = stateInferenceEpoch;
+  identity.predecessorInferenceEpoch = predecessorInferenceEpoch;
+  identity.requestId = std::move(requestId);
+  identity.attemptEpoch = attemptEpoch;
+  identity.generationId = std::move(generationId);
+  identity.validate();
+  return identity;
+}
+
+ConversationStateBinding
+exactConversationBinding(const DecodeStateIdentityV1& origin,
+                         std::uint64_t contextEpoch = 1,
+                         std::uint64_t expiresAtMs = 10'000)
+{
+  ConversationStateBinding binding;
+  binding.conversationId = "conversation-a-0001";
+  binding.contextEpoch = contextEpoch;
+  binding.serviceName = "/LLM/Pipeline/Generate";
+  binding.planRoleMapDigest = stateDigest('0');
+  binding.receiptDigest = stateDigest('9');
+  binding.expiresAtMs = expiresAtMs;
+  binding.identity = origin;
+  binding.validate();
+  return binding;
+}
+
+BOOST_AUTO_TEST_CASE(DecodeStateIdentityRequiresExactPredecessorEpoch)
+{
+  auto prefill = exactStateIdentity();
+  BOOST_CHECK_NO_THROW(prefill.validate());
+
+  prefill.predecessorInferenceEpoch = 0;
+  BOOST_CHECK_THROW(prefill.validate(), std::invalid_argument);
+
+  auto decode = exactStateIdentity("request-a", 1, "generation-a", 1, 0);
+  BOOST_CHECK_NO_THROW(decode.validate());
+
+  decode.predecessorInferenceEpoch = std::nullopt;
+  BOOST_CHECK_THROW(decode.validate(), std::invalid_argument);
+  decode.predecessorInferenceEpoch = 1;
+  BOOST_CHECK_THROW(decode.validate(), std::invalid_argument);
 }
 
 std::string
@@ -233,6 +314,171 @@ public:
   std::vector<std::string> publishedNames;
 };
 
+class FailingPublishDependencyIo : public DependencyIo
+{
+public:
+  explicit FailingPublishDependencyIo(bool failPublication)
+    : failPublication(failPublication)
+  {
+  }
+
+  std::future<TensorBundle>
+  prefetchInput(const std::string&, const DependencyEdge&) override
+  {
+    std::promise<TensorBundle> promise;
+    promise.set_exception(std::make_exception_ptr(
+      std::runtime_error("unexpected publication-failure prefetch")));
+    return promise.get_future();
+  }
+
+  void
+  publishOutput(const std::string&,
+                const DependencyEdge&,
+                const TensorBundle&) override
+  {
+    ++publicationCalls;
+    if (failPublication) {
+      throw std::runtime_error("injected dependency publication failure");
+    }
+  }
+
+public:
+  bool failPublication = false;
+  std::atomic<std::size_t> publicationCalls{0};
+};
+
+enum class NativeEpochPublicationFault
+{
+  EventAdmission,
+  FeedbackPublication,
+  ActivationPublication,
+};
+
+struct NativeEpochPublicationFailureResult
+{
+  std::string error;
+  std::size_t runnerCalls = 0;
+  std::size_t eventCalls = 0;
+  std::size_t publicationCalls = 0;
+  ProviderDecodeStateSnapshot state;
+};
+
+NativeEpochPublicationFailureResult
+runNativeEpochPublicationFailure(NativeEpochPublicationFault fault)
+{
+  NativeProviderRuntime runtime(1);
+  const auto identityTemplate = exactStateIdentity();
+  NativeModelRunnerSpec runnerSpec;
+  runnerSpec.role = "/Stage/0";
+  runnerSpec.kind = "onnx-model";
+  runnerSpec.backend = "test-stateful";
+  runnerSpec.path = "/tmp/stage-0.onnx";
+  runnerSpec.metadata = {
+    {"evidence.modelDigest", identityTemplate.modelDigest},
+    {"evidence.planDigest", stateDigest('0')},
+    {"evidence.providerName", identityTemplate.providerIdentity},
+    {"evidence.providerBootId", identityTemplate.providerBootId},
+    {"state.securityEpoch", "7"},
+    {"state.generationId", identityTemplate.generationId},
+    {"state.schemaDigest", identityTemplate.stateSchemaDigest},
+  };
+
+  std::atomic<std::size_t> runnerCalls{0};
+  runtime.registerRunner(
+    runnerSpec,
+    makeNativeModelRunner([&runnerCalls] (const RoleExecutionContext&) {
+      ++runnerCalls;
+      NamedTensor logits;
+      logits.name = "logits";
+      logits.elementType = TensorElementType::Float32;
+      logits.shape = {1, 2};
+      logits.payload = floatPayload({0.0f, 1.0f});
+      NamedTensor state;
+      state.name = "attention_kv_out";
+      state.elementType = TensorElementType::Int64;
+      state.shape = {1};
+      state.payload = rawTensorPayload<std::int64_t>({1});
+      return std::map<std::string, TensorBundle>{
+        {"onnx-output-bundle",
+         makeEncodedTensorBundle(
+           "onnx-output-bundle", {std::move(logits), std::move(state)})},
+      };
+    }));
+
+  NativeExecutionPlan plan;
+  plan.roles = {runnerSpec.role};
+  NativeDependencySpec output;
+  output.producers = {runnerSpec.role};
+  output.keyScope = fault == NativeEpochPublicationFault::ActivationPublication
+    ? "activation" : "token-feedback";
+  output.topicPrefix = "/ndnsf-di";
+  output.objectNameTemplate = fault ==
+      NativeEpochPublicationFault::ActivationPublication
+    ? "{producerProvider}/NDNSF/DI/ACTIVATION/{sessionId}/{producerRole}/bundle/{sequence}"
+    : "{producerProvider}/NDNSF/DI/FEEDBACK/{sessionId}/{producerRole}/bundle/{sequence}";
+  output.operationKind = fault ==
+      NativeEpochPublicationFault::ActivationPublication
+    ? "ACTIVATION" : "TOKEN_FEEDBACK";
+  if (fault == NativeEpochPublicationFault::ActivationPublication) {
+    plan.roles.push_back("/Consumer");
+    output.consumers = {"/Consumer"};
+  }
+  else {
+    output.consumers = {runnerSpec.role};
+  }
+  plan.dependencies = {output};
+
+  NativeProviderAssignment assignment;
+  assignment.providerByRole[runnerSpec.role] = "/provider/A";
+  if (fault == NativeEpochPublicationFault::ActivationPublication) {
+    assignment.providerByRole["/Consumer"] = "/provider/B";
+  }
+  auto io = std::make_shared<FailingPublishDependencyIo>(
+    fault != NativeEpochPublicationFault::EventAdmission);
+
+  std::atomic<std::size_t> eventCalls{0};
+  NativeEpochCoordinatorConfig config{runtime, plan, assignment, io};
+  config.sessionId = "publication-failure-session";
+  config.requestId = "publication-failure-request";
+  config.attemptEpoch = 1;
+  config.lineagePlanDigest = stateDigest('0');
+  config.localProvider = "/provider/A";
+  config.role = runnerSpec.role;
+  config.initialInputs = {
+    {"input_ids",
+     makeEncodedTensorBundle(
+       "prompt",
+       {NamedTensor{"input_ids", TensorElementType::Int64, {1, 3},
+                    rawTensorPayload<std::int64_t>({11, 12, 13})}})},
+  };
+  config.maxEpochs = 1;
+  config.tokenInputName = "input_ids";
+  config.stateInputNames = {"attention_kv_in"};
+  config.stateOutputNames = {"attention_kv_out"};
+  config.stateIdentityTemplate = identityTemplate;
+  config.positionPolicyDigest = identityTemplate.positionDigest;
+  config.samplingDigest = "sha256:sampling";
+  if (fault != NativeEpochPublicationFault::ActivationPublication) {
+    config.eventSink = [&eventCalls, fault] (const std::vector<std::uint8_t>&) {
+      ++eventCalls;
+      return fault != NativeEpochPublicationFault::EventAdmission;
+    };
+  }
+
+  NativeEpochPublicationFailureResult result;
+  try {
+    runNativeEpochCoordinator(std::move(config));
+  }
+  catch (const std::exception& error) {
+    result.error = error.what();
+  }
+  result.runnerCalls = runnerCalls.load();
+  result.eventCalls = eventCalls.load();
+  result.publicationCalls = io->publicationCalls.load();
+  result.state = runtime.decodeStateSnapshot();
+  return result;
+}
+
 class ImmediateDependencyIo : public DependencyIo
 {
 public:
@@ -276,6 +522,53 @@ public:
                                 "native:" + payloadText(ctx.inputsByScope.begin()->second))},
     };
   }
+};
+
+class StreamEventNativeRunner : public NativeModelRunner
+{
+public:
+  std::map<std::string, TensorBundle>
+  run(const RoleExecutionContext& ctx) final
+  {
+    BOOST_REQUIRE(static_cast<bool>(ctx.streamEventSink));
+    const std::vector<std::uint8_t> event{'t', 'o', 'k', 'e', 'n', '-', '1'};
+    BOOST_REQUIRE(ctx.streamEventSink(event));
+    return {{"terminal", bundle("terminal", "result")}};
+  }
+};
+
+class IncrementalTestRunner final : public NativeModelRunner
+{
+public:
+  IncrementalTestRunner(std::atomic<int>& oneShotRuns,
+                        std::atomic<int>& streamedRuns)
+    : m_oneShotRuns(oneShotRuns)
+    , m_streamedRuns(streamedRuns)
+  {
+  }
+
+  std::map<std::string, TensorBundle>
+  run(const RoleExecutionContext&) final
+  {
+    ++m_oneShotRuns;
+    return {{"final-response", bundle("final-response", "one-shot-result")}};
+  }
+
+  std::optional<std::map<std::string, TensorBundle>>
+  runStreamed(const RoleExecutionContext& ctx) final
+  {
+    ++m_streamedRuns;
+    BOOST_REQUIRE(static_cast<bool>(ctx.streamEventSink));
+    BOOST_REQUIRE(ctx.streamEventSink(
+      std::vector<std::uint8_t>{'s', 't', 'r', 'e', 'a', 'm'}));
+    return std::map<std::string, TensorBundle>{
+      {"final-response", bundle("final-response", "incremental-result")},
+    };
+  }
+
+private:
+  std::atomic<int>& m_oneShotRuns;
+  std::atomic<int>& m_streamedRuns;
 };
 
 } // namespace
@@ -718,6 +1011,124 @@ BOOST_AUTO_TEST_CASE(ProviderRoleWorkerAcceptsNativeModelRunnerObject)
   BOOST_REQUIRE(io->publishedByScope.count("native-to-user") == 1);
   BOOST_CHECK_EQUAL(payloadText(io->publishedByScope.at("native-to-user")),
                     "native:input:input-to-native");
+}
+
+BOOST_AUTO_TEST_CASE(ProviderRoleWorkerPassesStreamEventSinkToNativeRunner)
+{
+  RoleSpec role{
+    "/Terminal",
+    {},
+    {},
+  };
+  auto io = std::make_shared<FakeDependencyIo>();
+  auto runner = std::make_shared<StreamEventNativeRunner>();
+  std::vector<std::string> events;
+  std::mutex eventsMutex;
+  ProviderRoleWorker worker(1);
+  auto sink = [&] (const std::vector<std::uint8_t>& payload) {
+    std::lock_guard<std::mutex> lock(eventsMutex);
+    events.emplace_back(payload.begin(), payload.end());
+    return true;
+  };
+
+  const auto result = worker.executeAsync(
+    "run-stream-sink", role, io, runner, {}, std::move(sink)).get();
+  BOOST_CHECK_EQUAL(payloadText(result.outputsByScope.at("terminal")), "result");
+  std::lock_guard<std::mutex> lock(eventsMutex);
+  BOOST_REQUIRE_EQUAL(events.size(), 1);
+  BOOST_CHECK_EQUAL(events.front(), "token-1");
+}
+
+BOOST_AUTO_TEST_CASE(ProviderRoleWorkerDoesNotCacheStreamEventSideEffects)
+{
+  RoleSpec role;
+  role.role = "/LLM/Pipeline/Stage/0";
+
+  auto io = std::make_shared<FakeDependencyIo>();
+  std::atomic<int> runCount{0};
+  std::atomic<int> eventCount{0};
+  ProviderRoleWorker worker(1);
+  auto runner = makeNativeModelRunner(
+    [&runCount] (const RoleExecutionContext& ctx) {
+      ++runCount;
+      BOOST_REQUIRE(static_cast<bool>(ctx.streamEventSink));
+      BOOST_REQUIRE(ctx.streamEventSink(
+        std::vector<std::uint8_t>{'e', 'v', 'e', 'n', 't'}));
+      return std::map<std::string, TensorBundle>{
+        {"final-response", bundle("final-response", "result")},
+      };
+    });
+  auto eventSink = [&eventCount] (const std::vector<std::uint8_t>& payload) {
+    if (payload != std::vector<std::uint8_t>{'e', 'v', 'e', 'n', 't'}) {
+      return false;
+    }
+    ++eventCount;
+    return true;
+  };
+
+  const auto first = worker.executeAsync(
+    "stream-request-1", role, io, runner, {}, eventSink).get();
+  const auto second = worker.executeAsync(
+    "stream-request-2", role, io, runner, {}, eventSink).get();
+
+  BOOST_CHECK_EQUAL(runCount.load(), 2);
+  BOOST_CHECK_EQUAL(eventCount.load(), 2);
+  BOOST_CHECK(!first.exactForwardCacheHit);
+  BOOST_CHECK(!second.exactForwardCacheHit);
+  BOOST_CHECK_EQUAL(payloadText(second.outputsByScope.at("final-response")),
+                    "result");
+}
+
+BOOST_AUTO_TEST_CASE(ProviderRoleWorkerUsesIncrementalRunnerWhenAvailable)
+{
+  RoleSpec role;
+  role.role = "/LLM/Pipeline/Stage/0";
+  auto io = std::make_shared<FakeDependencyIo>();
+  std::atomic<int> oneShotRuns{0};
+  std::atomic<int> streamedRuns{0};
+  auto runner = std::make_shared<IncrementalTestRunner>(
+    oneShotRuns, streamedRuns);
+  ProviderRoleWorker worker(1);
+  auto sink = [] (const std::vector<std::uint8_t>& payload) {
+    return payload == std::vector<std::uint8_t>{'s', 't', 'r', 'e', 'a', 'm'};
+  };
+  const auto result = worker.executeAsync(
+    "stream-request-incremental", role, io, runner, {}, sink).get();
+  BOOST_CHECK_EQUAL(oneShotRuns.load(), 0);
+  BOOST_CHECK_EQUAL(streamedRuns.load(), 1);
+  BOOST_CHECK(!result.exactForwardCacheHit);
+  BOOST_CHECK_EQUAL(payloadText(result.outputsByScope.at("final-response")),
+                    "incremental-result");
+}
+
+BOOST_AUTO_TEST_CASE(ProviderRoleWorkerUsesOneShotRunnerForCoordinatorEpoch)
+{
+  RoleSpec role;
+  role.role = "/LLM/Pipeline/Stage/0";
+  role.requestId = "coordinator-request";
+  role.attemptEpoch = 1;
+  GenerationEpochLineageV1 lineage;
+  lineage.requestId = role.requestId;
+  lineage.attemptEpoch = role.attemptEpoch;
+  lineage.inferenceEpoch = 0;
+  role.generationLineage = lineage;
+
+  auto io = std::make_shared<FakeDependencyIo>();
+  std::atomic<int> oneShotRuns{0};
+  std::atomic<int> streamedRuns{0};
+  auto runner = std::make_shared<IncrementalTestRunner>(
+    oneShotRuns, streamedRuns);
+  ProviderRoleWorker worker(1);
+  auto sink = [] (const std::vector<std::uint8_t>&) {
+    return true;
+  };
+
+  const auto result = worker.executeAsync(
+    "coordinator-epoch", role, io, runner, {}, sink).get();
+  BOOST_CHECK_EQUAL(oneShotRuns.load(), 1);
+  BOOST_CHECK_EQUAL(streamedRuns.load(), 0);
+  BOOST_CHECK_EQUAL(payloadText(result.outputsByScope.at("final-response")),
+                    "one-shot-result");
 }
 
 BOOST_AUTO_TEST_CASE(ProviderRoleWorkerPassesInitialInputsToSourceRole)
@@ -2044,6 +2455,76 @@ BOOST_AUTO_TEST_CASE(NativeTensorBundleCodecSelectsNamedTensorSubset)
                     std::out_of_range);
 }
 
+BOOST_AUTO_TEST_CASE(GenerationEpochLineageRoundTripsInsideTensorBundle)
+{
+  GenerationEpochLineageV1 lineage;
+  lineage.requestId = "request-a";
+  lineage.attemptEpoch = 1;
+  lineage.planDigest = stateDigest('1');
+  lineage.generationId = "generation-a";
+  lineage.streamEpoch = 3;
+  lineage.inferenceEpoch = 2;
+  lineage.transitionKind = GenerationEpochLineageV1::DECODE;
+  lineage.logicalPrefixDigest = stateDigest('2');
+  lineage.logicalPrefixTokenCount = 5;
+  lineage.positionDigest = stateDigest('3');
+  lineage.producerRole = "/Stage/0";
+  lineage.consumerRole = "/Stage/1";
+  lineage.operationIndex = 9;
+
+  const auto original = makeEncodedTensorBundle(
+    "activation",
+    {NamedTensor{"hidden_states", TensorElementType::Float32, {1},
+                 rawTensorPayload<float>({1.0f})}});
+  const auto attached = attachGenerationEpochLineage(original, lineage);
+  const auto decoded = extractGenerationEpochLineage(attached);
+  BOOST_REQUIRE(decoded.has_value());
+  BOOST_CHECK(*decoded == lineage);
+
+  const auto stripped = stripGenerationEpochLineage(attached);
+  BOOST_CHECK(!extractGenerationEpochLineage(stripped).has_value());
+  BOOST_REQUIRE_EQUAL(decodeTensorBundle(stripped.payload).size(), 1);
+  BOOST_CHECK_EQUAL(decodeTensorBundle(stripped.payload).front().name,
+                    "hidden_states");
+}
+
+BOOST_AUTO_TEST_CASE(GenerationEpochLineageRejectsUnknownOrInconsistentTransition)
+{
+  GenerationEpochLineageV1 lineage;
+  lineage.requestId = "request-transition";
+  lineage.attemptEpoch = 1;
+  lineage.planDigest = stateDigest('1');
+  lineage.generationId = "generation-transition";
+  lineage.streamEpoch = 1;
+  lineage.logicalPrefixDigest = stateDigest('2');
+  lineage.logicalPrefixTokenCount = 1;
+  lineage.positionDigest = stateDigest('3');
+  lineage.producerRole = "/Stage/0";
+  lineage.consumerRole = "/Stage/1";
+
+  lineage.transitionKind = GenerationEpochLineageV1::PREFILL;
+  lineage.inferenceEpoch = 0;
+  BOOST_CHECK_NO_THROW(lineage.validate());
+
+  lineage.transitionKind = GenerationEpochLineageV1::DECODE;
+  lineage.inferenceEpoch = 1;
+  BOOST_CHECK_NO_THROW(lineage.validate());
+
+  lineage.transitionKind = GenerationEpochLineageV1::CHECKPOINT_FINALIZE;
+  BOOST_CHECK_NO_THROW(lineage.validate());
+
+  lineage.transitionKind = "UNKNOWN";
+  BOOST_CHECK_THROW(lineage.validate(), std::invalid_argument);
+
+  lineage.transitionKind = GenerationEpochLineageV1::PREFILL;
+  lineage.inferenceEpoch = 1;
+  BOOST_CHECK_THROW(lineage.validate(), std::invalid_argument);
+
+  lineage.transitionKind = GenerationEpochLineageV1::DECODE;
+  lineage.inferenceEpoch = 0;
+  BOOST_CHECK_THROW(lineage.validate(), std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_CASE(NativeTensorBundleCodecRoundTripsPilotDtypesDynamicShapesAndKvOutputs)
 {
   const std::vector<NamedTensor> tensors{
@@ -2479,7 +2960,8 @@ BOOST_AUTO_TEST_CASE(KvStateStoreBindsReplacesEvictsAndInvalidatesOnBoot)
   store.setProviderBootId("boot-a");
   KvStateBinding first{
     "session-a", "/LLM/Stage/0", 1, "sha256:model", "sha256:plan",
-    "/provider/A", "boot-a", 7,
+    "/provider/A", "boot-a", 7, "request-a", 1, "generation-a",
+    "sha256:state-schema", std::nullopt,
   };
   BOOST_CHECK(store.put(first, bundle("kv-a", "1234")));
   BOOST_REQUIRE(store.lookup(first));
@@ -2522,6 +3004,1648 @@ BOOST_AUTO_TEST_CASE(KvStateStoreBindsReplacesEvictsAndInvalidatesOnBoot)
   BOOST_CHECK_EQUAL(store.size(), 0);
 
   BOOST_CHECK(!store.put(newBoot, bundle("too-large", "123456789")));
+}
+
+BOOST_AUTO_TEST_CASE(KvStateStoreRequiresCompleteIdentityForExactReuse)
+{
+  KvStateStore store(1024, 2);
+  store.setProviderBootId("boot-a");
+  KvStateBinding binding{
+    "session-a", "/Stage/0", 0, stateDigest('1'), stateDigest('0'),
+    "/provider/A", "boot-a", 7, "request-a", 1, "generation-a",
+    stateDigest('b'), exactStateIdentity(),
+  };
+  BOOST_REQUIRE(store.put(binding, bundle("state", "AAAA")));
+  BOOST_REQUIRE(store.lookup(binding));
+
+  const auto rejectMutation = [&] (const auto& mutate) {
+    auto changed = binding;
+    mutate(*changed.exactIdentity);
+    try {
+      BOOST_CHECK(!store.lookup(changed));
+    }
+    catch (const std::invalid_argument&) {
+      // A compact/full-identity disagreement is rejected during validation;
+      // an unmirrored full-identity change is rejected by exact comparison.
+    }
+  };
+  rejectMutation([] (auto& value) { value.modelDigest = stateDigest('2'); });
+  rejectMutation([] (auto& value) { value.graphSemanticDigest = stateDigest('3'); });
+  rejectMutation([] (auto& value) { value.artifactDigest = stateDigest('4'); });
+  rejectMutation([] (auto& value) { value.adapterDigest = stateDigest('5'); });
+  rejectMutation([] (auto& value) { value.tokenizerDigest = stateDigest('6'); });
+  rejectMutation([] (auto& value) { value.runnerDigest = stateDigest('7'); });
+  rejectMutation([] (auto& value) { value.roleName = "/Stage/1"; });
+  rejectMutation([] (auto& value) { value.roleSplitDigest = stateDigest('8'); });
+  rejectMutation([] (auto& value) { value.layerEnd += 1; });
+  rejectMutation([] (auto& value) { value.prefixDigest = stateDigest('9'); });
+  rejectMutation([] (auto& value) { value.prefixTokenCount += 1; });
+  rejectMutation([] (auto& value) { value.positionDigest = stateDigest('a'); });
+  rejectMutation([] (auto& value) { value.precision = "fp16"; });
+  rejectMutation([] (auto& value) { value.layoutDigest = stateDigest('0'); });
+  rejectMutation([] (auto& value) { value.stateSchemaDigest = stateDigest('c'); });
+  rejectMutation([] (auto& value) {
+    value.stateComponentDigests.front() = stateDigest('0');
+  });
+  rejectMutation([] (auto& value) { value.runtimeAbiDigest = stateDigest('0'); });
+  rejectMutation([] (auto& value) { value.securityDomainDigest = stateDigest('0'); });
+  rejectMutation([] (auto& value) { value.providerIdentity = "/provider/B"; });
+  rejectMutation([] (auto& value) { value.providerBootId = "boot-b"; });
+  rejectMutation([] (auto& value) { value.cacheEpoch += 1; });
+  rejectMutation([] (auto& value) { value.stateInferenceEpoch += 1; });
+  rejectMutation([] (auto& value) { value.predecessorInferenceEpoch = 0; });
+  rejectMutation([] (auto& value) { value.requestId = "request-b"; });
+  rejectMutation([] (auto& value) { value.attemptEpoch = 2; });
+  rejectMutation([] (auto& value) { value.generationId = "generation-b"; });
+
+  BOOST_REQUIRE(store.lookup(binding));
+  BOOST_CHECK_EQUAL(payloadText(*store.lookup(binding)), "AAAA");
+}
+
+BOOST_AUTO_TEST_CASE(KvStateStorePinsAndAtomicallyRollsBackCandidates)
+{
+  KvStateStore store(12, 2);
+  store.setProviderBootId("boot-a");
+  KvStateBinding first{
+    "session-a", "/Stage/0", 0, "sha256:model", "sha256:plan",
+    "/provider/A", "boot-a", 7, "request-a", 1, "generation-a",
+    "sha256:state-schema", std::nullopt,
+  };
+  auto second = first;
+  second.sessionId = "session-b";
+  second.requestId = "request-b";
+  second.generationId = "generation-b";
+  BOOST_REQUIRE(store.put(first, bundle("state-a", "AAAA")));
+  BOOST_REQUIRE(store.put(second, bundle("state-b", "BBBB")));
+
+  BOOST_REQUIRE(store.beginTransition(first));
+  auto candidate = first;
+  candidate.contextEpoch = 1;
+  BOOST_REQUIRE(store.stageCandidate(
+    first, candidate, bundle("candidate-a", "CCCC")));
+  BOOST_CHECK_EQUAL(store.pinnedCount(), 1);
+  BOOST_CHECK_EQUAL(store.candidateCount(), 1);
+
+  auto third = first;
+  third.sessionId = "session-c";
+  third.requestId = "request-c";
+  third.generationId = "generation-c";
+  BOOST_REQUIRE(store.put(third, bundle("state-c", "DDDD")));
+  BOOST_CHECK(store.lookup(first));
+  BOOST_CHECK(!store.lookup(second));
+  BOOST_CHECK(store.lookup(third));
+  BOOST_CHECK_EQUAL(store.evictionCount(), 1);
+
+  BOOST_REQUIRE(store.rollbackTransition(candidate));
+  BOOST_CHECK_EQUAL(payloadText(*store.lookup(first)), "AAAA");
+  BOOST_CHECK(!store.lookup(candidate));
+  BOOST_CHECK_EQUAL(store.pinnedCount(), 0);
+  BOOST_CHECK_EQUAL(store.candidateCount(), 0);
+
+  BOOST_REQUIRE(store.beginTransition(first));
+  BOOST_REQUIRE(store.stageCandidate(
+    first, candidate, bundle("candidate-a", "EEEE")));
+  BOOST_REQUIRE(store.commitCandidate(candidate));
+  BOOST_CHECK(!store.lookup(first));
+  BOOST_CHECK_EQUAL(payloadText(*store.lookup(candidate)), "EEEE");
+  BOOST_CHECK_EQUAL(store.pinnedCount(), 0);
+  BOOST_CHECK_EQUAL(store.candidateCount(), 0);
+}
+
+BOOST_AUTO_TEST_CASE(ConversationStateStoreSeparatesCrossRequestState)
+{
+  ConversationStateStore store(4, 1, 4, 1, 1'000);
+  store.setProviderBinding("/provider/A", "boot-a", 7);
+  const auto origin = exactStateIdentity();
+  const auto binding = exactConversationBinding(origin, 1, 10'000);
+
+  BOOST_REQUIRE(store.stagePromotion(
+    origin.requestId, origin.roleName, binding, bundle("state", "AAAA"), 100));
+  BOOST_REQUIRE(store.commitStagedPromotion(binding, stateDigest('8')));
+  auto snapshot = store.snapshot();
+  BOOST_CHECK_EQUAL(snapshot.entries, 1U);
+  BOOST_CHECK_EQUAL(snapshot.gpuEntries, 1U);
+  BOOST_CHECK_EQUAL(snapshot.hostEntries, 0U);
+  BOOST_CHECK_EQUAL(snapshot.promotions, 1U);
+
+  // A resumed Request has fresh request/generation authority.  Those origin
+  // fields are audited but must not prevent exact conversation lookup.
+  auto resumed = binding;
+  resumed.identity.requestId = "request-b";
+  resumed.identity.generationId = "generation-b";
+  BOOST_REQUIRE(store.lookup(resumed, 200));
+  BOOST_CHECK_EQUAL(store.snapshot().hits, 1U);
+
+  auto wrongPrefix = resumed;
+  wrongPrefix.identity.prefixDigest = stateDigest('0');
+  BOOST_CHECK(!store.lookup(wrongPrefix, 200));
+  BOOST_CHECK_EQUAL(store.snapshot().misses, 1U);
+
+  BOOST_REQUIRE(store.pin(resumed, 250));
+  BOOST_CHECK_EQUAL(store.snapshot().pinnedEntries, 1U);
+  BOOST_CHECK(!store.pauseToHost(resumed, 250));
+  BOOST_REQUIRE(store.unpin(resumed));
+  BOOST_REQUIRE(store.pauseToHost(resumed, 300));
+  snapshot = store.snapshot();
+  BOOST_CHECK_EQUAL(snapshot.gpuEntries, 0U);
+  BOOST_CHECK_EQUAL(snapshot.hostEntries, 1U);
+  BOOST_CHECK_EQUAL(snapshot.hostBytes, 4U);
+
+  // Two callers attempting the same host restore share one in-flight
+  // transition; the second call is rejected rather than duplicating work.
+  // The transfer is asynchronous, so a very fast first transfer may already
+  // have completed by the time the duplicate call is made; in that case the
+  // idempotent GPU-resident result is also valid.
+  auto first = store.prefetchToGpu(resumed, 350);
+  auto duplicate = store.prefetchToGpu(resumed, 350);
+  const auto duplicateResult = duplicate.get();
+  BOOST_CHECK(first.get());
+  snapshot = store.snapshot();
+  // The duplicate may either observe PREFETCHING and return false, or arrive
+  // after the first transfer and return the idempotent GPU-resident result.
+  // Do not inspect the transient lifecycle after duplicate.get(): the first
+  // worker may have changed PREFETCHING to IDLE between those operations.
+  BOOST_CHECK(duplicateResult || snapshot.gpuEntries == 1U);
+  BOOST_CHECK_EQUAL(snapshot.gpuEntries, 1U);
+  BOOST_CHECK_EQUAL(snapshot.hostEntries, 0U);
+  BOOST_CHECK_EQUAL(snapshot.prefetchedEntries, 1U);
+  BOOST_CHECK_EQUAL(snapshot.prefetchBytes, 4U);
+
+  BOOST_REQUIRE(store.release(resumed));
+  snapshot = store.snapshot();
+  BOOST_CHECK_EQUAL(snapshot.entries, 0U);
+  BOOST_CHECK_EQUAL(snapshot.cleanups, 1U);
+
+  // Provider boot/cache changes invalidate every retained conversation entry.
+  BOOST_REQUIRE(store.promote(
+    origin.requestId, origin.roleName, binding, bundle("state", "BBBB"), 400));
+  store.setProviderBinding("/provider/A", "boot-b", 8);
+  snapshot = store.snapshot();
+  BOOST_CHECK_EQUAL(snapshot.entries, 0U);
+  BOOST_CHECK_EQUAL(snapshot.cleanups, 2U);
+  BOOST_CHECK(!store.lookup(binding, 500));
+}
+
+BOOST_AUTO_TEST_CASE(ConversationStatePromotionIsInvisibleUntilAggregateCommit)
+{
+  ConversationStateStore store(16, 2, 16, 2, 1'000);
+  store.setProviderBinding("/provider/A", "boot-a", 7);
+  const auto origin = exactStateIdentity();
+  const auto binding = exactConversationBinding(origin, 1, 10'000);
+
+  BOOST_REQUIRE(store.stagePromotion(
+    origin.requestId, origin.roleName, binding, bundle("state", "AAAA"), 100));
+  auto snapshot = store.snapshot();
+  BOOST_CHECK_EQUAL(snapshot.entries, 1U);
+  BOOST_CHECK_EQUAL(snapshot.committingEntries, 1U);
+  BOOST_CHECK_EQUAL(snapshot.stagedPromotions, 1U);
+  BOOST_CHECK_EQUAL(snapshot.promotions, 0U);
+  BOOST_CHECK(!store.lookup(binding, 110));
+
+  ConversationStateReferenceV1 reference;
+  reference.conversationId = binding.conversationId;
+  reference.contextEpoch = binding.contextEpoch;
+  reference.serviceName = binding.serviceName;
+  reference.planRoleMapDigest = binding.planRoleMapDigest;
+  reference.checkpointDigest = stateDigest('8');
+  reference.roleName = binding.identity.roleName;
+  reference.roleReceiptDigest = binding.receiptDigest;
+  reference.expiresAtMs = binding.expiresAtMs;
+  BOOST_CHECK(!store.resolve(reference, 110));
+
+  BOOST_REQUIRE(store.commitStagedPromotion(binding));
+  snapshot = store.snapshot();
+  BOOST_CHECK_EQUAL(snapshot.committingEntries, 0U);
+  BOOST_CHECK_EQUAL(snapshot.promotions, 1U);
+  BOOST_REQUIRE(store.lookup(binding, 120));
+
+  auto second = binding;
+  second.contextEpoch = 2;
+  second.receiptDigest = stateDigest('9');
+  BOOST_REQUIRE(store.stagePromotion(
+    origin.requestId, origin.roleName, second, bundle("state", "BBBB"), 130));
+  BOOST_REQUIRE(store.rollbackStagedPromotion(second));
+  snapshot = store.snapshot();
+  BOOST_CHECK_EQUAL(snapshot.entries, 1U);
+  BOOST_CHECK_EQUAL(snapshot.committingEntries, 0U);
+  BOOST_CHECK_EQUAL(snapshot.promotionRollbacks, 1U);
+  BOOST_CHECK(!store.lookup(second, 140));
+  BOOST_REQUIRE(store.lookup(binding, 140));
+}
+
+BOOST_AUTO_TEST_CASE(ConversationStateStoreCleansExpiredStagedPromotion)
+{
+  ConversationStateStore store(16, 2, 16, 2, 1'000);
+  store.setProviderBinding("/provider/A", "boot-a", 7);
+  const auto identity = exactStateIdentity();
+  auto binding = exactConversationBinding(identity, 1, 150);
+  BOOST_REQUIRE(store.stagePromotion(
+    identity.requestId, identity.roleName, binding,
+    bundle("state", "AAAA"), 100));
+  BOOST_CHECK_EQUAL(store.snapshot().committingEntries, 1U);
+  BOOST_CHECK_EQUAL(store.cleanupExpired(150), 1U);
+  const auto snapshot = store.snapshot();
+  BOOST_CHECK_EQUAL(snapshot.entries, 0U);
+  BOOST_CHECK_EQUAL(snapshot.committingEntries, 0U);
+  BOOST_CHECK_EQUAL(snapshot.cleanups, 1U);
+  BOOST_CHECK(!store.lookup(binding, 151));
+}
+
+BOOST_AUTO_TEST_CASE(ProviderConversationReceiptMatchesPythonCanonicalDigest)
+{
+  const auto identity = exactStateIdentity();
+  ProviderConversationStateReceiptV1 receipt;
+  receipt.conversationId = "conversation-a-0001";
+  receipt.parentContextEpoch = 0;
+  receipt.successorContextEpoch = 1;
+  receipt.originRequestId = identity.requestId;
+  receipt.originGenerationId = identity.generationId;
+  receipt.serviceName = "/LLM/Pipeline/Generate";
+  receipt.requesterIdentity = "/requester/A";
+  receipt.securityDomainDigest = identity.securityDomainDigest;
+  receipt.modelDigest = identity.modelDigest;
+  receipt.graphSemanticDigest = identity.graphSemanticDigest;
+  receipt.adapterDigest = identity.adapterDigest;
+  receipt.roleName = identity.roleName;
+  receipt.roleSplitDigest = identity.roleSplitDigest;
+  receipt.layoutDigest = identity.layoutDigest;
+  receipt.planRoleMapDigest = stateDigest('0');
+  receipt.providerIdentity = identity.providerIdentity;
+  receipt.providerBootId = identity.providerBootId;
+  receipt.cacheEpoch = identity.cacheEpoch;
+  receipt.prefixDigest = identity.prefixDigest;
+  receipt.prefixTokenCount = identity.prefixTokenCount;
+  receipt.positionDigest = identity.positionDigest;
+  receipt.stateSchemaDigest = identity.stateSchemaDigest;
+  receipt.stateComponentDigests = identity.stateComponentDigests;
+  receipt.expiresAtMs = 10'000;
+
+  BOOST_CHECK_EQUAL(
+    receipt.computedDigest(),
+    "sha256:e3351841b1ad9ef264fdb28a9890224b965513a09640d1cfed8ce786dcf53bdf");
+  const auto wire = receipt.toJson();
+  BOOST_CHECK(wire.find("\"receiptDigest\":\"" + receipt.computedDigest() +
+                        "\"") != std::string::npos);
+  BOOST_CHECK(wire.find("\"signature\":\"\"") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(ConversationStateStoreResolvesOnlyExactSelectionCommitment)
+{
+  ConversationStateStore store(16, 2, 16, 2, 1'000);
+  store.setProviderBinding("/provider/A", "boot-a", 7);
+  const auto origin = exactStateIdentity();
+  const auto binding = exactConversationBinding(origin, 1, 10'000);
+  BOOST_REQUIRE(store.stagePromotion(
+    origin.requestId, origin.roleName, binding, bundle("state", "AAAA"), 100));
+  BOOST_REQUIRE(store.commitStagedPromotion(binding, stateDigest('8')));
+
+  // A caller cannot smuggle a conflicting aggregate checkpoint through the
+  // binding argument while supplying a different final checkpoint digest.
+  auto conflictingBinding = binding;
+  conflictingBinding.checkpointDigest = stateDigest('7');
+  BOOST_CHECK(!store.commitStagedPromotion(conflictingBinding, stateDigest('8')));
+
+  ConversationStateReferenceV1 reference;
+  reference.conversationId = binding.conversationId;
+  reference.contextEpoch = binding.contextEpoch;
+  reference.serviceName = binding.serviceName;
+  reference.planRoleMapDigest = binding.planRoleMapDigest;
+  reference.checkpointDigest = stateDigest('8');
+  reference.roleName = binding.identity.roleName;
+  reference.roleReceiptDigest = binding.receiptDigest;
+  reference.expiresAtMs = binding.expiresAtMs;
+  auto resolved = store.resolve(reference, 200);
+  BOOST_REQUIRE(resolved);
+  auto expectedBinding = binding;
+  expectedBinding.checkpointDigest = reference.checkpointDigest;
+  BOOST_CHECK(*resolved == expectedBinding);
+
+  auto wrongReceipt = reference;
+  wrongReceipt.roleReceiptDigest = stateDigest('7');
+  BOOST_CHECK(!store.resolve(wrongReceipt, 200));
+  auto wrongCheckpoint = reference;
+  wrongCheckpoint.checkpointDigest = stateDigest('7');
+  BOOST_CHECK(!store.resolve(wrongCheckpoint, 200));
+  auto wrongRoleMap = reference;
+  wrongRoleMap.planRoleMapDigest = stateDigest('6');
+  BOOST_CHECK(!store.resolve(wrongRoleMap, 200));
+  BOOST_CHECK(!store.resolve(reference, 10'000));
+
+  // The legacy commit overload cannot authenticate an aggregate checkpoint.
+  // It must reject a caller that tries to attach one there instead of using
+  // the explicit checkpoint-bearing overload.
+  ConversationStateStore legacyStore(16, 2, 16, 2, 1'000);
+  legacyStore.setProviderBinding("/provider/A", "boot-a", 7);
+  BOOST_REQUIRE(legacyStore.stagePromotion(
+    origin.requestId, origin.roleName, binding, bundle("state", "BBBB"), 100));
+  auto forgedLegacyBinding = binding;
+  forgedLegacyBinding.checkpointDigest = stateDigest('8');
+  BOOST_CHECK(!legacyStore.commitStagedPromotion(forgedLegacyBinding));
+  BOOST_REQUIRE(legacyStore.rollbackStagedPromotion(binding));
+}
+
+BOOST_AUTO_TEST_CASE(NativeProviderRuntimeAutomaticallyReusesCommittedDecodeState)
+{
+  NativeProviderRuntime runtime(1);
+  NativeModelRunnerSpec runnerSpec;
+  runnerSpec.role = "/Stage/0";
+  runnerSpec.kind = "onnx-model";
+  runnerSpec.backend = "test-stateful";
+  runnerSpec.path = "/tmp/stage-0.onnx";
+  runnerSpec.metadata = {
+    {"evidence.modelDigest", stateDigest('1')},
+    {"evidence.planDigest", stateDigest('0')},
+    {"evidence.providerName", "/provider/A"},
+    {"evidence.providerBootId", "boot-a"},
+    {"state.securityEpoch", "7"},
+    {"state.generationId", "generation-a"},
+    {"state.schemaDigest", stateDigest('b')},
+  };
+
+  std::atomic<std::size_t> calls{0};
+  auto runner = makeNativeModelRunner(
+    [&calls] (const RoleExecutionContext& ctx) {
+      const auto call = calls.fetch_add(1);
+      bool foundCommittedState = false;
+      for (const auto& input : ctx.inputsByScope) {
+        if (!isEncodedTensorBundle(input.second.payload)) {
+          continue;
+        }
+        try {
+          const auto& state = findTensor(
+            decodeTensorBundle(input.second.payload), "attention_kv_in");
+          BOOST_CHECK(state.payload == rawTensorPayload<std::int64_t>({1}));
+          foundCommittedState = true;
+        }
+        catch (const std::out_of_range&) {
+        }
+      }
+      BOOST_CHECK_EQUAL(foundCommittedState, call == 1);
+
+      NamedTensor state;
+      state.name = "attention_kv_out";
+      state.elementType = TensorElementType::Int64;
+      state.shape = {1};
+      state.payload = rawTensorPayload<std::int64_t>(
+        {static_cast<std::int64_t>(call + 1)});
+      return std::map<std::string, TensorBundle>{
+        {"onnx-output-bundle",
+         makeEncodedTensorBundle("onnx-output-bundle", {std::move(state)})},
+      };
+    });
+  runtime.registerRunner(runnerSpec, std::move(runner));
+
+  RoleSpec role;
+  role.role = runnerSpec.role;
+  role.requestId = "request-a";
+  role.attemptEpoch = 1;
+  role.stateInputNames = {"attention_kv_in"};
+  role.stateOutputNames = {"attention_kv_out"};
+
+  role.inferenceEpoch = 0;
+  role.candidateDecodeStateIdentity = exactStateIdentity();
+  runtime.executeRoleAsync(
+    "session-a", role, std::make_shared<FakeDependencyIo>(),
+    {{"input_ids", bundle("input_ids", "prompt")}}).get();
+
+  role.inferenceEpoch = 1;
+  role.predecessorDecodeStateIdentity = role.candidateDecodeStateIdentity;
+  role.candidateDecodeStateIdentity->prefixDigest = stateDigest('0');
+  ++role.candidateDecodeStateIdentity->prefixTokenCount;
+  role.candidateDecodeStateIdentity->positionDigest = stateDigest('0');
+  role.candidateDecodeStateIdentity->stateInferenceEpoch = 1;
+  role.candidateDecodeStateIdentity->predecessorInferenceEpoch = 0;
+  runtime.executeRoleAsync(
+    "session-a", role, std::make_shared<FakeDependencyIo>(),
+    {{"input_ids", bundle("input_ids", "next-token")}}).get();
+
+  auto state = runtime.decodeStateSnapshot();
+  BOOST_CHECK_EQUAL(calls.load(), 2);
+  BOOST_CHECK_EQUAL(state.commits, 2);
+  BOOST_CHECK_EQUAL(state.hits, 1);
+  BOOST_CHECK_EQUAL(state.misses, 0);
+
+  role.inferenceEpoch = 2;
+  role.predecessorDecodeStateIdentity = role.candidateDecodeStateIdentity;
+  role.predecessorDecodeStateIdentity->adapterDigest = stateDigest('0');
+  role.candidateDecodeStateIdentity->prefixDigest = stateDigest('2');
+  ++role.candidateDecodeStateIdentity->prefixTokenCount;
+  role.candidateDecodeStateIdentity->positionDigest = stateDigest('2');
+  role.candidateDecodeStateIdentity->stateInferenceEpoch = 2;
+  role.candidateDecodeStateIdentity->predecessorInferenceEpoch = 1;
+  BOOST_CHECK_THROW(
+    runtime.executeRoleAsync(
+      "session-a", role, std::make_shared<FakeDependencyIo>(),
+      {{"input_ids", bundle("input_ids", "next-token-2")}}),
+    std::runtime_error);
+  state = runtime.decodeStateSnapshot();
+  BOOST_CHECK_EQUAL(calls.load(), 2);
+  BOOST_CHECK_EQUAL(state.hits, 1);
+  BOOST_CHECK_EQUAL(state.misses, 1);
+  BOOST_CHECK_EQUAL(state.commits, 2);
+}
+
+BOOST_AUTO_TEST_CASE(NativeProviderRuntimePromotesDecodeStateAcrossRequests)
+{
+  NativeProviderRuntime runtime(1, 1024, 1024, 4, 1024, 4, 1024, 4, 1'000);
+  NativeModelRunnerSpec runnerSpec;
+  runnerSpec.role = "/Stage/0";
+  runnerSpec.metadata = {
+    {"evidence.modelDigest", stateDigest('1')},
+    {"evidence.planDigest", stateDigest('0')},
+    {"evidence.providerName", "/provider/A"},
+    {"evidence.providerBootId", "boot-a"},
+    {"state.securityEpoch", "7"},
+    {"state.generationId", "generation-a"},
+    {"state.schemaDigest", stateDigest('b')},
+  };
+  runtime.registerRunner(
+    runnerSpec,
+    makeNativeModelRunner([] (const RoleExecutionContext&) {
+      NamedTensor state;
+      state.name = "attention_kv_out";
+      state.elementType = TensorElementType::Int64;
+      state.shape = {1};
+      state.payload = rawTensorPayload<std::int64_t>({42});
+      return std::map<std::string, TensorBundle>{
+        {"onnx-output-bundle",
+         makeEncodedTensorBundle("onnx-output-bundle", {std::move(state)})},
+      };
+    }));
+
+  const auto identity = exactStateIdentity();
+  RoleSpec role;
+  role.role = runnerSpec.role;
+  role.requestId = identity.requestId;
+  role.attemptEpoch = identity.attemptEpoch;
+  role.inferenceEpoch = 0;
+  role.stateInputNames = {"attention_kv_in"};
+  role.stateOutputNames = {"attention_kv_out"};
+  role.candidateDecodeStateIdentity = identity;
+  runtime.executeRoleAsync(
+    "session-a", role, std::make_shared<FakeDependencyIo>(),
+    {{"input_ids", bundle("input_ids", "prompt")}}).get();
+
+  const auto binding = exactConversationBinding(identity, 1, 10'000);
+  BOOST_REQUIRE(runtime.stageDecodeStatePromotion(
+    "session-a", role, binding, 100));
+  auto local = runtime.decodeStateSnapshot();
+  BOOST_CHECK_EQUAL(local.entries, 1U);
+  auto conversation = runtime.conversationStateSnapshot();
+  BOOST_CHECK_EQUAL(conversation.entries, 1U);
+  BOOST_CHECK_EQUAL(conversation.committingEntries, 1U);
+  BOOST_CHECK_EQUAL(conversation.promotions, 0U);
+  BOOST_CHECK(!runtime.lookupConversationState(binding, 150));
+
+  ConversationStateReferenceV1 stagedReference;
+  stagedReference.conversationId = binding.conversationId;
+  stagedReference.contextEpoch = binding.contextEpoch;
+  stagedReference.serviceName = binding.serviceName;
+  stagedReference.planRoleMapDigest = binding.planRoleMapDigest;
+  stagedReference.checkpointDigest = stateDigest('8');
+  stagedReference.roleName = binding.identity.roleName;
+  stagedReference.roleReceiptDigest = binding.receiptDigest;
+  stagedReference.expiresAtMs = binding.expiresAtMs;
+  BOOST_REQUIRE(runtime.resolveStagedConversationState(stagedReference, 150));
+  BOOST_CHECK(!runtime.resolveConversationState(stagedReference, 150));
+
+  BOOST_REQUIRE(runtime.commitStagedDecodeStatePromotion(binding));
+  local = runtime.decodeStateSnapshot();
+  BOOST_CHECK_EQUAL(local.entries, 0U);
+  conversation = runtime.conversationStateSnapshot();
+  BOOST_CHECK_EQUAL(conversation.entries, 1U);
+  BOOST_CHECK_EQUAL(conversation.committingEntries, 0U);
+  BOOST_CHECK_EQUAL(conversation.promotions, 1U);
+  BOOST_CHECK_EQUAL(conversation.requestLocalReleases, 1U);
+
+  auto resumed = binding;
+  resumed.identity.requestId = "request-b";
+  resumed.identity.generationId = "generation-b";
+  auto restored = runtime.lookupConversationState(resumed, 200);
+  BOOST_REQUIRE(restored);
+  const auto& restoredTensor = findTensor(
+    decodeTensorBundle(restored->payload), "attention_kv_in");
+  BOOST_CHECK(restoredTensor.payload == rawTensorPayload<std::int64_t>({42}));
+  BOOST_REQUIRE(runtime.pauseConversationStateToHost(resumed, 300));
+  BOOST_REQUIRE(runtime.prefetchConversationStateToGpu(resumed, 400).get());
+  BOOST_CHECK_EQUAL(runtime.conversationStateSnapshot().prefetchedEntries, 1U);
+
+  // A later Request cannot accidentally re-enter the request-local store by
+  // using the old request identity; it must explicitly restore conversation
+  // state first.
+  auto later = role;
+  later.requestId = "request-b";
+  later.inferenceEpoch = 1;
+  later.predecessorDecodeStateIdentity = identity;
+  later.candidateDecodeStateIdentity = identity;
+  later.candidateDecodeStateIdentity->requestId = "request-b";
+  later.candidateDecodeStateIdentity->generationId = "generation-b";
+  later.candidateDecodeStateIdentity->stateInferenceEpoch = 1;
+  later.candidateDecodeStateIdentity->predecessorInferenceEpoch = 0;
+  BOOST_CHECK_EXCEPTION(
+    runtime.executeRoleAsync(
+      "session-b", later, std::make_shared<FakeDependencyIo>(),
+      {{"input_ids", bundle("input_ids", "next")}}),
+    std::exception,
+    [] (const std::exception& error) {
+      // The old request identity is rejected before any runner call.  Depending
+      // on which exact compact/full binding check fires, this is either the
+      // explicit missing-state error or the equivalent fail-closed mismatch.
+      return std::string(error.what()) == "PROVIDER_DECODE_STATE_MISSING" ||
+             std::string(error.what()).find("compact binding") !=
+               std::string::npos;
+    });
+}
+
+BOOST_AUTO_TEST_CASE(NativeProviderRuntimeRestoresConversationStateForFreshRequest)
+{
+  NativeProviderRuntime runtime(1, 1024, 1024, 4, 1024, 4, 1024, 4, 1'000);
+  NativeModelRunnerSpec runnerSpec;
+  runnerSpec.role = "/Stage/0";
+  runnerSpec.metadata = {
+    {"evidence.modelDigest", stateDigest('1')},
+    {"evidence.planDigest", stateDigest('0')},
+    {"evidence.providerName", "/provider/A"},
+    {"evidence.providerBootId", "boot-a"},
+    {"state.securityEpoch", "7"},
+    {"state.generationId", "generation-a"},
+    {"state.schemaDigest", stateDigest('b')},
+  };
+
+  std::atomic<std::size_t> calls{0};
+  std::atomic<bool> restored{false};
+  runtime.registerRunner(
+    runnerSpec,
+    makeNativeModelRunner([&calls, &restored] (const RoleExecutionContext& ctx) {
+      const auto call = calls.fetch_add(1);
+      if (call == 1) {
+        const auto found = ctx.inputsByScope.find(
+          "__ndnsf_provider_decode_state");
+        BOOST_REQUIRE(found != ctx.inputsByScope.end());
+        BOOST_REQUIRE(isEncodedTensorBundle(found->second.payload));
+        const auto& state = findTensor(
+          decodeTensorBundle(found->second.payload), "attention_kv_in");
+        BOOST_CHECK(state.payload == rawTensorPayload<std::int64_t>({42}));
+        restored.store(true);
+      }
+      NamedTensor state;
+      state.name = "attention_kv_out";
+      state.elementType = TensorElementType::Int64;
+      state.shape = {1};
+      state.payload = rawTensorPayload<std::int64_t>({42});
+      return std::map<std::string, TensorBundle>{
+        {"onnx-output-bundle",
+         makeEncodedTensorBundle("onnx-output-bundle", {std::move(state)})},
+      };
+    }));
+
+  const auto origin = exactStateIdentity();
+  RoleSpec first;
+  first.role = runnerSpec.role;
+  first.requestId = origin.requestId;
+  first.attemptEpoch = origin.attemptEpoch;
+  first.stateInputNames = {"attention_kv_in"};
+  first.stateOutputNames = {"attention_kv_out"};
+  first.candidateDecodeStateIdentity = origin;
+  runtime.executeRoleAsync(
+    "session-a", first, std::make_shared<FakeDependencyIo>(),
+    {{"input_ids", bundle("input_ids", "prompt")}}).get();
+
+  auto binding = exactConversationBinding(origin, 1, 10'000);
+  BOOST_REQUIRE(runtime.promoteDecodeStateToConversation(
+    "session-a", first, binding, 100));
+
+  RoleSpec resumed = first;
+  resumed.requestId = "request-b";
+  auto resumedIdentity = exactStateIdentity(
+    "request-b", 1, "generation-b");
+  // A resumed request executes only the appended suffix, but its candidate
+  // identity commits the complete successor prefix.  The retained parent
+  // represents three tokens and this fixture supplies one delta token.
+  resumedIdentity.prefixTokenCount = binding.identity.prefixTokenCount + 1;
+  resumedIdentity.prefixDigest = stateDigest('4');
+  resumedIdentity.positionDigest = stateDigest('5');
+  resumedIdentity.validate();
+  resumed.candidateDecodeStateIdentity = resumedIdentity;
+  resumed.conversationStateBinding = binding;
+  resumed.conversationStateLookupNowMs = 200;
+  runtime.executeRoleAsync(
+    "session-b", resumed, std::make_shared<FakeDependencyIo>(),
+    {{"input_ids", bundle("input_ids", "delta")}}).get();
+
+  BOOST_CHECK_EQUAL(calls.load(), 2U);
+  BOOST_CHECK(restored.load());
+  const auto conversation = runtime.conversationStateSnapshot();
+  BOOST_CHECK_EQUAL(conversation.hits, 1U);
+  BOOST_CHECK_EQUAL(conversation.misses, 0U);
+  BOOST_CHECK_EQUAL(runtime.decodeStateSnapshot().commits, 2U);
+
+  auto zeroGrowth = resumed;
+  zeroGrowth.requestId = "request-zero-growth";
+  auto zeroGrowthIdentity = exactStateIdentity(
+    zeroGrowth.requestId, 1, "generation-zero-growth");
+  zeroGrowthIdentity.prefixTokenCount = binding.identity.prefixTokenCount;
+  zeroGrowthIdentity.validate();
+  zeroGrowth.candidateDecodeStateIdentity = zeroGrowthIdentity;
+  BOOST_CHECK_EXCEPTION(
+    runtime.executeRoleAsync(
+      "session-zero-growth", zeroGrowth,
+      std::make_shared<FakeDependencyIo>(),
+      {{"input_ids", bundle("input_ids", "delta")}}).get(),
+    std::logic_error,
+    [] (const std::logic_error& error) {
+      return std::string(error.what()) ==
+        "Provider generation input token count is not a strict prefix extension";
+    });
+  BOOST_CHECK_EQUAL(calls.load(), 2U);
+
+  auto missing = resumed;
+  missing.conversationStateBinding->contextEpoch = 2;
+  BOOST_CHECK_EXCEPTION(
+    runtime.executeRoleAsync(
+      "session-c", missing, std::make_shared<FakeDependencyIo>(),
+      {{"input_ids", bundle("input_ids", "delta-2")}}),
+    std::runtime_error,
+    [] (const std::runtime_error& error) {
+      return std::string(error.what()) == "PROVIDER_CONVERSATION_STATE_MISSING";
+    });
+  BOOST_CHECK_EQUAL(calls.load(), 2U);
+}
+
+BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorRestoresConversationStateAndExtendsPrefix)
+{
+  NativeProviderRuntime runtime(1, 1024, 1024, 4, 1024, 4, 1024, 4, 1'000);
+  const auto origin = exactStateIdentity();
+  NativeModelRunnerSpec runnerSpec;
+  runnerSpec.role = origin.roleName;
+  runnerSpec.metadata = {
+    {"evidence.modelDigest", origin.modelDigest},
+    {"evidence.planDigest", stateDigest('0')},
+    {"evidence.providerName", origin.providerIdentity},
+    {"evidence.providerBootId", origin.providerBootId},
+    {"state.securityEpoch", "7"},
+    {"state.generationId", origin.generationId},
+    {"state.schemaDigest", origin.stateSchemaDigest},
+  };
+
+  std::atomic<std::size_t> calls{0};
+  std::atomic<bool> restored{false};
+  runtime.registerRunner(
+    runnerSpec,
+    makeNativeModelRunner([&calls, &restored] (const RoleExecutionContext& ctx) {
+      const auto call = calls.fetch_add(1);
+      if (call == 1) {
+        const auto found = ctx.inputsByScope.find(
+          "__ndnsf_provider_decode_state");
+        BOOST_REQUIRE(found != ctx.inputsByScope.end());
+        const auto& state = findTensor(
+          decodeTensorBundle(found->second.payload), "attention_kv_in");
+        BOOST_CHECK(state.payload == rawTensorPayload<std::int64_t>({42}));
+        restored.store(true);
+      }
+      NamedTensor logits;
+      logits.name = "logits";
+      logits.elementType = TensorElementType::Float32;
+      logits.shape = {1, 2};
+      logits.payload = floatPayload({0.0f, 1.0f});
+      NamedTensor state;
+      state.name = "attention_kv_out";
+      state.elementType = TensorElementType::Int64;
+      state.shape = {1};
+      state.payload = rawTensorPayload<std::int64_t>({42});
+      return std::map<std::string, TensorBundle>{
+        {"onnx-output-bundle",
+         makeEncodedTensorBundle("onnx-output-bundle",
+                                 {std::move(logits), std::move(state)})},
+      };
+    }));
+
+  RoleSpec first;
+  first.role = runnerSpec.role;
+  first.requestId = origin.requestId;
+  first.attemptEpoch = origin.attemptEpoch;
+  first.stateInputNames = {"attention_kv_in"};
+  first.stateOutputNames = {"attention_kv_out"};
+  first.candidateDecodeStateIdentity = origin;
+  auto io = std::make_shared<FakeDependencyIo>();
+  runtime.executeRoleAsync(
+    "session-a", first, io,
+    {{"input_ids", makeEncodedTensorBundle(
+      "prompt", {NamedTensor{"input_ids", TensorElementType::Int64, {1, 3},
+                               rawTensorPayload<std::int64_t>({1, 2, 3})}})}})
+    .get();
+  const auto binding = exactConversationBinding(origin, 1, 10'000);
+  BOOST_REQUIRE(runtime.promoteDecodeStateToConversation(
+    "session-a", first, binding, 100));
+
+  NativeExecutionPlan plan;
+  plan.roles = {runnerSpec.role};
+  NativeDependencySpec feedback;
+  feedback.producers = {runnerSpec.role};
+  feedback.consumers = {runnerSpec.role};
+  feedback.keyScope = "token-feedback";
+  feedback.topicPrefix = "/ndnsf-di";
+  feedback.objectNameTemplate =
+    "{producerProvider}/NDNSF/DI/FEEDBACK/{sessionId}/{producerRole}/bundle/{sequence}";
+  feedback.operationKind = "TOKEN_FEEDBACK";
+  plan.dependencies = {feedback};
+  NativeProviderAssignment assignment;
+  assignment.providerByRole[runnerSpec.role] = origin.providerIdentity;
+
+  NativeEpochCoordinatorConfig config{runtime, plan, assignment, io};
+  config.sessionId = "session-b";
+  config.requestId = "request-b";
+  config.lineagePlanDigest = stateDigest('0');
+  config.localProvider = origin.providerIdentity;
+  config.role = runnerSpec.role;
+  config.initialInputs = {
+    {"input_ids", makeEncodedTensorBundle(
+      "delta", {NamedTensor{"input_ids", TensorElementType::Int64, {1, 2},
+                              rawTensorPayload<std::int64_t>({4, 5})}})},
+  };
+  config.maxEpochs = 1;
+  config.stateInputNames = {"attention_kv_in"};
+  config.stateOutputNames = {"attention_kv_out"};
+  config.stateIdentityTemplate = exactStateIdentity(
+    "request-b", 1, "generation-b");
+  config.positionPolicyDigest = origin.positionDigest;
+  config.samplingDigest = "sha256:sampling";
+  config.conversationStateBinding = binding;
+  config.conversationStateLookupNowMs = 200;
+  std::size_t events = 0;
+  config.eventSink = [&events] (const std::vector<std::uint8_t>&) {
+    ++events;
+    return true;
+  };
+
+  const auto result = runNativeEpochCoordinator(std::move(config));
+  BOOST_CHECK_EQUAL(calls.load(), 2U);
+  BOOST_CHECK(restored.load());
+  BOOST_CHECK_EQUAL(events, 1U);
+  BOOST_REQUIRE_EQUAL(result.cacheObservations.size(), 1U);
+  BOOST_CHECK(result.cacheObservations.front().conversationStateHit);
+  BOOST_CHECK_EQUAL(result.cacheObservations.front().actualNewInputExtent, 2U);
+  BOOST_CHECK_EQUAL(result.cacheObservations.front().representedPrefixTokenCount, 5U);
+  BOOST_CHECK_EQUAL(result.cacheObservations.front().prefixWorkAvoided, 3U);
+  BOOST_CHECK_EQUAL(runtime.conversationStateSnapshot().hits, 1U);
+  BOOST_CHECK_EQUAL(runtime.decodeStateSnapshot().entries, 0U);
+}
+
+BOOST_AUTO_TEST_CASE(NativeProviderRuntimeRejectsEveryPredecessorIdentityMutation)
+{
+  NativeProviderRuntime runtime(1);
+  NativeModelRunnerSpec runnerSpec;
+  runnerSpec.role = "/Stage/0";
+  runnerSpec.metadata = {
+    {"evidence.modelDigest", stateDigest('1')},
+    {"evidence.planDigest", stateDigest('0')},
+    {"evidence.providerName", "/provider/A"},
+    {"evidence.providerBootId", "boot-a"},
+    {"state.securityEpoch", "7"},
+    {"state.generationId", "generation-a"},
+    {"state.schemaDigest", stateDigest('b')},
+  };
+
+  std::atomic<std::size_t> calls{0};
+  runtime.registerRunner(
+    runnerSpec,
+    makeNativeModelRunner([&calls] (const RoleExecutionContext&) {
+      ++calls;
+      NamedTensor state;
+      state.name = "attention_kv_out";
+      state.elementType = TensorElementType::Int64;
+      state.shape = {1};
+      state.payload = rawTensorPayload<std::int64_t>({1});
+      return std::map<std::string, TensorBundle>{
+        {"onnx-output-bundle",
+         makeEncodedTensorBundle("onnx-output-bundle", {std::move(state)})},
+      };
+    }));
+
+  RoleSpec prefill;
+  prefill.role = runnerSpec.role;
+  prefill.requestId = "request-a";
+  prefill.attemptEpoch = 1;
+  prefill.inferenceEpoch = 0;
+  prefill.stateInputNames = {"attention_kv_in"};
+  prefill.stateOutputNames = {"attention_kv_out"};
+  prefill.candidateDecodeStateIdentity = exactStateIdentity();
+  runtime.executeRoleAsync(
+    "session-a", prefill, std::make_shared<FakeDependencyIo>(),
+    {{"input_ids", bundle("input_ids", "prompt")}}).get();
+  BOOST_REQUIRE_EQUAL(calls.load(), 1U);
+
+  RoleSpec decode = prefill;
+  decode.inferenceEpoch = 1;
+  decode.predecessorDecodeStateIdentity = prefill.candidateDecodeStateIdentity;
+  decode.candidateDecodeStateIdentity->prefixDigest = stateDigest('0');
+  ++decode.candidateDecodeStateIdentity->prefixTokenCount;
+  decode.candidateDecodeStateIdentity->positionDigest = stateDigest('0');
+  decode.candidateDecodeStateIdentity->stateInferenceEpoch = 1;
+  decode.candidateDecodeStateIdentity->predecessorInferenceEpoch = 0;
+
+  using Mutation = std::function<void(DecodeStateIdentityV1&)>;
+  const std::vector<std::pair<std::string, Mutation>> mutations{
+    {"modelDigest", [] (auto& v) { v.modelDigest = stateDigest('2'); }},
+    {"graphSemanticDigest", [] (auto& v) { v.graphSemanticDigest = stateDigest('3'); }},
+    {"artifactDigest", [] (auto& v) { v.artifactDigest = stateDigest('4'); }},
+    {"adapterDigest", [] (auto& v) { v.adapterDigest = stateDigest('5'); }},
+    {"tokenizerDigest", [] (auto& v) { v.tokenizerDigest = stateDigest('6'); }},
+    {"runnerDigest", [] (auto& v) { v.runnerDigest = stateDigest('7'); }},
+    {"roleName", [] (auto& v) { v.roleName = "/Stage/1"; }},
+    {"roleSplitDigest", [] (auto& v) { v.roleSplitDigest = stateDigest('8'); }},
+    {"layerRange", [] (auto& v) { ++v.layerEnd; }},
+    {"prefixDigest", [] (auto& v) { v.prefixDigest = stateDigest('9'); }},
+    {"prefixTokenCount", [] (auto& v) { ++v.prefixTokenCount; }},
+    {"positionDigest", [] (auto& v) { v.positionDigest = stateDigest('a'); }},
+    {"precision", [] (auto& v) { v.precision = "fp16"; }},
+    {"layoutDigest", [] (auto& v) { v.layoutDigest = stateDigest('0'); }},
+    {"stateSchemaDigest", [] (auto& v) { v.stateSchemaDigest = stateDigest('c'); }},
+    {"stateComponentDigests", [] (auto& v) {
+       v.stateComponentDigests.front() = stateDigest('0');
+     }},
+    {"stateComponentOrder", [] (auto& v) {
+       std::reverse(v.stateComponentDigests.begin(), v.stateComponentDigests.end());
+     }},
+    {"runtimeAbiDigest", [] (auto& v) { v.runtimeAbiDigest = stateDigest('0'); }},
+    {"securityDomainDigest", [] (auto& v) { v.securityDomainDigest = stateDigest('0'); }},
+    {"providerIdentity", [] (auto& v) { v.providerIdentity = "/provider/B"; }},
+    {"providerBootId", [] (auto& v) { v.providerBootId = "boot-b"; }},
+    {"cacheEpoch", [] (auto& v) { ++v.cacheEpoch; }},
+    {"stateInferenceEpoch", [] (auto& v) { ++v.stateInferenceEpoch; }},
+    {"predecessorInferenceEpoch", [] (auto& v) { v.predecessorInferenceEpoch = 0; }},
+    {"requestId", [] (auto& v) { v.requestId = "request-b"; }},
+    {"attemptEpoch", [] (auto& v) { v.attemptEpoch = 2; }},
+    {"generationId", [] (auto& v) { v.generationId = "generation-b"; }},
+  };
+
+  for (const auto& mutation : mutations) {
+    BOOST_TEST_CONTEXT("mutated predecessor field=" << mutation.first) {
+      auto changed = decode;
+      mutation.second(*changed.predecessorDecodeStateIdentity);
+      BOOST_CHECK_THROW(
+        runtime.executeRoleAsync(
+          "session-a", changed, std::make_shared<FakeDependencyIo>(),
+          {{"input_ids", bundle("input_ids", "next-token")}}).get(),
+        std::exception);
+      BOOST_CHECK_EQUAL(calls.load(), 1U);
+      const auto snapshot = runtime.decodeStateSnapshot();
+      BOOST_CHECK_EQUAL(snapshot.entries, 1U);
+      BOOST_CHECK_EQUAL(snapshot.pinnedEntries, 0U);
+      BOOST_CHECK_EQUAL(snapshot.candidates, 0U);
+      BOOST_CHECK_EQUAL(snapshot.commits, 1U);
+    }
+  }
+}
+
+BOOST_AUTO_TEST_CASE(NativeProviderRuntimeAppliesConfiguredDecodeStateCapacity)
+{
+  NativeProviderRuntime runtime(1, 1024, 1024, 1);
+  NativeModelRunnerSpec runnerSpec;
+  runnerSpec.role = "/Stage/0";
+  runnerSpec.metadata = {
+    {"evidence.modelDigest", stateDigest('1')},
+    {"evidence.planDigest", stateDigest('0')},
+    {"evidence.providerName", "/provider/A"},
+    {"evidence.providerBootId", "boot-a"},
+    {"state.securityEpoch", "7"},
+    {"state.generationId", "generation-a"},
+    {"state.schemaDigest", stateDigest('b')},
+  };
+
+  std::atomic<std::size_t> calls{0};
+  runtime.registerRunner(
+    runnerSpec,
+    makeNativeModelRunner([&calls] (const RoleExecutionContext&) {
+      const auto value = static_cast<std::int64_t>(++calls);
+      NamedTensor state;
+      state.name = "attention_kv_out";
+      state.elementType = TensorElementType::Int64;
+      state.shape = {1};
+      state.payload = rawTensorPayload<std::int64_t>({value});
+      return std::map<std::string, TensorBundle>{
+        {"onnx-output-bundle",
+         makeEncodedTensorBundle("onnx-output-bundle", {std::move(state)})},
+      };
+    }));
+
+  auto makePrefillRole = [&runnerSpec] (const std::string& requestId) {
+    RoleSpec role;
+    role.role = runnerSpec.role;
+    role.requestId = requestId;
+    role.attemptEpoch = 1;
+    role.inferenceEpoch = 0;
+    role.stateInputNames = {"attention_kv_in"};
+    role.stateOutputNames = {"attention_kv_out"};
+    role.candidateDecodeStateIdentity = exactStateIdentity(
+      requestId, 1, "generation-a");
+    return role;
+  };
+
+  auto first = makePrefillRole("request-a");
+  auto second = makePrefillRole("request-b");
+  runtime.executeRoleAsync(
+    "session-a", first, std::make_shared<FakeDependencyIo>(),
+    {{"input_ids", bundle("input_ids", "prompt-a")}}).get();
+  runtime.executeRoleAsync(
+    "session-b", second, std::make_shared<FakeDependencyIo>(),
+    {{"input_ids", bundle("input_ids", "prompt-b")}}).get();
+
+  auto snapshot = runtime.decodeStateSnapshot();
+  BOOST_CHECK_EQUAL(snapshot.entries, 1U);
+  BOOST_CHECK_EQUAL(snapshot.evictions, 1U);
+  BOOST_CHECK_EQUAL(snapshot.commits, 2U);
+
+  first.inferenceEpoch = 1;
+  first.predecessorDecodeStateIdentity = first.candidateDecodeStateIdentity;
+  first.candidateDecodeStateIdentity->prefixDigest = stateDigest('0');
+  ++first.candidateDecodeStateIdentity->prefixTokenCount;
+  first.candidateDecodeStateIdentity->positionDigest = stateDigest('0');
+  first.candidateDecodeStateIdentity->stateInferenceEpoch = 1;
+  first.candidateDecodeStateIdentity->predecessorInferenceEpoch = 0;
+  BOOST_CHECK_EXCEPTION(
+    runtime.executeRoleAsync(
+      "session-a", first, std::make_shared<FakeDependencyIo>()),
+    std::runtime_error,
+    [] (const std::runtime_error& error) {
+      return std::string(error.what()) == "PROVIDER_DECODE_STATE_MISSING";
+    });
+  BOOST_CHECK_EQUAL(calls.load(), 2U);
+}
+
+BOOST_AUTO_TEST_CASE(NativeProviderRuntimeIsolatesConcurrentGenerationsAndAttempts)
+{
+  NativeProviderRuntime runtime(3);
+  NativeModelRunnerSpec runnerSpec;
+  runnerSpec.role = "/Stage/0";
+  runnerSpec.metadata = {
+    {"evidence.modelDigest", stateDigest('1')},
+    {"evidence.planDigest", stateDigest('0')},
+    {"evidence.providerName", "/provider/A"},
+    {"evidence.providerBootId", "boot-a"},
+    {"state.securityEpoch", "7"},
+    {"state.generationId", "generation-a"},
+    {"state.schemaDigest", stateDigest('b')},
+  };
+
+  std::atomic<std::size_t> calls{0};
+  runtime.registerRunner(
+    runnerSpec,
+    makeNativeModelRunner([&calls] (const RoleExecutionContext& ctx) {
+      ++calls;
+      const auto input = payloadText(ctx.inputsByScope.at("input_ids"));
+      const std::map<std::string, std::int64_t> prefillValues{
+        {"prompt-generation-a", 11},
+        {"prompt-generation-b", 21},
+        {"prompt-attempt-2", 31},
+      };
+      const std::map<std::string, std::int64_t> decodeValues{
+        {"next-generation-a", 11},
+        {"next-generation-b", 21},
+        {"next-attempt-2", 31},
+      };
+
+      std::int64_t outputValue = 0;
+      const auto prefill = prefillValues.find(input);
+      if (prefill != prefillValues.end()) {
+        if (ctx.inputsByScope.count("__ndnsf_provider_decode_state") != 0) {
+          throw std::runtime_error("prefill unexpectedly received decode state");
+        }
+        outputValue = prefill->second;
+      }
+      else {
+        const auto decode = decodeValues.find(input);
+        if (decode == decodeValues.end()) {
+          throw std::runtime_error("unexpected concurrent identity test input");
+        }
+        const auto& state = findTensor(
+          decodeTensorBundle(
+            ctx.inputsByScope.at("__ndnsf_provider_decode_state").payload),
+          "attention_kv_in");
+        const auto expected = rawTensorPayload<std::int64_t>({decode->second});
+        if (state.payload != expected) {
+          throw std::runtime_error("decode state crossed generation/attempt");
+        }
+        outputValue = decode->second + 1;
+      }
+
+      NamedTensor state;
+      state.name = "attention_kv_out";
+      state.elementType = TensorElementType::Int64;
+      state.shape = {1};
+      state.payload = rawTensorPayload<std::int64_t>({outputValue});
+      return std::map<std::string, TensorBundle>{
+        {"onnx-output-bundle",
+         makeEncodedTensorBundle("onnx-output-bundle", {std::move(state)})},
+      };
+    }));
+
+  auto makePrefillRole = [&runnerSpec] (std::string requestId,
+                                        std::uint64_t attemptEpoch,
+                                        std::string generationId) {
+    RoleSpec role;
+    role.role = runnerSpec.role;
+    role.requestId = requestId;
+    role.attemptEpoch = attemptEpoch;
+    role.inferenceEpoch = 0;
+    role.stateInputNames = {"attention_kv_in"};
+    role.stateOutputNames = {"attention_kv_out"};
+    role.candidateDecodeStateIdentity = exactStateIdentity(
+      std::move(requestId), attemptEpoch, std::move(generationId));
+    return role;
+  };
+  auto makeDecodeRole = [] (RoleSpec role, char digest) {
+    role.inferenceEpoch = 1;
+    role.predecessorDecodeStateIdentity = role.candidateDecodeStateIdentity;
+    role.candidateDecodeStateIdentity->prefixDigest = stateDigest(digest);
+    ++role.candidateDecodeStateIdentity->prefixTokenCount;
+    role.candidateDecodeStateIdentity->positionDigest = stateDigest(digest);
+    role.candidateDecodeStateIdentity->stateInferenceEpoch = 1;
+    role.candidateDecodeStateIdentity->predecessorInferenceEpoch = 0;
+    return role;
+  };
+
+  const std::array<std::string, 3> sessions{
+    "request-a/attempt/1", "request-b/attempt/1", "request-a/attempt/2",
+  };
+  std::array<RoleSpec, 3> roles{
+    makePrefillRole("request-a", 1, "generation-a"),
+    makePrefillRole("request-b", 1, "generation-b"),
+    makePrefillRole("request-a", 2, "generation-a"),
+  };
+  const std::array<std::string, 3> promptInputs{
+    "prompt-generation-a", "prompt-generation-b", "prompt-attempt-2",
+  };
+  std::array<std::future<ProviderRoleResult>, 3> prefillFutures;
+  for (std::size_t i = 0; i < roles.size(); ++i) {
+    prefillFutures[i] = runtime.executeRoleAsync(
+      sessions[i], roles[i], std::make_shared<FakeDependencyIo>(),
+      {{"input_ids", bundle("input_ids", promptInputs[i])}});
+  }
+  for (auto& future : prefillFutures) {
+    BOOST_CHECK_NO_THROW(future.get());
+  }
+
+  roles[0] = makeDecodeRole(std::move(roles[0]), '0');
+  roles[1] = makeDecodeRole(std::move(roles[1]), '2');
+  roles[2] = makeDecodeRole(std::move(roles[2]), '3');
+  const std::array<std::string, 3> decodeInputs{
+    "next-generation-a", "next-generation-b", "next-attempt-2",
+  };
+  std::array<std::future<ProviderRoleResult>, 3> decodeFutures;
+  for (std::size_t i = 0; i < roles.size(); ++i) {
+    decodeFutures[i] = runtime.executeRoleAsync(
+      sessions[i], roles[i], std::make_shared<FakeDependencyIo>(),
+      {{"input_ids", bundle("input_ids", decodeInputs[i])}});
+  }
+  for (auto& future : decodeFutures) {
+    BOOST_CHECK_NO_THROW(future.get());
+  }
+
+  auto snapshot = runtime.decodeStateSnapshot();
+  BOOST_CHECK_EQUAL(calls.load(), 6U);
+  BOOST_CHECK_EQUAL(snapshot.entries, 3U);
+  BOOST_CHECK_EQUAL(snapshot.hits, 3U);
+  BOOST_CHECK_EQUAL(snapshot.commits, 6U);
+  BOOST_CHECK_EQUAL(snapshot.pinnedEntries, 0U);
+  BOOST_CHECK_EQUAL(snapshot.candidates, 0U);
+
+  auto rebootedSpec = runnerSpec;
+  rebootedSpec.metadata["evidence.providerBootId"] = "boot-b";
+  runtime.registerRunner(
+    std::move(rebootedSpec),
+    makeNativeModelRunner([] (const RoleExecutionContext&) {
+      return std::map<std::string, TensorBundle>{};
+    }));
+  snapshot = runtime.decodeStateSnapshot();
+  BOOST_CHECK_EQUAL(snapshot.entries, 0U);
+  BOOST_CHECK_EQUAL(snapshot.cleanups, 3U);
+  for (std::size_t i = 0; i < roles.size(); ++i) {
+    BOOST_CHECK(!runtime.releaseDecodeState(sessions[i], roles[i].role));
+  }
+}
+
+BOOST_AUTO_TEST_CASE(NativeProviderRuntimeRejectsMissingDecodeStateBeforeRunner)
+{
+  NativeProviderRuntime runtime(1);
+  NativeModelRunnerSpec runnerSpec;
+  runnerSpec.role = "/Stage/0";
+  runnerSpec.metadata = {
+    {"evidence.modelDigest", "sha256:model"},
+    {"evidence.planDigest", "sha256:plan"},
+    {"evidence.providerName", "/provider/A"},
+    {"evidence.providerBootId", "boot-a"},
+    {"state.securityEpoch", "7"},
+    {"state.generationId", "generation-a"},
+    {"state.schemaDigest", "sha256:state-schema"},
+  };
+
+  std::atomic<std::size_t> calls{0};
+  runtime.registerRunner(
+    runnerSpec,
+    makeNativeModelRunner([&calls] (const RoleExecutionContext&) {
+      ++calls;
+      return std::map<std::string, TensorBundle>{};
+    }));
+
+  RoleSpec role;
+  role.role = runnerSpec.role;
+  role.requestId = "request-a";
+  role.attemptEpoch = 1;
+  role.inferenceEpoch = 1;
+  role.stateInputNames = {"attention_kv_in"};
+  role.stateOutputNames = {"attention_kv_out"};
+
+  BOOST_CHECK_EXCEPTION(
+    runtime.executeRoleAsync(
+      "session-a", role, std::make_shared<FakeDependencyIo>(),
+      {{"input_ids", bundle("input_ids", "next-token")}}),
+    std::runtime_error,
+    [] (const std::runtime_error& error) {
+      return std::string(error.what()) == "PROVIDER_DECODE_STATE_MISSING";
+    });
+  BOOST_CHECK_EQUAL(calls.load(), 0);
+  const auto state = runtime.decodeStateSnapshot();
+  BOOST_CHECK_EQUAL(state.hits, 0);
+  BOOST_CHECK_EQUAL(state.misses, 1);
+  BOOST_CHECK_EQUAL(state.commits, 0);
+  BOOST_CHECK_EQUAL(state.entries, 0);
+}
+
+BOOST_AUTO_TEST_CASE(NativeProviderRuntimePreservesCommittedStateAfterFailedDecode)
+{
+  NativeProviderRuntime runtime(1);
+  NativeModelRunnerSpec runnerSpec;
+  runnerSpec.role = "/Stage/0";
+  runnerSpec.metadata = {
+    {"evidence.modelDigest", "sha256:model"},
+    {"evidence.planDigest", "sha256:plan"},
+    {"evidence.providerName", "/provider/A"},
+    {"evidence.providerBootId", "boot-a"},
+    {"state.securityEpoch", "7"},
+    {"state.generationId", "generation-a"},
+    {"state.schemaDigest", "sha256:state-schema"},
+  };
+  std::atomic<std::size_t> calls{0};
+  runtime.registerRunner(
+    runnerSpec,
+    makeNativeModelRunner([&calls] (const RoleExecutionContext& ctx) {
+      const auto call = calls.fetch_add(1);
+      if (call > 0) {
+        const auto& committed = findTensor(
+          decodeTensorBundle(
+            ctx.inputsByScope.at("__ndnsf_provider_decode_state").payload),
+          "attention_kv_in");
+        BOOST_CHECK(committed.payload == rawTensorPayload<std::int64_t>({1}));
+      }
+      if (call == 1) {
+        throw std::runtime_error("injected decode failure");
+      }
+      NamedTensor state;
+      state.name = "attention_kv_out";
+      state.elementType = TensorElementType::Int64;
+      state.shape = {1};
+      state.payload = rawTensorPayload<std::int64_t>(
+        {static_cast<std::int64_t>(call == 0 ? 1 : 2)});
+      return std::map<std::string, TensorBundle>{
+        {"onnx-output-bundle",
+         makeEncodedTensorBundle("onnx-output-bundle", {std::move(state)})},
+      };
+    }));
+
+  RoleSpec role;
+  role.role = runnerSpec.role;
+  role.requestId = "request-a";
+  role.attemptEpoch = 1;
+  role.stateInputNames = {"attention_kv_in"};
+  role.stateOutputNames = {"attention_kv_out"};
+  auto io = std::make_shared<FakeDependencyIo>();
+
+  role.inferenceEpoch = 0;
+  runtime.executeRoleAsync("session-a", role, io).get();
+  role.inferenceEpoch = 1;
+  BOOST_CHECK_THROW(runtime.executeRoleAsync("session-a", role, io).get(),
+                    std::runtime_error);
+  auto state = runtime.decodeStateSnapshot();
+  BOOST_CHECK_EQUAL(state.commits, 1);
+  BOOST_CHECK_EQUAL(state.rollbacks, 1);
+  BOOST_CHECK_EQUAL(state.entries, 1);
+  BOOST_CHECK_EQUAL(state.pinnedEntries, 0);
+  BOOST_CHECK_EQUAL(state.candidates, 0);
+
+  runtime.executeRoleAsync("session-a", role, io).get();
+  state = runtime.decodeStateSnapshot();
+  BOOST_CHECK_EQUAL(state.commits, 2);
+  BOOST_CHECK_EQUAL(state.hits, 2);
+  BOOST_CHECK_EQUAL(state.misses, 0);
+  BOOST_CHECK(runtime.releaseDecodeState("session-a", role.role));
+  state = runtime.decodeStateSnapshot();
+  BOOST_CHECK_EQUAL(state.entries, 0);
+  BOOST_CHECK_EQUAL(state.cleanups, 1);
+}
+
+BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorKeepsDecodeStateProviderLocal)
+{
+  NativeProviderRuntime runtime(1);
+  const auto identityTemplate = exactStateIdentity();
+  NativeModelRunnerSpec runnerSpec;
+  runnerSpec.role = "/Stage/0";
+  runnerSpec.kind = "onnx-model";
+  runnerSpec.backend = "test-stateful";
+  runnerSpec.path = "/tmp/stage-0.onnx";
+  runnerSpec.metadata = {
+    {"evidence.modelDigest", identityTemplate.modelDigest},
+    {"evidence.planDigest", stateDigest('0')},
+    {"evidence.providerName", identityTemplate.providerIdentity},
+    {"evidence.providerBootId", identityTemplate.providerBootId},
+    {"state.securityEpoch", "7"},
+    {"state.generationId", identityTemplate.generationId},
+    {"state.schemaDigest", identityTemplate.stateSchemaDigest},
+  };
+
+  std::atomic<std::size_t> calls{0};
+  runtime.registerRunner(
+    runnerSpec,
+    makeNativeModelRunner([&calls] (const RoleExecutionContext& ctx) {
+      const auto call = calls.fetch_add(1);
+      const auto state = ctx.inputsByScope.find("__ndnsf_provider_decode_state");
+      BOOST_CHECK_EQUAL(state != ctx.inputsByScope.end(), call == 1);
+      if (state != ctx.inputsByScope.end()) {
+        const auto& cached = findTensor(
+          decodeTensorBundle(state->second.payload), "attention_kv_in");
+        BOOST_CHECK(cached.payload == rawTensorPayload<std::int64_t>({1}));
+      }
+
+      NamedTensor logits;
+      logits.name = "logits";
+      logits.elementType = TensorElementType::Float32;
+      logits.shape = {1, 2};
+      logits.payload = floatPayload({0.0f, 1.0f});
+      NamedTensor nextState;
+      nextState.name = "attention_kv_out";
+      nextState.elementType = TensorElementType::Int64;
+      nextState.shape = {1};
+      nextState.payload = rawTensorPayload<std::int64_t>(
+        {static_cast<std::int64_t>(call + 1)});
+      return std::map<std::string, TensorBundle>{
+        {"onnx-output-bundle",
+         makeEncodedTensorBundle(
+           "onnx-output-bundle", {std::move(logits), std::move(nextState)})},
+      };
+    }));
+
+  NativeExecutionPlan plan;
+  plan.roles = {runnerSpec.role, "/Consumer"};
+  NativeDependencySpec activation;
+  activation.producers = {runnerSpec.role};
+  activation.consumers = {"/Consumer"};
+  activation.keyScope = "activation";
+  activation.topicPrefix = "/ndnsf-di";
+  activation.objectNameTemplate =
+    "{producerProvider}/NDNSF/DI/ACTIVATION/{sessionId}/{producerRole}/bundle/{sequence}";
+  activation.operationKind = "ACTIVATION";
+  NativeDependencySpec feedback;
+  feedback.producers = {runnerSpec.role};
+  feedback.consumers = {runnerSpec.role};
+  feedback.keyScope = "token-feedback";
+  feedback.topicPrefix = "/ndnsf-di";
+  feedback.objectNameTemplate =
+    "{producerProvider}/NDNSF/DI/FEEDBACK/{sessionId}/{producerRole}/bundle/{sequence}";
+  feedback.operationKind = "TOKEN_FEEDBACK";
+  plan.dependencies = {activation, feedback};
+
+  NativeProviderAssignment assignment;
+  assignment.providerByRole[runnerSpec.role] = "/provider/A";
+  assignment.providerByRole["/Consumer"] = "/provider/B";
+  auto io = std::make_shared<BlockingDependencyIo>();
+  std::vector<DecodeStateIdentityV1> observedIdentities;
+
+  NativeEpochCoordinatorConfig config{runtime, plan, assignment, io};
+  config.sessionId = "session-a";
+  config.requestId = "request-a";
+  config.attemptEpoch = 1;
+  config.lineagePlanDigest = stateDigest('0');
+  config.localProvider = "/provider/A";
+  config.role = runnerSpec.role;
+  config.initialInputs = {
+    {"input_ids",
+     makeEncodedTensorBundle(
+       "prompt",
+       {NamedTensor{"input_ids", TensorElementType::Int64, {1, 3},
+                    rawTensorPayload<std::int64_t>({11, 12, 13})}})},
+  };
+  config.finalResponseScope = "final-response";
+  config.maxEpochs = 2;
+  config.tokenInputName = "input_ids";
+  config.stateInputNames = {"attention_kv_in"};
+  config.stateOutputNames = {"attention_kv_out"};
+  config.stateIdentityTemplate = identityTemplate;
+  config.positionPolicyDigest = identityTemplate.positionDigest;
+  config.samplingDigest = "sha256:sampling";
+  config.eventSink = [] (const std::vector<std::uint8_t>&) { return true; };
+  config.resultObserver = [&observedIdentities] (
+    const RoleSpec& role, const ProviderRoleResult&) {
+      BOOST_REQUIRE(role.candidateDecodeStateIdentity.has_value());
+      observedIdentities.push_back(*role.candidateDecodeStateIdentity);
+    };
+
+  const auto result = runNativeEpochCoordinator(std::move(config));
+  BOOST_CHECK_EQUAL(result.epochsExecuted, 2);
+  BOOST_CHECK_EQUAL(result.eventsPublished, 2);
+  BOOST_CHECK(result.finalPayload.has_value());
+  BOOST_CHECK_EQUAL(calls.load(), 2);
+  BOOST_REQUIRE(result.finalizedRole.has_value());
+  BOOST_REQUIRE(result.finalizedRole->candidateDecodeStateIdentity.has_value());
+  BOOST_CHECK_EQUAL(
+    result.finalizedRole->candidateDecodeStateIdentity->stateInferenceEpoch, 1U);
+  BOOST_CHECK_EQUAL(
+    result.finalizedRole->candidateDecodeStateIdentity->prefixTokenCount, 4U);
+  BOOST_REQUIRE_EQUAL(result.cacheObservations.size(), 2U);
+  BOOST_CHECK_EQUAL(result.cacheObservations[0].inferenceEpoch, 0U);
+  BOOST_CHECK_EQUAL(result.cacheObservations[0].actualNewInputExtent, 3U);
+  BOOST_CHECK_EQUAL(result.cacheObservations[0].representedPrefixTokenCount, 3U);
+  BOOST_CHECK_EQUAL(result.cacheObservations[0].prefixWorkAvoided, 0U);
+  BOOST_CHECK(!result.cacheObservations[0].decodeStateHit);
+  BOOST_CHECK_EQUAL(result.cacheObservations[1].inferenceEpoch, 1U);
+  BOOST_CHECK_EQUAL(result.cacheObservations[1].actualNewInputExtent, 1U);
+  BOOST_CHECK_EQUAL(result.cacheObservations[1].representedPrefixTokenCount, 4U);
+  BOOST_CHECK_EQUAL(result.cacheObservations[1].prefixWorkAvoided, 3U);
+  BOOST_CHECK(result.cacheObservations[1].decodeStateHit);
+  BOOST_REQUIRE_EQUAL(observedIdentities.size(), 2);
+  BOOST_CHECK_EQUAL(observedIdentities[0].stateInferenceEpoch, 0);
+  BOOST_CHECK(!observedIdentities[0].predecessorInferenceEpoch.has_value());
+  BOOST_CHECK_EQUAL(observedIdentities[0].prefixTokenCount, 3);
+  BOOST_CHECK_EQUAL(observedIdentities[1].stateInferenceEpoch, 1);
+  BOOST_REQUIRE(observedIdentities[1].predecessorInferenceEpoch.has_value());
+  BOOST_CHECK_EQUAL(*observedIdentities[1].predecessorInferenceEpoch, 0);
+  BOOST_CHECK_EQUAL(observedIdentities[1].prefixTokenCount, 4);
+  BOOST_CHECK_EQUAL(observedIdentities[0].cacheEpoch,
+                    observedIdentities[1].cacheEpoch);
+  BOOST_CHECK_NE(observedIdentities[0].prefixDigest,
+                 observedIdentities[1].prefixDigest);
+  BOOST_CHECK_NE(observedIdentities[0].positionDigest,
+                 observedIdentities[1].positionDigest);
+
+  const auto state = runtime.decodeStateSnapshot();
+  BOOST_CHECK_EQUAL(state.commits, 2);
+  BOOST_CHECK_EQUAL(state.hits, 1);
+  BOOST_CHECK_EQUAL(state.misses, 0);
+  BOOST_CHECK_EQUAL(state.entries, 0);
+  BOOST_CHECK_EQUAL(state.pinnedEntries, 0);
+  BOOST_CHECK_EQUAL(state.candidates, 0);
+  BOOST_CHECK_EQUAL(state.cleanups, 1);
+  BOOST_REQUIRE_EQUAL(io->publishedNames.size(), 4);
+  for (const auto& name : io->publishedNames) {
+    BOOST_CHECK(name.find("attention_kv") == std::string::npos);
+    BOOST_CHECK(name.find("provider_decode_state") == std::string::npos);
+  }
+  for (const auto& item : io->available) {
+    if (!isEncodedTensorBundle(item.second.payload)) {
+      continue;
+    }
+    const auto tensors = decodeTensorBundle(item.second.payload);
+    BOOST_CHECK(std::none_of(tensors.begin(), tensors.end(), [] (const auto& tensor) {
+      return tensor.name == "attention_kv_in" ||
+             tensor.name == "attention_kv_out";
+    }));
+  }
+}
+
+BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorRejectsCancellationBeforeRunner)
+{
+  NativeProviderRuntime runtime(1);
+  const auto identityTemplate = exactStateIdentity();
+  NativeModelRunnerSpec runnerSpec;
+  runnerSpec.role = "/Stage/0";
+  runnerSpec.kind = "onnx-model";
+  runnerSpec.backend = "test-stateful";
+  runnerSpec.path = "/tmp/stage-0.onnx";
+  runnerSpec.metadata = {
+    {"evidence.modelDigest", identityTemplate.modelDigest},
+    {"evidence.planDigest", stateDigest('0')},
+    {"evidence.providerName", identityTemplate.providerIdentity},
+    {"evidence.providerBootId", identityTemplate.providerBootId},
+    {"state.securityEpoch", "7"},
+    {"state.generationId", identityTemplate.generationId},
+    {"state.schemaDigest", identityTemplate.stateSchemaDigest},
+  };
+
+  std::atomic<std::size_t> calls{0};
+  runtime.registerRunner(
+    runnerSpec,
+    makeNativeModelRunner([&calls] (const RoleExecutionContext&) {
+      calls.fetch_add(1);
+      return std::map<std::string, TensorBundle>{};
+    }));
+
+  NativeExecutionPlan plan;
+  plan.roles = {runnerSpec.role};
+  NativeDependencySpec feedback;
+  feedback.producers = {runnerSpec.role};
+  feedback.consumers = {runnerSpec.role};
+  feedback.keyScope = "token-feedback";
+  feedback.topicPrefix = "/ndnsf-di";
+  feedback.objectNameTemplate =
+    "{producerProvider}/NDNSF/DI/FEEDBACK/{sessionId}/{producerRole}/bundle/{sequence}";
+  feedback.operationKind = "TOKEN_FEEDBACK";
+  plan.dependencies = {feedback};
+
+  NativeProviderAssignment assignment;
+  assignment.providerByRole[runnerSpec.role] = "/provider/A";
+  auto io = std::make_shared<BlockingDependencyIo>();
+  NativeEpochCoordinatorConfig config{runtime, plan, assignment, io};
+  config.sessionId = "session-cancel";
+  config.requestId = "request-a";
+  config.attemptEpoch = 1;
+  config.lineagePlanDigest = stateDigest('0');
+  config.localProvider = "/provider/A";
+  config.role = runnerSpec.role;
+  config.initialInputs = {
+    {"input_ids",
+     makeEncodedTensorBundle(
+       "prompt",
+       {NamedTensor{"input_ids", TensorElementType::Int64, {1, 3},
+                    rawTensorPayload<std::int64_t>({11, 12, 13})}})},
+  };
+  config.maxEpochs = 2;
+  config.stateInputNames = {"attention_kv_in"};
+  config.stateOutputNames = {"attention_kv_out"};
+  config.stateIdentityTemplate = identityTemplate;
+  config.positionPolicyDigest = identityTemplate.positionDigest;
+  config.samplingDigest = "sha256:sampling";
+  config.stopCheck = [] {
+    return std::optional<NativeEpochStopReason>{
+      NativeEpochStopReason::Cancelled};
+  };
+
+  try {
+    runNativeEpochCoordinator(std::move(config));
+    BOOST_FAIL("cancelled coordinator should not start the runner");
+  }
+  catch (const std::runtime_error& error) {
+    BOOST_CHECK_EQUAL(error.what(), "ATTEMPT_CANCELLED");
+  }
+
+  BOOST_CHECK_EQUAL(calls.load(), 0);
+  const auto state = runtime.decodeStateSnapshot();
+  BOOST_CHECK_EQUAL(state.entries, 0);
+  BOOST_CHECK_EQUAL(state.pinnedEntries, 0);
+  BOOST_CHECK_EQUAL(state.candidates, 0);
+}
+
+BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorRollsBackWhenDeadlineExpiresAfterRunner)
+{
+  NativeProviderRuntime runtime(1);
+  const auto identityTemplate = exactStateIdentity();
+  NativeModelRunnerSpec runnerSpec;
+  runnerSpec.role = "/Stage/0";
+  runnerSpec.kind = "onnx-model";
+  runnerSpec.backend = "test-stateful";
+  runnerSpec.path = "/tmp/stage-0.onnx";
+  runnerSpec.metadata = {
+    {"evidence.modelDigest", identityTemplate.modelDigest},
+    {"evidence.planDigest", stateDigest('0')},
+    {"evidence.providerName", identityTemplate.providerIdentity},
+    {"evidence.providerBootId", identityTemplate.providerBootId},
+    {"state.securityEpoch", "7"},
+    {"state.generationId", identityTemplate.generationId},
+    {"state.schemaDigest", identityTemplate.stateSchemaDigest},
+  };
+
+  std::atomic<std::size_t> calls{0};
+  runtime.registerRunner(
+    runnerSpec,
+    makeNativeModelRunner([&calls] (const RoleExecutionContext&) {
+      calls.fetch_add(1);
+      NamedTensor logits;
+      logits.name = "logits";
+      logits.elementType = TensorElementType::Float32;
+      logits.shape = {1, 2};
+      logits.payload = floatPayload({0.0f, 1.0f});
+      NamedTensor nextState;
+      nextState.name = "attention_kv_out";
+      nextState.elementType = TensorElementType::Int64;
+      nextState.shape = {1};
+      nextState.payload = rawTensorPayload<std::int64_t>({1});
+      return std::map<std::string, TensorBundle>{
+        {"onnx-output-bundle",
+         makeEncodedTensorBundle(
+           "onnx-output-bundle", {std::move(logits), std::move(nextState)})},
+      };
+    }));
+
+  NativeExecutionPlan plan;
+  plan.roles = {runnerSpec.role};
+  NativeDependencySpec feedback;
+  feedback.producers = {runnerSpec.role};
+  feedback.consumers = {runnerSpec.role};
+  feedback.keyScope = "token-feedback";
+  feedback.topicPrefix = "/ndnsf-di";
+  feedback.objectNameTemplate =
+    "{producerProvider}/NDNSF/DI/FEEDBACK/{sessionId}/{producerRole}/bundle/{sequence}";
+  feedback.operationKind = "TOKEN_FEEDBACK";
+  plan.dependencies = {feedback};
+
+  NativeProviderAssignment assignment;
+  assignment.providerByRole[runnerSpec.role] = "/provider/A";
+  auto io = std::make_shared<BlockingDependencyIo>();
+  std::atomic<bool> expired{false};
+  std::atomic<std::size_t> events{0};
+  NativeEpochCoordinatorConfig config{runtime, plan, assignment, io};
+  config.sessionId = "session-deadline";
+  config.requestId = "request-a";
+  config.attemptEpoch = 1;
+  config.lineagePlanDigest = stateDigest('0');
+  config.localProvider = "/provider/A";
+  config.role = runnerSpec.role;
+  config.initialInputs = {
+    {"input_ids",
+     makeEncodedTensorBundle(
+       "prompt",
+       {NamedTensor{"input_ids", TensorElementType::Int64, {1, 3},
+                    rawTensorPayload<std::int64_t>({11, 12, 13})}})},
+  };
+  config.maxEpochs = 1;
+  config.stateInputNames = {"attention_kv_in"};
+  config.stateOutputNames = {"attention_kv_out"};
+  config.stateIdentityTemplate = identityTemplate;
+  config.positionPolicyDigest = identityTemplate.positionDigest;
+  config.samplingDigest = "sha256:sampling";
+  config.stopCheck = [&expired] {
+    return expired.load()
+      ? std::optional<NativeEpochStopReason>{NativeEpochStopReason::Deadline}
+      : std::nullopt;
+  };
+  config.resultObserver = [&expired] (const RoleSpec&, const ProviderRoleResult&) {
+    expired.store(true);
+  };
+  config.eventSink = [&events] (const std::vector<std::uint8_t>&) {
+    events.fetch_add(1);
+    return true;
+  };
+
+  try {
+    runNativeEpochCoordinator(std::move(config));
+    BOOST_FAIL("expired coordinator should roll back before event publication");
+  }
+  catch (const std::runtime_error& error) {
+    BOOST_CHECK_EQUAL(error.what(), "REQUEST_DEADLINE");
+  }
+
+  BOOST_CHECK_EQUAL(calls.load(), 1);
+  BOOST_CHECK_EQUAL(events.load(), 0);
+  const auto state = runtime.decodeStateSnapshot();
+  BOOST_CHECK_EQUAL(state.entries, 0);
+  BOOST_CHECK_EQUAL(state.pinnedEntries, 0);
+  BOOST_CHECK_EQUAL(state.candidates, 0);
+  BOOST_CHECK_EQUAL(state.rollbacks, 1);
+  BOOST_CHECK_EQUAL(state.cleanups, 0);
+}
+
+BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorRollsBackRejectedEventAdmission)
+{
+  const auto result = runNativeEpochPublicationFailure(
+    NativeEpochPublicationFault::EventAdmission);
+  BOOST_CHECK_EQUAL(result.error,
+                    "native epoch token event admission was rejected");
+  BOOST_CHECK_EQUAL(result.runnerCalls, 1U);
+  BOOST_CHECK_EQUAL(result.eventCalls, 1U);
+  BOOST_CHECK_EQUAL(result.publicationCalls, 0U);
+  BOOST_CHECK_EQUAL(result.state.commits, 0U);
+  BOOST_CHECK_EQUAL(result.state.rollbacks, 1U);
+  BOOST_CHECK_EQUAL(result.state.entries, 0U);
+  BOOST_CHECK_EQUAL(result.state.pinnedEntries, 0U);
+  BOOST_CHECK_EQUAL(result.state.candidates, 0U);
+}
+
+BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorRollsBackFailedFeedbackPublication)
+{
+  const auto result = runNativeEpochPublicationFailure(
+    NativeEpochPublicationFault::FeedbackPublication);
+  BOOST_CHECK_EQUAL(result.error, "injected dependency publication failure");
+  BOOST_CHECK_EQUAL(result.runnerCalls, 1U);
+  BOOST_CHECK_EQUAL(result.eventCalls, 1U);
+  BOOST_CHECK_EQUAL(result.publicationCalls, 1U);
+  BOOST_CHECK_EQUAL(result.state.commits, 0U);
+  BOOST_CHECK_EQUAL(result.state.rollbacks, 1U);
+  BOOST_CHECK_EQUAL(result.state.entries, 0U);
+  BOOST_CHECK_EQUAL(result.state.pinnedEntries, 0U);
+  BOOST_CHECK_EQUAL(result.state.candidates, 0U);
+}
+
+BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorLeavesNoStateAfterActivationFailure)
+{
+  const auto result = runNativeEpochPublicationFailure(
+    NativeEpochPublicationFault::ActivationPublication);
+  BOOST_CHECK_EQUAL(result.error, "injected dependency publication failure");
+  BOOST_CHECK_EQUAL(result.runnerCalls, 1U);
+  BOOST_CHECK_EQUAL(result.eventCalls, 0U);
+  BOOST_CHECK_EQUAL(result.publicationCalls, 1U);
+  BOOST_CHECK_EQUAL(result.state.commits, 0U);
+  BOOST_CHECK_EQUAL(result.state.rollbacks, 0U);
+  BOOST_CHECK_EQUAL(result.state.entries, 0U);
+  BOOST_CHECK_EQUAL(result.state.pinnedEntries, 0U);
+  BOOST_CHECK_EQUAL(result.state.candidates, 0U);
 }
 
 BOOST_AUTO_TEST_CASE(NativeExecutionPlanBuildsRoleLocalSpecsWithDeterministicNames)
@@ -2683,7 +4807,8 @@ BOOST_AUTO_TEST_CASE(Spec111CacheSessionAndAttemptEpochRemainIndependentBindings
   store.setProviderBootId("boot-spec111");
   KvStateBinding binding{
     "session-spec111", "/Stage/0", 3, "sha256:model", "sha256:plan",
-    "/provider/spec111", "boot-spec111", 11,
+    "/provider/spec111", "boot-spec111", 11, "request-spec111", 3,
+    "generation-spec111", "sha256:state-schema", std::nullopt,
   };
   BOOST_REQUIRE(store.put(binding, bundle("kv", "state")));
   BOOST_CHECK(store.lookup(binding));

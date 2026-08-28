@@ -12,6 +12,12 @@ NativeModelRunner::executionEvidence() const
   return none;
 }
 
+std::optional<std::map<std::string, TensorBundle>>
+NativeModelRunner::runStreamed(const RoleExecutionContext&)
+{
+  return std::nullopt;
+}
+
 std::optional<ExecutionEvidence>
 NativeModelRunner::executionEvidenceSnapshot() const
 {

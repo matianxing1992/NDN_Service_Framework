@@ -137,14 +137,16 @@ public:
                RoleSpec role,
                std::shared_ptr<DependencyIo> io,
                RoleRunner runner,
-               std::map<std::string, TensorBundle> initialInputsByScope = {});
+               std::map<std::string, TensorBundle> initialInputsByScope = {},
+               RoleExecutionContext::StreamEventSink eventSink = {});
 
   std::future<ProviderRoleResult>
   executeAsync(std::string sessionId,
                RoleSpec role,
                std::shared_ptr<DependencyIo> io,
                std::shared_ptr<NativeModelRunner> runner,
-               std::map<std::string, TensorBundle> initialInputsByScope = {});
+               std::map<std::string, TensorBundle> initialInputsByScope = {},
+               RoleExecutionContext::StreamEventSink eventSink = {});
 
   /** Queue the role before fetching/assembling/loading its native runner.
    * The preparation callback runs on the bounded Provider worker only after
@@ -156,23 +158,26 @@ public:
     RoleSpec role,
     std::shared_ptr<DependencyIo> io,
     NativeRunnerPreparation prepareRunner,
-    std::map<std::string, TensorBundle> initialInputsByScope = {});
+    std::map<std::string, TensorBundle> initialInputsByScope = {},
+    RoleExecutionContext::StreamEventSink eventSink = {});
 
   std::future<ProviderRoleResult>
   executeCollectiveAsync(std::string sessionId,
                          RoleSpec role,
                          std::shared_ptr<DependencyIo> io,
-                         RoleRunner runner,
-                         CollectiveExecutionBinding collective,
-                         std::map<std::string, TensorBundle> initialInputsByScope = {});
+    RoleRunner runner,
+    CollectiveExecutionBinding collective,
+                         std::map<std::string, TensorBundle> initialInputsByScope = {},
+                         RoleExecutionContext::StreamEventSink eventSink = {});
 
   std::future<ProviderRoleResult>
   executeCollectiveAsync(std::string sessionId,
                          RoleSpec role,
                          std::shared_ptr<DependencyIo> io,
-                         std::shared_ptr<NativeModelRunner> runner,
-                         CollectiveExecutionBinding collective,
-                         std::map<std::string, TensorBundle> initialInputsByScope = {});
+    std::shared_ptr<NativeModelRunner> runner,
+    CollectiveExecutionBinding collective,
+                         std::map<std::string, TensorBundle> initialInputsByScope = {},
+                         RoleExecutionContext::StreamEventSink eventSink = {});
 
   ProviderRoleWorkerSnapshot
   snapshot() const;
@@ -186,6 +191,7 @@ private:
     std::shared_ptr<NativeModelRunner> runner;
     NativeRunnerPreparation prepareRunner;
     std::map<std::string, TensorBundle> initialInputsByScope;
+    RoleExecutionContext::StreamEventSink eventSink;
     std::vector<InputFetchTiming> inputTimings;
     std::shared_ptr<std::promise<ProviderRoleResult>> promise;
     std::chrono::steady_clock::time_point queuedAt;
@@ -206,7 +212,8 @@ private:
                    std::shared_ptr<NativeModelRunner> runner,
                    NativeRunnerPreparation prepareRunner,
                    std::map<std::string, TensorBundle> initialInputsByScope,
-                   std::optional<CollectiveExecutionBinding> collective);
+                   std::optional<CollectiveExecutionBinding> collective,
+                   RoleExecutionContext::StreamEventSink eventSink);
 
   void
   workerLoop();

@@ -2,11 +2,13 @@
 #define NDNSF_DISTRIBUTED_INFERENCE_NATIVE_EXECUTION_PLAN_JSON_HPP
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/ConversationStateBinding.hpp"
 
 #include <boost/property_tree/ptree_fwd.hpp>
 
 #include <istream>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -54,6 +56,22 @@ struct NativeSelectionRoleV3
   std::uint64_t maxNodes = 0;
 };
 
+struct NativeGenerationExecutionContractV1
+{
+  bool enabled = false;
+  std::string mode;
+  std::size_t maxGeneratedTokens = 0;
+  std::string tokenInputName;
+  std::vector<std::string> stateInputNames;
+  std::vector<std::string> stateOutputNames;
+  std::vector<std::int64_t> eosTokenIds;
+  std::string samplingDigest;
+  std::string tokenizerDigest;
+  std::string generationId;
+  std::vector<std::int64_t> committedPrefixTokenIds;
+  std::uint64_t streamingOperationStride = 0;
+};
+
 struct NativeSelectionProjectionV3
 {
   std::string provider;
@@ -64,6 +82,7 @@ struct NativeSelectionProjectionV3
   std::string ackClosedDigest;
   std::string offerDigest;
   std::string securityPolicySnapshotDigest;
+  std::string requestContractDigest;
   std::uint64_t deadlineMs = 0;
   std::string groupCapabilityV1;
   bool hasGrantBinding = false;
@@ -74,6 +93,9 @@ struct NativeSelectionProjectionV3
   NativeSelectionRoleV3 assembly;
   NativeRoleDataflowContractV3 dataflow;
   NativeDeviceBindingV3 deviceBinding;
+  NativeGenerationExecutionContractV1 generationContract;
+  std::optional<ConversationStateReferenceV1> conversationStateReference;
+  std::optional<ConversationTurnBindingV1> conversationTurnBinding;
   NativeExecutionPlan plan;
 };
 

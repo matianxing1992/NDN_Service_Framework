@@ -19,6 +19,28 @@ decisions, application-defined ACK selection, asynchronous requests,
 provider-side collaboration handlers, user-side collaboration requests, and the
 generic NDNSF large-data reference helpers used by higher-level applications.
 
+Predictive streaming keeps signing in the application. Install the optional
+`ndn-python` extra when the application uses its Python keychain:
+
+```bash
+python3 -m pip install -e './pythonWrapper[ndn-python]'
+```
+
+`ServiceProvider.signing_metadata` exposes the Provider identity, signing key
+name, and certificate name as public metadata only. An application can use the
+matching private key through `python-ndn`, construct the canonical name with
+`make_predictive_data_name`, and pass the exact signed wire to
+`StreamPublisher.push`. The convenience `make_signed_data` helper remains
+available for tests and small diagnostics; it is not the production signing
+path.
+
+The runnable application example is
+`examples/python/live_stream/facade_provider.py`; it signs each predictive
+Data packet with `python-ndn` and pushes the exact wire. The MiniNDN
+interoperability launcher is
+`Experiments/NDNSF_PythonNdnStreamPush_Minindn.py` (run it with the repository's
+root privileges for the network namespace setup).
+
 Application-specific orchestration, such as which AI roles to start or which
 policy file to use, belongs in user code or `examples/`, not in this wrapper
 package.

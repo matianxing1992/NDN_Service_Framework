@@ -13,6 +13,7 @@ from llm_pipeline_lib import (
     QWEN_ONNX_RUNTIME,
     QWEN_TRANSFORMERS_RUNTIME,
     SERVICE,
+    TINY_ONNX_RUNTIME,
     TINY_TRANSFORMERS_RUNTIME,
     write_policy,
 )
@@ -33,7 +34,8 @@ def main() -> int:
     parser.add_argument("--provider-prefix", default="/NDNSF-DistributeInference/example/provider")
     parser.add_argument(
         "--runtime",
-        choices=("fake", TINY_TRANSFORMERS_RUNTIME, QWEN_TRANSFORMERS_RUNTIME, QWEN_ONNX_RUNTIME),
+        choices=("fake", TINY_TRANSFORMERS_RUNTIME, TINY_ONNX_RUNTIME,
+                 QWEN_TRANSFORMERS_RUNTIME, QWEN_ONNX_RUNTIME),
         default="fake",
     )
     parser.add_argument("--transformer-layers", type=int, default=4)
@@ -46,6 +48,7 @@ def main() -> int:
     parser.add_argument("--qwen-artifact-store", default="")
     parser.add_argument("--qwen-service-manifest", default="")
     parser.add_argument("--qwen-runtime-manifest", default="")
+    parser.add_argument("--tiny-onnx-fixture-root", default="")
     parser.add_argument("--trust-app-root", action="append", default=[])
     args = parser.parse_args()
 
@@ -70,6 +73,7 @@ def main() -> int:
         qwen_artifact_store=args.qwen_artifact_store,
         qwen_service_manifest=args.qwen_service_manifest,
         qwen_runtime_manifest=args.qwen_runtime_manifest,
+        tiny_onnx_fixture_root=args.tiny_onnx_fixture_root,
     )
     if args.trust_app_root:
         config = yaml.safe_load(policy.read_text(encoding="utf-8"))

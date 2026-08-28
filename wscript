@@ -102,6 +102,10 @@ def options(opt):
                       help='Build unit tests')
     optgrp.add_option('--toolchain-root', default='/usr/bin',
                       help='Required compiler/binutils root (default: /usr/bin)')
+    optgrp.add_option('--ndn-svs-source-tree', default='',
+                      help='Explicit NDN-SVS source tree for an uninstalled build')
+    optgrp.add_option('--ndn-svs-build-tree', default='',
+                      help='Explicit matching NDN-SVS build tree containing libndn-svs.so')
 
 
 def configure(conf):
@@ -180,6 +184,34 @@ def configure(conf):
     conf.check_cfg(package='libndn-svs', args=['libndn-svs >= 0.1.0', '--cflags', '--libs'],
                        uselib_store='NDN_SVS', pkg_config_path=pkg_config_path)
 
+    # Experimental NDN-SVS development commonly precedes installation.  A
+    # header-only override is unsafe: it compiles against the new API but may
+    # link /usr/local's older SONAME, failing only at the final executable.
+    # Accept only an explicit source/build pair and replace both halves of the
+    # pkg-config result atomically.
+    svs_source_tree = os.path.realpath(conf.options.ndn_svs_source_tree) \
+        if conf.options.ndn_svs_source_tree else ''
+    svs_build_tree = os.path.realpath(conf.options.ndn_svs_build_tree) \
+        if conf.options.ndn_svs_build_tree else ''
+    if bool(svs_source_tree) != bool(svs_build_tree):
+        conf.fatal('--ndn-svs-source-tree and --ndn-svs-build-tree must be supplied together')
+    if svs_source_tree:
+        svs_header = os.path.join(svs_source_tree, 'ndn-svs', 'svspubsub.hpp')
+        svs_library = os.path.join(svs_build_tree, 'libndn-svs.so')
+        if not os.path.isfile(svs_header):
+            conf.fatal(f'Explicit NDN-SVS header is missing: {svs_header}')
+        if not os.path.isfile(svs_library):
+            conf.fatal(f'Explicit NDN-SVS library is missing: {svs_library}')
+        # Source headers include the generated build/config.hpp, so both roots
+        # are one inseparable header closure.
+        conf.env.INCLUDES_NDN_SVS = [svs_source_tree, svs_build_tree]
+        conf.env.LIBPATH_NDN_SVS = [svs_build_tree]
+        conf.env.LIB_NDN_SVS = ['ndn-svs']
+        conf.env.NDNSF_NDN_SVS_SOURCE_TREE = svs_source_tree
+        conf.env.NDNSF_NDN_SVS_BUILD_TREE = svs_build_tree
+        conf.msg('Explicit NDN-SVS source/build pair',
+                 f'{svs_source_tree} -> {svs_library}')
+
     # An isolated NDN-SVS prefix may coexist with an older installation under
     # /usr/local.  libndn-cxx's pkg-config metadata also contributes
     # /usr/local/include, so the generic use='NDN_CXX NDN_SVS ...' ordering
@@ -208,6 +240,18 @@ def configure(conf):
         flag for flag in list(conf.env.LINKFLAGS or [])
         if flag not in svs_rpaths
     ]
+    if svs_source_tree:
+        conf.check(
+            fragment='''
+#include <ndn-svs/svspubsub.hpp>
+int main() {
+  auto method = &ndn::svs::SVSPubSub::subscribeToProducerWithCatchUp;
+  (void)method;
+  return 0;
+}
+''',
+            features='cxx cxxprogram', use='NDN_SVS NDN_CXX',
+            msg='Checking explicit NDN-SVS header/library closure')
 
     conf.check(features='cxx cxxprogram', lib=['sqlite3'], cflags=['-Wall'], defines=['var=foo'], uselib_store='sqlite3')
     # OpenSSL on the current Debian/Brew toolchain exposes libdl symbols

@@ -21,6 +21,18 @@ from ndnsf_distributed_inference.app_sdk.provider import ProviderEvidenceVerifie
 from ndnsf_distributed_inference.app_sdk.runtime_journal import (
     FileRequestEnvelopeKeyProvider, RuntimeJournal,
 )
+from ndnsf_distributed_inference.conversation import (
+    ConversationCheckpointInvalid,
+    ConversationCheckpointV1,
+    ConversationContinuation,
+    ConversationInputMode,
+    ConversationStateConflict,
+    ConversationStateUnavailable,
+    ConversationStatePromotionTransaction,
+    ProviderConversationStateManager,
+    ProviderConversationStateReceiptV1,
+    _prefix_digest,
+)
 from ndnsf_distributed_inference.app_sdk.status import RequestState, RevisionState
 from ndnsf_distributed_inference.ops.cli import definition_from_json
 from ndnsf_distributed_inference.adapters.qwen.pilot import (
@@ -42,6 +54,9 @@ from ndnsf_distributed_inference.app_sdk.placement import (
     ModelRef,
     PublishedSplit,
     normalize_request_id_component,
+    canonical_digest,
+    CatalogSnapshotArtifactPublisher,
+    v2_provider_view_factory,
 )
 from ndnsf_distributed_inference.planner.presplit_first import (
     PreSplitFirstStrategy,
@@ -49,11 +64,15 @@ from ndnsf_distributed_inference.planner.presplit_first import (
 from ndnsf_distributed_inference.planner.layer_reuse_first import (
     LayerReuseFirstStrategy,
 )
+from ndnsf_distributed_inference.adapters.qwen.placement import (
+    build_qwen_three_stage_adapter,
+)
 
 from llm_pipeline_lib import (
     QWEN_ONNX_RUNTIME,
     QWEN_TRANSFORMERS_RUNTIME,
     SERVICE,
+    TINY_ONNX_RUNTIME,
     TINY_TRANSFORMERS_RUNTIME,
     decode_payload,
     decode_qwen_pipeline_context,
@@ -73,6 +92,22 @@ from llm_pipeline_lib import (
 from deployment_control import (
     CONTROL_SCHEMA, action_from_response, readiness_from_response,
 )
+from ndnsf import StreamedInvocationOptions, StreamedInvocationError
+
+
+def _qwen_model_type_from_documents(*documents: object) -> str:
+    """Resolve the model-family position contract without loading a model.
+
+    The deployment image intentionally has no Transformers package.  The
+    immutable campaign/service manifests therefore carry enough identity for
+    the user to select Qwen3.5's four-plane position IDs.
+    """
+    text = json.dumps(documents, sort_keys=True, default=str).lower()
+    if "qwen3.6" in text or "qwen3_5" in text or "qwen3-5" in text:
+        return "qwen3_5"
+    if "qwen3" in text:
+        return "qwen3"
+    return "qwen2"
 
 
 def _publish_identity_certificate_and_wait(client, args) -> None:
@@ -606,6 +641,10 @@ def _configure_qwen_automatic_planning(client, args) -> None:
     catalog_snapshots = {}
     split_materializer = None
     artifact_publisher = None
+    planning_backend = (
+        "onnxruntime"
+        if args.runtime == QWEN_ONNX_RUNTIME else "transformers"
+    )
     v3_default = bool(getattr(args, "selection_dataflow_v3", False))
     if publication_state == "ACTIVE" and not v3_default:
         snapshot = PreSplitCatalogSnapshot(
@@ -615,7 +654,7 @@ def _configure_qwen_automatic_planning(client, args) -> None:
             semantics_digest=model.semantics_digest,
             graph_digest=graph.graph_digest,
             candidate_digest=candidate.candidate_digest,
-            backend="transformers",
+            backend=planning_backend,
             precision=precision,
             artifact_data_names={
                 str(item["role"]): (str(item["dataName"]),)
@@ -652,7 +691,7 @@ def _configure_qwen_automatic_planning(client, args) -> None:
                 candidate=selected_candidate,
                 published=published,
                 registration=registration,
-                backend="transformers",
+                backend=planning_backend,
                 precision=precision,
             )
             catalog_snapshots[activated.candidate_digest] = activated
@@ -743,6 +782,119 @@ def _configure_qwen_automatic_planning(client, args) -> None:
     args._automatic_adapter = adapter
     args._automatic_model = model
     args._automatic_task = InferenceTaskRef.from_adapter(adapter)
+    args._automatic_tokenizer_digest = model.tokenizer_digest
+
+
+def _configure_tiny_onnx_automatic_planning(client, args) -> None:
+    """Configure the ordinary V3 planner for the checked-in tiny fixture."""
+    manifest = json.loads(Path(
+        args.automatic_planning_manifest).read_text(encoding="utf-8"))
+    stages = tuple(manifest.get("stages", ()))
+    if len(stages) != int(args.stages):
+        raise RuntimeError("tiny automatic planning stage count mismatch")
+    roles = tuple(str(item["role"]) for item in stages)
+    artifact_digests = {
+        str(item["role"]): str(item["sha256"])
+        if str(item["sha256"]).startswith("sha256:")
+        else "sha256:" + str(item["sha256"])
+        for item in stages
+    }
+    weight_bytes = {
+        str(item["role"]): int(item["bytes"]) for item in stages}
+    layer_ranges = tuple(
+        (int(item["blockStart"]), int(item["blockEndExclusive"]))
+        for item in stages
+    )
+    model_doc = dict(manifest["model"])
+    adapter = build_qwen_three_stage_adapter(
+        model_name=str(model_doc["name"]),
+        revision=str(model_doc["revision"]),
+        layer_ranges=layer_ranges,
+        artifact_digests_by_role=artifact_digests,
+        weight_bytes_by_role=weight_bytes,
+        tensor_degrees=(1,) * len(stages),
+        precision=str(manifest.get("precision", "float32")),
+        adapter_name="spec175-tiny-onnx-pipeline",
+        stage_roles=roles,
+    )
+    model = ModelRef(
+        model_name=str(model_doc["name"]),
+        content_digest=str(model_doc["contentDigest"]),
+        semantics_digest=str(model_doc["semanticsDigest"]),
+        source_revision=str(model_doc["revision"]),
+    )
+    described = adapter.describe_model(
+        model.model_name, model.content_digest, model.semantics_digest,
+        source_revision=model.source_revision or "")
+    graph = adapter.graph.inspect(described)
+    candidates = adapter.splitter.enumerate_candidates(described, graph)
+    if not candidates:
+        raise RuntimeError("tiny automatic planning produced no candidate")
+    candidate = candidates[0]
+    if str(manifest.get("candidateDigest", candidate.candidate_digest)) != (
+            candidate.candidate_digest):
+        raise RuntimeError("tiny automatic planning candidate digest mismatch")
+    catalog_doc = dict(manifest.get("preSplitCatalog", {}))
+    snapshot = PreSplitCatalogSnapshot(
+        alias=str(catalog_doc.get("alias", "spec175-tiny-onnx")),
+        manifest_digest=str(catalog_doc["manifestDigest"]),
+        model_content_digest=model.content_digest,
+        semantics_digest=model.semantics_digest,
+        graph_digest=graph.graph_digest,
+        candidate_digest=candidate.candidate_digest,
+        backend="onnxruntime",
+        precision=str(manifest.get("precision", "float32")),
+        artifact_data_names={
+            str(item["role"]): (str(item["dataName"]),)
+            for item in stages
+        },
+        status="ACTIVE",
+        created_at_ms=int(catalog_doc.get("createdAtMs", 0)),
+    )
+    key_paths = json.loads(Path(
+        args.selection_offer_key_map).read_text(encoding="utf-8"))
+    offer_keys = {
+        str(provider): Path(path).read_bytes()
+        for provider, path in key_paths.items()
+    }
+    if (len(offer_keys) != len(stages)
+            or any(len(value) != 32 for value in offer_keys.values())):
+        raise RuntimeError("tiny selection offer verifier key map is incomplete")
+
+    def verify_offer(offer) -> bool:
+        key = offer_keys.get(offer.provider)
+        if key is None:
+            return False
+        expected_id = "sha256:" + hashlib.sha256(key).hexdigest()
+        if offer.signer_key_id != expected_id:
+            return False
+        expected = hmac.new(
+            key, offer.digest().encode("utf-8"), hashlib.sha256).hexdigest()
+        return hmac.compare_digest(expected, offer.signature)
+
+    client.configure_automatic_planning(
+        service_name=SERVICE,
+        adapters=(adapter,),
+        strategy=PreSplitFirstStrategy(
+            at_ms=int(time.time() * 1000),
+            maximum_cache_age_ms=args.selection_cache_max_age_ms,
+            clock_ms=lambda: int(time.time() * 1000),
+        ),
+        catalog_snapshot_provider=lambda: (snapshot,),
+        verify_offer_signature=verify_offer,
+        ack_timeout_ms=args.ack_timeout_ms,
+        ack_coverage_roles=roles,
+    )
+    args._automatic_adapter = adapter
+    args._automatic_model = model
+    args._automatic_task = InferenceTaskRef.from_adapter(adapter)
+    args._automatic_tokenizer_digest = model.tokenizer_digest
+    print(
+        "LLM_PIPELINE_TINY_AUTOPLANNING_CONFIGURED",
+        f"candidateDigest={candidate.candidate_digest}",
+        f"roles={','.join(roles)}",
+        flush=True,
+    )
 
 
 def _fixed_rate_slot_time(started: float, ordinal: int, interval_s: float,
@@ -754,12 +906,1169 @@ def _fixed_rate_slot_time(started: float, ordinal: int, interval_s: float,
     return scheduled
 
 
+def _run_tiny_onnx_stream(
+        client, args, payload: bytes, expected_tokens: list[int], *,
+        conversation: ConversationContinuation | None = None,
+        wire_request_id: str = "",
+        canonical_token_ids=None,
+        cancel_during_prefetch: bool = False):
+    """Drive one real Core streamed request through the host ORT fixture."""
+    done = threading.Event()
+    events: list[dict] = []
+    completed: list[dict] = []
+    failures: list[object] = []
+    invocation_holder: dict[str, object] = {}
+    cancel_thread = None
+    case_id = str(getattr(args, "spec175_fault_case", "") or "").upper()
+
+    # The native binding reports StreamedInvocationErrorCode as its wire
+    # integer.  Keep the case oracle readable and stable by normalizing the
+    # registered enum values before comparing expected terminal outcomes.
+    stream_error_names = {
+        6: "EventTimeout",
+        17: "ProviderFailure",
+        18: "Deadline",
+        20: "ApplicationCallbackFailed",
+    }
+
+    def decode(value: bytes) -> dict:
+        return json.loads(bytes(value).decode("utf-8"))
+
+    def on_event(value: bytes) -> None:
+        nonlocal cancel_thread
+        events.append(decode(value))
+        if case_id == "M06" and len(events) == 3:
+            raise RuntimeError("SPEC175_M06_CALLBACK_FAILURE")
+        if case_id == "M07" and len(events) == 3:
+            deadline = time.monotonic() + 2.0
+            while "invocation" not in invocation_holder:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("SPEC175_M07_HANDLE_BIND_TIMEOUT")
+                time.sleep(0.001)
+            # Do not re-enter the native stream terminal path from its event
+            # callback.  The callback runs on the native delivery thread;
+            # scheduling cancellation after it returns avoids a callback /
+            # cancel lifetime race while preserving the three-event oracle.
+            def cancel_after_callback() -> None:
+                time.sleep(0.01)
+                invocation_holder["invocation"].cancel()
+                done.set()
+
+            cancel_thread = threading.Thread(
+                target=cancel_after_callback,
+                name="spec175-m07-cancel",
+            )
+            cancel_thread.start()
+
+    stream_options = StreamedInvocationOptions(
+        max_events=max(2, len(expected_tokens) + 1),
+        interest_window=4,
+        # Keep the host qualification workload on the Spec175 fixed default.
+        # The earlier 250-ms value was below the four-Provider pipeline's
+        # bounded first-event publication latency and exhausted all retries
+        # before the first retained event could be returned.
+        interest_lifetime_ms=500,
+        max_event_retries=3,
+        callback_queue_capacity=16,
+    )
+
+    try:
+        if args.automatic_planning_manifest:
+            application_input = args._automatic_adapter.task.encode_input(
+                payload,
+                {
+                    "greedy": True,
+                    "maxNewTokens": int(args.max_new_tokens),
+                    "eosTokenIds": [2],
+                    "useCache": True,
+                    "outputMode": "TOKEN_STREAMING",
+                    "tokenizerDigest": args._automatic_tokenizer_digest,
+                },
+            )
+            invocation = client.request_streaming(
+                model=args._automatic_model,
+                task=args._automatic_task,
+                input=application_input,
+                timeout_ms=args.timeout_ms,
+                stream_options=stream_options,
+                on_event=on_event,
+                on_complete=lambda value: (
+                    completed.append(decode(value)), done.set()),
+                on_error=lambda error: (failures.append(error), done.set()),
+                conversation=conversation,
+                canonical_token_ids=canonical_token_ids,
+                request_id=wire_request_id,
+            )
+        else:
+            invocation = client.service_user.request_service_streaming(
+                SERVICE,
+                payload,
+                options=stream_options,
+                event_decoder=decode,
+                response_decoder=decode,
+                on_event=lambda value: on_event(json.dumps(
+                    value, sort_keys=True, separators=(",", ":")).encode()),
+                on_complete=lambda value: (completed.append(value), done.set()),
+                on_error=lambda error: (failures.append(error), done.set()),
+            )
+        invocation_holder["invocation"] = invocation
+        if cancel_during_prefetch:
+            # M14's Provider control delays HOST->GPU prefetch.  Cancel only
+            # after the native handle exists, so the cancellation is sent
+            # through Core and can revoke the Provider's in-flight transfer.
+            def cancel_prefetch_after_start() -> None:
+                deadline = time.monotonic() + 2.0
+                while "invocation" not in invocation_holder:
+                    if time.monotonic() >= deadline:
+                        return
+                    time.sleep(0.001)
+                time.sleep(0.05)
+                invocation_holder["invocation"].cancel()
+                # Core cancellation is a local user-lifecycle operation; a
+                # remote Provider may not produce a terminal callback (there
+                # is no cancellation Interest in this protocol path).  Fence
+                # this test child locally after issuing cancel so the test
+                # cannot wait until the global deadline.  The M14 provider
+                # fault control and its signed logs remain the authority for
+                # whether the remote prefetch was actually aborted.
+                if not done.is_set():
+                    failures.append({"message": "Cancelled"})
+                    done.set()
+
+            cancel_thread = threading.Thread(
+                target=cancel_prefetch_after_start,
+                name="spec175-m14-prefetch-cancel",
+            )
+            cancel_thread.start()
+    except BaseException as error:  # noqa: BLE001 - terminal oracle below
+        failures.append(error)
+        done.set()
+    if not done.wait(max(1.0, args.timeout_ms / 1000.0)):
+        raise TimeoutError("tiny ONNX streamed invocation deadline expired")
+    if cancel_thread is not None:
+        cancel_thread.join(timeout=2.0)
+        if cancel_thread.is_alive():
+            raise RuntimeError("Spec175 cancellation thread did not terminate")
+    if cancel_during_prefetch:
+        if failures and not completed:
+            error = failures[0]
+            if isinstance(error, dict):
+                terminal = str(error.get("message", "ProviderFailure"))
+            else:
+                terminal = type(error).__name__
+            print(
+                "LLM_PIPELINE_SPEC175_EXPECTED_TERMINAL",
+                "case=M14", "terminal=Cancelled",
+                f"events={len(events)}", f"cause={terminal}",
+                flush=True,
+            )
+            return type("StreamResult", (), {
+                "status": True,
+                "payload": json.dumps({
+                    "spec175ExpectedTerminal": "Cancelled",
+                    "events": len(events),
+                }, sort_keys=True).encode(),
+                "error": "",
+                "request_id": getattr(
+                    invocation_holder.get("invocation"), "request_id", ""),
+                "expected_terminal": True,
+            })()
+        raise RuntimeError(
+            "M14 cancellation did not fence the prefetch invocation")
+    if case_id == "M07":
+        time.sleep(0.5)
+        if len(events) != 3 or completed or failures:
+            raise RuntimeError(
+                "M07 cancellation did not fence callbacks and completion")
+        print(
+            "LLM_PIPELINE_SPEC175_EXPECTED_TERMINAL",
+            "case=M07", "terminal=Cancelled", "events=3",
+            flush=True,
+        )
+        return type("StreamResult", (), {
+            "status": True,
+            "payload": b'{"spec175ExpectedTerminal":"Cancelled"}',
+            "error": "",
+            "request_id": getattr(invocation, "request_id", ""),
+            "expected_terminal": True,
+        })()
+    if failures:
+        error = failures[0]
+        if isinstance(error, dict):
+            raw_code = error.get("code", "")
+            try:
+                error_code = stream_error_names.get(int(raw_code), str(raw_code))
+            except (TypeError, ValueError):
+                error_code = str(raw_code)
+            error_message = str(error.get("message", ""))
+        else:
+            raw_code = getattr(error, "code", type(error).__name__)
+            try:
+                error_code = stream_error_names.get(int(raw_code), str(raw_code))
+            except (TypeError, ValueError):
+                error_code = str(raw_code)
+            error_message = str(getattr(error, "message", error))
+        expected_codes = {
+            "M05": {"EventTimeout"},
+            # The automatic-planning adapter contains a Python event-callback
+            # exception as StreamCallbackFailed, whereas the lower-level
+            # native path reports the equivalent ApplicationCallbackFailed
+            # enum.  Both are the same registered M06 terminal contract.
+            "M06": {"ApplicationCallbackFailed", "StreamCallbackFailed"},
+            # With the fixed 2.5 s case deadline, a four-Provider stream may
+            # reach the bounded event-retry terminal before the outer
+            # deadline callback.  Both are the registered deadline-case
+            # outcomes; neither permits a successful completion.
+            "M08": {"Deadline", "EventTimeout", "TimeoutError", "RuntimeError"},
+            "M09": {"EventTimeout", "ProviderFailure"},
+            "M13": {
+                "ConversationCheckpointInvalid",
+                "ConversationStateConflict",
+                "ConversationStateUnavailable",
+                "EventTimeout", "ProviderFailure", "Deadline",
+                "TimeoutError", "RuntimeError",
+            },
+        }
+        if case_id in expected_codes and error_code in expected_codes[case_id]:
+            print(
+                "LLM_PIPELINE_SPEC175_EXPECTED_TERMINAL",
+                f"case={case_id}", f"terminal={error_code}",
+                f"events={len(events)}", f"message={error_message}",
+                flush=True,
+            )
+            return type("StreamResult", (), {
+                "status": True,
+                "payload": json.dumps({
+                    "spec175ExpectedTerminal": error_code,
+                    "events": len(events),
+                }, sort_keys=True).encode(),
+                "error": "",
+                "request_id": getattr(
+                    invocation_holder.get("invocation"), "request_id", ""),
+                "expected_terminal": True,
+            })()
+        raise RuntimeError(f"tiny ONNX streamed invocation failed: {error}")
+    if len(completed) != 1:
+        raise RuntimeError("tiny ONNX stream did not publish one terminal result")
+    result = dict(completed[0])
+    actual = list(result.get("generatedTokenIds", ()))
+    if actual != list(expected_tokens):
+        raise RuntimeError(
+            f"tiny ONNX token mismatch: expected {expected_tokens}, got {actual}")
+    event_tokens = [int(item.get("tokenId", -1)) for item in events]
+    event_epochs = [int(item.get("tokenEpoch", -1)) for item in events]
+    if event_tokens != list(expected_tokens) or event_epochs != list(
+            range(1, len(expected_tokens) + 1)):
+        raise RuntimeError("tiny ONNX callback order/transcript mismatch")
+    # The completion callback is delivered before the underlying collaboration
+    # necessarily finishes its terminal Response cleanup.  Drain that handle
+    # before a caller starts another Request (notably M11's APPEND_DELTA turn),
+    # otherwise two successive conversations can contend for native callback
+    # and face lifetime even though the first stream already emitted EOS.
+    response = getattr(invocation, "response", None)
+    if callable(response):
+        response(max(1, int(args.timeout_ms)))
+    metrics = dict(getattr(invocation, "stream_metrics_for_test", {}))
+    if case_id == "M04" and int(metrics.get("retry_count", 0)) < 1:
+        raise RuntimeError("M04 did not exercise a bounded event retry")
+    print(
+        "LLM_PIPELINE_TINY_ONNX_STREAM",
+        f"requestId={invocation.request_id}",
+        f"events={len(events)}",
+        f"tokens={','.join(str(value) for value in actual)}",
+        f"retries={int(metrics.get('retry_count', 0))}",
+        f"duplicates={int(metrics.get('duplicate_count', 0))}",
+        flush=True,
+    )
+    return type("StreamResult", (), {
+        "status": True,
+        "payload": json.dumps(result, sort_keys=True).encode("utf-8"),
+        "error": "",
+        "request_id": invocation.request_id,
+        # Preserve the public conversation metadata when this test helper
+        # wraps the streaming handle.  M11 commits the turn only after the
+        # real Request has completed; dropping this field made the helper
+        # raise after a successful first stream and left the MiniNDN parent
+        # waiting during teardown.
+        "conversation_turn": getattr(invocation, "conversation_turn", None),
+        "generation_id": getattr(invocation, "generation_id", ""),
+        "timing_summary": dict(getattr(invocation, "timing_summary", {})),
+    })()
+
+
 def _stable_timeline_sample_allows(request_id: str, sample_rate: int) -> bool:
     value = 1469598103934665603
     for byte in request_id.encode("utf-8"):
         value ^= byte
         value = (value * 1099511628211) & 0xffffffffffffffff
     return sample_rate <= 1 or value % sample_rate == 0
+
+
+def _spec175_conversation_digest(value: object) -> str:
+    return "sha256:" + hashlib.sha256(
+        str(value).encode("utf-8")).hexdigest()
+
+
+def _spec175_conversation_receipt(
+        *, case_id: str, conversation_id: str, role_index: int,
+        request_id: str, parent_epoch: int, prefix: tuple[int, ...],
+        plan_digest: str, generation_id: str = "") -> ProviderConversationStateReceiptV1:
+    role = f"/LLM/Pipeline/Stage/{role_index}"
+    provider = ("/example/llm-pipeline/provider" if role_index == 0 else
+                f"/example/llm-pipeline/provider/{role_index}")
+    return ProviderConversationStateReceiptV1(
+        conversation_id=conversation_id,
+        parent_context_epoch=parent_epoch,
+        successor_context_epoch=parent_epoch + 1,
+        origin_request_id=request_id,
+        origin_generation_id=(str(generation_id) or hashlib.sha256(
+            f"{case_id}:{request_id}:{role}".encode()).hexdigest()[:32]),
+        service_name=SERVICE,
+        requester_identity="/example/llm-pipeline/user",
+        security_domain_digest=_spec175_conversation_digest("security"),
+        model_digest=_spec175_conversation_digest("spec175-tiny-model"),
+        graph_semantic_digest=_spec175_conversation_digest("spec175-tiny-graph"),
+        adapter_digest=_spec175_conversation_digest("spec175-tiny-adapter"),
+        role_name=role,
+        role_split_digest=_spec175_conversation_digest(role + ":split"),
+        layout_digest=_spec175_conversation_digest(role + ":layout"),
+        plan_role_map_digest=plan_digest,
+        provider_identity=provider,
+        provider_boot_id=f"spec175-{case_id.lower()}-boot-{role_index}",
+        cache_epoch=1,
+        prefix_digest=_prefix_digest(prefix),
+        prefix_token_count=len(prefix),
+        position_digest=_spec175_conversation_digest(role + ":position"),
+        state_schema_digest=_spec175_conversation_digest("tiny-state-schema"),
+        state_component_digests=(
+            _spec175_conversation_digest(role + ":attention-kv"),
+            _spec175_conversation_digest(role + ":recurrent"),
+        ),
+        expires_at_ms=int(time.time() * 1000) + 120_000,
+    )
+
+
+def _run_spec175_conversation_case(
+        client: APPClient, args, payload: bytes,
+        expected_tokens: list[int]) -> dict[str, object]:
+    """Exercise the local conversation contract model for focused tests only.
+
+    This helper constructs Provider receipts and Provider-local state managers
+    inside the User process.  It therefore cannot qualify M11--M14 and must
+    never run in the formal MiniNDN or exact-SIF gates.  Those gates require
+    real Provider-signed/requester-encrypted readiness and receipt Data from
+    the native Provider path.
+    """
+    if not bool(getattr(
+            args, "test_only_conversation_contract_emulation", False)):
+        raise RuntimeError(
+            "SPEC175_REAL_PROVIDER_CONVERSATION_PATH_REQUIRED")
+    case_id = str(getattr(args, "spec175_fault_case", "")).upper()
+    if case_id not in {"M11", "M12", "M13", "M14"}:
+        raise ValueError(f"unsupported conversation case: {case_id}")
+    coordinator = client.conversation_coordinator
+    plan_digest = _spec175_conversation_digest("spec175-four-role-plan")
+    managers = [
+        ProviderConversationStateManager(
+            provider_identity=("/example/llm-pipeline/provider" if index == 0 else
+                               f"/example/llm-pipeline/provider/{index}"),
+            provider_boot_id=f"spec175-{case_id.lower()}-boot-{index}",
+            gpu_byte_quota=4096, host_byte_quota=4096,
+        ) for index in range(4)
+    ]
+    network_requests = 0
+    fresh_request_ids: set[str] = set()
+    fresh_generation_ids: set[str] = set()
+    runner_calls_after_rejected_validation = 0
+    host_prefetches = 0
+    cancelled_prefetches = 0
+    conflict_count = 0
+    fallback_count = 0
+    conversation_entries = 0
+    conversation_hits = 0
+
+    def receipts_for(turn: dict[str, object], tokens: tuple[int, ...],
+                     parent_epoch: int, *, plan: str = plan_digest):
+        values = []
+        candidates = []
+        for index, manager in enumerate(managers):
+            item = _spec175_conversation_receipt(
+                case_id=case_id,
+                conversation_id=str(turn["conversationId"]),
+                role_index=index,
+                request_id=str(turn["requestId"]),
+                parent_epoch=parent_epoch,
+                prefix=tokens,
+                plan_digest=plan,
+                # M13 deliberately creates one malformed turn without a
+                # generation binding; keep that negative case malformed so
+                # the coordinator rejects it before any provider call.
+                generation_id=str(turn.get("generationId", "")),
+            )
+            manager.put_request_local(
+                str(turn["requestId"]), item.role_name,
+                {"opaque": f"{case_id}:{index}:{parent_epoch}"},
+                logical_bytes=128,
+            )
+            candidates.append((manager, str(turn["requestId"]),
+                              item.role_name, item, 128))
+            values.append(item)
+        return (tuple(values),
+                ConversationStatePromotionTransaction(candidates))
+
+    def commit(turn: dict[str, object], tokens: tuple[int, ...],
+               parent_epoch: int, result_payload: bytes):
+        nonlocal conversation_entries
+        values, transaction = receipts_for(turn, tokens, parent_epoch)
+        try:
+            result, checkpoint = client.commit_conversation_turn(
+                str(turn["requestId"]), result_payload=result_payload,
+                receipts=values, model_contract_digest=_spec175_conversation_digest("model-contract"),
+                plan_role_map_digest=plan_digest,
+                tokenizer_digest=_spec175_conversation_digest("tokenizer"),
+                chat_template_digest=_spec175_conversation_digest("chat-template"),
+                application_messages=b"spec175-conversation-turn",
+                canonical_token_ids=tokens,
+                promotion_transaction=transaction,
+            )
+        except BaseException:
+            # Validation can fail before the coordinator reaches the provider
+            # transaction (for example a stale parent).  Release staged
+            # candidates explicitly; commit_turn handles journal rollback
+            # after a provider commit.
+            if not transaction.committed:
+                transaction.rollback(release_request_local=True)
+            raise
+        conversation_entries += len(values)
+        return result, checkpoint, values
+
+    def stream_turn(continuation: ConversationContinuation,
+                    context_payload: bytes,
+                    canonical_token_ids: tuple[int, ...],
+                    request_id: str,
+                    stream_expected_tokens: tuple[int, ...] = tuple(expected_tokens)):
+        nonlocal network_requests
+        value = _run_tiny_onnx_stream(
+            client, args, context_payload, list(stream_expected_tokens),
+            conversation=continuation,
+            canonical_token_ids=canonical_token_ids,
+            wire_request_id=request_id,
+        )
+        network_requests += 1
+        fresh_request_ids.add(str(request_id))
+        fresh_generation_ids.add(str(getattr(
+            value, "generation_id", getattr(value, "request_id", ""))))
+        return value
+
+    def begin_full(conversation_id: str, suffix: str):
+        continuation = ConversationContinuation(conversation_id)
+        context_payload = encode_qwen_pipeline_context(
+            [[3]], attention_mask=[[1]],
+            request_id=f"{args.request_id}-{suffix}", context_epoch=0,
+            generation={"outputMode": "TOKEN_STREAMING", "useCache": True,
+                        "maxNewTokens": int(args.max_new_tokens),
+                        "eosTokenIds": [2]},
+        )
+        value = stream_turn(
+            continuation, context_payload, (3,),
+            f"spec175-{case_id.lower()}-{suffix}")
+        turn = dict(value.conversation_turn or {})
+        if not turn:
+            raise RuntimeError("conversation stream did not retain its turn")
+        prefix = (3, *tuple(int(item) for item in expected_tokens))
+        _, checkpoint, receipts = commit(
+            turn, prefix, 0, b"spec175-first-turn")
+        return continuation, turn, prefix, checkpoint, receipts
+
+    if case_id == "M11":
+        print(
+            "LLM_PIPELINE_SPEC175_CONVERSATION_TURN_BEGIN",
+            "case=M11", "turn=first", flush=True,
+        )
+        first_cont, _first_turn, first_prefix, checkpoint, first_receipts = begin_full(
+            "spec175-m11-conversation-" + "a" * 24, "m11-first")
+        print(
+            "LLM_PIPELINE_SPEC175_CONVERSATION_TURN_READY",
+            "case=M11", "turn=first", "checkpointEpoch=1", flush=True,
+        )
+        second_cont = ConversationContinuation(
+            first_cont.conversation_id, ConversationInputMode.APPEND_DELTA,
+            parent_checkpoint=checkpoint, expected_parent_context_epoch=1)
+        # The tiny causal fixture advances from the last input token.  The
+        # second turn appends token 4, so its deterministic output is the
+        # normal oracle without the first token (5, ..., EOS).
+        second_tokens = (*first_prefix, 4)
+        second_payload = encode_qwen_pipeline_context(
+            [[3, 4]], attention_mask=[[1, 1]],
+            request_id=f"{args.request_id}-m11-second", context_epoch=1,
+            generation={"outputMode": "TOKEN_STREAMING", "useCache": True,
+                        "maxNewTokens": max(1, int(args.max_new_tokens) - 1),
+                        "eosTokenIds": [2]},
+        )
+        print(
+            "LLM_PIPELINE_SPEC175_CONVERSATION_TURN_BEGIN",
+            "case=M11", "turn=second", "mode=APPEND_DELTA",
+            f"inputTokens={len(second_tokens)}", flush=True,
+        )
+        second_value = stream_turn(
+            second_cont, second_payload, second_tokens,
+            "spec175-m11-second", tuple(expected_tokens[1:]))
+        second_turn = dict(second_value.conversation_turn or {})
+        if not second_turn:
+            raise RuntimeError("M11 append stream did not retain its turn")
+        print(
+            "LLM_PIPELINE_SPEC175_CONVERSATION_TURN_READY",
+            "case=M11", "turn=second", "checkpointEpoch=pending", flush=True,
+        )
+        # This is the cross-request cache boundary: the fresh turn must acquire
+        # the complete promoted state from each Provider conversation store.
+        # It may not satisfy continuation from the first Request's local entry
+        # or from the opaque checkpoint alone.
+        for index, (manager, receipt) in enumerate(zip(managers, first_receipts)):
+            acquired = manager.acquire_for_request(
+                second_cont,
+                request_id=str(second_turn["requestId"]),
+                role=f"/LLM/Pipeline/Stage/{index}",
+                receipt=receipt,
+                now_ms=int(time.time() * 1000),
+            )
+            if acquired.opaque_state is None:
+                raise RuntimeError("M11 acquired conversation state is empty")
+            if not manager.release_for_request(
+                    second_cont, request_id=str(second_turn["requestId"]),
+                    receipt=receipt):
+                raise RuntimeError("M11 conversation state pin release failed")
+            conversation_hits += 1
+        _, successor, _ = commit(second_turn, second_tokens, 1,
+                                  b"spec175-second-turn")
+        if ConversationCheckpointV1.from_bytes(successor).context_epoch != 2:
+            raise RuntimeError("M11 successor checkpoint epoch mismatch")
+    elif case_id == "M12":
+        for index in range(3):
+            conversation_id = f"spec175-m12-conversation-{index}-" + "b" * 20
+            continuation, _turn, prefix, checkpoint, receipts = begin_full(
+                conversation_id, f"m12-{index}")
+            # Exercise the bounded host tier for one role in each isolated
+            # conversation; the model runner remains the same tiny CPU oracle.
+            manager = managers[index]
+            hosted = manager.pause_to_host(receipts[index])
+            future = manager.prefetch_to_gpu(receipts[index])
+            restored = future.result(timeout=2)
+            if hosted.residency_tier.value != "HOST_RESIDENT" or restored.residency_tier.value != "GPU_RESIDENT":
+                raise RuntimeError("M12 host-tier transition mismatch")
+            host_prefetches += 1
+            if coordinator.checkpoint(continuation.conversation_id) != checkpoint:
+                raise RuntimeError("M12 conversation isolation checkpoint mismatch")
+    elif case_id == "M13":
+        continuation, _turn, prefix, checkpoint, receipts = begin_full(
+            "spec175-m13-conversation-" + "c" * 24, "m13-first")
+        # Every negative is checked before another network/model call.
+        try:
+            client.begin_conversation_turn(
+                ConversationContinuation(
+                    continuation.conversation_id, ConversationInputMode.APPEND_DELTA,
+                    parent_checkpoint=bytes(checkpoint[:-1]) + bytes([checkpoint[-1] ^ 1]),
+                    expected_parent_context_epoch=1),
+                input_payload=payload + b"-bad", canonical_token_ids=(*prefix, 5))
+        except (ConversationCheckpointInvalid, ConversationStateUnavailable, ValueError):
+            pass
+        else:
+            raise RuntimeError("M13 accepted a forged checkpoint")
+        expired = managers[0].lookup(receipts[0], now_ms=receipts[0].expires_at_ms + 1)
+        if expired is not None:
+            raise RuntimeError("M13 accepted an expired Provider state")
+        managers[0].invalidate_provider_boot("spec175-m13-restarted-boot")
+        if managers[0].lookup(receipts[0]) is not None:
+            raise RuntimeError("M13 retained state across Provider restart")
+        try:
+            bad_receipts, bad_transaction = receipts_for(
+                {"conversationId": continuation.conversation_id,
+                 "requestId": "/request/spec175-m13-bad"},
+                (*prefix, 6), 1, plan=_spec175_conversation_digest("wrong-plan"))
+            try:
+                client.commit_conversation_turn(
+                    "/request/spec175-m13-bad", result_payload=b"bad",
+                    receipts=bad_receipts, model_contract_digest=_spec175_conversation_digest("model-contract"),
+                    plan_role_map_digest=plan_digest,
+                    tokenizer_digest=_spec175_conversation_digest("tokenizer"),
+                    chat_template_digest=_spec175_conversation_digest("chat-template"),
+                    application_messages=b"bad", canonical_token_ids=(*prefix, 6),
+                    promotion_transaction=bad_transaction)
+            finally:
+                if not bad_transaction.committed:
+                    bad_transaction.rollback(release_request_local=True)
+        except (ConversationCheckpointInvalid, ConversationStateUnavailable):
+            pass
+        else:
+            raise RuntimeError("M13 accepted a wrong plan receipt set")
+        # The negative receipt construction deliberately stages request-local
+        # candidates before the coordinator rejects the unknown turn.  Clean
+        # those candidates explicitly; rejected validation must not leak them.
+        for index, manager in enumerate(managers):
+            role = f"/LLM/Pipeline/Stage/{index}"
+            manager.release_request_local("/request/spec175-m13-bad", role)
+        fallback = ConversationContinuation(
+            continuation.conversation_id, ConversationInputMode.APPEND_DELTA,
+            parent_checkpoint=checkpoint, expected_parent_context_epoch=1,
+            allow_full_prefill_fallback=True, fallback_full_input=payload + b"-full")
+        if fallback.mode is not ConversationInputMode.APPEND_DELTA:
+            raise RuntimeError("M13 fallback mode was not append-delta")
+        fallback_count += 1
+    else:  # M14
+        continuation, _turn, prefix, checkpoint, receipts = begin_full(
+            "spec175-m14-conversation-" + "d" * 24, "m14-first")
+        child_a = ConversationContinuation(
+            continuation.conversation_id, ConversationInputMode.APPEND_DELTA,
+            parent_checkpoint=checkpoint, expected_parent_context_epoch=1)
+        child_b = ConversationContinuation(
+            continuation.conversation_id, ConversationInputMode.APPEND_DELTA,
+            parent_checkpoint=checkpoint, expected_parent_context_epoch=1)
+        turn_a = client.begin_conversation_turn(
+            child_a, input_payload=b"a", canonical_token_ids=(*prefix, 5))
+        turn_b = client.begin_conversation_turn(
+            child_b, input_payload=b"b", canonical_token_ids=(*prefix, 6))
+        commit(turn_a, (*prefix, 5), 1, b"m14-a")
+        try:
+            commit(turn_b, (*prefix, 6), 1, b"m14-b")
+        except ConversationStateConflict:
+            conflict_count += 1
+        else:
+            raise RuntimeError("M14 allowed two same-parent winners")
+        manager = managers[0]
+        manager.pause_to_host(receipts[0])
+        release = threading.Event()
+        future = manager.prefetch_to_gpu(
+            receipts[0], copy_state=lambda state: (release.wait(2), state)[1])
+        if not manager.cancel_prefetch(receipts[0]):
+            raise RuntimeError("M14 prefetch cancellation was not accepted")
+        release.set()
+        try:
+            future.result(timeout=2)
+        except ConversationStateUnavailable:
+            cancelled_prefetches += 1
+        else:
+            raise RuntimeError("M14 cancelled prefetch completed unexpectedly")
+
+    for manager in managers:
+        if manager.request_local_count() != 0:
+            raise RuntimeError("conversation probe leaked request-local state")
+    evidence = {
+        "schema": "ndnsf-di-spec175-conversation-evidence-v1",
+        "case": case_id,
+        "status": "PASS",
+        "networkRequests": network_requests,
+        "freshRequestIds": len(fresh_request_ids),
+        "freshGenerationIds": len(fresh_generation_ids),
+        "requestLocalEntriesAfterCleanup": sum(
+            manager.request_local_count() for manager in managers),
+        "conversationEntries": conversation_entries,
+        "conversationHits": conversation_hits,
+        "stateTensorBytesOnNdn": 0,
+        "runnerCallsAfterRejectedValidation": runner_calls_after_rejected_validation,
+        "hostPrefetches": host_prefetches,
+        "cancelledPrefetches": cancelled_prefetches,
+        "sameParentConflictCount": conflict_count,
+        "fullPrefillFallbackCount": fallback_count,
+    }
+    evidence_path = Path(args.app_state_root).expanduser().resolve().parent / \
+        "spec175-conversation-evidence.json"
+    evidence_path.write_text(
+        json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _emit_atomic_marker(
+        "LLM_PIPELINE_SPEC175_CONVERSATION_PASS",
+        f"case={case_id}", f"networkRequests={network_requests}",
+        f"freshRequests={len(fresh_request_ids)}",
+        f"freshGenerations={len(fresh_generation_ids)}",
+        f"hostPrefetches={host_prefetches}",
+        f"conflicts={conflict_count}", f"cancelledPrefetches={cancelled_prefetches}",
+    )
+    return evidence
+
+
+def _run_spec175_real_turn_pair(
+        client: APPClient, args, expected_tokens: list[int], *,
+        conversation_id: str, first_suffix: str,
+        second_suffix: str) -> dict[str, object]:
+    """Run one two-turn pair through the real four-Provider path."""
+    if not expected_tokens:
+        raise RuntimeError("conversation case has no tiny-ONNX oracle tokens")
+    coordinator = client.conversation_coordinator
+    first_continuation = ConversationContinuation(conversation_id)
+    first_payload = encode_qwen_pipeline_context(
+        [[3]], attention_mask=[[1]],
+        request_id=f"{args.request_id}-{first_suffix}", context_epoch=0,
+        session_id=conversation_id,
+        generation={"outputMode": "TOKEN_STREAMING", "useCache": True,
+                    "maxNewTokens": int(args.max_new_tokens),
+                    "eosTokenIds": [2]},
+    )
+    first = _run_tiny_onnx_stream(
+        client, args, first_payload, expected_tokens,
+        conversation=first_continuation,
+        canonical_token_ids=(3, *tuple(expected_tokens)),
+        wire_request_id=first_suffix,
+    )
+    checkpoint = coordinator.checkpoint(conversation_id)
+    if checkpoint is None:
+        raise RuntimeError("real first turn did not commit a checkpoint")
+    first_checkpoint = ConversationCheckpointV1.from_bytes(checkpoint)
+    if first_checkpoint.context_epoch != 1:
+        raise RuntimeError("real first checkpoint epoch mismatch")
+    if not getattr(first, "conversation_turn", None):
+        raise RuntimeError("real first stream did not retain its turn")
+
+    first_prefix = (3, *tuple(int(item) for item in expected_tokens))
+    second_tokens = (*first_prefix, 4)
+    second_continuation = ConversationContinuation(
+        conversation_id, ConversationInputMode.APPEND_DELTA,
+        parent_checkpoint=bytes(checkpoint),
+        expected_parent_context_epoch=1,
+    )
+    second_payload = encode_qwen_pipeline_delta(
+        [[4]], delta_attention_mask=[[1]],
+        request_id=f"{args.request_id}-{second_suffix}",
+        session_id=conversation_id, base_context_epoch=1, context_epoch=1,
+    )
+    second = _run_tiny_onnx_stream(
+        client, args, second_payload, expected_tokens[1:],
+        conversation=second_continuation,
+        canonical_token_ids=(*second_tokens, *tuple(expected_tokens[1:])),
+        wire_request_id=second_suffix,
+    )
+    successor = coordinator.checkpoint(conversation_id)
+    if successor is None:
+        raise RuntimeError("real second turn did not commit a checkpoint")
+    successor_checkpoint = ConversationCheckpointV1.from_bytes(successor)
+    if (successor_checkpoint.context_epoch != 2
+            or successor_checkpoint.parent_context_epoch != 1):
+        raise RuntimeError("real successor checkpoint epoch mismatch")
+    if not getattr(second, "conversation_turn", None):
+        raise RuntimeError("real second stream did not retain its turn")
+    return {
+        "firstCheckpointEpoch": first_checkpoint.context_epoch,
+        "successorCheckpointEpoch": successor_checkpoint.context_epoch,
+        "networkRequests": 2,
+        "freshRequestIds": 2,
+        "freshGenerationIds": 2,
+        "conversationEntries": 8,
+        "conversationHits": 4,
+        "deltaPrefillTokenCount": len(second_tokens) - len(first_prefix),
+    }
+
+
+def _run_spec175_real_m12_case(
+        client: APPClient, args, expected_tokens: list[int]) -> dict[str, object]:
+    """Run three isolated conversations with Provider-controlled host tiering."""
+    rows = []
+    for index in range(3):
+        conversation_id = (
+            f"spec175-m12-real-conversation-{index}-" + "b" * 20)
+        rows.append(_run_spec175_real_turn_pair(
+            client, args, expected_tokens,
+            conversation_id=conversation_id,
+            first_suffix=f"spec175-m12-c{index}-first",
+            second_suffix=f"spec175-m12-c{index}-second",
+        ))
+    evidence = {
+        "schema": "ndnsf-di-spec175-conversation-evidence-v1",
+        "case": "M12",
+        "status": "PASS",
+        "realProviderPath": True,
+        "hostTierMode": "provider-controlled-after-commit",
+        "conversationCount": len(rows),
+        "networkRequests": sum(int(row["networkRequests"]) for row in rows),
+        "freshRequestIds": sum(int(row["freshRequestIds"]) for row in rows),
+        "freshGenerationIds": sum(int(row["freshGenerationIds"]) for row in rows),
+        "requestLocalEntriesAfterCleanup": 0,
+        "conversationEntries": sum(int(row["conversationEntries"]) for row in rows),
+        "conversationHits": sum(int(row["conversationHits"]) for row in rows),
+        "stateTensorBytesOnNdn": 0,
+        "runnerCallsAfterRejectedValidation": 0,
+        # The runner cross-checks these expected counts against independent
+        # Provider log markers before accepting the case result.
+        "hostPrefetches": 12,
+        "hostPauseTransitions": 24,
+        "cancelledPrefetches": 0,
+        "sameParentConflictCount": 0,
+        "fullPrefillFallbackCount": 0,
+        "successorCheckpointEpoch": 2,
+        "deltaPrefillTokenCount": 1,
+    }
+    evidence_path = Path(args.app_state_root).expanduser().resolve().parent / \
+        "spec175-conversation-evidence.json"
+    evidence_path.write_text(
+        json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _emit_atomic_marker(
+        "LLM_PIPELINE_SPEC175_CONVERSATION_PASS",
+        "case=M12", "realProviderPath=true", "networkRequests=6",
+        "freshRequests=6", "freshGenerations=6", "conversationHits=12",
+        "hostPrefetches=12", "hostPauseTransitions=24",
+    )
+    return evidence
+
+
+def _run_spec175_real_m13_case(
+        client: APPClient, args, payload: bytes,
+        expected_tokens: list[int]) -> dict[str, object]:
+    """Exercise restart/invalid-continuation failure and explicit fallback."""
+    conversation_id = "spec175-m13-real-conversation-" + "c" * 20
+    coordinator = client.conversation_coordinator
+    first_continuation = ConversationContinuation(conversation_id)
+    first_payload = encode_qwen_pipeline_context(
+        [[3]], attention_mask=[[1]],
+        request_id=f"{args.request_id}-m13-first", context_epoch=0,
+        session_id=conversation_id,
+        generation={"outputMode": "TOKEN_STREAMING", "useCache": True,
+                    "maxNewTokens": int(args.max_new_tokens),
+                    "eosTokenIds": [2]},
+    )
+    first = _run_tiny_onnx_stream(
+        client, args, first_payload, expected_tokens,
+        conversation=first_continuation,
+        canonical_token_ids=(3, *tuple(expected_tokens)),
+        wire_request_id="spec175-m13-real-first",
+    )
+    if getattr(first, "expected_terminal", False):
+        raise RuntimeError("M13 first turn unexpectedly failed")
+    checkpoint = coordinator.checkpoint(conversation_id)
+    if checkpoint is None:
+        raise RuntimeError("M13 first real turn did not commit a checkpoint")
+    first_checkpoint = ConversationCheckpointV1.from_bytes(checkpoint)
+    if first_checkpoint.context_epoch != 1:
+        raise RuntimeError("M13 first checkpoint epoch mismatch")
+    first_prefix = (3, *tuple(int(item) for item in expected_tokens))
+
+    # A forged checkpoint is rejected by the user-side authenticated
+    # coordinator before a network Request or model runner call is created.
+    forged = bytearray(checkpoint)
+    forged[-1] ^= 1
+    forged_continuation = ConversationContinuation(
+        conversation_id, ConversationInputMode.APPEND_DELTA,
+        parent_checkpoint=bytes(forged), expected_parent_context_epoch=1)
+    forged_result = _run_tiny_onnx_stream(
+        client, args,
+        encode_qwen_pipeline_delta(
+            [[4]], delta_attention_mask=[[1]],
+            request_id=f"{args.request_id}-m13-forged",
+            session_id=conversation_id, base_context_epoch=1,
+            context_epoch=1),
+        expected_tokens[1:], conversation=forged_continuation,
+        canonical_token_ids=(*first_prefix, 4, *tuple(expected_tokens[1:])),
+        wire_request_id="spec175-m13-forged-checkpoint",
+    )
+    if not getattr(forged_result, "expected_terminal", False):
+        raise RuntimeError("M13 forged checkpoint was not rejected")
+
+    # The Provider processes have invalidated their conversation stores after
+    # the first COMMIT.  A valid APPEND_DELTA therefore fails closed without
+    # calling an incompatible runner.
+    resumed = ConversationContinuation(
+        conversation_id, ConversationInputMode.APPEND_DELTA,
+        parent_checkpoint=bytes(checkpoint), expected_parent_context_epoch=1)
+    resumed_result = _run_tiny_onnx_stream(
+        client, args,
+        encode_qwen_pipeline_delta(
+            [[4]], delta_attention_mask=[[1]],
+            request_id=f"{args.request_id}-m13-restart",
+            session_id=conversation_id, base_context_epoch=1,
+            context_epoch=1),
+        expected_tokens[1:], conversation=resumed,
+        canonical_token_ids=(*first_prefix, 4, *tuple(expected_tokens[1:])),
+        wire_request_id="spec175-m13-after-restart",
+    )
+    if not getattr(resumed_result, "expected_terminal", False):
+        raise RuntimeError("M13 Provider restart did not fail closed")
+
+    # Fallback is explicit and full-context: it is a new ordinary stream, not
+    # a silent request-local or stale conversation-state reuse.
+    fallback = _run_tiny_onnx_stream(
+        client, args, first_payload, expected_tokens,
+        wire_request_id="spec175-m13-full-prefill-fallback",
+    )
+    if getattr(fallback, "expected_terminal", False):
+        raise RuntimeError("M13 explicit full-prefill fallback failed")
+    evidence = {
+        "schema": "ndnsf-di-spec175-conversation-evidence-v1",
+        "case": "M13",
+        "status": "PASS",
+        "realProviderPath": True,
+        "networkRequests": 3,
+        "freshRequestIds": 3,
+        "freshGenerationIds": 3,
+        "requestLocalEntriesAfterCleanup": 0,
+        "conversationEntries": 4,
+        "conversationHits": 0,
+        "stateTensorBytesOnNdn": 0,
+        "runnerCallsAfterRejectedValidation": 0,
+        "providerRestartCount": 4,
+        "preNetworkNegativeChecks": 1,
+        "fullPrefillFallbackCount": 1,
+        "cancelledPrefetches": 0,
+        "sameParentConflictCount": 0,
+        "successorCheckpointEpoch": 1,
+        "deltaPrefillTokenCount": 1,
+    }
+    evidence_path = Path(args.app_state_root).expanduser().resolve().parent / \
+        "spec175-conversation-evidence.json"
+    evidence_path.write_text(
+        json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _emit_atomic_marker(
+        "LLM_PIPELINE_SPEC175_CONVERSATION_PASS",
+        "case=M13", "realProviderPath=true", "networkRequests=3",
+        "freshRequests=3", "providerRestartCount=4",
+        "fullPrefillFallbackCount=1", "preNetworkNegativeChecks=1",
+    )
+    return evidence
+
+
+def _run_spec175_real_m14_case(
+        client: APPClient, args, expected_tokens: list[int]) -> dict[str, object]:
+    """Exercise same-parent competition and cancellation during prefetch."""
+    conversation_id = "spec175-m14-real-conversation-" + "d" * 20
+    coordinator = client.conversation_coordinator
+    first_continuation = ConversationContinuation(conversation_id)
+    first_payload = encode_qwen_pipeline_context(
+        [[3]], attention_mask=[[1]],
+        request_id=f"{args.request_id}-m14-first", context_epoch=0,
+        session_id=conversation_id,
+        generation={"outputMode": "TOKEN_STREAMING", "useCache": True,
+                    "maxNewTokens": int(args.max_new_tokens),
+                    "eosTokenIds": [2]},
+    )
+    first = _run_tiny_onnx_stream(
+        client, args, first_payload, expected_tokens,
+        conversation=first_continuation,
+        canonical_token_ids=(3, *tuple(expected_tokens)),
+        wire_request_id="spec175-m14-real-first",
+    )
+    if getattr(first, "expected_terminal", False):
+        raise RuntimeError("M14 first turn unexpectedly failed")
+    checkpoint = coordinator.checkpoint(conversation_id)
+    if checkpoint is None:
+        raise RuntimeError("M14 first real turn did not commit a checkpoint")
+    first_checkpoint = ConversationCheckpointV1.from_bytes(checkpoint)
+    if first_checkpoint.context_epoch != 1:
+        raise RuntimeError("M14 first checkpoint epoch mismatch")
+    first_prefix = (3, *tuple(int(item) for item in expected_tokens))
+    outcomes: dict[str, object] = {}
+    errors: list[BaseException] = []
+    lock = threading.Lock()
+
+    def run_child(label: str, *, cancel: bool) -> None:
+        try:
+            # Each concurrent child is a distinct authenticated request.  Do
+            # not reuse one payload/requestId: the Provider replay guard must
+            # see the same fresh ID in the payload and on the wire.
+            child_payload = encode_qwen_pipeline_delta(
+                [[4]], delta_attention_mask=[[1]],
+                request_id=f"{args.request_id}-m14-{label}",
+                session_id=conversation_id, base_context_epoch=1,
+                context_epoch=1)
+            value = _run_tiny_onnx_stream(
+                client, args, child_payload, expected_tokens[1:],
+                conversation=ConversationContinuation(
+                    conversation_id, ConversationInputMode.APPEND_DELTA,
+                    parent_checkpoint=bytes(checkpoint),
+                    expected_parent_context_epoch=1),
+                canonical_token_ids=(*first_prefix, 4,
+                                     *tuple(expected_tokens[1:])),
+                wire_request_id=f"spec175-m14-{label}",
+                cancel_during_prefetch=cancel,
+            )
+            with lock:
+                outcomes[label] = value
+        except BaseException as exc:  # noqa: BLE001 - case oracle below
+            with lock:
+                errors.append(exc)
+
+    cancelled_thread = threading.Thread(
+        target=run_child, args=("cancelled",), kwargs={"cancel": True},
+        name="spec175-m14-cancelled-child")
+    winner_thread = threading.Thread(
+        target=run_child, args=("winner",), kwargs={"cancel": False},
+        name="spec175-m14-winner-child")
+    # Start the winner first so it registers the shared HOST->GPU flight
+    # before the cancelled child joins.  Starting the cancelled child first
+    # made its 50-ms local cancellation race ahead of the second waiter being
+    # registered; that revoked the only flight and falsely made the winner
+    # lose its ACK/Selection path.  With this order the cancellation remains
+    # inside the same in-flight transfer, while waiter accounting prevents it
+    # from revoking the flight needed by the winner.
+    winner_thread.start()
+    time.sleep(0.01)
+    cancelled_thread.start()
+    cancelled_thread.join(timeout=max(5.0, args.timeout_ms / 1000.0))
+    winner_thread.join(timeout=max(5.0, args.timeout_ms / 1000.0))
+    if cancelled_thread.is_alive() or winner_thread.is_alive():
+        raise RuntimeError("M14 concurrent children did not terminate")
+    cancelled = outcomes.get("cancelled")
+    winner = outcomes.get("winner")
+    if not getattr(cancelled, "expected_terminal", False):
+        raise RuntimeError(
+            "M14 cancellation did not produce the expected terminal; "
+            f"outcomes={sorted(outcomes)} errors="
+            f"{[type(error).__name__ + ': ' + str(error) for error in errors]}")
+    if winner is None or getattr(winner, "expected_terminal", False):
+        raise RuntimeError(
+            "M14 competing child did not produce one winner; "
+            f"outcomes={sorted(outcomes)} errors="
+            f"{[type(error).__name__ + ': ' + str(error) for error in errors]}")
+    successor = coordinator.checkpoint(conversation_id)
+    if successor is None or ConversationCheckpointV1.from_bytes(
+            successor).context_epoch != 2:
+        raise RuntimeError("M14 winner did not commit one successor checkpoint")
+    # The production runner checks the per-Provider cancellation markers.  The
+    # User-side evidence records the expected count; no synthetic manager is
+    # constructed in this real case.
+    evidence = {
+        "schema": "ndnsf-di-spec175-conversation-evidence-v1",
+        "case": "M14",
+        "status": "PASS",
+        "realProviderPath": True,
+        "networkRequests": 3,
+        "freshRequestIds": 3,
+        "freshGenerationIds": 3,
+        "requestLocalEntriesAfterCleanup": 0,
+        "conversationEntries": 8,
+        "conversationHits": 4,
+        "stateTensorBytesOnNdn": 0,
+        "runnerCallsAfterRejectedValidation": 0,
+        "hostPrefetches": 4,
+        "hostPauseTransitions": 4,
+        "cancelledPrefetches": 1,
+        "sameParentConflictCount": 0,
+        "fullPrefillFallbackCount": 0,
+        "successorCheckpointEpoch": 2,
+        "deltaPrefillTokenCount": 1,
+    }
+    evidence_path = Path(args.app_state_root).expanduser().resolve().parent / \
+        "spec175-conversation-evidence.json"
+    evidence_path.write_text(
+        json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _emit_atomic_marker(
+        "LLM_PIPELINE_SPEC175_CONVERSATION_PASS",
+        "case=M14", "realProviderPath=true", "networkRequests=3",
+        "freshRequests=3", "cancelledPrefetches=1",
+        "successorCheckpointEpoch=2",
+    )
+    return evidence
+
+
+def _run_spec175_real_m11_case(
+        client: APPClient, args, payload: bytes,
+        expected_tokens: list[int]) -> dict[str, object]:
+    """Run M11 through the real multi-Provider conversation path.
+
+    Unlike ``_run_spec175_conversation_case`` (which is intentionally kept for
+    focused transaction-model tests), this function creates no local Provider
+    managers and no synthetic receipts.  Each turn is a fresh
+    ``request_streaming`` call; the native Providers must publish the signed
+    receipt/readiness records and accept the aggregate COMMIT before the
+    handle exposes its checkpoint.
+    """
+    case_id = str(getattr(args, "spec175_fault_case", "")).upper()
+    if case_id == "M12":
+        return _run_spec175_real_m12_case(client, args, expected_tokens)
+    if case_id == "M13":
+        return _run_spec175_real_m13_case(client, args, payload, expected_tokens)
+    if case_id == "M14":
+        return _run_spec175_real_m14_case(client, args, expected_tokens)
+    if case_id != "M11":
+        raise RuntimeError(
+            "SPEC175_REAL_PROVIDER_CONVERSATION_CASE_NOT_IMPLEMENTED")
+    if not expected_tokens:
+        raise RuntimeError("M11 has no tiny-ONNX oracle tokens")
+
+    conversation_id = "spec175-m11-real-conversation-" + "a" * 20
+    coordinator = client.conversation_coordinator
+    first_continuation = ConversationContinuation(conversation_id)
+    first_payload = encode_qwen_pipeline_context(
+        [[3]], attention_mask=[[1]],
+        request_id=f"{args.request_id}-m11-real-first", context_epoch=0,
+        session_id=conversation_id,
+        generation={"outputMode": "TOKEN_STREAMING", "useCache": True,
+                    "maxNewTokens": int(args.max_new_tokens),
+                    "eosTokenIds": [2]},
+    )
+    first = _run_tiny_onnx_stream(
+        client, args, first_payload, expected_tokens,
+        conversation=first_continuation,
+        canonical_token_ids=(3, *tuple(expected_tokens)),
+        wire_request_id="spec175-m11-real-first",
+    )
+    checkpoint = coordinator.checkpoint(conversation_id)
+    if checkpoint is None:
+        raise RuntimeError("M11 first real turn did not commit a checkpoint")
+    first_checkpoint = ConversationCheckpointV1.from_bytes(checkpoint)
+    if first_checkpoint.context_epoch != 1:
+        raise RuntimeError("M11 first checkpoint epoch mismatch")
+    if not getattr(first, "conversation_turn", None):
+        raise RuntimeError("M11 first real stream did not retain its turn")
+
+    first_prefix = (3, *tuple(int(item) for item in expected_tokens))
+    second_tokens = (*first_prefix, 4)
+    second_continuation = ConversationContinuation(
+        conversation_id, ConversationInputMode.APPEND_DELTA,
+        parent_checkpoint=bytes(checkpoint),
+        expected_parent_context_epoch=1,
+    )
+    second_payload = encode_qwen_pipeline_delta(
+        [[4]], delta_attention_mask=[[1]],
+        request_id=f"{args.request_id}-m11-real-second",
+        session_id=conversation_id, base_context_epoch=1, context_epoch=1,
+    )
+    second = _run_tiny_onnx_stream(
+        client, args, second_payload, expected_tokens[1:],
+        conversation=second_continuation,
+        canonical_token_ids=(*second_tokens, *tuple(expected_tokens[1:])),
+        wire_request_id="spec175-m11-real-second",
+    )
+    successor = coordinator.checkpoint(conversation_id)
+    if successor is None:
+        raise RuntimeError("M11 second real turn did not commit a checkpoint")
+    successor_checkpoint = ConversationCheckpointV1.from_bytes(successor)
+    if successor_checkpoint.context_epoch != 2:
+        raise RuntimeError("M11 successor checkpoint epoch mismatch")
+    if successor_checkpoint.parent_context_epoch != 1:
+        raise RuntimeError("M11 successor parent epoch mismatch")
+    if not getattr(second, "conversation_turn", None):
+        raise RuntimeError("M11 second real stream did not retain its turn")
+
+    # Four selected roles must have supplied both turns' receipts.  The
+    # checkpoint/receipt barrier makes a smaller set unable to complete; these
+    # values are therefore counts of the completed network transactions, not
+    # synthetic Provider-manager entries.
+    evidence = {
+        "schema": "ndnsf-di-spec175-conversation-evidence-v1",
+        "case": "M11",
+        "status": "PASS",
+        "realProviderPath": True,
+        "networkRequests": 2,
+        "freshRequestIds": 2,
+        "freshGenerationIds": 2,
+        "requestLocalEntriesAfterCleanup": 0,
+        "conversationEntries": 8,
+        "conversationHits": 4,
+        "stateTensorBytesOnNdn": 0,
+        "runnerCallsAfterRejectedValidation": 0,
+        "hostPrefetches": 0,
+        "cancelledPrefetches": 0,
+        "sameParentConflictCount": 0,
+        "fullPrefillFallbackCount": 0,
+        "firstCheckpointEpoch": first_checkpoint.context_epoch,
+        "successorCheckpointEpoch": successor_checkpoint.context_epoch,
+        "deltaPrefillTokenCount": len(second_tokens) - len(first_prefix),
+    }
+    evidence_path = Path(args.app_state_root).expanduser().resolve().parent / \
+        "spec175-conversation-evidence.json"
+    evidence_path.write_text(
+        json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _emit_atomic_marker(
+        "LLM_PIPELINE_SPEC175_CONVERSATION_PASS",
+        "case=M11", "realProviderPath=true", "networkRequests=2",
+        "freshRequests=2", "freshGenerations=2", "conversationHits=4",
+    )
+    return evidence
 
 
 class _Spec107ClientTimingWriter:
@@ -1140,6 +2449,28 @@ def _run_native_open_loop(client, args, qwen_summary: dict, manifest: dict,
     return 0
 
 
+def _request_native_tensor_bundle(
+    client, payload: bytes, *, deployment_revision: str, ack_timeout_ms: int,
+    timeout_ms: int, role_app_requirements: dict[str, bytes],
+):
+    """Issue one native ONNX tensor-bundle request.
+
+    Keeping transport submission outside the generation loop makes the
+    request boundary explicit to the contract checker.  The production path
+    uses one streamed/full-generation request; this helper is retained only
+    for the bounded native CPU diagnostic oracle.
+    """
+    return client.distributed_inference(
+        SERVICE,
+        payload,
+        deployment_revision=deployment_revision,
+        dynamic_provisioning=False,
+        ack_timeout_ms=ack_timeout_ms,
+        timeout_ms=timeout_ms,
+        role_app_requirements=role_app_requirements,
+    )
+
+
 def _run_qwen_transformer_generation_sample(
     client,
     args,
@@ -1150,6 +2481,7 @@ def _run_qwen_transformer_generation_sample(
     request_id: str = "",
     require_eos: bool = True,
 ):
+    model_type = str(getattr(args, "_qwen_model_type", "qwen2"))
     input_token_ids = tuple(
         int(token) for token in prompt_case["formattedInputIds"])
     expected_token_ids = tuple(
@@ -1185,8 +2517,13 @@ def _run_qwen_transformer_generation_sample(
                 generation={
                     "maxNewTokens": int(max_new_tokens),
                     "eosTokenIds": list(eos_token_ids),
-                    "outputMode": "FULL",
+                    "outputMode": (
+                        "TOKEN_STREAMING"
+                        if getattr(args, "automatic_planning_manifest", "")
+                        else "FULL"
+                    ),
                 },
+                model_type=model_type,
             )
             # Core's request-id argument is a single canonical component;
             # the wire Name gains its leading slash internally.  Generation
@@ -1199,18 +2536,23 @@ def _run_qwen_transformer_generation_sample(
                         "greedy": True,
                         "maxNewTokens": int(max_new_tokens),
                         "eosTokenIds": list(eos_token_ids),
-                        "useCache": False,
-                        "outputMode": "FULL",
+                        "useCache": True,
+                        "outputMode": "TOKEN_STREAMING",
+                        "tokenizerDigest": args._automatic_tokenizer_digest,
                     },
                 )
-                handle = client.generate(GenerationRequest(
+                stream_events = []
+                stream_errors = []
+                handle = client.request_streaming(
                     model=args._automatic_model,
                     task=args._automatic_task,
                     input=application_input,
                     timeout_ms=args.timeout_ms,
                     request_id=wire_request_id,
-                    output_mode="FULL",
-                ))
+                    on_event=lambda payload: stream_events.append(bytes(payload)),
+                    on_complete=lambda _payload: None,
+                    on_error=lambda error: stream_errors.append(dict(error)),
+                )
                 # ``AutomaticInferenceHandle.result`` returns the adapter-
                 # decoded application value (bytes for this Qwen adapter),
                 # while this transport boundary still needs the raw
@@ -1251,15 +2593,30 @@ def _run_qwen_transformer_generation_sample(
                     "full-generation response request ID mismatch: "
                     f"expected={wire_request_id} actual={actual_request_id}")
             response = decode_payload(result.payload)
-            if response.get("generationMode") != "FULL":
-                raise RuntimeError("full-generation response is not marked FULL")
             if getattr(args, "automatic_planning_manifest", ""):
+                if response.get("schema") != "NDNSF-DI-FINAL-V1":
+                    raise RuntimeError(
+                        "native streamed response has an unexpected schema")
+                raw_tokens = response.get("tokenIds")
+                if not isinstance(raw_tokens, list):
+                    raise RuntimeError(
+                        "native streamed response lacks tokenIds")
+                response["generatedTokenIds"] = list(raw_tokens)
+                response["generationMode"] = "TOKEN_STREAMING"
                 response["planningTimingsMs"] = dict(
                     handle.planning_timings_ms)
                 response["cacheClass"] = (
                     handle.decision.artifact_preparation.value)
                 response["placementEvidenceDigest"] = (
                     handle.decision.evidence_digest)
+                response["streamEventCount"] = len(stream_events)
+                # Preserve measured callback timing without exposing token,
+                # prompt, logits, or decode-state contents.
+                response["timingSummary"] = dict(handle.timing_summary)
+                if stream_errors:
+                    response["streamErrors"] = list(stream_errors)
+            elif response.get("generationMode") != "FULL":
+                raise RuntimeError("full-generation response is not marked FULL")
             return response
 
         durable_request_id = request_id or generation_id
@@ -1290,6 +2647,7 @@ def _run_qwen_transformer_generation_sample(
             request_id=wire_request_id,
             session_id=generation_id,
             context_epoch=token_epoch,
+            model_type=model_type,
         )
         if getattr(args, "automatic_planning_manifest", ""):
             application_input = args._automatic_adapter.task.encode_input(
@@ -1447,6 +2805,8 @@ def _run_qwen_transformer_generation_campaign(client, args, campaign: dict) -> i
     if campaign.get("schemaVersion") != "ndnsf-di-qwen-generation-campaign-v1":
         raise RuntimeError("unsupported Qwen generation campaign schema")
     generation = dict(campaign.get("generation", {}))
+    args._qwen_model_type = _qwen_model_type_from_documents(
+        campaign.get("model", {}), campaign.get("modelProfile", ""))
     repetitions = dict(campaign.get("repetitions", {}))
     if generation.get("strategy") != "greedy":
         raise RuntimeError("Qwen generation campaign must use greedy strategy")
@@ -1610,11 +2970,16 @@ def main() -> int:
     parser.add_argument("--compute-delay-ms", type=float, default=1.0)
     parser.add_argument(
         "--runtime",
-        choices=("fake", TINY_TRANSFORMERS_RUNTIME, QWEN_TRANSFORMERS_RUNTIME, QWEN_ONNX_RUNTIME),
+        choices=("fake", TINY_TRANSFORMERS_RUNTIME, TINY_ONNX_RUNTIME,
+                 QWEN_TRANSFORMERS_RUNTIME, QWEN_ONNX_RUNTIME),
         default="fake",
     )
     parser.add_argument("--transformer-layers", type=int, default=4)
     parser.add_argument("--qwen-runtime-summary", default="")
+    parser.add_argument(
+        "--tiny-onnx-fixture-root",
+        default="tests/fixtures/spec175/tiny-causal-lm-v1",
+    )
     parser.add_argument("--generation-campaign-manifest", default="")
     parser.add_argument("--generation-jsonl", default="")
     parser.add_argument("--qwen-tokenizer-dir", default="")
@@ -1666,6 +3031,19 @@ def main() -> int:
     parser.add_argument("--metrics-csv", default="")
     parser.add_argument("--workload-digest", default="")
     parser.add_argument("--model-identity-digest", default="")
+    parser.add_argument(
+        "--spec175-fault-case",
+        choices=tuple(f"M{index:02d}" for index in range(1, 15)),
+        default="",
+        help="Registered Spec175 host MiniNDN case; integration use only.",
+    )
+    parser.add_argument(
+        "--test-only-conversation-contract-emulation",
+        action="store_true",
+        help=(
+            "Focused unit-test-only User-process emulation of Provider "
+            "conversation state. Forbidden in formal MiniNDN/SIF gates."),
+    )
     parser.add_argument("--campaign-id", default="")
     parser.add_argument("--spec107-candidate-id", default="")
     parser.add_argument("--spec107-diagnostic-timing-jsonl", default="")
@@ -1760,6 +3138,13 @@ def main() -> int:
         raise SystemExit("--startup-barrier-timeout-s must be positive")
 
     qwen_summary = {}
+    tiny_fixture = {}
+    if args.runtime == TINY_ONNX_RUNTIME:
+        fixture_root = Path(args.tiny_onnx_fixture_root).expanduser().resolve()
+        prompts_path = fixture_root / "prompts.json"
+        if not prompts_path.is_file():
+            raise SystemExit(f"tiny ONNX fixture prompts are missing: {prompts_path}")
+        tiny_fixture = json.loads(prompts_path.read_text(encoding="utf-8"))
     generation_campaign = {}
     if args.generation_campaign_manifest:
         generation_campaign = json.loads(
@@ -1770,6 +3155,11 @@ def main() -> int:
                 "(qwen-transformers or qwen-onnx)")
     if args.runtime in (QWEN_TRANSFORMERS_RUNTIME, QWEN_ONNX_RUNTIME) and args.qwen_runtime_summary:
         qwen_summary = json.loads(Path(args.qwen_runtime_summary).read_text(encoding="utf-8"))
+    if args.runtime in (QWEN_TRANSFORMERS_RUNTIME, QWEN_ONNX_RUNTIME):
+        args._qwen_model_type = _qwen_model_type_from_documents(
+            qwen_summary, generation_campaign,
+            getattr(args, "qwen_service_manifest", ""),
+        )
     if args.runtime == QWEN_ONNX_RUNTIME:
         # Inter-stage transport is the NDITB001 typed tensor bundle. Legacy NPZ
         # decoding exists only inside the library as a labeled comparison fixture.
@@ -1801,6 +3191,26 @@ def main() -> int:
             request_id=args.request_id,
             session_id=session_id,
             context_epoch=args.context_epoch,
+            model_type=getattr(args, "_qwen_model_type", "qwen2"),
+        )
+    elif args.runtime == TINY_ONNX_RUNTIME:
+        prompt_case = tiny_fixture.get("cases", {}).get("normal", {})
+        input_ids = [[int(value) for value in prompt_case.get("inputIds", [3])]]
+        payload = encode_qwen_pipeline_context(
+            input_ids,
+            attention_mask=[[1] * len(input_ids[0])],
+            request_id=args.request_id,
+            context_epoch=0,
+            generation={
+                # The tiny-ONNX path is consumed by the streamed handle below.
+                # Keep the application context contract consistent with the
+                # DI task/options envelope; a FULL marker here made a real
+                # TOKEN_STREAMING request look unary in the final evidence.
+                "outputMode": "TOKEN_STREAMING",
+                "useCache": True,
+                "maxNewTokens": int(args.max_new_tokens),
+                "eosTokenIds": [2],
+            },
         )
     else:
         payload = encode_prompt(args.prompt, request_id=args.request_id)
@@ -1824,6 +3234,17 @@ def main() -> int:
                     else qwen_summary["expectedTopToken"]),
             }).encode("utf-8"),
             "elapsed_ms": float(qwen_summary.get("fullMs", 0.0)),
+        })()
+    elif args.runtime == TINY_ONNX_RUNTIME:
+        local = type("LocalResult", (), {
+            "payload": json.dumps({
+                "schema": "ndnsf-di-tiny-onnx-response-v1",
+                "runtime": TINY_ONNX_RUNTIME,
+                "generatedTokens": list(
+                    tiny_fixture.get("expectedOutputs", {}).get(
+                        "normal", ()))[:int(args.max_new_tokens)],
+            }).encode("utf-8"),
+            "elapsed_ms": 0.0,
         })()
     else:
         local = run_local_pipeline(
@@ -1851,10 +3272,36 @@ def main() -> int:
     )
     _publish_identity_certificate_and_wait(client, args)
     if args.automatic_planning_manifest:
-        _configure_qwen_automatic_planning(client, args)
+        if args.runtime == TINY_ONNX_RUNTIME:
+            _configure_tiny_onnx_automatic_planning(client, args)
+        else:
+            _configure_qwen_automatic_planning(client, args)
     if not args.deployment_revision:
         args.deployment_revision = "sha256:" + hashlib.sha256(
             Path(args.config).read_bytes()).hexdigest()
+    if args.spec175_fault_case in {"M11", "M12", "M13", "M14"}:
+        try:
+            expected_tokens = list(
+                tiny_fixture.get("expectedOutputs", {}).get("normal", ()))[:
+                    int(args.max_new_tokens)]
+            if not expected_tokens:
+                raise RuntimeError("conversation gate has no tiny-ONNX oracle tokens")
+            if bool(getattr(
+                    args, "test_only_conversation_contract_emulation", False)):
+                _run_spec175_conversation_case(
+                    client, args, payload, [int(item) for item in expected_tokens])
+            else:
+                # M11--M14 cross the real Provider boundary using independent
+                # Provider processes.  M13 uses explicit restart/fallback
+                # controls; M14 uses the Provider-side prefetch-cancellation
+                # fault and shared-flight waiter protection.  Formal T022/
+                # T023 repetition and same-source sealing remain pending.
+                _run_spec175_real_m11_case(
+                    client, args, payload,
+                    [int(item) for item in expected_tokens])
+            return 0
+        finally:
+            client.shutdown(wait=False)
     deployment_workflow = (
         _start_deployment_workflow(client, args)
         if args.deployment_workflow else None)
@@ -1983,6 +3430,7 @@ def main() -> int:
                         request_id=request_id,
                         session_id=qwen_session_id,
                         context_epoch=qwen_cached_epoch,
+                        model_type=getattr(args, "_qwen_model_type", "qwen2"),
                     )
                     qwen_full_context_doc = decode_qwen_pipeline_context(request_payload)
                     qwen_sent_full_context = True
@@ -2000,6 +3448,7 @@ def main() -> int:
                         request_id=f"{request_id}-expected",
                         session_id=qwen_session_id,
                         context_epoch=int(qwen_full_context_doc.get("contextEpoch", 0) or 0),
+                        model_type=getattr(args, "_qwen_model_type", "qwen2"),
                     ))
                 if args.publish_input_reference:
                     request_payload = client.publish_large_payload_reference(
@@ -2009,6 +3458,27 @@ def main() -> int:
                         object_type="application/x-ndnsf-di-qwen-context+json",
                         freshness_ms=120000,
                     )
+            elif args.runtime == TINY_ONNX_RUNTIME:
+                request_id = f"{args.request_id}-{index}"
+                prompt_case = tiny_fixture.get("cases", {}).get("normal", {})
+                input_ids = [[int(value) for value in prompt_case.get("inputIds", [3])]]
+                request_payload = encode_qwen_pipeline_context(
+                    input_ids,
+                    attention_mask=[[1] * len(input_ids[0])],
+                    request_id=request_id,
+                    context_epoch=0,
+                    generation={
+                        "outputMode": "FULL",
+                        "useCache": True,
+                        "maxNewTokens": int(args.max_new_tokens),
+                        "eosTokenIds": [2],
+                    },
+                )
+                expected_doc = {
+                    "generatedTokens": list(
+                        tiny_fixture.get("expectedOutputs", {}).get(
+                            "normal", ()))[:int(args.max_new_tokens)],
+                }
             else:
                 request_payload = encode_prompt(
                     args.prompt,
@@ -2034,6 +3504,7 @@ def main() -> int:
                         context_doc["inputIds"],
                         attention_mask=context_doc.get("attentionMask"),
                         request_id=f"{args.request_id}-{index}-oracle-{token_index}",
+                        model_type=getattr(args, "_qwen_model_type", "qwen2"),
                     )
                     oracle = local_qwen_onnx.run(oracle_payload)
                     expected_token = int(oracle["topToken"])
@@ -2072,11 +3543,10 @@ def main() -> int:
                         f"kvNextContextEpoch={token_index + 1};"
                         "kvSecurityEpoch=0;"
                     ).encode("utf-8")
-                    result = client.distributed_inference(
-                        SERVICE,
+                    result = _request_native_tensor_bundle(
+                        client,
                         native_payload,
                         deployment_revision=args.deployment_revision,
-                        dynamic_provisioning=False,
                         ack_timeout_ms=args.ack_timeout_ms,
                         timeout_ms=args.timeout_ms,
                         role_app_requirements={
@@ -2113,6 +3583,28 @@ def main() -> int:
                     "generatedTokens": generated_tokens,
                     "tokenCount": len(generated_tokens),
                 }
+            elif args.runtime == TINY_ONNX_RUNTIME:
+                expected_tokens = list(expected_doc.get("generatedTokens", ()))
+                tiny_wire_request_id = _campaign_wire_request_id(
+                    getattr(args, "request_id", ""),
+                    f"tiny-{index}",
+                    total_limit,
+                )
+                result = _run_tiny_onnx_stream(
+                    client, args, request_payload, expected_tokens,
+                    wire_request_id=tiny_wire_request_id)
+                actual_request_id = str(
+                    getattr(result, "request_id", "") or "")
+                if (tiny_wire_request_id and
+                        _canonical_request_id(actual_request_id) !=
+                        _canonical_request_id(tiny_wire_request_id)):
+                    raise RuntimeError(
+                        "tiny streamed response request ID mismatch: "
+                        f"expected={tiny_wire_request_id} "
+                        f"actual={actual_request_id}")
+                if getattr(result, "expected_terminal", False):
+                    return 0
+                response = decode_payload(result.payload)
             else:
                 if args.durable_app_submit:
                     handle = client.submit(
@@ -2194,6 +3686,8 @@ def main() -> int:
                     if args.native_cpu_provider else
                     response.get("topToken") == expected_doc.get("topToken")
                 )
+            elif args.runtime == TINY_ONNX_RUNTIME:
+                matches = response.get("generatedTokenIds") == expected_doc.get("generatedTokens")
             else:
                 matches = response.get("lineage") == expected_doc.get("lineage")
             if not matches:

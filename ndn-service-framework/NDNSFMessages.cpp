@@ -316,6 +316,8 @@ RequestMessage::operator=(const RequestMessage& other)
         deploymentIntent_ = other.deploymentIntent_;
         requestCapabilities_ = other.requestCapabilities_;
         encryptedRequestInput_ = other.encryptedRequestInput_;
+        streamRequestOptions_ = other.streamRequestOptions_;
+        conversationContinuation_ = other.conversationContinuation_;
         m_wire.reset();
     }
     return *this;
@@ -374,9 +376,30 @@ void RequestMessage::setEncryptedRequestInput(const EncryptedRequestInput& input
     encryptedRequestInput_ = input;
     m_wire.reset();
 }
+void RequestMessage::setStreamRequestOptions(const StreamRequestOptions& options) {
+    options.validate();
+    streamRequestOptions_ = options;
+    m_wire.reset();
+}
+void RequestMessage::clearStreamRequestOptions() {
+    streamRequestOptions_.reset();
+    m_wire.reset();
+}
+void RequestMessage::setConversationContinuation(
+    const ConversationContinuationOptions& continuation) {
+    continuation.validate();
+    conversationContinuation_ = continuation;
+    m_wire.reset();
+}
+void RequestMessage::clearConversationContinuation() {
+    conversationContinuation_.reset();
+    m_wire.reset();
+}
 bool RequestMessage::hasDeploymentIntent() const { return deploymentIntent_.has_value(); }
 bool RequestMessage::hasRequestCapabilities() const { return requestCapabilities_.has_value(); }
 bool RequestMessage::hasEncryptedRequestInput() const { return encryptedRequestInput_.has_value(); }
+bool RequestMessage::hasStreamRequestOptions() const { return streamRequestOptions_.has_value(); }
+bool RequestMessage::hasConversationContinuation() const { return conversationContinuation_.has_value(); }
 const DeploymentIntent& RequestMessage::getDeploymentIntent() const {
     if (!deploymentIntent_) throw std::logic_error("request has no deployment intent");
     return *deploymentIntent_;
@@ -388,6 +411,14 @@ const RequestCapabilities& RequestMessage::getRequestCapabilities() const {
 const EncryptedRequestInput& RequestMessage::getEncryptedRequestInput() const {
     if (!encryptedRequestInput_) throw std::logic_error("request has no encrypted input");
     return *encryptedRequestInput_;
+}
+const StreamRequestOptions& RequestMessage::getStreamRequestOptions() const {
+    if (!streamRequestOptions_) throw std::logic_error("request has no stream options");
+    return *streamRequestOptions_;
+}
+const ConversationContinuationOptions& RequestMessage::getConversationContinuation() const {
+    if (!conversationContinuation_) throw std::logic_error("request has no conversation continuation");
+    return *conversationContinuation_;
 }
 
 const std::map<std::string, std::string>& RequestMessage::getTokens() const {
@@ -444,6 +475,8 @@ void RequestMessage::Clear() {
     deploymentIntent_.reset();
     requestCapabilities_.reset();
     encryptedRequestInput_.reset();
+    streamRequestOptions_.reset();
+    conversationContinuation_.reset();
 }
 
 ndn::Block RequestMessage::WireEncode() const {
@@ -477,6 +510,8 @@ ndn::Block RequestMessage::WireEncode() const {
     if (deploymentIntent_) block.push_back(deploymentIntent_->WireEncode());
     if (requestCapabilities_) block.push_back(requestCapabilities_->WireEncode());
     if (encryptedRequestInput_) block.push_back(encryptedRequestInput_->WireEncode());
+    if (streamRequestOptions_) block.push_back(streamRequestOptions_->wireEncode());
+    if (conversationContinuation_) block.push_back(conversationContinuation_->wireEncode());
     block.encode();
     m_wire = std::make_shared<const ndn::Block>(block);
     return *m_wire;
@@ -489,8 +524,17 @@ bool RequestMessage::WireDecode(const ndn::Block& block) {
         return false; // 消息类型不匹配
     }
 
-    block.parse();
-    for(auto b : block.elements()){
+    try {
+      block.parse();
+      bool seenStreamOptions = false;
+      bool seenConversationContinuation = false;
+      for (auto b : block.elements()) {
+        if (seenConversationContinuation) {
+            return false;
+        }
+        if (seenStreamOptions && b.type() != tlv::ConversationContinuationType) {
+            return false;
+        }
         if (b.type() == tlv::TokenType) {
             std::string tokenStr = ndn::readString(b);
             size_t pos = tokenStr.find('=');
@@ -537,6 +581,25 @@ bool RequestMessage::WireDecode(const ndn::Block& block) {
             if (!input.WireDecode(b)) return false;
             encryptedRequestInput_ = std::move(input);
         }
+        else if (b.type() == tlv::StreamRequestOptionsType) {
+            if (streamRequestOptions_) return false;
+            StreamRequestOptions options;
+            if (!options.wireDecode(b)) return false;
+            streamRequestOptions_ = std::move(options);
+            seenStreamOptions = true;
+        }
+        else if (b.type() == tlv::ConversationContinuationType) {
+            if (conversationContinuation_) return false;
+            ConversationContinuationOptions continuation;
+            if (!continuation.wireDecode(b)) return false;
+            conversationContinuation_ = std::move(continuation);
+            seenConversationContinuation = true;
+        }
+      }
+    }
+    catch (const std::exception&) {
+      Clear();
+      return false;
     }
 
     return true;
@@ -563,6 +626,7 @@ ResponseMessage::operator=(const ResponseMessage& other)
         dataName_ = other.dataName_;
         signerCertificate_ = other.signerCertificate_;
         wireDigest_ = other.wireDigest_;
+        streamCompletion_ = other.streamCompletion_;
         m_wire.reset();
     }
     return *this;
@@ -605,6 +669,17 @@ void ResponseMessage::setAuthenticatedTransportEvidence(
     dataName_ = dataName;
     signerCertificate_ = signerCertificate;
     wireDigest_ = wireDigest;
+}
+
+void ResponseMessage::setStreamCompletion(const StreamCompletion& completion) {
+    completion.validate();
+    streamCompletion_ = completion;
+    m_wire.reset();
+}
+
+void ResponseMessage::clearStreamCompletion() {
+    streamCompletion_.reset();
+    m_wire.reset();
 }
 
 bool ResponseMessage::getStatus() const {
@@ -651,6 +726,15 @@ const std::string& ResponseMessage::getWireDigest() const {
     return wireDigest_;
 }
 
+bool ResponseMessage::hasStreamCompletion() const {
+    return streamCompletion_.has_value();
+}
+
+const StreamCompletion& ResponseMessage::getStreamCompletion() const {
+    if (!streamCompletion_) throw std::logic_error("response has no stream completion");
+    return *streamCompletion_;
+}
+
 void ResponseMessage::Clear() {
     status_ = false;
     errorInfo_.clear();
@@ -662,6 +746,7 @@ void ResponseMessage::Clear() {
     dataName_.clear();
     signerCertificate_.clear();
     wireDigest_.clear();
+    streamCompletion_.reset();
     m_wire.reset();
 }
 
@@ -685,6 +770,7 @@ ndn::Block ResponseMessage::WireEncode() const {
     if (policyEpoch_ > 0) {
         block.push_back(ndn::makeNonNegativeIntegerBlock(tlv::VersionType, policyEpoch_));
     }
+    if (streamCompletion_) block.push_back(streamCompletion_->wireEncode());
     block.encode();
     m_wire = std::make_shared<const ndn::Block>(block);
     return *m_wire;
@@ -696,8 +782,13 @@ bool ResponseMessage::WireDecode(const ndn::Block& block) {
     if (block.type() != tlv::ResponseMessageType) {
         return false; // 消息类型不匹配
     }
-    block.parse();
-    for(auto b : block.elements()){
+    try {
+      block.parse();
+      bool seenStreamCompletion = false;
+      for (auto b : block.elements()) {
+        if (seenStreamCompletion) {
+            return false;
+        }
         if (b.type() == tlv::StatusType) {
             status_ = ndn::readNonNegativeInteger(b) > 0 ? true : false;
         }
@@ -721,6 +812,18 @@ bool ResponseMessage::WireDecode(const ndn::Block& block) {
         else if (b.type() == tlv::VersionType) {
             policyEpoch_ = ndn::readNonNegativeInteger(b);
         }
+        else if (b.type() == tlv::StreamCompletionType) {
+            if (streamCompletion_) return false;
+            StreamCompletion completion;
+            if (!completion.wireDecode(b)) return false;
+            streamCompletion_ = std::move(completion);
+            seenStreamCompletion = true;
+        }
+      }
+    }
+    catch (const std::exception&) {
+      Clear();
+      return false;
     }
 
     return true;
@@ -1251,6 +1354,7 @@ ServiceSelectionMessage::operator=(const ServiceSelectionMessage& other)
         deploymentPlan_ = other.deploymentPlan_;
         selectionDecision_ = other.selectionDecision_;
         selectionInputKeyGrant_ = other.selectionInputKeyGrant_;
+        streamEventKeyGrant_ = other.streamEventKeyGrant_;
         recipientEncryptedAssignment_ = other.recipientEncryptedAssignment_;
         m_wire.reset();
     }
@@ -1300,12 +1404,23 @@ void ServiceSelectionMessage::setSelectionInputKeyGrant(const SelectionInputKeyG
     selectionInputKeyGrant_ = grant;
     m_wire.reset();
 }
+void ServiceSelectionMessage::setStreamEventKeyGrant(const ndn::Block& grant) {
+    if (grant.type() != tlv::HybridMessageEnvelopeType) {
+        throw std::invalid_argument("stream event key grant must be a HybridMessageEnvelope");
+    }
+    auto wrapper = ndn::Block(tlv::StreamEventKeyGrantType);
+    wrapper.push_back(grant);
+    wrapper.encode();
+    streamEventKeyGrant_ = std::move(wrapper);
+    m_wire.reset();
+}
 void ServiceSelectionMessage::setRecipientEncryptedAssignment(const RecipientEncryptedAssignment& assignment) {
     recipientEncryptedAssignment_ = assignment;
     m_wire.reset();
 }
 bool ServiceSelectionMessage::hasSelectionDecision() const { return selectionDecision_.has_value(); }
 bool ServiceSelectionMessage::hasSelectionInputKeyGrant() const { return selectionInputKeyGrant_.has_value(); }
+bool ServiceSelectionMessage::hasStreamEventKeyGrant() const { return streamEventKeyGrant_.has_value(); }
 bool ServiceSelectionMessage::hasRecipientEncryptedAssignment() const { return recipientEncryptedAssignment_.has_value(); }
 const SelectionDecision& ServiceSelectionMessage::getSelectionDecision() const {
     if (!selectionDecision_) throw std::logic_error("Selection has no R1 decision");
@@ -1314,6 +1429,10 @@ const SelectionDecision& ServiceSelectionMessage::getSelectionDecision() const {
 const SelectionInputKeyGrant& ServiceSelectionMessage::getSelectionInputKeyGrant() const {
     if (!selectionInputKeyGrant_) throw std::logic_error("Selection has no input key grant");
     return *selectionInputKeyGrant_;
+}
+const ndn::Block& ServiceSelectionMessage::getStreamEventKeyGrant() const {
+    if (!streamEventKeyGrant_) throw std::logic_error("Selection has no streamed event key grant");
+    return *streamEventKeyGrant_;
 }
 const RecipientEncryptedAssignment& ServiceSelectionMessage::getRecipientEncryptedAssignment() const {
     if (!recipientEncryptedAssignment_) throw std::logic_error("Selection has no encrypted assignment");
@@ -1354,6 +1473,7 @@ void ServiceSelectionMessage::Clear() {
     deploymentPlan_.reset();
     selectionDecision_.reset();
     selectionInputKeyGrant_.reset();
+    streamEventKeyGrant_.reset();
     recipientEncryptedAssignment_.reset();
     m_wire.reset();
 }
@@ -1397,6 +1517,7 @@ ndn::Block ServiceSelectionMessage::WireEncode() const {
     if (deploymentPlan_) block.push_back(deploymentPlan_->WireEncode());
     if (selectionDecision_) block.push_back(selectionDecision_->WireEncode());
     if (selectionInputKeyGrant_) block.push_back(selectionInputKeyGrant_->WireEncode());
+    if (streamEventKeyGrant_) block.push_back(*streamEventKeyGrant_);
     if (recipientEncryptedAssignment_) block.push_back(recipientEncryptedAssignment_->WireEncode());
     block.encode();
     m_wire = block;
@@ -1460,6 +1581,19 @@ bool ServiceSelectionMessage::WireDecode(const ndn::Block& block) {
             SelectionInputKeyGrant grant;
             if (!grant.WireDecode(b)) return false;
             selectionInputKeyGrant_ = std::move(grant);
+        }
+        else if (b.type() == tlv::StreamEventKeyGrantType) {
+            b.parse();
+            if (b.elements().size() != 1 ||
+                b.elements().front().type() != tlv::HybridMessageEnvelopeType) {
+                return false;
+            }
+            HybridMessageEnvelope envelope;
+            if (!envelope.WireDecode(b.elements().front())) return false;
+            auto wrapper = ndn::Block(tlv::StreamEventKeyGrantType);
+            wrapper.push_back(b.elements().front());
+            wrapper.encode();
+            streamEventKeyGrant_ = std::move(wrapper);
         }
         else if (b.type() == tlv::RecipientEncryptedAssignmentType) {
             RecipientEncryptedAssignment assignment;
@@ -1643,9 +1777,16 @@ ndn::Block HybridMessageEnvelope::WireEncode() const {
         block.push_back(ndn::makeStringBlock(tlv::EpochIdType, epochId_));
         block.push_back(ndn::makeStringBlock(tlv::MessageTypeType, messageType_));
     }
-    block.push_back(ndn::makeBinaryBlock(tlv::NonceType, nonce_.begin(), nonce_.end()));
-    block.push_back(ndn::makeBinaryBlock(tlv::CipherTextType, cipherText_.begin(), cipherText_.end()));
-    block.push_back(ndn::makeBinaryBlock(tlv::AuthTagType, authTag_.begin(), authTag_.end()));
+    // A stream-key grant reuses the HybridMessageEnvelope container for its
+    // recipient-wrapped key, but is not an AEAD payload.  Do not manufacture
+    // dummy nonce/ciphertext/tag bytes: those fields are required only for an
+    // encrypted application message.
+    const bool isStreamGrant = messageType_ == "STREAM-GRANT";
+    if (!isStreamGrant) {
+        block.push_back(ndn::makeBinaryBlock(tlv::NonceType, nonce_.begin(), nonce_.end()));
+        block.push_back(ndn::makeBinaryBlock(tlv::CipherTextType, cipherText_.begin(), cipherText_.end()));
+        block.push_back(ndn::makeBinaryBlock(tlv::AuthTagType, authTag_.begin(), authTag_.end()));
+    }
     if (!wrappedMessageKey_.empty()) {
         block.push_back(ndn::makeBinaryBlock(tlv::WrappedMessageKeyType,
                                              wrappedMessageKey_.begin(),
@@ -1713,8 +1854,16 @@ bool HybridMessageEnvelope::WireDecode(const ndn::Block& block) {
             wrappedMessageKey_ = ndn::Buffer(b.value(), b.value_size());
         }
     }
-    return (version_ == 1 || version_ == 2) && algorithm_ == "AES-256-GCM" &&
-           !keyId_.empty() && !epochId_.empty() && !nonce_.empty() &&
+    const bool isStreamGrant = messageType_ == "STREAM-GRANT";
+    const bool common = (version_ == 1 || version_ == 2) &&
+                        !algorithm_.empty() && !keyId_.empty() &&
+                        !epochId_.empty();
+    if (isStreamGrant) {
+        return common && algorithm_ == "RSA-OAEP" &&
+               !wrappedMessageKey_.empty() && nonce_.empty() &&
+               cipherText_.empty() && authTag_.empty();
+    }
+    return common && algorithm_ == "AES-256-GCM" && !nonce_.empty() &&
            !cipherText_.empty() && !authTag_.empty();
 }
 

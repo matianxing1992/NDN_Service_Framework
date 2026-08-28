@@ -51,6 +51,20 @@ def build_extension() -> Extension:
         library_dirs.insert(0, str(local_build))
         extra_link_args.append(f"-Wl,-rpath,{local_build}")
 
+    # Keep the extension's direct dependencies on the same native closure as
+    # the framework library.  The system pkg-config files currently resolve
+    # to /usr/local, while the Spec175 build is deliberately pinned to the
+    # repository's Boost-1.71 prefix and the checked-out NDN-SVS build.  If
+    # these directories are absent from the extension itself, the dynamic
+    # loader may choose a different libndn-cxx/libnac-abe before it evaluates
+    # libndn-service-framework's RUNPATH, creating an ABI/version split.
+    local_native = ROOT / ".local-boost171" / "lib"
+    svs_build = ROOT.parent / "ndn-svs" / "build"
+    for native_dir in (svs_build, local_native):
+        if native_dir.exists():
+            library_dirs.insert(0, str(native_dir))
+            extra_link_args.append(f"-Wl,-rpath,{native_dir}")
+
     env_library_dir = os.environ.get("NDNSF_LIBRARY_DIR")
     if env_library_dir:
         for value in env_library_dir.split(os.pathsep):
