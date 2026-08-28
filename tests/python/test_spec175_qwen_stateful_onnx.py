@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import sys
@@ -459,6 +460,7 @@ class Spec175StatefulOnnxTests(unittest.TestCase):
                 "modelRevision": "test-revision",
                 "dtype": "float16",
                 "sequencePolicy": "stateful-prefill-decode-v1",
+                "positionInputPolicy": "qwen-causal-position-v1",
                 "contextLength": 96,
                 "promptLength": 20,
                 "padTokenId": 0,
@@ -486,6 +488,71 @@ class Spec175StatefulOnnxTests(unittest.TestCase):
                 with self.assertRaises(SystemExit) as caught:
                     builder.main()
             self.assertIn("QWEN_STATE_STATEINPUTNAMES_REQUIRED", str(caught.exception))
+
+    def test_stage_manifest_builder_emits_prefixed_stage_digests(self) -> None:
+        builder = load_stage_manifest_builder()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = root / "qwen-onnx-stage-artifacts"
+            artifact.mkdir()
+            tokenizer = root / "qwen-onnx-tokenizer"
+            tokenizer.mkdir()
+            (tokenizer / "tokenizer.json").write_text("{}")
+            state_in = ["attention_kv_in", "recurrent_state_in",
+                        "convolution_state_in"]
+            state_out = ["attention_kv_out", "recurrent_state_out",
+                         "convolution_state_out"]
+            stages = []
+            for index, (start, end) in enumerate(((0, 21), (21, 42), (42, 64))):
+                filename = f"stage-{index}-qwen.onnx"
+                path = artifact / filename
+                path.write_bytes(f"stateful-stage-{index}".encode())
+                stages.append({
+                    "path": filename,
+                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                    "stageIndex": index,
+                    "layerRange": {"start": start, "endExclusive": end},
+                    "inputNames": ["input_ids", "attention_mask", "position_ids",
+                                   *state_in],
+                    "outputNames": ["hidden_states_out", *state_out],
+                    "stateInputNames": state_in,
+                    "stateOutputNames": state_out,
+                })
+            service = root / "qwen-onnx-service-manifest.json"
+            service.write_text(json.dumps({
+                "schema": "ndnsf-di-qwen-onnx-service-manifest-v1",
+                "runtime": "onnxruntime",
+                "modelType": "qwen3_5",
+                "modelRevision": "test-revision",
+                "dtype": "float16",
+                "sequencePolicy": "stateful-prefill-decode-v1",
+                "positionInputPolicy": "qwen-causal-position-v1",
+                "contextLength": 96,
+                "promptLength": 20,
+                "padTokenId": 0,
+                "layerCount": 64,
+                "layerRanges": [[0, 21], [21, 42], [42, 64]],
+                "referenceTopToken": 1,
+                "decodeMode": "single-token-autoregressive",
+                "modality": "text-only",
+                "mtpEnabled": False,
+                "thinkingMode": "disabled",
+                "graphComponents": ["token-embedding", "decoder-layers", "lm-head"],
+                "stages": stages,
+            }))
+            output = root / "stage-manifest.json"
+            args = [
+                "build-qwen-onnx-stage-manifest.py",
+                "--service-manifest", str(service), "--artifact-root", str(root),
+                "--output", str(output), "--runtime-sif-sha256", "a" * 64,
+                "--source-bundle-sha256", "b" * 64,
+                "--capacity-decision-sha256", "c" * 64,
+            ]
+            with patch.object(sys, "argv", args):
+                builder.main()
+            manifest = json.loads(output.read_text())
+            self.assertTrue(all(stage["sha256"].startswith("sha256:")
+                                for stage in manifest["stages"]))
 
     def test_pinned_qwen_profile_is_fp16_text_only_single_token(self) -> None:
         adapter = build_qwen36_27b_three_stage_adapter(

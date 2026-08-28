@@ -132,7 +132,7 @@ def main() -> int:
             "filename": filename,
             "path": str(path),
             "bytes": path.stat().st_size,
-            "sha256": actual,
+            "sha256": "sha256:" + actual,
             "kind": "onnx-model",
             "backend": "onnxruntime",
             "runtime": "onnxruntime",
