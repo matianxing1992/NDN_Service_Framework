@@ -115,6 +115,14 @@ containerized MiniNDN installation:
 | Exact SIF runtime | NFD and required NDN management/security tools, NDNSF libraries and Controller/repository/Provider/User entry points, CPython 3.10 bindings, ONNX Runtime, `tokenizers`, and sealed workload code | No MiniNDN, Mininet, Open vSwitch, NLSR, PyTorch, Transformers, host venv, or replacement source overlay |
 | Tiger execution | Slurm allocation, the same semantic Apptainer 1.5.3 release, verified node-local SIF staging, external content-addressed models, GPU devices, scratch, and evidence paths | No MiniNDN emulation, SIF rebuild, Docker/OCI materialization, package overlay, or changed workload |
 
+Offline ONNX export jobs that use `apptainer exec --containall` must bind a
+writable job scratch subdirectory at `/work/tmp` and pass `TMPDIR=/work/tmp`.
+The container's private `/tmp` is not an adequate workspace for large exporter
+intermediates: it can have a separate limit even when host scratch is empty and
+can leave an incomplete or unloadable graph.  The job records and probes this
+temporary path before model conversion; this requirement does not apply to the
+deployment SIF, which never contains the exporter or model-conversion stack.
+
 For G4, the host creates every namespace/link and then starts the exact SIF's
 NFD and NDNSF application commands inside those namespaces with
 `apptainer exec --cleanenv`. Host NLSR and routing helpers may configure the
