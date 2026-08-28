@@ -103,6 +103,7 @@ REPOSITORY_IDENTITY = APP_ROOT + "/repo"
 # invocation ACK/deadline contract so a slow first SVS publication cannot be
 # misclassified as an M01 stream failure.
 SPEC175_REPO_ACK_TIMEOUT_MS = 5_000
+SPEC175_REPO_STORE_SERVICE = "/NDNSF/DistributedRepo/Artifact/v2/STORE"
 # The three-stage pipeline remains the compatibility default.  Spec175 uses
 # four distinct Provider nodes; the layout is selected once, immediately
 # after argument parsing, so no caller can silently reuse one Provider for two
@@ -1087,6 +1088,17 @@ def wait_log(path: Path, needle: str, timeout_s: float, proc=None) -> bool:
     return False
 
 
+def release_file_barrier(path: Path, token: str) -> None:
+    """Atomically release a one-shot child-process barrier."""
+    if not token:
+        raise ValueError("barrier token must not be empty")
+    temporary = path.with_name(path.name + ".tmp")
+    if path.exists() or temporary.exists():
+        raise FileExistsError(path if path.exists() else temporary)
+    temporary.write_text(token + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
 def _percentile(values: list[float], percentile: float) -> float:
     if not values:
         return 0.0
@@ -1692,7 +1704,7 @@ def configure_spec175_repo_policy(path: Path) -> None:
 
     document = yaml.safe_load(path.read_text(encoding="utf-8"))
     users = [USER_IDENTITY, *STAGE_IDENTITIES, REPOSITORY_IDENTITY]
-    artifact_service = "/NDNSF/DistributedRepo/Artifact/v2/STORE"
+    artifact_service = SPEC175_REPO_STORE_SERVICE
     service_names = list(repo_versioned_services())
     if artifact_service not in service_names:
         service_names.append(artifact_service)
@@ -3057,6 +3069,12 @@ def main() -> int:
                 token_file, USER_IDENTITY,
                 OUT / "spec175-repo-user-bootstrap.token")
             repo_registration = OUT / "spec175-repo-registration.json"
+            repo_publication_barrier = OUT / "spec175-repo-publication.start"
+            repo_publication_token = hashlib.sha256(
+                (f"{args.spec175_case}:{args.seed}:{time.time_ns()}").encode(
+                    "utf-8")).hexdigest()
+            if repo_publication_barrier.exists():
+                raise FileExistsError(repo_publication_barrier)
             publish_command = (
                 base + perf.shell_quote(
                     runtime_source_path(REPO / "Experiments/spec175_repo_bootstrap.py"))
@@ -3074,15 +3092,35 @@ def main() -> int:
                 + perf.shell_quote(selection_bundle["repoStageManifest"])
                 + " --ack-timeout-ms "
                 + str(SPEC175_REPO_ACK_TIMEOUT_MS)
+                + " --publication-start-barrier-file "
+                + perf.shell_quote(repo_publication_barrier)
+                + " --publication-start-barrier-token "
+                + perf.shell_quote(repo_publication_token)
+                + " --publication-start-timeout-s "
+                + str(args.provider_start_timeout_s)
             )
             publisher_proc, publisher_log = start_process(
                 ndn, USER_NODE, "spec175-repo-publisher", publish_command,
                 node_env[USER_NODE], processes)
             if not wait_log(
-                    repo_log, "SPEC162_REPO_NODE_STARTING",
+                    publisher_log,
+                    "NDNSF_DI_SPEC175_REPO_PUBLISHER_WAITING",
+                    args.provider_start_timeout_s, publisher_proc):
+                raise RuntimeError(
+                    "Spec175 Repo publisher did not initialize before its "
+                    f"start barrier; log={publisher_log}")
+            repo_ready_marker = (
+                "Installed provider permission provider="
+                f"{REPOSITORY_IDENTITY}{SPEC175_REPO_STORE_SERVICE} "
+                f"service={SPEC175_REPO_STORE_SERVICE}")
+            if not wait_log(
+                    repo_log, repo_ready_marker,
                     args.provider_start_timeout_s, repo_proc):
                 raise RuntimeError(
-                    f"Spec175 Repo node did not start; log={repo_log}")
+                    "Spec175 Repo Store service did not become ready; "
+                    f"log={repo_log}")
+            release_file_barrier(
+                repo_publication_barrier, repo_publication_token)
             publisher_proc.wait(timeout=max(60.0, args.provider_start_timeout_s))
             publisher_text = publisher_log.read_text(errors="replace")
             if (publisher_proc.returncode != 0 or

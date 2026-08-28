@@ -6,6 +6,8 @@ import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "Experiments/spec175_repo_bootstrap.py"
@@ -81,3 +83,33 @@ def test_publish_receipts_are_scoped_to_the_current_operation():
     assert receipts == [
         {"receipt": {"receiptId": "current"}, "dataName": "/current"}
     ]
+
+
+def test_publication_start_barrier_accepts_only_the_expected_token(
+        tmp_path: Path):
+    helper = _module()
+    barrier = tmp_path / "repo-publication.start"
+    barrier.write_text("expected-token\n", encoding="utf-8")
+    args = SimpleNamespace(
+        publication_start_barrier_file=str(barrier),
+        publication_start_barrier_token="expected-token",
+        publication_start_timeout_s=0.1,
+    )
+
+    helper.wait_for_publication_start(args)
+
+    args.publication_start_barrier_token = "stale-token"
+    with pytest.raises(RuntimeError, match="token mismatch"):
+        helper.wait_for_publication_start(args)
+
+
+def test_publication_start_barrier_arguments_are_atomic():
+    helper = _module()
+    args = SimpleNamespace(
+        publication_start_barrier_file="/tmp/repo-publication.start",
+        publication_start_barrier_token="",
+        publication_start_timeout_s=0.1,
+    )
+
+    with pytest.raises(ValueError, match="provided together"):
+        helper.wait_for_publication_start(args)

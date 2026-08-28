@@ -62,6 +62,18 @@ def test_spec175_host_layout_separates_controller_repo_user_router_and_providers
     ])) == 8
 
 
+def test_repo_publication_barrier_is_released_atomically(tmp_path: Path):
+    runner = _runner_module()
+    barrier = tmp_path / "repo-publication.start"
+
+    runner.release_file_barrier(barrier, "unique-token")
+
+    assert barrier.read_text(encoding="utf-8") == "unique-token\n"
+    assert not barrier.with_name(barrier.name + ".tmp").exists()
+    with pytest.raises(FileExistsError):
+        runner.release_file_barrier(barrier, "another-token")
+
+
 def test_tiny_dataflow_derives_contiguous_repository_stage_indices(
         tmp_path: Path):
     runner = _runner_module()
