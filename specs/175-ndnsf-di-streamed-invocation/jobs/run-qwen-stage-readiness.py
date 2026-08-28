@@ -284,16 +284,22 @@ def run_stage(session, metadata: dict, *, arrays: dict[str, np.ndarray], state: 
         binding.bind_cpu_input(
             name, np.asarray(value).astype(numpy_dtype(item.type), copy=False))
     for item in session.get_outputs():
-        binding.bind_output(str(item.name), "cuda", device_id)
+        # Keep the complete recurrent/KV state on the stage's GPU.  Only the
+        # inter-stage activation (or terminal logits) is copied to the host;
+        # binding every output to CUDA and then copying every result to host
+        # would silently create a full state host round-trip on every token.
+        output_name = str(item.name)
+        binding.bind_output(
+            output_name, "cuda" if output_name in STATE_OUTPUTS else "cpu",
+            device_id if output_name in STATE_OUTPUTS else 0)
     session.run_with_iobinding(binding)
     values = binding.get_outputs()
-    host_values = binding.copy_outputs_to_cpu()
     outputs = {}
-    for item, value, host_value in zip(session.get_outputs(), values, host_values):
+    for item, value in zip(session.get_outputs(), values):
         name = str(item.name)
-        # Keep the complete state as CUDA OrtValues.  Only activation/logit
-        # outputs cross to the host so the next stage can consume them.
-        outputs[name] = value if name in STATE_OUTPUTS else host_value
+        # get_outputs() synchronizes the bound outputs.  State remains a CUDA
+        # OrtValue; activation/logit is the only host-visible output.
+        outputs[name] = value if name in STATE_OUTPUTS else value.numpy()
     next_state = {}
     for input_name, output_name in zip(STATE_INPUTS, STATE_OUTPUTS):
         value = outputs.get(output_name)
@@ -306,7 +312,7 @@ def run_stage(session, metadata: dict, *, arrays: dict[str, np.ndarray], state: 
 
 
 def run_chain(sessions: list[ort.InferenceSession], stages: list[dict], prompt: list[int],
-              steps: int, *, bound: bool, device_id: int) -> dict:
+              steps: int, *, bound: bool, stage_device_ids: tuple[int, ...]) -> dict:
     sequence = list(prompt)
     generated: list[int] = []
     states: list[dict[str, object]] = [{} for _ in sessions]
@@ -331,7 +337,7 @@ def run_chain(sessions: list[ort.InferenceSession], stages: list[dict], prompt: 
                 states[index] = initial_state(session, stages[index]["metadata"])
             outputs, successor, elapsed = run_stage(
                 session, stages[index]["metadata"], arrays=local, state=states[index],
-                device_id=device_id, bound=bound)
+                device_id=stage_device_ids[index], bound=bound)
             states[index] = successor
             stage_times[index].append(elapsed)
             state_device_checks[index] = state_device_checks[index] or all(
@@ -353,11 +359,24 @@ def main() -> int:
     parser.add_argument("--model-root", required=True, type=Path)
     parser.add_argument("--cache-root", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--device-id", type=int, default=0)
+    parser.add_argument(
+        "--stage-device-ids", default="0,1,2",
+        help="Comma-separated CUDA device IDs for stage 0, stage 1, and stage 2.",
+    )
     parser.add_argument("--max-new-tokens", type=int, default=8)
     args = parser.parse_args()
     if args.max_new_tokens != 8:
         fail("QWEN_STAGE_REGISTERED_LENGTH_MUST_BE_8")
+    try:
+        stage_device_ids = tuple(
+            int(value.strip()) for value in str(args.stage_device_ids).split(",")
+            if value.strip())
+    except ValueError as exc:
+        raise SystemExit("--stage-device-ids must be comma-separated integers") from exc
+    if len(stage_device_ids) != 3 or any(value < 0 for value in stage_device_ids):
+        raise SystemExit("--stage-device-ids must contain exactly three non-negative IDs")
+    if len(set(stage_device_ids)) != 3:
+        raise SystemExit("--stage-device-ids must assign one distinct GPU per stage")
     manifest = load_manifest(args.manifest.resolve())
     cache, staging = stage_model(args.model_root, args.cache_root, manifest)
     artifact = cache / "qwen-onnx-stage-artifacts"
@@ -372,7 +391,7 @@ def main() -> int:
         options.enable_mem_reuse = True
         session = ort.InferenceSession(
             str(artifact / filename), sess_options=options,
-            providers=[("CUDAExecutionProvider", {"device_id": args.device_id}),
+            providers=[("CUDAExecutionProvider", {"device_id": stage_device_ids[index]}),
                        "CPUExecutionProvider"])
         providers = tuple(session.get_providers())
         if providers[:1] != ("CUDAExecutionProvider",):
@@ -385,7 +404,7 @@ def main() -> int:
     # cached/full pairs.  The order is part of the evidence so a thermal or
     # allocator effect cannot be silently selected away.
     run_chain(sessions, manifest["stages"], prompt, args.max_new_tokens,
-              bound=True, device_id=args.device_id)
+              bound=True, stage_device_ids=stage_device_ids)
     cached_runs: list[dict] = []
     full_runs: list[dict] = []
     pair_order: list[str] = []
@@ -393,18 +412,18 @@ def main() -> int:
         if pair % 2 == 0:
             cached = run_chain(sessions, manifest["stages"], prompt,
                                args.max_new_tokens, bound=True,
-                               device_id=args.device_id)
+                               stage_device_ids=stage_device_ids)
             full = run_chain(sessions, manifest["stages"], prompt,
                              args.max_new_tokens, bound=False,
-                             device_id=args.device_id)
+                             stage_device_ids=stage_device_ids)
             pair_order.append("cached-full")
         else:
             full = run_chain(sessions, manifest["stages"], prompt,
                              args.max_new_tokens, bound=False,
-                             device_id=args.device_id)
+                             stage_device_ids=stage_device_ids)
             cached = run_chain(sessions, manifest["stages"], prompt,
                                args.max_new_tokens, bound=True,
-                               device_id=args.device_id)
+                               stage_device_ids=stage_device_ids)
             pair_order.append("full-cached")
         if cached["generatedTokenIds"] != full["generatedTokenIds"]:
             fail(f"QWEN_STAGE_CACHED_FULL_PARITY:{pair}")

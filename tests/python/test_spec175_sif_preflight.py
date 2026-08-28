@@ -97,6 +97,8 @@ class Spec175SifPreflightTests(unittest.TestCase):
             self.assertNotIn('dirname "$0"', text)
             if name == "qualify-stage-readiness.sbatch":
                 self.assertIn("run-qwen-stage-readiness.py", text)
+                self.assertIn("--gres=gpu:rtx_5000:3", text)
+                self.assertIn("--stage-device-ids", text)
                 self.assertIn("SPEC175_MODEL_MANIFEST", text)
                 self.assertIn("SPEC175_REMOTE_MODEL_ROOT", text)
                 self.assertNotIn("run-streamed-generation.sh", text)
