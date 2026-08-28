@@ -320,6 +320,13 @@ every child exit, and ends `COMPLETED 0:0`. This is a deployment/configuration
 control only; it cannot satisfy G5, G6, or G7. Stop before model staging if it
 fails.
 
+The current control bundle uses one fresh shared control `HOME`/KeyChain with
+distinct Controller, User, and Provider identities.  This matches the present
+permission-response implementation, which encrypts each response to the local
+identity certificate.  The isolated HOME/PIB/TPM arrangement in the historical
+D0 comparison remains a lower-gate reference and is not a second current
+control mode.
+
 ## 10. G5 Tiger Qwen3.6-27B stage/cache-readiness gate
 
 **Planned**:
