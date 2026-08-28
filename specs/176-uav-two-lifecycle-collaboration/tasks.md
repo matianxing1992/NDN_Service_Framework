@@ -32,8 +32,8 @@ the bounded-pressure regression; and T017
 by the trace analyzer and candidate-bound MiniNDN traces. The current focused
 unit and integration commands each returned 0 in two consecutive reruns. T016
 is closed by the state-model and Xvfb/MiniNDN GUI evidence; T020 is closed by
-the candidate-bound PX4/jMAVSim run, while T022 remains open because explicit
-promotion authorization and its release checks are not yet closed.
+the candidate-bound PX4/jMAVSim run; T022 is closed by the clean candidate
+audit, with promotion itself intentionally not performed.
 
 **Mandatory validation order**: after the read-only G0 baseline, execute and
 record `unit-tests` first, then the
@@ -369,11 +369,15 @@ out of scope.
   `AUDIT.md`, `traceability.md`, and the strict Spec Kit audit pass on
   2026-08-28.
 
-- [ ] T022 [US2] Perform the `UAV-Experimental` release/promotion gate:
+- [x] T022 [US2] Perform the `UAV-Experimental` release/promotion gate:
   verify clean ancestry and tree, no missing tests/contracts/evidence, all G0-G5
   results bound to the candidate, and no accidental NDNSF-DI/TigerCluster or Core
-  protocol edits. Keep development on `UAV-Experimental`; promotion or merge to
-  `Experimental`/`main` requires Tianxing's separate explicit authorization.
+  protocol edits. Evidence: candidate commit
+  `e9c096420909039c50b726ad9b7417e496dcbc04`, clean-tree verification, the
+  strict SpecKit audit, focused unit/integration reruns, and the candidate-bound
+  r15 SITL summary in `evidence/sitl-adapter-run-20260828.md`. Keep development
+  on `UAV-Experimental`; promotion or merge to `Experimental`/`main` is not
+  performed and still requires Tianxing's separate explicit authorization.
 
 ## Dependencies and Execution Order
 
@@ -467,12 +471,12 @@ and diagnostic gates.
 
 ## Notes
 
-- T001, T007, T014, T015, T016, T018, T019, T020, T021, and the selector policy gate
+- T001, T007, T014, T015, T016, T018, T019, T020, T021, T022, and the selector policy gate
   are closed with evidence. T016 includes the unit state-model check and the
   MiniNDN/Xvfb GUI smoke; T018/T019 include candidate-consistent post-selector
   reruns. T020 is closed by the candidate-bound PX4/jMAVSim wrapper run;
-  T022 remains open until the explicit promotion acceptance contract is
-  authorized and verified.
+  T022 is closed by the candidate release audit. Promotion or merge to
+  `Experimental`/`main` remains a separate authorization decision.
 - Commit per cohesive task or reviewable group; do not use `git add -A`.
 - Preserve old evidence; new runs use new immutable result directories.
 - Do not label fixture/CPU evidence as real-network, GPU, SITL, or flight proof.

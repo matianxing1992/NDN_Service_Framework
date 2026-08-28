@@ -61,3 +61,30 @@ after `MISSION_CLEAR_ALL`; candidate filtering keeps completed providers out of
 the compensation attempt. This closes the T020 SITL acceptance contract for
 the candidate-bound rootless PX4/jMAVSim scenario. It is not hardware-flight
 evidence and does not authorize T022 promotion.
+
+## Clean-candidate rerun (r15, 2026-08-28)
+
+After committing the implementation as
+`e9c096420909039c50b726ad9b7417e496dcbc04`, the same official wrapper was
+rerun without source changes:
+
+```text
+timeout 360s unshare -Urnm sh -c 'mount -t tmpfs tmpfs /tmp; mkdir -p /run/nfd;
+mount -t tmpfs tmpfs /run/nfd; export PX4_SITL_ROOT=/home/tianxing/PX4-Autopilot;
+export NDNSF_UAV_FLIGHT_CONTROLLER=udp; exec
+NDNSF-UAV-APP/tools/run_uav_collaboration_probe.sh
+results/spec176-rootless-sitl-r15-20260828'
+```
+
+The wrapper returned `SPEC176_SITL_RESULT returncode=0`. The summary at
+`results/spec176-rootless-sitl-r15-20260828/summary.json` reports
+`status=PASS`, `returnCode=0`, and `missingStageMarkers=[]`. Its preflight binds
+the run to commit `e9c096420909039c50b726ad9b7417e496dcbc04` and tree
+`0dfe3927af1501172fe5a75cb85c9c7969d261b6`, with PX4 commit
+`b405d75553905d272c0c69aa3e2d29a8e3fc8d0c`. The three-drone topology, 60-second
+window, named-Data/no-endpoint application contract, patrol compensation,
+successful and failed incident jobs, stream independence, and
+`duplicate_execution=0` reconciliation marker are present in
+`gui/ground-station.log`. This is the final candidate-bound SITL evidence for
+T020 and the T022 release audit; it remains simulator evidence, not a hardware
+flight claim.

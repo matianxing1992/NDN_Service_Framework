@@ -10,8 +10,9 @@ validator-backed application implementation slice; the capability-driven
 selector is wired, focused unit/CPU-integration reruns pass, candidate-
 consistent nominal plus ten-case failure-matrix MiniNDN reruns pass, and the
 candidate-bound PX4/jMAVSim SITL wrapper passes the two-lifecycle markers.
-Adverse multi-segment behavior, hardware, performance, and promotion remain
-open.**
+Adverse multi-segment behavior, hardware, and performance remain open; the
+release audit is complete, but branch promotion was intentionally not
+performed.**
 
 The corrected specification, plan, tasks, checklist, and traceability map remain
 consistent. The candidate now has bounded lifecycle records, named evidence
@@ -44,8 +45,8 @@ SITL**. A later gate cannot repair or hide an earlier failure. The typed
 operator-state regression is a G1 check; the bounded Xvfb Ground Station GUI
 smoke is recorded as a G3 profile and is not a replacement for G2. Current
 evidence passes G1, G2, the registered G3 nominal/failure profiles, and G4
-through the candidate-bound PX4/jMAVSim wrapper. G5 promotion is still an
-explicit release decision.
+through the candidate-bound PX4/jMAVSim wrapper. The G5 release audit is
+complete; promotion remains a separate explicit authorization decision.
 
 ## NDN Principle Matrix
 
@@ -214,7 +215,7 @@ runs plus the deterministic multi-segment CPU regression exercise that path.
 “Data-driven” remains unsuitable as a generic ML/framework contribution label;
 it describes only this bounded operational decision flow, not a claim of model
 accuracy or hardware-flight completeness while adverse segmented-data evidence
-and promotion remain open.
+remains open; branch promotion is intentionally separate from this audit.
 The current CPU detector is a deterministic acceptance adapter: it proves that
 verified named content crosses the execution boundary, but it does not measure
 object-detection accuracy or establish a production model-quality claim.
