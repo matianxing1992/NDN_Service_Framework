@@ -2577,6 +2577,34 @@ def _export_qwen_onnx_stage(model: Any, onnx_path: Path,
     actual_input_names = [value.name for value in graph.input]
     actual_output_names = [value.name for value in graph.output]
 
+    # ONNX exporters are free to reorder graph inputs/outputs.  The native
+    # state transaction pairs each state output with the corresponding state
+    # input by vector position, so preserving graph order here would silently
+    # bind (for example) recurrent state to the attention-KV slot.  Publish a
+    # canonical family order while retaining the graph's complete input/output
+    # signatures separately.
+    canonical_state_inputs = [
+        "attention_kv_in", "recurrent_state_in", "convolution_state_in"]
+    canonical_state_outputs = [
+        "attention_kv_out", "recurrent_state_out", "convolution_state_out"]
+    state_input_names = [
+        name for name in actual_input_names if name.endswith("_in")]
+    state_output_names = [
+        name for name in actual_output_names if name.endswith("_out")]
+    if stateful:
+        # ``hidden_states_out`` is a regular stage activation, not a
+        # persistent state component.  Select only the three adapter-owned
+        # families rather than treating every ``*_out`` graph value as state.
+        state_input_names = [
+            name for name in canonical_state_inputs if name in actual_input_names]
+        state_output_names = [
+            name for name in canonical_state_outputs if name in actual_output_names]
+        if (len(state_input_names) != len(canonical_state_inputs)
+                or len(state_output_names) != len(canonical_state_outputs)):
+            raise RuntimeError(
+                "QWEN_ONNX_STATE_IO_INCOMPLETE: "
+                f"inputs={actual_input_names} outputs={actual_output_names}")
+
     def contract(value):
         tensor = value.type.tensor_type
         dimensions = []
@@ -2595,8 +2623,8 @@ def _export_qwen_onnx_stage(model: Any, onnx_path: Path,
         "outputNames": actual_output_names,
         "cacheInputs": [name for name in actual_input_names if name.startswith("past_")],
         "cacheOutputs": [name for name in actual_output_names if name.startswith("present_")],
-        "stateInputNames": [name for name in actual_input_names if name.endswith("_in")],
-        "stateOutputNames": [name for name in actual_output_names if name.endswith("_out")],
+        "stateInputNames": state_input_names,
+        "stateOutputNames": state_output_names,
         "sequencePolicy": (
             "stateful-prefill-decode-v1" if stateful
             else "fixed-context-padded-v1" if fixed_context

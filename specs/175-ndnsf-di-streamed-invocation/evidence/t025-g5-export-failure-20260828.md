@@ -198,3 +198,20 @@ using source bundle `source-stateful-r10`; its exporter SHA-256 is
 the library SHA-256 remains
 `a6cae91ad0c7694e554a3d4cacc77ea4d31376c1e0c9326c2fcee95b4f5ca2d5`.
 Job `206555` must finish before any further candidate is submitted.
+
+Job `206555` did finish the full three-stage export and all ONNX prefill and
+decode parity checks before the post-export assertion.  The manifest's graph
+outputs include the ordinary activation `hidden_states_out` in addition to
+the three persistent state outputs; the generic `endswith("_out")` check
+therefore rejected a valid manifest at its state-name assertion.  The
+production exporter now filters state names against the three canonical state
+families and publishes the corresponding input/output vectors in matching
+order.  This preserves the positional state transaction contract while
+excluding ordinary activation outputs.
+
+The focused regression after this correction is `32 passed, 1 skipped`.  A
+single follow-up candidate, Job `206563`, uses source bundle
+`source-stateful-r11`; its library SHA-256 is
+`7a04a18147ea8679172fc8cd558c1e36b073360bd4e9064087892fab265b6203`, and it
+retains the r10 exporter SHA-256.  No additional GPU candidate will be
+submitted until `206563` reaches a terminal state.

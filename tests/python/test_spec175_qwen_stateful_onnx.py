@@ -145,11 +145,11 @@ class Spec175StatefulOnnxTests(unittest.TestCase):
             seen["filename"] = filename
             inputs = [
                 onnx.helper.make_tensor_value_info(name, onnx.TensorProto.FLOAT, [1])
-                for name in _kwargs["input_names"]
+                for name in reversed(_kwargs["input_names"])
             ]
             outputs = [
                 onnx.helper.make_tensor_value_info(name, onnx.TensorProto.FLOAT, [1])
-                for name in _kwargs["output_names"]
+                for name in reversed(_kwargs["output_names"])
             ]
             nodes = [onnx.helper.make_node(
                 "Identity", ["hidden_states"], [name])
@@ -171,6 +171,12 @@ class Spec175StatefulOnnxTests(unittest.TestCase):
             self.assertEqual(seen["filename"], path.name)
             self.assertEqual(Path.cwd(), original_cwd)
             self.assertEqual(info["sequencePolicy"], "stateful-prefill-decode-v1")
+            self.assertEqual(
+                info["stateInputNames"],
+                ["attention_kv_in", "recurrent_state_in", "convolution_state_in"])
+            self.assertEqual(
+                info["stateOutputNames"],
+                ["attention_kv_out", "recurrent_state_out", "convolution_state_out"])
 
     def test_tiny_qwen_stateful_export_matches_eager_prefill_and_decode(self) -> None:
         """Exercise one graph for variable-length prefill and one-token decode.
