@@ -1945,7 +1945,7 @@ def _onnx_stage_wrapper(model: Any, *, stateful: bool = False):
         # state contracts and rejects those sequence TypeProto values while
         # loading an otherwise valid Qwen graph.
         output_steps = torch.zeros(
-            (batch_size, num_heads, value_dim, 0),
+            (batch_size, num_heads, 0, value_dim),
             dtype=torch.float32,
             device=query.device,
         )
@@ -1971,7 +1971,7 @@ def _onnx_stage_wrapper(model: Any, *, stateful: bool = False):
             )
             output_step = (last_recurrent_state * q_t.unsqueeze(-1)).sum(dim=-2)
             output_steps = torch.cat(
-                (output_steps, output_step.unsqueeze(-1)), dim=-1)
+                (output_steps, output_step.unsqueeze(2)), dim=2)
         core_attn_out = output_steps
         return (
             core_attn_out.transpose(1, 2).contiguous().to(initial_dtype),
