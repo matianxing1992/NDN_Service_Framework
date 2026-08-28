@@ -78,6 +78,8 @@ class Spec175SifPreflightTests(unittest.TestCase):
         self.assertNotIn("docker", submit.lower())
         self.assertIn("cd /bundle", runner)
         self.assertIn("--cleanenv", runner)
+        self.assertIn('--env "SLURM_JOB_ID=${SLURM_JOB_ID:-spec175-local}"', runner)
+        self.assertIn('--env "SPEC175_GATE=${SPEC175_GATE}"', runner)
         self.assertIn("run-ndnsf-qwen.sh", runner)
         self.assertIn("SPEC175_SIF_CONTROL_ENTRYPOINT_MISSING", runner)
         self.assertIn("spec175-sif-control-v1", runner)
