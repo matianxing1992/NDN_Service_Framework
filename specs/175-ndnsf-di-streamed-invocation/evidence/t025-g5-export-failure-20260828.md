@@ -143,6 +143,19 @@ only tensor value types.  This is a correction/probe result, not a 27B G5
 qualification; a new source-bound 27B export is required before any CUDA
 artifact or downstream G6 work.
 
+The first GPU retry with this correction (Job `206469`) reached the staged
+PyTorch parity check but reported `prefill 220 != 332` and `decode 695 !=
+7812`.  Review showed that the tensor accumulator had preserved the wrong
+axis order (`[batch, heads, value, sequence]`) even though it removed the
+Sequence TypeProto.  The follow-up fix appends along the sequence axis and
+restores the original `[batch, sequence, heads, value]` output layout.
+
+Tiger CPU Job `206498` then ran the updated 21-layer probe in the same
+exporter SIF.  It reported `bad=[]`, passed ONNX checker and ORT load, and
+passed numerical prefill plus one-token decode comparisons against the eager
+wrapper (`PROBE_NUMERIC_PREFILL_DECODE_PASS`).  This closes the tensor-layout
+regression at the probe level; it is not yet a 27B G5 result.
+
 These probes and the local regression close the diagnosis and implementation
 correction only.  T025 G5 remains open until a new source-bound exporter
 bundle produces all three Qwen3.6-27B stages and passes the registered CUDA
