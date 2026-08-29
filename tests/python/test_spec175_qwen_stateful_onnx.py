@@ -655,6 +655,20 @@ class Spec175StatefulOnnxTests(unittest.TestCase):
         self.assertNotIn("import transformers", text.lower())
         self.assertNotIn("import torch", text.lower())
 
+    def test_reference_generator_keeps_observed_ort_token_as_oracle(self) -> None:
+        generator = ROOT / (
+            "specs/175-ndnsf-di-streamed-invocation/jobs/"
+            "generate-qwen-onnx-reference.py")
+        text = generator.read_text(encoding="utf-8")
+        self.assertIn('"referenceTopToken": generated_first', text)
+        self.assertIn('"declaredReferenceTopToken"', text)
+        self.assertIn('"referenceMismatch"', text)
+        self.assertNotIn(
+            'expected_first if expected_first >= 0',
+            text,
+            "a declared/stale token must not replace the observed ORT oracle",
+        )
+
     def test_pinned_qwen_profile_is_fp16_text_only_single_token(self) -> None:
         adapter = build_qwen36_27b_three_stage_adapter(
             artifact_digests_by_role={
