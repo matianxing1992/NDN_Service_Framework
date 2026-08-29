@@ -582,6 +582,9 @@ class Spec175StatefulOnnxTests(unittest.TestCase):
         self.assertIn("pair_order", text)
         self.assertIn("pairCount", text)
         self.assertIn("QWEN_STAGE_STATE_DTYPE", text)
+        self.assertIn("enable_profiling = True", text)
+        self.assertIn("profile_summary(session)", text)
+        self.assertIn("QWEN_STAGE_CPU_FALLBACK", text)
         self.assertNotIn("import transformers", text.lower())
         self.assertNotIn("import torch", text.lower())
 

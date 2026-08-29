@@ -27,6 +27,19 @@ STATE_INPUTS = tuple(f"{family}_in" for family in STATE_FAMILIES)
 STATE_OUTPUTS = tuple(f"{family}_out" for family in STATE_FAMILIES)
 SCHEMA = "ndnsf-di-qwen36-onnx-stage-manifest-v1"
 SEQUENCE_POLICY = "stateful-prefill-decode-v1"
+CPU_CONTROL_OP_ALLOWLIST = frozenset({
+    "Add", "Concat", "ConstantOfShape", "Div", "Equal", "Expand",
+    "Gather", "Identity", "Mul", "Range", "Reshape", "Shape", "Split",
+    "Squeeze", "Unsqueeze", "Where",
+})
+CPU_CONTROL_DTYPES = frozenset({"bool", "int64"})
+CPU_CONTROL_MAX_ELEMENTS = 8
+CUDA_CORE_GROUPS = {
+    "matmul": frozenset({"FusedMatMul", "MatMul"}),
+    "normalization": frozenset({"ReduceMean", "SimplifiedLayerNormalization"}),
+    "softmax": frozenset({"Softmax"}),
+}
+CUDA_CORE_OPS = frozenset().union(*CUDA_CORE_GROUPS.values())
 
 
 def sha256_file(path: Path) -> str:
@@ -207,6 +220,91 @@ def stage_model(model_root: Path, cache_root: Path, manifest: dict) -> tuple[Pat
         "artifactChecksumEntries": checksum_entries,
         "stagingMs": (time.perf_counter() - started) * 1000.0,
         "cacheHit": cache_hit,
+    }
+
+
+def profile_summary(session) -> dict:
+    """Classify ORT node placement; CPU is allowed only for tiny shape control."""
+    profile_path = Path(session.end_profiling())
+    try:
+        events = json.loads(profile_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        fail(f"QWEN_STAGE_PROFILE_UNREADABLE:{profile_path}")
+    if not isinstance(events, list):
+        fail("QWEN_STAGE_PROFILE_NOT_ARRAY")
+
+    counts: dict[str, dict[str, int]] = {}
+    cpu_nodes: dict[str, set[str]] = {}
+    cpu_bad_tensors: set[str] = set()
+    cpu_missing_shapes: set[str] = set()
+    for event in events:
+        if not isinstance(event, dict) or event.get("cat") != "Node":
+            continue
+        args = event.get("args")
+        if not isinstance(args, dict):
+            continue
+        provider = str(args.get("provider") or "")
+        op_name = str(args.get("op_name") or "<missing-op-name>")
+        if not provider:
+            continue
+        provider_counts = counts.setdefault(provider, {})
+        provider_counts[op_name] = provider_counts.get(op_name, 0) + 1
+        if provider != "CPUExecutionProvider":
+            continue
+        event_name = str(event.get("name") or "<missing-node-name>")
+        cpu_nodes.setdefault(op_name, set()).add(event_name)
+        for field in ("input_type_shape", "output_type_shape"):
+            entries = args.get(field)
+            if not isinstance(entries, list) or not entries:
+                cpu_missing_shapes.add(event_name)
+                continue
+            for entry in entries:
+                if not isinstance(entry, dict) or len(entry) != 1:
+                    cpu_bad_tensors.add(event_name)
+                    continue
+                dtype, shape = next(iter(entry.items()))
+                if dtype not in CPU_CONTROL_DTYPES or not isinstance(shape, list):
+                    cpu_bad_tensors.add(event_name)
+                    continue
+                if any(not isinstance(dim, int) or dim < 0 for dim in shape):
+                    cpu_bad_tensors.add(event_name)
+                    continue
+                elements = 1
+                for dim in shape:
+                    elements *= dim
+                if elements > CPU_CONTROL_MAX_ELEMENTS:
+                    cpu_bad_tensors.add(event_name)
+
+    cuda_ops = set(counts.get("CUDAExecutionProvider", {}))
+    cpu_ops = set(counts.get("CPUExecutionProvider", {}))
+    unknown_cpu_ops = sorted(cpu_ops - CPU_CONTROL_OP_ALLOWLIST)
+    cpu_core_ops = sorted(cpu_ops & CUDA_CORE_OPS)
+    missing_cuda_core_groups = sorted(
+        name for name, aliases in CUDA_CORE_GROUPS.items()
+        if not (cuda_ops & aliases))
+    violations = []
+    if not counts:
+        violations.append("EMPTY_NODE_PROFILE")
+    if unknown_cpu_ops:
+        violations.append("UNKNOWN_CPU_OPS:" + ",".join(unknown_cpu_ops))
+    if cpu_core_ops:
+        violations.append("CPU_CORE_OPS:" + ",".join(cpu_core_ops))
+    if cpu_missing_shapes:
+        violations.append("MISSING_CPU_TYPE_SHAPE:" + ",".join(sorted(cpu_missing_shapes)))
+    if cpu_bad_tensors:
+        violations.append("CPU_NON_CONTROL_TENSORS:" + ",".join(sorted(cpu_bad_tensors)))
+    if missing_cuda_core_groups:
+        violations.append("MISSING_CUDA_CORE_GROUPS:" + ",".join(missing_cuda_core_groups))
+    return {
+        "schemaVersion": "ndnsf-qwen-onnx-ep-profile-v2",
+        "state": "PASS" if not violations else "FAIL",
+        "profilePath": str(profile_path),
+        "providerOpCounts": counts,
+        "cpuControlOps": sorted(cpu_ops & CPU_CONTROL_OP_ALLOWLIST),
+        "unknownCpuOps": unknown_cpu_ops,
+        "cpuCoreOps": cpu_core_ops,
+        "missingCudaCoreGroups": missing_cuda_core_groups,
+        "violations": violations,
     }
 
 
@@ -391,6 +489,8 @@ def main() -> int:
     manifest = load_manifest(args.manifest.resolve())
     cache, staging = stage_model(args.model_root, args.cache_root, manifest)
     artifact = cache / "qwen-onnx-stage-artifacts"
+    profile_root = args.output.resolve().parent / "ort-profiles"
+    profile_root.mkdir(parents=True, exist_ok=True)
     sessions = []
     for index, stage in enumerate(manifest["stages"]):
         filename = Path(str(stage.get("filename") or stage.get("path", ""))).name
@@ -400,6 +500,8 @@ def main() -> int:
         options.inter_op_num_threads = 1
         options.enable_mem_pattern = False
         options.enable_mem_reuse = True
+        options.enable_profiling = True
+        options.profile_file_prefix = str(profile_root / f"stage-{index}")
         session = ort.InferenceSession(
             str(artifact / filename), sess_options=options,
             providers=[("CUDAExecutionProvider", {"device_id": stage_device_ids[index]}),
@@ -440,6 +542,12 @@ def main() -> int:
             fail(f"QWEN_STAGE_CACHED_FULL_PARITY:{pair}")
         cached_runs.append(cached)
         full_runs.append(full)
+    profiles = []
+    for index, session in enumerate(sessions):
+        profile = profile_summary(session)
+        profiles.append(profile)
+        if profile["state"] != "PASS":
+            fail(f"QWEN_STAGE_CPU_FALLBACK:{index}:" + ",".join(profile["violations"]))
     cached = cached_runs[-1]
     full = full_runs[-1]
     reference = manifest.get("reference", {})
@@ -469,6 +577,7 @@ def main() -> int:
             "stateDeviceResident": bool(cached["stateDeviceResident"][index]),
             "hostCompleteStateBytesAfterPrefill": 0,
             "cpuModelComputeFallback": False,
+            "executionProfile": profiles[index],
         })
         if not stage_records[-1]["cachedFaster"]:
             fail(f"QWEN_STAGE_CACHED_NOT_FASTER:{index}")
