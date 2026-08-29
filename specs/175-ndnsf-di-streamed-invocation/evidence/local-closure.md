@@ -22,7 +22,7 @@ historical diagnostic evidence only; they are not mixed into this candidate.
 
 The bounded M01 exact-SIF smoke also passed with four Providers and eight
 token events followed by a final Response. Its reported `distributed_ms`
-(8.6--8.9 s in the recorded runs) is an end-to-end tiny-ONNX CPU smoke metric,
+(8.0--8.9 s in the recorded runs) is an end-to-end tiny-ONNX CPU smoke metric,
 not a GPU prefill/decode benchmark; the run does not contain separate prefill
 or decode timing fields and cannot establish 27B CUDA performance.
 
