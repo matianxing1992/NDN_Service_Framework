@@ -391,3 +391,60 @@ and no readiness marker.  The next bounded submission will keep the same SIF,
 manifest, ledger, runner, and 3-GPU placement while explicitly requesting
 64 GiB host memory; it will use a new output directory and retain this failed
 run as diagnostic evidence.
+
+## Reference-oracle correction and G5 stage-readiness pass (2026-08-29)
+
+The first explicit-memory retry, Job `206773` (`96G`, three RTX 6000 GPUs),
+reached the complete staged CUDA path and failed only at the frozen-token
+assertion: the manifest declared `7812`, while the observed first token from
+the stateful chain was `96445`.  A same-SIF ONNX Runtime generator run
+(`206775`) reproduced the same value, so this was not a readiness-only or
+I/O-binding discrepancy.  Review of the source-bound exporter found that it
+had written the staged Transformer *second* token (`7812`) into
+`referenceTopToken`; the deployment field is required to be the first token
+from the canonical ONNX Runtime CUDA chain.  The tracked generator now keeps
+the observed token as the oracle and records a declared-token mismatch only
+in explicit diagnostic mode (commit `5a96d593`).
+
+The corrected generator completed as bounded Job `206778` and produced
+`generatedTokenIds=[96445]` with `referenceTopToken=96445`, while retaining
+the offline PyTorch value (`332`) as a diagnostic.  The promoted service
+manifest and stage manifest were updated together, with service SHA-256
+`cf246180e7334baf35b76ef49e3b9ec7626b44f657d05cb4ab5f370d90d473d2` and
+stage-manifest SHA-256
+`9da2920c4f328022f096da84f57541a87c22b045320b5adb01522cfac5b65fd6`.
+The 317-entry root-relative artifact ledger was regenerated and independently
+verified with zero failures (ledger SHA-256
+`a8ba98f67db5a08bda29ebff82becba8f17bafb9fb4f065dfe3cb452320e4620`).
+The old manifests are retained as `reference-repair-before-*` evidence.
+
+Job `206782` then ran the corrected runner through the exact runtime SIF
+(`sha256:63539a1adffa4d8500c56d34104d81971aa72a29958723cd35143bd52b98fbd1`)
+with the repaired manifest, external model bundle, three distinct RTX 6000
+devices, and `96G` host memory.  It completed `0:0` in `00:04:44` with
+`MaxRSS=53381620K`.  The machine-readable result is
+`t025-stage-readiness-206782.json` and its gate record is
+`t025-stage-readiness-206782-gate.json`.
+
+The registered eight-token control passed with
+`generatedTokenIds=[96445, 96170, 142289, 96895, 13368, 3035, 97186, 96565]`,
+`nonemptyTranscript=true`,
+`noCompleteStateHostRoundTripAfterPrefill=true`, and
+`cpuModelComputeFallback=false`.  All three stages reported device-resident
+state, three matched cached/full pairs, cached median model-compute lower
+than the full-prefix median, and `cpuModelComputeFallback=false`:
+
+```text
+stage 0: cached 67.4716 ms, full 167.5555 ms
+stage 1: cached 67.2555 ms, full 167.8819 ms
+stage 2: cached 78.6047 ms, full 183.3975 ms
+```
+
+The ORT node profiles were closed immediately after the excluded warmup to
+avoid the finite profile-event buffer.  Each profile passed with no CPU core
+ops, no unknown CPU ops, and all CUDA MatMul, normalization, and Softmax core
+groups present; CPU execution was limited to the declared bounded integer
+shape-control operators.  This closes the T025 current-SIF prerequisite and
+the G5 stateful-stage/cache-effectiveness gate.  T026 multi-provider functional
+execution and later performance/conversation gates remain open; this result
+does not claim those gates.
