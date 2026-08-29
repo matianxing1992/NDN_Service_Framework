@@ -271,3 +271,36 @@ used CPU ORT.  The exact promoted candidate must still pass the pre-frozen
 current-SIF control and the registered CUDA-ORT stage-readiness checks,
 including device-resident prefill/decode state and cache-effectiveness
 evidence, before T025 can be marked complete or G6 can start.
+
+## 206666 typed-state retry and promotion failure
+
+Job `206666` used the r12 source bundle, whose local and remote
+`llm_pipeline_lib.py` SHA-256 is
+`933a3e56297fb05e476d91fbd549cb9d51c26a57aca9dcb699d4038272e6bc78`.  The
+three-stage Qwen3.6-27B export again completed the reference and staged parity
+checks, all three ONNX exports, CPU-ORT prefill/decode checks, and the
+manifest assertions.  Its log ends with:
+
+```text
+SPEC175_ONNX_EXPORT_COMPLETE
+SPEC175_EXPORT_RC:0
+SPEC175_MANIFEST_OK 7812 9bbc6e43fb509d957d0aa597ea8b66f5b74982d1ef741884857018b1f6fc4eba
+```
+
+The job then failed while copying the ONNX external-data files into the
+project artifact directory.  Slurm recorded exit `1:0`, `MaxRSS=217195900K`,
+and the artifact directory contained an 11-GiB `.partial` tree.  A direct
+retry of the promotion returned `Disk quota exceeded`; the node filesystem
+still had ample free space, so this was the project quota rather than a SIF,
+CUDA, ORT, or exporter failure.  The invalid r11 artifact and the r12 partial
+tree were removed only after their manifests, checksum ledgers, job logs, and
+failure evidence had been retained in the evidence directories.
+
+The next bounded retry is Job `206697`.  It uses the same source, exporter SIF,
+model revision, workload, and three-GPU allocation, but stages the source in a
+new immutable directory, reserves 320 GiB, records an `ERR` trap, and removes
+the offline Transformer checkpoint/HuggingFace cache before ONNX promotion.
+The cleanup is intended to keep the job within the project/scratch quota; it
+does not alter the deployed ONNX output.  The job was submitted but remains
+pending at this checkpoint.  No G5, G6, or performance result is claimed until
+it produces a complete artifact and passes the exact CUDA readiness gate.
