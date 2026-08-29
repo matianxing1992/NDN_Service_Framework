@@ -73,16 +73,16 @@ queue below is closed.
 11. Mark a task complete only after its named acceptance gate passes. `compiled`,
    `wired`, or `one smoke ran` is not completion.
 
-**Current progress correction (2026-08-28 audit)**: 29 of 34 tasks satisfy
-their named gates: T001--T023, T024, and T029--T033. T025--T028 and T034
+**Current progress correction (2026-08-29 audit)**: 30 of 34 tasks satisfy
+their named gates: T001--T025 and T029--T033. T026--T028 and T034
 remain open. The previous G0/G1/G2 manifests, the selected 30/30
 M01--M10 matrix, its additional M09 `returncode=-11`, and every existing SIF
 candidate are historical subjects. They remain preserved as regression inputs,
 but they do not qualify the corrected source. The implementation queue is
 closed, T020's current-source G0/G1/G2 qualification is closed, T022's
 same-seal 42-process G3 matrix passed, and T023's exact-SIF G4 replay is
-qualified by an explicit, auditable single-entry replacement. T025 is now the
-active gate.
+qualified by an explicit, auditable single-entry replacement. T025 is now
+closed; T026 is the active gate.
 No focused test, stale manifest, or
 diagnostic SIF waives an open qualification or promotion gate.
 

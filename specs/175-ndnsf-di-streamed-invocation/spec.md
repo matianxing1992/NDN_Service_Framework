@@ -4,15 +4,15 @@
 
 **Created**: 2026-08-21
 
-**Status**: Local implementation and G0--G4 qualification complete; 29 of 34
+**Status**: Local implementation and G0--G5 qualification complete; 30 of 34
 tasks satisfy their named gates. T022 passed the same-seal M01--M14 host/CPU
 MiniNDN matrix 42/42, and T023 qualified one exact local SIF through the
 host-substrate/runtime preflights and a repaired 42-entry replay aggregate.
-T025--T028 and T034 remain open. The first unmodified G4 replay and all older
+T026--T028 and T034 remain open. The first unmodified G4 replay and all older
 SIF candidates remain preserved as diagnostic evidence; the repaired aggregate
 explicitly records its one replacement and does not claim a clean first pass.
-The authorized next step is the bounded current-SIF Tiger control, followed by
-the serial G5--G7 gates.
+The authorized next step is the bounded Tiger multi-Provider functional run,
+followed by the serial G6C/G7 gates.
 
 **Input**: Extend the verified NDNSF-DI design so a selected multi-Provider ONNX
 plan can produce a local-LLM-like ordered token stream and can continue an
@@ -102,18 +102,18 @@ compatible promoted entry. The checkpoint authorizes and identifies the
 continuation; it never carries or substitutes for the KV/recurrent/convolution
 state itself.
 
-### Current Evidence Boundary and Execution Priority (2026-08-28)
+### Current Evidence Boundary and Execution Priority (2026-08-29)
 
 The implementation queue is closed. The current committed source passed one
 coherent G0--G3 sequence, including all M01--M14 cases in three independent
 processes each. T023 then built one exact local SIF, passed both layer-specific
 preflights, and qualified the same 42-entry matrix through an auditable
-single-entry replacement. The only authorized next work is T025: the bounded
-current-SIF Tiger control followed by G5. Historical failures remain diagnostic
+single-entry replacement. The only authorized next work is T026: the bounded
+Tiger multi-Provider functional run. Historical failures remain diagnostic
 evidence and are not hidden by the repaired aggregate.
 
-- **Completed tasks**: T001--T024 and T029--T033 satisfy their named gates
-  (29 of 34). T025--T028 and T034 remain open in dependency order.
+- **Completed tasks**: T001--T025 and T029--T033 satisfy their named gates
+  (30 of 34). T026--T028 and T034 remain open in dependency order.
   T021 closes the builder/preflight implementation, not a promotable candidate.
   No source change is allowed after the G3 subject is frozen without returning
   to G0.
