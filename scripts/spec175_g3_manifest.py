@@ -110,10 +110,11 @@ def validate_run(run: Path, case: str) -> dict[str, Any]:
         raise ValueError(f"provider/admission contract mismatch: {result_path}")
     if result.get("runtime") != "tiny-onnx" or result.get("userReturnCode") != 0:
         raise ValueError(f"runtime/return-code contract mismatch: {result_path}")
-    expected_campaign = f"spec175-{case}-{WORKLOAD_SEED}"
-    if result.get("seed") != WORKLOAD_SEED:
+    expected_seed = FAULT_SEED if EXPECTED[case] else WORKLOAD_SEED
+    expected_campaign = f"spec175-{case}-{expected_seed}"
+    if result.get("seed") != expected_seed:
         raise ValueError(
-            f"workload-seed field mismatch: expected={WORKLOAD_SEED} "
+            f"case-seed field mismatch: expected={expected_seed} "
             f"actual={result.get('seed')}: {result_path}")
     if result.get("campaignId") != expected_campaign:
         raise ValueError(
