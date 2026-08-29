@@ -264,9 +264,14 @@ def validate_bundle(bundle_path: Path, expected_gate: str) -> dict[str, Any]:
             except OSError as exc:
                 errors.append(f"cannot read controller-wrapper.sh: {exc}")
             else:
-                start_offset = controller_text.find("controller.start()")
-                run_offset = controller_text.find("controller.run()")
-                background_offset = controller_text.find("controller.start_background()")
+                start_match = re.search(r"(?m)^\s*controller\.start\s*\(\s*\)", controller_text)
+                run_match = re.search(r"(?m)^\s*controller\.run\s*\(\s*\)", controller_text)
+                background_match = re.search(
+                    r"(?m)^\s*controller\.start_background\s*\(\s*\)", controller_text
+                )
+                start_offset = start_match.start() if start_match else -1
+                run_offset = run_match.start() if run_match else -1
+                background_offset = background_match.start() if background_match else -1
                 keepalive_offsets = [
                     offset for offset in (
                         controller_text.find("while True"),
