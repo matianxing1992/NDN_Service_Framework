@@ -266,6 +266,7 @@ def validate_bundle(bundle_path: Path, expected_gate: str) -> dict[str, Any]:
             else:
                 start_offset = controller_text.find("controller.start()")
                 run_offset = controller_text.find("controller.run()")
+                background_offset = controller_text.find("controller.start_background()")
                 ready_offsets = [
                     offset for offset in (
                         controller_text.find("SPEC175_CONTROLLER_BOOTSTRAP_READY"),
@@ -274,8 +275,11 @@ def validate_bundle(bundle_path: Path, expected_gate: str) -> dict[str, Any]:
                 ]
                 if start_offset < 0:
                     errors.append("controller-wrapper.sh must call controller.start()")
-                if run_offset < 0:
-                    errors.append("controller-wrapper.sh must call controller.run()")
+                if run_offset < 0 and background_offset < 0:
+                    errors.append(
+                        "controller-wrapper.sh must call controller.run() or "
+                        "controller.start_background()"
+                    )
                 if ready_offsets and start_offset >= 0 and min(ready_offsets) < start_offset:
                     errors.append("controller readiness marker precedes controller.start()")
     providers = sorted((bundle / "providers").glob("*.args")) if (bundle / "providers").is_dir() else []
