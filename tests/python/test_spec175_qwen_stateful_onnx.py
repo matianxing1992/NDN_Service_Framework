@@ -78,6 +78,18 @@ def load_reference_generator():
     return module
 
 
+def load_stage_readiness_runner():
+    path = ROOT / (
+        "specs/175-ndnsf-di-streamed-invocation/jobs/"
+        "run-qwen-stage-readiness.py")
+    spec = importlib.util.spec_from_file_location(
+        "spec175_qwen_stage_readiness_runner", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def digest(char: str) -> str:
     return "sha256:" + char * 64
 
@@ -112,6 +124,61 @@ def bundle(token_epoch: int = 0) -> DecodeStateBundleV1:
 
 
 class Spec175StatefulOnnxTests(unittest.TestCase):
+    def test_stage_profile_accepts_small_integer_shape_control(self) -> None:
+        runner = load_stage_readiness_runner()
+        with tempfile.TemporaryDirectory() as directory:
+            profile = Path(directory) / "ort-profile.json"
+            events = [
+                {"cat": "Node", "name": "matmul", "args": {
+                    "provider": "CUDAExecutionProvider", "op_name": "MatMul"}},
+                {"cat": "Node", "name": "norm", "args": {
+                    "provider": "CUDAExecutionProvider", "op_name": "ReduceMean"}},
+                {"cat": "Node", "name": "softmax", "args": {
+                    "provider": "CUDAExecutionProvider", "op_name": "Softmax"}},
+            ]
+            for op_name in ("Cast", "Neg", "Slice", "Sub"):
+                events.append({"cat": "Node", "name": op_name, "args": {
+                    "provider": "CPUExecutionProvider", "op_name": op_name,
+                    "input_type_shape": [{"int64": []}],
+                    "output_type_shape": [{"int64": []}],
+                }})
+            profile.write_text(json.dumps(events), encoding="utf-8")
+
+            class Session:
+                def end_profiling(self):
+                    return str(profile)
+
+            result = runner.profile_summary(Session())
+            self.assertEqual(result["state"], "PASS")
+            self.assertEqual(result["unknownCpuOps"], [])
+            self.assertEqual(result["cpuCoreOps"], [])
+
+    def test_stage_profile_rejects_cpu_model_compute(self) -> None:
+        runner = load_stage_readiness_runner()
+        with tempfile.TemporaryDirectory() as directory:
+            profile = Path(directory) / "ort-profile.json"
+            profile.write_text(json.dumps([
+                {"cat": "Node", "name": "matmul", "args": {
+                    "provider": "CUDAExecutionProvider", "op_name": "MatMul"}},
+                {"cat": "Node", "name": "norm", "args": {
+                    "provider": "CUDAExecutionProvider", "op_name": "ReduceMean"}},
+                {"cat": "Node", "name": "softmax", "args": {
+                    "provider": "CUDAExecutionProvider", "op_name": "Softmax"}},
+                {"cat": "Node", "name": "cpu-matmul", "args": {
+                    "provider": "CPUExecutionProvider", "op_name": "MatMul",
+                    "input_type_shape": [{"float16": [1, 8]}],
+                    "output_type_shape": [{"float16": [1, 8]}],
+                }},
+            ]), encoding="utf-8")
+
+            class Session:
+                def end_profiling(self):
+                    return str(profile)
+
+            result = runner.profile_summary(Session())
+            self.assertEqual(result["state"], "FAIL")
+            self.assertIn("MatMul", result["cpuCoreOps"])
+
     def test_artifact_promotion_rewrites_partial_manifest_paths(self) -> None:
         copier = load_artifact_copier()
         with tempfile.TemporaryDirectory() as directory:
