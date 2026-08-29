@@ -380,3 +380,14 @@ after node-local content-addressed staging; `sha256sum -c` verified all 317
 entries with zero failures.  The previous manifest and ledger remain in the
 evidence directory as the before-repair files.  A new readiness submission
 will use this repaired manifest/ledger and the already staged runner.
+
+Job `206753` used the repaired manifest, relative ledger, and profiled runner
+and reached the CUDA stage loop, but Slurm killed the step after 7 minutes 20
+seconds with `OUT_OF_MEMORY` (exit 125; `oom_kill event`).  The batch template
+had no explicit host-memory request, so it inherited a small default cgroup;
+this is a host-memory allocation failure, not a CUDA arena or ORT provider
+result.  The log also shows ORT's expected CUDA graph partitioning warnings
+and no readiness marker.  The next bounded submission will keep the same SIF,
+manifest, ledger, runner, and 3-GPU placement while explicitly requesting
+64 GiB host memory; it will use a new output directory and retain this failed
+run as diagnostic evidence.
