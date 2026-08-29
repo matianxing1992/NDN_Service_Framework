@@ -100,6 +100,7 @@ class Spec175SifPreflightTests(unittest.TestCase):
         self.assertIn(":/model:ro", runner)
         self.assertIn("SPEC175_FUNCTIONAL_PREFLIGHT_MISSING", submit)
         self.assertIn("SPEC175_BUNDLE:?set SPEC175_BUNDLE to the staged functional bundle", submit)
+        self.assertIn('export SPEC175_REMOTE_MODEL_ROOT="$REMOTE_MODEL_ROOT"', submit)
         self.assertIn("ndnsf-di-spec175-functional-preflight", submit)
         self.assertIn('SPEC175_JOB_ROOT', submit)
         for name in ("qualify-control.sbatch",
