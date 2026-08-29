@@ -369,3 +369,14 @@ ledger defect, not a model or CUDA result.  The ledger is being regenerated
 with root-relative paths before the next bounded readiness submission; the
 failed terminal record remains under
 `stage-readiness-206700-rtx6000-v3/spec175-gate-terminal.json`.
+
+The promoted `qwen36-stage-manifest.json` was then rebuilt from the tracked
+canonical manifest builder and checked for the complete top-level subject
+contract (`sequencePolicy`, decode mode, text-only/MTP-disabled profile,
+prompt/context lengths, and per-stage state metadata).  Its new SHA-256 is
+`e06e239f18868619ef8a8bfcef90ef94855da4c327084b0916eb1818071f7449`.  The
+artifact ledger was regenerated with root-relative paths so it remains valid
+after node-local content-addressed staging; `sha256sum -c` verified all 317
+entries with zero failures.  The previous manifest and ledger remain in the
+evidence directory as the before-repair files.  A new readiness submission
+will use this repaired manifest/ledger and the already staged runner.
