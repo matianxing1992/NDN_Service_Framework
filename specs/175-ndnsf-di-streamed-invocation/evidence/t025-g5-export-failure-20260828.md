@@ -296,11 +296,13 @@ CUDA, ORT, or exporter failure.  The invalid r11 artifact and the r12 partial
 tree were removed only after their manifests, checksum ledgers, job logs, and
 failure evidence had been retained in the evidence directories.
 
-The next bounded retry is Job `206697`.  It uses the same source, exporter SIF,
-model revision, workload, and three-GPU allocation, but stages the source in a
-new immutable directory, reserves 320 GiB, records an `ERR` trap, and removes
-the offline Transformer checkpoint/HuggingFace cache before ONNX promotion.
-The cleanup is intended to keep the job within the project/scratch quota; it
-does not alter the deployed ONNX output.  The job was submitted but remains
-pending at this checkpoint.  No G5, G6, or performance result is claimed until
-it produces a complete artifact and passes the exact CUDA readiness gate.
+The first bounded retry, Job `206697`, was submitted with a 320-GiB request but
+was canceled before start when Slurm projected a long priority wait; it produced
+no runtime evidence.  The active retry is Job `206700`.  It uses the same
+source, exporter SIF, model revision, workload, and three-GPU allocation, but
+stages the source in a new immutable directory, keeps the proven 256-GiB
+reservation, records an `ERR` trap, and removes the offline Transformer
+checkpoint/HuggingFace cache before ONNX promotion.  The cleanup is intended to
+keep the job within the project/scratch quota; it does not alter the deployed
+ONNX output.  No G5, G6, or performance result is claimed until `206700`
+produces a complete artifact and passes the exact CUDA readiness gate.
