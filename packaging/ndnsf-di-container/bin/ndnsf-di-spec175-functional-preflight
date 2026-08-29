@@ -1,0 +1,294 @@
+#!/usr/bin/env python3
+"""Validate the Spec175 functional bundle before a Tiger allocation.
+
+The control bundle used by G4T is deliberately not a functional workload.  A
+functional submission must carry the Qwen ONNX command lines, the frozen
+three-stage workload identity, and six measured invocation records.  This
+small validator runs on the submit host and is intentionally independent of
+Apptainer, SSH, Slurm, and any operator-local installation.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+from pathlib import Path
+from typing import Any
+
+
+SCHEMA = "ndnsf-di-spec175-functional-bundle-v1"
+EXPECTED_GATES = {"multi-provider", "conversation-residency", "performance"}
+EXPECTED_REPOSITORY = "Qwen/Qwen3.6-27B"
+EXPECTED_REVISION = "6a9e13bd6fc8f0983b9b99948120bc37f49c13e9"
+EXPECTED_ROLES = (
+    "/LLM/Pipeline/Stage/0",
+    "/LLM/Pipeline/Stage/1",
+    "/LLM/Pipeline/Stage/2",
+)
+FORBIDDEN_KEYS = {
+    "assignments",
+    "placement",
+    "placementmap",
+    "providerassignments",
+    "providermap",
+    "providerrolemap",
+    "roleprovidermap",
+}
+FORBIDDEN_TOKENS = (
+    "/source/",
+    "/workspace/",
+    "PYTHONPATH=",
+    "LD_PRELOAD=",
+    "--bind",
+)
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _digest(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    value = value.lower()
+    if value.startswith("sha256:"):
+        value = value[7:]
+    if len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
+        return None
+    return value
+
+
+def _tokens(path: Path, errors: list[str]) -> list[str]:
+    try:
+        values = [line.strip() for line in path.read_text(encoding="utf-8").splitlines()]
+    except OSError as exc:
+        errors.append(f"cannot read {path}: {exc}")
+        return []
+    values = [value for value in values if value and not value.startswith("#")]
+    if not values:
+        errors.append(f"empty argument file: {path}")
+    for token in values:
+        if any(marker.lower() in token.lower() for marker in FORBIDDEN_TOKENS):
+            errors.append(f"runtime source overlay or host path in {path}: {token}")
+    return values
+
+
+def _flag_values(values: list[str], flag: str) -> list[str]:
+    return [values[index + 1] for index, value in enumerate(values[:-1])
+            if value == flag]
+
+
+def _reject_forbidden_keys(value: Any, errors: list[str], path: str = "manifest") -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            normalized = "".join(character.lower() for character in str(key)
+                                  if character.isalnum())
+            if normalized in FORBIDDEN_KEYS:
+                errors.append(f"{path}: Provider-role map is not allowed ({key})")
+            _reject_forbidden_keys(child, errors, f"{path}.{key}")
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            _reject_forbidden_keys(child, errors, f"{path}[{index}]")
+
+
+def _bound_bundle_file(bundle: Path, record: Any, label: str,
+                       errors: list[str]) -> Path | None:
+    if not isinstance(record, dict):
+        errors.append(f"{label}: expected path/sha256 object")
+        return None
+    raw_path = record.get("path")
+    expected = _digest(record.get("sha256"))
+    if not isinstance(raw_path, str) or not raw_path.strip() or Path(raw_path).is_absolute():
+        errors.append(f"{label}: path must be bundle-relative")
+        return None
+    if expected is None:
+        errors.append(f"{label}: invalid sha256")
+        return None
+    path = (bundle / raw_path).resolve()
+    try:
+        path.relative_to(bundle.resolve())
+    except ValueError:
+        errors.append(f"{label}: path escapes bundle")
+        return None
+    if not path.is_file() or path.stat().st_size == 0:
+        errors.append(f"{label}: missing or empty file: {path}")
+        return None
+    if _sha256(path) != expected:
+        errors.append(f"{label}: sha256 mismatch: {path}")
+    return path
+
+
+def _validate_model_identity(path: Path, errors: list[str]) -> None:
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        errors.append(f"stage manifest cannot be read: {exc}")
+        return
+    if document.get("repository") != EXPECTED_REPOSITORY:
+        errors.append("stage manifest repository is not Qwen/Qwen3.6-27B")
+    if document.get("revision") != EXPECTED_REVISION:
+        errors.append("stage manifest revision is not the pinned Qwen3.6 commit")
+    if document.get("decodeMode") != "single-token-autoregressive":
+        errors.append("stage manifest decodeMode must be single-token-autoregressive")
+    if document.get("modality") != "text-only":
+        errors.append("stage manifest modality must be text-only")
+    if document.get("mtpEnabled") is not False:
+        errors.append("stage manifest must disable MTP")
+    stages = document.get("stages")
+    if not isinstance(stages, list) or len(stages) != 3:
+        errors.append("stage manifest must contain exactly three stages")
+        return
+    actual_roles = tuple(str(item.get("role")) for item in stages)
+    if actual_roles != EXPECTED_ROLES:
+        errors.append(f"stage manifest roles must equal {EXPECTED_ROLES!r}")
+    expected_ranges = ((0, 21), (21, 42), (42, 64))
+    for item, expected in zip(stages, expected_ranges):
+        layer_range = item.get("layerRange", {})
+        actual = (layer_range.get("start"), layer_range.get("endExclusive"))
+        if actual != expected:
+            errors.append(f"stage layer range {actual!r} does not equal {expected!r}")
+
+
+def validate_bundle(bundle_path: Path, expected_gate: str) -> dict[str, Any]:
+    errors: list[str] = []
+    bundle = bundle_path.expanduser().resolve()
+    if expected_gate not in EXPECTED_GATES:
+        errors.append(f"unsupported functional gate: {expected_gate}")
+    if not bundle.is_dir():
+        errors.append(f"bundle is not a directory: {bundle}")
+        return {"schemaVersion": SCHEMA, "status": "FAIL", "gate": expected_gate,
+                "bundle": str(bundle), "errors": errors}
+
+    manifest_path = bundle / "spec175-functional-manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        errors.append(f"functional manifest cannot be read: {exc}")
+        manifest = {}
+    if not isinstance(manifest, dict):
+        errors.append("functional manifest root must be an object")
+        manifest = {}
+    if manifest.get("schemaVersion") != SCHEMA:
+        errors.append(f"functional manifest schema must equal {SCHEMA}")
+    if manifest.get("gate") != expected_gate:
+        errors.append("functional manifest gate does not match submission gate")
+    if not isinstance(manifest.get("candidateId"), str) or not manifest["candidateId"].strip():
+        errors.append("functional manifest candidateId must be nonempty")
+    _reject_forbidden_keys(manifest, errors)
+
+    model = manifest.get("model")
+    if not isinstance(model, dict) or model.get("repository") != EXPECTED_REPOSITORY \
+            or model.get("revision") != EXPECTED_REVISION:
+        errors.append("functional manifest model identity is not the pinned Qwen3.6 subject")
+    roles = manifest.get("roles")
+    if not isinstance(roles, list) or tuple(str(role) for role in roles) != EXPECTED_ROLES:
+        errors.append(f"functional manifest roles must equal {EXPECTED_ROLES!r}")
+
+    stage_path = _bound_bundle_file(bundle, manifest.get("stageManifest"),
+                                    "stageManifest", errors)
+    if stage_path is not None:
+        _validate_model_identity(stage_path, errors)
+    workload_path = _bound_bundle_file(bundle, manifest.get("workload"),
+                                       "workload", errors)
+    campaign_path = _bound_bundle_file(bundle, manifest.get("generationCampaign"),
+                                       "generationCampaign", errors)
+    planning_path = _bound_bundle_file(bundle, manifest.get("automaticPlanningManifest"),
+                                       "automaticPlanningManifest", errors)
+    for path in (workload_path, campaign_path, planning_path):
+        if path is not None:
+            try:
+                json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                errors.append(f"invalid JSON in {path}: {exc}")
+
+    invocations = manifest.get("invocations")
+    if not isinstance(invocations, list) or len(invocations) != 6:
+        errors.append("functional manifest must contain exactly six invocations")
+    else:
+        identifiers = [item.get("id") if isinstance(item, dict) else None
+                       for item in invocations]
+        if any(not isinstance(value, str) or not value.strip() for value in identifiers):
+            errors.append("each invocation must have a nonempty id")
+        if len(set(identifiers)) != len(identifiers):
+            errors.append("invocation ids must be unique")
+
+    required_files = ("nfd.conf", "controller.args", "user.args")
+    for name in required_files:
+        if not (bundle / name).is_file():
+            errors.append(f"missing functional bundle file: {name}")
+    providers = sorted((bundle / "providers").glob("*.args")) if (bundle / "providers").is_dir() else []
+    if len(providers) != 3:
+        errors.append("functional bundle must contain exactly three provider .args files")
+    seen_roles: set[str] = set()
+    seen_devices: set[str] = set()
+    for path in providers:
+        values = _tokens(path, errors)
+        runtime = _flag_values(values, "--runtime")
+        role_values = _flag_values(values, "--roles")
+        device_values = _flag_values(values, "--device")
+        if runtime != ["qwen-onnx"]:
+            errors.append(f"{path}: provider runtime must be qwen-onnx")
+        if role_values not in [[role] for role in EXPECTED_ROLES]:
+            errors.append(f"{path}: provider must advertise one canonical stage role")
+        elif role_values[0] in seen_roles:
+            errors.append(f"duplicate Provider role: {role_values[0]}")
+        else:
+            seen_roles.add(role_values[0])
+        if len(device_values) != 1 or device_values[0] in seen_devices:
+            errors.append(f"{path}: each Provider needs a unique CUDA device")
+        else:
+            seen_devices.add(device_values[0])
+        for required in ("--require-cuda", "--require-onnx-runtime"):
+            if required not in values:
+                errors.append(f"{path}: missing {required}")
+        if _flag_values(values, "--stages") != ["3"]:
+            errors.append(f"{path}: --stages must be 3")
+
+    user_values = _tokens(bundle / "user.args", errors) if (bundle / "user.args").is_file() else []
+    if _flag_values(user_values, "--runtime") != ["qwen-onnx"]:
+        errors.append("user.args: runtime must be qwen-onnx")
+    for required in ("--generation-campaign-manifest", "--automatic-planning-manifest",
+                     "--qwen-stage-manifest", "--stages"):
+        if required not in user_values:
+            errors.append(f"user.args: missing {required}")
+    if _flag_values(user_values, "--stages") != ["3"]:
+        errors.append("user.args: --stages must be 3")
+    if any(token in {"--provider-map", "--provider-role-map", "--placement"}
+           for token in user_values):
+        errors.append("user.args: caller-side Provider-role mapping is forbidden")
+
+    return {
+        "schemaVersion": SCHEMA,
+        "status": "PASS" if not errors else "FAIL",
+        "gate": expected_gate,
+        "bundle": str(bundle),
+        "candidateId": manifest.get("candidateId"),
+        "providerCount": len(providers),
+        "invocationCount": len(invocations) if isinstance(invocations, list) else 0,
+        "errors": errors,
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--bundle", required=True, type=Path)
+    parser.add_argument("--gate", required=True, choices=sorted(EXPECTED_GATES))
+    parser.add_argument("--output", type=Path)
+    args = parser.parse_args()
+    result = validate_bundle(args.bundle, args.gate)
+    rendered = json.dumps(result, indent=2, sort_keys=True) + "\n"
+    if args.output is not None:
+        output = args.output.expanduser().resolve()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(rendered, encoding="utf-8")
+    print(rendered, end="")
+    return 0 if result["status"] == "PASS" else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

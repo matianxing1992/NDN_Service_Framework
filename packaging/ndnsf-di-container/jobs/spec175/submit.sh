@@ -35,6 +35,24 @@ PRE_TIGER_CHECKLIST_VALIDATION="${PRE_TIGER_CHECKLIST_VALIDATION:-${SPEC175_PRE_
 CHECKLIST_VALIDATOR="$ROOT/packaging/ndnsf-di-container/bin/ndnsf-di-pre-tiger-checklist"
 [[ -x "$CHECKLIST_VALIDATOR" ]] || { echo "SPEC175_CHECKLIST_VALIDATOR_MISSING" >&2; exit 4; }
 
+# A control bundle is intentionally insufficient for G6/G6C/G7.  Validate the
+# functional command bundle before any candidate-manifest processing that can
+# lead to SSH, upload, or sbatch.  This catches the historical failure mode in
+# which the multi-provider selector launched the HELLO-only control workload.
+if [[ "$CHECKLIST_GATE" == functional ]]; then
+  : "${SPEC175_BUNDLE:?set SPEC175_BUNDLE to the staged functional bundle}"
+  FUNCTIONAL_PREFLIGHT="$ROOT/packaging/ndnsf-di-container/bin/ndnsf-di-spec175-functional-preflight"
+  [[ -x "$FUNCTIONAL_PREFLIGHT" ]] || {
+    echo "SPEC175_FUNCTIONAL_PREFLIGHT_MISSING" >&2
+    exit 4
+  }
+  FUNCTIONAL_PREFLIGHT_OUTPUT="${SPEC175_FUNCTIONAL_PREFLIGHT_OUTPUT:-$(dirname "$PRE_TIGER_CHECKLIST")/functional-bundle-preflight.json}"
+  "$FUNCTIONAL_PREFLIGHT" \
+    --bundle "$SPEC175_BUNDLE" \
+    --gate "$GATE" \
+    --output "$FUNCTIONAL_PREFLIGHT_OUTPUT"
+fi
+
 python3 - "$CLOSURE_MANIFEST" "$SIF" "$SIF_SHA256" "$WORKLOAD" "${MODEL_MANIFEST:-}" "$CHECKLIST_GATE" <<'PY'
 import hashlib
 import json
