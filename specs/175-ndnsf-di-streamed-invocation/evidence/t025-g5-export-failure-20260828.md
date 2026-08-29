@@ -359,3 +359,13 @@ ORT, model, or readiness result; its terminal record is retained under
 `stage-readiness-206700-rtx6000/spec175-gate-terminal.json`.  The corrected
 submission omits that optional variable and uses the runner's sealed default
 `0,1,2`, with a new output directory.
+
+Job `206749` used the corrected runner and schema-complete manifest, reached
+the RTX6000 node, and failed during the first node-local artifact verification
+with `QWEN_STAGE_ARTIFACT_CHECKSUM_PATH_INVALID`.  The promoted ledger still
+contained absolute project paths; after the content-addressed copy those paths
+could not be safely resolved beneath the cache root.  This is a packaging
+ledger defect, not a model or CUDA result.  The ledger is being regenerated
+with root-relative paths before the next bounded readiness submission; the
+failed terminal record remains under
+`stage-readiness-206700-rtx6000-v3/spec175-gate-terminal.json`.
