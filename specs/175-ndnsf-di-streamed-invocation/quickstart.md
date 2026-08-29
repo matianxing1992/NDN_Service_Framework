@@ -356,6 +356,15 @@ pressure, GPU residency, or three-Provider qualification.
 packaging/ndnsf-di-container/jobs/spec175/submit.sh multi-provider
 ```
 
+Before submission, `submit.sh` runs the repository-owned
+`ndnsf-di-spec175-functional-preflight` against `SPEC175_BUNDLE`. The bundle
+must contain `spec175-functional-manifest.json`, the pinned Qwen3.6 stage and
+workload manifests, six unique invocation records, exactly three Provider
+argument files with unique CUDA devices and canonical roles, and a Qwen
+`qwen-onnx` User command. A control-only HELLO bundle, caller-side
+Provider-role map, `/source` replacement path, or incomplete six-invocation
+manifest is rejected before checklist validation, SSH/upload, or `sbatch`.
+
 Required primary result: pinned Qwen3.6-27B three-role split `[0,21)`,
 `[21,42)`, `[42,64)`, one GPU/Provider/role, six measured exact invocations,
 one plan/prefill each, complete activation/feedback/event lineage, active ONNX
