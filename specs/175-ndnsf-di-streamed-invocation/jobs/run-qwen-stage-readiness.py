@@ -518,6 +518,16 @@ def main() -> int:
     # allocator effect cannot be silently selected away.
     run_chain(sessions, manifest["stages"], prompt, args.max_new_tokens,
               bound=True, stage_device_ids=stage_device_ids)
+    # End profiling after the excluded warmup. ORT has a finite profile-event
+    # buffer; profiling all seven registered chains can truncate the trace and
+    # make a later CPU-fallback claim unverifiable. The paired controls below
+    # use the same sessions/artifact but run without profiling overhead.
+    profiles = []
+    for index, session in enumerate(sessions):
+        profile = profile_summary(session)
+        profiles.append(profile)
+        if profile["state"] != "PASS":
+            fail(f"QWEN_STAGE_CPU_FALLBACK:{index}:" + ",".join(profile["violations"]))
     cached_runs: list[dict] = []
     full_runs: list[dict] = []
     pair_order: list[str] = []
@@ -542,18 +552,14 @@ def main() -> int:
             fail(f"QWEN_STAGE_CACHED_FULL_PARITY:{pair}")
         cached_runs.append(cached)
         full_runs.append(full)
-    profiles = []
-    for index, session in enumerate(sessions):
-        profile = profile_summary(session)
-        profiles.append(profile)
-        if profile["state"] != "PASS":
-            fail(f"QWEN_STAGE_CPU_FALLBACK:{index}:" + ",".join(profile["violations"]))
     cached = cached_runs[-1]
     full = full_runs[-1]
     reference = manifest.get("reference", {})
     expected = reference.get("referenceTopToken")
     if expected is not None and cached["generatedTokenIds"][0] != int(expected):
-        fail("QWEN_STAGE_REFERENCE_TOKEN_MISMATCH")
+        fail(
+            "QWEN_STAGE_REFERENCE_TOKEN_MISMATCH:"
+            f"expected={int(expected)}:actual={cached['generatedTokenIds'][0]}")
     stage_records = []
     for index, stage in enumerate(manifest["stages"]):
         cached_times = [value for run in cached_runs
