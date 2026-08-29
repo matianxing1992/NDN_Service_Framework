@@ -14,6 +14,7 @@ CASES = (
 )
 WORKLOAD_SEED = 1750001
 FAULT_SEED = 1750002
+FAULT_CASES = {"M05", "M06", "M07", "M08", "M09"}
 
 
 class HostGateError(ValueError):
@@ -65,7 +66,8 @@ def validate_host_gate(path: Path, repository_root: Path) -> dict[str, Any]:
         if case not in counts:
             raise HostGateError("HOST_GATE_ENTRY_CASE_INVALID")
         counts[case] += 1
-        expected_campaign = f"spec175-{case}-{WORKLOAD_SEED}"
+        expected_seed = FAULT_SEED if case in FAULT_CASES else WORKLOAD_SEED
+        expected_campaign = f"spec175-{case}-{expected_seed}"
         if entry.get("campaignId") != expected_campaign:
             raise HostGateError("HOST_GATE_WORKLOAD_SEED_MISMATCH")
         if entry.get("workloadSeed") != WORKLOAD_SEED:
