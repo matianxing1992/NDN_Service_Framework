@@ -13,6 +13,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -76,6 +78,31 @@ def _tokens(path: Path, errors: list[str]) -> list[str]:
         if any(marker.lower() in token.lower() for marker in FORBIDDEN_TOKENS):
             errors.append(f"runtime source overlay or host path in {path}: {token}")
     return values
+
+
+def _effective_command_tokens(values: list[str], errors: list[str],
+                              path: Path) -> list[str]:
+    """Extract the argv after an explicit shell-wrapper ``exec``.
+
+    Argument files are one argv element per line, so a small ``bash -lc``
+    wrapper is the only supported way to wait for runtime-generated
+    certificates/tokens before starting a Provider or User.  Validate the
+    complete original lines above, then inspect the command that will really
+    be executed for the semantic Qwen flags.
+    """
+    if len(values) < 3 or values[0] not in {"bash", "sh"} \
+            or values[1] not in {"-c", "-lc"}:
+        return values
+    command = values[2]
+    match = re.search(r"(?:^|[;&])\s*exec\s+", command)
+    if match is None:
+        errors.append(f"{path}: shell wrapper must use an explicit exec")
+        return []
+    try:
+        return shlex.split(command[match.end():])
+    except ValueError as exc:
+        errors.append(f"{path}: invalid shell command: {exc}")
+        return []
 
 
 def _flag_values(values: list[str], flag: str) -> list[str]:
@@ -228,10 +255,11 @@ def validate_bundle(bundle_path: Path, expected_gate: str) -> dict[str, Any]:
     seen_devices: set[str] = set()
     for path in providers:
         values = _tokens(path, errors)
-        runtime = _flag_values(values, "--runtime")
-        role_values = _flag_values(values, "--roles")
-        device_values = _flag_values(values, "--device")
-        artifact_values = _flag_values(values, "--selection-local-artifact")
+        command_values = _effective_command_tokens(values, errors, path)
+        runtime = _flag_values(command_values, "--runtime")
+        role_values = _flag_values(command_values, "--roles")
+        device_values = _flag_values(command_values, "--device")
+        artifact_values = _flag_values(command_values, "--selection-local-artifact")
         if runtime != ["qwen-onnx"]:
             errors.append(f"{path}: provider runtime must be qwen-onnx")
         if role_values not in [[role] for role in EXPECTED_ROLES]:
@@ -245,9 +273,9 @@ def validate_bundle(bundle_path: Path, expected_gate: str) -> dict[str, Any]:
         else:
             seen_devices.add(device_values[0])
         for required in ("--require-cuda", "--require-onnx-runtime"):
-            if required not in values:
+            if required not in command_values:
                 errors.append(f"{path}: missing {required}")
-        if _flag_values(values, "--stages") != ["3"]:
+        if _flag_values(command_values, "--stages") != ["3"]:
             errors.append(f"{path}: --stages must be 3")
         if len(artifact_values) != 1:
             errors.append(
@@ -258,23 +286,25 @@ def validate_bundle(bundle_path: Path, expected_gate: str) -> dict[str, Any]:
                 f"{path}: local stage artifact must be mounted below /model")
 
     user_values = _tokens(bundle / "user.args", errors) if (bundle / "user.args").is_file() else []
-    if _flag_values(user_values, "--runtime") != ["qwen-onnx"]:
+    user_command_values = _effective_command_tokens(
+        user_values, errors, bundle / "user.args")
+    if _flag_values(user_command_values, "--runtime") != ["qwen-onnx"]:
         errors.append("user.args: runtime must be qwen-onnx")
     for required in ("--generation-campaign-manifest", "--automatic-planning-manifest",
                      "--qwen-stage-manifest", "--stages"):
-        if required not in user_values:
+        if required not in user_command_values:
             errors.append(f"user.args: missing {required}")
-    if _flag_values(user_values, "--stages") != ["3"]:
+    if _flag_values(user_command_values, "--stages") != ["3"]:
         errors.append("user.args: --stages must be 3")
-    tokenizer_values = _flag_values(user_values, "--qwen-tokenizer-dir")
-    stage_manifest_values = _flag_values(user_values, "--qwen-stage-manifest")
+    tokenizer_values = _flag_values(user_command_values, "--qwen-tokenizer-dir")
+    stage_manifest_values = _flag_values(user_command_values, "--qwen-stage-manifest")
     if len(tokenizer_values) != 1 or not tokenizer_values[0].startswith("/model/"):
         errors.append("user.args: --qwen-tokenizer-dir must use the read-only /model mount")
     if (len(stage_manifest_values) != 1
             or not stage_manifest_values[0].startswith("/model/")):
         errors.append("user.args: --qwen-stage-manifest must use the read-only /model mount")
     if any(token in {"--provider-map", "--provider-role-map", "--placement"}
-           for token in user_values):
+           for token in user_command_values):
         errors.append("user.args: caller-side Provider-role mapping is forbidden")
 
     return {

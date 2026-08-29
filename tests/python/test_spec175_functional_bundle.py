@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 
@@ -144,3 +145,30 @@ def test_functional_bundle_requires_external_model_mount(tmp_path: Path) -> None
     result = run(bundle)
     assert result.returncode != 0
     assert "mounted below /model" in result.stdout
+
+
+def test_functional_bundle_accepts_explicit_shell_exec_wrappers(tmp_path: Path) -> None:
+    bundle = make_bundle(tmp_path)
+    for path in [bundle / "user.args", *sorted((bundle / "providers").glob("*.args"))]:
+        argv = path.read_text(encoding="utf-8").splitlines()
+        command = " ".join(shlex.quote(value) for value in argv)
+        path.write_text(
+            "bash\n-lc\nexport HOME=/evidence/home; exec " + command + "\n",
+            encoding="utf-8",
+        )
+    result = run(bundle)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["status"] == "PASS"
+
+
+def test_functional_bundle_rejects_shell_wrapper_without_exec(tmp_path: Path) -> None:
+    bundle = make_bundle(tmp_path)
+    provider = bundle / "providers/provider-0.args"
+    argv = provider.read_text(encoding="utf-8").splitlines()
+    provider.write_text(
+        "bash\n-lc\n" + " ".join(shlex.quote(value) for value in argv) + "\n",
+        encoding="utf-8",
+    )
+    result = run(bundle)
+    assert result.returncode != 0
+    assert "shell wrapper must use an explicit exec" in result.stdout
