@@ -85,6 +85,8 @@ class Spec175SifPreflightTests(unittest.TestCase):
         self.assertIn("SPEC175_SIF_CONTROL_ENTRYPOINT_MISSING", runner)
         self.assertIn("spec175-sif-control-v1", runner)
         self.assertIn("SPEC175_SIF_DIGEST_MISMATCH", runner)
+        self.assertIn("SPEC175_MODEL_ROOT", runner)
+        self.assertIn(":/model:ro", runner)
         self.assertIn("SPEC175_FUNCTIONAL_PREFLIGHT_MISSING", submit)
         self.assertIn("SPEC175_BUNDLE:?set SPEC175_BUNDLE to the staged functional bundle", submit)
         self.assertIn("ndnsf-di-spec175-functional-preflight", submit)
@@ -100,13 +102,15 @@ class Spec175SifPreflightTests(unittest.TestCase):
             self.assertNotIn('dirname "$0"', text)
             if name == "qualify-stage-readiness.sbatch":
                 self.assertIn("run-qwen-stage-readiness.py", text)
-                self.assertIn("--gres=gpu:rtx_5000:3", text)
+                self.assertIn("--gres=gpu:rtx_6000:3", text)
                 self.assertIn("--stage-device-ids", text)
                 self.assertIn("SPEC175_MODEL_MANIFEST", text)
                 self.assertIn("SPEC175_REMOTE_MODEL_ROOT", text)
                 self.assertNotIn("run-streamed-generation.sh", text)
             else:
                 self.assertIn("run-streamed-generation.sh", text)
+                if name != "qualify-control.sbatch":
+                    self.assertIn("SPEC175_MODEL_ROOT", text)
 
     def test_repository_checklist_validator_is_home_independent(self):
         self.assertTrue(os.access(CHECKLIST_VALIDATOR, os.X_OK))

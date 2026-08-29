@@ -364,6 +364,12 @@ argument files with unique CUDA devices and canonical roles, and a Qwen
 `qwen-onnx` User command. A control-only HELLO bundle, caller-side
 Provider-role map, `/source` replacement path, or incomplete six-invocation
 manifest is rejected before checklist validation, SSH/upload, or `sbatch`.
+The staged model root is a separate content-addressed, read-only input: set
+`REMOTE_MODEL_ROOT` to the verified Qwen artifact directory. The submission
+wrapper binds it as `/model`; Provider arguments must use
+`--selection-local-artifact ROLE=/model/...`, and the User must use
+`/model/qwen-onnx-tokenizer` plus `/model/<stage-manifest>`. No model weights
+are copied into the SIF or the functional command bundle.
 
 Required primary result: pinned Qwen3.6-27B three-role split `[0,21)`,
 `[21,42)`, `[42,64)`, one GPU/Provider/role, six measured exact invocations,
@@ -387,7 +393,6 @@ Expected: the same candidate and three-role Qwen3.6-27B placement complete one
 two-turn conversation. Turn 1 first proves ordinary request-local decode state,
 then state-only terminal-prefix finalization when needed, and atomic all-role
 promotion into the parent conversation checkpoint. Turn 2 has a fresh
-Request/generation, submits only the new application input plus the opaque parent
 checkpoint, derives and prefills only the appended canonical suffix, restores all three
 role-local states through real `GPU_RESIDENT -> HOST_RESIDENT -> PREFETCHING ->
 GPU_RESIDENT` transitions, and exactly matches the full-transcript CUDA oracle.

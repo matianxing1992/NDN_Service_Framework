@@ -5,7 +5,9 @@
 #SBATCH --ntasks=1
 # One GPU owns each complete pipeline stage.  Loading all three 27B stages on
 # one GPU is not a valid readiness test and can exhaust the CUDA arena.
-#SBATCH --gres=gpu:rtx_5000:3
+# Qwen3.6-27B stage artifacts require the RTX 6000 capacity used by the
+# validated T025 job; RTX 5000 is not an interchangeable target here.
+#SBATCH --gres=gpu:rtx_6000:3
 #SBATCH --time=00:20:00
 #SBATCH --output=%x-%j.out
 #SBATCH --error=%x-%j.err

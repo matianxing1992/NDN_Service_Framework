@@ -29,7 +29,8 @@ def make_bundle(root: Path, gate: str = "multi-provider") -> Path:
         "python3\nuser.py\n--runtime\nqwen-onnx\n"
         "--generation-campaign-manifest\ncampaign.json\n"
         "--automatic-planning-manifest\nautomatic-planning.json\n"
-        "--qwen-stage-manifest\nstage-manifest.json\n"
+        "--qwen-stage-manifest\n/model/stage-manifest.json\n"
+        "--qwen-tokenizer-dir\n/model/qwen-onnx-tokenizer\n"
         "--stages\n3\n",
         encoding="utf-8",
     )
@@ -37,6 +38,7 @@ def make_bundle(root: Path, gate: str = "multi-provider") -> Path:
         (bundle / "providers" / f"provider-{index}.args").write_text(
             f"python3\nprovider.py\n--runtime\nqwen-onnx\n"
             f"--roles\n{role}\n--device\ncuda:{index}\n"
+            f"--selection-local-artifact\n{role}=/model/qwen-onnx-stage-artifacts/stage-{index}.onnx\n"
             "--require-cuda\n--require-onnx-runtime\n--stages\n3\n",
             encoding="utf-8",
         )
@@ -130,3 +132,15 @@ def test_functional_bundle_rejects_runtime_source_overlay(tmp_path: Path) -> Non
     result = run(bundle)
     assert result.returncode != 0
     assert "runtime source overlay" in result.stdout
+
+
+def test_functional_bundle_requires_external_model_mount(tmp_path: Path) -> None:
+    bundle = make_bundle(tmp_path)
+    provider = bundle / "providers/provider-0.args"
+    provider.write_text(
+        provider.read_text().replace("=/model/", "=/tmp/model/"),
+        encoding="utf-8",
+    )
+    result = run(bundle)
+    assert result.returncode != 0
+    assert "mounted below /model" in result.stdout
