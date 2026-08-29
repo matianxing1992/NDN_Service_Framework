@@ -92,7 +92,13 @@ all_providers_ready() {
   local index
   for index in "${!provider_logs[@]}"; do
     kill -0 "${provider_pids[$index]}" 2>/dev/null || return 1
-    grep -q 'NDNSF_DI_NATIVE_PROVIDER_READY' "${provider_logs[$index]}" 2>/dev/null || return 1
+    # The exact SIF ships both the native C++ provider and the Qwen ONNX
+    # application provider.  They have distinct readiness markers, but both
+    # represent a provider that has completed permission/model setup.  Keep
+    # the process-liveness check above: a stale marker from an exited child
+    # must never satisfy readiness.
+    grep -Eq 'NDNSF_DI_NATIVE_PROVIDER_READY|LLM_PIPELINE_PROVIDER_READY' \
+      "${provider_logs[$index]}" 2>/dev/null || return 1
   done
 }
 
