@@ -1,36 +1,59 @@
-# Spec175 T025 Tiger stage readiness
+# Spec175 T025 Tiger stage readiness: current candidate
 
-Date: 2026-08-29  
-Candidate: `spec175-final-candidate-replay42c`  
-Gate: G5 stateful-stage/cache-effectiveness readiness
+**Date:** 2026-08-29
+**Candidate:** `spec175-runtime-fe285147`
+**Source revision:** `15f823a4bb5a158be86df81074aae48d2a0244d7`
+**Gate:** G5 stateful-stage/cache-effectiveness readiness
 
 ## Bound inputs
 
-- Runtime SIF: `/project/tma1/ndnsf-di/staging/spec175/replay42c/spec175-runtime.sif`
-- Runtime SIF SHA-256: `63539a1adffa4d8500c56d34104d81971aa72a29958723cd35143bd52b98fbd1`
-- External model root: `/project/tma1/ndnsf-di/artifacts/spec175/qwen36-stateful/spec175-qwen36-stateful-rtx6000-206700`
-- Repaired service-manifest SHA-256: `cf246180e7334baf35b76ef49e3b9ec7626b44f657d05cb4ab5f370d90d473d2`
-- Repaired stage-manifest SHA-256: `9da2920c4f328022f096da84f57541a87c22b045320b5adb01522cfac5b65fd6`
-- Root-relative 317-entry ledger SHA-256: `a8ba98f67db5a08bda29ebff82becba8f17bafb9fb4f065dfe3cb452320e4620`
+- Runtime SIF: `/project/tma1/ndnsf-di/releases/spec175-runtime-fe285147/runtime.sif`
+- Runtime SIF SHA-256: `6d905dbb44a65b02dcd091fb1c9a89b81ce7bb86551acf16db2a620c8602e7d7`
+- Model root: `/project/tma1/ndnsf-di/artifacts/spec175/qwen36-stateful/spec175-qwen36-stateful-rtx6000-206700`
 - Model: `Qwen/Qwen3.6-27B@6a9e13bd6fc8f0983b9b99948120bc37f49c13e9`
-- Execution provider: `CUDAExecutionProvider`; three distinct RTX 6000 devices; host memory request `96G`.
+- Model digest: `cf246180e7334baf35b76ef49e3b9ec7626b44f657d05cb4ab5f370d90d473d2`
+- Execution provider: `CUDAExecutionProvider`; three RTX 6000 devices; `--mem=96G`
 
 ## Result
 
-Tiger Job `206782` completed with Slurm exit `0:0` in `00:04:44` (`MaxRSS=53381620K`). The frozen eight-token control produced
-`[96445, 96170, 142289, 96895, 13368, 3035, 97186, 96565]`, a nonempty transcript, no complete-state host round trip after prefill, and no CPU model-compute fallback. The observed first ONNX token (`96445`) is the deployment oracle; the earlier declared value (`7812`) was retained only as diagnostic mismatch evidence and is not used as the acceptance oracle.
+Tiger Job `206907` completed on `itiger02` with Slurm exit `0:0` in
+`00:01:21`. The terminal record is
+`/project/tma1/ndnsf-di/submits/spec175-runtime-fe285147/spec175-stage-206907/spec175-gate-terminal.json`
+with SHA-256
+`0f6a8e1e365289f0a17591fdb13c10bba5df09d38111111d3e54bfbebfe2bebe`.
+The machine-readable readiness record is
+`.../spec175-stage-206907/tiger-stage-readiness.json` with SHA-256
+`d1918ad677d6a64dff9a9c589ccf41cb0d398f939c9bc6c01885aae7f9efc2a7` and
+reports `status=PASS`.
 
-All three stages passed three matched cached/full pairs, with device-resident state and no CPU model-compute fallback:
+The eight-token control produced
+`[96445, 96170, 142289, 96895, 13368, 3035, 97186, 96565]` and a nonempty
+transcript. All stages used device-resident state, had zero complete-state
+host bytes after prefill, and reported zero CPU model-compute fallback:
 
-| stage | layers | cached median (ms) | full-prefix median (ms) |
-|---|---:|---:|---:|
-| 0 | `[0,21)` | 67.4716 | 167.5555 |
-| 1 | `[21,42)` | 67.2555 | 167.8819 |
-| 2 | `[42,64)` | 78.6047 | 183.3975 |
+| stage | role | cached median (ms) | full-prefix median (ms) | pairs |
+|---:|---|---:|---:|---:|
+| 0 | `/LLM/Pipeline/Stage/0` | 68.4436 | 170.1506 | 3 |
+| 1 | `/LLM/Pipeline/Stage/1` | 67.5662 | 169.3090 | 3 |
+| 2 | `/LLM/Pipeline/Stage/2` | 79.5844 | 182.4312 | 3 |
 
-Each ORT profile passed with no unknown CPU ops, no CPU core model ops, and all required CUDA model groups present. CPU execution was limited to the declared bounded shape-control operators. The machine-readable result and gate record are preserved as:
+Each ORT profile reported `unknownCpuOps=[]`, `cpuCoreOps=[]`, and
+`missingCudaCoreGroups=[]`; CPU execution was limited to declared shape-control
+operators. Artifact staging verified 317 ledger entries and 3,149,131 stage
+bytes in the content-addressed cache. The run closes the current candidate's
+T025 control plus G5 readiness prerequisite for T026.
 
-- `t025-stage-readiness-206782.json` (status `PASS`)
-- `t025-stage-readiness-206782-gate.json` (status `PASS`)
+## Retained failed attempts
 
-This closes the current-SIF control plus G5 readiness evidence needed by T026. It does not claim T026 multi-Provider functional execution, T034 conversation residency, or T027 performance.
+- Job `206904` failed before SIF execution with
+  `SPEC175_STAGE_RUNNER_MISSING`; the minimal remote submit tree omitted the
+  runner invoked by the stage wrapper.
+- Job `206905` reached the three-GPU job but was `OUT_OF_MEMORY` with the
+  default 3-GB allocation (`MaxRSS=3118036K`); it used the same SIF/model and
+  no NDNSF-DI request ran. The successful replacement declares `--mem=96G`.
+
+These are submission-bundle/resource failures, not CUDA, ONNX Runtime, model,
+or NDNSF-DI protocol results. Historical job `206782` belongs to the superseded
+`spec175-final-candidate-replay42c` SIF and is retained only for provenance.
+This evidence does not claim T026 multi-Provider execution, T034 conversation
+residency, or T027 performance.

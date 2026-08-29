@@ -39,13 +39,15 @@ or decode timing fields and cannot establish 27B CUDA performance.
 
 ## Release boundary
 
-T023/G4 is complete for this local candidate. T025's control closure is
-recorded separately. T026--T028 and T034 remain open: no current record here
-claims Tiger availability, Qwen3.6-27B CUDA execution, multi-node generation,
-conversation residency, GPU KV-cache effectiveness, or the 20-token/s target.
-The next valid step is the current-SIF Tiger control, followed serially by the
-27B stage-readiness, three-Provider functional, conversation-residency, and
-performance gates.
+T023/G4 and T025 are complete for the current candidate. T025 is recorded in
+`evidence/t025-tiger-control-206901.md` and
+`evidence/tiger-stage-readiness.md`: the current SIF passed the four-Provider
+CPU control and the pinned three-stage Qwen3.6-27B CUDA state/cache-readiness
+gate on Tiger jobs `206901` and `206907`. T026--T028 and T034 remain open: no
+current record here claims multi-Provider generation, conversation residency,
+or the 20-token/s performance target. The next valid step is the current-SIF
+three-Provider functional gate, followed serially by conversation-residency
+and performance gates.
 
 ## Historical diagnostic evidence
 
