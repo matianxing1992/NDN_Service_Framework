@@ -248,6 +248,36 @@ def validate_bundle(bundle_path: Path, expected_gate: str) -> dict[str, Any]:
     for name in required_files:
         if not (bundle / name).is_file():
             errors.append(f"missing functional bundle file: {name}")
+    controller_values = _effective_command_tokens(
+        _tokens(bundle / "controller.args", errors)
+        if (bundle / "controller.args").is_file() else [],
+        errors, bundle / "controller.args")
+    if "/bundle/controller-wrapper.sh" not in controller_values:
+        errors.append("controller.args must exec the bundled controller-wrapper.sh")
+    else:
+        controller_wrapper = bundle / "controller-wrapper.sh"
+        if not controller_wrapper.is_file():
+            errors.append("missing functional bundle file: controller-wrapper.sh")
+        else:
+            try:
+                controller_text = controller_wrapper.read_text(encoding="utf-8")
+            except OSError as exc:
+                errors.append(f"cannot read controller-wrapper.sh: {exc}")
+            else:
+                start_offset = controller_text.find("controller.start()")
+                run_offset = controller_text.find("controller.run()")
+                ready_offsets = [
+                    offset for offset in (
+                        controller_text.find("SPEC175_CONTROLLER_BOOTSTRAP_READY"),
+                        controller_text.find("NDNSF_DI_CONTROLLER_READY"),
+                    ) if offset >= 0
+                ]
+                if start_offset < 0:
+                    errors.append("controller-wrapper.sh must call controller.start()")
+                if run_offset < 0:
+                    errors.append("controller-wrapper.sh must call controller.run()")
+                if ready_offsets and start_offset >= 0 and min(ready_offsets) < start_offset:
+                    errors.append("controller readiness marker precedes controller.start()")
     providers = sorted((bundle / "providers").glob("*.args")) if (bundle / "providers").is_dir() else []
     if len(providers) != 3:
         errors.append("functional bundle must contain exactly three provider .args files")

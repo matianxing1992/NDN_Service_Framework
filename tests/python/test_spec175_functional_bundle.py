@@ -25,7 +25,16 @@ def make_bundle(root: Path, gate: str = "multi-provider") -> Path:
     bundle = root / "bundle"
     (bundle / "providers").mkdir(parents=True)
     (bundle / "nfd.conf").write_text("face_system { };\n", encoding="utf-8")
-    (bundle / "controller.args").write_text("/bin/true\n", encoding="utf-8")
+    (bundle / "controller-wrapper.sh").write_text(
+        "controller.start()\n"
+        "print('NDNSF_DI_CONTROLLER_READY', flush=True)\n"
+        "controller.run()\n",
+        encoding="utf-8",
+    )
+    (bundle / "controller.args").write_text(
+        "bash\n-lc\nexec /bundle/controller-wrapper.sh\n",
+        encoding="utf-8",
+    )
     (bundle / "user.args").write_text(
         "python3\nuser.py\n--runtime\nqwen-onnx\n"
         "--generation-campaign-manifest\ncampaign.json\n"
@@ -172,3 +181,16 @@ def test_functional_bundle_rejects_shell_wrapper_without_exec(tmp_path: Path) ->
     result = run(bundle)
     assert result.returncode != 0
     assert "shell wrapper must use an explicit exec" in result.stdout
+
+
+def test_functional_bundle_rejects_controller_ready_before_start(tmp_path: Path) -> None:
+    bundle = make_bundle(tmp_path)
+    wrapper = bundle / "controller-wrapper.sh"
+    wrapper.write_text(
+        "print('NDNSF_DI_CONTROLLER_READY', flush=True)\n"
+        "controller.start()\ncontroller.run()\n",
+        encoding="utf-8",
+    )
+    result = run(bundle)
+    assert result.returncode != 0
+    assert "controller readiness marker precedes controller.start()" in result.stdout
