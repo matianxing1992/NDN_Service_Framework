@@ -48,6 +48,21 @@ def fail(message: str) -> None:
     raise SystemExit("SPEC175_G4_REPLAY_" + message)
 
 
+def ensure_fresh_run_output(path: Path, run_id: str) -> None:
+    """Never allow a replay to reuse evidence from an earlier run."""
+    if path.exists():
+        if not path.is_dir():
+            fail(f"RUN_OUTPUT_NOT_DIRECTORY:{run_id}")
+        try:
+            has_entries = any(path.iterdir())
+        except OSError as exc:
+            fail(f"RUN_OUTPUT_UNREADABLE:{run_id}:{type(exc).__name__}")
+        if has_entries:
+            fail(f"RUN_OUTPUT_NOT_EMPTY:{run_id}")
+        return
+    path.mkdir(parents=True, exist_ok=False)
+
+
 def load_host_gate():
     path = ROOT / "packaging/ndnsf-di-container/lib/spec175_host_gate.py"
     spec = importlib.util.spec_from_file_location("spec175_host_gate", path)
@@ -121,6 +136,8 @@ def main() -> int:
         fail("APPTAINER_REQUIRED")
     if not args.sif:
         fail("SIF_REQUIRED")
+    if args.output.exists():
+        fail("OUTPUT_MANIFEST_EXISTS")
 
     host = load_manifest(args.host_gate_manifest.resolve(), args.sif.resolve())
     sif = inspect_sif(args.apptainer, args.sif.resolve(), args.sif_sha256)
@@ -176,7 +193,7 @@ def main() -> int:
                 "SPEC175_APPTAINER": args.apptainer,
                 "SPEC175_SIF_SHA256": sif["sha256"],
             })
-            output.mkdir(parents=True, exist_ok=True)
+            ensure_fresh_run_output(output, run_id)
             completed = subprocess.run(command, cwd=ROOT, env=env,
                                        text=True, capture_output=True, check=False)
             (output / "g4.stdout").write_text(completed.stdout, encoding="utf-8")

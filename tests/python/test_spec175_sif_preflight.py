@@ -54,6 +54,16 @@ def load_planning_builder_module():
     return module
 
 
+def load_replay_driver_module():
+    loader = importlib.machinery.SourceFileLoader(
+        "spec175_replay_driver", str(REPLAY_DRIVER))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
 class Spec175SifPreflightTests(unittest.TestCase):
     def test_host_gate_requires_current_42_process_matrix(self):
         if not HOST_GATE.is_file():
@@ -277,6 +287,22 @@ class Spec175SifPreflightTests(unittest.TestCase):
         self.assertIn("SPEC175_SIF_HOST_PROCESS_FALLBACK", text)
         self.assertIn("without_sha256_prefix", text)
         self.assertNotIn("removeprefix(", text)
+
+    def test_host_replay_driver_rejects_stale_run_evidence(self):
+        module = load_replay_driver_module()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            empty = root / "empty-run"
+            empty.mkdir()
+            module.ensure_fresh_run_output(empty, "M01-r1")
+            (empty / "spec175-case-result.json").write_text("{}")
+            with self.assertRaisesRegex(SystemExit, "RUN_OUTPUT_NOT_EMPTY:M01-r1"):
+                module.ensure_fresh_run_output(empty, "M01-r1")
+            (root / "not-a-directory").write_text("stale")
+            with self.assertRaisesRegex(SystemExit, "RUN_OUTPUT_NOT_DIRECTORY:M02-r1"):
+                module.ensure_fresh_run_output(root / "not-a-directory", "M02-r1")
+            with self.assertRaisesRegex(SystemExit, "RUN_OUTPUT_NOT_DIRECTORY:M03-r1"):
+                module.ensure_fresh_run_output(root / "not-a-directory", "M03-r1")
 
     def test_sif_launcher_uses_apptainer_home_mapping(self):
         text = (ROOT / "Experiments/NDNSF_DI_LlmPipeline_Minindn.py").read_text(
