@@ -85,6 +85,9 @@ class Spec175SifPreflightTests(unittest.TestCase):
         self.assertIn("SPEC175_SIF_CONTROL_ENTRYPOINT_MISSING", runner)
         self.assertIn("spec175-sif-control-v1", runner)
         self.assertIn("SPEC175_SIF_DIGEST_MISMATCH", runner)
+        self.assertIn("SPEC175_FUNCTIONAL_PREFLIGHT_MISSING", submit)
+        self.assertIn("SPEC175_BUNDLE:?set SPEC175_BUNDLE to the staged functional bundle", submit)
+        self.assertIn("ndnsf-di-spec175-functional-preflight", submit)
         self.assertIn('SPEC175_JOB_ROOT', submit)
         for name in ("qualify-control.sbatch",
                      "qualify-stage-readiness.sbatch",
