@@ -18,6 +18,7 @@ WORKLOAD = ROOT / "packaging/ndnsf-di-container/jobs/spec175/workload.json"
 EXAMPLES_WSCRIPT = ROOT / "examples/wscript"
 SPEC175_JOBS = ROOT / "packaging/ndnsf-di-container/jobs/spec175"
 REPLAY_DRIVER = SPEC175_JOBS / "replay-exact-sif.py"
+PLANNING_BUILDER = ROOT / "specs/162-itiger-qwen36-generation/jobs/build-automatic-planning-manifest.py"
 CHECKLIST_VALIDATOR = ROOT / "packaging/ndnsf-di-container/bin/ndnsf-di-pre-tiger-checklist"
 MODEL_PREFLIGHT = ROOT / "packaging/ndnsf-di-container/bin/ndnsf-di-spec175-model-preflight"
 HOST_GATE = ROOT / "results/spec175/g3/spec175-g3-current-20260827.json"
@@ -36,6 +37,16 @@ def load_module():
 def load_host_gate_module():
     loader = importlib.machinery.SourceFileLoader(
         "spec175_host_gate", str(HOST_GATE_MODULE))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def load_planning_builder_module():
+    loader = importlib.machinery.SourceFileLoader(
+        "spec175_planning_builder", str(PLANNING_BUILDER))
     spec = importlib.util.spec_from_loader(loader.name, loader)
     assert spec is not None
     module = importlib.util.module_from_spec(spec)
@@ -187,6 +198,15 @@ class Spec175SifPreflightTests(unittest.TestCase):
             )
             assert result.returncode == 0, result.stderr
             assert json.loads(result.stdout)["status"] == "PASS"
+
+    def test_automatic_planning_normalizes_prefixed_stage_digest(self):
+        module = load_planning_builder_module()
+        raw = "a" * 64
+        self.assertEqual(module.sha256_digest(raw, label="stage"), "sha256:" + raw)
+        self.assertEqual(module.sha256_digest("sha256:" + raw, label="stage"),
+                         "sha256:" + raw)
+        with self.assertRaises(ValueError):
+            module.sha256_digest("sha256:" + "g" * 64, label="stage")
 
     def test_direct_native_targets_keep_stream_and_epoch_sources(self):
         text = EXAMPLES_WSCRIPT.read_text(encoding="utf-8")
