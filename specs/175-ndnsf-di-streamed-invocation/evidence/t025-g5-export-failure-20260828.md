@@ -338,3 +338,14 @@ canonical manifest and the exact runtime SIF.  It is waiting for the frozen
 RTX5000 allocation; no readiness, G5, G6, or performance result is claimed
 until the job returns its device-residency, zero-host-round-trip, and
 cache-effectiveness evidence.
+
+Because the readiness contract specifies an allocated CUDA device per stage
+but does not require a particular GPU class, the same frozen script was also
+submitted as job `206740` with an explicit `gpu:rtx_6000:3` override.  It uses
+the identical SIF, canonical manifest, external model root, stage-device IDs,
+and eight-token control.  At the time of this record both `206736` and
+`206740` are still `PENDING (Priority)` and have produced no runtime evidence;
+the extra submission is a bounded scheduling alternative, not a pass or a
+second candidate.  The first terminal job with complete evidence will be
+reviewed against T025, and the other pending job will not be counted as an
+independent repetition.
