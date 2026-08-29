@@ -349,3 +349,13 @@ the extra submission is a bounded scheduling alternative, not a pass or a
 second candidate.  The first terminal job with complete evidence will be
 reviewed against T025, and the other pending job will not be counted as an
 independent repetition.
+
+Job `206740` reached `itiger06` before cancellation but exited after 33 seconds
+at the launcher argument check.  Slurm's comma-separated `--export` syntax
+split `SPEC175_STAGE_DEVICE_IDS=0,1,2` into a single value (`0`), so the runner
+correctly rejected it with `--stage-device-ids must contain exactly three
+non-negative IDs`.  This is a submission-encoding failure, not a SIF, CUDA,
+ORT, model, or readiness result; its terminal record is retained under
+`stage-readiness-206700-rtx6000/spec175-gate-terminal.json`.  The corrected
+submission omits that optional variable and uses the runner's sealed default
+`0,1,2`, with a new output directory.
