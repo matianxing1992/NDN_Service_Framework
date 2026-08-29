@@ -29,8 +29,8 @@ SCHEMA = "ndnsf-di-qwen36-onnx-stage-manifest-v1"
 SEQUENCE_POLICY = "stateful-prefill-decode-v1"
 CPU_CONTROL_OP_ALLOWLIST = frozenset({
     "Add", "Concat", "ConstantOfShape", "Div", "Equal", "Expand",
-    "Gather", "Identity", "Mul", "Range", "Reshape", "Shape", "Split",
-    "Squeeze", "Unsqueeze", "Where",
+    "Gather", "Identity", "Mul", "Neg", "Range", "Reshape", "Shape",
+    "Slice", "Split", "Squeeze", "Sub", "Unsqueeze", "Where", "Cast",
 })
 CPU_CONTROL_DTYPES = frozenset({"bool", "int64"})
 CPU_CONTROL_MAX_ELEMENTS = 8
