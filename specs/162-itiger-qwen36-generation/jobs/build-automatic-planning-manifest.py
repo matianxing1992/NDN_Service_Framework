@@ -46,7 +46,8 @@ def main() -> int:
     if len(stages) != 3:
         raise RuntimeError("Spec 162 requires exactly three stage artifacts")
     artifact_digests = {
-        str(item["role"]): sha256_digest(item["sha256"], label=f"stage {item['role']} digest")
+        str(item["role"]): sha256_digest(
+            item["sha256"], label=f"stage {item['role']} digest")
         for item in stages
     }
     weight_bytes = {
