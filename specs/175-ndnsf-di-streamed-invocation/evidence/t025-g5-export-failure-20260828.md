@@ -306,3 +306,35 @@ checkpoint/HuggingFace cache before ONNX promotion.  The cleanup is intended to
 keep the job within the project/scratch quota; it does not alter the deployed
 ONNX output.  No G5, G6, or performance result is claimed until `206700`
 produces a complete artifact and passes the exact CUDA readiness gate.
+
+## 206700 successful source-bound export and canonical manifest
+
+Job `206700` completed with exit `0:0` after `00:33:40` on `itiger05` using
+three RTX 6000 GPUs, the unchanged exporter SIF, and the r12 typed-state
+source (`llm_pipeline_lib.py` SHA-256
+`933a3e56297fb05e476d91fbd549cb9d51c26a57aca9dcb699d4038272e6bc78`).  The
+job reported all three stage exports and CPU-ORT checks, then cleaned the
+offline Transformer/HuggingFace files before promotion.  The resulting
+artifact is approximately 24 GiB with 317 files and a complete 317-entry
+checksum ledger; its stage files are 1,032,363, 1,030,910, and 1,085,858 bytes.
+
+The raw exporter manifest initially used bare stage digests and did not carry
+the runtime SIF/source/capacity bindings required by the deployment contract.
+The canonical `build-qwen-onnx-stage-manifest.py` conversion was therefore run
+against the promoted files.  The resulting manifest is
+`qwen36-stage-manifest.json` with schema
+`ndnsf-di-qwen36-onnx-stage-manifest-v1`, runtime SIF SHA-256
+`sha256:63539a1adffa4d8500c56d34104d81971aa72a29958723cd35143bd52b98fbd1`,
+source bundle SHA-256
+`sha256:24f493fb80a60fe6e14f137258b8a738ed14bf0ca6ba73532b99d64b0b651104`,
+and capacity-decision SHA-256
+`sha256:7a289e8c6434d756d443c831b69899d83a1c07fab8a5c26361c1376a794a36a2`.
+All six state input/output contracts are FP16 (element type 10) for every
+stage.  The manifest and rebuilt ledger are retained with the artifact and
+copied to the local replay evidence directory.
+
+The current 3-GPU stage-readiness job is `206736`, submitted with this
+canonical manifest and the exact runtime SIF.  It is waiting for the frozen
+RTX5000 allocation; no readiness, G5, G6, or performance result is claimed
+until the job returns its device-residency, zero-host-round-trip, and
+cache-effectiveness evidence.
