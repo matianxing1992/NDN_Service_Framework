@@ -593,12 +593,16 @@ For each of Stage0 `[0,21)`, Stage1 `[21,42)`, and Stage2 `[42,64)`:
 
 1. stage the immutable artifact once into a content-addressed node-local cache;
 2. verify artifact, adapter, graph, initializer, tokenizer, and cache digests;
-3. load the stage with ONNX Runtime `CUDAExecutionProvider` from the exact SIF;
+3. load the stage with ONNX Runtime `CUDAExecutionProvider` from the exact SIF,
+   assigning Stage0, Stage1, and Stage2 to three distinct allocated CUDA
+   devices; a one-GPU all-stage load is invalid;
 4. execute registered prefill and one incremental decode transition, preserve
    every state component, and match the reference output;
 5. retain the complete state in CUDA-resident buffers through persistent I/O
    binding, record logical state bytes and host-transfer bytes/time, and prove
    zero complete-state device-to-host-to-device round trips after prefill;
+   The graph contract MUST pair each state input and successor output with the
+   same tensor element type; a mismatch is an artifact failure before execution.
 6. run a bounded eight-token paired cache-effectiveness control using the same
    stage, inputs, outputs, precision, and GPU: one excluded warmup followed by
    three alternating-order cached-versus-full-prefix diagnostic pairs;

@@ -977,6 +977,11 @@ concurrent-parent cases without sending model state over NDN.
   27B gates, the exact current SIF MUST pass one bounded CPU/no-GPU Tiger
   deployment control shaped like the successful Spec170 D0 lifecycle. This
   control is deployment evidence only and cannot satisfy G5, G6, or G7.
+  Stage readiness MUST allocate one distinct CUDA device to each complete
+  pipeline stage; loading all three 27B stages into one GPU is invalid. Every
+  declared state family's input and successor output MUST have the same tensor
+  element type so a device-resident successor can be rebound without an
+  implicit host cast or a hidden full-state round trip.
 - **FR-055**: Every test or experiment run MUST record code commit, SIF/model/
   tokenizer/adapter/workload digests, topology, Provider-role mapping, runtime
   versions, seed, commands, timeouts, result counts, failures, and evidence
