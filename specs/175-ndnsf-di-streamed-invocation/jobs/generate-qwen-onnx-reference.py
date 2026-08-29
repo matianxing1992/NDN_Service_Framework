@@ -312,6 +312,7 @@ def main() -> int:
             and not args.allow_first_token_mismatch):
         raise RuntimeError(
             f"reference first token mismatch: {generated[0]} != {expected_first}")
+    generated_first = generated[0] if generated else None
     result = {
         "schemaVersion": "ndnsf-di-qwen-onnx-reference-v1",
         "runtime": "onnxruntime",
@@ -323,12 +324,11 @@ def main() -> int:
         "promptIds": [int(value) for value in prompt[0]],
         "generatedTokenIds": generated,
         "tokenCompletionMonotonicMs": completion_ms,
-        # When the manifest has no frozen runtime token yet, the first token
-        # produced by this exact ORT stage chain becomes the canonical oracle;
-        # the exporter-time PyTorch value remains a parity diagnostic only.
-        "referenceTopToken": (
-            expected_first if expected_first >= 0
-            else (generated[0] if generated else None)),
+        # The first token produced by this exact ORT stage chain is always the
+        # deployment oracle.  A declared value is only a parity check; it must
+        # never replace the observed CUDA-ORT result when diagnostic mismatch
+        # mode is explicitly requested.
+        "referenceTopToken": generated_first,
         "pytorchReferenceTopToken": pytorch_reference,
         "referencePolicy": service.get(
             "referencePolicy", "onnxruntime-canonical-v1"),
@@ -337,6 +337,10 @@ def main() -> int:
         "modelType": model_type,
         "sequencePolicy": SEQUENCE_POLICY,
     }
+    if (generated_first is not None and expected_first >= 0
+            and generated_first != expected_first):
+        result["declaredReferenceTopToken"] = expected_first
+        result["referenceMismatch"] = True
     output = Path(args.output)
     output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n",
                       encoding="utf-8")
