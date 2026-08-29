@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import hashlib
 import hmac
@@ -92,6 +93,22 @@ from llm_pipeline_lib import (
 from deployment_control import (
     CONTROL_SCHEMA, action_from_response, readiness_from_response,
 )
+
+
+def _cancel_invocation_from_worker(invocation) -> None:
+    """Run the public cancellation API from a non-event-loop worker.
+
+    ``StreamedInvocation.cancel`` is an async facade even though the native
+    cancellation itself is synchronous.  Calling it without awaiting only
+    creates a coroutine and leaves the native request alive, which can make a
+    cancellation negative test pass without exercising cancellation.  The
+    fault-injection workers run in ordinary threads, so execute an awaitable
+    result on a short-lived private loop and remain compatible with a future
+    synchronous facade.
+    """
+    result = invocation.cancel()
+    if inspect.isawaitable(result):
+        asyncio.run(result)
 from ndnsf import StreamedInvocationOptions, StreamedInvocationError
 
 
@@ -950,9 +967,14 @@ def _run_tiny_onnx_stream(
             # scheduling cancellation after it returns avoids a callback /
             # cancel lifetime race while preserving the three-event oracle.
             def cancel_after_callback() -> None:
-                time.sleep(0.01)
-                invocation_holder["invocation"].cancel()
-                done.set()
+                try:
+                    time.sleep(0.01)
+                    _cancel_invocation_from_worker(
+                        invocation_holder["invocation"])
+                except BaseException as error:  # noqa: BLE001 - fail closed
+                    failures.append(error)
+                finally:
+                    done.set()
 
             cancel_thread = threading.Thread(
                 target=cancel_after_callback,
@@ -1023,7 +1045,11 @@ def _run_tiny_onnx_stream(
                         return
                     time.sleep(0.001)
                 time.sleep(0.05)
-                invocation_holder["invocation"].cancel()
+                try:
+                    _cancel_invocation_from_worker(
+                        invocation_holder["invocation"])
+                except BaseException as error:  # noqa: BLE001 - fail closed
+                    failures.append(error)
                 # Core cancellation is a local user-lifecycle operation; a
                 # remote Provider may not produce a terminal callback (there
                 # is no cancellation Interest in this protocol path).  Fence

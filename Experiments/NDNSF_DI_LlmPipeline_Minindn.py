@@ -1094,6 +1094,24 @@ def wait_log(path: Path, needle: str, timeout_s: float, proc=None) -> bool:
     return False
 
 
+def wait_any_log(paths: list[Path], needle: str, timeout_s: float) -> bool:
+    """Wait for a marker that may be emitted by any still-running child.
+
+    Provider stdout is file-buffered independently of the User process.  A
+    negative stream case can therefore finish the User before the Provider's
+    fault marker has been flushed.  Polling the complete provider set avoids a
+    false missing-marker failure without changing the registered timeout or
+    retry contract.
+    """
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        for path in paths:
+            if path.exists() and needle in path.read_text(errors="replace"):
+                return True
+        time.sleep(0.1)
+    return False
+
+
 def release_file_barrier(path: Path, token: str) -> None:
     """Atomically release a one-shot child-process barrier."""
     if not token:
@@ -3699,6 +3717,17 @@ def main() -> int:
         expected_terminal_case = (
             args.spec175_case in spec175_expected_terminal_cases)
         user_failed = user_proc.returncode != 0
+        if args.spec175_case in {"M02", "M03", "M04", "M05", "M09"}:
+            # The fault marker is written by the Provider, whose stdio may
+            # flush after the User has already reported its expected
+            # terminal outcome.  Give the child logs a short bounded drain
+            # window before taking the marker snapshot; this does not alter
+            # the stream's attempt/ACK/deadline settings.
+            wait_any_log(
+                provider_logs,
+                f"NDNSF_DI_SPEC175_FAULT_INJECTED case={args.spec175_case}",
+                timeout_s=2.0,
+            )
         provider_texts = [
             log_path.read_text(errors="replace") for log_path in provider_logs
         ]
