@@ -27,9 +27,10 @@ def make_bundle(root: Path, gate: str = "multi-provider") -> Path:
     (bundle / "nfd.conf").write_text("face_system { };\n", encoding="utf-8")
     (bundle / "controller-wrapper.sh").write_text(
         "controller.start()\n"
-        "controller.start_background()\n"
+        "import time\n"
         "print('NDNSF_DI_CONTROLLER_READY', flush=True)\n"
-        "# background event loop owns controller.run()\n",
+        "while True:\n"
+        "    time.sleep(1)\n",
         encoding="utf-8",
     )
     (bundle / "controller.args").write_text(

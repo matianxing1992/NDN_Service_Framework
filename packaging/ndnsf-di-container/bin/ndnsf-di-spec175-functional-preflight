@@ -267,6 +267,12 @@ def validate_bundle(bundle_path: Path, expected_gate: str) -> dict[str, Any]:
                 start_offset = controller_text.find("controller.start()")
                 run_offset = controller_text.find("controller.run()")
                 background_offset = controller_text.find("controller.start_background()")
+                keepalive_offsets = [
+                    offset for offset in (
+                        controller_text.find("while True"),
+                        controller_text.find("time.sleep("),
+                    ) if offset >= 0
+                ]
                 ready_offsets = [
                     offset for offset in (
                         controller_text.find("SPEC175_CONTROLLER_BOOTSTRAP_READY"),
@@ -275,10 +281,20 @@ def validate_bundle(bundle_path: Path, expected_gate: str) -> dict[str, Any]:
                 ]
                 if start_offset < 0:
                     errors.append("controller-wrapper.sh must call controller.start()")
-                if run_offset < 0 and background_offset < 0:
+                if run_offset >= 0:
                     errors.append(
-                        "controller-wrapper.sh must call controller.run() or "
-                        "controller.start_background()"
+                        "controller-wrapper.sh must not call controller.run() after "
+                        "controller.start(); start() owns the native event loop"
+                    )
+                if background_offset >= 0:
+                    errors.append(
+                        "controller-wrapper.sh must not call controller.start_background(); "
+                        "controller.start() owns the native event loop"
+                    )
+                if start_offset >= 0 and not any(offset > start_offset for offset in keepalive_offsets):
+                    errors.append(
+                        "controller-wrapper.sh must keep the process alive after "
+                        "controller.start() while the native event loop runs"
                     )
                 if ready_offsets and start_offset >= 0 and min(ready_offsets) < start_offset:
                     errors.append("controller readiness marker precedes controller.start()")
