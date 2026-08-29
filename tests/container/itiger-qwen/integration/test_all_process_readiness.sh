@@ -32,7 +32,7 @@ printf '%s\n' bash -c \
   "echo NDNSF_DI_NATIVE_PROVIDER_READY; trap 'exit 0' TERM; while :; do sleep 1; done" \
   >"$work/provider-args/provider-0.args"
 printf '%s\n' bash -c \
-  "sleep 0.30; touch '$work/provider-1-ready'; echo LLM_PIPELINE_PROVIDER_READY; trap 'exit 0' TERM; while :; do sleep 1; done" \
+  "sleep 0.30; touch '$work/provider-1-ready'; echo NDNSF_DI_NATIVE_PROVIDER_READY; trap 'exit 0' TERM; while :; do sleep 1; done" \
   >"$work/provider-args/provider-1.args"
 printf '%s\n' bash -c \
   "test -f '$work/controller-ready' && test -f '$work/provider-1-ready' && echo USER_AFTER_ALL_READY" \
