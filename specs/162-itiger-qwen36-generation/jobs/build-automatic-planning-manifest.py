@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import re
 import time
 
 from ndnsf_distributed_inference.adapters.qwen import (
@@ -19,6 +20,16 @@ def canonical_digest(value) -> str:
         value, sort_keys=True, separators=(",", ":"), allow_nan=False,
     ).encode()
     return "sha256:" + hashlib.sha256(wire).hexdigest()
+
+
+def sha256_digest(value: object, *, label: str) -> str:
+    """Return one canonical digest without duplicating an existing prefix."""
+    raw = str(value).strip().lower()
+    if raw.startswith("sha256:"):
+        raw = raw[7:]
+    if not re.fullmatch(r"[0-9a-f]{64}", raw):
+        raise ValueError(f"{label} must be a canonical sha256 digest")
+    return "sha256:" + raw
 
 
 def main() -> int:
@@ -35,7 +46,7 @@ def main() -> int:
     if len(stages) != 3:
         raise RuntimeError("Spec 162 requires exactly three stage artifacts")
     artifact_digests = {
-        str(item["role"]): "sha256:" + str(item["sha256"])
+        str(item["role"]): sha256_digest(item["sha256"], label=f"stage {item['role']} digest")
         for item in stages
     }
     weight_bytes = {
