@@ -435,7 +435,15 @@ requestControllerSignedCertificate(ndn::Face& face,
   interest.setCanBePrefix(false);
   interest.setInterestLifetime(timeout);
   interest.setApplicationParameters(encryptedRequest.wireEncode());
-  keyChain.sign(interest, ndn::security::signingByIdentity(certificateIdentity));
+  // Signed Interest V0.2 appends SignatureInfo/SignatureValue as name
+  // components.  With ApplicationParameters that leaves the digest component
+  // in the middle of the name, so NFD cannot match the registered bootstrap
+  // prefix and returns NoRoute.  Use the Packet Specification V0.3 format,
+  // which carries the signature fields as Interest parameters and keeps the
+  // ParametersSha256DigestComponent last.
+  auto signingInfo = ndn::security::signingByIdentity(certificateIdentity);
+  signingInfo.setSignedInterestFormat(ndn::security::SignedInterestFormat::V03);
+  keyChain.sign(interest, signingInfo);
 
   bool done = false;
   bool ok = false;
