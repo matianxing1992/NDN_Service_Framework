@@ -218,12 +218,33 @@ if source_changes:
 
 previous = json.loads(host_path.read_text(encoding="utf-8"))
 local_rows = {row["path"]: row.get("sha256") for row in local_source.get("files", [])}
+# The G0/G3 source seal covers the whole Spec175 qualification subject, while
+# workspace.tar intentionally contains only source needed to build/runtime the
+# SIF.  Tests, host preflights, and submission/checklist tooling are host-only;
+# the replay driver and workload are the explicit packaging-owned exceptions
+# that must remain in the archive.  Do not silently allow an omitted runtime
+# path: an unclassified omission is still a hard candidate failure.
+host_only_prefixes = (
+    "tests/",
+    "packaging/ndnsf-di-container/",
+)
+runtime_archive_paths = {
+    "packaging/ndnsf-di-container/jobs/spec175/replay-exact-sif.py",
+    "packaging/ndnsf-di-container/jobs/spec175/workload.json",
+}
 for path, row in previous.get("dirtyFiles", {}).items():
     expected = row.get("sha256")
-    if expected and local_rows.get(path) != expected:
+    archived = local_rows.get(path)
+    if expected and archived == expected:
+        continue
+    if (path.startswith(host_only_prefixes)
+            and path not in runtime_archive_paths
+            and archived is None):
+        continue
+    if expected:
         print(
             "LOCAL_SIF_HOST_GATE_SOURCE_FILE_MISMATCH "
-            f"path={path} expected={expected} archive={local_rows.get(path)}",
+            f"path={path} expected={expected} archive={archived}",
             file=sys.stderr,
         )
         raise SystemExit(4)

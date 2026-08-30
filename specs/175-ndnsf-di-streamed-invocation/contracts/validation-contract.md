@@ -776,6 +776,7 @@ correctness of the underlying repository preflights.
 The frozen required rows for `control` are:
 
 ```text
+candidate-source-freshness
 release-identity
 local-sif-route
 cluster-substrate
@@ -783,11 +784,15 @@ target-apptainer-parity
 container-abi-provenance
 complete-target-link-closure
 exact-sif-library-entrypoint
+submit-tree-helper-closure
+submit-env-contract
 bundle-cwd-artifact-mount
 isolated-home-pib-bootstrap
+controller-start-liveness
 lower-gates-native-exits
 wrapper-config-child-status
 resource-envelope
+result-boundary-label
 promotion-hash-config-delta
 credential-secret-scan
 ```
@@ -799,10 +804,19 @@ require:
 ```text
 current-sif-tiger-control
 onnx-model-runtime-compatibility
+onnx-native-session-probe
 cuda-no-fallback
 routes-stage-dataflow
-conversation-checkpoint-state-tier
+provider-pre-ready-lifecycle
 ```
+
+The mapped `functional` and `performance` checklist gates additionally require
+`functional-bundle-identity-closure`. The repository-owned functional preflight
+is the semantic authority for the exact Controller/User/Provider bundle;
+the checklist row binds its current report to the candidate. Conversation
+residency still requires `conversation-checkpoint-state-tier` through its
+repository-specific G6C preflight and prerequisite manifest; it is not a
+generic `stage-readiness` or G6 checklist row.
 
 Gate prerequisites are cumulative and candidate-bound: `control` requires G4;
 `stage-readiness` requires the passing current-SIF Tiger control;
