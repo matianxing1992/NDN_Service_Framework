@@ -18,6 +18,7 @@ from typing import Any
 SCHEMA = "ndnsf-itiger-pre-submit-checklist-v1"
 GATES = {"control", "stage-readiness", "functional", "performance"}
 COMMON_CHECKS = {
+    "candidate-source-freshness",
     "release-identity",
     "local-sif-route",
     "cluster-substrate",
@@ -25,20 +26,38 @@ COMMON_CHECKS = {
     "container-abi-provenance",
     "complete-target-link-closure",
     "exact-sif-library-entrypoint",
+    "submit-tree-helper-closure",
+    "submit-env-contract",
     "bundle-cwd-artifact-mount",
     "isolated-home-pib-bootstrap",
+    "controller-start-liveness",
     "lower-gates-native-exits",
     "wrapper-config-child-status",
     "resource-envelope",
+    "result-boundary-label",
     "promotion-hash-config-delta",
     "credential-secret-scan",
 }
 MODEL_CHECKS = {
     "current-sif-tiger-control",
     "onnx-model-runtime-compatibility",
+    "onnx-native-session-probe",
     "cuda-no-fallback",
     "routes-stage-dataflow",
+    "provider-pre-ready-lifecycle",
 }
+FUNCTIONAL_CHECKS = {
+    "functional-bundle-identity-closure",
+}
+
+
+def _required_checks(gate: str) -> set[str]:
+    required = set(COMMON_CHECKS)
+    if gate != "control":
+        required.update(MODEL_CHECKS)
+    if gate in {"functional", "performance"}:
+        required.update(FUNCTIONAL_CHECKS)
+    return required
 
 
 def _sha256(path: Path) -> str:
@@ -143,9 +162,7 @@ def validate(
 
     base = manifest_path.parent.resolve()
     sif = _bound(payload.get("sif"), base, "sif", errors)
-    required = set(COMMON_CHECKS)
-    if expected_gate != "control":
-        required.update(MODEL_CHECKS)
+    required = _required_checks(expected_gate)
     checks = payload.get("checks")
     if not isinstance(checks, dict):
         checks = {}
@@ -168,7 +185,8 @@ def validate(
             if item_result is not None:
                 bound.append(item_result)
         observed[check_id] = bound
-    unknown = sorted(set(checks) - COMMON_CHECKS - MODEL_CHECKS)
+    known_checks = COMMON_CHECKS | MODEL_CHECKS | FUNCTIONAL_CHECKS
+    unknown = sorted(set(checks) - known_checks)
     if unknown:
         errors.append("unknown checklist row(s): " + ", ".join(unknown))
 

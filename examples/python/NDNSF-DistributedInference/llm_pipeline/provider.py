@@ -413,6 +413,16 @@ class _QwenOnnxRuntimeHandle:
             _qwen_onnx_session_placement(session))
 
 
+def _qwen_onnx_session_from_cache(
+    session_cache: Mapping[str, object], model_key: str,
+) -> object | None:
+    """Return the raw ORT session from either eager or lazy cache entries."""
+    value = session_cache.get(model_key)
+    if isinstance(value, _QwenOnnxRuntimeHandle):
+        return value.session
+    return value
+
+
 def _onnx_numpy_dtype(type_name: str, default):
     import numpy as np
 
@@ -671,6 +681,48 @@ def _preload_qwen_onnx_sessions(provider: APPProvider, roles: set[str], *,
             flush=True,
         )
     return cache
+
+
+def _qwen_onnx_sessions_for_startup(
+    provider: APPProvider,
+    roles: set[str],
+    *,
+    device: str,
+    require_cuda: bool,
+    local_artifacts: dict[str, dict] | None,
+    lazy_qwen_load: bool,
+) -> dict[str, object]:
+    """Construct ONNX sessions only when eager loading was requested.
+
+    ``--lazy-qwen-load`` is a real startup boundary: constructing a CUDA ORT
+    session after APPProvider has created its NDN workers can be unsafe on
+    some deployments. The selected-role preparation callback creates and
+    warms the session later, after ACK/Selection, using the same cache object.
+    """
+    if lazy_qwen_load:
+        return {}
+    return _preload_qwen_onnx_sessions(
+        provider,
+        roles,
+        device=device,
+        require_cuda=require_cuda,
+        local_artifacts=local_artifacts,
+    )
+
+
+def _qwen_onnx_can_prepare(
+    args,
+    *,
+    runtime_cache: Mapping[str, object],
+    local_artifacts: Mapping[str, Mapping[str, object]] | None,
+) -> bool:
+    """Return whether Selection can truthfully prepare an ONNX role."""
+    if runtime_cache:
+        return True
+    if any(str(item.get("path", ""))
+           for item in (local_artifacts or {}).values()):
+        return True
+    return bool(str(getattr(args, "selection_repo_registration", "") or ""))
 
 
 def _finalize_qwen_onnx_profiles(
@@ -1380,6 +1432,19 @@ def _selection_v2_for_qwen(
                     model = _QwenOnnxRuntimeHandle(
                         session,
                         runtime_metadata.get(model_path, {}),
+                    )
+                    if _warm_qwen_onnx_runtime(model) is not True:
+                        raise RuntimeError(
+                            "Qwen ONNX runtime warmup did not complete")
+                    execution_device, cpu_fallback = (
+                        _qwen_onnx_session_placement(session))
+                    _emit(
+                        "LLM_PIPELINE_QWEN_ONNX_STAGE_ARTIFACT_READY",
+                        f"role={role}",
+                        f"path={model_path}",
+                        f"device={execution_device}",
+                        f"cpuFallback={str(cpu_fallback).lower()}",
+                        flush=True,
                     )
                 else:
                     model = qwen_transformer_model_from_stage_package(
@@ -2962,7 +3027,7 @@ def handle_qwen_onnx_stage(ctx: ProviderRuntimeContext, *,
     total_start = time.perf_counter()
     artifact_paths = getattr(ctx.execution, "artifact_paths", {}) or {}
     model_key = str(artifact_paths.get("model") or "")
-    session = session_cache.get(model_key)
+    session = _qwen_onnx_session_from_cache(session_cache, model_key)
     if session is None:
         if not model_key:
             raise RuntimeError("Qwen ONNX stage execution requires an ONNX artifact path")
@@ -4110,12 +4175,13 @@ def main() -> int:
         )
     elif args.runtime == QWEN_ONNX_RUNTIME:
         selected_roles = _selected_roles(args.roles, provider)
-        qwen_sessions = _preload_qwen_onnx_sessions(
+        qwen_sessions = _qwen_onnx_sessions_for_startup(
             provider,
             selected_roles,
             device=args.device,
             require_cuda=args.require_cuda,
             local_artifacts=selection_local_artifacts,
+            lazy_qwen_load=args.lazy_qwen_load,
         )
         qwen_metadata = _qwen_onnx_metadata_by_path(
             provider, selection_local_artifacts)
@@ -4131,7 +4197,7 @@ def main() -> int:
         handler = lambda ctx: handle_qwen_onnx_stage(
             ctx,
             stages=args.stages,
-            session_cache=qwen_sessions,
+            session_cache=qwen_runtime_cache,
             metadata_cache=qwen_metadata,
             compute_delay_ms=args.compute_delay_ms,
             device=args.device,
@@ -4161,7 +4227,10 @@ def main() -> int:
              or (args.runtime == TINY_ONNX_RUNTIME
                  and bool(sessions))
              or (args.runtime == QWEN_ONNX_RUNTIME
-                 and bool(qwen_runtime_cache))
+                 and _qwen_onnx_can_prepare(
+                     args,
+                     runtime_cache=qwen_runtime_cache,
+                     local_artifacts=selection_local_artifacts))
              or (args.runtime != QWEN_ONNX_RUNTIME
                  and bool(qwen_models))))
     provider.serve_service(
