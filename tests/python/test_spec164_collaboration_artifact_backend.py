@@ -77,6 +77,21 @@ class FakeUser:
         return self.invocation
 
 
+def test_collaboration_backend_close_releases_native_user():
+    user = SimpleNamespace(stop_calls=0)
+
+    def stop():
+        user.stop_calls += 1
+
+    user.stop = stop
+    backend = CollaborationArtifactApiBackend(None, user, "/repo/store")
+
+    backend.close()
+
+    assert user.stop_calls == 1
+    assert backend.control is None
+
+
 class DelegateDriver:
     def __init__(self, descriptor, operation_id):
         self.descriptor = descriptor
