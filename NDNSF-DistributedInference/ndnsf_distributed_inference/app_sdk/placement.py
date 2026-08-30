@@ -429,6 +429,10 @@ class AutomaticStreamingHandle:
         self._pending_complete_payload: bytes | None = None
         self._error: dict[str, Any] | None = None
         self._terminal = False
+        # A failed public handle is terminal before the native stream has
+        # necessarily been cancelled.  Keep a separate idempotence bit so
+        # cleanup can still post one native cancellation after _fail().
+        self._native_cancel_requested = False
         self._conversation_coordinator = None
         self._conversation_turn: Mapping[str, Any] | None = None
         self._conversation_expected = bool(conversation_expected)
@@ -996,13 +1000,21 @@ class AutomaticStreamingHandle:
     def cancel(self) -> None:
         """Cancel the currently bound NDNSF stream without starting recovery."""
         with self._condition:
-            if self._terminal:
+            if self._native_cancel_requested:
+                return
+            # A normally completed stream has no native work left to cancel.
+            # A failed stream, however, is terminal at the public API while
+            # its ServiceUser may still own Interests/callback workers; allow
+            # that failure path to reach the native collaboration exactly once.
+            if self._terminal and self._error is None:
                 return
             base = self._attempts.get(self._current_attempt)
             if base is None:
                 raise RuntimeError("streaming attempt is not bound")
-            self._terminal = True
-            self._condition.notify_all()
+            self._native_cancel_requested = True
+            if not self._terminal:
+                self._terminal = True
+                self._condition.notify_all()
         base.collaboration.cancel()
 
     @property
