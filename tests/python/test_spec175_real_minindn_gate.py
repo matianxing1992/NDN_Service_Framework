@@ -7,6 +7,8 @@ import importlib.util
 from pathlib import Path
 import socket
 import sys
+import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -134,6 +136,61 @@ def test_tiny_stream_uses_and_verifies_the_campaign_request_id():
     assert "tiny_wire_request_id = _campaign_wire_request_id(" in body
     assert "wire_request_id=tiny_wire_request_id" in body
     assert "tiny streamed response request ID mismatch" in body
+
+
+def test_expected_terminal_stream_cleans_up_before_return_and_client_shutdown():
+    """A timeout oracle must cancel the native stream before the process exits."""
+    user = _user_module()
+
+    class FakeInvocation:
+        request_id = "/spec175-M08-test"
+
+        def __init__(self):
+            self.cancel_count = 0
+
+        def cancel(self):
+            self.cancel_count += 1
+
+    class FakeServiceUser:
+        def __init__(self, invocation):
+            self.invocation = invocation
+
+        def request_service_streaming(self, *args, **kwargs):
+            def fail_later():
+                time.sleep(0.01)
+                kwargs["on_error"]({
+                    "code": 6,
+                    "message": "stream event gap exceeded retry budget",
+                })
+
+            thread = threading.Thread(target=fail_later, daemon=True)
+            thread.start()
+            return self.invocation
+
+    class FakeClient:
+        def __init__(self, invocation):
+            self.service_user = FakeServiceUser(invocation)
+
+    invocation = FakeInvocation()
+    result = user._run_tiny_onnx_stream(
+        FakeClient(invocation),
+        SimpleNamespace(
+            automatic_planning_manifest="",
+            timeout_ms=1000,
+            max_new_tokens=1,
+            spec175_fault_case="M08",
+        ),
+        b"payload", [],
+        wire_request_id="spec175-M08-test",
+    )
+    assert getattr(result, "expected_terminal", False)
+    assert invocation.cancel_count == 1
+
+    source = USER_SCRIPT.read_text(encoding="utf-8")
+    expected_return = source.index(
+        'if getattr(result, "expected_terminal", False):')
+    shutdown = source.index("client.shutdown(wait=True)", expected_return)
+    assert shutdown < source.index("return 0", expected_return)
 
 
 def test_spec175_provider_timing_binds_repeated_role_spans(tmp_path: Path):
@@ -491,7 +548,7 @@ def test_g3_manifest_requires_conversation_evidence_for_m11_to_m14(
         g3.validate_run(run, "M11")
 
 
-def test_g3_manifest_rejects_unrecorded_or_wrong_workload_seed(
+def test_g3_manifest_rejects_unrecorded_or_wrong_case_seed(
         tmp_path: Path):
     g3 = _g3_module()
     run = tmp_path / "m01"
@@ -509,11 +566,11 @@ def test_g3_manifest_rejects_unrecorded_or_wrong_workload_seed(
     }
     path = run / "spec175-case-result.json"
     path.write_text(__import__("json").dumps(result), encoding="utf-8")
-    with pytest.raises(ValueError, match="workload-seed field mismatch"):
+    with pytest.raises(ValueError, match="case-seed field mismatch"):
         g3.validate_run(run, "M01")
     result["seed"] = 1750002
     path.write_text(__import__("json").dumps(result), encoding="utf-8")
-    with pytest.raises(ValueError, match="workload-seed field mismatch"):
+    with pytest.raises(ValueError, match="case-seed field mismatch"):
         g3.validate_run(run, "M01")
 
 

@@ -4,6 +4,7 @@ import hashlib
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import onnxruntime as ort
@@ -246,6 +247,21 @@ def test_stream_handle_error_callback_exception_is_contained() -> None:
     handle._fail(1, {"code": "ProviderFailure", "message": "failed"})
     assert handle.stream_error["code"] == "ProviderFailure"
     assert handle.stream_complete is None
+
+
+def test_failed_stream_cancel_still_reaches_native_once() -> None:
+    """Failure makes the public handle terminal but native work still needs cancellation."""
+    cancel_calls = []
+    handle = AutomaticStreamingHandle(None, {}, logical_request_id="/request/fail")
+    handle._attempts[1] = SimpleNamespace(
+        collaboration=SimpleNamespace(cancel=lambda: cancel_calls.append(True)))
+    handle._attempt_request_ids[1] = "/request/fail"
+
+    handle._fail(1, {"code": "EventTimeout", "message": "timed out"})
+    handle.cancel()
+    handle.cancel()
+
+    assert cancel_calls == [True]
 
 
 def test_one_plan_loop_emits_event_then_feedback_and_one_terminal() -> None:

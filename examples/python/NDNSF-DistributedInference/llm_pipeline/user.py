@@ -1156,6 +1156,22 @@ def _run_tiny_onnx_stream(
             },
         }
         if case_id in expected_codes and error_code in expected_codes[case_id]:
+            # An error callback is terminal for the public stream handle, but
+            # the native ServiceUser still owns the exact Interests and
+            # StreamEventConsumer until cancellation is posted to the Face
+            # thread.  Cancel before returning the expected negative result;
+            # otherwise interpreter teardown can destroy a live native
+            # callback/thread and abort with ``terminate called without an
+            # active exception``.
+            invocation = invocation_holder.get("invocation")
+            if invocation is None:
+                raise RuntimeError(
+                    "expected streamed failure has no native invocation handle")
+            try:
+                _cancel_invocation_from_worker(invocation)
+            except BaseException as cleanup_error:  # noqa: BLE001 - fail closed
+                raise RuntimeError(
+                    "expected streamed failure cleanup failed") from cleanup_error
             print(
                 "LLM_PIPELINE_SPEC175_EXPECTED_TERMINAL",
                 f"case={case_id}", f"terminal={error_code}",
@@ -3629,6 +3645,11 @@ def main() -> int:
                         f"expected={tiny_wire_request_id} "
                         f"actual={actual_request_id}")
                 if getattr(result, "expected_terminal", False):
+                    # Do not leave the Face/ServiceUser thread to Python
+                    # interpreter teardown after an expected negative case.
+                    # The stream helper has already cancelled the request;
+                    # this synchronous join drains the native owner safely.
+                    client.shutdown(wait=True)
                     return 0
                 response = decode_payload(result.payload)
             else:
