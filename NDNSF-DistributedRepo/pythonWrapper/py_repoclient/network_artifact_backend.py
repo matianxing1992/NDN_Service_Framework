@@ -849,6 +849,27 @@ class CollaborationArtifactApiBackend:
         )
         os.replace(temporary, path)
 
+    def close(self) -> None:
+        """Stop and release the native control-plane client.
+
+        The backend owns the ``ServiceUser`` created by :meth:`from_config`.
+        Calling only ``ServiceUser.stop()`` leaves that native object retained
+        until Python interpreter teardown, where its worker pools and Face can
+        keep a short-lived publisher process alive after it has printed its
+        success marker.  Close is idempotent and drops the ownership edge so
+        the native destructor runs before the process returns.
+        """
+        control = getattr(self, "control", None)
+        if control is None:
+            return
+        service_user = getattr(control, "service_user", None)
+        try:
+            if service_user is not None:
+                service_user.stop()
+        finally:
+            control.service_user = None
+            self.control = None
+
     @classmethod
     def from_config(
         cls,

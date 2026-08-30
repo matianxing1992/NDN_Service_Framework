@@ -152,71 +152,72 @@ def publish(args: argparse.Namespace) -> int:
     if len(stages) != 4:
         raise RuntimeError("Spec175 Repo bootstrap requires exactly four stages")
     backend = make_backend(args)
-    api = ArtifactRepositoryApi(
-        backend, publisher_identity=args.user,
-        default_timeout_ms=args.timeout_ms)
-    # Creating the backend starts the native ServiceUser and completes its
-    # permission bootstrap.  Wait only after that initialization so the User
-    # and Repo Provider can acquire controller state concurrently, while the
-    # first SVS publication is held until the Repo handler is actually ready.
-    wait_for_publication_start(args)
-    artifacts = []
-    for stage in stages:
-        path = Path(str(stage["path"]))
-        digest = digest_hex(stage["sha256"])
-        if not path.is_file() or sha256_file(path) != digest:
-            raise RuntimeError(f"Spec175 Repo source digest mismatch: {path}")
-        object_name = (
-            f"{args.object_prefix.rstrip('/')}/stage-{int(stage['stageIndex'])}-{digest}")
-        started = time.perf_counter()
-        result = api.publish_file(
-            path,
-            name=object_name,
-            expected_sha256=digest,
-            replicas=1,
-            policy_epoch=str(manifest["modelDigest"]),
-            idempotency_key=(
-                f"spec175:{manifest['modelDigest']}:{stage['stageIndex']}:{digest}"),
-            timeout_ms=args.timeout_ms,
-        )
-        receipts = receipts_for_publish_result(backend, result)
-        if result.achieved_replicas != 1 or len(receipts) != 1:
-            raise RuntimeError("Spec175 Repo publication lacks one committed receipt")
-        artifacts.append({
-            "role": str(stage["role"]),
-            "stageIndex": int(stage["stageIndex"]),
-            "fileSha256": "sha256:" + digest,
-            "fileBytes": path.stat().st_size,
-            "objectName": str(receipts[0].get("dataName", "")),
-            "artifactReference": result.reference.to_dict(),
-            "operationId": result.operation_id,
-            "receipts": receipts,
-            "publishMs": (time.perf_counter() - started) * 1000.0,
-        })
-        if not artifacts[-1]["objectName"]:
-            raise RuntimeError("Spec175 Repo receipt omits committed Data name")
+    try:
+        api = ArtifactRepositoryApi(
+            backend, publisher_identity=args.user,
+            default_timeout_ms=args.timeout_ms)
+        # Creating the backend starts the native ServiceUser and completes its
+        # permission bootstrap.  Wait only after that initialization so the
+        # User and Repo Provider can acquire controller state concurrently,
+        # while the first SVS publication is held until the Repo handler is
+        # actually ready.
+        wait_for_publication_start(args)
+        artifacts = []
+        for stage in stages:
+            path = Path(str(stage["path"]))
+            digest = digest_hex(stage["sha256"])
+            if not path.is_file() or sha256_file(path) != digest:
+                raise RuntimeError(f"Spec175 Repo source digest mismatch: {path}")
+            object_name = (
+                f"{args.object_prefix.rstrip('/')}/stage-{int(stage['stageIndex'])}-{digest}")
+            started = time.perf_counter()
+            result = api.publish_file(
+                path,
+                name=object_name,
+                expected_sha256=digest,
+                replicas=1,
+                policy_epoch=str(manifest["modelDigest"]),
+                idempotency_key=(
+                    f"spec175:{manifest['modelDigest']}:{stage['stageIndex']}:{digest}"),
+                timeout_ms=args.timeout_ms,
+            )
+            receipts = receipts_for_publish_result(backend, result)
+            if result.achieved_replicas != 1 or len(receipts) != 1:
+                raise RuntimeError("Spec175 Repo publication lacks one committed receipt")
+            artifacts.append({
+                "role": str(stage["role"]),
+                "stageIndex": int(stage["stageIndex"]),
+                "fileSha256": "sha256:" + digest,
+                "fileBytes": path.stat().st_size,
+                "objectName": str(receipts[0].get("dataName", "")),
+                "artifactReference": result.reference.to_dict(),
+                "operationId": result.operation_id,
+                "receipts": receipts,
+                "publishMs": (time.perf_counter() - started) * 1000.0,
+            })
+            if not artifacts[-1]["objectName"]:
+                raise RuntimeError("Spec175 Repo receipt omits committed Data name")
+            print(
+                "NDNSF_DI_SPEC175_REPO_STAGE_PUBLISHED",
+                f"role={stage['role']}", f"sha256={digest}", flush=True)
+        record = {
+            "schema": "ndnsf-di-spec175-repo-registration-v1",
+            "modelDigest": manifest["modelDigest"],
+            "revision": manifest["revision"],
+            "publisher": args.user,
+            "artifactCount": len(artifacts),
+            "artifacts": artifacts,
+        }
+        registration_path.parent.mkdir(parents=True, exist_ok=True)
+        registration_path.write_text(
+            json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        backend.close()
         print(
-            "NDNSF_DI_SPEC175_REPO_STAGE_PUBLISHED",
-            f"role={stage['role']}", f"sha256={digest}", flush=True)
-    record = {
-        "schema": "ndnsf-di-spec175-repo-registration-v1",
-        "modelDigest": manifest["modelDigest"],
-        "revision": manifest["revision"],
-        "publisher": args.user,
-        "artifactCount": len(artifacts),
-        "artifacts": artifacts,
-    }
-    registration_path.parent.mkdir(parents=True, exist_ok=True)
-    registration_path.write_text(
-        json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    # The native ServiceUser owns an IO thread and pybind-managed Face.  Stop
-    # it explicitly before interpreter teardown; relying on Python's object
-    # finalizer can double-release native state after a completed publication.
-    backend.control.service_user.stop()
-    print(
-        "NDNSF_DI_SPEC175_REPO_PUBLISH_PASS",
-        f"registration={registration_path}", flush=True)
-    return 0
+            "NDNSF_DI_SPEC175_REPO_PUBLISH_PASS",
+            f"registration={registration_path}", flush=True)
+        return 0
+    finally:
+        backend.close()
 
 
 def fetch(args: argparse.Namespace) -> int:
@@ -239,25 +240,28 @@ def fetch(args: argparse.Namespace) -> int:
         for receipt in artifact.get("receipts", ())
     )
     backend = make_backend(args, receipts=receipts)
-    api = ArtifactRepositoryApi(
-        backend, publisher_identity=args.user,
-        default_timeout_ms=args.timeout_ms)
-    destination = Path(args.destination)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    reference = artifact_reference_from_dict(dict(item["artifactReference"]))
-    result = api.fetch_file(
-        reference, destination, replace=False, timeout_ms=args.timeout_ms)
-    expected = digest_hex(item["fileSha256"])
-    if (not destination.is_file()
-            or destination.stat().st_size != int(item["fileBytes"])
-            or sha256_file(destination) != expected):
-        raise RuntimeError("Spec175 Repo fetch did not reproduce exact artifact")
-    backend.control.service_user.stop()
-    print(
-        "NDNSF_DI_SPEC175_REPO_FETCH_PASS",
-        f"role={args.role}", f"destination={destination}",
-        f"sha256={expected}", flush=True)
-    return 0
+    try:
+        api = ArtifactRepositoryApi(
+            backend, publisher_identity=args.user,
+            default_timeout_ms=args.timeout_ms)
+        destination = Path(args.destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        reference = artifact_reference_from_dict(dict(item["artifactReference"]))
+        result = api.fetch_file(
+            reference, destination, replace=False, timeout_ms=args.timeout_ms)
+        expected = digest_hex(item["fileSha256"])
+        if (not destination.is_file()
+                or destination.stat().st_size != int(item["fileBytes"])
+                or sha256_file(destination) != expected):
+            raise RuntimeError("Spec175 Repo fetch did not reproduce exact artifact")
+        backend.close()
+        print(
+            "NDNSF_DI_SPEC175_REPO_FETCH_PASS",
+            f"role={args.role}", f"destination={destination}",
+            f"sha256={expected}", flush=True)
+        return 0
+    finally:
+        backend.close()
 
 
 def main() -> int:
