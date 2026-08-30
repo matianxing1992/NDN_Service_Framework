@@ -193,6 +193,37 @@ def test_expected_terminal_stream_cleans_up_before_return_and_client_shutdown():
     assert shutdown < source.index("return 0", expected_return)
 
 
+def test_pre_network_expected_rejection_does_not_require_native_handle():
+    """A coordinator rejection before Request creation has nothing to cancel."""
+    user = _user_module()
+
+    class FakeServiceUser:
+        def request_service_streaming(self, *args, **kwargs):
+            raise RuntimeError("ConversationCheckpointInvalid")
+
+    class FakeClient:
+        service_user = FakeServiceUser()
+
+    args = SimpleNamespace(
+        automatic_planning_manifest="",
+        timeout_ms=1000,
+        max_new_tokens=1,
+        spec175_fault_case="M13",
+    )
+    with pytest.raises(RuntimeError, match="no native invocation handle"):
+        user._run_tiny_onnx_stream(
+            FakeClient(), args, b"payload", [],
+            wire_request_id="spec175-M13-forged-checkpoint",
+        )
+    result = user._run_tiny_onnx_stream(
+        FakeClient(), args, b"payload", [],
+        wire_request_id="spec175-M13-forged-checkpoint",
+        pre_network_rejection=True,
+    )
+    assert getattr(result, "expected_terminal", False)
+    assert getattr(result, "request_id", "") == ""
+
+
 def test_spec175_provider_timing_binds_repeated_role_spans(tmp_path: Path):
     pipeline = _pipeline_module()
     log = tmp_path / "provider.log"

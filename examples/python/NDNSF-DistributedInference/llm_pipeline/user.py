@@ -928,7 +928,8 @@ def _run_tiny_onnx_stream(
         conversation: ConversationContinuation | None = None,
         wire_request_id: str = "",
         canonical_token_ids=None,
-        cancel_during_prefetch: bool = False):
+        cancel_during_prefetch: bool = False,
+        pre_network_rejection: bool = False):
     """Drive one real Core streamed request through the host ORT fixture."""
     done = threading.Event()
     events: list[dict] = []
@@ -1165,8 +1166,34 @@ def _run_tiny_onnx_stream(
             # active exception``.
             invocation = invocation_holder.get("invocation")
             if invocation is None:
-                raise RuntimeError(
-                    "expected streamed failure has no native invocation handle")
+                # Some authenticated conversation checks intentionally reject
+                # before creating a native request.  There is no Face work to
+                # cancel in that case; keep this exception explicit so a
+                # post-network failure can never silently skip teardown.
+                if not pre_network_rejection:
+                    raise RuntimeError(
+                        "expected streamed failure has no native invocation handle")
+                if events or completed:
+                    raise RuntimeError(
+                        "pre-network rejection produced stream activity")
+                print(
+                    "LLM_PIPELINE_SPEC175_EXPECTED_TERMINAL",
+                    f"case={case_id}", f"terminal={error_code}",
+                    "nativeInvocationCreated=false",
+                    f"message={error_message}",
+                    flush=True,
+                )
+                return type("StreamResult", (), {
+                    "status": True,
+                    "payload": json.dumps({
+                        "spec175ExpectedTerminal": error_code,
+                        "events": 0,
+                        "nativeInvocationCreated": False,
+                    }, sort_keys=True).encode(),
+                    "error": "",
+                    "request_id": "",
+                    "expected_terminal": True,
+                })()
             try:
                 _cancel_invocation_from_worker(invocation)
             except BaseException as cleanup_error:  # noqa: BLE001 - fail closed
@@ -1797,6 +1824,7 @@ def _run_spec175_real_m13_case(
         expected_tokens[1:], conversation=forged_continuation,
         canonical_token_ids=(*first_prefix, 4, *tuple(expected_tokens[1:])),
         wire_request_id="spec175-m13-forged-checkpoint",
+        pre_network_rejection=True,
     )
     if not getattr(forged_result, "expected_terminal", False):
         raise RuntimeError("M13 forged checkpoint was not rejected")
