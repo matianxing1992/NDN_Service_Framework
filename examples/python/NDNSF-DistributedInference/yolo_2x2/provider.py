@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import signal
+import threading
 import base64
 import hashlib
 import json
@@ -439,7 +441,29 @@ def main() -> int:
             local_artifacts=local_artifacts,
             selection_offer_issuer_v3=offer_issuer_v3,
         )
-        provider.run()
+        # spec181 T005: the Python provider serves through the native run
+        # loop (GIL released); SIGINT would never be delivered at bytecode
+        # boundaries.  Run the native loop on a worker thread and keep the
+        # main thread in a wait loop whose signal handler only sets an event,
+        # then stop() and exit 130 inside the supervised 3 s window.
+        stop_requested = threading.Event()
+
+        def _on_sigint(signum, frame):
+            del signum, frame
+            stop_requested.set()
+
+        signal.signal(signal.SIGINT, _on_sigint)
+        runner_thread = threading.Thread(target=provider.run, daemon=True)
+        runner_thread.start()
+        while not stop_requested.wait(0.5):
+            if not runner_thread.is_alive():
+                return 0
+        try:
+            provider.stop()
+        except Exception:
+            pass
+        runner_thread.join(timeout=3)
+        return 130
     return 0
 
 
