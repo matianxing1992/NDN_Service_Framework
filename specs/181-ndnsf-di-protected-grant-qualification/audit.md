@@ -17,11 +17,11 @@ R = `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py`。行号对应本轮源码�
 | A01 | HIGH | N/ProtectedRuntime.cpp；N/NativeProviderHandler.cpp；R；evidence/t002-native-live-repair-20260905.md | 初审发现 runtime 无条件拒绝、缺 factory、保护 Y-B 使用 Python Provider。修复 native 选择、group 摘要、grant 路由、装配 basename 和就绪等待竞态后，live-r7 真实受保护 native Y-B 与正常清理 exit 0。 | PARTIAL — 定向正例及文件清理已通过；T002 仍需生产负例、取消/过期、资源上界及工作区源码闭包。 |
 | A02 | HIGH | P:1369、1445、1474、1485、1507、2559、2695、2734 | 先装配后授权；Merge 用 grant 自述 manifest 作预期值；落盘密文后直接解密内存对象；external weights 明文复制且未登记租约；准备阶段后续异常提前 return 可绕过 handler 的 finally。 | OPEN — T001 重排授权、绑定独立输入并覆盖全部加载/清理边界；错误密钥、磁盘密文变异、准备失败与取消测试。 |
 | A03 | HIGH | P:1445；tests/python/test_spec181_provider_grant.py:445 | 原实现未核对 Selection grant 摘要，权威另签的同上下文 grant 可替换选中密钥。新回归实测 `ProtectedGrantRejected not raised`。 | CLOSED — `ff7b5c3b` 增加封印摘要比对；RED 1 failed，GREEN 34 passed，见专项证据。 |
-| A04 | HIGH | U:149--155；R:2796--2912 | Y-N-E 在 User 内部新建固定测试身份、调用两个 verifier 后主动抛出拒绝；没有把 grant 变异送至选定 Provider。仅按异常文本含 grant/binding 等词判拒绝也不能证明注册原因。 | OPEN — T006 真实发布/获取变异，正向控制、明确原因与 request/attempt/provider 绑定；probe 限定为 unit。 |
+| A04 | HIGH | U；R；ProtectedRuntime.cpp；evidence/t006-production-repair-20260905.md | 初审发现 User 内部 probe 冒充 Provider 拒绝。现已移除该成功判据，记录并核对实际发布、Provider verifier、请求/attempt/Provider 与封印计划；三种真实变异和有效 grant 控制通过。 | CLOSED — T006 定向生产验收 PASS；正式同源矩阵仍归 T005/T008。 |
 | A05 | HIGH | scripts/run_spec181_y_n_matrix_retry.py:48--73、84--94；evidence/t005-y-n-matrix-current.md | driver 删除已有 attempt 目录、重试任意异常且取首个 PASS；产物是自有 retry schema。旧记录混合不同提交的 6/7、7/7 与 NOT PROVEN，不能形成同源矩阵。 | OPEN — T005 改为保留每次失败、唯一 run-id、受限启动重试与同源身份；本轮已纠正文档状态。 |
 | A06 | HIGH | plan.md revision 4 Summary / Ownership / Gate order；spec.md SC-001 | 计划同时指定 user 与 Controller 权威，已延期撤销仍写入成功条件；审计依赖后续资格，而资格又依赖审计。 | CLOSED（设计）— revision 5 统一进程内权威、保留延期边界，T007 PASS 先于 T005/T008；不扩大范围。 |
 | A07 | HIGH | tests/python/test_spec181_native_grant_parity.py:23、41、62；旧 traceability FR-012 | 9 个固定 grant 向量只检查解包；没有 ONNX canonical+recipe 双侧装配字节比较。已有映射将 grant parity 误作 FR-012 完成证据。 | OPEN（实现）— T003 已补独立装配向量/验收路径；现有 grant 向量覆盖保留。 |
-| A08 | HIGH | U；security/registry_keys.py；evidence/t001-registry-repair-20260905.md | 初审发现硬编码发布身份和空模型白名单。当前接线校验注册表算法、公钥摘要、模型/epoch，区分 requester 与 authority，并绑定最终发布 root；100 项定向 unit 通过。 | PARTIAL — 注册表与逻辑身份修复已接线；T001/T006 仍需生产链负例与完整验收；冻结注册表保持不变。 |
+| A08 | HIGH | U；security/registry_keys.py；evidence/t001-registry-repair-20260905.md | 初审发现硬编码发布身份和空模型白名单。当前接线校验注册表算法、公钥摘要、模型/epoch，区分 requester 与 authority，并绑定最终发布 root；100 项定向 unit 通过。 | PARTIAL — 注册表与逻辑身份修复已接线；T006 三种生产变异已验收，T001 策略与发布/消费完整验收仍开放；冻结注册表保持不变。 |
 | A09 | MEDIUM | tasks.md revision 4；T001/T002/T004/T006 证据；旧 audit.md | 五项任务打勾但缺其约定生产 integration；T004 测试明确使用 fake native；声称的 provider integration 文件不存在。任务加粗语法还导致扫描器解析为 0 tasks。 | CLOSED（进度/设计）— 恢复未完成标记并列出已有实现，规范 12 个 T 任务、4 个故事与三层证据。真实验收仍归所属任务。 |
 | A10 | MEDIUM | active-context health；failure index | 活动 feature 已为 181，但托管 plan 链接仍指 180；failure index 未指向当前 181 失败。 | CLOSED — 链接、索引已修复；project/active health 均 exit 0，当前文件来源 fresh。 |
 
@@ -48,11 +48,11 @@ R = `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py`。行号对应本轮源码�
 | 5 Code fact verification | BLOCK | A01/A02/A07 的源码距离明确且保留未完成状态。 |
 | 6 Security and distributed correctness | BLOCK | 摘要替换已修复；前置授权、存储、清理、策略仍有缺口。 |
 | 7 Task executability | PASS（修订后计划） | 12 个内聚任务；定向修复→审计→资格，包含 T004。 |
-| 8 Validation design | BLOCK（当前实现） | 已写明 production 断言；Y-N-E oracle 与重试器仍需修复。 |
+| 8 Validation design | BLOCK（当前实现） | Y-N-E production oracle 已修复并完成定向验收；重试器与其他生产覆盖仍待闭合。 |
 | 9 Evidence integrity | BLOCK（资格） | 旧 PASS 降为诊断，34 项回归严格为 unit；没有新矩阵。 |
 | 10 Frozen evidence protection | PASS（本轮变更边界） | 未修改 Spec180 冻结证据；不认可重试器覆盖行为。 |
 | 11 Migration and rollback | CONDITIONAL PASS | 延期与临时路径 owner/删除条件明确，删除验收仍待执行。 |
-| 12 Verdict gate | BLOCK | A01/A02/A04/A05/A07/A08 未闭合，禁止资格晋升。 |
+| 12 Verdict gate | BLOCK | A01/A02/A05/A07/A08 未闭合，禁止资格晋升。 |
 
 ## Metrics and Task Cohesion
 
@@ -95,6 +95,7 @@ T002 的 `ProtectedRuntime` 已接入真实 verifier 和受管内容密钥，
    T004 已补当前 build 的真实就绪/取消/无热转证据并完成定向验收，
    见 [生命周期验收](evidence/t004-lifecycle-acceptance-20260905.md)；
    此项关闭不改变整体 BLOCK 裁决。
-3. T006/T005：移除 User probe 的资格用途，修复真实变异与重试证据边界。
+3. T006 已关闭 User probe 资格漏洞并完成真实变异验收；T005 继续
+   修复重试器证据边界，保留所有失败，不运行正式矩阵。
 4. T007 对同一源/构建/有效配置重新审计；只有新 PASS 才执行 T005/T008。
 5. 本地资格通过后按 T009→T010→T011→T012 晋升；历史结果不得拼接。

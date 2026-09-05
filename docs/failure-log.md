@@ -19,6 +19,34 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 T006 positive control (2026-09-05): cold dependency timeout CLOSED.**
+All four native grants verify, but r8 Merge's first tensor-manifest fetch
+expires at the fixed 10 s no-progress bound while its producer finishes cold
+model preparation. User then times out. The three actual grant negatives
+pass. After binding the data wait to the configured request budget while
+retaining the existing hard deadline and cancellation, r10 completes the
+protected native control; a measured dependency wait is 13.97 s. The final
+r11/r12/r13 negatives also pass with complete process collection. T006 is
+complete at its focused scope; T007 remains BLOCK. See
+[T006 production repair](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t006-production-repair-20260905.md).
+
+**Spec181 T006 production rejection (2026-09-05): false-positive oracle CLOSED.**
+Eight focused regressions fail: the configured requester seam publishes no
+mutation, invalid mutation/epoch settings are admitted, and User-local
+exceptions or markers can masquerade as Provider rejection. No selected
+Provider network rejection is established by those old probes. See
+[T006 production repair](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t006-production-repair-20260905.md).
+After repair, 62 focused checks pass. The separate runner check retains one
+obsolete expectation that a User-local Y-N-E probe should report PASS; that
+test is corrected; the updated Python group has 150 PASS. A separate C++
+harness link omitted the store source; the next command used a nonexistent
+shortened filename. The verified source is NativeProtectedArtifactStore.cpp;
+use a new directory for the corrected harness command. The unified native
+build has independently completed successfully.
+r4 C++ harness passes 22 cases. The r5 live entry stops before network
+creation because Y-B inputs omit Y-N's FullModel role. Use the verified
+five-role Y-N inputs with an explicit protected epoch for subsequent variants.
+
 **Spec181 T004 lifecycle acceptance (2026-09-05): focused defects CLOSED.**
 R1 failed before the waiter because the fixture had no running Controller
 serving AA public parameters. R2 corrects that startup order and reaches the

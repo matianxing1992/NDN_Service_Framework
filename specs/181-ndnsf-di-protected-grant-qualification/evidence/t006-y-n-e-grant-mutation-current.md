@@ -1,6 +1,6 @@
 # T006 — Y-N-E 真实 grant 变异构造
 
-> **Current scope correction (revision 5, 2026-09-05)**: T006 当前 partial：以下三种变异直接调用 Python/native verifier，属于 unit/进程内组件检查；尚未通过真实发布/获取到达选定 Provider，不能作为 Y-N-E 网络资格 PASS。
+> **Current acceptance (revision 5, 2026-09-05)**: T006 当前 PASS，依据为 [生产修复与实际验收](t006-production-repair-20260905.md) 的三种选定 Provider 拒绝及受保护正向控制。以下旧记录仅属于进程内检查；其 User/probe PASS 路径已移除，不作为网络验收依据。正式矩阵仍归 T005/T008。
 > 当前裁决与下一步以 [audit.md](../audit.md) 为准，以下保留为原始范围记录。
 
 **Layer**: implemented（变异构造器 + runner 聚焦 probe 重写 + R001

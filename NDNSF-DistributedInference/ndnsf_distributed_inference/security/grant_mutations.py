@@ -9,9 +9,41 @@ subcase feeds through both the Python and the native verifier.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
-from ..core.protected_artifacts import KeyGrantV1
+from ..core.protected_artifacts import KeyGrantV1, wrap_content_key
+
+GRANT_MUTATION_VARIANTS = ("EXPIRED", "WRONG_RECIPIENT", "FORGED_AUTHORITY")
+
+
+def mutate_for_provider_publication(grant: KeyGrantV1, *, variant: str,
+                                    authority_private_key, content_key: bytes,
+                                    now_ms: int) -> KeyGrantV1:
+    """Construct experiment wire data after normal requester verification.
+
+    The caller seals the resulting digest and publishes via the ordinary
+    signed APP Data owner. This function makes no rejection/PASS claim.
+    """
+    if variant not in GRANT_MUTATION_VARIANTS:
+        raise ValueError("GRANT_MUTATION_INVALID")
+    if variant == "FORGED_AUTHORITY":
+        return mutate_forged_authority(grant, ed25519.Ed25519PrivateKey.generate())
+    if variant == "EXPIRED":
+        return mutate_expired(
+            replace(grant, issued_at_ms=now_ms - 2000),
+            authority_private_key, expires_at_ms=now_ms - 1000)
+    envelope = wrap_content_key(
+        ed25519.Ed25519PrivateKey.generate().public_key(),
+        provider_identity=grant.provider_identity, request_id=grant.request_id,
+        attempt=grant.attempt, plan_core_digest=grant.plan_core_digest,
+        model_manifest_digest=grant.model_manifest_digest,
+        protection_epoch=grant.protection_epoch, content_key=content_key)
+    changed = replace(grant, wrapped_content_key=envelope,
+                      grant_digest="", authority_signature="")
+    return replace(changed, grant_digest=changed.computed_grant_digest(),
+                   authority_signature=authority_private_key.sign(
+                       changed.signing_bytes()).hex())
 
 
 def mutate_expired(grant: KeyGrantV1, authority_private_key:
@@ -104,6 +136,8 @@ def verify_mutation_rejected(verifier, mutation: KeyGrantV1,
 
 
 __all__ = [
+    "GRANT_MUTATION_VARIANTS",
+    "mutate_for_provider_publication",
     "mutate_expired",
     "mutate_forged_authority",
     "verify_mutation_rejected",

@@ -73,7 +73,13 @@ T008 保留当前源身份与全部平面摘要；T009 只能封印这些相同�
    canonical ONNX + recipe 的装配字节/摘要向量；一者不证明另一者。
 6. **Production-path negatives**。T006 三种变异经真实发布、获取到达
    选定 Provider，断言明确拒绝码、请求/attempt/Provider 绑定与边界。
-   User 进程内直接调用 verifier 只能计作 unit probe。
+   User 进程内直接调用 verifier 只能计作 unit probe。实验入口在正常
+   requester 验证后截留一个选定 grant，再变异并更新其封印摘要与
+   规范名；不替换 Provider verifier。collector 同时验证发布记录、
+   `BEFORE_ASSEMBLY` verifier 记录和封印计划，资格边界标记为
+   `PROVIDER_GRANT_VERIFICATION`。Y-N-E 聚合要求三个独立目录均通过。
+   冷装配的 DATA_V1 等待使用调用者请求预算，仍受 native fetch 上界、
+   hard deadline 与取消限制，避免额外的固定短窗口先行误报。
 7. **CPU qualification**。MiniNDN 固定 canonical YOLO26n、640×640 输入
    与 CPU；只有 Tiger 要求既定 CUDA 角色及 Merge CPU 证据。
 

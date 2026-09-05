@@ -6,9 +6,32 @@
 #include <utility>
 #include <chrono>
 #include <openssl/crypto.h>
+#include <boost/property_tree/json_parser.hpp>
+#include <iostream>
+#include <sstream>
 
 namespace ndnsf::di {
 namespace {
+
+void
+recordGrantVerification(const ProtectedRuntimeBindingV1& binding,
+                        const char* status, const std::string& reason)
+{
+  boost::property_tree::ptree fields;
+  fields.put("status", status);
+  fields.put("boundary", "BEFORE_ASSEMBLY");
+  fields.put("provider", binding.provider);
+  fields.put("requestId", binding.requestId);
+  fields.put("attemptId", "attempt-" + std::to_string(binding.attempt));
+  fields.put("planCoreDigest", binding.planCoreDigest);
+  fields.put("planDigest", binding.planDigest);
+  fields.put("grantDigest", binding.grantDigest);
+  fields.put("reason", reason);
+  std::ostringstream record;
+  record << "NDNSF_DI_GRANT_VERIFICATION ";
+  boost::property_tree::write_json(record, fields, false);
+  std::cout << record.str() << std::flush;
+}
 
 bool
 isGroupDigest(const std::string& value)
@@ -173,6 +196,7 @@ ProtectedRuntime::verifyGrant(const ProtectedRuntimeBindingV1& observedBinding,
     // Transfer the allocation before any later exception can release it unwiped.
     m_contentKey = std::move(result.contentKey);
     if (!result.verified || m_contentKey.size() != 32) {
+      recordGrantVerification(m_binding, "REJECTED", result.reason);
       throw std::runtime_error(result.reason.empty()
         ? "DI_PROTECTED_GRANT_REJECTED: invalid content key" : result.reason);
     }
@@ -189,6 +213,7 @@ ProtectedRuntime::verifyGrant(const ProtectedRuntimeBindingV1& observedBinding,
       throw std::runtime_error("DI_PROTECTED_GRANT_REJECTED: grant acquisition expired or cancelled");
     }
     m_state = ProtectedRuntimeState::GrantVerified;
+    recordGrantVerification(m_binding, "VERIFIED", "");
   }
   catch (const std::exception& error) {
     m_terminalReason = error.what();

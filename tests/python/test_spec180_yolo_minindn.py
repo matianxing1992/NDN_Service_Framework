@@ -459,25 +459,23 @@ def test_case_plan_y_n_records_fixed_subcase_outcomes():
     ]
 
 
-def test_y_n_focused_negative_matrix_reaches_each_production_boundary(tmp_path: Path):
+def test_y_n_focused_probes_cannot_qualify_provider_grants(tmp_path: Path):
     module = load_runner()
+    cases = [item for item in module.YN_SUBCASES[1:] if item != "Y-N-E"]
     results = [
         module._run_focused_y_n_negative(subcase, tmp_path, {})
-        for subcase in module.YN_SUBCASES[1:]
+        for subcase in cases
     ]
-    assert [item["subcaseId"] for item in results] == list(module.YN_SUBCASES[1:])
-    # spec181 T006: Y-N-E runs real grant mutations through the implemented
-    # verifier and records the same registered PASS shape as every other
-    # negative subcase.
+    assert [item["subcaseId"] for item in results] == cases
     assert all(item["status"] == "PASS" for item in results)
     assert all(item["outcome"] == "FAIL_CLOSED" for item in results)
-    y_n_e = next(item for item in results if item["subcaseId"] == "Y-N-E")
-    assert y_n_e["reason"] == "DI_PROTECTED_GRANT_REJECTED"
     assert [item["boundary"] for item in results] == [
-        module.YN_SUBCASE_BOUNDARIES[item] for item in module.YN_SUBCASES[1:]
+        module.YN_SUBCASE_BOUNDARIES[item] for item in cases
     ]
     assert all((tmp_path / "subcases" / item / "subcase-result.json").is_file()
-               for item in module.YN_SUBCASES[1:])
+               for item in cases)
+    with pytest.raises(module.RunnerError, match="PRODUCTION_VERIFIER_REQUIRED"):
+        module._run_focused_y_n_negative("Y-N-E", tmp_path, {})
 
 
 def test_y_n_qualification_matrix_dispatches_every_negative_to_live_runner(
@@ -498,6 +496,9 @@ def test_y_n_qualification_matrix_dispatches_every_negative_to_live_runner(
         module._write_subcase_result(
             output, subcase=subcase, status=status, outcome=outcome,
             reason=reason, child_count=7)
+        if subcase == "Y-N-E":
+            (output / "negative-evidence.json").write_text(module.json.dumps({
+                "variant": output.name, "status": "PASS", "reason": reason}))
         return 0
 
     def focused_probe_must_not_be_used(*_args, **_kwargs):
@@ -510,9 +511,10 @@ def test_y_n_qualification_matrix_dispatches_every_negative_to_live_runner(
     # Every negative dispatches to the live runner; with the T006 real
     # mutations every row is a registered PASS, so the matrix completes.
     assert module._run_y_n_matrix(tmp_path, {}) == 0
-    assert observed == [
-        ("Y-N", subcase, subcase) for subcase in module.YN_SUBCASES
-    ]
+    assert observed == [("Y-N", subcase, name)
+                        for subcase in module.YN_SUBCASES
+                        for name in (tuple(module.YN_GRANT_REJECTIONS)
+                                     if subcase == "Y-N-E" else (subcase,))]
     matrix = module.json.loads(
         (tmp_path / "y-n-matrix-result.json").read_text(encoding="utf-8"))
     assert matrix["aggregate"] == "PASS"

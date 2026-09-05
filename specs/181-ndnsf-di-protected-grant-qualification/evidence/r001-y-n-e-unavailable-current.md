@@ -1,6 +1,6 @@
 # R001 — Y-N-E 诚实化（UNAVAILABLE until T006）
 
-> **Current scope correction (revision 5, 2026-09-05)**: 历史 R001 的 unit 结果保留。当前 T006 的进程内 probe 尚未满足生产变异验收，其 PASS 不得晋升为网络安全证据。
+> **Current scope correction (2026-09-05)**: 历史 R001 的 unit 结果保留，其进程内 probe PASS 不得晋升为网络安全证据。T006 后续真实 Provider 三种变异与正向控制已完成定向验收，见 [production repair](t006-production-repair-20260905.md)；正式同源矩阵仍待 T005/T008。
 > 当前裁决与下一步以 [audit.md](../audit.md) 为准，以下保留为原始范围记录。
 
 **Layer**: implemented（runner + user.py + unit tests）;executed（96 项
