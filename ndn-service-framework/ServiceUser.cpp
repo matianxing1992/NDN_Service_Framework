@@ -33,27 +33,6 @@ namespace ndn_service_framework
 
     namespace
     {
-        // A positive Face::processEvents timeout is implemented by stopping
-        // the io_context from a scheduled callback.  During NAC-ABE startup a
-        // SegmentFetcher can keep that context alive while its first DKEY
-        // Interest is unresolved, so the call can outlive the intended
-        // retry interval.  Pump non-blockingly in a wall-clock bounded loop;
-        // this lets certificate/DKEY callbacks run without allowing one
-        // transient miss to pin the ServiceUser constructor indefinitely.
-        void
-        pumpFaceFor(ndn::Face& face, std::chrono::milliseconds duration)
-        {
-            const auto deadline = std::chrono::steady_clock::now() + duration;
-            do {
-                face.processEvents(ndn::time::milliseconds(-1));
-                if (std::chrono::steady_clock::now() >= deadline) {
-                    break;
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            }
-            while (true);
-        }
-
         void
         configureSvsProtocol(ndn::svs::SVSPubSubOptions& options)
         {
@@ -1354,12 +1333,13 @@ namespace ndn_service_framework
             }
         }
 
-        while(!nacConsumer.readyForDecryption()){
-            // log waiting for decryption key
-            nacConsumer.obtainDecryptionKey();
-            NDN_LOG_INFO("Waiting for decryption key");
-            pumpFaceFor(face, std::chrono::milliseconds(1000));
-        }
+        // Construction must not wait for authorization: an unprovisioned
+        // identity needs a live application to request/renew permissions.
+        // The Consumer fetch and permission/status-driven refresh complete
+        // asynchronously; protected paths still require installed authority.
+        nacConsumer.obtainDecryptionKey();
+        if (!nacConsumer.readyForDecryption())
+            NDN_LOG_INFO("NDNSF_NAC_BOOTSTRAP_PENDING role=user");
 
         // Opt-in durable runtime status (NDNSF_PERSIST_RUNTIME_STATE, FR-039):
         // re-verify and seed statuses accepted by an earlier process of this
