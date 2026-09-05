@@ -80,6 +80,12 @@ counts require reevaluation because the collector censored failures.
   **70/70 cases, 1262/1262 assertions**, exit 0 (`gates/integration-green.log`).
   Full 16-scenario network campaign running under `results/spec179-online-auth-20260905/campaign/`;
   `gates/campaign.log` and per-scenario result/manifest files retain failed runs.
+- T017 network closure: `campaign/revocation-rotation-failure-retry/result.json`
+  **gatePassed=true, 14/14 checks**. Injected rotation failure at epoch 2,
+  explicit same-target retry recovered at epoch 3. All four runtime roles
+  installed epoch 3; user/A had 16 successes before withdrawal, 10 denial
+  log lines during pending rotation, 32 after recovery, and zero post-failure
+  successful invocations. User/B had **16/16 successful post-recovery calls**.
 
 ## Audit dimensions and limits
 
