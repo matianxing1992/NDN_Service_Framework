@@ -59,7 +59,7 @@ _YN_NEGATIVE_BOUNDARIES = {
     "Y-N-I": ("PROVIDER_EXECUTION_STARTED", "NON_INGRESS_INPUT_REJECTED"),
     # spec181 T006: the three real grant mutations must be verifier-rejected
     # before this subcase may record the registered PASS.
-    "Y-N-E": ("ARTIFACTS_READY", "DI_PROTECTED_GRANT_REJECTED"),
+    "Y-N-E": ("PROVIDER_GRANT_VERIFICATION", "DI_PROTECTED_GRANT_REJECTED"),
     "Y-N-L": ("EVIDENCE_ACCEPTANCE", "REDACTION_REJECTED"),
 }
 # Child exit code, kept identical to the runner's Y-N constant: 91 = a
@@ -102,17 +102,15 @@ def _spec180_negative_matches(mutation: str, error: Exception, journal) -> bool:
                   "LIFECYCLE_FIELD_FORBIDDEN:payload"),
     }.get(mutation)
     if mutation == "Y-N-E":
-        # The real mutations already ran inside the binding seam; the seam's
-        # raise must be exactly the registered verifier rejection at a phase
-        # at or before the ARTIFACTS_READY boundary.
-        return (type(error) is ValueError
-                and str(error) == "DI_PROTECTED_GRANT_REJECTED"
-                and phase in MILESTONES_PRE_ARTIFACTS)
+        # Only the selected Provider's actual verifier record can prove this.
+        return False
     return (expected is not None and phase == expected[0]
             and type(error) is expected[1] and str(error) == expected[2])
 
 
 def _emit_spec180_y_n_negative(args, mutation: str, *, journal) -> None:
+    if mutation == "Y-N-E":
+        raise RuntimeError("Y_N_E_REQUIRES_PROVIDER_VERIFIER_RECORD")
     if (journal.request_id != args.request_id
             or args.lifecycle_case != mutation or not journal.attempt_id):
         raise RuntimeError("SPEC180_NEGATIVE_IDENTITY_MISMATCH")
@@ -146,13 +144,6 @@ class _Spec180MutationBinding:
             # canonical artifact publisher is allowed to fetch/compute.
             replace(specs[0], role_kind="PIPELINE_RANGE",
                     layer_begin=0, layer_end=0)
-        if self._mutation == "Y-N-E":
-            # spec181 T006: the three real grant mutations must be rejected
-            # by the implemented verifiers (Python + native) before this seam
-            # may raise.  The raise below is the authorization-boundary
-            # outcome those mutations just proved, not a synthetic rejection.
-            _run_y_n_e_mutations()
-            raise ValueError("DI_PROTECTED_GRANT_REJECTED")
         return self._binding.ensure(
             candidate, role_specs, deadline_ms=deadline_ms)
 
@@ -170,14 +161,7 @@ from NDNSF_DI_YoloAckDriven_Minindn import (  # noqa: E402
     LifecycleJournal,
     MILESTONES,
     RunnerError,
-    _run_y_n_e_mutations,
 )
-
-# Y-N-E unavailable may be observed at any milestone at or before
-# ARTIFACTS_READY: the canonical-artifact binding seam fires before artifact
-# fetch, so an earlier journal phase is the honest observed point.
-MILESTONES_PRE_ARTIFACTS = tuple(
-    MILESTONES[:MILESTONES.index("ARTIFACTS_READY") + 1])
 
 
 def _prepare_yolo_input(args, package):
@@ -256,6 +240,15 @@ def _build_grant_seam(client, *, registry_path, model_manifest_digest,
     and publishes grant Data through the client's signed-APP-Data path.
     """
     epoch = os.environ.get("SPEC181_PROTECTION_EPOCH", "").strip()
+    mutation = ""
+    if os.environ.get("SPEC180_YN_MUTATION") == "Y-N-E":
+        from ndnsf_distributed_inference.security.grant_mutations import (
+            GRANT_MUTATION_VARIANTS)
+        mutation = os.environ.get("SPEC181_GRANT_MUTATION", "").strip()
+        if mutation not in GRANT_MUTATION_VARIANTS:
+            raise ValueError("GRANT_MUTATION_INVALID")
+        if not epoch or epoch == "plaintext-v1":
+            raise ValueError("GRANT_MUTATION_REQUIRES_PROTECTED_EPOCH")
     if not epoch or epoch == "plaintext-v1":
         return None, "plaintext-v1"
     from ndnsf_distributed_inference.security.registry_keys import (
@@ -310,7 +303,12 @@ def _build_grant_seam(client, *, registry_path, model_manifest_digest,
             raise RuntimeError(
                 f"grant Data publish failed: {getattr(result, 'error', '')}")
 
+    mutated = False
+
     def provider(grant_view, deadline_ms):
+        nonlocal mutated
+        pending = []
+        mutate_this_grant = bool(mutation and not mutated)
         # Canonical publication replaces the package digest with the published
         # root digest before grant acquisition. Read that trusted final binding,
         # never the candidate grant view, to form the one-model allowlist.
@@ -325,9 +323,40 @@ def _build_grant_seam(client, *, registry_path, model_manifest_digest,
             allowed_model_manifests=frozenset({current_manifest()}),
             recipient_public_keys=recipient_public_keys.get,
             content_key_owner=content_key_owner,
-            publisher=publisher,
+            publisher=(lambda name, wire: pending.append((name, wire)))
+            if mutate_this_grant else publisher,
         )
-        return bound_provider(grant_view, deadline_ms)
+        binding = bound_provider(grant_view, deadline_ms)
+        if mutate_this_grant:
+            from ndnsf_distributed_inference.core.protected_artifacts import (
+                grant_from_wire, grant_to_wire)
+            from ndnsf_distributed_inference.security.grant_mutations import (
+                mutate_for_provider_publication)
+            from ndnsf_distributed_inference.security.grant_provider import (
+                canonical_grant_name)
+            if len(pending) != 1 or pending[0][0] != binding.grant_name:
+                raise RuntimeError("GRANT_MUTATION_PUBLICATION_MISMATCH")
+            grant = mutate_for_provider_publication(
+                grant_from_wire(pending[0][1]), variant=mutation,
+                authority_private_key=authority_key,
+                content_key=content_key_owner(current_manifest(), epoch),
+                now_ms=int(time.time() * 1000))
+            name = canonical_grant_name(
+                authority=requester_identity, provider_identity=binding.provider,
+                request_id=binding.request_id, attempt=binding.attempt,
+                plan_core_digest=binding.plan_core_digest,
+                model_manifest_digest=grant.model_manifest_digest,
+                protection_epoch=epoch, grant_digest=grant.grant_digest)
+            binding = replace(binding, grant_name=name, grant_digest=grant.grant_digest)
+            publisher(name, grant_to_wire(grant))
+            mutated = True
+            print("SPEC181_GRANT_MUTATION_PUBLISHED " + json.dumps({
+                "variant": mutation, "provider": binding.provider,
+                "requestId": binding.request_id,
+                "attemptId": f"attempt-{binding.attempt}",
+                "planCoreDigest": binding.plan_core_digest,
+                "grantDigest": binding.grant_digest}, sort_keys=True), flush=True)
+        return binding
     return provider, epoch
 
 
@@ -498,7 +527,7 @@ def _load_yolo_ack_driven(client, args) -> int:
         ),
     )
     grant_model_binding = canonical_binding
-    if mutation in {"Y-N-R", "Y-N-E"}:
+    if mutation == "Y-N-R":
         canonical_binding = _Spec180MutationBinding(canonical_binding, mutation)
 
     grant_binding_provider, protection_epoch = _build_grant_seam(
@@ -512,11 +541,11 @@ def _load_yolo_ack_driven(client, args) -> int:
         canonical_artifact_ensurer=canonical_binding,
         verify_offer_signature=offer_verifier,
         ack_timeout_ms=args.ack_timeout_ms,
-        # The encrypted request-input fetch is part of the ingress role's
-        # execution.  Keep the DATA_V1 no-progress window above that fetch plus
-        # the first CPU fragment execution so downstream roles do not expire
-        # before the selected ingress can publish its first tensor.
-        data_v1_no_progress_ms=10_000,
+        # A first tensor may require cold protected assembly, ORT loading,
+        # encrypted input fetch and upstream compute. Use the caller's request
+        # budget instead of an independent shorter timeout; DATA_V1 still
+        # clamps every fetch to its hard deadline and observes cancellation.
+        data_v1_no_progress_ms=int(args.timeout_ms),
         ack_coverage_roles=(),
         grant_binding_provider=grant_binding_provider,
         protection_epoch=protection_epoch,
@@ -547,6 +576,16 @@ def _load_yolo_ack_driven(client, args) -> int:
     )
     # Keep this terminal branch independently executable for the focused
     # production-tail regression, which intentionally starts at `response`.
+    if locals().get("mutation") == "Y-N-E":
+        try:
+            response = handle.response(min(int(args.timeout_ms), 3000))
+        except Exception:
+            # Exit alone proves nothing: the runner requires the independent
+            # selected-Provider verifier record and complete child cleanup.
+            return 91
+        if response.status:
+            raise RuntimeError("GRANT_MUTATION_WAS_ACCEPTED")
+        return 91
     if locals().get("mutation") == "Y-N-I":
         try:
             # The bound must stay under the runner's 5 s terminal-cleanup

@@ -73,7 +73,7 @@ def _seed(label: str) -> bytes:
         ("spec181-y-n-e-test:" + label).encode("utf-8")).digest()
 
 
-class MutationConstructionTest:
+class TestMutationConstruction:
     @pytest.fixture(autouse=True)
     def _fixture(self):
         self.authority_key = ed25519.Ed25519PrivateKey.from_private_bytes(
@@ -189,7 +189,7 @@ def test_runner_registers_di_protected_grant_rejected_reason():
     assert not hasattr(module, "YN_E_UNAVAILABLE_REASON")
 
 
-def test_runner_accepts_y_n_e_pass_marker_with_mutation_reason(tmp_path):
+def test_runner_rejects_user_y_n_e_pass_marker_with_mutation_reason(tmp_path):
     module = load_runner()
     marker = ("SPEC180_YN_NEGATIVE_RESULT status=PASS subcase=Y-N-E"
               " boundary=ARTIFACTS_READY"
@@ -197,9 +197,10 @@ def test_runner_accepts_y_n_e_pass_marker_with_mutation_reason(tmp_path):
               " requestId=/request attemptId=attempt-1"
               " observedPhase=ARTIFACTS_READY")
     user_spec, user_log = _marker_spec_and_log(module, tmp_path)
-    module._validate_negative_marker(
-        marker, SimpleNamespace(name="user"),
-        "Y-N-E", user_spec, user_log)
+    with pytest.raises(module.RunnerError, match="PROVIDER_VERIFIER_RECORD"):
+        module._validate_negative_marker(
+            marker, SimpleNamespace(name="user"),
+            "Y-N-E", user_spec, user_log)
 
 
 def test_runner_rejects_y_n_e_synthetic_reason(tmp_path):
@@ -237,12 +238,10 @@ def test_focused_y_n_e_probe_rejects_all_mutations():
     module._run_y_n_e_mutations()
 
 
-def test_focused_y_n_e_probe_returns_registered_pass(tmp_path):
+def test_focused_y_n_e_probe_cannot_return_registered_pass(tmp_path):
     module = load_runner()
-    result = module._run_focused_y_n_negative("Y-N-E", tmp_path, {})
-    assert result["status"] == "PASS"
-    assert result["outcome"] == "FAIL_CLOSED"
-    assert result["reason"] == "DI_PROTECTED_GRANT_REJECTED"
+    with pytest.raises(module.RunnerError, match="PRODUCTION_VERIFIER_REQUIRED"):
+        module._run_focused_y_n_negative("Y-N-E", tmp_path, {})
 
 
 if __name__ == "__main__":

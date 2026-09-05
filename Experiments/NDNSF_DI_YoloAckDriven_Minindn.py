@@ -226,13 +226,11 @@ YN_SUBCASE_BOUNDARIES = {
     "Y-N-P": "ACK_CLOSED",
     "Y-N-R": "PLAN_SEALED",
     "Y-N-I": "PROVIDER_EXECUTION_STARTED",
-    "Y-N-E": "ARTIFACTS_READY",
+    "Y-N-E": "PROVIDER_GRANT_VERIFICATION",
     "Y-N-L": "EVIDENCE_ACCEPTANCE",
 }
-# Y-N-E is deliberately absent from YN_NEGATIVE_REASONS: until real grant
-# mutations reach an implemented verifier (spec181 T006) no PASS may be
-# recorded for it, and the old synthetic PROTECTION_EPOCH_REJECTED reason is
-# forbidden (spec181 R001).
+# Y-N-E requires a selected Provider verifier record; User-local probes
+# and synthetic PROTECTION_EPOCH_REJECTED markers are not evidence.
 YN_NEGATIVE_REASONS = {
     "Y-N-C": "NO_FEASIBLE_CANDIDATE",
     "Y-N-P": "ACK_PROVENANCE_REJECTED",
@@ -243,9 +241,14 @@ YN_NEGATIVE_REASONS = {
     "Y-N-E": "DI_PROTECTED_GRANT_REJECTED",
     "Y-N-L": "REDACTION_REJECTED",
 }
-# Child exit code for the User process in Y-N runs: 91 = registered
-# negative PASS (every subcase, including the T006 real-mutation Y-N-E).
+# Expected User exit code in Y-N runs. This exit alone does not prove PASS;
+# Y-N-E additionally requires the selected Provider verifier evidence.
 YN_NEGATIVE_PASS_EXIT = 91
+YN_GRANT_REJECTIONS = {
+    "EXPIRED": "DI_PROTECTED_GRANT_REJECTED: key grant is expired",
+    "WRONG_RECIPIENT": "DI_PROTECTED_GRANT_REJECTED: content-key envelope failed authentication",
+    "FORGED_AUTHORITY": "DI_PROTECTED_GRANT_REJECTED: key grant authority signature is invalid",
+}
 
 # spec181 R004 honesty gate: until grant wiring lands (T001/T002), a request
 # for protected-epoch execution (any role bound to a real protection epoch
@@ -2894,6 +2897,8 @@ def _run_y_n_l_negative(output: Path) -> None:
 
 def _run_focused_y_n_negative(subcase: str, output: Path,
                               inputs: Mapping[str, Any]) -> Mapping[str, Any]:
+    if subcase == "Y-N-E":
+        raise RunnerError("Y_N_E_PRODUCTION_VERIFIER_REQUIRED")
     del inputs  # The focused probes use only fixed, non-secret contract fixtures.
     target = _new_y_n_subcase_dir(output, subcase)
     probes = {
@@ -2901,7 +2906,6 @@ def _run_focused_y_n_negative(subcase: str, output: Path,
         "Y-N-P": _run_y_n_p_negative,
         "Y-N-R": _run_y_n_r_negative,
         "Y-N-I": _run_y_n_i_negative,
-        "Y-N-E": _run_y_n_e_mutations,
         "Y-N-L": lambda: _run_y_n_l_negative(target),
     }
     try:
@@ -2917,6 +2921,8 @@ def _run_focused_y_n_negative(subcase: str, output: Path,
 
 
 def _validate_negative_marker(line, spec, subcase, user_spec, user_log):
+    if subcase == "Y-N-E":
+        raise RunnerError("Y_N_E_REQUIRES_PROVIDER_VERIFIER_RECORD")
     if (subcase == "Y-N-I" and spec.startup_phase != "providers"
             or subcase != "Y-N-I" and spec.name != "user"):
         raise RunnerError("Y_N_NEGATIVE_OWNER_MISMATCH:" + subcase)
@@ -2927,10 +2933,7 @@ def _validate_negative_marker(line, spec, subcase, user_spec, user_log):
             raise ValueError("duplicate fields")
     except ValueError:
         raise RunnerError("Y_N_NEGATIVE_MARKER_INVALID:" + subcase) from None
-    # spec181 T006: Y-N-E records a registered PASS only when the three real
-    # grant mutations were rejected by the implemented verifier with the
-    # DI_PROTECTED_GRANT_REJECTED reason; the R001 UNAVAILABLE marker and the
-    # old synthetic PROTECTION_EPOCH_REJECTED reason are no longer accepted.
+    # Y-N-E uses its separate Provider-verifier collector above.
     expected = {"status": "PASS", "subcase": subcase,
                 "boundary": YN_SUBCASE_BOUNDARIES[subcase],
                 "reason": YN_NEGATIVE_REASONS[subcase]}
@@ -2952,22 +2955,14 @@ def _validate_negative_marker(line, spec, subcase, user_spec, user_log):
     expected_phase = {"Y-N-C": "GRAPH_READY", "Y-N-P": "GRAPH_READY",
                       "Y-N-R": "PLACEMENT_DECISION",
                       "Y-N-I": "PROVIDER_EXECUTION_STARTED",
-                      "Y-N-E": "ARTIFACTS_READY",
                       "Y-N-L": "INPUT_REFERENCE_PUBLISHED"}[subcase]
     try:
         events = [json.loads(row) for row in
                   (user_log.parent / "lifecycle.jsonl").read_text().splitlines()]
     except (OSError, ValueError):
         raise RunnerError("Y_N_NEGATIVE_LIFECYCLE_MISSING:" + subcase) from None
-    # Registered-negative subcases keep their exact fixed phase; Y-N-E now
-    # reaches the real verifier (T006) and records the same registered PASS
-    # shape as the other negative subcases.
     observed_phase = fields.get("observedPhase", "")
-    if subcase == "Y-N-E":
-        allowed_phase = observed_phase in list(
-            MILESTONES[:MILESTONES.index("ARTIFACTS_READY") + 1])
-    else:
-        allowed_phase = observed_phase == expected_phase
+    allowed_phase = observed_phase == expected_phase
     if (not events or any(not isinstance(event, dict) for event in events)
             or not allowed_phase
             or [event.get("milestone") for event in events]
@@ -2992,6 +2987,125 @@ def _validate_negative_marker(line, spec, subcase, user_spec, user_log):
             raise RunnerError("Y_N_NEGATIVE_PROVIDER_BINDING_MISMATCH:" + subcase)
 
 
+def _validate_grant_rejection(record, publication, *, spec, user_spec,
+                              user_log, variant):
+    """Bind an actual verifier decision to the selected published grant."""
+    record_fields = {"status", "boundary", "provider", "requestId", "attemptId",
+                     "planCoreDigest", "planDigest", "grantDigest", "reason"}
+    publication_fields = {"variant", "provider", "requestId", "attemptId",
+                          "planCoreDigest", "grantDigest"}
+    if (not isinstance(record, dict) or set(record) != record_fields
+            or not isinstance(publication, dict) or set(publication) != publication_fields
+            or variant not in YN_GRANT_REJECTIONS
+            or publication.get("variant") != variant
+            or record.get("status") != "REJECTED"
+            or record.get("boundary") != "BEFORE_ASSEMBLY"
+            or record.get("reason") != YN_GRANT_REJECTIONS[variant]):
+        raise RunnerError("Y_N_E_VERIFIER_REASON_INVALID")
+    if getattr(spec, "startup_phase", "") != "providers":
+        raise RunnerError("Y_N_E_VERIFIER_OWNER_INVALID")
+    try:
+        command = shlex.split(user_spec.command)
+        request_id = command[command.index("--request-id") + 1]
+        command = shlex.split(spec.command)
+        provider = command[command.index("--provider") + 1]
+    except (ValueError, IndexError):
+        raise RunnerError("Y_N_E_PROCESS_IDENTITY_MISSING") from None
+    if (record["requestId"] != request_id or record["provider"] != provider
+            or record["attemptId"] != "attempt-1"
+            or any(record[key] != publication[key] for key in
+                   ("provider", "requestId", "attemptId", "planCoreDigest", "grantDigest"))
+            or any(not isinstance(record[key], str) or not _DIGEST_RE.fullmatch(record[key])
+                   for key in ("planCoreDigest", "planDigest", "grantDigest"))):
+        raise RunnerError("Y_N_E_GRANT_BINDING_MISMATCH")
+    try:
+        events = [json.loads(row) for row in
+                  (user_log.parent / "lifecycle.jsonl").read_text().splitlines()]
+    except (OSError, ValueError):
+        raise RunnerError("Y_N_E_LIFECYCLE_MISSING") from None
+    expected = list(MILESTONES[:MILESTONES.index("PROVIDER_EXECUTION_STARTED") + 1])
+    if (any(not isinstance(event, dict) for event in events)
+            or [event.get("milestone") for event in events] != expected
+            or any(event.get("requestId") != request_id
+                   or event.get("attemptId") != "attempt-1"
+                   or event.get("caseId") != "Y-N-E"
+                   or event.get("sequence") != index
+                   for index, event in enumerate(events))
+            or next(event for event in events if event["milestone"] == "PLAN_SEALED")
+               .get("planDigest") != record["planDigest"]):
+        raise RunnerError("Y_N_E_LIFECYCLE_BINDING_MISMATCH")
+    return ("SPEC180_YN_NEGATIVE_RESULT status=PASS subcase=Y-N-E"
+            " boundary=PROVIDER_GRANT_VERIFICATION reason=DI_PROTECTED_GRANT_REJECTED"
+            f" requestId={request_id} attemptId=attempt-1"
+            " observedPhase=PROVIDER_EXECUTION_STARTED"
+            f" provider={provider} planDigest={record['planDigest']}"
+            f" grantDigest={record['grantDigest']} variant={variant}")
+
+
+def _wait_for_grant_rejection(started, timeout_s):
+    variant = os.environ.get("SPEC181_GRANT_MUTATION", "")
+    if variant not in YN_GRANT_REJECTIONS:
+        raise RunnerError("GRANT_MUTATION_INVALID")
+    users = [(spec, path) for spec, _proc, path in started if spec.name == "user"]
+    if len(users) != 1:
+        raise RunnerError("Y_N_E_USER_IDENTITY_MISSING")
+    user_spec, user_log = users[0]
+    deadline = time.monotonic() + timeout_s
+
+    def records(path, prefix):
+        if not path.exists():
+            return []
+        try:
+            return [json.loads(line[len(prefix):]) for line in
+                    path.read_text().splitlines() if line.startswith(prefix)]
+        except (ValueError, UnicodeError):
+            raise RunnerError("Y_N_E_VERIFIER_RECORD_INVALID") from None
+
+    while True:
+        publications = records(user_log, "SPEC181_GRANT_MUTATION_PUBLISHED ")
+        if len(publications) > 1:
+            raise RunnerError("Y_N_E_MULTIPLE_MUTATED_GRANTS")
+        accepted = None
+        for spec, proc, path in started:
+            text = path.read_text(errors="replace") if path.exists() else ""
+            if "YOLO_ACK_DRIVEN_RESULT status=true" in text or "GRANT_MUTATION_WAS_ACCEPTED" in text:
+                raise RunnerError("Y_N_E_MUTATION_ACCEPTED")
+            if "SPEC180_YN_NEGATIVE_RESULT " in text:
+                raise RunnerError("Y_N_E_REQUIRES_PROVIDER_VERIFIER_RECORD")
+            if publications:
+                for record in records(path, "NDNSF_DI_GRANT_VERIFICATION "):
+                    if not isinstance(record, dict):
+                        raise RunnerError("Y_N_E_VERIFIER_RECORD_INVALID")
+                    if (record.get("status") == "VERIFIED"
+                            and record.get("grantDigest") != publications[0].get("grantDigest")):
+                        continue
+                    # The Provider can finish before the requester appends its
+                    # execution milestone. Wait for that independent binding.
+                    lifecycle = user_log.parent / "lifecycle.jsonl"
+                    if (not lifecycle.exists()
+                            or '"PROVIDER_EXECUTION_STARTED"' not in lifecycle.read_text()):
+                        continue
+                    marker = _validate_grant_rejection(
+                        record, publications[0], spec=spec, user_spec=user_spec,
+                        user_log=user_log, variant=variant)
+                    if accepted is not None:
+                        raise RunnerError("Y_N_E_DUPLICATE_VERIFIER_REJECTION")
+                    accepted = (marker, record, publications[0])
+            code = proc.poll()
+            if code is not None and not (spec.name == "user" and code == YN_NEGATIVE_PASS_EXIT):
+                raise RunnerError("Y_N_NEGATIVE_CHILD_FAILURE:" + spec.name)
+        if accepted is not None:
+            marker, record, publication = accepted
+            (user_log.parent / "grant-rejection-evidence.json").write_text(json.dumps({
+                "status": "OBSERVED", "verifier": record, "publication": publication,
+            }, sort_keys=True, indent=2) + "\n")
+            return marker
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RunnerError("Y_N_E_PROVIDER_REJECTION_NOT_PROVEN")
+        time.sleep(min(0.2, remaining))
+
+
 def _wait_for_negative_result(
         started: tuple[tuple[CaseProcessSpec, object, Path], ...],
         subcase: str, timeout_s: float) -> str:
@@ -3005,6 +3119,8 @@ def _wait_for_negative_result(
     """
     if subcase not in YN_SUBCASES[1:]:
         raise RunnerError("Y_N_NEGATIVE_SUBCASE_INVALID:" + subcase)
+    if subcase == "Y-N-E":
+        return _wait_for_grant_rejection(started, timeout_s)
     users = [(spec, path) for spec, _proc, path in started if spec.name == "user"]
     if len(users) != 1:
         raise RunnerError("Y_N_NEGATIVE_USER_IDENTITY_MISSING")
@@ -3088,7 +3204,12 @@ def _run_live_case_once(case: str, output: Path, inputs: Mapping[str, Any], *,
     # process specs read (the Y-B grant round trip).
     requested_epoch = str(
         os.environ.get(PROTECTION_EPOCH_ENV, "") or "").strip()
-    if case == "Y-B" and requested_epoch and requested_epoch != PLAINTEXT_EPOCH:
+    if subcase == "Y-N-E":
+        if os.environ.get("SPEC181_GRANT_MUTATION", "") not in YN_GRANT_REJECTIONS:
+            raise RunnerError("GRANT_MUTATION_INVALID")
+        if not requested_epoch or requested_epoch == PLAINTEXT_EPOCH:
+            raise RunnerError("GRANT_MUTATION_REQUIRES_PROTECTED_EPOCH")
+    if (case == "Y-B" or subcase == "Y-N-E") and requested_epoch and requested_epoch != PLAINTEXT_EPOCH:
         runtime_inputs["protection_epoch"] = requested_epoch
     binding = CaseRuntimeBinding.from_inputs(case, output, runtime_inputs)
     publication = build_runtime_publication_file(binding, runtime_inputs)
@@ -3103,7 +3224,7 @@ def _run_live_case_once(case: str, output: Path, inputs: Mapping[str, Any], *,
     # requester-side User builds the in-process authority seam from these
     # inputs; every Provider resolves its own recipient key from the shared
     # offer private-key map.  Plaintext Y-A keeps the default epoch.
-    if case == "Y-B":
+    if case == "Y-B" or subcase == "Y-N-E":
         requested_epoch = str(env.get(PROTECTION_EPOCH_ENV, "") or "").strip()
         if requested_epoch and requested_epoch != PLAINTEXT_EPOCH:
             env[PROTECTION_EPOCH_ENV] = requested_epoch
@@ -3262,6 +3383,41 @@ def _run_live_case_once(case: str, output: Path, inputs: Mapping[str, Any], *,
     return 0
 
 
+def _run_y_n_e_variants(output: Path, inputs: Mapping[str, Any]) -> None:
+    """Require all three independent production variants; never retry one."""
+    previous = os.environ.get("SPEC181_GRANT_MUTATION")
+    results = []
+    try:
+        for variant in YN_GRANT_REJECTIONS:
+            target = output / variant
+            target.mkdir()  # Exclusive creation preserves every earlier run.
+            os.environ["SPEC181_GRANT_MUTATION"] = variant
+            if _run_live_case_once("Y-N", target, inputs, subcase="Y-N-E") != 0:
+                raise RunnerError("Y_N_E_VARIANT_FAILED:" + variant)
+            result = json.loads((target / "subcase-result.json").read_text())
+            evidence = json.loads((target / "negative-evidence.json").read_text())
+            if (result.get("status") != "PASS" or result.get("outcome") != "FAIL_CLOSED"
+                    or result.get("subcaseId") != "Y-N-E"
+                    or result.get("boundary") != YN_SUBCASE_BOUNDARIES["Y-N-E"]
+                    or evidence.get("variant") != variant
+                    or evidence.get("status") != "PASS"
+                    or evidence.get("reason") != YN_NEGATIVE_REASONS["Y-N-E"]):
+                raise RunnerError("Y_N_E_VARIANT_NOT_PROVEN:" + variant)
+            results.append({"variant": variant, "result": result,
+                            "evidenceSha256": digest_file(target / "negative-evidence.json")})
+    finally:
+        if previous is None:
+            os.environ.pop("SPEC181_GRANT_MUTATION", None)
+        else:
+            os.environ["SPEC181_GRANT_MUTATION"] = previous
+    (output / "grant-mutation-matrix.json").write_text(json.dumps({
+        "schema": "spec181-grant-mutation-matrix-v1", "status": "PASS",
+        "variants": results}, sort_keys=True, indent=2) + "\n")
+    _write_subcase_result(output, subcase="Y-N-E", status="PASS", outcome="FAIL_CLOSED",
+                          reason=YN_NEGATIVE_REASONS["Y-N-E"],
+                          child_count=sum(row["result"]["childCount"] for row in results))
+
+
 def _run_y_n_matrix(output: Path, inputs: Mapping[str, Any]) -> int:
     """Run Y-N-O live and every fixed negative through one owned dispatcher."""
     results: list[Mapping[str, Any]] = []
@@ -3286,7 +3442,10 @@ def _run_y_n_matrix(output: Path, inputs: Mapping[str, Any]) -> int:
     for subcase in YN_SUBCASES[1:]:
         target = _new_y_n_subcase_dir(output, subcase)
         try:
-            _run_live_case_once("Y-N", target, inputs, subcase=subcase)
+            if subcase == "Y-N-E":
+                _run_y_n_e_variants(target, inputs)
+            else:
+                _run_live_case_once("Y-N", target, inputs, subcase=subcase)
             result_path = target / "subcase-result.json"
             if not result_path.is_file():
                 raise RunnerError("Y_N_NEGATIVE_RESULT_MISSING:" + subcase)
