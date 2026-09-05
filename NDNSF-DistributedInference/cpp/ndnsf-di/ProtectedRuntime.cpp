@@ -122,6 +122,22 @@ ProtectedRuntime::verifyGrant(const ProtectedRuntimeBindingV1& observedBinding,
                               std::uint64_t nowMs)
 {
   std::lock_guard<std::mutex> lock(m_mutex);
+  // Honesty gate (spec181 R002): no real grant verifier is installed yet
+  // (fetch + authority signature + recipient unwrap land in T002). A
+  // binding-consistency comparison must never move the runtime to
+  // GrantVerified by itself.
+  m_state = ProtectedRuntimeState::FailedClosed;
+  m_terminalReason =
+    "DI_PROTECTED_GRANT_UNAVAILABLE: native grant verification is not "
+    "implemented (spec181 R002; real verifier lands in T002)";
+  throw std::runtime_error(m_terminalReason);
+}
+
+void
+ProtectedRuntime::verifyBindingConsistency(
+  const ProtectedRuntimeBindingV1& observedBinding, std::uint64_t nowMs)
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
   try {
     observedBinding.validate();
   }
@@ -130,13 +146,15 @@ ProtectedRuntime::verifyGrant(const ProtectedRuntimeBindingV1& observedBinding,
     m_terminalReason = "protected grant binding is invalid";
     throw;
   }
+  // Structural consistency and expiry only. Execution authority is NOT
+  // granted: state stays NoGrant unless a real grant verification (T002)
+  // moves it to GrantVerified.
   if (m_state != ProtectedRuntimeState::NoGrant ||
       !m_binding.exactlyMatches(observedBinding) || nowMs >= m_binding.expiresAtMs) {
     m_state = ProtectedRuntimeState::FailedClosed;
     m_terminalReason = "protected grant binding mismatch or expiry";
     throw std::runtime_error(m_terminalReason);
   }
-  m_state = ProtectedRuntimeState::GrantVerified;
 }
 
 bool
@@ -169,7 +187,7 @@ ProtectedRuntime::authorizeDataflow(ProtectedDataflowDirection direction,
     (direction == ProtectedDataflowDirection::Publish
        ? peer->second == consumerRole
        : peer->second == producerRole);
-  if (!authorizedStateLocked() || m_revoked || nowMs >= m_binding.expiresAtMs ||
+  if (!authorizedStateLocked() || nowMs >= m_binding.expiresAtMs ||
       !isDigest(endpointDigest) || allowed.count(endpointDigest) != 1 ||
       !ownsRole || !peerMatches || producerRole.empty() || consumerRole.empty()) {
     throw std::runtime_error(
@@ -240,25 +258,14 @@ ProtectedRuntime::drainLocked()
 }
 
 void
-ProtectedRuntime::revoke(std::uint64_t revocationSequence, std::string reason)
-{
-  std::lock_guard<std::mutex> lock(m_mutex);
-  if (revocationSequence <= m_binding.revocationSequence) {
-    throw std::invalid_argument("stale protected grant revocation sequence");
-  }
-  m_revoked = true;
-  m_terminalReason = std::move(reason);
-  drainLocked();
-}
-
-void
 ProtectedRuntime::cancel(std::string reason)
 {
   std::lock_guard<std::mutex> lock(m_mutex);
-  if (m_state == ProtectedRuntimeState::Zeroized ||
-      m_state == ProtectedRuntimeState::FailedClosed) {
+  if (m_state == ProtectedRuntimeState::Zeroized) {
     return;
   }
+  // FailedClosed still drains: cancel is the explicit cleanup path and must
+  // best-effort zeroize any remaining plaintext (spec181 R002 unit contract).
   m_terminalReason = std::move(reason);
   drainLocked();
 }
@@ -274,13 +281,6 @@ ProtectedRuntime::state() const noexcept
 {
   std::lock_guard<std::mutex> lock(m_mutex);
   return m_state;
-}
-
-bool
-ProtectedRuntime::revoked() const noexcept
-{
-  std::lock_guard<std::mutex> lock(m_mutex);
-  return m_revoked;
 }
 
 const std::string&
