@@ -1,5 +1,12 @@
 # NDNSF Failure Log
 
+## 2026-09-05 — base RequestMessage overload bypasses shared admission helper
+- **Area**: Spec179 initial-DKEY repair verification
+- **Symptom**: first repaired build passed the unwrap callback checks but still failed the two publication checks (6/8, `gates/readiness-green.log`).
+- **Root cause**: five convenience/Targeted callers used `prepareRequestControllerVersion`, but the base RequestMessage overload entered `startRequestServiceWithRequestId` directly, duplicating only status/version checks. Checking the helper's callers alone missed that separate entry.
+- **Fix**: replace the duplicated base-entry checks with the same shared readiness/status helper. The unchanged regression now passes8/8 (`gates/readiness-base-green.log`); all five native targets rebuilt successfully with `-j2` in12m58.644s (`gates/build-base-admission-green.log`). Expanded native and MiniNDN gates remain pending.
+- **Lesson**: trace from the public failing call to the publication boundary; a helper's caller list does not prove every entry uses it.
+
 ## 2026-09-05 — permission renewal admits requests before initial DKEY installs
 - **Area**: Spec179 asynchronous User startup and hybrid decrypt callbacks
 - **Symptom**: normal grant still failed with target11/13 despite status refresh. NAC Consumer debug shows permission renewal at12s coalescing behind the initial DKEY fetch; the stale result is discarded near15s before a replacement installs. ACKs for the first two requests arrive while the Consumer reports no private decryption key, with no application error callback.

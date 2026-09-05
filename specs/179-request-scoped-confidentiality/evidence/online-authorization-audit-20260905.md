@@ -5,8 +5,9 @@ Scope: online grant/revoke correctness on `UAV-Experimental`, starting at
 grant, startup readiness, error reporting and truthful network evidence.
 
 **Current verdict: verification in progress.** The scoped repairs are
-implemented, but the final readiness repair is rebuilding. Earlier native and
-network passes are historical until that repair passes the expanded gates.
+implemented; the final readiness regression passes8/8 after rebuilding. Earlier
+expanded native and network passes are historical until the final candidate
+passes those gates.
 This document supersedes the earlier runtime-grant/revoke PASS.
 
 ## Findings and repairs
@@ -44,7 +45,8 @@ results are retained locally and excluded from Git.
 | Controller repair | `PendingRotationFencesGrantAndPreservesImmutableStatus`: 36/36 assertions, exit0, `gates/controller-green.log`. Three independent retry/regrant/reconcile legs, immutable accepted statuses, retained-old-DKEY rejection on fresh ciphertext and replacement-key success. |
 | Real asynchronous constructors | `UnprovisionedRuntimesConstructAndRemainUnauthorized`: 8/8, five-second bound, `gates/bootstrap-constructor-green.log`. No DKEY/status, zero User publication and zero registered Provider execution. The old constructor hang is reproduced by MiniNDN, not by a claimed pre-fix run of this added case. |
 | First-DKEY admission and callback red | `OnlineGrantWaitsForInitialDkeyAndReportsUnwrapFailure`: 4/8 assertions failed, exit201, `gates/readiness-red.log`. Valid permission/status still produced one Request; actual Consumer missing-key error invoked zero callbacks. Retained `gates/integration-before-readiness-fix`. |
-| First-DKEY repair green | Pending final rebuild and focused execution. |
+| First-DKEY first repair | `gates/readiness-green.log`:6/8 passed. Error callbacks recovered, but the base RequestMessage entry bypassed the helper and still published. This is a failed gate. |
+| First-DKEY base-entry repair green | The shared admission helper now also guards `startRequestServiceWithRequestId`. Unchanged focused regression8/8, exit0, `gates/readiness-base-green.log`. |
 | Expanded C++ gates before final readiness repair | Unit182/182,11971 assertions (`gates/unit-final.log`); integration71/71,1270 assertions (`gates/integration-final-isolated.log`). These must be rerun after the final C++ changes; integration now contains72 cases. |
 | Timing-sensitive gate failure retained | Concurrent App compilation produced stream retryCount2 instead of1, integration70/71 (`gates/integration-final.log`). After compilation, focused12/12 and full71/71 passed without weakening an assertion. CPU scheduling is a plausible cause, not a separately controlled load experiment. |
 | Launcher regressions | Initial target-row/CLI regressions failed before repair. New control-retention regression also failed before repair. Current14/14 pass (`gates/harness-readiness.log`), including refusal to apply the transport fault in the host namespace. |
@@ -96,7 +98,9 @@ upstream-distribution claim.
 
 Each new manifest records source revision, working-diff SHA256, executable and
 resolved dependency hashes, actual commands, policy and scenario configuration.
-Final native build: `gates/build-readiness-green.log` (running).
+The first readiness build completed (`gates/build-readiness-green.log`,21m58s).
+The base-entry repair then rebuilt all five targets successfully with `-j2` in
+12m58.644s (`gates/build-base-admission-green.log`). Expanded gates remain pending.
 
 ```bash
 ./waf build --targets=unit-tests,integration-tests,App_User,App_Provider,App_ServiceController -j2
