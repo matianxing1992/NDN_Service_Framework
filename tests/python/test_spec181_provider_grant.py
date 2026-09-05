@@ -545,5 +545,107 @@ class ProtectedAssemblyQualificationTest(unittest.TestCase):
         registry.zeroize_all()
 
 
+class RequesterGrantPipelineTest(unittest.TestCase):
+    """In-process authority + publish seam: requester side of T001."""
+
+    def setUp(self):
+        self.requester_key = ed25519.Ed25519PrivateKey.generate()
+        self.authority_key = ed25519.Ed25519PrivateKey.generate()
+        self.recipient_key = ed25519.Ed25519PrivateKey.generate()
+        self.content_key = _CONTENT_KEY
+        self.published = {}
+
+    def _pipeline(self, **overrides):
+        from ndnsf_distributed_inference.security.requester_grant_pipeline import (
+            build_in_process_grant_provider)
+        fields = dict(
+            requester_identity="/user/u0",
+            requester_private_key=self.requester_key,
+            authority_identity="/authority/artifact-policy",
+            authority_private_key=self.authority_key,
+            protection_epoch="spec180-yolo-protected-v1",
+            allowed_model_manifests=frozenset({_MODEL_MANIFEST_DIGEST}),
+            recipient_public_keys=lambda provider: (
+                self.recipient_key.public_key()
+                if provider == "/provider/p0" else None),
+            content_key_owner=lambda manifest, epoch: self.content_key,
+            publisher=self.published.__setitem__,
+        )
+        fields.update(overrides)
+        return build_in_process_grant_provider(**fields)
+
+    def _grant_view(self):
+        from ndnsf_distributed_inference.sdk.placement import (
+            ProviderGrantViewV1)
+        return ProviderGrantViewV1(
+            provider="/provider/p0", request_id="req-181-1", attempt=1,
+            plan_core_digest="sha256:" + "cd" * 32,
+            offer_digest="sha256:" + "ef" * 32,
+            role_digests=("sha256:" + "ab" * 32,),
+            security_policy_snapshot_digest="sha256:" + "88" * 32,
+            model_manifest_digest=_MODEL_MANIFEST_DIGEST,
+            protection_epoch="spec180-yolo-protected-v1",
+        )
+
+    def test_grant_binding_round_trip_unwraps_on_provider_side(self):
+        provider = self._pipeline()
+        view = self._grant_view()
+        binding = provider(view, deadline_ms=int(time.time() * 1000) + 60_000)
+        self.assertTrue(binding.grant_name.startswith(
+            "/authority/artifact-policy/NDNSF-DI/KEY-GRANT/v1"))
+        self.assertEqual(len(self.published), 1)
+        (data_name, wire), = self.published.items()
+        self.assertEqual(data_name, binding.grant_name)
+        # Provider side: parse the published wire bytes and unwrap with the
+        # recipient key -- the same production call the Provider makes.
+        from ndnsf_distributed_inference.core.protected_artifacts import (
+            grant_from_wire, verify_and_unwrap_grant)
+        grant = grant_from_wire(wire)
+        content_key = verify_and_unwrap_grant(
+            grant,
+            authority_public_key=self.authority_key.public_key(),
+            recipient_private_key=self.recipient_key,
+            expected_provider_identity="/provider/p0",
+            expected_request_id="req-181-1", expected_attempt=1,
+            expected_plan_core_digest="sha256:" + "cd" * 32,
+            expected_model_manifest_digest=_MODEL_MANIFEST_DIGEST,
+            expected_protection_epoch="spec180-yolo-protected-v1",
+            now_ms=int(time.time() * 1000),
+        )
+        self.assertEqual(content_key, self.content_key)
+
+    def test_unknown_provider_recipient_fails_closed(self):
+        provider = self._pipeline(
+            recipient_public_keys=lambda provider: None)
+        with self.assertRaises(ValueError):
+            provider(self._grant_view(),
+                     deadline_ms=int(time.time() * 1000) + 60_000)
+        self.assertEqual(self.published, {})
+
+    def test_missing_content_key_fails_closed(self):
+        provider = self._pipeline(content_key_owner=None)
+        with self.assertRaises(ValueError):
+            provider(self._grant_view(),
+                     deadline_ms=int(time.time() * 1000) + 60_000)
+        self.assertEqual(self.published, {})
+
+    def test_authority_policy_rejects_unknown_model_manifest(self):
+        from ndnsf_distributed_inference.sdk.placement import (
+            ProviderGrantViewV1)
+        provider = self._pipeline()
+        view = ProviderGrantViewV1(
+            provider="/provider/p0", request_id="req-181-1", attempt=1,
+            plan_core_digest="sha256:" + "cd" * 32,
+            offer_digest="sha256:" + "ef" * 32,
+            role_digests=("sha256:" + "ab" * 32,),
+            security_policy_snapshot_digest="sha256:" + "88" * 32,
+            model_manifest_digest="sha256:" + "ff" * 32,
+            protection_epoch="spec180-yolo-protected-v1",
+        )
+        with self.assertRaises(ValueError):
+            provider(view, deadline_ms=int(time.time() * 1000) + 60_000)
+        self.assertEqual(self.published, {})
+
+
 if __name__ == "__main__":
     unittest.main()
