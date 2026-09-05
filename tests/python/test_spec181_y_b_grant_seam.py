@@ -78,7 +78,7 @@ view = ProviderGrantViewV1(
 )
 import time
 binding = provider(view, deadline_ms=int(time.time() * 1000) + 60000)
-assert binding.grant_name.startswith("/example/controller/NDNSF-DI/KEY-GRANT/v1")
+assert binding.grant_name.startswith("/example/user/NDNSF-DI/KEY-GRANT/v1")
 assert len(FakeNetworkClient.service_user.published) == 1
 published_name, wire = FakeNetworkClient.service_user.published[0]
 assert published_name == binding.grant_name
