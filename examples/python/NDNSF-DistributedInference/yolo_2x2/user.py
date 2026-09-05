@@ -259,6 +259,7 @@ def _build_grant_seam(client):
         return None, "plaintext-v1"
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric import ed25519
+    from cryptography.hazmat.backends import default_backend
     from ndnsf_distributed_inference.security.registry_keys import (
         load_artifact_policy_authority_private_key)
     from ndnsf_distributed_inference.security.requester_grant_pipeline import (
@@ -273,7 +274,8 @@ def _build_grant_seam(client):
     recipient_public_keys = {}
     for provider, pem_path in recipient_entries.items():
         key = serialization.load_pem_private_key(
-            Path(pem_path).read_bytes(), password=None)
+            Path(pem_path).read_bytes(), password=None,
+            backend=default_backend())
         if not isinstance(key, ed25519.Ed25519PrivateKey):
             raise ValueError(
                 f"recipient key is not Ed25519: {provider}")
