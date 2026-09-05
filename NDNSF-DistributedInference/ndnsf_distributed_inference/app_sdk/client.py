@@ -335,6 +335,118 @@ class APPClient:
             request_args["strategy"] = strategy
         return self._automatic_planner.request(**request_args)
 
+    def publish_application_input_reference(
+        self,
+        service: str,
+        payload: bytes,
+        *,
+        object_label: str = "input",
+        object_type: str = "",
+        freshness_ms: int = 60000,
+    ) -> dict:
+        """Publish and bind one encrypted DI application input.
+
+        The native NDNSF publisher is the authority for the Data name,
+        content digest, authorization scope, and protection epoch.  This
+        method only converts that result into the DI-owned reference and
+        records non-secret publication metadata; it never accepts a caller
+        supplied reference map or copies plaintext into the journal.
+        """
+        if self._network_client is None:
+            raise RuntimeError("application input publication requires a network client")
+        if not isinstance(payload, (bytes, bytearray, memoryview)):
+            raise TypeError("application input payload must be bytes-like")
+        if not service.startswith("/"):
+            raise ValueError("service must be an absolute NDN name")
+        service_user = getattr(self._network_client, "service_user", None)
+        if service_user is None:
+            raise RuntimeError("network client does not expose the ServiceUser owner")
+        publication = service_user.publish_encrypted_large_data(
+            service,
+            bytes(payload),
+            object_label=object_label,
+            freshness_ms=int(freshness_ms),
+        )
+        from ..repo_reference import bind_published_large_data_reference
+        reference = bind_published_large_data_reference(
+            publication,
+            service_name=service,
+            payload=bytes(payload),
+            object_type=object_type,
+        )
+        reference_digest = reference.digest()
+        self.journal.append("application-input-publication", {
+            "schema": "ndnsf-di-input-publication-v1",
+            "eventType": "INPUT_REFERENCE_PUBLISHED",
+            "referenceDigest": reference_digest,
+            "dataName": reference.data_name,
+            "manifestDigest": reference.manifest_digest,
+            "plaintextSize": reference.plaintext_size,
+            "contentDigest": reference.ciphertext_digest,
+            "authorizationScope": reference.authorization_scope,
+            "protectionEpoch": reference.protection_epoch,
+            "encrypted": True,
+        })
+        return reference.to_dict()
+
+    def request_task(
+        self,
+        *,
+        model,
+        task,
+        input,
+        timeout_ms: int,
+        options=None,
+        strategy=None,
+        request_id: str = "",
+    ):
+        """Submit a generic model/task request through the sole coordinator.
+
+        This canonical APP owner mirrors ``InferenceClient.request_task`` for
+        maintained applications.  REPO_REF inputs must carry the digest of a
+        publication recorded by :meth:`publish_application_input_reference`;
+        a caller-edited JSON reference is rejected before any Request wire is
+        published.
+        """
+        from ..adapters import ApplicationInput, InputTransportMode
+        from ..repo_reference import LargeDataReference
+        if not isinstance(input, ApplicationInput):
+            raise TypeError("generic request input must be ApplicationInput")
+        transport_mode = getattr(input.transport_mode, "value",
+                                 str(input.transport_mode))
+        if transport_mode == InputTransportMode.REPO_REF.value:
+            reference = LargeDataReference.from_mapping(input.repo_reference or {})
+            publication_digest = str(
+                input.metadata.get("publicationDigest", "") or
+                input.metadata.get("publication_digest", ""))
+            if publication_digest != reference.digest():
+                raise RuntimeError("DI_INPUT_PUBLICATION_BINDING_MISMATCH")
+            published = {
+                str(record.get("payload", {}).get("referenceDigest", ""))
+                for record in self.journal.records()
+                if record.get("kind") == "application-input-publication"
+            }
+            if publication_digest not in published:
+                raise RuntimeError("DI_INPUT_PUBLICATION_MISSING")
+            print(
+                "NDNSF_DI_INPUT_REFERENCE_PUBLISHED",
+                f"referenceDigest={publication_digest}",
+                f"manifestDigest={reference.manifest_digest}",
+                f"plaintextSize={reference.plaintext_size}",
+                flush=True,
+            )
+        effective_request_id = str(request_id or ("ndnsf-di-" + uuid.uuid4().hex))
+        return self.request(
+            model=model,
+            task=task,
+            input=input,
+            timeout_ms=int(timeout_ms),
+            options=options,
+            constraints={"ack_close_policy": "DEADLINE"},
+            request_id=effective_request_id,
+            strategy=strategy,
+        )
+
     def request_streaming(
         self,
         *,
@@ -491,6 +603,10 @@ class APPClient:
         data_v1_no_progress_ms: int = 2000,
         ack_coverage_roles=(),
         ack_coverage_predicate=None,
+        require_ack_provenance: bool = True,
+        grant_binding_provider=None,
+        protection_epoch: str = "plaintext-v1",
+        lifecycle_observer=None,
     ):
         """Attach the canonical deferred planner after the network client exists."""
         if self._network_client is None:
@@ -505,9 +621,22 @@ class APPClient:
         snapshot_provider = catalog_snapshot_provider or (lambda: ())
         placement_profile = str(
             getattr(strategy, "placement_profile", "DI_PLACEMENT_V2"))
+        # Spec180's request-scoped V3 planning closes discovery at the
+        # registered ACK timeout.  A caller-provided role predicate would make
+        # ACK coverage an offline authority and could terminate the window
+        # before all Providers have had a chance to advertise.  Keep the
+        # generic V2 compatibility hook, but reject it at the V3 configuration
+        # boundary rather than silently ignoring it later.
+        if (placement_profile == "DI_PLACEMENT_V3"
+                and (tuple(ack_coverage_roles)
+                     or ack_coverage_predicate is not None)):
+            raise ValueError(
+                "DI_PLACEMENT_V3 does not permit caller ACK coverage; "
+                "use the registered ACK timeout")
         if placement_profile == "DI_PLACEMENT_V3":
             provider_factory = v3_provider_view_factory(
-                verify_offer_signature)
+                verify_offer_signature,
+                require_ack_provenance=bool(require_ack_provenance))
         else:
             provider_factory = v2_provider_view_factory(
                 verify_offer_signature)
@@ -531,6 +660,9 @@ class APPClient:
             data_v1_no_progress_ms=data_v1_no_progress_ms,
             ack_coverage_roles=tuple(ack_coverage_roles),
             ack_coverage_predicate=ack_coverage_predicate,
+            grant_binding_provider=grant_binding_provider,
+            protection_epoch=protection_epoch,
+            lifecycle_observer=lifecycle_observer,
         )
         self._automatic_planner = coordinator
         return coordinator
@@ -1535,6 +1667,27 @@ class InferenceClient:
         return self._core._automatic_planner.request_application(
             model=model, input=input, generation=generation,
             strategy=strategy, request_id=request_id)
+
+    def request_task(
+        self, *, model, task, input, timeout_ms: int,
+        options=None, strategy=None, request_id: str = "",
+    ):
+        """Submit a generic task/input through the existing coordinator.
+
+        This is the model-neutral counterpart to ``request_model``.  It does
+        not accept Provider lists, deployment records, or role assignments;
+        those remain post-ACK coordinator decisions.
+        """
+        if self._core._automatic_planner is None:
+            raise RuntimeError(
+                "model-first request requires an AutomaticPlanningCoordinator")
+        if int(timeout_ms) <= 0:
+            raise ValueError("generic task timeout_ms must be positive")
+        return self._core._automatic_planner.request(
+            model=model, task=task, input=input, timeout_ms=int(timeout_ms),
+            options=options, strategy=strategy, request_id=request_id,
+            constraints={"ack_close_policy": "DEADLINE"},
+            generation_mode="FULL")
 
     def request_preplanned(
         self, deployment: RequestableDeployment, *, input,

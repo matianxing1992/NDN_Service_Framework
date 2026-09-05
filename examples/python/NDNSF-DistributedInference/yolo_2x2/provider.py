@@ -3,9 +3,18 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+from pathlib import Path
+import os
 import subprocess
 
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
 from ndnsf_distributed_inference.app_sdk import APPProvider, ProviderRuntimeContext
+from ndnsf_distributed_inference.provider import DIProviderOfferIssuerV3
 from ndnsf_distributed_inference.artifact_deployment import (
     ArtifactProvisioningState,
     materialize_role_artifacts,
@@ -28,6 +37,55 @@ from yolo_2x2_lib import (
 
 
 ACTIVE_SERVICE = ""
+
+
+def _load_v3_offer_signer(key_file: str):
+    """Load the candidate-bound Ed25519 key used for V3 ACK offers.
+
+    Provider-offer signatures are an execution input, not a caller-supplied
+    HMAC fixture.  The private key is read only in the Provider process; only
+    the derived public-key ID is exposed to the offer object.
+    """
+    path = Path(key_file).expanduser().resolve()
+    if not path.is_file() or not path.stat().st_mode & 0o400:
+        raise RuntimeError("selection offer signing key is not a readable file")
+    try:
+        key = serialization.load_pem_private_key(
+            path.read_bytes(), password=None, backend=default_backend())
+    except (OSError, ValueError, TypeError) as exc:
+        raise RuntimeError("invalid selection offer signing key") from exc
+    if not isinstance(key, Ed25519PrivateKey):
+        raise RuntimeError("selection offer signing key must be Ed25519")
+    public = key.public_key().public_bytes(
+        serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    key_id = "sha256:" + hashlib.sha256(public).hexdigest()
+
+    def sign_offer_digest(digest: str) -> str:
+        return base64.b64encode(key.sign(str(digest).encode("utf-8"))).decode("ascii")
+
+    return key_id, sign_offer_digest
+
+
+def _local_model_artifacts(model_path: str, roles: list[str]) -> dict[str, dict]:
+    """Bind one canonical ONNX file to explicitly selected local roles."""
+    if not model_path:
+        return {}
+    path = Path(model_path).expanduser().resolve()
+    if not path.is_file() or not path.stat().st_mode & 0o400:
+        raise RuntimeError("local model path is not a readable file")
+    digest = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+    return {
+        role: {
+            "path": str(path),
+            "artifact": "spec180-canonical/" + path.name,
+            "filename": path.name,
+            "kind": "onnx-model",
+            "backend": "onnxruntime-cpu",
+            "metadata": {"source": "spec180-canonical-package",
+                         "contentDigest": digest},
+        }
+        for role in roles
+    }
 
 
 def _roles_from_args(provider: APPProvider, service: str, role: str, roles: str):
@@ -74,20 +132,30 @@ def handle_role(ctx: ProviderRuntimeContext) -> None:
     model_path = ctx.execution.path("model")
     _probe_downloaded_runner(ctx, model_path)
 
+    if (os.environ.get("SPEC180_YN_MUTATION", "") == "Y-N-I"
+            and str(ctx.role) == "DetectShard0"):
+        # DetectShard0 is a non-ingress role in the fixed shared candidate.
+        # Calling the maintained ownership API here must be rejected before
+        # the role can fetch or execute any model input.
+        try:
+            ctx.fetch_application_input()
+        except Exception:
+            ctx.ndnsf.fail("DI_INPUT_FETCH_ROLE_MISMATCH")
+            print(
+                "SPEC180_YN_NEGATIVE_RESULT status=PASS subcase=Y-N-I "
+                "boundary=PROVIDER_EXECUTION_STARTED "
+                "reason=NON_INGRESS_INPUT_REJECTED",
+                flush=True,
+            )
+            return
+        raise RuntimeError("DI_INPUT_FETCH_ROLE_MISMATCH_ACCEPTED")
+
     is_first_chunk = not ctx.dependencies.inputs
     is_final_chunk = not ctx.dependencies.outputs
 
     if is_first_chunk:
         try:
-            image_ref = decode_image_reference(ctx.request)
-            image_payload = ctx.ndnsf.fetch_encrypted_large_data(
-                str(image_ref["data_name"]),
-                ACTIVE_SERVICE,
-            )
-            if image_payload is None:
-                ctx.ndnsf.fail("failed to fetch input image reference")
-                return
-            verify_referenced_payload(image_ref, image_payload)
+            image_payload = _fetch_application_input(ctx)
         except Exception as exc:
             ctx.ndnsf.fail(f"failed to load input image reference: {exc}")
             return
@@ -99,7 +167,7 @@ def handle_role(ctx: ProviderRuntimeContext) -> None:
         )
         if is_final_chunk:
             output = result.value("predictions")
-            ctx.ndnsf.publish_final_response(encode_yolo_output(0, output))
+            ctx.publish_terminal_result(encode_yolo_output(0, output))
             print(f"YOLO_LAYOUT_FINAL role={ctx.role} output={output.shape}", flush=True)
             return
         print(f"YOLO_LAYOUT_FIRST role={ctx.role} "
@@ -132,8 +200,31 @@ def handle_role(ctx: ProviderRuntimeContext) -> None:
         ctx.ndnsf.fail(f"failed to execute final ONNX chunk: {exc}")
         return
     output = result.value("predictions")
-    ctx.ndnsf.publish_final_response(encode_yolo_output(0, output))
+    ctx.publish_terminal_result(encode_yolo_output(0, output))
     print(f"YOLO_LAYOUT_FINAL role={ctx.role} output={output.shape}", flush=True)
+
+
+def _fetch_application_input(ctx: ProviderRuntimeContext) -> bytes:
+    """Fetch the request input through the V3 ownership boundary.
+
+    The maintained ACK-driven path always uses ``fetch_application_input``.
+    The explicit offline-oracle path may still receive the historical request
+    envelope, so it retains a narrow compatibility fallback to the old
+    reference helper when dataflow ownership is not enforced.
+    """
+
+    try:
+        return bytes(ctx.fetch_application_input())
+    except Exception:
+        if bool(getattr(ctx, "enforce_dataflow_ownership", False)):
+            raise
+        image_ref = decode_image_reference(ctx.request)
+        image_payload = ctx.ndnsf.fetch_encrypted_large_data(
+            str(image_ref["data_name"]), ACTIVE_SERVICE)
+        if image_payload is None:
+            raise RuntimeError("failed to fetch input image reference")
+        verify_referenced_payload(image_ref, image_payload)
+        return bytes(image_payload)
 
 
 def _probe_downloaded_runner(ctx: ProviderRuntimeContext, model_path) -> None:
@@ -150,6 +241,40 @@ def _probe_downloaded_runner(ctx: ProviderRuntimeContext, model_path) -> None:
         text=True,
     )
     print(completed.stdout.strip(), flush=True)
+
+
+def _load_grant_keys(provider_id: str = ""):
+    """Load protected-epoch grant key material from the runner environment.
+
+    Returns (authority_public_key, recipient_private_key) under a protected
+    epoch; (None, None) for plaintext-v1, where the grant path is never
+    entered (spec181 T001 wiring).  The recipient key is this Provider's
+    own Ed25519 offer key, looked up by Provider identity in the shared
+    runner-supplied map.
+    """
+    epoch = os.environ.get("SPEC181_PROTECTION_EPOCH", "").strip()
+    if not epoch or epoch == "plaintext-v1":
+        return None, None
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+    authority_pub_path = Path(os.environ["SPEC181_GRANT_AUTHORITY_PUBLIC_KEY"])
+    recipient_map_path = Path(os.environ["SPEC181_PROVIDER_RECIPIENT_KEY_MAP"])
+    recipient_entries = json.loads(recipient_map_path.read_text(
+        encoding="utf-8"))
+    identity = "/example/provider/" + str(provider_id).strip("/")
+    recipient_priv_path = recipient_entries.get(identity)
+    if not recipient_priv_path:
+        raise ValueError(
+            f"no grant recipient key for Provider identity {identity}")
+    authority_key = serialization.load_pem_public_key(
+        authority_pub_path.read_bytes())
+    if not isinstance(authority_key, ed25519.Ed25519PublicKey):
+        raise ValueError("grant authority public key is not Ed25519")
+    recipient_key = serialization.load_pem_private_key(
+        Path(recipient_priv_path).read_bytes(), password=None)
+    if not isinstance(recipient_key, ed25519.Ed25519PrivateKey):
+        raise ValueError("grant recipient private key is not Ed25519")
+    return authority_key, recipient_key
 
 
 def main() -> int:
@@ -170,23 +295,57 @@ def main() -> int:
     parser.add_argument("--sync-materialize-before-serve", action="store_true",
                         help="Wait for artifact installation before registering service capability")
     parser.add_argument("--install-timeout-s", type=float, default=300.0)
+    parser.add_argument(
+        "--selection-offer-key-file",
+        default="",
+        help="Ed25519 private key for candidate-bound ProviderOfferV3 ACKs",
+    )
+    parser.add_argument(
+        "--local-model-path", default="",
+        help="absolute canonical ONNX model path for local role execution",
+    )
+    parser.add_argument(
+        "--backend", default="onnxruntime-cpu",
+        choices=("onnxruntime-cpu", "onnxruntime-cuda"),
+        help=("ORT execution backend; the Tiger functional gate maps the "
+              "three model roles to CUDA device 0"),
+    )
     args = parser.parse_args()
     if args.dry_run:
         print("Run YOLO 2x2 provider", args.provider_id, args.role or args.roles)
         return 0
     with optional_local_nfd(args.start_local_nfd):
+        grant_authority_public_key, grant_recipient_private_key = (
+            _load_grant_keys(args.provider_id))
         provider = APPProvider.from_config(
             args.config,
             generated_policy_dir=args.generated_policy_dir,
             provider_id=args.provider_id,
             group=args.group,
             handler_workers=args.handler_workers,
+            grant_authority_public_key=grant_authority_public_key,
+            grant_recipient_private_key=grant_recipient_private_key,
         )
         service = yolo_inference_service(provider.deployment)
         global ACTIVE_SERVICE
         ACTIVE_SERVICE = service
         selected_roles = _roles_from_args(provider, service, args.role, args.roles)
+        if os.environ.get("SPEC180_YN_MUTATION", "") == "Y-N-C":
+            # Exercise the real capability publication path with an incomplete
+            # closed ACK snapshot.  Keep a Provider process alive even when a
+            # fixture advertises only the removed role; the replacement is an
+            # already allowlisted role and cannot restore FullModel/Merge
+            # coverage.
+            selected_roles = [
+                role for role in selected_roles
+                if role not in {"FullModel", "Merge"}
+            ]
+            if not selected_roles:
+                selected_roles = ["BackboneNeck"]
         local_artifacts: dict[str, dict] = {}
+        if args.local_model_path:
+            local_artifacts.update(
+                _local_model_artifacts(args.local_model_path, selected_roles))
         readiness = None
         if args.artifact_references:
             provisioning = ArtifactProvisioningState(
@@ -216,17 +375,42 @@ def main() -> int:
             args.dynamic_provisioning or
             (service_has_artifacts and not args.deployed_models and not args.artifact_references)
         )
+        # A candidate-bound local artifact is authoritative for this process;
+        # do not advertise dynamic provisioning for the same role set.
+        if local_artifacts:
+            dynamic_provisioning = False
+        offer_issuer_v3 = None
+        if args.selection_offer_key_file:
+            signer_key_id, sign_offer_digest = _load_v3_offer_signer(
+                args.selection_offer_key_file)
+            provider_identity = (
+                str(provider.deployment.provider_prefix).rstrip("/")
+                + "/" + str(args.provider_id).strip("/"))
+            offer_issuer_v3 = DIProviderOfferIssuerV3(
+                provider=provider_identity,
+                service=service,
+                boot_epoch=provider.provider_boot_epoch,
+                # DeviceTopologyProfile lists accelerator identities only;
+                # an ONNX Runtime CPU Provider therefore has no device entry.
+                devices=(),
+                signer_key_id=signer_key_id,
+                sign_offer_digest=sign_offer_digest,
+            )
         provider.serve_service(
             service=service,
             roles=selected_roles,
             handler=handle_role,
-            backends=["onnxruntime"],
+            backends=[args.backend],
             temp_dir=args.temp_dir or None,
             has_model=(not dynamic_provisioning) or bool(args.artifact_references),
             can_provision=dynamic_provisioning,
-            allow_executables=dynamic_provisioning,
+            # The YOLO artifacts are ONNX models executed in-process by
+            # ONNX Runtime, never downloaded executables.  Executable
+            # artifact authorization stays disabled for this application.
+            allow_executables=False,
             readiness_probe=readiness,
             local_artifacts=local_artifacts,
+            selection_offer_issuer_v3=offer_issuer_v3,
         )
         provider.run()
     return 0
