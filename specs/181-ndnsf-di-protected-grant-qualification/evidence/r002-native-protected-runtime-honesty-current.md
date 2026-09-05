@@ -1,5 +1,8 @@
 # R002 — native ProtectedRuntime 诚实化（FAIL_CLOSED until T002）
 
+> **Current scope correction (revision 5, 2026-09-05)**: 历史 R002 失败关闭行为仍是当前 native 边界；T002 verifier 函数存在尚未吸收生产 runtime 门。
+> 当前裁决与下一步以 [audit.md](../audit.md) 为准，以下保留为原始范围记录。
+
 **Layer**: implemented（C++ 诚实化代码 + C++ unit 负例）;executed
 （6 项 C++ unit 测试全绿，2026-09-05，waf build-system-j2）;无 measured
 声明。Integration 层随 T002 的 `tests/integration-tests/ndnsf-di-protected-grant.t.cpp`

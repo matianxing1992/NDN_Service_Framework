@@ -16,9 +16,36 @@ Spec 170 `artifact-assembly-v1` 契约。
   路径（main 分支的明文路径证明"无网络服务"可工作，本切片不新增
   网络角色与前缀）。集成条件见 spec.md Out of Scope。
 
-## 三层测试标准（本 spec 的规范性要求）
+## Current Checkpoint (revision 5)
+
+**Status**: `IN_PROGRESS / BLOCK`。2026-09-05 复核后，T001/T002/T003/T004/T006
+恢复未勾选；这表示完整验收未闭合，不抹去已实现的代码与 unit 结果。
+
+| Task | Implemented / executed | Remaining acceptance |
+|---|---|---|
+| T001 | Python grant/AEAD helper、发布 seam；本轮摘要替换回归 34 passed | 授权顺序、external-data 清理、独立绑定、真实发布/获取 |
+| T002 | native verifier 与 pybind | native Provider factory/状态/受管解包/AEAD/清理接线 |
+| T003 | grant 向量双侧消费 | FR-012 装配向量及全部绑定/算法负例覆盖 |
+| T004 | 15000 ms seam；历史 fake-native unit 测试 | 当前二进制的真实就绪、取消和无热转证据 |
+| T005 | 多源诊断子用例结果 | T007 PASS 后同源七子用例矩阵，保留所有失败 |
+| T006 | 三种进程内 verifier mutation probe | 选定 Provider 生产链变异与明确拒绝原因 |
+| T007 | 本轮 code-aware 审查与设计修正 | 当前裁决 BLOCK；控制性源码缺口闭合后重新审计 |
+| T008 | Python 保护 Y-B 调试记录 | 同源本地资格清单；native 受保护执行证据 |
+| T009--T012 | 继承工具链 | 本 Spec 候选、SIF、Tiger、终局均未闭合 |
+
+历史 6/7、7/7 与 `CONDITIONAL PASS` 不再作为当前状态；以
+[audit.md](audit.md) 与 [修正证据](evidence/audit-repair-20260905.md) 为准。
+本文件 `cpp/ndnsf-di/` 简写均相对 `NDNSF-DistributedInference/`；
+`security/`、`core/` 简写相对其 `ndnsf_distributed_inference/`。
+
+## Validation Standard
 
 每个实现任务的验收必须同时满足适用层，缺一不可：
+
+T001--T004/T006 的完成门为其 unit/定向 integration 验收；这些任务
+引用 T005/T008 的 MiniNDN 是后续 FR 资格覆盖，不是反向完成依赖。
+只有标记 `[MiniNDN]` 的 T005/T008 由完整网络资格闭合。T007 审查
+已完成的开发验收与后续资格设计，不要求未来的 MiniNDN 结果先存在。
 
 1. **单元测试（unit）**：纯函数与编码层的 focused red/green + 变异
    用例（错误输入、边界值、篡改字段）。不得启动 NFD、不得跨进程。
@@ -42,14 +69,13 @@ Spec 170 `artifact-assembly-v1` 契约。
 测试冒充 MiniNDN 资格证据。每个证据文件头部声明证据层（implemented/
 wired/executed/measured）。
 
-## Phase 0: 诚实化修正（先于所有实现任务，Priority: P0）
+## Phase 0: Fail-closed Safeguards (Priority: P0)
 
-本 spec 的审计发现：若干路径"假装做了工作"（合成拒绝、状态冒充、
-明文路径充当保护纪元执行）。在开始任何实现任务（T001+）之前，必须
-先让这些路径诚实——失败关闭或报告 UNAVAILABLE。每个修正任务在对应
-实现任务落地后由后者吸收（见各任务"吸收关系"）。
+这些历史修正防止合成拒绝、状态冒充与明文路径冒充保护执行。R 项
+保留原 ID 与历史证据，不计入 T001--T012 的完成率。当前缺口由对应
+T 任务完成定向修复；在生产验收前保持失败关闭，并禁止晋升诊断结果。
 
-- [x] **R001 [US0] Y-N-E 诚实化**。在真实 grant 变异（T006 实现）之前，
+- **R001 Y-N-E Fail-closed Guard**（historical unit evidence；T006 负责生产验收）。在真实 grant 变异（T006 实现）之前，
   runner 的 Y-N-E 子用例必须报告 `UNAVAILABLE`（结构化原因
   `Y-N-E:GRANT_VERIFIER_NOT_IMPLEMENTED`），禁止合成纪元异常充当
   `PROTECTION_EPOCH_REJECTED`；删除合成拒绝路径。文件：
@@ -59,7 +85,7 @@ wired/executed/measured）。
   unavailable 记录不进入 PASS 计数）。吸收关系：T006 落地后删除
   UNAVAILABLE 路径，由真实变异拒绝取代。
 
-- [x] **R002 [US0] native ProtectedRuntime 诚实化**。在真实 grant 获取/
+- **R002 Native Runtime Fail-closed Guard**（existing；T002 负责吸收）。在真实 grant 获取/
   解包（T002 实现）之前，native Provider 对非 `plaintext-v1` 纪元
   赋值必须失败关闭并给出明确错误（`DI_PROTECTED_GRANT_UNAVAILABLE`），
   禁止仅凭绑定比对进入 `GrantVerified` 状态；现有绑定比对函数明确
@@ -71,13 +97,14 @@ wired/executed/measured）。
   GrantVerified）；integration（native provider 真实保护纪元投影被
   拒）。吸收关系：T002 落地后由真实 grant 验证取代该失败关闭路径。
 
-- [x] **R003 [US0] 证据失效声明完整性检查**。审计 Spec 180/181 全部
+- **R003 Evidence Invalidation Inventory**（partial；T007 负责补齐）。审计 Spec 180/181 全部
   证据文件：任何声称 PASS 但被后续修订失效的文件必须带失效横幅
   （t016/s1 已确认有；核查其余）；每个证据文件头部必须声明证据层
   （implemented/wired/executed/measured）。验收：完整清单 + 每文件
-  层声明；发现缺失横幅即补上（不加内容、只加失效声明）。
+  层声明；当前修订不修改 Spec180 冻结文件，在本 Spec 的完整清单中
+  记录其失效范围与替代证据。原 R003 记录的历史修改不在本轮重做。
 
-- [x] **R004 [US0] 保护纪元子用例门禁**。runner 的 Y-B 保护纪元子用例
+- **R004 Protected-case Admission Guard**（partial；T001/T002 负责生产验收）。runner 的 Y-B 保护纪元子用例
   在 grant 接线（T001/T002）完成前必须失败关闭
   （`DI_PROTECTED_GRANT_UNAVAILABLE`），不得以明文路径冒充保护纪元
   执行、不得产出 PASS 记录。文件：
@@ -86,9 +113,9 @@ wired/executed/measured）。
   integration（未接线时保护纪元用例被拒且原因明确）。吸收关系：
   T001/T002 落地后门禁转为正常执行。
 
-## Phase 1: User Story 1 — 受保护工件授权正路径（Priority: P1）
+## Phase 1: Protected Artifact Execution (Priority: P1)
 
-- [x] **T001 [US1] Python Provider 解包接入与 grant 发布**。`provider.py`
+- [ ] T001 [US1] **Python Grant Publication and Consumption**。`provider.py`
   装配入口（`_assemble_certified_role_execution` 之前）在
   `protection_epoch != "plaintext-v1"` 时：按规范名**精确获取** grant
   Data（使用既有精确名 Data 获取原语，禁止 `ValidatorNull`）→
@@ -115,11 +142,17 @@ wired/executed/measured）。
   真实 Provider 进程精确名获取与解包：正确 grant 装配成功且密文
   暂存/解密加载/零化完整；错误收件人 grant 在 verifier 内被拒且无
   明文落地；**错误内容密钥或篡改密文在 AEAD 认证层以
-  `DI_PROTECTED_GRANT_REJECTED` 拒绝**）；MiniNDN 由 T005 的
+  `DI_PROTECTED_GRANT_REJECTED` 拒绝**）；MiniNDN 由 T008 的
   Y-B 保护纪元子用例覆盖。证据
-  `evidence/t001-python-provider-grant-current.md`。
+  `evidence/t001-python-provider-grant-current.md`。当前新增验收：授权先于
+  `_assemble_certified_role_execution` 的明文/ORT 加载；签名有效但摘要
+  不等于 Selection grant 引用时拒绝（定向回归已关闭）；Merge 模型
+  预期值来自独立认证输入；所有 `.weights` 以 `EXTERNAL_DATA` 加密并
+  登记租约，取消/失败时同样清理；核对 issuer 身份与注册表一致。
+  必须新增真实进程测试 `tests/python/test_spec181_provider_grant_integration.py`，
+  现有注入 fetch 的测试不满足 integration。
 
-- [x] **T002 [US1] native Provider 解包**。
+- [ ] T002 [US1] **Native Provider Grant Runtime**。
   `NativeProviderHandler`/`ProtectedRuntime` 增加规范名精确获取、
   权威签名/绑定/过期校验与 KeyChain 解包（信封算法按收件人密钥
   类型：Ed25519 → X25519 转换、EC → ECDH-P256，与 Python 信封
@@ -134,7 +167,7 @@ wired/executed/measured）。
   （Python 端到端 native provider 真实解包，grant 由真实请求方进程
   发布）。证据 `evidence/t002-native-provider-grant-current.md`。
 
-- [x] **T003 [US1] 跨语言 parity 向量锁定**。固定向量文件
+- [ ] T003 [US1] **Grant and Assembly Parity Vectors**。固定向量文件
   `tests/fixtures/spec181/grant-vectors-v1.json`：同一 grant 字节
   （规范 JSON）分别由 Python 与 native 解包，必须得到同一内容密钥；
   向量含正例与全部负例（错误收件人、跨请求/attempt/core/model/纪元、
@@ -142,9 +175,15 @@ wired/executed/measured）。
   `tests/python/test_spec181_native_grant_parity.py`（消费 T002 的
   pybind 面）。验收：integration（双侧一致断言；向量文件随任何编码
   变更必须同步更新并重新双侧验证）。证据
-  `evidence/t003-grant-parity-current.md`。
+  `evidence/t003-grant-parity-current.md`。FR-012 另需固定
+  `tests/fixtures/spec181/assembly-vectors-v1.json` 与
+  `tests/python/test_spec181_assembly_parity.py`：同一 canonical ONNX、
+  recipe、external-data 与 backend ABI，分别消费 Python
+  `assemble_certified_onnx_model`、native `NativeCanonicalOnnxAssembler`，
+  逐字节及摘要一致；变异 recipe/initializer 必须拒绝。grant 的 9 个
+  向量不能关闭该装配验收。
 
-- [x] **T004 [US1] 运行时就绪边界修复**。`pythonWrapper/ndnsf/service.py`
+- [ ] T004 [US1] **Runtime Readiness and Cancellation**。`pythonWrapper/ndnsf/service.py`
   的 `start()`/`start_background()` 就绪等待改为 15000 ms（对 Core
   10 s 探针留余量）；`ServiceController.cpp` 的探针循环在
   `stop()`/取消后不得热转（取消检查 + io 停止后立即退出）。文件：
@@ -155,9 +194,9 @@ wired/executed/measured）。
   不被误报；取消路径及时退出且无热转）。证据
   `evidence/t004-readiness-boundary-current.md`。
 
-## Phase 2: User Story 2 — 负面矩阵语义化（Priority: P1）
+## Phase 2: Registered Negative Outcomes (Priority: P1)
 
-- [ ] **T005 [US2] [MiniNDN] Y-N 全矩阵语义重跑**。在 MiniNDN 小模型
+- [ ] T005 [US2] **Y-N Matrix Qualification [MiniNDN]**。在 MiniNDN 小模型
   CPU 上按注册语义重跑七子用例：Y-N-O（目录序无关）、Y-N-C（双候选
   不可行）、Y-N-P（ACK 签名/来源/绑定篡改）、Y-N-R（组件角色非法
   区间）、Y-N-I（非 ingress 获取，`DI_INPUT_FETCH_ROLE_MISMATCH`）、
@@ -169,29 +208,36 @@ wired/executed/measured）。
   `tests/python/test_spec181_y_n_matrix.py`（矩阵参数化 + 原因断言）。
   验收：[MiniNDN] 七子用例全部预期结果、零未收集存活进程；证据
   `evidence/t005-y-n-matrix-current.md` 记录每子用例的拒绝原因与
-  边界。
+  边界。Y-N-O 是 terminal control，不要求负拒绝码。
+  先定向修复 `scripts/run_spec181_y_n_matrix_retry.py`：禁止删除已有
+  attempt 目录，记录全部失败与源/配置摘要，仅允许已识别的启动前
+  故障有界重试；协议、清理、oracle 错误立即阻断。其诊断摘要不能
+  代替维护 runner 的正式矩阵产物；完整矩阵必须在 T007 PASS 后执行。
 
-- [x] **T006 [US2] Y-N-E 真实 grant 变异构造**。构造三种真实 grant
+- [ ] T006 [US2] **Production Grant Mutation Rejection**。构造三种真实 grant
   变异（过期、错误收件人、伪造权威签名）供 T005 的 Y-N-E 子用例
   使用，断言已实现 verifier 在授权边界以
-  `DI_PROTECTED_GRANT_REJECTED` 拒绝；删除合成纪元异常路径。被撤销
-  纪元的拒绝以保护纪元绑定失败表达（撤销子系统属另一分支，见
-  spec.md Out of Scope）。文件：
+  `DI_PROTECTED_GRANT_REJECTED` 拒绝；删除合成纪元异常路径。
+  撤销仍是另一分支的延期项，不以过期或跨纪元拒绝冒充撤销。文件：
   `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py` 的 Y-N-E 子用例、
   `tests/python/test_spec181_y_n_e.py`。验收：unit（三种变异构造）；
-  integration（每种变异到达真实 verifier 并在装配前被拒）。证据
+  integration（每种变异经真实发布/获取到达选定 Provider verifier，
+  在装配前拒绝；绑定 request/attempt/provider，正向控制必须成功；
+  无关 ValueError、未配置、超时或错误生命周期不得算预期拒绝）。证据
   `evidence/t006-y-n-e-grant-mutation-current.md`。
 
-## Phase 3: User Story 3 — 收敛与本地资格（Priority: P2）
+## Phase 3: Convergence and Local Qualification (Priority: P2)
 
-- [ ] **T007 [US3] 设计-代码收敛审计**。按 12 审计原则对真实生产链
+- [ ] T007 [US3] **Design-code Convergence Audit**。按 12 审计原则对真实生产链
   （进程内权威、grant 解包双侧、装配、runner、候选工具链）做
   code-aware 审计，四层证据分离；BLOCK 项修复 + focused 回归 +
   重新审计至 PASS。文件：本目录 `audit.md`、`traceability.md`、
   `evidence/post-implementation-audit.md`。验收：审计 PASS 且每个
   发现附 file:line 证据与关闭回归；四层声明在每个证据文件头部。
+  T007 不等待 T005/T008 的正式资格结果；其审计 PASS 是这些执行的
+  前置条件。R003 的完整证据清单与临时诊断路径删除条件由本任务核查。
 
-- [ ] **T008 [US3] [MiniNDN] 本地资格认证**。从 T007 PASS 的同一源
+- [ ] T008 [US3] **Local Qualification [MiniNDN]**。从 T007 PASS 的同一源
   身份（提交哈希）执行：单元/集成选择器清单（local-suite inventory，
   逐项子进程监督）+ MiniNDN Y-A（原子候选、1 Provider）、Y-B
   （共享骨架、4 Provider、含 T001/T002 的保护纪元 grant 往返）、
@@ -200,22 +246,22 @@ wired/executed/measured）。
   移交本任务）、`evidence/local-qualification.md`。验收：清单完整、
   Y-A/Y-B/Y-N 全通过、零未收集存活进程、CPU 后端声明。
 
-## Phase 4: User Story 4 — 候选、SIF 与 Tiger（Priority: P3）
+## Phase 4: Candidate, SIF and Tiger (Priority: P3)
 
-- [ ] **T009 [US4] S1 候选封印**。以提交哈希封印候选：源、契约、
+- [ ] T009 [US4] **S1 Candidate Seal**。以提交哈希封印候选：源、契约、
   注册表（含 `artifactPolicyAuthority` 公钥摘要）、模型工件摘要、
   oracle、runner、测试清单与 parity 向量文件摘要。文件：
   `scripts/spec180_candidate.py`（沿用）。验收：unit（脏树/跨候选
   证据拒绝）；封印记录含提交哈希与全部平面摘要。证据
   `evidence/t009-candidate-seal-current.md`。
 
-- [ ] **T010 [US4] S4 本地 SIF + exact-SIF Y-B replay**。在 T008
+- [ ] T010 [US4] **S4 Exact-SIF Y-B Replay**。在 T008
   通过后的同一源上构建本地 SIF（含 rev-123 就绪修复后的运行时），
   执行 exact-SIF Y-B replay：无源码/包覆盖、NFD 与全部子进程在镜像
   内、终端结果与 oracle 一致。验收：integration（SIF 边界验证 +
   replay 结果摘要）；证据 `evidence/t010-exact-sif-replay-current.md`。
 
-- [ ] **T011 [US4] S5 一次 Tiger Y-B 提交**。通过 host-NFD node-local
+- [ ] T011 [US4] **S5 Single Tiger Y-B Submission**。通过 host-NFD node-local
   launcher（Spec 180 修订 122 暴露的设计缺口：Tiger 节点无 MiniNDN
   基底）提交一次 `yolo-functional`：一节点、一 RTX、四 Provider
   进程、一次 cold Y-B、三模型角色 CUDA 证据 + Merge CPU；无参数
@@ -225,7 +271,7 @@ wired/executed/measured）。
   （协议/数值/设备/子进程退出/清理 oracle 全通过）；证据
   `evidence/t011-tiger-submission-current.md`。
 
-- [ ] **T012 [US4] 终局记录**。在单一候选身份下映射全部 FR 到代码、
+- [ ] T012 [US4] **Final Closure Record**。在单一候选身份下映射全部 FR 到代码、
   三层测试与结构化证据，发出唯一功能裁决；声称边界语言审计（无
   Qwen/多 GPU/性能声称）。文件：
   `evidence/closure-record.md`（唯一裁决来源）。验收：closure 记录
@@ -235,14 +281,14 @@ wired/executed/measured）。
 ## Dependencies & Execution Order
 
 ```text
-R001/R002/R003/R004（诚实化修正，可并行 [P]） -> 全部实现任务
-T001 -> T002 -> T003 -> T006 -> T005
-T004 可与 T001 并行 [P]
-T001/T002/T003/T005/T006 -> T007 -> T008
+R001/R002/R003/R004（历史 safeguard；对应任务持续定向回归）
+T001 -> T002 -> T003 -> T006
+T004 为独立修复，但同样是 T007 的前提
+T001/T002/T003/T004/T006 -> T007 PASS -> T005 -> T008
 T008 -> T009 -> T010 -> T011 -> T012
 ```
 
-Phase 0（R001--R004）是前置门：任一修正任务未完成，实现任务不得开始。
-修正任务随对应实现落地被吸收（见各任务"吸收关系"），不长期存留。
-只有第一个未关门是活动门；G3/G4 的昂贵动作在 G0--G2 全通过前禁止。
+R0 的失败关闭语义在定向修复期间保持；不得因 helper 存在或常量翻转
+声称生产完成。只有第一个未关门是活动门；T007 未 PASS 前不运行完整
+矩阵或资格套件。G3/G4 昂贵动作在 G0--G2 全通过前禁止。
 任何行为影响面变更使下游证据失效并回到最早失效门。

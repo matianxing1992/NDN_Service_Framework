@@ -19,6 +19,13 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Active Spec181 audit (2026-09-05): BLOCK.** Native protected runtime wiring,
+production-path negative validation and assembly parity remain unproven;
+the active Context Mode plan link has been repaired. Latest retained Spec181 Y-B log
+reports `CASE_RUNTIME_PROCESS_START_FAILED:control`, not a protocol result.
+See [Spec181 audit repair](../specs/181-ndnsf-di-protected-grant-qualification/evidence/audit-repair-20260905.md).
+Focused repair checks are allowed; full qualification requires a fresh audit PASS.
+
 | ID | Observed | Scope | First failing boundary | Disposition | Durable record | Raw run data |
 | --- | --- | --- | --- | --- | --- | --- |
 | `SPEC180-Y-N-R35-P-E` | 2026-09-05 | Spec180 local MiniNDN Y-N | Controller `PUBPARAMS` readiness before either negative case reached the ACK disposition path | `UNQUALIFIED`; Y-N-O/C/R/I/L passed, Y-N-P/E were not proven | [`t011-y-n-live-current-20260905-r35.md`](../specs/180-ack-driven-cross-model-qualification/evidence/t011-y-n-live-current-20260905-r35.md) | ignored workspace temporary run `spec180-yolo-y-n-current-20260905-r35/` and console log with the same run-id |

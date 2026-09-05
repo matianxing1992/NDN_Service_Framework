@@ -1,196 +1,85 @@
-# Spec181 设计-代码收敛审计（T007）
+# Spec181 Design-code Convergence Audit
 
-**Audit basis**: 12 审计原则（`.specify/memory/speckit-audit-principles.md`）。
-**Audit scope**: 真实生产链——进程内权威、grant 解包双侧、装配、
-runner、候选工具链。
-**Date**: 2026-09-05。**Source identity**: `Experimental` 分支
-`af85b7a7` 起的 spec181 提交序列（Phase 0 修正 → T001/T002/T003/T004/
-T006 实现，见各证据文件）。
+**Date**: 2026-09-05 | **Revision**: 5 | **Task**: T007
+**Source identity**: 基线 `67194dc2`；定向修复 `ff7b5c3b`；本修订文档差异。
+**Layer**: proposed（设计）+ implemented（源码核查）+ executed（定向 unit）。
+**Verdict**: **BLOCK**。本审查取代旧 `CONDITIONAL PASS / no HIGH` 结论。
 
-四层证据分离：文档声称（proposed）/ 代码实现（implemented）/ 测试
-执行（executed）/ 实验测量（measured）逐层声明，禁止跨层包装。
+## Findings
 
----
+路径缩写：P = `NDNSF-DistributedInference/ndnsf_distributed_inference/provider.py`；
+N = `NDNSF-DistributedInference/cpp/ndnsf-di/`；
+U = `examples/python/NDNSF-DistributedInference/yolo_2x2/user.py`；
+R = `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py`。行号对应本轮源码。
 
-## 原则 1：意图一致性
+| ID | Severity | Location | Finding and evidence boundary | Disposition / closing action |
+|---|---|---|---|---|
+| A01 | HIGH | N/ProtectedRuntime.cpp:120；N/NativeProviderHandler.cpp:1876；R:787、931 | `verifyGrant` 无条件拒绝，handler 缺 factory 或授权态时拒绝；保护 Y-B 改用 Python Provider。native verifier/pybind 存在不等于 native 生产路径已接线。 | OPEN — T002 完成真实获取、受管解包、授权状态、AEAD 与清理；真实 native 正负用例。 |
+| A02 | HIGH | P:1369、1445、1474、1485、1507、2559、2695、2734 | 先装配后授权；Merge 用 grant 自述 manifest 作预期值；落盘密文后直接解密内存对象；external weights 明文复制且未登记租约；准备阶段后续异常提前 return 可绕过 handler 的 finally。 | OPEN — T001 重排授权、绑定独立输入并覆盖全部加载/清理边界；错误密钥、磁盘密文变异、准备失败与取消测试。 |
+| A03 | HIGH | P:1445；tests/python/test_spec181_provider_grant.py:445 | 原实现未核对 Selection grant 摘要，权威另签的同上下文 grant 可替换选中密钥。新回归实测 `ProtectedGrantRejected not raised`。 | CLOSED — `ff7b5c3b` 增加封印摘要比对；RED 1 failed，GREEN 34 passed，见专项证据。 |
+| A04 | HIGH | U:149--155；R:2796--2912 | Y-N-E 在 User 内部新建固定测试身份、调用两个 verifier 后主动抛出拒绝；没有把 grant 变异送至选定 Provider。仅按异常文本含 grant/binding 等词判拒绝也不能证明注册原因。 | OPEN — T006 真实发布/获取变异，正向控制、明确原因与 request/attempt/provider 绑定；probe 限定为 unit。 |
+| A05 | HIGH | scripts/run_spec181_y_n_matrix_retry.py:48--73、84--94；evidence/t005-y-n-matrix-current.md | driver 删除已有 attempt 目录、重试任意异常且取首个 PASS；产物是自有 retry schema。旧记录混合不同提交的 6/7、7/7 与 NOT PROVEN，不能形成同源矩阵。 | OPEN — T005 改为保留每次失败、唯一 run-id、受限启动重试与同源身份；本轮已纠正文档状态。 |
+| A06 | HIGH | plan.md revision 4 Summary / Ownership / Gate order；spec.md SC-001 | 计划同时指定 user 与 Controller 权威，已延期撤销仍写入成功条件；审计依赖后续资格，而资格又依赖审计。 | CLOSED（设计）— revision 5 统一进程内权威、保留延期边界，T007 PASS 先于 T005/T008；不扩大范围。 |
+| A07 | HIGH | tests/python/test_spec181_native_grant_parity.py:23、41、62；旧 traceability FR-012 | 9 个固定 grant 向量只检查解包；没有 ONNX canonical+recipe 双侧装配字节比较。已有映射将 grant parity 误作 FR-012 完成证据。 | OPEN（实现）— T003 已补独立装配向量/验收路径；现有 grant 向量覆盖保留。 |
+| A08 | HIGH | U:267、310--313；Spec180 registry artifactPolicyAuthority | 示例加载本地权威密钥、硬编码 `/example/user` 并传空模型白名单；尚无证据表明运行时消费注册表模型策略、身份与公钥摘要约束。进程同宿主不免除该校验。 | OPEN — T001 明确发布身份与策略权威映射，校验注册表/public-key 摘要、拒绝未授权模型；不得静默改冻结注册表。 |
+| A09 | MEDIUM | tasks.md revision 4；T001/T002/T004/T006 证据；旧 audit.md | 五项任务打勾但缺其约定生产 integration；T004 测试明确使用 fake native；声称的 provider integration 文件不存在。任务加粗语法还导致扫描器解析为 0 tasks。 | CLOSED（进度/设计）— 恢复未完成标记并列出已有实现，规范 12 个 T 任务、4 个故事与三层证据。真实验收仍归所属任务。 |
+| A10 | MEDIUM | active-context health；failure index | 活动 feature 已为 181，但托管 plan 链接仍指 180；failure index 未指向当前 181 失败。 | CLOSED — 链接、索引已修复；project/active health 均 exit 0，当前文件来源 fresh。 |
 
-**结论：PASS。**
+## Traceability Gaps
 
-- spec.md 的完成目标（"一个不可变 YOLO 候选在 MiniNDN 本地小模型
-  CPU 上通过 Y-A/Y-B/Y-N 全矩阵，通过收敛审计与本地资格，随后 SIF
-  replay 与一次 Tiger Y-B"）与 tasks.md 的 12 任务逐一对应，无目标
-  偷换。
-- 边界遵守：撤销子系统不在本分支（`protected_artifacts.py:9-13`
-  docstring 与 `revocation_sequence=1` 被动字段 `:400`）;独立权威
-  服务为延期项（`requester_grant_pipeline.py` 明示 in-process
-  functional slice）。
-- FR-013 的"内容密钥必须被真实消费"是设计自审结论（plan.md
-  Architecture Decision 5），T001 以 AEAD 密封落地
-  （`provider.py:_qualify_protected_assembly`）。
-- 拒绝的替代方案：无隐藏的合成拒绝残留——`_validate_negative_marker`
-  （`Experiments/NDNSF_DI_YoloAckDriven_Minindn.py:2924-2935`）只接受
-  注册原因，合成 `PROTECTION_EPOCH_REJECTED` 已删除。
+- FR-002/003/013：T001/T002 仍缺完整生产接线与错误路径清理证据。
+- FR-004：T006 的真实密码学 helper 不是 Provider 授权拒绝网络证据。
+- FR-012：T003 原装配验收缺失已写回任务，尚未执行或证明一致。
+- FR-005/011：现有 unit 不代替真实进程 integration；T004 不应被依赖图漏掉。
+- SC-003--006：没有本 Spec 同源完整矩阵、local-suite inventory、SIF/Tiger
+  或唯一 closure；未来 evidence 路径均明确标记 planned。
+- R003 的清单记录旧文件“无层声明”却给 PASS，不能解释为逐文件要求已
+  全满足。本轮保护 Spec180，历史覆盖缺口由 T007 的当前清单承接。
+- 未发现需新增模型、网络服务或撤销任务的依据；现有 T 任务可承接修复。
 
-## 原则 2：必要性与 Occam
+## Readiness Scorecard
 
-**结论：PASS。**
+| Principle | Status | Rationale |
+|---|---|---|
+| 1 Intent fidelity | PASS（设计范围） | 保留 YOLO 功能闭环及既定延期，不扩展性能结论。 |
+| 2 Necessity and Occam | PASS（修复规划） | 复用既有机制，不新增协议；grant 与装配各自有验收价值。 |
+| 3 Architecture and ownership | BLOCK | 设计归属已澄清；native 生产路径与注册表消费未闭合。 |
+| 4 Cross-document consistency | PASS（修订后设计） | 统一权威、撤销边界、七子用例、验收依赖与映射。 |
+| 5 Code fact verification | BLOCK | A01/A02/A07 的源码距离明确且保留未完成状态。 |
+| 6 Security and distributed correctness | BLOCK | 摘要替换已修复；前置授权、存储、清理、策略仍有缺口。 |
+| 7 Task executability | PASS（修订后计划） | 12 个内聚任务；定向修复→审计→资格，包含 T004。 |
+| 8 Validation design | BLOCK（当前实现） | 已写明 production 断言；Y-N-E oracle 与重试器仍需修复。 |
+| 9 Evidence integrity | BLOCK（资格） | 旧 PASS 降为诊断，34 项回归严格为 unit；没有新矩阵。 |
+| 10 Frozen evidence protection | PASS（本轮变更边界） | 未修改 Spec180 冻结证据；不认可重试器覆盖行为。 |
+| 11 Migration and rollback | CONDITIONAL PASS | 延期与临时路径 owner/删除条件明确，删除验收仍待执行。 |
+| 12 Verdict gate | BLOCK | A01/A02/A04/A05/A07/A08 未闭合，禁止资格晋升。 |
 
-- AEAD 派生复用既有 `HKDF`/`AESGCM` 原语（`protected_artifacts.py`
-  已 import），未引入新密码学库;native 侧全部 OpenSSL EVP
-  （`NativeGrantVerifier.cpp`），无第三方依赖。
-- `verify_and_unwrap_grant`/`AuthorityBackedGrantProvider`/
-  `canonical_grant_name` 全部复用 Spec 180 资产（提交 `d36438c2`），
-  未重造。
-- `NativeGrantVerifier` 编译进 `_ndnsf` 扩展（`pythonWrapper/setup.py`）
-  而非重复实现于 Core 库——DI 层组件归属正确。
-- 变异构造器（`grant_mutations.py`）同时服务 runner 聚焦 probe、
-  user.py binding seam 与 T003 向量生成，单一实现三处消费。
+## Metrics and Task Cohesion
 
-## 原则 3：架构与归属
+4 user stories；14 FR；6 SC；12 T tasks，4 个历史 R safeguards 独立记录。
+本次 10 个发现：8 HIGH、2 MEDIUM；4 个文档/代码/上下文发现已关闭，
+其他按表中状态执行。T001/T002 因 Python/native owner 与验收边界不同
+保留；T003 负责跨语言等价性；T006 构造与生产拒绝，T005 同源矩阵。
+未发现需要机械拆分“测试/实现/跑测试”的理由。
 
-**结论：PASS。**
+## Evidence Limits
 
-- 通用编码/密码学在 `core/protected_artifacts.py`（Core 层）;操作者
-  密钥加载在 `security/registry_keys.py`;requester 组合逻辑在
-  `security/requester_grant_pipeline.py`;Provider 装配接线在
-  `provider.py`（APP 层）;native 验证在 `cpp/ndnsf-di/`
-  （DI 层）。无 YOLO 特判进入 Core——`_PROTECTED_ASSEMBLY_STORAGE_PROFILE`
-  是通用 workdir profile，非 workload 特判。
-- runner（`Experiments/`）不承载密码学逻辑，只调用
-  `security.grant_mutations`。
-- 错误码家族统一：Python 侧 `ProtectedGrantRejected` →
-  `DI_PROTECTED_GRANT_REJECTED`;native 侧同名字符串家族
-  （`NativeGrantVerifier.cpp` verifyAndUnwrapNativeGrant 各拒绝分支）。
+- 文档声称：revision 5 规定待完成行为；不是实现 PASS。
+- 代码实现：CodeGraph 首查后用工作区精确路径核对；其初次结果混入
+  临时历史副本，已排除，不能用索引健康代替生产事实。
+- 测试执行：本轮仅重跑 grant 引用修复的 34 项 unit/seam 回归；旧
+  2682、143、9-vector 等记录未在本轮重新执行，不作当前通过声明。
+- 实验测量：本轮未启动 MiniNDN、SIF 或 Tiger。当前原始
+  `/tmp/spec181-y-n-run/yb39.log` 六次 `control` startup 失败，
+  包装脚本 `EXIT=0` 不是 Y-B PASS，也不足以归因 OOM/transport 竞态。
+- 工作区起始 775 条预存变更，不是已封印候选；提交只包含本轮明确路径。
 
-## 原则 4：跨文档一致性
+## Next Actions
 
-**结论：PASS（随 T005 结果更新 executed 层）。**
-
-- spec.md FR-013 的派生公式
-  （`K_bundle = HKDF(epochContentKey, "NDNSF-DI/assembled/v1" ||
-  modelManifestDigest || roleAssemblySpecDigest ||
-  storageProfileDigest)`）与实现
-  `protected_artifacts.py:assembled_kdf_context()` 逐字一致;契约
-  `specs/170/contracts/artifact-assembly-v1.md:204-212` 同源。
-- 信封 alg 字段三方一致：Python `RecipientEnvelopeV1.__post_init__`
-  （`protected_artifacts.py:92-100`）、native
-  `verifyAndUnwrapNativeGrant` 的 X25519/P-256 分支、Spec170 契约。
-- 绑定上下文 canonical JSON 双侧一致（T003 向量锁定证明——
-  `tests/fixtures/spec181/grant-vectors-v1.json` 9 case 双侧逐字节
-  一致）。
-- traceability.md 的 FR→task→evidence 映射已随实现更新（revision 4
-  + Source-owner status）。
-
-## 原则 5：代码事实核查
-
-**结论：PASS。**（CodeGraph 证据 + 编译/测试验证）
-
-- `verify_and_unwrap_grant`（`core/protected_artifacts.py:444`）：
-  调用方 = provider.py `_qualify_protected_assembly`、T003 双侧测试、
-  Y-N-E 变异测试;全部真实调用。
-- `AuthorityBackedGrantProvider.__call__`
-  （`security/grant_provider.py:101-155`）：签发 → 校验 → binding;
-  `requester_grant_pipeline.build_in_process_grant_provider` 组装真实
-  发布路径。
-- `_qualify_protected_assembly`（`provider.py:1364`）在 wrapped()
-  装配调用点（`provider.py:2524`）真实接线;handler finally 零化
-  （`provider.py:2700`）。
-- `verifyAndUnwrapNativeGrant`（`NativeGrantVerifier.cpp`）：
-  C++ unit tests 消费固定向量（`distributed-inference-native-grant-verifier.t.cpp`）;
-  pybind 面 `verify_and_unwrap_native_grant`（`_ndnsf.cpp`）由
-  T003/Y-N-E 测试真实调用。
-- 编译事实：waf build-system-j2 全绿（2 次构建）;`_ndnsf` 经
-  `scripts/spec180_native_build.py build` 重建
-  （`SPEC180_NATIVE_IDENTITY_OK`）。
-- 测试执行事实：unit 层 32+28+7+6+9+3 用例全绿;spec181/runner
-  合计 143 passed;全量 Python 回归 2682 passed（1 个预存基线漂移
-  `test_authorization_evaluation` 与本 spec 无关，已记录）。
-
-## 原则 6：安全与分布式正确性
-
-**结论：PASS（本地;网络层由 T005 矩阵执行验证）。**
-
-- 认证链：requester 签名（`GrantRequestV1.sign`）→ 权威策略校验
-  （`ArtifactPolicyAuthority.issue`）→ 权威签名（Ed25519）→ Provider
-  双侧验证（签名 + 非循环 digest + 过期 + 绑定 + AEAD）。每层失败
-  关闭。
-- 重放/新鲜度：grant 过期强制（`verify`/`verifyAndUnwrapNativeGrant`
-  的 expiry 分支）;`(K_entry, nonce)` 一次性（`os.urandom(12)`
-  每次加密）。
-- AAD 绑定：信封 AAD = canonical binding context——跨请求/attempt/
-  core/model/纪元复用信封在 AEAD 认证层失败（Spec 180 设计 +
-  T003 向量 6 个负例证明）。
-- 密钥材料：权威私钥 mode 0600 强制（`registry_keys.py:
-  _check_private_mode`）;manifest 不含明文密钥
-  （`test_manifest_exposes_no_plaintext_key_material`）;租约零化
-  （`PlaintextLeaseRegistry.zeroize_all` 在 handler finally +
-  失败路径）。
-- fail-closed：保护纪元下无 grant binding / fetch 失败 / 密钥未配置
-  / AEAD 失败 → `DI_PROTECTED_GRANT_REJECTED`（全部负例测试覆盖）。
-- native `ProtectedRuntime` 状态机：verifyGrant 失败关闭（R002）、
-  cancel 从 FailedClosed 排空（修正后 6 C++ 用例）。
-
-## 原则 7：任务可执行性
-
-**结论：PASS。**
-
-- 12 任务（R001-R004 + T001-T012 中本切片落地 8 项）每个任务绑定
-  具体文件、行为结果、三层验收;无机械拆分（tasks.md 内聚规则）。
-- 每任务证据文件头部声明证据层;不存在"写测试/实现/跑测试"的伪
-  拆分。
-
-## 原则 8：验证设计
-
-**结论：PASS（本地执行部分;MiniNDN 矩阵 6/7 通过，Y-N-I 修复重跑中）。**
-
-- 纯函数/编码层 → unit（无 NFD、无跨进程）;真实生产链 →
-  integration（进程内权威真实签发、双侧 verifier 真实调用）;
-  网络功能 → MiniNDN（T005 的 Y-N 七子用例 + T008 的 Y-A/Y-B/Y-N）。
-- 小模型 CPU 为资格对象（plan.md AD5）;GPU 只在 S5 Tiger。
-- parity 固定向量（T003）使双侧一致性可复现、非机会性。
-
-## 原则 9：证据完整性
-
-**结论：PASS（现有证据）;T005/T008 的 measured 层待矩阵完成。**
-
-- 每个证据文件头部四层声明（r001-r004、t001-t004、t006 均遵守）。
-- T001/T002 证据明确声明 integration/MiniNDN 由 T005 覆盖，不把
-  unit 冒充 integration（诚实声明边界）。
-- Spec 180 的 29 个编码测试作为回归基线（不冒充本 spec 资格）。
-
-## 原则 10：冻结证据保护
-
-**结论：PASS。**
-
-- Spec 180 全树冻结（spec.md 输入声明 + r003 审计确认 105 个
-  证据文件带失效横幅）;本 spec 不修改 Spec 180 文件。
-- 本 spec 证据新目录（`specs/181/evidence/`），引用式继承不复制。
-- 预存失败（`test_authorization_evaluation` 基线漂移）如实记录、
-  不静默跳过（deselect 运行已记录）。
-
-## 原则 11：迁移与回滚
-
-**结论：PASS。**
-
-- plaintext-v1 路径零改动：`_qualify_protected_assembly` 仅在
-  `protection_epoch != "plaintext-v1"` 时进入;所有 Spec 175/180
-  plaintext 回归保持绿色（2682 passed）。
-- 撤销/独立权威/纪元轮换三项延期在 spec.md Out of Scope 有明确
-  集成条件与删除标准;`revocation_sequence=1` 线编码不变。
-- `GRANT_WIRING_AVAILABLE` 的 R004 门禁已被 T001/T002 吸收（翻转
-  commit `66f6ce55`）：保护纪元请求进入真实 verifier 路径，未接线
-  时的失败关闭语义由 `DI_PROTECTED_GRANT_REJECTED` 家族承担。
-
-## 原则 12：结论门禁
-
-**当前裁决：CONDITIONAL PASS**——条件 = T005 MiniNDN 矩阵七子用例
-全部注册结果通过（6/7，Y-N-I 修复重跑中）+ Y-B 保护纪元 grant 往返
-（重跑中）+ T008 本地资格（Y-A/Y-B/Y-N）完成。
-BLOCK 项：无。HIGH：无。
-
-审计发现列表（每项附 file:line 与关闭回归）：
-- （已关闭，T006 阶段）runner 矩阵 UNAVAILABLE 路径残留 → 删除 +
-  143 项回归。
-- （已关闭，R002 阶段）`cancel()` FailedClosed 早退导致无法干净
-  排空 → 修正 + 6 C++ 用例。
-- （无发现）其余原则未发现需修复项。
+1. T001：在装配前完成独立绑定与授权；补注册表消费、模型/weights 密文
+   读取及全错误路径清理，建立真实发布/获取的定向进程测试。
+2. T002/T003：接入 native 授权 runtime，并完成 grant 与装配两组 parity。
+   T004 同时补当前 build 的真实就绪/取消证据。
+3. T006/T005：移除 User probe 的资格用途，修复真实变异与重试证据边界。
+4. T007 对同一源/构建/有效配置重新审计；只有新 PASS 才执行 T005/T008。
+5. 本地资格通过后按 T009→T010→T011→T012 晋升；历史结果不得拼接。

@@ -1,5 +1,8 @@
 # R001 — Y-N-E 诚实化（UNAVAILABLE until T006）
 
+> **Current scope correction (revision 5, 2026-09-05)**: 历史 R001 的 unit 结果保留。当前 T006 的进程内 probe 尚未满足生产变异验收，其 PASS 不得晋升为网络安全证据。
+> 当前裁决与下一步以 [audit.md](../audit.md) 为准，以下保留为原始范围记录。
+
 **Layer**: implemented（runner + user.py + unit tests）;executed（96 项
 Python unit 测试全绿，2026-09-05）;无 measured 声明。
 

@@ -6,14 +6,14 @@
 
 **Created**: 2026-09-05
 
-**Status**: `PLANNED`（继承 Spec 180 的未完成实现与资格认证工作；
+**Status**: `IN_PROGRESS / BLOCK`（修订 5：G0 实现与证据缺口尚未闭合；
 Spec 180 已按所有者决定关闭，其契约、冻结证据与失效声明保持权威。）
 
 **Input**: Spec 180 修订 125 的迁移清单；Spec 170
 `contracts/artifact-assembly-v1.md`（受保护工件授权契约）；Spec 180
 `contracts/`（目录信任、runner 契约、信任根注册表，全部原样继承）。
 
-## 中文叙述：本 spec 的目标
+## Goal
 
 Spec 180 的教训是：范围反复扩张、审计循环替代执行、负裁决假 PASS、
 seam-only 证据。本 spec 只做一件事——把 180 遗留的实现与资格认证工作
@@ -30,16 +30,40 @@ SIF 通过 exact-SIF replay，并在 Tiger 上完成一次 cold Y-B 请求**。
 native Provider 运行时边界、Tiger 提交机制全部继承 180 的实现与契约；
 本 spec 不引入新协议、新放置策略、新模型或新范围。
 
+## User Scenarios & Testing
+
+### User Story 1 - Protected Artifact Execution (Priority: P1)
+
+请求方获得签名且面向选定 Provider 加密的 grant，Python 与 native
+Provider 在装配/加载前完成授权，并在成功、取消及失败时清理全部秘密。
+独立验收：真实发布与精确名获取、正负授权及装配字节 parity；对应 T001--T004。
+
+### User Story 2 - Registered Negative Outcomes (Priority: P1)
+
+操作者能将真实授权拒绝与启动、网络、收集器故障区分。Y-N-E 变异必须
+到达请求选中的 Provider；进程内 verifier probe 仅为 unit 证据。
+独立验收：T006 定向生产链变异与 T005 同源七子用例矩阵。
+
+### User Story 3 - Auditable Local Qualification (Priority: P2)
+
+操作者先获得当前源与有效配置的收敛审计 PASS，再执行受监督的本地
+资格套件。审计验收不依赖随后产生的资格结果；对应 T007、T008。
+
+### User Story 4 - Immutable Release and One Tiger Request (Priority: P3)
+
+操作者把同一源、候选及模型身份绑定至 SIF replay 与一次 Tiger 请求，
+保留失败和清理结果，最后只发出功能裁决；对应 T009--T012。
+
 ## Requirements *(mandatory)*
 
 ### Functional Requirements
 
-- **FR-001** — **继承的授权契约**。受保护工件授权沿用 Spec170
+- **FR-001** — **Inherited Authorization Contract**。受保护工件授权沿用 Spec170
   `artifact-assembly-v1` 的 KeyGrantV1 流程（seal core → 签名请求 →
   策略校验 → 接收者加密 grant → finalize → Provider 解包）。已落地的
   规范编码与真实权威（提交 `d36438c2`）是本 spec 的起点；HMAC/`repr`
   脚手架不得作为任何资格输入，`plaintext-v1` 不得充当保护纪元。
-- **FR-002** — **进程内权威与既有发布路径**。功能切片内授权的策略
+- **FR-002** — **In-process Authority and Publication**。功能切片内授权的策略
   权威运行在请求方（user）进程中：加载注册表
   `artifactPolicyAuthority` 条目的私钥（git 外，mode 0600），校验
   请求方签名、模型/纪元策略、Provider 身份与封存 core/grant-view
@@ -47,50 +71,53 @@ native Provider 运行时边界、Tiger 提交机制全部继承 180 的实现�
   `ServiceUser.publish_signed_app_data` 路径发布，供 Provider 按规范名
   精确获取。本切片不新增网络服务前缀；独立权威服务（生产形态的信任
   域分离）是延期项（见 Out of Scope）。
-- **FR-003** — **Provider 双侧解包一致性**。Python Provider 装配路径与
+- **FR-003** — **Provider Grant Verification Parity**。Python Provider 装配路径与
   native `ProtectedRuntime` 必须按规范名精确获取 grant，校验权威签名、
   全部绑定字段与过期，解包内容密钥，注册明文租约并在清理时零化。
   错误收件人、跨请求/attempt/core/model/纪元绑定或过期的 grant 必须
   在认证层失败关闭（Python 与 native 行为一致，用同一跨语言向量
   验证）。撤销校验由所有者的另一分支负责（见 Out of Scope）。
-- **FR-004** — **Y-N-E 真实变异**。Y-N-E 子用例必须让一个真实的 grant
+  grant payload 摘要必须匹配 Selection 的 `GrantBindingV1.grant_digest`；
+  grant 自述字段不得替代独立封印的模型、策略或身份预期值。
+- **FR-004** — **Production Grant Mutation**。Y-N-E 子用例必须让一个真实的 grant
   变异（过期、错误收件人或伪造签名）到达已实现的 verifier 并断言
-  其在授权边界被拒；合成纪元异常不得充当该证据。被撤销/过期纪元
-  的授权拒绝以保护纪元绑定失败表达。
-- **FR-005** — **三层测试标准**。每个实现任务必须交付：① 单元测试
+  其在选定 Provider 的授权边界被拒；合成纪元异常或 User 进程内
+  verifier probe 不得充当该证据。过期 grant 与跨纪元绑定是独立负例，
+  均不代表已实现撤销。
+- **FR-005** — **Three-layer Validation**。每个实现任务必须交付：① 单元测试
   （focused red/green + 变异）；② 集成测试（真实生产调用链，见
   tasks.md 的集成测试设计标准）；③ 适用任务的 MiniNDN 小模型 CPU
   测试。集成测试的每个用例必须命名其覆盖的生产入口、注册的拒绝原因
   与边界位置；无关失败、错误生命周期相位、内部策略异常不得充当
   预期结果。禁止 seam-only、mock 替换被测生产链、标签 PASS 的证据。
-- **FR-006** — **本地资格认证**。从同一个源身份（提交哈希）出发，
-  MiniNDN 小模型 CPU 必须执行 Y-A、Y-B 与 Y-N 全矩阵（Y-N-C/P/R/I/E/L）
+- **FR-006** — **Local Qualification**。从同一个源身份（提交哈希）出发，
+  MiniNDN 小模型 CPU 必须执行 Y-A、Y-B 与 Y-N 全矩阵（Y-N-O/C/P/R/I/E/L）
   直至终端 Response 或注册边界拒绝，全量子进程退出状态收集、零泄漏
   明文/密钥能力、清理完整。
-- **FR-007** — **设计-代码收敛审计**。正式资格认证前必须通过一次
+- **FR-007** — **Design-code Convergence Audit**。正式资格认证前必须通过一次
   code-aware 收敛审计（12 原则、四层证据分离：文档声称/代码实现/
   测试执行/实验测量）；BLOCK 项修复并回归后才允许后续门。
-- **FR-008** — **不可变候选与 SIF**。S1 候选封印绑定提交哈希、契约、
+- **FR-008** — **Immutable Candidate and SIF**。S1 候选封印绑定提交哈希、契约、
   注册表、权威公钥摘要、模型工件与 oracle；S4 的本地 SIF 哈希必须
   通过 exact-SIF Y-B replay（rev-123 就绪修复之后的运行时）。
-- **FR-009** — **一次 Tiger 功能提交**。S5 通过 host-NFD node-local
+- **FR-009** — **Single Tiger Functional Submission**。S5 通过 host-NFD node-local
   launcher 提交一次 `yolo-functional`（一节点、一 RTX、四 Provider
   进程、一次 cold Y-B），产出结构化终局证据。
-- **FR-010** — **声称边界**。最终报告不得声称 Qwen、多 GPU、吞吐、
+- **FR-010** — **Claim Boundary**。最终报告不得声称 Qwen、多 GPU、吞吐、
   延迟、扩展或性能结论；不得复用任何 Spec 175/180 历史 PASS 作
   本 spec 证据。
-- **FR-011** — **就绪边界修复**。Python `start()`/`start_background()`
+- **FR-011** — **Readiness Boundary**。Python `start()`/`start_background()`
   的就绪等待必须大于 Core 探针 deadline（建议 15000 ms 对 10 s）；
   `stop()` 在探针进行中不得热转事件循环至 deadline。
-- **FR-012** — **装配 parity**。Python `assemble_certified_onnx_model`
+- **FR-012** — **Assembly Byte Parity**。Python `assemble_certified_onnx_model`
   与 native `NativeCanonicalOnnxAssembler` 对同一 canonical ONNX + 同一
   recipe 必须产出相同装配字节摘要；该 parity 用固定向量测试锁定。
-- **FR-014** — **诚实化先行**。修正任务（tasks.md Phase 0，R001--R004）
-  先于所有实现任务执行：在真实机制接线前，相关路径必须失败关闭或
+- **FR-014** — **Fail-closed Evidence Boundary**。修正任务（tasks.md Phase 0，R001--R004）
+  确立的约束在实现与定向修复期间持续有效：真实机制接线前，相关路径必须失败关闭或
   报告 `UNAVAILABLE`，禁止合成拒绝充当注册拒绝原因、禁止状态冒充
   （如仅凭绑定比对进入 `GRANT_VERIFIED`）、禁止明文路径冒充保护纪元
-  执行。修正任务随对应实现落地被吸收，不长期存留。
-- **FR-013** — **内容密钥真实消费**。解包出的内容密钥必须被真实的
+  执行。对应生产验收闭合后才吸收临时门；允许为已命名缺口进行定向修复。
+- **FR-013** — **Content-key Consumption and Cleanup**。解包出的内容密钥必须被真实的
   密码学操作消费，禁止"验证授权但密钥闲置"的授权剧场。功能切片内
   的最小真实消费：装配产物按 Spec170 契约的 `DISK_CIPHERTEXT_ASSEMBLED`
   语义 AEAD 加密暂存于 Provider 工作目录——
@@ -101,11 +128,14 @@ native Provider 运行时边界、Tiger 提交机制全部继承 180 的实现�
   以 `DI_PROTECTED_GRANT_REJECTED` 关闭。本切片内保护纪元固定不
   轮换（单一 `spec180-yolo-protected-v1`）；纪元轮换机制是生产延期
   项（见 Out of Scope）。
+  保护范围包含 `MODEL_PROTO` 与全部 ONNX external-data 工件；未加密、
+  未登记租约的 `.weights` 副本不能作为受保护加载结果。授权校验必须
+  先于装配器的明文加载/ORT 检查；清理不得删除共享 canonical 源。
 
 ### Key Entities
 
-- **Policy authority**：签发 grant 与撤销状态的策略权威（身份/密钥/
-  策略来自注册表）。
+- **Policy authority**：本切片签发 grant 的策略权威（身份/密钥/
+  策略来自注册表）；撤销状态签发与检查属于延期子系统。
 - **KeyGrantV1**：权威签名、Provider 身份加密的内容密钥授权
   （规范编码见 Spec 180 提交 `d36438c2`）。
 - **GrantBindingV1**：进入最终 plan 的非秘密名称/摘要引用。
@@ -117,17 +147,17 @@ native Provider 运行时边界、Tiger 提交机制全部继承 180 的实现�
 
 ### Measurable Outcomes
 
-- **SC-001**：grant 往返（权威→seam→Provider 解包）正例与全部负例
-  （错误请求方/收件人/请求/attempt/core/model/纪元、过期、撤销、
+- **SC-001** — **Protected Grant Round Trip**：grant 往返（权威→seam→Provider 解包）正例与全部负例
+  （错误请求方/收件人/请求/attempt/core/model/纪元、过期、伪造签名、
   跨绑定）在单元、集成与 MiniNDN 三层全部通过；Y-N-E 真实变异拒绝。
-- **SC-002**：每个集成测试用例绑定生产入口 + 注册拒绝原因 + 边界
+- **SC-002** — **Production Boundary Assertions**：每个集成测试用例绑定生产入口 + 注册拒绝原因 + 边界
   位置；无关失败不得充当预期结果（Spec 180 假 PASS 教训的制度化）。
-- **SC-003**：一个源身份下 MiniNDN Y-A/Y-B/Y-N 全矩阵通过，全部子
+- **SC-003** — **Same-source Local Matrix**：一个源身份下 MiniNDN Y-A/Y-B/Y-N 全矩阵通过，全部子
   进程退出收集，零未收集存活进程。
-- **SC-004**：收敛审计 PASS + 本地资格认证清单（local-suite
+- **SC-004** — **Audit and Inventory**：收敛审计 PASS + 本地资格认证清单（local-suite
   inventory）完整可复现。
-- **SC-005**：一个 SIF 哈希通过 exact-SIF Y-B replay 与 Tiger Y-B。
-- **SC-006**：终局记录在单一候选身份下映射全部 FR 到代码、测试与
+- **SC-005** — **Exact-SIF and Tiger**：一个 SIF 哈希通过 exact-SIF Y-B replay 与 Tiger Y-B。
+- **SC-006** — **Single Functional Verdict**：终局记录在单一候选身份下映射全部 FR 到代码、测试与
   结构化证据，且只发出一个功能裁决。
 
 ## Assumptions

@@ -1,5 +1,8 @@
 # T003 — 跨语言 parity 向量锁定
 
+> **Current scope correction (revision 5, 2026-09-05)**: T003 当前 partial：以下结果只证明历史 grant 解包 parity；FR-012 要求的 canonical ONNX + recipe 装配字节 parity 尚无独立向量与执行证据。
+> 当前裁决与下一步以 [audit.md](../audit.md) 为准，以下保留为原始范围记录。
+
 **Layer**: implemented（向量生成器 + 固定向量文件 + 双侧消费测试）;
 executed（Python 侧 3 组 parity 测试全绿 + C++ 侧 3 用例全绿，
 2026-09-05）;无 measured 声明。

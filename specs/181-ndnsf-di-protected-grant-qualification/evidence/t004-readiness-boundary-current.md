@@ -1,5 +1,8 @@
 # T004 — 运行时就绪边界修复
 
+> **Current scope correction (revision 5, 2026-09-05)**: T004 当前 partial：以下 Python 测试使用 fake native；当前构建的真实 Controller 就绪、取消及无热转 integration 尚未闭合。
+> 当前裁决与下一步以 [audit.md](../audit.md) 为准，以下保留为原始范围记录。
+
 **Layer**: implemented（native waitUntilReady + Python seam 15000 ms）;
 executed（7 项 unit 测试全绿，2026-09-05）;无 measured 声明。
 

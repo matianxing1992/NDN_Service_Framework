@@ -1,5 +1,8 @@
 # T002 — native Provider 解包
 
+> **Current scope correction (revision 5, 2026-09-05)**: T002 当前 partial：native verifier 与 pybind 已实现，ProtectedRuntime::verifyGrant 仍失败关闭，native factory 接线未完成；Python Y-B 诊断不替代 native 验收。
+> 当前裁决与下一步以 [audit.md](../audit.md) 为准，以下保留为原始范围记录。
+
 **Layer**: implemented（NativeGrantVerifier + pybind 最小面 + C++ unit
 tests）;executed（C++ parity 测试 3 用例全绿、Python parity 测试全绿，
 2026-09-05）;无 measured 声明。

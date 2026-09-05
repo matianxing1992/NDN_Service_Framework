@@ -1,12 +1,14 @@
 # T005 — Y-N 全矩阵语义重跑（MiniNDN）
 
+> **Current status: BLOCK / NOT PROVEN (revision 5)**。下文 6/7、7/7 和不同提交的追加记录均为历史诊断，不构成同源矩阵。User 内部 Y-N-E probe 未到达选定 Provider；在 T007 新 PASS 前不得重跑完整矩阵。新 run 必须保留全部失败、唯一目录与源/配置身份。
+
 **Layer**: implemented（runner 语义 + Y-N-E 真实变异 + 矩阵收集器
 T006 吸收）;executed（2026-09-05 三次矩阵尝试，状态如下）;无
 measured 声明。
 
 Date: 2026-09-05. Source HEAD: `2f835386` 起（含 drain 修复 `28a91f47`）。
 
-## 状态：6/7 子用例通过（Y-N-I 修复验证中，诚实记录）
+## Historical Diagnostic Sequence
 
 修复链（全部提交）：
 1. **drain 位置**（`28a91f47`）：runControllerLoop 内同步
@@ -40,7 +42,7 @@ Y-N-L PASS (attempts=3)
 Y-N-I PASS (attempts=1, FAIL_CLOSED)  # 3 s 响应上界 + runner marker 门
 ```
 
-**七子用例全部通过（7/7）**。Y-N-I 重跑成功依赖最后一项修复：
+**历史跨运行汇总声称 7/7（不能晋升资格）**。Y-N-I 重跑成功依赖最后一项修复：
 publishSignedAppData 的 face.put（CS 放置，f21d0665）在 controller
 启动的 face 层引发 libndn-cxx segfault（dmesg 可见、0 字节 controller
 日志）——回滚（b4fb1d6d）后 Y-N-I 一次通过。grant 的跨节点 fetch 由
@@ -109,5 +111,6 @@ Controller/NAC 启动层，不影响已锁定的 verifier 语义。
 
 ## Verdict
 
-NOT PROVEN（矩阵未通过）。修复方向已锁定（drain 位置 + NAC
-pubparams 验证时序），后续 run 将在本文件追加 executed 记录。
+BLOCK / NOT PROVEN（当前完整矩阵未获资格）。首个未完成门是 G0，
+先修复 native 生产路径、真实变异与重试证据边界，再取得 T007 PASS。
+后续失败记录必须使用新 run-id，不覆盖这里的历史诊断。

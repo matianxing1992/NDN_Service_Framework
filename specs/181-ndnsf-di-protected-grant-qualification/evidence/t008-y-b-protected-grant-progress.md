@@ -1,5 +1,7 @@
 # T008 — Y-B 保护纪元 grant 往返（接线与调试进度）
 
+> **Current status: BLOCK / NOT PROVEN (revision 5)**。以下为 Python Provider 的历史接线与调试，不能关闭 T002 native 路径或 T008 资格。最新检查 `/tmp/spec181-y-n-run/yb39.log` 的六次尝试均为 `CASE_RUNTIME_PROCESS_START_FAILED:control`；包装脚本 `EXIT=0` 不是协议 PASS。
+
 **Layer**: implemented（requester seam、Python Provider 保护纪元路径、
 grant 发布/获取链的 7 项修复）;executed（unit 层闭环 + MiniNDN 调试
 序列）;无 measured 声明。
@@ -30,14 +32,12 @@ Date: 2026-09-05. Source HEAD: `8fe17c63`（fetch 错误消息暴露）。
 
 ## MiniNDN 层（调试中）
 
-grant 签发、发布、Provider 精确名 fetch 链在 MiniNDN 多节点下的
-逐步修复已完成（见上 5）;最终验证受 host 环境竞态阻碍（libndn-cxx
-face 层 segfault、OOM——长时间运行后恶化）。下次会话按
-`evidence/t005-y-n-matrix-current.md` 的环境清理步骤重跑
-`unshare -Urnm python3 Experiments/NDNSF_DI_YoloAckDriven_Minindn.py
---case Y-B`（env 见 /tmp/spec181-y-n-run/env-yb.sh）。
+grant 发布与获取有多次接线修改，但当前日志未证明保护 Y-B 端到端
+完成。旧记录的 OOM/face 竞态解释缺少本轮可核对的第一边界证据，
+保留为历史假设，不作为重试依据。先完成 G0 定向修复与 T007 审计；
+不得依据旧环境脚本直接启动完整 Y-B 资格。
 
 ## Verdict
 
-NOT PROVEN（MiniNDN 层）。接线与 unit 闭环完成;MiniNDN 首跑的环境
-竞态阻碍了 executed 层。
+BLOCK / NOT PROVEN。存在控制性设计/代码缺口与 control 启动失败；
+按当前 plan.md 的 G0→G1→G2 顺序继续，不能将其统称为环境竞态。

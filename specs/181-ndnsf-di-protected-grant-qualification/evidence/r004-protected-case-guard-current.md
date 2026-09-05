@@ -1,5 +1,8 @@
 # R004 — 保护纪元子用例门禁（Protected-Epoch Case Guard）
 
+> **Current scope correction (revision 5, 2026-09-05)**: 历史 R004 的 false/true 单元预演不证明生产接线；当前 GRANT_WIRING_AVAILABLE=True 及 Python Y-B 路径不关闭 T002 native 验收。
+> 当前裁决与下一步以 [audit.md](../audit.md) 为准，以下保留为原始范围记录。
+
 **Layer**: implemented（runner guard）+ executed（7 项 unit 测试全绿，
 2026-09-05）;无 measured 声明。
 

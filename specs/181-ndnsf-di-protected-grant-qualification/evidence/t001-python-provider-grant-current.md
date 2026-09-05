@@ -1,5 +1,8 @@
 # T001 — Python Provider 解包接入与 grant 发布
 
+> **Current scope correction (revision 5, 2026-09-05)**: T001 当前 partial：原 PASS 限定 unit/helper，真实进程发布/获取、前置授权和完整 external-data/异常清理尚未验收。本轮仅封印摘要替换修复通过 34 项 unit 回归，见 grant-reference-repair-20260905.md。
+> 当前裁决与下一步以 [audit.md](../audit.md) 为准，以下保留为原始范围记录。
+
 **Layer**: implemented（AEAD 派生/密文暂存、Provider 装配入口接线、
 requester 进程内权威流水线、密钥加载）;executed（32 项 unit 测试全绿，
 2026-09-05;79 项 grant 相关回归全绿）;无 measured 声明。Integration 层
