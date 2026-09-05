@@ -3419,7 +3419,7 @@ def _run_y_n_e_variants(output: Path, inputs: Mapping[str, Any]) -> None:
 
 
 def _run_y_n_matrix(output: Path, inputs: Mapping[str, Any]) -> int:
-    """Run Y-N-O live and every fixed negative through one owned dispatcher."""
+    """Run one ordered matrix; preserve and stop at the first failed subcase."""
     results: list[Mapping[str, Any]] = []
     failures: list[str] = []
     control = _new_y_n_subcase_dir(output, "Y-N-O")
@@ -3438,6 +3438,7 @@ def _run_y_n_matrix(output: Path, inputs: Mapping[str, Any]) -> int:
             _write_subcase_result(
                 control, subcase="Y-N-O", status="UNQUALIFIED",
                 outcome="CONTROL_NOT_PROVEN", reason="CONTROL_NOT_PROVEN")
+        raise RunnerError("Y_N_MATRIX_INCOMPLETE:Y-N-O")
 
     for subcase in YN_SUBCASES[1:]:
         target = _new_y_n_subcase_dir(output, subcase)
@@ -3462,6 +3463,7 @@ def _run_y_n_matrix(output: Path, inputs: Mapping[str, Any]) -> int:
                     target, subcase=subcase, status="UNQUALIFIED",
                     outcome="FAIL_CLOSED_NOT_PROVEN",
                     reason="FAIL_CLOSED_NOT_PROVEN")
+            raise RunnerError("Y_N_MATRIX_INCOMPLETE:" + subcase)
 
     # PASS rows must cover every subcase (spec181 T006: Y-N-E records a
     # registered PASS after the real mutations were verifier-rejected).

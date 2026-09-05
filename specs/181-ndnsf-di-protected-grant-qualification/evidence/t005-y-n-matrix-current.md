@@ -1,6 +1,6 @@
 # T005 — Y-N 全矩阵语义重跑（MiniNDN）
 
-> **Current status: BLOCK / NOT PROVEN (revision 5)**。下文 6/7、7/7 和不同提交的追加记录均为历史诊断，不构成同源矩阵。User 内部 Y-N-E probe 未到达选定 Provider；在 T007 新 PASS 前不得重跑完整矩阵。新 run 必须保留全部失败、唯一目录与源/配置身份。
+> **Current status: BLOCK / NOT PROVEN (2026-09-05)**。下文 6/7、7/7 和不同提交的追加记录均为历史诊断，不构成同源矩阵。T006 后续真实 Provider 变异已定向验收，见 [生产修复](t006-production-repair-20260905.md)。旧重试入口已停用，维护矩阵首个失败即停止，见 [证据保留修复](t005-evidence-repair-20260905.md)。T007 新 PASS 前不得重跑完整矩阵；新 run 保留全部失败、唯一目录与源/配置身份。
 
 **Layer**: implemented（runner 语义 + Y-N-E 真实变异 + 矩阵收集器
 T006 吸收）;executed（2026-09-05 三次矩阵尝试，状态如下）;无

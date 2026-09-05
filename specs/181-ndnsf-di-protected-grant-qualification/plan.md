@@ -95,7 +95,7 @@ native 路径相对 `NDNSF-DistributedInference/cpp/ndnsf-di/`。
 | Python grant 消费 | `provider.py` | T001 |
 | native 授权与装配 | `ProtectedRuntime.*`、`NativeGrantVerifier.*`、`NativeProviderHandler.cpp`、`NativeCanonicalOnnxAssembler.*` | T002/T003 |
 | 就绪与取消 | `pythonWrapper/ndnsf/service.py`、`pythonWrapper/src/ndnsf/_ndnsf.cpp`、`ndn-service-framework/ServiceController.cpp`（仓库相对） | T004 |
-| 负例、监督与身份 | `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py`、`scripts/run_spec181_y_n_matrix_retry.py`（仓库相对） | T005/T006 |
+| 负例、监督与身份 | `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py`（仓库相对）；旧 retry driver 已停用 | T005/T006 |
 | 审计与晋升 | 本目录及现有 `scripts/spec180_*`、`packaging/ndnsf-di-container/jobs/spec180/*`（仓库相对） | T007--T012 |
 
 ## Evidence and Failure Handling
@@ -105,6 +105,10 @@ native 路径相对 `NDNSF-DistributedInference/cpp/ndnsf-di/`。
 归因为 OOM。失败先写本 Spec 记录并更新仓库 failure index，再重试。
 诊断重试不得覆盖旧目录或汇总不同源上的首个 PASS 作为资格矩阵；
 `retry-driver-result.json` 不是维护 runner 的正式 `y-n-matrix-result.json`。
+旧 retry driver 仅保留 exit 2 的迁移提示，不执行运行或改写证据。
+没有已验证的启动前可重试分类器，因此不支持自动重试。维护矩阵
+在首个子用例失败后停止并保留原始结果；诊断后重跑必须使用新目录，
+完整矩阵的源/构建/配置身份仍按 T007/T008 的门验证。
 
 ## Migration and Rollback
 

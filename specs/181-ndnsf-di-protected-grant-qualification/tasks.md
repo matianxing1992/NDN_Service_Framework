@@ -28,7 +28,7 @@ Spec 170 `artifact-assembly-v1` 契约。
 | T002 | runtime/store 修复；20 项当前 C++、55 项存储检查；统一构建和 3 rebuilt grant parity tests PASS；live-r7 真实受保护 native Y-B、3 ORT + native Merge、正常清理 exit 0，见 `evidence/t002-native-live-repair-20260905.md` | 生产负例、取消/过期及资源上界；factory/assembler/handler 工作区接线尚未形成独立提交 |
 | T003 | grant 向量双侧消费 | FR-012 装配向量及全部绑定/算法负例覆盖 |
 | T004 | PASS：7 项 Python seam、6 项 Core 定向检查；重建后真实 Provider 等待约 83 ms、Controller 12.39 s 就绪、等待中取消约 2.3 ms 且无热转；全部线程/网络清理，见 [生命周期证据](evidence/t004-lifecycle-acceptance-20260905.md) | 本任务定向验收已闭合；后续同源正式资格仍归 T005/T008 |
-| T005 | 多源诊断子用例结果 | T007 PASS 后同源七子用例矩阵，保留所有失败 |
+| T005 | 已停用旧自动重试入口，维护矩阵首个失败即停止并保留原始结果；118 项定向检查 PASS，见 [证据保留修复](evidence/t005-evidence-repair-20260905.md) | T007 PASS 后同源七子用例矩阵，保留所有失败 |
 | T006 | PASS：153 项 Python、22 项 C++、3 rebuilt parity checks；r11/r12/r13 三种实际 Provider 拒绝及 r10 受保护正向控制通过；每次清理后 exit 0，见 [生产修复](evidence/t006-production-repair-20260905.md) | 本任务定向验收已闭合；同源正式矩阵仍归 T005/T008 |
 | T007 | 本轮 code-aware 审查与设计修正 | 当前裁决 BLOCK；控制性源码缺口闭合后重新审计 |
 | T008 | native 受保护 Y-B 定向正向控制已有证据 | T007 PASS 后执行同源本地资格清单与 Y-A/Y-B/Y-N 正式矩阵 |
@@ -38,8 +38,9 @@ Spec 170 `artifact-assembly-v1` 契约。
 三种 grant 变异完成实际发布、Provider 拒绝与身份绑定；有效 grant
 仍完成 native Y-B 推理。正向控制发现并修复冷装配期间的固定 10 s
 依赖等待上界，改用调用者请求预算且保留硬截止/取消。所有失败保留，
-仅最终正负控制用于本次验收。下一步修复 T005 重试器证据保留问题，
-并继续 T001/T002 生产闭合及 T003 装配 parity；T007 仍为 BLOCK。
+仅最终正负控制用于本次验收。T005 旧自动重试入口已停用，维护矩阵
+首个失败即停止；5 项新增回归先失败，修复后相关 118 项检查通过。
+下一步继续 T001/T002 生产闭合及 T003 装配 parity；T007 仍为 BLOCK。
 
 历史 6/7、7/7 与 `CONDITIONAL PASS` 不再作为当前状态；以
 [audit.md](audit.md) 与 [修正证据](evidence/audit-repair-20260905.md) 为准。
@@ -221,10 +222,12 @@ T 任务完成定向修复；在生产验收前保持失败关闭，并禁止晋
   验收：[MiniNDN] 七子用例全部预期结果、零未收集存活进程；证据
   `evidence/t005-y-n-matrix-current.md` 记录每子用例的拒绝原因与
   边界。Y-N-O 是 terminal control，不要求负拒绝码。
-  先定向修复 `scripts/run_spec181_y_n_matrix_retry.py`：禁止删除已有
-  attempt 目录，记录全部失败与源/配置摘要，仅允许已识别的启动前
-  故障有界重试；协议、清理、oracle 错误立即阻断。其诊断摘要不能
-  代替维护 runner 的正式矩阵产物；完整矩阵必须在 T007 PASS 后执行。
+  `scripts/run_spec181_y_n_matrix_retry.py` 已停用：旧入口 exit 2，
+  不删除目录、不启动进程、不生成结果。没有已验证的启动前故障
+  分类器，不保留自动重试。唯一矩阵入口为维护 runner，首个失败
+  立即停止、保留原始证据；诊断与 failure index 更新后才可使用新
+  run-id 重跑。正式矩阵需保留全部失败与源/构建/配置摘要，在
+  T007 PASS 后执行；旧自有 retry schema 不具备资格效力。
 
 - [x] T006 [US2] **Production Grant Mutation Rejection**。构造三种真实 grant
   变异（过期、错误收件人、伪造权威签名）供 T005 的 Y-N-E 子用例

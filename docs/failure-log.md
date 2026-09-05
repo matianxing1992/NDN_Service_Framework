@@ -19,6 +19,17 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 T005 evidence preservation (2026-09-05): focused defects CLOSED.**
+Five focused checks expose the legacy driver's destructive attempt handling,
+runtime-dependent entry, and continuation after matrix failures. No network
+processes are started. The repair retires this unsafe automatic retry path
+and makes the maintained matrix stop at its first failed subcase. Raw RED
+output is retained under `spec181-t005-evidence-repair-20260905-r1` in the
+ignored workspace temporary directory. R2 passes 118 focused checks after
+retiring the legacy entry and stopping on the first matrix failure. This is
+not formal matrix qualification; T005 remains NOT PROVEN. See
+[T005 evidence repair](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-evidence-repair-20260905.md).
+
 **Spec181 T006 positive control (2026-09-05): cold dependency timeout CLOSED.**
 All four native grants verify, but r8 Merge's first tensor-manifest fetch
 expires at the fixed 10 s no-progress bound while its producer finishes cold
