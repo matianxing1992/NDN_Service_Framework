@@ -599,6 +599,22 @@ execution counts are in
 
 Every deterministic branch in those rows remains closed by the named
 in-process cases above.
+## Amendment 2026-09-05 rows (FR-039–FR-041)
+
+Re-introduced follow-ups (`spec.md` Amendment; `tasks.md` Phase 7). New rows
+below the frozen release rows; the 2026-09-04 rows are unaffected.
+
+| Row | Level | Covers | Evidence / cases | Status |
+|---|---|---|---|---|
+| RV-U22 | compile | FR-041 — Spec179 NAC-ABE contract surface missing on upstream master ⇒ NDNSF framework build fails | `evidence/nac-abe-unpatched-contract-20260905.md` (master 1cc17d9 worktree, clean CMake prefix, `--nac-abe-prefix` rebuild, RC=1: `Consumer::clearCache`/`refreshDecryptionKey`/`getPublicParams{Name,Digest}`, `CacheProducer::refreshPublicParameters` missing) | executed 2026-09-05 |
+| RV-U23 | unit | FR-039 — `RuntimeStatusStore` atomic persist round-trip; magic/truncated/corrupt/permission negatives fail closed; disabled mode stores nothing | cases named in `tasks.md` T015 (implemented) | pending |
+| RV-I32 | component | FR-039 — runtime restart recovery: restored unexpired status decides authorization while Controller unreachable; online confirmation refresh replaces on higher version, idempotent on equal; expired/superseded/unverifiable persisted status fails closed; opt-in disabled keeps `RuntimeRestartDropsControllerStatusAndFailsClosed` behavior | cases named in `tasks.md` T015 (implemented) | pending |
+| RV-I33 | component | FR-040 — hierarchical configured trust anchor (root → intermediate CA → Controller cert) accepts live status installation; chain-external signer and broken-chain intermediate are rejected before installation | cases named in `tasks.md` T016 (implemented) | pending |
+
+FR-041 acceptance additionally re-runs the existing RV-U20/RV-U21 rows on a
+prefix rebuilt from the upstream-merged commit (external gate: upstream
+maintainer review).
+
 ## Completion Rules
 
 Revocation is not complete unless:

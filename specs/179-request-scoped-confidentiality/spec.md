@@ -626,4 +626,62 @@ reported as full packet-level coverage until those runtime modes execute.
 - Active-active Controller high availability across independent authority stores.
 - Revocation of same-process trusted `LocalServiceRegistry` calls, which do not use the NDNSF network authorization path.
 - Emergency rotation of the Controller trust anchor/signing identity; this requires a separate trust-schema migration protocol.
-- **Deferred runtime hardening (2026-09-04 release scope; owner: NDNSF maintainer)**: NAC-ABE internal cache renewal, persistent runtime-cache restoration across process restart, and production live User/Provider status installation under a configured file trust anchor. The executed release covers the normative RV-U/RV-I rows, including trust-schema validation (`ConfiguredTrustSchemaControlsControllerStatusValidation`, `LargeResponseUsesConfiguredTrustAndRequestBoundAead`), runtime restart fail-closed behavior (`RuntimeRestartDropsControllerStatusAndFailsClosed`), and Controller restart restoration (`ServiceControllerRestoresEveryRevocationKindAfterRestart`, MiniNDN `controller-restart`). Reintroduction criteria for these three items: a new spec revision that (a) names the concrete failure mode each item protects against, and (b) assigns an FR plus an RV-U/RV-I matrix row before implementation. See `evidence/release-gate.md` (Unrun section) and `AUDIT.md`.
+- ~~Deferred runtime hardening (2026-09-04 release scope)~~ — **superseded by the 2026-09-05 Amendment (FR-039–FR-041) below**: persistent runtime-cache restoration across process restart, and production live User/Provider status installation under a configured file trust anchor are re-introduced in this revision with named failure modes, FRs, and RV rows. NAC-ABE internal cache renewal as such remains out of scope: the executed release already renews the Consumer/Producer cache through the patched API (`clearCache`/`refreshDecryptionKey`/`refreshPublicParameters`), and upstreaming that contract surface is FR-041. The 2026-09-04 release claim is unaffected; its executed trust-schema validation (`ConfiguredTrustSchemaControlsControllerStatusValidation`, `LargeResponseUsesConfiguredTrustAndRequestBoundAead`), runtime restart fail-closed behavior (`RuntimeRestartDropsControllerStatusAndFailsClosed`), and Controller restart restoration (`ServiceControllerRestoresEveryRevocationKindAfterRestart`, MiniNDN `controller-restart`) remain normative evidence.
+
+## Amendment 2026-09-05 — runtime-hardening follow-ups (FR-039–FR-041)
+
+This revision re-introduces the three recorded follow-ups by naming the
+concrete failure mode each protects against and assigning an FR plus
+RV-U/RV-I rows (see `tasks.md` Phase 7 and `validation-matrix.md`
+"Amendment 2026-09-05 rows"). Each FR is satisfied only by its listed
+executed evidence; none changes the 2026-09-04 release claim.
+
+- **FR-039**: A User or Provider runtime MAY persist its accepted per-service
+  Controller status in an explicitly enabled durable mode; when enabled, the
+  runtime MUST atomically store each accepted `PolicyStatusData` wire (with
+  its signature) plus the bound public-parameter name/digest and
+  ControllerVersion, MUST fail closed on a missing, truncated, or
+  unverifiable store (today's restart behavior stays the default), MUST
+  restore only statuses that are unexpired and never superseded by a version
+  the process itself observed, MUST immediately schedule a bounded online
+  confirmation refresh and accept the Controller's signed answer as
+  authority (higher version replaces; equal version is idempotent), and MUST
+  keep deciding authorization from the restored status when the Controller is
+  unreachable until expiry or a higher observed version. Restoring status
+  restores authorization and refresh decisions only: decrypting protected
+  request/response material still requires a fresh DKEY from the reachable
+  AA, so an offline Controller with an offline AA cannot decrypt new
+  traffic — this online-material limitation is unchanged from the release
+  and is recorded, not hidden. Failure mode: today
+  (`RuntimeRestartDropsControllerStatusAndFailsClosed`) a runtime restart
+  discards still-valid authority even though FR-037 guarantees equal-version
+  continuity only inside one process lifetime, so a restart during a
+  Controller outage turns a bounded outage into an unbounded one and forces a
+  full online bootstrap on every restart. Rows: RV-U23 (unit), RV-I32
+  (component restart recovery). Design guidance and the opt-in
+  configuration are in `plan.md` Amendment guidance.
+- **FR-040**: Controller status installation MUST validate under a
+  hierarchical configured trust anchor of arbitrary depth (anchor → one or
+  more intermediate CAs → Controller certificate), not only a directly
+  anchored Controller certificate; a signature from any certificate outside
+  the anchored chain MUST fail closed before installation. Failure mode: the
+  release executed trust-schema validation only with the Controller
+  certificate directly anchored (or `trust-any`), so a production
+  hierarchical PKI deployment has no executed evidence that live status
+  installation works under its schema. Rows: RV-I33 (component hierarchical
+  accept/reject). The framework's `ValidatorConfig`-based schema loading is
+  reused; no trust-schema redesign is intended.
+- **FR-041**: The Spec179 NAC-ABE dependency contract — DKEY segments with
+  `FreshnessPeriod=0` (grant-only replacement cannot be hidden by a fresh
+  Content Store copy), `Consumer::clearCache`/`refreshDecryptionKey`/
+  `getPublicParams{Name,Digest}`, `CacheProducer::refreshPublicParameters`
+  — MUST be accepted into the upstream NAC-ABE repository through
+  maintainer review, and the NDNSF build prefix MUST then be rebuilt from the
+  upstream commit with the RV-U20/RV-U21 gate re-run on that rebuild. Failure
+  mode: the contract surface exists only on the local, unpushed NAC-ABE
+  `Experimental` branch (`b1c9c4f`), so any clean environment fails the
+  NDNSF build (compile-contract evidence `RV-U22`,
+  `evidence/nac-abe-unpatched-contract-20260905.md`) and the dependency is
+  one lost local branch away from unbuildable. Row: RV-U22 (compile
+  contract, executed 2026-09-05) plus re-execution of RV-U20/RV-U21 on the
+  upstream-pinned rebuild as the acceptance step.

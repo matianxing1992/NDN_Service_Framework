@@ -51,34 +51,62 @@
 - [x] T013 Re-run gates in unit → integration → MiniNDN order, compare every FR/SC and every RV-U/RV-I row with code and evidence, verify affected failures and matched unaffected controls, audit every security-critical transition for a fail-open branch, verify no private key/plaintext leakage, record measured versus implemented versus unrun claims, and write `specs/179-request-scoped-confidentiality/traceability.md`, `specs/179-request-scoped-confidentiality/AUDIT.md`, and `specs/179-request-scoped-confidentiality/evidence/release-gate.md`; do not mark confidentiality or revocation complete while any normative matrix row is missing
   **Executed 2026-09-04**: gates re-run in unit → integration order on the post-removal binary (unit suites `RequestScopedConfidentiality`/`ControllerRevocationPolicy`/`ControllerRevocationState`/`GenericDynamicApi` exit 0; integration `ControllerRevocationFlow` 38/38 + `ControllerVersionRefresh` 1/1 + `RequestScopedSelection` 3/3 + `RequestScopedResponseConfidentiality` 4/4 + `Spec175InvocationStream` 19/19); the MiniNDN campaign ran 14/14 scenarios `gatePassed=true` the same day before removal, and removal touched only branches the campaign never executes. Every FR-001–FR-038 and SC-001–SC-022 is traced in the rewritten `traceability.md`; every RV-U01–RV-U21 and RV-I01–RV-I31 row and every security-critical negative branch has an executed mapping in `validation-matrix.md`. Fail-open audit (T013): provider and user large-response handling fail closed with typed errors, no plaintext fallback and no resurrected service-wide carrier exists, no residual reference to removed symbols remains, and failures carry redacted typed reasons with no key/plaintext in telemetry or traces. Release audit written to `AUDIT.md` (verdict PASS, R179-H0A/H0B/H0C/M1 RESOLVED) and `evidence/release-gate.md` (implemented/executed/measured/unrun layers). Two documented non-goals remain: the pre-existing out-of-scope DI codec SIGFPE in the full monolithic unit target, and NAC-ABE internal cache/persistent-restart/production-trust-schema extensions beyond the executed rows — neither is a missing normative matrix row.
 
-## Phase 7: Deferred follow-ups (recorded 2026-09-05; outside the release gate)
+## Phase 7: Runtime-hardening follow-ups (Amendment 2026-09-05, FR-039–FR-041)
 
-These three items are formally out of scope for the 2026-09-04 release
-(`spec.md` `## Out of Scope` — deferred runtime hardening). Each has an
-owner and an entry condition; none blocks the release claim. A new spec
-revision that wants one of them MUST (a) name the concrete failure mode
-the item protects against and (b) assign an FR plus an RV-U/RV-I matrix
-row before implementation.
+Re-introduced by the 2026-09-05 spec amendment. Each task names the failure
+mode it protects against in `spec.md` (`FR-039`–`FR-041`) and is satisfied by
+its listed executed evidence rows (`RV-U22`, `RV-U23`, `RV-I32`, `RV-I33`).
+Implementation order: T016 (smallest, no framework change) → T015
+(new durable store + restore path) → T014 (upstreaming, external gate).
+The 2026-09-04 release claim and its rows are unaffected.
 
-- [ ] T014 [deferred] Promote the local NAC-ABE Spec179 dependency patches
-  (DKEY `FreshnessPeriod=0`, versioned exact public-params fetch,
-  consumer cache invalidation/DKEY-only refresh fence — currently only on
-  the local NAC-ABE `Experimental` branch, commit `b1c9c4f`, not pushed)
-  into the upstream NAC-ABE repository, then rebuild the NDNSF Spec179
-  prefix from the upstream commit and re-run the RV-U20/RV-U21 gate.
-  Entry condition: upstream maintainer review; owner: NDNSF maintainer.
-- [ ] T015 [deferred] Persistent runtime-cache restoration across process
-  restart (today a restart drops installed Controller status and fails
-  closed, `RuntimeRestartDropsControllerStatusAndFailsClosed`). Entry
-  condition: a named failure mode where fail-closed refetch is
-  insufficient (e.g., Controller unavailable while stale-but-valid status
-  is safe to reuse); owner: NDNSF maintainer.
-- [ ] T016 [deferred] Production live User/Provider status installation
-  under a configured file trust anchor beyond the executed
-  `LiveControllerStatusRefreshRejectsRevokedRenewal` /
-  `LargeResponseUsesConfiguredTrustAndRequestBoundAead` coverage. Entry
-  condition: a named production trust-schema scenario not already
-  exercised; owner: NDNSF maintainer.
+- [ ] T014 Promote the local NAC-ABE Spec179 dependency patches (DKEY
+  `FreshnessPeriod=0`, versioned exact public-params fetch, consumer cache
+  invalidation/DKEY-only refresh fence — local NAC-ABE `Experimental`
+  branch, commit `b1c9c4f`, not pushed) into the upstream NAC-ABE
+  repository, then rebuild the NDNSF Spec179 prefix from the upstream commit
+  and re-run the RV-U20/RV-U21 gate on that rebuild. **FR-041**. Local
+  work: upstreaming package (split-PR description for the one-line
+  freshness fix vs the API-contract extension, mapping each patched symbol
+  to its Spec179 use), compile-contract evidence row RV-U22 (executed
+  2026-09-05, `evidence/nac-abe-unpatched-contract-20260905.md`).
+  Acceptance: upstream maintainer merges the contract (external gate —
+  push/PR require the NDNSF maintainer's explicit go), then the rebuilt
+  prefix from the upstream commit passes RV-U20/RV-U21. Owner: NDNSF
+  maintainer.
+- [ ] T015 [FR-039] Persistent runtime-cache restoration across process
+  restart, opt-in (`NDNSF_PERSIST_RUNTIME_STATE`): atomic store of accepted
+  per-service `PolicyStatusData` wire + bound public-parameter name/digest +
+  ControllerVersion; fail closed on missing/corrupt store (today's
+  `RuntimeRestartDropsControllerStatusAndFailsClosed` behavior remains the
+  default); restore only unexpired, never-superseded statuses; immediate
+  bounded online confirmation refresh whose Controller answer is authority;
+  restored status keeps deciding authorization while the Controller is
+  unreachable until expiry or a higher observed version; DKEY material never
+  persisted (online-material limitation recorded, not hidden). Files: new
+  `RuntimeStatusStore.*` (reuse `ControllerGenerationStore`'s fenced-writer,
+  magic+atomic-rename, corrupt-fail-closed pattern), `ServiceUser.cpp`,
+  `ServiceProvider.cpp`, `PolicyRefreshCoordinator.cpp`, focused tests.
+  Rows: RV-U23 (unit), RV-I32 (component restart recovery). Acceptance:
+  store round-trip/corrupt/permission negatives; restart recovery with
+  online-higher-version replacement and equal-version idempotence; expired
+  and superseded persisted statuses fail closed; disabled mode keeps today's
+  behavior pinned by `RuntimeRestartDropsControllerStatusAndFailsClosed`;
+  full unit/integration gate green. MiniNDN runtime-restart scenario is a
+  follow-up when the launcher can stop/start a runtime process; component
+  rows do not depend on it.
+- [ ] T016 [FR-040] Production live User/Provider status installation under
+  a hierarchical configured file trust anchor (anchor → intermediate CA →
+  Controller certificate), proving accept on the anchored chain and fail-closed
+  rejection of a chain-external signer at every status-installation path.
+  Failure mode: release executed trust-schema validation only for a directly
+  anchored Controller certificate, so hierarchical PKI deployments have no
+  executed evidence. Files: trust-schema fixture (root CA + intermediate +
+  Controller, NDNSF-named), test additions to `controller-revocation-flow.t.cpp`
+  (component, reuse the live-install LocalMock surface), no framework
+  change expected. Row: RV-I33. Acceptance: hierarchical accept; intermediate-
+  revoked or chain-external signer rejected before installation; the direct-
+  anchor tests stay green.
 
 ## Dependencies and Execution Order
 

@@ -225,3 +225,55 @@ after current-path MiniNDN and streaming gates pass.
 The release gate checks coverage by security decision and state transition,
 not by aggregate line percentage. Any RV-U/RV-I row that is unrun or reaches a
 mock-only shortcut remains missing evidence.
+
+## Amendment 2026-09-05 — implementation guidance (FR-039–FR-041)
+
+Order and scope follow `tasks.md` Phase 7 (T016 → T015 → T014).
+
+### T016 (FR-040, hierarchical trust anchor) — no framework change expected
+
+The runtime validates Controller status through `MessageValidator`
+(`ValidatorConfig` trust schema). A hierarchical schema (root anchor,
+`hierarchical` rule over an intermediate, Controller certificate signed by
+the intermediate) exercises the same install path with a deeper chain.
+Fixture: generate root/intermediate/Controller identities in-test, write a
+temporary schema file, drive the existing live-install LocalMock surface;
+negative cases sign status with a chain-external identity and with an
+intermediate that does not chain to the anchored root. Reuse
+`ConfiguredTrustSchemaControlsControllerStatusValidation`'s shape.
+
+### T015 (FR-039, opt-in persistent runtime status)
+
+- Opt-in env `NDNSF_PERSIST_RUNTIME_STATE` (path via
+  `NDNSF_RUNTIME_STATE_DIR`, default under `~/.local/state/ndnsf/`); unset
+  keeps today's process-local semantics unchanged.
+- New `RuntimeStatusStore` mirrors `ControllerGenerationStore`'s durability
+  pattern (magic header, binary wire, `.tmp.<fence>` + atomic rename, corrupt
+  → fail closed), but is a *reader/writer on one runtime process*, so it
+  needs no cross-process writer fence; it stores one record per service:
+  accepted `PolicyStatusData` wire, bound public-parameter name + digest,
+  ControllerVersion, install time. File mode 0600, directory 0700; the same
+  per-identity file naming used by the Controller generation store.
+- Install path (`ServiceUser`/`ServiceProvider` status acceptance): after an
+  accepted status becomes authority, append/overwrite that service's record.
+  On startup, when enabled: load records, verify each signature against the
+  configured trust anchor (unverifiable → discard that service, fail closed
+  for it only), skip expired records and any record whose version the
+  process has not itself seen as superseded; then start the normal
+  `PolicyRefreshCoordinator` bootstrap, but seed initial authority from the
+  recovered records so equal-version traffic may proceed while the bounded
+  confirmation refresh runs. The Controller's signed answer on refresh is
+  authority (higher replaces, equal idempotent). Never persist DKEY or
+  request-key material.
+- Restart-of-runtime tests reuse the LocalMock/LocalController surface with
+  two sequential `ServiceUser`/`ServiceProvider` constructions over the same
+  store directory (mirroring `ServiceControllerRestoresEveryRevocationKindAfterRestart`).
+
+### T014 (FR-041, upstreaming) — local package first
+
+Split description only (history of `b1c9c4f` stays intact): (1) the
+one-hunk freshness fix in `attribute-authority.cpp` DKEY segment publication
+plus its rationale comment; (2) the API-contract extension
+(consumer/producer/param-fetcher/abe-support) mapping each new symbol to its
+Spec179 requirement. Rebuild-and-rerun of RV-U20/RV-U21 happens only after
+the upstream commit exists (external gate).
