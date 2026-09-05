@@ -1,0 +1,936 @@
+{
+  "cases": [
+    {
+      "canonicalModelHex": "08081214737065633138312d66697865642d766563746f723ab8010a1b0a01780a0677656967687412066d6964646c6522064d61744d756c0a160a066d6964646c650a046269617312017922034164641213737065633138312d617373656d626c792d76312a1408010801100142067765696768744a04000000402a120801080110014204626961734a040000803f5a130a0178120e0a0c080112080a0208010a02080162130a0179120e0a0c080112080a0208010a0208016a180a066d6964646c65120e0a0c080112080a0208010a02080142040a00100d",
+      "expected": {
+        "accepted": true,
+        "modelDigest": "sha256:2763bad3637efbae404902d7acced4991a1d2aa30502166ff1493b3d6b598075",
+        "modelHex": "080812186f6e6e782e7574696c732e657874726163745f6d6f64656c3aa2010a1b0a01780a0677656967687412066d6964646c6522064d61744d756c12244578747261637465642066726f6d207b737065633138312d617373656d626c792d76317d2a1408010801100142067765696768744a04000000405a130a0178120e0a0c080112080a0208010a02080162180a066d6964646c65120e0a0c080112080a0208010a0208016a180a066d6964646c65120e0a0c080112080a0208010a02080142040a00100d"
+      },
+      "id": "inline-range",
+      "initializerHex": "",
+      "recipe": {
+        "adapter_descriptor_digest": "sha256:ae1eae1d76e5b7c865c4122ce366a08025842566d2d96c75cc13e6353a73db0d",
+        "artifact_profile_digest": "sha256:1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+        "assembler_descriptor_digest": "sha256:1ca89e861e514f1a2cdde83f8ed49a69b1c19a76dd2c3bd76bd7ffe36364bd11",
+        "backend_abi": "onnxruntime-cpu-v1",
+        "canonical_initializer_digest": "sha256:5624a579c48b0758f97175560dbd14b526bce4c23f7ea6cebedf583fad3ffbec",
+        "expected_inputs": [
+          {
+            "dtype": "float32",
+            "name": "x",
+            "shape": [
+              1,
+              1
+            ]
+          }
+        ],
+        "expected_outputs": [
+          {
+            "dtype": "float32",
+            "name": "middle",
+            "shape": [
+              1,
+              1
+            ]
+          }
+        ],
+        "graph_digest": "sha256:8f04c394eb4626de655bd177235b84107aad4c920d55c8ecc18cb00380ee1dc6",
+        "input_names": [
+          "x"
+        ],
+        "layer_begin": 0,
+        "layer_end": 1,
+        "layout": "native",
+        "max_assembled_bytes": 65536,
+        "max_nodes": 8,
+        "max_source_bytes": 65536,
+        "model_manifest_digest": "sha256:da725570e86a9691075a6ff990165bf0fb137d7626ad45393210b6e535781b05",
+        "node_indices": [
+          0
+        ],
+        "output_names": [
+          "middle"
+        ],
+        "padding": "none",
+        "precision": "float32",
+        "quantization": "none",
+        "role_kind": "PIPELINE_RANGE",
+        "schema": "ndnsf-di-certified-onnx-assembly-v1"
+      },
+      "role": {
+        "adapter_descriptor_digest": "sha256:ae1eae1d76e5b7c865c4122ce366a08025842566d2d96c75cc13e6353a73db0d",
+        "adapter_id": "onnx",
+        "adapter_version": "1",
+        "artifact_digest": "sha256:ce7a7c10b0dfd96808cca64c88cf5c5e13b7775283bdc924767887bfa32c8fa1",
+        "artifact_profile_digest": "sha256:1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+        "assembler_descriptor_digest": "sha256:1ca89e861e514f1a2cdde83f8ed49a69b1c19a76dd2c3bd76bd7ffe36364bd11",
+        "backend": "onnxruntime",
+        "backend_abi": "onnxruntime-cpu-v1",
+        "canonical_initializer_digest": "sha256:5624a579c48b0758f97175560dbd14b526bce4c23f7ea6cebedf583fad3ffbec",
+        "device_set": [
+          "cpu"
+        ],
+        "expected_inputs": [
+          {
+            "dtype": "float32",
+            "name": "x",
+            "shape": [
+              1,
+              1
+            ]
+          }
+        ],
+        "expected_outputs": [
+          {
+            "dtype": "float32",
+            "name": "middle",
+            "shape": [
+              1,
+              1
+            ]
+          }
+        ],
+        "graph_digest": "sha256:8f04c394eb4626de655bd177235b84107aad4c920d55c8ecc18cb00380ee1dc6",
+        "layer_begin": 0,
+        "layer_end": 1,
+        "layout": "native",
+        "model_manifest_digest": "sha256:da725570e86a9691075a6ff990165bf0fb137d7626ad45393210b6e535781b05",
+        "node_indices": [
+          0
+        ],
+        "padding": "none",
+        "precision": "float32",
+        "protection_epoch": "plaintext-v1",
+        "quantization": "none",
+        "rank": 0,
+        "recipe_digest": "sha256:5bb9c01ddd632b8b38f4eb6aefa31222ba58d2137ad6db4e421e718e341fb339",
+        "resource_envelope": {
+          "maxAssembledBytes": 65536,
+          "maxNodes": 8,
+          "maxSourceBytes": 65536
+        },
+        "role": "/spec181/role",
+        "role_kind": "PIPELINE_RANGE"
+      },
+      "rootManifest": "{\"artifactProfileDigest\":\"sha256:1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"metadata\":{\"canonicalSourceBytes\":217,\"canonicalSourceDataName\":\"/spec181/assembly/source\",\"canonicalSourceDigest\":\"sha256:ccd0f4c4b5f2391b1f68ff100ca69cffcda481adeb669510ef8d4b292da5c9f7\"},\"modelIdentityDigest\":\"sha256:9372c470eeadd5ecd9c3c74c2b3cb633f8e2f2fad799250a0f70d652b6b825e4\",\"modelName\":\"spec181-assembly-v1\",\"schema\":\"ndnsf-di-canonical-model-manifest-v1\",\"state\":\"ACTIVE\"}"
+    },
+    {
+      "canonicalModelHex": "08081214737065633138312d66697865642d766563746f723ab8010a1b0a01780a0677656967687412066d6964646c6522064d61744d756c0a160a066d6964646c650a046269617312017922034164641213737065633138312d617373656d626c792d76312a1408010801100142067765696768744a04000000402a120801080110014204626961734a040000803f5a130a0178120e0a0c080112080a0208010a02080162130a0179120e0a0c080112080a0208010a0208016a180a066d6964646c65120e0a0c080112080a0208010a02080142040a00100d",
+      "expected": {
+        "accepted": true,
+        "modelDigest": "sha256:bc058dbf527bd5971a0ab29aa2174aeb7a2399aabdfefb4be66f721471ca8f90",
+        "modelHex": "080812186f6e6e782e7574696c732e657874726163745f6d6f64656c3ac9010a1b0a01780a0677656967687412066d6964646c6522064d61744d756c0a160a066d6964646c650a0462696173120179220341646412244578747261637465642066726f6d207b737065633138312d617373656d626c792d76317d2a1408010801100142067765696768744a04000000402a120801080110014204626961734a040000803f5a130a0178120e0a0c080112080a0208010a02080162130a0179120e0a0c080112080a0208010a0208016a180a066d6964646c65120e0a0c080112080a0208010a02080142040a00100d"
+      },
+      "id": "inline-component",
+      "initializerHex": "",
+      "recipe": {
+        "adapter_descriptor_digest": "sha256:ae1eae1d76e5b7c865c4122ce366a08025842566d2d96c75cc13e6353a73db0d",
+        "artifact_profile_digest": "sha256:1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+        "assembler_descriptor_digest": "sha256:1ca89e861e514f1a2cdde83f8ed49a69b1c19a76dd2c3bd76bd7ffe36364bd11",
+        "backend_abi": "onnxruntime-cpu-v1",
+        "canonical_initializer_digest": "sha256:5624a579c48b0758f97175560dbd14b526bce4c23f7ea6cebedf583fad3ffbec",
+        "expected_inputs": [
+          {
+            "dtype": "float32",
+            "name": "x",
+            "shape": [
+              1,
+              1
+            ]
+          }
+        ],
+        "expected_outputs": [
+          {
+            "dtype": "float32",
+            "name": "y",
+            "shape": [
+              1,
+              1
+            ]
+          }
+        ],
+        "graph_digest": "sha256:8f04c394eb4626de655bd177235b84107aad4c920d55c8ecc18cb00380ee1dc6",
+        "input_names": [
+          "x"
+        ],
+        "layer_begin": 0,
+        "layer_end": 0,
+        "layout": "native",
+        "max_assembled_bytes": 65536,
+        "max_nodes": 8,
+        "max_source_bytes": 65536,
+        "model_manifest_digest": "sha256:da725570e86a9691075a6ff990165bf0fb137d7626ad45393210b6e535781b05",
+        "node_indices": [
+          0,
+          1
+        ],
+        "output_names": [
+          "y"
+        ],
+        "padding": "none",
+        "precision": "float32",
+        "quantization": "none",
+        "role_kind": "COMPONENT_SET",
+        "schema": "ndnsf-di-certified-onnx-assembly-v1"
+      },
+      "role": {
+        "adapter_descriptor_digest": "sha256:ae1eae1d76e5b7c865c4122ce366a08025842566d2d96c75cc13e6353a73db0d",
+        "adapter_id": "onnx",
+        "adapter_version": "1",
+        "artifact_digest": "sha256:ce7a7c10b0dfd96808cca64c88cf5c5e13b7775283bdc924767887bfa32c8fa1",
+        "artifact_profile_digest": "sha256:1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+        "assembler_descriptor_digest": "sha256:1ca89e861e514f1a2cdde83f8ed49a69b1c19a76dd2c3bd76bd7ffe36364bd11",
+        "backend": "onnxruntime",
+        "backend_abi": "onnxruntime-cpu-v1",
+        "canonical_initializer_digest": "sha256:5624a579c48b0758f97175560dbd14b526bce4c23f7ea6cebedf583fad3ffbec",
+        "device_set": [
+          "cpu"
+        ],
+        "expected_inputs": [
+          {
+            "dtype": "float32",
+            "name": "x",
+            "shape": [
+              1,
+              1
+            ]
+          }
+        ],
+        "expected_outputs": [
+          {
+            "dtype": "float32",
+            "name": "y",
+            "shape": [
+              1,
+              1
+            ]
+          }
+        ],
+        "graph_digest": "sha256:8f04c394eb4626de655bd177235b84107aad4c920d55c8ecc18cb00380ee1dc6",
+        "layer_begin": 0,
+        "layer_end": 0,
+        "layout": "native",
+        "model_manifest_digest": "sha256:da725570e86a9691075a6ff990165bf0fb137d7626ad45393210b6e535781b05",
+        "node_indices": [
+          0,
+          1
+        ],
+        "padding": "none",
+        "precision": "float32",
+        "protection_epoch": "plaintext-v1",
+        "quantization": "none",
+        "rank": 0,
+        "recipe_digest": "sha256:b93acff6c2e6fbaa3b9609569f39efe604f181e17101d6513a80424362d54dd2",
+        "resource_envelope": {
+          "maxAssembledBytes": 65536,
+          "maxNodes": 8,
+          "maxSourceBytes": 65536
+        },
+        "role": "/spec181/role",
+        "role_kind": "COMPONENT_SET"
+      },
+      "rootManifest": "{\"artifactProfileDigest\":\"sha256:1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"metadata\":{\"canonicalSourceBytes\":217,\"canonicalSourceDataName\":\"/spec181/assembly/source\",\"canonicalSourceDigest\":\"sha256:ccd0f4c4b5f2391b1f68ff100ca69cffcda481adeb669510ef8d4b292da5c9f7\"},\"modelIdentityDigest\":\"sha256:9372c470eeadd5ecd9c3c74c2b3cb633f8e2f2fad799250a0f70d652b6b825e4\",\"modelName\":\"spec181-assembly-v1\",\"schema\":\"ndnsf-di-canonical-model-manifest-v1\",\"state\":\"ACTIVE\"}"
+    },
+    {
+      "canonicalModelHex": "08081214737065633138312d66697865642d766563746f723a9e020a1b0a01780a0677656967687412066d6964646c6522064d61744d756c0a160a066d6964646c650a046269617312017922034164641213737065633138312d617373656d626c792d76312a4708010801100142067765696768746a1b0a086c6f636174696f6e120f6d6f64656c2e6f6e6e782e646174616a0b0a066f66667365741201306a0b0a066c656e67746812013470012a450801080110014204626961736a1b0a086c6f636174696f6e120f6d6f64656c2e6f6e6e782e646174616a0b0a066f66667365741201346a0b0a066c656e67746812013470015a130a0178120e0a0c080112080a0208010a02080162130a0179120e0a0c080112080a0208010a0208016a180a066d6964646c65120e0a0c080112080a0208010a02080142040a00100d",
+      "expected": {
+        "accepted": true,
+        "modelDigest": "sha256:5182e6b6bda249b72ff991d425450af7d09981857cea6bc4f6563ef6b2859cec",
+        "modelHex": "080812186f6e6e782e7574696c732e657874726163745f6d6f64656c3acd010a1b0a01780a0677656967687412066d6964646c6522064d61744d756c0a160a066d6964646c650a0462696173120179220341646412244578747261637465642066726f6d207b737065633138312d617373656d626c792d76317d2a1608010801100142067765696768744a040000004070002a140801080110014204626961734a040000803f70005a130a0178120e0a0c080112080a0208010a02080162130a0179120e0a0c080112080a0208010a0208016a180a066d6964646c65120e0a0c080112080a0208010a02080142040a00100d"
+      },
+      "id": "external-component",
+      "initializerHex": "000000400000803f",
+      "recipe": {
+        "adapter_descriptor_digest": "sha256:ae1eae1d76e5b7c865c4122ce366a08025842566d2d96c75cc13e6353a73db0d",
+        "artifact_profile_digest": "sha256:1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+        "assembler_descriptor_digest": "sha256:1ca89e861e514f1a2cdde83f8ed49a69b1c19a76dd2c3bd76bd7ffe36364bd11",
+        "backend_abi": "onnxruntime-cpu-v1",
+        "canonical_initializer_digest": "sha256:5624a579c48b0758f97175560dbd14b526bce4c23f7ea6cebedf583fad3ffbec",
+        "expected_inputs": [
+          {
+            "dtype": "float32",
+            "name": "x",
+            "shape": [
+              1,
+              1
+            ]
+          }
+        ],
+        "expected_outputs": [
+          {
+            "dtype": "float32",
+            "name": "y",
+            "shape": [
+              1,
+              1
+            ]
+          }
+        ],
+        "graph_digest": "sha256:8f04c394eb4626de655bd177235b84107aad4c920d55c8ecc18cb00380ee1dc6",
+        "input_names": [
+          "x"
+        ],
+        "layer_begin": 0,
+        "layer_end": 0,
+        "layout": "native",
+        "max_assembled_bytes": 65536,
+        "max_nodes": 8,
+        "max_source_bytes": 65536,
+        "model_manifest_digest": "sha256:878a5854e6dd108a3eac33602950ff39da67db14db0dd7723e73a7fc5b403a0c",
+        "node_indices": [
+          0,
+          1
+        ],
+        "output_names": [
+          "y"
+        ],
+        "padding": "none",
+        "precision": "float32",
+        "quantization": "none",
+        "role_kind": "COMPONENT_SET",
+        "schema": "ndnsf-di-certified-onnx-assembly-v1"
+      },
+      "role": {
+        "adapter_descriptor_digest": "sha256:ae1eae1d76e5b7c865c4122ce366a08025842566d2d96c75cc13e6353a73db0d",
+        "adapter_id": "onnx",
+        "adapter_version": "1",
+        "artifact_digest": "sha256:ce7a7c10b0dfd96808cca64c88cf5c5e13b7775283bdc924767887bfa32c8fa1",
+        "artifact_profile_digest": "sha256:1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+        "assembler_descriptor_digest": "sha256:1ca89e861e514f1a2cdde83f8ed49a69b1c19a76dd2c3bd76bd7ffe36364bd11",
+        "backend": "onnxruntime",
+        "backend_abi": "onnxruntime-cpu-v1",
+        "canonical_initializer_digest": "sha256:5624a579c48b0758f97175560dbd14b526bce4c23f7ea6cebedf583fad3ffbec",
+        "device_set": [
+          "cpu"
+        ],
+        "expected_inputs": [
+          {
+            "dtype": "float32",
+            "name": "x",
+            "shape": [
+              1,
+              1
+            ]
+          }
+        ],
+        "expected_outputs": [
+          {
+            "dtype": "float32",
+            "name": "y",
+            "shape": [
+              1,
+              1
+            ]
+          }
+        ],
+        "graph_digest": "sha256:8f04c394eb4626de655bd177235b84107aad4c920d55c8ecc18cb00380ee1dc6",
+        "layer_begin": 0,
+        "layer_end": 0,
+        "layout": "native",
+        "model_manifest_digest": "sha256:878a5854e6dd108a3eac33602950ff39da67db14db0dd7723e73a7fc5b403a0c",
+        "node_indices": [
+          0,
+          1
+        ],
+        "padding": "none",
+        "precision": "float32",
+        "protection_epoch": "plaintext-v1",
+        "quantization": "none",
+        "rank": 0,
+        "recipe_digest": "sha256:dfaf72e60ebdee6b04014277602d77081c9ad3e373a289e070ede93e7ab6c299",
+        "resource_envelope": {
+          "maxAssembledBytes": 65536,
+          "maxNodes": 8,
+          "maxSourceBytes": 65536
+        },
+        "role": "/spec181/role",
+        "role_kind": "COMPONENT_SET"
+      },
+      "rootManifest": "{\"artifactProfileDigest\":\"sha256:1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"metadata\":{\"canonicalInitializerBytes\":8,\"canonicalInitializerDataName\":\"/spec181/assembly/initializers\",\"canonicalInitializerObjectDigest\":\"sha256:cec62291c7d5e97447562503965c17a32c0c4bdb5696725f2225aa37afc61e28\",\"canonicalSourceBytes\":319,\"canonicalSourceDataName\":\"/spec181/assembly/source\",\"canonicalSourceDigest\":\"sha256:2a2ba35d72d270cf1497e22d42eef77034a1c2b7ea9e5f74df200d089f6dd8a8\"},\"modelIdentityDigest\":\"sha256:9372c470eeadd5ecd9c3c74c2b3cb633f8e2f2fad799250a0f70d652b6b825e4\",\"modelName\":\"spec181-assembly-v1\",\"schema\":\"ndnsf-di-canonical-model-manifest-v1\",\"state\":\"ACTIVE\"}"
+    },
+    {
+      "canonicalModelHex": "08081214737065633138312d66697865642d766563746f723ac7010a1b0a01780a0677656967687412066d6964646c6522064d61744d756c0a160a066d6964646c650a046269617312017922034164641213737065633138312d617373656d626c792d76312a1408010801100142067765696768744a04000000402a120801080110014204626961734a040000803f5a180a017812130a110801120d0a07120562617463680a02080162180a017912130a110801120d0a07120562617463680a0208016a1d0a066d6964646c6512130a110801120d0a07120562617463680a02080142040a00100d",
+      "expected": {
+        "accepted": true,
+        "modelDigest": "sha256:d804b74e067e2f20e2a3688f7e2dea5c201ffff33eb24061349ffeeca8b80569",
+        "modelHex": "080812186f6e6e782e7574696c732e657874726163745f6d6f64656c3ab1010a1b0a01780a0677656967687412066d6964646c6522064d61744d756c12244578747261637465642066726f6d207b737065633138312d617373656d626c792d76317d2a1408010801100142067765696768744a04000000405a180a017812130a110801120d0a07120562617463680a020801621d0a066d6964646c6512130a110801120d0a07120562617463680a0208016a1d0a066d6964646c6512130a110801120d0a07120562617463680a02080142040a00100d"
+      },
+      "id": "symbolic-range",
+      "initializerHex": "",
+      "recipe": {
+        "adapter_descriptor_digest": "sha256:ae1eae1d76e5b7c865c4122ce366a08025842566d2d96c75cc13e6353a73db0d",
+        "artifact_profile_digest": "sha256:1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+        "assembler_descriptor_digest": "sha256:1ca89e861e514f1a2cdde83f8ed49a69b1c19a76dd2c3bd76bd7ffe36364bd11",
+        "backend_abi": "onnxruntime-cpu-v1",
+        "canonical_initializer_digest": "sha256:5624a579c48b0758f97175560dbd14b526bce4c23f7ea6cebedf583fad3ffbec",
+        "expected_inputs": [
+          {
+            "dtype": "float32",
+            "name": "x",
+            "shape": [
+              "batch",
+              1
+            ]
+          }
+        ],
+        "expected_outputs": [
+          {
+            "dtype": "float32",
+            "name": "middle",
+            "shape": [
+              "batch",
+              1
+            ]
+          }
+        ],
+        "graph_digest": "sha256:48aca209485d28d6c5c4fa0a804afe90f7047b189467bb473f6c3f0164eba461",
+        "input_names": [
+          "x"
+        ],
+        "layer_begin": 0,
+        "layer_end": 1,
+        "layout": "native",
+        "max_assembled_bytes": 65536,
+        "max_nodes": 8,
+        "max_source_bytes": 65536,
+        "model_manifest_digest": "sha256:45e7adfbb21630c613b817857b1acaab29073af6ff797782bcfc3389ba467976",
+        "node_indices": [
+          0
+        ],
+        "output_names": [
+          "middle"
+        ],
+        "padding": "none",
+        "precision": "float32",
+        "quantization": "none",
+        "role_kind": "PIPELINE_RANGE",
+        "schema": "ndnsf-di-certified-onnx-assembly-v1"
+      },
+      "role": {
+        "adapter_descriptor_digest": "sha256:ae1eae1d76e5b7c865c4122ce366a08025842566d2d96c75cc13e6353a73db0d",
+        "adapter_id": "onnx",
+        "adapter_version": "1",
+        "artifact_digest": "sha256:ce7a7c10b0dfd96808cca64c88cf5c5e13b7775283bdc924767887bfa32c8fa1",
+        "artifact_profile_digest": "sha256:1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+        "assembler_descriptor_digest": "sha256:1ca89e861e514f1a2cdde83f8ed49a69b1c19a76dd2c3bd76bd7ffe36364bd11",
+        "backend": "onnxruntime",
+        "backend_abi": "onnxruntime-cpu-v1",
+        "canonical_initializer_digest": "sha256:5624a579c48b0758f97175560dbd14b526bce4c23f7ea6cebedf583fad3ffbec",
+        "device_set": [
+          "cpu"
+        ],
+        "expected_inputs": [
+          {
+            "dtype": "float32",
+            "name": "x",
+            "shape": [
+              "batch",
+              1
+            ]
+          }
+        ],
+        "expected_outputs": [
+          {
+            "dtype": "float32",
+            "name": "middle",
+            "shape": [
+              "batch",
+              1
+            ]
+          }
+        ],
+        "graph_digest": "sha256:48aca209485d28d6c5c4fa0a804afe90f7047b189467bb473f6c3f0164eba461",
+        "layer_begin": 0,
+        "layer_end": 1,
+        "layout": "native",
+        "model_manifest_digest": "sha256:45e7adfbb21630c613b817857b1acaab29073af6ff797782bcfc3389ba467976",
+        "node_indices": [
+          0
+        ],
+        "padding": "none",
+        "precision": "float32",
+        "protection_epoch": "plaintext-v1",
+        "quantization": "none",
+        "rank": 0,
+        "recipe_digest": "sha256:4f183ae4ec75566d3c8335ed05ebbdc8916bbded4e6bfa4675413f9cdfc3340c",
+        "resource_envelope": {
+          "maxAssembledBytes": 65536,
+          "maxNodes": 8,
+          "maxSourceBytes": 65536
+        },
+        "role": "/spec181/role",
+        "role_kind": "PIPELINE_RANGE"
+      },
+      "rootManifest": "{\"artifactProfileDigest\":\"sha256:1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"metadata\":{\"canonicalSourceBytes\":232,\"canonicalSourceDataName\":\"/spec181/assembly/source\",\"canonicalSourceDigest\":\"sha256:39e8389c52cc52e519a7c953278b3c8dad3fcd852c4e5247f33064c0c205ee46\"},\"modelIdentityDigest\":\"sha256:9372c470eeadd5ecd9c3c74c2b3cb633f8e2f2fad799250a0f70d652b6b825e4\",\"modelName\":\"spec181-assembly-v1\",\"schema\":\"ndnsf-di-canonical-model-manifest-v1\",\"state\":\"ACTIVE\"}"
+    },
+    {
+      "canonicalModelHex": "08081214737065633138312d66697865642d766563746f723ab8010a1b0a01780a0677656967687412066d6964646c6522064d61744d756c0a160a066d6964646c650a046269617312017922034164641213737065633138312d617373656d626c792d76312a1408010801100142067765696768744a04000000402a120801080110014204626961734a040000803f5a130a0178120e0a0c080112080a0208010a02080162130a0179120e0a0c080112080a0208010a0208016a180a066d6964646c65120e0a0c080112080a0208010a02080142040a00100d",
+      "expected": {
+        "accepted": false,
+        "boundary": "RECIPE_BINDING"
+      },
+      "id": "wrong-recipe-digest",
+      "initializerHex": "",
+      "recipe": {
+        "adapter_descriptor_digest": "sha256:ae1eae1d76e5b7c865c4122ce366a08025842566d2d96c75cc13e6353a73db0d",
+        "artifact_profile_digest": "sha256:1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+        "assembler_descriptor_digest": "sha256:1ca89e861e514f1a2cdde83f8ed49a69b1c19a76dd2c3bd76bd7ffe36364bd11",
+        "backend_abi": "onnxruntime-cpu-v1",
+        "canonical_initializer_digest": "sha256:5624a579c48b0758f97175560dbd14b526bce4c23f7ea6cebedf583fad3ffbec",
+        "expected_inputs": [
+          {
+            "dtype": "float32",
+            "name": "x",
+            "shape": [
+              1,
+              1
+            ]
+          }
+        ],
+        "expected_outputs": [
+          {
+            "dtype": "float32",
+            "name": "middle",
+            "shape": [
+              1,
+              1
+            ]
+          }
+        ],
+        "graph_digest": "sha256:8f04c394eb4626de655bd177235b84107aad4c920d55c8ecc18cb00380ee1dc6",
+        "input_names": [
+          "x"
+        ],
+        "layer_begin": 0,
+        "layer_end": 1,
+        "layout": "native",
+        "max_assembled_bytes": 65536,
+        "max_nodes": 8,
+        "max_source_bytes": 65536,
+        "model_manifest_digest": "sha256:da725570e86a9691075a6ff990165bf0fb137d7626ad45393210b6e535781b05",
+        "node_indices": [
+          0
+        ],
+        "output_names": [
+          "middle"
+        ],
+        "padding": "none",
+        "precision": "float32",
+        "quantization": "none",
+        "role_kind": "PIPELINE_RANGE",
+        "schema": "ndnsf-di-certified-onnx-assembly-v1"
+      },
+      "role": {
+        "adapter_descriptor_digest": "sha256:ae1eae1d76e5b7c865c4122ce366a08025842566d2d96c75cc13e6353a73db0d",
+        "adapter_id": "onnx",
+        "adapter_version": "1",
+        "artifact_digest": "sha256:ce7a7c10b0dfd96808cca64c88cf5c5e13b7775283bdc924767887bfa32c8fa1",
+        "artifact_profile_digest": "sha256:1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+        "assembler_descriptor_digest": "sha256:1ca89e861e514f1a2cdde83f8ed49a69b1c19a76dd2c3bd76bd7ffe36364bd11",
+        "backend": "onnxruntime",
+        "backend_abi": "onnxruntime-cpu-v1",
+        "canonical_initializer_digest": "sha256:5624a579c48b0758f97175560dbd14b526bce4c23f7ea6cebedf583fad3ffbec",
+        "device_set": [
+          "cpu"
+        ],
+        "expected_inputs": [
+          {
+            "dtype": "float32",
+            "name": "x",
+            "shape": [
+              1,
+              1
+            ]
+          }
+        ],
+        "expected_outputs": [
+          {
+            "dtype": "float32",
+            "name": "middle",
+            "shape": [
+              1,
+              1
+            ]
+          }
+        ],
+        "graph_digest": "sha256:8f04c394eb4626de655bd177235b84107aad4c920d55c8ecc18cb00380ee1dc6",
+        "layer_begin": 0,
+        "layer_end": 1,
+        "layout": "native",
+        "model_manifest_digest": "sha256:da725570e86a9691075a6ff990165bf0fb137d7626ad45393210b6e535781b05",
+        "node_indices": [
+          0
+        ],
+        "padding": "none",
+        "precision": "float32",
+        "protection_epoch": "plaintext-v1",
+        "quantization": "none",
+        "rank": 0,
+        "recipe_digest": "sha256:8810ad581e59f2bc3928b261707a71308f7e139eb04820366dc4d5c18d980225",
+        "resource_envelope": {
+          "maxAssembledBytes": 65536,
+          "maxNodes": 8,
+          "maxSourceBytes": 65536
+        },
+        "role": "/spec181/role",
+        "role_kind": "PIPELINE_RANGE"
+      },
+      "rootManifest": "{\"artifactProfileDigest\":\"sha256:1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"metadata\":{\"canonicalSourceBytes\":217,\"canonicalSourceDataName\":\"/spec181/assembly/source\",\"canonicalSourceDigest\":\"sha256:ccd0f4c4b5f2391b1f68ff100ca69cffcda481adeb669510ef8d4b292da5c9f7\"},\"modelIdentityDigest\":\"sha256:9372c470eeadd5ecd9c3c74c2b3cb633f8e2f2fad799250a0f70d652b6b825e4\",\"modelName\":\"spec181-assembly-v1\",\"schema\":\"ndnsf-di-canonical-model-manifest-v1\",\"state\":\"ACTIVE\"}"
+    },
+    {
+      "canonicalModelHex": "08081214737065633138312d66697865642d766563746f723ab8010a1b0a01780a0677656967687412066d6964646c6522064d61744d756c0a160a066d6964646c650a046269617312017922034164641213737065633138312d617373656d626c792d76312a1408010801100142067765696768744a04000000402a120801080110014204626961734a040000803f5a130a0178120e0a0c080112080a0208010a02080162130a0179120e0a0c080112080a0208010a0208016a180a066d6964646c65120e0a0c080112080a0208010a02080142040a00100d",
+      "expected": {
+        "accepted": false,
+        "boundary": "RECIPE_BINDING"
+      },
+      "id": "wrong-backend-abi",
+      "initializerHex": "",
+      "recipe": {
+        "adapter_descriptor_digest": "sha256:ae1eae1d76e5b7c865c4122ce366a08025842566d2d96c75cc13e6353a73db0d",
+        "artifact_profile_digest": "sha256:1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+        "assembler_descriptor_digest": "sha256:1ca89e861e514f1a2cdde83f8ed49a69b1c19a76dd2c3bd76bd7ffe36364bd11",
+        "backend_abi": "onnxruntime-cpu-v1",
+        "canonical_initializer_digest": "sha256:5624a579c48b0758f97175560dbd14b526bce4c23f7ea6cebedf583fad3ffbec",
+        "expected_inputs": [
+          {
+            "dtype": "float32",
+            "name": "x",
+            "shape": [
+              1,
+              1
+            ]
+          }
+        ],
+        "expected_outputs": [
+          {
+            "dtype": "float32",
+            "name": "middle",
+            "shape": [
+              1,
+              1
+            ]
+          }
+        ],
+        "graph_digest": "sha256:8f04c394eb4626de655bd177235b84107aad4c920d55c8ecc18cb00380ee1dc6",
+        "input_names": [
+          "x"
+        ],
+        "layer_begin": 0,
+        "layer_end": 1,
+        "layout": "native",
+        "max_assembled_bytes": 65536,
+        "max_nodes": 8,
+        "max_source_bytes": 65536,
+        "model_manifest_digest": "sha256:da725570e86a9691075a6ff990165bf0fb137d7626ad45393210b6e535781b05",
+        "node_indices": [
+          0
+        ],
+        "output_names": [
+          "middle"
+        ],
+        "padding": "none",
+        "precision": "float32",
+        "quantization": "none",
+        "role_kind": "PIPELINE_RANGE",
+        "schema": "ndnsf-di-certified-onnx-assembly-v1"
+      },
+      "role": {
+        "adapter_descriptor_digest": "sha256:ae1eae1d76e5b7c865c4122ce366a08025842566d2d96c75cc13e6353a73db0d",
+        "adapter_id": "onnx",
+        "adapter_version": "1",
+        "artifact_digest": "sha256:ce7a7c10b0dfd96808cca64c88cf5c5e13b7775283bdc924767887bfa32c8fa1",
+        "artifact_profile_digest": "sha256:1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+        "assembler_descriptor_digest": "sha256:1ca89e861e514f1a2cdde83f8ed49a69b1c19a76dd2c3bd76bd7ffe36364bd11",
+        "backend": "onnxruntime",
+        "backend_abi": "different-abi",
+        "canonical_initializer_digest": "sha256:5624a579c48b0758f97175560dbd14b526bce4c23f7ea6cebedf583fad3ffbec",
+        "device_set": [
+          "cpu"
+        ],
+        "expected_inputs": [
+          {
+            "dtype": "float32",
+            "name": "x",
+            "shape": [
+              1,
+              1
+            ]
+          }
+        ],
+        "expected_outputs": [
+          {
+            "dtype": "float32",
+            "name": "middle",
+            "shape": [
+              1,
+              1
+            ]
+          }
+        ],
+        "graph_digest": "sha256:8f04c394eb4626de655bd177235b84107aad4c920d55c8ecc18cb00380ee1dc6",
+        "layer_begin": 0,
+        "layer_end": 1,
+        "layout": "native",
+        "model_manifest_digest": "sha256:da725570e86a9691075a6ff990165bf0fb137d7626ad45393210b6e535781b05",
+        "node_indices": [
+          0
+        ],
+        "padding": "none",
+        "precision": "float32",
+        "protection_epoch": "plaintext-v1",
+        "quantization": "none",
+        "rank": 0,
+        "recipe_digest": "sha256:5bb9c01ddd632b8b38f4eb6aefa31222ba58d2137ad6db4e421e718e341fb339",
+        "resource_envelope": {
+          "maxAssembledBytes": 65536,
+          "maxNodes": 8,
+          "maxSourceBytes": 65536
+        },
+        "role": "/spec181/role",
+        "role_kind": "PIPELINE_RANGE"
+      },
+      "rootManifest": "{\"artifactProfileDigest\":\"sha256:1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"metadata\":{\"canonicalSourceBytes\":217,\"canonicalSourceDataName\":\"/spec181/assembly/source\",\"canonicalSourceDigest\":\"sha256:ccd0f4c4b5f2391b1f68ff100ca69cffcda481adeb669510ef8d4b292da5c9f7\"},\"modelIdentityDigest\":\"sha256:9372c470eeadd5ecd9c3c74c2b3cb633f8e2f2fad799250a0f70d652b6b825e4\",\"modelName\":\"spec181-assembly-v1\",\"schema\":\"ndnsf-di-canonical-model-manifest-v1\",\"state\":\"ACTIVE\"}"
+    },
+    {
+      "canonicalModelHex": "08081214737065633138312d66697865642d766563746f723ab8010a1b0a01780a0677656967687412066d6964646c6522064d61744d756c0a160a066d6964646c650a046269617312017922034164641213737065633138312d617373656d626c792d76312a1408010801100142067765696768744a04000000402a120801080110014204626961734a040000803f5a130a0178120e0a0c080112080a0208010a02080162130a0179120e0a0c080112080a0208010a0208016a180a066d6964646c65120e0a0c080112080a0208010a02080142040a00100d",
+      "expected": {
+        "accepted": false,
+        "boundary": "RECIPE_BINDING"
+      },
+      "id": "wrong-node-cover",
+      "initializerHex": "",
+      "recipe": {
+        "adapter_descriptor_digest": "sha256:ae1eae1d76e5b7c865c4122ce366a08025842566d2d96c75cc13e6353a73db0d",
+        "artifact_profile_digest": "sha256:1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+        "assembler_descriptor_digest": "sha256:1ca89e861e514f1a2cdde83f8ed49a69b1c19a76dd2c3bd76bd7ffe36364bd11",
+        "backend_abi": "onnxruntime-cpu-v1",
+        "canonical_initializer_digest": "sha256:5624a579c48b0758f97175560dbd14b526bce4c23f7ea6cebedf583fad3ffbec",
+        "expected_inputs": [
+          {
+            "dtype": "float32",
+            "name": "x",
+            "shape": [
+              1,
+              1
+            ]
+          }
+        ],
+        "expected_outputs": [
+          {
+            "dtype": "float32",
+            "name": "middle",
+            "shape": [
+              1,
+              1
+            ]
+          }
+        ],
+        "graph_digest": "sha256:8f04c394eb4626de655bd177235b84107aad4c920d55c8ecc18cb00380ee1dc6",
+        "input_names": [
+          "x"
+        ],
+        "layer_begin": 0,
+        "layer_end": 1,
+        "layout": "native",
+        "max_assembled_bytes": 65536,
+        "max_nodes": 8,
+        "max_source_bytes": 65536,
+        "model_manifest_digest": "sha256:da725570e86a9691075a6ff990165bf0fb137d7626ad45393210b6e535781b05",
+        "node_indices": [
+          0
+        ],
+        "output_names": [
+          "middle"
+        ],
+        "padding": "none",
+        "precision": "float32",
+        "quantization": "none",
+        "role_kind": "PIPELINE_RANGE",
+        "schema": "ndnsf-di-certified-onnx-assembly-v1"
+      },
+      "role": {
+        "adapter_descriptor_digest": "sha256:ae1eae1d76e5b7c865c4122ce366a08025842566d2d96c75cc13e6353a73db0d",
+        "adapter_id": "onnx",
+        "adapter_version": "1",
+        "artifact_digest": "sha256:ce7a7c10b0dfd96808cca64c88cf5c5e13b7775283bdc924767887bfa32c8fa1",
+        "artifact_profile_digest": "sha256:1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+        "assembler_descriptor_digest": "sha256:1ca89e861e514f1a2cdde83f8ed49a69b1c19a76dd2c3bd76bd7ffe36364bd11",
+        "backend": "onnxruntime",
+        "backend_abi": "onnxruntime-cpu-v1",
+        "canonical_initializer_digest": "sha256:5624a579c48b0758f97175560dbd14b526bce4c23f7ea6cebedf583fad3ffbec",
+        "device_set": [
+          "cpu"
+        ],
+        "expected_inputs": [
+          {
+            "dtype": "float32",
+            "name": "x",
+            "shape": [
+              1,
+              1
+            ]
+          }
+        ],
+        "expected_outputs": [
+          {
+            "dtype": "float32",
+            "name": "middle",
+            "shape": [
+              1,
+              1
+            ]
+          }
+        ],
+        "graph_digest": "sha256:8f04c394eb4626de655bd177235b84107aad4c920d55c8ecc18cb00380ee1dc6",
+        "layer_begin": 0,
+        "layer_end": 1,
+        "layout": "native",
+        "model_manifest_digest": "sha256:da725570e86a9691075a6ff990165bf0fb137d7626ad45393210b6e535781b05",
+        "node_indices": [
+          1
+        ],
+        "padding": "none",
+        "precision": "float32",
+        "protection_epoch": "plaintext-v1",
+        "quantization": "none",
+        "rank": 0,
+        "recipe_digest": "sha256:5bb9c01ddd632b8b38f4eb6aefa31222ba58d2137ad6db4e421e718e341fb339",
+        "resource_envelope": {
+          "maxAssembledBytes": 65536,
+          "maxNodes": 8,
+          "maxSourceBytes": 65536
+        },
+        "role": "/spec181/role",
+        "role_kind": "PIPELINE_RANGE"
+      },
+      "rootManifest": "{\"artifactProfileDigest\":\"sha256:1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"metadata\":{\"canonicalSourceBytes\":217,\"canonicalSourceDataName\":\"/spec181/assembly/source\",\"canonicalSourceDigest\":\"sha256:ccd0f4c4b5f2391b1f68ff100ca69cffcda481adeb669510ef8d4b292da5c9f7\"},\"modelIdentityDigest\":\"sha256:9372c470eeadd5ecd9c3c74c2b3cb633f8e2f2fad799250a0f70d652b6b825e4\",\"modelName\":\"spec181-assembly-v1\",\"schema\":\"ndnsf-di-canonical-model-manifest-v1\",\"state\":\"ACTIVE\"}"
+    },
+    {
+      "canonicalModelHex": "08081214737065633138312d66697865642d766563746f723a9e020a1b0a01780a0677656967687412066d6964646c6522064d61744d756c0a160a066d6964646c650a046269617312017922034164641213737065633138312d617373656d626c792d76312a4708010801100142067765696768746a1b0a086c6f636174696f6e120f6d6f64656c2e6f6e6e782e646174616a0b0a066f66667365741201306a0b0a066c656e67746812013470012a450801080110014204626961736a1b0a086c6f636174696f6e120f6d6f64656c2e6f6e6e782e646174616a0b0a066f66667365741201346a0b0a066c656e67746812013470015a130a0178120e0a0c080112080a0208010a02080162130a0179120e0a0c080112080a0208010a0208016a180a066d6964646c65120e0a0c080112080a0208010a02080142040a00100d",
+      "expected": {
+        "accepted": false,
+        "boundary": "INITIALIZER_IDENTITY"
+      },
+      "id": "authenticated-initializer-tamper",
+      "initializerHex": "010000400000803f",
+      "recipe": {
+        "adapter_descriptor_digest": "sha256:ae1eae1d76e5b7c865c4122ce366a08025842566d2d96c75cc13e6353a73db0d",
+        "artifact_profile_digest": "sha256:1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+        "assembler_descriptor_digest": "sha256:1ca89e861e514f1a2cdde83f8ed49a69b1c19a76dd2c3bd76bd7ffe36364bd11",
+        "backend_abi": "onnxruntime-cpu-v1",
+        "canonical_initializer_digest": "sha256:5624a579c48b0758f97175560dbd14b526bce4c23f7ea6cebedf583fad3ffbec",
+        "expected_inputs": [
+          {
+            "dtype": "float32",
+            "name": "x",
+            "shape": [
+              1,
+              1
+            ]
+          }
+        ],
+        "expected_outputs": [
+          {
+            "dtype": "float32",
+            "name": "y",
+            "shape": [
+              1,
+              1
+            ]
+          }
+        ],
+        "graph_digest": "sha256:8f04c394eb4626de655bd177235b84107aad4c920d55c8ecc18cb00380ee1dc6",
+        "input_names": [
+          "x"
+        ],
+        "layer_begin": 0,
+        "layer_end": 0,
+        "layout": "native",
+        "max_assembled_bytes": 65536,
+        "max_nodes": 8,
+        "max_source_bytes": 65536,
+        "model_manifest_digest": "sha256:edb6d26b206b0134870788037ae57385c81832f0e53dac519214e0f3752008f0",
+        "node_indices": [
+          0,
+          1
+        ],
+        "output_names": [
+          "y"
+        ],
+        "padding": "none",
+        "precision": "float32",
+        "quantization": "none",
+        "role_kind": "COMPONENT_SET",
+        "schema": "ndnsf-di-certified-onnx-assembly-v1"
+      },
+      "role": {
+        "adapter_descriptor_digest": "sha256:ae1eae1d76e5b7c865c4122ce366a08025842566d2d96c75cc13e6353a73db0d",
+        "adapter_id": "onnx",
+        "adapter_version": "1",
+        "artifact_digest": "sha256:ce7a7c10b0dfd96808cca64c88cf5c5e13b7775283bdc924767887bfa32c8fa1",
+        "artifact_profile_digest": "sha256:1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+        "assembler_descriptor_digest": "sha256:1ca89e861e514f1a2cdde83f8ed49a69b1c19a76dd2c3bd76bd7ffe36364bd11",
+        "backend": "onnxruntime",
+        "backend_abi": "onnxruntime-cpu-v1",
+        "canonical_initializer_digest": "sha256:5624a579c48b0758f97175560dbd14b526bce4c23f7ea6cebedf583fad3ffbec",
+        "device_set": [
+          "cpu"
+        ],
+        "expected_inputs": [
+          {
+            "dtype": "float32",
+            "name": "x",
+            "shape": [
+              1,
+              1
+            ]
+          }
+        ],
+        "expected_outputs": [
+          {
+            "dtype": "float32",
+            "name": "y",
+            "shape": [
+              1,
+              1
+            ]
+          }
+        ],
+        "graph_digest": "sha256:8f04c394eb4626de655bd177235b84107aad4c920d55c8ecc18cb00380ee1dc6",
+        "layer_begin": 0,
+        "layer_end": 0,
+        "layout": "native",
+        "model_manifest_digest": "sha256:edb6d26b206b0134870788037ae57385c81832f0e53dac519214e0f3752008f0",
+        "node_indices": [
+          0,
+          1
+        ],
+        "padding": "none",
+        "precision": "float32",
+        "protection_epoch": "plaintext-v1",
+        "quantization": "none",
+        "rank": 0,
+        "recipe_digest": "sha256:81631ad7cce3664a76c3cfbf95020631bf0f08a3162fb7b53f3d75234dadd410",
+        "resource_envelope": {
+          "maxAssembledBytes": 65536,
+          "maxNodes": 8,
+          "maxSourceBytes": 65536
+        },
+        "role": "/spec181/role",
+        "role_kind": "COMPONENT_SET"
+      },
+      "rootManifest": "{\"artifactProfileDigest\":\"sha256:1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"metadata\":{\"canonicalInitializerBytes\":8,\"canonicalInitializerDataName\":\"/spec181/assembly/initializers\",\"canonicalInitializerObjectDigest\":\"sha256:677cf57ebc33f2966bd2c77e6afbe9c53c3bed41aa38746b224994ef5072f4aa\",\"canonicalSourceBytes\":319,\"canonicalSourceDataName\":\"/spec181/assembly/source\",\"canonicalSourceDigest\":\"sha256:2a2ba35d72d270cf1497e22d42eef77034a1c2b7ea9e5f74df200d089f6dd8a8\"},\"modelIdentityDigest\":\"sha256:9372c470eeadd5ecd9c3c74c2b3cb633f8e2f2fad799250a0f70d652b6b825e4\",\"modelName\":\"spec181-assembly-v1\",\"schema\":\"ndnsf-di-canonical-model-manifest-v1\",\"state\":\"ACTIVE\"}"
+    }
+  ],
+  "entryPoints": [
+    "assemble_certified_onnx_model",
+    "prepareNativeCanonicalOnnxRole"
+  ],
+  "formatOwner": "certified-python-onnx-assembler",
+  "schema": "spec181-assembly-vectors-v1",
+  "toolchain": {
+    "onnx": "1.17.0",
+    "onnxruntime": "1.19.2"
+  }
+}
