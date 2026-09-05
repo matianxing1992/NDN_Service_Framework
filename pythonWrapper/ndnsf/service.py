@@ -419,6 +419,13 @@ class AckCandidate:
     payload: bytes = b""
     telemetry: Optional[Mapping[str, Any]] = None
     selection_input_key_offer: Mapping[str, str] = field(default_factory=dict)
+    # These values are projected from the Trust-Schema-validated ACK Data
+    # packet.  They are intentionally non-secret and empty for direct unit
+    # helpers that bypass the network packet path.
+    signer_identity: str = ""
+    signer_key_locator: str = ""
+    validated_wire_digest: str = ""
+    trust_schema_validated: bool = False
 
 
 @dataclass(frozen=True)
@@ -457,6 +464,12 @@ class LargeDataPublishResult:
     success: bool
     encrypted_data_name: str = ""
     object_id: str = ""
+    plaintext_size: int = 0
+    content_digest: str = ""
+    manifest_digest: str = ""
+    authorization_scope: str = ""
+    protection_epoch: str = ""
+    encrypted: bool = True
     error: str = ""
 
 
@@ -1259,26 +1272,58 @@ class CollaborationContext:
 
     def fetch_large_reference(
         self,
-        reference_payload: bytes,
+        reference_payload: Union[bytes, Mapping[str, Any]],
         key_scope: str,
         timeout_ms: int = 5000,
     ) -> Optional[bytes]:
-        """Fetch a large collaboration object described by a standard reference.
+        """Fetch and verify a large collaboration object reference.
 
-        Older examples published only a naked Data name in the reference
-        message. That form is accepted for migration, while new publishers use
-        ``LargeDataReference``.
+        The DI provider path passes the structured reference mapping directly
+        so that ``dataName``, size, content digest, encryption bit, and
+        authorization scope are checked before plaintext is returned. The
+        legacy wire-payload form remains supported for existing callers, but
+        it cannot supply the DI-only authorization-scope check.
         """
 
-        reference = parse_large_data_reference_payload(bytes(reference_payload))
-        if reference is None:
-            data_name = bytes(reference_payload).decode()
-            expected_size = 0
-            expected_digest = ""
+        structured = isinstance(reference_payload, Mapping)
+        reference = None
+        if structured:
+            value = dict(reference_payload)
+            data_name = str(value.get("dataName", value.get("data_name", "")))
+            expected_size = int(value.get(
+                "plaintextSize", value.get("plaintext_size", 0)))
+            expected_digest = str(value.get(
+                "contentDigest", value.get(
+                    "digest", value.get("ciphertextDigest",
+                                        value.get("ciphertext_digest", "")))))
+            encrypted = value.get("encrypted") is True
+            reference_scope = str(value.get(
+                "authorizationScope", value.get("authorization_scope", "")))
+            protection_epoch = str(value.get(
+                "protectionEpoch", value.get("protection_epoch", "")))
+            if (not data_name.startswith("/") or expected_size <= 0
+                    or not expected_digest.startswith("sha256:")
+                    or len(expected_digest) != 71 or not encrypted
+                    or not reference_scope or reference_scope != str(key_scope)
+                    or not protection_epoch
+                    or protection_epoch == "plaintext-v1"):
+                raise ValueError("large reference metadata is not authenticated")
+            try:
+                int(expected_digest[7:], 16)
+            except ValueError as exc:
+                raise ValueError("large reference metadata digest is invalid") from exc
         else:
-            data_name = reference.data_name
-            expected_size = reference.plaintext_size
-            expected_digest = reference.digest
+            reference = parse_large_data_reference_payload(bytes(reference_payload))
+            if reference is None:
+                data_name = bytes(reference_payload).decode()
+                expected_size = 0
+                expected_digest = ""
+            else:
+                data_name = reference.data_name
+                expected_size = reference.plaintext_size
+                expected_digest = reference.digest
+                if not reference.encrypted:
+                    raise ValueError("large reference is not encrypted")
         payload = self.fetch_large(data_name, key_scope, timeout_ms)
         if payload is None:
             return None
@@ -1424,6 +1469,14 @@ def _from_native_large_data_result(result) -> LargeDataPublishResult:
         success=bool(result.success),
         encrypted_data_name=str(result.encrypted_data_name),
         object_id=str(result.object_id),
+        plaintext_size=int(getattr(result, "plaintext_size", 0) or 0),
+        content_digest=str(getattr(result, "content_digest", "") or ""),
+        manifest_digest=str(getattr(result, "manifest_digest", "") or ""),
+        authorization_scope=str(
+            getattr(result, "authorization_scope", "") or ""),
+        protection_epoch=str(
+            getattr(result, "protection_epoch", "") or ""),
+        encrypted=bool(getattr(result, "encrypted", True)),
         error=str(result.error),
     )
 
@@ -1524,6 +1577,12 @@ def _from_native_ack_candidate(candidate) -> AckCandidate:
             else _freeze_collaboration_value(
                 dict(candidate.selection_input_key_offer))
         ),
+        signer_identity=str(getattr(candidate, "signer_identity", "")),
+        signer_key_locator=str(getattr(candidate, "signer_key_locator", "")),
+        validated_wire_digest=str(
+            getattr(candidate, "validated_wire_digest", "")),
+        trust_schema_validated=bool(
+            getattr(candidate, "trust_schema_validated", False)),
     )
 
 
@@ -1836,6 +1895,7 @@ class ServiceProvider:
         self._ack_context_handlers: set[str] = set()
         self._collaboration_services: set[str] = set()
         self._streaming_services: set[str] = set()
+        self._registered_services: set[str] = set()
 
     def create_live_stream(self, definition):
         """Create the Core-owned publisher; application supplies opaque bytes only."""
@@ -2070,6 +2130,8 @@ class ServiceProvider:
         self._native.set_r1_reservation_terminal_handler(service, handler)
 
     def _register_service(self, service: str) -> None:
+        if service in self._registered_services:
+            return
         if service not in self._handlers:
             raise ValueError(f"no handler registered for {service}")
 
@@ -2093,6 +2155,7 @@ class ServiceProvider:
         self._native.add_service(
             service, request_handler, ack_handler, include_context,
             service in self._ack_context_handlers)
+        self._registered_services.add(service)
 
     def add_collaboration_handler(
         self,
@@ -2153,6 +2216,38 @@ class ServiceProvider:
         self._native.run()
         return 0
 
+    def start(self, service: Optional[str] = None) -> None:
+        """Start the native provider after synchronously installing handlers.
+
+        ``run()`` remains the blocking compatibility entry point.  This
+        explicit start seam lets an application publish its own readiness
+        marker only after Core has installed all request/ACK registrations and
+        started the Face event loop; a subsequent ``run()`` is idempotent.
+        """
+        if service is None:
+            if not self._handlers and not (
+                    self._collaboration_services or self._streaming_services):
+                raise ValueError(
+                    "at least one service handler must be registered")
+            for registered_service in self._handlers:
+                self._register_service(registered_service)
+        elif service in self._handlers:
+            self._register_service(service)
+        elif service not in self._streaming_services:
+            raise ValueError("service handler is not registered")
+        self._native.start()
+        # spec181 FR-011/T004: the readiness wait (15000 ms) deliberately
+        # exceeds the Core 10 s probe deadline, so a boundary success is not
+        # misreported as a timeout.
+        try:
+            ready = self._native.wait_until_ready(15000)
+        except Exception:
+            self._native.stop()
+            raise
+        if not ready:
+            self._native.stop()
+            raise RuntimeError("ServiceProvider readiness timeout")
+
     def publish_service_info(self,
                              service_name: str,
                              service_lifetime_seconds: int = 30,
@@ -2182,6 +2277,16 @@ class ServiceProvider:
     def start_background(self, service: Optional[str] = None) -> threading.Thread:
         thread = threading.Thread(target=self.run, args=(service,), daemon=True)
         thread.start()
+        # spec181 FR-011/T004: readiness wait must exceed the Core 10 s
+        # probe deadline; cancellation/stop must not spin the loop hot.
+        try:
+            ready = self._native.wait_until_ready(15000)
+        except Exception:
+            self._native.stop()
+            raise
+        if not ready:
+            self._native.stop()
+            raise RuntimeError("ServiceProvider readiness timeout")
         return thread
 
     def stop(self) -> int:
@@ -2219,6 +2324,14 @@ class ServiceController:
 
     def start(self) -> None:
         self._native.start()
+        try:
+            ready = self._native.wait_until_ready(15000)
+        except Exception:
+            self._native.stop()
+            raise
+        if not ready:
+            self._native.stop()
+            raise RuntimeError("ServiceController readiness timeout")
 
     def run(self) -> int:
         self._native.run()
@@ -2231,6 +2344,14 @@ class ServiceController:
     def start_background(self) -> threading.Thread:
         thread = threading.Thread(target=self.run, daemon=True)
         thread.start()
+        try:
+            ready = self._native.wait_until_ready(15000)
+        except Exception:
+            self._native.stop()
+            raise
+        if not ready:
+            self._native.stop()
+            raise RuntimeError("ServiceController readiness timeout")
         return thread
 
 
@@ -2815,6 +2936,14 @@ class ServiceUser:
                         None if candidate.telemetry is None
                         else dict(candidate.telemetry)
                     ),
+                    signer_identity=str(
+                        getattr(candidate, "signer_identity", "")),
+                    signer_key_locator=str(
+                        getattr(candidate, "signer_key_locator", "")),
+                    validated_wire_digest=str(
+                        getattr(candidate, "validated_wire_digest", "")),
+                    trust_schema_validated=bool(
+                        getattr(candidate, "trust_schema_validated", False)),
                 )
                 for candidate in native_candidates
             ]))
@@ -3106,6 +3235,14 @@ class ServiceUser:
                             None if candidate.telemetry is None
                             else dict(candidate.telemetry)
                         ),
+                        signer_identity=str(
+                            getattr(candidate, "signer_identity", "")),
+                        signer_key_locator=str(
+                            getattr(candidate, "signer_key_locator", "")),
+                        validated_wire_digest=str(
+                            getattr(candidate, "validated_wire_digest", "")),
+                        trust_schema_validated=bool(
+                            getattr(candidate, "trust_schema_validated", False)),
                     )
                     for candidate in native_candidates
                 ])
