@@ -853,6 +853,10 @@ class PlaintextLeaseRegistry:
     def __enter__(self) -> "PlaintextLeaseRegistry":
         return self
 
+    def __contains__(self, lease_id: str) -> bool:
+        with self._lock:
+            return lease_id in self._leases
+
     def __exit__(self, *_exc) -> None:
         self.zeroize_all()
 

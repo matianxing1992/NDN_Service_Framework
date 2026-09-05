@@ -101,3 +101,27 @@ def test_runtime_exception_erases_both_memory_and_file_leases(tmp_path):
             raise ValueError("prepare failed")
     assert bytes(key) == bytes(32)
     assert not path.exists()
+
+
+def test_partial_file_write_failure_erases_the_registered_allocation(tmp_path, monkeypatch):
+    import os
+    registry = PlaintextLeaseRegistry()
+    path = tmp_path / "partial-model"
+    write = os.write
+    calls = 0
+
+    def fail_mid_write(fd, data):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return write(fd, data[:2])
+        if calls == 2:
+            raise OSError("injected partial write failure")
+        return write(fd, data)
+
+    monkeypatch.setattr(os, "write", fail_mid_write)
+    with pytest.raises(OSError, match="injected partial write"):
+        registry.register("model", path, b"secret model")
+    assert not path.exists()
+    assert "model" not in registry
+    registry.zeroize_all()
