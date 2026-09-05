@@ -106,6 +106,9 @@ def options(opt):
                       help='Explicit NDN-SVS source tree for an uninstalled build')
     optgrp.add_option('--ndn-svs-build-tree', default='',
                       help='Explicit matching NDN-SVS build tree containing libndn-svs.so')
+    optgrp.add_option('--disable-local-dependency-prefix', action='store_true',
+                      default=False,
+                      help='Do not add the repository .local-boost171 prefix to dependency discovery')
 
 
 def configure(conf):
@@ -159,7 +162,8 @@ def configure(conf):
         pkg_config_paths.append(os.environ['PKG_CONFIG_PATH'])
     else:
         pkg_config_paths.append(f'{conf.env.LIBDIR}/pkgconfig')
-    if os.path.isdir(local_pkg_config_path):
+    if (not conf.options.disable_local_dependency_prefix
+            and os.path.isdir(local_pkg_config_path)):
         pkg_config_paths.append(local_pkg_config_path)
         # /usr/local/lib (conf.env.LIBDIR) is already in the system loader
         # cache.  Encoding it ahead of a target's $ORIGIN runpath makes build-
