@@ -119,7 +119,7 @@ wired/executed/measured）。
   Y-B 保护纪元子用例覆盖。证据
   `evidence/t001-python-provider-grant-current.md`。
 
-- [ ] **T002 [US1] native Provider 解包**。
+- [x] **T002 [US1] native Provider 解包**。
   `NativeProviderHandler`/`ProtectedRuntime` 增加规范名精确获取、
   权威签名/绑定/过期校验与 KeyChain 解包（信封算法按收件人密钥
   类型：Ed25519 → X25519 转换、EC → ECDH-P256，与 Python 信封
@@ -134,7 +134,7 @@ wired/executed/measured）。
   （Python 端到端 native provider 真实解包，grant 由真实请求方进程
   发布）。证据 `evidence/t002-native-provider-grant-current.md`。
 
-- [ ] **T003 [US1] 跨语言 parity 向量锁定**。固定向量文件
+- [x] **T003 [US1] 跨语言 parity 向量锁定**。固定向量文件
   `tests/fixtures/spec181/grant-vectors-v1.json`：同一 grant 字节
   （规范 JSON）分别由 Python 与 native 解包，必须得到同一内容密钥；
   向量含正例与全部负例（错误收件人、跨请求/attempt/core/model/纪元、
@@ -144,7 +144,7 @@ wired/executed/measured）。
   变更必须同步更新并重新双侧验证）。证据
   `evidence/t003-grant-parity-current.md`。
 
-- [ ] **T004 [US1] 运行时就绪边界修复**。`pythonWrapper/ndnsf/service.py`
+- [x] **T004 [US1] 运行时就绪边界修复**。`pythonWrapper/ndnsf/service.py`
   的 `start()`/`start_background()` 就绪等待改为 15000 ms（对 Core
   10 s 探针留余量）；`ServiceController.cpp` 的探针循环在
   `stop()`/取消后不得热转（取消检查 + io 停止后立即退出）。文件：
@@ -171,7 +171,7 @@ wired/executed/measured）。
   `evidence/t005-y-n-matrix-current.md` 记录每子用例的拒绝原因与
   边界。
 
-- [ ] **T006 [US2] Y-N-E 真实 grant 变异构造**。构造三种真实 grant
+- [x] **T006 [US2] Y-N-E 真实 grant 变异构造**。构造三种真实 grant
   变异（过期、错误收件人、伪造权威签名）供 T005 的 Y-N-E 子用例
   使用，断言已实现 verifier 在授权边界以
   `DI_PROTECTED_GRANT_REJECTED` 拒绝；删除合成纪元异常路径。被撤销
