@@ -3164,7 +3164,11 @@ def _run_live_case_once(case: str, output: Path, inputs: Mapping[str, Any], *,
                 binding.nodes.get("user", "") or "").strip()
             if not user_node:
                 raise RunnerError("PROTECTED_EPOCH_USER_NODE_MISSING")
-            env["SPEC181_GRANT_FORWARDING_HINT"] = "/" + user_node
+            # MiniNDN's NLSR registers each node under
+            # /ndn/<node>-site/<node>; that is the name a forwarding hint
+            # must use to reach the User's local NFD.
+            env["SPEC181_GRANT_FORWARDING_HINT"] = (
+                "/ndn/" + user_node + "-site/" + user_node)
             if not env["SPEC181_REQUESTER_PRIVATE_KEY"]:
                 raise RunnerError("PROTECTED_EPOCH_REQUESTER_KEY_MISSING")
             if not env["SPEC181_PROVIDER_RECIPIENT_KEY_MAP"]:
