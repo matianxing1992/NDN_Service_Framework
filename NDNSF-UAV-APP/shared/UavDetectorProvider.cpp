@@ -193,4 +193,34 @@ UavDetectorProvider::execute(const UavEvidenceReference& evidence,
   return execute(*verified);
 }
 
+MultiViewExecutionResult
+UavDetectorProvider::executeMultiView(
+  const MultiViewRecognitionJob& job,
+  const MultiViewModelProfile& profile,
+  const std::vector<UavVerifiedEvidence>& evidence,
+  const ndn::Name& terminalOwner,
+  const IMultiViewRecognitionAlgorithm& algorithm) const
+{
+  std::vector<VerifiedMultiViewInput> inputs;
+  inputs.reserve(evidence.size());
+  for (const auto& item : evidence) {
+    VerifiedMultiViewInput input;
+    input.reference.viewId = item.reference.exactDataName.get(-2).toUri();
+    input.reference.producerIdentity = item.reference.producerIdentity;
+    input.reference.exactDataName = item.reference.exactDataName;
+    input.reference.contentDigest = item.reference.contentDigest;
+    input.reference.captureTimeMs = item.reference.windowStartMs;
+    input.reference.targetId = job.targetId;
+    input.reference.mediaType = item.reference.contentType == "image/jpeg" ?
+      "image/jpeg" : "image/png";
+    input.content = item.content;
+    input.signerIdentity = item.signerIdentity;
+    input.nameVerified = item.nameVerified;
+    input.signatureVerified = item.signatureVerified;
+    input.digestVerified = item.digestVerified;
+    inputs.push_back(std::move(input));
+  }
+  return executeMultiViewJob(job, profile, inputs, terminalOwner, algorithm);
+}
+
 } // namespace ndnsf::examples::uav

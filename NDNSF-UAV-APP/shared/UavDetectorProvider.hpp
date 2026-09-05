@@ -2,6 +2,7 @@
 #define NDNSF_EXAMPLES_UAV_DETECTOR_PROVIDER_HPP
 
 #include "UavProtocol.hpp"
+#include "UavMultiViewRecognition.hpp"
 
 #include <ndn-cxx/data.hpp>
 #include <ndn-cxx/security/certificate.hpp>
@@ -98,6 +99,16 @@ public:
           const ndn::Data& fetchedData,
           const ndn::security::Certificate& signerCertificate,
           std::string* reason = nullptr) const;
+
+  /** Execute the registered multi-view algorithm after every input has crossed
+   * the same signed-Data acceptance boundary as the single-view path. */
+  MultiViewExecutionResult
+  executeMultiView(const MultiViewRecognitionJob& job,
+                   const MultiViewModelProfile& profile,
+                   const std::vector<UavVerifiedEvidence>& evidence,
+                   const ndn::Name& terminalOwner,
+                   const IMultiViewRecognitionAlgorithm& algorithm =
+                     DeterministicMultiViewAlgorithm{}) const;
 
 private:
   UavDetectorProviderConfig m_config;

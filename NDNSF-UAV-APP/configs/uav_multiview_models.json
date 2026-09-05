@@ -1,0 +1,53 @@
+{
+  "schema": "ndnsf-uav-multiview-model-registry/v2",
+  "profiles": [
+    {
+      "profile_id": "vehicle-mvcnn-v1",
+      "algorithm_id": "mvcnn-onnx-maxpool/v1",
+      "model_id": "mvcnn-tiny-vehicle-v1",
+      "model_family": "MVCNN-family/shared-backbone-masked-max-pooling",
+      "model_digest": "sha256:14ec256fbc84e1c6d9d0cf593ca47ce151c641c5b3280535ca4dcbedd1a4c317",
+      "checkpoint_digest": "sha256:6acdbf2c34c7a2cd2cc6f7c76d3ced2fcd4e99f71e3907131dbbc113bb25b279",
+      "model_artifact": "NDNSF-UAV-APP/models/mvcnn_vehicle_cpu.onnx",
+      "checkpoint_artifact": "NDNSF-UAV-APP/models/mvcnn_vehicle_cpu.pt",
+      "artifact_manifest": "NDNSF-UAV-APP/models/mvcnn_vehicle_cpu.manifest.json",
+      "model_license": "MIT",
+      "source_revision": "local-source:sha256:4a8610c47ed89159293cf5b36939360ca257b9cf391b0691add652d45ce05a76",
+      "minimum_views": 2,
+      "maximum_views": 6,
+      "minimum_distinct_producers": 2,
+      "requires_calibration": false,
+      "supported_media": ["image/png", "image/jpeg"],
+      "pooling_operator": "masked-elementwise-max/v1",
+      "preprocessing_profile": "rgb-resize-224-center-crop/v1",
+      "device_class": "cpu",
+      "execution_provider": "CPUExecutionProvider",
+      "input_contract": {
+        "images": [1, 6, 3, 224, 224],
+        "viewMask": [1, 6]
+      },
+      "class_map": ["car", "truck", "person"],
+      "output_schema": "ndnsf-uav-multiview-result/v2",
+      "scientific_accuracy_claim_allowed": false
+    },
+    {
+      "profile_id": "functional-adapter-v1",
+      "algorithm_id": "detector-guided-mvcnn-pooling/v1",
+      "model_id": "functional-adapter",
+      "model_digest": "sha256:fixture-functional-adapter",
+      "model_artifact": "",
+      "model_license": "project test fixture",
+      "minimum_views": 2,
+      "maximum_views": 6,
+      "minimum_distinct_producers": 2,
+      "requires_calibration": false,
+      "supported_media": ["image/png", "image/jpeg"],
+      "pooling_operator": "elementwise-max/v1",
+      "preprocessing_profile": "fixture-rgb-32/v1",
+      "device_class": "functional-only",
+      "execution_provider": "none",
+      "output_schema": "ndnsf-uav-multiview-result/v1",
+      "scientific_accuracy_claim_allowed": false
+    }
+  ]
+}

@@ -2025,3 +2025,53 @@ UAV service-container workload:
 9. **Distributed inference integration.** Future image and object-detection
    workflows can connect to `NDNSF-DistributedInference` when model execution is
    split across ground stations, drones, and edge machines.
+
+## Multi-view recognition (Spec 178)
+
+The UAV-Experimental branch also contains a bounded multi-view recognition
+workflow. A mission session remains long-lived; each recognition attempt is a
+finite job with an immutable set of exact named-Data view references. A selected
+Provider verifies every signed view, consumes two through six views from distinct
+UAV identities, and executes one registered MVCNN-family ONNX graph with an
+explicit view mask on `CPUExecutionProvider`. The graph jointly pools the view
+features and emits one fused decision plus one Provider-owned annotation Data
+object per contributing view. Independent per-view labels or a voting adapter
+are baselines, not MVCNN. The generated fixture is functional-only and cannot
+support real-flight accuracy claims.
+
+Run the CPU functional gate with:
+
+```bash
+python3 NDNSF-UAV-APP/tools/run_multiview_fixture.py \
+  --manifest NDNSF-UAV-APP/testdata/multiview-car/manifest.json \
+  --mode real --views 6 --output results/uav-multiview-real
+```
+
+The registered CPU artifact is created and checked with:
+
+```bash
+python3 NDNSF-UAV-APP/tools/prepare_mvcnn_artifact.py \
+  --output-dir NDNSF-UAV-APP/models
+```
+
+The deterministic Spec 177 adapter remains available only through the explicit
+`--mode functional` path for contract tests. A real-model invocation fails
+closed on a missing/different artifact, malformed input, non-finite output, or
+any execution provider other than `CPUExecutionProvider`.
+
+Validation order is model provenance/native qualification, ONNX contract and
+CPU parity, CPU integration, real MiniNDN multi-process delivery, and only then
+a registered paired 1/2/4/6-view dataset. The reusable MiniNDN matrix is:
+
+```bash
+sudo -n python3 NDNSF-UAV-APP/tools/run_uav_multiview_minindn.py \
+  --execute --all-scenarios --provider /provider/gpu \
+  --output results/uav-multiview-minindn
+```
+
+It records exact UAV Data retrieval, competing Provider ACKs, single-owner
+selection, Provider-owned result/annotation Data, and explicit unavailable,
+late, and publication-failure terminals.  The model registry and
+preprocessing/model digest are in
+`configs/uav_multiview_models.json`; generated fixture output is functional
+evidence only.

@@ -1305,7 +1305,7 @@ public:
     }
     if (autoFlightControlsTest) {
       std::thread([this] {
-        auto makeReadiness = [this] (std::string droneId, bool ready, bool armed) {
+        auto makeReadiness = [] (std::string droneId, bool ready, bool armed) {
           ReadinessState readiness;
           readiness.droneId = std::move(droneId);
           readiness.heartbeatSeen = ready ? "true" : "false";

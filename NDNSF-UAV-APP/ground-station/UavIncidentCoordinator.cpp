@@ -244,6 +244,47 @@ UavIncidentCoordinator::acceptReport(const UavTerminalReport& report, uint64_t n
 }
 
 bool
+UavIncidentCoordinator::beginMultiViewJob(const MultiViewRecognitionJob& job,
+                                          uint64_t nowMs, std::string* reason)
+{
+  if (!job.isValid(nullptr, reason) || job.missionSessionId != m_incident.missionId ||
+      job.jobId.empty() || m_incident.incidentId.empty()) {
+    if (reason && reason->empty()) *reason = "invalid multi-view job lineage";
+    return false;
+  }
+  const auto requestId = ndn::Name("/UAV/MULTIVIEW").append(job.jobId);
+  if (!begin(requestId, nowMs, reason)) return false;
+  m_multiViewJob = job;
+  m_job.attemptId = "multiview-attempt-" + std::to_string(job.attempt);
+  return true;
+}
+
+bool
+UavIncidentCoordinator::acceptMultiViewResult(const FusedRecognitionResult& result,
+                                              uint64_t nowMs, std::string* reason)
+{
+  if (!m_multiViewJob || !requireState(UavCollaborationJobState::Reporting, reason) ||
+      !withinDeadline(nowMs, reason)) {
+    return false;
+  }
+  if (!result.isValid(&*m_multiViewJob, nullptr, reason) ||
+      result.terminalOwner != m_selectedProvider ||
+      result.terminalOwner != m_job.terminalOwner) {
+    if (reason && reason->empty()) *reason = "multi-view result terminal owner mismatch";
+    return false;
+  }
+  m_job.terminalReportDigest = result.resultManifestDigest;
+  const auto next = result.status == MultiViewTerminalStatus::Completed ?
+    UavCollaborationJobState::Succeeded : UavCollaborationJobState::Failed;
+  if (m_mission.hasJob(m_job.requestId) &&
+      !m_mission.updateJob(m_job.requestId, next, {}, {}, reason)) {
+    return false;
+  }
+  m_job.state = next;
+  return true;
+}
+
+bool
 UavIncidentCoordinator::fail(const std::string& stage, const std::string& detail,
                              bool timedOut, std::string* reason)
 {

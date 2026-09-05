@@ -442,6 +442,71 @@ makeUavReportName(const ndn::Name& producerIdentity,
   return name;
 }
 
+ndn::Name
+makeUavMultiViewResultName(const ndn::Name& providerIdentity,
+                           const std::string& missionSessionId,
+                           const std::string& jobId,
+                           uint64_t attempt,
+                           uint64_t version)
+{
+  if (providerIdentity.empty() || missionSessionId.empty() || jobId.empty() ||
+      attempt == 0 || version == 0) {
+    throw std::invalid_argument("multi-view result name requires non-empty IDs and positive version");
+  }
+  ndn::Name name = providerIdentity;
+  return name.append("UAV").append("MULTIVIEW").append("MISSION")
+    .append(missionSessionId).append("JOB").append(jobId).append("RESULT")
+    .append(ndn::name::Component::fromNumber(attempt))
+    .append(ndn::name::Component::fromVersion(version));
+}
+
+ndn::Name
+makeUavMultiViewAnnotationName(const ndn::Name& providerIdentity,
+                               const std::string& missionSessionId,
+                               const std::string& jobId,
+                               uint64_t attempt,
+                               const std::string& viewId,
+                               uint64_t version)
+{
+  if (providerIdentity.empty() || missionSessionId.empty() || jobId.empty() ||
+      attempt == 0 || viewId.empty() || version == 0) {
+    throw std::invalid_argument("multi-view annotation name requires non-empty IDs and positive version");
+  }
+  ndn::Name name = providerIdentity;
+  return name.append("UAV").append("MULTIVIEW").append("MISSION")
+    .append(missionSessionId).append("JOB").append(jobId).append("ANNOTATION")
+    .append(viewId).append(ndn::name::Component::fromNumber(attempt))
+    .append(ndn::name::Component::fromVersion(version));
+}
+
+bool
+isUavProviderMultiViewDataName(const ndn::Name& providerIdentity,
+                               const ndn::Name& objectName,
+                               const std::string& objectKind,
+                               const std::string& missionSessionId,
+                               const std::string& jobId)
+{
+  if (providerIdentity.empty() || missionSessionId.empty() || jobId.empty() ||
+      (objectKind != "RESULT" && objectKind != "ANNOTATION") ||
+      !providerIdentity.isPrefixOf(objectName) ||
+      containsTransportEndpoint(providerIdentity) || containsTransportEndpoint(objectName)) {
+    return false;
+  }
+  const auto suffix = objectName.getSubName(providerIdentity.size());
+  if (objectKind == "RESULT") {
+    return suffix.size() == 9 && hasComponentAt(suffix, 0, "UAV") &&
+           hasComponentAt(suffix, 1, "MULTIVIEW") && hasComponentAt(suffix, 2, "MISSION") &&
+           hasComponentAt(suffix, 3, missionSessionId) && hasComponentAt(suffix, 4, "JOB") &&
+           hasComponentAt(suffix, 5, jobId) && hasComponentAt(suffix, 6, "RESULT") &&
+           !suffix[7].empty() && !suffix[8].empty() && suffix[8].isVersion();
+  }
+  return suffix.size() == 10 && hasComponentAt(suffix, 0, "UAV") &&
+         hasComponentAt(suffix, 1, "MULTIVIEW") && hasComponentAt(suffix, 2, "MISSION") &&
+         hasComponentAt(suffix, 3, missionSessionId) && hasComponentAt(suffix, 4, "JOB") &&
+         hasComponentAt(suffix, 5, jobId) && hasComponentAt(suffix, 6, "ANNOTATION") &&
+         !suffix[7].empty() && !suffix[8].empty() && !suffix[9].empty() && suffix[9].isVersion();
+}
+
 bool
 isUavProducerDataName(const ndn::Name& producerIdentity,
                       const ndn::Name& objectName,

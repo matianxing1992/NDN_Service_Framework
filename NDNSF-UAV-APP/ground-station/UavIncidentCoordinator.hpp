@@ -3,6 +3,7 @@
 
 #include "../shared/UavCollaborationPolicy.hpp"
 #include "../shared/UavMissionSession.hpp"
+#include "../shared/UavMultiViewRecognition.hpp"
 
 #include <cstdint>
 #include <string>
@@ -60,6 +61,10 @@ public:
   bool markReporting(std::string* reason = nullptr);
   bool acceptReport(const UavTerminalReport& report, uint64_t nowMs,
                     std::string* reason = nullptr);
+  bool beginMultiViewJob(const MultiViewRecognitionJob& job, uint64_t nowMs,
+                         std::string* reason = nullptr);
+  bool acceptMultiViewResult(const FusedRecognitionResult& result, uint64_t nowMs,
+                             std::string* reason = nullptr);
   bool fail(const std::string& stage, const std::string& detail,
             bool timedOut = false, std::string* reason = nullptr);
   bool retryAnalysis(UavCollaborationFailureStage stage,
@@ -86,6 +91,7 @@ private:
   ndn::Name m_selectedProvider;
   bool m_started = false;
   std::size_t m_retriesUsed = 0;
+  std::optional<MultiViewRecognitionJob> m_multiViewJob;
 };
 
 } // namespace ndnsf::examples::uav

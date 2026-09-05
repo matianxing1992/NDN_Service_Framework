@@ -77,6 +77,29 @@ makeUavReportName(const ndn::Name& producerIdentity,
                   const std::string& attemptId,
                   uint64_t version);
 
+/** Provider-owned immutable outputs for a bounded multi-view recognition job. */
+ndn::Name
+makeUavMultiViewResultName(const ndn::Name& providerIdentity,
+                           const std::string& missionSessionId,
+                           const std::string& jobId,
+                           uint64_t attempt,
+                           uint64_t version);
+
+ndn::Name
+makeUavMultiViewAnnotationName(const ndn::Name& providerIdentity,
+                               const std::string& missionSessionId,
+                               const std::string& jobId,
+                               uint64_t attempt,
+                               const std::string& viewId,
+                               uint64_t version);
+
+bool
+isUavProviderMultiViewDataName(const ndn::Name& providerIdentity,
+                               const ndn::Name& objectName,
+                               const std::string& objectKind,
+                               const std::string& missionSessionId,
+                               const std::string& jobId);
+
 bool
 isUavProducerDataName(const ndn::Name& producerIdentity,
                       const ndn::Name& objectName,
