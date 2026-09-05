@@ -1197,6 +1197,15 @@ namespace ndn_service_framework
 
         nac_validator.load(trustSchemaPath);
 
+        // Register the identity prefix as a route so other processes can
+        // fetch this User's signed APP Data (the spec181 grant Data is
+        // fetched by Providers on other MiniNDN nodes; without the route
+        // their Interests die with NoRoute before reaching the IMS filter).
+        m_face.registerPrefix(
+            identity,
+            nullptr,
+            std::bind(&ServiceUser::onPrefixRegisterFailure, this, _1, _2));
+
         // Serve NDNSF and ck messages using IMS.  Registration uses a short
         // bounded retry because NFD's offline command authenticator can
         // transiently miss the freshly created signer certificate while the
