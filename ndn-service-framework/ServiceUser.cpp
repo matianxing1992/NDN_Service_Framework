@@ -1233,6 +1233,9 @@ namespace ndn_service_framework
         // node PIB is briefly locked by a concurrent keychain operation.
         for (const auto& servicePrefix :
              {ndn::Name(identity.toUri()).append("NDNSF"),
+              // spec181: the KEY-GRANT namespace uses the Spec170 spelling
+              // NDNSF-DI (single component); serve it from the same IMS.
+              ndn::Name(identity.toUri()).append("NDNSF-DI"),
               ndn::Name(identity.toUri()).append("CK")}) {
             registerInterestFilterWithRetry(
                 m_face,
