@@ -16,6 +16,10 @@ grammar. Name components carry bare hex digests (no ``sha256:`` prefix):
       /REQ/<request-id>/ATTEMPT/<attempt>/PLAN-CORE/<plan-core-digest>
       /MODEL/<model-manifest-digest>/EPOCH/<protection-epoch>
       /GRANT/<grant-digest>
+
+The configured authority endpoint can be hosted under the requester's
+existing publication identity. That route is separate from the registry's
+logical policy authority ID carried and authenticated in the grant payload.
 """
 
 from __future__ import annotations
@@ -89,6 +93,7 @@ class AuthorityBackedGrantProvider:
         authority_public_key: ed25519.Ed25519PublicKey,
         authority_issue: Callable[[GrantRequestV1], KeyGrantV1],
         authority_identity: str,
+        publication_identity: str | None = None,
         content_key_owner: Callable[[str, str], bytes] | None = None,
         clock: Callable[[], int] | None = None,
     ) -> None:
@@ -105,6 +110,7 @@ class AuthorityBackedGrantProvider:
         self.requester_private_key = requester_private_key
         self.authority_public_key = authority_public_key
         self.authority_identity = authority_identity
+        self.publication_identity = publication_identity or authority_identity
         self.authority_issue = authority_issue
         self.content_key_owner = content_key_owner
         self._clock = clock or (lambda: int(time.time() * 1000))
@@ -134,7 +140,8 @@ class AuthorityBackedGrantProvider:
         if not isinstance(grant, KeyGrantV1):
             raise TypeError("authority did not return KeyGrantV1")
         grant.verify(self.authority_public_key, now_ms=self._clock())
-        if (grant.provider_identity != grant_view.provider
+        if (grant.policy_authority != self.authority_identity
+                or grant.provider_identity != grant_view.provider
                 or grant.request_id != grant_view.request_id
                 or grant.attempt != grant_view.attempt
                 or grant.plan_core_digest != grant_view.plan_core_digest
@@ -142,7 +149,7 @@ class AuthorityBackedGrantProvider:
                 or grant.protection_epoch != grant_view.protection_epoch):
             raise ValueError("authority grant does not cover the sealed view")
         grant_name = canonical_grant_name(
-            authority=self.authority_identity,
+            authority=self.publication_identity,
             provider_identity=grant_view.provider,
             request_id=grant_view.request_id,
             attempt=grant_view.attempt,

@@ -19,6 +19,13 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 T001 registry repair (2026-09-05): focused defects CLOSED.**
+100 focused tests plus 7 inherited grant tests pass for pinned registry
+policy, private-key matching, distinct issuer/publication identities and
+the final published-root allowlist. Initial RED and Python 3.8 compatibility
+failures are retained. T001 network and lifecycle acceptance remains open.
+See [T001 registry repair](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t001-registry-repair-20260905.md).
+
 **Spec181 T001 Provider repair (2026-09-05): focused defects CLOSED.**
 70 focused tests pass for authorization before preparation, in-memory keys,
 on-disk AEAD loading, model/weights cleanup and registered-handler failures.

@@ -243,7 +243,8 @@ def _make_lifecycle_observer(journal: LifecycleJournal):
     return observe
 
 
-def _build_grant_seam(client):
+def _build_grant_seam(client, *, registry_path, model_manifest_digest,
+                      model_family="YOLO26n"):
     """Build the in-process authority grant seam for a protected epoch.
 
     SPEC181_PROTECTION_EPOCH is empty or ``plaintext-v1`` by default and the
@@ -257,64 +258,76 @@ def _build_grant_seam(client):
     epoch = os.environ.get("SPEC181_PROTECTION_EPOCH", "").strip()
     if not epoch or epoch == "plaintext-v1":
         return None, "plaintext-v1"
-    from cryptography.hazmat.primitives import serialization
-    from cryptography.hazmat.primitives.asymmetric import ed25519
-    from cryptography.hazmat.backends import default_backend
     from ndnsf_distributed_inference.security.registry_keys import (
-        load_artifact_policy_authority_private_key)
+        load_artifact_policy_authority_private_key,
+        load_artifact_policy_authority_registry, load_ed25519_private_key)
     from ndnsf_distributed_inference.security.requester_grant_pipeline import (
         build_in_process_grant_provider)
-    authority_key = load_artifact_policy_authority_private_key()
+    policy = load_artifact_policy_authority_registry(
+        registry_path, model_family=model_family, protection_epoch=epoch)
+    authority_key = load_artifact_policy_authority_private_key(
+        expected_public_key=policy.public_key)
+    def current_manifest():
+        value = model_manifest_digest() if callable(model_manifest_digest) else model_manifest_digest
+        if (not isinstance(value, str) or not value.startswith("sha256:")
+                or len(value) != 71
+                or any(c not in "0123456789abcdef" for c in value[7:])):
+            raise ValueError("grant policy requires a canonical model manifest digest")
+        return value
+
+    if not callable(model_manifest_digest):
+        current_manifest()
     requester_seed_path = Path(os.environ["SPEC181_REQUESTER_PRIVATE_KEY"])
-    requester_key = ed25519.Ed25519PrivateKey.from_private_bytes(
-        Path(requester_seed_path).read_bytes())
+    requester_key = load_ed25519_private_key(requester_seed_path, raw_seed=True)
     recipient_map_path = Path(os.environ["SPEC181_PROVIDER_RECIPIENT_KEY_MAP"])
     recipient_entries = json.loads(recipient_map_path.read_text(
         encoding="utf-8"))
     recipient_public_keys = {}
     for provider, pem_path in recipient_entries.items():
-        key = serialization.load_pem_private_key(
-            Path(pem_path).read_bytes(), password=None,
-            backend=default_backend())
-        if not isinstance(key, ed25519.Ed25519PrivateKey):
-            raise ValueError(
-                f"recipient key is not Ed25519: {provider}")
+        key = load_ed25519_private_key(pem_path)
         recipient_public_keys[provider] = key.public_key()
-    content_keys: dict[str, bytes] = {}
+    content_keys: dict[tuple[str, str], bytes] = {}
 
     def content_key_owner(model_manifest_digest: str, protection_epoch: str):
-        del protection_epoch
-        if model_manifest_digest not in content_keys:
-            content_keys[model_manifest_digest] = os.urandom(32)
-        return content_keys[model_manifest_digest]
+        if (model_manifest_digest != current_manifest() or protection_epoch != epoch):
+            raise ValueError("content key request is outside the configured model/epoch")
+        identity = (model_manifest_digest, protection_epoch)
+        if identity not in content_keys:
+            content_keys[identity] = os.urandom(32)
+        return content_keys[identity]
 
     service_user = getattr(client._network_client, "service_user", None)
     if service_user is None:
         raise RuntimeError("grant publisher requires the ServiceUser owner")
+    requester_identity = str(client.deployment.user)
+    if not requester_identity.startswith("/") or requester_identity.endswith("/"):
+        raise ValueError("grant requester identity must be a canonical absolute name")
 
     def publisher(data_name: str, payload: bytes) -> None:
         result = service_user.publish_signed_app_data(
             data_name, payload, freshness_ms=600000)
-        if getattr(result, "error", "") or not getattr(result, "success", True):
+        if getattr(result, "error", "") or not getattr(result, "success", False):
             raise RuntimeError(
                 f"grant Data publish failed: {getattr(result, 'error', '')}")
 
-    provider = build_in_process_grant_provider(
-        requester_identity="/example/user",
-        requester_private_key=requester_key,
-        # The in-process authority publishes through the requester's own
-        # signed-APP-Data path, which signs only records below the local
-        # identity's /NDNSF/DI namespace — the grant Data name therefore
-        # carries the requester identity (the functional slice keeps the
-        # authority in the requester process, FR-002).
-        authority_identity="/example/user",
-        authority_private_key=authority_key,
-        protection_epoch=epoch,
-        allowed_model_manifests=frozenset(),
-        recipient_public_keys=recipient_public_keys.get,
-        content_key_owner=content_key_owner,
-        publisher=publisher,
-    )
+    def provider(grant_view, deadline_ms):
+        # Canonical publication replaces the package digest with the published
+        # root digest before grant acquisition. Read that trusted final binding,
+        # never the candidate grant view, to form the one-model allowlist.
+        bound_provider = build_in_process_grant_provider(
+            requester_identity=requester_identity,
+            requester_private_key=requester_key,
+            authority_identity=policy.authority_id,
+            publication_identity=requester_identity,
+            authority_key_id=policy.key_id,
+            authority_private_key=authority_key,
+            protection_epoch=epoch,
+            allowed_model_manifests=frozenset({current_manifest()}),
+            recipient_public_keys=recipient_public_keys.get,
+            content_key_owner=content_key_owner,
+            publisher=publisher,
+        )
+        return bound_provider(grant_view, deadline_ms)
     return provider, epoch
 
 
@@ -484,10 +497,13 @@ def _load_yolo_ack_driven(client, args) -> int:
             )
         ),
     )
+    grant_model_binding = canonical_binding
     if mutation in {"Y-N-R", "Y-N-E"}:
         canonical_binding = _Spec180MutationBinding(canonical_binding, mutation)
 
-    grant_binding_provider, protection_epoch = _build_grant_seam(client)
+    grant_binding_provider, protection_epoch = _build_grant_seam(
+        client, registry_path=registry, model_family=model.model_name,
+        model_manifest_digest=lambda: grant_model_binding.model_manifest_digest)
     client.configure_automatic_planning(
         service_name=service,
         adapters=(adapter,),

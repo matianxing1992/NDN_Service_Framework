@@ -1150,6 +1150,7 @@ class DistributedInferenceProvider:
 
     def __init__(self, provider: ServiceProvider, *, handler_workers: int = 0,
                  grant_authority_public_key=None,
+                 grant_authority_identity: str = "",
                  grant_recipient_private_key=None,
                  grant_fetch_timeout_ms: int = 30000):
         self.provider = provider
@@ -1166,6 +1167,7 @@ class DistributedInferenceProvider:
         # own Ed25519/EC identity key.  None means protected assignments fail
         # closed with DI_PROTECTED_GRANT_REJECTED.
         self._grant_authority_public_key = grant_authority_public_key
+        self._grant_authority_identity = grant_authority_identity
         self._grant_recipient_private_key = grant_recipient_private_key
         self._grant_fetch_timeout_ms = int(grant_fetch_timeout_ms)
 
@@ -1190,6 +1192,7 @@ class DistributedInferenceProvider:
         serve_certificates: bool = True,
         bootstrap_token: str = "",
         grant_authority_public_key=None,
+        grant_authority_identity: str = "",
         grant_recipient_private_key=None,
         grant_fetch_timeout_ms: int = 30000,
     ) -> "DistributedInferenceProvider":
@@ -1207,6 +1210,7 @@ class DistributedInferenceProvider:
             bootstrap_token=bootstrap_token,
         ), handler_workers=handler_workers,
             grant_authority_public_key=grant_authority_public_key,
+            grant_authority_identity=grant_authority_identity,
             grant_recipient_private_key=grant_recipient_private_key,
             grant_fetch_timeout_ms=grant_fetch_timeout_ms)
 
@@ -1403,7 +1407,8 @@ class DistributedInferenceProvider:
         from .core import ProtectedGrantRejected, grant_from_wire, verify_and_unwrap_grant
         from .security.grant_provider import canonical_grant_name
         if (self._grant_authority_public_key is None
-                or self._grant_recipient_private_key is None):
+                or self._grant_recipient_private_key is None
+                or not self._grant_authority_identity):
             raise ProtectedGrantRejected("protected grant keys are not configured for this Provider")
         binding = v3_projection.grant_binding
         if binding is None:
@@ -1434,12 +1439,15 @@ class DistributedInferenceProvider:
                 name, timeout_ms=self._grant_fetch_timeout_ms, forwarding_hints=hints))
             packet = fetch(binding.grant_name)
             grant = grant_from_wire(packet.content)
+            if grant.policy_authority != self._grant_authority_identity:
+                raise ValueError("grant policy authority differs from configured issuer")
             if grant.grant_digest != binding.grant_digest:
                 raise ValueError("grant digest does not match the sealed Selection reference")
             if grant.model_manifest_digest != expected_manifest:
                 raise ValueError("grant model manifest binding mismatch")
             expected_name = canonical_grant_name(
-                authority=grant.policy_authority, provider_identity=ctx.local_provider,
+                authority=binding.grant_name.split("/NDNSF-DI/KEY-GRANT/v1/")[0],
+                provider_identity=ctx.local_provider,
                 request_id=v3_projection.request_id, attempt=v3_projection.attempt,
                 plan_core_digest=v3_projection.plan_core_digest,
                 model_manifest_digest=expected_manifest,

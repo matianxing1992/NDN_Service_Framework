@@ -91,6 +91,7 @@ def protected_handler(tmp_path, monkeypatch, request):
     native = Mock()
     runtime = DistributedInferenceProvider(
         native, grant_authority_public_key=authority_key.public_key(),
+        grant_authority_identity=authority.identity,
         grant_recipient_private_key=recipient_key)
     state = SimpleNamespace(events=[], keys=[], work_dirs=[], paths=[], grant=grant,
                             external=external)

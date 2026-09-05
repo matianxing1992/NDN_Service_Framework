@@ -48,6 +48,13 @@ T008 保留当前源身份与全部平面摘要；T009 只能封印这些相同�
    与策略来自 `artifactPolicyAuthority`；不把发布路由身份自动视为
    策略权威。复用 `ServiceUser.publish_signed_app_data`，不新增
    Controller 权威网络服务。T001 核查 user.py 的身份覆盖与注册表一致性。
+   功能切片中 `KeyGrantV1.policyAuthority` 固定为注册表 `authorityId`，
+   `keyId` 使用注册表值；规范名的 authority endpoint 由 requester 的
+   `deployment.user` 承载，保留 `/NDNSF-DI/KEY-GRANT/v1` 文法。
+   Provider 从已封印 Selection 取得 endpoint，独立核对 payload 的
+   逻辑签发者与注册表公钥。模型族/纪元先按注册表校验，具体模型允许
+   列表在 grant 获取时读取可信 canonical binding 的最终 root 摘要，
+   不使用发布前 package 摘要或 grant view 自述值。
 2. **Authorization before assembly**。签名请求 -> 权威校验并签发 ->
    精确名发布/获取 -> Provider 校验权威、封印 grant 摘要、全部绑定与
    期限 -> recipient 解包 -> 装配/AEAD 暂存/解密加载 -> 清理。

@@ -23,7 +23,7 @@ Spec 170 `artifact-assembly-v1` 契约。
 
 | Task | Implemented / executed | Remaining acceptance |
 |---|---|---|
-| T001 | grant 摘要修复；内存租约、前置授权、落盘 AEAD 读取与 external-data 清理；70 项定向 unit 通过，见 `evidence/t001-provider-repair-20260905.md` | 注册表策略/公钥/身份约束；真实发布/获取及取消/过期验收 |
+| T001 | grant 摘要、租约/存储修复；注册表策略/公钥/逻辑身份与最终 root 允许列表已接线；100 项定向 unit 通过，见 `evidence/t001-registry-repair-20260905.md` | 真实发布/获取；资源上界、全部封印绑定及取消/过期验收 |
 | T002 | native verifier 与 pybind | native Provider factory/状态/受管解包/AEAD/清理接线 |
 | T003 | grant 向量双侧消费 | FR-012 装配向量及全部绑定/算法负例覆盖 |
 | T004 | 15000 ms seam；历史 fake-native unit 测试 | 当前二进制的真实就绪、取消和无热转证据 |
