@@ -14,6 +14,8 @@ import subprocess
 import sys
 import time
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[2]
 RUNNER = ROOT / "tests/minindn/run_request_scoped_confidentiality.py"
@@ -198,3 +200,17 @@ def test_late_grant_exports_evidence_and_requires_observed_renewal(tmp_path):
         tmp_path, name, runner._scenario_config(name), [], time.monotonic())
     assert evidence["grantOnly"]["lateRenewalObserved"] is False
     assert evidence["grantOnly"]["permissionExhaustedTimeUs"] is None
+
+
+def test_permission_loss_refuses_host_namespace():
+    runner = _load_runner()
+
+    class HostNode:
+        name = "user-b"
+        inNamespace = False
+
+        def pexec(self, _command):
+            pytest.fail("must never change the host packet filter")
+
+    with pytest.raises(RuntimeError, match="isolated user-b namespace"):
+        runner._set_startup_permission_loss(HostNode(), True)
