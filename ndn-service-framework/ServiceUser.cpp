@@ -5301,23 +5301,11 @@ namespace ndn_service_framework
         SelectionStatusTimeoutHandler statusTimeoutHandler,
         SelectionStatusOptions statusOptions)
     {
-        if (!authorizeControllerTransition(serviceName,
-                                           ProtectedTransition::DISCOVERY)) {
-            NDN_LOG_ERROR("Reject request under revoked Controller status serviceName="
-                          << serviceName.toUri());
+        // The base RequestMessage overload enters here directly, while the
+        // typed/Targeted wrappers also prepare before reaching this boundary.
+        // Keep every publication path behind the same readiness/status gate.
+        if (!prepareRequestControllerVersion(requestMessage, serviceName, requestId)) {
             return ndn::Name();
-        }
-        const auto currentControllerVersion = getControllerVersion(serviceName);
-        if (currentControllerVersion) {
-            if (!requestMessage.hasControllerVersion()) {
-                requestMessage.setControllerVersion(*currentControllerVersion);
-            }
-            else if (!isAcceptableControllerVersion(
-                         serviceName, requestMessage.getControllerVersion())) {
-                NDN_LOG_ERROR("Reject request with stale ControllerVersion serviceName="
-                              << serviceName.toUri());
-                return ndn::Name();
-            }
         }
         if (!hasUserPermissionForRequest(providers, serviceName)) {
             NDN_LOG_ERROR("Reject request without user permission serviceName="
