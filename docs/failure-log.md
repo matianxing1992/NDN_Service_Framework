@@ -19,6 +19,12 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 T001 lifecycle repair (2026-09-05): focused defect CLOSED.** Five
+RED failures are repaired; 19 focused tests pass for in-memory key leases,
+duplicate protection, complete cleanup and private/symlink-safe files.
+Provider integration remains open; this does not close T001.
+See [T001 lifecycle repair](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t001-lifecycle-repair-20260905.md).
+
 **Active Spec181 audit (2026-09-05): BLOCK.** Native protected runtime wiring,
 production-path negative validation and assembly parity remain unproven;
 the active Context Mode plan link has been repaired. Latest retained Spec181 Y-B log

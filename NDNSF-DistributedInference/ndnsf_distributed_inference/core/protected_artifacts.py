@@ -35,6 +35,7 @@ import hashlib
 import hmac
 import json
 import os
+import stat
 from pathlib import Path
 from threading import RLock
 from typing import Any, Mapping, Sequence, Union
@@ -741,43 +742,119 @@ class ProtectionState(str, Enum):
     FAILED_CLOSED = "FAILED_CLOSED"
 
 
+@dataclass
+class _PlaintextLease:
+    secret: bytearray
+    path: Path | None = None
+    fd: int | None = None
+
+
 class PlaintextLeaseRegistry:
-    """Tracks every materialized plaintext path and zeroizes it on close."""
+    """Owns mutable secrets and private file leases until cleanup succeeds.
+
+    File descriptors pin the allocation being erased, so replacing a path
+    cannot redirect zeroization into an unrelated file. Failed cleanup stays
+    registered and does not prevent the remaining leases from being erased.
+    """
 
     def __init__(self) -> None:
-        self._leases: dict[str, tuple[Path, bytearray]] = {}
+        self._leases: dict[str, _PlaintextLease] = {}
         self._lock = RLock()
 
-    def register(self, lease_id: str, path: str | Path, plaintext: bytes) -> None:
+    def _check_new_lease(self, lease_id: str, plaintext: bytes) -> None:
         if not lease_id or not plaintext:
             raise ValueError("plaintext lease is incomplete")
-        target = Path(path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        secret = bytearray(plaintext)
-        target.write_bytes(secret)
+        if lease_id in self._leases:
+            raise ValueError("duplicate plaintext lease ID")
+
+    def register_secret(self, lease_id: str, plaintext: bytes) -> bytearray:
+        """Return the owned mutable allocation without creating a disk copy."""
         with self._lock:
-            self._leases[lease_id] = (target, secret)
+            self._check_new_lease(lease_id, plaintext)
+            secret = bytearray(plaintext)
+            self._leases[lease_id] = _PlaintextLease(secret)
+            return secret
+
+    def register(self, lease_id: str, path: str | Path, plaintext: bytes) -> None:
+        with self._lock:
+            self._check_new_lease(lease_id, plaintext)
+            target = Path(path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(target, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW |
+                         os.O_NONBLOCK, 0o600)
+            try:
+                if not stat.S_ISREG(os.fstat(fd).st_mode):
+                    raise ValueError("plaintext lease requires a regular file")
+                os.fchmod(fd, 0o600)
+            except BaseException:
+                os.close(fd)
+                raise
+            secret = bytearray(plaintext)
+            self._leases[lease_id] = _PlaintextLease(secret, target, fd)
+            # Register ownership before writing: a partial write is still
+            # discoverable by the enclosing runtime's cleanup boundary.
+            try:
+                os.ftruncate(fd, 0)
+                offset = 0
+                while offset < len(secret):
+                    count = os.write(fd, memoryview(secret)[offset:])
+                    if count <= 0:
+                        raise OSError("plaintext lease write made no progress")
+                    offset += count
+            except BaseException:
+                self.zeroize(lease_id)
+                raise
 
     def zeroize(self, lease_id: str) -> None:
         with self._lock:
-            item = self._leases.pop(lease_id, None)
-        if item is None:
-            return
-        path, secret = item
-        for index in range(len(secret)):
-            secret[index] = 0
-        if path.exists():
+            item = self._leases.get(lease_id)
+            if item is None:
+                return
+            item.secret[:] = b"\x00" * len(item.secret)
             try:
-                with path.open("r+b") as output:
-                    output.write(b"\x00" * max(1, path.stat().st_size))
-                    output.flush()
-                path.unlink()
-            except OSError as exc:
+                if item.fd is not None:
+                    size = os.fstat(item.fd).st_size
+                    os.lseek(item.fd, 0, os.SEEK_SET)
+                    zeros = bytes(min(64 * 1024, size))
+                    while size:
+                        count = os.write(item.fd, zeros[:min(len(zeros), size)])
+                        if count <= 0:
+                            raise OSError("plaintext zeroization made no progress")
+                        size -= count
+                    os.fsync(item.fd)
+                    try:
+                        current = item.path.lstat()
+                    except FileNotFoundError:
+                        current = None
+                    original = os.fstat(item.fd)
+                    if current is not None:
+                        if (current.st_dev, current.st_ino) != (
+                                original.st_dev, original.st_ino):
+                            raise OSError("plaintext lease path was replaced")
+                        item.path.unlink()
+                    os.close(item.fd)
+                    item.fd = None
+            except (OSError, ValueError) as exc:
                 raise RuntimeError("plaintext zeroization failed") from exc
+            del self._leases[lease_id]
 
     def zeroize_all(self) -> None:
-        for lease_id in tuple(self._leases):
-            self.zeroize(lease_id)
+        with self._lock:
+            errors = []
+            for lease_id in tuple(self._leases):
+                try:
+                    self.zeroize(lease_id)
+                except RuntimeError as exc:
+                    errors.append(exc)
+            if errors:
+                raise RuntimeError(
+                    f"plaintext zeroization failed for {len(errors)} lease(s)") from errors[0]
+
+    def __enter__(self) -> "PlaintextLeaseRegistry":
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self.zeroize_all()
 
 
 __all__ = [
