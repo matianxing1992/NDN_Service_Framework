@@ -3533,10 +3533,23 @@ class AutomaticPlanningCoordinator:
         if protected_providers and self.grant_binding_provider is None:
             raise RuntimeError(
                 "protected placement requires an ArtifactPolicyAuthority grant provider")
+        default_manifest_digest = ""
+        if protected_providers and self.canonical_artifact_ensurer is not None:
+            try:
+                canonical_binding = self.canonical_artifact_ensurer.ensure(
+                    selected_candidate, role_specs, deadline_ms=deadline_ms)
+                default_manifest_digest = str(
+                    getattr(canonical_binding, "model_manifest_digest", ""))
+            except Exception:
+                # A protected plan cannot proceed without the canonical
+                # binding; the failure surfaces at the projection stage.
+                default_manifest_digest = ""
         grant_bindings_by_provider: dict[str, GrantBindingV1] = {}
         for provider in sorted(protected_providers):
             grant_view = PlanSealerV3.grant_view(
-                core, provider, provider_views[provider], security_policy_digest)
+                core, provider, provider_views[provider],
+                security_policy_digest,
+                default_model_manifest_digest=default_manifest_digest)
             binding = self.grant_binding_provider(grant_view, deadline_ms)
             if not isinstance(binding, GrantBindingV1):
                 raise TypeError("grant provider did not return GrantBindingV1")
@@ -4258,18 +4271,7 @@ class AutomaticPlanningCoordinator:
                 # model-layer artifact and must not enter the assembler, but
                 # a protected-epoch grant still binds the same model-manifest
                 # digest as the component roles (spec181 T008 Y-B).
-                certified.append(replace(
-                    spec,
-                    model_manifest_digest=binding.model_manifest_digest,
-                    artifact_profile_digest=binding.artifact_profile_digest,
-                    graph_digest=binding.graph_digest,
-                    canonical_initializer_digest=(
-                        binding.canonical_initializer_digest),
-                    adapter_descriptor_digest=(
-                        binding.adapter_descriptor_digest),
-                    assembler_descriptor_digest=(
-                        binding.assembler_descriptor_digest),
-                ))
+                certified.append(spec)
                 continue
             owned = tuple(sorted(
                 order[node] for node, owner

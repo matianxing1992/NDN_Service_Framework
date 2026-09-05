@@ -2025,7 +2025,8 @@ class PlanSealerV3:
     @staticmethod
     def grant_view(core: PlacementPlanCoreV3, provider: str,
                    offer: ProviderPlanningViewV3,
-                   security_policy_snapshot_digest: str) -> ProviderGrantViewV1:
+                   security_policy_snapshot_digest: str,
+                   default_model_manifest_digest: str = "") -> ProviderGrantViewV1:
         if provider != offer.provider:
             raise ValueError("grant Provider/offer mismatch")
         role_names = tuple(item.role for item in core.roles)
@@ -2051,6 +2052,12 @@ class PlanSealerV3:
             if getattr(role, "model_manifest_digest", "")
         }
         if protection_epoch != "plaintext-v1":
+            # Pre-certification role specs carry no manifest digest yet (the
+            # canonical ensurer binds it during projection).  The coordinator
+            # supplies the canonical binding's digest as the fallback; both
+            # must agree when the roles already carry one.
+            if default_model_manifest_digest:
+                model_manifest_digests.add(default_model_manifest_digest)
             if len(model_manifest_digests) != 1:
                 raise ValueError(
                     "protected Provider grant requires exactly one "
