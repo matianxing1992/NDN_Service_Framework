@@ -4262,6 +4262,13 @@ class AutomaticPlanningCoordinator:
                     spec,
                     model_manifest_digest=binding.model_manifest_digest,
                     artifact_profile_digest=binding.artifact_profile_digest,
+                    graph_digest=binding.graph_digest,
+                    canonical_initializer_digest=(
+                        binding.canonical_initializer_digest),
+                    adapter_descriptor_digest=(
+                        binding.adapter_descriptor_digest),
+                    assembler_descriptor_digest=(
+                        binding.assembler_descriptor_digest),
                 ))
                 continue
             owned = tuple(sorted(
