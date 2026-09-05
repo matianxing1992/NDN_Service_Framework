@@ -1147,7 +1147,41 @@ def check_tamper_replay(ctx: RunCtx) -> Dict[str, Any]:
     return result
 
 
+def check_rotation_failure_retry(ctx: RunCtx) -> Dict[str, Any]:
+    """Prove the affected runtime denies during failure and after recovery."""
+    events = _ts_lines(ctx.output / "controller-1.log")
+    failed = [ts for ts, msg in events if "NDNSF_CONTROLLER_ABE_REKEY_FAILED" in msg]
+    recovered = [ts for ts, msg in events if "NDNSF_CONTROLLER_ABE_REKEY_RECONCILED" in msg]
+    ctx.check("rotation_failed_once", len(failed) == 1, str(failed))
+    ctx.check("rotation_recovered_once", len(recovered) == 1, str(recovered))
+    ctx.check("same_target_retry_succeeded", ctx.rev is not None and
+              ctx.rev["identity"] == "/example/hello/user/A" and ctx.rev["epoch"] == 3,
+              str(ctx.rev))
+    if len(failed) == 1 and len(recovered) == 1:
+        lo, hi = failed[0], recovered[0]
+        ctx.check("recovery_follows_failure", hi > lo, "%.3f -> %.3f" % (lo, hi))
+        installed = ctx.install_ts("userA", 2)
+        ctx.check("failure_status_installed", installed is not None and lo <= installed < hi,
+                  str(installed))
+        if installed is not None:
+            ctx.report_log_denials("userA", installed, hi, "denied_while_rotation_pending", 1)
+        for role in ("userA", "userB", "providerA", "providerB"):
+            ts = ctx.install_ts(role, 3)
+            ctx.check("recovered_status_" + role, ts is not None and ts >= hi - 0.5, str(ts))
+        ctx.report_log_denials("userA", hi + 1, float("inf"), "still_denied_after_recovery", 2)
+        pre_ok, _ = row_success_counts(ctx.rows["userA"], 0, lo - 1)
+        post_ok, post_fail = row_success_counts(ctx.rows["userB"], hi + 2, float("inf"))
+        leaked, _ = row_success_counts(ctx.rows["userA"], lo + 1, float("inf"))
+        ctx.check("affected_worked_before_failure", pre_ok > 0, str(pre_ok))
+        ctx.check("affected_no_post_failure_success", leaked == 0, str(leaked))
+        ctx.check("unaffected_recovers_without_failure", post_ok > 0 and post_fail == 0,
+                  "success=%d failure=%d" % (post_ok, post_fail))
+    return {"passed": all(ctx.checks.values()), "checks": ctx.checks,
+            "details": ctx.details, "evidence": ctx.evidence}
+
+
 EVALUATORS = {
+    "revocation-rotation-failure-retry": check_rotation_failure_retry,
     "user-identity-revocation": check_user_identity_revocation,
     "provider-identity-revocation": check_provider_identity_revocation,
     "service-scoped-revocation-with-unaffected-control": check_service_scoped_revocation,

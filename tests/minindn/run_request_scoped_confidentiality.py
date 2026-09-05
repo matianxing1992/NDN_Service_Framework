@@ -60,6 +60,7 @@ SCENARIOS = [
     "selection-response-tamper-and-replay",
     "grant-only-advance",
     "grant-after-permission-exhaustion",
+    "revocation-rotation-failure-retry",
 ]
 
 TARGETS = ["identity", "certificate", "service"]
@@ -547,6 +548,15 @@ def _collect_runtime_evidence(output: Path, scenario: str,
         control_rows = [row for row in _read_csv_rows(output / "user-A" / "request-results.csv")
                         if row.get("success", "").strip() == "1"
                         and row.get("request_id")]
+        control_enqueue = {}
+        for row in _read_csv_rows(output / "user-A" / "request_lifecycle.csv"):
+            try:
+                ts = int(row.get("enqueue_timestamp_us", "0") or 0)
+            except ValueError:
+                continue
+            if ts > 0:
+                key = row.get("request_id")
+                control_enqueue[key] = min(ts, control_enqueue.get(key, ts))
         grant_only = {
             "grantApplied": bool(grant_markers and grant_markers[-1][0] == "1"),
             "grantMarker": {
@@ -583,6 +593,9 @@ def _collect_runtime_evidence(output: Path, scenario: str,
             "grantedPreResolveWaiting": granted_pre_resolve_waiting,
             "grantedTerminalReasons": granted_reasons,
             "unaffectedControlSuccessRows": len(control_rows),
+            "unaffectedControlPostGrantSuccessRows": sum(
+                1 for row in control_rows if grant_time_us is not None and
+                control_enqueue.get(row["request_id"], 0) > grant_time_us),
         }
         if config.get("permissionRefetchAfterMs"):
             def marker_time_us(pattern: str) -> int | None:
@@ -594,6 +607,9 @@ def _collect_runtime_evidence(output: Path, scenario: str,
             refetch_us = marker_time_us(r"NDNSF_APP_PERMISSION_REFETCH\b")
             grant_only["permissionExhaustedTimeUs"] = exhausted_us
             grant_only["explicitRefetchTimeUs"] = refetch_us
+            grant_only["unaffectedControlPostRefetchSuccessRows"] = sum(
+                1 for row in control_rows if refetch_us is not None and
+                control_enqueue.get(row["request_id"], 0) > refetch_us)
             grant_only["lateRenewalObserved"] = bool(
                 exhausted_us is not None and grant_time_us is not None and
                 refetch_us is not None and granted_first_enqueue_us is not None and
@@ -642,7 +658,7 @@ def _collect_runtime_evidence(output: Path, scenario: str,
         # Startup logs alone are not packet evidence.  Require a validated
         # Request publication before calling this a cross-process run.
         "networkEvidence": request_publication_count > 0,
-        **({"grantOnly": grant_only} if scenario == "grant-only-advance" else {}),
+        **({"grantOnly": grant_only} if config.get("grantOnlyAdvance") else {}),
     }
 
 
@@ -702,7 +718,12 @@ def _scenario_config(scenario: str) -> Dict[str, Any]:
         # the restarted authority begins its bounded window.
         "controller2RevokeAfterMs": 0,
     }
-    if scenario == "provider-identity-revocation":
+    if scenario == "revocation-rotation-failure-retry":
+        config.update({"revokeAfterMs": 20000, "revokeRetryAfterMs": 26000,
+                       "rotationFaultOnce": True, "lifetimeMs": 80000,
+                       "requestCount": 40, "requestDurationMs": 40000,
+                       "recovery": "same-target-rekey-retry"})
+    elif scenario == "provider-identity-revocation":
         config.update({"revokeIdentity": PROVIDER_ROOT + "/A",
                        "recovery": "provider-restart",
                        "restartProviderAfterMs": 8500})
@@ -797,10 +818,11 @@ def _scenario_config(scenario: str) -> Dict[str, Any]:
         })
         if scenario == "grant-after-permission-exhaustion":
             config.update({
-                "grantAfterMs": 12000,
-                "permissionRefetchAfterMs": 16000,
-                "lifetimeMs": 50000,
-                "requestCount": 8,
+                "grantAfterMs": 30000,
+                "permissionRefetchAfterMs": 25000,
+                "lifetimeMs": 100000,
+                "requestCount": 32,
+                "requestDurationMsByUser": {"A": 60000, "B": 16000},
                 "recovery": "explicit-permission-renewal",
             })
     return config
@@ -1030,6 +1052,8 @@ def execute_gate(output: Path, scenario: str = SCENARIOS[0],
             if config["revokeCertificateDigest"]:
                 args += ["--revoke-certificate-digest",
                          q(config["revokeCertificateDigest"])]
+            if config.get("revokeRetryAfterMs"):
+                args += ["--revoke-retry-after-ms", str(config["revokeRetryAfterMs"])]
         return "cd %s && exec %s" % (q(ROOT), " ".join(args))
 
     def provider_command(provider_id: str, provider_log: Path) -> str:
@@ -1055,6 +1079,8 @@ def execute_gate(output: Path, scenario: str = SCENARIOS[0],
         return "cd %s && exec %s" % (q(ROOT), " ".join(args))
 
     def user_command(user_id: str, user_log: Path) -> str:
+        duration_ms = int(config.get("requestDurationMsByUser", {}).get(
+            user_id, config.get("requestDurationMs", 8000)))
         args = [
             q(user_binary), "--user-identity", q(USER_ROOT + "/" + user_id),
             "--provider-root", q(PROVIDER_ROOT),
@@ -1067,7 +1093,7 @@ def execute_gate(output: Path, scenario: str = SCENARIOS[0],
             "--rate-rps", "1", "--count", str(int(config.get("requestCount", 8))),
             "--warmup", "0",
             "--interval-ms", "1000", "--duration",
-            str(int(config.get("requestDurationMs", 8000))),
+            str(max(1, (duration_ms + 999) // 1000)),
             "--ack-timeout-ms", "1000", "--timeout-ms", "5000",
             "--request-timeout-ms", "5000", "--drain-seconds", "1",
             "--strategy", "first-responding", "--timeline-trace",
@@ -1111,7 +1137,9 @@ def execute_gate(output: Path, scenario: str = SCENARIOS[0],
                 not bool(config.get("grantOnlyAdvance")),
                 controller_run_ms if config["controllerRestart"] else lifetime_ms),
             output, shared_keychain, processes,
-            {"NDNSF_CONTROLLER_GENERATION_STATE": str(controller_state)})
+            {"NDNSF_CONTROLLER_GENERATION_STATE": str(controller_state),
+             **({"NDNSF_CONTROLLER_FAULT_INJECT_ABE_ROTATE": "once"}
+                if config.get("rotationFaultOnce") else {})})
         _wait_marker(output / "controller-1.log", "ServiceController started...",
                      processes, 30)
 
@@ -1306,8 +1334,10 @@ def execute_gate(output: Path, scenario: str = SCENARIOS[0],
             grant.get("grantedPreGrantRows") == 0 and
             grant.get("grantedPreResolveWaiting", 0) >= 1 and
             grant.get("unaffectedControlSuccessRows", 0) >= 1 and
+            grant.get("unaffectedControlPostGrantSuccessRows", 0) >= 1 and
             (not config.get("permissionRefetchAfterMs") or
-             grant.get("lateRenewalObserved") is True))
+             (grant.get("lateRenewalObserved") is True and
+              grant.get("unaffectedControlPostRefetchSuccessRows", 0) >= 1)))
 
     # Spec179 per-scenario checks (sibling module) are the authority for the
     # revocation family.  grant-only-advance has no scenario evaluator and

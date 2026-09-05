@@ -125,6 +125,7 @@ main(int argc, char** argv)
     const ndn::Name controllerPrefix(
       getOption(argc, argv, "--controller-prefix", DEFAULT_CONTROLLER_PREFIX.toUri()));
     const auto revokeAfterMs = getIntegerOption(argc, argv, "--revoke-after-ms", -1);
+    const auto revokeRetryAfterMs = getIntegerOption(argc, argv, "--revoke-retry-after-ms", -1);
     const auto runForMs = getIntegerOption(argc, argv, "--run-for-ms", 0);
     // Deterministic grant-only version advance (Spec179 MiniNDN gate): issue
     // one additional /PERMISSION grant at a bounded offset while the global
@@ -137,6 +138,9 @@ main(int argc, char** argv)
     if (revokeAfterMs < -1 || runForMs < 0 || grantAfterMs < -1)
       throw std::invalid_argument(
         "--revoke-after-ms/--run-for-ms/--grant-additional-after-ms must be >= 0 or omitted");
+    if (revokeRetryAfterMs < -1 ||
+        (revokeRetryAfterMs >= 0 && (revokeAfterMs < 0 || revokeRetryAfterMs <= revokeAfterMs)))
+      throw std::invalid_argument("--revoke-retry-after-ms must follow --revoke-after-ms");
     if (grantAfterMs >= 0 && grantIdentity.empty())
       throw std::invalid_argument(
         "--grant-additional-identity is required when --grant-additional-after-ms is set");
@@ -202,15 +206,17 @@ main(int argc, char** argv)
         throw std::invalid_argument(
           "invalid revocation target; provide the fields required by --revoke-kind");
       }
-      scheduler.schedule(ndn::time::milliseconds(revokeAfterMs),
-        [&controller, target] {
+      const auto applyRevocation = [&controller, target] {
           const bool success = controller.revoke(target);
           const auto version = controller.getControllerVersion();
           std::cout << "NDNSF_REVOCATION_APPLIED success=" << (success ? 1 : 0)
                     << " kind=" << static_cast<int>(target.kind)
                     << " generation=" << version.controllerGenerationTimestamp
                     << " epoch=" << version.controllerEpoch << std::endl;
-        });
+        };
+      scheduler.schedule(ndn::time::milliseconds(revokeAfterMs), applyRevocation);
+      if (revokeRetryAfterMs >= 0)
+        scheduler.schedule(ndn::time::milliseconds(revokeRetryAfterMs), applyRevocation);
     }
 
     if (grantAfterMs >= 0) {
