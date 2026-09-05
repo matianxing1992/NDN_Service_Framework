@@ -4088,7 +4088,15 @@ namespace ndn_service_framework
     {
         ndn::Name allowedPrefix(identity);
         allowedPrefix.append("NDNSF").append("DI");
-        if (!allowedPrefix.isPrefixOf(dataName) || dataName.size() <= allowedPrefix.size()) {
+        // spec181: the KEY-GRANT namespace uses the Spec170 spelling
+        // NDNSF-DI (single component); accept both spellings below the
+        // local identity.
+        ndn::Name grantAllowedPrefix(identity);
+        grantAllowedPrefix.append("NDNSF-DI");
+        const bool allowed = allowedPrefix.isPrefixOf(dataName) ||
+          grantAllowedPrefix.isPrefixOf(dataName);
+        if (!allowed || dataName.size() <= std::min(
+              allowedPrefix.size(), grantAllowedPrefix.size())) {
             throw std::invalid_argument(
                 "signed APP Data name must be below the local /NDNSF/DI prefix");
         }

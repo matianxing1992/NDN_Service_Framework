@@ -293,8 +293,11 @@ def _build_grant_seam(client):
         raise RuntimeError("grant publisher requires the ServiceUser owner")
 
     def publisher(data_name: str, payload: bytes) -> None:
-        service_user.publish_signed_app_data(
+        result = service_user.publish_signed_app_data(
             data_name, payload, freshness_ms=600000)
+        if getattr(result, "error", "") or not getattr(result, "success", True):
+            raise RuntimeError(
+                f"grant Data publish failed: {getattr(result, 'error', '')}")
 
     provider = build_in_process_grant_provider(
         requester_identity="/example/user",
