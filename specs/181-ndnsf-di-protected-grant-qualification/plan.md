@@ -59,7 +59,7 @@ G0 grant 正路径（权威服务端 + Python/native 解包 + Y-N-E 真实变异
 | grant 编码/权威/解包 | `core/protected_artifacts.py`、`security/*`、`app_sdk/placement.py`、native `ProtectedRuntime` |
 | 权威服务端 | controller 子进程（`examples/python/NDNSF-DistributedInference/yolo_2x2/controller.py` 扩展或等价维护入口） |
 | MiniNDN 执行 | `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py`（继承 180 的 barriered runner） |
-| 候选/SIF/Tiger | Spec 180 的 `scripts/spec180_*` 工具链（路径沿用，所有权移交本 spec 的 T011--T014） |
+| 候选/SIF/Tiger | Spec 180 的 `scripts/spec180_*` 工具链（路径沿用，所有权移交本 spec 的 T010--T013） |
 
 ## Project Structure
 
