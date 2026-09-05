@@ -3535,15 +3535,12 @@ class AutomaticPlanningCoordinator:
                 "protected placement requires an ArtifactPolicyAuthority grant provider")
         default_manifest_digest = ""
         if protected_providers and self.canonical_artifact_ensurer is not None:
-            try:
-                canonical_binding = self.canonical_artifact_ensurer.ensure(
-                    selected_candidate, role_specs, deadline_ms=deadline_ms)
-                default_manifest_digest = str(
-                    getattr(canonical_binding, "model_manifest_digest", ""))
-            except Exception:
-                # A protected plan cannot proceed without the canonical
-                # binding; the failure surfaces at the projection stage.
-                default_manifest_digest = ""
+            # Pre-certification manifest facts are read-only binding
+            # properties; ensure() performs the publication checks and stays
+            # on the projection path.
+            default_manifest_digest = str(getattr(
+                self.canonical_artifact_ensurer,
+                "model_manifest_digest", "") or "")
         grant_bindings_by_provider: dict[str, GrantBindingV1] = {}
         for provider in sorted(protected_providers):
             grant_view = PlanSealerV3.grant_view(
