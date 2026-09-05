@@ -396,6 +396,7 @@ class ProtectedAssemblyQualificationTest(unittest.TestCase):
             types.SimpleNamespace(), handler_workers=0,
             grant_authority_public_key=(
                 authority_key or self.authority_key).public_key(),
+            grant_authority_identity=self.authority.identity,
             grant_recipient_private_key=recipient_key or self.recipient_key,
             grant_fetch_timeout_ms=5000)
         if fetch is not None:
@@ -453,6 +454,20 @@ class ProtectedAssemblyQualificationTest(unittest.TestCase):
                 self._ctx(), execution, projection, self._role_spec(),
                 _fetch_grant_data=lambda name: self._packet(grant))
         self.assertFalse((self.work_dir / "assembled-role.onnx.cipher").is_file())
+
+    def test_signed_grant_requires_configured_logical_authority(self):
+        grant = self._signed_grant()
+        provider = self._provider()
+        provider._grant_authority_identity = "different-authority"
+        projection = types.SimpleNamespace(
+            grant_binding=self._binding(grant.grant_digest),
+            request_id=self.request_id, attempt=1,
+            plan_core_digest="sha256:" + "cd" * 32)
+        with self.assertRaisesRegex(ProtectedGrantRejected, "policy authority"):
+            provider._qualify_protected_assembly(
+                self._ctx(), self._execution(), projection, self._role_spec(),
+                _fetch_grant_data=lambda name: self._packet(grant))
+        self.assertFalse((self.work_dir / "assembled-role.onnx.cipher").exists())
 
     def test_disk_ciphertext_tampering_is_rejected_by_the_loading_path(self):
         from unittest.mock import patch
@@ -639,6 +654,18 @@ class RequesterGrantPipelineTest(unittest.TestCase):
         )
         fields.update(overrides)
         return build_in_process_grant_provider(**fields)
+
+    def test_pipeline_rejects_unbounded_model_policy(self):
+        with self.assertRaisesRegex(ValueError, "explicit model"):
+            self._pipeline(allowed_model_manifests=frozenset())
+
+    def test_pipeline_rejects_shared_requester_authority_key(self):
+        with self.assertRaisesRegex(ValueError, "distinct keys"):
+            self._pipeline(requester_private_key=self.authority_key)
+
+    def test_pipeline_rejects_shared_logical_identity(self):
+        with self.assertRaisesRegex(ValueError, "distinct logical identities"):
+            self._pipeline(authority_identity="/user/u0")
 
     def _grant_view(self):
         from ndnsf_distributed_inference.sdk.placement import (

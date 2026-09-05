@@ -18,6 +18,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from ndnsf_distributed_inference.app_sdk import APPProvider, ProviderRuntimeContext
 from ndnsf_distributed_inference.provider import DIProviderOfferIssuerV3
+from ndnsf_distributed_inference.policy import load_or_generate_deployment
 from ndnsf_distributed_inference.artifact_deployment import (
     ArtifactProvisioningState,
     materialize_role_artifacts,
@@ -270,40 +271,36 @@ def _probe_downloaded_runner(ctx: ProviderRuntimeContext, model_path) -> None:
     print(completed.stdout.strip(), flush=True)
 
 
-def _load_grant_keys(provider_id: str = ""):
+def _load_grant_keys(provider_id: str = "", *, provider_prefix="/example/provider"):
     """Load protected-epoch grant key material from the runner environment.
 
-    Returns (authority_public_key, recipient_private_key) under a protected
-    epoch; (None, None) for plaintext-v1, where the grant path is never
+    Returns (authority_public_key, recipient_private_key, authority_identity)
+    under a protected epoch; (None, None, "") for plaintext-v1, where the grant path is never
     entered (spec181 T001 wiring).  The recipient key is this Provider's
     own Ed25519 offer key, looked up by Provider identity in the shared
     runner-supplied map.
     """
     epoch = os.environ.get("SPEC181_PROTECTION_EPOCH", "").strip()
     if not epoch or epoch == "plaintext-v1":
-        return None, None
-    from cryptography.hazmat.primitives import serialization
-    from cryptography.hazmat.primitives.asymmetric import ed25519
-    from cryptography.hazmat.backends import default_backend
+        return None, None, ""
+    from ndnsf_distributed_inference.security.registry_keys import (
+        load_artifact_policy_authority_registry, load_ed25519_private_key)
     authority_pub_path = Path(os.environ["SPEC181_GRANT_AUTHORITY_PUBLIC_KEY"])
+    policy = load_artifact_policy_authority_registry(
+        authority_pub_path.with_name("trust-root-registry-v1.json"),
+        model_family="YOLO26n", protection_epoch=epoch)
     recipient_map_path = Path(os.environ["SPEC181_PROVIDER_RECIPIENT_KEY_MAP"])
     recipient_entries = json.loads(recipient_map_path.read_text(
         encoding="utf-8"))
-    identity = "/example/provider/" + str(provider_id).strip("/")
+    identity = str(provider_prefix).rstrip("/")
+    if provider_id:
+        identity += "/" + str(provider_id).strip("/")
     recipient_priv_path = recipient_entries.get(identity)
     if not recipient_priv_path:
         raise ValueError(
             f"no grant recipient key for Provider identity {identity}")
-    authority_key = serialization.load_pem_public_key(
-        authority_pub_path.read_bytes(), backend=default_backend())
-    if not isinstance(authority_key, ed25519.Ed25519PublicKey):
-        raise ValueError("grant authority public key is not Ed25519")
-    recipient_key = serialization.load_pem_private_key(
-        Path(recipient_priv_path).read_bytes(), password=None,
-        backend=default_backend())
-    if not isinstance(recipient_key, ed25519.Ed25519PrivateKey):
-        raise ValueError("grant recipient private key is not Ed25519")
-    return authority_key, recipient_key
+    recipient_key = load_ed25519_private_key(recipient_priv_path)
+    return policy.public_key, recipient_key, policy.authority_id
 
 
 def main() -> int:
@@ -344,8 +341,10 @@ def main() -> int:
         print("Run YOLO 2x2 provider", args.provider_id, args.role or args.roles)
         return 0
     with optional_local_nfd(args.start_local_nfd):
-        grant_authority_public_key, grant_recipient_private_key = (
-            _load_grant_keys(args.provider_id))
+        grant_deployment = load_or_generate_deployment(
+            args.config, args.generated_policy_dir)
+        grant_authority_public_key, grant_recipient_private_key, grant_authority_identity = (
+            _load_grant_keys(args.provider_id, provider_prefix=grant_deployment.provider_prefix))
         provider = APPProvider.from_config(
             args.config,
             generated_policy_dir=args.generated_policy_dir,
@@ -353,6 +352,7 @@ def main() -> int:
             group=args.group,
             handler_workers=args.handler_workers,
             grant_authority_public_key=grant_authority_public_key,
+            grant_authority_identity=grant_authority_identity,
             grant_recipient_private_key=grant_recipient_private_key,
         )
         service = yolo_inference_service(provider.deployment)

@@ -1062,6 +1062,7 @@ class APPProvider:
         handler_workers: int = 0,
         bootstrap_token: str = "",
         grant_authority_public_key=None,
+        grant_authority_identity: str = "",
         grant_recipient_private_key=None,
     ) -> "APPProvider":
         deployment = load_or_generate_deployment(config, generated_policy_dir)
@@ -1076,6 +1077,7 @@ class APPProvider:
             handler_workers=handler_workers,
             bootstrap_token=bootstrap_token,
             grant_authority_public_key=grant_authority_public_key,
+            grant_authority_identity=grant_authority_identity,
             grant_recipient_private_key=grant_recipient_private_key,
         )
         return cls(deployment, provider)
