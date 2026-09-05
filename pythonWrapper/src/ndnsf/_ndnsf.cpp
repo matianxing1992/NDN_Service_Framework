@@ -3738,26 +3738,45 @@ public:
     if (m_running.exchange(true)) {
       return;
     }
-    m_provider->init();
-    m_provider->fetchPermissionsFromController(m_controller);
-    m_started = false;
-    m_thread = std::thread([this] {
-      while (m_running.load()) {
-        try {
-          processFaceEvents(m_face, pythonFacePollTimeout());
-          if (!m_started.exchange(true)) {
+    {
+      std::lock_guard<std::mutex> lock(m_startMutex);
+      m_started = false;
+      m_startFinished = false;
+    }
+    {
+      std::lock_guard<std::mutex> lock(m_errorMutex);
+      m_error.clear();
+    }
+    try {
+      m_provider->init();
+      m_provider->fetchPermissionsFromController(m_controller);
+      m_thread = std::thread([this] {
+        while (m_running.load()) {
+          try {
+            processFaceEvents(m_face, pythonFacePollTimeout());
+            {
+              std::lock_guard<std::mutex> lock(m_startMutex);
+              m_started = m_running.load();
+              m_startFinished = true;
+            }
             m_startCv.notify_all();
           }
+          catch (const std::exception& e) {
+            recordStartFailure(e);
+          }
         }
-        catch (const std::exception& e) {
-          std::lock_guard<std::mutex> lock(m_errorMutex);
-          m_error = e.what();
-          m_running = false;
-          m_startCv.notify_all();
+        {
+          std::lock_guard<std::mutex> lock(m_startMutex);
+          m_started = false;
+          m_startFinished = true;
         }
-      }
-      m_startCv.notify_all();
-    });
+        m_startCv.notify_all();
+      });
+    }
+    catch (const std::exception& e) {
+      recordStartFailure(e);
+      throw;
+    }
   }
 
   /** True once the event thread has run at least one slice without error.
@@ -3772,12 +3791,12 @@ public:
     if (!m_startCv.wait_for(lock,
                             std::chrono::milliseconds(std::max(1, timeoutMs)),
                             [this] {
-                              return m_started.load() || !m_running.load();
+                              return m_startFinished;
                             })) {
       return false;
     }
     throwIfError();
-    return m_started.load();
+    return m_started;
   }
 
   void
@@ -3788,12 +3807,19 @@ public:
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
       throwIfError();
     }
+    throwIfError();
   }
 
   void
   stop()
   {
     m_running = false;
+    {
+      std::lock_guard<std::mutex> lock(m_startMutex);
+      m_started = false;
+      m_startFinished = true;
+    }
+    m_startCv.notify_all();
     // Close the transport before joining the event thread.  Merely flipping
     // the loop flag leaves pending Face callbacks alive until Python/C++
     // teardown, which can release callback-owned native blocks twice.
@@ -3863,6 +3889,22 @@ public:
   }
 
 private:
+  void
+  recordStartFailure(const std::exception& error)
+  {
+    {
+      std::lock_guard<std::mutex> lock(m_errorMutex);
+      m_error = error.what();
+    }
+    m_running = false;
+    {
+      std::lock_guard<std::mutex> lock(m_startMutex);
+      m_started = false;
+      m_startFinished = true;
+    }
+    m_startCv.notify_all();
+  }
+
   ndn::Face m_face;
   ndn::KeyChain m_keyChain;
   ndn::Name m_group;
@@ -3891,7 +3933,10 @@ private:
   std::map<std::string, std::shared_ptr<PyOpaqueSelectionParticipant>>
     m_opaqueSelectionParticipants;
   std::atomic<bool> m_running{false};
-  std::atomic<bool> m_started{false};
+  bool m_started = false;
+  // The initial idle state is not a completed startup attempt.
+  // Both readiness fields are protected by m_startMutex.
+  bool m_startFinished = false;
   std::thread m_thread;
   std::mutex m_errorMutex;
   std::string m_error;
