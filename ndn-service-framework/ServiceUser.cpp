@@ -1201,10 +1201,31 @@ namespace ndn_service_framework
         // fetch this User's signed APP Data (the spec181 grant Data is
         // fetched by Providers on other MiniNDN nodes; without the route
         // their Interests die with NoRoute before reaching the IMS filter).
-        m_face.registerPrefix(
-            identity,
-            nullptr,
-            std::bind(&ServiceUser::onPrefixRegisterFailure, this, _1, _2));
+        // Bounded retry mirrors registerInterestFilterWithRetry: NFD's
+        // offline command authenticator can transiently miss the freshly
+        // created signer certificate while the node PIB is briefly locked.
+        {
+          auto attempts = std::make_shared<int>(0);
+          const int maxAttempts = 8;
+          const auto retryDelay = ndn::time::milliseconds(250);
+          std::function<void(const ndn::Name&, const std::string&)> onFail;
+          onFail = [this, attempts, maxAttempts, retryDelay, &onFail](
+            const ndn::Name& prefix, const std::string& reason) {
+            onPrefixRegisterFailure(prefix, reason);
+            if (++*attempts >= maxAttempts) {
+              return;
+            }
+            m_scheduler.schedule(retryDelay, [this, prefix, &onFail] {
+              m_face.registerPrefix(
+                prefix,
+                [](const ndn::Name&) {},
+                onFail);
+            });
+          };
+          m_face.registerPrefix(identity,
+                                [](const ndn::Name&) {},
+                                onFail);
+        }
 
         // Serve NDNSF and ck messages using IMS.  Registration uses a short
         // bounded retry because NFD's offline command authenticator can
