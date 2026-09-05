@@ -322,3 +322,24 @@ plus its rationale comment; (2) the API-contract extension
 (consumer/producer/param-fetcher/abe-support) mapping each new symbol to its
 Spec179 requirement. Rebuild-and-rerun of RV-U20/RV-U21 happens only after
 the upstream commit exists (external gate).
+
+### T021 — Controller grants for both runtime roles
+
+The user's permission scope is Controller-authorized service use (User,
+`/PERMISSION/<service>`) and service offering (Provider, `/SERVICE/<service>`).
+Keep this authority boundary in the existing `grant()` API. The example gains
+an explicit grant-role option defaulting to User; Provider mirrors the existing
+App-owned delayed permission refetch. No framework permission-polling feature
+or new wire field is needed.
+
+Provider/B starts unprovisioned while Provider/A serves as a control. Controller
+grants B, B explicitly renews permissions, and User/B renews its provider table
+before successfully targeting B. Verify no pre-grant Provider publication,
+target-only DKEY refresh and all target/control terminal rows without censoring.
+The late variant drops UDP only in the isolated Provider/B namespace until the
+observed final permission timeout, restores the exact rule in finally, then
+requires timeout < grant < renewal < successful service. Pure evaluator tests
+must reject missing/forged transitions and any target/control failure. Rebuild
+only the changed example targets against the already verified matching NAC
+prefix; run both new network variants and the existing User grant control.
+The completed T02016-case cohort stays frozen at de1eb508.

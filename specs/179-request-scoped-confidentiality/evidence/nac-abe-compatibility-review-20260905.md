@@ -1,6 +1,6 @@
 # NAC-ABE Experimental compatibility review
 
-Status: dependency and clean rebuilt NDNSF native gates PASS; MiniNDN acceptance pending.
+Status: T020 local dependency, clean rebuilt NDNSF and full MiniNDN gates PASS.
 
 Scope: `b1c9c4f` (Spec179 dependency changes) and `8b462d0` (late callbacks and
 OpenABE error normalization). Both are on local NAC-ABE `Experimental`, not
@@ -117,7 +117,7 @@ integration cases (1278 assertions), both exit0. The fresh Clang build completed
 in21m10.471s; `clang-build-final.log`, `ndnsf-unit-final.log` and
 `ndnsf-integration-final.log` retain evidence. `native-closure.log` records all
 six targets resolving the matching installed NAC library with no missing
-dependencies. The complete existing 16-scenario MiniNDN campaign remains pending.
+dependencies. The complete existing 16-scenario MiniNDN campaign passed below.
 The previous
 16/16 campaign used NAC `8b462d0`; it is historical evidence and is not relabeled
 as a test of `b3b43c8`. Upstream delivery and full third-party ecosystem testing
@@ -131,3 +131,46 @@ artifacts were not tested or accepted. A fresh Clang10/system-binutils build in
 unused `this` captures in User/Provider status-restore error callbacks; removing
 them is the only NDNSF runtime-source change in this review. Build logs retain
 all attempts; the old GCC tree must not be used as a matched ABI deployment.
+
+## Full rebuilt MiniNDN acceptance
+
+`campaign-final/` binds clean NDNSF revision
+`de1eb508219849e2f0f2017c3f23bb40f38baac4` and NAC source `b3b43c8`
+(documentation HEAD `85547eb`). Every run completed with `gatePassed=true`,
+`networkEvidence=true`, no launcher error and CLI exit0. The driver completion
+marker is retained; its PTY session was no longer available for a separate
+exit-code read. `campaign-verification.log` independently verifies all16 results,
+161 scenario assertions, empty source diffs and33 identical artifact hashes
+against disk before any subsequent App rebuild.
+
+| Scenario | Result / scenario assertions |
+|---|---|
+| revocation-rotation-failure-retry | PASS14/14 |
+| grant-after-permission-exhaustion | PASS dedicated grant gate;21/21 granted requests and60/60 control requests |
+| grant-only-advance | PASS dedicated grant gate |
+| inflight-revocation | PASS12/12 |
+| user-identity-revocation | PASS12/12 |
+| provider-identity-revocation | PASS14/14 |
+| service-scoped-revocation-with-unaffected-control | PASS11/11 |
+| offline-rejoin-epoch-skip | PASS8/8 |
+| controller-cache-provider-status-retrieval | PASS14/14 |
+| controller-unavailable-expiry | PASS7/7 |
+| large-response-invalidation | PASS14/14 |
+| targeted-refill-invalidation | PASS14/14 |
+| stream-invalidation | PASS6/6 |
+| hintless-scheduled-refresh | PASS6/6 |
+| controller-restart | PASS15/15 |
+| selection-response-tamper-and-replay | PASS14/14 |
+
+The two grant runs use explicit `grantOnlyGateOk`, not an empty-checks pass.
+Their target refreshes once, unaffected roles do not refresh DKEYs, and every
+control/target terminal failure is retained. Planned Provider restart and
+Controller outage produce role exit-2; their scenario checks verify recovery
+or expiry. Other role exits are0. Raw rows/logs and manifests remain frozen.
+
+This closes the NAC compatibility repair, not every possible authorization
+case. The user clarified that Controller authorization covers both service use
+by Users and service offering by Providers. These16 cases contain User online
+grant and both-role revocation; Provider first-grant execution remains a
+separate coverage gap, tracked as T021. No universal third-party compatibility,
+Python-extension, TigerCluster or performance qualification is claimed.

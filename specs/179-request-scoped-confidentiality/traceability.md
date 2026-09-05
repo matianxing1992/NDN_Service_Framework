@@ -136,7 +136,8 @@ generation ownership, canonical Authority names and caller-bound decrypted-CK
 caching. NAC `b3b43c8` passes42/42 complete CTest cases and20/20 installed-prefix
 checks. Compile probes demonstrate changed layouts and the restored no-argument
 fetch entry. Clean rebuilt NDNSF passes182/182 unit and72/72 integration cases;
-MiniNDN acceptance remains pending; see
+full16-scenario MiniNDN acceptance passes161 assertions and both dedicated grant
+gates at clean revision de1eb508. Provider first-grant execution is T021; see
 `evidence/nac-abe-compatibility-review-20260905.md` and RV-I40.
 
 ## Evidence rules

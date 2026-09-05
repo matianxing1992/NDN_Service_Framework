@@ -127,7 +127,13 @@ refresh each. Expanded gates: NDNSF unit182/182, integration72/72, NAC14/14
 
 ## Dependency compatibility review (2026-09-05)
 
-- [ ] T020 Audit and repair the NAC-ABE Experimental dependency boundary in `src/consumer.cpp`, `src/param-fetcher.*`, `src/attribute-authority.cpp` and `src/algo/abe-support.*`: reproduce callback reentry, stale parameter installation, exact-name generation mismatch and cross-key cache reuse; preserve existing source entry points, explicitly document ABI rebuild requirements and cancellation/thread semantics, and verify the ordinary NAC suite plus rebuilt NDNSF integration and representative MiniNDN paths. Record findings, red/green evidence and migration guidance in `evidence/nac-abe-compatibility-review-20260905.md`. FR-019/023/024/036/041; upstream publication remains T014.
+- [x] T020 Audit and repair the NAC-ABE Experimental dependency boundary in `src/consumer.cpp`, `src/param-fetcher.*`, `src/attribute-authority.cpp` and `src/algo/abe-support.*`: reproduce callback reentry, stale parameter installation, exact-name generation mismatch and cross-key cache reuse; preserve existing source entry points, explicitly document ABI rebuild requirements and cancellation/thread semantics, and verify the ordinary NAC suite plus rebuilt NDNSF integration and representative MiniNDN paths. Record findings, red/green evidence and migration guidance in `evidence/nac-abe-compatibility-review-20260905.md`. FR-019/023/024/036/041; upstream publication remains T014.
+
+Executed: NAC42/42; clean NDNSF unit182/182 and integration72/72; full16/16
+MiniNDN scenarios,161 assertions and dedicated User grant gates at de1eb508,
+33 identical artifact hashes verified. NAC repair b3b43c8, migration note85547eb.
+
+- [ ] T021 Verify the user's clarified Controller permission scope on both roles: add explicit User/Provider grant-role selection to `examples/App_ServiceController.cpp`, mirror application-owned permission renewal in `examples/App_Provider.cpp`, and add real Provider first-grant and post-permission-exhaustion scenarios in `tests/minindn/run_request_scoped_confidentiality.py` and `spec179_scenario_checks.py`. Preserve default User grants; require no Provider service before authorization, target-only key refresh, successful service through the newly authorized Provider, zero unaffected-control failures, and exact late-renewal ordering. Add adversarial evaluator tests, rebuild the two Apps, verify the matching dependency closure, and execute the two new scenarios plus the existing User grant compatibility control. FR-017/019/024/036/041; use `evidence/provider-online-grant-20260905.md` for findings and results.
 
 ## Dependencies and Execution Order
 
