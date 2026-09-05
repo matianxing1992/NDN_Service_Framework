@@ -664,6 +664,8 @@ class AssembledCiphertextV1:
         if (int(payload.get("ciphertextLength", -1)) != len(ciphertext)
                 or payload.get("ciphertextDigest") != sealed.ciphertext_digest):
             raise ValueError("assembled ciphertext framing does not match its manifest")
+        if raw[8:8 + manifest_length] != sealed.manifest_bytes():
+            raise ValueError("assembled ciphertext manifest is not the canonical contract")
         return sealed
 
 

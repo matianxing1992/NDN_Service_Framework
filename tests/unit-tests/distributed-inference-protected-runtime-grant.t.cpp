@@ -1,5 +1,6 @@
 #include "tests/boost-test.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp"
 
 #include <boost/property_tree/json_parser.hpp>
 #include <fstream>
@@ -199,5 +200,49 @@ BOOST_FIXTURE_TEST_CASE(ProtectedRuntimeCancellationBeforeConsumptionDrains, Bou
   BOOST_CHECK_THROW(runtime.withContentKey(now, [] (const auto&) {}), std::runtime_error);
   BOOST_CHECK(cleaned);
   BOOST_CHECK(runtime.state() == ProtectedRuntimeState::Zeroized);
+}
+
+BOOST_FIXTURE_TEST_CASE(NativeProtectedStoreSealsAndAuthenticatesAllEntryKinds, BoundGrantFixture)
+{
+  ProtectedRuntime runtime(binding, config);
+  runtime.verifyGrant(binding, now);
+  for (const auto& kind : {"MODEL_PROTO", "EXTERNAL_DATA"}) {
+    const NativeAssembledEntryContext context{
+      config.modelManifestDigest, binding.planDigest, binding.securityPolicySnapshotDigest, kind};
+    const std::vector<std::uint8_t> plain{'m', 'o', 'd', 'e', 'l'};
+    runtime.withContentKey(now, [&] (const auto& key) {
+      auto wire = sealNativeAssembledEntry(key, plain, context);
+      BOOST_CHECK(openNativeAssembledEntry(key, wire, context, plain.size()) == plain);
+      auto wrongKey = key;
+      wrongKey.front() ^= 1;
+      BOOST_CHECK_THROW(openNativeAssembledEntry(wrongKey, wire, context, plain.size()), std::runtime_error);
+      BOOST_CHECK_THROW(openNativeAssembledEntry(key, wire, context, plain.size() - 1), std::runtime_error);
+      wire.back() ^= 1;
+      BOOST_CHECK_THROW(openNativeAssembledEntry(key, wire, context, plain.size()), std::runtime_error);
+    });
+  }
+}
+
+BOOST_FIXTURE_TEST_CASE(NativeProtectedDirectoryCleansOriginalAndPreservesReplacement, BoundGrantFixture)
+{
+  char pattern[] = "/tmp/spec181-native-lease-XXXXXX";
+  const auto root = std::filesystem::path(::mkdtemp(pattern));
+  const auto staging = root / "staging";
+  std::filesystem::create_directory(staging);
+  std::filesystem::permissions(staging, std::filesystem::perms::owner_all);
+  ProtectedRuntime runtime(binding, config);
+  runtime.verifyGrant(binding, now);
+  registerNativePlaintextDirectory(runtime, staging, "assembly");
+  std::ofstream(root / "canonical") << "shared model";
+  std::ofstream(staging / "model.onnx") << "owned plaintext";
+  std::filesystem::create_symlink(root / "canonical", staging / "source-link");
+  std::filesystem::rename(staging, root / "moved");
+  std::filesystem::create_directory(staging);
+  std::ofstream(staging / "replacement") << "keep";
+  BOOST_CHECK_THROW(runtime.cancel("cancelled"), std::runtime_error);
+  BOOST_CHECK(!std::filesystem::exists(root / "moved/model.onnx"));
+  BOOST_CHECK(std::filesystem::exists(staging / "replacement"));
+  BOOST_CHECK_EQUAL(std::filesystem::file_size(root / "canonical"), 12);
+  std::filesystem::remove_all(root);
 }
 }

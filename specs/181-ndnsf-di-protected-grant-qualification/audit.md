@@ -84,7 +84,10 @@ PASS。后续 A08 注册表公钥/策略、逻辑身份和最终 root 允许列�
 真实网络验收及其他控制性缺口仍开放。
 T002 的 `ProtectedRuntime` 已接入真实 verifier 和受管内容密钥，
 18 项定向 C++ 用例通过，见 `evidence/t002-runtime-repair-20260905.md`；
-生产 factory、native 存储/加载及真实网络仍缺，A01 未整体关闭。
+后续 native store 与私有目录清理已有实现，20 项 C++ 和 55 项 Python/
+跨语言存储检查通过，见 `evidence/t002-storage-repair-20260905.md`。
+生产 factory/装配接线仍在工作区验证中，真实网络与 ORT 生命周期
+仍未闭合，A01 未整体关闭；这些更新不改变本审计 BLOCK 裁决。
 
 1. T001：在装配前完成独立绑定与授权；补注册表消费、模型/weights 密文
    读取及全错误路径清理，建立真实发布/获取的定向进程测试。
