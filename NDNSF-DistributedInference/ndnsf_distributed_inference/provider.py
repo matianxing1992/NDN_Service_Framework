@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from concurrent.futures import Future, ThreadPoolExecutor
+import base64
 import json
 import os
 from pathlib import Path
@@ -48,6 +49,8 @@ from .core import (
     ReservationDecisionAuthority, SelectionDecision, SelectionGatedProvider,
 )
 from .plan import DependencyEdge, RoleDependencyView
+from .adapters.base import MAX_INLINE_INPUT_BYTES
+from .repo_reference import LargeDataReference, _publication_manifest_digest
 from .sdk.placement import (
     DIProviderOfferV2, ProviderOfferV3, DeviceTopologyProfile,
     DeviceResourceSnapshot, ExecutionDisposition, ResidencyProofV3,
@@ -64,6 +67,24 @@ class LargePrefetchResult:
     expected_segments: int = 0
     expected_bytes: int = 0
     used_planned_name: bool = False
+
+
+def validate_request_input_boundary(request: DIRequestEnvelopeV2) -> str:
+    """Validate request input transport without fetching application data.
+
+    ACK processing may inspect only the transport metadata.  A repository
+    reference is intentionally returned as ``REPO_REF`` metadata; plaintext
+    fetch/decrypt is owned by the selected ingress role after Selection.
+    """
+    if not isinstance(request, DIRequestEnvelopeV2):
+        raise TypeError("request must be DIRequestEnvelopeV2")
+    if request.input_transport == "REPO_REF":
+        if request.input_payload_b64:
+            raise ValueError("REPO_REF request contains inline payload")
+        return "REPO_REF"
+    if request.input_transport != "INLINE":
+        raise ValueError("unsupported request input transport")
+    return "INLINE"
 
 
 def _dependency_view_from_assignment(role_assignment) -> RoleDependencyView:
@@ -287,6 +308,9 @@ class DIProviderOfferIssuer:
         reusable_state: Sequence[object] = (),
     ) -> AckDecision:
         request = DIRequestEnvelopeV2.from_bytes(request_wire)
+        # The ACK path validates only the transport boundary.  REPO_REF data
+        # remains opaque until the selected ingress role receives Selection.
+        validate_request_input_boundary(request)
         now_ms = self._clock_ms()
         if request.service != self.service or request.plan_deadline_ms <= now_ms:
             return AckDecision(
@@ -450,7 +474,8 @@ class DIProviderOfferIssuerV3:
         preparation_accepted: bool, residency: Sequence[ResidencyProofV3] = (),
         resources: Sequence[DeviceResourceSnapshot] = (), queue_depth: int = 0,
         estimated_wait_ms: float = 0.0, rtt_ms: float = 0.0,
-        bandwidth_mbps: float = 0.0) -> AckDecision:
+        bandwidth_mbps: float = 0.0, can_provision: bool = False,
+        has_model: bool = False) -> AckDecision:
         now_ms = int(self._clock_ms())
         if int(deadline_ms) <= now_ms:
             return AckDecision(status=False, message="DI_V3_REQUEST_EXPIRED")
@@ -473,6 +498,7 @@ class DIProviderOfferIssuerV3:
             rtt_ms=float(rtt_ms), bandwidth_mbps=float(bandwidth_mbps),
             boot_epoch=self.boot_epoch, captured_at_ms=now_ms,
             expires_at_ms=int(deadline_ms), signer_key_id=self.signer_key_id,
+            can_provision=bool(can_provision), has_model=bool(has_model),
             signature="unsigned-placeholder")
         signature = str(self._sign(offer.digest()))
         if not signature:
@@ -706,6 +732,12 @@ class ProviderRuntimeContext:
     # duck-typed so the DI layer remains independent of the Python binding;
     # it exposes publish_event(), finish_stream(), and fail().
     stream_writer: object | None = None
+    # V3 dataflow ownership is request-scoped.  Legacy/simple contexts leave
+    # enforcement disabled for source compatibility; a decoded V3 Selection
+    # must set these flags from its signed role/dataflow projection.
+    input_ingress_owner: bool = False
+    terminal_response_owner: bool = False
+    enforce_dataflow_ownership: bool = False
     _terminal_response_guard: _TerminalResponseGuard = field(
         default_factory=_TerminalResponseGuard,
         compare=False, repr=False,
@@ -723,10 +755,89 @@ class ProviderRuntimeContext:
 
         return str(self.ndnsf.session_id)
 
+    def _require_input_ingress(self) -> None:
+        if (self.enforce_dataflow_ownership
+                and not self.input_ingress_owner):
+            raise PermissionError("DI_INPUT_FETCH_ROLE_MISMATCH")
+
+    def _require_terminal_owner(self) -> None:
+        if (self.enforce_dataflow_ownership
+                and not self.terminal_response_owner):
+            raise PermissionError("DI_TERMINAL_RESPONSE_ROLE_MISMATCH")
+
+    def fetch_application_input(self, timeout_ms: int | None = None) -> bytes:
+        """Resolve the request input only from the signed ingress role.
+
+        INLINE bytes are decoded from the canonical request envelope.  A
+        REPO_REF contains metadata only; the selected role must ask the
+        reference-aware NDNSF large-data path to fetch/decrypt/verify it.
+        A name-only or size-only fetch is rejected before plaintext is
+        returned, and reference-integrity failures use a stable reason.
+        No plaintext is logged or copied into an evidence record by this
+        helper.
+        """
+        self._require_input_ingress()
+        request = DIRequestEnvelopeV2.from_bytes(bytes(self.request))
+        transport = validate_request_input_boundary(request)
+        if transport == "INLINE":
+            try:
+                payload = base64.b64decode(
+                    request.input_payload_b64, validate=True)
+            except (ValueError, TypeError) as exc:
+                raise ValueError("DI_INPUT_INLINE_BASE64_INVALID") from exc
+            if len(payload) > MAX_INLINE_INPUT_BYTES:
+                raise ValueError("DI_INPUT_INLINE_OVERSIZE")
+            return bytes(payload)
+
+        try:
+            reference = LargeDataReference.from_mapping(request.input_reference)
+            expected_manifest = _publication_manifest_digest(
+                data_name=reference.data_name,
+                object_id=reference.object_id,
+                plaintext_size=reference.plaintext_size,
+                content_digest=reference.ciphertext_digest,
+                authorization_scope=reference.authorization_scope,
+                protection_epoch=reference.protection_epoch,
+            )
+            if reference.manifest_digest != expected_manifest:
+                raise ValueError("manifest digest mismatch")
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("DI_INPUT_REPO_DIGEST_UNVERIFIED") from exc
+        fetch_reference = getattr(self.ndnsf, "fetch_large_reference", None)
+        if not callable(fetch_reference):
+            raise RuntimeError("DI_INPUT_REPO_DIGEST_UNVERIFIED")
+        if timeout_ms is None:
+            if self.deadline_ms > 0:
+                timeout_ms = max(1, self.deadline_ms - int(time() * 1000))
+            else:
+                timeout_ms = 5000
+        if int(timeout_ms) <= 0:
+            raise TimeoutError("DI_INPUT_REPO_DEADLINE_EXPIRED")
+        try:
+            payload = fetch_reference(
+                reference.to_dict(), reference.authorization_scope, int(timeout_ms))
+        except TimeoutError:
+            raise
+        except PermissionError as exc:
+            raise ValueError("DI_INPUT_REPO_DIGEST_UNVERIFIED") from exc
+        except ValueError as exc:
+            if "size mismatch" in str(exc):
+                raise ValueError("DI_INPUT_REPO_SIZE_MISMATCH") from exc
+            raise ValueError("DI_INPUT_REPO_DIGEST_UNVERIFIED") from exc
+        if payload is None:
+            raise TimeoutError("DI_INPUT_REPO_FETCH_TIMEOUT")
+        payload = bytes(payload)
+        return payload
+
     def publish_final_response(self, payload: bytes) -> None:
         """Publish exactly one complete authenticated terminal Response."""
+        self._require_terminal_owner()
         self._terminal_response_guard.claim()
         self.ndnsf.publish_final_response(bytes(payload))
+
+    def publish_terminal_result(self, payload: bytes) -> None:
+        """Publish the one result owned by the candidate-declared egress role."""
+        self.publish_final_response(bytes(payload))
 
     def publish_event(self, payload: bytes, *, event_type: str = "application") -> int:
         """Publish one ordered event and return its committed 1-based cursor.
@@ -765,6 +876,7 @@ class ProviderRuntimeContext:
         reason: int | None = None,
     ) -> None:
         """Claim the streamed terminal and carry the complete final result."""
+        self._require_terminal_owner()
         writer = self.stream_writer
         if writer is None or not hasattr(writer, "finish_stream"):
             # Preserve the unary context contract for legacy handlers.
@@ -1027,10 +1139,19 @@ def _safe_path_token(value: str) -> str:
     return token or "role"
 
 
+# Fixed storage profile for the functional slice (spec181 FR-013): the
+# assembled artifact is AEAD-sealed at rest in the Provider work directory
+# under this profile's canonical digest.  Epoch rotation is out of scope.
+_PROTECTED_ASSEMBLY_STORAGE_PROFILE = "ndnsf-di-provider-workdir-scratch-v1"
+
+
 class DistributedInferenceProvider:
     """Register inference roles using the underlying NDNSF provider."""
 
-    def __init__(self, provider: ServiceProvider, *, handler_workers: int = 0):
+    def __init__(self, provider: ServiceProvider, *, handler_workers: int = 0,
+                 grant_authority_public_key=None,
+                 grant_recipient_private_key=None,
+                 grant_fetch_timeout_ms: int = 30000):
         self.provider = provider
         self._handler_executor = (
             ThreadPoolExecutor(
@@ -1039,6 +1160,14 @@ class DistributedInferenceProvider:
             )
             if int(handler_workers) > 0 else None
         )
+        # Protected-epoch grant qualification (spec181 T001).  Both keys are
+        # operator configuration: the authority public key comes from the
+        # Spec180 trust-root registry, the recipient key is the Provider's
+        # own Ed25519/EC identity key.  None means protected assignments fail
+        # closed with DI_PROTECTED_GRANT_REJECTED.
+        self._grant_authority_public_key = grant_authority_public_key
+        self._grant_recipient_private_key = grant_recipient_private_key
+        self._grant_fetch_timeout_ms = int(grant_fetch_timeout_ms)
 
     @property
     def provider_boot_epoch(self) -> str:
@@ -1060,6 +1189,9 @@ class DistributedInferenceProvider:
         handler_workers: int = 0,
         serve_certificates: bool = True,
         bootstrap_token: str = "",
+        grant_authority_public_key=None,
+        grant_recipient_private_key=None,
+        grant_fetch_timeout_ms: int = 30000,
     ) -> "DistributedInferenceProvider":
         """Create an inference provider without exposing NDNSF Core objects."""
 
@@ -1073,7 +1205,10 @@ class DistributedInferenceProvider:
             ack_threads=ack_threads,
             serve_certificates=serve_certificates,
             bootstrap_token=bootstrap_token,
-        ), handler_workers=handler_workers)
+        ), handler_workers=handler_workers,
+            grant_authority_public_key=grant_authority_public_key,
+            grant_recipient_private_key=grant_recipient_private_key,
+            grant_fetch_timeout_ms=grant_fetch_timeout_ms)
 
     def _run_handler(self, handler: InferenceHandler,
                      context: ProviderRuntimeContext) -> None:
@@ -1162,6 +1297,195 @@ class DistributedInferenceProvider:
                 dir=str(root))),
         )
 
+    def _assemble_certified_role_execution(
+        self,
+        ctx: CollaborationContext,
+        execution: ExecutionContext,
+        v3_role_spec: Any,
+        local_artifacts: dict[str, dict],
+    ) -> ExecutionContext:
+        """Assemble one certified component-set subgraph from the canonical root.
+
+        The sealed V3 projection carries the digest-pinned recipe (node cover,
+        interface contracts, canonical identities).  This Provider-local
+        boundary extracts exactly the certified nodes, verifies graph and
+        initializer identity, loads the assembled bytes through ONNX Runtime,
+        and swaps them in for this role's execution only.
+        """
+        from .adapters.onnx.executor import (
+            CertifiedOnnxAssemblyRecipe, assemble_certified_onnx_model)
+        artifact = dict(local_artifacts.get(ctx.assignment.role, {}))
+        model_path = str(artifact.get("path", ""))
+        if not model_path or not Path(model_path).is_file():
+            raise RuntimeError(
+                "certified role assembly requires the canonical model")
+        recipe = CertifiedOnnxAssemblyRecipe(
+            model_manifest_digest=v3_role_spec.model_manifest_digest,
+            artifact_profile_digest=v3_role_spec.artifact_profile_digest,
+            graph_digest=v3_role_spec.graph_digest,
+            canonical_initializer_digest=v3_role_spec.canonical_initializer_digest,
+            adapter_descriptor_digest=v3_role_spec.adapter_descriptor_digest,
+            assembler_descriptor_digest=v3_role_spec.assembler_descriptor_digest,
+            backend_abi=v3_role_spec.backend_abi,
+            role_kind=v3_role_spec.role_kind,
+            layer_begin=v3_role_spec.layer_begin,
+            layer_end=v3_role_spec.layer_end,
+            node_indices=tuple(int(index) for index in v3_role_spec.node_indices),
+            input_names=tuple(
+                str(item["name"]) for item in v3_role_spec.expected_inputs),
+            output_names=tuple(
+                str(item["name"]) for item in v3_role_spec.expected_outputs),
+            expected_inputs=tuple(
+                dict(item) for item in v3_role_spec.expected_inputs),
+            expected_outputs=tuple(
+                dict(item) for item in v3_role_spec.expected_outputs),
+            precision=str(v3_role_spec.precision or "float32"),
+            max_source_bytes=int(
+                v3_role_spec.resource_envelope.get(
+                    "maxSourceBytes", 8 * 1024**3)),
+            max_assembled_bytes=int(
+                v3_role_spec.resource_envelope.get(
+                    "maxAssembledBytes", 8 * 1024**3)),
+            max_nodes=int(
+                v3_role_spec.resource_envelope.get("maxNodes", 1_000_000)),
+        )
+        if len(recipe.node_indices) >= recipe.max_nodes:
+            # Assembling the whole canonical graph is an identity operation:
+            # the certified node set covers every node, so the canonical
+            # model itself is the certified slice (and re-inlining every
+            # initializer would only exceed the assembled-byte envelope).
+            return execution
+        canonical_initializer: bytes | None = None
+        weights_path = Path(model_path).with_name(
+            Path(model_path).stem + ".weights")
+        if weights_path.is_file():
+            canonical_initializer = weights_path.read_bytes()
+        assembly = assemble_certified_onnx_model(
+            Path(model_path).read_bytes(),
+            canonical_initializer=canonical_initializer,
+            role_spec=v3_role_spec,
+            recipe=recipe,
+        )
+        assembled_path = execution.work_dir / "assembled-role.onnx"
+        assembled_path.write_bytes(assembly.model_bytes)
+        return replace(
+            execution,
+            artifact_paths={
+                **dict(execution.artifact_paths),
+                "model": assembled_path,
+            },
+            spec=replace(
+                execution.spec,
+                metadata={
+                    **dict(execution.spec.metadata),
+                    "assembledModelDigest": assembly.model_digest,
+                    "assembledNodeCount": assembly.node_count,
+                },
+            ),
+        )
+
+    def _qualify_protected_assembly(
+        self,
+        ctx: CollaborationContext,
+        execution: ExecutionContext,
+        v3_projection: Any,
+        v3_role_spec: Any,
+        *,
+        _fetch_grant_data=None,
+    ) -> tuple[ExecutionContext, "PlaintextLeaseRegistry"]:
+        """Fetch, verify, and unwrap the Provider-bound grant (spec181 T001),
+        then seal the assembled artifact under the unwrapped content key
+        (FR-013: the content key is consumed by a real AEAD operation, never
+        left idle).
+
+        Failure modes register DI_PROTECTED_GRANT_REJECTED and fail closed
+        before the artifact is exposed to the adapter: a synthetic rejection
+        may never stand in for a real verifier decision.
+        """
+        from ndnsf import fetch_exact_data_packet
+        from .core import (
+            PlaintextLeaseRegistry, ProtectedGrantRejected,
+            decrypt_assembled_entry, encrypt_assembled_entry,
+            grant_from_wire, verify_and_unwrap_grant)
+        if (self._grant_authority_public_key is None
+                or self._grant_recipient_private_key is None):
+            raise ProtectedGrantRejected(
+                "protected grant keys are not configured for this Provider")
+        grant_binding = v3_projection.grant_binding
+        if grant_binding is None:
+            raise ProtectedGrantRejected(
+                "protected V3 Selection carries no Provider grant binding")
+        lease_registry = PlaintextLeaseRegistry()
+        try:
+            fetch_grant = _fetch_grant_data or (
+                lambda name: fetch_exact_data_packet(
+                    name, timeout_ms=self._grant_fetch_timeout_ms))
+            try:
+                packet = fetch_grant(grant_binding.grant_name)
+            except Exception as exc:
+                raise ProtectedGrantRejected(
+                    f"grant Data fetch failed at {grant_binding.grant_name}: "
+                    f"{type(exc).__name__}") from exc
+            try:
+                grant = grant_from_wire(packet.content)
+            except ValueError as exc:
+                raise ProtectedGrantRejected(
+                    "grant Data payload is malformed") from exc
+            try:
+                content_key = verify_and_unwrap_grant(
+                    grant,
+                    authority_public_key=self._grant_authority_public_key,
+                    recipient_private_key=self._grant_recipient_private_key,
+                    expected_provider_identity=ctx.local_provider,
+                    expected_request_id=v3_projection.request_id,
+                    expected_attempt=v3_projection.attempt,
+                    expected_plan_core_digest=v3_projection.plan_core_digest,
+                    expected_model_manifest_digest=(
+                        v3_role_spec.model_manifest_digest),
+                    expected_protection_epoch=v3_role_spec.protection_epoch,
+                    now_ms=int(time() * 1000),
+                )
+            except ValueError as exc:
+                raise ProtectedGrantRejected(
+                    f"grant verifier rejected: {exc}") from exc
+            # FR-013: register the unwrapped content key as a zeroizable
+            # plaintext lease, then seal the assembled artifact under a key
+            # derived from it (DISK_CIPHERTEXT_ASSEMBLED semantics).
+            role_assembly_spec_digest = canonical_digest(v3_role_spec)
+            storage_profile_digest = canonical_digest(
+                _PROTECTED_ASSEMBLY_STORAGE_PROFILE)
+            model_path = Path(str(execution.artifact_paths.get("model", "")))
+            if not model_path.is_file():
+                raise ProtectedGrantRejected(
+                    "protected assembly has no assembled artifact to seal")
+            assembled_bytes = model_path.read_bytes()
+            sealed = encrypt_assembled_entry(
+                content_key, assembled_bytes, entry_kind="MODEL_PROTO",
+                model_manifest_digest=v3_role_spec.model_manifest_digest,
+                role_assembly_spec_digest=role_assembly_spec_digest,
+                storage_profile_digest=storage_profile_digest,
+            )
+            cipher_path = execution.work_dir / "assembled-role.onnx.cipher"
+            cipher_path.write_bytes(sealed.to_bytes())
+            try:
+                plaintext = decrypt_assembled_entry(content_key, sealed)
+            except ValueError as exc:
+                raise ProtectedGrantRejected(
+                    "assembled artifact failed AEAD authentication") from exc
+            lease_registry.register(
+                "protected-content-key",
+                execution.work_dir / "content-key.bin", content_key)
+            lease_registry.register(
+                "assembled-model-plaintext", model_path, plaintext)
+            return execution, lease_registry
+        except ProtectedGrantRejected:
+            lease_registry.zeroize_all()
+            raise
+        except Exception as exc:
+            lease_registry.zeroize_all()
+            raise ProtectedGrantRejected(
+                f"protected grant qualification failed: {exc}") from exc
+
     @staticmethod
     def _report_preparation(
         ctx: CollaborationContext,
@@ -1171,6 +1495,7 @@ class DistributedInferenceProvider:
         progress: float,
         execution: ExecutionContext | None = None,
         reason: str = "",
+        attempt: int = 1,
     ) -> None:
         """Publish bounded observational progress on the generic NDNSF channel.
 
@@ -1199,7 +1524,9 @@ class DistributedInferenceProvider:
             provider_name=ctx.local_provider,
             request_id=ctx.session_id,
             role=ctx.assignment.role,
-            attempt=1,
+            attempt=attempt,
+            # Core keys this operation by Selection digest. Its local status
+            # epoch is independent of the ACK attempt and Provider boot epoch.
             epoch=1,
             sequence=sequence,
             state=(ServiceOperationState.FAILED if phase == "FAILED"
@@ -1515,6 +1842,16 @@ class DistributedInferenceProvider:
                 max_prepare_ms=selection_max_prepare_ms,
             )
         local_artifacts = dict(local_artifacts or {})
+        # A role-keyed, already validated local artifact is a cold-preparation
+        # capability. It is distinct from ``has_model``: that flag is only a
+        # coarse readiness hint and cannot authorize exact reuse. The role key
+        # also prevents material for another role from becoming a capability
+        # for this Provider's selected role.
+        local_preparation_roles = frozenset(
+            role for role in role_list
+            if isinstance(local_artifacts.get(role), Mapping)
+            and str(local_artifacts[role].get("path", "")).strip())
+        local_preparation_available = bool(local_preparation_roles)
 
         def attach_negotiated_reservation(
             context: Mapping[str, object], decision: AckDecision,
@@ -1680,6 +2017,7 @@ class DistributedInferenceProvider:
                 "queue": queue_depth,
                 "hasModel": has_model,
                 "canProvision": can_provision,
+                "canPrepare": local_preparation_available,
                 "readyWithoutModel": ready_without_model,
                 **readiness_fields,
             }
@@ -1714,6 +2052,7 @@ class DistributedInferenceProvider:
                     "backends": backend_list,
                     "hasModel": has_model,
                     "canProvision": can_provision,
+                    "canPrepare": local_preparation_available,
                     **({
                         "freeMemoryMb": telemetry.free_memory_mb,
                         "runtimeBackend": telemetry.runtime_backend,
@@ -1721,7 +2060,8 @@ class DistributedInferenceProvider:
                     } if telemetry is not None else {}),
                 },
             )
-            if not (can_provision or has_model or ready_without_model):
+            if not (can_provision or has_model or ready_without_model
+                    or local_preparation_available):
                 fields["negativeAckReason"] = NEGATIVE_ACK_REASON_MODEL_UNAVAILABLE
                 fields["status"] = "model-unavailable"
                 capability_hint = ProviderCapabilityHint(
@@ -1792,7 +2132,8 @@ class DistributedInferenceProvider:
                 if exact_reuse_available:
                     v3_disposition = ExecutionDisposition.ACCEPT_IF_EXACT_REUSE
                     v3_preparation_accepted = False
-                elif can_provision or ready_without_model:
+                elif (can_provision or ready_without_model
+                      or local_preparation_available):
                     v3_disposition = ExecutionDisposition.ACCEPT_WITH_PREPARATION
                     v3_preparation_accepted = True
                 else:
@@ -1807,6 +2148,8 @@ class DistributedInferenceProvider:
                     accepted_roles=role_list, backends=backend_list,
                     execution_disposition=v3_disposition,
                     preparation_accepted=v3_preparation_accepted,
+                    can_provision=bool(can_provision),
+                    has_model=bool(has_model),
                     queue_depth=(telemetry.aggregate_queue
                                  if telemetry is not None else queue_depth),
                     estimated_wait_ms=(telemetry.queue_wait_ewma_ms
@@ -1941,6 +2284,7 @@ class DistributedInferenceProvider:
             return
 
         def wrapped(ctx: CollaborationContext, request: bytes) -> None:
+            from .core import ProtectedGrantRejected
             sequence = 1
             assignment_payload = bytes(ctx.assignment.assignment_payload or b"")
             terminal_released = False
@@ -1949,11 +2293,35 @@ class DistributedInferenceProvider:
             v3_projection = None
             v3_role_spec = None
             v3_dependency_view = None
-            if assignment_payload.lstrip().startswith(b"{"):
+            protected_lease_registry = None
+            # These flags are derived only from the authenticated V3
+            # RoleDataflowContract.  Keep them false for legacy V2/simple
+            # assignments so the compatibility path remains unchanged.
+            v3_input_ingress_owner = False
+            v3_terminal_response_owner = False
+            if (selection_offer_issuer_v3 is not None
+                    or assignment_payload.lstrip().startswith(b"{")):
                 try:
                     decoded_projection = ProviderSelectionProjectionV3.from_bytes(
                         assignment_payload)
-                except ValueError:
+                except (ValueError, TypeError):
+                    # A V3 Provider must never downgrade a rejected Selection
+                    # into the legacy local-artifact path. Unconfigured legacy
+                    # handlers may still receive a different JSON envelope,
+                    # but a declared V3 schema retains the same strict boundary.
+                    if (selection_offer_issuer_v3 is not None
+                            or len(assignment_payload) > 1024 * 1024):
+                        ctx.fail("DI_V3_SELECTION_INVALID")
+                        return
+                    try:
+                        envelope = json.loads(assignment_payload)
+                    except (ValueError, UnicodeError):
+                        ctx.fail("DI_V3_SELECTION_INVALID")
+                        return
+                    if (not isinstance(envelope, dict)
+                            or envelope.get("schema") == "ndnsf-di-selection-v3"):
+                        ctx.fail("DI_V3_SELECTION_INVALID")
+                        return
                     decoded_projection = None
                 if decoded_projection is not None:
                     v3_projection = decoded_projection
@@ -1976,6 +2344,13 @@ class DistributedInferenceProvider:
                         ctx.fail("V3 Selection role coverage mismatch")
                         return
                     v3_role_spec = matching[0]
+                    v3_input_ingress_owner = any(
+                        str(getattr(endpoint.source_kind, "value",
+                                    endpoint.source_kind)) == "APPLICATION_INPUT"
+                        and str(endpoint.consumer_role) == str(ctx.assignment.role)
+                        for endpoint in decoded_projection.dataflow.must_fetch)
+                    v3_terminal_response_owner = bool(
+                        decoded_projection.dataflow.terminal_response_owner)
                     v3_dependency_view = _dependency_view_from_v3_projection(
                         ctx.assignment.role, decoded_projection.dependencies)
                     # SVS delivers the collaboration namespace broadly to all
@@ -2038,14 +2413,17 @@ class DistributedInferenceProvider:
 
             terminal_context = TerminalAwareContext()
 
+            preparation_attempt = v3_projection.attempt if v3_projection else 1
             self._report_preparation(
-                ctx, phase="ACCEPTED", sequence=sequence, progress=0.0)
+                ctx, phase="ACCEPTED", sequence=sequence, progress=0.0,
+                attempt=preparation_attempt)
 
             def report(phase: str, value: float) -> None:
                 nonlocal sequence
                 sequence += 1
                 self._report_preparation(
-                    ctx, phase=phase, sequence=sequence, progress=value)
+                    ctx, phase=phase, sequence=sequence, progress=value,
+                    attempt=preparation_attempt)
 
             try:
                 dependency_ready = None
@@ -2127,6 +2505,41 @@ class DistributedInferenceProvider:
                     raise RuntimeError(
                         "collaboration assignment has no artifact and provider "
                         "was not registered with has_model=True")
+                if (v3_role_spec is not None
+                        and v3_role_spec.role_kind == "COMPONENT_SET"
+                        and v3_role_spec.node_indices
+                        and role_has_local_artifact):
+                    # A certified component-set role assembles its own
+                    # subgraph from the validated canonical root; the
+                    # assembled bytes replace the local canonical model for
+                    # this role's execution only.
+                    execution = self._assemble_certified_role_execution(
+                        ctx, execution, v3_role_spec, local_artifacts)
+                    if v3_role_spec.protection_epoch != "plaintext-v1":
+                        # spec181 T001: fetch + verify + unwrap the
+                        # Provider-bound grant at the authorization boundary
+                        # (before the artifact is exposed), then AEAD-seal the
+                        # assembled artifact under the unwrapped content key
+                        # (FR-013).  Any verifier decision fails closed as
+                        # DI_PROTECTED_GRANT_REJECTED.
+                        try:
+                            (execution,
+                             protected_lease_registry) = (
+                                self._qualify_protected_assembly(
+                                    ctx, execution, v3_projection,
+                                    v3_role_spec))
+                        except ProtectedGrantRejected as exc:
+                            sequence += 1
+                            self._report_preparation(
+                                ctx, phase="FAILED", sequence=sequence,
+                                progress=0.0,
+                                reason="DI_PROTECTED_GRANT_REJECTED",
+                                attempt=preparation_attempt)
+                            release_selection_reservation(
+                                "PREPARATION_FAILED")
+                            ctx.fail(
+                                f"DI_PROTECTED_GRANT_REJECTED: {exc}")
+                            return
                 execution = self._bind_assignment_metadata(ctx, execution)
                 if v3_role_spec is not None:
                     execution = replace(execution, spec=replace(
@@ -2240,7 +2653,7 @@ class DistributedInferenceProvider:
                 sequence += 1
                 self._report_preparation(
                     ctx, phase="FAILED", sequence=sequence, progress=0.0,
-                    reason=type(exc).__name__)
+                    reason=type(exc).__name__, attempt=preparation_attempt)
                 release_selection_reservation("PREPARATION_FAILED")
                 ctx.fail(f"failed to prepare inference execution: {exc}")
                 return
@@ -2248,7 +2661,7 @@ class DistributedInferenceProvider:
             sequence += 1
             self._report_preparation(
                 ctx, phase="READY", sequence=sequence, progress=1.0,
-                execution=execution)
+                execution=execution, attempt=preparation_attempt)
 
             prefetcher = DependencyPrefetcher(ctx)
             try:
@@ -2271,10 +2684,18 @@ class DistributedInferenceProvider:
                     on_dependency_ready=dependency_ready,
                     stream_writer=(terminal_context if getattr(ctx, "is_streamed", False)
                                    else None),
+                    input_ingress_owner=v3_input_ingress_owner,
+                    terminal_response_owner=v3_terminal_response_owner,
+                    enforce_dataflow_ownership=(v3_projection is not None),
                 ))
             finally:
                 prefetcher.shutdown()
                 release_selection_reservation("ROLE_HANDLER_RETURNED")
+                if protected_lease_registry is not None:
+                    # FR-013: every materialized plaintext (content key copy
+                    # and assembled model) is zeroized and removed before the
+                    # handler boundary closes.
+                    protected_lease_registry.zeroize_all()
 
         try:
             self.provider.add_collaboration_handler(
@@ -2292,6 +2713,10 @@ class DistributedInferenceProvider:
 
     def run(self) -> int:
         return self.provider.run()
+
+    def start(self) -> None:
+        """Start Core after all service registrations are installed."""
+        self.provider.start()
 
     def stop(self) -> int:
         try:
