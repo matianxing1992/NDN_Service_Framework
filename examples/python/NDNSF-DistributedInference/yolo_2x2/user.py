@@ -3,10 +3,31 @@
 
 from __future__ import annotations
 
-from ndnsf_distributed_inference.app_sdk import APPClient
+import hashlib
+import json
+from dataclasses import replace
+from ndnsf_distributed_inference.app_sdk import APPClient, ProviderOfferTrustVerifier
 from pathlib import Path
 import os
+import re
+import sys
 import time
+
+from ndnsf_distributed_inference.adapters import ApplicationInput
+from ndnsf_distributed_inference.adapters.yolo import (
+    YoloCanonicalArtifactBinding,
+    build_yolo26n_adapter,
+)
+from ndnsf_distributed_inference.adapters.yolo.reference import (
+    compare_reference, load_reference,
+)
+from ndnsf_distributed_inference.app_sdk.placement import (
+    InferenceTaskRef,
+    ModelRef,
+    NetworkCatalogSnapshotResolver,
+    TaskOptions,
+)
+from ndnsf_distributed_inference.planner.presplit_first import PreSplitFirstStrategy
 
 from yolo_2x2_lib import (
     DEFAULT_MODEL,
@@ -17,6 +38,7 @@ from yolo_2x2_lib import (
     compare_yolo_outputs,
     decode_yolo_output,
     decode_image,
+    encode_image_for_yolo,
     encode_native_tensor_bundle,
     full_forward,
     make_input,
@@ -30,10 +52,458 @@ from yolo_2x2_lib import (
 )
 
 
+_YN_NEGATIVE_BOUNDARIES = {
+    "Y-N-C": ("PLACEMENT_DECISION", "NO_FEASIBLE_CANDIDATE"),
+    "Y-N-P": ("ACK_CLOSED", "ACK_PROVENANCE_REJECTED"),
+    "Y-N-R": ("PLAN_SEALED", "ROLE_KIND_REJECTED"),
+    "Y-N-I": ("PROVIDER_EXECUTION_STARTED", "NON_INGRESS_INPUT_REJECTED"),
+    # spec181 T006: the three real grant mutations must be verifier-rejected
+    # before this subcase may record the registered PASS.
+    "Y-N-E": ("ARTIFACTS_READY", "DI_PROTECTED_GRANT_REJECTED"),
+    "Y-N-L": ("EVIDENCE_ACCEPTANCE", "REDACTION_REJECTED"),
+}
+# Child exit code, kept identical to the runner's Y-N constant: 91 = a
+# registered negative PASS (every subcase, including the T006 Y-N-E).
+
+
+def _spec180_y_n_mutation(args) -> str:
+    mutation = os.environ.get("SPEC180_YN_MUTATION", "").strip()
+    if not mutation:
+        return ""
+    if mutation not in _YN_NEGATIVE_BOUNDARIES:
+        raise RuntimeError("SPEC180_YN_MUTATION_INVALID")
+    if str(args.lifecycle_case) != mutation:
+        raise RuntimeError("SPEC180_YN_MUTATION_CASE_MISMATCH")
+    return mutation
+
+
+def _spec180_negative_matches(mutation: str, error: Exception, journal) -> bool:
+    """Accept only the named production rejection at its observed phase.
+
+    Unknown errors retain their failure status. In particular an absent grant
+    implementation, transport timeout or internal strategy error is not a
+    successful safety control.
+    """
+    phase = journal.last_milestone
+    if mutation == "Y-N-C":
+        # The coordinator includes per-candidate rejections. Every rejection
+        # must be the planner's actual lack of a distinct feasible Provider;
+        # the coordinator also wraps internal strategy errors in ValueError.
+        detail = r"sha256:[0-9a-f]{64}:ValueError:no distinct feasible Provider for V3 role [A-Za-z0-9_/#.-]+"
+        return (type(error) is ValueError and phase == "GRAPH_READY" and
+                re.fullmatch(r"V3 strategy found no feasible graph candidate \("
+                             + detail + r"(?:; " + detail + r")*\)", str(error)) is not None)
+    expected = {
+        "Y-N-P": ("GRAPH_READY", ValueError,
+                  "Provider ACK failed Trust Schema verification"),
+        "Y-N-R": ("PLACEMENT_DECISION", ValueError,
+                  "range/rank role requires a non-empty layer interval"),
+        "Y-N-L": ("INPUT_REFERENCE_PUBLISHED", RunnerError,
+                  "LIFECYCLE_FIELD_FORBIDDEN:payload"),
+    }.get(mutation)
+    if mutation == "Y-N-E":
+        # The real mutations already ran inside the binding seam; the seam's
+        # raise must be exactly the registered verifier rejection at a phase
+        # at or before the ARTIFACTS_READY boundary.
+        return (type(error) is ValueError
+                and str(error) == "DI_PROTECTED_GRANT_REJECTED"
+                and phase in MILESTONES_PRE_ARTIFACTS)
+    return (expected is not None and phase == expected[0]
+            and type(error) is expected[1] and str(error) == expected[2])
+
+
+def _emit_spec180_y_n_negative(args, mutation: str, *, journal) -> None:
+    if (journal.request_id != args.request_id
+            or args.lifecycle_case != mutation or not journal.attempt_id):
+        raise RuntimeError("SPEC180_NEGATIVE_IDENTITY_MISMATCH")
+    boundary, reason = _YN_NEGATIVE_BOUNDARIES[mutation]
+    print(
+        "SPEC180_YN_NEGATIVE_RESULT status=PASS"
+        f" subcase={mutation} boundary={boundary} reason={reason}"
+        f" requestId={journal.request_id} attemptId={journal.attempt_id}"
+        f" observedPhase={journal.last_milestone}",
+        flush=True,
+    )
+
+
+class _Spec180MutationBinding:
+    """Keep Y-N mutation at the maintained post-ACK binding seam."""
+
+    def __init__(self, binding, mutation: str) -> None:
+        self._binding = binding
+        self._mutation = mutation
+
+    def describe(self, candidate):
+        return self._binding.describe(candidate)
+
+    def ensure(self, candidate, role_specs, *, deadline_ms: int):
+        if self._mutation == "Y-N-R":
+            specs = tuple(role_specs)
+            if not specs:
+                raise RuntimeError("DI_ROLE_KIND_REJECTED")
+            # Constructing this invalid range through the real RoleAssemblySpec
+            # validator exercises the production role contract before the
+            # canonical artifact publisher is allowed to fetch/compute.
+            replace(specs[0], role_kind="PIPELINE_RANGE",
+                    layer_begin=0, layer_end=0)
+        if self._mutation == "Y-N-E":
+            # spec181 T006: the three real grant mutations must be rejected
+            # by the implemented verifiers (Python + native) before this seam
+            # may raise.  The raise below is the authorization-boundary
+            # outcome those mutations just proved, not a synthetic rejection.
+            _run_y_n_e_mutations()
+            raise ValueError("DI_PROTECTED_GRANT_REJECTED")
+        return self._binding.ensure(
+            candidate, role_specs, deadline_ms=deadline_ms)
+
+
+# The case-owned journal implementation lives with the Spec180 runner so the
+# evidence schema and redaction rules have one source of truth.  The runner is
+# import-safe (MiniNDN is loaded only when its runtime adapter is invoked), and
+# the explicit path keeps the maintained example usable from the repository
+# checkout and from the sealed image.
+_REPO_ROOT = Path(__file__).resolve().parents[4]
+_EXPERIMENTS_ROOT = _REPO_ROOT / "Experiments"
+if str(_EXPERIMENTS_ROOT) not in sys.path:
+    sys.path.insert(0, str(_EXPERIMENTS_ROOT))
+from NDNSF_DI_YoloAckDriven_Minindn import (  # noqa: E402
+    LifecycleJournal,
+    MILESTONES,
+    RunnerError,
+    _run_y_n_e_mutations,
+)
+
+# Y-N-E unavailable may be observed at any milestone at or before
+# ARTIFACTS_READY: the canonical-artifact binding seam fires before artifact
+# fetch, so an earlier journal phase is the honest observed point.
+MILESTONES_PRE_ARTIFACTS = tuple(
+    MILESTONES[:MILESTONES.index("ARTIFACTS_READY") + 1])
+
+
+def _prepare_yolo_input(args, package):
+    reference = load_reference(package, _REPO_ROOT, args.input_size)
+    if not args.native_tensor_input:
+        raise ValueError("ACK_DRIVEN_REQUIRES_NATIVE_TENSOR_INPUT")
+    payload = encode_native_tensor_bundle({"images": reference.input_tensor})
+    if args.input_payload_file:
+        if Path(args.input_payload_file).expanduser().read_bytes() != payload:
+            raise ValueError("REGISTERED_FIXTURE_PAYLOAD_MISMATCH")
+    return reference, payload
+
+
+def _record_yolo_numerical_result(args, reference, payload, plan_digest, attempt_id):
+    """Check the received bytes, emitting a fresh, payload-free component record."""
+    record = {
+        "schemaVersion": "spec180-yolo-numerical-v1",
+        "case": args.lifecycle_case, "requestId": args.request_id,
+        "attemptId": attempt_id, "planDigest": plan_digest,
+        "manifestDigest": reference.manifest_digest,
+        "oracleDigest": reference.oracle_digest,
+        "fixtureDigest": reference.fixture_digest,
+        "inputTensorDigest": "sha256:" + hashlib.sha256(reference.input_tensor.tobytes()).hexdigest(),
+        "responseDigest": "sha256:" + hashlib.sha256(payload).hexdigest(),
+    }
+    # The terminal collector must be able to bind this component oracle to the
+    # immutable Tiger candidate.  These values come from the sealed workload's
+    # environment; they are intentionally absent from standalone local probes.
+    candidate_id = os.environ.get("SPEC180_CANDIDATE_ID", "")
+    candidate_digest = os.environ.get("SPEC180_CANDIDATE_DIGEST", "")
+    if candidate_id:
+        record["candidateId"] = candidate_id
+    if candidate_digest:
+        record["candidateDigest"] = candidate_digest
+    try:
+        _, actual = decode_yolo_output(payload, native_predictions_only=True)
+        record.update(compare_reference(reference, actual))
+    except (ValueError, KeyError, UnicodeError, OverflowError):
+        record.update(matched=False, reason="INVALID_NUMERICAL_RESPONSE")
+    path = Path(args.lifecycle_output_dir) / "yolo-numerical.json"
+    with path.open("x", encoding="utf-8") as stream:
+        json.dump(record, stream, sort_keys=True, allow_nan=False)
+        stream.write("\n")
+    return record["matched"]
+
+
+def _digest_json(value) -> str:
+    return "sha256:" + hashlib.sha256(json.dumps(
+        value, ensure_ascii=False, sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+
+
+def _make_lifecycle_observer(journal: LifecycleJournal):
+    """Bridge coordinator transitions into the bound case journal."""
+    def observe(milestone: str, fields: dict[str, object]) -> None:
+        values = dict(fields)
+        request_id = str(values.pop("_requestId", ""))
+        attempt_id = str(values.pop("_attemptId", ""))
+        if request_id != journal.request_id or attempt_id != journal.attempt_id:
+            raise RunnerError("LIFECYCLE_PROTOCOL_IDENTITY_MISMATCH")
+        journal.append(milestone, **values)
+    return observe
+
+
+def _load_yolo_ack_driven(client, args) -> int:
+    """Run the maintained model-first YOLO path.
+
+    This path deliberately accepts only a canonical package, an authenticated
+    input reference, a registered ACK-offer verifier, and an exact-name signed
+    catalogue APP Data record.  It never accepts a Provider list, a split ID,
+    a role map, or the legacy ``auto_parallel_detect_plan`` result as planning
+    authority.  The historical service-policy invocation remains available
+    only through ``--offline-oracle``.
+    """
+    required = {
+        "--canonical-package": args.canonical_package,
+        "--catalogue-registry": args.catalogue_registry,
+        "--offer-trust-root": args.offer_trust_root,
+        "--offer-public-key-map": args.offer_public_key_map,
+        "--catalog-data-name": args.catalog_data_name,
+        "--catalog-signer": args.catalog_signer,
+    }
+    missing = [name for name, value in required.items() if not value]
+    if missing:
+        raise RuntimeError(
+            "ACK-driven YOLO mode requires " + ", ".join(missing) +
+            "; use --offline-oracle only for the legacy offline path")
+    if int(args.ack_timeout_ms) != 1500:
+        raise RuntimeError(
+            "Spec180 YOLO qualification requires ack-timeout-ms=1500")
+    if args.input_reference_file:
+        raise RuntimeError(
+            "ACK-driven YOLO does not accept a bare input-reference-file; "
+            "publish the source payload through the canonical APPClient")
+
+    if (not args.lifecycle_output_dir or not args.lifecycle_case
+            or not args.request_id):
+        raise RuntimeError(
+            "ACK-driven YOLO requires explicit lifecycle output, case, and request ID")
+    if not str(args.request_id).startswith("/"):
+        raise RuntimeError("ACK-driven YOLO request ID must be an absolute NDN name")
+    mutation = _spec180_y_n_mutation(args)
+    journal = LifecycleJournal(
+        Path(args.lifecycle_output_dir).expanduser().resolve(),
+        str(args.lifecycle_case),
+    )
+    try:
+        journal.bind_protocol_identity(
+            request_id=str(args.request_id), attempt_id="attempt-1")
+    except RunnerError as exc:
+        raise RuntimeError(str(exc)) from exc
+
+    service = yolo_inference_service(client.deployment)
+    package = Path(args.canonical_package).expanduser().resolve()
+    registry = Path(args.catalogue_registry).expanduser().resolve()
+    adapter = build_yolo26n_adapter(package, registry_path=registry)
+    manifest = json.loads((package / "manifest.json").read_text(encoding="utf-8"))
+    source = manifest.get("source")
+    graph = manifest.get("graph")
+    if not isinstance(source, dict) or not isinstance(graph, dict):
+        raise RuntimeError("YOLO canonical manifest lacks source/graph identity")
+    model_digest = str(source.get("checkpointSha256", ""))
+    if not model_digest.startswith("sha256:"):
+        model_digest = "sha256:" + model_digest
+    semantics_digest = "sha256:" + hashlib.sha256(json.dumps(
+        {
+            "preprocessing": manifest.get("preprocessing", {}),
+            "postprocessing": manifest.get("postprocessing", {}),
+        }, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+    model = ModelRef(
+        model_name="YOLO26n",
+        content_digest=model_digest,
+        semantics_digest=semantics_digest,
+        source_revision=str(manifest.get("graphRevision", "")),
+    )
+    task = InferenceTaskRef.from_adapter(adapter)
+    numerical_reference, input_payload = _prepare_yolo_input(args, package)
+    reference = client.publish_application_input_reference(
+        service,
+        input_payload,
+        object_label="inference-input-image",
+        object_type="application/x-ndnsf-di-input+native-tensor",
+        freshness_ms=120000,
+    )
+    reference_digest = "sha256:" + hashlib.sha256(json.dumps(
+        reference, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+    app_input = ApplicationInput.from_repo_ref(
+        task_name=task.task_name,
+        input_schema_digest=adapter.descriptor.input_schema_digest,
+        options_schema_digest=adapter.descriptor.options_schema_digest,
+        reference=reference,
+        options=b"{}",
+        metadata={"publicationDigest": reference_digest},
+    )
+    journal.append(
+        "INPUT_REFERENCE_PUBLISHED", referenceDigest=reference_digest)
+    if mutation == "Y-N-L":
+        try:
+            # Deliberately route a plaintext-bearing field through the real
+            # evidence writer.  LifecycleJournal must reject it before any
+            # terminal response can be accepted.
+            journal.append("REQUEST_SENT", payload="redacted-test")
+        except RunnerError as exc:
+            if not _spec180_negative_matches(mutation, exc, journal):
+                raise
+            _emit_spec180_y_n_negative(args, mutation, journal=journal)
+            return 91
+        raise RuntimeError("DI_REDACTION_ACCEPTED")
+
+    service_user = client._network_client._client.user
+    snapshots = NetworkCatalogSnapshotResolver(
+        service_user.fetch_signed_app_data,
+        data_name=args.catalog_data_name,
+        expected_signer=args.catalog_signer,
+        timeout_ms=args.catalog_timeout_ms,
+    )
+    if args.selection_offer_key_map:
+        raise RuntimeError(
+            "--selection-offer-key-map is a fixture-only HMAC input and "
+            "cannot be used by the maintained ACK-driven path")
+    key_paths = json.loads(
+        Path(args.offer_public_key_map).read_text(encoding="utf-8"))
+    if not isinstance(key_paths, dict) or not key_paths:
+        raise RuntimeError("offer public-key map must be a non-empty object")
+    offer_keys = {
+        str(key_id): Path(path).expanduser().read_bytes()
+        for key_id, path in key_paths.items()
+    }
+
+    def trust_schema_was_validated(ack) -> bool:
+        # The C++ ServiceUser sets this only after the configured Trust Schema
+        # accepted the received ACK Data.  A Python-side name/key guess is not
+        # an authentication substitute.
+        if mutation == "Y-N-P":
+            return False
+        return bool(getattr(ack, "trust_schema_validated", False))
+
+    offer_verifier = ProviderOfferTrustVerifier.from_json(
+        args.offer_trust_root,
+        offer_keys,
+        trust_schema_verifier=trust_schema_was_validated,
+    )
+
+    # The canonical binding certifies Provider-local assembly recipes: each
+    # role carries its certified node cover and interface contracts in the
+    # sealed Selection, and every Provider assembles its own subgraph from
+    # the validated canonical root after Selection.
+    canonical_model_descriptor = adapter.describe_model(
+        model.model_name, model.content_digest, model.semantics_digest,
+        source_revision=model.source_revision)
+    yolo_graph = adapter.graph.inspect(canonical_model_descriptor)
+    canonical_binding = YoloCanonicalArtifactBinding(
+        package_dir=package,
+        adapter=adapter,
+        model=canonical_model_descriptor,
+        graph=yolo_graph,
+        artifact_root=str(args.catalog_signer).rstrip("/") + "/NDNSF/DI/ARTIFACT",
+        publish_encrypted_artifact=(
+            lambda payload, *, object_label, object_type:
+            client.publish_application_input_reference(
+                service,
+                payload,
+                object_label=object_label,
+                object_type=object_type,
+                freshness_ms=120000,
+            )
+        ),
+    )
+    if mutation in {"Y-N-R", "Y-N-E"}:
+        canonical_binding = _Spec180MutationBinding(canonical_binding, mutation)
+
+    client.configure_automatic_planning(
+        service_name=service,
+        adapters=(adapter,),
+        strategy=PreSplitFirstStrategy(at_ms=int(time.time() * 1000)),
+        catalog_snapshot_provider=snapshots,
+        canonical_artifact_ensurer=canonical_binding,
+        verify_offer_signature=offer_verifier,
+        ack_timeout_ms=args.ack_timeout_ms,
+        # The encrypted request-input fetch is part of the ingress role's
+        # execution.  Keep the DATA_V1 no-progress window above that fetch plus
+        # the first CPU fragment execution so downstream roles do not expire
+        # before the selected ingress can publish its first tensor.
+        data_v1_no_progress_ms=10_000,
+        ack_coverage_roles=(),
+        lifecycle_observer=_make_lifecycle_observer(journal),
+    )
+    try:
+        handle = client.request_task(
+            model=model,
+            task=task,
+            input=app_input,
+            timeout_ms=args.timeout_ms,
+            options=TaskOptions(adapter.descriptor.options_schema_digest, b"{}"),
+            request_id=args.request_id,
+        )
+    except Exception as exc:
+        if _spec180_negative_matches(mutation, exc, journal):
+            _emit_spec180_y_n_negative(args, mutation, journal=journal)
+            return 91
+        raise
+    role_map = {
+        str(role): str(provider)
+        for role, provider in handle.sealed_plan.providers_by_role.items()
+    }
+    journal.append(
+        "PROVIDER_EXECUTION_STARTED",
+        roleDigest=_digest_json(role_map),
+        providerCount=len(set(role_map.values())),
+    )
+    response = handle.response(args.timeout_ms)
+    # Keep this terminal branch independently executable for the focused
+    # production-tail regression, which intentionally starts at `response`.
+    if locals().get("mutation") == "Y-N-I":
+        if response.status:
+            raise RuntimeError("DI_INPUT_FETCH_ROLE_MISMATCH_ACCEPTED")
+        # Only the native Provider's owner-side rejection may prove this case.
+        # A generic failed Response does not identify the input-fetch boundary.
+        if getattr(response, "error", "") != "DI_INPUT_FETCH_ROLE_MISMATCH":
+            raise RuntimeError("SPEC180_Y_N_I_REQUIRES_PROVIDER_EVIDENCE")
+        return 91
+    journal.append(
+        "TERMINAL_RESPONSE",
+        resultDigest="sha256:" + hashlib.sha256(
+            bytes(response.payload)).hexdigest(),
+        requestCount=1,
+        status=bool(response.status),
+    )
+    journal.validate_complete()
+    if not response.status:
+        print("YOLO_ACK_DRIVEN_RESULT status=false reason=REMOTE_RESPONSE_FAILED")
+        return 3
+    if not _record_yolo_numerical_result(
+            args, numerical_reference, bytes(response.payload),
+            handle.sealed_plan.plan_digest, journal.attempt_id):
+        print("YOLO_ACK_DRIVEN_RESULT status=false reason=NUMERICAL_ORACLE_FAILED", flush=True)
+        return 4
+    print(
+        "YOLO_ACK_DRIVEN_RESULT status=true "
+        f"payload_bytes={len(response.payload)} "
+        f"plan_digest={handle.sealed_plan.plan_digest}",
+        flush=True,
+    )
+    return 0
+
+
 def main() -> int:
     parser = parse_args_with_common("Run YOLO 2x2 user")
-    parser.add_argument("--ack-timeout-ms", type=int, default=500)
+    parser.add_argument("--ack-timeout-ms", type=int, default=1500)
     parser.add_argument("--timeout-ms", type=int, default=30000)
+    parser.add_argument(
+        "--request-id", default="",
+        help=("optional request identity supplied by the case driver; the "
+              "coordinator returns and authenticates this same identity"),
+    )
+    parser.add_argument(
+        "--lifecycle-output-dir", default="",
+        help="case evidence directory for the bound lifecycle journal",
+    )
+    parser.add_argument(
+        "--lifecycle-case", default="",
+        help="registered Spec180 case identifier for lifecycle evidence",
+    )
     parser.add_argument("--permission-wait-ms", type=int, default=2500)
     parser.add_argument("--async-requests", type=int, default=1)
     parser.add_argument("--dynamic-provisioning", action="store_true",
@@ -56,6 +526,39 @@ def main() -> int:
     parser.add_argument("--input-size", type=int, default=DEFAULT_INPUT_SIZE)
     parser.add_argument("--native-tensor-input", action="store_true",
                         help="publish request input as an NDNSF-DI native tensor bundle")
+    parser.add_argument(
+        "--offline-oracle", action="store_true",
+        help="run the historical service-policy path as an offline oracle only",
+    )
+    parser.add_argument("--canonical-package", default="",
+                        help="signed Spec180 YOLO canonical package directory")
+    parser.add_argument("--catalogue-registry", default="",
+                        help="Spec180 catalogue trust-root registry JSON")
+    parser.add_argument("--input-reference-file", default="",
+                        help="offline-only legacy reference JSON; rejected by ACK-driven mode")
+    parser.add_argument("--input-payload-file", default="",
+                        help="encoded YOLO input bytes to publish; omitted uses the deterministic fixture")
+    parser.add_argument("--envelope-key-file", required=True,
+                        help="owner-only raw 32-byte key protecting persistent request state")
+    parser.add_argument(
+        "--offer-trust-root",
+        default=os.environ.get("SPEC180_YOLO_OFFER_TRUST_ROOT", ""),
+        help="candidate-bound Provider-offer Trust Schema policy JSON")
+    parser.add_argument(
+        "--offer-public-key-map",
+        default=os.environ.get("SPEC180_YOLO_OFFER_PUBLIC_KEY_MAP", ""),
+        help="JSON map of Provider signer key IDs to PEM public-key paths")
+    parser.add_argument(
+        "--selection-offer-key-map", default="",
+        help="deprecated fixture-only HMAC map; rejected for ACK-driven mode")
+    parser.add_argument("--catalog-data-name", default="",
+                        help="exact signed APP Data name for active catalogue metadata")
+    parser.add_argument("--catalog-signer", default="",
+                        help="expected NDN signer identity for catalogue APP Data")
+    parser.add_argument("--catalog-timeout-ms", type=int, default=5000,
+                        help="signed catalogue APP Data fetch timeout")
+    parser.add_argument("--catalog-snapshot-file", default="",
+                        help="offline-oracle fixture only; never used by ACK-driven mode")
     args = parser.parse_args()
     if args.dry_run:
         print("Run YOLO 2x2 user")
@@ -66,6 +569,7 @@ def main() -> int:
         trace_init = os.environ.get("NDNSF_DI_INIT_TRACE") == "1"
         client = APPClient.from_config(
             args.config,
+            envelope_key_file=args.envelope_key_file,
             generated_policy_dir=args.generated_policy_dir,
             group=args.group,
             permission_wait_ms=args.permission_wait_ms,
@@ -74,6 +578,11 @@ def main() -> int:
         )
         if trace_init:
             print("NDNSF_DI_INIT_TRACE stage=user_after_client", flush=True)
+        if not args.offline_oracle:
+            try:
+                return _load_yolo_ack_driven(client, args)
+            finally:
+                client.shutdown()
         service = yolo_inference_service(client.deployment)
         service_policy = client.deployment.service_policy(service)
         metadata = service_policy.metadata or {}
