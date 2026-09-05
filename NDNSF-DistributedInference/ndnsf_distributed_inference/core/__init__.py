@@ -60,7 +60,7 @@ from .hybrid_contracts import (
 )
 from .protected_artifacts import (
     GrantRequestV1, KeyGrantV1, PlaintextLeaseRegistry, ProtectionState,
-    RecipientEnvelopeV1, RevocationStateV1,
+    RecipientEnvelopeV1,
     verify_and_unwrap_grant,
     wrap_content_key, unwrap_content_key,
 )

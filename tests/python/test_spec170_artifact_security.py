@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "NDNSF-DistributedInference"))
 from cryptography.hazmat.primitives.asymmetric import ed25519  # noqa: E402
 from ndnsf_distributed_inference.core import (  # noqa: E402
-    GrantRequestV1, PlaintextLeaseRegistry, RevocationStateV1,
+    GrantRequestV1, PlaintextLeaseRegistry,
 )
 from ndnsf_distributed_inference.security import ArtifactPolicyAuthority  # noqa: E402
 
@@ -44,7 +44,7 @@ class ArtifactSecurityTest(unittest.TestCase):
         fields.update(overrides)
         return GrantRequestV1(**fields).sign(self.requester_key)
 
-    def test_grant_is_bound_to_core_provider_and_revocation(self):
+    def test_grant_is_bound_to_core_provider_and_expiry(self):
         request = self.request()
         grant = self.authority.issue(
             request,
@@ -56,10 +56,9 @@ class ArtifactSecurityTest(unittest.TestCase):
             now_ms=_now_ms(),
         )
         grant.verify(self.authority.public_key, now_ms=_now_ms())
-        state = self.authority.revoke(
-            frozenset({grant.grant_digest}), now_ms=_now_ms(),
-            next_check_at_ms=_now_ms() + 60_000)
-        self.assertTrue(state.is_revoked(grant.grant_digest, now_ms=_now_ms()))
+        with self.assertRaises(ValueError):
+            grant.verify(self.authority.public_key,
+                         now_ms=grant.expires_at_ms + 1)
         with self.assertRaises(ValueError):
             other = ed25519.Ed25519PrivateKey.generate()
             grant.verify(other.public_key(), now_ms=_now_ms())
