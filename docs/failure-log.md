@@ -27,7 +27,7 @@
 ## 2026-09-05 — late-grant probe initially missed its timing contract
 - **Area**: Spec179 MiniNDN T018 probe
 - **Symptom**: first late-grant run completed but gate failed (exit 4): user/B started after the Controller grant, no startup timeout exhaustion occurred, and the result exporter omitted the new scenario's grant evidence.
-- **Root cause**: serial RSA/identity startup outlasted the 12-second grant offset; one scenario-name equality remained in the evidence return despite sharing the grant collector.
+- **Root cause**: startup outlasted the 12-second grant offset; the later probe identified the constructor DKEY wait (see the entry above), superseding the initial RSA-delay hypothesis. One scenario-name equality remained in the evidence return despite sharing the grant collector.
 - **Fix**: grant evidence now follows the grantOnlyAdvance configuration for both scenarios; added an exporter regression. Increased grant/renewal/workload windows and require measured exhaustion < grant < refetch <= first invocation plus post-refetch unaffected successes. First run retained as a failed timing probe.
 - **Ref**: results/spec179-online-auth-20260905/late-grant-first; 12 launcher tests pass. Corrected network rerun pending.
 - **Lesson**: launch offsets are assumptions; acceptance must verify event ordering from observed timestamps.
@@ -36,7 +36,7 @@
 - **Area**: Spec179 launcher workload lifetime
 - **Symptom**: a run configured for 16 seconds kept enqueueing until the process lifetime killed it; late-grant-first user/A enqueued for about 51 seconds despite the nominal workload/count.
 - **Root cause**: requestDurationMs was passed directly to App_User --duration, which uses std::chrono::seconds; --count applies to closed-loop mode and does not cap this open-loop workload. Teardown could therefore truncate in-flight requests, previously hidden by the grant collector.
-- **Fix**: round milliseconds up to integer seconds at the App_User command boundary. Late-grant uses a longer independent user/A control window and a 16-second user/B granted workload; the fault/retry scenario explicitly spans both mutation events and drains before process shutdown.
+- **Fix**: round milliseconds up to integer seconds at the App_User command boundary. The final late-grant probe uses 60-second workloads for both users, spanning explicit renewal at 40 seconds after App startup; the fault/retry scenario explicitly spans both mutation events and drains before process shutdown.
 - **Ref**: examples/App_User.cpp openLoopDurationSeconds and measurementStopAt; run_request_scoped_confidentiality.py user_command; T018.
 - **Lesson**: verify units at the actual CLI consumer and distinguish open-loop duration from closed-loop count.
 

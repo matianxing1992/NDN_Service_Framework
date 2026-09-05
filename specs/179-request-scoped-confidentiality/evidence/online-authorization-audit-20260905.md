@@ -99,6 +99,9 @@ counts require reevaluation because the collector censored failures.
   and final C++/network regressions remain pending. The network rejection is
   the pre-fix reproduction; this additional constructor case was not executed
   against the old binary.
+- Final rebuilt unit gate after asynchronous constructor changes:
+  **182/182 cases, 11971/11971 assertions** (`gates/unit-final.log`).
+  Integration and final network results are still pending.
 
 ## Audit dimensions and limits
 
