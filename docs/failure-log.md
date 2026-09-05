@@ -1,5 +1,13 @@
 # NDNSF Failure Log
 
+## 2026-09-05 — grant control failures were not included in the gate
+- **Area**: Spec179 grant-only control and status-convergence evidence
+- **Symptom**: normal renewal probe failed with target12/13 and control12/24 successes. The collector exposed control successes only, so the twelve control failures were absent from gate conditions.
+- **Root cause**: successful-only control projection lacked a companion failure count. Separately, this grant probe disabled scheduled status refresh: providers learned epoch2 from target traffic while User/A remained epoch1, and the first target request's ACK waited on Provider refresh. Exact-version rejection remains required; a short convergence probe cannot assume all peers instantly discover grant-only changes.
+- **Fix**: record every control row and require zero control failures; the new regression fails before the change. Use the existing 1s status refresh knob for the normal grant probe, matching the corrected late-grant case and other bounded revocation tests. This is an explicit experiment/deployment setting, not a claim of instantaneous convergence under production defaults. Retain the 12/24 negative run; recheck earlier late-grant raw rows against the stronger control rule. Final normal grant rerun pending.
+- **Ref**: `campaign-renewal/grant-only-advance`; `gates/harness-control-red.log`; T018.
+- **Lesson**: key reuse and status-version convergence are separate conditions; count all control outcomes, not only successful ones.
+
 ## 2026-09-05 — asynchronous startup exposes three MiniNDN timing assumptions
 - **Area**: Spec179 grant and offline-rejoin probes (T018)
 - **Symptom**: rebuilt full campaign finished 13/16, exit 1. Normal grant had no renewal and zero granted requests; late grant had 21/21 successes but no exhausted permission retries; offline User installed epoch 2 before reaching epoch 3.

@@ -185,6 +185,20 @@ def test_grant_evidence_retains_failures_while_providers_are_alive(tmp_path, mon
     assert evidence["grantOnly"]["grantedSuccessRows"] == 1
 
 
+def test_grant_evidence_counts_unaffected_control_failures(tmp_path):
+    runner = _load_runner()
+    user = tmp_path / "user-A"
+    user.mkdir()
+    (user / "request-results.csv").write_text(
+        "request_id,success\ncontrol-ok,1\ncontrol-timeout,0\n", encoding="utf-8")
+    evidence = runner._collect_runtime_evidence(
+        tmp_path, "grant-only-advance", runner._scenario_config("grant-only-advance"),
+        [], time.monotonic())
+    assert evidence["grantOnly"]["unaffectedControlRows"] == 2
+    assert evidence["grantOnly"]["unaffectedControlFailures"] == 1
+    assert evidence["grantOnly"]["unaffectedControlSuccessRows"] == 1
+
+
 def test_completed_but_failed_network_gate_returns_nonzero(monkeypatch, tmp_path):
     runner = _load_runner()
     monkeypatch.setattr(sys, "argv", [str(RUNNER), "--execute", "--output", str(tmp_path)])

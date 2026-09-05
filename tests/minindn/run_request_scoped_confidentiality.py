@@ -566,9 +566,10 @@ def _collect_runtime_evidence(output: Path, scenario: str,
             row.get("final_cleanup_reason", "")
             for row in granted_lifecycle
             if row.get("final_cleanup_reason") not in (None, "", "-")})
-        control_rows = [row for row in _read_csv_rows(output / "user-A" / "request-results.csv")
-                        if row.get("success", "").strip() == "1"
-                        and row.get("request_id")]
+        control_all_rows = [row for row in _read_csv_rows(output / "user-A" / "request-results.csv")
+                            if row.get("request_id")]
+        control_rows = [row for row in control_all_rows
+                        if row.get("success", "").strip() == "1"]
         control_enqueue = {}
         for row in _read_csv_rows(output / "user-A" / "request_lifecycle.csv"):
             try:
@@ -616,6 +617,8 @@ def _collect_runtime_evidence(output: Path, scenario: str,
                 1 for ts in denial_ts_us if resolution_us is None or ts < resolution_us),
             "grantedTerminalReasons": granted_reasons,
             "unaffectedControlSuccessRows": len(control_rows),
+            "unaffectedControlRows": len(control_all_rows),
+            "unaffectedControlFailures": len(control_all_rows) - len(control_rows),
             "unaffectedControlPostGrantSuccessRows": sum(
                 1 for row in control_rows if grant_time_us is not None and
                 control_enqueue.get(row["request_id"], 0) > grant_time_us),
@@ -843,7 +846,8 @@ def _scenario_config(scenario: str) -> Dict[str, Any]:
             "recovery": "grant-only-advance",
             # Permission discovery is App-owned. Explicit renewal arms the
             # target-only DKEY refresh; constructor readiness is not a grant.
-            "knobMs": {},
+            "knobMs": {"userA": 1000, "userB": 1000,
+                       "providerA": 1000, "providerB": 1000},
         })
         if scenario == "grant-after-permission-exhaustion":
             config.update({
@@ -1384,6 +1388,7 @@ def execute_gate(output: Path, scenario: str = SCENARIOS[0],
             grant.get("grantedPreGrantRows") == 0 and
             grant.get("grantedPreResolveWaiting", 0) >= 1 and
             grant.get("unaffectedControlSuccessRows", 0) >= 1 and
+            grant.get("unaffectedControlFailures") == 0 and
             grant.get("unaffectedControlPostGrantSuccessRows", 0) >= 1 and
             (not config.get("permissionRefetchAfterMs") or
              (grant.get("explicitRenewalObserved") is True and
