@@ -19,6 +19,16 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 T004 lifecycle acceptance (2026-09-05): Provider waiter / OPEN.**
+R1 failed before the waiter because the fixture had no running Controller
+serving AA public parameters. R2 corrects that startup order and reaches the
+real Provider waiter: an 80 ms wait returns false in about 6 us before run,
+with SPEC181_PROVIDER_READINESS_PREMATURE_TERMINAL. The initial non-running
+state is incorrectly terminal; no Provider fix or GREEN is claimed yet.
+Six focused Core lifecycle checks pass, including isolated real NFD probes;
+Python/native startup margin and cancellation acceptance remain open. See
+[T004 lifecycle acceptance](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t004-lifecycle-acceptance-20260905.md).
+
 **Spec181 T002/T004 native repair (2026-09-05): focused defects CLOSED; tasks OPEN.**
 Retained failures identify group digest format, grant forwarding hint, model
 basename, premature readiness, and debugger exit-code boundaries. Live-r7
