@@ -76,6 +76,11 @@ R = `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py`。行号对应本轮源码�
 
 ## Next Actions
 
+**Implementation checkpoint (2026-09-05)**：A02 的前置授权、独立模型名
+绑定、落盘密文读取与已登记明文清理已有定向修复；70 项 unit 回归
+通过，见 `evidence/t001-provider-repair-20260905.md`。这不是重新审计
+PASS；A08 注册表消费、真实网络验收及其他控制性缺口仍开放。
+
 1. T001：在装配前完成独立绑定与授权；补注册表消费、模型/weights 密文
    读取及全错误路径清理，建立真实发布/获取的定向进程测试。
 2. T002/T003：接入 native 授权 runtime，并完成 grant 与装配两组 parity。

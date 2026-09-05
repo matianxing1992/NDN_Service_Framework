@@ -309,8 +309,14 @@ class ProtectedAssemblyQualificationTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.work_dir = Path(self.tmp.name) / "work"
         self.work_dir.mkdir(parents=True, exist_ok=True)
-        self.model_path = self.work_dir / "assembled-role.onnx"
-        self.model_path.write_bytes(_PLAINTEXT)
+        self.model_path = Path(self.tmp.name) / "canonical.onnx"
+        import onnx
+        self.model_bytes = onnx.helper.make_model(onnx.helper.make_graph(
+            [onnx.helper.make_node("Identity", ["x"], ["y"])], "lease-test",
+            [onnx.helper.make_tensor_value_info("x", onnx.TensorProto.FLOAT, [1])],
+            [onnx.helper.make_tensor_value_info("y", onnx.TensorProto.FLOAT, [1])],
+        )).SerializeToString()
+        self.model_path.write_bytes(self.model_bytes)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -345,13 +351,15 @@ class ProtectedAssemblyQualificationTest(unittest.TestCase):
         return RoleAssemblySpec(**fields)
 
     def _binding(self, grant_digest: str):
+        from ndnsf_distributed_inference.security.grant_provider import canonical_grant_name
         return GrantBindingV1(
             provider="/provider/p0",
-            grant_name=f"/authority/artifact-policy/NDNSF-DI/KEY-GRANT/v1"
-                       f"/PROVIDER/{'ab' * 32}/REQ/{self.request_id}"
-                       f"/ATTEMPT/1/PLAN-CORE/{'cd' * 32}"
-                       f"/MODEL/{'ef' * 32}/EPOCH/spec180-yolo-protected-v1"
-                       f"/GRANT/{grant_digest[len('sha256:'):] if grant_digest.startswith('sha256:') else grant_digest}",
+            grant_name=canonical_grant_name(
+                authority="/authority/artifact-policy", provider_identity="/provider/p0",
+                request_id=self.request_id, attempt=1,
+                plan_core_digest="sha256:" + "cd" * 32,
+                model_manifest_digest=_MODEL_MANIFEST_DIGEST,
+                protection_epoch="spec180-yolo-protected-v1", grant_digest=grant_digest),
             grant_digest=grant_digest,
             request_id=self.request_id, attempt=1,
             plan_core_digest="sha256:" + "cd" * 32,
@@ -419,14 +427,16 @@ class ProtectedAssemblyQualificationTest(unittest.TestCase):
             grant_binding=self._binding(grant.grant_digest),
             request_id=self.request_id, attempt=1,
             plan_core_digest="sha256:" + "cd" * 32)
-        _, registry = provider._qualify_protected_assembly(
+        protected_execution, registry = provider._qualify_protected_assembly(
             self._ctx(), execution, projection, self._role_spec(),
             _fetch_grant_data=lambda name: self._packet(grant))
         self.assertTrue(
             (self.work_dir / "assembled-role.onnx.cipher").is_file())
         self.assertTrue(self.model_path.is_file())
+        self.assertFalse((self.work_dir / "content-key.bin").exists())
         registry.zeroize_all()
-        self.assertFalse(self.model_path.exists())
+        self.assertEqual(self.model_path.read_bytes(), self.model_bytes)
+        self.assertFalse(protected_execution.artifact_paths["model"].exists())
         self.assertFalse((self.work_dir / "content-key.bin").exists())
 
     def test_wrong_recipient_grant_is_rejected_in_verifier(self):
@@ -443,6 +453,46 @@ class ProtectedAssemblyQualificationTest(unittest.TestCase):
                 self._ctx(), execution, projection, self._role_spec(),
                 _fetch_grant_data=lambda name: self._packet(grant))
         self.assertFalse((self.work_dir / "assembled-role.onnx.cipher").is_file())
+
+    def test_disk_ciphertext_tampering_is_rejected_by_the_loading_path(self):
+        from unittest.mock import patch
+        grant = self._signed_grant()
+        projection = types.SimpleNamespace(
+            grant_binding=self._binding(grant.grant_digest),
+            request_id=self.request_id, attempt=1,
+            plan_core_digest="sha256:" + "cd" * 32)
+        write = Path.write_bytes
+
+        def corrupt_ciphertext(path, data):
+            if path.name.endswith(".cipher"):
+                sealed = AssembledCiphertextV1.from_bytes(data)
+                sealed = replace(sealed, ciphertext=bytes([sealed.ciphertext[0] ^ 1])
+                                 + sealed.ciphertext[1:])
+                data = sealed.to_bytes()
+            return write(path, data)
+
+        with patch.object(Path, "write_bytes", corrupt_ciphertext):
+            with self.assertRaisesRegex(ProtectedGrantRejected, "authentication"):
+                self._provider()._qualify_protected_assembly(
+                    self._ctx(), self._execution(), projection, self._role_spec(),
+                    _fetch_grant_data=lambda name: self._packet(grant))
+        self.assertEqual(self.model_path.read_bytes(), self.model_bytes)
+        self.assertFalse((self.work_dir / "assembled-role.onnx").exists())
+
+    def test_missing_role_manifest_uses_the_sealed_name_not_grant_self_claims(self):
+        grant = self._signed_grant()
+        binding = self._binding(grant.grant_digest)
+        binding = replace(binding, grant_name=binding.grant_name.replace(
+            "/MODEL/" + "11" * 32, "/MODEL/" + "aa" * 32))
+        projection = types.SimpleNamespace(
+            grant_binding=binding, request_id=self.request_id, attempt=1,
+            plan_core_digest="sha256:" + "cd" * 32)
+        with self.assertRaisesRegex(ProtectedGrantRejected, "manifest"):
+            self._provider()._qualify_protected_assembly(
+                self._ctx(), self._execution(), projection,
+                types.SimpleNamespace(model_manifest_digest="",
+                                      protection_epoch="spec180-yolo-protected-v1"),
+                _fetch_grant_data=lambda name: self._packet(grant))
 
     def test_valid_grant_cannot_replace_the_sealed_grant_reference(self):
         """A valid authority signature does not authorize another grant digest."""

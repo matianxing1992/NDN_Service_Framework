@@ -1303,6 +1303,7 @@ class DistributedInferenceProvider:
         execution: ExecutionContext,
         v3_role_spec: Any,
         local_artifacts: dict[str, dict],
+        *, _lease_registry=None,
     ) -> ExecutionContext:
         """Assemble one certified component-set subgraph from the canonical root.
 
@@ -1373,7 +1374,10 @@ class DistributedInferenceProvider:
             recipe=recipe,
         )
         assembled_path = execution.work_dir / "assembled-role.onnx"
-        assembled_path.write_bytes(assembly.model_bytes)
+        if _lease_registry is None:
+            assembled_path.write_bytes(assembly.model_bytes)
+        else:
+            _lease_registry.register("assembly-input", assembled_path, assembly.model_bytes)
         return replace(
             execution,
             artifact_paths={
@@ -1390,144 +1394,180 @@ class DistributedInferenceProvider:
             ),
         )
 
-    def _qualify_protected_assembly(
-        self,
-        ctx: CollaborationContext,
-        execution: ExecutionContext,
-        v3_projection: Any,
-        v3_role_spec: Any,
-        *,
-        _fetch_grant_data=None,
-    ) -> tuple[ExecutionContext, "PlaintextLeaseRegistry"]:
-        """Fetch, verify, and unwrap the Provider-bound grant (spec181 T001),
-        then seal the assembled artifact under the unwrapped content key
-        (FR-013: the content key is consumed by a real AEAD operation, never
-        left idle).
-
-        Failure modes register DI_PROTECTED_GRANT_REJECTED and fail closed
-        before the artifact is exposed to the adapter: a synthetic rejection
-        may never stand in for a real verifier decision.
-        """
+    def _verify_protected_grant(
+        self, ctx, v3_projection, v3_role_spec, lease_registry,
+        *, _fetch_grant_data=None,
+    ):
+        """Authenticate the sealed grant before any assembly or model load."""
         from ndnsf import fetch_exact_data_packet
-        from .core import (
-            PlaintextLeaseRegistry, ProtectedGrantRejected,
-            decrypt_assembled_entry, encrypt_assembled_entry,
-            grant_from_wire, verify_and_unwrap_grant)
+        from .core import ProtectedGrantRejected, grant_from_wire, verify_and_unwrap_grant
+        from .security.grant_provider import canonical_grant_name
         if (self._grant_authority_public_key is None
                 or self._grant_recipient_private_key is None):
-            raise ProtectedGrantRejected(
-                "protected grant keys are not configured for this Provider")
-        grant_binding = v3_projection.grant_binding
-        if grant_binding is None:
-            raise ProtectedGrantRejected(
-                "protected V3 Selection carries no Provider grant binding")
-        lease_registry = PlaintextLeaseRegistry()
+            raise ProtectedGrantRejected("protected grant keys are not configured for this Provider")
+        binding = v3_projection.grant_binding
+        if binding is None:
+            raise ProtectedGrantRejected("protected V3 Selection carries no Provider grant binding")
         try:
-            grant_hints = [
-                hint for hint in os.environ.get(
-                    "SPEC181_GRANT_FORWARDING_HINT", "").split(",")
-                if hint.strip()]
-            fetch_grant = _fetch_grant_data or (
-                lambda name: fetch_exact_data_packet(
-                    name, timeout_ms=self._grant_fetch_timeout_ms,
-                    forwarding_hints=grant_hints))
-            try:
-                packet = fetch_grant(grant_binding.grant_name)
-            except Exception as exc:
-                raise ProtectedGrantRejected(
-                    f"grant Data fetch failed at {grant_binding.grant_name}: "
-                    f"{type(exc).__name__}: {exc}") from exc
-            try:
-                grant = grant_from_wire(packet.content)
-            except ValueError as exc:
-                raise ProtectedGrantRejected(
-                    "grant Data payload is malformed") from exc
-            # Exact-name fetch and a valid signature do not prove that the
-            # payload is the grant selected by the sealed plan. Bind that
-            # reference before unwrapping or materializing any plaintext.
-            if grant.grant_digest != grant_binding.grant_digest:
-                raise ProtectedGrantRejected(
-                    "grant digest does not match the sealed Selection reference")
-            # The native Merge role carries no assembly identity (no ONNX
-            # layer); its grant still binds the same canonical manifest as
-            # the component roles, so fall back to the grant's own manifest
-            # for the binding comparison when the projection omits it.
-            expected_manifest = (
-                v3_role_spec.model_manifest_digest
-                or grant.model_manifest_digest)
-            try:
-                content_key = verify_and_unwrap_grant(
-                    grant,
-                    authority_public_key=self._grant_authority_public_key,
-                    recipient_private_key=self._grant_recipient_private_key,
-                    expected_provider_identity=ctx.local_provider,
-                    expected_request_id=v3_projection.request_id,
-                    expected_attempt=v3_projection.attempt,
-                    expected_plan_core_digest=v3_projection.plan_core_digest,
-                    expected_model_manifest_digest=expected_manifest,
-                    expected_protection_epoch=v3_role_spec.protection_epoch,
-                    now_ms=int(time() * 1000),
-                )
-            except ValueError as exc:
-                raise ProtectedGrantRejected(
-                    f"grant verifier rejected: {exc}") from exc
-            # FR-013: register the unwrapped content key as a zeroizable
-            # plaintext lease, then seal the assembled artifact under a key
-            # derived from it (DISK_CIPHERTEXT_ASSEMBLED semantics).
-            role_assembly_spec_digest = canonical_digest(v3_role_spec)
-            storage_profile_digest = canonical_digest(
-                _PROTECTED_ASSEMBLY_STORAGE_PROFILE)
-            model_path = Path(str(execution.artifact_paths.get("model", "")))
-            if not model_path.is_file():
-                raise ProtectedGrantRejected(
-                    "protected assembly has no assembled artifact to seal")
-            assembled_bytes = model_path.read_bytes()
-            sealed = encrypt_assembled_entry(
-                content_key, assembled_bytes, entry_kind="MODEL_PROTO",
+            # The name is authenticated by Selection, independently of the
+            # returned payload. This also supplies Merge's model commitment.
+            components = binding.grant_name.split("/MODEL/")
+            if len(components) != 2:
+                raise ValueError("grant name has no unique model manifest")
+            manifest_hex = components[1].split("/EPOCH/")[0]
+            if (len(manifest_hex) != 64
+                    or any(c not in "0123456789abcdef" for c in manifest_hex)):
+                raise ValueError("grant name model manifest is not canonical")
+            expected_manifest = "sha256:" + manifest_hex
+            role_manifest = v3_role_spec.model_manifest_digest
+            if role_manifest and role_manifest != expected_manifest:
+                raise ValueError("grant name model manifest differs from the sealed role")
+            if (binding.provider != ctx.local_provider
+                    or binding.request_id != v3_projection.request_id
+                    or binding.attempt != v3_projection.attempt
+                    or binding.plan_core_digest != v3_projection.plan_core_digest
+                    or binding.protection_epoch != v3_role_spec.protection_epoch):
+                raise ValueError("grant reference binding mismatch")
+            hints = [value.strip() for value in os.environ.get(
+                "SPEC181_GRANT_FORWARDING_HINT", "").split(",") if value.strip()]
+            fetch = _fetch_grant_data or (lambda name: fetch_exact_data_packet(
+                name, timeout_ms=self._grant_fetch_timeout_ms, forwarding_hints=hints))
+            packet = fetch(binding.grant_name)
+            grant = grant_from_wire(packet.content)
+            if grant.grant_digest != binding.grant_digest:
+                raise ValueError("grant digest does not match the sealed Selection reference")
+            if grant.model_manifest_digest != expected_manifest:
+                raise ValueError("grant model manifest binding mismatch")
+            expected_name = canonical_grant_name(
+                authority=grant.policy_authority, provider_identity=ctx.local_provider,
+                request_id=v3_projection.request_id, attempt=v3_projection.attempt,
+                plan_core_digest=v3_projection.plan_core_digest,
                 model_manifest_digest=expected_manifest,
-                role_assembly_spec_digest=role_assembly_spec_digest,
-                storage_profile_digest=storage_profile_digest,
-            )
-            cipher_path = execution.work_dir / "assembled-role.onnx.cipher"
-            cipher_path.write_bytes(sealed.to_bytes())
-            try:
-                plaintext = decrypt_assembled_entry(content_key, sealed)
-            except ValueError as exc:
-                raise ProtectedGrantRejected(
-                    "assembled artifact failed AEAD authentication") from exc
-            lease_registry.register(
-                "protected-content-key",
-                execution.work_dir / "content-key.bin", content_key)
-            # The plaintext lease must never register the canonical package
-            # path: zeroization would delete the shared source ONNX file.
-            # Materialize the decrypted bytes into the role work directory
-            # and point the execution at that copy instead.
-            work_model = execution.work_dir / "assembled-role.onnx"
-            work_model.write_bytes(plaintext)
-            # ORT external-data models read the sibling .weights file; copy
-            # it into the work directory so the sealed copy stays runnable.
-            weights_source = Path(str(model_path)).with_name(
-                Path(str(model_path)).stem + ".weights")
-            if weights_source.is_file():
-                weights_copy = execution.work_dir / weights_source.name
-                weights_copy.write_bytes(weights_source.read_bytes())
-            lease_registry.register(
-                "assembled-model-plaintext", work_model, plaintext)
-            execution = replace(
-                execution,
-                artifact_paths={
-                    **dict(execution.artifact_paths),
-                    "model": work_model,
-                },
-            )
-            return execution, lease_registry
-        except ProtectedGrantRejected:
-            lease_registry.zeroize_all()
-            raise
+                protection_epoch=v3_role_spec.protection_epoch,
+                grant_digest=binding.grant_digest)
+            if binding.grant_name != expected_name:
+                raise ValueError("grant canonical name binding mismatch")
+            content_key = verify_and_unwrap_grant(
+                grant, authority_public_key=self._grant_authority_public_key,
+                recipient_private_key=self._grant_recipient_private_key,
+                expected_provider_identity=ctx.local_provider,
+                expected_request_id=v3_projection.request_id,
+                expected_attempt=v3_projection.attempt,
+                expected_plan_core_digest=v3_projection.plan_core_digest,
+                expected_model_manifest_digest=expected_manifest,
+                expected_protection_epoch=v3_role_spec.protection_epoch,
+                now_ms=int(time() * 1000))
+            if "DISK_CIPHERTEXT_ASSEMBLED" not in grant.allowed_residency_tiers:
+                raise ValueError("grant forbids assembled ciphertext residency")
+            key = lease_registry.register_secret("protected-content-key", content_key)
+            return key, expected_manifest, grant.expires_at_ms
         except Exception as exc:
-            lease_registry.zeroize_all()
-            raise ProtectedGrantRejected(
-                f"protected grant qualification failed: {exc}") from exc
+            raise ProtectedGrantRejected(f"grant verifier rejected: {exc}") from exc
+
+    def _qualify_protected_assembly(
+        self, ctx, execution, v3_projection, v3_role_spec, *,
+        _fetch_grant_data=None, _verified_grant=None, _lease_registry=None,
+    ):
+        """Seal every ONNX entry, then authenticate its on-disk bytes to load."""
+        from .core import (
+            AssembledCiphertextV1, PlaintextLeaseRegistry, ProtectedGrantRejected,
+            decrypt_assembled_entry, encrypt_assembled_entry)
+        import onnx
+        registry = _lease_registry if _lease_registry is not None else PlaintextLeaseRegistry()
+        try:
+            key, manifest, expires_at_ms = _verified_grant or self._verify_protected_grant(
+                ctx, v3_projection, v3_role_spec, registry,
+                _fetch_grant_data=_fetch_grant_data)
+            if int(time() * 1000) >= expires_at_ms:
+                raise ValueError("grant expired before protected assembly")
+            model_path = Path(str(execution.artifact_paths.get("model", "")))
+            if not model_path.is_file() or model_path.is_symlink():
+                raise ValueError("protected assembly has no regular model artifact")
+            work_dir = execution.work_dir
+            work_dir.mkdir(parents=True, exist_ok=True)
+            model_bytes = model_path.read_bytes()
+            # Assembly output is our allocation; canonical source files are
+            # shared and must never be registered for deletion.
+            owned_model = model_path.parent.resolve() == work_dir.resolve()
+            if owned_model and "assembly-input" not in registry:
+                registry.register("assembly-input", model_path, model_bytes)
+            model = onnx.load_model_from_string(model_bytes)
+            external_locations = set()
+            external_tensors = []
+
+            def inspect_message(message):
+                if isinstance(message, onnx.TensorProto):
+                    if message.data_location == onnx.TensorProto.EXTERNAL:
+                        metadata = {entry.key: entry.value for entry in message.external_data}
+                        location = metadata.get("location", "")
+                        if (not location or Path(location).name != location
+                                or location in (".", "..") or "\\" in location):
+                            raise ValueError("unsafe ONNX external-data location")
+                        external_locations.add(location)
+                        external_tensors.append(message)
+                    return
+                for descriptor, value in message.ListFields():
+                    if descriptor.type != descriptor.TYPE_MESSAGE:
+                        continue
+                    if descriptor.label == descriptor.LABEL_REPEATED:
+                        for child in value:
+                            inspect_message(child)
+                    else:
+                        inspect_message(value)
+
+            inspect_message(model)
+            if len(external_locations) > 1:
+                raise ValueError("protected ONNX bundle requires one external-data entry")
+            entries = []
+            if external_locations:
+                source = model_path.parent / next(iter(external_locations))
+                if not source.is_file() or source.is_symlink():
+                    raise ValueError("external-data entry is missing or not regular")
+                external_bytes = source.read_bytes()
+                if source.parent.resolve() == work_dir.resolve():
+                    registry.register("assembly-external-input", source, external_bytes)
+                # The inherited bundle contract has one fixed safe basename.
+                for tensor in external_tensors:
+                    for entry in tensor.external_data:
+                        if entry.key == "location":
+                            entry.value = "model.onnx.data"
+                model_bytes = model.SerializeToString()
+                entries.append(("EXTERNAL_DATA", "model.onnx.data", external_bytes))
+            entries.insert(0, ("MODEL_PROTO", "assembled-role.onnx", model_bytes))
+            role_digest = canonical_digest(v3_role_spec)
+            profile_digest = canonical_digest(_PROTECTED_ASSEMBLY_STORAGE_PROFILE)
+            sealed_paths = []
+            for kind, basename, plaintext in entries:
+                sealed = encrypt_assembled_entry(
+                    key, plaintext, entry_kind=kind,
+                    model_manifest_digest=manifest,
+                    role_assembly_spec_digest=role_digest,
+                    storage_profile_digest=profile_digest)
+                cipher_path = work_dir / (basename + ".cipher")
+                cipher_path.write_bytes(sealed.to_bytes())
+                sealed_paths.append((kind, basename, cipher_path))
+            registry.zeroize("assembly-input")
+            registry.zeroize("assembly-external-input")
+            for kind, basename, cipher_path in sealed_paths:
+                # Load from disk, not the in-memory object used for sealing.
+                stored = AssembledCiphertextV1.from_bytes(cipher_path.read_bytes())
+                if (stored.model_manifest_digest != manifest
+                        or stored.role_assembly_spec_digest != role_digest
+                        or stored.storage_profile_digest != profile_digest):
+                    raise ValueError("assembled entry authentication context mismatch")
+                plaintext = decrypt_assembled_entry(key, stored, entry_kind=kind)
+                registry.register("loaded-" + kind, work_dir / basename, plaintext)
+            if int(time() * 1000) >= expires_at_ms:
+                raise ValueError("grant expired before protected model exposure")
+            return replace(execution, artifact_paths={
+                **dict(execution.artifact_paths),
+                "model": work_dir / "assembled-role.onnx",
+            }), registry
+        except Exception as exc:
+            registry.zeroize_all()
+            if isinstance(exc, ProtectedGrantRejected):
+                raise
+            raise ProtectedGrantRejected(f"protected assembly rejected: {exc}") from exc
 
     @staticmethod
     def _report_preparation(
@@ -2326,7 +2366,8 @@ class DistributedInferenceProvider:
             register_decision_authority()
             return
 
-        def wrapped(ctx: CollaborationContext, request: bytes) -> None:
+        def execute_with_leases(ctx: CollaborationContext, request: bytes,
+                                protected_lease_registry) -> None:
             from .core import ProtectedGrantRejected
             sequence = 1
             assignment_payload = bytes(ctx.assignment.assignment_payload or b"")
@@ -2336,7 +2377,7 @@ class DistributedInferenceProvider:
             v3_projection = None
             v3_role_spec = None
             v3_dependency_view = None
-            protected_lease_registry = None
+            verified_grant = None
             # These flags are derived only from the authenticated V3
             # RoleDataflowContract.  Keep them false for legacy V2/simple
             # assignments so the compatibility path remains unchanged.
@@ -2470,6 +2511,9 @@ class DistributedInferenceProvider:
 
             try:
                 dependency_ready = None
+                if v3_role_spec is not None and v3_role_spec.protection_epoch != "plaintext-v1":
+                    verified_grant = self._verify_protected_grant(
+                        ctx, v3_projection, v3_role_spec, protected_lease_registry)
                 if v3_projection is not None and selection_participant is not None:
                     raise RuntimeError("V3 Selection cannot use the V2 participant")
                 if selection_participant is not None:
@@ -2557,32 +2601,14 @@ class DistributedInferenceProvider:
                     # assembled bytes replace the local canonical model for
                     # this role's execution only.
                     execution = self._assemble_certified_role_execution(
-                        ctx, execution, v3_role_spec, local_artifacts)
-                    if v3_role_spec.protection_epoch != "plaintext-v1":
-                        # spec181 T001: fetch + verify + unwrap the
-                        # Provider-bound grant at the authorization boundary
-                        # (before the artifact is exposed), then AEAD-seal the
-                        # assembled artifact under the unwrapped content key
-                        # (FR-013).  Any verifier decision fails closed as
-                        # DI_PROTECTED_GRANT_REJECTED.
-                        try:
-                            (execution,
-                             protected_lease_registry) = (
-                                self._qualify_protected_assembly(
-                                    ctx, execution, v3_projection,
-                                    v3_role_spec))
-                        except ProtectedGrantRejected as exc:
-                            sequence += 1
-                            self._report_preparation(
-                                ctx, phase="FAILED", sequence=sequence,
-                                progress=0.0,
-                                reason="DI_PROTECTED_GRANT_REJECTED",
-                                attempt=preparation_attempt)
-                            release_selection_reservation(
-                                "PREPARATION_FAILED")
-                            ctx.fail(
-                                f"DI_PROTECTED_GRANT_REJECTED: {exc}")
-                            return
+                        ctx, execution, v3_role_spec, local_artifacts,
+                        _lease_registry=(protected_lease_registry
+                                         if verified_grant is not None else None))
+                if verified_grant is not None:
+                    execution, _ = self._qualify_protected_assembly(
+                        ctx, execution, v3_projection, v3_role_spec,
+                        _verified_grant=verified_grant,
+                        _lease_registry=protected_lease_registry)
                 execution = self._bind_assignment_metadata(ctx, execution)
                 if v3_role_spec is not None:
                     execution = replace(execution, spec=replace(
@@ -2692,6 +2718,14 @@ class DistributedInferenceProvider:
                     if sequence == 1:
                         report("LOADING", 0.70)
                     report("WARMING", 0.90)
+            except ProtectedGrantRejected as exc:
+                sequence += 1
+                self._report_preparation(
+                    ctx, phase="FAILED", sequence=sequence, progress=0.0,
+                    reason="DI_PROTECTED_GRANT_REJECTED", attempt=preparation_attempt)
+                release_selection_reservation("PREPARATION_FAILED")
+                ctx.fail(f"DI_PROTECTED_GRANT_REJECTED: {exc}")
+                return
             except Exception as exc:
                 sequence += 1
                 self._report_preparation(
@@ -2734,11 +2768,13 @@ class DistributedInferenceProvider:
             finally:
                 prefetcher.shutdown()
                 release_selection_reservation("ROLE_HANDLER_RETURNED")
-                if protected_lease_registry is not None:
-                    # FR-013: every materialized plaintext (content key copy
-                    # and assembled model) is zeroized and removed before the
-                    # handler boundary closes.
-                    protected_lease_registry.zeroize_all()
+
+        def wrapped(ctx: CollaborationContext, request: bytes) -> None:
+            from .core import PlaintextLeaseRegistry
+            # Cover the entire production callback, including all preparation
+            # returns and exceptions before the handler's narrower finally.
+            with PlaintextLeaseRegistry() as registry:
+                execute_with_leases(ctx, request, registry)
 
         try:
             self.provider.add_collaboration_handler(

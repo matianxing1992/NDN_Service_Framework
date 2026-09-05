@@ -19,6 +19,12 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 T001 Provider repair (2026-09-05): focused defects CLOSED.**
+70 focused tests pass for authorization before preparation, in-memory keys,
+on-disk AEAD loading, model/weights cleanup and registered-handler failures.
+Registry-policy wiring and real network integration still keep T001 open.
+See [T001 Provider repair](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t001-provider-repair-20260905.md).
+
 **Spec181 T001 lifecycle repair (2026-09-05): focused defect CLOSED.** Five
 RED failures are repaired; 19 focused tests pass for in-memory key leases,
 duplicate protection, complete cleanup and private/symlink-safe files.
