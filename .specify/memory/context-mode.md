@@ -338,8 +338,9 @@ is stable.
 
 ## Hooks Configured but No Real Capture
 
-`ctx_doctor` validates the executable, storage, SQLite/FTS5, version, feature
-flag, and hook entries on disk. It does not prove that Codex trusts those hook
+The `ctx_doctor` MCP tool (or `context-mode doctor` from a shell) validates the
+executable, storage, SQLite/FTS5, version, feature flag, and hook entries on
+disk. It does not prove that Codex trusts those hook
 commands, or that an already-running host loaded a configuration written after
 that host started. A configured but `untrusted` hook is not executed.
 
@@ -372,6 +373,15 @@ If `hooks.json` is newer than the running app-server, restart the full Codex
 session or IDE host. Reloading MCP tools alone is insufficient because hook
 registration is host-owned and loaded at process startup.
 
+The repository health guard starts a short-lived app-server with
+`mcp_servers={}` because `hooks/list` does not require any MCP server. This
+keeps hook-trust validation independent of unrelated MCP startup time. It also
+means that a passing guard validates Context Mode hooks, sources, and SessionDB,
+but does not prove that the current IDE host has reloaded its MCP children.
+After changing `~/.codex/config.toml`, reload the full IDE window/client before
+testing MCP tools. Run the stable and `--scope active` health checks
+sequentially; concurrent probes can race while inspecting the same SessionDB.
+
 Do **not** use the whole-file mtime of `~/.codex/config.toml` as a restart
 signal. Codex legitimately rewrites that file while the app-server is running
 when it records `[hooks.state.*]` trusted hashes or unrelated UI/model settings.
@@ -383,7 +393,8 @@ write from causing a permanent false `HOST_RESTART_REQUIRED`.
 
 Use this recovery sequence:
 
-1. run `ctx_doctor`, then run the repository `health` guard;
+1. run the `ctx_doctor` MCP tool (or `context-mode doctor` from a shell), then
+   run the repository `health` guard;
 2. if doctor reports an installation, version, hook, MCP, storage, or FTS5
    failure, run `ctx_upgrade` and execute the exact returned command;
 3. if `health` reports `HOOK_TRUST_REQUIRED`, review and approve only the exact
@@ -492,7 +503,7 @@ use repository fallback until its retention semantics are re-audited.
 
 | Check | Pass condition | Failure response |
 |---|---|---|
-| Installation | `ctx_doctor` reports hook, storage, server, and FTS5 success | Run the official upgrade, then re-audit the documented v1.0.169 retention hotfix before real capture |
+| Installation | `ctx_doctor` reports hook, storage, server, and FTS5 success (shell equivalent: `context-mode doctor`) | Run the official upgrade, then re-audit the documented v1.0.169 retention hotfix before real capture |
 | Saturated prompt retention | At 1000 events, the raw prompt and derived intent both survive the same `UserPromptSubmit` hook fire long enough for marker verification | Keep repository fallback active; audit prompt priority and eviction order before accepting the host |
 | Hook trust | Repository `health` reports every required Context Mode and NDNSF query-guard hook enabled and `trusted` or managed | Review and approve only the exact command hashes; never enable a global bypass |
 | Host dispatch | A previously absent, post-restart `CTX_HOST_ACCEPT_*` marker submitted only through a real prompt returns as `user-prompt` after the new host start | Restart full host; if still absent, repository fallback |
@@ -592,10 +603,32 @@ project ContentDB entry is therefore an index-sync failure, not evidence that
 the other client has stolen or corrupted this project's context.
 
 For Claude Code's separate store, run the same helper from Claude's process
-environment (or explicitly set `CONTEXT_MODE_PLATFORM=claude` and its
-`CONTEXT_MODE_DIR`); do not merge the Codex and Claude ContentDB directories,
+environment (or explicitly set `CONTEXT_MODE_PLATFORM=claude-code` and its
+`CONTEXT_MODE_DIR`); `claude-code` is the canonical platform identifier. Do not
+merge the Codex and Claude ContentDB directories,
 and do not delete the other platform's store to repair a stale active-feature
 index.
+
+The repository helper accepts that platform selection directly. For example,
+to refresh Claude Code's private ContentDB without touching Codex's store:
+
+```bash
+CONTEXT_MODE_PLATFORM=claude-code \
+CONTEXT_MODE_DIR="$HOME/.claude/context-mode" \
+scripts/context_mode_index_authority.sh
+```
+
+With no platform override, the helper targets Codex's private store and runs
+the Codex guard. The two commands must be run separately; never point both
+clients at one ContentDB.
+
+Claude's global `~/.claude.json` must register both MCP servers independently
+of `settings.json`. Use absolute executable commands; the CodeGraph server
+must include `serve --mcp --no-watch`, and the Context Mode server must set
+`CONTEXT_MODE_PLATFORM=claude-code`. A stale per-server value of `claude` can
+make Claude write to the wrong store even when the settings hooks look valid.
+The repository guard checks this registry, the executable paths, and the
+canonical platform value before accepting Claude host health.
 
 After creating or changing the active plan, keep `.specify/feature.json` and
 the managed `<!-- SPECKIT START -->` block in `AGENTS.md` on the same feature.
@@ -637,15 +670,17 @@ containing:
 
 ## Installation and Upgrade Verification
 
-Use Context Mode's own doctor and upgrade operations. Run `ctx_upgrade` only
-when `ctx_doctor` identifies an installation, version, hook, MCP, storage, or
-FTS5 failure, and execute the exact command it returns.
+Use Context Mode's own doctor and upgrade operations. Run the `ctx_upgrade` MCP
+tool (or `context-mode upgrade` from a shell) only when `ctx_doctor` identifies
+an installation, version, hook, MCP, storage, or FTS5 failure, and execute the
+exact command it returns.
 
 After any installation, upgrade, or hook/configuration change:
 
 1. restart the full Codex session/app-server and reload plugins or restart
    Claude Code;
-2. run `ctx_doctor` again inside each restarted client;
+2. run `ctx_doctor` again inside each restarted client (or
+   `context-mode doctor` from a shell);
 3. follow the complete recovery and acceptance sequence in
    [Hooks Configured but No Real Capture](#hooks-configured-but-no-real-capture);
    do not substitute a shortened marker check;
@@ -656,6 +691,60 @@ After any installation, upgrade, or hook/configuration change:
 An installed server with an empty database is not a successful context
 continuity test. The acceptance condition is retrieval of a real, current
 prompt or decision from a restarted client session.
+
+### Codex log-database recovery
+
+If `codex doctor` reports that `~/.codex/logs_2.sqlite` has failed integrity
+checks, do not run `VACUUM`, `REINDEX`, or replace the file while the Codex
+app-server still has it open. First close the full IDE/Codex client and verify
+that no `codex app-server` process owns `logs_2.sqlite`, its `-wal`, or its
+`-shm` file. Then move those three files together to a timestamped backup
+directory (never delete them), restart the client so Codex can rebuild the log
+database, and rerun `codex doctor`. Finally rerun both repository health
+scopes and submit one real post-restart prompt before accepting host capture.
+Stale rollout rows are diagnostic warnings; do not bulk-delete rollout files
+as part of this repair unless a separate retention decision has been made.
+
+The repository includes a guarded helper for this operation:
+
+```bash
+scripts/codex_state_recovery.sh --check
+# after closing the full VS Code/Codex client:
+scripts/codex_state_recovery.sh --apply
+```
+
+The helper refuses to move any file while a process owns the database trio and
+moves existing files to a timestamped, mode-700 recovery directory. It never
+deletes rollout files or the backup. `--apply` must be followed by a full
+client restart; a new shell alone is insufficient.
+
+### Codex MCP and plugin checks
+
+Treat the local MCP registry and the plugin marketplace as separate layers.
+`codex mcp list` must show the configured `context-mode` and `codegraph`
+servers as enabled, and the `ctx_doctor` MCP tool (or `context-mode doctor`
+from a shell) must report their executable, storage, FTS5, and hook checks as
+passing. `codex plugin list` reports only plugins from
+configured marketplace snapshots; `No marketplace plugins found` therefore
+means that no CLI marketplace is configured, not that an enabled MCP server or
+repository skill is broken. Do not repair this state by editing the plugin
+cache or deleting app data. If a marketplace or app-backed plugin is required,
+add or refresh it through the Codex plugin UI/CLI, then restart the full Codex
+client and rerun `codex mcp list`, `codex plugin list`, and `ctx_doctor` (or
+`context-mode doctor` from a shell).
+
+On the current Codex build, `codex features list` reports the former
+`plugin_hooks` flag as removed. Do not keep `plugin_hooks = true` in
+`~/.codex/config.toml`; it is not needed for the explicit `~/.codex/hooks.json`
+fallback and can make the installation appear to depend on an obsolete
+feature. The required runtime flag is `[features].hooks = true`, together with
+the reviewed Context Mode and NDNSF guard commands in `hooks.json`.
+
+Installed local skills are checked from their repository paths, independently
+of the remote plugin catalog. A skill being present on disk does not prove that
+the already-running IDE host has loaded a changed skill or hook; a full client
+restart remains the acceptance step after installation or configuration
+changes.
 
 ## Reporting
 

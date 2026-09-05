@@ -686,20 +686,18 @@ def verify_file_backed_sources(
             continue
         checks.append({"label": label, "path": str(expected_path), "fresh": True})
 
-    for label, stored_path, stored_hash in rows:
-        if not stored_path:
-            continue
-        path = _resolved(Path(stored_path))
-        if not _is_within(path, context.root):
-            continue
-        if path.name.lower() == "agents.md":
+    # ContentDB intentionally retains historical Specs and automatic
+    # ``file:/...`` aliases.  They are useful for explicitly scoped historical
+    # retrieval, but must not make the *active* feature health check fail.  The
+    # required active labels above are the only authority sources this check
+    # owns; validating every row under the repository made an old Spec's stale
+    # hash mask a fresh active Spec (and produced false failures after a branch
+    # switch).  Keep the AGENTS.md prohibition globally, while leaving
+    # historical/alias rows untouched for their own source-scoped freshness
+    # checks.
+    for label, stored_path, _ in rows:
+        if stored_path and Path(stored_path).name.lower() == "agents.md":
             failures.append(f"AGENTS.md must not be a file-backed source: {label}")
-            continue
-        if not path.is_file():
-            failures.append(f"indexed project file is missing: {path}")
-            continue
-        if stored_hash != _sha256(path):
-            failures.append(f"stale indexed source hash: {label}")
 
     if failures:
         raise GuardError(EXIT_SOURCE_MISMATCH, "; ".join(dict.fromkeys(failures)))
@@ -845,6 +843,27 @@ CODEX_CONTEXT_HOOKS = {
     ("stop", "stop"),
 }
 
+# The hook-trust probe does not use MCP tools. Starting every configured MCP
+# server here makes a health check depend on unrelated server startup time and
+# can exceed the RPC deadline in large workspaces. Keep the probe isolated and
+# leave MCP validation to the host's own server lifecycle checks.
+CODEX_HOOK_PROBE_TIMEOUT_SECONDS = 30.0
+
+
+def _codex_initialize_params() -> dict[str, Any]:
+    """Return the initialize payload accepted by the current app-server."""
+
+    return {
+        "clientInfo": {
+            "name": "ndnsf-context-mode-guard",
+            # Codex 0.151 deserializes ClientInfo strictly; title is nullable
+            # but required even for a non-UI probe client.
+            "title": None,
+            "version": "1",
+        },
+        "capabilities": {"experimentalApi": True},
+    }
+
 
 def _codex_rpc_response(
     process: subprocess.Popen[str], request_id: int, timeout: float
@@ -880,7 +899,13 @@ def _load_codex_hook_entries(project_root: Path) -> list[dict[str, Any]]:
             "cannot inspect Codex hook trust: codex executable is unavailable",
         )
     process = subprocess.Popen(
-        [executable, "app-server", "--stdio"],
+        [
+            executable,
+            "app-server",
+            "--stdio",
+            "-c",
+            "mcp_servers={}",
+        ],
         cwd=_resolved(project_root),
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -908,15 +933,11 @@ def _load_codex_hook_entries(project_root: Path) -> list[dict[str, Any]]:
         send(
             1,
             "initialize",
-            {
-                "clientInfo": {
-                    "name": "ndnsf-context-mode-guard",
-                    "version": "1",
-                },
-                "capabilities": {"experimentalApi": True},
-            },
+            _codex_initialize_params(),
         )
-        initialized = _codex_rpc_response(process, 1, 8.0)
+        initialized = _codex_rpc_response(
+            process, 1, CODEX_HOOK_PROBE_TIMEOUT_SECONDS
+        )
         if "error" in initialized:
             raise GuardError(
                 EXIT_PROJECT_BINDING_UNPROVEN,
@@ -928,7 +949,9 @@ def _load_codex_hook_entries(project_root: Path) -> list[dict[str, Any]]:
         )
         process.stdin.flush()
         send(2, "hooks/list", {"cwds": [str(_resolved(project_root))]})
-        response = _codex_rpc_response(process, 2, 8.0)
+        response = _codex_rpc_response(
+            process, 2, CODEX_HOOK_PROBE_TIMEOUT_SECONDS
+        )
         if "error" in response:
             raise GuardError(
                 EXIT_PROJECT_BINDING_UNPROVEN,
@@ -1029,8 +1052,10 @@ def _verify_codex_configuration(
                 EXIT_PROJECT_BINDING_UNPROVEN, f"Context Mode host file is missing: {path}"
             )
     config_text = config.read_text(encoding="utf-8")
+    # Current Codex builds report the former `plugin_hooks` flag as removed.
+    # Context Mode uses the explicit hooks.json fallback, so requiring that
+    # obsolete flag would reject a valid current installation after restart.
     required_config = {
-        "plugin_hooks=true": r"(?m)^\s*plugin_hooks\s*=\s*true\s*$",
         "hooks=true": r"(?m)^\s*hooks\s*=\s*true\s*$",
         "[mcp_servers.context-mode]": (
             r"(?m)^\s*\[mcp_servers\.context-mode\]\s*$"
@@ -1152,13 +1177,10 @@ def _verify_claude_configuration(
             EXIT_PROJECT_BINDING_UNPROVEN, "settings.json must contain an object"
         )
     env = payload.get("env")
-    if not isinstance(env, dict) or env.get("CONTEXT_MODE_PLATFORM") not in {
-        "claude",
-        "claude-code",
-    }:
+    if not isinstance(env, dict) or env.get("CONTEXT_MODE_PLATFORM") != "claude-code":
         raise GuardError(
             EXIT_PROJECT_BINDING_UNPROVEN,
-            "Claude settings must set CONTEXT_MODE_PLATFORM to claude",
+            "Claude settings must set CONTEXT_MODE_PLATFORM to claude-code",
         )
     hook_groups = payload.get("hooks")
     if not isinstance(hook_groups, dict):
@@ -1183,17 +1205,88 @@ def _verify_claude_configuration(
             "Claude PreToolUse does not enforce context_mode_guard.py "
             "hook --platform claude-code",
         )
-    settings_mtime = settings.stat().st_mtime
-    if client_start <= settings_mtime:
+    # Claude keeps global MCP registrations in ~/.claude.json rather than in
+    # settings.json.  Checking only settings made a stale per-server
+    # CONTEXT_MODE_PLATFORM=claude (or a PATH-dependent `codegraph` command)
+    # invisible to the health gate even though the host would start the wrong
+    # Context Mode store or fail to spawn CodeGraph.
+    registry = home.parent / ".claude.json"
+    if not registry.is_file():
         raise GuardError(
             EXIT_PROJECT_BINDING_UNPROVEN,
-            "HOST_RESTART_REQUIRED: Claude Code predates settings.json",
+            f"Claude MCP registry is missing: {registry}",
+        )
+    try:
+        registry_payload = json.loads(registry.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise GuardError(
+            EXIT_PROJECT_BINDING_UNPROVEN,
+            f".claude.json is invalid: {exc}",
+        ) from exc
+    servers = registry_payload.get("mcpServers") if isinstance(registry_payload, dict) else None
+    if not isinstance(servers, dict):
+        raise GuardError(
+            EXIT_PROJECT_BINDING_UNPROVEN,
+            ".claude.json does not contain an mcpServers object",
+        )
+    expected_servers = {"context-mode", "codegraph"}
+    registry_failures: list[str] = []
+    for name in sorted(expected_servers):
+        server = servers.get(name)
+        if not isinstance(server, dict):
+            registry_failures.append(f"missing Claude MCP server: {name}")
+            continue
+        if server.get("type") != "stdio":
+            registry_failures.append(f"Claude MCP server {name} is not stdio")
+        command = server.get("command")
+        if (
+            not isinstance(command, str)
+            or not os.path.isabs(command)
+            or not Path(command).is_file()
+            or not os.access(command, os.X_OK)
+        ):
+            registry_failures.append(
+                f"Claude MCP server {name} must use an executable absolute command"
+            )
+        if name == "context-mode":
+            server_env = server.get("env")
+            if not isinstance(server_env, dict) or server_env.get(
+                "CONTEXT_MODE_PLATFORM"
+            ) != "claude-code":
+                registry_failures.append(
+                    "Claude context-mode MCP server must set "
+                    "CONTEXT_MODE_PLATFORM=claude-code"
+                )
+        args = server.get("args")
+        if not isinstance(args, list) or any(not isinstance(item, str) for item in args):
+            registry_failures.append(f"Claude MCP server {name} args must be a string list")
+        if name == "codegraph" and (
+            not isinstance(args, list) or "--no-watch" not in args
+        ):
+            registry_failures.append(
+                "Claude codegraph MCP server must include --no-watch"
+            )
+    if registry_failures:
+        raise GuardError(
+            EXIT_PROJECT_BINDING_UNPROVEN,
+            "Claude MCP registry is invalid: " + "; ".join(registry_failures),
+        )
+    settings_mtime = settings.stat().st_mtime
+    registry_mtime = registry.stat().st_mtime
+    newest_mtime = max(settings_mtime, registry_mtime)
+    if client_start <= newest_mtime:
+        raise GuardError(
+            EXIT_PROJECT_BINDING_UNPROVEN,
+            "HOST_RESTART_REQUIRED: Claude Code predates settings.json or .claude.json",
         )
     return {
         "platform": "claude-code",
         "client_started_at": client_start,
-        "newest_configuration_mtime": settings_mtime,
+        "newest_configuration_mtime": newest_mtime,
+        "settings_json_mtime": settings_mtime,
+        "claude_json_mtime": registry_mtime,
         "loaded_after_configuration": True,
+        "mcp_servers": sorted(expected_servers),
     }
 
 
