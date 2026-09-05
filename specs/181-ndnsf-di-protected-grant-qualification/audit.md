@@ -177,8 +177,9 @@ T006 实现，见各证据文件）。
   plaintext 回归保持绿色（2682 passed）。
 - 撤销/独立权威/纪元轮换三项延期在 spec.md Out of Scope 有明确
   集成条件与删除标准;`revocation_sequence=1` 线编码不变。
-- `GRANT_WIRING_AVAILABLE = False`（R004 门禁）在 Y-B 保护纪元
-  子用例接线前保持拒绝（翻转时机 = T005 Y-B 落地吸收 commit）。
+- `GRANT_WIRING_AVAILABLE` 的 R004 门禁已被 T001/T002 吸收（翻转
+  commit `66f6ce55`）：保护纪元请求进入真实 verifier 路径，未接线
+  时的失败关闭语义由 `DI_PROTECTED_GRANT_REJECTED` 家族承担。
 
 ## 原则 12：结论门禁
 
