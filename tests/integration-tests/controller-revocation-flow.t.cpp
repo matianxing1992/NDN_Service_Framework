@@ -3,6 +3,7 @@
 #include "ndn-service-framework/ControllerGenerationStore.hpp"
 #include "ndn-service-framework/PolicyStatus.hpp"
 #include "ndn-service-framework/RevocationState.hpp"
+#include "ndn-service-framework/RuntimeStatusStore.hpp"
 #include "ndn-service-framework/ServiceController.hpp"
 #include "ndn-service-framework/ServiceProvider.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
@@ -3969,6 +3970,174 @@ BOOST_AUTO_TEST_CASE(ConfiguredControllerFailsClosedBeforeStatusInstallation)
   BOOST_CHECK(!providerResponse.getStatus());
   BOOST_TEST_MESSAGE(
       "NDNSF_REVOCATION_RUNTIME no_status=fail_closed user_publish=0 provider_execute=0");
+}
+
+BOOST_AUTO_TEST_CASE(PersistedRuntimeStatusSurvivesRuntimeRestart)
+{
+  // RV-I32 (FR-039): with NDNSF_PERSIST_RUNTIME_STATE enabled, statuses
+  // accepted over the live Controller fetch path are persisted; a second
+  // runtime construction of the same identity re-verifies and seeds them
+  // offline, then a bounded online confirmation fetch converges on the
+  // Controller's authoritative (advanced) status.
+  const auto statePath = std::filesystem::temp_directory_path() /
+                         ("ndnsf-controller-restart-" +
+                          std::to_string(::getpid()) + ".bin");
+  std::filesystem::remove(statePath);
+  std::filesystem::remove(statePath.string() + ".lock");
+  ::setenv("NDNSF_CONTROLLER_GENERATION_STATE", statePath.c_str(), 1);
+  const auto runtimeStateDir = std::filesystem::temp_directory_path() /
+                               ("ndnsf-restart-runtime-" +
+                                std::to_string(::getpid()));
+  std::filesystem::remove_all(runtimeStateDir);
+  ::setenv("NDNSF_RUNTIME_STATE_DIR", runtimeStateDir.c_str(), 1);
+  ::setenv("NDNSF_PERSIST_RUNTIME_STATE", "1", 1);
+
+  ndn::KeyChain controllerKeys;
+  const auto controller = controllerKeys.createIdentity(
+      ndn::Name("/controller/spec179-restart"), ndn::RsaKeyParams(2048));
+  const auto controllerCert = controller.getDefaultKey().getDefaultCertificate();
+  ndn::DummyClientFace::Options controllerFaceOptions;
+  controllerFaceOptions.enableRegistrationReply = true;
+  ndn::DummyClientFace controllerFace(controllerKeys, controllerFaceOptions);
+  ndn::ValidatorConfig controllerValidator(controllerFace);
+  ServiceController serviceController(controllerFace, controllerCert,
+                                      controllerValidator,
+                                      "examples/hello.policies");
+  const auto controllerPrefix = controllerCert.getIdentity();
+  const auto runtimeAaCert =
+      ServiceControllerTestAccess::ensureInternalControllerSigner(serviceController);
+
+  // Use the identities authorized by examples/hello.policies: the controller
+  // issues zero permissions to identities outside its authorization tables,
+  // and the automatic PolicyStatus fetch is driven by installed permissions.
+  const ndn::Name userName("/example/hello/user");
+  const ndn::Name providerName("/example/hello/provider");
+  const ndn::Name serviceName("/HELLO");
+  ndn::KeyChain runtimeKeys;
+  const auto userCert = ServiceControllerTestAccess::ensureInternalIdentity(
+      serviceController, userName);
+  const auto providerCert = ServiceControllerTestAccess::ensureInternalIdentity(
+      serviceController, providerName);
+
+  ControllerVersion firstVersion;
+  ControllerVersion advancedVersion;
+  {
+    // First runtime construction: accept statuses over the live fetch path,
+    // which is the only accept path that persists.
+    ndn::DummyClientFace runtimeFaceA(runtimeKeys);
+    ServiceUser userA(ServiceUser::LocalMockTag{}, runtimeFaceA,
+                      ndn::Name("/spec179/restart"), userCert,
+                      runtimeAaCert, "examples/trust-any.conf");
+    ServiceProvider providerA(ServiceProvider::LocalMockTag{}, runtimeFaceA,
+                              ndn::Name("/spec179/restart"), providerCert,
+                              runtimeAaCert, "examples/trust-any.conf");
+    userA.useSigningKeyChainForTest(runtimeKeys);
+    providerA.useSigningKeyChainForTest(runtimeKeys);
+    userA.setUseTokens(false);
+    providerA.setUseTokens(false);
+    auto interestRelay = runtimeFaceA.onSendInterest.connect(
+        [&] (const ndn::Interest& interest) {
+          controllerFace.receive(interest);
+        });
+    auto dataRelay = controllerFace.onSendData.connect(
+        [&] (const ndn::Data& data) {
+          runtimeFaceA.receive(data);
+        });
+    const auto pumpA = [&] {
+      const auto deadline = ndn::time::steady_clock::now() +
+                            ndn::time::milliseconds(800);
+      do {
+        runtimeFaceA.processEvents(ndn::time::milliseconds(-1));
+        controllerFace.processEvents(ndn::time::milliseconds(-1));
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      } while (ndn::time::steady_clock::now() < deadline);
+    };
+    serviceController.start();
+    pumpA();
+    userA.fetchPermissionsFromController(controllerPrefix);
+    providerA.fetchPermissionsFromController(controllerPrefix);
+    pumpA();
+    firstVersion = serviceController.getControllerVersion();
+    BOOST_REQUIRE(firstVersion.isValid());
+    BOOST_REQUIRE(userA.getControllerVersion());
+    BOOST_REQUIRE(providerA.getControllerVersion());
+    BOOST_CHECK(*userA.getControllerVersion() == firstVersion);
+    BOOST_CHECK(*providerA.getControllerVersion() == firstVersion);
+    // The accept path must have persisted both roles' records.
+    BOOST_CHECK(std::filesystem::exists(RuntimeStatusStore::defaultStorePath(
+        "user", userName)));
+    BOOST_CHECK(std::filesystem::exists(RuntimeStatusStore::defaultStorePath(
+        "provider", providerName)));
+    interestRelay.disconnect();
+    dataRelay.disconnect();
+  } // userA/providerA/runtimeFaceA destroyed; records remain on disk.
+
+  // While the runtime is gone, the Controller advances its authority.
+  BOOST_REQUIRE(
+      serviceController.revoke(makeIdentityRevocation(userName.toUri().c_str())));
+  advancedVersion = serviceController.getControllerVersion();
+  BOOST_REQUIRE(advancedVersion.compare(firstVersion) > 0);
+
+  // Second runtime construction over the same store directory.  Connect the
+  // relay before constructing so the constructor's confirmation Interests
+  // are forwarded.  The offline seed itself is synchronous under the
+  // LocalMock trust schema, so the restored status is authority before any
+  // online round-trip.
+  ndn::DummyClientFace runtimeFaceB(runtimeKeys);
+  auto interestRelayB = runtimeFaceB.onSendInterest.connect(
+      [&] (const ndn::Interest& interest) {
+        controllerFace.receive(interest);
+      });
+  auto dataRelayB = controllerFace.onSendData.connect(
+      [&] (const ndn::Data& data) {
+        runtimeFaceB.receive(data);
+      });
+  ServiceUser userB(ServiceUser::LocalMockTag{}, runtimeFaceB,
+                    ndn::Name("/spec179/restart"), userCert,
+                    runtimeAaCert, "examples/trust-any.conf");
+  ServiceProvider providerB(ServiceProvider::LocalMockTag{}, runtimeFaceB,
+                            ndn::Name("/spec179/restart"), providerCert,
+                            runtimeAaCert, "examples/trust-any.conf");
+  userB.useSigningKeyChainForTest(runtimeKeys);
+  providerB.useSigningKeyChainForTest(runtimeKeys);
+  userB.setUseTokens(false);
+  providerB.setUseTokens(false);
+  BOOST_REQUIRE(userB.getControllerVersion());
+  BOOST_REQUIRE(providerB.getControllerVersion());
+  BOOST_CHECK(*userB.getControllerVersion() == firstVersion);
+  BOOST_CHECK(*providerB.getControllerVersion() == firstVersion);
+
+  // Bounded online confirmation: the Controller's current status is
+  // authority and supersedes the offline seed on both roles.
+  const auto converge = [&] {
+    const auto deadline = ndn::time::steady_clock::now() +
+                          ndn::time::seconds(3);
+    while (ndn::time::steady_clock::now() < deadline) {
+      runtimeFaceB.processEvents(ndn::time::milliseconds(-1));
+      controllerFace.processEvents(ndn::time::milliseconds(-1));
+      const auto userConverged = userB.getControllerVersion() &&
+          *userB.getControllerVersion() == advancedVersion;
+      const auto providerConverged = providerB.getControllerVersion() &&
+          *providerB.getControllerVersion() == advancedVersion;
+      if (userConverged && providerConverged)
+        return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return false;
+  };
+  BOOST_REQUIRE(converge());
+  BOOST_TEST_MESSAGE(
+      "NDNSF_RUNTIME_RESTART restore=offline_seed"
+      << " first_epoch=" << firstVersion.controllerEpoch
+      << " advanced_epoch=" << advancedVersion.controllerEpoch);
+  interestRelayB.disconnect();
+  dataRelayB.disconnect();
+  ::unsetenv("NDNSF_PERSIST_RUNTIME_STATE");
+  ::unsetenv("NDNSF_RUNTIME_STATE_DIR");
+  ::unsetenv("NDNSF_CONTROLLER_GENERATION_STATE");
+  std::filesystem::remove(statePath);
+  std::filesystem::remove(statePath.string() + ".lock");
+  std::filesystem::remove_all(runtimeStateDir);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
