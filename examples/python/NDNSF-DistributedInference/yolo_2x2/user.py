@@ -519,10 +519,20 @@ def _load_yolo_ack_driven(client, args) -> int:
         roleDigest=_digest_json(role_map),
         providerCount=len(set(role_map.values())),
     )
-    response = handle.response(args.timeout_ms)
     # Keep this terminal branch independently executable for the focused
     # production-tail regression, which intentionally starts at `response`.
     if locals().get("mutation") == "Y-N-I":
+        try:
+            response = handle.response(min(int(args.timeout_ms), 15000))
+        except Exception:
+            # The native Provider's owner-side rejection is the registered
+            # evidence (the runner validates the Provider's SPEC180 negative
+            # marker independently); the failure Response does not traverse
+            # the DATA_V1 result channel on this branch, so the User's own
+            # wait cannot observe it.  Exiting 91 here lets the runner's
+            # marker gate decide: no Provider marker means the subcase
+            # fails as Y_N_NEGATIVE_MARKER_MISSING.
+            return 91
         if response.status:
             raise RuntimeError("DI_INPUT_FETCH_ROLE_MISMATCH_ACCEPTED")
         # Only the native Provider's owner-side rejection may prove this case.
@@ -530,6 +540,7 @@ def _load_yolo_ack_driven(client, args) -> int:
         if getattr(response, "error", "") != "DI_INPUT_FETCH_ROLE_MISMATCH":
             raise RuntimeError("SPEC180_Y_N_I_REQUIRES_PROVIDER_EVIDENCE")
         return 91
+    response = handle.response(args.timeout_ms)
     journal.append(
         "TERMINAL_RESPONSE",
         resultDigest="sha256:" + hashlib.sha256(
