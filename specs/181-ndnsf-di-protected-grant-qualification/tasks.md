@@ -19,14 +19,14 @@ Spec 170 `artifact-assembly-v1` 契约。
 ## Current Checkpoint (revision 5)
 
 **Status**: `IN_PROGRESS / BLOCK`。2026-09-05 初次复核恢复未完成标记；
-本轮 T004/T006 的定向验收已闭合并勾选。其余任务仍按完整验收判断，
+本轮 T003/T004/T006 的定向验收已闭合并勾选。其余任务仍按完整验收判断，
 未勾选不抹去已实现的代码与 unit 结果。
 
 | Task | Implemented / executed | Remaining acceptance |
 |---|---|---|
 | T001 | grant 摘要、租约/存储修复；注册表策略/公钥/逻辑身份与最终 root 允许列表已接线；100 项定向 unit 通过，见 `evidence/t001-registry-repair-20260905.md` | 真实发布/获取；资源上界、全部封印绑定及取消/过期验收 |
 | T002 | runtime/store 修复；20 项当前 C++、55 项存储检查；统一构建和 3 rebuilt grant parity tests PASS；live-r7 真实受保护 native Y-B、3 ORT + native Merge、正常清理 exit 0，见 `evidence/t002-native-live-repair-20260905.md` | 生产负例、取消/过期及资源上界；factory/assembler/handler 工作区接线尚未形成独立提交 |
-| T003 | grant 向量双侧消费 | FR-012 装配向量及全部绑定/算法负例覆盖 |
+| T003 | PASS：3 项 grant parity 检查消费 9 个向量；8 个装配向量分别走 Python/C++ 生产入口，16 项检查通过，含实际 ORT CPU 结果和 initializer/recipe/ABI 拒绝，见 [装配证据](evidence/t003-assembly-parity-20260905.md) | 本任务定向验收已闭合；native 格式操作共用生产 Python helper，后续同源资格仍归 T005/T008 |
 | T004 | PASS：7 项 Python seam、6 项 Core 定向检查；重建后真实 Provider 等待约 83 ms、Controller 12.39 s 就绪、等待中取消约 2.3 ms 且无热转；全部线程/网络清理，见 [生命周期证据](evidence/t004-lifecycle-acceptance-20260905.md) | 本任务定向验收已闭合；后续同源正式资格仍归 T005/T008 |
 | T005 | 已停用旧自动重试入口，维护矩阵首个失败即停止并保留原始结果；118 项定向检查 PASS，见 [证据保留修复](evidence/t005-evidence-repair-20260905.md) | T007 PASS 后同源七子用例矩阵，保留所有失败 |
 | T006 | PASS：153 项 Python、22 项 C++、3 rebuilt parity checks；r11/r12/r13 三种实际 Provider 拒绝及 r10 受保护正向控制通过；每次清理后 exit 0，见 [生产修复](evidence/t006-production-repair-20260905.md) | 本任务定向验收已闭合；同源正式矩阵仍归 T005/T008 |
@@ -34,13 +34,15 @@ Spec 170 `artifact-assembly-v1` 契约。
 | T008 | native 受保护 Y-B 定向正向控制已有证据 | T007 PASS 后执行同源本地资格清单与 Y-A/Y-B/Y-N 正式矩阵 |
 | T009--T012 | 继承工具链 | 本 Spec 候选、SIF、Tiger、终局均未闭合 |
 
-**Latest progress (2026-09-05)**：T004/T006 已完成（2/12 个 T 任务）。
+**Latest progress (2026-09-05)**：T003/T004/T006 已完成（3/12 个 T 任务）。
 三种 grant 变异完成实际发布、Provider 拒绝与身份绑定；有效 grant
 仍完成 native Y-B 推理。正向控制发现并修复冷装配期间的固定 10 s
 依赖等待上界，改用调用者请求预算且保留硬截止/取消。所有失败保留，
 仅最终正负控制用于本次验收。T005 旧自动重试入口已停用，维护矩阵
 首个失败即停止；5 项新增回归先失败，修复后相关 118 项检查通过。
-下一步继续 T001/T002 生产闭合及 T003 装配 parity；T007 仍为 BLOCK。
+T003 已补固定装配向量、C++ 生产入口 Waf target 和双侧字节检查；
+19 项 grant/assembly parity 通过，四个 native 正例实际 ORT CPU 推理
+结果符合固定数学预期。下一步继续 T001/T002 生产闭合；T007 仍为 BLOCK。
 
 历史 6/7、7/7 与 `CONDITIONAL PASS` 不再作为当前状态；以
 [audit.md](audit.md) 与 [修正证据](evidence/audit-repair-20260905.md) 为准。
@@ -176,7 +178,7 @@ T 任务完成定向修复；在生产验收前保持失败关闭，并禁止晋
   （Python 端到端 native provider 真实解包，grant 由真实请求方进程
   发布）。证据 `evidence/t002-native-provider-grant-current.md`。
 
-- [ ] T003 [US1] **Grant and Assembly Parity Vectors**。固定向量文件
+- [x] T003 [US1] **Grant and Assembly Parity Vectors**。固定向量文件
   `tests/fixtures/spec181/grant-vectors-v1.json`：同一 grant 字节
   （规范 JSON）分别由 Python 与 native 解包，必须得到同一内容密钥；
   向量含正例与全部负例（错误收件人、跨请求/attempt/core/model/纪元、
@@ -191,6 +193,9 @@ T 任务完成定向修复；在生产验收前保持失败关闭，并禁止晋
   `assemble_certified_onnx_model`、native `NativeCanonicalOnnxAssembler`，
   逐字节及摘要一致；变异 recipe/initializer 必须拒绝。grant 的 9 个
   向量不能关闭该装配验收。
+  定向验收已通过：Waf `spec181-assembly-parity` 调用真实 C++ 入口
+  与正常 subprocess helper；8 个装配向量双侧验证 + 3 项 grant 检查
+  共 19 PASS，见 [装配验收](evidence/t003-assembly-parity-20260905.md)。
 
 - [x] T004 [US1] **Runtime Readiness and Cancellation**。`pythonWrapper/ndnsf/service.py`
   的 `start()`/`start_background()` 就绪等待改为 15000 ms（对 Core

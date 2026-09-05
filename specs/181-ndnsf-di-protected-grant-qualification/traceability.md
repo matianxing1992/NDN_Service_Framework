@@ -27,7 +27,7 @@ Spec 180 的矩阵冻结为历史，未来证据路径不表示文件已存在�
 | FR-009 Tiger 一次提交 | T011 | MiniNDN 之后的一次真实提交 | `evidence/t011-tiger-submission-current.md` |
 | FR-010 声称边界 | T012 | 终局语言审计 | `evidence/closure-record.md` |
 | FR-011 就绪边界修复 | T004 | PASS：unit + rebuilt native integration（Provider 等待、真实 Controller 启动余量/取消/无热转） | `evidence/t004-readiness-boundary-current.md`、`evidence/t004-lifecycle-acceptance-20260905.md` |
-| FR-012 装配 parity | T003 | canonical ONNX + recipe 双侧装配字节/摘要；grant 向量不能代替 | planned: `tests/fixtures/spec181/assembly-vectors-v1.json`、`tests/python/test_spec181_assembly_parity.py`；待执行 |
+| FR-012 装配 parity | T003 | PASS：8 个固定向量双侧 16 项检查，含真实 C++ 入口/正常 helper、逐字节/摘要、ORT CPU 结果与变异拒绝 | `tests/fixtures/spec181/assembly-vectors-v1.json`、`tests/python/test_spec181_assembly_parity.py`、`evidence/t003-assembly-parity-20260905.md` |
 | FR-013 内容密钥真实消费 | T001（AEAD 暂存/解密/零化）、T002（native 同语义） | unit（派生/往返）+ integration（错误密钥/篡改密文在 AEAD 层拒绝）+ MiniNDN（T008 覆盖） | `evidence/t001-python-provider-grant-current.md`、`evidence/t002-native-provider-grant-current.md` |
 | FR-014 诚实化先行 | R001（Y-N-E UNAVAILABLE）、R002（native 状态诚实化）、R003（证据失效声明）、R004（保护纪元子用例门禁） | unit + integration（先于全部实现任务，被 T001/T002/T006 吸收） | `evidence/r001-y-n-e-unavailable-current.md`、`evidence/r002-native-protected-runtime-honesty-current.md`、`evidence/r003-evidence-banner-audit-current.md`、`evidence/r004-protected-case-guard-current.md` |
 
@@ -43,6 +43,7 @@ Spec 180 的矩阵冻结为历史，未来证据路径不表示文件已存在�
 | `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py` | T005, T006, T008 | existing（barriered runner + 语义判定已修复）| Y-N 全矩阵语义重跑 + Y-A/Y-B 资格 |
 | `scripts/spec180_*`、`packaging/.../jobs/spec180/*` | T009--T012 | existing（Spec 180 工具链，路径沿用）| 候选封印（提交哈希）+ SIF + Tiger 终局 |
 | `tests/fixtures/spec181/grant-vectors-v1.json` | T003 | executed（重建后的 3 项 parity 检查消费 9 个 grant 向量 PASS）| grant 向量不代替独立 canonical ONNX 装配 parity |
+| `tests/fixtures/spec181/assembly-vectors-v1.json`、`assembly-parity-driver.cpp`、`tests/python/test_spec181_assembly_parity.py` | T003 | executed（16 项固定装配检查 PASS） | C++ 获取/序列化/缓存入口到正常 helper；不声称第二套 ONNX 算法 |
 | 撤销子系统（账本/网络服务/撤销校验） | **另一分支（所有者）** | deferred（本分支不实现） | 集成时插入撤销检查并解除 spec.md Out of Scope 延期标记 |
 | 独立权威网络服务端（生产形态） | **操作者（生产部署前）** | deferred（本分支不实现） | 生产部署前拆分为独立服务并恢复网络服务端形态 |
 

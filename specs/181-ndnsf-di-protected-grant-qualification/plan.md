@@ -71,6 +71,10 @@ T008 保留当前源身份与全部平面摘要；T009 只能封印这些相同�
    往返不证明实际加载路径具备该拒绝能力。
 5. **Independent parity claims**。T003 分别锁定 grant 解包向量与
    canonical ONNX + recipe 的装配字节/摘要向量；一者不证明另一者。
+   装配比较 Python 直接入口和 C++ `prepareNativeCanonicalOnnxRole`
+   完整入口；后者正常执行现有 Python 格式 helper。这里的独立性
+   指 grant/装配两项验收，不声称第二套独立 ONNX 算法。固定向量
+   同时检查请求序列化、external initializer、规范摘要和缓存输出。
 6. **Production-path negatives**。T006 三种变异经真实发布、获取到达
    选定 Provider，断言明确拒绝码、请求/attempt/Provider 绑定与边界。
    User 进程内直接调用 verifier 只能计作 unit probe。实验入口在正常

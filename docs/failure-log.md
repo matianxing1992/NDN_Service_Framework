@@ -19,6 +19,22 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 T003 assembly parity (2026-09-05): focused build defects CLOSED.**
+The fixed-vector Python lane passes 8 cases; the native lane fails 8 checks
+because its required current-source test executable is not built yet. This
+is a test-input boundary, not an assembly or protocol rejection. R2 compile
+also fails before execution because the manual command omitted the installed
+NAC-ABE package's `NAC_ABE_CMAKE_BUILD` definition. R3 also lacks the maintained
+framework include path; r4 replaces the manual command with a focused Waf
+target using the existing dependency configuration. R4 compiles but exposes
+the framework's NDNSD link dependency; r5 adds that configured dependency.
+R5 build passes; the final 19 parity checks pass, including real ORT CPU
+execution and unchanged negative-cache state. Fixed-vector regeneration is
+byte-identical. T003 is complete at its focused scope; T007 remains BLOCK. Preserve
+`spec181-t003-assembly-20260905-r1` and build the production-entry fixture
+before another attempt. See
+[T003 assembly parity](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t003-assembly-parity-20260905.md).
+
 **Spec181 T005 evidence preservation (2026-09-05): focused defects CLOSED.**
 Five focused checks expose the legacy driver's destructive attempt handling,
 runtime-dependent entry, and continuation after matrix failures. No network

@@ -1,6 +1,6 @@
 # T003 — 跨语言 parity 向量锁定
 
-> **Current scope correction (revision 5, 2026-09-05)**: T003 当前 partial：以下结果只证明历史 grant 解包 parity；FR-012 要求的 canonical ONNX + recipe 装配字节 parity 尚无独立向量与执行证据。
+> **Current scope correction (2026-09-05)**: T003 已完成定向验收：以下历史记录仅证明 grant 解包 parity；新增 8 个装配向量及双生产入口 16 项检查见 [装配验收](t003-assembly-parity-20260905.md)。本轮 grant/assembly 合计 19 PASS，整体资格仍等待 T007。
 > 当前裁决与下一步以 [audit.md](../audit.md) 为准，以下保留为原始范围记录。
 
 **Layer**: implemented（向量生成器 + 固定向量文件 + 双侧消费测试）;
