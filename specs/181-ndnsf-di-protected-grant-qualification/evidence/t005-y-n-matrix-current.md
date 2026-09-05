@@ -37,10 +37,15 @@ Y-N-P PASS (attempts=2)
 Y-N-R PASS (attempts=2)
 Y-N-E PASS (attempts=1)   # 真实 grant 变异，live MiniNDN 一次通过
 Y-N-L PASS (attempts=3)
-Y-N-I 修复后重跑中（3 s 响应上界 + runner marker 门判定）;重跑受
-host 环境恶化（libndn-cxx face 层 segfault、OOM）阻碍，修复本身已由
-unit 层验证。
+Y-N-I PASS (attempts=1, FAIL_CLOSED)  # 3 s 响应上界 + runner marker 门
 ```
+
+**七子用例全部通过（7/7）**。Y-N-I 重跑成功依赖最后一项修复：
+publishSignedAppData 的 face.put（CS 放置，f21d0665）在 controller
+启动的 face 层引发 libndn-cxx segfault（dmesg 可见、0 字节 controller
+日志）——回滚（b4fb1d6d）后 Y-N-I 一次通过。grant 的跨节点 fetch 由
+identity 前缀路由（c0a887fe）+ forwarding hint（1232a043）承担，
+不再需要 CS 放置。
 
 三次矩阵尝试的失败链与修复：
 
