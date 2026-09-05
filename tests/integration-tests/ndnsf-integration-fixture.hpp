@@ -138,6 +138,9 @@ public:
   void bootstrap();
   void pumpUntil(const std::function<bool()>& done);
   void pumpUntilReady();
+  /** Bounded pump that also processes the Attribute Authority face so a
+   *  post-install NAC re-arm (public-parameter refetch) can complete. */
+  void pumpUntilWithAttributeAuthority(const std::function<bool()>& done);
   RequestScope beginRequest(std::string requestId, FaultProfile faults = {});
   void markRequestPublished(RequestScope& scope);
   void updateRequestResidue(RequestScope& scope, RequestResidue residue);
@@ -159,6 +162,10 @@ public:
   ndn::svs::SVSPubSub& providerPubSub(size_t index);
   /** Attach User and Providers to in-process SVS and register production regexes. */
   void enableProductionIngressForTest();
+  /** Exact current public-parameter name served by the fixture Attribute Authority. */
+  ndn::Name attributeAuthorityPublicParametersName() const;
+  /** SHA-256 digest of the fixture Attribute Authority's public parameters. */
+  std::string attributeAuthorityPublicParametersDigest() const;
   /** Backward-compatible name for callers that only need Provider ingress. */
   void enableProviderProductionIngressForTest();
   ServiceUser& user();
@@ -197,7 +204,10 @@ private:
   std::unique_ptr<ndn::DummyClientFace> m_attributeAuthorityFace;
   std::unique_ptr<ndn::security::ValidatorNull> m_attributeAuthorityValidator;
   std::unique_ptr<ndn::nacabe::KpAttributeAuthority> m_attributeAuthority;
-  std::unique_ptr<ndn::svs::SecurityOptions> m_securityOptions;
+  std::unique_ptr<ndn::svs::SecurityOptions> m_userSecurityOptions;
+  std::unique_ptr<ndn::svs::SecurityOptions> m_providerSecurityOptions;
+  std::vector<std::unique_ptr<ndn::svs::SecurityOptions>>
+      m_extraProviderSecurityOptions;
   ndn::svs::SVSPubSubOptions m_svsOptions;
   std::unique_ptr<ndn::svs::SVSPubSub> m_userPubSub;
   std::unique_ptr<ndn::svs::SVSPubSub> m_providerPubSub;

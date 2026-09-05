@@ -365,6 +365,19 @@ namespace ndn_service_framework
             return std::max(500, intEnvOrDefault("NDNSF_PERMISSION_FETCH_LIFETIME_MS", 4000));
         }
 
+        uint64_t
+        policyRevalidationPeriodMs()
+        {
+            // Deterministic scheduled revalidation for the Spec179 MiniNDN
+            // gate.  Default 0 keeps the production near-expiry schedule
+            // unchanged; a positive value forces the scheduled-refresh path
+            // to re-fetch on a fixed period while the status is still far
+            // from expiry, so a controller-side revocation/authorization
+            // change is discovered inside a bounded campaign window.
+            return static_cast<uint64_t>(
+                std::max(0, intEnvOrDefault("NDNSF_POLICY_REVALIDATION_PERIOD_MS", 0)));
+        }
+
         int
         permissionFetchRetryBackoffMs(int attempt)
         {
@@ -443,6 +456,19 @@ namespace ndn_service_framework
             return name;
         }
 
+        size_t
+        requestScopedResponseChunkBytes(size_t thresholdBytes)
+        {
+            const int configured = intEnvOrDefault(
+                "NDNSF_REQUEST_SCOPED_RESPONSE_CHUNK_BYTES", 4096);
+            if (configured <= 0) {
+                return std::max<size_t>(1, thresholdBytes);
+            }
+            return std::max<size_t>(1, std::min<size_t>(
+                static_cast<size_t>(configured),
+                std::max<size_t>(1, thresholdBytes)));
+        }
+
         std::string
         sha256DigestString(const ndn::Buffer& payload)
         {
@@ -452,6 +478,34 @@ namespace ndn_service_framework
                                       payload.size());
             }
             return "sha256:" + digest.toString();
+        }
+
+        ndn::Name
+        makeProviderAuthorizationAttribute(const ndn::Name& serviceName)
+        {
+            ndn::Name attribute("/SERVICE");
+            attribute.append(serviceName);
+            return attribute;
+        }
+
+        EncryptionCertificateAdvertisement
+        makeEncryptionCertificateAdvertisement(
+            const ndn::security::Certificate& certificate)
+        {
+            EncryptionCertificateAdvertisement advertisement;
+            advertisement.certificateName = certificate.getName();
+            const auto wire = certificate.wireEncode();
+            advertisement.certificateDigest = sha256DigestString(
+                ndn::Buffer(wire.data(), wire.data() + wire.size()));
+            const auto period = certificate.getValidityPeriod().getPeriod();
+            const auto toMilliseconds = [] (const auto& point) -> uint64_t {
+                return static_cast<uint64_t>(boost::chrono::duration_cast<
+                    boost::chrono::milliseconds>(point.time_since_epoch()).count());
+            };
+            advertisement.validFromMs = toMilliseconds(period.first);
+            advertisement.validUntilMs = toMilliseconds(period.second);
+            advertisement.supportedEnvelopeAlgorithms = {"RSA-OAEP-SHA256"};
+            return advertisement;
         }
 
         void
@@ -1599,6 +1653,7 @@ namespace ndn_service_framework
         m_IMS(m_face.getIoContext(), 50000),
         m_configManager("/tmp/ndnsf-service-provider-local-mock.conf")
     {
+        m_isLocalMock = true;
         ensureSameIdentity(encryptionCert, signingCert, "ServiceProvider");
         if (!isRsaCertificate(encryptionCert)) {
             throw std::invalid_argument("ServiceProvider encryptionCert must be RSA for NAC-ABE");
@@ -1628,7 +1683,17 @@ namespace ndn_service_framework
             throw std::logic_error(
                 "ServiceProvider PubSub is already initialized");
         }
+        installLocalMockDataIngressForTest();
         m_svsps = std::move(pubSub);
+    }
+
+    void
+    ServiceProvider::installLocalMockDataIngressForTest()
+    {
+        if (m_svsps != nullptr) {
+            throw std::logic_error(
+                "LocalMock data ingress must be installed before PubSub attachment");
+        }
         // LocalMock uses the real production onInterest/IMS path for exact
         // streamed-event retries.  Keep the same content filters that the
         // normal constructor installs; the SVS attachment alone only covers
@@ -3849,6 +3914,22 @@ namespace ndn_service_framework
                     auto data = std::make_shared<ndn::Data>();
                     data->wireDecode(ndn::Block(event.signedWire));
 
+                    // A stream event is a protected Provider transition, not
+                    // merely an SVS publication.  The handler may have
+                    // produced the signed event before a newer Controller
+                    // status arrived; check the authoritative local status at
+                    // the Face commit point so a revoked Provider cannot put
+                    // another event on the wire.  Throwing here propagates
+                    // through StreamEventPublisher::publish/finish and fences
+                    // the stream instead of reporting a false publication.
+                    const auto parsedEvent = parseInvocationEventName(data->getName());
+                    if (!parsedEvent ||
+                        !authorizeControllerTransition(parsedEvent->serviceName,
+                                                       ProtectedTransition::STREAM_EVENT)) {
+                        throw std::runtime_error(
+                            "stream event rejected by Controller revocation state");
+                    }
+
                     StreamRetentionInterceptorForTest retentionInterceptor;
                     {
                         std::lock_guard<std::mutex> lock(
@@ -3947,6 +4028,18 @@ namespace ndn_service_framework
         // unwrap; production providers continue to use their private chain.
         auto& activeKeyChain = m_testSigningKeyChain ? *m_testSigningKeyChain : m_keyChain;
         const auto& options = requestMessage.getStreamRequestOptions();
+        if (options.controllerVersion && requestMessage.hasControllerVersion() &&
+            *options.controllerVersion != requestMessage.getControllerVersion()) {
+            NDN_LOG_WARN("Reject streamed request with mismatched ControllerVersion requestId="
+                         << requestId.toUri());
+            return false;
+        }
+        if (options.controllerVersion && selectionMessage.hasControllerVersion() &&
+            *options.controllerVersion != selectionMessage.getControllerVersion()) {
+            NDN_LOG_WARN("Reject streamed Selection with mismatched ControllerVersion requestId="
+                         << requestId.toUri());
+            return false;
+        }
         ndn::Block grantBlock;
         if (selectionMessage.hasStreamEventKeyGrant()) {
             auto wrapper = selectionMessage.getStreamEventKeyGrant();
@@ -3999,6 +4092,9 @@ namespace ndn_service_framework
             reinterpret_cast<const uint8_t*>(requestMessage.getUserToken().data()),
             requestMessage.getUserToken().size());
         binding.policyEpoch = selectionMessage.getPolicyEpoch();
+        binding.controllerVersion = selectionMessage.hasControllerVersion() ?
+            std::optional<ControllerVersion>(selectionMessage.getControllerVersion()) :
+            options.controllerVersion;
         binding.deadlineEpochMs = options.deadlineEpochMs;
         try { binding.validate(); }
         catch (const std::exception&) {
@@ -4801,11 +4897,14 @@ namespace ndn_service_framework
     }
 
     LargeDataReferenceResponseResult
-    ServiceProvider::makeResponseWithLargeDataOptimization(
+    ServiceProvider::makeRequestScopedResponseWithLargeDataOptimization(
         const ndn::Name& requesterName,
+        const ndn::Name& providerName,
         const ndn::Name& serviceName,
         const ndn::Name& requestId,
         ResponseMessage response,
+        const RequestKeyBundle& keys,
+        RequestSecurityBinding binding,
         size_t thresholdBytes,
         ndn::time::milliseconds freshness)
     {
@@ -4822,125 +4921,109 @@ namespace ndn_service_framework
             return result;
         }
 
-        if (requesterName.empty() || serviceName.empty() || requestId.empty()) {
-            result.errorMessage = "large response reference requires requesterName, serviceName, and requestId";
+        if (requesterName.empty() || providerName.empty() || serviceName.empty() ||
+            requestId.empty() || !keys.isValid(nowMilliseconds()) ||
+            !binding.isValid()) {
+            result.errorMessage =
+                "request-scoped large response requires valid names, binding, and keys";
+            return result;
+        }
+        if (binding.serviceName != serviceName ||
+            binding.requestId != requestId ||
+            binding.providerEncryptionCertName.empty()) {
+            result.errorMessage = "request-scoped large response binding mismatch";
+            return result;
+        }
+        try {
+            if (ndn::security::extractIdentityFromCertName(
+                    binding.providerEncryptionCertName) != providerName) {
+                result.errorMessage =
+                    "request-scoped large response provider certificate mismatch";
+                return result;
+            }
+        }
+        catch (const std::exception&) {
+            result.errorMessage =
+                "request-scoped large response provider certificate is invalid";
             return result;
         }
 
-        result.largeData.objectId =
-            sanitizeLargeDataObjectId("response-" + requestId.toUri());
-        ndn::Name encryptedDataName =
-            makeLargeResponseDataName(identity,
-                                      requesterName,
-                                      serviceName,
-                                      requestId,
-                                      result.largeData.objectId);
+        result.largeData.objectId = sanitizeLargeDataObjectId(
+            "response-" + requestId.toUri());
+        ndn::Name encryptedDataName = makeLargeResponseDataName(
+            providerName, requesterName, serviceName, requestId,
+            result.largeData.objectId);
         encryptedDataName.appendVersion();
-        const auto responseName = makeResponseNameV2(identity,
-                                                     requesterName,
-                                                     serviceName,
-                                                     requestId);
-        const auto messageType = std::string("RESPONSE-LARGE");
-        const auto accessAttribute = std::string("/PERMISSION") + serviceName.toUri();
 
+        const auto chunkBytes = requestScopedResponseChunkBytes(threshold);
+        result.largeData.digest = sha256DigestString(payload);
+        size_t segmentCount = 0;
+        std::string publicationStage = "initialization";
         try {
-            auto key = m_hybridMessageCrypto.getOrCreateSendKey(
-                serviceName, identity, accessAttribute, messageType, m_hybridCryptoCounters);
-
-            HybridMessageEnvelope envelope;
-            envelope.setKeyId(key.keyId);
-            envelope.setEpochId(key.epochId);
-            envelope.setMessageType(messageType);
-
-            if (m_hybridMessageCrypto.shouldAttachWrappedKey(key.keyId)) {
-                ndn::nacabe::SPtrVector<ndn::Data> contentData;
-                ndn::nacabe::SPtrVector<ndn::Data> ckData;
-                std::tie(contentData, ckData) =
-                    (m_testNacProducer ? *m_testNacProducer : nacProducer).produce(key.keyName,
-                                        std::vector<std::string>{accessAttribute},
-                                        ndn::span<const uint8_t>(key.key.data(),
-                                                                key.key.size()),
-                                        m_signingInfo);
-                auto wrapped = mergeDataContents(contentData);
-                if (wrapped.empty()) {
-                    result.errorMessage = "NAC-ABE produced no wrapped large-response MessageKey";
-                    return result;
-                }
-                serveDataWithIMS(contentData, ckData);
-                m_hybridMessageCrypto.cacheWrappedSendKey(
-                    key.keyId, ndn::Buffer(wrapped.data(), wrapped.size()));
-                ++m_hybridCryptoCounters.nac_abe_key_wrap_count;
-            }
-
-            const auto ad = hybridAssociatedData(responseName,
-                                                 messageType,
-                                                 requestId,
-                                                 serviceName,
-                                                 identity,
-                                                 key.keyId,
-                                                 key.epochId);
-            auto encrypted = hybridAesGcmEncrypt(
-                key.key,
-                ndn::span<const uint8_t>(payload.data(), payload.size()),
-                ndn::span<const uint8_t>(ad.data(), ad.size()));
-            envelope.setNonce(encrypted.nonce);
-            envelope.setCipherText(encrypted.ciphertext);
-            envelope.setAuthTag(encrypted.tag);
-            auto envelopeBlock = envelope.WireEncode();
-            ndn::Buffer encoded(envelopeBlock.begin(), envelopeBlock.end());
-
-            auto& activeKeyChain = m_testSigningKeyChain ?
-                *m_testSigningKeyChain : m_keyChain;
-            ndn::Segmenter segmenter(activeKeyChain, m_signingInfo);
-            auto segments = segmenter.segment(
-                ndn::span<const uint8_t>(encoded.data(), encoded.size()),
-                encryptedDataName,
-                7000,
-                freshness);
-            for (const auto& data : segments) {
+            for (size_t offset = 0; offset < payload.size(); offset += chunkBytes) {
+                const auto length = std::min(chunkBytes, payload.size() - offset);
+                auto segmentBinding = binding;
+                segmentBinding.segmentOrEventId =
+                    "response/" + std::to_string(segmentCount);
+                publicationStage = "encrypt";
+                const auto envelope = encryptRequestContent(
+                    keys.responseKey,
+                    keys.keyId,
+                    segmentBinding,
+                    ndn::span<const uint8_t>(payload.data() + offset, length));
+                const auto envelopeWire = envelope.wireEncode();
+                // InMemoryStorageFifo retains the Data through
+                // enable_shared_from_this; a stack Data would throw
+                // std::bad_weak_ptr on insert.  Keep the signed segment in a
+                // shared owner for both IMS retention and subsequent fetches.
+                auto data = std::make_shared<ndn::Data>(
+                    ndn::Name(encryptedDataName).appendSegment(segmentCount));
+                data->setContent(envelopeWire);
+                data->setFreshnessPeriod(freshness);
+                publicationStage = "sign";
+                auto& activeKeyChain = m_testSigningKeyChain ?
+                    *m_testSigningKeyChain : m_keyChain;
+                activeKeyChain.sign(*data, m_signingInfo);
+                publicationStage = "insert-ims";
                 insertDataIntoIMS(*data, freshness);
-            }
-            result.largeData.encryptedDataName = encryptedDataName;
-            result.largeData.digest = sha256DigestString(payload);
-
-            LargeDataReference reference;
-            reference.dataName = encryptedDataName;
-            reference.objectType = "ndnsf-response";
-            reference.objectId = result.largeData.objectId;
-            reference.plaintextSize = payload.size();
-            reference.encrypted = true;
-            reference.digest = result.largeData.digest;
-            auto referencePayload = encodeLargeDataReferencePayload(reference);
-            response.setPayload(referencePayload, referencePayload.size());
-
-            result.responseMessage = std::move(response);
-            result.usedLargeDataReference = true;
-            result.success = true;
-            NDN_LOG_INFO("LARGE_RESPONSE_REFERENCE_PUBLISHED"
-                         << " name=" << encryptedDataName.toUri()
-                         << " requestId=" << requestId.toUri()
-                         << " serviceName=" << serviceName.toUri()
-                         << " plaintextBytes=" << payload.size()
-                         << " envelopeBytes=" << encoded.size()
-                         << " segments=" << segments.size()
-                         << " wrappedKeyAttached=" << envelope.hasWrappedMessageKey());
-            if (isTruthyEnv("NDNSF_COLLAB_ASSIGNMENT_FETCH_TRACE")) {
-                NDN_LOG_WARN("NDNSF_RESPONSE_LARGE_REFERENCE"
-                             << " event=published"
-                             << " name=" << encryptedDataName.toUri()
-                             << " requestId=" << requestId.toUri()
-                             << " serviceName=" << serviceName.toUri()
-                             << " plaintextBytes=" << payload.size()
-                             << " envelopeBytes=" << encoded.size()
-                             << " segments=" << segments.size()
-                             << " messageType=" << messageType
-                             << " wrappedKeyAttached="
-                             << (envelope.hasWrappedMessageKey() ? "true" : "false"));
+                ++segmentCount;
             }
         }
         catch (const std::exception& e) {
-            result.errorMessage = e.what();
+            result.errorMessage = std::string(
+                "request-scoped large response publication failed at ") +
+                publicationStage + ": " + e.what();
+            return result;
         }
+        if (segmentCount == 0) {
+            result.errorMessage = "request-scoped large response produced no segments";
+            return result;
+        }
+
+        result.largeData.encryptedDataName = encryptedDataName;
+        LargeDataReference reference;
+        reference.dataName = encryptedDataName;
+        reference.objectType = "ndnsf-response";
+        reference.objectId = result.largeData.objectId;
+        reference.plaintextSize = payload.size();
+        reference.encrypted = true;
+        reference.digest = result.largeData.digest;
+        reference.keyScope = "request";
+        auto referencePayload = encodeLargeDataReferencePayload(reference);
+        response.setPayload(referencePayload, referencePayload.size());
+        response.clearAeadEnvelope();
+        response.setControllerVersion(binding.controllerVersion);
+
+        result.responseMessage = std::move(response);
+        result.usedLargeDataReference = true;
+        result.success = true;
+        NDN_LOG_INFO("NDNSF_REQUEST_SCOPED_LARGE_RESPONSE_PUBLISHED"
+                     << " name=" << encryptedDataName.toUri()
+                     << " requestId=" << requestId.toUri()
+                     << " serviceName=" << serviceName.toUri()
+                     << " plaintextBytes=" << payload.size()
+                     << " chunkBytes=" << chunkBytes
+                     << " segments=" << segmentCount);
         return result;
     }
 
@@ -5000,8 +5083,78 @@ namespace ndn_service_framework
             registeredService->second.targetedRequestHandler) {
             attachTargetedTokenBatch(requesterName, serviceName, requestMessage, response);
         }
-        auto optimizedResponse = makeResponseWithLargeDataOptimization(
-            requesterName, serviceName, requestId, std::move(response));
+        const ndn::Name pendingKey = ndn::Name(requesterName)
+            .append(serviceName).append(requestId);
+        std::optional<RequestScopedInvocationState> requestScopedState;
+        {
+            std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+            const auto stateIt = m_requestScopedInvocations.find(pendingKey);
+            if (stateIt != m_requestScopedInvocations.end()) {
+                requestScopedState = stateIt->second;
+            }
+        }
+        const bool requestScopedResponse = requestScopedState.has_value();
+        LargeDataReferenceResponseResult optimizedResponse;
+        if (requestScopedResponse) {
+            auto binding = requestScopedState->binding;
+            const auto payload = response.getPayload();
+            const auto threshold = responseLargeDataThresholdBytes();
+            if (response.getStatus() && threshold > 0 &&
+                payload.size() > threshold &&
+                !isLargeDataReferencePayload(payload)) {
+                optimizedResponse = makeRequestScopedResponseWithLargeDataOptimization(
+                    requesterName,
+                    providerName,
+                    serviceName,
+                    requestId,
+                    std::move(response),
+                    requestScopedState->keys,
+                    std::move(binding));
+            }
+            else {
+                binding.segmentOrEventId = "response";
+                const auto envelope = encryptRequestContent(
+                    requestScopedState->keys.responseKey,
+                    requestScopedState->keys.keyId,
+                    binding,
+                    ndn::span<const uint8_t>(payload.data(), payload.size()));
+                const auto encoded = envelope.wireEncode();
+                ndn::Block emptyPayload(tlv::PayloadType);
+                emptyPayload.encode();
+                response.setPayloadBlock(emptyPayload);
+                response.setAeadEnvelope(encoded);
+                response.setControllerVersion(binding.controllerVersion);
+                optimizedResponse.success = true;
+                optimizedResponse.responseMessage = std::move(response);
+                NDN_LOG_INFO("NDNSF_REQUEST_SCOPED_RESPONSE_ENCRYPTED requestId="
+                             << requestId.toUri()
+                             << " providerName=" << providerName.toUri()
+                             << " plaintextBytes=" << payload.size()
+                             << " keyId=" << requestScopedState->keys.keyId);
+            }
+        }
+        else {
+            // Spec179 migration (T012): the old service-wide response-key
+            // carrier was removed once the request-scoped default and its
+            // MiniNDN gate passed.  A large response with no request-scoped
+            // invocation state can no longer be delivered confidentially;
+            // fail closed with a typed error instead of silently falling
+            // back to plaintext or resurrecting a service-wide ABE carrier.
+            const auto legacyPayload = response.getPayload();
+            const auto legacyThreshold = responseLargeDataThresholdBytes();
+            if (response.getStatus() && legacyThreshold > 0 &&
+                legacyPayload.size() > legacyThreshold &&
+                !isLargeDataReferencePayload(legacyPayload)) {
+                optimizedResponse.success = false;
+                optimizedResponse.errorMessage =
+                    "large response requires request-scoped confidentiality "
+                    "(service-wide response-key carrier removed)";
+            }
+            else {
+                optimizedResponse.success = true;
+                optimizedResponse.responseMessage = std::move(response);
+            }
+        }
         if (!optimizedResponse.success) {
             NDN_LOG_ERROR("Failed to prepare large response reference requestId="
                           << requestId.toUri()
@@ -5016,7 +5169,18 @@ namespace ndn_service_framework
         else {
             response = std::move(optimizedResponse.responseMessage);
         }
-        response.setPolicyEpoch(m_currentPolicyEpoch);
+        response.setPolicyEpoch(getCurrentPolicyEpoch(serviceName));
+        if (requestScopedResponse) {
+            // The Response metadata is part of the authenticated invocation
+            // contract.  Do not overwrite the version used in the AEAD AAD
+            // with a newer process-wide status observed while the handler was
+            // running; the User must either accept this exact invocation
+            // version or reject it as stale.
+            response.setControllerVersion(requestScopedState->binding.controllerVersion);
+        }
+        else if (const auto version = getControllerVersion(serviceName)) {
+            response.setControllerVersion(*version);
+        }
         NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=RESPONSE_DISPATCHED timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << requestId.toUri()
@@ -5096,6 +5260,256 @@ namespace ndn_service_framework
             releaseR1Reservation("RESPONSE_PUBLISH_FAILED");
             throw;
         }
+        if (requestScopedResponse) {
+            std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+            const auto stateIt = m_requestScopedInvocations.find(pendingKey);
+            if (stateIt != m_requestScopedInvocations.end()) {
+                stateIt->second.keys.zeroize();
+                m_requestScopedInvocations.erase(stateIt);
+            }
+            m_requestScopedNonceRegistry.invalidate(requestScopedState->keys.keyId);
+        }
+    }
+
+    void ServiceProvider::fetchRequestScopedInputAndDispatch(
+        const ndn::Name& requesterName,
+        const ndn::Name& providerName,
+        const ndn::Name& serviceName,
+        const ndn::Name& requestId,
+        RequestMessage requestMessage,
+        const ServiceSelectionMessage& selectionMessage,
+        const std::string& selectionDigest)
+    {
+        const ndn::Name pendingKey = ndn::Name(requesterName)
+            .append(serviceName).append(requestId);
+        auto completed = std::make_shared<std::atomic_bool>(false);
+
+        const auto finishFailure =
+            [this, requesterName, providerName, serviceName, requestId,
+             requestMessage, selectionDigest, completed](std::string reason) {
+                if (completed->exchange(true)) {
+                    return;
+                }
+                NDN_LOG_WARN("NDNSF_REQUEST_SCOPED_INPUT_REJECTED requestId="
+                             << requestId.toUri()
+                             << " providerName=" << providerName.toUri()
+                             << " reason=" << reason);
+                boost::asio::post(m_face.getIoContext(),
+                    [this, requesterName, providerName, serviceName, requestId,
+                     requestMessage, selectionDigest,
+                     reason = std::move(reason)]() mutable {
+                        publishExecutionFailureOnEventLoop(
+                            requesterName, providerName, serviceName, requestId,
+                            requestMessage,
+                            "request-scoped input unavailable: " + reason,
+                            selectionDigest);
+                    });
+            };
+
+        if (!requestMessage.hasRequestCapabilities() ||
+            !requestMessage.getRequestCapabilities().hasField(
+                "RequestScopedConfidentialityV1") ||
+            requestMessage.getRequestCapabilities().getField(
+                "RequestScopedConfidentialityV1") != "required" ||
+            !selectionMessage.hasSelectionKeyEnvelope() ||
+            !selectionMessage.hasControllerVersion() ||
+            !requestMessage.hasUserEncryptionCertificate()) {
+            finishFailure("missing request-scoped capability, certificate, version, or envelope");
+            return;
+        }
+
+        const auto& userAdvertisement =
+            requestMessage.getUserEncryptionCertificate();
+        const auto nowMs = nowMilliseconds();
+        if (!userAdvertisement.isValid(nowMs)) {
+            finishFailure("invalid or expired User encryption certificate advertisement");
+            return;
+        }
+
+        const auto publicKey = identityCert.getPublicKey();
+        ndn::Buffer publicKeyBuffer(publicKey.begin(), publicKey.end());
+        RequestSecurityBinding expected;
+        expected.serviceName = serviceName;
+        expected.requestId = requestId;
+        expected.attempt = selectionMessage.getAttempt();
+        expected.controllerVersion = selectionMessage.getControllerVersion();
+        expected.userEncryptionCertName = userAdvertisement.certificateName;
+        expected.userEncryptionCertDigest = userAdvertisement.certificateDigest;
+        expected.providerEncryptionCertName = identityCert.getName();
+        expected.providerEncryptionCertDigest = sha256DigestString(publicKeyBuffer);
+        expected.selectionDigest =
+            computeSelectionDigestWithoutKeyEnvelope(selectionMessage);
+        expected.inputDataName = ndn::Name(requesterName)
+            .append("NDNSF").append("DI").append("REQUEST-INPUT")
+            .append(serviceName).append(requestId)
+            .appendNumber(expected.attempt);
+        expected.segmentOrEventId = "request-input";
+
+        SelectionKeyEnvelope envelope;
+        if (!envelope.wireDecode(selectionMessage.getSelectionKeyEnvelope())) {
+            finishFailure("malformed SelectionKeyEnvelope");
+            return;
+        }
+        RequestKeyBundle keys;
+        RequestCryptoFailure failure = RequestCryptoFailure::NONE;
+        auto& activeKeyChain = m_testSigningKeyChain ?
+            *m_testSigningKeyChain : m_keyChain;
+        if (!unwrapSelectionKeyEnvelope(
+                envelope, expected, identityCert.getName(), activeKeyChain,
+                nowMs, keys, &failure)) {
+            finishFailure(std::string("Selection key envelope rejected: ") +
+                          requestCryptoFailureName(failure));
+            return;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+            if (m_requestScopedInvocations.find(pendingKey) !=
+                m_requestScopedInvocations.end()) {
+                finishFailure("request-scoped key bundle replayed");
+                return;
+            }
+            m_requestScopedInvocations.emplace(
+                pendingKey, RequestScopedInvocationState{keys, expected});
+        }
+
+        ndn::Interest interest(expected.inputDataName);
+        interest.setCanBePrefix(false);
+        interest.setMustBeFresh(true);
+        interest.setInterestLifetime(ndn::time::milliseconds(1000));
+        NDN_LOG_INFO("NDNSF_REQUEST_SCOPED_INPUT_FETCH requestId="
+                     << requestId.toUri()
+                     << " providerName=" << providerName.toUri()
+                     << " dataName=" << expected.inputDataName.toUri());
+        m_face.expressInterest(
+            interest,
+                    [this, requesterName, providerName, serviceName, requestId,
+                     requestMessage, selectionMessage, expected, keys, selectionDigest, completed,
+                     finishFailure](const ndn::Interest&, const ndn::Data& data) mutable {
+                if (completed->load()) {
+                    return;
+                }
+                if (data.getName() != expected.inputDataName) {
+                    finishFailure("exact input Data name mismatch");
+                    return;
+                }
+                validator->validate(
+                    data,
+                            [this, requesterName, providerName, serviceName, requestId,
+                             requestMessage, selectionMessage, expected, keys, selectionDigest, completed,
+                             finishFailure](const ndn::Data& validated) mutable {
+                        if (validated.getName() != expected.inputDataName ||
+                            !isSignedByIdentity(validated, requesterName)) {
+                            finishFailure("input Data signer identity mismatch");
+                            return;
+                        }
+                        AeadEnvelope envelope;
+                        const auto& content = validated.getContent();
+                        bool decoded = false;
+                        try {
+                            auto [ok, block] = ndn::Block::fromBuffer(
+                                ndn::span<const uint8_t>(content.value(),
+                                                          content.value_size()));
+                            decoded = ok && envelope.wireDecode(block);
+                        }
+                        catch (const std::exception&) {
+                            decoded = false;
+                        }
+                        if (!decoded) {
+                            finishFailure("malformed input AEAD envelope");
+                            return;
+                        }
+                        const auto nowMs = nowMilliseconds();
+                        const auto lifetimeMs = std::chrono::milliseconds(
+                            std::max<uint64_t>(1, keys.expiresAtMs > nowMs ?
+                                keys.expiresAtMs - nowMs : 1));
+                        ndn::Buffer plaintext;
+                        RequestCryptoFailure failure = RequestCryptoFailure::NONE;
+                        if (!decryptRequestContent(
+                                keys.inputKey, keys.keyId, expected, envelope,
+                                plaintext, &failure)) {
+                            finishFailure(std::string("input AEAD rejected: ") +
+                                          requestCryptoFailureName(failure));
+                            return;
+                        }
+                        // Only authenticated input may consume replay state;
+                        // otherwise a forged packet can poison the nonce and
+                        // reject the later valid publication.
+                        if (!m_requestScopedNonceRegistry.reserve(
+                                keys.keyId,
+                                ndn::span<const uint8_t>(envelope.nonce.data(),
+                                                         envelope.nonce.size()),
+                                lifetimeMs)) {
+                            finishFailure("input AEAD nonce replayed");
+                            return;
+                        }
+                        if (completed->exchange(true)) {
+                            return;
+                        }
+                        boost::asio::post(m_face.getIoContext(),
+                            [this, requesterName, providerName, serviceName,
+                             requestId, requestMessage, selectionMessage,
+                             plaintext = std::move(plaintext), selectionDigest]() mutable {
+                                RequestMessage readyRequest(requestMessage);
+                                readyRequest.setPayload(plaintext, plaintext.size());
+                                if (!hasService(serviceName) ||
+                                    readyRequest.hasDeploymentIntent() ||
+                                    m_collaborationServices.find(serviceName) !=
+                                        m_collaborationServices.end()) {
+                                    publishExecutionFailureOnEventLoop(
+                                        requesterName, providerName, serviceName,
+                                        requestId, readyRequest,
+                                        "request-scoped confidentiality currently supports normal unary services only",
+                                        selectionDigest);
+                                    return;
+                                }
+                                if (readyRequest.hasStreamRequestOptions()) {
+                                    // The request-scoped input has now been
+                                    // authenticated.  Initialize the normal
+                                    // stream publisher from the already
+                                    // authenticated Selection grant before
+                                    // entering the worker handler; this keeps
+                                    // event-key delivery bound to the same
+                                    // request/selection as the encrypted input.
+                                    if (!initializeStreamPublisher(
+                                            requesterName, providerName, serviceName,
+                                            requestId, readyRequest, selectionMessage,
+                                            selectionDigest)) {
+                                        publishExecutionFailureOnEventLoop(
+                                            requesterName, providerName, serviceName,
+                                            requestId, readyRequest,
+                                            "request-scoped stream grant rejected",
+                                            selectionDigest);
+                                        return;
+                                    }
+                                }
+                                if (dispatchRequestExecutionAsync(
+                                        requesterName, providerName, serviceName,
+                                        requestId, readyRequest, selectionDigest)) {
+                                    return;
+                                }
+                                auto response = dispatchRequest(
+                                    requesterName, providerName, serviceName,
+                                    requestId, readyRequest);
+                                finishRequestExecutionOnEventLoop(
+                                    requesterName, providerName, serviceName,
+                                    requestId, readyRequest, std::move(response),
+                                    selectionDigest);
+                            });
+                    },
+                    [finishFailure](const ndn::Data&,
+                                    const ndn::security::ValidationError& error) {
+                        finishFailure("input Data signature validation failed: " +
+                                      error.getInfo());
+                    });
+            },
+            [finishFailure](const ndn::Interest&, const ndn::lp::Nack& nack) {
+                finishFailure("input Data Nack: " +
+                              std::to_string(static_cast<int>(nack.getReason())));
+            },
+            [finishFailure](const ndn::Interest&) {
+                finishFailure("input Data fetch timeout");
+            });
     }
 
     void ServiceProvider::publishExecutionFailureOnEventLoop(
@@ -6845,7 +7259,10 @@ namespace ndn_service_framework
         if (m_useTokens) {
             response.setUserToken(requestMessage.getUserToken());
         }
-        response.setPolicyEpoch(m_currentPolicyEpoch);
+        response.setPolicyEpoch(getCurrentPolicyEpoch(serviceName));
+        if (const auto version = getControllerVersion(serviceName)) {
+            response.setControllerVersion(*version);
+        }
         boost::asio::post(m_face.getIoContext(),
             [this,
              requesterName,
@@ -7778,8 +8195,23 @@ namespace ndn_service_framework
     {
         auto parsedV2 = ndn_service_framework::parseRequestNameV2(requestName);
         if (parsedV2) {
-            if (!isAcceptablePolicyEpoch(requestMessage.getPolicyEpoch())) {
+            const auto requestVersion = requestMessage.hasControllerVersion() ?
+                std::optional<ControllerVersion>(requestMessage.getControllerVersion()) :
+                std::nullopt;
+            maybeRefreshControllerVersionHint(parsedV2->serviceName, requestVersion);
+            if (!authorizeControllerTransition(parsedV2->serviceName,
+                                               ProtectedTransition::PROVIDER_EXECUTION)) {
+                return makeErrorResponse("Controller revoked provider authorization for " +
+                                         parsedV2->serviceName.toUri());
+            }
+            if (!isAcceptablePolicyEpoch(parsedV2->serviceName,
+                                         requestMessage.getPolicyEpoch())) {
                 return makeErrorResponse("Stale policy epoch for " +
+                                         parsedV2->serviceName.toUri());
+            }
+            if (!isAcceptableControllerVersion(parsedV2->serviceName,
+                                               requestVersion)) {
+                return makeErrorResponse("Stale controller version for " +
                                          parsedV2->serviceName.toUri());
             }
             if (!hasProviderPermission(identity, parsedV2->serviceName, m_authorizations)) {
@@ -7856,7 +8288,10 @@ namespace ndn_service_framework
                                          requestMessage,
                                          response);
             }
-            response.setPolicyEpoch(m_currentPolicyEpoch);
+            response.setPolicyEpoch(getCurrentPolicyEpoch(parsedV2->serviceName));
+            if (const auto version = getControllerVersion(parsedV2->serviceName)) {
+                response.setControllerVersion(*version);
+            }
             return response;
         }
 
@@ -7893,7 +8328,8 @@ namespace ndn_service_framework
         return decision;
     }
 
-    void ServiceProvider::cleanupPendingRequestState(const ndn::Name& pendingKey)
+    void ServiceProvider::cleanupPendingRequestState(const ndn::Name& pendingKey,
+                                                     bool preserveReplayTombstone)
     {
         ++m_cleanupInvocationCount;
         std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
@@ -7928,9 +8364,18 @@ namespace ndn_service_framework
         m_recentProviderRequests.erase(pendingKey);
         m_selectedProviderRequests.erase(pendingKey);
         m_selectionDecryptsInFlight.erase(pendingKey);
+        auto requestScopedIt = m_requestScopedInvocations.find(pendingKey);
+        if (requestScopedIt != m_requestScopedInvocations.end()) {
+            const auto keyId = requestScopedIt->second.keys.keyId;
+            requestScopedIt->second.keys.zeroize();
+            m_requestScopedInvocations.erase(requestScopedIt);
+            m_requestScopedNonceRegistry.invalidate(keyId);
+        }
         auto selectedTokenHashIt = m_selectedProviderTokenHashes.find(pendingKey);
         if (selectedTokenHashIt != m_selectedProviderTokenHashes.end()) {
-            m_consumedProviderTokenHashes.erase(selectedTokenHashIt->second);
+            if (!preserveReplayTombstone) {
+                m_consumedProviderTokenHashes.erase(selectedTokenHashIt->second);
+            }
             m_selectedProviderTokenHashes.erase(selectedTokenHashIt);
         }
         {
@@ -7981,6 +8426,13 @@ namespace ndn_service_framework
         }
         pendingRequests.erase(pendingKey);
         pendingProviderTokens.erase(pendingKey);
+        auto requestScopedIt = m_requestScopedInvocations.find(pendingKey);
+        if (requestScopedIt != m_requestScopedInvocations.end()) {
+            const auto keyId = requestScopedIt->second.keys.keyId;
+            requestScopedIt->second.keys.zeroize();
+            m_requestScopedInvocations.erase(requestScopedIt);
+            m_requestScopedNonceRegistry.invalidate(keyId);
+        }
         auto streamIt = m_streamLifecycles.find(pendingKey);
         if (streamIt != m_streamLifecycles.end()) {
             auto& lifecycle = *streamIt->second;
@@ -8097,7 +8549,8 @@ namespace ndn_service_framework
             }
             serveDataWithIMS(contentData, ckData);
             m_hybridMessageCrypto.cacheWrappedSendKey(
-                key.keyId, ndn::Buffer(wrapped.data(), wrapped.size()));
+                serviceName, key.keyId,
+                ndn::Buffer(wrapped.data(), wrapped.size()));
             ++m_hybridCryptoCounters.nac_abe_key_wrap_count;
             const auto wrapEndUs = timelineSteadyMicroseconds();
             if (m_timelineTrace) {
@@ -8394,7 +8847,7 @@ namespace ndn_service_framework
                                           "inline" : "named-fetch"},
                                {"keyName", keyDataName.toUri()}});
         try {
-            auto onKey = [this, envelope, finish = std::move(finish), requestId,
+            auto onKey = [this, serviceName, envelope, finish = std::move(finish), requestId,
                           unwrapStartUs, keyDataName](const ndn::Buffer& unwrappedKey) mutable {
                                     logHybridCryptoTiming("provider", "hybrid_decrypt_key_unwrap_done", requestId,
                                                           {{"messageType", envelope.getMessageType()},
@@ -8403,7 +8856,8 @@ namespace ndn_service_framework
                                                            {"keyName", keyDataName.toUri()},
                                                            {"unwrapUs", std::to_string(timelineSteadyMicroseconds() - unwrapStartUs)},
                                                            {"keyBytes", std::to_string(unwrappedKey.size())}});
-                                    m_hybridMessageCrypto.cacheReceiveKey(envelope.getKeyId(),
+                                    m_hybridMessageCrypto.cacheReceiveKey(serviceName,
+                                                                          envelope.getKeyId(),
                                                                           envelope.getEpochId(),
                                                                           unwrappedKey);
                                     finish(unwrappedKey);
@@ -9116,11 +9570,28 @@ void ServiceProvider::finishDecodedRequestOnEventLoop(
         requestId, serviceName,
         ProviderRequestLifecycleState::REQUEST_OBSERVED);
 
-    if (!isAcceptablePolicyEpoch(requestMessage.getPolicyEpoch())) {
+    const auto requestVersion = requestMessage.hasControllerVersion() ?
+        std::optional<ControllerVersion>(requestMessage.getControllerVersion()) :
+        std::nullopt;
+    maybeRefreshControllerVersionHint(serviceName, requestVersion);
+    if (!authorizeControllerTransition(serviceName,
+                                       ProtectedTransition::PROVIDER_EXECUTION)) {
+        NDN_LOG_ERROR("Reject decoded request under revoked Controller status requestId="
+                      << requestId.toUri());
+        return;
+    }
+
+    if (!isAcceptablePolicyEpoch(serviceName, requestMessage.getPolicyEpoch())) {
         NDN_LOG_ERROR("Reject request with stale policy epoch requestId="
                       << requestId.toUri()
                       << " receivedEpoch=" << requestMessage.getPolicyEpoch()
                       << " currentEpoch=" << m_currentPolicyEpoch);
+        return;
+    }
+
+    if (!isAcceptableControllerVersion(serviceName, requestVersion)) {
+        NDN_LOG_ERROR("Reject request with stale ControllerVersion requestId="
+                      << requestId.toUri());
         return;
     }
 
@@ -9369,7 +9840,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                                                    const ndn::Data& data)
     {
         const auto expectedController = extractPermissionControllerIdentity(interest);
-        validator->validate(
+        validator->validateWithConfiguredTrustSchema(
             data,
             [this, expectedController](const ndn::Data& validatedData) {
                 if (expectedController &&
@@ -9470,7 +9941,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                                                const ndn::Data& data)
     {
         const auto expectedController = extractPermissionControllerIdentity(interest);
-        validator->validate(
+        validator->validateWithConfiguredTrustSchema(
             data,
             [this, expectedController](const ndn::Data& validatedData) {
                 if (expectedController &&
@@ -9494,6 +9965,9 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                     return;
                 }
                 m_currentPolicyEpoch = manifest.getPolicyEpoch();
+                if (manifest.hasControllerVersion()) {
+                    adoptControllerVersion(manifest.getControllerVersion());
+                }
                 m_requiredKeyEpoch = manifest.getRequiredKeyEpoch();
                 m_policyGracePeriodMs = manifest.getGracePeriodMs();
                 NDN_LOG_INFO("Installed PolicyManifest " << manifest.toString());
@@ -9541,6 +10015,274 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             });
     }
 
+    void ServiceProvider::fetchPolicyStatusFromController(const ndn::Name& controllerPrefix,
+                                                           const ndn::Name& serviceName,
+                                                           int attempt,
+                                                           std::optional<ControllerVersion> expectedVersion)
+    {
+        if (controllerPrefix.empty() || serviceName.empty()) {
+            return;
+        }
+        const auto serviceKey = serviceName.toUri();
+        {
+            std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
+            if (attempt == 1 && !m_policyStatusFetchInFlight.insert(serviceKey).second) {
+                return;
+            }
+        }
+
+        ndn::Name interestName;
+        if (expectedVersion) {
+            interestName = makePolicyStatusName(controllerPrefix, serviceName,
+                                                *expectedVersion);
+        }
+        else {
+            interestName = controllerPrefix;
+            interestName.append("NDNSF").append("POLICY-STATUS").append(serviceName);
+        }
+        ndn::Interest interest(interestName);
+        interest.setCanBePrefix(!expectedVersion);
+        interest.setMustBeFresh(true);
+        interest.setInterestLifetime(ndn::time::milliseconds(permissionFetchLifetimeMs()));
+
+        NDN_LOG_INFO("Fetch policy status: " << interestName
+                     << " attempt=" << attempt
+                     << "/" << permissionFetchMaxAttempts());
+        m_face.expressInterest(
+            interest,
+            [this, attempt](const ndn::Interest& statusInterest,
+                            const ndn::Data& statusData) {
+                onPolicyStatusData(statusInterest, statusData, attempt);
+            },
+            [this, attempt](const ndn::Interest& retryInterest, const ndn::lp::Nack&) {
+                onPolicyStatusTimeout(retryInterest, attempt);
+            },
+            [this, attempt](const ndn::Interest& retryInterest) {
+                onPolicyStatusTimeout(retryInterest, attempt);
+            });
+    }
+
+    void ServiceProvider::onPolicyStatusData(const ndn::Interest& interest,
+                                             const ndn::Data& data,
+                                             int attempt)
+    {
+        const auto expectedController = extractPermissionControllerIdentity(interest);
+        const auto parsedInterest = expectedController ?
+            parsePolicyStatusName(*expectedController, interest.getName()) :
+            std::optional<PolicyStatusName>();
+        const ndn::Name serviceName = parsedInterest ?
+            parsedInterest->serviceName : ndn::Name();
+        const auto requestedVersion = parsedInterest ? parsedInterest->version : std::nullopt;
+        const auto serviceKey = serviceName.toUri();
+        auto clearInFlight = [this, serviceKey] {
+            if (serviceKey.empty()) {
+                return;
+            }
+            std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
+            m_policyStatusFetchInFlight.erase(serviceKey);
+        };
+
+        auto retryValidationFailure = [this, interest, serviceKey, attempt,
+                                       clearInFlight] {
+            {
+                std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
+                const auto coordinator = m_policyRefreshCoordinators.find(serviceKey);
+                if (coordinator != m_policyRefreshCoordinators.end()) {
+                    coordinator->second.failFetch(nowMilliseconds());
+                }
+            }
+            clearInFlight();
+            const int maxAttempts = permissionFetchMaxAttempts();
+            if (attempt >= maxAttempts) {
+                NDN_LOG_ERROR("PolicyStatus validation exhausted: "
+                              << interest.getName()
+                              << " attempt=" << attempt << "/" << maxAttempts);
+                return;
+            }
+            const int nextAttempt = attempt + 1;
+            const int backoffMs = permissionFetchRetryBackoffMs(attempt);
+            NDN_LOG_WARN("PolicyStatus validation retry: "
+                         << interest.getName()
+                         << " attempt=" << attempt
+                         << " retryAttempt=" << nextAttempt
+                         << " backoffMs=" << backoffMs);
+            m_scheduler.schedule(ndn::time::milliseconds(backoffMs),
+                [this, interest, nextAttempt] {
+                    const auto controllerPrefix =
+                        extractPermissionControllerIdentity(interest)
+                            .value_or(ndn::Name());
+                    const auto parsed = parsePolicyStatusName(
+                        controllerPrefix, interest.getName());
+                    if (!parsed) {
+                        return;
+                    }
+                    fetchPolicyStatusFromController(
+                        controllerPrefix, parsed->serviceName,
+                        nextAttempt, parsed->version);
+                });
+        };
+
+        validator->validateWithConfiguredTrustSchema(
+            data,
+            [this, expectedController, serviceName, requestedVersion,
+             clearInFlight, retryValidationFailure](const ndn::Data& validatedData) {
+                if (expectedController &&
+                    !isSignedByIdentity(validatedData, *expectedController)) {
+                    NDN_LOG_ERROR("PolicyStatus Data signer mismatch: "
+                                  << validatedData.getName()
+                                  << " expectedController=" << expectedController->toUri());
+                    retryValidationFailure();
+                    return;
+                }
+                PolicyStatusData status;
+                const auto& content = validatedData.getContent();
+                bool ok = content.type() == PolicyStatusData::TYPE &&
+                    status.wireDecode(content);
+                if (!ok && content.value_size() > 0) {
+                    auto [parsed, block] = ndn::Block::fromBuffer(
+                        ndn::span<const uint8_t>(content.value(), content.value_size()));
+                    ok = parsed && status.wireDecode(block);
+                }
+                const auto parsedData = expectedController ?
+                    parsePolicyStatusName(*expectedController, validatedData.getName()) :
+                    std::optional<PolicyStatusName>();
+                bool controllerCertificateMatches = !expectedController;
+                if (expectedController && ok) {
+                    try {
+                        controllerCertificateMatches =
+                            ndn::security::extractIdentityFromCertName(
+                                status.getControllerCertificate()) == *expectedController;
+                    }
+                    catch (const std::exception&) {
+                        controllerCertificateMatches = false;
+                    }
+                }
+                const bool exactNameMatches =
+                    parsedData && parsedData->version &&
+                    parsedData->serviceName == serviceName &&
+                    (!requestedVersion || parsedData->version == requestedVersion) &&
+                    status.getControllerVersion() == *parsedData->version &&
+                    validatedData.getName() == makePolicyStatusName(
+                        *expectedController, serviceName, *parsedData->version);
+                if (!ok || serviceName.empty() || status.getServiceName() != serviceName ||
+                    !exactNameMatches ||
+                    !status.validate(nowMilliseconds()) ||
+                    !controllerCertificateMatches ||
+                    !installControllerStatus(status, true)) {
+                    NDN_LOG_ERROR("PolicyStatus rejected: " << validatedData.getName());
+                    retryValidationFailure();
+                    return;
+                }
+                NDN_LOG_INFO("Installed PolicyStatus service=" << serviceName
+                             << " generation="
+                             << status.getControllerVersion().controllerGenerationTimestamp
+                             << " epoch=" << status.getControllerVersion().controllerEpoch);
+                clearInFlight();
+            },
+            [retryValidationFailure](const ndn::Data& badData,
+                                     const ndn::security::ValidationError& error) {
+                NDN_LOG_ERROR("PolicyStatus Data validation failed: "
+                              << badData.getName() << " reason=" << error);
+                retryValidationFailure();
+            });
+    }
+
+    void ServiceProvider::onPolicyStatusTimeout(const ndn::Interest& interest,
+                                                int attempt)
+    {
+        const auto controllerPrefix = extractPermissionControllerIdentity(interest)
+            .value_or(ndn::Name());
+        const auto parsed = parsePolicyStatusName(controllerPrefix, interest.getName());
+        if (parsed) {
+            std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
+            const auto coordinator = m_policyRefreshCoordinators.find(
+                parsed->serviceName.toUri());
+            if (coordinator != m_policyRefreshCoordinators.end()) {
+                coordinator->second.failFetch(nowMilliseconds());
+            }
+        }
+        const int maxAttempts = permissionFetchMaxAttempts();
+        if (attempt >= maxAttempts) {
+            const auto& name = interest.getName();
+            for (size_t i = 0; i + 1 < name.size(); ++i) {
+                if (name[i].toUri() == "POLICY-STATUS") {
+                    std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
+                    m_policyStatusFetchInFlight.erase(name.getSubName(i + 1).toUri());
+                    break;
+                }
+            }
+            NDN_LOG_ERROR("PolicyStatus timeout: " << interest.getName()
+                          << " attempt=" << attempt << "/" << maxAttempts
+                          << " final=1");
+            return;
+        }
+
+        const int nextAttempt = attempt + 1;
+        const int backoffMs = permissionFetchRetryBackoffMs(attempt);
+        NDN_LOG_WARN("PolicyStatus timeout: " << interest.getName()
+                     << " attempt=" << attempt << "/" << maxAttempts
+                     << " retryAttempt=" << nextAttempt
+                     << " backoffMs=" << backoffMs);
+        m_scheduler.schedule(ndn::time::milliseconds(backoffMs),
+            [this, interest, nextAttempt] {
+                const auto controllerPrefix = extractPermissionControllerIdentity(interest)
+                    .value_or(ndn::Name());
+                const auto parsed = parsePolicyStatusName(controllerPrefix, interest.getName());
+                if (!parsed) {
+                    return;
+                }
+                fetchPolicyStatusFromController(controllerPrefix,
+                                                parsed->serviceName,
+                                                nextAttempt,
+                                                parsed->version);
+            });
+    }
+
+    void ServiceProvider::maybeRefreshControllerVersionHint(
+        const ndn::Name& serviceName,
+        const std::optional<ControllerVersion>& messageVersion) const
+    {
+        if (serviceName.empty() || !messageVersion || !messageVersion->isValid()) {
+            return;
+        }
+        ndn::Name controllerPrefix;
+        std::optional<ControllerVersion> current;
+        {
+            std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
+            controllerPrefix = m_controllerPrefix;
+            const auto state = m_revocationStates.find(serviceName.toUri());
+            if (state != m_revocationStates.end() &&
+                state->second.hasCurrentStatus()) {
+                current = state->second.currentVersion();
+            }
+        }
+        if (controllerPrefix.empty() ||
+            (current && messageVersion->compare(*current) <= 0)) {
+            return;
+        }
+        // Some synchronous test/adapter entry points are const for historical
+        // API compatibility, but an authenticated higher hint intentionally
+        // schedules a network refresh.  The refresh mutates only the provider's
+        // bounded coordinator/Face state and is therefore routed through the
+        // existing non-const implementation.
+        auto* self = const_cast<ServiceProvider*>(this);
+        bool shouldFetch = false;
+        {
+            std::lock_guard<std::mutex> lock(self->m_controllerVersionMutex);
+            auto [coordinator, inserted] = self->m_policyRefreshCoordinators.try_emplace(
+                serviceName.toUri(), serviceName);
+            (void) inserted;
+            const auto result = coordinator->second.observeHint(
+                *messageVersion, true, nowMilliseconds());
+            shouldFetch = result.outcome ==
+                PolicyRefreshCoordinator::Outcome::FETCH_STARTED;
+        }
+        if (shouldFetch) {
+            self->fetchPolicyStatusFromController(
+                controllerPrefix, serviceName, 1, *messageVersion);
+        }
+    }
+
     bool ServiceProvider::replyFromIMS(const ndn::Interest &interest)
     {
         const auto streamEvent = parseInvocationEventName(interest.getName());
@@ -9553,6 +10295,33 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         }
         if (dataToSend)
         {
+            // A discovery Interest (CanBePrefix) for a segmented object must
+            // learn the final segment from the served first Data; otherwise a
+            // SegmentFetcher keeps requesting past the last segment until its
+            // deadline.  The IMS does not track final block ids, so walk the
+            // contiguous retained segments and publish the last one.
+            if (interest.getCanBePrefix() &&
+                dataToSend->getName().at(-1).isSegment() &&
+                !dataToSend->getFinalBlock()) {
+                uint64_t finalSegment = dataToSend->getName().at(-1).toSegment();
+                while (true) {
+                    auto nextName = dataToSend->getName();
+                    nextName.set(-1, ndn::name::Component::fromSegment(
+                        finalSegment + 1));
+                    bool hasNext = false;
+                    {
+                        std::lock_guard<std::mutex> lock(_cache_mutex);
+                        hasNext = static_cast<bool>(m_IMS.find(nextName));
+                    }
+                    if (!hasNext)
+                        break;
+                    ++finalSegment;
+                }
+                auto finalized = *dataToSend;
+                finalized.setFinalBlock(
+                    ndn::name::Component::fromSegment(finalSegment));
+                dataToSend = std::move(finalized);
+            }
             if (streamEvent && std::getenv("SPEC175_TRACE") != nullptr) {
                 NDN_LOG_INFO("SPEC175_TRACE stream-exact-ims-hit name="
                              << interest.getName()
@@ -10099,8 +10868,9 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                     activeNacConsumer().consume(
                         keyDataName,
                         makeNacInlineContentBlock(envelope.getWrappedMessageKey()),
-                        [this, envelope, finishDecrypt](const ndn::Buffer& unwrappedKey) mutable {
-                            m_hybridMessageCrypto.cacheReceiveKey(envelope.getKeyId(),
+                        [this, serviceName, envelope, finishDecrypt](const ndn::Buffer& unwrappedKey) mutable {
+                            m_hybridMessageCrypto.cacheReceiveKey(serviceName,
+                                                                  envelope.getKeyId(),
                                                                   envelope.getEpochId(),
                                                                   unwrappedKey);
                             finishDecrypt(unwrappedKey);
@@ -10126,8 +10896,9 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                         envelope.getEpochId());
                     activeNacConsumer().consume(
                         keyDataName,
-                        [this, envelope, finishDecrypt](const ndn::Buffer& unwrappedKey) mutable {
-                            m_hybridMessageCrypto.cacheReceiveKey(envelope.getKeyId(),
+                        [this, serviceName, envelope, finishDecrypt](const ndn::Buffer& unwrappedKey) mutable {
+                            m_hybridMessageCrypto.cacheReceiveKey(serviceName,
+                                                                  envelope.getKeyId(),
                                                                   envelope.getEpochId(),
                                                                   unwrappedKey);
                             finishDecrypt(unwrappedKey);
@@ -10217,7 +10988,16 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         requestAckMessage.setMessage(msg);
         requestAckMessage.setUserToken(userToken);
         requestAckMessage.setProviderToken(providerToken);
-        requestAckMessage.setPolicyEpoch(m_currentPolicyEpoch);
+        requestAckMessage.setPolicyEpoch(getCurrentPolicyEpoch(serviceName));
+        if (const auto version = getControllerVersion(serviceName)) {
+            requestAckMessage.setControllerVersion(*version);
+        }
+        if (status) {
+            // ACK advertises the Provider's RSA recipient certificate and
+            // supported envelope algorithm; no request key is exposed here.
+            requestAckMessage.setProviderEncryptionCertificate(
+                makeEncryptionCertificateAdvertisement(identityCert));
+        }
         // Deployment discovery is deliberately advisory: constructing this
         // bounded offer performs no fetch, load, warm, reservation, or handler
         // execution. Selection remains the first mutation authority.
@@ -10247,7 +11027,9 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
              (sourceRequest->getRequestCapabilities().hasField("DIReservationSelectionV1") &&
               sourceRequest->getRequestCapabilities().getField("DIReservationSelectionV1") == "required") ||
              (sourceRequest->getRequestCapabilities().hasField("NDNSF_DATA_V1") &&
-              sourceRequest->getRequestCapabilities().getField("NDNSF_DATA_V1") == "required")) &&
+              sourceRequest->getRequestCapabilities().getField("NDNSF_DATA_V1") == "required") ||
+             (sourceRequest->getRequestCapabilities().hasField("RequestScopedConfidentialityV1") &&
+              sourceRequest->getRequestCapabilities().getField("RequestScopedConfidentialityV1") == "required")) &&
             !requestAckMessage.hasSelectionInputKeyOffer()) {
             const auto publicKey = identityCert.getPublicKey();
             ndn::Buffer publicKeyBuffer(publicKey.begin(), publicKey.end());
@@ -10862,6 +11644,10 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
 
     void ServiceProvider::fetchPermissionsFromController(const ndn::Name& controllerPrefix)
     {
+        {
+            std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
+            m_controllerPrefix = controllerPrefix;
+        }
         fetchPolicyManifestFromController(controllerPrefix);
 
         ndn::Name interestName(controllerPrefix);
@@ -10886,12 +11672,62 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             });
     }
 
+    void ServiceProvider::refreshProviderPermissionsAfterAdvance(
+        const ndn::Name& serviceName)
+    {
+        // A withdrawn grant (identity or service-scoped revocation) is only
+        // discovered through the scheduled PolicyStatus refresh: the signed
+        // status for a served service advances to a newer ControllerVersion,
+        // but the ProviderPermission table would otherwise keep the
+        // bootstrap-era grants forever and OnRequest would keep serving a
+        // revoked authorization.  Re-fetch the identity-wide permission
+        // renewal whenever an already-installed status advances; the
+        // controller omits withdrawn grants (an empty renewal for a fully
+        // revoked identity) and applyPermissionResponse installs the
+        // replacement table.
+        if (m_isLocalMock) {
+            return;
+        }
+        ndn::Name controllerPrefix;
+        {
+            std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
+            controllerPrefix = m_controllerPrefix;
+        }
+        if (controllerPrefix.empty()) {
+            return;
+        }
+        NDN_LOG_INFO("NDNSF_PROVIDER_PERMISSION_REVALIDATION role=provider"
+                     << " serviceName=" << serviceName.toUri());
+        fetchPermissionsFromController(controllerPrefix);
+    }
+
     void ServiceProvider::applyPermissionResponse(const PermissionResponse& response)
     {
         if (response.getPermissionKind() != tlv::ProviderPermission) {
             NDN_LOG_ERROR("Ignoring non-provider PermissionResponse for "
                           << response.getTargetIdentity());
             return;
+        }
+        // PermissionResponse carries a controller-version hint, but it is not
+        // authoritative for any single service.  A single response can contain
+        // records from services at different policy epochs; rejecting it
+        // against the process-wide version would let one service suppress
+        // another service's renewal.  Exact per-service PolicyStatus validation
+        // below owns freshness and monotonicity.
+
+        // Keep the old service scopes available for status refresh when a
+        // revoked Provider receives an empty permission renewal.  Without
+        // this, replacing the table first would suppress the only fetch that
+        // can install the new ControllerVersion and revocation state.
+        std::set<std::string> previouslyKnownServices;
+        std::set<std::string> previousRecords;
+        for (const auto& existing : m_authorizations.snapshot()) {
+            if (existing.permissionKind == tlv::ProviderPermission &&
+                !existing.serviceName.empty()) {
+                previouslyKnownServices.insert(existing.serviceName);
+                previousRecords.insert(existing.providerServiceName + "\x1f" +
+                                       existing.serviceName);
+            }
         }
 
         std::vector<ServiceAuthorizationRecord> records;
@@ -10919,12 +11755,57 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                           << response.getPolicyEpoch());
             return;
         }
+        // Permission responses are scoped to this identity, but their
+        // records are service-level.  Detect an actual table change before
+        // requesting a replacement DKEY; a newer ControllerVersion caused by
+        // another identity must not make this identity refetch its DKEY.
+        std::set<std::string> currentRecords;
+        for (const auto& record : records) {
+            currentRecords.insert(record.providerServiceName + "\x1f" +
+                                  record.serviceName);
+        }
+        if (previousRecords != currentRecords) {
+            std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
+            for (const auto& record : records)
+                m_nacDkeyRefreshPendingServices.insert(record.serviceName);
+            for (const auto& existing : previouslyKnownServices)
+                m_nacDkeyRefreshPendingServices.insert(existing);
+            NDN_LOG_INFO("NDNSF_NAC_DKEY_REFRESH_PENDING role=provider reason=grant-only");
+        }
         m_currentPolicyEpoch = response.getPolicyEpoch();
+        if (response.hasControllerVersion()) {
+            adoptControllerVersion(response.getControllerVersion());
+        }
         for (const auto& record : records) {
             NDN_LOG_WARN("Installed provider permission provider="
                          << record.providerServiceName
                          << " service=" << record.serviceName
                          << " policyEpoch=" << record.policyEpoch);
+        }
+
+        ndn::Name controllerPrefix;
+        {
+            std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
+            controllerPrefix = m_controllerPrefix;
+        }
+        if (!controllerPrefix.empty()) {
+            std::set<std::string> services;
+            for (const auto& serviceUri : m_serviceNames) {
+                if (!serviceUri.empty()) {
+                    services.insert(serviceUri);
+                }
+            }
+            services.insert(previouslyKnownServices.begin(),
+                            previouslyKnownServices.end());
+            for (const auto& record : records) {
+                if (!record.serviceName.empty()) {
+                    services.insert(record.serviceName);
+                }
+            }
+            for (const auto& serviceUri : services) {
+                fetchPolicyStatusFromController(controllerPrefix,
+                                                ndn::Name(serviceUri));
+            }
         }
     }
 
@@ -10938,10 +11819,616 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         return m_currentPolicyEpoch;
     }
 
+    size_t ServiceProvider::getCurrentPolicyEpoch(const ndn::Name& serviceName) const
+    {
+        if (serviceName.empty()) {
+            return 0;
+        }
+        std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
+        const auto it = m_revocationStates.find(serviceName.toUri());
+        if (it != m_revocationStates.end() && it->second.hasCurrentStatus()) {
+            return static_cast<size_t>(
+                it->second.currentVersion().controllerEpoch);
+        }
+        return m_controllerPrefix.empty() ? m_currentPolicyEpoch : 0;
+    }
+
+    bool ServiceProvider::installControllerStatus(const PolicyStatusData& status,
+                                                  bool controllerSignatureValid)
+    {
+        const auto serviceKey = status.getServiceName().toUri();
+        if (serviceKey.empty()) {
+            return false;
+        }
+        bool accepted = false;
+        bool versionChanged = false;
+        // An advance beyond a status this process already installed (the
+        // scheduled-refresh revocation-discovery path) must re-fetch the
+        // ProviderPermission renewal.  A cold-bootstrap first install is not
+        // an advance: the enclosing bootstrap already fetched permissions
+        // before any serving began.
+        bool advancedFromInstalledStatus = false;
+        bool abeGenerationChanged = true;
+        bool grantOnlyDkeyRefresh = false;
+        {
+            std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
+            // Stage the revocation state and refresh coordinator together so a
+            // rejected coordinator status cannot partially advance authority.
+            std::optional<RevocationState> stagedState;
+            const auto stateIt = m_revocationStates.find(serviceKey);
+            if (stateIt != m_revocationStates.end()) {
+                stagedState.emplace(stateIt->second);
+            }
+            else {
+                stagedState.emplace(status.getServiceName());
+            }
+            const auto previousVersion = stagedState->hasCurrentStatus() ?
+                std::optional<ControllerVersion>(stagedState->currentVersion()) :
+                std::nullopt;
+            const auto previousAbeName = stagedState->hasCurrentStatus() ?
+                stagedState->currentStatus().getAbePublicParametersName() : ndn::Name();
+            const auto previousAbeDigest = stagedState->hasCurrentStatus() ?
+                stagedState->currentStatus().getAbePublicParametersDigest() : std::string();
+            if (!stagedState->acceptStatus(status, nowMilliseconds(),
+                                           controllerSignatureValid)) {
+                return false;
+            }
+
+            std::optional<PolicyRefreshCoordinator> stagedCoordinator;
+            const auto coordinatorIt = m_policyRefreshCoordinators.find(serviceKey);
+            if (coordinatorIt != m_policyRefreshCoordinators.end()) {
+                stagedCoordinator.emplace(coordinatorIt->second);
+            }
+            else {
+                stagedCoordinator.emplace(status.getServiceName());
+            }
+            if (!stagedCoordinator->installCurrentStatus(
+                    status, nowMilliseconds(), controllerSignatureValid)) {
+                return false;
+            }
+
+            m_revocationStates[serviceKey] = std::move(*stagedState);
+            m_policyRefreshCoordinators.insert_or_assign(
+                serviceKey, std::move(*stagedCoordinator));
+            if (!m_controllerVersion ||
+                status.getControllerVersion().compare(*m_controllerVersion) > 0) {
+                m_controllerVersion = status.getControllerVersion();
+            }
+            m_currentPolicyEpoch = std::max(
+                m_currentPolicyEpoch,
+                static_cast<size_t>(status.getControllerVersion().controllerEpoch));
+            accepted = true;
+            versionChanged = !previousVersion ||
+                status.getControllerVersion().compare(*previousVersion) > 0;
+            advancedFromInstalledStatus = versionChanged &&
+                previousVersion.has_value();
+            // ABE public parameters are controller-global rather than
+            // per-service.  A first install of this service's status is a
+            // generation change only when the identity has no public
+            // parameter identity at all yet (cold bootstrap) or the status
+            // moves to a different parameter identity than the one already
+            // active across installed services.  A same-identity first
+            // install (a grant-only addition of a new service) retains the
+            // unaffected caches and refreshes only the target DKEY.
+            const auto consumerParamsName =
+                activeNacConsumer().getPublicParamsDataName();
+            const auto consumerParamsDigest =
+                activeNacConsumer().getPublicParamsDigest();
+            const bool consumerHasParams = !consumerParamsName.empty();
+            const bool sameParameterIdentity =
+                consumerHasParams &&
+                status.getAbePublicParametersName() == consumerParamsName &&
+                status.getAbePublicParametersDigest() == consumerParamsDigest;
+            abeGenerationChanged = !consumerHasParams
+                ? (!previousVersion ||
+                   previousAbeName != status.getAbePublicParametersName() ||
+                   previousAbeDigest != status.getAbePublicParametersDigest())
+                : !sameParameterIdentity;
+            const auto pendingDkeyRefresh =
+                m_nacDkeyRefreshPendingServices.find(serviceKey);
+            if (abeGenerationChanged || pendingDkeyRefresh !=
+                m_nacDkeyRefreshPendingServices.end()) {
+                // The consumer DKEY is identity-wide: the several service
+                // statuses of one permission wave (same ControllerVersion)
+                // must collapse into a single replacement fetch.  A
+                // generation change always refreshes; a pending grant-only
+                // hit refreshes only when this wave has not already driven
+                // one (RV-U21 single-issuance).
+                const bool refreshForCurrentWave =
+                    abeGenerationChanged ||
+                    !m_lastDkeyRefreshWave ||
+                    *m_lastDkeyRefreshWave != status.getControllerVersion();
+                if (refreshForCurrentWave) {
+                    m_lastDkeyRefreshWave = status.getControllerVersion();
+                }
+                grantOnlyDkeyRefresh = !abeGenerationChanged &&
+                    refreshForCurrentWave &&
+                    pendingDkeyRefresh != m_nacDkeyRefreshPendingServices.end();
+                if (abeGenerationChanged)
+                    m_nacDkeyRefreshPendingServices.erase(serviceKey);
+                else
+                    m_nacDkeyRefreshPendingServices.erase(pendingDkeyRefresh);
+            }
+        }
+        if (accepted) {
+            if (versionChanged) {
+                invalidateControllerScopedCaches(status.getServiceName(),
+                                                  status.getControllerVersion(),
+                                                  abeGenerationChanged, &status,
+                                                  grantOnlyDkeyRefresh);
+            }
+            if (advancedFromInstalledStatus) {
+                // A newer ControllerVersion can withdraw this provider's own
+                // grant (identity or service-scoped revocation); the renewal
+                // fetch installs the replacement table so OnRequest begins
+                // refusing the withdrawn service.
+                refreshProviderPermissionsAfterAdvance(status.getServiceName());
+            }
+            scheduleControllerStatusRefresh(status.getServiceName(), status);
+        }
+        return accepted;
+    }
+
+    void ServiceProvider::invalidateControllerScopedCaches(
+        const ndn::Name& serviceName,
+        const ControllerVersion& version,
+        bool abeGenerationChanged,
+        const PolicyStatusData* status,
+        bool grantOnlyDkeyRefresh)
+    {
+        if (serviceName.empty() || !version.isValid()) {
+            return;
+        }
+
+        const auto serviceUri = serviceName.toUri();
+        const auto hybridKeys = m_hybridMessageCrypto.invalidateService(serviceName);
+        // NAC-ABE's DKEY and encrypted-CK caches are scoped to the local
+        // identity/authority rather than to an NDNSF service name.  Clear the
+        // external cache whenever a newer controller status is committed so
+        // old authority material cannot be reused for a future request.  The
+        // NDNSF caches below remain service-selective.
+        auto& nacConsumer = activeNacConsumer();
+        if (abeGenerationChanged) {
+            if (status != nullptr) {
+                nacConsumer.clearCache(status->getAbePublicParametersName(),
+                                       status->getAbePublicParametersDigest());
+            }
+            else {
+                nacConsumer.clearCache();
+            }
+        }
+        // clearCache() removes the identity DKEY in addition to encrypted
+        // service keys. Immediately schedule a fresh DKEY fetch after a
+        // validated generation change. For grant-only changes the old key
+        // remains active until the complete replacement is installed.
+        // Consumer coalescing handles a constructor-time fetch still in
+        // flight. A LocalMock without its fixture-owned Consumer defers to
+        // its explicit bootstrap path.
+        const bool canRefreshDkey = !m_isLocalMock || m_testNacConsumer != nullptr;
+        if ((abeGenerationChanged || grantOnlyDkeyRefresh) && canRefreshDkey) {
+            if (grantOnlyDkeyRefresh)
+                nacConsumer.refreshDecryptionKey();
+            else
+                nacConsumer.obtainDecryptionKey();
+            NDN_LOG_INFO("NDNSF_NAC_DKEY_REFRESH_REQUESTED role=provider"
+                         << " serviceName=" << serviceUri
+                         << " epoch=" << version.controllerEpoch
+                         << " reason=" << (abeGenerationChanged ?
+                             "generation-change" : "grant-only"));
+        }
+        else if (abeGenerationChanged || grantOnlyDkeyRefresh) {
+            NDN_LOG_INFO("NDNSF_NAC_DKEY_REFRESH_DEFERRED role=provider"
+                         << " serviceName=" << serviceUri
+                         << " epoch=" << version.controllerEpoch
+                         << " reason=local-mock-bootstrap");
+            scheduleDeferredDkeyRefreshRetry(serviceName);
+        }
+        else {
+            NDN_LOG_DEBUG("NDNSF_NAC_DKEY_REFRESH_NOT_REQUIRED role=provider"
+                         << " serviceName=" << serviceUri
+                         << " epoch=" << version.controllerEpoch
+                         << " reason=same-generation-no-grant");
+        }
+        if (abeGenerationChanged) {
+            activeNacProducer().clearCache();
+            if (status != nullptr) {
+                activeNacProducer().refreshPublicParameters(
+                    status->getAbePublicParametersName(),
+                    status->getAbePublicParametersDigest());
+            }
+        }
+        auto keyContainsService = [&serviceName](const ndn::Name& key) {
+            if (key.size() <= serviceName.size()) {
+                return false;
+            }
+            // Pending provider keys are requester + service + request-id.
+            // Search component-wise so identities containing a service-like
+            // prefix do not become a cache invalidation boundary by accident.
+            for (size_t offset = 1;
+                 offset + serviceName.size() < key.size(); ++offset) {
+                if (key.getSubName(offset, serviceName.size()) == serviceName) {
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        std::vector<ndn::Name> affectedPendingKeys;
+        {
+            std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+            auto collect = [&affectedPendingKeys, &keyContainsService](
+                               const auto& map) {
+                for (const auto& item : map) {
+                    if (keyContainsService(item.first)) {
+                        affectedPendingKeys.push_back(item.first);
+                    }
+                }
+            };
+            collect(pendingRequests);
+            collect(pendingProviderTokens);
+            collect(m_pendingRequestTokenHashes);
+            collect(m_streamBindings);
+            for (const auto& pendingKey : m_recentProviderRequests) {
+                if (keyContainsService(pendingKey)) {
+                    affectedPendingKeys.push_back(pendingKey);
+                }
+            }
+            for (const auto& pendingKey : m_selectedProviderRequests) {
+                if (keyContainsService(pendingKey)) {
+                    affectedPendingKeys.push_back(pendingKey);
+                }
+            }
+        }
+        std::sort(affectedPendingKeys.begin(), affectedPendingKeys.end());
+        affectedPendingKeys.erase(std::unique(affectedPendingKeys.begin(),
+                                              affectedPendingKeys.end()),
+                                  affectedPendingKeys.end());
+        for (const auto& pendingKey : affectedPendingKeys) {
+            cleanupPendingRequestState(pendingKey, true);
+        }
+
+        size_t targetedTokens = 0;
+        {
+            std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+            for (auto it = m_targetedProviderTokens.begin();
+                 it != m_targetedProviderTokens.end();) {
+                if (it->second.serviceName == serviceName) {
+                    ++targetedTokens;
+                    it = m_targetedProviderTokens.erase(it);
+                }
+                else {
+                    ++it;
+                }
+            }
+
+            for (auto it = m_streamBindings.begin();
+                 it != m_streamBindings.end();) {
+                if (it->second.serviceName == serviceName) {
+                    it = m_streamBindings.erase(it);
+                }
+                else {
+                    ++it;
+                }
+            }
+            for (auto it = m_streamPublishers.begin();
+                 it != m_streamPublishers.end();) {
+                if (keyContainsService(it->first)) {
+                    it = m_streamPublishers.erase(it);
+                }
+                else {
+                    ++it;
+                }
+            }
+        }
+
+        std::vector<ndn::Name> collaborationRequests;
+        {
+            std::lock_guard<std::mutex> lock(m_collaborationMutex);
+            for (const auto& item : m_collaborationServiceNamesByRequest) {
+                if (item.second == serviceName) {
+                    collaborationRequests.push_back(item.first);
+                }
+            }
+            for (const auto& requestId : collaborationRequests) {
+                m_collaborationServiceNamesByRequest.erase(requestId);
+                m_collaborationDataByRequest.erase(requestId);
+                m_collaborationScopeKeysByRequest.erase(requestId);
+                m_collaborationScopeKeyDataNamesByRequest.erase(requestId);
+                m_pendingEncryptedCollaborationData.erase(requestId);
+            }
+        }
+
+        for (auto it = m_preparedDeployments.begin();
+             it != m_preparedDeployments.end();) {
+            if (it->second.serviceName == serviceName) {
+                it = m_preparedDeployments.erase(it);
+            }
+            else {
+                ++it;
+            }
+        }
+
+        NDN_LOG_WARN("NDNSF_CONTROLLER_CACHE_INVALIDATED role=provider"
+                     << " serviceName=" << serviceUri
+                     << " generation=" << version.controllerGenerationTimestamp
+                     << " epoch=" << version.controllerEpoch
+                     << " pendingRequests=" << affectedPendingKeys.size()
+                     << " hybridKeys=" << hybridKeys
+                     << " targetedTokens=" << targetedTokens
+                     << " collaborationRequests=" << collaborationRequests.size()
+                     << " abeGenerationChanged=" << (abeGenerationChanged ? "true" : "false")
+                     << " nacAbeCaches="
+                     << (abeGenerationChanged ? "authority-shared-cleared" :
+                         "retained-grant-only-same-generation")
+                     << " runtimeFamilies=targeted-token,selection-binding,nonce,in-flight-request"
+                     << " stateFamilies=abe,message-key,replay");
+    }
+
+    void ServiceProvider::scheduleControllerStatusRefresh(
+        const ndn::Name& serviceName, const PolicyStatusData& status)
+    {
+        if (serviceName.empty() || !status.getControllerVersion().isValid()) {
+            return;
+        }
+
+        ndn::Name controllerPrefix;
+        const auto serviceKey = serviceName.toUri();
+        const auto now = nowMilliseconds();
+        const auto revalidationPeriodMs = policyRevalidationPeriodMs();
+        const auto expiry = status.getValidUntilMs();
+        const auto remaining = expiry > now ? expiry - now : 0;
+        const auto lead = remaining == 0 ? 0 :
+            std::min<uint64_t>(60000, std::max<uint64_t>(1000, remaining / 4));
+        // The revalidation knob (default 0 = off) replaces the far-future
+        // near-expiry delay with a fixed period so the production scheduled
+        // refresh path discovers a controller-side change inside a bounded
+        // MiniNDN window.  Each completed fetch re-arms the next period in
+        // the fire handler below, because the single-flight version guard
+        // would otherwise suppress every same-version re-arm after the
+        // first fire.
+        const auto delay = revalidationPeriodMs > 0 ? revalidationPeriodMs :
+            (remaining > lead ? remaining - lead : 0);
+        const auto version = status.getControllerVersion();
+        {
+            std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
+            controllerPrefix = m_controllerPrefix;
+            if (controllerPrefix.empty()) {
+                return;
+            }
+            const auto scheduled = m_policyStatusRefreshScheduled.find(serviceKey);
+            if (scheduled != m_policyStatusRefreshScheduled.end() &&
+                scheduled->second.compare(version) >= 0) {
+                return;
+            }
+            m_policyStatusRefreshScheduled[serviceKey] = version;
+        }
+
+        m_scheduler.schedule(ndn::time::milliseconds(delay),
+            [this, serviceName, serviceKey, version, lead, revalidationPeriodMs] {
+                ndn::Name prefix;
+                bool shouldFetch = false;
+                bool rearmForPeriodicRefresh = false;
+                {
+                    std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
+                    const auto scheduled = m_policyStatusRefreshScheduled.find(serviceKey);
+                    if (scheduled == m_policyStatusRefreshScheduled.end() ||
+                        scheduled->second != version) {
+                        return;
+                    }
+                    prefix = m_controllerPrefix;
+                    const auto coordinator = m_policyRefreshCoordinators.find(serviceKey);
+                    if (coordinator != m_policyRefreshCoordinators.end()) {
+                        // The coordinator admits a scheduled refresh only near
+                        // status expiry; under the knob the status is still far
+                        // from expiry, so pass an unbounded lead and let the
+                        // revalidation fetch proceed.
+                        const auto result = coordinator->second.startScheduledRefresh(
+                            nowMilliseconds(),
+                            revalidationPeriodMs > 0
+                                ? std::numeric_limits<uint64_t>::max() / 2 : lead);
+                        shouldFetch = result.outcome ==
+                            PolicyRefreshCoordinator::Outcome::FETCH_STARTED;
+                        rearmForPeriodicRefresh = revalidationPeriodMs > 0 &&
+                            (result.outcome ==
+                                 PolicyRefreshCoordinator::Outcome::FETCH_STARTED ||
+                             result.outcome ==
+                                 PolicyRefreshCoordinator::Outcome::FETCH_COALESCED);
+                    }
+                    if (rearmForPeriodicRefresh) {
+                        const auto current = m_policyStatusRefreshScheduled.find(serviceKey);
+                        if (current != m_policyStatusRefreshScheduled.end() &&
+                            current->second == version) {
+                            // Drop the armed version so the receipt of this
+                            // fetch re-arms the next periodic revalidation;
+                            // the single-flight guard above would otherwise
+                            // suppress a same-version re-arm forever.
+                            m_policyStatusRefreshScheduled.erase(current);
+                        }
+                    }
+                }
+                if (shouldFetch && !prefix.empty()) {
+                    NDN_LOG_INFO("NDNSF_POLICY_STATUS_REVALIDATION role=provider"
+                                 << " serviceName=" << serviceName.toUri()
+                                 << " generation=" << version.controllerGenerationTimestamp
+                                 << " epoch=" << version.controllerEpoch);
+                    // Under the knob the revalidation must be able to
+                    // discover a newer controller epoch, so issue an
+                    // unversioned must-be-fresh status fetch (the controller
+                    // answers with its current status) instead of the
+                    // exact-version confirmation fetch of the near-expiry
+                    // schedule, which can never observe a version advance.
+                    fetchPolicyStatusFromController(prefix, serviceName, 1,
+                        revalidationPeriodMs > 0
+                            ? std::optional<ControllerVersion>()
+                            : std::optional<ControllerVersion>(version));
+                }
+            });
+    }
+
+    void ServiceProvider::scheduleDeferredDkeyRefreshRetry(const ndn::Name& serviceName)
+    {
+        const auto attempts = std::make_shared<size_t>(0);
+        const auto retry = std::make_shared<std::function<void()>>();
+        std::weak_ptr<std::function<void()>> weakRetry = retry;
+        *retry = [this, serviceName, attempts, weakRetry] {
+            if (*attempts >= 20) {
+                NDN_LOG_WARN("NDNSF_NAC_DKEY_RETRY_EXHAUSTED role=provider"
+                             << " serviceName=" << serviceName.toUri());
+                return;
+            }
+            ++*attempts;
+            if (activeNacConsumer().readyForDecryption())
+                return;
+            activeNacConsumer().obtainDecryptionKey();
+            if (const auto self = weakRetry.lock()) {
+                m_scheduler.schedule(ndn::time::milliseconds(250), *self);
+            }
+        };
+        m_scheduler.schedule(ndn::time::milliseconds(250), *retry);
+    }
+
+    std::optional<ControllerVersion> ServiceProvider::getControllerVersion() const
+    {
+        std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
+        return m_controllerVersion;
+    }
+
+    std::optional<ControllerVersion>
+    ServiceProvider::getControllerVersion(const ndn::Name& serviceName) const
+    {
+        if (serviceName.empty()) {
+            return std::nullopt;
+        }
+        std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
+        const auto it = m_revocationStates.find(serviceName.toUri());
+        if (it != m_revocationStates.end() && it->second.hasCurrentStatus()) {
+            return it->second.currentVersion();
+        }
+        if (m_controllerPrefix.empty()) {
+            return m_controllerVersion;
+        }
+        return std::nullopt;
+    }
+
+    void ServiceProvider::adoptControllerVersion(const ControllerVersion& version)
+    {
+        if (!version.isValid()) {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
+        // Permission responses and manifests carry only a refresh hint.  A
+        // configured runtime may adopt authority exclusively through an
+        // exact, Controller-signed PolicyStatus; retaining a hint here would
+        // allow an unverified version to become the local comparison point.
+        if (!m_controllerPrefix.empty()) {
+            NDN_LOG_DEBUG("Ignoring non-status ControllerVersion hint generation="
+                          << version.controllerGenerationTimestamp
+                          << " epoch=" << version.controllerEpoch);
+            return;
+        }
+        if (!m_controllerVersion || version.compare(*m_controllerVersion) > 0) {
+            m_controllerVersion = version;
+        }
+    }
+
     bool ServiceProvider::isAcceptablePolicyEpoch(size_t messageEpoch) const
     {
         return m_currentPolicyEpoch == 0 || messageEpoch == 0 ||
                messageEpoch == m_currentPolicyEpoch;
+    }
+
+    bool ServiceProvider::isAcceptablePolicyEpoch(const ndn::Name& serviceName,
+                                                  size_t messageEpoch) const
+    {
+        if (serviceName.empty()) {
+            return false;
+        }
+        std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
+        const auto it = m_revocationStates.find(serviceName.toUri());
+        if (it != m_revocationStates.end() && it->second.hasCurrentStatus()) {
+            const auto currentEpoch = static_cast<size_t>(
+                it->second.currentVersion().controllerEpoch);
+            // LocalMock fixtures have no Controller authority and historically
+            // omit policyEpoch.  Keep that compatibility only for the
+            // controller-free path; configured runtimes require exact, nonzero
+            // service-scoped epochs.
+            return m_controllerPrefix.empty() ?
+                (messageEpoch == 0 || messageEpoch == currentEpoch) :
+                messageEpoch == currentEpoch;
+        }
+        return m_controllerPrefix.empty() &&
+               (m_currentPolicyEpoch == 0 || messageEpoch == 0 ||
+                messageEpoch == m_currentPolicyEpoch);
+    }
+
+    bool ServiceProvider::isAcceptableControllerVersion(
+        const std::optional<ControllerVersion>& messageVersion) const
+    {
+        std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
+        if (!m_controllerVersion) {
+            // A configured Controller marks this as a protected runtime.  Do
+            // not accept a missing message version before a signed status is
+            // installed; controller-free LocalMock/unit callers keep the
+            // compatibility behavior used by non-authority tests.
+            return m_controllerPrefix.empty();
+        }
+        return messageVersion && *messageVersion == *m_controllerVersion;
+    }
+
+    bool ServiceProvider::isAcceptableControllerVersion(
+        const ndn::Name& serviceName,
+        const std::optional<ControllerVersion>& messageVersion) const
+    {
+        if (serviceName.empty()) {
+            return false;
+        }
+        std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
+        const auto it = m_revocationStates.find(serviceName.toUri());
+        if (it != m_revocationStates.end() && it->second.hasCurrentStatus()) {
+            return messageVersion &&
+                   *messageVersion == it->second.currentVersion();
+        }
+        if (m_controllerPrefix.empty()) {
+            if (!m_controllerVersion) {
+                return true;
+            }
+            return messageVersion && *messageVersion == *m_controllerVersion;
+        }
+        return false;
+    }
+
+    bool ServiceProvider::authorizeControllerTransition(
+        const ndn::Name& serviceName,
+        ProtectedTransition transition) const
+    {
+        if (serviceName.empty()) {
+            return false;
+        }
+
+        const auto certificateWire = identityCert.wireEncode();
+        const auto certificateDigest = sha256DigestString(ndn::Buffer(
+            certificateWire.data(), certificateWire.data() + certificateWire.size()));
+        const AuthorizationSubject subject{
+            identityCert.getIdentity(), certificateDigest, serviceName,
+            makeProviderAuthorizationAttribute(serviceName)};
+
+        std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
+        const auto it = m_revocationStates.find(serviceName.toUri());
+        if (it == m_revocationStates.end()) {
+            // Permissions alone are not an authority snapshot.  Fail closed
+            // for configured Controller runtimes until this service has an
+            // authenticated non-zero PolicyStatus.
+            return m_controllerPrefix.empty();
+        }
+        const auto decision = it->second.authorize(subject, transition,
+                                                   nowMilliseconds());
+        if (!decision.allowed) {
+            NDN_LOG_WARN("NDNSF_PROVIDER_REVOCATION_REJECT service="
+                         << serviceName << " transition="
+                         << static_cast<int>(transition)
+                         << " reason=" << decision.reason);
+        }
+        return decision.allowed;
     }
 
     bool ServiceProvider::handlePermissionResponseData(const ndn::Data& data,
@@ -11032,6 +12519,30 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             return;
         }
 
+        ServiceSelectionMessage message;
+        if (!message.WireDecode(block)) {
+            NDN_LOG_ERROR("Reject V2 selection with invalid message wire for "
+                          << key.toUri());
+            clearSelectionDecryptInFlight();
+            return;
+        }
+        const auto messageVersion = message.hasControllerVersion() ?
+            std::optional<ControllerVersion>(message.getControllerVersion()) :
+            std::nullopt;
+        // Do not make the first message carrying a newer ControllerVersion
+        // disappear behind the old authorization state.  The hint is only a
+        // trigger for an exact signed status fetch; it never changes authority
+        // by itself, and the transition below still fails closed until that
+        // status is installed.
+        maybeRefreshControllerVersionHint(serviceName, messageVersion);
+        if (!authorizeControllerTransition(serviceName,
+                                           ProtectedTransition::SELECTION)) {
+            NDN_LOG_ERROR("Reject Selection under revoked Controller status requestId="
+                          << msgId.toUri());
+            clearSelectionDecryptInFlight();
+            return;
+        }
+
         NDN_LOG_DEBUG("OnServiceSelectionMessageDecryptionSuccessCallbackV2: "
             << requesterName.toUri()
             << providerName.toUri()
@@ -11047,8 +12558,6 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             msgId, serviceName,
             ProviderRequestLifecycleState::SELECTION_RECEIVED);
 
-        ServiceSelectionMessage message;
-        message.WireDecode(block);
         const std::string selectionDigest = computeSelectionDigest(message);
         const auto opaqueParticipantIt =
             m_opaqueSelectionParticipants.find(serviceName);
@@ -11317,7 +12826,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                                        serviceName,
                                        msgId,
                                        "selection received");
-        if (!isAcceptablePolicyEpoch(message.getPolicyEpoch())) {
+        if (!isAcceptablePolicyEpoch(serviceName, message.getPolicyEpoch())) {
             NDN_LOG_ERROR("Reject V2 selection with stale policy epoch for "
                           << msgId.toUri()
                           << " receivedEpoch=" << message.getPolicyEpoch()
@@ -11331,9 +12840,20 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             clearSelectionDecryptInFlight();
             return;
         }
+        if (!isAcceptableControllerVersion(serviceName, messageVersion)) {
+            NDN_LOG_ERROR("Reject V2 selection with stale ControllerVersion for "
+                          << msgId.toUri());
+            updateSelectionExecutionStatus(
+                selectionDigest, SelectionExecutionState::Rejected,
+                providerName, serviceName, msgId,
+                "stale controller version");
+            clearSelectionDecryptInFlight();
+            return;
+        }
 
         bool hasR1Decision = false;
         bool r1NotSelected = false;
+        bool requestScopedSelection = false;
         std::string r1ReservationId;
         std::string r1DecisionDigest;
         uint64_t r1TombstoneRetainUntilMs = 0;
@@ -11546,6 +13066,20 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                 }
             }
             selectedRequest = *(it->second);
+            requestScopedSelection =
+                selectedRequest.hasRequestCapabilities() &&
+                selectedRequest.getRequestCapabilities().hasField(
+                    "RequestScopedConfidentialityV1") &&
+                selectedRequest.getRequestCapabilities().getField(
+                    "RequestScopedConfidentialityV1") == "required";
+            if (requestScopedSelection && (hasOpaqueParticipant || hasR1Decision)) {
+                updateSelectionExecutionStatus(
+                    selectionDigest, SelectionExecutionState::Rejected,
+                    providerName, serviceName, msgId,
+                    "request-scoped confidentiality does not support opaque/R1 Selection");
+                m_selectionDecryptsInFlight.erase(key);
+                return;
+            }
             if (hasOpaqueParticipant) {
                 if (!m_genericSelectionTxnStore) {
                     updateSelectionExecutionStatus(
@@ -11694,8 +13228,10 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                     return;
                 }
                 const auto wrapped = selectionGatedUnhex(grant.getField("wrappedInputKey"));
+                auto& activeKeyChain = m_testSigningKeyChain ?
+                    *m_testSigningKeyChain : m_keyChain;
                 const auto inputKey = unwrapSelectionGatedInputKey(
-                    wrapped, identityCert.getName(), m_keyChain);
+                    wrapped, identityCert.getName(), activeKeyChain);
                 ndn::Buffer plaintext;
                 if (!decryptSelectionGatedInput(
                       selectedRequest.getEncryptedRequestInput(), inputKey,
@@ -11820,6 +13356,17 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             pendingReservationLeases.erase(key);
             m_recentProviderRequests.erase(key);
             m_selectionDecryptsInFlight.erase(key);
+        }
+        if (requestScopedSelection) {
+            // The Selection transaction is committed above; the Provider now
+            // fetches the exact User-signed encrypted Input Data before
+            // dispatching application code.  Keeping this branch ahead of
+            // legacy payload/assignment dispatch prevents an empty discovery
+            // payload from reaching an ordinary handler.
+            fetchRequestScopedInputAndDispatch(
+                requesterName, providerName, serviceName, msgId,
+                std::move(selectedRequest), message, selectionDigest);
+            return;
         }
 opaque_selection_committed:
         if (opaqueCommitted) {

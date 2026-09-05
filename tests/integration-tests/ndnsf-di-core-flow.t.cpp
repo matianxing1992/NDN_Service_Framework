@@ -2688,7 +2688,7 @@ BOOST_AUTO_TEST_CASE(PreconfiguredEnvironmentRunsThreeProviderCustomSelection)
     }
     environment.userPubSub().subscribeToProducer(
         providerNode,
-        [&, index] (const ndn::svs::SVSPubSub::SubscriptionData& publication) {
+        [&] (const ndn::svs::SVSPubSub::SubscriptionData& publication) {
           if (auto parsedAck = parseRequestAckNameV2(publication.name)) {
             if (parsedAck->serviceName.equals(serviceName)) {
               ndn::Block ackBlock(publication.data);
@@ -5628,7 +5628,7 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
           ackCapabilityOffer.size());
         return decision;
       },
-      [nativeHandler = std::move(nativeHandler), &result, roleIndex,
+      [nativeHandler = std::move(nativeHandler), roleIndex,
        streamedContextByRole, streamedContextMutex] (
           ServiceProvider::CollaborationContext& context,
           const RequestMessage& request) mutable {
@@ -5812,8 +5812,7 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
     finalProvider.setStreamPublicationInterceptorForTest(
       [fault = caseOptions.fault, publicationSuppressions,
        publicationReorders, publicationDuplicates,
-       providerTransportDetachments, heldPublication, &environment,
-       finalProviderIndex,
+       providerTransportDetachments, heldPublication,
        heldPublicationMutex, &finalProviderPubSub,
        &finalProviderIo] (const ndn::Data& data) {
         const auto parsed = parseInvocationEventName(data.getName());
@@ -7868,6 +7867,8 @@ BOOST_AUTO_TEST_CASE(ProductionIngressRunsD2hFrozenHeterogeneousMappings)
   }};
 
   for (const auto& [mappingLabel, mapping] : mappings) {
+    const auto mappingCopy = mapping;
+    const std::string mappingLabelCopy(mappingLabel);
     test::BootstrapProfile profile;
     profile.serviceName = ndn::Name("/Inference/D2hHybrid");
     profile.providerCount = 2;
@@ -7894,12 +7895,12 @@ BOOST_AUTO_TEST_CASE(ProductionIngressRunsD2hFrozenHeterogeneousMappings)
       environment.provider(index).setUseTokens(false);
       environment.provider(index).addCollaborationHandler(
           serviceName,
-          [&, index] (ServiceProvider::CollaborationContext& context,
+          [&, index, mappingCopy] (ServiceProvider::CollaborationContext& context,
                       const RequestMessage& request) {
             if (request.getPayload().size() != 11) {
               return;
             }
-            const auto& localRoles = mapping[index];
+            const auto& localRoles = mappingCopy[index];
             const auto& roleProviders = context.assignment().roleProviders;
             {
               std::lock_guard<std::mutex> lock(observedMutex);
@@ -7969,19 +7970,19 @@ BOOST_AUTO_TEST_CASE(ProductionIngressRunsD2hFrozenHeterogeneousMappings)
         std::vector<ndn::Name>{provider0Name, provider1Name}, serviceName,
         request, 200,
         ServiceUser::AckCandidatesHandler(
-            [&] (const std::vector<AckSelectionCandidate>& candidates) {
+            [&, mappingCopy, mappingLabelCopy] (const std::vector<AckSelectionCandidate>& candidates) {
               ackObserved = true;
               if (candidates.size() != 2) {
                 return candidates;
               }
               for (size_t index = 0; index < environment.providerCount(); ++index) {
                 std::vector<ndn::Buffer> assignmentItems;
-                for (const auto& role : mapping[index]) {
+                for (const auto& role : mappingCopy[index]) {
                   CollaborationAssignmentEnvelope assignment;
                   assignment.role = role;
                   assignment.assignedArtifact = ndn::Name("/artifact").append(role);
                   const std::string opaque = std::string("mapping=") +
-                                             mappingLabel + ";rank=" + role + ";";
+                                             mappingLabelCopy + ";rank=" + role + ";";
                   assignment.opaquePayload = ndn::Buffer(
                       reinterpret_cast<const uint8_t*>(opaque.data()), opaque.size());
                   assignmentItems.push_back(
@@ -8421,7 +8422,7 @@ BOOST_AUTO_TEST_CASE(PreconfiguredEnvironmentRunsFourProviderRoleSplitCollaborat
     }
     environment.userPubSub().subscribeToProducer(
         providerNode,
-        [&, index] (const ndn::svs::SVSPubSub::SubscriptionData& publication) {
+        [&] (const ndn::svs::SVSPubSub::SubscriptionData& publication) {
           if (const auto parsedAck = parseRequestAckNameV2(publication.name)) {
             if (parsedAck->serviceName.equals(serviceName)) {
               ndn::Block ackBlock(publication.data);

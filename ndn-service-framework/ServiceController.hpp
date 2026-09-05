@@ -13,6 +13,8 @@
 #include <nac-abe/attribute-authority.hpp>
 
 #include "NDNSFMessages.hpp"
+#include "ControllerGenerationStore.hpp"
+#include "PolicyStatus.hpp"
 
 #include <boost/algorithm/string/join.hpp>
 
@@ -25,10 +27,16 @@
 #include <list>
 #include <algorithm>
 #include <utility>
+#include <memory>
 
 namespace fs = std::filesystem;
 
 namespace ndn_service_framework {
+
+// Test-only access shim.  The production Controller keeps permission
+// response construction private; the integration suite uses this friend to
+// assert revocation filtering without bypassing the real policy tables.
+struct ServiceControllerTestAccess;
 
 // ======= 你工程里应该已有这些：PolicyParser / Policy types / AA =======
 // 这里保持“只声明，不定义”，避免跟你工程冲突。
@@ -67,12 +75,55 @@ public:
   void start();
   void run();
 
+  /** Current persisted Controller authorization version. */
+  ControllerVersion getControllerVersion() const;
+
+  /** Build the signed-status payload for one service.  The enclosing Data
+   * packet is signed by ServiceController when published. */
+  PolicyStatusData getPolicyStatus(const ndn::Name& serviceName) const;
+
+  /** Add one typed revocation and advance the Controller epoch. */
+  bool revoke(const RevocationTarget& target);
+
+  /**
+   * Grant one exact service authorization.  Grant-only mutations advance the
+   * ControllerVersion but keep the current global ABE generation; the
+   * Controller replaces only the target identity's complete policy; NAC-ABE
+   * generates the replacement DKEY lazily on that identity's next fetch.
+   */
+  bool grant(const ndn::Name& identity,
+             const ndn::Name& serviceName,
+             const ndn::Name& authorizationAttribute);
+
+  /** Testable policy decision used by permission issuance.  An empty
+   * authorizationAttribute is a query wildcard for legacy diagnostics; all
+   * runtime authorization paths pass the exact canonical attribute. */
+  bool isRevoked(const ndn::Name& identity,
+                 const ndn::Name& serviceName,
+                 const std::string& certificateDigest = {},
+                 const ndn::Name& authorizationAttribute = {}) const;
+
 private:
+  friend struct ServiceControllerTestAccess;
   // ===== lifecycle =====
   void loadConfigFiles();
   void addAttributesForUsersAccordingToServicePolicy();
   void buildLookupTables();
   void registerInterestHandlers();
+  void onPolicyStatusInterest(const ndn::InterestFilter&, const ndn::Interest& interest);
+  bool initializeControllerGeneration();
+  static std::string certificateDigest(const ndn::security::Certificate& certificate);
+  bool isIdentityOrCertificateRevoked(const ndn::Name& identity,
+                                      const std::string& certificateDigest) const;
+  void advanceAuthorizationEpoch();
+  void initializeAbeGenerationIdentity();
+  void rotateAbeGenerationAndReissuePolicies();
+  void reissueAbePolicies();
+  std::set<std::string> effectiveAttributesFor(const std::string& identity) const;
+  bool isAbeAttributeRevoked(const std::string& identity,
+                             const std::string& attribute) const;
+  static std::string abePublicParametersDigest(const ndn::Buffer& wire);
+  ndn::Name currentAbePublicParametersName() const;
 
   // ===== helpers =====
   static std::vector<std::string> uniqSorted(std::vector<std::string> v);
@@ -133,6 +184,8 @@ private:
 
   ndn::KeyChain m_keyChain;
   ndn::nacabe::KpAttributeAuthority m_aa;
+  ndn::Name m_abePublicParametersName;
+  std::string m_abePublicParametersDigest;
 
   // controller prefix selection
   ndn::Name m_controllerPrefix;
@@ -145,11 +198,17 @@ private:
   ndn::Name m_prefixUserPermissions;
   ndn::Name m_prefixProviderPermissions;
   ndn::Name m_prefixPolicyManifest;
+  ndn::Name m_prefixPolicyStatus;
   ndn::Name m_prefixCertificateBootstrap;
   size_t m_policyEpoch = 1;
   size_t m_requiredKeyEpoch = 1;
   uint64_t m_policyValidFromMs = 0;
   uint64_t m_policyGracePeriodMs = 0;
+  uint64_t m_policyValidUntilMs = 0;
+  ControllerVersion m_controllerVersion;
+  std::unique_ptr<ControllerGenerationStore> m_generationStore;
+  bool m_generationReady = false;
+  std::vector<RevocationTarget> m_revocations;
 
   // policies loaded from config
   std::vector<ProviderPolicy> m_providerPolicies;

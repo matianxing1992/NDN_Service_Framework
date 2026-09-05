@@ -120,6 +120,20 @@ clonePayloadBlock(const ndn::Block& payloadBlock)
     return makePayloadBlockPtr(payloadBlock.value(), payloadBlock.value_size());
 }
 
+ndn::Block
+cloneOpaqueContainer(const ndn::Block& block, uint32_t expectedType)
+{
+    if (!block.isValid() || block.type() != expectedType || block.size() > 65536) {
+        throw std::invalid_argument("message confidentiality block has unexpected type or size");
+    }
+    const auto wire = ndn::span<const uint8_t>(block.data(), block.size());
+    auto [ok, decoded] = ndn::Block::fromBuffer(wire);
+    if (!ok || decoded.type() != expectedType || decoded.size() != block.size()) {
+        throw std::invalid_argument("message confidentiality block is not canonical wire");
+    }
+    return decoded;
+}
+
 const ndn::Block&
 emptyPayloadBlock()
 {
@@ -293,6 +307,113 @@ StageInputEvidence::StageInputEvidence() : DeploymentControlMessage(tlv::StageIn
 StageAbort::StageAbort() : DeploymentControlMessage(tlv::StageAbortType) {}
 SelectionDecisionTombstone::SelectionDecisionTombstone() : DeploymentControlMessage(tlv::SelectionDecisionTombstoneType) {}
 
+bool
+EncryptionCertificateAdvertisement::isValid(uint64_t nowMs) const
+{
+    if (certificateName.empty() || certificateDigest.size() != 71 ||
+        certificateDigest.compare(0, 7, "sha256:") != 0 ||
+        validFromMs == 0 || validUntilMs <= validFromMs ||
+        (nowMs != 0 && (nowMs < validFromMs || nowMs >= validUntilMs)) ||
+        supportedEnvelopeAlgorithms.empty()) {
+        return false;
+    }
+    for (size_t i = 7; i < certificateDigest.size(); ++i) {
+        const auto c = static_cast<unsigned char>(certificateDigest[i]);
+        if (!std::isxdigit(c)) return false;
+    }
+    std::set<std::string> algorithms;
+    std::string previousAlgorithm;
+    for (const auto& algorithm : supportedEnvelopeAlgorithms) {
+        if (algorithm.empty() || algorithm.size() > 64 ||
+            (!previousAlgorithm.empty() && algorithm <= previousAlgorithm) ||
+            !algorithms.insert(algorithm).second) {
+            return false;
+        }
+        previousAlgorithm = algorithm;
+    }
+    return true;
+}
+
+bool
+EncryptionCertificateAdvertisement::supportsAlgorithm(const std::string& algorithm) const
+{
+    return std::find(supportedEnvelopeAlgorithms.begin(),
+                     supportedEnvelopeAlgorithms.end(), algorithm) !=
+           supportedEnvelopeAlgorithms.end();
+}
+
+void
+EncryptionCertificateAdvertisement::Clear()
+{
+    certificateName.clear();
+    certificateDigest.clear();
+    validFromMs = 0;
+    validUntilMs = 0;
+    supportedEnvelopeAlgorithms.clear();
+}
+
+ndn::Block
+EncryptionCertificateAdvertisement::WireEncode() const
+{
+    if (!isValid()) {
+        throw std::invalid_argument("invalid encryption certificate advertisement");
+    }
+    ndn::Block block(TYPE);
+    block.push_back(ndn::makeStringBlock(tlv::CertificateNameType,
+                                         certificateName.toUri()));
+    block.push_back(ndn::makeStringBlock(tlv::CertificateDigestType,
+                                         certificateDigest));
+    block.push_back(ndn::makeNonNegativeIntegerBlock(tlv::CertificateValidFromType,
+                                                     validFromMs));
+    block.push_back(ndn::makeNonNegativeIntegerBlock(tlv::CertificateValidUntilType,
+                                                     validUntilMs));
+    for (const auto& algorithm : supportedEnvelopeAlgorithms) {
+        block.push_back(ndn::makeStringBlock(tlv::KeyEnvelopeAlgorithmType,
+                                             algorithm));
+    }
+    block.encode();
+    return block;
+}
+
+bool
+EncryptionCertificateAdvertisement::WireDecode(const ndn::Block& block)
+{
+    Clear();
+    if (block.type() != TYPE) return false;
+    try {
+        block.parse();
+        const auto& elements = block.elements();
+        if (elements.size() < 5 ||
+            elements[0].type() != tlv::CertificateNameType ||
+            elements[1].type() != tlv::CertificateDigestType ||
+            elements[2].type() != tlv::CertificateValidFromType ||
+            elements[3].type() != tlv::CertificateValidUntilType) {
+            return false;
+        }
+        EncryptionCertificateAdvertisement decoded;
+        decoded.certificateName = ndn::Name(ndn::readString(elements[0]));
+        decoded.certificateDigest = ndn::readString(elements[1]);
+        decoded.validFromMs = ndn::readNonNegativeInteger(elements[2]);
+        decoded.validUntilMs = ndn::readNonNegativeInteger(elements[3]);
+        for (size_t i = 4; i < elements.size(); ++i) {
+            if (elements[i].type() != tlv::KeyEnvelopeAlgorithmType) return false;
+            decoded.supportedEnvelopeAlgorithms.push_back(ndn::readString(elements[i]));
+        }
+        if (!decoded.isValid()) return false;
+        const auto canonical = decoded.WireEncode();
+        if (canonical.size() != block.size() ||
+            !std::equal(canonical.begin(), canonical.end(), block.begin())) {
+            return false;
+        }
+        *this = std::move(decoded);
+        return true;
+    }
+    catch (const std::exception&) {
+        Clear();
+        return false;
+    }
+}
+
 RequestMessage::RequestMessage() {}
 
 RequestMessage::RequestMessage(const RequestMessage& other)
@@ -313,9 +434,18 @@ RequestMessage::operator=(const RequestMessage& other)
         requestMode_ = other.requestMode_;
         targetProvider_ = other.targetProvider_;
         policyEpoch_ = other.policyEpoch_;
+        controllerVersion_ = other.controllerVersion_;
+        userEncryptionCertificate_ = other.userEncryptionCertificate_;
         deploymentIntent_ = other.deploymentIntent_;
         requestCapabilities_ = other.requestCapabilities_;
         encryptedRequestInput_ = other.encryptedRequestInput_;
+        if (other.requestSecurityBinding_) {
+            requestSecurityBinding_ = cloneOpaqueContainer(
+                *other.requestSecurityBinding_, tlv::RequestSecurityBindingType);
+        }
+        else {
+            requestSecurityBinding_.reset();
+        }
         streamRequestOptions_ = other.streamRequestOptions_;
         conversationContinuation_ = other.conversationContinuation_;
         m_wire.reset();
@@ -361,6 +491,21 @@ void RequestMessage::setPolicyEpoch(size_t policyEpoch) {
     policyEpoch_ = policyEpoch;
 }
 
+void RequestMessage::setControllerVersion(const ControllerVersion& version) {
+    if (!version.isValid()) throw std::invalid_argument("invalid ControllerVersion");
+    controllerVersion_ = version;
+    m_wire.reset();
+}
+
+void RequestMessage::setUserEncryptionCertificate(
+    const EncryptionCertificateAdvertisement& advertisement) {
+    if (!advertisement.isValid()) {
+        throw std::invalid_argument("invalid user encryption certificate advertisement");
+    }
+    userEncryptionCertificate_ = advertisement;
+    m_wire.reset();
+}
+
 void RequestMessage::setDeploymentIntent(const DeploymentIntent& intent) {
     if (intent.getVersion() != DeploymentControlMessage::VERSION) {
         throw std::invalid_argument("unsupported deployment intent version");
@@ -374,6 +519,11 @@ void RequestMessage::setRequestCapabilities(const RequestCapabilities& capabilit
 }
 void RequestMessage::setEncryptedRequestInput(const EncryptedRequestInput& input) {
     encryptedRequestInput_ = input;
+    m_wire.reset();
+}
+void RequestMessage::setRequestSecurityBinding(const ndn::Block& binding) {
+    requestSecurityBinding_ = cloneOpaqueContainer(
+        binding, tlv::RequestSecurityBindingType);
     m_wire.reset();
 }
 void RequestMessage::setStreamRequestOptions(const StreamRequestOptions& options) {
@@ -398,6 +548,10 @@ void RequestMessage::clearConversationContinuation() {
 bool RequestMessage::hasDeploymentIntent() const { return deploymentIntent_.has_value(); }
 bool RequestMessage::hasRequestCapabilities() const { return requestCapabilities_.has_value(); }
 bool RequestMessage::hasEncryptedRequestInput() const { return encryptedRequestInput_.has_value(); }
+bool RequestMessage::hasRequestSecurityBinding() const { return requestSecurityBinding_.has_value(); }
+bool RequestMessage::hasUserEncryptionCertificate() const {
+    return userEncryptionCertificate_.has_value();
+}
 bool RequestMessage::hasStreamRequestOptions() const { return streamRequestOptions_.has_value(); }
 bool RequestMessage::hasConversationContinuation() const { return conversationContinuation_.has_value(); }
 const DeploymentIntent& RequestMessage::getDeploymentIntent() const {
@@ -411,6 +565,16 @@ const RequestCapabilities& RequestMessage::getRequestCapabilities() const {
 const EncryptedRequestInput& RequestMessage::getEncryptedRequestInput() const {
     if (!encryptedRequestInput_) throw std::logic_error("request has no encrypted input");
     return *encryptedRequestInput_;
+}
+const ndn::Block& RequestMessage::getRequestSecurityBinding() const {
+    if (!requestSecurityBinding_) throw std::logic_error("request has no security binding");
+    return *requestSecurityBinding_;
+}
+const EncryptionCertificateAdvertisement& RequestMessage::getUserEncryptionCertificate() const {
+    if (!userEncryptionCertificate_) {
+        throw std::logic_error("request has no user encryption certificate");
+    }
+    return *userEncryptionCertificate_;
 }
 const StreamRequestOptions& RequestMessage::getStreamRequestOptions() const {
     if (!streamRequestOptions_) throw std::logic_error("request has no stream options");
@@ -461,6 +625,12 @@ size_t RequestMessage::getPolicyEpoch() const {
     return policyEpoch_;
 }
 
+bool RequestMessage::hasControllerVersion() const { return controllerVersion_.has_value(); }
+const ControllerVersion& RequestMessage::getControllerVersion() const {
+    if (!controllerVersion_) throw std::logic_error("request has no ControllerVersion");
+    return *controllerVersion_;
+}
+
 void RequestMessage::Clear() {
     tokens_.clear();
     userToken_.clear();
@@ -472,9 +642,12 @@ void RequestMessage::Clear() {
     targetProvider_.clear();
     m_wire.reset();
     policyEpoch_ = 0;
+    controllerVersion_.reset();
+    userEncryptionCertificate_.reset();
     deploymentIntent_.reset();
     requestCapabilities_.reset();
     encryptedRequestInput_.reset();
+    requestSecurityBinding_.reset();
     streamRequestOptions_.reset();
     conversationContinuation_.reset();
 }
@@ -507,9 +680,12 @@ ndn::Block RequestMessage::WireEncode() const {
     if (policyEpoch_ > 0) {
         block.push_back(ndn::makeNonNegativeIntegerBlock(tlv::VersionType, policyEpoch_));
     }
+    if (controllerVersion_) block.push_back(controllerVersion_->wireEncode());
+    if (userEncryptionCertificate_) block.push_back(userEncryptionCertificate_->WireEncode());
     if (deploymentIntent_) block.push_back(deploymentIntent_->WireEncode());
     if (requestCapabilities_) block.push_back(requestCapabilities_->WireEncode());
     if (encryptedRequestInput_) block.push_back(encryptedRequestInput_->WireEncode());
+    if (requestSecurityBinding_) block.push_back(*requestSecurityBinding_);
     if (streamRequestOptions_) block.push_back(streamRequestOptions_->wireEncode());
     if (conversationContinuation_) block.push_back(conversationContinuation_->wireEncode());
     block.encode();
@@ -566,6 +742,18 @@ bool RequestMessage::WireDecode(const ndn::Block& block) {
         else if (b.type() == tlv::VersionType) {
             policyEpoch_ = ndn::readNonNegativeInteger(b);
         }
+        else if (b.type() == tlv::ControllerVersionType) {
+            if (controllerVersion_) return false;
+            ControllerVersion version;
+            if (!version.wireDecode(b)) return false;
+            controllerVersion_ = std::move(version);
+        }
+        else if (b.type() == tlv::EncryptionCertificateAdvertisementType) {
+            if (userEncryptionCertificate_) return false;
+            EncryptionCertificateAdvertisement advertisement;
+            if (!advertisement.WireDecode(b)) return false;
+            userEncryptionCertificate_ = std::move(advertisement);
+        }
         else if (b.type() == tlv::DeploymentIntentType) {
             DeploymentIntent intent;
             if (!intent.WireDecode(b)) return false;
@@ -580,6 +768,11 @@ bool RequestMessage::WireDecode(const ndn::Block& block) {
             EncryptedRequestInput input;
             if (!input.WireDecode(b)) return false;
             encryptedRequestInput_ = std::move(input);
+        }
+        else if (b.type() == tlv::RequestSecurityBindingType) {
+            if (requestSecurityBinding_) return false;
+            requestSecurityBinding_ = cloneOpaqueContainer(
+                b, tlv::RequestSecurityBindingType);
         }
         else if (b.type() == tlv::StreamRequestOptionsType) {
             if (streamRequestOptions_) return false;
@@ -623,10 +816,18 @@ ResponseMessage::operator=(const ResponseMessage& other)
         payloadBlock_ = clonePayloadBlock(other.getPayloadBlock());
         payloadSize_ = other.payloadSize_;
         policyEpoch_ = other.policyEpoch_;
+        controllerVersion_ = other.controllerVersion_;
         dataName_ = other.dataName_;
         signerCertificate_ = other.signerCertificate_;
         wireDigest_ = other.wireDigest_;
         streamCompletion_ = other.streamCompletion_;
+        if (other.aeadEnvelope_) {
+            aeadEnvelope_ = cloneOpaqueContainer(
+                *other.aeadEnvelope_, tlv::AeadEnvelopeType);
+        }
+        else {
+            aeadEnvelope_.reset();
+        }
         m_wire.reset();
     }
     return *this;
@@ -660,6 +861,22 @@ void ResponseMessage::setPayloadBlock(const ndn::Block& payloadBlock) {
 
 void ResponseMessage::setPolicyEpoch(size_t policyEpoch) {
     policyEpoch_ = policyEpoch;
+}
+
+void ResponseMessage::setControllerVersion(const ControllerVersion& version) {
+    if (!version.isValid()) throw std::invalid_argument("invalid ControllerVersion");
+    controllerVersion_ = version;
+    m_wire.reset();
+}
+
+void ResponseMessage::setAeadEnvelope(const ndn::Block& envelope) {
+    aeadEnvelope_ = cloneOpaqueContainer(envelope, tlv::AeadEnvelopeType);
+    m_wire.reset();
+}
+
+void ResponseMessage::clearAeadEnvelope() {
+    aeadEnvelope_.reset();
+    m_wire.reset();
 }
 
 void ResponseMessage::setAuthenticatedTransportEvidence(
@@ -714,6 +931,17 @@ size_t ResponseMessage::getPolicyEpoch() const {
     return policyEpoch_;
 }
 
+bool ResponseMessage::hasControllerVersion() const { return controllerVersion_.has_value(); }
+bool ResponseMessage::hasAeadEnvelope() const { return aeadEnvelope_.has_value(); }
+const ControllerVersion& ResponseMessage::getControllerVersion() const {
+    if (!controllerVersion_) throw std::logic_error("response has no ControllerVersion");
+    return *controllerVersion_;
+}
+const ndn::Block& ResponseMessage::getAeadEnvelope() const {
+    if (!aeadEnvelope_) throw std::logic_error("response has no AEAD envelope");
+    return *aeadEnvelope_;
+}
+
 const std::string& ResponseMessage::getDataName() const {
     return dataName_;
 }
@@ -743,6 +971,8 @@ void ResponseMessage::Clear() {
     payloadBlock_.reset();
     payloadSize_ = 0;
     policyEpoch_ = 0;
+    controllerVersion_.reset();
+    aeadEnvelope_.reset();
     dataName_.clear();
     signerCertificate_.clear();
     wireDigest_.clear();
@@ -770,6 +1000,8 @@ ndn::Block ResponseMessage::WireEncode() const {
     if (policyEpoch_ > 0) {
         block.push_back(ndn::makeNonNegativeIntegerBlock(tlv::VersionType, policyEpoch_));
     }
+    if (controllerVersion_) block.push_back(controllerVersion_->wireEncode());
+    if (aeadEnvelope_) block.push_back(*aeadEnvelope_);
     if (streamCompletion_) block.push_back(streamCompletion_->wireEncode());
     block.encode();
     m_wire = std::make_shared<const ndn::Block>(block);
@@ -812,6 +1044,16 @@ bool ResponseMessage::WireDecode(const ndn::Block& block) {
         else if (b.type() == tlv::VersionType) {
             policyEpoch_ = ndn::readNonNegativeInteger(b);
         }
+        else if (b.type() == tlv::ControllerVersionType) {
+            if (controllerVersion_) return false;
+            ControllerVersion version;
+            if (!version.wireDecode(b)) return false;
+            controllerVersion_ = std::move(version);
+        }
+        else if (b.type() == tlv::AeadEnvelopeType) {
+            if (aeadEnvelope_) return false;
+            aeadEnvelope_ = cloneOpaqueContainer(b, tlv::AeadEnvelopeType);
+        }
         else if (b.type() == tlv::StreamCompletionType) {
             if (streamCompletion_) return false;
             StreamCompletion completion;
@@ -847,6 +1089,8 @@ RequestAckMessage::operator=(const RequestAckMessage& other)
         payloadBlock_ = clonePayloadBlock(other.getPayloadBlock());
         payloadSize_ = other.payloadSize_;
         policyEpoch_ = other.policyEpoch_;
+        controllerVersion_ = other.controllerVersion_;
+        providerEncryptionCertificate_ = other.providerEncryptionCertificate_;
         providerCapabilityOffer_ = other.providerCapabilityOffer_;
         selectionInputKeyOffer_ = other.selectionInputKeyOffer_;
         reservationLease_ = other.reservationLease_;
@@ -885,6 +1129,21 @@ void RequestAckMessage::setPolicyEpoch(size_t policyEpoch) {
     policyEpoch_ = policyEpoch;
 }
 
+void RequestAckMessage::setControllerVersion(const ControllerVersion& version) {
+    if (!version.isValid()) throw std::invalid_argument("invalid ControllerVersion");
+    controllerVersion_ = version;
+    m_wire.reset();
+}
+
+void RequestAckMessage::setProviderEncryptionCertificate(
+    const EncryptionCertificateAdvertisement& advertisement) {
+    if (!advertisement.isValid()) {
+        throw std::invalid_argument("invalid provider encryption certificate advertisement");
+    }
+    providerEncryptionCertificate_ = advertisement;
+    m_wire.reset();
+}
+
 void RequestAckMessage::setProviderCapabilityOffer(const ProviderCapabilityOffer& offer) {
     providerCapabilityOffer_ = offer;
     m_wire.reset();
@@ -904,6 +1163,9 @@ void RequestAckMessage::setReservationLease(const ReservationLease& lease) {
 }
 bool RequestAckMessage::hasSelectionInputKeyOffer() const { return selectionInputKeyOffer_.has_value(); }
 bool RequestAckMessage::hasReservationLease() const { return reservationLease_.has_value(); }
+bool RequestAckMessage::hasProviderEncryptionCertificate() const {
+    return providerEncryptionCertificate_.has_value();
+}
 const SelectionInputKeyOffer& RequestAckMessage::getSelectionInputKeyOffer() const {
     if (!selectionInputKeyOffer_) throw std::logic_error("ACK has no selection input key offer");
     return *selectionInputKeyOffer_;
@@ -911,6 +1173,12 @@ const SelectionInputKeyOffer& RequestAckMessage::getSelectionInputKeyOffer() con
 const ReservationLease& RequestAckMessage::getReservationLease() const {
     if (!reservationLease_) throw std::logic_error("ACK has no reservation lease");
     return *reservationLease_;
+}
+const EncryptionCertificateAdvertisement& RequestAckMessage::getProviderEncryptionCertificate() const {
+    if (!providerEncryptionCertificate_) {
+        throw std::logic_error("ACK has no provider encryption certificate");
+    }
+    return *providerEncryptionCertificate_;
 }
 
 bool RequestAckMessage::getStatus() const {
@@ -945,6 +1213,12 @@ size_t RequestAckMessage::getPolicyEpoch() const {
     return policyEpoch_;
 }
 
+bool RequestAckMessage::hasControllerVersion() const { return controllerVersion_.has_value(); }
+const ControllerVersion& RequestAckMessage::getControllerVersion() const {
+    if (!controllerVersion_) throw std::logic_error("ACK has no ControllerVersion");
+    return *controllerVersion_;
+}
+
 void RequestAckMessage::Clear() {
     status_ = false;
     message_.clear();
@@ -953,6 +1227,8 @@ void RequestAckMessage::Clear() {
     payloadBlock_.reset();
     payloadSize_ = 0;
     policyEpoch_ = 0;
+    controllerVersion_.reset();
+    providerEncryptionCertificate_.reset();
     providerCapabilityOffer_.reset();
     selectionInputKeyOffer_.reset();
     reservationLease_.reset();
@@ -978,6 +1254,10 @@ ndn::Block RequestAckMessage::WireEncode() const {
     block.push_back(payloadBlockOrEmpty(payloadBlock_));
     if (policyEpoch_ > 0) {
         block.push_back(ndn::makeNonNegativeIntegerBlock(tlv::VersionType, policyEpoch_));
+    }
+    if (controllerVersion_) block.push_back(controllerVersion_->wireEncode());
+    if (providerEncryptionCertificate_) {
+        block.push_back(providerEncryptionCertificate_->WireEncode());
     }
     if (providerCapabilityOffer_) block.push_back(providerCapabilityOffer_->WireEncode());
     if (selectionInputKeyOffer_) block.push_back(selectionInputKeyOffer_->WireEncode());
@@ -1014,6 +1294,18 @@ bool RequestAckMessage::WireDecode(const ndn::Block& block) {
         }
         else if (b.type() == tlv::VersionType) {
             policyEpoch_ = ndn::readNonNegativeInteger(b);
+        }
+        else if (b.type() == tlv::ControllerVersionType) {
+            if (controllerVersion_) return false;
+            ControllerVersion version;
+            if (!version.wireDecode(b)) return false;
+            controllerVersion_ = std::move(version);
+        }
+        else if (b.type() == tlv::EncryptionCertificateAdvertisementType) {
+            if (providerEncryptionCertificate_) return false;
+            EncryptionCertificateAdvertisement advertisement;
+            if (!advertisement.WireDecode(b)) return false;
+            providerEncryptionCertificate_ = std::move(advertisement);
         }
         else if (b.type() == tlv::ProviderCapabilityOfferType) {
             ProviderCapabilityOffer offer;
@@ -1349,11 +1641,19 @@ ServiceSelectionMessage::operator=(const ServiceSelectionMessage& other)
         providerToken_ = other.providerToken_;
         assignmentPayload_ = other.assignmentPayload_;
         policyEpoch_ = other.policyEpoch_;
+        controllerVersion_ = other.controllerVersion_;
         attempt_ = other.attempt_;
         providerEntries_ = other.providerEntries_;
         deploymentPlan_ = other.deploymentPlan_;
         selectionDecision_ = other.selectionDecision_;
         selectionInputKeyGrant_ = other.selectionInputKeyGrant_;
+        if (other.selectionKeyEnvelope_) {
+            selectionKeyEnvelope_ = cloneOpaqueContainer(
+                *other.selectionKeyEnvelope_, tlv::SelectionKeyEnvelopeType);
+        }
+        else {
+            selectionKeyEnvelope_.reset();
+        }
         streamEventKeyGrant_ = other.streamEventKeyGrant_;
         recipientEncryptedAssignment_ = other.recipientEncryptedAssignment_;
         m_wire.reset();
@@ -1375,6 +1675,12 @@ void ServiceSelectionMessage::setAssignmentPayload(const ndn::Buffer& payload) {
 
 void ServiceSelectionMessage::setPolicyEpoch(size_t policyEpoch) {
     policyEpoch_ = policyEpoch;
+}
+
+void ServiceSelectionMessage::setControllerVersion(const ControllerVersion& version) {
+    if (!version.isValid()) throw std::invalid_argument("invalid ControllerVersion");
+    controllerVersion_ = version;
+    m_wire.reset();
 }
 
 void ServiceSelectionMessage::setAttempt(uint64_t attempt) {
@@ -1404,6 +1710,15 @@ void ServiceSelectionMessage::setSelectionInputKeyGrant(const SelectionInputKeyG
     selectionInputKeyGrant_ = grant;
     m_wire.reset();
 }
+void ServiceSelectionMessage::setSelectionKeyEnvelope(const ndn::Block& envelope) {
+    selectionKeyEnvelope_ = cloneOpaqueContainer(
+        envelope, tlv::SelectionKeyEnvelopeType);
+    m_wire.reset();
+}
+void ServiceSelectionMessage::clearSelectionKeyEnvelope() {
+    selectionKeyEnvelope_.reset();
+    m_wire.reset();
+}
 void ServiceSelectionMessage::setStreamEventKeyGrant(const ndn::Block& grant) {
     if (grant.type() != tlv::HybridMessageEnvelopeType) {
         throw std::invalid_argument("stream event key grant must be a HybridMessageEnvelope");
@@ -1420,6 +1735,7 @@ void ServiceSelectionMessage::setRecipientEncryptedAssignment(const RecipientEnc
 }
 bool ServiceSelectionMessage::hasSelectionDecision() const { return selectionDecision_.has_value(); }
 bool ServiceSelectionMessage::hasSelectionInputKeyGrant() const { return selectionInputKeyGrant_.has_value(); }
+bool ServiceSelectionMessage::hasSelectionKeyEnvelope() const { return selectionKeyEnvelope_.has_value(); }
 bool ServiceSelectionMessage::hasStreamEventKeyGrant() const { return streamEventKeyGrant_.has_value(); }
 bool ServiceSelectionMessage::hasRecipientEncryptedAssignment() const { return recipientEncryptedAssignment_.has_value(); }
 const SelectionDecision& ServiceSelectionMessage::getSelectionDecision() const {
@@ -1429,6 +1745,10 @@ const SelectionDecision& ServiceSelectionMessage::getSelectionDecision() const {
 const SelectionInputKeyGrant& ServiceSelectionMessage::getSelectionInputKeyGrant() const {
     if (!selectionInputKeyGrant_) throw std::logic_error("Selection has no input key grant");
     return *selectionInputKeyGrant_;
+}
+const ndn::Block& ServiceSelectionMessage::getSelectionKeyEnvelope() const {
+    if (!selectionKeyEnvelope_) throw std::logic_error("Selection has no key envelope");
+    return *selectionKeyEnvelope_;
 }
 const ndn::Block& ServiceSelectionMessage::getStreamEventKeyGrant() const {
     if (!streamEventKeyGrant_) throw std::logic_error("Selection has no streamed event key grant");
@@ -1455,6 +1775,12 @@ size_t ServiceSelectionMessage::getPolicyEpoch() const {
     return policyEpoch_;
 }
 
+bool ServiceSelectionMessage::hasControllerVersion() const { return controllerVersion_.has_value(); }
+const ControllerVersion& ServiceSelectionMessage::getControllerVersion() const {
+    if (!controllerVersion_) throw std::logic_error("selection has no ControllerVersion");
+    return *controllerVersion_;
+}
+
 uint64_t ServiceSelectionMessage::getAttempt() const {
     return attempt_;
 }
@@ -1468,11 +1794,13 @@ void ServiceSelectionMessage::Clear() {
     providerToken_.clear();
     assignmentPayload_.clear();
     policyEpoch_ = 0;
+    controllerVersion_.reset();
     attempt_ = 1;
     providerEntries_.clear();
     deploymentPlan_.reset();
     selectionDecision_.reset();
     selectionInputKeyGrant_.reset();
+    selectionKeyEnvelope_.reset();
     streamEventKeyGrant_.reset();
     recipientEncryptedAssignment_.reset();
     m_wire.reset();
@@ -1497,6 +1825,7 @@ ndn::Block ServiceSelectionMessage::WireEncode() const {
     if (policyEpoch_ > 0) {
         block.push_back(ndn::makeNonNegativeIntegerBlock(tlv::VersionType, policyEpoch_));
     }
+    if (controllerVersion_) block.push_back(controllerVersion_->wireEncode());
     block.push_back(ndn::makeNonNegativeIntegerBlock(tlv::AttemptType, attempt_));
     for (const auto& entry : providerEntries_) {
         ndn::Block entryBlock(tlv::SelectionProviderEntryType);
@@ -1517,6 +1846,7 @@ ndn::Block ServiceSelectionMessage::WireEncode() const {
     if (deploymentPlan_) block.push_back(deploymentPlan_->WireEncode());
     if (selectionDecision_) block.push_back(selectionDecision_->WireEncode());
     if (selectionInputKeyGrant_) block.push_back(selectionInputKeyGrant_->WireEncode());
+    if (selectionKeyEnvelope_) block.push_back(*selectionKeyEnvelope_);
     if (streamEventKeyGrant_) block.push_back(*streamEventKeyGrant_);
     if (recipientEncryptedAssignment_) block.push_back(recipientEncryptedAssignment_->WireEncode());
     block.encode();
@@ -1544,6 +1874,12 @@ bool ServiceSelectionMessage::WireDecode(const ndn::Block& block) {
         }
         else if (b.type() == tlv::VersionType) {
             policyEpoch_ = ndn::readNonNegativeInteger(b);
+        }
+        else if (b.type() == tlv::ControllerVersionType) {
+            if (controllerVersion_) return false;
+            ControllerVersion version;
+            if (!version.wireDecode(b)) return false;
+            controllerVersion_ = std::move(version);
         }
         else if (b.type() == tlv::AttemptType) {
             attempt_ = ndn::readNonNegativeInteger(b);
@@ -1581,6 +1917,11 @@ bool ServiceSelectionMessage::WireDecode(const ndn::Block& block) {
             SelectionInputKeyGrant grant;
             if (!grant.WireDecode(b)) return false;
             selectionInputKeyGrant_ = std::move(grant);
+        }
+        else if (b.type() == tlv::SelectionKeyEnvelopeType) {
+            if (selectionKeyEnvelope_) return false;
+            selectionKeyEnvelope_ = cloneOpaqueContainer(
+                b, tlv::SelectionKeyEnvelopeType);
         }
         else if (b.type() == tlv::StreamEventKeyGrantType) {
             b.parse();
@@ -1985,6 +2326,13 @@ void PermissionResponse::setPolicyEpoch(size_t policyEpoch) {
     policyEpoch_ = policyEpoch;
 }
 
+void PermissionResponse::setControllerVersion(const ControllerVersion& version) {
+    if (!version.isValid()) {
+        throw std::invalid_argument("PermissionResponse requires a non-zero ControllerVersion");
+    }
+    controllerVersion_ = version;
+}
+
 void PermissionResponse::setEntries(const std::vector<PermissionEntry>& entries) {
     entries_ = entries;
 }
@@ -2003,6 +2351,17 @@ size_t PermissionResponse::getPermissionKind() const {
 
 size_t PermissionResponse::getPolicyEpoch() const {
     return policyEpoch_;
+}
+
+bool PermissionResponse::hasControllerVersion() const {
+    return controllerVersion_.has_value();
+}
+
+const ControllerVersion& PermissionResponse::getControllerVersion() const {
+    if (!controllerVersion_) {
+        throw std::logic_error("permission response has no ControllerVersion");
+    }
+    return *controllerVersion_;
 }
 
 const std::vector<PermissionEntry>& PermissionResponse::getEntries() const {
@@ -2028,6 +2387,7 @@ void PermissionResponse::Clear() {
     targetIdentity_.clear();
     permissionKind_ = tlv::UserPermission;
     policyEpoch_ = 1;
+    controllerVersion_.reset();
     entries_.clear();
     m_wire.reset();
 }
@@ -2041,6 +2401,9 @@ ndn::Block PermissionResponse::WireEncode() const {
     block.push_back(ndn::makeStringBlock(tlv::TargetIdentityType, targetIdentity_));
     block.push_back(ndn::makeNonNegativeIntegerBlock(tlv::PermissionKindType, permissionKind_));
     block.push_back(ndn::makeNonNegativeIntegerBlock(tlv::VersionType, policyEpoch_));
+    if (controllerVersion_) {
+        block.push_back(controllerVersion_->wireEncode());
+    }
     for (const auto& entry : entries_) {
         block.push_back(entry.WireEncode());
     }
@@ -2067,6 +2430,12 @@ bool PermissionResponse::WireDecode(const ndn::Block& block) {
         else if (b.type() == tlv::VersionType) {
             policyEpoch_ = ndn::readNonNegativeInteger(b);
         }
+        else if (b.type() == tlv::ControllerVersionType) {
+            if (controllerVersion_) return false;
+            ControllerVersion version;
+            if (!version.wireDecode(b)) return false;
+            controllerVersion_ = std::move(version);
+        }
         else if (b.type() == tlv::PermissionEntryType) {
             PermissionEntry entry;
             if (entry.WireDecode(b)) {
@@ -2081,11 +2450,26 @@ bool PermissionResponse::WireDecode(const ndn::Block& block) {
 PolicyManifest::PolicyManifest() {}
 
 void PolicyManifest::setPolicyEpoch(size_t policyEpoch) { policyEpoch_ = policyEpoch; }
+void PolicyManifest::setControllerVersion(const ControllerVersion& version)
+{
+    if (!version.isValid()) {
+        throw std::invalid_argument("PolicyManifest requires a non-zero ControllerVersion");
+    }
+    controllerVersion_ = version;
+}
 void PolicyManifest::setValidFromMs(uint64_t validFromMs) { validFromMs_ = validFromMs; }
 void PolicyManifest::setGracePeriodMs(uint64_t gracePeriodMs) { gracePeriodMs_ = gracePeriodMs; }
 void PolicyManifest::setRequiredKeyEpoch(size_t requiredKeyEpoch) { requiredKeyEpoch_ = requiredKeyEpoch; }
 
 size_t PolicyManifest::getPolicyEpoch() const { return policyEpoch_; }
+bool PolicyManifest::hasControllerVersion() const { return controllerVersion_.has_value(); }
+const ControllerVersion& PolicyManifest::getControllerVersion() const
+{
+    if (!controllerVersion_) {
+        throw std::logic_error("policy manifest has no ControllerVersion");
+    }
+    return *controllerVersion_;
+}
 uint64_t PolicyManifest::getValidFromMs() const { return validFromMs_; }
 uint64_t PolicyManifest::getGracePeriodMs() const { return gracePeriodMs_; }
 size_t PolicyManifest::getRequiredKeyEpoch() const { return requiredKeyEpoch_; }
@@ -2102,6 +2486,7 @@ void PolicyManifest::Clear() {
     validFromMs_ = 0;
     gracePeriodMs_ = 0;
     requiredKeyEpoch_ = 1;
+    controllerVersion_.reset();
     m_wire.reset();
 }
 
@@ -2114,6 +2499,9 @@ ndn::Block PolicyManifest::WireEncode() const {
     block.push_back(ndn::makeNonNegativeIntegerBlock(tlv::ValidFromType, validFromMs_));
     block.push_back(ndn::makeNonNegativeIntegerBlock(tlv::GracePeriodMsType, gracePeriodMs_));
     block.push_back(ndn::makeNonNegativeIntegerBlock(tlv::RequiredKeyEpochType, requiredKeyEpoch_));
+    if (controllerVersion_) {
+        block.push_back(controllerVersion_->wireEncode());
+    }
     block.encode();
     m_wire = block;
     return m_wire;
@@ -2137,6 +2525,12 @@ bool PolicyManifest::WireDecode(const ndn::Block& block) {
         }
         else if (b.type() == tlv::RequiredKeyEpochType) {
             requiredKeyEpoch_ = ndn::readNonNegativeInteger(b);
+        }
+        else if (b.type() == tlv::ControllerVersionType) {
+            if (controllerVersion_) return false;
+            ControllerVersion version;
+            if (!version.wireDecode(b)) return false;
+            controllerVersion_ = std::move(version);
         }
     }
     return policyEpoch_ > 0 && requiredKeyEpoch_ > 0;

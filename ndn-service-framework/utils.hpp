@@ -19,6 +19,22 @@
 
 namespace ndn_service_framework
 {
+    /** Canonical Controller policy-status name.  A bare service suffix is
+     * retained as a bootstrap prefix; Controller replies use the versioned
+     * form so a (service, generation, epoch) pair is directly addressable. */
+    struct PolicyStatusName
+    {
+        ndn::Name serviceName;
+        std::optional<ControllerVersion> version;
+    };
+
+    ndn::Name makePolicyStatusName(const ndn::Name& controllerPrefix,
+                                   const ndn::Name& serviceName,
+                                   const ControllerVersion& version);
+    std::optional<PolicyStatusName>
+    parsePolicyStatusName(const ndn::Name& controllerPrefix,
+                          const ndn::Name& name);
+
     struct RequestNameV2
     {
         ndn::Name requesterName;
@@ -109,6 +125,11 @@ namespace ndn_service_framework
         ndn::Name dataName;
         std::string objectType;
         std::string objectId;
+        // Empty preserves the legacy service-wide MessageKey path.  The
+        // request-scoped response path sets this to "request" so the User
+        // resolves the object with the invocation's K_response instead of a
+        // service-wide ABE key.
+        std::string keyScope;
         size_t plaintextSize = 0;
         bool encrypted = true;
         std::string digest;
@@ -196,6 +217,13 @@ namespace ndn_service_framework
     std::optional<SelectionStatusQueryName>
     parseSelectionStatusQueryName(const ndn::Name& statusQueryName);
     std::string computeSelectionDigest(const ServiceSelectionMessage& message);
+
+    /** Compute the pre-envelope Selection digest used by request-scoped key
+     * bindings.  The RSA envelope is excluded to avoid a circular digest;
+     * the final Selection wire digest remains available from
+     * computeSelectionDigest(). */
+    std::string computeSelectionDigestWithoutKeyEnvelope(
+        const ServiceSelectionMessage& message);
 
     std::string makeOpaqueControlHandle(size_t bytes = 24);
     bool isValidOpaqueControlHandle(const std::string& handle);

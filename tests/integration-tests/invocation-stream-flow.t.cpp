@@ -3,6 +3,7 @@
 #include "tests/integration-tests/ndnsf-integration-fixture.hpp"
 #include "ndn-service-framework/InvocationStream.hpp"
 #include "ndn-service-framework/HybridMessageCrypto.hpp"
+#include "ndn-service-framework/PolicyStatus.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 
@@ -445,6 +446,264 @@ BOOST_AUTO_TEST_CASE(NormalServiceOnlyRequestPublishesOrderedEventsAndOneResult)
   BOOST_CHECK_EQUAL(handle->metrics().deliveredEvents, 3);
 }
 
+BOOST_AUTO_TEST_CASE(StreamEventAfterUserRevocationIsRejectedBeforeDelivery)
+{
+  BootstrapProfile profile;
+  profile.serviceName = ndn::Name("/Spec175/Stream/Revocation");
+  NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+
+  const auto serviceName = environment.profile().serviceName;
+
+  const auto now = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch()).count());
+  PolicyStatusData current;
+  current.setServiceName(serviceName);
+  current.setControllerVersion(ControllerVersion{now, 1});
+  current.setValidity(now - 1000, now + 60000);
+  current.setPolicyDigest("sha256:" + std::string(64, '0'));
+  current.setControllerCertificate(ndn::Name("/controller/spec175/stream"));
+  BOOST_REQUIRE(environment.user().installControllerStatus(current));
+  BOOST_REQUIRE(environment.provider().installControllerStatus(current));
+  // Install the test status before priming the request/ACK/Response keys.
+  // A status transition intentionally invalidates service-scoped message-key
+  // caches; preparing them earlier would make this test exercise a stale-key
+  // setup instead of the stream revocation boundary.
+  prepareStreamCrypto(environment, serviceName);
+
+  std::atomic<bool> handlerCalled{false};
+  std::atomic<bool> firstEventDelivered{false};
+  std::atomic<bool> revocationAttempted{false};
+  std::atomic<bool> statusInstalled{false};
+  environment.provider().addStreamingHandler<ndn::Buffer, ndn::Buffer, ndn::Buffer>(
+      serviceName,
+      [&] (const ndn::Buffer&, StreamedResponseWriter<ndn::Buffer, ndn::Buffer>& writer) {
+        handlerCalled = true;
+        if (!writer.publish(ndn::Buffer(reinterpret_cast<const uint8_t*>("event-1"), 7))) {
+          return;
+        }
+        // Let the User callback install the newer Controller status after the
+        // first event is actually delivered.  The remaining events then
+        // exercise the active-stream revocation cut-point deterministically.
+        for (int round = 0; round < 200 && !firstEventDelivered.load(); ++round) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        for (const char* payload : {"event-2", "event-3"}) {
+          if (!writer.publish(ndn::Buffer(reinterpret_cast<const uint8_t*>(payload), 7))) {
+            return;
+          }
+        }
+        writer.finish(ndn::Buffer(reinterpret_cast<const uint8_t*>("result"), 6),
+                      StreamFinishReason::Eos);
+      });
+  environment.enableProductionIngressForTest();
+  installEncryptedRequestPublisher(environment, serviceName);
+
+  const ndn::Buffer request(reinterpret_cast<const uint8_t*>("hello"), 5);
+  std::vector<std::string> events;
+  std::vector<StreamedInvocationError> errors;
+  bool completed = false;
+  auto handle = environment.user().RequestServiceStreaming<ndn::Buffer,
+                                                            ndn::Buffer,
+                                                            ndn::Buffer>(
+      serviceName, request, testStreamOptions(),
+      [&] (const ndn::Buffer& event) {
+        events.emplace_back(reinterpret_cast<const char*>(event.data()), event.size());
+        if (events.size() == 1 && !revocationAttempted.exchange(true)) {
+          auto revoked = current;
+          auto version = current.getControllerVersion();
+          ++version.controllerEpoch;
+          revoked.setControllerVersion(version);
+          RevocationTarget target;
+          target.kind = RevocationKind::IDENTITY;
+          target.targetIdentity = environment.user().getName();
+          revoked.addRevocation(target);
+          statusInstalled = environment.user().installControllerStatus(revoked);
+          firstEventDelivered = true;
+        }
+      },
+      [&] (const ndn::Buffer&) { completed = true; },
+      [&] (const StreamedInvocationError& error) { errors.push_back(error); });
+  BOOST_REQUIRE(handle);
+  const auto terminal = [&] {
+    return handle->status() == StreamedInvocationStatus::Completed ||
+           handle->status() == StreamedInvocationStatus::Failed;
+  };
+  for (int round = 0; round < 8 && !terminal(); ++round) {
+    environment.pumpUntil(terminal);
+  }
+
+  BOOST_CHECK(handlerCalled);
+  BOOST_CHECK(statusInstalled);
+  BOOST_REQUIRE_EQUAL(events.size(), 1U);
+  BOOST_CHECK_EQUAL(events.front(), "event-1");
+  BOOST_CHECK(!completed);
+  BOOST_REQUIRE_EQUAL(errors.size(), 1U);
+  BOOST_CHECK(errors.front().code == StreamedInvocationErrorCode::Unauthorized);
+  BOOST_CHECK(handle->status() == StreamedInvocationStatus::Failed);
+}
+
+BOOST_AUTO_TEST_CASE(TargetedStreamRevocationStopsBeforeBootstrap)
+{
+  BootstrapProfile profile;
+  profile.serviceName = ndn::Name("/Spec175/Stream/TargetedRevocation");
+  NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+
+  const auto serviceName = environment.profile().serviceName;
+  const auto providerName = environment.provider().getName();
+  const auto now = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch()).count());
+  PolicyStatusData current;
+  current.setServiceName(serviceName);
+  current.setControllerVersion(ControllerVersion{now, 1});
+  current.setValidity(now - 1000, now + 60000);
+  current.setPolicyDigest("sha256:" + std::string(64, '0'));
+  current.setControllerCertificate(ndn::Name("/controller/spec175/targeted"));
+  BOOST_REQUIRE(environment.user().installControllerStatus(current));
+  BOOST_REQUIRE(environment.provider().installControllerStatus(current));
+
+  auto revoked = current;
+  auto revokedVersion = current.getControllerVersion();
+  ++revokedVersion.controllerEpoch;
+  revoked.setControllerVersion(revokedVersion);
+  RevocationTarget target;
+  target.kind = RevocationKind::IDENTITY;
+  target.targetIdentity = environment.user().getName();
+  revoked.addRevocation(target);
+  BOOST_REQUIRE(environment.user().installControllerStatus(revoked));
+
+  bool requestPublished = false;
+  environment.user().setRequestPublisher(
+      [&] (const ndn::Name&, const ndn::Name&, const std::vector<ndn::Name>&,
+           const ndn::Name&, const RequestMessage&, size_t) {
+        requestPublished = true;
+      });
+  std::vector<StreamedInvocationError> errors;
+  StreamedInvocationOptions options = testStreamOptions();
+  options.mode = InvocationMode::Targeted;
+  auto handle = environment.user().RequestServiceStreaming<ndn::Buffer,
+                                                            ndn::Buffer,
+                                                            ndn::Buffer>(
+      providerName, serviceName,
+      ndn::Buffer(reinterpret_cast<const uint8_t*>("hello"), 5), options,
+      [] (const ndn::Buffer&) {}, [] (const ndn::Buffer&) {},
+      [&] (const StreamedInvocationError& error) { errors.push_back(error); });
+
+  BOOST_CHECK(!handle);
+  BOOST_CHECK(!requestPublished);
+  BOOST_REQUIRE_EQUAL(errors.size(), 1U);
+  BOOST_CHECK(errors.front().code == StreamedInvocationErrorCode::Unauthorized);
+}
+
+BOOST_AUTO_TEST_CASE(StreamEventAfterProviderRevocationIsRejectedAtPublication)
+{
+  BootstrapProfile profile;
+  profile.serviceName = ndn::Name("/Spec175/Stream/ProviderRevocation");
+  NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+
+  const auto serviceName = environment.profile().serviceName;
+
+  const auto now = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch()).count());
+  PolicyStatusData current;
+  current.setServiceName(serviceName);
+  current.setControllerVersion(ControllerVersion{now, 1});
+  current.setValidity(now - 1000, now + 60000);
+  current.setPolicyDigest("sha256:" + std::string(64, '0'));
+  current.setControllerCertificate(ndn::Name("/controller/spec175/provider"));
+  BOOST_REQUIRE(environment.user().installControllerStatus(current));
+  BOOST_REQUIRE(environment.provider().installControllerStatus(current));
+  // Prime keys only after the current status is installed; accepted status
+  // changes invalidate existing service-scoped message-key caches.
+  prepareStreamCrypto(environment, serviceName);
+
+  std::atomic<bool> handlerCalled{false};
+  std::atomic<bool> firstEventDelivered{false};
+  std::atomic<bool> statusInstalled{false};
+  std::atomic<bool> secondPublishAccepted{false};
+  environment.provider().addStreamingHandler<ndn::Buffer, ndn::Buffer, ndn::Buffer>(
+      serviceName,
+      [&] (const ndn::Buffer&, StreamedResponseWriter<ndn::Buffer, ndn::Buffer>& writer) {
+        handlerCalled = true;
+        if (!writer.publish(ndn::Buffer(reinterpret_cast<const uint8_t*>("event-1"), 7))) {
+          return;
+        }
+        for (int round = 0; round < 200 && !firstEventDelivered.load(); ++round) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+
+        auto revoked = current;
+        auto version = current.getControllerVersion();
+        ++version.controllerEpoch;
+        revoked.setControllerVersion(version);
+        RevocationTarget target;
+        target.kind = RevocationKind::IDENTITY;
+        target.targetIdentity = environment.provider().getName();
+        revoked.addRevocation(target);
+        statusInstalled = environment.provider().installControllerStatus(revoked);
+
+        // The Provider-side Face commit point must re-check the current
+        // Controller status.  A successful return here would mean that the
+        // revoked Provider retained/published a post-withdrawal event.
+        secondPublishAccepted = writer.publish(
+            ndn::Buffer(reinterpret_cast<const uint8_t*>("event-2"), 7));
+        if (secondPublishAccepted.load()) {
+          try {
+            writer.finish(ndn::Buffer(reinterpret_cast<const uint8_t*>("result"), 6),
+                          StreamFinishReason::Eos);
+          }
+          catch (...) {
+          }
+        }
+      });
+  environment.enableProductionIngressForTest();
+  installEncryptedRequestPublisher(environment, serviceName);
+
+  std::vector<std::string> events;
+  std::vector<StreamedInvocationError> errors;
+  bool completed = false;
+  auto handle = environment.user().RequestServiceStreaming<ndn::Buffer,
+                                                            ndn::Buffer,
+                                                            ndn::Buffer>(
+      serviceName,
+      ndn::Buffer(reinterpret_cast<const uint8_t*>("hello"), 5),
+      testStreamOptions(),
+      [&] (const ndn::Buffer& event) {
+        events.emplace_back(reinterpret_cast<const char*>(event.data()), event.size());
+        if (events.size() == 1) {
+          firstEventDelivered = true;
+        }
+      },
+      [&] (const ndn::Buffer&) { completed = true; },
+      [&] (const StreamedInvocationError& error) { errors.push_back(error); });
+  BOOST_REQUIRE(handle);
+
+  const auto terminal = [&] {
+    const auto status = handle->status();
+    return status == StreamedInvocationStatus::Completed ||
+           status == StreamedInvocationStatus::Failed;
+  };
+  for (int round = 0; round < 12 && !terminal(); ++round) {
+    environment.pumpUntil(terminal);
+  }
+
+  BOOST_CHECK(handlerCalled);
+  BOOST_CHECK(statusInstalled);
+  BOOST_CHECK(!secondPublishAccepted);
+  BOOST_REQUIRE_EQUAL(events.size(), 1U);
+  BOOST_CHECK_EQUAL(events.front(), "event-1");
+  BOOST_CHECK(!completed);
+  if (!errors.empty()) {
+    BOOST_CHECK(errors.front().code == StreamedInvocationErrorCode::ProviderFailure ||
+                errors.front().code == StreamedInvocationErrorCode::EventTimeout);
+  }
+}
+
 BOOST_AUTO_TEST_CASE(NormalStreamRetriesOneSuppressedEventFromProviderIms)
 {
   BootstrapProfile profile;
@@ -849,8 +1108,14 @@ BOOST_AUTO_TEST_CASE(NormalStreamContainsCallbackException)
       serviceName,
       [&] (const ndn::Buffer&, StreamedResponseWriter<ndn::Buffer, ndn::Buffer>& writer) {
         for (const char* payload : {"event-1", "event-2", "event-3", "event-4"}) {
-          BOOST_REQUIRE(writer.publish(ndn::Buffer(
-              reinterpret_cast<const uint8_t*>(payload), std::strlen(payload))));
+          // A consumer callback failure may fence the Provider while this
+          // worker is still producing events.  Publication is transactional:
+          // once the Face commit rejects a later event, stop producing rather
+          // than treating the rejected event as a successful publication.
+          if (!writer.publish(ndn::Buffer(
+                  reinterpret_cast<const uint8_t*>(payload), std::strlen(payload)))) {
+            return;
+          }
         }
         writer.finish(ndn::Buffer(reinterpret_cast<const uint8_t*>("result"), 6),
                       StreamFinishReason::Eos);

@@ -361,6 +361,54 @@ BOOST_AUTO_TEST_CASE(HybridKeyEpochRotatesByUsesAndNonceIsUnique)
   BOOST_CHECK_EQUAL(counters.hybrid_key_rotation_uses.load(), 1);
 }
 
+BOOST_AUTO_TEST_CASE(HybridMessageCryptoInvalidatesOnlyAffectedService)
+{
+  HybridMessageCrypto crypto;
+  HybridCryptoCounters counters;
+  const ndn::Name serviceA("/ObjectDetection/YOLOv8");
+  const ndn::Name serviceB("/ObjectDetection/Depth");
+  const ndn::Name sender("/test/provider/gpu");
+
+  const auto keyA = crypto.getOrCreateSendKey(serviceA, sender,
+                                              "/PERMISSION/ObjectDetection/YOLOv8",
+                                              "RESPONSE", counters);
+  const auto keyB = crypto.getOrCreateSendKey(serviceB, sender,
+                                              "/PERMISSION/ObjectDetection/Depth",
+                                              "RESPONSE", counters);
+  BOOST_REQUIRE_NE(keyA.keyId, keyB.keyId);
+
+  const ndn::Buffer wrappedA(reinterpret_cast<const uint8_t*>("wrapped-a"), 9);
+  const ndn::Buffer wrappedB(reinterpret_cast<const uint8_t*>("wrapped-b"), 9);
+  crypto.cacheWrappedSendKey(serviceA, keyA.keyId, wrappedA);
+  crypto.cacheWrappedSendKey(serviceB, keyB.keyId, wrappedB);
+  crypto.cacheReceiveKey(serviceA, keyA.keyId, keyA.epochId, keyA.key);
+  crypto.cacheReceiveKey(serviceB, keyB.keyId, keyB.epochId, keyB.key);
+
+  ndn::Buffer cached;
+  BOOST_REQUIRE(crypto.getWrappedSendKey(keyA.keyId, cached));
+  BOOST_CHECK_EQUAL_COLLECTIONS(cached.begin(), cached.end(),
+                                wrappedA.begin(), wrappedA.end());
+  BOOST_REQUIRE(crypto.findReceiveKey(keyA.keyId, cached, counters));
+  BOOST_CHECK_EQUAL_COLLECTIONS(cached.begin(), cached.end(),
+                                keyA.key.begin(), keyA.key.end());
+
+  const auto removed = crypto.invalidateService(serviceA);
+  BOOST_CHECK_EQUAL(removed, 2U);
+  BOOST_CHECK(!crypto.getWrappedSendKey(keyA.keyId, cached));
+  BOOST_CHECK(!crypto.findReceiveKey(keyA.keyId, cached, counters));
+
+  BOOST_REQUIRE(crypto.getWrappedSendKey(keyB.keyId, cached));
+  BOOST_CHECK_EQUAL_COLLECTIONS(cached.begin(), cached.end(),
+                                wrappedB.begin(), wrappedB.end());
+  BOOST_REQUIRE(crypto.findReceiveKey(keyB.keyId, cached, counters));
+  BOOST_CHECK_EQUAL_COLLECTIONS(cached.begin(), cached.end(),
+                                keyB.key.begin(), keyB.key.end());
+
+  const auto replacement = crypto.getOrCreateSendKey(
+    serviceA, sender, "/PERMISSION/ObjectDetection/YOLOv8", "RESPONSE", counters);
+  BOOST_CHECK_NE(replacement.keyId, keyA.keyId);
+}
+
 BOOST_AUTO_TEST_CASE(ProviderRequiresPermissionAndUserToken)
 {
   ndn::Face face;
