@@ -199,7 +199,8 @@ def handle_role(ctx: ProviderRuntimeContext) -> None:
               flush=True)
         return
 
-    if str(ctx.role).rstrip("/").endswith("/Merge"):
+    if str(ctx.role).rstrip("/") in ("Merge", "/Merge") or \
+            str(ctx.role).rstrip("/").endswith("/Merge"):
         # The native Merge owns deterministic postprocessing only (no ONNX
         # layer); run the Python equivalent (spec181 T008).
         try:

@@ -1498,6 +1498,13 @@ class DistributedInferenceProvider:
             # and point the execution at that copy instead.
             work_model = execution.work_dir / "assembled-role.onnx"
             work_model.write_bytes(plaintext)
+            # ORT external-data models read the sibling .weights file; copy
+            # it into the work directory so the sealed copy stays runnable.
+            weights_source = Path(str(model_path)).with_name(
+                Path(str(model_path)).stem + ".weights")
+            if weights_source.is_file():
+                weights_copy = execution.work_dir / weights_source.name
+                weights_copy.write_bytes(weights_source.read_bytes())
             lease_registry.register(
                 "assembled-model-plaintext", work_model, plaintext)
             execution = replace(
