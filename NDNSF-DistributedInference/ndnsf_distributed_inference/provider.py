@@ -1442,6 +1442,12 @@ class DistributedInferenceProvider:
             except ValueError as exc:
                 raise ProtectedGrantRejected(
                     "grant Data payload is malformed") from exc
+            # Exact-name fetch and a valid signature do not prove that the
+            # payload is the grant selected by the sealed plan. Bind that
+            # reference before unwrapping or materializing any plaintext.
+            if grant.grant_digest != grant_binding.grant_digest:
+                raise ProtectedGrantRejected(
+                    "grant digest does not match the sealed Selection reference")
             # The native Merge role carries no assembly identity (no ONNX
             # layer); its grant still binds the same canonical manifest as
             # the component roles, so fall back to the grant's own manifest
