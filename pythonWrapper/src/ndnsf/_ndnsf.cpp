@@ -4039,6 +4039,14 @@ public:
   runControllerLoop(bool propagateError)
   {
     try {
+      // spec180 r36-r42 repair (restored on the spec181 branch): drain the
+      // Controller Face BEFORE start() so the Unix transport is connected
+      // and the certificate/AA registrations settle before the readiness
+      // probe runs.  This must stay outside ServiceController::start():
+      // the probe loop drives the same io context with run_for, and a
+      // keepRunning drain there starts a background io thread that races
+      // it (SIGSEGV in the first spec181 Y-N matrix rerun).
+      m_face.processEvents(ndn::time::milliseconds(2000));
       m_controller->start();
       {
         std::lock_guard<std::mutex> lock(m_startMutex);

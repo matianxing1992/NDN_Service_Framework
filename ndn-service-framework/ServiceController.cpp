@@ -248,18 +248,7 @@ void ServiceController::start()
       "ServiceController AttributeAuthority PUBPARAMS readiness cancelled");
   }
 
-  // spec180 r36-r42 repair (restored on the spec181 branch): drain the AA
-  // Face before registration so the Unix transport is connected before any
-  // route registration or readiness probe runs.  keepRunning=true keeps the
-  // transport alive across the drain; without it the face closes right after
-  // the first connection and the readiness probe times out (the r39 Y-N-I
-  // startup race).
-  m_face.processEvents(ndn::time::milliseconds(1000), true);
-
   registerInterestHandlers();
-
-  // Drain registered routes into NFD before the readiness probe starts.
-  m_face.processEvents(ndn::time::milliseconds(1000), true);
 
   // A second Face has its own transport, PIT and event loop.
   // Never express the readiness Interest on the AA Face: ndn-cxx could satisfy
