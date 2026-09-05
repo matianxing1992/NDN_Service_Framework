@@ -3963,6 +3963,7 @@ public:
     {
       std::lock_guard<std::mutex> lock(m_startMutex);
       m_started = false;
+      m_startFinished = false;
     }
     {
       std::lock_guard<std::mutex> lock(m_errorMutex);
@@ -3979,7 +3980,7 @@ public:
     const auto timeout = std::chrono::milliseconds(std::max(1, timeoutMs));
     std::unique_lock<std::mutex> lock(m_startMutex);
     if (!m_startCv.wait_for(lock, timeout,
-                            [this] { return m_started || !m_running.load(); })) {
+                            [this] { return m_startFinished; })) {
       return false;
     }
     if (!m_started) {
@@ -4004,6 +4005,7 @@ public:
     {
       std::lock_guard<std::mutex> lock(m_startMutex);
       m_started = false;
+      m_startFinished = false;
     }
     {
       std::lock_guard<std::mutex> lock(m_errorMutex);
@@ -4017,6 +4019,11 @@ public:
   {
     m_controller->cancelStart();
     m_running = false;
+    {
+      std::lock_guard<std::mutex> lock(m_startMutex);
+      m_started = false;
+      m_startFinished = true;
+    }
     m_startCv.notify_all();
     m_face.shutdown();
     m_face.getIoContext().stop();
@@ -4050,7 +4057,8 @@ public:
       m_controller->start();
       {
         std::lock_guard<std::mutex> lock(m_startMutex);
-        m_started = true;
+        m_started = m_running.load();
+        m_startFinished = true;
       }
       m_startCv.notify_all();
       while (m_running.load()) {
@@ -4064,6 +4072,10 @@ public:
         m_error = e.what();
       }
       m_running = false;
+      {
+        std::lock_guard<std::mutex> lock(m_startMutex);
+        m_startFinished = true;
+      }
       m_startCv.notify_all();
       if (propagateError) {
         throw;
@@ -4087,6 +4099,9 @@ public:
   std::mutex m_startMutex;
   std::condition_variable m_startCv;
   bool m_started = false;
+  // Idle before the Python background thread enters run() is not a terminal
+  // startup result. Only ready, failure, or explicit stop wakes the waiter.
+  bool m_startFinished = false;
   std::mutex m_errorMutex;
   std::string m_error;
 };

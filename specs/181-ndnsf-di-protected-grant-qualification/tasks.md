@@ -24,9 +24,9 @@ Spec 170 `artifact-assembly-v1` 契约。
 | Task | Implemented / executed | Remaining acceptance |
 |---|---|---|
 | T001 | grant 摘要、租约/存储修复；注册表策略/公钥/逻辑身份与最终 root 允许列表已接线；100 项定向 unit 通过，见 `evidence/t001-registry-repair-20260905.md` | 真实发布/获取；资源上界、全部封印绑定及取消/过期验收 |
-| T002 | runtime 真实授权；native AEAD store 与目录清理；20 项 C++、55 项 Python/跨语言存储定向检查通过，见 `evidence/t002-storage-repair-20260905.md` | factory/注册表/fetch/装配接线在工作区验证中；真实 Provider、ORT 生命周期与资源上界验收 |
+| T002 | runtime/store 修复；20 项当前 C++、55 项存储检查；统一构建和 3 rebuilt grant parity tests PASS；live-r7 真实受保护 native Y-B、3 ORT + native Merge、正常清理 exit 0，见 `evidence/t002-native-live-repair-20260905.md` | 生产负例、取消/过期及资源上界；factory/assembler/handler 工作区接线尚未形成独立提交 |
 | T003 | grant 向量双侧消费 | FR-012 装配向量及全部绑定/算法负例覆盖 |
-| T004 | 15000 ms seam；历史 fake-native unit 测试 | 当前二进制的真实就绪、取消和无热转证据 |
+| T004 | 15000 ms seam、7 项 Python 接口检查；GDB 定位启动失败，pre-thread waiter 定向 RED/GREEN（15 us → 81 ms），重建 native 到达真实 READY/catalogue，见 `evidence/t002-native-live-repair-20260905.md` | 完整取消、超时和无热转验收；单次启动通过不等于 T004 完成 |
 | T005 | 多源诊断子用例结果 | T007 PASS 后同源七子用例矩阵，保留所有失败 |
 | T006 | 三种进程内 verifier mutation probe | 选定 Provider 生产链变异与明确拒绝原因 |
 | T007 | 本轮 code-aware 审查与设计修正 | 当前裁决 BLOCK；控制性源码缺口闭合后重新审计 |

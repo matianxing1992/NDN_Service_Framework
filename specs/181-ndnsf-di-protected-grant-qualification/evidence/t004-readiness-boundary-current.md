@@ -1,6 +1,6 @@
 # T004 — 运行时就绪边界修复
 
-> **Current scope correction (revision 5, 2026-09-05)**: T004 当前 partial：以下 Python 测试使用 fake native；当前构建的真实 Controller 就绪、取消及无热转 integration 尚未闭合。
+> **Current scope correction (revision 5, 2026-09-05)**: T004 当前 partial：以下旧 Python 测试使用 fake native。新 GDB/NDN 日志与真实 native 探针已定位并修复 pre-thread readiness 误判，80 ms 等待从约 15 us 提前失败修正为约 81 ms，随后正常 READY/catalogue。见 [native live repair](t002-native-live-repair-20260905.md)。完整取消、超时及无热转 integration 尚未闭合，旧 PASS 不代表当前任务完成。
 > 当前裁决与下一步以 [audit.md](../audit.md) 为准，以下保留为原始范围记录。
 
 **Layer**: implemented（native waitUntilReady + Python seam 15000 ms）;

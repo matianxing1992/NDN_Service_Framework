@@ -1,6 +1,6 @@
 # T002 — native Provider 解包
 
-> **Current scope correction (revision 5, 2026-09-05)**: T002 当前 partial：native verifier 与 pybind 已实现，ProtectedRuntime::verifyGrant 仍失败关闭，native factory 接线未完成；Python Y-B 诊断不替代 native 验收。
+> **Current scope correction (revision 5, 2026-09-05)**: T002 当前 partial：ProtectedRuntime 已接入真实 verifier；live-r7 在普通生产命令下完成请求方 grant 发布、四个 native Provider 消费、3 ORT + native Merge 执行及正常清理，exit 0。生产负例、取消/过期、资源上界和工作区源码闭包尚未完成，T002/T007 仍 OPEN/BLOCK。见 [native live repair](t002-native-live-repair-20260905.md)。下方旧 PASS 仅保留为历史 verifier 范围记录，不是当前任务完成裁决。
 > 当前裁决与下一步以 [audit.md](../audit.md) 为准，以下保留为原始范围记录。
 
 **Layer**: implemented（NativeGrantVerifier + pybind 最小面 + C++ unit

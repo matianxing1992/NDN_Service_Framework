@@ -14,14 +14,14 @@ R = `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py`。行号对应本轮源码�
 
 | ID | Severity | Location | Finding and evidence boundary | Disposition / closing action |
 |---|---|---|---|---|
-| A01 | HIGH | N/ProtectedRuntime.cpp:120；N/NativeProviderHandler.cpp:1876；R:787、931 | `verifyGrant` 无条件拒绝，handler 缺 factory 或授权态时拒绝；保护 Y-B 改用 Python Provider。native verifier/pybind 存在不等于 native 生产路径已接线。 | OPEN — T002 完成真实获取、受管解包、授权状态、AEAD 与清理；真实 native 正负用例。 |
+| A01 | HIGH | N/ProtectedRuntime.cpp；N/NativeProviderHandler.cpp；R；evidence/t002-native-live-repair-20260905.md | 初审发现 runtime 无条件拒绝、缺 factory、保护 Y-B 使用 Python Provider。修复 native 选择、group 摘要、grant 路由、装配 basename 和就绪等待竞态后，live-r7 真实受保护 native Y-B 与正常清理 exit 0。 | PARTIAL — 定向正例及文件清理已通过；T002 仍需生产负例、取消/过期、资源上界及工作区源码闭包。 |
 | A02 | HIGH | P:1369、1445、1474、1485、1507、2559、2695、2734 | 先装配后授权；Merge 用 grant 自述 manifest 作预期值；落盘密文后直接解密内存对象；external weights 明文复制且未登记租约；准备阶段后续异常提前 return 可绕过 handler 的 finally。 | OPEN — T001 重排授权、绑定独立输入并覆盖全部加载/清理边界；错误密钥、磁盘密文变异、准备失败与取消测试。 |
 | A03 | HIGH | P:1445；tests/python/test_spec181_provider_grant.py:445 | 原实现未核对 Selection grant 摘要，权威另签的同上下文 grant 可替换选中密钥。新回归实测 `ProtectedGrantRejected not raised`。 | CLOSED — `ff7b5c3b` 增加封印摘要比对；RED 1 failed，GREEN 34 passed，见专项证据。 |
 | A04 | HIGH | U:149--155；R:2796--2912 | Y-N-E 在 User 内部新建固定测试身份、调用两个 verifier 后主动抛出拒绝；没有把 grant 变异送至选定 Provider。仅按异常文本含 grant/binding 等词判拒绝也不能证明注册原因。 | OPEN — T006 真实发布/获取变异，正向控制、明确原因与 request/attempt/provider 绑定；probe 限定为 unit。 |
 | A05 | HIGH | scripts/run_spec181_y_n_matrix_retry.py:48--73、84--94；evidence/t005-y-n-matrix-current.md | driver 删除已有 attempt 目录、重试任意异常且取首个 PASS；产物是自有 retry schema。旧记录混合不同提交的 6/7、7/7 与 NOT PROVEN，不能形成同源矩阵。 | OPEN — T005 改为保留每次失败、唯一 run-id、受限启动重试与同源身份；本轮已纠正文档状态。 |
 | A06 | HIGH | plan.md revision 4 Summary / Ownership / Gate order；spec.md SC-001 | 计划同时指定 user 与 Controller 权威，已延期撤销仍写入成功条件；审计依赖后续资格，而资格又依赖审计。 | CLOSED（设计）— revision 5 统一进程内权威、保留延期边界，T007 PASS 先于 T005/T008；不扩大范围。 |
 | A07 | HIGH | tests/python/test_spec181_native_grant_parity.py:23、41、62；旧 traceability FR-012 | 9 个固定 grant 向量只检查解包；没有 ONNX canonical+recipe 双侧装配字节比较。已有映射将 grant parity 误作 FR-012 完成证据。 | OPEN（实现）— T003 已补独立装配向量/验收路径；现有 grant 向量覆盖保留。 |
-| A08 | HIGH | U:267、310--313；Spec180 registry artifactPolicyAuthority | 示例加载本地权威密钥、硬编码 `/example/user` 并传空模型白名单；尚无证据表明运行时消费注册表模型策略、身份与公钥摘要约束。进程同宿主不免除该校验。 | OPEN — T001 明确发布身份与策略权威映射，校验注册表/public-key 摘要、拒绝未授权模型；不得静默改冻结注册表。 |
+| A08 | HIGH | U；security/registry_keys.py；evidence/t001-registry-repair-20260905.md | 初审发现硬编码发布身份和空模型白名单。当前接线校验注册表算法、公钥摘要、模型/epoch，区分 requester 与 authority，并绑定最终发布 root；100 项定向 unit 通过。 | PARTIAL — 注册表与逻辑身份修复已接线；T001/T006 仍需生产链负例与完整验收；冻结注册表保持不变。 |
 | A09 | MEDIUM | tasks.md revision 4；T001/T002/T004/T006 证据；旧 audit.md | 五项任务打勾但缺其约定生产 integration；T004 测试明确使用 fake native；声称的 provider integration 文件不存在。任务加粗语法还导致扫描器解析为 0 tasks。 | CLOSED（进度/设计）— 恢复未完成标记并列出已有实现，规范 12 个 T 任务、4 个故事与三层证据。真实验收仍归所属任务。 |
 | A10 | MEDIUM | active-context health；failure index | 活动 feature 已为 181，但托管 plan 链接仍指 180；failure index 未指向当前 181 失败。 | CLOSED — 链接、索引已修复；project/active health 均 exit 0，当前文件来源 fresh。 |
 

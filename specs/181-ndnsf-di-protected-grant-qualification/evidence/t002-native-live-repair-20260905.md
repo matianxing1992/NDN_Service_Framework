@@ -128,3 +128,128 @@ User 超时退出；本轮 **UNQUALIFIED**，装配/ORT 未到达。新扩展
 SIGINT/KeyboardInterrupt，没有 SIGSEGV；原间歇崩溃仍未关闭。
 下一诊断核对真实 APP Data 发布名、精确 Interest 与现有路由，不
 通过放宽 CanBePrefix、跳过授权或重试聚合来获得 PASS。
+
+源码显示维护 runner 使用 `NdnRoutingHelper.calculateRoutes()` 预装
+requester identity 路由，却额外强制设置假定由 NLSR 宣告的
+`/ndn/<user-node>-site/<user-node>` forwarding hint。下一 live-r4
+仅在诊断启动器中移除该 hint，记录各节点 FIB 并开启 ServiceUser
+发布/Interest 日志：若精确 grant 成功获取，支持错误 hint 导致
+超时；若仍失败，再区分发布/路由/IMS 边界。尚未改变正式源码。
+
+## Live R4 Routing Diagnosis
+
+移除 hint 后 User 日志记录 4 次 grant 发布和 4 条对应精确 Interest；
+四个 native Provider 均越过 grant 获取/验证。FIB 记录确认远端节点
+存在 requester identity 路由，也存在 router-name 路由；所以不能
+把原因简写为「所有节点都没有 router 路由」。移除非必需 hint 后
+原超时消失，正式 runner 应直接使用其已安装的 identity 路由。
+
+首个失败变为 BackboneNeck 的 `DI_PROVIDER_ASSEMBLY_PATH_UNSAFE`；
+其余角色随后因上游未输出而 dependency fetch 失败，User 超时。
+本轮 **UNQUALIFIED**。源码显示受保护装配将解密副本命名为
+`loaded-model.onnx`，而现有 prepared-runner contract 严格要求
+`model.onnx`。修复保持私有 leased staging 目录，只改副本 basename，
+不得放宽路径校验。原始记录为 live-r4 的 FIB、User/Provider 日志。
+
+路由环境回归 `route-red.log` 先复现错误 hint 被继承；修复后
+`route-green.log` 为 5 tests PASS。正式 runner 不再强加该 hint，
+并清除继承的同名变量，使用已安装的 requester identity 路由。
+live-r4 清理后缓存保留 `model.onnx.cipher`（9128285 bytes）；扫描
+未发现 `.onnx`/`.onnx.data` 明文或残留 staging 子目录。此证据仅
+覆盖本次失败后的文件清理，不替代 ORT 成功/取消/过期生命周期。
+
+## Live R5 Build Identity
+
+文件名修复后的 native/library/extension 统一构建 exit 0，输出
+`SPEC180_NATIVE_IDENTITY_OK`；manifest SHA-256 为
+`802d5cb14c3c252f8d7d42671df526073847dd16949c0236c812818070df0df4`。
+live-r5 使用正式 runner 路由，沿用 live-r3 的 GDB-only Controller
+包装，不再 monkeypatch grant hint。构建与单次日志独立保留。
+
+## Live R5 Captured Startup SIGSEGV
+
+live-r5 在 Controller READY 之前再次崩溃；GDB 成功捕获，外层
+Controller returncode 255 是 debugger 的返回值，不应误读成新的
+应用错误。`case/controller.log:13--40` 记录 thread 7 SIGSEGV：
+`ndn::UnixTransport::resume()` → `Face::Impl::ensureConnected()` →
+`Face::Impl::expressInterest()` → `ServiceController::start()` 的
+`io_context::run_for()` → `NativeServiceController::runControllerLoop()`。
+本轮 **UNQUALIFIED / startup**；Provider 未启动，文件名修复尚未
+完成真实执行验收。新扩展 3 grant parity tests PASS。
+
+后续缩小为 Controller 启动诊断，检查 transport 的非密钥状态与
+对象生命周期。该栈定位了实际崩溃边界，但尚不能在未检查指针/状态
+前断言根因为连接竞态、对象销毁或残留回调。保留 GDB 参数屏蔽，
+只检查 transport 指针与状态，不打印局部业务对象或私钥。
+
+## Controller Probe R6
+
+`spec181-controller-startup-20260905-r6/` 的完整启动前段再次捕获相同
+SIGSEGV。NDN 日志显示 connect、4 次 resume、close，然后约 10 ms
+后再次 resume 并崩溃。优化后的 ndn-cxx 栈没有可用 `this` 符号，
+GDB 状态查询因此停止；不得据此声称已经确认空指针状态。下一次
+最小 probe 在 `UnixTransport::close` 设置自动继续的断点，仅输出
+关闭者栈，以确定关闭发生在哪个 owner，避免猜测。
+
+R7 最小 probe 到达 READY/catalogue，停止在 Repo 之前；没有捕获
+关闭断点，不能因此关闭 R5/R6 的失败。源码另发现可证伪的等待
+竞态：`start_background()` 启动 Python thread 后立即等待，而
+native `waitUntilReady()` 将初始 `m_running == false` 当作终态。
+调度尚未进入 `run()` 时会提前返回 false，Python 随即 `stop()`；
+晚到的 `run()` 又重置取消状态。下一 probe 在启动线程前显式调用
+短时 readiness wait，验证它是否错误地立即返回，而非等待期限。
+
+R8 确定性 RED：在真实 node 环境构造 native Controller，尚未启动
+线程时调用 `wait_until_ready(80)`，仅 **0.00001462 s** 就返回 false，
+触发 `SPEC181_READINESS_PREMATURE_TERMINAL`。这确认初始 idle 被错误
+当作完成/失败终态；正常控制路径会随即调用 stop。修复以显式启动
+终态（就绪、失败或取消）唤醒等待者，不以初始 running=false 判定。
+
+生产修复位于 `NativeServiceController`：新增由 `m_startMutex`
+保护的完成状态，初始 idle 不唤醒 waiter；start/run 开始时清除，
+就绪、异常和 stop 时设置。stop 清除 ready，避免已停止对象仍报告
+就绪；成功路径也再次检查 running。真实探针维护在
+`tests/fixtures/spec181/controller-readiness-before-run.py`，Python
+接口 seam 7 tests PASS；最终以重建 native 探针结果判定本缺陷。
+
+R9 统一构建 PASS，manifest SHA-256
+`49f77e3d3dd57842ad6c930eeb79a00f40d0d50c5df1c34672a5e6b6fe027e64`；
+重建扩展 3 grant parity tests PASS。真实 native 探针记录
+`ready=False elapsed=0.08105735`，随后正常 READY、catalogue 发布，
+在 Repo 前按设计停止并完成清理。确定性 pre-thread readiness
+缺陷 **CLOSED**；此单次探针不代表所有取消/超时/热转验收完成。
+下一 live-r6 使用同一构建与正式 runner，继续先前装配修复的单次
+请求诊断，并保留 GDB。T007 保持 BLOCK。
+
+## Live R6 Native Execution and Debugger Cleanup
+
+同一构建下三个 ONNX Runtime Provider 与 native Merge 执行，User
+输出 `YOLO_ACK_DRIVEN_RESULT status=true payload_bytes=1267`，plan
+digest 为 `sha256:6506d58ed380aacf83764e799fd58f7ef94b9d6410dd4b4bb5c3ce3921bf80cf`。
+装配 basename 和启动等待修复已越过原失败边界。但 runner 最终
+报 `CASE_TERMINAL_CLEANUP_FAILURE:controller:255`：GDB 在清理 SIGINT
+后以 255 返回，而监督器期望普通 Python Controller 的退出语义。
+本轮整体仍 **UNQUALIFIED / debugger cleanup**，不得作为正式 PASS。
+
+下一 live-r7 移除 GDB 包装，保留相同构建、正式进程命令和定向
+日志，仅验证正常清理/采集边界；不放宽 exit-code 验收，不删除 r6。
+
+## Live R7 Focused Acceptance
+
+普通进程命令、同一 r9 构建下，单次入口 exit 0，输出
+`SPEC180_CASE_RESULT status=PASS case=Y-B`；`subcase-result.json` 为
+`spec180-yolo-subcase-result-v1 / PASS / CONTROL`。User 返回
+`status=true payload_bytes=1267`，plan digest 为
+`sha256:463f1f605e940b6a1b11fb2618fa2714ac82f023e50b1631aaa40a20a61a6b52`。
+三个角色使用 ONNX Runtime CPU，Merge 使用 native postprocess；
+这是受保护 native 请求的定向正例及正常清理证据。
+
+清理后保留 3 个 `model.onnx.cipher`，未发现 `.onnx`/`.onnx.data`
+明文或 staging 子目录；本次 NFD、Controller、Provider 均被收集，
+五个原有 NFD 保持运行。所有此前失败目录仍保留，未使用重试聚合。
+
+**Verdict**: focused repairs PASS；T002/T004 partial；T007 BLOCK。
+尚未完成生产负例、全部资源/取消/过期验收，也未运行正式 T005/T008。
+factory/assembler/handler 仍含先前工作区接线，后续须单独审查并形成
+可提交源码闭包；本记录的二进制由 manifest 全部源哈希标识，不能
+仅以检查点 HEAD 代替该构建身份。
