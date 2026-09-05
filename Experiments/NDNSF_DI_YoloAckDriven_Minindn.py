@@ -3142,6 +3142,15 @@ def _run_live_case_once(case: str, output: Path, inputs: Mapping[str, Any], *,
             env["SPEC181_GRANT_AUTHORITY_PUBLIC_KEY"] = str(
                 ROOT / "specs/180-ack-driven-cross-model-qualification"
                 / "contracts/artifact-policy-authority.pub")
+            # The authority private key lives outside Git under the operator
+            # home; MiniNDN rewrites each child's HOME to its node directory,
+            # so pin the config root explicitly for the registry loader.
+            env["NDNSF_SPEC180_CONFIG_ROOT"] = str(
+                Path.home() / ".config" / "ndnsf" / "spec180")
+            if not (Path(env["NDNSF_SPEC180_CONFIG_ROOT"])
+                    / "artifact-policy-authority.key").is_file():
+                raise RunnerError(
+                    "PROTECTED_EPOCH_AUTHORITY_PRIVATE_KEY_MISSING")
             if not env["SPEC181_REQUESTER_PRIVATE_KEY"]:
                 raise RunnerError("PROTECTED_EPOCH_REQUESTER_KEY_MISSING")
             if not env["SPEC181_PROVIDER_RECIPIENT_KEY_MAP"]:
