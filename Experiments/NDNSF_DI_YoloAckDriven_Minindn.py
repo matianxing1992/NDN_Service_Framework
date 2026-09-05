@@ -784,30 +784,6 @@ class MiniNdnCaseRuntime:
             return ("cd " + shlex.quote(str(ROOT)) +
                     " && exec " + quoted)
 
-        def python_provider_command(*, identity: str,
-                                   roles: tuple[str, ...],
-                                   key_path: Path) -> str:
-            """Python Provider command for the protected-epoch Y-B round
-            trip (spec181 T008): the T001 grant qualification seam lives in
-            the Python assembly path; the native Provider has no factory
-            wiring on this branch (R002 honesty gate)."""
-            provider_id = identity[len(repo_marker):]
-            argv = [
-                "--config", str(policy),
-                "--generated-policy-dir", str(generated),
-                "--group", str(identities["group"]),
-                "--provider-id", provider_id,
-                "--role", ",".join(roles),
-                "--temp-dir", "/tmp/" + provider_id,
-                "--handler-workers", "1",
-                "--dynamic-provisioning",
-                "--local-model-path", str(
-                    Path(self.inputs["package"]).expanduser()
-                    / "canonical/yolo26n.onnx"),
-                "--selection-offer-key-file", str(key_path),
-            ]
-            return python_command("provider.py", argv)
-
         identities = self.binding.identities
         nodes = self.binding.nodes
         publication_file = self.inputs.get("runtime_publication_file")
@@ -923,25 +899,14 @@ class MiniNdnCaseRuntime:
                 raise RunnerError(
                     "CASE_PROCESS_OFFER_PRIVATE_KEY_DIGEST_MISMATCH:" + identity)
             node = str(nodes["providers"][identity])
-            protected_epoch = str(
-                self.inputs.get("protection_epoch", "") or "").strip()
-            if protected_epoch and protected_epoch != "plaintext-v1":
-                # spec181 T008: the protected round trip runs on the Python
-                # Provider path (T001 grant seam); the native Provider has
-                # no factory wiring on this branch.
-                commands.append(CaseProcessSpec(
-                    "provider-" + provider_id, node,
-                    python_provider_command(
-                        identity=identity, roles=roles, key_path=key_path),
-                    "Installed provider permission", "providers", "",
-                ))
-            else:
-                commands.append(CaseProcessSpec(
-                    "provider-" + provider_id, node,
-                    native_provider_command(
-                        identity=identity, roles=roles, key_path=key_path),
-                    "NDNSF_DI_NATIVE_PROVIDER_READY", "providers", "native",
-                ))
+            # Both epochs exercise the native production owner. Protected
+            # assignments must pass its grant factory before preparation.
+            commands.append(CaseProcessSpec(
+                "provider-" + provider_id, node,
+                native_provider_command(
+                    identity=identity, roles=roles, key_path=key_path),
+                "NDNSF_DI_NATIVE_PROVIDER_READY", "providers", "native",
+            ))
 
         user_args = common + [
             "--canonical-package", str(package),
@@ -3175,12 +3140,8 @@ def _run_live_case_once(case: str, output: Path, inputs: Mapping[str, Any], *,
                 raise RunnerError("PROTECTED_EPOCH_RECIPIENT_KEY_MAP_MISSING")
             if not Path(env["SPEC181_GRANT_AUTHORITY_PUBLIC_KEY"]).is_file():
                 raise RunnerError("PROTECTED_EPOCH_AUTHORITY_PUBLIC_KEY_MISSING")
-            # The protected round trip runs on the Python Provider path,
-            # where the T001 grant qualification seam lives.  A native
-            # Provider has no factory wiring on this branch (R002 honesty
-            # gate would reject it); the process-spec branch selects the
-            # Python command, while the native build guard keeps validating
-            # the unchanged closure.
+            # Native Providers consume the same pinned registry and recipient
+            # map through their protected factory; no process substitution.
     # Y-N-O is the live control permutation, not a mutation.  Keep the
     # subcase in the lifecycle identity while leaving the User on its normal
     # control path; the negative User hook accepts only Y-N-C/P/R/I/E/L.

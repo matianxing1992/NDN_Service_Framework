@@ -11,6 +11,16 @@ namespace ndnsf::di {
 namespace {
 
 bool
+isGroupDigest(const std::string& value)
+{
+  // GroupCapabilityV1's existing wire contract uses unprefixed SHA-256 hex.
+  return value.size() == 64 &&
+         std::all_of(value.begin(), value.end(), [] (unsigned char ch) {
+           return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
+         });
+}
+
+bool
 isDigest(const std::string& value)
 {
   if (value.size() != 71 || value.compare(0, 7, "sha256:") != 0) {
@@ -46,11 +56,13 @@ ProtectedRuntimeBindingV1::validate() const
   if (grantName.front() != '/' || protectionEpoch == "plaintext-v1" ||
       attempt == 0 || expiresAtMs == 0 ||
       !isDigest(planCoreDigest) || !isDigest(planDigest) ||
-      !isDigest(securityPolicySnapshotDigest) || !isDigest(grantDigest) ||
-      (hasGroupBinding && (groupId.empty() || groupEpoch == 0 ||
-                           !isDigest(capabilityDigest) ||
-                           !isDigest(epochKeyId)))) {
+      !isDigest(securityPolicySnapshotDigest) || !isDigest(grantDigest)) {
     throw std::invalid_argument("protected runtime binding is incomplete");
+  }
+  if (hasGroupBinding && (groupId.empty() || groupEpoch == 0 ||
+                         !isGroupDigest(capabilityDigest) ||
+                         !isGroupDigest(epochKeyId))) {
+    throw std::invalid_argument("protected runtime group binding is invalid");
   }
   const auto validateEndpoints = [] (const auto& endpoints) {
     return std::all_of(endpoints.begin(), endpoints.end(), [] (const auto& item) {

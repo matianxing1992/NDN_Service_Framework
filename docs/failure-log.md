@@ -19,6 +19,14 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 T002 native launch repair (2026-09-05): exact grant fetch timeout / OPEN.**
+The group wire-format defect is repaired with 20 focused C++ cases passing.
+Retained live-r3 reaches native grant fetching; all four roles time out before
+assembly. Check APP publication, exact names and routing before another
+focused request. Earlier Controller startup SIGSEGV remains unresolved;
+GDB-supervised startup passed but does not close it. All raw runs are retained. See
+[native launch repair](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t002-native-live-repair-20260905.md).
+
 **Spec181 T002 production wiring (2026-09-05): build defect CLOSED; T002 OPEN.**
 The first compile failed on the installed ndn-cxx forwarding-hint API. A
 separate retained r2 build passes native/library/extension identity checks,
