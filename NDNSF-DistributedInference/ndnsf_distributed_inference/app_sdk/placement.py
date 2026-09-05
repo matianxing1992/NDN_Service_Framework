@@ -4255,8 +4255,14 @@ class AutomaticPlanningCoordinator:
                     spec.role == candidate.result_egress_role):
                 # A native Merge consumes the declared dependency tensors and
                 # owns only deterministic postprocessing. It has no ONNX
-                # model-layer artifact and must not enter the assembler.
-                certified.append(spec)
+                # model-layer artifact and must not enter the assembler, but
+                # a protected-epoch grant still binds the same model-manifest
+                # digest as the component roles (spec181 T008 Y-B).
+                certified.append(replace(
+                    spec,
+                    model_manifest_digest=binding.model_manifest_digest,
+                    artifact_profile_digest=binding.artifact_profile_digest,
+                ))
                 continue
             owned = tuple(sorted(
                 order[node] for node, owner
