@@ -4124,11 +4124,6 @@ namespace ndn_service_framework
             std::lock_guard<std::mutex> lock(_cache_mutex);
             m_IMS.insert(*data, freshness);
         }
-        // spec181 T008: place the signed APP Data in the forwarder's
-        // ContentStore as well, so an exact-name fetch from another process
-        // (the Provider's grant fetch) is satisfied without an identity
-        // prefix route.  Freshness bounds the ContentStore residency.
-        m_face.put(*data);
         NDN_LOG_INFO("Published signed APP Data name=" << dataName
                      << " bytes=" << payload.size());
         return dataName;
