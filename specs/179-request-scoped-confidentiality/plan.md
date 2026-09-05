@@ -11,6 +11,15 @@ and makes the MiniNDN gate retain all failed requests and return a failing exit
 code for a failed gate. Detailed audit, negative reproductions and final results
 live in `evidence/online-authorization-audit-20260905.md`.
 
+The late-grant campaign further reproduced a first-DKEY constructor deadlock:
+an unprovisioned User cannot reach the App permission API at all; Provider has
+the same wait. Remove both blocking loops, initiate the existing asynchronous
+Consumer fetch, and retain all existing permission/status/key admission checks.
+No polling thread or new wire/API is added. Real-constructor timeout and
+unauthorized-publication/execution tests plus the full network campaign gate
+this startup change. Scenario workloads must also drain for at least their
+request timeout rather than treating teardown as successful authorization.
+
 **Branch**: `UAV-Experimental` | **Date**: 2026-09-01 | **Spec**: `spec.md`
 
 ## Summary

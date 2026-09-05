@@ -4292,6 +4292,55 @@ BOOST_AUTO_TEST_CASE(ConfiguredControllerFailsClosedBeforeStatusInstallation)
       "NDNSF_REVOCATION_RUNTIME no_status=fail_closed user_publish=0 provider_execute=0");
 }
 
+BOOST_AUTO_TEST_CASE(UnprovisionedRuntimesConstructAndRemainUnauthorized,
+                     *boost::unit_test::timeout(5))
+{
+  // Real constructors, no AA relay and no DKEY. They must return so an
+  // application can drive online permission renewal, without admitting work.
+  ndn::KeyChain keys;
+  ndn::DummyClientFace face(keys);
+  const ndn::Name userName("/spec179/unprovisioned/user");
+  const ndn::Name providerName("/spec179/unprovisioned/provider");
+  const auto cert = [&] (const ndn::Name& name) {
+    return keys.createIdentity(name, ndn::RsaKeyParams(2048))
+        .getDefaultKey().getDefaultCertificate();
+  };
+  const auto aa = cert(ndn::Name("/spec179/unprovisioned/controller"));
+  ServiceUser user(face, ndn::Name("/spec179/unprovisioned/group"),
+                   cert(userName), aa, "examples/trust-any.conf");
+  ServiceProvider provider(face, ndn::Name("/spec179/unprovisioned/group"),
+                           cert(providerName), aa, "examples/trust-any.conf");
+  BOOST_CHECK(!user.isNacConsumerReadyForTest());
+  BOOST_CHECK(!provider.isNacConsumerReadyForTest());
+  user.fetchPermissionsFromController(aa.getIdentity());
+  provider.fetchPermissionsFromController(aa.getIdentity());
+  BOOST_CHECK(!user.getControllerVersion());
+  BOOST_CHECK(!provider.getControllerVersion());
+  size_t executed = 0;
+  provider.addService(ndn::Name(SERVICE), ServiceProvider::RequestHandler(
+      [&] (const ndn::Name&, const ndn::Name&, const ndn::Name&,
+           const ndn::Name&, const RequestMessage&) {
+        ++executed;
+        ResponseMessage response;
+        response.setStatus(true);
+        return response;
+      }));
+  size_t published = 0;
+  user.setRequestPublisher([&] (const ndn::Name&, const ndn::Name&,
+      const std::vector<ndn::Name>&, const ndn::Name&, const RequestMessage&, size_t) {
+    ++published;
+  });
+  RequestMessage request;
+  const auto id = user.RequestService({providerName}, ndn::Name(SERVICE), request,
+      1000, [] (const ndn::Name&) {}, [] (const ResponseMessage&) {}, tlv::FirstResponding);
+  BOOST_CHECK(id.empty());
+  BOOST_CHECK_EQUAL(published, 0U);
+  BOOST_CHECK(!provider.handleDecryptedRequestByName(
+      makeRequestNameV2(userName, ndn::Name(SERVICE), ndn::Name("no-dkey")), request)
+      .getStatus());
+  BOOST_CHECK_EQUAL(executed, 0U);
+}
+
 BOOST_AUTO_TEST_CASE(PersistedRuntimeStatusSurvivesRuntimeRestart)
 {
   // RV-I32 (FR-039): with NDNSF_PERSIST_RUNTIME_STATE enabled, statuses

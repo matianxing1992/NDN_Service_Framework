@@ -177,6 +177,12 @@ the current post-revocation generation and cannot reactivate the old DKEY.
 
 ### Edge Cases
 
+- User/Provider construction MUST return without waiting for the first DKEY.
+  An unprovisioned participant must be able to run its Face event loop and
+  request or renew permissions after an online grant. Pending bootstrap is
+  not authorization: protected publication/execution still requires valid
+  permission, exact signed status and the matching cryptographic material.
+
 - A pending failed withdrawal MUST be reconciled before any subsequent grant
   or revoke, including a retry of the same target. Failed recovery preserves
   the withdrawal. Recovery MUST reserve a newer durable ControllerVersion

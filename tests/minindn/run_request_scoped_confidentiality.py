@@ -512,8 +512,10 @@ def _collect_runtime_evidence(output: Path, scenario: str,
         # not prove process termination; using the earliest provider log as
         # a cutoff silently discarded all failed requests. Scenario lifetime
         # must include bootstrap, workload and drain instead of censoring reds.
-        # Bootstrap-hold evidence: count "Waiting for decryption key" before the
-        # identity's permission state resolved (first PENDING/REQUESTED line).
+        # Old runs held construction until the first DKEY. New runtimes let
+        # the App run but reject protected requests before authority arrives.
+        # Retain both forms for historical reanalysis; a pending marker alone
+        # is never sufficient negative evidence.
         granted_log_text = log_text.get("user-%s.log" % granted_leaf, "")
         resolution_us = None
         for marker_pattern in ("NDNSF_NAC_DKEY_REFRESH_PENDING",
@@ -527,9 +529,14 @@ def _collect_runtime_evidence(output: Path, scenario: str,
         waiting_ts_us = [int(round(float(ts) * 1_000_000)) for ts in re.findall(
             r"^([0-9]+\.[0-9]+)\s+.*Waiting for decryption key",
             granted_log_text, flags=re.MULTILINE)]
+        denial_ts_us = [int(round(float(ts) * 1_000_000)) for ts in re.findall(
+            r"^([0-9]+\.[0-9]+)\s+.*(?:NDNSF_USER_REVOCATION_REJECT|"
+            r"Reject request (?:under revoked Controller status|without installed ControllerVersion|"
+            r"without user permission))", granted_log_text, flags=re.MULTILINE)]
+        blocked_ts_us = waiting_ts_us + denial_ts_us
         granted_pre_resolve_waiting = (
-            sum(1 for ts_us in waiting_ts_us if ts_us < resolution_us)
-            if resolution_us is not None else len(waiting_ts_us))
+            sum(1 for ts_us in blocked_ts_us if ts_us < resolution_us)
+            if resolution_us is not None else len(blocked_ts_us))
         # Unaffected identities must observe the new epoch and decline to
         # refetch: NOT_REQUIRED reason=same-generation-no-grant and/or
         # CACHE_INVALIDATED with abeGenerationChanged=false at epoch>=2.
@@ -591,6 +598,8 @@ def _collect_runtime_evidence(output: Path, scenario: str,
             "grantedPreGrantRows": granted_pre_grant_rows,
             "grantedFirstEnqueueUs": granted_first_enqueue_us,
             "grantedPreResolveWaiting": granted_pre_resolve_waiting,
+            "grantedPreResolveDenials": sum(
+                1 for ts in denial_ts_us if resolution_us is None or ts < resolution_us),
             "grantedTerminalReasons": granted_reasons,
             "unaffectedControlSuccessRows": len(control_rows),
             "unaffectedControlPostGrantSuccessRows": sum(
@@ -614,7 +623,7 @@ def _collect_runtime_evidence(output: Path, scenario: str,
                 exhausted_us is not None and grant_time_us is not None and
                 refetch_us is not None and granted_first_enqueue_us is not None and
                 exhausted_us < grant_time_us < refetch_us <= granted_first_enqueue_us and
-                any(exhausted_us < ts < refetch_us for ts in waiting_ts_us))
+                any(exhausted_us < ts < refetch_us for ts in denial_ts_us))
     trace_material = "\n".join(
         "%s:%s" % (name, text) for name, text in sorted(log_text.items()))
     trace_hash = "sha256:" + hashlib.sha256(trace_material.encode("utf-8")).hexdigest()
@@ -697,7 +706,7 @@ def _scenario_config(scenario: str) -> Dict[str, Any]:
         # the face before the benchmark finalizes and the request-results
         # CSV stays empty.  Scenarios with delayed/in-flight windows that
         # must drain inside the role window override this upward.
-        "lifetimeMs": 20000,
+        "lifetimeMs": 35000,
         # role -> NDNSF_POLICY_REVALIDATION_PERIOD_MS.  A fixed period forces
         # the scheduled-refresh path to re-fetch even while the signed status
         # is far from expiry; absent roles keep the production near-expiry
@@ -740,7 +749,7 @@ def _scenario_config(scenario: str) -> Dict[str, Any]:
         # delay: pre-revoke rows are still in flight across the boundary.
         config.update({"revokeAfterMs": 5200,
                        "providerRequestDelayMs": 3000,
-                       "lifetimeMs": 22000})
+                       "lifetimeMs": 35000})
     elif scenario == "offline-rejoin-epoch-skip":
         # Freeze user/A across two controller version advances (grant C ->
         # epoch 2, revoke provider/A -> epoch 3).  user/A is frozen across
@@ -764,7 +773,7 @@ def _scenario_config(scenario: str) -> Dict[str, Any]:
                        "grantService": SERVICE_NAME,
                        "knobMs": {"userA": 800, "userB": 800,
                                   "providerA": 800, "providerB": 800},
-                       "lifetimeMs": 19000,
+                       "lifetimeMs": 35000,
                        "stopUserAMs": 3300,
                        "contUserAMs": 9500})
     elif scenario == "controller-cache-provider-status-retrieval":
@@ -819,10 +828,10 @@ def _scenario_config(scenario: str) -> Dict[str, Any]:
         if scenario == "grant-after-permission-exhaustion":
             config.update({
                 "grantAfterMs": 30000,
-                "permissionRefetchAfterMs": 25000,
+                "permissionRefetchAfterMs": 40000,
                 "lifetimeMs": 100000,
                 "requestCount": 32,
-                "requestDurationMsByUser": {"A": 60000, "B": 16000},
+                "requestDurationMsByUser": {"A": 60000, "B": 60000},
                 "recovery": "explicit-permission-renewal",
             })
     return config
@@ -1095,7 +1104,7 @@ def execute_gate(output: Path, scenario: str = SCENARIOS[0],
             "--interval-ms", "1000", "--duration",
             str(max(1, (duration_ms + 999) // 1000)),
             "--ack-timeout-ms", "1000", "--timeout-ms", "5000",
-            "--request-timeout-ms", "5000", "--drain-seconds", "1",
+            "--request-timeout-ms", "5000", "--drain-seconds", "6",
             "--strategy", "first-responding", "--timeline-trace",
             "--disable-adaptive-admission-control", "--run-for-ms",
             str(lifetime_ms + 3000), "--output-csv", q(user_log),

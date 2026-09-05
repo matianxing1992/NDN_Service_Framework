@@ -33,24 +33,6 @@ namespace ndn_service_framework
 
     namespace
     {
-        // Keep NAC-ABE startup retries bounded even when an unresolved DKEY
-        // SegmentFetcher leaves Face::processEvents running past its nominal
-        // timeout.  Non-blocking pumps still dispatch certificate/DKEY
-        // callbacks and let the outer loop re-express the Interest.
-        void
-        pumpFaceFor(ndn::Face& face, std::chrono::milliseconds duration)
-        {
-            const auto deadline = std::chrono::steady_clock::now() + duration;
-            do {
-                face.processEvents(ndn::time::milliseconds(-1));
-                if (std::chrono::steady_clock::now() >= deadline) {
-                    break;
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            }
-            while (true);
-        }
-
         void
         configureSvsProtocol(ndn::svs::SVSPubSubOptions& options)
         {
@@ -1596,18 +1578,14 @@ namespace ndn_service_framework
         NDN_LOG_WARN("NDNSF_PROVIDER_INIT_STAGE stage=svs_pubsub_ready provider="
                      << identity.toUri());
 
-        while(!nacConsumer.readyForDecryption()){
-            // log waiting for decryption key
-            NDN_LOG_INFO("DK_INTEREST_EXPRESSED prefix="
-                      << ndn::Name(attrAuthorityCertificate.getIdentity()).append("DKEY").toUri()
-                      << " provider=" << identity.toUri());
-            nacConsumer.obtainDecryptionKey();
-            NDN_LOG_INFO("Waiting for decryption key");
-            pumpFaceFor(face, std::chrono::milliseconds(1000));
-            NDN_LOG_WARN("NDNSF_PROVIDER_INIT_STAGE stage=dkey_wait_iteration provider="
-                         << identity.toUri());
-        }
-        NDN_LOG_INFO("DK_DECRYPT_SUCCESS provider=" << identity.toUri());
+        // Permission renewal must remain reachable even without an initial
+        // grant/DKEY. Crypto readiness is asynchronous; admission remains
+        // fail-closed until permission, signed status and key installation.
+        nacConsumer.obtainDecryptionKey();
+        if (nacConsumer.readyForDecryption())
+            NDN_LOG_INFO("DK_DECRYPT_SUCCESS provider=" << identity.toUri());
+        else
+            NDN_LOG_INFO("NDNSF_NAC_BOOTSTRAP_PENDING role=provider");
         NDN_LOG_WARN("NDNSF_PROVIDER_INIT_STAGE stage=constructor_done provider="
                      << identity.toUri());
 

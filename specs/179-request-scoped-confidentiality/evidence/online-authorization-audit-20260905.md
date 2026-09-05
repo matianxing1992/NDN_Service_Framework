@@ -18,6 +18,8 @@ counts require reevaluation because the collector censored failures.
 | OA-4 | MEDIUM, automation | Executed CLI regression returned 0 for completed + gatePassed=false. | Require explicit passing gate for exit 0. |
 | OA-5 | MEDIUM, coverage | Existing grant arrives during permission retries; no post-exhaustion renewal evidence. | New scenario must observe timeout exhaustion < grant < App refetch <= first request, plus target-only DKEY replacement and successful unaffected control. |
 | OA-6 | MEDIUM, harness | Runtime trace kept enqueueing for about 51 seconds; launcher passed milliseconds to App_User's seconds-based --duration (and open-loop ignores --count). | Convert units and reserve independent late-grant control and drain windows. |
+| OA-7 | HIGH, runtime | Actual late-grant network probe cannot emit App readiness or perform permission renewal: User construction waits for a DKEY. Provider has the same loop. | Return with asynchronous bootstrap pending; verify real constructors remain unauthorized and execute late online grant without restart. |
+| OA-8 | MEDIUM, harness | Inflight scenario retains two incomplete control rows because one-second drain is shorter than its Provider delay/request timeout. | Reserve full request drain and role lifetime; rerun with every row retained. |
 
 ## Repair design and traceability
 
@@ -86,6 +88,17 @@ counts require reevaluation because the collector censored failures.
   installed epoch 3; user/A had 16 successes before withdrawal, 10 denial
   log lines during pending rotation, 32 after recovery, and zero post-failure
   successful invocations. User/B had **16/16 successful post-recovery calls**.
+- Diagnostic campaign completed **14/16 passing scenarios**, with failures
+  retained for late-grant constructor blocking and insufficient inflight drain.
+  These results precede the asynchronous startup change and are not its gate.
+- Both real constructors now return with initial DKEY fetch pending. The new
+  `UnprovisionedRuntimesConstructAndRemainUnauthorized` test passes **8/8 assertions**
+  under a five-second timeout: no DKEY/status, zero request publication and zero
+  executions of a registered Provider handler. See `gates/bootstrap-constructor-green.log`;
+  test build `gates/build-bootstrap-tests.log` succeeded in 6m21s. App rebuild
+  and final C++/network regressions remain pending. The network rejection is
+  the pre-fix reproduction; this additional constructor case was not executed
+  against the old binary.
 
 ## Audit dimensions and limits
 

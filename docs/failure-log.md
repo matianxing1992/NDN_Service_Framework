@@ -1,5 +1,21 @@
 # NDNSF Failure Log
 
+## 2026-09-05 — unprovisioned runtime cannot reach online permission renewal
+- **Area**: Spec179 User/Provider construction and online grant (T018)
+- **Symptom**: late-grant MiniNDN probe failed the App_User readiness deadline; no permission fetch or App refetch marker appeared, only repeated Waiting for decryption key lines. The original first-grant scenario began the App only after grant unlocked construction.
+- **Root cause**: both real constructors synchronously pump their Face until Consumer has a DKEY. An identity with no grant cannot finish construction to call the App-owned permission API. This corrects the earlier startup-delay hypothesis: the relevant delay was the DKEY gate, not slow RSA initialization.
+- **Fix**: begin the existing asynchronous Consumer fetch and return with an explicit bootstrap-pending marker. Keep all permission/status/key checks. Timed real User/Provider constructor coverage passes 8/8 assertions with zero unauthorized publication/execution; final late-grant network rerun remains pending.
+- **Ref**: campaign/grant-after-permission-exhaustion; ServiceUser/ServiceProvider constructors; UnprovisionedRuntimesConstructAndRemainUnauthorized.
+- **Lesson**: an application-owned recovery API is unusable if construction blocks waiting for the condition that API must recover.
+
+## 2026-09-05 — one-second benchmark drain truncates delayed valid responses
+- **Area**: Spec179 MiniNDN workload shutdown
+- **Symptom**: corrected-duration inflight-revocation run reported two unsuccessful unaffected-user requests near workload end, despite ten successful post-revoke requests.
+- **Root cause**: the launcher allowed only one second of drain for a three-second Provider delay and five-second request timeout. Open-loop finalization emitted incomplete rows before valid in-flight work could finish.
+- **Fix**: drain six seconds (five-second request timeout plus margin), use at least 35-second role windows for the standard scenarios, retain all failures and rerun. No success filter is added.
+- **Ref**: campaign/inflight-revocation; App_User drainDeadline; T018.
+- **Lesson**: measured-window completion and process survival must include the entire request drain budget.
+
 ## 2026-09-05 — failed withdrawal bypassed by grant or same-target retry
 - **Area**: Spec179 Controller pending ABE rotation
 - **Symptom**: the new real Controller regression produced 10 failed assertions: same-target retry left the old ABE pair; grant removed the revocation during injected rotation failure; direct recovery produced an equal-version conflicting status rejected by RevocationState.
