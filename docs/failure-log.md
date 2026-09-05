@@ -1,5 +1,12 @@
 # NDNSF Failure Log
 
+## 2026-09-05 — stream retry timing assertion fails alongside compilation
+- **Area**: Spec179 final integration verification / shared-host load
+- **Symptom**: `NormalStreamRetriesOneSuppressedEventFromProviderIms` completed successfully but recorded two retries instead of exactly one; the expanded gate returned 201 (70/71 cases, 1269/1270 assertions).
+- **Root cause**: the test uses a 100ms Interest lifetime; concurrent `-j2` App compilation is a plausible scheduling cause, not yet established by a controlled load experiment. No source change to the stream implementation occurred in this repair.
+- **Fix**: retain `gates/integration-final.log`, finish compilation and rerun without compilation load. The isolated case passed immediately (exit 0); full isolated integration gate is pending. No retry assertion or timeout was weakened.
+- **Lesson**: independent binaries avoid link races but do not isolate timing-sensitive tests from shared CPU pressure. Run the final timing gate without compilation.
+
 ## 2026-09-05 — unprovisioned runtime cannot reach online permission renewal
 - **Area**: Spec179 User/Provider construction and online grant (T018)
 - **Symptom**: late-grant MiniNDN probe failed the App_User readiness deadline; no permission fetch or App refetch marker appeared, only repeated Waiting for decryption key lines. The original first-grant scenario began the App only after grant unlocked construction.
