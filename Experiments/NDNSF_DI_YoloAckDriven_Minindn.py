@@ -3155,6 +3155,16 @@ def _run_live_case_once(case: str, output: Path, inputs: Mapping[str, Any], *,
                     / "artifact-policy-authority.key").is_file():
                 raise RunnerError(
                     "PROTECTED_EPOCH_AUTHORITY_PRIVATE_KEY_MISSING")
+            # The Provider's grant fetch happens right after the User starts,
+            # before NLSR has propagated the identity-prefix route.  Pin a
+            # forwarding hint to the User's node so the Interest reaches the
+            # User's local NFD directly (the identity route is registered
+            # there synchronously).
+            user_node = str(
+                binding.nodes.get("user", "") or "").strip()
+            if not user_node:
+                raise RunnerError("PROTECTED_EPOCH_USER_NODE_MISSING")
+            env["SPEC181_GRANT_FORWARDING_HINT"] = "/" + user_node
             if not env["SPEC181_REQUESTER_PRIVATE_KEY"]:
                 raise RunnerError("PROTECTED_EPOCH_REQUESTER_KEY_MISSING")
             if not env["SPEC181_PROVIDER_RECIPIENT_KEY_MAP"]:

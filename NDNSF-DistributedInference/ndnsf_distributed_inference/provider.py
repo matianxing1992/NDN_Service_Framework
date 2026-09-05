@@ -1417,9 +1417,14 @@ class DistributedInferenceProvider:
                 "protected V3 Selection carries no Provider grant binding")
         lease_registry = PlaintextLeaseRegistry()
         try:
+            grant_hints = [
+                hint for hint in os.environ.get(
+                    "SPEC181_GRANT_FORWARDING_HINT", "").split(",")
+                if hint.strip()]
             fetch_grant = _fetch_grant_data or (
                 lambda name: fetch_exact_data_packet(
-                    name, timeout_ms=self._grant_fetch_timeout_ms))
+                    name, timeout_ms=self._grant_fetch_timeout_ms,
+                    forwarding_hints=grant_hints))
             try:
                 packet = fetch_grant(grant_binding.grant_name)
             except Exception as exc:
