@@ -101,7 +101,13 @@ counts require reevaluation because the collector censored failures.
   against the old binary.
 - Final rebuilt unit gate after asynchronous constructor changes:
   **182/182 cases, 11971/11971 assertions** (`gates/unit-final.log`).
-  Integration and final network results are still pending.
+  Initial concurrent-build integration run had one stream retry-count failure
+  (70/71 cases); retained in `gates/integration-final.log`. After compilation
+  finished, the focused retry case passed 12/12 and the full isolated integration
+  gate passed **71/71 cases, 1270/1270 assertions**, exit 0
+  (`gates/integration-final-isolated.log`). No assertion was relaxed.
+  App/shared library build passed in 9m23s with `-j2`; all three Apps resolve
+  the candidate framework and intended NAC-ABE prefix. Final network is pending.
 
 ## Audit dimensions and limits
 
