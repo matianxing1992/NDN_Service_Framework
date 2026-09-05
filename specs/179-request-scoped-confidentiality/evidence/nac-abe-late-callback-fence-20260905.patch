@@ -16,13 +16,13 @@ index e2bb6e9..1a044c1 100644
 +        "OpenABE decryption failed (code " + std::to_string(static_cast<int>(error)) + ")"));
    }
  }
- 
+
 diff --git a/src/consumer.cpp b/src/consumer.cpp
 index dff2651..529256f 100644
 --- a/src/consumer.cpp
 +++ b/src/consumer.cpp
 @@ -202,11 +202,16 @@ Consumer::consume(const Interest& dataInterest,
- 
+
    ndn::SegmentFetcher::Options fetchOptions;
    fetchOptions.probeLatestVersion = false; // Disable MustBeFresh flag
 +  const auto generation = m_cacheGeneration;
@@ -48,7 +48,7 @@ index dff2651..529256f 100644
      errorCallback("Data fetch failed: " + errorMsg);
    });
 @@ -312,11 +319,16 @@ Consumer::decryptContent(const Name& dataObjName,
- 
+
    ndn::SegmentFetcher::Options ckOptions;
    ckOptions.probeLatestVersion = false; // Disable MustBeFresh flag
 +  const auto generation = m_cacheGeneration;
@@ -79,16 +79,16 @@ index ea30a74..e0cbfc7 100644
 +++ b/tests/unit-tests/abe-support.t.cpp
 @@ -19,6 +19,7 @@
   */
- 
+
  #include "algo/abe-support.hpp"
 +#include "ndn-crypto/error.hpp"
- 
+
  #include "test-common.hpp"
- 
+
 @@ -62,6 +63,31 @@ onLifecycleStop(int)
- 
+
  BOOST_AUTO_TEST_SUITE(TestAbeSupport)
- 
+
 +BOOST_AUTO_TEST_CASE(InvalidPrivateKeyReportsStandardError)
 +{
 +  auto& abe = ABESupport::getInstance();

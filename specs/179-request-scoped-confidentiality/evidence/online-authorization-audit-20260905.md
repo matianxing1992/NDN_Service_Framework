@@ -8,8 +8,8 @@ grant, startup readiness, error reporting and truthful network evidence.
 implemented; the readiness regression passes8/8, unit182/182 and integration72/72
 on the previous dependency. Final MiniNDN exposed a further dependency-side
 callback/error boundary failure (T019), now fixed with14 dependency cases and
-GDB-backed reproduction. NDNSF regression and final16-scenario acceptance on
-the rebuilt dependency remain pending.
+GDB-backed reproduction. NDNSF unit182/182 and integration72/72 pass on the
+rebuilt dependency; final16-scenario acceptance remains pending.
 This document supersedes the earlier runtime-grant/revoke PASS.
 
 ## Findings and repairs
@@ -64,6 +64,7 @@ results are retained locally and excluded from Git.
 | T019 GDB/NDN_LOG | `gates/nac-late-content-gdb-red.log`, old test/library: catch `oabe::_OpenABE_ERROR`; main thread in SegmentFetcher/Consumer onCkeyData, crypto worker in ABESupport decrypt/importUserKey/constructKeyFromBytes. `nac-consumer-fixture-debug.log` identified AA registration ordering in the test setup. |
 | T019 expanded dependency gates | Algorithm9/9,25 assertions (`gates/nac-algorithm-expanded-green.log`); real CP/KP integration3/3,42 (`gates/nac-integrated-expanded-green.log`), plus Consumer2/2,23:14 cases/90 assertions. Performance benchmark cases were not part of this correctness gate. |
 | T019 NDNSF unit gate | Installed repaired NAC dependency:182/182 cases,11971 assertions, exit0, `gates/unit-nac-final.log`. |
+| T019 NDNSF integration gate | Installed repaired NAC dependency:72/72 cases,1278 assertions, exit0, `gates/integration-nac-final.log`. |
 
 NAC debug in `grant-crypto-diagnostic/user-B.log` establishes OA-9/OA-10:
 initial DKEY fetch at startup, explicit renewal around12s coalescing behind it,
