@@ -213,6 +213,9 @@ def _child_process_environment(base: Mapping[str, str]) -> dict[str, str]:
     # otherwise Controller/User/Provider share the operator PIB/TPM, and a
     # real child can select a key that was never installed in its node.
     env.pop("HOME", None)
+    # This topology installs requester identity routes before child startup.
+    # A router-name hint can divert exact grant Interests from those routes.
+    env.pop("SPEC181_GRANT_FORWARDING_HINT", None)
     env["NDN_LOG"] = child_ndn_log
     return env
 CASE_IDS = ("Y-A", "Y-B", "Y-N")
@@ -3120,20 +3123,8 @@ def _run_live_case_once(case: str, output: Path, inputs: Mapping[str, Any], *,
                     / "artifact-policy-authority.key").is_file():
                 raise RunnerError(
                     "PROTECTED_EPOCH_AUTHORITY_PRIVATE_KEY_MISSING")
-            # The Provider's grant fetch happens right after the User starts,
-            # before NLSR has propagated the identity-prefix route.  Pin a
-            # forwarding hint to the User's node so the Interest reaches the
-            # User's local NFD directly (the identity route is registered
-            # there synchronously).
-            user_node = str(
-                binding.nodes.get("user", "") or "").strip()
-            if not user_node:
-                raise RunnerError("PROTECTED_EPOCH_USER_NODE_MISSING")
-            # MiniNDN's NLSR registers each node under
-            # /ndn/<node>-site/<node>; that is the name a forwarding hint
-            # must use to reach the User's local NFD.
-            env["SPEC181_GRANT_FORWARDING_HINT"] = (
-                "/ndn/" + user_node + "-site/" + user_node)
+            # configure_routing() installs the requester's identity route
+            # before startup; exact grants use that route without a hint.
             if not env["SPEC181_REQUESTER_PRIVATE_KEY"]:
                 raise RunnerError("PROTECTED_EPOCH_REQUESTER_KEY_MISSING")
             if not env["SPEC181_PROVIDER_RECIPIENT_KEY_MAP"]:
