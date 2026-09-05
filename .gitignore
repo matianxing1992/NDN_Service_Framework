@@ -23,6 +23,8 @@ docs/
 !docs/
 docs/*
 !docs/README.md
+!docs/architecture.md
+!docs/failure-log.md
 !docs/ndnsf-core-app-boundary.md
 !docs/NDNSF-DI-runtime-workflow.md
 !docs/NDNSF-REPO/
