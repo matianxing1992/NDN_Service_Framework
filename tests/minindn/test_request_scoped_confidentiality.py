@@ -11,6 +11,7 @@ import json
 import importlib.util
 from pathlib import Path
 import subprocess
+import sqlite3
 import sys
 import time
 
@@ -228,3 +229,27 @@ def test_permission_loss_refuses_host_namespace():
 
     with pytest.raises(RuntimeError, match="isolated user-b namespace"):
         runner._set_startup_permission_loss(HostNode(), True)
+
+
+def test_shared_pib_reader_keeps_identity_during_other_role_write(tmp_path):
+    runner = _load_runner()
+    shared = runner._prepare_shared_keychain(tmp_path)
+    db = shared / "pib" / "pib.db"
+    identity = b"/example/hello/user/A"
+    with sqlite3.connect(db) as setup:
+        setup.execute("CREATE TABLE identities (identity BLOB, is_default INTEGER)")
+        setup.execute("INSERT INTO identities VALUES (?, 0)", (identity,))
+    reader = sqlite3.connect(db, timeout=0)
+    writer = sqlite3.connect(db, timeout=0)
+    try:
+        assert reader.execute("SELECT identity FROM identities").fetchone() == (identity,)
+        writer.execute("BEGIN EXCLUSIVE")
+        writer.execute("UPDATE identities SET is_default=1")
+        # The installed ndn-cxx PIB treats a SELECT result other than ROW as
+        # absent. A concurrent role changing its default identity must not
+        # make this previously committed signing identity disappear to readers.
+        assert reader.execute("SELECT identity FROM identities").fetchone() == (identity,)
+    finally:
+        writer.rollback()
+        writer.close()
+        reader.close()
