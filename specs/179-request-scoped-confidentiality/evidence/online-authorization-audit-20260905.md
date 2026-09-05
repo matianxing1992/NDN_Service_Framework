@@ -76,6 +76,10 @@ counts require reevaluation because the collector censored failures.
   candidate framework library and the intended patched NAC-ABE prefix via ldd.
 - Expanded unit gate: `unit-tests --run_test=RequestScopedConfidentiality,ControllerRevocationPolicy,ControllerRevocationState,GenericDynamicApi,RuntimeStatusStorePersistence --report_level=detailed`;
   **182/182 cases, 11971/11971 assertions**, exit 0 (`gates/unit-green.log`).
+- Expanded integration gate: `integration-tests --run_test=ControllerRevocationFlow,ControllerVersionRefresh,RequestScopedSelection,RequestScopedResponseConfidentiality,Spec175InvocationStream --report_level=detailed`;
+  **70/70 cases, 1262/1262 assertions**, exit 0 (`gates/integration-green.log`).
+  Full 16-scenario network campaign running under `results/spec179-online-auth-20260905/campaign/`;
+  `gates/campaign.log` and per-scenario result/manifest files retain failed runs.
 
 ## Audit dimensions and limits
 
