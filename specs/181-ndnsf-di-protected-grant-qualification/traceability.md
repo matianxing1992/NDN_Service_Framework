@@ -27,6 +27,7 @@ Spec 181 从 Spec 180（修订 125 关闭）继承未完成的实现与资格认
 | FR-010 声称边界 | T012 | 终局语言审计 | `evidence/closure-record.md` |
 | FR-011 就绪边界修复 | T004 | unit + integration（真实 controller 进程） | `evidence/t004-readiness-boundary-current.md` |
 | FR-012 装配 parity | T003 | 固定向量双侧一致 | `evidence/t003-grant-parity-current.md` |
+| FR-013 内容密钥真实消费 | T001（AEAD 暂存/解密/零化）、T002（native 同语义） | unit（派生/往返）+ integration（错误密钥/篡改密文在 AEAD 层拒绝）+ MiniNDN（T005 覆盖） | `evidence/t001-python-provider-grant-current.md`、`evidence/t002-native-provider-grant-current.md` |
 
 ## Source-owner status
 

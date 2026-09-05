@@ -85,6 +85,17 @@ native Provider 运行时边界、Tiger 提交机制全部继承 180 的实现�
 - **FR-012** — **装配 parity**。Python `assemble_certified_onnx_model`
   与 native `NativeCanonicalOnnxAssembler` 对同一 canonical ONNX + 同一
   recipe 必须产出相同装配字节摘要；该 parity 用固定向量测试锁定。
+- **FR-013** — **内容密钥真实消费**。解包出的内容密钥必须被真实的
+  密码学操作消费，禁止"验证授权但密钥闲置"的授权剧场。功能切片内
+  的最小真实消费：装配产物按 Spec170 契约的 `DISK_CIPHERTEXT_ASSEMBLED`
+  语义 AEAD 加密暂存于 Provider 工作目录——
+  `K_bundle = HKDF(epochContentKey, "NDNSF-DI/assembled/v1" || modelManifestDigest || roleAssemblySpecDigest || storageProfileDigest)`，
+  `K_entry = HKDF(K_bundle, entryKind)`——加载路径用解包出的内容密钥
+  解密（AES-256-GCM），明文分配注册进 `PlaintextLeaseRegistry` 并在
+  清理/失败时零化。错误内容密钥或篡改的密文在 AEAD 认证层失败并
+  以 `DI_PROTECTED_GRANT_REJECTED` 关闭。本切片内保护纪元固定不
+  轮换（单一 `spec180-yolo-protected-v1`）；纪元轮换机制是生产延期
+  项（见 Out of Scope）。
 
 ### Key Entities
 
@@ -139,3 +150,7 @@ native Provider 运行时边界、Tiger 提交机制全部继承 180 的实现�
   信任集（Spec 180 修订 112：无生产 PKI 声称），权威与请求方同进程
   可接受。集成条件：任何生产部署前将权威拆分为独立服务并恢复
   FR-002 原网络服务端形态。
+- **纪元轮换（延期项）**：本切片保护纪元固定为
+  `spec180-yolo-protected-v1` 且不轮换。纪元轮换（rotation）、旧纪元
+  拒收与缓存身份跨纪元失效的完整机制是生产延期项；本切片的绑定与
+  缓存身份已携带纪元字段，轮换机制接入时不改变线编码。

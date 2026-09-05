@@ -55,15 +55,23 @@ wired/executed/measured）。
   Spec 180 提交 `d36438c2`）进程内签发后，grant Data 经既有
   `ServiceUser.publish_signed_app_data` 路径发布，Provider 按同一
   规范名获取。权威私钥经注册表 `artifactPolicyAuthority` 条目加载
-  （`~/.config/ndnsf/spec180/`，mode 0600）。文件：
+  （`~/.config/ndnsf/spec180/`，mode 0600）。**内容密钥真实消费
+  （FR-013）**：装配产物按 `DISK_CIPHERTEXT_ASSEMBLED` 语义用派生密钥
+  （`K_bundle = HKDF(content_key, ...)` → `K_entry = HKDF(K_bundle,
+  entryKind)`，AES-256-GCM）加密暂存于工作目录；加载路径用解包出的
+  内容密钥解密，明文分配注册进 `PlaintextLeaseRegistry` 并在清理/
+  失败时零化。文件：
   `NDNSF-DistributedInference/ndnsf_distributed_inference/provider.py`、
   `security/grant_provider.py`（复用）、
-  `core/protected_artifacts.py`（复用）、
+  `core/protected_artifacts.py`（复用；如需 AEAD 派生辅助在此新增）、
   `tests/python/test_spec181_provider_grant.py`。验收：unit（绑定/过期/
-  跨绑定负例，复用 Spec 180 的 29 个编码测试为回归基线）；
-  integration（真实 requester 进程内签发并经真实发布路径发布 →
-  真实 Provider 进程精确名获取与解包：正确 grant 装配成功；错误
-  收件人 grant 在 verifier 内被拒且无明文落地）；MiniNDN 由 T005 的
+  跨绑定负例，复用 Spec 180 的 29 个编码测试为回归基线；AEAD 派生
+  与加密/解密往返）；integration（真实 requester 进程内签发并经真实
+  发布路径发布 →
+  真实 Provider 进程精确名获取与解包：正确 grant 装配成功且密文
+  暂存/解密加载/零化完整；错误收件人 grant 在 verifier 内被拒且无
+  明文落地；**错误内容密钥或篡改密文在 AEAD 认证层以
+  `DI_PROTECTED_GRANT_REJECTED` 拒绝**）；MiniNDN 由 T005 的
   Y-B 保护纪元子用例覆盖。证据
   `evidence/t001-python-provider-grant-current.md`。
 
