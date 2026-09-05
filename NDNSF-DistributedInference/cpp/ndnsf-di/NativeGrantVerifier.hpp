@@ -34,7 +34,15 @@ struct NativeGrantVerificationResult
   /** Empty on success; otherwise the registered rejection reason. */
   std::string reason;
   std::vector<std::uint8_t> contentKey;
+  std::uint64_t expiresAtMs = 0;
+  std::vector<std::string> allowedResidencyTiers;
 };
+
+std::string canonicalNativeGrantName(
+  const std::string& publicationIdentity, const std::string& providerIdentity,
+  const std::string& requestId, std::uint64_t attempt,
+  const std::string& planCoreDigest, const std::string& modelManifestDigest,
+  const std::string& protectionEpoch, const std::string& grantDigest);
 
 /**
  * Verify and unwrap a KeyGrantV1 (canonical JSON wire bytes) inside the
@@ -56,7 +64,9 @@ verifyAndUnwrapNativeGrant(const std::string& wireJson,
                            const std::string& planCoreDigest,
                            const std::string& modelManifestDigest,
                            const std::string& protectionEpoch,
-                           std::uint64_t nowMs);
+                           std::uint64_t nowMs,
+                           const std::string& expectedAuthority = "",
+                           const std::string& expectedGrantDigest = "");
 
 } // namespace ndnsf::di
 

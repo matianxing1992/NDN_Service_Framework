@@ -19,6 +19,13 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 T002 native runtime repair (2026-09-05): focused defects CLOSED.**
+18 native focused tests pass with real verification, managed content keys,
+deadline/cancellation checks and retryable cleanup. Initial compile, linker
+and consumption/deadline failures remain preserved. Factory, storage AEAD
+and real network acceptance still keep T002 open.
+See [T002 runtime repair](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t002-runtime-repair-20260905.md).
+
 **Spec181 T001 registry repair (2026-09-05): focused defects CLOSED.**
 100 focused tests plus 7 inherited grant tests pass for pinned registry
 policy, private-key matching, distinct issuer/publication identities and

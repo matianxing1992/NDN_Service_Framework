@@ -82,6 +82,9 @@ R = `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py`。行号对应本轮源码�
 PASS。后续 A08 注册表公钥/策略、逻辑身份和最终 root 允许列表已接线，
 100 项定向 unit 通过，见 `evidence/t001-registry-repair-20260905.md`。
 真实网络验收及其他控制性缺口仍开放。
+T002 的 `ProtectedRuntime` 已接入真实 verifier 和受管内容密钥，
+18 项定向 C++ 用例通过，见 `evidence/t002-runtime-repair-20260905.md`；
+生产 factory、native 存储/加载及真实网络仍缺，A01 未整体关闭。
 
 1. T001：在装配前完成独立绑定与授权；补注册表消费、模型/weights 密文
    读取及全错误路径清理，建立真实发布/获取的定向进程测试。
