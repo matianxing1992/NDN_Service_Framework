@@ -88,7 +88,7 @@ native 路径相对 `NDNSF-DistributedInference/cpp/ndnsf-di/`。
 | 权威宿主与发布 | `security/requester_grant_pipeline.py`、`security/registry_keys.py`、`examples/python/NDNSF-DistributedInference/yolo_2x2/user.py`（仓库相对）；复用 Core 发布接口 | T001 |
 | Python grant 消费 | `provider.py` | T001 |
 | native 授权与装配 | `ProtectedRuntime.*`、`NativeGrantVerifier.*`、`NativeProviderHandler.cpp`、`NativeCanonicalOnnxAssembler.*` | T002/T003 |
-| 就绪与取消 | `pythonWrapper/ndnsf/service.py`、`ndn-service-framework/ServiceController.cpp`（仓库相对） | T004 |
+| 就绪与取消 | `pythonWrapper/ndnsf/service.py`、`pythonWrapper/src/ndnsf/_ndnsf.cpp`、`ndn-service-framework/ServiceController.cpp`（仓库相对） | T004 |
 | 负例、监督与身份 | `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py`、`scripts/run_spec181_y_n_matrix_retry.py`（仓库相对） | T005/T006 |
 | 审计与晋升 | 本目录及现有 `scripts/spec180_*`、`packaging/ndnsf-di-container/jobs/spec180/*`（仓库相对） | T007--T012 |
 

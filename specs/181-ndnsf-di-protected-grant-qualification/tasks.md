@@ -18,26 +18,27 @@ Spec 170 `artifact-assembly-v1` 契约。
 
 ## Current Checkpoint (revision 5)
 
-**Status**: `IN_PROGRESS / BLOCK`。2026-09-05 复核后，T001/T002/T003/T004/T006
-恢复未勾选；这表示完整验收未闭合，不抹去已实现的代码与 unit 结果。
+**Status**: `IN_PROGRESS / BLOCK`。2026-09-05 初次复核恢复未完成标记；
+本轮 T004 的定向验收已闭合并勾选。其余任务仍按完整验收判断，
+未勾选不抹去已实现的代码与 unit 结果。
 
 | Task | Implemented / executed | Remaining acceptance |
 |---|---|---|
 | T001 | grant 摘要、租约/存储修复；注册表策略/公钥/逻辑身份与最终 root 允许列表已接线；100 项定向 unit 通过，见 `evidence/t001-registry-repair-20260905.md` | 真实发布/获取；资源上界、全部封印绑定及取消/过期验收 |
 | T002 | runtime/store 修复；20 项当前 C++、55 项存储检查；统一构建和 3 rebuilt grant parity tests PASS；live-r7 真实受保护 native Y-B、3 ORT + native Merge、正常清理 exit 0，见 `evidence/t002-native-live-repair-20260905.md` | 生产负例、取消/过期及资源上界；factory/assembler/handler 工作区接线尚未形成独立提交 |
 | T003 | grant 向量双侧消费 | FR-012 装配向量及全部绑定/算法负例覆盖 |
-| T004 | Controller pre-thread waiter 修复及 7 项 Python 接口检查已通过；本轮 6 项 Core 生命周期定向检查 PASS（含真实 NFD 往返）；真实 Provider waiter RED：80 ms 等待约 6 us 即返回，见 [生命周期证据](evidence/t004-lifecycle-acceptance-20260905.md) | 修复 Provider 初始状态误判；验证 Python/native 超过 10 s 的启动余量与等待中取消；T004 保持未完成 |
+| T004 | PASS：7 项 Python seam、6 项 Core 定向检查；重建后真实 Provider 等待约 83 ms、Controller 12.39 s 就绪、等待中取消约 2.3 ms 且无热转；全部线程/网络清理，见 [生命周期证据](evidence/t004-lifecycle-acceptance-20260905.md) | 本任务定向验收已闭合；后续同源正式资格仍归 T005/T008 |
 | T005 | 多源诊断子用例结果 | T007 PASS 后同源七子用例矩阵，保留所有失败 |
 | T006 | 三种进程内 verifier mutation probe | 选定 Provider 生产链变异与明确拒绝原因 |
 | T007 | 本轮 code-aware 审查与设计修正 | 当前裁决 BLOCK；控制性源码缺口闭合后重新审计 |
 | T008 | Python 保护 Y-B 调试记录 | 同源本地资格清单；native 受保护执行证据 |
 | T009--T012 | 继承工具链 | 本 Spec 候选、SIF、Tiger、终局均未闭合 |
 
-**Latest progress (2026-09-05)**：`447bfe3b` 已同步上一轮 Controller
-修复及 native Y-B 定向结果。本轮完成 6 项 Core 检查，新增 Provider
-启动等待缺陷的真实复现；尚未修复，不能勾选 T004。下一步先修复
-Provider waiter 并复验，再补齐启动余量和取消验收。T007 仍为 BLOCK，
-正式资格矩阵不得据这些定向结果提前启动。
+**Latest progress (2026-09-05)**：T004 已完成（1/12 个 T 任务）。Provider
+启动前等待缺陷完成真实 RED/GREEN；统一 native 构建、3 项 rebuilt
+grant parity 及真实启动余量/取消探针 PASS。r1/r2/r3 失败记录保留，
+不得混作成功证据。下一步继续 T001/T002/T003/T006 的剩余生产验收
+与装配 parity；T007 仍为 BLOCK，正式资格矩阵不得提前启动。
 
 历史 6/7、7/7 与 `CONDITIONAL PASS` 不再作为当前状态；以
 [audit.md](audit.md) 与 [修正证据](evidence/audit-repair-20260905.md) 为准。
@@ -189,16 +190,20 @@ T 任务完成定向修复；在生产验收前保持失败关闭，并禁止晋
   逐字节及摘要一致；变异 recipe/initializer 必须拒绝。grant 的 9 个
   向量不能关闭该装配验收。
 
-- [ ] T004 [US1] **Runtime Readiness and Cancellation**。`pythonWrapper/ndnsf/service.py`
+- [x] T004 [US1] **Runtime Readiness and Cancellation**。`pythonWrapper/ndnsf/service.py`
   的 `start()`/`start_background()` 就绪等待改为 15000 ms（对 Core
   10 s 探针留余量）；`ServiceController.cpp` 的探针循环在
   `stop()`/取消后不得热转（取消检查 + io 停止后立即退出）。文件：
   `pythonWrapper/ndnsf/service.py`、
+  `pythonWrapper/src/ndnsf/_ndnsf.cpp`、
   `ndn-service-framework/ServiceController.cpp`、
-  `tests/python/test_spec181_controller_readiness.py`。验收：unit（取消/
+  `tests/python/test_spec181_controller_readiness.py`、
+  `tests/fixtures/spec181/controller-lifecycle.py`、
+  `tests/standalone/run-spec181-controller-lifecycle.py`。验收：unit（取消/
   停止路径）；integration（真实 controller 进程：超时余量下边界成功
   不被误报；取消路径及时退出且无热转）。证据
-  `evidence/t004-readiness-boundary-current.md`。
+  `evidence/t004-readiness-boundary-current.md` 与
+  `evidence/t004-lifecycle-acceptance-20260905.md`。
 
 ## Phase 2: Registered Negative Outcomes (Priority: P1)
 

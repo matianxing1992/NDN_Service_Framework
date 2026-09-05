@@ -26,7 +26,7 @@ Spec 180 的矩阵冻结为历史，未来证据路径不表示文件已存在�
 | FR-008 候选与 SIF | T009, T010 | unit（封印）+ integration（SIF replay） | `evidence/t009-candidate-seal-current.md`、`evidence/t010-exact-sif-replay-current.md` |
 | FR-009 Tiger 一次提交 | T011 | MiniNDN 之后的一次真实提交 | `evidence/t011-tiger-submission-current.md` |
 | FR-010 声称边界 | T012 | 终局语言审计 | `evidence/closure-record.md` |
-| FR-011 就绪边界修复 | T004 | unit + integration（真实 controller 进程） | `evidence/t004-readiness-boundary-current.md` |
+| FR-011 就绪边界修复 | T004 | PASS：unit + rebuilt native integration（Provider 等待、真实 Controller 启动余量/取消/无热转） | `evidence/t004-readiness-boundary-current.md`、`evidence/t004-lifecycle-acceptance-20260905.md` |
 | FR-012 装配 parity | T003 | canonical ONNX + recipe 双侧装配字节/摘要；grant 向量不能代替 | planned: `tests/fixtures/spec181/assembly-vectors-v1.json`、`tests/python/test_spec181_assembly_parity.py`；待执行 |
 | FR-013 内容密钥真实消费 | T001（AEAD 暂存/解密/零化）、T002（native 同语义） | unit（派生/往返）+ integration（错误密钥/篡改密文在 AEAD 层拒绝）+ MiniNDN（T008 覆盖） | `evidence/t001-python-provider-grant-current.md`、`evidence/t002-native-provider-grant-current.md` |
 | FR-014 诚实化先行 | R001（Y-N-E UNAVAILABLE）、R002（native 状态诚实化）、R003（证据失效声明）、R004（保护纪元子用例门禁） | unit + integration（先于全部实现任务，被 T001/T002/T006 吸收） | `evidence/r001-y-n-e-unavailable-current.md`、`evidence/r002-native-protected-runtime-honesty-current.md`、`evidence/r003-evidence-banner-audit-current.md`、`evidence/r004-protected-case-guard-current.md` |
