@@ -39,13 +39,14 @@ native Provider 运行时边界、Tiger 提交机制全部继承 180 的实现�
   策略校验 → 接收者加密 grant → finalize → Provider 解包）。已落地的
   规范编码与真实权威（提交 `d36438c2`）是本 spec 的起点；HMAC/`repr`
   脚手架不得作为任何资格输入，`plaintext-v1` 不得充当保护纪元。
-- **FR-002** — **权威网络服务端**。授权的策略权威必须通过 NDN 服务
-  `/<authority>/NDNSF-DI/KEY-GRANT/v1/...` 规范名下的签名 grant Data，
-  并签发撤销状态 Data。身份、公钥摘要与信任规则来自 Spec 180 的
-  `contracts/trust-root-registry-v1.json` 的 `artifactPolicyAuthority`
-  条目；私钥在 git 外（`~/.config/ndnsf/spec180/`，mode 0600）。
-  权威必须校验请求方签名、模型/纪元策略、Provider 身份与封存
-  core/grant-view 摘要，失败即拒绝签发。
+- **FR-002** — **进程内权威与既有发布路径**。功能切片内授权的策略
+  权威运行在请求方（user）进程中：加载注册表
+  `artifactPolicyAuthority` 条目的私钥（git 外，mode 0600），校验
+  请求方签名、模型/纪元策略、Provider 身份与封存 core/grant-view
+  摘要，签发规范名 grant Data 并经既有
+  `ServiceUser.publish_signed_app_data` 路径发布，供 Provider 按规范名
+  精确获取。本切片不新增网络服务前缀；独立权威服务（生产形态的信任
+  域分离）是延期项（见 Out of Scope）。
 - **FR-003** — **Provider 双侧解包一致性**。Python Provider 装配路径与
   native `ProtectedRuntime` 必须按规范名精确获取 grant，校验权威签名、
   全部绑定字段与过期，解包内容密钥，注册明文租约并在清理时零化。
@@ -133,3 +134,8 @@ native Provider 运行时边界、Tiger 提交机制全部继承 180 的实现�
   被动字段（固定为 1）以保证未来集成不改变规范字节。集成条件：所有
   者分支的撤销机制落地后，在 Provider 校验路径插入撤销检查并解除该
   延期标记。
+- **独立权威服务（延期项）**：生产形态的策略权威必须与请求方进程
+  分离（独立网络服务端、独立信任域）。本功能切片为 experiment-only
+  信任集（Spec 180 修订 112：无生产 PKI 声称），权威与请求方同进程
+  可接受。集成条件：任何生产部署前将权威拆分为独立服务并恢复
+  FR-002 原网络服务端形态。

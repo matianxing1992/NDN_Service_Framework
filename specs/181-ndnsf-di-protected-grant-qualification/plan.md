@@ -35,10 +35,12 @@ G0 grant 正路径（权威服务端 + Python/native 解包 + Y-N-E 真实变异
 
 ## Architecture Decisions
 
-1. **权威宿主 = Controller 进程**。策略权威作为 controller 子进程内的
-   服务运行，复用既有 signed APP Data 发布路径注册 KEY-GRANT 前缀；
-   不新增独立网络角色。身份/公钥摘要来自 Spec 180 注册表的
-   `artifactPolicyAuthority` 条目。
+1. **权威宿主 = 请求方进程（功能切片）**。策略权威在 user 进程中
+   进程内签发（`AuthorityBackedGrantProvider` 已是进程内 closure），
+   grant Data 经既有 `ServiceUser.publish_signed_app_data` 路径发布，
+  不新增网络角色与前缀。身份/公钥摘要来自 Spec 180 注册表的
+   `artifactPolicyAuthority` 条目。独立权威服务是生产形态的延期项
+  （spec.md Out of Scope）。
 2. **Provider 解包先 Python 后 native，向量共享**。Python 路径
    （`provider.py` 装配入口）先接上 `verify_and_unwrap_grant`；native
    `ProtectedRuntime` 用同一跨语言向量（相同 grant 字节 → 相同内容
@@ -59,7 +61,7 @@ G0 grant 正路径（权威服务端 + Python/native 解包 + Y-N-E 真实变异
 | grant 编码/权威/解包 | `core/protected_artifacts.py`、`security/*`、`app_sdk/placement.py`、native `ProtectedRuntime` |
 | 权威服务端 | controller 子进程（`examples/python/NDNSF-DistributedInference/yolo_2x2/controller.py` 扩展或等价维护入口） |
 | MiniNDN 执行 | `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py`（继承 180 的 barriered runner） |
-| 候选/SIF/Tiger | Spec 180 的 `scripts/spec180_*` 工具链（路径沿用，所有权移交本 spec 的 T010--T013） |
+| 候选/SIF/Tiger | Spec 180 的 `scripts/spec180_*` 工具链（路径沿用，所有权移交本 spec 的 T009--T012） |
 
 ## Project Structure
 
