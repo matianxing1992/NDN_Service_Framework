@@ -6,10 +6,18 @@
 #include <ndn-cxx/security/signing-helpers.hpp>
 #include <ndn-cxx/security/verification-helpers.hpp>
 #include <ndn-cxx/util/logger.hpp>
+#include <ndn-cxx/util/random.hpp>
+#include <ndn-cxx/util/scope.hpp>
+
+#include <boost/asio/executor_work_guard.hpp>
+#include <boost/asio/io_context.hpp>
 
 #include <cstdlib>
+#include <atomic>
+#include <chrono>
 #include <fstream>
 #include <limits>
+#include <memory>
 #include <sstream>
 #include <string_view>
 
@@ -220,9 +228,136 @@ ServiceController::setBootstrapTokenFile(const std::string& path)
   loadBootstrapTokenFile(path);
 }
 
+void
+ServiceController::cancelStart() noexcept
+{
+  m_startCancelled.store(true, std::memory_order_release);
+}
+
+void
+ServiceController::resetStartCancellation() noexcept
+{
+  m_startCancelled.store(false, std::memory_order_release);
+}
+
 void ServiceController::start()
 {
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  if (m_startCancelled.load(std::memory_order_acquire)) {
+    throw std::runtime_error(
+      "ServiceController AttributeAuthority PUBPARAMS readiness cancelled");
+  }
+
   registerInterestHandlers();
+
+  // A second Face has its own transport, PIT and event loop.
+  // Never express the readiness Interest on the AA Face: ndn-cxx could satisfy
+  // it in-process even when no Interest/response crosses NFD. Reuse ndn-cxx's
+  // configured endpoint, not a hard-coded socket or the AA transport object.
+  auto& io = m_face.getIoContext();
+  // Keep probe callbacks on a private context: destroying a temporary Face on
+  // the long-lived AA context could leave ndn-cxx transport callbacks queued
+  // there after the temporary Face is gone.
+  boost::asio::io_context probeIo;
+  ndn::Face probeFace(nullptr, probeIo, m_keyChain);
+  struct ReadinessProbeState {
+    bool receivedByAuthority = false;
+    bool ready = false;
+    bool finished = false;
+    bool inFlight = false;
+    std::string error;
+  };
+  const auto state = std::make_shared<ReadinessProbeState>();
+  // NAC-ABE echoes the full Interest name before appending its type/version.
+  // A fresh 128-bit suffix prevents old cached PUBPARAMS from proving readiness.
+  const auto probeName = ndn::Name(m_aaCert.getIdentity()).append("PUBPARAMS")
+    .append("readiness").appendNumber(ndn::random::generateSecureWord64())
+    .appendNumber(ndn::random::generateSecureWord64());
+  ndn::ScopedInterestFilterHandle observer = m_face.setInterestFilter(probeName,
+    [state, probeName](const ndn::InterestFilter&, const ndn::Interest& interest) {
+      // NFD decrements 1 to 0 on ingress and only forwards the result to local
+      // faces. Thus both Faces must reach the same local forwarder. If a caller
+      // supplied a different endpoint, fail closed instead of probing another NFD.
+      if (!state->finished && interest.getName() == probeName &&
+          interest.getHopLimit() == 0) {
+        state->receivedByAuthority = true;
+      }
+    });
+  ndn::ScopedPendingInterestHandle pending;
+  auto finish = ndn::make_scope_exit([state] { state->finished = true; });
+
+  // Only restart on entry. A concurrent stop() must not be undone in the loop.
+  // A work guard makes each idle run_for block; Nacks have a retry floor too.
+  io.restart();
+  auto work = boost::asio::make_work_guard(io);
+  auto probeWork = boost::asio::make_work_guard(probeIo);
+  auto nextAttempt = std::chrono::steady_clock::now();
+  while (true) {
+    if (m_startCancelled.load(std::memory_order_acquire)) {
+      throw std::runtime_error(
+        "ServiceController AttributeAuthority PUBPARAMS readiness cancelled");
+    }
+    if (io.stopped() || probeIo.stopped()) {
+      throw std::runtime_error(
+        "ServiceController AttributeAuthority PUBPARAMS readiness event loop stopped");
+    }
+    if (!m_registrationState->error.empty()) {
+      throw std::runtime_error("ServiceController prefix registration failed: " +
+                               m_registrationState->error);
+    }
+    if (!state->error.empty()) {
+      throw std::runtime_error(state->error);
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline) {
+      throw std::runtime_error(
+        "ServiceController AttributeAuthority PUBPARAMS readiness timeout");
+    }
+    if (state->ready && m_registrationState->pending == 0) {
+      return;
+    }
+    if (!state->ready && !state->inFlight && now >= nextAttempt) {
+      state->inFlight = true;
+      nextAttempt = now + std::chrono::milliseconds(100);
+      ndn::Interest interest(probeName);
+      interest.setMustBeFresh(true);
+      interest.setCanBePrefix(true);
+      interest.setHopLimit(1);
+      interest.setInterestLifetime(ndn::time::milliseconds(250));
+      pending = probeFace.expressInterest(
+        interest,
+        [state, cert = m_aaCert](const ndn::Interest&, const ndn::Data& data) {
+          if (!state->finished) {
+            state->inFlight = false;
+            if (!state->receivedByAuthority) {
+              state->error = "ServiceController PUBPARAMS probe did not reach the authority Face";
+            }
+            else if (data.getContent().value_size() == 0 ||
+                     !ndn::security::verifySignature(data, cert)) {
+              state->error = "ServiceController PUBPARAMS probe returned invalid authority Data";
+            }
+            else {
+              state->ready = true;
+            }
+          }
+        },
+        [state](const ndn::Interest&, const ndn::lp::Nack&) {
+          state->inFlight = false;
+        },
+        [state](const ndn::Interest&) {
+          state->inFlight = false;
+        });
+    }
+    // Both contexts run on this thread; cancellation is checked at least once
+    // per two 25 ms slices, without sleeps or busy polling an empty context.
+    const auto slice = std::chrono::steady_clock::duration(std::chrono::milliseconds(25));
+    io.run_for(std::min(deadline - now, slice));
+    const auto remaining = deadline - std::chrono::steady_clock::now();
+    if (remaining > std::chrono::steady_clock::duration::zero() &&
+        !m_startCancelled.load(std::memory_order_acquire) && !io.stopped()) {
+      probeIo.run_for(std::min(remaining, slice));
+    }
+  }
 }
 
 void ServiceController::run()
@@ -274,7 +409,7 @@ void ServiceController::addAttributesForUsersAccordingToServicePolicy()
     }
   }
 
-  // Register each identity's OR-policy into the Attribute Authority
+  // Register each identity's OR-policy into the Attribute Authority.
   for (const auto& item : m_attributesMap) {
     const std::string& identity = item.first;
     const std::set<std::string>& attrs = item.second;
@@ -397,65 +532,57 @@ void ServiceController::registerInterestHandlers()
   m_prefixCertificateBootstrap = m_controllerPrefix;
   m_prefixCertificateBootstrap.append("NDNSF").append("CERTBOOTSTRAP");
 
+  m_registrationState = std::make_shared<RegistrationState>();
+  const auto onRegistered = [state = m_registrationState](const ndn::Name&) {
+    --state->pending;
+  };
+  const auto onFailure = [state = m_registrationState](const ndn::Name& prefix,
+                                                      const std::string& reason) {
+    state->error = prefix.toUri() + ": " + reason;
+    NDN_LOG_ERROR("Failed to register prefix " << prefix << " reason=" << reason);
+  };
+
   m_face.setInterestFilter(
     m_prefixServiceAccess,
     [this](const ndn::InterestFilter& f, const ndn::Interest& i) {
       this->onServiceAccessInterest(f, i);
     },
-    ndn::RegisterPrefixSuccessCallback(),
-    [](const ndn::Name& p, const std::string& reason) {
-      NDN_LOG_ERROR("Failed to register prefix " << p << " reason=" << reason);
-    });
+    onRegistered, onFailure);
 
   m_face.setInterestFilter(
     m_prefixServiceProvision,
     [this](const ndn::InterestFilter& f, const ndn::Interest& i) {
       this->onServiceProvisionInterest(f, i);
     },
-    ndn::RegisterPrefixSuccessCallback(),
-    [](const ndn::Name& p, const std::string& reason) {
-      NDN_LOG_ERROR("Failed to register prefix " << p << " reason=" << reason);
-    });
+    onRegistered, onFailure);
 
   m_face.setInterestFilter(
     m_prefixUserPermissions,
     [this](const ndn::InterestFilter& f, const ndn::Interest& i) {
       this->onUserPermissionsInterest(f, i);
     },
-    ndn::RegisterPrefixSuccessCallback(),
-    [](const ndn::Name& p, const std::string& reason) {
-      NDN_LOG_ERROR("Failed to register prefix " << p << " reason=" << reason);
-    });
+    onRegistered, onFailure);
 
   m_face.setInterestFilter(
     m_prefixProviderPermissions,
     [this](const ndn::InterestFilter& f, const ndn::Interest& i) {
       this->onProviderPermissionsInterest(f, i);
     },
-    ndn::RegisterPrefixSuccessCallback(),
-    [](const ndn::Name& p, const std::string& reason) {
-      NDN_LOG_ERROR("Failed to register prefix " << p << " reason=" << reason);
-    });
+    onRegistered, onFailure);
 
   m_face.setInterestFilter(
     m_prefixPolicyManifest,
     [this](const ndn::InterestFilter& f, const ndn::Interest& i) {
       this->onPolicyManifestInterest(f, i);
     },
-    ndn::RegisterPrefixSuccessCallback(),
-    [](const ndn::Name& p, const std::string& reason) {
-      NDN_LOG_ERROR("Failed to register prefix " << p << " reason=" << reason);
-    });
+    onRegistered, onFailure);
 
   m_face.setInterestFilter(
     m_prefixCertificateBootstrap,
     [this](const ndn::InterestFilter& f, const ndn::Interest& i) {
       this->onCertificateBootstrapInterest(f, i);
     },
-    ndn::RegisterPrefixSuccessCallback(),
-    [](const ndn::Name& p, const std::string& reason) {
-      NDN_LOG_ERROR("Failed to register prefix " << p << " reason=" << reason);
-    });
+    onRegistered, onFailure);
 
   NDN_LOG_INFO("ServiceController listening on:\n"
             << "  " << m_prefixServiceAccess 

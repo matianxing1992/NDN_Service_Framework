@@ -17,8 +17,10 @@
 #include <boost/algorithm/string/join.hpp>
 
 #include <filesystem>
+#include <atomic>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
@@ -64,6 +66,12 @@ public:
 
   void setControllerPrefix(const ndn::Name& prefix);
   void setBootstrapTokenFile(const std::string& path);
+  void cancelStart() noexcept;
+  void resetStartCancellation() noexcept;
+  // Owns the Face event loop until registrations and an independently received,
+  // authenticated PUBPARAMS round trip complete (at most ten seconds). The
+  // probe uses ndn-cxx's configured local transport; a caller-supplied Face
+  // must reach that same local NFD. Cancellation or a stopped loop fails closed.
   void start();
   void run();
 
@@ -117,6 +125,12 @@ private:
   void onCertificateBootstrapInterest(const ndn::InterestFilter&, const ndn::Interest& interest);
 
 private:
+  struct RegistrationState
+  {
+    size_t pending = 6;
+    std::string error;
+  };
+
   struct BootstrapTokenEntry
   {
     std::string token;
@@ -138,6 +152,9 @@ private:
   ndn::Name m_controllerPrefix;
   bool m_hasCustomControllerPrefix = false;
   bool m_isRegistered = false;
+  std::atomic_bool m_startCancelled{false};
+  // Callbacks share this state rather than borrowing the start() stack.
+  std::shared_ptr<RegistrationState> m_registrationState;
 
   // registered prefixes
   ndn::Name m_prefixServiceAccess;
