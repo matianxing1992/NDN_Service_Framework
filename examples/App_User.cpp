@@ -815,6 +815,18 @@ main(int argc, char** argv)
              );
     user.fetchPermissionsFromController(controllerPrefix);
 
+    // Explicit application-owned renewal for an online grant after startup
+    // retries have ended. Runtime status refresh does not poll permissions.
+    const auto permissionRefetchAfterMs =
+        envSizeOption("NDNSF_PERMISSION_REFETCH_AFTER_MS", 0);
+    if (permissionRefetchAfterMs > 0) {
+      scheduler.schedule(ndn::time::milliseconds(permissionRefetchAfterMs),
+          [&user, controllerPrefix] {
+        NDN_LOG_INFO("NDNSF_APP_PERMISSION_REFETCH");
+        user.fetchPermissionsFromController(controllerPrefix);
+      });
+    }
+
     if (runForMs > 0) {
       scheduler.schedule(ndn::time::milliseconds(runForMs), [&face] {
         face.getIoContext().stop();

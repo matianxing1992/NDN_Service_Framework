@@ -59,6 +59,7 @@ SCENARIOS = [
     "controller-restart",
     "selection-response-tamper-and-replay",
     "grant-only-advance",
+    "grant-after-permission-exhaustion",
 ]
 
 TARGETS = ["identity", "certificate", "service"]
@@ -391,7 +392,7 @@ def _collect_runtime_evidence(output: Path, scenario: str,
     # are exact: the granted identity performs exactly one epoch>=2 refresh
     # in the advance wave; every unaffected identity performs none.
     grant_only: Dict[str, Any] = {}
-    if scenario == "grant-only-advance":
+    if config.get("grantOnlyAdvance"):
         ident_events: Dict[Tuple[str, str], Dict[str, Any]] = {}
         for name, text in log_text.items():
             match = re.match(r"^(user|provider|controller)-(.+?)\.log$", name)
@@ -478,29 +479,10 @@ def _collect_runtime_evidence(output: Path, scenario: str,
             sum(1 for enqueue_us in grant_row_enqueue_us.values()
                 if grant_time_us is not None and enqueue_us < grant_time_us)
             if grant_time_us is not None else None)
-        # Run-window truncation: the launcher tears the provider processes
-        # down while user request streams still run, so the granted stream's
-        # final rows can fail solely because every provider already exited.
-        # A granted-identity failure is a gate failure only when it could
-        # still have been served (enqueued at least one request-timeout
-        # budget before the earliest provider stopped logging).
-        from spec179_scenario_checks import REQUEST_TIMEOUT_BUDGET_S
-        granted_success_ids = {row.get("request_id")
-                               for row in granted_successes}
-        provider_deadline = None
-        for prov_log in ("provider-A.log", "provider-B.log"):
-            for line in log_text.get(prov_log, "").splitlines():
-                ts = re.match(r"^([0-9]+\.[0-9]+)\s", line)
-                if ts:
-                    ts_val = float(ts.group(1))
-                    provider_deadline = (ts_val if provider_deadline is None
-                                         else min(provider_deadline, ts_val))
-        if provider_deadline is not None:
-            granted_rows = [
-                row for row in granted_rows
-                if (row.get("request_id") in granted_success_ids
-                    or (grant_row_enqueue_us.get(row.get("request_id"), 0) / 1e6
-                        + REQUEST_TIMEOUT_BUDGET_S <= provider_deadline))]
+        # Retain every terminal row, including failures. Log timestamps do
+        # not prove process termination; using the earliest provider log as
+        # a cutoff silently discarded all failed requests. Scenario lifetime
+        # must include bootstrap, workload and drain instead of censoring reds.
         # Bootstrap-hold evidence: count "Waiting for decryption key" before the
         # identity's permission state resolved (first PENDING/REQUESTED line).
         granted_log_text = log_text.get("user-%s.log" % granted_leaf, "")
@@ -574,6 +556,21 @@ def _collect_runtime_evidence(output: Path, scenario: str,
             "grantedTerminalReasons": granted_reasons,
             "unaffectedControlSuccessRows": len(control_rows),
         }
+        if config.get("permissionRefetchAfterMs"):
+            def marker_time_us(pattern: str) -> int | None:
+                match = re.search(r"^([0-9]+\.[0-9]+)\s+.*" + pattern,
+                                  granted_log_text, flags=re.MULTILINE)
+                return int(round(float(match.group(1)) * 1_000_000)) if match else None
+
+            exhausted_us = marker_time_us(r"PermissionResponse timeout:.*final=1")
+            refetch_us = marker_time_us(r"NDNSF_APP_PERMISSION_REFETCH\b")
+            grant_only["permissionExhaustedTimeUs"] = exhausted_us
+            grant_only["explicitRefetchTimeUs"] = refetch_us
+            grant_only["lateRenewalObserved"] = bool(
+                exhausted_us is not None and grant_time_us is not None and
+                refetch_us is not None and granted_first_enqueue_us is not None and
+                exhausted_us < grant_time_us < refetch_us <= granted_first_enqueue_us and
+                any(exhausted_us < ts < refetch_us for ts in waiting_ts_us))
     trace_material = "\n".join(
         "%s:%s" % (name, text) for name, text in sorted(log_text.items()))
     trace_hash = "sha256:" + hashlib.sha256(trace_material.encode("utf-8")).hexdigest()
@@ -748,7 +745,7 @@ def _scenario_config(scenario: str) -> Dict[str, Any]:
                        "controller2RevokeAfterMs": 2000})
     elif scenario == "selection-response-tamper-and-replay":
         config.update({"recovery": "tamper-replay"})
-    elif scenario == "grant-only-advance":
+    elif scenario in {"grant-only-advance", "grant-after-permission-exhaustion"}:
         # One ControllerVersion advance that grants user/B its first /HELLO
         # while the global ABE pair stays byte-identical.  user/B is absent
         # from the wave-1 policy variant, so its pre-advance requests are
@@ -762,6 +759,7 @@ def _scenario_config(scenario: str) -> Dict[str, Any]:
             "grantOnlyAdvance": True,
             "policyFile": str(POLICY_GRANT_ONLY),
             "grantAfterMs": 8000,
+            "lifetimeMs": 40000,
             "grantIdentity": USER_ROOT + "/B",
             "grantService": SERVICE_NAME,
             "recovery": "grant-only-advance",
@@ -769,6 +767,14 @@ def _scenario_config(scenario: str) -> Dict[str, Any]:
             # the DKEY/first-use path, so no scheduled refresh is injected.
             "knobMs": {},
         })
+        if scenario == "grant-after-permission-exhaustion":
+            config.update({
+                "grantAfterMs": 12000,
+                "permissionRefetchAfterMs": 16000,
+                "lifetimeMs": 50000,
+                "requestCount": 8,
+                "recovery": "explicit-permission-renewal",
+            })
     return config
 
 
@@ -1110,6 +1116,13 @@ def execute_gate(output: Path, scenario: str = SCENARIOS[0],
             user_dir = output / ("user-%s" % user_id)
             user_dir.mkdir(parents=True, exist_ok=True)
             user_env = {}
+            if user_id == "B" and config.get("permissionRefetchAfterMs"):
+                user_env.update({
+                    "NDNSF_PERMISSION_FETCH_MAX_ATTEMPTS": "2",
+                    "NDNSF_PERMISSION_FETCH_LIFETIME_MS": "500",
+                    "NDNSF_PERMISSION_FETCH_RETRY_BACKOFF_MS": "0",
+                    "NDNSF_PERMISSION_REFETCH_AFTER_MS": str(config["permissionRefetchAfterMs"]),
+                })
             knob = int((config.get("knobMs") or {}).get("user" + user_id, 0))
             if knob > 0:
                 user_env["NDNSF_POLICY_REVALIDATION_PERIOD_MS"] = str(knob)
@@ -1262,7 +1275,9 @@ def execute_gate(output: Path, scenario: str = SCENARIOS[0],
             grant.get("grantedRows") == grant.get("grantedSuccessRows") and
             grant.get("grantedPreGrantRows") == 0 and
             grant.get("grantedPreResolveWaiting", 0) >= 1 and
-            grant.get("unaffectedControlSuccessRows", 0) >= 1)
+            grant.get("unaffectedControlSuccessRows", 0) >= 1 and
+            (not config.get("permissionRefetchAfterMs") or
+             grant.get("lateRenewalObserved") is True))
 
     # Spec179 per-scenario checks (sibling module) are the authority for the
     # revocation family.  grant-only-advance has no scenario evaluator and
@@ -1366,7 +1381,7 @@ def main() -> int:
         print(json.dumps(result, indent=2, sort_keys=True))
         if result["status"] in {"requires-root", "preflight-failed", "not-ready"}:
             return 3
-        return 0 if result["status"] == "completed" else 4
+        return 0 if result["status"] == "completed" and result.get("gatePassed") is True else 4
 
     result = contract_report(args.scenario)
     if args.output:

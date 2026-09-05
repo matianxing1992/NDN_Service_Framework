@@ -161,3 +161,31 @@ def test_minindn_work_dir_keeps_nfd_socket_path_short(tmp_path: Path) -> None:
     work_dir = runner._minindn_work_dir(long_output)
     socket = work_dir / "controller" / "controller.sock"
     assert len(str(socket)) < 108
+
+
+def test_grant_evidence_retains_failures_while_providers_are_alive(tmp_path, monkeypatch):
+    monkeypatch.syspath_prepend(str(RUNNER.parent))
+    runner = _load_runner()
+    for name in ("provider-A", "provider-B"):
+        (tmp_path / (name + ".log")).write_text(
+            "100.0 INFO started\n200.0 INFO still serving\n", encoding="utf-8")
+    user = tmp_path / "user-B"
+    user.mkdir()
+    (user / "request-results.csv").write_text(
+        "request_id,success\nok,1\nbroken,0\n", encoding="utf-8")
+    (user / "request_lifecycle.csv").write_text(
+        "request_id,enqueue_timestamp_us\nok,120000000\nbroken,130000000\n",
+        encoding="utf-8")
+    evidence = runner._collect_runtime_evidence(
+        tmp_path, "grant-only-advance", runner._scenario_config("grant-only-advance"),
+        [], time.monotonic())
+    assert evidence["grantOnly"]["grantedRows"] == 2
+    assert evidence["grantOnly"]["grantedSuccessRows"] == 1
+
+
+def test_completed_but_failed_network_gate_returns_nonzero(monkeypatch, tmp_path):
+    runner = _load_runner()
+    monkeypatch.setattr(sys, "argv", [str(RUNNER), "--execute", "--output", str(tmp_path)])
+    monkeypatch.setattr(runner, "execute_gate", lambda *args: {
+        "status": "completed", "gatePassed": False, "networkEvidence": True})
+    assert runner.main() != 0
