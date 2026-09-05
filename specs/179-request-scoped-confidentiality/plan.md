@@ -2,6 +2,17 @@
 
 ## Online authorization recovery amendment (2026-09-05)
 
+T020 reviews the Experimental dependency as a reusable library. Detach CK
+waiter batches before application callbacks; fence parameter fetch/retry and
+validation generations; install name/digest-checked parameter candidates
+atomically; serve current public parameters only under their canonical name;
+bind decrypted CK caching to scheme/parameters/private key/ciphertext. Restore
+the original no-argument parameter-fetch entry and document silent cancellation,
+Face-thread ownership and mandatory dependent rebuilds for changed class layouts.
+Acceptance requires reproduced negatives, the complete NAC suite, existing
+example builds, rebuilt NDNSF integration and representative live grant/revoke
+paths. See `evidence/nac-abe-compatibility-review-20260905.md`.
+
 T017 repairs the existing pending-rotation state machine: reconcile before
 duplicate-target return or any grant mutation, and durably advance the epoch
 before a recovery attempt changes parameter identity. Previously published

@@ -63,7 +63,8 @@ The 2026-09-04 release claim and its rows are unaffected.
 - [ ] T014 Promote the local NAC-ABE Spec179 dependency patches (DKEY
   `FreshnessPeriod=0`, versioned exact public-params fetch, consumer cache
   invalidation/DKEY-only refresh fence — local NAC-ABE `Experimental`
-  branch, base `b1c9c4f` plus T019 callback/error repair `8b462d0`, not pushed) into the upstream NAC-ABE
+  branch, base `b1c9c4f`, T019 repair `8b462d0` and T020 compatibility repair
+  `b3b43c8`, not pushed) into the upstream NAC-ABE
   repository, then rebuild the NDNSF Spec179 prefix from the upstream commit
   and re-run the RV-U20/RV-U21 gate on that rebuild. **FR-041**. Local
   work: upstreaming package (split-PR description for the one-line
@@ -123,6 +124,10 @@ target21/21/control60/60 have no failed terminal rows, with one target-only DKEY
 refresh each. Expanded gates: NDNSF unit182/182, integration72/72, NAC14/14
 (90 assertions), harness15/15. Evidence and retained negative runs:
 `evidence/online-authorization-audit-20260905.md`. T014 remains external.
+
+## Dependency compatibility review (2026-09-05)
+
+- [ ] T020 Audit and repair the NAC-ABE Experimental dependency boundary in `src/consumer.cpp`, `src/param-fetcher.*`, `src/attribute-authority.cpp` and `src/algo/abe-support.*`: reproduce callback reentry, stale parameter installation, exact-name generation mismatch and cross-key cache reuse; preserve existing source entry points, explicitly document ABI rebuild requirements and cancellation/thread semantics, and verify the ordinary NAC suite plus rebuilt NDNSF integration and representative MiniNDN paths. Record findings, red/green evidence and migration guidance in `evidence/nac-abe-compatibility-review-20260905.md`. FR-019/023/024/036/041; upstream publication remains T014.
 
 ## Dependencies and Execution Order
 

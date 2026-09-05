@@ -1,5 +1,16 @@
 # Spec179 Audit — Controller Revocation Test Coverage
 
+## 2026-09-05 NAC dependency compatibility follow-up (current; dependent validation pending)
+
+The broader dependency review found and repaired warm-cache authorization
+reuse, CK callback reentry crashes, stale parameter installation and exact-name
+generation relabeling. NAC `b3b43c8` passes the full42-case/3299-assertion CTest
+gate and all three example builds. Public class layouts changed, so NDNSF must
+be rebuilt before runtime acceptance. T020 remains open for that gate and
+representative MiniNDN verification. The report is
+`evidence/nac-abe-compatibility-review-20260905.md`; prior16/16 evidence below
+remains valid for its recorded NAC `8b462d0`, not for the new dependency.
+
 ## 2026-09-05 online authorization follow-up (current; local scope PASS)
 
 **PASS for T017–T019 local online grant/revoke repair.** The authoritative
