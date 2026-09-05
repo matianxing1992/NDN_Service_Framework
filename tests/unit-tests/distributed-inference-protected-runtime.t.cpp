@@ -22,10 +22,10 @@ binding()
   value.protectionEpoch = "policy-epoch-7";
   value.grantName = "/authority/grants/request-1/provider-P0";
   value.grantDigest = "sha256:" + std::string(64, 'd');
-  value.capabilityDigest = "sha256:" + std::string(64, 'e');
+  value.capabilityDigest = std::string(64, 'e');
   value.groupId = "group-1";
   value.groupEpoch = 7;
-  value.epochKeyId = "sha256:" + std::string(64, 'f');
+  value.epochKeyId = std::string(64, 'f');
   value.providerBootId = "boot-1";
   value.fencingToken = "fence-1";
   value.revocationSequence = 4;

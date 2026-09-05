@@ -68,6 +68,45 @@ struct BoundGrantFixture
 };
 }
 
+BOOST_FIXTURE_TEST_CASE(ProtectedRuntimeAcceptsExistingGroupWireDigests, BoundGrantFixture)
+{
+  // ProviderGroupCoordinator hashes both fields as raw lowercase SHA-256 hex.
+  binding.groupId = "group-1";
+  binding.groupEpoch = 1;
+  binding.capabilityDigest = std::string(64, 'e');
+  binding.epochKeyId = std::string(64, 'f');
+  ProtectedRuntime runtime(binding, config);
+  runtime.verifyGrant(binding, now);
+  BOOST_CHECK(runtime.state() == ProtectedRuntimeState::GrantVerified);
+  auto substituted = binding;
+  substituted.epochKeyId[0] = 'a';
+  BOOST_CHECK_THROW(runtime.verifyGrant(substituted, now), std::runtime_error);
+}
+
+BOOST_FIXTURE_TEST_CASE(ProtectedRuntimeRejectsMalformedGroupWireDigests, BoundGrantFixture)
+{
+  binding.groupId = "group-1";
+  binding.groupEpoch = 1;
+  binding.capabilityDigest = std::string(64, 'e');
+  binding.epochKeyId = std::string(64, 'f');
+  for (const auto& invalid : {std::string(), std::string(63, 'a'),
+                             std::string(65, 'a'), std::string(64, 'A'),
+                             std::string(64, 'g'), "sha256:" + std::string(64, 'a')}) {
+    auto candidate = binding;
+    candidate.capabilityDigest = invalid;
+    BOOST_CHECK_THROW(candidate.validate(), std::invalid_argument);
+    candidate = binding;
+    candidate.epochKeyId = invalid;
+    BOOST_CHECK_THROW(candidate.validate(), std::invalid_argument);
+  }
+  auto candidate = binding;
+  candidate.planCoreDigest = std::string(64, 'a');
+  BOOST_CHECK_THROW(candidate.validate(), std::invalid_argument);
+  candidate = binding;
+  candidate.groupEpoch = 0;
+  BOOST_CHECK_THROW(candidate.validate(), std::invalid_argument);
+}
+
 BOOST_FIXTURE_TEST_CASE(ProtectedRuntimeRealGrantOwnsKeyAndDrains, BoundGrantFixture)
 {
   ProtectedRuntime runtime(binding, config);
