@@ -299,7 +299,12 @@ def _build_grant_seam(client):
     provider = build_in_process_grant_provider(
         requester_identity="/example/user",
         requester_private_key=requester_key,
-        authority_identity="/example/controller",
+        # The in-process authority publishes through the requester's own
+        # signed-APP-Data path, which signs only records below the local
+        # identity's /NDNSF/DI namespace — the grant Data name therefore
+        # carries the requester identity (the functional slice keeps the
+        # authority in the requester process, FR-002).
+        authority_identity="/example/user",
         authority_private_key=authority_key,
         protection_epoch=epoch,
         allowed_model_manifests=frozenset(),
