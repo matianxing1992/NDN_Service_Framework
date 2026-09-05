@@ -5,9 +5,9 @@ Scope: online grant/revoke correctness on `UAV-Experimental`, starting at
 grant, startup readiness, error reporting and truthful network evidence.
 
 **Current verdict: verification in progress.** The scoped repairs are
-implemented; the final readiness regression passes8/8 after rebuilding. Earlier
-expanded native and network passes are historical until the final candidate
-passes those gates.
+implemented; the final readiness regression passes8/8, unit182/182 and
+integration72/72 after rebuilding. Final16-scenario MiniNDN verification is
+still pending; earlier network passes remain historical.
 This document supersedes the earlier runtime-grant/revoke PASS.
 
 ## Findings and repairs
@@ -48,6 +48,7 @@ results are retained locally and excluded from Git.
 | First-DKEY first repair | `gates/readiness-green.log`:6/8 passed. Error callbacks recovered, but the base RequestMessage entry bypassed the helper and still published. This is a failed gate. |
 | First-DKEY base-entry repair green | The shared admission helper now also guards `startRequestServiceWithRequestId`. Unchanged focused regression8/8, exit0, `gates/readiness-base-green.log`. |
 | Final-candidate unit gate | Unit182/182,11971 assertions, exit0, `gates/unit-base-final.log`, after the base-entry repair. |
+| Final-candidate integration gate | Integration72/72,1278 assertions, exit0, `gates/integration-base-final.log`, run after compilation without concurrent build load. |
 | Expanded C++ gates before final readiness repair | Unit182/182,11971 assertions (`gates/unit-final.log`); integration71/71,1270 assertions (`gates/integration-final-isolated.log`). These must be rerun after the final C++ changes; integration now contains72 cases. |
 | Timing-sensitive gate failure retained | Concurrent App compilation produced stream retryCount2 instead of1, integration70/71 (`gates/integration-final.log`). After compilation, focused12/12 and full71/71 passed without weakening an assertion. CPU scheduling is a plausible cause, not a separately controlled load experiment. |
 | Launcher regressions | Initial target-row/CLI regressions failed before repair. New control-retention regression also failed before repair. Current14/14 pass (`gates/harness-readiness.log`), including refusal to apply the transport fault in the host namespace. |
@@ -92,7 +93,9 @@ Never rebuild shared libraries while MiniNDN processes are using them.
 
 The installed patched NAC-ABE dependency is
 `/tmp/nac-abe-spec179-exact-prefix/lib/libnac-abe.so`. Its existence and actual
-`ldd` resolution have been checked; final checks must repeat after the rebuild.
+`ldd` resolution passed again after the final rebuild. All five executable
+targets and the shared framework have resolved dependencies with none missing;
+SHA256 and `readelf` output are retained in `gates/native-base-closure.log`.
 The App RUNPATH includes that prefix and `$ORIGIN/..`. A reproducible deployment
 must retain the exact patched dependency; the temporary prefix is not an
 upstream-distribution claim.
