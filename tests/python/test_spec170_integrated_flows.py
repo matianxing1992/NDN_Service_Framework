@@ -13,6 +13,7 @@ from pathlib import Path
 import hashlib
 import sys
 import tempfile
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -65,11 +66,16 @@ from ndnsf_distributed_inference.sdk.placement import (  # noqa: E402
     canonical_digest,
 )
 from ndnsf_distributed_inference.security import ArtifactPolicyAuthority  # noqa: E402
+from cryptography.hazmat.primitives.asymmetric import ed25519  # noqa: E402
 
 
 M = "sha256:" + "1" * 64
 G = "sha256:" + "2" * 64
 A = "sha256:" + "3" * 64
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
 R = "sha256:" + "4" * 64
 S = "sha256:" + "5" * 64
 MI = "sha256:" + "6" * 64
@@ -284,17 +290,33 @@ class Spec170IntegratedFlowsTest(unittest.TestCase):
                 set(first_edge[0]) | set(first_edge[1]))
 
     def test_protected_grant_revocation_lease_and_zeroization(self):
+        requester_key = ed25519.Ed25519PrivateKey.generate()
+        recipient_key = ed25519.Ed25519PrivateKey.generate()
         request = GrantRequestV1(
-            provider="/provider/p0", request_id="req-1", attempt=1,
-            plan_core_digest=M, grant_view_digest=G, artifact_digest=A,
-            recipient="/provider/p0")
-        authority = ArtifactPolicyAuthority("/authority", b"k" * 32)
-        grant = authority.issue(request, wrapped_key=b"wrapped", expires_at_ms=500)
-        grant.verify(authority="/authority", key=b"k" * 32, now_ms=100)
-        state = RevocationStateV1(
-            "/authority", "epoch-1", 1,
-            revoked_grants=(grant.request_digest,), next_check_at_ms=500)
-        self.assertTrue(state.is_revoked(grant, now_ms=100))
+            provider_identity="/provider/p0", request_id="req-1", attempt=1,
+            plan_core_digest=M, grant_view_digest=G,
+            model_manifest_digest=A,
+            protection_epoch="epoch-1",
+            requester_identity="/user/u0",
+            issued_at_ms=_now_ms(),
+        ).sign(requester_key)
+        authority = ArtifactPolicyAuthority(
+            "/authority", ed25519.Ed25519PrivateKey.generate(),
+            protection_epoch="epoch-1")
+        grant = authority.issue(
+            request,
+            requester_public_key=requester_key.public_key(),
+            recipient_public_key=recipient_key.public_key(),
+            content_key=b"content-key-32-bytes-000000000000",
+            key_id="key-1",
+            expires_at_ms=_now_ms() + 60_000,
+            now_ms=_now_ms(),
+        )
+        grant.verify(authority.public_key, now_ms=_now_ms())
+        state = authority.revoke(
+            frozenset({grant.grant_digest}), now_ms=_now_ms(),
+            next_check_at_ms=_now_ms() + 60_000)
+        self.assertTrue(state.is_revoked(grant.grant_digest, now_ms=_now_ms()))
 
         registry = PlaintextLeaseRegistry()
         with tempfile.TemporaryDirectory() as directory:

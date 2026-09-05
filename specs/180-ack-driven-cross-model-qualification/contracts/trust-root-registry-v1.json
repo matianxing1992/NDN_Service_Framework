@@ -1,0 +1,44 @@
+{
+  "artifactPolicyAuthority": {
+    "acceptedModelFamilies": [
+      "YOLO26n"
+    ],
+    "authorityId": "spec180-artifact-policy-authority",
+    "grantSchema": "ndnsf-di-key-grant-v1",
+    "keyId": "spec180-artifact-policy-ed25519-20260905",
+    "protectionEpochs": [
+      "spec180-yolo-protected-v1"
+    ],
+    "publicKeyAlgorithm": "ed25519",
+    "publicKeyPath": "contracts/artifact-policy-authority.pub",
+    "publicKeySha256": "sha256:8a0c3f7dc1b709928f7912e51c53ae8d30cf887c07ba20092b114171f371dad7",
+    "signatureAlgorithm": "ed25519"
+  },
+  "catalogue": {
+    "acceptedModelFamilies": [
+      "YOLO26n"
+    ],
+    "authorityId": "spec180-yolo-catalogue-authority",
+    "keyId": "spec180-yolo-catalogue-ed25519-20260903",
+    "manifestSchema": "spec180-yolo-catalogue-v1",
+    "publicKeyAlgorithm": "ed25519",
+    "publicKeyPath": "contracts/catalogue-authority.pub",
+    "publicKeySha256": "sha256:9967848bb1efa16edd381007610573338f41d84a365d67ead6ac987136989e1e",
+    "signatureAlgorithm": "ed25519"
+  },
+  "modelManifest": {
+    "acceptedModelFamilies": [
+      "YOLO26n",
+      "Qwen3.6-27B"
+    ],
+    "authorityId": "spec180-model-manifest-authority",
+    "keyId": "spec180-model-manifest-ed25519-20260902",
+    "manifestSchema": "spec180-model-manifest-v1",
+    "publicKeyAlgorithm": "ed25519",
+    "publicKeyPath": "contracts/model-manifest-authority.pub",
+    "publicKeySha256": "sha256:6aa8a1c4bcf30fd51445471ea435394bd9a6f8a81a9a7c27ff9e99a63a6945ea",
+    "signatureAlgorithm": "ed25519"
+  },
+  "schemaVersion": 1,
+  "status": "CONFIGURED"
+}
