@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "NDNSF-DistributedInference"))
 from cryptography.hazmat.primitives.asymmetric import ed25519  # noqa: E402
 from ndnsf_distributed_inference.core import (  # noqa: E402
-    GrantRequestV1, KeyGrantV1, RecipientEnvelopeV1, RevocationStateV1,
+    GrantRequestV1, KeyGrantV1, RecipientEnvelopeV1,
     verify_and_unwrap_grant, wrap_content_key, unwrap_content_key,
 )
 from ndnsf_distributed_inference.security import ArtifactPolicyAuthority  # noqa: E402
@@ -182,12 +182,8 @@ class ProtectedGrantRoundTripTest(unittest.TestCase):
                 expected_protection_epoch="epoch-1",
                 now_ms=_now_ms())
 
-    def test_revoked_grant_is_rejected_and_stale_state_fails_closed(self):
+    def test_expired_grant_fails_closed_in_provider_verify(self):
         grant = self.issue(self.signed_request())
-        state = self.authority.revoke(
-            frozenset({grant.grant_digest}), now_ms=_now_ms(),
-            next_check_at_ms=_now_ms() + 60_000)
-        self.assertTrue(state.is_revoked(grant.grant_digest, now_ms=_now_ms()))
         with self.assertRaises(ValueError):
             verify_and_unwrap_grant(
                 grant,
@@ -199,11 +195,7 @@ class ProtectedGrantRoundTripTest(unittest.TestCase):
                 expected_plan_core_digest=_digest("a"),
                 expected_model_manifest_digest=_digest("c"),
                 expected_protection_epoch="epoch-1",
-                revocation_state=state,
-                now_ms=_now_ms())
-        with self.assertRaises(ValueError):
-            state.is_revoked(grant.grant_digest,
-                             now_ms=state.next_check_at_ms + 1)
+                now_ms=grant.expires_at_ms + 1)
 
     def test_envelope_aad_binds_request_context(self):
         envelope = wrap_content_key(

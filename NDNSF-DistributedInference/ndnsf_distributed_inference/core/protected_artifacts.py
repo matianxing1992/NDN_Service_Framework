@@ -1,10 +1,16 @@
 """Canonical protected-artifact grant encodings for NDNSF-DI.
 
 Implements the Spec170 ``artifact-assembly-v1`` protected-profile key contract
-(KeyGrantV1 / GrantRequestV1 / RevocationStateV1) with canonical cross-language
-wire encodings. All digests are non-circular: a record's digest and signature
-are computed over the canonical bytes of every other field, so a grant digest
-never hashes a field containing that same digest.
+(KeyGrantV1 / GrantRequestV1) with canonical cross-language wire encodings.
+All digests are non-circular: a record's digest and signature are computed
+over the canonical bytes of every other field, so a grant digest never hashes
+a field containing that same digest.
+
+The revocation subsystem (RevocationStateV1 ledger and its network service)
+is intentionally NOT implemented on this branch: the owner develops it on a
+separate branch/machine. ``revocationSequence`` stays in the wire encoding as
+a passive contract-stable field fixed at 1, so the later integration does not
+change the canonical bytes. Expiry is the only time-bound rejection here.
 
 Wire convention (matches the native Provider parser): canonical JSON with
 sorted keys, no whitespace, snake_case field names, ``sha256:`` digest prefix,
@@ -343,6 +349,8 @@ class KeyGrantV1:
     allowed_residency_tiers: tuple[str, ...] = (_GRANT_PURPOSE,)
     issued_at_ms: int = 0
     expires_at_ms: int = 0
+    # Passive contract-stable field. The revocation system is owned by a
+    # separate branch; on this branch it is fixed at 1 and never advances.
     revocation_sequence: int = 1
     active_request_policy: str = _GRANT_POLICY
     grant_digest: str = ""
@@ -431,58 +439,6 @@ class KeyGrantV1:
 
 
 # ---------------------------------------------------------------------------
-# RevocationStateV1 — signed authority revocation record
-
-@dataclass(frozen=True)
-class RevocationStateV1:
-    policy_authority: str
-    protection_epoch: str
-    sequence: int
-    revoked_grant_digests: tuple[str, ...] = ()
-    issued_at_ms: int = 0
-    next_check_at_ms: int = 0
-    authority_signature: str = ""
-
-    def __post_init__(self) -> None:
-        if (not self.policy_authority or not self.protection_epoch
-                or self.sequence <= 0):
-            raise ValueError("invalid revocation state")
-        object.__setattr__(
-            self, "revoked_grant_digests",
-            tuple(sorted(set(self.revoked_grant_digests))))
-        for digest in self.revoked_grant_digests:
-            _require_digest(digest, "revoked_grant_digest")
-
-    def payload(self) -> dict[str, Any]:
-        return {
-            "policyAuthority": self.policy_authority,
-            "protectionEpoch": self.protection_epoch,
-            "sequence": self.sequence,
-            "revokedGrantDigests": list(self.revoked_grant_digests),
-            "issuedAtMs": self.issued_at_ms,
-            "nextCheckAtMs": self.next_check_at_ms,
-        }
-
-    def signing_bytes(self) -> bytes:
-        return _canonical_bytes(self.payload())
-
-    def verify(self, authority_public_key: ed25519.Ed25519PublicKey) -> None:
-        if not self.authority_signature:
-            raise ValueError("revocation state is unsigned")
-        try:
-            authority_public_key.verify(
-                bytes.fromhex(self.authority_signature), self.signing_bytes())
-        except InvalidSignature as exc:
-            raise ValueError("revocation state signature is invalid") from exc
-
-    def is_revoked(self, grant_digest: str, *, now_ms: int) -> bool:
-        """Revoked-check; a stale record past next_check_at fails closed."""
-        if self.next_check_at_ms and int(now_ms) >= self.next_check_at_ms:
-            raise ValueError("revocation state is stale")
-        return grant_digest in self.revoked_grant_digests
-
-
-# ---------------------------------------------------------------------------
 # Provider-side verification and unwrap
 
 def verify_and_unwrap_grant(
@@ -495,14 +451,14 @@ def verify_and_unwrap_grant(
     expected_plan_core_digest: str,
     expected_model_manifest_digest: str,
     expected_protection_epoch: str,
-    revocation_state: RevocationStateV1 | None = None,
     now_ms: int,
 ) -> bytes:
     """Verify a fetched grant and unwrap its content key inside the Provider.
 
-    Every binding mismatch, an expired grant, a revoked grant, a stale
-    revocation record, or an envelope that fails authentication fails closed
-    before any content key is exposed.
+    Every binding mismatch, an expired grant, or an envelope that fails
+    authentication fails closed before any content key is exposed.
+    Revocation checks are owned by a separate branch and are not part of
+    this branch's verification path; expiry is the time-bound rejection.
     """
     if (grant.provider_identity != expected_provider_identity
             or grant.request_id != expected_request_id
@@ -512,10 +468,6 @@ def verify_and_unwrap_grant(
             or grant.protection_epoch != expected_protection_epoch):
         raise ValueError("key grant binding does not match the assignment")
     grant.verify(authority_public_key, now_ms=now_ms)
-    if revocation_state is not None:
-        revocation_state.verify(authority_public_key)
-        if revocation_state.is_revoked(grant.grant_digest, now_ms=now_ms):
-            raise ValueError("key grant is revoked")
     return unwrap_content_key(
         recipient_private_key, grant.wrapped_content_key,
         provider_identity=expected_provider_identity,
@@ -581,7 +533,6 @@ __all__ = [
     "GrantRequestV1",
     "KeyGrantV1",
     "RecipientEnvelopeV1",
-    "RevocationStateV1",
     "PlaintextLeaseRegistry",
     "canonical_digest",
     "wrap_content_key",

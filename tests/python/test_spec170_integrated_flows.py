@@ -34,7 +34,6 @@ from ndnsf_distributed_inference.core import (  # noqa: E402
     LocalTensorGroup,
     PlaintextLeaseRegistry,
     RedistributionEdge,
-    RevocationStateV1,
     TensorDisposition,
     TensorSlice,
     V3AdmissionController,
@@ -313,10 +312,8 @@ class Spec170IntegratedFlowsTest(unittest.TestCase):
             now_ms=_now_ms(),
         )
         grant.verify(authority.public_key, now_ms=_now_ms())
-        state = authority.revoke(
-            frozenset({grant.grant_digest}), now_ms=_now_ms(),
-            next_check_at_ms=_now_ms() + 60_000)
-        self.assertTrue(state.is_revoked(grant.grant_digest, now_ms=_now_ms()))
+        with self.assertRaises(ValueError):
+            grant.verify(authority.public_key, now_ms=grant.expires_at_ms + 1)
 
         registry = PlaintextLeaseRegistry()
         with tempfile.TemporaryDirectory() as directory:

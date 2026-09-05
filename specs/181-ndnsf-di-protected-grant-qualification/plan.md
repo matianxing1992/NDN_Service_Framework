@@ -28,8 +28,8 @@ G0 grant 正路径（权威服务端 + Python/native 解包 + Y-N-E 真实变异
 
 - **Pre-design gate**：原则 I（通用动态运行时）——grant 机制是通用
   NDNSF-DI 基础设施，无 YOLO 特判；原则 II（安全在数据路径）——grant
-  复用权威签名 + 收件人加密 + 撤销，不新增调试后门；原则 VII（昂贵
-  执行的不可变晋升）——候选身份含提交哈希与全部平面。
+  复用权威签名 + 收件人加密，不新增调试后门；原则 VII（昂贵执行的
+  不可变晋升）——候选身份含提交哈希与全部平面。
 - **Post-design gate**：原则 VIII（收敛审计在正式验证前）——G2 是硬门；
   审计原则 4 的四层证据分离在每个证据文件头部声明层。
 
@@ -79,3 +79,6 @@ specs/181-ndnsf-di-protected-grant-qualification/
   修订（revision 编号递增），禁止就地静默改契约。
 - 若 grant 网络服务端在 controller 内实现受阻，回退路径是独立权威
   进程（同契约、同注册表），不弱化安全语义。
+- **撤销子系统（延期，原则 11）**：账本与网络撤销服务由所有者的另一
+  分支开发。本分支 `revocationSequence` 固定为 1、无撤销服务；集成
+  条件与删除标准见 spec.md Out of Scope 的延期项。

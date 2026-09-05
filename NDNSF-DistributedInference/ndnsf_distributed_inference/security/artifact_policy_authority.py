@@ -3,8 +3,13 @@
 Issues Spec170 ``artifact-assembly-v1`` KeyGrantV1 records: it verifies the
 requester signature and requester identity, enforces the configured model/
 epoch/residency policy, wraps the content key to the selected Provider
-identity certificate, signs the grant with the authority Ed25519 key, and
-maintains a signed revocation ledger.
+identity certificate, and signs the grant with the authority Ed25519 key.
+
+The revocation subsystem (ledger and network service) is intentionally NOT
+implemented on this branch: the owner develops it on a separate
+branch/machine. ``revocationSequence`` stays a passive wire field fixed at 1
+so the later integration does not change the canonical grant bytes. Expiry
+is the only time-bound rejection.
 
 The authority identity, endpoint, and trust rule are operator configuration
 (Spec180: an entry in ``contracts/trust-root-registry-v1.json``); the private
@@ -13,16 +18,12 @@ key lives outside Git like every other Spec180 signing key.
 
 from __future__ import annotations
 
-from typing import Mapping
-
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
 from ..core.protected_artifacts import (
     GrantRequestV1,
     KeyGrantV1,
-    RecipientEnvelopeV1,
     RecipientPublicKey,
-    RevocationStateV1,
     wrap_content_key,
 )
 
@@ -38,10 +39,8 @@ class ArtifactPolicyAuthority:
         protection_epoch: str,
         allowed_model_manifests: frozenset[str] = frozenset(),
         allowed_residency_tiers: tuple[str, ...] = ("DISK_CIPHERTEXT_ASSEMBLED",),
-        revocation_sequence: int = 1,
     ) -> None:
-        if (not identity or not protection_epoch or not allowed_residency_tiers
-                or revocation_sequence <= 0):
+        if (not identity or not protection_epoch or not allowed_residency_tiers):
             raise ValueError("artifact policy authority is incomplete")
         self.identity = identity
         self.private_key = private_key
@@ -49,8 +48,6 @@ class ArtifactPolicyAuthority:
         self.protection_epoch = protection_epoch
         self.allowed_model_manifests = frozenset(allowed_model_manifests)
         self.allowed_residency_tiers = frozenset(allowed_residency_tiers)
-        self.revocation_sequence = revocation_sequence
-        self._revoked: set[str] = set()
 
     def issue(
         self,
@@ -104,7 +101,6 @@ class ArtifactPolicyAuthority:
             allowed_residency_tiers=request.allowed_residency_tiers,
             issued_at_ms=int(now_ms),
             expires_at_ms=int(expires_at_ms),
-            revocation_sequence=self.revocation_sequence,
         )
         grant_digest = unsigned.computed_grant_digest()
         signature = self.private_key.sign(unsigned.signing_bytes()).hex()
@@ -123,38 +119,6 @@ class ArtifactPolicyAuthority:
             expires_at_ms=unsigned.expires_at_ms,
             revocation_sequence=unsigned.revocation_sequence,
             grant_digest=grant_digest,
-            authority_signature=signature,
-        )
-
-    def revoke(self, grant_digests: frozenset[str], *, now_ms: int,
-               next_check_at_ms: int = 0) -> RevocationStateV1:
-        """Advance the revocation sequence and sign the new ledger state."""
-        self._revoked.update(grant_digests)
-        self.revocation_sequence += 1
-        return self._sign_state(now_ms=now_ms, next_check_at_ms=next_check_at_ms)
-
-    def revocation_state(self, *, now_ms: int,
-                         next_check_at_ms: int = 0) -> RevocationStateV1:
-        return self._sign_state(now_ms=now_ms, next_check_at_ms=next_check_at_ms)
-
-    def _sign_state(self, *, now_ms: int,
-                    next_check_at_ms: int) -> RevocationStateV1:
-        unsigned = RevocationStateV1(
-            policy_authority=self.identity,
-            protection_epoch=self.protection_epoch,
-            sequence=self.revocation_sequence,
-            revoked_grant_digests=tuple(sorted(self._revoked)),
-            issued_at_ms=int(now_ms),
-            next_check_at_ms=int(next_check_at_ms),
-        )
-        signature = self.private_key.sign(unsigned.signing_bytes()).hex()
-        return RevocationStateV1(
-            policy_authority=unsigned.policy_authority,
-            protection_epoch=unsigned.protection_epoch,
-            sequence=unsigned.sequence,
-            revoked_grant_digests=unsigned.revoked_grant_digests,
-            issued_at_ms=unsigned.issued_at_ms,
-            next_check_at_ms=unsigned.next_check_at_ms,
             authority_signature=signature,
         )
 
