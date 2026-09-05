@@ -1112,6 +1112,23 @@ namespace ndn_service_framework{
                 bool abeGenerationChanged = true,
                 const PolicyStatusData* status = nullptr,
                 bool grantOnlyDkeyRefresh = false);
+            /**
+             * Run the DKEY-only refresh leg of a Controller-status install
+             * (grant-only target-policy replacement, FR-017/SC-022).  Called
+             * from invalidateControllerScopedCaches on a version-advance
+             * install and directly from installControllerStatus when an
+             * equal-version install consumes a pending grant-only refresh
+             * that arrived after the version-advance install already ran
+             * (reverse order: the status channel installed the version before
+             * the PermissionResponse recorded the grant).  A LocalMock
+             * without its fixture-owned Consumer defers to the explicit
+             * bootstrap path via scheduleDeferredDkeyRefreshRetry.
+             */
+            void refreshNacDkeyForControllerStatus(
+                const ndn::Name& serviceName,
+                const ControllerVersion& version,
+                bool abeGenerationChanged,
+                bool grantOnlyDkeyRefresh);
 
 
             bool replyFromIMS(const ndn::Interest &interest);
