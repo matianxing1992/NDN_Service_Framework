@@ -23,6 +23,12 @@ namespace {
 constexpr const char* GRANT_KDF_INFO = "NDNSF-DI/key-grant/v1";
 constexpr const char* GRANT_POLICY = "CANCEL_IMMEDIATELY";
 
+struct CleanseString
+{
+  std::string& value;
+  ~CleanseString() { OPENSSL_cleanse(value.data(), value.size()); }
+};
+
 // ---------------------------------------------------------------------------
 // Canonical JSON helpers (byte-compatible with the Python verifier's
 // json.dumps(sort_keys=True, separators=(",", ":"), ensure_ascii=False))
@@ -426,6 +432,7 @@ aesGcmDecrypt(const std::string& key, const std::string& nonce,
     EVP_DecryptFinal_ex(ctx, nullptr, &written) == 1;
   EVP_CIPHER_CTX_free(ctx);
   if (!ok) {
+    OPENSSL_cleanse(plaintext.data(), plaintext.size());
     throw std::runtime_error(
       "content-key envelope failed authentication");
   }
@@ -439,10 +446,52 @@ ed25519SeedToX25519(const std::string& seed)
   unsigned char digest[SHA512_DIGEST_LENGTH];
   SHA512(reinterpret_cast<const unsigned char*>(seed.data()), seed.size(),
          digest);
-  return std::string(reinterpret_cast<char*>(digest), 32);
+  std::string result(reinterpret_cast<char*>(digest), 32);
+  OPENSSL_cleanse(digest, sizeof(digest));
+  return result;
 }
 
 } // namespace
+
+std::string
+canonicalNativeGrantName(
+  const std::string& publicationIdentity, const std::string& providerIdentity,
+  const std::string& requestId, std::uint64_t attempt,
+  const std::string& planCoreDigest, const std::string& modelManifestDigest,
+  const std::string& protectionEpoch, const std::string& grantDigest)
+{
+  const auto safe = [] (unsigned char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+           (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~';
+  };
+  if (publicationIdentity.empty() || publicationIdentity.front() != '/' ||
+      publicationIdentity.back() == '/' || publicationIdentity.find("//") != std::string::npos ||
+      !std::all_of(publicationIdentity.begin(), publicationIdentity.end(),
+        [&] (unsigned char c) { return safe(c) || c == '/' || c == ':'; }) ||
+      providerIdentity.empty() || requestId.empty() || protectionEpoch.empty() || attempt == 0) {
+    throw std::invalid_argument("grant publication or request identity is invalid");
+  }
+  const auto bare = [] (const std::string& digest) {
+    if (digest.size() != 71 || digest.substr(0, 7) != "sha256:" ||
+        !std::all_of(digest.begin() + 7, digest.end(), [] (unsigned char c) {
+          return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+        })) throw std::invalid_argument("grant name digest is not canonical");
+    return digest.substr(7);
+  };
+  const auto component = [&] (const std::string& value) {
+    const char* hex = "0123456789ABCDEF";
+    std::string out;
+    for (unsigned char c : value) {
+      if (safe(c)) out += static_cast<char>(c);
+      else { out += '%'; out += hex[c >> 4]; out += hex[c & 15]; }
+    }
+    return out;
+  };
+  return publicationIdentity + "/NDNSF-DI/KEY-GRANT/v1/PROVIDER/" + sha256Hex(providerIdentity) +
+    "/REQ/" + component(requestId) + "/ATTEMPT/" + std::to_string(attempt) +
+    "/PLAN-CORE/" + bare(planCoreDigest) + "/MODEL/" + bare(modelManifestDigest) +
+    "/EPOCH/" + component(protectionEpoch) + "/GRANT/" + bare(grantDigest);
+}
 
 NativeGrantVerificationResult
 verifyAndUnwrapNativeGrant(const std::string& wireJson,
@@ -454,9 +503,15 @@ verifyAndUnwrapNativeGrant(const std::string& wireJson,
                            const std::string& planCoreDigest,
                            const std::string& modelManifestDigest,
                            const std::string& protectionEpoch,
-                           std::uint64_t nowMs)
+                           std::uint64_t nowMs,
+                           const std::string& expectedAuthority,
+                           const std::string& expectedGrantDigest)
 {
   NativeGrantVerificationResult result;
+  if (wireJson.size() > 65536) {
+    result.reason = "DI_PROTECTED_GRANT_REJECTED: grant wire exceeds limit";
+    return result;
+  }
   ParsedGrant grant;
   std::string error;
   if (!parseGrant(wireJson, grant, error)) {
@@ -473,6 +528,11 @@ verifyAndUnwrapNativeGrant(const std::string& wireJson,
       grant.protectionEpoch != protectionEpoch) {
     result.reason = "DI_PROTECTED_RUNTIME_BINDING_MISMATCH: key grant "
                     "binding does not match the assignment";
+    return result;
+  }
+  if ((!expectedAuthority.empty() && grant.policyAuthority != expectedAuthority) ||
+      (!expectedGrantDigest.empty() && grant.grantDigest != expectedGrantDigest)) {
+    result.reason = "DI_PROTECTED_GRANT_REJECTED: sealed grant reference or authority mismatch";
     return result;
   }
   if (grant.grantDigest != grant.computedGrantDigest()) {
@@ -496,6 +556,7 @@ verifyAndUnwrapNativeGrant(const std::string& wireJson,
     modelManifestDigest, protectionEpoch);
   try {
     std::string shared;
+    CleanseString cleanShared{shared};
     if (grant.envelopeAlg == "X25519-AESGCM-SHA256") {
       if (recipientKey.kind != NativeRecipientKey::Kind::Ed25519Seed ||
           recipientKey.material.size() != 32) {
@@ -509,8 +570,10 @@ verifyAndUnwrapNativeGrant(const std::string& wireJson,
                         "public key is malformed";
         return result;
       }
+      auto curveSeed = ed25519SeedToX25519(recipientKey.material);
+      CleanseString cleanSeed{curveSeed};
       shared = x25519SharedSecret(
-        ed25519SeedToX25519(recipientKey.material),
+        curveSeed,
         std::string(reinterpret_cast<const char*>(peerPublic.data()),
                     peerPublic.size()));
     }
@@ -536,8 +599,9 @@ verifyAndUnwrapNativeGrant(const std::string& wireJson,
                       "envelope algorithm";
       return result;
     }
-    const std::string derived = deriveHkdfSha256(
+    std::string derived = deriveHkdfSha256(
       shared, std::string(GRANT_KDF_INFO) + context);
+    CleanseString cleanDerived{derived};
     std::vector<std::uint8_t> nonce;
     std::vector<std::uint8_t> ciphertext;
     if (!hexDecode(grant.envelopeNonce, nonce) ||
@@ -546,20 +610,31 @@ verifyAndUnwrapNativeGrant(const std::string& wireJson,
                       "malformed";
       return result;
     }
-    const std::string plaintext = aesGcmDecrypt(
+    std::string plaintext = aesGcmDecrypt(
       derived,
       std::string(reinterpret_cast<const char*>(nonce.data()), nonce.size()),
       std::string(reinterpret_cast<const char*>(ciphertext.data()),
                   ciphertext.size()),
       context);
+    CleanseString cleanPlaintext{plaintext};
+    if (plaintext.size() != 32) {
+      OPENSSL_cleanse(plaintext.data(), plaintext.size());
+      throw std::runtime_error("content key is not 256 bits");
+    }
     result.contentKey.assign(
       reinterpret_cast<const std::uint8_t*>(plaintext.data()),
       reinterpret_cast<const std::uint8_t*>(plaintext.data()) +
         plaintext.size());
     result.verified = true;
+    result.expiresAtMs = grant.expiresAtMs;
+    result.allowedResidencyTiers = grant.allowedResidencyTiers;
+    OPENSSL_cleanse(plaintext.data(), plaintext.size());
     return result;
   }
   catch (const std::exception& exc) {
+    OPENSSL_cleanse(result.contentKey.data(), result.contentKey.size());
+    result.contentKey.clear();
+    result.verified = false;
     result.reason = std::string("DI_PROTECTED_GRANT_REJECTED: ") + exc.what();
     return result;
   }

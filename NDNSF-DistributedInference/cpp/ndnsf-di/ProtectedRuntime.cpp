@@ -4,6 +4,8 @@
 #include <exception>
 #include <stdexcept>
 #include <utility>
+#include <chrono>
+#include <openssl/crypto.h>
 
 namespace ndnsf::di {
 namespace {
@@ -96,8 +98,10 @@ ProtectedRuntimeBindingV1::exactlyMatches(
          mustFetchProducerByEndpoint == other.mustFetchProducerByEndpoint;
 }
 
-ProtectedRuntime::ProtectedRuntime(ProtectedRuntimeBindingV1 expectedBinding)
+ProtectedRuntime::ProtectedRuntime(ProtectedRuntimeBindingV1 expectedBinding,
+                                   std::optional<NativeProtectedGrantConfig> grantConfig)
   : m_binding(std::move(expectedBinding))
+  , m_grantConfig(std::move(grantConfig))
 {
   m_binding.validate();
 }
@@ -106,14 +110,18 @@ ProtectedRuntime::~ProtectedRuntime()
 {
   try {
     std::lock_guard<std::mutex> lock(m_mutex);
-    if (m_state != ProtectedRuntimeState::Zeroized &&
-        m_state != ProtectedRuntimeState::FailedClosed) {
+    if (m_state != ProtectedRuntimeState::Zeroized) {
       m_terminalReason = "protected runtime destroyed";
       drainLocked();
     }
   }
   catch (...) {
     // Destructors cannot propagate; drainLocked already records FailedClosed.
+  }
+  OPENSSL_cleanse(m_contentKey.data(), m_contentKey.size());
+  if (m_grantConfig) {
+    auto& material = m_grantConfig->recipientKey.material;
+    OPENSSL_cleanse(material.data(), material.size());
   }
 }
 
@@ -122,15 +130,83 @@ ProtectedRuntime::verifyGrant(const ProtectedRuntimeBindingV1& observedBinding,
                               std::uint64_t nowMs)
 {
   std::lock_guard<std::mutex> lock(m_mutex);
-  // Honesty gate (spec181 R002): no real grant verifier is installed yet
-  // (fetch + authority signature + recipient unwrap land in T002). A
-  // binding-consistency comparison must never move the runtime to
-  // GrantVerified by itself.
-  m_state = ProtectedRuntimeState::FailedClosed;
-  m_terminalReason =
-    "DI_PROTECTED_GRANT_UNAVAILABLE: native grant verification is not "
-    "implemented (spec181 R002; real verifier lands in T002)";
-  throw std::runtime_error(m_terminalReason);
+  try {
+    const auto started = std::chrono::steady_clock::now();
+    if (!m_grantConfig || !m_grantConfig->fetchGrant ||
+        m_grantConfig->authorityIdentity.empty() ||
+        m_grantConfig->authorityPublicKeyRaw.size() != 32) {
+      throw std::runtime_error("DI_PROTECTED_GRANT_UNAVAILABLE: native grant configuration is missing");
+    }
+    observedBinding.validate();
+    if (m_state != ProtectedRuntimeState::NoGrant ||
+        !m_binding.exactlyMatches(observedBinding) || nowMs >= m_binding.expiresAtMs) {
+      throw std::runtime_error("DI_PROTECTED_GRANT_REJECTED: sealed binding mismatch or expiry");
+    }
+    const auto& config = *m_grantConfig;
+    if (config.shouldCancel && config.shouldCancel()) {
+      throw std::runtime_error("DI_PROTECTED_GRANT_REJECTED: grant acquisition cancelled");
+    }
+    const auto separator = m_binding.grantName.find("/NDNSF-DI/KEY-GRANT/v1/");
+    if (separator == std::string::npos || m_binding.grantName != canonicalNativeGrantName(
+          m_binding.grantName.substr(0, separator), m_binding.provider,
+          m_binding.requestId, m_binding.attempt, m_binding.planCoreDigest,
+          config.modelManifestDigest, m_binding.protectionEpoch, m_binding.grantDigest)) {
+      throw std::runtime_error("DI_PROTECTED_GRANT_REJECTED: canonical grant name mismatch");
+    }
+    auto result = verifyAndUnwrapNativeGrant(
+      config.fetchGrant(m_binding.grantName), config.authorityPublicKeyRaw,
+      config.recipientKey, m_binding.provider, m_binding.requestId, m_binding.attempt,
+      m_binding.planCoreDigest, config.modelManifestDigest, m_binding.protectionEpoch,
+      nowMs, config.authorityIdentity, m_binding.grantDigest);
+    // Transfer the allocation before any later exception can release it unwiped.
+    m_contentKey = std::move(result.contentKey);
+    if (!result.verified || m_contentKey.size() != 32) {
+      throw std::runtime_error(result.reason.empty()
+        ? "DI_PROTECTED_GRANT_REJECTED: invalid content key" : result.reason);
+    }
+    if (std::find(result.allowedResidencyTiers.begin(), result.allowedResidencyTiers.end(),
+                  "DISK_CIPHERTEXT_ASSEMBLED") == result.allowedResidencyTiers.end()) {
+      throw std::runtime_error("DI_PROTECTED_GRANT_REJECTED: assembled residency is forbidden");
+    }
+    m_grantExpiresAtMs = std::min(m_binding.expiresAtMs, result.expiresAtMs);
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - started).count();
+    if (nowMs >= m_grantExpiresAtMs ||
+        static_cast<std::uint64_t>(elapsed) >= m_grantExpiresAtMs - nowMs ||
+        (config.shouldCancel && config.shouldCancel())) {
+      throw std::runtime_error("DI_PROTECTED_GRANT_REJECTED: grant acquisition expired or cancelled");
+    }
+    m_state = ProtectedRuntimeState::GrantVerified;
+  }
+  catch (const std::exception& error) {
+    m_terminalReason = error.what();
+    try { drainLocked(); } catch (...) {}
+    m_state = ProtectedRuntimeState::FailedClosed;
+    throw;
+  }
+}
+
+void
+ProtectedRuntime::withContentKey(
+  std::uint64_t nowMs,
+  const std::function<void(const std::vector<std::uint8_t>&)>& consume)
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (!authorizedStateLocked() || nowMs >= m_grantExpiresAtMs || !consume ||
+      (m_grantConfig && m_grantConfig->shouldCancel && m_grantConfig->shouldCancel())) {
+    m_terminalReason = "DI_PROTECTED_GRANT_REJECTED: content key lease is unavailable or expired";
+    drainLocked();
+    throw std::runtime_error(m_terminalReason);
+  }
+  try {
+    consume(m_contentKey);
+  }
+  catch (...) {
+    m_terminalReason = "DI_PROTECTED_GRANT_REJECTED: content key consumer failed";
+    try { drainLocked(); } catch (...) {}
+    m_state = ProtectedRuntimeState::FailedClosed;
+    throw;
+  }
 }
 
 void
@@ -170,7 +246,7 @@ ProtectedRuntime::authorizeDataflow(ProtectedDataflowDirection direction,
                                     const std::string& endpointDigest,
                                     const std::string& producerRole,
                                     const std::string& consumerRole,
-                                    std::uint64_t nowMs) const
+                                    std::uint64_t nowMs)
 {
   std::lock_guard<std::mutex> lock(m_mutex);
   const auto& allowed = direction == ProtectedDataflowDirection::Publish
@@ -187,11 +263,14 @@ ProtectedRuntime::authorizeDataflow(ProtectedDataflowDirection direction,
     (direction == ProtectedDataflowDirection::Publish
        ? peer->second == consumerRole
        : peer->second == producerRole);
-  if (!authorizedStateLocked() || nowMs >= m_binding.expiresAtMs ||
+  if (!authorizedStateLocked() || nowMs >= m_grantExpiresAtMs ||
+      (m_grantConfig && m_grantConfig->shouldCancel && m_grantConfig->shouldCancel()) ||
       !isDigest(endpointDigest) || allowed.count(endpointDigest) != 1 ||
       !ownsRole || !peerMatches || producerRole.empty() || consumerRole.empty()) {
-    throw std::runtime_error(
-      "protected dataflow is not authorized for this role/endpoint");
+    m_terminalReason = "protected dataflow is not authorized for this role/endpoint";
+    try { drainLocked(); } catch (...) {}
+    m_state = ProtectedRuntimeState::FailedClosed;
+    throw std::runtime_error(m_terminalReason);
   }
 }
 
@@ -237,16 +316,20 @@ ProtectedRuntime::drainLocked()
 {
   m_state = ProtectedRuntimeState::Draining;
   bool failed = false;
+  OPENSSL_cleanse(m_contentKey.data(), m_contentKey.size());
+  m_contentKey.clear();
   const auto drain = [&failed] (auto& leases) {
     for (auto it = leases.rbegin(); it != leases.rend(); ++it) {
       try {
         it->zeroize();
+        it->zeroize = {};
       }
       catch (...) {
         failed = true;
       }
     }
-    leases.clear();
+    leases.erase(std::remove_if(leases.begin(), leases.end(),
+      [] (const auto& item) { return !item.zeroize; }), leases.end());
   };
   drain(m_deviceLeases);
   drain(m_hostLeases);
