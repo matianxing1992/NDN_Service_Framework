@@ -23,6 +23,17 @@ unauthorized-publication/execution tests plus the full network campaign gate
 this startup change. Scenario workloads must also drain for at least their
 request timeout rather than treating teardown as successful authorization.
 
+T019 closes a further dependency-side revocation gap found during final MiniNDN:
+an asynchronous content completion can outlive `Consumer::clearCache()` and
+reach crypto with a cleared DKEY; CK callbacks can repopulate invalidated state.
+Capture/check the existing cache generation in content and CK completion/error
+callbacks before any state mutation or application callback. Convert OpenABE's
+enum failures into the existing `NacAlgoError` contract. Tests use real segmented
+fetches held across invalidation, verify fresh recovery, and exercise invalid
+CP/KP key input. This remains NAC-ABE-owned; no NDNSF wire or permission-policy
+change is needed. Rebuild the exact prefix and reverify resolution, expanded
+native gates and the complete network campaign. Dependency publication is T014.
+
 **Branch**: `UAV-Experimental` | **Date**: 2026-09-01 | **Spec**: `spec.md`
 
 ## Summary

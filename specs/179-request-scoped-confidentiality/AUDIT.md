@@ -6,8 +6,14 @@ The earlier PASS below is historical and is superseded by the current audit in
 `evidence/online-authorization-audit-20260905.md`. New executed regressions found
 pending-rotation grant/retry bypasses, equal-version recovery conflicts, blocked
 unprovisioned constructors, and MiniNDN failure censoring. The scoped fixes are
-implemented. T017 has component and live network closure; T018 awaits the final
-rebuilt integration and 16-scenario MiniNDN gates. Do not infer release readiness
+implemented. T017 has component and live network closure. T019 now addresses
+late dependency callbacks and a non-standard OpenABE error escape found during
+final MiniNDN; T018 awaits this dependency repair and a fresh complete campaign.
+The bounded repair keeps generation ownership in NAC-ABE, uses its existing
+cache generation and algorithm error type, and adds delayed-fetch/crypto
+regressions before implementation. No wire or authority format changes are
+required; the task is necessary to close the observed process failure.
+Do not infer release readiness
 from the historical grant collector or the diagnostic campaign's 14/16 result.
 
 ## 2026-09-05 runtime grant/revoke audit closure (fixes applied; supersedes the report-only record below)

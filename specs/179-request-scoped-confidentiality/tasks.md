@@ -63,7 +63,7 @@ The 2026-09-04 release claim and its rows are unaffected.
 - [ ] T014 Promote the local NAC-ABE Spec179 dependency patches (DKEY
   `FreshnessPeriod=0`, versioned exact public-params fetch, consumer cache
   invalidation/DKEY-only refresh fence — local NAC-ABE `Experimental`
-  branch, commit `b1c9c4f`, not pushed) into the upstream NAC-ABE
+  branch, base `b1c9c4f` plus T019 callback/error repair `8b462d0`, not pushed) into the upstream NAC-ABE
   repository, then rebuild the NDNSF Spec179 prefix from the upstream commit
   and re-run the RV-U20/RV-U21 gate on that rebuild. **FR-041**. Local
   work: upstreaming package (split-PR description for the one-line
@@ -114,6 +114,7 @@ The 2026-09-04 release claim and its rows are unaffected.
 
 - [x] T017 Close pending-rotation recovery across repeated-target revoke and grant in `ServiceController.cpp` and `controller-revocation-flow.t.cpp`: reproduce bypasses and same-version status mutation, retain fail-closed revocations on retry failure, recover with a fresh immutable ControllerVersion, and verify reauthorization never uses the pre-withdrawal ABE pair. Closed by 36/36 focused assertions, 182 unit and 70 integration cases, and MiniNDN `revocation-rotation-failure-retry` (14/14 checks; epoch 2 denial, same-target recovery to epoch 3, 16/16 unaffected post-recovery calls). Evidence: `evidence/online-authorization-audit-20260905.md`.
 - [ ] T018 Validate grants after startup permission retries expire through explicit App-layer renewal in the HELLO examples and `tests/minindn/run_request_scoped_confidentiality.py`; remove the first-DKEY constructor wait in `ServiceUser.cpp` and `ServiceProvider.cpp` so application renewal is reachable, with a timed real-constructor/no-authority regression. Exercise denial before grant/renewal, successful use after replacement DKEY installation, one target-only refresh and no unaffected fan-out, then rerun the relevant revocation campaign. Fix any reproduced runtime or harness defects and record exact source/build provenance.
+- [ ] T019 Fence every asynchronous NAC Consumer content/CK completion and error against cache invalidation, and report non-standard OpenABE decode errors through the standard algorithm error boundary. Reproduce late content reaching crypto after DKEY clearing, stale CK cache refill, and invalid CP/KP key error escape in the local NAC-ABE dependency. Rebuild/install the exact prefix, verify native dependency resolution and all expanded regression gates, then close a fresh full MiniNDN campaign. FR-019/023/024/036/041; final T018 network acceptance depends on this repair. Upstream publication remains T014.
 
 ## Dependencies and Execution Order
 

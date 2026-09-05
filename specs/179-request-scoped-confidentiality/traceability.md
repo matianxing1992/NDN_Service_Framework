@@ -122,6 +122,11 @@ to normal and post-exhaustion App renewal in MiniNDN. RV-I38 maps
 FR-017/019/035/036 to live failed-rotation recovery. The earlier network
 failures remain in the report; T018 awaits the final readiness repair gates.
 
+T019/RV-I39 additionally map FR-019/023/024/036/041 to dependency-side delayed
+content/CK generation checks and standard OpenABE failure reporting. Final
+network acceptance is pending after the observed Provider abort; business
+checks alone cannot override a failing process exit.
+
 ## Evidence rules
 
 - Unit tests establish deterministic serialization, cryptographic failure codes,

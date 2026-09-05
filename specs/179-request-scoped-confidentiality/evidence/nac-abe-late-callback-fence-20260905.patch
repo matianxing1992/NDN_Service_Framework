@@ -1,0 +1,255 @@
+diff --git a/src/algo/abe-support.cpp b/src/algo/abe-support.cpp
+index e2bb6e9..1a044c1 100644
+--- a/src/algo/abe-support.cpp
++++ b/src/algo/abe-support.cpp
+@@ -379,7 +379,13 @@ ABESupport::decrypt(oabe::OpenABECryptoContext& context, const PublicParams &pub
+   }
+   catch (oabe::ZCryptoBoxException& ex) {
+     BOOST_THROW_EXCEPTION(NacAlgoError(
+-        "cannot encrypt the ciphertext using given private key."));
++        "cannot decrypt the ciphertext using given private key."));
++  }
++  catch (oabe::OpenABE_ERROR error) {
++    // OpenABE key decoding can throw an enum, which bypasses Consumer's
++    // standard error callbacks unless normalized at this algorithm boundary.
++    BOOST_THROW_EXCEPTION(NacAlgoError(
++        "OpenABE decryption failed (code " + std::to_string(static_cast<int>(error)) + ")"));
+   }
+ }
+ 
+diff --git a/src/consumer.cpp b/src/consumer.cpp
+index dff2651..529256f 100644
+--- a/src/consumer.cpp
++++ b/src/consumer.cpp
+@@ -202,11 +202,16 @@ Consumer::consume(const Interest& dataInterest,
+ 
+   ndn::SegmentFetcher::Options fetchOptions;
+   fetchOptions.probeLatestVersion = false; // Disable MustBeFresh flag
++  const auto generation = m_cacheGeneration;
+   auto fetcher = SegmentFetcher::start(m_face, dataInterest, m_validator, fetchOptions);
+   fetcher->afterSegmentValidated.connect([](Data seg) {
+     NDN_LOG_DEBUG("Validated " << seg.getName());
+   });
+   fetcher->onComplete.connect([=](ConstBufferPtr contentBuffer) {
++    if (generation != m_cacheGeneration) {
++      NDN_LOG_WARN("Ignoring stale content fetch after cache invalidation");
++      return;
++    }
+     Name baseName = dataInterest.getName();
+     if (baseName.size() > 0 && baseName.get(-1).isSegment())
+       baseName = baseName.getPrefix(-1);
+@@ -215,6 +220,8 @@ Consumer::consume(const Interest& dataInterest,
+     decryptContent(baseName, Block(contentBuffer), consumptionCb, errorCallback);
+   });
+   fetcher->onError.connect([=](uint32_t errorCode, const std::string& errorMsg) {
++    if (generation != m_cacheGeneration)
++      return;
+     NDN_LOG_ERROR("Data fetch error: " << errorMsg);
+     errorCallback("Data fetch failed: " + errorMsg);
+   });
+@@ -312,11 +319,16 @@ Consumer::decryptContent(const Name& dataObjName,
+ 
+   ndn::SegmentFetcher::Options ckOptions;
+   ckOptions.probeLatestVersion = false; // Disable MustBeFresh flag
++  const auto generation = m_cacheGeneration;
+   auto ckFetcher = SegmentFetcher::start(m_face, ckInterest, m_validator, ckOptions);
+   ckFetcher->afterSegmentValidated.connect([](Data seg) {
+     NDN_LOG_DEBUG("Validated CK seg " << seg.getName());
+   });
+   ckFetcher->onComplete.connect([=](ConstBufferPtr contentBuffer) {
++    if (generation != m_cacheGeneration) {
++      NDN_LOG_WARN("Ignoring stale CK fetch after cache invalidation");
++      return;
++    }
+     Name ckObjName = ckKey; // normalized object base name
+     Block ckBlock(contentBuffer);
+     // Cache encrypted AES (best-effort)
+@@ -339,6 +351,8 @@ Consumer::decryptContent(const Name& dataObjName,
+     m_ckInterestsSent.erase(ckKey);
+   });
+   ckFetcher->onError.connect([=](uint32_t errorCode, const std::string& errorMsg) {
++    if (generation != m_cacheGeneration)
++      return;
+     NDN_LOG_ERROR("CK fetch error: " << errorMsg);
+     // Broadcast error to all waiters
+     auto it = m_pendingCallbacks.find(ckKey);
+diff --git a/tests/unit-tests/abe-support.t.cpp b/tests/unit-tests/abe-support.t.cpp
+index ea30a74..e0cbfc7 100644
+--- a/tests/unit-tests/abe-support.t.cpp
++++ b/tests/unit-tests/abe-support.t.cpp
+@@ -19,6 +19,7 @@
+  */
+ 
+ #include "algo/abe-support.hpp"
++#include "ndn-crypto/error.hpp"
+ 
+ #include "test-common.hpp"
+ 
+@@ -62,6 +63,31 @@ onLifecycleStop(int)
+ 
+ BOOST_AUTO_TEST_SUITE(TestAbeSupport)
+ 
++BOOST_AUTO_TEST_CASE(InvalidPrivateKeyReportsStandardError)
++{
++  auto& abe = ABESupport::getInstance();
++  for (bool kp : {false, true}) {
++    PublicParams pub;
++    MasterKey master;
++    if (kp) abe.kpInit(pub, master); else abe.cpInit(pub, master);
++    auto cipher = kp ? abe.kpEncrypt(pub, {"attr1"}, Buffer{1, 2, 3})
++                     : abe.cpEncrypt(pub, "attr1", Buffer{1, 2, 3});
++    abe.clearCachedContentKeys();
++    bool standardError = false;
++    try {
++      if (kp) abe.kpDecrypt(pub, PrivateKey{}, cipher);
++      else abe.cpDecrypt(pub, PrivateKey{}, cipher);
++    }
++    catch (const NacAlgoError&) { standardError = true; }
++    catch (...) { /* a non-standard OpenABE enum must not escape the API */ }
++    BOOST_CHECK_MESSAGE(standardError, (kp ? "KP error must be NacAlgoError" : "CP error must be NacAlgoError"));
++    auto key = kp ? abe.kpPrvKeyGen(pub, master, "attr1")
++                  : abe.cpPrvKeyGen(pub, master, {"attr1"});
++    const auto plain = kp ? abe.kpDecrypt(pub, key, cipher) : abe.cpDecrypt(pub, key, cipher);
++    BOOST_CHECK(plain == Buffer({1, 2, 3}));
++  }
++}
++
+ BOOST_AUTO_TEST_CASE(CpSetup)
+ {
+   PublicParams pubParams;
+diff --git a/tests/unit-tests/consumer-revocation.t.cpp b/tests/unit-tests/consumer-revocation.t.cpp
+new file mode 100644
+index 0000000..b851825
+--- /dev/null
++++ b/tests/unit-tests/consumer-revocation.t.cpp
+@@ -0,0 +1,130 @@
++#include "consumer.hpp"
++#include "producer.hpp"
++#include "attribute-authority.hpp"
++#include "test-common.hpp"
++
++#include <ndn-cxx/security/validator-null.hpp>
++#include <ndn-cxx/util/dummy-client-face.hpp>
++
++namespace ndn::nacabe::tests {
++
++// Real segmented transport and crypto; signature-policy decisions are outside
++// this fixture's cache-invalidation boundary.
++class ConsumerRevocationFixture : public IdentityManagementTimeFixture
++{
++public:
++  ConsumerRevocationFixture()
++    : aaFace(io, m_keyChain, {false, true})
++    , producerFace(io, m_keyChain, {false, true})
++    , consumerFace(io, m_keyChain, {false, true})
++  {
++    producerFace.linkTo(aaFace);
++    producerFace.linkTo(consumerFace);
++    const auto aaCert = addIdentity("/revocation/aa").getDefaultKey().getDefaultCertificate();
++    const auto consumerCert = addIdentity("/revocation/user", RsaKeyParams())
++                                .getDefaultKey().getDefaultCertificate();
++    const auto producerCert = addIdentity("/revocation/provider").getDefaultKey().getDefaultCertificate();
++    aa = std::make_unique<CpAttributeAuthority>(aaCert, aaFace, validator, m_keyChain);
++    aa->addNewPolicy(consumerCert, {"attr1"});
++    advanceClocks(time::milliseconds(20), 60);
++    consumer = std::make_unique<Consumer>(consumerFace, m_keyChain, validator, consumerCert, aaCert);
++    producer = std::make_unique<Producer>(producerFace, m_keyChain, validator,
++                                          producerCert, aaCert, producerCert);
++    advanceClocks(time::milliseconds(20), 60);
++    consumer->obtainDecryptionKey();
++    advanceClocks(time::milliseconds(20), 60);
++    BOOST_REQUIRE(consumer->readyForDecryption());
++    std::tie(data, ck) = producer->produce(Name("/payload"), "attr1", Buffer{1, 2, 3},
++                                           security::signingByCertificate(producerCert));
++    BOOST_REQUIRE_EQUAL(data.size(), 1U);
++    BOOST_REQUIRE(!ck.empty());
++    dataName = data.front()->getName().getPrefix(-1);
++    producerFace.setInterestFilter(producerCert.getIdentity(),
++      [this] (const InterestFilter&, const Interest& interest) {
++        for (const auto& packet : data) {
++          if (interest.matchesData(*packet)) {
++            ++dataRequests;
++            if (!holdData) producerFace.put(*packet);
++            return;
++          }
++        }
++        for (const auto& packet : ck) {
++          if (interest.matchesData(*packet)) {
++            ++ckRequests;
++            if (!holdCk) producerFace.put(*packet);
++            return;
++          }
++        }
++      });
++    advanceClocks(time::milliseconds(10), 2);
++  }
++
++  void consume()
++  {
++    consumer->consume(dataName,
++      [this] (const Buffer& plain) {
++        BOOST_CHECK(plain == Buffer({1, 2, 3}));
++        ++successes;
++      }, [this] (const std::string&) { ++errors; });
++  }
++
++  DummyClientFace aaFace, producerFace, consumerFace;
++  security::ValidatorNull validator;
++  std::unique_ptr<CpAttributeAuthority> aa;
++  std::unique_ptr<Consumer> consumer;
++  std::unique_ptr<Producer> producer;
++  SPtrVector<Data> data, ck;
++  Name dataName;
++  bool holdData = false, holdCk = false;
++  size_t dataRequests = 0, ckRequests = 0, successes = 0, errors = 0;
++};
++
++BOOST_FIXTURE_TEST_SUITE(TestConsumerRevocation, ConsumerRevocationFixture)
++
++BOOST_AUTO_TEST_CASE(LateContentCannotDecryptAfterInvalidation)
++{
++  holdData = true;
++  consume();
++  advanceClocks(time::milliseconds(10), 5);
++  BOOST_REQUIRE_GT(dataRequests, 0U);
++  consumer->clearCache();
++  holdData = false;
++  producerFace.put(*data.front());
++  BOOST_CHECK_NO_THROW(advanceClocks(time::milliseconds(10), 10));
++  BOOST_CHECK_EQUAL(ckRequests, 0U);
++  BOOST_CHECK_EQUAL(successes, 0U);
++  BOOST_CHECK_EQUAL(errors, 0U);
++  consumer->obtainDecryptionKey();
++  advanceClocks(time::milliseconds(20), 60);
++  BOOST_REQUIRE(consumer->readyForDecryption());
++  consume();
++  advanceClocks(time::milliseconds(20), 60);
++  BOOST_CHECK_EQUAL(successes, 1U);
++  BOOST_CHECK_EQUAL(errors, 0U);
++}
++
++BOOST_AUTO_TEST_CASE(LateCkCannotRefillInvalidatedCache)
++{
++  holdCk = true;
++  consume();
++  advanceClocks(time::milliseconds(10), 5);
++  BOOST_REQUIRE_GT(ckRequests, 0U);
++  consumer->clearCache();
++  holdCk = false;
++  producerFace.put(*ck.front());
++  advanceClocks(time::milliseconds(20), 20);
++  BOOST_CHECK_EQUAL(successes, 0U);
++  BOOST_CHECK_EQUAL(errors, 0U);
++  const auto staleFetchRequests = ckRequests;
++  consumer->obtainDecryptionKey();
++  advanceClocks(time::milliseconds(20), 60);
++  BOOST_REQUIRE(consumer->readyForDecryption());
++  consume();
++  advanceClocks(time::milliseconds(20), 60);
++  BOOST_CHECK_GT(ckRequests, staleFetchRequests);
++  BOOST_CHECK_EQUAL(successes, 1U);
++  BOOST_CHECK_EQUAL(errors, 0U);
++}
++
++BOOST_AUTO_TEST_SUITE_END()
++} // namespace ndn::nacabe::tests
