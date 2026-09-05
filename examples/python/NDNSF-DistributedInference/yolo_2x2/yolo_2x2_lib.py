@@ -168,12 +168,16 @@ def _yolo_merge_postprocess(ctx, input_prefetches) -> np.ndarray:
     grids = (80, 40, 20)
     strides = (8.0, 16.0, 32.0)
     threshold = 0.001
+    from ndnsf_distributed_inference.adapters.onnx.executor import (
+        decode_tensor_bundle)
     tensors: dict[str, np.ndarray] = {}
     for prefetch in input_prefetches:
         result = ctx.wait_prefetched_input_large_result(
             prefetch.future, timeout_ms=60000)
         payload = result if isinstance(result, bytes) else result.payload
-        decoded = _decode_native_tensor_bundle(payload)
+        # Dependency edges carry an npz envelope over the NDITB001 bundle.
+        decoded = _decode_native_tensor_bundle(
+            decode_tensor_bundle(payload))
         tensors.update(decoded)
     detections: list[tuple[float, float, float, float, float, int]] = []
     for scale in range(3):
