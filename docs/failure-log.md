@@ -19,6 +19,13 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 T002 production wiring (2026-09-05): build defect CLOSED; T002 OPEN.**
+The first compile failed on the installed ndn-cxx forwarding-hint API. A
+separate retained r2 build passes native/library/extension identity checks,
+and 3 rebuilt-extension tests consume the 9 grant vectors. Real Provider
+network and ORT lifecycle acceptance remains open. See
+[T002 production repair](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t002-production-repair-20260905.md).
+
 **Spec181 T002 native runtime repair (2026-09-05): focused defects CLOSED.**
 18 native focused tests pass with real verification, managed content keys,
 deadline/cancellation checks and retryable cleanup. Initial compile, linker
