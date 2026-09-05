@@ -6,7 +6,39 @@ measured 声明。
 
 Date: 2026-09-05. Source HEAD: `2f835386` 起（含 drain 修复 `28a91f47`）。
 
-## 状态：矩阵未完成（诚实记录，非 PASS）
+## 状态：6/7 子用例通过（Y-N-I 修复验证中，诚实记录）
+
+修复链（全部提交）：
+1. **drain 位置**（`28a91f47`）：runControllerLoop 内同步
+   processEvents(2000ms) → controller readiness 达成。
+2. **ContentStore 污染**（`3433c805`）：readiness probe 的 PUBPARAMS
+   Data 被 NAC 的 CanBePrefix Interest 匹配 → abeType 解析
+   "readiness" 失败 → publication ServiceUser 构造崩溃。修复：
+   publication 前等待 freshness 窗口（6 s）过期。
+3. **repo SIGINT**（`3433c805` + `5325165e` 的 user 部分 + 事件式
+   handler）：native run 循环（GIL 释放）不响应 SIGINT → 清理超时
+   SIGKILL(-9) 判负。修复：worker 线程跑 native 循环 + 主线程
+   event 等待 + 信号 handler 只 set event。
+4. **Y-N-I user 退出**：provider 的 DI_INPUT_FETCH_ROLE_MISMATCH
+   拒绝证据由 runner 从 provider marker 验证，failure Response 不
+   走 DATA_V1 通道——user 的 response 等待永不返回（r36 同款）。修复：
+   user 的 Y-N-I 分支等待上限 3 s（低于 runner 的 5 s cleanup 窗口）
+   后退出 91，判定由 runner 的 marker 门承担。
+5. **瞬态 face 竞态**（r39 同类）：controller 启动时 NFD/face
+   transport 竞态——`scripts/run_spec181_y_n_matrix_retry.py` 逐子
+   用例隔离 + 最多 3 次重试。
+
+驱动 3 结果（2026-09-05，`8abfc59d` 源）：
+
+```text
+Y-N-O PASS (attempts=3)
+Y-N-C PASS (attempts=2)
+Y-N-P PASS (attempts=2)
+Y-N-R PASS (attempts=2)
+Y-N-E PASS (attempts=1)   # 真实 grant 变异，live MiniNDN 一次通过
+Y-N-L PASS (attempts=3)
+Y-N-I 修复后重跑中
+```
 
 三次矩阵尝试的失败链与修复：
 
