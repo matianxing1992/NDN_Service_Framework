@@ -37,7 +37,9 @@ Y-N-P PASS (attempts=2)
 Y-N-R PASS (attempts=2)
 Y-N-E PASS (attempts=1)   # 真实 grant 变异，live MiniNDN 一次通过
 Y-N-L PASS (attempts=3)
-Y-N-I 修复后重跑中
+Y-N-I 修复后重跑中（3 s 响应上界 + runner marker 门判定）;重跑受
+host 环境恶化（libndn-cxx face 层 segfault、OOM）阻碍，修复本身已由
+unit 层验证。
 ```
 
 三次矩阵尝试的失败链与修复：
