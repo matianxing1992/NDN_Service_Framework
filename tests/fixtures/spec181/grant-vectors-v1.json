@@ -1,0 +1,167 @@
+{
+  "attempt": 7,
+  "authorityPublicKeyRaw": "b3a9bca2923caa332597597c30a36b359efbe00204d0b95faf8584be849fb80d",
+  "cases": [
+    {
+      "binding": {
+        "attempt": 7,
+        "modelManifestDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "nowMs": 1730000001000,
+        "planCoreDigest": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "protectionEpoch": "spec180-yolo-protected-v1",
+        "requestId": "req-vector-1"
+      },
+      "expected": {
+        "contentKey": "d6d8c81c3dc4e286deedb7031cd8307723e1378eeb778bb00fbcd1e5e8cea193",
+        "ok": true,
+        "reason": ""
+      },
+      "name": "positive-roundtrip",
+      "wire": "{\"activeRequestPolicy\":\"CANCEL_IMMEDIATELY\",\"allowedResidencyTiers\":[\"DISK_CIPHERTEXT_ASSEMBLED\"],\"attempt\":7,\"authoritySignature\":\"c972fb57ade209c0a1b01a761c36a2b616c2273a108321900c88e3bf0fec48b5e78d00f74bc8a8dfad9148008797e9f919960c39710b3a9c6cae4df6a8485702\",\"expiresAtMs\":1730003600000,\"grantDigest\":\"sha256:115c8fd0adc11d6a0c4370c5242bb713bdfec33fb75bc9d7105663d92c57b58f\",\"issuedAtMs\":1730000000000,\"keyId\":\"key-vector-1\",\"modelManifestDigest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"planCoreDigest\":\"sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"policyAuthority\":\"/authority/artifact-policy\",\"protectionEpoch\":\"spec180-yolo-protected-v1\",\"providerIdentity\":\"/provider/p0\",\"requestId\":\"req-vector-1\",\"revocationSequence\":1,\"wrappedContentKey\":{\"alg\":\"X25519-AESGCM-SHA256\",\"ciphertext\":\"a8a486e2ed711dd1aae59dec3c6152653a7e61a4a862c8dfe657b8624d7dbeaa14ecd48187ae48ff1319491a0883a964\",\"ephemeralPublicKey\":\"743ea06ce8933f19887cf82070241fccd32e4942f446514da1a89b6bda42654a\",\"kdf\":\"HKDF-SHA256\",\"nonce\":\"51e9b65e927e45f8e4c9f885\"}}"
+    },
+    {
+      "binding": {
+        "attempt": 7,
+        "modelManifestDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "nowMs": 1730000001000,
+        "planCoreDigest": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "protectionEpoch": "spec180-yolo-protected-v1",
+        "requestId": "req-vector-1"
+      },
+      "expected": {
+        "contentKey": "",
+        "ok": false,
+        "reason": "content-key envelope failed authentication"
+      },
+      "name": "wrong-recipient",
+      "wire": "{\"activeRequestPolicy\":\"CANCEL_IMMEDIATELY\",\"allowedResidencyTiers\":[\"DISK_CIPHERTEXT_ASSEMBLED\"],\"attempt\":7,\"authoritySignature\":\"2d5e5ef335f3188fe29bce0918dd01ed130e974c30dd19dbf6ac7e819c429724438a1ba04b78a065de81a0521873ccef2ce192d0020d391dc6838aad920ab90e\",\"expiresAtMs\":1730003600000,\"grantDigest\":\"sha256:370b537bfd5ce49ddb5d5f946132a3d61e4a1fe79ff1f656fc658e5f8806bf04\",\"issuedAtMs\":1730000000000,\"keyId\":\"key-vector-1\",\"modelManifestDigest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"planCoreDigest\":\"sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"policyAuthority\":\"/authority/artifact-policy\",\"protectionEpoch\":\"spec180-yolo-protected-v1\",\"providerIdentity\":\"/provider/p0\",\"requestId\":\"req-vector-1\",\"revocationSequence\":1,\"wrappedContentKey\":{\"alg\":\"X25519-AESGCM-SHA256\",\"ciphertext\":\"d21098083cb2da03c43dac6c9f8d9f42f8fc25731b088142848f1968b23ab1c6e7183f3c6c010641c58c1e38abbb7a84\",\"ephemeralPublicKey\":\"a097271d750e99342f85c7da7862a59938b43707ec02bc624834eb9c6c54935c\",\"kdf\":\"HKDF-SHA256\",\"nonce\":\"31259270b443854e83e90fbc\"}}"
+    },
+    {
+      "binding": {
+        "attempt": 7,
+        "modelManifestDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "nowMs": 1730000001000,
+        "planCoreDigest": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "protectionEpoch": "spec180-yolo-protected-v1",
+        "requestId": "req-vector-OTHER"
+      },
+      "expected": {
+        "contentKey": "",
+        "ok": false,
+        "reason": "key grant binding does not match the assignment"
+      },
+      "name": "cross-request",
+      "wire": "{\"activeRequestPolicy\":\"CANCEL_IMMEDIATELY\",\"allowedResidencyTiers\":[\"DISK_CIPHERTEXT_ASSEMBLED\"],\"attempt\":7,\"authoritySignature\":\"c972fb57ade209c0a1b01a761c36a2b616c2273a108321900c88e3bf0fec48b5e78d00f74bc8a8dfad9148008797e9f919960c39710b3a9c6cae4df6a8485702\",\"expiresAtMs\":1730003600000,\"grantDigest\":\"sha256:115c8fd0adc11d6a0c4370c5242bb713bdfec33fb75bc9d7105663d92c57b58f\",\"issuedAtMs\":1730000000000,\"keyId\":\"key-vector-1\",\"modelManifestDigest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"planCoreDigest\":\"sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"policyAuthority\":\"/authority/artifact-policy\",\"protectionEpoch\":\"spec180-yolo-protected-v1\",\"providerIdentity\":\"/provider/p0\",\"requestId\":\"req-vector-1\",\"revocationSequence\":1,\"wrappedContentKey\":{\"alg\":\"X25519-AESGCM-SHA256\",\"ciphertext\":\"a8a486e2ed711dd1aae59dec3c6152653a7e61a4a862c8dfe657b8624d7dbeaa14ecd48187ae48ff1319491a0883a964\",\"ephemeralPublicKey\":\"743ea06ce8933f19887cf82070241fccd32e4942f446514da1a89b6bda42654a\",\"kdf\":\"HKDF-SHA256\",\"nonce\":\"51e9b65e927e45f8e4c9f885\"}}"
+    },
+    {
+      "binding": {
+        "attempt": 8,
+        "modelManifestDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "nowMs": 1730000001000,
+        "planCoreDigest": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "protectionEpoch": "spec180-yolo-protected-v1",
+        "requestId": "req-vector-1"
+      },
+      "expected": {
+        "contentKey": "",
+        "ok": false,
+        "reason": "key grant binding does not match the assignment"
+      },
+      "name": "cross-attempt",
+      "wire": "{\"activeRequestPolicy\":\"CANCEL_IMMEDIATELY\",\"allowedResidencyTiers\":[\"DISK_CIPHERTEXT_ASSEMBLED\"],\"attempt\":7,\"authoritySignature\":\"c972fb57ade209c0a1b01a761c36a2b616c2273a108321900c88e3bf0fec48b5e78d00f74bc8a8dfad9148008797e9f919960c39710b3a9c6cae4df6a8485702\",\"expiresAtMs\":1730003600000,\"grantDigest\":\"sha256:115c8fd0adc11d6a0c4370c5242bb713bdfec33fb75bc9d7105663d92c57b58f\",\"issuedAtMs\":1730000000000,\"keyId\":\"key-vector-1\",\"modelManifestDigest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"planCoreDigest\":\"sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"policyAuthority\":\"/authority/artifact-policy\",\"protectionEpoch\":\"spec180-yolo-protected-v1\",\"providerIdentity\":\"/provider/p0\",\"requestId\":\"req-vector-1\",\"revocationSequence\":1,\"wrappedContentKey\":{\"alg\":\"X25519-AESGCM-SHA256\",\"ciphertext\":\"a8a486e2ed711dd1aae59dec3c6152653a7e61a4a862c8dfe657b8624d7dbeaa14ecd48187ae48ff1319491a0883a964\",\"ephemeralPublicKey\":\"743ea06ce8933f19887cf82070241fccd32e4942f446514da1a89b6bda42654a\",\"kdf\":\"HKDF-SHA256\",\"nonce\":\"51e9b65e927e45f8e4c9f885\"}}"
+    },
+    {
+      "binding": {
+        "attempt": 7,
+        "modelManifestDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "nowMs": 1730000001000,
+        "planCoreDigest": "sha256:cececececececececececececececececececececececececececececececece",
+        "protectionEpoch": "spec180-yolo-protected-v1",
+        "requestId": "req-vector-1"
+      },
+      "expected": {
+        "contentKey": "",
+        "ok": false,
+        "reason": "key grant binding does not match the assignment"
+      },
+      "name": "cross-plan-core",
+      "wire": "{\"activeRequestPolicy\":\"CANCEL_IMMEDIATELY\",\"allowedResidencyTiers\":[\"DISK_CIPHERTEXT_ASSEMBLED\"],\"attempt\":7,\"authoritySignature\":\"c972fb57ade209c0a1b01a761c36a2b616c2273a108321900c88e3bf0fec48b5e78d00f74bc8a8dfad9148008797e9f919960c39710b3a9c6cae4df6a8485702\",\"expiresAtMs\":1730003600000,\"grantDigest\":\"sha256:115c8fd0adc11d6a0c4370c5242bb713bdfec33fb75bc9d7105663d92c57b58f\",\"issuedAtMs\":1730000000000,\"keyId\":\"key-vector-1\",\"modelManifestDigest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"planCoreDigest\":\"sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"policyAuthority\":\"/authority/artifact-policy\",\"protectionEpoch\":\"spec180-yolo-protected-v1\",\"providerIdentity\":\"/provider/p0\",\"requestId\":\"req-vector-1\",\"revocationSequence\":1,\"wrappedContentKey\":{\"alg\":\"X25519-AESGCM-SHA256\",\"ciphertext\":\"a8a486e2ed711dd1aae59dec3c6152653a7e61a4a862c8dfe657b8624d7dbeaa14ecd48187ae48ff1319491a0883a964\",\"ephemeralPublicKey\":\"743ea06ce8933f19887cf82070241fccd32e4942f446514da1a89b6bda42654a\",\"kdf\":\"HKDF-SHA256\",\"nonce\":\"51e9b65e927e45f8e4c9f885\"}}"
+    },
+    {
+      "binding": {
+        "attempt": 7,
+        "modelManifestDigest": "sha256:1212121212121212121212121212121212121212121212121212121212121212",
+        "nowMs": 1730000001000,
+        "planCoreDigest": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "protectionEpoch": "spec180-yolo-protected-v1",
+        "requestId": "req-vector-1"
+      },
+      "expected": {
+        "contentKey": "",
+        "ok": false,
+        "reason": "key grant binding does not match the assignment"
+      },
+      "name": "cross-model-manifest",
+      "wire": "{\"activeRequestPolicy\":\"CANCEL_IMMEDIATELY\",\"allowedResidencyTiers\":[\"DISK_CIPHERTEXT_ASSEMBLED\"],\"attempt\":7,\"authoritySignature\":\"c972fb57ade209c0a1b01a761c36a2b616c2273a108321900c88e3bf0fec48b5e78d00f74bc8a8dfad9148008797e9f919960c39710b3a9c6cae4df6a8485702\",\"expiresAtMs\":1730003600000,\"grantDigest\":\"sha256:115c8fd0adc11d6a0c4370c5242bb713bdfec33fb75bc9d7105663d92c57b58f\",\"issuedAtMs\":1730000000000,\"keyId\":\"key-vector-1\",\"modelManifestDigest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"planCoreDigest\":\"sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"policyAuthority\":\"/authority/artifact-policy\",\"protectionEpoch\":\"spec180-yolo-protected-v1\",\"providerIdentity\":\"/provider/p0\",\"requestId\":\"req-vector-1\",\"revocationSequence\":1,\"wrappedContentKey\":{\"alg\":\"X25519-AESGCM-SHA256\",\"ciphertext\":\"a8a486e2ed711dd1aae59dec3c6152653a7e61a4a862c8dfe657b8624d7dbeaa14ecd48187ae48ff1319491a0883a964\",\"ephemeralPublicKey\":\"743ea06ce8933f19887cf82070241fccd32e4942f446514da1a89b6bda42654a\",\"kdf\":\"HKDF-SHA256\",\"nonce\":\"51e9b65e927e45f8e4c9f885\"}}"
+    },
+    {
+      "binding": {
+        "attempt": 7,
+        "modelManifestDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "nowMs": 1730000001000,
+        "planCoreDigest": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "protectionEpoch": "spec180-yolo-protected-v2",
+        "requestId": "req-vector-1"
+      },
+      "expected": {
+        "contentKey": "",
+        "ok": false,
+        "reason": "key grant binding does not match the assignment"
+      },
+      "name": "cross-epoch",
+      "wire": "{\"activeRequestPolicy\":\"CANCEL_IMMEDIATELY\",\"allowedResidencyTiers\":[\"DISK_CIPHERTEXT_ASSEMBLED\"],\"attempt\":7,\"authoritySignature\":\"c972fb57ade209c0a1b01a761c36a2b616c2273a108321900c88e3bf0fec48b5e78d00f74bc8a8dfad9148008797e9f919960c39710b3a9c6cae4df6a8485702\",\"expiresAtMs\":1730003600000,\"grantDigest\":\"sha256:115c8fd0adc11d6a0c4370c5242bb713bdfec33fb75bc9d7105663d92c57b58f\",\"issuedAtMs\":1730000000000,\"keyId\":\"key-vector-1\",\"modelManifestDigest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"planCoreDigest\":\"sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"policyAuthority\":\"/authority/artifact-policy\",\"protectionEpoch\":\"spec180-yolo-protected-v1\",\"providerIdentity\":\"/provider/p0\",\"requestId\":\"req-vector-1\",\"revocationSequence\":1,\"wrappedContentKey\":{\"alg\":\"X25519-AESGCM-SHA256\",\"ciphertext\":\"a8a486e2ed711dd1aae59dec3c6152653a7e61a4a862c8dfe657b8624d7dbeaa14ecd48187ae48ff1319491a0883a964\",\"ephemeralPublicKey\":\"743ea06ce8933f19887cf82070241fccd32e4942f446514da1a89b6bda42654a\",\"kdf\":\"HKDF-SHA256\",\"nonce\":\"51e9b65e927e45f8e4c9f885\"}}"
+    },
+    {
+      "binding": {
+        "attempt": 7,
+        "modelManifestDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "nowMs": 1730003601000,
+        "planCoreDigest": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "protectionEpoch": "spec180-yolo-protected-v1",
+        "requestId": "req-vector-1"
+      },
+      "expected": {
+        "contentKey": "",
+        "ok": false,
+        "reason": "key grant is expired"
+      },
+      "name": "expired",
+      "wire": "{\"activeRequestPolicy\":\"CANCEL_IMMEDIATELY\",\"allowedResidencyTiers\":[\"DISK_CIPHERTEXT_ASSEMBLED\"],\"attempt\":7,\"authoritySignature\":\"4eb1fc2a527b13c871a0785297e78fc4d48e8980b20ac0646938607efae280607df86d2464d7d8eef18e43608622d5c2e33b6eedd58c63ff3e3822772e26460d\",\"expiresAtMs\":1729999999999,\"grantDigest\":\"sha256:97b9d1129220e5d6e0cc044b202e1e4dea02326255bbc5e8e6281578de3458a8\",\"issuedAtMs\":1730000000000,\"keyId\":\"key-vector-1\",\"modelManifestDigest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"planCoreDigest\":\"sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"policyAuthority\":\"/authority/artifact-policy\",\"protectionEpoch\":\"spec180-yolo-protected-v1\",\"providerIdentity\":\"/provider/p0\",\"requestId\":\"req-vector-1\",\"revocationSequence\":1,\"wrappedContentKey\":{\"alg\":\"X25519-AESGCM-SHA256\",\"ciphertext\":\"a8a486e2ed711dd1aae59dec3c6152653a7e61a4a862c8dfe657b8624d7dbeaa14ecd48187ae48ff1319491a0883a964\",\"ephemeralPublicKey\":\"743ea06ce8933f19887cf82070241fccd32e4942f446514da1a89b6bda42654a\",\"kdf\":\"HKDF-SHA256\",\"nonce\":\"51e9b65e927e45f8e4c9f885\"}}"
+    },
+    {
+      "binding": {
+        "attempt": 7,
+        "modelManifestDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "nowMs": 1730000001000,
+        "planCoreDigest": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "protectionEpoch": "spec180-yolo-protected-v1",
+        "requestId": "req-vector-1"
+      },
+      "expected": {
+        "contentKey": "",
+        "ok": false,
+        "reason": "key grant authority signature is invalid"
+      },
+      "name": "forged-authority-signature",
+      "wire": "{\"activeRequestPolicy\":\"CANCEL_IMMEDIATELY\",\"allowedResidencyTiers\":[\"DISK_CIPHERTEXT_ASSEMBLED\"],\"attempt\":7,\"authoritySignature\":\"dcb06a26e420122f7c3d526ea31c3f615f2da4362898531a37b281d8f882afdfd0b2dc560aac258d7ef91d9dd6f63bb0de233e31cfea65d7dc799e36cb1fdc08\",\"expiresAtMs\":1730003600000,\"grantDigest\":\"sha256:90332c39b1f2855eaedea4d1918ce96a228dca4b0a8e1191be8eaf112fe60fb2\",\"issuedAtMs\":1730000000000,\"keyId\":\"key-vector-1\",\"modelManifestDigest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"planCoreDigest\":\"sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"policyAuthority\":\"/authority/artifact-policy\",\"protectionEpoch\":\"spec180-yolo-protected-v1\",\"providerIdentity\":\"/provider/p0\",\"requestId\":\"req-vector-1\",\"revocationSequence\":1,\"wrappedContentKey\":{\"alg\":\"X25519-AESGCM-SHA256\",\"ciphertext\":\"2899757653ac7401a787524cba912bf48d3ce1278d003bb49ba03135ae51f74d274624c8961ff85322efb8b7e7d62766\",\"ephemeralPublicKey\":\"537b68799795caaebc1a4d06440097e2d8b0cfa87cef680067cd0894938a3c7b\",\"kdf\":\"HKDF-SHA256\",\"nonce\":\"f607cc1257ca3d28ca81e5f2\"}}"
+    }
+  ],
+  "modelManifestDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "nowMs": 1730000000000,
+  "planCoreDigest": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+  "protectionEpoch": "spec180-yolo-protected-v1",
+  "providerIdentity": "/provider/p0",
+  "recipientSeed": "bc016e76f1cb641cfd07101b1914fc2bce9d5e43e315b1ddf389e24d52d6810d",
+  "requestId": "req-vector-1",
+  "schema": "spec181-grant-vectors-v1"
+}
