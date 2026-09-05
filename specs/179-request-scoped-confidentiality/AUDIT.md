@@ -1,5 +1,38 @@
 # Spec179 Audit — Controller Revocation Test Coverage
 
+## 2026-09-05 runtime grant/revoke audit (report only; no fixes applied)
+
+**Verdict: CONDITIONAL PASS** — runtime service-permission grant/revoke is
+safe (fail-closed at every protected transition; revocation is independent of
+the grant-only mechanism and remains fully covered). Two MEDIUM and one LOW
+non-security findings recorded with no code changes; full report:
+`evidence/runtime-grant-revoke-audit-20260905.md`.
+
+- **A (MEDIUM, functional/spec, not security)** — grant-only DKEY-only
+  refresh's pending consumption is not guarded by the same condition as its
+  execution: when a grant-only status installs through the independent status
+  channel *before* the permission response (reverse order), the later
+  equal-version install consumes the pending entry
+  (ServiceUser.cpp:3899-3902 / ServiceProvider.cpp:11966-11968) while
+  `invalidate` — the only consumer of `grantOnlyDkeyRefresh` — runs only on
+  `versionChanged` (ServiceUser.cpp:3906-3911 / ServiceProvider.cpp:11972-11976).
+  The refresh is silently lost until the next real version advance; affected
+  content fails closed (no over-authorization). Spec SC-022's "normally
+  initiated after signed status installation" (spec.md:598) is not met in this
+  order. Untested (all grant-only cases drive the forward order).
+- **R1 (MEDIUM, carried from 2026-09-03/04)** — `revoke()` ABE-rotation
+  failure leaves memory revocation + durably advanced version with no crypto
+  rotation/retry/reconcile (ServiceController.cpp:501-511); untested.
+- **B (LOW)** — grant discovery depends on the one-shot `fetchPermissions-
+  FromController` retry window (no production auto-driver; App_User.cpp:816
+  calls once at startup); grants arriving after the window need an explicit
+  App-level refetch. SC-022 "explicit fetch as fallback" ownership should be
+  stated in spec.md.
+- Re-verified on the closing binary: unit RV-U20/U21/U23 and integration
+  RV-I32/I33 gates remain green; MiniNDN grant-only-advance
+  `grantedEpochGE2Fetches==1` confirms exactly one target-only DKEY fetch on
+  the forward path (`run_request_scoped_confidentiality.py:1251-1265`).
+
 ## 2026-09-05 independent re-audit ("审核并修复"; supersedes document state, not verdict)
 
 **Verdict: PASS** — confirms the 2026-09-04 release audit and fixes the
