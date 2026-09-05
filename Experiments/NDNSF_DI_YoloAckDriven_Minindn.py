@@ -250,8 +250,9 @@ YN_NEGATIVE_PASS_EXIT = 91
 # DI_PROTECTED_GRANT_UNAVAILABLE instead of running the plaintext path and
 # emitting a PASS record.  The requester declares the epoch on the same env
 # channel the runner already uses for subcase routing (SPEC180_YN_MUTATION).
-# T001/T002's absorption commit flips GRANT_WIRING_AVAILABLE to True.
-GRANT_WIRING_AVAILABLE = False
+# spec181 T001/T002 landed (Python provider grant qualification + native
+# verifier with parity lock); the R004 gate is absorbed.
+GRANT_WIRING_AVAILABLE = True
 PROTECTION_EPOCH_ENV = "SPEC181_PROTECTION_EPOCH"
 PLAINTEXT_EPOCH = "plaintext-v1"
 
@@ -783,6 +784,27 @@ class MiniNdnCaseRuntime:
             return ("cd " + shlex.quote(str(ROOT)) +
                     " && exec " + quoted)
 
+        def python_provider_command(*, identity: str,
+                                   roles: tuple[str, ...],
+                                   key_path: Path) -> str:
+            """Python Provider command for the protected-epoch Y-B round
+            trip (spec181 T008): the T001 grant qualification seam lives in
+            the Python assembly path; the native Provider has no factory
+            wiring on this branch (R002 honesty gate)."""
+            provider_id = identity[len(repo_marker):]
+            argv = [
+                "provider.py",
+                "--config", str(config),
+                "--generated-policy-dir", str(generated),
+                "--group", str(identities["group"]),
+                "--provider-id", provider_id,
+                "--role", ",".join(roles),
+                "--temp-dir", "/tmp/" + provider_id,
+                "--handler-workers", "1",
+                "--selection-offer-key-file", str(key_path),
+            ]
+            return python_command("provider.py", argv)
+
         identities = self.binding.identities
         nodes = self.binding.nodes
         publication_file = self.inputs.get("runtime_publication_file")
@@ -898,12 +920,25 @@ class MiniNdnCaseRuntime:
                 raise RunnerError(
                     "CASE_PROCESS_OFFER_PRIVATE_KEY_DIGEST_MISMATCH:" + identity)
             node = str(nodes["providers"][identity])
-            commands.append(CaseProcessSpec(
-                "provider-" + provider_id, node,
-                native_provider_command(
-                    identity=identity, roles=roles, key_path=key_path),
-                "NDNSF_DI_NATIVE_PROVIDER_READY", "providers", "native",
-            ))
+            protected_epoch = str(
+                self.inputs.get("protection_epoch", "") or "").strip()
+            if protected_epoch and protected_epoch != "plaintext-v1":
+                # spec181 T008: the protected round trip runs on the Python
+                # Provider path (T001 grant seam); the native Provider has
+                # no factory wiring on this branch.
+                commands.append(CaseProcessSpec(
+                    "provider-" + provider_id, node,
+                    python_provider_command(
+                        identity=identity, roles=roles, key_path=key_path),
+                    "Installed provider permission", "providers", "",
+                ))
+            else:
+                commands.append(CaseProcessSpec(
+                    "provider-" + provider_id, node,
+                    native_provider_command(
+                        identity=identity, roles=roles, key_path=key_path),
+                    "NDNSF_DI_NATIVE_PROVIDER_READY", "providers", "native",
+                ))
 
         user_args = common + [
             "--canonical-package", str(package),
@@ -3078,6 +3113,12 @@ def _run_live_case_once(case: str, output: Path, inputs: Mapping[str, Any], *,
     if subcase:
         runtime_inputs["subcase"] = subcase
         runtime_inputs["lifecycle_case"] = subcase
+    # spec181 T008: declare the protected epoch on the same channel the
+    # process specs read (the Y-B grant round trip).
+    requested_epoch = str(
+        os.environ.get(PROTECTION_EPOCH_ENV, "") or "").strip()
+    if case == "Y-B" and requested_epoch and requested_epoch != PLAINTEXT_EPOCH:
+        runtime_inputs["protection_epoch"] = requested_epoch
     binding = CaseRuntimeBinding.from_inputs(case, output, runtime_inputs)
     publication = build_runtime_publication_file(binding, runtime_inputs)
     runtime_inputs["runtime_publication_file"] = publication
@@ -3087,6 +3128,32 @@ def _run_live_case_once(case: str, output: Path, inputs: Mapping[str, Any], *,
     # do not inherit a caller's PYTHONPATH ordering for an ACK-driven case.
     py_dir = ROOT / "examples/python/NDNSF-DistributedInference/yolo_2x2"
     env = _child_process_environment(os.environ)
+    # spec181 T008: Y-B runs the protected-epoch grant round trip.  The
+    # requester-side User builds the in-process authority seam from these
+    # inputs; every Provider resolves its own recipient key from the shared
+    # offer private-key map.  Plaintext Y-A keeps the default epoch.
+    if case == "Y-B":
+        requested_epoch = str(env.get(PROTECTION_EPOCH_ENV, "") or "").strip()
+        if requested_epoch and requested_epoch != PLAINTEXT_EPOCH:
+            env[PROTECTION_EPOCH_ENV] = requested_epoch
+            env["SPEC181_REQUESTER_PRIVATE_KEY"] = str(
+                env.get("NDNSF_DI_ENVELOPE_KEY_FILE", ""))
+            env["SPEC181_PROVIDER_RECIPIENT_KEY_MAP"] = str(
+                env.get("SPEC180_YOLO_OFFER_PRIVATE_KEY_MAP", ""))
+            env["SPEC181_GRANT_AUTHORITY_PUBLIC_KEY"] = str(
+                ROOT / "specs/180-ack-driven-cross-model-qualification"
+                / "contracts/artifact-policy-authority.pub")
+            if not env["SPEC181_REQUESTER_PRIVATE_KEY"]:
+                raise RunnerError("PROTECTED_EPOCH_REQUESTER_KEY_MISSING")
+            if not env["SPEC181_PROVIDER_RECIPIENT_KEY_MAP"]:
+                raise RunnerError("PROTECTED_EPOCH_RECIPIENT_KEY_MAP_MISSING")
+            if not Path(env["SPEC181_GRANT_AUTHORITY_PUBLIC_KEY"]).is_file():
+                raise RunnerError("PROTECTED_EPOCH_AUTHORITY_PUBLIC_KEY_MISSING")
+            # The protected round trip runs on the Python Provider path,
+            # where the T001 grant qualification seam lives.  A native
+            # Provider has no factory wiring on this branch (R002 honesty
+            # gate would reject it), so force the Python command provider.
+            env["SPEC180_NATIVE_PROVIDER_BINARY"] = ""
     # Y-N-O is the live control permutation, not a mutation.  Keep the
     # subcase in the lifecycle identity while leaving the User on its normal
     # control path; the negative User hook accepts only Y-N-C/P/R/I/E/L.

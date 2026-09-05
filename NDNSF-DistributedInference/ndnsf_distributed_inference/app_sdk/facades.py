@@ -1030,7 +1030,13 @@ class APPDeployment:
 
 
 class APPProvider:
-    """Simple provider facade for AI application code."""
+    """Network-serving facade used by the public ``app_sdk.APPProvider``.
+
+    ``from_config`` creates one Python-bound Core ServiceProvider. The public
+    facade in ``app_sdk.provider`` delegates to this instance; it does not
+    launch a native-provider executable or a second network Provider. Keep this
+    import path for existing callers; new application code uses ``app_sdk``.
+    """
 
     def __init__(self, deployment: DistributedInferenceDeployment,
                  provider: DistributedInferenceProvider):
@@ -1055,6 +1061,8 @@ class APPProvider:
         ack_threads: int = 2,
         handler_workers: int = 0,
         bootstrap_token: str = "",
+        grant_authority_public_key=None,
+        grant_recipient_private_key=None,
     ) -> "APPProvider":
         deployment = load_or_generate_deployment(config, generated_policy_dir)
         provider = DistributedInferenceProvider.create(
@@ -1067,6 +1075,8 @@ class APPProvider:
             ack_threads=ack_threads,
             handler_workers=handler_workers,
             bootstrap_token=bootstrap_token,
+            grant_authority_public_key=grant_authority_public_key,
+            grant_recipient_private_key=grant_recipient_private_key,
         )
         return cls(deployment, provider)
 
@@ -1146,8 +1156,10 @@ class APPProvider:
             selection_reusable_state=selection_reusable_state,
             runtime_preparer=runtime_preparer,
             register_simple_service=(
-                len(list(roles)) == 1 and
-                not list(self.deployment.service_policy(service).dependencies)
+                selection_offer_issuer is None
+                and selection_offer_issuer_v3 is None
+                and len(list(roles)) == 1
+                and not list(self.deployment.service_policy(service).dependencies)
             ),
         )
 
@@ -1195,6 +1207,10 @@ class APPProvider:
 
     def run(self) -> int:
         return self._provider.run()
+
+    def start(self) -> None:
+        """Start Core after all service registrations are installed."""
+        self._provider.start()
 
     def stop(self) -> int:
         return self._provider.stop()

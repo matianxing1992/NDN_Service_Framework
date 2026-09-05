@@ -18,8 +18,12 @@ from urllib.parse import quote
 
 from ndnsf import CollaborationDependency, CollaborationRole
 
-from ..adapters import ApplicationInput, ModelFamilyAdapter
-from .contracts import GenerationConfig, GenerationInput
+from ..adapters import ApplicationInput, InputTransportMode, ModelFamilyAdapter
+from .contracts import (
+    GenerationConfig,
+    GenerationInput,
+    PreSplitCatalogSnapshot,
+)
 from ..core.ports import CandidateBudget
 from ..core.contracts import (
     DATA_DRIVEN_V2, DIDataDependencyV2, DIRequestEnvelopeV2, DIRoleAssignmentV2,
@@ -415,6 +419,11 @@ class AutomaticStreamingHandle:
         self._current_attempt = 1
         self._replacement_count = 0
         self._replacement_started = False
+        self._stale_event_count = 0
+        self._lineage_reject_count = 0
+        self._gap_reject_count = 0
+        self._duplicate_reject_count = 0
+        self._callback_error_count = 0
         self._events: list[bytes] = []
         self._token_ids: list[int] = []
         # Monotonic callback timestamps are intentionally kept separate from
@@ -499,6 +508,11 @@ class AutomaticStreamingHandle:
             failed = self._error_timestamp_us
             attempts = len(self._attempts)
             replacements = int(self._replacement_count)
+            stale_events = int(self._stale_event_count)
+            lineage_rejects = int(self._lineage_reject_count)
+            gap_rejects = int(self._gap_reject_count)
+            duplicate_rejects = int(self._duplicate_reject_count)
+            callback_errors = int(self._callback_error_count)
         inter_token_ms = tuple(
             round((right - left) / 1000.0, 3)
             for left, right in zip(timestamps, timestamps[1:])
@@ -520,6 +534,11 @@ class AutomaticStreamingHandle:
                 if (completed is not None or failed is not None) else None),
             "attemptCount": attempts,
             "replacementCount": replacements,
+            "staleEventCount": stale_events,
+            "lineageRejectCount": lineage_rejects,
+            "gapRejectCount": gap_rejects,
+            "duplicateRejectCount": duplicate_rejects,
+            "callbackErrorCount": callback_errors,
         })
 
     @property
@@ -1076,6 +1095,7 @@ class AutomaticStreamingHandle:
         timestamp_us = time.monotonic_ns() // 1000
         with self._condition:
             if self._terminal or attempt != self._current_attempt:
+                self._stale_event_count += 1
                 return
             expected_request_id = self._attempt_request_ids.get(attempt)
             mismatch = (
@@ -1093,6 +1113,11 @@ class AutomaticStreamingHandle:
             if (mismatch or schema != "GenerationTokenEventV1"
                     or token_id < 0 or token_epoch != expected_epoch
                     or prefix_digest != expected_digest):
+                self._lineage_reject_count += 1
+                if token_epoch < expected_epoch:
+                    self._duplicate_reject_count += 1
+                elif token_epoch > expected_epoch:
+                    self._gap_reject_count += 1
                 value = {
                     "code": "StreamEventLineageMismatch",
                     "message": "GenerationTokenEventV1 lineage mismatch",
@@ -1120,6 +1145,8 @@ class AutomaticStreamingHandle:
             try:
                 callback(wire)
             except BaseException as exc:
+                with self._condition:
+                    self._callback_error_count += 1
                 self._fail(attempt, {
                     "code": "StreamCallbackFailed",
                     "message": str(exc) or type(exc).__name__,
@@ -1305,21 +1332,33 @@ class PublishedSplit:
     candidate_digest: str
     artifact_digests_by_role: Mapping[str, str]
     artifact_data_names_by_role: Mapping[str, str]
+    # A V3 canonical artifact has a stable identity (the value above) and may
+    # use a separately named, encrypted large-data object for transport.  The
+    # latter is carried in Selection as ``artifactDataName`` while the former
+    # remains the authenticated ``assignedArtifact`` root.
+    artifact_fetch_data_names_by_role: Mapping[str, str] = field(
+        default_factory=dict)
 
     def __post_init__(self) -> None:
         _require_digest(self.candidate_digest, "published candidate_digest")
         digests = dict(self.artifact_digests_by_role)
         names = dict(self.artifact_data_names_by_role)
-        if not digests or set(digests) != set(names):
+        fetch_names = dict(self.artifact_fetch_data_names_by_role or names)
+        if (not digests or set(digests) != set(names)
+                or set(fetch_names) != set(digests)):
             raise ValueError("published split role coverage mismatch")
         for role, digest in digests.items():
-            if not role or not names[role].startswith("/"):
+            if (not role or not names[role].startswith("/")
+                    or not fetch_names[role].startswith("/")):
                 raise ValueError("published artifact requires an absolute NDN name")
             _require_digest(digest, f"published artifact digest for {role}")
         object.__setattr__(
             self, "artifact_digests_by_role", MappingProxyType(digests))
         object.__setattr__(
             self, "artifact_data_names_by_role", MappingProxyType(names))
+        object.__setattr__(
+            self, "artifact_fetch_data_names_by_role",
+            MappingProxyType(fetch_names))
 
 
 def _candidate_artifacts_by_execution_key(
@@ -1396,6 +1435,127 @@ class RejectGeneratedSplitMaterializer:
         raise RuntimeError("generated split materialization is disabled")
 
 
+class NetworkCatalogSnapshotResolver:
+    """Resolve active pre-split metadata through signed APP Data.
+
+    The resolver deliberately owns only artifact-publication metadata.  It is
+    called by the coordinator after ``CollaborationAckClosed`` and therefore
+    cannot close capability discovery or select a candidate.  The native
+    ``fetch_signed_app_data`` path validates the exact name and expected signer
+    before this class parses the canonical, digest-bound snapshot envelope.
+    """
+
+    SCHEMA = "ndnsf-di-presplit-catalog-snapshot-v1"
+
+    def __init__(self, fetch_signed_app_data: Callable[..., Any], *,
+                 data_name: str, expected_signer: str,
+                 timeout_ms: int = 5000) -> None:
+        if not callable(fetch_signed_app_data):
+            raise TypeError("fetch_signed_app_data must be callable")
+        if not str(data_name).startswith("/"):
+            raise ValueError("catalogue data name must be an absolute NDN name")
+        if not str(expected_signer).startswith("/"):
+            raise ValueError("catalogue signer must be an absolute NDN name")
+        if int(timeout_ms) <= 0:
+            raise ValueError("catalogue fetch timeout must be positive")
+        self._fetch = fetch_signed_app_data
+        self.data_name = str(data_name)
+        self.expected_signer = str(expected_signer)
+        self.timeout_ms = int(timeout_ms)
+
+    def __call__(self) -> tuple[PreSplitCatalogSnapshot, ...]:
+        result = self._fetch(
+            self.data_name,
+            self.expected_signer,
+            timeout_ms=self.timeout_ms,
+        )
+        if not bool(getattr(result, "success", False)):
+            reason = str(getattr(result, "error", "catalogue fetch failed"))
+            raise LookupError("signed pre-split catalogue unavailable: " + reason)
+        if str(getattr(result, "data_name", "")) != self.data_name:
+            raise ValueError("signed pre-split catalogue exact-name mismatch")
+        try:
+            envelope = json.loads(bytes(getattr(result, "payload", b"")).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError, TypeError) as exc:
+            raise ValueError("signed pre-split catalogue is malformed") from exc
+        if (not isinstance(envelope, Mapping)
+                or envelope.get("schema") != self.SCHEMA
+                or envelope.get("recordName") != self.data_name
+                or not isinstance(envelope.get("snapshots"), list)
+                or not isinstance(envelope.get("snapshotDigest"), str)):
+            raise ValueError("signed pre-split catalogue envelope is invalid")
+        snapshots = tuple(
+            PreSplitCatalogSnapshot.from_mapping(value)
+            for value in envelope["snapshots"]
+        )
+        ordered = tuple(sorted(
+            snapshots, key=lambda item: (item.alias, item.manifest_digest)))
+        if canonical_digest([item.to_dict() for item in ordered]) != envelope["snapshotDigest"]:
+            raise ValueError("signed pre-split catalogue digest mismatch")
+        aliases = [item.alias for item in ordered]
+        manifests = [item.manifest_digest for item in ordered]
+        candidates = [item.candidate_digest for item in ordered]
+        if any(item.status != "ACTIVE" for item in ordered):
+            raise ValueError(
+                "signed pre-split catalogue requires ACTIVE snapshots")
+        if (len(set(aliases)) != len(aliases)
+                or len(set(zip(manifests, candidates))) != len(manifests)
+                or len(set(candidates)) != len(candidates)):
+            raise ValueError("signed pre-split catalogue contains duplicates")
+        return ordered
+
+
+def encode_runtime_catalog_snapshot(
+        data_name: str,
+        snapshots: tuple[PreSplitCatalogSnapshot, ...] | list[PreSplitCatalogSnapshot],
+        *,
+        required_candidate_digests: tuple[str, ...] | list[str] = (),
+    ) -> bytes:
+    """Encode the signed APP payload for the active pre-split catalog.
+
+    The package candidate catalogue and this runtime object catalogue are
+    intentionally separate.  This helper only builds the canonical payload;
+    the caller must publish it through the controller-owned signed APP path
+    and retain that publication receipt.  Requiring the expected candidate
+    digests here prevents a runner from publishing a syntactically valid but
+    incomplete snapshot before starting User.
+    """
+    if (not isinstance(data_name, str) or not data_name.startswith("/")
+            or any(char.isspace() for char in data_name)):
+        raise ValueError("runtime catalogue data name must be absolute")
+    values = tuple(snapshots)
+    if not values:
+        raise ValueError("runtime catalogue requires at least one snapshot")
+    if any(not isinstance(item, PreSplitCatalogSnapshot)
+           for item in values):
+        raise TypeError("runtime catalogue snapshots must be typed records")
+    ordered = tuple(sorted(
+        values, key=lambda item: (item.alias, item.manifest_digest)))
+    aliases = [item.alias for item in ordered]
+    manifests = [item.manifest_digest for item in ordered]
+    candidates = [item.candidate_digest for item in ordered]
+    if (len(set(aliases)) != len(aliases)
+            or len(set(zip(manifests, candidates))) != len(manifests)
+            or len(set(candidates)) != len(candidates)):
+        raise ValueError("runtime catalogue contains duplicate snapshots")
+    if any(item.status != "ACTIVE" for item in ordered):
+        raise ValueError("runtime catalogue requires ACTIVE snapshots")
+    required = {str(item) for item in required_candidate_digests}
+    if not required.issubset(set(candidates)):
+        raise ValueError("runtime catalogue candidate coverage is incomplete")
+    snapshot_values = [item.to_dict() for item in ordered]
+    envelope = {
+        "schema": NetworkCatalogSnapshotResolver.SCHEMA,
+        "recordName": data_name,
+        "snapshotDigest": canonical_digest(snapshot_values),
+        "snapshots": snapshot_values,
+    }
+    return json.dumps(
+        envelope, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+
+
 class CatalogSnapshotArtifactPublisher:
     """Resolve exact active pre-split snapshots without republishing bytes."""
 
@@ -1428,10 +1588,24 @@ class CatalogSnapshotArtifactPublisher:
         if len(matches) != 1:
             raise ValueError("exact active pre-split publication is not unique")
         snapshot = matches[0]
+        snapshot_precision = str(getattr(snapshot, "precision", "") or "")
+        candidate_precision = str(
+            getattr(candidate.model, "precision", "") or "")
+        if snapshot_precision and candidate_precision \
+                and snapshot_precision != candidate_precision:
+            raise ValueError("pre-split publication precision mismatch")
+        snapshot_backend = str(getattr(snapshot, "backend", "") or "")
+        if any(snapshot_backend not in candidate.requirements_by_role[role].backends
+               for role in candidate.execution_plan.roles):
+            raise ValueError("pre-split publication backend mismatch")
         expected = _candidate_artifacts_by_execution_key(candidate)
         names: dict[str, str] = {}
         for role in candidate.execution_plan.roles:
-            values = tuple(snapshot.artifact_data_names[role])
+            try:
+                values = tuple(snapshot.artifact_data_names[role])
+            except (KeyError, TypeError):
+                raise ValueError(
+                    "pre-split publication is missing a candidate role") from None
             degree = int(candidate.tensor_degrees_by_role.get(role, 1))
             if len(values) != degree:
                 raise ValueError(
@@ -1470,8 +1644,29 @@ def v2_provider_view_factory(
     return convert
 
 
+def _validate_v3_ack_offer_provenance(
+    ack: Any, offer: ProviderOfferV3,
+) -> None:
+    """Require packet-authenticated identity before V3 planning."""
+    signer_identity = str(getattr(ack, "signer_identity", "") or "")
+    signer_locator = str(getattr(ack, "signer_key_locator", "") or "")
+    wire_digest = str(getattr(ack, "validated_wire_digest", "") or "")
+    if (not signer_identity or not signer_locator
+            or not re.fullmatch(r"sha256:[0-9a-f]{64}", wire_digest)):
+        raise ValueError("V3 ACK authenticated provenance is missing or malformed")
+    if signer_identity != offer.provider:
+        raise ValueError("V3 ACK signer does not match Provider offer identity")
+    if not signer_locator.startswith(signer_identity + "/KEY/"):
+        raise ValueError("V3 ACK KeyLocator is outside Provider identity")
+    if str(getattr(ack, "service_name", "") or "") != offer.service:
+        raise ValueError("V3 ACK service does not match Provider offer")
+    if str(getattr(ack, "request_id", "") or "") != offer.request_id:
+        raise ValueError("V3 ACK request does not match Provider offer")
+
+
 def v3_provider_view_factory(
     verify_offer_signature: Callable[[ProviderOfferV3], bool],
+    *, require_ack_provenance: bool = True,
 ) -> Callable[[Any, str, int, str], ProviderPlanningViewV3]:
     """Convert a signed V3 ACK payload into an immutable planning view.
 
@@ -1489,6 +1684,25 @@ def v3_provider_view_factory(
         offer = ProviderOfferV3.from_bytes(bytes(ack.payload))
         if bool(getattr(ack, "status", False)) != bool(offer.status):
             raise ValueError("V3 ACK status/offer status mismatch")
+        if require_ack_provenance:
+            _validate_v3_ack_offer_provenance(ack, offer)
+        # A production verifier may expose the richer ACK-aware method.  It
+        # must run before the offer enters the planning view so the candidate
+        # policy can bind the already Trust-Schema-validated packet identity,
+        # not a Python-reconstructed Provider name.  Legacy fixture callbacks
+        # remain supported for compatibility tests.
+        verify_ack = getattr(verify_offer_signature, "verify_ack", None)
+        if callable(verify_ack):
+            verified = verify_ack(
+                offer,
+                ack,
+                model_digest=str(model_intent_digest or ""),
+                graph_digest=str(graph_digest or ""),
+                request_id=str(getattr(ack, "request_id", "") or ""),
+                deadline_ms=int(deadline_ms),
+            )
+            if verified is False:
+                raise ValueError("V3 Provider offer trust verification failed")
         # The offer binds model content, while the public application intent
         # digest binds model+semantics+revision.  The coordinator checks both
         # at the request envelope boundary; V3 offer verification receives the
@@ -1504,6 +1718,107 @@ def v3_provider_view_factory(
         )
 
     return convert
+
+
+def validate_spec175_ordinary_v3_proposal(
+    proposal: PlacementProposalV3,
+    *,
+    required_roles: tuple[str, ...] | list[str],
+    tensor_degrees_by_role: Mapping[str, int] | None = None,
+    hybrid_plan: Any | None = None,
+    placement_profile: str = DI_PLACEMENT_V3,
+) -> None:
+    """Enforce the narrow Spec175 streamed-invocation V3 boundary.
+
+    Spec174 keeps the richer TensorGroup/hybrid protocol, but the ordinary
+    Spec175 stream has one rank-zero pipeline role per selected Provider.  The
+    check is deliberately placed after the strategy returns its data-only
+    proposal and before canonical publication or Selection, so an incompatible
+    proposal cannot reach a Provider or execute as a silent fallback.
+    """
+
+    if str(placement_profile) != DI_PLACEMENT_V3:
+        raise ValueError(
+            "Spec175 streamed invocation requires placement profile "
+            f"{DI_PLACEMENT_V3}")
+    if not isinstance(proposal, PlacementProposalV3):
+        raise TypeError("ordinary Spec175 V3 strategy returned a non-proposal")
+    if hybrid_plan is not None:
+        raise ValueError(
+            "ordinary Spec175 V3 does not permit a hybrid/TensorGroup plan")
+
+    expected = tuple(str(role) for role in required_roles)
+    if (not expected or len(set(expected)) != len(expected)
+            or any(not role for role in expected)):
+        raise ValueError("ordinary Spec175 V3 required role set is invalid")
+    specs = tuple(proposal.roles)
+    spec_roles = tuple(str(spec.role) for spec in specs)
+    if (len(specs) != len(expected)
+            or len(set(spec_roles)) != len(spec_roles)
+            or set(spec_roles) != set(expected)):
+        raise ValueError(
+            "ordinary Spec175 V3 role set does not cover every role exactly once")
+
+    degrees = tensor_degrees_by_role or {}
+    if any(int(degrees.get(role, 1)) != 1 for role in expected):
+        raise ValueError(
+            "ordinary Spec175 V3 requires tensor degree one for every role")
+    if any(spec.rank != 0 for spec in specs):
+        raise ValueError(
+            "ordinary Spec175 V3 rejects non-zero tensor rank roles")
+    if any(spec.role_kind in {"TENSOR_RANK", "HYBRID_RANK"}
+           for spec in specs):
+        raise ValueError(
+            "ordinary Spec175 V3 rejects tensor or hybrid rank roles")
+
+    assignments = {
+        str(role): str(provider)
+        for role, provider in proposal.provider_by_role.items()
+    }
+    if set(assignments) != set(expected):
+        raise ValueError(
+            "ordinary Spec175 V3 role assignment does not cover every role")
+    if (any(not provider for provider in assignments.values())
+            or len(set(assignments.values())) != len(assignments)):
+        raise ValueError(
+            "ordinary Spec175 V3 role/Provider assignment must be one-to-one")
+
+
+def _v3_candidate_priority_key(candidate: SplitCandidate) -> tuple[int, str]:
+    """Order already-enumerated candidates by adapter-signed preference.
+
+    Candidate feasibility is evaluated separately by the strategy.  This key
+    is only a deterministic choice among candidates that can be planned; it
+    deliberately ignores catalogue/list order, cache hints, and estimated
+    runtime cost.
+    """
+    priority = int(getattr(candidate, "selection_priority", 0))
+    if priority < 0:
+        raise ValueError("candidate selection priority must be non-negative")
+    return (-priority, candidate.candidate_digest)
+
+
+def _v3_role_kind(role: str) -> str:
+    """Map a role name to its conservative assembly kind.
+
+    ``Shard`` is not synonymous with tensor parallelism: the Spec180 YOLO
+    DetectShard roles are graph component sets. A shard under an explicit
+    stage/tensor/rank namespace remains a tensor-rank role, preserving the
+    existing Qwen naming convention without rejecting YOLO component roles.
+    """
+    parts = tuple(part.lower() for part in str(role).strip("/").split("/")
+                  if part)
+    has_tensor = any("tensor" in part or "rank" in part for part in parts)
+    has_stage = any(
+        part in {"pipeline", "stage", "stages"} or part.startswith("stage-")
+        for part in parts)
+    has_shard = any("shard" in part for part in parts)
+    if has_tensor or (has_shard and has_stage):
+        return "TENSOR_RANK"
+    if has_stage:
+        return "PIPELINE_RANGE"
+    return "COMPONENT_SET"
+
 
 class AutomaticPlanningCoordinator:
     """Trusted composition around an untrusted, data-only placement decision."""
@@ -1527,6 +1842,8 @@ class AutomaticPlanningCoordinator:
         ack_coverage_predicate: Callable[[tuple[Any, ...]], bool] | None = None,
         group_epoch_key_wrapper: Callable[[bytes, bytes], bytes] | None = None,
         grant_binding_provider: GrantBindingProvider | None = None,
+        protection_epoch: str = "plaintext-v1",
+        lifecycle_observer: Callable[[str, Mapping[str, Any]], None] | None = None,
     ) -> None:
         if not service_name or not adapters:
             raise ValueError("automatic planning coordinator is incomplete")
@@ -1537,6 +1854,9 @@ class AutomaticPlanningCoordinator:
                     getattr(artifact_publisher, "resolve_existing", None))):
             raise TypeError(
                 "artifact_publisher does not implement publish/resolve_existing")
+        if not protection_epoch:
+            raise ValueError("protection epoch must not be empty")
+        self.protection_epoch = str(protection_epoch)
         if ack_timeout_ms <= 0:
             raise ValueError("ACK collection timeout must be positive")
         if data_v1_no_progress_ms <= 0:
@@ -1553,6 +1873,12 @@ class AutomaticPlanningCoordinator:
             raise TypeError(
                 "canonical_artifact_ensurer does not implement ensure")
         self.canonical_artifact_ensurer = canonical_artifact_ensurer
+        # Remember whether the caller supplied an artifact authority.  V3
+        # requests that explicitly use the signed catalog must resolve (or
+        # materialize) role artifacts before sealing Selection; the historical
+        # direct-coordinator fixtures omit this provider and intentionally keep
+        # their synthetic artifact-name behavior.
+        self._catalog_snapshot_explicit = catalog_snapshot_provider is not None
         self.catalog_snapshot_provider = (
             catalog_snapshot_provider or (lambda: ()))
         self.budget = budget or CandidateBudget(
@@ -1577,6 +1903,27 @@ class AutomaticPlanningCoordinator:
             raise TypeError("grant_binding_provider must be callable")
         self.grant_binding_provider = grant_binding_provider
 
+        if (lifecycle_observer is not None
+                and not callable(lifecycle_observer)):
+            raise TypeError("lifecycle_observer must be callable")
+        self.lifecycle_observer = lifecycle_observer
+
+    def _emit_lifecycle(self, milestone: str, *, request_id: str,
+                        attempt: int, **fields: Any) -> None:
+        """Report a bounded planning transition to an evidence owner.
+
+        The observer is outside the placement decision and receives only
+        scalar metadata plus private request/attempt bindings. Exceptions are
+        propagated so a required evidence writer cannot silently emit a
+        partial trace.
+        """
+        if self.lifecycle_observer is None:
+            return
+        payload = dict(fields)
+        payload["_requestId"] = str(request_id)
+        payload["_attemptId"] = f"attempt-{int(attempt)}"
+        self.lifecycle_observer(str(milestone), payload)
+
     @staticmethod
     def _validated_data_v1_key_offer(
         ack: Any,
@@ -1599,7 +1946,17 @@ class AutomaticPlanningCoordinator:
             mismatched.append("recipient")
         if not fields["recipientCertName"]:
             mismatched.append("recipientCertName")
-        if fields["providerBootEpoch"] != provider_offer.boot_epoch:
+        # The native key offer binds the epoch to its Provider identity
+        # ("/example/provider/X:1234") so a cross-Provider epoch can never be
+        # confused; the V3 offer carries the bare epoch.  Accept only these
+        # two equivalent forms.
+        boot_epoch = str(fields["providerBootEpoch"])
+        offer_epoch = str(provider_offer.boot_epoch)
+        boot_epoch_ok = (
+            boot_epoch == offer_epoch
+            or boot_epoch == f"{provider_offer.provider}:{offer_epoch}"
+        )
+        if not boot_epoch_ok:
             mismatched.append("providerBootEpoch")
         if not fields["ndnsfDataV1EndpointPrefix"]:
             mismatched.append("ndnsfDataV1EndpointPrefix")
@@ -1762,7 +2119,7 @@ class AutomaticPlanningCoordinator:
                 operation_kind = str(dependency_contract.get(
                     "operationKind",
                     (redistributions[0].get("operation", "")
-                     if redistributions else "PIPELINE_TRANSFER"),
+                     if redistributions else "PIPELINE"),
                 ))
                 operation_index = int(dependency_contract.get(
                     "collectiveOperationIndex", index))
@@ -1942,6 +2299,11 @@ class AutomaticPlanningCoordinator:
         active_strategy = strategy or self.strategy
         placement_profile = str(
             getattr(active_strategy, "placement_profile", "DI_PLACEMENT_V2"))
+        if (str(generation_mode).upper() == "TOKEN_STREAMING"
+                and placement_profile != DI_PLACEMENT_V3):
+            raise ValueError(
+                "Spec175 streamed invocation requires placement profile "
+                f"{DI_PLACEMENT_V3}; V2 streamed plans are unsupported")
         if placement_profile == DI_PLACEMENT_V3:
             return self._request_v3(
                 model=model, task=task, input=input, timeout_ms=timeout_ms,
@@ -1969,8 +2331,10 @@ class AutomaticPlanningCoordinator:
         timings["request_encode_ms"] = (
             time.perf_counter() - phase_started) * 1000.0
         phase_started = time.perf_counter()
+        ack_close_policy = str((constraints or {}).get("ack_close_policy", "")).upper()
         ack_coverage_predicate = self.ack_coverage_predicate
-        if ack_coverage_predicate is None and self.ack_coverage_roles:
+        if ack_close_policy not in {"DEADLINE", "ACK_TIMEOUT"} \
+                and ack_coverage_predicate is None and self.ack_coverage_roles:
             ack_coverage_predicate = AckRoleCoveragePolicy(
                 required_roles=self.ack_coverage_roles,
                 provider_view_factory=self.provider_view_factory,
@@ -2010,6 +2374,10 @@ class AutomaticPlanningCoordinator:
             "mode=DEFERRED",
             flush=True,
         )
+        self._emit_lifecycle(
+            "REQUEST_SENT", request_id=request_id, attempt=_attempt,
+            requestDigest="sha256:" + hashlib.sha256(
+                request_payload).hexdigest())
         timings["request_publish_ms"] = (
             time.perf_counter() - phase_started) * 1000.0
         phase_started = time.perf_counter()
@@ -2021,6 +2389,10 @@ class AutomaticPlanningCoordinator:
             f"ackCount={len(closed.candidates)}",
             flush=True,
         )
+        self._emit_lifecycle(
+            "ACK_CLOSED", request_id=request_id, attempt=_attempt,
+            ackSnapshotDigest=str(closed.digest),
+            ackCount=len(closed.candidates))
         timings["ack_collect_ms"] = (
             time.perf_counter() - phase_started) * 1000.0
         providers = tuple(
@@ -2060,6 +2432,16 @@ class AutomaticPlanningCoordinator:
             "after=ACK_CLOSED",
             flush=True,
         )
+        self._emit_lifecycle(
+            "GRAPH_READY", request_id=request_id, attempt=_attempt,
+            graphDigest=str(graph.graph_digest))
+        candidate_role_sets = tuple(
+            tuple(candidate.execution_plan.roles) for candidate in candidates)
+        if any(role_set != candidate_role_sets[0]
+               for role_set in candidate_role_sets[1:]):
+            raise ValueError(
+                "V2 automatic planning requires candidate-local evaluation; "
+                "use the V3 placement profile")
         placement = PlacementRequest(
             request_id=collaboration.request_id,
             attempt=_attempt,
@@ -2069,7 +2451,7 @@ class AutomaticPlanningCoordinator:
             candidate_ids=tuple(
                 candidate.candidate_digest for candidate in candidates),
             providers=providers,
-            required_roles=candidates[0].execution_plan.roles,
+            required_roles=candidate_role_sets[0],
             budget=self.budget,
             objective=objective,
             constraints={
@@ -2114,6 +2496,18 @@ class AutomaticPlanningCoordinator:
             f"catalogCount={len(placement.catalog_snapshot)}",
             flush=True,
         )
+        selected_for_trace = next(
+            (item for item in candidates
+             if item.candidate_digest == decision.split_id), None)
+        if selected_for_trace is not None:
+            self._emit_lifecycle(
+                "PLACEMENT_DECISION", request_id=request_id, attempt=_attempt,
+                candidateId=str(getattr(selected_for_trace, "candidate_id", "")
+                                or decision.split_id),
+                candidateDigest=str(decision.split_id),
+                candidatePriority=int(getattr(
+                    selected_for_trace, "selection_priority", 0)),
+                providerCount=len(providers))
         if (decision.artifact_preparation is
                 ArtifactPreparationMode.REUSE_CACHED
                 and not placement.catalog_snapshot):
@@ -2200,6 +2594,11 @@ class AutomaticPlanningCoordinator:
             f"preparation={decision.artifact_preparation.value}",
             flush=True,
         )
+        self._emit_lifecycle(
+            "ARTIFACTS_READY", request_id=request_id, attempt=_attempt,
+            artifactDigest=canonical_digest(
+                dict(published.artifact_digests_by_role)),
+            artifactCount=len(published.artifact_digests_by_role))
         timings["artifact_resolve_publish_ms"] = (
             time.perf_counter() - phase_started) * 1000.0
         phase_started = time.perf_counter()
@@ -2217,6 +2616,9 @@ class AutomaticPlanningCoordinator:
             sealed,
             scope_key_data_names=scope_key_data_names,
         )
+        self._emit_lifecycle(
+            "PLAN_SEALED", request_id=request_id, attempt=_attempt,
+            planDigest=str(sealed.plan_digest))
         # Bind conversation metadata to the final post-key-publication plan.
         # The V2 path has no local ``plan_digest`` variable; using the digest
         # computed from this sealed object also prevents authenticating a
@@ -2247,6 +2649,13 @@ class AutomaticPlanningCoordinator:
             f"candidateDigest={candidate.candidate_digest}",
             flush=True,
         )
+        self._emit_lifecycle(
+            "SELECTION_COMMITTED", request_id=request_id, attempt=_attempt,
+            selectionDigest=canonical_digest({
+                "plan": sealed.plan_digest,
+                "ack": closed.digest,
+            }),
+            selectedRoleCount=len(sealed.roles))
         timings["selection_commit_ms"] = (
             time.perf_counter() - phase_started) * 1000.0
         timings["pre_response_setup_total_ms"] = (
@@ -2288,6 +2697,13 @@ class AutomaticPlanningCoordinator:
         strategy: ModelPlacementStrategy | None = None,
     ) -> AutomaticStreamingHandle:
         """Expose one logical stream with one optional fresh Normal recovery."""
+        active_strategy = strategy or getattr(self, "strategy", None)
+        if (active_strategy is not None
+                and str(getattr(active_strategy, "placement_profile", ""))
+                != DI_PLACEMENT_V3):
+            raise ValueError(
+                "Spec175 streamed invocation requires placement profile "
+                f"{DI_PLACEMENT_V3}; V2 streamed plans are unsupported")
         if not callable(on_event) or not callable(on_complete) or not callable(on_error):
             raise TypeError("streaming requests require on_event/on_complete/on_error")
         if conversation is not None and not isinstance(conversation, ConversationContinuation):
@@ -2478,11 +2894,10 @@ class AutomaticPlanningCoordinator:
         if (not isinstance(values, dict)
                 or values.get("useCache") is not True
                 or str(values.get("outputMode", "")).upper()
-                != "TOKEN_STREAMING"
-                or values.get("greedy") is not True):
+                != "TOKEN_STREAMING"):
             raise ValueError(
-                "TOKEN_STREAMING requires useCache=true, outputMode="
-                "TOKEN_STREAMING, and greedy=true")
+                "TOKEN_STREAMING requires useCache=true and outputMode="
+                "TOKEN_STREAMING")
         generation_id = str(generation_id or values.get("generationId", "")
                             or values.get("generation_id", ""))
         if (len(generation_id) != 32
@@ -2497,6 +2912,47 @@ class AutomaticPlanningCoordinator:
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError(
                 "TOKEN_STREAMING maxNewTokens/eosTokenIds/tokenizerDigest are incomplete") from exc
+
+        raw_sampling = values.get("sampling", {})
+        if raw_sampling is None:
+            raw_sampling = {}
+        if not isinstance(raw_sampling, dict):
+            raise ValueError("TOKEN_STREAMING sampling must be an object")
+        mode_value = raw_sampling.get(
+            "mode", values.get("samplingMode", ""))
+        if not mode_value:
+            mode_value = "Greedy" if values.get("greedy", True) else "SeededTopKTopP"
+        normalized_mode = str(mode_value).strip().lower().replace("-", "").replace("_", "")
+        if normalized_mode == "greedy":
+            sampling_mode = "Greedy"
+        elif normalized_mode in {"seededtopktopp", "topktopp", "topkp"}:
+            sampling_mode = "SeededTopKTopP"
+        else:
+            sampling_mode = str(mode_value).strip()
+        def sampling_value(name: str, default: Any, *aliases: str) -> Any:
+            for key in (name, *aliases):
+                if key in raw_sampling:
+                    return raw_sampling[key]
+                if key in values:
+                    return values[key]
+            return default
+        try:
+            sampling_temperature = float(sampling_value(
+                "temperature", 0.0 if sampling_mode == "Greedy" else 1.0))
+            sampling_top_k = int(sampling_value("topK", 1, "top_k"))
+            sampling_top_p = float(sampling_value("topP", 1.0, "top_p"))
+            sampling_repetition_penalty = float(sampling_value(
+                "repetitionPenalty", 1.0, "repetition_penalty"))
+            sampling_seed = int(sampling_value("seed", 1_750_001))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("TOKEN_STREAMING sampling parameters are invalid") from exc
+        stop_values = sampling_value("stopStrings", (), "stop_strings")
+        if isinstance(stop_values, str) or stop_values is None:
+            raise ValueError("TOKEN_STREAMING stopStrings must be an array")
+        try:
+            stop_strings = tuple(str(value) for value in stop_values)
+        except TypeError as exc:
+            raise ValueError("TOKEN_STREAMING stopStrings must be an array") from exc
 
         token_input_name = str(values.get("tokenInputName", "input_ids"))
         state_input_names = tuple(str(value) for value in values.get(
@@ -2540,12 +2996,21 @@ class AutomaticPlanningCoordinator:
             state_output_names=state_output_names,
             eos_token_ids=eos_token_ids,
             sampling_digest=canonical_digest({
-                "mode": "Greedy",
-                "temperature": 0,
-                "topK": 1,
-                "topP": 1,
+                "mode": sampling_mode,
+                "temperature": sampling_temperature,
+                "topK": sampling_top_k,
+                "topP": sampling_top_p,
+                "repetitionPenalty": sampling_repetition_penalty,
+                "seed": sampling_seed,
             }),
             tokenizer_digest=tokenizer_digest,
+            sampling_mode=sampling_mode,
+            sampling_temperature=sampling_temperature,
+            sampling_top_k=sampling_top_k,
+            sampling_top_p=sampling_top_p,
+            sampling_repetition_penalty=sampling_repetition_penalty,
+            sampling_seed=sampling_seed,
+            stop_strings=stop_strings,
             generation_id=generation_id,
             committed_prefix_token_ids=committed_prefix,
             streaming_operation_stride=streaming_operation_stride,
@@ -2604,8 +3069,10 @@ class AutomaticPlanningCoordinator:
             placement_profile=DI_PLACEMENT_V3, attempt=_attempt,
             generation_recovery=_generation_recovery,
             conversation=conversation)
+        ack_close_policy = str((constraints or {}).get("ack_close_policy", "")).upper()
         ack_coverage_predicate = self.ack_coverage_predicate
-        if ack_coverage_predicate is None and self.ack_coverage_roles:
+        if ack_close_policy not in {"DEADLINE", "ACK_TIMEOUT"} \
+                and ack_coverage_predicate is None and self.ack_coverage_roles:
             ack_coverage_predicate = AckRoleCoveragePolicy(
                 required_roles=self.ack_coverage_roles,
                 provider_view_factory=self.provider_view_factory,
@@ -2636,6 +3103,10 @@ class AutomaticPlanningCoordinator:
             f"requestId={request_id}", "mode=DEFERRED", "placement=V3",
             flush=True,
         )
+        self._emit_lifecycle(
+            "REQUEST_SENT", request_id=request_id, attempt=_attempt,
+            requestDigest="sha256:" + hashlib.sha256(
+                request_payload).hexdigest())
         closed = collaboration.acks_closed()
         self._validate_ack_closed_binding(closed, request_id)
         print(
@@ -2643,6 +3114,10 @@ class AutomaticPlanningCoordinator:
             f"requestId={request_id}", f"ackCount={len(closed.candidates)}",
             "placement=V3", flush=True,
         )
+        self._emit_lifecycle(
+            "ACK_CLOSED", request_id=request_id, attempt=_attempt,
+            ackSnapshotDigest=str(closed.digest),
+            ackCount=len(closed.candidates))
 
         descriptor = adapter.describe_model(
             model.model_name, model.content_digest, model.semantics_digest,
@@ -2655,6 +3130,9 @@ class AutomaticPlanningCoordinator:
         candidates = tuple(adapter.splitter.enumerate_candidates(descriptor, graph))
         if not candidates or len(candidates) > self.budget.max_candidates:
             raise ValueError("adapter returned an invalid V3 candidate set")
+        self._emit_lifecycle(
+            "GRAPH_READY", request_id=request_id, attempt=_attempt,
+            graphDigest=str(graph.graph_digest))
 
         providers: list[ProviderPlanningViewV3] = []
         provider_offers: dict[str, ProviderOfferV3] = {}
@@ -2681,29 +3159,20 @@ class AutomaticPlanningCoordinator:
         if not providers:
             raise ValueError("ACK_CLOSED contains no valid V3 Provider offer")
 
-        # Try graph-derived candidates in a deterministic reuse-first order.
-        # The external strategy still controls Provider assignment; candidate
-        # identity is bound into the proposal and sealed core.
+        # Try graph-derived candidates in the adapter's signed preference
+        # order.  Feasibility is still decided by the strategy for each
+        # candidate independently; cache residency and estimated cost are not
+        # allowed to override the signed candidate priority or make catalogue
+        # order authoritative.
         def candidate_order(item: SplitCandidate):
-            exact = sum(
-                1 for role in item.execution_plan.roles
-                for view in providers
-                if any(proof.role == role and proof.rank == 0
-                       and proof.artifact_digest
-                       == item.artifacts_by_role[role][0]
-                       for proof in view.residency))
-            return (
-                0 if item.source == SplitSource.PRE_SPLIT else 1,
-                -exact,
-                canonical_digest(item.estimated_costs),
-                item.candidate_digest,
-            )
+            return _v3_candidate_priority_key(item)
 
         proposal: PlacementProposalV3 | None = None
         selected_candidate: SplitCandidate | None = None
         candidate_rejections: list[str] = []
         for candidate in sorted(candidates, key=candidate_order):
-            role_specs = tuple(self._v3_role_specs(candidate, graph))
+            role_specs = tuple(self._v3_role_specs(
+                candidate, graph, protection_epoch=self.protection_epoch))
             try:
                 candidate_proposal = strategy.propose_v3(
                     request_id=collaboration.request_id,
@@ -2724,6 +3193,14 @@ class AutomaticPlanningCoordinator:
                 continue
             if not isinstance(candidate_proposal, PlacementProposalV3):
                 raise TypeError("V3 strategy returned a non-proposal")
+            validate_spec175_ordinary_v3_proposal(
+                candidate_proposal,
+                required_roles=tuple(candidate.execution_plan.roles),
+                tensor_degrees_by_role=candidate.tensor_degrees_by_role,
+                hybrid_plan=candidate.hybrid_plan,
+                placement_profile=str(getattr(
+                    strategy, "placement_profile", "")),
+            )
             proposal = replace(
                 candidate_proposal,
                 candidate_digest=(candidate_proposal.candidate_digest
@@ -2736,21 +3213,95 @@ class AutomaticPlanningCoordinator:
             raise ValueError(
                 "V3 strategy found no feasible graph candidate"
                 + (f" ({detail})" if detail else ""))
+        self._emit_lifecycle(
+            "PLACEMENT_DECISION", request_id=request_id, attempt=_attempt,
+            candidateId=str(selected_candidate.candidate_digest),
+            candidateDigest=str(selected_candidate.candidate_digest),
+            candidatePriority=int(getattr(
+                selected_candidate, "selection_priority", 0)),
+            providerCount=len(providers))
 
         # The placement strategy chooses feasible Provider ownership from the
-        # ACK set using draft role requirements.  Only after that choice do we
-        # bind each role to the immutable ACTIVE canonical root and to an exact
-        # adapter-certified ONNX assembly recipe.  No Provider path or locally
-        # assembled file is selected by the User.
-        if (self.canonical_artifact_ensurer is not None
-                and callable(getattr(
-                    self.canonical_artifact_ensurer, "describe", None))):
+        # ACK set using draft role requirements.  Certify once from the
+        # ensurer's current binding before invoking it; this preserves the
+        # existing ensurer contract and lets implementations validate the
+        # exact recipe they receive.  A request-scoped publisher may refine
+        # the model-manifest digest after publication; that binding is
+        # re-applied immediately below before Selection is sealed.
+        canonical_published: PublishedSplit | None = None
+        v3_artifact_preparation: ArtifactPreparationMode | None = None
+        catalog_snapshot: tuple[Any, ...] = ()
+        catalog_snapshot_loaded = False
+        if (self.canonical_artifact_ensurer is not None and
+                callable(getattr(self.canonical_artifact_ensurer, "describe", None))):
             binding = self.canonical_artifact_ensurer.describe(selected_candidate)
             proposal = replace(
                 proposal,
                 roles=self._certify_v3_role_specs(
                     selected_candidate, graph, proposal.roles, binding),
             )
+
+        if self.canonical_artifact_ensurer is not None:
+            print(
+                "NDNSF_DI_CANONICAL_ENSURE_START",
+                f"requestId={request_id}",
+                f"candidateDigest={selected_candidate.candidate_digest}",
+                flush=True,
+            )
+            canonical_published = self.canonical_artifact_ensurer.ensure(
+                selected_candidate, tuple(proposal.roles), deadline_ms=deadline_ms)
+            self._validate_published_split(
+                selected_candidate, canonical_published)
+            print(
+                "NDNSF_DI_CANONICAL_ENSURE_DONE",
+                f"requestId={request_id}",
+                f"candidateDigest={selected_candidate.candidate_digest}",
+                flush=True,
+            )
+            if callable(getattr(self.canonical_artifact_ensurer, "describe", None)):
+                binding = self.canonical_artifact_ensurer.describe(selected_candidate)
+                proposal = replace(
+                    proposal,
+                    roles=self._certify_v3_role_specs(
+                        selected_candidate, graph, proposal.roles, binding),
+                )
+
+        # The maintained YOLO path supplies a signed APP-data snapshot and
+        # the default CatalogSnapshotArtifactPublisher.  Resolve that
+        # candidate-bound publication here, after ACK_CLOSED and candidate
+        # selection but before the sealed role artifacts are constructed.  The
+        # previous V3 path skipped _prepare_artifacts and synthesized names
+        # even though sealed roles disabled dynamic provisioning, yielding a
+        # Selection that could not be fetched by any Provider.
+        if (self.canonical_artifact_ensurer is None
+                and self._catalog_snapshot_explicit):
+            catalog_snapshot = tuple(self.catalog_snapshot_provider())
+            catalog_snapshot_loaded = True
+            if self._v3_catalog_snapshot_matches_candidate(
+                    selected_candidate, catalog_snapshot):
+                v3_artifact_preparation = ArtifactPreparationMode.PRE_SPLIT
+            else:
+                v3_artifact_preparation = ArtifactPreparationMode.GENERATED
+            print(
+                "NDNSF_DI_AUTOPLANNING_ARTIFACT_PREPARATION",
+                f"requestId={request_id}",
+                f"candidateDigest={selected_candidate.candidate_digest}",
+                f"preparation={v3_artifact_preparation.value}",
+                flush=True,
+            )
+            canonical_published = self._prepare_artifacts(
+                selected_candidate, v3_artifact_preparation, deadline_ms)
+
+        if canonical_published is not None:
+            artifact_digests = dict(canonical_published.artifact_digests_by_role)
+        else:
+            artifact_digests = dict(
+                selected_candidate.rank_artifact_digests_by_role or
+                selected_candidate.artifacts_by_role)
+        self._emit_lifecycle(
+            "ARTIFACTS_READY", request_id=request_id, attempt=_attempt,
+            artifactDigest=canonical_digest(artifact_digests),
+            artifactCount=len(artifact_digests))
 
         proposal_role_counts = {
             item.role: sum(other.role == item.role for other in proposal.roles)
@@ -2769,6 +3320,25 @@ class AutomaticPlanningCoordinator:
             if not role_keys_by_name[logical_role]:
                 raise ValueError(
                     f"V3 proposal omitted role {logical_role}")
+
+        def candidate_role_key(logical_role: str, *, label: str) -> str:
+            keys = role_keys_by_name.get(str(logical_role), ())
+            if len(keys) != 1:
+                raise ValueError(
+                    f"V3 candidate {label} role is not uniquely projected")
+            return keys[0]
+
+        declared_input_role = ""
+        declared_terminal_role = ""
+        if str(task.task_name) == "object-detection":
+            if (not selected_candidate.input_ingress_role
+                    or not selected_candidate.result_egress_role):
+                raise ValueError(
+                    "V3 object-detection candidate lacks ingress/egress ownership")
+            declared_input_role = candidate_role_key(
+                selected_candidate.input_ingress_role, label="input-ingress")
+            declared_terminal_role = candidate_role_key(
+                selected_candidate.result_egress_role, label="result-egress")
 
         dependency_dicts: list[dict[str, Any]] = []
         redistribution_by_boundary: dict[int, list[dict[str, Any]]] = {}
@@ -2836,7 +3406,9 @@ class AutomaticPlanningCoordinator:
             str(role) for item in dependency_dicts
             for role in item["producers"]
         }
-        terminal_roles = sorted(set(planned_role_keys) - producers)
+        terminal_roles = ([declared_terminal_role]
+                          if declared_terminal_role else
+                          sorted(set(planned_role_keys) - producers))
         if len(terminal_roles) != 1:
             raise ValueError(
                 "V3 plan requires exactly one terminal response role")
@@ -2902,27 +3474,10 @@ class AutomaticPlanningCoordinator:
         proposal = replace(proposal, dependencies=tuple(dependency_dicts))
 
         # Use the strategy's sealed role specs (including rank/device choices)
-        # as the canonical-ensure input; the candidate-derived tuple is only
-        # the strategy's initial proposal input.
+        # as the plan's authoritative role input.  Canonical publication, when
+        # enabled, has already been completed and re-certified above; the
+        # candidate-derived tuple is only the strategy's initial input.
         role_specs = tuple(proposal.roles)
-        canonical_published: PublishedSplit | None = None
-        if self.canonical_artifact_ensurer is not None:
-            print(
-                "NDNSF_DI_CANONICAL_ENSURE_START",
-                f"requestId={request_id}",
-                f"candidateDigest={selected_candidate.candidate_digest}",
-                flush=True,
-            )
-            canonical_published = self.canonical_artifact_ensurer.ensure(
-                selected_candidate, role_specs, deadline_ms=deadline_ms)
-            self._validate_published_split(
-                selected_candidate, canonical_published)
-            print(
-                "NDNSF_DI_CANONICAL_ENSURE_DONE",
-                f"requestId={request_id}",
-                f"candidateDigest={selected_candidate.candidate_digest}",
-                flush=True,
-            )
 
         placement_input = PlacementRequest(
             request_id=collaboration.request_id, attempt=_attempt,
@@ -2940,7 +3495,8 @@ class AutomaticPlanningCoordinator:
                 **({"excluded_providers": tuple(sorted(excluded_providers))}
                    if excluded_providers else {}),
             },
-            catalog_snapshot=tuple(self.catalog_snapshot_provider()),
+            catalog_snapshot=(catalog_snapshot if catalog_snapshot_loaded
+                              else tuple(self.catalog_snapshot_provider())),
             task_digest=task.task_descriptor_digest, state_contracts=adapter.state.contracts,
             model=descriptor, graph=graph, candidates=candidates,
         )
@@ -2988,6 +3544,9 @@ class AutomaticPlanningCoordinator:
         grants = tuple(grant_bindings_by_provider.values())
         plan_digest = PlanSealerV3.finalize_security(
             core, grants, security_policy_digest)
+        self._emit_lifecycle(
+            "PLAN_SEALED", request_id=request_id, attempt=_attempt,
+            planDigest=str(plan_digest))
 
         dependencies: list[CollaborationDependency] = []
         committed_dependencies: list[DIDataDependencyV2] = []
@@ -3035,6 +3594,7 @@ class AutomaticPlanningCoordinator:
                 role_scopes[role].append(CONVERSATION_STATE_SCOPE)
 
         artifact_names: dict[str, str] = {}
+        artifact_fetch_names: dict[str, str] = {}
         roles: list[CollaborationRole] = []
         for spec in proposal.roles:
             role = proposal_role_key(spec)
@@ -3049,6 +3609,32 @@ class AutomaticPlanningCoordinator:
                 raise ValueError(
                     f"published split omitted rank artifact {role}")
             artifact_names[role] = artifact_name
+            fetch_name = (
+                canonical_published.artifact_fetch_data_names_by_role.get(
+                    role,
+                    canonical_published.artifact_fetch_data_names_by_role.get(
+                        spec.role, artifact_name),
+                )
+                if canonical_published is not None else artifact_name)
+            if not fetch_name:
+                raise ValueError(
+                    f"published split omitted rank fetch reference {role}")
+            # A Provider whose accepted V3 offer declared preparation from
+            # local material (or exact residency) prepares the role without
+            # any external fetch.  Its sealed-plan fetch reference stays
+            # empty while the canonical artifact identity remains bound in
+            # ``artifact_names`` and the V3 projection digest.  A Provider
+            # that advertises provisioning (can_provision=True) still needs
+            # a real external fetch reference.
+            selected_provider = str(proposal.provider_by_role.get(role, ""))
+            selected_offer = provider_offers.get(selected_provider)
+            if selected_offer is not None and not bool(
+                    selected_offer.can_provision) and (
+                    bool(selected_offer.preparation_accepted)
+                    or (selected_offer.execution_disposition
+                        is ExecutionDisposition.ACCEPT_IF_EXACT_REUSE)):
+                fetch_name = ""
+            artifact_fetch_names[role] = fetch_name
             roles.append(CollaborationRole(
                 role=role, service=self.service_name, artifact=artifact_name,
                 allow_dynamic_provisioning=False,
@@ -3095,6 +3681,41 @@ class AutomaticPlanningCoordinator:
             role: [] for role in specs_by_role
         }
         outgoing_roles: set[str] = set()
+        if declared_input_role:
+            input_layout_digest = canonical_digest({
+                "task": task.task_name,
+                "inputSchemaDigest": input.input_schema_digest,
+                "transport": str(getattr(
+                    input.transport_mode, "value", input.transport_mode)),
+            })
+            input_endpoint = TensorEndpoint(
+                producer_namespace=self.service_name,
+                requester=(collaboration.request_id
+                           if collaboration.request_id.startswith("/")
+                           else "/" + collaboration.request_id),
+                request_id=collaboration.request_id,
+                attempt=core.attempt,
+                plan_digest=plan_digest,
+                group_id="application-input",
+                group_epoch=f"attempt-{core.attempt}",
+                operation="APPLICATION_INPUT",
+                round=0,
+                source_kind=TensorEndpointSource.APPLICATION_INPUT,
+                producer_role="",
+                producer_rank=0,
+                consumer_role=declared_input_role,
+                tensor_id="application-input",
+                tensor_digest=input.logical_input_digest,
+                layout_digest=input_layout_digest,
+                microbatch=0,
+                segment_count=1,
+                manifest_digest=input.logical_input_digest,
+                security_profile="NDNSF_DATA_V1",
+                no_progress_deadline_ms=self.data_v1_no_progress_ms,
+                hard_deadline_ms=max(
+                    1, deadline_ms - int(time.time() * 1000)),
+            )
+            must_fetch[declared_input_role].append(input_endpoint)
         for index, dependency in enumerate(dependency_dicts):
             if str(dependency.get("operationKind", "")) == "TOKEN_FEEDBACK":
                 # The feedback edge closes the per-epoch runtime loop but is
@@ -3107,8 +3728,22 @@ class AutomaticPlanningCoordinator:
                 dict(redistributions[0]) if redistributions else {})
             operation = str(
                 redistribution.get("operation", "PIPELINE"))
-            tensor_id = str(
-                redistribution.get("tensor", dependency["key_scope"]))
+            dependency_tensors = tuple(
+                str(item) for item in dependency.get("tensors", ())
+                if str(item))
+            if redistributions:
+                tensor_specs = ((str(redistribution.get(
+                    "tensor", dependency_tensors[0]
+                    if dependency_tensors else dependency["key_scope"])),),)
+            else:
+                if not dependency_tensors:
+                    raise ValueError(
+                        "V3 pipeline dependency has no tensor identity")
+                # A normal pipeline dependency is a transport scope that may
+                # carry several adapter tensors.  Each sealed DATA_V1
+                # endpoint is tensor-specific so the native runner can map
+                # its named ONNX outputs to the corresponding publication.
+                tensor_specs = tuple((tensor,) for tensor in dependency_tensors)
             tensor_digest = str(
                 redistribution.get(
                     "integrityDigest",
@@ -3147,65 +3782,67 @@ class AutomaticPlanningCoordinator:
                     endpoint_prefixes.get(producer_provider, producer_provider))
                 dependency_consumers = tuple(
                     str(role) for role in dependency["consumers"])
-                producer_endpoint: TensorEndpoint | None = None
-                for consumer_role in dependency_consumers:
-                    consumer = str(consumer_role)
-                    if consumer not in specs_by_role:
-                        raise ValueError(
-                            "V3 dependency references an unknown consumer role")
-                    manifest_digest = canonical_digest({
-                        "requestId": collaboration.request_id,
-                        "attempt": core.attempt,
-                        "planDigest": plan_digest,
-                        "group": group_id,
-                        "epoch": group_epoch,
-                        "operation": operation,
-                        "round": round_id,
-                        "producer": producer,
-                        "consumers": dependency_consumers,
-                        "tensor": tensor_id,
-                        "tensorDigest": tensor_digest,
-                    })
-                    endpoint = TensorEndpoint(
-                        producer_namespace=producer_namespace,
-                        requester=(collaboration.request_id
-                                   if collaboration.request_id.startswith("/")
-                                   else "/" + collaboration.request_id),
-                        request_id=collaboration.request_id,
-                        attempt=core.attempt,
-                        plan_digest=plan_digest,
-                        group_id=group_id,
-                        group_epoch=group_epoch,
-                        operation=operation,
-                        round=round_id,
-                        source_kind=TensorEndpointSource.ROLE,
-                        producer_role=producer,
-                        producer_rank=producer_spec.rank,
-                        consumer_role=consumer,
-                        tensor_id=tensor_id,
-                        tensor_digest=tensor_digest,
-                        layout_digest=layout_digest,
-                        microbatch=0,
-                        # Plan-time upper bound. The signed runtime manifest
-                        # supplies the concrete segment count after execution.
-                        segment_count=_DATA_V1_MAX_SEGMENTS,
-                        manifest_digest=manifest_digest,
-                        security_profile="NDNSF_DATA_V1",
-                        no_progress_deadline_ms=int(dependency.get(
-                            "noProgressMs", self.data_v1_no_progress_ms)),
-                        hard_deadline_ms=int(dependency.get(
-                            "hardDeadlineMs",
-                            max(1, deadline_ms - int(time.time() * 1000)))),
-                        consumer_roles=dependency_consumers,
-                        target_layout_digest=target_layout_digest,
-                    )
-                    if producer_endpoint is None:
-                        producer_endpoint = endpoint
-                    must_fetch[consumer].append(endpoint)
-                if producer_endpoint is not None:
-                    may_publish[producer].append(producer_endpoint)
+                producer_endpoints: list[TensorEndpoint] = []
+                for (tensor_id,) in tensor_specs:
+                    for consumer_role in dependency_consumers:
+                        consumer = str(consumer_role)
+                        if consumer not in specs_by_role:
+                            raise ValueError(
+                                "V3 dependency references an unknown consumer role")
+                        manifest_digest = canonical_digest({
+                            "requestId": collaboration.request_id,
+                            "attempt": core.attempt,
+                            "planDigest": plan_digest,
+                            "group": group_id,
+                            "epoch": group_epoch,
+                            "operation": operation,
+                            "round": round_id,
+                            "producer": producer,
+                            "consumers": dependency_consumers,
+                            "tensor": tensor_id,
+                            "tensorDigest": tensor_digest,
+                        })
+                        endpoint = TensorEndpoint(
+                            producer_namespace=producer_namespace,
+                            requester=(collaboration.request_id
+                                       if collaboration.request_id.startswith("/")
+                                       else "/" + collaboration.request_id),
+                            request_id=collaboration.request_id,
+                            attempt=core.attempt,
+                            plan_digest=plan_digest,
+                            group_id=group_id,
+                            group_epoch=group_epoch,
+                            operation=operation,
+                            round=round_id,
+                            source_kind=TensorEndpointSource.ROLE,
+                            producer_role=producer,
+                            producer_rank=producer_spec.rank,
+                            consumer_role=consumer,
+                            tensor_id=tensor_id,
+                            tensor_digest=tensor_digest,
+                            layout_digest=layout_digest,
+                            microbatch=0,
+                            # Plan-time upper bound. The signed runtime manifest
+                            # supplies the concrete segment count after execution.
+                            segment_count=_DATA_V1_MAX_SEGMENTS,
+                            manifest_digest=manifest_digest,
+                            security_profile="NDNSF_DATA_V1",
+                            no_progress_deadline_ms=int(dependency.get(
+                                "noProgressMs", self.data_v1_no_progress_ms)),
+                            hard_deadline_ms=int(dependency.get(
+                                "hardDeadlineMs",
+                                max(1, deadline_ms - int(time.time() * 1000)))),
+                            consumer_roles=dependency_consumers,
+                            target_layout_digest=target_layout_digest,
+                        )
+                        if consumer == dependency_consumers[0]:
+                            producer_endpoints.append(endpoint)
+                        must_fetch[consumer].append(endpoint)
+                may_publish[producer].extend(producer_endpoints)
 
-        terminal_roles = sorted(set(specs_by_role) - outgoing_roles)
+        terminal_roles = ([declared_terminal_role]
+                          if declared_terminal_role else
+                          sorted(set(specs_by_role) - outgoing_roles))
         if len(terminal_roles) != 1:
             raise ValueError(
                 "V3 plan must have exactly one terminal Response owner")
@@ -3350,6 +3987,7 @@ class AutomaticPlanningCoordinator:
             role_scopes={key: tuple(value) for key, value in role_scopes.items()},
             providers_by_role=providers_by_role,
             artifact_data_names=artifact_names,
+            artifact_fetch_data_names=artifact_fetch_names,
             scope_key_data_names=scope_key_data_names,
             assignment_payloads_by_role=assignment_payloads,
         )
@@ -3385,7 +4023,9 @@ class AutomaticPlanningCoordinator:
                 "proposal": proposal.digest(), "core": core.digest(),
                 "plan": plan_digest,
             }),
-            artifact_preparation=(ArtifactPreparationMode.REUSE_CACHED
+            artifact_preparation=(v3_artifact_preparation
+                                  if v3_artifact_preparation is not None else
+                                  ArtifactPreparationMode.REUSE_CACHED
                                   if exact_all else ArtifactPreparationMode.GENERATED),
             evidence={"placementProfile": DI_PLACEMENT_V3,
                       "planCoreDigest": core.plan_core_digest or core.digest(),
@@ -3397,7 +4037,7 @@ class AutomaticPlanningCoordinator:
             roles=list(sealed.roles), key_scopes={
                 key: list(value) for key, value in sealed.key_scopes.items()},
             dependencies=list(sealed.dependencies),
-            artifact_data_names=dict(sealed.artifact_data_names),
+            artifact_data_names=dict(sealed.artifact_fetch_data_names),
             scope_key_data_names=dict(sealed.scope_key_data_names),
             role_scopes={key: list(value) for key, value in sealed.role_scopes.items()},
             role_provider_assignments=dict(sealed.providers_by_role),
@@ -3412,6 +4052,13 @@ class AutomaticPlanningCoordinator:
             f"candidateDigest={selected_candidate.candidate_digest}",
             "placement=V3", f"planDigest={plan_digest}", flush=True,
         )
+        self._emit_lifecycle(
+            "SELECTION_COMMITTED", request_id=request_id, attempt=_attempt,
+            selectionDigest=canonical_digest({
+                "plan": plan_digest,
+                "ack": closed.digest,
+            }),
+            selectedRoleCount=len(sealed.roles))
         timings["pre_response_setup_total_ms"] = (
             time.perf_counter() - request_started) * 1000.0
         return AutomaticInferenceHandle(
@@ -3435,6 +4082,7 @@ class AutomaticPlanningCoordinator:
     @staticmethod
     def _v3_role_specs(
         candidate: SplitCandidate, graph: Any | None = None,
+        *, protection_epoch: str = "plaintext-v1",
     ) -> tuple[RoleAssemblySpec, ...]:
         # Keep the historical candidate-only helper source-compatible.  The
         # production request path passes the post-ACK graph explicitly and
@@ -3480,13 +4128,17 @@ class AutomaticPlanningCoordinator:
         specs = []
         for role in candidate.execution_plan.roles:
             requirement = candidate.requirements_by_role[role]
+            kind = _v3_role_kind(role)
             begin, end = AutomaticPlanningCoordinator._role_layer_range(candidate, role)
-            if begin is None or end is None:
-                # Non-layer adapters still need a deterministic assembly range.
-                owned = [
-                    node for node, owner in candidate.execution_plan.node_roles.items()
-                    if owner == role
-                ]
+            owned = [
+                node for node, owner in candidate.execution_plan.node_roles.items()
+                if owner == role
+            ]
+            if kind == "COMPONENT_SET":
+                # Component roles are identified by their canonical node set;
+                # a fabricated layer interval would change their identity.
+                begin, end = 0, 0
+            elif begin is None or end is None:
                 begin = 0
                 end = max(1, len(owned))
             degree = int(candidate.tensor_degrees_by_role.get(role, 1))
@@ -3534,18 +4186,35 @@ class AutomaticPlanningCoordinator:
                     layer_end=int(end), recipe_digest=recipe_digest,
                     artifact_digest=rank_artifacts[rank],
                     backend=str(requirement.backends[0]),
+                    protection_epoch=protection_epoch,
                     required_device_memory_mb=int(math.ceil(
                         (requirement.estimated_peak_gpu_memory_bytes or 0)
                         / (1024 * 1024))),
                     adapter_id=str(candidate.model.adapter.name),
                     adapter_version=str(candidate.model.adapter.version),
-                    role_kind=("HYBRID_RANK" if degree > 1 else role_kind(role)),
+                    role_kind=("HYBRID_RANK" if degree > 1 else kind),
+                    node_indices=(tuple(
+                        index for index, node in enumerate(
+                            candidate.execution_plan.node_roles)
+                        if node in owned)
+                        if kind == "COMPONENT_SET" else ()),
                     expected_inputs=tuple(
                         input_contracts[name]
                         for name in sorted(input_contracts)),
                     expected_outputs=tuple(
                         output_contracts[name]
                         for name in sorted(output_contracts)),
+                    merge_kind=(candidate.merge_kind
+                                if role == candidate.result_egress_role else ""),
+                    postprocess_identity=(str(candidate.postprocessing.get("identity", ""))
+                                          if role == candidate.result_egress_role else ""),
+                    postprocess_output_name=(str(candidate.postprocessing.get("outputName", ""))
+                                             if role == candidate.result_egress_role else ""),
+                    postprocess_confidence_threshold=(float(
+                        candidate.postprocessing.get("confidenceThreshold", 0.0))
+                        if role == candidate.result_egress_role else 0.0),
+                    postprocess_sort=(str(candidate.postprocessing.get("sort", ""))
+                                      if role == candidate.result_egress_role else ""),
                 ))
         return tuple(specs)
 
@@ -3582,6 +4251,13 @@ class AutomaticPlanningCoordinator:
 
         certified: list[RoleAssemblySpec] = []
         for spec in role_specs:
+            if (candidate.merge_kind == "NATIVE_POSTPROCESS" and
+                    spec.role == candidate.result_egress_role):
+                # A native Merge consumes the declared dependency tensors and
+                # owns only deterministic postprocessing. It has no ONNX
+                # model-layer artifact and must not enter the assembler.
+                certified.append(spec)
+                continue
             owned = tuple(sorted(
                 order[node] for node, owner
                 in candidate.execution_plan.node_roles.items()
@@ -3623,10 +4299,22 @@ class AutomaticPlanningCoordinator:
                     f"role {spec.role} has an incomplete ONNX I/O boundary")
 
             max_source = int(binding.canonical_source_bytes)
+            # Provider-local extraction may inline a separately addressed
+            # initializer and re-encode the graph protobuf.  The source limit
+            # applies independently to each fetched object; it is not a
+            # valid upper bound for the assembled model.  Bind a conservative
+            # finite output limit to the same immutable source facts instead
+            # of silently allowing the executor's multi-gigabyte default.
+            initializer_bytes = int(binding.canonical_initializer_bytes or 0)
+            max_assembled = max_source + initializer_bytes + max_source
+            # The assembler verifies the canonical ONNX identity digest,
+            # which may differ from the planning-space graph-port digest.
+            recipe_graph_digest = (
+                binding.canonical_graph_digest or binding.graph_digest)
             recipe = CertifiedOnnxAssemblyRecipe(
                 model_manifest_digest=binding.model_manifest_digest,
                 artifact_profile_digest=binding.artifact_profile_digest,
-                graph_digest=binding.graph_digest,
+                graph_digest=recipe_graph_digest,
                 canonical_initializer_digest=binding.canonical_initializer_digest,
                 adapter_descriptor_digest=binding.adapter_descriptor_digest,
                 assembler_descriptor_digest=binding.assembler_descriptor_digest,
@@ -3643,7 +4331,7 @@ class AutomaticPlanningCoordinator:
                     output_contracts[name] for name in sorted(output_contracts)),
                 precision=str(candidate.model.precision),
                 max_source_bytes=max_source,
-                max_assembled_bytes=max_source,
+                max_assembled_bytes=max_assembled,
                 max_nodes=len(graph.nodes),
             )
             certified.append(replace(
@@ -3651,7 +4339,7 @@ class AutomaticPlanningCoordinator:
                 recipe_digest=recipe.digest,
                 model_manifest_digest=binding.model_manifest_digest,
                 artifact_profile_digest=binding.artifact_profile_digest,
-                graph_digest=binding.graph_digest,
+                graph_digest=recipe_graph_digest,
                 canonical_initializer_digest=binding.canonical_initializer_digest,
                 adapter_descriptor_digest=binding.adapter_descriptor_digest,
                 assembler_descriptor_digest=binding.assembler_descriptor_digest,
@@ -3801,6 +4489,47 @@ class AutomaticPlanningCoordinator:
         return data_names
 
     @staticmethod
+    def _v3_catalog_snapshot_matches_candidate(
+            candidate: SplitCandidate,
+            snapshots: tuple[Any, ...],
+    ) -> bool:
+        """Return whether a signed active snapshot can satisfy every rank.
+
+        This is only a mode probe.  ``_prepare_artifacts`` and
+        ``CatalogSnapshotArtifactPublisher.resolve_existing`` remain the final
+        digest/name authority; the probe prevents a known-missing publication
+        from being treated as a usable PRE_SPLIT input.
+        """
+        expected_roles = tuple(candidate.execution_plan.roles)
+        for snapshot in snapshots:
+            if (getattr(snapshot, "status", "") != "ACTIVE"
+                    or getattr(snapshot, "candidate_digest", "")
+                    != candidate.candidate_digest
+                    or getattr(snapshot, "model_content_digest", "")
+                    != candidate.model.content_digest
+                    or getattr(snapshot, "semantics_digest", "")
+                    != candidate.model.semantics_digest
+                    or getattr(snapshot, "graph_digest", "")
+                    != candidate.graph_digest
+                    or (getattr(snapshot, "precision", "")
+                        and getattr(snapshot, "precision", "")
+                        != getattr(candidate.model, "precision", ""))):
+                continue
+            backend = str(getattr(snapshot, "backend", ""))
+            if any(backend not in candidate.requirements_by_role[role].backends
+                   for role in expected_roles):
+                continue
+            names_by_role = getattr(snapshot, "artifact_data_names", {})
+            if set(names_by_role) != set(expected_roles):
+                continue
+            if any(len(tuple(names_by_role[role]))
+                   != int(candidate.tensor_degrees_by_role.get(role, 1))
+                   for role in expected_roles):
+                continue
+            return True
+        return False
+
+    @staticmethod
     def _validate_published_split(
         candidate: SplitCandidate, published: PublishedSplit,
     ) -> None:
@@ -3872,8 +4601,11 @@ class AutomaticPlanningCoordinator:
         return canonical_digest({
             "input_schema_digest": application_input.input_schema_digest,
             "options_schema_digest": application_input.options_schema_digest,
-            "input_digest": hashlib.sha256(
-                application_input.payload).hexdigest(),
+            "input_transport": getattr(
+                application_input.transport_mode, "value",
+                str(application_input.transport_mode)),
+            "input_digest": application_input.logical_input_digest,
+            "input_reference": application_input.repo_reference or {},
             "options_digest": hashlib.sha256(options_payload).hexdigest(),
         })
 
@@ -3916,8 +4648,7 @@ class AutomaticPlanningCoordinator:
         if conversation is not None:
             if not isinstance(conversation, ConversationContinuation):
                 raise TypeError("conversation must be ConversationContinuation")
-            input_digest = "sha256:" + hashlib.sha256(
-                bytes(application_input.payload)).hexdigest()
+            input_digest = application_input.logical_input_digest
             if conversation.turn_input_digest \
                     and conversation.turn_input_digest != input_digest:
                 raise ValueError("conversation turn input digest mismatch")
@@ -3934,6 +4665,16 @@ class AutomaticPlanningCoordinator:
                 **conversation.to_dict(),
                 "requestContractDigest": contract_digest,
             }
+        transport_mode = getattr(
+            application_input.transport_mode, "value",
+            str(application_input.transport_mode))
+        if transport_mode == InputTransportMode.INLINE.value:
+            encoded_input = base64.b64encode(
+                application_input.payload).decode("ascii")
+            input_reference = {}
+        else:
+            encoded_input = ""
+            input_reference = dict(application_input.repo_reference or {})
         return DIRequestEnvelopeV2(
             invocation_id=invocation_id,
             request_id=request_id,
@@ -3943,12 +4684,13 @@ class AutomaticPlanningCoordinator:
             model_identity_hash=model.intent_digest,
             task_kind=task.task_name,
             input_manifest_digest=input_manifest_digest,
-            input_payload_b64=base64.b64encode(
-                application_input.payload).decode("ascii"),
+            input_payload_b64=encoded_input,
             options_payload_b64=base64.b64encode(
                 options_payload).decode("ascii"),
             plan_deadline_ms=deadline_ms,
             security_domain="requester-default",
+            input_transport=transport_mode,
+            input_reference=input_reference,
             model={
                 "name": model.model_name,
                 "identity_hash": model.intent_digest,
@@ -4197,8 +4939,10 @@ __all__ = [
     "AutomaticInferenceHandle",
     "AutomaticPlanningCoordinator",
     "CanonicalArtifactEnsurer",
+    "encode_runtime_catalog_snapshot",
     "InferenceTaskRef",
     "ModelRef",
     "TaskOptions",
+    "validate_spec175_ordinary_v3_proposal",
     "replan_placement_request",
 ]

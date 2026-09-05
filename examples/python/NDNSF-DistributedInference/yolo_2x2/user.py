@@ -243,6 +243,71 @@ def _make_lifecycle_observer(journal: LifecycleJournal):
     return observe
 
 
+def _build_grant_seam(client):
+    """Build the in-process authority grant seam for a protected epoch.
+
+    SPEC181_PROTECTION_EPOCH is empty or ``plaintext-v1`` by default and the
+    seam stays absent.  A protected epoch (spec181 T001/T002 wiring) loads
+    the operator authority key from the Spec180 config registry, derives the
+    requester signing key from the request-envelope seed, maps every
+    Provider identity to its recipient public key (the same Ed25519 keys the
+    Provider ACK offers use), owns one content key per model-manifest digest,
+    and publishes grant Data through the client's signed-APP-Data path.
+    """
+    epoch = os.environ.get("SPEC181_PROTECTION_EPOCH", "").strip()
+    if not epoch or epoch == "plaintext-v1":
+        return None, "plaintext-v1"
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+    from ndnsf_distributed_inference.security.registry_keys import (
+        load_artifact_policy_authority_private_key)
+    from ndnsf_distributed_inference.security.requester_grant_pipeline import (
+        build_in_process_grant_provider)
+    authority_key = load_artifact_policy_authority_private_key()
+    requester_seed_path = Path(os.environ["SPEC181_REQUESTER_PRIVATE_KEY"])
+    requester_key = ed25519.Ed25519PrivateKey.from_private_bytes(
+        Path(requester_seed_path).read_bytes())
+    recipient_map_path = Path(os.environ["SPEC181_PROVIDER_RECIPIENT_KEY_MAP"])
+    recipient_entries = json.loads(recipient_map_path.read_text(
+        encoding="utf-8"))
+    recipient_public_keys = {}
+    for provider, pem_path in recipient_entries.items():
+        key = serialization.load_pem_private_key(
+            Path(pem_path).read_bytes(), password=None)
+        if not isinstance(key, ed25519.Ed25519PrivateKey):
+            raise ValueError(
+                f"recipient key is not Ed25519: {provider}")
+        recipient_public_keys[provider] = key.public_key()
+    content_keys: dict[str, bytes] = {}
+
+    def content_key_owner(model_manifest_digest: str, protection_epoch: str):
+        del protection_epoch
+        if model_manifest_digest not in content_keys:
+            content_keys[model_manifest_digest] = os.urandom(32)
+        return content_keys[model_manifest_digest]
+
+    service_user = getattr(client._network_client, "service_user", None)
+    if service_user is None:
+        raise RuntimeError("grant publisher requires the ServiceUser owner")
+
+    def publisher(data_name: str, payload: bytes) -> None:
+        service_user.publish_signed_app_data(
+            data_name, payload, freshness_ms=600000)
+
+    provider = build_in_process_grant_provider(
+        requester_identity="/example/user",
+        requester_private_key=requester_key,
+        authority_identity="/example/controller",
+        authority_private_key=authority_key,
+        protection_epoch=epoch,
+        allowed_model_manifests=frozenset(),
+        recipient_public_keys=recipient_public_keys.get,
+        content_key_owner=content_key_owner,
+        publisher=publisher,
+    )
+    return provider, epoch
+
+
 def _load_yolo_ack_driven(client, args) -> int:
     """Run the maintained model-first YOLO path.
 
@@ -412,6 +477,7 @@ def _load_yolo_ack_driven(client, args) -> int:
     if mutation in {"Y-N-R", "Y-N-E"}:
         canonical_binding = _Spec180MutationBinding(canonical_binding, mutation)
 
+    grant_binding_provider, protection_epoch = _build_grant_seam(client)
     client.configure_automatic_planning(
         service_name=service,
         adapters=(adapter,),
@@ -426,6 +492,8 @@ def _load_yolo_ack_driven(client, args) -> int:
         # before the selected ingress can publish its first tensor.
         data_v1_no_progress_ms=10_000,
         ack_coverage_roles=(),
+        grant_binding_provider=grant_binding_provider,
+        protection_epoch=protection_epoch,
         lifecycle_observer=_make_lifecycle_observer(journal),
     )
     try:

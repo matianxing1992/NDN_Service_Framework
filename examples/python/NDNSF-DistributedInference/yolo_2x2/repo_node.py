@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import signal
+import threading
+import time
 
 from ndnsf_distributed_inference.app_sdk import APPDeployment
 from py_repoclient.orchestration import RepoNodeApp
@@ -60,21 +62,33 @@ def main() -> int:
     )
 
     # spec181 T005 repair: the repo serves through the native provider run
-    # loop (GIL released).  A default SIGINT raises KeyboardInterrupt only
-    # after the C++ loop returns — which it never does — so the supervised
-    # cleanup SIGINT would time out and fall back to SIGKILL (-9), failing
-    # the terminal-cleanup gate.  Stop the native provider first so the run
-    # loop exits and the process terminates cleanly with 130.
-    def _stop_on_sigint(signum, frame):
-        del frame
-        try:
-            app.provider.stop()
-        except Exception:
-            pass
-        raise SystemExit(128 + signum)
+    # loop (GIL released).  CPython delivers SIGINT handlers only at
+    # bytecode boundaries on the main thread, which the C++ run loop never
+    # reaches — so a main-thread run() would ignore the supervised cleanup
+    # SIGINT until it times out and falls back to SIGKILL (-9), failing the
+    # terminal-cleanup gate.  Run the native loop on a worker thread and
+    # keep the main thread in a Python wait loop: the signal handler only
+    # sets an event (fast, no blocking work inside the signal context), and
+    # the main thread then stops the native provider and exits 130 well
+    # within the supervised 3 s window.
+    stop_requested = threading.Event()
 
-    signal.signal(signal.SIGINT, _stop_on_sigint)
-    return app.run()
+    def _on_sigint(signum, frame):
+        del signum, frame
+        stop_requested.set()
+
+    signal.signal(signal.SIGINT, _on_sigint)
+    runner_thread = threading.Thread(target=app.run, daemon=True)
+    runner_thread.start()
+    while not stop_requested.wait(0.5):
+        if not runner_thread.is_alive():
+            return 0
+    try:
+        app.provider.stop()
+    except Exception:
+        pass
+    runner_thread.join(timeout=3)
+    return 130
 
 
 if __name__ == "__main__":
