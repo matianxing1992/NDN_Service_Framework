@@ -114,9 +114,16 @@ User                                Provider(s)                     Controller
   immutable failure statuses already accepted by peers. A still-failing retry
   preserves the withdrawal and refuses the grant;
   after restart the durable epoch re-derives the ABE generation.
+- NAC Consumer content and CK fetch completion/error callbacks retain the
+  cache generation from admission and stop after invalidation. Clearing DKEY
+  and cache state alone cannot fence an already-running fetch. The algorithm
+  boundary converts OpenABE enum decode failures into `NacAlgoError`, allowing
+  runtime error handling to retain control instead of terminating the process.
 - Local NAC-ABE dependency patches (DKEY FreshnessPeriod=0, versioned
-  exact public-params fetch, consumer cache invalidation) live on the
-  NAC-ABE `Experimental` branch (commit `b1c9c4f`, not pushed).
+  exact public-params fetch, consumer cache invalidation and delayed-callback
+  fencing) live on the NAC-ABE `Experimental` branch (base `b1c9c4f`, repair
+  `8b462d0`, not pushed). The T019 repair is also captured in
+  `specs/179-request-scoped-confidentiality/evidence/nac-abe-late-callback-fence-20260905.patch`.
 
 ## NAC-ABE routing
 

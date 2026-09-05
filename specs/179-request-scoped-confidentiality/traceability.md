@@ -111,7 +111,7 @@ runs live in `results/spec179-minindn-fixclosure-20260905/` (the frozen
 2026-09-04 campaign directory is untouched). T014's upstream NAC-ABE
 package/push remains the only open maintainer action (user-authorized only).
 
-## Online authorization follow-up (T017/T018, current verification pending)
+## Online authorization follow-up (T017–T019, current local scope PASS)
 
 The historical audit closure above is superseded by
 `evidence/online-authorization-audit-20260905.md`. RV-I35 maps FR-017/019/036
@@ -119,13 +119,15 @@ to repeated-target recovery, grant fencing, immutable statuses and retained-key
 crypto tests. RV-I36 maps the FR-038 startup edge and FR-023/024 diagnostics to
 real constructor and no-DKEY admission/callback tests. RV-I37 maps FR-038/SC-022
 to normal and post-exhaustion App renewal in MiniNDN. RV-I38 maps
-FR-017/019/035/036 to live failed-rotation recovery. The earlier network
-failures remain in the report; T018 awaits the final readiness repair gates.
+FR-017/019/035/036 to live failed-rotation recovery. Earlier network failures
+remain in the report; T018 is closed by final normal10/10/control24/24 and
+late21/21/control60/60 grants, with observed renewal and one target-only refresh.
 
 T019/RV-I39 additionally map FR-019/023/024/036/041 to dependency-side delayed
-content/CK generation checks and standard OpenABE failure reporting. Final
-network acceptance is pending after the observed Provider abort; business
-checks alone cannot override a failing process exit.
+content/CK generation checks and standard OpenABE failure reporting. T019 is
+closed by GDB-backed red/green,14 dependency cases,182 NDNSF unit and72 integration
+cases, and full16/16 MiniNDN using NAC `8b462d0`. The previous Provider abort is
+retained as failure; final retry14/14 checks and five zero process exits close it.
 
 ## Evidence rules
 

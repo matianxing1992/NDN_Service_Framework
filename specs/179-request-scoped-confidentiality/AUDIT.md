@@ -1,22 +1,24 @@
 # Spec179 Audit — Controller Revocation Test Coverage
 
-## 2026-09-05 online authorization follow-up (current; verification in progress)
+## 2026-09-05 online authorization follow-up (current; local scope PASS)
 
-The earlier PASS below is historical and is superseded by the current audit in
-`evidence/online-authorization-audit-20260905.md`. New executed regressions found
-pending-rotation grant/retry bypasses, equal-version recovery conflicts, blocked
-unprovisioned constructors, and MiniNDN failure censoring. The scoped fixes are
-implemented. T017 has component and live network closure. T019 now addresses
-late dependency callbacks and a non-standard OpenABE error escape found during
-final MiniNDN; T018 awaits this dependency repair and a fresh complete campaign.
-The bounded repair keeps generation ownership in NAC-ABE, uses its existing
-cache generation and algorithm error type, and adds delayed-fetch/crypto
-regressions before implementation. No wire or authority format changes are
-required; the task is necessary to close the observed process failure.
-Do not infer release readiness
-from the historical grant collector or the diagnostic campaign's 14/16 result.
+**PASS for T017–T019 local online grant/revoke repair.** The authoritative
+report is `evidence/online-authorization-audit-20260905.md`; earlier verdicts
+below are historical. Controller retry/grant fencing and immutable recovery
+epochs, asynchronous unprovisioned startup, initial-DKEY admission, callback
+reporting and truthful MiniNDN evidence are repaired. NAC `8b462d0` additionally
+fences delayed content/CK callbacks and normalizes OpenABE errors; real negative
+tests and GDB reproduce the old failure path.
 
-## 2026-09-05 runtime grant/revoke audit closure (fixes applied; supersedes the report-only record below)
+Final gates: NDNSF unit182/182, integration72/72; dependency14/14; launcher15/15;
+complete MiniNDN16/16 with driver exit0. Source, clean working diff and29 artifact
+hashes agree across every final manifest. Both grant probes retain all target
+and control outcomes with zero failures; rekey recovery has14/14 checks and all
+five processes exit0. Earlier failed/incomplete campaigns remain negative.
+No wire/authority format changed. T014 upstream dependency publication remains
+external; this is not an upstream release or TigerCluster qualification claim.
+
+## 2026-09-05 runtime grant/revoke audit closure (historical; superseded above)
 
 **Verdict: PASS** — the three findings of the report-only audit
 (evidence/runtime-grant-revoke-audit-20260905.md) are fixed and re-verified:

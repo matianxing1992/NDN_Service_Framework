@@ -2,15 +2,15 @@
 
 Scope: online grant/revoke correctness on `UAV-Experimental`, starting at
 `d2833215`. T017 covers Controller recovery; T018 covers same-process online
-grant, startup readiness, error reporting and truthful network evidence.
+grant, startup readiness, error reporting and truthful network evidence; T019
+covers dependency callbacks crossing invalidation and OpenABE error reporting.
 
-**Current verdict: verification in progress.** The scoped repairs are
-implemented; the readiness regression passes8/8, unit182/182 and integration72/72
-on the previous dependency. Final MiniNDN exposed a further dependency-side
-callback/error boundary failure (T019), now fixed with14 dependency cases and
-GDB-backed reproduction. NDNSF unit182/182 and integration72/72 pass on the
-rebuilt dependency; final16-scenario acceptance remains pending.
-This document supersedes the earlier runtime-grant/revoke PASS.
+**Current verdict: PASS for this local online-authorization repair scope.**
+NDNSF unit182/182 and integration72/72, NAC dependency14/14, launcher15/15 and
+one complete MiniNDN campaign16/16 pass. GDB/NDN_LOG and retained negative runs
+support the repairs. T017–T019 are closed; T014 upstream dependency publication
+remains external. This supersedes the earlier runtime-grant/revoke verdict;
+it is not an upstream release or TigerCluster qualification claim.
 
 ## Findings and repairs
 
@@ -54,7 +54,7 @@ results are retained locally and excluded from Git.
 | First-DKEY base-entry repair green | The shared admission helper now also guards `startRequestServiceWithRequestId`. Unchanged focused regression8/8, exit0, `gates/readiness-base-green.log`. |
 | Final-candidate unit gate | Unit182/182,11971 assertions, exit0, `gates/unit-base-final.log`, after the base-entry repair. |
 | Final-candidate integration gate | Integration72/72,1278 assertions, exit0, `gates/integration-base-final.log`, run after compilation without concurrent build load. |
-| Expanded C++ gates before final readiness repair | Unit182/182,11971 assertions (`gates/unit-final.log`); integration71/71,1270 assertions (`gates/integration-final-isolated.log`). These must be rerun after the final C++ changes; integration now contains72 cases. |
+| Expanded C++ gates before final readiness repair (historical) | Unit182/182,11971 assertions (`gates/unit-final.log`); integration71/71,1270 assertions (`gates/integration-final-isolated.log`). Superseded by the final T019 NDNSF gates below. |
 | Timing-sensitive gate failure retained | Concurrent App compilation produced stream retryCount2 instead of1, integration70/71 (`gates/integration-final.log`). After compilation, focused12/12 and full71/71 passed without weakening an assertion. CPU scheduling is a plausible cause, not a separately controlled load experiment. |
 | Launcher regressions | Initial target-row/CLI regressions failed before repair. New control-retention regression also failed before repair. Current14/14 pass (`gates/harness-readiness.log`), including refusal to apply the transport fault in the host namespace. |
 | Stronger control reanalysis | `gates/grant-control-reanalysis.log`: retained late run target21/21/control60/60; negative normal run target12/13/control12/24. All twelve failed control rows remain counted. |
@@ -85,18 +85,62 @@ reproduces admission and callback ownership failures.
 | `grant-crypto-diagnostic` | Failed, exit4 | Additional NAC Consumer diagnostics; no negative result was promoted. |
 | `campaign-readiness-final` | Incomplete failed campaign:8/9 completed probes passed; driver intentionally stopped, exit143 | Normal grant10/10 target and24/24 control,11 denials, one target/zero unaffected DKEY refreshes. Late target21/21 but User/A startup exit1/control0/0 exposed shared-PIB contention. Active ninth probe completed normally after driver stop; no16-scenario acceptance is claimed. |
 | `campaign-pib-final` | Incomplete failed campaign:5/6 completed probes passed; driver intentionally stopped, exit143 | Both grants pass (normal10/10 and24/24 control; late21/21 and60/60 control). Retry passes14 business checks but Provider/A aborts(-6), so the scene and campaign fail. Active scene cleaned up normally. |
-| Final rebuilt16-scenario gate | Pending after T019 | Must use the repaired NAC dependency, WAL fixture and current all-row/process-exit gates. |
+| `campaign-nac-final` | **16/16, driver exit0** | Complete campaign using NAC `8b462d0`, WAL fixture and all-row/process-exit gates. Every manifest and29 current artifact hashes agree. |
 
 Earlier T017 live closure in `campaign/revocation-rotation-failure-retry`
 passed14/14 checks: epoch2 rotation failure, same-target recovery to epoch3,
 all four roles installed3, revoked User had16 pre-withdrawal successes and no
 post-failure successes, with denials both during and after recovery. Unaffected
-User had16/16 post-recovery successes. This proves the Controller repair; the
-expanded native campaign must still be rerun after later User/Provider edits.
+User had16/16 post-recovery successes. The final campaign below repeats this
+behavior after the User/Provider and NAC fixes. Every prior failed/incomplete
+campaign retains its original status.
 
-Final selection will list each scenario's actual result path, checks and shared
-native hashes. A failed whole campaign is never relabeled as passing merely
-because a subset later passes.
+### Final complete campaign
+
+Root: `campaign-nac-final/`; each result is
+`campaign-nac-final/<scenario>/result.json`, with its adjacent `manifest.json`.
+All16 results are completed, networkEvidence=true, gatePassed=true, launcher
+exit0. Scenario durations total1033s. Checks below are the scenario evaluator's
+checks; the two grants use the separate grantOnlyGateOk=true gate.
+
+| Scenario | Checks / grant gate | Seconds |
+|---|---|---:|
+| `revocation-rotation-failure-retry` | 14/14 | 103 |
+| `grant-after-permission-exhaustion` | grant gate PASS | 126 |
+| `grant-only-advance` | grant gate PASS | 67 |
+| `inflight-revocation` | 12/12 | 54 |
+| `user-identity-revocation` | 12/12 | 54 |
+| `provider-identity-revocation` | 14/14 | 63 |
+| `service-scoped-revocation-with-unaffected-control` | 11/11 | 55 |
+| `offline-rejoin-epoch-skip` | 8/8 | 65 |
+| `controller-cache-provider-status-retrieval` | 14/14 | 55 |
+| `controller-unavailable-expiry` | 7/7 | 59 |
+| `large-response-invalidation` | 14/14 | 54 |
+| `targeted-refill-invalidation` | 14/14 | 55 |
+| `stream-invalidation` | 6/6 | 54 |
+| `hintless-scheduled-refresh` | 6/6 | 55 |
+| `controller-restart` | 15/15 | 58 |
+| `selection-response-tamper-and-replay` | 14/14 | 56 |
+
+Normal grant: target10/10, control24/24,11 pre-resolution denials, zero failed
+target/control rows. Late grant: target21/21, control60/60,39 denials, zero failed
+rows. Each has one target DKEY refresh and zero unaffected DKEY refreshes.
+Late event timestamps in microseconds establish the ordering directly:
+permission exhaustion1788644447075392 < grant1788644475366235 <
+explicit App renewal1788644486073626 < first enqueue1788644487074818.
+
+Rekey-failure recovery: failure epoch2, same-target retry epoch3, all four
+roles installed3; revoked User had17 pre-withdrawal successes, zero successes
+after failure, and denial during/after recovery. Unaffected User had14/14
+post-recovery success. All five role processes exited0, closing the previous
+Provider abort. Offline User installed epochs[1,3] and succeeded6 times after
+rejoin; the revoked Provider made zero serving publications after discovery.
+
+`gates/campaign-integrity.log` verifies the complete unique scenario set,
+all gates/exits, manifest consistency and29 artifact hashes against current
+disk. Campaign source is `7e5ef3676cc96be88e8c458a81e359e5d43fdae5`, with empty
+working diff (`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`).
+The final documentation checkpoint changes no tested runtime/launcher source.
 
 ## Build, reproducibility and operational boundary
 
@@ -109,13 +153,16 @@ The installed patched NAC-ABE dependency is
 `/tmp/nac-abe-spec179-exact-prefix/lib/libnac-abe.so`. Its existence and actual
 `ldd` resolution passed again after the final rebuild. All five executable
 targets and the shared framework have resolved dependencies with none missing;
-SHA256 and `readelf` output are retained in `gates/native-base-closure.log`.
+Final SHA256 and `readelf` output are retained in `gates/native-nac-closure.log`;
+`native-base-closure.log` retains the previous dependency snapshot.
 The App RUNPATH includes that prefix and `$ORIGIN/..`. A reproducible deployment
 must retain the exact patched dependency; the temporary prefix is not an
 upstream-distribution claim.
 
 Each new manifest records source revision, working-diff SHA256, executable and
-resolved dependency hashes, actual commands, policy and scenario configuration.
+resolved dependency hashes, role executable names, policy and scenario
+configuration. The commands field lists roles rather than full argv; the
+launcher and reproducibility commands below define the actual invocation.
 T019 updates the local NAC-ABE `Experimental` dependency from `b1c9c4f` to
 `8b462d09073b97bec1a7e145cefc898df0682c67` (not pushed). The reviewable delta is
 `nac-abe-late-callback-fence-20260905.patch`. The installed library SHA256 is
@@ -125,7 +172,8 @@ missing dependencies. Public headers and ABI are unchanged; the framework/App
 binaries are retained while their dynamic dependency is rebuilt and revalidated.
 The first readiness build completed (`gates/build-readiness-green.log`,21m58s).
 The base-entry repair then rebuilt all five targets successfully with `-j2` in
-12m58.644s (`gates/build-base-admission-green.log`). Expanded gates remain pending.
+12m58.644s (`gates/build-base-admission-green.log`). T019 separately rebuilt the
+NAC dependency with Clang10 and `-j2`; all expanded gates then passed.
 
 ```bash
 ./waf build --targets=unit-tests,integration-tests,App_User,App_Provider,App_ServiceController -j2
@@ -145,15 +193,20 @@ local goal and remains a separate maintainer action; no push is authorized.
 
 - Context Mode stats were an anomaly screen only. Project health passed; stale
   active hashes were repaired by canonical document indexing and active health
-  passed. Repository tasks, source and artifacts remain authority. Final edited
-  documents still need reindexing and health checks.
+  passed. Repository tasks, source and artifacts remain authority. Final
+  authority indexing and project/active health diagnostics are retained in
+  `gates/context-final.log`.
 - CodeGraph verified Controller recovery, real constructors and admission/
-  hybrid decrypt callers. Sync again after source edits before final review.
+  hybrid decrypt callers. Final sync/status is retained in
+  `gates/codegraph-final.log`. The sibling NAC repository has no CodeGraph
+  index; its exact source, diff, real tests and GDB were inspected directly.
 - Spec Kit constitution, feature artifacts, contracts, architecture and failure
   log were read. The bounded repair plan passed audit review; strict structural
-  checks pass. RV-I35–RV-I38 map new evidence, with final verification pending.
+  checks are retained in `gates/spec-audit-final.log`. RV-I35–RV-I39 map the
+  completed component and final network evidence.
 - GSD health passed; resumable local state is
-  `.planning/debug/online-grant-revoke.md`. Diagnosis is inline.
+  `.planning/debug/online-grant-revoke.md`; final health is in
+  `gates/gsd-health-final.log`. Diagnosis is inline.
 - ARS is not applicable: this is implementation/security regression, without
   literature, comparative-performance or statistical claims.
 
