@@ -6,6 +6,7 @@
 #include "ndn-service-framework/ServiceController.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
 #include "ndn-service-framework/Stream.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.hpp"
 
 #include <ndn-cxx/face.hpp>
 #include <ndn-cxx/security/key-chain.hpp>
@@ -525,6 +526,10 @@ struct PyAckCandidate
   py::bytes payload;
   py::object telemetry = py::none();
   py::object selectionInputKeyOffer = py::none();
+  std::string signerIdentity;
+  std::string signerKeyLocator;
+  std::string validatedWireDigest;
+  bool trustSchemaValidated = false;
 };
 
 struct PyCollaborationAckClosure
@@ -541,6 +546,12 @@ struct PyLargeDataPublishResult
   bool success = false;
   std::string encryptedDataName;
   std::string objectId;
+  size_t plaintextSize = 0;
+  std::string contentDigest;
+  std::string manifestDigest;
+  std::string authorizationScope;
+  std::string protectionEpoch;
+  bool encrypted = true;
   std::string error;
 };
 
@@ -2519,6 +2530,10 @@ ackCandidatesToPyList(const std::vector<nsf::AckCandidate>& candidates)
     item.status = candidate.ack.getStatus();
     item.message = candidate.ack.getMessage();
     item.payload = toPyBytes(candidate.ack.getPayload());
+    item.signerIdentity = candidate.authenticationEvidence.signerIdentity;
+    item.signerKeyLocator = candidate.authenticationEvidence.signerKeyLocator;
+    item.validatedWireDigest = candidate.authenticationEvidence.wireDigest;
+    item.trustSchemaValidated = candidate.authenticationEvidence.trustSchemaValidated;
     if (candidate.ack.hasSelectionInputKeyOffer()) {
       item.selectionInputKeyOffer = stringMapToDict(
         candidate.ack.getSelectionInputKeyOffer().getFields());
@@ -2544,6 +2559,10 @@ ackCandidatesToPyVector(const std::vector<nsf::AckCandidate>& candidates)
     item.status = candidate.ack.getStatus();
     item.message = candidate.ack.getMessage();
     item.payload = toPyBytes(candidate.ack.getPayload());
+    item.signerIdentity = candidate.authenticationEvidence.signerIdentity;
+    item.signerKeyLocator = candidate.authenticationEvidence.signerKeyLocator;
+    item.validatedWireDigest = candidate.authenticationEvidence.wireDigest;
+    item.trustSchemaValidated = candidate.authenticationEvidence.trustSchemaValidated;
     if (candidate.ack.hasSelectionInputKeyOffer()) {
       item.selectionInputKeyOffer = stringMapToDict(
         candidate.ack.getSelectionInputKeyOffer().getFields());
@@ -2757,6 +2776,13 @@ public:
                           role.provisioningTimeoutMs,
                           std::move(assignmentPayload),
                           *best});
+      // Preserve the assignment-bound canonical root even when the role uses
+      // an opaque V3 JSON payload. The legacy semicolon path embeds this name
+      // in text; V3 carries it as framework metadata instead.
+      if (const auto artifactData = m_artifactDataNames.find(role.role);
+          artifactData != m_artifactDataNames.end()) {
+        selected.back().artifactDataName = artifactData->second;
+      }
     }
     // Native distributed execution derives cross-role dependency names from
     // the immutable role->Provider assignment.  A collaboration with more
@@ -3714,18 +3740,44 @@ public:
     }
     m_provider->init();
     m_provider->fetchPermissionsFromController(m_controller);
+    m_started = false;
     m_thread = std::thread([this] {
       while (m_running.load()) {
         try {
           processFaceEvents(m_face, pythonFacePollTimeout());
+          if (!m_started.exchange(true)) {
+            m_startCv.notify_all();
+          }
         }
         catch (const std::exception& e) {
           std::lock_guard<std::mutex> lock(m_errorMutex);
           m_error = e.what();
           m_running = false;
+          m_startCv.notify_all();
         }
       }
+      m_startCv.notify_all();
     });
+  }
+
+  /** True once the event thread has run at least one slice without error.
+
+      The readiness wait bound (15000 ms at the Python seam) deliberately
+      exceeds the Core 10 s probe deadline (spec181 FR-011/T004).
+   */
+  bool
+  waitUntilReady(int timeoutMs)
+  {
+    std::unique_lock<std::mutex> lock(m_startMutex);
+    if (!m_startCv.wait_for(lock,
+                            std::chrono::milliseconds(std::max(1, timeoutMs)),
+                            [this] {
+                              return m_started.load() || !m_running.load();
+                            })) {
+      return false;
+    }
+    throwIfError();
+    return m_started.load();
   }
 
   void
@@ -3839,9 +3891,12 @@ private:
   std::map<std::string, std::shared_ptr<PyOpaqueSelectionParticipant>>
     m_opaqueSelectionParticipants;
   std::atomic<bool> m_running{false};
+  std::atomic<bool> m_started{false};
   std::thread m_thread;
   std::mutex m_errorMutex;
   std::string m_error;
+  std::mutex m_startMutex;
+  std::condition_variable m_startCv;
 };
 
 class NativeServiceController
@@ -3904,16 +3959,39 @@ public:
     if (m_running.exchange(true)) {
       return;
     }
+    m_controller->resetStartCancellation();
+    {
+      std::lock_guard<std::mutex> lock(m_startMutex);
+      m_started = false;
+    }
+    {
+      std::lock_guard<std::mutex> lock(m_errorMutex);
+      m_error.clear();
+    }
     m_thread = std::thread([this] {
-      try {
-        m_controller->run();
-      }
-      catch (const std::exception& e) {
-        std::lock_guard<std::mutex> lock(m_errorMutex);
-        m_error = e.what();
-      }
-      m_running = false;
+      runControllerLoop(false);
     });
+  }
+
+  bool
+  waitUntilReady(int timeoutMs)
+  {
+    const auto timeout = std::chrono::milliseconds(std::max(1, timeoutMs));
+    std::unique_lock<std::mutex> lock(m_startMutex);
+    if (!m_startCv.wait_for(lock, timeout,
+                            [this] { return m_started || !m_running.load(); })) {
+      return false;
+    }
+    if (!m_started) {
+      std::lock_guard<std::mutex> errorLock(m_errorMutex);
+      const auto error = m_error;
+      lock.unlock();
+      if (!error.empty()) {
+        throw std::runtime_error(error);
+      }
+      return false;
+    }
+    return true;
   }
 
   void
@@ -3922,24 +4000,24 @@ public:
     if (m_running.exchange(true)) {
       return;
     }
-    try {
-      m_controller->run();
+    m_controller->resetStartCancellation();
+    {
+      std::lock_guard<std::mutex> lock(m_startMutex);
+      m_started = false;
     }
-    catch (const std::exception& e) {
-      {
-        std::lock_guard<std::mutex> lock(m_errorMutex);
-        m_error = e.what();
-      }
-      m_running = false;
-      throw;
+    {
+      std::lock_guard<std::mutex> lock(m_errorMutex);
+      m_error.clear();
     }
-    m_running = false;
+    runControllerLoop(true);
   }
 
   void
   stop()
   {
+    m_controller->cancelStart();
     m_running = false;
+    m_startCv.notify_all();
     m_face.shutdown();
     m_face.getIoContext().stop();
     if (m_thread.joinable()) {
@@ -3956,7 +4034,35 @@ public:
     }
   }
 
-private:
+  private:
+  void
+  runControllerLoop(bool propagateError)
+  {
+    try {
+      m_controller->start();
+      {
+        std::lock_guard<std::mutex> lock(m_startMutex);
+        m_started = true;
+      }
+      m_startCv.notify_all();
+      while (m_running.load()) {
+        m_face.getIoContext().restart();
+        m_face.processEvents(ndn::time::milliseconds(1000));
+      }
+    }
+    catch (const std::exception& e) {
+      {
+        std::lock_guard<std::mutex> errorLock(m_errorMutex);
+        m_error = e.what();
+      }
+      m_running = false;
+      m_startCv.notify_all();
+      if (propagateError) {
+        throw;
+      }
+    }
+  }
+
   ndn::Face m_face;
   ndn::KeyChain m_keyChain;
   ndn::Name m_controllerPrefix;
@@ -3970,6 +4076,9 @@ private:
   std::unique_ptr<nsf::ServiceController> m_controller;
   std::atomic<bool> m_running{false};
   std::thread m_thread;
+  std::mutex m_startMutex;
+  std::condition_variable m_startCv;
+  bool m_started = false;
   std::mutex m_errorMutex;
   std::string m_error;
 };
@@ -4397,6 +4506,12 @@ public:
     output.success = state->result.success;
     output.encryptedDataName = state->result.encryptedDataName.toUri();
     output.objectId = state->result.objectId;
+    output.plaintextSize = state->result.plaintextSize;
+    output.contentDigest = state->result.contentDigest;
+    output.manifestDigest = state->result.manifestDigest;
+    output.authorizationScope = state->result.authorizationScope;
+    output.protectionEpoch = state->result.protectionEpoch;
+    output.encrypted = state->result.encrypted;
     output.error = state->result.errorMessage;
     return output;
   }
@@ -5024,14 +5139,24 @@ public:
       serviceName, roles, keyScopes, dependencies, artifactDataNames,
       scopeKeyDataNames, roleScopes, ackTimeoutMs, timeoutMs,
       roleProviderAssignments);
-    std::mutex mutex;
-    std::condition_variable cv;
-    bool done = false;
-    bool result = false;
-    std::string error;
+    // The posted callback may outlive the synchronous Python-side wait when
+    // the Face event loop is delayed.  Keep its completion state on the heap;
+    // capturing stack references here turns a bounded timeout into a native
+    // use-after-return and can crash the embedding Python process.
+    struct CommitState
+    {
+      std::mutex mutex;
+      std::condition_variable cv;
+      bool done = false;
+      bool result = false;
+      std::string error;
+    };
+    auto state = std::make_shared<CommitState>();
     boost::asio::post(m_face.getIoContext(),
       [this, requestId, ackClosedDigest, plan = std::move(plan),
-       &mutex, &cv, &done, &result, &error]() mutable {
+       state]() mutable {
+        bool result = false;
+        std::string error;
         try {
           result = m_user->CommitCollaborationPlan(
             ndn::Name(requestId), ackClosedDigest, std::move(plan));
@@ -5040,24 +5165,26 @@ public:
           error = exception.what();
         }
         {
-          std::lock_guard<std::mutex> lock(mutex);
-          done = true;
+          std::lock_guard<std::mutex> lock(state->mutex);
+          state->result = result;
+          state->error = std::move(error);
+          state->done = true;
         }
-        cv.notify_one();
+        state->cv.notify_one();
       });
     {
       py::gil_scoped_release release;
-      std::unique_lock<std::mutex> lock(mutex);
-      if (!cv.wait_for(lock, std::chrono::seconds(3),
-                       [&done] { return done; })) {
+      std::unique_lock<std::mutex> lock(state->mutex);
+      if (!state->cv.wait_for(lock, std::chrono::seconds(3),
+                              [&state] { return state->done; })) {
         throw std::runtime_error(
           "timed out committing deferred collaboration plan");
       }
     }
-    if (!error.empty()) {
-      throw std::runtime_error(error);
+    if (!state->error.empty()) {
+      throw std::runtime_error(state->error);
     }
-    return result;
+    return state->result;
   }
 
   py::list
@@ -7121,7 +7248,11 @@ PYBIND11_MODULE(_ndnsf, m)
     .def_readwrite("payload", &PyAckCandidate::payload)
     .def_readwrite("telemetry", &PyAckCandidate::telemetry)
     .def_readwrite("selection_input_key_offer",
-                   &PyAckCandidate::selectionInputKeyOffer);
+                   &PyAckCandidate::selectionInputKeyOffer)
+    .def_readwrite("signer_identity", &PyAckCandidate::signerIdentity)
+    .def_readwrite("signer_key_locator", &PyAckCandidate::signerKeyLocator)
+    .def_readwrite("validated_wire_digest", &PyAckCandidate::validatedWireDigest)
+    .def_readwrite("trust_schema_validated", &PyAckCandidate::trustSchemaValidated);
 
   py::class_<PyCollaborationAckClosure>(m, "CollaborationAckClosure")
     .def(py::init<>())
@@ -7137,6 +7268,12 @@ PYBIND11_MODULE(_ndnsf, m)
     .def_readwrite("success", &PyLargeDataPublishResult::success)
     .def_readwrite("encrypted_data_name", &PyLargeDataPublishResult::encryptedDataName)
     .def_readwrite("object_id", &PyLargeDataPublishResult::objectId)
+    .def_readwrite("plaintext_size", &PyLargeDataPublishResult::plaintextSize)
+    .def_readwrite("content_digest", &PyLargeDataPublishResult::contentDigest)
+    .def_readwrite("manifest_digest", &PyLargeDataPublishResult::manifestDigest)
+    .def_readwrite("authorization_scope", &PyLargeDataPublishResult::authorizationScope)
+    .def_readwrite("protection_epoch", &PyLargeDataPublishResult::protectionEpoch)
+    .def_readwrite("encrypted", &PyLargeDataPublishResult::encrypted)
     .def_readwrite("error", &PyLargeDataPublishResult::error);
 
   py::class_<PySignedAppDataResult>(m, "SignedAppDataResult")
@@ -7352,6 +7489,56 @@ PYBIND11_MODULE(_ndnsf, m)
         py::arg("forwarding_hints") = std::vector<std::string>{},
         py::call_guard<py::gil_scoped_release>());
 
+  // spec181 T002: minimal cross-language grant verification surface.  The
+  // Provider calls this with the fetched grant Data content bytes; the
+  // verifier is byte-compatible with the Python implementation and locked
+  // by the T003 parity vectors.
+  m.def("verify_and_unwrap_native_grant",
+        [] (const std::string& wireJson,
+            const std::string& authorityPublicKeyRawHex,
+            const std::string& recipientSeedHex,
+            const std::string& providerIdentity,
+            const std::string& requestId,
+            std::uint64_t attempt,
+            const std::string& planCoreDigest,
+            const std::string& modelManifestDigest,
+            const std::string& protectionEpoch,
+            std::uint64_t nowMs) -> py::dict {
+          auto decodeHex = [] (const std::string& text) {
+            std::string out;
+            for (std::size_t index = 0; index < text.size(); index += 2) {
+              out.push_back(static_cast<char>(
+                std::stoul(text.substr(index, 2), nullptr, 16)));
+            }
+            return out;
+          };
+          ndnsf::di::NativeRecipientKey recipient;
+          recipient.kind = ndnsf::di::NativeRecipientKey::Kind::Ed25519Seed;
+          recipient.material = decodeHex(recipientSeedHex);
+          const auto result = ndnsf::di::verifyAndUnwrapNativeGrant(
+            wireJson, decodeHex(authorityPublicKeyRawHex), recipient,
+            providerIdentity, requestId, attempt,
+            planCoreDigest, modelManifestDigest, protectionEpoch, nowMs);
+          py::dict output;
+          output["verified"] = result.verified;
+          output["reason"] = result.reason;
+          output["content_key"] = py::bytes(
+            reinterpret_cast<const char*>(result.contentKey.data()),
+            result.contentKey.size());
+          return output;
+        },
+        py::arg("wire_json"),
+        py::arg("authority_public_key_raw_hex"),
+        py::arg("recipient_seed_hex"),
+        py::arg("provider_identity"),
+        py::arg("request_id"),
+        py::arg("attempt"),
+        py::arg("plan_core_digest"),
+        py::arg("model_manifest_digest"),
+        py::arg("protection_epoch"),
+        py::arg("now_ms"),
+        py::call_guard<py::gil_scoped_release>());
+
   m.def("fetch_segmented_object",
         &fetchSegmentedObject,
         py::arg("base_name"),
@@ -7457,6 +7644,9 @@ PYBIND11_MODULE(_ndnsf, m)
          py::arg("serve_certificates") = true,
          py::arg("bootstrap_token_file") = "")
     .def("start", &NativeServiceController::start)
+    .def("wait_until_ready", &NativeServiceController::waitUntilReady,
+         py::call_guard<py::gil_scoped_release>(),
+         py::arg("timeout_ms") = 10000)
     .def("run", &NativeServiceController::run, py::call_guard<py::gil_scoped_release>())
     .def("stop", &NativeServiceController::stop);
 
@@ -7561,6 +7751,8 @@ PYBIND11_MODULE(_ndnsf, m)
     .def("create_stream", &NativeServiceProvider::createStream,
          py::arg("config"))
     .def("run", &NativeServiceProvider::run, py::call_guard<py::gil_scoped_release>())
+    .def("wait_until_ready", &NativeServiceProvider::waitUntilReady,
+         py::arg("timeout_ms") = 15000)
     .def("stop", &NativeServiceProvider::stop);
 
   py::class_<NativeServiceUser>(m, "NativeServiceUser")
@@ -7732,7 +7924,12 @@ PYBIND11_MODULE(_ndnsf, m)
          &NativeServiceUser::getCollaborationStatusSnapshot,
          py::arg("request_id"), py::arg("timeout_ms") = 500)
     .def("start", &NativeServiceUser::start)
-    .def("stop", &NativeServiceUser::stop)
+    // Stopping may join the Face thread while the last native callback is
+    // unwinding into Python.  Release the interpreter lock during the
+    // synchronous join so the callback can return and teardown cannot
+    // deadlock after a timeout/terminal error.
+    .def("stop", &NativeServiceUser::stop,
+         py::call_guard<py::gil_scoped_release>())
     .def("get_allowed_services", &NativeServiceUser::getAllowedServices)
     .def("refresh_permissions", &NativeServiceUser::refreshPermissions)
     .def("get_ndnsd_services", &NativeServiceUser::getNdnsdServices)

@@ -113,12 +113,19 @@ def build_extension() -> Extension:
 
     return Extension(
         "ndnsf._ndnsf",
-        sources=["src/ndnsf/_ndnsf.cpp"],
+        # NativeGrantVerifier is a DI-layer component (not part of the Core
+        # library), compiled directly into the binding (spec181 T002).
+        sources=[
+            "src/ndnsf/_ndnsf.cpp",
+            str(ROOT / "NDNSF-DistributedInference/cpp/ndnsf-di/"
+                "NativeGrantVerifier.cpp"),
+        ],
         include_dirs=[
             *svs_includes,
             pybind11.get_include(),
             str(ROOT),
             str(ROOT / "ndn-service-framework"),
+            str(ROOT / "NDNSF-DistributedInference/cpp/ndnsf-di"),
             *include_dirs,
         ],
         library_dirs=library_dirs,
