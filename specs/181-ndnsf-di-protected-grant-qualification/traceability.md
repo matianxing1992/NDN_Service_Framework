@@ -36,12 +36,12 @@ Spec 181 从 Spec 180（修订 125 关闭）继承未完成的实现与资格认
 |---|---|---|---|
 | `core/protected_artifacts.py`、`security/*` | T001, T006 | existing（Spec 180 提交 `d36438c2` + 2026-09-05 撤销清理：规范编码 + 进程内权威 + seam + 注册表，无撤销账本） | 签发/发布/获取/解包的生产连线；29 个编码测试作为回归基线 |
 | `app_sdk/placement.py` grant seam、`sdk/placement.py` grant view | T001, T002 | existing（seam 已扩展，`AuthorityBackedGrantProvider` 就绪） | 真实资格路径使用非 `plaintext-v1` 纪元并通过 seam |
-| `provider.py` 装配入口 | T001 | planned | 保护纪元下规范名获取 + 解包 + 租约 + 零化 |
-| `cpp/ndnsf-di/NativeProviderHandler.cpp`、`ProtectedRuntime.{hpp,cpp}`、`_ndnsf.cpp` | T002, T003 | existing（绑定校验）| grant 精确名获取、权威校验、KeyChain 解包、parity |
+| `provider.py` 装配入口 | T001 | done（`_qualify_protected_assembly` + AEAD 密封 + 租约零化）| 保护纪元下规范名获取 + 解包 + 租约 + 零化 |
+| `cpp/ndnsf-di/NativeProviderHandler.cpp`、`ProtectedRuntime.{hpp,cpp}`、`NativeGrantVerifier.{hpp,cpp}`、`_ndnsf.cpp` | T002, T003 | done（native verifier + pybind 最小面 + parity 锁定）| grant 精确名获取、权威校验、KeyChain 解包、parity |
 | `ServiceUser.publish_signed_app_data` 发布路径 | T001 | existing（runner 目录发布已使用）| grant Data 经此路径发布并被 Provider 精确名获取 |
 | `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py` | T005, T006, T008 | existing（barriered runner + 语义判定已修复）| Y-N 全矩阵语义重跑 + Y-A/Y-B 资格 |
 | `scripts/spec180_*`、`packaging/.../jobs/spec180/*` | T009--T012 | existing（Spec 180 工具链，路径沿用）| 候选封印（提交哈希）+ SIF + Tiger 终局 |
-| `tests/fixtures/spec181/grant-vectors-v1.json` | T003 | planned | 正例与全部负例的双侧一致向量 |
+| `tests/fixtures/spec181/grant-vectors-v1.json` | T003 | done（9 case 双侧一致）| 正例与全部负例的双侧一致向量 |
 | 撤销子系统（账本/网络服务/撤销校验） | **另一分支（所有者）** | deferred（本分支不实现） | 集成时插入撤销检查并解除 spec.md Out of Scope 延期标记 |
 | 独立权威网络服务端（生产形态） | **操作者（生产部署前）** | deferred（本分支不实现） | 生产部署前拆分为独立服务并恢复网络服务端形态 |
 
