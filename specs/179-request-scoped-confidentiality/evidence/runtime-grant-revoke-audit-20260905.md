@@ -196,3 +196,92 @@ scheduled refresh is injected"）。窗口耗尽后到达的 grant 依赖 App �
 3. **B**：spec.md SC-022 fallback 归属文字化（App 层 API 为 fallback，
    runtime 不自动重取 permission）；或增加 scheduled permission refresh
    旋钮（默认关，与 revocation 的 scheduled status refresh 分离）。
+
+---
+
+## Closure addendum（2026-09-05，修复已应用 + 门禁重跑；supersedes 上方 report-only 记录）
+
+上方 CONDITIONAL PASS 三发现（A/R1/B）已修复并经全门禁重验。本加章按
+文档声称 / 代码实现 / 测试执行 / 实验测量四层记录。冻结的 2026-09-04
+MiniNDN campaign（`results/spec179-minindn/`）未被触碰；本次网络测量写入
+新目录 `results/spec179-minindn-fixclosure-20260905/`。
+
+### 1. 文档声称（spec.md Amendment，2026-09-05）
+
+- grant-only normative 第 2 条重写 + 新增 "Grant discovery is App-driven"
+  归属段：runtime 永不轮询 permission records；一次已应用的 App 层
+  permission renewal（或显式 refetch）为 target-only refresh 上膛；
+  "armed once ... explicit refetch is the trigger and fallback" 取代
+  "normally initiated after signed status installation ... explicit fetch as
+  fallback"（SC-022 spec.md:598 与 FR-038 变体同文）。
+- SC-022 追加 arrival-order 契约："The single target-only refresh MUST occur
+  whether the signed status install preceded or followed the permission
+  renewal that armed it — no arrival order may silently consume the pending
+  refresh without issuing it."
+- FR-017 追加 R1 契约：crypto rotation 无法完成时 Controller 仍须在后续
+  每个已发布 status 中强制该 revocation（fail-closed），将 rotation 记为
+  pending，并在接受任何后续 revocation 前重试。
+
+### 2. 代码实现（修复后 file:line）
+
+- **A**（User/Provider 对称）：`installControllerStatus` accepted 分支现为
+  `versionChanged → invalidateControllerScopedCaches(...)`；
+  `else if (grantOnlyDkeyRefresh)`（equal-version 迟到 pending 命中）→ 直接
+  调 `refreshNacDkeyForControllerStatus`（ServiceUser.cpp:3922 /
+  ServiceProvider.cpp:11988）。原 invalidate 内 DKEY 块抽为同一 helper
+  （定义 ServiceUser.cpp:4276 / ServiceProvider.cpp:12352；invalidate 内调用
+  ServiceUser.cpp:4211 / ServiceProvider.cpp:12214），保留 wave 去重
+  （m_lastDkeyRefreshWave）、LocalMock defer 与 NOT_REQUIRED 语义
+  （hpp 声明 ServiceUser.hpp:1117 / ServiceProvider.hpp:1127）。
+- **R1**：`rotateAbeGenerationAndReissuePolicies` 现带幂等 fence ——
+  `m_aa.getPublicParametersVersion() != generation*1000+epoch` 时才
+  `rotateKeyGeneration`（避免 reconcile 重试二次滚动 master key）；
+  :415 test-only env 注入 `NDNSF_CONTROLLER_FAULT_INJECT_ABE_ROTATE`。
+  `revoke()` 旋转失败 catch 块置 `m_abeRotationPending=true` 后返回 false
+  （内存 revocation + durable epoch 已生效，fail-closed，ServiceController.cpp:547-549）；
+  下次 revoke 入口先 `reconcilePendingAbeRotation()`（:525），重试成功才
+  接受新 target（实现 :442-453；hpp 声明与成员 :225，含重启后由 durable
+  epoch 权威重派生 ABE identity 的注释）。
+
+### 3. 测试执行（2026-09-05，build-clang-spec179-rv32，327/327 编译 30m46s）
+
+| 层 | 用例 | 结果 |
+|---|---|---|
+| RV-I34 倒序 | `GrantOnlyRefreshSurvivesReverseOrderStatusFirstInstall`（controller-revocation-flow.t.cpp:3254）：先 `installControllerStatus(v2)`（status 通道先行，pending 空 → 0 fetch、wave 未设）；再 `fetchPermissionsFromController`（grant 发现）→ granted 侧 DKEY fetch 恰 1 次、unaffected provider 0 次；重复 fetch 幂等仍 1 | green（机制分析而非单独执行负向：修复前 equal-version install 吞 pending 不刷新 → 该序列断言将得 0 fetch） |
+| RV-U24 注入 | `ControllerRevokeRotationFailureRecordsPendingAndReconciles`（t.cpp:3417，Controller-only）：env 注入 → 首 revoke 返回 false、params name/digest 不变、revocations==1（fail-closed 保留）；env 清除后第二次 revoke → reconcile 成功、params advance、revocations==2 | green |
+| 全套 gate suites | integration `ControllerRevocationFlow` **42/42**（40/40 + 上述 2 例）、`ControllerVersionRefresh`、`RequestScopedSelection`、`RequestScopedResponseConfidentiality`、`Spec175InvocationStream`；unit `RequestScopedConfidentiality`、`ControllerRevocationPolicy`、`ControllerRevocationState`、`GenericDynamicApi`、`RuntimeStatusStorePersistence` | 全部 "No errors detected" |
+
+### 4. 实验测量（MiniNDN fix-closure runs，2026-09-05）
+
+固定二进制 build-clang-spec179-rv32（含 A/R1 修复）三场景真实 MiniNDN
+执行，输出 `results/spec179-minindn-fixclosure-20260905/<scenario>/result.json`
+（冻结的 2026-09-04 campaign 目录未触碰）：
+
+| 场景 | 权威信号（result.json） | 结果 |
+|---|---|---|
+| `grant-only-advance`（正序 grant-only 无回归） | `grantedEpochGE2Fetches==1`（恰一次 target-only DKEY fetch）、`unaffectedEpochGE2Fetches==0`（unaffected 零 fetch）、`grantAbeUnchanged=true`、granted 14/14 行成功、`grantOnlyGateOk=true`、`networkEvidence=true`、executionCount 23 | gatePassed=true |
+| `service-scoped-revocation-with-unaffected-control`（service 撤回复归） | `revocationApplied=true`、11/11 类不受影响/双角色控制链保留、`networkEvidence=true`、executionCount 41 | gatePassed=true |
+| `user-identity-revocation`（identity 撤回复归） | `revocationApplied=true`、`networkEvidence=true`、executionCount 23 | gatePassed=true |
+
+结论：A 修复在倒序路径上新增 equal-version 刷新（RV-I34 集成层确定性验证），
+正序路径网络测量与冻结基线一致（grantedEpochGE2Fetches==1）；R1 修复仅在
+rotate 失败注入路径生效（RV-U24），正常 revoke 的 MiniNDN 撤回家族无回归。
+
+---
+
+## 最终结论（closure verdict）
+
+**PASS。** 原 CONDITIONAL PASS 的 A/R1/B 三发现均已修复：
+- A — equal-version+pending install 现在直接签发被挂起的 grant-only
+  DKEY-only refresh（User/Provider 对称 helper），SC-022 的
+  arrival-order 契约由 RV-I34 集成用例确定性验证；
+- R1 — rotate 失败 fail-closed 记录 + `reconcilePendingAbeRotation()`
+  下次入口重试（幂等 fence 防二次滚动），RV-U24 注入用例验证；
+- B — spec.md SC-022/FR-038/grant-only 归属文字化（App-driven）。
+
+门禁重跑全绿：integration `ControllerRevocationFlow` 42/42（40/40 基线 +
+RV-I34/RV-U24），全部 spec179 unit/integration gate suites "No errors
+detected"；MiniNDN fix-closure 三场景 gatePassed=true（独立结果目录）。
+spec.md/validation-matrix/traceability/AUDIT/docs-architecture 在同一
+commit 内同步。残余项仅为 T014 upstream NAC-ABE package/push（maintainer
+授权动作，非代码门禁）。

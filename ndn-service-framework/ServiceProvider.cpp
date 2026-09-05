@@ -11975,6 +11975,21 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                                                   abeGenerationChanged, &status,
                                                   grantOnlyDkeyRefresh);
             }
+            else if (grantOnlyDkeyRefresh) {
+                // Reverse-order grant-only install: the status channel (a
+                // scheduled refresh or a restore confirmation) installed this
+                // exact version before the PermissionResponse recorded the
+                // grant, so the version-advance invalidate above already ran
+                // with an empty pending set and refreshed nothing.  The
+                // pending entry consumed here must still drive the single
+                // DKEY-only refresh of this wave (FR-017/SC-022); skipping it
+                // would silently lose the grant until the next real version
+                // advance.
+                refreshNacDkeyForControllerStatus(
+                    status.getServiceName(),
+                    status.getControllerVersion(),
+                    abeGenerationChanged, grantOnlyDkeyRefresh);
+            }
             if (advancedFromInstalledStatus) {
                 // A newer ControllerVersion can withdraw this provider's own
                 // grant (identity or service-scoped revocation); the renewal
@@ -12193,37 +12208,12 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             }
         }
         // clearCache() removes the identity DKEY in addition to encrypted
-        // service keys. Immediately schedule a fresh DKEY fetch after a
-        // validated generation change. For grant-only changes the old key
-        // remains active until the complete replacement is installed.
-        // Consumer coalescing handles a constructor-time fetch still in
-        // flight. A LocalMock without its fixture-owned Consumer defers to
-        // its explicit bootstrap path.
-        const bool canRefreshDkey = !m_isLocalMock || m_testNacConsumer != nullptr;
-        if ((abeGenerationChanged || grantOnlyDkeyRefresh) && canRefreshDkey) {
-            if (grantOnlyDkeyRefresh)
-                nacConsumer.refreshDecryptionKey();
-            else
-                nacConsumer.obtainDecryptionKey();
-            NDN_LOG_INFO("NDNSF_NAC_DKEY_REFRESH_REQUESTED role=provider"
-                         << " serviceName=" << serviceUri
-                         << " epoch=" << version.controllerEpoch
-                         << " reason=" << (abeGenerationChanged ?
-                             "generation-change" : "grant-only"));
-        }
-        else if (abeGenerationChanged || grantOnlyDkeyRefresh) {
-            NDN_LOG_INFO("NDNSF_NAC_DKEY_REFRESH_DEFERRED role=provider"
-                         << " serviceName=" << serviceUri
-                         << " epoch=" << version.controllerEpoch
-                         << " reason=local-mock-bootstrap");
-            scheduleDeferredDkeyRefreshRetry(serviceName);
-        }
-        else {
-            NDN_LOG_DEBUG("NDNSF_NAC_DKEY_REFRESH_NOT_REQUIRED role=provider"
-                         << " serviceName=" << serviceUri
-                         << " epoch=" << version.controllerEpoch
-                         << " reason=same-generation-no-grant");
-        }
+        // service keys. A grant-only wave refreshes only the target DKEY; a
+        // generation wave refetches everything (shared helper keeps the
+        // equal-version install path from losing the refresh).
+        refreshNacDkeyForControllerStatus(serviceName, version,
+                                          abeGenerationChanged,
+                                          grantOnlyDkeyRefresh);
         if (abeGenerationChanged) {
             activeNacProducer().clearCache();
             if (status != nullptr) {
@@ -12357,6 +12347,49 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                          "retained-grant-only-same-generation")
                      << " runtimeFamilies=targeted-token,selection-binding,nonce,in-flight-request"
                      << " stateFamilies=abe,message-key,replay");
+    }
+
+    void ServiceProvider::refreshNacDkeyForControllerStatus(
+        const ndn::Name& serviceName, const ControllerVersion& version,
+        bool abeGenerationChanged, bool grantOnlyDkeyRefresh)
+    {
+        if (serviceName.empty() || !version.isValid()) {
+            return;
+        }
+        const auto serviceUri = serviceName.toUri();
+        // clearCache() removes the identity DKEY in addition to encrypted
+        // service keys. Immediately schedule a fresh DKEY fetch after a
+        // validated generation change. For grant-only changes the old key
+        // remains active until the complete replacement is installed.
+        // Consumer coalescing handles a constructor-time fetch still in
+        // flight. A LocalMock without its fixture-owned Consumer defers to
+        // its explicit bootstrap path.
+        auto& nacConsumer = activeNacConsumer();
+        const bool canRefreshDkey = !m_isLocalMock || m_testNacConsumer != nullptr;
+        if ((abeGenerationChanged || grantOnlyDkeyRefresh) && canRefreshDkey) {
+            if (grantOnlyDkeyRefresh)
+                nacConsumer.refreshDecryptionKey();
+            else
+                nacConsumer.obtainDecryptionKey();
+            NDN_LOG_INFO("NDNSF_NAC_DKEY_REFRESH_REQUESTED role=provider"
+                         << " serviceName=" << serviceUri
+                         << " epoch=" << version.controllerEpoch
+                         << " reason=" << (abeGenerationChanged ?
+                             "generation-change" : "grant-only"));
+        }
+        else if (abeGenerationChanged || grantOnlyDkeyRefresh) {
+            NDN_LOG_INFO("NDNSF_NAC_DKEY_REFRESH_DEFERRED role=provider"
+                         << " serviceName=" << serviceUri
+                         << " epoch=" << version.controllerEpoch
+                         << " reason=local-mock-bootstrap");
+            scheduleDeferredDkeyRefreshRetry(serviceName);
+        }
+        else {
+            NDN_LOG_DEBUG("NDNSF_NAC_DKEY_REFRESH_NOT_REQUIRED role=provider"
+                         << " serviceName=" << serviceUri
+                         << " epoch=" << version.controllerEpoch
+                         << " reason=same-generation-no-grant");
+        }
     }
 
     void ServiceProvider::scheduleControllerStatusRefresh(

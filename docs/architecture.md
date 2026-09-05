@@ -90,6 +90,20 @@ User                                Provider(s)                     Controller
   identity's DKEY policy (DKEY-only refresh fence, atomic replacement
   install). Runtime install is atomic per service
   (`RevocationState.*`); affected caches invalidate by service/binding.
+- The single target-only DKEY refresh of a grant-only wave fires exactly
+  once per armed permission renewal regardless of arrival order: it is
+  issued on a version-advance install and also when a later equal-version
+  install consumes the pending entry left by the permission response
+  (shared `refreshNacDkeyForControllerStatus` helper, User/Provider
+  mirrors). Grant discovery is App-driven — the runtime never polls
+  permission records; an applied App-layer renewal (or explicit
+  `fetchPermissionsFromController` refetch) arms the refresh.
+- If the withdrawal's ABE rotation throws, the revocation stays enforced in
+  memory and in every published status (fail-closed), the rotation is
+  recorded pending, and the next `revoke()` entry reconciles it
+  (`reconcilePendingAbeRotation`, idempotent against the durable
+  generation*epoch public-params version) before accepting another target;
+  after restart the durable epoch re-derives the ABE generation.
 - Local NAC-ABE dependency patches (DKEY FreshnessPeriod=0, versioned
   exact public-params fetch, consumer cache invalidation) live on the
   NAC-ABE `Experimental` branch (commit `b1c9c4f`, not pushed).

@@ -13,7 +13,8 @@ box is never inferred from this table.
 | FR-001–FR-004 | Discovery boundary, certificate advertisements | T003 | US1, SC-001/006; `CertificatePublisher` unit suite; encryption-certificate advertisement cases (RV-U13) |
 | FR-005–FR-009, FR-013 | Request bundle, named Input Data, Selection envelope, replay binding | T004 | US1/2, SC-002/003/004; `RequestScopedConfidentiality`, `GenericDynamicApi` selection/replay cases (RV-U08); MiniNDN `selection-response-tamper-and-replay` (14/14) |
 | FR-010–FR-014, FR-022–FR-023 | Response AEAD, signer/recipient checks, segment nonce contract | T005–T006 | US2, SC-002/003/005/006; `RequestScopedResponseConfidentiality` 4/4 and `Spec175InvocationStream` 19/19; per-segment AEAD reference cases (RV-U13); `request-scoped-response-confidentiality.t.cpp` + `evidence/response-runtime-green-20260904.md` |
-| FR-015–FR-018, FR-038 | Signed PolicyStatus, ControllerVersion authority, authorization attributes, withdrawal-driven global ABE rotation, and grant-only target-policy replacement with one lazy DKEY fetch/install | T007 | US4, SC-006/007/008/014/015/022; Controller-authority completeness matrix; RV-U20–RV-U21, RV-I15–RV-I19, RV-I27, RV-I30–RV-I31; `evidence/grant-only-single-issuance-20260904.md`, `evidence/grant-only-dkey-20260903.md` |
+| FR-015–FR-018, FR-038 | Signed PolicyStatus, ControllerVersion authority, authorization attributes, withdrawal-driven global ABE rotation, and grant-only target-policy replacement with one lazy DKEY fetch/install | T007 | US4, SC-006/007/008/014/015/022; Controller-authority completeness matrix; RV-U20–RV-U21, RV-I15–RV-I19, RV-I27, RV-I30–RV-I31, RV-I34 (reverse-order grant-only refresh, audit closure 2026-09-05); `evidence/grant-only-single-issuance-20260904.md`, `evidence/grant-only-dkey-20260903.md` |
+| FR-017 R1 addendum (audit closure) | Rotation failure in `revoke()` stays fail-closed in memory/status, records pending, retries via reconcile before the next revocation | T007 closure | RV-U24 (`ControllerRevokeRotationFailureRecordsPendingAndReconciles`, 2026-09-05); spec.md FR-017; `evidence/runtime-grant-revoke-audit-20260905.md` closure addendum |
 | FR-019–FR-021 | Refresh, expiry, cache invalidation, restart behavior | T008 | US4, SC-007/008/009/013; `ControllerRevocationState`/`ControllerVersionRefresh` suites; RV-U10/U11/U18/U19, RV-I11/RV-I24; MiniNDN `controller-unavailable-expiry` (7/7) |
 | FR-024–FR-025 | Redacted telemetry and separation from permission Data | T001, T005, T009 | SC-002/010/012; `RevocationStateReportsRedactedTypedReasons`, `RequestCryptoFailureNamesAreStable` (RV-U12); redacted MiniNDN trace hashes |
 | FR-026 | Explicit compatibility mode and removal owner | T011–T012 | SC-011/012; executed migration: switch/counters/carrier removed once the MiniNDN and streaming gates passed; owner and threshold in `AUDIT.md` R179-M4 (RESOLVED); default pinned by `RequestScopedDefaultActivationWithConfiguredController`; see also `tasks.md` T012 and this audit's network campaign |
@@ -95,6 +96,20 @@ The three deferred follow-ups T014–T016 are closed or handed off:
   (`evidence/regression-red-green-20260904.md`), both out of spec179 scope
   and unchanged by this work. MiniNDN cross-process coverage remains the
   2026-09-04 campaign (14/14), untouched by these opt-in additions.
+
+## Current evidence status (2026-09-05 runtime grant/revoke audit closure)
+
+The runtime grant/revoke audit findings A (reverse-order grant-only DKEY
+refresh loss), R1 (revoke rotation failure), and B (grant-discovery ownership
+wording) are fixed and re-verified on build `build-clang-spec179-rv32`
+(AUDIT.md closure section; evidence-file closure addendum above). RV-I34
+(`GrantOnlyRefreshSurvivesReverseOrderStatusFirstInstall`) and RV-U24
+(`ControllerRevokeRotationFailureRecordsPendingAndReconciles`) execute the
+new branches; `ControllerRevocationFlow` is 42/42 and every spec179 gate
+suite is green. The forward-path and revocation-family MiniNDN regression
+runs live in `results/spec179-minindn-fixclosure-20260905/` (the frozen
+2026-09-04 campaign directory is untouched). T014's upstream NAC-ABE
+package/push remains the only open maintainer action (user-authorized only).
 
 ## Evidence rules
 

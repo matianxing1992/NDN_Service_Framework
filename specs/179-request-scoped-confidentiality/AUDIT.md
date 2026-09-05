@@ -1,11 +1,66 @@
 # Spec179 Audit — Controller Revocation Test Coverage
 
-## 2026-09-05 runtime grant/revoke audit (report only; no fixes applied)
+## 2026-09-05 runtime grant/revoke audit closure (fixes applied; supersedes the report-only record below)
 
-**Verdict: CONDITIONAL PASS** — runtime service-permission grant/revoke is
-safe (fail-closed at every protected transition; revocation is independent of
-the grant-only mechanism and remains fully covered). Two MEDIUM and one LOW
-non-security findings recorded with no code changes; full report:
+**Verdict: PASS** — the three findings of the report-only audit
+(evidence/runtime-grant-revoke-audit-20260905.md) are fixed and re-verified:
+Finding A (reverse-order grant-only DKEY refresh loss) is closed by an
+equal-version+pending install that now issues the pending DKEY-only refresh
+(User and Provider mirrors), R1 (revoke rotation failure) now records the
+rotation as pending and reconciles it before the next revoke entry, and
+Finding B's spec wording now states the App-driven ownership of grant
+discovery.
+
+- **A (MEDIUM) → fixed.** `installControllerStatus`'s accepted branch now
+  calls the shared `refreshNacDkeyForControllerStatus` helper both on
+  `versionChanged` (via `invalidateControllerScopedCaches`,
+  ServiceUser.cpp:4211 / ServiceProvider.cpp:12214) and on an
+  equal-version install that consumes a pending grant-only entry
+  (ServiceUser.cpp:3922 / ServiceProvider.cpp:11988); helper body keeps the
+  DKEY-only wave fence, LocalMock defer, and NOT_REQUIRED semantics
+  (ServiceUser.cpp:4276 / ServiceProvider.cpp:12352). RV-I34
+  (`GrantOnlyRefreshSurvivesReverseOrderStatusFirstInstall`,
+  controller-revocation-flow.t.cpp:3254) drives status-first → permission-later
+  and asserts exactly one target DKEY fetch (pre-fix zero is mechanism
+  analysis — the equal-version install consumed the pending entry without
+  refreshing — not a separately executed negative).
+- **R1 (MEDIUM) → fixed.** `revoke()` sets `m_abeRotationPending` when
+  `rotateAbeGenerationAndReissuePolicies()` throws and returns false while the
+  revocation stays enforced (memory + every published status); the next
+  `revoke()` entry first calls `reconcilePendingAbeRotation()`
+  (ServiceController.cpp:442-453, gate :525) which retries the rotation with
+  an idempotency fence on `m_aa.getPublicParametersVersion()` vs the target
+  `generation*1000+epoch` (:415 test-only `NDNSF_CONTROLLER_FAULT_INJECT_ABE_ROTATE`
+  injection). RV-U24 (`ControllerRevokeRotationFailureRecordsPendingAndReconciles`,
+  controller-revocation-flow.t.cpp:3417) asserts fail-closed retention +
+  params unchanged + successful reconcile on the next entry. Spec FR-017
+  (spec.md) now states the fail-closed + pending + retry contract.
+- **B (LOW) → fixed in spec.md.** SC-022/FR-038 and the grant-only normative
+  block now state that grant discovery is App-driven — the runtime never polls
+  permission records; an applied App-layer renewal (or explicit
+  `fetchPermissionsFromController` refetch) arms the single target-only
+  refresh, regardless of whether the signed status install preceded or
+  followed the renewal.
+- Re-verified on build `build-clang-spec179-rv32` (2026-09-05): RV-I34 +
+  RV-U24 green; full spec179 gate suites green — integration
+  `ControllerRevocationFlow` 42/42 (was 40/40), `ControllerVersionRefresh`,
+  `RequestScopedSelection`, `RequestScopedResponseConfidentiality`,
+  `Spec175InvocationStream`; unit `RequestScopedConfidentiality`,
+  `ControllerRevocationPolicy`, `ControllerRevocationState`, `GenericDynamicApi`,
+  `RuntimeStatusStorePersistence` — "No errors detected" on every suite.
+  MiniNDN fix-closure runs (new `results/spec179-minindn-fixclosure-20260905/`,
+  frozen 2026-09-04 campaign untouched): grant-only-advance
+  `grantedEpochGE2Fetches==1` forward path intact + revocation regression
+  scenarios green (details in the evidence-file closure addendum).
+- Matrix rows RV-I34 and RV-U24 executed (validation-matrix.md);
+  `docs/architecture.md` grant/revoke lifecycle updated in the same commit.
+
+## 2026-09-05 runtime grant/revoke audit (report only; no fixes applied; historical — superseded by the closure above)
+
+**Historical verdict: CONDITIONAL PASS** — runtime service-permission
+grant/revoke is safe (fail-closed at every protected transition; revocation is
+independent of the grant-only mechanism and remains fully covered). Two MEDIUM
+and one LOW non-security findings recorded with no code changes; full report:
 `evidence/runtime-grant-revoke-audit-20260905.md`.
 
 - **A (MEDIUM, functional/spec, not security)** — grant-only DKEY-only
@@ -13,13 +68,15 @@ non-security findings recorded with no code changes; full report:
   execution: when a grant-only status installs through the independent status
   channel *before* the permission response (reverse order), the later
   equal-version install consumes the pending entry
-  (ServiceUser.cpp:3899-3902 / ServiceProvider.cpp:11966-11968) while
-  `invalidate` — the only consumer of `grantOnlyDkeyRefresh` — runs only on
-  `versionChanged` (ServiceUser.cpp:3906-3911 / ServiceProvider.cpp:11972-11976).
-  The refresh is silently lost until the next real version advance; affected
-  content fails closed (no over-authorization). Spec SC-022's "normally
-  initiated after signed status installation" (spec.md:598) is not met in this
-  order. Untested (all grant-only cases drive the forward order).
+  (ServiceUser.cpp:3899-3902 / ServiceProvider.cpp:11966-11968, pre-fix
+  numbering) while `invalidate` — the only consumer of
+  `grantOnlyDkeyRefresh` — runs only on `versionChanged`
+  (ServiceUser.cpp:3906-3911 / ServiceProvider.cpp:11972-11976, pre-fix
+  numbering). The refresh is silently lost until the next real version
+  advance; affected content fails closed (no over-authorization). Spec
+  SC-022's "normally initiated after signed status installation"
+  (spec.md:598) is not met in this order. Untested (all grant-only cases
+  drive the forward order).
 - **R1 (MEDIUM, carried from 2026-09-03/04)** — `revoke()` ABE-rotation
   failure leaves memory revocation + durably advanced version with no crypto
   rotation/retry/reconcile (ServiceController.cpp:501-511); untested.

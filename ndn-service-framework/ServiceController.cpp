@@ -412,6 +412,13 @@ ServiceController::reissueAbePolicies()
 void
 ServiceController::rotateAbeGenerationAndReissuePolicies()
 {
+  // Test-only fault injection: NDNSF_CONTROLLER_FAULT_INJECT_ABE_ROTATE=1
+  // throws before any crypto work so the revocation-rotation failure path
+  // (recording + reconcile retry) is executable in RV-U24.  Production never
+  // sets this variable.
+  const char* injectRotateFailure = std::getenv("NDNSF_CONTROLLER_FAULT_INJECT_ABE_ROTATE");
+  if (injectRotateFailure != nullptr && *injectRotateFailure != '\0')
+    throw std::runtime_error("injected ABE rotation failure");
   if (!m_controllerVersion.isValid())
     throw std::runtime_error("cannot rotate ABE generation without ControllerVersion");
   const auto generation = m_controllerVersion.controllerGenerationTimestamp;
@@ -419,11 +426,35 @@ ServiceController::rotateAbeGenerationAndReissuePolicies()
   if (generation > (std::numeric_limits<uint64_t>::max() - epoch) / 1000ULL)
     throw std::overflow_error("ABE public-parameter generation version overflow");
   const auto publicParamsVersion = generation * 1000ULL + epoch;
-  m_aa.rotateKeyGeneration(publicParamsVersion);
+  // Idempotence for the reconcile retry (R1): a partial failure that already
+  // committed the rotation for this epoch must not roll the master key a
+  // second time; the retry only re-runs the policy reissue that was skipped.
+  if (m_aa.getPublicParametersVersion() != publicParamsVersion) {
+    m_aa.rotateKeyGeneration(publicParamsVersion);
+  }
   m_abePublicParametersName = currentAbePublicParametersName();
   m_abePublicParametersDigest = abePublicParametersDigest(
       m_aa.getPublicParametersWire());
   reissueAbePolicies();
+}
+
+bool
+ServiceController::reconcilePendingAbeRotation()
+{
+  if (!m_abeRotationPending)
+    return true;
+  try {
+    rotateAbeGenerationAndReissuePolicies();
+  }
+  catch (const std::exception& error) {
+    NDN_LOG_ERROR("NDNSF_CONTROLLER_ABE_REKEY_RETRY_FAILED error=" << error.what());
+    return false;
+  }
+  m_abeRotationPending = false;
+  NDN_LOG_WARN("NDNSF_CONTROLLER_ABE_REKEY_RECONCILED generation="
+               << m_controllerVersion.controllerGenerationTimestamp
+               << " epoch=" << m_controllerVersion.controllerEpoch);
+  return true;
 }
 
 bool
@@ -487,6 +518,12 @@ ServiceController::revoke(const RevocationTarget& target)
       return false;
   }
 
+  // A prior revocation whose ABE rotation failed leaves the crypto
+  // generation behind the enforced epoch.  Refuse a further target until the
+  // rotation reconciles; otherwise every accepted revocation would compound
+  // the same mixed state.
+  if (m_abeRotationPending && !reconcilePendingAbeRotation())
+    return false;
   m_revocations.push_back(target);
   try {
     advanceAuthorizationEpoch();
@@ -506,7 +543,10 @@ ServiceController::revoke(const RevocationTarget& target)
     // The generation store is monotonic; do not pretend an already-persisted
     // ControllerVersion can be rolled back.  Keep the revocation in memory so
     // a subsequent status publication cannot issue authority that the newly
-    // advanced version has withdrawn.
+    // advanced version has withdrawn, and record the pending rotation so the
+    // next revoke entry retries it (reconcilePendingAbeRotation) instead of
+    // serving the mixed state indefinitely.
+    m_abeRotationPending = true;
     return false;
   }
   NDN_LOG_WARN("NDNSF_CONTROLLER_REVOKED kind="

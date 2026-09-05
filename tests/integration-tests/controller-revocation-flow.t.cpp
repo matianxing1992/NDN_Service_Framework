@@ -3251,6 +3251,240 @@ BOOST_AUTO_TEST_CASE(GrantOnlyRefreshIssuesOneTargetFetchWithZeroFanOut)
   std::filesystem::remove(statePath.string() + ".lock");
 }
 
+BOOST_AUTO_TEST_CASE(GrantOnlyRefreshSurvivesReverseOrderStatusFirstInstall)
+{
+  // RV-I34 (Finding A, 2026-09-05): when the status channel installs a
+  // grant-only ControllerVersion advance BEFORE the PermissionResponse that
+  // records the grant, the later equal-version install which consumes the
+  // pending grant-only refresh must still drive the single target-only DKEY
+  // fetch.  Pre-fix the refresh was gated behind the version-change
+  // invalidate (ServiceUser.cpp installControllerStatus), so the pending
+  // entry was consumed and its wave marker set while no fetch was issued;
+  // the following version-change install of the newly granted service was
+  // then suppressed by the same wave marker: the whole grant wave refreshed
+  // nothing until the next real version advance.
+  const auto statePath = std::filesystem::temp_directory_path() /
+                         ("ndnsf-controller-reverse-order-" +
+                          std::to_string(::getpid()) + ".bin");
+  std::filesystem::remove(statePath);
+  std::filesystem::remove(statePath.string() + ".lock");
+  ::setenv("NDNSF_CONTROLLER_GENERATION_STATE", statePath.c_str(), 1);
+
+  ndn::KeyChain controllerKeys;
+  const auto controller = controllerKeys.createIdentity(
+      ndn::Name("/controller/spec179-reverse-order"), ndn::RsaKeyParams(2048));
+  const auto controllerCert = controller.getDefaultKey().getDefaultCertificate();
+  ndn::DummyClientFace::Options controllerFaceOptions;
+  controllerFaceOptions.enableRegistrationReply = true;
+  ndn::DummyClientFace controllerFace(controllerKeys, controllerFaceOptions);
+  ndn::ValidatorConfig controllerValidator(controllerFace);
+  ServiceController serviceController(controllerFace, controllerCert,
+                                      controllerValidator,
+                                      "examples/hello.policies");
+  const auto controllerPrefix = controllerCert.getIdentity();
+  const auto runtimeAaCert =
+      ServiceControllerTestAccess::ensureInternalControllerSigner(serviceController);
+
+  const ndn::Name grantedUser("/example/hello/user-grant-fetch");
+  const ndn::Name unaffectedProvider("/example/hello/provider");
+  const ndn::Name seededService("/HELLO");
+  const ndn::Name grantedService("/NDNSF/DistributedRepo/Store");
+  const auto userCert = ServiceControllerTestAccess::ensureInternalIdentity(
+      serviceController, grantedUser);
+  const auto providerCert = ServiceControllerTestAccess::ensureInternalIdentity(
+      serviceController, unaffectedProvider);
+
+  ndn::KeyChain runtimeKeys;
+  ndn::DummyClientFace runtimeFace(runtimeKeys);
+  ServiceUser user(ServiceUser::LocalMockTag{}, runtimeFace,
+                   ndn::Name("/spec179/reverse-order"), userCert,
+                   runtimeAaCert, "examples/trust-any.conf");
+  ServiceProvider provider(ServiceProvider::LocalMockTag{}, runtimeFace,
+                           ndn::Name("/spec179/reverse-order"), providerCert,
+                           runtimeAaCert, "examples/trust-any.conf");
+  user.setUseTokens(false);
+  provider.setUseTokens(false);
+
+  auto interestRelay = runtimeFace.onSendInterest.connect(
+      [&] (const ndn::Interest& interest) {
+        controllerFace.receive(interest);
+      });
+  auto dataRelay = controllerFace.onSendData.connect(
+      [&] (const ndn::Data& data) {
+        runtimeFace.receive(data);
+      });
+  const auto pump = [&] {
+    const auto pumpDeadline = ndn::time::steady_clock::now() +
+                              ndn::time::milliseconds(800);
+    do {
+      runtimeFace.processEvents(ndn::time::milliseconds(-1));
+      controllerFace.processEvents(ndn::time::milliseconds(-1));
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    } while (ndn::time::steady_clock::now() < pumpDeadline);
+  };
+
+  serviceController.start();
+  pump();
+
+  // Seed the granted identity (permission + status at the seed version)
+  // before refresh fetches are counted.
+  const auto seedVersion = serviceController.getControllerVersion();
+  BOOST_REQUIRE(serviceController.grant(
+      grantedUser, seededService,
+      ndn::Name("/PERMISSION").append(seededService)));
+  const auto seedParamsName =
+      ServiceControllerTestAccess::abePublicParametersName(serviceController);
+  const auto seedParamsDigest =
+      ServiceControllerTestAccess::abePublicParametersDigest(serviceController);
+
+  user.useSigningKeyChainForTest(runtimeKeys);
+  provider.useSigningKeyChainForTest(runtimeKeys);
+  pump();
+  BOOST_CHECK(user.isNacConsumerReadyForTest());
+  BOOST_CHECK(provider.isNacConsumerReadyForTest());
+  user.fetchPermissionsFromController(controllerPrefix);
+  pump();
+  BOOST_CHECK(user.isNacConsumerReadyForTest());
+
+  size_t grantedUserDkeyFetches = 0;
+  size_t providerDkeyFetches = 0;
+  auto dkeyCounter = runtimeFace.onSendInterest.connect(
+      [&] (const ndn::Interest& interest) {
+        const auto uri = interest.getName().toUri();
+        if (uri.find("/DKEY") == std::string::npos) {
+          return;
+        }
+        const auto grantedUserLeaf = grantedUser.get(-1).toUri();
+        const auto unaffectedProviderLeaf = unaffectedProvider.get(-1).toUri();
+        if (uri.find(grantedUserLeaf) != std::string::npos) {
+          ++grantedUserDkeyFetches;
+        }
+        if (uri.find(unaffectedProviderLeaf) != std::string::npos) {
+          ++providerDkeyFetches;
+        }
+      });
+
+  // The grant-only change advances ControllerVersion while the global ABE
+  // pair stays byte-identical.
+  BOOST_REQUIRE(serviceController.grant(
+      grantedUser, grantedService,
+      ndn::Name("/PERMISSION").append(grantedService)));
+  BOOST_CHECK(serviceController.getControllerVersion().compare(seedVersion) > 0);
+  BOOST_CHECK(ServiceControllerTestAccess::abePublicParametersName(serviceController) ==
+              seedParamsName);
+  BOOST_CHECK_EQUAL(ServiceControllerTestAccess::abePublicParametersDigest(serviceController),
+                    seedParamsDigest);
+
+  // REVERSE ORDER, leg 1 — the status channel installs the advanced version
+  // before any permission refetch (as a scheduled refresh would): the seeded
+  // /HELLO status advances v1 -> v2 with an empty pending set, so no refresh
+  // is expected (and the wave marker must stay unset).
+  BOOST_REQUIRE(user.installControllerStatus(
+      serviceController.getPolicyStatus(seededService), true));
+  pump();
+  BOOST_CHECK_EQUAL(grantedUserDkeyFetches, 0U);
+  BOOST_CHECK_EQUAL(providerDkeyFetches, 0U);
+
+  // REVERSE ORDER, leg 2 — the permission response arrives late.  The
+  // whole-table diff marks every service pending, and the tail refetch of the
+  // already-installed /HELLO status is an equal-version install: it consumes
+  // the pending entry and must be the one driving the single target-only
+  // DKEY refresh.  (If the newly granted service's version-change install
+  // were to arrive first it would drive the same single fetch; the fix makes
+  // either order issue exactly one.)
+  user.fetchPermissionsFromController(controllerPrefix);
+  pump();
+  BOOST_CHECK_EQUAL(grantedUserDkeyFetches, 1U);
+  BOOST_CHECK_EQUAL(providerDkeyFetches, 0U);
+  BOOST_CHECK(user.isNacConsumerReadyForTest());
+  BOOST_CHECK(provider.isNacConsumerReadyForTest());
+
+  // Idempotence: an already current-generation DKEY is never refetched by a
+  // repeated permission/status cycle.
+  user.fetchPermissionsFromController(controllerPrefix);
+  pump();
+  BOOST_CHECK_EQUAL(grantedUserDkeyFetches, 1U);
+  BOOST_CHECK_EQUAL(providerDkeyFetches, 0U);
+
+  interestRelay.disconnect();
+  dataRelay.disconnect();
+  dkeyCounter.disconnect();
+  ::unsetenv("NDNSF_CONTROLLER_GENERATION_STATE");
+  std::filesystem::remove(statePath);
+  std::filesystem::remove(statePath.string() + ".lock");
+}
+
+BOOST_AUTO_TEST_CASE(ControllerRevokeRotationFailureRecordsPendingAndReconciles)
+{
+  // RV-U24 (R1, 2026-09-05): a revocation whose ABE rotation throws still
+  // advances the durable epoch and stays enforced in memory and in every
+  // published status (fail-closed), but the crypto identity must remain
+  // untouched; the next revoke entry reconciles the pending rotation before
+  // accepting another target, so the mixed state cannot grow or persist.
+  const auto statePath = std::filesystem::temp_directory_path() /
+                         ("ndnsf-controller-rotate-fail-" +
+                          std::to_string(::getpid()) + ".bin");
+  std::filesystem::remove(statePath);
+  std::filesystem::remove(statePath.string() + ".lock");
+  ::setenv("NDNSF_CONTROLLER_GENERATION_STATE", statePath.c_str(), 1);
+
+  ndn::KeyChain controllerKeys;
+  const auto controller = controllerKeys.createIdentity(
+      ndn::Name("/controller/spec179-rotate-fail"), ndn::RsaKeyParams(2048));
+  const auto controllerCert = controller.getDefaultKey().getDefaultCertificate();
+  ndn::DummyClientFace controllerFace(controllerKeys);
+  ndn::ValidatorConfig controllerValidator(controllerFace);
+  ServiceController serviceController(controllerFace, controllerCert,
+                                      controllerValidator,
+                                      "examples/hello.policies");
+  ServiceControllerTestAccess::ensureInternalControllerSigner(serviceController);
+  ServiceControllerTestAccess::ensureInternalIdentity(
+      serviceController, ndn::Name("/spec179/rotate-fail/user"));
+  ServiceControllerTestAccess::ensureInternalIdentity(
+      serviceController, ndn::Name("/spec179/rotate-fail/provider"));
+
+  const auto paramsNameBefore =
+      ServiceControllerTestAccess::abePublicParametersName(serviceController);
+  const auto paramsDigestBefore =
+      ServiceControllerTestAccess::abePublicParametersDigest(serviceController);
+
+  // Rotation failure injection (test-only env arm inside
+  // rotateAbeGenerationAndReissuePolicies): revoke records the revocation
+  // and the durable epoch advance but cannot rotate the ABE generation.
+  ::setenv("NDNSF_CONTROLLER_FAULT_INJECT_ABE_ROTATE", "1", 1);
+  BOOST_CHECK(!serviceController.revoke(makeServiceRevocation(
+      "/spec179/rotate-fail/user")));
+  ::unsetenv("NDNSF_CONTROLLER_FAULT_INJECT_ABE_ROTATE");
+
+  // Fail-closed while rotation is pending: the revocation is already
+  // enforced in the published status and the crypto identity is unchanged.
+  const auto statusAfterFailure =
+      serviceController.getPolicyStatus(ndn::Name(SERVICE));
+  BOOST_REQUIRE_EQUAL(statusAfterFailure.getRevocations().size(), 1U);
+  BOOST_CHECK_EQUAL(ServiceControllerTestAccess::abePublicParametersName(serviceController),
+                    paramsNameBefore);
+  BOOST_CHECK_EQUAL(ServiceControllerTestAccess::abePublicParametersDigest(serviceController),
+                    paramsDigestBefore);
+
+  // The next revoke entry reconciles the pending rotation first, then
+  // accepts the new target under a fully rotated generation.
+  BOOST_CHECK(serviceController.revoke(makeServiceRevocation(
+      "/spec179/rotate-fail/provider")));
+  const auto paramsNameAfter =
+      ServiceControllerTestAccess::abePublicParametersName(serviceController);
+  const auto paramsDigestAfter =
+      ServiceControllerTestAccess::abePublicParametersDigest(serviceController);
+  BOOST_CHECK(paramsNameAfter != paramsNameBefore ||
+              paramsDigestAfter != paramsDigestBefore);
+  const auto statusAfterReconcile =
+      serviceController.getPolicyStatus(ndn::Name(SERVICE));
+  BOOST_REQUIRE_EQUAL(statusAfterReconcile.getRevocations().size(), 2U);
+
+  ::unsetenv("NDNSF_CONTROLLER_GENERATION_STATE");
+  std::filesystem::remove(statePath);
+  std::filesystem::remove(statePath.string() + ".lock");
+}
+
 BOOST_AUTO_TEST_CASE(RealControllerStatusRevokesEveryTargetKindAtEveryCutPoint)
 {
   // Keep the target-shape matrix at the real Controller boundary.  The unit
