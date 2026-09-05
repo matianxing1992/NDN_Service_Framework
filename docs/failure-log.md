@@ -1,5 +1,20 @@
 # NDNSF Failure Log
 
+## 2026-09-05 — online authorization audit detects censored MiniNDN failures
+- **Area**: Spec179 MiniNDN evidence and exit status
+- **Symptom**: a success plus a failed request while providers were alive was counted as one successful row; a completed run with gatePassed=false returned exit code 0.
+- **Root cause**: the grant collector used the earliest provider log timestamp as a termination cutoff and dropped failure rows; main checked process completion alone.
+- **Fix**: retain all terminal rows, allow bootstrap/workload/drain in the grant scenario lifetime, and require gatePassed=true for exit 0. Two regression cases reproduced both defects before the fix; the 11-case launcher suite passed afterward.
+- **Ref**: tests/minindn/test_request_scoped_confidentiality.py; /tmp/spec179-online-auth-harness-red.log and harness-green.log; T018.
+- **Lesson**: process completion is not a security gate; never infer teardown from a first log or silently discard negative evidence.
+
+## 2026-09-05 — online authorization audit preflight and test authoring corrections
+- **Area**: Context Mode and Controller regression fixture
+- **Symptom**: active authority hashes were stale; project query guard rejected a low-entropy identifier and then an identifier absent from its query; a new C++ regression did not compile.
+- **Root cause**: prior Spec edits were not indexed; malformed guard arguments; makeServiceRevocation takes const char* rather than std::string.
+- **Fix**: reindexed canonical authority documents, verified active health, corrected and reran the guarded project query; passed the temporary URI through c_str for the immediate copying helper call.
+- **Lesson**: use file-backed checkpoints after retrieval failures and verify fixture signatures before writing a regression. An initially rejected query is not accepted authority.
+
 Append-only engineering failure record. Rule (AGENTS.md): every failure that
 costs non-trivial debugging MUST be appended here **in the same checkpoint
 commit that fixes or records it**. New tasks MUST read the recent entries as
