@@ -88,7 +88,7 @@ wired/executed/measured）。
 
 ## Phase 1: User Story 1 — 受保护工件授权正路径（Priority: P1）
 
-- [ ] **T001 [US1] Python Provider 解包接入与 grant 发布**。`provider.py`
+- [x] **T001 [US1] Python Provider 解包接入与 grant 发布**。`provider.py`
   装配入口（`_assemble_certified_role_execution` 之前）在
   `protection_epoch != "plaintext-v1"` 时：按规范名**精确获取** grant
   Data（使用既有精确名 Data 获取原语，禁止 `ValidatorNull`）→
