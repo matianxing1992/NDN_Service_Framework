@@ -55,8 +55,9 @@ from ndnsf_distributed_inference.adapters.onnx.graph import (
 )
 from ndnsf_distributed_inference.planner.sequential_split import (
     ProviderProfile, SequentialSplitCandidate, homogeneous_provider_profiles,
-    nxm_stage_roles, recommend_sequential_splits,
+    recommend_sequential_splits,
 )
+from ndnsf_distributed_inference.plan import nxm_stage_roles
 from ndnsf_distributed_inference.repo_reference import (
     repo_manifest_from_large_data_reference,
 )
@@ -146,6 +147,78 @@ def optional_local_nfd(enabled: bool) -> Iterator[None]:
                            stderr=subprocess.DEVNULL)
 
 
+def _yolo_merge_postprocess(ctx, input_prefetches) -> np.ndarray:
+    """Python equivalent of the native YOLO Merge runner (spec181 T008).
+
+    Decodes the six dependency tensor bundles (3 scales x boxes+scores),
+    applies the confidence filter and the canonical ordering
+    (confidence-desc, class-asc, xyxy-asc), and returns the [1, N, 6]
+    predictions tensor.
+    """
+    boxes_names = (
+        "/model/model.23/one2one_cv2.0/one2one_cv2.0.2/Conv_output_0",
+        "/model/model.23/one2one_cv2.1/one2one_cv2.1.2/Conv_output_0",
+        "/model/model.23/one2one_cv2.2/one2one_cv2.2.2/Conv_output_0",
+    )
+    scores_names = (
+        "/model/model.23/one2one_cv3.0/one2one_cv3.0.2/Conv_output_0",
+        "/model/model.23/one2one_cv3.1/one2one_cv3.1.2/Conv_output_0",
+        "/model/model.23/one2one_cv3.2/one2one_cv3.2.2/Conv_output_0",
+    )
+    grids = (80, 40, 20)
+    strides = (8.0, 16.0, 32.0)
+    threshold = 0.001
+    tensors: dict[str, np.ndarray] = {}
+    for prefetch in input_prefetches:
+        result = ctx.wait_prefetched_input_large_result(
+            prefetch.future, timeout_ms=60000)
+        payload = result if isinstance(result, bytes) else result.payload
+        decoded = _decode_native_tensor_bundle(payload)
+        tensors.update(decoded)
+    detections: list[tuple[float, float, float, float, float, int]] = []
+    for scale in range(3):
+        boxes = tensors[boxes_names[scale]]
+        scores = tensors[scores_names[scale]]
+        grid = grids[scale]
+        stride = strides[scale]
+        if (boxes.shape != (1, 4, grid, grid)
+                or scores.shape != (1, 80, grid, grid)):
+            raise ValueError("YOLO Merge dependency shape contract mismatch")
+        confidences = 1.0 / (1.0 + np.exp(-scores[0]))  # sigmoid
+        for cy in range(grid):
+            for cx in range(grid):
+                cell_conf = confidences[:, cy, cx]
+                if cell_conf.max() < threshold:
+                    continue
+                left, top, right, bottom = (
+                    float(value) for value in boxes[0, :, cy, cx])
+                center_x = (cx + 0.5) * stride
+                center_y = (cy + 0.5) * stride
+                x1 = center_x - left * stride
+                y1 = center_y - top * stride
+                x2 = center_x + right * stride
+                y2 = center_y + bottom * stride
+                if not all(np.isfinite(value)
+                           for value in (x1, y1, x2, y2)):
+                    raise ValueError("YOLO Merge decoded box is non-finite")
+                for class_id in range(80):
+                    confidence = float(cell_conf[class_id])
+                    if confidence >= threshold:
+                        detections.append(
+                            (x1, y1, x2, y2, confidence, class_id))
+    detections.sort(key=lambda item: (
+        -item[4], item[5], item[0], item[1], item[2], item[3]))
+    if len(detections) > 300:
+        detections = detections[:300]
+    if not detections:
+        return np.zeros((1, 0, 6), dtype=np.float32)
+    output = np.array(
+        [[x1, y1, x2, y2, confidence, float(class_id)]
+         for x1, y1, x2, y2, confidence, class_id in detections],
+        dtype=np.float32)
+    return output.reshape(1, -1, 6)
+
+
 def _npz_payload(values: dict) -> bytes:
     buffer = io.BytesIO()
     np.savez(buffer, **values)
@@ -180,9 +253,13 @@ def _decode_native_tensor_bundle(payload: bytes) -> dict[str, np.ndarray]:
             raise ValueError("truncated NDNSF-DI native tensor name")
         name = payload[offset:offset + name_size].decode("utf-8")
         offset += name_size
+        if not name or name in tensors:
+            raise ValueError("duplicate or empty native tensor name")
         element_type = read("<I")
         rank = read("<I")
         shape = [read("<q") for _ in range(rank)]
+        if any(dimension < 0 for dimension in shape):
+            raise ValueError("negative native tensor dimension")
         data_size = read("<Q")
         if offset + data_size > len(payload):
             raise ValueError("truncated NDNSF-DI native tensor payload")
@@ -2378,9 +2455,13 @@ def encode_yolo_output(offset: int, value: np.ndarray) -> bytes:
     })
 
 
-def decode_yolo_output(payload: bytes) -> tuple[int, np.ndarray]:
+def decode_yolo_output(payload: bytes, *, native_predictions_only: bool = False) -> tuple[int, np.ndarray]:
     if payload.startswith(b"NDITB001"):
         tensors = _decode_native_tensor_bundle(payload)
+        if native_predictions_only:
+            if set(tensors) != {"predictions"}:
+                raise ValueError("expected exactly one native predictions tensor")
+            return 0, tensors["predictions"]
         if "output" in tensors:
             return 0, tensors["output"]
         if "predictions" in tensors:
@@ -2388,6 +2469,8 @@ def decode_yolo_output(payload: bytes) -> tuple[int, np.ndarray]:
         if len(tensors) == 1:
             return 0, next(iter(tensors.values()))
         raise KeyError("native YOLO output bundle does not contain output/predictions")
+    if native_predictions_only:
+        raise ValueError("expected native predictions tensor bundle")
     obj = _load_npz_payload(payload)
     return int(obj["offset"]), obj["output"].astype(np.float32)
 
