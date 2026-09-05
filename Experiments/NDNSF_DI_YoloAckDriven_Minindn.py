@@ -793,7 +793,6 @@ class MiniNdnCaseRuntime:
             wiring on this branch (R002 honesty gate)."""
             provider_id = identity[len(repo_marker):]
             argv = [
-                "provider.py",
                 "--config", str(policy),
                 "--generated-policy-dir", str(generated),
                 "--group", str(identities["group"]),
