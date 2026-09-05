@@ -21,6 +21,7 @@
 #include <sys/file.h>
 #include <unistd.h>
 
+#include <ndn-cxx/security/certificate.hpp>
 #include <ndn-cxx/security/signing-helpers.hpp>
 #include <ndn-cxx/security/validator-null.hpp>
 #include <ndn-cxx/security/transform/public-key.hpp>
@@ -749,7 +750,12 @@ namespace ndn_service_framework
                 digest << std::string(reinterpret_cast<const char*>(payload.data()),
                                       payload.size());
             }
-            return "sha256:" + digest.toString();
+            auto hex = digest.toString();
+            std::transform(hex.begin(), hex.end(), hex.begin(),
+                           [] (unsigned char value) {
+                               return static_cast<char>(std::tolower(value));
+                           });
+            return "sha256:" + hex;
         }
 
         void
@@ -791,6 +797,54 @@ namespace ndn_service_framework
                          << " serviceName=" << serviceName.toUri()
                          << " requesterName=" << requesterName.toUri()
                          << " providerName=" << providerName.toUri());
+        }
+
+        ndn_service_framework::AckAuthenticationEvidence
+        makeAckAuthenticationEvidence(
+            const ndn::svs::SVSPubSub::SubscriptionData& subscription)
+        {
+            ndn_service_framework::AckAuthenticationEvidence evidence;
+            // Direct unit helpers may not have an SVS packet.  Do not
+            // manufacture provenance from the ACK name or decrypted payload;
+            // production verification must fail closed when this is empty.
+            if (!subscription.packet) {
+                return evidence;
+            }
+
+            // OnRequestAck is reached from the SVS subscription after the
+            // configured Trust Schema validator has accepted the Data. Keep
+            // that fact as explicit provenance; Python must not infer it from
+            // a reconstructed Provider name or key map.
+            evidence.trustSchemaValidated = true;
+
+            const auto wire = subscription.packet->wireEncode();
+            evidence.wireDigest = sha256DigestString(ndn::Buffer(
+                wire.data(), wire.data() + wire.size()));
+
+            const auto& signatureInfo = subscription.packet->getSignatureInfo();
+            if (!signatureInfo.hasKeyLocator() ||
+                signatureInfo.getKeyLocator().getType() != ndn::tlv::Name) {
+                return evidence;
+            }
+
+            const auto& keyLocatorName = signatureInfo.getKeyLocator().getName();
+            evidence.signerKeyLocator = keyLocatorName.toUri();
+            try {
+                if (ndn::security::Certificate::isValidName(keyLocatorName)) {
+                    evidence.signerIdentity =
+                        ndn::security::extractIdentityFromCertName(keyLocatorName).toUri();
+                }
+                else if (ndn::security::isValidKeyName(keyLocatorName)) {
+                    evidence.signerIdentity =
+                        ndn::security::extractIdentityFromKeyName(keyLocatorName).toUri();
+                }
+            }
+            catch (const std::exception&) {
+                // Preserve the wire digest for diagnostics, but leave the
+                // identity empty so a production verifier rejects the ACK.
+                evidence.signerIdentity.clear();
+            }
+            return evidence;
         }
 
         ndn::Buffer
@@ -1143,13 +1197,22 @@ namespace ndn_service_framework
 
         nac_validator.load(trustSchemaPath);
 
-        // Serve NDNSF and ck messages using IMS
-        m_face.setInterestFilter(ndn::Name(identity.toUri()).append("NDNSF"),
-            std::bind(&ServiceUser::onInterest, this, _1, _2),
-            std::bind(&ServiceUser::onPrefixRegisterFailure, this, _1, _2));
-        m_face.setInterestFilter(ndn::Name(identity.toUri()).append("CK"),
-            std::bind(&ServiceUser::onInterest, this, _1, _2),
-            std::bind(&ServiceUser::onPrefixRegisterFailure, this, _1, _2));
+        // Serve NDNSF and ck messages using IMS.  Registration uses a short
+        // bounded retry because NFD's offline command authenticator can
+        // transiently miss the freshly created signer certificate while the
+        // node PIB is briefly locked by a concurrent keychain operation.
+        for (const auto& servicePrefix :
+             {ndn::Name(identity.toUri()).append("NDNSF"),
+              ndn::Name(identity.toUri()).append("CK")}) {
+            registerInterestFilterWithRetry(
+                m_face,
+                servicePrefix,
+                std::bind(&ServiceUser::onInterest, this, _1, _2),
+                std::function<void(const ndn::Name&)>(),
+                std::bind(&ServiceUser::onPrefixRegisterFailure, this, _1, _2),
+                6,
+                std::chrono::milliseconds(250));
+        }
 
         m_signingInfo = ndn::security::signingByCertificate(signingCert);
 
@@ -1477,32 +1540,16 @@ namespace ndn_service_framework
 	                         << " productionDropped=" << stats.syncProductionJobsDropped
 	                         << " productionStale=" << stats.syncProductionJobsStale
 	                         << " productionQueueDepth=" << stats.syncProductionWorkerQueueDepth);
-	            const auto rejection = m_svsps->getSVSync().getCore().getSyncRejectionStats();
-	            const auto mapping = m_svsps->getMappingFetchStats();
-	            const auto publication = m_svsps->getPublicationFetchStats();
-	            const auto piggy = m_svsps->getPiggybackStats();
-	            NDN_LOG_INFO("NDNSF_SVS_DELIVERY_STATS role=user"
-	                         << " malformed=" << rejection.malformedEnvelope
-	                         << " signaturePolicy=" << rejection.signaturePolicy
-	                         << " vectorDecode=" << rejection.vectorDecode
-	                         << " mappingQueued=" << mapping.queued
-	                         << " mappingPending=" << mapping.pending
-	                         << " mappingDispatched=" << mapping.dispatched
-	                         << " mappingData=" << mapping.data
-	                         << " mappingNacks=" << mapping.nacks
-	                         << " mappingTimeouts=" << mapping.timeouts
-	                         << " mappingRetries=" << mapping.retries
-	                         << " publicationQueued=" << publication.queued
-	                         << " publicationPending=" << publication.pending
-	                         << " publicationDispatched=" << publication.dispatched
-	                         << " publicationData=" << publication.data
-	                         << " publicationNacks=" << publication.nacks
-	                         << " publicationTimeouts=" << publication.timeouts
-	                         << " publicationRetries=" << publication.retries
-	                         << " piggyReceived=" << piggy.received
-	                         << " piggyDelivered=" << piggy.delivered
-	                         << " publicationFallbacks=" << piggy.publicationFetchFallbacks
-	                         << " publicationRetryActivations=" << piggy.publicationRetryActivations);
+            const auto rejection = m_svsps->getSVSync().getCore().getSyncRejectionStats();
+            // The system NDN-SVS ABI used by this build exposes the core
+            // rejection counters but not the newer fetch/piggyback counters.
+            // Keep the portable diagnostics here; provider-specific counters
+            // must be added only when the linked SVS ABI exposes them.
+            NDN_LOG_INFO("NDNSF_SVS_DELIVERY_STATS role=user"
+                         << " malformed=" << rejection.malformedEnvelope
+                         << " signaturePolicy=" << rejection.signaturePolicy
+                         << " vectorDecode=" << rejection.vectorDecode
+                         << " fetchStatsAbi=unavailable");
 	            m_svsps.reset();
         }
         m_cryptoProduceQueue.shutdown();
@@ -3929,6 +3976,16 @@ namespace ndn_service_framework
             auto key = m_hybridMessageCrypto.getOrCreateSendKey(
                 ctx.serviceName, identity, accessAttribute, messageType, m_hybridCryptoCounters);
 
+            // Keep the publication metadata in the native crypto owner.  A
+            // DI caller may bind the returned object to its request, but it
+            // cannot invent the protection epoch, scope, or manifest digest
+            // in Python after this point.
+            result.plaintextSize = plaintext.size();
+            result.contentDigest = sha256DigestString(
+                ndn::Buffer(plaintext.begin(), plaintext.end()));
+            result.authorizationScope = accessAttribute;
+            result.protectionEpoch = key.epochId;
+
             HybridMessageEnvelope envelope;
             envelope.setKeyId(key.keyId);
             envelope.setEpochId(key.epochId);
@@ -3947,6 +4004,8 @@ namespace ndn_service_framework
                     result.errorMessage = "NAC-ABE produced no wrapped large-data MessageKey";
                     return result;
                 }
+                envelope.setWrappedMessageKey(
+                    ndn::Buffer(wrapped.data(), wrapped.size()));
                 serveDataWithIMS(contentData, ckData);
                 m_hybridMessageCrypto.cacheWrappedSendKey(
                     key.keyId, ndn::Buffer(wrapped.data(), wrapped.size()));
@@ -3967,6 +4026,19 @@ namespace ndn_service_framework
 
             auto envelopeBlock = envelope.WireEncode();
             ndn::Buffer encoded(envelopeBlock.begin(), envelopeBlock.end());
+
+            const std::string manifestText =
+                std::string("version=1\n") +
+                "name=" + encryptedDataName.toUri() + "\n" +
+                "object_id=" + result.objectId + "\n" +
+                "plaintext_size=" + std::to_string(result.plaintextSize) + "\n" +
+                "content_digest=" + result.contentDigest + "\n" +
+                "authorization_scope=" + result.authorizationScope + "\n" +
+                "protection_epoch=" + result.protectionEpoch + "\n" +
+                "encrypted=1\n";
+            result.manifestDigest = sha256DigestString(ndn::Buffer(
+                reinterpret_cast<const uint8_t*>(manifestText.data()),
+                manifestText.size()));
 
             ndn::Segmenter segmenter(
                 m_testSigningKeyChain ? *m_testSigningKeyChain : m_keyChain,
@@ -4035,6 +4107,11 @@ namespace ndn_service_framework
             std::lock_guard<std::mutex> lock(_cache_mutex);
             m_IMS.insert(*data, freshness);
         }
+        // spec181 T008: place the signed APP Data in the forwarder's
+        // ContentStore as well, so an exact-name fetch from another process
+        // (the Provider's grant fetch) is satisfied without an identity
+        // prefix route.  Freshness bounds the ContentStore residency.
+        m_face.put(*data);
         NDN_LOG_INFO("Published signed APP Data name=" << dataName
                      << " bytes=" << payload.size());
         return dataName;
@@ -4501,6 +4578,16 @@ namespace ndn_service_framework
             if (state->onError) state->onError({StreamedInvocationErrorCode::SelectionFailed,
                                                 error.what()});
             return nullptr;
+        }
+        // Cancellation may be requested from the application callback thread
+        // before the Face gets to initialize the selected stream consumer.
+        // Install a thread-safe lifecycle fence now that the request-owned
+        // lifecycle has been attached; Face-owned map cleanup remains queued
+        // in state->cancel below.
+        if (const auto lifecycle = getStreamLifecycle(requestId)) {
+            state->cancelFence = [lifecycle] {
+                lifecycle->user().cancel();
+            };
         }
         return state;
     }
@@ -6372,7 +6459,8 @@ namespace ndn_service_framework
 
     bool ServiceUser::handleRequestAckByName(
         const ndn::Name& ackName,
-        const ndn_service_framework::RequestAckMessage& ackMessage)
+        const ndn_service_framework::RequestAckMessage& ackMessage,
+        AckAuthenticationEvidence authenticationEvidence)
     {
         auto parsedV2 = ndn_service_framework::parseRequestAckNameV2(ackName);
         if (parsedV2) {
@@ -6552,7 +6640,8 @@ namespace ndn_service_framework
                 StoredAck{parsedV2->providerName,
                           parsedV2->serviceName,
                           parsedV2->requestId,
-                          ackMessage});
+                          ackMessage,
+                          std::move(authenticationEvidence)});
             if (collectResponseRetryCandidate && ackMessage.getStatus()) {
                 addUniqueName(pendingCall->second.successfulAckProviders,
                               parsedV2->providerName);
@@ -6847,6 +6936,7 @@ namespace ndn_service_framework
         candidate.telemetry =
             m_networkTelemetry.getServicePath(storedAck.providerName,
                                               storedAck.serviceName);
+        candidate.authenticationEvidence = storedAck.authenticationEvidence;
         return candidate;
     }
 
@@ -7689,6 +7779,7 @@ namespace ndn_service_framework
                         CollaborationAssignmentEnvelope envelope;
                         envelope.role = participant.role;
                         envelope.assignedArtifact = participant.assignedArtifact;
+                        envelope.artifactDataName = participant.artifactDataName;
                         envelope.requiresProvisioning =
                             participant.requiresProvisioning;
                         envelope.provisioningTimeoutMs =
@@ -7777,7 +7868,11 @@ namespace ndn_service_framework
                     if (!duplicateOpaqueTuple) {
                         providerAssignments.push_back(std::move(assignment));
                     }
-                    NDN_LOG_INFO("NDNSF_COLLAB_ASSIGNMENT_SELECTED requestId="
+                    // This is qualification evidence, not verbose diagnostics:
+                    // the ACK-driven role map must remain visible under the
+                    // routine *=WARN filter without enabling all ServiceUser
+                    // INFO records.
+                    NDN_LOG_WARN("NDNSF_COLLAB_ASSIGNMENT_SELECTED requestId="
                                  << storedAck.requestId.toUri()
                                  << " providerName=" << storedAck.providerName.toUri()
                                  << " serviceName=" << storedAck.serviceName.toUri()
@@ -8203,6 +8298,8 @@ namespace ndn_service_framework
 
         auto ackV2 = parseRequestAckNameV2(subscription.name);
         if (ackV2) {
+            const auto authenticationEvidence =
+                makeAckAuthenticationEvidence(subscription);
             logValidatedPublicationAudit(
                 "user", "ACK", subscription,
                 ackV2->requestId, ackV2->serviceName,
@@ -8318,7 +8415,8 @@ namespace ndn_service_framework
                     OnRequestAckDecryptionSuccessCallback(ackV2->providerName,
                                                           ackV2->serviceName,
                                                           ackV2->requestId,
-                                                          plaintext);
+                                                          plaintext,
+                                                          authenticationEvidence);
                     return;
                 }
                 if (decryptHybridMessage(
@@ -8327,6 +8425,7 @@ namespace ndn_service_framework
                         [this, providerName = ackV2->providerName,
                          serviceName = ackV2->serviceName,
                          requestId = ackV2->requestId,
+                         authenticationEvidence,
                          subscriptionName = ndn::Name(subscription.name),
                          decryptStartUs](const ndn::Buffer& buffer) {
                             const auto decryptEndUs = nowMicroseconds();
@@ -8344,7 +8443,8 @@ namespace ndn_service_framework
                             OnRequestAckDecryptionSuccessCallback(providerName,
                                                                   serviceName,
                                                                   requestId,
-                                                                  buffer);
+                                                                  buffer,
+                                                                  authenticationEvidence);
                         },
                         [this, providerName = ackV2->providerName,
                          serviceName = ackV2->serviceName,
@@ -8373,6 +8473,7 @@ namespace ndn_service_framework
                             [this, providerName = ackV2->providerName,
                              serviceName = ackV2->serviceName,
                              requestId = ackV2->requestId,
+                             authenticationEvidence,
                              subscriptionName = ndn::Name(subscription.name),
                              decryptStartUs](const ndn::Buffer& buffer) {
                                 const auto decryptEndUs = nowMicroseconds();
@@ -8390,12 +8491,14 @@ namespace ndn_service_framework
                                 OnRequestAckDecryptionSuccessCallback(providerName,
                                                                       serviceName,
                                                                       requestId,
-                                                                      buffer);
+                                                                      buffer,
+                                                                      authenticationEvidence);
                             },
-                            [this, providerName = ackV2->providerName,
-                             serviceName = ackV2->serviceName,
-                             requestId = ackV2->requestId,
-                             subscriptionName = ndn::Name(subscription.name),
+                         [this, providerName = ackV2->providerName,
+                          serviceName = ackV2->serviceName,
+                          requestId = ackV2->requestId,
+                          authenticationEvidence,
+                          subscriptionName = ndn::Name(subscription.name),
                              decryptStartUs](const std::string& error) {
                                 const auto decryptEndUs = nowMicroseconds();
                                 logCryptoDiag("user", "ack", "decrypt", "normal",
@@ -8413,6 +8516,7 @@ namespace ndn_service_framework
                             [this, providerName = ackV2->providerName,
                              serviceName = ackV2->serviceName,
                              requestId = ackV2->requestId,
+                             authenticationEvidence,
                              subscriptionName = ndn::Name(subscription.name),
                              decryptStartUs](const ndn::Buffer& buffer) {
                                 const auto decryptEndUs = nowMicroseconds();
@@ -8422,7 +8526,8 @@ namespace ndn_service_framework
                                 OnRequestAckDecryptionSuccessCallback(providerName,
                                                                       serviceName,
                                                                       requestId,
-                                                                      buffer);
+                                                                      buffer,
+                                                                      authenticationEvidence);
                             },
                             [this, providerName = ackV2->providerName,
                              serviceName = ackV2->serviceName,
@@ -8674,10 +8779,12 @@ void ServiceUser::OnRequestAckDecryptionSuccessCallback(
     const ndn::Name& providerName,
     const ndn::Name& serviceName,
     const ndn::Name& requestID,
-    const ndn::Buffer& buffer)
+    const ndn::Buffer& buffer,
+    AckAuthenticationEvidence authenticationEvidence)
 {
     auto raw = std::make_shared<std::vector<uint8_t>>(buffer.begin(), buffer.end());
-    auto decodeAndPost = [this, providerName, serviceName, requestID, raw]() mutable {
+    auto decodeAndPost = [this, providerName, serviceName, requestID, raw,
+                          authenticationEvidence]() mutable {
         RequestAckMessage AckMessage;
         std::string error;
         try {
@@ -8692,6 +8799,7 @@ void ServiceUser::OnRequestAckDecryptionSuccessCallback(
 
         boost::asio::post(m_face.getIoContext(),
             [this, providerName, serviceName, requestID,
+             authenticationEvidence,
              AckMessage = std::move(AckMessage), error = std::move(error)]() mutable {
                 if (!error.empty()) {
                     NDN_LOG_ERROR("RequestAckMessage decode failed: " << error);
@@ -8705,7 +8813,8 @@ void ServiceUser::OnRequestAckDecryptionSuccessCallback(
                     return;
                 }
                 finishRequestAckOnEventLoop(providerName, serviceName,
-                                            requestID, std::move(AckMessage));
+                                            requestID, std::move(AckMessage),
+                                            std::move(authenticationEvidence));
             });
     };
 
@@ -8721,7 +8830,8 @@ void ServiceUser::finishRequestAckOnEventLoop(
     const ndn::Name& providerName,
     const ndn::Name& serviceName,
     const ndn::Name& requestID,
-    ndn_service_framework::RequestAckMessage AckMessage)
+    ndn_service_framework::RequestAckMessage AckMessage,
+    AckAuthenticationEvidence authenticationEvidence)
 {
         NDN_LOG_DEBUG("OnRequestAckDecryptionSuccessCallback: "
                      << providerName.toUri() << " "
@@ -8743,7 +8853,8 @@ void ServiceUser::finishRequestAckOnEventLoop(
         const ndn::Name ackName =
             ndn_service_framework::makeRequestAckNameV2(providerName, identity,
                                                         serviceName, requestID);
-        if (!handleRequestAckByName(ackName, AckMessage)) {
+        if (!handleRequestAckByName(ackName, AckMessage,
+                                    std::move(authenticationEvidence))) {
             NDN_LOG_DEBUG("V2 ACK did not update pending call state for requestID: "
                           << requestID.toUri());
         }
@@ -9728,9 +9839,14 @@ void ServiceUser::finishRequestAckOnEventLoop(
         }
 
         // Publish the NAC-ABE wrapped MessageKey once under its deterministic
-        // epoch name. Packets carry only the compact key/epoch identifiers;
-        // receivers recover the key by fetching that name when needed.
-        if (m_hybridMessageCrypto.shouldAttachWrappedKey(key.keyId)) {
+        // epoch name.  The first packet in a new epoch also carries that
+        // wrapped key inline so a cold receiver can decrypt without racing the
+        // named-key Interest.  Subsequent packets carry only compact key/epoch
+        // identifiers and recover the key by name when needed.
+        ndn::Buffer cachedWrappedKey;
+        const bool wrappedKeyKnown =
+            m_hybridMessageCrypto.getWrappedSendKey(key.keyId, cachedWrappedKey);
+        if (!wrappedKeyKnown && m_hybridMessageCrypto.shouldAttachWrappedKey(key.keyId)) {
             if (m_timelineTrace) {
                 logTimelineTrace("user", "wrapped_key_published", requestId,
                                  {{"value", "true"},
@@ -9755,6 +9871,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
                 return;
             }
             ndn::Buffer wrappedBuffer(wrapped.data(), wrapped.size());
+            envelope.setWrappedMessageKey(wrappedBuffer);
             serveDataWithIMS(contentData, ckData);
             m_hybridMessageCrypto.cacheWrappedSendKey(key.keyId, wrappedBuffer);
             ++m_hybridCryptoCounters.nac_abe_key_wrap_count;
@@ -10367,9 +10484,13 @@ void ServiceUser::finishRequestAckOnEventLoop(
         // requester/service names from the message body.
         std::string regex_str = "^(<>*)<NDNSF><ACK>(<>*)$";
         NDN_LOG_INFO(regex_str);
+        // Keep the validated Data packet for ACK provenance.  The ACK-aware
+        // V3 planner must bind the inner ProviderOfferV3 to the signer and
+        // wire digest produced by the Trust-Schema-validated packet; a
+        // payload-only subscription cannot provide that evidence.
         m_svsps->subscribeWithRegex(ndn::Regex(regex_str),
                                     std::bind(&ServiceUser::OnRequestAck, this, _1),
-                                    true, false);
+                                    true, true);
         std::string regex_str2 = "^(<>*)<NDNSF><RESPONSE>(<>*)$";
         NDN_LOG_INFO(regex_str2);
         m_svsps->subscribeWithRegex(ndn::Regex(regex_str2),
@@ -10806,6 +10927,9 @@ void ServiceUser::finishRequestAckOnEventLoop(
         else {
             state = std::make_shared<StreamedInvocationSharedState>();
             state->requestId = requestId;
+            state->cancelFence = [lifecycle] {
+                lifecycle->user().cancel();
+            };
             state->cancel = [this, requestId] {
                 boost::asio::post(m_face.getIoContext(), [this, requestId] {
                     cancelStreamRequest(requestId);
@@ -10815,6 +10939,9 @@ void ServiceUser::finishRequestAckOnEventLoop(
         }
         {
             std::lock_guard<std::mutex> lock(state->mutex);
+            if (state->status == StreamedInvocationStatus::Cancelled) {
+                return false;
+            }
             state->status = StreamedInvocationStatus::Streaming;
         }
         auto consumerSlot = std::make_shared<std::weak_ptr<StreamEventConsumer>>();
