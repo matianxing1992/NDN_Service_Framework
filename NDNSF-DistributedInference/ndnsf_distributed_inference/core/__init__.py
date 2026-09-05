@@ -59,8 +59,13 @@ from .hybrid_contracts import (
     RedistributionEdge, TensorDisposition, TensorSlice,
 )
 from .protected_artifacts import (
-    GrantRequestV1, KeyGrantV1, PlaintextLeaseRegistry, ProtectionState,
+    AssembledCiphertextV1, GrantRequestV1, KeyGrantV1,
+    PlaintextLeaseRegistry, ProtectedGrantRejected, ProtectionState,
     RecipientEnvelopeV1,
+    assembled_kdf_context, decrypt_assembled_entry,
+    derive_assembled_bundle_key, derive_assembled_entry_key,
+    encrypt_assembled_entry,
+    grant_from_wire, grant_to_wire,
     verify_and_unwrap_grant,
     wrap_content_key, unwrap_content_key,
 )

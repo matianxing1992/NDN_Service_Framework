@@ -438,6 +438,41 @@ class KeyGrantV1:
             raise ValueError("key grant payload is incomplete") from exc
 
 
+class ProtectedGrantRejected(Exception):
+    """A protected grant failed verification at the authorization boundary.
+
+    Raised with the reason that the verifier registered (expiry, binding
+    mismatch, bad authority signature, AEAD authentication failure, ...).
+    The Provider boundary maps it to the DI_PROTECTED_GRANT_REJECTED error
+    family, never to a synthetic rejection reason.
+    """
+
+
+def grant_to_wire(grant: KeyGrantV1) -> bytes:
+    """Canonical wire bytes for one KeyGrantV1 (published as signed APP Data).
+
+    The published bytes are the canonical payload plus the non-secret
+    digest/signature pair; verification recomputes the digest and checks the
+    signature over the payload (non-circular by construction).
+    """
+    return _canonical_bytes({
+        **grant.payload(),
+        "grantDigest": grant.grant_digest,
+        "authoritySignature": grant.authority_signature,
+    })
+
+
+def grant_from_wire(raw: bytes) -> KeyGrantV1:
+    """Parse canonical wire bytes back into a KeyGrantV1 (fields validated)."""
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise ValueError("key grant wire bytes are malformed") from exc
+    if not isinstance(payload, Mapping):
+        raise ValueError("key grant wire payload is not an object")
+    return KeyGrantV1.from_dict(payload)
+
+
 # ---------------------------------------------------------------------------
 # Provider-side verification and unwrap
 
@@ -475,6 +510,223 @@ def verify_and_unwrap_grant(
         plan_core_digest=expected_plan_core_digest,
         model_manifest_digest=expected_model_manifest_digest,
         protection_epoch=expected_protection_epoch)
+
+
+# ---------------------------------------------------------------------------
+# Assembled-entry AEAD (spec181 FR-013: the unwrapped content key must be
+# consumed by a real cryptographic operation). Derivation follows the
+# Spec170 artifact-assembly-v1 contract:
+#
+#   K_bundle = HKDF(epochContentKey,
+#     "NDNSF-DI/assembled/v1" || modelManifestDigest
+#     || roleAssemblySpecDigest || storageProfileDigest)
+#   K_entry  = HKDF(K_bundle, entryKind)
+#
+# A (K_entry, nonce) pair is used exactly once; wrong keys or tampered
+# ciphertext fail closed at AEAD authentication.
+
+_ASSEMBLED_KDF_PREFIX = b"NDNSF-DI/assembled/v1"
+_ASSEMBLED_CIPHERTEXT_SCHEMA = "ndnsf-di-assembled-ciphertext-v1"
+_ASSEMBLED_ENTRY_KINDS = ("MODEL_PROTO", "EXTERNAL_DATA")
+
+
+def assembled_kdf_context(*, model_manifest_digest: str,
+                          role_assembly_spec_digest: str,
+                          storage_profile_digest: str) -> bytes:
+    """Deterministic KDF info bytes for the assembled-bundle key."""
+    for name in ("model_manifest_digest", "role_assembly_spec_digest",
+                 "storage_profile_digest"):
+        _require_digest(str(locals()[name]), name)
+    return (_ASSEMBLED_KDF_PREFIX
+            + model_manifest_digest.encode("utf-8")
+            + role_assembly_spec_digest.encode("utf-8")
+            + storage_profile_digest.encode("utf-8"))
+
+
+def derive_assembled_bundle_key(epoch_content_key: bytes, *,
+                                model_manifest_digest: str,
+                                role_assembly_spec_digest: str,
+                                storage_profile_digest: str) -> bytes:
+    """K_bundle = HKDF(epochContentKey, assembled-kdf-context)."""
+    if not epoch_content_key or len(epoch_content_key) > 256:
+        raise ValueError("epoch content key is empty or oversized")
+    return HKDF(
+        algorithm=hashes.SHA256(), length=32, salt=None,
+        info=assembled_kdf_context(
+            model_manifest_digest=model_manifest_digest,
+            role_assembly_spec_digest=role_assembly_spec_digest,
+            storage_profile_digest=storage_profile_digest),
+        backend=default_backend(),
+    ).derive(epoch_content_key)
+
+
+def derive_assembled_entry_key(bundle_key: bytes, entry_kind: str) -> bytes:
+    """K_entry = HKDF(K_bundle, entryKind)."""
+    if entry_kind not in _ASSEMBLED_ENTRY_KINDS:
+        raise ValueError("assembled entry kind is not allowlisted")
+    if len(bundle_key) != 32:
+        raise ValueError("assembled bundle key is malformed")
+    return HKDF(
+        algorithm=hashes.SHA256(), length=32, salt=None,
+        info=entry_kind.encode("utf-8"),
+        backend=default_backend(),
+    ).derive(bundle_key)
+
+
+@dataclass(frozen=True)
+class AssembledCiphertextV1:
+    """AEAD-sealed assembled entry (DISK_CIPHERTEXT_ASSEMBLED semantics).
+
+    The manifest binds the AEAD/KDF identifiers, KDF-context digest, entry
+    nonce, ciphertext length, and ciphertext digest; the raw ciphertext
+    travels alongside the manifest and is never exposed inside it.
+    """
+
+    schema: str
+    entry_kind: str
+    kdf_context_digest: str
+    model_manifest_digest: str
+    role_assembly_spec_digest: str
+    storage_profile_digest: str
+    nonce: str
+    ciphertext: bytes = b""
+
+    def __post_init__(self) -> None:
+        if self.schema != _ASSEMBLED_CIPHERTEXT_SCHEMA:
+            raise ValueError("assembled ciphertext schema is not recognized")
+        if self.entry_kind not in _ASSEMBLED_ENTRY_KINDS:
+            raise ValueError("assembled entry kind is not allowlisted")
+        _require_digest(self.kdf_context_digest, "kdf_context_digest")
+        for name in ("model_manifest_digest", "role_assembly_spec_digest",
+                     "storage_profile_digest"):
+            _require_digest(str(getattr(self, name)), name)
+        bytes.fromhex(self.nonce)
+        if not self.ciphertext:
+            raise ValueError("assembled ciphertext is empty")
+
+    @property
+    def ciphertext_digest(self) -> str:
+        return _digest_bytes(self.ciphertext)
+
+    def manifest(self) -> dict[str, Any]:
+        """Canonical manifest: every field except the raw ciphertext."""
+        return {
+            "schema": self.schema,
+            "entryKind": self.entry_kind,
+            "kdf": "HKDF-SHA256",
+            "aead": "AES-256-GCM",
+            "kdfContextDigest": self.kdf_context_digest,
+            "modelManifestDigest": self.model_manifest_digest,
+            "roleAssemblySpecDigest": self.role_assembly_spec_digest,
+            "storageProfileDigest": self.storage_profile_digest,
+            "nonce": self.nonce,
+            "ciphertextLength": len(self.ciphertext),
+            "ciphertextDigest": self.ciphertext_digest,
+        }
+
+    def manifest_bytes(self) -> bytes:
+        return _canonical_bytes(self.manifest())
+
+    def to_bytes(self) -> bytes:
+        """Deterministic framing: 8-byte big-endian manifest length, manifest
+        JSON, then raw ciphertext."""
+        manifest = self.manifest_bytes()
+        return len(manifest).to_bytes(8, "big") + manifest + self.ciphertext
+
+    @classmethod
+    def from_bytes(cls, raw: bytes) -> "AssembledCiphertextV1":
+        """Parse the deterministic framing back into a sealed entry."""
+        if len(raw) < 9:
+            raise ValueError("assembled ciphertext framing is malformed")
+        manifest_length = int.from_bytes(raw[:8], "big")
+        if (manifest_length < 1 or manifest_length > 65536
+                or len(raw) < 8 + manifest_length + 1):
+            raise ValueError("assembled ciphertext framing is malformed")
+        ciphertext = raw[8 + manifest_length:]
+        try:
+            payload = json.loads(raw[8:8 + manifest_length].decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise ValueError("assembled ciphertext framing is malformed") from exc
+        try:
+            sealed = cls(
+                schema=str(payload["schema"]),
+                entry_kind=str(payload["entryKind"]),
+                kdf_context_digest=str(payload["kdfContextDigest"]),
+                model_manifest_digest=str(payload["modelManifestDigest"]),
+                role_assembly_spec_digest=str(payload["roleAssemblySpecDigest"]),
+                storage_profile_digest=str(payload["storageProfileDigest"]),
+                nonce=str(payload["nonce"]),
+                ciphertext=ciphertext,
+            )
+        except KeyError as exc:
+            raise ValueError("assembled ciphertext manifest is incomplete") from exc
+        if (int(payload.get("ciphertextLength", -1)) != len(ciphertext)
+                or payload.get("ciphertextDigest") != sealed.ciphertext_digest):
+            raise ValueError("assembled ciphertext framing does not match its manifest")
+        return sealed
+
+
+def encrypt_assembled_entry(epoch_content_key: bytes, plaintext: bytes, *,
+                            entry_kind: str,
+                            model_manifest_digest: str,
+                            role_assembly_spec_digest: str,
+                            storage_profile_digest: str) -> AssembledCiphertextV1:
+    """AEAD-seal one assembled entry under the derived entry key."""
+    if not plaintext:
+        raise ValueError("assembled entry plaintext is empty")
+    context = assembled_kdf_context(
+        model_manifest_digest=model_manifest_digest,
+        role_assembly_spec_digest=role_assembly_spec_digest,
+        storage_profile_digest=storage_profile_digest)
+    bundle_key = derive_assembled_bundle_key(
+        epoch_content_key, model_manifest_digest=model_manifest_digest,
+        role_assembly_spec_digest=role_assembly_spec_digest,
+        storage_profile_digest=storage_profile_digest)
+    entry_key = derive_assembled_entry_key(bundle_key, entry_kind)
+    nonce = os.urandom(12)
+    ciphertext = AESGCM(entry_key).encrypt(nonce, plaintext, associated_data=context)
+    return AssembledCiphertextV1(
+        schema=_ASSEMBLED_CIPHERTEXT_SCHEMA,
+        entry_kind=entry_kind,
+        kdf_context_digest=_digest_bytes(context),
+        model_manifest_digest=model_manifest_digest,
+        role_assembly_spec_digest=role_assembly_spec_digest,
+        storage_profile_digest=storage_profile_digest,
+        nonce=nonce.hex(),
+        ciphertext=ciphertext,
+    )
+
+
+def decrypt_assembled_entry(epoch_content_key: bytes,
+                            sealed: AssembledCiphertextV1, *,
+                            entry_kind: str | None = None) -> bytes:
+    """Decrypt one sealed assembled entry; any mismatch fails authentication.
+
+    Raises ValueError on wrong content key, tampered ciphertext, tampered
+    context fields, or a wrong entry kind (DI_PROTECTED_GRANT_REJECTED at
+    the call boundary).
+    """
+    if entry_kind is not None and entry_kind != sealed.entry_kind:
+        raise ValueError("assembled entry kind does not match")
+    context = assembled_kdf_context(
+        model_manifest_digest=sealed.model_manifest_digest,
+        role_assembly_spec_digest=sealed.role_assembly_spec_digest,
+        storage_profile_digest=sealed.storage_profile_digest)
+    if sealed.kdf_context_digest != _digest_bytes(context):
+        raise ValueError("assembled KDF context digest does not match")
+    entry_key = derive_assembled_entry_key(
+        derive_assembled_bundle_key(
+            epoch_content_key,
+            model_manifest_digest=sealed.model_manifest_digest,
+            role_assembly_spec_digest=sealed.role_assembly_spec_digest,
+            storage_profile_digest=sealed.storage_profile_digest),
+        sealed.entry_kind)
+    try:
+        return AESGCM(entry_key).decrypt(
+            bytes.fromhex(sealed.nonce), sealed.ciphertext,
+            associated_data=context)
+    except InvalidTag as exc:
+        raise ValueError("assembled entry failed authentication") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -534,8 +786,17 @@ __all__ = [
     "KeyGrantV1",
     "RecipientEnvelopeV1",
     "PlaintextLeaseRegistry",
+    "AssembledCiphertextV1",
     "canonical_digest",
+    "assembled_kdf_context",
+    "derive_assembled_bundle_key",
+    "derive_assembled_entry_key",
+    "encrypt_assembled_entry",
+    "decrypt_assembled_entry",
     "wrap_content_key",
     "unwrap_content_key",
     "verify_and_unwrap_grant",
+    "grant_to_wire",
+    "grant_from_wire",
+    "ProtectedGrantRejected",
 ]
