@@ -2546,6 +2546,198 @@ BOOST_AUTO_TEST_CASE(ConfiguredTrustSchemaControlsControllerStatusValidation)
   std::filesystem::remove(rootPath);
 }
 
+BOOST_AUTO_TEST_CASE(HierarchicalConfiguredTrustAnchorControlsControllerStatusValidation)
+{
+  // FR-040 / RV-I33: a hierarchical configured file trust anchor (root CA ->
+  // intermediate CA -> Controller certificate) must accept live Controller
+  // status when the whole chain is anchored, and must reject a chain-external
+  // signer and a broken-chain intermediate before installation.  The
+  // depth-0 case (signer == file anchor) is covered by
+  // ConfiguredTrustSchemaControlsControllerStatusValidation above; this case
+  // resolves the intermediate certificates over the callback face exactly
+  // like the production CertificateFetcherFromNetwork path does.
+  const auto nonce = std::to_string(
+      std::chrono::system_clock::now().time_since_epoch().count());
+  const auto rootPath = std::filesystem::temp_directory_path() /
+                        ("ndnsf-spec179-hier-root-" + nonce + ".cert");
+  const auto schemaPath = std::filesystem::temp_directory_path() /
+                          ("ndnsf-spec179-hier-schema-" + nonce + ".conf");
+
+  // --- PKI: anchor /spec179/hier, CA /spec179/hier/ca, Controller
+  // /spec179/hier/ca/controller.  Each level owns an isolated PIB/TPM; the
+  // intermediate and Controller certificates are issued by their parent with
+  // KeyChain::makeCertificate() and deterministic names.
+  ndn::KeyChain rootKeys("pib-memory:spec179-hier-root-" + nonce,
+                         "tpm-memory:spec179-hier-root-" + nonce);
+  const auto rootIdentity =
+      rootKeys.createIdentity(ndn::Name("/spec179/hier"), ndn::RsaKeyParams(2048));
+  const auto rootKey = rootIdentity.getDefaultKey();
+  const auto rootCert = rootKey.getDefaultCertificate();
+  ndn::io::save(rootCert, rootPath.string());
+
+  ndn::KeyChain caKeys("pib-memory:spec179-hier-ca-" + nonce,
+                       "tpm-memory:spec179-hier-ca-" + nonce);
+  const auto caIdentity =
+      caKeys.createIdentity(ndn::Name("/spec179/hier/ca"), ndn::RsaKeyParams(2048));
+  const auto caKey = caIdentity.getDefaultKey();
+
+  ndn::KeyChain ctlKeys("pib-memory:spec179-hier-ctl-" + nonce,
+                        "tpm-memory:spec179-hier-ctl-" + nonce);
+  const auto ctlIdentity = ctlKeys.createIdentity(
+      ndn::Name("/spec179/hier/ca/controller"), ndn::RsaKeyParams(2048));
+  const auto ctlKey = ctlIdentity.getDefaultKey();
+
+  ndn::security::MakeCertificateOptions caOpts;
+  caOpts.issuerId = ndn::Name::Component("ROOT");
+  caOpts.version = 1;
+  const auto caCert = rootKeys.makeCertificate(
+      caKey, ndn::security::signingByCertificate(rootCert), caOpts);
+  caKeys.addCertificate(caKey, caCert);
+
+  ndn::security::MakeCertificateOptions ctlOpts;
+  ctlOpts.issuerId = ndn::Name::Component("CA");
+  ctlOpts.version = 1;
+  const auto ctlCert = caKeys.makeCertificate(
+      ctlKey, ndn::security::signingByCertificate(caCert), ctlOpts);
+  // makeCertificate only needs the subject key; register the issued
+  // certificate so signing below can resolve signingByCertificate(ctlCert)
+  // in the Controller's own KeyChain.
+  ctlKeys.addCertificate(ctlKey, ctlCert);
+
+  // Chain-external signer: an attacker-issued identity that sits inside the
+  // Controller name space and self-signs its certificate.  Its status must
+  // be rejected even though the name rules pass and the certificate is
+  // fetchable.
+  ndn::KeyChain rogueKeys("pib-memory:spec179-hier-rogue-" + nonce,
+                          "tpm-memory:spec179-hier-rogue-" + nonce);
+  const auto rogueCert = rogueKeys.createIdentity(
+      ndn::Name("/spec179/hier/ca/controller/rogue"), ndn::RsaKeyParams(2048))
+      .getDefaultKey().getDefaultCertificate();
+
+  // Broken-chain intermediate: an entity outside the anchor signs a
+  // certificate for the CA key.  The Controller certificate below is then
+  // signed by the real CA key against that counterfeit CA certificate, so
+  // the presented chain carries the right key names but its intermediate
+  // does not terminate at the configured anchor (stranger self-signed).
+  // makeCertificate() resolves the signer by the signer-certificate key
+  // name, so the CA-issued Controller certificate must be produced by the
+  // KeyChain that actually holds the CA private key.
+  ndn::KeyChain strangerKeys("pib-memory:spec179-hier-stranger-" + nonce,
+                             "tpm-memory:spec179-hier-stranger-" + nonce);
+  const auto strangerSelfCert = strangerKeys.createIdentity(
+      ndn::Name("/spec179/stranger"), ndn::RsaKeyParams(2048))
+      .getDefaultKey().getDefaultCertificate();
+  ndn::security::MakeCertificateOptions brokenCaOpts;
+  brokenCaOpts.issuerId = ndn::Name::Component("STRANGER");
+  brokenCaOpts.version = 2;
+  const auto brokenCaCert = strangerKeys.makeCertificate(
+      caKey, ndn::security::signingByCertificate(strangerSelfCert),
+      brokenCaOpts);
+  ndn::security::MakeCertificateOptions brokenCtlOpts;
+  brokenCtlOpts.issuerId = ndn::Name::Component("STRANGER");
+  brokenCtlOpts.version = 2;
+  const auto brokenCtlCert = caKeys.makeCertificate(
+      ctlKey, ndn::security::signingByCertificate(brokenCaCert),
+      brokenCtlOpts);
+  ctlKeys.addCertificate(ctlKey, brokenCtlCert);
+
+  {
+    std::ofstream schema(schemaPath);
+    schema << "rule\n{\n"
+           << "  id \"Spec179 hierarchical controller status\"\n"
+           << "  for data\n"
+           << "  filter { type name regex ^<spec179><>*$ }\n"
+           << "  checker { type hierarchical sig-type rsa-sha256 }\n"
+           << "}\n"
+           << "trust-anchor\n{\n"
+           << "  type file\n"
+           << "  file-name \"" << rootPath.string() << "\"\n"
+           << "}\n";
+  }
+
+  PolicyStatusData status;
+  status.setServiceName(ndn::Name("/ObjectDetection/YOLOv8"));
+  status.setControllerVersion(ControllerVersion{1, 1});
+  status.setValidity(1, 5000000000000ULL);
+  status.setPolicyDigest("sha256:" + std::string(64, '0'));
+  status.setControllerCertificate(ctlCert.getName());
+
+  const ndn::Name statusName(
+      "/spec179/hier/ca/controller/NDNSF/POLICY-STATUS/"
+      "ObjectDetection/YOLOv8/v=1/epoch/1");
+  const ndn::Name rogueStatusName(
+      "/spec179/hier/ca/controller/rogue/NDNSF/POLICY-STATUS/"
+      "ObjectDetection/YOLOv8/v=1/epoch/1");
+
+  ndn::Data anchoredData(statusName);
+  anchoredData.setContent(status.wireEncode());
+  ctlKeys.sign(anchoredData, ndn::security::signingByCertificate(ctlCert));
+
+  ndn::Data rogueData(rogueStatusName);
+  rogueData.setContent(status.wireEncode());
+  rogueKeys.sign(rogueData,
+                 ndn::security::signingByCertificate(rogueCert));
+
+  ndn::Data brokenChainData(statusName);
+  brokenChainData.setContent(status.wireEncode());
+  ctlKeys.sign(brokenChainData,
+               ndn::security::signingByCertificate(brokenCtlCert));
+
+  // Certificate fetch relay: the configured trust schema resolves every
+  // non-anchor signer through CertificateFetcherFromNetwork on the callback
+  // face.  Serve the issued certificates under their exact names.
+  const std::vector<std::pair<ndn::Name, ndn::Data>> fetchableCerts = {
+      {caCert.getName(), caCert},
+      {ctlCert.getName(), ctlCert},
+      {rogueCert.getName(), rogueCert},
+      {strangerSelfCert.getName(), strangerSelfCert},
+      {brokenCaCert.getName(), brokenCaCert},
+      {brokenCtlCert.getName(), brokenCtlCert},
+  };
+
+  ndn::DummyClientFace face;
+  auto certRelay = face.onSendInterest.connect(
+      [&] (const ndn::Interest& interest) {
+        for (const auto& entry : fetchableCerts) {
+          if (interest.getName() == entry.first ||
+              entry.first.isPrefixOf(interest.getName())) {
+            face.receive(entry.second);
+            return;
+          }
+        }
+      });
+
+  auto validator = std::make_shared<MessageValidator>(
+      schemaPath.string(), std::nullopt, &face);
+  size_t anchoredSuccess = 0;
+  size_t rogueSuccess = 0;
+  size_t brokenSuccess = 0;
+  size_t failures = 0;
+  validator->validateWithConfiguredTrustSchema(
+      anchoredData,
+      [&] (const ndn::Data&) { ++anchoredSuccess; },
+      [&] (const ndn::Data&, const ndn::security::ValidationError&) { ++failures; });
+  validator->validateWithConfiguredTrustSchema(
+      rogueData,
+      [&] (const ndn::Data&) { ++rogueSuccess; },
+      [&] (const ndn::Data&, const ndn::security::ValidationError&) { ++failures; });
+  validator->validateWithConfiguredTrustSchema(
+      brokenChainData,
+      [&] (const ndn::Data&) { ++brokenSuccess; },
+      [&] (const ndn::Data&, const ndn::security::ValidationError&) { ++failures; });
+  for (size_t i = 0; i < 200 && (anchoredSuccess == 0 || failures < 2); ++i) {
+    face.processEvents(ndn::time::milliseconds(5));
+  }
+
+  BOOST_CHECK_EQUAL(anchoredSuccess, 1U);
+  BOOST_CHECK_EQUAL(rogueSuccess, 0U);
+  BOOST_CHECK_EQUAL(brokenSuccess, 0U);
+  BOOST_CHECK_EQUAL(failures, 2U);
+
+  std::filesystem::remove(schemaPath);
+  std::filesystem::remove(rootPath);
+}
+
 BOOST_AUTO_TEST_CASE(RealControllerStatusDrivesUserAndProviderRevocation)
 {
   // Bridge the Controller mutation to the production User/Provider runtime
