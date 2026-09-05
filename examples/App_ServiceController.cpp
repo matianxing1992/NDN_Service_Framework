@@ -128,13 +128,16 @@ main(int argc, char** argv)
     const auto revokeRetryAfterMs = getIntegerOption(argc, argv, "--revoke-retry-after-ms", -1);
     const auto runForMs = getIntegerOption(argc, argv, "--run-for-ms", 0);
     // Deterministic grant-only version advance (Spec179 MiniNDN gate): issue
-    // one additional /PERMISSION grant at a bounded offset while the global
+    // one additional role-specific grant at a bounded offset while the global
     // ABE pair stays byte-identical, so the campaign can observe the single
     // lazy replacement-DKEY fetch of the granted identity and the unchanged
     // behavior of every unaffected identity.
     const auto grantAfterMs = getIntegerOption(argc, argv, "--grant-additional-after-ms", -1);
     const auto grantIdentity = getOption(argc, argv, "--grant-additional-identity", "");
     const auto grantService = getOption(argc, argv, "--grant-additional-service", "/HELLO");
+    const auto grantRole = getOption(argc, argv, "--grant-additional-role", "user");
+    if (grantRole != "user" && grantRole != "provider")
+      throw std::invalid_argument("--grant-additional-role must be user or provider");
     if (revokeAfterMs < -1 || runForMs < 0 || grantAfterMs < -1)
       throw std::invalid_argument(
         "--revoke-after-ms/--run-for-ms/--grant-additional-after-ms must be >= 0 or omitted");
@@ -222,11 +225,12 @@ main(int argc, char** argv)
     if (grantAfterMs >= 0) {
       const ndn::Name targetIdentity(grantIdentity);
       const ndn::Name serviceName(grantService);
+      const ndn::Name attribute = ndn::Name(
+          grantRole == "provider" ? "/SERVICE" : "/PERMISSION").append(serviceName);
       scheduler.schedule(ndn::time::milliseconds(grantAfterMs),
-        [&controller, targetIdentity, serviceName] {
+        [&controller, targetIdentity, serviceName, attribute] {
           const bool success = controller.grant(
-            targetIdentity, serviceName,
-            ndn::Name("/PERMISSION").append(serviceName));
+            targetIdentity, serviceName, attribute);
           const auto version = controller.getControllerVersion();
           std::cout << "NDNSF_GRANT_ONLY_APPLIED success=" << (success ? 1 : 0)
                     << " identity=" << targetIdentity.toUri()

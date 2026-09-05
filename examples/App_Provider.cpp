@@ -557,6 +557,18 @@ main(int argc, char** argv)
     provider.init();
     provider.fetchPermissionsFromController(controllerPrefix);
 
+    // Permission discovery is application-owned, including online grants
+    // after the initial bounded fetch has exhausted its retries.
+    const auto permissionRefetchAfterMs =
+        envSizeOption("NDNSF_PERMISSION_REFETCH_AFTER_MS", 0);
+    if (permissionRefetchAfterMs > 0) {
+      scheduler.schedule(ndn::time::milliseconds(permissionRefetchAfterMs),
+          [&provider, controllerPrefix] {
+        NDN_LOG_INFO("NDNSF_APP_PERMISSION_REFETCH");
+        provider.fetchPermissionsFromController(controllerPrefix);
+      });
+    }
+
     const int runForMs = parseIntOption(argc, argv, "--run-for-ms", 0);
     if (runForMs < 0) {
       std::cerr << "--run-for-ms must be non-negative" << std::endl;

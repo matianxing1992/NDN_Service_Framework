@@ -139,6 +139,15 @@ User                                Provider(s)                     Controller
 
 ## NAC-ABE routing
 
+Controller grants use `/PERMISSION/<service>` for service use by a User and
+`/SERVICE/<service>` for service offering by a Provider. The Controller example
+selects these explicitly with `--grant-additional-role` (default `user`). Both
+role examples support application-owned delayed permission discovery through
+`NDNSF_PERMISSION_REFETCH_AFTER_MS`; Controller policy mutation alone does not
+mean the role has installed new permission/key material. A newly eligible
+Provider also requires Users to renew their provider permission table before
+targeting it. This is the existing discovery contract, not a new wire mode.
+
 - NAC-ABE protects service-level confidential discovery before Provider
   selection only. `/PERMISSION/<service>` attributes authorize Users for
   ACK/Response; `/SERVICE/<service>` attributes authorize Providers for

@@ -31,6 +31,7 @@ ROOT = Path(__file__).resolve().parents[2]
 TOPOLOGY = Path(__file__).with_name("spec179-topology.conf")
 POLICY = ROOT / "examples/spec179-revocation.policies"
 POLICY_GRANT_ONLY = ROOT / "examples/spec179-revocation-grantonly.policies"
+POLICY_PROVIDER_GRANT = ROOT / "examples/spec179-provider-grant.policies"
 TRUST_SCHEMA = ROOT / "examples/trust-schema.conf"
 SERVICE_NAME = "/HELLO"
 CONTROLLER_PREFIX = "/example/hello/controller"
@@ -61,6 +62,8 @@ SCENARIOS = [
     "selection-response-tamper-and-replay",
     "grant-only-advance",
     "grant-after-permission-exhaustion",
+    "provider-grant-only-advance",
+    "provider-grant-after-permission-exhaustion",
     "revocation-rotation-failure-retry",
 ]
 
@@ -185,8 +188,8 @@ def _run_nfdc(node: Any, socket: str, command: str) -> str:
 
 def _set_startup_permission_loss(node: Any, enabled: bool) -> Dict[str, Any]:
     """Bound initial permission retries to a real isolated transport outage."""
-    if node.name != "user-b" or not getattr(node, "inNamespace", False):
-        raise RuntimeError("permission loss requires the isolated user-b namespace")
+    if node.name not in {"user-b", "provider-b"} or not getattr(node, "inNamespace", False):
+        raise RuntimeError("permission loss requires the isolated user-b or provider-b namespace")
     command = ["iptables", "--wait", "5", "-I" if enabled else "-D", "OUTPUT",
                "-p", "udp", "--dport", "6363", "-m", "comment", "--comment",
                "spec179-permission-bootstrap", "-j", "DROP"]
@@ -194,7 +197,7 @@ def _set_startup_permission_loss(node: Any, enabled: bool) -> Dict[str, Any]:
     if code != 0:
         raise RuntimeError("permission loss command failed: %s %s" % (stdout, stderr))
     return {"node": node.name, "enabled": enabled, "timeUs": time.time_ns() // 1000,
-            "scope": "outbound UDP port 6363 in user-b namespace"}
+            "scope": "outbound UDP port 6363 in %s namespace" % node.name}
 
 
 def _configure_nfd(ndn: Any, nodes: Sequence[Any]) -> None:
@@ -881,6 +884,25 @@ def _scenario_config(scenario: str) -> Dict[str, Any]:
                            "providerA": 1000, "providerB": 1000},
                 "recovery": "explicit-permission-renewal",
             })
+    elif scenario in {"provider-grant-only-advance", "provider-grant-after-permission-exhaustion"}:
+        config.update({
+            "revokeAfterMs": -1, "providerGrant": True,
+            "policyFile": str(POLICY_PROVIDER_GRANT),
+            "grantRole": "provider", "grantAfterMs": 8000,
+            "grantIdentity": PROVIDER_ROOT + "/B", "grantService": SERVICE_NAME,
+            "providerPermissionRefetchAfterMs": 12000,
+            "permissionRefetchAfterMs": 16000,
+            "knownProvidersByUser": {"A": "A", "B": "B"},
+            "requestDurationMs": 32000, "lifetimeMs": 55000,
+            "recovery": "provider-permission-renewal",
+            "knobMs": {"userA": 1000, "userB": 1000, "providerA": 1000, "providerB": 1000},
+        })
+        if scenario == "provider-grant-after-permission-exhaustion":
+            config.update({"grantAfterMs": 30000,
+                           "providerPermissionRefetchAfterMs": 40000,
+                           "permissionRefetchAfterMs": 44000,
+                           "initialProviderPermissionTransportLoss": True,
+                           "requestDurationMs": 65000, "lifetimeMs": 90000})
     return config
 
 
@@ -1091,6 +1113,8 @@ def execute_gate(output: Path, scenario: str = SCENARIOS[0],
                      q(config.get("grantIdentity", USER_ROOT + "/B")),
                      "--grant-additional-service",
                      q(str(config.get("grantService", SERVICE_NAME)))]
+            if config.get("grantRole"):
+                args += ["--grant-additional-role", q(config["grantRole"])]
         if revoke:
             args += ["--revoke-after-ms",
                      str(revoke_after_ms if revoke_after_ms is not None
@@ -1138,7 +1162,8 @@ def execute_gate(output: Path, scenario: str = SCENARIOS[0],
             q(user_binary), "--user-identity", q(USER_ROOT + "/" + user_id),
             "--provider-root", q(PROVIDER_ROOT),
             "--known-provider-ids",
-            "A" if config["mode"] == "targeted" else "A,B",
+            config.get("knownProvidersByUser", {}).get(
+                user_id, "A" if config["mode"] == "targeted" else "A,B"),
             "--group-prefix", q(GROUP_PREFIX),
             "--controller-prefix", q(CONTROLLER_PREFIX),
             "--trust-schema", q(TRUST_SCHEMA),
@@ -1198,6 +1223,13 @@ def execute_gate(output: Path, scenario: str = SCENARIOS[0],
 
         for provider_id, node_name in (("A", "provider-a"), ("B", "provider-b")):
             provider_env = {}
+            if provider_id == "B" and config.get("providerPermissionRefetchAfterMs"):
+                provider_env.update({
+                    "NDNSF_PERMISSION_FETCH_MAX_ATTEMPTS": "2",
+                    "NDNSF_PERMISSION_FETCH_LIFETIME_MS": "500",
+                    "NDNSF_PERMISSION_FETCH_RETRY_BACKOFF_MS": "0",
+                    "NDNSF_PERMISSION_REFETCH_AFTER_MS": str(config["providerPermissionRefetchAfterMs"]),
+                })
             knob = int((config.get("knobMs") or {}).get(
                 "provider" + provider_id, 0))
             if knob > 0:
@@ -1209,12 +1241,27 @@ def execute_gate(output: Path, scenario: str = SCENARIOS[0],
                 # Two one-time pairs force a real fast-path consumption and a
                 # bounded refill within the eight-request workload.
                 provider_env["NDNSF_TARGETED_TOKEN_BATCH_SIZE"] = "2"
-            _launch_process(
-                ndn, node_name, "provider-%s" % provider_id,
-                provider_command(provider_id,
-                                 output / ("provider-%s" % provider_id) /
-                                 "provider-lifecycle.csv"),
-                output, shared_keychain, processes, provider_env)
+            loss_node = (next(node for node in nodes if node.name == node_name)
+                         if provider_id == "B" and config.get("initialProviderPermissionTransportLoss")
+                         else None)
+            loss_events = []
+            loss_path = output / "provider-permission-startup-loss.json"
+            if loss_node is not None:
+                loss_events.append(_set_startup_permission_loss(loss_node, True))
+                loss_path.write_text(json.dumps(loss_events, indent=2) + "\n", encoding="utf-8")
+            try:
+                _launch_process(
+                    ndn, node_name, "provider-%s" % provider_id,
+                    provider_command(provider_id,
+                                     output / ("provider-%s" % provider_id) /
+                                     "provider-lifecycle.csv"),
+                    output, shared_keychain, processes, provider_env)
+                if loss_node is not None:
+                    _wait_marker(output / "provider-B.log", "final=1", processes, 10)
+            finally:
+                if loss_node is not None:
+                    loss_events.append(_set_startup_permission_loss(loss_node, False))
+                    loss_path.write_text(json.dumps(loss_events, indent=2) + "\n", encoding="utf-8")
             # The role examples share a campaign PIB/TPM.  Start each process
             # only after the previous one has completed its KeyChain
             # initialization; concurrent sqlite writers otherwise race before
@@ -1434,7 +1481,8 @@ def execute_gate(output: Path, scenario: str = SCENARIOS[0],
     common_gate = (
         evidence["status"] == "completed" and
         evidence["networkEvidence"] and
-        (evidence["revocationApplied"] or grant_only_gate) and
+        (evidence["revocationApplied"] or grant_only_gate or
+         (config.get("providerGrant") and scenario_passed)) and
         evidence["executionCount"] > 0 and
         evidence["requestPublicationCount"] > 0 and
         (bool(evidence["terminalOwner"]) or stream_mode) and

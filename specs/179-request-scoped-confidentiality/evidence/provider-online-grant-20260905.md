@@ -1,6 +1,6 @@
 # Controller-authorized Provider online grant
 
-Status: T021 implementation and network validation pending.
+Status: T021 example/launcher changes and27/27 component tests pass; native/network pending.
 
 User clarification: authorization means Controller permission to use services
 as a User and to offer services as a Provider. Existing16-case MiniNDN evidence
@@ -25,3 +25,18 @@ service. Retain all failures; test malformed/missing/early evidence negatively.
 Workflow: existing Context/CodeGraph/Spec Kit/GSD gates continue from T020;
 provider-specific CodeGraph queries and repository source confirmed the gap.
 ARS remains inapplicable to this implementation regression.
+
+Implemented Controller `--grant-additional-role=user|provider` (default User)
+and Provider `NDNSF_PERMISSION_REFETCH_AFTER_MS`, matching the User example.
+New scenarios are `provider-grant-only-advance` and
+`provider-grant-after-permission-exhaustion`; both keep Provider/A as control,
+target User/B exclusively at Provider/B, and renew User/B's provider table after
+the Provider grant. The late scenario isolates UDP loss in Provider/B's own
+namespace until its observed final permission timeout, then removes the rule.
+
+Evidence root remains `results/spec179-nac-compatibility-20260905/`.
+`provider-grant-evaluator-red.log`:11 failures before the evaluator exists;
+`provider-grant-evaluator-green.log`:11 pass; combined launcher/guard/evaluator
+`provider-grant-launcher-final.log`:27 pass. The initial combined failure only
+matched the old User-only guard-error wording; the final test covers both host
+role names and ensures neither can reach packet-filter mutation.
