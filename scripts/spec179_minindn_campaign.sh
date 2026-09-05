@@ -7,9 +7,9 @@
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT" || exit 2
-OUT="${ROOT}/results/spec179-minindn"
+OUT="${NDNSF_CAMPAIGN_OUTPUT:-${ROOT}/results/spec179-minindn-$(date +%Y%m%d-%H%M%S)}"
 LAUNCHER="tests/minindn/run_request_scoped_confidentiality.py"
-BUILD_DIR="build-clang-spec179-nac3"
+BUILD_DIR="${NDNSF_BUILD_DIR:-build-clang-spec179-rv32}"
 ALL=(
   user-identity-revocation
   provider-identity-revocation
@@ -25,6 +25,7 @@ ALL=(
   controller-restart
   selection-response-tamper-and-replay
   grant-only-advance
+  grant-after-permission-exhaustion
 )
 if [[ "${1:-}" == "--dry" ]]; then
   for s in "${ALL[@]}"; do
@@ -32,24 +33,40 @@ if [[ "${1:-}" == "--dry" ]]; then
   done
   exit 0
 fi
-SCENS=("${@:-${ALL[@]}}")
+if (( $# > 0 )); then
+  SCENS=("$@")
+else
+  SCENS=("${ALL[@]}")
+fi
+for s in "${SCENS[@]}"; do
+  if [[ ! " ${ALL[*]} " == *" $s "* ]]; then
+    echo "unknown scenario: $s" >&2
+    exit 2
+  fi
+  if [[ -e "$OUT/$s" ]]; then
+    echo "refusing to overwrite existing scenario evidence: $OUT/$s" >&2
+    exit 2
+  fi
+done
 mkdir -p "$OUT"
 : > "$OUT/campaign-summary.tsv"
 printf 'scenario\tgatePassed\tstatus\trevocationApplied\tgrantOnlyGateOk\tnetworkEvidence\texecutionCount\trunDurationSec\texit\n' \
   >> "$OUT/campaign-summary.tsv"
+campaign_rc=0
 for s in "${SCENS[@]}"; do
   dir="$OUT/$s"
-  rm -rf "$dir"           # keep each scenario dir a single-run evidence unit
   mkdir -p "$dir"
   started=$(date +%s)
   sudo -n python3 "$LAUNCHER" --execute --scenario "$s" \
     --output "$dir" --build-dir "$BUILD_DIR" > "$dir/run.stdout.json" 2>&1
   rc=$?
+  if (( rc != 0 )); then campaign_rc=1; fi
   ended=$(date +%s)
   # Compact per-scenario gate summary appended as TSV for the evidence pass.
   python3 - "$dir/result.json" "$rc" "$((ended - started))" "$OUT/campaign-summary.tsv" <<'PYEOF'
 import json,sys
 path,rc,dur,tsv=sys.argv[1],int(sys.argv[2]),int(sys.argv[3]),sys.argv[4]
+r={}
 try:
     r=json.load(open(path))
     line="%(s)s\t%(g)s\t%(st)s\t%(ra)s\t%(gog)s\t%(ne)s\t%(ec)s\t%(du)s\t%(rc)s" % {
@@ -62,7 +79,10 @@ except Exception as e:
 with open(tsv,"a") as f:
     f.write(line+"\n")
 print(line)
+sys.exit(0 if rc == 0 and r.get("gatePassed") is True else 1)
 PYEOF
+  if (( $? != 0 )); then campaign_rc=1; fi
 done
 sudo -n chown -R "$(id -u):$(id -g)" "$OUT" 2>/dev/null || true
 echo "campaign done -> $OUT/campaign-summary.tsv"
+exit "$campaign_rc"

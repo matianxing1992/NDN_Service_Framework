@@ -1,5 +1,16 @@
 # Implementation Plan: Request-Scoped Confidentiality and Epoch Revocation
 
+## Online authorization recovery amendment (2026-09-05)
+
+T017 repairs the existing pending-rotation state machine: reconcile before
+duplicate-target return or any grant mutation, and durably advance the epoch
+before a recovery attempt changes parameter identity. Previously published
+failure statuses remain immutable; failed retries retain the withdrawal.
+T018 validates late App-owned permission renewal after startup retries expire
+and makes the MiniNDN gate retain all failed requests and return a failing exit
+code for a failed gate. Detailed audit, negative reproductions and final results
+live in `evidence/online-authorization-audit-20260905.md`.
+
 **Branch**: `UAV-Experimental` | **Date**: 2026-09-01 | **Spec**: `spec.md`
 
 ## Summary
