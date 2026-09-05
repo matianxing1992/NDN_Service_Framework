@@ -1611,6 +1611,14 @@ namespace ndn_service_framework
         NDN_LOG_WARN("NDNSF_PROVIDER_INIT_STAGE stage=constructor_done provider="
                      << identity.toUri());
 
+        // Opt-in durable runtime status (NDNSF_PERSIST_RUNTIME_STATE, FR-039):
+        // re-verify and seed statuses accepted by an earlier process of this
+        // identity, then confirm each against its Controller online.
+        if (RuntimeStatusStore::enabled()) {
+            m_runtimeStatusStore = std::make_unique<RuntimeStatusStore>(
+                RuntimeStatusStore::defaultStorePath("provider", identity));
+        }
+        restorePersistedRuntimeStatuses();
 
     }
 
@@ -1669,6 +1677,15 @@ namespace ndn_service_framework
         m_handlerPool.setThreadCount(0);
         m_ackPool.setThreadCount(0);
         m_signingInfo = ndn::security::signingByCertificate(signingCert);
+        // Opt-in durable runtime status (NDNSF_PERSIST_RUNTIME_STATE, FR-039):
+        // re-verify and seed statuses accepted by an earlier process of this
+        // identity, then confirm each against its Controller online.  The
+        // LocalMock trust schema resolves synchronously.
+        if (RuntimeStatusStore::enabled()) {
+            m_runtimeStatusStore = std::make_unique<RuntimeStatusStore>(
+                RuntimeStatusStore::defaultStorePath("provider", identity));
+        }
+        restorePersistedRuntimeStatuses();
     }
 
     void
@@ -10177,6 +10194,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                              << " generation="
                              << status.getControllerVersion().controllerGenerationTimestamp
                              << " epoch=" << status.getControllerVersion().controllerEpoch);
+                persistAcceptedControllerStatus(validatedData, status);
                 clearInFlight();
             },
             [retryValidationFailure](const ndn::Data& badData,
@@ -11967,6 +11985,183 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             scheduleControllerStatusRefresh(status.getServiceName(), status);
         }
         return accepted;
+    }
+
+    void ServiceProvider::persistAcceptedControllerStatus(
+        const ndn::Data& validatedData, const PolicyStatusData& status)
+    {
+        if (m_runtimeStatusStore == nullptr) {
+            return;
+        }
+        const auto serviceKey = status.getServiceName().toUri();
+        if (serviceKey.empty()) {
+            return;
+        }
+        RuntimeStatusStore::Record record;
+        record.serviceName = status.getServiceName();
+        record.controllerVersion = status.getControllerVersion();
+        record.installTimeMs = nowMilliseconds();
+        record.abePublicParametersName = status.getAbePublicParametersName();
+        record.abePublicParametersDigest = status.getAbePublicParametersDigest();
+        const auto policyWire = status.wireEncode();
+        const auto dataWire = validatedData.wireEncode();
+        record.policyStatusWire =
+            ndn::Buffer(policyWire.data(), policyWire.size());
+        record.statusDataWire =
+            ndn::Buffer(dataWire.data(), dataWire.size());
+        m_persistedRuntimeStatuses[serviceKey] = std::move(record);
+        std::vector<RuntimeStatusStore::Record> records;
+        records.reserve(m_persistedRuntimeStatuses.size());
+        for (const auto& entry : m_persistedRuntimeStatuses) {
+            records.push_back(entry.second);
+        }
+        if (!m_runtimeStatusStore->persist(records)) {
+            NDN_LOG_ERROR("Runtime status persist failed service=" << serviceKey);
+        }
+    }
+
+    void ServiceProvider::restorePersistedRuntimeStatuses()
+    {
+        if (m_runtimeStatusStore == nullptr) {
+            return;
+        }
+        std::vector<RuntimeStatusStore::Record> records;
+        try {
+            if (!m_runtimeStatusStore->load(records)) {
+                NDN_LOG_WARN("Runtime status restore skipped: no usable store"
+                             " (cold start or corrupt store fails closed)");
+                return;
+            }
+        }
+        catch (const std::exception& e) {
+            NDN_LOG_ERROR("Runtime status restore aborted: " << e.what());
+            return;
+        }
+        if (records.empty()) {
+            return;
+        }
+        NDN_LOG_WARN("Runtime status restore candidates=" << records.size());
+        const auto nowMs = nowMilliseconds();
+        for (const auto& record : records) {
+            const auto& serviceName = record.serviceName;
+            const auto serviceKey = serviceName.toUri();
+            if (record.policyStatusWire.empty() || record.statusDataWire.empty()) {
+                continue;
+            }
+            // Decode the persisted status for the expiry gate and for the
+            // Controller identity the signed Data must be bound to.
+            PolicyStatusData persistedStatus;
+            bool decoded = false;
+            try {
+                decoded = persistedStatus.wireDecode(ndn::Block(ndn::span<const uint8_t>(
+                        record.policyStatusWire.data(),
+                        record.policyStatusWire.size())));
+            }
+            catch (const std::exception&) {
+                decoded = false;
+            }
+            if (!decoded) {
+                NDN_LOG_ERROR("Runtime status restore: undecodable status"
+                              << " service=" << serviceKey);
+                continue;
+            }
+            if (!persistedStatus.validate(nowMs)) {
+                NDN_LOG_WARN("Runtime status restore: expired, not restored"
+                             << " service=" << serviceKey);
+                continue;
+            }
+            ndn::Name controllerIdentity;
+            try {
+                controllerIdentity = ndn::security::extractIdentityFromCertName(
+                    persistedStatus.getControllerCertificate());
+            }
+            catch (const std::exception&) {
+                controllerIdentity = ndn::Name();
+            }
+            if (controllerIdentity.empty()) {
+                NDN_LOG_ERROR("Runtime status restore: malformed controller cert"
+                              << " service=" << serviceKey);
+                continue;
+            }
+            const auto expectedVersion = record.controllerVersion;
+            const auto seedRecord =
+                std::make_shared<RuntimeStatusStore::Record>(record);
+            auto signedData = std::make_shared<ndn::Data>();
+            try {
+                signedData->wireDecode(ndn::Block(ndn::span<const uint8_t>(
+                    record.statusDataWire.data(),
+                    record.statusDataWire.size())));
+            }
+            catch (const std::exception&) {
+                NDN_LOG_ERROR("Runtime status restore: undecodable signed Data"
+                              << " service=" << serviceKey);
+                continue;
+            }
+            // A persisted record is only seeded after the very same checks a
+            // live status Data must pass: trust-anchor validation of the
+            // signed Data, the signer-identity binding, and the exact-version
+            // accept gate.  Until a record passes, this process behaves as a
+            // cold start for that service.
+            validator->validateWithConfiguredTrustSchema(
+                *signedData,
+                [this, serviceKey, serviceName, controllerIdentity,
+                 expectedVersion, seedRecord](const ndn::Data& validatedData) {
+                    if (!isSignedByIdentity(validatedData, controllerIdentity)) {
+                        NDN_LOG_ERROR("Runtime status restore signer mismatch"
+                                     << " service=" << serviceKey);
+                        return;
+                    }
+                    PolicyStatusData status;
+                    const auto& content = validatedData.getContent();
+                    bool ok = content.type() == PolicyStatusData::TYPE &&
+                        status.wireDecode(content);
+                    if (!ok && content.value_size() > 0) {
+                        auto [parsed, block] = ndn::Block::fromBuffer(
+                            ndn::span<const uint8_t>(content.value(),
+                                                     content.value_size()));
+                        ok = parsed && status.wireDecode(block);
+                    }
+                    if (!ok || status.getServiceName() != serviceName ||
+                        status.getControllerVersion() != expectedVersion ||
+                        !status.validate(nowMilliseconds()) ||
+                        !installControllerStatus(status, true)) {
+                        NDN_LOG_ERROR("Runtime status restore rejected"
+                                     << " service=" << serviceKey);
+                        return;
+                    }
+                    {
+                        RuntimeStatusStore::Record current = *seedRecord;
+                        current.installTimeMs = nowMilliseconds();
+                        m_persistedRuntimeStatuses[serviceKey] = std::move(current);
+                    }
+                    std::vector<RuntimeStatusStore::Record> refresh;
+                    refresh.reserve(m_persistedRuntimeStatuses.size());
+                    for (const auto& entry : m_persistedRuntimeStatuses) {
+                        refresh.push_back(entry.second);
+                    }
+                    if (!m_runtimeStatusStore->persist(refresh)) {
+                        NDN_LOG_ERROR("Runtime status restore persist failed"
+                                     << " service=" << serviceKey);
+                    }
+                    NDN_LOG_WARN("Runtime status restored service=" << serviceKey
+                                 << " generation="
+                                 << expectedVersion.controllerGenerationTimestamp
+                                 << " epoch=" << expectedVersion.controllerEpoch);
+                    // Bounded online confirmation: the Controller's current
+                    // status is authority.  If it has advanced or revoked, the
+                    // normal accept path installs the newer version; offline,
+                    // the restore stands until the scheduled refresh or an
+                    // explicit fetch supersedes it.
+                    fetchPolicyStatusFromController(
+                        controllerIdentity, serviceName, 1);
+                },
+                [this, serviceKey](const ndn::Data& badData,
+                                   const ndn::security::ValidationError& error) {
+                    NDN_LOG_ERROR("Runtime status restore validation failed"
+                                 << " service=" << serviceKey
+                                 << " reason=" << error);
+                });
+        }
     }
 
     void ServiceProvider::invalidateControllerScopedCaches(

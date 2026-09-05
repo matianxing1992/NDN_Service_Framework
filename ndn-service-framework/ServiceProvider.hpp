@@ -18,11 +18,13 @@
 #include "StreamFacade.hpp"
 #include "RevocationState.hpp"
 #include "PolicyRefreshCoordinator.hpp"
+#include "RuntimeStatusStore.hpp"
 
 #include <functional>
 #include <chrono>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -750,6 +752,17 @@ namespace ndn_service_framework{
              * Data has passed the configured trust validator. */
             bool installControllerStatus(const PolicyStatusData& status,
                                          bool controllerSignatureValid = true);
+            /** Persist an accepted Controller status Data (opt-in durable
+             * mode, FR-039); no-op when the store is disabled. */
+            void persistAcceptedControllerStatus(
+                const ndn::Data& validatedData,
+                const PolicyStatusData& status);
+            /** Restore persisted per-service statuses after startup (opt-in
+             * durable mode, FR-039): unexpired, never-superseded records are
+             * re-verified against the configured trust anchor and seeded as
+             * authority; each seed schedules a bounded online confirmation
+             * refresh whose Controller answer is authority. */
+            void restorePersistedRuntimeStatuses();
             std::optional<ControllerVersion> getControllerVersion() const;
             std::optional<ControllerVersion> getControllerVersion(
                 const ndn::Name& serviceName) const;
@@ -1541,6 +1554,12 @@ namespace ndn_service_framework{
             // DKEY refresh was requested; same-wave service status installs
             // collapse into that single identity-wide replacement fetch.
             std::optional<ControllerVersion> m_lastDkeyRefreshWave;
+            // Opt-in durable runtime status (NDNSF_PERSIST_RUNTIME_STATE):
+            // accepted per-service statuses are persisted and restored across
+            // process restart.  DKEY material is never stored.
+            std::unique_ptr<RuntimeStatusStore> m_runtimeStatusStore;
+            std::map<std::string, RuntimeStatusStore::Record>
+                m_persistedRuntimeStatuses;
             // Process-incarnation fence used by deployment capability and
             // readiness contracts. It is never an authorization secret.
             const uint64_t m_processStartedAtUs = static_cast<uint64_t>(
