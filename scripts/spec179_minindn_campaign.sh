@@ -26,6 +26,7 @@ ALL=(
   selection-response-tamper-and-replay
   grant-only-advance
   grant-after-permission-exhaustion
+  revocation-rotation-failure-retry
 )
 if [[ "${1:-}" == "--dry" ]]; then
   for s in "${ALL[@]}"; do

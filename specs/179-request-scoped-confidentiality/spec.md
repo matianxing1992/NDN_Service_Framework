@@ -177,6 +177,13 @@ the current post-revocation generation and cannot reactivate the old DKEY.
 
 ### Edge Cases
 
+- A pending failed withdrawal MUST be reconciled before any subsequent grant
+  or revoke, including a retry of the same target. Failed recovery preserves
+  the withdrawal. Recovery MUST reserve a newer durable ControllerVersion
+  before changing ABE parameter identity, because the failure status may
+  already have been published. Successful same-target recovery returns true;
+  a duplicate of an already completed withdrawal remains a false/no-op.
+
 - A Request with a missing, expired, non-RSA, or digest-mismatched User encryption certificate MUST fail before key delivery.
 - An ACK with a missing, expired, revoked, or digest-mismatched Provider encryption certificate MUST not be selectable.
 - Duplicate Selection packets with the same binding MUST be idempotent only until the first successful consumption; conflicting duplicates MUST be rejected.

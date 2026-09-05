@@ -128,6 +128,11 @@ struct ServiceControllerTestAccess
     return controller.m_abePublicParametersName;
   }
 
+  static bool reconcilePendingAbeRotation(ServiceController& controller)
+  {
+    return controller.reconcilePendingAbeRotation();
+  }
+
   static std::string
   abePublicParametersDigest(const ServiceController& controller)
   {
@@ -3483,6 +3488,87 @@ BOOST_AUTO_TEST_CASE(ControllerRevokeRotationFailureRecordsPendingAndReconciles)
   ::unsetenv("NDNSF_CONTROLLER_GENERATION_STATE");
   std::filesystem::remove(statePath);
   std::filesystem::remove(statePath.string() + ".lock");
+}
+
+BOOST_AUTO_TEST_CASE(PendingRotationFencesGrantAndPreservesImmutableStatus)
+{
+  // Exercise each public recovery entry independently: a normal duplicate
+  // remains a no-op, but a failed withdrawal must be recoverable by retrying
+  // that same operation, and grant must never reuse its old ABE generation.
+  for (const std::string entry : {"revoke", "grant", "reconcile"}) {
+    BOOST_TEST_CONTEXT("recovery entry=" << entry) {
+      const auto statePath = std::filesystem::temp_directory_path() /
+          ("ndnsf-pending-rotation-" + entry + std::to_string(::getpid()) + ".bin");
+      std::filesystem::remove(statePath);
+      std::filesystem::remove(statePath.string() + ".lock");
+      ::setenv("NDNSF_CONTROLLER_GENERATION_STATE", statePath.c_str(), 1);
+      ndn::KeyChain keys;
+      const auto identity = keys.createIdentity(
+          ndn::Name("/controller/pending-rotation/" + entry), ndn::RsaKeyParams(2048));
+      ndn::DummyClientFace face(keys);
+      ndn::ValidatorConfig validator(face);
+      ServiceController controller(face, identity.getDefaultKey().getDefaultCertificate(),
+                                   validator, "examples/hello.policies");
+      ServiceControllerTestAccess::ensureInternalControllerSigner(controller);
+      const ndn::Name user("/spec179/pending-rotation/user");
+      ServiceControllerTestAccess::ensureInternalIdentity(controller, user);
+      BOOST_REQUIRE(controller.grant(user, ndn::Name(SERVICE),
+                                     ndn::Name("/PERMISSION").append(ndn::Name(SERVICE))));
+      const auto before = controller.getPolicyStatus(ndn::Name(SERVICE));
+      const auto retainedKey = ServiceControllerTestAccess::abePrivateKey(controller, user);
+      const auto target = makeUserServiceRevocation(user.toUri().c_str());
+      ::setenv("NDNSF_CONTROLLER_FAULT_INJECT_ABE_ROTATE", "1", 1);
+      BOOST_CHECK(!controller.revoke(target));
+      const auto failed = controller.getPolicyStatus(ndn::Name(SERVICE));
+      BOOST_CHECK_EQUAL(failed.getRevocations().size(), 1U);
+      const auto recover = [&] {
+        if (entry == "revoke")
+          return controller.revoke(target);
+        if (entry == "grant")
+          return controller.grant(user, ndn::Name(SERVICE),
+                                  ndn::Name("/PERMISSION").append(ndn::Name(SERVICE)));
+        return ServiceControllerTestAccess::reconcilePendingAbeRotation(controller);
+      };
+      // A still-failing retry must not remove the durable withdrawal.
+      BOOST_CHECK(!recover());
+      BOOST_CHECK_EQUAL(controller.getPolicyStatus(ndn::Name(SERVICE))
+                            .getRevocations().size(), 1U);
+      ::unsetenv("NDNSF_CONTROLLER_FAULT_INJECT_ABE_ROTATE");
+      const auto publishedBeforeRecovery = controller.getPolicyStatus(ndn::Name(SERVICE));
+      BOOST_CHECK(recover());
+      const auto recovered = controller.getPolicyStatus(ndn::Name(SERVICE));
+      BOOST_CHECK(recovered.getAbePublicParametersDigest() !=
+                  before.getAbePublicParametersDigest());
+      // Peers may have accepted the failure status. New parameter identity
+      // at the same version is conflicting immutable authority, not recovery.
+      BOOST_CHECK(recovered.getControllerVersion().compare(
+                      publishedBeforeRecovery.getControllerVersion()) > 0);
+      RevocationState runtime{ndn::Name(SERVICE)};
+      const auto now = static_cast<uint64_t>(std::chrono::duration_cast<
+          std::chrono::milliseconds>(std::chrono::system_clock::now()
+                                        .time_since_epoch()).count());
+      BOOST_CHECK(runtime.acceptStatus(publishedBeforeRecovery, now));
+      BOOST_CHECK(runtime.acceptStatus(recovered, now));
+      BOOST_CHECK_EQUAL(recovered.getRevocations().size(), entry == "grant" ? 0U : 1U);
+      if (entry == "grant") {
+        const ndn::Name attribute = ndn::Name("/PERMISSION").append(ndn::Name(SERVICE));
+        const std::string secret = "fresh-after-recovery";
+        const auto ciphertext = ServiceControllerTestAccess::abeEncrypt(controller, attribute, secret);
+        BOOST_CHECK(ServiceControllerTestAccess::decryptFailsClosed(
+            ServiceControllerTestAccess::abePublicParameters(controller), retainedKey,
+            ciphertext, secret));
+        const auto replacement = ServiceControllerTestAccess::abePrivateKey(controller, user);
+        const auto recoveredPlaintext = ServiceControllerTestAccess::abeDecrypt(
+            controller, replacement, ciphertext);
+        BOOST_CHECK_EQUAL(std::string(recoveredPlaintext.begin(), recoveredPlaintext.end()), secret);
+      }
+      if (entry == "revoke")
+        BOOST_CHECK(!controller.revoke(target)); // completed duplicate stays a no-op
+      ::unsetenv("NDNSF_CONTROLLER_GENERATION_STATE");
+      std::filesystem::remove(statePath);
+      std::filesystem::remove(statePath.string() + ".lock");
+    }
+  }
 }
 
 BOOST_AUTO_TEST_CASE(RealControllerStatusRevokesEveryTargetKindAtEveryCutPoint)

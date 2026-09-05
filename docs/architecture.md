@@ -100,9 +100,11 @@ User                                Provider(s)                     Controller
   `fetchPermissionsFromController` refetch) arms the refresh.
 - If the withdrawal's ABE rotation throws, the revocation stays enforced in
   memory and in every published status (fail-closed), the rotation is
-  recorded pending, and the next `revoke()` entry reconciles it
-  (`reconcilePendingAbeRotation`, idempotent against the durable
-  generation*epoch public-params version) before accepting another target;
+  recorded pending, and the next `revoke()` (including same-target retry) or
+  `grant()` entry reconciles it before changing policy. Each recovery attempt
+  reserves a newer durable ControllerVersion before rotating, preserving
+  immutable failure statuses already accepted by peers. A still-failing retry
+  preserves the withdrawal and refuses the grant;
   after restart the durable epoch re-derives the ABE generation.
 - Local NAC-ABE dependency patches (DKEY FreshnessPeriod=0, versioned
   exact public-params fetch, consumer cache invalidation) live on the

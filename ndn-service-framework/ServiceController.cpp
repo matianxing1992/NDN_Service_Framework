@@ -417,8 +417,12 @@ ServiceController::rotateAbeGenerationAndReissuePolicies()
   // (recording + reconcile retry) is executable in RV-U24.  Production never
   // sets this variable.
   const char* injectRotateFailure = std::getenv("NDNSF_CONTROLLER_FAULT_INJECT_ABE_ROTATE");
-  if (injectRotateFailure != nullptr && *injectRotateFailure != '\0')
+  if (injectRotateFailure != nullptr && *injectRotateFailure != '\0') {
+    // A one-shot network fault leaves subsequent explicit retries runnable.
+    if (std::string(injectRotateFailure) == "once")
+      ::unsetenv("NDNSF_CONTROLLER_FAULT_INJECT_ABE_ROTATE");
     throw std::runtime_error("injected ABE rotation failure");
+  }
   if (!m_controllerVersion.isValid())
     throw std::runtime_error("cannot rotate ABE generation without ControllerVersion");
   const auto generation = m_controllerVersion.controllerGenerationTimestamp;
@@ -426,9 +430,9 @@ ServiceController::rotateAbeGenerationAndReissuePolicies()
   if (generation > (std::numeric_limits<uint64_t>::max() - epoch) / 1000ULL)
     throw std::overflow_error("ABE public-parameter generation version overflow");
   const auto publicParamsVersion = generation * 1000ULL + epoch;
-  // Idempotence for the reconcile retry (R1): a partial failure that already
-  // committed the rotation for this epoch must not roll the master key a
-  // second time; the retry only re-runs the policy reissue that was skipped.
+  // Avoid rotating twice within one reserved epoch. A pending-recovery
+  // attempt reserves a fresh epoch before reaching this function because
+  // the previous attempt's status may already have been published.
   if (m_aa.getPublicParametersVersion() != publicParamsVersion) {
     m_aa.rotateKeyGeneration(publicParamsVersion);
   }
@@ -444,6 +448,11 @@ ServiceController::reconcilePendingAbeRotation()
   if (!m_abeRotationPending)
     return true;
   try {
+    // The failure epoch may already have been served with the previous ABE
+    // identity. Replacing that identity at the same version would conflict
+    // with immutable cached status and be rejected by every accepting peer.
+    // Persist a new version before touching crypto on every recovery attempt.
+    advanceAuthorizationEpoch();
     rotateAbeGenerationAndReissuePolicies();
   }
   catch (const std::exception& error) {
@@ -509,21 +518,30 @@ ServiceController::revoke(const RevocationTarget& target)
 {
   if (!m_generationReady || !target.isValid())
     return false;
+  const bool recovering = m_abeRotationPending;
+  // Reconcile before the duplicate-target check: callers retry the operation
+  // that returned false, not an unrelated revocation invented to trigger it.
+  if (!reconcilePendingAbeRotation())
+    return false;
   for (const auto& existing : m_revocations) {
     if (existing.kind == target.kind &&
         existing.targetIdentity == target.targetIdentity &&
         existing.serviceName == target.serviceName &&
         existing.certificateDigest == target.certificateDigest &&
-        existing.authorizationAttribute == target.authorizationAttribute)
-      return false;
+        existing.authorizationAttribute == target.authorizationAttribute) {
+      if (recovering) {
+        NDN_LOG_WARN("NDNSF_CONTROLLER_REVOKED kind="
+                     << static_cast<int>(target.kind)
+                     << " identity=" << target.targetIdentity
+                     << " service=" << target.serviceName
+                     << " generation=" << m_controllerVersion.controllerGenerationTimestamp
+                     << " epoch=" << m_controllerVersion.controllerEpoch
+                     << " recovered=true");
+      }
+      return recovering;
+    }
   }
 
-  // A prior revocation whose ABE rotation failed leaves the crypto
-  // generation behind the enforced epoch.  Refuse a further target until the
-  // rotation reconciles; otherwise every accepted revocation would compound
-  // the same mixed state.
-  if (m_abeRotationPending && !reconcilePendingAbeRotation())
-    return false;
   m_revocations.push_back(target);
   try {
     advanceAuthorizationEpoch();
@@ -569,6 +587,11 @@ ServiceController::grant(const ndn::Name& identity,
   target.serviceName = serviceName;
   target.authorizationAttribute = authorizationAttribute;
   if (!target.isValid() || !m_generationReady)
+    return false;
+  // A grant following a failed withdrawal is not grant-only until the
+  // withdrawal's rotation has completed. Never erase its target or issue a
+  // replacement policy under the pre-withdrawal pair, even for another user.
+  if (!reconcilePendingAbeRotation())
     return false;
 
   // An explicit grant can reauthorize an identity after an identity-wide

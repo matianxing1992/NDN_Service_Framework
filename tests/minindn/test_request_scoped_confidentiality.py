@@ -189,3 +189,12 @@ def test_completed_but_failed_network_gate_returns_nonzero(monkeypatch, tmp_path
     monkeypatch.setattr(runner, "execute_gate", lambda *args: {
         "status": "completed", "gatePassed": False, "networkEvidence": True})
     assert runner.main() != 0
+
+
+def test_late_grant_exports_evidence_and_requires_observed_renewal(tmp_path):
+    runner = _load_runner()
+    name = "grant-after-permission-exhaustion"
+    evidence = runner._collect_runtime_evidence(
+        tmp_path, name, runner._scenario_config(name), [], time.monotonic())
+    assert evidence["grantOnly"]["lateRenewalObserved"] is False
+    assert evidence["grantOnly"]["permissionExhaustedTimeUs"] is None

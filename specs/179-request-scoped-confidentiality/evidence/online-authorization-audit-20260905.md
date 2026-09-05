@@ -12,11 +12,12 @@ counts require reevaluation because the collector censored failures.
 
 | ID | Severity | Evidence | Required repair / acceptance |
 |---|---|---|---|
-| OA-1 | HIGH | `revoke()` checks duplicates before pending recovery; `grant()` has no pending guard. Reproduction being compiled. | Retry the same failed withdrawal and guard grant before any policy mutation. A failed retry retains the withdrawal; successful reauthorization uses a fresh ABE pair. |
-| OA-2 | HIGH | `reconcilePendingAbeRotation()` changes public-parameter identity at the unchanged ControllerVersion. Runtime rejects equal-version conflicting wire. Reproduction being compiled. | Persist a newer epoch before each recovery attempt; status already exposed at an earlier version never changes. |
+| OA-1 | HIGH | Executed Controller regression: same-target retry does not recover; grant succeeds during persistent rotation failure and removes the target. | Retry the same failed withdrawal and guard grant before any policy mutation. A failed retry retains the withdrawal; successful reauthorization uses a fresh ABE pair. |
+| OA-2 | HIGH | Executed Controller regression: direct recovery changes parameters at the unchanged version; real RevocationState rejects the conflicting wire. | Persist a newer epoch before each recovery attempt; status already exposed at an earlier version never changes. |
 | OA-3 | HIGH, evidence | Executed collector regression reduced success+failure to one success. Reprocessing the actual baseline yields 16 rows, 14 success, 2 failures (old result claimed 14/14). | Keep every terminal row; allocate startup/workload/drain time and rerun genuine MiniNDN. |
 | OA-4 | MEDIUM, automation | Executed CLI regression returned 0 for completed + gatePassed=false. | Require explicit passing gate for exit 0. |
 | OA-5 | MEDIUM, coverage | Existing grant arrives during permission retries; no post-exhaustion renewal evidence. | New scenario must observe timeout exhaustion < grant < App refetch <= first request, plus target-only DKEY replacement and successful unaffected control. |
+| OA-6 | MEDIUM, harness | Runtime trace kept enqueueing for about 51 seconds; launcher passed milliseconds to App_User's seconds-based --duration (and open-loop ignores --count). | Convert units and reserve independent late-grant control and drain windows. |
 
 ## Repair design and traceability
 
@@ -58,6 +59,21 @@ counts require reevaluation because the collector censored failures.
   `/tmp/nac-abe-spec179-exact-prefix`. Actual build config overrides old narrative
   claims that this candidate was built with Clang. Final library closure/hashes
   and repaired network results remain pending.
+- Controller red re-executed from retained pre-fix binary:
+  `results/spec179-online-auth-20260905/gates/integration-before-fix`,
+  `--run_test=ControllerRevocationFlow/PendingRotationFencesGrantAndPreservesImmutableStatus`;
+  exit 201, 10 failed assertions; `gates/controller-red.log`. The fixed case
+  additionally retains the old DKEY and tests its inability to decrypt fresh
+  post-recovery ciphertext, followed by successful replacement-key decryption.
+- First late-grant run `late-grant-first` correctly failed its gate: serial
+  startup passed the original grant offset, so exhaustion was never observed.
+  Also corrected the result-export scenario guard and added its regression.
+  `gates/harness-green.log`: 12/12 pass; corrected MiniNDN rerun pending.
+- Rebuild `gates/build-green.log`: all 218 build tasks completed, 16m14s.
+  Focused fixed Controller case: **36/36 assertions pass**, exit 0,
+  `gates/controller-green.log`; expected wrong-generation OpenABE rejection
+  appears in this negative crypto test. App_ServiceController resolves the
+  candidate framework library and the intended patched NAC-ABE prefix via ldd.
 
 ## Audit dimensions and limits
 

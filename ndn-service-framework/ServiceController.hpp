@@ -82,7 +82,8 @@ public:
    * packet is signed by ServiceController when published. */
   PolicyStatusData getPolicyStatus(const ndn::Name& serviceName) const;
 
-  /** Add one typed revocation and advance the Controller epoch. */
+  /** Add a typed revocation, or finish its pending failed rotation on retry.
+   * An already completed duplicate remains a no-op returning false. */
   bool revoke(const RevocationTarget& target);
 
   /**
@@ -121,9 +122,10 @@ private:
   /** Retry a failed ABE rotation (R1).  While m_abeRotationPending is set the
    * revocation stays enforced in memory and in every published status, but
    * crypto material has not been rotated for the durably advanced epoch; a
-   * later revoke entry calls this before accepting another target so the
-   * mixed state cannot grow.  Returns true when no rotation was pending or
-   * the retry completed. */
+   * later revoke (including the same target) or grant calls this before any
+   * mutation. Each attempt reserves a fresh durable epoch before crypto work
+   * so previously published status remains immutable. Returns true when no
+   * rotation was pending or the retry completed. */
   bool reconcilePendingAbeRotation();
   void reissueAbePolicies();
   std::set<std::string> effectiveAttributesFor(const std::string& identity) const;
@@ -219,7 +221,7 @@ private:
   // A revocation whose ABE rotation threw is still enforced in memory and in
   // every published status (fail-closed), but the crypto generation has not
   // advanced with the durable epoch.  reconcilePendingAbeRotation() retries
-  // the rotation on the next revoke entry.  In-memory only: after a restart
+  // the rotation on the next revoke or grant entry. In-memory only: after a restart
   // the durable epoch advance is authoritative and the ABE identity is
   // re-derived from it in initializeAbeGenerationIdentity().
   bool m_abeRotationPending = false;

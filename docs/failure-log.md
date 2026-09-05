@@ -1,5 +1,29 @@
 # NDNSF Failure Log
 
+## 2026-09-05 — failed withdrawal bypassed by grant or same-target retry
+- **Area**: Spec179 Controller pending ABE rotation
+- **Symptom**: the new real Controller regression produced 10 failed assertions: same-target retry left the old ABE pair; grant removed the revocation during injected rotation failure; direct recovery produced an equal-version conflicting status rejected by RevocationState.
+- **Root cause**: duplicate-target return preceded reconciliation; grant never checked pending rotation; reconciliation reused a ControllerVersion whose old parameter identity could already be published.
+- **Fix**: reconcile before duplicate handling and grant mutation, persist a newer epoch before recovery crypto work, return successful completion for the pending same-target retry, and retain ordinary completed-duplicate no-op behavior. One-shot injection and a repeated App revoke support the matching MiniNDN scenario.
+- **Ref**: T017; PendingRotationFencesGrantAndPreservesImmutableStatus; `results/spec179-online-auth-20260905/gates/controller-red.log` (exit 201, 10 failed assertions) and `controller-green.log` (exit 0, 36/36 assertions, including old/replacement DKEY decryption). Network recovery gate pending.
+- **Lesson**: failure recovery is an authorization mutation too; test every public entry and preserve already published immutable status identities.
+
+## 2026-09-05 — late-grant probe initially missed its timing contract
+- **Area**: Spec179 MiniNDN T018 probe
+- **Symptom**: first late-grant run completed but gate failed (exit 4): user/B started after the Controller grant, no startup timeout exhaustion occurred, and the result exporter omitted the new scenario's grant evidence.
+- **Root cause**: serial RSA/identity startup outlasted the 12-second grant offset; one scenario-name equality remained in the evidence return despite sharing the grant collector.
+- **Fix**: grant evidence now follows the grantOnlyAdvance configuration for both scenarios; added an exporter regression. Increased grant/renewal/workload windows and require measured exhaustion < grant < refetch <= first invocation plus post-refetch unaffected successes. First run retained as a failed timing probe.
+- **Ref**: results/spec179-online-auth-20260905/late-grant-first; 12 launcher tests pass. Corrected network rerun pending.
+- **Lesson**: launch offsets are assumptions; acceptance must verify event ordering from observed timestamps.
+
+## 2026-09-05 — MiniNDN open-loop milliseconds interpreted as seconds
+- **Area**: Spec179 launcher workload lifetime
+- **Symptom**: a run configured for 16 seconds kept enqueueing until the process lifetime killed it; late-grant-first user/A enqueued for about 51 seconds despite the nominal workload/count.
+- **Root cause**: requestDurationMs was passed directly to App_User --duration, which uses std::chrono::seconds; --count applies to closed-loop mode and does not cap this open-loop workload. Teardown could therefore truncate in-flight requests, previously hidden by the grant collector.
+- **Fix**: round milliseconds up to integer seconds at the App_User command boundary. Late-grant uses a longer independent user/A control window and a 16-second user/B granted workload; the fault/retry scenario explicitly spans both mutation events and drains before process shutdown.
+- **Ref**: examples/App_User.cpp openLoopDurationSeconds and measurementStopAt; run_request_scoped_confidentiality.py user_command; T018.
+- **Lesson**: verify units at the actual CLI consumer and distinguish open-loop duration from closed-loop count.
+
 ## 2026-09-05 — online authorization audit detects censored MiniNDN failures
 - **Area**: Spec179 MiniNDN evidence and exit status
 - **Symptom**: a success plus a failed request while providers were alive was counted as one successful row; a completed run with gatePassed=false returned exit code 0.
