@@ -716,6 +716,13 @@ class ProviderOfferV3:
     ack_reservation: bool = False
     schema: str = DI_PLACEMENT_V3
     schema_version: int = 3
+    # Distinguishes a Provider that prepares its role from validated local
+    # canonical material (can_provision=False) from one that must fetch and
+    # install the artifact after Selection (can_provision=True).  This field
+    # is part of the signed offer so the sealed plan can leave the external
+    # fetch reference empty only for provider-prepared roles.
+    can_provision: bool = False
+    has_model: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "execution_disposition",
@@ -858,8 +865,13 @@ class ExecutionRole:
     adapter_version: str = ""
 
     def __post_init__(self) -> None:
+        # A component-set role has an empty layer interval by contract
+        # (layer_begin == layer_end == 0); range/rank roles still require a
+        # strictly increasing interval.
+        component_set = self.layer_begin == 0 and self.layer_end == 0
         if (not self.role_id or not self.stage_id or self.rank < 0
-                or self.layer_begin < 0 or self.layer_end <= self.layer_begin
+                or self.layer_begin < 0 or self.layer_end < 0
+                or (not component_set and self.layer_end <= self.layer_begin)
                 or not self.backend):
             raise ValueError("invalid execution role")
         if bool(self.adapter_id) != bool(self.adapter_version):
@@ -1322,10 +1334,17 @@ class RoleAssemblySpec:
     padding: str = "none"
     resource_envelope: Mapping[str, int] = field(default_factory=dict)
     protection_epoch: str = "plaintext-v1"
+    # Terminal adapter-owned postprocessing contract. Non-empty values are
+    # carried through Selection to the Provider's native consumer.
+    merge_kind: str = ""
+    postprocess_identity: str = ""
+    postprocess_output_name: str = ""
+    postprocess_confidence_threshold: float = 0.0
+    postprocess_sort: str = ""
 
     def __post_init__(self) -> None:
         if (not self.role or self.rank < 0 or self.layer_begin < 0
-                or self.layer_end <= self.layer_begin or not self.backend
+                or self.layer_end < 0 or not self.backend
                 or self.required_device_memory_mb < 0
                 or not self.protection_epoch):
             raise ValueError("invalid role assembly spec")
@@ -1337,6 +1356,12 @@ class RoleAssemblySpec:
                 "COMPONENT_SET",
         }:
             raise ValueError("RoleAssemblySpec role_kind is not allowlisted")
+        if self.role_kind == "COMPONENT_SET":
+            if self.layer_begin != 0 or self.layer_end != 0:
+                raise ValueError(
+                    "COMPONENT_SET role must not use a layer interval")
+        elif self.layer_end <= self.layer_begin:
+            raise ValueError("range/rank role requires a non-empty layer interval")
         if bool(self.adapter_id) != bool(self.adapter_version):
             raise ValueError("RoleAssemblySpec adapter identity is incomplete")
         identity_fields = (
@@ -1362,6 +1387,8 @@ class RoleAssemblySpec:
                          or indices != tuple(sorted(set(indices))))):
             raise ValueError("RoleAssemblySpec node cover is not exact")
         object.__setattr__(self, "node_indices", indices)
+        if self.role_kind == "COMPONENT_SET" and not indices:
+            raise ValueError("COMPONENT_SET role requires a canonical node set")
         object.__setattr__(self, "expected_inputs", tuple(
             _freeze(dict(item)) for item in self.expected_inputs))
         object.__setattr__(self, "expected_outputs", tuple(
@@ -1371,6 +1398,23 @@ class RoleAssemblySpec:
         if any(not name or value < 0 for name, value in envelope.items()):
             raise ValueError("RoleAssemblySpec resource envelope is invalid")
         object.__setattr__(self, "resource_envelope", _freeze(envelope))
+        if self.merge_kind not in {"", "NATIVE_POSTPROCESS", "ONNX_MERGE_GRAPH"}:
+            raise ValueError("RoleAssemblySpec merge_kind is not allowlisted")
+        if self.merge_kind == "":
+            if any((self.postprocess_identity, self.postprocess_output_name,
+                    self.postprocess_sort)) or self.postprocess_confidence_threshold != 0.0:
+                raise ValueError("RoleAssemblySpec has orphaned postprocessing metadata")
+        else:
+            if (self.role_kind != "COMPONENT_SET" or
+                    not self.postprocess_identity or
+                    not self.postprocess_output_name or
+                    not self.postprocess_sort or
+                    not math.isfinite(float(self.postprocess_confidence_threshold)) or
+                    not 0.0 <= float(self.postprocess_confidence_threshold) <= 1.0):
+                raise ValueError("RoleAssemblySpec postprocessing contract is incomplete")
+            if (self.merge_kind == "NATIVE_POSTPROCESS" and
+                    self.postprocess_sort != "confidence-desc,class-asc,xyxy-asc"):
+                raise ValueError("RoleAssemblySpec native postprocessing sort is not canonical")
         if any(identity_fields) and (
                 not self.backend_abi or not indices
                 or not self.expected_inputs or not self.expected_outputs
@@ -1437,6 +1481,16 @@ class GenerationExecutionContractV1:
     # Digest of the exact tokenizer/vocabulary configuration admitted for this
     # request. KV identity must not substitute a model or manifest digest here.
     tokenizer_digest: str
+    # Authenticated terminal-role sampling policy.  These fields are part of
+    # the signed generation contract rather than an implementation default so
+    # every Provider can reproduce the same token choice.
+    sampling_mode: str = "Greedy"
+    sampling_temperature: float = 0.0
+    sampling_top_k: int = 1
+    sampling_top_p: float = 1.0
+    sampling_repetition_penalty: float = 1.0
+    sampling_seed: int = 1_750_001
+    stop_strings: Tuple[str, ...] = ()
     # Request-scoped generation identity.  Older diagnostic callers may omit
     # this field; live TOKEN_STREAMING requests populate it so every Provider
     # observes the same identity as the User-side conversation transaction.
@@ -1462,6 +1516,31 @@ class GenerationExecutionContractV1:
             raise ValueError("generation state input/output names are incomplete")
         if not eos or any(value < 0 for value in eos):
             raise ValueError("generation EOS token IDs are incomplete")
+        if self.sampling_mode not in {"Greedy", "SeededTopKTopP"}:
+            raise ValueError("unsupported generation sampling mode")
+        if not math.isfinite(float(self.sampling_temperature)):
+            raise ValueError("generation sampling temperature is not finite")
+        if self.sampling_mode == "Greedy":
+            if float(self.sampling_temperature) != 0.0:
+                raise ValueError("Greedy generation requires temperature=0")
+        elif not 0.0 < float(self.sampling_temperature) <= 5.0:
+            raise ValueError("generation sampling temperature is out of range")
+        if self.sampling_top_k < 1:
+            raise ValueError("generation sampling top_k is out of range")
+        if (not math.isfinite(float(self.sampling_top_p))
+                or not 0.0 < float(self.sampling_top_p) <= 1.0):
+            raise ValueError("generation sampling top_p is out of range")
+        if (not math.isfinite(float(self.sampling_repetition_penalty))
+                or not 0.1 <= float(self.sampling_repetition_penalty) <= 2.0):
+            raise ValueError(
+                "generation sampling repetition penalty is out of range")
+        if self.sampling_seed < 0 or self.sampling_seed >= 2**64:
+            raise ValueError("generation sampling seed is out of range")
+        stops = tuple(str(value) for value in self.stop_strings)
+        if (len(stops) > 16
+                or any(not value or len(value.encode("utf-8")) > 256
+                       for value in stops)):
+            raise ValueError("generation stop string set is invalid")
         _require_digest(self.sampling_digest, "sampling_digest")
         _require_digest(self.tokenizer_digest, "tokenizer_digest")
         if self.generation_id and (
@@ -1478,6 +1557,7 @@ class GenerationExecutionContractV1:
         object.__setattr__(self, "state_output_names", outputs)
         object.__setattr__(self, "eos_token_ids", eos)
         object.__setattr__(self, "committed_prefix_token_ids", prefix)
+        object.__setattr__(self, "stop_strings", stops)
 
     def digest(self) -> str:
         return canonical_digest(self)
@@ -1560,6 +1640,11 @@ class ProviderGrantViewV1:
     offer_digest: str
     role_digests: Tuple[str, ...]
     security_policy_snapshot_digest: str
+    # Revision-124 additions: authority-bound inputs for the grant request.
+    # Protected views carry the signed model-manifest digest and a
+    # non-plaintext protection epoch; plaintext views keep the defaults.
+    model_manifest_digest: str = ""
+    protection_epoch: str = "plaintext-v1"
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -1570,6 +1655,10 @@ class ProviderGrantViewV1:
             _require_digest(value, name)
         if not self.provider or not self.request_id or self.attempt <= 0:
             raise ValueError("invalid Provider grant view")
+        if not self.protection_epoch:
+            raise ValueError("Provider grant view protection epoch is empty")
+        if self.protection_epoch != "plaintext-v1":
+            _require_digest(self.model_manifest_digest, "model_manifest_digest")
         object.__setattr__(self, "role_digests", tuple(self.role_digests))
         if len(self.role_digests) != 1:
             raise ValueError("Provider grant must bind exactly one role")
@@ -1940,16 +2029,44 @@ class PlanSealerV3:
         if provider != offer.provider:
             raise ValueError("grant Provider/offer mismatch")
         role_names = tuple(item.role for item in core.roles)
-        role_digests = tuple(sorted(
-            canonical_digest(role) for role in core.roles
+        provider_roles = [
+            role for role in core.roles
             if core.provider_by_role[
                 role.role if role_names.count(role.role) == 1
-                else f"{role.role}#{role.rank}"] == provider))
+                else f"{role.role}#{role.rank}"] == provider
+        ]
+        role_digests = tuple(sorted(
+            canonical_digest(role) for role in provider_roles))
+        protection_epochs = {
+            str(role.protection_epoch) for role in provider_roles
+        }
+        if len(protection_epochs) > 1:
+            raise ValueError(
+                "Provider grant view cannot mix protection epochs")
+        protection_epoch = (
+            next(iter(protection_epochs)) if protection_epochs
+            else "plaintext-v1")
+        model_manifest_digests = {
+            str(role.model_manifest_digest) for role in provider_roles
+            if getattr(role, "model_manifest_digest", "")
+        }
+        if protection_epoch != "plaintext-v1":
+            if len(model_manifest_digests) != 1:
+                raise ValueError(
+                    "protected Provider grant requires exactly one "
+                    "model-manifest digest")
+            model_manifest_digest = next(iter(model_manifest_digests))
+        else:
+            model_manifest_digest = (
+                next(iter(model_manifest_digests)) if len(model_manifest_digests) == 1
+                else "")
         return ProviderGrantViewV1(
             provider=provider, request_id=core.request_id, attempt=core.attempt,
             plan_core_digest=core.plan_core_digest or core.digest(),
             offer_digest=offer.offer_digest, role_digests=role_digests,
-            security_policy_snapshot_digest=security_policy_snapshot_digest)
+            security_policy_snapshot_digest=security_policy_snapshot_digest,
+            model_manifest_digest=model_manifest_digest,
+            protection_epoch=protection_epoch)
 
     @staticmethod
     def finalize_security(core: PlacementPlanCoreV3,
