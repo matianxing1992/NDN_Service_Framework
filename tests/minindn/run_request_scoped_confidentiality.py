@@ -182,6 +182,20 @@ def _run_nfdc(node: Any, socket: str, command: str) -> str:
     return node.cmd("NDN_CLIENT_TRANSPORT=unix://%s nfdc %s" % (socket, command))
 
 
+def _set_startup_permission_loss(node: Any, enabled: bool) -> Dict[str, Any]:
+    """Bound initial permission retries to a real isolated transport outage."""
+    if node.name != "user-b" or not getattr(node, "inNamespace", False):
+        raise RuntimeError("permission loss requires the isolated user-b namespace")
+    command = ["iptables", "--wait", "5", "-I" if enabled else "-D", "OUTPUT",
+               "-p", "udp", "--dport", "6363", "-m", "comment", "--comment",
+               "spec179-permission-bootstrap", "-j", "DROP"]
+    stdout, stderr, code = node.pexec(command)
+    if code != 0:
+        raise RuntimeError("permission loss command failed: %s %s" % (stdout, stderr))
+    return {"node": node.name, "enabled": enabled, "timeUs": time.time_ns() // 1000,
+            "scope": "outbound UDP port 6363 in user-b namespace"}
+
+
 def _configure_nfd(ndn: Any, nodes: Sequence[Any]) -> None:
     """Start one private NFD per MiniNDN application node."""
     from minindn.apps.nfd import Nfd
@@ -616,6 +630,10 @@ def _collect_runtime_evidence(output: Path, scenario: str,
             refetch_us = marker_time_us(r"NDNSF_APP_PERMISSION_REFETCH\b")
             grant_only["permissionExhaustedTimeUs"] = exhausted_us
             grant_only["explicitRefetchTimeUs"] = refetch_us
+            grant_only["explicitRenewalObserved"] = bool(
+                grant_time_us is not None and refetch_us is not None and
+                granted_first_enqueue_us is not None and
+                grant_time_us < refetch_us <= granted_first_enqueue_us)
             grant_only["unaffectedControlPostRefetchSuccessRows"] = sum(
                 1 for row in control_rows if refetch_us is not None and
                 control_enqueue.get(row["request_id"], 0) > refetch_us)
@@ -701,8 +719,8 @@ def _scenario_config(scenario: str) -> Dict[str, Any]:
         "requestDurationMs": 16000,
         # Roles run for lifetime_ms + 3000 ms (see user_command).  The user
         # open loop needs role startup (~3 s) + requestDurationMs + drain
-        # (~1 s) of *live* time before it flushes its results CSV, so the
-        # default lifetime must clear ~20.3 s or the run-for deadline stops
+        # (6 s) of *live* time before it flushes its results CSV, so the
+        # default lifetime must clear that sum or the run-for deadline stops
         # the face before the benchmark finalizes and the request-results
         # CSV stays empty.  Scenarios with delayed/in-flight windows that
         # must drain inside the role window override this upward.
@@ -817,21 +835,26 @@ def _scenario_config(scenario: str) -> Dict[str, Any]:
             "grantOnlyAdvance": True,
             "policyFile": str(POLICY_GRANT_ONLY),
             "grantAfterMs": 8000,
-            "lifetimeMs": 40000,
+            "permissionRefetchAfterMs": 12000,
+            "requestDurationMs": 24000,
+            "lifetimeMs": 45000,
             "grantIdentity": USER_ROOT + "/B",
             "grantService": SERVICE_NAME,
             "recovery": "grant-only-advance",
-            # No revocation in this wave; the grant is discovered lazily by
-            # the DKEY/first-use path, so no scheduled refresh is injected.
+            # Permission discovery is App-owned. Explicit renewal arms the
+            # target-only DKEY refresh; constructor readiness is not a grant.
             "knobMs": {},
         })
         if scenario == "grant-after-permission-exhaustion":
             config.update({
                 "grantAfterMs": 30000,
                 "permissionRefetchAfterMs": 40000,
+                "initialPermissionTransportLoss": True,
                 "lifetimeMs": 100000,
                 "requestCount": 32,
                 "requestDurationMsByUser": {"A": 60000, "B": 60000},
+                "knobMs": {"userA": 1000, "userB": 1000,
+                           "providerA": 1000, "providerB": 1000},
                 "recovery": "explicit-permission-renewal",
             })
     return config
@@ -1194,17 +1217,28 @@ def execute_gate(output: Path, scenario: str = SCENARIOS[0],
                 user_env["NDNSF_POLICY_REVALIDATION_PERIOD_MS"] = str(knob)
             if config["mode"] == "targeted":
                 user_env["NDNSF_TARGETED_TOKEN_BATCH_SIZE"] = "2"
-            _launch_process(
-                ndn, node_name, "user-%s" % user_id,
-                user_command(user_id, user_dir / "request-results.csv"),
-                output, shared_keychain, processes, user_env)
-            # The applications use a campaign-scoped PIB/TPM so the
-            # Controller-issued certificates are mutually recognizable.  Do
-            # not initialize both SQLite clients concurrently: a second
-            # ndn-cxx KeyChain can observe the first client's schema lock and
-            # fail before it reaches its readiness marker.
-            _wait_marker(output / ("user-%s.log" % user_id),
-                         "[App_User] token_mode=", processes, 30)
+            loss_node = (next(node for node in nodes if node.name == node_name)
+                         if user_id == "B" and config.get("initialPermissionTransportLoss")
+                         else None)
+            loss_events = []
+            loss_path = output / "permission-startup-loss.json"
+            if loss_node is not None:
+                loss_events.append(_set_startup_permission_loss(loss_node, True))
+                loss_path.write_text(json.dumps(loss_events, indent=2) + "\n", encoding="utf-8")
+            try:
+                _launch_process(
+                    ndn, node_name, "user-%s" % user_id,
+                    user_command(user_id, user_dir / "request-results.csv"),
+                    output, shared_keychain, processes, user_env)
+                # Serialize campaign PIB initialization through App readiness.
+                _wait_marker(output / ("user-%s.log" % user_id),
+                             "[App_User] token_mode=", processes, 30)
+                if loss_node is not None:
+                    _wait_marker(output / "user-B.log", "final=1", processes, 10)
+            finally:
+                if loss_node is not None:
+                    loss_events.append(_set_startup_permission_loss(loss_node, False))
+                    loss_path.write_text(json.dumps(loss_events, indent=2) + "\n", encoding="utf-8")
 
         if config["controllerRestart"]:
             deadline = time.monotonic() + (controller_run_ms / 1000.0) + 15
@@ -1272,8 +1306,15 @@ def execute_gate(output: Path, scenario: str = SCENARIOS[0],
             if user_a is not None and user_a.poll() is None:
                 user_a.send_signal(signal.SIGSTOP)
             time.sleep(max(0.0, cont_at - stop_at))
-            if user_a is not None and user_a.poll() is None:
-                user_a.send_signal(signal.SIGCONT)
+            try:
+                # Fast asynchronous startup removes the old implicit launch
+                # skew. Resume only after the real epoch-3 mutation, not a
+                # wall-clock estimate that can still expose epoch 2.
+                _wait_marker(output / "controller-1.log", "NDNSF_CONTROLLER_REVOKED",
+                             processes, 20)
+            finally:
+                if user_a is not None and user_a.poll() is None:
+                    user_a.send_signal(signal.SIGCONT)
 
         # Let the measured user window drain.  The role processes also have a
         # bounded lifetime, so this wait cannot create an unbounded campaign.
@@ -1345,8 +1386,10 @@ def execute_gate(output: Path, scenario: str = SCENARIOS[0],
             grant.get("unaffectedControlSuccessRows", 0) >= 1 and
             grant.get("unaffectedControlPostGrantSuccessRows", 0) >= 1 and
             (not config.get("permissionRefetchAfterMs") or
-             (grant.get("lateRenewalObserved") is True and
-              grant.get("unaffectedControlPostRefetchSuccessRows", 0) >= 1)))
+             (grant.get("explicitRenewalObserved") is True and
+              grant.get("unaffectedControlPostRefetchSuccessRows", 0) >= 1)) and
+            (not config.get("initialPermissionTransportLoss") or
+             grant.get("lateRenewalObserved") is True))
 
     # Spec179 per-scenario checks (sibling module) are the authority for the
     # revocation family.  grant-only-advance has no scenario evaluator and

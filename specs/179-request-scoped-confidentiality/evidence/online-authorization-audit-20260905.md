@@ -108,6 +108,14 @@ counts require reevaluation because the collector censored failures.
   (`gates/integration-final-isolated.log`). No assertion was relaxed.
   App/shared library build passed in 9m23s with `-j2`; all three Apps resolve
   the candidate framework and intended NAC-ABE prefix. Final network is pending.
+- Rebuilt full campaign `campaign-final` completed **13/16**, exit 1. The
+  remaining three are harness prerequisites exposed by asynchronous startup:
+  normal grant omitted App renewal; late grant succeeded 21/21 but never exhausted
+  initial permission retries; offline SIGCONT preceded the actual epoch-3 revoke.
+  Corrected probes retain those failures and add explicit renewal, isolated
+  initial transport loss, sustained control-status refresh, and marker-bound
+  offline recovery. Only these three scenarios need rerun; native artifacts
+  remain identical to the 13 passing scenarios.
 
 ## Audit dimensions and limits
 
