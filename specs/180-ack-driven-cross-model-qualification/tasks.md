@@ -10,6 +10,10 @@ tests occur only after the convergence gate.
 
 ## Revision 123 active queue (supersedes revision 112 ordering)
 
+**Closure (2026-09-05, revision 125):** Spec 180 已由所有者决定关闭；所有
+未完成的实现与资格认证任务转移到 Spec 181。以下任务注册表与队列记录
+保持冻结（契约门禁依赖 T001..T020 注册表），不再在此重新打开任何任务。
+
 **2026-09-05 controlling repair queue:** T010/T011 negative verdicts had false
 positives: arbitrary request errors were converted to PASS and Y-N-E raised its
 own rejection without grant validation. Complete the corrections in

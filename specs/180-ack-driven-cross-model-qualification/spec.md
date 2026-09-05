@@ -6,15 +6,11 @@
 
 **Created**: 2026-09-02
 
-**Status**: `IMPLEMENTATION_REPAIR_BEFORE_T014` (documentation revision 124,
-2026-09-05);
-T001, T003, T012, and T019 complete, T002 and T004--T011 partial, T013
-partial, and T014--T018/T020 not complete. Live Y-N-I focused run r42 PASS
-is recorded (2026-09-05). The strict negative-verdict repair (2026-09-05)
-makes earlier Y-N PASS labels historical observations. The controlling
-completion item is the FR-008 protected-grant subsystem (T014 BLOCK, owned
-by T007/T010). The revision-121 exact-SIF/S4 evidence is invalidated by the
-revision-123 runtime repair; S4 must be rerun from a new candidate.
+**Status**: `CLOSED_BY_REASSIGNMENT` (documentation revision 125,
+2026-09-05; closed by owner decision). All remaining implementation and
+qualification work transfers to Spec 181
+(`181-ndnsf-di-protected-grant-qualification`). This document and its
+evidence stay frozen; no new work opens here.
 
 **Current-source addendum (2026-09-04)**: the Python Provider compatibility
 boundary now rejects invalid V3 Selection instead of falling back to legacy
@@ -71,6 +67,25 @@ hash is stale under the immutable-candidate rules. Ownership returns to T013,
 then a fresh T014 `PASS`, current-source T015 local qualification, a new SIF,
 and only afterward the single Tiger route. No SIF or Tiger experiment is
 claimed for this repair.
+
+## Revision 125: closure by reassignment (2026-09-05)
+
+Spec 180 在 123 次审计迭代后由所有者决定关闭。遗留到 Spec 181 的实现与
+资格认证工作按行为归属重新登记（详见 Spec 181 的 tasks.md）：
+
+- FR-008 受保护工件授权正路径：权威网络服务端、Provider 双侧解包
+  （Python 与 native）、Y-N-E 真实变异（已落地部分：规范编码、真实权威、
+  grant seam、注册表与密钥，见提交 `d36438c2`）；
+- 负面/安全矩阵按注册拒绝原因语义化重跑（Y-N-C/P/R/I/E/L）；
+- 运行时就绪边界修复（包装器超时余量、probe 停止热转）；
+- Python/native 装配 parity 测试（同输入同摘要）；
+- T014 收敛审计、T015 本地 MiniNDN 小模型 CPU 资格认证；
+- S1 候选封印（提交哈希）、S4 新 SIF + exact-SIF replay、
+  S5 一次 Tiger Y-B、T020 终局记录。
+
+Spec 180 的历史诊断、契约、冻结证据与失效声明保持原样；Spec 181 的
+测试标准（单元+集成+MiniNDN，集成测试必须真实生效）是本次重组的核心
+修正，继承并强化 180 的教训（假 PASS 裁决、seam-only 证据、审计循环）。
 
 ## Revision 124: grant closure as the controlling completion item
 

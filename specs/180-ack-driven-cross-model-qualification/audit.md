@@ -14,6 +14,10 @@ Spec. It is not just a missing callback: the authenticated authority, canonical
 cross-language grant contract and Native key lifecycle are incomplete. See
 `evidence/t008-protected-grant-gap-20260905.md`. Full T014 remains **BLOCK**.
 
+**Closure by reassignment (2026-09-05, revision 125):** Spec 180 已关闭；
+剩余实现与资格认证工作全部转移到 Spec 181
+（`181-ndnsf-di-protected-grant-qualification`）。本文件冻结为历史记录。
+
 **Revision 124 closure (2026-09-05):** the grant gap is now owned by task
 bodies: T007 (positive grant path) and T010 (Y-N-E real grant mutation);
 T011 carries the strict negative-verdict semantics and the post-probe
