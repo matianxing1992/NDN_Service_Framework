@@ -1180,7 +1180,74 @@ def check_rotation_failure_retry(ctx: RunCtx) -> Dict[str, Any]:
             "details": ctx.details, "evidence": ctx.evidence}
 
 
+def check_provider_online_grant(ctx: RunCtx) -> Dict[str, Any]:
+    """First service-offering grant; never censor target or control failures."""
+    controller = _ts_lines(ctx.output / "controller-1.log")
+    grants = [(ts, msg) for ts, msg in controller
+              if "NDNSF_CONTROLLER_GRANT " in msg
+              and "identity=/example/hello/provider/B " in msg
+              and "service=/HELLO " in msg and "attribute=/SERVICE/HELLO " in msg
+              and "abeParametersUnchanged=true" in msg]
+    ctx.check("controller_grants_provider_service", len(grants) == 1, str(grants))
+    applied = [g for g in ctx.grants if g["success"] == 1
+               and g["identity"] == "/example/hello/provider/B" and g["service"] == "/HELLO"]
+    ctx.check("grant_applied_once", len(applied) == 1, str(applied))
+    provider = _ts_lines(ctx.output / "provider-B.log")
+    renewals = [ts for ts, msg in provider if "NDNSF_APP_PERMISSION_REFETCH" in msg]
+    user_renewals = [ts for ts, msg in _ts_lines(ctx.output / "user-B.log")
+                     if "NDNSF_APP_PERMISSION_REFETCH" in msg]
+    grant_ts = grants[0][0] if len(grants) == 1 else None
+    renew_ts = renewals[0] if len(renewals) == 1 else None
+    ready_ts = user_renewals[0] if len(user_renewals) == 1 else None
+    ordered = (grant_ts is not None and renew_ts is not None and ready_ts is not None
+               and grant_ts < renew_ts < ready_ts)
+    ctx.check("explicit_permission_renewal_order", ordered,
+              str((grant_ts, renew_ts, ready_ts)))
+    ctx.check("provider_initially_pending", any(
+        "NDNSF_NAC_BOOTSTRAP_PENDING role=provider" in msg
+        and grant_ts is not None and ts < grant_ts for ts, msg in provider), "initial DKEY pending")
+    serving = [(ts, msg) for ts, msg in provider if _PROV_SERVING.search(msg)]
+    ctx.check("no_service_before_renewal", renew_ts is not None
+              and not any(ts < renew_ts for ts, _ in serving), str(serving[:3]))
+    ctx.check("provider_responds_after_renewal", ready_ts is not None and any(
+        ts >= ready_ts and "messageType=RESPONSE" in msg for ts, msg in serving), str(len(serving)))
+    refreshed = [(ts, msg) for ts, msg in provider
+                 if re.search(r"NDNSF_NAC_DKEY_REFRESH_REQUESTED\b.*\bepoch=2\b", msg)]
+    ctx.check("target_only_refresh_once", len(refreshed) == 1 and renew_ts is not None
+              and refreshed[0][0] >= renew_ts and "reason=grant-only" in refreshed[0][1], str(refreshed))
+    others = [(p.name, ts, msg) for p in ctx.output.glob("*.log")
+              if p.name in {"provider-A.log", "user-A.log", "user-B.log"}
+              for ts, msg in _ts_lines(p)
+              if re.search(r"NDNSF_NAC_DKEY_REFRESH_REQUESTED\b.*\bepoch=2\b", msg)]
+    ctx.check("unaffected_no_dkey_refresh", not others, str(others))
+    target = list(ctx.rows["userB"].values())
+    post = [r for r in target if ready_ts is not None and r["enqueue_s"] >= ready_ts]
+    ctx.check("target_completes_through_granted_provider", bool(post) and all(
+        r["success"] and r["selected_provider"] == "/example/hello/provider/B" for r in post),
+        "success=%d rows=%d" % (sum(r["success"] for r in post), len(post)))
+    ctx.check("target_no_early_success", grant_ts is not None and not any(
+        r["success"] and r["enqueue_s"] < grant_ts for r in target), str(len(target)))
+    control = list(ctx.rows["userA"].values())
+    ctx.check("control_has_no_failures", bool(control) and all(r["success"] for r in control),
+              "success=%d rows=%d" % (sum(r["success"] for r in control), len(control)))
+    ctx.check("control_spans_grant", grant_ts is not None and ready_ts is not None
+              and any(r["enqueue_s"] < grant_ts for r in control)
+              and any(r["enqueue_s"] > ready_ts for r in control), str(len(control)))
+    if ctx.config.get("initialProviderPermissionTransportLoss"):
+        timeouts = [ts for ts, msg in provider
+                    if "PermissionResponse timeout:" in msg and "final=1" in msg]
+        ctx.check("exhaustion_precedes_grant_and_renewal", ordered and bool(timeouts)
+                  and timeouts[0] < grant_ts, str(timeouts))
+    ctx.evidence["providerGrant"] = {"grantTime": grant_ts, "renewalTime": renew_ts,
+                                    "userRenewalTime": ready_ts, "targetRows": len(target),
+                                    "postRenewalRows": len(post), "controlRows": len(control)}
+    return {"passed": all(ctx.checks.values()), "checks": ctx.checks,
+            "details": ctx.details, "evidence": ctx.evidence}
+
+
 EVALUATORS = {
+    "provider-grant-only-advance": check_provider_online_grant,
+    "provider-grant-after-permission-exhaustion": check_provider_online_grant,
     "revocation-rotation-failure-retry": check_rotation_failure_retry,
     "user-identity-revocation": check_user_identity_revocation,
     "provider-identity-revocation": check_provider_identity_revocation,

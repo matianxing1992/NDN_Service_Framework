@@ -217,17 +217,18 @@ def test_late_grant_exports_evidence_and_requires_observed_renewal(tmp_path):
     assert evidence["grantOnly"]["permissionExhaustedTimeUs"] is None
 
 
-def test_permission_loss_refuses_host_namespace():
+@pytest.mark.parametrize("role_node", ["user-b", "provider-b"])
+def test_permission_loss_refuses_host_namespace(role_node):
     runner = _load_runner()
 
     class HostNode:
-        name = "user-b"
+        name = role_node
         inNamespace = False
 
         def pexec(self, _command):
             pytest.fail("must never change the host packet filter")
 
-    with pytest.raises(RuntimeError, match="isolated user-b namespace"):
+    with pytest.raises(RuntimeError, match="isolated .* namespace"):
         runner._set_startup_permission_loss(HostNode(), True)
 
 
