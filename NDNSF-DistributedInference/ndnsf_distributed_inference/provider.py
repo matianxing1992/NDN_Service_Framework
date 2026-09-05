@@ -1492,8 +1492,21 @@ class DistributedInferenceProvider:
             lease_registry.register(
                 "protected-content-key",
                 execution.work_dir / "content-key.bin", content_key)
+            # The plaintext lease must never register the canonical package
+            # path: zeroization would delete the shared source ONNX file.
+            # Materialize the decrypted bytes into the role work directory
+            # and point the execution at that copy instead.
+            work_model = execution.work_dir / "assembled-role.onnx"
+            work_model.write_bytes(plaintext)
             lease_registry.register(
-                "assembled-model-plaintext", model_path, plaintext)
+                "assembled-model-plaintext", work_model, plaintext)
+            execution = replace(
+                execution,
+                artifact_paths={
+                    **dict(execution.artifact_paths),
+                    "model": work_model,
+                },
+            )
             return execution, lease_registry
         except ProtectedGrantRejected:
             lease_registry.zeroize_all()
