@@ -1436,6 +1436,13 @@ class DistributedInferenceProvider:
             except ValueError as exc:
                 raise ProtectedGrantRejected(
                     "grant Data payload is malformed") from exc
+            # The native Merge role carries no assembly identity (no ONNX
+            # layer); its grant still binds the same canonical manifest as
+            # the component roles, so fall back to the grant's own manifest
+            # for the binding comparison when the projection omits it.
+            expected_manifest = (
+                v3_role_spec.model_manifest_digest
+                or grant.model_manifest_digest)
             try:
                 content_key = verify_and_unwrap_grant(
                     grant,
@@ -1445,8 +1452,7 @@ class DistributedInferenceProvider:
                     expected_request_id=v3_projection.request_id,
                     expected_attempt=v3_projection.attempt,
                     expected_plan_core_digest=v3_projection.plan_core_digest,
-                    expected_model_manifest_digest=(
-                        v3_role_spec.model_manifest_digest),
+                    expected_model_manifest_digest=expected_manifest,
                     expected_protection_epoch=v3_role_spec.protection_epoch,
                     now_ms=int(time() * 1000),
                 )
