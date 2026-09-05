@@ -77,6 +77,9 @@ User                                Provider(s)                     Controller
   first DKEY cannot block the App from running its Face or renewing permissions
   after an online grant. Bootstrap-pending is not authority: protected work
   still requires permission, current signed status and valid key material.
+  Real User Request admission explicitly checks initial Consumer readiness;
+  an accepted permission response cannot bypass a pending first DKEY fetch.
+  Hybrid unwrap errors remain wired independently of the success/AES closure.
 
 - `ControllerVersion` = two uint64 fields (generation timestamp + epoch);
   both are signed or covered by AEAD AAD; message-carried versions are

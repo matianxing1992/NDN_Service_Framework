@@ -1411,7 +1411,7 @@ namespace ndn_service_framework{
             bool prepareRequestControllerVersion(
                 ndn_service_framework::RequestMessage& requestMessage,
                 const ndn::Name& serviceName,
-                const ndn::Name& requestId) const;
+                const ndn::Name& requestId);
             ndn::Name makeRequestScopedInputDataName(
                 const ndn::Name& serviceName,
                 const ndn::Name& requestId,

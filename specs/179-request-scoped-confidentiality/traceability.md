@@ -111,6 +111,17 @@ runs live in `results/spec179-minindn-fixclosure-20260905/` (the frozen
 2026-09-04 campaign directory is untouched). T014's upstream NAC-ABE
 package/push remains the only open maintainer action (user-authorized only).
 
+## Online authorization follow-up (T017/T018, current verification pending)
+
+The historical audit closure above is superseded by
+`evidence/online-authorization-audit-20260905.md`. RV-I35 maps FR-017/019/036
+to repeated-target recovery, grant fencing, immutable statuses and retained-key
+crypto tests. RV-I36 maps the FR-038 startup edge and FR-023/024 diagnostics to
+real constructor and no-DKEY admission/callback tests. RV-I37 maps FR-038/SC-022
+to normal and post-exhaustion App renewal in MiniNDN. RV-I38 maps
+FR-017/019/035/036 to live failed-rotation recovery. The earlier network
+failures remain in the report; T018 awaits the final readiness repair gates.
+
 ## Evidence rules
 
 - Unit tests establish deterministic serialization, cryptographic failure codes,

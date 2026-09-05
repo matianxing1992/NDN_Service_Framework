@@ -546,7 +546,7 @@ def _collect_runtime_evidence(output: Path, scenario: str,
         denial_ts_us = [int(round(float(ts) * 1_000_000)) for ts in re.findall(
             r"^([0-9]+\.[0-9]+)\s+.*(?:NDNSF_USER_REVOCATION_REJECT|"
             r"Reject request (?:under revoked Controller status|without installed ControllerVersion|"
-            r"without user permission))", granted_log_text, flags=re.MULTILINE)]
+            r"without user permission|without decryption readiness))", granted_log_text, flags=re.MULTILINE)]
         blocked_ts_us = waiting_ts_us + denial_ts_us
         granted_pre_resolve_waiting = (
             sum(1 for ts_us in blocked_ts_us if ts_us < resolution_us)
@@ -846,8 +846,10 @@ def _scenario_config(scenario: str) -> Dict[str, Any]:
             "recovery": "grant-only-advance",
             # Permission discovery is App-owned. Explicit renewal arms the
             # target-only DKEY refresh; constructor readiness is not a grant.
-            "knobMs": {"userA": 1000, "userB": 1000,
-                       "providerA": 1000, "providerB": 1000},
+            # Four refresh opportunities per one-second request interval;
+            # default-policy instantaneous convergence is not claimed.
+            "knobMs": {"userA": 250, "userB": 250,
+                       "providerA": 250, "providerB": 250},
         })
         if scenario == "grant-after-permission-exhaustion":
             config.update({

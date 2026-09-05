@@ -117,6 +117,11 @@ The 2026-09-04 release claim and its rows are unaffected.
 
 ## Dependencies and Execution Order
 
+T018 additionally requires explicit initial-DKEY Request admission and preserved
+hybrid unwrap error callbacks: the normal grant probe reproduced publication
+before bootstrap completion and silent callback loss. Its real-constructor
+regression must pass before rebuilding and rerunning the native/network gates.
+
 ```text
 T001 -> T002 -> T003 -> T004 -> T005 -> T006 --+
                          T007 -> T008 -----------+-> T009 -> T010 -> T011 -> T012 -> T013

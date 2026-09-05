@@ -14,7 +14,10 @@ live in `evidence/online-authorization-audit-20260905.md`.
 The late-grant campaign further reproduced a first-DKEY constructor deadlock:
 an unprovisioned User cannot reach the App permission API at all; Provider has
 the same wait. Remove both blocking loops, initiate the existing asynchronous
-Consumer fetch, and retain all existing permission/status/key admission checks.
+Consumer fetch, retain permission/status checks and replace the former implicit
+initial-DKEY prerequisite with an explicit real-User admission check. Preserve
+hybrid key-unwrap error callbacks independently of the success closure in both
+roles; a valid-permission/no-DKEY regression reproduces both missing guards.
 No polling thread or new wire/API is added. Real-constructor timeout and
 unauthorized-publication/execution tests plus the full network campaign gate
 this startup change. Scenario workloads must also drain for at least their

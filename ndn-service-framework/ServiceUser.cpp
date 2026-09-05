@@ -4568,11 +4568,20 @@ namespace ndn_service_framework
     bool ServiceUser::prepareRequestControllerVersion(
         ndn_service_framework::RequestMessage& requestMessage,
         const ndn::Name& serviceName,
-        const ndn::Name& requestId) const
+        const ndn::Name& requestId)
     {
         if (!authorizeControllerTransition(serviceName,
                                            ProtectedTransition::DISCOVERY)) {
             NDN_LOG_ERROR("Reject request under revoked Controller status serviceName="
+                          << serviceName.toUri());
+            return false;
+        }
+
+        // Constructors return while the initial DKEY fetch is pending. A
+        // permission response alone cannot make ACK decryption usable yet.
+        // LocalMock fixtures own their explicit crypto/publication boundary.
+        if (!m_isLocalMock && !activeNacConsumer().readyForDecryption()) {
+            NDN_LOG_ERROR("Reject request without decryption readiness serviceName="
                           << serviceName.toUri());
             return false;
         }
@@ -11759,7 +11768,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
 
         auto finish = [this, envelope, logicalMessageName, serviceName, requestId,
                        senderPrefix, decryptEntryUs, onSuccess = std::move(onSuccess),
-                       onError = std::move(onError)](const ndn::Buffer& key) mutable {
+                       onError](const ndn::Buffer& key) mutable {
             const auto keyReadyUs = timelineSteadyMicroseconds();
             const auto ad = hybridAssociatedData(logicalMessageName, envelope.getMessageType(),
                                                 requestId, serviceName, senderPrefix,
@@ -11860,7 +11869,9 @@ void ServiceUser::finishRequestAckOnEventLoop(
                                                                           unwrappedKey);
                                     finish(unwrappedKey);
                                 };
-            auto onKeyError = [onError = std::move(onError), keyDataName](const std::string& error) {
+            // Both unwrap failure and the success/AES path need the callback;
+            // retain the outer copy for synchronous consume exceptions too.
+            auto onKeyError = [onError, keyDataName](const std::string& error) {
                                     if (onError) {
                                         onError("hybrid MessageKey " +
                                                 std::string(keyDataName.empty() ? "unwrap" :

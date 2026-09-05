@@ -182,6 +182,10 @@ the current post-revocation generation and cannot reactivate the old DKEY.
   request or renew permissions after an online grant. Pending bootstrap is
   not authorization: protected publication/execution still requires valid
   permission, exact signed status and the matching cryptographic material.
+  A real User MUST reject Request admission while the initial Consumer DKEY
+  is unavailable, even after permission/status installation. Hybrid key-unwrap
+  errors MUST reach the supplied error callback rather than silently becoming
+  request timeouts.
 
 - A pending failed withdrawal MUST be reconciled before any subsequent grant
   or revoke, including a retry of the same target. Failed recovery preserves

@@ -1,130 +1,136 @@
-# Online authorization audit and MiniNDN follow-up
+# Online authorization audit and MiniNDN repair
 
 Scope: online grant/revoke correctness on `UAV-Experimental`, starting at
-`d2833215`; user authorized audit, reproduction and fixes. T017–T018 track
-cohesive Controller recovery and cross-process authorization outcomes.
+`d2833215`. T017 covers Controller recovery; T018 covers same-process online
+grant, startup readiness, error reporting and truthful network evidence.
 
-## Findings and gate
+**Current verdict: verification in progress.** The scoped repairs are
+implemented, but the final readiness repair is rebuilding. Earlier native and
+network passes are historical until that repair passes the expanded gates.
+This document supersedes the earlier runtime-grant/revoke PASS.
 
-Current verdict: **CONDITIONAL PASS for the bounded repair plan; verification
-in progress**. This is not a release PASS. Earlier grant-only network success
-counts require reevaluation because the collector censored failures.
+## Findings and repairs
 
-| ID | Severity | Evidence | Required repair / acceptance |
+| ID | Severity | Reproduced problem | Repair |
 |---|---|---|---|
-| OA-1 | HIGH | Executed Controller regression: same-target retry does not recover; grant succeeds during persistent rotation failure and removes the target. | Retry the same failed withdrawal and guard grant before any policy mutation. A failed retry retains the withdrawal; successful reauthorization uses a fresh ABE pair. |
-| OA-2 | HIGH | Executed Controller regression: direct recovery changes parameters at the unchanged version; real RevocationState rejects the conflicting wire. | Persist a newer epoch before each recovery attempt; status already exposed at an earlier version never changes. |
-| OA-3 | HIGH, evidence | Executed collector regression reduced success+failure to one success. Reprocessing the actual baseline yields 16 rows, 14 success, 2 failures (old result claimed 14/14). | Keep every terminal row; allocate startup/workload/drain time and rerun genuine MiniNDN. |
-| OA-4 | MEDIUM, automation | Executed CLI regression returned 0 for completed + gatePassed=false. | Require explicit passing gate for exit 0. |
-| OA-5 | MEDIUM, coverage | Existing grant arrives during permission retries; no post-exhaustion renewal evidence. | New scenario must observe timeout exhaustion < grant < App refetch <= first request, plus target-only DKEY replacement and successful unaffected control. |
-| OA-6 | MEDIUM, harness | Runtime trace kept enqueueing for about 51 seconds; launcher passed milliseconds to App_User's seconds-based --duration (and open-loop ignores --count). | Convert units and reserve independent late-grant control and drain windows. |
-| OA-7 | HIGH, runtime | Actual late-grant network probe cannot emit App readiness or perform permission renewal: User construction waits for a DKEY. Provider has the same loop. | Return with asynchronous bootstrap pending; verify real constructors remain unauthorized and execute late online grant without restart. |
-| OA-8 | MEDIUM, harness | Inflight scenario retains two incomplete control rows because one-second drain is shorter than its Provider delay/request timeout. | Reserve full request drain and role lifetime; rerun with every row retained. |
+| OA-1 | HIGH | Same-target revoke retry returned before recovery; grant bypassed pending rotation and removed the withdrawal. | Reconcile before duplicate handling and any grant mutation. Failed recovery retains the withdrawal; successful regrant uses current fresh ABE material. |
+| OA-2 | HIGH | Recovery changed ABE parameters at an already-published ControllerVersion; real RevocationState rejected the conflicting status. | Persist a newer epoch before every recovery attempt. Completed duplicate revokes remain no-ops. |
+| OA-3 | HIGH, evidence | Grant collector dropped failed rows using the earliest Provider log as a cutoff; control failures were absent from gate conditions. | Retain every terminal target/control row, expose both failure counts, require zero failures in the grant probes. Reprocessed negatives stay negative. |
+| OA-4 | MEDIUM | CLI returned zero for completed runs whose gate failed. | Require explicit gatePassed=true; campaign propagates failure, validates scenario names and refuses overwritten evidence. |
+| OA-5 | MEDIUM, coverage | First-grant probe relied on constructor blocking. Empty permission responses did not exercise retry exhaustion. | Explicit App renewal in both grant probes; isolated User/B transport loss until observed final timeout in the late case, removed in finally. Record both fault boundaries. |
+| OA-6 | MEDIUM | Milliseconds were supplied to the seconds-based open-loop duration; count did not bound this workload. | Convert units at the CLI boundary and allocate independent workload/lifetime windows. |
+| OA-7 | HIGH | Unprovisioned User and Provider constructors waited indefinitely for their first DKEY, preventing App renewal. | Start existing Consumer bootstrap asynchronously and return; retain authorization enforcement. |
+| OA-8 | MEDIUM | One-second drain truncated valid three-second delayed responses with five-second request timeouts. | Six-second drain and adequate role lifetime; retain incomplete/failed rows. |
+| OA-9 | HIGH | After asynchronous startup, valid permission/status admitted Requests before the first DKEY installed. ACKs arrived but could not decrypt. | Real User admission explicitly requires initial Consumer readiness. LocalMock fixtures retain their explicit crypto boundary. |
+| OA-10 | MEDIUM | Both hybrid decrypt methods moved onError into the success closure, leaving unwrap-error handling empty. | Copy the shared callback into success/unwrap paths and retain synchronous exception reporting. |
+| OA-11 | MEDIUM, harness | Faster startup made timed SIGCONT precede the real epoch-3 revoke; the offline role observed epoch 2. | Wait for the actual Controller revoke marker before resuming the role. |
 
-## Repair design and traceability
+The normal grant probe uses the existing **250ms** status-refresh setting with
+1rps traffic; the late grant uses **1s**. Distributed exact-version convergence
+is distinct from DKEY fan-out. Prior runs with 1s/no forced refresh include
+transition timeouts and remain recorded below. No zero-interruption guarantee
+under default refresh timing is claimed. No deadline or success filter is
+relaxed to hide an unsuccessful request.
 
-- FR-017/019/035/036, immutable status contract -> T017 ->
-  `PendingRotationFencesGrantAndPreservesImmutableStatus`: independent same-target
-  revoke, grant, and direct retry legs; force persistent failure before allowing
-  recovery, retain targets, require fresh parameter digest and increasing version,
-  and install both failure/recovery statuses through real `RevocationState`.
-- FR-038/SC-022 -> T018 -> `grant-after-permission-exhaustion`: App-owned one-shot
-  `NDNSF_PERMISSION_REFETCH_AFTER_MS`; no new runtime polling mechanism or wire API.
-- T011/SC-011/SC-012 -> T018 -> retain failures and fail the launcher exit code;
-  regression inputs cross the real evidence collector and CLI boundary.
-- Repeated completed revokes remain no-ops. Only a pending failed operation
-  gains successful retry behavior. No rollback of persisted epochs or remote
-  key-erasure claim; an unsuccessful crypto recovery preserves the withdrawal.
-- Rollback: revert the scoped repair commits; do not roll back durable Controller
-  state. Old code still understands the same generation-store format. Reverting
-  the recovery fix reintroduces OA-1/OA-2 and cannot be called a passing release.
+## Executed red/green evidence
 
-## Verification checkpoints
+All relative run paths below are under
+`results/spec179-online-auth-20260905/`. Generated logs, keys, binaries and
+results are retained locally and excluded from Git.
 
-- Context Mode stats screened only; project health passed, stale active hashes
-  repaired by indexing canonical documents and active health passed. Repository
-  tasks/source are authority. Two malformed project guard attempts corrected;
-  the successful final query used `ndn-service-framework` in query and requirement.
-- CodeGraph current at entry; verified affected source after semantic exploration.
-- Spec Kit strict structural check and prerequisites passed. Read constitution,
-  active artifacts, relevant contracts/evidence, architecture and failure log.
-- GSD debug state: `.planning/debug/online-grant-revoke.md` (local ignored state).
-  GSD health passed. Diagnosis performed inline. ARS is not applicable to this
-  implementation/security regression task; no literature or performance claim.
-- Harness red: 2/2 new regressions failed before patch; green: all 11 launcher
-  tests pass. Checkpoint `4ceb8ce3` contains harness fixes and late-renewal probe.
-- Real pre-fix baseline: `results/spec179-online-auth-20260905/baseline-grant/`.
-  `networkEvidence=true`; one target refresh and zero unaffected refreshes;
-  corrected collector finds **14/16 success**, so it is a failed gate.
-- Build uses `/usr/bin/g++` (GCC 9), **despite directory name**
-  `build-clang-spec179-rv32`, and NAC-ABE prefix
-  `/tmp/nac-abe-spec179-exact-prefix`. Actual build config overrides old narrative
-  claims that this candidate was built with Clang. Final library closure/hashes
-  and repaired network results remain pending.
-- Controller red re-executed from retained pre-fix binary:
-  `results/spec179-online-auth-20260905/gates/integration-before-fix`,
-  `--run_test=ControllerRevocationFlow/PendingRotationFencesGrantAndPreservesImmutableStatus`;
-  exit 201, 10 failed assertions; `gates/controller-red.log`. The fixed case
-  additionally retains the old DKEY and tests its inability to decrypt fresh
-  post-recovery ciphertext, followed by successful replacement-key decryption.
-- First late-grant run `late-grant-first` correctly failed its gate: serial
-  startup passed the original grant offset, so exhaustion was never observed.
-  Also corrected the result-export scenario guard and added its regression.
-  `gates/harness-green.log`: 12/12 pass; corrected MiniNDN rerun pending.
-- Rebuild `gates/build-green.log`: all 218 build tasks completed, 16m14s.
-  Focused fixed Controller case: **36/36 assertions pass**, exit 0,
-  `gates/controller-green.log`; expected wrong-generation OpenABE rejection
-  appears in this negative crypto test. App_ServiceController resolves the
-  candidate framework library and the intended patched NAC-ABE prefix via ldd.
-- Expanded unit gate: `unit-tests --run_test=RequestScopedConfidentiality,ControllerRevocationPolicy,ControllerRevocationState,GenericDynamicApi,RuntimeStatusStorePersistence --report_level=detailed`;
-  **182/182 cases, 11971/11971 assertions**, exit 0 (`gates/unit-green.log`).
-- Expanded integration gate: `integration-tests --run_test=ControllerRevocationFlow,ControllerVersionRefresh,RequestScopedSelection,RequestScopedResponseConfidentiality,Spec175InvocationStream --report_level=detailed`;
-  **70/70 cases, 1262/1262 assertions**, exit 0 (`gates/integration-green.log`).
-  Full 16-scenario network campaign running under `results/spec179-online-auth-20260905/campaign/`;
-  `gates/campaign.log` and per-scenario result/manifest files retain failed runs.
-- T017 network closure: `campaign/revocation-rotation-failure-retry/result.json`
-  **gatePassed=true, 14/14 checks**. Injected rotation failure at epoch 2,
-  explicit same-target retry recovered at epoch 3. All four runtime roles
-  installed epoch 3; user/A had 16 successes before withdrawal, 10 denial
-  log lines during pending rotation, 32 after recovery, and zero post-failure
-  successful invocations. User/B had **16/16 successful post-recovery calls**.
-- Diagnostic campaign completed **14/16 passing scenarios**, with failures
-  retained for late-grant constructor blocking and insufficient inflight drain.
-  These results precede the asynchronous startup change and are not its gate.
-- Both real constructors now return with initial DKEY fetch pending. The new
-  `UnprovisionedRuntimesConstructAndRemainUnauthorized` test passes **8/8 assertions**
-  under a five-second timeout: no DKEY/status, zero request publication and zero
-  executions of a registered Provider handler. See `gates/bootstrap-constructor-green.log`;
-  test build `gates/build-bootstrap-tests.log` succeeded in 6m21s. App rebuild
-  and final C++/network regressions remain pending. The network rejection is
-  the pre-fix reproduction; this additional constructor case was not executed
-  against the old binary.
-- Final rebuilt unit gate after asynchronous constructor changes:
-  **182/182 cases, 11971/11971 assertions** (`gates/unit-final.log`).
-  Initial concurrent-build integration run had one stream retry-count failure
-  (70/71 cases); retained in `gates/integration-final.log`. After compilation
-  finished, the focused retry case passed 12/12 and the full isolated integration
-  gate passed **71/71 cases, 1270/1270 assertions**, exit 0
-  (`gates/integration-final-isolated.log`). No assertion was relaxed.
-  App/shared library build passed in 9m23s with `-j2`; all three Apps resolve
-  the candidate framework and intended NAC-ABE prefix. Final network is pending.
-- Rebuilt full campaign `campaign-final` completed **13/16**, exit 1. The
-  remaining three are harness prerequisites exposed by asynchronous startup:
-  normal grant omitted App renewal; late grant succeeded 21/21 but never exhausted
-  initial permission retries; offline SIGCONT preceded the actual epoch-3 revoke.
-  Corrected probes retain those failures and add explicit renewal, isolated
-  initial transport loss, sustained control-status refresh, and marker-bound
-  offline recovery. Only these three scenarios need rerun; native artifacts
-  remain identical to the 13 passing scenarios.
+| Gate | Executed result / boundary |
+|---|---|
+| Controller recovery reproduction | Retained `gates/integration-before-fix`; `gates/controller-red.log`: exit201, 10 failures. |
+| Controller repair | `PendingRotationFencesGrantAndPreservesImmutableStatus`: 36/36 assertions, exit0, `gates/controller-green.log`. Three independent retry/regrant/reconcile legs, immutable accepted statuses, retained-old-DKEY rejection on fresh ciphertext and replacement-key success. |
+| Real asynchronous constructors | `UnprovisionedRuntimesConstructAndRemainUnauthorized`: 8/8, five-second bound, `gates/bootstrap-constructor-green.log`. No DKEY/status, zero User publication and zero registered Provider execution. The old constructor hang is reproduced by MiniNDN, not by a claimed pre-fix run of this added case. |
+| First-DKEY admission and callback red | `OnlineGrantWaitsForInitialDkeyAndReportsUnwrapFailure`: 4/8 assertions failed, exit201, `gates/readiness-red.log`. Valid permission/status still produced one Request; actual Consumer missing-key error invoked zero callbacks. Retained `gates/integration-before-readiness-fix`. |
+| First-DKEY repair green | Pending final rebuild and focused execution. |
+| Expanded C++ gates before final readiness repair | Unit182/182,11971 assertions (`gates/unit-final.log`); integration71/71,1270 assertions (`gates/integration-final-isolated.log`). These must be rerun after the final C++ changes; integration now contains72 cases. |
+| Timing-sensitive gate failure retained | Concurrent App compilation produced stream retryCount2 instead of1, integration70/71 (`gates/integration-final.log`). After compilation, focused12/12 and full71/71 passed without weakening an assertion. CPU scheduling is a plausible cause, not a separately controlled load experiment. |
+| Launcher regressions | Initial target-row/CLI regressions failed before repair. New control-retention regression also failed before repair. Current14/14 pass (`gates/harness-readiness.log`), including refusal to apply the transport fault in the host namespace. |
+| Stronger control reanalysis | `gates/grant-control-reanalysis.log`: retained late run target21/21/control60/60; negative normal run target12/13/control12/24. All twelve failed control rows remain counted. |
 
-## Audit dimensions and limits
+NAC debug in `grant-crypto-diagnostic/user-B.log` establishes OA-9/OA-10:
+initial DKEY fetch at startup, explicit renewal around12s coalescing behind it,
+stale completion around15s rejected, then replacement installed. First ACK
+decrypt attempts report no private key. The new component test separately
+reproduces admission and callback ownership failures.
 
-Intent/necessity/ownership: scoped to demonstrated recovery/evidence gaps, no
-new policy authority. Task cohesion: two outcomes, no mechanical fragmentation.
-Security/distribution: fail-closed recovery and immutable authority required;
-historical disclosure remains irreversible. Migration: unchanged public wire and
-store formats. Validation/evidence: component plus real wired MiniNDN, all
-failures retained. Operations: App renewal explicitly controlled, not automatic
-discovery promised by the runtime. Documentation: prior PASS is historical;
-current closure awaits executed T017/T018 evidence. External NAC-ABE upstream
-publication (T014) remains outside this local task.
+## MiniNDN history and final acceptance
+
+| Retained attempt | Result | Interpretation |
+|---|---|---|
+| `baseline-grant` | Corrected target14/16, two timeouts | Old collector incorrectly reported14/14. This is a failed gate. |
+| `late-grant-first` | Failed | Original timing missed exhaustion; exporter omission repaired. Later evidence identified constructor blocking, superseding the initial RSA-delay hypothesis. |
+| `campaign` | 14/16 | Before asynchronous startup: late constructor blocking and inflight drain failed. |
+| `campaign-final` | 13/16, driver exit1 | Before final readiness repair: missing normal renewal, missing late exhaustion, and offline resume timing failed. Other13 scenarios passed on that native candidate. |
+| `campaign-renewal` | 2/3, driver exit1 | Late grant passed21/21 target and60/60 control;39 pre-renewal denials, one target DKEY refresh and zero unaffected refreshes. Offline role installed epochs1 then3. Normal grant failed12/13 target and12/24 control. |
+| `campaign-grant-final` | Failed | With1s convergence, target11/13 and control23/24; this exposed initial-DKEY admission and callback loss. |
+| `grant-crypto-diagnostic` | Failed, exit4 | Additional NAC Consumer diagnostics; no negative result was promoted. |
+| Final rebuilt16-scenario gate | Pending | Must use the final readiness/error-callback repair and current all-row gate. |
+
+Earlier T017 live closure in `campaign/revocation-rotation-failure-retry`
+passed14/14 checks: epoch2 rotation failure, same-target recovery to epoch3,
+all four roles installed3, revoked User had16 pre-withdrawal successes and no
+post-failure successes, with denials both during and after recovery. Unaffected
+User had16/16 post-recovery successes. This proves the Controller repair; the
+expanded native campaign must still be rerun after later User/Provider edits.
+
+Final selection will list each scenario's actual result path, checks and shared
+native hashes. A failed whole campaign is never relabeled as passing merely
+because a subset later passes.
+
+## Build, reproducibility and operational boundary
+
+The actual compiler is **GCC9** (`/usr/bin/g++ -B/usr/bin`), despite the output
+directory name `build-clang-spec179-rv32`. Builds retain **-j2**. Native tests
+embed framework source; App executables resolve the shared candidate framework.
+Never rebuild shared libraries while MiniNDN processes are using them.
+
+The installed patched NAC-ABE dependency is
+`/tmp/nac-abe-spec179-exact-prefix/lib/libnac-abe.so`. Its existence and actual
+`ldd` resolution have been checked; final checks must repeat after the rebuild.
+The App RUNPATH includes that prefix and `$ORIGIN/..`. A reproducible deployment
+must retain the exact patched dependency; the temporary prefix is not an
+upstream-distribution claim.
+
+Each new manifest records source revision, working-diff SHA256, executable and
+resolved dependency hashes, actual commands, policy and scenario configuration.
+Final native build: `gates/build-readiness-green.log` (running).
+
+```bash
+./waf build --targets=unit-tests,integration-tests,App_User,App_Provider,App_ServiceController -j2
+build-clang-spec179-rv32/unit-tests --run_test=RequestScopedConfidentiality,ControllerRevocationPolicy,ControllerRevocationState,GenericDynamicApi,RuntimeStatusStorePersistence --report_level=detailed
+build-clang-spec179-rv32/integration-tests --run_test=ControllerRevocationFlow,ControllerVersionRefresh,RequestScopedSelection,RequestScopedResponseConfidentiality,Spec175InvocationStream --report_level=detailed
+NDNSF_CAMPAIGN_OUTPUT="$PWD/results/spec179-online-auth-20260905/campaign-readiness-final" NDNSF_BUILD_DIR=build-clang-spec179-rv32 bash scripts/spec179_minindn_campaign.sh
+```
+
+Run unit, integration and MiniNDN gates sequentially after compilation. Initial
+permission recovery stays App-owned; no runtime permission-polling thread,
+new wire mode or remote key-erasure mechanism is added. Old disclosed keys can
+still decrypt their historical ciphertext. Global ABE rekey after withdrawal
+remains the current design. T014 upstream NAC-ABE publication is outside this
+local goal and remains a separate maintainer action; no push is authorized.
+
+## Workflow and audit dimensions
+
+- Context Mode stats were an anomaly screen only. Project health passed; stale
+  active hashes were repaired by canonical document indexing and active health
+  passed. Repository tasks, source and artifacts remain authority. Final edited
+  documents still need reindexing and health checks.
+- CodeGraph verified Controller recovery, real constructors and admission/
+  hybrid decrypt callers. Sync again after source edits before final review.
+- Spec Kit constitution, feature artifacts, contracts, architecture and failure
+  log were read. The bounded repair plan passed audit review; strict structural
+  checks pass. RV-I35–RV-I38 map new evidence, with final verification pending.
+- GSD health passed; resumable local state is
+  `.planning/debug/online-grant-revoke.md`. Diagnosis is inline.
+- ARS is not applicable: this is implementation/security regression, without
+  literature, comparative-performance or statistical claims.
+
+Intent/necessity: fixes follow reproduced failures. Ownership: Controller owns
+authorization mutation, runtime owns readiness/enforcement, App owns renewal,
+and launcher owns fault timing/evidence. Migration: no wire/store format change.
+Rollback must never roll durable Controller epochs backward; reverting recovery
+or readiness fixes reintroduces demonstrated failures. Evidence: component
+crypto/state checks complement real wired MiniNDN and do not replace it.

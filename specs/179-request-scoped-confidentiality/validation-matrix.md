@@ -627,6 +627,20 @@ FR-041 acceptance additionally re-runs the existing RV-U20/RV-U21 rows on a
 prefix rebuilt from the upstream-merged commit (external gate: upstream
 maintainer review).
 
+## Online authorization follow-up rows (2026-09-05, T017/T018)
+
+| Row | Level | Covers | Evidence / cases | Status |
+|---|---|---|---|---|
+| RV-I35 | component | FR-017/019/036: pending withdrawal fences same-target retry and grant; recovery cannot mutate an already-published version or reactivate the old ABE pair | `PendingRotationFencesGrantAndPreservesImmutableStatus`: executed red10 failures; green36/36 assertions including retained-old-DKEY vs fresh ciphertext and replacement-key success | executed; final expanded regression pending |
+| RV-I36 | component | FR-038/SC-022 and startup edge case: real constructors return without initial DKEY; valid permissions/status cannot admit a network Request without it; FR-023/024 unwrap errors reach the callback | `UnprovisionedRuntimesConstructAndRemainUnauthorized`8/8; new `OnlineGrantWaitsForInitialDkeyAndReportsUnwrapFailure` red4/8 failed; real User Consumer callback test, Provider callback ownership checked in source | fix implemented; final regression pending |
+| RV-I37 | MiniNDN | FR-038/SC-022: same-process online grant after explicit renewal, including exhausted initial retries; only target DKEY refreshes; full target/control outcomes retained | `grant-only-advance`, `grant-after-permission-exhaustion`; old normal failures retained, late probe21/21 target and60/60 control before final readiness repair; isolated transport-fault boundaries and observed event ordering | final rebuilt campaign pending |
+| RV-I38 | MiniNDN | FR-017/019/035/036: actual rotation failure and same-target recovery across four processes | `revocation-rotation-failure-retry`: earlier14/14 checks, failure epoch2/recovery epoch3, denial throughout and unaffected success | final rebuilt campaign pending |
+
+Evidence and exact run selection: `evidence/online-authorization-audit-20260905.md`.
+Earlier passing runs are historical when subsequent native code changes require
+regression. In particular, none of these rows implies zero interruption under
+default status refresh timing or remote erasure of already disclosed keys.
+
 ## Completion Rules
 
 Revocation is not complete unless:
