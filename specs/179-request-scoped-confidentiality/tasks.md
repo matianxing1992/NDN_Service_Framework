@@ -95,7 +95,7 @@ The 2026-09-04 release claim and its rows are unaffected.
   full unit/integration gate green. MiniNDN runtime-restart scenario is a
   follow-up when the launcher can stop/start a runtime process; component
   rows do not depend on it.
-- [ ] T016 [FR-040] Production live User/Provider status installation under
+- [x] T016 [FR-040] Production live User/Provider status installation under
   a hierarchical configured file trust anchor (anchor → intermediate CA →
   Controller certificate), proving accept on the anchored chain and fail-closed
   rejection of a chain-external signer at every status-installation path.
