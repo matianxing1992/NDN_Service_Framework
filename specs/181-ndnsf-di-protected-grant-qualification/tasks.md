@@ -42,6 +42,50 @@ Spec 170 `artifact-assembly-v1` 契约。
 测试冒充 MiniNDN 资格证据。每个证据文件头部声明证据层（implemented/
 wired/executed/measured）。
 
+## Phase 0: 诚实化修正（先于所有实现任务，Priority: P0）
+
+本 spec 的审计发现：若干路径"假装做了工作"（合成拒绝、状态冒充、
+明文路径充当保护纪元执行）。在开始任何实现任务（T001+）之前，必须
+先让这些路径诚实——失败关闭或报告 UNAVAILABLE。每个修正任务在对应
+实现任务落地后由后者吸收（见各任务"吸收关系"）。
+
+- [ ] **R001 [US0] Y-N-E 诚实化**。在真实 grant 变异（T006 实现）之前，
+  runner 的 Y-N-E 子用例必须报告 `UNAVAILABLE`（结构化原因
+  `Y-N-E:GRANT_VERIFIER_NOT_IMPLEMENTED`），禁止合成纪元异常充当
+  `PROTECTION_EPOCH_REJECTED`；删除合成拒绝路径。文件：
+  `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py`、
+  `tests/python/test_spec181_y_n_e.py`。验收：unit（verifier 缺席时
+  Y-N-E 报 UNAVAILABLE 而非 PASS/拒绝原因）；integration（矩阵驱动下
+  unavailable 记录不进入 PASS 计数）。吸收关系：T006 落地后删除
+  UNAVAILABLE 路径，由真实变异拒绝取代。
+
+- [ ] **R002 [US0] native ProtectedRuntime 诚实化**。在真实 grant 获取/
+  解包（T002 实现）之前，native Provider 对非 `plaintext-v1` 纪元
+  赋值必须失败关闭并给出明确错误（`DI_PROTECTED_GRANT_UNAVAILABLE`），
+  禁止仅凭绑定比对进入 `GrantVerified` 状态；现有绑定比对函数明确
+  为"绑定一致性校验"（改名或文档化）。文件：
+  `cpp/ndnsf-di/ProtectedRuntime.{hpp,cpp}`、
+  `cpp/ndnsf-di/NativeProviderHandler.cpp`、
+  `tests/integration-tests/ndnsf-di-protected-grant.t.cpp`。验收：unit
+  （C++ 负例：保护纪元赋值 → 明确 unavailable 错误，状态不进
+  GrantVerified）；integration（native provider 真实保护纪元投影被
+  拒）。吸收关系：T002 落地后由真实 grant 验证取代该失败关闭路径。
+
+- [ ] **R003 [US0] 证据失效声明完整性检查**。审计 Spec 180/181 全部
+  证据文件：任何声称 PASS 但被后续修订失效的文件必须带失效横幅
+  （t016/s1 已确认有；核查其余）；每个证据文件头部必须声明证据层
+  （implemented/wired/executed/measured）。验收：完整清单 + 每文件
+  层声明；发现缺失横幅即补上（不加内容、只加失效声明）。
+
+- [ ] **R004 [US0] 保护纪元子用例门禁**。runner 的 Y-B 保护纪元子用例
+  在 grant 接线（T001/T002）完成前必须失败关闭
+  （`DI_PROTECTED_GRANT_UNAVAILABLE`），不得以明文路径冒充保护纪元
+  执行、不得产出 PASS 记录。文件：
+  `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py`、
+  `tests/python/test_spec181_runner_guard.py`。验收：unit（门禁存在）；
+  integration（未接线时保护纪元用例被拒且原因明确）。吸收关系：
+  T001/T002 落地后门禁转为正常执行。
+
 ## Phase 1: User Story 1 — 受保护工件授权正路径（Priority: P1）
 
 - [ ] **T001 [US1] Python Provider 解包接入与 grant 发布**。`provider.py`
@@ -191,11 +235,14 @@ wired/executed/measured）。
 ## Dependencies & Execution Order
 
 ```text
+R001/R002/R003/R004（诚实化修正，可并行 [P]） -> 全部实现任务
 T001 -> T002 -> T003 -> T006 -> T005
 T004 可与 T001 并行 [P]
 T001/T002/T003/T005/T006 -> T007 -> T008
 T008 -> T009 -> T010 -> T011 -> T012
 ```
 
+Phase 0（R001--R004）是前置门：任一修正任务未完成，实现任务不得开始。
+修正任务随对应实现落地被吸收（见各任务"吸收关系"），不长期存留。
 只有第一个未关门是活动门；G3/G4 的昂贵动作在 G0--G2 全通过前禁止。
 任何行为影响面变更使下游证据失效并回到最早失效门。

@@ -85,6 +85,11 @@ native Provider 运行时边界、Tiger 提交机制全部继承 180 的实现�
 - **FR-012** — **装配 parity**。Python `assemble_certified_onnx_model`
   与 native `NativeCanonicalOnnxAssembler` 对同一 canonical ONNX + 同一
   recipe 必须产出相同装配字节摘要；该 parity 用固定向量测试锁定。
+- **FR-014** — **诚实化先行**。修正任务（tasks.md Phase 0，R001--R004）
+  先于所有实现任务执行：在真实机制接线前，相关路径必须失败关闭或
+  报告 `UNAVAILABLE`，禁止合成拒绝充当注册拒绝原因、禁止状态冒充
+  （如仅凭绑定比对进入 `GRANT_VERIFIED`）、禁止明文路径冒充保护纪元
+  执行。修正任务随对应实现落地被吸收，不长期存留。
 - **FR-013** — **内容密钥真实消费**。解包出的内容密钥必须被真实的
   密码学操作消费，禁止"验证授权但密钥闲置"的授权剧场。功能切片内
   的最小真实消费：装配产物按 Spec170 契约的 `DISK_CIPHERTEXT_ASSEMBLED`

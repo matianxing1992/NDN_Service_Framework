@@ -12,7 +12,9 @@
 ## Gate order（只有一个活动门）
 
 ```text
-G0 grant 正路径（权威服务端 + Python/native 解包 + Y-N-E 真实变异）
+R0 诚实化修正（R001--R004：合成拒绝/状态冒充/明文冒充全部失败关闭或
+   UNAVAILABLE；先于一切实现任务，作为 G0 的前置门）
+ -> G0 grant 正路径（进程内权威 + Python/native 解包 + Y-N-E 真实变异）
  -> G1 负面矩阵语义重跑（MiniNDN Y-N-C/P/R/I/E/L + 集成用例设计标准）
  -> G2 收敛审计 PASS + 本地资格认证（MiniNDN Y-A/Y-B/Y-N 小模型 CPU）
  -> G3 S1 候选封印（提交哈希） + S4 新 SIF + exact-SIF replay

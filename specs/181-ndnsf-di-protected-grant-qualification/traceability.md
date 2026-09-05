@@ -28,6 +28,7 @@ Spec 181 从 Spec 180（修订 125 关闭）继承未完成的实现与资格认
 | FR-011 就绪边界修复 | T004 | unit + integration（真实 controller 进程） | `evidence/t004-readiness-boundary-current.md` |
 | FR-012 装配 parity | T003 | 固定向量双侧一致 | `evidence/t003-grant-parity-current.md` |
 | FR-013 内容密钥真实消费 | T001（AEAD 暂存/解密/零化）、T002（native 同语义） | unit（派生/往返）+ integration（错误密钥/篡改密文在 AEAD 层拒绝）+ MiniNDN（T005 覆盖） | `evidence/t001-python-provider-grant-current.md`、`evidence/t002-native-provider-grant-current.md` |
+| FR-014 诚实化先行 | R001（Y-N-E UNAVAILABLE）、R002（native 状态诚实化）、R003（证据失效声明）、R004（保护纪元子用例门禁） | unit + integration（先于全部实现任务，被 T001/T002/T006 吸收） | `evidence/r001-y-n-e-unavailable-current.md`、`evidence/r002-native-protected-honesty-current.md`、`evidence/r003-evidence-banner-audit-current.md`、`evidence/r004-protected-case-guard-current.md` |
 
 ## Source-owner status
 
