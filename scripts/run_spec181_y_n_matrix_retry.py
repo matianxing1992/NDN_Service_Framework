@@ -46,6 +46,7 @@ def main() -> int:
             # NFD fail with "Address already in use" before any child starts;
             # clear them per attempt (inside the user-namespace boundary).
             shutil.rmtree("/run/nfd", ignore_errors=True)
+            Path("/run/nfd").mkdir(parents=True, exist_ok=True)
             target = root / subcase / f"attempt-{attempt}"
             if target.exists():
                 shutil.rmtree(target)
