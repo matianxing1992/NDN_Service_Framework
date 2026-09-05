@@ -1,6 +1,6 @@
 # NAC-ABE Experimental compatibility review
 
-Status: dependency gate PASS; rebuilt NDNSF/native-network acceptance pending.
+Status: dependency and clean rebuilt NDNSF native gates PASS; MiniNDN acceptance pending.
 
 Scope: `b1c9c4f` (Spec179 dependency changes) and `8b462d0` (late callbacks and
 OpenABE error normalization). Both are on local NAC-ABE `Experimental`, not
@@ -39,6 +39,8 @@ Repair commit: NAC-ABE `b3b43c8` on `Experimental`, not pushed. Compatibility an
 lifecycle documentation is `NAC-ABE/docs/experimental-compatibility.md`, linked
 from its README. The change uses existing generation/callback/cache ownership;
 it adds no NDNSF permission policy or general plugin framework to NAC.
+Documentation follow-up `85547eb` requires a clean dependent build for ABI
+upgrades; it changes no library source. These are local commits only.
 
 ## Executed evidence
 
@@ -110,7 +112,22 @@ hashes (`relink-after-inspection.log`); only then was installed execution rerun.
 The exported `.text` sections compare equal (`nac-text-closure.log`). Use a
 read-only ELF parser or disposable copies for future inspection.
 
-NDNSF rebuild and representative MiniNDN results remain pending. The previous
+Clean NDNSF native gates pass: 182/182 unit cases (11971 assertions) and 72/72
+integration cases (1278 assertions), both exit0. The fresh Clang build completed
+in21m10.471s; `clang-build-final.log`, `ndnsf-unit-final.log` and
+`ndnsf-integration-final.log` retain evidence. `native-closure.log` records all
+six targets resolving the matching installed NAC library with no missing
+dependencies. The complete existing 16-scenario MiniNDN campaign remains pending.
+The previous
 16/16 campaign used NAC `8b462d0`; it is historical evidence and is not relabeled
 as a test of `b3b43c8`. Upstream delivery and full third-party ecosystem testing
 are not established by local gates; publication remains T014.
+
+Build recovery: GCC9 first failed inside its garbage collector; a retry linked
+in6m35.140s but reused old test objects predating the new NAC layout. Invalidating
+90 selected stale objects exposed another GCC crash/assembler error. Those
+artifacts were not tested or accepted. A fresh Clang10/system-binutils build in
+`build-clang-spec179-nac-compat` retains `-j2` and `-Werror`. Clang identified two
+unused `this` captures in User/Provider status-restore error callbacks; removing
+them is the only NDNSF runtime-source change in this review. Build logs retain
+all attempts; the old GCC tree must not be used as a matched ABI deployment.

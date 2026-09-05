@@ -119,10 +119,22 @@ User                                Provider(s)                     Controller
   and cache state alone cannot fence an already-running fetch. The algorithm
   boundary converts OpenABE enum decode failures into `NacAlgoError`, allowing
   runtime error handling to retain control instead of terminating the process.
+- CK fan-out detaches its waiter batch before calling applications and checks
+  generation between waiters, so reentrant invalidation/retry cannot corrupt
+  the queue. Invalidation silently cancels old consumptions; NDNSF retains
+  terminal-event/timeout ownership. Parameter fetch, retry and validation
+  callbacks likewise retain their generation; name/digest-checked candidates
+  replace installed material only after validation. Authority responses name
+  the actual current generation. The shared decrypted-CK cache binds scheme,
+  public parameters, private key and encrypted CK to preserve caller authority.
 - Local NAC-ABE dependency patches (DKEY FreshnessPeriod=0, versioned
   exact public-params fetch, consumer cache invalidation and delayed-callback
   fencing) live on the NAC-ABE `Experimental` branch (base `b1c9c4f`, repair
-  `8b462d0`, not pushed). The T019 repair is also captured in
+  `8b462d0`, compatibility repair `b3b43c8`, not pushed). These patches change
+  public class layouts: dependent C++ applications and language extensions
+  require a matched header/library rebuild. The compatibility contract is in
+  `specs/179-request-scoped-confidentiality/evidence/nac-abe-compatibility-review-20260905.md`.
+  The T019 repair is also captured in
   `specs/179-request-scoped-confidentiality/evidence/nac-abe-late-callback-fence-20260905.patch`.
 
 ## NAC-ABE routing
@@ -132,7 +144,7 @@ User                                Provider(s)                     Controller
   ACK/Response; `/SERVICE/<service>` attributes authorize Providers for
   Request/Selection.
 - Public parameters are named
-  `<AA-identity>/PUBLIC-PARAMS/<ABE-TYPE>/v=<version>`;
+  `<AA-identity>/PUBPARAMS/<ABE-TYPE>/v=<version>`;
   `ParamFetcher` binds expected Data name/digest for status-bound exact
   retrieval. DKEYs are versioned segmented Data; discovery Interests are
   unversioned and `MustBeFresh`.

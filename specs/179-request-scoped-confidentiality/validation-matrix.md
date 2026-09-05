@@ -642,6 +642,12 @@ Earlier passing runs are historical when subsequent native code changes require
 regression. In particular, none of these rows implies zero interruption under
 default status refresh timing or remote erasure of already disclosed keys.
 
+## Dependency compatibility follow-up (2026-09-05, T020)
+
+| Row | Level | Covers | Evidence / cases | Status |
+|---|---|---|---|---|
+| RV-I40 | dependency component + rebuilt runtime/MiniNDN | FR-019/023/024/036/041: callback reentry, stale parameter/validation generations, exact current naming, warm-cache private-key isolation, source/ABI migration | `NAC-ABE`42/42 CTest3299 assertions; installed-prefix20/20 cases89 assertions; original three example builds; restored typed no-argument fetch and three-version layout probes. Report: `evidence/nac-abe-compatibility-review-20260905.md` | component executed; rebuilt NDNSF/MiniNDN pending |
+
 ## Completion Rules
 
 Revocation is not complete unless:

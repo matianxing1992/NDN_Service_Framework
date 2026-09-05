@@ -129,6 +129,16 @@ closed by GDB-backed red/green,14 dependency cases,182 NDNSF unit and72 integrat
 cases, and full16/16 MiniNDN using NAC `8b462d0`. The previous Provider abort is
 retained as failure; final retry14/14 checks and five zero process exits close it.
 
+## Dependency compatibility follow-up (T020)
+
+FR-019/023/024/036/041 additionally map to NAC callback reentry, parameter
+generation ownership, canonical Authority names and caller-bound decrypted-CK
+caching. NAC `b3b43c8` passes42/42 complete CTest cases and20/20 installed-prefix
+checks. Compile probes demonstrate changed layouts and the restored no-argument
+fetch entry. Clean rebuilt NDNSF passes182/182 unit and72/72 integration cases;
+MiniNDN acceptance remains pending; see
+`evidence/nac-abe-compatibility-review-20260905.md` and RV-I40.
+
 ## Evidence rules
 
 - Unit tests establish deterministic serialization, cryptographic failure codes,

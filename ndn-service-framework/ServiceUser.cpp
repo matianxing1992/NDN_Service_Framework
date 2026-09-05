@@ -4077,7 +4077,7 @@ namespace ndn_service_framework
                     fetchPolicyStatusFromController(
                         controllerIdentity, serviceName, 1);
                 },
-                [this, serviceKey](const ndn::Data& badData,
+                [serviceKey](const ndn::Data& badData,
                                    const ndn::security::ValidationError& error) {
                     NDN_LOG_ERROR("Runtime status restore validation failed"
                                  << " service=" << serviceKey
