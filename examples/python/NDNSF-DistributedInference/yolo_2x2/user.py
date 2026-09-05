@@ -523,7 +523,11 @@ def _load_yolo_ack_driven(client, args) -> int:
     # production-tail regression, which intentionally starts at `response`.
     if locals().get("mutation") == "Y-N-I":
         try:
-            response = handle.response(min(int(args.timeout_ms), 15000))
+            # The bound must stay under the runner's 5 s terminal-cleanup
+            # window: the failure Response does not traverse the DATA_V1
+            # result channel on this branch, so this wait always times out
+            # and the User must reach its own 91 exit first.
+            response = handle.response(min(int(args.timeout_ms), 3000))
         except Exception:
             # The native Provider's owner-side rejection is the registered
             # evidence (the runner validates the Provider's SPEC180 negative

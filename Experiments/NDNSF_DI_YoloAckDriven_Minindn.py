@@ -794,7 +794,7 @@ class MiniNdnCaseRuntime:
             provider_id = identity[len(repo_marker):]
             argv = [
                 "provider.py",
-                "--config", str(config),
+                "--config", str(policy),
                 "--generated-policy-dir", str(generated),
                 "--group", str(identities["group"]),
                 "--provider-id", provider_id,
@@ -3152,8 +3152,9 @@ def _run_live_case_once(case: str, output: Path, inputs: Mapping[str, Any], *,
             # The protected round trip runs on the Python Provider path,
             # where the T001 grant qualification seam lives.  A native
             # Provider has no factory wiring on this branch (R002 honesty
-            # gate would reject it), so force the Python command provider.
-            env["SPEC180_NATIVE_PROVIDER_BINARY"] = ""
+            # gate would reject it); the process-spec branch selects the
+            # Python command, while the native build guard keeps validating
+            # the unchanged closure.
     # Y-N-O is the live control permutation, not a mutation.  Keep the
     # subcase in the lifecycle identity while leaving the User on its normal
     # control path; the negative User hook accepts only Y-N-C/P/R/I/E/L.
