@@ -31,6 +31,7 @@ from yolo_2x2_lib import (
     decode_image_reference,
     _decode_native_tensor_bundle,
     _yolo_merge_postprocess,
+    encode_native_tensor_bundle,
     encode_yolo_output,
     optional_local_nfd,
     parse_args_with_common,
@@ -202,13 +203,15 @@ def handle_role(ctx: ProviderRuntimeContext) -> None:
     if str(ctx.role).rstrip("/") in ("Merge", "/Merge") or \
             str(ctx.role).rstrip("/").endswith("/Merge"):
         # The native Merge owns deterministic postprocessing only (no ONNX
-        # layer); run the Python equivalent (spec181 T008).
+        # layer); run the Python equivalent (spec181 T008) and publish the
+        # native predictions bundle the ACK-driven collector expects.
         try:
             predictions = _yolo_merge_postprocess(ctx, input_prefetches)
         except Exception as exc:
             ctx.ndnsf.fail(f"failed to execute YOLO Merge postprocess: {exc}")
             return
-        ctx.publish_terminal_result(encode_yolo_output(0, predictions))
+        ctx.publish_terminal_result(
+            encode_native_tensor_bundle({"predictions": predictions}))
         print(f"YOLO_LAYOUT_FINAL role={ctx.role} output={predictions.shape}",
               flush=True)
         return
