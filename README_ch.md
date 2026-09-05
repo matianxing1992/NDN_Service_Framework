@@ -287,6 +287,23 @@ Targeted invocation 的安全模型：
 authorization 和 replay resistance。缓存 token pool 用完后，下一次
 `RequestServiceTargeted(...)` 会自动重新走 bootstrap/refill 流程。
 
+### 请求级机密性
+
+对于已经配置 Controller 且安装了签名 `ControllerVersion` 的 runtime，普通
+V2 request 默认使用请求级机密路径。NAC-ABE 只保护 Provider 选择前的服务级
+discovery descriptor；选择完成后，User 发布精确名字的 Input Data，Provider
+返回 inline 或 segmented Response Data。输入和结果使用一次 invocation 新建的
+AES-GCM key，并绑定 requesting User、selected Provider、request、attempt 和
+ControllerVersion。请求级 Targeted 调用会使用有界的
+bootstrap/ACK/Selection 路径，以便携带 recipient-bound key envelope；只有非请求级
+兼容流量继续使用 token-only Targeted fast path。旧的 service-wide response-key
+carrier 与其临时回退开关 `NDNSF_REQUEST_SCOPED_COMPATIBILITY` 已在跨用户机密性与
+ControllerVersion 撤销 MiniNDN 门通过后移除（Spec179 T012）：配置了 Controller
+runtime 时，request-scoped 路径是唯一受保护的 V2 invocation 模式，残留的
+`NDNSF_REQUEST_SCOPED_COMPATIBILITY=1` 环境变量会被忽略。没有 request-scoped
+invocation 状态的大响应现在以类型化错误 fail closed，而不会回退到已移除的
+service-wide carrier。
+
 ### 如何选择传输 API
 
 NDNSF 把连续发布和按名字精确获取对象分开：
@@ -598,7 +615,10 @@ Controller 不再发放 service invocation token。服务调用使用 `ServiceUs
 
 这个 PermissionResponse encryption 不是 NAC-ABE。
 
-NAC-ABE 仍然是 NDNSF service request/response message、未来 selection payload、content key、IMS 和 SVS-backed runtime publication 的 runtime encryption 机制。
+对于请求级 V2 invocation，NAC-ABE 只负责服务级 discovery authorization；请求输入和结果
+使用上面描述的每次 invocation 独立 AES-GCM key。旧的 service-wide response-key carrier
+已在迁移 MiniNDN 门通过后移除，不会作为失败后的自动 fallback；非 request-scoped
+大响应会 fail closed。
 
 运行时证书选择会在启动时区分 encryption certificate 和 signing certificate。由于当前
 NAC-ABE 和 PermissionResponse unwrap 仍要求 identity 具有 RSA-capable

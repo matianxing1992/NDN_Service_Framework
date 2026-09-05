@@ -1,0 +1,222 @@
+diff --git a/src/consumer.cpp b/src/consumer.cpp
+index 1a98369..5ae04ea 100644
+--- a/src/consumer.cpp
++++ b/src/consumer.cpp
+@@ -55,6 +55,7 @@ Consumer::Consumer(Face& face, KeyChain& keyChain,
+ void
+ Consumer::obtainDecryptionKey()
+ {
++  const auto generation = m_cacheGeneration;
+   auto identity = m_cert.getIdentity();
+   auto keyName = security::extractKeyNameFromCertName(m_cert.getName());
+   auto keyNameTlv = keyName.wireEncode();
+@@ -72,7 +73,11 @@ Consumer::obtainDecryptionKey()
+   fetcher->afterSegmentValidated.connect([](Data seg) {
+     NDN_LOG_DEBUG("Validated " << seg.getName());
+   });
+-  fetcher->onComplete.connect([this] (ConstBufferPtr contentBuffer) {
++  fetcher->onComplete.connect([this, generation] (ConstBufferPtr contentBuffer) {
++    if (generation != m_cacheGeneration) {
++      NDN_LOG_WARN("Ignoring stale DKEY fetch from invalidated cache generation");
++      return;
++    }
+     NDN_LOG_DEBUG("SegmentFetcher completed with total fetched size of " << contentBuffer->size());
+     auto prvBlock = decryptDataContent(Block(contentBuffer), m_keyChain.getTpm(), m_cert.getName());
+     algo::PrivateKey prv;
+@@ -84,6 +89,33 @@ Consumer::obtainDecryptionKey()
+   });
+ }
+
++void
++Consumer::clearCache()
++{
++  ++m_cacheGeneration;
++
++  std::vector<ErrorCallback> invalidatedCallbacks;
++  for (const auto& [_, tasks] : m_pendingCallbacks) {
++    for (const auto& task : tasks) {
++      if (task.onError)
++        invalidatedCallbacks.push_back(task.onError);
++    }
++  }
++  m_pendingCallbacks.clear();
++  m_ckInterestsSent.clear();
++
++  for (auto& [_, encryptedAes] : m_ckEncAesCache) {
++    std::fill(encryptedAes.begin(), encryptedAes.end(), 0);
++  }
++  m_ckEncAesCache.clear();
++  std::fill(m_keyCache.m_prv.begin(), m_keyCache.m_prv.end(), '\0');
++  m_keyCache.m_prv.clear();
++
++  for (const auto& callback : invalidatedCallbacks) {
++    callback("NAC-ABE cache invalidated by Controller policy update");
++  }
++}
++
+ bool
+ Consumer::readyForDecryption()
+ {
+@@ -116,6 +148,7 @@ Consumer::consume(const Interest& dataInterest,
+                   const ConsumptionCallback& consumptionCb,
+                   const ErrorCallback& errorCallback)
+ {
++  const auto generation = m_cacheGeneration;
+   // ready for decryption
+   if (!readyForDecryption()) {
+     errorCallback("Public params or private decryption key doesn't exist");
+@@ -131,12 +164,18 @@ Consumer::consume(const Interest& dataInterest,
+     NDN_LOG_DEBUG("Validated " << seg.getName());
+   });
+   fetcher->onComplete.connect([=](ConstBufferPtr contentBuffer) {
++    if (generation != m_cacheGeneration) {
++      NDN_LOG_WARN("Ignoring stale data fetch from invalidated cache generation");
++      errorCallback("NAC-ABE cache invalidated by Controller policy update");
++      return;
++    }
+     Name baseName = dataInterest.getName();
+     if (baseName.size() > 0 && baseName.get(-1).isSegment())
+       baseName = baseName.getPrefix(-1);
+
+     NDN_LOG_DEBUG("SegmentFetcher completed with total fetched size of " << contentBuffer->size() << " baseName=" << baseName);
+-    decryptContent(baseName, Block(contentBuffer), consumptionCb, errorCallback);
++    decryptContent(baseName, Block(contentBuffer), consumptionCb, errorCallback,
++                   generation);
+   });
+   fetcher->onError.connect([=](uint32_t errorCode, const std::string& errorMsg) {
+     NDN_LOG_ERROR("Data fetch error: " << errorMsg);
+@@ -154,7 +193,8 @@ Consumer::consume(const Name &dataName,
+     errorCallback("Public params or private decryption key doesn't exist");
+     return;
+   }
+-  decryptContent(dataName, dataBlock, consumptionCb, errorCallback);
++  decryptContent(dataName, dataBlock, consumptionCb, errorCallback,
++                 m_cacheGeneration);
+ }
+
+ void
+@@ -181,8 +221,13 @@ void
+ Consumer::decryptContent(const Name& dataObjName,
+                          const Block& content,
+                          const ConsumptionCallback& successCallBack,
+-                         const ErrorCallback& errorCallback)
++                         const ErrorCallback& errorCallback,
++                         uint64_t generation)
+ {
++  if (generation != m_cacheGeneration) {
++    errorCallback("NAC-ABE cache invalidated by Controller policy update");
++    return;
++  }
+   NDN_LOG_INFO(m_cert.getIdentity() << " Get content data " << dataObjName);
+   content.parse();
+   auto encryptedContentTLV = content.get(TLV_EncryptedContent);
+@@ -220,13 +265,15 @@ Consumer::decryptContent(const Name& dataObjName,
+   // 2) In-flight de-dup: only one CK fetch per ckKey
+   if (m_ckInterestsSent.count(ckKey) != 0) {
+     NDN_LOG_DEBUG("CK already in-flight for " << ckKey << ", queuing");
+-    m_pendingCallbacks[ckKey].push_back(PendingTask{cipherText, successCallBack, errorCallback});
++    m_pendingCallbacks[ckKey].push_back(
++        PendingTask{cipherText, successCallBack, errorCallback, generation});
+     return;
+   }
+
+   // 3) Start single CK fetch and queue current task
+   m_ckInterestsSent.insert(ckKey);
+-  m_pendingCallbacks[ckKey].push_back(PendingTask{cipherText, successCallBack, errorCallback});
++  m_pendingCallbacks[ckKey].push_back(
++      PendingTask{cipherText, successCallBack, errorCallback, generation});
+
+   Interest ckInterest(ckKey);
+   ckInterest.setInterestLifetime(ndn::time::milliseconds(m_defaultTimeout));
+@@ -241,6 +288,12 @@ Consumer::decryptContent(const Name& dataObjName,
+     NDN_LOG_DEBUG("Validated CK seg " << seg.getName());
+   });
+   ckFetcher->onComplete.connect([=](ConstBufferPtr contentBuffer) {
++    if (generation != m_cacheGeneration) {
++      NDN_LOG_WARN("Ignoring stale CK fetch from invalidated cache generation");
++      m_pendingCallbacks.erase(ckKey);
++      m_ckInterestsSent.erase(ckKey);
++      return;
++    }
+     Name ckObjName = ckKey; // normalized object base name
+     Block ckBlock(contentBuffer);
+     // Cache encrypted AES (best-effort)
+@@ -256,7 +309,8 @@ Consumer::decryptContent(const Name& dataObjName,
+     auto it = m_pendingCallbacks.find(ckKey);
+     if (it != m_pendingCallbacks.end()) {
+       for (const auto& t : it->second) {
+-        onCkeyData(ckObjName, ckBlock, t.cipher, t.onSuccess, t.onError);
++        onCkeyData(ckObjName, ckBlock, t.cipher, t.onSuccess, t.onError,
++                   t.generation);
+       }
+       m_pendingCallbacks.erase(it);
+     }
+@@ -280,8 +334,13 @@ void
+ Consumer::onCkeyData(const Name& ckObjName, const Block& content,
+                      std::shared_ptr<algo::CipherText> cipherText,
+                      const ConsumptionCallback& successCallBack,
+-                     const ErrorCallback& errorCallback)
++                     const ErrorCallback& errorCallback,
++                     uint64_t generation)
+ {
++  if (generation != m_cacheGeneration) {
++    errorCallback("NAC-ABE cache invalidated by Controller policy update");
++    return;
++  }
+   NDN_LOG_INFO(m_cert.getIdentity() << " Get CKEY data " << ckObjName);
+   content.parse();
+
+diff --git a/src/consumer.hpp b/src/consumer.hpp
+index 79e4252..0d84e3b 100644
+--- a/src/consumer.hpp
++++ b/src/consumer.hpp
+@@ -53,6 +53,16 @@ public:
+   void
+   obtainDecryptionKey();
+
++  /**
++   * @brief Invalidate cached DKEY/CK material and pending decryptions.
++   *
++   * A new Controller policy epoch must not leave an old private attribute key
++   * or encrypted CK result usable.  The generation fence also prevents an
++   * already-running DKEY/CK fetch from repopulating the cache after this call.
++   */
++  void
++  clearCache();
++
+   bool
+   readyForDecryption();
+
+@@ -122,14 +132,16 @@ private:
+   decryptContent(const Name& dataObjName,
+                  const Block& content,
+                  const ConsumptionCallback& successCallBack,
+-                 const ErrorCallback& errorCallback);
++                 const ErrorCallback& errorCallback,
++                 uint64_t generation);
+
+   void
+   onCkeyData(const Name& ckObjName,
+              const Block& content,
+              std::shared_ptr<algo::CipherText> cipherText,
+              const ConsumptionCallback& successCallBack,
+-             const ErrorCallback& errorCallback);
++             const ErrorCallback& errorCallback,
++             uint64_t generation);
+
+   void
+   handleNack(const Interest& interest, const lp::Nack& nack,
+@@ -154,11 +166,13 @@ private:
+     std::shared_ptr<algo::CipherText> cipher;
+     ConsumptionCallback onSuccess;
+     ErrorCallback onError;
++    uint64_t generation;
+   };
+
+   std::unordered_set<ndn::Name> m_ckInterestsSent;
+   std::unordered_map<ndn::Name, std::vector<PendingTask>> m_pendingCallbacks;
+   std::unordered_map<ndn::Name, ndn::Buffer> m_ckEncAesCache;
++  uint64_t m_cacheGeneration = 0;
+
+   int m_maxRetries = 3;
+   int m_defaultTimeout = 200;
