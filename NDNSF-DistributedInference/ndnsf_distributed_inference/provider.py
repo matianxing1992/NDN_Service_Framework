@@ -1314,6 +1314,12 @@ class DistributedInferenceProvider:
         """
         from .adapters.onnx.executor import (
             CertifiedOnnxAssemblyRecipe, assemble_certified_onnx_model)
+        if not v3_role_spec.model_manifest_digest:
+            # Roles without an assembly identity (the native Merge owns only
+            # deterministic postprocessing) have no ONNX layer to extract;
+            # skip assembly entirely — the protected grant verification still
+            # runs in _qualify_protected_assembly afterwards.
+            return execution
         artifact = dict(local_artifacts.get(ctx.assignment.role, {}))
         model_path = str(artifact.get("path", ""))
         if not model_path or not Path(model_path).is_file():
