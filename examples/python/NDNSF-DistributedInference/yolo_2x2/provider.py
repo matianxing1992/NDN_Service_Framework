@@ -29,6 +29,7 @@ from ndnsf_distributed_inference.adapters.onnx.executor import (
 from yolo_2x2_lib import (
     decode_image,
     decode_image_reference,
+    _decode_native_tensor_bundle,
     encode_yolo_output,
     optional_local_nfd,
     parse_args_with_common,
@@ -160,7 +161,13 @@ def handle_role(ctx: ProviderRuntimeContext) -> None:
         except Exception as exc:
             ctx.ndnsf.fail(f"failed to load input image reference: {exc}")
             return
-        images = decode_image(image_payload)
+        # The ACK-driven runner binds the native tensor bundle format
+        # (NDITB001); decode that, falling back to the legacy npz image
+        # encoding for non-ACK-driven callers.
+        if image_payload.startswith(b"NDITB001"):
+            images = _decode_native_tensor_bundle(image_payload)["images"]
+        else:
+            images = decode_image(image_payload)
         result = execute_onnx_dependency_chunk(
             ctx,
             model_path,
