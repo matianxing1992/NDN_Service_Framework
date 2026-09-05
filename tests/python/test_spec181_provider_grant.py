@@ -444,6 +444,22 @@ class ProtectedAssemblyQualificationTest(unittest.TestCase):
                 _fetch_grant_data=lambda name: self._packet(grant))
         self.assertFalse((self.work_dir / "assembled-role.onnx.cipher").is_file())
 
+    def test_valid_grant_cannot_replace_the_sealed_grant_reference(self):
+        """A valid authority signature does not authorize another grant digest."""
+        selected = self._signed_grant()
+        replacement = self._signed_grant(content_key=b"z" * 32)
+        self.assertNotEqual(selected.grant_digest, replacement.grant_digest)
+        projection = types.SimpleNamespace(
+            grant_binding=self._binding(selected.grant_digest),
+            request_id=self.request_id, attempt=1,
+            plan_core_digest="sha256:" + "cd" * 32)
+        with self.assertRaisesRegex(ProtectedGrantRejected, "grant digest"):
+            self._provider()._qualify_protected_assembly(
+                self._ctx(), self._execution(), projection, self._role_spec(),
+                _fetch_grant_data=lambda name: self._packet(replacement))
+        self.assertFalse((self.work_dir / "assembled-role.onnx.cipher").exists())
+        self.assertFalse((self.work_dir / "content-key.bin").exists())
+
     def test_expired_grant_is_rejected_in_verifier(self):
         grant = self._signed_grant()
         # The authority refuses to issue an already-expired grant (correct),
