@@ -258,6 +258,7 @@ def _load_grant_keys(provider_id: str = ""):
         return None, None
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric import ed25519
+    from cryptography.hazmat.backends import default_backend
     authority_pub_path = Path(os.environ["SPEC181_GRANT_AUTHORITY_PUBLIC_KEY"])
     recipient_map_path = Path(os.environ["SPEC181_PROVIDER_RECIPIENT_KEY_MAP"])
     recipient_entries = json.loads(recipient_map_path.read_text(
@@ -268,11 +269,12 @@ def _load_grant_keys(provider_id: str = ""):
         raise ValueError(
             f"no grant recipient key for Provider identity {identity}")
     authority_key = serialization.load_pem_public_key(
-        authority_pub_path.read_bytes())
+        authority_pub_path.read_bytes(), backend=default_backend())
     if not isinstance(authority_key, ed25519.Ed25519PublicKey):
         raise ValueError("grant authority public key is not Ed25519")
     recipient_key = serialization.load_pem_private_key(
-        Path(recipient_priv_path).read_bytes(), password=None)
+        Path(recipient_priv_path).read_bytes(), password=None,
+        backend=default_backend())
     if not isinstance(recipient_key, ed25519.Ed25519PrivateKey):
         raise ValueError("grant recipient private key is not Ed25519")
     return authority_key, recipient_key
