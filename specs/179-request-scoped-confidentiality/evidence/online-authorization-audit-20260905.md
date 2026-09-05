@@ -25,6 +25,7 @@ This document supersedes the earlier runtime-grant/revoke PASS.
 | OA-9 | HIGH | After asynchronous startup, valid permission/status admitted Requests before the first DKEY installed. ACKs arrived but could not decrypt. | Real User admission explicitly requires initial Consumer readiness. LocalMock fixtures retain their explicit crypto boundary. |
 | OA-10 | MEDIUM | Both hybrid decrypt methods moved onError into the success closure, leaving unwrap-error handling empty. | Copy the shared callback into success/unwrap paths and retain synchronous exception reporting. |
 | OA-11 | MEDIUM, harness | Faster startup made timed SIGCONT precede the real epoch-3 revoke; the offline role observed epoch 2. | Wait for the actual Controller revoke marker before resuming the role. |
+| OA-12 | MEDIUM, harness | Late grant target succeeded21/21 but control exited before traffic with a missing-signing-certificate error; the public key/certificate remained in the shared PIB. Concurrent read/write regression reproduces rollback-journal reader lockout; ndn-cxx treats non-ROW as absent. | Initialize only the campaign PIB in WAL mode before roles start, retain writer serialization, and record the mode. The App did not expose the nested SQLite code, so contention attribution is an inference supported by the reproduced mechanism. |
 
 The normal grant probe uses the existing **250ms** status-refresh setting with
 1rps traffic; the late grant uses **1s**. Distributed exact-version convergence
@@ -53,6 +54,8 @@ results are retained locally and excluded from Git.
 | Timing-sensitive gate failure retained | Concurrent App compilation produced stream retryCount2 instead of1, integration70/71 (`gates/integration-final.log`). After compilation, focused12/12 and full71/71 passed without weakening an assertion. CPU scheduling is a plausible cause, not a separately controlled load experiment. |
 | Launcher regressions | Initial target-row/CLI regressions failed before repair. New control-retention regression also failed before repair. Current14/14 pass (`gates/harness-readiness.log`), including refusal to apply the transport fault in the host namespace. |
 | Stronger control reanalysis | `gates/grant-control-reanalysis.log`: retained late run target21/21/control60/60; negative normal run target12/13/control12/24. All twelve failed control rows remain counted. |
+| Shared PIB contention red | `gates/pib-concurrency-red.log`: new concurrent signing-identity reader fails with `database is locked` while another role holds a write transaction. The test uses the launcher's actual PIB setup. |
+| WAL fixture green | Unchanged concurrent-reader regression and full launcher suite15/15 pass, exit0, `gates/harness-pib-green.log`. Native binaries are unchanged. |
 
 NAC debug in `grant-crypto-diagnostic/user-B.log` establishes OA-9/OA-10:
 initial DKEY fetch at startup, explicit renewal around12s coalescing behind it,
@@ -71,7 +74,8 @@ reproduces admission and callback ownership failures.
 | `campaign-renewal` | 2/3, driver exit1 | Late grant passed21/21 target and60/60 control;39 pre-renewal denials, one target DKEY refresh and zero unaffected refreshes. Offline role installed epochs1 then3. Normal grant failed12/13 target and12/24 control. |
 | `campaign-grant-final` | Failed | With1s convergence, target11/13 and control23/24; this exposed initial-DKEY admission and callback loss. |
 | `grant-crypto-diagnostic` | Failed, exit4 | Additional NAC Consumer diagnostics; no negative result was promoted. |
-| Final rebuilt16-scenario gate | Pending | Must use the final readiness/error-callback repair and current all-row gate. |
+| `campaign-readiness-final` | Incomplete failed campaign:8/9 completed probes passed; driver intentionally stopped, exit143 | Normal grant10/10 target and24/24 control,11 denials, one target/zero unaffected DKEY refreshes. Late target21/21 but User/A startup exit1/control0/0 exposed shared-PIB contention. Active ninth probe completed normally after driver stop; no16-scenario acceptance is claimed. |
+| Final rebuilt16-scenario gate | Pending in `campaign-pib-final` | Same final native binaries, WAL fixture and current all-row gate. |
 
 Earlier T017 live closure in `campaign/revocation-rotation-failure-retry`
 passed14/14 checks: epoch2 rotation failure, same-target recovery to epoch3,
@@ -110,7 +114,7 @@ The base-entry repair then rebuilt all five targets successfully with `-j2` in
 ./waf build --targets=unit-tests,integration-tests,App_User,App_Provider,App_ServiceController -j2
 build-clang-spec179-rv32/unit-tests --run_test=RequestScopedConfidentiality,ControllerRevocationPolicy,ControllerRevocationState,GenericDynamicApi,RuntimeStatusStorePersistence --report_level=detailed
 build-clang-spec179-rv32/integration-tests --run_test=ControllerRevocationFlow,ControllerVersionRefresh,RequestScopedSelection,RequestScopedResponseConfidentiality,Spec175InvocationStream --report_level=detailed
-NDNSF_CAMPAIGN_OUTPUT="$PWD/results/spec179-online-auth-20260905/campaign-readiness-final" NDNSF_BUILD_DIR=build-clang-spec179-rv32 bash scripts/spec179_minindn_campaign.sh
+NDNSF_CAMPAIGN_OUTPUT="$PWD/results/spec179-online-auth-20260905/campaign-pib-final" NDNSF_BUILD_DIR=build-clang-spec179-rv32 bash scripts/spec179_minindn_campaign.sh
 ```
 
 Run unit, integration and MiniNDN gates sequentially after compilation. Initial

@@ -19,6 +19,7 @@ import re
 import shlex
 import signal
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -301,6 +302,23 @@ def _wait_marker(path: Path, marker: str,
                     raise RuntimeError("%s exited before marker %s" % (name, marker))
         time.sleep(0.1)
     raise RuntimeError("%s did not emit marker %r" % (path, marker))
+
+
+def _prepare_shared_keychain(output: Path) -> Path:
+    """Allow signing reads while another fixture role updates the shared PIB."""
+    shared_keychain = output / "keys" / "shared"
+    (shared_keychain / "pib").mkdir(parents=True, exist_ok=True)
+    (shared_keychain / "tpm").mkdir(parents=True, exist_ok=True)
+    # Configure before launching any role. With rollback journals, a writer
+    # can make ndn-cxx's non-waiting PIB SELECT return BUSY instead of ROW;
+    # the installed backend then reports a present signing identity as absent.
+    # WAL keeps committed identities readable. Writer initialization remains
+    # serialized by the existing App readiness gates and initialization lock.
+    with sqlite3.connect(shared_keychain / "pib" / "pib.db") as db:
+        mode = db.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+        if mode.lower() != "wal":
+            raise RuntimeError("shared MiniNDN PIB requires WAL journal mode")
+    return shared_keychain
 
 
 def _launch_process(ndn: Any, node_name: str, process_name: str, command: str,
@@ -1039,10 +1057,7 @@ def execute_gate(output: Path, scenario: str = SCENARIOS[0],
     launcher_error = ""
     route_path = output / "routes.json"
     manifest_path = output / "manifest.json"
-    shared_keychain = output / "keys" / "shared"
-    shared_keychain.mkdir(parents=True, exist_ok=True)
-    (shared_keychain / "pib").mkdir(parents=True, exist_ok=True)
-    (shared_keychain / "tpm").mkdir(parents=True, exist_ok=True)
+    shared_keychain = _prepare_shared_keychain(output)
 
     def q(value: Any) -> str:
         return shlex.quote(str(value))
@@ -1348,6 +1363,7 @@ def execute_gate(output: Path, scenario: str = SCENARIOS[0],
     manifest_path.write_text(json.dumps({
         "schemaVersion": "ndnsf-spec179-minindn-manifest-v1",
         "scenario": scenario,
+        "sharedPibJournalMode": "wal",
         "config": config,
         "topology": str(TOPOLOGY),
         "policy": str(config.get("policyFile", POLICY)),
