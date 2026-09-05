@@ -734,6 +734,18 @@ public:
     m_targetedProviderTokens[tokenHash] =
       TargetedProviderTokenState{requesterName, serviceName, userToken};
   }
+
+  bool
+  hasTargetedProviderTokenForTest(const ndn::Name& requesterName,
+                                  const ndn::Name& serviceName,
+                                  const std::string& providerToken) const
+  {
+    const auto tokenHash =
+      makeProviderTokenHashForTest(requesterName, serviceName, providerToken);
+    std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+    return m_targetedProviderTokens.find(tokenHash) !=
+           m_targetedProviderTokens.end();
+  }
 };
 
 RequestAckMessage

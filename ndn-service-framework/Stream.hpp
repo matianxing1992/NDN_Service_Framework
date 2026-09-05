@@ -1159,7 +1159,6 @@ private:
   bool m_routeFailed = false;
   StreamCursor m_latestJoinCursor = 0;
   double m_measuredSamplePeriodMs = 0.0;
-  uint64_t m_recovered = 0;
   uint64_t m_providerFutureInterests = 0;
   uint64_t m_providerFutureHits = 0;
   uint64_t m_providerInitialFutureInterests = 0;

@@ -10,11 +10,14 @@
 #include "InvocationStream.hpp"
 #include "ConfigManager.hpp"
 #include "HybridMessageCrypto.hpp"
+#include "RequestConfidentiality.hpp"
 #include "GenericSelectionTxnStore.hpp"
 #include "NetworkTelemetry.hpp"
 #include "TimelineTrace.hpp"
 #include "Stream.hpp"
 #include "StreamFacade.hpp"
+#include "RevocationState.hpp"
+#include "PolicyRefreshCoordinator.hpp"
 
 #include <functional>
 #include <chrono>
@@ -653,6 +656,16 @@ namespace ndn_service_framework{
                 std::shared_ptr<ndn::svs::SVSPubSub> pubSub);
 
             /**
+             * Install only the LocalMock exact-Data/IMS interest filters.
+             *
+             * This keeps the LocalMock publication callback path intact while
+             * allowing a test to fetch Data objects retained in the Provider
+             * IMS.  It intentionally does not attach an SVSPubSub instance or
+             * change publication semantics.
+             */
+            void installLocalMockDataIngressForTest();
+
+            /**
              * Seed a receive key for a LocalMock integration test.  This keeps
              * the test on the real HybridMessageEnvelope ingress while
              * intentionally omitting the controller/NAC bootstrap from the
@@ -725,7 +738,21 @@ namespace ndn_service_framework{
             createStream(const StreamConfig& config);
 
             void fetchPermissionsFromController(const ndn::Name& controllerPrefix);
+            /** Re-fetch the identity-wide ProviderPermission renewal after an
+             * already-installed policy status advanced to a newer
+             * ControllerVersion (a revocation discovered through the
+             * scheduled refresh).  Cold-bootstrap first installs skip this:
+             * the enclosing bootstrap already fetched permissions. */
+            void refreshProviderPermissionsAfterAdvance(
+                const ndn::Name& serviceName);
             void applyPermissionResponse(const PermissionResponse& response);
+            /** Install a Controller-signed policy status after the enclosing
+             * Data has passed the configured trust validator. */
+            bool installControllerStatus(const PolicyStatusData& status,
+                                         bool controllerSignatureValid = true);
+            std::optional<ControllerVersion> getControllerVersion() const;
+            std::optional<ControllerVersion> getControllerVersion(
+                const ndn::Name& serviceName) const;
             /**
              * Return whether the current provider authorization table contains
              * permission for the requested service.  This is a runtime
@@ -734,6 +761,7 @@ namespace ndn_service_framework{
              */
             bool hasProviderPermissionForService(const ndn::Name& serviceName) const;
             size_t getCurrentPolicyEpoch() const;
+            size_t getCurrentPolicyEpoch(const ndn::Name& serviceName) const;
             static bool handlePermissionResponseData(const ndn::Data& data,
                                                      const ndn::Name& identity,
                                                      ndn::KeyChain& keyChain,
@@ -972,11 +1000,18 @@ namespace ndn_service_framework{
                 const ndn::Buffer& payload,
                 const std::string& serviceName);
 
-            LargeDataReferenceResponseResult makeResponseWithLargeDataOptimization(
+            // Request-scoped large responses cannot use the legacy
+            // service-wide HybridMessageCrypto carrier.  Each segment is an
+            // independently authenticated AeadEnvelope bound to the same
+            // invocation and a unique segment identity.
+            LargeDataReferenceResponseResult makeRequestScopedResponseWithLargeDataOptimization(
                 const ndn::Name& requesterName,
+                const ndn::Name& providerName,
                 const ndn::Name& serviceName,
                 const ndn::Name& requestId,
                 ResponseMessage response,
+                const RequestKeyBundle& keys,
+                RequestSecurityBinding binding,
                 size_t thresholdBytes = 0,
                 ndn::time::milliseconds freshness = ndn::DEFAULT_FRESHNESS_PERIOD);
 
@@ -1015,7 +1050,55 @@ namespace ndn_service_framework{
                                       const ndn::Data& data);
             void onPolicyManifestTimeout(const ndn::Interest& interest,
                                          int attempt = 1);
+            void fetchPolicyStatusFromController(const ndn::Name& controllerPrefix,
+                                                 const ndn::Name& serviceName,
+                                                 int attempt = 1,
+                                                 std::optional<ControllerVersion> expectedVersion = std::nullopt);
+            void onPolicyStatusData(const ndn::Interest& interest,
+                                    const ndn::Data& data,
+                                    int attempt = 1);
+            void onPolicyStatusTimeout(const ndn::Interest& interest,
+                                       int attempt = 1);
+            void scheduleControllerStatusRefresh(
+                const ndn::Name& serviceName,
+                const PolicyStatusData& status);
+            // Bounded DKEY re-arm retries for a LocalMock whose immediate
+            // refresh was deferred (no fixture-owned Consumer).  The retry
+            // fires only while the Face is pumped and stops as soon as the
+            // Consumer is ready or the attempt bound is exhausted.
+            void scheduleDeferredDkeyRefreshRetry(const ndn::Name& serviceName);
             bool isAcceptablePolicyEpoch(size_t messageEpoch) const;
+            bool isAcceptablePolicyEpoch(const ndn::Name& serviceName,
+                                         size_t messageEpoch) const;
+            bool isAcceptableControllerVersion(
+                const std::optional<ControllerVersion>& messageVersion) const;
+            bool isAcceptableControllerVersion(
+                const ndn::Name& serviceName,
+                const std::optional<ControllerVersion>& messageVersion) const;
+            void maybeRefreshControllerVersionHint(
+                const ndn::Name& serviceName,
+                const std::optional<ControllerVersion>& messageVersion) const;
+            /** Enforce an installed Controller-signed revocation state at a
+             * protected Provider transition while preserving the pre-status
+             * bootstrap path. */
+            #if defined(__GNUC__)
+            __attribute__((noinline))
+            #endif
+            bool authorizeControllerTransition(
+                const ndn::Name& serviceName,
+                ProtectedTransition transition) const;
+            void adoptControllerVersion(const ControllerVersion& version);
+            /**
+             * Evict per-service authorization material after an authenticated
+             * ControllerVersion change.  Replay tombstones remain bounded and
+             * are not removed merely because a newer policy arrived.
+             */
+            void invalidateControllerScopedCaches(
+                const ndn::Name& serviceName,
+                const ControllerVersion& version,
+                bool abeGenerationChanged = true,
+                const PolicyStatusData* status = nullptr,
+                bool grantOnlyDkeyRefresh = false);
 
 
             bool replyFromIMS(const ndn::Interest &interest);
@@ -1157,7 +1240,8 @@ namespace ndn_service_framework{
                                                ndn::time::milliseconds ttl = ndn::time::seconds(30),
                                                bool authoritative = false);
 
-            void cleanupPendingRequestState(const ndn::Name& pendingKey);
+            void cleanupPendingRequestState(const ndn::Name& pendingKey,
+                                            bool preserveReplayTombstone = false);
 
             bool expirePendingRequestState(const ndn::Name& pendingKey);
 
@@ -1270,6 +1354,14 @@ namespace ndn_service_framework{
                 const RequestMessage& requestMessage,
                 ResponseMessage response,
                 std::string selectionDigest = "");
+            void fetchRequestScopedInputAndDispatch(
+                const ndn::Name& requesterName,
+                const ndn::Name& providerName,
+                const ndn::Name& serviceName,
+                const ndn::Name& requestId,
+                RequestMessage requestMessage,
+                const ServiceSelectionMessage& selectionMessage,
+                const std::string& selectionDigest);
             void publishExecutionFailureOnEventLoop(
                 const ndn::Name& requesterName,
                 const ndn::Name& providerName,
@@ -1390,6 +1482,11 @@ namespace ndn_service_framework{
             {
                 return m_testNacConsumer ? *m_testNacConsumer : nacConsumer;
             }
+
+            ndn::nacabe::CacheProducer& activeNacProducer()
+            {
+                return m_testNacProducer ? *m_testNacProducer : nacProducer;
+            }
             ndn::Face& m_face;
             ndn::Scheduler m_scheduler;
             ndn::Name identity;
@@ -1411,6 +1508,10 @@ namespace ndn_service_framework{
             ndn::security::Certificate attrAuthorityCertificate;
             ndn::nacabe::Consumer nacConsumer;
             std::unique_ptr<ndn::nacabe::Consumer> m_testNacConsumer;
+            // LocalMock fixtures do not model the production Controller/AA
+            // bootstrap lifecycle.  Keep their refresh path fail-closed until
+            // the fixture explicitly completes its bootstrap.
+            bool m_isLocalMock = false;
             //ndn::nacabe::Producer nacProducer;
             NetworkTelemetryStore m_networkTelemetry;
             ndn::nacabe::CacheProducer nacProducer;
@@ -1421,6 +1522,25 @@ namespace ndn_service_framework{
             ndn::security::SigningInfo m_signingInfo;
             bool m_timelineTrace = false;
             size_t m_currentPolicyEpoch = 0;
+            mutable std::mutex m_controllerVersionMutex;
+            std::optional<ControllerVersion> m_controllerVersion;
+            std::map<std::string, RevocationState> m_revocationStates;
+            std::map<std::string, PolicyRefreshCoordinator>
+                m_policyRefreshCoordinators;
+            ndn::Name m_controllerPrefix;
+            std::set<std::string> m_policyStatusFetchInFlight;
+            std::map<std::string, ControllerVersion>
+                m_policyStatusRefreshScheduled;
+            // A grant-only PermissionResponse can add a service while the
+            // ABE generation remains unchanged. Defer one identity-scoped
+            // DKEY replacement for the affected service until its signed
+            // PolicyStatus is installed; keep this per-service so an update
+            // for S cannot trigger a refresh while installing T's status.
+            std::set<std::string> m_nacDkeyRefreshPendingServices;
+            // ControllerVersion of the last permission wave for which a
+            // DKEY refresh was requested; same-wave service status installs
+            // collapse into that single identity-wide replacement fetch.
+            std::optional<ControllerVersion> m_lastDkeyRefreshWave;
             // Process-incarnation fence used by deployment capability and
             // readiness contracts. It is never an authorization secret.
             const uint64_t m_processStartedAtUs = static_cast<uint64_t>(
@@ -1475,6 +1595,18 @@ namespace ndn_service_framework{
             std::map<ndn::Name, std::string> m_selectedProviderTokenHashes;
             std::set<std::string> m_recentProviderRequestTokenHashes;
             std::set<std::string> m_consumedProviderTokenHashes;
+            struct RequestScopedInvocationState
+            {
+                RequestKeyBundle keys;
+                RequestSecurityBinding binding;
+            };
+            // One state entry is created only after a Selection envelope is
+            // authenticated and consumed.  It is retained until the
+            // terminal Response is published so the response key cannot be
+            // reconstructed from a service-wide ABE key.
+            std::map<ndn::Name, RequestScopedInvocationState>
+                m_requestScopedInvocations;
+            NonceRegistry m_requestScopedNonceRegistry;
             struct PreparedDeploymentExecution
             {
                 ndn::Name requesterName;

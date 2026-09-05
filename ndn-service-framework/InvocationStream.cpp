@@ -222,6 +222,7 @@ StreamRequestOptions::validate() const
       retentionMs < 1000 || retentionMs > 300000 ||
       completionGraceMs > 30000 ||
       maxEventWireBytes < 512 || maxEventWireBytes > 65536 ||
+      (controllerVersion && !controllerVersion->isValid()) ||
       (allowReplacement && maxReplacements != 1) ||
       (!allowReplacement && maxReplacements != 0) ||
       (mode == InvocationMode::Targeted && allowReplacement) ||
@@ -249,6 +250,12 @@ StreamRequestOptions::wireEncode() const
     tlv::StreamEventKeyCommitmentType, eventKeyCommitment));
   block.push_back(ndn::makeNonNegativeIntegerBlock(
     tlv::StreamDeadlineEpochMsType, deadlineEpochMs));
+  if (controllerVersion) {
+    ndn::Block version(tlv::StreamControllerVersionType);
+    version.push_back(controllerVersion->wireEncode());
+    version.encode();
+    block.push_back(version);
+  }
   if (eventKeyGrant) {
     ndn::Block grant(tlv::StreamEventKeyGrantType);
     grant.push_back(*eventKeyGrant);
@@ -294,6 +301,20 @@ StreamRequestOptions::wireDecode(const ndn::Block& wire)
       take(elements, index, tlv::StreamEventKeyCommitmentType));
     decoded.deadlineEpochMs = ndn::readNonNegativeInteger(
       take(elements, index, tlv::StreamDeadlineEpochMsType));
+    if (index < elements.size() &&
+        elements[index].type() == tlv::StreamControllerVersionType) {
+      auto version = elements[index++];
+      version.parse();
+      if (version.elements().size() != 1 ||
+          version.elements().front().type() != ControllerVersion::TYPE) {
+        return false;
+      }
+      ControllerVersion controllerVersion;
+      if (!controllerVersion.wireDecode(version.elements().front())) {
+        return false;
+      }
+      decoded.controllerVersion = controllerVersion;
+    }
     if (index < elements.size() && elements[index].type() == tlv::StreamEventKeyGrantType) {
       auto grant = elements[index++];
       grant.parse();
@@ -364,7 +385,8 @@ StreamRequestOptions::operator==(const StreamRequestOptions& other) const
          generationId == other.generationId && attemptEpoch == other.attemptEpoch &&
          streamEpoch == other.streamEpoch &&
          eventKeyCommitment == other.eventKeyCommitment &&
-         deadlineEpochMs == other.deadlineEpochMs && grantEqual() &&
+         deadlineEpochMs == other.deadlineEpochMs &&
+         controllerVersion == other.controllerVersion && grantEqual() &&
          maxEvents == other.maxEvents && interestWindow == other.interestWindow &&
          interestLifetimeMs == other.interestLifetimeMs &&
          maxEventRetries == other.maxEventRetries &&
@@ -1168,6 +1190,7 @@ StreamBinding::validate() const
       attemptEpoch < 1 || attemptEpoch > 2 ||
       allZero(planDigest) || allZero(generationId) || streamEpoch == 0 ||
       allZero(eventKeyCommitment) || userToken.empty() || policyEpoch == 0 ||
+      (controllerVersion && !controllerVersion->isValid()) ||
       deadlineEpochMs == 0) {
     throw std::invalid_argument("invalid invocation stream binding");
   }
@@ -1193,6 +1216,15 @@ StreamBinding::canonicalBytes() const
     ndn::span<const uint8_t>(userToken.data(), userToken.size()));
   appendArray(bytes, tokenDigest);
   appendUint64(bytes, policyEpoch);
+  if (controllerVersion) {
+    // Keep the legacy versionless binding transcript byte-for-byte stable.
+    // New protected streams append an explicit presence marker and the
+    // canonical ControllerVersion wire before the deadline field.
+    appendUint64(bytes, 1);
+    const auto versionWire = controllerVersion->wireEncode();
+    appendLengthPrefixed(bytes, ndn::span<const uint8_t>(
+      versionWire.begin(), versionWire.size()));
+  }
   appendUint64(bytes, deadlineEpochMs);
   return bytes;
 }
@@ -1207,6 +1239,7 @@ StreamBinding::operator==(const StreamBinding& other) const
          streamEpoch == other.streamEpoch &&
          eventKeyCommitment == other.eventKeyCommitment &&
          userToken == other.userToken && policyEpoch == other.policyEpoch &&
+         controllerVersion == other.controllerVersion &&
          deadlineEpochMs == other.deadlineEpochMs;
 }
 
@@ -1620,6 +1653,13 @@ StreamEventPublisher::publish(const ndn::Buffer& payload,
     if (!emitted) {
       std::lock_guard<std::mutex> lock(mutex_);
       failProviderLocked();
+      // `makeAndRetain` reserves the cursor and keeps the exact signed bytes
+      // before the transport commit.  If the Provider Face rejects the
+      // commit (for example after Controller revocation), that event must not
+      // remain available through the local retry/retention path and the
+      // caller must observe publication failure rather than a false success.
+      retained_.erase(result->name.toUri());
+      result.reset();
     }
   }
   return result;
@@ -1834,6 +1874,17 @@ StreamEventConsumer::prefetchWindow()
   for (const auto& name : names) {
     onRetry_(name);
   }
+}
+
+void
+StreamEventConsumer::setAuthorizationCallback(AuthorizationCallback callback)
+{
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (started_) {
+    throw std::logic_error(
+        "stream event authorization callback must be set before start");
+  }
+  authorization_ = std::move(callback);
 }
 
 bool
@@ -2088,6 +2139,17 @@ StreamEventConsumer::deliverReady()
     // buffered events after that terminal claim.
     if (lifecycle_->terminalAuthority()->isTerminal() ||
         lifecycle_->terminalAuthority()->isFenced()) {
+      return false;
+    }
+
+    AuthorizationCallback authorization;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      authorization = authorization_;
+    }
+    if (authorization && !authorization()) {
+      fail(StreamedInvocationErrorCode::Unauthorized,
+           "stream event rejected by Controller revocation state");
       return false;
     }
 

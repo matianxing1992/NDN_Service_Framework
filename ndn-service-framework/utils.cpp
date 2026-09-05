@@ -6,12 +6,88 @@
 #include <sstream>
 #include <algorithm>
 #include <iomanip>
+#include <stdexcept>
 #include <openssl/rand.h>
 
 namespace ndn_service_framework
 {
 
     NDN_LOG_INIT(ndn_service_framework.utils);
+
+
+    namespace
+    {
+        constexpr const char* POLICY_STATUS_MARKER = "version";
+
+        ndn::Name
+        policyStatusPrefix(const ndn::Name& controllerPrefix)
+        {
+            ndn::Name prefix(controllerPrefix);
+            prefix.append("NDNSF").append("POLICY-STATUS");
+            return prefix;
+        }
+    }
+
+    ndn::Name
+    makePolicyStatusName(const ndn::Name& controllerPrefix,
+                         const ndn::Name& serviceName,
+                         const ControllerVersion& version)
+    {
+        if (controllerPrefix.empty() || serviceName.empty() || !version.isValid()) {
+            throw std::invalid_argument("invalid policy-status name inputs");
+        }
+        auto name = policyStatusPrefix(controllerPrefix);
+        name.append(serviceName)
+            .append(POLICY_STATUS_MARKER)
+            .appendNumber(version.controllerGenerationTimestamp)
+            .appendNumber(version.controllerEpoch);
+        return name;
+    }
+
+    std::optional<PolicyStatusName>
+    parsePolicyStatusName(const ndn::Name& controllerPrefix,
+                          const ndn::Name& inputName)
+    {
+        if (controllerPrefix.empty()) {
+            return std::nullopt;
+        }
+        auto name = inputName;
+        if (!name.empty() && name[-1].isParametersSha256Digest()) {
+            name = name.getPrefix(-1);
+        }
+        const auto prefix = policyStatusPrefix(controllerPrefix);
+        if (!prefix.isPrefixOf(name) || name.size() <= prefix.size()) {
+            return std::nullopt;
+        }
+        const auto suffix = name.getSubName(prefix.size());
+        PolicyStatusName result;
+        if (suffix.size() >= 3 &&
+            suffix[-3].toUri() == POLICY_STATUS_MARKER) {
+            const auto serviceSize = suffix.size() - 3;
+            if (serviceSize == 0) {
+                return std::nullopt;
+            }
+            result.serviceName = suffix.getPrefix(serviceSize);
+            try {
+                const ControllerVersion version{
+                    suffix[-2].toNumber(), suffix[-1].toNumber()};
+                if (!version.isValid()) {
+                    return std::nullopt;
+                }
+                result.version = version;
+            }
+            catch (const std::exception&) {
+                return std::nullopt;
+            }
+            return result;
+        }
+
+        result.serviceName = suffix;
+        if (result.serviceName.empty()) {
+            return std::nullopt;
+        }
+        return result;
+    }
 
 
     namespace
@@ -548,6 +624,24 @@ namespace ndn_service_framework
     }
 
     std::string
+    computeSelectionDigestWithoutKeyEnvelope(
+        const ServiceSelectionMessage& message)
+    {
+        ServiceSelectionMessage withoutEnvelope(message);
+        withoutEnvelope.clearSelectionKeyEnvelope();
+        // RequestSecurityBinding carries typed SHA-256 digests as
+        // ``sha256:<hex>``.  The legacy selection-status paths intentionally
+        // keep the bare hexadecimal digest, so canonicalize only this
+        // confidentiality-binding helper instead of changing those wire
+        // identifiers.
+        const auto digest = computeSelectionDigest(withoutEnvelope);
+        if (digest.compare(0, 7, "sha256:") == 0) {
+            return digest;
+        }
+        return "sha256:" + digest;
+    }
+
+    std::string
     makeOpaqueControlHandle(size_t bytes)
     {
         if (bytes < 16 || bytes > 64) {
@@ -723,6 +817,8 @@ namespace ndn_service_framework
            << "name=" << reference.dataName.toUri() << "\n"
            << "type=" << sanitizeReferenceField(reference.objectType) << "\n"
            << "object_id=" << sanitizeReferenceField(reference.objectId) << "\n"
+           << (reference.keyScope.empty() ? std::string() :
+               "key_scope=" + sanitizeReferenceField(reference.keyScope) + "\n")
            << "plaintext_size=" << reference.plaintextSize << "\n"
            << "encrypted=" << (reference.encrypted ? "1" : "0") << "\n"
            << "digest=" << sanitizeReferenceField(reference.digest) << "\n";
@@ -764,6 +860,16 @@ namespace ndn_service_framework
             }
             else if (key == "object_id") {
                 reference.objectId = value;
+            }
+            else if (key == "key_scope") {
+                reference.keyScope = value;
+                // Do not silently fall back to the legacy service-wide key
+                // when a producer advertises an unknown scope.  An unknown
+                // scope is ambiguous and must fail closed at the reference
+                // boundary.
+                if (reference.keyScope != "request") {
+                    return std::nullopt;
+                }
             }
             else if (key == "plaintext_size") {
                 try {

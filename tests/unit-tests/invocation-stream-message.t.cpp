@@ -335,6 +335,66 @@ BOOST_AUTO_TEST_CASE(StreamRequestOptionsAttemptTwoRoundTripsWithoutDowngrade)
   BOOST_CHECK_EQUAL(decoded.streamEpoch, 8U);
 }
 
+BOOST_AUTO_TEST_CASE(StreamRequestOptionsControllerVersionRoundTripsAndIsOptional)
+{
+  auto value = validOptions();
+  value.controllerVersion = ControllerVersion{1788285600123ULL, 7};
+
+  const auto wire = value.wireEncode();
+  StreamRequestOptions decoded;
+  BOOST_REQUIRE(decoded.wireDecode(wire));
+  BOOST_CHECK(decoded == value);
+  BOOST_REQUIRE(decoded.controllerVersion.has_value());
+  BOOST_CHECK_EQUAL(decoded.controllerVersion->controllerGenerationTimestamp,
+                    1788285600123ULL);
+  BOOST_CHECK_EQUAL(decoded.controllerVersion->controllerEpoch, 7ULL);
+
+  auto parsed = wire;
+  parsed.parse();
+  BOOST_REQUIRE_EQUAL(parsed.elements().size(), 20);
+  const auto versionIndex = size_t{7};
+  BOOST_CHECK_EQUAL(parsed.elements()[versionIndex].type(),
+                    tlv::StreamControllerVersionType);
+  auto versionWrapper = parsed.elements()[versionIndex];
+  versionWrapper.parse();
+  BOOST_REQUIRE_EQUAL(versionWrapper.elements().size(), 1);
+  BOOST_CHECK_EQUAL(versionWrapper.elements().front().type(), ControllerVersion::TYPE);
+
+  auto changed = value;
+  changed.controllerVersion->controllerEpoch++;
+  BOOST_CHECK(toHex(changed.wireEncode()) != toHex(wire));
+
+  auto legacy = validOptions();
+  StreamRequestOptions legacyDecoded;
+  BOOST_REQUIRE(legacyDecoded.wireDecode(legacy.wireEncode()));
+  BOOST_CHECK(!legacyDecoded.controllerVersion.has_value());
+
+  auto invalid = value;
+  invalid.controllerVersion = ControllerVersion{0, 1};
+  BOOST_CHECK_THROW(invalid.wireEncode(), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(StreamBindingControllerVersionChangesCanonicalDigest)
+{
+  auto binding = validBinding();
+  binding.controllerVersion = ControllerVersion{1788285600123ULL, 7};
+  const auto currentDigest = computeStreamBindingDigest(binding);
+
+  auto changed = binding;
+  changed.controllerVersion->controllerEpoch++;
+  const auto changedDigest = computeStreamBindingDigest(changed);
+  BOOST_CHECK(currentDigest != changedDigest);
+
+  auto legacy = binding;
+  legacy.controllerVersion.reset();
+  const auto legacyDigest = computeStreamBindingDigest(legacy);
+  BOOST_CHECK(currentDigest != legacyDigest);
+
+  auto invalid = binding;
+  invalid.controllerVersion = ControllerVersion{0, 1};
+  BOOST_CHECK_THROW(computeStreamBindingDigest(invalid), std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_CASE(StreamEventKeyGrantEnvelopeCarriesOnlyWrappedKey)
 {
   const auto grant = validRecipientWrappedEventKeyGrant();

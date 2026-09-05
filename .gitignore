@@ -64,6 +64,15 @@ examples/python/NDNSF-DistributedInference/native_di_tracer/artifacts/qwen-nativ
 # Local experiment virtual environments
 Experiments/pythonEnv/
 
+# Local waf build output trees (clang/gcc/spec179 variants)
+/build-clang*/
+/build-gcc*/
+/build-spec179*/
+
+# Local experiment results (MiniNDN run keys are generated per campaign —
+# never commit; redacted evidence lives under specs/<n>/evidence/)
+/results/
+
 # Local Chinese README translations
 README_ch.md
 
