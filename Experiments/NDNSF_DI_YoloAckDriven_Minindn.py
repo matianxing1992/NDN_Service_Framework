@@ -800,6 +800,7 @@ class MiniNdnCaseRuntime:
                 "--role", ",".join(roles),
                 "--temp-dir", "/tmp/" + provider_id,
                 "--handler-workers", "1",
+                "--dynamic-provisioning",
                 "--selection-offer-key-file", str(key_path),
             ]
             return python_command("provider.py", argv)
