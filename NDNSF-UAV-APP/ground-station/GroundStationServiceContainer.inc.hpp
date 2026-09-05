@@ -4308,7 +4308,7 @@ public:
           coordinator->fail("plan", error.what());
         }
       },
-      [this, coordinator, incident, evidence](
+      [coordinator, incident, evidence](
         const ndn_service_framework::ResponseMessage& response) {
         std::string callbackReason;
         if (!coordinator->markExecuting(&callbackReason) ||
@@ -7051,7 +7051,7 @@ private:
                     onStopped();
                   }
                 },
-                [this, droneId] {
+                [droneId] {
                   return false;
                 },
                 [this, droneId, onStopTimeout = std::move(onStopTimeout)] {

@@ -1613,3 +1613,46 @@ nfdc strategy set /example/uav/group /localhost/nfd/strategy/multicast
    和 report 后续应复用同一个 publisher-owned data-product model。
 6. 把部分图像/object-detection workflow 接到 `NDNSF-DistributedInference`，用于 ground station
    和 drones 之间的分割模型执行。
+
+## 多视角识别（Spec 178）
+
+UAV-Experimental 分支还包含一个有界的多视角识别流程。Mission session 仍然是长生命周期；
+每次识别是一个有限 job，并携带不可变的精确 named-Data 视图引用集合。被选中的 Provider
+先验证每个签名视图，要求至少两个不同 UAV 身份的视图，再把 2–6 个视角送入一个注册的
+MVCNN-family ONNX 图，并显式使用 `CPUExecutionProvider` 和 view mask。模型在图内完成
+联合特征池化，输出一个融合决定及每个贡献视图对应的 Provider-owned 带标注 named Data。
+各视图独立检测或投票只属于 baseline，不是 MVCNN。当前生成的汽车 fixture 只能做功能测试，
+不能用于真实飞行准确率结论。
+
+运行 CPU 功能门禁：
+
+```bash
+python3 NDNSF-UAV-APP/tools/run_multiview_fixture.py \
+  --manifest NDNSF-UAV-APP/testdata/multiview-car/manifest.json \
+  --mode real --views 6 --output results/uav-multiview-real
+```
+
+注册并检查 CPU 模型：
+
+```bash
+python3 NDNSF-UAV-APP/tools/prepare_mvcnn_artifact.py \
+  --output-dir NDNSF-UAV-APP/models
+```
+
+Spec 177 的确定性 adapter 只通过显式 `--mode functional` 用于 contract 测试。真实模型
+路径在模型缺失、摘要不符、输入损坏、输出非有限，或实际启用了非
+`CPUExecutionProvider` 时直接失败，不会自动替换模型。
+
+验证顺序为模型来源/原生资格、ONNX contract 与 CPU 一致性、CPU integration、真实 MiniNDN
+多进程传输，最后才是已注册的 1/2/4/6-view 配对数据集。可复用的 MiniNDN 五场景夹具命令为：
+
+```bash
+sudo -n python3 NDNSF-UAV-APP/tools/run_uav_multiview_minindn.py \
+  --execute --all-scenarios --provider /provider/gpu \
+  --output results/uav-multiview-minindn
+```
+
+它会记录 UAV 精确 Data 获取、竞争 Provider ACK、单一 owner 选择、Provider-owned
+结果/标注 Data，以及 unavailable、late、publication-failure 三种明确失败终态。模型注册、
+预处理和模型摘要位于
+`configs/uav_multiview_models.json`；生成的 fixture 输出只能作为功能证据。
