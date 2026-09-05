@@ -1430,7 +1430,7 @@ class DistributedInferenceProvider:
             except Exception as exc:
                 raise ProtectedGrantRejected(
                     f"grant Data fetch failed at {grant_binding.grant_name}: "
-                    f"{type(exc).__name__}") from exc
+                    f"{type(exc).__name__}: {exc}") from exc
             try:
                 grant = grant_from_wire(packet.content)
             except ValueError as exc:
