@@ -28,10 +28,25 @@ cross-document inconsistencies it left behind. Full report:
   deferred non-goals with owner and reintroduction criteria in `spec.md`
   `## Out of Scope` (R179-A3); `release-gate.md` scenario-name alignment
   (R179-A5).
-- **R179-A6 (HIGH, not yet fixed): the whole Spec179 changeset — code,
-  `specs/179-request-scoped-confidentiality/` (untracked), and evidence — is
-  uncommitted in the working tree (HEAD `e2d793e8`). Mandatory before
-  treating the release as durable: commit the Spec179 changeset.**
+- **R179-A6 (HIGH → RESOLVED 2026-09-05): the Spec179 changeset is now
+  committed** — spec/plan/tasks/matrix/AUDIT and the FR-039–FR-041 code,
+  tests, and evidence landed on `UAV-Experimental` as cc18c930 (spec
+  amendment), 98388f7f/d6016773 (T014 evidence/records), 91fd25b0 (RV-I33),
+  71bbe311 (FR-039 store + restore path), 2325781b (RV-I32), plus this
+  close-out commit (tasks.md flip, traceability status, AUDIT closure). The
+  only follow-up that still needs a maintainer action is T014's upstream
+  package/split hand-off and push (user-authorized only).
+- **R179-A8 (closing regression, 2026-09-05):** full unit and integration
+  runs on `build-clang-spec179-rv32` reproduce only the two recorded
+  pre-existing, out-of-scope DI failures — the deterministic codec SIGFPE
+  (`NativeTensorBundleCodecRoundTripsPilotDtypesDynamicShapesAndKvOutputs`)
+  and the schedule-dependent `Spec170*` integration cases that rotate per
+  run (D2a, NativePostSelection, NativeDeviceMismatch, D2b/D2h) —
+  `evidence/regression-red-green-20260904.md`. Every spec179 gate suite is
+  green: `RuntimeStatusStorePersistence` 6/6 and `ControllerRevocationFlow`
+  40/40 on the closing binary; MiniNDN coverage remains the 2026-09-04
+  campaign 14/14 (the FR-039 additions are opt-in and touch no network
+  path exercised there).
 
 ## 2026-09-04 release audit (T013; supersedes the 2026-09-03 BLOCK below)
 

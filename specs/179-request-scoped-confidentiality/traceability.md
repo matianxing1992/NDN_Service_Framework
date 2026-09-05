@@ -25,6 +25,9 @@ box is never inferred from this table.
 | SC-010–SC-012 | Telemetry scan, regression, release trace | T009–T012 | SC-010: redacted typed reasons + no private key/plaintext in telemetry; SC-011: all suites green on the new default path with stale switch inert; SC-012: this traceability table, `validation-matrix.md`, `AUDIT.md`, `evidence/release-gate.md` |
 | SC-013–SC-015 | Cross-message refresh, repeated restart/clock rollback, writer exclusion, Provider/cache status retrieval | T007–T009, T011, T013 | RV-U17, RV-I05/RV-I12/RV-I26/RV-I28/RV-I29; MiniNDN `controller-cache-provider-status-retrieval`, `offline-rejoin-epoch-skip`, `controller-restart` |
 | SC-016–SC-022 | Complete revocation decision/state matrix, affected/unaffected controls, reauthorization, grant-only target-only lazy DKEY fetch/install, bounded unavailable-Controller behavior, hintless scheduled refresh | T007–T011, T013 | `validation-matrix.md` executed mapping; MiniNDN campaign 2026-09-04 (14/14 scenarios, `gatePassed=true`) — `evidence/minindn-campaign-20260904.md` |
+| FR-039 | Opt-in durable runtime status: atomic per-service `PolicyStatusData` wire store, fail-closed restore of only unexpired/never-superseded statuses, bounded online confirmation refresh whose Controller answer is authority, DKEY never persisted | T015 | RV-U23 (`RuntimeStatusStorePersistence` 6/6); RV-I32 (`PersistedRuntimeStatusSurvivesRuntimeRestart`, offline seed then epoch-2 convergence); `ControllerRevocationFlow` 40/40 |
+| FR-040 | Production live status installation validated under the runtime's configured trust anchor (file/hierarchical chains, not fixture bypass) | T016 | RV-I33 (`HierarchicalConfiguredTrustAnchorControlsControllerStatusValidation`, anchored depth-2 accepted, chain-external signer and counterfeit CA rejected); `ControllerRevocationFlow` 40/40 |
+| FR-041 | NAC-ABE Spec179 contract surface (clearCache, refreshDecryptionKey, public-params accessors, CacheProducer refresh) present in the dependency | T014 | RV-U22 unpatched-contract verification (upstream master `1cc17d9` fails NDNSF build; `evidence/nac-abe-unpatched-contract-20260905.md`); upstream package/split hand-off is maintainer action, not a code gate |
 
 ## Current evidence status (2026-09-04)
 
@@ -62,10 +65,36 @@ Two documented non-goals remain outside the normative completion rule: (1)
 the full monolithic unit target on this host shows one pre-existing,
 out-of-scope DI codec SIGFPE (recorded, not spec179 code —
 `evidence/regression-red-green-20260904.md`); (2) NAC-ABE internal cache
-renewal, persistent runtime-cache restoration, and production live
-User/Provider status installation under a file trust anchor remain runtime
-extensions of the recorded evidence, not missing normative rows of this
-matrix — every RV-U and RV-I row has an executed mapping.
+renewal remains a runtime extension of the recorded evidence, not a missing
+normative row of this matrix — every RV-U and RV-I row has an executed
+mapping.
+
+## Current evidence status (2026-09-05 follow-up close)
+
+The three deferred follow-ups T014–T016 are closed or handed off:
+- **T016 (FR-040)** — production live User/Provider status installation
+  under a hierarchical file trust anchor, RV-I33 executed 2026-09-05
+  (`HierarchicalConfiguredTrustAnchorControlsControllerStatusValidation`,
+  91fd25b0).
+- **T015 (FR-039)** — opt-in persistent runtime-cache restoration
+  (`NDNSF_PERSIST_RUNTIME_STATE`): `RuntimeStatusStore.*` atomic store +
+  restore path in ServiceUser/ServiceProvider, RV-U23 unit suite
+  `RuntimeStatusStorePersistence` 6/6 and RV-I32 restart-recovery case
+  green; `ControllerRevocationFlow` grew 39/39 → 40/40 (71bbe311 +
+  2325781b). A MiniNDN process stop/start restart scenario remains a
+  launcher follow-up (tasks.md T015; component rows do not depend on it).
+- **T014 (FR-041)** — upstreaming of the local NAC-ABE dependency patches:
+  contract surface verified missing on upstream master
+  (`evidence/nac-abe-unpatched-contract-20260905.md`, RV-U22); package/split
+  description and the upstream hand-off remain for the maintainer to
+  execute/push.
+- Full-gate regression on the closing binary (build-clang-spec179-rv32):
+  spec179 gate suites green; the only unit failure is the recorded
+  pre-existing DI codec SIGFPE and the only integration failures are the
+  recorded pre-existing schedule-dependent `Spec170*` DI cases
+  (`evidence/regression-red-green-20260904.md`), both out of spec179 scope
+  and unchanged by this work. MiniNDN cross-process coverage remains the
+  2026-09-04 campaign (14/14), untouched by these opt-in additions.
 
 ## Evidence rules
 

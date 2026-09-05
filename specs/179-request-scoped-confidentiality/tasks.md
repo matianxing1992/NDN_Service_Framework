@@ -74,7 +74,7 @@ The 2026-09-04 release claim and its rows are unaffected.
   push/PR require the NDNSF maintainer's explicit go), then the rebuilt
   prefix from the upstream commit passes RV-U20/RV-U21. Owner: NDNSF
   maintainer.
-- [ ] T015 [FR-039] Persistent runtime-cache restoration across process
+- [x] T015 [FR-039] Persistent runtime-cache restoration across process
   restart, opt-in (`NDNSF_PERSIST_RUNTIME_STATE`): atomic store of accepted
   per-service `PolicyStatusData` wire + bound public-parameter name/digest +
   ControllerVersion; fail closed on missing/corrupt store (today's
@@ -94,7 +94,9 @@ The 2026-09-04 release claim and its rows are unaffected.
   behavior pinned by `RuntimeRestartDropsControllerStatusAndFailsClosed`;
   full unit/integration gate green. MiniNDN runtime-restart scenario is a
   follow-up when the launcher can stop/start a runtime process; component
-  rows do not depend on it.
+  rows do not depend on it. Executed 2026-09-05: 71bbe311 (store + restore
+  path, RV-U23 unit suite green) and 2325781b (RV-I32 restart recovery case,
+  `ControllerRevocationFlow` 40/40 green).
 - [x] T016 [FR-040] Production live User/Provider status installation under
   a hierarchical configured file trust anchor (anchor → intermediate CA →
   Controller certificate), proving accept on the anchored chain and fail-closed
