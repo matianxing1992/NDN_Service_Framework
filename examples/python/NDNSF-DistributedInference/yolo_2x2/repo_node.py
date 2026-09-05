@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import signal
 
 from ndnsf_distributed_inference.app_sdk import APPDeployment
 from py_repoclient.orchestration import RepoNodeApp
@@ -57,6 +58,22 @@ def main() -> int:
         ack_threads=args.ack_threads,
         serve_certificates=not args.no_serve_certificates,
     )
+
+    # spec181 T005 repair: the repo serves through the native provider run
+    # loop (GIL released).  A default SIGINT raises KeyboardInterrupt only
+    # after the C++ loop returns — which it never does — so the supervised
+    # cleanup SIGINT would time out and fall back to SIGKILL (-9), failing
+    # the terminal-cleanup gate.  Stop the native provider first so the run
+    # loop exits and the process terminates cleanly with 130.
+    def _stop_on_sigint(signum, frame):
+        del frame
+        try:
+            app.provider.stop()
+        except Exception:
+            pass
+        raise SystemExit(128 + signum)
+
+    signal.signal(signal.SIGINT, _stop_on_sigint)
     return app.run()
 
 
