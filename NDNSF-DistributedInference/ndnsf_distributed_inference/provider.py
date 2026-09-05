@@ -1472,7 +1472,7 @@ class DistributedInferenceProvider:
             assembled_bytes = model_path.read_bytes()
             sealed = encrypt_assembled_entry(
                 content_key, assembled_bytes, entry_kind="MODEL_PROTO",
-                model_manifest_digest=v3_role_spec.model_manifest_digest,
+                model_manifest_digest=expected_manifest,
                 role_assembly_spec_digest=role_assembly_spec_digest,
                 storage_profile_digest=storage_profile_digest,
             )
