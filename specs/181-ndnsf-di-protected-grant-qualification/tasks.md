@@ -49,7 +49,7 @@ wired/executed/measured）。
 先让这些路径诚实——失败关闭或报告 UNAVAILABLE。每个修正任务在对应
 实现任务落地后由后者吸收（见各任务"吸收关系"）。
 
-- [ ] **R001 [US0] Y-N-E 诚实化**。在真实 grant 变异（T006 实现）之前，
+- [x] **R001 [US0] Y-N-E 诚实化**。在真实 grant 变异（T006 实现）之前，
   runner 的 Y-N-E 子用例必须报告 `UNAVAILABLE`（结构化原因
   `Y-N-E:GRANT_VERIFIER_NOT_IMPLEMENTED`），禁止合成纪元异常充当
   `PROTECTION_EPOCH_REJECTED`；删除合成拒绝路径。文件：
@@ -59,7 +59,7 @@ wired/executed/measured）。
   unavailable 记录不进入 PASS 计数）。吸收关系：T006 落地后删除
   UNAVAILABLE 路径，由真实变异拒绝取代。
 
-- [ ] **R002 [US0] native ProtectedRuntime 诚实化**。在真实 grant 获取/
+- [x] **R002 [US0] native ProtectedRuntime 诚实化**。在真实 grant 获取/
   解包（T002 实现）之前，native Provider 对非 `plaintext-v1` 纪元
   赋值必须失败关闭并给出明确错误（`DI_PROTECTED_GRANT_UNAVAILABLE`），
   禁止仅凭绑定比对进入 `GrantVerified` 状态；现有绑定比对函数明确
@@ -71,13 +71,13 @@ wired/executed/measured）。
   GrantVerified）；integration（native provider 真实保护纪元投影被
   拒）。吸收关系：T002 落地后由真实 grant 验证取代该失败关闭路径。
 
-- [ ] **R003 [US0] 证据失效声明完整性检查**。审计 Spec 180/181 全部
+- [x] **R003 [US0] 证据失效声明完整性检查**。审计 Spec 180/181 全部
   证据文件：任何声称 PASS 但被后续修订失效的文件必须带失效横幅
   （t016/s1 已确认有；核查其余）；每个证据文件头部必须声明证据层
   （implemented/wired/executed/measured）。验收：完整清单 + 每文件
   层声明；发现缺失横幅即补上（不加内容、只加失效声明）。
 
-- [ ] **R004 [US0] 保护纪元子用例门禁**。runner 的 Y-B 保护纪元子用例
+- [x] **R004 [US0] 保护纪元子用例门禁**。runner 的 Y-B 保护纪元子用例
   在 grant 接线（T001/T002）完成前必须失败关闭
   （`DI_PROTECTED_GRANT_UNAVAILABLE`），不得以明文路径冒充保护纪元
   执行、不得产出 PASS 记录。文件：
