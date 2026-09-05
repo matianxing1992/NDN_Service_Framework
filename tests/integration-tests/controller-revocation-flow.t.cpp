@@ -4341,6 +4341,57 @@ BOOST_AUTO_TEST_CASE(UnprovisionedRuntimesConstructAndRemainUnauthorized,
   BOOST_CHECK_EQUAL(executed, 0U);
 }
 
+BOOST_AUTO_TEST_CASE(OnlineGrantWaitsForInitialDkeyAndReportsUnwrapFailure,
+                     *boost::unit_test::timeout(5))
+{
+  ndn::KeyChain keys;
+  ndn::DummyClientFace face(keys);
+  const ndn::Name userName("/spec179/grant-pending/user");
+  const ndn::Name providerName("/spec179/grant-pending/provider");
+  const auto cert = [&] (const ndn::Name& name) {
+    return keys.createIdentity(name, ndn::RsaKeyParams(2048))
+        .getDefaultKey().getDefaultCertificate();
+  };
+  const auto aa = cert(ndn::Name("/spec179/grant-pending/controller"));
+  ServiceUser user(face, ndn::Name("/spec179/grant-pending/group"),
+                   cert(userName), aa, "examples/trust-any.conf");
+  const ControllerVersion version{9900, 1};
+  user.applyPermissionResponse(runtimePermission(
+      userName, tlv::UserPermission, providerName, ndn::Name(SERVICE), version));
+  BOOST_REQUIRE(user.installControllerStatus(liveStatusFor(version)));
+  BOOST_REQUIRE(!user.isNacConsumerReadyForTest());
+  size_t published = 0;
+  user.setRequestPublisher([&] (const ndn::Name&, const ndn::Name&,
+      const std::vector<ndn::Name>&, const ndn::Name&, const RequestMessage&, size_t) {
+    ++published;
+  });
+  RequestMessage request;
+  const auto id = user.RequestService({providerName}, ndn::Name(SERVICE), request,
+      1000, [] (const ndn::Name&) {}, [] (const ResponseMessage&) {}, tlv::FirstResponding);
+  BOOST_CHECK(id.empty());
+  BOOST_CHECK_EQUAL(published, 0U);
+
+  // A named MessageKey consume fails synchronously when no DKEY exists.
+  // Preserve the error callback across construction of the success closure.
+  HybridMessageEnvelope envelope;
+  envelope.setKeyId("0000000000000001");
+  envelope.setEpochId("0000000000000001");
+  envelope.setMessageType("ACK");
+  envelope.setNonce(ndn::Buffer(12, 0));
+  envelope.setCipherText(ndn::Buffer(1, 0));
+  envelope.setAuthTag(ndn::Buffer(16, 0));
+  size_t successes = 0;
+  size_t errors = 0;
+  std::string error;
+  BOOST_REQUIRE(user.decryptHybridMessage(
+      makeRequestAckNameV2(providerName, userName, ndn::Name(SERVICE), ndn::Name("no-dkey")),
+      envelope.WireEncode(), [&] (const ndn::Buffer&) { ++successes; },
+      [&] (const std::string& reason) { ++errors; error = reason; }));
+  BOOST_CHECK_EQUAL(successes, 0U);
+  BOOST_CHECK_EQUAL(errors, 1U);
+  BOOST_CHECK(error.find("decryption key") != std::string::npos);
+}
+
 BOOST_AUTO_TEST_CASE(PersistedRuntimeStatusSurvivesRuntimeRestart)
 {
   // RV-I32 (FR-039): with NDNSF_PERSIST_RUNTIME_STATE enabled, statuses

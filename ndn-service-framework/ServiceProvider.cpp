@@ -8759,7 +8759,7 @@ namespace ndn_service_framework
 
         auto finish = [this, envelope, messageName, serviceName, requestId,
                        senderPrefix, decryptEntryUs, onSuccess = std::move(onSuccess),
-                       onError = std::move(onError)](const ndn::Buffer& key) mutable {
+                       onError](const ndn::Buffer& key) mutable {
             const auto keyReadyUs = timelineSteadyMicroseconds();
             const auto ad = hybridAssociatedData(messageName, envelope.getMessageType(),
                                                 requestId, serviceName, senderPrefix,
@@ -8857,7 +8857,9 @@ namespace ndn_service_framework
                                                                           unwrappedKey);
                                     finish(unwrappedKey);
                                 };
-            auto onKeyError = [onError = std::move(onError), keyDataName](const std::string& error) {
+            // Keep unwrap and synchronous-exception reporting independent of
+            // the success closure's ownership of its callback copy.
+            auto onKeyError = [onError, keyDataName](const std::string& error) {
                                     if (onError) {
                                         onError("hybrid MessageKey " +
                                                 std::string(keyDataName.empty() ? "unwrap" :
