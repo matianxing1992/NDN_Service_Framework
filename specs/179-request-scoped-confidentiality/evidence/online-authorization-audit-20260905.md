@@ -74,6 +74,8 @@ counts require reevaluation because the collector censored failures.
   `gates/controller-green.log`; expected wrong-generation OpenABE rejection
   appears in this negative crypto test. App_ServiceController resolves the
   candidate framework library and the intended patched NAC-ABE prefix via ldd.
+- Expanded unit gate: `unit-tests --run_test=RequestScopedConfidentiality,ControllerRevocationPolicy,ControllerRevocationState,GenericDynamicApi,RuntimeStatusStorePersistence --report_level=detailed`;
+  **182/182 cases, 11971/11971 assertions**, exit 0 (`gates/unit-green.log`).
 
 ## Audit dimensions and limits
 
