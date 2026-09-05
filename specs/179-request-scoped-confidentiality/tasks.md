@@ -51,6 +51,35 @@
 - [x] T013 Re-run gates in unit → integration → MiniNDN order, compare every FR/SC and every RV-U/RV-I row with code and evidence, verify affected failures and matched unaffected controls, audit every security-critical transition for a fail-open branch, verify no private key/plaintext leakage, record measured versus implemented versus unrun claims, and write `specs/179-request-scoped-confidentiality/traceability.md`, `specs/179-request-scoped-confidentiality/AUDIT.md`, and `specs/179-request-scoped-confidentiality/evidence/release-gate.md`; do not mark confidentiality or revocation complete while any normative matrix row is missing
   **Executed 2026-09-04**: gates re-run in unit → integration order on the post-removal binary (unit suites `RequestScopedConfidentiality`/`ControllerRevocationPolicy`/`ControllerRevocationState`/`GenericDynamicApi` exit 0; integration `ControllerRevocationFlow` 38/38 + `ControllerVersionRefresh` 1/1 + `RequestScopedSelection` 3/3 + `RequestScopedResponseConfidentiality` 4/4 + `Spec175InvocationStream` 19/19); the MiniNDN campaign ran 14/14 scenarios `gatePassed=true` the same day before removal, and removal touched only branches the campaign never executes. Every FR-001–FR-038 and SC-001–SC-022 is traced in the rewritten `traceability.md`; every RV-U01–RV-U21 and RV-I01–RV-I31 row and every security-critical negative branch has an executed mapping in `validation-matrix.md`. Fail-open audit (T013): provider and user large-response handling fail closed with typed errors, no plaintext fallback and no resurrected service-wide carrier exists, no residual reference to removed symbols remains, and failures carry redacted typed reasons with no key/plaintext in telemetry or traces. Release audit written to `AUDIT.md` (verdict PASS, R179-H0A/H0B/H0C/M1 RESOLVED) and `evidence/release-gate.md` (implemented/executed/measured/unrun layers). Two documented non-goals remain: the pre-existing out-of-scope DI codec SIGFPE in the full monolithic unit target, and NAC-ABE internal cache/persistent-restart/production-trust-schema extensions beyond the executed rows — neither is a missing normative matrix row.
 
+## Phase 7: Deferred follow-ups (recorded 2026-09-05; outside the release gate)
+
+These three items are formally out of scope for the 2026-09-04 release
+(`spec.md` `## Out of Scope` — deferred runtime hardening). Each has an
+owner and an entry condition; none blocks the release claim. A new spec
+revision that wants one of them MUST (a) name the concrete failure mode
+the item protects against and (b) assign an FR plus an RV-U/RV-I matrix
+row before implementation.
+
+- [ ] T014 [deferred] Promote the local NAC-ABE Spec179 dependency patches
+  (DKEY `FreshnessPeriod=0`, versioned exact public-params fetch,
+  consumer cache invalidation/DKEY-only refresh fence — currently only on
+  the local NAC-ABE `Experimental` branch, commit `b1c9c4f`, not pushed)
+  into the upstream NAC-ABE repository, then rebuild the NDNSF Spec179
+  prefix from the upstream commit and re-run the RV-U20/RV-U21 gate.
+  Entry condition: upstream maintainer review; owner: NDNSF maintainer.
+- [ ] T015 [deferred] Persistent runtime-cache restoration across process
+  restart (today a restart drops installed Controller status and fails
+  closed, `RuntimeRestartDropsControllerStatusAndFailsClosed`). Entry
+  condition: a named failure mode where fail-closed refetch is
+  insufficient (e.g., Controller unavailable while stale-but-valid status
+  is safe to reuse); owner: NDNSF maintainer.
+- [ ] T016 [deferred] Production live User/Provider status installation
+  under a configured file trust anchor beyond the executed
+  `LiveControllerStatusRefreshRejectsRevokedRenewal` /
+  `LargeResponseUsesConfiguredTrustAndRequestBoundAead` coverage. Entry
+  condition: a named production trust-schema scenario not already
+  exercised; owner: NDNSF maintainer.
+
 ## Dependencies and Execution Order
 
 ```text
