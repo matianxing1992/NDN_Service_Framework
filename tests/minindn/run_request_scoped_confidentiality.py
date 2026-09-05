@@ -119,6 +119,34 @@ def _find_binary(name: str, build_dir: str | Path | None = None) -> str | None:
     return None
 
 
+def _build_provenance(report: Mapping[str, Any]) -> Dict[str, Any]:
+    """Pin the executable/library bytes actually selected for this campaign."""
+    artifacts = {Path(path).resolve() for path in report["roleBinaries"].values() if path}
+    library = Path(report["buildDir"]) / "libndn-service-framework.so"
+    if library.is_file():
+        artifacts.add(library.resolve())
+        linked = subprocess.run(["ldd", str(library)], text=True,
+                                capture_output=True, check=False)
+        for match in re.finditer(r"=> (/\S+)", linked.stdout):
+            path = Path(match.group(1))
+            if path.is_file():
+                artifacts.add(path.resolve())
+    def digest(path: Path) -> str:
+        value = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                value.update(chunk)
+        return value.hexdigest()
+
+    revision = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT,
+                              text=True, capture_output=True, check=False)
+    diff = subprocess.run(["git", "diff", "HEAD", "--"], cwd=ROOT,
+                          capture_output=True, check=False)
+    return {"sourceRevision": revision.stdout.strip(),
+            "workingDiffSha256": hashlib.sha256(diff.stdout).hexdigest(),
+            "artifactsSha256": {str(path): digest(path) for path in sorted(artifacts)}}
+
+
 def _face_lookup(created_faces: Mapping[Any, Iterable[Tuple[str, str, int]]]) -> Dict[Tuple[str, str], str]:
     """Return the link-local address selected by MiniNDN for each face."""
     lookup: Dict[Tuple[str, str], str] = {}
@@ -940,6 +968,7 @@ def execute_gate(output: Path, scenario: str = SCENARIOS[0],
         })
         return report
     config = _scenario_config(scenario)
+    provenance = _build_provenance(report)
     # Scenario lifetimes that must drain delayed/in-flight traffic inside the
     # role window override the caller-provided default.
     if int(config.get("lifetimeMs", 0) or 0) > 0:
@@ -1237,9 +1266,10 @@ def execute_gate(output: Path, scenario: str = SCENARIOS[0],
         "scenario": scenario,
         "config": config,
         "topology": str(TOPOLOGY),
-        "policy": str(POLICY),
+        "policy": str(config.get("policyFile", POLICY)),
         "trustSchema": str(TRUST_SCHEMA),
         "buildDir": report["buildDir"],
+        "provenance": provenance,
         "minindnWorkDir": str(_minindn_work_dir(output)),
         "commands": [
             "App_ServiceController", "App_Provider", "App_User",
