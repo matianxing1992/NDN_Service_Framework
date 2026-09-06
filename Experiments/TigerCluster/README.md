@@ -35,6 +35,11 @@ Spec180既定用例见 [quickstart](../../specs/180-ack-driven-cross-model-quali
 
 ## Compatibility And Review Boundary
 
+开发机负责代码、静态审查与测试，实验机负责SIF构建和Tiger集群运行；MiniNDN依当前Spec安排。
+另一台机器应从明确的完整源码基线开始，按本README及构建说明操作。
+新运行显式使用`results/<run-id>/`，新镜像使用`images/<candidate>/`；
+本地历史镜像链接不随Git交付，须另行获取或构建候选并核对身份。
+
 旧packaging中的adapter/jobs路径及两份文档保留相对symlink，指向这里的唯一实体。
 profile、source seal、测试和冻结脚本的旧路径因此仍可解析，哈希不因移动而被重写。
 共享lib/bin反向链接回原owner；无链接指向合并审查工作树。
