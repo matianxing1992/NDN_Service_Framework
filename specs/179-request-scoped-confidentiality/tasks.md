@@ -74,9 +74,10 @@ The 2026-09-04 release claim and its rows are unaffected.
   Current delivery: `evidence/nac-abe-delivery-20260905.md` and
   `evidence/nac-abe-pr-draft-20260905.md`; complete four-commit range through
   `85547eb`, standalone bundle verified by fresh clone/tree comparison/fsck.
-  The tested `1cc17d9` base is the personal fork master; original-project
-  master has12 prerequisite commits fewer. Local package complete;
-  destination-specific push/PR authorization and upstream acceptance pending.
+  The tested `1cc17d9` base is personal fork master. Official UCLA-IRL master
+  is58f3948; fork master is2 ahead/3 behind, Experimental6 ahead/3 behind.
+  See `evidence/nac-abe-official-comparison-20260905.md`. User requests no PR;
+  local package/comparison complete, publication not scheduled.
   Acceptance: upstream maintainer merges the contract (external gate —
   push/PR require the NDNSF maintainer's explicit go), then the rebuilt
   prefix from the upstream commit passes RV-U20/RV-U21. Owner: NDNSF

@@ -1,5 +1,8 @@
 # Preserve authorization boundaries across key refresh and cache reuse
 
+> Archival draft only: the user subsequently instructed not to submit a PR.
+> Current work is documented in `nac-abe-official-comparison-20260905.md`.
+
 Proposed draft PR destination: `matianxing1992/NAC-ABE`, base `master`,
 head `Experimental` at `85547eb558c4a4f706b51cb354ab4db573609895`.
 Publication is pending authorization. The body below describes the complete

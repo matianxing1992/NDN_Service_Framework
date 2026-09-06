@@ -1,7 +1,7 @@
 # T014 — verified NAC-ABE delivery
 
-Updated2026-09-05 CDT. Local package PASS; publication, upstream review/merge
-and rebuilt-dependency acceptance remain pending. This supersedes the earlier
+Updated2026-09-05 CDT. Local package PASS; user explicitly requests no PR.
+Publication is not scheduled; upstream acceptance remains open. This supersedes the earlier
 split description, which omitted T019/T020 and mixed API changes into a purported
 no-API-change fix. No NAC history or runtime source was changed in this step.
 
@@ -26,21 +26,20 @@ Read-only live `git ls-remote` results during this update:
 |---|---|---|
 | `origin`: `matianxing1992/NAC-ABE`, personal fork | `master` | `1cc17d9d21f4dfc0921cc77315d0c57d46291880` |
 | `origin` | `Experimental` | Absent |
-| `suravi`: `suraviregmi/NAC-ABE`, original project | `master` | `5ac3eb991d6ed7eef36e6a265e97912961e9807f` |
+| `suravi`: `suraviregmi/NAC-ABE`, another fork | `master` | `5ac3eb991d6ed7eef36e6a265e97912961e9807f` |
 | `suravi` | `ck-duplicate-interest` | `b69dc2e4aa2ce146605728c3a19f7e32e65e4431` |
 
-The tested base is the personal fork's master. The original master's ancestry
-to that base includes12 additional commits (5 files,524 insertions/90 deletions):
-CK queueing, segmented fetch, OpenABE exit handling and tests. A PR against the
-original master therefore includes prerequisite work beyond the four commits.
-Neither four-commit cherry-picks onto original master nor the newly advertised
-`ck-duplicate-interest` head have been qualified.
+The tested base is the personal fork's master. GitHub parent/source metadata
+confirms the official project is `UCLA-IRL/NAC-ABE`, master
+`58f394862cd2a2462fbcf763c000c745f9f7f0c8`. Both configured remotes are forks.
+The previous claim about12 original-project prerequisite commits compared an
+outdated fork. Against official master, fork master is2 ahead/3 behind and
+Experimental is6 ahead/3 behind. See the corrected
+[official comparison](nac-abe-official-comparison-20260905.md).
 
-Recommended next publication: exact `Experimental` head to the personal fork,
-with a draft review against its tested master. Agree the original-project
-target/prerequisites with its maintainer before original-project submission.
-Fork publication alone does not close FR-041. Refresh remote refs before any
-publication and do not force-update an existing branch.
+Per the latest user instruction, do not submit a PR. The next engineering step
+is isolated qualification of the two missing official fixes, retaining local
+repairs. No publication is scheduled; fork publication alone would not close FR-041.
 
 ## Review sections
 

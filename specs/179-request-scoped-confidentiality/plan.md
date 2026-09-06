@@ -326,9 +326,11 @@ the upstream commit exists (external gate).
 Current package: `evidence/nac-abe-delivery-20260905.md` includes all four
 commits through85547eb, mandatory T019/T020 repairs and ABI migration guidance.
 The two sections are review descriptions, not independently qualified branches.
-The tested base is the personal fork master; original master lacks12 prerequisite
-commits. A verified standalone bundle preserves the exact local source/history.
-Publication target and upstream prerequisite review remain explicit external steps.
+The tested base is personal fork master; official UCLA-IRL master includes two
+further fixes plus their merge commit. `evidence/nac-abe-official-comparison-20260905.md`
+records ahead/behind counts and conflict-free static merge previews. User requests
+no PR; next is isolated merge qualification, with no publication scheduled.
+A standalone bundle preserves the exact tested source/history.
 
 ### T021 — Controller grants for both runtime roles
 
