@@ -185,6 +185,8 @@ class DIRequestEnvelopeV2(CanonicalContract):
     options_payload_b64: str
     plan_deadline_ms: int
     security_domain: str
+    input_transport: str = "INLINE"
+    input_reference: Mapping[str, Any] = field(default_factory=dict)
     model: Mapping[str, Any] = field(default_factory=dict)
     task: Mapping[str, Any] = field(default_factory=dict)
     schema_version: int = 2
@@ -209,6 +211,10 @@ class DIRequestEnvelopeV2(CanonicalContract):
                 or self.capability_version != "SELECTION_DATAFLOW_V2"
                 or self.acceptance_predicate_version != "DI_ACCEPTANCE_V2"):
             raise ValueError("invalid DIRequestEnvelopeV2")
+        if self.input_transport not in {"INLINE", "REPO_REF"}:
+            raise ValueError("unsupported DI request input transport")
+        input_reference = dict(self.input_reference)
+        object.__setattr__(self, "input_reference", input_reference)
         if (model.get("name") != self.model_name
                 or model.get("identity_hash") != self.model_identity_hash
                 or task.get("name") != self.task_kind):
@@ -240,6 +246,28 @@ class DIRequestEnvelopeV2(CanonicalContract):
                 or base64.b64encode(options_payload).decode("ascii")
                 != self.options_payload_b64):
             raise ValueError("DI request payload is not canonical base64")
+        if self.input_transport == "INLINE":
+            if input_reference:
+                raise ValueError("INLINE DI request cannot carry input reference")
+        else:
+            if input_payload:
+                raise ValueError("REPO_REF DI request cannot carry input payload")
+            if (not input_reference.get("dataName", "").startswith("/")
+                    or input_reference.get("encrypted") is not True
+                    or int(input_reference.get("plaintextSize", 0)) <= 0
+                    or not input_reference.get("authorizationScope")
+                    or not input_reference.get("protectionEpoch")
+                    or input_reference.get("protectionEpoch") == "plaintext-v1"):
+                raise ValueError("invalid encrypted DI input reference")
+            for name in ("manifestDigest", "ciphertextDigest"):
+                value = input_reference.get(name, "")
+                if (not isinstance(value, str) or len(value) != 71
+                        or not value.startswith("sha256:")):
+                    raise ValueError("invalid DI input reference digest")
+                try:
+                    int(value[7:], 16)
+                except ValueError as exc:
+                    raise ValueError("invalid DI input reference digest") from exc
 
     @classmethod
     def from_bytes(cls, wire: bytes) -> "DIRequestEnvelopeV2":

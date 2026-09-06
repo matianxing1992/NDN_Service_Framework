@@ -54,10 +54,11 @@ def log(message: str) -> None:
     info(message + "\n")
 
 
-def python_cmd(script: str, argv: list[str]) -> str:
-    args = " ".join([perf.shell_quote(str(PY_DIR / script))] +
+def python_cmd(script: str, argv: list[str], *, repo: Path = REPO,
+               py_dir: Path = PY_DIR) -> str:
+    args = " ".join([perf.shell_quote(str(py_dir / script))] +
                     [perf.shell_quote(arg) for arg in argv])
-    return f"cd {perf.shell_quote(REPO)} && exec python3 {args}"
+    return f"cd {perf.shell_quote(repo)} && exec python3 {args}"
 
 
 def run_user_python_step(command: list[str], *, cwd: str, env: dict[str, str], writable_path: Path) -> None:
@@ -114,12 +115,15 @@ def native_provider_cmd(argv: list[str],
     return f"cd {perf.shell_quote(REPO)} && exec {quoted}"
 
 
-def start(node, name, cmd, env, procs):
-    path = OUT / f"{name}.log"
+def start(node, name, cmd, env, procs, *, output_dir: Path = OUT,
+          artifact_cache_root: Path | None = None):
+    path = output_dir / f"{name}.log"
+    path.parent.mkdir(parents=True, exist_ok=True)
     f = path.open("wb")
     log(f"start {name} on {node.name}: {cmd}")
     node_env = dict(env)
-    node_env["NDNSF_ARTIFACT_CACHE_DIR"] = str(OUT / "artifact-cache" / node.name)
+    cache_root = artifact_cache_root or (output_dir / "artifact-cache")
+    node_env["NDNSF_ARTIFACT_CACHE_DIR"] = str(cache_root / node.name)
     p = getPopen(node, cmd, envDict=node_env, shell=True, stdout=f, stderr=subprocess.STDOUT)
     procs.append((p, f, path))
     return p, path
@@ -5491,32 +5495,39 @@ def initialize_di_keychains(ndn,
                             output_dir: Path,
                             provider_identities: list[str],
                             *,
-                            dual_signing_certs: bool = True) -> None:
+                            dual_signing_certs: bool = True,
+                            app_root: str = APP_ROOT,
+                            controller_identity: str = CONTROLLER_IDENTITY,
+                            user_identity: str = USER_IDENTITY,
+                            provider_prefix: str = PROVIDER_PREFIX,
+                            repo_identity: str = "",
+                            controller_node: str = AI_LAB_CONTROLLER_NODE) -> None:
     """Install root-signed keys that match the generated DI policy namespace."""
     log("Installing root-signed DI keychain material on MiniNDN nodes")
     security_dir = output_dir / "security"
     security_dir.mkdir(parents=True, exist_ok=True)
     identities = [
-        CONTROLLER_IDENTITY,
-        PROVIDER_PREFIX + "/D",
-        USER_IDENTITY,
+        controller_identity,
+        provider_prefix + "/D",
+        user_identity,
+        *([repo_identity] if repo_identity else []),
         *provider_identities,
     ]
     identities = list(dict.fromkeys(identities))
 
     for node in ndn.net.hosts:
-        for identity in [APP_ROOT] + identities:
+        for identity in [app_root] + identities:
             perf.node_cmd(node, "ndnsec delete {} >/dev/null 2>&1 || true".format(
                 perf.shell_quote(identity)))
 
-    controller = ndn.net[AI_LAB_CONTROLLER_NODE]
+    controller = ndn.net[controller_node]
     root_cert_path = security_dir / "root.cert"
     perf.node_cmd(controller, "ndnsec key-gen -t r {} > {}".format(
-        perf.shell_quote(APP_ROOT), perf.shell_quote(root_cert_path)))
+        perf.shell_quote(app_root), perf.shell_quote(root_cert_path)))
     perf.node_cmd(controller, "ndnsec cert-install -f {} >/dev/null 2>&1 || true".format(
         perf.shell_quote(root_cert_path)))
     log("di_root_cert identity={} name={} file={}".format(
-        APP_ROOT, perf.certificate_name_from_file(root_cert_path), root_cert_path))
+        app_root, perf.certificate_name_from_file(root_cert_path), root_cert_path))
 
     exported_keys = []
     for index, identity in enumerate(identities):
@@ -5526,7 +5537,8 @@ def initialize_di_keychains(ndn,
         perf.node_cmd(controller, "ndnsec key-gen -t r {} > {}".format(
             perf.shell_quote(identity), perf.shell_quote(rsa_req_path)))
         perf.node_cmd(controller, "ndnsec cert-gen -s {} -i ROOT {} > {}".format(
-            perf.shell_quote(APP_ROOT), perf.shell_quote(rsa_req_path), perf.shell_quote(rsa_cert_path)))
+            perf.shell_quote(app_root), perf.shell_quote(rsa_req_path),
+            perf.shell_quote(rsa_cert_path)))
         perf.node_cmd(controller, "ndnsec cert-install -f {} >/dev/null 2>&1 || true".format(
             perf.shell_quote(rsa_cert_path)))
 
@@ -5544,7 +5556,8 @@ def initialize_di_keychains(ndn,
             perf.node_cmd(controller, "ndnsec key-gen -n -t e {} > {}".format(
                 perf.shell_quote(identity), perf.shell_quote(ec_req_path)))
             perf.node_cmd(controller, "ndnsec cert-gen -s {} -i ROOT {} > {}".format(
-                perf.shell_quote(APP_ROOT), perf.shell_quote(ec_req_path), perf.shell_quote(ec_cert_path)))
+                perf.shell_quote(app_root), perf.shell_quote(ec_req_path),
+                perf.shell_quote(ec_cert_path)))
             perf.node_cmd(controller, "ndnsec cert-install -f {} >/dev/null 2>&1 || true".format(
                 perf.shell_quote(ec_cert_path)))
             ec_cert_name = perf.certificate_name_from_file(ec_cert_path)

@@ -7,8 +7,9 @@ import base64
 import hashlib
 import json
 from pathlib import Path
+import re
 import time
-from typing import Callable, Mapping
+from typing import Any, Callable, Mapping
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.backends import default_backend
@@ -86,6 +87,216 @@ class ProviderEvidenceVerifier:
             return True
         except (InvalidSignature, ValueError):
             return False
+
+
+class ProviderOfferTrustVerifier:
+    """Candidate-bound verifier for signed ``ProviderOfferV3`` ACK payloads.
+
+    The verifier owns the candidate policy (Provider/service/key bindings and
+    the candidate digest) while the supplied ``trust_schema_verifier`` remains
+    the authority for authenticating the received ACK Data/certificate.  This
+    deliberately keeps the policy from becoming a second Trust Schema or a
+    caller-owned HMAC key map.
+    """
+
+    SCHEMA = "spec180-provider-offer-trust-v1"
+    _DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}\Z")
+
+    def __init__(
+        self,
+        policy: Mapping[str, Any] | str | Path,
+        trusted_public_keys: Mapping[str, bytes] | None = None,
+        *,
+        trust_schema_verifier: Callable[[Any], bool] | None = None,
+        candidate_digest: str = "",
+        clock_ms: Callable[[], int] | None = None,
+    ) -> None:
+        if isinstance(policy, (str, Path)):
+            policy = json.loads(Path(policy).read_text(encoding="utf-8"))
+        if not isinstance(policy, Mapping):
+            raise TypeError("Provider-offer trust policy must be a mapping")
+        normalized = dict(policy)
+        allowed_policy_fields = {
+            "schema", "candidateId", "candidateDigest", "trustSchema",
+            "entries",
+        }
+        if set(normalized) - allowed_policy_fields:
+            raise ValueError("unknown Provider-offer trust policy field")
+        if normalized.get("schema") != self.SCHEMA:
+            raise ValueError("unsupported Provider-offer trust policy schema")
+        candidate_id = str(normalized.get("candidateId", ""))
+        if not candidate_id or "/" in candidate_id or "\\" in candidate_id:
+            raise ValueError("Provider-offer trust policy has invalid candidate ID")
+        policy_digest = str(normalized.get("candidateDigest", ""))
+        if not self._DIGEST_RE.fullmatch(policy_digest):
+            raise ValueError("Provider-offer trust policy has invalid candidate digest")
+        if candidate_digest and candidate_digest != policy_digest:
+            raise ValueError("Provider-offer policy is not bound to candidate")
+        trust_schema = str(normalized.get("trustSchema", ""))
+        if not trust_schema.startswith("/"):
+            raise ValueError("Provider-offer policy has no Trust Schema identity")
+        raw_entries = normalized.get("entries")
+        if not isinstance(raw_entries, list) or not raw_entries:
+            raise ValueError("Provider-offer trust policy has no entries")
+        entries: dict[tuple[str, str], dict[str, str]] = {}
+        for raw in raw_entries:
+            if not isinstance(raw, Mapping):
+                raise ValueError("malformed Provider-offer trust entry")
+            allowed = {
+                "provider", "service", "keyLocatorPrefix", "signerKeyId",
+                "certificateName",
+            }
+            if set(raw) - allowed:
+                raise ValueError("unknown Provider-offer trust entry field")
+            provider = str(raw.get("provider", ""))
+            service = str(raw.get("service", ""))
+            prefix = str(raw.get("keyLocatorPrefix", ""))
+            key_id = str(raw.get("signerKeyId", ""))
+            certificate = str(raw.get("certificateName", ""))
+            if (not provider.startswith("/") or not service.startswith("/")
+                    or not prefix.startswith(provider + "/KEY/")
+                    or not key_id or not certificate.startswith(prefix)):
+                raise ValueError("malformed Provider-offer trust entry")
+            key = (provider, service)
+            if key in entries:
+                raise ValueError("duplicate Provider-offer trust entry")
+            entries[key] = {
+                "provider": provider,
+                "service": service,
+                "keyLocatorPrefix": prefix,
+                "signerKeyId": key_id,
+                "certificateName": certificate,
+            }
+
+        keys: dict[str, Ed25519PublicKey] = {}
+        for key_id, pem in (trusted_public_keys or {}).items():
+            key = serialization.load_pem_public_key(
+                bytes(pem), backend=default_backend())
+            if not isinstance(key, Ed25519PublicKey):
+                raise ValueError("Provider-offer trust key must be Ed25519")
+            raw = key.public_bytes(
+                serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+            derived_id = "sha256:" + hashlib.sha256(raw).hexdigest()
+            if str(key_id) != derived_id:
+                raise ValueError("Provider-offer trust key ID does not match key")
+            keys[str(key_id)] = key
+        for entry in entries.values():
+            if entry["signerKeyId"] not in keys:
+                raise ValueError(
+                    "Provider-offer policy signer key is not registered")
+        if not callable(trust_schema_verifier):
+            raise TypeError(
+                "Provider-offer verifier requires the existing Trust Schema verifier")
+        self.candidate_id = candidate_id
+        self.policy_digest = policy_digest
+        self.trust_schema = trust_schema
+        self._entries = entries
+        self._keys = keys
+        self._verify_trust_schema = trust_schema_verifier
+        self._clock_ms = clock_ms or (lambda: int(time.time() * 1000))
+
+    @classmethod
+    def from_json(
+        cls,
+        path: str | Path,
+        trusted_public_keys: Mapping[str, bytes],
+        *,
+        trust_schema_verifier: Callable[[Any], bool],
+        candidate_digest: str = "",
+        clock_ms: Callable[[], int] | None = None,
+    ) -> "ProviderOfferTrustVerifier":
+        return cls(
+            path, trusted_public_keys,
+            trust_schema_verifier=trust_schema_verifier,
+            candidate_digest=candidate_digest,
+            clock_ms=clock_ms,
+        )
+
+    def _entry(self, provider: str, service: str) -> dict[str, str]:
+        try:
+            return self._entries[(provider, service)]
+        except KeyError as exc:
+            raise ValueError(
+                "Provider-offer identity is not registered for service") from exc
+
+    def _verify_signature(self, offer: Any, entry: Mapping[str, str]) -> None:
+        key_id = str(getattr(offer, "signer_key_id", ""))
+        if key_id != entry["signerKeyId"]:
+            raise ValueError("Provider-offer signer key is not policy-bound")
+        key = self._keys.get(key_id)
+        if key is None:
+            raise ValueError("Provider-offer signer key is unknown")
+        try:
+            signature = base64.b64decode(
+                str(getattr(offer, "signature", "")), validate=True)
+            key.verify(signature, offer.digest().encode("utf-8"))
+        except (InvalidSignature, ValueError) as exc:
+            raise ValueError("Provider-offer signature is invalid") from exc
+
+    def __call__(self, offer: Any) -> bool:
+        """Verify the signed offer identity and signature for ``from_offer``."""
+        try:
+            entry = self._entry(str(offer.provider), str(offer.service))
+            self._verify_signature(offer, entry)
+            return True
+        except (AttributeError, TypeError, ValueError):
+            return False
+
+    def verify_ack(
+        self,
+        offer: Any,
+        ack: Any,
+        *,
+        model_digest: str = "",
+        graph_digest: str = "",
+        request_id: str = "",
+        deadline_ms: int = 0,
+    ) -> bool:
+        """Verify ACK provenance, policy identity, signature, and bindings.
+
+        ``ack`` must be the packet that already passed the configured Trust
+        Schema.  The callback is invoked before any offer fields influence
+        planning; a false result or exception fails closed.
+        """
+        if not bool(getattr(ack, "trust_schema_validated", False)):
+            raise ValueError("Provider ACK is not marked Trust-Schema validated")
+        if not bool(self._verify_trust_schema(ack)):
+            raise ValueError("Provider ACK failed Trust Schema verification")
+        signer = str(getattr(ack, "signer_identity", "") or "")
+        locator = str(getattr(ack, "signer_key_locator", "") or "")
+        wire_digest = str(getattr(ack, "validated_wire_digest", "") or "")
+        if (not signer or not locator or not self._DIGEST_RE.fullmatch(wire_digest)):
+            raise ValueError("Provider ACK authenticated provenance is missing")
+        provider = str(getattr(offer, "provider", "") or "")
+        service = str(getattr(offer, "service", "") or "")
+        entry = self._entry(provider, service)
+        if signer != provider or str(getattr(ack, "provider_name", "")) != provider:
+            raise ValueError("Provider ACK signer does not match offer Provider")
+        if (not locator.startswith(entry["keyLocatorPrefix"])
+                or not locator.startswith(signer + "/KEY/")):
+            raise ValueError("Provider ACK KeyLocator is outside policy")
+        if str(getattr(ack, "service_name", "")) != service:
+            raise ValueError("Provider ACK service does not match offer")
+        offer_request = str(getattr(offer, "request_id", ""))
+        if str(getattr(ack, "request_id", "")) != offer_request:
+            raise ValueError("Provider ACK request does not match offer")
+        if request_id and offer_request != str(request_id):
+            raise ValueError("Provider-offer request binding mismatch")
+        ack_attempt = getattr(ack, "attempt", None)
+        if ack_attempt is not None and int(ack_attempt) != int(offer.attempt):
+            raise ValueError("Provider ACK attempt does not match offer")
+        if model_digest and str(offer.model_digest) != str(model_digest):
+            raise ValueError("Provider-offer model binding mismatch")
+        if graph_digest and str(offer.graph_digest) not in {
+                str(graph_digest), "sha256:" + "0" * 64}:
+            raise ValueError("Provider-offer graph binding mismatch")
+        now_ms = int(self._clock_ms())
+        if int(offer.captured_at_ms) > now_ms or int(offer.expires_at_ms) <= now_ms:
+            raise ValueError("Provider-offer is stale or expired")
+        if deadline_ms and int(offer.expires_at_ms) < int(deadline_ms):
+            raise ValueError("Provider-offer does not cover request deadline")
+        self._verify_signature(offer, entry)
+        return True
 
 
 @dataclass(frozen=True)
@@ -202,11 +413,13 @@ class ProviderActionReceipt:
 
 
 class APPProvider:
-    """APP-owned façade over an already launched generic Provider agent.
+    """Public APP facade for registration and optional network serving.
 
-    Registration is not process provisioning. The external operator starts the
-    agent; this object binds its boot epoch and capabilities to one immutable
-    deployment revision before creating the selected Runner.
+    Direct construction supports revision-scoped registration over an
+    operator-owned agent. ``from_config`` additionally constructs one
+    ``facades.APPProvider`` in this Python process and delegates serving to it.
+    Neither path launches ``di-native-provider``. Registration itself binds a
+    boot epoch and capabilities to a revision; it does not provision a process.
     """
 
     def __init__(self, provider: str, adapter_registry=None,
@@ -282,6 +495,12 @@ class APPProvider:
         if self._network_provider is None:
             raise RuntimeError("network Provider is not configured")
         return self._network_provider.run()
+
+    def start(self):
+        """Start Core after all service registrations are installed."""
+        if self._network_provider is None:
+            raise RuntimeError("network Provider is not configured")
+        return self._network_provider.start()
 
     def stop(self):
         if self._network_provider is not None:
@@ -567,5 +786,6 @@ class ProviderAdminPort:
 __all__ = [
     "APPProvider", "InferenceProvider", "ProviderAdminPort",
     "ProviderActionReceipt", "ProviderEvidenceSigner",
-    "ProviderEvidenceVerifier", "ProviderReadiness", "ProviderRegistration",
+    "ProviderEvidenceVerifier", "ProviderOfferTrustVerifier",
+    "ProviderReadiness", "ProviderRegistration",
 ]

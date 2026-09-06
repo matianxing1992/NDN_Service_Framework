@@ -3,6 +3,7 @@
 from .base import (
     AdapterPortDescriptor,
     ApplicationInput,
+    InputTransportMode,
     GraphAdapter,
     InferenceStateClass,
     InferenceStateContract,
@@ -27,6 +28,7 @@ from .qwen import (
     build_qwen_three_stage_adapter,
     build_qwen36_27b_three_stage_adapter,
 )
+from .yolo import build_yolo26n_adapter, Yolo26GraphAdapter, Yolo26Splitter
 
 
 def register(registry, adapter):
@@ -37,6 +39,7 @@ def register(registry, adapter):
 __all__ = [
     "AdapterPortDescriptor",
     "ApplicationInput",
+    "InputTransportMode",
     "GraphAdapter",
     "InferenceStateClass",
     "InferenceStateContract",
@@ -56,5 +59,8 @@ __all__ = [
     "QwenThreeStageSplitter",
     "build_qwen_three_stage_adapter",
     "build_qwen36_27b_three_stage_adapter",
+    "build_yolo26n_adapter",
+    "Yolo26GraphAdapter",
+    "Yolo26Splitter",
     "register",
 ]

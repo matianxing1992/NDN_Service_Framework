@@ -705,6 +705,27 @@ class PreSplitCatalogSnapshot:
     def __post_init__(self):
         if self.status not in {"ACTIVE", "RETIRED", "REVOKED"}:
             raise ValueError("invalid pre-split catalog status")
+        for field_name in (
+                "manifest_digest", "model_content_digest", "semantics_digest",
+                "graph_digest", "candidate_digest"):
+            digest = str(getattr(self, field_name))
+            if (not digest.startswith("sha256:") or len(digest) != 71):
+                raise ValueError(f"{field_name} must be a canonical sha256 digest")
+            try:
+                int(digest[7:], 16)
+            except ValueError as exc:
+                raise ValueError(
+                    f"{field_name} must be a canonical sha256 digest") from exc
+        if not self.alias or not self.backend or not self.precision:
+            raise ValueError("pre-split catalog identity is incomplete")
+        if int(self.created_at_ms) <= 0:
+            raise ValueError("pre-split catalog timestamp is invalid")
+        if not self.artifact_data_names:
+            raise ValueError("pre-split catalog has no artifacts")
+        for role, names in self.artifact_data_names.items():
+            if (not str(role) or not names
+                    or any(not str(name).startswith("/") for name in names)):
+                raise ValueError("pre-split catalog artifact names are invalid")
         object.__setattr__(
             self,
             "artifact_data_names",
@@ -712,6 +733,59 @@ class PreSplitCatalogSnapshot:
                 str(role): tuple(names)
                 for role, names in self.artifact_data_names.items()
             }),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return the stable wire shape used by signed catalogue records."""
+        return {
+            "alias": self.alias,
+            "manifestDigest": self.manifest_digest,
+            "modelContentDigest": self.model_content_digest,
+            "semanticsDigest": self.semantics_digest,
+            "graphDigest": self.graph_digest,
+            "candidateDigest": self.candidate_digest,
+            "backend": self.backend,
+            "precision": self.precision,
+            "artifactDataNames": {
+                role: list(names)
+                for role, names in sorted(self.artifact_data_names.items())
+            },
+            "status": self.status,
+            "createdAtMs": self.created_at_ms,
+        }
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "PreSplitCatalogSnapshot":
+        """Decode either the canonical camelCase record or legacy snake_case."""
+        if not isinstance(value, Mapping):
+            raise TypeError("pre-split snapshot must be a mapping")
+
+        def field(camel: str, snake: str):
+            if camel in value and snake in value and value[camel] != value[snake]:
+                raise ValueError(f"pre-split snapshot fields disagree: {camel}/{snake}")
+            return value.get(camel, value.get(snake))
+
+        names = field("artifactDataNames", "artifact_data_names")
+        if not isinstance(names, Mapping):
+            raise ValueError("pre-split snapshot artifact names are missing")
+        if any(not isinstance(names_value, (list, tuple))
+               for names_value in names.values()):
+            raise ValueError("pre-split snapshot artifact names are invalid")
+        return cls(
+            alias=str(value.get("alias", "")),
+            manifest_digest=str(field("manifestDigest", "manifest_digest") or ""),
+            model_content_digest=str(field("modelContentDigest", "model_content_digest") or ""),
+            semantics_digest=str(field("semanticsDigest", "semantics_digest") or ""),
+            graph_digest=str(field("graphDigest", "graph_digest") or ""),
+            candidate_digest=str(field("candidateDigest", "candidate_digest") or ""),
+            backend=str(value.get("backend", "")),
+            precision=str(value.get("precision", "")),
+            artifact_data_names={
+                str(role): tuple(str(name) for name in names_value)
+                for role, names_value in names.items()
+            },
+            status=str(value.get("status", "")),
+            created_at_ms=int(field("createdAtMs", "created_at_ms") or 0),
         )
 
 
