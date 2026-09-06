@@ -2,7 +2,7 @@
 
 **Date**: 2026-09-05 | **Revision**: 5 | **Task**: T007
 **Source identity**: 基线 `67194dc2`；定向修复 `ff7b5c3b`；本修订文档差异。
-**Layer**: proposed（设计）+ implemented（源码核查）+ executed（定向 unit）。
+**Layer**: proposed（设计）+ implemented（源码核查）+ executed（定向 unit / live control）。
 **Verdict**: **BLOCK**。本审查取代旧 `CONDITIONAL PASS / no HIGH` 结论。
 
 ## Findings
@@ -89,13 +89,17 @@ T002 的 `ProtectedRuntime` 已接入真实 verifier 和受管内容密钥，
 后续真实 native Y-B 与 grant 负例已有定向证据；helper 的超时、
 并发取消、过期、输出限制及取消后目录重建问题已修复，27 项检查
 通过，见 [helper 生命周期](evidence/t002-helper-lifecycle-20260905.md)。
-factory/handler 源码闭包和全部生产验收仍未完成，A01 未整体关闭；
+factory 的 P-256 凭据入口缺口已由实际失败回归确认并修复，8 项
+定向检查通过；factory/header 纳入 `35e1c6d5`，见
+[凭据入口](evidence/t002-recipient-credentials-20260905.md)。P-256 网络
+解包、剩余 handler 源码闭包和全部生产验收仍未完成，A01 未整体关闭；
 这些更新不改变本审计 BLOCK 裁决。
 
 1. T001：在装配前完成独立绑定与授权；补注册表消费、模型/weights 密文
    读取及全错误路径清理，建立真实发布/获取的定向进程测试。
-2. T002：native 授权与实际正负例已有证据，继续闭合取消/过期、资源
-   上界及源码提交。T003 已完成 grant 与装配两组 parity。
+2. T002：native 授权与实际正负例已有证据，继续闭合 P-256 网络解包、
+   全部取消/过期和资源上界验收及剩余 handler 源码提交；新生产运行
+   前刷新统一 native 构建。T003 已完成 grant 与装配两组 parity。
    T004 已补当前 build 的真实就绪/取消/无热转证据并完成定向验收，
    见 [生命周期验收](evidence/t004-lifecycle-acceptance-20260905.md)；
    此项关闭不改变整体 BLOCK 裁决。

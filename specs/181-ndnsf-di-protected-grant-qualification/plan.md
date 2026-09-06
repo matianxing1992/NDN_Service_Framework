@@ -64,6 +64,10 @@ T008 保留当前源身份与全部平面摘要；T009 只能封印这些相同�
    只是基础组件；T002 还须将精确名获取、受管密钥解包、授权状态、
    AEAD 消费与清理接入 `protectedRuntimeFactory` 及
    `NativeProviderHandler`。Python 诊断结果不替代 native 验收。
+   factory 的注册表凭据入口必须支持与 verifier 相同的收件人类型：
+   Ed25519 原始 seed 或有效 EC P-256 PEM，拒绝其他曲线/类型；
+   两者保持相同公钥摘要、模型/纪元、身份映射及 0600 权限检查。
+   凭据加载 unit 不替代真实 grant 发布/获取/解包验收。
 4. **Protected storage**。`MODEL_PROTO` 与 `EXTERNAL_DATA` 均使用
    FR-013 既有 HKDF/AES-256-GCM 契约；暂存限定在 role workdir，
    明文全部登记租约，覆盖正常、取消和异常清理，保留 canonical 源。

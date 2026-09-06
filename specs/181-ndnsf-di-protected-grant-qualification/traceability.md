@@ -38,7 +38,7 @@ Spec 180 的矩阵冻结为历史，未来证据路径不表示文件已存在�
 | `core/protected_artifacts.py`、`security/*` | T001, T006 | existing（Spec 180 提交 `d36438c2` + 2026-09-05 撤销清理：规范编码 + 进程内权威 + seam + 注册表，无撤销账本） | 签发/发布/获取/解包的生产连线；29 个编码测试作为回归基线 |
 | `app_sdk/placement.py` grant seam、`sdk/placement.py` grant view | T001, T002 | existing（seam 已扩展，`AuthorityBackedGrantProvider` 就绪） | 真实资格路径使用非 `plaintext-v1` 纪元并通过 seam |
 | `provider.py` 装配入口 | T001 | partial（授权顺序、AEAD/租约修复已有定向证据；Python 生产网络与全部异常路径验收仍待补）| 保护纪元下规范名获取 + 解包 + 租约 + 零化 |
-| `cpp/ndnsf-di/NativeProviderHandler.cpp`、`ProtectedRuntime.{hpp,cpp}`、`NativeGrantVerifier.{hpp,cpp}`、`_ndnsf.cpp` | T002, T003 | partial（native 保护链已有真实正负证据；helper 生命周期修复与源码检查点已补，factory/handler 与全部验收仍待闭合）| grant 精确名获取、权威校验、KeyChain 解包、parity |
+| `cpp/ndnsf-di/NativeProviderHandler.cpp`、`NativeProtectedProvider.{hpp,cpp}`、`ProtectedRuntime.{hpp,cpp}`、`NativeGrantVerifier.{hpp,cpp}`、`_ndnsf.cpp` | T002, T003 | partial（native 保护链已有真实正负证据；helper 和 factory 已有源码检查点，P-256 凭据入口 8 项检查 PASS；剩余 handler 源码与全部生产验收仍待闭合）| grant 精确名获取、权威校验、KeyChain 解包、parity |
 | `ServiceUser.publish_signed_app_data` 发布路径 | T001 | existing（runner 目录发布已使用）| grant Data 经此路径发布并被 Provider 精确名获取 |
 | `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py` | T005, T006, T008 | existing（barriered runner + 语义判定已修复）| Y-N 全矩阵语义重跑 + Y-A/Y-B 资格 |
 | `scripts/spec180_*`、`packaging/.../jobs/spec180/*` | T009--T012 | existing（Spec 180 工具链，路径沿用）| 候选封印（提交哈希）+ SIF + Tiger 终局 |

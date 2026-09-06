@@ -50,7 +50,8 @@ T003 已补固定装配向量、C++ 生产入口 Waf target 和双侧字节检�
 随后检查 factory 发现 P-256 私钥在生产配置加载层被拒绝；首轮
 8 项回归中仅 P-256 正例失败，修复并重建后 8 项全 PASS，见
 [凭据入口](evidence/t002-recipient-credentials-20260905.md)。factory/header
-纳入源码检查点；下一步继续 T001/T002 完整生产验收与剩余
+纳入源码检查点 `35e1c6d5`，plan/audit/traceability 已同步范围；
+下一步继续 T001/T002 完整生产验收与剩余
 handler 源码闭包，生产运行前刷新统一 native 构建；T007 仍为 BLOCK。
 
 历史 6/7、7/7 与 `CONDITIONAL PASS` 不再作为当前状态；以
