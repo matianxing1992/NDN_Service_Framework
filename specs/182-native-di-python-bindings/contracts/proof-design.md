@@ -1,6 +1,6 @@
 # Proof Design
 
-**Revision**: 4 | **Status**: planned; behavioral verification NOT_RUN
+**Revision**: 5 | **Status**: planned; behavioral verification NOT_RUN
 本契约定义将来证明，不记录虚构测试结果。source review 不等于行为通过。
 
 ## Proof Obligations
@@ -22,6 +22,7 @@
 | PO-013 | FR-001/002/004/009/016; CD-013 | native prepareInput/inspectModel/ensureArtifacts/verify 经 requester 生产入口 | 冻结 task encode/decode、认证 ACK/policy 和 publication 向量 | 不由 harness 预先规划；假 provenance/错 candidate/错实际名字/图身份被拒；移除任一绑定校验后反例失败 |
 | PO-014 | FR-001/009/010/012; CD-014 | C++ consumer/CLI/native binding → 同一 Provider host | 真实 Core ACK/Selection/Response 与共享第二服务 | 不调用旧 Python runner；停一注册不破坏共享服务；接回旧 provider 或提前销毁 handler 会失败 |
 | PO-015 | FR-013/018; CD-001--014 | 每单元及T016各层测试启动前，实施代理核对S0报告 | 设计条款与实际代码路径对照、source/test/config hashes、具名允许范围及运行时间/前层结果 | 无报告、BLOCK/STALE、范围不足或身份漂移必须在运行前停止；静态推理与运行结果分别记录，规则结构检查不能冒充代码审查 |
+| PO-016 | FR-019; CD-001--014 | 单元计划验证全绿之后、完成/交付之前，S1重读实际代码/测试及final diff | Requirement→Runtime→Observable→Test与5风险的真实检错证据，独立oracle及同源运行记录 | 测试只验证mock/无条件success、实际路径缺失或关键PO未验证时不得完成；新增具体缺陷需S0修复回归再S1，静态PASS不替代行为 |
 
 ## Negative Path Matrix
 
@@ -56,6 +57,8 @@
 - L6：每个 PO 至少一个错误实现或输入 counterfactual；必须在语义断言处失败。
 编译失败、收集失败和环境缺失不是 L6 成功。focused L1--L3/L6 可在修复期间运行；
 各单元unit/integration前须当前范围S0 PASS；完整suites/MiniNDN还须T015整体PASS。T016按完整unit→integration→MiniNDN逐层进入，每层核对审查identity/scope与前层结果。具名RED只按S0契约的受控缺陷规则放行。
+
+- S1：该单元规定的运行/检错检查通过后，对真实代码及证据做Post-Test Adversarial Review和final diff；详见S0契约SR-010--013。S0前增加compile-oriented源码检查，再执行项目Waf/native构建。证据层分类不强制把所有mutant延后，具名RED仍按计划先审查。
 
 ## Planned Test and Build Inventory
 
@@ -121,12 +124,16 @@ T001/O-005 冻结隔离设计、T014 实现后，用已知 fork-helper 版本作
 
 每单元 evidence/tNNN-<unit>.md 必须记录：
 Task、DesignRevision、SourceIdentity、DesignClausesImplemented、FilesActuallyChanged、
-SymbolsActuallyChanged、StaticReview（ReviewId/report/subject/verdict/AllowedTestScope）、TestEntryChecks（审查身份/范围、前层结果）、BehavioralProofs（PO/layer/oracle/result）、CommandsExecuted
+SymbolsActuallyChanged、PostTestReview（S1/TestEvidence/RiskOutcomes/FinalDiffReview/未验证义务）、StaticReview（ReviewId/report/subject/verdict/AllowedTestScope）、TestEntryChecks（审查身份/范围、前层结果）、BehavioralProofs（PO/layer/oracle/result）、CommandsExecuted
 （cwd/env/exit/raw path）、FailuresEncountered、DesignDeviations、RemainingRisks、
 DiffScope、RecoveryState、ImplementationStatus、VerificationStatus、AcceptanceStatus、NextAction。
 
 失败保留新 run-dir，更新 active Spec evidence/tasks 与 docs/failure-log.md，
 不得覆盖历史日志或提交 secrets/大原始输出。状态为 IMPLEMENTED 不自动等于 ACCEPTED。
+
+## Adversarial Detection Proof
+
+每风险列实际源码路径、触发、独立观察量、具名测试和语义断言；缺测试先补PO子用例和owner，未运行保持UNTESTED。不得用expected PASS或由runtime自写success代替实际证据。S1问“全绿仍可能如何错”，重查缺失生产路径、self-oracle、mock、旧binary/config、状态/journal round-trip。发现明确缺陷先静态诊断再修复/重审/回归；必要PO缺失不允许完成。
 
 ## Static Review Proof
 

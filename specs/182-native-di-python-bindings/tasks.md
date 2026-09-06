@@ -1,22 +1,20 @@
 # Tasks: Native NDNSF-DI with Optional Python Bindings
 
-**Revision**: 4 | **Status**: DRAFT / NOT_STARTED
+**Revision**: 5 | **Status**: DRAFT / NOT_STARTED
 **Input**: [spec](spec.md), [code design](contracts/code-design.md),
 [proof](contracts/proof-design.md), [work units](contracts/work-units.md)
 
 ## Current Checkpoint
 
-2026-09-06 revision 4：按用户要求增加测试前静态代码审查。已更新写作/审计/实施技能规则，并同步FR-018/SC-010/PO-015、S0契约、17单元StaticReview及unit→integration→MiniNDN入口条件。T015仍为整体审查，不能替代各单元首次测试前的S0。
+2026-09-06 revision 5：按用户评论加强S0三层审查、5项有源码依据的风险预测及test/PO映射；增加S1测试后对抗复审、final diff和有界修复循环。新增FR-019/SC-011/PO-016，保持17任务与原实现依赖。
 
-本轮仅修改技能/Spec文档与文档检查器。实现进度 **0/17**；产品STATIC_REVIEW **NOT_RUN**，build/unit/integration/MiniNDN均未执行。文档审阅与结构验证不能升级为产品代码审查PASS。证据见 [revision 4 review](evidence/static-review-gate-revision4.md)。
-本轮文档验证PASS：18 FR / 10 SC / 15 PO / 17任务、186链接、严格结构与diff检查；两个内存counterfactual均准确拒绝缺失审查条目/允许范围。技能引用和入口检查PASS。
-
-revision3合并快照和未关闭O-001--005仍有效作为设计限制，不将旧unit/integration失败或修复进度改写。下一步合并修复稳定后T001关闭设计/身份门，再逐单元实施→S0修复复审PASS→测试。
+本轮只改技能、Spec与文档检查器；实现 **0/17**，产品STATIC_REVIEW/POST_TEST_REVIEW及unit/integration/MiniNDN均 **NOT_RUN**。文档检查结果见 [revision 5 evidence](evidence/adversarial-review-revision5.md)，不计产品行为PASS。合并修复和O-001--005状态不由本轮改写。下一步关闭T001后按S0→计划验证→S1/final diff逐单元推进。
+本轮文档验证PASS：19 FR / 11 SC / 16 PO / 17任务、187链接；严格结构/diff及技能引用检查PASS；缺风险预测和缺S1条目的内存counterfactual均准确拒绝。测试后文档复审明确T015不冒充T016的S1，未验证产品能力保持OPEN。
 
 ## Validation Standard
 
 每个行为任务包含S0静态读码审查/修复复审，然后执行unit test、integration、adjacent regression及proof-design规定验证。每次测试入口核对有效报告身份/范围；无PASS不运行。
-完整unit→integration→MiniNDN必须在T015整体PASS后按顺序执行；具名RED/mutant也先完成受控范围S0。见 [S0 contract](contracts/pre-test-static-review.md)。本文只规定计划，不运行上述检查。
+完整unit→integration→MiniNDN必须在T015整体PASS后按顺序执行；具名RED/mutant也先完成受控范围S0。见 [S0 contract](contracts/pre-test-static-review.md)。每个单元计划检查全绿后S1追查假绿和未验证行为，final diff核对后才勾任务；Static review PASS != Behavior PASS。本文只规定计划，不运行上述检查。
 
 ## Phase 1: Design and Native Components
 
@@ -93,12 +91,12 @@ revision3合并快照和未关闭O-001--005仍有效作为设计限制，不将�
   [T014 contract](contracts/work-units.md#t014-runtime-dependency-exclusion-gate)。
 
 - [ ] T015 [US5] **Design-code Convergence Audit**。整体静态读码核对FR/CD/INV/PO、生产接线、test/oracle/harness与依赖身份，控制性发现清零；签发覆盖T016范围的S0报告。Dependencies: T014。
-  Design: FR-013,FR-017,FR-018; CD-001--014。Proof: PO-001--015。
+  Design: FR-013,FR-017,FR-018; CD-001--014。Proof: PO-001--016。
   完整文件/符号、decision budget、预期 diff、命令、恢复点与证据：
   [T015 contract](contracts/work-units.md#t015-design-code-convergence-audit)。
 
-- [ ] T016 [US5] **Local Native Qualification**。每层先核对有效S0及前层结果，再同源完整unit→integration→YOLO/Qwen MiniNDN/no-Python全部通过。Dependencies: T015 PASS。
-  Design: FR-001,FR-005,FR-006,FR-007,FR-008,FR-010,FR-011,FR-012,FR-013,FR-016; CD-011。Proof: PO-001--015。
+- [ ] T016 [US5] **Local Native Qualification**。每层先核对有效S0及前层结果，同源完整unit→integration→YOLO/Qwen MiniNDN/no-Python及必要检错证明通过，再完成整体S1/final diff。Dependencies: T015 PASS。
+  Design: FR-001,FR-005,FR-006,FR-007,FR-008,FR-010,FR-011,FR-012,FR-013,FR-016; CD-011。Proof: PO-001--016。
   完整文件/符号、decision budget、预期 diff、命令、恢复点与证据：
   [T016 contract](contracts/work-units.md#t016-local-native-qualification)。
 
@@ -113,5 +111,5 @@ Merged baseline closure and Spec181 handoff → T001 → T002；T003/T004/T005 �
 T006/T007 依赖 T002 和已关闭 native dependency design；
 T003/T006/T007 → T008；T006/T007 → T009；
 T003--009 → T010 → T011 → T012 → T013 → T014 → T015 PASS → T016 → T017。
-所有任务同时受FR-018/PO-015约束；每任务StaticReview见work-units。只有最早未关闭门可进入其对应实施。每次失败先保留新 raw/evidence、更新本 tasks/failure index。
+所有任务同时受FR-018/019及PO-015/016约束；每任务StaticReview见work-units。只有最早未关闭门可进入其对应实施。每次失败先保留新 raw/evidence、更新本 tasks/failure index。
 最终 checkpoint 前核对 task 状态与实际 diff/PO；不得 blanket stage 预存修改。

@@ -1,10 +1,10 @@
 # Spec182 Design Audit
 
-**Revision**: 4 | **Mode**: design-workflow revision / pre-implementation
+**Revision**: 5 | **Mode**: design-workflow revision / pre-implementation
 **Verdict**: DRAFT / BLOCK for implementation
 **Evidence layer**: source/design review；runtime NOT_RUN
 **Reviewed source**: merged-source-baseline-r3.json；未提交merge及修复快照，不仅HEAD。
-**Evidence**: [revision 4 review](evidence/static-review-gate-revision4.md)；[revision 3 history](evidence/skill-and-design-revision3.md)
+**Evidence**: [revision 5 review](evidence/adversarial-review-revision5.md)；[revision 4 history](evidence/static-review-gate-revision4.md)
 本轮按用户要求将静态读码审查前置到unit/integration/MiniNDN之前；仅修改技能和文档，不对尚未实现的182签发产品审查PASS。
 
 ## Findings
@@ -48,6 +48,14 @@ FIXED_IN_DESIGN 仅表示规范缺陷已修正，不表示对应 native 行为�
 | A182-24 | HIGH / FIXED_IN_DESIGN | 原L0混合Static/compile，易以lint/编译或结构扫描冒充实际逻辑审查 | S0单列源码/设计/测试逻辑对照、walkthrough/finding及证据；L0仍只证明构建边界 |
 | A182-25 | HIGH / FIXED_IN_DESIGN | 审查结论没有明确测试scope/逐层入口和修复失效，旧PASS可能放行新代码或更广实验 | hash+AllowedTestScope+TestEntryChecks；BLOCK修复复审，行为变化STALE；具名RED不放行正常测试 |
 
+## Revision 5 Findings
+
+| ID | Severity / status | Finding | Disposition |
+| --- | --- | --- | --- |
+| A182-26 | HIGH / FIXED_IN_DESIGN | S0已有广义维度，但没有固定三层结论、运行前风险排序和逐风险检错义务 | SR-010/011及报告字段：Design Conformance/Correctness/Test Adequacy、5风险→runtime→observable→test/PO |
+| A182-27 | HIGH / FIXED_IN_DESIGN | 未知风险和已证实缺陷易混为BLOCK，引发无执行证据的无限重构 | SR-012：明确缺陷修复；有检测方案的动态假设进入测试；两轮不收敛回具名设计/诊断，不自动放行 |
+| A182-28 | HIGH / FIXED_IN_DESIGN | 只定义测试前S0，测试全绿后没有独立假绿审查和完成门 | FR-019/SC-011/PO-016、每任务S1、T016整体S1及final diff；Static review PASS != Behavior PASS |
+
 ## Readiness Scorecard
 
 | Rubric / gate | Verdict | Evidence / limit |
@@ -87,7 +95,7 @@ Provider stop 误停共享服务、未知 journal 自动降级、审计后更改
 
 ## Verdict and Next Actions
 
-本轮已修正静态审查时点、语义审查与编译混淆、范围和失效门禁；原符号/依赖未决项保留。
+本轮已补三层审查、风险检错、有界循环及测试后S1/final diff。原符号/依赖未决项保留，产品S0/S1与运行均NOT_RUN。
 整体仍 **DRAFT / BLOCK for implementation**，不能把结构 PASS 写成 READY。
 下一步在合并修复稳定后执行 T001，冻结原生依赖、兼容字段/调用方、
 隔离设计并细化工作单元，再对相应范围作 readiness review。

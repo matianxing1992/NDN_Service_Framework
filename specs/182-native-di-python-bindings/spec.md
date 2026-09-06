@@ -3,7 +3,7 @@
 **Feature Branch**: `Experimental`
 **Feature Directory**: `182-native-di-python-bindings`
 **Created**: 2026-09-06
-**Revision**: 4
+**Revision**: 5
 **Status**: DRAFT
 **Execution Status**: NOT_STARTED
 **Activation**: active design; merged baseline stabilization in progress
@@ -149,6 +149,8 @@ Python 绑定可选构建，禁止依赖主工作区未提交文件。
 
 - **FR-018**: **Pre-Test Static Code Review**. System MUST 在每个实施单元及unit/integration/MiniNDN入口执行或核对有效的S0静态代码审查：实际阅读生产/测试逻辑并对照设计，记录源码证据、问题与修复复审、subject身份和允许测试范围。未审、BLOCK、STALE或范围不足不得运行；代码/设计/测试等行为变化须使相关审查失效。lint/编译/文档扫描不能替代，具名RED只按受控审查契约放行。
 
+- **FR-019**: **Adversarial Verification Closure**. System MUST 在S0完成Design Conformance/Correctness/Test Adequacy三层审查及具源码依据的5风险预测（不足须解释），逐风险映射runtime观察量、检错测试/断言和PO；测试通过后S1再次检查假绿、实际风险证据与最终diff。必要行为未验证不算完成，无已知阻塞则立即进入计划验证，禁止无证据无限审查/重构。
+
 ### Key Entities
 
 - NativeInferenceClient / NativeInferenceHandle：原生调用入口与请求操作句柄。
@@ -183,6 +185,8 @@ Python 绑定可选构建，禁止依赖主工作区未提交文件。
 - **SC-009**: **Reviewable Symbol Contracts**. 每个变更符号有覆盖条目和任务/证明映射，所有非 LOCAL_DETAIL 字段有语义说明；公开 C++/Python 文档及使用示例经实际构建/运行验收。设计阶段只计文档检查，不计编译通过。
 
 - **SC-010**: **Static Review Before Runtime Checks**. 每次unit/integration/MiniNDN执行证据均引用先于该次运行的有效S0报告，hash与范围相符、控制性finding为零；unit→integration→MiniNDN前层验收按约定通过。缺失/失效/越范围报告时在运行前停止。静态PASS不计运行PASS。
+
+- **SC-011**: **No False-Green Completion**. 每单元完成证据含三层S0、风险→实际test/PO映射和S1/final diff报告；关键风险无检错证据保持UNTESTED，必要PO未闭合不勾任务。Static review PASS != Behavior PASS；测试全绿也不能豁免缺失生产行为。T016整体S1完成后才能交付。
 
 ## Architecture Invariants
 
@@ -275,13 +279,15 @@ O-001（合并修复基线及181承接）、O-002（ONNX 原生字节契约）�
 
 ## Static Review Contract
 
-[Pre-test static review](contracts/pre-test-static-review.md)定义S0范围、逐代码路径推理、finding修复复审、阶段入口、证据与失效规则。T002--T014在本任务内先审查再focused运行；T015保留完整系统审查，T016按unit→integration→MiniNDN验收。无需为每文件另加审查任务。
+[Pre-test static review](contracts/pre-test-static-review.md)定义S0范围、逐代码路径推理、finding修复复审、阶段入口、证据与失效规则。T002--T014在本任务内先审查再focused运行；T015保留完整系统审查，T016按unit→integration→MiniNDN验收，必要检错证明及S1/final diff完成后交付。首次编译前也进行compile-oriented读码，具体三层/风险/有界循环/S1见SR-010--013。无需为每文件另加审查任务。
 
 ## Symbol Documentation Contract
 
 [Symbol design](contracts/symbol-design.md) 定义类/方法/状态/注释/用法；[value contracts](contracts/value-contracts.md) 对照合并源码的12类137字段，逐项解释含义；[coverage inventory](contracts/source-field-coverage.json) 保留机器可查来源。嵌套 schema、原生依赖 ABI、注册/取消接线等未决项必须在T001关闭，禁止跳过到实现。
 
 ## Revision History
+
+- Revision 5：按用户评论补三层对抗性审查、5项风险/检错义务、Static review PASS != Behavior PASS、有界复审与失败日志驱动修复；新增FR-019/SC-011/PO-016及测试全绿后的S1和final diff。
 
 - Revision 4：新增FR-018/SC-010/PO-015及S0静态代码审查；每单元在unit/integration前读码对照设计并修复复审，T015整体审查仍先于T016正式验收，补报告身份/范围/失效与具名RED限制。
 

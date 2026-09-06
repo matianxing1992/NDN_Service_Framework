@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 4 | **Date**: 2026-09-06
+**Branch**: Experimental | **Revision**: 5 | **Date**: 2026-09-06
 **Status**: DRAFT / NOT_STARTED
 **Spec**: [spec.md](spec.md)
 
@@ -37,12 +37,12 @@ Provider native runtime 和模型 adapter 边界；消除默认 Python 控制实
 3. G2 / T010--012：完整 C++ requester、会话/恢复与同库 Python binding；S0覆盖调用链及测试后unit→focused integration。
 4. G3 / T013--014：maintained callers 切换、旧路径退出、无 Python gate、MiniNDN harness/collector/fixture；先S0审查其逻辑再反例自检，正式用例尚不运行。
 5. G4 / T015：整体静态/convergence audit，覆盖跨单元生产路径、test/oracle/harness、effective config与依赖；不替代此前各单元S0。
-6. G5 / T016：每层核对有效S0 subject/scope；同源完整unit PASS → integration PASS → MiniNDN/no-Python资格，保留失败首边界。
-7. G6 / T017：本地开发交付、调用示例、迁移说明与外部实验交接。
+6. G5 / T016：每层核对有效S0 subject/scope；同源完整unit PASS → integration PASS → MiniNDN/no-Python资格，保留失败首边界；规定的mutation/anti-fake证据齐全后完成整体S1和final diff才结束T016。
+7. G6 / T017：核对T016整体S1/final diff及同源行为证据后，本地开发交付、调用示例、迁移说明与外部实验交接。
 
 ### Per-Unit Static Review
 
-每单元实施/测试编写 → S0读代码对照设计 → 修复控制性finding → 复审PASS → unit → integration。规则与报告见 [static review](contracts/pre-test-static-review.md)。转入更广测试范围前检查审查覆盖；身份未变且已覆盖可复用，有行为修复则先标STALE、重审再重跑。具名RED/mutant也先接受独立受控范围审查，不能借此放行产品测试。T001只检查设计/已合并基线，未实现的迁移无产品静态PASS。
+每单元实施/测试编写 → compile-oriented读码 → S0三层审查/5风险检错映射 → 修复控制性finding/复审PASS → Waf/native构建 → unit → adjacent → integration → 适用运行/mutation证明 → S1对抗复审 → final diff。规则与报告见 [static review](contracts/pre-test-static-review.md)。转入更广测试范围前检查审查覆盖；身份未变且已覆盖可复用，有行为修复则先标STALE、重审再重跑。具名RED/mutant也先接受独立受控范围审查，不能借此放行产品测试。T001只检查设计/已合并基线，未实现的迁移无产品静态PASS。
 
 ### Dependencies
 
@@ -60,7 +60,7 @@ T012 -> T013 -> T014 -> T015 -> T016 -> T017
 T006/T007 的原生依赖设计必须先由 T001 关闭，不能一边猜 ABI 一边并入 requester。
 T003--011 中的大算法迁移为设计批次，超过工作单元阈值时按 work-units 先沿稳定行为接口细分，
 不机械按文件拆分、不授权并行 agent 自动实施。
-当前授权仅文档，不运行以上实现/构建/实验。
+当前授权仅文档，不运行以上实现/构建/实验。Static review PASS != Behavior PASS。
 
 ## Migration and Compatibility
 
@@ -98,7 +98,7 @@ T017 的 evidence/development-handoff.md 包含 exact commit、clean source clos
 
 ## Current Planning Result
 
-设计revision 4已规定符号/字段契约、S0前置审查、架构不变量、工作边界与PO；
+设计revision 5已规定符号/字段契约、S0前置审查、架构不变量、工作边界与PO；
 完整实现就绪受 O-001--005 控制；O-005 设计由 T001 关闭，T014 再实现隔离并证明检错能力。
 下一步待合并修复提交稳定后执行T001，核对源码漂移、关闭叶子schema/ABI与兼容清单，再开始原生迁移。
 
@@ -107,3 +107,9 @@ T017 的 evidence/development-handoff.md 包含 exact commit、clean source clos
 FR-017/SC-009 的设计审查执行 [symbol contract](contracts/symbol-design.md) 与 [field contract](contracts/value-contracts.md)：任务逐项列 SymbolContracts、Documentation、Usage；公开接口注释和使用示例随同实现验收。局部实现细节只有不改变外部行为且无资源/安全/状态责任时才可列 LOCAL_DETAIL。
 
 后续原生构建使用已核对的 system compiler/binutils closure，匹配 Boost headers/libs、NAC-ABE prefix 与 NDN-SVS build；ABI变更后重建全部依赖对象和绑定，核对实际加载路径/hash。默认至多-j2，不并发操作同一Waf树。当前文档检查不触发任何构建；合并记录中的依赖PASS不能替代新库验收。
+
+## Review Budget and Post-Test Closure
+
+SR-010--013规定三层审查与风险映射；无已确认阻塞则立即测试，动态假设不要求静态证明。一次初审后仅复查影响面，同一问题两轮仍不收敛回明确设计问题或经审查的最小诊断，不自动放行、不无限重构。测试失败先读实际失败路径再修复。
+
+S1在各任务计划测试通过后、完成勾选/提交前执行；T015不替代T016的测试后整体审查。修复使对应S0/S1及下游测试证据失效；无行为改变可说明后复用。T017核对最终diff、风险检错证据和交付身份，未验证的必要行为阻止完成。

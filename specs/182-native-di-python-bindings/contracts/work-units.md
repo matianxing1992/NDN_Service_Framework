@@ -1,6 +1,6 @@
 # Work Unit Contracts
 
-**Revision**: 4 | **Status**: planned, all implementation NOT_STARTED
+**Revision**: 5 | **Status**: planned, all implementation NOT_STARTED
 本表定义设计批次，不授权现在执行。O-001--005 关闭前全部实现 BLOCK。
 T001 必须把超过合理范围的批次再细分为有独立行为和验收的原子单元，并同步全部 ID 引用，
 才能标 READY_FOR_IMPLEMENTATION；不可把本表的大估算直接当无限实现授权。
@@ -27,9 +27,11 @@ RecoveryPoint：失败保留独立 run 和 patch，不 reset/clean/stash 他人�
 ExpectedDiff 是偏移提示，不是配额。T003/004/006/008/010/011 可能大于 300 行，
 原因是既有算法/状态和字节契约较大；T001 须确认可独立 checkpoint 的分界后细化。
 T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新功能。
-每单元实际结果采用proof-design的Completion Evidence Record，并记录StaticReview与TestEntryChecks。以下范围均包含对应SymbolContracts和未修改的生产调用者；只有fresh scoped PASS放行测试，状态变化先标STALE。
+每单元实际结果采用proof-design的Completion Evidence Record，并记录StaticReview、风险检错映射、TestEntryChecks及PostTestReview。S0含compile-oriented检查和Design Conformance/Correctness/Test Adequacy三层，预测5项有路径依据的失败模式（不足须解释）；首次产品编译/运行前完成。以下范围均包含对应SymbolContracts和未修改的生产调用者；只有fresh scoped PASS放行测试，状态变化先标STALE。
 
 ## T001 Successor Baseline and Design Closure
+
+- **PostTestReview**: 本单元仅设计/基线或具名探针，审其真实文档与探针证据，产品S1标N/A；不得对planned实现签发结论。 Report: evidence/t001-post-test-review-rN.md（planned）；FR-019/PO-016，SR-010--013。发现具体缺陷→日志/源码复审→修复→S0→相关回归→更新S1；无新证据不重复重构。
 
 - **StaticReview**: T001读取合并源码/设计，不审不存在的迁移。补齐后续单元S0范围、报告路径、失效与测试入口条件；设计检查不产生产品STATIC_REVIEW PASS。 Report: evidence/t001-static-review-rN.md（planned）；FR-018/PO-015，完整规则见 [S0](pre-test-static-review.md)。
 
@@ -54,6 +56,8 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 
 ## T002 Installable Native Library Contract
 
+- **PostTestReview**: 本单元计划检查通过后、勾选/提交前执行S1，重新检查Requirement→Runtime→Observable→Test、预测风险实际检错、mock/self-oracle/无条件success和最终diff；必要行为未验证仍OPEN。 Report: evidence/t002-post-test-review-rN.md（planned）；FR-019/PO-016，SR-010--013。发现具体缺陷→日志/源码复审→修复→S0→相关回归→更新S1；无新证据不重复重构。
+
 - **StaticReview**: 先读本单元生产实现、受影响caller及test/fixture/oracle/collector，对照CD/INV和SymbolContracts推演成功/失败路径；修复控制性finding→重读→S0 PASS→unit/相邻回归→integration。 Report: evidence/t002-static-review-rN.md（planned）；FR-018/PO-015，完整规则见 [S0](pre-test-static-review.md)。
 
 - **SymbolContracts**: C01,C20 / public declarations / build variables；以 [symbol design](symbol-design.md) 与 [value contracts](value-contracts.md) 中同CD的精确符号为准；未覆盖新增符号先补契约。
@@ -76,6 +80,8 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 - **Evidence**: ../evidence/t002-completion.md（planned，当前不存在）。
 
 ## T003 Native Split and Placement Decisions
+
+- **PostTestReview**: 本单元计划检查通过后、勾选/提交前执行S1，重新检查Requirement→Runtime→Observable→Test、预测风险实际检错、mock/self-oracle/无条件success和最终diff；必要行为未验证仍OPEN。 Report: evidence/t003-post-test-review-rN.md（planned）；FR-019/PO-016，SR-010--013。发现具体缺陷→日志/源码复审→修复→S0→相关回归→更新S1；无新证据不重复重构。
 
 - **StaticReview**: 先读本单元生产实现、受影响caller及test/fixture/oracle/collector，对照CD/INV和SymbolContracts推演成功/失败路径；修复控制性finding→重读→S0 PASS→unit/相邻回归→integration。 Report: evidence/t003-static-review-rN.md（planned）；FR-018/PO-015，完整规则见 [S0](pre-test-static-review.md)。
 
@@ -100,6 +106,8 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 
 ## T004 Canonical Native Plan Sealing
 
+- **PostTestReview**: 本单元计划检查通过后、勾选/提交前执行S1，重新检查Requirement→Runtime→Observable→Test、预测风险实际检错、mock/self-oracle/无条件success和最终diff；必要行为未验证仍OPEN。 Report: evidence/t004-post-test-review-rN.md（planned）；FR-019/PO-016，SR-010--013。发现具体缺陷→日志/源码复审→修复→S0→相关回归→更新S1；无新证据不重复重构。
+
 - **StaticReview**: 先读本单元生产实现、受影响caller及test/fixture/oracle/collector，对照CD/INV和SymbolContracts推演成功/失败路径；修复控制性finding→重读→S0 PASS→unit/相邻回归→integration。 Report: evidence/t004-static-review-rN.md（planned）；FR-018/PO-015，完整规则见 [S0](pre-test-static-review.md)。
 
 - **SymbolContracts**: C11 / M19--M23 / V10,V12；以 [symbol design](symbol-design.md) 与 [value contracts](value-contracts.md) 中同CD的精确符号为准；未覆盖新增符号先补契约。
@@ -122,6 +130,8 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 - **Evidence**: ../evidence/t004-completion.md（planned，当前不存在）。
 
 ## T005 Native Requester Grant Path
+
+- **PostTestReview**: 本单元计划检查通过后、勾选/提交前执行S1，重新检查Requirement→Runtime→Observable→Test、预测风险实际检错、mock/self-oracle/无条件success和最终diff；必要行为未验证仍OPEN。 Report: evidence/t005-post-test-review-rN.md（planned）；FR-019/PO-016，SR-010--013。发现具体缺陷→日志/源码复审→修复→S0→相关回归→更新S1；无新证据不重复重构。
 
 - **StaticReview**: 先读本单元生产实现、受影响caller及test/fixture/oracle/collector，对照CD/INV和SymbolContracts推演成功/失败路径；修复控制性finding→重读→S0 PASS→unit/相邻回归→integration。 Report: evidence/t005-static-review-rN.md（planned）；FR-018/PO-015，完整规则见 [S0](pre-test-static-review.md)。
 
@@ -146,6 +156,8 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 
 ## T006 Native Cold ONNX Assembly
 
+- **PostTestReview**: 本单元计划检查通过后、勾选/提交前执行S1，重新检查Requirement→Runtime→Observable→Test、预测风险实际检错、mock/self-oracle/无条件success和最终diff；必要行为未验证仍OPEN。 Report: evidence/t006-post-test-review-rN.md（planned）；FR-019/PO-016，SR-010--013。发现具体缺陷→日志/源码复审→修复→S0→相关回归→更新S1；无新证据不重复重构。
+
 - **StaticReview**: 先读本单元生产实现、受影响caller及test/fixture/oracle/collector，对照CD/INV和SymbolContracts推演成功/失败路径；修复控制性finding→重读→S0 PASS→unit/相邻回归→integration。 Report: evidence/t006-static-review-rN.md（planned）；FR-018/PO-015，完整规则见 [S0](pre-test-static-review.md)。
 
 - **SymbolContracts**: C14 / M26--M28 / assembly options；以 [symbol design](symbol-design.md) 与 [value contracts](value-contracts.md) 中同CD的精确符号为准；未覆盖新增符号先补契约。
@@ -169,6 +181,8 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 
 ## T007 Native Tokenizer Execution
 
+- **PostTestReview**: 本单元计划检查通过后、勾选/提交前执行S1，重新检查Requirement→Runtime→Observable→Test、预测风险实际检错、mock/self-oracle/无条件success和最终diff；必要行为未验证仍OPEN。 Report: evidence/t007-post-test-review-rN.md（planned）；FR-019/PO-016，SR-010--013。发现具体缺陷→日志/源码复审→修复→S0→相关回归→更新S1；无新证据不重复重构。
+
 - **StaticReview**: 先读本单元生产实现、受影响caller及test/fixture/oracle/collector，对照CD/INV和SymbolContracts推演成功/失败路径；修复控制性finding→重读→S0 PASS→unit/相邻回归→integration。 Report: evidence/t007-static-review-rN.md（planned）；FR-018/PO-015，完整规则见 [S0](pre-test-static-review.md)。
 
 - **SymbolContracts**: C15 / M29--M33 / V11；以 [symbol design](symbol-design.md) 与 [value contracts](value-contracts.md) 中同CD的精确符号为准；未覆盖新增符号先补契约。
@@ -191,6 +205,8 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 - **Evidence**: ../evidence/t007-completion.md（planned，当前不存在）。
 
 ## T008 Native Request Preparation and Admission
+
+- **PostTestReview**: 本单元计划检查通过后、勾选/提交前执行S1，重新检查Requirement→Runtime→Observable→Test、预测风险实际检错、mock/self-oracle/无条件success和最终diff；必要行为未验证仍OPEN。 Report: evidence/t008-post-test-review-rN.md（planned）；FR-019/PO-016，SR-010--013。发现具体缺陷→日志/源码复审→修复→S0→相关回归→更新S1；无新证据不重复重构。
 
 - **StaticReview**: 先读本单元生产实现、受影响caller及test/fixture/oracle/collector，对照CD/INV和SymbolContracts推演成功/失败路径；修复控制性finding→重读→S0 PASS→unit/相邻回归→integration。 Report: evidence/t008-static-review-rN.md（planned）；FR-018/PO-015，完整规则见 [S0](pre-test-static-review.md)。
 
@@ -216,6 +232,8 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 
 ## T009 Shared Native Provider Host
 
+- **PostTestReview**: 本单元计划检查通过后、勾选/提交前执行S1，重新检查Requirement→Runtime→Observable→Test、预测风险实际检错、mock/self-oracle/无条件success和最终diff；必要行为未验证仍OPEN。 Report: evidence/t009-post-test-review-rN.md（planned）；FR-019/PO-016，SR-010--013。发现具体缺陷→日志/源码复审→修复→S0→相关回归→更新S1；无新证据不重复重构。
+
 - **StaticReview**: 先读本单元生产实现、受影响caller及test/fixture/oracle/collector，对照CD/INV和SymbolContracts推演成功/失败路径；修复控制性finding→重读→S0 PASS→unit/相邻回归→integration。 Report: evidence/t009-static-review-rN.md（planned）；FR-018/PO-015，完整规则见 [S0](pre-test-static-review.md)。
 
 - **SymbolContracts**: C20,C21 / M44--M48 / service family；以 [symbol design](symbol-design.md) 与 [value contracts](value-contracts.md) 中同CD的精确符号为准；未覆盖新增符号先补契约。
@@ -238,6 +256,8 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 - **Evidence**: ../evidence/t009-completion.md（planned）。
 
 ## T010 Complete Native Request Lifecycle
+
+- **PostTestReview**: 本单元计划检查通过后、勾选/提交前执行S1，重新检查Requirement→Runtime→Observable→Test、预测风险实际检错、mock/self-oracle/无条件success和最终diff；必要行为未验证仍OPEN。 Report: evidence/t010-post-test-review-rN.md（planned）；FR-019/PO-016，SR-010--013。发现具体缺陷→日志/源码复审→修复→S0→相关回归→更新S1；无新证据不重复重构。
 
 - **StaticReview**: 先读本单元生产实现、受影响caller及test/fixture/oracle/collector，对照CD/INV和SymbolContracts推演成功/失败路径；修复控制性finding→重读→S0 PASS→unit/相邻回归→integration。 Report: evidence/t010-static-review-rN.md（planned）；FR-018/PO-015，完整规则见 [S0](pre-test-static-review.md)。
 
@@ -262,6 +282,8 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 
 ## T011 Native Conversation Continuation
 
+- **PostTestReview**: 本单元计划检查通过后、勾选/提交前执行S1，重新检查Requirement→Runtime→Observable→Test、预测风险实际检错、mock/self-oracle/无条件success和最终diff；必要行为未验证仍OPEN。 Report: evidence/t011-post-test-review-rN.md（planned）；FR-019/PO-016，SR-010--013。发现具体缺陷→日志/源码复审→修复→S0→相关回归→更新S1；无新证据不重复重构。
+
 - **StaticReview**: 先读本单元生产实现、受影响caller及test/fixture/oracle/collector，对照CD/INV和SymbolContracts推演成功/失败路径；修复控制性finding→重读→S0 PASS→unit/相邻回归→integration。 Report: evidence/t011-static-review-rN.md（planned）；FR-018/PO-015，完整规则见 [S0](pre-test-static-review.md)。
 
 - **SymbolContracts**: C16 / M34--M38 / V07,V08,V11；以 [symbol design](symbol-design.md) 与 [value contracts](value-contracts.md) 中同CD的精确符号为准；未覆盖新增符号先补契约。
@@ -284,6 +306,8 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 - **Evidence**: ../evidence/t011-completion.md（planned，当前不存在）。
 
 ## T012 Thin Python Native Bindings
+
+- **PostTestReview**: 本单元计划检查通过后、勾选/提交前执行S1，重新检查Requirement→Runtime→Observable→Test、预测风险实际检错、mock/self-oracle/无条件success和最终diff；必要行为未验证仍OPEN。 Report: evidence/t012-post-test-review-rN.md（planned）；FR-019/PO-016，SR-010--013。发现具体缺陷→日志/源码复审→修复→S0→相关回归→更新S1；无新证据不重复重构。
 
 - **StaticReview**: 先读本单元生产实现、受影响caller及test/fixture/oracle/collector，对照CD/INV和SymbolContracts推演成功/失败路径；修复控制性finding→重读→S0 PASS→unit/相邻回归→integration。 Report: evidence/t012-static-review-rN.md（planned）；FR-018/PO-015，完整规则见 [S0](pre-test-static-review.md)。
 
@@ -308,6 +332,8 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 
 ## T013 Default Route and Legacy Retirement
 
+- **PostTestReview**: 本单元计划检查通过后、勾选/提交前执行S1，重新检查Requirement→Runtime→Observable→Test、预测风险实际检错、mock/self-oracle/无条件success和最终diff；必要行为未验证仍OPEN。 Report: evidence/t013-post-test-review-rN.md（planned）；FR-019/PO-016，SR-010--013。发现具体缺陷→日志/源码复审→修复→S0→相关回归→更新S1；无新证据不重复重构。
+
 - **StaticReview**: 先读本单元生产实现、受影响caller及test/fixture/oracle/collector，对照CD/INV和SymbolContracts推演成功/失败路径；修复控制性finding→重读→S0 PASS→unit/相邻回归→integration。 Report: evidence/t013-static-review-rN.md（planned）；FR-018/PO-015，完整规则见 [S0](pre-test-static-review.md)。
 
 - **SymbolContracts**: C17 / maintained caller and legacy inventory；以 [symbol design](symbol-design.md) 与 [value contracts](value-contracts.md) 中同CD的精确符号为准；未覆盖新增符号先补契约。
@@ -330,6 +356,8 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 - **Evidence**: ../evidence/t013-completion.md（planned，当前不存在）。
 
 ## T014 Runtime Dependency Exclusion Gate
+
+- **PostTestReview**: 本单元计划检查通过后、勾选/提交前执行S1，重新检查Requirement→Runtime→Observable→Test、预测风险实际检错、mock/self-oracle/无条件success和最终diff；必要行为未验证仍OPEN。 Report: evidence/t014-post-test-review-rN.md（planned）；FR-019/PO-016，SR-010--013。发现具体缺陷→日志/源码复审→修复→S0→相关回归→更新S1；无新证据不重复重构。
 
 - **StaticReview**: 先读本单元生产实现、受影响caller及test/fixture/oracle/collector，对照CD/INV和SymbolContracts推演成功/失败路径；修复控制性finding→重读→S0 PASS→unit/相邻回归→integration。 Report: evidence/t014-static-review-rN.md（planned）；FR-018/PO-015，完整规则见 [S0](pre-test-static-review.md)。
 
@@ -354,6 +382,8 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 
 ## T015 Design-code Convergence Audit
 
+- **PostTestReview**: T015属于测试前整体审查，只复核本单元审查报告、设计追踪和final diff；没有独立产品运行，产品S1标N/A并说明。不得借此满足T016整体S1。 Report: evidence/t015-post-test-review-rN.md（planned）；FR-019/PO-016，SR-010--013。
+
 - **StaticReview**: 整体S0审查覆盖CD-001--014、跨任务调用、test/oracle/harness/config/dependencies及T016全部运行范围；控制性finding清零并绑定当前subject，T014局部PASS不能替代。 Report: evidence/t015-static-review-rN.md（planned）；FR-018/PO-015，完整规则见 [S0](pre-test-static-review.md)。
 
 - **SymbolContracts**: C01--C21 / M01--M48 / V01--V12；以 [symbol design](symbol-design.md) 与 [value contracts](value-contracts.md) 中同CD的精确符号为准；未覆盖新增符号先补契约。
@@ -369,13 +399,15 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 - **AllowedDecisions**: 仅审查和记录证据；修复必须回所属任务。
 - **ForbiddenChanges**: 把存在 helper/单测通过当作完整资格；为通过放宽验收。
 - **ExpectedDiff**: spec182 audit/traceability/evidence/post-implementation-audit.md；0 生产/测试源码；只审查 T014 已存在的 harness。
-- **ProofObligations**: PO-001--015。
+- **ProofObligations**: PO-001--016。
 - **ExactCommands / VerificationLadder**: L0/L2 source-aware audit，未运行的 L4 明确 NOT_RUN；使用上述 planned command contract，未冻结 selectors 前 BLOCK。
 - **EscalationConditions**: 任何 semantic/security/wiring/config/evidence gap 为 BLOCK；同样适用 common boundary。
 - **RecoveryPoint**: 记录 first open boundary，返回所属任务修复后复审。
 - **Evidence**: ../evidence/t015-completion.md（planned，当前不存在）。
 
 ## T016 Local Native Qualification
+
+- **PostTestReview**: 完整unit/integration/MiniNDN及必需检错证据通过后执行整体S1；追问全绿仍可能如何错，核对5风险真实证据、必要PO及最终diff。T015不能替代。 Report: evidence/t016-post-test-review-rN.md（planned）；FR-019/PO-016，SR-010--013。发现具体缺陷→日志/源码复审→修复→S0→相关回归→更新S1；无新证据不重复重构。
 
 - **StaticReview**: 每层运行前核对T015报告的identity/AllowedTestScope与前层结果；完整unit PASS→integration PASS→MiniNDN。修复使相关报告STALE，先回对应单元S0及T015复核再运行。 Report: evidence/t016-static-review-rN.md（planned）；FR-018/PO-015，完整规则见 [S0](pre-test-static-review.md)。
 
@@ -392,13 +424,15 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 - **AllowedDecisions**: 仅执行已冻结 case/selector/config/timeout；失败先保留诊断。
 - **ForbiddenChanges**: 运行中延长 deadline/改 oracle；将 collector 故障记拒绝；SIF/Tiger 混作本地门。
 - **ExpectedDiff**: 仅 evidence/local-qualification.md 与 case 结果索引；harness/fixtures 在 T014 已冻结，0 生产或测试源码改动；失败回最早受影响任务。
-- **ProofObligations**: PO-001--015。
+- **ProofObligations**: PO-001--016。
 - **ExactCommands / VerificationLadder**: L4/L5 同源真实 MiniNDN；L1/2/3/L6 已有完整有效证据；使用上述 planned command contract，未冻结 selectors 前 BLOCK。
 - **EscalationConditions**: 失败更新 raw/evidence/failure index，回最早受影响任务和 T015；同样适用 common boundary。
 - **RecoveryPoint**: 每 case 独立新目录；无未收集进程和明文/密钥残留。
 - **Evidence**: ../evidence/t016-completion.md（planned，当前不存在）。
 
 ## T017 Native Development Handoff
+
+- **PostTestReview**: 核对T016整体S1和交付身份；本单元变更的示例/config完成适用验证后另做S1/final diff，不能沿用旧binary或报告。 Report: evidence/t017-post-test-review-rN.md（planned）；FR-019/PO-016，SR-010--013。发现具体缺陷→日志/源码复审→修复→S0→相关回归→更新S1；无新证据不重复重构。
 
 - **StaticReview**: 核对交付subject与静态/运行证据一致；示例、launcher或配置行为变更先执行本单元S0，不能沿用旧报告测试新版本。 Report: evidence/t017-static-review-rN.md（planned）；FR-018/PO-015，完整规则见 [S0](pre-test-static-review.md)。
 

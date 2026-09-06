@@ -1,7 +1,7 @@
 # Specification Quality Checklist: Native NDNSF-DI
 
 **Created**: 2026-09-06
-**Revision**: 4
+**Revision**: 5
 **Feature**: [spec.md](../spec.md)
 **Status**: DRAFT; design-document delivery only
 
@@ -15,8 +15,8 @@
 
 ## Requirement Completeness
 
-- [x] 18 个 FR 均有 CD/T/PO 和成功判据。
-- [x] 10 个 SC 区分 source review、运行、资格和交付。
+- [x] 19 个 FR 均有 CD/T/PO 和成功判据。
+- [x] 11 个 SC 区分 source review、运行、资格和交付。
 - [x] 默认 native 策略不允许 Python trampoline。
 - [x] 冷动态装配与完整 tokenizer 文本不能降级为离线预切/warm/token-only。
 - [x] Core 不吸收模型差异，Provider 独立验证不因共用 C++ 而删除。
@@ -67,3 +67,12 @@ specify CLI 未在 PATH；仓库只有一个 active spec template，直接使用
 - [x] 具名RED/mutant先审查受控缺陷，不能据此放行普通测试。
 - [x] FR-018/SC-010/PO-015/SR-001--009及任务/证据映射齐全。
 - [ ] 产品实现的S0报告已实际完成；当前NOT_RUN。
+
+## Adversarial Review and Bounded Closure
+
+- [x] 三层S0、首次编译前源码检查、实际diff对ExpectedDiff及权限范围明确。
+- [x] 预测5项有源码依据的风险，不足须解释；逐项映射runtime观察量、测试/语义断言和PO。
+- [x] 写明Static review PASS != Behavior PASS；未验证关键行为保持OPEN。
+- [x] 首次审查后只复查修复影响面；无新依据不无限重构，同一问题两轮不收敛进入具名设计/诊断处置。
+- [x] 测试失败先按日志静态复审；计划测试全绿后S1追查假绿并审final diff。
+- [ ] 真实产品风险检错证据及S1完成；当前NOT_RUN。
