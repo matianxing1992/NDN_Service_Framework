@@ -58,6 +58,16 @@ G1/T007。当前控制性缺口是 local gate 未验证清单声明的实际源�
 本地清单与 Y-A/Y-B/Y-N → T009 候选 → T010 exact-SIF → T011 单次
 Tiger Y-B → T012 终局。不得把定向测试或历史 PASS 代入这些未完成门。
 
+**Shared runtime review (2026-09-06)**：已重新核对两种模型的 adapter
+构造、生产准备 factory 的公共上下文绑定、生成路径向共同 worker
+传递 guard；FR-015 已覆盖复用要求，保持现有模型差异 owner 与 YOLO
+资格范围。同步修正共享说明中的旧 manifest/4 complete 表述，见
+[当前源码核对](evidence/shared-runtime-reuse-20260905.md#current-review-2026-09-06)。
+本轮为文档与调用链复核，完成数仍 5/12；下一步仍是上述 A05 身份修复。
+验证：`audit_speckit_structure.py --strict` PASS（15 FR、6 SC、12 tasks、
+5 complete、15 FR traced），`spec181_evidence_inventory.py --check` PASS，
+`git diff --check` PASS；未重跑未改变的模型或 native 测试。
+
 较早 4/12、6/7、7/7 与 CONDITIONAL PASS 均为历史状态，不覆盖当前
 检查点。逐次 RED/GREEN、启动/构建失败、原始 run-id 与退役条件保留在
 对应 evidence 及 Git 历史中；以 [audit.md](audit.md) 与

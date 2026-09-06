@@ -15,7 +15,8 @@ Spec 180 的矩阵冻结为历史，未来证据路径不表示文件已存在�
 ## Requirement-to-task map
 
 FR-015 由 T002（公共准备与 adapter 收口）、T007（共用路径和接口
-兼容性验收）负责；当前为 partial，映射与剩余项见
+兼容性验收）负责；公共准备/adapter 与生成 worker 的定向修复已通过，
+整体 T007 仍因 A05 身份闭包 BLOCK；映射与证据见
 `evidence/shared-runtime-reuse-20260905.md`。不增加 Qwen 模型资格任务。
 
 | Requirement | Owner tasks | 三层测试归属 | Closing evidence |
@@ -42,7 +43,7 @@ FR-015 由 T002（公共准备与 adapter 收口）、T007（共用路径和接�
 | `core/protected_artifacts.py`、`security/*` | T001, T006 | existing（Spec 180 提交 `d36438c2` + 2026-09-05 撤销清理：规范编码 + 进程内权威 + seam + 注册表，无撤销账本） | 签发/发布/获取/解包的生产连线；29 个编码测试作为回归基线 |
 | `app_sdk/placement.py` grant seam、`sdk/placement.py` grant view | T001, T002 | existing（seam 已扩展，`AuthorityBackedGrantProvider` 就绪） | 真实资格路径使用非 `plaintext-v1` 纪元并通过 seam |
 | `provider.py` 装配入口 | T001 | PASS（任务验收）：真实获取/装配与负例、独立策略绑定、inline/external 清理、请求/排队取消与过期；151 项定向回归、6 个真实进程用例通过 | `evidence/t001-request-lifecycle-20260905.md`；正式 MiniNDN 资格仍由 T005/T008 验收 |
-| `cpp/ndnsf-di/NativeProviderHandler.cpp`、`NativeProtectedProvider.{hpp,cpp}`、`NativeProtectedGrantCredentials.cpp`、`NativeProtectedGrantTransport.cpp`、`ProtectedRuntime.{hpp,cpp}`、`NativeGrantVerifier.{hpp,cpp}`、`_ndnsf.cpp` | T002, T003 | PASS（T002 明确 unit/integration 与公共准备/adapter 验收完成；新源正式运行前须刷新统一 native manifest）| `evidence/t002-acceptance-20260905.md`；同源资格与剩余收敛审计仍归后续门 |
+| `cpp/ndnsf-di/NativeProviderHandler.cpp`、`NativeProtectedProvider.{hpp,cpp}`、`NativeProtectedGrantCredentials.cpp`、`NativeProtectedGrantTransport.cpp`、`ProtectedRuntime.{hpp,cpp}`、`NativeGrantVerifier.{hpp,cpp}`、`_ndnsf.cpp` | T002, T003 | PASS（T002 unit/integration 与公共准备/adapter 验收完成；`1ba99000` 的维护 native build 身份已刷新，仅适用于该提交）| `evidence/t002-acceptance-20260905.md`、`evidence/t007-native-plan-closure-20260906.md`；同源资格与剩余收敛审计仍归后续门 |
 | `ServiceUser.publish_signed_app_data` 发布路径 | T001 | existing（runner 目录发布已使用）| grant Data 经此路径发布并被 Provider 精确名获取 |
 | `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py` | T005, T006, T008 | existing（barriered runner + 语义判定已修复）| Y-N 全矩阵语义重跑 + Y-A/Y-B 资格 |
 | `scripts/spec180_*`、`packaging/.../jobs/spec180/*` | T009--T012 | existing（Spec 180 工具链，路径沿用）| 候选封印（提交哈希）+ SIF + Tiger 终局 |

@@ -1,6 +1,6 @@
 # Shared Runtime Reuse Boundary
 
-**Status**: IN_PROGRESS
+**Status**: PASS (focused shared runtime closure); T007 BLOCK
 **Evidence layer**: implemented / wired / executed (focused checks only)
 
 ## Decision
@@ -34,9 +34,10 @@ Spec181 源码收口，不把 Qwen 模型运行、跨模型资格或性能结论
    runner spec，不复制上述公共准备逻辑。
 2. T002（implemented + focused PASS）：native YOLO 后处理算法归入 adapter，保留已有公开入口的
    兼容性并同步 Waf 生产/定向测试源清单；不新建第二套 Provider。
-3. T007：复核普通执行、缓存及可选生成 epoch 都经过公共授权、
-   取消/截止和清理边界；发现旁路时修复公共 owner，并用真实 runtime
-   加最小 stateless/stateful 扩展点用例验证，不能仅以符号相同判 PASS。
+3. T007（focused PASS）：生成 coordinator 向公共 worker 传递授权、
+   取消/截止 guard 的缺口已由 RED 复现并修复；真实 runtime 的定向
+   回归通过，见下方证据。整体 T007 仍待源码/配置与候选身份闭包，
+   不因这个共享路径单元通过而关闭。
 4. 公共代码变化必须运行受影响的既有 Qwen/生成接口定向回归；不
    启动新的 Qwen 模型/集群资格任务。YOLO 正式资格仍归 T005/T008--T012。
 
@@ -51,8 +52,25 @@ Spec181 源码收口，不把 Qwen 模型运行、跨模型资格或性能结论
 定向检查、统一 native 构建和隔离 P-256 正向控制通过。随后修复
 generation worker 授权/取消传递缺口，48 cases / 366 assertions
 PASS，见 [generation worker authority](t007-generation-worker-20260905.md)。
-新源尚未刷新统一 native manifest；T007 的其他审计义务仍 BLOCK。
+随后 `1ba99000` 的干净 tracked checkout 已刷新维护 native build，
+实际扩展导入与依赖身份 PASS；receipt 和精确源码身份见
+[native closure R3](t007-native-plan-closure-20260906.md#committed-native-build-r3)。
+该结果只覆盖此提交，不覆盖主工作区其他未提交修改；T007 当前仍因
+[local gate identity](t007-local-gate-identity-20260906.md) 等 A05 义务 BLOCK。
 
-`audit_speckit_structure.py --strict` PASS：15 FR、6 SC、4 user stories、
-12 tasks（4 complete）、15 FR traced。`git diff --check` PASS。
-这证明文档结构和映射完整，不证明待收口实现或跨模型资格已通过。
+## Current Review (2026-09-06)
+
+本轮重新核对当前源码：Qwen `placement.py` 与 YOLO `adapter.py` 均
+构造 `ModelFamilyAdapter`；`examples/DI_NativeProviderExecutable.cpp`
+的生产 `runnerPreparationFactory` 在模型 spec 分支之后只调用一次
+`bindNativeRunnerPreparationContext`；`NativeEpochCoordinator.cpp`
+经 `executeRoleAsync` 把 guard 传给公共 worker。CodeGraph 泛化查询
+返回旧临时快照，改用精确文件节点并核对当前生产调用位置。
+
+FR-015 与 plan 的 Shared Runtime Reuse 已覆盖本次复用要求，无需
+新增基类或模型资格任务。后续重复片段只有在协议语义、生命周期与
+资源所有权一致时才抽取；模型 I/O、YOLO 合并、Qwen tokenizer、
+prefill/decode、KV/混合状态和停止条件保留各自 owner。
+
+进度以 tasks.md 的 5/12 为准；旧 4 complete 是历史结构检查结果。
+本轮仅校正文档与调用链映射，不产生新的模型运行或资格证据。

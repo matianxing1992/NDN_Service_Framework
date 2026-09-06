@@ -63,7 +63,8 @@ R = `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py`。
 ## Evidence and Tool Limits
 
 - 本审查使用各修复记录及其原始日志，不把历史不同源的测试数相加成一次同源套件。
-- 最近公共准备控制是隔离 P-256 Y-B，四 Provider grant 验证、数值匹配和七个子进程退出已收集；随后 worker 修复仅刷新 unit target。下一次 native live 前须刷新统一 native manifest。
+- 最近公共准备模型控制是隔离 P-256 Y-B，四 Provider grant 验证、数值匹配和七个子进程退出已收集。随后 worker 修复通过定向检查；`1ba99000` 已在干净 tracked checkout 刷新维护 native build/实际扩展身份（见 native closure R3），仅覆盖该提交，尚未获得正式资格。
+- 2026-09-06 重新核对 FR-015 的模型 adapter、生产公共准备与生成 worker guard 调用链，并同步共享说明/plan/traceability/tasks 的旧进度表述；未新增模型或资格范围，T007 继续由 A05 控制。
 - 本轮 R003 只审计文档。没有因此启动完整网络矩阵、SIF 或 Tiger，也不重跑未变的模型测试。
 - Context Mode project/active health 通过，权威来源明确命中当前 tasks.md；统计中的跨宿主汇总不作为当前项目或资格证明。
 - CodeGraph 泛化检索在 20 s 超时；改用精确 `scripts/spec180_inventory.py` 节点成功，再按当前文件核对。没有把检索超时当作运行失败。

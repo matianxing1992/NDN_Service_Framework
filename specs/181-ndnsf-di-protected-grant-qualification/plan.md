@@ -12,8 +12,11 @@ G0 已完成，当前进入 G1/T007：Python/native 授权链已接线，native 
 已通过。T001/T002 验收已关闭；T002 公共准备、adapter 迁移与 handler 接线
 已在 `0a3a79c3` 收口，统一构建及隔离 P-256 控制 PASS，见
 [T002 acceptance](evidence/t002-acceptance-20260905.md)。FR-015 生成 worker 的排队取消/截止缺口已由定向 RED
-复现并修复，重建后 48 cases / 366 assertions PASS；新源需在下次
-native live 前刷新统一 manifest。T007 其余审计未闭合，后续门保持关闭。
+复现并修复，重建后 48 cases / 366 assertions PASS。后续 `1ba99000`
+干净 tracked checkout 的维护 native build 与实际扩展导入/依赖身份
+PASS，见 [native closure R3](evidence/t007-native-plan-closure-20260906.md#committed-native-build-r3)。
+此身份不覆盖主工作区其他未提交修改；T007 的 local gate 实际源码/
+配置与候选闭包尚未闭合，后续门保持关闭。
 
 ## Gate Order
 
