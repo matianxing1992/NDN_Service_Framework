@@ -52,6 +52,28 @@ R2 暴露生产 `_source_git` 内部再次丢弃 SUDO_UID；在首次网络前
 sudo 源码边界修复最终 **51 passed（8.68 s）**，包含真实 root/
 用户检出正负例、Git 覆盖隔离与既有 gate 回归。受影响 A05 复审
 PASS，T007 恢复 PASS，完成数仍 6/10；下一步新 R3 正式矩阵。
+R3 已通过修复后的 sudo 源码门，维护输入预检 exit 78：envelope
+key owner 与 root 执行身份不符。下一步在新 R4 state 放置同字节、
+0600 的 root-owned 副本；原 key 不变，未联网，不放宽输入门。
+R4 envelope owner 通过，维护预检发现误用了 Y-B 四角色配置，
+Y-N 要求另有 FullModel 能力。已记录 exit 78；下一步使用并核对
+既有 Y-N 专属输入集，在新 R5 运行，保持注册角色要求。
+R5 临时 launcher 未允许 Y-N 环境的 SPEC180_CASE_OUTPUT_DIR，
+解析阶段停止，无网络。下一步接收该明确字段并由新 R6 输出覆盖；
+已确认五角色配置/同一模型，并显式保留保护纪元以执行 Y-N-E。
+R6 在 Mininet 可执行检查缺 ifconfig 处停止：显式 PATH 未含 sbin。
+下一步核对完整系统命令并追加 sbin 路径，在新 R7 运行；保持
+Python/native 原选择并重新记录环境摘要。未产生协议结果。
+R7 五 NFD socket 存在但 nfdc 全部未就绪，Y-N-O 启动失败；清理
+后无 NFD/native Provider。已定位 launcher 的离线 NDN_CLIENT_*
+覆盖与节点 client.conf 冲突，下一步 R8 用独立父 HOME 隔离并移除
+全局覆盖，保留显式依赖路径；本次不是协议负例 PASS。
+R8 NFD/路由/keychain 已通过，controller.log 创建后立即启动失败；
+矩阵包装丢失底层异常定位信息。下一步补类型/文件/函数/行号的
+启动失败证据（不记录内容/locals），保持失败与清理，再定位修复。
+诊断修复最终两文件 **93 passed**，部分启动清理与矩阵首失败停止
+仍通过；新增类型/frame 证据不含异常内容/locals。受影响审计 PASS，
+下一步提交并以新运行定位 spawn 根因；T005 仍未通过。
 
 | Closed unit | Current evidence |
 |---|---|

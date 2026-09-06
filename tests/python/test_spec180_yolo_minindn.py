@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import importlib.util
 from pathlib import Path
 import sys
@@ -1271,6 +1273,14 @@ def test_start_processes_rolls_back_partial_phase_launch(tmp_path: Path):
     assert legacy.started[0].signaled is True
     assert legacy.started[0].waited is True
     assert runtime._started_phases == set()
+    failure_text = (output / "process-start-failure.json").read_text()
+    failure = json.loads(failure_text)
+    assert failure["phase"] == "control"
+    assert failure["errorType"] == "OSError"
+    assert failure["frames"][-1]["function"] == "start"
+    assert failure["frames"][-1]["line"] > 0
+    assert "simulated launch failure" not in failure_text
+    assert "locals" not in failure_text
 
 
 def test_catalogue_publication_receipt_is_name_signer_and_digest_bound(tmp_path: Path):

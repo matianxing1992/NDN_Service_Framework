@@ -1162,6 +1162,31 @@ class MiniNdnCaseRuntime:
                     legacy.stop_process_group(phase_procs)
                 finally:
                     del procs[phase_start:]
+            # The outer matrix deliberately reports a bounded failure code.
+            # Preserve the underlying location before that wrapping loses it,
+            # without serializing exception messages, arguments, or locals.
+            frames = []
+            frame = exc.__traceback__
+            while frame is not None:
+                frames.append({
+                    "file": frame.tb_frame.f_code.co_filename,
+                    "function": frame.tb_frame.f_code.co_name,
+                    "line": frame.tb_lineno,
+                })
+                frame = frame.tb_next
+            failure = {
+                "schema": "spec180-process-start-failure-v1",
+                "phase": phase, "errorType": type(exc).__name__,
+                "frames": frames,
+            }
+            try:
+                with (self.binding.output / "process-start-failure.json").open("x") as record:
+                    json.dump(failure, record, sort_keys=True, indent=2)
+                    record.write("\n")
+            except OSError:
+                # Retain existing evidence and the original failure even if
+                # this optional diagnostic cannot be written.
+                pass
             raise RunnerError(
                 "CASE_RUNTIME_PROCESS_START_FAILED:" + phase) from exc
         self._started_phases.add(phase)

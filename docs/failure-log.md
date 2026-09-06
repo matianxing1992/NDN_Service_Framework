@@ -19,6 +19,69 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 spawn diagnostic repair R3 (2026-09-06): focused PASS.**
+All 93 runner/matrix checks pass. Partial-start cleanup and first-failure stop
+remain intact; the new exclusive diagnostic records type and frame locations
+without exception text or locals. The actual R8 spawn cause still requires a
+new run. See [formal matrix](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-formal-matrix-20260906.md#spawn-diagnostic-repair-r3).
+
+**Spec181 spawn diagnostic R2 (2026-09-06): BLOCK at test import.**
+Two-file checks produce 1 failed / 92 passed (1.55 s). The runtime writes its
+new diagnostic; the new assertion lacks the json import. Preserve R2, add the
+test import, and rerun. This is a test-fixture failure, not a runtime result.
+See [formal matrix](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-formal-matrix-20260906.md#spawn-diagnostic-regression-r2).
+
+**Spec181 spawn diagnostic regression R1 (2026-09-06): RED reproduced.**
+The existing partial-start cleanup test now verifies a durable error boundary;
+it fails because process-start-failure.json is absent (1 failed / 87 deselected,
+0.90 s). Keep cleanup and failure verdicts intact; record only exception type
+and frame locations, preserving first evidence without messages or locals.
+See [formal matrix](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-formal-matrix-20260906.md#spawn-diagnostic-regression-r1).
+
+**Spec181 T005 formal R8 (2026-09-06): BLOCK at application spawn diagnostics.**
+NFD readiness/routing/keychains pass. Controller log creation is followed by an
+immediate spawn failure; the matrix preserves only CONTROL_NOT_PROVEN and drops
+the underlying traceback boundary. Preserve R8 and add exception type plus
+file/function/line frames, without exception text or locals, before another
+diagnostic run. NFD cleanup was verified. See
+[formal matrix](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-formal-matrix-20260906.md#first-application-boundary-r8).
+
+**Spec181 T005 formal R7 (2026-09-06): BLOCK at NFD readiness.**
+All five NFD sockets exist, but node nfdc checks fail; no application child
+started. The launcher inherited offline probe NDN_CLIENT_* overrides pointing
+to unused.sock instead of node client.conf. Preserve startup diagnostics and
+logs. R8 will isolate the parent via private HOME, remove the global overrides,
+and retain explicit Python dependency paths. NFD/native Provider cleanup was
+verified. See [formal matrix](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-formal-matrix-20260906.md#first-network-boundary-r7).
+
+**Spec181 T005 formal R6 (2026-09-06): BLOCK at Mininet executable readiness.**
+The explicit PATH omitted sbin and Mininet could not find ifconfig (exit 1).
+Preserve R6. Verify required network tools and append the system sbin paths for
+R7 while preserving Python/native resolution order and recording the new launch
+environment. This is startup readiness, not a protocol result. See
+[formal matrix](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-formal-matrix-20260906.md#first-boundary-r6).
+
+**Spec181 T005 formal R5 (2026-09-06): BLOCK at launch environment parsing.**
+The temporary parser rejected the registered SPEC180_CASE_OUTPUT_DIR in the
+Y-N environment. No case/state or runner was created. Preserve R5; accept that
+specific field and override it with R6's unique output. The five-role Y-N input
+uses the same model; the protected epoch remains explicit for Y-N-E. See
+[formal matrix](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-formal-matrix-20260906.md#first-boundary-r5).
+
+**Spec181 T005 formal R4 (2026-09-06): WAITING_EXTERNAL_INPUT at case roles.**
+Envelope ownership now passes. The Y-B baseline configuration lacks Y-N's
+required FullModel capability, so maintained validation exits 78 before network.
+Preserve R4; inspect and use the existing Y-N-specific inputs for a new R5.
+The registered role-set requirement remains unchanged. See
+[formal matrix](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-formal-matrix-20260906.md#first-boundary-r4).
+
+**Spec181 T005 formal R3 (2026-09-06): WAITING_EXTERNAL_INPUT at key ownership.**
+The repaired sudo source gate passes on 88e7a458. Maintained input validation
+rejects the developer-owned envelope key for root execution (exit 78), before
+network. Preserve R3 and provision the same bytes as a 0600 root-owned file in
+R4's private state, retaining the original key untouched. See
+[formal matrix](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-formal-matrix-20260906.md#first-boundary-r3).
+
 **Spec181 sudo source repair R2 (2026-09-06): PASS; formal R3 next.**
 The gate preserves SUDO_UID only for root plus the actual selected checkout
 owner. Real sudo positive/negative tests and existing local gate regressions

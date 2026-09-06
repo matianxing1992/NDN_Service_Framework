@@ -1,7 +1,7 @@
 # Formal Local Y-N Matrix
 
-**Status**: IN_PROGRESS (sudo source repair PASS; formal retry pending)
-**Evidence layer**: implemented / executed (source regression; no network yet)
+**Status**: BLOCK (application spawn cause pending; focused diagnostic repair PASS)
+**Evidence layer**: implemented / executed (formal network startup and focused regression)
 
 ## Subject and Launch R1
 
@@ -55,3 +55,83 @@ UID 按预期拒绝；同时注入 GIT_DIR/GIT_INDEX_FILE 验证它们不成为
 也保留。owner 读取放在原错误处理内，缺失检出仍受统一拒绝处理。
 此修复不修改 native/应用行为；A05 受影响项复审 PASS，T007 恢复
 PASS。下一步提交修复，用新 R3 执行维护正式矩阵。
+
+## First Boundary R3
+
+修复已提交 `88e7a458`。R3 前置源码核对通过并进入维护 CLI，
+exit 78：`REQUEST_ENVELOPE_KEY_OWNER_MISMATCH`。原 envelope key
+由开发用户拥有，root MiniNDN 的现有输入契约要求当前执行 uid
+拥有该文件。未创建网络/子用例；前后源码和输入保持一致。
+下一步将相同 key 字节复制到新 R4 专有 state（root owner、0600），
+显式引用副本；保留原 key 的所有者/权限与原始 R3，不改校验契约。
+
+## First Boundary R4
+
+R4 的 envelope owner 已满足；维护预检继续在
+`CASE_CONFIG_ROLE_SET_INVALID:Y-N` exit 78。前次 Y-B 预检环境只
+声明四个共享角色，Y-N 必须额外声明 FullModel 能力。无网络启动。
+既有 `/tmp/spec181-y-n-run/env.sh` 是 Y-N 输入集，下一步核对其
+五角色/四 Provider 覆盖及全部实际输入字节，再以新 R5 执行。
+R4 原始结果保留；不在 runner 放宽注册角色集合。
+
+## First Boundary R5
+
+既有 Y-N 配置确有五角色，同一模型包；须补设保护纪元以执行
+Y-N-E。R5 在临时 launcher 的变量名白名单断言处 exit 1：Y-N
+环境含已注册 `SPEC180_CASE_OUTPUT_DIR`，旧 Y-B 解析器未接收它。
+尚未创建 case/state 或执行维护 runner。下一步允许这一明确字段，
+仍由当前 run 专有输出路径覆盖；不扩大生产环境或变更协议。
+
+## First Boundary R6
+
+R6 已进入维护 runtime，Mininet 的可执行文件检查找不到 ifconfig，
+exit 1；显式 PATH 仅含 bin 目录，遗漏系统 sbin。没有产生协议
+结果。下一步显式追加 /usr/sbin、/sbin、/usr/local/sbin，并核对
+ifconfig/ip/tc/ovs-vsctl/mnexec/NFD/ndnsec/NLSR 可定位；Python 与
+native 选择优先级保持原值，实际有效环境重新记录。R6 日志保留。
+
+## First Network Boundary R7
+
+R7 在 Y-N-O 启动五个 NFD，五个 socket 均存在，但 nfdc face list
+全部未就绪，维护矩阵 exit 2。`nfd-startup-failure.json` 与每节点
+NFD 日志保留；没有启动业务子进程，控制结果 UNQUALIFIED。
+终止后确认无 NFD/native Provider 残留，源码/输入前后不变。
+
+排查发现 launcher 继承了离线 preflight 的 NDN_CLIENT_TRANSPORT=
+unused.sock（以及 PIB/TPM）覆盖；节点 client.conf 本来分别指向
+/run/nfd/<node>.sock。公共 wait_for_nfd_sockets 调用节点 nfdc，
+会受该环境覆盖影响。R8 移除这些全局覆盖，使用 launcher 专有
+HOME/.ndn/client.conf 隔离父进程；节点继续用其自身 HOME。明确
+保留已验证的 /home/tianxing/.local/lib/python3.8/site-packages
+依赖路径，避免 HOME 改变导致依赖丢失。新运行验证这一诊断。
+
+## First Application Boundary R8
+
+R8 已越过 NFD readiness、路由与 keychain 初始化，首次创建
+controller.log 后在业务进程启动边界退出，日志为空。总耗时约
+19.2 s，无 90 s readiness 等待；矩阵只留下 CONTROL_NOT_PROVEN，
+原始启动异常被包装/顶层处理后不可见。NFD 已全部退出。
+下一步修复这一实际诊断缺口：启动异常记录类型与 traceback
+文件/函数/行号，不记录异常文本、locals 或 secret；保留现有失败
+裁决与清理。定向测试后在新 run 定位底层启动错误。
+
+## Spawn Diagnostic Regression R1
+
+`spec181-spawn-diagnostics-20260906-r1/red.log` 复现 **1 failed /
+87 deselected（0.90 s）**：现有部分启动回滚仍清理，但没有任何
+process-start-failure.json 可定位原异常。新增断言要求异常类型、
+末端函数/行号且不出现异常文本或 locals；下一步补这个持久记录。
+
+## Spawn Diagnostic Regression R2
+
+实现后两文件回归 **1 failed / 92 passed（1.55 s）**；唯一失败是
+新增测试未导入 json，运行时已生成预期诊断。R2 日志保留；下一步
+补测试导入后重验，不能把 fixture 错误归为运行时失败。
+
+## Spawn Diagnostic Repair R3
+
+两文件最终 **93 passed（2.25 s）**，见 R3 focused.log。部分启动仍
+回滚/关闭原子 phase；新证据记录 OSError 及真实 frame 位置，不含
+异常文本或 locals，使用独占文件创建保留首次证据。写入失败不
+替代原始运行异常。没有改矩阵 PASS/FAIL、重试或网络流程。
+本单元受影响审计 PASS；下一步提交后新 run 定位业务 spawn 失败。
