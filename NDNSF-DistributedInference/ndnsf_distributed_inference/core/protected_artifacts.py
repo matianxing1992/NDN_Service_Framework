@@ -185,7 +185,7 @@ def wrap_content_key(recipient_public_key: RecipientPublicKey, *,
         ephemeral_public = ephemeral.public_key().public_bytes(
             serialization.Encoding.Raw, serialization.PublicFormat.Raw)
     elif isinstance(recipient_public_key, EllipticCurvePublicKey):
-        ephemeral = ec.generate_private_key(ec.SECP256R1())
+        ephemeral = ec.generate_private_key(ec.SECP256R1(), default_backend())
         shared = ephemeral.exchange(ec.ECDH(), recipient_public_key)
         alg = "ECDH-P256-AESGCM-SHA256"
         ephemeral_public = ephemeral.public_key().public_bytes(

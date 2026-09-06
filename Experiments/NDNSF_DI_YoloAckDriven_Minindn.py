@@ -3222,8 +3222,9 @@ def _run_live_case_once(case: str, output: Path, inputs: Mapping[str, Any], *,
     env = _child_process_environment(os.environ)
     # spec181 T008: Y-B runs the protected-epoch grant round trip.  The
     # requester-side User builds the in-process authority seam from these
-    # inputs; every Provider resolves its own recipient key from the shared
-    # offer private-key map.  Plaintext Y-A keeps the default epoch.
+    # inputs; every Provider resolves its own recipient key from the configured
+    # recipient map (the offer-key map is the backward-compatible default).
+    # Plaintext Y-A keeps the default epoch.
     if case == "Y-B" or subcase == "Y-N-E":
         requested_epoch = str(env.get(PROTECTION_EPOCH_ENV, "") or "").strip()
         if requested_epoch and requested_epoch != PLAINTEXT_EPOCH:
@@ -3231,6 +3232,7 @@ def _run_live_case_once(case: str, output: Path, inputs: Mapping[str, Any], *,
             env["SPEC181_REQUESTER_PRIVATE_KEY"] = str(
                 env.get("NDNSF_DI_ENVELOPE_KEY_FILE", ""))
             env["SPEC181_PROVIDER_RECIPIENT_KEY_MAP"] = str(
+                env.get("SPEC181_PROVIDER_RECIPIENT_KEY_MAP") or
                 env.get("SPEC180_YOLO_OFFER_PRIVATE_KEY_MAP", ""))
             env["SPEC181_GRANT_AUTHORITY_PUBLIC_KEY"] = str(
                 ROOT / "specs/180-ack-driven-cross-model-qualification"

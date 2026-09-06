@@ -235,8 +235,8 @@ def _build_grant_seam(client, *, registry_path, model_manifest_digest,
     seam stays absent.  A protected epoch (spec181 T001/T002 wiring) loads
     the operator authority key from the Spec180 config registry, derives the
     requester signing key from the request-envelope seed, maps every
-    Provider identity to its recipient public key (the same Ed25519 keys the
-    Provider ACK offers use), owns one content key per model-manifest digest,
+    Provider identity to an Ed25519 or EC P-256 recipient public key, owns
+    one content key per model-manifest digest,
     and publishes grant Data through the client's signed-APP-Data path.
     """
     epoch = os.environ.get("SPEC181_PROTECTION_EPOCH", "").strip()
@@ -253,7 +253,8 @@ def _build_grant_seam(client, *, registry_path, model_manifest_digest,
         return None, "plaintext-v1"
     from ndnsf_distributed_inference.security.registry_keys import (
         load_artifact_policy_authority_private_key,
-        load_artifact_policy_authority_registry, load_ed25519_private_key)
+        load_artifact_policy_authority_registry, load_ed25519_private_key,
+        load_grant_recipient_private_key)
     from ndnsf_distributed_inference.security.requester_grant_pipeline import (
         build_in_process_grant_provider)
     policy = load_artifact_policy_authority_registry(
@@ -277,7 +278,7 @@ def _build_grant_seam(client, *, registry_path, model_manifest_digest,
         encoding="utf-8"))
     recipient_public_keys = {}
     for provider, pem_path in recipient_entries.items():
-        key = load_ed25519_private_key(pem_path)
+        key = load_grant_recipient_private_key(pem_path)
         recipient_public_keys[provider] = key.public_key()
     content_keys: dict[tuple[str, str], bytes] = {}
 
