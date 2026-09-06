@@ -48,6 +48,14 @@ T008 保留当前源身份与全部平面摘要；T009 只能封印这些相同�
 
 ## Architecture Decisions
 
+活动本地资格清单沿用 `scripts/spec180_inventory.py` 与
+`scripts/run_spec180_local_gate.py` 的路径及既有记录字段，由 T008
+接管。注册网络案例仅 Y-A/Y-B/Y-N；收集继承的 `test_spec180_*.py`
+及活动 `test_spec181_*.py`。案例名、维护路径和精确参数由同一
+契约校验，旧 Q-C/Q-W 清单、重算摘要后的入口替换和越界输出 ID
+在启动子进程前拒绝。Qwen 自身入口及已有接口 unit 回归仍保留。
+见 [inventory repair](evidence/t007-qualification-scope-20260905.md)。
+
 1. **In-process authority**。权威宿主为 requester/user 进程，保持
    requester 与 authority 逻辑身份和密钥区分。签发者身份、公钥摘要
    与策略来自 `artifactPolicyAuthority`；不把发布路由身份自动视为

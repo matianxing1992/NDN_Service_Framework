@@ -19,6 +19,25 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 A05 qualification inventory (2026-09-05): CLOSED within focused inventory repair.**
+The inherited inventory requires Q-C/Q-W but discovers only Spec180 Python
+tests, omitting Spec181 protected-grant regressions. Two tests using the real
+inventory builder and pytest collection fail; no formal network run started.
+R2 repairs those cases (15 PASS); an old count assertion is corrected, and R3
+passes 16 checks. R4 then exposes a second boundary: two tests show rehashed
+case-source substitution is accepted by the real builder and gate. These use
+fixture children, not a network qualification. Preserve R4 before repair.
+R5 rejects both substitutions (17 PASS); the old missing-oracle fixture also
+changed its source path and is now correctly rejected earlier. R6 keeps the
+registered path while withholding its oracle to preserve that check's scope.
+R6 passes 18 checks. R7 then finds three unsafe entry IDs accepted by the
+validator although the gate joins IDs into output directories; no escaped
+write is attempted. Reject these IDs at the inventory boundary before R8.
+R8 passes all 21 checks: active scope/collection, registered case source/args,
+safe entry IDs, existing evidence/oracle controls and wrapper compatibility.
+The remaining A05 native/candidate effective-configuration audit stays BLOCK.
+See [qualification scope repair](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t007-qualification-scope-20260905.md).
+
 **Spec181 T007 evidence inventory (2026-09-05): CLOSED within document inventory scope.**
 The R003 record reports zero Spec181 evidence files, while the current tree
 contains 37. Four active evidence records lack an explicit header layer, and

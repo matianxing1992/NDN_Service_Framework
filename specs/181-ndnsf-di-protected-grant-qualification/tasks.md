@@ -40,9 +40,26 @@ G0 已闭合，当前进入 G1/T007 剩余源码/配置与证据收敛审查。
 T007 R003 当前清单核对发现旧记录仍称 Spec181 无证据文件，实际有
 37 个，其中 4 个缺头部层声明；旧审计正文仍描述已关闭的 T002 缺口。
 已补层声明、重写当前审计并加入 [完整清单](evidence/t007-evidence-inventory-20260905.md)
-与漂移检查。145 个条目完整列出（含两份根级 audit 和报告 SELF 行）；
+与漂移检查。R003 闭合时完整列出 145 个条目（含两份根级 audit 和报告 SELF 行）；
 清单/结构检查 PASS，105 个 Spec180 evidence 文件哈希与修复前一致。
 冻结原文和已有原始测试结果保持原范围；T007 仍待 A05 源/配置闭包。
+A05 已复现清单范围错误：旧工具强制 Q-C/Q-W，且未收集任何 Spec181
+Python 回归；实际 builder/collection 的两个定向测试均失败，见
+[资格范围修复](evidence/t007-qualification-scope-20260905.md)。正在收口
+YOLO 案例集合并纳入活动 Spec 回归，不启动正式矩阵。
+R2 为 15 PASS / 1 FAIL：新范围检查通过，旧 gate fixture 仍预期
+8 个条目而实际为 6；修正该断言后用新的 R3 目录复验。
+R3 已 16 PASS；R4 两项新回归发现重新计算摘要后仍可替换注册案例
+脚本，builder/gate 均未拒绝。正在把案例名、路径、参数绑定到同一
+注册契约，保持 T007 BLOCK。
+R5 已拒绝两个重算摘要替换（17 PASS）；旧缺 oracle fixture 因更换
+路径被更早拒绝，调整为保留注册路径后在新 R6 验证原检查目的。
+R6 为 18 PASS；R7 的 3 个纯 validator 回归发现输出目录 entry ID
+可含父路径/绝对路径，未实际写越界文件，正在前置拒绝这些 ID。
+R8 最终 **21 PASS（2.45s）**：活动测试发现、三个 YOLO 案例的
+路径/参数契约、重算摘要替换、输出 ID 边界及既有 gate 检查均通过。
+维护 inventory/gate 源码与测试本轮收口；T007 仍待 native/candidate
+有效配置与封印输入闭包，整体保持 5/12。
 下列较早的 4/12 与 partial 记载保留为修复过程，不覆盖本检查点。
 三种 grant 变异完成实际发布、Provider 拒绝与身份绑定；有效 grant
 仍完成 native Y-B 推理。正向控制发现并修复冷装配期间的固定 10 s
@@ -354,7 +371,7 @@ T 任务完成定向修复；在生产验收前保持失败关闭，并禁止晋
   逐项子进程监督）+ MiniNDN Y-A（原子候选、1 Provider）、Y-B
   （共享骨架、4 Provider、含 T001/T002 的保护纪元 grant 往返）、
   Y-N 全矩阵（T005 同源重跑）；CPU 后端证据记录，不得呈现为 GPU
-  证据。文件：`scripts/run_spec180_local_gate.py`（路径沿用，所有权
+  证据。文件：`scripts/spec180_inventory.py`、`scripts/run_spec180_local_gate.py`（路径沿用，所有权
   移交本任务）、`evidence/local-qualification.md`。验收：清单完整、
   Y-A/Y-B/Y-N 全通过、零未收集存活进程、CPU 后端声明。
 
