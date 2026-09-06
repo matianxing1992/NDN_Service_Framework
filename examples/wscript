@@ -225,7 +225,10 @@ def build(bld):
         'NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollectiveControl.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/CollectiveRuntime.cpp',
         'NDNSF-DistributedInference/cpp/adapters/qwen/QwenGenerationSession.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.cpp',
@@ -234,6 +237,12 @@ def build(bld):
     di_native_collaboration_sources = bld.path.parent.ant_glob([
         'NDNSF-DistributedInference/cpp/ndnsf-di/DistributedExecutionConsistency.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeRunnerPreparation.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedGrantCredentials.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedGrantTransport.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV3.cpp',
+        'NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloMergeRunner.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.cpp',
     ])
 
@@ -364,6 +373,7 @@ def build(bld):
                         di_native_collaboration_sources +
                         bld.path.parent.ant_glob([
                             'NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactMaterializer.cpp',
+                            'NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.cpp',
                             'NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.cpp',
                             'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderReadiness.cpp',
                             'NDNSF-DistributedInference/cpp/ndnsf-di/ProviderResourceProbe.cpp',
@@ -399,6 +409,7 @@ def build(bld):
                         di_native_collaboration_sources +
                         bld.path.parent.ant_glob([
                             'NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactMaterializer.cpp',
+                            'NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.cpp',
                             'NDNSF-DistributedInference/cpp/ndnsf-di/NativeFaultInjection.cpp',
                             'NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.cpp',
                             'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderReadiness.cpp',

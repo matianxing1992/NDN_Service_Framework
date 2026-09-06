@@ -60,13 +60,17 @@ def build(bld):
         'NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionEvidence.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/DistributedExecutionConsistency.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.cpp',
+        'NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloMergeRunner.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.cpp',
         # The integration target exercises the real CPU ONNX adapter when
         # NDNSF_DI_TEST_ONNX_MODEL is set; keep the adapter object in the same
         # target rather than accidentally testing only the fake runner.
         'NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV3.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.cpp',
@@ -77,6 +81,9 @@ def build(bld):
         'NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollectiveControl.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedGrantCredentials.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedGrantTransport.cpp',
     ])
@@ -117,6 +124,7 @@ def build(bld):
                         bld.path.parent.ant_glob([
                             'NDNSF-DistributedInference/cpp/ndnsf-di/*.cpp',
                             'NDNSF-DistributedInference/cpp/adapters/onnx/*.cpp',
+                            'NDNSF-DistributedInference/cpp/adapters/yolo/*.cpp',
                             'NDNSF-DistributedInference/cpp/adapters/qwen/*.cpp',
                         ])),
                 includes=['..', '../ndn-service-framework',
@@ -139,6 +147,7 @@ def build(bld):
                         bld.path.find_node('unit-tests/ndn-svs-smoke.t.cpp'),
                         bld.path.find_node('integration-tests/ndnsf-data-v1-svs-flow.t.cpp'),
                         bld.path.find_node('integration-tests/ndnsf-di-core-flow.t.cpp'),
+                        bld.path.find_node('integration-tests/ndnsf-di-native-assembly.t.cpp'),
                         bld.path.find_node('integration-tests/invocation-stream-flow.t.cpp'),
                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')] +
                        framework_sources + di_integration_sources,

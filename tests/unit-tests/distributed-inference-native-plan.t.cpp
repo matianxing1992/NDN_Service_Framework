@@ -382,7 +382,12 @@ BOOST_AUTO_TEST_CASE(NativeV3ProtectedRuntimeMustMatchSelectionBeforeExecution)
   runtimeBinding.mayPublishConsumerByEndpoint = {
     {endpointValue.endpointDigest, endpointValue.consumerRole}};
   ProtectedRuntime runtime(runtimeBinding);
-  runtime.verifyGrant(runtimeBinding, 1000);
+  // spec181 R002: binding consistency grants no execution authority and the
+  // real verification entry fails closed until T002 installs the verifier.
+  runtime.verifyBindingConsistency(runtimeBinding, 1000);
+  BOOST_CHECK(runtime.state() == ProtectedRuntimeState::NoGrant);
+  BOOST_CHECK_THROW(runtime.verifyGrant(runtimeBinding, 1001),
+                    std::runtime_error);
 
   BOOST_CHECK(!validateProtectedRuntimeBinding(
     selected, runtime, nullptr, "boot-1", "fence-1"));
@@ -390,6 +395,48 @@ BOOST_AUTO_TEST_CASE(NativeV3ProtectedRuntimeMustMatchSelectionBeforeExecution)
     *validateProtectedRuntimeBinding(
       selected, runtime, nullptr, "boot-wrong", "fence-1"),
     "DI_PROTECTED_RUNTIME_BINDING_MISMATCH");
+}
+
+BOOST_AUTO_TEST_CASE(NativeV3ProtectedRuntimeExcludesApplicationInputProducer)
+{
+  auto selected = projection("/provider/0", "S0R0", true);
+  selected.selectedRole.protectionEpoch = "policy-epoch-7";
+  selected.assembly.protectionEpoch = "policy-epoch-7";
+  selected.hasGrantBinding = true;
+  selected.grantName = "/authority/grants/request-1/provider-0";
+  selected.grantDigest = digest('9');
+  auto application = endpoint("", "S0R0", digest('f'));
+  application.sourceKind = "APPLICATION_INPUT";
+  application.operation = "APPLICATION_INPUT";
+  application.producerNamespace = "/service";
+  application.producerRole.clear();
+  selected.dataflow.mustFetch = {application};
+
+  ProtectedRuntimeBindingV1 runtimeBinding;
+  runtimeBinding.provider = selected.provider;
+  runtimeBinding.role = selected.executionRole.roleId;
+  runtimeBinding.requestId = selected.requestId;
+  runtimeBinding.attempt = selected.attempt;
+  runtimeBinding.planCoreDigest = selected.planCoreDigest;
+  runtimeBinding.planDigest = selected.planDigest;
+  runtimeBinding.securityPolicySnapshotDigest =
+    selected.securityPolicySnapshotDigest;
+  runtimeBinding.protectionEpoch = selected.selectedRole.protectionEpoch;
+  runtimeBinding.grantName = selected.grantName;
+  runtimeBinding.grantDigest = selected.grantDigest;
+  runtimeBinding.providerBootId = "boot-1";
+  runtimeBinding.fencingToken = "fence-1";
+  runtimeBinding.expiresAtMs = 5000;
+  ProtectedRuntime runtime(runtimeBinding);
+  // spec181 R002: binding consistency grants no execution authority and the
+  // real verification entry fails closed until T002 installs the verifier.
+  runtime.verifyBindingConsistency(runtimeBinding, 1000);
+  BOOST_CHECK(runtime.state() == ProtectedRuntimeState::NoGrant);
+  BOOST_CHECK_THROW(runtime.verifyGrant(runtimeBinding, 1001),
+                    std::runtime_error);
+
+  BOOST_CHECK(!validateProtectedRuntimeBinding(
+    selected, runtime, nullptr, "boot-1", "fence-1"));
 }
 
 BOOST_AUTO_TEST_CASE(NativeV3ProjectionDecodesCertifiedAssemblyRecipe)
