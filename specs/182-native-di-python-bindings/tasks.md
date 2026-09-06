@@ -12,6 +12,10 @@
 文档结构、107链接、依赖及技能引用检查PASS；既定PO-001--014/负例/运行用例与符号字段表的保留检查PASS。范围见 [workflow simplification](evidence/workflow-simplification.md)。
 O-001--005和合并修复状态未被本轮关闭。下一步执行T001确认基线与设计就绪。
 
+## Tiger Directory Checkpoint
+
+2026-09-06：Tiger目录迁移完成，64文件内容/权限与路径静态检查PASS；工具单测50 PASS / 1 FAIL，独立原布局已复现相同原因码失败，留给原工具owner。纯路径checkpoint保留49个已跟踪文件原HEAD内容，已有修改及15个未跟踪文件在新路径继续保留，不混入迁移提交。详见 [migration evidence](evidence/tiger-directory-migration-20260906.md)。本工作不计T001--T017实现或产品验收。
+
 ## Validation Standard
 
 唯一规则见 [validation workflow](contracts/pre-test-static-review.md)。

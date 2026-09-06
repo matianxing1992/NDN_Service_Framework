@@ -1,0 +1,452 @@
+{
+  "schema": "tiger-directory-migration-v1",
+  "date": "2026-09-06",
+  "status": "MOVED",
+  "sourceBaseline": "ff64b8e5 plus existing working-tree files; per-file hashes bind actual inputs",
+  "groups": [
+    {
+      "source": "packaging/ndnsf-di-container/adapters/slurm-apptainer",
+      "target": "Experiments/TigerCluster/adapters/slurm-apptainer"
+    },
+    {
+      "source": "packaging/ndnsf-di-container/jobs",
+      "target": "Experiments/TigerCluster/jobs"
+    },
+    {
+      "source": "packaging/ndnsf-di-container/docs/itiger-qwen-models.md",
+      "target": "Experiments/TigerCluster/docs/itiger-qwen-models.md"
+    },
+    {
+      "source": "packaging/ndnsf-di-container/docs/itiger-qwen-evidence.md",
+      "target": "Experiments/TigerCluster/docs/itiger-qwen-evidence.md"
+    }
+  ],
+  "files": [
+    {
+      "source": "packaging/ndnsf-di-container/adapters/slurm-apptainer/profiles/itiger-h100.yaml",
+      "target": "Experiments/TigerCluster/adapters/slurm-apptainer/profiles/itiger-h100.yaml",
+      "sha256": "8a2682cd1b7ab02061a1d85bb8489dfccc3afe02ef6a79931f55c7cf59f734b4",
+      "mode": 436
+    },
+    {
+      "source": "packaging/ndnsf-di-container/adapters/slurm-apptainer/profiles/itiger-rtx5000.yaml",
+      "target": "Experiments/TigerCluster/adapters/slurm-apptainer/profiles/itiger-rtx5000.yaml",
+      "sha256": "69b6b6215bdf723516ff0d5c0d8cd653812f725c6722ccce1920fd823e24660e",
+      "mode": 436
+    },
+    {
+      "source": "packaging/ndnsf-di-container/adapters/slurm-apptainer/profiles/itiger-rtx6000.yaml",
+      "target": "Experiments/TigerCluster/adapters/slurm-apptainer/profiles/itiger-rtx6000.yaml",
+      "sha256": "ba90b19a8d64892cff85f5d4dec712f139ef60f868a16306d218a60bfe07e491",
+      "mode": 436
+    },
+    {
+      "source": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/build-local-sif.sh",
+      "target": "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/build-local-sif.sh",
+      "sha256": "8afe293fd5cd44d1f4e23d386612f69bc9a5696000355ea24c43d4b4817f7381",
+      "mode": 493
+    },
+    {
+      "source": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/build-sif-from-archive-legacy.sh",
+      "target": "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/build-sif-from-archive-legacy.sh",
+      "sha256": "3f91a0fb96afbddda40a815a417a5f1123077d12ad36c3855a9da240135006b3",
+      "mode": 493
+    },
+    {
+      "source": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/check-scratch.py",
+      "target": "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/check-scratch.py",
+      "sha256": "3cb16d74e63fdda812bef33ad70a551fc6fc436bec6deac9d6ec134226ce5db4",
+      "mode": 509
+    },
+    {
+      "source": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/check-storage.py",
+      "target": "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/check-storage.py",
+      "sha256": "0d3c69b38be35dd2b38cb540b6886f8f003fe7f2111421a4363582bfea7a4d10",
+      "mode": 509
+    },
+    {
+      "source": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/collect-gpu.py",
+      "target": "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/collect-gpu.py",
+      "sha256": "fbeae7b32cc83b3a3f6e5b26265ed93c0fb39dacc40ff4dbe90a126967b87d87",
+      "mode": 509
+    },
+    {
+      "source": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/configure-allocation-routes.sh",
+      "target": "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/configure-allocation-routes.sh",
+      "sha256": "f709fdd29cff6b3c389347c668974654400145892bd83ea7d9227bc91ac161d3",
+      "mode": 509
+    },
+    {
+      "source": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/discover-itiger-qwen.sh",
+      "target": "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/discover-itiger-qwen.sh",
+      "sha256": "0f3bb7e1b3c057480bfbcc2cfdcff9c85f7bfa83b948b9d76b65b18dc7645d73",
+      "mode": 509
+    },
+    {
+      "source": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/finalize-evidence.sh",
+      "target": "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/finalize-evidence.sh",
+      "sha256": "4ad20afce79351b068df2b8f308f31d3f5ecd5d3cba9c50a15648b62e3fa4512",
+      "mode": 509
+    },
+    {
+      "source": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/finalize-qwen-model.py",
+      "target": "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/finalize-qwen-model.py",
+      "sha256": "94eb1092d5517f663941aba4d161ead3045acb359ab1f3ccfbe9f3dda0970617",
+      "mode": 509
+    },
+    {
+      "source": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/inspect-oci-archive.py",
+      "target": "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/inspect-oci-archive.py",
+      "sha256": "dd11f649ceaeadfc8c0aa715de0fd48571973ddc910a8685d9cd5ec42400727d",
+      "mode": 509
+    },
+    {
+      "source": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/materialize-sif.sh",
+      "target": "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/materialize-sif.sh",
+      "sha256": "11f34dcac256a82a0099f8d13b92f6cdcf2d487a67a2eab08244372a50d7769a",
+      "mode": 509
+    },
+    {
+      "source": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/preflight-compute.sh",
+      "target": "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/preflight-compute.sh",
+      "sha256": "3b7268ee34b4980529afb68b2dc7bd263feb2badf86ebc854adad6388428177b",
+      "mode": 509
+    },
+    {
+      "source": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/preflight-login.sh",
+      "target": "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/preflight-login.sh",
+      "sha256": "9a270296b5a85ad88db60070573e29a17f2e040b8c0efa7a5b90db99c7ff8127",
+      "mode": 509
+    },
+    {
+      "source": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/prepare-local-sif-source.py",
+      "target": "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/prepare-local-sif-source.py",
+      "sha256": "e95baa94bca47e68fc099700c9c9dc5002d9a422d9951059af0d3f3bc12c1084",
+      "mode": 509
+    },
+    {
+      "source": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/prepare-qwen-project.sh",
+      "target": "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/prepare-qwen-project.sh",
+      "sha256": "0abd70a76b5be8ce456828f530e4df9634def8bb46f7c29730f508e040b02d5c",
+      "mode": 509
+    },
+    {
+      "source": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/probe-multinode-network.sh",
+      "target": "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/probe-multinode-network.sh",
+      "sha256": "a99e91f04615df685da70ca5e374379cd468aa81ee89b780ad557e27a5087244",
+      "mode": 509
+    },
+    {
+      "source": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/probe-ndnsf-security.sh",
+      "target": "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/probe-ndnsf-security.sh",
+      "sha256": "937d5ce54c1bddf572759c453742e97251ffbf2242f6a3dfe91f289d6450f770",
+      "mode": 509
+    },
+    {
+      "source": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/rootless-build.sh",
+      "target": "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/rootless-build.sh",
+      "sha256": "0d7d995c17e3ee839a1ab30a80e4d37af08a03d71a0b00746ec7916614633044",
+      "mode": 509
+    },
+    {
+      "source": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/run-allocation-topology.sh",
+      "target": "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/run-allocation-topology.sh",
+      "sha256": "942bf29cac38593bbd769090d46e1457e05c8bebc9ed98a582e2f668b053b185",
+      "mode": 509
+    },
+    {
+      "source": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/run-container.sh",
+      "target": "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/run-container.sh",
+      "sha256": "b695760aeba9cdc096dd8359f5029de4098fa5f96e273b56415b258d51adac2c",
+      "mode": 509
+    },
+    {
+      "source": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/run-ndnsf-qwen.sh",
+      "target": "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/run-ndnsf-qwen.sh",
+      "sha256": "ec40cc60555a9495430cabced6cdab55524e1408aab04d746ba389e1d48bae16",
+      "mode": 509
+    },
+    {
+      "source": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/run-qwen-reference.py",
+      "target": "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/run-qwen-reference.py",
+      "sha256": "e7ccc8b440d5b16d0bd85790361f93435b13180d0baa37e343ee397eeebd6332",
+      "mode": 509
+    },
+    {
+      "source": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/sample-qwen-resources.py",
+      "target": "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/sample-qwen-resources.py",
+      "sha256": "e37e1e3db630e4cd047df01bb82899e7fafd46e289e208e7c4af944ab2e0d281",
+      "mode": 509
+    },
+    {
+      "source": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/seal-rootless-source.py",
+      "target": "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/seal-rootless-source.py",
+      "sha256": "8daa9f35c3c01259ffacc67a736864baa1348f63e1cabc612ef7ef53a7bbf4fd",
+      "mode": 509
+    },
+    {
+      "source": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/stage-qwen-model.py",
+      "target": "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/stage-qwen-model.py",
+      "sha256": "7926ac81b093536c9ffbeed25288b2c6464a29486804791310b6f1ac2c48d227",
+      "mode": 509
+    },
+    {
+      "source": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/validate-local-sif-build-record.py",
+      "target": "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/validate-local-sif-build-record.py",
+      "sha256": "113dff848a01c0f4c56e59f10fdf00c6d5865ca5ae3fb261d913acfb10c55277",
+      "mode": 436
+    },
+    {
+      "source": "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/validate-local-sif-source.py",
+      "target": "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/validate-local-sif-source.py",
+      "sha256": "498600ad5a014b2f307559a868e52c188d3eae70b2d3a0ea991a0d3f36615b5b",
+      "mode": 436
+    },
+    {
+      "source": "packaging/ndnsf-di-container/adapters/slurm-apptainer/templates/ndnsf-di.sbatch.in",
+      "target": "Experiments/TigerCluster/adapters/slurm-apptainer/templates/ndnsf-di.sbatch.in",
+      "sha256": "0decd888b55c81c49fdb860f6873b1d3cc1cdb497714db4840ab535c03854fcd",
+      "mode": 436
+    },
+    {
+      "source": "packaging/ndnsf-di-container/adapters/slurm-apptainer/templates/ndnsf-qwen.sbatch.in",
+      "target": "Experiments/TigerCluster/adapters/slurm-apptainer/templates/ndnsf-qwen.sbatch.in",
+      "sha256": "0f352e196dcb525a94b0045d0e5bfc15a9aa37ad2d736e9f62e91ed33f0b9bc7",
+      "mode": 436
+    },
+    {
+      "source": "packaging/ndnsf-di-container/adapters/slurm-apptainer/templates/nfd.conf.in",
+      "target": "Experiments/TigerCluster/adapters/slurm-apptainer/templates/nfd.conf.in",
+      "sha256": "bd657e4dde09fe13c6dd7fbb822f2129ab33a0dbe35e4e7b69a1627aa3531223",
+      "mode": 436
+    },
+    {
+      "source": "packaging/ndnsf-di-container/adapters/slurm-apptainer/templates/process-map.yaml.in",
+      "target": "Experiments/TigerCluster/adapters/slurm-apptainer/templates/process-map.yaml.in",
+      "sha256": "2379f0cabd4a07e537cc8a7358db2aac539c0b0c6b46370ae9416ae661541191",
+      "mode": 436
+    },
+    {
+      "source": "packaging/ndnsf-di-container/adapters/slurm-apptainer/templates/qwen-oracle.sbatch.in",
+      "target": "Experiments/TigerCluster/adapters/slurm-apptainer/templates/qwen-oracle.sbatch.in",
+      "sha256": "6f85bbbede6d34e654fbb25a24bb7ae95a4ada00fc3990f4023e626529ef2987",
+      "mode": 436
+    },
+    {
+      "source": "packaging/ndnsf-di-container/adapters/slurm-apptainer/templates/qwen-staged-baseline.sbatch.in",
+      "target": "Experiments/TigerCluster/adapters/slurm-apptainer/templates/qwen-staged-baseline.sbatch.in",
+      "sha256": "e3b264037e9711e7c56c3d8bd1fffbe0a386ef90417df5686d6e01db1c7a865b",
+      "mode": 436
+    },
+    {
+      "source": "packaging/ndnsf-di-container/adapters/slurm-apptainer/templates/qwen-transfer.sbatch.in",
+      "target": "Experiments/TigerCluster/adapters/slurm-apptainer/templates/qwen-transfer.sbatch.in",
+      "sha256": "4e4ab7b2b0ff5876553d167ded44984db0abf85ccedca19fefc98450cf3a7be8",
+      "mode": 436
+    },
+    {
+      "source": "packaging/ndnsf-di-container/adapters/slurm-apptainer/templates/rootless-build.sbatch.in",
+      "target": "Experiments/TigerCluster/adapters/slurm-apptainer/templates/rootless-build.sbatch.in",
+      "sha256": "82525fe0c92362ccc620e1dabd21c29175e4bdf811abe859ae4d954706ed6ef0",
+      "mode": 436
+    },
+    {
+      "source": "packaging/ndnsf-di-container/jobs/spec175/diagnose-multiprovider.sbatch",
+      "target": "Experiments/TigerCluster/jobs/spec175/diagnose-multiprovider.sbatch",
+      "sha256": "7b8bf93560dffa36ec482203b8dccec8ec574898032656c932e14d6fd3faeb0e",
+      "mode": 509
+    },
+    {
+      "source": "packaging/ndnsf-di-container/jobs/spec175/proven-tiger-profile.json",
+      "target": "Experiments/TigerCluster/jobs/spec175/proven-tiger-profile.json",
+      "sha256": "41eb812bab4e676fd9e396407b922000eba20b48f8b4bc233d0fae6b706d7f5b",
+      "mode": 436
+    },
+    {
+      "source": "packaging/ndnsf-di-container/jobs/spec175/qualify-control.sbatch",
+      "target": "Experiments/TigerCluster/jobs/spec175/qualify-control.sbatch",
+      "sha256": "574c84a53c53535ce8e2b777b878ce7bc39aee0a61b8725180aa3db4614532fe",
+      "mode": 509
+    },
+    {
+      "source": "packaging/ndnsf-di-container/jobs/spec175/qualify-conversation-residency.sbatch",
+      "target": "Experiments/TigerCluster/jobs/spec175/qualify-conversation-residency.sbatch",
+      "sha256": "fa05d835f190abe8cf69cf7e297d12aa4bdffc3b32ada54a39d7036261fd61aa",
+      "mode": 509
+    },
+    {
+      "source": "packaging/ndnsf-di-container/jobs/spec175/qualify-multiprovider.sbatch",
+      "target": "Experiments/TigerCluster/jobs/spec175/qualify-multiprovider.sbatch",
+      "sha256": "6930af9950f6bffc1f7b14c56798837928c1f91d9b2d257c90220c730a6c109d",
+      "mode": 509
+    },
+    {
+      "source": "packaging/ndnsf-di-container/jobs/spec175/qualify-performance.sbatch",
+      "target": "Experiments/TigerCluster/jobs/spec175/qualify-performance.sbatch",
+      "sha256": "0f64e9fed47d6258abe2a65c45ac794c41b6fb583fc56702e3693ea281d0581c",
+      "mode": 509
+    },
+    {
+      "source": "packaging/ndnsf-di-container/jobs/spec175/qualify-stage-readiness.sbatch",
+      "target": "Experiments/TigerCluster/jobs/spec175/qualify-stage-readiness.sbatch",
+      "sha256": "da8c8ef5c8d83508aea961036913af048903e4edc1c9a1b60634606b542adf1f",
+      "mode": 509
+    },
+    {
+      "source": "packaging/ndnsf-di-container/jobs/spec175/replay-exact-sif.py",
+      "target": "Experiments/TigerCluster/jobs/spec175/replay-exact-sif.py",
+      "sha256": "b92c156fb95dda44b0021a66946cb65243ea6e1984b2d8fcd687f2215c0055ea",
+      "mode": 509
+    },
+    {
+      "source": "packaging/ndnsf-di-container/jobs/spec175/run-streamed-generation.sh",
+      "target": "Experiments/TigerCluster/jobs/spec175/run-streamed-generation.sh",
+      "sha256": "a68e896d2b2f0f208d08dc71c3843528b9d3d96ddf2cad9ae0e0fdf600de2930",
+      "mode": 509
+    },
+    {
+      "source": "packaging/ndnsf-di-container/jobs/spec175/submit-diagnostic-multiprovider.sh",
+      "target": "Experiments/TigerCluster/jobs/spec175/submit-diagnostic-multiprovider.sh",
+      "sha256": "6ace0a8c82859947c4eff43e2d3692a4eb2a1b6d73e3618e19233ee73c464cb0",
+      "mode": 509
+    },
+    {
+      "source": "packaging/ndnsf-di-container/jobs/spec175/submit.sh",
+      "target": "Experiments/TigerCluster/jobs/spec175/submit.sh",
+      "sha256": "3c3a2b98c516fbd8720f54ac69c78fbe2c9c67494c499629a5d2df781335f839",
+      "mode": 493
+    },
+    {
+      "source": "packaging/ndnsf-di-container/jobs/spec175/submit_profile.py",
+      "target": "Experiments/TigerCluster/jobs/spec175/submit_profile.py",
+      "sha256": "a984bdb5ba76eabc90840ce0e87ed6cabbc79f0073bc068e9aa49c17ce9f6c37",
+      "mode": 493
+    },
+    {
+      "source": "packaging/ndnsf-di-container/jobs/spec175/workload.json",
+      "target": "Experiments/TigerCluster/jobs/spec175/workload.json",
+      "sha256": "420299721682c76ae6538e05583a9f891fb05be3264cf56d635a278b771aa90d",
+      "mode": 436
+    },
+    {
+      "source": "packaging/ndnsf-di-container/jobs/spec180/bootstrap-tiger-identities.sh",
+      "target": "Experiments/TigerCluster/jobs/spec180/bootstrap-tiger-identities.sh",
+      "sha256": "1bca35a4623c3a0f059d8e0d237de022f407a21c33b2a04b475f5785d2613632",
+      "mode": 509
+    },
+    {
+      "source": "packaging/ndnsf-di-container/jobs/spec180/collect_spec180_result.py",
+      "target": "Experiments/TigerCluster/jobs/spec180/collect_spec180_result.py",
+      "sha256": "a5a38bdf7825cd99c5cca65100699548a8652241dca79d286197d238949f6c02",
+      "mode": 436
+    },
+    {
+      "source": "packaging/ndnsf-di-container/jobs/spec180/profile.json",
+      "target": "Experiments/TigerCluster/jobs/spec180/profile.json",
+      "sha256": "0bb356f2734557d0200ea4cc6506bdee0a148907df791aac26601abb093b7282",
+      "mode": 436
+    },
+    {
+      "source": "packaging/ndnsf-di-container/jobs/spec180/qwen-functional.sbatch",
+      "target": "Experiments/TigerCluster/jobs/spec180/qwen-functional.sbatch",
+      "sha256": "8b03367f0533fa3850eb5325156a678591e85ac2055dc73cb35b028f39dc81d8",
+      "mode": 509
+    },
+    {
+      "source": "packaging/ndnsf-di-container/jobs/spec180/render-tiger-yb-args.py",
+      "target": "Experiments/TigerCluster/jobs/spec180/render-tiger-yb-args.py",
+      "sha256": "1fcc1c8fbf935cb4dcaca7066f018c163633bd5a0669465f0b042a8d63f54a40",
+      "mode": 436
+    },
+    {
+      "source": "packaging/ndnsf-di-container/jobs/spec180/replay-exact-sif.py",
+      "target": "Experiments/TigerCluster/jobs/spec180/replay-exact-sif.py",
+      "sha256": "d9e20c275d6c60bce17b28ca3650446b74313a91306af6a091104471e8345fc9",
+      "mode": 436
+    },
+    {
+      "source": "packaging/ndnsf-di-container/jobs/spec180/run-functional.sh",
+      "target": "Experiments/TigerCluster/jobs/spec180/run-functional.sh",
+      "sha256": "3c1ae8f50956b3ecf28f38e7d26a807363825c58e5d43dfd274f87e61e53e7c1",
+      "mode": 509
+    },
+    {
+      "source": "packaging/ndnsf-di-container/jobs/spec180/run-ndnsf-yolo.sh",
+      "target": "Experiments/TigerCluster/jobs/spec180/run-ndnsf-yolo.sh",
+      "sha256": "cd2daf1ef90f17d402ae831bc2339954c5dac5441c75053f2d569484743d5679",
+      "mode": 509
+    },
+    {
+      "source": "packaging/ndnsf-di-container/jobs/spec180/submit.sh",
+      "target": "Experiments/TigerCluster/jobs/spec180/submit.sh",
+      "sha256": "c16f28bb89e67e8e5e7b79efcba6f0f1c81699fde2a990bf74b8ad1adf98f2f7",
+      "mode": 509
+    },
+    {
+      "source": "packaging/ndnsf-di-container/jobs/spec180/supervise-tiger.py",
+      "target": "Experiments/TigerCluster/jobs/spec180/supervise-tiger.py",
+      "sha256": "68ceb75797f051cc744705ac9f7fa48f5159a467aea45974e5f31f9de462ded9",
+      "mode": 436
+    },
+    {
+      "source": "packaging/ndnsf-di-container/jobs/spec180/yolo-functional.sbatch",
+      "target": "Experiments/TigerCluster/jobs/spec180/yolo-functional.sbatch",
+      "sha256": "7b043a2c39192a8c2c1e6fa857c8989c8fe8025ef268157c077e9945b04484fd",
+      "mode": 509
+    },
+    {
+      "source": "packaging/ndnsf-di-container/docs/itiger-qwen-models.md",
+      "target": "Experiments/TigerCluster/docs/itiger-qwen-models.md",
+      "sha256": "dfdf1a285d6627771a4929f34fb46466d03c3c4e591625828984d9c567d6f8a1",
+      "mode": 436
+    },
+    {
+      "source": "packaging/ndnsf-di-container/docs/itiger-qwen-evidence.md",
+      "target": "Experiments/TigerCluster/docs/itiger-qwen-evidence.md",
+      "sha256": "1b4fd6df2c1415e236765092a9bdb3084a228a778f2619e3746e1928aacb3d06",
+      "mode": 436
+    }
+  ],
+  "shared": [
+    {
+      "path": "packaging/ndnsf-di-container/lib",
+      "owner": "shared container runtime",
+      "access": "Experiments/TigerCluster/lib compatibility link; implementation remains in packaging"
+    },
+    {
+      "path": "packaging/ndnsf-di-container/bin",
+      "owner": "shared operator CLI",
+      "access": "Experiments/TigerCluster/bin compatibility link; implementation remains in packaging"
+    },
+    {
+      "path": "packaging/ndnsf-di-container/oci",
+      "owner": "shared/historical image construction",
+      "access": "reference only"
+    },
+    {
+      "path": "packaging/ndnsf-di-container/adapters/docker-compose",
+      "owner": "cloud deployment",
+      "access": "unchanged"
+    },
+    {
+      "path": "scripts/spec180_candidate.py, scripts/spec180_release.py, scripts/spec180_contract_gate.py",
+      "owner": "shared local qualification and release",
+      "access": "invoked by Tiger jobs, unchanged"
+    },
+    {
+      "path": "scripts/spec180_native_build.py, scripts/spec180_inventory.py",
+      "owner": "local development and qualification",
+      "access": "unchanged"
+    },
+    {
+      "path": "specs/*/evidence",
+      "owner": "historical evidence",
+      "access": "unchanged"
+    },
+    {
+      "path": "NDNSF-DistributedInference, ndn-service-framework",
+      "owner": "production runtime and current merge review",
+      "access": "unchanged"
+    }
+  ]
+}

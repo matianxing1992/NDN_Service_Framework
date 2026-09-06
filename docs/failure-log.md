@@ -19,6 +19,14 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Tiger directory migration unit R1 (2026-09-06): 50 PASS / 1 FAIL.**
+The supervisor no-result unit expects TERMINAL_RESULT_MISSING but receives
+CollectionError from the collector that now runs first. All 64 moved files
+retain their original bytes and modes. The same named test with identical
+bytes in a separate physical pre-migration layout reproduces the same failure;
+this remains a baseline tool/test issue, not a relocation regression.
+No SIF or Tiger execution occurred. See [migration evidence](../specs/182-native-di-python-bindings/evidence/tiger-directory-migration-20260906.md).
+
 **Spec181 T008 exporter adoption R1 (2026-09-06): focused PASS.**
 The isolated exporter/adapter/numerical run passes 41 checks with no skips.
 Explicit checkpoint input, actual 32/640 ONNX export, registered signatures,
