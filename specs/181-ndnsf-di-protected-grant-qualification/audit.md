@@ -7,7 +7,12 @@ local gate 提交/源码身份修复为 `2628e3d2`。最终审计对象为
 `6b9bb51c43a597bf36ca62f304fee5f71c17fa58` 的隔离源码和 R13 runtime；
 `8c231493` 仅补记证据，主工作区其余预存改动不在该审计对象内。
 **Layer**: proposed / implemented / wired / executed（限定在各记录的检查范围）。
-**Verdict**: **PASS**（R12 subcase epoch consistency re-audited）。
+**Verdict**: **PASS**（R13 canonical binding/assembly closure re-audited）。
+R13 暂停后在隔离源码闭合 canonical binding、公共发布 consumer
+及 CPU component/external-initializer 装配依赖，40 项检查 PASS
+（12.91 s），含真实 C++/Python 固定装配 parity。实际签名 YOLO
+两候选的 describe/recipe/publication port probe PASS。未纳入
+executor 的预存 CUDA 选择改动；该边界复审 PASS，提交后恢复矩阵。
 R12 的 runner 修复使 child epoch 与 publication/process specs
 共用本子用例选定的 runtime 输入；117 项 runner/matrix/grant seam
 回归 PASS（3.99 s）。七种明文控制、Y-B 和三种 Y-N-E 配置均验证，

@@ -19,6 +19,51 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 canonical binding/assembly repair R6 (2026-09-06): focused PASS.**
+The isolated Waf parity target builds successfully; all 40 canonical,
+candidate and actual C++/Python assembly checks pass (12.91 s). Actual YOLO
+two-candidate binding, recipe and publication-port checks pass as well.
+Affected convergence review PASS. Commit only the tested shared CPU unit,
+then resume a fresh formal matrix. See
+[formal matrix](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-formal-matrix-20260906.md#canonical-binding-and-assembly-repair-r6).
+
+**Spec181 canonical assembly R5 (2026-09-06): BLOCK at focused harness inputs.**
+Thirty-two Python checks pass. Eight native checks lack the required parity
+binary; the extended recipe probe incorrectly includes the non-ONNX Merge
+role in its graph assertion. Correct those focused harness inputs before
+further validation; no network attempt was made. See
+[formal matrix](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-formal-matrix-20260906.md#canonical-assembly-boundary-r5).
+
+**Spec181 canonical recipe R4 (2026-09-06): BLOCK after binding repair.**
+R3 actual binding/publication and 24 focused checks pass. Extending the probe
+through real role certification reveals that the committed recipe rejects
+COMPONENT_SET zero intervals. Add the reviewed component/external-initializer
+assembly changes to this source unit; retain unrelated CUDA provider selection
+outside the unit. See [formal matrix](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-formal-matrix-20260906.md#canonical-binding-repair-r3-and-recipe-boundary-r4).
+
+**Spec181 canonical-binding regression R2 (2026-09-06): RED reproduced.**
+With the complete Python path and private offline NDN environment, actual
+YOLO describe reproduces the missing canonical_graph_digest TypeError.
+Proceed with the reviewed shared dependency unit and focused checks. See
+[formal matrix](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-formal-matrix-20260906.md#canonical-binding-regression-r2).
+
+**Spec181 canonical-binding regression R1 (2026-09-06): BLOCK at probe import.**
+The isolated probe lacks the Repo Python path and stops at SDK import before
+the binding constructor. Complete the explicit Python/private NDN environment
+for the next focused run. The source/reference contract,
+shared deployment consumer and their tests form the reviewed dependency unit.
+Validate that unit plus actual two-candidate publication before re-auditing.
+See [formal matrix](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-formal-matrix-20260906.md#canonical-binding-regression-r1).
+
+**Spec181 T005 formal R13 (2026-09-06): BLOCK at canonical artifact binding closure.**
+The epoch repair permits the User to request a V3 task. YOLO describe passes
+canonical_graph_digest to the committed CanonicalArtifactBinding, whose
+dataclass lacks that field. The working tree contains the shared canonical
+reference extension, while the isolated commit omits it. Review and validate
+the complete binding/publication dependency before another run; all NFDs
+exited and source/input identities stayed unchanged. See
+[formal matrix](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-formal-matrix-20260906.md#canonical-binding-boundary-r13).
+
 **Spec181 subcase-epoch repair R2 (2026-09-06): focused PASS.**
 All 117 runner/matrix/grant seam checks pass (3.99 s). Child epoch now matches
 the publication/Provider runtime inputs; the protected Y-B and all three

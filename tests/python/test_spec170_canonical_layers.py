@@ -67,6 +67,27 @@ def _metadata():
 
 
 class Spec170CanonicalLayersTest(unittest.TestCase):
+    def test_binding_keeps_planning_and_canonical_graph_identities_distinct(self):
+        from dataclasses import replace
+        from ndnsf_distributed_inference.app_sdk.canonical_artifacts import CanonicalArtifactBinding
+        binding = CanonicalArtifactBinding(
+            model_manifest_digest=M, artifact_profile_digest=R, graph_digest=G,
+            canonical_initializer_digest=M, adapter_descriptor_digest=R,
+            assembler_descriptor_digest=M, backend_abi="onnxruntime-cpu-v1",
+            canonical_source_bytes=128)
+        self.assertEqual(binding.canonical_graph_digest, "")
+        canonical = replace(binding, canonical_graph_digest=R)
+        self.assertEqual(canonical.graph_digest, G)
+        self.assertEqual(canonical.canonical_graph_digest, R)
+        with self.assertRaisesRegex(ValueError, "canonical_graph_digest"):
+            replace(binding, canonical_graph_digest="invalid")
+        with self.assertRaises(ValueError):
+            replace(binding, canonical_initializer_data_name="/weights")
+        complete = replace(binding, canonical_initializer_data_name="/weights",
+                           canonical_initializer_object_digest=M,
+                           canonical_initializer_bytes=64)
+        self.assertEqual(complete.canonical_initializer_bytes, 64)
+
     def test_onnx_identity_ignores_file_and_initializer_packing_order(self):
         import numpy as np
         import onnx
@@ -283,6 +304,138 @@ class Spec170CanonicalLayersTest(unittest.TestCase):
         self.assertNotEqual(first.candidate_digest, second.candidate_digest)
         self.assertEqual(first.artifact_data_names_by_role,
                          second.artifact_data_names_by_role)
+
+    def test_spec175_source_reference_is_strict_and_published_before_root(self):
+        model = _identity()
+        profile = _profile()
+        layer_payload = b"canonical-layer"
+        source_payload = b"complete-canonical-onnx"
+        source_name = "/publisher/NDNSF-DI/SOURCE/Qwen3-0.6B/v1"
+        manifest = canonical_layer_manifest(
+            model_name="Qwen/Qwen3-0.6B", model_digest=model.digest,
+            profile=profile.digest, graph_digest=G, role_kind="pipeline",
+            layer_begin=0, layer_end=2, rank=0, recipe_digest=R,
+            payload=layer_payload, publisher="/publisher",
+            model_identity=model, artifact_profile=profile)
+        catalog = CanonicalLayerCatalog()
+        catalog.publish_layer(manifest, layer_payload)
+        catalog.activate_model(
+            model_name="Qwen/Qwen3-0.6B", model_identity=model,
+            artifact_profile=profile,
+            origin_attestation="origin:" + model.digest,
+            transformation_attestation="transform:" + profile.digest,
+            activation_epoch="epoch-1", signer="/publisher",
+            signature="signed-root", metadata=_metadata(),
+            canonical_source_data_name=source_name,
+            canonical_source_digest=_digest(source_payload),
+            canonical_source_bytes=len(source_payload),
+            verify_origin=lambda identity, value: identity.digest in value,
+            verify_transformation=lambda identity, selected, value:
+                selected.digest in value,
+            verify_signature=lambda wire, signature, signer: True)
+        calls = []
+
+        def publish_object(**kwargs):
+            calls.append(kwargs)
+            return kwargs["name"]
+
+        ensurer = CanonicalCatalogEnsurer(
+            catalog, publish_object, publisher="/publisher",
+            require_canonical_source=True,
+            canonical_source_payload=source_payload)
+        binding = ensurer.describe()
+        self.assertEqual(binding.canonical_source_data_name, source_name)
+        self.assertEqual(binding.canonical_source_digest, _digest(source_payload))
+        role = SimpleNamespace(
+            role="stage", rank=0, role_kind="PIPELINE_RANGE",
+            layer_begin=0, layer_end=2, artifact_digest=_digest(b"assembly"))
+        ensurer.ensure(
+            SimpleNamespace(candidate_digest=_digest(b"placement")), (role,),
+            deadline_ms=2**62)
+        self.assertEqual(calls[0]["name"], source_name)
+        self.assertEqual(calls[0]["payload"], source_payload)
+        self.assertEqual(calls[-1]["name"], catalog.active_manifest.name)
+
+    def test_spec175_strict_ensurer_rejects_legacy_root_without_source(self):
+        model = _identity()
+        profile = _profile()
+        payload = b"canonical-layer"
+        manifest = canonical_layer_manifest(
+            model_name="Qwen/Qwen3-0.6B", model_digest=model.digest,
+            profile=profile.digest, graph_digest=G, role_kind="pipeline",
+            layer_begin=0, layer_end=2, rank=0, recipe_digest=R,
+            payload=payload, publisher="/publisher",
+            model_identity=model, artifact_profile=profile)
+        catalog = CanonicalLayerCatalog()
+        catalog.publish_layer(manifest, payload)
+        catalog.activate_model(
+            model_name="Qwen/Qwen3-0.6B", model_identity=model,
+            artifact_profile=profile,
+            origin_attestation="origin:" + model.digest,
+            transformation_attestation="transform:" + profile.digest,
+            activation_epoch="epoch-1", signer="/publisher",
+            signature="signed-root", metadata=_metadata(),
+            verify_origin=lambda identity, value: identity.digest in value,
+            verify_transformation=lambda identity, selected, value: True,
+            verify_signature=lambda wire, signature, signer: True)
+        with self.assertRaisesRegex(ValueError, "canonical source reference"):
+            CanonicalCatalogEnsurer(
+                catalog, lambda **kwargs: kwargs["name"],
+                publisher="/publisher", require_canonical_source=True).describe()
+
+    def test_spec180_external_initializer_root_is_bound_and_published(self):
+        model = _identity()
+        profile = _profile()
+        layer_payload = b"canonical-layer"
+        initializer_payload = b"external-initializer"
+        initializer_name = "/publisher/NDNSF-DI/SOURCE/YOLO26n/v1/weights"
+        manifest = canonical_layer_manifest(
+            model_name="YOLO26n", model_digest=model.digest,
+            profile=profile.digest, graph_digest=G, role_kind="component",
+            layer_begin=0, layer_end=1, rank=0, recipe_digest=R,
+            payload=layer_payload, publisher="/publisher",
+            model_identity=model, artifact_profile=profile)
+        catalog = CanonicalLayerCatalog()
+        catalog.publish_layer(manifest, layer_payload)
+        catalog.activate_model(
+            model_name="YOLO26n", model_identity=model,
+            artifact_profile=profile,
+            origin_attestation="origin:" + model.digest,
+            transformation_attestation="transform:" + profile.digest,
+            activation_epoch="epoch-1", signer="/publisher",
+            signature="signed-root", metadata=_metadata(),
+            canonical_initializer_data_name=initializer_name,
+            canonical_initializer_object_digest=_digest(initializer_payload),
+            canonical_initializer_bytes=len(initializer_payload),
+            verify_origin=lambda identity, value: identity.digest in value,
+            verify_transformation=lambda identity, selected, value:
+                selected.digest in value,
+            verify_signature=lambda wire, signature, signer: True)
+        calls = []
+
+        def publish_object(**kwargs):
+            calls.append(kwargs)
+            return kwargs["name"]
+
+        ensurer = CanonicalCatalogEnsurer(
+            catalog, publish_object, publisher="/publisher",
+            canonical_initializer_payload=initializer_payload)
+        binding = ensurer.describe()
+        self.assertEqual(binding.canonical_initializer_data_name,
+                         initializer_name)
+        self.assertEqual(binding.canonical_initializer_object_digest,
+                         _digest(initializer_payload))
+        self.assertEqual(binding.canonical_initializer_bytes,
+                         len(initializer_payload))
+        role = SimpleNamespace(
+            role="FullModel", rank=0, role_kind="COMPONENT_SET",
+            layer_begin=0, layer_end=1, artifact_digest=_digest(b"assembly"))
+        ensurer.ensure(
+            SimpleNamespace(candidate_digest=_digest(b"placement")), (role,),
+            deadline_ms=2**62)
+        self.assertEqual(calls[0]["name"], initializer_name)
+        self.assertEqual(calls[0]["payload"], initializer_payload)
+        self.assertEqual(calls[-1]["name"], catalog.active_manifest.name)
 
 
 if __name__ == "__main__":

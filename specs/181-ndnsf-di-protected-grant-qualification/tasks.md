@@ -18,6 +18,16 @@ Spec 170 `artifact-assembly-v1` 契约。
 
 ## Current Checkpoint (revision 7)
 
+**Latest repair R6 (2026-09-06)**：共享 canonical binding、公共发布
+与 CPU 装配依赖在隔离检出完成验证：40 项检查 PASS（12.91 s），
+含实际 C++/Python parity；真实 YOLO 两候选的配方/发布 port probe
+PASS。T007 受影响项复审 PASS；提交后执行新矩阵。本机仍 6/10。
+
+**Latest attempt R13 (2026-09-06)**：epoch 修复后 User 进入 V3 request，
+YOLO describe 依赖的 canonical binding 字段未纳入提交。A05 暂时
+BLOCK，先验证并纳入共享 canonical 引用依赖；T005 未完成，历史
+验收仍 6/10。
+
 **Latest repair R2 (2026-09-06)**：子用例 epoch 已与 publication/
 process specs 对齐，117 项 runner/matrix/grant seam 回归 PASS
 （3.99 s），T007 受影响项复审 PASS。下一步新提交执行正式矩阵；

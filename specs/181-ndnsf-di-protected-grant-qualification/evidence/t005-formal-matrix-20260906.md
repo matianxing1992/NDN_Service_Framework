@@ -1,6 +1,6 @@
 # Formal Local Y-N Matrix
 
-**Status**: IN_PROGRESS (subcase epoch repair focused PASS; formal matrix pending)
+**Status**: IN_PROGRESS (canonical binding/assembly repair PASS; formal matrix pending)
 **Evidence layer**: implemented / executed (formal network startup and focused regression)
 
 ## Subject and Launch R1
@@ -223,3 +223,73 @@ requester/recipient 配置；父进程环境保持不变。仅修复环境选择
 未改变受保护授权验证、协议 oracle 或自动重试策略。T007 受影响项
 复审 PASS。R12 source/input 前后仍一致，且所有 NFD 已退出。
 下一步以新提交执行新正式矩阵；T005 继续未完成。
+
+## Canonical Binding Boundary R13
+
+源码 `9dd5c62c3883001206f601dbaddf1b08dc751907`；原始目录为
+ignored workspace temporary directory 下 `spec181-t005-formal-20260906-r13/`。
+User 越过 epoch seam 后发起 V3 request，YOLO ensurer.describe 给
+CanonicalArtifactBinding 传 canonical_graph_digest 时 TypeError。
+主工作区 canonical_artifacts.py 的共享字段/引用扩展未进入提交，
+而已提交的 YOLO adapter 与 placement 消费这些字段。CLI exit 2，
+Y-N-O CONTROL_NOT_PROVEN；源码/输入不变，全部 NFD 已退出。
+暂停矩阵、重开 A05，审查绑定与后续 publication 所需依赖，在隔离
+源码先定向验证完整 describe/recipe/publication 路径后再复审。
+
+## Canonical Binding Regression R1
+
+`spec181-binding-closure-20260906-r1/probe.py` 使用同一签名 canonical
+package，在隔离检出直接调用真实 adapter/binding；red.log 首先在
+SDK import 因缺少 Repo Python 路径而失败，尚未复现构造错误。
+下一次补全已验证的显式 Python 路径与私有离线 NDN 环境。
+审查现有 canonical_artifacts.py 变更均为同一 source/initializer
+引用契约与绑定扩展；artifact_deployment.py 及既有 canonical tests
+提供其公共发布/消费 owner 与回归，一起形成可测试的完整依赖单元。
+下一步将该单元映射到隔离源码，验证实际 YOLO 两候选发布及旧调用兼容。
+
+## Canonical Binding Regression R2
+
+补齐 Repo/native Python 路径及私有离线 PIB/TPM/transport 后，
+`spec181-binding-closure-20260906-r2/red.log` 在真实
+YoloCanonicalArtifactBinding.describe 精确复现 R13 的 TypeError。
+未启动网络。现在执行已审查的共享依赖单元投影和定向回归。
+
+## Canonical Binding Repair R3 and Recipe Boundary R4
+
+R3 共享依赖投影的 24 项 canonical/candidate 回归 PASS（1.16 s）；
+真实签名 YOLO 两候选的 describe/三对象 publication probe PASS。
+R4 增加真实 _v3_role_specs → _certify_v3_role_specs 后，发现提交的
+CertifiedOnnxAssemblyRecipe 仍拒绝 COMPONENT_SET 的零 layer interval，
+与已提交 placement 的 node-set 语义不一致。R4 保留独立 probe.py
+及失败日志；R1 probe.py 保持原版。继续 BLOCK，不运行网络。
+现有 executor 修改中，component-set、external initializer 与 shape
+归一化属于当前 canonical assembly 单元；CUDA provider-chain 为
+未纳入的预存实验改动。仅投影前者并跑实际 recipe 与 assembly parity。
+
+## Canonical Assembly Boundary R5
+
+R5 的 Python/reference/candidate 检查 **32 passed**；8 项 native
+parity 因未指定 SPEC181_ASSEMBLY_PARITY_BINARY 失败，当前隔离
+构建未生成该目标，不能把配置缺失记为 parity 拒绝。recipe probe
+已越过原构造错误，但断言把无 ONNX 装配的 Merge 也计入 canonical
+graph 检查；生产明确跳过该角色。下一步改 probe 的角色断言并构建
+实际 native parity 目标，保留 R5 的 8 failed / 32 passed（1.80 s）。
+
+## Canonical Binding and Assembly Repair R6
+
+原始目录 `spec181-binding-closure-20260906-r6/`。隔离源码使用
+既有 Waf `spec181-assembly-parity` 目标，编译/链接 PASS（60.684 s）；
+binary SHA-256 为 `9a3d1842d1407b614ad4c8167d6c4b0b9c921dc85d6ad307de0a68192cd93543`。
+设置 SPEC181_ASSEMBLY_PARITY_BINARY 后，canonical/candidate 与
+固定装配检查 **40 passed（12.91 s）**，包括 8 个 Python 和 8 个
+实际 C++ 入口向量；四种拒绝与正例模型字节/ORT CPU 输出均通过。
+实际签名 YOLO 两候选的 describe → role specs → certification →
+publication port probe 通过；三对象按 graph/initializer/root 发布，
+引用摘要与 source/initializer 绑定，Merge 保留独立 native 语义。
+publication 使用内存测试 port，不声称此 probe 证明网络或加密往返。
+
+提交单元为 canonical_artifacts.py、artifact_deployment.py、
+executor.py 的 component/external-initializer/shape 改动，以及
+canonical tests。其余预存改动（包括 CUDA provider-chain）留在工作区。
+隔离测试字节与选定提交字节逐文件核对；A05 受影响项复审 PASS，
+下一步以新提交恢复正式矩阵。T005 仍未完成。
