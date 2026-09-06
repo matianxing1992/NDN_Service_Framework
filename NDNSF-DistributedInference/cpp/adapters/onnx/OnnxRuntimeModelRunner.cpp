@@ -1491,11 +1491,14 @@ OnnxRuntimeModelRunner::runStreamedImpl(const RoleExecutionContext& ctx)
 void
 registerOnnxRuntimeBackend(RegistryNativeModelRunnerFactory& factory)
 {
-  factory.registerBackend(
-    "onnxruntime",
-    [] (const NativeModelRunnerSpec& spec) -> std::shared_ptr<NativeModelRunner> {
-      return std::make_shared<OnnxRuntimeModelRunner>(spec);
-    });
+  const auto creator = [] (const NativeModelRunnerSpec& spec) {
+    return std::make_shared<OnnxRuntimeModelRunner>(spec);
+  };
+  // Keep the public adapter backend names distinct from the internal
+  // execution-provider selection stored in runner metadata.
+  factory.registerBackend("onnxruntime", creator);
+  factory.registerBackend("onnxruntime-cpu", creator);
+  factory.registerBackend("onnxruntime-cuda", creator);
 }
 
 const std::optional<ExecutionEvidence>&
@@ -1554,11 +1557,14 @@ OnnxRuntimeModelRunner::runStreamedImpl(const RoleExecutionContext&)
 void
 registerOnnxRuntimeBackend(RegistryNativeModelRunnerFactory& factory)
 {
-  factory.registerBackend(
-    "onnxruntime",
-    [] (const NativeModelRunnerSpec& spec) -> std::shared_ptr<NativeModelRunner> {
-      return std::make_shared<OnnxRuntimeModelRunner>(spec);
-    });
+  const auto creator = [] (const NativeModelRunnerSpec& spec) {
+    return std::make_shared<OnnxRuntimeModelRunner>(spec);
+  };
+  // Keep the public adapter backend names distinct from the internal
+  // execution-provider selection stored in runner metadata.
+  factory.registerBackend("onnxruntime", creator);
+  factory.registerBackend("onnxruntime-cpu", creator);
+  factory.registerBackend("onnxruntime-cuda", creator);
 }
 
 } // namespace ndnsf::di
