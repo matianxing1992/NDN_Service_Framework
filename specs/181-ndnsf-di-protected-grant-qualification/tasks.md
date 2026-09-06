@@ -19,13 +19,13 @@ Spec 170 `artifact-assembly-v1` 契约。
 ## Current Checkpoint (revision 6)
 
 **Status**: `IN_PROGRESS / BLOCK`。2026-09-05 初次复核恢复未完成标记；
-T001/T003/T004/T006 的定向验收已闭合并勾选。其余任务仍按完整验收判断，
+T001/T002/T003/T004/T006 的任务验收已闭合并勾选（5/12）。其余任务仍按完整验收判断，
 未勾选不抹去已实现的代码与 unit 结果。
 
 | Task | Implemented / executed | Remaining acceptance |
 |---|---|---|
 | T001 | PASS：真实发布/消费与受保护装配、全部绑定、inline/external 清理及请求/排队生命周期；最终 151 项定向回归、6 个真实进程用例 PASS，见 [请求生命周期与完成审查](evidence/t001-request-lifecycle-20260905.md) | 本任务验收完成；正式 MiniNDN 归 T005/T008 |
-| T002 | native Ed25519/P-256 正负链、进程集成与 EC 泄漏修复 PASS；公共准备/adapter 收口 12 cases / 76 assertions、统一构建及隔离 P-256 控制 PASS，见 [公共准备闭包](evidence/t002-shared-preparation-20260905.md) | 汇总全部验收和提交边界后作任务完成裁决；T007 generation worker 边界仍待修复 |
+| T002 | PASS：真实 native grant 正负链、资源/请求生命周期、公共准备与 adapter、handler 接线均闭合；追加生成接口修复后 48 cases / 366 assertions PASS，见 [完整验收映射](evidence/t002-acceptance-20260905.md) | 本任务验收完成；新源统一 manifest 刷新与正式同源资格归后续门 |
 | T003 | PASS：3 项 grant parity 检查消费 9 个向量；8 个装配向量分别走 Python/C++ 生产入口，16 项检查通过，含实际 ORT CPU 结果和 initializer/recipe/ABI 拒绝，见 [装配证据](evidence/t003-assembly-parity-20260905.md) | 本任务定向验收已闭合；native 格式操作共用生产 Python helper，后续同源资格仍归 T005/T008 |
 | T004 | PASS：7 项 Python seam、6 项 Core 定向检查；重建后真实 Provider 等待约 83 ms、Controller 12.39 s 就绪、等待中取消约 2.3 ms 且无热转；全部线程/网络清理，见 [生命周期证据](evidence/t004-lifecycle-acceptance-20260905.md) | 本任务定向验收已闭合；后续同源正式资格仍归 T005/T008 |
 | T005 | 已停用旧自动重试入口，维护矩阵首个失败即停止并保留原始结果；118 项定向检查 PASS，见 [证据保留修复](evidence/t005-evidence-repair-20260905.md) | T007 PASS 后同源七子用例矩阵，保留所有失败 |
@@ -34,7 +34,10 @@ T001/T003/T004/T006 的定向验收已闭合并勾选。其余任务仍按完整
 | T008 | native 受保护 Y-B 定向正向控制已有证据 | T007 PASS 后执行同源本地资格清单与 Y-A/Y-B/Y-N 正式矩阵 |
 | T009--T012 | 继承工具链 | 本 Spec 候选、SIF、Tiger、终局均未闭合 |
 
-**Latest progress (2026-09-05)**：T001/T003/T004/T006 已完成（4/12 个 T 任务）。
+**Latest progress (2026-09-05)**：T001/T002/T003/T004/T006 已完成（5/12 个 T 任务）。
+T002 完成裁决见 [验收映射](evidence/t002-acceptance-20260905.md)；
+G0 已闭合，当前进入 G1/T007 剩余源码/配置与证据收敛审查。
+下列较早的 4/12 与 partial 记载保留为修复过程，不覆盖本检查点。
 三种 grant 变异完成实际发布、Provider 拒绝与身份绑定；有效 grant
 仍完成 native Y-B 推理。正向控制发现并修复冷装配期间的固定 10 s
 依赖等待上界，改用调用者请求预算且保留硬截止/取消。所有失败保留，
@@ -165,7 +168,7 @@ T 任务完成定向修复；在生产验收前保持失败关闭，并禁止晋
   unavailable 记录不进入 PASS 计数）。吸收关系：T006 落地后删除
   UNAVAILABLE 路径，由真实变异拒绝取代。
 
-- **R002 Native Runtime Fail-closed Guard**（existing；T002 负责吸收）。在真实 grant 获取/
+- **R002 Native Runtime Fail-closed Guard**（absorbed；T002 验收完成，以下保留先行门原要求）。在真实 grant 获取/
   解包（T002 实现）之前，native Provider 对非 `plaintext-v1` 纪元
   赋值必须失败关闭并给出明确错误（`DI_PROTECTED_GRANT_UNAVAILABLE`），
   禁止仅凭绑定比对进入 `GrantVerified` 状态；现有绑定比对函数明确
@@ -232,7 +235,7 @@ T 任务完成定向修复；在生产验收前保持失败关闭，并禁止晋
   必须新增真实进程测试 `tests/python/test_spec181_provider_grant_integration.py`，
   现有注入 fetch 的测试不满足 integration。
 
-- [ ] T002 [US1] **Native Provider Grant Runtime**。
+- [x] T002 [US1] **Native Provider Grant Runtime**。
   `NativeProviderHandler`/`ProtectedRuntime` 增加规范名精确获取、
   权威签名/绑定/过期校验与 KeyChain 解包（信封算法按收件人密钥
   类型：Ed25519 → X25519 转换、EC → ECDH-P256，与 Python 信封

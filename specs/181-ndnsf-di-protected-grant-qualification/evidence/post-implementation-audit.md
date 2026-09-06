@@ -1,6 +1,6 @@
 # Post-implementation Audit Record
 
-**Date**: 2026-09-05 | **Revision**: 5 | **Status**: BLOCK
+**Date**: 2026-09-05 | **Revision**: 6 | **Status**: BLOCK
 **Layer**: proposed + implemented + executed（定向 unit）；无 qualified 声明。
 
 本轮完整发现、逐原则裁决、源码行号、测试边界与执行次序集中在
@@ -12,5 +12,11 @@ RED 1 failed / GREEN 34 passed，见
 设计与进度修正随本记录的文档 checkpoint 提交。
 
 原 `CONDITIONAL PASS / no HIGH` 结论已被源码核查推翻。
-T007 仍未完成；native wiring、前置授权/清理、真实 Provider 变异、
-同源矩阵与装配 parity 等控制性问题未闭合。本记录不授权后续资格执行。
+G0 的 T001/T002/T003/T004/T006 已完成（5/12），包括 native wiring、
+前置授权/清理、真实 Provider 变异和装配 parity；见
+[T002 acceptance](t002-acceptance-20260905.md)。公共准备与 generation
+worker 收口提交为 `0a3a79c3`、`cf15fa0c`。
+
+T007 仍待剩余源码/配置闭包、完整证据清单及逐原则收敛裁决；正式
+同源矩阵是其 PASS 后的 T005/T008 工作，不能反过来充当 T007 前提。
+本记录不授权后续资格执行。

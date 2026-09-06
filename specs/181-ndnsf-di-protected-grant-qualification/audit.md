@@ -1,8 +1,8 @@
 # Spec181 Design-code Convergence Audit
 
 **Date**: 2026-09-05 | **Revision**: 6 | **Task**: T007
-**Source identity**: 初审基线 `67194dc2`；当前检查点 `0a3a79c3`
-与本轮 generation worker 修复差异。历史运行仅对应各自证据中的源/构建。
+**Source identity**: 初审基线 `67194dc2`；当前公共准备/worker 检查点
+`0a3a79c3`、`cf15fa0c`。历史运行仅对应各自证据中的源/构建。
 **Layer**: proposed（设计）+ implemented（源码核查）+ executed（定向 unit / live control）。
 **Verdict**: **BLOCK**。本审查取代旧 `CONDITIONAL PASS / no HIGH` 结论。
 
@@ -15,7 +15,7 @@ R = `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py`。行号对应本轮源码�
 
 | ID | Severity | Location | Finding and evidence boundary | Disposition / closing action |
 |---|---|---|---|---|
-| A01 | HIGH | N/ProtectedRuntime.cpp；N/NativeProviderHandler.cpp；R；evidence/t002-shared-preparation-20260905.md | 初审发现 runtime 无条件拒绝、缺 factory、保护 Y-B 使用 Python Provider。native Ed25519/P-256 正负链、helper 生命周期、进程集成和 ASAN 已有证据；worker 授权、公共准备/adapter 与 handler 接线已收口，统一构建及新隔离 P-256 控制 PASS。 | PARTIAL — 待汇总 T002 全部验收与提交边界；独立的 generation worker 缺口见 A11。 |
+| A01 | HIGH | N/ProtectedRuntime.cpp；N/NativeProviderHandler.cpp；R；evidence/t002-acceptance-20260905.md | 初审发现 runtime 无条件拒绝、缺 factory、保护 Y-B 使用 Python Provider。native Ed25519/P-256 正负链、helper 生命周期、进程集成和 ASAN 已有证据；worker 授权、公共准备/adapter 与 handler 接线已收口，统一构建及新隔离 P-256 控制 PASS。 | CLOSED — T002 unit/integration 与 FR-015 验收完成；正式同源资格仍归 T005/T008，generation worker 修复见 A11。 |
 | A02 | HIGH | P；evidence/t001-request-lifecycle-20260905.md | 授权顺序、独立模型/策略绑定、实际磁盘读取与两类明文清理已修复。12 项失败回归定位请求取消/截止漏检，4 项失败回归定位策略快照替换；修复覆盖准备及实际 worker 排队后的重新校验。 | CLOSED — T001 逐项验收 PASS：最终 151 项定向回归、6 个真实 Python 进程用例；inline/external、成功/异常/取消/过期均有检查。 |
 | A03 | HIGH | P:1445；tests/python/test_spec181_provider_grant.py:445 | 原实现未核对 Selection grant 摘要，权威另签的同上下文 grant 可替换选中密钥。新回归实测 `ProtectedGrantRejected not raised`。 | CLOSED — `ff7b5c3b` 增加封印摘要比对；RED 1 failed，GREEN 34 passed，见专项证据。 |
 | A04 | HIGH | U；R；ProtectedRuntime.cpp；evidence/t006-production-repair-20260905.md | 初审发现 User 内部 probe 冒充 Provider 拒绝。现已移除该成功判据，记录并核对实际发布、Provider verifier、请求/attempt/Provider 与封印计划；三种真实变异和有效 grant 控制通过。 | CLOSED — T006 定向生产验收 PASS；正式同源矩阵仍归 T005/T008。 |

@@ -1,6 +1,6 @@
 # T002 — native Provider 解包
 
-> **Current scope correction (revision 6, 2026-09-05)**: T002 当前 partial，等待全部验收与提交边界汇总裁决。真实 native Ed25519/P-256 正负链及 [进程集成和 EC 泄漏修复](t001-t002-process-integration-20260905.md)、[worker 请求生命周期](t002-worker-authority-20260905.md) 已有定向 PASS；FR-015 公共准备与 adapter 迁移已完成 12 cases / 76 assertions、统一构建及新隔离 P-256 正向控制，见 [公共准备闭包](t002-shared-preparation-20260905.md)。T007 的 generation worker guard 审查仍 BLOCK。下方旧 PASS 仅保留为历史 verifier 范围记录，不是当前任务完成裁决。
+> **Current scope correction (revision 6, 2026-09-05)**: T002 完整任务验收 PASS，见 [acceptance map](t002-acceptance-20260905.md)。真实 native Ed25519/P-256 正负链、进程集成、EC 泄漏修复、worker 生命周期、公共准备与 adapter/handler 接线均有检查；追加 generation worker 修复后 48 cases / 366 assertions PASS。T007 其余审计及正式资格仍 BLOCK；新源在下次 native live 前须刷新统一 manifest。下方仅保留历史 verifier 范围记录。
 > 当前裁决与下一步以 [audit.md](../audit.md) 为准，以下保留为原始范围记录。
 
 **Layer**: implemented（NativeGrantVerifier + pybind 最小面 + C++ unit

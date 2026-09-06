@@ -1,6 +1,6 @@
 # R002 — native ProtectedRuntime 诚实化（FAIL_CLOSED until T002）
 
-> **Current scope correction (revision 5, 2026-09-05)**: 历史 R002 失败关闭行为仍是当前 native 边界；T002 verifier 函数存在尚未吸收生产 runtime 门。
+> **Current scope correction (revision 6, 2026-09-05)**: T002 生产 grant 验收已完成，R002 的临时未实现状态已由真实 verifier/worker 路径吸收，见 [T002 acceptance](t002-acceptance-20260905.md)。缺配置或未验证 grant 时仍失败关闭；下方“until T002”只保留为历史范围，不描述当前已接线行为。T007 与正式资格仍 BLOCK。
 > 当前裁决与下一步以 [audit.md](../audit.md) 为准，以下保留为原始范围记录。
 
 **Layer**: implemented（C++ 诚实化代码 + C++ unit 负例）;executed
