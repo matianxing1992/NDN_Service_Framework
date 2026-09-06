@@ -108,6 +108,7 @@ def build(bld):
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedGrantCredentials.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedGrantTransport.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeRunnerPreparation.cpp',
     ])
 
     # Exercise the shared native projection and model-specific merge contract
