@@ -1,0 +1,167 @@
+{
+  "schema": "spec182-revision4-workflow-review-v1",
+  "baseline_commit": "b5eb4d396bbfa711c5b246669e0e74c89c23a2a6",
+  "document_contract": {
+    "schema": "spec182-revision4-document-validation-v1",
+    "ok": true,
+    "tasks": 17,
+    "tasks_complete": 0,
+    "fr": 18,
+    "sc": 10,
+    "cd": 14,
+    "po": 15,
+    "source_types": 12,
+    "source_fields": 137,
+    "classes_or_modules": 21,
+    "methods": 48,
+    "design_readiness": "DRAFT",
+    "local_links_checked": 186,
+    "dependency_graph": {
+      "T001": [],
+      "T002": [
+        "T001"
+      ],
+      "T003": [
+        "T002"
+      ],
+      "T004": [
+        "T003"
+      ],
+      "T005": [
+        "T004"
+      ],
+      "T006": [
+        "T002"
+      ],
+      "T007": [
+        "T002"
+      ],
+      "T008": [
+        "T003",
+        "T006",
+        "T007"
+      ],
+      "T009": [
+        "T006",
+        "T007"
+      ],
+      "T010": [
+        "T003",
+        "T004",
+        "T005",
+        "T006",
+        "T007",
+        "T008",
+        "T009"
+      ],
+      "T011": [
+        "T010"
+      ],
+      "T012": [
+        "T011"
+      ],
+      "T013": [
+        "T012"
+      ],
+      "T014": [
+        "T013"
+      ],
+      "T015": [
+        "T014"
+      ],
+      "T016": [
+        "T015"
+      ],
+      "T017": [
+        "T016"
+      ]
+    },
+    "errors": [],
+    "runtime_tests": "NOT_RUN",
+    "product_static_review": "NOT_RUN"
+  },
+  "structure_audit": {
+    "blockers": [],
+    "details": {
+      "duplicate_requirements": [],
+      "duplicate_success_criteria": [],
+      "duplicate_tasks": [],
+      "malformed_tasks": [],
+      "missing_story_tasks": [],
+      "placeholders": [],
+      "untraced_requirements": []
+    },
+    "feature": "/home/tianxing/NDN/ndn-service-framework/specs/182-native-di-python-bindings",
+    "metrics": {
+      "functional_requirements": 18,
+      "has_traceability": true,
+      "parallel_tasks": 0,
+      "story_task_counts": {
+        "US1": 6,
+        "US2": 1,
+        "US3": 3,
+        "US4": 2,
+        "US5": 5
+      },
+      "success_criteria": 10,
+      "tasks": 17,
+      "tasks_complete": 0,
+      "traced_requirements": 18,
+      "user_stories": 5
+    },
+    "missing_required": [],
+    "ok": true,
+    "warnings": []
+  },
+  "diff_check_exit_code": 0,
+  "local_skills": {
+    "ok": true,
+    "errors": [],
+    "sha256": {
+      "speckit-code-design/SKILL.md": "8be34aaa3df7b11a3d989becef5f839fb2be9d8f3060271cdbdb513eb4a40898",
+      "design-template.md": "9d769b887afd8b511eb07f737be48859d58449d22763b1a1eb6e958fdfc3954e",
+      "work-unit-contract.md": "91faee18ddd92460c1cad7c990a96adeadd81fcca215ffa3721658bf6c1863c6",
+      "review-gate.md": "a26f0735e592c2454c6d26c5e2516cd148974503e0e4fe1ed2e63722779000a7",
+      "speckit-audit/SKILL.md": "30572126d4077d68710311de2f82e4b804a835c43a635ec1ed85625c0d34ad2a",
+      "audit-rubric.md": "7a5dec4efc4c1557b0a663182ab97157c020cdf1bcb3ccc2e51d4d32fd5c3652",
+      "report-template.md": "83bd7a9313806a54dbb74ea715b4d3ebe0d0c83cac6a47154015e07837b5ecad",
+      "speckit-implement/SKILL.md": "eb659ef44414d4cd644c7b1061d98b4c0f3cdef5f2861e9b7cf390557e3e1791",
+      "speckit-plan/SKILL.md": "22cd6eb0c132f655c0fd19f695c0cbfd92115aa90041286b28f151f4b07c06b3",
+      "speckit-tasks/SKILL.md": "0354186e1e7a2bf1a91b5c893cf1a7b203bd67c83427ed94e922db89f9d0b007",
+      "speckit-specify/SKILL.md": "b4f219fe029c95a4261f63deea285c578b6d6ac6b1045281fccf37aa38182a0d",
+      "pre-test-static-review.md": "a2052cf296745099632a99ca84073f232116d0b3108431f3394410060d27428c"
+    },
+    "local_only": true
+  },
+  "document_checker_counterfactuals": {
+    "scope": "document_validator_only",
+    "filesystem_edits": false,
+    "results": [
+      {
+        "case": "missing_T002_StaticReview",
+        "exit_code": 1,
+        "errors": [
+          "T002 missing StaticReview"
+        ]
+      },
+      {
+        "case": "missing_AllowedTestScope",
+        "exit_code": 1,
+        "errors": [
+          "missing static-review evidence field: AllowedTestScope"
+        ]
+      }
+    ]
+  },
+  "context_mode": {
+    "project_initial": "PASS",
+    "active_initial_exit_code": 5,
+    "active_initial_boundary": "NO_REAL_SESSION_EVENTS",
+    "fallback": "durable repository documents",
+    "active_after_index_exit_code": 0
+  },
+  "review_scope": "workflow design and document checker logic only",
+  "runtime_tests": "NOT_RUN",
+  "product_static_review": "NOT_RUN",
+  "implementation_tasks_complete": 0
+}

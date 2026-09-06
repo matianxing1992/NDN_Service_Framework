@@ -1,8 +1,8 @@
 # Spec182 Traceability Matrix
 
-**Revision**: 3 | **Status**: DRAFT / NOT_STARTED
+**Revision**: 4 | **Status**: DRAFT / NOT_STARTED
 source review 只证明 baseline 所述实现存在，不证明新实现或资格。
-所有 task completion evidence 路径为 planned，revision 3 文档检查见 evidence/skill-and-design-revision3.md；revision 1/2 历史记录不改写。
+所有 task completion evidence 路径为 planned，revision 4 文档检查见 evidence/static-review-gate-revision4.md；revision 1/2 历史记录不改写。
 
 ## Requirement-to-task Map
 
@@ -25,6 +25,7 @@ source review 只证明 baseline 所述实现存在，不证明新实现或资�
 | FR-015 | SC-008 | CD-012 | T001,T017 | PO-012 | FLOW-001 |
 | FR-016 | SC-004,SC-005,SC-006 | CD-002,CD-005,CD-007,CD-010,CD-013 | T001,T003,T006,T008,T011,T013,T016 | PO-002,PO-005,PO-008,PO-010,PO-013 | FLOW-001,FLOW-003 |
 | FR-017 | SC-009 | CD-001--014; symbol-design; value-contracts | T001,T002--T017 | PO-001--014; document coverage gate | FLOW-001--004 |
+| FR-018 | SC-010 | CD-001--014; SR-001--009 | T001--T017 | PO-015 | FLOW-001--004 |
 
 ## Design-to-task Map
 
@@ -55,3 +56,7 @@ T001 关闭 OPEN 并刷新 baseline 后补足叶子签名、精确默认值、le
 ## Symbol Coverage
 
 C01--C21 / M01--M48 位于 [symbol design](contracts/symbol-design.md)；V01--V12 共137字段位于 [value contracts](contracts/value-contracts.md)。每个任务的 SymbolContracts 指向其受影响集合，Documentation/Usage 必须随单元验收。该计数只覆盖已列来源类型，不代表递归schema已关闭；O-004 OPEN持续阻塞缺失叶子类型。
+
+## Static Review Traceability
+
+FR-018→SC-010→PO-015由 [SR-001--009](contracts/pre-test-static-review.md)定义；各T001--T017的StaticReview条目为执行owner。S0先于局部unit/integration；T015整体S0覆盖T016完整unit/integration/MiniNDN。报告映射C/M/V符号与真实代码/测试路径；T016运行引用报告身份和范围，T017核对交付一致。产品审查当前NOT_RUN，不借文档结构PASS晋升。

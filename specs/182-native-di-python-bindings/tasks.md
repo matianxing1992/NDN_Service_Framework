@@ -1,26 +1,27 @@
 # Tasks: Native NDNSF-DI with Optional Python Bindings
 
-**Revision**: 3 | **Status**: DRAFT / NOT_STARTED
+**Revision**: 4 | **Status**: DRAFT / NOT_STARTED
 **Input**: [spec](spec.md), [code design](contracts/code-design.md),
 [proof](contracts/proof-design.md), [work units](contracts/work-units.md)
 
 ## Current Checkpoint
 
-2026-09-06 revision 3：依据用户最新要求先强化设计写作规则，再按合并工作区源码修正182。增加类/方法/字段/注释/用法契约，修正合并基线、Core安全继承及 CandidateBudget。实现进度 **0/17**；本轮未运行build、unit/integration/MiniNDN或外部实验。
+2026-09-06 revision 4：按用户要求增加测试前静态代码审查。已更新写作/审计/实施技能规则，并同步FR-018/SC-010/PO-015、S0契约、17单元StaticReview及unit→integration→MiniNDN入口条件。T015仍为整体审查，不能替代各单元首次测试前的S0。
 
-当前182为活动设计；不再要求先完成181全部旧资格。合并工作区尚有未提交修复，记录中的 unit R1 747/751、integration R1 60/92 不能称PASS。本轮只读取并区分这些已有失败，不修改其修复代码或索引。合并 closure、嵌套schema/兼容清单、原生ABI和隔离设计仍由 O-001--005 控制；本文不勾选T001。
+本轮仅修改技能/Spec文档与文档检查器。实现进度 **0/17**；产品STATIC_REVIEW **NOT_RUN**，build/unit/integration/MiniNDN均未执行。文档审阅与结构验证不能升级为产品代码审查PASS。证据见 [revision 4 review](evidence/static-review-gate-revision4.md)。
+本轮文档验证PASS：18 FR / 10 SC / 15 PO / 17任务、186链接、严格结构与diff检查；两个内存counterfactual均准确拒绝缺失审查条目/允许范围。技能引用和入口检查PASS。
 
-本轮文档检查与来源身份见 [revision 3 evidence](evidence/skill-and-design-revision3.md)；旧 authoring/audit 记录保留历史身份。下一步在合并修复稳定后执行T001，按新契约关闭具体未决项，再进入T002原生库实现。
+revision3合并快照和未关闭O-001--005仍有效作为设计限制，不将旧unit/integration失败或修复进度改写。下一步合并修复稳定后T001关闭设计/身份门，再逐单元实施→S0修复复审PASS→测试。
 
 ## Validation Standard
 
-每个行为任务包含 unit test、integration、adjacent regression 和 proof-design 指定的 validation。
-正式 MiniNDN 必须在 T015 PASS 后执行；本文只规定计划，不运行上述检查。
+每个行为任务包含S0静态读码审查/修复复审，然后执行unit test、integration、adjacent regression及proof-design规定验证。每次测试入口核对有效报告身份/范围；无PASS不运行。
+完整unit→integration→MiniNDN必须在T015整体PASS后按顺序执行；具名RED/mutant也先完成受控范围S0。见 [S0 contract](contracts/pre-test-static-review.md)。本文只规定计划，不运行上述检查。
 
 ## Phase 1: Design and Native Components
 
 - [ ] T001 [US5] **Successor Baseline and Design Closure**。冻结合并基线与181承接表、所有 schema/公开调用方/能力清单及原生依赖，关闭 O-001--005；修订叶子签名与任务至可执行。Dependencies: Merged baseline closure and Spec181 handoff。
-  Design: FR-015,FR-016,FR-017; CD-001--014。Proof: PO-012。
+  Design: FR-015,FR-016,FR-017,FR-018; CD-001--014。Proof: PO-012。
   完整文件/符号、decision budget、预期 diff、命令、恢复点与证据：
   [T001 contract](contracts/work-units.md#t001-successor-baseline-and-design-closure)。
 
@@ -91,13 +92,13 @@
   完整文件/符号、decision budget、预期 diff、命令、恢复点与证据：
   [T014 contract](contracts/work-units.md#t014-runtime-dependency-exclusion-gate)。
 
-- [ ] T015 [US5] **Design-code Convergence Audit**。逐 FR/CD/INV/PO 核对生产接线、effective config、依赖/源码身份，控制性发现清零。Dependencies: T014。
-  Design: FR-013,FR-017; CD-001--014。Proof: PO-001--014。
+- [ ] T015 [US5] **Design-code Convergence Audit**。整体静态读码核对FR/CD/INV/PO、生产接线、test/oracle/harness与依赖身份，控制性发现清零；签发覆盖T016范围的S0报告。Dependencies: T014。
+  Design: FR-013,FR-017,FR-018; CD-001--014。Proof: PO-001--015。
   完整文件/符号、decision budget、预期 diff、命令、恢复点与证据：
   [T015 contract](contracts/work-units.md#t015-design-code-convergence-audit)。
 
-- [ ] T016 [US5] **Local Native Qualification**。同源完整 suites、YOLO/Qwen MiniNDN 和 no-Python 全部通过。Dependencies: T015 PASS。
-  Design: FR-001,FR-005,FR-006,FR-007,FR-008,FR-010,FR-011,FR-012,FR-013,FR-016; CD-011。Proof: PO-001--014。
+- [ ] T016 [US5] **Local Native Qualification**。每层先核对有效S0及前层结果，再同源完整unit→integration→YOLO/Qwen MiniNDN/no-Python全部通过。Dependencies: T015 PASS。
+  Design: FR-001,FR-005,FR-006,FR-007,FR-008,FR-010,FR-011,FR-012,FR-013,FR-016; CD-011。Proof: PO-001--015。
   完整文件/符号、decision budget、预期 diff、命令、恢复点与证据：
   [T016 contract](contracts/work-units.md#t016-local-native-qualification)。
 
@@ -112,5 +113,5 @@ Merged baseline closure and Spec181 handoff → T001 → T002；T003/T004/T005 �
 T006/T007 依赖 T002 和已关闭 native dependency design；
 T003/T006/T007 → T008；T006/T007 → T009；
 T003--009 → T010 → T011 → T012 → T013 → T014 → T015 PASS → T016 → T017。
-只有最早未关闭门可进入其对应实施。每次失败先保留新 raw/evidence、更新本 tasks/failure index。
+所有任务同时受FR-018/PO-015约束；每任务StaticReview见work-units。只有最早未关闭门可进入其对应实施。每次失败先保留新 raw/evidence、更新本 tasks/failure index。
 最终 checkpoint 前核对 task 状态与实际 diff/PO；不得 blanket stage 预存修改。

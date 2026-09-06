@@ -1,6 +1,6 @@
 # Runtime Boundary Completion
 
-**Revision**: 3 | **Status**: DRAFT / BLOCK for implementation
+**Revision**: 4 | **Status**: DRAFT / BLOCK for implementation
 **Normative parent**: [spec](../spec.md), [code design](code-design.md)
 本附件补齐 revision 1 的中间调用缺口；所有 Native* 新接口均 planned。
 O-002/O-003 依赖锁和 O-004 完整字段/兼容清单未关闭，不宣称可直接编译。
@@ -158,3 +158,7 @@ UNSUPPORTED_EXTENSION 只能用于被本次用户目标明确排除的 Python ca
 合并Core已具备请求级机密性、ControllerVersion、服务撤销/权限刷新和RuntimeStatusStore。Core/Provider继续持有当前权限与generation fence；DI admission只读取认证快照，不能建立第二份可写撤销表或以相同字段绕过Core独立校验。会话journal与Core持久运行状态分别归属，路径/锁/恢复规则不混用。DI artifact grant与Core请求/响应密钥分别验证，不因为两者都叫grant/key就共享寿命或撤销范围。
 
 新增/修改接口的完整职责、字段含义及注释要求见 [symbol design](symbol-design.md) 和 [value contracts](value-contracts.md)。O-004需核对合并后的真实注册、撤销、取消和callback generation接线，不能引用旧行号证明当前实现。
+
+## Pre-Test Review Scope
+
+CD-013/014、取消/观察、迁移回退与合并安全owner必须在相应运行检查前按 [S0](pre-test-static-review.md)逐真实代码路径审查。晚到callback、共享服务停止、publication失败和旧默认入口不可仅靠后续测试发现。运行时行为仍由原PO独立证明，静态PASS不是权限或数值结果证据。

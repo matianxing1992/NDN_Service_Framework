@@ -1,7 +1,7 @@
 # Specification Quality Checklist: Native NDNSF-DI
 
 **Created**: 2026-09-06
-**Revision**: 3
+**Revision**: 4
 **Feature**: [spec.md](../spec.md)
 **Status**: DRAFT; design-document delivery only
 
@@ -15,8 +15,8 @@
 
 ## Requirement Completeness
 
-- [x] 17 个 FR 均有 CD/T/PO 和成功判据。
-- [x] 9 个 SC 区分 source review、运行、资格和交付。
+- [x] 18 个 FR 均有 CD/T/PO 和成功判据。
+- [x] 10 个 SC 区分 source review、运行、资格和交付。
 - [x] 默认 native 策略不允许 Python trampoline。
 - [x] 冷动态装配与完整 tokenizer 文本不能降级为离线预切/warm/token-only。
 - [x] Core 不吸收模型差异，Provider 独立验证不因共用 C++ 而删除。
@@ -58,3 +58,12 @@ specify CLI 未在 PATH；仓库只有一个 active spec template，直接使用
 - [x] Core已合并安全/撤销能力与DI artifact grant范围分开；CandidateBudget依据实际3字段修正。
 - [ ] 全部嵌套schema、错误/配置/caller清单与原生ABI已冻结。
 - [ ] 所有公开示例实际编译/运行通过；当前仅DESIGN_EXAMPLE / NOT_COMPILED。
+
+## Pre-Test Static Review
+
+- [x] S0是读代码逻辑对照设计，独立于lint/编译/结构检查。
+- [x] 所有17任务有StaticReview；单元首次unit/integration前审查，T015整体审查先于T016。
+- [x] 定义finding证据、控制性问题修复/复审、subject身份、AllowedTestScope、失效和分层入口。
+- [x] 具名RED/mutant先审查受控缺陷，不能据此放行普通测试。
+- [x] FR-018/SC-010/PO-015/SR-001--009及任务/证据映射齐全。
+- [ ] 产品实现的S0报告已实际完成；当前NOT_RUN。

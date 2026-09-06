@@ -1,6 +1,6 @@
 # Work Unit Contracts
 
-**Revision**: 3 | **Status**: planned, all implementation NOT_STARTED
+**Revision**: 4 | **Status**: planned, all implementation NOT_STARTED
 本表定义设计批次，不授权现在执行。O-001--005 关闭前全部实现 BLOCK。
 T001 必须把超过合理范围的批次再细分为有独立行为和验收的原子单元，并同步全部 ID 引用，
 才能标 READY_FOR_IMPLEMENTATION；不可把本表的大估算直接当无限实现授权。
@@ -9,7 +9,7 @@ T001 必须把超过合理范围的批次再细分为有独立行为和验收的
 
 ExactFiles/ExactSymbols 以每单元 CD 的全路径清单为规范，测试路径见
 [proof inventory](proof-design.md#planned-test-and-build-inventory)。
-每任务均包含自己的 RED/实现/GREEN/相邻回归/证据，不另造机械测试任务。
+每任务均包含自己的实现/测试编写、S0静态读码/修复复审、运行验证与证据，不另造机械审查任务。具名RED/mutant也按 [S0 contract](pre-test-static-review.md)先审查其受控缺陷及断言。
 
 ExactCommands：均为 proof-design 中明确 planned 的入口；cwd=repo root，环境为经 T001
 封存的 compiler/ORT/native dependencies，run output 必须新目录。
@@ -27,9 +27,11 @@ RecoveryPoint：失败保留独立 run 和 patch，不 reset/clean/stash 他人�
 ExpectedDiff 是偏移提示，不是配额。T003/004/006/008/010/011 可能大于 300 行，
 原因是既有算法/状态和字节契约较大；T001 须确认可独立 checkpoint 的分界后细化。
 T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新功能。
-每单元实际结果采用 proof-design 的 Completion Evidence Record。
+每单元实际结果采用proof-design的Completion Evidence Record，并记录StaticReview与TestEntryChecks。以下范围均包含对应SymbolContracts和未修改的生产调用者；只有fresh scoped PASS放行测试，状态变化先标STALE。
 
 ## T001 Successor Baseline and Design Closure
+
+- **StaticReview**: T001读取合并源码/设计，不审不存在的迁移。补齐后续单元S0范围、报告路径、失效与测试入口条件；设计检查不产生产品STATIC_REVIEW PASS。 Report: evidence/t001-static-review-rN.md（planned）；FR-018/PO-015，完整规则见 [S0](pre-test-static-review.md)。
 
 - **SymbolContracts**: C01--C21 / M01--M48 / V01--V12；以 [symbol design](symbol-design.md) 与 [value contracts](value-contracts.md) 中同CD的精确符号为准；未覆盖新增符号先补契约。
 - **Documentation**: 每个受影响声明补英文 Doxygen/docstring：职责/输入输出/单位/owner/失败/取消/线程/保密/调用顺序；字段注释说明非显然约束，旧字段删除同步配置和文档。
@@ -52,6 +54,8 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 
 ## T002 Installable Native Library Contract
 
+- **StaticReview**: 先读本单元生产实现、受影响caller及test/fixture/oracle/collector，对照CD/INV和SymbolContracts推演成功/失败路径；修复控制性finding→重读→S0 PASS→unit/相邻回归→integration。 Report: evidence/t002-static-review-rN.md（planned）；FR-018/PO-015，完整规则见 [S0](pre-test-static-review.md)。
+
 - **SymbolContracts**: C01,C20 / public declarations / build variables；以 [symbol design](symbol-design.md) 与 [value contracts](value-contracts.md) 中同CD的精确符号为准；未覆盖新增符号先补契约。
 - **Documentation**: 每个受影响声明补英文 Doxygen/docstring：职责/输入输出/单位/owner/失败/取消/线程/保密/调用顺序；字段注释说明非显然约束，旧字段删除同步配置和文档。
 - **Usage**: 修改前入口→修改后原生调用及 Python 映射；成功、边界失败、取消/关闭至少覆盖适用场景。设计片段标NOT_COMPILED，实现时用独立consumer/对应PO实际验证，不能以文档检查冒充通过。
@@ -72,6 +76,8 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 - **Evidence**: ../evidence/t002-completion.md（planned，当前不存在）。
 
 ## T003 Native Split and Placement Decisions
+
+- **StaticReview**: 先读本单元生产实现、受影响caller及test/fixture/oracle/collector，对照CD/INV和SymbolContracts推演成功/失败路径；修复控制性finding→重读→S0 PASS→unit/相邻回归→integration。 Report: evidence/t003-static-review-rN.md（planned）；FR-018/PO-015，完整规则见 [S0](pre-test-static-review.md)。
 
 - **SymbolContracts**: C04--C10 / M10--M18 / V01--V04,V09,V10；以 [symbol design](symbol-design.md) 与 [value contracts](value-contracts.md) 中同CD的精确符号为准；未覆盖新增符号先补契约。
 - **Documentation**: 每个受影响声明补英文 Doxygen/docstring：职责/输入输出/单位/owner/失败/取消/线程/保密/调用顺序；字段注释说明非显然约束，旧字段删除同步配置和文档。
@@ -94,6 +100,8 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 
 ## T004 Canonical Native Plan Sealing
 
+- **StaticReview**: 先读本单元生产实现、受影响caller及test/fixture/oracle/collector，对照CD/INV和SymbolContracts推演成功/失败路径；修复控制性finding→重读→S0 PASS→unit/相邻回归→integration。 Report: evidence/t004-static-review-rN.md（planned）；FR-018/PO-015，完整规则见 [S0](pre-test-static-review.md)。
+
 - **SymbolContracts**: C11 / M19--M23 / V10,V12；以 [symbol design](symbol-design.md) 与 [value contracts](value-contracts.md) 中同CD的精确符号为准；未覆盖新增符号先补契约。
 - **Documentation**: 每个受影响声明补英文 Doxygen/docstring：职责/输入输出/单位/owner/失败/取消/线程/保密/调用顺序；字段注释说明非显然约束，旧字段删除同步配置和文档。
 - **Usage**: 修改前入口→修改后原生调用及 Python 映射；成功、边界失败、取消/关闭至少覆盖适用场景。设计片段标NOT_COMPILED，实现时用独立consumer/对应PO实际验证，不能以文档检查冒充通过。
@@ -114,6 +122,8 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 - **Evidence**: ../evidence/t004-completion.md（planned，当前不存在）。
 
 ## T005 Native Requester Grant Path
+
+- **StaticReview**: 先读本单元生产实现、受影响caller及test/fixture/oracle/collector，对照CD/INV和SymbolContracts推演成功/失败路径；修复控制性finding→重读→S0 PASS→unit/相邻回归→integration。 Report: evidence/t005-static-review-rN.md（planned）；FR-018/PO-015，完整规则见 [S0](pre-test-static-review.md)。
 
 - **SymbolContracts**: C12,C13 / M24--M25 / grant family；以 [symbol design](symbol-design.md) 与 [value contracts](value-contracts.md) 中同CD的精确符号为准；未覆盖新增符号先补契约。
 - **Documentation**: 每个受影响声明补英文 Doxygen/docstring：职责/输入输出/单位/owner/失败/取消/线程/保密/调用顺序；字段注释说明非显然约束，旧字段删除同步配置和文档。
@@ -136,6 +146,8 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 
 ## T006 Native Cold ONNX Assembly
 
+- **StaticReview**: 先读本单元生产实现、受影响caller及test/fixture/oracle/collector，对照CD/INV和SymbolContracts推演成功/失败路径；修复控制性finding→重读→S0 PASS→unit/相邻回归→integration。 Report: evidence/t006-static-review-rN.md（planned）；FR-018/PO-015，完整规则见 [S0](pre-test-static-review.md)。
+
 - **SymbolContracts**: C14 / M26--M28 / assembly options；以 [symbol design](symbol-design.md) 与 [value contracts](value-contracts.md) 中同CD的精确符号为准；未覆盖新增符号先补契约。
 - **Documentation**: 每个受影响声明补英文 Doxygen/docstring：职责/输入输出/单位/owner/失败/取消/线程/保密/调用顺序；字段注释说明非显然约束，旧字段删除同步配置和文档。
 - **Usage**: 修改前入口→修改后原生调用及 Python 映射；成功、边界失败、取消/关闭至少覆盖适用场景。设计片段标NOT_COMPILED，实现时用独立consumer/对应PO实际验证，不能以文档检查冒充通过。
@@ -157,6 +169,8 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 
 ## T007 Native Tokenizer Execution
 
+- **StaticReview**: 先读本单元生产实现、受影响caller及test/fixture/oracle/collector，对照CD/INV和SymbolContracts推演成功/失败路径；修复控制性finding→重读→S0 PASS→unit/相邻回归→integration。 Report: evidence/t007-static-review-rN.md（planned）；FR-018/PO-015，完整规则见 [S0](pre-test-static-review.md)。
+
 - **SymbolContracts**: C15 / M29--M33 / V11；以 [symbol design](symbol-design.md) 与 [value contracts](value-contracts.md) 中同CD的精确符号为准；未覆盖新增符号先补契约。
 - **Documentation**: 每个受影响声明补英文 Doxygen/docstring：职责/输入输出/单位/owner/失败/取消/线程/保密/调用顺序；字段注释说明非显然约束，旧字段删除同步配置和文档。
 - **Usage**: 修改前入口→修改后原生调用及 Python 映射；成功、边界失败、取消/关闭至少覆盖适用场景。设计片段标NOT_COMPILED，实现时用独立consumer/对应PO实际验证，不能以文档检查冒充通过。
@@ -177,6 +191,8 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 - **Evidence**: ../evidence/t007-completion.md（planned，当前不存在）。
 
 ## T008 Native Request Preparation and Admission
+
+- **StaticReview**: 先读本单元生产实现、受影响caller及test/fixture/oracle/collector，对照CD/INV和SymbolContracts推演成功/失败路径；修复控制性finding→重读→S0 PASS→unit/相邻回归→integration。 Report: evidence/t008-static-review-rN.md（planned）；FR-018/PO-015，完整规则见 [S0](pre-test-static-review.md)。
 
 - **SymbolContracts**: C09,C18,C19 / M16--M18,M40--M43 / V01,V02,V05,V06,V09；以 [symbol design](symbol-design.md) 与 [value contracts](value-contracts.md) 中同CD的精确符号为准；未覆盖新增符号先补契约。
 - **Documentation**: 每个受影响声明补英文 Doxygen/docstring：职责/输入输出/单位/owner/失败/取消/线程/保密/调用顺序；字段注释说明非显然约束，旧字段删除同步配置和文档。
@@ -200,6 +216,8 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 
 ## T009 Shared Native Provider Host
 
+- **StaticReview**: 先读本单元生产实现、受影响caller及test/fixture/oracle/collector，对照CD/INV和SymbolContracts推演成功/失败路径；修复控制性finding→重读→S0 PASS→unit/相邻回归→integration。 Report: evidence/t009-static-review-rN.md（planned）；FR-018/PO-015，完整规则见 [S0](pre-test-static-review.md)。
+
 - **SymbolContracts**: C20,C21 / M44--M48 / service family；以 [symbol design](symbol-design.md) 与 [value contracts](value-contracts.md) 中同CD的精确符号为准；未覆盖新增符号先补契约。
 - **Documentation**: 每个受影响声明补英文 Doxygen/docstring：职责/输入输出/单位/owner/失败/取消/线程/保密/调用顺序；字段注释说明非显然约束，旧字段删除同步配置和文档。
 - **Usage**: 修改前入口→修改后原生调用及 Python 映射；成功、边界失败、取消/关闭至少覆盖适用场景。设计片段标NOT_COMPILED，实现时用独立consumer/对应PO实际验证，不能以文档检查冒充通过。
@@ -220,6 +238,8 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 - **Evidence**: ../evidence/t009-completion.md（planned）。
 
 ## T010 Complete Native Request Lifecycle
+
+- **StaticReview**: 先读本单元生产实现、受影响caller及test/fixture/oracle/collector，对照CD/INV和SymbolContracts推演成功/失败路径；修复控制性finding→重读→S0 PASS→unit/相邻回归→integration。 Report: evidence/t010-static-review-rN.md（planned）；FR-018/PO-015，完整规则见 [S0](pre-test-static-review.md)。
 
 - **SymbolContracts**: C01--C03 / M01--M09 / request and result fields；以 [symbol design](symbol-design.md) 与 [value contracts](value-contracts.md) 中同CD的精确符号为准；未覆盖新增符号先补契约。
 - **Documentation**: 每个受影响声明补英文 Doxygen/docstring：职责/输入输出/单位/owner/失败/取消/线程/保密/调用顺序；字段注释说明非显然约束，旧字段删除同步配置和文档。
@@ -242,6 +262,8 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 
 ## T011 Native Conversation Continuation
 
+- **StaticReview**: 先读本单元生产实现、受影响caller及test/fixture/oracle/collector，对照CD/INV和SymbolContracts推演成功/失败路径；修复控制性finding→重读→S0 PASS→unit/相邻回归→integration。 Report: evidence/t011-static-review-rN.md（planned）；FR-018/PO-015，完整规则见 [S0](pre-test-static-review.md)。
+
 - **SymbolContracts**: C16 / M34--M38 / V07,V08,V11；以 [symbol design](symbol-design.md) 与 [value contracts](value-contracts.md) 中同CD的精确符号为准；未覆盖新增符号先补契约。
 - **Documentation**: 每个受影响声明补英文 Doxygen/docstring：职责/输入输出/单位/owner/失败/取消/线程/保密/调用顺序；字段注释说明非显然约束，旧字段删除同步配置和文档。
 - **Usage**: 修改前入口→修改后原生调用及 Python 映射；成功、边界失败、取消/关闭至少覆盖适用场景。设计片段标NOT_COMPILED，实现时用独立consumer/对应PO实际验证，不能以文档检查冒充通过。
@@ -262,6 +284,8 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 - **Evidence**: ../evidence/t011-completion.md（planned，当前不存在）。
 
 ## T012 Thin Python Native Bindings
+
+- **StaticReview**: 先读本单元生产实现、受影响caller及test/fixture/oracle/collector，对照CD/INV和SymbolContracts推演成功/失败路径；修复控制性finding→重读→S0 PASS→unit/相邻回归→integration。 Report: evidence/t012-static-review-rN.md（planned）；FR-018/PO-015，完整规则见 [S0](pre-test-static-review.md)。
 
 - **SymbolContracts**: C17 / M39 / all exposed values；以 [symbol design](symbol-design.md) 与 [value contracts](value-contracts.md) 中同CD的精确符号为准；未覆盖新增符号先补契约。
 - **Documentation**: 每个受影响声明补英文 Doxygen/docstring：职责/输入输出/单位/owner/失败/取消/线程/保密/调用顺序；字段注释说明非显然约束，旧字段删除同步配置和文档。
@@ -284,6 +308,8 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 
 ## T013 Default Route and Legacy Retirement
 
+- **StaticReview**: 先读本单元生产实现、受影响caller及test/fixture/oracle/collector，对照CD/INV和SymbolContracts推演成功/失败路径；修复控制性finding→重读→S0 PASS→unit/相邻回归→integration。 Report: evidence/t013-static-review-rN.md（planned）；FR-018/PO-015，完整规则见 [S0](pre-test-static-review.md)。
+
 - **SymbolContracts**: C17 / maintained caller and legacy inventory；以 [symbol design](symbol-design.md) 与 [value contracts](value-contracts.md) 中同CD的精确符号为准；未覆盖新增符号先补契约。
 - **Documentation**: 每个受影响声明补英文 Doxygen/docstring：职责/输入输出/单位/owner/失败/取消/线程/保密/调用顺序；字段注释说明非显然约束，旧字段删除同步配置和文档。
 - **Usage**: 修改前入口→修改后原生调用及 Python 映射；成功、边界失败、取消/关闭至少覆盖适用场景。设计片段标NOT_COMPILED，实现时用独立consumer/对应PO实际验证，不能以文档检查冒充通过。
@@ -304,6 +330,8 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 - **Evidence**: ../evidence/t013-completion.md（planned，当前不存在）。
 
 ## T014 Runtime Dependency Exclusion Gate
+
+- **StaticReview**: 先读本单元生产实现、受影响caller及test/fixture/oracle/collector，对照CD/INV和SymbolContracts推演成功/失败路径；修复控制性finding→重读→S0 PASS→unit/相邻回归→integration。 Report: evidence/t014-static-review-rN.md（planned）；FR-018/PO-015，完整规则见 [S0](pre-test-static-review.md)。
 
 - **SymbolContracts**: runtime process/environment fields / CD-011；以 [symbol design](symbol-design.md) 与 [value contracts](value-contracts.md) 中同CD的精确符号为准；未覆盖新增符号先补契约。
 - **Documentation**: 每个受影响声明补英文 Doxygen/docstring：职责/输入输出/单位/owner/失败/取消/线程/保密/调用顺序；字段注释说明非显然约束，旧字段删除同步配置和文档。
@@ -326,6 +354,8 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 
 ## T015 Design-code Convergence Audit
 
+- **StaticReview**: 整体S0审查覆盖CD-001--014、跨任务调用、test/oracle/harness/config/dependencies及T016全部运行范围；控制性finding清零并绑定当前subject，T014局部PASS不能替代。 Report: evidence/t015-static-review-rN.md（planned）；FR-018/PO-015，完整规则见 [S0](pre-test-static-review.md)。
+
 - **SymbolContracts**: C01--C21 / M01--M48 / V01--V12；以 [symbol design](symbol-design.md) 与 [value contracts](value-contracts.md) 中同CD的精确符号为准；未覆盖新增符号先补契约。
 - **Documentation**: 每个受影响声明补英文 Doxygen/docstring：职责/输入输出/单位/owner/失败/取消/线程/保密/调用顺序；字段注释说明非显然约束，旧字段删除同步配置和文档。
 - **Usage**: 修改前入口→修改后原生调用及 Python 映射；成功、边界失败、取消/关闭至少覆盖适用场景。设计片段标NOT_COMPILED，实现时用独立consumer/对应PO实际验证，不能以文档检查冒充通过。
@@ -339,13 +369,15 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 - **AllowedDecisions**: 仅审查和记录证据；修复必须回所属任务。
 - **ForbiddenChanges**: 把存在 helper/单测通过当作完整资格；为通过放宽验收。
 - **ExpectedDiff**: spec182 audit/traceability/evidence/post-implementation-audit.md；0 生产/测试源码；只审查 T014 已存在的 harness。
-- **ProofObligations**: PO-001--014。
+- **ProofObligations**: PO-001--015。
 - **ExactCommands / VerificationLadder**: L0/L2 source-aware audit，未运行的 L4 明确 NOT_RUN；使用上述 planned command contract，未冻结 selectors 前 BLOCK。
 - **EscalationConditions**: 任何 semantic/security/wiring/config/evidence gap 为 BLOCK；同样适用 common boundary。
 - **RecoveryPoint**: 记录 first open boundary，返回所属任务修复后复审。
 - **Evidence**: ../evidence/t015-completion.md（planned，当前不存在）。
 
 ## T016 Local Native Qualification
+
+- **StaticReview**: 每层运行前核对T015报告的identity/AllowedTestScope与前层结果；完整unit PASS→integration PASS→MiniNDN。修复使相关报告STALE，先回对应单元S0及T015复核再运行。 Report: evidence/t016-static-review-rN.md（planned）；FR-018/PO-015，完整规则见 [S0](pre-test-static-review.md)。
 
 - **SymbolContracts**: all public usage and protocol oracle fields；以 [symbol design](symbol-design.md) 与 [value contracts](value-contracts.md) 中同CD的精确符号为准；未覆盖新增符号先补契约。
 - **Documentation**: 每个受影响声明补英文 Doxygen/docstring：职责/输入输出/单位/owner/失败/取消/线程/保密/调用顺序；字段注释说明非显然约束，旧字段删除同步配置和文档。
@@ -360,13 +392,15 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 - **AllowedDecisions**: 仅执行已冻结 case/selector/config/timeout；失败先保留诊断。
 - **ForbiddenChanges**: 运行中延长 deadline/改 oracle；将 collector 故障记拒绝；SIF/Tiger 混作本地门。
 - **ExpectedDiff**: 仅 evidence/local-qualification.md 与 case 结果索引；harness/fixtures 在 T014 已冻结，0 生产或测试源码改动；失败回最早受影响任务。
-- **ProofObligations**: PO-001--014。
+- **ProofObligations**: PO-001--015。
 - **ExactCommands / VerificationLadder**: L4/L5 同源真实 MiniNDN；L1/2/3/L6 已有完整有效证据；使用上述 planned command contract，未冻结 selectors 前 BLOCK。
 - **EscalationConditions**: 失败更新 raw/evidence/failure index，回最早受影响任务和 T015；同样适用 common boundary。
 - **RecoveryPoint**: 每 case 独立新目录；无未收集进程和明文/密钥残留。
 - **Evidence**: ../evidence/t016-completion.md（planned，当前不存在）。
 
 ## T017 Native Development Handoff
+
+- **StaticReview**: 核对交付subject与静态/运行证据一致；示例、launcher或配置行为变更先执行本单元S0，不能沿用旧报告测试新版本。 Report: evidence/t017-static-review-rN.md（planned）；FR-018/PO-015，完整规则见 [S0](pre-test-static-review.md)。
 
 - **SymbolContracts**: public API examples and deployment configuration；以 [symbol design](symbol-design.md) 与 [value contracts](value-contracts.md) 中同CD的精确符号为准；未覆盖新增符号先补契约。
 - **Documentation**: 每个受影响声明补英文 Doxygen/docstring：职责/输入输出/单位/owner/失败/取消/线程/保密/调用顺序；字段注释说明非显然约束，旧字段删除同步配置和文档。

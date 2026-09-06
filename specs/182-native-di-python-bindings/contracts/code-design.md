@@ -1,6 +1,6 @@
 # Code Design Contract
 
-**Revision**: 3 | **Status**: DRAFT
+**Revision**: 4 | **Status**: DRAFT
 **Normative parent**: [spec.md](../spec.md)
 **Baseline**: [merged-source-baseline-r3.json](../evidence/merged-source-baseline-r3.json)；revision 1/2 evidence 只保留历史意义。
 
@@ -344,3 +344,7 @@ T001 的交付是关闭表、叶子签名、lock/compatibility manifest 和修�
 新增原生依赖/公有字段/状态 owner/wire format/调用方必须先修订 CD、T、PO。
 Private helper 只可实现已描述职责，不能用 helper 名义增加 subsystem。
 完整单元边界见 [work-units](work-units.md)，证明见 [proof-design](proof-design.md)。
+
+## Pre-Test Review Obligation
+
+每个CD的代码与测试改动受 [S0](pre-test-static-review.md)约束：读最终源码/调用者对照设计，修复复审后才执行对应unit/integration；更广验收先核对覆盖和身份。此规则不新增产品类、字段或Core API，也不删除既有PO。当前计划符号未实现，不产生产品静态PASS。

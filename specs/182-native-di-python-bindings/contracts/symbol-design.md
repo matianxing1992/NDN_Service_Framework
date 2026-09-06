@@ -1,6 +1,6 @@
 # Symbol Design and Usage Contracts
 
-**Revision**: 3 | **Status**: DRAFT / PARTIAL
+**Revision**: 4 | **Status**: DRAFT / PARTIAL
 **Authority**: 本文补充 [code design](code-design.md) 与 [runtime boundaries](runtime-boundaries.md)。
 本文定义 planned 代码结果；不是运行实现。完整 merged source baseline 见
 [baseline](../evidence/merged-source-baseline-r3.json)。未决依赖/嵌套 schema 在
@@ -257,3 +257,7 @@ policy snapshot仅提供计算输入，受保护转换仍由Core/Provider重新�
 本文使类职责/方法行为/状态/注释和用法可审查；它不是“所有叶子API已冻结”的声明。
 value-contracts列出的nested类型、O-002/003原生依赖、O-004的注销/错误/持久化字段，
 以及合并integration失败尚未闭合。T001必须逐条关闭，不能跳过进入T002。
+
+## Static Review Use
+
+实现后S0将C/M/V契约与真实源码、调用链及测试逐项对照，报告哪些分支满足或违背契约，再决定是否可运行该范围测试。符号表或注释齐全本身不构成代码逻辑PASS。新规则见 [pre-test review](pre-test-static-review.md)。

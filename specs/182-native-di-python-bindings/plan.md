@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 3 | **Date**: 2026-09-06
+**Branch**: Experimental | **Revision**: 4 | **Date**: 2026-09-06
 **Status**: DRAFT / NOT_STARTED
 **Spec**: [spec.md](spec.md)
 
@@ -24,8 +24,8 @@ Provider native runtime 和模型 adapter 边界；消除默认 Python 控制实
 | Canonical runtime | 复用 ServiceUser deferred collaboration，不引入平行 wire |
 | Security | 保留 grant/AEAD/lease/fencing 和 Provider 独立授权 |
 | CodeGraph | 精确主工作区路径，排除临时比较副本 |
-| Cohesive tasks | 每任务同时包含实现、focused 检查、证据；大单元先修订边界 |
-| Convergence | T015 PASS 前不执行正式 T016 |
+| Cohesive tasks | 每任务包含实现、S0静态审查/修复复审、focused检查和证据；大单元先修订边界 |
+| Convergence | 每单元S0 PASS前不运行对应测试；T015整体PASS前不执行正式T016 |
 | Immutable delivery | 源、库、adapter、依赖、工件、config、harness 同一身份 |
 | Language / code design | 中文叙述、英文 markers；技术细节归规范性 CD 附件 |
 
@@ -33,12 +33,16 @@ Provider native runtime 和模型 adapter 边界；消除默认 Python 控制实
 
 1. G0 / T001：确认合并修复与181承接后刷新 baseline，关闭 O-001--005，冻结类型/调用方/依赖锁，
    自审达到相关范围 READY_FOR_IMPLEMENTATION。当前尚不满足。
-2. G1 / T002--009：独立库、策略/sealer/grant、ONNX/tokenizer、请求准备/admission 和 Provider host；focused proof。
-3. G2 / T010--012：完整 C++ requester、会话/恢复与同库 Python binding；focused integration。
-4. G3 / T013--014：maintained callers 切换、旧路径退出、无 Python gate、MiniNDN harness/collector/fixture 和反例自检；正式用例尚不运行。
-5. G4 / T015：code-aware convergence audit，检查真实生产路径、effective config、源与运行依赖。
-6. G5 / T016：同源完整 unit/integration + MiniNDN + no-Python 资格，保留所有失败首边界。
+2. G1 / T002--009：独立库、策略/sealer/grant、ONNX/tokenizer、请求准备/admission 和 Provider host；每单元实现后S0 PASS，再focused proof。
+3. G2 / T010--012：完整 C++ requester、会话/恢复与同库 Python binding；S0覆盖调用链及测试后unit→focused integration。
+4. G3 / T013--014：maintained callers 切换、旧路径退出、无 Python gate、MiniNDN harness/collector/fixture；先S0审查其逻辑再反例自检，正式用例尚不运行。
+5. G4 / T015：整体静态/convergence audit，覆盖跨单元生产路径、test/oracle/harness、effective config与依赖；不替代此前各单元S0。
+6. G5 / T016：每层核对有效S0 subject/scope；同源完整unit PASS → integration PASS → MiniNDN/no-Python资格，保留失败首边界。
 7. G6 / T017：本地开发交付、调用示例、迁移说明与外部实验交接。
+
+### Per-Unit Static Review
+
+每单元实施/测试编写 → S0读代码对照设计 → 修复控制性finding → 复审PASS → unit → integration。规则与报告见 [static review](contracts/pre-test-static-review.md)。转入更广测试范围前检查审查覆盖；身份未变且已覆盖可复用，有行为修复则先标STALE、重审再重跑。具名RED/mutant也先接受独立受控范围审查，不能借此放行产品测试。T001只检查设计/已合并基线，未实现的迁移无产品静态PASS。
 
 ### Dependencies
 
@@ -73,11 +77,11 @@ GUI、离线训练/导出与实验 Python 保留；其业务调用转向 binding
 | Changed plane | Invalidated evidence | Earliest gate |
 | --- | --- | --- |
 | Merged source / inherited capability baseline | CD inventory、迁移假设、下游全部 | G0 |
-| strategy/sealer/contract | wire/placement + integration/qualification | 相关 G1 + G4 |
-| grant/assembly/tokenizer | 安全/字节/token oracle 对应结果 + 下游 | 相关 G1 + G4 |
-| lifecycle/binding/default routing | 状态/兼容/no-Python/下游 | G2 或 G3 + G4 |
-| compiler/native dependency/ABI/build recipe | installed consumer、runtime identity、下游 | G1 build closure + G4 |
-| config/model/oracle/harness | 受影响的 proof 和正式运行 | 源/输入 preflight + G4 |
+| strategy/sealer/contract | 对应S0、wire/placement及integration/qualification | 相关G1的S0 + G4 |
+| grant/assembly/tokenizer | 对应S0、安全/字节/token结果及下游 | 相关G1的S0 + G4 |
+| lifecycle/binding/default routing | 对应S0、状态/兼容/no-Python及下游 | G2或G3的S0 + G4 |
+| compiler/native dependency/ABI/build recipe | 对应S0、installed consumer、runtime identity及下游 | S0及G1 build closure + G4 |
+| config/model/oracle/harness | 对应S0、受影响的proof和正式运行 | S0及源/输入preflight + G4 |
 | 纯文档无行为变化 | 结构/追踪/链接检查 | 文档检查；不得自动重跑模型 |
 
 ## Delivery
@@ -94,7 +98,7 @@ T017 的 evidence/development-handoff.md 包含 exact commit、clean source clos
 
 ## Current Planning Result
 
-设计 revision 2 已有范围、架构不变量、CD、工作边界和 PO；
+设计revision 4已规定符号/字段契约、S0前置审查、架构不变量、工作边界与PO；
 完整实现就绪受 O-001--005 控制；O-005 设计由 T001 关闭，T014 再实现隔离并证明检错能力。
 下一步待合并修复提交稳定后执行T001，核对源码漂移、关闭叶子schema/ABI与兼容清单，再开始原生迁移。
 

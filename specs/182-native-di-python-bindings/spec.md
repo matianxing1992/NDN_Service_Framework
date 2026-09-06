@@ -3,7 +3,7 @@
 **Feature Branch**: `Experimental`
 **Feature Directory**: `182-native-di-python-bindings`
 **Created**: 2026-09-06
-**Revision**: 3
+**Revision**: 4
 **Status**: DRAFT
 **Execution Status**: NOT_STARTED
 **Activation**: active design; merged baseline stabilization in progress
@@ -138,8 +138,7 @@ Python 绑定可选构建，禁止依赖主工作区未提交文件。
   迁移清单；退出默认 import/运行图并有阻断旧实现仍可运行的证明。
 - **FR-012**: **Native Build and Runtime Closure**. System MUST 可独立构建/安装/链接原生库
   与 C++ consumer；生产运行树不依赖 Python/libpython/DI Python 包，绑定为可选构建产物。
-- **FR-013**: **Behavioral Proof and Convergence**. System MUST 保留真实 unit/integration/
-  MiniNDN 与可杀死错误实现的负例；正式本地验收前 code-aware audit PASS，故障先分类首边界。
+- **FR-013**: **Behavioral Proof and Convergence**. System MUST 在相应范围静态读码审查PASS后依次执行真实unit/integration/MiniNDN与规定负例；完整本地验收另需T015整体audit PASS，故障先分类首边界。
 - **FR-014**: **Immutable Local Delivery**. System MUST 交付同一源、原生库、配置、工件、
   adapter、harness、依赖锁与证据身份；本地交付和外部 SIF/Tiger verdict 分开记录。
 - **FR-015**: **Controlled Successor Activation**. System MUST 在合并修复基线及181承接表确认、对应设计门关闭后启动182实现；不要求先完成181全部旧资格，不改写历史验收结果。
@@ -147,6 +146,8 @@ Python 绑定可选构建，禁止依赖主工作区未提交文件。
   行为清单；禁止以提前离线固定切分、只验 warm path、只返回 tokens 或删除负例冒充完整原生化。
 
 - **FR-017**: **Symbol Documentation and Usage Closure**. System MUST 在每个实施单元开始前冻结受影响类、方法、字段和关键局部状态的职责、变更原因、签名、类型/单位/边界、所有权、失败/取消、调用方、注释及前后用法；新增/修改/复用/退出路径均可追踪，未决项阻塞对应实现。不得用堆砌符号名或转述方法名代替解释。
+
+- **FR-018**: **Pre-Test Static Code Review**. System MUST 在每个实施单元及unit/integration/MiniNDN入口执行或核对有效的S0静态代码审查：实际阅读生产/测试逻辑并对照设计，记录源码证据、问题与修复复审、subject身份和允许测试范围。未审、BLOCK、STALE或范围不足不得运行；代码/设计/测试等行为变化须使相关审查失效。lint/编译/文档扫描不能替代，具名RED只按受控审查契约放行。
 
 ### Key Entities
 
@@ -180,6 +181,8 @@ Python 绑定可选构建，禁止依赖主工作区未提交文件。
   映射，本地 audit/验收/交付证据齐全才关闭，外部实验不借用本地 PASS。
 
 - **SC-009**: **Reviewable Symbol Contracts**. 每个变更符号有覆盖条目和任务/证明映射，所有非 LOCAL_DETAIL 字段有语义说明；公开 C++/Python 文档及使用示例经实际构建/运行验收。设计阶段只计文档检查，不计编译通过。
+
+- **SC-010**: **Static Review Before Runtime Checks**. 每次unit/integration/MiniNDN执行证据均引用先于该次运行的有效S0报告，hash与范围相符、控制性finding为零；unit→integration→MiniNDN前层验收按约定通过。缺失/失效/越范围报告时在运行前停止。静态PASS不计运行PASS。
 
 ## Architecture Invariants
 
@@ -270,11 +273,17 @@ O-001（合并修复基线及181承接）、O-002（ONNX 原生字节契约）�
 [runtime boundaries](contracts/runtime-boundaries.md)、[work-units](contracts/work-units.md)、[plan](plan.md)、[tasks](tasks.md)、
 [traceability](traceability.md)、[audit](audit.md)、[checklist](checklists/requirements.md)。
 
+## Static Review Contract
+
+[Pre-test static review](contracts/pre-test-static-review.md)定义S0范围、逐代码路径推理、finding修复复审、阶段入口、证据与失效规则。T002--T014在本任务内先审查再focused运行；T015保留完整系统审查，T016按unit→integration→MiniNDN验收。无需为每文件另加审查任务。
+
 ## Symbol Documentation Contract
 
 [Symbol design](contracts/symbol-design.md) 定义类/方法/状态/注释/用法；[value contracts](contracts/value-contracts.md) 对照合并源码的12类137字段，逐项解释含义；[coverage inventory](contracts/source-field-coverage.json) 保留机器可查来源。嵌套 schema、原生依赖 ABI、注册/取消接线等未决项必须在T001关闭，禁止跳过到实现。
 
 ## Revision History
+
+- Revision 4：新增FR-018/SC-010/PO-015及S0静态代码审查；每单元在unit/integration前读码对照设计并修复复审，T015整体审查仍先于T016正式验收，补报告身份/范围/失效与具名RED限制。
 
 - Revision 3：依据合并工作区修正基线和承接门；保留新 Core 安全/撤销能力，纠正 CandidateBudget 字段；增加 FR-017/SC-009 及逐符号、字段、注释、用法契约。设计交付不代表迁移已完成。
 

@@ -1,11 +1,11 @@
 # Spec182 Design Audit
 
-**Revision**: 3 | **Mode**: full / pre-implementation
+**Revision**: 4 | **Mode**: design-workflow revision / pre-implementation
 **Verdict**: DRAFT / BLOCK for implementation
 **Evidence layer**: source/design review；runtime NOT_RUN
 **Reviewed source**: merged-source-baseline-r3.json；未提交merge及修复快照，不仅HEAD。
-**Evidence**: [revision 3 review](evidence/skill-and-design-revision3.md)；[revision 2 history](evidence/audit-revision2.md)
-本轮按最新用户要求强化设计技能并修正182；不执行生产实现，不干扰正在进行的合并修复。
+**Evidence**: [revision 4 review](evidence/static-review-gate-revision4.md)；[revision 3 history](evidence/skill-and-design-revision3.md)
+本轮按用户要求将静态读码审查前置到unit/integration/MiniNDN之前；仅修改技能和文档，不对尚未实现的182签发产品审查PASS。
 
 ## Findings
 
@@ -40,6 +40,14 @@ FIXED_IN_DESIGN 仅表示规范缺陷已修正，不表示对应 native 行为�
 | A182-21 | HIGH / PARTIAL | 只列类名/签名不足以指导迁移，注释和变量责任没有逐项契约 | FR-017/SC-009、21类/模块、48方法、137来源字段与每任务文档/用法门；嵌套schema/ABI/完整caller仍OPEN，禁止声称全部READY |
 | A182-22 | HIGH / OPEN | 合并记录unit/integration仍失败，无法作为完整稳定交付基线 | 保留首边界及来源记录；本轮不修改或重跑另一工作单元修复 |
 
+## Revision 4 Findings
+
+| ID | Severity / status | Finding | Disposition |
+| --- | --- | --- | --- |
+| A182-23 | HIGH / FIXED_IN_DESIGN | 只有T015正式资格前整体audit，不能阻止各单元先跑focused tests再发现明显逻辑错误 | 新FR-018/SC-010/PO-015和SR-001--009，每单元S0先于unit/integration；T015保留整体范围 |
+| A182-24 | HIGH / FIXED_IN_DESIGN | 原L0混合Static/compile，易以lint/编译或结构扫描冒充实际逻辑审查 | S0单列源码/设计/测试逻辑对照、walkthrough/finding及证据；L0仍只证明构建边界 |
+| A182-25 | HIGH / FIXED_IN_DESIGN | 审查结论没有明确测试scope/逐层入口和修复失效，旧PASS可能放行新代码或更广实验 | hash+AllowedTestScope+TestEntryChecks；BLOCK修复复审，行为变化STALE；具名RED不放行正常测试 |
+
 ## Readiness Scorecard
 
 | Rubric / gate | Verdict | Evidence / limit |
@@ -51,7 +59,7 @@ FIXED_IN_DESIGN 仅表示规范缺陷已修正，不表示对应 native 行为�
 | Code reality | PASS for reviewed scope | exact workspace 来源，指明 planned 接口；不等于穷尽 O-004 |
 | Security / distributed correctness | BLOCK for implementation | admission/cancel/rollback 已定义；完整 wire/journal/权限字段仍由 O-004 控制 |
 | Task executability | BLOCK | T001 需关闭 OPEN 和大批次叶子契约；后续任务不可绕过 |
-| Validation design | PASS for design | 独立 oracle、定向 counterfactual、先 harness 后 audit，最后正式验收 |
+| Validation design | PASS for design | 独立 oracle、定向 counterfactual、每单元先S0再测试；harness先S0/自检后T015整体audit，最后正式验收 |
 | Evidence integrity | PASS for design | revision 1/2历史与合并快照分开；合并unit/integration记录只读取，持续源码漂移已记录 |
 | Migration / rollback | BLOCK for final inventory | 已定义分类/删除/混合版本/持久化回退契约；逐 caller 数据清单仍 O-004 |
 | Performance / operations | PASS for scope | 不承诺语言带来加速；deadline/有界队列/清理身份保留；SIF/Tiger 外部承担 |
@@ -67,7 +75,7 @@ FIXED_IN_DESIGN 仅表示规范缺陷已修正，不表示对应 native 行为�
 - T009 host 提供 T012 Provider 绑定所缺的先决接口，不重写 runtime。
 - T012 绑定与 T013 所有调用方/旧路径退出的 gate 不同，有独立迁移价值。
 - T014 harness、T015 审计、T016 正式运行有明确依赖和不同交付，不把一次测试机械拆单。
-- 每个实现单元仍包含自己的定向测试/回归/证据；任务数不是进度或质量证明。
+- 每个实现单元包含自己的S0读码/修复复审和定向测试/回归/证据；17任务不机械扩张。
 
 ## Traceability and Counterfactual Review
 
@@ -79,7 +87,7 @@ Provider stop 误停共享服务、未知 journal 自动降级、审计后更改
 
 ## Verdict and Next Actions
 
-本轮已修正可由合并源码确定的规范缺陷，并记录符号覆盖与剩余未决项。
+本轮已修正静态审查时点、语义审查与编译混淆、范围和失效门禁；原符号/依赖未决项保留。
 整体仍 **DRAFT / BLOCK for implementation**，不能把结构 PASS 写成 READY。
 下一步在合并修复稳定后执行 T001，冻结原生依赖、兼容字段/调用方、
 隔离设计并细化工作单元，再对相应范围作 readiness review。

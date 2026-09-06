@@ -1,6 +1,6 @@
 # Proof Design
 
-**Revision**: 3 | **Status**: planned; behavioral verification NOT_RUN
+**Revision**: 4 | **Status**: planned; behavioral verification NOT_RUN
 本契约定义将来证明，不记录虚构测试结果。source review 不等于行为通过。
 
 ## Proof Obligations
@@ -18,9 +18,10 @@
 | PO-009 | FR-010; CD-008 | Python 绑定和独立 C++ consumer 输入等价请求 | 固定 entropy/时钟/ACK transcript 下精确 plan bytes；实时只比较规定语义和数值 | 结果/错误/取消一致；注入 Python 策略 callback 在入口拒绝，不执行 callback |
 | PO-010 | FR-011/016; CD-010 | maintained user/provider/runner 默认入口；阻断旧模块 | capability/caller inventory 与运行时 import/exec observation | 旧 coordinator/provider/helpers 被阻断仍运行；主动接回一条旧入口必须使检查失败 |
 | PO-011 | FR-013/014; CD-011 | 同源完整 unit/integration + MiniNDN matrix | YOLO standalone numerical oracle、Qwen token/text oracle、进程退出与资源/secret 清理 | 所有规定 case 终端成功/注册拒绝；启动/collector 故障不得算拒绝 PASS |
-| PO-012 | FR-014/015; CD-012 | 干净 checkout / handoff receiver | commit、依赖、模型/config/harness SHA-256；181 冻结交付文档 hashes；本次设计 pointer 前后 hash（未来激活时应切182） | 本地交付身份完整，外部结果单列；替换源/依赖/配置使 gate 在启动前拒绝 |
+| PO-012 | FR-014/015; CD-012 | 干净 checkout / handoff receiver | commit、依赖、模型/config/harness SHA-256；合并基线与181承接文档hashes；当前182活动指针及审查身份 | 本地交付身份完整，外部结果单列；替换源/依赖/配置使 gate 在启动前拒绝 |
 | PO-013 | FR-001/002/004/009/016; CD-013 | native prepareInput/inspectModel/ensureArtifacts/verify 经 requester 生产入口 | 冻结 task encode/decode、认证 ACK/policy 和 publication 向量 | 不由 harness 预先规划；假 provenance/错 candidate/错实际名字/图身份被拒；移除任一绑定校验后反例失败 |
 | PO-014 | FR-001/009/010/012; CD-014 | C++ consumer/CLI/native binding → 同一 Provider host | 真实 Core ACK/Selection/Response 与共享第二服务 | 不调用旧 Python runner；停一注册不破坏共享服务；接回旧 provider 或提前销毁 handler 会失败 |
+| PO-015 | FR-013/018; CD-001--014 | 每单元及T016各层测试启动前，实施代理核对S0报告 | 设计条款与实际代码路径对照、source/test/config hashes、具名允许范围及运行时间/前层结果 | 无报告、BLOCK/STALE、范围不足或身份漂移必须在运行前停止；静态推理与运行结果分别记录，规则结构检查不能冒充代码审查 |
 
 ## Negative Path Matrix
 
@@ -43,6 +44,9 @@
 
 ## Verification Ladder
 
+- S0：逐路径静态读码对照设计、tests/fixture/oracle，修复控制性finding并复审PASS；先于任何对应范围的运行检查。详见 [S0 contract](pre-test-static-review.md)。
+
+
 - L0：原生公共头/库/consumer 编译链接、default import/依赖检查；不证明运行。
 - L1：每单元的纯函数、编码、策略、资源/状态负例。
 - L2：受影响 Core/DI/model adapter 的现有定向回归，必须登记 selectors。
@@ -51,7 +55,7 @@
 - L5：所有 FR/能力清单的最终同源回归与 no-Python/legacy-exclusion。
 - L6：每个 PO 至少一个错误实现或输入 counterfactual；必须在语义断言处失败。
 编译失败、收集失败和环境缺失不是 L6 成功。focused L1--L3/L6 可在修复期间运行；
-完整 suites/MiniNDN 正式验收必须先 T015 audit PASS。
+各单元unit/integration前须当前范围S0 PASS；完整suites/MiniNDN还须T015整体PASS。T016按完整unit→integration→MiniNDN逐层进入，每层核对审查identity/scope与前层结果。具名RED只按S0契约的受控缺陷规则放行。
 
 ## Planned Test and Build Inventory
 
@@ -117,12 +121,16 @@ T001/O-005 冻结隔离设计、T014 实现后，用已知 fork-helper 版本作
 
 每单元 evidence/tNNN-<unit>.md 必须记录：
 Task、DesignRevision、SourceIdentity、DesignClausesImplemented、FilesActuallyChanged、
-SymbolsActuallyChanged、BehavioralProofs（PO/layer/oracle/result）、CommandsExecuted
+SymbolsActuallyChanged、StaticReview（ReviewId/report/subject/verdict/AllowedTestScope）、TestEntryChecks（审查身份/范围、前层结果）、BehavioralProofs（PO/layer/oracle/result）、CommandsExecuted
 （cwd/env/exit/raw path）、FailuresEncountered、DesignDeviations、RemainingRisks、
 DiffScope、RecoveryState、ImplementationStatus、VerificationStatus、AcceptanceStatus、NextAction。
 
 失败保留新 run-dir，更新 active Spec evidence/tasks 与 docs/failure-log.md，
 不得覆盖历史日志或提交 secrets/大原始输出。状态为 IMPLEMENTED 不自动等于 ACCEPTED。
+
+## Static Review Proof
+
+PO-015是工作流证据约束，不凭空新增自动运行拦截器。实施代理必须在记录command之前核对报告，缺失即停止；T015抽查逐路径语义推理及所有运行的前置记录。静态审查可发现的返回值忽略、失效owner、权限顺序、错误默认入口或oracle自证，必须先修再测。静态PASS无法证明真实网络、并发与数值正确，PO-001--014运行证明仍全部保留。
 
 ## Symbol Documentation Proof
 
