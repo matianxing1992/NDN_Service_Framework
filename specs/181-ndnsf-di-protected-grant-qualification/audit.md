@@ -16,8 +16,11 @@ T005 的 ce6a4ba0 subject 已通过 R19 完整矩阵，验收独立保留；T008
 配置缺口已按设计修复，76 项定向回归与受影响代码复审 PASS。完整
 T008 的四组预存共享回归已通过 32 项检查，Batch B 两组应用/Merge
 回归已通过 19 项；Batch C 核实未交付 GPU 实现依赖后，来源审查保留
-九项实验/历史草稿（含实际失败与后续 GPU 准入条件），仍须完成四项
-本地测试/依赖纳入与显式 checkpoint 消费、最终运行输入闭合。
+九项实验/历史草稿（含实际失败与后续 GPU 准入条件）。Exporter、
+adapter、numerical 三组及共享显式 checkpoint 消费已纳入，隔离
+41 项定向检查 PASS，包括 640 固定输入真实 CPU ORT/PyTorch 数值
+对照；见 [exporter adoption](evidence/t008-local-suite-preflight-20260906.md#exporter-adoption-r1)。
+仍须完成 candidate 本地交付工具/回归与最终运行输入闭合。
 三案例配置已通过生产静态校验，最终 subject 仍须
 复审后运行。详见
 [T008 review](evidence/t008-local-suite-preflight-20260906.md#focused-configuration-r2-and-review)。

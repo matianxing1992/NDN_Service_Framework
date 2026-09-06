@@ -221,7 +221,8 @@ Test Source Closure 的待处置项和完整构建清单限制，未启动完整
 以 `4bd1998b` 提交与主工作区预存未跟踪草稿作比较，余下 15 文件
 初审分为七项本地待纳入和八项保留移交/历史工具草稿；Batch B 后
 本地两项已验证纳入；Batch C 核实 native evidence 草稿依赖尚未交付的
-GPU 实现，将其改归后续实验准备。当前尚余四项本地工作、九项保留
+GPU 实现，将其改归后续实验准备。随后 exporter/adapter/numerical
+三组 R1 41 项定向检查通过；当前尚余一项本地工作、九项保留
 草稿，变更理由与失败证据保留在 Batch C。此表不是删除测试
 或选择器豁免：已提交的继承测试仍由现有发现规则全量收集；本地
 待纳入项须先审查依赖、修正过期 fixture，再在隔离源码验证后提交。
@@ -231,11 +232,11 @@ GPU 实现，将其改归后续实验准备。当前尚余四项本地工作、�
 | --- | --- | --- |
 | test_spec180_candidate.py | LOCAL_PENDING / T009 | 旧 helper 强制 SIF 等十平面；按已批准本地交付契约修订 helper 与测试，封印发生在 T008 后。 |
 | test_spec180_native_evidence.py | TRANSFERRED_DRAFT / T010-T011 preparation | Batch C 证明需要未交付 CUDA 身份/profile/observation 实现；本机开发 owner 后续提供代码修复，实验机器 owner 执行 GPU 验证。当前 CPU 验收不得升级为 GPU 资格。 |
-| test_spec180_yolo_adapter.py | LOCAL_PENDING / T008 | 真实 catalogue/候选/分区检查依赖 exporter；纳入并验证本地工具与显式 checkpoint 输入。 |
+| test_spec180_yolo_adapter.py | ADOPTED / T008 | Exporter Adoption R1 通过真实 catalogue/候选/签名/分区检查，使用共享显式 checkpoint 输入。 |
 | test_spec180_yolo_application.py | ADOPTED / T008 | Batch B R2 PASS；生产入口、输入和终端 owner，源码断言与实际函数检查分别限定证据范围。 |
 | test_spec180_yolo_equivalence.py | ADOPTED / T008 | Batch B R2 PASS；共享投影/原生 Merge/canonical 发布，显式 package/registry、真实签名与当前 adapter 路径。 |
-| test_spec180_yolo_export.py | LOCAL_PENDING / T008 | pinned checkpoint、签名、实际 ONNX 导出；审查 exporter 和外部模型输入闭包。 |
-| test_spec180_yolo_numerical.py | LOCAL_PENDING / T008 | 数值 oracle、独立预处理及真实 User 函数；补齐 exporter 依赖及当前 tensor helper 接线。 |
+| test_spec180_yolo_export.py | ADOPTED / T008 | Exporter Adoption R1 通过 pinned checkpoint、显式输入拒绝、真实签名/ONNX 导出与 640 CPU ORT 数值对照。 |
+| test_spec180_yolo_numerical.py | ADOPTED / T008 | Exporter Adoption R1 通过独立预处理、真实 User 函数/终端分支与反例；torch 为必需依赖，不 skip。 |
 | test_spec180_contract_gate.py | TRANSFERRED_DRAFT / experiment tools owner | 目标固定 Spec180 文档与九个 SC，运行调用方为 spec180_release.py；不能将旧文档门冒充 Spec181 审计。本地 catalogue 验证由已提交 adapter 与本地签名回归覆盖。 |
 | test_spec180_dispatcher.py | TRANSFERRED_DRAFT / experiment tools owner | run_spec180_case.py 的 yolo-functional / QWEN-F workload，调用方为 SIF/release；本地维护 runner 由 inventory 直接注册。 |
 | test_spec180_qwen_entrypoint.py | PRESERVED_DRAFT / local development owner | QWEN-F 模型 manifest 与 delegate，不是本 Spec 的 Y-A/Y-B/Y-N 或共享 runtime 验收；后续适用开发范围再纳入。 |
@@ -551,6 +552,80 @@ Ed25519 公钥，再比较注册摘要与生产 local_input_identity 记录：
 输入身份/结果。snapshot 不替代签名验证、模型摘要 pin 或运行验收。
 下一步剩余四项本地工具/测试纳入，导出测试消费显式 checkpoint，
 确定最终输入和新源码身份后重新审计，才允许完整 T008 gate。
+
+## Exporter And Numerical Source Adoption Plan
+
+在 `7f5a3aff` 隔离源码上纳入既有
+`tools/ndnsf-di/export_spec180_yolo26_onnx.py`，保留真实 PyTorch 导出、
+外置 ONNX initializer、图元数据/四角色分区、注册签名与独立 oracle。
+现有 `yolo_split_lib.py` 与固定 PPM fixture 已提交；不新增模型下载、
+GPU 或网络案例。原草稿已审查到 build_package/CLI 与全部调用 helper。
+
+纳入 `test_spec180_yolo_adapter.py`、`test_spec180_yolo_export.py`、
+`test_spec180_yolo_numerical.py`。前两者用新增共享测试辅助文件
+`tests/python/spec180_yolo_inputs.py::declared_yolo_checkpoint() -> Path`
+替代隐含 `ROOT/yolo26n.pt`。该函数每次从 SPEC180_YOLO_CHECKPOINT
+读取绝对文件路径，缺声明/相对路径/非文件明确拒绝；保持 symlink
+声明路径供现有 input identity 绑定，摘要 pin 仍由 exporter 负责。
+两个消费者共用该入口，不复制两套环境解析。导出文件新增输入拒绝
+检查；真实导出仍保留 32 与 640 输入，后者直接对照 CPU ORT 输出。
+
+数值文件保留独立 torch 预处理对照、真实 User 输入/输出函数、负例
+与终端状态分支；torch/ORT 是这些具名检查的必需依赖，缺失应失败，
+不以 importorskip 消除应有覆盖。生产 User 若已有新 helper 依赖，先
+按首个失败边界核对真实符号与测试加载闭合，不复制被测行为。
+
+先运行共享输入拒绝及三个具名文件的定向检查；使用系统 Python 3.8、
+已验证固定 checkpoint、CPU 与隔离输出目录。测试源/工具通过后纳入
+交付，剩余 candidate 本地封印工具仍需闭合，完整 gate 继续 BLOCK。
+
+## Exporter Adoption R1
+
+**Layer**: focused CPU export + adapter + production User function regression；
+MiniNDN / full qualification NOT_RUN。隔离 `7f5a3aff` 加上述五文件，
+所有源字节与主工作区投影一致；exporter 721 行沿用现有实现，未改
+协议或模型计算。测试修复隐含 checkpoint 路径，新增共享输入入口。
+
+从隔离源码根目录运行，output 由 pytest 临时目录分别隔离：
+
+```bash
+env PATH=/usr/bin:/bin:/usr/local/bin \
+  PYTHONPATH=NDNSF-DistributedInference \
+  OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+  SPEC180_YOLO_CHECKPOINT=/absolute/path/to/yolo26n.pt \
+  timeout 600 /usr/bin/python3 -m pytest -q \
+  tests/python/test_spec180_yolo_adapter.py \
+  tests/python/test_spec180_yolo_export.py \
+  tests/python/test_spec180_yolo_numerical.py
+```
+
+实际 checkpoint 为主工作区已有的 yolo26n.pt，SHA-256
+`9b09cc8bf347f0fc8a5f7657480587f25db09b34bf33b0652110fb03a8ad4fef`，
+通过显式环境声明供隔离源码消费，没有复制为根目录隐含依赖。
+**41 passed、22 warnings（18.06 s，exit 0，无 skip）**。包括实际
+32/640 ONNX 外置 initializer 导出，640 固定 PPM 输入的 CPU ORT
+输出与独立 PyTorch oracle 在 `atol=1e-3, rtol=1e-4` 内一致，以及
+候选/角色/签名/公钥摘要变异拒绝、数值反例与真实 User 函数结果。
+测试只在外部 transport/journal 等边界使用替身，不代替被测数值行为。
+
+22 条警告为固定形状导出的 tensor-to-bool tracing 和高级索引导出
+提示；本轮验证限于声明的固定输入/图，不据此声称动态形状或任意输入
+等价。保留原始警告，未过滤或降低数值门槛。全部原始结果在 ignored
+workspace temporary directory 下
+`spec181-yolo-source-adoption-20260906-r1/tests.log`，SHA-256
+`fb9a27601ff46a83ddebbaa12f62bae07711d8281b09db2fc358cbc4e7816fef`。
+
+Source hashes：exporter
+`2d742c2b9f97d83810e6fdf99d898415c5b4e17333cecc9d870a4306bf92afa4`；
+共享输入 helper
+`f5a11c5b000a0674a03ca4578a125dd8b30c36ff85e3d9e042aecb3feb6f6b71`。
+三个测试文件 adapter/export/numerical 分别
+`65683c9fc7e829b9186fbc80ec7c938eedcb0e330e68e12f4953dee967241f9d`、
+`85b9eb60a39f45508d6d55e5d919db53cd1b8d6944a68e34f448f20c40f58d2a`、
+`d8116af2ad2a15d047b0f5bc2a6241d43a0d9f025a1edb0d9c3dc84950eee1ea`。
+
+此批三组本地 source dependency CLOSED；剩余 candidate 本地封印
+工具仍待实现/验证。未运行完整 suite 或 Y-A/Y-B/Y-N，T008 不勾选。
 
 ## Case Profiles R1
 

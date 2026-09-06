@@ -19,6 +19,14 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 T008 exporter adoption R1 (2026-09-06): focused PASS.**
+The isolated exporter/adapter/numerical run passes 41 checks with no skips.
+Explicit checkpoint input, actual 32/640 ONNX export, registered signatures,
+640 CPU ORT versus PyTorch oracle, and production User negative branches are
+covered. Preserve 22 fixed-shape export warnings; candidate local-delivery
+tool closure and complete qualification remain open. See
+[exporter adoption](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t008-local-suite-preflight-20260906.md#exporter-adoption-r1).
+
 **Spec181 T008 input closure R3 (2026-09-06): focused PASS.**
 The isolated inventory/supervisor run passes 92 checks after the actual RED.
 Checkpoint files and registry-referenced public keys are bound; changed inputs
