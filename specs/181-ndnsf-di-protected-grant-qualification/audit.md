@@ -19,6 +19,12 @@ T008 的四组预存共享回归已通过 32 项检查；仍须处置余下 15 �
 实际配置，再对最终 subject 复审。详见
 [T008 review](evidence/t008-local-suite-preflight-20260906.md#focused-configuration-r2-and-review)。
 
+T008 旧 runtime 测试已迁移到当前缺配置拒绝与真实 grant fixture，
+R2 定向构建和 30/30 用例、225/225 断言 PASS；保留数据流/零化及
+cleanup-failure/retry 覆盖，生产源码未改。此项关闭旧 `revoke/revoked`
+测试编译边界，不解除上述完整 suite BLOCK，见
+[runtime test migration](evidence/t008-local-suite-preflight-20260906.md#full-test-build-r1-and-runtime-test-migration)。
+
 以下是 R19 执行前的 wire/native 受审范围与许可：
 维护 native build 与独立 verify 均 exit 0，刷新后的真实 Core 上
 重跑 21/21 与 270/270 断言通过。按 12 维度复审受影响边界后

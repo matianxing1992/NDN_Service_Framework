@@ -5,6 +5,10 @@
 #include <stdexcept>
 #include <string>
 
+// Structural consistency grants no authority without configured credentials.
+// Real grant, dataflow and zeroization checks use BoundGrantFixture in the
+// companion protected-runtime-grant test file.
+
 namespace ndnsf::di::test {
 namespace {
 
@@ -28,7 +32,8 @@ binding()
   value.epochKeyId = std::string(64, 'f');
   value.providerBootId = "boot-1";
   value.fencingToken = "fence-1";
-  value.revocationSequence = 4;
+  // Passive wire field (fixed; no revocation ledger on this branch).
+  value.revocationSequence = 1;
   value.expiresAtMs = 5000;
   value.mayPublishEndpointDigests = {
     "sha256:" + std::string(64, '1')};
@@ -41,56 +46,74 @@ binding()
   return value;
 }
 
+bool
+hasToken(const std::exception& error, const std::string& token)
+{
+  return std::string(error.what()).find(token) != std::string::npos;
+}
+
 } // namespace
 
-BOOST_AUTO_TEST_CASE(ProtectedRuntimeRejectsWrongDataflowAndZeroizesOnRevocation)
+BOOST_AUTO_TEST_CASE(ProtectedRuntimeVerifyGrantFailsClosedWithoutConfiguration)
 {
   const auto expected = binding();
   ProtectedRuntime runtime(expected);
-  runtime.verifyGrant(expected, 1000);
 
-  BOOST_CHECK_NO_THROW(runtime.authorizeDataflow(
-    ProtectedDataflowDirection::Publish,
-    "sha256:" + std::string(64, '1'), "stage0", "stage1", 1001));
+  // Matching fields cannot substitute for fetching and verifying a grant.
+  try {
+    runtime.verifyGrant(expected, 1000);
+    BOOST_FAIL("verifyGrant must fail closed without configured credentials");
+  }
+  catch (const std::runtime_error& error) {
+    BOOST_CHECK(hasToken(error, "DI_PROTECTED_GRANT_UNAVAILABLE"));
+  }
+  BOOST_CHECK(runtime.state() == ProtectedRuntimeState::FailedClosed);
   BOOST_CHECK_THROW(runtime.authorizeDataflow(
     ProtectedDataflowDirection::Publish,
-    "sha256:" + std::string(64, '9'), "stage0", "stage1", 1001),
+    "sha256:" + std::string(64, '1'), "stage0", "stage1", 1001),
     std::runtime_error);
-  BOOST_CHECK_THROW(runtime.authorizeDataflow(
-    ProtectedDataflowDirection::Publish,
-    "sha256:" + std::string(64, '1'), "stage0", "wrong-consumer", 1001),
-    std::runtime_error);
-  BOOST_CHECK_THROW(runtime.authorizeDataflow(
-    ProtectedDataflowDirection::Publish,
-    "sha256:" + std::string(64, '1'), "wrong-role", "stage1", 1001),
-    std::runtime_error);
-
-  bool hostZeroized = false;
-  bool deviceZeroized = false;
-  runtime.registerHostPlaintextLease(
-    "host-1", [&] { hostZeroized = true; });
-  runtime.registerDevicePlaintextLease(
-    "device-1", [&] { deviceZeroized = true; });
-  runtime.revoke(5, "grant revoked");
-
-  BOOST_CHECK(hostZeroized);
-  BOOST_CHECK(deviceZeroized);
-  BOOST_CHECK(runtime.revoked());
-  BOOST_CHECK(runtime.state() == ProtectedRuntimeState::Zeroized);
-  BOOST_CHECK_THROW(runtime.authorizeDataflow(
-    ProtectedDataflowDirection::Publish,
-    "sha256:" + std::string(64, '1'), "stage0", "stage1", 1002),
-    std::runtime_error);
+  BOOST_CHECK_THROW(
+    runtime.registerHostPlaintextLease("host-1", [] {}), std::runtime_error);
 }
 
-BOOST_AUTO_TEST_CASE(ProtectedRuntimeFailsClosedOnGrantSubstitution)
+BOOST_AUTO_TEST_CASE(ProtectedRuntimeBindingConsistencyGrantsNoAuthority)
+{
+  const auto expected = binding();
+  ProtectedRuntime runtime(expected);
+
+  // Structural consistency is checked and passes...
+  BOOST_CHECK_NO_THROW(runtime.verifyBindingConsistency(expected, 1000));
+  // ...but it grants no execution authority: state stays NoGrant, so every
+  // authorized operation still fails closed.
+  BOOST_CHECK(runtime.state() == ProtectedRuntimeState::NoGrant);
+  BOOST_CHECK_THROW(runtime.authorizeDataflow(
+    ProtectedDataflowDirection::Publish,
+    "sha256:" + std::string(64, '1'), "stage0", "stage1", 1001),
+    std::runtime_error);
+  BOOST_CHECK_THROW(
+    runtime.registerDevicePlaintextLease("device-1", [] {}),
+    std::runtime_error);
+  try {
+    runtime.verifyGrant(expected, 1001);
+    BOOST_FAIL("verifyGrant must fail closed without configured credentials");
+  }
+  catch (const std::runtime_error& error) {
+    BOOST_CHECK(hasToken(error, "DI_PROTECTED_GRANT_UNAVAILABLE"));
+  }
+
+  // Cleanup on an un-authorized runtime still drains cleanly.
+  BOOST_CHECK_NO_THROW(runtime.cancel("no authority granted"));
+  BOOST_CHECK(runtime.state() == ProtectedRuntimeState::Zeroized);
+}
+
+BOOST_AUTO_TEST_CASE(ProtectedRuntimeFailsClosedOnBindingSubstitution)
 {
   const auto expected = binding();
   auto substituted = expected;
   substituted.provider = "/provider/P1";
   ProtectedRuntime runtime(expected);
 
-  BOOST_CHECK_THROW(runtime.verifyGrant(substituted, 1000),
+  BOOST_CHECK_THROW(runtime.verifyBindingConsistency(substituted, 1000),
                     std::runtime_error);
   BOOST_CHECK(runtime.state() == ProtectedRuntimeState::FailedClosed);
   BOOST_CHECK_THROW(runtime.authorizeDataflow(
@@ -99,18 +122,18 @@ BOOST_AUTO_TEST_CASE(ProtectedRuntimeFailsClosedOnGrantSubstitution)
     std::runtime_error);
 }
 
-BOOST_AUTO_TEST_CASE(ProtectedRuntimeRemainsFailedClosedAfterZeroizerFailure)
+BOOST_AUTO_TEST_CASE(ProtectedRuntimeFailsClosedOnExpiry)
 {
   const auto expected = binding();
   ProtectedRuntime runtime(expected);
-  runtime.verifyGrant(expected, 1000);
-  runtime.registerHostPlaintextLease("host-bad", [] {
-    throw std::runtime_error("device cleanup failed");
-  });
 
-  BOOST_CHECK_THROW(runtime.cancel("request cancelled"), std::runtime_error);
+  BOOST_CHECK_THROW(runtime.verifyBindingConsistency(expected, 5001),
+                    std::runtime_error);
   BOOST_CHECK(runtime.state() == ProtectedRuntimeState::FailedClosed);
-  BOOST_CHECK_THROW(runtime.verifyGrant(expected, 1001), std::runtime_error);
+  BOOST_CHECK_THROW(runtime.authorizeDataflow(
+    ProtectedDataflowDirection::Publish,
+    "sha256:" + std::string(64, '1'), "stage0", "stage1", 1002),
+    std::runtime_error);
 }
 
 } // namespace ndnsf::di::test

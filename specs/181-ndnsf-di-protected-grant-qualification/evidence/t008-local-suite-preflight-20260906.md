@@ -118,6 +118,69 @@ Batch A R3 最终字节重跑：**32 passed，2.78 s，exit 0，无 skip**；
 日志为 `spec181-test-adoption-20260906-r3/tests.log`。主工作区与隔离
 投影四文件逐字节一致；不把原提交钩子失败解释为代码或协议失败。
 
+## Full Test Build R1 And Runtime Test Migration
+
+完整 test-target 构建在 `distributed-inference-protected-runtime.t.cpp`
+的旧 `revoke/revoked` 调用处 exit 1。首边界为编译，未执行 unit 或
+integration。该接口已按用户决定移交另一分支，不恢复接口来迁就
+旧测试。主工作区的未提交版本也仍含 “until T002” 历史注释。
+
+迁移设计：旧文件保留缺少 grant config、仅 binding 一致不授予权限、
+绑定替换和过期拒绝；改为当前语义命名。其原有数据流/零化证明迁入
+`distributed-inference-protected-runtime-grant.t.cpp` 的真实 BoundGrantFixture，
+先精确获取并验证固定 grant，再断言 publish/fetch endpoint、local/peer
+角色边界和取消/拒绝后 host/device buffer 清零。已有真实 fixture 的
+cleanup-failure/retry 检查保留。增加 Waf focused target
+`spec181-protected-runtime-closure`，复用现有 DI sources 与本地库，执行
+上述两文件；通过后继续完整编译。不以编译错误冒充语义 RED。
+
+恢复中断补丁时发现 `tests/wscript` 重复 `name='unit-tests'`；已移除
+该重复参数，并添加上述独立 target。两份测试在主工作区与隔离检出
+逐字节一致；主工作区其他任务新增的 tokenizer source 不纳入本单元。
+定向构建原始目录为 `spec181-protected-runtime-closure-20260906-r1/`，
+使用系统 Python/Waf、既有 `build-system-j2` 配置与 `-j2`。
+
+R1 构建 exit 0（2m4.495s），两文件 **30/30 用例、225/225 断言 PASS**；
+数据流与取消/拒绝清理新增用例独立 63/63 断言。复审将该用例 buffer
+声明提前到 runtime 之前，确保异常离开时清理回调不访问已析构 buffer；
+不改变生产实现或断言。最终字节在新 R2 构建/重跑，保留 R1。
+
+R2 最终构建 exit 0（14.274 s），测试 exit 0，**30/30 用例、225/225
+断言 PASS，无 skip**。从隔离仓库根执行：
+
+```sh
+env -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \
+  PATH=/usr/bin:/bin:/usr/local/bin /usr/bin/python3 ./waf build \
+  --out=build-system-j2 --targets=spec181-protected-runtime-closure -j2
+env PATH=/usr/bin:/bin:/usr/local/bin \
+  ./build-system-j2/spec181-protected-runtime-closure \
+  --report_level=detailed --log_level=test_suite
+```
+
+原始目录为 ignored workspace temporary directory 下
+`spec181-protected-runtime-closure-20260906-r2/`。构建为 `46cd21a4` 加
+本单元两测试及 Waf target 投影；主工作区两测试字节与已测投影一致。
+生产源码未改；ldd 确认使用隔离 Core、系统 ndn-cxx 0.9.0、既定 SVS
+build library 和 `/opt/onnxruntime`，无缺失动态库。Core SHA-256 仍为
+`0e748103217e3f5af7038cc15d8aee0863e3c832a954ba9b7338df2d1d7d5370`。
+
+| Artifact | SHA-256 |
+| --- | --- |
+| R2 build.log | `4fd6603d398711b1a17d73c06049e650a37e9c0f085028c6873f9ee363e423fa` |
+| R2 tests.log | `2e4918617bfa7046668caef9f67d7f4eb5431347b7c03e8dc197f76448c35555` |
+| focused executable | `35261c947f537d5cef7dc4910e87e12a03883a34f17a8d37aa12fb79001de1e5` |
+| protected-runtime.t.cpp | `403c93e6865fc84aca28ed5ead2de9afa81acfb1ebe187f44b8b1641fb69dcb4` |
+| protected-runtime-grant.t.cpp | `f4c2a982a50170bd2a363aaf6c2c7cad5874055415abb88b0c68d7145855a906` |
+
+迁移复审 PASS：缺配置不授予权限；结构一致不冒充 grant 验证；两种
+数据流各自的 endpoint/local/peer 边界触发真实 runtime 拒绝、内容
+密钥不可用和 host/device lease 清理；取消正向也清理。device lease
+以测试 buffer 验证回调契约，不是 CUDA 设备内存实验。fetch callback
+返回固定签名向量、密码学校验使用生产 verifier；本单元不证明 NDN
+获取链。已有 cleanup-failure/retry、worker guard 等 29 个用例保留。
+该定向修复关闭旧测试接口边界；完整 C++ 构建、剩余 15 份测试处置及
+正式 T008 验收仍待完成，不能把此 PASS 升级为完整 suite PASS。
+
 ## Focused Configuration R1
 
 新断言在修复前源码上运行：11 failed、4 passed、61 deselected，

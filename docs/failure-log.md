@@ -19,6 +19,18 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 T008 runtime test migration R2 (2026-09-06): focused PASS.**
+The final two-file target builds and passes 30 cases / 225 assertions.
+Real verified grants now cover publish/fetch rejection and host/device lease
+cleanup; credential-free checks remain fail-closed. Full-suite build and
+source closure remain open. See [runtime test migration](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t008-local-suite-preflight-20260906.md#full-test-build-r1-and-runtime-test-migration).
+
+**Spec181 T008 full test build R1 (2026-09-06): stale test API.**
+Compilation stops at the old ProtectedRuntime revoke/revoked calls; no full
+suite executed. Keep revocation transferred, migrate current fail-closed
+tests, and retain dataflow/zeroization assertions using real BoundGrantFixture.
+See [runtime test migration](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t008-local-suite-preflight-20260906.md#full-test-build-r1-and-runtime-test-migration).
+
 **Spec181 T008 test adoption R3 (2026-09-06): focused PASS.**
 The final four-file projection passes all 32 checks without skips after
 removing the rejected temporary-path fallback. Source/test bytes match the
