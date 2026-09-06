@@ -93,7 +93,7 @@ def _fixture_root(tmp_path: Path, inventory) -> Path:
     return tmp_path
 
 
-def _inventory(tmp_path: Path):
+def _inventory(tmp_path: Path, environment=None):
     inventory, runner = _modules()
     root = _fixture_root(tmp_path, inventory)
     value = inventory.build_inventory(
@@ -101,7 +101,7 @@ def _inventory(tmp_path: Path):
         candidate_id="candidate-test",
         candidate_digest="sha256:" + "a" * 64,
         source_revision=_git(root, "rev-parse", "HEAD"),
-        effective_config_digest="sha256:" + "c" * 64,
+        environment={} if environment is None else environment,
         integration_listing="Suite*\n    Test*\n",
         python_selectors=(
             "tests/python/test_spec180_fixture.py::test_fixture",
@@ -121,14 +121,18 @@ def _file_digest(inventory_module, path: Path) -> str:
 
 
 def test_local_gate_runs_each_inventory_entry_and_seals_snapshot(tmp_path: Path):
-    _inventory_module, runner, root, inventory = _inventory(tmp_path)
+    environment = {"PYTHONPATH": "", "SPEC175_RUN_REAL_MININDN": "1"}
+    _inventory_module, runner, root, inventory = _inventory(tmp_path, environment)
     result = runner.run_local_gate(
         inventory,
         root=root,
         output_root=tmp_path / "evidence",
-        environment={"PYTHONPATH": "", "SPEC175_RUN_REAL_MININDN": "1"},
+        environment=environment,
     )
     assert result["status"] == "PASS"
+    assert result["effectiveConfigDigest"] == _inventory_module.canonical_digest(
+        result["effectiveConfiguration"])
+    assert result["effectiveConfiguration"]["environmentDigest"] == _digest(environment)
     assert result["entryCount"] == 6
     assert all(item["status"] == "PASS" for item in result["entries"])
     assert all(isinstance(item["pid"], int) for item in result["entries"])
@@ -136,6 +140,12 @@ def test_local_gate_runs_each_inventory_entry_and_seals_snapshot(tmp_path: Path)
     assert snapshot.is_file()
     assert result["inventoryFileSha256"].startswith("sha256:")
     assert all(Path(item["stdoutPath"]).is_file() for item in result["entries"])
+    for entry in result["entries"]:
+        actual_environment = dict(environment)
+        if entry["kind"] == "minindn-case":
+            actual_environment["SPEC180_CASE_OUTPUT_DIR"] = str(
+                tmp_path / "evidence" / entry["id"] / "case-output")
+        assert entry["environmentDigest"] == _digest(actual_environment)
 
 
 def test_source_digest_failure_has_no_child_or_output_side_effect(tmp_path: Path):
@@ -146,7 +156,7 @@ def test_source_digest_failure_has_no_child_or_output_side_effect(tmp_path: Path
     output = tmp_path / "evidence"
     with pytest.raises(runner.LocalGateError, match="ENTRY_FILE_DIGEST_MISMATCH"):
         runner.run_local_gate(inventory, root=root, output_root=output,
-                              environment={"SPEC175_RUN_REAL_MININDN": "1"})
+                              environment={})
     assert not output.exists()
 
 
@@ -295,7 +305,7 @@ def test_missing_case_oracle_is_unqualified(tmp_path: Path):
     _rebind_revision(_inventory_module, inventory, _seal_fixture(root))
     result = runner.run_local_gate(
         inventory, root=root, output_root=tmp_path / "evidence",
-        environment={"SPEC175_RUN_REAL_MININDN": "1"},
+        environment={},
     )
     assert result["status"] == "UNQUALIFIED"
     assert result["failedEntryIds"] == ["minindn-y-a"]
@@ -315,7 +325,7 @@ def test_secret_like_child_output_is_redaction_failure(tmp_path: Path):
     _refresh_inventory_digest(_inventory_module, inventory)
     result = runner.run_local_gate(
         inventory, root=root, output_root=tmp_path / "evidence",
-        environment={"SPEC175_RUN_REAL_MININDN": "1"},
+        environment={},
     )
     assert result["status"] == "UNQUALIFIED"
     unit = result["entries"][0]
@@ -332,7 +342,7 @@ def test_nonempty_output_root_is_rejected_before_execution(tmp_path: Path):
     (output / "old.json").write_text("old", encoding="utf-8")
     with pytest.raises(runner.LocalGateError, match="OUTPUT_ROOT_NOT_EMPTY"):
         runner.run_local_gate(inventory, root=root, output_root=output,
-                              environment={"SPEC175_RUN_REAL_MININDN": "1"})
+                              environment={})
 
 
 def test_command_outside_inventory_source_is_rejected(tmp_path: Path):
@@ -344,7 +354,7 @@ def test_command_outside_inventory_source_is_rejected(tmp_path: Path):
     with pytest.raises(runner.LocalGateError, match="ENTRY_COMMAND_PATH_MISMATCH"):
         runner.run_local_gate(inventory, root=root,
                               output_root=tmp_path / "evidence",
-                              environment={"SPEC175_RUN_REAL_MININDN": "1"})
+                              environment={})
 
 
 def test_out_of_scope_qwen_case_rejected_before_any_child(tmp_path: Path):
@@ -424,3 +434,137 @@ def test_checkout_identity_rejects_before_qualification_children(
     with pytest.raises(runner.LocalGateError, match=reason):
         runner.run_local_gate(inventory, root=root, output_root=output, environment={})
     assert not output.exists()
+
+
+@pytest.mark.parametrize("environment,reason", [
+    ({"LD_LIBRARY_PATH": "/unsealed/runtime"}, "EFFECTIVE_CONFIG_DIGEST_MISMATCH"),
+    ({"PYTHONPATH": "/unsealed/imports"}, "EFFECTIVE_CONFIG_DIGEST_MISMATCH"),
+    ({"PATH": "/unsealed/tools"}, "EFFECTIVE_CONFIG_DIGEST_MISMATCH"),
+    ({"SPEC180_CASE_OUTPUT_DIR": "/unsealed/output"}, "CONFIG_RESERVED_ENVIRONMENT"),
+    ({}, "EFFECTIVE_CONFIG_DIGEST_MISMATCH"),
+])
+def test_local_gate_rejects_unbound_configuration_before_children(
+        tmp_path: Path, monkeypatch, environment, reason):
+    module, runner, root, inventory = _inventory(tmp_path)
+    if not environment:
+        inventory["effectiveConfigDigest"] = "sha256:" + "d" * 64
+        for entry in inventory["entries"]:
+            entry["effectiveConfigDigest"] = inventory["effectiveConfigDigest"]
+        _refresh_inventory_digest(module, inventory)
+    def unexpected_child(*args, **kwargs):
+        pytest.fail("qualification child started with unbound configuration")
+    monkeypatch.setattr(runner, "_run_entry", unexpected_child)
+    with pytest.raises(runner.LocalGateError, match=reason):
+        runner.run_local_gate(inventory, root=root,
+                              output_root=root / "evidence", environment=environment)
+    assert not (root / "evidence").exists()
+
+
+def test_local_gate_binds_interpreter_bytes_before_children(tmp_path: Path, monkeypatch):
+    interpreter = tmp_path / "build/python"
+    interpreter.parent.mkdir(parents=True)
+    shutil.copy2(Path(sys.executable).resolve(), interpreter)
+    monkeypatch.setattr(sys, "executable", str(interpreter))
+    _module, runner, root, inventory = _inventory(tmp_path)
+    with interpreter.open("ab") as stream:
+        stream.write(b"changed interpreter bytes")
+    def unexpected_child(*args, **kwargs):
+        pytest.fail("qualification child started with a changed interpreter")
+    monkeypatch.setattr(runner, "_run_entry", unexpected_child)
+    with pytest.raises(runner.LocalGateError, match="EFFECTIVE_CONFIG_DIGEST_MISMATCH"):
+        runner.run_local_gate(inventory, root=root,
+                              output_root=root / "evidence", environment={})
+    assert not (root / "evidence").exists()
+
+
+def test_local_gate_children_consume_frozen_explicit_environment(tmp_path: Path, monkeypatch):
+    environment = {"SPEC181_FIXTURE_VALUE": "sealed"}
+    monkeypatch.setenv("SPEC181_AMBIENT_ONLY", "must-not-be-inherited")
+    module, runner, root, inventory = _inventory(tmp_path, environment)
+    source = root / "Experiments/NDNSF_DI_YoloAckDriven_Minindn.py"
+    source.write_text(
+        "import os\n"
+        "assert os.environ['SPEC181_FIXTURE_VALUE'] == 'sealed'\n"
+        "assert 'SPEC181_AMBIENT_ONLY' not in os.environ\n"
+        "assert 'SPEC181_LATE_VALUE' not in os.environ\n" + source.read_text(),
+        encoding="utf-8")
+    for entry in inventory["entries"]:
+        if entry["kind"] == "minindn-case":
+            entry["artifactSha256"] = _file_digest(module, source)
+    _rebind_revision(module, inventory, _seal_fixture(root))
+    original = runner._run_entry
+    def mutate_caller_then_execute(*args, **kwargs):
+        environment["SPEC181_LATE_VALUE"] = "unsealed"
+        return original(*args, **kwargs)
+    monkeypatch.setattr(runner, "_run_entry", mutate_caller_then_execute)
+    result = runner.run_local_gate(inventory, root=root,
+                                   output_root=root / "evidence", environment=environment)
+    assert result["status"] == "PASS"
+    assert all(entry["exitCode"] == 0 for entry in result["entries"])
+    assert result["effectiveConfiguration"]["environmentDigest"] == _digest(
+        {"SPEC181_FIXTURE_VALUE": "sealed"})
+
+
+def test_local_gate_collects_children_when_interpreter_changes_during_run(tmp_path: Path, monkeypatch):
+    interpreter = tmp_path / "build/python"
+    interpreter.parent.mkdir(parents=True)
+    executable = Path(sys.executable).resolve()
+    interpreter.symlink_to(executable)
+    replacement = interpreter.with_name("changed-python")
+    shutil.copy2(executable, replacement)
+    with replacement.open("ab") as stream:
+        stream.write(b"changed interpreter bytes")
+    monkeypatch.setattr(sys, "executable", str(interpreter))
+    _module, runner, root, inventory = _inventory(tmp_path)
+    original = runner._run_entry
+    def execute_then_replace(root, entry, *args, **kwargs):
+        result = original(root, entry, *args, **kwargs)
+        if entry.get("case") == "Y-N":
+            interpreter.unlink()
+            interpreter.symlink_to(replacement)
+        return result
+    monkeypatch.setattr(runner, "_run_entry", execute_then_replace)
+    result = runner.run_local_gate(inventory, root=root,
+                                   output_root=root / "evidence", environment={})
+    assert result["status"] == "UNQUALIFIED"
+    assert result["configurationIdentity"] == {
+        "status": "FAIL", "reason": "CONFIGURATION_CHANGED_DURING_RUN"}
+    assert result["cleanup"] == "PASS"
+    assert len(result["entries"]) == 6
+    assert all(entry["status"] == "PASS" for entry in result["entries"])
+
+
+def test_inventory_and_gate_clis_share_actual_configuration(tmp_path: Path, capsys):
+    module, runner = _modules()
+    root = _fixture_root(tmp_path / "source", module)
+    integration = root / "build/integration-tests"
+    integration.write_text("#!/bin/sh\nprintf 'Suite*\\n    Test*\\n'\n", encoding="utf-8")
+    environment = {"SPEC181_FIXTURE_VALUE": "explicit-config-fixture"}
+    environment_path = tmp_path / "environment.json"
+    environment_path.write_text(json.dumps(environment), encoding="utf-8")
+    inventory_path = tmp_path / "inventory.json"
+    assert module.main([
+        "--root", str(root), "--candidate-id", "candidate-cli",
+        "--candidate-digest", "sha256:" + "a" * 64,
+        "--source-revision", _git(root, "rev-parse", "HEAD"),
+        "--environment-json", str(environment_path), "--output", str(inventory_path),
+    ]) == 0
+    value = json.loads(inventory_path.read_text())
+    assert value["effectiveConfigDigest"] == module.canonical_digest(
+        module.local_launch_configuration(root, environment, value["timeoutSeconds"]))
+    output = tmp_path / "evidence"
+    assert runner.main([
+        "--inventory", str(inventory_path), "--root", str(root),
+        "--output-root", str(output), "--environment-json", str(environment_path),
+    ]) == 0
+    result = json.loads((output / "local-qualification.json").read_text())
+    assert result["status"] == "PASS" and result["entryCount"] == 6
+    assert result["effectiveConfigDigest"] == value["effectiveConfigDigest"]
+    assert "explicit-config-fixture" not in capsys.readouterr().out
+    environment_path.write_text(json.dumps({"SPEC181_FIXTURE_VALUE": "changed"}), encoding="utf-8")
+    refused_output = tmp_path / "refused"
+    assert runner.main([
+        "--inventory", str(inventory_path), "--root", str(root),
+        "--output-root", str(refused_output), "--environment-json", str(environment_path),
+    ]) == 78
+    assert not refused_output.exists()

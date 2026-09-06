@@ -78,6 +78,49 @@ def canonical_digest(value: Any) -> str:
     return digest_bytes(canonical_bytes(value))
 
 
+def local_launch_configuration(root: Path | str, environment: Mapping[str, str],
+                               timeout_seconds: int) -> dict[str, Any]:
+    """Describe actual supervisor launch inputs without recording env values.
+
+    Native dependencies and external input-file contents retain their own
+    identity checks; this record binds the configuration passed to children.
+    """
+    if not isinstance(environment, Mapping) or any(
+            not isinstance(key, str) or not isinstance(value, str)
+            for key, value in environment.items()):
+        raise InventoryError("ENVIRONMENT_MUST_BE_STRING_MAP")
+    if any(not key or "=" in key or "\0" in key or "\0" in value
+           for key, value in environment.items()):
+        raise InventoryError("CONFIG_INVALID_ENVIRONMENT")
+    if "SPEC180_CASE_OUTPUT_DIR" in environment:
+        raise InventoryError("CONFIG_RESERVED_ENVIRONMENT:SPEC180_CASE_OUTPUT_DIR")
+    if environment.get("SPEC180_RUNTIME_SIF"):
+        raise InventoryError("LOCAL_GATE_SIF_RUNTIME_UNSUPPORTED")
+    if not isinstance(timeout_seconds, int) or timeout_seconds <= 0:
+        raise InventoryError("INVALID_TIMEOUT_SECONDS")
+    interpreter = Path(sys.executable)
+    try:
+        resolved = interpreter.resolve(strict=True)
+        digest = hashlib.sha256()
+        with resolved.open("rb") as source:
+            for block in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(block)
+    except (OSError, RuntimeError) as exc:
+        raise InventoryError("CONFIG_INTERPRETER_UNAVAILABLE") from exc
+    return {
+        "schema": "spec181-local-launch-configuration-v1",
+        "workingDirectory": str(Path(root).resolve()),
+        "environmentDigest": canonical_digest(dict(environment)),
+        "interpreter": {"path": str(interpreter), "resolvedPath": str(resolved),
+                        "sha256": "sha256:" + digest.hexdigest()},
+        "backend": BACKEND,
+        "timeoutSeconds": timeout_seconds,
+        "cleanupPolicy": CLEANUP_POLICY,
+        "caseOutputLayout": "{outputRoot}/{entryId}/case-output",
+        "caseOutputVariable": "SPEC180_CASE_OUTPUT_DIR",
+    }
+
+
 def _require_digest(value: Any, label: str) -> str:
     if not isinstance(value, str) or not _DIGEST_RE.fullmatch(value):
         raise InventoryError("INVALID_DIGEST:" + label)
@@ -392,7 +435,8 @@ def build_inventory(
     candidate_id: str,
     candidate_digest: str,
     source_revision: str,
-    effective_config_digest: str,
+    environment: Mapping[str, str],
+    effective_config_digest: str | None = None,
     unit_binary: Path | str = "build/unit-tests",
     integration_binary: Path | str = "build/integration-tests",
     integration_listing: str | None = None,
@@ -402,6 +446,11 @@ def build_inventory(
 ) -> dict[str, Any]:
     """Build a complete inventory or fail before writing any output."""
     root_path = Path(root).resolve()
+    actual_config_digest = canonical_digest(local_launch_configuration(
+        root_path, environment, timeout_seconds))
+    if effective_config_digest is not None and effective_config_digest != actual_config_digest:
+        raise InventoryError("EFFECTIVE_CONFIG_DIGEST_MISMATCH")
+    effective_config_digest = actual_config_digest
     _require_identity(
         candidate_id, candidate_digest, source_revision,
         effective_config_digest,
@@ -488,7 +537,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--candidate-id", required=True)
     parser.add_argument("--candidate-digest", required=True)
     parser.add_argument("--source-revision", required=True)
-    parser.add_argument("--effective-config-digest", required=True)
+    parser.add_argument("--environment-json", type=Path, required=True,
+                        help="explicit child environment; ambient values are never substituted")
+    parser.add_argument("--effective-config-digest",
+                        help="optional expected digest; checked against actual launch inputs")
     parser.add_argument("--unit-binary", default="build/unit-tests")
     parser.add_argument("--integration-binary", default="build/integration-tests")
     parser.add_argument("--output", type=Path, required=True)
@@ -496,17 +548,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                         default=DEFAULT_TIMEOUT_SECONDS)
     args = parser.parse_args(argv)
     try:
+        environment = json.loads(args.environment_json.read_text(encoding="utf-8"))
         inventory = build_inventory(
             args.root, candidate_id=args.candidate_id,
             candidate_digest=args.candidate_digest,
             source_revision=args.source_revision,
+            environment=environment,
             effective_config_digest=args.effective_config_digest,
             unit_binary=args.unit_binary, integration_binary=args.integration_binary,
             timeout_seconds=args.timeout_seconds,
         )
         output = args.output if args.output.is_absolute() else args.root / args.output
         _write_json(output, inventory)
-    except InventoryError as exc:
+    except (InventoryError, OSError, UnicodeError, json.JSONDecodeError) as exc:
         print(str(exc), file=sys.stderr)
         return 78
     print(json.dumps(inventory, ensure_ascii=False, sort_keys=True))

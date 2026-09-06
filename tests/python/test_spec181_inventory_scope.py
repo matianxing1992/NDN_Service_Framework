@@ -15,7 +15,7 @@ def test_spec181_generated_inventory_requires_only_yolo_network_cases(tmp_path: 
         candidate_id="spec181-candidate",
         candidate_digest="sha256:" + "a" * 64,
         source_revision="b" * 40,
-        effective_config_digest="sha256:" + "c" * 64,
+        environment={},
         integration_listing="Suite*\n    Test*\n",
         python_selectors=("tests/python/test_spec180_alpha.py::test_fixture",),
     )
@@ -45,7 +45,7 @@ def test_inventory_cannot_rebind_a_registered_case_to_another_source(tmp_path: P
         module.build_inventory(
             root, candidate_id="spec181-candidate",
             candidate_digest="sha256:" + "a" * 64, source_revision="b" * 40,
-            effective_config_digest="sha256:" + "c" * 64,
+            environment={},
             integration_listing="Suite*\n    Test*\n",
             python_selectors=("tests/python/test_spec180_alpha.py::test_fixture",),
             cases=cases,

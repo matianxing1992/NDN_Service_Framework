@@ -75,7 +75,7 @@ def test_build_inventory_is_candidate_bound_and_complete(tmp_path: Path):
         candidate_id="candidate-test",
         candidate_digest="sha256:" + "a" * 64,
         source_revision="b" * 40,
-        effective_config_digest="sha256:" + "c" * 64,
+        environment={},
         integration_listing=(
             "NdnSvsSmoke*\n"
             "    DummyFacesDeliverV2RequestPublication*\n"
@@ -110,7 +110,7 @@ def test_missing_formal_case_fails_before_inventory_creation(tmp_path: Path):
             candidate_id="candidate-test",
             candidate_digest="sha256:" + "a" * 64,
             source_revision="b" * 40,
-            effective_config_digest="sha256:" + "c" * 64,
+            environment={},
             integration_listing="Suite*\n    Test*\n",
             python_selectors=(
                 "tests/python/test_spec180_alpha.py::test_fixture",
@@ -126,7 +126,7 @@ def test_inventory_digest_tamper_is_rejected(tmp_path: Path):
         candidate_id="candidate-test",
         candidate_digest="sha256:" + "a" * 64,
         source_revision="b" * 40,
-        effective_config_digest="sha256:" + "c" * 64,
+        environment={},
         integration_listing="Suite*\n    Test*\n",
         python_selectors=(
             "tests/python/test_spec180_alpha.py::test_fixture",
@@ -135,3 +135,37 @@ def test_inventory_digest_tamper_is_rejected(tmp_path: Path):
     inventory["entries"][0]["command"].append("--tampered")
     with pytest.raises(module.InventoryError, match="ENTRY_COMMAND_DIGEST_MISMATCH"):
         module.validate_inventory(inventory)
+
+
+def test_launch_configuration_binds_actual_inputs_without_exposing_env_values(tmp_path: Path):
+    module = load_inventory()
+    environment = {"PRIVATE_VALUE": "fixture-sensitive-value", "PATH": "/usr/bin"}
+    record = module.local_launch_configuration(tmp_path, environment, 120)
+    assert record == module.local_launch_configuration(tmp_path, dict(reversed(list(environment.items()))), 120)
+    assert "fixture-sensitive-value" not in str(record)
+    assert record["environmentDigest"] == module.canonical_digest(environment)
+    for root, env, timeout in [(tmp_path / "other", environment, 120),
+                               (tmp_path, {}, 120), (tmp_path, environment, 121)]:
+        assert module.canonical_digest(module.local_launch_configuration(root, env, timeout)) != module.canonical_digest(record)
+
+
+@pytest.mark.parametrize("environment,reason", [
+    ({"SPEC180_CASE_OUTPUT_DIR": ""}, "CONFIG_RESERVED_ENVIRONMENT"),
+    ({"SPEC180_RUNTIME_SIF": "/external/runtime.sif"}, "LOCAL_GATE_SIF_RUNTIME_UNSUPPORTED"),
+    ({"BAD=KEY": "value"}, "CONFIG_INVALID_ENVIRONMENT"),
+    ({"KEY": "bad\0value"}, "CONFIG_INVALID_ENVIRONMENT"),
+    ({"KEY": 1}, "ENVIRONMENT_MUST_BE_STRING_MAP"),
+])
+def test_launch_configuration_rejects_unusable_or_wrong_scope_environment(tmp_path: Path, environment, reason):
+    module = load_inventory()
+    with pytest.raises(module.InventoryError, match=reason):
+        module.local_launch_configuration(tmp_path, environment, 120)
+
+
+def test_inventory_rejects_caller_config_digest_before_discovery(tmp_path: Path):
+    module = load_inventory()
+    with pytest.raises(module.InventoryError, match="EFFECTIVE_CONFIG_DIGEST_MISMATCH"):
+        module.build_inventory(tmp_path, candidate_id="candidate-test",
+                               candidate_digest="sha256:" + "a" * 64,
+                               source_revision="b" * 40, environment={},
+                               effective_config_digest="sha256:" + "c" * 64)
