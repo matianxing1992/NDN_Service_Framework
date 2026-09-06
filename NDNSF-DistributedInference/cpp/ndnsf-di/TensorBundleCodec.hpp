@@ -70,6 +70,11 @@ struct TensorObjectManifestV1
   std::vector<std::uint8_t> producerSignature;
   std::string objectManifestDigest;
 
+  // The context-bound transport form omits fields that the authenticated
+  // Selection edge and group capability reconstruct at the receiver.
+  bool compactContextRequired = false;
+  std::string compactSegmentDigestCommitment;
+
   void validate() const;
   std::vector<std::uint8_t> signingBytes() const;
   std::string digest() const;
@@ -77,6 +82,9 @@ struct TensorObjectManifestV1
 
 std::vector<std::uint8_t>
 encodeTensorObjectManifest(const TensorObjectManifestV1& manifest);
+
+std::vector<std::uint8_t>
+encodeTensorObjectManifestContextCompact(const TensorObjectManifestV1& manifest);
 
 TensorObjectManifestV1
 decodeTensorObjectManifest(const std::vector<std::uint8_t>& wire);

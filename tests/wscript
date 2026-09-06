@@ -111,6 +111,18 @@ def build(bld):
     ])
 
     # Exercise the shared native projection and model-specific merge contract
+    bld.program(target='../spec181-exact-tensor-transport',
+                name='spec181-exact-tensor-transport',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('integration-tests/spec181-exact-tensor-transport.t.cpp'),
+                        bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')] +
+                       di_integration_sources,
+                includes=framework_includes,
+                use='ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
+                cxxflags=['-fPIC'], linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
+    # Exercise the shared native projection and model-specific merge contract
     # with existing unit cases, linked against the configured framework.
     bld.program(target='../spec181-native-plan-closure',
                 name='spec181-native-plan-closure',
@@ -184,6 +196,7 @@ def build(bld):
                         bld.path.find_node('integration-tests/ndnsf-di-core-flow.t.cpp'),
                         bld.path.find_node('integration-tests/spec181-exact-data-wire.t.cpp'),
                         bld.path.find_node('integration-tests/ndnsf-di-native-assembly.t.cpp'),
+                        bld.path.find_node('integration-tests/spec181-exact-tensor-transport.t.cpp'),
                         bld.path.find_node('integration-tests/invocation-stream-flow.t.cpp'),
                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')] +
                        framework_sources + di_integration_sources,

@@ -1,6 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <iterator>
 #include <limits>
@@ -168,6 +169,62 @@ isSha256Digest(const std::string& value)
   });
 }
 
+const std::string&
+contextCompactManifestMagic()
+{
+  static const std::string magic = "TensorObjectManifestV1ContextCompact";
+  return magic;
+}
+
+std::array<std::uint8_t, 32>
+decodeSha256Digest(const std::string& value)
+{
+  if (!isSha256Digest(value)) {
+    throw std::invalid_argument(
+      "TensorObjectManifestV1 contains an invalid SHA-256 digest");
+  }
+  std::array<std::uint8_t, 32> result{};
+  for (std::size_t index = 0; index < result.size(); ++index) {
+    const auto high = value[7 + index * 2];
+    const auto low = value[8 + index * 2];
+    const auto nibble = [] (char ch) -> std::uint8_t {
+      return static_cast<std::uint8_t>(ch <= '9' ? ch - '0' : ch - 'a' + 10);
+    };
+    result[index] = static_cast<std::uint8_t>(
+      (nibble(high) << 4) | nibble(low));
+  }
+  return result;
+}
+
+std::string
+encodeSha256Digest(const std::uint8_t* bytes)
+{
+  static constexpr char HEX[] = "0123456789abcdef";
+  std::string result = "sha256:";
+  result.reserve(71);
+  for (std::size_t index = 0; index < 32; ++index) {
+    result.push_back(HEX[bytes[index] >> 4]);
+    result.push_back(HEX[bytes[index] & 0x0f]);
+  }
+  return result;
+}
+
+void
+appendCompactDigestValue(std::vector<std::uint8_t>& output,
+                         const std::string& value)
+{
+  const auto digest = decodeSha256Digest(value);
+  appendBytes(output, digest.data(), digest.size());
+}
+
+std::string
+readCompactDigestValue(const std::vector<std::uint8_t>& input,
+                       std::size_t& offset)
+{
+  const auto digest = readBytes(input, offset, 32);
+  return encodeSha256Digest(digest.data());
+}
+
 void
 validateLineageString(const std::string& value, const char* field)
 {
@@ -305,6 +362,30 @@ sha256TensorBytes(const std::vector<std::uint8_t>& bytes)
 void
 TensorObjectManifestV1::validate() const
 {
+  if (totalBytes == 0 || segmentSize == 0 || segmentCount == 0 ||
+      segmentSize > totalBytes || segmentCount > MAX_MANIFEST_SEGMENTS ||
+      segmentCount != 1 + (totalBytes - 1) / segmentSize) {
+    throw std::invalid_argument("invalid TensorObjectManifestV1 segmentation");
+  }
+  if (compactContextRequired) {
+    if (!isSha256Digest(contentDigest) || totalBytes == 0 ||
+        segmentSize == 0 || segmentCount == 0 ||
+        (!orderedSegmentDigests.empty() &&
+         segmentCount != orderedSegmentDigests.size()) ||
+        segmentCount > MAX_MANIFEST_SEGMENTS || createdAtMs == 0 ||
+        producerSignature.empty() ||
+        !isSha256Digest(compactSegmentDigestCommitment)) {
+      throw std::invalid_argument(
+        "invalid context-compact TensorObjectManifestV1 bounds");
+    }
+    for (const auto& digest : orderedSegmentDigests) {
+      if (!isSha256Digest(digest)) {
+        throw std::invalid_argument(
+          "TensorObjectManifestV1 contains an invalid segment digest");
+      }
+    }
+    return;
+  }
   for (const auto* value : {
          &capabilityDigest, &planDigest, &sourceLayoutDigest,
          &targetLayoutDigest, &tensorDigest, &contentDigest,
@@ -344,6 +425,9 @@ TensorObjectManifestV1::validate() const
 std::vector<std::uint8_t>
 TensorObjectManifestV1::signingBytes() const
 {
+  if (compactContextRequired) {
+    throw std::logic_error("tensor manifest context is not restored");
+  }
   std::vector<std::uint8_t> output;
   const std::string marker = "TensorObjectManifestV1";
   appendString(output, marker);
@@ -398,6 +482,36 @@ encodeTensorObjectManifest(const TensorObjectManifestV1& manifest)
   return output;
 }
 
+std::vector<std::uint8_t>
+encodeTensorObjectManifestContextCompact(
+  const TensorObjectManifestV1& manifest)
+{
+  if (manifest.compactContextRequired) {
+    throw std::invalid_argument("cannot encode an unrestored tensor manifest");
+  }
+  manifest.validate();
+  std::vector<std::uint8_t> output;
+  appendString(output, contextCompactManifestMagic());
+  appendCompactDigestValue(output, manifest.contentDigest);
+  appendScalar<std::uint64_t>(output, manifest.totalBytes);
+  appendScalar<std::uint64_t>(output, manifest.segmentSize);
+  appendScalar<std::uint64_t>(output, manifest.segmentCount);
+  std::vector<std::uint8_t> digestCommitmentInput;
+  for (const auto& digest : manifest.orderedSegmentDigests) {
+    appendBytes(digestCommitmentInput,
+                reinterpret_cast<const std::uint8_t*>(digest.data()),
+                digest.size());
+  }
+  appendCompactDigestValue(output, sha256TensorBytes(digestCommitmentInput));
+  appendScalar<std::uint64_t>(output, manifest.createdAtMs);
+  appendSizedBytes(output, manifest.producerSignature);
+  if (output.size() > MAX_MANIFEST_WIRE_BYTES) {
+    throw std::invalid_argument(
+      "TensorObjectManifestV1 context-compact wire exceeds bound");
+  }
+  return output;
+}
+
 TensorObjectManifestV1
 decodeTensorObjectManifest(const std::vector<std::uint8_t>& wire)
 {
@@ -405,7 +519,26 @@ decodeTensorObjectManifest(const std::vector<std::uint8_t>& wire)
     throw std::invalid_argument("TensorObjectManifestV1 wire exceeds bound");
   }
   std::size_t offset = 0;
-  if (readString(wire, offset) != "TensorObjectManifestV1") {
+  const auto marker = readString(wire, offset);
+  const bool contextCompact = marker == contextCompactManifestMagic();
+  if (contextCompact) {
+    TensorObjectManifestV1 value;
+    value.compactContextRequired = true;
+    value.contentDigest = readCompactDigestValue(wire, offset);
+    value.totalBytes = readScalar<std::uint64_t>(wire, offset);
+    value.segmentSize = readScalar<std::uint64_t>(wire, offset);
+    value.segmentCount = readScalar<std::uint64_t>(wire, offset);
+    value.compactSegmentDigestCommitment = readCompactDigestValue(wire, offset);
+    value.createdAtMs = readScalar<std::uint64_t>(wire, offset);
+    value.producerSignature = readSizedBytes(wire, offset, 1U << 20);
+    if (offset != wire.size()) {
+      throw std::invalid_argument(
+        "TensorObjectManifestV1 has trailing context-compact bytes");
+    }
+    value.validate();
+    return value;
+  }
+  if (marker != "TensorObjectManifestV1") {
     throw std::invalid_argument("invalid TensorObjectManifestV1 marker");
   }
   TensorObjectManifestV1 value;

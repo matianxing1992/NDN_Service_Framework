@@ -88,6 +88,13 @@ struct CollectiveOperationManifestV1
   std::uint64_t hardDeadlineMs = 0;
   ProviderGroupBytes producerSignature;
 
+  // Compact exact-segment transport omits the operation-wide plaintext
+  // digest list and group signature because the outer signed tensor manifest
+  // authenticates the complete ciphertext object. These fields are transient
+  // decode state and are deliberately excluded from canonicalBytes()/digest().
+  bool externalSegmentDigests = false;
+  std::string transportManifestDigest;
+
   void validate() const;
   ProviderGroupBytes canonicalBytes(bool includeSignature = false) const;
   std::string digest() const;
@@ -212,8 +219,18 @@ public:
   encodeSegment(const CollectiveOperationManifestV1& manifest,
                 const NdnsfDataV1Segment& segment);
 
+  /**
+   * Encode one exact tensor segment without repeating the operation-wide
+   * manifest. The caller must authenticate the outer tensor manifest and pass
+   * the exact Data name to decodeSegment().
+   */
+  static ProviderGroupBytes
+  encodeSegmentCompact(const CollectiveOperationManifestV1& manifest,
+                       const NdnsfDataV1Segment& segment);
+
   static SealedCollectiveOperationV1
-  decodeSegment(const ProviderGroupBytes& wire);
+  decodeSegment(const ProviderGroupBytes& wire,
+                const std::string& expectedDataName = {});
 
   ProviderGroupBytes
   openSegment(const CollectiveOperationManifestV1& manifest,

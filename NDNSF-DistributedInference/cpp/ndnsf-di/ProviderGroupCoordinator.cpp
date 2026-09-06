@@ -26,6 +26,9 @@ constexpr std::size_t NONCE_BYTES = 12;
 constexpr std::size_t DIGEST_BYTES = 32;
 constexpr std::size_t MAX_STRING_BYTES = 1U << 20;
 
+const char* const COMPACT_SEGMENT_BUNDLE_MARKER =
+  "NDNSF_DATA_V1_SEGMENT_BUNDLE_COMPACT";
+
 void
 appendU64(Bytes& out, std::uint64_t value)
 {
@@ -97,6 +100,15 @@ public:
     return result;
   }
 
+  Bytes readFixedBytes(std::size_t size)
+  {
+    require(size);
+    Bytes result(m_input.begin() + static_cast<std::ptrdiff_t>(m_offset),
+                 m_input.begin() + static_cast<std::ptrdiff_t>(m_offset + size));
+    m_offset += size;
+    return result;
+  }
+
   bool atEnd() const noexcept
   {
     return m_offset == m_input.size();
@@ -122,6 +134,57 @@ appendStrings(Bytes& out, const std::vector<std::string>& values)
   for (const auto& value : values) {
     appendString(out, value);
   }
+}
+
+bool
+isHexDigest(const std::string& value)
+{
+  return value.size() == DIGEST_BYTES * 2 &&
+         std::all_of(value.begin(), value.end(), [] (unsigned char ch) {
+           return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
+         });
+}
+
+Bytes
+decodeHexDigest(const std::string& value)
+{
+  if (!isHexDigest(value)) {
+    throw std::invalid_argument(
+      "NDNSF_DATA_V1 compact digest is not canonical hexadecimal");
+  }
+  const auto nibble = [] (char ch) -> std::uint8_t {
+    return static_cast<std::uint8_t>(ch <= '9' ? ch - '0' : ch - 'a' + 10);
+  };
+  Bytes result(DIGEST_BYTES);
+  for (std::size_t index = 0; index < result.size(); ++index) {
+    result[index] = static_cast<std::uint8_t>(
+      (nibble(value[index * 2]) << 4) | nibble(value[index * 2 + 1]));
+  }
+  return result;
+}
+
+std::string
+encodeHexDigest(const Bytes& value)
+{
+  if (value.size() != DIGEST_BYTES) {
+    throw std::invalid_argument("NDNSF_DATA_V1 compact digest size is invalid");
+  }
+  static constexpr char HEX[] = "0123456789abcdef";
+  std::string result;
+  result.reserve(DIGEST_BYTES * 2);
+  for (const auto byte : value) {
+    result.push_back(HEX[byte >> 4]);
+    result.push_back(HEX[byte & 0x0f]);
+  }
+  return result;
+}
+
+std::string
+manifestDigestForTransport(const CollectiveOperationManifestV1& manifest)
+{
+  return manifest.externalSegmentDigests && !manifest.transportManifestDigest.empty()
+    ? manifest.transportManifestDigest
+    : manifest.digest();
 }
 
 Bytes
@@ -362,15 +425,21 @@ CollectiveOperationManifestV1::validate() const
   requireNonEmpty(producerRank, "manifest.producerRank");
   requireNonEmpty(tensorDigest, "manifest.tensorDigest");
   if (epoch == 0 || totalBytes == 0 || segmentSize == 0 || segmentCount == 0 ||
-      segmentCount != orderedSegmentDigests.size() || noProgressMs == 0 ||
-      hardDeadlineMs < noProgressMs || producerSignature.empty()) {
+      ((!externalSegmentDigests && segmentCount != orderedSegmentDigests.size()) ||
+       (externalSegmentDigests && !orderedSegmentDigests.empty() &&
+        segmentCount != orderedSegmentDigests.size())) ||
+      noProgressMs == 0 || hardDeadlineMs < noProgressMs ||
+      (!externalSegmentDigests && producerSignature.empty()) ||
+      (externalSegmentDigests && transportManifestDigest.empty())) {
     throw std::invalid_argument("invalid CollectiveOperationManifestV1 bounds");
   }
   if (segmentCount > (1U << 20)) {
     throw std::invalid_argument("manifest segment count exceeds bound");
   }
-  for (const auto& digest : orderedSegmentDigests) {
-    requireNonEmpty(digest, "manifest.segmentDigest");
+  if (!externalSegmentDigests) {
+    for (const auto& digest : orderedSegmentDigests) {
+      requireNonEmpty(digest, "manifest.segmentDigest");
+    }
   }
 }
 
@@ -1047,18 +1116,91 @@ ProviderGroupCoordinator::encodeSegment(
   return wire;
 }
 
+ProviderGroupBytes
+ProviderGroupCoordinator::encodeSegmentCompact(
+  const CollectiveOperationManifestV1& manifest,
+  const NdnsfDataV1Segment& segment)
+{
+  manifest.validate();
+  if (manifest.externalSegmentDigests) {
+    throw std::invalid_argument(
+      "cannot compact-encode an external segment manifest");
+  }
+  segment.validate();
+  if (segment.descriptor.manifestDigest != manifest.digest() ||
+      segment.descriptor.segmentCount != manifest.segmentCount ||
+      segment.descriptor.totalBytes != manifest.totalBytes ||
+      segment.descriptor.segmentSize != manifest.segmentSize ||
+      segment.descriptor.segmentNo >= manifest.segmentCount) {
+    throw std::invalid_argument("NDNSF_DATA_V1 segment does not match manifest");
+  }
+  std::uint64_t producerRank = 0;
+  try {
+    producerRank = std::stoull(segment.descriptor.producerRank);
+  }
+  catch (const std::exception&) {
+    throw std::invalid_argument("NDNSF_DATA_V1 compact producer rank is not numeric");
+  }
+  const auto manifestDigest = decodeHexDigest(manifest.digest());
+  if (std::to_string(producerRank) != segment.descriptor.producerRank) {
+    throw std::invalid_argument("NDNSF_DATA_V1 compact rank is not canonical");
+  }
+  Bytes wire;
+  appendString(wire, COMPACT_SEGMENT_BUNDLE_MARKER);
+  wire.insert(wire.end(), manifestDigest.begin(), manifestDigest.end());
+  appendU64(wire, producerRank);
+  appendU64(wire, segment.descriptor.segmentNo);
+  appendBytes(wire, segment.nonce);
+  appendBytes(wire, segment.ciphertext);
+  appendBytes(wire, segment.authTag);
+  appendBytes(wire, segment.hmac);
+  if (wire.size() > (64U << 20)) {
+    throw std::invalid_argument("NDNSF_DATA_V1 compact segment bundle exceeds bound");
+  }
+  return wire;
+}
+
 SealedCollectiveOperationV1
-ProviderGroupCoordinator::decodeSegment(const ProviderGroupBytes& wire)
+ProviderGroupCoordinator::decodeSegment(const ProviderGroupBytes& wire,
+                                         const std::string& expectedDataName)
 {
   if (wire.size() > (64U << 20)) {
     throw std::invalid_argument("NDNSF_DATA_V1 segment bundle exceeds bound");
   }
   WireCursor cursor(wire);
-  if (cursor.readString() != "NDNSF_DATA_V1_SEGMENT_BUNDLE") {
+  const auto marker = cursor.readString();
+  const bool compact = marker == COMPACT_SEGMENT_BUNDLE_MARKER;
+  if (marker != "NDNSF_DATA_V1_SEGMENT_BUNDLE" && !compact) {
     throw std::invalid_argument("invalid NDNSF_DATA_V1 segment bundle marker");
   }
   SealedCollectiveOperationV1 result;
   auto& manifest = result.manifest;
+  if (compact) {
+    if (expectedDataName.empty()) {
+      throw std::invalid_argument(
+        "NDNSF_DATA_V1 compact segment requires its exact Data name");
+    }
+    manifest.transportManifestDigest = encodeHexDigest(
+      cursor.readFixedBytes(DIGEST_BYTES));
+    manifest.externalSegmentDigests = true;
+    manifest.producerRank = std::to_string(cursor.readU64());
+    const auto segmentNo = cursor.readU64();
+    NdnsfDataV1Segment segment;
+    segment.dataName = expectedDataName;
+    segment.descriptor.manifestDigest = manifest.transportManifestDigest;
+    segment.descriptor.operationIndex = 0;
+    segment.descriptor.producerRank = manifest.producerRank;
+    segment.descriptor.segmentNo = segmentNo;
+    segment.nonce = cursor.readBytes(NONCE_BYTES);
+    segment.ciphertext = cursor.readBytes(16U << 20);
+    segment.authTag = cursor.readBytes(16);
+    segment.hmac = cursor.readBytes(DIGEST_BYTES);
+    if (!cursor.atEnd()) {
+      throw std::invalid_argument("trailing compact NDNSF_DATA_V1 segment bytes");
+    }
+    result.segments.push_back(std::move(segment));
+    return result;
+  }
   manifest.capabilityDigest = cursor.readString();
   manifest.epochKeyId = cursor.readString();
   manifest.requestId = cursor.readString();
@@ -1122,17 +1264,23 @@ ProviderGroupCoordinator::validateManifestAgainstCapability(
       manifest.totalBytes > m_capability.maxInflightBytes) {
     throw std::runtime_error("manifest operation bounds mismatch");
   }
-  const auto manifestBytes = manifest.canonicalBytes(false);
-  const auto verified = m_options.verifyManifest
-    ? m_options.verifyManifest(manifestBytes, manifest.producerSignature)
-    : [&] {
-        const auto expected = hmac(m_epochKey, manifestBytes);
-        return expected.size() == manifest.producerSignature.size() &&
-               CRYPTO_memcmp(expected.data(), manifest.producerSignature.data(),
-                             expected.size()) == 0;
-      }();
-  if (!verified) {
-    throw std::runtime_error("manifest authenticator verification failed");
+  // Compact exact segments deliberately omit the operation-wide plaintext
+  // digest list and producer signature. The outer signed TensorObject
+  // manifest authenticates every ciphertext segment and its final content
+  // digest; the segment AEAD/HMAC still binds this operation manifest digest.
+  if (!manifest.externalSegmentDigests) {
+    const auto manifestBytes = manifest.canonicalBytes(false);
+    const auto verified = m_options.verifyManifest
+      ? m_options.verifyManifest(manifestBytes, manifest.producerSignature)
+      : [&] {
+          const auto expected = hmac(m_epochKey, manifestBytes);
+          return expected.size() == manifest.producerSignature.size() &&
+                 CRYPTO_memcmp(expected.data(), manifest.producerSignature.data(),
+                               expected.size()) == 0;
+        }();
+    if (!verified) {
+      throw std::runtime_error("manifest authenticator verification failed");
+    }
   }
 }
 
@@ -1146,7 +1294,7 @@ ProviderGroupCoordinator::openSegment(
   const auto expectedName = expectedDataName.empty()
     ? makeDataName(m_capability, manifest, segment.descriptor.segmentNo)
     : expectedDataName;
-  if (segment.descriptor.manifestDigest != manifest.digest() ||
+  if (segment.descriptor.manifestDigest != manifestDigestForTransport(manifest) ||
       segment.descriptor.segmentCount != manifest.segmentCount ||
       segment.descriptor.totalBytes != manifest.totalBytes ||
       segment.descriptor.segmentSize != manifest.segmentSize ||
@@ -1165,7 +1313,8 @@ ProviderGroupCoordinator::openSegment(
   }
   const auto operationKey = deriveOperationKey(m_epochKey, m_capability, manifest);
   auto plaintext = NdnsfCollectiveControl::open(segment, operationKey, expectedName);
-  if (hex(plaintext) != manifest.orderedSegmentDigests[segment.descriptor.segmentNo]) {
+  if (!manifest.externalSegmentDigests &&
+      hex(plaintext) != manifest.orderedSegmentDigests[segment.descriptor.segmentNo]) {
     throw std::runtime_error("NDNSF_DATA_V1 plaintext digest mismatch");
   }
   return plaintext;
@@ -1175,7 +1324,7 @@ DataSegmentReplayWindow&
 ProviderGroupCoordinator::replayWindow(
   const CollectiveOperationManifestV1& manifest)
 {
-  const auto key = manifest.digest();
+  const auto key = manifestDigestForTransport(manifest);
   auto found = m_replayWindows.find(key);
   if (found != m_replayWindows.end()) {
     return *found->second;
@@ -1343,7 +1492,7 @@ ProviderGroupCoordinator::deriveOperationKey(
   appendString(info, manifest.sourceLayoutDigest);
   appendString(info, manifest.targetLayoutDigest);
   appendString(info, manifest.tensorDigest);
-  appendString(info, manifest.digest());
+  appendString(info, manifestDigestForTransport(manifest));
   return hkdf32(epochKey, info);
 }
 
@@ -1362,7 +1511,7 @@ ProviderGroupCoordinator::deriveNonce(
   appendU64(input, manifest.operationIndex);
   appendString(input, manifest.producerRank);
   appendString(input, manifest.tensorDigest);
-  appendString(input, manifest.digest());
+  appendString(input, manifestDigestForTransport(manifest));
   appendString(input, exactDataName);
   appendU64(input, segmentNo);
   const auto digest = sha256(input);
