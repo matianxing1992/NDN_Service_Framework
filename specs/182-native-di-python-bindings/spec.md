@@ -3,7 +3,7 @@
 **Feature Branch**: `Experimental`
 **Feature Directory**: `182-native-di-python-bindings`
 **Created**: 2026-09-06
-**Revision**: 1
+**Revision**: 2
 **Status**: DRAFT
 **Execution Status**: NOT_STARTED
 **Activation**: planned successor; active feature remains Spec181
@@ -15,7 +15,7 @@ Python 可以传入原生策略对象或配置，但默认策略执行、切分�
 ## Goal
 
 提供一个可被纯 C++ 应用链接和调用的 NDNSF-DI 库。相同的模型、输入和策略也可由
-Python 绑定提交，两个入口使用同一套 DI 实现。移除默认生产路径对 Python 规划器、
+Python 绑定提交，两个入口使用同一套 DI 实现，包括模型/输入准备、ACK admission 和 Provider 服务注册。移除默认生产路径对 Python 规划器、
 状态机、装配 helper 和 tokenizer helper 的运行时依赖。
 
 本需求改变的是 DI 的语言实现与职责归属，保留 Request/ACK/Selection/Response、
@@ -93,7 +93,7 @@ Python 不参与每 token/epoch 或会话提交决策。
 1. **Given** 空缓存和 standalone tokenizer 工件，**When** 原生请求生成文本，
    **Then** 完成首次装配、token 输出及文本解码，不 fork Python。
 2. **Given** 运行中取消或过期状态，**When** 到达下一调度/提交边界，
-   **Then** 停止新工作，拒绝旧 attempt/state，输出完整清理记录。
+   **Then** 停止新工作，拒绝旧 attempt/state，输出分别记录本地取消终态和远端 deadline/control 收束的清理结果，不承诺本地取消立即中止远端。
 
 ### User Story 5 - Reproducible Development Delivery (Priority: P3)
 
@@ -124,7 +124,7 @@ Python 绑定可选构建，禁止依赖主工作区未提交文件。
 - **FR-003**: **Native Strategy Execution**. System MUST 接受原生策略对象/配置，
   由 C++ 执行 split 和 placement；拒绝 Python callback 作为默认生产策略。
 - **FR-004**: **Single Plan Semantics**. System MUST 由 C++ DI 构造并校验候选、依赖、
-  规范摘要、grant view 和 Selection 投影；非法图/绑定在网络提交前拒绝。
+  规范摘要、grant view 和 Selection 投影，并在规划前原生验证 ACK provenance 与 offer policy；非法图/绑定在网络提交前拒绝。
 - **FR-005**: **Protected Grant Closure**. System MUST 原生完成 requester grant 请求/绑定/
   发布和 Provider 验证/密钥消费/清理，保留 Spec170/181 保护语义及独立权威职责。
 - **FR-006**: **Native Cold Assembly**. System MUST 在选定 Provider 原生完成所需动态 ONNX
@@ -136,7 +136,7 @@ Python 绑定可选构建，禁止依赖主工作区未提交文件。
 - **FR-009**: **Model Boundary Preservation**. System MUST 保持 YOLO/Qwen 共用机制，
   模型图、切分细节、tokenizer 与后处理留在 native adapters，不反向耦合通用 Core。
 - **FR-010**: **Thin Python Compatibility**. System MUST 将支持的 Python API 转发至同一
-  原生库；类型/参数错误在入口报告，运行错误映射原生类别，不静默 Python fallback。
+  原生库及 Provider host；Python callable strategy/runner 明确迁移为原生对象；类型/参数错误在入口报告，运行错误映射原生类别，不静默 Python fallback。
 - **FR-011**: **Default Path Retirement**. System MUST 完成旧 Python 路径及其真实调用方的
   迁移清单；退出默认 import/运行图并有阻断旧实现仍可运行的证明。
 - **FR-012**: **Native Build and Runtime Closure**. System MUST 可独立构建/安装/链接原生库
@@ -193,7 +193,7 @@ Python 绑定可选构建，禁止依赖主工作区未提交文件。
 | INV-006 | 冷动态装配仍在 Selection 后；模型差异归 adapter | NativeCanonicalOnnxAssembler；现有 recipe | 冷缓存、多不同切分和权限先行 |
 | INV-007 | 运行时零 Python，不要求离线训练/导出或构建工具零 Python | 本次用户目标；Waf 为构建工具 | 生产进程树/动态库检查 |
 | INV-008 | 设计、实现、定向检查、本地验收、外部实验分离 | constitution V/VII/VIII；Spec181 handoff | audit + 同源证据 |
-| INV-009 | 本轮只添加 182 文档，181 活动身份不变 | 本次用户授权 | 前后 hash / Git diff |
+| INV-009 | 本轮仅修改 182 文档，181 活动身份不变 | 本次用户授权 | 前后 hash / Git diff |
 
 ## Code Design Index
 
@@ -215,21 +215,23 @@ NDNSF-DistributedInference/cpp/adapters。仅本表使用前缀缩写，附件�
 | CD-010 | ADD examples/DI_NativeRequester.cpp；MODIFY DI_NativeProviderExecutable.cpp、三个 maintained runners；RETIRE P/app_sdk/placement.py 等默认路径 | 切换与旧实现退出 | [Migration](contracts/code-design.md#cd-010-migration) |
 | CD-011 | ADD tests/standalone/run-spec182-native-closure.py、受影响 unit/integration tests、fixtures 与 inventory | 真实可检错证明 | [Proof](contracts/proof-design.md) |
 | CD-012 | MODIFY docs/architecture.md, docs/NDNSF-DI-runtime-workflow.md, docs/ndnsf-core-app-boundary.md；ADD evidence/development-handoff.md | 将新职责写入维护文档并交付 | [Delivery](plan.md#delivery) |
+| CD-013 | ADD D/NativeRequestPreparation.{hpp,cpp}, D/NativeOfferAdmission.{hpp,cpp}；MODIFY planned NativeModelAdapter::inspect/encodeInput/decodeResult | 补齐完整调用前后端与 ACK trust | [Preparation](contracts/runtime-boundaries.md#cd-013-preparation-and-offer-admission) |
+| CD-014 | ADD D/NativeInferenceProvider.{hpp,cpp}；MODIFY DI_NativeProviderExecutable.cpp | C++/绑定共用 Provider 注册与生命周期 | [Provider host](contracts/runtime-boundaries.md#cd-014-provider-host-and-binding) |
 
 ### Main Call Flow
 
 ~~~text
 C++ application ─────────────────────────┐
 Python caller → optional native binding ├→ NativeInferenceClient::request
-                                       └→ Core BeginCollaboration
-                                          → ACK_CLOSED snapshot
+                                       └→ native input preparation → Core BeginCollaboration
+                                          → ACK_CLOSED → native offer admission / graph inspection → snapshot
                                           → C++ model split + placement strategy
-                                          → NativePlanSealer + NativeGrantClient
+                                          → native artifact ensure → NativePlanSealer + NativeGrantClient
                                           → Core CommitCollaborationPlan
-                                          → Native Provider / protected preparation
+                                          → NativeInferenceProvider / protected preparation
                                           → native ONNX assembly + runner / tokenizer
                                           → Core Response / stream
-                                          → native handle → caller
+                                          → native adapter decodeResult → handle → caller
 ~~~
 
 Python 不成为 flow 中间的 planner、grant authority、每 token callback 或补救子进程。
@@ -259,11 +261,18 @@ Python 不成为 flow 中间的 planner、grant authority、每 token callback �
 
 **DRAFT / BLOCK for implementation**。用户目标与职责选择已明确，公开 API/行为和证明框架见附件；
 O-001（181 最终基线）、O-002（ONNX 原生字节契约）、O-003（tokenizer 原生依赖 ABI）
-与 O-004（完整旧能力/调用方清单）在 [code-design](contracts/code-design.md#open-questions)
+、O-004（完整旧能力/调用方清单）与 O-005（隔离设计可行性）在 [code-design](contracts/code-design.md#open-questions)
 中保留有界关闭条件。不得把尚未冻结的叶子接口交给实现者临场补全。
 
 本轮可以完成设计文档交付；它不是 READY_FOR_IMPLEMENTATION 或代码完成。
 详细参数/状态、工作单元边界、PO 和自审分别见：
 [code-design](contracts/code-design.md)、[proof-design](contracts/proof-design.md)、
-[work-units](contracts/work-units.md)、[plan](plan.md)、[tasks](tasks.md)、
+[runtime boundaries](contracts/runtime-boundaries.md)、[work-units](contracts/work-units.md)、[plan](plan.md)、[tasks](tasks.md)、
 [traceability](traceability.md)、[audit](audit.md)、[checklist](checklists/requirements.md)。
+
+## Revision History
+
+- Revision 2：完整审计后补 CD-013/014 与 PO-013/014；任务 15→17。
+  原 T008--015 改为 T010--017；原 T001--007 不变。历史 revision 1 evidence 不回写。
+  修复取消语义、兼容退出/回退、harness-before-audit 及 O-005 自依赖；仍 DRAFT。
+  审计证据见 [revision 2 review](evidence/audit-revision2.md)。

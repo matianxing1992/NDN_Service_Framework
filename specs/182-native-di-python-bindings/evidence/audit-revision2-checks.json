@@ -1,0 +1,167 @@
+{
+  "schema": "spec182-audit-revision2-v1",
+  "design_revision": 2,
+  "reviewed_head": "d21eb5557eb05b7d7f28d45805c632e708fc8001",
+  "files": [
+    {
+      "path": ".specify/feature.json",
+      "sha256": "44ebdea7eeea3ccf4417b719f8e8c2cce4030fc46ecbd2275ae1ea899fd619ef",
+      "classification": "workspace-existing"
+    },
+    {
+      "path": "ndn-service-framework/ServiceUser.hpp",
+      "sha256": "c70853baa752270bdbb4ef392b06e52c5cb109b6ffa93fd7be34d9a08d5a8788",
+      "classification": "workspace-existing"
+    },
+    {
+      "path": "ndn-service-framework/ServiceUser.cpp",
+      "sha256": "1f67a21aa670c8cf5e264ca895eb2b169838cd807606a3ff433c4f70a4b75316",
+      "classification": "committed"
+    },
+    {
+      "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/base.py",
+      "sha256": "6ae718f2e14c197832a51c002f936c9d579f9c0f44cea56939024f1e9035e3f7",
+      "classification": "committed"
+    },
+    {
+      "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/provider.py",
+      "sha256": "49c432a74f022ed654fc55e5eb420f95873953e1b0e93656eb352b1879b77775",
+      "classification": "committed"
+    },
+    {
+      "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/placement.py",
+      "sha256": "32c2960b2500bbfd57a35b67cabd37b7a281178d0672748dfc1dd784aa0429b4",
+      "classification": "committed"
+    },
+    {
+      "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/artifact_deployment.py",
+      "sha256": "1669b0dcdb4f064ce35d3aa5353bcaaf96a0fea6bd84fee0e74b34681601d8dd",
+      "classification": "committed"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp",
+      "sha256": "54d493c07b94f2eb92e851357aa8ff80adfadb7e35a3522be6007a0e4de63f81",
+      "classification": "workspace-existing"
+    },
+    {
+      "path": "examples/DI_NativeProviderExecutable.cpp",
+      "sha256": "9b4aaa6429c0a653d6dd51300b4d40e6c3f7efd91ba184d61bbbccba3c10bab0",
+      "classification": "workspace-existing"
+    },
+    {
+      "path": "docs/failure-log.md",
+      "sha256": "214888231bc4c922f210197472582cbbb9f697ec17ba7c33eef56dfa9f5f0559",
+      "classification": "workspace-existing"
+    }
+  ],
+  "validation_status": "PASS_DOCUMENT_CHECKS_ONLY",
+  "runtime_tests": "NOT_RUN",
+  "structural_audit": {
+    "blockers": [],
+    "details": {
+      "duplicate_requirements": [],
+      "duplicate_success_criteria": [],
+      "duplicate_tasks": [],
+      "malformed_tasks": [],
+      "missing_story_tasks": [],
+      "placeholders": [],
+      "untraced_requirements": []
+    },
+    "metrics": {
+      "functional_requirements": 16,
+      "has_traceability": true,
+      "parallel_tasks": 0,
+      "story_task_counts": {
+        "US1": 6,
+        "US2": 1,
+        "US3": 3,
+        "US4": 2,
+        "US5": 5
+      },
+      "success_criteria": 8,
+      "tasks": 17,
+      "tasks_complete": 0,
+      "traced_requirements": 16,
+      "user_stories": 5
+    },
+    "missing_required": [],
+    "ok": true,
+    "warnings": []
+  },
+  "document_validation": {
+    "schema": "spec182-revision2-document-validation-v1",
+    "ok": true,
+    "tasks": 17,
+    "tasks_complete": 0,
+    "fr": 16,
+    "sc": 8,
+    "cd": 14,
+    "po": 14,
+    "local_links_checked": 100,
+    "dependency_graph": {
+      "T001": [],
+      "T002": [
+        "T001"
+      ],
+      "T003": [
+        "T002"
+      ],
+      "T004": [
+        "T003"
+      ],
+      "T005": [
+        "T004"
+      ],
+      "T006": [
+        "T002"
+      ],
+      "T007": [
+        "T002"
+      ],
+      "T008": [
+        "T003",
+        "T006",
+        "T007"
+      ],
+      "T009": [
+        "T006",
+        "T007"
+      ],
+      "T010": [
+        "T003",
+        "T004",
+        "T005",
+        "T006",
+        "T007",
+        "T008",
+        "T009"
+      ],
+      "T011": [
+        "T010"
+      ],
+      "T012": [
+        "T011"
+      ],
+      "T013": [
+        "T012"
+      ],
+      "T014": [
+        "T013"
+      ],
+      "T015": [
+        "T014"
+      ],
+      "T016": [
+        "T015"
+      ],
+      "T017": [
+        "T016"
+      ]
+    },
+    "errors": [],
+    "runtime_tests": "NOT_RUN"
+  },
+  "diff_check_exit": 0,
+  "active_pointer_unchanged": true,
+  "historical_revision1_evidence_unchanged": true
+}

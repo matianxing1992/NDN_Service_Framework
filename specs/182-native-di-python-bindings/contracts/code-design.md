@@ -1,8 +1,8 @@
 # Code Design Contract
 
-**Revision**: 1 | **Status**: DRAFT
+**Revision**: 2 | **Status**: DRAFT
 **Normative parent**: [spec.md](../spec.md)
-**Baseline**: [design-baseline.json](../evidence/design-baseline.json)
+**Baseline**: [design-baseline.json](../evidence/design-baseline.json)（revision 1 历史快照）；revision 2 当前差异见 [audit evidence](../evidence/audit-revision2.md)。
 
 ## Baseline and Evidence
 
@@ -17,8 +17,8 @@ existing 仅表示主工作区存在；committed/workspace-existing 及每文件
 - NativeCanonicalOnnxAssembler.cpp:740 runPythonHelper：existing 生产冷装配依赖。
 - NativeStandaloneTokenizer.cpp:68--109 decoder callback：workspace-existing fork/exec Python。
 - NativeEpochCoordinator.hpp：existing 原生生成调度和 executionGuard；保持复用。
-- 最新 R18 为 Data wire-size 发送失败，不是 Python 原因的已证实案例；
-  见 Spec181 formal matrix 的 Exact Dependency Boundary R18。
+- revision 1 引用的 R18 是历史 Data wire-size 失败；当前 failure index 已推进至
+  exact-tensor R6 focused PASS（270 assertions），尚不能当作正式 matrix/181 关闭。
 
 CodeGraph 广义查询包含临时比较副本，全部排除；
 以精确主工作区路径和源码核对。Context Mode project query 曾返回空，
@@ -46,7 +46,9 @@ public:
   NativeInferenceClient(std::shared_ptr<ndn_service_framework::ServiceUser> user,
                         std::shared_ptr<const NativeAdapterRegistry> adapters,
                         std::shared_ptr<NativeGrantClient> grants,
-                        std::shared_ptr<NativeConversationCoordinator> conversations);
+                        std::shared_ptr<NativeConversationCoordinator> conversations,
+                        std::shared_ptr<NativeRequestPreparation> preparation,
+                        std::shared_ptr<const NativeOfferAdmission> admission);
   NativeInferenceHandle request(
       const NativeModelRef& model,
       const NativeApplicationInput& input,
@@ -73,8 +75,9 @@ public:
 | adapters | 原生注册表提供模型差异，构造后只读 | 不允许模型名称分支散落于 client；未注册 adapter 在 Request 前拒绝 |
 | grants | 已配置原生权威 port；保护请求必须有 | 不接受明文 key dict；grant secrets 禁止进入 handle/日志 |
 | conversations | 可选的原生会话 owner | 无续接请求可为空；有 continuation 而未配置必须拒绝 |
+| preparation / admission | CD-013 原生输入/工件 I/O 与 ACK policy owner；应用配置时构造 | 共享寿命，native ports；缺配置在 Request 前拒绝 |
 | model | 调用者给出 immutable model/adapter 引用 | URI、revision、digest 按认证模型契约校验；不能只给可变名称 |
-| input | inline bytes 或认证 publication reference | 只允许声明 transport mode；禁止 caller 拼接伪造 REPO_REF |
+| input | application value、inline bytes 或认证 publication reference | 只允许声明 transport mode；禁止 caller 拼接伪造 REPO_REF |
 | splitStrategy / placementStrategy | C++ 对象或由绑定生成的 C++ 对象 | 非空、immutable identity；无 Python trampoline；异步期间 shared lifetime |
 | options | 调用者的 task、总预算、ACK 时间、生成参数、可选 continuation | 总预算毫秒 > ACK 毫秒 > 0；默认值由已验证 config 一处解析；不接受独立 planDigest/attempt 字段 |
 | waitTimeout | 调用者本次等待时长 | 超过本次等待只报告 local wait timeout，不改变请求 deadline 或取消请求 |
@@ -90,7 +93,8 @@ optional generation options、optional conversation reference。请求 ID、atte
 NativeDiError。其 code/domain/boundary/requestId/attempt 为结构化非秘密数据，
 复用已注册 DI 原因码；原生异常文本不能被当作协议拒绝 oracle。
 result 返回 payload 和真实执行/结果元数据，禁止把本地日志 marker 转为成功。
-线程、等待与取消桥接的准确 Core API 重载在 T001/O-004 固定，禁止发明新的 Core cancel 状态。
+线程/取消见 [runtime boundary](runtime-boundaries.md#cancellation-and-observer-contract)；
+现有 cancelStreamRequest 不是远端 abort。T001/O-004 固定非 stream 的本地 fencing 和真实 control 接线。
 
 ## CD-002 Strategies
 
@@ -138,7 +142,7 @@ strategy identity 是版本/参数规范摘要，不含可变全局缓存。
 5. 原生 registry 按 adapter ID 注入 Qwen/YOLO 实现；通用 client 不比较模型名称。
 
 **Purity**：策略只读取输入，无网络/磁盘副作用。模型描述/图构建需要 I/O 时由 adapter preparation
-port 在 snapshot 形成前完成，不能在 comparator 中加载模型。未经支持的 tensor parallel 配置
+port 在 ACK_CLOSED 后、planning snapshot 形成前完成，不能在 comparator 中加载模型。未经支持的 tensor parallel 配置
 按现有能力清单显式拒绝，不在本次迁移中顺便增加算法。
 
 ## CD-003 Plan Semantics
@@ -179,11 +183,11 @@ grantName 和 signed payload 保持现有 wire 语义。共享源码不取消 Pr
 | RETIRE default execution | NDNSF-DistributedInference/ndnsf_distributed_inference/security/grant_provider.py; NDNSF-DistributedInference/ndnsf_distributed_inference/security/artifact_policy_authority.py; NDNSF-DistributedInference/ndnsf_distributed_inference/security/requester_grant_pipeline.py | AuthorityBackedGrantProvider.__call__；ArtifactPolicyAuthority.issue；Python requester pipeline |
 
 planned acquire(const NativeProviderGrantView&, std::chrono::system_clock::time_point deadline)
-→ NativeGrantBinding；issue(const NativeGrantRequest&, std::chrono::system_clock::time_point now)
+→ NativeGrantBinding（工作 executor 等待，publication post 至 Face；deadline/cancel 终止等待）；issue(const NativeGrantRequest&, std::chrono::system_clock::time_point now)
 → NativeKeyGrant。认证证书、私钥 handle 和 issuer policy 在构造时注入；禁止把私钥字节作为 request 参数。
 
 按已有 seal core → 签名请求 → policy 检查 → recipient encryption → 规范名 signed Data 发布 →
-grant binding → finalize 的顺序。NativeGrantClient 使用现有 Core publication API，
+grant binding → finalize 的顺序。NativeGrantClient 使用现有 ServiceUser::publishSignedAppData，
 不得引入新的网络 authority 服务作为迁移捷径。
 进程内 authority 仍为独立职责；requester 不可绕过 policy 签发，Provider 不可把“字段相等”当验证成功。
 key 只能经已有安全原语消费和零化；不自写替代密码算法。算法/字段复用 Spec170/181，
@@ -254,7 +258,7 @@ restore(const std::filesystem::path& journalRoot) → void。
 | handle status | 从 DI operation + Core result 派生 | binding 只读；result/observer 不改变状态 | 非第二套权威 |
 | Provider role/state | 既有 NativeProviderRuntime/ProtectedRuntime/ConversationStateStore | 原位保留授权、deadline、排队取消和零化 | 现有状态引用 |
 | conversation journal | NativeConversationCoordinator 单写者 | 验证完整 checkpoint 后原子提交；崩溃恢复拒绝不完整后继 | 旧格式迁移由 O-004 定义 |
-| notified event queue | 只存有界非秘密事件 | observer 不能阻塞 Core；队列溢出按现有 stream 语义显式报错 | 不擅自丢 token 后声称完整 |
+| notified event queue | 只存有界非秘密事件 | observer 不能阻塞 Core；通知溢出只记 DELIVERY_OVERFLOW，业务 stream 缺失另按既有语义失败 | 不擅自丢 token 后声称完整 |
 
 策略/装配等耗时工作不阻塞 ndn::Face event loop。继续复用原生 epoch 调度，
 不引入一个“统一状态机”取代请求方和 Provider 必要的独立权限边界。
@@ -269,7 +273,8 @@ restore(const std::filesystem::path& journalRoot) → void。
 | MODIFY | NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py; NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/__init__.py | 导出原生-backed API，去掉默认旧运行时 import |
 
 planned bindDistributedInference(pybind11::module_& module)；
-Python request/infer/result/cancel 的旧签名按 T001 capability manifest 保留可映射部分。
+Python request/infer/result/cancel 及 Provider serve/run/stop 按 T001 capability manifest 转发；
+Provider native counterpart 为 CD-014；受支持语义不得通过“不可映射”删减。
 不支持的签名必须列出替代调用；不能悄悄转到旧 APPClient 或旧 Provider。
 阻塞 native wait 释放 GIL；回调进入 Python 才获取 GIL，投递只在 observation queue，
 对象销毁注销回调并保留在途 native shared lifetime。
@@ -302,7 +307,9 @@ O-002/O-003 冻结后必须记录原生工具链、include/lib、RPATH、license
 | ADD | specs/182-native-di-python-bindings/contracts/compatibility-manifest.json | T001 产出每个公开签名、调用方、配置、旧数据和退出证明清单；O-004 当前 OPEN |
 
 迁移顺序：原生等价实现 + 冻结向量 → 独立 C++ 路径闭合 → binding 转发 →
-maintained callers 切换 → 阻断旧路径验证 → 根据完整 caller inventory 删除无消费者运行实现。
+maintained callers 切换 → 阻断旧路径验证 → T013 删除无生产消费者的运行实现和包注册。
+兼容字段、callback 形式变更、mixed-version 与持久化回退以
+[runtime migration](runtime-boundaries.md#migration-and-rollback-contract) 为规范。
 不存在长期 dual-default 或自动 fallback。测试 oracle/离线工具允许保留 Python，
 必须显式分类，不能将生产算法改名为“工具”规避依赖检查。
 
@@ -311,15 +318,20 @@ maintained callers 切换 → 阻断旧路径验证 → 根据完整 caller inve
 | FLOW / step | Caller → callee | Data / effect | Failure owner |
 | --- | --- | --- | --- |
 | FLOW-001 / 1 | C++ main 或 binding → NativeInferenceClient::request | 认证模型引用、输入、native strategies、已验证 config | client 参数错误，尚无网络调用 |
-| FLOW-001 / 2 | client → Core BeginCollaboration | 原生编码 request；Core 产生 request/ACK authority | Core timeout → DI terminal error |
-| FLOW-001 / 3 | ACK callback → snapshot → enumerate/propose | 不可变 offers、模型图、预算；原生 executor | strategy error → 不提交 Selection |
-| FLOW-001 / 4 | client → sealer → grants → finalize/project | 请求/计划/权限绑定；同一权威生成各投影 | grant/seal failure → 清理 requester secrets |
+| FLOW-001 / 2 | client → CD-013 prepareInput → Core BeginCollaboration | native encodeInput；Core 产生 request/ACK authority | native 输入错误或 Core timeout → DI terminal error |
+| FLOW-001 / 3 | ACK_CLOSED → CD-013 verify/inspectModel → snapshot → enumerate/propose | Core provenance + DI offer policy；认证图、预算；原生 executor | admission/strategy error → 不提交 Selection |
+| FLOW-001 / 4 | client → CD-013 ensureArtifacts → sealer → grants → finalize/project | 请求/计划/权限绑定；同一权威生成各投影 | grant/seal failure → 清理 requester secrets |
 | FLOW-001 / 5 | client → Core CommitCollaborationPlan | 原 ACK digest、roles/dependencies/assignment payload | Core 独立拒绝过期/越界/二次冲突 |
-| FLOW-001 / 6 | Native Provider → ProtectedRuntime → native assembler/runner | Selection 后冷装配；device/model 由 adapter 表达 | Provider 拒绝、资源清理和退出证据 |
-| FLOW-001 / 7 | Core Response → native handle → binding observer | 单一结果/终态，Python 不重新判定成功 | late callbacks 忽略业务状态更新 |
-| FLOW-002 | handle.cancel / deadline → existing Core operation → executionGuard | request 和 Provider 各自状态 owner，停止新调度 | client 不热转等待；Provider 零化 |
+| FLOW-001 / 6 | CD-014 native host → Native Provider → ProtectedRuntime → native assembler/runner | Selection 后冷装配；device/model 由 adapter 表达 | Provider 拒绝、资源清理和退出证据 |
+| FLOW-001 / 7 | Core Response → native adapter decodeResult → handle → observer | 单一结果/终态，Python 不重新判定成功 | late callbacks 忽略业务状态更新 |
+| FLOW-002 | handle.cancel → local fence；stream 调 cancelStreamRequest；远端按已有 control/deadline → executionGuard | 本地取消不等于远端已停；分开记录终态/cleanup | 见 runtime cancellation 契约，禁止新 attempt/Selection |
 | FLOW-003 | beginTurn → request → native epochs → prepareCheckpoint/commitTurn | lineage 绑定、原子状态提交、原生文本 decode | 旧 attempt/state 不能晋升，abort 保留诚实错误 |
 | FLOW-004 | compatibility entry → native request | 无旧 coordinator、无 callback strategy | 不支持 API 显式错误，不能 fallback |
+
+## Additional Normative Contracts
+
+CD-013/014、取消/通知队列及旧路径回退完整定义于
+[runtime boundaries](runtime-boundaries.md)。其字段、任务和证明与本文共同构成规范。
 
 ## Open Questions
 
@@ -328,8 +340,8 @@ maintained callers 切换 → 阻断旧路径验证 → 根据完整 caller inve
 | O-001 | Spec181 最终交付和依赖修复尚未封存 | 读取最终 closure/handoff 与实际 commit，核对 R18 首边界处置；刷新 baseline 一次，不重跑旧实验以猜测 | T001；全部实现 |
 | O-002 | 原生 ONNX extraction/checker/protobuf 是否复现既有精确字节 | 在固定 inline/external-data 与两种 role recipe 上比较；列出 native 调用、版本、许可、依赖和差异。精确相等或经明确版本化设计修订后才能关闭；最多两个候选方案 | T001；T002/T006 |
 | O-003 | 可复用 native tokenizer 库/ABI/线程安全尚未验证 | 固定 tokenizer.json 的 ASCII、Unicode、special/byte fallback 向量，比较完整 ids/text；证明无 Python。冻结一种 ABI/依赖及内存所有权；最多两个候选方案 | T001；T002/T007 |
-| O-004 | 所有旧公开 API/策略/会话持久化与调用方尚未穷举 | CodeGraph + AST/import/config inventory；逐项 retained/native binding/offline/deprecated，补完整 types、状态、Core cancel/observer 接线和错误映射；不允许遗漏调用方或以未验证分支做基线 | T001；T002--T011 |
-| O-005 | native runtime 隔离工具可用性 | 核对 Linux mount/process observation 能阻断解释器、libpython、旁路服务，同时允许 harness 在外部；以故意加入 helper 的 counterfactual 证明检查有效 | T012；T014 |
+| O-004 | 所有旧公开 API/策略/会话持久化与调用方尚未穷举 | CodeGraph + AST/import/config inventory；按 runtime-boundaries 的 NATIVE_REQUIRED/BINDING_ONLY/OFFLINE_REFERENCE/UNSUPPORTED_EXTENSION 分类，补完整 types、状态、Core cancel/observer 接线和错误映射；不允许遗漏调用方或以未验证分支做基线 | T001；T002--T013 |
+| O-005 | native runtime 隔离设计可行性 | 核对 Linux mount/process observation 能阻断解释器、libpython、旁路服务，同时允许 harness 在外部；T001 冻结工具、权限和白名单设计后关闭此 OPEN；T014 实现并用故意 helper 验证有效性 | T001 设计；T014 实现；T016 资格 |
 
 每项 OPEN 是具体设计边界，不能宣称 READY 后留给实现 improvisation。
 T001 的交付是关闭表、叶子签名、lock/compatibility manifest 和修订后的原子任务，
@@ -337,7 +349,7 @@ T001 的交付是关闭表、叶子签名、lock/compatibility manifest 和修�
 
 ## Change Control
 
-当前签名和 manifest 是设计 revision 1；OPEN 影响范围为 BLOCK。
+当前签名和 manifest 是设计 revision 2；OPEN 影响范围为 BLOCK。
 新增原生依赖/公有字段/状态 owner/wire format/调用方必须先修订 CD、T、PO。
 Private helper 只可实现已描述职责，不能用 helper 名义增加 subsystem。
 完整单元边界见 [work-units](work-units.md)，证明见 [proof-design](proof-design.md)。

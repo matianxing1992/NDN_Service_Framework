@@ -1,6 +1,7 @@
 # Specification Quality Checklist: Native NDNSF-DI
 
 **Created**: 2026-09-06
+**Revision**: 2
 **Feature**: [spec.md](../spec.md)
 **Status**: DRAFT; design-document delivery only
 
@@ -24,7 +25,13 @@
 - [ ] O-001 最终 181 baseline 已冻结。
 - [ ] O-002/O-003 原生依赖/字节与 tokenizer 契约已关闭。
 - [ ] O-004 完整 native fields/signatures/legacy caller 迁移已关闭。
-- [ ] O-005 runtime isolation 反例已验证。
+- [ ] O-005 隔离设计由 T001 冻结；T014 实现后另验反例。
+
+- [x] input/graph/artifact preparation 和 ACK provenance/policy admission 有 CD-013/T008/PO-013。
+- [x] Provider 绑定有 CD-014/T009/PO-014 原生宿主，不仅命名 Python 转发。
+- [x] 本地取消、远端收束、observer overflow 与业务失败分开定义。
+- [x] T014 先实现正式 harness，T015 审计，T016 只执行冻结验收。
+- [x] 旧 callback、默认退出、mixed-version 和 journal 回退有明确契约。
 
 ## Feature Readiness
 
