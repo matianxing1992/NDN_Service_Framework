@@ -130,7 +130,8 @@ ProviderRoleWorker::executeAsync(std::string sessionId,
                                  std::shared_ptr<DependencyIo> io,
                                  RoleRunner runner,
                                  std::map<std::string, TensorBundle> initialInputsByScope,
-                                 RoleExecutionContext::StreamEventSink eventSink)
+                                 RoleExecutionContext::StreamEventSink eventSink,
+                                 std::function<void()> executionGuard)
 {
   return executeAsyncImpl(std::move(sessionId),
                           std::move(role),
@@ -139,7 +140,8 @@ ProviderRoleWorker::executeAsync(std::string sessionId,
                           {},
                           std::move(initialInputsByScope),
                           std::nullopt,
-                          std::move(eventSink));
+                          std::move(eventSink),
+                          std::move(executionGuard));
 }
 
 std::future<ProviderRoleResult>
@@ -148,7 +150,8 @@ ProviderRoleWorker::executeAsync(std::string sessionId,
                                  std::shared_ptr<DependencyIo> io,
                                  std::shared_ptr<NativeModelRunner> runner,
                                  std::map<std::string, TensorBundle> initialInputsByScope,
-                                 RoleExecutionContext::StreamEventSink eventSink)
+                                 RoleExecutionContext::StreamEventSink eventSink,
+                                 std::function<void()> executionGuard)
 {
   return executeAsyncImpl(std::move(sessionId),
                           std::move(role),
@@ -157,7 +160,8 @@ ProviderRoleWorker::executeAsync(std::string sessionId,
                           {},
                           std::move(initialInputsByScope),
                           std::nullopt,
-                          std::move(eventSink));
+                          std::move(eventSink),
+                          std::move(executionGuard));
 }
 
 std::future<ProviderRoleResult>

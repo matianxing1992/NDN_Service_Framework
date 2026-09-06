@@ -1157,8 +1157,10 @@ NativeProviderRuntime::executeRoleAsync(std::string sessionId,
                                         RoleSpec role,
                                         std::shared_ptr<DependencyIo> io,
                                         std::map<std::string, TensorBundle> initialInputsByScope,
-                                        RoleExecutionContext::StreamEventSink eventSink)
+                                        RoleExecutionContext::StreamEventSink eventSink,
+                                        std::function<void()> executionGuard)
 {
+  if (executionGuard) executionGuard();
   const auto timelineRequestId = role.requestId.empty()
     ? "/ndnsf-di/session/" + sessionId
     : role.requestId;
@@ -1261,7 +1263,8 @@ NativeProviderRuntime::executeRoleAsync(std::string sessionId,
                                          std::move(io),
                                          std::move(runner),
                                          std::move(initialInputsByScope),
-                                         std::move(eventSink));
+                                         std::move(eventSink),
+                                         executionGuard);
   }
   catch (...) {
     if (predecessorBinding &&
@@ -1278,6 +1281,7 @@ NativeProviderRuntime::executeRoleAsync(std::string sessionId,
     [this, role = std::move(role), binding = std::move(*stateBinding),
      predecessor = std::move(predecessorBinding),
      conversationBinding = std::move(conversationBinding),
+     executionGuard = std::move(executionGuard),
      future = std::move(workerFuture)] () mutable {
       bool candidateStaged = false;
       const auto releaseConversationPin = [this, &conversationBinding] {
@@ -1288,7 +1292,9 @@ NativeProviderRuntime::executeRoleAsync(std::string sessionId,
       };
       try {
         auto result = future.get();
+        if (executionGuard) executionGuard();
         auto state = stateBundleFromResult(result, role);
+        if (executionGuard) executionGuard();
         if (!m_decodeStateStore.stageCandidate(
               predecessor, binding, std::move(state))) {
           ++m_decodeStateCommitFailures;
@@ -1296,6 +1302,7 @@ NativeProviderRuntime::executeRoleAsync(std::string sessionId,
         }
         candidateStaged = true;
         if (!role.deferStateCommit) {
+          if (executionGuard) executionGuard();
           if (!m_decodeStateStore.commitCandidate(binding)) {
             ++m_decodeStateCommitFailures;
             throw std::runtime_error("PROVIDER_DECODE_STATE_COMMIT_FAILED");

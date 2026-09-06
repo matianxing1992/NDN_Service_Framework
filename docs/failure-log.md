@@ -19,6 +19,14 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 shared generation worker (2026-09-05): CLOSED by focused repair.**
+Two queued coordinator regressions entered the model after cancellation or
+deadline. The existing pre-run cancellation check passed (1/3 cases PASS,
+14/18 assertions PASS). Propagating the shared guard through the registered
+runtime/worker and state staging repairs the boundary: rebuilt 48 cases /
+366 assertions PASS. T007 remains BLOCK for its remaining audit obligations.
+See [generation worker authority](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t007-generation-worker-20260905.md).
+
 **Spec181 shared preparation control R1 (2026-09-05): CLOSED as startup error; R2 focused PASS.**
 The isolated launcher omitted the empty output directory; `validate_inputs`
 raised `OUTPUT_ROOT_MISSING` before MiniNDN startup. No protocol result exists.

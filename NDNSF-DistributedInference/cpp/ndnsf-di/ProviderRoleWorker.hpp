@@ -138,7 +138,8 @@ public:
                std::shared_ptr<DependencyIo> io,
                RoleRunner runner,
                std::map<std::string, TensorBundle> initialInputsByScope = {},
-               RoleExecutionContext::StreamEventSink eventSink = {});
+               RoleExecutionContext::StreamEventSink eventSink = {},
+               std::function<void()> executionGuard = {});
 
   std::future<ProviderRoleResult>
   executeAsync(std::string sessionId,
@@ -146,7 +147,8 @@ public:
                std::shared_ptr<DependencyIo> io,
                std::shared_ptr<NativeModelRunner> runner,
                std::map<std::string, TensorBundle> initialInputsByScope = {},
-               RoleExecutionContext::StreamEventSink eventSink = {});
+               RoleExecutionContext::StreamEventSink eventSink = {},
+               std::function<void()> executionGuard = {});
 
   /** Queue the role before fetching/assembling/loading its native runner.
    * The preparation callback runs on the bounded Provider worker only after

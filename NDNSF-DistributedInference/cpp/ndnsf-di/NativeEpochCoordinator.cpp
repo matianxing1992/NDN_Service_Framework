@@ -47,12 +47,14 @@ private:
 };
 
 void
-throwIfStopped(const NativeEpochCoordinatorConfig& config)
+throwIfStopped(const std::function<std::optional<NativeEpochStopReason>()>& stopCheck,
+               const std::function<void()>& executionGuard)
 {
-  if (!config.stopCheck) {
+  if (executionGuard) executionGuard();
+  if (!stopCheck) {
     return;
   }
-  const auto reason = config.stopCheck();
+  const auto reason = stopCheck();
   if (!reason) {
     return;
   }
@@ -63,6 +65,12 @@ throwIfStopped(const NativeEpochCoordinatorConfig& config)
       throw std::runtime_error("REQUEST_DEADLINE");
   }
   throw std::runtime_error("native epoch coordinator stop reason is invalid");
+}
+
+void
+throwIfStopped(const NativeEpochCoordinatorConfig& config)
+{
+  throwIfStopped(config.stopCheck, config.executionGuard);
 }
 
 void
@@ -778,7 +786,10 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
     }
     throwIfStopped(config);
     auto roleFuture = config.runtime.executeRoleAsync(
-      config.sessionId, executable, config.io, std::move(inputs));
+      config.sessionId, executable, config.io, std::move(inputs), {},
+      [stopCheck = config.stopCheck, executionGuard = config.executionGuard] {
+        throwIfStopped(stopCheck, executionGuard);
+      });
     traceEpoch("role_submitted", config.role, epoch);
     auto roleResult = roleFuture.get();
     traceEpoch("role_done", config.role, epoch);

@@ -4418,7 +4418,9 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorKeepsDecodeStateProviderLocal)
   }
 }
 
-BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorRejectsCancellationBeforeRunner)
+static void
+checkNativeEpochStopBeforeRunner(bool queued, NativeEpochStopReason reason,
+                                bool useAuthorityGuard = false)
 {
   NativeProviderRuntime runtime(1);
   const auto identityTemplate = exactStateIdentity();
@@ -4480,24 +4482,93 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorRejectsCancellationBeforeRunner)
   config.stateIdentityTemplate = identityTemplate;
   config.positionPolicyDigest = identityTemplate.positionDigest;
   config.samplingDigest = "sha256:sampling";
-  config.stopCheck = [] {
-    return std::optional<NativeEpochStopReason>{
-      NativeEpochStopReason::Cancelled};
+  std::atomic<bool> stopped{!queued};
+  config.stopCheck = [&stopped, reason] {
+    return stopped.load() ? std::optional<NativeEpochStopReason>{reason}
+                          : std::nullopt;
   };
+  if (useAuthorityGuard) {
+    config.stopCheck = {};
+    config.executionGuard = [&stopped] {
+      if (stopped.load()) {
+        throw std::runtime_error("DI_PROTECTED_GRANT_REJECTED:test");
+      }
+    };
+  }
 
+  std::promise<void> blockerStarted;
+  std::promise<void> releaseBlocker;
+  auto released = releaseBlocker.get_future().share();
+  std::future<ProviderRoleResult> blocker;
+  bool admitted = !queued;
+  if (queued) {
+    runtime.registerRunner("/blocker", [&] (const RoleExecutionContext&) {
+      blockerStarted.set_value();
+      released.wait_for(std::chrono::seconds(10));
+      return std::map<std::string, TensorBundle>{};
+    });
+    RoleSpec blockerRole;
+    blockerRole.role = "/blocker";
+    blocker = runtime.executeRoleAsync("blocker", blockerRole, io);
+    const auto started = blockerStarted.get_future().wait_for(std::chrono::seconds(5));
+    if (started != std::future_status::ready) {
+      releaseBlocker.set_value();
+      blocker.get();
+      BOOST_FAIL("blocking role did not occupy the worker");
+      return;
+    }
+  }
+  auto coordination = std::async(std::launch::async,
+    [config = std::move(config)] () mutable {
+      return runNativeEpochCoordinator(std::move(config));
+    });
+  if (queued) {
+    const auto limit = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (runtime.snapshot().readyQueueDepth == 0 &&
+           std::chrono::steady_clock::now() < limit) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    admitted = runtime.snapshot().readyQueueDepth == 1;
+    stopped.store(true);
+    releaseBlocker.set_value();
+    blocker.get();
+  }
   try {
-    runNativeEpochCoordinator(std::move(config));
-    BOOST_FAIL("cancelled coordinator should not start the runner");
+    coordination.get();
+    BOOST_FAIL("stopped coordinator should not start the runner");
   }
   catch (const std::runtime_error& error) {
-    BOOST_CHECK_EQUAL(error.what(), "ATTEMPT_CANCELLED");
+    const auto expected = useAuthorityGuard ? "DI_PROTECTED_GRANT_REJECTED:test"
+      : reason == NativeEpochStopReason::Cancelled ? "ATTEMPT_CANCELLED" : "REQUEST_DEADLINE";
+    BOOST_CHECK_EQUAL(error.what(), expected);
   }
 
+  BOOST_CHECK(admitted);
   BOOST_CHECK_EQUAL(calls.load(), 0);
   const auto state = runtime.decodeStateSnapshot();
   BOOST_CHECK_EQUAL(state.entries, 0);
   BOOST_CHECK_EQUAL(state.pinnedEntries, 0);
   BOOST_CHECK_EQUAL(state.candidates, 0);
+}
+
+BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorRejectsCancellationBeforeRunner)
+{
+  checkNativeEpochStopBeforeRunner(false, NativeEpochStopReason::Cancelled);
+}
+
+BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorRejectsCancellationWhileQueued)
+{
+  checkNativeEpochStopBeforeRunner(true, NativeEpochStopReason::Cancelled);
+}
+
+BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorRejectsDeadlineWhileQueued)
+{
+  checkNativeEpochStopBeforeRunner(true, NativeEpochStopReason::Deadline);
+}
+
+BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorRejectsAuthorityLossWhileQueued)
+{
+  checkNativeEpochStopBeforeRunner(true, NativeEpochStopReason::Cancelled, true);
 }
 
 BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorRollsBackWhenDeadlineExpiresAfterRunner)

@@ -342,7 +342,8 @@ public:
                    RoleSpec role,
                    std::shared_ptr<DependencyIo> io,
                    std::map<std::string, TensorBundle> initialInputsByScope = {},
-                   RoleExecutionContext::StreamEventSink eventSink = {});
+                   RoleExecutionContext::StreamEventSink eventSink = {},
+                   std::function<void()> executionGuard = {});
 
   std::future<ProviderRoleResult>
   executePreparedRoleAsync(

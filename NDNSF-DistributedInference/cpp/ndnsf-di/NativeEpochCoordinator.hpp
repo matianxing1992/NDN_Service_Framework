@@ -90,6 +90,9 @@ struct NativeEpochCoordinatorConfig
   // boundaries so cancellation or the absolute request deadline cannot admit
   // another token or state successor.
   std::function<std::optional<NativeEpochStopReason>()> stopCheck;
+  // Same request authority used by prepared roles, propagated through queued
+  // execution and state staging; no generation-specific authorization owner.
+  std::function<void()> executionGuard;
   RoleExecutionContext::StreamEventSink eventSink;
   std::function<void(const RoleSpec&, const ProviderRoleResult&)> resultObserver;
 };

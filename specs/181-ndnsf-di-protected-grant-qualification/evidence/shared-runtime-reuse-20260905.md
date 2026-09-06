@@ -48,8 +48,10 @@ Spec181 源码收口，不把 Qwen 模型运行、跨模型资格或性能结论
 
 公共准备提取与 adapter 迁移的当前证据见
 [T002 shared preparation](t002-shared-preparation-20260905.md)。12 项
-定向检查、统一 native 构建和隔离 P-256 正向控制通过；generation
-worker 授权/取消传递审查尚未完成，T007 仍 BLOCK。
+定向检查、统一 native 构建和隔离 P-256 正向控制通过。随后修复
+generation worker 授权/取消传递缺口，48 cases / 366 assertions
+PASS，见 [generation worker authority](t007-generation-worker-20260905.md)。
+新源尚未刷新统一 native manifest；T007 的其他审计义务仍 BLOCK。
 
 `audit_speckit_structure.py --strict` PASS：15 FR、6 SC、4 user stories、
 12 tasks（4 complete）、15 FR traced。`git diff --check` PASS。

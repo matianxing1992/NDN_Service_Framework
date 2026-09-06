@@ -105,6 +105,14 @@ control R1 因启动脚本缺少空输出目录而在 preflight 失败，无协�
 匹配、7 个子进程退出已收集、无明文模型残留。generation 到 worker 的 guard 传递归 T007 后续
 定向修复。见 [公共准备闭包](evidence/t002-shared-preparation-20260905.md)。
 
+T007 generation worker 回归已复现：唯一 worker 排队后触发取消/截止，
+两项均仍进入模型 1 次。3 cases 中 1 PASS / 2 FAIL（14/18 assertions
+PASS），构建先完成后运行；见 [生成 worker 边界](evidence/t007-generation-worker-20260905.md)。
+公共 guard 传递与状态提交复核已修复，重建后 48 cases / 366 assertions
+PASS，含三种排队停止、真实 grant 计算/缓存拒绝和原有生成回滚。
+本轮仅刷新 unit target；下次 native live 前需刷新统一 manifest。
+仍为 4/12、T007 BLOCK，待 T002 汇总裁决及剩余源码/配置收敛审查。
+
 历史 6/7、7/7 与 `CONDITIONAL PASS` 不再作为当前状态；以
 [audit.md](audit.md) 与 [修正证据](evidence/audit-repair-20260905.md) 为准。
 本文件 `cpp/ndnsf-di/` 简写均相对 `NDNSF-DistributedInference/`；

@@ -1,6 +1,6 @@
 # Implementation Plan: NDNSF-DI Protected-Grant and Qualification Closure
 
-**Branch**: `Experimental` | **Date**: 2026-09-05 | **Revision**: 5
+**Branch**: `Experimental` | **Date**: 2026-09-05 | **Revision**: 6
 **Spec**: [spec.md](spec.md) | **Status**: `IN_PROGRESS / BLOCK`
 
 ## Summary
@@ -9,8 +9,11 @@
 同一候选的本地 YOLO 功能资格、exact-SIF replay 与一次 Tiger Y-B。
 当前停在 G0：Python/native 授权链已接线，native Ed25519/P-256
 定向正向控制和真实负例已有证据；维护的进程集成与 P-256 资源检查
-已通过。T001 的请求生命周期与完整任务验收已关闭；T002 的 native
-handler 源码闭包及剩余边界核对仍未完成。T007 保持 BLOCK，后续门保持关闭。
+已通过。T001 验收已关闭；T002 公共准备、adapter 迁移与 handler 接线
+已在 `0a3a79c3` 收口，统一构建及隔离 P-256 控制 PASS，待汇总任务
+完成裁决。FR-015 生成 worker 的排队取消/截止缺口已由定向 RED
+复现并修复，重建后 48 cases / 366 assertions PASS；新源需在下次
+native live 前刷新统一 manifest。T007 其余审计未闭合，后续门保持关闭。
 
 ## Gate Order
 
