@@ -226,6 +226,20 @@ namespace ndn_service_framework
     std::optional<LargeDataReference> parseLargeDataReferencePayload(const ndn::Buffer& payload);
     bool isLargeDataReferencePayload(const ndn::Buffer& payload);
 
+    // Register one Interest filter with a bounded retry on transient RIB
+    // authorization rejections.  NFD's offline command authenticator can
+    // miss the freshly created signer certificate while the node PIB is
+    // briefly locked by a concurrent keychain operation; a short bounded
+    // retry avoids turning that race into a fatal startup failure.
+    void registerInterestFilterWithRetry(
+        ndn::Face& face,
+        const ndn::Name& prefix,
+        std::function<void(const ndn::InterestFilter&, const ndn::Interest&)> onInterest,
+        std::function<void(const ndn::Name&)> onSuccess,
+        std::function<void(const ndn::Name&, const std::string&)> onFailure,
+        size_t attempts,
+        std::chrono::milliseconds delayBetweenAttempts);
+
     // /muas/drone1/NDNSF/TOKEN/ObjectDetection/YOLOv8/0
     // <provider> <service> <function> <seqNum>
     std::shared_ptr<ndn::Buffer> CombineSegmentsIntoBuffer(ndn::nacabe::SPtrVector<ndn::Data> segments);

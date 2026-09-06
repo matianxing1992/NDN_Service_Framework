@@ -38,6 +38,26 @@ namespace ndn_service_framework{
         ndn::Name requestID;
     };
 
+    /**
+     * Non-secret authentication evidence for one validated ACK Data packet.
+     *
+     * The outer ACK Data is validated by the configured Trust Schema before it
+     * reaches ServiceUser.  Keep the resulting signer provenance alongside the
+     * decrypted ACK so higher layers can bind an embedded capability offer to
+     * the authenticated Provider without reconstructing identity from the ACK
+     * name or a caller-provided key map.  Empty values are retained for direct
+     * unit-test helpers that do not have a validated Data packet.
+     */
+    struct AckAuthenticationEvidence
+    {
+        std::string signerIdentity;
+        std::string signerKeyLocator;
+        std::string wireDigest;
+        // True only for an ACK delivered through the validated ServiceUser
+        // subscription path. Direct/unit fixtures leave this false.
+        bool trustSchemaValidated = false;
+    };
+
     struct AckSelectionCandidate
     {
         ndn::Name providerName;
@@ -45,6 +65,7 @@ namespace ndn_service_framework{
         ndn::Name requestId;
         ndn_service_framework::RequestAckMessage ack;
         std::optional<ndn_service_framework::NetworkTelemetrySnapshot> telemetry;
+        AckAuthenticationEvidence authenticationEvidence{};
     };
 
     using ProviderId = ndn::Name;
@@ -122,6 +143,9 @@ namespace ndn_service_framework{
         int provisioningTimeoutMs = 0;
         ndn::Buffer assignmentPayload;
         AckCandidate ack;
+        // Assignment-bound canonical root Data name. Keep this at the end so
+        // existing aggregate initializers remain source-compatible.
+        ndn::Name artifactDataName;
     };
 
     class ParticipantSelectionPolicy
@@ -195,6 +219,12 @@ namespace ndn_service_framework{
         bool success = false;
         ndn::Name encryptedDataName;
         std::string objectId;
+        size_t plaintextSize = 0;
+        std::string contentDigest;
+        std::string manifestDigest;
+        std::string authorizationScope;
+        std::string protectionEpoch;
+        bool encrypted = true;
         std::string errorMessage;
     };
 
@@ -980,7 +1010,8 @@ namespace ndn_service_framework{
                                                  std::string& errorMessage);
 
             bool handleRequestAckByName(const ndn::Name& ackName,
-                                        const ndn_service_framework::RequestAckMessage& ackMessage);
+                                        const ndn_service_framework::RequestAckMessage& ackMessage,
+                                        AckAuthenticationEvidence authenticationEvidence = {});
 
             bool handleRequestAckByName(const ndn::Name& ackName,
                                         const ndn::Block& ackBlock);
@@ -996,7 +1027,8 @@ namespace ndn_service_framework{
             void finishRequestAckOnEventLoop(const ndn::Name& providerName,
                                              const ndn::Name& ServiceName,
                                              const ndn::Name& requestID,
-                                             ndn_service_framework::RequestAckMessage AckMessage);
+                                             ndn_service_framework::RequestAckMessage AckMessage,
+                                             AckAuthenticationEvidence authenticationEvidence = {});
 
             virtual void OnResponse(const ndn::svs::SVSPubSub::SubscriptionData &subscription);
             void OnCollaborationData(
@@ -1022,7 +1054,8 @@ namespace ndn_service_framework{
             void OnRequestAckDecryptionSuccessCallback(const ndn::Name& providerName,
                                                        const ndn::Name& serviceName,
                                                        const ndn::Name& requestID,
-                                                       const ndn::Buffer& buffer);
+                                                       const ndn::Buffer& buffer,
+                                                       AckAuthenticationEvidence authenticationEvidence = {});
 
             void OnRequestAckDecryptionErrorCallback(const ndn::Name& providerName,
                                                      const ndn::Name& serviceName,
@@ -1078,6 +1111,7 @@ namespace ndn_service_framework{
                 ndn::Name serviceName;
                 ndn::Name requestId;
                 ndn_service_framework::RequestAckMessage message;
+                AckAuthenticationEvidence authenticationEvidence{};
             };
 
             struct PendingCall;

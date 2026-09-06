@@ -212,6 +212,10 @@ struct StreamedInvocationSharedState {
   ndn::Name requestId;
   StreamedInvocationStatus status = StreamedInvocationStatus::Created;
   StreamedInvocationMetrics metrics;
+  // The public handle can be cancelled from an application callback thread.
+  // Keep a synchronous fence callback in addition to the Face-owned cleanup
+  // callback so queued events cannot overtake cancellation.
+  std::function<void()> cancelFence;
   std::function<void()> cancel;
   std::function<void(const ndn::Buffer&)> onEvent;
   std::function<void(const ndn::Buffer&)> onComplete;
@@ -249,11 +253,18 @@ public:
 
   void cancel()
   {
+    std::function<void()> fence;
     std::function<void()> callback;
     {
       std::lock_guard<std::mutex> lock(state_->mutex);
+      if (state_->status != StreamedInvocationStatus::Completed &&
+          state_->status != StreamedInvocationStatus::Failed) {
+        state_->status = StreamedInvocationStatus::Cancelled;
+        fence = state_->cancelFence;
+      }
       callback = state_->cancel;
     }
+    if (fence) fence();
     if (callback) callback();
   }
 

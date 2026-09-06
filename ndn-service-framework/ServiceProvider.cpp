@@ -7511,6 +7511,8 @@ namespace ndn_service_framework
             assignment.role = std::move(envelope.role);
             assignment.assignedArtifact =
                 std::move(envelope.assignedArtifact);
+            assignment.artifactDataName =
+                std::move(envelope.artifactDataName);
             assignment.requiresProvisioning =
                 envelope.requiresProvisioning;
             assignment.provisioningTimeoutMs = static_cast<int>(
@@ -7560,10 +7562,20 @@ namespace ndn_service_framework
                     for (const auto& entry : itemEnvelope.scopeKeyDataNames) {
                         first.scopeKeyDataNames.emplace(entry.first, entry.second);
                     }
+                    if (!itemEnvelope.artifactDataName.empty()) {
+                        if (!first.artifactDataName.empty() &&
+                            !first.artifactDataName.equals(
+                                itemEnvelope.artifactDataName)) {
+                            throw std::runtime_error(
+                                "conflicting collaboration artifact Data names");
+                        }
+                        first.artifactDataName = itemEnvelope.artifactDataName;
+                    }
                 }
                 if (haveEnvelope) {
                     assignment.role = first.role;
                     assignment.assignedArtifact = first.assignedArtifact;
+                    assignment.artifactDataName = first.artifactDataName;
                     assignment.requiresProvisioning = first.requiresProvisioning;
                     assignment.provisioningTimeoutMs = static_cast<int>(
                         std::min<uint64_t>(

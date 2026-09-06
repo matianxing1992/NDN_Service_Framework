@@ -961,3 +961,59 @@ namespace ndn_service_framework
         return response;
     }
 }
+
+namespace ndn_service_framework {
+
+void
+registerInterestFilterWithRetry(
+    ndn::Face& face,
+    const ndn::Name& prefix,
+    std::function<void(const ndn::InterestFilter&, const ndn::Interest&)> onInterest,
+    std::function<void(const ndn::Name&)> onSuccess,
+    std::function<void(const ndn::Name&, const std::string&)> onFailure,
+    size_t attempts,
+    std::chrono::milliseconds delayBetweenAttempts)
+{
+    if (attempts == 0) {
+        onFailure(prefix, "registration retry budget exhausted");
+        return;
+    }
+    // The interest handler must stay identical across attempts.  Passing a
+    // moved-from std::function on a retry would register an empty filter.
+    auto interestHandler = std::make_shared<
+        std::function<void(const ndn::InterestFilter&, const ndn::Interest&)>>(
+        std::move(onInterest));
+    face.setInterestFilter(
+        prefix,
+        [interestHandler](const ndn::InterestFilter& filter,
+                          const ndn::Interest& interest) {
+            (*interestHandler)(filter, interest);
+        },
+        [onSuccess](const ndn::Name& registered) {
+            if (onSuccess) {
+                onSuccess(registered);
+            }
+        },
+        [&face, prefix, interestHandler, onSuccess, onFailure,
+         attempts, delayBetweenAttempts](
+            const ndn::Name& failed, const std::string& reason) {
+            (void)failed;
+            (void)reason;
+            auto timer = std::make_shared<boost::asio::steady_timer>(
+                face.getIoContext());
+            timer->expires_after(delayBetweenAttempts);
+            timer->async_wait(
+                [&face, prefix, interestHandler,
+                 onSuccess, onFailure, attempts, delayBetweenAttempts,
+                 timer](const boost::system::error_code& ec) {
+                    if (ec) {
+                        return;
+                    }
+                    registerInterestFilterWithRetry(
+                        face, prefix, *interestHandler, onSuccess, onFailure,
+                        attempts - 1, delayBetweenAttempts);
+                });
+        });
+}
+
+} // namespace ndn_service_framework
