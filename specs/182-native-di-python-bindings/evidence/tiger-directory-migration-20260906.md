@@ -59,3 +59,15 @@ Spec182原生实现仍0/17；SIF构建、MiniNDN及集群执行NOT_RUN。
 覆盖前轮51项和额外7项collector正负例；原失败记录保留，当前原因码断言已关闭。
 本次提交包含这两份此前未跟踪的测试及同步记录；未提交Tiger作业和其他合并修复仍由原owner交付。
 该结果仅是工具单测，不能升级为SIF/MiniNDN/Tiger或整个合并验收PASS；独立审查工作树未改动。
+
+## Follow-up R2
+
+2026-09-06复核：manifest的64个canonical文件均满足原SHA-256、文件权限与legacy路径解析一致；逐字对比审查工作树原路径无差异。共享lib/bin（排除生成的Python缓存）及R1列出的四个根目录工具共29文件亦一致。Tiger目录Markdown本地链接、共享lib/bin链接及本地历史SIF链接均可解析；两份R1同步测试与HEAD及审查工作树一致。没有新的脚本修复需要搬运，不重复运行未变单元的测试。
+
+审查工作树`/home/tianxing/NDN/ndnsf-integration-182`仍有MERGE_HEAD，HEAD为`d4a5e39ce5b4a023f6e55d2440c60aa998983f8f`，包含未提交修复；本轮未修改该工作树。其忽略的临时目录内`merge-20260906/integration-static-r1/output.log`完整module结果为 **152/154 PASS、2 failed**，本次读取SHA-256为`72f8941b6840088e3d3b39236e347b7b92d488701bb460ce5f93e202e987cd0f`。这是对已有日志的读取，不是本轮新执行结果，也不能用HEAD单独绑定尚未提交的被测源码。
+
+两个首边界为`Spec175NativeTinyOnnxExpiredDeadlineCleansProviderState`的providerFailures为0、预期2，以及`ProductionNativeHandlersRunD2h212ToCompleteOracleResponse`缺少角色和最终oracle响应；审查侧failure-log已登记。该工作树的`d2h-fence-trace-r1/output.log`也保留了后者定向失败。修复和回归仍归原审查owner；本轮不复制未完成的Core修复，不将这些失败归因于目录移动。
+
+目录迁移已完成，R1的58/58工具单测证据继续保留；本轮仅追加上述路径/内容复核。原有9个已跟踪修改、15个未跟踪Tiger作业继续由原功能单元交付。下一步在合并审查形成最终基线后，按manifest映射剩余修复并核对共享依赖；届时再确定可供另一台机器使用的完整源码交付，当前checkpoint仍不代表完整发布。Spec182实现、SIF构建与MiniNDN/Tiger验收状态不变。
+
+文档校验器PASS（110个本地链接），diff空白检查PASS。首次文档提交被仓库引用过滤钩子拒绝：临时目录全名属于禁止提交的工具标识；改为目录内相对标识，保留工作树位置和日志哈希后重试，不禁用钩子。该提交失败不是运行验证失败。
