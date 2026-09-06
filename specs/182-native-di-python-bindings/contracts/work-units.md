@@ -1,320 +1,176 @@
 # Work Unit Contracts
 
-**Revision**: 2 | **Status**: planned, all implementation NOT_STARTED
-本表定义设计批次，不授权现在执行。O-001--005 关闭前全部实现 BLOCK。
-T001 必须把超过合理范围的批次再细分为有独立行为和验收的原子单元，并同步全部 ID 引用，
-才能标 READY_FOR_IMPLEMENTATION；不可把本表的大估算直接当无限实现授权。
+**Revision**: 6 | **Status**: planned, all implementation NOT_STARTED
 
 ## Common Boundary
 
-ExactFiles/ExactSymbols 以每单元 CD 的全路径清单为规范，测试路径见
-[proof inventory](proof-design.md#planned-test-and-build-inventory)。
-每任务均包含自己的 RED/实现/GREEN/相邻回归/证据，不另造机械测试任务。
+T001关闭O-001--005并冻结可执行接口/依赖/测试选择器后开始实现。
+每任务的具体文件与符号由其CD定义，类/方法与字段解释分别引用
+[symbol design](symbol-design.md)和[value contracts](value-contracts.md)，不重复抄表。
+新增/变更公开API提供英文Doxygen/docstring；重要字段、寿命与安全边界解释含义，
+成功/失败/取消等适用用法随实现维护。普通局部helper不改变契约时无需额外设计审批。
 
-ExactCommands：均为 proof-design 中明确 planned 的入口；cwd=repo root，环境为经 T001
-封存的 compiler/ORT/native dependencies，run output 必须新目录。
-focused supervisor 120s，初始网络 180s，cleanup 15s；T001 按既有 case 契约冻结，
-不得运行中延长。C++ selectors 尚待 T001 注册冻结，这也是当前实施 BLOCK 的原因。
+执行顺序和短记录统一见 [validation workflow](pre-test-static-review.md)。
+T002--T014只做实现、静态审查、相关unit及必要构建，任务[x]仅表示这些完成。
+各PO的真实跨组件/跨进程和实验义务一律由T016关闭；本文件LocalChecks不替代完整PO。
+集成用例与harness随所属任务编写注册；不能只登记将来写测试的TODO。
+具体命令与测试路径见 [test inventory](proof-design.md#planned-test-and-build-inventory)；
+unit/integration按实际调用边界分类，不按文件名或smoke标签分类。
+T001冻结新unit selectors，不能执行整份混合测试文件而意外启动integration。
+必要原生工具链、时间上限、新run目录和原始失败保存沿用proof/plan约定。
 
-Default EscalationConditions：未列文件/符号/参数；改变 API/wire/状态 owner/依赖/错误或 oracle；
-diff 超估算；测试只在编译/环境层失败。先保留证据并修订相关 CD/T/PO，再实施。
-普通内部设计修订不等于反复请用户审批；越出用户授权才询问。
-
-RecoveryPoint：失败保留独立 run 和 patch，不 reset/clean/stash 他人工作，不覆盖旧日志；
-清理本次自有进程/资源，先更新 evidence/tasks/failure index 再重试。安全秘密不入 Git。
-只有完成本任务所有必要 proof 并记录真实 CommandsExecuted，才勾选任务。
-
-ExpectedDiff 是偏移提示，不是配额。T003/004/006/008/010/011 可能大于 300 行，
-原因是既有算法/状态和字节契约较大；T001 须确认可独立 checkpoint 的分界后细化。
-T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新功能。
-每单元实际结果采用 proof-design 的 Completion Evidence Record。
+实际结果优先记tasks.md；详情才使用evidence/tNNN-completion.md，不另建审查或逐层放行报告。
+失败只清理本次资源，保留run/patch并同步tasks及failure index，不覆盖他人工作或历史证据。
 
 ## T001 Successor Baseline and Design Closure
 
-- **Owner**: 本机，Successor Baseline and Design Closure。
-- **Design**: FR-015,FR-016; CD-001--014; INV-001,INV-004,INV-008,INV-009; FLOW-001, FLOW-002。
-- **StartState**: Spec181 local closure；核对具体 source/design identity。
-- **EndState**: 冻结 181 交付、所有 schema/公开调用方/能力清单及原生依赖，关闭 O-001--005；修订叶子签名与任务至可执行。
-- **ExactFiles / ExactSymbols**: [code-design](code-design.md) 的 CD-001--014 和 [proof inventory](proof-design.md#planned-test-and-build-inventory) 的 T001。
-- **DecisionBudget**: BOUNDED_DESIGN。
-- **AllowedDecisions**: 按 O-001--005 冻结现有语义；每个依赖最多两个候选的设计调查和隔离工具可行性核对。依赖/端口选择记录于 CD 后复审，不运行模型实验。
+- **Outcome**: 冻结合并基线与181承接表、所有 schema/公开调用方/能力清单及原生依赖，关闭 O-001--005；修订叶子签名与任务至可执行。
+- **Design**: FR-015,FR-016,FR-017; CD-001--014; INV-001,INV-004,INV-008,INV-009; FLOW-001, FLOW-002。
+- **Changes**: spec182 文档、native-dependencies.json、compatibility-manifest.json、冻结 fixture 元数据
 - **ForbiddenChanges**: 修改 Spec181 状态；无最终 baseline 就启动迁移；把 Python helper 保留为默认。
-- **ExpectedDiff**: spec182 文档、native-dependencies.json、compatibility-manifest.json、冻结 fixture 元数据；0 生产代码；有界探针单独记录，不强行生成测试行数。
-- **ProofObligations**: PO-012。
-- **ExactCommands / VerificationLadder**: L0 source/design review；设计 probe 若另行执行必须独立记录，不能计实现；使用上述 planned command contract，未冻结 selectors 前 BLOCK。
-- **EscalationConditions**: 设计 READY 需要关闭每个影响接口/状态/依赖的 OPEN；同样适用 common boundary。
-- **RecoveryPoint**: 当前设计 commit；保留 181 authority。
-- **Evidence**: ../evidence/t001-completion.md（planned，当前不存在）。
+- **LocalChecks**: 设计/基线核对，冻结unit/integration selectors；如需依赖可行性探针，单独记实际结果，不计产品验收。
+- **FinalProof**: PO-012。
 
 ## T002 Installable Native Library Contract
 
-- **Owner**: 本机，Installable Native Library Contract。
+- **Outcome**: 先将 existing Provider runtime 构建为可安装库，独立 consumer 链接已有可执行符号；planned requester 仅声明，完整调用由T010实现、T016验收。
 - **Design**: FR-001,FR-012; CD-001,CD-009; INV-001,INV-002,INV-007; FLOW-001, FLOW-002。
-- **StartState**: T001；核对具体 source/design identity。
-- **EndState**: 先将 existing Provider runtime 构建为可安装库，独立 consumer 链接已有可执行符号；planned requester 仅声明，完整调用由 T010 验收。
-- **ExactFiles / ExactSymbols**: [code-design](code-design.md) 的 CD-001,CD-009 和 [proof inventory](proof-design.md#planned-test-and-build-inventory) 的 T002。
-- **DecisionBudget**: LOW。
-- **AllowedDecisions**: 局部 include/构建变量名和等价编译修正；保持目标名和链接 owner。
+- **Changes**: NativeInferenceClient公开头、CD-009构建/pc及安装链接consumer；request完整实现由T010负责。
 - **ForbiddenChanges**: 复制一份 DI 实现进 extension；以 stub 返回成功冒充完整请求。
-- **ExpectedDiff**: NativeInferenceClient 公开头及 CD-009 构建/pc 文件，安装链接 smoke consumer；不创建未实现 request 的假成功源；约 100--300 行生产变更；测试约 80--300 行/行为，文档按实际证据；不按比例凑改动。
-- **ProofObligations**: PO-001 的 installed-library L0 子门；完整请求和 isolation 由 T010/T014/T016 收口。
-- **ExactCommands / VerificationLadder**: L0/L2 链接已有 runtime 的 consumer + dependency checks；L1/L3 完整请求对本阶段 N/A，禁止启动不存在的 requester target；selectors 由 T001 冻结。
-- **EscalationConditions**: 隐藏链接依赖、增加 ABI/公共字段需回 CD-001/009；同样适用 common boundary。
-- **RecoveryPoint**: 独立库可链接 checkpoint；未接通 request 不导出可调用 stub；不能标 PO-001 全部完成。
-- **Evidence**: ../evidence/t002-completion.md（planned，当前不存在）。
+- **LocalChecks**: 必要编译/安装/链接检查及已有runtime接口单测；完整request/isolation在T016。
+- **FinalProof**: PO-001 的 installed-library L0 子门；完整请求和 isolation 由 T010/T014/T016 收口。 本任务只完成局部单测；其余运行证据由T016统一产生。
 
 ## T003 Native Split and Placement Decisions
 
-- **Owner**: 本机，Native Split and Placement Decisions。
+- **Outcome**: 两个原生模型 splitter 与默认 placement 对固定输入生成合法且确定的方案。
 - **Design**: FR-003,FR-009,FR-016; CD-002; INV-001,INV-002,INV-003,INV-004; FLOW-001, FLOW-002。
-- **StartState**: T002；核对具体 source/design identity。
-- **EndState**: 两个原生模型 splitter 与默认 placement 对固定输入生成合法且确定的方案。
-- **ExactFiles / ExactSymbols**: [code-design](code-design.md) 的 CD-002 和 [proof inventory](proof-design.md#planned-test-and-build-inventory) 的 T003。
-- **DecisionBudget**: LOW。
-- **AllowedDecisions**: 移植现有已冻结算法及确定性排序；局部容器选择保持语义。
+- **Changes**: NativePlanning、NativeQwenPlanner、NativeYoloPlanner 声明/源和 di-native-planning
 - **ForbiddenChanges**: Python callback；has_model 代替 exact residency；在 Core 写模型分支。
-- **ExpectedDiff**: NativePlanning、NativeQwenPlanner、NativeYoloPlanner 声明/源和 di-native-planning；6 生产文件，约 400--900 行；测试约 80--300 行/行为，文档按实际证据；不按比例凑改动。
-- **ProofObligations**: PO-002。
-- **ExactCommands / VerificationLadder**: L1/L2/L6，图 cover/预算/device/lease/ref ordering vectors；使用上述 planned command contract，未冻结 selectors 前 BLOCK。
-- **EscalationConditions**: 超过范围或发现算法缺口先拆成稳定策略接口单元，修订 CD-002；同样适用 common boundary。
-- **RecoveryPoint**: 每策略向量闭合的隔离 checkpoint，默认请求尚未切换。
-- **Evidence**: ../evidence/t003-completion.md（planned，当前不存在）。
+- **LocalChecks**: 固定小图cover、budget/device/lease/ref排序及非法向量单测；单元级既定检错。
+- **FinalProof**: PO-002。 本任务只完成局部单测；其余运行证据由T016统一产生。
 
 ## T004 Canonical Native Plan Sealing
 
-- **Owner**: 本机，Canonical Native Plan Sealing。
+- **Outcome**: 合法 proposal 转成可被真实 Core/Provider 接受的规范计划；非法投影在首边界拒绝。
 - **Design**: FR-002,FR-004; CD-003; INV-001,INV-003,INV-004; FLOW-001, FLOW-002。
-- **StartState**: T003；核对具体 source/design identity。
-- **EndState**: 合法 proposal 转成可被真实 Core/Provider 接受的规范计划；非法投影在首边界拒绝。
-- **ExactFiles / ExactSymbols**: [code-design](code-design.md) 的 CD-003 和 [proof inventory](proof-design.md#planned-test-and-build-inventory) 的 T004。
-- **DecisionBudget**: LOW。
-- **AllowedDecisions**: 等价编码实现；保持固定字节和现有验证顺序。
+- **Changes**: NativePlanSealer 与 NativeExecutionPlanJson 头/源，di-native-plan-sealer
 - **ForbiddenChanges**: 修改 wire/schema；重生成 oracle 掩盖差异；移除 Provider 独立校验。
-- **ExpectedDiff**: NativePlanSealer 与 NativeExecutionPlanJson 头/源，di-native-plan-sealer；4 生产文件，约 300--700 行；测试约 80--300 行/行为，文档按实际证据；不按比例凑改动。
-- **ProofObligations**: PO-003。
-- **ExactCommands / VerificationLadder**: L1/L2/L3/L6，frozen wire + Core commit + real parser；使用上述 planned command contract，未冻结 selectors 前 BLOCK。
-- **EscalationConditions**: 字节差异或新字段需先回 CD-003/O-004；同样适用 common boundary。
-- **RecoveryPoint**: 固定 vectors + Core commit 边界通过后 checkpoint。
-- **Evidence**: ../evidence/t004-completion.md（planned，当前不存在）。
+- **LocalChecks**: canonical JSON/签名字节、非法投影/endpoint/ACK摘要单测；真实Core commit与Provider parser协作在T016。
+- **FinalProof**: PO-003。 本任务只完成局部单测；其余运行证据由T016统一产生。
 
 ## T005 Native Requester Grant Path
 
-- **Owner**: 本机，Native Requester Grant Path。
+- **Outcome**: 原生 requester 签名/申请/发布 grant，实际 Provider 验证并消费密钥。
 - **Design**: FR-005; CD-004; INV-001,INV-003,INV-004,INV-005; FLOW-001, FLOW-002。
-- **StartState**: T004；核对具体 source/design identity。
-- **EndState**: 原生 requester 签名/申请/发布 grant，实际 Provider 验证并消费密钥。
-- **ExactFiles / ExactSymbols**: [code-design](code-design.md) 的 CD-004 和 [proof inventory](proof-design.md#planned-test-and-build-inventory) 的 T005。
-- **DecisionBudget**: LOW。
-- **AllowedDecisions**: 调用现有密码原语和 Core publication；等价错误映射。
+- **Changes**: NativeGrantClient、NativeArtifactPolicyAuthority 头/源和 di-native-requester-grant
 - **ForbiddenChanges**: 新网络权威服务；自写密码算法；保护路径 fallback plaintext。
-- **ExpectedDiff**: NativeGrantClient、NativeArtifactPolicyAuthority 头/源和 di-native-requester-grant；4 生产文件，约 250--550 行；测试约 80--300 行/行为，文档按实际证据；不按比例凑改动。
-- **ProofObligations**: PO-004。
-- **ExactCommands / VerificationLadder**: L1/L2/L3/L6，真实签名 publication/fetch 与 wrong-key/recipient/expiry；使用上述 planned command contract，未冻结 selectors 前 BLOCK。
-- **EscalationConditions**: 缺少现有原语或需改变 key owner，先修订 CD-004；同样适用 common boundary。
-- **RecoveryPoint**: 密钥清理、正负向完整后 checkpoint。
-- **Evidence**: ../evidence/t005-completion.md（planned，当前不存在）。
+- **LocalChecks**: grant构造、签名/原因码、wrong-key/recipient/expiry单测；真实authority publication/fetch及Provider消费在T016。
+- **FinalProof**: PO-004。 本任务只完成局部单测；其余运行证据由T016统一产生。
 
 ## T006 Native Cold ONNX Assembly
 
-- **Owner**: 本机，Native Cold ONNX Assembly。
+- **Outcome**: Selection 后原生装配与既有固定 bytes 一致，消除生产 helper IPC。
 - **Design**: FR-006,FR-016; CD-005; INV-003,INV-004,INV-006,INV-007; FLOW-001, FLOW-002。
-- **StartState**: T002；O-002 closed；核对具体 source/design identity。
-- **EndState**: Selection 后原生装配与既有固定 bytes 一致，消除生产 helper IPC。
-- **ExactFiles / ExactSymbols**: [code-design](code-design.md) 的 CD-005 和 [proof inventory](proof-design.md#planned-test-and-build-inventory) 的 T006。
-- **DecisionBudget**: LOW。
-- **AllowedDecisions**: 按锁定 ONNX/protobuf API 实现既定 recipe；等价路径/size 检查。
+- **Changes**: NativeCanonicalOnnxAssembler 与 NativeOnnxRecipeAssembler 头/源、di-native-onnx-recipe
 - **ForbiddenChanges**: 全部提前离线切分；临时明文绕过授权；改 recipe digest。
-- **ExpectedDiff**: NativeCanonicalOnnxAssembler 与 NativeOnnxRecipeAssembler 头/源、di-native-onnx-recipe；4 生产文件，约 300--800 行并删除 helper 分支；测试约 80--300 行/行为，文档按实际证据；不按比例凑改动。
-- **ProofObligations**: PO-005。
-- **ExactCommands / VerificationLadder**: L1/L2/L3/L6，双 recipe cold、inline/external-data、实际 ONNX load；使用上述 planned command contract，未冻结 selectors 前 BLOCK。
-- **EscalationConditions**: 字节或资源行为不等价，回 O-002/CD-005，不能重封 oracle；同样适用 common boundary。
-- **RecoveryPoint**: 原 helper 仅 reference；保留失败 staging 诊断，秘密清理。
-- **Evidence**: ../evidence/t006-completion.md（planned，当前不存在）。
+- **LocalChecks**: 固定recipe字节、inline/external-data和错误输入单测，可直接调用原生ONNX库；Selection后真实Provider装配在T016。
+- **FinalProof**: PO-005。 本任务只完成局部单测；其余运行证据由T016统一产生。
 
 ## T007 Native Tokenizer Execution
 
-- **Owner**: 本机，Native Tokenizer Execution。
+- **Outcome**: 原生 encode/decode 完整文本，与固定 tokenizer oracle 一致，无子进程解释器。
 - **Design**: FR-007; CD-006; INV-002,INV-006,INV-007; FLOW-001, FLOW-002。
-- **StartState**: T002；O-003 closed；核对具体 source/design identity。
-- **EndState**: 原生 encode/decode 完整文本，与固定 tokenizer oracle 一致，无子进程解释器。
-- **ExactFiles / ExactSymbols**: [code-design](code-design.md) 的 CD-006 和 [proof inventory](proof-design.md#planned-test-and-build-inventory) 的 T007。
-- **DecisionBudget**: LOW。
-- **AllowedDecisions**: 仅锁定 native API 的封装与资源释放；不自改 tokenizer 算法。
+- **Changes**: NativeTokenizer、NativeStandaloneTokenizer 头/源和 decoder factory，di-native-tokenizer
 - **ForbiddenChanges**: 仍调用 Python module；只返回 token IDs；每 token fork helper。
-- **ExpectedDiff**: NativeTokenizer、NativeStandaloneTokenizer 头/源和 decoder factory，di-native-tokenizer；5 生产文件，约 150--350 行；测试约 80--300 行/行为，文档按实际证据；不按比例凑改动。
-- **ProofObligations**: PO-006。
-- **ExactCommands / VerificationLadder**: L1/L2/L3/L6，Unicode/special/byte fallback/digest vectors；使用上述 planned command contract，未冻结 selectors 前 BLOCK。
-- **EscalationConditions**: 需新 C ABI 或改变线程安全/ownership，先修订 O-003/CD-006；同样适用 common boundary。
-- **RecoveryPoint**: native decoder 向量和资源检查后 checkpoint。
-- **Evidence**: ../evidence/t007-completion.md（planned，当前不存在）。
+- **LocalChecks**: Unicode/special/byte-fallback/digest encode/decode单测；完整adapter请求和进程依赖隔离在T016。
+- **FinalProof**: PO-006。 本任务只完成局部单测；其余运行证据由T016统一产生。
 
 ## T008 Native Request Preparation and Admission
 
-- **Owner**: 本机；原生 request preparation / offer admission。
+- **Outcome**: 原生 input→graph→artifact binding 和可信 offer→view 可独立调用；拒绝伪 provenance，无 Python 辅助。
 - **Design**: FR-001,FR-002,FR-004,FR-009,FR-016; CD-013; INV-001,INV-002,INV-003,INV-004; FLOW-001。
-- **StartState**: T003/T006/T007；O-004 已冻结 adapter/task/catalog/ACK 字段与真实调用方。
-- **EndState**: 原生 input→graph→artifact binding 和可信 offer→view 可独立调用；拒绝伪 provenance，无 Python 辅助。
-- **ExactFiles / ExactSymbols**: [CD-013](runtime-boundaries.md#cd-013-preparation-and-offer-admission) 全清单；tests/integration-tests/di-native-preparation.t.cpp 与 tests/unit-tests/di-native-offer-admission.t.cpp。
-- **DecisionBudget**: LOW。
-- **AllowedDecisions**: 等价数据转换、已定义 executor/端口接线、冻结算法移植。
+- **Changes**: 4 个新增生产文件及已列 adapter 接线，约 400--900 行
 - **ForbiddenChanges**: caller trusted=true、策略自行 I/O、离线预生成结果替代 runtime、提前角色装配。
-- **ExpectedDiff**: 4 个新增生产文件及已列 adapter 接线，约 400--900 行；2 个行为测试。
-  admission trust 与 model I/O 是独立边界；T001 必须据冻结接口细化为分别可验收的原子单元。
-- **ProofObligations**: PO-013。
-- **ExactCommands / VerificationLadder**: L1/L2/L3/L6；独立 task bytes/ACK policy/名称绑定向量与真实 publication；selectors 由 T001 固定。
-- **EscalationConditions**: 新 catalog/publication/加密端口或模型能力、字节差异、缺少可信 ACK 来源，先修 CD-013。
-- **RecoveryPoint**: 每个准备阶段释放自有资源；已发布 immutable Data 只按 TTL 过期，不能声称 rollback 撤回。
-- **Evidence**: ../evidence/t008-completion.md（planned）。
+- **LocalChecks**: 输入/工件名称绑定、ACK policy与provenance单测；真实publication及准备/准入协作在T016。
+- **FinalProof**: PO-013。 本任务只完成局部单测；其余运行证据由T016统一产生。
 
 ## T009 Shared Native Provider Host
 
-- **Owner**: 本机；Provider host 接线。
+- **Outcome**: executable 与独立 consumer 共用宿主及同一 NativeProviderRuntime。
 - **Design**: FR-001,FR-009,FR-010,FR-012; CD-014; INV-001,INV-002,INV-003,INV-005; FLOW-001,FLOW-004。
-- **StartState**: T006/T007；O-004 已确认真实 Core registration/stop 接口。
-- **EndState**: executable 与独立 consumer 共用宿主及同一 NativeProviderRuntime。
-- **ExactFiles / ExactSymbols**: [CD-014](runtime-boundaries.md#cd-014-provider-host-and-binding) 的 native 源/头与 executable；tests/integration-tests/di-native-provider-host.t.cpp；绑定注册由 T012 负责。
-- **DecisionBudget**: LOW。
-- **AllowedDecisions**: 抽取已验证接线，保持 handler/config/运行语义；必要 include 与注册。
+- **Changes**: NativeInferenceProvider头/源与DI_NativeProviderExecutable接线，删除重复宿主逻辑。
 - **ForbiddenChanges**: 重写 Provider runtime、把管理权限合并进 serving facade、销毁共享 Face、Python runner trampoline。
-- **ExpectedDiff**: 3 个生产文件，约 150--350 行新增/移动并删除 executable 重复接线；1 个生产路径测试。
-- **ProofObligations**: PO-014。
-- **ExactCommands / VerificationLadder**: L0/L1/L2/L3/L6；真实注册/ACK/Selection/stop/shared service；selectors 由 T001 固定。
-- **EscalationConditions**: 无独立注销能力或需要新管理 API，回 CD-014/O-004，不用全局停机替代。
-- **RecoveryPoint**: 已有 executable 原行为与新 consumer 等价后 checkpoint；失败清理仅本 registration。
-- **Evidence**: ../evidence/t009-completion.md（planned）。
+- **LocalChecks**: host配置、重复注册、stop/共享资源所有权单测；真实NFD注册/ACK/Selection及多入口协作在T016。
+- **FinalProof**: PO-014。 本任务只完成局部单测；其余运行证据由T016统一产生。
 
 ## T010 Complete Native Request Lifecycle
 
-- **Owner**: 本机，Complete Native Request Lifecycle。
+- **Outcome**: 独立 C++ requester 从模型/输入到真实 Response，cancel/deadline/late callbacks 保持单一终态。
 - **Design**: FR-001,FR-002,FR-008; CD-001,CD-013,CD-014; INV-001,INV-002,INV-003,INV-005; FLOW-001, FLOW-002。
-- **StartState**: T003/T004/T005/T006/T007/T008/T009；核对具体 source/design identity。
-- **EndState**: 独立 C++ requester 从模型/输入到真实 Response，cancel/deadline/late callbacks 保持单一终态。
-- **ExactFiles / ExactSymbols**: [code-design](code-design.md) 的 CD-001、runtime-boundaries 的 CD-013/014 和 [proof inventory](proof-design.md#planned-test-and-build-inventory) 的 T010。
-- **DecisionBudget**: LOW。
-- **AllowedDecisions**: 在已定义串行 executor 内接线既有原生组件；不新造全局状态。
+- **Changes**: NativeInferenceClient 头/源和 DI_NativeRequester.cpp，di-native-request
 - **ForbiddenChanges**: 在 Face 线程阻塞规划或 result；以低层 preplanned 调用代替完整 model request。
-- **ExpectedDiff**: NativeInferenceClient 头/源和 DI_NativeRequester.cpp，di-native-request；3 生产文件，约 300--700 行；测试约 80--300 行/行为，文档按实际证据；不按比例凑改动。
-- **ProofObligations**: PO-001,PO-003,PO-007。
-- **ExactCommands / VerificationLadder**: L1/L2/L3/L6，真实 Core/Provider；未到 T015 不作正式矩阵声明；使用上述 planned command contract，未冻结 selectors 前 BLOCK。
-- **EscalationConditions**: 需要新 callback/状态/取消 API，先修订 CD-001/007；同样适用 common boundary。
-- **RecoveryPoint**: 完整最小原生请求及生命周期 focused PASS checkpoint。
-- **Evidence**: ../evidence/t010-completion.md（planned，当前不存在）。
+- **LocalChecks**: client状态机、cancel/deadline/late callback单测；完整真实Core/Provider请求在T016。
+- **FinalProof**: PO-001,PO-003,PO-007。 本任务只完成局部单测；其余运行证据由T016统一产生。
 
 ## T011 Native Conversation Continuation
 
-- **Owner**: 本机，Native Conversation Continuation。
+- **Outcome**: 原生 requester 续接/有限恢复与既有 epoch/state runtime 协作，文本/lineage 正确。
 - **Design**: FR-008,FR-016; CD-007; INV-003,INV-004,INV-005; FLOW-001, FLOW-003。
-- **StartState**: T010；核对具体 source/design identity。
-- **EndState**: 原生 requester 续接/有限恢复与既有 epoch/state runtime 协作，文本/lineage 正确。
-- **ExactFiles / ExactSymbols**: [code-design](code-design.md) 的 CD-007 和 [proof inventory](proof-design.md#planned-test-and-build-inventory) 的 T011。
-- **DecisionBudget**: LOW。
-- **AllowedDecisions**: 按冻结旧状态和持久化契约接线；保持一个 writer。
+- **Changes**: NativeConversationCoordinator 头/源及 NativeInferenceClient 接线，di-native-conversation
 - **ForbiddenChanges**: 新生成运行时；Python journal authority；悄悄丢弃旧会话格式。
-- **ExpectedDiff**: NativeConversationCoordinator 头/源及 NativeInferenceClient 接线，di-native-conversation；3 生产文件，约 300--800 行；测试约 80--300 行/行为，文档按实际证据；不按比例凑改动。
-- **ProofObligations**: PO-007,PO-008。
-- **ExactCommands / VerificationLadder**: L1/L2/L3/L6，真实两轮/取消/错 parent/有限 replacement；使用上述 planned command contract，未冻结 selectors 前 BLOCK。
-- **EscalationConditions**: 新增状态或恢复语义，回 CD-007/O-004；同样适用 common boundary。
-- **RecoveryPoint**: 有效 checkpoint 不能被失败 turn 覆盖；保留失败证据。
-- **Evidence**: ../evidence/t011-completion.md（planned，当前不存在）。
+- **LocalChecks**: journal/lineage、prefix、cancel、wrong-parent、replacement状态转换单测；真实两轮续接在T016。
+- **FinalProof**: PO-007,PO-008。 本任务只完成局部单测；其余运行证据由T016统一产生。
 
 ## T012 Thin Python Native Bindings
 
-- **Owner**: 本机，Thin Python Native Bindings。
+- **Outcome**: 支持的 Python 调用转发同一 native 库，无 Python strategy trampoline/业务状态机。
 - **Design**: FR-010; CD-008,CD-009; INV-002,INV-004,INV-005,INV-007; FLOW-001, FLOW-004。
-- **StartState**: T011；核对具体 source/design identity。
-- **EndState**: 支持的 Python 调用转发同一 native 库，无 Python strategy trampoline/业务状态机。
-- **ExactFiles / ExactSymbols**: [code-design](code-design.md) 的 CD-008,CD-009 和 [proof inventory](proof-design.md#planned-test-and-build-inventory) 的 T012。
-- **DecisionBudget**: LOW。
-- **AllowedDecisions**: 纯类型转换、GIL/observer 投递及冻结错误映射。
+- **Changes**: di_bindings.cpp、_ndnsf.cpp、setup.py 和五个已列 Python 导出/入口，test_spec182_native_bindings
 - **ForbiddenChanges**: 重新编译复制 DI 源；Python override；重新计算计划/判定成功。
-- **ExpectedDiff**: di_bindings.cpp、_ndnsf.cpp、setup.py 和五个已列 Python 导出/入口，test_spec182_native_bindings；约 150--400 行 native 与删减 Python；测试约 80--300 行/行为，文档按实际证据；不按比例凑改动。
-- **ProofObligations**: PO-009。
-- **ExactCommands / VerificationLadder**: L0/L1/L2/L3/L6，固定向量和真实入口一致性；使用上述 planned command contract，未冻结 selectors 前 BLOCK。
-- **EscalationConditions**: 未列公开签名/consumer 或需新 fallback，回 CD-008/O-004；同样适用 common boundary。
-- **RecoveryPoint**: 同库两个入口 focused PASS，旧入口清单尚未全部退出。
-- **Evidence**: ../evidence/t012-completion.md（planned，当前不存在）。
+- **LocalChecks**: 绑定参数/异常/生命周期映射及禁止callback单测、必要同库链接检查；真实C++/Python请求一致性在T016。
+- **FinalProof**: PO-009。 本任务只完成局部单测；其余运行证据由T016统一产生。
 
 ## T013 Default Route and Legacy Retirement
 
-- **Owner**: 本机，Default Route and Legacy Retirement。
+- **Outcome**: 所有 maintained callers 默认原生；旧运行时退出默认 import/调用图。
 - **Design**: FR-011,FR-016; CD-010; INV-002,INV-004,INV-005,INV-007; FLOW-001, FLOW-002。
-- **StartState**: T012；核对具体 source/design identity。
-- **EndState**: 所有 maintained callers 默认原生；旧运行时退出默认 import/调用图。
-- **ExactFiles / ExactSymbols**: [code-design](code-design.md) 的 CD-010 和 [proof inventory](proof-design.md#planned-test-and-build-inventory) 的 T013。
-- **DecisionBudget**: LOW。
-- **AllowedDecisions**: 按冻结兼容映射转换调用；删除已证实无生产消费者的路径。
+- **Changes**: CD-010 全部列明 caller/runners 和旧路径，test_spec182_legacy_exclusion
 - **ForbiddenChanges**: 批量删除未知 consumers；移动算法到工具包后继续默认调用；双默认。
-- **ExpectedDiff**: CD-010 全部列明 caller/runners 和旧路径，test_spec182_legacy_exclusion；生产删除量由 O-004 inventory 固定；测试约 80--300 行/行为，文档按实际证据；不按比例凑改动。
-- **ProofObligations**: PO-010。
-- **ExactCommands / VerificationLadder**: L0/L2/L3/L6，callback-aware inventory + old module denial；使用上述 planned command contract，未冻结 selectors 前 BLOCK。
-- **EscalationConditions**: 发现新 consumer 先补 manifest/PO，不按文件名推断 dead code；同样适用 common boundary。
-- **RecoveryPoint**: 逐入口切换记录和完整去向清单，可回到此前文档 checkpoint重修。
-- **Evidence**: ../evidence/t013-completion.md（planned，当前不存在）。
+- **LocalChecks**: 调用清单、默认路由和legacy排除逻辑单测；阻断旧模块后的真实maintained callers运行在T016。
+- **FinalProof**: PO-010。 本任务只完成局部单测；其余运行证据由T016统一产生。
 
 ## T014 Runtime Dependency Exclusion Gate
 
-- **Owner**: 本机，Runtime Dependency Exclusion Gate。
+- **Outcome**: harness 将被测 native scope 与 Python harness 隔离；交付正式 MiniNDN harness/collector/fixtures，本地单测完成后进入T015，真实反例由T016运行。
 - **Design**: FR-001,FR-011,FR-012,FR-014; CD-011; INV-002,INV-007,INV-008; FLOW-001, FLOW-002。
-- **StartState**: T013；核对具体 source/design identity。
-- **EndState**: harness 将被测 native scope 与 Python harness 隔离；交付正式 MiniNDN harness/collector/fixtures，定向反例通过后才进入 T015。
-- **ExactFiles / ExactSymbols**: [code-design](code-design.md) 的 CD-011 和 [proof inventory](proof-design.md#planned-test-and-build-inventory) 的 T014。
-- **DecisionBudget**: LOW。
-- **AllowedDecisions**: 在 O-005 已冻结隔离方法内实现有界观察；明确 PID/namespace owner。
+- **Changes**: run-spec182-native-closure.py、test_spec182_native_closure.py、NDNSF_DI_NativeClosure_Minindn.py、case-manifest
 - **ForbiddenChanges**: 只看 PATH/字符串就 PASS；隐藏 Python 服务；混用源/依赖身份。
-- **ExpectedDiff**: run-spec182-native-closure.py、test_spec182_native_closure.py、NDNSF_DI_NativeClosure_Minindn.py、case-manifest；0 生产运行时代码，约 250--500 行 harness；测试约 80--300 行/行为，文档按实际证据；不按比例凑改动。
-- **ProofObligations**: PO-001,PO-010,PO-012。
-- **ExactCommands / VerificationLadder**: L0/L3/L6；warm-only、rename-helper、embedded-libpython 反例；使用上述 planned command contract，未冻结 selectors 前 BLOCK。
-- **EscalationConditions**: 隔离工具无法观察旁路，保留 BLOCK 并回 O-005；同样适用 common boundary。
-- **RecoveryPoint**: 退出/cleanup 完整；反例 run 分开保留。
-- **Evidence**: ../evidence/t014-completion.md（planned，当前不存在）。
+- **LocalChecks**: collector判定、manifest和隔离gate解析逻辑单测，编写并注册所有真实反例；warm-only/rename-helper/embedded-libpython与隔离运行均在T016。
+- **FinalProof**: PO-001,PO-010,PO-012。 本任务只完成局部单测；其余运行证据由T016统一产生。
 
 ## T015 Design-code Convergence Audit
 
-- **Owner**: 本机，Design-code Convergence Audit。
+- **Outcome**: 逐 FR/CD/INV/PO 核对生产接线、effective config、依赖/源码身份，控制性发现清零。
 - **Design**: FR-013; CD-001--014; INV-001,INV-002,INV-003,INV-004,INV-005,INV-006,INV-007,INV-008; FLOW-001, FLOW-002。
-- **StartState**: T014；核对具体 source/design identity。
-- **EndState**: 逐 FR/CD/INV/PO 核对生产接线、effective config、依赖/源码身份，控制性发现清零。
-- **ExactFiles / ExactSymbols**: [code-design](code-design.md) 的 CD-001--014 和 [proof inventory](proof-design.md#planned-test-and-build-inventory) 的 T015。
-- **DecisionBudget**: ZERO。
-- **AllowedDecisions**: 仅审查和记录证据；修复必须回所属任务。
+- **Changes**: 在同一任务结果中记录整体审查发现，必要时同步受影响契约与追踪；不新增重复audit报告。
 - **ForbiddenChanges**: 把存在 helper/单测通过当作完整资格；为通过放宽验收。
-- **ExpectedDiff**: spec182 audit/traceability/evidence/post-implementation-audit.md；0 生产/测试源码；只审查 T014 已存在的 harness。
-- **ProofObligations**: PO-001--014。
-- **ExactCommands / VerificationLadder**: L0/L2 source-aware audit，未运行的 L4 明确 NOT_RUN；使用上述 planned command contract，未冻结 selectors 前 BLOCK。
-- **EscalationConditions**: 任何 semantic/security/wiring/config/evidence gap 为 BLOCK；同样适用 common boundary。
-- **RecoveryPoint**: 记录 first open boundary，返回所属任务修复后复审。
-- **Evidence**: ../evidence/t015-completion.md（planned，当前不存在）。
+- **LocalChecks**: 整体静态检查生产接线、设计、测试/oracle/harness及未关闭义务，不执行集成/实验。
+- **FinalProof**: PO-001--016。
 
 ## T016 Local Native Qualification
 
-- **Owner**: 本机，Local Native Qualification。
+- **Outcome**: 同源完整 suites、YOLO/Qwen MiniNDN 和 no-Python 全部通过。
 - **Design**: FR-001,FR-005,FR-006,FR-007,FR-008,FR-010,FR-011,FR-012,FR-013,FR-016; CD-011; INV-001,INV-002,INV-003,INV-004,INV-005,INV-006,INV-007,INV-008; FLOW-001, FLOW-002。
-- **StartState**: T015 PASS；核对具体 source/design identity。
-- **EndState**: 同源完整 suites、YOLO/Qwen MiniNDN 和 no-Python 全部通过。
-- **ExactFiles / ExactSymbols**: [code-design](code-design.md) 的 CD-011 和 [proof inventory](proof-design.md#planned-test-and-build-inventory) 的 T016。
-- **DecisionBudget**: ZERO。
-- **AllowedDecisions**: 仅执行已冻结 case/selector/config/timeout；失败先保留诊断。
+- **Changes**: 记录真实suite/case结果索引，复用已完成的harness；修复回到受影响代码/测试契约，不靠放宽判据通过。
 - **ForbiddenChanges**: 运行中延长 deadline/改 oracle；将 collector 故障记拒绝；SIF/Tiger 混作本地门。
-- **ExpectedDiff**: 仅 evidence/local-qualification.md 与 case 结果索引；harness/fixtures 在 T014 已冻结，0 生产或测试源码改动；失败回最早受影响任务。
-- **ProofObligations**: PO-001--014。
-- **ExactCommands / VerificationLadder**: L4/L5 同源真实 MiniNDN；L1/2/3/L6 已有完整有效证据；使用上述 planned command contract，未冻结 selectors 前 BLOCK。
-- **EscalationConditions**: 失败更新 raw/evidence/failure index，回最早受影响任务和 T015；同样适用 common boundary。
-- **RecoveryPoint**: 每 case 独立新目录；无未收集进程和明文/密钥残留。
-- **Evidence**: ../evidence/t016-completion.md（planned，当前不存在）。
+- **LocalChecks**: 完整unit→真实integration→MiniNDN/no-Python；PO-001--014及Negative Path Matrix全部既定负例/反事实按真实边界运行。
+- **FinalProof**: PO-001--016。
 
 ## T017 Native Development Handoff
 
-- **Owner**: 本机，Native Development Handoff。
+- **Outcome**: 唯一开发交付版本、维护文档与两个入口示例；外部实验单列 TRANSFERRED。
 - **Design**: FR-014,FR-015; CD-012; INV-001,INV-002,INV-007,INV-008,INV-009; FLOW-001, FLOW-002。
-- **StartState**: T016 PASS；核对具体 source/design identity。
-- **EndState**: 唯一开发交付版本、维护文档与两个入口示例；外部实验单列 TRANSFERRED。
-- **ExactFiles / ExactSymbols**: [code-design](code-design.md) 的 CD-012 和 [proof inventory](proof-design.md#planned-test-and-build-inventory) 的 T017。
-- **DecisionBudget**: LOW。
-- **AllowedDecisions**: 仅按已验证实现更新使用说明/身份字段，不扩大 claims。
+- **Changes**: 三个 CD-012 docs 和 evidence/development-handoff.md、closure-record.md
 - **ForbiddenChanges**: 把 SIF/Tiger/GPU 未运行写 PASS；改冻结历史/181 关闭状态。
-- **ExpectedDiff**: 三个 CD-012 docs 和 evidence/development-handoff.md、closure-record.md；0 生产/测试源码；交付清单按已验证身份。
-- **ProofObligations**: PO-012。
-- **ExactCommands / VerificationLadder**: L0/L5 追踪、链接、commit/工件清单核对；使用上述 planned command contract，未冻结 selectors 前 BLOCK。
-- **EscalationConditions**: 接收方缺源码/依赖或 audit identity 漂移，回对应 gate；同样适用 common boundary。
-- **RecoveryPoint**: 本地 checkpoint；不 push/远端提交，记录下一外部 owner。
-- **Evidence**: ../evidence/t017-completion.md（planned，当前不存在）。
+- **LocalChecks**: 核对交付版本、既有T016结果、链接和可复现命令；无行为变化不重新运行套件。
+- **FinalProof**: PO-012。

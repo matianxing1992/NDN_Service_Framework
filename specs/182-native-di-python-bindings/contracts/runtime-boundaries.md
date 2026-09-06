@@ -1,6 +1,6 @@
 # Runtime Boundary Completion
 
-**Revision**: 2 | **Status**: DRAFT / BLOCK for implementation
+**Revision**: 6 | **Status**: DRAFT / BLOCK for implementation
 **Normative parent**: [spec](../spec.md), [code design](code-design.md)
 本附件补齐 revision 1 的中间调用缺口；所有 Native* 新接口均 planned。
 O-002/O-003 依赖锁和 O-004 完整字段/兼容清单未关闭，不宣称可直接编译。
@@ -152,3 +152,13 @@ UNSUPPORTED_EXTENSION 只能用于被本次用户目标明确排除的 Python ca
 - journal 使用原格式时验证新写旧读/旧写新读；如必须迁移，先复制备份、
   原子转换与写入新版本目录，单写者锁定，保留 crash/partial-write/restart 负例。
   没有降级读取证明时旧版本不得读取新 journal，回退使用先前快照并说明丢失的未提交 turn。
+
+## Merged Security Ownership
+
+合并Core已具备请求级机密性、ControllerVersion、服务撤销/权限刷新和RuntimeStatusStore。Core/Provider继续持有当前权限与generation fence；DI admission只读取认证快照，不能建立第二份可写撤销表或以相同字段绕过Core独立校验。会话journal与Core持久运行状态分别归属，路径/锁/恢复规则不混用。DI artifact grant与Core请求/响应密钥分别验证，不因为两者都叫grant/key就共享寿命或撤销范围。
+
+新增/修改接口的完整职责、字段含义及注释要求见 [symbol design](symbol-design.md) 和 [value contracts](value-contracts.md)。O-004需核对合并后的真实注册、撤销、取消和callback generation接线，不能引用旧行号证明当前实现。
+
+## Pre-Test Review Scope
+
+源码对照设计的审查、任务内unit和全部实现后的integration/MiniNDN统一见 [validation workflow](pre-test-static-review.md)。本附件只定义技术契约，静态或文档检查不代替运行证明。

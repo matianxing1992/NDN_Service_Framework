@@ -2,7 +2,15 @@
 
 ## Final Local Validation
 
-Status: VALIDATED_PENDING_COMMIT。三个真实 MiniNDN 场景均 PASS：user-identity-revocation（49.108 s，12/12 checks）、grant-only-advance（58.985 s，专用 grantOnlyGateOk=true）、provider-identity-revocation（58.295 s，14/14 checks）。最后一项主动 SIGINT 旧 Provider 后重启，旧进程 exit -2，其余 exit0；没有节点进程残留。证据和实际库摘要见 [validation record](merge-validation-20260906.json)。静态设计审查、完整 C++ suites 和 current Python profile 均通过；不宣称历史全量 Python suite、181最终资格或182原生迁移完成。
+Status: VALIDATED / COMMITTED。原生合并checkpoint为 `c770f18bb7bf42c3b8a8274b5c029b4883141f60`，双亲为下述本机与远端提交。随后归并 `2e7865c7a031f677e1ff382cf999392cf0aacd0a` 的8个本机提交，保留Spec182 revision6和Tiger canonical目录；原生生产代码保持同一已测字节。最终本地开发分支为 `Experimental`；临时整合目录保留为detached验证工作树，临时分支在纳入Experimental后删除；未push或删除远端分支。
+
+三个真实 MiniNDN 场景均 PASS：user-identity-revocation（49.108 s，12/12 checks）、grant-only-advance（58.985 s，专用 grantOnlyGateOk=true）、provider-identity-revocation（58.295 s，14/14 checks）。最后一项主动 SIGINT 旧 Provider 后重启，旧进程 exit -2，其余 exit0；没有节点进程残留。证据和实际库摘要见 [validation record](merge-validation-20260906.json)。静态设计审查、完整 C++ suites 和 current Python profile 均通过；不宣称历史全量 Python suite、181最终资格或182原生迁移完成。
+
+合并新目录后的工具回归 `branch-consolidation-r1`：**162 passed / 3 skipped，exit0，11.321s**，覆盖Tiger源打包/发布/profile/supervisor/collector、Spec175 preflight、两个Context guard套件、native closure与原生证据检查。skips为缺失历史主机工件，不能视为真实SIF/Tiger验收。旧路径jobs/adapters兼容链接与15个新增作业文件全部映射到canonical目录；没有再次构建SIF或运行集群。
+
+用户停止并行实验后，纳入其12个新增Tiger源码/配置/文档文件，保留Local R1--R8失败史和B003未完成状态。静态复审补齐collector真实ACK/selection/request关联和wrong-root边界证据、有限应用进程组清理；新增独立生命周期测试。最终 `tiger-baseline-final-r1` **58/58 PASS，exit0，1.237s**，详见 [Tiger checkpoint](../../../Experiments/TigerCluster/docs/two-node-baseline.md#usage)。主工作区原有UAV slides另作独立文档checkpoint；模型、私钥、原始实验/构建输出及本地助手配置保持不入Git。
+
+本地checkpoint hook提供显式 `NDNSF_LOCAL_CHECKPOINT=1` 模式，仅允许文档中的工具文字引用；默认严格规则及实际助手配置/原始临时目录禁止规则保留。shell语法、默认拒绝、显式模式通过、真实AGENTS路径仍拒绝的隔离index检查均PASS。hook本身为本地Git元数据，不进入交付源码；未使用no-verify。
 
 ## Validation History
 
@@ -12,7 +20,7 @@ MiniNDN `minindn-user-revocation-r1` **BLOCK at launcher**（exit1、0.644 s）�
 
 ## Scope and Status
 
-Status: IN_PROGRESS。用户授权先整合 NAC-ABE / UAV 开发成果，完成合并后的 unit/integration 验证，再修订 Spec182；不启动原生迁移实现。Spec181 的独立最终验收暂停，未完成责任由 Spec182 接收，不宣称 Spec181 PASS。
+Status: COMPLETE for merged native development baseline。用户授权先整合 NAC-ABE / UAV 开发成果，完成合并后的 unit/integration 验证，再修订 Spec182；不启动原生迁移实现。Spec181 的独立最终验收暂停，未完成责任由 Spec182 接收，不宣称 Spec181 PASS。正在开发的Tiger双节点基础设施另以B001--B003记录，历史运行失败和待验收项不影响上述原生合并证据，也不由上述证据自动关闭。
 
 ## Source Boundaries
 

@@ -1,0 +1,154 @@
+{
+  "schema": "spec182-revision3-review-evidence-v1",
+  "scope": "documentation_and_local_skill_review",
+  "document_contract": {
+    "schema": "spec182-revision3-document-validation-v1",
+    "ok": true,
+    "tasks": 17,
+    "tasks_complete": 0,
+    "fr": 17,
+    "sc": 9,
+    "cd": 14,
+    "po": 14,
+    "source_types": 12,
+    "source_fields": 137,
+    "classes_or_modules": 21,
+    "methods": 48,
+    "design_readiness": "DRAFT",
+    "local_links_checked": 154,
+    "dependency_graph": {
+      "T001": [],
+      "T002": [
+        "T001"
+      ],
+      "T003": [
+        "T002"
+      ],
+      "T004": [
+        "T003"
+      ],
+      "T005": [
+        "T004"
+      ],
+      "T006": [
+        "T002"
+      ],
+      "T007": [
+        "T002"
+      ],
+      "T008": [
+        "T003",
+        "T006",
+        "T007"
+      ],
+      "T009": [
+        "T006",
+        "T007"
+      ],
+      "T010": [
+        "T003",
+        "T004",
+        "T005",
+        "T006",
+        "T007",
+        "T008",
+        "T009"
+      ],
+      "T011": [
+        "T010"
+      ],
+      "T012": [
+        "T011"
+      ],
+      "T013": [
+        "T012"
+      ],
+      "T014": [
+        "T013"
+      ],
+      "T015": [
+        "T014"
+      ],
+      "T016": [
+        "T015"
+      ],
+      "T017": [
+        "T016"
+      ]
+    },
+    "errors": [],
+    "runtime_tests": "NOT_RUN"
+  },
+  "structure_audit": {
+    "blockers": [],
+    "details": {
+      "duplicate_requirements": [],
+      "duplicate_success_criteria": [],
+      "duplicate_tasks": [],
+      "malformed_tasks": [],
+      "missing_story_tasks": [],
+      "placeholders": [],
+      "untraced_requirements": []
+    },
+    "feature": "/home/tianxing/NDN/ndn-service-framework/specs/182-native-di-python-bindings",
+    "metrics": {
+      "functional_requirements": 17,
+      "has_traceability": true,
+      "parallel_tasks": 0,
+      "story_task_counts": {
+        "US1": 6,
+        "US2": 1,
+        "US3": 3,
+        "US4": 2,
+        "US5": 5
+      },
+      "success_criteria": 9,
+      "tasks": 17,
+      "tasks_complete": 0,
+      "traced_requirements": 17,
+      "user_stories": 5
+    },
+    "missing_required": [],
+    "ok": true,
+    "warnings": []
+  },
+  "diff_check": {
+    "exit_code": 0
+  },
+  "local_skills": {
+    "ok": true,
+    "errors": [],
+    "sha256": {
+      "SKILL.md": "49736b3856dd9b538f866920c22421f38f9f2173c89d1040610491409c5f82e3",
+      "references/design-template.md": "ba8fe90eb63a2d75446c1d5923e6060967e863b538c5535353d58426f4f3f044",
+      "references/review-gate.md": "be5aa95b78c7251983486e64f45b0ae29d7947c54c484b950926f92ea05c0296",
+      "references/work-unit-contract.md": "adac6ffe81453c3427b15ac5ad5d04ef415b53ced7a6c6bf17c7727ad3fba8e0",
+      "references/symbol-contract.md": "cb8f6396311117af4e6c61b40ba39363fdcc63620eae0d822e9d5caf738d0fa3",
+      "speckit-specify": "2f46b891584602e2b63d98ad84f4254cc1d3c069c361ed7bdbbf622ff0827095",
+      "speckit-plan": "88a351f4909d67f05582dfe9ac376cd8a82b83037b16f01ea8c46091349ee0f1",
+      "speckit-tasks": "a33d1fa1180829b342b9bbcee03b2e0e093c9dacdef2c18e78f6edb8732b07a7"
+    }
+  },
+  "context_mode": {
+    "project": "PASS",
+    "active_exit_code": 0,
+    "managed_plan": "182-native-di-python-bindings"
+  },
+  "source_field_ast_recheck": {
+    "types": 12,
+    "fields": 137,
+    "mismatches": []
+  },
+  "concurrent_source_drift": [
+    "ndn-service-framework/ServiceController.cpp",
+    "specs/182-native-di-python-bindings/evidence/integration-20260906.md"
+  ],
+  "runtime_tests": "NOT_RUN",
+  "implementation_tasks_complete": 0,
+  "design_readiness": "DRAFT_OPEN_001_005",
+  "initial_checker_attempt": {
+    "result": "FAIL_CHECKER_REGEX_ESCAPING",
+    "classification": "DOCUMENT_TOOLING_NOT_RUNTIME",
+    "correction": "Removed double escaping; document coverage rerun passed"
+  }
+}

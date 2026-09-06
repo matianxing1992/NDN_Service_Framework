@@ -1,49 +1,47 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 2 | **Date**: 2026-09-06
+**Branch**: Experimental | **Revision**: 6 | **Date**: 2026-09-06
 **Status**: DRAFT / NOT_STARTED
 **Spec**: [spec.md](spec.md)
 
 ## Summary
 
-本机建立完整 C++ DI，Python 只作同库绑定。保留现有 Core 协作/安全原语、
-Provider native runtime 和模型 adapter 边界；消除默认 Python 控制实现及 helper 依赖。
-本计划是后续规划，不激活 Spec182，不改变仍在执行的 Spec181。
+完整C++ DI复用Core协作/安全原语、Provider runtime和原生model adapters；
+Python只作同库兼容绑定，旧默认控制路径退出。O-001--005关闭前不开始迁移。
+详细接口与字段仅在contracts定义；本文件安排实施和验证阶段。
 
 ## Technical Context
 
-当前 native 以 Waf core/adapter objects 和 executable 为主；Python setup 也直接编译部分 DI 源。
-目标为可安装的 ndnsf-distributed-inference 库和独立 C++ consumer；Python 绑定可选。
-使用仓库既有 C++/Boost/ndn-cxx/ORT 工具链，ONNX/protobuf/tokenizer 精确锁尚待 O-002/O-003。
-不在此声称具体原生 tokenizer 依赖已安装、可链接或能通过向量。
+建立可安装ndnsf-distributed-inference库与独立C++ consumer，Python绑定可选。
+沿用Waf、C++/Boost/ndn-cxx/ORT；ONNX/tokenizer依赖及ABI锁由T001冻结。
+原生构建使用核对后的system compiler/binutils、匹配Boost headers/libs、
+NAC-ABE prefix与NDN-SVS build；ABI变化重建依赖对象与绑定并核对实际加载路径/hash。
+默认至多-j2，不并发操作同一Waf树。本轮只改文档，不构建产品。
 
 ## Constitution Check
 
-| Principle | Planned compliance |
-| --- | --- |
-| Canonical runtime | 复用 ServiceUser deferred collaboration，不引入平行 wire |
-| Security | 保留 grant/AEAD/lease/fencing 和 Provider 独立授权 |
-| CodeGraph | 精确主工作区路径，排除临时比较副本 |
-| Cohesive tasks | 每任务同时包含实现、focused 检查、证据；大单元先修订边界 |
-| Convergence | T015 PASS 前不执行正式 T016 |
-| Immutable delivery | 源、库、adapter、依赖、工件、config、harness 同一身份 |
-| Language / code design | 中文叙述、英文 markers；技术细节归规范性 CD 附件 |
+沿用Core协作与安全边界、同库绑定和旧路径退出契约；保留全部真实运行验收。
+流程只调整记录方式与执行阶段，不缩减权限、协议、数值或隔离要求。
 
 ## Gate Order
 
-1. G0 / T001：Spec181 关闭/交付后刷新 baseline，关闭 O-001--005，冻结类型/调用方/依赖锁，
-   自审达到相关范围 READY_FOR_IMPLEMENTATION。当前尚不满足。
-2. G1 / T002--009：独立库、策略/sealer/grant、ONNX/tokenizer、请求准备/admission 和 Provider host；focused proof。
-3. G2 / T010--012：完整 C++ requester、会话/恢复与同库 Python binding；focused integration。
-4. G3 / T013--014：maintained callers 切换、旧路径退出、无 Python gate、MiniNDN harness/collector/fixture 和反例自检；正式用例尚不运行。
-5. G4 / T015：code-aware convergence audit，检查真实生产路径、effective config、源与运行依赖。
-6. G5 / T016：同源完整 unit/integration + MiniNDN + no-Python 资格，保留所有失败首边界。
-7. G6 / T017：本地开发交付、调用示例、迁移说明与外部实验交接。
+1. G0 / T001：核对合并修复和181承接，关闭O-001--005，冻结schema/调用方/依赖与单测、集成、实验选择器。181旧完整资格不作为前置门。
+2. G1 / T002--009：库、策略、sealer/grant、assembler/tokenizer、准备/admission和Provider host；每任务实现→静态审查→相关单测及必要构建。
+3. G2 / T010--012：requester、会话/恢复与绑定；完成接线、相关单测，同时编写注册后续集成用例。
+4. G3 / T013--014：迁移旧入口、实现隔离gate和MiniNDN harness/collector；完成静态审查与本地单测，真实跨进程/no-Python用例尚不运行。
+5. G4 / T015：全部实现与测试工具完成后，补审跨任务调用链、effective config、测试/oracle/harness和依赖；复用有效局部审查，控制性缺陷修复后进入T016。
+6. G5 / T016：统一执行完整unit→integration→MiniNDN/no-Python及既定负例，核对实际证据和最终diff；不另写测试后报告。
+7. G6 / T017：交付已验证版本、说明与示例；外部SIF/Tiger由实验机器接手。
+
+审查内容、最小诊断例外、变化/失败处理和唯一结果记录见
+[validation workflow](contracts/pre-test-static-review.md)。
+实现任务[x]表示实现/审查/单测完成；完整PO与feature验收直到T016才关闭。
+任务开始本身不会使前项单测失效；实际变化决定重审和回归范围。
 
 ### Dependencies
 
 ~~~text
-Spec181 local closure -> T001
+Merged baseline closure and Spec181 handoff -> T001
 T001 -> T002 -> T003 -> T004 -> T005
 T002 -> T006
 T002 -> T007
@@ -56,11 +54,11 @@ T012 -> T013 -> T014 -> T015 -> T016 -> T017
 T006/T007 的原生依赖设计必须先由 T001 关闭，不能一边猜 ABI 一边并入 requester。
 T003--011 中的大算法迁移为设计批次，超过工作单元阈值时按 work-units 先沿稳定行为接口细分，
 不机械按文件拆分、不授权并行 agent 自动实施。
-当前授权仅文档，不运行以上实现/构建/实验。
+当前授权仅文档，不运行以上实现/构建/实验。Static review PASS != Behavior PASS。
 
 ## Migration and Compatibility
 
-新原生路径在独立消费者中验证后，Python 默认入口一次切换到同库；
+在本地候选版本中将Python默认入口一次切换到同库；独立消费者的完整运行与迁移正确性由T016统一验收后交付。
 旧实现仅在迁移窗口保留；T013 关闭时删除无生产消费者的运行实现，离线对照不进入运行包。
 无长期双默认路径。公开 API 未实现的兼容项由 inventory 显式 BLOCK，不静默 fallback。
 旧 journal/model/contract 格式使用原版本规则；字节不一致先修订设计，不能改 oracle 消除差异。
@@ -68,17 +66,12 @@ T003--011 中的大算法迁移为设计批次，超过工作单元阈值时按 
 [migration contract](contracts/runtime-boundaries.md#migration-and-rollback-contract)。
 GUI、离线训练/导出与实验 Python 保留；其业务调用转向 binding，禁止在工具层藏 runtime owner。
 
-## Invalidation Matrix
+## Evidence Reuse
 
-| Changed plane | Invalidated evidence | Earliest gate |
-| --- | --- | --- |
-| 181 final source / capability baseline | CD inventory、迁移假设、下游全部 | G0 |
-| strategy/sealer/contract | wire/placement + integration/qualification | 相关 G1 + G4 |
-| grant/assembly/tokenizer | 安全/字节/token oracle 对应结果 + 下游 | 相关 G1 + G4 |
-| lifecycle/binding/default routing | 状态/兼容/no-Python/下游 | G2 或 G3 + G4 |
-| compiler/native dependency/ABI/build recipe | installed consumer、runtime identity、下游 | G1 build closure + G4 |
-| config/model/oracle/harness | 受影响的 proof 和正式运行 | 源/输入 preflight + G4 |
-| 纯文档无行为变化 | 结构/追踪/链接检查 | 文档检查；不得自动重跑模型 |
+按源码、接口、依赖、配置、oracle/harness的实际变化判断影响；
+只更新受影响契约、重读相关调用方并重跑相关检查。没有变化或具体缺口不重复全量验证。
+未运行、环境失败、局部通过和完整资格分开，原始失败结果保留。
+最终版本必须有全部既定本地运行证明；文档改动不触发模型重跑。
 
 ## Delivery
 
@@ -94,6 +87,5 @@ T017 的 evidence/development-handoff.md 包含 exact commit、clean source clos
 
 ## Current Planning Result
 
-设计 revision 2 已有范围、架构不变量、CD、工作边界和 PO；
-完整实现就绪受 O-001--005 控制；O-005 设计由 T001 关闭，T014 再实现隔离并证明检错能力。
-下一个执行动作是继续 Spec181；其关闭后从 T001 刷新/补齐设计开始。
+本轮为revision 6文档简化和验证分层，产品实现与运行均NOT_RUN。
+O-001--005仍控制实施就绪，下一步T001核对稳定合并基线并关闭其设计缺口。

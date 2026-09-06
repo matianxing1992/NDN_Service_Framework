@@ -1,6 +1,6 @@
 # Proof Design
 
-**Revision**: 2 | **Status**: planned; behavioral verification NOT_RUN
+**Revision**: 6 | **Status**: planned; behavioral verification NOT_RUN
 本契约定义将来证明，不记录虚构测试结果。source review 不等于行为通过。
 
 ## Proof Obligations
@@ -18,9 +18,11 @@
 | PO-009 | FR-010; CD-008 | Python 绑定和独立 C++ consumer 输入等价请求 | 固定 entropy/时钟/ACK transcript 下精确 plan bytes；实时只比较规定语义和数值 | 结果/错误/取消一致；注入 Python 策略 callback 在入口拒绝，不执行 callback |
 | PO-010 | FR-011/016; CD-010 | maintained user/provider/runner 默认入口；阻断旧模块 | capability/caller inventory 与运行时 import/exec observation | 旧 coordinator/provider/helpers 被阻断仍运行；主动接回一条旧入口必须使检查失败 |
 | PO-011 | FR-013/014; CD-011 | 同源完整 unit/integration + MiniNDN matrix | YOLO standalone numerical oracle、Qwen token/text oracle、进程退出与资源/secret 清理 | 所有规定 case 终端成功/注册拒绝；启动/collector 故障不得算拒绝 PASS |
-| PO-012 | FR-014/015; CD-012 | 干净 checkout / handoff receiver | commit、依赖、模型/config/harness SHA-256；181 冻结交付文档 hashes；本次设计 pointer 前后 hash（未来激活时应切182） | 本地交付身份完整，外部结果单列；替换源/依赖/配置使 gate 在启动前拒绝 |
+| PO-012 | FR-014/015; CD-012 | 干净 checkout / handoff receiver | commit、依赖、模型/config/harness SHA-256；合并基线与181承接文档hashes；当前182活动指针及审查身份 | 本地交付身份完整，外部结果单列；替换源/依赖/配置使 gate 在启动前拒绝 |
 | PO-013 | FR-001/002/004/009/016; CD-013 | native prepareInput/inspectModel/ensureArtifacts/verify 经 requester 生产入口 | 冻结 task encode/decode、认证 ACK/policy 和 publication 向量 | 不由 harness 预先规划；假 provenance/错 candidate/错实际名字/图身份被拒；移除任一绑定校验后反例失败 |
 | PO-014 | FR-001/009/010/012; CD-014 | C++ consumer/CLI/native binding → 同一 Provider host | 真实 Core ACK/Selection/Response 与共享第二服务 | 不调用旧 Python runner；停一注册不破坏共享服务；接回旧 provider 或提前销毁 handler 会失败 |
+| PO-015 | FR-018; CD-001--014 | 实现后源码/设计/测试逻辑审查，T015补整体接线 | 具体代码路径与设计条款，关键发现及处置 | 相关unit之前无已知控制性缺陷；静态结论不替代运行证明 |
+| PO-016 | FR-019; CD-001--014 | T016集中运行后核对交付diff与证据 | 约定PO/用例、真实命令结果及未执行项 | 必需本地行为全部验证才整体PASS；实现任务完成不冒充最终资格 |
 
 ## Negative Path Matrix
 
@@ -43,20 +45,27 @@
 
 ## Verification Ladder
 
-- L0：原生公共头/库/consumer 编译链接、default import/依赖检查；不证明运行。
-- L1：每单元的纯函数、编码、策略、资源/状态负例。
-- L2：受影响 Core/DI/model adapter 的现有定向回归，必须登记 selectors。
-- L3：真实 requester/authority/Core/Provider 生产组件跨进程协作；不可 mock 被测链。
-- L4：audit PASS 后真实 MiniNDN，外部 Python harness 与被测原生运行范围分开。
-- L5：所有 FR/能力清单的最终同源回归与 no-Python/legacy-exclusion。
-- L6：每个 PO 至少一个错误实现或输入 counterfactual；必须在语义断言处失败。
-编译失败、收集失败和环境缺失不是 L6 成功。focused L1--L3/L6 可在修复期间运行；
-完整 suites/MiniNDN 正式验收必须先 T015 audit PASS。
+执行与记录仅定义于 [validation workflow](pre-test-static-review.md)，不逐层新增报告。
+- L0：必要公共头/库/consumer编译、安装链接和依赖检查，不证明完整请求。
+- L1：各实现任务的编码、策略、资源/状态及适用负例unit。
+- L2：受影响既有回归；unit部分随任务执行，跨组件/跨进程部分由T016运行。
+- L3：全部实现后T016运行真实requester/authority/Core/Provider协作，不mock被测链。
+- L4：T016在完整unit和integration通过后运行真实MiniNDN。
+- L5：T016完成全部FR/能力的同源证明与no-Python/legacy-exclusion，T017交接。
+- L6：保留PO-001--014及下表规定的负例/counterfactual；
+  单元级随实现，涉及真实协作/隔离/实验的在T016。
+  检错成功必须来自目标语义断言；编译/启动/collector失败不算。
+  工作流PO-015/016无需为了报告额外制造mutant。
+
+T002--T014不提前执行L3/L4；T015整体静态检查后，T016执行完整unit→integration→MiniNDN。
+测试编写与执行分开；同一文件有不同层级时使用T001冻结的独立selector。
 
 ## Planned Test and Build Inventory
 
 下列文件/命令是 planned，当前未创建/运行；T001/O-004 将冻结旧 selectors 和新增 case 名称。
 新增 tests/wscript 的注册必须与同一任务生产改动一起交付。
+下表Owner负责编写和单测；所有L3/L4及系统级L5/L6的执行owner统一为T016。
+目录名不决定层级。为仅列integration文件的任务补独立unit入口，避免为通过任务而提前跑服务协作。
 
 | Owner | Exact planned test paths | Required layers / PO |
 | --- | --- | --- |
@@ -64,17 +73,17 @@
 | T010 | tests/unit-tests/di-native-client.t.cpp; tests/integration-tests/di-native-request.t.cpp | L0/1/2/3/6，PO-001/003/007/013/014 |
 | T003 | tests/unit-tests/di-native-planning.t.cpp | L1/2/6，PO-002 |
 | T004 | tests/unit-tests/di-native-plan-sealer.t.cpp | L1/2/3/6，PO-003 |
-| T005 | tests/integration-tests/di-native-requester-grant.t.cpp | L1/2/3/6，PO-004 |
-| T006 | tests/integration-tests/di-native-onnx-recipe.t.cpp | L1/2/3/6，PO-005 |
+| T005 | tests/unit-tests/di-native-grant.t.cpp; tests/integration-tests/di-native-requester-grant.t.cpp | L1/2/3/6，PO-004 |
+| T006 | tests/unit-tests/di-native-onnx-recipe.t.cpp; tests/integration-tests/di-native-onnx-recipe.t.cpp | L1/2/3/6，PO-005 |
 | T007 | tests/unit-tests/di-native-tokenizer.t.cpp | L1/2/3/6，PO-006 |
-| T011 | tests/integration-tests/di-native-conversation.t.cpp | L1/2/3/6，PO-007/008 |
+| T011 | tests/unit-tests/di-native-conversation.t.cpp; tests/integration-tests/di-native-conversation.t.cpp | L1/2/3/6，PO-007/008 |
 | T012 | tests/python/test_spec182_native_bindings.py | L1/2/3/6，PO-009 |
 | T013 | tests/python/test_spec182_legacy_exclusion.py | L0/2/3/6，PO-010 |
 | T014 | tests/standalone/run-spec182-native-closure.py; tests/python/test_spec182_native_closure.py | L0/3/6，PO-001/010/012 |
-| T014 build / T016 execute | Experiments/NDNSF_DI_NativeClosure_Minindn.py | T014 L0/3/6 collector 自检；T015 审计后 T016 L4/5 正式运行 |
+| T014 build / T016 execute | Experiments/NDNSF_DI_NativeClosure_Minindn.py | T014编写/静态审查与collector逻辑unit；T016执行L3/4/5及真实L6 |
 | T001/T003--012 | tests/fixtures/spec182/case-manifest.json; tests/fixtures/spec182/native-wire-vectors.json; tests/fixtures/spec182/tokenizer-vectors.json | 冻结来源、工件摘要、单位、容差及独立 oracle |
-| T008 | tests/integration-tests/di-native-preparation.t.cpp; tests/unit-tests/di-native-offer-admission.t.cpp | L1/2/3/6，PO-013 |
-| T009 | tests/integration-tests/di-native-provider-host.t.cpp | L0/1/2/3/6，PO-014 |
+| T008 | tests/unit-tests/di-native-preparation.t.cpp; tests/integration-tests/di-native-preparation.t.cpp; tests/unit-tests/di-native-offer-admission.t.cpp | L1/2/3/6，PO-013 |
+| T009 | tests/unit-tests/di-native-provider-host.t.cpp; tests/integration-tests/di-native-provider-host.t.cpp | L0/1/2/3/6，PO-014 |
 
 planned command contract，cwd=repo root；--output 必须新建 run-id 目录，存在非空目录即拒绝：
 - python3 tests/standalone/run-spec182-native-closure.py --manifest <case-manifest> --case <case-id> --output <new-run-dir>
@@ -115,11 +124,14 @@ T001/O-005 冻结隔离设计、T014 实现后，用已知 fork-helper 版本作
 
 ## Evidence Record
 
-每单元 evidence/tNNN-<unit>.md 必须记录：
-Task、DesignRevision、SourceIdentity、DesignClausesImplemented、FilesActuallyChanged、
-SymbolsActuallyChanged、BehavioralProofs（PO/layer/oracle/result）、CommandsExecuted
-（cwd/env/exit/raw path）、FailuresEncountered、DesignDeviations、RemainingRisks、
-DiffScope、RecoveryState、ImplementationStatus、VerificationStatus、AcceptanceStatus、NextAction。
+使用 [validation workflow](pre-test-static-review.md#one-completion-record)的一份短记录，
+说明实际源码/范围、审查发现、命令/结果/日志、状态和下一步。
+未运行、实现/单测完成、完整PO通过分别标明；T016收齐全部既定运行证据。
+失败保留新run-dir并同步tasks和docs/failure-log.md，不提交secrets或大日志。
 
-失败保留新 run-dir，更新 active Spec evidence/tasks 与 docs/failure-log.md，
-不得覆盖历史日志或提交 secrets/大原始输出。状态为 IMPLEMENTED 不自动等于 ACCEPTED。
+## Symbol Documentation Proof
+
+
+FR-017/SC-009：T001 对源码/设计执行双向清单核对（source symbol→contract→task→PO，以及新增契约→预期diff），覆盖重载、字段、配置、回调和关键局部状态。LOCAL_DETAIL只豁免无外部语义的循环计数等细节。T015 对实际声明、Doxygen/Python docstring和示例逐项审计；类/方法计数本身不能证明文字准确。
+
+成功用法在独立C++ consumer与绑定测试执行；错误例核对原生原因码及Python映射，取消例区分本地终态与远端清理。删除旧默认配置项要有实际caller迁移与拒绝/弃用行为，不能只更新示例。Core请求加密/版本刷新/撤销/持久状态的既有回归在迁移后重跑；如ControllerVersion变化或撤销使在途请求失效，不允许DI缓存的过时policy或observer恢复成功。

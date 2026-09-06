@@ -1,8 +1,8 @@
 # Spec182 Traceability Matrix
 
-**Revision**: 2 | **Status**: DRAFT / NOT_STARTED
+**Revision**: 6 | **Status**: DRAFT / NOT_STARTED
 source review 只证明 baseline 所述实现存在，不证明新实现或资格。
-所有 task completion evidence 路径为 planned，revision 2 文档检查见 evidence/audit-revision2.md；revision 1 历史记录不改写。
+任务运行证据均为planned；本轮文档检查见 [workflow simplification](evidence/workflow-simplification.md)。历史证据不改写。
 
 ## Requirement-to-task Map
 
@@ -24,6 +24,9 @@ source review 只证明 baseline 所述实现存在，不证明新实现或资�
 | FR-014 | SC-007,SC-008 | CD-009,CD-012 | T014,T016,T017 | PO-012 | FLOW-001 |
 | FR-015 | SC-008 | CD-012 | T001,T017 | PO-012 | FLOW-001 |
 | FR-016 | SC-004,SC-005,SC-006 | CD-002,CD-005,CD-007,CD-010,CD-013 | T001,T003,T006,T008,T011,T013,T016 | PO-002,PO-005,PO-008,PO-010,PO-013 | FLOW-001,FLOW-003 |
+| FR-017 | SC-009 | CD-001--014; symbol-design; value-contracts | T001,T002--T017 | PO-001--014; document coverage gate | FLOW-001--004 |
+| FR-018 | SC-010 | CD-001--014; validation workflow | T002--T015 | PO-015 | FLOW-001--004 |
+| FR-019 | SC-011 | CD-001--014; validation workflow | T002--T017 | PO-016 | FLOW-001--004 |
 
 ## Design-to-task Map
 
@@ -49,4 +52,16 @@ source review 只证明 baseline 所述实现存在，不证明新实现或资�
 T001 关闭 OPEN 并刷新 baseline 后补足叶子签名、精确默认值、legacy callers 和 dependency lock；
 本矩阵覆盖设计目标，不将其称为已可直接实施。
 本机实现、unit/integration/MiniNDN 和交付；实验机器 SIF/Tiger 为 TRANSFERRED。
-当前活动指针和 Spec181 任务保持原状；未来 active-Spec audit 不能用本文 DRAFT 替代。
+当前182活动设计不改写181历史任务；合并源码持续修复，必须用最终checkpoint刷新快照。DRAFT不能替代实施验收。
+
+## Symbol Coverage
+
+C01--C21 / M01--M48 位于 [symbol design](contracts/symbol-design.md)；V01--V12 共137字段位于 [value contracts](contracts/value-contracts.md)。每个任务的 SymbolContracts 指向其受影响集合，Documentation/Usage 必须随单元验收。该计数只覆盖已列来源类型，不代表递归schema已关闭；O-004 OPEN持续阻塞缺失叶子类型。
+
+## Static Review Traceability
+
+FR-018/SC-010/PO-015由 [validation workflow](contracts/pre-test-static-review.md)定义：T002--T014局部读码+unit；T015补整体接线审查，不另建重复报告。
+
+## Adversarial Closure Traceability
+
+FR-019/SC-011/PO-016：完整PO的集成/实验执行owner为T016，T017交付。前述FR→Task行包含实现owner，不表示每个owner都要提前运行完整PO。Static review PASS != Behavior PASS。

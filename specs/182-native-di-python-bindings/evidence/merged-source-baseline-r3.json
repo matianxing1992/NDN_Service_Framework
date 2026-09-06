@@ -1,0 +1,172 @@
+{
+  "schema": "spec182-merged-design-baseline-v1",
+  "worktree": "/home/tianxing/NDN/ndnsf-integration-182",
+  "head": "d4a5e39ce5b4a023f6e55d2440c60aa998983f8f",
+  "merge_parent": "4391af81cd24ff5510aa52b48ab9cec0fdec1ebb",
+  "unmerged_paths": [],
+  "qualification": "IN_PROGRESS_NOT_QUALIFIED",
+  "files": [
+    {
+      "path": "ndn-service-framework/ServiceUser.hpp",
+      "sha256": "1d2d7220f0c1084b80c92a70a63a4936d3b78d1f53e05b52f9d6090de4f1eb60",
+      "status": "M  ndn-service-framework/ServiceUser.hpp",
+      "classification": "workspace-existing"
+    },
+    {
+      "path": "ndn-service-framework/ServiceUser.cpp",
+      "sha256": "d0304acba970240cfde2f63de6f7ca040b92f8e98c57bca217ecb7054f984d12",
+      "status": "M  ndn-service-framework/ServiceUser.cpp",
+      "classification": "workspace-existing"
+    },
+    {
+      "path": "ndn-service-framework/ServiceProvider.hpp",
+      "sha256": "e0d28155ee1e8fffe9e24147023a5169c62da1067e325d174de9b328e2506a1f",
+      "status": "M  ndn-service-framework/ServiceProvider.hpp",
+      "classification": "workspace-existing"
+    },
+    {
+      "path": "ndn-service-framework/ServiceProvider.cpp",
+      "sha256": "bfb7f909c0ab116b837440ca0172a8d312d833e070a322c47a3c22c0f3c757dc",
+      "status": "MM ndn-service-framework/ServiceProvider.cpp",
+      "classification": "workspace-existing"
+    },
+    {
+      "path": "ndn-service-framework/ServiceController.cpp",
+      "sha256": "72d0fd9b6a35e59a2d52e9610ddb4609970c1edf5540d036a8796f78f07eae30",
+      "status": "MM ndn-service-framework/ServiceController.cpp",
+      "classification": "workspace-existing"
+    },
+    {
+      "path": "ndn-service-framework/RequestConfidentiality.hpp",
+      "sha256": "cd37d9dd5baa68679a7e9710f5fcce7dc5351332743513e04d98f67414092d16",
+      "status": "A  ndn-service-framework/RequestConfidentiality.hpp",
+      "classification": "workspace-existing"
+    },
+    {
+      "path": "ndn-service-framework/RevocationState.hpp",
+      "sha256": "7acb6df4c4e1e7e3163f109b0cb77375b93f307e1d6cd7839a29bd0d25ad5a05",
+      "status": "A  ndn-service-framework/RevocationState.hpp",
+      "classification": "workspace-existing"
+    },
+    {
+      "path": "ndn-service-framework/RuntimeStatusStore.hpp",
+      "sha256": "f5fcfbef7c34c597c24641632b92d063a27f4ea4e56b7364a5c3225ef0f33fc4",
+      "status": "A  ndn-service-framework/RuntimeStatusStore.hpp",
+      "classification": "workspace-existing"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp",
+      "sha256": "9709a7bc5ff659f1a88aadfbcc40b8dd646d6276b5ae8ca2eac1eb7f1afaa145",
+      "status": "",
+      "classification": "committed"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.cpp",
+      "sha256": "ed1a167ddb3e33405dd58608502580dab6b1497a1599e94d31fdfe67d44f3595",
+      "status": "",
+      "classification": "committed"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeStandaloneTokenizer.hpp",
+      "sha256": "27b9416ed3ccc294ac7dbb9c03b7ea01f3b73b6b1e13e06d94c60b6aa54e7754",
+      "status": "?? NDNSF-DistributedInference/cpp/ndnsf-di/NativeStandaloneTokenizer.hpp",
+      "classification": "workspace-existing"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeStandaloneTokenizer.cpp",
+      "sha256": "71282f18bdb771246dab07c125380f615093951b2d735fe4dc4400e3089cca23",
+      "status": "?? NDNSF-DistributedInference/cpp/ndnsf-di/NativeStandaloneTokenizer.cpp",
+      "classification": "workspace-existing"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp",
+      "sha256": "54d493c07b94f2eb92e851357aa8ff80adfadb7e35a3522be6007a0e4de63f81",
+      "status": "M  NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp",
+      "classification": "workspace-existing"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp",
+      "sha256": "18333155726fde685ec9ab67b00b33941de8abbc497bde37b8eddeee482702ca",
+      "status": "M  NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp",
+      "classification": "workspace-existing"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp",
+      "sha256": "4b0721ea848bdcd27923c3fbcbbb1975f478d3fd1f4d932af34c70195379a404",
+      "status": "M  NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp",
+      "classification": "workspace-existing"
+    },
+    {
+      "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/placement.py",
+      "sha256": "32c2960b2500bbfd57a35b67cabd37b7a281178d0672748dfc1dd784aa0429b4",
+      "status": "",
+      "classification": "committed"
+    },
+    {
+      "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/provider.py",
+      "sha256": "49c432a74f022ed654fc55e5eb420f95873953e1b0e93656eb352b1879b77775",
+      "status": "",
+      "classification": "committed"
+    },
+    {
+      "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/base.py",
+      "sha256": "6ae718f2e14c197832a51c002f936c9d579f9c0f44cea56939024f1e9035e3f7",
+      "status": "",
+      "classification": "committed"
+    },
+    {
+      "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/splitter.py",
+      "sha256": "4455deff2de6f27d52206e6cc074aa5aa2d89d6681435892358a73d6a78c2dbc",
+      "status": "M  NDNSF-DistributedInference/ndnsf_distributed_inference/splitter.py",
+      "classification": "workspace-existing"
+    },
+    {
+      "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/core/ports.py",
+      "sha256": "59e7d70fbd8c6d0aa3575cfd097e63e1269174bbc7f389fc7918c7886bcf838f",
+      "status": "",
+      "classification": "committed"
+    },
+    {
+      "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py",
+      "sha256": "75c32038cb33e7ea3a59e3c3692adb3ca48b47638b0d6ef433fda9309b1fff9f",
+      "status": "",
+      "classification": "committed"
+    },
+    {
+      "path": "pythonWrapper/setup.py",
+      "sha256": "aaad6b4316bfcd1830a72a89b910e4dbfe74929c3e2b79a8de73366a695e8897",
+      "status": "M pythonWrapper/setup.py",
+      "classification": "workspace-existing"
+    },
+    {
+      "path": "examples/wscript",
+      "sha256": "9ac054c159d16cdf30ea8db900e06d68a9aacf3709d0a023f291b3017e55ae4d",
+      "status": "MM examples/wscript",
+      "classification": "workspace-existing"
+    },
+    {
+      "path": "tests/wscript",
+      "sha256": "e9f1fc2112d773c7d89d60a83d2aff210a30b6b763e2babcf17e8c0b2556c819",
+      "status": "MM tests/wscript",
+      "classification": "workspace-existing"
+    },
+    {
+      "path": "wscript",
+      "sha256": "d8a8b6d4c21a6d1d4807b0015d84c5ca6aa8e3b4fa67c9b5ddc27ecb1b6b65df",
+      "status": "M  wscript",
+      "classification": "workspace-existing"
+    },
+    {
+      "path": "docs/architecture.md",
+      "sha256": "00f422069c1f6fe9b1cdc6471c245566a528ebd4c9700cfaf7ff99cc082cba1f",
+      "status": "MM docs/architecture.md",
+      "classification": "workspace-existing"
+    },
+    {
+      "path": "specs/182-native-di-python-bindings/evidence/integration-20260906.md",
+      "sha256": "656b34b9aee88df80c0ee4b352b41d36869d2fe618882133fe9d9ed8b3ff9a63",
+      "status": "?? specs/182-native-di-python-bindings/evidence/integration-20260906.md",
+      "classification": "workspace-existing"
+    }
+  ]
+}

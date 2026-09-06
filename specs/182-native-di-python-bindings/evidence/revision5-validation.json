@@ -1,0 +1,179 @@
+{
+  "schema": "spec182-revision5-adversarial-workflow-review-v1",
+  "baseline_commit": "cc3f4e7ad5fe16cbc5896e506e76b660e570ace1",
+  "document_contract": {
+    "schema": "spec182-revision5-document-validation-v1",
+    "ok": true,
+    "tasks": 17,
+    "tasks_complete": 0,
+    "fr": 19,
+    "sc": 11,
+    "cd": 14,
+    "po": 16,
+    "source_types": 12,
+    "source_fields": 137,
+    "classes_or_modules": 21,
+    "methods": 48,
+    "design_readiness": "DRAFT",
+    "local_links_checked": 187,
+    "dependency_graph": {
+      "T001": [],
+      "T002": [
+        "T001"
+      ],
+      "T003": [
+        "T002"
+      ],
+      "T004": [
+        "T003"
+      ],
+      "T005": [
+        "T004"
+      ],
+      "T006": [
+        "T002"
+      ],
+      "T007": [
+        "T002"
+      ],
+      "T008": [
+        "T003",
+        "T006",
+        "T007"
+      ],
+      "T009": [
+        "T006",
+        "T007"
+      ],
+      "T010": [
+        "T003",
+        "T004",
+        "T005",
+        "T006",
+        "T007",
+        "T008",
+        "T009"
+      ],
+      "T011": [
+        "T010"
+      ],
+      "T012": [
+        "T011"
+      ],
+      "T013": [
+        "T012"
+      ],
+      "T014": [
+        "T013"
+      ],
+      "T015": [
+        "T014"
+      ],
+      "T016": [
+        "T015"
+      ],
+      "T017": [
+        "T016"
+      ]
+    },
+    "errors": [],
+    "runtime_tests": "NOT_RUN",
+    "product_static_review": "NOT_RUN",
+    "product_post_test_review": "NOT_RUN"
+  },
+  "structure_audit": {
+    "blockers": [],
+    "details": {
+      "duplicate_requirements": [],
+      "duplicate_success_criteria": [],
+      "duplicate_tasks": [],
+      "malformed_tasks": [],
+      "missing_story_tasks": [],
+      "placeholders": [],
+      "untraced_requirements": []
+    },
+    "feature": "/home/tianxing/NDN/ndn-service-framework/specs/182-native-di-python-bindings",
+    "metrics": {
+      "functional_requirements": 19,
+      "has_traceability": true,
+      "parallel_tasks": 0,
+      "story_task_counts": {
+        "US1": 6,
+        "US2": 1,
+        "US3": 3,
+        "US4": 2,
+        "US5": 5
+      },
+      "success_criteria": 11,
+      "tasks": 17,
+      "tasks_complete": 0,
+      "traced_requirements": 19,
+      "user_stories": 5
+    },
+    "missing_required": [],
+    "ok": true,
+    "warnings": []
+  },
+  "diff_check_exit_code": 0,
+  "local_skills": {
+    "ok": true,
+    "errors": [],
+    "sha256": {
+      "speckit-code-design/SKILL.md": "11710b0aaa7aab56e2fc43d5a72dbc7df2a46e90a5faa221a86df1236b79ba33",
+      "pre-test-static-review.md": "0aa8158ef08bf484f6c5aa7a00329ed33a60cad931dcda202c8ee2e8d1d6fdea",
+      "work-unit-contract.md": "6cde5eee8007d9bb30880d06841f9ca5a1338d25cb18a304edd101367f275062",
+      "review-gate.md": "971129c57f7236af9daaa236de26423b4e6fc6fe68f84cce5eb677d241251034",
+      "design-template.md": "440fc6ad7f66cc3a4b19b8eb1f173421f88c6812d22b32482e2b81130bfab7ca",
+      "speckit-audit/SKILL.md": "b7dcb9b5eb4b33ec261b8f0f63176b2f3bdb4563452d1b4899e2a580ed4aa53f",
+      "audit-rubric.md": "8be1e0269b5f0e3c750795cf82f22deed29a18cda1752fa1f916e29a684b7b60",
+      "report-template.md": "9e4991a42eed6f7c8cf6d1e46fa087288a6cd34de2fba31a2c7721658f60d6c2",
+      "speckit-implement/SKILL.md": "f206ac866e08ab3ca71ddac14f6bf75754ad6a47ca9683e038eca7e272e7a8d0",
+      "speckit-plan/SKILL.md": "17585638a1024273d01f10d1743164776e254f04378330f4795227dadf1dec77",
+      "speckit-tasks/SKILL.md": "b92b857b1f10c5e6d2502eaf15f9f0dc901a85035234647694c662523e0b95d1",
+      "speckit-specify/SKILL.md": "76387b8425840524e5f8d71309fc2b398d79c4e25450801889b86d1e63bdd1fb"
+    },
+    "local_only": true
+  },
+  "document_checker_counterfactuals": {
+    "scope": "document_checker_only",
+    "filesystem_edits": false,
+    "cases": [
+      {
+        "case": "missing_RiskPredictions",
+        "exit_code": 1,
+        "errors": [
+          "missing static-review evidence field: RiskPredictions"
+        ]
+      },
+      {
+        "case": "missing_T016_PostTestReview",
+        "exit_code": 1,
+        "errors": [
+          "T016 missing PostTestReview"
+        ]
+      }
+    ]
+  },
+  "skill_checker_correction": "Case-sensitive heading check falsely missed Post-test-adversarial; case-insensitive recheck passed",
+  "context_mode": {
+    "project_initial": "PASS",
+    "active_initial_exit_code": 5,
+    "fallback": "durable repository documents",
+    "active_after_index_exit_code": 0
+  },
+  "post_check_review": {
+    "scope": "documents and document-checker only",
+    "findings_resolved": [
+      "T015 pure review marked product S1 N/A; T016 whole-path S1 remains required"
+    ],
+    "limitations": [
+      "No product source-review or behavior qualification performed",
+      "Structural presence does not prove semantic adequacy",
+      "Skills remain local configuration"
+    ]
+  },
+  "implementation_tasks_complete": 0,
+  "product_static_review": "NOT_RUN",
+  "product_post_test_review": "NOT_RUN",
+  "runtime_tests": "NOT_RUN"
+}

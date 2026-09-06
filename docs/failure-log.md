@@ -123,6 +123,85 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Experimental consolidation closure (2026-09-06): development checks PASS.**
+原生合并 `c770f18b` 的unit759/759、integration154/154、current Python
+2171 passed/22 skipped和三个MiniNDN场景均PASS；新目录关联工具162 passed/
+3 skipped，新Tiger工具58/58 PASS。下方collector RED由精确证据核对和进程组
+清理修复关闭；原始失败保留。Tiger Local R8和B003运行验收仍未关闭，用户已暂停实验。
+见 [integration closure](../specs/182-native-di-python-bindings/evidence/integration-20260906.md)
+及 [Tiger baseline](../Experiments/TigerCluster/docs/two-node-baseline.md)。
+
+**Tiger baseline collector review R1 (2026-09-06): expected regression RED.**
+新增ACK/provider/request/selection与wrong-root边界证据负例在旧collector上
+19 failed / 13 passed / 20 deselected，0.23s，证明它会接受不完整或矛盾证据。
+这不是网络结果；保留 `.codex-tmp/merge-20260906/tiger-baseline-collector-red-r1/`。
+修复后相关unit必须通过，B003实际运行仍未完成；见
+[baseline record](../Experiments/TigerCluster/docs/two-node-baseline.md)。
+
+**Tiger two-node baseline Local R8 (2026-09-06): wrong-root boundary mismatch.**
+All normal service, permission-rejection and cleanup checks passed. The wrong-root
+child rejected PUBPARAMS authentication with abort134 before permission delivery.
+Preserve this FAIL; classify only this exact isolated authentication abort in the
+next run, rejecting unrelated crashes/timeouts. See the
+[baseline record](../Experiments/TigerCluster/docs/two-node-baseline.md).
+
+**Tiger two-node baseline Local R7 (2026-09-06): observer/lifecycle FAIL.**
+The service returned correct ECHO, but generic V2 binding leaves authentication
+metadata unset. Replaced the unavailable-field assertion with observed native
+ACK/Selection plus an actual wrong-root rejection obligation. The old Controller
+wrapper cannot join its infinite native loop; use the existing C++ executable.
+See the [baseline record](../Experiments/TigerCluster/docs/two-node-baseline.md).
+
+**Tiger two-node baseline Local R6 (2026-09-06): permission bootstrap FAIL.**
+Raw signed roundtrips, signature negatives and PUBPARAMS succeeded. Controller
+lacked public target certificates in its PIB and refused permission encryption;
+added public-only imports with ndn-cxx readback and unchanged private-key checks.
+Also isolated session state and corrected TERM ordering for FUSE-backed containers.
+See the [baseline record](../Experiments/TigerCluster/docs/two-node-baseline.md).
+
+**Tiger two-node baseline Local R5 (2026-09-06): pre-NFD import FAIL.**
+The image exposes UnixFace in stream_socket, not stream_face. Runtime preflight
+stopped both workers before NFD startup; corrected the actual module path.
+See the [baseline record](../Experiments/TigerCluster/docs/two-node-baseline.md).
+
+**Tiger two-node baseline Local R4 (2026-09-06): probe import FAIL.**
+Multiline NFD/route configuration succeeded on both local instances. The probe
+used KeychainSqlite instead of the image's KeychainSqlite3; corrected the symbol
+and moved full application imports into pre-NFD inspection. See the
+[baseline record](../Experiments/TigerCluster/docs/two-node-baseline.md).
+
+**Tiger two-node baseline Local R3 (2026-09-06): NFD management startup FAIL.**
+Both NFDs aborted during internal FIB registration (10021). Review found compact
+INFO list entries could not preserve privilege/policy nodes; restored multiline
+INFO generation before retry. No protocol result; owned processes reaped. See
+the [baseline record](../Experiments/TigerCluster/docs/two-node-baseline.md).
+
+**Tiger two-node baseline Local R2 (2026-09-06): identity setup FAIL.**
+ndnsec refused root certificate installation into a nonexistent role-local root
+identity. The validator already loads the public root file; removed the redundant
+PIB installation. No NFD started; private state was cleaned. See the
+[baseline record](../Experiments/TigerCluster/docs/two-node-baseline.md).
+
+**Tiger two-node baseline Local R1 (2026-09-06): host preflight FAIL.**
+The local Python lacks str.removeprefix; version parsing stopped before identity
+or NFD startup. Replaced it with an explicit prefix check and slice. Raw output
+and subsequent attempts are indexed in the [baseline record](../Experiments/TigerCluster/docs/two-node-baseline.md).
+
+**Tiger review sync R1 (2026-09-06): 58/58 tool checks PASS.**
+Adopted the reviewed supervisor fixture expectation for the existing
+collector-before-terminal-validation order, retaining FAILED/cleanup checks,
+and restored sys.path after profile-test import. The 51 prior checks plus
+7 collector positive/negative checks pass; the migration R1 assertion failure
+is closed. No production runtime or cluster was run. See [review sync evidence](../specs/182-native-di-python-bindings/evidence/tiger-directory-migration-20260906.md#review-sync-r1).
+
+**Tiger directory migration unit R1 (2026-09-06): 50 PASS / 1 FAIL.**
+The supervisor no-result unit expects TERMINAL_RESULT_MISSING but receives
+CollectionError from the collector that now runs first. All 64 moved files
+retain their original bytes and modes. The same named test with identical
+bytes in a separate physical pre-migration layout reproduces the same failure;
+this remains a baseline tool/test issue, not a relocation regression.
+No SIF or Tiger execution occurred. See [migration evidence](../specs/182-native-di-python-bindings/evidence/tiger-directory-migration-20260906.md).
+
 **Spec181 delivery-tool counterfactual R1 (2026-09-06): expected semantic RED.**
 The 40-check baseline passes. Removing only the exit-code rejection makes the
 same named regression fail with DID NOT RAISE, proving it detects false PASS
