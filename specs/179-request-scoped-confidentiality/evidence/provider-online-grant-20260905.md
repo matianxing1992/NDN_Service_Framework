@@ -76,3 +76,26 @@ route-only grant regression (`provider-runtime-{unit,integration}.log`). Final
 launcher/evaluator/namespace checks pass28/28 (`provider-grant-launcher-complete.log`).
 The positive automatic-renewal fixture explicitly permits status discovery
 before the later idempotent App timer. Full18-scenario acceptance remains pending.
+
+## Explicit Provider ACK boundary
+
+The next cohort at925ec3a9 (`provider-campaign-final/`, superseded despite its
+directory name) exposes an additional runtime omission. Both Provider cases
+pass all checks except exact Provider selection:17/17 and22/22 post-renewal
+requests succeed, but some select A. The benchmark now passes B correctly;
+`handleRequestAckByName` checks Controller permission without checking the
+pending call's explicit candidate set. A is authorized generally, but is not
+the caller's requested Provider. Stop the remaining campaign (driver143) and
+retain both failures; the in-flight User control also finishes successfully.
+
+Reject out-of-set ACKs centrally before status/selection effects, balance
+tracked decrypt completion, and preserve empty-list discovery. The new
+`ExplicitProviderRequestRejectsOtherAuthorizedProviderAcks` native case covers
+FirstResponding, RandomSelection and AllSelected. No authority wire format or
+class layout changes. Final full native/network acceptance remains pending.
+
+ACK-boundary build passes in8m2.858s at-j2; six target dependency closures pass.
+`provider-ack-unit.log` passes183/183 cases (11998 assertions), including all
+three selection strategies; `provider-ack-integration.log` passes72/72 cases
+(1281 assertions). Python28/28 remains unchanged. A new complete18-case
+network cohort is required; neither earlier Provider cohort is acceptance.

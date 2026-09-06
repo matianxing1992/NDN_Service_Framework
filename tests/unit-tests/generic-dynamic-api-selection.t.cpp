@@ -5,6 +5,48 @@ namespace ndn_service_framework::test {
 BOOST_AUTO_TEST_SUITE(GenericDynamicApi)
 BOOST_AUTO_TEST_SUITE(SelectionStrategies)
 
+BOOST_AUTO_TEST_CASE(ExplicitProviderRequestRejectsOtherAuthorizedProviderAcks)
+{
+  for (const auto strategy : {ServiceUser::AckSelectionStrategy::FirstRespondingSelection,
+                             ServiceUser::AckSelectionStrategy::RandomSelection,
+                             ServiceUser::AckSelectionStrategy::AllSelected}) {
+    ndn::security::KeyChain keys("pib-memory:explicit-provider", "tpm-memory:explicit-provider");
+    ndn::DummyClientFace face(keys);
+    const ndn::Name requester("/test/user/explicit-provider");
+    const ndn::Name providerA("/test/provider/A");
+    const ndn::Name providerB("/test/provider/B");
+    const ndn::Name service("/HELLO");
+    auto cert = makeRsaIdentity(keys, requester);
+    auto aa = makeRsaIdentity(keys, ndn::Name("/test/aa-explicit-provider"));
+    LocalServiceUser user(face, ndn::Name("/test/group"), cert, aa, "examples/trust-any.conf");
+    installUserPermissions(user, requester, service, {providerA, providerB});
+    RequestMessage published;
+    user.setRequestPublisher([&](const ndn::Name&, const ndn::Name&,
+                                const std::vector<ndn::Name>& providers, const ndn::Name&,
+                                const RequestMessage& value, size_t) {
+      BOOST_REQUIRE_EQUAL(providers.size(), 1);
+      BOOST_CHECK_EQUAL(providers.front(), providerB);
+      published = value;
+    });
+    const auto id = user.RequestService({providerB}, service, RequestMessage(), 5,
+                                       strategy, 100, [](const ndn::Name&) {},
+                                       [](const ResponseMessage&) {});
+    BOOST_REQUIRE(!id.empty());
+    BOOST_CHECK(!user.handleRequestAckByName(
+        makeRequestAckNameV2(providerA, requester, service, id),
+        makeSuccessAckForRequest(published, "not-requested")));
+    BOOST_CHECK_EQUAL(user.getPendingRequestAckCount(id), 0);
+    BOOST_CHECK(user.getSelectedProvider(id).empty());
+    BOOST_CHECK(user.handleRequestAckByName(
+        makeRequestAckNameV2(providerB, requester, service, id),
+        makeSuccessAckForRequest(published, "requested")));
+    pumpFace(face, ndn::time::milliseconds(15));
+    const auto selected = user.getSelectionPublishedProviders(id);
+    BOOST_REQUIRE_EQUAL(selected.size(), 1);
+    BOOST_CHECK_EQUAL(selected.front(), providerB);
+  }
+}
+
 BOOST_AUTO_TEST_CASE(FirstRespondingResponseTimeoutReselectsBoundedAlternate)
 {
   ndn::security::KeyChain keyChain("pib-memory:response-reselection",

@@ -7781,6 +7781,19 @@ namespace ndn_service_framework
                 return false;
             }
 
+            // Controller permission allows use of a provider, but does not
+            // override the caller's explicit candidate set for this request.
+            if (!pendingCall->second.providers.empty() &&
+                !containsName(pendingCall->second.providers, parsedV2->providerName)) {
+                NDN_LOG_WARN("Reject ACK outside requested provider set requestId="
+                             << parsedV2->requestId.toUri()
+                             << " provider=" << parsedV2->providerName.toUri());
+                if (completeAckDecrypt()) {
+                    evaluateAckSelection(parsedV2->requestId);
+                }
+                return false;
+            }
+
             const auto ackVersion = ackMessage.hasControllerVersion() ?
                 std::optional<ControllerVersion>(ackMessage.getControllerVersion()) :
                 std::nullopt;
