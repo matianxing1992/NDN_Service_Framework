@@ -3,7 +3,7 @@
 **Feature Branch**: `Experimental`
 **Feature Directory**: `182-native-di-python-bindings`
 **Created**: 2026-09-06
-**Revision**: 5
+**Revision**: 6
 **Status**: DRAFT
 **Execution Status**: NOT_STARTED
 **Activation**: active design; merged baseline stabilization in progress
@@ -138,7 +138,7 @@ Python 绑定可选构建，禁止依赖主工作区未提交文件。
   迁移清单；退出默认 import/运行图并有阻断旧实现仍可运行的证明。
 - **FR-012**: **Native Build and Runtime Closure**. System MUST 可独立构建/安装/链接原生库
   与 C++ consumer；生产运行树不依赖 Python/libpython/DI Python 包，绑定为可选构建产物。
-- **FR-013**: **Behavioral Proof and Convergence**. System MUST 在相应范围静态读码审查PASS后依次执行真实unit/integration/MiniNDN与规定负例；完整本地验收另需T015整体audit PASS，故障先分类首边界。
+- **FR-013**: **Behavioral Proof and Convergence**. System MUST 在实现阶段静态审查后执行相关unit；全部实现与T015整体审查完成后，由T016统一执行真实完整unit/integration/MiniNDN与规定负例，故障先分类首边界。
 - **FR-014**: **Immutable Local Delivery**. System MUST 交付同一源、原生库、配置、工件、
   adapter、harness、依赖锁与证据身份；本地交付和外部 SIF/Tiger verdict 分开记录。
 - **FR-015**: **Controlled Successor Activation**. System MUST 在合并修复基线及181承接表确认、对应设计门关闭后启动182实现；不要求先完成181全部旧资格，不改写历史验收结果。
@@ -147,9 +147,9 @@ Python 绑定可选构建，禁止依赖主工作区未提交文件。
 
 - **FR-017**: **Symbol Documentation and Usage Closure**. System MUST 在每个实施单元开始前冻结受影响类、方法、字段和关键局部状态的职责、变更原因、签名、类型/单位/边界、所有权、失败/取消、调用方、注释及前后用法；新增/修改/复用/退出路径均可追踪，未决项阻塞对应实现。不得用堆砌符号名或转述方法名代替解释。
 
-- **FR-018**: **Pre-Test Static Code Review**. System MUST 在每个实施单元及unit/integration/MiniNDN入口执行或核对有效的S0静态代码审查：实际阅读生产/测试逻辑并对照设计，记录源码证据、问题与修复复审、subject身份和允许测试范围。未审、BLOCK、STALE或范围不足不得运行；代码/设计/测试等行为变化须使相关审查失效。lint/编译/文档扫描不能替代，具名RED只按受控审查契约放行。
+- **FR-018**: **Pre-Test Static Code Review**. System MUST 在每个实现任务运行相关单测前，读实际生产/测试逻辑对照设计，检查职责、正确性和检错能力；修复已知控制性缺陷后运行。全部实现与接线完成后，T015审查整体调用链，再由T016统一执行集成与MiniNDN。lint/编译/文档扫描不能替代读码。
 
-- **FR-019**: **Adversarial Verification Closure**. System MUST 在S0完成Design Conformance/Correctness/Test Adequacy三层审查及具源码依据的5风险预测（不足须解释），逐风险映射runtime观察量、检错测试/断言和PO；测试通过后S1再次检查假绿、实际风险证据与最终diff。必要行为未验证不算完成，无已知阻塞则立即进入计划验证，禁止无证据无限审查/重构。
+- **FR-019**: **Phased Verification Closure**. System MUST 将实现阶段限定为实现、静态审查、相关unit及必要构建检查；完整integration与MiniNDN在全部实现后集中执行。结果记录合并，关键风险按实际需要关联检错测试，不规定数量；既定运行用例/负例不得删减。最终diff与验收证据一致且必要PO通过即可交付，变化或失败只重审和回归受影响范围。
 
 ### Key Entities
 
@@ -184,9 +184,9 @@ Python 绑定可选构建，禁止依赖主工作区未提交文件。
 
 - **SC-009**: **Reviewable Symbol Contracts**. 每个变更符号有覆盖条目和任务/证明映射，所有非 LOCAL_DETAIL 字段有语义说明；公开 C++/Python 文档及使用示例经实际构建/运行验收。设计阶段只计文档检查，不计编译通过。
 
-- **SC-010**: **Static Review Before Runtime Checks**. 每次unit/integration/MiniNDN执行证据均引用先于该次运行的有效S0报告，hash与范围相符、控制性finding为零；unit→integration→MiniNDN前层验收按约定通过。缺失/失效/越范围报告时在运行前停止。静态PASS不计运行PASS。
+- **SC-010**: **Static Review Before Runtime Checks**. T002--T014完成各自实现、静态审查及相关单测，集成测试与harness已编写并登记但尚未运行。T015整体审查无控制性缺陷后，T016按完整unit→integration→MiniNDN执行。静态PASS不计运行PASS；最小诊断例外不计正式资格。
 
-- **SC-011**: **No False-Green Completion**. 每单元完成证据含三层S0、风险→实际test/PO映射和S1/final diff报告；关键风险无检错证据保持UNTESTED，必要PO未闭合不勾任务。Static review PASS != Behavior PASS；测试全绿也不能豁免缺失生产行为。T016整体S1完成后才能交付。
+- **SC-011**: **No False-Green Completion**. 实现任务[x]只表示本阶段实现、审查、单测完成；完整PO的集成/实验义务集中由T016关闭。只用一份任务结果记录说明实际检查、证据与未执行项，最终核对diff和必需行为。Static review PASS != Behavior PASS；T016全部本地验收通过后才可T017交付。
 
 ## Architecture Invariants
 
@@ -279,13 +279,19 @@ O-001（合并修复基线及181承接）、O-002（ONNX 原生字节契约）�
 
 ## Static Review Contract
 
-[Pre-test static review](contracts/pre-test-static-review.md)定义S0范围、逐代码路径推理、finding修复复审、阶段入口、证据与失效规则。T002--T014在本任务内先审查再focused运行；T015保留完整系统审查，T016按unit→integration→MiniNDN验收，必要检错证明及S1/final diff完成后交付。首次编译前也进行compile-oriented读码，具体三层/风险/有界循环/S1见SR-010--013。无需为每文件另加审查任务。
+[Validation workflow](contracts/pre-test-static-review.md)是审查、分层运行和简短记录的唯一规则。
+T002--T014实现后只做静态审查、相关单测和必要构建；T015核对整体接线；
+T016统一执行完整unit→integration→MiniNDN和必要负例，T017核对交付。
+完整PO与运行用例保持在 [proof design](contracts/proof-design.md)，不逐任务重复运行或复制报告模板。
 
 ## Symbol Documentation Contract
 
 [Symbol design](contracts/symbol-design.md) 定义类/方法/状态/注释/用法；[value contracts](contracts/value-contracts.md) 对照合并源码的12类137字段，逐项解释含义；[coverage inventory](contracts/source-field-coverage.json) 保留机器可查来源。嵌套 schema、原生依赖 ABI、注册/取消接线等未决项必须在T001关闭，禁止跳过到实现。
 
 ## Revision History
+
+- Revision 6：合并重复审查/报告规则；取消固定风险数量和独立S0/S1报告。各实现任务只做静态审查及单测，集成与MiniNDN在全部实现完成后统一执行；保留所有真实运行义务和符号设计，区分实现完成与整体验收。
+
 
 - Revision 5：按用户评论补三层对抗性审查、5项风险/检错义务、Static review PASS != Behavior PASS、有界复审与失败日志驱动修复；新增FR-019/SC-011/PO-016及测试全绿后的S1和final diff。
 

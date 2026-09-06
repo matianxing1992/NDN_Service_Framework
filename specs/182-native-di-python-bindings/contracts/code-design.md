@@ -1,6 +1,6 @@
 # Code Design Contract
 
-**Revision**: 4 | **Status**: DRAFT
+**Revision**: 6 | **Status**: DRAFT
 **Normative parent**: [spec.md](../spec.md)
 **Baseline**: [merged-source-baseline-r3.json](../evidence/merged-source-baseline-r3.json)；revision 1/2 evidence 只保留历史意义。
 
@@ -347,4 +347,4 @@ Private helper 只可实现已描述职责，不能用 helper 名义增加 subsy
 
 ## Pre-Test Review Obligation
 
-每个CD的代码与测试改动受 [S0](pre-test-static-review.md)约束：读最终源码/调用者对照设计，修复复审后才执行对应unit/integration；更广验收先核对覆盖和身份。此规则不新增产品类、字段或Core API，也不删除既有PO。当前计划符号未实现，不产生产品静态PASS。
+源码对照设计的审查、任务内unit和全部实现后的integration/MiniNDN统一见 [validation workflow](pre-test-static-review.md)。本附件只定义技术契约，静态或文档检查不代替运行证明。

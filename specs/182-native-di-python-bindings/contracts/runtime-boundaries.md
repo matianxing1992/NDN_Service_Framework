@@ -1,6 +1,6 @@
 # Runtime Boundary Completion
 
-**Revision**: 4 | **Status**: DRAFT / BLOCK for implementation
+**Revision**: 6 | **Status**: DRAFT / BLOCK for implementation
 **Normative parent**: [spec](../spec.md), [code design](code-design.md)
 本附件补齐 revision 1 的中间调用缺口；所有 Native* 新接口均 planned。
 O-002/O-003 依赖锁和 O-004 完整字段/兼容清单未关闭，不宣称可直接编译。
@@ -161,4 +161,4 @@ UNSUPPORTED_EXTENSION 只能用于被本次用户目标明确排除的 Python ca
 
 ## Pre-Test Review Scope
 
-CD-013/014、取消/观察、迁移回退与合并安全owner必须在相应运行检查前按 [S0](pre-test-static-review.md)逐真实代码路径审查。晚到callback、共享服务停止、publication失败和旧默认入口不可仅靠后续测试发现。运行时行为仍由原PO独立证明，静态PASS不是权限或数值结果证据。
+源码对照设计的审查、任务内unit和全部实现后的integration/MiniNDN统一见 [validation workflow](pre-test-static-review.md)。本附件只定义技术契约，静态或文档检查不代替运行证明。

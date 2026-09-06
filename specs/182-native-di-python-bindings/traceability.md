@@ -1,8 +1,8 @@
 # Spec182 Traceability Matrix
 
-**Revision**: 5 | **Status**: DRAFT / NOT_STARTED
+**Revision**: 6 | **Status**: DRAFT / NOT_STARTED
 source review 只证明 baseline 所述实现存在，不证明新实现或资格。
-所有 task completion evidence 路径为 planned，revision 5 文档检查见 evidence/adversarial-review-revision5.md；revision 1/2 历史记录不改写。
+任务运行证据均为planned；本轮文档检查见 [workflow simplification](evidence/workflow-simplification.md)。历史证据不改写。
 
 ## Requirement-to-task Map
 
@@ -25,8 +25,8 @@ source review 只证明 baseline 所述实现存在，不证明新实现或资�
 | FR-015 | SC-008 | CD-012 | T001,T017 | PO-012 | FLOW-001 |
 | FR-016 | SC-004,SC-005,SC-006 | CD-002,CD-005,CD-007,CD-010,CD-013 | T001,T003,T006,T008,T011,T013,T016 | PO-002,PO-005,PO-008,PO-010,PO-013 | FLOW-001,FLOW-003 |
 | FR-017 | SC-009 | CD-001--014; symbol-design; value-contracts | T001,T002--T017 | PO-001--014; document coverage gate | FLOW-001--004 |
-| FR-018 | SC-010 | CD-001--014; SR-001--009 | T001--T017 | PO-015 | FLOW-001--004 |
-| FR-019 | SC-011 | CD-001--014; SR-010--013 | T001--T017 | PO-016 | FLOW-001--004 |
+| FR-018 | SC-010 | CD-001--014; validation workflow | T002--T015 | PO-015 | FLOW-001--004 |
+| FR-019 | SC-011 | CD-001--014; validation workflow | T002--T017 | PO-016 | FLOW-001--004 |
 
 ## Design-to-task Map
 
@@ -60,8 +60,8 @@ C01--C21 / M01--M48 位于 [symbol design](contracts/symbol-design.md)；V01--V1
 
 ## Static Review Traceability
 
-FR-018→SC-010→PO-015由 [SR-001--009](contracts/pre-test-static-review.md)定义；各T001--T017的StaticReview条目为执行owner。S0先于局部unit/integration；T015整体S0覆盖T016完整unit/integration/MiniNDN。报告映射C/M/V符号与真实代码/测试路径；T016运行引用报告身份和范围，T017核对交付一致。产品审查当前NOT_RUN，不借文档结构PASS晋升。
+FR-018/SC-010/PO-015由 [validation workflow](contracts/pre-test-static-review.md)定义：T002--T014局部读码+unit；T015补整体接线审查，不另建重复报告。
 
 ## Adversarial Closure Traceability
 
-FR-019/SC-011/PO-016→SR-010--013→每任务PostTestReview。三层S0和5风险表先于首次编译/测试；风险必须对应真实runtime观察量与检测它的test/PO。T002--T014各单元S1、T016整体S1和T017交付diff核对保留独立证据。Static review PASS != Behavior PASS；关键风险未验证不得升级完成。
+FR-019/SC-011/PO-016：完整PO的集成/实验执行owner为T016，T017交付。前述FR→Task行包含实现owner，不表示每个owner都要提前运行完整PO。Static review PASS != Behavior PASS。
