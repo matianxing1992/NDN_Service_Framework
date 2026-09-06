@@ -100,6 +100,19 @@ def build(bld):
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedGrantTransport.cpp',
     ])
 
+    # Exercise the shared native projection and model-specific merge contract
+    # with existing unit cases, linked against the configured framework.
+    bld.program(target='../spec181-native-plan-closure',
+                name='spec181-native-plan-closure',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('unit-tests/distributed-inference-native-plan.t.cpp'),
+                        bld.path.find_node('unit-tests/distributed-inference-native-yolo-merge.t.cpp')] +
+                       di_integration_sources,
+                includes=framework_includes,
+                use='ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
+                cxxflags=['-fPIC'], linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
     bld.program(target='../unit-tests',
                 name='unit-tests',
                 source=([bld.path.find_node('main.cpp')] +

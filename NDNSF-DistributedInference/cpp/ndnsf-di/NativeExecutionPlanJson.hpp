@@ -51,6 +51,13 @@ struct NativeSelectionRoleV3
   std::string layout;
   std::string padding;
   std::string protectionEpoch = "plaintext-v1";
+  // Adapter-declared terminal postprocessing. NATIVE_POSTPROCESS has no
+  // model-layer artifact; the Provider consumes dependency tensors directly.
+  std::string mergeKind;
+  std::string postprocessIdentity;
+  std::string postprocessOutputName;
+  double postprocessConfidenceThreshold = 0.0;
+  std::string postprocessSort;
   std::uint64_t maxSourceBytes = 0;
   std::uint64_t maxAssembledBytes = 0;
   std::uint64_t maxNodes = 0;
@@ -76,6 +83,11 @@ struct NativeSelectionProjectionV3
 {
   std::string provider;
   std::string requestId;
+  // The canonical root assigned by NDNSF Core. This is populated from the
+  // authenticated CollaborationAssignment after Selection; it is deliberately
+  // not requester-controlled JSON so a Provider assembly factory can fetch
+  // only the root bound to its assignment.
+  std::string canonicalArtifactName;
   std::uint64_t attempt = 0;
   std::string planCoreDigest;
   std::string planDigest;

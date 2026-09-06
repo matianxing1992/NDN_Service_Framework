@@ -258,6 +258,59 @@ BOOST_AUTO_TEST_CASE(NativeV3ProjectionDecodesCompleteSingleRoleContract)
   BOOST_CHECK_EQUAL(value.requestContractDigest, digest('9'));
 }
 
+BOOST_AUTO_TEST_CASE(NativeV3ProjectionParsesAndBindsNativePostprocess)
+{
+  auto wire = projectionJson(1, {}, "CPU", {}, false, true);
+  const std::vector<std::pair<std::string, std::string>> replacements{
+    {"\"layer_end\":4", "\"layer_end\":0"},
+    {"\"role_kind\":\"PIPELINE_RANGE\"", "\"role_kind\":\"COMPONENT_SET\""},
+    {"\"protection_epoch\":\"plaintext-v1\"",
+     "\"protection_epoch\":\"plaintext-v1\",\"merge_kind\":\"NATIVE_POSTPROCESS\","
+     "\"postprocess_identity\":\"YOLO26n-canonical-detection-rows\","
+     "\"postprocess_output_name\":\"y\","
+     "\"postprocess_confidence_threshold\":0.001,"
+     "\"postprocess_sort\":\"confidence-desc,class-asc,xyxy-asc\""},
+  };
+  for (const auto& [from, to] : replacements) {
+    BOOST_REQUIRE_NE(wire.find(from), std::string::npos);
+    for (auto pos = wire.find(from); pos != std::string::npos;
+         pos = wire.find(from, pos + to.size())) {
+      wire.replace(pos, from.size(), to);
+    }
+  }
+  NativeSelectionProjectionV3 value;
+  BOOST_REQUIRE_NO_THROW(value = parseProjection(wire));
+  BOOST_CHECK_EQUAL(value.assembly.roleKind, "COMPONENT_SET");
+  BOOST_CHECK_EQUAL(value.executionRole.layerEnd, 0);
+  BOOST_CHECK_EQUAL(value.assembly.mergeKind, "NATIVE_POSTPROCESS");
+  BOOST_CHECK_EQUAL(value.assembly.postprocessOutputName, "y");
+  BOOST_CHECK_EQUAL(value.assembly.postprocessConfidenceThreshold, .001);
+
+  auto mismatched = wire;
+  const std::string outputName = "\"postprocess_output_name\":\"y\"";
+  const auto output = mismatched.find(outputName);
+  BOOST_REQUIRE_NE(output, std::string::npos);
+  mismatched.replace(output, outputName.size(),
+                     "\"postprocess_output_name\":\"other\"");
+  BOOST_CHECK_THROW(parseProjection(mismatched), std::invalid_argument);
+
+  const std::string threshold = "\"postprocess_confidence_threshold\":0.001";
+  const std::string invalid = "\"postprocess_confidence_threshold\":2.0";
+  for (auto pos = wire.find(threshold); pos != std::string::npos;
+       pos = wire.find(threshold, pos + invalid.size())) {
+    wire.replace(pos, threshold.size(), invalid);
+  }
+  BOOST_CHECK_THROW(parseProjection(wire), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(NativeV3ProjectionNeverTakesRootAuthorityFromJson)
+{
+  auto wire = projectionJson();
+  wire.insert(1, "\"canonicalArtifactName\":\"/untrusted/camel\","
+                 "\"canonical_artifact_name\":\"/untrusted/snake\",");
+  BOOST_CHECK(parseProjection(wire).canonicalArtifactName.empty());
+}
+
 BOOST_AUTO_TEST_CASE(NativeV3ProjectionBindsStreamedGenerationContract)
 {
   const auto value = parseProjection(streamingProjectionJson());
@@ -524,6 +577,27 @@ BOOST_AUTO_TEST_CASE(NativeV3RuntimeEdgesComeOnlyFromSealedRoleDataflow)
   BOOST_CHECK_THROW(roleSpecFromSelectionProjectionV3(
                       values[1], "/provider/wrong"),
                     std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(NativeV3ProjectionSeparatesMultiplePipelineTensors)
+{
+  auto source = projection("/provider/0", "S0R0", false);
+  auto sink = projection("/provider/1", "S1R0", true);
+  auto first = endpoint("S0R0", "S1R0", digest('f'));
+  auto second = endpoint("S0R0", "S1R0", digest('1'));
+  second.tensorId = "activation-2";
+  source.dataflow.mayPublish = {first, second};
+  sink.dataflow.mustFetch = {first, second};
+
+  const auto sourceSpec = roleSpecFromSelectionProjectionV3(source, source.provider);
+  const auto sinkSpec = roleSpecFromSelectionProjectionV3(sink, sink.provider);
+  BOOST_REQUIRE_EQUAL(sourceSpec.outputs.size(), 2);
+  BOOST_REQUIRE_EQUAL(sinkSpec.inputs.size(), 2);
+  BOOST_CHECK_NE(sourceSpec.outputs[0].scope, sourceSpec.outputs[1].scope);
+  BOOST_CHECK_EQUAL(sourceSpec.outputs[0].scope, sinkSpec.inputs[0].scope);
+  BOOST_CHECK_EQUAL(sourceSpec.outputs[1].scope, sinkSpec.inputs[1].scope);
+  BOOST_CHECK_EQUAL(sourceSpec.outputs[0].transportScope, first.groupId);
+  BOOST_CHECK_EQUAL(sinkSpec.inputs[1].transportScope, second.groupId);
 }
 
 BOOST_AUTO_TEST_CASE(NativeTensorEndpointUsesOneExactManifestAndSegmentGrammar)
