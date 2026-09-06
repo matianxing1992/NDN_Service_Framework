@@ -48,3 +48,7 @@ Installed-prefix gate passes26/26 cases and1082 assertions, with ldd explicitly
 resolving the new installed NAC (`nac-installed.log`). Full merge revision:
 `c3aafa6ec5a566879942107c7b20855659c9dfb9`; parents85547eb and58f3948.
 Experimental now contains every official master commit (7 ahead/0 behind).
+
+Launcher/guard/evaluator gate: pytest28/28 pass in6.81s (`launcher-pytest.log`).
+Two earlier unittest attempts are not acceptance: one has import errors, the
+other runs zero cases. The correct runner's count is explicitly checked.
