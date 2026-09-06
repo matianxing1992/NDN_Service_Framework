@@ -28,6 +28,7 @@ def fixture(root, mutation=""):
         lines.append("2.000 INFO: [provider] PermissionResponse timeout: final=1")
     if mutation != "missing-renewal":
         lines.append("12.000 INFO: [provider] NDNSF_APP_PERMISSION_REFETCH")
+        lines.append("12.010 INFO: [provider] Fetch provider permissions: /controller/PERMISSIONS/PROVIDER/B attempt=1/2")
     lines += [
         "13.000 INFO: [provider] NDNSF_NAC_DKEY_REFRESH_REQUESTED role=provider serviceName=/HELLO epoch=2 reason=grant-only",
         "13.500 INFO: [provider] Installed PolicyStatus service=/HELLO generation=100 epoch=2",
@@ -71,6 +72,16 @@ def test_provider_grant_requires_complete_positive_evidence(tmp_path, late):
     fixture(tmp_path)
     result = evaluator().evaluate("provider-grant-only-advance", tmp_path,
                                   {"initialProviderPermissionTransportLoss": late})
+    assert result["passed"] is True, result
+
+
+def test_provider_status_renewal_may_precede_idempotent_app_timer(tmp_path):
+    fixture(tmp_path)
+    path = tmp_path / "provider-B.log"
+    path.write_text(path.read_text().replace(
+        "12.010 INFO: [provider] Fetch", "10.500 INFO: [provider] Fetch").replace(
+        "13.000 INFO: [provider] NDNSF_NAC_DKEY", "11.000 INFO: [provider] NDNSF_NAC_DKEY"))
+    result = evaluator().evaluate("provider-grant-only-advance", tmp_path)
     assert result["passed"] is True, result
 
 

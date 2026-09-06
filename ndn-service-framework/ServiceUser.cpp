@@ -3681,13 +3681,10 @@ namespace ndn_service_framework
         // PolicyStatus; otherwise the empty response would silently skip the
         // status refresh and leave the old revocation snapshot installed.
         std::set<std::string> previouslyKnownServices;
-        std::set<std::string> previousRecords;
         for (const auto& existing : m_authorizations.snapshot()) {
             if (existing.permissionKind == tlv::UserPermission &&
                 !existing.serviceName.empty()) {
                 previouslyKnownServices.insert(existing.serviceName);
-                previousRecords.insert(existing.providerServiceName + "\x1f" +
-                                       existing.serviceName);
             }
         }
 
@@ -3717,15 +3714,15 @@ namespace ndn_service_framework
             return;
         }
         // Permission responses are scoped to this identity, but their
-        // records are service-level.  Detect an actual table change before
+        // ABE attributes are service-level, independent of provider routes.
+        // Detect an actual service authorization change before
         // requesting a replacement DKEY; a newer ControllerVersion caused by
         // another identity must not make this identity refetch its DKEY.
-        std::set<std::string> currentRecords;
+        std::set<std::string> currentServices;
         for (const auto& record : records) {
-            currentRecords.insert(record.providerServiceName + "\x1f" +
-                                  record.serviceName);
+            currentServices.insert(record.serviceName);
         }
-        if (previousRecords != currentRecords) {
+        if (previouslyKnownServices != currentServices) {
             std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
             for (const auto& record : records)
                 m_nacDkeyRefreshPendingServices.insert(record.serviceName);

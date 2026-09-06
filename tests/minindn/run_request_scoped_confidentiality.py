@@ -895,7 +895,7 @@ def _scenario_config(scenario: str) -> Dict[str, Any]:
             "knownProvidersByUser": {"A": "A", "B": "B"},
             "requestDurationMs": 32000, "lifetimeMs": 55000,
             "recovery": "provider-permission-renewal",
-            "knobMs": {"userA": 1000, "userB": 1000, "providerA": 1000, "providerB": 1000},
+            "knobMs": {"userA": 250, "userB": 250, "providerA": 250, "providerB": 250},
         })
         if scenario == "provider-grant-after-permission-exhaustion":
             config.update({"grantAfterMs": 30000,
@@ -908,7 +908,7 @@ def _scenario_config(scenario: str) -> Dict[str, Any]:
 
 def preflight(build_dir: str | Path | None = None) -> Dict[str, Any]:
     resolved_build_dir = _resolve_build_dir(build_dir)
-    required_files = [TOPOLOGY, POLICY, POLICY_GRANT_ONLY, TRUST_SCHEMA]
+    required_files = [TOPOLOGY, POLICY, POLICY_GRANT_ONLY, POLICY_PROVIDER_GRANT, TRUST_SCHEMA]
     missing_files = [str(path) for path in required_files if not path.is_file()]
     commands = {
         command: shutil.which(command) is not None

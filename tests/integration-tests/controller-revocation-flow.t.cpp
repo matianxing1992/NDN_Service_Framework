@@ -3248,6 +3248,16 @@ BOOST_AUTO_TEST_CASE(GrantOnlyRefreshIssuesOneTargetFetchWithZeroFanOut)
   BOOST_CHECK_EQUAL(grantedUserDkeyFetches, 1U);
   BOOST_CHECK_EQUAL(providerDkeyFetches, 0U);
 
+  // A newly authorized Provider adds a route for an already held User
+  // service attribute. It must not trigger another User DKEY refresh.
+  BOOST_REQUIRE(serviceController.grant(
+      ndn::Name("/example/hello/provider/additional-grant-fetch"), seededService,
+      ndn::Name("/SERVICE").append(seededService)));
+  user.fetchPermissionsFromController(controllerPrefix);
+  pump();
+  BOOST_CHECK_EQUAL(grantedUserDkeyFetches, 1U);
+  BOOST_CHECK_EQUAL(providerDkeyFetches, 0U);
+
   interestRelay.disconnect();
   dataRelay.disconnect();
   dkeyCounter.disconnect();
