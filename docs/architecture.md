@@ -147,6 +147,10 @@ role examples support application-owned delayed permission discovery through
 mean the role has installed new permission/key material. A newly eligible
 Provider also requires Users to renew their provider permission table before
 targeting it. This is the existing discovery contract, not a new wire mode.
+Provider status advances also trigger permission revalidation; an App timer
+need not be the first post-grant fetch. User DKEY refresh compares authorized
+service sets because an additional Provider route for a held service does not
+change that User's ABE attribute policy.
 
 - NAC-ABE protects service-level confidential discovery before Provider
   selection only. `/PERMISSION/<service>` attributes authorize Users for

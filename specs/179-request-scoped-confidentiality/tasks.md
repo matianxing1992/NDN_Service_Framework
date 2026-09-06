@@ -137,6 +137,15 @@ MiniNDN scenarios,161 assertions and dedicated User grant gates at de1eb508,
 
 ## Dependencies and Execution Order
 
+T021 live findings extend its bounded implementation to `examples/App_User.cpp`
+(benchmark explicit-provider routing), `ServiceUser::applyPermissionResponse`
+(service-level DKEY refresh detection), and the existing Controller grant
+integration test. Its final acceptance now requires all18 network scenarios
+after the full selected182-unit/72-integration gates, not only the three
+initial probes. Provider permission renewal can be triggered by a signed
+status advance before its App timer; verify the actual fetch and timer
+idempotence. First network reds remain in `provider-campaign-first/`.
+
 T018 additionally requires explicit initial-DKEY Request admission and preserved
 hybrid unwrap error callbacks: the normal grant probe reproduced publication
 before bootstrap completion and silent callback loss. Its real-constructor

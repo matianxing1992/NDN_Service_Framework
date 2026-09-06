@@ -1193,16 +1193,24 @@ def check_provider_online_grant(ctx: RunCtx) -> Dict[str, Any]:
                and g["identity"] == "/example/hello/provider/B" and g["service"] == "/HELLO"]
     ctx.check("grant_applied_once", len(applied) == 1, str(applied))
     provider = _ts_lines(ctx.output / "provider-B.log")
-    renewals = [ts for ts, msg in provider if "NDNSF_APP_PERMISSION_REFETCH" in msg]
+    explicit_renewals = [ts for ts, msg in provider if "NDNSF_APP_PERMISSION_REFETCH" in msg]
     user_renewals = [ts for ts, msg in _ts_lines(ctx.output / "user-B.log")
                      if "NDNSF_APP_PERMISSION_REFETCH" in msg]
     grant_ts = grants[0][0] if len(grants) == 1 else None
-    renew_ts = renewals[0] if len(renewals) == 1 else None
+    # A scheduled status advance can renew Provider permissions before the
+    # App timer. Attribute actual fetches, and verify the later App renewal
+    # stays idempotent instead of requiring it to be the first discovery.
+    renewals = [ts for ts, msg in provider if "Fetch provider permissions:" in msg
+                and grant_ts is not None and ts > grant_ts]
+    renew_ts = min(renewals) if renewals else None
     ready_ts = user_renewals[0] if len(user_renewals) == 1 else None
     ordered = (grant_ts is not None and renew_ts is not None and ready_ts is not None
                and grant_ts < renew_ts < ready_ts)
-    ctx.check("explicit_permission_renewal_order", ordered,
+    ctx.check("permission_renewal_order", ordered,
               str((grant_ts, renew_ts, ready_ts)))
+    ctx.check("app_renewal_observed", len(explicit_renewals) == 1
+              and grant_ts is not None and explicit_renewals[0] > grant_ts,
+              str(explicit_renewals))
     ctx.check("provider_initially_pending", any(
         "NDNSF_NAC_BOOTSTRAP_PENDING role=provider" in msg
         and grant_ts is not None and ts < grant_ts for ts, msg in provider), "initial DKEY pending")
@@ -1228,7 +1236,8 @@ def check_provider_online_grant(ctx: RunCtx) -> Dict[str, Any]:
     ctx.check("target_no_early_success", grant_ts is not None and not any(
         r["success"] and r["enqueue_s"] < grant_ts for r in target), str(len(target)))
     control = list(ctx.rows["userA"].values())
-    ctx.check("control_has_no_failures", bool(control) and all(r["success"] for r in control),
+    ctx.check("control_has_no_failures", bool(control) and all(
+        r["success"] and r["selected_provider"] == "/example/hello/provider/A" for r in control),
               "success=%d rows=%d" % (sum(r["success"] for r in control), len(control)))
     ctx.check("control_spans_grant", grant_ts is not None and ready_ts is not None
               and any(r["enqueue_s"] < grant_ts for r in control)

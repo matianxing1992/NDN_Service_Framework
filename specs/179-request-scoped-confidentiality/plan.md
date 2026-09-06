@@ -343,3 +343,14 @@ must reject missing/forged transitions and any target/control failure. Rebuild
 only the changed example targets against the already verified matching NAC
 prefix; run both new network variants and the existing User grant control.
 The completed T02016-case cohort stays frozen at de1eb508.
+
+First live T021 probes additionally expose two bounded defects: benchmark
+request paths in `App_User.cpp` ignore the explicit provider list, and User
+permission installation confuses added provider routes with new service ABE
+attributes. Repair the benchmark adapter through existing provider-specific
+overloads and compare service sets in `ServiceUser::applyPermissionResponse`;
+extend the existing real Controller integration grant test. Provider status
+advances already trigger permission revalidation, so actual post-grant fetches
+may precede the App timer; require actual renewal and idempotence, including
+the late timeout ordering. Revalidate28 component tests, the full selected
+native182/72 suites and all18 network scenarios after these runtime changes.

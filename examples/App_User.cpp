@@ -406,6 +406,45 @@ nowMilliseconds()
     std::chrono::system_clock::now().time_since_epoch()).count();
 }
 
+ndn::Name
+requestBenchmarkService(
+    ndn_service_framework::ServiceUser& user,
+    const std::vector<ndn::Name>& providers, const ndn::Name& service,
+    const ndn_service_framework::RequestMessage& request, int ackTimeoutMs,
+    std::shared_ptr<const ndnsf::AckSelectionPolicy> policy, int timeoutMs,
+    ndn_service_framework::ServiceUser::ResponseHandler onResponse,
+    ndn_service_framework::ServiceUser::TimeoutHandler onTimeout)
+{
+  using User = ndn_service_framework::ServiceUser;
+  if (providers.empty()) {
+    return user.RequestService(service, request.getPayload(), ackTimeoutMs,
+                               std::move(policy), timeoutMs,
+                               std::move(onResponse), std::move(onTimeout));
+  }
+  if (policy == ndnsf::strategy::FirstResponding ||
+      policy == ndnsf::strategy::RandomSelection || policy == ndnsf::strategy::AllSelected) {
+    const auto strategy = policy == ndnsf::strategy::RandomSelection
+        ? User::AckSelectionStrategy::RandomSelection
+        : policy == ndnsf::strategy::AllSelected
+          ? User::AckSelectionStrategy::AllSelected
+          : User::AckSelectionStrategy::FirstRespondingSelection;
+    return user.RequestService(providers, service, request, ackTimeoutMs, strategy,
+                               timeoutMs, std::move(onTimeout), std::move(onResponse));
+  }
+  const auto strategy = policy->requestStrategy();
+  User::AckCandidatesHandler select = [policy = std::move(policy)](const auto& candidates) {
+    const auto chosen = policy->select(candidates);
+    std::vector<ndnsf::AckCandidate> selected;
+    for (const auto& candidate : candidates) {
+      if (std::find(chosen.begin(), chosen.end(), candidate.providerName) != chosen.end())
+        selected.push_back(candidate);
+    }
+    return selected;
+  };
+  return user.RequestService(providers, service, request, ackTimeoutMs, std::move(select),
+                             timeoutMs, std::move(onTimeout), std::move(onResponse), strategy);
+}
+
 std::string
 providerLabel(const ndn::Name& providerName)
 {
@@ -1865,9 +1904,9 @@ main(int argc, char** argv)
                 onResponse);
             }
             else {
-              requestId = user.RequestService(
+              requestId = requestBenchmarkService(user, knownProviders,
                 benchmarkServiceName,
-                request.getPayload(),
+                request,
                 ackTimeoutMs,
                 benchmarkSelectionPolicy,
                 requestTimeoutMs,
@@ -2298,9 +2337,9 @@ main(int argc, char** argv)
             onResponse);
         }
         else {
-          requestId = user.RequestService(
+          requestId = requestBenchmarkService(user, knownProviders,
             benchmarkServiceName,
-            request.getPayload(),
+            request,
             ackTimeoutMs,
             selectionPolicy,
             timeoutMs,
