@@ -1,5 +1,10 @@
 # Tasks: NDNSF-DI Protected-Grant Local Development and Delivery
 
+**Latest native refresh (2026-09-06)**：`214df1d6` 维护 native build /
+verify 均 PASS，真实 backend 回归与受影响 A05 复审 PASS；允许
+R18 新矩阵。T005 未完成，本机仍 6/10。见
+[backend native identity](evidence/t005-formal-matrix-20260906.md#backend-native-identity-r1)。
+
 **Latest backend repair R4 (2026-09-06)**：仅补齐公共 backend
 名称注册，维护 Provider 重建后 5 项真实 CLI 检查 PASS（1.02 s），
 包含 CPU 实际 load/warmup、未知名称与非法设备 metadata 拒绝。

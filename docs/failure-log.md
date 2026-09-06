@@ -19,6 +19,13 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 backend native refresh R1 (2026-09-06): PASS.**
+Committed 214df1d6 completes maintained native build and independent verify;
+both report native identity OK. The tested registration change and retained
+device/error contracts pass affected convergence review. Resume a new formal
+matrix; focused CPU checks do not establish matrix qualification. See
+[formal matrix](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-formal-matrix-20260906.md#backend-native-identity-r1).
+
 **Spec181 backend repair R4 (2026-09-06): focused PASS.**
 The maintained native Provider rebuilds (35.522 s); five real executable
 checks pass (1.02 s). Legacy/public CPU names load and warm a real ONNX

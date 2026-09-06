@@ -3,24 +3,26 @@
 **Date**: 2026-09-06 | **Revision**: 7 | **Task**: T007
 **Source identity**: 初审基线 `67194dc2`；当前 G0 完成检查点 `453f6990`，
 公共准备与 worker 修复为 `0a3a79c3`、`cf15fa0c`。
-local gate 提交/源码身份修复为 `2628e3d2`。最终审计对象为
+local gate 提交/源码身份修复为 `2628e3d2`。历史应用闭合审计对象为
 `6b9bb51c43a597bf36ca62f304fee5f71c17fa58` 的隔离源码和 R13 runtime；
 `8c231493` 仅补记证据，主工作区其余预存改动不在该审计对象内。
+当前受审源码为 `214df1d66019360394c93f364ee71976b25e1eba` 的隔离
+检出；维护 native identity 见 formal matrix 的 Backend Native Identity R1。
 **Layer**: proposed / implemented / wired / executed（限定在各记录的检查范围）。
-**Verdict**: **BLOCK**（backend focused PASS；native identity refresh pending）。
+**Verdict**: **PASS**（backend registration and native identity verified）。
 仅补齐两处 backend 注册后，维护 Provider 重建及五项真实 CLI
 检查 PASS：CPU load/warmup 与非法设备/未知 backend 拒绝均验证。
-待提交后刷新维护 runtime 身份，再恢复正式矩阵。
-真实网络已证明四 Provider 越过 assignment 校验；BackboneNeck
-随后拒绝未注册的 onnxruntime-cpu。先闭合公共 backend 名与实际
-factory 注册/设备选择，再复审 A05。下述 digest 修复证据仍有效，
-但不能替代当前全路径就绪裁决。
+提交 `214df1d6` 已完成维护 native build 与独立 verify，均 exit 0；
+实际产物/依赖身份一致，受影响 A05 复审 PASS，允许 R18 新矩阵。
+R17 真实网络已证明四 Provider 越过 assignment 校验；当时
+BackboneNeck 拒绝未注册的 onnxruntime-cpu。该注册缺口现由
+上述实际 CLI 回归与重建证据闭合，R17 失败原样保留。
 R16 首次失败为 external assignment 校验；两端实际 C++ helper 的
 4 项 RED 确认 Provider 大写摘要与既定小写格式不一致。仅投影
 既有规范化 hunk 后 4 项 PASS（1.73 s），保留精确大小/摘要拒绝。
 修复已提交 `e6f44b65`；维护 native build 与独立 verify 均 exit 0，
 实际 Core/Provider/重新编译的 Python 绑定及依赖身份通过。精确
-拒绝条件保持不变，受影响 A05 复审 PASS，允许 R17 新正式矩阵。
+拒绝条件保持不变，当时复审 PASS 后执行了 R17 正式矩阵。
 当前证据只覆盖该提交隔离源码，T008 全量选择器及 T009 交付尚待完成。
 封存计划补齐 fetch references，并拒绝非字符串/控制字符，保留
 空引用和旧调用回退；22 项直接生产表达式/候选回归及 36 项既有

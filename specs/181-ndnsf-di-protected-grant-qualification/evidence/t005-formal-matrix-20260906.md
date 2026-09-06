@@ -1,6 +1,6 @@
 # Formal Local Y-N Matrix
 
-**Status**: BLOCK (backend focused repair PASS; native identity refresh/re-audit pending)
+**Status**: IN_PROGRESS (backend repair / native identity / affected re-audit PASS; R18 pending)
 **Evidence layer**: implemented / executed (formal network startup and focused regression)
 
 ## Subject and Launch R1
@@ -462,3 +462,24 @@ metadata 均进入既有 provider validation 并拒绝，未启动 GPU，
 只纳入 enabled/disabled 两个注册函数（16 added / 10 removed）
 与真实 CLI 回归，设备选择和其他预存 ONNX/生成改动保留原状。
 下一步提交该单元，刷新维护 native identity，再复审与新矩阵。
+
+## Backend Native Identity R1
+
+提交 `214df1d66019360394c93f364ee71976b25e1eba` 的隔离源码完成
+维护 native build 与独立 verify，两者 exit 0 并输出
+SPEC180_NATIVE_IDENTITY_OK。原始目录 `spec181-backend-native-20260906-r1/`；
+Python 绑定重新编译（binding_reused=false），其结果与前次字节
+相同。源码 tracked/index 干净，仅保留允许的构建输出。
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Native receipt | `211d20cb486f3a4f0815cef4311d7917fb5678e63f91783051f73581bb2baae5` |
+| Native Provider | `7c1080a1504b7cb8f1a9ac0910e2612cf0d5b07719bad44e59722de8fc3a3125` |
+| Core library | `e2d9d100d13f40e57de395c39b99b2365a18d784dc69a68bb0d405297cf52a4b` |
+| Python extension | `e9932073205b66b79e12c6f3944342d65d91fdb340b3225eb4b3326f480e1339` |
+
+受影响 A05 复审 PASS：生产 executable 调用修复后的注册函数，
+真实 CPU 初始化/warmup、legacy 兼容、非法 provider 与未知
+backend 拒绝均有 R4 检查。设备选择、角色/模型契约和 Core
+assignment 严格校验未变，未纳入预存生成/CUDA 实验代码。
+允许 R18 新矩阵；T005/T008 尚未通过，开发交付尚未封存。
