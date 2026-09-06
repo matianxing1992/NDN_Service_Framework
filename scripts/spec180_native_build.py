@@ -61,7 +61,8 @@ SOURCE_TREES = (
 SOURCE_SUFFIXES = {".cpp", ".cc", ".cxx", ".c", ".hpp", ".h", ".ipp",
                    ".inl", ".inc", ".tcc", ".proto", ".py"}
 SOURCE_FILES = (
-    "waf", "wscript", "examples/wscript", "examples/DI_NativeProviderExecutable.cpp",
+    "waf", "wscript", "examples/wscript", "tests/wscript",
+    "examples/DI_NativeProviderExecutable.cpp",
     "pythonWrapper/setup.py", "pythonWrapper/pyproject.toml",
     "scripts/spec180_native_build.py",
 )

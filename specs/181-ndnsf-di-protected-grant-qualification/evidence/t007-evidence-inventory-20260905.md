@@ -5,7 +5,7 @@
 
 ## Scope and Interpretation
 
-完整输入为 Spec180 的 106 个文件和 Spec181 的 40 个文件：
+完整输入为 Spec180 的 106 个文件和 Spec181 的 41 个文件：
 各 feature 的全部 evidence 文件及根级 audit.md；没有省略中间行。
 本报告也列入清单，SELF 行不计算自身哈希以避免循环；其头部层声明显式给出。
 
@@ -179,6 +179,7 @@ SHA-256、头部声明和本报告。只检查文档覆盖与漂移，不验证�
 | [specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-y-n-matrix-current.md](../../../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-y-n-matrix-current.md) | `6cf62372460c1199dd62f10ff2dcdcdd7c2cd3be8c268a0231dc5945d19859c5` | implemented（runner 语义 + Y-N-E 真实变异 + 矩阵收集器 | MISSING_HEADER | NOT_DECLARED | SCOPED_RECORD |
 | [specs/181-ndnsf-di-protected-grant-qualification/evidence/t006-production-repair-20260905.md](../../../specs/181-ndnsf-di-protected-grant-qualification/evidence/t006-production-repair-20260905.md) | `ebf8a5630a1bd8562271dbf7308a28e36788d31d3d3147e4e1111f2cf98af2b4` | implemented / executed / measured（focused production integration） &#124; **Status**: PASS | PASS | NOT_DECLARED | SCOPED_RECORD |
 | [specs/181-ndnsf-di-protected-grant-qualification/evidence/t006-y-n-e-grant-mutation-current.md](../../../specs/181-ndnsf-di-protected-grant-qualification/evidence/t006-y-n-e-grant-mutation-current.md) | `0991923e510d69f6532773d38e85b9bac07ad7c58b9283dbbb7084a377b2b3ea` | implemented（变异构造器 + runner 聚焦 probe 重写 + R001 | MISSING_HEADER | NOT_DECLARED | SCOPED_RECORD |
+| [specs/181-ndnsf-di-protected-grant-qualification/evidence/t007-committed-native-build-20260905.md](../../../specs/181-ndnsf-di-protected-grant-qualification/evidence/t007-committed-native-build-20260905.md) | `b153b3146126f3508e8e0029ba69128ebbd3300c0a2f64d9630343516ac97b82` | source inspection / executed (focused configure and build preflight) | BLOCK | NOT_DECLARED | SCOPED_RECORD |
 | [specs/181-ndnsf-di-protected-grant-qualification/evidence/t007-evidence-inventory-20260905.md](../../../specs/181-ndnsf-di-protected-grant-qualification/evidence/t007-evidence-inventory-20260905.md) | `SELF` | executed (document inventory) | PASS (inventory only) | SELF | INVENTORY_ONLY |
 | [specs/181-ndnsf-di-protected-grant-qualification/evidence/t007-generation-worker-20260905.md](../../../specs/181-ndnsf-di-protected-grant-qualification/evidence/t007-generation-worker-20260905.md) | `468946a9d200c5d5b474f1747507c5d8e109bdb8200628d3903e412195d701ec` | implemented / wired / executed (focused RED and GREEN) | PASS (focused repair); T007 BLOCK | NOT_DECLARED | SCOPED_RECORD |
 | [specs/181-ndnsf-di-protected-grant-qualification/evidence/t007-qualification-scope-20260905.md](../../../specs/181-ndnsf-di-protected-grant-qualification/evidence/t007-qualification-scope-20260905.md) | `5024b903b2b35a77b0ffdadf7605c4b5f4fa9bc288ad2d65b780128ed993e4af` | implemented / wired / executed (focused RED and GREEN) | PASS (focused inventory repair); T007 BLOCK | NOT_DECLARED | SCOPED_RECORD |

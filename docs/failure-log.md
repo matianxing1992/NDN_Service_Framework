@@ -19,6 +19,24 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 committed native build (2026-09-05): BLOCK at Waf graph creation.**
+Detached d67de87a configures successfully, but tests/wscript references an
+untracked native assembly integration source. find_node returns None and Waf
+fails before C++ compilation. No protocol result exists; preserve the isolated
+checkout and repair the committed source dependency before retrying.
+One focused identity regression also fails: changing loaded tests/wscript
+bytes with unchanged mtime does not invalidate the native receipt, because
+that Waf control file is missing from source fingerprints.
+R2 binds the missing control file (70 identity checks PASS) and builds the
+integration target, but its seven named assembly cases yield 3 PASS / 4 FAIL.
+All four fail at certified recipe_digest validation before ORT loading;
+preserve R2 and compare fixture serialization with the production contract.
+R3 corrects the old fixture's quoted integer dimensions, leaving production
+digest validation intact: 7 cases / 160 assertions PASS. The missing test
+source and identity repair are ready for a checkpoint; a fresh committed
+checkout must still pass the maintained native build. T007 remains BLOCK.
+See [committed native closure](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t007-committed-native-build-20260905.md).
+
 **Spec181 A05 qualification inventory (2026-09-05): CLOSED within focused inventory repair.**
 The inherited inventory requires Q-C/Q-W but discovers only Spec180 Python
 tests, omitting Spec181 protected-grant regressions. Two tests using the real

@@ -60,6 +60,20 @@ R8 最终 **21 PASS（2.45s）**：活动测试发现、三个 YOLO 案例的
 路径/参数契约、重算摘要替换、输出 ID 边界及既有 gate 检查均通过。
 维护 inventory/gate 源码与测试本轮收口；T007 仍待 native/candidate
 有效配置与封印输入闭包，整体保持 5/12。
+隔离 `d67de87a` 检出 configure PASS，但维护 native build 在 Waf
+建图时失败：tests/wscript 引用的 native assembly 集成测试未入 Git。
+已保留原始检出和日志，正在补齐并验证该源码依赖，见
+[committed native closure](evidence/t007-committed-native-build-20260905.md)。
+同轮还复现 native identity 漏记 tests/wscript：字节改变且 mtime
+不变时旧身份仍被接受，1 项回归失败；正在补构建控制输入绑定。
+该绑定修复后 identity **70 PASS（2.21s）**，集成目标构建 PASS。
+R2 的 7 个 assembly 定向用例为 **3 PASS / 4 FAIL**；四个失败均为
+certified recipe_digest 不匹配，尚未到 ORT，正在核对构造字节与契约。
+T007 保持 BLOCK，未开始正式资格矩阵。
+R3 修复旧 fixture 将数字维度写为字符串的摘要构造，生产验证保持
+严格；定向集成 **7 cases / 160 assertions PASS**，增量构建 PASS。
+缺失 assembly 测试与 identity 修复完成定向验证；下一步从新提交
+重建干净 native 源，继续 A05 候选/有效配置闭包，整体仍为 5/12。
 下列较早的 4/12 与 partial 记载保留为修复过程，不覆盖本检查点。
 三种 grant 变异完成实际发布、Provider 拒绝与身份绑定；有效 grant
 仍完成 native Y-B 推理。正向控制发现并修复冷装配期间的固定 10 s
