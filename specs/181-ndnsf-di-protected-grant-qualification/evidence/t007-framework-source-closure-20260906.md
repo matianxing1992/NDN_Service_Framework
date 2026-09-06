@@ -71,3 +71,24 @@ envelope 保留 `artifactDataName`，集合合并保留一致根并拒绝冲突�
 `focused-build.log`、`focused-green.log` 已保留。本单元证明 framework
 源码闭包与上述定向契约，不证明完整 native Provider、Python 扩展、
 MiniNDN、SIF 或 Tiger 资格。后续从同一源码提交运行维护 native build。
+
+## Checkpoint and Native Diagnostic R3
+
+源码单元提交为 `1df718c8`。首次把隔离检出切换至该提交时，Git 因
+尚未暂存的诊断修改拒绝 checkout；后续构建误在原 HEAD 加明确源差异
+的状态启动，因此 R3 **不得作为干净提交验证**。该构建已终止（退出 1），
+没有存活子进程；原日志保留在 `spec181-source-closure-audit-20260906-r3/`。
+
+R3 的源码诊断暴露下一处精确依赖：`NativeCanonicalOnnxAssembler.cpp`
+读取 `NativeSelectionProjectionV3::canonicalArtifactName`，但已提交头文件
+缺少该成员。随后仅暂存原九个已验证文件，确认与 `1df718c8` 的 Core/tests
+字节差异为空，再切换成功；未丢弃源或改写历史。下一步验证 DI projection
+声明及实际赋值路径后，在新目录记录修复验证。framework 的 26 项结果
+仍有效于其明确源码范围；T007 继续 BLOCK。
+
+当前已提交 `NativeProviderHandler.cpp:1839` 从经过认证的
+`assignedArtifact` 填充该 projection 字段；装配器以逻辑 artifact 名称
+调用 `CollaborationContext::fetchArtifact`，字段不来自 requester JSON。
+该赋值已存在，后续不应另造第二条根选择路径。相关 header 还存在
+未提交的 native postprocess 字段，需与已提交 adapter 及现有 parser
+逐项核对。新一轮须先补齐实际依赖，不能重复启动同一未修复编译。

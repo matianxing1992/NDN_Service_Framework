@@ -91,6 +91,10 @@ R1 源差异与失败日志，正在补齐字段传递/冲突根拒绝，T007 �
 R2 补齐 Provider 单项/集合的根名称传递后，隔离目标 **26 cases /
 204 assertions PASS**，增量编译/链接 PASS。该 framework 闭包单元
 可提交；下一步验证同一提交的完整 native Provider/扩展，整体仍为 5/12。
+framework 单元已提交 `1df718c8`。R3 首次 checkout 被未暂存修改拒绝，
+随后构建只能作为明确差异源码诊断：DI projection 缺少
+canonicalArtifactName 声明。已核对九个文件字节与新提交一致并完成
+干净切换，下一步补齐该声明与实际赋值依赖；未声称 native 通过。
 下列较早的 4/12 与 partial 记载保留为修复过程，不覆盖本检查点。
 三种 grant 变异完成实际发布、Provider 拒绝与身份绑定；有效 grant
 仍完成 native Y-B 推理。正向控制发现并修复冷装配期间的固定 10 s

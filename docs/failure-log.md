@@ -19,6 +19,15 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 native source diagnostic R3 (2026-09-06): BLOCK at DI projection declaration.**
+A checkout refusal left the first native retry on the prior HEAD plus an
+explicit source patch; that run is invalid as clean-commit evidence. It
+terminated with two compiler errors: NativeCanonicalOnnxAssembler reads
+canonicalArtifactName absent from the committed NativeSelectionProjectionV3.
+The nine tested files were then matched to 1df718c8 and checkout completed.
+Inspect the declaration and assignment path before a fresh recorded retry.
+See [framework source closure](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t007-framework-source-closure-20260906.md).
+
 **Spec181 framework source closure R1 (2026-09-06): BLOCK at assignment metadata.**
 The isolated six-file dependency closure builds the production framework
 library. Its reused lifecycle/assignment checks yield 16 PASS / 1 FAIL:
