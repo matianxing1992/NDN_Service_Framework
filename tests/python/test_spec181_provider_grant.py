@@ -427,7 +427,8 @@ class ProtectedAssemblyQualificationTest(unittest.TestCase):
         projection = types.SimpleNamespace(
             grant_binding=self._binding(grant.grant_digest),
             request_id=self.request_id, attempt=1,
-            plan_core_digest="sha256:" + "cd" * 32)
+            plan_core_digest="sha256:" + "cd" * 32,
+            security_policy_snapshot_digest="sha256:" + "88" * 32)
         protected_execution, registry = provider._qualify_protected_assembly(
             self._ctx(), execution, projection, self._role_spec(),
             _fetch_grant_data=lambda name: self._packet(grant))
@@ -448,7 +449,8 @@ class ProtectedAssemblyQualificationTest(unittest.TestCase):
         projection = types.SimpleNamespace(
             grant_binding=self._binding(grant.grant_digest),
             request_id=self.request_id, attempt=1,
-            plan_core_digest="sha256:" + "cd" * 32)
+            plan_core_digest="sha256:" + "cd" * 32,
+            security_policy_snapshot_digest="sha256:" + "88" * 32)
         with self.assertRaises(ProtectedGrantRejected):
             provider._qualify_protected_assembly(
                 self._ctx(), execution, projection, self._role_spec(),
@@ -462,7 +464,8 @@ class ProtectedAssemblyQualificationTest(unittest.TestCase):
         projection = types.SimpleNamespace(
             grant_binding=self._binding(grant.grant_digest),
             request_id=self.request_id, attempt=1,
-            plan_core_digest="sha256:" + "cd" * 32)
+            plan_core_digest="sha256:" + "cd" * 32,
+            security_policy_snapshot_digest="sha256:" + "88" * 32)
         with self.assertRaisesRegex(ProtectedGrantRejected, "policy authority"):
             provider._qualify_protected_assembly(
                 self._ctx(), self._execution(), projection, self._role_spec(),
@@ -475,7 +478,8 @@ class ProtectedAssemblyQualificationTest(unittest.TestCase):
         projection = types.SimpleNamespace(
             grant_binding=self._binding(grant.grant_digest),
             request_id=self.request_id, attempt=1,
-            plan_core_digest="sha256:" + "cd" * 32)
+            plan_core_digest="sha256:" + "cd" * 32,
+            security_policy_snapshot_digest="sha256:" + "88" * 32)
         write = Path.write_bytes
 
         def corrupt_ciphertext(path, data):
@@ -501,7 +505,8 @@ class ProtectedAssemblyQualificationTest(unittest.TestCase):
             "/MODEL/" + "11" * 32, "/MODEL/" + "aa" * 32))
         projection = types.SimpleNamespace(
             grant_binding=binding, request_id=self.request_id, attempt=1,
-            plan_core_digest="sha256:" + "cd" * 32)
+            plan_core_digest="sha256:" + "cd" * 32,
+            security_policy_snapshot_digest="sha256:" + "88" * 32)
         with self.assertRaisesRegex(ProtectedGrantRejected, "manifest"):
             self._provider()._qualify_protected_assembly(
                 self._ctx(), self._execution(), projection,
@@ -517,7 +522,8 @@ class ProtectedAssemblyQualificationTest(unittest.TestCase):
         projection = types.SimpleNamespace(
             grant_binding=self._binding(selected.grant_digest),
             request_id=self.request_id, attempt=1,
-            plan_core_digest="sha256:" + "cd" * 32)
+            plan_core_digest="sha256:" + "cd" * 32,
+            security_policy_snapshot_digest="sha256:" + "88" * 32)
         with self.assertRaisesRegex(ProtectedGrantRejected, "grant digest"):
             self._provider()._qualify_protected_assembly(
                 self._ctx(), self._execution(), projection, self._role_spec(),
@@ -541,7 +547,8 @@ class ProtectedAssemblyQualificationTest(unittest.TestCase):
         projection = types.SimpleNamespace(
             grant_binding=self._binding(grant.grant_digest),
             request_id=self.request_id, attempt=1,
-            plan_core_digest="sha256:" + "cd" * 32)
+            plan_core_digest="sha256:" + "cd" * 32,
+            security_policy_snapshot_digest="sha256:" + "88" * 32)
         with self.assertRaises(ProtectedGrantRejected):
             provider._qualify_protected_assembly(
                 self._ctx(), execution, projection, self._role_spec(),
@@ -554,7 +561,8 @@ class ProtectedAssemblyQualificationTest(unittest.TestCase):
         projection = types.SimpleNamespace(
             grant_binding=self._binding(grant.grant_digest),
             request_id="req-other-request", attempt=1,
-            plan_core_digest="sha256:" + "cd" * 32)
+            plan_core_digest="sha256:" + "cd" * 32,
+            security_policy_snapshot_digest="sha256:" + "88" * 32)
         with self.assertRaises(ProtectedGrantRejected):
             provider._qualify_protected_assembly(
                 self._ctx(), execution, projection, self._role_spec(),
@@ -567,7 +575,8 @@ class ProtectedAssemblyQualificationTest(unittest.TestCase):
         projection = types.SimpleNamespace(
             grant_binding=self._binding("sha256:" + "12" * 32),
             request_id=self.request_id, attempt=1,
-            plan_core_digest="sha256:" + "cd" * 32)
+            plan_core_digest="sha256:" + "cd" * 32,
+            security_policy_snapshot_digest="sha256:" + "88" * 32)
         with self.assertRaises(ProtectedGrantRejected):
             provider._qualify_protected_assembly(
                 self._ctx(), execution, projection, self._role_spec(),
@@ -586,7 +595,8 @@ class ProtectedAssemblyQualificationTest(unittest.TestCase):
         projection = types.SimpleNamespace(
             grant_binding=self._binding("sha256:" + "34" * 32),
             request_id=self.request_id, attempt=1,
-            plan_core_digest="sha256:" + "cd" * 32)
+            plan_core_digest="sha256:" + "cd" * 32,
+            security_policy_snapshot_digest="sha256:" + "88" * 32)
         with self.assertRaises(ProtectedGrantRejected):
             bare._qualify_protected_assembly(
                 self._ctx(), execution, projection, self._role_spec())
@@ -596,7 +606,8 @@ class ProtectedAssemblyQualificationTest(unittest.TestCase):
         execution = self._execution()
         projection = types.SimpleNamespace(
             grant_binding=None, request_id=self.request_id, attempt=1,
-            plan_core_digest="sha256:" + "cd" * 32)
+            plan_core_digest="sha256:" + "cd" * 32,
+            security_policy_snapshot_digest="sha256:" + "88" * 32)
         with self.assertRaises(ProtectedGrantRejected):
             provider._qualify_protected_assembly(
                 self._ctx(), execution, projection, self._role_spec())
@@ -610,7 +621,8 @@ class ProtectedAssemblyQualificationTest(unittest.TestCase):
         projection = types.SimpleNamespace(
             grant_binding=self._binding(grant.grant_digest),
             request_id=self.request_id, attempt=1,
-            plan_core_digest="sha256:" + "cd" * 32)
+            plan_core_digest="sha256:" + "cd" * 32,
+            security_policy_snapshot_digest="sha256:" + "88" * 32)
         # Corrupt the assembled bytes before qualification so the seal happens
         # over tampered plaintext: decrypt must then fail via a mismatch only
         # if the seal step is real (it is); assert the AEAD-sealed file exists

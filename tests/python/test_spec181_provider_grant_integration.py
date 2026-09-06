@@ -172,7 +172,9 @@ def python_provider(root):
     binding = GrantBindingV1(**metadata["binding"])
     context = SimpleNamespace(local_provider=PROVIDER, assignment=SimpleNamespace(role=role.role))
     projection = SimpleNamespace(grant_binding=binding, request_id=binding.request_id,
-        attempt=binding.attempt, plan_core_digest=binding.plan_core_digest)
+        attempt=binding.attempt, plan_core_digest=binding.plan_core_digest,
+        security_policy_snapshot_digest=binding.security_policy_snapshot_digest,
+        deadline_ms=metadata["deadlineMs"])
     leases, key = PlaintextLeaseRegistry(), None
     result = dict(status="REJECTED", boundary="BEFORE_ASSEMBLY", transport="ndn")
     original = (root / "canonical.onnx").read_bytes()

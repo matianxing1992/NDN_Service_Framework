@@ -169,6 +169,23 @@ def test_grant_rejection_never_reaches_preparation(protected_handler):
     assert "DI_PROTECTED_GRANT_REJECTED" in ctx.fail.call_args.args[0]
 
 
+@pytest.mark.parametrize("changed", ["grant-reference", "selection"])
+def test_policy_snapshot_substitution_never_reaches_preparation(protected_handler, changed):
+    _runtime, wrapped, ctx, state, _source = protected_handler
+    projection = ProviderSelectionProjectionV3.from_bytes(ctx.assignment.assignment_payload)
+    different = "sha256:" + "b" * 64
+    if changed == "grant-reference":
+        projection = replace(projection, grant_binding=replace(
+            projection.grant_binding, security_policy_snapshot_digest=different))
+    else:
+        projection = replace(projection, security_policy_snapshot_digest=different)
+    ctx.assignment.assignment_payload = projection.to_bytes()
+    wrapped(ctx, b"request")
+    assert state.events == []
+    assert state.work_dirs == [] and state.keys == []
+    assert "DI_PROTECTED_GRANT_REJECTED" in ctx.fail.call_args.args[0]
+
+
 def test_preparation_failure_after_unwrap_erases_keys_and_loaded_model(protected_handler, monkeypatch):
     runtime, wrapped, ctx, state, source = protected_handler
 
@@ -204,6 +221,165 @@ def test_stored_entry_tampering_erases_partial_loaded_state(protected_handler, m
     assert "DI_PROTECTED_GRANT_REJECTED" in ctx.fail.call_args.args[0]
     assert "authentication" in ctx.fail.call_args.args[0]
     assert state.keys and all(not any(key) for key in state.keys)
+    for root in state.work_dirs:
+        assert not (root / "assembled-role.onnx").exists()
+        assert not (root / "model.onnx.data").exists()
+
+
+@pytest.mark.parametrize("boundary", ["before-fetch", "during-fetch", "after-prepare"])
+def test_cancelled_request_never_enters_protected_handler(protected_handler, monkeypatch, boundary):
+    import ndnsf
+    runtime, wrapped, ctx, state, source = protected_handler
+    original = source.read_bytes()
+    ctx.is_streamed = True
+    ctx.stream_cancelled = boundary == "before-fetch"
+    if boundary == "during-fetch":
+        fetch = ndnsf.fetch_exact_data_packet
+        def cancel_fetch(*args, **kwargs):
+            packet = fetch(*args, **kwargs)
+            ctx.stream_cancelled = True
+            return packet
+        monkeypatch.setattr(ndnsf, "fetch_exact_data_packet", cancel_fetch)
+    elif boundary == "after-prepare":
+        bind = runtime._bind_assignment_metadata
+        def cancel_prepared(*args, **kwargs):
+            execution = bind(*args, **kwargs)
+            ctx.stream_cancelled = True
+            return execution
+        monkeypatch.setattr(runtime, "_bind_assignment_metadata", cancel_prepared)
+    wrapped(ctx, b"request")
+    assert "handler" not in state.events
+    if boundary == "before-fetch":
+        assert state.events == []
+    if boundary != "after-prepare":
+        assert state.work_dirs == [] and state.keys == []
+    else:
+        assert state.keys and all(not any(key) for key in state.keys)
+    assert "DI_PROTECTED_GRANT_REJECTED" in ctx.fail.call_args.args[0]
+    assert "cancel" in ctx.fail.call_args.args[0]
+    assert source.read_bytes() == original
+    for root in state.work_dirs:
+        assert not (root / "assembled-role.onnx").exists()
+        assert not (root / "model.onnx.data").exists()
+
+
+@pytest.mark.parametrize("boundary", ["before-fetch", "during-fetch", "after-prepare"])
+def test_selection_deadline_bounds_protected_preparation(protected_handler, monkeypatch, boundary):
+    import importlib
+    import ndnsf
+    module = importlib.import_module("ndnsf_distributed_inference.provider")
+    runtime, wrapped, ctx, state, source = protected_handler
+    now = int(time.time() * 1000)
+    deadline = now + 250
+    projection = ProviderSelectionProjectionV3.from_bytes(ctx.assignment.assignment_payload)
+    ctx.assignment.assignment_payload = replace(projection, deadline_ms=deadline).to_bytes()
+    clock = [deadline if boundary == "before-fetch" else now]
+    monkeypatch.setattr(module, "time", lambda: clock[0] / 1000)
+    fetch = ndnsf.fetch_exact_data_packet
+    def bounded_fetch(*args, **kwargs):
+        state.fetch_timeout_ms = kwargs["timeout_ms"]
+        packet = fetch(*args, **kwargs)
+        if boundary == "during-fetch":
+            clock[0] = deadline
+        return packet
+    monkeypatch.setattr(ndnsf, "fetch_exact_data_packet", bounded_fetch)
+    if boundary == "after-prepare":
+        bind = runtime._bind_assignment_metadata
+        def expire_prepared(*args, **kwargs):
+            execution = bind(*args, **kwargs)
+            clock[0] = deadline
+            return execution
+        monkeypatch.setattr(runtime, "_bind_assignment_metadata", expire_prepared)
+    wrapped(ctx, b"request")
+    assert "handler" not in state.events
+    if boundary == "before-fetch":
+        assert state.events == []
+    else:
+        assert 0 < state.fetch_timeout_ms <= 250
+    if boundary != "after-prepare":
+        assert state.work_dirs == [] and state.keys == []
+    else:
+        assert state.keys and all(not any(key) for key in state.keys)
+    assert "DI_PROTECTED_GRANT_REJECTED" in ctx.fail.call_args.args[0]
+    assert "deadline" in ctx.fail.call_args.args[0]
+    assert source.exists()
+    for root in state.work_dirs:
+        assert not (root / "assembled-role.onnx").exists()
+        assert not (root / "model.onnx.data").exists()
+
+
+@pytest.mark.parametrize("fence", ["cancel", "request-deadline", "grant-expiry"])
+def test_queued_handler_rechecks_protected_authority(protected_handler, monkeypatch, fence):
+    import importlib
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event, Thread
+    module = importlib.import_module("ndnsf_distributed_inference.provider")
+    runtime, wrapped, ctx, state, source = protected_handler
+    now = int(time.time() * 1000)
+    deadline = now + 250 if fence == "request-deadline" else state.grant.expires_at_ms + 30000
+    projection = ProviderSelectionProjectionV3.from_bytes(ctx.assignment.assignment_payload)
+    ctx.assignment.assignment_payload = replace(projection, deadline_ms=deadline).to_bytes()
+    clock = [now]
+    monkeypatch.setattr(module, "time", lambda: clock[0] / 1000)
+    ctx.is_streamed, ctx.stream_cancelled = True, False
+    gate, occupied, queued = Event(), Event(), Event()
+    errors = []
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        def occupy():
+            occupied.set()
+            assert gate.wait(10), "test worker gate timed out"
+        blocker = pool.submit(occupy)
+        assert occupied.wait(5)
+        runtime._handler_executor = pool
+        submit = pool.submit
+        def observe_submit(*args, **kwargs):
+            future = submit(*args, **kwargs)
+            queued.set()
+            return future
+        monkeypatch.setattr(pool, "submit", observe_submit)
+        def invoke():
+            try:
+                wrapped(ctx, b"request")
+            except Exception as error:
+                errors.append(error)
+        callback = Thread(target=invoke)
+        callback.start()
+        try:
+            assert queued.wait(5), "registered handler never entered the real executor queue"
+            if fence == "cancel":
+                ctx.stream_cancelled = True
+            else:
+                clock[0] = deadline if fence == "request-deadline" else state.grant.expires_at_ms
+        finally:
+            gate.set()
+            callback.join(10)
+            runtime._handler_executor = None
+        blocker.result()
+        assert not callback.is_alive()
+    assert errors == []
+    assert "handler" not in state.events
+    assert "DI_PROTECTED_GRANT_REJECTED" in ctx.fail.call_args.args[0]
+    assert ("cancel" if fence == "cancel" else "deadline" if fence == "request-deadline"
+            else "grant expired") in ctx.fail.call_args.args[0]
+    assert state.keys and all(not any(key) for key in state.keys)
+    assert source.exists()
+    for root in state.work_dirs:
+        assert not (root / "assembled-role.onnx").exists()
+        assert not (root / "model.onnx.data").exists()
+
+
+def test_handler_exception_drains_protected_files_and_key(protected_handler, monkeypatch):
+    runtime, wrapped, ctx, state, source = protected_handler
+    run = runtime._run_handler
+    def fail_after_load(handler, context):
+        run(handler, context)
+        raise RuntimeError("injected handler failure after model load")
+    monkeypatch.setattr(runtime, "_run_handler", fail_after_load)
+    with pytest.raises(RuntimeError, match="handler failure after model load"):
+        wrapped(ctx, b"request")
+    assert "handler" in state.events
+    assert state.keys and all(not any(key) for key in state.keys)
+    assert source.exists()
     for root in state.work_dirs:
         assert not (root / "assembled-role.onnx").exists()
         assert not (root / "model.onnx.data").exists()
