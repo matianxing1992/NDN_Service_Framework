@@ -68,3 +68,9 @@ required dynamic symbols exist, and all20 source headers match installation.
 The expanded unit gate passes183/183 cases,11998 assertions (`ndnsf-unit.log`).
 Integration authorization/stream suites plus the two NdnsfDataV1SvsFlow segment
 cases are running. No network acceptance claim yet.
+
+Integration gate passes74/74 cases,1297 assertions (`ndnsf-integration.log`):
+the previous72-case authorization/stream gate plus NdnsfDataV1SvsFlow2/2,
+16 assertions for independent segments/SVS repair/replay and production
+Provider segment context. All native/launcher prerequisites pass. Next is a
+fresh18-scenario MiniNDN campaign with clean source and the new exact build dir.
