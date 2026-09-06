@@ -40,6 +40,7 @@ R = `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py`。
 - SC-003--006：本 Spec 尚无同源完整矩阵、local-suite inventory 执行、候选/SIF/Tiger 或唯一 closure。这些是 T007 PASS 后的任务，缺失后续资格结果本身不构成审计依赖环。
 - A05 剩余的是生产入口、构建源清单、有效配置和资格收集入口的同源闭包核查；T005 的正式网络矩阵不移入 T007。
 - A05 的干净编译核查暴露 framework 配套声明遗漏与 Provider 根元数据丢失；已在隔离源码修复并链接生产库，26 cases / 204 assertions PASS，见 [framework source closure](evidence/t007-framework-source-closure-20260906.md)。本轮关闭该 framework 单元；完整 native/candidate 源和有效配置仍须核查。
+- A05 的 native projection 声明缺口已补齐并通过一次明确差异源码的维护 native build；随后修复 COMPONENT_SET 后处理解析和双张量 scope，29 cases / 133 assertions PASS，见 [native plan closure](evidence/t007-native-plan-closure-20260906.md)。后续以该源码提交刷新 native 身份，继续候选与有效配置审查。
 
 ## Readiness Scorecard
 

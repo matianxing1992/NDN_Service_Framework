@@ -95,6 +95,20 @@ framework 单元已提交 `1df718c8`。R3 首次 checkout 被未暂存修改拒�
 随后构建只能作为明确差异源码诊断：DI projection 缺少
 canonicalArtifactName 声明。已核对九个文件字节与新提交一致并完成
 干净切换，下一步补齐该声明与实际赋值依赖；未声称 native 通过。
+已在 `0e59e33b` 隔离检出选择 native projection 根名称与后处理字段
+声明，正在进行维护 native 构建；同步核对 COMPONENT_SET/parser 和
+多张量 scope 的精确依赖，见 [native plan closure](evidence/t007-native-plan-closure-20260906.md)。
+补入 12 行声明后的维护 native build PASS（含实际 Python 扩展导入和
+运行时身份），receipt 已保留。正在编译复用现有 plan/merge 用例的
+定向目标，验证 COMPONENT_SET 与双张量 scope；源清单已变化，旧
+receipt 不晋升为资格证据，T007 仍 BLOCK。
+定向 R1 为 **27 PASS / 2 FAIL**：旧 parser 拒绝后处理 COMPONENT_SET，
+双张量 PIPELINE scope 重合且两端不一致。已保留源码与日志，正在
+收口对应 parser/scope 差异，并保持原传输授权 groupId。
+R2 增量构建 PASS（28.075s），**29 cases / 133 assertions PASS**；
+后处理字段一致性、根来源及双张量分离/原传输授权组均已验证。
+native projection 单元可提交；下一步从该提交刷新 native 身份并继续
+A05 候选/有效配置闭包，整体保持 5/12。
 下列较早的 4/12 与 partial 记载保留为修复过程，不覆盖本检查点。
 三种 grant 变异完成实际发布、Provider 拒绝与身份绑定；有效 grant
 仍完成 native Y-B 推理。正向控制发现并修复冷装配期间的固定 10 s

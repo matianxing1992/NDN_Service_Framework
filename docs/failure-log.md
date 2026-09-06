@@ -19,6 +19,18 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 native plan closure R1 (2026-09-06): BLOCK at projection behavior.**
+Twelve missing header lines close the maintained local native build, including
+the extension import/identity check. Focused plan/merge tests then yield
+27 PASS / 2 FAIL: COMPONENT_SET postprocessing is rejected, and two PIPELINE
+tensors collide in runtime scope with mismatched producer/consumer names.
+Preserve R1 before applying the exact parser/scope repair; no qualification
+matrix or model run was started.
+R2 closes the parser/scope unit: 29 cases / 133 assertions PASS, including
+unchanged transport authorization groups. Refresh native identity from its
+source checkpoint before advancing the remaining A05 candidate/config audit.
+See [native plan closure](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t007-native-plan-closure-20260906.md).
+
 **Spec181 native source diagnostic R3 (2026-09-06): BLOCK at DI projection declaration.**
 A checkout refusal left the first native retry on the prior HEAD plus an
 explicit source patch; that run is invalid as clean-commit evidence. It

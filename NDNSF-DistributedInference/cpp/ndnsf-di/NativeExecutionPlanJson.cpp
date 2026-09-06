@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <iterator>
 #include <map>
 #include <set>
@@ -170,6 +171,14 @@ selectionRoleFromV3Json(const boost::property_tree::ptree& node,
   role.padding = node.get<std::string>("padding", "");
   role.protectionEpoch = node.get<std::string>(
     "protection_epoch", "plaintext-v1");
+  role.mergeKind = node.get<std::string>("merge_kind", "");
+  role.postprocessIdentity = node.get<std::string>(
+    "postprocess_identity", "");
+  role.postprocessOutputName = node.get<std::string>(
+    "postprocess_output_name", "");
+  role.postprocessConfidenceThreshold = node.get<double>(
+    "postprocess_confidence_threshold", 0.0);
+  role.postprocessSort = node.get<std::string>("postprocess_sort", "");
   if (const auto envelope = node.get_child_optional("resource_envelope")) {
     role.maxSourceBytes = envelope->get<std::uint64_t>("maxSourceBytes", 0);
     role.maxAssembledBytes = envelope->get<std::uint64_t>("maxAssembledBytes", 0);
@@ -196,8 +205,25 @@ selectionRoleFromV3Json(const boost::property_tree::ptree& node,
     !role.precision.empty() && !role.quantization.empty() &&
     !role.layout.empty() && !role.padding.empty() &&
     role.maxSourceBytes > 0 && role.maxAssembledBytes > 0 && role.maxNodes > 0;
+  const bool componentSet = role.roleKind == "COMPONENT_SET";
+  const bool hasPostprocessMetadata =
+    !role.mergeKind.empty() || !role.postprocessIdentity.empty() ||
+    !role.postprocessOutputName.empty() || role.postprocessConfidenceThreshold != 0.0 ||
+    !role.postprocessSort.empty();
+  const bool validNativePostprocess =
+    role.mergeKind == "NATIVE_POSTPROCESS" && componentSet &&
+    !role.postprocessIdentity.empty() && !role.postprocessOutputName.empty() &&
+    role.postprocessSort == "confidence-desc,class-asc,xyxy-asc" &&
+    std::isfinite(role.postprocessConfidenceThreshold) &&
+    role.postprocessConfidenceThreshold >= 0.0 &&
+    role.postprocessConfidenceThreshold <= 1.0;
+  const bool validMergeKind = role.mergeKind.empty() ||
+    role.mergeKind == "ONNX_MERGE_GRAPH" || validNativePostprocess;
+  const bool validRoleCover = componentSet
+    ? (role.layerBegin == 0 && role.layerEnd == 0 && !role.nodeIndices.empty())
+    : role.layerEnd > role.layerBegin;
   if (role.role.empty() || role.selectedRole.empty() ||
-      role.layerEnd <= role.layerBegin || role.backend.empty() ||
+      !validRoleCover || role.backend.empty() ||
       (isCpuBackend(role.backend) && !role.deviceSet.empty()) ||
       (!isCpuBackend(role.backend) && role.deviceSet.size() != 1) ||
       !isSha256Digest(role.artifactDigest) ||
@@ -207,7 +233,10 @@ selectionRoleFromV3Json(const boost::property_tree::ptree& node,
        role.roleKind != "HYBRID_RANK" &&
        role.roleKind != "COMPONENT_SET") ||
       !hasCompleteAdapterIdentity(role.adapterId, role.adapterVersion) ||
-      role.protectionEpoch.empty()) {
+      role.protectionEpoch.empty() || !validMergeKind ||
+      (!role.mergeKind.empty() && !validNativePostprocess &&
+       role.mergeKind != "ONNX_MERGE_GRAPH") ||
+      (role.mergeKind.empty() && hasPostprocessMetadata)) {
     throw std::invalid_argument(
       "V3 Selection projection contains an incomplete local role");
   }
@@ -246,6 +275,11 @@ sameAssembly(const NativeSelectionRoleV3& left,
          left.precision == right.precision &&
          left.quantization == right.quantization && left.layout == right.layout &&
          left.padding == right.padding &&
+         left.mergeKind == right.mergeKind &&
+         left.postprocessIdentity == right.postprocessIdentity &&
+         left.postprocessOutputName == right.postprocessOutputName &&
+         left.postprocessConfidenceThreshold == right.postprocessConfidenceThreshold &&
+         left.postprocessSort == right.postprocessSort &&
          left.maxSourceBytes == right.maxSourceBytes &&
          left.maxAssembledBytes == right.maxAssembledBytes &&
          left.maxNodes == right.maxNodes;
@@ -263,8 +297,14 @@ executionRoleFromV3Json(const boost::property_tree::ptree& node)
   role.backend = node.get<std::string>("backend", "");
   role.adapterId = node.get<std::string>("adapter_id", "");
   role.adapterVersion = node.get<std::string>("adapter_version", "");
+  // COMPONENT_SET roles deliberately carry no layer interval.  The selected
+  // role/assembly parser below validates the role kind and exact node cover;
+  // this execution-role object must therefore accept the same canonical 0..0
+  // representation as the Python V3 sealer.
+  const bool componentSet = role.layerBegin == 0 && role.layerEnd == 0;
   if (role.roleId.empty() || role.stageId.empty() ||
-      role.layerEnd <= role.layerBegin || role.backend.empty() ||
+      (!componentSet && role.layerEnd <= role.layerBegin) ||
+      role.backend.empty() ||
       !hasCompleteAdapterIdentity(role.adapterId, role.adapterVersion)) {
     throw std::invalid_argument("invalid V3 execution role");
   }
@@ -1185,19 +1225,49 @@ roleSpecFromSelectionProjectionV3(
       "V3 Selection dataflow cannot be projected for this Provider");
   }
 
-  std::map<std::string, std::size_t> fetchesByGroup;
-  for (const auto& endpoint : dataflow.mustFetch) {
-    ++fetchesByGroup[endpoint.groupId];
+  // A runtime scope is the key used by AsyncDataflowRuntime to retain one
+  // reconstructed TensorBundle.  A normal PIPELINE dependency may carry
+  // several named tensors (for example the two YOLO DetectShard1 inputs),
+  // while a redistribution deliberately groups producer-rank bundles under
+  // one transport scope for the certified GATHER/SCATTER transition.
+  // Count both sides of the local projection so producer and consumer derive
+  // the same scope; counting mustFetch alone would leave a multi-output
+  // producer on the unsuffixed scope.
+  std::map<std::string, std::set<std::string>> endpointKeysByGroup;
+  for (const auto* endpoints : {&dataflow.mayPublish, &dataflow.mustFetch}) {
+    for (const auto& endpoint : *endpoints) {
+      endpointKeysByGroup[endpoint.groupId].insert(
+        endpoint.producerRole + "\x1f" + endpoint.tensorId);
+    }
   }
+  const auto hasRedistribution = [&projection] (const std::string& groupId) {
+    return std::any_of(
+      projection.plan.dependencies.begin(), projection.plan.dependencies.end(),
+      [&groupId] (const NativeDependencySpec& dependency) {
+        return dependency.keyScope == groupId &&
+               !dependency.redistributions.empty();
+      });
+  };
   const auto runtimeScopeFor = [&] (const NativeTensorEndpointV3& endpoint) {
-    if (fetchesByGroup[endpoint.groupId] <= 1) {
+    if (hasRedistribution(endpoint.groupId)) {
+      if (endpointKeysByGroup[endpoint.groupId].size() > 1) {
+        auto producerRole = endpoint.producerRole;
+        while (!producerRole.empty() && producerRole.front() == '/') {
+          producerRole.erase(producerRole.begin());
+        }
+        return endpoint.groupId + "/from/" + producerRole;
+      }
+      return endpoint.groupId;
+    }
+    if (endpointKeysByGroup[endpoint.groupId].size() <= 1) {
       return endpoint.groupId;
     }
     auto producerRole = endpoint.producerRole;
     while (!producerRole.empty() && producerRole.front() == '/') {
       producerRole.erase(producerRole.begin());
     }
-    return endpoint.groupId + "/from/" + producerRole;
+    return endpoint.groupId + "/from/" + producerRole +
+           "/tensor/" + endpoint.tensorId;
   };
 
   auto makeEdge = [&projection, &dataflow, &localProvider, &runtimeScopeFor](
@@ -1213,8 +1283,8 @@ roleSpecFromSelectionProjectionV3(
         "V3 tensor endpoint is outside the local role authority");
     }
     DependencyEdge edge;
-    // groupId is the runtime dependency scope. tensorId remains the adapter
-    // tensor identity and is carried separately in `tensors`.
+    // Separate local tensor storage scopes without changing the transport
+    // authorization group. tensorId remains the adapter tensor identity.
     edge.scope = runtimeScopeFor(endpoint);
     edge.producerRole = endpoint.producerRole;
     edge.consumerRole = endpoint.consumerRole;
