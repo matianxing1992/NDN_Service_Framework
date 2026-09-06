@@ -443,6 +443,115 @@ torch、onnx、onnxruntime、ultralytics；主工作区有 `yolo26n.pt`，隔离
 按现有 G0/G1 门复审，再执行同源完整 suite 与三案例；R19 旧源结果
 不能取代新的 T008 Y-N。
 
+## Checkpoint And Registry Input Identity Design
+
+后续导出/适配器测试统一显式读取 `SPEC180_YOLO_CHECKPOINT`。本单元
+先在 `scripts/spec180_inventory.py::local_input_identity` 的文件输入
+清单增加该项，复用现有 file_record 绑定声明路径、实际目标、字节摘要、
+大小和 mode；未配置仍记 UNCONFIGURED，由消费测试报告缺失输入。
+不得用仓库根部隐含文件代替声明。参数、返回 schema 和 supervisor
+接口不变。
+
+同一函数对 `SPEC180_YOLO_CATALOGUE_REGISTRY` 解析注册表并增加
+`referencedFiles`，键为注册表 entry 名称，值为实际公钥文件身份。
+catalogue 为必需对象；存在的 modelManifest/artifactPolicyAuthority
+及其他声明 publicKeyPath 的 entry 均纳入，空或非字符串路径拒绝为
+`INPUT_REGISTRY_INVALID`。公钥摘要有效性仍由生产验证器负责，此处
+负责防止原 JSON 未变而实际依赖漂移；证据不携带文件内容。
+
+路径必须跟随实际消费者：catalogue/通用 entry 沿用 feature spec.md
+优先、contracts 父目录、否则注册表所在目录的既有语义；
+artifactPolicyAuthority 跟随已解析 registry 的上两级根目录语义。
+对 registry 文件先取身份、读取引用并逐项 hash、最后重新核对 registry
+身份，拒绝读取期间变化。此处不更改生产信任规则，不导入重量模型依赖。
+
+`test_spec180_inventory.py` 增加 checkpoint 内容/mode/目标漂移、
+注册表相对路径/所有公钥引用、不可读引用及无效字段回归；
+`test_spec180_local_gate.py` 现有真实 gate 输入漂移检查增加 checkpoint
+与未改 JSON 的公钥变异，断言在任何 child 启动和结果目录建立前拒绝。
+先保留原实现的语义 RED，再修复并运行这两个具名文件的定向检查。
+该工作不运行完整资格或更改案例验收语义。
+
+## Input Identity Closure R1
+
+**Layer**: focused semantic RED，非运行资格。`a877fbe4` 原实现上增加
+上述定向回归，14 failed、5 passed、71 deselected（0.93 s，exit 1）。
+checkpoint 内容/mode/目标变化没有改变身份；registry 引用字段不存在，
+无效/不可读引用未拒绝。真实 supervisor 对 checkpoint 与公钥漂移继续
+调用 child 入口，被 `child started with changed inputs` 断言捕获。
+其余五种既有输入漂移仍拒绝，首次失败为输入身份遗漏，未启动实际
+应用/NFD。原始记录保留为 ignored workspace temporary directory 下
+`spec181-input-identity-closure-20260906-r1/tests.log`。按前述设计修复
+同一 inventory owner，再以相同回归验证；T008 与完整 gate 保持 BLOCK。
+
+## Input Identity Closure R2 And Shared Wrapper Dependency
+
+R2 隔离 `a877fbe4` 加三文件修复，两个具名文件定向运行 89 passed、
+1 failed（6.44 s，exit 1）。新增身份回归均通过；唯一失败是已提交的
+`test_qwen_wrapper_accepts_runner_owned_output_directory`，生产
+`NDNSF_DI_StreamedGeneration_Minindn.py::build_parser` 的已提交版本
+仍要求 CLI `--output-dir`，没有消费已约定的 supervisor 输出目录。
+主工作区已存在该修复，但与未纳入的 timeline/终端检查扩展混合，
+旧主工作区 PASS 因而没有证明干净交付。保留
+`spec181-input-identity-closure-20260906-r2/tests.log`，首次失败是 CLI
+参数解析，未启动 Qwen/MiniNDN；不得删掉既有回归以缩减清单。
+
+新增来源闭合限定为上述 wrapper 的 build_parser 输出目录默认值
+`SPEC180_CASE_OUTPUT_DIR` 和 main 缺失目录时的显式拒绝。CLI 显式值
+优先，缺两种来源时不得启动子进程；采用已存在的两处工作区实现，
+不纳入其余 timeline/启动时间/终端资格扩展，不新增 Qwen 网络案例。
+同一测试文件增加显式覆盖优先级和无目录拒绝验证。下一轮在隔离源码
+重新运行两个具名文件；本单元仍是共享 local gate 的开发依赖闭合。
+
+## Input Identity Closure R3 And Public Material
+
+**Layer**: focused unit + actual supervisor boundary；full qualification NOT_RUN。
+Subject 为隔离 `a877fbe4` 加 inventory、两个具名测试文件，以及
+streamed wrapper 的输出目录两处原有工作区实现。其余 wrapper
+timeline/等待窗口/终端资格扩展未纳入。主工作区三文件与隔离投影
+逐字节一致；wrapper 仅按本节限定 diff 纳入交付。
+
+从隔离源码根目录运行：
+
+```bash
+env PATH=/usr/bin:/bin:/usr/local/bin /usr/bin/python3 -m pytest -q \
+  tests/python/test_spec180_inventory.py tests/python/test_spec180_local_gate.py
+```
+
+**92 passed（6.33 s，exit 0，无 skip）**。新增输入边界的原实现 R1
+为 14 failed，修复后均通过；真实 gate 在 checkpoint、公钥实际字节
+变化后于 child/输出目录前拒绝。路径/mode/实际 symlink 目标变化、
+注册表相对路径、缺失/无效引用均有对应检查。旧五种输入漂移仍拒绝。
+共享 wrapper 接收 supervisor 环境目录、显式 CLI 优先，缺两种来源
+时在任何子进程调用前拒绝；没有运行 Qwen 网络案例。
+
+实际注册表检查同时发现 `contracts/model-manifest-authority.pub` 与
+`contracts/catalogue-authority.pub` 都尚未跟踪。两份现有公开材料按
+原字节纳入 Spec180 contracts 路径，原注册表 JSON 与摘要不变，
+未生成/修改/纳入任何私钥。隔离源码中逐一解析三个 PEM 为真实
+Ed25519 公钥，再比较注册摘要与生产 local_input_identity 记录：
+**3/3 PASS，exit 0**。验证器与原始输出保留在本轮 raw 目录。
+
+| Entry | SHA-256 (without prefix) |
+| --- | --- |
+| catalogue | `9967848bb1efa16edd381007610573338f41d84a365d67ead6ac987136989e1e` |
+| artifactPolicyAuthority | `8a0c3f7dc1b709928f7912e51c53ae8d30cf887c07ba20092b114171f371dad7` |
+| modelManifest | `6aa8a1c4bcf30fd51445471ea435394bd9a6f8a81a9a7c27ff9e99a63a6945ea` |
+
+原始记录位于 ignored workspace temporary directory 下：
+
+| Record | SHA-256 |
+| --- | --- |
+| spec181-input-identity-closure-20260906-r1/tests.log | `7d9c3406454284807f3c21d97895d6d9e128cd8fc484f8ca037924eef896c89c` |
+| spec181-input-identity-closure-20260906-r2/tests.log | `194efc036ae349338babf4c4637f0f6464e61bbf3f6a01ff0f5a7e382f8c397a` |
+| spec181-input-identity-closure-20260906-r3/tests.log | `c9a1fa77213e2ff3ad16b6b9304166d645438ddda027f2c59604d8cd6d881510` |
+| spec181-input-identity-closure-20260906-r3/public-inputs.log | `3d8e12e0a7a29a04902aae716fea270d44b9e45d16bab8f50cc2d622764389d1` |
+
+此修复改变 local input snapshot，旧 inventory 必须重建，不能沿用旧
+输入身份/结果。snapshot 不替代签名验证、模型摘要 pin 或运行验收。
+下一步剩余四项本地工具/测试纳入，导出测试消费显式 checkpoint，
+确定最终输入和新源码身份后重新审计，才允许完整 T008 gate。
+
 ## Case Profiles R1
 
 三案例配置已写入 `contracts/local-case-configs/`：Y-A 从 R19 配置

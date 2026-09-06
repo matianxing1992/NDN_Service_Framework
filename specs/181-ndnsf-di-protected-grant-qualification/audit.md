@@ -17,8 +17,8 @@ T005 的 ce6a4ba0 subject 已通过 R19 完整矩阵，验收独立保留；T008
 T008 的四组预存共享回归已通过 32 项检查，Batch B 两组应用/Merge
 回归已通过 19 项；Batch C 核实未交付 GPU 实现依赖后，来源审查保留
 九项实验/历史草稿（含实际失败与后续 GPU 准入条件），仍须完成四项
-本地测试/依赖纳入和封闭
-模型/公钥输入。三案例配置已通过生产静态校验，最终 subject 仍须
+本地测试/依赖纳入与显式 checkpoint 消费、最终运行输入闭合。
+三案例配置已通过生产静态校验，最终 subject 仍须
 复审后运行。详见
 [T008 review](evidence/t008-local-suite-preflight-20260906.md#focused-configuration-r2-and-review)。
 
@@ -34,6 +34,13 @@ cleanup-failure/retry 覆盖，生产源码未改。此项关闭旧 `revoke/revo
 受审变更限于测试和其源码注册，未引入主工作区额外指标/GPU 扩展。
 此项关闭旧 API 编译及新增源码链接缺口，完整 suite 与最终本地
 资格仍 BLOCK，见 [assembly closure](evidence/t008-local-suite-preflight-20260906.md#assembly-test-build-and-focused-closure)。
+
+输入身份遗漏经 R1 真实语义 RED 后修复：checkpoint 内容/mode/目标
+及 registry 引用公钥均绑定，三个公钥文件通过实际 Ed25519 类型与
+注册摘要检查。隔离 R3 两个具名 inventory/supervisor 文件 92 passed，
+包括漂移前拒绝及共享 wrapper 输出目录来源/缺失拒绝。只采用 wrapper
+现有输出参数两处实现，其他历史扩展保留未纳入；旧源/旧输入清单
+不能据此继承新 subject 资格。见 [input closure](evidence/t008-local-suite-preflight-20260906.md#input-identity-closure-r3-and-public-material)。
 
 以下是 R19 执行前的 wire/native 受审范围与许可：
 维护 native build 与独立 verify 均 exit 0，刷新后的真实 Core 上

@@ -40,7 +40,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--case", choices=tuple(CASES), required=True)
     parser.add_argument("--seed", type=int, required=True)
-    parser.add_argument("--output-dir", required=True)
+    parser.add_argument(
+        "--output-dir",
+        default=os.environ.get("SPEC180_CASE_OUTPUT_DIR", ""),
+        help=(
+            "Case evidence directory. Spec180's isolated runner supplies "
+            "SPEC180_CASE_OUTPUT_DIR per child; direct runs must pass this "
+            "option explicitly."),
+    )
     parser.add_argument(
         "--tiny-fixture-root",
         default=str(ROOT / "tests/fixtures/spec175/tiny-causal-lm-v1"),
@@ -110,6 +117,8 @@ def main() -> int:
     # changing the subject between M-cases.
     if args.seed <= 0:
         raise SystemExit("seed must be positive")
+    if not args.output_dir:
+        raise SystemExit("--output-dir or SPEC180_CASE_OUTPUT_DIR is required")
     for label, path in (("tiny ONNX fixture", args.tiny_fixture_root),):
         if not Path(path).expanduser().exists():
             raise SystemExit(f"missing {label}: {path}")

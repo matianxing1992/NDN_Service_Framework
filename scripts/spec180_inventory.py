@@ -171,6 +171,7 @@ def local_input_identity(root: Path | str, environment: Mapping[str, str]) -> di
     file_names = (
         "NDNSF_DI_ENVELOPE_KEY_FILE", "SPEC180_YOLO_CATALOGUE_REGISTRY",
         "SPEC180_YOLO_OFFER_TRUST_ROOT", "SPEC180_YOLO_TOPOLOGY", "SPEC180_YOLO_CONFIG",
+        "SPEC180_YOLO_CHECKPOINT",
     ) + tuple(CASE_CONFIG_ENV.values())
     map_names = ("SPEC180_YOLO_OFFER_PUBLIC_KEY_MAP", "SPEC180_YOLO_OFFER_PRIVATE_KEY_MAP",
                  "SPEC181_PROVIDER_RECIPIENT_KEY_MAP")
@@ -190,6 +191,29 @@ def local_input_identity(root: Path | str, environment: Mapping[str, str]) -> di
                     raise InventoryError("INPUT_KEY_MAP_INVALID:" + name)
                 record["referencedFiles"] = {key: file_record(path_for(value))
                                              for key, value in sorted(document.items())}
+            elif name == "SPEC180_YOLO_CATALOGUE_REGISTRY":
+                document = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(document, dict) or not isinstance(document.get("catalogue"), dict):
+                    raise InventoryError("INPUT_REGISTRY_INVALID:" + name)
+                # Match the catalogue consumer's feature-root convention.
+                feature_root = (path.parent if (path.parent / "spec.md").exists()
+                                else path.parent.parent if path.parent.name == "contracts"
+                                else path.parent)
+                references = {}
+                for entry_name, entry in sorted(document.items()):
+                    required = entry_name in ("catalogue", "modelManifest", "artifactPolicyAuthority")
+                    if not required and not (isinstance(entry, dict) and "publicKeyPath" in entry):
+                        continue
+                    value = entry.get("publicKeyPath") if isinstance(entry, dict) else None
+                    if not isinstance(value, str) or not value:
+                        raise InventoryError("INPUT_REGISTRY_INVALID:" + entry_name)
+                    # The policy-authority loader resolves the registry first
+                    # and always interprets keys relative to its feature root.
+                    key_root = (path.resolve(strict=True).parent.parent
+                                if entry_name == "artifactPolicyAuthority" else feature_root)
+                    references[entry_name] = file_record(key_root / value)
+                record["referencedFiles"] = references
+            if "referencedFiles" in record:
                 if file_record(path) != {k: v for k, v in record.items() if k != "referencedFiles"}:
                     raise InventoryError("INPUT_CHANGED_DURING_HASH:" + name)
             inputs[name] = record

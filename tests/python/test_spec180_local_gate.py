@@ -384,12 +384,25 @@ def test_cli_rejects_non_string_environment_values(tmp_path: Path):
     ]) == 78
 
 
+@pytest.mark.parametrize("explicit", [False, True])
 def test_qwen_wrapper_accepts_runner_owned_output_directory(monkeypatch,
-                                                             tmp_path: Path):
+                                                             tmp_path: Path, explicit):
     wrapper = _load(QWEN_WRAPPER, "spec180_qwen_wrapper")
     monkeypatch.setenv("SPEC180_CASE_OUTPUT_DIR", str(tmp_path / "q-c"))
-    args = wrapper.build_parser().parse_args(["--case", "M01", "--seed", "1750001"])
-    assert args.output_dir == str(tmp_path / "q-c")
+    argv = ["--case", "M01", "--seed", "1750001"]
+    if explicit:
+        argv += ["--output-dir", str(tmp_path / "explicit")]
+    args = wrapper.build_parser().parse_args(argv)
+    assert args.output_dir == str(tmp_path / ("explicit" if explicit else "q-c"))
+
+
+def test_qwen_wrapper_rejects_missing_output_before_child_start(monkeypatch):
+    wrapper = _load(QWEN_WRAPPER, "spec180_qwen_wrapper")
+    monkeypatch.delenv("SPEC180_CASE_OUTPUT_DIR", raising=False)
+    monkeypatch.setattr(sys, "argv", [str(QWEN_WRAPPER), "--case", "M01", "--seed", "1750001"])
+    monkeypatch.setattr(wrapper.subprocess, "run", lambda *a, **kw: pytest.fail("child started"))
+    with pytest.raises(SystemExit, match="--output-dir or SPEC180_CASE_OUTPUT_DIR is required"):
+        wrapper.main()
 
 
 @pytest.mark.parametrize("mutation,reason", [
@@ -576,7 +589,8 @@ def test_inventory_and_gate_clis_share_actual_configuration(tmp_path: Path, caps
     assert not refused_output.exists()
 
 
-@pytest.mark.parametrize("mutation", ["model", "referenced-key", "add-model", "map", "case-config"])
+@pytest.mark.parametrize("mutation", ["model", "referenced-key", "add-model", "map", "case-config",
+                                      "checkpoint", "registry-public-key"])
 def test_local_gate_rejects_external_input_drift_before_children(tmp_path, monkeypatch, mutation):
     external = tmp_path / "inputs"
     package = external / "package"
@@ -587,8 +601,16 @@ def test_local_gate_rejects_external_input_drift_before_children(tmp_path, monke
     key.write_bytes(b"fixture private bytes")
     key_map = external / "recipients.json"
     key_map.write_text(json.dumps({"provider": str(key)}))
+    checkpoint = external / "checkpoint.pt"
+    checkpoint.write_bytes(b"frozen checkpoint")
+    public_key = external / "catalogue.pub"
+    public_key.write_bytes(b"registered public fixture")
+    registry = external / "registry.json"
+    registry.write_text(json.dumps({"catalogue": {"publicKeyPath": "catalogue.pub"}}))
     environment = {"SPEC180_YOLO_CANONICAL_PACKAGE": str(package),
-                   "SPEC181_PROVIDER_RECIPIENT_KEY_MAP": str(key_map)}
+                   "SPEC181_PROVIDER_RECIPIENT_KEY_MAP": str(key_map),
+                   "SPEC180_YOLO_CHECKPOINT": str(checkpoint),
+                   "SPEC180_YOLO_CATALOGUE_REGISTRY": str(registry)}
     for case in ("A", "B", "N"):
         config = external / (case + ".json")
         config.write_text(json.dumps({"case": case}))
@@ -602,6 +624,10 @@ def test_local_gate_rejects_external_input_drift_before_children(tmp_path, monke
         (package / "external.data").write_bytes(b"new external initializer")
     elif mutation == "map":
         key_map.write_text(json.dumps({"other-provider": str(key)}))
+    elif mutation == "checkpoint":
+        checkpoint.write_bytes(b"changed checkpoint")
+    elif mutation == "registry-public-key":
+        public_key.write_bytes(b"changed public fixture")
     else:
         Path(environment["SPEC181_LOCAL_CONFIG_Y_B"]).write_text('{"roles": []}')
     monkeypatch.setattr(runner, "_run_entry", lambda *a: pytest.fail("child started with changed inputs"))

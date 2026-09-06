@@ -22,10 +22,15 @@ exit 0、30/30 用例和 225/225 断言 PASS。完整构建 R2 又在原生装�
 错误修正后，R4 完整 unit/integration 目标构建成功。三个具名装配
 用例实际 ORT 加载/预热检查 3/3、138/138 断言 PASS（约 5.02 s）；
 仅为定向修复证据，未运行完整 suite。三案例配置已落盘，生产配置
-校验 3/3 PASS。
+校验 3/3 PASS。输入身份缺口已修复：checkpoint 与 registry 引用公钥
+均绑定实际文件，R1 语义 RED 后，隔离 R3 两文件 **92 passed（6.33 s）**。
+其间 R2 暴露的共享 wrapper 输出目录依赖已限定纳入；显式 CLI 优先
+及缺目录拒绝通过。三个实际注册 Ed25519 公钥摘要/身份检查 PASS，
+纳入遗漏的 catalogue/modelManifest 公钥。详见 preflight 的 Input
+Identity Closure R1/R2/R3。
 下一步按 [preflight review](evidence/t008-local-suite-preflight-20260906.md)
-完成余下四项本地测试/工具依赖和输入身份
-闭包，复审后以同一最终源码运行完整 gate。T008/T009/T012
+完成余下四项本地测试/工具依赖、让 exporter 消费显式 checkpoint，
+封闭最终运行输入，复审后以同一最终源码运行完整 gate。T008/T009/T012
 仍未完成；T010/T011 保持 TRANSFERRED。以下旧检查点仅保留历史。
 
 ## Historical Wire Repair Checkpoints

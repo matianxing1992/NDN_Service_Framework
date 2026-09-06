@@ -19,6 +19,28 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 T008 input closure R3 (2026-09-06): focused PASS.**
+The isolated inventory/supervisor run passes 92 checks after the actual RED.
+Checkpoint files and registry-referenced public keys are bound; changed inputs
+are rejected before children. The shared wrapper output-source dependency is
+included with explicit CLI precedence and missing-input rejection. Three
+registered Ed25519 public keys pass digest/identity checks. Full qualification
+remains open. See [R3 closure](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t008-local-suite-preflight-20260906.md#input-identity-closure-r3-and-public-material).
+
+**Spec181 T008 input identity R2 (2026-09-06): missing shared CLI dependency.**
+All new input checks pass; the isolated two-file run has 89 PASS and one FAIL.
+The existing streamed-generation wrapper regression exposes an unadopted
+runner-owned output-directory option. Preserve its CLI failure, adopt only
+the output-source/default rejection behavior, and retain the existing test.
+See [R2 boundary](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t008-local-suite-preflight-20260906.md#input-identity-closure-r2-and-shared-wrapper-dependency).
+
+**Spec181 T008 input identity R1 (2026-09-06): semantic RED.**
+Fourteen focused checks expose unbound checkpoint and registry public-key
+files; five existing drift checks pass. The actual gate attempts its child
+entry after either new input changes, caught before a real child launch.
+Repair the inventory input owner; no full suite or network case ran. See
+[input identity R1](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t008-local-suite-preflight-20260906.md#input-identity-closure-r1).
+
 **Spec181 T008 assembly closure R4/R1 (2026-09-06): focused PASS.**
 The corrected shared-source registration builds both complete C++ test targets.
 Only the three named assembly cases ran: 3/3 cases and 138/138 assertions pass
