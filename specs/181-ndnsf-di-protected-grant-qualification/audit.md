@@ -53,6 +53,12 @@ R = `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py`。
 
 ## Readiness Scorecard
 
+上述源码单元 checkpoint 为 `6b9bb51c`。R13 最终提交的维护
+source guard 与实际 application/native preflight 都 PASS；R12 的
+未跟踪 Repo 中间对象已完整移出源码检出保留，不放宽 gate。
+19 个 staged Python 文件与 R11 已测源逐字节相同。源码单元
+提交核对已完成，下一步按这些证据更新 A05/逐原则整体裁决。
+
 A05 实际应用源码闭包的 R11 已通过：同一隔离源码 45 项公共请求/
 签名/目录/规划检查与 12 项候选绑定回归 PASS，真实 publication、
 process_specs、native guard 和四个应用入口导入 PASS。新增 native

@@ -199,3 +199,32 @@ native receipt 来自同一 native 源构建，Python 模块入口摘要不等�
 整个第三方 distribution 的文件证明。T007 仍需最终源/运行环境
 闭包审查；T005/T008 正式网络矩阵、T009 交付与 T012 关闭未完成。
 本轮无 SIF/Tiger 操作、Git 合并或正式 MiniNDN 执行。
+
+## Committed Source Reconciliation R12
+
+源码单元已提交 `6b9bb51c`；19 个 staged Python 文件逐字节等于
+R11 已测隔离源码，checkpoint 前结构/证据清单与 diff 检查 PASS。
+隔离检出更新到该提交后 tracked/index 干净；实际 source guard
+exit 1，拒绝 Repo setup 留下的未跟踪 `build/src/ArtifactManifest.o`。
+R12 保存 terminal 结果记录。该中间构建目录不用于运行时导入；
+下一步把它完整移入 R12 保存，再执行 source guard，不放宽门禁。
+
+Context Mode 重建文档索引后 project health PASS；strict active
+仍报 `NO_REAL_SESSION_EVENTS`。当前任务状态继续以仓库文档为准，
+不让该可选检索层替代源码/资格证据。
+
+## Committed Source and Runtime R13
+
+Repo 中间对象完整移入 R12 `repo-build-intermediates/` 保存，运行
+扩展原位保留；没有删除源码或放宽 gate。R13 实际维护 source guard
+exit 0：`COMMITTED_SOURCE_CHECK_OK
+6b9bb51c43a597bf36ca62f304fee5f71c17fa58`。
+该提交的实际 application preflight/native guard/四入口导入再次
+exit 0，`APPLICATION_PREFLIGHT_IDENTITY_OK`，没有启动网络。
+原始 source-check.log、脚本、application-preflight.log/json 均保留。
+
+因此 R11 的 57 项定向检查现已与最终提交源码对应，runtime 在该
+提交上复验通过。剩余是 T007 的整体逐原则复审与 A05 关闭裁决，
+不是再次修复本节已验证的源码/导入缺口，也不等待 T005/T008
+正式网络结果。主工作区保留 119 个 tracked 修改和 618 个
+untracked 条目；它们未混入本源码 checkpoint。

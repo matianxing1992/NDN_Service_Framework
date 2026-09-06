@@ -19,6 +19,19 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 committed source R13 (2026-09-06): R12 resolved.**
+Repo build intermediates are preserved outside the checkout. The strict source
+guard passes for 6b9bb51c, and the real application/native preflight plus four
+application imports pass on that commit without network. Overall T007 audit
+remains the next gate. See [runtime refresh](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t007-local-runtime-refresh-20260906.md#committed-source-and-runtime-r13).
+
+**Spec181 committed source R12 (2026-09-06): BLOCK at build intermediates.**
+The isolated checkout matches 6b9bb51c with a clean tracked/index tree. The
+actual source gate rejects untracked Repo setup build/src/ArtifactManifest.o.
+Preserve the terminal result and move the complete intermediate build directory
+to R12 before retry, retaining runtime extension and strict source checks. See
+[runtime refresh](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t007-local-runtime-refresh-20260906.md#committed-source-reconciliation-r12).
+
 **Spec181 source closure R11 (2026-09-06): focused failures resolved.**
 The same isolated selected source passes 45 existing checks and 12 new candidate
 binding checks. Actual application/native preflight and four application imports

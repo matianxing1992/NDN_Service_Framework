@@ -126,6 +126,15 @@ publication/process_specs/native guard/四个应用入口导入均 PASS。
 57 项检查关闭选入的 Python 源依赖单元，保留全部 R1–R10 失败；
 下一步在最终提交核对同源源码与 runtime，完成 T007 审查后才进入
 T005/T008。完成数仍 5/10；本轮没有网络、SIF/Tiger 或 Git 合并。
+源码单元 checkpoint 为 `6b9bb51c`，19 个 Python 文件与隔离已测
+内容相同。R12 最终提交 source guard 拒绝 Repo setup 留下的未跟踪
+中间对象目录；下一步移入原始证据目录保存后重验，不放宽源码门。
+Context Mode project health PASS，active 层缺 session events，使用
+仓库 authority；T007 完整审查仍待完成。
+R13 保留 Repo 中间对象后，`6b9bb51c` 的实际 source guard PASS；
+该提交的 production application/native preflight 与四入口导入再验
+PASS，无网络。R11 的 57 项检查已与最终提交源码对应。下一步做
+T007 的整体逐原则复审/A05 关闭裁决，通过后进入 T005；完成数未变。
 
 **Execution order**：T007 PASS → T005 七子用例同源矩阵 → T008 完整
 本地清单与 Y-A/Y-B/Y-N → T009 开发交付封存 → T012 本地关闭。
