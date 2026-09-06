@@ -120,6 +120,9 @@ Batch A R3 最终字节重跑：**32 passed，2.78 s，exit 0，无 skip**；
 
 ## Full Test Build R1 And Runtime Test Migration
 
+以下运行记录之外的剩余测试来源处置见本文末尾 Remaining Test Source
+Disposition；登记的 local-suite 选择器规则保持不变。
+
 完整 test-target 构建在 `distributed-inference-protected-runtime.t.cpp`
 的旧 `revoke/revoked` 调用处 exit 1。首边界为编译，未执行 unit 或
 integration。该接口已按用户决定移交另一分支，不恢复接口来迁就
@@ -212,3 +215,90 @@ MiniNDN 协议或模型计算。
 配置字节变更触发已实现输入门，定向检错证据 RED/GREEN 完整。
 新身份使旧 inventory 无法直接沿用，须重新生成。完整 T008 仍受
 Test Source Closure 的待处置项和完整构建清单限制，未启动完整 suite。
+
+## Remaining Test Source Disposition
+
+以 `4bd1998b` 提交与主工作区预存未跟踪草稿作比较，余下 15 文件
+初审分为七项本地待纳入和八项保留移交/历史工具草稿；Batch B 后
+本地两项已验证纳入，尚余五项。此表不是删除测试
+或选择器豁免：已提交的继承测试仍由现有发现规则全量收集；本地
+待纳入项须先审查依赖、修正过期 fixture，再在隔离源码验证后提交。
+未交付草稿留在原工作区，T009 必须把它们列入未纳入交付的说明。
+
+| Test file (tests/python/) | Disposition / owner | Evidence and required next action |
+| --- | --- | --- |
+| test_spec180_candidate.py | LOCAL_PENDING / T009 | 旧 helper 强制 SIF 等十平面；按已批准本地交付契约修订 helper 与测试，封印发生在 T008 后。 |
+| test_spec180_native_evidence.py | LOCAL_PENDING / T008 | 实际编译 ExecutionEvidence / CudaDeviceIdentity，模拟 CUDA 边界；保留证据诚实性回归，纳入两份 C++ fixture，修正已抽取公共准备 owner 的旧源码断言。不能视为 GPU 资格。 |
+| test_spec180_yolo_adapter.py | LOCAL_PENDING / T008 | 真实 catalogue/候选/分区检查依赖 exporter；纳入并验证本地工具与显式 checkpoint 输入。 |
+| test_spec180_yolo_application.py | ADOPTED / T008 | Batch B R2 PASS；生产入口、输入和终端 owner，源码断言与实际函数检查分别限定证据范围。 |
+| test_spec180_yolo_equivalence.py | ADOPTED / T008 | Batch B R2 PASS；共享投影/原生 Merge/canonical 发布，显式 package/registry、真实签名与当前 adapter 路径。 |
+| test_spec180_yolo_export.py | LOCAL_PENDING / T008 | pinned checkpoint、签名、实际 ONNX 导出；审查 exporter 和外部模型输入闭包。 |
+| test_spec180_yolo_numerical.py | LOCAL_PENDING / T008 | 数值 oracle、独立预处理及真实 User 函数；补齐 exporter 依赖及当前 tensor helper 接线。 |
+| test_spec180_contract_gate.py | TRANSFERRED_DRAFT / experiment tools owner | 目标固定 Spec180 文档与九个 SC，运行调用方为 spec180_release.py；不能将旧文档门冒充 Spec181 审计。本地 catalogue 验证由已提交 adapter 与本地签名回归覆盖。 |
+| test_spec180_dispatcher.py | TRANSFERRED_DRAFT / experiment tools owner | run_spec180_case.py 的 yolo-functional / QWEN-F workload，调用方为 SIF/release；本地维护 runner 由 inventory 直接注册。 |
+| test_spec180_qwen_entrypoint.py | PRESERVED_DRAFT / local development owner | QWEN-F 模型 manifest 与 delegate，不是本 Spec 的 Y-A/Y-B/Y-N 或共享 runtime 验收；后续适用开发范围再纳入。 |
+| test_spec180_qwen_reference.py | PRESERVED_DRAFT / local development owner | 冻结 Spec175 tiny Q-C/Q-W 参考与 Tiger 27B 区分；保留历史，不能据此声称当前 Qwen 已验收。 |
+| test_spec180_release_workflow.py | TRANSFERRED_DRAFT / experiment tools owner | spec180_release.py、Slurm profile/dispatch/remote mount 身份；T010/T011 移交范围。 |
+| test_spec180_terminal_collector.py | TRANSFERRED_DRAFT / experiment tools owner | packaging jobs/spec180 collector 与 validate_spec180_results.py 的 profile 结果；本地维护 collector/negative oracle 由已提交测试覆盖。 |
+| test_spec180_tiger_contract.py | TRANSFERRED_DRAFT / experiment tools owner | 单 GPU 三 CUDA 角色及原生 CPU Merge/Tiger args，属于 T011。 |
+| test_spec180_tiger_supervision.py | TRANSFERRED_DRAFT / experiment tools owner | supervise-tiger.py、SIF source builder 与远端 validator；本地 supervisor 自身 76 项定向回归已有记录。 |
+
+依据：CodeGraph 定位工具后，对 `scripts/`、`Experiments/`、`packaging/`
+和 DI 源码核对真实引用。contract gate 的运行调用方为 release；dispatcher
+由 release/SIF build 使用；远端 validator 由 Tiger supervisor/collector
+使用。未触发远端脚本、SIF 构建、网络任务或 Git 合并。表中待纳入项
+仍为 BLOCK 的实际工作，不将静态分类记为回归 PASS。
+
+## Full Test Build R2
+
+旧测试迁移 checkpoint 为 `4bd1998b`。七个投影文件与该提交逐字节
+核对后，隔离 checkout 已切到此提交，只有构建目录为未跟踪产物。
+同一 `--targets=unit-tests,integration-tests -j2` 静态构建已启动，原始
+日志为 `spec181-full-test-build-20260906-r2/build.log`，结果待收集。
+
+## Test Adoption Batch B
+
+本批纳入 application 与 equivalence 两份预存本地回归。先把等价检查
+的隐藏临时 package 路径改为显式 `SPEC180_YOLO_CANONICAL_PACKAGE`，
+缺配置仅作普通开发 skip、显式缺失文件 FAIL；正式 gate 必须配置。
+原生 Merge 源码检查跟随实际 owner `cpp/adapters/yolo/`。其余断言
+保持后，对 `4bd1998b` 加两测试投影执行定向 pytest。
+
+R1：**18 passed、1 failed，3.01 s，无 skip，exit 1**。唯一失败是
+application 的源码文本断言仍要求硬编码 `data_v1_no_progress_ms=10_000`，
+需要核对当前超时参数来源再修正过期断言；不是一次网络超时。
+日志为 ignored workspace temporary directory 下
+`spec181-test-adoption-b-20260906-r1/tests.log`。实际 Controller publication
+函数及 APPProvider 入口检查通过，不能推广为真实 NDN 运行通过。
+
+R2：**19 passed，2.88 s，无 skip，exit 0**。实际 User 采用
+`data_v1_no_progress_ms=int(args.timeout_ms)`，源码检查已跟随当前请求
+预算契约，不修改超时行为。等价测试改为 `registry_path` 调用实际
+签名验证，不再采用 `require_signature=False`。两测试文件与隔离已测
+内容逐字节一致，源基线仍为 `4bd1998b`，无生产修改。
+
+```sh
+env PATH=/usr/bin:/bin:/usr/local/bin \
+  PYTHONPATH="$PWD/pythonWrapper:$PWD/NDNSF-DistributedInference:$PWD/NDNSF-DistributedRepo/pythonWrapper" \
+  SPEC180_YOLO_CANONICAL_PACKAGE="$CANONICAL_PACKAGE" \
+  SPEC180_YOLO_CATALOGUE_REGISTRY="$CATALOGUE_REGISTRY" \
+  /usr/bin/python3 -m pytest -q \
+  tests/python/test_spec180_yolo_application.py \
+  tests/python/test_spec180_yolo_equivalence.py
+```
+
+`CANONICAL_PACKAGE` / `CATALOGUE_REGISTRY` 为 R19 与 Batch A 已声明的
+真实外部输入，运行目录为隔离仓库根。原始 R2 目录为
+`spec181-test-adoption-b-20260906-r2/`；tests.log SHA-256 为
+`394fa0b30b8cb9df80d130eb93780aa9b8c0f3c7250cd370e5ba9855d3285601`。
+application / equivalence 最终测试源码 SHA-256 分别为
+`a22610d5c7e5ee80172170be36a815bda6bde52b70e0b55e1f26b96f5abec071` /
+`6d4fe3be20c19ce281f161add3bd5093e65c67db8c7a9cba8706409eedf9b5c6`。
+
+复审 PASS：15 个 application 检查含源码接线约束和实际签名密钥重载、
+Controller decoder/publication、APPProvider facade 调用；外部 ServiceUser
+为替身，只证明 publication 生命期意图和调用，不证明网络传输。四个
+equivalence 检查覆盖实际 catalogue/共享候选投影、Merge 无 ONNX 装配、
+canonical transport 与身份分离及 adapter 依赖约束。没有放宽验收或
+修改业务 deadline。当前提交准备纳入的 Python 发现文件数变为 39；
+余下五项本地依赖和八项保留草稿如表所列。完整 T008 仍未验收。

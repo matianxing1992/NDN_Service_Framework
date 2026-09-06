@@ -10,11 +10,13 @@
 
 T008 三案例配置绑定已修复，真实 supervisor 与输入漂移定向检查
 76 passed（6.22 s）；四组预存共享回归纳入，最终 32 passed（2.78 s，无 skip）。
+Batch B 应用入口/Merge 两组最终 19 passed（2.88 s，无 skip）；剩余
+来源已逐项处置，五项本地待纳入、八项实验/历史草稿保留说明。
 完整 C++ 构建 R1 因旧测试调用已移交的 `revoke/revoked` 停止；
 已迁移到真实 grant fixture 的数据流/零化检查，最终 R2 定向构建
 exit 0、30/30 用例和 225/225 断言 PASS；完整构建待继续。
 下一步按 [preflight review](evidence/t008-local-suite-preflight-20260906.md)
-处置余下 15 个预存测试来源差异，构建完整 unit/integration，准备三案例
+完成余下五项本地测试/工具依赖，收集完整 unit/integration R2 构建结果，准备三案例
 实际配置并复审后，以同一最终源码运行完整 gate。T008/T009/T012
 仍未完成；T010/T011 保持 TRANSFERRED。以下旧检查点仅保留历史。
 

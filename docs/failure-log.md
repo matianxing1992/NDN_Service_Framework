@@ -19,6 +19,17 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 T008 test adoption B R2 (2026-09-06): focused PASS.**
+All 19 application/Merge checks pass without skips using explicit signed
+canonical inputs. The stale timeout assertion follows the existing request
+budget contract; no production deadline changed. Five local test/tool
+dependencies remain. See [Batch B](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t008-local-suite-preflight-20260906.md#test-adoption-batch-b).
+
+**Spec181 T008 test adoption B R1 (2026-09-06): stale source assertion.**
+Eighteen checks pass; one expects a historical hard-coded User no-progress
+timeout. Inspect its current parameter source before migrating the assertion.
+No network attempt occurred. See [Batch B](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t008-local-suite-preflight-20260906.md#test-adoption-batch-b).
+
 **Spec181 T008 runtime test migration R2 (2026-09-06): focused PASS.**
 The final two-file target builds and passes 30 cases / 225 assertions.
 Real verified grants now cover publish/fetch rejection and host/device lease
