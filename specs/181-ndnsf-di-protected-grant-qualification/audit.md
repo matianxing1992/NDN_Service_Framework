@@ -53,6 +53,11 @@ R = `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py`。
 
 ## Readiness Scorecard
 
+显式配置根被默认 HOME 路径覆盖的问题已修复，24 focused checks
+PASS（0.85 s）；绝对/相对目录实际传入 child，显式缺 key 不回退。
+见 [配置选择证据](evidence/t007-explicit-config-root-20260906.md)。
+该修复关闭路径选择，不代替外部文件内容的身份核查。
+
 Waf 源/工具选择缺口已在维护 native owner 修复：80 focused checks
 PASS（1.75 s），两个真实 checkout 的只读目录对照均 PASS。新
 `waf_tool` 字段参与 receipt、复用及前后核对；旧 receipt 必须由

@@ -73,6 +73,11 @@ owner 记录并前后检查 Waf 解释器/目录/源文件，child 显式 WAFDIR
 旧 receipt 缺字段时拒绝。R1--R3 的失败与修复保留在证据中。
 下一步核查实际 import/外部模型输入，再用最终源码刷新 native
 receipt；本轮没有 native build、模型或网络资格运行。
+[显式配置目录修复](evidence/t007-explicit-config-root-20260906.md) R2
+**24 项定向检查 PASS（0.85 s）**：受保护入口保留显式配置根，
+在 child HOME/cwd 改写前解析绝对路径；显式目录缺 key 时直接
+拒绝，即使默认目录有 key。R1 RED 保留。本轮未启动正式网络；
+下一步继续外部输入字节/import 核查与 native receipt 刷新。
 
 **Execution order**：T007 PASS → T005 七子用例同源矩阵 → T008 完整
 本地清单与 Y-A/Y-B/Y-N → T009 开发交付封存 → T012 本地关闭。

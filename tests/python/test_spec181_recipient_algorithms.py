@@ -74,7 +74,8 @@ def test_recipient_file_rejected_before_publication(seam, invalid):
     assert seam.published == []
 
 
-def test_runner_preserves_separate_recipient_map(monkeypatch, tmp_path):
+@pytest.mark.parametrize("config_root", ["default", "absolute", "relative", "missing"])
+def test_runner_preserves_separate_recipient_map(monkeypatch, tmp_path, config_root):
     module = load_runner()
     monkeypatch.setattr(module, "CaseRuntimeBinding", SimpleNamespace(
         from_inputs=lambda *args: SimpleNamespace(output=tmp_path)))
@@ -88,6 +89,17 @@ def test_runner_preserves_separate_recipient_map(monkeypatch, tmp_path):
     authority = tmp_path / ".config/ndnsf/spec180/artifact-policy-authority.key"
     authority.parent.mkdir(parents=True)
     authority.write_text("not consumed: test stops before network startup")
+    expected_config = authority.parent
+    monkeypatch.delenv("NDNSF_SPEC180_CONFIG_ROOT", raising=False)
+    if config_root != "default":
+        expected_config = tmp_path / "explicit-config"
+        if config_root != "missing":
+            expected_config.mkdir()
+            (expected_config / authority.name).write_text("explicit fixture; not consumed")
+        if config_root == "relative":
+            monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("NDNSF_SPEC180_CONFIG_ROOT",
+                           expected_config.name if config_root == "relative" else str(expected_config))
     monkeypatch.setenv("SPEC181_PROTECTION_EPOCH", EPOCH)
     monkeypatch.setenv("SPEC181_PROVIDER_RECIPIENT_KEY_MAP", "/configured/recipients.json")
     monkeypatch.setenv("SPEC180_YOLO_OFFER_PRIVATE_KEY_MAP", "/configured/offers.json")
@@ -99,7 +111,13 @@ def test_runner_preserves_separate_recipient_map(monkeypatch, tmp_path):
         raise module.RunnerError("FIXTURE_BEFORE_NETWORK")
 
     monkeypatch.setattr(module, "_validate_local_native_build", stop_at_build_check)
-    with pytest.raises(module.RunnerError, match="FIXTURE_BEFORE_NETWORK"):
+    reason = ("PROTECTED_EPOCH_AUTHORITY_PRIVATE_KEY_MISSING" if config_root == "missing"
+              else "FIXTURE_BEFORE_NETWORK")
+    with pytest.raises(module.RunnerError, match=reason):
         module._run_live_case_once("Y-B", tmp_path, {})
+    if config_root == "missing":
+        assert not observed
+        return
+    assert observed["NDNSF_SPEC180_CONFIG_ROOT"] == str(expected_config)
     assert observed["SPEC181_PROVIDER_RECIPIENT_KEY_MAP"] == "/configured/recipients.json"
     assert observed["SPEC180_YOLO_OFFER_PRIVATE_KEY_MAP"] == "/configured/offers.json"

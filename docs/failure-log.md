@@ -19,6 +19,16 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 explicit config root R1 (2026-09-06): BLOCK at protected launch selection.**
+The runner overwrites explicit NDNSF_SPEC180_CONFIG_ROOT with the HOME default.
+Absolute/relative overrides and missing-key rejection fail (3 failed / 1 passed,
+0.81 s); fixture stops before native preflight/network. Preserve R1 and honor
+the explicit root before child HOME changes. See
+[explicit configuration root](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t007-explicit-config-root-20260906.md).
+R2 honors the explicit root, resolves it before child HOME/cwd changes, and
+rejects a missing explicit key even when the default key exists: 24 focused
+checks PASS (0.85 s). Configuration selection unit CLOSED; T007 remains open.
+
 **Spec181 Waf tool identity R3 (2026-09-06): BLOCK at CLI fixture PATH mismatch.**
 1 failed / 79 passed (1.81 s): an old CLI linkage test builds with fixture PATH
 then verifies with ambient PATH. The new Waf identity check correctly rejects

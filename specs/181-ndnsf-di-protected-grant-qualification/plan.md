@@ -84,6 +84,11 @@ WAFDIR，并在构建/校验前后核对；该字段也控制 binding reuse。
 刷新，不能手工补字段。此为本地源/工具选择检查，边界与证据见
 [Waf identity](evidence/t007-waf-tool-identity-20260906.md)。
 
+受保护本地 runner 必须尊重显式 `NDNSF_SPEC180_CONFIG_ROOT`，只在
+未配置时选择 operator HOME 默认值；child HOME/cwd 改写前解析
+绝对路径。显式目录缺少 authority key 时失败关闭，不回退其他
+目录。见 [explicit root](evidence/t007-explicit-config-root-20260906.md)。
+
 1. **In-process authority**。权威宿主为 requester/user 进程，保持
    requester 与 authority 逻辑身份和密钥区分。签发者身份、公钥摘要
    与策略来自 `artifactPolicyAuthority`；不把发布路由身份自动视为
