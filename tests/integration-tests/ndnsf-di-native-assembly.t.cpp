@@ -1,0 +1,727 @@
+#include "tests/boost-test.hpp"
+
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV3.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeYoloMergeRunner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp"
+#include "ndnsf-integration-fixture.hpp"
+
+#include <ndn-cxx/util/sha256.hpp>
+
+#include <boost/test/unit_test.hpp>
+
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <optional>
+#include <sstream>
+#include <string>
+#include <algorithm>
+#include <array>
+#include <cctype>
+#include <vector>
+
+namespace ndnsf::di::tests {
+namespace {
+
+using namespace ndn_service_framework;
+namespace fixture = ndn_service_framework::test;
+
+std::filesystem::path
+findFixture()
+{
+  const auto relative = std::filesystem::path(
+    "tests/fixtures/spec175/tiny-causal-lm-v1/two-role/role-0.onnx");
+  for (const auto& root : {std::filesystem::current_path(),
+                           std::filesystem::current_path().parent_path(),
+                           std::filesystem::current_path().parent_path().parent_path()}) {
+    const auto candidate = root / relative;
+    if (std::filesystem::is_regular_file(candidate)) {
+      return candidate;
+    }
+  }
+  return {};
+}
+
+std::vector<std::uint8_t>
+readBytes(const std::filesystem::path& path)
+{
+  std::ifstream input(path, std::ios::binary);
+  return std::vector<std::uint8_t>(std::istreambuf_iterator<char>(input),
+                                  std::istreambuf_iterator<char>());
+}
+
+std::string
+digest(const std::vector<std::uint8_t>& bytes)
+{
+  ndn::util::Sha256 hash;
+  hash.update(ndn::span<const std::uint8_t>(bytes.data(), bytes.size()));
+  auto hex = hash.toString();
+  std::transform(hex.begin(), hex.end(), hex.begin(), [] (unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
+  });
+  return "sha256:" + hex;
+}
+
+std::string
+digest(const std::string& text)
+{
+  return digest(std::vector<std::uint8_t>(text.begin(), text.end()));
+}
+
+std::string
+zeroDigest(char value = '0')
+{
+  return "sha256:" + std::string(64, value);
+}
+
+std::string
+jsonQuote(const std::string& value)
+{
+  std::string escaped = value;
+  std::string output = "\"";
+  for (const auto ch : escaped) {
+    if (ch == '\\' || ch == '\"') {
+      output.push_back('\\');
+    }
+    output.push_back(ch);
+  }
+  output.push_back('\"');
+  return output;
+}
+
+std::string
+recipeDigestFor(const NativeSelectionRoleV3& role)
+{
+  // The tiny fixture has concrete integer dimensions and one symbolic axis.
+  // Hash JSON integers for concrete axes, as required by the Python recipe.
+  const auto dimensionJson = [] (const std::string& dimension) {
+    if (dimension == "sequence") {
+      return jsonQuote(dimension);
+    }
+    const auto value = std::stoull(dimension);
+    BOOST_REQUIRE_EQUAL(std::to_string(value), dimension);
+    return std::to_string(value);
+  };
+  std::ostringstream wire;
+  wire << "{\"adapterDescriptorDigest\":" << jsonQuote(role.adapterDescriptorDigest)
+       << ",\"artifactProfileDigest\":" << jsonQuote(role.artifactProfileDigest)
+       << ",\"assemblerDescriptorDigest\":" << jsonQuote(role.assemblerDescriptorDigest)
+       << ",\"backendAbi\":" << jsonQuote(role.backendAbi)
+       << ",\"canonicalInitializerDigest\":"
+       << jsonQuote(role.canonicalInitializerDigest) << ",\"expectedInputs\":[";
+  for (std::size_t index = 0; index < role.expectedInputs.size(); ++index) {
+    if (index != 0) wire << ',';
+    const auto& item = role.expectedInputs[index];
+    wire << "{\"dtype\":" << jsonQuote(item.dtype)
+         << ",\"name\":" << jsonQuote(item.name) << ",\"shape\":[";
+    for (std::size_t dimension = 0; dimension < item.shape.size(); ++dimension) {
+      if (dimension != 0) wire << ',';
+      wire << dimensionJson(item.shape[dimension]);
+    }
+    wire << "]}";
+  }
+  wire << "],\"expectedOutputs\":[";
+  for (std::size_t index = 0; index < role.expectedOutputs.size(); ++index) {
+    if (index != 0) wire << ',';
+    const auto& item = role.expectedOutputs[index];
+    wire << "{\"dtype\":" << jsonQuote(item.dtype)
+         << ",\"name\":" << jsonQuote(item.name) << ",\"shape\":[";
+    for (std::size_t dimension = 0; dimension < item.shape.size(); ++dimension) {
+      if (dimension != 0) wire << ',';
+      wire << dimensionJson(item.shape[dimension]);
+    }
+    wire << "]}";
+  }
+  wire << "],\"graphDigest\":" << jsonQuote(role.graphDigest)
+       << ",\"inputNames\":[";
+  std::vector<std::string> inputNames;
+  for (const auto& item : role.expectedInputs) inputNames.push_back(item.name);
+  std::sort(inputNames.begin(), inputNames.end());
+  for (std::size_t index = 0; index < inputNames.size(); ++index) {
+    if (index != 0) wire << ',';
+    wire << jsonQuote(inputNames[index]);
+  }
+  wire << "],\"layerBegin\":" << role.layerBegin
+       << ",\"layerEnd\":" << role.layerEnd
+       << ",\"layout\":" << jsonQuote(role.layout)
+       << ",\"maxAssembledBytes\":" << role.maxAssembledBytes
+       << ",\"maxNodes\":" << role.maxNodes
+       << ",\"maxSourceBytes\":" << role.maxSourceBytes
+       << ",\"modelManifestDigest\":"
+       << jsonQuote(role.modelManifestDigest) << ",\"nodeIndices\":[";
+  for (std::size_t index = 0; index < role.nodeIndices.size(); ++index) {
+    if (index != 0) wire << ',';
+    wire << role.nodeIndices[index];
+  }
+  wire << "],\"outputNames\":[";
+  std::vector<std::string> outputNames;
+  for (const auto& item : role.expectedOutputs) outputNames.push_back(item.name);
+  std::sort(outputNames.begin(), outputNames.end());
+  for (std::size_t index = 0; index < outputNames.size(); ++index) {
+    if (index != 0) wire << ',';
+    wire << jsonQuote(outputNames[index]);
+  }
+  wire << "],\"padding\":" << jsonQuote(role.padding)
+       << ",\"precision\":" << jsonQuote(role.precision)
+       << ",\"quantization\":" << jsonQuote(role.quantization)
+       << ",\"roleKind\":" << jsonQuote(role.roleKind)
+       << ",\"schema\":\"ndnsf-di-certified-onnx-assembly-v1\"}";
+  return digest(wire.str());
+}
+
+class ScopedEnv
+{
+public:
+  ScopedEnv(const char* name, const std::string& value)
+    : m_name(name)
+  {
+    if (const auto* previous = std::getenv(name)) {
+      m_previous = previous;
+    }
+    ::setenv(name, value.c_str(), 1);
+  }
+
+  ~ScopedEnv()
+  {
+    if (m_previous) {
+      ::setenv(m_name.c_str(), m_previous->c_str(), 1);
+    }
+    else {
+      ::unsetenv(m_name.c_str());
+    }
+  }
+
+private:
+  std::string m_name;
+  std::optional<std::string> m_previous;
+};
+
+NativeSelectionProjectionV3
+makeProjection(const std::string& rootDigest,
+               const std::string& profileDigest,
+               const std::string& graphDigest,
+               const std::string& initializerDigest)
+{
+  NativeSelectionProjectionV3 projection;
+  projection.provider = "/provider/p0";
+  projection.requestId = "/request/spec175-assembly";
+  projection.canonicalArtifactName = "/spec175/native/root";
+  projection.plan.serviceName = "/LLM/Qwen";
+  projection.plan.modelName = "spec175-tiny-causal-lm-v1";
+
+  auto& role = projection.assembly;
+  role.role = "/LLM/Pipeline/Stage/0";
+  role.selectedRole = role.role;
+  role.rank = 0;
+  role.layerBegin = 0;
+  role.layerEnd = 2;
+  role.backend = "onnxruntime";
+  role.deviceSet = {"cpu"};
+  role.artifactDigest = zeroDigest('c');
+  role.roleKind = "PIPELINE_RANGE";
+  role.modelManifestDigest = rootDigest;
+  role.artifactProfileDigest = profileDigest;
+  role.graphDigest = graphDigest;
+  role.canonicalInitializerDigest = initializerDigest;
+  role.adapterDescriptorDigest = zeroDigest('1');
+  role.assemblerDescriptorDigest = zeroDigest('2');
+  role.backendAbi = "onnxruntime-cpu-v1";
+  for (std::uint64_t index = 0; index < 21; ++index) {
+    role.nodeIndices.push_back(index);
+  }
+  role.expectedInputs = {
+    {"input_ids", "int64", {"1", "sequence"}},
+    {"attention_kv_in", "float32", {"2", "8"}},
+    {"recurrent_state_in", "float32", {"2", "8"}},
+    {"convolution_state_in", "float32", {"2", "8"}},
+  };
+  role.expectedOutputs = {
+    {"hidden_out", "float32", {"1", "sequence", "8"}},
+    {"attention_kv_out", "float32", {"2", "8"}},
+    {"recurrent_state_out", "float32", {"2", "8"}},
+    {"convolution_state_out", "float32", {"2", "8"}},
+  };
+  role.precision = "float32";
+  role.quantization = "none";
+  role.layout = "native";
+  role.padding = "none";
+  role.maxSourceBytes = 1024 * 1024;
+  role.maxAssembledBytes = 1024 * 1024;
+  role.maxNodes = 64;
+  role.recipeDigest = recipeDigestFor(role);
+  return projection;
+}
+
+void
+runRegisteredProviderAssemblyCase(std::size_t providerCount)
+{
+  BOOST_REQUIRE(providerCount == 1 || providerCount == 2 || providerCount == 4);
+  const auto fixture = findFixture();
+  BOOST_REQUIRE(!fixture.empty());
+  const auto source = readBytes(fixture);
+  BOOST_REQUIRE(!source.empty());
+  const auto sourceDigest = digest(source);
+  const auto profileDigest = zeroDigest('b');
+  const auto graphDigest =
+    "sha256:557dd7e11bd9e7b083356aeaab4f823ddb2e6c2b66ec0426032497dbe357c682";
+  const auto initializerDigest =
+    "sha256:074d3acd4acd13d94c4d27e9a201255ed9fd72f1783e4a056b7c6509deb6be9b";
+  const auto suffix = std::to_string(providerCount);
+  const auto rootName = ndn::Name("/spec175/native/registered/root/" + suffix);
+  const auto sourceName = ndn::Name("/spec175/native/registered/source/" + suffix);
+  const auto rootJson = std::string(
+    "{\"artifactProfileDigest\":\"") + profileDigest +
+    "\",\"metadata\":{\"canonicalSourceBytes\":" +
+    std::to_string(source.size()) +
+    ",\"canonicalSourceDataName\":\"" + sourceName.toUri() +
+    "\",\"canonicalSourceDigest\":\"" + sourceDigest +
+    "\"},\"modelIdentityDigest\":\"" + zeroDigest('a') +
+    "\",\"modelName\":\"spec175-tiny-causal-lm-v1\","
+    "\"schema\":\"ndnsf-di-canonical-model-manifest-v1\","
+    "\"state\":\"ACTIVE\"}";
+  const auto rootPayload = std::vector<std::uint8_t>(rootJson.begin(), rootJson.end());
+  auto projection = makeProjection(
+    digest(rootPayload), profileDigest, graphDigest, initializerDigest);
+  projection.canonicalArtifactName = rootName.toUri();
+  projection.requestId = "/request/spec175-registered/" + suffix;
+
+  ScopedEnv pythonPath(
+    "PYTHONPATH", "NDNSF-DistributedInference:NDNSF-DistributedRepo/pythonWrapper");
+  const auto baseCacheDir = std::filesystem::temp_directory_path() /
+    ("spec175-native-assembly-registered-" + suffix);
+  std::error_code cleanupError;
+  std::filesystem::remove_all(baseCacheDir, cleanupError);
+
+  NativeCanonicalOnnxFetchers fetchers;
+  fetchers.getArtifact = [rootName, rootPayload] (const ndn::Name& name)
+    -> std::optional<ndn::Buffer> {
+    if (name != rootName) {
+      return std::nullopt;
+    }
+    return ndn::Buffer(rootPayload.data(), rootPayload.size());
+  };
+  fetchers.fetchEncryptedLargeData = [sourceName, source] (
+      const ndn::Name& name, const ndn::Name& service)
+    -> std::optional<ndn::Buffer> {
+    if (name != sourceName || service != ndn::Name("/LLM/Qwen")) {
+      return std::nullopt;
+    }
+    return ndn::Buffer(source.data(), source.size());
+  };
+
+  NativeCanonicalOnnxAssemblerOptions options;
+  options.signManifest = [] (const std::string& manifestBytes) {
+    return "fixture-signature-" + digest(manifestBytes);
+  };
+
+  // Each simulated registered Provider runs this same post-Selection path in
+  // its own cache namespace.  The Python oracle invokes each Boost case in a
+  // separate process, so no startup-time role artifact can satisfy the check.
+  for (std::size_t index = 0; index < providerCount; ++index) {
+    auto providerProjection = projection;
+    providerProjection.provider = "/provider/registered/" + suffix +
+                                  "/p" + std::to_string(index);
+    options.providerIdentity = providerProjection.provider;
+    options.cacheDir = (baseCacheDir / ("p" + std::to_string(index))).string();
+    const auto prepared = prepareNativeCanonicalOnnxRole(
+      fetchers, providerProjection, options);
+    BOOST_REQUIRE(std::filesystem::is_regular_file(prepared.path));
+    BOOST_CHECK_EQUAL(prepared.metadata.at("assembledFrom"),
+                      "canonical-root-post-selection");
+    BOOST_CHECK_EQUAL(prepared.metadata.at("modelManifestDigest"),
+                      providerProjection.assembly.modelManifestDigest);
+
+    // Construction performs the real C++ ORT session load and shape-valid
+    // warmup; a synthetic runner or a ready-made startup file cannot satisfy it.
+    OnnxRuntimeModelRunner runner(prepared);
+    BOOST_REQUIRE(runner.runtimeMetricsSnapshot());
+  }
+  std::filesystem::remove_all(baseCacheDir, cleanupError);
+}
+
+} // namespace
+
+BOOST_AUTO_TEST_SUITE(Spec175NativeAssembly)
+
+BOOST_AUTO_TEST_CASE(AssignmentBoundRootSourceAndCachePath)
+{
+  const auto fixture = findFixture();
+  BOOST_REQUIRE(!fixture.empty());
+  const auto source = readBytes(fixture);
+  BOOST_REQUIRE(!source.empty());
+  const auto sourceDigest = digest(source);
+  const auto profileDigest = zeroDigest('b');
+  const auto graphDigest =
+    "sha256:557dd7e11bd9e7b083356aeaab4f823ddb2e6c2b66ec0426032497dbe357c682";
+  const auto initializerDigest =
+    "sha256:074d3acd4acd13d94c4d27e9a201255ed9fd72f1783e4a056b7c6509deb6be9b";
+  const auto rootJson = std::string(
+    "{\"artifactProfileDigest\":\"") + profileDigest +
+    "\",\"metadata\":{\"canonicalSourceBytes\":" +
+    std::to_string(source.size()) +
+    ",\"canonicalSourceDataName\":\"/spec175/native/source\","
+    "\"canonicalSourceDigest\":\"" + sourceDigest +
+    "\"},\"modelIdentityDigest\":\"" + zeroDigest('a') +
+    "\",\"modelName\":\"spec175-tiny-causal-lm-v1\","
+    "\"schema\":\"ndnsf-di-canonical-model-manifest-v1\","
+    "\"state\":\"ACTIVE\"}";
+  const auto rootPayload = std::vector<std::uint8_t>(rootJson.begin(), rootJson.end());
+  const auto rootDigest = digest(rootPayload);
+  const auto projection = makeProjection(
+    rootDigest, profileDigest, graphDigest, initializerDigest);
+
+  ScopedEnv pythonPath(
+    "PYTHONPATH", "NDNSF-DistributedInference:NDNSF-DistributedRepo/pythonWrapper");
+  const auto cacheDir = std::filesystem::temp_directory_path() /
+    "spec175-native-assembly-fixture";
+  std::error_code cleanupError;
+  std::filesystem::remove_all(cacheDir, cleanupError);
+
+  NativeCanonicalOnnxFetchers fetchers;
+  fetchers.getArtifact = [rootPayload] (const ndn::Name& name)
+    -> std::optional<ndn::Buffer> {
+    if (name == ndn::Name("/spec175/native/root")) {
+      return ndn::Buffer(rootPayload.data(), rootPayload.size());
+    }
+    return std::nullopt;
+  };
+  fetchers.fetchEncryptedLargeData = [source] (
+      const ndn::Name& name, const ndn::Name& service)
+    -> std::optional<ndn::Buffer> {
+    if (name == ndn::Name("/spec175/native/source") &&
+        service == ndn::Name("/LLM/Qwen")) {
+      return ndn::Buffer(source.data(), source.size());
+    }
+    return std::nullopt;
+  };
+
+  NativeCanonicalOnnxAssemblerOptions options;
+  options.cacheDir = cacheDir.string();
+  options.providerIdentity = "/provider/p0";
+  options.signManifest = [] (const std::string&) {
+    return std::string("fixture-signature-v1");
+  };
+
+  const auto first = prepareNativeCanonicalOnnxRole(fetchers, projection, options);
+  BOOST_REQUIRE(std::filesystem::is_regular_file(first.path));
+  BOOST_CHECK_EQUAL(first.metadata.at("assembledFrom"),
+                    "canonical-root-post-selection");
+  BOOST_CHECK_EQUAL(first.metadata.at("modelManifestDigest"), rootDigest);
+  const auto second = prepareNativeCanonicalOnnxRole(fetchers, projection, options);
+  BOOST_CHECK_EQUAL(second.path, first.path);
+  BOOST_CHECK(std::filesystem::is_regular_file(second.path));
+
+  auto tamperedFetchers = fetchers;
+  tamperedFetchers.fetchEncryptedLargeData = [source] (
+      const ndn::Name& name, const ndn::Name& service)
+    -> std::optional<ndn::Buffer> {
+    if (name != ndn::Name("/spec175/native/source") ||
+        service != ndn::Name("/LLM/Qwen")) {
+      return std::nullopt;
+    }
+    auto mutated = source;
+    mutated.front() ^= 0x01;
+    return ndn::Buffer(mutated.data(), mutated.size());
+  };
+  BOOST_CHECK_THROW(
+    prepareNativeCanonicalOnnxRole(tamperedFetchers, projection, options),
+    std::runtime_error);
+
+  auto unsignedOptions = options;
+  unsignedOptions.signManifest = {};
+  BOOST_CHECK_THROW(
+    prepareNativeCanonicalOnnxRole(fetchers, projection, unsignedOptions),
+    std::runtime_error);
+
+  auto missingRootFetchers = fetchers;
+  missingRootFetchers.getArtifact = [] (const ndn::Name&)
+    -> std::optional<ndn::Buffer> {
+    return std::nullopt;
+  };
+  BOOST_CHECK_THROW(
+    prepareNativeCanonicalOnnxRole(missingRootFetchers, projection, options),
+    std::runtime_error);
+
+  auto mutatedProjection = projection;
+  mutatedProjection.assembly.graphDigest = zeroDigest('f');
+  BOOST_CHECK_THROW(
+    prepareNativeCanonicalOnnxRole(fetchers, mutatedProjection, options),
+    std::runtime_error);
+
+  mutatedProjection = projection;
+  mutatedProjection.assembly.canonicalInitializerDigest = zeroDigest('f');
+  BOOST_CHECK_THROW(
+    prepareNativeCanonicalOnnxRole(fetchers, mutatedProjection, options),
+    std::runtime_error);
+
+  mutatedProjection = projection;
+  mutatedProjection.assembly.recipeDigest = zeroDigest('f');
+  BOOST_CHECK_THROW(
+    prepareNativeCanonicalOnnxRole(fetchers, mutatedProjection, options),
+    std::runtime_error);
+
+  auto cachedModel = readBytes(first.path);
+  BOOST_REQUIRE(!cachedModel.empty());
+  cachedModel.front() ^= 0x01;
+  {
+    std::ofstream output(first.path, std::ios::binary | std::ios::trunc);
+    output.write(reinterpret_cast<const char*>(cachedModel.data()),
+                 static_cast<std::streamsize>(cachedModel.size()));
+  }
+  BOOST_CHECK_THROW(
+    prepareNativeCanonicalOnnxRole(fetchers, projection, options),
+    std::runtime_error);
+  std::filesystem::remove_all(cacheDir, cleanupError);
+}
+
+BOOST_AUTO_TEST_CASE(CollaborationContextBindsAssignmentRootBeforeSourceFetch)
+{
+  // This is intentionally a no-network boundary check.  The assignment
+  // payload is supplied through CollaborationContext, but its ACTIVE root
+  // omits the canonical source name.  The context overload must therefore
+  // reach the context-owned root first and fail at source-name validation; a
+  // detached or fake fetcher would report root-unavailable instead.
+  fixture::BootstrapProfile profile;
+  profile.serviceName = ndn::Name("/LLM/Qwen");
+  fixture::NdnsfIntegrationEnvironment environment(profile);
+
+  const auto profileDigest = zeroDigest('b');
+  const auto rootJson = std::string(
+    "{\"artifactProfileDigest\":\"") + profileDigest +
+    "\",\"modelIdentityDigest\":\"" + zeroDigest('a') +
+    "\",\"modelName\":\"spec175-tiny-causal-lm-v1\","
+    "\"schema\":\"ndnsf-di-canonical-model-manifest-v1\","
+    "\"state\":\"ACTIVE\"}";
+  const auto rootBytes = std::vector<std::uint8_t>(rootJson.begin(), rootJson.end());
+  const auto projection = makeProjection(
+    digest(rootBytes), profileDigest, zeroDigest('d'), zeroDigest('e'));
+
+  ServiceProvider::CollaborationAssignment assignment;
+  assignment.role = projection.assembly.role;
+  assignment.service = projection.plan.serviceName;
+  assignment.assignedArtifact = ndn::Name(projection.canonicalArtifactName);
+  assignment.artifactPayload = ndn::Buffer(rootBytes.data(), rootBytes.size());
+  RequestMessage request;
+  ServiceProvider::CollaborationContext context(
+    environment.provider(), environment.user().getName(), projection.requestId,
+    request, assignment);
+  BOOST_REQUIRE(context.fetchArtifact(assignment.assignedArtifact, 1));
+
+  NativeCanonicalOnnxAssemblerOptions options;
+  options.cacheDir = (std::filesystem::temp_directory_path() /
+                      "spec175-native-context-wiring").string();
+  options.providerIdentity = environment.provider().getName().toUri();
+  options.signManifest = [] (const std::string&) {
+    return std::string("fixture-signature-v1");
+  };
+
+  try {
+    prepareNativeCanonicalOnnxRole(context, projection, options);
+    BOOST_FAIL("missing canonical source metadata was accepted");
+  }
+  catch (const std::runtime_error& error) {
+    BOOST_CHECK_EQUAL(error.what(),
+                      std::string("DI_CANONICAL_SOURCE_NAME_MISSING"));
+  }
+}
+
+BOOST_AUTO_TEST_CASE(RegisteredOneProviderAssemblyLoadsOrt)
+{
+  runRegisteredProviderAssemblyCase(1);
+}
+
+BOOST_AUTO_TEST_CASE(RegisteredTwoProviderAssemblyLoadsOrt)
+{
+  runRegisteredProviderAssemblyCase(2);
+}
+
+BOOST_AUTO_TEST_CASE(RegisteredFourProviderAssemblyLoadsOrt)
+{
+  runRegisteredProviderAssemblyCase(4);
+}
+
+BOOST_AUTO_TEST_CASE(NativeYoloMergeDecodesAndOrdersDependencyTensors)
+{
+  const std::array<std::string, 6> names{
+    "/model/model.23/one2one_cv2.0/one2one_cv2.0.2/Conv_output_0",
+    "/model/model.23/one2one_cv2.1/one2one_cv2.1.2/Conv_output_0",
+    "/model/model.23/one2one_cv2.2/one2one_cv2.2.2/Conv_output_0",
+    "/model/model.23/one2one_cv3.0/one2one_cv3.0.2/Conv_output_0",
+    "/model/model.23/one2one_cv3.1/one2one_cv3.1.2/Conv_output_0",
+    "/model/model.23/one2one_cv3.2/one2one_cv3.2.2/Conv_output_0",
+  };
+  const std::array<std::size_t, 3> grids{80, 40, 20};
+  const std::array<std::string, 6> scopes{
+    "merge-box-0", "merge-box-1", "merge-box-2",
+    "merge-class-0", "merge-class-1", "merge-class-2",
+  };
+  const auto digestValue = zeroDigest('a');
+  NativeModelRunnerSpec spec;
+  spec.role = "Merge";
+  spec.kind = "native-yolo-postprocess";
+  spec.backend = "native-yolo-postprocess";
+  spec.metadata = {
+    {"mergeKind", "NATIVE_POSTPROCESS"},
+    {"postprocessIdentity", "YOLO26n-canonical-detection-rows"},
+    {"postprocessOutputName", "predictions"},
+    {"postprocessConfidenceThreshold", "0.001000"},
+    {"postprocessSort", "confidence-desc,class-asc,xyxy-asc"},
+    {"expectedOutputShape", "1,2,6"},
+    {"evidence.providerName", "/provider/merge"},
+    {"evidence.providerBootId", "boot-merge"},
+    {"evidence.epoch", "1"},
+    {"evidence.createdAtMs", "1"},
+    {"evidence.modelDigest", digestValue},
+    {"evidence.planDigest", digestValue},
+    {"evidence.artifactDigest", digestValue},
+  };
+  auto runner = makeNativeYoloMergeRunner(spec);
+  BOOST_REQUIRE(runner->executionEvidence());
+  BOOST_CHECK(!runner->executionEvidence()->realCompute);
+  BOOST_CHECK_EQUAL(
+    validateNativeProviderRuntimeReadiness(
+      *runner->executionEvidence(), "Merge", "onnxruntime-cpu", "cpu", digestValue)
+      .value_or(""), "");
+  auto invalidEvidence = *runner->executionEvidence();
+  invalidEvidence.realCompute = true;
+  BOOST_CHECK_EQUAL(
+    validateNativeProviderRuntimeReadiness(
+      invalidEvidence, "Merge", "onnxruntime-cpu", "cpu", digestValue)
+      .value_or(""), "DI_RUNTIME_EVIDENCE_INVALID");
+
+  RoleExecutionContext context;
+  context.role = "Merge";
+  for (std::size_t scale = 0; scale < grids.size(); ++scale) {
+    const auto cellCount = grids[scale] * grids[scale];
+    std::vector<float> boxValues(cellCount * 4, 0.0f);
+    for (std::size_t cell = 0; cell < cellCount; ++cell) {
+      boxValues[cell] = 1.0f;
+      boxValues[cellCount + cell] = 2.0f;
+      boxValues[2 * cellCount + cell] = 3.0f;
+      boxValues[3 * cellCount + cell] = 4.0f;
+    }
+    std::vector<float> classValues(cellCount * 80, -20.0f);
+    if (scale == 0) {
+      classValues[7 * cellCount + 2 * grids[scale] + 1] = 4.0f;
+    }
+    if (scale == 2) {
+      classValues[2 * cellCount + 4 * grids[scale] + 3] = 3.0f;
+    }
+    auto bytes = [] (const std::vector<float>& values) {
+      std::vector<std::uint8_t> result(values.size() * sizeof(float));
+      std::memcpy(result.data(), values.data(), result.size());
+      return result;
+    };
+    const auto boxBundle = makeEncodedTensorBundle(
+      scopes[scale], {makeFloat32Tensor(
+        names[scale], {1, 4, static_cast<std::int64_t>(grids[scale]),
+                       static_cast<std::int64_t>(grids[scale])}, bytes(boxValues))});
+    const auto classBundle = makeEncodedTensorBundle(
+      scopes[scale + 3], {makeFloat32Tensor(
+        names[scale + 3], {1, 80, static_cast<std::int64_t>(grids[scale]),
+                           static_cast<std::int64_t>(grids[scale])}, bytes(classValues))});
+    context.inputsByScope.emplace(scopes[scale], boxBundle);
+    context.inputsByScope.emplace(scopes[scale + 3], classBundle);
+    context.inputEdgesByScope.emplace(
+      scopes[scale], DependencyEdge{scopes[scale], "DetectShard0", "Merge",
+                                    "/planned/" + scopes[scale], 0, 0,
+                                    {names[scale]}});
+    context.inputEdgesByScope.emplace(
+      scopes[scale + 3], DependencyEdge{scopes[scale + 3], "DetectShard0", "Merge",
+                                        "/planned/" + scopes[scale + 3], 0, 0,
+                                        {names[scale + 3]}});
+  }
+  const auto outputs = runner->run(context);
+  BOOST_REQUIRE_EQUAL(outputs.size(), 1U);
+  const auto& result = outputs.at("final-response");
+  const auto decoded = decodeTensorBundle(result.payload);
+  BOOST_REQUIRE_EQUAL(decoded.size(), 1U);
+  BOOST_REQUIRE_EQUAL(decoded.front().name, "predictions");
+  BOOST_REQUIRE(decoded.front().shape ==
+                (std::vector<std::int64_t>{1, 2, 6}));
+  std::vector<float> actual(decoded.front().payload.size() / sizeof(float));
+  std::memcpy(actual.data(), decoded.front().payload.data(), decoded.front().payload.size());
+  const auto firstConfidence = 1.0f / (1.0f + std::exp(-4.0f));
+  const auto secondConfidence = 1.0f / (1.0f + std::exp(-3.0f));
+  const std::vector<float> expected{
+    4.0f, 4.0f, 36.0f, 52.0f, firstConfidence, 7.0f,
+    80.0f, 80.0f, 208.0f, 272.0f, secondConfidence, 2.0f,
+  };
+  BOOST_REQUIRE_EQUAL(actual.size(), expected.size());
+  for (std::size_t index = 0; index < actual.size(); ++index) {
+    BOOST_CHECK_CLOSE(actual[index], expected[index], 0.001);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(NativeProviderIssuesCanonicalPreparationOfferV3)
+{
+  const auto signerKeyId = zeroDigest('2');
+  NativeProviderOfferV3Config config;
+  config.provider = "/provider/A";
+  config.service = "/AI/YOLO/YOLO26n";
+  config.bootEpoch = "boot-1";
+  config.signerKeyId = signerKeyId;
+  config.acceptedRoles = {"BackboneNeck"};
+  config.backends = {"onnxruntime-cpu"};
+  config.canProvision = true;
+  config.hasModel = false;
+  std::string signedDigest;
+  config.signDigest = [&signedDigest] (const std::string& value) {
+    signedDigest = value;
+    return "fixture-signature";
+  };
+  const std::string request =
+    "{\"attempt\":1,\"model_identity_hash\":\"" + zeroDigest('1') +
+    "\",\"plan_deadline_ms\":1700000060000,\"request_id\":\"/request/1\","
+    "\"schema\":\"ndnsf-di-request-envelope-v2\","
+    "\"service\":\"/AI/YOLO/YOLO26n\","
+    "\"task\":{\"placement_profile\":\"DI_PLACEMENT_V3\"}}";
+  const auto decision = issueNativeProviderOfferV3(
+    std::vector<std::uint8_t>(request.begin(), request.end()),
+    config, 1700000000000ULL);
+  BOOST_REQUIRE(decision);
+  BOOST_CHECK(decision->status);
+  BOOST_CHECK_EQUAL(decision->message, "DI_PLACEMENT_V3_OFFER");
+  BOOST_CHECK_EQUAL(decision->pendingStateTtlMs, 60000U);
+  BOOST_CHECK_EQUAL(
+    signedDigest,
+    "sha256:6a0b22af7b13bb44b7664a71c8b94c28267951184c1ea2a912704f748b1ef444");
+  BOOST_CHECK_EQUAL(
+    decision->payload,
+    "{\"accepted_roles\":[\"BackboneNeck\"],\"ack_reservation\":false,"
+    "\"attempt\":1,\"backends\":[\"onnxruntime-cpu\"],\"bandwidth_mbps\":0.0,"
+    "\"boot_epoch\":\"boot-1\",\"can_provision\":true,"
+    "\"captured_at_ms\":1700000000000,\"estimated_wait_ms\":0.0,"
+    "\"execution_disposition\":\"ACCEPT_WITH_PREPARATION\","
+    "\"expires_at_ms\":1700000060000,\"graph_digest\":\"" + zeroDigest() +
+    "\",\"has_model\":false,\"model_digest\":\"" + zeroDigest('1') +
+    "\",\"preparation_accepted\":true,\"provider\":\"/provider/A\","
+    "\"queue_depth\":0,\"request_id\":\"/request/1\",\"residency\":[],"
+    "\"resources\":[],\"rtt_ms\":0.0,\"schema\":\"DI_PLACEMENT_V3\","
+    "\"schema_version\":3,\"service\":\"/AI/YOLO/YOLO26n\","
+    "\"signature\":\"fixture-signature\",\"signer_key_id\":\"" + signerKeyId +
+    "\",\"status\":true,\"topology\":{\"backend\":\"cpu\",\"devices\":[],"
+    "\"provider\":\"/provider/A\",\"topology_digest\":\"\"}}"
+  );
+
+  bool signerCalled = false;
+  config.signDigest = [&signerCalled] (const std::string&) {
+    signerCalled = true;
+    return "must-not-be-used";
+  };
+  const auto expired = issueNativeProviderOfferV3(
+    std::vector<std::uint8_t>(request.begin(), request.end()),
+    config, 1700000060000ULL);
+  BOOST_REQUIRE(expired);
+  BOOST_CHECK(!expired->status);
+  BOOST_CHECK_EQUAL(expired->message, "DI_V3_REQUEST_EXPIRED");
+  BOOST_CHECK(!signerCalled);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+} // namespace ndnsf::di::tests

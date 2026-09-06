@@ -216,6 +216,19 @@ def test_inventory_detects_added_or_deleted_headers(local, operation):
         verify(local)
 
 
+def test_loaded_test_wscript_is_bound_even_for_native_targets(local):
+    local["put"]("tests/wscript")
+    build(local)
+    path = local["root"] / "tests/wscript"
+    before = path.stat()
+    path.write_bytes(b"changed Waf build graph\n")
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    local["calls"].clear()
+    with pytest.raises(native.IdentityError, match="STALE_SOURCES"):
+        verify(local)
+    assert local["calls"] == []
+
+
 def test_irrelevant_temp_logs_do_not_invalidate_deterministic_inventory(local):
     first = native.source_fingerprints(local["root"])
     local["put"](".workspace-tmp/foreign/ServiceController.cpp")
