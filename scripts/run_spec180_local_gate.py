@@ -24,7 +24,8 @@ import time
 from typing import Any, Mapping, Sequence
 
 from spec180_inventory import (
-    DEFAULT_CASES, InventoryError, local_input_identity, local_launch_configuration, validate_inventory,
+    CASE_CONFIG_ENV, DEFAULT_CASES, InventoryError, local_input_identity,
+    local_launch_configuration, validate_inventory,
 )
 
 
@@ -249,6 +250,9 @@ def _run_entry(root: Path, entry: Mapping[str, Any], output_root: Path,
     pid: int | None = None
     child_environment = dict(environment)
     if entry.get("kind") == "minindn-case":
+        config_variable = CASE_CONFIG_ENV[str(entry["case"])]
+        if config_variable in environment:
+            child_environment["SPEC180_YOLO_CONFIG"] = environment[config_variable]
         case_output = evidence_dir / "case-output"
         # The supervisor owns creation of the case root.  The case runner must
         # reject a missing root, so a typo cannot silently create evidence in

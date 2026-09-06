@@ -8,9 +8,10 @@
 前后不变。T005 完成，本机 **7/10**。见
 [T005 current evidence](evidence/t005-y-n-matrix-current.md#current-r19-qualification)。
 
-下一步 T008：按 [preflight review](evidence/t008-local-suite-preflight-20260906.md)
-修复三案例共用配置的缺口，处置 19 个预存测试来源差异，构建完整
-unit/integration，复审后以同一最终源码运行完整 gate。T008/T009/T012
+T008 三案例配置绑定已修复，真实 supervisor 与输入漂移定向检查
+76 passed（6.22 s）。下一步按 [preflight review](evidence/t008-local-suite-preflight-20260906.md)
+处置 19 个预存测试来源差异，构建完整 unit/integration，准备三案例
+实际配置并复审后，以同一最终源码运行完整 gate。T008/T009/T012
 仍未完成；T010/T011 保持 TRANSFERRED。以下旧检查点仅保留历史。
 
 ## Historical Wire Repair Checkpoints

@@ -1,8 +1,8 @@
 # T008 Local Suite Preflight Review
 
 **Date**: 2026-09-06 | **Task**: T008
-**Evidence layer**: proposed / implemented (source inspection only)
-**Status**: BLOCK (complete local gate configuration; T005 R19 subject unchanged)
+**Evidence layer**: proposed / implemented / wired / executed (focused configuration repair)
+**Status**: BLOCK (test-source/build closure pending; case configuration focused PASS)
 
 ## Scope And Source
 
@@ -74,5 +74,38 @@ legacy encoder 的大包断言与最终契约不符；不能原样纳入或为�
 
 ## Next Action
 
-先完成并记录 T005 R19 的实际终态；按上述设计修复 T008 case 配置，
-完成测试来源处置与构建清单，再进行同源完整资格验证。T008 未完成。
+T005 R19 已完整 PASS。T008 case 配置定向修复也已通过（下文 R2）；
+下一步完成测试来源处置与构建清单、准备三案例实际配置并复审，再
+进行同源完整资格验证。T008 未完成。
+
+## Focused Configuration R1
+
+新断言在修复前源码上运行：11 failed、4 passed、61 deselected，
+1.12 s，exit 1。原始日志为 ignored workspace temporary directory
+下 `spec181-local-case-config-20260906-r1/red.log`。四项声明校验未拒绝，
+三份配置内容变化未改变输入身份，gate 未阻止配置漂移，三个真实
+supervisor 子进程没有收到所需配置。均在命名断言处 RED，非收集或
+启动环境故障。下一步按上述计划补三处生产接线并在新 R2 定向验证。
+
+## Focused Configuration R2 And Review
+
+实现上述 CASE_CONFIG_ENV 映射、声明校验、三配置文件身份与子进程
+选取；没有修改角色数量、授权策略或 MiniNDN runner 的验收逻辑。
+`/usr/bin/python3 -m pytest -q tests/python/test_spec180_inventory.py
+tests/python/test_spec180_local_gate.py`：**76 passed，6.22 s，exit 0**。
+原始日志保留在 ignored workspace temporary directory 下
+`spec181-local-case-config-20260906-r2/green.log`；R1 RED 未覆盖。
+
+三个实际 supervisor 子进程分别读取对应文件内容并核对 case，父环境
+未被修改；修改任一配置会改变输入身份，修改 Y-B 配置使生产 gate
+在启动子进程和创建输出目录前拒绝。既有 source/environment/解释器/
+外部输入漂移、退出监督与清理回归同时通过。fixture 只替代被监督的
+子程序，不替代此次被测 inventory/supervisor；这些检查不证明
+MiniNDN 协议或模型计算。
+
+受影响代码复审 PASS：意图对应 FR-006/008；配置选择归本地工具，
+授权仍归 runner；两脚本共用映射，三条命令与 case registry 不变；
+无密钥内容输出、无新远端依赖；已有 common-config 调用仍保留；
+配置字节变更触发已实现输入门，定向检错证据 RED/GREEN 完整。
+新身份使旧 inventory 无法直接沿用，须重新生成。完整 T008 仍受
+Test Source Closure 的待处置项和完整构建清单限制，未启动完整 suite。

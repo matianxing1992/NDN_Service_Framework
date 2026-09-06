@@ -11,10 +11,17 @@ local gate 提交/源码身份修复为 `2628e3d2`。历史应用闭合审计对
 Native Identity R1 And Convergence Review。
 历史 backend native identity 见 formal matrix 的 Backend Native Identity R1。
 **Layer**: proposed / implemented / wired / executed（限定在各记录的检查范围）。
-**Verdict**: **PASS**（affected wire convergence; formal matrix pending）。
+**Verdict**: **BLOCK**（T008 complete-suite source/build closure pending）。
+T005 的 ce6a4ba0 subject 已通过 R19 完整矩阵，验收独立保留；T008
+配置缺口已按设计修复，76 项定向回归与受影响代码复审 PASS。完整
+T008 仍须处置 19 个预存测试/依赖差异、产出完整二进制与三案例
+实际配置，再对最终 subject 复审。详见
+[T008 review](evidence/t008-local-suite-preflight-20260906.md#focused-configuration-r2-and-review)。
+
+以下是 R19 执行前的 wire/native 受审范围与许可：
 维护 native build 与独立 verify 均 exit 0，刷新后的真实 Core 上
 重跑 21/21 与 270/270 断言通过。按 12 维度复审受影响边界后
-A05 恢复 PASS，允许 R19；T005/T008/T009/T012 仍未完成。主工作区
+A05 恢复 PASS，允许 R19；当时 T005/T008/T009/T012 仍未完成。主工作区
 Spec182 指针不作为此 Spec181 审计的任务权威。详见
 [native identity and review](evidence/t005-exact-data-wire-repair-20260906.md#native-identity-r1-and-convergence-review)。
 

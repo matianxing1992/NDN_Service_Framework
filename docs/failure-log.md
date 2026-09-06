@@ -19,6 +19,18 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 T008 case-configuration R2 (2026-09-06): focused PASS.**
+All 76 inventory/supervisor checks pass, including actual per-case child
+configuration and pre-launch input-drift rejection. The complete T008 gate
+still needs test-source/build closure and final case inputs; R19 remains the
+completed T005 subject. See [R2 review](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t008-local-suite-preflight-20260906.md#focused-configuration-r2-and-review).
+
+**Spec181 T008 case-configuration R1 (2026-09-06): focused RED.**
+Eleven assertions expose missing declaration validation, unbound case-policy
+bytes, and absent per-case child configuration; four existing input-drift
+checks pass. The repair stays in the local inventory/supervisor boundary.
+See [configuration preflight](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t008-local-suite-preflight-20260906.md#focused-configuration-r1).
+
 **Spec181 formal Y-N R19 (2026-09-06): PASS; T008 preflight remains open.**
 The maintained CLI completes all seven subcases, including three real grant
 variants, on ce6a4ba0. All 63 application child exits are collected; source and
