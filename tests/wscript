@@ -3,6 +3,16 @@
 top = '..'
 
 def build(bld):
+    bld.program(target='../spec181-exact-data-wire',
+                name='spec181-exact-data-wire',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('integration-tests/spec181-exact-data-wire.t.cpp'),
+                        bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')],
+                includes=['..', '../ndn-service-framework'],
+                use='ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
+                cxxflags=['-fPIC'], linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
     # Reuse framework contract tests against the production shared library.
     # Keep source-closure diagnostics independent of DI adapter build inputs.
     bld.program(target='../spec181-framework-closure',
@@ -172,6 +182,7 @@ def build(bld):
                         bld.path.find_node('unit-tests/ndn-svs-smoke.t.cpp'),
                         bld.path.find_node('integration-tests/ndnsf-data-v1-svs-flow.t.cpp'),
                         bld.path.find_node('integration-tests/ndnsf-di-core-flow.t.cpp'),
+                        bld.path.find_node('integration-tests/spec181-exact-data-wire.t.cpp'),
                         bld.path.find_node('integration-tests/ndnsf-di-native-assembly.t.cpp'),
                         bld.path.find_node('integration-tests/invocation-stream-flow.t.cpp'),
                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')] +
