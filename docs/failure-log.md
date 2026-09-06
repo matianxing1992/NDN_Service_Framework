@@ -19,6 +19,22 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 R18 diagnosis (2026-09-06): BLOCK at NDN Data wire size.**
+The first actual send boundary is now identified: BackboneNeck's exact
+MANIFEST Data encodes to 19,658 / 10,883 bytes and a SEG Data to 14,191,
+above ndn-cxx's 8,800-byte limit (169 event-loop exceptions). The exact
+NDNSF-DI filter exists; downstream deadlines are consequences. Review the
+existing compact transport changes and pre-publication size guard as a
+bounded shared unit, retaining signature/content commitments. See
+[formal matrix](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-formal-matrix-20260906.md#exact-dependency-boundary-r18).
+
+**Spec181 T005 formal R18 (2026-09-06): BLOCK at exact dependency transfer.**
+BackboneNeck now executes with actual CPU ONNX evidence and completes its
+role. DetectShard0/1 cannot fetch its exact tensor manifests; Merge then
+times out on their outputs. Inspect publication, cache response and routing
+before another run. Source/input identities remain unchanged and NFDs exit.
+See [formal matrix](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-formal-matrix-20260906.md#exact-dependency-boundary-r18).
+
 **Spec181 backend native refresh R1 (2026-09-06): PASS.**
 Committed 214df1d6 completes maintained native build and independent verify;
 both report native identity OK. The tested registration change and retained

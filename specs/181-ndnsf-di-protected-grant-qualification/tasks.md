@@ -1,5 +1,17 @@
 # Tasks: NDNSF-DI Protected-Grant Local Development and Delivery
 
+**Latest diagnosis R18 (2026-09-06)**：首次发送失败已定位为完整
+NDN Data 超过 8,800 bytes：manifest 19,658 / 10,883，segment
+14,191；169 条事件循环异常。下一步审查并验证既有共享紧凑
+传输编码和批量发布前大小检查，保持签名/内容绑定；T005 未完成，
+本机仍 6/10。证据见 [R18](evidence/t005-formal-matrix-20260906.md#exact-dependency-boundary-r18)。
+
+**Latest attempt R18 (2026-09-06)**：BackboneNeck 完成实际 CPU
+ONNX 执行；shard 获取其精确 tensor manifest 超时，Merge 随后
+失败。矩阵仍未通过，身份不变、NFD 全清理。下一步修复角色间
+精确数据传输边界；A05 BLOCK，本机仍 6/10。见
+[R18](evidence/t005-formal-matrix-20260906.md#exact-dependency-boundary-r18)。
+
 **Latest native refresh (2026-09-06)**：`214df1d6` 维护 native build /
 verify 均 PASS，真实 backend 回归与受影响 A05 复审 PASS；允许
 R18 新矩阵。T005 未完成，本机仍 6/10。见

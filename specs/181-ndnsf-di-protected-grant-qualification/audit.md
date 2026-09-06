@@ -9,7 +9,11 @@ local gate 提交/源码身份修复为 `2628e3d2`。历史应用闭合审计对
 当前受审源码为 `214df1d66019360394c93f364ee71976b25e1eba` 的隔离
 检出；维护 native identity 见 formal matrix 的 Backend Native Identity R1。
 **Layer**: proposed / implemented / wired / executed（限定在各记录的检查范围）。
-**Verdict**: **PASS**（backend registration and native identity verified）。
+**Verdict**: **BLOCK**（R18 exact Data wire size）。
+R18 已验证实际 BackboneNeck CPU 执行并完成角色；首次响应
+Data 因 19,658 / 10,883 / 14,191 bytes 超出 8,800 上限失败。
+先审查共享紧凑传输和发布前大小检查，完成签名/承诺/兼容定向
+验证并复审后再恢复矩阵；下述 backend 修复证据保持有效。
 仅补齐两处 backend 注册后，维护 Provider 重建及五项真实 CLI
 检查 PASS：CPU load/warmup 与非法设备/未知 backend 拒绝均验证。
 提交 `214df1d6` 已完成维护 native build 与独立 verify，均 exit 0；

@@ -1,6 +1,6 @@
 # Formal Local Y-N Matrix
 
-**Status**: IN_PROGRESS (backend repair / native identity / affected re-audit PASS; R18 pending)
+**Status**: BLOCK (R18 exact dependency transfer; BackboneNeck real CPU execution completed)
 **Evidence layer**: implemented / executed (formal network startup and focused regression)
 
 ## Subject and Launch R1
@@ -483,3 +483,32 @@ Python 绑定重新编译（binding_reused=false），其结果与前次字节
 backend 拒绝均有 R4 检查。设备选择、角色/模型契约和 Core
 assignment 严格校验未变，未纳入预存生成/CUDA 实验代码。
 允许 R18 新矩阵；T005/T008 尚未通过，开发交付尚未封存。
+
+## Exact Dependency Boundary R18
+
+源码 `c0d585f12fbfc94bd6070b2fffc708e8223024ef`，原始目录
+`spec181-t005-formal-20260906-r18/`。BackboneNeck 已产生实际
+ONNX CPU 执行证据，随后 Core state=4：collaboration role complete;
+no terminal response。注册修复在真实 Selection 消费路径生效。
+DetectShard0/1 获取 BackboneNeck 的 NDNSF-DI/TENSOR 精确名
+MANIFEST 时达到 deadline；Merge 后续等待 shard 输出也超时。
+矩阵 exit 2、Y-N-O CONTROL_NOT_PROVEN；源码/输入前后不变，
+NFD 全退出。完成一个上游角色不能证明终端数值或矩阵通过。
+下一步定位 publish/cache response/route 边界，重开受影响 A05；
+不把网络超时当作注册负例，不改七子用例验收语义。
+
+定向日志进一步确认首次发送失败：BackboneNeck 的 MANIFEST
+Data 编码为 **19,658 / 10,883 bytes**，一个 SEG Data 为
+**14,191 bytes**，均超出 ndn-cxx **8,800 bytes** 上限；其
+provider 日志保留 **169** 条 EVENT_LOOP_EXCEPTION。精确
+NDNSF-DI Interest filter 在当前源码中已注册；不能将这次失败
+归因为没有该 filter。已提交 publication 只签名并插入 IMS，
+不先检查完整 wire 大小，故角色可能完成而缓存对象无法响应。
+
+主工作区已有候选修复：TensorBundleCodec 的紧凑 manifest、
+ProviderGroupCoordinator 的紧凑 segment、DependencyIo 的
+编码/恢复消费及 Core 的批量发布前 wire-size 校验。尚未纳入
+本次源码，需审查签名原文、分段承诺、上下文恢复、兼容和先验
+资源界限后验证；不能直接纳入混杂的 YOLO 特例或生成状态改动。
+下一单元先以真实签名 Data 大小和生产解码/验签往返建立定向
+RED/GREEN，再完整重建、复审及新矩阵。
