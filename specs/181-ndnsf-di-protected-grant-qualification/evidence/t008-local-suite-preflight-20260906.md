@@ -78,6 +78,46 @@ T005 R19 已完整 PASS。T008 case 配置定向修复也已通过（下文 R2�
 下一步完成测试来源处置与构建清单、准备三案例实际配置并复审，再
 进行同源完整资格验证。T008 未完成。
 
+## Test Adoption Batch A
+
+先核对并纳入四个已有测试：`test_spec180_ack_provenance.py`（Python
+ACK 投影及默认认证门）、`test_spec180_negative_verdict.py`（真实
+User 异常分支，拒绝无关错误）、`test_spec180_role_assembly.py`
+（组件角色契约与真实 ONNX 子图装配）、`test_spec180_yolo_security.py`
+（输入引用完整性与 terminal 单次发布）。对应已交付的共享源码；
+不需要引入未提交的 SIF/Tiger 或 exporter helper。测试替身仅用于
+外部依赖/注入输入，证据按 unit 或装配调用边界限定。
+
+装配检查须显式使用本轮封存 canonical package，不能因隔离检出
+缺少临时模型目录而 skip 后宣称覆盖。其余 15 个文件继续待审。
+完整 C++ test-target 构建使用 46cd21a4 源码、系统 Python/Waf 与
+既有本地依赖，`--targets=unit-tests,integration-tests -j2`；原始日志
+保留在 `spec181-full-test-build-20260906-r1/build.log`（ignored workspace
+temporary directory）。这是缺失完整构建产物的静态闭合，不是运行验收。
+
+Batch A R1：31 passed、1 failed（1.63 s）。唯一失败在装配测试的
+catalogue 签名预检，底层为隔离检出没有注册表引用的
+`catalogue-authority.pub`，不是 ONNX 装配结果。日志为
+`spec181-test-adoption-20260906-r1/tests.log`。测试现显式消费
+`SPEC180_YOLO_CANONICAL_PACKAGE` 与 `SPEC180_YOLO_CATALOGUE_REGISTRY`
+两项已有运行输入；保持真实签名验证，不复制私钥或放宽校验。R2
+使用 R19 同一模型与注册表，后续交付仍须绑定注册表引用的公开材料。
+
+Batch A R2：**32 passed，2.67 s，exit 0，无 skip**。原始日志
+`spec181-test-adoption-20260906-r2/tests.log`。四个文件均使用隔离源码的
+共享实现；真实 ONNX 装配检查加载并核对 certified 输入/输出名称。
+测试只增加上述两项显式外部输入，未放宽签名或角色/数值检查。
+该批纳入后 Python 发现文件数为 37；其余 15 个差异仍须审查。
+
+Batch A 提交检查拒绝测试中残留的开发临时路径 fallback；提交未产生。
+删除该默认路径，模型检查仅消费显式 package 输入；未配置时仅作为
+普通开发测试 skip，完整 T008 必须配置且不能据此跳过。显式路径缺失
+保持 FAIL。将在新 R3 重跑该批，随后按最终字节提交。
+
+Batch A R3 最终字节重跑：**32 passed，2.78 s，exit 0，无 skip**；
+日志为 `spec181-test-adoption-20260906-r3/tests.log`。主工作区与隔离
+投影四文件逐字节一致；不把原提交钩子失败解释为代码或协议失败。
+
 ## Focused Configuration R1
 
 新断言在修复前源码上运行：11 failed、4 passed、61 deselected，

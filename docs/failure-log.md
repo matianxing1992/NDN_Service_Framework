@@ -19,6 +19,30 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 T008 test adoption R3 (2026-09-06): focused PASS.**
+The final four-file projection passes all 32 checks without skips after
+removing the rejected temporary-path fallback. Source/test bytes match the
+isolated projection; the complete C++ test-target build continues separately.
+See [test adoption](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t008-local-suite-preflight-20260906.md#test-adoption-batch-a).
+
+**Spec181 T008 adoption checkpoint (2026-09-06): commit hook blocked.**
+The staged role-assembly test retained a development-temporary-path fallback.
+No commit was created. Remove that fallback, keep explicit input validation,
+and rerun the focused checks before committing. See [test adoption](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t008-local-suite-preflight-20260906.md#test-adoption-batch-a).
+
+**Spec181 T008 test adoption R2 (2026-09-06): focused PASS.**
+All 32 checks pass without skips using explicit canonical-package/registry
+inputs. The four adopted files cover ACK provenance, truthful negative
+verdicts, certified role assembly, and input/terminal ownership. Fifteen
+other draft-test dependencies remain to review before complete qualification.
+See [test adoption](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t008-local-suite-preflight-20260906.md#test-adoption-batch-a).
+
+**Spec181 T008 test adoption R1 (2026-09-06): 31 PASS, one input failure.**
+The role-assembly regression's hard-coded isolated registry lacks its
+catalogue-authority public-key file. Failure precedes assembly at signature
+preflight. Bind the test to the explicit package and registry already used by
+R19, retaining signature verification. See [test adoption](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t008-local-suite-preflight-20260906.md#test-adoption-batch-a).
+
 **Spec181 T008 case-configuration R2 (2026-09-06): focused PASS.**
 All 76 inventory/supervisor checks pass, including actual per-case child
 configuration and pre-launch input-drift rejection. The complete T008 gate

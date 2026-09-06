@@ -14,7 +14,8 @@ Native Identity R1 And Convergence Review。
 **Verdict**: **BLOCK**（T008 complete-suite source/build closure pending）。
 T005 的 ce6a4ba0 subject 已通过 R19 完整矩阵，验收独立保留；T008
 配置缺口已按设计修复，76 项定向回归与受影响代码复审 PASS。完整
-T008 仍须处置 19 个预存测试/依赖差异、产出完整二进制与三案例
+T008 的四组预存共享回归已通过 32 项检查；仍须处置余下 15 个
+测试/依赖差异、产出完整二进制与三案例
 实际配置，再对最终 subject 复审。详见
 [T008 review](evidence/t008-local-suite-preflight-20260906.md#focused-configuration-r2-and-review)。
 
