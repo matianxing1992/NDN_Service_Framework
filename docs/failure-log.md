@@ -31,7 +31,10 @@ environment to the current build library: 26 focused checks pass. A new
 source-fetch cancellation regression then proves that the parent recreates
 the erased plaintext directory. R4 serializes protected staging writes
 with runtime cleanup; 27 focused checks pass, including the new race. The
-new RED log is retained in r3. Full T002 acceptance remains in progress. See
+new RED log is retained in r3. The final unified native rebuild and a fresh
+protected Y-B control pass: four actual grant verifications, three ORT CPU
+roles plus native Merge, verified terminal output, and empty staging after
+all seven child exits are collected. Full T002 acceptance remains in progress. See
 [T002 helper lifecycle](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t002-helper-lifecycle-20260905.md).
 
 **Spec181 T003 assembly parity (2026-09-05): focused build defects CLOSED.**

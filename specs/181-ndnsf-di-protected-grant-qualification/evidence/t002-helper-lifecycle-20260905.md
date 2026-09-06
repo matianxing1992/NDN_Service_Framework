@@ -68,6 +68,33 @@ initializer、helper 请求及最终明文的写入与 runtime 清理使用同�
 
 本轮同时将既有 `NativeCanonicalOnnxAssembler.{hpp,cpp}` 和正常
 `native_assembly_helper.py` 纳入源码检查点；生产 factory/handler 的
-其余工作区变更继续归 T002。R3 统一 native 构建已通过，但 R4 的
-目录竞态修复需要再次重建；新的受保护 Y-B 定向控制已准备独立 run
-目录，尚未执行。T002 不能勾选，T007 仍 BLOCK。
+其余工作区变更继续归 T002。源码检查点为 `e5981d5e`。
+
+## Rebuilt Protected Control
+
+R4 最终统一 native 构建 exit 0，包含 Provider、Python 扩展及
+`SPEC180_NATIVE_IDENTITY_OK`。原始构建日志为
+`spec181-t002-helper-20260905-r4/native-build.log`；构建清单
+`build-system-j2/spec180-native-build.json` 的 SHA-256 为
+`5f0e7789197a7ebb7bacdb6d188cda9877ed657a850af6aa81bf7ea13be83bbd`。
+
+随后在独立 user/network/mount/PID namespace 运行一次维护入口
+`_run_live_case_once("Y-B", ...)`。原始证据保留在 ignored workspace
+temporary directory 下 `spec181-t002-helper-20260905-live-r1/`，
+runner exit 0；`case/subcase-result.json` 为 PASS，边界为
+`TERMINAL_RESPONSE`，原因 `TERMINAL_RESPONSE_VERIFIED`。
+
+- 四个实际 Provider 日志各有一次 `VERIFIED / BEFORE_ASSEMBLY`。
+- BackboneNeck、DetectShard0、DetectShard1 的执行记录和 ORT profile
+  均确认 `CPUExecutionProvider`；Merge 为 `native-yolo-postprocess`。
+- `case/yolo-numerical.json` 的 shape 为 `[1, 50, 6]`，`matched=true`，
+  最大绝对误差 `0.0005340576171875`，`atol=0.001`、`rtol=0.0001`。
+- `case/child-exits.json` 收集全部 7 个子进程：user exit 0；其余进程
+  由 runner 请求终止（SIGINT `-2`，repo `130`）。隔离 PID namespace
+  已退出，宿主原有五个 NFD PID 及 PPID 保持不变。
+- 三个 `.staging` 父目录均为空；缓存仅有密文、manifest、签名和
+  ORT profile，没有明文模型或权重文件；未发现装配 helper 进程。
+
+此结果验证 helper 修复后的生产正向链路；构建仍包含既有工作区
+factory/handler 变更，不是冻结候选或完整资格矩阵。T002 的全部
+生产验收及源码闭包继续开放，T007 仍 BLOCK。
