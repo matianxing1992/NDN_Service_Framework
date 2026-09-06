@@ -1,11 +1,11 @@
 # Spec181 Traceability Matrix (revision 7)
 
 Spec 181 从 Spec 180（修订 125 关闭）继承未完成的实现与资格认证工作。
-本表是活动完成映射；当前 Status: BLOCK，完整裁决见 audit.md。
+本表是活动完成映射；当前 Status: IN_PROGRESS（T007 audit PASS），完整裁决见 audit.md。
 Spec 180 的矩阵冻结为历史，未来证据路径不表示文件已存在或任务完成。
 
 **Scope update (2026-09-06)**：本机负责开发、本地验证与版本交付；
-T010/T011 移交实验机器，不计完成。本机活动 10 项中 5 项完成。
+T010/T011 移交实验机器，不计完成。本机活动 10 项中 6 项完成。
 原要求与外部 owner/验收的去向见 [handoff contract](handoff-contract.md)。
 Git 合并留到当前开发完成后另行讨论。
 
@@ -21,7 +21,7 @@ Git 合并留到当前开发完成后另行讨论。
 
 FR-015 由 T002（公共准备与 adapter 收口）、T007（共用路径和接口
 兼容性验收）负责；公共准备/adapter 与生成 worker 的定向修复已通过，
-整体 T007 仍因 A05 身份闭包 BLOCK；映射与证据见
+T007 的 A05 源码/配置/runtime 核查已 PASS；映射与证据见
 `evidence/shared-runtime-reuse-20260905.md`。不增加 Qwen 模型资格任务。
 
 | Requirement | Owner tasks | 三层测试归属 | Closing evidence |
@@ -32,7 +32,7 @@ FR-015 由 T002（公共准备与 adapter 收口）、T007（共用路径和接�
 | FR-004 Y-N-E 真实变异 | T006（构造）+ T005（矩阵执行） | T006 unit + 三种实际 native Provider 拒绝/正向控制 PASS；正式同源矩阵仍待 T005 | `evidence/t006-production-repair-20260905.md` + `evidence/t005-y-n-matrix-current.md` |
 | FR-005 三层测试标准 | 全部任务 | 每个证据文件头部声明证据层 | tasks.md 标准章节 + 审计 |
 | FR-006 本地资格认证 | T005（矩阵）、T008（资格） | MiniNDN 小模型 CPU 全矩阵 | `evidence/t005-y-n-matrix-current.md`、`evidence/local-qualification.md` |
-| FR-007 收敛审计 | T007 | 审计 PASS + 四层分离 | `audit.md`、`evidence/post-implementation-audit.md` |
+| FR-007 收敛审计 | T007 | PASS：12 原则、A01–A12 关闭、四层分离；正式验证归后续门 | `audit.md`、`evidence/post-implementation-audit.md` |
 | FR-008 开发交付封存 | T009 | unit（脏树/跨版本/摘要拒绝）+ 本地完整性检查 | `evidence/development-delivery.json`、`evidence/t009-candidate-seal-current.md`；原 SIF 条款转 T010 |
 | FR-009 实验交接与反馈 | T009, T012 | 本地核对复现材料、实验 owner、移交验收和反馈字段 | `handoff-contract.md`、交付清单与 closure；原 Tiger 执行转 T011 |
 | FR-010 声称边界 | T012 | 终局语言审计 | `evidence/closure-record.md` |
@@ -63,9 +63,9 @@ FR-015 由 T002（公共准备与 adapter 收口）、T007（共用路径和接�
 | Criterion | Tasks | Required evidence and current status |
 |---|---|---|
 | SC-001 | T001/T002/T003/T005/T006 | T001/T002/T003/T006 验收完成；正式同源 MiniNDN 未闭合；撤销延期 |
-| SC-002 | T001/T002/T004/T005/T006/T007 | T001/T002/T004/T006 的任务边界验收完成；公共 generation worker 追加修复 48 cases / 366 assertions PASS；T007 剩余源码/配置审计与正式同源资格仍开放 |
+| SC-002 | T001/T002/T004/T005/T006/T007 | T001/T002/T004/T006/T007 验收完成；公共 generation worker 追加修复 48 cases / 366 assertions PASS；正式同源资格仍开放 |
 | SC-003 | T005/T008 | planned: `evidence/local-qualification.md`；同源 Y-A/Y-B/Y-N 与全部退出/清理 |
-| SC-004 | T007/T008 | `audit.md`、`evidence/post-implementation-audit.md` 当前 BLOCK；local-suite inventory 待执行 |
+| SC-004 | T007/T008 | `audit.md`、`evidence/post-implementation-audit.md` 的审计 PASS；local-suite inventory 待执行，SC 尚未整体完成 |
 | SC-005 | T009 | planned: 同源开发交付清单、复现命令、输入/证据摘要与移交契约；SIF/Tiger 验收转外部 |
 | SC-006 | T012 | planned: `evidence/closure-record.md` 的 LOCAL_DEVELOPMENT_PASS；未发出本地关闭裁决 |
 

@@ -19,6 +19,13 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 T007 convergence (2026-09-06): PASS; T005 next.**
+A05's source/configuration/input/build/application boundaries now map to their
+focused regressions and final committed checks. A01–A12 are closed within their
+documented scopes. The 12-principle audit permits same-source local validation;
+it is not qualification or development-delivery PASS. Historical failures below
+remain preserved. See [audit](../specs/181-ndnsf-di-protected-grant-qualification/audit.md#a05-closure-matrix).
+
 **Spec181 committed source R13 (2026-09-06): R12 resolved.**
 Repo build intermediates are preserved outside the checkout. The strict source
 guard passes for 6b9bb51c, and the real application/native preflight plus four

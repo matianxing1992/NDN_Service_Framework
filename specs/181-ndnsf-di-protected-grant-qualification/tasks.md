@@ -18,8 +18,8 @@ Spec 170 `artifact-assembly-v1` 契约。
 
 ## Current Checkpoint (revision 7)
 
-**Status**: `IN_PROGRESS / BLOCK`。2026-09-06 按当前提交与证据复核；
-T001/T002/T003/T004/T006 的任务验收已闭合并勾选（本机 5/10；另有 2 个 TRANSFERRED）。其余任务仍按完整验收判断，
+**Status**: `IN_PROGRESS`。2026-09-06 按当前提交与证据复核；
+T001/T002/T003/T004/T006/T007 的任务验收已闭合并勾选（本机 6/10；另有 2 个 TRANSFERRED）。其余任务仍按完整验收判断，
 未勾选不抹去已实现的代码与 unit 结果。
 
 | Task | Implemented / executed | Remaining acceptance |
@@ -30,14 +30,16 @@ T001/T002/T003/T004/T006 的任务验收已闭合并勾选（本机 5/10；另�
 | T004 | PASS：7 项 Python seam、6 项 Core 定向检查；重建后真实 Provider 等待约 83 ms、Controller 12.39 s 就绪、等待中取消约 2.3 ms 且无热转；全部线程/网络清理，见 [生命周期证据](evidence/t004-lifecycle-acceptance-20260905.md) | 本任务定向验收已闭合；后续同源正式资格仍归 T005/T008 |
 | T005 | 已停用旧自动重试入口，维护矩阵首个失败即停止并保留原始结果；118 项定向检查 PASS，见 [证据保留修复](evidence/t005-evidence-repair-20260905.md) | T007 PASS 后同源七子用例矩阵，保留所有失败 |
 | T006 | PASS：153 项 Python、22 项 C++、3 rebuilt parity checks；r11/r12/r13 三种实际 Provider 拒绝及 r10 受保护正向控制通过；每次清理后 exit 0，见 [生产修复](evidence/t006-production-repair-20260905.md) | 本任务定向验收已闭合；同源正式矩阵仍归 T005/T008 |
-| T007 | framework/native projection 源码单元与维护 native 构建已通过；见下方当前检查点 | BLOCK：local gate 实际源码/配置身份及候选闭包待修复和重审 |
+| T007 | PASS：A01–A12 关闭，12 原则复审、完整 evidence inventory；最终提交源码/actual runtime 与 57 项应用回归对应，见 audit.md | 本任务验收完成；正式同源网络/清单归 T005/T008 |
 | T008 | native 受保护 Y-B 定向正向控制已有证据 | T007 PASS 后执行同源本地资格清单与 Y-A/Y-B/Y-N 正式矩阵 |
 | T009/T012 | 继承本地工具链，按修订 7 调整为开发交付/本地关闭 | 交付清单、复现/移交材料与 LOCAL_DEVELOPMENT_PASS 尚未完成 |
 | T010/T011 | TRANSFERRED：SIF/replay/Tiger 归实验机器 | 外部验收仍未执行；不计本机完成率或本地关闭依赖 |
 
-**Latest progress (2026-09-06)**：本机 5/10 已完成，另 2 项 TRANSFERRED；G0 已关闭，当前唯一活动门为
-G1/T007。local gate 的源码/配置/输入身份单元已通过，当前为实际应用源码闭包与最终同源身份复核；
-不得据此启动 T005/T008 正式矩阵；SIF/Tiger 已移交实验机器。
+**Latest progress (2026-09-06)**：本机 **6/10** 已完成，另 2 项 TRANSFERRED。
+T007 的 A05 Closure Matrix 与 12 原则裁决 PASS；`6b9bb51c` 最终源码/
+actual native/application 核对及 57 项应用回归证明一致。当前进入
+T005 七子用例同源矩阵，再执行 T008 完整本地清单。正式资格、
+T009 开发交付与 T012 关闭仍未完成。
 
 | Closed unit | Current evidence |
 |---|---|
@@ -48,7 +50,11 @@ G1/T007。local gate 的源码/配置/输入身份单元已通过，当前为实
 | Native projection closure | 提交 `1ba99000`；[29 cases / 133 assertions PASS](evidence/t007-native-plan-closure-20260906.md)，覆盖 COMPONENT_SET/后处理解析、根来源与多张量 scope/原授权组 |
 | Committed native build | `1ba99000cd6b03705ea96f0b176d6a77fbbe8a1d` 的 tracked tree 无修改，维护 native build 与实际扩展导入/依赖身份 PASS；R3 receipt 见上一行证据。此结论仅限 host-local 构建，不是正式资格 |
 
-**Current blocker**：[local gate identity](evidence/t007-local-gate-identity-20260906.md)
+## Historical A05 Repair Checkpoints
+
+以下保留每次修复时的 BLOCK 与检查结果；当前裁决以顶端 Latest progress 和 audit.md 为准。
+
+**Initial blocker**：[local gate identity](evidence/t007-local-gate-identity-20260906.md)
 的源码单元 R7 已通过：39 项定向检查（3.44 s），错误 Git/源码
 身份在子进程与输出目录创建前拒绝；执行期间源码变化使最终结果
 UNQUALIFIED，保留全部子项与清理证据。实际 `1ba99000` 隔离构建
@@ -226,7 +232,7 @@ T 任务完成定向修复；在生产验收前保持失败关闭，并禁止晋
   GrantVerified）；integration（native provider 真实保护纪元投影被
   拒）。吸收关系：T002 落地后由真实 grant 验证取代该失败关闭路径。
 
-- **R003 Evidence Invalidation Inventory**（PASS，document inventory only；T007 剩余 A05 未闭合）。审计 Spec 180/181 全部
+- **R003 Evidence Invalidation Inventory**（PASS，document inventory only；T007 已完成整体审计）。审计 Spec 180/181 全部
   证据文件：任何声称 PASS 但被后续修订失效的文件必须带失效横幅
   （t016/s1 已确认有；核查其余）；每个证据文件头部必须声明证据层
   （implemented/wired/executed/measured）。验收：完整清单 + 每文件
@@ -377,7 +383,7 @@ T 任务完成定向修复；在生产验收前保持失败关闭，并禁止晋
 
 ## Phase 3: Convergence and Local Qualification (Priority: P2)
 
-- [ ] T007 [US3] **Design-code Convergence Audit**。按 12 审计原则对真实生产链
+- [x] T007 [US3] **Design-code Convergence Audit**。按 12 审计原则对真实生产链
   （进程内权威、grant 解包双侧、装配、runner、本地验证/交付工具链）做
   code-aware 审计，四层证据分离；BLOCK 项修复 + focused 回归 +
   重新审计至 PASS。文件：本目录 `audit.md`、`traceability.md`、

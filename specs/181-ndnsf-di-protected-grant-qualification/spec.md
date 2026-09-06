@@ -6,7 +6,7 @@
 
 **Created**: 2026-09-05
 
-**Status**: `IN_PROGRESS / BLOCK`（修订 7：本机开发、本地验证与版本交付；SIF/Tiger 移交实验机器。G0 已完成，当前为 G1/T007；
+**Status**: `IN_PROGRESS`（修订 7：本机开发、本地验证与版本交付；SIF/Tiger 移交实验机器。G0 与 G1/T007 已完成，当前进入 G2/T005；
 Spec 180 已按所有者决定关闭，其契约、冻结证据与失效声明保持权威。）
 
 **Input**: Spec 180 修订 125 的迁移清单；Spec 170

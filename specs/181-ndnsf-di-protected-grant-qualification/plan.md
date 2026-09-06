@@ -1,7 +1,7 @@
 # Implementation Plan: NDNSF-DI Protected-Grant Local Development and Delivery
 
 **Branch**: `Experimental` | **Date**: 2026-09-06 | **Revision**: 7
-**Spec**: [spec.md](spec.md) | **Status**: `IN_PROGRESS / BLOCK`
+**Spec**: [spec.md](spec.md) | **Status**: `IN_PROGRESS`（T007 audit PASS；当前 T005）
 
 ## Summary
 
@@ -9,7 +9,7 @@
 的本地 YOLO 功能资格、可复现开发交付与本地关闭。按所有者确认，
 SIF/replay/Tiger 执行及其脚本/配置移交实验机器；本机继续承担开发、
 单元/集成与本地 MiniNDN，不按 Qwen/YOLO 划分长期 owner。
-G0 已完成，当前进入 G1/T007：Python/native 授权链已接线，native Ed25519/P-256
+G0 与 G1/T007 已完成，当前进入 G2/T005：Python/native 授权链已接线，native Ed25519/P-256
 定向正向控制和真实负例已有证据；维护的进程集成与 P-256 资源检查
 已通过。T001/T002 验收已关闭；T002 公共准备、adapter 迁移与 handler 接线
 已在 `0a3a79c3` 收口，统一构建及隔离 P-256 控制 PASS，见
@@ -19,7 +19,9 @@ G0 已完成，当前进入 G1/T007：Python/native 授权链已接线，native 
 PASS，见 [native closure R3](evidence/t007-native-plan-closure-20260906.md#committed-native-build-r3)。
 此身份不覆盖主工作区其他未提交修改。`2628e3d2` 已关闭 local gate
 的提交/源码校验单元（最终 39 focused checks 与真实 checkout PASS）；
-T007 的实际本地配置与开发交付闭包尚未闭合，后续本地门保持关闭。Git 合并留到
+`6b9bb51c` 的最终源码/运行时检查和 57 项应用定向回归已闭合 A05；
+T007 逐原则审计 PASS，见 [audit.md](audit.md)。允许进入 T005/T008，
+最终开发交付仍归 T009，不能提前声称已封存。Git 合并留到
 当前开发完成后另行讨论，本轮不分析或执行合并。
 
 ## Gate Order
