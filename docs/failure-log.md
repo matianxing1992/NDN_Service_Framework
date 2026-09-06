@@ -19,6 +19,17 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 framework source closure R1 (2026-09-06): BLOCK at assignment metadata.**
+The isolated six-file dependency closure builds the production framework
+library. Its reused lifecycle/assignment checks yield 16 PASS / 1 FAIL:
+ServiceProvider loses artifactDataName while projecting a structured
+assignment set into CollaborationContext. Preserve the R1 source patch and
+result, then close the exact Provider transfer before retrying.
+R2 carries the root name through single/structured assignments and rejects
+conflicting roots. The isolated target links and passes 26 cases / 204
+assertions. This framework boundary is closed; full native closure remains.
+See [framework source closure](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t007-framework-source-closure-20260906.md).
+
 **Spec181 committed native build R4 (2026-09-05): BLOCK at C++ source closure.**
 Clean 6c7a0b23 passes configuration and Waf graph creation, then ServiceUser.cpp
 fails to compile: AckAuthenticationEvidence is missing, followed by missing

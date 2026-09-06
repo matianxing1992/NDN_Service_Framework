@@ -102,6 +102,7 @@ namespace tlv {
         CollaborationScopeKeyDataNamesType = 0xF633,
         CollaborationScopeKeyDataNameType = 0xF634,
         CollaborationScopeKeyDataValueType = 0xF635,
+        CollaborationArtifactDataNameType = 0xF636,
     };
 
     // Selection strategies.
@@ -398,6 +399,9 @@ struct CollaborationAssignmentEnvelope
 {
     std::string role;
     ndn::Name assignedArtifact;
+    // Content-addressed Data name for the assignment-bound canonical root.
+    // This is framework metadata and must survive opaque V3 payloads.
+    ndn::Name artifactDataName;
     bool requiresProvisioning = false;
     uint64_t provisioningTimeoutMs = 0;
     std::map<std::string, ndn::Buffer> scopeKeys;

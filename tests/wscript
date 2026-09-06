@@ -3,6 +3,18 @@
 top = '..'
 
 def build(bld):
+    # Reuse framework contract tests against the production shared library.
+    # Keep source-closure diagnostics independent of DI adapter build inputs.
+    bld.program(target='../spec181-framework-closure',
+                name='spec181-framework-closure',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('unit-tests/invocation-stream-lifecycle.t.cpp'),
+                        bld.path.find_node('unit-tests/opaque-selection-lifecycle.t.cpp')],
+                includes=['..', '../ndn-service-framework'],
+                use='ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
+                cxxflags=['-fPIC'], linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
     grant_sources = [bld.path.find_node('integration-tests/ndnsf-di-protected-grant.t.cpp')] + bld.path.parent.ant_glob([
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedGrantCredentials.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedGrantTransport.cpp',

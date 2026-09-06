@@ -166,6 +166,7 @@ BOOST_AUTO_TEST_CASE(CollaborationAssignmentEnvelopePreservesOpaqueBytes)
   CollaborationAssignmentEnvelope assignment;
   assignment.role = "artifact-replica-0";
   assignment.assignedArtifact = ndn::Name("/publisher/model/root");
+  assignment.artifactDataName = ndn::Name("/publisher/model/root-data");
   assignment.requiresProvisioning = true;
   assignment.provisioningTimeoutMs = 45000;
   assignment.scopeKeys.emplace(
@@ -178,6 +179,7 @@ BOOST_AUTO_TEST_CASE(CollaborationAssignmentEnvelopePreservesOpaqueBytes)
   BOOST_REQUIRE(decodeCollaborationAssignmentEnvelope(encoded, decoded));
   BOOST_CHECK_EQUAL(decoded.role, assignment.role);
   BOOST_CHECK(decoded.assignedArtifact == assignment.assignedArtifact);
+  BOOST_CHECK(decoded.artifactDataName == assignment.artifactDataName);
   BOOST_CHECK_EQUAL(decoded.requiresProvisioning, true);
   BOOST_CHECK_EQUAL(decoded.provisioningTimeoutMs, 45000);
   BOOST_REQUIRE_EQUAL(decoded.scopeKeys.size(), 1);
@@ -544,6 +546,7 @@ BOOST_AUTO_TEST_CASE(
   std::atomic<bool> handlerCalled{false};
   std::string observedRole;
   size_t observedRoleProviderCount = 0;
+  ndn::Name observedArtifactDataName;
   provider.addCollaborationHandler(
       service,
       [&](ServiceProvider::CollaborationContext& context,
@@ -551,6 +554,7 @@ BOOST_AUTO_TEST_CASE(
         handlerCalled = true;
         observedRole = context.role();
         observedRoleProviderCount = context.assignment().roleProviders.size();
+        observedArtifactDataName = context.assignment().artifactDataName;
       });
 
   RequestMessage request;
@@ -568,6 +572,7 @@ BOOST_AUTO_TEST_CASE(
                            "/Inference/NativeTracer/Merge"}) {
     CollaborationAssignmentEnvelope envelope;
     envelope.role = role;
+    envelope.artifactDataName = ndn::Name("/models/qwen/canonical-root");
     envelope.opaquePayload = bytes(std::string("role=") + role + ";");
     assignments.push_back(encodeCollaborationAssignmentEnvelope(envelope));
   }
@@ -594,6 +599,8 @@ BOOST_AUTO_TEST_CASE(
   BOOST_CHECK(handlerCalled.load());
   BOOST_CHECK_EQUAL(observedRole, "/Inference/NativeTracer");
   BOOST_CHECK_EQUAL(observedRoleProviderCount, assignments.size());
+  BOOST_CHECK(observedArtifactDataName ==
+              ndn::Name("/models/qwen/canonical-root"));
 }
 
 BOOST_AUTO_TEST_CASE(

@@ -78,6 +78,19 @@ R3 修复旧 fixture 将数字维度写为字符串的摘要构造，生产验�
 建图，但 `ServiceUser.cpp` 编译暴露未提交的 framework 类型/函数
 声明依赖（首个为 AckAuthenticationEvidence）。已保留退出 1 的构建
 日志与检出；下一单元补齐精确源码依赖，T007 仍 BLOCK。
+2026-09-06 从 `6f2e4ac4` 建立隔离源码诊断，选择六个 framework
+声明/配套实现文件，排除日志开关等无关差异；正在编译 framework
+目标并核查既有生命周期/assignment 用例，见
+[framework source closure](evidence/t007-framework-source-closure-20260906.md)。
+隔离 framework 编译/链接 PASS（3m28.249s），正在通过维护
+`spec181-framework-closure` 目标复用现有测试验证同一库；尚未完成
+完整 native 构建或 T007 验收。
+该目标 17 个定向用例为 16 PASS / 1 FAIL（145/146 assertions）；
+Provider 在结构化 assignment 集合中丢失 artifactDataName。已保留
+R1 源差异与失败日志，正在补齐字段传递/冲突根拒绝，T007 保持 BLOCK。
+R2 补齐 Provider 单项/集合的根名称传递后，隔离目标 **26 cases /
+204 assertions PASS**，增量编译/链接 PASS。该 framework 闭包单元
+可提交；下一步验证同一提交的完整 native Provider/扩展，整体仍为 5/12。
 下列较早的 4/12 与 partial 记载保留为修复过程，不覆盖本检查点。
 三种 grant 变异完成实际发布、Provider 拒绝与身份绑定；有效 grant
 仍完成 native Y-B 推理。正向控制发现并修复冷装配期间的固定 10 s

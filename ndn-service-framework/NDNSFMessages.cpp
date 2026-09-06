@@ -1114,6 +1114,15 @@ encodeCollaborationAssignmentEnvelope(
             tlv::CollaborationArtifactType,
             assignment.assignedArtifact.toUri()));
     }
+    if (!assignment.artifactDataName.empty()) {
+        if (assignment.artifactDataName.toUri().size() > 8192) {
+            throw std::invalid_argument(
+                "collaboration assignment artifact Data name exceeds bounds");
+        }
+        block.push_back(ndn::makeStringBlock(
+            tlv::CollaborationArtifactDataNameType,
+            assignment.artifactDataName.toUri()));
+    }
     block.push_back(ndn::makeNonNegativeIntegerBlock(
         tlv::CollaborationProvisioningType,
         assignment.requiresProvisioning ? 1 : 0));
@@ -1187,6 +1196,7 @@ decodeCollaborationAssignmentEnvelope(
         block.parse();
         CollaborationAssignmentEnvelope decoded;
         bool hasRole = false;
+        bool hasArtifactDataName = false;
         bool hasOpaquePayload = false;
         for (const auto& element : block.elements()) {
             switch (element.type()) {
@@ -1204,6 +1214,19 @@ decodeCollaborationAssignmentEnvelope(
                         "duplicate collaboration assignment artifact");
                 }
                 decoded.assignedArtifact = ndn::Name(ndn::readString(element));
+                break;
+            case tlv::CollaborationArtifactDataNameType:
+                if (hasArtifactDataName) {
+                    throw std::runtime_error(
+                        "duplicate collaboration assignment artifact Data name");
+                }
+                decoded.artifactDataName = ndn::Name(ndn::readString(element));
+                if (decoded.artifactDataName.empty() ||
+                    decoded.artifactDataName.toUri().size() > 8192) {
+                    throw std::runtime_error(
+                        "invalid collaboration assignment artifact Data name");
+                }
+                hasArtifactDataName = true;
                 break;
             case tlv::CollaborationProvisioningType:
                 decoded.requiresProvisioning =
