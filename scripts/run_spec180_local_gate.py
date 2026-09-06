@@ -24,7 +24,7 @@ import time
 from typing import Any, Mapping, Sequence
 
 from spec180_inventory import (
-    DEFAULT_CASES, InventoryError, local_launch_configuration, validate_inventory,
+    DEFAULT_CASES, InventoryError, local_input_identity, local_launch_configuration, validate_inventory,
 )
 
 
@@ -546,12 +546,32 @@ def run_local_gate(inventory: Mapping[str, Any], *, root: Path | str,
         raise LocalGateError(str(exc)) from exc
     if canonical_digest(configuration) != inventory["effectiveConfigDigest"]:
         raise LocalGateError("EFFECTIVE_CONFIG_DIGEST_MISMATCH")
+    try:
+        inputs = local_input_identity(root_path, environment)
+    except InventoryError as exc:
+        raise LocalGateError(str(exc)) from exc
+    if canonical_digest(inputs) != inventory["inputDigest"]:
+        raise LocalGateError("INPUT_IDENTITY_MISMATCH")
     output_path.mkdir(parents=True, exist_ok=True)
     inventory_path = output_path / "inventory.json"
     inventory_file_digest = _write_json(inventory_path, inventory)
     results = []
+    input_identity = {"status": "PASS", "reason": "LOCAL_INPUTS_MATCH"}
     for entry in inventory["entries"]:
+        if entry["kind"] == "minindn-case":
+            try:
+                if local_input_identity(root_path, environment) != inputs:
+                    input_identity = {"status": "FAIL", "reason": "INPUTS_CHANGED_BEFORE_CASE"}
+            except InventoryError as exc:
+                input_identity = {"status": "FAIL", "reason": str(exc)}
+            if input_identity["status"] != "PASS":
+                break
         results.append(_run_entry(root_path, entry, output_path, environment))
+    try:
+        if local_input_identity(root_path, environment) != inputs:
+            input_identity = {"status": "FAIL", "reason": "INPUTS_CHANGED_DURING_RUN"}
+    except InventoryError as exc:
+        input_identity = {"status": "FAIL", "reason": str(exc)}
     failed = [item for item in results if item["status"] != "PASS"]
     source_identity = {"status": "PASS", "reason": "COMMITTED_SOURCE_MATCH"}
     try:
@@ -569,10 +589,14 @@ def run_local_gate(inventory: Mapping[str, Any], *, root: Path | str,
     result: dict[str, Any] = {
         "schema": RESULT_SCHEMA,
         "status": ("PASS" if not failed and source_identity["status"] == "PASS"
-                   and configuration_identity["status"] == "PASS" else "UNQUALIFIED"),
+                   and configuration_identity["status"] == "PASS"
+                   and input_identity["status"] == "PASS" else "UNQUALIFIED"),
         "sourceIdentity": source_identity,
         "configurationIdentity": configuration_identity,
         "effectiveConfiguration": configuration,
+        "inputIdentity": input_identity,
+        "inputDigest": inventory["inputDigest"],
+        "unexecutedEntryIds": [entry["id"] for entry in inventory["entries"][len(results):]],
         "candidateId": inventory["candidateId"],
         "candidateDigest": inventory["candidateDigest"],
         "sourceRevision": inventory["sourceRevision"],

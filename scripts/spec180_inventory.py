@@ -32,7 +32,7 @@ _ENTRY_KINDS = {"cpp-suite", "cpp-selector", "python-selector", "minindn-case"}
 _INVENTORY_KEYS = {
     "schema", "candidateId", "candidateDigest", "sourceRevision",
     "effectiveConfigDigest", "backend", "timeoutSeconds", "cleanupPolicy",
-    "entries", "inventoryDigest",
+    "entries", "inventoryDigest", "inputIdentity", "inputDigest",
 }
 _ENTRY_KEYS = {
     "id", "kind", "path", "selector", "case", "command", "commandDigest",
@@ -119,6 +119,96 @@ def local_launch_configuration(root: Path | str, environment: Mapping[str, str],
         "caseOutputLayout": "{outputRoot}/{entryId}/case-output",
         "caseOutputVariable": "SPEC180_CASE_OUTPUT_DIR",
     }
+
+
+def local_input_identity(root: Path | str, environment: Mapping[str, str]) -> dict[str, Any]:
+    """Snapshot configured external inputs; private file contents never escape.
+
+    Missing environment inputs stay explicit. The maintained case validator
+    owns required inputs and cryptographic validity; this owner detects drift
+    across inventory discovery and the complete local qualification run.
+    """
+    root = Path(root).resolve()
+    home = Path(environment.get("HOME") or Path.home())
+
+    def path_for(value: str) -> Path:
+        if value == "~" or value.startswith("~/"):
+            return root / home / value[2:]
+        return root / Path(value).expanduser()
+
+    def file_record(path: Path) -> dict[str, Any]:
+        before = path.stat()
+        if not path.is_file():
+            raise InventoryError("INPUT_NOT_FILE:" + str(path))
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(block)
+        after = path.stat()
+        if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns,
+                before.st_ctime_ns) != (after.st_dev, after.st_ino, after.st_size,
+                                       after.st_mtime_ns, after.st_ctime_ns):
+            raise InventoryError("INPUT_CHANGED_DURING_HASH:" + str(path))
+        return {"path": str(path), "resolvedPath": str(path.resolve(strict=True)),
+                "sha256": "sha256:" + digest.hexdigest(), "size": after.st_size,
+                "mode": after.st_mode & 0o777}
+
+    result: dict[str, Any] = {"schema": "spec181-local-input-identity-v1", "inputs": {}}
+    inputs = result["inputs"]
+    file_names = (
+        "NDNSF_DI_ENVELOPE_KEY_FILE", "SPEC180_YOLO_CATALOGUE_REGISTRY",
+        "SPEC180_YOLO_OFFER_TRUST_ROOT", "SPEC180_YOLO_TOPOLOGY", "SPEC180_YOLO_CONFIG",
+    )
+    map_names = ("SPEC180_YOLO_OFFER_PUBLIC_KEY_MAP", "SPEC180_YOLO_OFFER_PRIVATE_KEY_MAP",
+                 "SPEC181_PROVIDER_RECIPIENT_KEY_MAP")
+    try:
+        for name in file_names + map_names:
+            value = environment.get(name)
+            if not value:
+                inputs[name] = {"status": "UNCONFIGURED"}
+                continue
+            path = path_for(value)
+            record = file_record(path)
+            if name in map_names:
+                document = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(document, dict) or any(
+                        not isinstance(key, str) or not isinstance(value, str) or not value
+                        for key, value in document.items()):
+                    raise InventoryError("INPUT_KEY_MAP_INVALID:" + name)
+                record["referencedFiles"] = {key: file_record(path_for(value))
+                                             for key, value in sorted(document.items())}
+                if file_record(path) != {k: v for k, v in record.items() if k != "referencedFiles"}:
+                    raise InventoryError("INPUT_CHANGED_DURING_HASH:" + name)
+            inputs[name] = record
+        package_value = environment.get("SPEC180_YOLO_CANONICAL_PACKAGE")
+        if package_value:
+            package = path_for(package_value)
+            if not package.is_dir():
+                raise InventoryError("INPUT_NOT_DIRECTORY:" + str(package))
+            files = {}
+            for path in sorted(package.rglob("*")):
+                if path.is_symlink() and path.is_dir():
+                    raise InventoryError("INPUT_DIRECTORY_SYMLINK:" + str(path))
+                if path.is_file() or path.is_symlink():
+                    files[str(path.relative_to(package))] = file_record(path)
+            inputs["SPEC180_YOLO_CANONICAL_PACKAGE"] = {
+                "path": str(package), "resolvedPath": str(package.resolve(strict=True)), "files": files}
+        else:
+            inputs["SPEC180_YOLO_CANONICAL_PACKAGE"] = {"status": "UNCONFIGURED"}
+        epoch = environment.get("SPEC181_PROTECTION_EPOCH", "")
+        if epoch and epoch != "plaintext-v1":
+            config_root = path_for(environment.get("NDNSF_SPEC180_CONFIG_ROOT") or
+                                   str(home / ".config/ndnsf/spec180"))
+            inputs["protectedAuthorityPrivateKey"] = file_record(config_root / "artifact-policy-authority.key")
+        else:
+            inputs["protectedAuthorityPrivateKey"] = {"status": "UNCONFIGURED"}
+        manifest = path_for(environment.get("SPEC180_NATIVE_BUILD_MANIFEST") or
+                            "build-system-j2/spec180-native-build.json")
+        inputs["nativeBuildManifest"] = (file_record(manifest) if manifest.is_file()
+                                         else {"status": "UNCONFIGURED"})
+    except (OSError, RuntimeError, UnicodeError, json.JSONDecodeError) as exc:
+        raise InventoryError("INPUT_IDENTITY_UNREADABLE") from exc
+    return result
 
 
 def _require_digest(value: Any, label: str) -> str:
@@ -223,11 +313,11 @@ def parse_pytest_collect_output(text: str, root: Path) -> tuple[str, ...]:
     return tuple(sorted(selectors))
 
 
-def _run_listing(command: Sequence[str], *, cwd: Path, label: str,
+def _run_listing(command: Sequence[str], *, cwd: Path, label: str, environment: Mapping[str, str],
                  timeout_seconds: float = 30.0) -> str:
     try:
         completed = subprocess.run(
-            list(command), cwd=str(cwd), text=True, capture_output=True,
+            list(command), cwd=str(cwd), env=dict(environment), text=True, capture_output=True,
             check=False, timeout=timeout_seconds,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -239,14 +329,14 @@ def _run_listing(command: Sequence[str], *, cwd: Path, label: str,
 
 
 def discover_integration_selectors(root: Path, binary: Path | str,
-                                   listing: str | None = None
+                                   listing: str | None = None, *, environment: Mapping[str, str] | None = None
                                    ) -> tuple[str, ...]:
     relative, resolved = _relative_file(
         root, binary, "integration-binary", executable=True)
     del relative
     text = listing if listing is not None else _run_listing(
         (str(resolved), "--list_content", "--log_level=nothing"),
-        cwd=root, label="integration-list")
+        cwd=root, label="integration-list", environment=environment or {})
     selectors = parse_boost_list(text)
     if not selectors:
         raise InventoryError("INTEGRATION_SELECTOR_EMPTY")
@@ -254,7 +344,8 @@ def discover_integration_selectors(root: Path, binary: Path | str,
 
 
 def discover_python_selectors(root: Path,
-                              selectors: Iterable[str] | None = None
+                              selectors: Iterable[str] | None = None, *,
+                              environment: Mapping[str, str] | None = None
                               ) -> tuple[str, ...]:
     if selectors is not None:
         result = tuple(sorted(set(str(item) for item in selectors)))
@@ -270,14 +361,7 @@ def discover_python_selectors(root: Path,
         raise InventoryError("PYTEST_SOURCE_FILES_EMPTY")
     command = [sys.executable, "-m", "pytest", "--collect-only", "-q"]
     command.extend(str(path.relative_to(root)) for path in files)
-    env = dict(os.environ)
-    python_path = [
-        str(root / "NDNSF-DistributedInference"),
-        str(root / "pythonWrapper"),
-    ]
-    if env.get("PYTHONPATH"):
-        python_path.append(env["PYTHONPATH"])
-    env["PYTHONPATH"] = os.pathsep.join(python_path)
+    env = dict(environment or {})
     try:
         completed = subprocess.run(
             command, cwd=str(root), env=env, text=True, capture_output=True,
@@ -351,6 +435,11 @@ def validate_inventory(inventory: Mapping[str, Any]) -> dict[str, Any]:
         raise InventoryError("MISSING_INVENTORY_FIELD:" + ",".join(missing))
     if inventory.get("schema") != SCHEMA:
         raise InventoryError("INVENTORY_SCHEMA_UNSUPPORTED")
+    identity = inventory.get("inputIdentity")
+    if (not isinstance(identity, dict) or identity.get("schema") != "spec181-local-input-identity-v1"
+            or not isinstance(identity.get("inputs"), dict)
+            or inventory.get("inputDigest") != canonical_digest(identity)):
+        raise InventoryError("INVENTORY_INPUT_IDENTITY_INVALID")
     _require_identity(
         inventory.get("candidateId"), inventory.get("candidateDigest"),
         inventory.get("sourceRevision"), inventory.get("effectiveConfigDigest"),
@@ -451,6 +540,8 @@ def build_inventory(
     if effective_config_digest is not None and effective_config_digest != actual_config_digest:
         raise InventoryError("EFFECTIVE_CONFIG_DIGEST_MISMATCH")
     effective_config_digest = actual_config_digest
+    environment = dict(environment)
+    inputs = local_input_identity(root_path, environment)
     _require_identity(
         candidate_id, candidate_digest, source_revision,
         effective_config_digest,
@@ -462,8 +553,8 @@ def build_inventory(
     int_rel, int_path = _relative_file(
         root_path, integration_binary, "integration-binary", executable=True)
     int_selectors = discover_integration_selectors(
-        root_path, int_path, listing=integration_listing)
-    py_selectors = discover_python_selectors(root_path, python_selectors)
+        root_path, int_path, listing=integration_listing, environment=environment)
+    py_selectors = discover_python_selectors(root_path, python_selectors, environment=environment)
     case_records = _case_registry(root_path, cases)
     entries: list[dict[str, Any]] = []
     entries.append(_entry(
@@ -516,7 +607,11 @@ def build_inventory(
         "timeoutSeconds": timeout_seconds,
         "cleanupPolicy": CLEANUP_POLICY,
         "entries": entries,
+        "inputIdentity": inputs,
+        "inputDigest": canonical_digest(inputs),
     }
+    if local_input_identity(root_path, environment) != inputs:
+        raise InventoryError("INPUTS_CHANGED_DURING_DISCOVERY")
     inventory["inventoryDigest"] = canonical_digest(inventory)
     return validate_inventory(inventory)
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 import sys
 
@@ -169,3 +170,39 @@ def test_inventory_rejects_caller_config_digest_before_discovery(tmp_path: Path)
                                candidate_digest="sha256:" + "a" * 64,
                                source_revision="b" * 40, environment={},
                                effective_config_digest="sha256:" + "c" * 64)
+
+
+def test_input_identity_binds_protected_default_key_and_references_without_values(tmp_path):
+    module = load_inventory()
+    key = tmp_path / ".config/ndnsf/spec180/artifact-policy-authority.key"
+    key.parent.mkdir(parents=True)
+    key.write_text("private fixture value must not be in evidence")
+    mapping = tmp_path / "keys.json"
+    mapping.write_text(json.dumps({"provider": str(key)}))
+    environment = {"HOME": str(tmp_path), "SPEC181_PROTECTION_EPOCH": "protected-v1",
+                   "SPEC181_PROVIDER_RECIPIENT_KEY_MAP": str(mapping)}
+    record = module.local_input_identity(tmp_path / "source", environment)
+    assert "private fixture value" not in json.dumps(record)
+    inputs = record["inputs"]
+    assert inputs["protectedAuthorityPrivateKey"]["sha256"] == inputs[
+        "SPEC181_PROVIDER_RECIPIENT_KEY_MAP"]["referencedFiles"]["provider"]["sha256"]
+    key.write_text("changed")
+    assert module.local_input_identity(tmp_path / "source", environment) != record
+
+
+@pytest.mark.parametrize("kind", ["bad-map", "missing-reference", "directory-link"])
+def test_input_snapshot_rejects_unreadable_or_omitted_inputs(tmp_path, kind):
+    module = load_inventory()
+    if kind == "directory-link":
+        package = tmp_path / "package"
+        package.mkdir()
+        (package / "recursive").symlink_to(package, target_is_directory=True)
+        environment = {"SPEC180_YOLO_CANONICAL_PACKAGE": str(package)}
+        reason = "INPUT_DIRECTORY_SYMLINK"
+    else:
+        mapping = tmp_path / "keys.json"
+        mapping.write_text(json.dumps([] if kind == "bad-map" else {"provider": str(tmp_path / "absent.key")}))
+        environment = {"SPEC181_PROVIDER_RECIPIENT_KEY_MAP": str(mapping)}
+        reason = "INPUT_KEY_MAP_INVALID" if kind == "bad-map" else "INPUT_IDENTITY_UNREADABLE"
+    with pytest.raises(module.InventoryError, match=reason):
+        module.local_input_identity(tmp_path, environment)

@@ -538,8 +538,14 @@ def test_inventory_and_gate_clis_share_actual_configuration(tmp_path: Path, caps
     module, runner = _modules()
     root = _fixture_root(tmp_path / "source", module)
     integration = root / "build/integration-tests"
-    integration.write_text("#!/bin/sh\nprintf 'Suite*\\n    Test*\\n'\n", encoding="utf-8")
+    integration.write_text(
+        "#!/bin/sh\n[ \"$SPEC181_FIXTURE_VALUE\" = explicit-config-fixture ] || exit 91\n"
+        "printf 'Suite*\\n    Test*\\n'\n", encoding="utf-8")
     environment = {"SPEC181_FIXTURE_VALUE": "explicit-config-fixture"}
+    (root / "tests/python/test_spec180_fixture.py").write_text(
+        "import os\nassert os.environ['SPEC181_FIXTURE_VALUE'] == 'explicit-config-fixture'\n"
+        "def test_fixture():\n    assert True\n", encoding="utf-8")
+    _seal_fixture(root)
     environment_path = tmp_path / "environment.json"
     environment_path.write_text(json.dumps(environment), encoding="utf-8")
     inventory_path = tmp_path / "inventory.json"
@@ -568,3 +574,57 @@ def test_inventory_and_gate_clis_share_actual_configuration(tmp_path: Path, caps
         "--output-root", str(refused_output), "--environment-json", str(environment_path),
     ]) == 78
     assert not refused_output.exists()
+
+
+@pytest.mark.parametrize("mutation", ["model", "referenced-key", "add-model", "map"])
+def test_local_gate_rejects_external_input_drift_before_children(tmp_path, monkeypatch, mutation):
+    external = tmp_path / "inputs"
+    package = external / "package"
+    package.mkdir(parents=True)
+    model = package / "model.onnx"
+    model.write_bytes(b"frozen model")
+    key = external / "recipient.key"
+    key.write_bytes(b"fixture private bytes")
+    key_map = external / "recipients.json"
+    key_map.write_text(json.dumps({"provider": str(key)}))
+    environment = {"SPEC180_YOLO_CANONICAL_PACKAGE": str(package),
+                   "SPEC181_PROVIDER_RECIPIENT_KEY_MAP": str(key_map)}
+    _, runner, root, inventory = _inventory(tmp_path / "source", environment)
+    if mutation == "model":
+        model.write_bytes(b"changed model")
+    elif mutation == "referenced-key":
+        key.write_bytes(b"changed private bytes")
+    elif mutation == "add-model":
+        (package / "external.data").write_bytes(b"new external initializer")
+    else:
+        key_map.write_text(json.dumps({"other-provider": str(key)}))
+    monkeypatch.setattr(runner, "_run_entry", lambda *a: pytest.fail("child started with changed inputs"))
+    output = tmp_path / "evidence"
+    with pytest.raises(runner.LocalGateError, match="INPUT_IDENTITY_MISMATCH"):
+        runner.run_local_gate(inventory, root=root, output_root=output, environment=environment)
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("phase,completed", [("before-cases", 3), ("last-case", 6)])
+def test_input_drift_preserves_completed_children_and_blocks_qualification(tmp_path, monkeypatch, phase, completed):
+    key = tmp_path / "requester.key"
+    key.write_bytes(b"frozen fixture bytes")
+    environment = {"NDNSF_DI_ENVELOPE_KEY_FILE": str(key)}
+    _, runner, root, inventory = _inventory(tmp_path / "source", environment)
+    original = runner._run_entry
+    def execute_then_mutate(root, entry, *args):
+        result = original(root, entry, *args)
+        if ((phase == "before-cases" and entry["kind"] == "python-selector") or
+                (phase == "last-case" and entry.get("case") == "Y-N")):
+            key.write_bytes(b"changed after child")
+        return result
+    monkeypatch.setattr(runner, "_run_entry", execute_then_mutate)
+    result = runner.run_local_gate(inventory, root=root, output_root=tmp_path / "evidence",
+                                   environment=environment)
+    assert result["status"] == "UNQUALIFIED"
+    assert result["inputIdentity"]["status"] == "FAIL"
+    assert result["entryCount"] == completed
+    assert len(result["unexecutedEntryIds"]) == 6 - completed
+    assert result["cleanup"] == "PASS"
+    assert all(item["status"] == "PASS" and Path(item["stdoutPath"]).is_file()
+               for item in result["entries"])
