@@ -1,5 +1,21 @@
 # Spec179 Audit — Controller Revocation Test Coverage
 
+## 2026-09-05 Controller grants for both roles (current; T021 local PASS)
+
+Controller service-use grants to Users and service-offering grants to Providers
+now have real first-grant and post-permission-exhaustion evidence. Live probes
+exposed ignored benchmark provider lists, unnecessary User DKEY refreshes on
+added provider routes, and missing request-level Provider restrictions in ACK
+admission. All three are repaired; early failures remain recorded.
+
+Final clean994018ac cohort:18/18 MiniNDN scenarios,188 scenario assertions,
+both dedicated User grant gates,33 matching native hashes, driver/CLI exit0.
+Native183/183 unit and72/72 integration cases, plus28/28 launcher checks pass.
+See `evidence/provider-online-grant-20260905.md` for exact cases and limits.
+NAC ordinary source calls remain supported but public layouts require clean
+matching dependent rebuilds. This is local configuration-bound acceptance,
+not a proof of all timings/deployments. T014 upstream delivery remains external.
+
 ## 2026-09-05 NAC dependency compatibility follow-up (T020 local PASS)
 
 The broader dependency review found and repaired warm-cache authorization
@@ -9,8 +25,8 @@ gate and all three example builds. Public class layouts changed, so NDNSF must
 be rebuilt before runtime acceptance. Clean Clang rebuild passes182 unit and72
 integration cases; the fresh full16-scenario MiniNDN cohort passes161 scenario
 assertions and both dedicated User grant gates, with33 matching artifact hashes.
-T020 is closed. Provider first-grant execution is a distinct coverage gap under
-the user's clarified Controller permission scope and remains T021. The report is
+T020 is closed. The subsequent Provider first-grant coverage gap is closed by
+T021 above. The dependency report is
 `evidence/nac-abe-compatibility-review-20260905.md`; prior16/16 evidence below
 remains valid for its recorded NAC `8b462d0`, not for the new dependency.
 

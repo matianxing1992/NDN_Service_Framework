@@ -1,7 +1,12 @@
 # Controller-authorized Provider online grant
 
-Status: T021 runtime/example fixes,28/28 launcher checks and rebuilt native gates pass;
-final18-scenario MiniNDN acceptance pending.
+Status: T021 local PASS. Runtime/example fixes,28/28 launcher checks,
+183/183 unit cases,72/72 integration cases and18/18 MiniNDN scenarios pass.
+
+The authoritative final cohort is `campaign-ack-final/` at clean NDNSF
+`994018ac5c03f5f8aa9cf81614334f0713449d6e`. Earlier pending statements below are
+historical checkpoints, superseded by the final acceptance section. NAC source
+remains `b3b43c8` on local `Experimental` (documentation HEAD `85547eb`).
 
 User clarification: authorization means Controller permission to use services
 as a User and to offer services as a Provider. Existing16-case MiniNDN evidence
@@ -99,3 +104,57 @@ ACK-boundary build passes in8m2.858s at-j2; six target dependency closures pass.
 three selection strategies; `provider-ack-integration.log` passes72/72 cases
 (1281 assertions). Python28/28 remains unchanged. A new complete18-case
 network cohort is required; neither earlier Provider cohort is acceptance.
+
+## Final acceptance
+
+All18 scenarios in `campaign-ack-final/` complete with `gatePassed=true`,
+`networkEvidence=true`, no launcher error and CLI exit0; the driver exit0 is
+retained in `campaign-ack-final.exit`. `final-network-verification.log` verifies
+188/188 scenario assertions, both dedicated User grant gates, clean994018ac
+for every manifest and33 identical artifact hashes against the actual files.
+The NAC library remains SHA256
+`925e983ba167ca158ce0fc2e8dd015fd2c9afc2971cf0ccdd5b88c66637223b0`.
+
+| Scenario | Final evidence |
+|---|---|
+| Provider first grant |13/13 assertions; target17/17, control32/32 successful requests |
+| Provider grant after permission exhaustion |14/14; target22/22, control65/65; timeout < grant < actual renewal < service |
+| User first grant |Dedicated gate PASS; target10/10, control24/24; one target DKEY fetch, zero unaffected fetches |
+| User grant after permission exhaustion |Dedicated gate PASS; target21/21, control60/60; one target DKEY fetch, zero unaffected fetches |
+| Revocation rotation failure and retry |14/14 |
+| In-flight revocation |12/12 |
+| User identity revocation |12/12 |
+| Provider identity revocation/restart |14/14 |
+| Service-scoped revocation with unaffected control |11/11 |
+| Offline rejoin across epochs |8/8 |
+| Controller/cache/Provider status retrieval |14/14 |
+| Controller unavailable and permission expiry |7/7 |
+| Large response invalidation |14/14 |
+| Targeted refill invalidation |14/14 |
+| Stream invalidation |6/6 |
+| Hintless scheduled refresh |6/6 |
+| Controller restart |15/15 |
+| Selection/response tampering and replay |14/14 |
+
+The planned Provider restart and Controller outage have role exit-2, with
+recovery/expiry checked explicitly. All other role exits are0. No failed target
+or control rows are omitted. Provider grants use `/SERVICE/HELLO`; User grants
+use `/PERMISSION/HELLO`. App provider lists and runtime ACK admission now enforce
+the same explicit selection constraint. A new Provider route does not refresh
+an already authorized User's unchanged ABE service attribute.
+
+This establishes the listed Controller authorization and revocation cases on
+the pinned local build/configuration. It is not proof of every possible timing,
+fault or deployment. Version transitions may cancel in-flight requests; Apps
+own retries and permission discovery, with Provider status-triggered renewal
+also supported. Ordinary source calls remain supported; NAC changed public
+layouts, so clean matching rebuilds are mandatory for other applications and
+language extensions. Python bindings, third-party deployments and TigerCluster
+are not qualified by these C++/MiniNDN results. Next delivery item is T014,
+upstream publication and a matched dependency release; nothing was pushed.
+
+Workflow closure: Context Mode repository authority was refreshed and checked;
+CodeGraph verified NDNSF sources and synced changes (NAC has no index); Spec Kit
+records requirements, findings and execution; GSD retains the diagnosis state.
+ARS is not applicable to this implementation regression. Compiler/tooling and
+network failures remain in `docs/failure-log.md` and the ignored evidence root.

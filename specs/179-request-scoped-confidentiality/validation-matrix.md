@@ -647,6 +647,7 @@ default status refresh timing or remote erasure of already disclosed keys.
 | Row | Level | Covers | Evidence / cases | Status |
 |---|---|---|---|---|
 | RV-I40 | dependency component + rebuilt runtime/MiniNDN | FR-019/023/024/036/041: callback reentry, stale parameter/validation generations, exact current naming, warm-cache private-key isolation, source/ABI migration | `NAC-ABE`42/42 CTest3299 assertions; installed-prefix20/20 cases89 assertions; original three example builds; restored typed no-argument fetch and three-version layout probes; clean NDNSF182 unit/72 integration and16 MiniNDN scenarios pass. Report: `evidence/nac-abe-compatibility-review-20260905.md` | executed at de1eb508;33 artifact hashes verified |
+| RV-I41 | component + rebuilt runtime/MiniNDN | FR-017/019/024/036/041: Controller grants User service-use and Provider service-offer permissions; Provider first grant and grant after exhausted discovery; route-only User permission change does not refresh DKEY; explicit Provider set restricts ACK selection |28/28 launcher checks;183/183 unit cases11998 assertions,72/72 integration cases1281 assertions; full18/18 network cohort with188 assertions and both dedicated User grant gates; Provider targets17/17 and22/22, controls32/32 and65/65. Report: `evidence/provider-online-grant-20260905.md` | executed at clean994018ac;33 hashes verified; all scenario CLIs and driver exit0 |
 
 ## Completion Rules
 

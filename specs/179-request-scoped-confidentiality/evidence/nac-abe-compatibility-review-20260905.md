@@ -174,3 +174,11 @@ by Users and service offering by Providers. These16 cases contain User online
 grant and both-role revocation; Provider first-grant execution remains a
 separate coverage gap, tracked as T021. No universal third-party compatibility,
 Python-extension, TigerCluster or performance qualification is claimed.
+
+Subsequent T021 closure: `evidence/provider-online-grant-20260905.md` verifies
+both Provider first-grant variants and a fresh complete18-scenario cohort at
+994018ac, with188 assertions/33 hashes. It also repairs NDNSF benchmark Provider
+routing, User route-only DKEY refresh and explicit Provider ACK constraints.
+Final NDNSF gates are183 unit/72 integration and28 launcher cases; NAC source
+and its42-case dependency gate remain unchanged. The T020 cohort above stays
+historical evidence for its own exact native hashes.

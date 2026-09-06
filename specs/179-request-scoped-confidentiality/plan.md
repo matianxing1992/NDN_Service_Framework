@@ -353,4 +353,9 @@ extend the existing real Controller integration grant test. Provider status
 advances already trigger permission revalidation, so actual post-grant fetches
 may precede the App timer; require actual renewal and idempotence, including
 the late timeout ordering. Revalidate28 component tests, the full selected
-native182/72 suites and all18 network scenarios after these runtime changes.
+native183/72 suites and all18 network scenarios after these runtime changes.
+The second live probe further requires central ACK membership in a nonempty
+explicit Provider set; Controller permission alone does not override caller
+selection. Empty-list discovery stays supported. Final acceptance at994018ac
+passes all18 scenarios,188 assertions, both User grant gates and33 matching
+artifact hashes; the evidence report closes T021 and retains both network reds.

@@ -142,6 +142,14 @@ gates at clean revision de1eb508. Provider first-grant execution is T021; see
 
 ## Evidence rules
 
+T021 / RV-I41 maps FR-017/019/024/036/041 to actual Controller-to-Provider
+first-grant and late-renewal execution, User route-only DKEY idempotence and
+request-level Provider ACK constraints. Final clean994018ac passes183 unit,
+72 integration and28 launcher cases; full18 MiniNDN scenarios pass188 assertions
+and both dedicated User grant gates with33 matching hashes. Provider targets
+17/17 and22/22 and controls32/32 and65/65 succeed. Both earlier failed cohorts
+remain evidence. See `evidence/provider-online-grant-20260905.md` for limits.
+
 - Unit tests establish deterministic serialization, cryptographic failure codes,
   canonical AAD, nonce behavior, Controller authority, typed revocation policy,
   cache invalidation, and every security-critical state transition.

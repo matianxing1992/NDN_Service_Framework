@@ -133,7 +133,13 @@ Executed: NAC42/42; clean NDNSF unit182/182 and integration72/72; full16/16
 MiniNDN scenarios,161 assertions and dedicated User grant gates at de1eb508,
 33 identical artifact hashes verified. NAC repair b3b43c8, migration note85547eb.
 
-- [ ] T021 Verify the user's clarified Controller permission scope on both roles: add explicit User/Provider grant-role selection to `examples/App_ServiceController.cpp`, mirror application-owned permission renewal in `examples/App_Provider.cpp`, and add real Provider first-grant and post-permission-exhaustion scenarios in `tests/minindn/run_request_scoped_confidentiality.py` and `spec179_scenario_checks.py`. Preserve default User grants; require no Provider service before authorization, target-only key refresh, successful service through the newly authorized Provider, zero unaffected-control failures, and exact late-renewal ordering. Add adversarial evaluator tests, rebuild the two Apps, verify the matching dependency closure, and execute the two new scenarios plus the existing User grant compatibility control. FR-017/019/024/036/041; use `evidence/provider-online-grant-20260905.md` for findings and results.
+- [x] T021 Verify the user's clarified Controller permission scope on both roles: add explicit User/Provider grant-role selection to `examples/App_ServiceController.cpp`, mirror application-owned permission renewal in `examples/App_Provider.cpp`, and add real Provider first-grant and post-permission-exhaustion scenarios in `tests/minindn/run_request_scoped_confidentiality.py` and `spec179_scenario_checks.py`. Preserve default User grants; require no Provider service before authorization, target-only key refresh, successful service through the newly authorized Provider, zero unaffected-control failures, and exact late-renewal ordering. Add adversarial evaluator tests, rebuild the two Apps, verify the matching dependency closure, and execute the two new scenarios plus the existing User grant compatibility control. FR-017/019/024/036/041; use `evidence/provider-online-grant-20260905.md` for findings and results.
+
+Executed:28/28 launcher checks;183/183 unit cases (11998 assertions),72/72
+integration cases (1281 assertions); final18/18 MiniNDN scenarios with188
+assertions and both dedicated User grant gates at clean994018ac. All33 native
+artifact hashes match disk; driver and all scenario CLIs exit0. Both earlier
+Provider network failures are retained. T014 upstream publication remains external.
 
 ## Dependencies and Execution Order
 
@@ -141,7 +147,7 @@ T021 live findings extend its bounded implementation to `examples/App_User.cpp`
 (benchmark explicit-provider routing), `ServiceUser::applyPermissionResponse`
 (service-level DKEY refresh detection), and the existing Controller grant
 integration test. Its final acceptance now requires all18 network scenarios
-after the full selected182-unit/72-integration gates, not only the three
+after the full selected183-unit/72-integration gates, not only the three
 initial probes. Provider permission renewal can be triggered by a signed
 status advance before its App timer; verify the actual fetch and timer
 idempotence. First network reds remain in `provider-campaign-first/`.
