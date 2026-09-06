@@ -19,6 +19,13 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 digest native rebuild R1 (2026-09-06): PASS.**
+Committed e6f44b65 rebuilds the Core library, native Provider and Python
+extension; maintained build and independent verify both report native identity
+OK. Source/byte checks and exact assignment rejection remain intact. Affected
+convergence review PASS; proceed to a fresh formal matrix. See
+[formal matrix](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-formal-matrix-20260906.md#provider-digest-native-rebuild-r1).
+
 **Spec181 digest repair R3 (2026-09-06): focused PASS; native rebuild pending.**
 Four actual C++ helper checks pass (1.73 s) after the isolated Provider emits
 canonical lowercase hex. Exact assignment size/digest checks remain intact.

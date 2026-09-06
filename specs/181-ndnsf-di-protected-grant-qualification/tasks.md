@@ -1,5 +1,12 @@
 # Tasks: NDNSF-DI Protected-Grant Local Development and Delivery
 
+**Latest native checkpoint (2026-09-06)**：`e6f44b65` 完成维护 native
+重建及独立 verify，均 SPEC180_NATIVE_IDENTITY_OK；T007 受影响项
+复审 PASS。下一步 R17 正式矩阵，T005 未完成，本机仍 6/10。见
+[native rebuild](evidence/t005-formal-matrix-20260906.md#provider-digest-native-rebuild-r1)。
+T008 前须核对主工作区尚未纳入隔离提交的 19 个 Spec180 测试及
+其依赖/适用范围，不能将当前较小集合当作完整资格清单。
+
 **Latest repair R3 (2026-09-06)**：Provider digest 规范化定向检查
 4 passed（1.73 s），此前 4 failed（1.65 s）确认大小写不一致。
 T005 仍未完成，本机 6/10；下一步提交该 hunk、重建 native 并复审，

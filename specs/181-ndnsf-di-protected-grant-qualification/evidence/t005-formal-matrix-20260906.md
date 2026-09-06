@@ -1,6 +1,6 @@
 # Formal Local Y-N Matrix
 
-**Status**: BLOCK (digest focused repair PASS; native rebuild/re-audit pending)
+**Status**: IN_PROGRESS (digest repair / native rebuild / affected re-audit PASS; formal matrix pending)
 **Evidence layer**: implemented / executed (formal network startup and focused regression)
 
 ## Subject and Launch R1
@@ -381,3 +381,27 @@ prepareCollaborationAssignment 的 plaintextSize 和 digest 精确比较
 此测试编译实际函数体，不是全框架链接/网络校验。下一步本地提交、
 维护 native build 重建并复审，随后新正式矩阵验证真实 assignment
 边界。T005 未完成，本机 6/10 保持不变。
+
+## Provider Digest Native Rebuild R1
+
+修复提交 `e6f44b65`，原始目录 `spec181-provider-digest-native-20260906-r1/`。
+隔离源码无 tracked/index 改动，仅允许的 build 输出目录；维护命令
+`scripts/spec180_native_build.py build --jobs 2` 成功，Core/Provider
+编译链接 4m8.325s，随后重新编译 Python 绑定（binding_reused=false）。
+同一显式系统工具链环境下独立 `verify` exit 0，两次均输出
+SPEC180_NATIVE_IDENTITY_OK；实际 DSO/SVS/provider 依赖映射通过。
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Native receipt | `96d972c36db284d709272ce9125175c65bbcff9cabaaf56d6a0d46a1d9d4dce4` |
+| Core library | `e2d9d100d13f40e57de395c39b99b2365a18d784dc69a68bb0d405297cf52a4b` |
+| Native Provider | `9fea3b07792ef77092d0823aec8034a9e6a5de65c18888237b7cbb7bd0e42705` |
+| Python extension | `e9932073205b66b79e12c6f3944342d65d91fdb340b3225eb4b3326f480e1339` |
+
+源码复核：ServiceUser 与 Provider 规范形式一致，后者只新增小写
+归一化；prepareCollaborationAssignment 原有 size/digest 比较与
+失败拒绝不变。4 个实际 C++ helper 正例对独立 SHA-256 通过；
+该 focused RED/GREEN 与完整重建闭合此 A05 边界，T007 受影响项
+复审 PASS。没有弱化 grant 或校验，也未纳入其他预存 Provider
+改动。下一步 R17 验证真实获取后 assignment 处理，不能以当前
+环境/构建 PASS 代替矩阵或本地资格。
