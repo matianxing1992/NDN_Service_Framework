@@ -68,6 +68,10 @@ def local(tmp_path, monkeypatch):
 
     for name in native.SOURCE_FILES:
         put(name)
+    put("waf", b'#!/usr/bin/env python3\nVERSION="2.0.24"\nREVISION="fixture"\nINSTALL=""\n')
+    waf_dir = root / ".waf3-2.0.24-fixture"
+    put(waf_dir / "waflib/__init__.py", b"# fixture Waf\n")
+    put(waf_dir / "waflib/Scripting.py", b"# fixture build entry\n")
     for name in native.CONFIG_FILES:
         put("build-system-j2/" + name)
     for name in ("ndn-service-framework/ServiceController.cpp",
@@ -96,12 +100,14 @@ def local(tmp_path, monkeypatch):
         native.SVS_SOURCE_ENV + " = " + repr(str(svs_source)) + "\n" +
         native.SVS_BUILD_ENV + " = " + repr(str(svs_build)) + "\n").encode())
     python = put("system/python", b"python-v1")
+    python.chmod(0o755)
+    (python.parent / "python3").symlink_to(python.name)
     manifest = root / native.DEFAULT_MANIFEST
     calls = []
     state = {"framework": core, "extension": extension,
              "provider_dependency": dependency, "svs": svs_library,
              "provider_svs": svs_library, "linker": toolchain_root / "ld"}
-    env = {"PYTHONPATH": str(root / "pythonWrapper"),
+    env = {"PATH": str(python.parent), "PYTHONPATH": str(root / "pythonWrapper"),
            "LD_LIBRARY_PATH": str(root / "system")}
 
     def runtime():
@@ -139,7 +145,7 @@ def local(tmp_path, monkeypatch):
             "core": core, "extension": extension, "provider": provider,
             "dependency": dependency, "put": put, "runtime": runtime,
             "svs_source": svs_source, "svs_build": svs_build, "svs_library": svs_library,
-            "toolchain_root": toolchain_root}
+            "toolchain_root": toolchain_root, "waf_dir": waf_dir}
 
 
 def build(local, **kwargs):
@@ -439,8 +445,9 @@ def test_cli_verify_missing_manifest_returns_failure(local, capsys):
     assert sorted(local["root"].rglob("*")) == before
 
 
-def test_cli_verify_detects_wrong_core_linkage(local, capsys):
+def test_cli_verify_detects_wrong_core_linkage(local, capsys, monkeypatch):
     build(local)
+    monkeypatch.setenv("PATH", local["env"]["PATH"])
     local["state"]["framework"] = local["put"](
         "old-build/" + native.LIBRARY, b"old core")
     code = native.main(["verify", "--root", str(local["root"]),
@@ -605,7 +612,7 @@ def test_setup_pins_and_records_drivers_without_changing_parent_environment(loca
         assert data["setup_toolchain"]["drivers"][name]["linker"] == native.file_identity(
             local["toolchain_root"] / "ld")
     assert local["env"] == original
-    assert local["calls"][0]["env"] == original  # Waf is not reconfigured.
+    assert local["calls"][0]["env"] == dict(original, WAFDIR=str(local["waf_dir"]))
     assert all({key: c["env"][key] for key in original} == original
                for c in local["calls"] if "-c" in c["command"])
 
@@ -672,3 +679,71 @@ def test_old_manifest_without_toolchain_receipt_is_rejected(local):
     local["manifest"].write_text(json.dumps(data))
     with pytest.raises(native.IdentityError, match="INVALID_MANIFEST_FIELD: setup_toolchain"):
         verify(local)
+
+
+@pytest.mark.parametrize("mutation", ["edit", "add", "delete", "override", "python"])
+def test_waf_runtime_identity_drift_rejected_before_native_import(local, mutation):
+    build(local)
+    source = local["waf_dir"] / "waflib/Scripting.py"
+    if mutation == "edit":
+        source.write_text("# changed build implementation\n")
+    elif mutation == "add":
+        source.with_name("new_tool.py").write_text("# added tool\n")
+    elif mutation == "delete":
+        source.unlink()
+    elif mutation == "override":
+        other = local["root"] / "alternate-waf"
+        local["put"](other / "waflib/__init__.py")
+        local["put"](other / "waflib/Scripting.py")
+        local["env"]["WAFDIR"] = str(other)
+    else:
+        Path(local["python"]).write_bytes(b"changed Waf interpreter")
+    local["calls"].clear()
+    with pytest.raises(native.IdentityError, match="WAF_TOOL_CHANGED"):
+        verify(local)
+    assert not local["calls"]
+
+
+def test_waf_build_pins_selected_directory_without_mutating_parent(local):
+    original = dict(local["env"])
+    result = build(local)
+    assert local["env"] == original
+    assert local["calls"][0]["env"]["WAFDIR"] == str(local["waf_dir"])
+    assert result["waf_tool"]["directory"] == str(local["waf_dir"])
+    assert result["waf_tool"]["files"]["waflib/Scripting.py"] == native.file_identity(
+        local["waf_dir"] / "waflib/Scripting.py")
+    assert result["commands"][0]["WAFDIR"] == str(local["waf_dir"])
+
+
+@pytest.mark.parametrize("during", ["build", "verify"])
+def test_waf_change_during_operation_preserves_previous_receipt(local, monkeypatch, during):
+    build(local)
+    previous = local["manifest"].read_bytes()
+    original = native.run
+    def change_waf(command, **kwargs):
+        result = original(command, **kwargs)
+        if (during == "build" and command[0] == str(local["root"] / "waf")) or (
+                during == "verify" and "-c" in command):
+            (local["waf_dir"] / "waflib/Scripting.py").write_text("# drift\n")
+        return result
+    monkeypatch.setattr(native, "run", change_waf)
+    with pytest.raises(native.IdentityError, match="WAF_TOOL_CHANGED_DURING_" + during.upper()):
+        (build if during == "build" else verify)(local)
+    assert local["manifest"].read_bytes() == previous
+
+
+def test_waf_relative_path_is_resolved_in_build_working_directory(local):
+    env = dict(local["env"], PATH="system", WAFDIR=local["waf_dir"].name)
+    result = native.waf_tool_identity(local["root"], env)
+    assert result["python"] == native.file_identity(local["root"] / "system/python3")
+    assert result["directory"] == str(local["waf_dir"])
+
+
+def test_old_receipt_without_waf_identity_fails_before_probe(local):
+    result = build(local)
+    del result["waf_tool"]
+    local["manifest"].write_text(json.dumps(result))
+    local["calls"].clear()
+    with pytest.raises(native.IdentityError, match="INVALID_MANIFEST_FIELD: waf_tool"):
+        verify(local)
+    assert not local["calls"]
