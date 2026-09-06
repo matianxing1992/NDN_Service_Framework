@@ -38,3 +38,13 @@ previous prefix. Installed lib SHA256
 its ldd closure has no missing dependency. Clean NDNSF configuration succeeds
 in `build-clang-spec179-official` using Clang10/system binutils, debug-Werror,
 shared library/tests and the exact new prefix. Native build starts at-j2.
+
+Full NAC CTest passes46/46 cases and4284 assertions in95.24 seconds
+(`nac-full-ctest.log`, exit0). All three examples also built. Installed-prefix
+focused verification and the clean NDNSF build are ongoing; native/network
+authorization acceptance is not yet established for the merged dependency.
+
+Installed-prefix gate passes26/26 cases and1082 assertions, with ldd explicitly
+resolving the new installed NAC (`nac-installed.log`). Full merge revision:
+`c3aafa6ec5a566879942107c7b20855659c9dfb9`; parents85547eb and58f3948.
+Experimental now contains every official master commit (7 ahead/0 behind).
