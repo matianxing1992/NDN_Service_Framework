@@ -19,6 +19,28 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 subcase-epoch repair R2 (2026-09-06): focused PASS.**
+All 117 runner/matrix/grant seam checks pass (3.99 s). Child epoch now matches
+the publication/Provider runtime inputs; the protected Y-B and all three
+Y-N-E mutations retain their grant configuration, and the parent environment
+is unchanged. Affected convergence review PASS; T005 needs a new formal run.
+See [formal matrix](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-formal-matrix-20260906.md#subcase-epoch-repair-r2).
+
+**Spec181 subcase-epoch regression R1 (2026-09-06): RED reproduced.**
+Seven plaintext cases inherit the protected matrix epoch; four protected
+profiles pass. The focused production runner capture stops before network
+startup (7 failed / 4 passed / 88 deselected, 2.06 s). Bind child epoch to the
+same runtime inputs used by publication and Provider process specifications.
+See [formal matrix](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-formal-matrix-20260906.md#subcase-epoch-regression-r1).
+
+**Spec181 T005 formal R12 (2026-09-06): BLOCK at subcase epoch environment.**
+Committed fixture loading passes. Y-N-O User inherits the matrix's protected
+epoch, although runtime publication and process specifications choose the
+plaintext control epoch; its grant seam then raises SPEC181_REQUESTER_PRIVATE_KEY
+KeyError. Scope the child epoch to the selected subcase and regression-test
+both plaintext controls and protected Y-N-E before rerunning. See
+[formal matrix](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-formal-matrix-20260906.md#subcase-epoch-boundary-r12).
+
 **Spec181 fixed-input closure repair (2026-09-06): focused PASS.**
 The existing PPM and provenance README are adopted without byte changes.
 All 22 numerical regression checks pass (7.97 s); the actual canonical

@@ -1,6 +1,6 @@
 # Formal Local Y-N Matrix
 
-**Status**: IN_PROGRESS (fixture closure focused PASS; formal matrix pending)
+**Status**: IN_PROGRESS (subcase epoch repair focused PASS; formal matrix pending)
 **Evidence layer**: implemented / executed (formal network startup and focused regression)
 
 ## Subject and Launch R1
@@ -190,3 +190,36 @@ FileNotFoundError：隔离提交缺少
 及其 README 原字节纳入提交，未替换 oracle 或模型。A05 受影响项
 复审 PASS；下一步在新提交的隔离检出重复实际 loader 检查后运行
 新矩阵。本记录仍不构成 T005 PASS。
+
+## Subcase Epoch Boundary R12
+
+隔离提交 `344fb52fe7b264ea114ae2cb60dab57d748248ae` 的真实
+load_reference 已通过（fixture repair 的 committed-reference.log）。
+正式原始目录为 ignored workspace temporary directory 下
+`spec181-t005-formal-20260906-r12/`。User 越过输入加载后，在
+_build_grant_seam 报 SPEC181_REQUESTER_PRIVATE_KEY KeyError。
+生产 _run_live_case_once 仅对 Y-B/Y-N-E 配置 protected runtime
+publication 和 grant keys，却让其余子用例继承 matrix 顶层的保护
+epoch；Y-N-O 因而错误进入 grant seam。矩阵 exit 2，没有控制 PASS。
+这属于 runner 子用例配置不一致；暂停矩阵，按子用例统一 child epoch，
+以定向测试证明 control 与三种 Y-N-E 仍分别走预期语义后复审。
+
+## Subcase Epoch Regression R1
+
+`spec181-subcase-epoch-20260906-r1/red.log` 记录 **7 failed / 4 passed /
+88 deselected（2.06 s）**：Y-A 及六个明文 Y-N 子用例全部复现 child
+epoch 与 publication 输入不一致；Y-B 与三种 Y-N-E 已保留 protected
+epoch。测试在真实 _run_live_case_once 的 native preflight 边界捕获
+环境，不启动网络。下一步将 child epoch 绑定该函数选定的 runtime
+输入，并核对父环境保持不变，不能修改 matrix 顶层的保护要求。
+
+## Subcase Epoch Repair R2
+
+`spec181-subcase-epoch-20260906-r2/focused.log`：**117 passed（3.99 s）**，
+覆盖 runner、完整矩阵调度/失败保留和 grant seam。新 11 项实际 runner
+环境捕获验证 child epoch 与 publication 一致：Y-A/O/C/P/R/I/L
+为 plaintext-v1；Y-B 及 Y-N-E 的三变异保留 protected epoch 与
+requester/recipient 配置；父进程环境保持不变。仅修复环境选择，
+未改变受保护授权验证、协议 oracle 或自动重试策略。T007 受影响项
+复审 PASS。R12 source/input 前后仍一致，且所有 NFD 已退出。
+下一步以新提交执行新正式矩阵；T005 继续未完成。

@@ -7,7 +7,11 @@ local gate 提交/源码身份修复为 `2628e3d2`。最终审计对象为
 `6b9bb51c43a597bf36ca62f304fee5f71c17fa58` 的隔离源码和 R13 runtime；
 `8c231493` 仅补记证据，主工作区其余预存改动不在该审计对象内。
 **Layer**: proposed / implemented / wired / executed（限定在各记录的检查范围）。
-**Verdict**: **PASS**（R11 fixed input closure re-audited）。
+**Verdict**: **PASS**（R12 subcase epoch consistency re-audited）。
+R12 的 runner 修复使 child epoch 与 publication/process specs
+共用本子用例选定的 runtime 输入；117 项 runner/matrix/grant seam
+回归 PASS（3.99 s）。七种明文控制、Y-B 和三种 Y-N-E 配置均验证，
+父环境不变，授权负例与首失败停止语义保留；允许新提交恢复矩阵。
 R11 暂停矩阵后补齐既有固定 PPM 与来源说明；固定字节与候选
 manifest 完全匹配，实际 reference loader PASS、22 项数值回归
 PASS（7.97 s）。A05 的该项复审通过；提交后先在隔离检出复核实际

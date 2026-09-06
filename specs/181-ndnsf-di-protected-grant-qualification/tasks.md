@@ -18,6 +18,16 @@ Spec 170 `artifact-assembly-v1` 契约。
 
 ## Current Checkpoint (revision 7)
 
+**Latest repair R2 (2026-09-06)**：子用例 epoch 已与 publication/
+process specs 对齐，117 项 runner/matrix/grant seam 回归 PASS
+（3.99 s），T007 受影响项复审 PASS。下一步新提交执行正式矩阵；
+本机仍 6/10，T005 未通过。
+
+**Latest attempt R12 (2026-09-06)**：提交 fixture 的隔离 loader 通过；
+正式 Y-N-O 继承了只应供 Y-N-E 使用的 protected epoch，错误进入
+grant seam 并缺 requester key。先定向修复子用例环境一致性；
+T005 未通过，T007 的此受影响边界暂为 BLOCK，历史完成数仍 6/10。
+
 **Latest repair (2026-09-06)**：既有固定 PPM/README 纳入源码，
 实际 canonical package 的 reference loader PASS，22 项数值
 回归 PASS（7.97 s），A05/T007 恢复 PASS。完成数仍 6/10；提交后
