@@ -177,6 +177,50 @@ def test_sif_never_uses_host_build_receipt(monkeypatch):
     module._validate_local_native_build({})
 
 
+@pytest.mark.parametrize("case,subcase,mutation", [
+    ("Y-A", "", ""),
+    *[("Y-N", name, "") for name in
+      ("Y-N-O", "Y-N-C", "Y-N-P", "Y-N-R", "Y-N-I", "Y-N-L")],
+    ("Y-B", "", ""),
+    *[("Y-N", "Y-N-E", value) for value in
+      ("EXPIRED", "WRONG_RECIPIENT", "FORGED_AUTHORITY")],
+])
+def test_live_case_child_epoch_matches_publication(monkeypatch, tmp_path,
+                                                  case, subcase, mutation):
+    module = load_runner()
+    requested = "spec180-yolo-protected-v1"
+    monkeypatch.setenv(module.PROTECTION_EPOCH_ENV, requested)
+    monkeypatch.setenv("SPEC181_GRANT_MUTATION", mutation)
+    monkeypatch.setenv("NDNSF_DI_ENVELOPE_KEY_FILE", str(tmp_path / "requester.key"))
+    monkeypatch.setenv("SPEC180_YOLO_OFFER_PRIVATE_KEY_MAP", str(tmp_path / "keys.json"))
+    monkeypatch.setenv("NDNSF_SPEC180_CONFIG_ROOT", str(tmp_path))
+    (tmp_path / "artifact-policy-authority.key").write_text("preflight fixture")
+    publication_inputs, child_environment = {}, {}
+    def binding(_case, _output, inputs):
+        publication_inputs.update(inputs)
+        return SimpleNamespace(output=tmp_path)
+    monkeypatch.setattr(module, "CaseRuntimeBinding", SimpleNamespace(from_inputs=binding))
+    monkeypatch.setattr(module, "build_runtime_publication_file", lambda *args: tmp_path)
+    monkeypatch.setattr(module, "MiniNdnCaseRuntime", lambda *args: SimpleNamespace(
+        process_specs=lambda: None,
+        start_network=lambda: pytest.fail("network must not start in focused test"),
+        stop=lambda: None))
+    monkeypatch.setattr(module, "_validate_native_library_closure", lambda: None)
+    def stop_before_network(env):
+        child_environment.update(env)
+        raise module.RunnerError("EPOCH_CAPTURED")
+    monkeypatch.setattr(module, "_validate_local_native_build", stop_before_network)
+    with pytest.raises(module.RunnerError, match="EPOCH_CAPTURED"):
+        module._run_live_case_once(case, tmp_path, {}, subcase=subcase)
+    expected = requested if case == "Y-B" or subcase == "Y-N-E" else module.PLAINTEXT_EPOCH
+    assert publication_inputs.get("protection_epoch", module.PLAINTEXT_EPOCH) == expected
+    assert child_environment[module.PROTECTION_EPOCH_ENV] == expected
+    assert module.os.environ[module.PROTECTION_EPOCH_ENV] == requested
+    if expected == requested:
+        assert child_environment["SPEC181_REQUESTER_PRIVATE_KEY"]
+        assert child_environment["SPEC181_PROVIDER_RECIPIENT_KEY_MAP"]
+
+
 def test_live_case_build_rejection_has_no_network_side_effect(monkeypatch, tmp_path):
     module = load_runner()
     calls = []

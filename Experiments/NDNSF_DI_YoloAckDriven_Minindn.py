@@ -3245,6 +3245,10 @@ def _run_live_case_once(case: str, output: Path, inputs: Mapping[str, Any], *,
     # do not inherit a caller's PYTHONPATH ordering for an ACK-driven case.
     py_dir = ROOT / "examples/python/NDNSF-DistributedInference/yolo_2x2"
     env = _child_process_environment(os.environ)
+    # The matrix-level epoch selects protected Y-N-E only. Use the same
+    # per-case epoch as publication and Provider process specs for every child.
+    env[PROTECTION_EPOCH_ENV] = str(
+        runtime_inputs.get("protection_epoch", PLAINTEXT_EPOCH))
     # spec181 T008: Y-B runs the protected-epoch grant round trip.  The
     # requester-side User builds the in-process authority seam from these
     # inputs; every Provider resolves its own recipient key from the configured
