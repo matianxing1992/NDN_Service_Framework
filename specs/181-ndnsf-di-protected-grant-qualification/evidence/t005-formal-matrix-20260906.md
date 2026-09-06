@@ -1,6 +1,6 @@
 # Formal Local Y-N Matrix
 
-**Status**: IN_PROGRESS (sealed plan repair PASS; formal matrix pending)
+**Status**: BLOCK (digest focused repair PASS; native rebuild/re-audit pending)
 **Evidence layer**: implemented / executed (formal network startup and focused regression)
 
 ## Subject and Launch R1
@@ -330,3 +330,54 @@ identity 保留；外部 map 修改不改变已封存 digest，transport 变更
 local preparation 的空字符串。无网络副作用，不构成 Core 传输证明。
 本次 plan.py 与新增测试的隔离/提交字节一致；A05 复审 PASS，
 新提交后恢复正式矩阵，T005 未完成。
+
+## Provider Response Boundary R15
+
+源码 `fe3d687bb95e837a4014a341f29e8acba8b08b38`；原始目录
+`spec181-t005-formal-20260906-r15/`。四 Provider 接受 preparation，
+User 成功封存计划并发出 SELECTION_COMMITTED，随后终端
+REMOTE_RESPONSE_FAILED，矩阵 exit 2、Y-N-O CONTROL_NOT_PROVEN。
+WARN 日志只有 duplicate-request-and-token 拒绝，尚无 native
+执行错误细节；不能据此断言重复请求就是根因。源码/输入前后
+不变，所有 NFD 已退出。下一步检查 Core 请求/Selection 处理边界，
+补有界诊断日志后定位首次实际拒绝，保留全部失败。
+
+## External Assignment Boundary R16
+
+同源 `fe3d687b` 的新原始目录 `spec181-t005-formal-20260906-r16/`，
+仅将 Core ServiceProvider/ServiceUser 的 NDN_LOG 提升至 INFO，
+其余 case 行为不变。四 Provider 依次 selection received → handler
+queued → failed，首次失败信息一致：external collaboration assignment
+size or digest mismatch。并非模型执行，也不是 duplicate request
+日志造成的首次拒绝。矩阵 exit 2；下一步定位真实 assignment
+publication/fetch/validation 的字节契约，先定向修复再恢复矩阵。
+
+## Provider Digest Probe R1
+
+原始目录 `spec181-provider-digest-20260906-r1/`，实际 Core 两端 helper
+的编译探针在链接阶段失败：系统 g++ 由 PATH 选中 Homebrew ld，
+Boost 间接依赖未解析。结果为 4 setup errors（1.60 s），尚未比较
+摘要，不能记为协议 RED。下一次指定 `-B/usr/bin`，使用独立 R2
+记录；同时为大 payload 设置短测试 ID，避免失败报告展开全部字节。
+
+## Provider Digest Regression R2
+
+`spec181-provider-digest-20260906-r2/red.log`：4 failed（1.65 s）。
+系统工具链成功编译从实际 ServiceUser/ServiceProvider 源码提取的
+helper；空字节、ASCII、二进制及 30 KiB 外部 assignment 均验证
+User 与独立 hashlib SHA-256 一致，Provider 仅十六进制大写不符。
+当前提交 Provider 未纳入工作区既有小写归一化修复；下一步仅投影
+该 hunk。大小/摘要严格比较保持不变；此探针尚不证明真实网络获取。
+R16 launch-result 复核 sourceIdentityUnchanged / inputIdentityUnchanged
+及 sourceRevision/inputDigest/environmentDigest；前后身份一致。
+
+## Provider Digest Repair R3
+
+`spec181-provider-digest-20260906-r3/green.log`：4 passed（1.73 s）。
+仅将既有 Provider 小写归一化 hunk 纳入隔离源码；两端实际 C++
+helper 对四种输入均与独立 SHA-256 一致。ServiceUser 不变，
+prepareCollaborationAssignment 的 plaintextSize 和 digest 精确比较
+均保留；同一 helper 的其他消费者也获得既定 canonical 形式。
+此测试编译实际函数体，不是全框架链接/网络校验。下一步本地提交、
+维护 native build 重建并复审，随后新正式矩阵验证真实 assignment
+边界。T005 未完成，本机 6/10 保持不变。

@@ -7,7 +7,11 @@ local gate 提交/源码身份修复为 `2628e3d2`。最终审计对象为
 `6b9bb51c43a597bf36ca62f304fee5f71c17fa58` 的隔离源码和 R13 runtime；
 `8c231493` 仅补记证据，主工作区其余预存改动不在该审计对象内。
 **Layer**: proposed / implemented / wired / executed（限定在各记录的检查范围）。
-**Verdict**: **PASS**（R14 sealed-plan fetch references re-audited）。
+**Verdict**: **BLOCK**（Provider digest focused PASS；native rebuild pending）。
+R16 首次失败为 external assignment 校验；两端实际 C++ helper 的
+4 项 RED 确认 Provider 大写摘要与既定小写格式不一致。仅投影
+既有规范化 hunk 后 4 项 PASS（1.73 s），保留精确大小/摘要拒绝。
+尚须提交、维护 native 重建和受影响边界复审，才恢复正式矩阵。
 封存计划补齐 fetch references，并拒绝非字符串/控制字符，保留
 空引用和旧调用回退；22 项直接生产表达式/候选回归及 36 项既有
 plan sealer/YOLO/automatic-plan 回归全部 PASS。计划身份/transport

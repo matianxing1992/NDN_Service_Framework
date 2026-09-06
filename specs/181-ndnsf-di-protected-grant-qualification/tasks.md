@@ -1,5 +1,10 @@
 # Tasks: NDNSF-DI Protected-Grant Local Development and Delivery
 
+**Latest repair R3 (2026-09-06)**：Provider digest 规范化定向检查
+4 passed（1.73 s），此前 4 failed（1.65 s）确认大小写不一致。
+T005 仍未完成，本机 6/10；下一步提交该 hunk、重建 native 并复审，
+再执行新正式矩阵。见 [digest repair](evidence/t005-formal-matrix-20260906.md#provider-digest-repair-r3)。
+
 **Input**: [spec.md](spec.md), [plan.md](plan.md)，Spec 180 契约（继承）与
 Spec 170 `artifact-assembly-v1` 契约。
 
@@ -17,6 +22,14 @@ Spec 170 `artifact-assembly-v1` 契约。
   网络角色与前缀）。集成条件见 spec.md Out of Scope。
 
 ## Current Checkpoint (revision 7)
+
+**Latest diagnosis R16 (2026-09-06)**：Core INFO 日志定位四 Provider
+在外部 assignment 准备阶段 size/digest mismatch，尚未执行模型。
+当前沿发布/获取/校验链修复此边界；T005 未通过，失败保留。
+
+**Latest attempt R15 (2026-09-06)**：首次到达四角色 Selection commit，
+终端 REMOTE_RESPONSE_FAILED。当前诊断 Core/Provider 首次执行拒绝；
+WARN 的 duplicate-request 日志尚不足以判定原因。T005 未通过。
 
 **Latest repair R3 (2026-09-06)**：SealedCollaborationPlan 引用扩展
 及严格值校验已完成隔离验证：22 + 36 项回归 PASS，A05 受影响项

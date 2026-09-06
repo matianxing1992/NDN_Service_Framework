@@ -19,6 +19,40 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 digest repair R3 (2026-09-06): focused PASS; native rebuild pending.**
+Four actual C++ helper checks pass (1.73 s) after the isolated Provider emits
+canonical lowercase hex. Exact assignment size/digest checks remain intact.
+Commit this unit, rebuild the native runtime and re-audit before a new matrix.
+See [formal matrix](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-formal-matrix-20260906.md#provider-digest-repair-r3).
+
+**Spec181 digest probe R2 (2026-09-06): RED reproduced.**
+All four actual-helper comparisons fail only at Provider uppercase hex;
+User matches independent SHA-256. Normalize Provider output to the existing
+canonical lowercase contract, preserving exact byte/size checks. See
+[formal matrix](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-formal-matrix-20260906.md#provider-digest-regression-r2).
+
+**Spec181 digest probe R1 (2026-09-06): BLOCK at linker selection.**
+The focused helper probe fails at compilation/linking (4 setup errors,
+1.60 s), before digest comparison: system g++ selects Homebrew ld from PATH.
+Use the system toolchain explicitly and retain the original log. See
+[formal matrix](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-formal-matrix-20260906.md#provider-digest-probe-r1).
+
+**Spec181 T005 diagnostic R16 (2026-09-06): BLOCK at external assignment validation.**
+Core INFO logging shows each Provider receives and queues Selection, then
+fails assignment preparation with external collaboration assignment size or
+digest mismatch. The duplicate request log is not the controlling boundary.
+Inspect assignment publication, fetch and validation on the same source.
+See [formal matrix](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-formal-matrix-20260906.md#external-assignment-boundary-r16).
+
+**Spec181 T005 formal R15 (2026-09-06): UNQUALIFIED after Selection commit.**
+The sealed-plan repair reaches four-role Selection commit, then the User
+receives REMOTE_RESPONSE_FAILED. Provider WARN logs contain duplicate request
+rejections but no native execution failure reason; this does not yet identify
+the controlling cause. Inspect the Core request/Selection boundary and obtain
+bounded diagnostic logs before changing behavior. Source/input identities
+stay unchanged and all NFDs exit. See
+[formal matrix](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-formal-matrix-20260906.md#provider-response-boundary-r15).
+
 **Spec181 sealed-plan repair R3 (2026-09-06): focused PASS.**
 All 22 sealing/candidate checks (0.97 s) and 36 existing plan integration
 checks (0.77 s) pass in the isolated source. Fetch references remain separate
