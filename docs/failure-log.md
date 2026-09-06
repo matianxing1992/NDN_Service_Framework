@@ -19,6 +19,12 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 T008 full test build R2 (2026-09-06): stale assembly-test API.**
+The ProtectedRuntime migration compiles; integration compilation now stops at
+ndnsf-di-native-assembly.t.cpp:341, which calls unavailable runtimeMetricsSnapshot().
+No complete suite ran. Preserve real ORT load/execution proof while migrating
+the check to the current runner contract. See [full build R2](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t008-local-suite-preflight-20260906.md#full-test-build-r2).
+
 **Spec181 T008 adoption C R1 (2026-09-06): unadopted GPU-source dependency.**
 Fifteen checks stop at fixture compilation on the absent CudaDeviceIdentity header; one
 source assertion exposes the old GPU metadata path. Inspection confirms this

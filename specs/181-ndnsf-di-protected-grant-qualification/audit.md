@@ -17,8 +17,9 @@ T005 的 ce6a4ba0 subject 已通过 R19 完整矩阵，验收独立保留；T008
 T008 的四组预存共享回归已通过 32 项检查，Batch B 两组应用/Merge
 回归已通过 19 项；Batch C 核实未交付 GPU 实现依赖后，来源审查保留
 九项实验/历史草稿（含实际失败与后续 GPU 准入条件），仍须完成四项
-本地测试/依赖纳入、产出完整二进制与三案例
-实际配置，再对最终 subject 复审。详见
+本地测试/依赖纳入、修复装配集成测试编译、产出完整二进制和封闭
+模型/公钥输入。三案例配置已通过生产静态校验，最终 subject 仍须
+复审后运行。详见
 [T008 review](evidence/t008-local-suite-preflight-20260906.md#focused-configuration-r2-and-review)。
 
 T008 旧 runtime 测试已迁移到当前缺配置拒绝与真实 grant fixture，

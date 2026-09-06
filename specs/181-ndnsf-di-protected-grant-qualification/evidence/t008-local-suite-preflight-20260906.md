@@ -256,7 +256,14 @@ GPU 实现，将其改归后续实验准备。当前尚余四项本地工作、�
 旧测试迁移 checkpoint 为 `4bd1998b`。七个投影文件与该提交逐字节
 核对后，隔离 checkout 已切到此提交，只有构建目录为未跟踪产物。
 同一 `--targets=unit-tests,integration-tests -j2` 静态构建已启动，原始
-日志为 `spec181-full-test-build-20260906-r2/build.log`，结果待收集。
+日志为 `spec181-full-test-build-20260906-r2/build.log`。该次最终 exit 1：
+`tests/integration-tests/ndnsf-di-native-assembly.t.cpp:341` 调用不存在的
+`OnnxRuntimeModelRunner::runtimeMetricsSnapshot()`，失败发生在集成
+测试编译，未运行完整 suite。旧 ProtectedRuntime 接口已越过。日志
+SHA-256 为 `fadb9422b119df595196c92dace8785968dfef65877b459a6f89f99a591a51fc`。
+实际源为 `4bd1998bd2fe3c32865606b2a51738c489269d3c`；后续 Python
+测试投影不改变 C++ 编译输入。下一步核对真实 ORT 构造/执行证据 API，
+迁移旧装配测试并保留真实模型加载/运行的证明，不能仅删除断言过门。
 
 ## Test Adoption Batch B
 
@@ -341,3 +348,48 @@ T010/T011 移交与 CPU-only 范围，保留此草稿及两 fixture，供本机�
 “远端未运行”。本地剩余项为 candidate、YOLO adapter/export/numerical。
 R1 tests.log SHA-256：
 `e2e22e99c6200d21297f85341a58e1e036c3ca8fb1f23a67fe99f716fc03e8eb`。
+
+## Remaining Local Input Closure Plan
+
+对剩余 exporter/adapter/numerical 草稿核对：系统 Python 3.8 可发现
+torch、onnx、onnxruntime、ultralytics；主工作区有 `yolo26n.pt`，隔离
+源码没有。exporter 依赖的 `yolo_split_lib.py` 已提交；exporter 本身
+尚未纳入。不能用隐藏本机模型路径或未跟踪依赖让测试通过。
+
+后续本地单元在正式 T008 前完成如下闭合，再审计最终源码；T009
+实际封印仍在 T008 后，不能为生成封印修改已验证的源/配置字节。
+
+| Owner | Required repair and proof |
+| --- | --- |
+| tools/ndnsf-di/export_spec180_yolo26_onnx.py + adapter/export/numerical tests | 审查并纳入现有本地 exporter；测试通过明确 checkpoint 输入消费固定摘要模型，保持真实 ONNX 导出、签名、分区与独立数值检查。缺声明与路径无效须有准确诊断，完整 gate 不允许用 skip 代替。 |
+| scripts/spec180_inventory.py::local_input_identity + inventory/gate tests | 新的 checkpoint 文件输入必须绑定实际字节/路径/mode，并验证输入变更会在后续案例启动前拒绝；当前 file_names 未包含这项输入。 |
+| Registry public material + local_input_identity | 当前只绑定 registry JSON，没有绑定其 publicKeyPath 引用的实际文件；遵循现有 registry 解析相对路径语义补引用文件身份，并验证公钥文件漂移。catalogue-authority.pub 尚未提交，须按公钥摘要审查交付。私钥仍在 Git 外。 |
+| scripts/spec180_candidate.py + candidate tests | 按既定 spec181-development-delivery-v1 本地平面实现可复现封印/验证，保留脏源、输入漂移和跨版本证据拒绝；不把旧 helper 的 SIF 平面变成本地关闭依赖。 |
+
+上述均为待执行计划，不是导出/身份/封印已完成的证据。源文件改变后
+按现有 G0/G1 门复审，再执行同源完整 suite 与三案例；R19 旧源结果
+不能取代新的 T008 Y-N。
+
+## Case Profiles R1
+
+三案例配置已写入 `contracts/local-case-configs/`：Y-A 从 R19 配置
+保留唯一 FullModel capability Provider，Y-B 保留四角色/四 Provider，
+Y-N 保留五角色 capability 并集/四 Provider。相应 runtime identity/node
+映射同步筛选，Repo 服务策略不变；配置只声明允许能力，不提前选择
+Provider，Selection 仍由认证 ACK 决定。Y-N JSON 和 topology.conf
+与 R19 输入逐字节一致。
+
+| Local input | Path below contracts/local-case-configs/ | SHA-256 |
+| --- | --- | --- |
+| SPEC181_LOCAL_CONFIG_Y_A | y-a.json | `72be8029bbc870ca874ad1e0a3a022a7f3c5a665712e44a8d530aa361b2f0bb3` |
+| SPEC181_LOCAL_CONFIG_Y_B | y-b.json | `cda36d330cac85c9bb324dae7e9410256d6e0c15d2ff827a867fafa5c370c6df` |
+| SPEC181_LOCAL_CONFIG_Y_N | y-n.json | `b87ab2da1bf7548e1d3490a7d0fd2805784687936e7ca4e78029cc2e3b5ca576` |
+| SPEC180_YOLO_TOPOLOGY | topology.conf | `c849907bbfaa5230c1729e1a40e8b48657f083d545fa9f15a519143c93956601` |
+
+从 `4bd1998b` 的真实维护 runner 加载 `_validate_case_config`，使用
+上述文件逐一校验，**3/3 PASS，exit 0**，Provider 数分别 1/4/4。
+原始代码/结果为 ignored workspace temporary directory 下
+`spec181-case-config-preflight-20260906-r1/check.py` / `check.log`。
+这是已有配置缺口的定向静态检查，没有启动 NFD/应用或正式案例。
+最终 gate 设置三项绝对配置路径且不再同时声明公共
+`SPEC180_YOLO_CONFIG`；其余模型、密钥和运行环境仍待最终清单封闭。

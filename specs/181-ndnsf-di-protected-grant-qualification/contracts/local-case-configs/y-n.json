@@ -1,0 +1,308 @@
+{
+  "application": "spec180-yolo",
+  "controller": "/example/controller",
+  "group": "/example/group",
+  "runtime": {
+    "identities": {
+      "controller": "/example/controller",
+      "group": "/example/group",
+      "providerPrefix": "/example/provider",
+      "providers": {
+        "/example/provider/BackboneNeck": "/example/provider/BackboneNeck",
+        "/example/provider/DetectShard0": "/example/provider/DetectShard0",
+        "/example/provider/DetectShard1": "/example/provider/DetectShard1",
+        "/example/provider/Merge": "/example/provider/Merge"
+      },
+      "repo": "/example/provider/Repo",
+      "repoServicePrefix": "/NDNSF/DistributedRepo/Object",
+      "user": "/example/user"
+    },
+    "nodes": {
+      "controller": "memphis",
+      "providers": {
+        "/example/provider/BackboneNeck": "ucla",
+        "/example/provider/DetectShard0": "neu",
+        "/example/provider/DetectShard1": "arizona",
+        "/example/provider/Merge": "wustl"
+      },
+      "repo": "neu",
+      "user": "memphis"
+    },
+    "provider_prefix": "/example/provider",
+    "user_identity": "/example/user"
+  },
+  "services": [
+    {
+      "model": "/Model/YOLO26n",
+      "name": "/AI/YOLO/YOLO26n",
+      "providers": [
+        {
+          "identity": "/example/provider/BackboneNeck",
+          "roles": [
+            "FullModel",
+            "BackboneNeck"
+          ]
+        },
+        {
+          "identity": "/example/provider/DetectShard0",
+          "roles": [
+            "DetectShard0"
+          ]
+        },
+        {
+          "identity": "/example/provider/DetectShard1",
+          "roles": [
+            "DetectShard1"
+          ]
+        },
+        {
+          "identity": "/example/provider/Merge",
+          "roles": [
+            "Merge"
+          ]
+        }
+      ],
+      "roles": [
+        "FullModel",
+        "BackboneNeck",
+        "DetectShard0",
+        "DetectShard1",
+        "Merge"
+      ],
+      "users": [
+        "/example/user"
+      ]
+    },
+    {
+      "dependencies": [],
+      "model": "/NDNSF/DistributedRepo/Object/v1/INSERT",
+      "name": "/NDNSF/DistributedRepo/Object/v1/INSERT",
+      "providers": [
+        {
+          "identity": "/example/provider/Repo",
+          "roles": []
+        }
+      ],
+      "roles": [],
+      "users": [
+        "/example/controller",
+        "/example/provider/BackboneNeck",
+        "/example/provider/DetectShard0",
+        "/example/provider/DetectShard1",
+        "/example/provider/Merge",
+        "/example/provider/Repo",
+        "/example/user"
+      ]
+    },
+    {
+      "dependencies": [],
+      "model": "/NDNSF/DistributedRepo/Object/v1/MANIFEST",
+      "name": "/NDNSF/DistributedRepo/Object/v1/MANIFEST",
+      "providers": [
+        {
+          "identity": "/example/provider/Repo",
+          "roles": []
+        }
+      ],
+      "roles": [],
+      "users": [
+        "/example/controller",
+        "/example/provider/BackboneNeck",
+        "/example/provider/DetectShard0",
+        "/example/provider/DetectShard1",
+        "/example/provider/Merge",
+        "/example/provider/Repo",
+        "/example/user"
+      ]
+    },
+    {
+      "dependencies": [],
+      "model": "/NDNSF/DistributedRepo/Object/v1/FETCH",
+      "name": "/NDNSF/DistributedRepo/Object/v1/FETCH",
+      "providers": [
+        {
+          "identity": "/example/provider/Repo",
+          "roles": []
+        }
+      ],
+      "roles": [],
+      "users": [
+        "/example/controller",
+        "/example/provider/BackboneNeck",
+        "/example/provider/DetectShard0",
+        "/example/provider/DetectShard1",
+        "/example/provider/Merge",
+        "/example/provider/Repo",
+        "/example/user"
+      ]
+    },
+    {
+      "dependencies": [],
+      "model": "/NDNSF/DistributedRepo/Object/v1/INVENTORY",
+      "name": "/NDNSF/DistributedRepo/Object/v1/INVENTORY",
+      "providers": [
+        {
+          "identity": "/example/provider/Repo",
+          "roles": []
+        }
+      ],
+      "roles": [],
+      "users": [
+        "/example/controller",
+        "/example/provider/BackboneNeck",
+        "/example/provider/DetectShard0",
+        "/example/provider/DetectShard1",
+        "/example/provider/Merge",
+        "/example/provider/Repo",
+        "/example/user"
+      ]
+    },
+    {
+      "dependencies": [],
+      "model": "/NDNSF/DistributedRepo/Object/v1/STATUS",
+      "name": "/NDNSF/DistributedRepo/Object/v1/STATUS",
+      "providers": [
+        {
+          "identity": "/example/provider/Repo",
+          "roles": []
+        }
+      ],
+      "roles": [],
+      "users": [
+        "/example/controller",
+        "/example/provider/BackboneNeck",
+        "/example/provider/DetectShard0",
+        "/example/provider/DetectShard1",
+        "/example/provider/Merge",
+        "/example/provider/Repo",
+        "/example/user"
+      ]
+    },
+    {
+      "dependencies": [],
+      "model": "/NDNSF/DistributedRepo/Object/v1/DELETE",
+      "name": "/NDNSF/DistributedRepo/Object/v1/DELETE",
+      "providers": [
+        {
+          "identity": "/example/provider/Repo",
+          "roles": []
+        }
+      ],
+      "roles": [],
+      "users": [
+        "/example/controller",
+        "/example/provider/BackboneNeck",
+        "/example/provider/DetectShard0",
+        "/example/provider/DetectShard1",
+        "/example/provider/Merge",
+        "/example/provider/Repo",
+        "/example/user"
+      ]
+    },
+    {
+      "dependencies": [],
+      "model": "/NDNSF/DistributedRepo/Object/v1/CATALOG_QUERY",
+      "name": "/NDNSF/DistributedRepo/Object/v1/CATALOG_QUERY",
+      "providers": [
+        {
+          "identity": "/example/provider/Repo",
+          "roles": []
+        }
+      ],
+      "roles": [],
+      "users": [
+        "/example/controller",
+        "/example/provider/BackboneNeck",
+        "/example/provider/DetectShard0",
+        "/example/provider/DetectShard1",
+        "/example/provider/Merge",
+        "/example/provider/Repo",
+        "/example/user"
+      ]
+    },
+    {
+      "dependencies": [],
+      "model": "/NDNSF/DistributedRepo/Internal/v1/REPLICA_COMMIT",
+      "name": "/NDNSF/DistributedRepo/Internal/v1/REPLICA_COMMIT",
+      "providers": [
+        {
+          "identity": "/example/provider/Repo",
+          "roles": []
+        }
+      ],
+      "roles": [],
+      "users": [
+        "/example/controller",
+        "/example/provider/BackboneNeck",
+        "/example/provider/DetectShard0",
+        "/example/provider/DetectShard1",
+        "/example/provider/Merge",
+        "/example/provider/Repo",
+        "/example/user"
+      ]
+    },
+    {
+      "dependencies": [],
+      "model": "/NDNSF/DistributedRepo/Internal/v1/CATALOG_MERGE",
+      "name": "/NDNSF/DistributedRepo/Internal/v1/CATALOG_MERGE",
+      "providers": [
+        {
+          "identity": "/example/provider/Repo",
+          "roles": []
+        }
+      ],
+      "roles": [],
+      "users": [
+        "/example/controller",
+        "/example/provider/BackboneNeck",
+        "/example/provider/DetectShard0",
+        "/example/provider/DetectShard1",
+        "/example/provider/Merge",
+        "/example/provider/Repo",
+        "/example/user"
+      ]
+    },
+    {
+      "dependencies": [],
+      "model": "/NDNSF/DistributedRepo/Internal/v1/CATALOG_DIGEST",
+      "name": "/NDNSF/DistributedRepo/Internal/v1/CATALOG_DIGEST",
+      "providers": [
+        {
+          "identity": "/example/provider/Repo",
+          "roles": []
+        }
+      ],
+      "roles": [],
+      "users": [
+        "/example/controller",
+        "/example/provider/BackboneNeck",
+        "/example/provider/DetectShard0",
+        "/example/provider/DetectShard1",
+        "/example/provider/Merge",
+        "/example/provider/Repo",
+        "/example/user"
+      ]
+    },
+    {
+      "dependencies": [],
+      "model": "/NDNSF/DistributedRepo/Internal/v1/REPAIR",
+      "name": "/NDNSF/DistributedRepo/Internal/v1/REPAIR",
+      "providers": [
+        {
+          "identity": "/example/provider/Repo",
+          "roles": []
+        }
+      ],
+      "roles": [],
+      "users": [
+        "/example/controller",
+        "/example/provider/BackboneNeck",
+        "/example/provider/DetectShard0",
+        "/example/provider/DetectShard1",
+        "/example/provider/Merge",
+        "/example/provider/Repo",
+        "/example/user"
+      ]
+    }
+  ]
+}
