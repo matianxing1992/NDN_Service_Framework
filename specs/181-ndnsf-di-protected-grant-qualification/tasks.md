@@ -53,12 +53,19 @@ G1/T007。local gate 的提交/源码身份单元已通过，当前控制性缺�
 身份在子进程与输出目录创建前拒绝；执行期间源码变化使最终结果
 UNQUALIFIED，保留全部子项与清理证据。实际 `1ba99000` 隔离构建
 checkout 也通过只读源码校验。R1--R7 的失败和修复历史见上述链接。
-下一步核查 `effectiveConfigDigest` 的实际消费、生成构建工具与
-运行时/import 路径绑定；这些独立身份平面尚未闭合。T007 仍 BLOCK，
+后续核查生成构建工具、运行时/import 路径与外部输入字节绑定；
+这些独立身份平面尚未闭合。T007 仍 BLOCK，
 未运行正式矩阵；源码单元不新增已完成任务。
 源码 checkpoint 曾被本地 hook 拒绝，已删除产品脚本中的助手目录
 特例。R8 重验 39 项 PASS（4.46 s），真实 checkout 校验 PASS；
 原 hook 保持启用，配置/工具链身份仍待关闭。
+[启动配置单元](evidence/t007-local-config-identity-20260906.md) 已关闭：
+共享 owner 从实际环境、工作目录、解释器字节、超时及输出策略计算
+`effectiveConfigDigest`，在执行前后核对。R4 最终 **62 项定向检查
+PASS（5.80 s）**，覆盖真实 child 环境消费、原 map 修改隔离、运行后
+身份变化以及 builder/gate CLI 联通与配置漂移拒绝。原始 R1 六项
+RED 与 R2/R3 修复证据保留。本单元不新增已完成任务，下一步继续
+native/import 依赖、生成工具与外部输入身份；未启动正式矩阵。
 
 **Execution order**：T007 PASS → T005 七子用例同源矩阵 → T008 完整
 本地清单与 Y-A/Y-B/Y-N → T009 开发交付封存 → T012 本地关闭。

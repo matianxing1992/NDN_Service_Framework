@@ -19,6 +19,19 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 local configuration R1 (2026-09-06): BLOCK at launch identity.**
+Six focused mutations of environment, reserved output variable, declared
+digest and interpreter bytes reach the forbidden qualification-child boundary
+(6 failed, 0.78 s). The runner already uses explicit environment; the missing
+check binds its actual values to the declared digest. No qualification child
+ran. Preserve R1 before repairing the shared launch-configuration owner.
+See [local configuration identity](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t007-local-config-identity-20260906.md).
+R2 binds actual launch inputs through one shared builder/gate owner (52 PASS).
+R3 verifies real child environment consumption and post-execution identity
+failure (61 PASS). R4 adds builder/gate CLI round-trip and rejects changed
+configuration before output/children: 62 PASS (5.80 s). Launch configuration
+unit CLOSED; T007 remains BLOCK at runtime/input-byte identity planes.
+
 **Spec181 revision 7 (2026-09-06): BLOCK at local configuration identity.**
 Committed-source validation is closed in 2628e3d2 (39 focused checks and
 the configured checkout PASS). The remaining controlling work binds actual

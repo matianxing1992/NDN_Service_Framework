@@ -48,7 +48,8 @@ R = `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py`。
 - local gate 的实际 Git 根/提交/index/源码字节及运行后变化校验已修复（`2628e3d2`）；最终 R8 39 focused checks PASS，真实 `1ba99000` 构建 checkout 的只读源码核对 PASS。生成的本地工具/runtime、外部 import 与实际配置摘要仍待绑定，见 [local gate identity](evidence/t007-local-gate-identity-20260906.md#checkpoint-gate-r8)。
 - A05 的干净编译核查暴露 framework 配套声明遗漏与 Provider 根元数据丢失；已在隔离源码修复并链接生产库，26 cases / 204 assertions PASS，见 [framework source closure](evidence/t007-framework-source-closure-20260906.md)。本轮关闭该 framework 单元；完整 native/candidate 源和有效配置仍须核查。
 - A05 的 native projection 声明缺口已补齐并通过一次明确差异源码的维护 native build；随后修复 COMPONENT_SET 后处理解析和双张量 scope，29 cases / 133 assertions PASS，见 [native plan closure](evidence/t007-native-plan-closure-20260906.md)。后续以该源码提交刷新 native 身份，继续候选与有效配置审查。
-- A05 最初的无 Git HEAD/虚构 sourceRevision probe 为历史失败证据，已由上述源码校验关闭；后续实际本地配置/交付身份审查仍 BLOCK，不能晋升正式资格。
+- A05 最初的无 Git HEAD/虚构 sourceRevision probe 为历史失败证据，已由上述源码校验关闭；后续运行时/输入及交付身份审查仍 BLOCK，不能晋升正式资格。
+- 启动配置单元已关闭：builder/gate 共用实际环境、工作目录、解释器文件与启动策略摘要，并核对运行后身份；最终 62 focused checks PASS（5.80 s），包含真实 child 环境消费及 CLI 联通/配置漂移拒绝。见 [local launch configuration](evidence/t007-local-config-identity-20260906.md)。该摘要不封存 native/import 依赖或外部输入文件字节；这些 A05 平面仍待核查，T007 保持 BLOCK。
 
 ## Readiness Scorecard
 

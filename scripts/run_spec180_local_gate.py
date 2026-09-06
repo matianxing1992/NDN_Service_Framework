@@ -23,7 +23,9 @@ import sys
 import time
 from typing import Any, Mapping, Sequence
 
-from spec180_inventory import DEFAULT_CASES, InventoryError, validate_inventory
+from spec180_inventory import (
+    DEFAULT_CASES, InventoryError, local_launch_configuration, validate_inventory,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -335,6 +337,8 @@ def _run_entry(root: Path, entry: Mapping[str, Any], output_root: Path,
         "case": entry.get("case"),
         "command": command,
         "commandDigest": entry["commandDigest"],
+        "environmentDigest": canonical_digest(child_environment),
+        "workingDirectory": str(root),
         "pid": pid,
         "startedAtUnix": started,
         "endedAtUnix": ended,
@@ -522,6 +526,7 @@ def run_local_gate(inventory: Mapping[str, Any], *, root: Path | str,
     if any(not isinstance(key, str) or not isinstance(value, str)
            for key, value in environment.items()):
         raise LocalGateError("ENVIRONMENT_MUST_BE_STRING_MAP")
+    environment = dict(environment)
     if output_path.exists():
         try:
             if any(output_path.iterdir()):
@@ -534,6 +539,13 @@ def run_local_gate(inventory: Mapping[str, Any], *, root: Path | str,
         _validate_entry_command(root_path, entry)
         _entry_digest_matches(root_path, entry)
     _validate_source_checkout(root_path, inventory["sourceRevision"])
+    try:
+        configuration = local_launch_configuration(
+            root_path, environment, inventory["timeoutSeconds"])
+    except InventoryError as exc:
+        raise LocalGateError(str(exc)) from exc
+    if canonical_digest(configuration) != inventory["effectiveConfigDigest"]:
+        raise LocalGateError("EFFECTIVE_CONFIG_DIGEST_MISMATCH")
     output_path.mkdir(parents=True, exist_ok=True)
     inventory_path = output_path / "inventory.json"
     inventory_file_digest = _write_json(inventory_path, inventory)
@@ -546,10 +558,21 @@ def run_local_gate(inventory: Mapping[str, Any], *, root: Path | str,
         _validate_source_checkout(root_path, inventory["sourceRevision"])
     except LocalGateError as exc:
         source_identity = {"status": "FAIL", "reason": str(exc)}
+    configuration_identity = {"status": "PASS", "reason": "LAUNCH_CONFIGURATION_MATCH"}
+    try:
+        current_configuration = local_launch_configuration(
+            root_path, environment, inventory["timeoutSeconds"])
+        if canonical_digest(current_configuration) != inventory["effectiveConfigDigest"]:
+            configuration_identity = {"status": "FAIL", "reason": "CONFIGURATION_CHANGED_DURING_RUN"}
+    except InventoryError as exc:
+        configuration_identity = {"status": "FAIL", "reason": str(exc)}
     result: dict[str, Any] = {
         "schema": RESULT_SCHEMA,
-        "status": "PASS" if not failed and source_identity["status"] == "PASS" else "UNQUALIFIED",
+        "status": ("PASS" if not failed and source_identity["status"] == "PASS"
+                   and configuration_identity["status"] == "PASS" else "UNQUALIFIED"),
         "sourceIdentity": source_identity,
+        "configurationIdentity": configuration_identity,
+        "effectiveConfiguration": configuration,
         "candidateId": inventory["candidateId"],
         "candidateDigest": inventory["candidateDigest"],
         "sourceRevision": inventory["sourceRevision"],

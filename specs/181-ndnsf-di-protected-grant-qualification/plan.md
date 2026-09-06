@@ -68,6 +68,15 @@ T008 保留当前源身份与全部本地输入/证据摘要；T009 只能封印
 在启动子进程前拒绝。Qwen 自身入口及已有接口 unit 回归仍保留。
 见 [inventory repair](evidence/t007-qualification-scope-20260905.md)。
 
+本地 `effectiveConfigDigest` 绑定 gate 实际启动配置：工作目录、完整
+显式环境摘要、解释器路径/文件身份、CPU backend、超时、监督与输出
+布局。inventory builder 与 gate 共用计算入口；`--environment-json`
+在两者均为显式输入，旧 `--effective-config-digest` 只能作期望值核对，
+不能替代实际计算。gate 复制并核对环境后才启动 child，结束后再验
+解释器身份，保留每项实际 child 环境摘要；不把秘密环境值写入结果。
+native/runtime 及外部文件内容仍由独立身份平面验证，不把仅有启动
+摘要误称为它们已闭合。见 [configuration contract](evidence/t007-local-config-identity-20260906.md)。
+
 1. **In-process authority**。权威宿主为 requester/user 进程，保持
    requester 与 authority 逻辑身份和密钥区分。签发者身份、公钥摘要
    与策略来自 `artifactPolicyAuthority`；不把发布路由身份自动视为
