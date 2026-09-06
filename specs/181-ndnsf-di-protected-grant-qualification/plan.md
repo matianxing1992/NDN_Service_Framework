@@ -77,6 +77,13 @@ T008 保留当前源身份与全部本地输入/证据摘要；T009 只能封印
 native/runtime 及外部文件内容仍由独立身份平面验证，不把仅有启动
 摘要误称为它们已闭合。见 [configuration contract](evidence/t007-local-config-identity-20260906.md)。
 
+维护本地 native receipt 增加 `waf_tool`：从启动脚本静态选择规则
+绑定实际工具目录、源/资源文件和 Waf 解释器，构建 child 显式传入
+WAFDIR，并在构建/校验前后核对；该字段也控制 binding reuse。
+旧 receipt 缺字段时拒绝，待最终交付源码确定后用维护 builder
+刷新，不能手工补字段。此为本地源/工具选择检查，边界与证据见
+[Waf identity](evidence/t007-waf-tool-identity-20260906.md)。
+
 1. **In-process authority**。权威宿主为 requester/user 进程，保持
    requester 与 authority 逻辑身份和密钥区分。签发者身份、公钥摘要
    与策略来自 `artifactPolicyAuthority`；不把发布路由身份自动视为

@@ -103,6 +103,59 @@ def config_fingerprints(build_dir):
     return {name: file_identity(build_dir / name) for name in CONFIG_FILES}
 
 
+def waf_tool_identity(root, env):
+    """Bind the maintained launcher's selection without importing Waf.
+
+    The configured tree already has an extracted/installed waflib. Match the
+    launcher's WAFDIR, install-prefix, local-tree order, then pass the selected
+    directory explicitly to its build child. Python caches are generated, not
+    build inputs; source and resource file additions/deletions are inventoried.
+    """
+    launcher = root / "waf"
+    header = launcher.read_bytes().split(b"\n#==>\n", 1)[0].decode("latin-1")
+    values = {}
+    for name in ("VERSION", "REVISION", "INSTALL"):
+        matches = re.findall(r"^" + name + r"\s*=\s*(.+)$", header, re.MULTILINE)
+        if len(matches) != 1:
+            raise IdentityError("WAF_LAUNCHER_CONSTANT_REQUIRED: " + name)
+        try:
+            value = ast.literal_eval(matches[0])
+        except (ValueError, SyntaxError) as error:
+            raise IdentityError("WAF_LAUNCHER_CONSTANT_INVALID: " + name) from error
+        if not isinstance(value, str) or (name != "INSTALL" and (not value or "/" in value)):
+            raise IdentityError("WAF_LAUNCHER_CONSTANT_INVALID: " + name)
+        values[name] = value
+    if header.splitlines()[0] != "#!/usr/bin/env python3":
+        raise IdentityError("WAF_INTERPRETER_CONTRACT_CHANGED")
+    search_path = os.pathsep.join(str(root / part)
+                                  for part in env.get("PATH", os.defpath).split(os.pathsep))
+    python = shutil.which("python3", path=search_path)
+    if python is None:
+        raise IdentityError("WAF_PYTHON_MISSING")
+    if not Path(python).is_absolute():
+        python = str(root / python)
+    dirname = "waf3-" + values["VERSION"] + "-" + values["REVISION"]
+    candidates = [root / env.get("WAFDIR", "")]
+    candidates.extend(root / (prefix + "/lib/" + dirname)
+                      for prefix in (values["INSTALL"], "/usr", "/usr/local", "/opt"))
+    candidates.append(root / ("." + dirname))
+    selected = next((path.absolute() for path in candidates
+                     if (path / "waflib").exists()), None)
+    if selected is None or not (selected / "waflib").is_dir():
+        raise IdentityError("WAF_LIBRARY_MISSING: configure the maintained Waf tree first")
+    files = {}
+    for path in sorted((selected / "waflib").rglob("*")):
+        if "__pycache__" in path.relative_to(selected).parts or path.suffix in (".pyc", ".pyo"):
+            continue
+        if path.is_symlink() and path.is_dir():
+            raise IdentityError("WAF_LIBRARY_DIRECTORY_SYMLINK: " + str(path))
+        if path.is_file() or path.is_symlink():
+            files[str(path.relative_to(selected))] = file_identity(path)
+    return {"directory": str(selected), "realpath": str(selected.resolve(strict=True)),
+            "launcher": file_identity(launcher), "python": file_identity(python),
+            "files": files}
+
+
 def setup_toolchain_environment():
     prefix = str(SETUP_TOOLCHAIN_ROOT)
     return {"CC": prefix + "/gcc -B" + prefix,
@@ -336,7 +389,7 @@ def read_manifest(path):
             or data.get("scope") != "HOST_LOCAL_ONLY"):
         raise IdentityError("WRONG_MANIFEST_SCOPE")
     for key in ("sources", "configuration", "framework", "runtime", "provider", "ndn_svs",
-                "setup_toolchain", "setup_build_flags"):
+                "setup_toolchain", "setup_build_flags", "waf_tool"):
         if not isinstance(data.get(key), dict):
             raise IdentityError("INVALID_MANIFEST_FIELD: " + key)
     return data
@@ -357,7 +410,7 @@ def atomic_manifest(path, data):
             os.unlink(temporary)
 
 
-def binding_reusable(previous, sources, config, runtime, framework, svs, toolchain, flags):
+def binding_reusable(previous, sources, config, runtime, framework, svs, toolchain, flags, waf_tool):
     # setup.py does not track included Core headers. Only reuse an extension
     # previously built here with identical native inputs AND artifact identity.
     if not previous:
@@ -370,12 +423,14 @@ def binding_reusable(previous, sources, config, runtime, framework, svs, toolcha
             and previous["ndn_svs"] == svs
             and previous["setup_toolchain"] == toolchain
             and previous["setup_build_flags"] == flags
+            and previous["waf_tool"] == waf_tool
             and previous["runtime"] == runtime)
 
 
 def build(root, build_dir, manifest, python, env, jobs=1, binding="auto"):
     sources = source_fingerprints(root)
     config = config_fingerprints(build_dir)
+    waf_tool = waf_tool_identity(root, env)
     svs = svs_identity(build_dir)
     flags = setup_build_flags(env)
     previous = None
@@ -389,7 +444,9 @@ def build(root, build_dir, manifest, python, env, jobs=1, binding="auto"):
     # These optional overrides belong to setup's glue compilation only. Waf
     # continues to use its recorded configuration, including its optimization.
     waf_env = {name: value for name, value in env.items() if name not in SETUP_FLAG_NAMES}
+    waf_env["WAFDIR"] = waf_tool["directory"]
     run(command, cwd=root, env=waf_env)
+    check_equal(waf_tool_identity(root, env), waf_tool, "WAF_TOOL_CHANGED_DURING_BUILD")
     check_equal(source_fingerprints(root), sources, "SOURCES_CHANGED_DURING_BUILD")
     check_equal(config_fingerprints(build_dir), config, "CONFIG_CHANGED_DURING_BUILD")
     check_equal(svs_identity(build_dir), svs, "SVS_CHANGED_DURING_BUILD")
@@ -402,10 +459,10 @@ def build(root, build_dir, manifest, python, env, jobs=1, binding="auto"):
             validate_runtime(runtime, root, build_dir)
             validate_svs_mapping(svs, runtime["mapped_libraries"], "WRONG_RUNTIME_NDN_SVS")
             reusable = binding_reusable(previous, sources, config, runtime, framework,
-                                        svs, toolchain, flags)
+                                        svs, toolchain, flags, waf_tool)
         except (IdentityError, OSError, ValueError, KeyError, subprocess.SubprocessError):
             pass
-    commands = [{"argv": command, "cwd": str(root)}]
+    commands = [{"argv": command, "cwd": str(root), "WAFDIR": waf_tool["directory"]}]
     if not reusable:
         command = [python, "setup.py", "build_ext", "--inplace", "--force"]
         build_env = dict(env, NDNSF_LIBRARY_DIR=str(build_dir),
@@ -427,12 +484,14 @@ def build(root, build_dir, manifest, python, env, jobs=1, binding="auto"):
     check_equal(config_fingerprints(build_dir), config, "CONFIG_CHANGED_DURING_BUILD")
     check_equal(svs_identity(build_dir), svs, "SVS_CHANGED_DURING_BUILD")
     check_equal(setup_toolchain_identity(root, env), toolchain, "SETUP_TOOLCHAIN_CHANGED_DURING_BUILD")
+    check_equal(waf_tool_identity(root, env), waf_tool, "WAF_TOOL_CHANGED_DURING_BUILD")
     check_equal(file_identity(build_dir / LIBRARY), framework, "FRAMEWORK_CHANGED_DURING_BUILD")
     data = {"schema": SCHEMA, "scope": "HOST_LOCAL_ONLY", "root": str(root),
             "build_dir": str(build_dir), "sources": sources, "configuration": config,
             "framework": framework, "runtime": runtime, "provider": provider, "ndn_svs": svs,
             "setup_toolchain": toolchain,
             "setup_build_flags": flags,
+            "waf_tool": waf_tool,
             "commands": commands, "binding_reused": reusable}
     atomic_manifest(manifest, data)
     return data
@@ -444,6 +503,7 @@ def verify(root, build_dir, manifest, python, env):
                 "WRONG_BUILD_ROOT")
     check_equal(source_fingerprints(root), data["sources"], "STALE_SOURCES")
     check_equal(config_fingerprints(build_dir), data["configuration"], "STALE_CONFIGURATION")
+    check_equal(waf_tool_identity(root, env), data["waf_tool"], "WAF_TOOL_CHANGED")
     svs = svs_identity(build_dir)
     check_equal(svs, data["ndn_svs"], "STALE_NDN_SVS_INPUTS")
     check_equal(setup_toolchain_identity(root, env), data["setup_toolchain"], "STALE_SETUP_TOOLCHAIN")
@@ -460,6 +520,7 @@ def verify(root, build_dir, manifest, python, env):
     check_equal(source_fingerprints(root), data["sources"], "SOURCES_CHANGED_DURING_VERIFY")
     check_equal(config_fingerprints(build_dir), data["configuration"],
                 "CONFIG_CHANGED_DURING_VERIFY")
+    check_equal(waf_tool_identity(root, env), data["waf_tool"], "WAF_TOOL_CHANGED_DURING_VERIFY")
     check_equal(svs_identity(build_dir), svs, "SVS_CHANGED_DURING_VERIFY")
     check_equal(file_identity(build_dir / LIBRARY), data["framework"], "FRAMEWORK_CHANGED")
     check_equal(file_identity(data["runtime"]["extension"]["path"]),

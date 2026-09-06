@@ -19,6 +19,31 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 Waf tool identity R3 (2026-09-06): BLOCK at CLI fixture PATH mismatch.**
+1 failed / 79 passed (1.81 s): an old CLI linkage test builds with fixture PATH
+then verifies with ambient PATH. The new Waf identity check correctly rejects
+that mismatch first. Align the CLI fixture environment and retain its original
+wrong-Core rejection assertion. R3 log and patch preserved in
+[Waf tool identity](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t007-waf-tool-identity-20260906.md#cli-fixture-boundary-r3).
+R4 repairs the CLI fixture: 80 PASS (1.75 s). Actual Waf directory selection
+matches the new owner in both current and isolated checkouts (80 source/resource
+files each). Waf source/selection unit CLOSED; runtime/input closure remains
+T007 work. Existing native receipts require a maintained rebuild for the new field.
+
+**Spec181 Waf tool identity R2 (2026-09-06): BLOCK at fixture executable identity.**
+57 failed / 18 passed (2.77 s): the existing fake interpreter lacks its
+executable bit, so real PATH resolution rejects it before mocked build; one
+environment assertion also predates child-only WAFDIR. Preserve R2 and repair
+fixtures before retry, without relaxing production resolution.
+See [Waf tool identity](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t007-waf-tool-identity-20260906.md#fixture-boundary-r2).
+
+**Spec181 Waf tool identity R1 (2026-09-06): BLOCK at generated build-tool identity.**
+Four waflib content/location mutations escape native verification; interpreter
+drift is rejected only after the native probe. Focused fixture checks: 5 failed,
+70 deselected (0.36 s), no real build/network/qualification process.
+Preserve R1, then bind actual selected Waf implementation in the maintained
+native identity owner. See [Waf tool identity](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t007-waf-tool-identity-20260906.md).
+
 **Spec181 local configuration R1 (2026-09-06): BLOCK at launch identity.**
 Six focused mutations of environment, reserved output variable, declared
 digest and interpreter bytes reach the forbidden qualification-child boundary

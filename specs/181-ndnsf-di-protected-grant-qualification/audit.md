@@ -53,6 +53,13 @@ R = `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py`。
 
 ## Readiness Scorecard
 
+Waf 源/工具选择缺口已在维护 native owner 修复：80 focused checks
+PASS（1.75 s），两个真实 checkout 的只读目录对照均 PASS。新
+`waf_tool` 字段参与 receipt、复用及前后核对；旧 receipt 必须由
+维护构建刷新。[证据与范围](evidence/t007-waf-tool-identity-20260906.md)
+保留 RED 和 fixture 修复。T007 继续核查外部 import/模型输入及
+runtime 闭包，不以该单元代替实际 native rebuild 或正式验收。
+
 | Principle | Status | Rationale |
 |---|---|---|
 | 1 Intent fidelity | PASS（修订 7 设计） | 本机开发、本地矩阵、同源交付；实验机器接管 SIF/Tiger，按开发/实验而非模型分工；既有安全延期边界保留。 |

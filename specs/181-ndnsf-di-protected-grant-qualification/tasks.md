@@ -66,6 +66,13 @@ PASS（5.80 s）**，覆盖真实 child 环境消费、原 map 修改隔离、�
 身份变化以及 builder/gate CLI 联通与配置漂移拒绝。原始 R1 六项
 RED 与 R2/R3 修复证据保留。本单元不新增已完成任务，下一步继续
 native/import 依赖、生成工具与外部输入身份；未启动正式矩阵。
+[Waf 源/选择单元](evidence/t007-waf-tool-identity-20260906.md) R4
+**80 项定向检查 PASS（1.75 s）**；主工作区和隔离 checkout 的实际
+Waf 目录选择对照 PASS，各绑定 80 个源/资源文件。维护 native
+owner 记录并前后检查 Waf 解释器/目录/源文件，child 显式 WAFDIR，
+旧 receipt 缺字段时拒绝。R1--R3 的失败与修复保留在证据中。
+下一步核查实际 import/外部模型输入，再用最终源码刷新 native
+receipt；本轮没有 native build、模型或网络资格运行。
 
 **Execution order**：T007 PASS → T005 七子用例同源矩阵 → T008 完整
 本地清单与 Y-A/Y-B/Y-N → T009 开发交付封存 → T012 本地关闭。
