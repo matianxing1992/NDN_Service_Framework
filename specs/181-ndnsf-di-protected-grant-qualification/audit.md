@@ -41,6 +41,7 @@ R = `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py`。
 - A05 剩余的是生产入口、构建源清单、有效配置和资格收集入口的同源闭包核查；T005 的正式网络矩阵不移入 T007。
 - A05 的干净编译核查暴露 framework 配套声明遗漏与 Provider 根元数据丢失；已在隔离源码修复并链接生产库，26 cases / 204 assertions PASS，见 [framework source closure](evidence/t007-framework-source-closure-20260906.md)。本轮关闭该 framework 单元；完整 native/candidate 源和有效配置仍须核查。
 - A05 的 native projection 声明缺口已补齐并通过一次明确差异源码的维护 native build；随后修复 COMPONENT_SET 后处理解析和双张量 scope，29 cases / 133 assertions PASS，见 [native plan closure](evidence/t007-native-plan-closure-20260906.md)。后续以该源码提交刷新 native 身份，继续候选与有效配置审查。
+- A05 的 `1ba99000` 提交 native 身份已刷新 PASS；local gate 却在无 Git HEAD 的 fixture 目录接受虚构 sourceRevision 并返回 PASS，见 [local gate identity](evidence/t007-local-gate-identity-20260906.md)。六个 fixture 子进程已收集；这确认实际源码身份绑定仍 BLOCK，不能晋升正式资格。
 
 ## Readiness Scorecard
 

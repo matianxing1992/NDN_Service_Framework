@@ -72,3 +72,17 @@ scope 变化不改变传输授权组。R2 的 `focused-build.log`、
 的生成采样扩展或 compact tensor codec 改动。可以形成源码 checkpoint；
 之后须在同一提交重新运行维护 native build，才有当前身份。上述
 29 项不是完整资格套件，T007 其余候选/有效配置闭包仍待审查。
+
+## Committed Native Build R3
+
+源码单元提交为 `1ba99000cd6b03705ea96f0b176d6a77fbbe8a1d`。
+逐一核对四个隔离源文件与该提交字节一致后暂存并切换；tracked tree
+无修改。维护 native build **PASS**：Waf 22.385s，随后重新构建 Python
+扩展并完成实际导入/运行时依赖身份检查，进程退出 0，输出
+`SPEC180_NATIVE_IDENTITY_OK`。
+
+R3 receipt SHA-256：
+`be8b6f6e0adf8c77c25b9d9541d14961a5d4d19aab169a6f8f8c557d88f0cff1`。
+原始日志与 `native-build-receipt.json` 保留在
+`spec181-native-plan-closure-20260906-r3/`。这关闭本单元的提交 native
+源码/构建闭包；T007 剩余资格入口的实际源码/配置绑定与候选闭包仍待修复。

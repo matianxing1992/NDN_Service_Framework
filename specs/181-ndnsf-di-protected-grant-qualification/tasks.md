@@ -18,7 +18,7 @@ Spec 170 `artifact-assembly-v1` 契约。
 
 ## Current Checkpoint (revision 6)
 
-**Status**: `IN_PROGRESS / BLOCK`。2026-09-05 初次复核恢复未完成标记；
+**Status**: `IN_PROGRESS / BLOCK`。2026-09-06 按当前提交与证据复核；
 T001/T002/T003/T004/T006 的任务验收已闭合并勾选（5/12）。其余任务仍按完整验收判断，
 未勾选不抹去已实现的代码与 unit 结果。
 
@@ -30,166 +30,38 @@ T001/T002/T003/T004/T006 的任务验收已闭合并勾选（5/12）。其余任
 | T004 | PASS：7 项 Python seam、6 项 Core 定向检查；重建后真实 Provider 等待约 83 ms、Controller 12.39 s 就绪、等待中取消约 2.3 ms 且无热转；全部线程/网络清理，见 [生命周期证据](evidence/t004-lifecycle-acceptance-20260905.md) | 本任务定向验收已闭合；后续同源正式资格仍归 T005/T008 |
 | T005 | 已停用旧自动重试入口，维护矩阵首个失败即停止并保留原始结果；118 项定向检查 PASS，见 [证据保留修复](evidence/t005-evidence-repair-20260905.md) | T007 PASS 后同源七子用例矩阵，保留所有失败 |
 | T006 | PASS：153 项 Python、22 项 C++、3 rebuilt parity checks；r11/r12/r13 三种实际 Provider 拒绝及 r10 受保护正向控制通过；每次清理后 exit 0，见 [生产修复](evidence/t006-production-repair-20260905.md) | 本任务定向验收已闭合；同源正式矩阵仍归 T005/T008 |
-| T007 | 本轮 code-aware 审查与设计修正 | 当前裁决 BLOCK；控制性源码缺口闭合后重新审计 |
+| T007 | framework/native projection 源码单元与维护 native 构建已通过；见下方当前检查点 | BLOCK：local gate 实际源码/配置身份及候选闭包待修复和重审 |
 | T008 | native 受保护 Y-B 定向正向控制已有证据 | T007 PASS 后执行同源本地资格清单与 Y-A/Y-B/Y-N 正式矩阵 |
 | T009--T012 | 继承工具链 | 本 Spec 候选、SIF、Tiger、终局均未闭合 |
 
-**Latest progress (2026-09-05)**：T001/T002/T003/T004/T006 已完成（5/12 个 T 任务）。
-T002 完成裁决见 [验收映射](evidence/t002-acceptance-20260905.md)；
-G0 已闭合，当前进入 G1/T007 剩余源码/配置与证据收敛审查。
-T007 R003 当前清单核对发现旧记录仍称 Spec181 无证据文件，实际有
-37 个，其中 4 个缺头部层声明；旧审计正文仍描述已关闭的 T002 缺口。
-已补层声明、重写当前审计并加入 [完整清单](evidence/t007-evidence-inventory-20260905.md)
-与漂移检查。R003 闭合时完整列出 145 个条目（含两份根级 audit 和报告 SELF 行）；
-清单/结构检查 PASS，105 个 Spec180 evidence 文件哈希与修复前一致。
-冻结原文和已有原始测试结果保持原范围；T007 仍待 A05 源/配置闭包。
-A05 已复现清单范围错误：旧工具强制 Q-C/Q-W，且未收集任何 Spec181
-Python 回归；实际 builder/collection 的两个定向测试均失败，见
-[资格范围修复](evidence/t007-qualification-scope-20260905.md)。正在收口
-YOLO 案例集合并纳入活动 Spec 回归，不启动正式矩阵。
-R2 为 15 PASS / 1 FAIL：新范围检查通过，旧 gate fixture 仍预期
-8 个条目而实际为 6；修正该断言后用新的 R3 目录复验。
-R3 已 16 PASS；R4 两项新回归发现重新计算摘要后仍可替换注册案例
-脚本，builder/gate 均未拒绝。正在把案例名、路径、参数绑定到同一
-注册契约，保持 T007 BLOCK。
-R5 已拒绝两个重算摘要替换（17 PASS）；旧缺 oracle fixture 因更换
-路径被更早拒绝，调整为保留注册路径后在新 R6 验证原检查目的。
-R6 为 18 PASS；R7 的 3 个纯 validator 回归发现输出目录 entry ID
-可含父路径/绝对路径，未实际写越界文件，正在前置拒绝这些 ID。
-R8 最终 **21 PASS（2.45s）**：活动测试发现、三个 YOLO 案例的
-路径/参数契约、重算摘要替换、输出 ID 边界及既有 gate 检查均通过。
-维护 inventory/gate 源码与测试本轮收口；T007 仍待 native/candidate
-有效配置与封印输入闭包，整体保持 5/12。
-隔离 `d67de87a` 检出 configure PASS，但维护 native build 在 Waf
-建图时失败：tests/wscript 引用的 native assembly 集成测试未入 Git。
-已保留原始检出和日志，正在补齐并验证该源码依赖，见
-[committed native closure](evidence/t007-committed-native-build-20260905.md)。
-同轮还复现 native identity 漏记 tests/wscript：字节改变且 mtime
-不变时旧身份仍被接受，1 项回归失败；正在补构建控制输入绑定。
-该绑定修复后 identity **70 PASS（2.21s）**，集成目标构建 PASS。
-R2 的 7 个 assembly 定向用例为 **3 PASS / 4 FAIL**；四个失败均为
-certified recipe_digest 不匹配，尚未到 ORT，正在核对构造字节与契约。
-T007 保持 BLOCK，未开始正式资格矩阵。
-R3 修复旧 fixture 将数字维度写为字符串的摘要构造，生产验证保持
-严格；定向集成 **7 cases / 160 assertions PASS**，增量构建 PASS。
-缺失 assembly 测试与 identity 修复完成定向验证；下一步从新提交
-重建干净 native 源，继续 A05 候选/有效配置闭包，整体仍为 5/12。
-该单元已提交 `6c7a0b23`。R4 干净检出 configure PASS 并越过 Waf
-建图，但 `ServiceUser.cpp` 编译暴露未提交的 framework 类型/函数
-声明依赖（首个为 AckAuthenticationEvidence）。已保留退出 1 的构建
-日志与检出；下一单元补齐精确源码依赖，T007 仍 BLOCK。
-2026-09-06 从 `6f2e4ac4` 建立隔离源码诊断，选择六个 framework
-声明/配套实现文件，排除日志开关等无关差异；正在编译 framework
-目标并核查既有生命周期/assignment 用例，见
-[framework source closure](evidence/t007-framework-source-closure-20260906.md)。
-隔离 framework 编译/链接 PASS（3m28.249s），正在通过维护
-`spec181-framework-closure` 目标复用现有测试验证同一库；尚未完成
-完整 native 构建或 T007 验收。
-该目标 17 个定向用例为 16 PASS / 1 FAIL（145/146 assertions）；
-Provider 在结构化 assignment 集合中丢失 artifactDataName。已保留
-R1 源差异与失败日志，正在补齐字段传递/冲突根拒绝，T007 保持 BLOCK。
-R2 补齐 Provider 单项/集合的根名称传递后，隔离目标 **26 cases /
-204 assertions PASS**，增量编译/链接 PASS。该 framework 闭包单元
-可提交；下一步验证同一提交的完整 native Provider/扩展，整体仍为 5/12。
-framework 单元已提交 `1df718c8`。R3 首次 checkout 被未暂存修改拒绝，
-随后构建只能作为明确差异源码诊断：DI projection 缺少
-canonicalArtifactName 声明。已核对九个文件字节与新提交一致并完成
-干净切换，下一步补齐该声明与实际赋值依赖；未声称 native 通过。
-已在 `0e59e33b` 隔离检出选择 native projection 根名称与后处理字段
-声明，正在进行维护 native 构建；同步核对 COMPONENT_SET/parser 和
-多张量 scope 的精确依赖，见 [native plan closure](evidence/t007-native-plan-closure-20260906.md)。
-补入 12 行声明后的维护 native build PASS（含实际 Python 扩展导入和
-运行时身份），receipt 已保留。正在编译复用现有 plan/merge 用例的
-定向目标，验证 COMPONENT_SET 与双张量 scope；源清单已变化，旧
-receipt 不晋升为资格证据，T007 仍 BLOCK。
-定向 R1 为 **27 PASS / 2 FAIL**：旧 parser 拒绝后处理 COMPONENT_SET，
-双张量 PIPELINE scope 重合且两端不一致。已保留源码与日志，正在
-收口对应 parser/scope 差异，并保持原传输授权 groupId。
-R2 增量构建 PASS（28.075s），**29 cases / 133 assertions PASS**；
-后处理字段一致性、根来源及双张量分离/原传输授权组均已验证。
-native projection 单元可提交；下一步从该提交刷新 native 身份并继续
-A05 候选/有效配置闭包，整体保持 5/12。
-下列较早的 4/12 与 partial 记载保留为修复过程，不覆盖本检查点。
-三种 grant 变异完成实际发布、Provider 拒绝与身份绑定；有效 grant
-仍完成 native Y-B 推理。正向控制发现并修复冷装配期间的固定 10 s
-依赖等待上界，改用调用者请求预算且保留硬截止/取消。所有失败保留，
-仅最终正负控制用于本次验收。T005 旧自动重试入口已停用，维护矩阵
-首个失败即停止；5 项新增回归先失败，修复后相关 118 项检查通过。
-T003 已补固定装配向量、C++ 生产入口 Waf target 和双侧字节检查；
-19 项 grant/assembly parity 通过，四个 native 正例实际 ORT CPU 推理
-结果符合固定数学预期。T002 helper 管理已补 8 项子进程/取消边界
-检查，连同 parity 共 27 PASS；修复了取消后重建明文目录的竞态。
-最终统一 native 重建通过，新受保护 Y-B 控制 PASS：4 个 Provider
-实际验证 grant，3 个 ORT CPU 角色与 native Merge 完成数值校验；
-7 个子进程退出状态已收集，staging 为空且缓存无明文模型。
-随后检查 factory 发现 P-256 私钥在生产配置加载层被拒绝；首轮
-8 项回归中仅 P-256 正例失败，修复并重建后 8 项全 PASS，见
-[凭据入口](evidence/t002-recipient-credentials-20260905.md)。factory/header
-纳入源码检查点 `35e1c6d5`，plan/audit/traceability 已同步范围。
-P-256 生产入口追踪另修复 Python loader 类型限制、runner 覆盖专用
-收件人映射及生产 EC 临时密钥生成的 backend 兼容缺口；新增文件
-边界检查后相关 134 项 PASS。`835f20f9` 的统一 native 重建与独立
-P-256 Y-B 控制 PASS：四个真实 grant 验证、三 ORT CPU 与 native
-Merge、终端数值匹配、7 个子进程退出收集及空 staging，见
-[P-256 生产链](evidence/t002-p256-production-20260905.md)。
-维护进程测试最终 **11 PASS（50.78s）**：10 项真实进程发布/消费与
-负例，另 1 项 ASAN 诊断验证 P-256 资源泄漏修复（10 次调用）。
-40 个子进程退出全部收集，Python 密钥零化、canonical 保留及无明文
-残留检查通过。r1--r5 失败分别保留；NFD 授权、Controller/策略/bootstrap
-缺口及测试断言层次已修复，见 [进程集成](evidence/t001-t002-process-integration-20260905.md)。
-实际 factory 及共用源码的 Waf `unit-tests` 重建通过；仅运行
-`NativeProtected*,ProtectedRuntime*,NativeGrantVerifier*`，28 个用例、
-126 条断言全部 PASS，未运行完整资格套件。
-Selection metadata 为 fixture 输入，不替代 Core Selection 全链路；
-T001 请求生命周期新增 12 项回归先失败：取消或 Selection 截止后仍
-进入受保护 handler。修复后连同排队、grant 过期与 handler 异常清理，
-67 项 handler/密码学、80 项绑定/注册表/租约回归及 6 个真实 Python
-网络用例通过。提交前另补 4 项策略快照替换失败回归并修复遗漏；
-最终 151 项定向回归、6 个真实 Python 网络用例通过，24 个进程退出
-均已收集。T001 逐项验收已关闭，见 [请求生命周期](evidence/t001-request-lifecycle-20260905.md)。
-下一步完成 T002 的 native handler 源码闭包与剩余边界核对，完整
-生产控制前刷新统一 native 构建。当前 4/12，T007 BLOCK。
-T002 worker 边界新增 4 项回归先失败：初始 grant 有效，但准备后或
-计算期间取消/过期仍返回结果。修复由 handler 传入请求检查回调，
-覆盖准备、compute/fallback、缓存消费、事件/依赖发布与最终返回；
-补有效请求、实际缓存命中与取消后事件拒绝，重建后 **51 cases /
-280 assertions PASS**，见 [worker 授权](evidence/t002-worker-authority-20260905.md)。
-T002 仍待完整 handler/可执行文件源码闭包与统一生产构建更新；保持
-4/12、T007 BLOCK。
+**Latest progress (2026-09-06)**：5/12 已完成，G0 已关闭；当前唯一活动门为
+G1/T007。当前控制性缺口是 local gate 未验证清单声明的实际源码身份；
+不得据此启动 T005/T008 正式矩阵或后续候选/SIF/Tiger 阶段。
 
-T002 源码闭包核对发现 native Merge 尚未入 Git；新增直接 runner
-回归中 3/6 cases PASS，错误 identity/数值文本/output dtype 漏检。
-修复后直接 6 cases / 26 assertions PASS，连同证据/就绪为 10 cases /
-69 assertions PASS；Merge 源码、backend 注册及类型转换纳入独立
-检查点，首轮失败保留。继续完成 handler 准备/输入接线及统一构建，
-见 [Merge 源码闭包](evidence/t002-native-merge-closure-20260905.md)。
-handler 另发现准备 spec 的输出预算与 Selection 未比较，K=300→1
-变异回归失败；首轮保留在 [handler 源码闭包](evidence/t002-native-handler-closure-20260905.md)。
-修复构建仍在运行时误启动的 r2 测试使用旧 binary，结果 INVALID；
-原构建结束后重新验证，46 cases / 242 assertions PASS，K 预算
-替换已拒绝；旧结果保留。继续核对 handler/factory 源码闭包，并按
-用户要求明确 Qwen/YOLO 共用机制与适配器边界。
-FR-015 已纳入 spec/plan/T002/T007；共用基础与待收口项见
-[共享路径核对](evidence/shared-runtime-reuse-20260905.md)。文档结构检查
-PASS（15 FR、12 tasks、4 completed）；这是设计更新，不新增完成勾选。
-FR-015 公共准备已实现：ONNX/native postprocess 的观察初始化合并，
-YOLO 算法移入 adapter，12 cases / 76 assertions PASS（含既有生成
-取消/截止回归）。统一 native 构建与身份刷新已 PASS；隔离 P-256
-control R1 因启动脚本缺少空输出目录而在 preflight 失败，无协议
-结果，已保留原始记录。新 R2 已 PASS：4 Provider 验证 grant，数值
-匹配、7 个子进程退出已收集、无明文模型残留。generation 到 worker 的 guard 传递归 T007 后续
-定向修复。见 [公共准备闭包](evidence/t002-shared-preparation-20260905.md)。
+| Closed unit | Current evidence |
+|---|---|
+| T002 acceptance / shared runtime | [完整验收映射](evidence/t002-acceptance-20260905.md)；[共用路径与差异 owner](evidence/shared-runtime-reuse-20260905.md)。共用准备与 adapter 已收口，生成 worker 授权修复为 48 cases / 366 assertions PASS |
+| Qualification inventory | [范围与注册契约修复](evidence/t007-qualification-scope-20260905.md)：21 focused checks PASS；YOLO 三案例、活动 Spec 测试发现、案例路径/参数与输出 ID 边界已修复 |
+| Evidence inventory | [完整逐文件清单](evidence/t007-evidence-inventory-20260905.md)，由维护脚本检查漂移；历史证据的层与用途保持各自范围 |
+| Framework source closure | 提交 `1df718c8`；[26 cases / 204 assertions PASS](evidence/t007-framework-source-closure-20260906.md)，覆盖配套声明和 assignment 根名称传递 |
+| Native projection closure | 提交 `1ba99000`；[29 cases / 133 assertions PASS](evidence/t007-native-plan-closure-20260906.md)，覆盖 COMPONENT_SET/后处理解析、根来源与多张量 scope/原授权组 |
+| Committed native build | `1ba99000cd6b03705ea96f0b176d6a77fbbe8a1d` 的 tracked tree 无修改，维护 native build 与实际扩展导入/依赖身份 PASS；R3 receipt 见上一行证据。此结论仅限 host-local 构建，不是正式资格 |
 
-T007 generation worker 回归已复现：唯一 worker 排队后触发取消/截止，
-两项均仍进入模型 1 次。3 cases 中 1 PASS / 2 FAIL（14/18 assertions
-PASS），构建先完成后运行；见 [生成 worker 边界](evidence/t007-generation-worker-20260905.md)。
-公共 guard 传递与状态提交复核已修复，重建后 48 cases / 366 assertions
-PASS，含三种排队停止、真实 grant 计算/缓存拒绝和原有生成回滚。
-本轮仅刷新 unit target；下次 native live 前需刷新统一 manifest。
-仍为 4/12、T007 BLOCK，待 T002 汇总裁决及剩余源码/配置收敛审查。
+**Current blocker**：[local gate identity](evidence/t007-local-gate-identity-20260906.md)
+已复现生产 gate 在无 Git HEAD 的 fixture 目录接受虚构 sourceRevision，
+执行六个小型 fixture 子进程后返回 PASS；所有退出/清理已收集，没有
+网络或模型资格结果。下一步补实际 checkout/提交与未提交源码校验，
+证明失败在子进程/输出目录创建前被拒绝，并核查有效配置的实际消费
+绑定及后续候选封印。完成这些修复及重新审计后才可判 T007 PASS。
 
-历史 6/7、7/7 与 `CONDITIONAL PASS` 不再作为当前状态；以
-[audit.md](audit.md) 与 [修正证据](evidence/audit-repair-20260905.md) 为准。
+**Execution order**：T007 PASS → T005 七子用例同源矩阵 → T008 完整
+本地清单与 Y-A/Y-B/Y-N → T009 候选 → T010 exact-SIF → T011 单次
+Tiger Y-B → T012 终局。不得把定向测试或历史 PASS 代入这些未完成门。
+
+较早 4/12、6/7、7/7 与 CONDITIONAL PASS 均为历史状态，不覆盖当前
+检查点。逐次 RED/GREEN、启动/构建失败、原始 run-id 与退役条件保留在
+对应 evidence 及 Git 历史中；以 [audit.md](audit.md) 与
+[修正证据](evidence/audit-repair-20260905.md) 为准。
 本文件 `cpp/ndnsf-di/` 简写均相对 `NDNSF-DistributedInference/`；
 `security/`、`core/` 简写相对其 `ndnsf_distributed_inference/`。
 

@@ -19,6 +19,14 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 local gate identity R1 (2026-09-06): BLOCK at source authority.**
+The real local gate accepts a fixture root without a Git HEAD and an invented
+40-character sourceRevision, then reports PASS for six fixture children.
+All six exits/cleanup records are collected; no network qualification ran.
+Validate actual checkout/source identity before any qualification child or
+output directory is created, then retain focused regressions for rejection.
+See [local gate identity](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t007-local-gate-identity-20260906.md).
+
 **Spec181 native plan closure R1 (2026-09-06): BLOCK at projection behavior.**
 Twelve missing header lines close the maintained local native build, including
 the extension import/identity check. Focused plan/merge tests then yield
