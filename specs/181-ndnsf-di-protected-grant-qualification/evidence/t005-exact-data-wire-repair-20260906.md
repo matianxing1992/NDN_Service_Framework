@@ -1,7 +1,7 @@
 # Exact Data Wire Repair
 
 **Evidence layer**: implemented / wired / executed (focused Core and DI repair)
-**Status**: IN_PROGRESS (focused PASS; full native identity refresh pending)
+**Status**: PASS (affected convergence and native identity; matrix pending)
 
 ## Baseline And Controlling Failure
 
@@ -45,9 +45,9 @@ content 字节数或用手工恢复的测试副本代替真实消费路径。
 
 ## Status
 
-`IN_PROGRESS`：Core R2 21/21 断言 PASS；DI R6 9/9 用例、
-270/270 断言 PASS。下一步整体 native 刷新与复审。
-T005/T008 未完成；A05 保持 BLOCK。
+`PASS`（受影响收敛边界）：Core R2 21/21 断言 PASS；DI R6 9/9
+用例、270/270 断言 PASS，完整 native 刷新和独立验证通过，同一
+实际 Core 上重跑两组检查均通过。允许 R19；T005/T008 未完成。
 
 ## Core Regression R1
 
@@ -163,3 +163,50 @@ ProviderGroupCoordinator、NdnsfCollaborationDependencyIo 及头文件，
 不在本次投影中，不能以本记录为该配置背书。完整 native Provider
 尚未按本修复重建；A05 在完整 source/build identity 更新前保持
 BLOCK，R6 不能替代 T005/T008 正式矩阵。
+
+## Native Identity R1 And Convergence Review
+
+源码 `ce6a4ba0f07bbdbc954a667f7846e5348c8861da`，隔离检出无
+tracked/index 改动。原始目录为 ignored workspace temporary directory
+下 `spec181-exact-wire-native-20260906-r1/`。维护
+`scripts/spec180_native_build.py build --jobs 2` 与独立 `verify` 均
+exit 0 / `SPEC180_NATIVE_IDENTITY_OK`。Core/Provider Waf 阶段
+2m19.324s；Python 扩展重新构建（binding_reused=false），扩展最终
+字节与先前相同，不据此跳过本轮源码/依赖核验。
+
+| Artifact | SHA-256 |
+|---|---|
+| native build receipt | `2f4d7e61c6b0406b667af0048d582b5e91165f1823276b691191d1961ee48bd2` |
+| Core shared library | `0e748103217e3f5af7038cc15d8aee0863e3c832a954ba9b7338df2d1d7d5370` |
+| native Provider | `d279d40a699d1386d8cd589a613253265f5adcfebf87bd402f0eae24920eabb9` |
+| Python extension | `e9932073205b66b79e12c6f3944342d65d91fdb340b3225eb4b3326f480e1339` |
+
+系统 Python 3.8、系统编译/链接器、选定 ndn-svs build tree、实际
+loaded mappings 由 receipt/verify 核对。新构建后再次运行
+`spec181-exact-data-wire --run_test=Spec181ExactDataWire` 和
+`spec181-exact-tensor-transport --run_test=Spec181ExactTensorTransport`，
+均 exit 0：21/21 与 270/270 断言通过。日志为本目录
+`focused-core.log`、`focused-tensor.log`，同样保留 detailed report。
+
+按 post-implementation 的 12 维度复审受影响边界：
+
+| Dimension | Verdict | Evidence / boundary |
+|---|---|---|
+| Intent fidelity | PASS | 保留 T005 七子用例和本地责任边界 |
+| Necessity and scope | PASS | R18/R1 真实超包失败；紧凑表示有生产消费者 |
+| Architecture and ownership | PASS | Core 仅负责 signed Data 大小；DI 负责 tensor 编解码 |
+| Cross-artifact consistency | PASS | spec 纳入 exact-tensor-wire 契约，tasks/evidence 同步 |
+| Code reality | PASS | 已提交 publish/prefetch、默认 7,000-byte 分段、真实库与入口 |
+| Security and correctness | PASS | 旧签名原文、外层承诺、内层 HMAC、上下文与索引拒绝 |
+| Task executability | PASS | Core 大小和 DI 传输分别可审阅；仍归同一 T005 修复 |
+| Validation design | PASS | 语义 RED/GREEN、九项真实用例；矩阵验收仍待执行 |
+| Evidence integrity | PASS | R1–R6 分开保留，环境失败与业务拒绝分开，最终构建身份明确 |
+| Migration and rollback | PASS | 旧 decoder 兼容已执行，新 marker 要求同版本接收端；未混入预存改动 |
+| Performance and operations | PASS | 只作有限功能验证；不提升超时或 packet limit、不声称性能收益 |
+| Documentation quality | PASS | Spec181 显式路径结构检查、prerequisites、证据清单可核对 |
+
+当前控制性代码/构建缺口关闭，A05 恢复 PASS，允许新 R19 正式
+矩阵。这里的 PASS 是执行前收敛许可，不是 T005/T008 资格结果。
+主工作区另一个任务已把活动指针设为 Spec182；本轮用显式 Spec181
+文档和 Spec181 隔离源码复审，未改写该指针。T008 的 19 个额外
+Python 测试来源差异仍须按现有任务核对，不能遗漏后声称完整清单。

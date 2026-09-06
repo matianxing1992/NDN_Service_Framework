@@ -6,11 +6,19 @@
 local gate 提交/源码身份修复为 `2628e3d2`。历史应用闭合审计对象为
 `6b9bb51c43a597bf36ca62f304fee5f71c17fa58` 的隔离源码和 R13 runtime；
 `8c231493` 仅补记证据，主工作区其余预存改动不在该审计对象内。
-当前受审源码为 `0c383f9d` 上的共享 wire 修复隔离投影，见本轮
-wire repair 的 R6；完整 native identity 刷新尚待执行。
+当前受审源码为 `ce6a4ba0f07bbdbc954a667f7846e5348c8861da` 的
+隔离检出；完整 native build/verify 已通过，见 wire repair 的
+Native Identity R1 And Convergence Review。
 历史 backend native identity 见 formal matrix 的 Backend Native Identity R1。
 **Layer**: proposed / implemented / wired / executed（限定在各记录的检查范围）。
-**Verdict**: **BLOCK**（shared wire repair full native identity pending）。
+**Verdict**: **PASS**（affected wire convergence; formal matrix pending）。
+维护 native build 与独立 verify 均 exit 0，刷新后的真实 Core 上
+重跑 21/21 与 270/270 断言通过。按 12 维度复审受影响边界后
+A05 恢复 PASS，允许 R19；T005/T008/T009/T012 仍未完成。主工作区
+Spec182 指针不作为此 Spec181 审计的任务权威。详见
+[native identity and review](evidence/t005-exact-data-wire-repair-20260906.md#native-identity-r1-and-convergence-review)。
+
+以下保留此前修复过程与限定证据：
 DI R6 共享精确传输修复完成定向审查与 9/9 生产路径回归：实际
 1.4 MB 内容重建，signed Data 最大 8,477 bytes；旧格式兼容及
 签名/承诺/上下文/资源/HMAC/索引/旧字段拒绝均通过。旧默认 codec

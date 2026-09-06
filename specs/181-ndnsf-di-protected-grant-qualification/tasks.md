@@ -1,5 +1,11 @@
 # Tasks: NDNSF-DI Protected-Grant Local Development and Delivery
 
+**Wire native identity R1 (2026-09-06)**：`ce6a4ba0` 完整 native
+build/verify 均 PASS；刷新后的 Core 上 21/21 与 270/270 断言
+重跑通过，受影响 12 维度复审/A05 PASS。下一步 R19 同源正式
+矩阵；T005/T008 未完成，本机 6/10。见
+[native review](evidence/t005-exact-data-wire-repair-20260906.md#native-identity-r1-and-convergence-review)。
+
 **Tensor wire R6 (2026-09-06)**：9/9 真实生产用例、270/270 断言
 PASS；大 tensor 最大 signed Data 8,477 bytes，旧格式兼容和
 七种拒绝边界得到验证。下一步提交共享修复、完整 native identity

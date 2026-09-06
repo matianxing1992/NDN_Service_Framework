@@ -19,6 +19,13 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 exact-wire native R1 (2026-09-06): PASS.**
+Committed ce6a4ba0 passes maintained native build and independent verify.
+Both focused regressions also pass against the refreshed Core (21 and 270
+assertions). The affected 12-dimension convergence review restores A05 PASS;
+proceed to a fresh R19 matrix, retaining all earlier failures. See
+[native review](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-exact-data-wire-repair-20260906.md#native-identity-r1-and-convergence-review).
+
 **Spec181 exact-tensor R6 (2026-09-06): focused PASS.**
 Nine real DI/Provider/IMS cases pass 270 assertions: 1.4 MB compact transfer
 fits signed packets (maximum 8,477 bytes), legacy format reconstructs, and
