@@ -17,10 +17,14 @@ Batch B 应用入口/Merge 两组最终 19 passed（2.88 s，无 skip）；剩�
 完整 C++ 构建 R1 因旧测试调用已移交的 `revoke/revoked` 停止；
 已迁移到真实 grant fixture 的数据流/零化检查，最终 R2 定向构建
 exit 0、30/30 用例和 225/225 断言 PASS。完整构建 R2 又在原生装配
-集成测试的旧 `runtimeMetricsSnapshot()` 调用处 exit 1，先迁移该
-真实 ORT 检查。三案例配置已落盘，生产配置校验 3/3 PASS。
+集成测试的旧 `runtimeMetricsSnapshot()` 调用处 exit 1。该检查已
+迁移至共享 preparation 与现有 execution evidence，R3 源注册链接
+错误修正后，R4 完整 unit/integration 目标构建成功。三个具名装配
+用例实际 ORT 加载/预热检查 3/3、138/138 断言 PASS（约 5.02 s）；
+仅为定向修复证据，未运行完整 suite。三案例配置已落盘，生产配置
+校验 3/3 PASS。
 下一步按 [preflight review](evidence/t008-local-suite-preflight-20260906.md)
-修复上述集成编译边界、完成余下四项本地测试/工具依赖和输入身份
+完成余下四项本地测试/工具依赖和输入身份
 闭包，复审后以同一最终源码运行完整 gate。T008/T009/T012
 仍未完成；T010/T011 保持 TRANSFERRED。以下旧检查点仅保留历史。
 

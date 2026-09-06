@@ -3,6 +3,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV3.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRunnerPreparation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeYoloMergeRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp"
@@ -288,6 +289,7 @@ runRegisteredProviderAssemblyCase(std::size_t providerCount)
     digest(rootPayload), profileDigest, graphDigest, initializerDigest);
   projection.canonicalArtifactName = rootName.toUri();
   projection.requestId = "/request/spec175-registered/" + suffix;
+  projection.planDigest = zeroDigest('d');
 
   ScopedEnv pythonPath(
     "PYTHONPATH", "NDNSF-DistributedInference:NDNSF-DistributedRepo/pythonWrapper");
@@ -327,7 +329,7 @@ runRegisteredProviderAssemblyCase(std::size_t providerCount)
                                   "/p" + std::to_string(index);
     options.providerIdentity = providerProjection.provider;
     options.cacheDir = (baseCacheDir / ("p" + std::to_string(index))).string();
-    const auto prepared = prepareNativeCanonicalOnnxRole(
+    auto prepared = prepareNativeCanonicalOnnxRole(
       fetchers, providerProjection, options);
     BOOST_REQUIRE(std::filesystem::is_regular_file(prepared.path));
     BOOST_CHECK_EQUAL(prepared.metadata.at("assembledFrom"),
@@ -337,8 +339,19 @@ runRegisteredProviderAssemblyCase(std::size_t providerCount)
 
     // Construction performs the real C++ ORT session load and shape-valid
     // warmup; a synthetic runner or a ready-made startup file cannot satisfy it.
+    bindNativeRunnerPreparationContext(prepared, providerProjection,
+      {providerProjection.provider, "registered-provider-boot", 1, options.cacheDir});
     OnnxRuntimeModelRunner runner(prepared);
-    BOOST_REQUIRE(runner.runtimeMetricsSnapshot());
+    const auto evidence = runner.executionEvidenceSnapshot();
+    BOOST_REQUIRE(evidence);
+    BOOST_CHECK(evidence->runnerKind == RunnerKind::OnnxRuntimeCpu);
+    BOOST_CHECK(evidence->realCompute);
+    BOOST_CHECK(evidence->loadCompleted);
+    BOOST_CHECK(evidence->warmupCompleted);
+    BOOST_CHECK_EQUAL(evidence->deviceKind, "cpu");
+    BOOST_CHECK_EQUAL(evidence->providerName, providerProjection.provider);
+    BOOST_CHECK_EQUAL(evidence->modelDigest, providerProjection.assembly.modelManifestDigest);
+    BOOST_CHECK_EQUAL(evidence->planDigest, providerProjection.planDigest);
   }
   std::filesystem::remove_all(baseCacheDir, cleanupError);
 }

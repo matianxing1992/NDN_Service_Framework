@@ -19,6 +19,18 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 T008 assembly closure R4/R1 (2026-09-06): focused PASS.**
+The corrected shared-source registration builds both complete C++ test targets.
+Only the three named assembly cases ran: 3/3 cases and 138/138 assertions pass
+through actual CPU ORT load/warmup with bound Provider/model/plan identities.
+The complete suite remains blocked on remaining source/input closure. See
+[assembly closure](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t008-local-suite-preflight-20260906.md#assembly-test-build-and-focused-closure).
+
+**Spec181 T008 full test build R3 (2026-09-06): source-registration link failure.**
+The migrated assembly test compiles, but its shared preparation implementation
+was added to grant_sources instead of di_integration_sources. Move that
+registration; no suite ran. See [assembly migration](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t008-local-suite-preflight-20260906.md#assembly-test-api-migration-plan).
+
 **Spec181 T008 full test build R2 (2026-09-06): stale assembly-test API.**
 The ProtectedRuntime migration compiles; integration compilation now stops at
 ndnsf-di-native-assembly.t.cpp:341, which calls unavailable runtimeMetricsSnapshot().

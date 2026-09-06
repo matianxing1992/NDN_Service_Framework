@@ -349,6 +349,79 @@ T010/T011 移交与 CPU-only 范围，保留此草稿及两 fixture，供本机�
 R1 tests.log SHA-256：
 `e2e22e99c6200d21297f85341a58e1e036c3ca8fb1f23a67fe99f716fc03e8eb`。
 
+## Assembly Test API Migration Plan
+
+当前装配回归调用的 `runtimeMetricsSnapshot()` 只存在于主工作区未
+纳入的接口扩展。测试本意是证明注册后的真实 ORT 装配、加载与预热，
+不需要额外指标子系统。复用已提交的 `bindNativeRunnerPreparationContext`
+为每个 Provider 的 prepared spec 绑定其自身身份、boot、模型/plan 摘要
+与缓存目录；使用现有 `executionEvidenceSnapshot()` 断言真实 CPU
+runner、loadCompleted、warmupCompleted 及对应 Provider/模型/plan。
+构造器已执行真实 ORT `run(warmup)` 后才设置 warmupCompleted。
+
+修改限定为原装配测试及 Waf 的 DI integration 源列表（补共享准备
+实现），不修改生产接口/runner。先完成静态 test-target 构建，再只运行
+RegisteredOne/Two/FourProviderAssemblyLoadsOrt 三个具名案例作定向
+修复证据；保持完整 suite BLOCK，不能把构建或这三项升级为正式验收。
+
+R3 test-target 构建已越过旧 API 编译，最终在 integration-tests 链接
+报 `bindNativeRunnerPreparationContext` undefined reference，exit 1。
+首边界为 Waf 源注册：本轮补丁误将实现加入前面的 grant_sources，
+未加入实际消费它的 di_integration_sources。保留
+`spec181-full-test-build-20260906-r3/build.log`，将该注册移动到正确
+列表后在新 R4 重建，未运行任何完整或定向 suite。
+
+## Assembly Test Build And Focused Closure
+
+**Layer**: static build + focused production integration; full qualification NOT_RUN。
+Subject 为 `eb832ffe841966838f0b1067fabe3c82dcc57d53` 隔离源码，加
+`tests/integration-tests/ndnsf-di-native-assembly.t.cpp` 的上述迁移及
+`tests/wscript` 的 DI integration 共享准备源码注册。装配测试逐字节
+等同主工作区本单元改动；Waf 不包含主工作区预存的独立 tokenizer
+扩展。生产 runner/API 未修改，测试未引入额外指标/GPU 依赖。
+
+R4 从隔离源码运行以下命令，构建 **成功（9.893 s）**：
+
+```bash
+env -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \
+  PATH=/usr/bin:/bin:/usr/local/bin /usr/bin/python3 ./waf build \
+  --out=build-system-j2 --targets=unit-tests,integration-tests -j2
+```
+
+原始结果为 ignored workspace temporary directory 下
+`spec181-full-test-build-20260906-r4/build.log`，SHA-256
+`58c8940673ddc6350e5f53164ec8366dce80c86967a8612306e0dba28bfcf705`。
+此前 R3 失败保留，未用完整 suite 检查去试探剩余缺口。
+
+随后在同一隔离源码根目录只运行以下具名定向检查，**exit 0**：
+
+```bash
+env PATH=/usr/bin:/bin:/usr/local/bin timeout 180 \
+  build-system-j2/integration-tests \
+  '--run_test=Spec175NativeAssembly/Registered*' \
+  --report_level=detailed --log_level=test_suite
+```
+
+**3/3 cases、138/138 assertions PASS，约 5.02 s，无 skip**。
+RegisteredOne/Two/FourProviderAssemblyLoadsOrt 分别 30/42/66 条断言。
+真实 assembler 消费小型 ONNX fixture，经共享 preparation 绑定身份，
+真实 C++ ORT 构造器创建 session 并执行 shape-valid warmup。断言
+runnerKind/realCompute/loadCompleted/warmupCompleted/deviceKind 以及
+对应 Provider/model/plan。获取 callback 与签名 fixture 是受控测试
+边界，这不是注册网络 Provider、真实签名或 MiniNDN 资格证明。
+
+原始结果 `spec181-assembly-test-closure-20260906-r1/tests.log`，SHA-256
+`7bb624e7a61de54522756b336fdf58c8d1c7dad42503b3583734b9e56e9af641`。
+integration-tests SHA-256
+`42ff7df9ce5733c9973f35feb614b6af3a73dd5bbb40279f1213a3b6d385ef94`；
+unit-tests SHA-256
+`af73cfabcb4d0cefc07fdd4290c6373c1cf648575594f147d38089d6abafa452`。
+`ldd` 无缺失依赖，实际链接 `/opt/onnxruntime/lib/libonnxruntime.so.1`、
+系统 Boost 1.71、`/usr/local/lib/libndn-cxx.so.0.9.0` 及现有 SVS。
+
+旧 API 编译和 R3 链接缺口 CLOSED；完整 suite 未运行，剩余本地
+工具/模型/公钥依赖与最终输入身份仍需闭合，T008 保持未完成。
+
 ## Remaining Local Input Closure Plan
 
 对剩余 exporter/adapter/numerical 草稿核对：系统 Python 3.8 可发现

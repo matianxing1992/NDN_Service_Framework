@@ -17,7 +17,7 @@ T005 的 ce6a4ba0 subject 已通过 R19 完整矩阵，验收独立保留；T008
 T008 的四组预存共享回归已通过 32 项检查，Batch B 两组应用/Merge
 回归已通过 19 项；Batch C 核实未交付 GPU 实现依赖后，来源审查保留
 九项实验/历史草稿（含实际失败与后续 GPU 准入条件），仍须完成四项
-本地测试/依赖纳入、修复装配集成测试编译、产出完整二进制和封闭
+本地测试/依赖纳入和封闭
 模型/公钥输入。三案例配置已通过生产静态校验，最终 subject 仍须
 复审后运行。详见
 [T008 review](evidence/t008-local-suite-preflight-20260906.md#focused-configuration-r2-and-review)。
@@ -27,6 +27,13 @@ R2 定向构建和 30/30 用例、225/225 断言 PASS；保留数据流/零化�
 cleanup-failure/retry 覆盖，生产源码未改。此项关闭旧 `revoke/revoked`
 测试编译边界，不解除上述完整 suite BLOCK，见
 [runtime test migration](evidence/t008-local-suite-preflight-20260906.md#full-test-build-r1-and-runtime-test-migration)。
+
+装配测试已复用共享 preparation 与现有 execution evidence，R4
+完整 unit/integration 目标构建成功；仅运行三个具名装配案例，
+真实 CPU ORT load/warmup 与身份断言 3/3 用例、138/138 断言 PASS。
+受审变更限于测试和其源码注册，未引入主工作区额外指标/GPU 扩展。
+此项关闭旧 API 编译及新增源码链接缺口，完整 suite 与最终本地
+资格仍 BLOCK，见 [assembly closure](evidence/t008-local-suite-preflight-20260906.md#assembly-test-build-and-focused-closure)。
 
 以下是 R19 执行前的 wire/native 受审范围与许可：
 维护 native build 与独立 verify 均 exit 0，刷新后的真实 Core 上
