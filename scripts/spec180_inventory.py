@@ -53,6 +53,10 @@ DEFAULT_CASES = (
     ("Y-N", "Experiments/NDNSF_DI_YoloAckDriven_Minindn.py", ("--case", "Y-N")),
 )
 
+# The supervisor selects an explicitly supplied policy; it never derives roles.
+CASE_CONFIG_ENV = {case: "SPEC181_LOCAL_CONFIG_" + case.replace("-", "_")
+                   for case, _path, _args in DEFAULT_CASES}
+
 
 def validate_case_contract(case: str, path: str, args: Sequence[str]) -> None:
     """Bind the case name to its maintained source and exact workload arguments."""
@@ -96,6 +100,15 @@ def local_launch_configuration(root: Path | str, environment: Mapping[str, str],
         raise InventoryError("CONFIG_RESERVED_ENVIRONMENT:SPEC180_CASE_OUTPUT_DIR")
     if environment.get("SPEC180_RUNTIME_SIF"):
         raise InventoryError("LOCAL_GATE_SIF_RUNTIME_UNSUPPORTED")
+    if any(name in environment for name in CASE_CONFIG_ENV.values()):
+        missing = [name for name in CASE_CONFIG_ENV.values() if not environment.get(name)]
+        if missing:
+            raise InventoryError("LOCAL_CASE_CONFIG_INCOMPLETE:" + ",".join(missing))
+        if "SPEC180_YOLO_CONFIG" in environment:
+            raise InventoryError("LOCAL_CASE_CONFIG_AMBIGUOUS")
+        for name in CASE_CONFIG_ENV.values():
+            if not Path(environment[name]).is_absolute():
+                raise InventoryError("LOCAL_CASE_CONFIG_NOT_ABSOLUTE:" + name)
     if not isinstance(timeout_seconds, int) or timeout_seconds <= 0:
         raise InventoryError("INVALID_TIMEOUT_SECONDS")
     interpreter = Path(sys.executable)
@@ -158,7 +171,7 @@ def local_input_identity(root: Path | str, environment: Mapping[str, str]) -> di
     file_names = (
         "NDNSF_DI_ENVELOPE_KEY_FILE", "SPEC180_YOLO_CATALOGUE_REGISTRY",
         "SPEC180_YOLO_OFFER_TRUST_ROOT", "SPEC180_YOLO_TOPOLOGY", "SPEC180_YOLO_CONFIG",
-    )
+    ) + tuple(CASE_CONFIG_ENV.values())
     map_names = ("SPEC180_YOLO_OFFER_PUBLIC_KEY_MAP", "SPEC180_YOLO_OFFER_PRIVATE_KEY_MAP",
                  "SPEC181_PROVIDER_RECIPIENT_KEY_MAP")
     try:

@@ -172,6 +172,46 @@ def test_inventory_rejects_caller_config_digest_before_discovery(tmp_path: Path)
                                effective_config_digest="sha256:" + "c" * 64)
 
 
+@pytest.mark.parametrize("mutation,reason", [
+    ("missing", "LOCAL_CASE_CONFIG_INCOMPLETE"),
+    ("empty", "LOCAL_CASE_CONFIG_INCOMPLETE"),
+    ("shared", "LOCAL_CASE_CONFIG_AMBIGUOUS"),
+    ("relative", "LOCAL_CASE_CONFIG_NOT_ABSOLUTE"),
+])
+def test_case_config_requires_one_complete_unambiguous_source(tmp_path, mutation, reason):
+    module = load_inventory()
+    environment = {"SPEC181_LOCAL_CONFIG_Y_" + case: str(tmp_path / (case + ".json"))
+                   for case in ("A", "B", "N")}
+    if mutation == "missing":
+        del environment["SPEC181_LOCAL_CONFIG_Y_B"]
+    elif mutation == "empty":
+        environment["SPEC181_LOCAL_CONFIG_Y_B"] = ""
+    elif mutation == "shared":
+        environment["SPEC180_YOLO_CONFIG"] = str(tmp_path / "shared.json")
+    else:
+        environment["SPEC181_LOCAL_CONFIG_Y_B"] = "relative.json"
+    with pytest.raises(module.InventoryError, match=reason):
+        module.local_launch_configuration(tmp_path, environment, 120)
+
+
+@pytest.mark.parametrize("case", ["A", "B", "N"])
+def test_case_config_bytes_are_bound_even_before_that_case_runs(tmp_path, case):
+    module = load_inventory()
+    environment = {}
+    for name in ("A", "B", "N"):
+        path = tmp_path / (name + ".json")
+        path.write_text(json.dumps({"case": name, "roles": [name]}))
+        environment["SPEC181_LOCAL_CONFIG_Y_" + name] = str(path)
+    module.local_launch_configuration(tmp_path, environment, 120)
+    before = module.local_input_identity(tmp_path, environment)
+    Path(environment["SPEC181_LOCAL_CONFIG_Y_" + case]).write_text('{"roles": []}')
+    after = module.local_input_identity(tmp_path, environment)
+    assert before != after
+    for name in ("A", "B", "N"):
+        key = "SPEC181_LOCAL_CONFIG_Y_" + name
+        assert (before["inputs"][key] == after["inputs"][key]) == (name != case)
+
+
 def test_input_identity_binds_protected_default_key_and_references_without_values(tmp_path):
     module = load_inventory()
     key = tmp_path / ".config/ndnsf/spec180/artifact-policy-authority.key"

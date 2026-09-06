@@ -576,7 +576,7 @@ def test_inventory_and_gate_clis_share_actual_configuration(tmp_path: Path, caps
     assert not refused_output.exists()
 
 
-@pytest.mark.parametrize("mutation", ["model", "referenced-key", "add-model", "map"])
+@pytest.mark.parametrize("mutation", ["model", "referenced-key", "add-model", "map", "case-config"])
 def test_local_gate_rejects_external_input_drift_before_children(tmp_path, monkeypatch, mutation):
     external = tmp_path / "inputs"
     package = external / "package"
@@ -589,6 +589,10 @@ def test_local_gate_rejects_external_input_drift_before_children(tmp_path, monke
     key_map.write_text(json.dumps({"provider": str(key)}))
     environment = {"SPEC180_YOLO_CANONICAL_PACKAGE": str(package),
                    "SPEC181_PROVIDER_RECIPIENT_KEY_MAP": str(key_map)}
+    for case in ("A", "B", "N"):
+        config = external / (case + ".json")
+        config.write_text(json.dumps({"case": case}))
+        environment["SPEC181_LOCAL_CONFIG_Y_" + case] = str(config)
     _, runner, root, inventory = _inventory(tmp_path / "source", environment)
     if mutation == "model":
         model.write_bytes(b"changed model")
@@ -596,13 +600,44 @@ def test_local_gate_rejects_external_input_drift_before_children(tmp_path, monke
         key.write_bytes(b"changed private bytes")
     elif mutation == "add-model":
         (package / "external.data").write_bytes(b"new external initializer")
-    else:
+    elif mutation == "map":
         key_map.write_text(json.dumps({"other-provider": str(key)}))
+    else:
+        Path(environment["SPEC181_LOCAL_CONFIG_Y_B"]).write_text('{"roles": []}')
     monkeypatch.setattr(runner, "_run_entry", lambda *a: pytest.fail("child started with changed inputs"))
     output = tmp_path / "evidence"
     with pytest.raises(runner.LocalGateError, match="INPUT_IDENTITY_MISMATCH"):
         runner.run_local_gate(inventory, root=root, output_root=output, environment=environment)
     assert not output.exists()
+
+
+@pytest.mark.parametrize("case", ["Y-A", "Y-B", "Y-N"])
+def test_supervised_case_receives_its_own_configuration(tmp_path, case):
+    # This tests the production process supervisor, not MiniNDN semantics.
+    module, runner = _modules()
+    environment = {}
+    for name in ("Y-A", "Y-B", "Y-N"):
+        config = tmp_path / (name + ".json")
+        config.write_text(json.dumps({"case": name}))
+        environment["SPEC181_LOCAL_CONFIG_" + name.replace("-", "_")] = str(config)
+    module.local_launch_configuration(tmp_path, environment, 10)
+    script = tmp_path / "observe.py"
+    script.write_text(
+        "import json, os, pathlib, sys\n"
+        "case = sys.argv[1]\n"
+        "value = json.loads(pathlib.Path(os.environ['SPEC180_YOLO_CONFIG']).read_text())\n"
+        "assert value['case'] == case, 'wrong case configuration'\n"
+        "print('OBSERVED_CONFIG=' + value['case'])\n"
+        "print('SPEC180_CASE_RESULT status=PASS case=' + case)\n")
+    command = [sys.executable, str(script), case]
+    entry = {"id": "case-" + case, "kind": "minindn-case", "case": case,
+             "command": command, "commandDigest": module.canonical_digest(command),
+             "timeoutSeconds": 10}
+    result = runner._run_entry(tmp_path, entry, tmp_path / "evidence", environment)
+    assert result["status"] == "PASS"
+    assert result["exitCode"] == 0 and result["cleanup"] == "PASS"
+    assert "OBSERVED_CONFIG=" + case in Path(result["stdoutPath"]).read_text()
+    assert "SPEC180_YOLO_CONFIG" not in environment
 
 
 @pytest.mark.parametrize("phase,completed", [("before-cases", 3), ("last-case", 6)])
