@@ -28,6 +28,11 @@ R = `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py`。行号对应本轮源码�
 
 ## Traceability Gaps
 
+- FR-015：用户要求共用 YOLO/Qwen 已有执行机制。当前共用接口已存在，
+  native 准备分支仍重复证据初始化、YOLO 算法位于通用 runtime 目录；
+  多轮授权与清理一致性仍待核对。T002/T007 按
+  [共享路径核对](evidence/shared-runtime-reuse-20260905.md) 收口；维持 BLOCK。
+
 - FR-002/003/013：T001 的任务验收已完成；T002 已有真实 grant 接线、维护进程集成和定向清理证据，native handler 源码闭包及剩余边界核对仍开放。
 - FR-004：T006 实际 Provider 拒绝网络证据已关闭 A04；正式同源矩阵由 T005/T008 验收。
 - FR-012：T003 固定装配向量已完成双入口字节/摘要与 ORT CPU 检查，A07 CLOSED。

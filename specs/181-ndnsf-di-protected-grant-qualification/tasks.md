@@ -16,7 +16,7 @@ Spec 170 `artifact-assembly-v1` 契约。
   路径（main 分支的明文路径证明"无网络服务"可工作，本切片不新增
   网络角色与前缀）。集成条件见 spec.md Out of Scope。
 
-## Current Checkpoint (revision 5)
+## Current Checkpoint (revision 6)
 
 **Status**: `IN_PROGRESS / BLOCK`。2026-09-05 初次复核恢复未完成标记；
 T001/T003/T004/T006 的定向验收已闭合并勾选。其余任务仍按完整验收判断，
@@ -88,6 +88,15 @@ T002 源码闭包核对发现 native Merge 尚未入 Git；新增直接 runner
 69 assertions PASS；Merge 源码、backend 注册及类型转换纳入独立
 检查点，首轮失败保留。继续完成 handler 准备/输入接线及统一构建，
 见 [Merge 源码闭包](evidence/t002-native-merge-closure-20260905.md)。
+handler 另发现准备 spec 的输出预算与 Selection 未比较，K=300→1
+变异回归失败；首轮保留在 [handler 源码闭包](evidence/t002-native-handler-closure-20260905.md)。
+修复构建仍在运行时误启动的 r2 测试使用旧 binary，结果 INVALID；
+原构建结束后重新验证，46 cases / 242 assertions PASS，K 预算
+替换已拒绝；旧结果保留。继续核对 handler/factory 源码闭包，并按
+用户要求明确 Qwen/YOLO 共用机制与适配器边界。
+FR-015 已纳入 spec/plan/T002/T007；共用基础与待收口项见
+[共享路径核对](evidence/shared-runtime-reuse-20260905.md)。文档结构检查
+PASS（15 FR、12 tasks、4 completed）；这是设计更新，不新增完成勾选。
 
 历史 6/7、7/7 与 `CONDITIONAL PASS` 不再作为当前状态；以
 [audit.md](audit.md) 与 [修正证据](evidence/audit-repair-20260905.md) 为准。
@@ -222,6 +231,12 @@ T 任务完成定向修复；在生产验收前保持失败关闭，并禁止晋
   （C++ 校验负例：错误权威/收件人/绑定/过期）；integration
   （Python 端到端 native provider 真实解包，grant 由真实请求方进程
   发布）。证据 `evidence/t002-native-provider-grant-current.md`。
+  FR-015 追加验收：复用现有公共准备/执行路径；native factory 的
+  证据和资源初始化只保留一个 owner，模型分支只构造 runner spec；
+  native YOLO 后处理计算归 adapter，并保持现有公开调用兼容。
+  定向回归覆盖公共边界与受影响的已有生成接口，不能用复制 Qwen
+  Provider 或新建平行运行时实现。见
+  `evidence/shared-runtime-reuse-20260905.md`。
 
 - [x] T003 [US1] **Grant and Assembly Parity Vectors**。固定向量文件
   `tests/fixtures/spec181/grant-vectors-v1.json`：同一 grant 字节
@@ -306,6 +321,9 @@ T 任务完成定向修复；在生产验收前保持失败关闭，并禁止晋
   发现附 file:line 证据与关闭回归；四层声明在每个证据文件头部。
   T007 不等待 T005/T008 的正式资格结果；其审计 PASS 是这些执行的
   前置条件。R003 的完整证据清单与临时诊断路径删除条件由本任务核查。
+  FR-015：附 YOLO/Qwen 共用路径与差异 owner 映射，核查普通角色、
+  缓存和可选生成 epoch 的公共授权/截止/清理边界；共享修复附
+  受影响的 stateless/stateful 接口定向回归。Qwen 模型资格仍在范围外。
 
 - [ ] T008 [US3] **Local Qualification [MiniNDN]**。从 T007 PASS 的同一源
   身份（提交哈希）执行：单元/集成选择器清单（local-suite inventory，

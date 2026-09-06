@@ -1,4 +1,4 @@
-# Spec181 Traceability Matrix (revision 5)
+# Spec181 Traceability Matrix (revision 6)
 
 Spec 181 从 Spec 180（修订 125 关闭）继承未完成的实现与资格认证工作。
 本表是活动完成映射；当前 Status: BLOCK，完整裁决见 audit.md。
@@ -13,6 +13,10 @@ Spec 180 的矩阵冻结为历史，未来证据路径不表示文件已存在�
   角色与前缀）。集成条件见 spec.md Out of Scope。
 
 ## Requirement-to-task map
+
+FR-015 由 T002（公共准备与 adapter 收口）、T007（共用路径和接口
+兼容性验收）负责；当前为 partial，映射与剩余项见
+`evidence/shared-runtime-reuse-20260905.md`。不增加 Qwen 模型资格任务。
 
 | Requirement | Owner tasks | 三层测试归属 | Closing evidence |
 |---|---|---|---|

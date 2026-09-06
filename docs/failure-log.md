@@ -19,6 +19,20 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 T002 native handler observation (2026-09-05): CLOSED; early result INVALID.** A focused test
+was started before the repair build completed and ran the previous binary.
+R2/green.log is preserved. The original build completed (59.612s), then the rebuilt
+binary passed 46 cases / 242 assertions in a new log. The early result is a
+validation orchestration error, not a protocol result.
+See [native handler closure](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t002-native-handler-closure-20260905.md).
+
+**Spec181 T002 native prepared output binding (2026-09-05): CLOSED (focused repair).** The production
+prepared-runner validator accepts a Merge output budget changed from the sealed
+Selection's K=300 to K=1. R1 fails one of two assertions after a passing positive
+control. Exact output shape/type binding now rejects the mutation; rebuilt focused
+checks pass 46 cases / 242 assertions. Source closure remains pending; see
+[native handler closure](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t002-native-handler-closure-20260905.md).
+
 **Spec181 T002 native Merge contract (2026-09-05): CLOSED (focused repair).** Direct production-runner
 checks pass the numerical controls but expose four missed rejections: unknown
 postprocess identity, numeric suffix, trailing shape delimiter, and wrong output

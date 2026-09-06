@@ -127,6 +127,17 @@ native 路径相对 `NDNSF-DistributedInference/cpp/ndnsf-di/`。
 | 负例、监督与身份 | `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py`（仓库相对）；旧 retry driver 已停用 | T005/T006 |
 | 审计与晋升 | 本目录及现有 `scripts/spec180_*`、`packaging/ndnsf-di-container/jobs/spec180/*`（仓库相对） | T007--T012 |
 
+## Shared Runtime Reuse
+
+遵循 FR-015，直接复用 Qwen/YOLO 已有 `ModelFamilyAdapter`、
+`NativeModelRunner`、runtime/worker、Selection、grant、装配及依赖
+传输路径。T002 将 native 准备 factory 的证据/资源初始化提取为公共
+步骤，模型分支只构造 runner spec；YOLO 后处理计算归模型 adapter。
+生成 coordinator 保持既有公共角色执行基础，通过可选状态/stream
+端口承载多轮差异。T007 检查多轮路径不绕过共同的授权与清理边界，
+并运行受影响接口的最小定向兼容性回归；不新增 Qwen 模型资格。
+当前实现与剩余工作见 [共享路径核对](evidence/shared-runtime-reuse-20260905.md)。
+
 ## Evidence and Failure Handling
 
 每次执行使用新的 run-id，记录命令、源/构建/配置摘要、子进程退出与
@@ -152,5 +163,8 @@ native 路径相对 `NDNSF-DistributedInference/cpp/ndnsf-di/`。
 
 ## Revision History
 
+- **6 (2026-09-05)**：按用户要求加入 FR-015，共用 Qwen/YOLO 已有
+  执行机制；公共准备归一个 owner，模型算法归 adapter；T002/T007
+  增加调用链与接口兼容性验收，保持 YOLO 资格范围和 12 个任务。
 - **5 (2026-09-05)**：修正权威归属冲突、审计依赖环、漏掉的 Y-N-O、
   grant/装配 parity 混淆及证据等级；不扩大模型或部署范围。

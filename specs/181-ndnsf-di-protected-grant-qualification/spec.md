@@ -6,7 +6,7 @@
 
 **Created**: 2026-09-05
 
-**Status**: `IN_PROGRESS / BLOCK`（修订 5：G0 实现与证据缺口尚未闭合；
+**Status**: `IN_PROGRESS / BLOCK`（修订 6：明确共用运行时与 adapter 边界，G0 尚未闭合；
 Spec 180 已按所有者决定关闭，其契约、冻结证据与失效声明保持权威。）
 
 **Input**: Spec 180 修订 125 的迁移清单；Spec 170
@@ -29,6 +29,15 @@ SIF 通过 exact-SIF replay，并在 Tiger 上完成一次 cold Y-B 请求**。
 不改变的技术路线：ACK 驱动规划、V3 选择投影、受保护工件授权契约、
 native Provider 运行时边界、Tiger 提交机制全部继承 180 的实现与契约；
 本 spec 不引入新协议、新放置策略、新模型或新范围。
+
+### Shared Runtime Boundary
+
+YOLO 与 Qwen 案例使用同一套服务、规划/Selection、授权、装配、
+依赖传输、角色调度、执行证据和清理机制。已有 Qwen 实现中的公共
+机制须直接复用；图/切分规则、任务编码、模型计算及状态表示由
+现有 adapter/runner 接口承载。生成的多轮调度是可选能力，无状态
+YOLO 不承担 tokenizer、KV 或会话保留职责。详见
+[共享路径核对](evidence/shared-runtime-reuse-20260905.md)。
 
 ## User Scenarios & Testing
 
@@ -132,6 +141,14 @@ Provider 在装配/加载前完成授权，并在成功、取消及失败时清�
   未登记租约的 `.weights` 副本不能作为受保护加载结果。授权校验必须
   先于装配器的明文加载/ORT 检查；清理不得删除共享 canonical 源。
 
+- **FR-015** — **Shared Runtime and Adapter Reuse**。不得因 YOLO/Qwen
+  案例不同而复制 Provider 主循环、grant/装配/传输协议或清理逻辑。
+  native 公共准备与执行边界由同一 owner 维护，模型分支只提供
+  adapter/runner spec；模型专属计算归 adapter。公共变更须以受影响
+  的既有单次/生成接口定向回归证明兼容，实际模型资格仍限本 Spec
+  的 YOLO 切片。T002 完成公共准备与 adapter 收口，T007 以调用链和
+  边界回归验收，不能用目录迁移或空接口作为复用证明。
+
 ### Key Entities
 
 - **Policy authority**：本切片签发 grant 的策略权威（身份/密钥/
@@ -171,7 +188,9 @@ Provider 在装配/加载前完成授权，并在成功、取消及失败时清�
 
 ## Out of Scope
 
-- Qwen 执行、跨模型资格、多 GPU、性能/吞吐/延迟声称（延续 180 边界）。
+- Qwen 模型执行资格、跨模型资格、多 GPU、性能/吞吐/延迟声称
+  （延续 180 边界）。复用已有 Qwen 公共机制及其受影响接口的定向
+  兼容性回归属于源码收口，不是新增模型资格。
 - 新放置策略、新协议、跨 Provider 张量并行。
 - 对 Spec 180 历史文档的回译或重写。
 - **撤销子系统（延期项）**：`RevocationStateV1` 账本、网络撤销服务与
