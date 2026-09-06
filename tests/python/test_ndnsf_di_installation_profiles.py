@@ -56,6 +56,7 @@ class InstallationProfilesTest(unittest.TestCase):
             self.assertTrue(core)
             self.assertTrue(all(path.startswith("ndnsf_distributed_inference/core/") for path in core))
             sdk=next(files for name,files in wheels.items() if name.startswith("ndnsf_di_sdk-"))
+            self.assertIn("ndnsf_distributed_inference/conversation.py", sdk)
             self.assertIn("ndnsf_distributed_inference/adapters/__init__.py", sdk)
             self.assertIn("ndnsf_distributed_inference/adapters/base.py", sdk)
             self.assertIn("ndnsf_distributed_inference/adapters/builtin.py", sdk)
@@ -64,13 +65,16 @@ class InstallationProfilesTest(unittest.TestCase):
             self.assertIn("ndnsf_distributed_inference/runtime_v1.py", app)
 
             with tempfile.TemporaryDirectory() as environment:
-                subprocess.run([sys.executable, "-m", "venv", environment], check=True)
+                # The profile wheels are installed without dependency resolution.
+                # Reuse the test host's declared third-party dependencies offline;
+                # verify below that every DI module still comes from these wheels.
+                subprocess.run([sys.executable, "-m", "venv", "--system-site-packages", environment], check=True)
                 python = str(Path(environment) / "bin/python")
                 clean_env = dict(os.environ)
                 clean_env.pop("PYTHONPATH", None)
                 wheel_paths = [str(path) for path in Path(output).glob("*.whl")]
                 subprocess.run(
-                    [python, "-m", "pip", "install", "--no-deps", *wheel_paths],
+                    [python, "-m", "pip", "install", "--no-deps", "--ignore-installed", *wheel_paths],
                     check=True, capture_output=True, text=True, env=clean_env,
                 )
                 probe = subprocess.run(
@@ -86,7 +90,12 @@ class InstallationProfilesTest(unittest.TestCase):
                      "from ndnsf_distributed_inference.adapters import "
                      "ApplicationInput, ModelFamilyAdapter; "
                      "import ndnsf_distributed_inference.adapters.onnx; "
-                     "import ndnsf_distributed_inference.ops"],
+                     "import ndnsf_distributed_inference.ops; "
+                     "from pathlib import Path; "
+                     "outside = [(n, m.__file__) for n, m in sys.modules.items() "
+                     "if n.startswith('ndnsf_distributed_inference') and getattr(m, '__file__', None) "
+                     "and not str(Path(m.__file__).resolve()).startswith(str(Path(sys.prefix).resolve()) + '/')]; "
+                     "assert not outside, outside"],
                     check=False, capture_output=True, text=True, env=clean_env,
                 )
                 self.assertEqual(probe.returncode, 0, probe.stdout + probe.stderr)

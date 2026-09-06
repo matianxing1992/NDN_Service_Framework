@@ -164,6 +164,11 @@ class SequentialFixtureSplitter:
                     if edge.edge_id in cross_tensors
                 ),
             },
+            # V3 never infers dataflow ownership from catalogue order or role
+            # names. Even this model-neutral fixture therefore declares its
+            # first role as input ingress and its last role as result egress.
+            input_ingress_role=roles[0],
+            result_egress_role=roles[-1],
         )
         candidate.validate_against(graph)
         return (candidate,)

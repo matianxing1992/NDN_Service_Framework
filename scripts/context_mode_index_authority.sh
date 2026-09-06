@@ -7,6 +7,15 @@ set -Eeuo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 context_mode_bin="${CONTEXT_MODE_BIN:-context-mode}"
 project_root="${CONTEXT_MODE_PROJECT_ROOT:-$root}"
+platform="${CONTEXT_MODE_PLATFORM:-codex}"
+
+case "$platform" in
+  codex|claude-code) ;;
+  *)
+    echo "unsupported CONTEXT_MODE_PLATFORM: $platform" >&2
+    exit 2
+    ;;
+esac
 
 active_dir=$(python3 - "$project_root/.specify/feature.json" <<'PY'
 import json
@@ -47,4 +56,4 @@ for filename in spec.md plan.md tasks.md; do
 done
 
 python3 "$project_root/scripts/context_mode_guard.py" \
-  health --project-root "$project_root"
+  health --platform "$platform" --project-root "$project_root"

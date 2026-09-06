@@ -15,6 +15,105 @@ owns deployment concerns such as identity, trust schema, policy fetch, GUI, and
 local hardware adapters, while each named NDNSF service remains independently
 addressable and permission-controlled.
 
+## Development Branch
+
+Active UAV application development is performed on the retained
+`UAV-Experimental` branch. UAV feature work, tests, and evidence merge back to
+that branch; promotion to `Experimental` or `main` requires a separate explicit
+decision after validation. Spec 176 defines the next cooperative-UAV increment
+as a long-lived application MissionSession plus bounded incident-level NDNSF
+CollaborationJobs, rather than one patrol-wide `RequestCollaboration()`.
+
+The application contract uses an NDN **data-centric service transaction**:
+evidence, manifests, and retained reports are producer-owned, signed, immutable
+versioned Data retrieved with Interests and bound by digest. “Data-driven” here
+is not an analytics claim and is not a standalone contribution. Requests carry
+compact names and metadata only; they never carry IP/host/port/socket endpoints
+or raw frame bytes. A MissionSession is local bounded state, not an NDN connection. The
+nominal flow is `EvidenceSource` -> named evidence -> `DetectorReporter` -> one
+terminal report; Ground Station detection is an explicit fallback only. Both roles
+share `/UAV/Incident/Analyze`; the Ground Station selector consumes capability
+metadata from the validator-accepted ACK closure and checks model, quality,
+device, readiness, queue, and freshness before selecting a role, so the plan
+does not encode a transport endpoint or role-specific address. The
+source candidate is additionally bound to the producer identity in the evidence
+reference; it cannot attest another provider's namespace.
+Operationally, the collaboration is evidence-driven only after verified ACK
+capability metadata and signed named evidence are available; this is not a
+generic data-driven/ML claim.
+ACK/SVS advertisements may bootstrap a logical name or availability hint, but
+they are not by themselves the official incomplete-name discovery mechanism;
+consumers still retrieve exact Data with bounded Interests. Exact object fetch
+keeps one outstanding Interest per object, and stream/segmented prefetch windows
+remain finite.
+An evidence descriptor is not executable input: `UavEvidenceReference` remains
+metadata until the exact Data name, producer certificate/signature, and content
+digest have been verified. Detector execution accepts only the resulting
+`UavVerifiedEvidence` value; the descriptor and unchecked raw bytes are rejected
+at that boundary.
+The current CPU slice verifies a supplied producer certificate for raw Data;
+the selected Drone collaboration participant uses the same exact-name,
+expected-producer contract through `CollaborationContext::fetchSignedExactData`
+before admitting bytes to the detector. Core multi-segment retrieval now routes
+through the configured NDNSF/ndn-cxx validator. A real MiniNDN/SITL
+multi-segment run is still required before this is counted as deployment
+evidence.
+
+### Spec176 acceptance launchers
+
+The fixed four-node MiniNDN profile is recorded in
+`examples/ndnsf/uav-collaboration/topology.conf`. Run the read-only preflight
+before starting a campaign:
+
+```bash
+python3 examples/ndnsf/uav-collaboration/minindn_uav_collaboration.py
+python3 examples/ndnsf/uav-collaboration/minindn_failure_matrix.py
+```
+
+Use `--run --output <directory>` only on a host with the built UAV binaries and
+MiniNDN installed. The launchers write a candidate-bound manifest and logs;
+they do not convert startup into proof of named-Data verification. PX4 SITL is
+separate and must be explicitly configured with `PX4_SITL_ROOT`:
+
+```bash
+NDNSF-UAV-APP/tools/run_uav_collaboration_probe.sh <output-directory>
+```
+
+The probe now delegates to the candidate-bound
+`tools/run_uav_px4_sitl_scenario.py` adapter. It uses the standard PX4
+`Tools/simulation/jmavsim/jmavsim_run.sh` entry point, three real UDP-backed
+SITL drones (`A`, `B`, and `C`), and refuses to start without root, the PX4
+tree, and all built binaries. The adapter records preflight hashes and checks
+the stream, patrol/compensation, incident-success, incident-failure, and
+command-reconciliation markers. It never falls back to the mock backend.
+For example:
+
+```bash
+sudo -n env PX4_SITL_ROOT=/home/tianxing/PX4-Autopilot \
+  NDNSF_UAV_FLIGHT_CONTROLLER=udp \
+  NDNSF-UAV-APP/tools/run_uav_collaboration_probe.sh <output-directory>
+```
+
+The retained Spec 176 nominal evidence is recorded in
+`specs/176-uav-two-lifecycle-collaboration/evidence/minindn-nominal-20260828.md`.
+It uses the fixed four-process topology, a 60-second MissionSession, two
+finite incident jobs, and a second-consumer exact-name re-fetch.  The Ground
+Station starts the real predictive stream first and records
+`SPEC176_STREAM_FINAL ok=true` with a larger fetched-chunk count after both
+jobs, so stream independence is measured rather than inferred.  The ten-case
+failure evidence is separate in
+`specs/176-uav-two-lifecycle-collaboration/evidence/minindn-failure-matrix-20260828.md`.
+These are NDN data-centric/evidence-driven acceptance claims only: the
+application names producer-owned Data and retrieves it with bounded Interests
+and validation; “data-driven” is not a generic ML or framework novelty claim.
+This is an **NDN-compatible application-boundary** claim, not a claim of full
+NDN protocol implementation: exact-name retrieval is used after ACK/SVS hints,
+while formal incomplete-name discovery remains outside Spec 176.
+The post-selector candidate-consistent nominal rerun records explicit
+`SPEC176_CAPABILITY_SELECTION`; the ten-case failure matrix was rerun on the
+same candidate. PX4 SITL remains a separate gate.
+It is not implied by the MiniNDN result.
+
 ## Why This Application Exists
 
 Developing UAV network applications directly over IP often forces application
@@ -1812,10 +1911,11 @@ another available provider.
 
 ## Development Roadmap
 
-At this checkpoint, the app is useful as a MiniNDN/SITL demonstrator and has
-several deployment-facing pieces in place. The remaining roadmap is best read as
-a mix of completed stabilization work and future hardening for a deployable UAV
-service-container workload:
+At this checkpoint, the app has a passing MiniNDN demonstrator path and a
+SITL launcher/preflight path, but PX4 SITL acceptance is still pending. It has
+several deployment-facing pieces in place. The remaining roadmap is best read
+as a mix of completed stabilization work and future hardening for a deployable
+UAV service-container workload:
 
 1. **State model consolidation.** Telemetry, readiness, mission, video, command,
    and safety state now drive the main flight buttons, selected-drone action
@@ -1925,3 +2025,53 @@ service-container workload:
 9. **Distributed inference integration.** Future image and object-detection
    workflows can connect to `NDNSF-DistributedInference` when model execution is
    split across ground stations, drones, and edge machines.
+
+## Multi-view recognition (Spec 178)
+
+The UAV-Experimental branch also contains a bounded multi-view recognition
+workflow. A mission session remains long-lived; each recognition attempt is a
+finite job with an immutable set of exact named-Data view references. A selected
+Provider verifies every signed view, consumes two through six views from distinct
+UAV identities, and executes one registered MVCNN-family ONNX graph with an
+explicit view mask on `CPUExecutionProvider`. The graph jointly pools the view
+features and emits one fused decision plus one Provider-owned annotation Data
+object per contributing view. Independent per-view labels or a voting adapter
+are baselines, not MVCNN. The generated fixture is functional-only and cannot
+support real-flight accuracy claims.
+
+Run the CPU functional gate with:
+
+```bash
+python3 NDNSF-UAV-APP/tools/run_multiview_fixture.py \
+  --manifest NDNSF-UAV-APP/testdata/multiview-car/manifest.json \
+  --mode real --views 6 --output results/uav-multiview-real
+```
+
+The registered CPU artifact is created and checked with:
+
+```bash
+python3 NDNSF-UAV-APP/tools/prepare_mvcnn_artifact.py \
+  --output-dir NDNSF-UAV-APP/models
+```
+
+The deterministic Spec 177 adapter remains available only through the explicit
+`--mode functional` path for contract tests. A real-model invocation fails
+closed on a missing/different artifact, malformed input, non-finite output, or
+any execution provider other than `CPUExecutionProvider`.
+
+Validation order is model provenance/native qualification, ONNX contract and
+CPU parity, CPU integration, real MiniNDN multi-process delivery, and only then
+a registered paired 1/2/4/6-view dataset. The reusable MiniNDN matrix is:
+
+```bash
+sudo -n python3 NDNSF-UAV-APP/tools/run_uav_multiview_minindn.py \
+  --execute --all-scenarios --provider /provider/gpu \
+  --output results/uav-multiview-minindn
+```
+
+It records exact UAV Data retrieval, competing Provider ACKs, single-owner
+selection, Provider-owned result/annotation Data, and explicit unavailable,
+late, and publication-failure terminals.  The model registry and
+preprocessing/model digest are in
+`configs/uav_multiview_models.json`; generated fixture output is functional
+evidence only.

@@ -6,6 +6,7 @@ import json
 import os
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -20,9 +21,20 @@ SPEC175_JOBS = ROOT / "packaging/ndnsf-di-container/jobs/spec175"
 REPLAY_DRIVER = SPEC175_JOBS / "replay-exact-sif.py"
 PLANNING_BUILDER = ROOT / "specs/162-itiger-qwen36-generation/jobs/build-automatic-planning-manifest.py"
 CHECKLIST_VALIDATOR = ROOT / "packaging/ndnsf-di-container/bin/ndnsf-di-pre-tiger-checklist"
+CANDIDATE_CLOSURE_VALIDATOR = ROOT / "packaging/ndnsf-di-container/bin/spec175-candidate-closure"
+CANDIDATE_CLOSURE_MODULE = ROOT / "packaging/ndnsf-di-container/lib/spec175_candidate_closure.py"
 MODEL_PREFLIGHT = ROOT / "packaging/ndnsf-di-container/bin/ndnsf-di-spec175-model-preflight"
-HOST_GATE = ROOT / "results/spec175/g3/spec175-g3-current-20260827.json"
+HOST_GATE = ROOT / "results/spec175/g3/host-minindn-manifest-fe285147.json"
 HOST_GATE_MODULE = ROOT / "packaging/ndnsf-di-container/lib/spec175_host_gate.py"
+
+
+def execute_isolated(loader, module):
+    """CLI bootstrap paths must not shadow stdlib modules in later tests."""
+    original_path = sys.path[:]
+    try:
+        loader.exec_module(module)
+    finally:
+        sys.path[:] = original_path
 
 
 def load_module():
@@ -30,7 +42,7 @@ def load_module():
     spec = importlib.util.spec_from_loader(loader.name, loader)
     assert spec is not None
     module = importlib.util.module_from_spec(spec)
-    loader.exec_module(module)
+    execute_isolated(loader, module)
     return module
 
 
@@ -40,7 +52,17 @@ def load_host_gate_module():
     spec = importlib.util.spec_from_loader(loader.name, loader)
     assert spec is not None
     module = importlib.util.module_from_spec(spec)
-    loader.exec_module(module)
+    execute_isolated(loader, module)
+    return module
+
+
+def load_candidate_closure_module():
+    loader = importlib.machinery.SourceFileLoader(
+        "spec175_candidate_closure", str(CANDIDATE_CLOSURE_MODULE))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    execute_isolated(loader, module)
     return module
 
 
@@ -50,7 +72,7 @@ def load_planning_builder_module():
     spec = importlib.util.spec_from_loader(loader.name, loader)
     assert spec is not None
     module = importlib.util.module_from_spec(spec)
-    loader.exec_module(module)
+    execute_isolated(loader, module)
     return module
 
 
@@ -60,11 +82,127 @@ def load_replay_driver_module():
     spec = importlib.util.spec_from_loader(loader.name, loader)
     assert spec is not None
     module = importlib.util.module_from_spec(spec)
-    loader.exec_module(module)
+    execute_isolated(loader, module)
     return module
 
 
 class Spec175SifPreflightTests(unittest.TestCase):
+    def _candidate_closure_fixture(self, root: Path, module, *, gate="G4T",
+                                   changed="submitBundle"):
+        files = {}
+        for name in module.TUPLE_COMPONENTS + module.TERMINAL_COMPONENTS:
+            path = root / (name.replace("/", "-") + ".bin")
+            path.write_bytes((name + "\n").encode())
+            files[name] = path
+        for kind in module.CLOSURE_KINDS:
+            path = root / ("closure-" + kind.replace("/", "-") + ".bin")
+            path.write_bytes((kind + "\n").encode())
+            files["closure:" + kind] = path
+        components = {
+            name: {"path": str(files[name]), "sha256": module.sha256(files[name])}
+            for name in module.TUPLE_COMPONENTS
+        }
+        previous = {name: "sha256:" + ("a" * 64)
+                    for name in module.TUPLE_COMPONENTS}
+        current = dict(previous)
+        current[changed] = "sha256:" + ("b" * 64)
+        payload = {
+            "schema": module.SCHEMA,
+            "status": "PASS",
+            "candidateId": "candidate-test-1",
+            "selectedGate": gate,
+            "changedPlane": "tiger-submit",
+            "restartGate": "G4T",
+            "invalidatedGates": ["G4T"],
+            "previousIdentities": previous,
+            "newIdentities": current,
+            "components": components,
+            "terminalGates": {
+                gate_name: {"path": str(files[gate_name]),
+                            "sha256": module.sha256(files[gate_name])}
+                for gate_name in module.TERMINAL_COMPONENTS
+            },
+            "closure": {"files": [
+                {"id": "closure-" + kind, "kind": kind,
+                 "path": str(files["closure:" + kind]),
+                 "sha256": module.sha256(files["closure:" + kind])}
+                for kind in module.CLOSURE_KINDS
+            ]},
+            "candidateTuple": {
+                name: components[name]["sha256"]
+                for name in module.TUPLE_COMPONENTS
+            },
+        }
+        manifest = root / "candidate-closure.json"
+        manifest.write_text(json.dumps(payload), encoding="utf-8")
+        return manifest, files
+
+    def test_candidate_closure_binds_tuple_terminal_and_all_closure_planes(self):
+        module = load_candidate_closure_module()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest, files = self._candidate_closure_fixture(root, module)
+            result = module.validate(
+                manifest, expected_gate="G4T", expected_sif=files["exactSif"],
+                expected_sif_sha256=module.sha256(files["exactSif"]),
+            )
+            self.assertEqual(result["status"], "PASS", result["errors"])
+            self.assertEqual(set(item["kind"] for item in result["closureFiles"]),
+                             set(module.CLOSURE_KINDS))
+
+    def test_candidate_closure_rejects_mutation_and_missing_closure_kind(self):
+        module = load_candidate_closure_module()
+        for missing_kind in module.CLOSURE_KINDS:
+            with self.subTest(missing_kind=missing_kind), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                manifest, files = self._candidate_closure_fixture(root, module)
+                payload = json.loads(manifest.read_text(encoding="utf-8"))
+                payload["closure"]["files"] = [
+                    item for item in payload["closure"]["files"]
+                    if item["kind"] != missing_kind
+                ]
+                manifest.write_text(json.dumps(payload), encoding="utf-8")
+                result = module.validate(
+                    manifest, expected_gate="G4T", expected_sif=files["exactSif"],
+                    expected_sif_sha256=module.sha256(files["exactSif"]),
+                )
+                self.assertEqual(result["status"], "FAIL")
+                self.assertTrue(any("missing kinds" in error for error in result["errors"]))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest, files = self._candidate_closure_fixture(root, module)
+            files["exactSif"].write_bytes(b"mutated")
+            result = module.validate(
+                manifest, expected_gate="G4T", expected_sif=files["exactSif"],
+                expected_sif_sha256=module.sha256(files["exactSif"]),
+            )
+            self.assertEqual(result["status"], "FAIL")
+            self.assertTrue(any("sha256 mismatch" in error for error in result["errors"]))
+
+    def test_candidate_closure_rejects_two_plane_transition_and_gate_mismatch(self):
+        module = load_candidate_closure_module()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest, files = self._candidate_closure_fixture(root, module)
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+            payload["newIdentities"]["hostReplay"] = "sha256:" + ("c" * 64)
+            payload["selectedGate"] = "G5"
+            manifest.write_text(json.dumps(payload), encoding="utf-8")
+            result = module.validate(manifest, expected_gate="G4T",
+                                     expected_sif=files["exactSif"],
+                                     expected_sif_sha256=module.sha256(files["exactSif"]))
+            self.assertEqual(result["status"], "FAIL")
+            self.assertTrue(any("exactly one" in error for error in result["errors"]))
+            self.assertTrue(any("selectedGate" in error for error in result["errors"]))
+
+    def test_candidate_closure_cli_is_executable_and_precedes_dispatch(self):
+        self.assertTrue(os.access(CANDIDATE_CLOSURE_VALIDATOR, os.X_OK))
+        submit = (SPEC175_JOBS / "submit.sh").read_text(encoding="utf-8")
+        submitter = (SPEC175_JOBS / "submit_profile.py").read_text(encoding="utf-8")
+        self.assertIn("submit_profile.py", submit)
+        self.assertIn("spec175-candidate-closure", submitter)
+        self.assertLess(submitter.index("spec175-candidate-closure"),
+                        submitter.index("shutil.which(\"sbatch\")"))
     def test_host_gate_requires_current_42_process_matrix(self):
         if not HOST_GATE.is_file():
             self.skipTest("current G3 host manifest is not present")
@@ -86,17 +224,105 @@ class Spec175SifPreflightTests(unittest.TestCase):
             with self.assertRaisesRegex(module.HostGateError, "ENTRY_COUNT"):
                 module.validate_host_gate(path, ROOT)
 
+    def test_host_gate_accepts_current_single_m01_manifest(self):
+        module = load_host_gate_module()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source-seal.json"
+            fixture = root / "fixture.json"
+            source.write_text("{}\n", encoding="utf-8")
+            fixture.write_text("{}\n", encoding="utf-8")
+            payload = {
+                "schema": "spec175-host-minindn-manifest-v2",
+                "status": "PASS",
+                "subject": {
+                    "runtime": "tiny-onnx",
+                    "providerCount": 4,
+                    "admissionControl": False,
+                    "targetedPrefetch": False,
+                    "workloadSeed": 1750001,
+                    "sourceSealPath": "source-seal.json",
+                    "sourceSealSha256": module.sha256(source),
+                    "fixtureManifestPath": "fixture.json",
+                    "fixtureManifestSha256": module.sha256(fixture),
+                },
+                "matrix": {
+                    "cases": ["M01"],
+                    "repetitionsPerCase": 1,
+                    "entries": [{
+                        "case": "M01",
+                        "repetition": 1,
+                        "status": "PASS",
+                        "campaignId": "spec175-M01-1750001",
+                        "workloadSeed": 1750001,
+                        "expectedTerminal": False,
+                    }],
+                },
+            }
+            path = root / "host-gate.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            result = module.validate_host_gate(path, root)
+            self.assertEqual(result["schema"], "spec175-host-minindn-manifest-v2")
+            self.assertEqual(result["cases"], ["M01"])
+            self.assertEqual(result["repetitionsPerCase"], 1)
+            self.assertEqual(result["total"], 1)
+            self.assertEqual(result["passed"], 1)
+
+    def test_host_gate_rejects_current_manifest_seed_or_case_mutation(self):
+        module = load_host_gate_module()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source-seal.json"
+            fixture = root / "fixture.json"
+            source.write_text("{}\n", encoding="utf-8")
+            fixture.write_text("{}\n", encoding="utf-8")
+            payload = {
+                "schema": "spec175-host-minindn-manifest-v2",
+                "status": "PASS",
+                "subject": {
+                    "runtime": "tiny-onnx", "providerCount": 4,
+                    "admissionControl": False, "targetedPrefetch": False,
+                    "workloadSeed": 1750001,
+                    "sourceSealPath": "source-seal.json",
+                    "sourceSealSha256": module.sha256(source),
+                    "fixtureManifestPath": "fixture.json",
+                    "fixtureManifestSha256": module.sha256(fixture),
+                },
+                "matrix": {
+                    "cases": ["M01"], "repetitionsPerCase": 1,
+                    "entries": [{
+                        "case": "M01", "repetition": 1, "status": "PASS",
+                        "campaignId": "spec175-M01-1750001",
+                        "workloadSeed": 1750001,
+                        "expectedTerminal": False,
+                    }],
+                },
+            }
+            path = root / "host-gate.json"
+            for field, value, error in (
+                ("case", "M02", "CASE_INVALID"),
+                ("workloadSeed", 7, "WORKLOAD_SEED_FIELD_MISMATCH"),
+            ):
+                mutated = json.loads(json.dumps(payload))
+                mutated["matrix"]["entries"][0][field] = value
+                path.write_text(json.dumps(mutated), encoding="utf-8")
+                with self.subTest(field=field):
+                    with self.assertRaisesRegex(module.HostGateError, error):
+                        module.validate_host_gate(path, root)
+
     def test_tiger_submission_is_frozen_and_cwd_safe(self):
         submit = (SPEC175_JOBS / "submit.sh").read_text(encoding="utf-8")
         runner = (SPEC175_JOBS / "run-streamed-generation.sh").read_text(
             encoding="utf-8")
-        self.assertIn("SPEC175_GATE_CLOSURE_NOT_PASS", submit)
-        self.assertIn("CHECKLIST_VALIDATOR", submit)
-        self.assertIn("PRE_TIGER_CHECKLIST", submit)
+        self.assertIn("proven-tiger-profile.json", submit)
+        self.assertIn("run-record.json", submit)
+        self.assertIn("submit_profile.py", submit)
         self.assertIn("conversation-residency", submit)
         self.assertIn("control", submit)
-        self.assertIn("sha256", submit)
-        self.assertIn("sbatch --export=ALL", submit)
+        self.assertNotIn("--export=ALL", submit)
+        submitter = (SPEC175_JOBS / "submit_profile.py").read_text(encoding="utf-8")
+        self.assertIn("--export=NONE", submitter)
+        self.assertIn("candidate-closure", submitter)
         self.assertNotIn("docker", submit.lower())
         self.assertIn("cd /bundle", runner)
         self.assertIn("--cleanenv", runner)
@@ -108,11 +334,11 @@ class Spec175SifPreflightTests(unittest.TestCase):
         self.assertIn("SPEC175_SIF_DIGEST_MISMATCH", runner)
         self.assertIn("SPEC175_MODEL_ROOT", runner)
         self.assertIn(":/model:ro", runner)
-        self.assertIn("SPEC175_FUNCTIONAL_PREFLIGHT_MISSING", submit)
-        self.assertIn("SPEC175_BUNDLE:?set SPEC175_BUNDLE to the staged functional bundle", submit)
-        self.assertIn('export SPEC175_REMOTE_MODEL_ROOT="$REMOTE_MODEL_ROOT"', submit)
-        self.assertIn("ndnsf-di-spec175-functional-preflight", submit)
-        self.assertIn('SPEC175_JOB_ROOT', submit)
+        self.assertIn('if [[ "$SPEC175_GATE" != control ]]; then', runner)
+        self.assertIn('apptainer_args+=(--nv)', runner)
+        self.assertIn('apptainer "${apptainer_args[@]}"', runner)
+        self.assertIn("ndnsf-di-spec175-functional-preflight", submitter)
+        self.assertIn("model", submitter)
         for name in ("qualify-control.sbatch",
                      "qualify-stage-readiness.sbatch",
                      "qualify-multiprovider.sbatch",
@@ -133,6 +359,47 @@ class Spec175SifPreflightTests(unittest.TestCase):
                 self.assertIn("run-streamed-generation.sh", text)
                 if name != "qualify-control.sbatch":
                     self.assertIn("SPEC175_MODEL_ROOT", text)
+            if name in ("qualify-multiprovider.sbatch",
+                        "qualify-conversation-residency.sbatch",
+                        "qualify-performance.sbatch"):
+                self.assertIn("#SBATCH --mem=96G", text)
+
+    def test_diagnostic_gpu_path_is_explicitly_non_qualifying(self):
+        submit = (SPEC175_JOBS / "submit-diagnostic-multiprovider.sh").read_text(
+            encoding="utf-8")
+        job = (SPEC175_JOBS / "diagnose-multiprovider.sbatch").read_text(
+            encoding="utf-8")
+        self.assertIn("diagnostic-multi-provider", submit)
+        self.assertIn("ndnsf-di-spec175-functional-preflight", submit)
+        self.assertIn("ndnsf-di-spec175-model-preflight", submit)
+        self.assertIn("SPEC175_DIAGNOSTIC_SIF_DIGEST_MISMATCH", submit)
+        self.assertIn("SPEC175_GPU_GRES", submit)
+        self.assertIn('sbatch_args+=(--gres="$SPEC175_GPU_GRES")', submit)
+        self.assertNotIn("CANDIDATE_GATE=G6", submit)
+        preflight = (ROOT / "packaging/ndnsf-di-container/bin/"
+                     "ndnsf-di-spec175-functional-preflight").read_text(
+                         encoding="utf-8")
+        self.assertIn("--initial-sync-settle-s", preflight)
+        self.assertIn("must use the SIF-native settle option", preflight)
+        self.assertIn("diagnosticHardware", preflight)
+        self.assertIn("not multi-GPU scaling evidence", preflight)
+        self.assertNotIn("diagnostic bundle is missing user-settle-wrapper.py",
+                         preflight)
+        self.assertIn("G6 qualification", job)
+        self.assertIn("#SBATCH --gres=gpu:rtx_6000:3", job)
+        self.assertIn("#SBATCH --mem=96G", job)
+        self.assertIn("SPEC175_STAGE_MANIFEST_OVERRIDE", job)
+        self.assertIn("SPEC175_SVS_PERIODIC_SYNC_MS=1000", job)
+        streamed = (SPEC175_JOBS / "run-streamed-generation.sh").read_text(
+            encoding="utf-8")
+        self.assertIn("SPEC175_STAGE_MANIFEST_OVERRIDE_MISSING", streamed)
+        self.assertIn(
+            ":/model/qwen36-stage-manifest.json:ro", streamed)
+        self.assertIn(
+            "NDNSF_SVS_PERIODIC_SYNC_MS=${SPEC175_SVS_PERIODIC_SYNC_MS:-1000}",
+            streamed,
+        )
+        self.assertIn("run-streamed-generation.sh", job)
 
     def test_repository_checklist_validator_is_home_independent(self):
         self.assertTrue(os.access(CHECKLIST_VALIDATOR, os.X_OK))
@@ -143,12 +410,27 @@ class Spec175SifPreflightTests(unittest.TestCase):
         self.assertIn('--candidate-manifest', text)
         self.assertIn('--expected-sif-sha256', text)
 
+    def test_local_builder_classifies_host_only_sources_explicitly(self):
+        builder = (ROOT /
+                   "packaging/ndnsf-di-container/adapters/slurm-apptainer/"
+                   "scripts/build-local-sif.sh").read_text(encoding="utf-8")
+        self.assertIn("host_only_prefixes", builder)
+        self.assertIn('"tests/"', builder)
+        self.assertIn('"packaging/ndnsf-di-container/"', builder)
+        self.assertIn('"scripts/"', builder)
+        self.assertIn("runtime_archive_paths", builder)
+        self.assertIn("replay-exact-sif.py", builder)
+        self.assertIn("workload.json", builder)
+        self.assertIn("scripts/build_spec175_workload.py", builder)
+        self.assertIn("scripts/run_spec180_case.py", builder)
+        self.assertIn("LOCAL_SIF_HOST_GATE_SOURCE_FILE_MISMATCH", builder)
+        self.assertIn("--strict-host-source-seal", builder)
+
     def test_submit_control_has_no_model_requirement(self):
         submit = (SPEC175_JOBS / "submit.sh").read_text(encoding="utf-8")
-        model_block = submit.split('if [[ "$CHECKLIST_GATE" != control ]]; then', 1)[1]
-        self.assertIn('MODEL_MANIFEST', model_block)
-        self.assertIn('fi', model_block)
-        self.assertIn('if [[ "$CHECKLIST_GATE" != control ]]; then', submit)
+        self.assertIn("proven-tiger-profile.json", submit)
+        self.assertIn("run-record.json", submit)
+        self.assertNotIn("MODEL_MANIFEST", submit)
 
     def test_model_preflight_rejects_legacy_manifest_before_allocation(self):
         self.assertTrue(os.access(MODEL_PREFLIGHT, os.X_OK))
@@ -277,9 +559,12 @@ class Spec175SifPreflightTests(unittest.TestCase):
     def test_host_replay_driver_matches_minindn_python38_boundary(self):
         text = REPLAY_DRIVER.read_text(encoding="utf-8")
         self.assertIn("WORKLOAD_SEED = 1750001", text)
-        self.assertIn("REPETITIONS = 3", text)
-        self.assertIn("range(1, REPETITIONS + 1)", text)
-        self.assertIn('len(entries) == EXPECTED_ENTRIES', text)
+        self.assertIn("FAULT_SEED = 1750002", text)
+        self.assertIn("FAULT_CASES", text)
+        self.assertIn("case_seed", text)
+        self.assertIn('host_entries = host["entries"]', text)
+        self.assertIn("for index, registered in enumerate(host_entries)", text)
+        self.assertNotIn("EXPECTED_ENTRIES", text)
         self.assertIn('"repetition": repetition', text)
         self.assertIn('parser.add_argument("--source-seal", required=True', text)
         self.assertIn("complete candidate source seal", text)
@@ -287,6 +572,23 @@ class Spec175SifPreflightTests(unittest.TestCase):
         self.assertIn("SPEC175_SIF_HOST_PROCESS_FALLBACK", text)
         self.assertIn("without_sha256_prefix", text)
         self.assertNotIn("removeprefix(", text)
+
+    def test_exact_replay_uses_registered_seed_for_fault_cases(self):
+        module = load_replay_driver_module()
+        self.assertEqual(module.case_seed("M01", 1750001), 1750001)
+        self.assertEqual(module.case_seed("M14", 1750001), 1750001)
+        for case in ("M05", "M06", "M07", "M08", "M09"):
+            self.assertEqual(module.case_seed(case, 1750001), 1750002)
+
+    def test_exact_replay_resolves_case_output_for_sif_bind_mount(self):
+        module = load_replay_driver_module()
+        aggregate = module.resolve_replay_output(
+            Path("results/spec175/g4/current/replay.json"))
+        self.assertTrue(aggregate.is_absolute())
+        self.assertEqual(
+            aggregate.parent / "M01-r1",
+            Path("results/spec175/g4/current/M01-r1").resolve(),
+        )
 
     def test_host_replay_driver_rejects_stale_run_evidence(self):
         module = load_replay_driver_module()
@@ -428,3 +730,13 @@ class Spec175SifPreflightTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_cli_loaders_preserve_import_paths():
+    before = sys.path[:]
+    for load in (load_module, load_host_gate_module, load_candidate_closure_module,
+                 load_planning_builder_module, load_replay_driver_module):
+        load()
+        assert sys.path == before
+    import cProfile
+    assert callable(cProfile.run)

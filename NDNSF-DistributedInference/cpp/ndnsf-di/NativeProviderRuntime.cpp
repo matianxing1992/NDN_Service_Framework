@@ -207,6 +207,30 @@ stateBundleFromResult(const ProviderRoleResult& result, const RoleSpec& role)
                                  std::move(nextState));
 }
 
+TensorBundle
+opaqueStateBundleFromHandle(const NativeOpaqueStateHandleV1& handle,
+                            const RoleSpec& role,
+                            const std::string& sessionId)
+{
+  handle.validate();
+  if (role.stateInputNames.empty() ||
+      handle.sessionId != sessionId ||
+      handle.role != role.role) {
+    throw std::invalid_argument("opaque Provider state handle does not bind to role");
+  }
+  std::vector<NamedTensor> handles;
+  handles.reserve(role.stateInputNames.size());
+  for (const auto& inputName : role.stateInputNames) {
+    handles.push_back(NamedTensor{
+      inputName,
+      TensorElementType::UInt8,
+      {static_cast<std::int64_t>(handle.token.size())},
+      std::vector<std::uint8_t>(handle.token.begin(), handle.token.end())});
+  }
+  return makeEncodedTensorBundle("__ndnsf_provider_decode_state",
+                                 std::move(handles));
+}
+
 } // namespace
 
 void
@@ -456,6 +480,10 @@ ConversationStateStore::setProviderBinding(std::string providerIdentity,
   if (changed) {
     m_cleanups += m_entries.size();
     for (auto& item : m_entries) {
+      if (item.second.adapterState && item.second.adapterRunner) {
+        (void)item.second.adapterRunner->releaseConversationState(
+          *item.second.adapterState);
+      }
       wipeTensorBundle(item.second.state);
     }
     m_entries.clear();
@@ -510,6 +538,9 @@ ConversationStateStore::removeEntry(const std::string& key,
   }
   else if (entry.residency == ConversationStateResidency::HOST_RESIDENT) {
     m_hostBytes -= std::min(m_hostBytes, entry.allocatedBytes);
+  }
+  if (entry.adapterState && entry.adapterRunner) {
+    (void)entry.adapterRunner->releaseConversationState(*entry.adapterState);
   }
   wipeTensorBundle(entry.state);
   m_entries.erase(found);
@@ -648,6 +679,53 @@ ConversationStateStore::stagePromotion(std::string originRequestId,
 }
 
 bool
+ConversationStateStore::stageAdapterPromotion(
+  std::string originRequestId,
+  std::string role,
+  ConversationStateBinding binding,
+  NativeConversationStateHandleV1 state,
+  std::shared_ptr<NativeModelRunner> runner,
+  std::uint64_t nowMs)
+{
+  binding.validate();
+  state.validate();
+  if (!runner || originRequestId.empty() || role.empty() ||
+      role != binding.identity.roleName || role != state.opaque.role ||
+      originRequestId != binding.identity.requestId ||
+      nowMs >= binding.expiresAtMs ||
+      state.opaque.providerIdentity != binding.identity.providerIdentity ||
+      state.opaque.providerBootId != binding.identity.providerBootId ||
+      (!m_providerIdentity.empty() &&
+       (binding.identity.providerIdentity != m_providerIdentity ||
+        binding.identity.providerBootId != m_providerBootId ||
+        binding.identity.cacheEpoch != m_cacheEpoch))) {
+    return false;
+  }
+  const auto key = keyFor(binding);
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (m_entries.find(key) != m_entries.end() ||
+      !evictGpuUntilFits(state.logicalBytes, key)) {
+    return false;
+  }
+  Entry entry;
+  entry.binding = std::move(binding);
+  entry.adapterState = std::move(state);
+  entry.adapterRunner = std::move(runner);
+  entry.residency = ConversationStateResidency::GPU_RESIDENT;
+  entry.lifecycle = ConversationStateLifecycle::COMMITTING;
+  entry.logicalBytes = entry.adapterState->logicalBytes;
+  entry.allocatedBytes = entry.logicalBytes;
+  entry.pinCount = 1;
+  entry.lastAccess = ++m_accessSequence;
+  entry.lastUsedAtMs = nowMs;
+  entry.expiresAtMs = std::min(entry.binding.expiresAtMs, nowMs + m_retentionMs);
+  m_gpuBytes += entry.allocatedBytes;
+  m_entries.emplace(key, std::move(entry));
+  ++m_stagedPromotions;
+  return true;
+}
+
+bool
 ConversationStateStore::commitStagedPromotion(
   const ConversationStateBinding& binding)
 {
@@ -662,7 +740,8 @@ ConversationStateStore::commitStagedPromotion(
   const auto key = keyFor(binding);
   std::lock_guard<std::mutex> lock(m_mutex);
   const auto found = m_entries.find(key);
-  if (found == m_entries.end() || !compatible(found->second.binding, binding) ||
+  if (found == m_entries.end() ||
+      !compatible(found->second.binding, binding) ||
       found->second.lifecycle != ConversationStateLifecycle::COMMITTING ||
       found->second.pinCount != 1) {
     return false;
@@ -719,7 +798,8 @@ ConversationStateStore::rollbackStagedPromotion(
   const auto key = keyFor(binding);
   std::lock_guard<std::mutex> lock(m_mutex);
   const auto found = m_entries.find(key);
-  if (found == m_entries.end() || !compatible(found->second.binding, binding) ||
+  if (found == m_entries.end() || found->second.adapterState ||
+      !compatible(found->second.binding, binding) ||
       found->second.lifecycle != ConversationStateLifecycle::COMMITTING ||
       found->second.pinCount != 1) {
     return false;
@@ -745,7 +825,8 @@ ConversationStateStore::lookup(const ConversationStateBinding& binding,
   const auto key = keyFor(binding);
   std::lock_guard<std::mutex> lock(m_mutex);
   const auto found = m_entries.find(key);
-  if (found == m_entries.end() || !compatible(found->second.binding, binding) ||
+  if (found == m_entries.end() || found->second.adapterState ||
+      !compatible(found->second.binding, binding) ||
       found->second.lifecycle == ConversationStateLifecycle::COMMITTING ||
       (m_providerIdentity.empty() ? false :
        (binding.identity.providerIdentity != m_providerIdentity ||
@@ -763,6 +844,24 @@ ConversationStateStore::lookup(const ConversationStateBinding& binding,
   found->second.lastUsedAtMs = nowMs;
   ++m_hits;
   return found->second.state;
+}
+
+std::optional<NativeConversationStateHandleV1>
+ConversationStateStore::adapterHandle(
+  const ConversationStateBinding& binding,
+  std::uint64_t nowMs) const
+{
+  binding.validate();
+  const auto key = keyFor(binding);
+  std::lock_guard<std::mutex> lock(m_mutex);
+  const auto found = m_entries.find(key);
+  if (found == m_entries.end() || !found->second.adapterState ||
+      !compatible(found->second.binding, binding) ||
+      found->second.lifecycle == ConversationStateLifecycle::COMMITTING ||
+      nowMs >= found->second.expiresAtMs) {
+    return std::nullopt;
+  }
+  return found->second.adapterState;
 }
 
 std::optional<ConversationStateBinding>
@@ -885,6 +984,11 @@ ConversationStateStore::pauseToHost(const ConversationStateBinding& binding,
   if (!evictHostUntilFits(bytes, key)) {
     return false;
   }
+  if (found->second.adapterState && found->second.adapterRunner &&
+      !found->second.adapterRunner->pauseConversationStateToHost(
+        *found->second.adapterState)) {
+    return false;
+  }
   m_gpuBytes -= std::min(m_gpuBytes, bytes);
   m_hostBytes += bytes;
   found->second.residency = ConversationStateResidency::HOST_RESIDENT;
@@ -919,10 +1023,34 @@ ConversationStateStore::prefetchToGpu(const ConversationStateBinding& binding,
     generation = ++found->second.prefetchGeneration;
   }
   const auto queuedAt = std::chrono::steady_clock::now();
+  std::future<bool> adapterTransfer;
+  std::shared_ptr<NativeModelRunner> adapterRunner;
+  std::optional<NativeConversationStateHandleV1> adapterState;
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    const auto found = m_entries.find(key);
+    if (found != m_entries.end()) {
+      adapterRunner = found->second.adapterRunner;
+      adapterState = found->second.adapterState;
+    }
+  }
+  if (adapterRunner && adapterState) {
+    adapterTransfer = adapterRunner->prefetchConversationStateToGpu(*adapterState);
+  }
   return std::async(
     std::launch::async,
-    [this, binding, key, generation, nowMs, queuedAt] {
+    [this, binding, key, generation, nowMs, queuedAt,
+     adapterTransfer = std::move(adapterTransfer)] () mutable {
       const auto started = std::chrono::steady_clock::now();
+      bool transferred = true;
+      if (adapterTransfer.valid()) {
+        try {
+          transferred = adapterTransfer.get();
+        }
+        catch (...) {
+          transferred = false;
+        }
+      }
       const auto elapsedMs = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(
           started - queuedAt).count());
@@ -938,6 +1066,10 @@ ConversationStateStore::prefetchToGpu(const ConversationStateBinding& binding,
           found->second.prefetchGeneration != generation ||
           found->second.lifecycle != ConversationStateLifecycle::PREFETCHING ||
           completedNowMs >= found->second.expiresAtMs) {
+        return false;
+      }
+      if (!transferred) {
+        found->second.lifecycle = ConversationStateLifecycle::IDLE;
         return false;
       }
       const auto bytes = found->second.allocatedBytes;
@@ -974,6 +1106,10 @@ ConversationStateStore::cancelPrefetch(const ConversationStateBinding& binding)
   // Invalidate the generation observed by the worker.  The worker will leave
   // the entry in HOST_RESIDENT and return false when it eventually wakes; it
   // can then be retried or released by the owning request.
+  if (found->second.adapterState && found->second.adapterRunner) {
+    (void)found->second.adapterRunner->cancelConversationStatePrefetch(
+      *found->second.adapterState);
+  }
   ++found->second.prefetchGeneration;
   found->second.lifecycle = ConversationStateLifecycle::IDLE;
   return true;
@@ -1019,6 +1155,10 @@ ConversationStateStore::clear()
   std::lock_guard<std::mutex> lock(m_mutex);
   m_cleanups += m_entries.size();
   for (auto& item : m_entries) {
+    if (item.second.adapterState && item.second.adapterRunner) {
+      (void)item.second.adapterRunner->releaseConversationState(
+        *item.second.adapterState);
+    }
     wipeTensorBundle(item.second.state);
   }
   m_entries.clear();
@@ -1170,6 +1310,7 @@ NativeProviderRuntime::executeRoleAsync(std::string sessionId,
      {"role", role.role},
      {"attemptEpoch", std::to_string(role.attemptEpoch)}});
   auto runner = findRunner(role.role);
+  const bool expectsOpaqueStateHandle = runner->supportsOpaqueStateHandles();
   const auto runnerSpec = findRunnerSpec(role.role);
   const bool stateful = !role.stateInputNames.empty() ||
                         !role.stateOutputNames.empty();
@@ -1214,18 +1355,30 @@ NativeProviderRuntime::executeRoleAsync(std::string sessionId,
             requested, role.conversationStateLookupNowMs).get()) {
         throw std::runtime_error("PROVIDER_CONVERSATION_STATE_MISSING");
       }
-      auto restored = m_conversationStateStore.lookup(
-        requested, role.conversationStateLookupNowMs);
-      if (!restored) {
-        throw std::runtime_error("PROVIDER_CONVERSATION_STATE_MISSING");
-      }
       if (!m_conversationStateStore.pin(
             requested, role.conversationStateLookupNowMs)) {
         throw std::runtime_error("PROVIDER_CONVERSATION_STATE_MISSING");
       }
       conversationBinding = std::move(requested);
-      initialInputsByScope["__ndnsf_provider_decode_state"] =
-        std::move(*restored);
+      if (const auto adapterState = m_conversationStateStore.adapterHandle(
+            *conversationBinding, role.conversationStateLookupNowMs)) {
+        if (!runner->restoreConversationState(*adapterState, sessionId)) {
+          m_conversationStateStore.unpin(*conversationBinding);
+          conversationBinding.reset();
+          throw std::runtime_error("PROVIDER_CONVERSATION_STATE_MISSING");
+        }
+      }
+      else {
+        auto restored = m_conversationStateStore.lookup(
+          *conversationBinding, role.conversationStateLookupNowMs);
+        if (!restored) {
+          m_conversationStateStore.unpin(*conversationBinding);
+          conversationBinding.reset();
+          throw std::runtime_error("PROVIDER_CONVERSATION_STATE_MISSING");
+        }
+        initialInputsByScope["__ndnsf_provider_decode_state"] =
+          std::move(*restored);
+      }
     }
     if (role.inferenceEpoch > 0) {
       if (role.predecessorDecodeStateIdentity.has_value() !=
@@ -1278,9 +1431,11 @@ NativeProviderRuntime::executeRoleAsync(std::string sessionId,
   }
   return std::async(
     std::launch::async,
-    [this, role = std::move(role), binding = std::move(*stateBinding),
+    [this, role = std::move(role), stateSessionId = sessionId,
+     binding = std::move(*stateBinding),
      predecessor = std::move(predecessorBinding),
      conversationBinding = std::move(conversationBinding),
+     expectsOpaqueStateHandle,
      executionGuard = std::move(executionGuard),
      future = std::move(workerFuture)] () mutable {
       bool candidateStaged = false;
@@ -1293,7 +1448,31 @@ NativeProviderRuntime::executeRoleAsync(std::string sessionId,
       try {
         auto result = future.get();
         if (executionGuard) executionGuard();
-        auto state = stateBundleFromResult(result, role);
+        TensorBundle state;
+        if (role.streamingStateExecution && expectsOpaqueStateHandle) {
+          if (!result.stateHandle) {
+            throw std::runtime_error(
+              "PROVIDER_OPAQUE_STATE_HANDLE_MISSING");
+          }
+          result.stateHandle->validate();
+          if (!binding.exactIdentity ||
+              result.stateHandle->providerIdentity !=
+                binding.exactIdentity->providerIdentity ||
+              result.stateHandle->providerBootId !=
+                binding.exactIdentity->providerBootId ||
+              result.stateHandle->sessionId != stateSessionId ||
+              result.stateHandle->role != role.role ||
+              result.stateHandle->stateInferenceEpoch !=
+                binding.exactIdentity->stateInferenceEpoch) {
+            throw std::runtime_error(
+              "PROVIDER_OPAQUE_STATE_HANDLE_IDENTITY_MISMATCH");
+          }
+          state = opaqueStateBundleFromHandle(*result.stateHandle, role,
+                                              stateSessionId);
+        }
+        else {
+          state = stateBundleFromResult(result, role);
+        }
         if (executionGuard) executionGuard();
         if (!m_decodeStateStore.stageCandidate(
               predecessor, binding, std::move(state))) {
@@ -1424,14 +1603,29 @@ NativeProviderRuntime::stageDecodeStatePromotion(
     return false;
   }
   const auto sourceBinding = decodeStateBindingFor(*runnerSpec, sessionId, role);
-  const auto state = m_decodeStateStore.lookup(sourceBinding);
-  if (!state.has_value()) {
-    return false;
-  }
   const auto promotionBinding = binding;
-  if (!m_conversationStateStore.stagePromotion(
-        sourceBinding.requestId, role.role, std::move(binding), *state, nowMs)) {
-    return false;
+  const auto runner = findRunner(role.role);
+  if (runner->supportsConversationStateTransfer()) {
+    const auto conversationKey = conversationPromotionKey(promotionBinding);
+    const auto adapterState = runner->promoteSessionStateToConversation(
+      sessionId, conversationKey);
+    if (!adapterState ||
+        !m_conversationStateStore.stageAdapterPromotion(
+          sourceBinding.requestId, role.role, std::move(binding),
+          *adapterState, runner, nowMs)) {
+      if (adapterState) {
+        (void)runner->releaseConversationState(*adapterState);
+      }
+      return false;
+    }
+  }
+  else {
+    const auto state = m_decodeStateStore.lookup(sourceBinding);
+    if (!state.has_value() ||
+        !m_conversationStateStore.stagePromotion(
+          sourceBinding.requestId, role.role, std::move(binding), *state, nowMs)) {
+      return false;
+    }
   }
   StagedConversationPromotion staged;
   staged.sessionId = sessionId;
@@ -1572,8 +1766,12 @@ std::string
 NativeProviderRuntime::conversationPromotionKey(
   const ConversationStateBinding& binding)
 {
-  return binding.conversationId + "\n" + std::to_string(binding.contextEpoch) +
-         "\n" + binding.identity.roleName;
+  // Keep the internal key single-line because the adapter handle is carried
+  // through validation/logging as metadata; use the same non-printing
+  // delimiter as ConversationStateStore::keyFor rather than embedding newlines.
+  return binding.conversationId + '\x1f' +
+         std::to_string(binding.contextEpoch) + '\x1f' +
+         binding.identity.roleName;
 }
 
 bool
@@ -1660,7 +1858,19 @@ bool
 NativeProviderRuntime::releaseDecodeState(const std::string& sessionId,
                                           const std::string& role)
 {
-  return m_decodeStateStore.erase(sessionId, role);
+  std::shared_ptr<NativeModelRunner> runner;
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    const auto found = m_runners.find(role);
+    if (found != m_runners.end()) {
+      runner = found->second;
+    }
+  }
+  const auto erased = m_decodeStateStore.erase(sessionId, role);
+  if (runner) {
+    runner->releaseSessionState(sessionId);
+  }
+  return erased;
 }
 
 std::shared_ptr<NativeModelRunner>

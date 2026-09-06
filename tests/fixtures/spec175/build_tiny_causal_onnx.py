@@ -193,6 +193,70 @@ def _sha256(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _write_standalone_tokenizers(output: Path) -> None:
+    """Write the native tokenizer fixtures used by the C++ generation oracle.
+
+    These files are part of the frozen fixture tree, rather than ad-hoc files
+    maintained beside it.  Keeping their construction here makes the
+    reproducibility check cover the exact tokenizer bytes consumed by the
+    standalone native decoder (including the UTF-8 boundary case).
+    """
+    common = {
+        "version": "1.0",
+        "truncation": None,
+        "padding": None,
+        "added_tokens": [],
+        "normalizer": None,
+        "pre_tokenizer": {"type": "Whitespace"},
+        "post_processor": None,
+    }
+    ascii_tokenizer = {
+        **common,
+        "decoder": None,
+        "model": {
+            "type": "WordLevel",
+            "vocab": {
+                "[UNK]": 0,
+                **{f"token-{index}": index for index in range(1, 11)},
+            },
+            "unk_token": "[UNK]",
+        },
+    }
+    unicode_tokenizer = {
+        **common,
+        "decoder": {"type": "WordPiece", "prefix": "", "cleanup": False},
+        "model": {
+            "type": "WordLevel",
+            "vocab": {
+                "[UNK]": 0,
+                "token-1": 1,
+                "token-2": 2,
+                "token-3": 3,
+                "你": 4,
+                "好": 5,
+                "🙂": 6,
+                "!": 7,
+                "token-8": 8,
+                "token-9": 9,
+                "token-10": 10,
+            },
+            "unk_token": "[UNK]",
+        },
+    }
+    standalone = output / "standalone"
+    standalone.mkdir()
+    (standalone / "tokenizer.json").write_text(
+        json.dumps(ascii_tokenizer, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    unicode_dir = standalone / "unicode"
+    unicode_dir.mkdir()
+    (unicode_dir / "tokenizer.json").write_text(
+        json.dumps(unicode_tokenizer, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+
 def build(output: Path) -> None:
     output = output.resolve()
     if output.exists():
@@ -218,6 +282,7 @@ def build(output: Path) -> None:
         }, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    _write_standalone_tokenizers(output)
 
     partition_rows = {}
     for partition, ranges in PARTITIONS.items():
@@ -246,7 +311,13 @@ def build(output: Path) -> None:
     content = {
         str(path.relative_to(output)): _sha256(path)
         for path in sorted(output.rglob("*"))
+        # The standalone tokenizer fixtures are generated and frozen in the
+        # tree, but the historical model content manifest intentionally binds
+        # only the ONNX/prompt/tokenizer oracle consumed by the CPU graph.
+        # Keep this boundary stable so adding the native decoder fixture does
+        # not silently invalidate an otherwise identical G3 candidate.
         if path.is_file()
+        and not str(path.relative_to(output)).startswith("standalone/")
     }
     manifest = {
         "schemaVersion": SCHEMA,

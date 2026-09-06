@@ -110,6 +110,13 @@ class GithubSealedWorkflowTests(unittest.TestCase):
 
     def test_native_di_targets_declare_complete_link_closure(self) -> None:
         text = (REPO / "examples/wscript").read_text()
+        session_sources = text.split(
+            "di_native_session_sources =", 1
+        )[1].split("di_native_collaboration_sources =", 1)[0]
+        self.assertIn(
+            "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.cpp",
+            session_sources,
+        )
         required = {"BOOST", "NDN_CXX", "NDN_SVS", "ONNXRUNTIME", "DL"}
         for target in (
             "di-native-plan-onnx-smoke",

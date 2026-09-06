@@ -11,7 +11,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import math
-import random
 import json
 from typing import Any, Callable, Iterable, Mapping, Sequence
 from urllib.parse import quote
@@ -62,6 +61,17 @@ def _penalized_logits(logits: Sequence[float], generated: Iterable[int],
     return result
 
 
+def _splitmix64(value: int) -> int:
+    value = (int(value) + 0x9E3779B97F4A7C15) & ((1 << 64) - 1)
+    value = ((value ^ (value >> 30)) * 0xBF58476D1CE4E5B9) & ((1 << 64) - 1)
+    value = ((value ^ (value >> 27)) * 0x94D049BB133111EB) & ((1 << 64) - 1)
+    return (value ^ (value >> 31)) & ((1 << 64) - 1)
+
+
+def _deterministic_unit(seed: int, step: int) -> float:
+    return float(_splitmix64(int(seed) + int(step)) >> 11) / float(1 << 53)
+
+
 def sample_token(logits: Sequence[float], config: SamplingConfig,
                  *, generated: Sequence[int] = (), step: int = 0) -> int:
     """Sample one token with a sealed greedy or seeded Top-K/Top-P policy."""
@@ -91,8 +101,13 @@ def sample_token(logits: Sequence[float], config: SamplingConfig,
         if cumulative >= config.top_p:
             break
     retained_weights = [weights[candidates.index(index)] for index in retained]
-    rng = random.Random((int(config.seed) + int(step)) & ((1 << 64) - 1))
-    return rng.choices(retained, weights=retained_weights, k=1)[0]
+    draw = _deterministic_unit(config.seed, step) * sum(retained_weights)
+    cumulative = 0.0
+    for offset, (index, weight) in enumerate(zip(retained, retained_weights)):
+        cumulative += weight
+        if draw < cumulative or offset + 1 == len(retained_weights):
+            return index
+    raise GenerationContractError("sampler failed to select a token")
 
 
 @dataclass(frozen=True)

@@ -60,9 +60,24 @@ struct ExecutionEvidence
   std::vector<std::string> gpuUuids;
   std::string providerProfilePath;
   std::uint64_t createdAtMs = 0;
+  // Optional additive observations; absent in older v1 records. They are not
+  // caller metadata, and preparation/warmup alone cannot mark execution done.
+  std::uint64_t processId = 0;
+  std::string cudaVisibleDevices;
+  std::string gpuIdentitySource;
+  std::string requestId;
+  std::uint64_t attemptEpoch = 0;
+  bool executionCompleted = false;
+  bool exactForwardCacheHit = false;
+  std::string profileRequestId;
+  std::uint64_t profileAttemptEpoch = 0;
 
   void validate() const;
 };
+
+void bindExecutionObservation(ExecutionEvidence& evidence,
+                              const std::string& requestId,
+                              std::uint64_t attemptEpoch, bool cacheHit);
 
 void applyOnnxRuntimeProviderProfile(ExecutionEvidence& evidence,
                                      const std::string& profilePath,

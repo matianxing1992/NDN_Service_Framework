@@ -1,4 +1,5 @@
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
+#include "ndn-service-framework/PolicyStatus.hpp"
 
 #include <chrono>
 #include <cstdlib>
@@ -124,18 +125,28 @@ BOOST_AUTO_TEST_CASE(RequestServiceTargetedBootstrapsBeforeFastPath)
   BOOST_CHECK_EQUAL(user.getTargetedTokenPoolSizeForTest(providerName, serviceName), 1);
 
   bool fastPathPublished = false;
+  ndn::Name fastPathRequestId;
   user.setRequestPublisher(
-    [&](const ndn::Name&,
+    [&](const ndn::Name& requestId,
         const ndn::Name&,
         const std::vector<ndn::Name>&,
         const ndn::Name&,
         const RequestMessage& requestMessage,
         size_t) {
-      fastPathPublished = true;
-      BOOST_CHECK_EQUAL(requestMessage.getRequestMode(), tlv::TargetedRequest);
-      BOOST_CHECK_EQUAL(requestMessage.getTargetProvider(), providerName);
-      BOOST_CHECK_EQUAL(requestMessage.getProviderToken(), "provider-token-0");
-      BOOST_CHECK_EQUAL(requestMessage.getUserToken(), "user-token-0");
+      if (requestMessage.getRequestMode() == tlv::TargetedRequest) {
+        fastPathPublished = true;
+        fastPathRequestId = requestId;
+        BOOST_CHECK_EQUAL(requestMessage.getTargetProvider(), providerName);
+        BOOST_CHECK_EQUAL(requestMessage.getProviderToken(), "provider-token-0");
+        BOOST_CHECK_EQUAL(requestMessage.getUserToken(), "user-token-0");
+      }
+      else {
+        // Consuming the last cached pair schedules the normal fixed-size
+        // refill.  It is a separate bootstrap publication and must not be
+        // mistaken for the application request under test.
+        BOOST_CHECK_EQUAL(requestMessage.getRequestMode(), tlv::TargetedBootstrapRequest);
+        BOOST_CHECK_EQUAL(requestMessage.getTargetProvider(), providerName);
+      }
     });
   RequestMessage secondRequest;
   const auto fastRequestId = user.RequestServiceTargeted(
@@ -147,7 +158,303 @@ BOOST_AUTO_TEST_CASE(RequestServiceTargetedBootstrapsBeforeFastPath)
     [] (const ResponseMessage&) {});
   BOOST_CHECK(!fastRequestId.empty());
   BOOST_CHECK(fastPathPublished);
+  BOOST_CHECK_EQUAL(fastRequestId, fastPathRequestId);
   BOOST_CHECK_EQUAL(user.getTargetedTokenPoolSizeForTest(providerName, serviceName), 0);
+}
+
+BOOST_AUTO_TEST_CASE(RevokedUserCannotConsumeTargetedTokenOrStartRefill)
+{
+  ndn::security::KeyChain keyChain("pib-memory:targeted-revoked-user",
+                                   "tpm-memory:targeted-revoked-user");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name userName("/test/user/targeted-revoked");
+  const ndn::Name providerName("/test/provider/targeted-revoked");
+  const ndn::Name serviceName("/UAV/Targeted/Revocation");
+  auto userCert = makeRsaIdentity(keyChain, userName);
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa/targeted-revoked"));
+  LocalServiceUser user(face,
+                        ndn::Name("/test/group/targeted-revoked"),
+                        userCert,
+                        aaCert,
+                        "examples/trust-any.conf");
+  user.applyPermissionResponse(
+    makePermissionResponse(userName, tlv::UserPermission, providerName, serviceName));
+
+  const auto now = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch()).count());
+  PolicyStatusData current;
+  current.setServiceName(serviceName);
+  current.setControllerVersion(ControllerVersion{now, 1});
+  current.setValidity(now - 1000, now + 60000);
+  current.setPolicyDigest("sha256:" + std::string(64, '0'));
+  current.setControllerCertificate(ndn::Name("/controller/targeted-revoked"));
+  BOOST_REQUIRE(user.installControllerStatus(current));
+
+  user.addTargetedTokenPairForTest(providerName, serviceName,
+                                   "provider-token", "user-token");
+  BOOST_CHECK_EQUAL(user.getTargetedTokenPoolSizeForTest(providerName, serviceName), 1);
+
+  auto revoked = current;
+  auto revokedVersion = current.getControllerVersion();
+  ++revokedVersion.controllerEpoch;
+  revoked.setControllerVersion(revokedVersion);
+  RevocationTarget target;
+  target.kind = RevocationKind::IDENTITY;
+  target.targetIdentity = userName;
+  revoked.addRevocation(target);
+  BOOST_REQUIRE(user.installControllerStatus(revoked));
+
+  size_t publicationCount = 0;
+  user.setRequestPublisher(
+    [&] (const ndn::Name&, const ndn::Name&, const std::vector<ndn::Name>&,
+         const ndn::Name&, const RequestMessage&, size_t) {
+      ++publicationCount;
+    });
+
+  const auto requestId = user.RequestServiceTargeted(
+      providerName, serviceName, RequestMessage(), 1000,
+      [] (const ndn::Name&) {}, [] (const ResponseMessage&) {});
+  BOOST_CHECK(requestId.empty());
+  BOOST_CHECK_EQUAL(publicationCount, 0U);
+  // The authorization gate runs before token consumption and before any
+  // adaptive refill/bootstrap scheduling.  The accepted newer status has
+  // already evicted the obsolete service-scoped pool, so the revoked token
+  // cannot remain usable after withdrawal.
+  BOOST_CHECK_EQUAL(user.getTargetedTokenPoolSizeForTest(providerName, serviceName), 0);
+}
+
+BOOST_AUTO_TEST_CASE(ControllerVersionChangeEvictsOnlyAffectedUserTargetedPool)
+{
+  ndn::security::KeyChain keyChain("pib-memory:targeted-version-user",
+                                   "tpm-memory:targeted-version-user");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name userName("/test/user/targeted-version");
+  const ndn::Name providerName("/test/provider/targeted-version");
+  const ndn::Name serviceName("/UAV/Targeted/Versioned");
+  const ndn::Name unaffectedService("/UAV/Targeted/Unaffected");
+  auto userCert = makeRsaIdentity(keyChain, userName);
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa/targeted-version"));
+  LocalServiceUser user(face,
+                        ndn::Name("/test/group/targeted-version"),
+                        userCert,
+                        aaCert,
+                        "examples/trust-any.conf");
+  PermissionResponse permissions;
+  permissions.setTargetIdentity(userName.toUri());
+  permissions.setPermissionKind(tlv::UserPermission);
+  permissions.setPolicyEpoch(1);
+  PermissionEntry affectedEntry;
+  affectedEntry.setProviderName(providerName.toUri());
+  affectedEntry.setServiceName(serviceName.toUri());
+  affectedEntry.setVersion(1);
+  permissions.addEntry(affectedEntry);
+  PermissionEntry unaffectedEntry;
+  unaffectedEntry.setProviderName(providerName.toUri());
+  unaffectedEntry.setServiceName(unaffectedService.toUri());
+  unaffectedEntry.setVersion(1);
+  permissions.addEntry(unaffectedEntry);
+  user.applyPermissionResponse(permissions);
+
+  const auto now = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch()).count());
+  PolicyStatusData current;
+  current.setServiceName(serviceName);
+  current.setControllerVersion(ControllerVersion{now, 1});
+  current.setValidity(now - 1000, now + 60000);
+  current.setPolicyDigest("sha256:" + std::string(64, '0'));
+  current.setControllerCertificate(ndn::Name("/controller/targeted-version"));
+  BOOST_REQUIRE(user.installControllerStatus(current));
+
+  PolicyStatusData unaffectedStatus = current;
+  unaffectedStatus.setServiceName(unaffectedService);
+  BOOST_REQUIRE(user.installControllerStatus(unaffectedStatus));
+
+  user.addTargetedTokenPairForTest(providerName, serviceName,
+                                   "provider-token-a", "user-token-a");
+  user.addTargetedTokenPairForTest(providerName, unaffectedService,
+                                   "provider-token-b", "user-token-b");
+  BOOST_CHECK_EQUAL(user.getTargetedTokenPoolSizeForTest(providerName, serviceName), 1);
+  BOOST_CHECK_EQUAL(user.getTargetedTokenPoolSizeForTest(providerName, unaffectedService), 1);
+
+  auto newer = current;
+  newer.setControllerVersion(ControllerVersion{now, 2});
+  BOOST_REQUIRE(user.installControllerStatus(newer));
+
+  BOOST_CHECK_EQUAL(user.getTargetedTokenPoolSizeForTest(providerName, serviceName), 0);
+  BOOST_CHECK_EQUAL(user.getTargetedTokenPoolSizeForTest(providerName, unaffectedService), 1);
+
+  std::map<ndn::Name, size_t> publishedModes;
+  user.setRequestPublisher(
+    [&publishedModes] (const ndn::Name&,
+                       const ndn::Name&,
+                       const std::vector<ndn::Name>&,
+                       const ndn::Name& publishedService,
+                       const RequestMessage& request,
+                       size_t) {
+      publishedModes[publishedService] = request.getRequestMode();
+    });
+  BOOST_REQUIRE(!user.RequestServiceTargeted(
+    providerName, serviceName, RequestMessage(), 1000,
+    [] (const ndn::Name&) {}, [] (const ResponseMessage&) {}).empty());
+  BOOST_REQUIRE(!user.RequestServiceTargeted(
+    providerName, unaffectedService, RequestMessage(), 1000,
+    [] (const ndn::Name&) {}, [] (const ResponseMessage&) {}).empty());
+  BOOST_CHECK_EQUAL(publishedModes[serviceName], tlv::TargetedBootstrapRequest);
+  BOOST_CHECK_EQUAL(publishedModes[unaffectedService], tlv::TargetedRequest);
+}
+
+BOOST_AUTO_TEST_CASE(RevokedProviderCannotConsumeTargetedTokenOrExecuteHandler)
+{
+  ndn::security::KeyChain keyChain("pib-memory:targeted-revoked-provider",
+                                   "tpm-memory:targeted-revoked-provider");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name providerName("/test/provider/targeted-revoked");
+  const ndn::Name requesterName("/test/user/targeted-revoked");
+  const ndn::Name serviceName("/UAV/Targeted/ProviderRevocation");
+  auto providerCert = makeRsaIdentity(keyChain, providerName);
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa/targeted-provider"));
+  LocalServiceProvider provider(face,
+                                ndn::Name("/test/group/targeted-provider"),
+                                providerCert,
+                                aaCert,
+                                "examples/trust-any.conf");
+  provider.applyPermissionResponse(
+    makePermissionResponse(providerName, tlv::ProviderPermission,
+                           providerName, serviceName));
+
+  const auto now = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch()).count());
+  PolicyStatusData current;
+  current.setServiceName(serviceName);
+  current.setControllerVersion(ControllerVersion{now, 1});
+  current.setValidity(now - 1000, now + 60000);
+  current.setPolicyDigest("sha256:" + std::string(64, '0'));
+  current.setControllerCertificate(ndn::Name("/controller/targeted-provider"));
+  BOOST_REQUIRE(provider.installControllerStatus(current));
+
+  size_t handlerCalls = 0;
+  provider.addTargetedService(
+    serviceName,
+    [&] (const RequestMessage&) {
+      ++handlerCalls;
+      ResponseMessage response;
+      response.setStatus(true);
+      return response;
+    });
+  provider.addTargetedProviderTokenForTest(requesterName, serviceName,
+                                           "provider-token", "user-token");
+
+  auto invoke = [&] (const ndn::Name& requestId, const ControllerVersion& version) {
+    auto request = makeRequestMessageWithUserToken("payload", "user-token");
+    request.setRequestMode(tlv::TargetedRequest);
+    request.setTargetProvider(providerName);
+    request.setProviderToken("provider-token");
+    request.setControllerVersion(version);
+    return provider.handleDecryptedRequestByName(
+      makeRequestNameV2(requesterName, serviceName, requestId), request);
+  };
+
+  const auto accepted = invoke(ndn::Name("/targeted-before-revoke"),
+                               current.getControllerVersion());
+  BOOST_REQUIRE(accepted.getStatus());
+  BOOST_CHECK_EQUAL(handlerCalls, 1U);
+
+  auto revoked = current;
+  auto revokedVersion = current.getControllerVersion();
+  ++revokedVersion.controllerEpoch;
+  revoked.setControllerVersion(revokedVersion);
+  RevocationTarget target;
+  target.kind = RevocationKind::IDENTITY;
+  target.targetIdentity = providerName;
+  revoked.addRevocation(target);
+  BOOST_REQUIRE(provider.installControllerStatus(revoked));
+
+  const auto denied = invoke(ndn::Name("/targeted-after-revoke"), revokedVersion);
+  BOOST_CHECK(!denied.getStatus());
+  BOOST_CHECK_EQUAL(handlerCalls, 1U);
+
+  // Reauthorization advances the ControllerVersion, but it must not erase
+  // the Provider-side replay tombstone for the already consumed token.  A
+  // fresh request carrying the old pair remains rejected and cannot execute
+  // the handler a second time.
+  auto reauthorized = current;
+  auto reauthorizedVersion = current.getControllerVersion();
+  reauthorizedVersion.controllerEpoch += 2;
+  reauthorized.setControllerVersion(reauthorizedVersion);
+  BOOST_REQUIRE(provider.installControllerStatus(reauthorized));
+  const auto replayAfterReauthorization = invoke(
+      ndn::Name("/targeted-after-reauthorize"), reauthorizedVersion);
+  BOOST_CHECK(!replayAfterReauthorization.getStatus());
+  BOOST_CHECK_EQUAL(handlerCalls, 1U);
+}
+
+BOOST_AUTO_TEST_CASE(ControllerVersionChangeEvictsOnlyAffectedProviderTargetedTokens)
+{
+  ndn::security::KeyChain keyChain("pib-memory:targeted-version-provider",
+                                   "tpm-memory:targeted-version-provider");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name providerName("/test/provider/targeted-version");
+  const ndn::Name requesterName("/test/user/targeted-version");
+  const ndn::Name serviceName("/UAV/Targeted/ProviderVersioned");
+  const ndn::Name unaffectedService("/UAV/Targeted/ProviderUnaffected");
+  auto providerCert = makeRsaIdentity(keyChain, providerName);
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa/targeted-version-provider"));
+  LocalServiceProvider provider(face,
+                                ndn::Name("/test/group/targeted-version-provider"),
+                                providerCert,
+                                aaCert,
+                                "examples/trust-any.conf");
+  PermissionResponse permissions;
+  permissions.setTargetIdentity(providerName.toUri());
+  permissions.setPermissionKind(tlv::ProviderPermission);
+  permissions.setPolicyEpoch(1);
+  PermissionEntry affectedEntry;
+  affectedEntry.setProviderName(providerName.toUri());
+  affectedEntry.setServiceName(serviceName.toUri());
+  affectedEntry.setVersion(1);
+  permissions.addEntry(affectedEntry);
+  PermissionEntry unaffectedEntry;
+  unaffectedEntry.setProviderName(providerName.toUri());
+  unaffectedEntry.setServiceName(unaffectedService.toUri());
+  unaffectedEntry.setVersion(1);
+  permissions.addEntry(unaffectedEntry);
+  provider.applyPermissionResponse(permissions);
+
+  const auto now = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch()).count());
+  PolicyStatusData current;
+  current.setServiceName(serviceName);
+  current.setControllerVersion(ControllerVersion{now, 1});
+  current.setValidity(now - 1000, now + 60000);
+  current.setPolicyDigest("sha256:" + std::string(64, '0'));
+  current.setControllerCertificate(ndn::Name("/controller/targeted-version-provider"));
+  BOOST_REQUIRE(provider.installControllerStatus(current));
+
+  PolicyStatusData unaffectedStatus = current;
+  unaffectedStatus.setServiceName(unaffectedService);
+  BOOST_REQUIRE(provider.installControllerStatus(unaffectedStatus));
+
+  provider.addTargetedProviderTokenForTest(requesterName, serviceName,
+                                           "provider-token-a", "user-token-a");
+  provider.addTargetedProviderTokenForTest(requesterName, unaffectedService,
+                                           "provider-token-b", "user-token-b");
+  BOOST_CHECK(provider.hasTargetedProviderTokenForTest(
+    requesterName, serviceName, "provider-token-a"));
+  BOOST_CHECK(provider.hasTargetedProviderTokenForTest(
+    requesterName, unaffectedService, "provider-token-b"));
+
+  auto newer = current;
+  newer.setControllerVersion(ControllerVersion{now, 2});
+  BOOST_REQUIRE(provider.installControllerStatus(newer));
+
+  BOOST_CHECK(!provider.hasTargetedProviderTokenForTest(
+    requesterName, serviceName, "provider-token-a"));
+  BOOST_CHECK(provider.hasTargetedProviderTokenForTest(
+    requesterName, unaffectedService, "provider-token-b"));
 }
 
 BOOST_AUTO_TEST_CASE(TargetedPoolProactivelyRefillsOnceAtLowWatermark)

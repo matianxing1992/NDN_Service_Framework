@@ -1,13 +1,15 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp"
 
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 
 #include <ndn-cxx/util/sha256.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <limits>
-#include <iostream>
+#include <numeric>
 #include <sstream>
 #include <stdexcept>
 #include <cstdlib>
@@ -78,8 +80,10 @@ traceEpoch(const std::string& phase, const std::string& role, std::size_t epoch)
 {
   const auto* enabled = std::getenv("NDNSF_DI_RUNTIME_TIMING");
   if (enabled != nullptr && *enabled != '\0' && *enabled != '0') {
-    std::cout << "NDNSF_DI_EPOCH_COORDINATOR phase=" << phase
-              << " role=" << role << " epoch=" << epoch << std::endl;
+    std::ostringstream record;
+    record << "NDNSF_DI_EPOCH_COORDINATOR phase=" << phase
+           << " role=" << role << " epoch=" << epoch;
+    logRuntimeTrace(record.str());
   }
 }
 
@@ -488,8 +492,8 @@ decodeStateIdentityForEpoch(
   return identity;
 }
 
-std::int64_t
-greedyToken(const std::map<std::string, TensorBundle>& outputs)
+std::vector<float>
+lastLogits(const std::map<std::string, TensorBundle>& outputs)
 {
   const auto encoded = std::find_if(
     outputs.begin(), outputs.end(), [] (const auto& item) {
@@ -511,8 +515,140 @@ greedyToken(const std::map<std::string, TensorBundle>& outputs)
   const auto sequence = logits.payload.size() / (vocabulary * sizeof(float));
   const auto* values = reinterpret_cast<const float*>(logits.payload.data());
   const auto* begin = values + (sequence - 1) * vocabulary;
-  return static_cast<std::int64_t>(std::distance(
-    begin, std::max_element(begin, begin + vocabulary)));
+  std::vector<float> result(begin, begin + vocabulary);
+  if (std::any_of(result.begin(), result.end(), [] (const float value) {
+        return !std::isfinite(value);
+      })) {
+    throw std::invalid_argument("native epoch coordinator logits are non-finite");
+  }
+  return result;
+}
+
+std::uint64_t
+splitmix64(std::uint64_t value)
+{
+  value += 0x9e3779b97f4a7c15ULL;
+  value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9ULL;
+  value = (value ^ (value >> 27)) * 0x94d049bb133111ebULL;
+  return value ^ (value >> 31);
+}
+
+double
+deterministicUnit(std::uint64_t seed, std::uint64_t step)
+{
+  const auto bits = splitmix64(seed + step);
+  return static_cast<double>(bits >> 11) /
+         static_cast<double>(1ULL << 53);
+}
+
+std::int64_t
+sampleToken(const std::map<std::string, TensorBundle>& outputs,
+            const NativeEpochCoordinatorConfig& config,
+            const std::vector<std::int64_t>& generated,
+            std::size_t step)
+{
+  auto logits = lastLogits(outputs);
+  for (const auto token : generated) {
+    if (token < 0 || static_cast<std::size_t>(token) >= logits.size()) {
+      continue;
+    }
+    if (config.samplingRepetitionPenalty != 1.0) {
+      auto& value = logits[static_cast<std::size_t>(token)];
+      value = value >= 0.0F
+        ? value / static_cast<float>(config.samplingRepetitionPenalty)
+        : value * static_cast<float>(config.samplingRepetitionPenalty);
+    }
+  }
+  if (config.samplingMode == "Greedy") {
+    if (config.samplingTemperature != 0.0 || config.samplingTopK == 0 ||
+        config.samplingTopP <= 0.0 || config.samplingTopP > 1.0) {
+      throw std::invalid_argument("invalid Greedy sampling contract");
+    }
+    return static_cast<std::int64_t>(std::distance(
+      logits.begin(), std::max_element(logits.begin(), logits.end())));
+  }
+  if (config.samplingMode != "SeededTopKTopP" ||
+      !(config.samplingTemperature > 0.0) ||
+      config.samplingTemperature > 5.0 || config.samplingTopK == 0 ||
+      !(config.samplingTopP > 0.0) || config.samplingTopP > 1.0 ||
+      !(config.samplingRepetitionPenalty >= 0.1) ||
+      config.samplingRepetitionPenalty > 2.0) {
+    throw std::invalid_argument("unsupported native sampling contract");
+  }
+  const auto count = std::min<std::size_t>(config.samplingTopK, logits.size());
+  std::vector<std::size_t> candidates(logits.size());
+  std::iota(candidates.begin(), candidates.end(), 0);
+  std::stable_sort(candidates.begin(), candidates.end(), [&logits] (auto left, auto right) {
+    return logits[left] > logits[right];
+  });
+  candidates.resize(count);
+  double maximum = -std::numeric_limits<double>::infinity();
+  for (const auto index : candidates) {
+    maximum = std::max(maximum,
+      static_cast<double>(logits[index]) / config.samplingTemperature);
+  }
+  std::vector<double> weights;
+  weights.reserve(candidates.size());
+  double total = 0.0;
+  for (const auto index : candidates) {
+    const auto weight = std::exp(
+      static_cast<double>(logits[index]) / config.samplingTemperature - maximum);
+    if (!std::isfinite(weight)) {
+      throw std::invalid_argument("native sampling distribution is non-finite");
+    }
+    weights.push_back(weight);
+    total += weight;
+  }
+  if (!std::isfinite(total) || total <= 0.0) {
+    throw std::invalid_argument("native sampling distribution is empty");
+  }
+  std::size_t retained = candidates.size();
+  double cumulative = 0.0;
+  for (std::size_t index = 0; index < weights.size(); ++index) {
+    cumulative += weights[index] / total;
+    if (cumulative >= config.samplingTopP) {
+      retained = index + 1;
+      break;
+    }
+  }
+  const auto draw = deterministicUnit(config.samplingSeed, step) * total;
+  double prefix = 0.0;
+  for (std::size_t index = 0; index < retained; ++index) {
+    prefix += weights[index];
+    if (draw < prefix || index + 1 == retained) {
+      return static_cast<std::int64_t>(candidates[index]);
+    }
+  }
+  throw std::logic_error("native sampler failed to select a token");
+}
+
+std::string
+jsonEscape(const std::string& value)
+{
+  std::ostringstream output;
+  output << '"';
+  for (const auto ch : value) {
+    switch (ch) {
+      case '"': output << "\\\""; break;
+      case '\\': output << "\\\\"; break;
+      case '\n': output << "\\n"; break;
+      case '\r': output << "\\r"; break;
+      case '\t': output << "\\t"; break;
+      default: output << ch; break;
+    }
+  }
+  output << '"';
+  return output.str();
+}
+
+bool
+hasStopSuffix(const std::string& text,
+              const std::vector<std::string>& stopStrings)
+{
+  return std::any_of(stopStrings.begin(), stopStrings.end(), [&text] (const auto& stop) {
+    return !stop.empty() && text.size() >= stop.size() &&
+           text.compare(text.size() - stop.size(), stop.size(), stop) == 0;
+  });
 }
 
 std::string
@@ -520,7 +656,8 @@ makeTokenEvent(std::int64_t token,
                std::size_t epoch,
                const std::vector<std::int64_t>& generated,
                const std::string& finishHint,
-               const std::string& samplingDigest)
+               const std::string& samplingDigest,
+               const std::string& textDelta)
 {
   std::ostringstream prefix;
   for (std::size_t i = 0; i < generated.size(); ++i) {
@@ -534,9 +671,9 @@ makeTokenEvent(std::int64_t token,
         << "\"tokenId\":" << token
         << ",\"tokenEpoch\":" << epoch
         << ",\"cumulativeTokenCount\":" << epoch
-        << ",\"textDelta\":\"\","
-        << "\"finishHint\":\"" << finishHint << "\","
-        << "\"samplingDigest\":\"" << samplingDigest << "\","
+        << ",\"textDelta\":" << jsonEscape(textDelta) << ","
+        << "\"finishHint\":" << jsonEscape(finishHint) << ","
+        << "\"samplingDigest\":" << jsonEscape(samplingDigest) << ","
         << "\"acceptedPrefixDigest\":\"sha256:" << digest.toString()
         << "\"}";
   return event.str();
@@ -544,11 +681,17 @@ makeTokenEvent(std::int64_t token,
 
 std::vector<std::uint8_t>
 makeFinalPayload(const std::vector<std::int64_t>& generated,
-                 const std::string& finishHint)
+                 const std::string& finishHint,
+                 const std::string& textValue)
 {
+  const auto finishReason = finishHint == "EOS" ? "eos" :
+    finishHint == "STOP_SEQUENCE" ? "stop_sequence" :
+    finishHint == "MAX_TOKENS" ? "max_tokens" : "failed";
   std::ostringstream text;
-  text << "{\"schema\":\"NDNSF-DI-FINAL-V1\",\"finishHint\":\""
-       << finishHint << "\",\"tokenIds\":[";
+  text << "{\"schema\":\"NDNSF-DI-FINAL-V1\",\"finishHint\":"
+       << jsonEscape(finishHint) << ",\"finishReason\":"
+       << jsonEscape(finishReason) << ",\"text\":" << jsonEscape(textValue)
+       << ",\"tokenIds\":[";
   for (std::size_t i = 0; i < generated.size(); ++i) {
     if (i != 0) text << ',';
     text << generated[i];
@@ -577,6 +720,10 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
       config.lineagePlanDigest.empty() || config.positionPolicyDigest.empty() ||
       !config.stateIdentityTemplate) {
     throw std::invalid_argument("native epoch coordinator configuration is incomplete");
+  }
+  if ((!config.stopStrings.empty() || config.requireTextOutput) &&
+      !config.textDecoder) {
+    throw std::invalid_argument("NATIVE_TEXT_DECODER_REQUIRED");
   }
   if (config.attemptEpoch < 1 || config.attemptEpoch > 2 ||
       (config.attemptEpoch == 1 && !config.committedPrefixTokenIds.empty()) ||
@@ -622,6 +769,7 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
                                        config.role);
   std::vector<std::int64_t> generated;
   generated.reserve(config.maxEpochs);
+  std::string generatedText;
   std::optional<DecodeStateIdentityV1> committedStateIdentity;
   std::string finishHint = "MAX_TOKENS";
   // A non-terminal upstream role needs one bounded drain epoch after the
@@ -653,6 +801,7 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
     executable.stateInputNames = config.stateInputNames;
     executable.stateOutputNames = config.stateOutputNames;
     executable.deferStateCommit = !config.stateInputNames.empty();
+    executable.streamingStateExecution = !config.stateInputNames.empty();
     if (epoch == 0 && config.conversationStateBinding) {
       executable.conversationStateBinding = config.conversationStateBinding;
       executable.conversationStateLookupNowMs =
@@ -799,6 +948,11 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
         config.resultObserver(executable, roleResult);
       }
       throwIfStopped(config);
+      if (roleResult.runtimeMetrics) {
+        result.runtimeMetrics.push_back(
+          NativeEpochCoordinatorResult::RuntimeMetricsObservation{
+            executable.role, epoch, *roleResult.runtimeMetrics});
+      }
       result.cacheObservations.push_back(cacheObservation);
       ++result.epochsExecuted;
 
@@ -820,8 +974,26 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
         }
         continue;
       }
-      const auto token = greedyToken(roleResult.outputsByScope);
-      generated.push_back(token);
+      const auto token = sampleToken(roleResult.outputsByScope, config,
+                                     generated, epoch);
+      const auto candidateTokenIds = [&] {
+        auto value = generated;
+        value.push_back(token);
+        return value;
+      }();
+      std::string candidateText;
+      std::string textDelta;
+      if (config.textDecoder) {
+        candidateText = config.textDecoder(candidateTokenIds);
+        if (candidateText.size() < generatedText.size() ||
+            candidateText.compare(0, generatedText.size(), generatedText) != 0) {
+          throw std::runtime_error("native tokenizer rewrote committed text prefix");
+        }
+        textDelta = candidateText.substr(generatedText.size());
+      }
+      else if (config.requireTextOutput) {
+        throw std::runtime_error("NATIVE_TEXT_DECODER_REQUIRED");
+      }
       const bool replayingCommittedPrefix =
         epoch < config.committedPrefixTokenIds.size();
       if (replayingCommittedPrefix &&
@@ -831,13 +1003,17 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
       }
       const bool eos = config.eosTokenIds.count(token) != 0;
       const bool atMax = epoch + 1 >= config.maxEpochs;
-      finishHint = eos ? "EOS" : atMax ? "MAX_TOKENS" : "NONE";
+      const bool stopSequence = !eos && hasStopSuffix(
+        candidateText, config.stopStrings);
+      finishHint = eos ? "EOS" : stopSequence ? "STOP_SEQUENCE" :
+                   atMax ? "MAX_TOKENS" : "NONE";
       if (replayingCommittedPrefix) {
         ++result.prefixTokensRecomputed;
       }
       else {
-        const auto event = makeTokenEvent(token, epoch + 1, generated,
-                                          finishHint, config.samplingDigest);
+        const auto event = makeTokenEvent(token, epoch + 1, candidateTokenIds,
+                                          finishHint, config.samplingDigest,
+                                          textDelta);
         throwIfStopped(config);
         if (config.eventSink &&
             !config.eventSink(std::vector<std::uint8_t>(event.begin(), event.end()))) {
@@ -847,6 +1023,10 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
           ++result.eventsPublished;
         }
         throwIfStopped(config);
+      }
+      generated.push_back(token);
+      if (config.textDecoder) {
+        generatedText = std::move(candidateText);
       }
 
       // Feedback is produced for the next decode epoch.  Use the next
@@ -864,8 +1044,9 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
       if (feedbackEdge == nextRole.outputs.end()) {
         throw std::runtime_error("terminal role is missing TOKEN_FEEDBACK output");
       }
-      auto feedbackBundle = makeTokenFeedback(token, eos || atMax);
-      if (!eos && !atMax) {
+      const bool terminal = eos || stopSequence || atMax;
+      auto feedbackBundle = makeTokenFeedback(token, terminal);
+      if (!terminal) {
         feedbackBundle = attachGenerationEpochLineage(
           feedbackBundle,
           lineageForEdge(
@@ -898,8 +1079,9 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
         committedStateIdentity = executable.candidateDecodeStateIdentity;
         result.finalizedRole = executable;
       }
-      if (eos || atMax) {
-        result.finalPayload = makeFinalPayload(generated, finishHint);
+      if (eos || stopSequence || atMax) {
+        result.finalPayload = makeFinalPayload(generated, finishHint,
+                                               generatedText);
         return result;
       }
     }

@@ -345,6 +345,13 @@ This application surface accepts no Provider list, role map, artifact split, or
 deployment. It extends the existing deferred collaboration rather than calling
 the ordinary service API after planning:
 
+For Spec175, this bridge is fail-closed to the ordinary V3 pipeline profile.
+The coordinator uses `PreSplitFirstStrategy` and rejects a V2 compatibility
+strategy, hybrid/TensorGroup plan, tensor degree other than one, incomplete
+role map, or duplicate Provider ownership before Selection. Applications that
+need the independently specified Spec174 TensorGroup contract use that separate
+API; passing its strategy here is an error rather than an implicit mode switch.
+
 ```text
 same requestId:
   begin_collaboration(stream intent)
@@ -384,6 +391,15 @@ The Core writer still assigns cursors, signs/retains Data, and owns End/Response
 The direct tiny-ONNX adapter test proves the runner contract, but until the
 same hook is driven by the native multi-Provider Request/ACK/Selection loop it
 remains adapter evidence rather than a formal G2 case.
+
+For the native Provider, the post-Selection preparation port receives both the
+live `CollaborationContext` and the authenticated `NativeSelectionProjectionV3`.
+The projection's `canonicalArtifactName` is populated from
+`CollaborationAssignment.assignedArtifact`, never from opaque requester JSON.
+The factory may fetch that exact root and its sealed recipe through the context;
+an absent root is a fail-closed assembly error. Startup `runnerSpecs` and
+preassembled compatibility are diagnostic-only and cannot satisfy the formal
+Spec175 assembly path.
 
 Provider-local exact-forward caching is disabled for any role execution that
 has this sink. Cached TensorBundle outputs cannot replay the external event

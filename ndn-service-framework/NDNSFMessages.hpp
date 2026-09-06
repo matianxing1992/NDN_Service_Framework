@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 #include "common.hpp"
+#include "ControllerVersion.hpp"
 #include "InvocationStream.hpp"
 
 namespace ndn_service_framework {
@@ -62,6 +63,7 @@ namespace tlv {
         GracePeriodMsType = 187,
         RequiredKeyEpochType = 188,
         RequestModeType = 189,
+        ControllerVersionType = 0xF700,
         AllowedServiceListType = 0xF501,
         AllowedServiceType = 0xF502,
         DeploymentIntentType = 0xF610,
@@ -103,6 +105,19 @@ namespace tlv {
         CollaborationScopeKeyDataNameType = 0xF634,
         CollaborationScopeKeyDataValueType = 0xF635,
         CollaborationArtifactDataNameType = 0xF636,
+        // Request-scoped confidentiality containers.  The concrete wire
+        // schema lives in RequestConfidentiality.hpp; Core messages retain
+        // them as opaque, validated blocks to avoid coupling the message
+        // layer to the crypto implementation.
+        RequestSecurityBindingType = 0xF810,
+        AeadEnvelopeType = 0xF820,
+        SelectionKeyEnvelopeType = 0xF830,
+        EncryptionCertificateAdvertisementType = 0xF840,
+        CertificateNameType = 0xF841,
+        CertificateDigestType = 0xF842,
+        CertificateValidFromType = 0xF843,
+        CertificateValidUntilType = 0xF844,
+        KeyEnvelopeAlgorithmType = 0xF845,
     };
 
     // Selection strategies.
@@ -211,6 +226,27 @@ class StageAbort : public DeploymentControlMessage
 class SelectionDecisionTombstone : public DeploymentControlMessage
 { public: SelectionDecisionTombstone(); };
 
+/** Metadata for the RSA encryption certificate used by the request-scoped
+ * key envelope.  This is intentionally separate from the signing
+ * certificate: the advertisement is a binding input, while the enclosing
+ * Request/ACK remains authenticated by the normal NDNSF Data signature. */
+struct EncryptionCertificateAdvertisement : public AbstractMessage
+{
+    static constexpr uint32_t TYPE = tlv::EncryptionCertificateAdvertisementType;
+
+    ndn::Name certificateName;
+    std::string certificateDigest;
+    uint64_t validFromMs = 0;
+    uint64_t validUntilMs = 0;
+    std::vector<std::string> supportedEnvelopeAlgorithms;
+
+    bool isValid(uint64_t nowMs = 0) const;
+    bool supportsAlgorithm(const std::string& algorithm) const;
+    void Clear() override;
+    ndn::Block WireEncode() const override;
+    bool WireDecode(const ndn::Block& block) override;
+};
+
 class RequestMessage : public AbstractMessage {
 public:
     RequestMessage();
@@ -227,9 +263,13 @@ public:
     void setRequestMode(size_t requestMode);
     void setTargetProvider(const ndn::Name& targetProvider);
     void setPolicyEpoch(size_t policyEpoch);
+    void setControllerVersion(const ControllerVersion& version);
+    void setUserEncryptionCertificate(
+      const EncryptionCertificateAdvertisement& advertisement);
     void setDeploymentIntent(const DeploymentIntent& intent);
     void setRequestCapabilities(const RequestCapabilities& capabilities);
     void setEncryptedRequestInput(const EncryptedRequestInput& input);
+    void setRequestSecurityBinding(const ndn::Block& binding);
     void setStreamRequestOptions(const StreamRequestOptions& options);
     void clearStreamRequestOptions();
     void setConversationContinuation(
@@ -238,11 +278,15 @@ public:
     bool hasDeploymentIntent() const;
     bool hasRequestCapabilities() const;
     bool hasEncryptedRequestInput() const;
+    bool hasRequestSecurityBinding() const;
+    bool hasUserEncryptionCertificate() const;
     bool hasStreamRequestOptions() const;
     bool hasConversationContinuation() const;
     const DeploymentIntent& getDeploymentIntent() const;
     const RequestCapabilities& getRequestCapabilities() const;
     const EncryptedRequestInput& getEncryptedRequestInput() const;
+    const ndn::Block& getRequestSecurityBinding() const;
+    const EncryptionCertificateAdvertisement& getUserEncryptionCertificate() const;
     const StreamRequestOptions& getStreamRequestOptions() const;
     const ConversationContinuationOptions& getConversationContinuation() const;
     const std::map<std::string, std::string>& getTokens() const;
@@ -255,6 +299,8 @@ public:
     size_t getRequestMode() const;
     const ndn::Name& getTargetProvider() const;
     size_t getPolicyEpoch() const;
+    bool hasControllerVersion() const;
+    const ControllerVersion& getControllerVersion() const;
     void Clear() override;
     ndn::Block WireEncode() const override;
     bool WireDecode(const ndn::Block& block) override;
@@ -269,9 +315,12 @@ private:
     size_t requestMode_ = tlv::NormalRequest;
     ndn::Name targetProvider_;
     size_t policyEpoch_ = 0;
+    std::optional<ControllerVersion> controllerVersion_;
+    std::optional<EncryptionCertificateAdvertisement> userEncryptionCertificate_;
     std::optional<DeploymentIntent> deploymentIntent_;
     std::optional<RequestCapabilities> requestCapabilities_;
     std::optional<EncryptedRequestInput> encryptedRequestInput_;
+    std::optional<ndn::Block> requestSecurityBinding_;
     std::optional<StreamRequestOptions> streamRequestOptions_;
     std::optional<ConversationContinuationOptions> conversationContinuation_;
     mutable std::shared_ptr<const ndn::Block> m_wire;
@@ -290,6 +339,8 @@ public:
     void setPayload(ndn::Buffer& payload, size_t size);
     void setPayloadBlock(const ndn::Block& payloadBlock);
     void setPolicyEpoch(size_t policyEpoch);
+    void setControllerVersion(const ControllerVersion& version);
+    void setAeadEnvelope(const ndn::Block& envelope);
     void setAuthenticatedTransportEvidence(const std::string& dataName,
                                            const std::string& signerCertificate,
                                            const std::string& wireDigest);
@@ -303,6 +354,11 @@ public:
     const ndn::Block& getPayloadBlock() const;
     size_t getPayloadSize() const;
     size_t getPolicyEpoch() const;
+    bool hasControllerVersion() const;
+    bool hasAeadEnvelope() const;
+    void clearAeadEnvelope();
+    const ControllerVersion& getControllerVersion() const;
+    const ndn::Block& getAeadEnvelope() const;
     const std::string& getDataName() const;
     const std::string& getSignerCertificate() const;
     const std::string& getWireDigest() const;
@@ -320,6 +376,8 @@ private:
     std::shared_ptr<const ndn::Block> payloadBlock_;
     size_t payloadSize_ = 0;
     size_t policyEpoch_ = 0;
+    std::optional<ControllerVersion> controllerVersion_;
+    std::optional<ndn::Block> aeadEnvelope_;
     // Local metadata from the authenticated SVS Data packet. These fields are
     // deliberately excluded from ResponseMessage wire encoding.
     std::string dataName_;
@@ -342,15 +400,20 @@ public:
     void setPayload(ndn::Buffer& payload, size_t size);
     void setPayloadBlock(const ndn::Block& payloadBlock);
     void setPolicyEpoch(size_t policyEpoch);
+    void setControllerVersion(const ControllerVersion& version);
+    void setProviderEncryptionCertificate(
+      const EncryptionCertificateAdvertisement& advertisement);
     void setProviderCapabilityOffer(const ProviderCapabilityOffer& offer);
     void setSelectionInputKeyOffer(const SelectionInputKeyOffer& offer);
     void setReservationLease(const ReservationLease& lease);
     bool hasProviderCapabilityOffer() const;
     bool hasSelectionInputKeyOffer() const;
     bool hasReservationLease() const;
+    bool hasProviderEncryptionCertificate() const;
     const ProviderCapabilityOffer& getProviderCapabilityOffer() const;
     const SelectionInputKeyOffer& getSelectionInputKeyOffer() const;
     const ReservationLease& getReservationLease() const;
+    const EncryptionCertificateAdvertisement& getProviderEncryptionCertificate() const;
     bool getStatus() const;
     const std::string& getMessage() const;
     const std::string& getUserToken() const;
@@ -359,6 +422,8 @@ public:
     const ndn::Block& getPayloadBlock() const;
     size_t getPayloadSize() const;
     size_t getPolicyEpoch() const;
+    bool hasControllerVersion() const;
+    const ControllerVersion& getControllerVersion() const;
     void Clear() override;
     ndn::Block WireEncode() const override;
     bool WireDecode(const ndn::Block& block) override;
@@ -371,6 +436,8 @@ private:
     std::shared_ptr<const ndn::Block> payloadBlock_;
     size_t payloadSize_ = 0;
     size_t policyEpoch_ = 0;
+    std::optional<ControllerVersion> controllerVersion_;
+    std::optional<EncryptionCertificateAdvertisement> providerEncryptionCertificate_;
     std::optional<ProviderCapabilityOffer> providerCapabilityOffer_;
     std::optional<SelectionInputKeyOffer> selectionInputKeyOffer_;
     std::optional<ReservationLease> reservationLease_;
@@ -437,11 +504,14 @@ public:
     void setProviderToken(const std::string& providerToken);
     void setAssignmentPayload(const ndn::Buffer& payload);
     void setPolicyEpoch(size_t policyEpoch);
+    void setControllerVersion(const ControllerVersion& version);
     void setAttempt(uint64_t attempt);
     void addProviderEntry(const SelectionProviderEntry& entry);
     void setDeploymentPlan(const DeploymentPlan& plan);
     void setSelectionDecision(const SelectionDecision& decision);
     void setSelectionInputKeyGrant(const SelectionInputKeyGrant& grant);
+    void setSelectionKeyEnvelope(const ndn::Block& envelope);
+    void clearSelectionKeyEnvelope();
     /** Set the provider-specific streamed event-key grant. The block must
      * contain exactly one HybridMessageEnvelope and is emitted only in the
      * selected Provider's Selection projection. */
@@ -450,17 +520,21 @@ public:
     bool hasDeploymentPlan() const;
     bool hasSelectionDecision() const;
     bool hasSelectionInputKeyGrant() const;
+    bool hasSelectionKeyEnvelope() const;
     bool hasStreamEventKeyGrant() const;
     bool hasRecipientEncryptedAssignment() const;
     const DeploymentPlan& getDeploymentPlan() const;
     const SelectionDecision& getSelectionDecision() const;
     const SelectionInputKeyGrant& getSelectionInputKeyGrant() const;
+    const ndn::Block& getSelectionKeyEnvelope() const;
     const ndn::Block& getStreamEventKeyGrant() const;
     const RecipientEncryptedAssignment& getRecipientEncryptedAssignment() const;
     const std::vector<std::string>& getRequestIDs() const;
     const std::string& getProviderToken() const;
     const ndn::Buffer& getAssignmentPayload() const;
     size_t getPolicyEpoch() const;
+    bool hasControllerVersion() const;
+    const ControllerVersion& getControllerVersion() const;
     uint64_t getAttempt() const;
     const std::vector<SelectionProviderEntry>& getProviderEntries() const;
     void Clear() override;
@@ -472,11 +546,13 @@ private:
     std::string providerToken_;
     ndn::Buffer assignmentPayload_;
     size_t policyEpoch_ = 0;
+    std::optional<ControllerVersion> controllerVersion_;
     uint64_t attempt_ = 1;
     std::vector<SelectionProviderEntry> providerEntries_;
     std::optional<DeploymentPlan> deploymentPlan_;
     std::optional<SelectionDecision> selectionDecision_;
     std::optional<SelectionInputKeyGrant> selectionInputKeyGrant_;
+    std::optional<ndn::Block> selectionKeyEnvelope_;
     std::optional<ndn::Block> streamEventKeyGrant_;
     std::optional<RecipientEncryptedAssignment> recipientEncryptedAssignment_;
     mutable ndn::Block m_wire;
@@ -593,12 +669,15 @@ public:
     void setTargetIdentity(const std::string& targetIdentity);
     void setPermissionKind(size_t permissionKind);
     void setPolicyEpoch(size_t policyEpoch);
+    void setControllerVersion(const ControllerVersion& version);
     void setEntries(const std::vector<PermissionEntry>& entries);
     void addEntry(const PermissionEntry& entry);
 
     const std::string& getTargetIdentity() const;
     size_t getPermissionKind() const;
     size_t getPolicyEpoch() const;
+    bool hasControllerVersion() const;
+    const ControllerVersion& getControllerVersion() const;
     const std::vector<PermissionEntry>& getEntries() const;
     std::string toString() const;
 
@@ -610,6 +689,7 @@ private:
     std::string targetIdentity_;
     size_t permissionKind_ = tlv::UserPermission;
     size_t policyEpoch_ = 1;
+    std::optional<ControllerVersion> controllerVersion_;
     std::vector<PermissionEntry> entries_;
     mutable ndn::Block m_wire;
 };
@@ -619,11 +699,14 @@ public:
     PolicyManifest();
 
     void setPolicyEpoch(size_t policyEpoch);
+    void setControllerVersion(const ControllerVersion& version);
     void setValidFromMs(uint64_t validFromMs);
     void setGracePeriodMs(uint64_t gracePeriodMs);
     void setRequiredKeyEpoch(size_t requiredKeyEpoch);
 
     size_t getPolicyEpoch() const;
+    bool hasControllerVersion() const;
+    const ControllerVersion& getControllerVersion() const;
     uint64_t getValidFromMs() const;
     uint64_t getGracePeriodMs() const;
     size_t getRequiredKeyEpoch() const;
@@ -635,6 +718,7 @@ public:
 
 private:
     size_t policyEpoch_ = 1;
+    std::optional<ControllerVersion> controllerVersion_;
     uint64_t validFromMs_ = 0;
     uint64_t gracePeriodMs_ = 0;
     size_t requiredKeyEpoch_ = 1;

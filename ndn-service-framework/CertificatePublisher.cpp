@@ -1,4 +1,5 @@
 #include "CertificatePublisher.hpp"
+#include "utils.hpp"
 
 #include <ndn-cxx/interest.hpp>
 #include <ndn-cxx/security/pib/identity.hpp>
@@ -34,7 +35,8 @@ CertificatePublisher::CertificatePublisher(ndn::Face& face,
 
   for (const auto& prefix : prefixes) {
     m_registeredPrefixes.push_back(prefix);
-    m_face.setInterestFilter(
+    registerInterestFilterWithRetry(
+      m_face,
       prefix,
       [this](const ndn::InterestFilter& filter, const ndn::Interest& interest) {
         this->onInterest(filter, interest);
@@ -45,7 +47,9 @@ CertificatePublisher::CertificatePublisher(ndn::Face& face,
       [] (const ndn::Name& prefix, const std::string& reason) {
         NDN_LOG_ERROR("NDNSF_CERT_PUBLISHER_REGISTER_FAILED prefix=" << prefix.toUri()
                   << " reason=" << reason);
-      });
+      },
+      6,
+      std::chrono::milliseconds(250));
   }
 
   NDN_LOG_INFO("Serving certificate name=" << m_certificate.getName()

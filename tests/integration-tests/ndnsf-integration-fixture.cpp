@@ -3,6 +3,8 @@
 #include "ndn-service-framework/NDNSFMessages.hpp"
 #include "ndn-service-framework/utils.hpp"
 
+#include <nac-abe/common.hpp>
+
 #include <ndn-cxx/security/key-params.hpp>
 #include <ndn-cxx/security/signing-helpers.hpp>
 #include <ndn-cxx/util/sha256.hpp>
@@ -18,12 +20,14 @@ namespace ndn_service_framework::test {
 namespace {
 
 ndn::svs::SecurityOptions
-makeSecurityOptions(ndn::KeyChain& keyChain)
+makeSecurityOptions(ndn::KeyChain& keyChain, const ndn::security::Certificate& cert)
 {
   ndn::svs::SecurityOptions options(keyChain);
   options.interestSigner = std::make_shared<ndn::svs::BaseSigner>();
-  options.dataSigner->signingInfo = ndn::security::signingWithSha256();
-  options.pubSigner->signingInfo = ndn::security::signingWithSha256();
+  // Sign publications with the role certificate (production shape) so the
+  // request-scoped response transport-owner check can read the KeyLocator.
+  options.dataSigner->signingInfo = ndn::security::signingByCertificate(cert);
+  options.pubSigner->signingInfo = ndn::security::signingByCertificate(cert);
   options.validator = std::make_shared<ndn::svs::BaseValidator>();
   options.encapsulatedDataValidator = std::make_shared<ndn::svs::BaseValidator>();
   return options;
@@ -108,9 +112,15 @@ NdnsfIntegrationEnvironment::NdnsfIntegrationEnvironment(BootstrapProfile profil
   m_providerFace = std::make_unique<ndn::DummyClientFace>(m_providerIo, *m_keyChain, faceOptions);
   m_attributeAuthorityFace = std::make_unique<ndn::DummyClientFace>(
       m_attributeAuthorityIo, *m_keyChain, faceOptions);
-  m_securityOptions = std::make_unique<ndn::svs::SecurityOptions>(
-      makeSecurityOptions(*m_keyChain));
   m_svsOptions.useTimestamp = false;
+
+  const auto userCert = makeIdentity(*m_keyChain, m_profile.userIdentity);
+  const auto providerCert = makeIdentity(*m_keyChain, m_profile.providerIdentity);
+  const auto aaCert = makeIdentity(*m_keyChain, m_profile.attributeAuthority);
+  m_userSecurityOptions = std::make_unique<ndn::svs::SecurityOptions>(
+      makeSecurityOptions(*m_keyChain, userCert));
+  m_providerSecurityOptions = std::make_unique<ndn::svs::SecurityOptions>(
+      makeSecurityOptions(*m_keyChain, providerCert));
 
   // Production ServiceUser appends a numeric process session to its SVS
   // producer node.  Keep that shape in the in-process fixture so the real
@@ -120,17 +130,13 @@ NdnsfIntegrationEnvironment::NdnsfIntegrationEnvironment(BootstrapProfile profil
   m_userPubSub = std::make_unique<ndn::svs::SVSPubSub>(
       m_profile.syncPrefix, userSvsNode, *m_userFace,
       [] (const std::vector<ndn::svs::MissingDataInfo>&) {},
-      m_svsOptions, *m_securityOptions);
+      m_svsOptions, *m_userSecurityOptions);
   auto providerSvsNode = m_profile.providerNode;
   providerSvsNode.append("0");
   m_providerPubSub = std::make_unique<ndn::svs::SVSPubSub>(
       m_profile.syncPrefix, providerSvsNode, *m_providerFace,
       [] (const std::vector<ndn::svs::MissingDataInfo>&) {},
-      m_svsOptions, *m_securityOptions);
-
-  const auto userCert = makeIdentity(*m_keyChain, m_profile.userIdentity);
-  const auto providerCert = makeIdentity(*m_keyChain, m_profile.providerIdentity);
-  const auto aaCert = makeIdentity(*m_keyChain, m_profile.attributeAuthority);
+      m_svsOptions, *m_providerSecurityOptions);
   m_attributeAuthorityValidator = std::make_unique<ndn::security::ValidatorNull>();
   m_attributeAuthority = std::make_unique<ndn::nacabe::KpAttributeAuthority>(
       aaCert, *m_attributeAuthorityFace, *m_attributeAuthorityValidator, *m_keyChain);
@@ -207,12 +213,17 @@ NdnsfIntegrationEnvironment::NdnsfIntegrationEnvironment(BootstrapProfile profil
   for (size_t index = 1; index < providerCount; ++index) {
     auto face = std::make_unique<ndn::DummyClientFace>(
         m_providerIo, *m_keyChain, faceOptions);
+    const auto identity = indexedName(m_profile.providerIdentity, index);
+    const auto certificate = makeIdentity(*m_keyChain, identity);
+    m_extraProviderSecurityOptions.push_back(
+        std::make_unique<ndn::svs::SecurityOptions>(
+            makeSecurityOptions(*m_keyChain, certificate)));
     auto node = indexedName(m_profile.providerNode, index);
     node.append("0");
     m_extraProviderPubSubs.push_back(std::make_unique<ndn::svs::SVSPubSub>(
         m_profile.syncPrefix, node, *face,
         [] (const std::vector<ndn::svs::MissingDataInfo>&) {},
-        m_svsOptions, *m_securityOptions));
+        m_svsOptions, *m_extraProviderSecurityOptions.back()));
     m_extraProviderAttributeAuthorityInterestBridges.emplace_back(
         face->onSendInterest.connect(
             [this, isAttributeAuthorityPacket] (const ndn::Interest& interest) {
@@ -221,8 +232,6 @@ NdnsfIntegrationEnvironment::NdnsfIntegrationEnvironment(BootstrapProfile profil
                 m_attributeAuthorityFace->receive(interest);
               }
             }));
-    const auto identity = indexedName(m_profile.providerIdentity, index);
-    const auto certificate = makeIdentity(*m_keyChain, identity);
     m_attributeAuthority->addNewPolicy(
         certificate, "/SERVICE" + serviceUri);
     m_extraProviders.push_back(std::make_unique<ServiceProvider>(
@@ -299,6 +308,25 @@ NdnsfIntegrationEnvironment::NdnsfIntegrationEnvironment(BootstrapProfile profil
 }
 
 NdnsfIntegrationEnvironment::~NdnsfIntegrationEnvironment() = default;
+
+ndn::Name
+NdnsfIntegrationEnvironment::attributeAuthorityPublicParametersName() const
+{
+  ndn::Name name(m_profile.attributeAuthority);
+  name.append(ndn::nacabe::PUBLIC_PARAMS);
+  name.append(ndn::nacabe::ABE_TYPE_KP_ABE);
+  name.appendVersion(m_attributeAuthority->getPublicParametersVersion());
+  return name;
+}
+
+std::string
+NdnsfIntegrationEnvironment::attributeAuthorityPublicParametersDigest() const
+{
+  const auto wire = m_attributeAuthority->getPublicParametersWire();
+  ndn::util::Sha256 digest;
+  digest << std::string(reinterpret_cast<const char*>(wire.data()), wire.size());
+  return "sha256:" + digest.toString();
+}
 
 void
 NdnsfIntegrationEnvironment::enableProviderProductionIngressForTest()
@@ -470,6 +498,18 @@ NdnsfIntegrationEnvironment::pumpUntilReady()
     throw std::logic_error("cannot pump a non-READY Spec170 environment");
   }
   pumpUntil([] { return false; });
+}
+
+void
+NdnsfIntegrationEnvironment::pumpUntilWithAttributeAuthority(
+    const std::function<bool()>& done)
+{
+  std::vector<ndn::DummyClientFace*> providerFaces;
+  providerFaces.reserve(providerCount());
+  for (size_t index = 0; index < providerCount(); ++index) {
+    providerFaces.push_back(&providerFace(index));
+  }
+  pumpFaces(*m_userFace, providerFaces, *m_attributeAuthorityFace, true, done);
 }
 
 void

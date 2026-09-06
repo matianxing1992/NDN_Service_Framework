@@ -9,9 +9,11 @@ tiny ONNX fixture; Qwen/SIF/Tiger inputs are intentionally not required here.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -34,6 +36,82 @@ CASES = {
     "M13": "conversation-negative-fallback",
     "M14": "concurrent-parent-cancel-prefetch",
 }
+
+_TIMELINE_FIELD_RE = re.compile(r"([A-Za-z][A-Za-z0-9_]*)=([^ ]+)")
+_SENSITIVE_TIMELINE_FIELD_RE = re.compile(
+    r"(?:^|_)(?:payload|prompt(?:text|bytes)?|answer(?:text|bytes)?|"
+    r"logits?|token(?:key|payload|bytes)?|secret|private|"
+    r"key(?:bytes|material)?|content(?:bytes)?|"
+    r"state(?:tensor|payload|bytes)?|tensor(?:data|payload|bytes)?)(?:$|_)",
+    re.IGNORECASE)
+
+
+def write_request_lifecycle_evidence(output_dir: Path) -> dict[str, object]:
+    """Merge bounded ndn-cxx TimelineTrace records from every node log.
+
+    The original per-process logs remain authoritative.  This derivative is a
+    correlation aid: it contains names, state and timing only, never payload,
+    token, key, certificate private material, or application input bytes.
+    """
+    events: list[dict[str, object]] = []
+    event_counts: dict[str, int] = {}
+    request_ids: set[str] = set()
+    for log_path in sorted(output_dir.glob("*.log")):
+        for line_number, line in enumerate(
+                log_path.read_text(errors="replace").splitlines(), start=1):
+            markers = (
+                ("timeline", line.find("NDNSF_TIMELINE ")),
+                ("control", line.find("NDNSF_CONTROL_TIMING ")),
+            )
+            channel, marker = next(
+                ((kind, index) for kind, index in markers if index >= 0),
+                ("", -1),
+            )
+            if marker < 0:
+                continue
+            fields = dict(_TIMELINE_FIELD_RE.findall(line[marker:]))
+            required = {"role", "event", "timestamp_us", "steady_us", "requestId"}
+            if not required.issubset(fields):
+                continue
+            event_name = fields.pop("event")
+            request_id = fields.pop("requestId")
+            role = fields.pop("role")
+            timestamp_us = int(fields.pop("timestamp_us"))
+            steady_us = int(fields.pop("steady_us"))
+            fields = {
+                key: value for key, value in fields.items()
+                if not _SENSITIVE_TIMELINE_FIELD_RE.search(key)
+            }
+            event_counts[event_name] = event_counts.get(event_name, 0) + 1
+            request_ids.add(request_id)
+            events.append({
+                "timestampUs": timestamp_us,
+                "steadyUs": steady_us,
+                "role": role,
+                "event": event_name,
+                "requestId": request_id,
+                "sourceLog": log_path.name,
+                "sourceLine": line_number,
+                "channel": channel,
+                "fields": fields,
+            })
+    events.sort(key=lambda row: (
+        int(row["timestampUs"]), str(row["sourceLog"]), int(row["sourceLine"])))
+    lifecycle_path = output_dir / "spec175-request-lifecycle.jsonl"
+    lifecycle_path.write_text(
+        "".join(json.dumps(event, sort_keys=True) + "\n" for event in events),
+        encoding="utf-8",
+    )
+    digest = hashlib.sha256(lifecycle_path.read_bytes()).hexdigest()
+    return {
+        "schema": "ndnsf-di-spec175-request-lifecycle-summary-v1",
+        "status": "PASS" if events else "EMPTY",
+        "path": str(lifecycle_path.resolve()),
+        "sha256": "sha256:" + digest,
+        "eventCount": len(events),
+        "requestCount": len(request_ids),
+        "eventCounts": dict(sorted(event_counts.items())),
+    }
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -96,6 +174,10 @@ def qualification_command(args: argparse.Namespace) -> list[str]:
         "--selection-dataflow-v3",
         "--app-state-root", str(Path(args.output_dir) / "app-state"),
         "--provider-start-timeout-s", "120",
+        # The route snapshot proves FIB/strategy installation. This fixed,
+        # measurement-excluded window lets the last Provider exchange initial
+        # SVS state before the one registered business Request is published.
+        "--initial-sync-settle-s", "5",
     ]
     if args.runtime_sif:
         command += ["--runtime-sif", args.runtime_sif]
@@ -139,6 +221,7 @@ def main() -> int:
         raise SystemExit(
             "set SPEC175_RUN_REAL_MININDN=1 for the exclusive real MiniNDN gate")
     completed = subprocess.run(command, cwd=ROOT, check=False)
+    lifecycle = write_request_lifecycle_evidence(Path(args.output_dir))
     if completed.returncode != 0:
         return int(completed.returncode)
     result_path = Path(args.output_dir) / "spec175-case-result.json"
@@ -150,6 +233,33 @@ def main() -> int:
         raise SystemExit(
             "production runner emitted invalid case evidence: "
             f"status={result.get('status')} case={result.get('case')}")
+    terminal = result.get("terminalEvidence")
+    if (not isinstance(terminal, dict) or
+            terminal.get("schema") != "ndnsf-di-spec175-terminal-evidence-v1" or
+            terminal.get("status") != "PASS" or
+            terminal.get("resultWrittenAfterProcessExit") is not True or
+            terminal.get("abortObserved") is not False or
+            terminal.get("unexpectedSignalExits") != {} or
+            terminal.get("survivingOwnedProcesses") != []):
+        raise SystemExit(
+            "production runner emitted incomplete terminal process evidence")
+    if lifecycle["status"] != "PASS":
+        raise SystemExit(
+            "production runner emitted no structured request lifecycle evidence")
+    result["requestLifecycle"] = lifecycle
+    lifecycle_artifact = {
+        "path": Path(str(lifecycle["path"])).name,
+        "sha256": lifecycle["sha256"],
+        "bytes": Path(str(lifecycle["path"])).stat().st_size,
+    }
+    artifacts = result.setdefault("artifacts", [])
+    if not any(row.get("path") == lifecycle_artifact["path"]
+               for row in artifacts if isinstance(row, dict)):
+        artifacts.append(lifecycle_artifact)
+    result_path.write_text(
+        json.dumps(result, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     print(
         "NDNSF_DI_SPEC175_MININDN_WRAPPER_PASS "
         f"case={args.case} seed={args.seed} result={result_path}")

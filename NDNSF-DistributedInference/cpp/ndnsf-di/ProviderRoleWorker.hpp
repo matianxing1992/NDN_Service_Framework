@@ -55,6 +55,8 @@ struct ProviderRoleResult
 {
   std::map<std::string, TensorBundle> outputsByScope;
   std::optional<ExecutionEvidence> executionEvidence;
+  std::optional<NativeRuntimeMetrics> runtimeMetrics;
+  std::optional<NativeOpaqueStateHandleV1> stateHandle;
   RoleTiming timing;
   std::vector<InputFetchTiming> inputTimings;
   std::vector<OutputPublishTiming> outputTimings;

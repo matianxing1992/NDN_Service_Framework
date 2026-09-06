@@ -406,6 +406,45 @@ nowMilliseconds()
     std::chrono::system_clock::now().time_since_epoch()).count();
 }
 
+ndn::Name
+requestBenchmarkService(
+    ndn_service_framework::ServiceUser& user,
+    const std::vector<ndn::Name>& providers, const ndn::Name& service,
+    const ndn_service_framework::RequestMessage& request, int ackTimeoutMs,
+    std::shared_ptr<const ndnsf::AckSelectionPolicy> policy, int timeoutMs,
+    ndn_service_framework::ServiceUser::ResponseHandler onResponse,
+    ndn_service_framework::ServiceUser::TimeoutHandler onTimeout)
+{
+  using User = ndn_service_framework::ServiceUser;
+  if (providers.empty()) {
+    return user.RequestService(service, request.getPayload(), ackTimeoutMs,
+                               std::move(policy), timeoutMs,
+                               std::move(onResponse), std::move(onTimeout));
+  }
+  if (policy == ndnsf::strategy::FirstResponding ||
+      policy == ndnsf::strategy::RandomSelection || policy == ndnsf::strategy::AllSelected) {
+    const auto strategy = policy == ndnsf::strategy::RandomSelection
+        ? User::AckSelectionStrategy::RandomSelection
+        : policy == ndnsf::strategy::AllSelected
+          ? User::AckSelectionStrategy::AllSelected
+          : User::AckSelectionStrategy::FirstRespondingSelection;
+    return user.RequestService(providers, service, request, ackTimeoutMs, strategy,
+                               timeoutMs, std::move(onTimeout), std::move(onResponse));
+  }
+  const auto strategy = policy->requestStrategy();
+  User::AckCandidatesHandler select = [policy = std::move(policy)](const auto& candidates) {
+    const auto chosen = policy->select(candidates);
+    std::vector<ndnsf::AckCandidate> selected;
+    for (const auto& candidate : candidates) {
+      if (std::find(chosen.begin(), chosen.end(), candidate.providerName) != chosen.end())
+        selected.push_back(candidate);
+    }
+    return selected;
+  };
+  return user.RequestService(providers, service, request, ackTimeoutMs, std::move(select),
+                             timeoutMs, std::move(onTimeout), std::move(onResponse), strategy);
+}
+
 std::string
 providerLabel(const ndn::Name& providerName)
 {
@@ -416,7 +455,7 @@ providerLabel(const ndn::Name& providerName)
 }
 
 std::vector<ndn::Name>
-parseKnownProviderIds(const std::string& csv)
+parseKnownProviderIds(const std::string& csv, const ndn::Name& providerRoot)
 {
   std::vector<ndn::Name> providers;
   std::stringstream stream(csv);
@@ -432,13 +471,13 @@ parseKnownProviderIds(const std::string& csv)
       continue;
     }
     if (item == "default") {
-      providers.push_back(PROVIDER_IDENTITY);
+      providers.push_back(providerRoot);
     }
     else if (item.front() == '/') {
       providers.emplace_back(item);
     }
     else {
-      providers.push_back(ndn::Name(PROVIDER_IDENTITY).append(item));
+      providers.push_back(ndn::Name(providerRoot).append(item));
     }
   }
   return providers;
@@ -613,6 +652,7 @@ main(int argc, char** argv)
     const bool useCustomSelection = hasFlag(argc, argv, "--custom-selection");
     const bool benchmark = hasFlag(argc, argv, "--benchmark");
     const bool targetedBenchmark = hasFlag(argc, argv, "--targeted");
+    const bool streamBenchmark = hasFlag(argc, argv, "--stream");
     const bool performanceMode = hasFlag(argc, argv, "--performance-mode");
     auto perfLogGate = std::make_shared<SampledLogGate>(10);
     const bool useTokens = !hasFlag(argc, argv, "--disable-tokens");
@@ -630,6 +670,9 @@ main(int argc, char** argv)
     const int openLoopPacingJitterUs = std::max(
       0, parseIntOption(argc, argv, "--pacing-jitter-us", 0));
     const int openLoopDurationSeconds = parseIntOption(argc, argv, "--duration", 10);
+    const int runForMs = parseIntOption(argc, argv, "--run-for-ms", 0);
+    if (runForMs < 0)
+      throw std::invalid_argument("--run-for-ms must be non-negative");
     const int maxOutstanding = parseIntOption(
       argc, argv, "--max-inflight",
       parseIntOption(argc, argv, "--max-outstanding", 512));
@@ -726,25 +769,35 @@ main(int argc, char** argv)
     const std::string outputCsv = getOption(argc, argv, "--output-csv", "");
     const std::string benchmarkStrategyText = getOption(argc, argv, "--strategy", "custom-selection");
     const std::string expectedResponse = getOption(argc, argv, "--expect-response", "");
+    const std::string trustSchema = getOption(
+      argc, argv, "--trust-schema", "examples/trust-schema.conf");
+    const ndn::Name groupPrefix(
+      getOption(argc, argv, "--group-prefix", GROUP_PREFIX.toUri()));
+    const ndn::Name controllerPrefix(
+      getOption(argc, argv, "--controller-prefix", CONTROLLER_PREFIX.toUri()));
+    const ndn::Name providerRoot(
+      getOption(argc, argv, "--provider-root", PROVIDER_IDENTITY.toUri()));
+    const ndn::Name userIdentity(
+      getOption(argc, argv, "--user-identity", USER_IDENTITY.toUri()));
     const ndn::Name targetedProvider(
-      getOption(argc, argv, "--targeted-provider", PROVIDER_IDENTITY.toUri()));
+      getOption(argc, argv, "--targeted-provider", providerRoot.toUri()));
     const std::string bootstrapToken = getOption(argc, argv, "--bootstrap-token", "");
     const ndn::Name bootstrapName(
-      getOption(argc, argv, "--bootstrap-name", USER_IDENTITY.toUri()));
+      getOption(argc, argv, "--bootstrap-name", userIdentity.toUri()));
     const auto knownProviders =
-      parseKnownProviderIds(getOption(argc, argv, "--known-provider-ids", ""));
+      parseKnownProviderIds(getOption(argc, argv, "--known-provider-ids", ""), providerRoot);
 
-    auto userCert = getOrCreateIdentity(keyChain, USER_IDENTITY);
-    auto controllerCert = getOrCreateIdentity(keyChain, CONTROLLER_PREFIX);
+    auto userCert = getOrCreateIdentity(keyChain, userIdentity);
+    auto controllerCert = getOrCreateIdentity(keyChain, controllerPrefix);
     if (!bootstrapToken.empty()) {
       userCert = ndn_service_framework::ensureControllerSignedCertificate(
-        face, keyChain, CONTROLLER_PREFIX, USER_IDENTITY, bootstrapName, bootstrapToken);
+        face, keyChain, controllerPrefix, userIdentity, bootstrapName, bootstrapToken);
     }
-    keyChain.setDefaultIdentity(keyChain.getPib().getIdentity(USER_IDENTITY));
-    getOrCreateIdentity(keyChain, PROVIDER_IDENTITY);
-    getOrCreateIdentity(keyChain, ndn::Name(PROVIDER_IDENTITY).append("A"));
-    getOrCreateIdentity(keyChain, ndn::Name(PROVIDER_IDENTITY).append("B"));
-    getOrCreateIdentity(keyChain, ndn::Name(PROVIDER_IDENTITY).append("C"));
+    keyChain.setDefaultIdentity(keyChain.getPib().getIdentity(userIdentity));
+    getOrCreateIdentity(keyChain, providerRoot);
+    getOrCreateIdentity(keyChain, ndn::Name(providerRoot).append("A"));
+    getOrCreateIdentity(keyChain, ndn::Name(providerRoot).append("B"));
+    getOrCreateIdentity(keyChain, ndn::Name(providerRoot).append("C"));
     keyChainInitLock.unlock();
 
     std::unique_ptr<ndn_service_framework::CertificatePublisher> certPublisher;
@@ -755,10 +808,10 @@ main(int argc, char** argv)
 
     ndn_service_framework::ServiceUser user(
       face,
-      GROUP_PREFIX,
+      groupPrefix,
       userCert,
       controllerCert,
-      "examples/trust-schema.conf");
+      trustSchema);
 
     user.init();
     user.setPerformanceMode(performanceMode);
@@ -786,6 +839,7 @@ main(int argc, char** argv)
               << (user.getUseTokens() ? "enabled" : "disabled")
               << " hybridMessageCrypto=enabled"
               << " timelineTrace=" << timelineTrace
+              << " streamBenchmark=" << streamBenchmark
               << " handlerThreads=" << user.getHandlerThreads()
               << " adaptiveAdmission=" << adaptiveAdmission.enabled
               << " adaptiveWindow=" << user.getAdaptiveAdmissionWindow()
@@ -798,9 +852,109 @@ main(int argc, char** argv)
                                               adaptiveAdmission.softQueueLimit,
                                               adaptiveAdmission.hardQueueLimit).second
              );
-    user.fetchPermissionsFromController(CONTROLLER_PREFIX);
+    user.fetchPermissionsFromController(controllerPrefix);
+
+    // Explicit application-owned renewal for an online grant after startup
+    // retries have ended. Runtime status refresh does not poll permissions.
+    const auto permissionRefetchAfterMs =
+        envSizeOption("NDNSF_PERMISSION_REFETCH_AFTER_MS", 0);
+    if (permissionRefetchAfterMs > 0) {
+      scheduler.schedule(ndn::time::milliseconds(permissionRefetchAfterMs),
+          [&user, controllerPrefix] {
+        NDN_LOG_INFO("NDNSF_APP_PERMISSION_REFETCH");
+        user.fetchPermissionsFromController(controllerPrefix);
+      });
+    }
+
+    if (runForMs > 0) {
+      scheduler.schedule(ndn::time::milliseconds(runForMs), [&face] {
+        face.getIoContext().stop();
+      });
+    }
 
     int exitCode = 0;
+
+    if (streamBenchmark) {
+      // Spec179 MiniNDN stream gate: one user stream per attempt, with a
+      // bounded retry on terminal error or start failure.  A revocation that
+      // lands between attempts must make every later attempt fail at the
+      // admission boundary (START_FAILED), while an unaffected identity
+      // keeps starting new streams -- the per-attempt STARTED/START_FAILED
+      // markers are the observable negative/control halves.
+      using StreamHandle = ndn_service_framework::StreamedInvocationHandle<
+        ndn::Buffer, ndn::Buffer>;
+      const ndn::Name streamService(serviceNameText);
+      const ndn::Buffer streamRequest(
+        reinterpret_cast<const uint8_t*>("HELLO"), 5);
+      constexpr int kMaxStreamAttempts = 3;
+      auto attemptCount = std::make_shared<int>(0);
+      auto handle = std::make_shared<std::shared_ptr<StreamHandle>>();
+      auto startedAt = std::make_shared<ndn::time::steady_clock::time_point>();
+      auto invokeStream = std::make_shared<std::function<void()>>();
+      auto maybeRetry = [&, attemptCount, startedAt,
+                         invokeStream](const char* terminalMarker) {
+        NDN_LOG_INFO("SPEC179_STREAM_ATTEMPT_ENDED user=" << userIdentity
+                     << " attempt=" << *attemptCount
+                     << " terminal=" << terminalMarker);
+        if (*attemptCount >= kMaxStreamAttempts) {
+          return;
+        }
+        const auto elapsed = ndn::time::steady_clock::now() - *startedAt;
+        scheduler.schedule(elapsed + ndn::time::seconds(1), [invokeStream] {
+          (*invokeStream)();
+        });
+      };
+      auto startAttempt = [&, handle, attemptCount, startedAt,
+                           invokeStream, maybeRetry, streamService,
+                           streamRequest] {
+        ++*attemptCount;
+        *startedAt = ndn::time::steady_clock::now();
+        ndn_service_framework::StreamedInvocationOptions options;
+        options.maxEvents = 32;
+        options.interestWindow = 4;
+        options.maxEventRetries = 3;
+        options.retentionMs = 30000;
+        options.completionGraceMs = 5000;
+        NDN_LOG_INFO("SPEC179_STREAM_ATTEMPT user=" << userIdentity
+                     << " attempt=" << *attemptCount);
+        *handle = user.RequestServiceStreaming<ndn::Buffer, ndn::Buffer, ndn::Buffer>(
+          streamService, streamRequest, options,
+          [&](const ndn::Buffer& event) {
+            NDN_LOG_INFO("SPEC179_STREAM_EVENT_RECEIVED user=" << userIdentity
+                         << " bytes=" << event.size());
+          },
+          [&](const ndn::Buffer& result) {
+            NDN_LOG_INFO("SPEC179_STREAM_COMPLETE_RECEIVED user=" << userIdentity
+                         << " bytes=" << result.size());
+            maybeRetry("complete");
+          },
+          [&](const ndn_service_framework::StreamedInvocationError& error) {
+            NDN_LOG_WARN("SPEC179_STREAM_ERROR user=" << userIdentity
+                         << " code=" << static_cast<int>(error.code)
+                         << " message=" << error.message);
+            maybeRetry("error");
+          });
+        if (!*handle) {
+          // Admission-boundary rejection (for example a revocation that
+          // landed after the previous attempt started) surfaces as an empty
+          // handle, not a streamed error callback.
+          NDN_LOG_ERROR("SPEC179_STREAM_START_FAILED user=" << userIdentity
+                        << " attempt=" << *attemptCount);
+          maybeRetry("start_failed");
+        }
+        else {
+          NDN_LOG_INFO("SPEC179_STREAM_STARTED user=" << userIdentity
+                       << " attempt=" << *attemptCount
+                       << " requestId=" << (*handle)->requestId().toUri());
+        }
+      };
+      *invokeStream = startAttempt;
+      scheduler.schedule(ndn::time::seconds(2), [invokeStream] {
+        (*invokeStream)();
+      });
+      face.processEvents();
+      return exitCode;
+    }
 
     if (largeDataPublishTest) {
       scheduler.schedule(ndn::time::seconds(2), [&] {
@@ -1663,6 +1817,12 @@ main(int argc, char** argv)
                     if (measured) {
                       *csv << csvEscape(requestIdText) << ",0,"
                            << std::fixed << std::setprecision(3) << latencyMs << ",\n";
+                      // Flush per terminal row: the CSV handle is captured by
+                      // the scheduler callbacks and can outlive main's local
+                      // cleanup, so relying on the destructor left the
+                      // results CSV empty after a natural exit.  A benchmark
+                      // writes only O(count) rows, so per-row flush is free.
+                      csv->flush();
                     }
                     if (!performanceMode && perfLogGate->allow()) {
                       NDN_LOG_TRACE( "PERF_REQUEST_TIMEOUT id=" << requestIdText
@@ -1714,6 +1874,10 @@ main(int argc, char** argv)
                       *csv << csvEscape(requestIdText) << ",1,"
                            << std::fixed << std::setprecision(3) << latencyMs << ","
                            << csvEscape(responseText) << "\n";
+                      // See the timeout row above: the CSV handle outlives
+                      // main's cleanup, so terminal rows must be flushed
+                      // explicitly or the results file stays empty.
+                      csv->flush();
                     }
                     if (!performanceMode && perfLogGate->allow()) {
                       NDN_LOG_TRACE( "PERF_RESPONSE_RECEIVED id=" << requestIdText
@@ -1740,9 +1904,9 @@ main(int argc, char** argv)
                 onResponse);
             }
             else {
-              requestId = user.RequestService(
+              requestId = requestBenchmarkService(user, knownProviders,
                 benchmarkServiceName,
-                request.getPayload(),
+                request,
                 ackTimeoutMs,
                 benchmarkSelectionPolicy,
                 requestTimeoutMs,
@@ -2173,9 +2337,9 @@ main(int argc, char** argv)
             onResponse);
         }
         else {
-          requestId = user.RequestService(
+          requestId = requestBenchmarkService(user, knownProviders,
             benchmarkServiceName,
-            request.getPayload(),
+            request,
             ackTimeoutMs,
             selectionPolicy,
             timeoutMs,
@@ -2207,7 +2371,7 @@ main(int argc, char** argv)
     scheduler.schedule(ndn::time::seconds(2), [&] {
       NDN_LOG_INFO( "Sending HELLO request...");
       NDN_LOG_INFO( "[App_User] selected providerName="
-                << PROVIDER_IDENTITY.toUri());
+                << providerRoot.toUri());
       if (!knownProviders.empty()) {
         std::ostringstream knownProvidersText;
         for (const auto& provider : knownProviders) {
@@ -2220,7 +2384,8 @@ main(int argc, char** argv)
       }
       NDN_LOG_INFO( "[App_User] selected serviceName=/HELLO");
       NDN_LOG_INFO( "[App_User] final request name="
-                   "/example/hello/user/NDNSF/REQUEST/HELLO/<requestId>"
+                   << userIdentity.toUri()
+                   << "/NDNSF/REQUEST/HELLO/<requestId>"
                );
 
       const std::string requestText = "HELLO";

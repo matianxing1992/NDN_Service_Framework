@@ -1,0 +1,193 @@
+{
+  "status": "PASS",
+  "scope": "Merged local functional validation; not Spec181 closure or Spec182 implementation",
+  "parents": [
+    "d4a5e39ce5b4a023f6e55d2440c60aa998983f8f",
+    "4391af81cd24ff5510aa52b48ab9cec0fdec1ebb"
+  ],
+  "nac_commit": "5ed23e6",
+  "build": {
+    "exit_code": 0,
+    "elapsed_seconds": 391.882,
+    "raw_directory": ".codex-tmp/merge-20260906/build-static-review-r3",
+    "log_sha256": "d692f85bd0684924192d028279485d285c690432fbdb8cc3a8ff9bffed9bc921"
+  },
+  "unit": {
+    "exit_code": 0,
+    "elapsed_seconds": 60.91,
+    "raw_directory": ".codex-tmp/merge-20260906/unit-static-r2",
+    "log_sha256": "92bd47fdeeaf64d419468925e2089cdf5d7c3cc462787c7c3dfddfb09b81b622",
+    "passed": 759,
+    "assertions": 63846
+  },
+  "integration": {
+    "exit_code": 0,
+    "elapsed_seconds": 209.203,
+    "raw_directory": ".codex-tmp/merge-20260906/integration-static-r2",
+    "log_sha256": "b17faf421f340f0d6b9718218491213dbdee5267919d409b4e2b74cdc5f8c92e",
+    "passed": 154,
+    "assertions": 3634
+  },
+  "python": {
+    "exit_code": 0,
+    "elapsed_seconds": 248.89,
+    "raw_directory": ".codex-tmp/merge-20260906/python-current-r2",
+    "log_sha256": "d882a876f1b37ebe2567a2c6a8fd34f3c68ac8181a35114b6e8b843a2af47dd7",
+    "passed": 2171,
+    "skipped": 22,
+    "file_count": 236,
+    "file_list_sha256": "0f77c269edd908fac4118e98eb32fee518ab5a841b35b79c61ff8349c61bb861",
+    "excluded_external_prerequisites": {
+      "test_ndnsf_di_candidate_lineage.py": "frozen Spec109 evidence",
+      "test_ndnsf_di_runtime_aware_campaign.py": "external Qwen model qualification",
+      "test_ndnsf_native_tracer_runtime_profile.py": "generated Qwen tracer profile",
+      "test_ndnsf_runtime_doctor.py": "generated Qwen tracer profile"
+    },
+    "prefixes": [
+      "test_spec175_",
+      "test_spec176_",
+      "test_spec177_",
+      "test_spec178_",
+      "test_spec179_",
+      "test_spec180_",
+      "test_spec181_",
+      "test_uav_",
+      "test_ndnsf_"
+    ],
+    "extra_files": [
+      "test_streamed_invocation_api.py",
+      "test_context_mode_guard.py",
+      "test_context_mode_guard_local.py",
+      "test_python_wrapper_native_closure.py"
+    ]
+  },
+  "runtime": {
+    "status": "PASS",
+    "loaded": [
+      {
+        "path": "/home/tianxing/NDN/ndnsf-integration-182/build-merge/libndn-service-framework.so",
+        "sha256": "5fa424800613f697ecffb04b0b4b43b17f6bed06adbd0a59903558ba97da74fd"
+      },
+      {
+        "path": "/home/tianxing/NDN/nac-abe-integration-182/install/lib/libnac-abe.so",
+        "sha256": "41224ebffeb7ed34a8209de83b942cdc0ad3c08fe9eda55173f046a76d58df48"
+      },
+      {
+        "path": "/home/tianxing/NDN/ndn-svs/build/libndn-svs.so",
+        "sha256": "9fe2bdc9bf5fe2f9f191dda1f11944a86a348ad2de118a95aa739e2c170844ee"
+      },
+      {
+        "path": "/home/tianxing/NDN/ndnsf-integration-182/pythonWrapper/ndnsf/_ndnsf.cpython-38-x86_64-linux-gnu.so",
+        "sha256": "72cf0a8a9bce490da550a62fe525119cd2082a87d976b0b91cec88deb751a0ef"
+      },
+      {
+        "path": "/home/tianxing/NDN/ndnsf-integration-182/NDNSF-DistributedRepo/pythonWrapper/py_repoclient/_py_repoclient.cpython-38-x86_64-linux-gnu.so",
+        "sha256": "55ae841d6b455b077eedea58b529d3e30cd8c4d1918e5250eac3ba06e139fb3d"
+      }
+    ]
+  },
+  "minindn": [
+    {
+      "exit_code": 0,
+      "elapsed_seconds": 49.108,
+      "raw_directory": ".codex-tmp/merge-20260906/minindn-user-revocation-r2",
+      "log_sha256": "649473e6a5ae5de947149b5d8c84249f8472293c3a010ee1903b9607df53ebf0",
+      "scenario": "user-identity-revocation",
+      "gatePassed": true,
+      "networkEvidence": true,
+      "grantOnlyGateOk": false,
+      "scenarioChecks": {
+        "affected_no_success_after_discovery": true,
+        "affected_post_discovery_denied": true,
+        "affected_pre_revoke_success": true,
+        "control_userB_post_revoke": true,
+        "discovery_after_revoke": true,
+        "discovery_by_userA": true,
+        "discovery_within_grace": true,
+        "revalidation_providerA": true,
+        "revalidation_providerB": true,
+        "revalidation_userA": true,
+        "revalidation_userB": true,
+        "revoke_observed": true
+      },
+      "processReturnCodes": {
+        "controller-1": 0,
+        "provider-A": 0,
+        "provider-B": 0,
+        "user-A": 0,
+        "user-B": 0
+      },
+      "redactedTraceHash": "sha256:d5e209eaa452377238d284ce76f6ba91eecacf4963f0733900443e293fdfd22e",
+      "executionCount": 20,
+      "responseDecryptedCount": 20,
+      "result_sha256": "649473e6a5ae5de947149b5d8c84249f8472293c3a010ee1903b9607df53ebf0"
+    },
+    {
+      "exit_code": 0,
+      "elapsed_seconds": 58.985,
+      "raw_directory": ".codex-tmp/merge-20260906/minindn-grant-only-r1",
+      "log_sha256": "32046f255833150525274ce5920f6248ce824ff1ecc949290a25ad57020245be",
+      "scenario": "grant-only-advance",
+      "gatePassed": true,
+      "networkEvidence": true,
+      "grantOnlyGateOk": true,
+      "scenarioChecks": {},
+      "processReturnCodes": {
+        "controller-1": 0,
+        "provider-A": 0,
+        "provider-B": 0,
+        "user-A": 0,
+        "user-B": 0
+      },
+      "redactedTraceHash": "sha256:6de4ee8e2760d8bd8a33acb6fa5517d8048ac42ef0bf9b88cc3d92ee5c4cbdf1",
+      "executionCount": 34,
+      "responseDecryptedCount": 34,
+      "result_sha256": "32046f255833150525274ce5920f6248ce824ff1ecc949290a25ad57020245be"
+    },
+    {
+      "exit_code": 0,
+      "elapsed_seconds": 58.295,
+      "raw_directory": ".codex-tmp/merge-20260906/minindn-provider-revocation-r1",
+      "log_sha256": "00162867cbfb2516a4041f24ad00c0a8afd180296f6d2e17a2e6d8a2c019b12e",
+      "scenario": "provider-identity-revocation",
+      "gatePassed": true,
+      "networkEvidence": true,
+      "grantOnlyGateOk": false,
+      "scenarioChecks": {
+        "control_userA_post_revoke": true,
+        "control_userB_post_revoke": true,
+        "discovery_after_revoke": true,
+        "discovery_by_providerA": true,
+        "discovery_within_grace": true,
+        "prov_a_served_before": true,
+        "prov_a_stops_serving": true,
+        "restart_never_serves": true,
+        "restart_second_bootstrap": true,
+        "revalidation_providerA": true,
+        "revalidation_providerB": true,
+        "revalidation_userA": true,
+        "revalidation_userB": true,
+        "revoke_observed": true
+      },
+      "processReturnCodes": {
+        "controller-1": 0,
+        "provider-A": -2,
+        "provider-A-2": 0,
+        "provider-B": 0,
+        "user-A": 0,
+        "user-B": 0
+      },
+      "redactedTraceHash": "sha256:46f2a1d6fd9e540e624e4f06a6d6ac5e136d660aaf060aadf60373f3535e011e",
+      "executionCount": 25,
+      "responseDecryptedCount": 30,
+      "result_sha256": "00162867cbfb2516a4041f24ad00c0a8afd180296f6d2e17a2e6d8a2c019b12e"
+    }
+  ],
+  "limitations": [
+    "Provider revocation intentionally sends SIGINT to provider-A before restarting it; -2 is expected for that process only.",
+    "Historical full Python diagnostics remain 3079 passed / 128 failed / 39 skipped; current compatibility scope is separately defined.",
+    "Generated-plan unit smoke without external model inputs does not prove model qualification.",
+    "D2h uses a deterministic model runner.",
+    "SIF/Tiger execution is transferred; no performance or multi-GPU verdict."
+  ]
+}

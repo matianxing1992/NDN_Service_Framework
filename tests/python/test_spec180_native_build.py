@@ -530,6 +530,7 @@ def test_pre_svs_manifest_is_rejected(local):
 
 
 def capture_setup(local, monkeypatch):
+    monkeypatch.delenv("NDNSF_NAC_ABE_PREFIX", raising=False)
     import setuptools
     captured = {}
     calls = []

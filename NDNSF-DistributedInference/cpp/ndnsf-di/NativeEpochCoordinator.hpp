@@ -76,6 +76,20 @@ struct NativeEpochCoordinatorConfig
   std::string positionPolicyDigest;
   std::set<std::int64_t> eosTokenIds;
   std::string samplingDigest;
+  // Authenticated terminal-role sampling parameters.  They are copied from
+  // the V3 Selection contract; a Provider may not silently substitute local
+  // defaults for a sealed request.
+  std::string samplingMode = "Greedy";
+  double samplingTemperature = 0.0;
+  std::size_t samplingTopK = 1;
+  double samplingTopP = 1.0;
+  double samplingRepetitionPenalty = 1.0;
+  std::uint64_t samplingSeed = 1'750'001;
+  std::vector<std::string> stopStrings;
+  // The standalone adapter owns tokenizer implementation.  Native Core only
+  // receives a bounded decoder callback and never embeds Transformers/PyTorch.
+  std::function<std::string(const std::vector<std::int64_t>&)> textDecoder;
+  bool requireTextOutput = false;
   // Conversation-enabled turns may need one bounded state-only pass through
   // non-terminal roles after the terminal role has emitted its final token.
   // The pass carries the final token lineage, publishes no event, and is
@@ -99,6 +113,13 @@ struct NativeEpochCoordinatorConfig
 
 struct NativeEpochCoordinatorResult
 {
+  struct RuntimeMetricsObservation
+  {
+    std::string role;
+    std::uint64_t inferenceEpoch = 0;
+    NativeRuntimeMetrics metrics;
+  };
+
   struct CacheObservation
   {
     std::uint64_t inferenceEpoch = 0;
@@ -123,6 +144,7 @@ struct NativeEpochCoordinatorResult
   // inference epoch or prefix identity.
   std::optional<RoleSpec> finalizedRole;
   std::vector<CacheObservation> cacheObservations;
+  std::vector<RuntimeMetricsObservation> runtimeMetrics;
 };
 
 NativeEpochCoordinatorResult

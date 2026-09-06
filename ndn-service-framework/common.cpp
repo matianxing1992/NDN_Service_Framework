@@ -39,6 +39,35 @@ readSizeEnvironment(const char* name, size_t current)
   return parsed;
 }
 
+ndn::time::milliseconds
+readPositiveMillisecondsEnvironment(const char* name,
+                                    ndn::time::milliseconds current)
+{
+  const char* raw = std::getenv(name);
+  if (raw == nullptr || *raw == '\0') {
+    return current;
+  }
+
+  std::string text(raw);
+  if (!std::all_of(text.begin(), text.end(),
+                   [] (unsigned char c) { return std::isdigit(c) != 0; })) {
+    throw std::invalid_argument(std::string(name) + " must be a positive integer");
+  }
+  uint64_t parsed = 0;
+  try {
+    parsed = std::stoull(text);
+  }
+  catch (const std::exception&) {
+    throw std::invalid_argument(std::string(name) + " must be a positive integer");
+  }
+  constexpr uint64_t MAX_PERIODIC_SYNC_MS = 60ULL * 60ULL * 1000ULL;
+  if (parsed == 0 || parsed > MAX_PERIODIC_SYNC_MS) {
+    throw std::invalid_argument(
+      std::string(name) + " must be between 1 and 3600000 milliseconds");
+  }
+  return ndn::time::milliseconds(parsed);
+}
+
 } // namespace
 
 NDN_LOG_MEMBER_INIT(SerializedWorkerQueue, ndn_service_framework.SerializedWorkerQueue);
@@ -156,6 +185,14 @@ configureSvsPubSubOptionsFromEnvironment(ndn::svs::SVSPubSubOptions& options)
     "NDNSF_SVS_MAX_APP_PARAMS_BYTES", options.maxApplicationParametersSize);
   options.maxPiggyDataSize = readSizeEnvironment(
     "NDNSF_SVS_MAX_PIGGYDATA_BYTES", options.maxPiggyDataSize);
+  if (std::getenv("NDNSF_SVS_PERIODIC_SYNC_MS") != nullptr) {
+    // Configure this before SVSPubSub construction. Calling
+    // setPeriodicSyncTime() afterward changes the stored interval but does not
+    // necessarily reschedule the already-armed first periodic timer.
+    options.syncProtocol.periodicTimeout =
+      readPositiveMillisecondsEnvironment(
+        "NDNSF_SVS_PERIODIC_SYNC_MS", ndn::time::seconds(30));
+  }
 }
 
 const char*

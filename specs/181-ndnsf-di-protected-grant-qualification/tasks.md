@@ -1,5 +1,9 @@
 # Tasks: NDNSF-DI Protected-Grant Local Development and Delivery
 
+## Current Integration Hold
+
+2026-09-06：按最新用户授权，先整合 NAC-ABE / UAV-Experimental 与本机 DI，进行静态设计审查、修复、完整 unit/integration 和必要本地 MiniNDN，再修订182。合并后本地验证 **PASS**，等待合并 checkpoint 与182承接文档；本 Spec 的独立 T008/T009/T012 暂停，不继续重复最终 qualification/seal，也不宣称完成。整合后由182明确承接未完成责任；原有7/10和历史证据保留。当前验证/失败权威见 [integration evidence](../182-native-di-python-bindings/evidence/integration-20260906.md) 与 [static review](../182-native-di-python-bindings/evidence/static-review-20260906.md)。SIF/Tiger仍交实验机器。
+
 ## Current Checkpoint (revision 7)
 
 **Latest progress R19 (2026-09-06)**：`ce6a4ba0` 同源正式 Y-N 七子用例
@@ -31,7 +35,10 @@ exit 0、30/30 用例和 225/225 断言 PASS。完整构建 R2 又在原生装�
 纳入遗漏的 catalogue/modelManifest 公钥。详见 preflight 的 Input
 Identity Closure R1/R2/R3。
 下一步按 [preflight review](evidence/t008-local-suite-preflight-20260906.md)
-完成剩余 candidate 本地交付工具/回归，封闭最终运行输入，复审后
+candidate 本地工具 R1 40 项通过，删除退出检查的变异被同一回归检出；
+自审补充原子发布与写入失败清理，先验证最终字节。见
+[delivery tool development](evidence/t009-delivery-tool-20260906.md)。
+下一步完成该工具闭合、封闭最终运行输入，复审后
 以同一最终源码运行完整 gate。T008/T009/T012
 仍未完成；T010/T011 保持 TRANSFERRED。以下旧检查点仅保留历史。
 

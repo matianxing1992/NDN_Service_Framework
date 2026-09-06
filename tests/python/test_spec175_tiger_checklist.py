@@ -13,6 +13,10 @@ VALIDATOR = ROOT / "packaging/ndnsf-di-container/bin/ndnsf-di-pre-tiger-checklis
 SUBMIT = ROOT / "packaging/ndnsf-di-container/jobs/spec175/submit.sh"
 
 COMMON = (
+    "candidate-source-freshness",
+    "candidate-closure-manifest",
+    "candidate-invalidation-matrix",
+    "proven-baseline-exact-delta",
     "release-identity",
     "local-sif-route",
     "cluster-substrate",
@@ -20,19 +24,30 @@ COMMON = (
     "container-abi-provenance",
     "complete-target-link-closure",
     "exact-sif-library-entrypoint",
+    "submit-tree-helper-closure",
+    "submit-env-contract",
     "bundle-cwd-artifact-mount",
     "isolated-home-pib-bootstrap",
+    "controller-start-liveness",
     "lower-gates-native-exits",
     "wrapper-config-child-status",
     "resource-envelope",
+    "result-boundary-label",
     "promotion-hash-config-delta",
     "credential-secret-scan",
+    "predispatch-no-side-effects",
 )
 MODEL = (
     "current-sif-tiger-control",
     "onnx-model-runtime-compatibility",
+    "onnx-native-session-probe",
     "cuda-no-fallback",
     "routes-stage-dataflow",
+    "provider-pre-ready-lifecycle",
+)
+FUNCTIONAL = (
+    "functional-bundle-identity-closure",
+    "repository-service-route-readiness",
 )
 
 
@@ -58,7 +73,11 @@ def make_subject(tmp_path: Path, gate: str = "control") -> dict[str, Path]:
         name: {"status": "PASS", "evidence": [{
             "path": str(evidence), "sha256": digest(evidence),
         }]}
-        for name in COMMON + (() if gate == "control" else MODEL)
+        for name in (
+            COMMON
+            + (() if gate == "control" else MODEL)
+            + (FUNCTIONAL if gate in {"functional", "performance"} else ())
+        )
     }
     checklist = tmp_path / "pre-tiger-checklist.json"
     checklist.write_text(json.dumps({
@@ -98,9 +117,10 @@ def test_checklist_validator_accepts_candidate_bound_control(tmp_path: Path) -> 
 
 def test_submit_digest_parser_is_python39_compatible() -> None:
     text = SUBMIT.read_text(encoding="utf-8")
-    assert "expected = sys.argv[3]" in text
-    assert 'expected.startswith("sha256:")' in text
-    assert "map(pathlib.Path, sys.argv[1:5])" not in text
+    assert "proven-tiger-profile.json" in text
+    assert "run-record.json" in text
+    assert "submit_profile.py" in text
+    assert "--export=ALL" not in text
 
 
 def test_checklist_validator_requires_model_rows_for_functional_gate(tmp_path: Path) -> None:
@@ -111,6 +131,17 @@ def test_checklist_validator_requires_model_rows_for_functional_gate(tmp_path: P
     result = run_validator(subject, tmp_path, "functional")
     assert result.returncode == 2
     assert "cuda-no-fallback" in json.loads((tmp_path / "validation.json").read_text())["errors"][0]
+
+
+def test_checklist_validator_requires_functional_bundle_closure(tmp_path: Path) -> None:
+    subject = make_subject(tmp_path, "functional")
+    payload = json.loads(subject["checklist"].read_text())
+    payload["checks"].pop("functional-bundle-identity-closure")
+    subject["checklist"].write_text(json.dumps(payload))
+    result = run_validator(subject, tmp_path, "functional")
+    assert result.returncode == 2
+    errors = json.loads((tmp_path / "validation.json").read_text())["errors"]
+    assert any("functional-bundle-identity-closure" in item for item in errors)
 
 
 def test_checklist_validator_rejects_unknown_or_stale_rows(tmp_path: Path) -> None:

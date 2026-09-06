@@ -413,6 +413,9 @@ BOOST_AUTO_TEST_CASE(CoordinatorUsesRsaWrappedEpochKeyAndWireBundle)
   // An empty local key forces the Provider-specific RSA unwrap callback.
   consumer.installCapability(
     capability.projectForProvider("/provider/P1"), {}, true);
+  ProviderGroupCoordinator compactConsumer(options);
+  compactConsumer.installCapability(
+    capability.projectForProvider("/provider/P1"), {}, true);
   const auto unwrapped = consumer.epochKeyForProvider("/provider/P1");
   BOOST_REQUIRE_EQUAL(unwrapped.size(), 32U);
   BOOST_CHECK_THROW(consumer.epochKeyForProvider("/provider/P0"),
@@ -433,6 +436,59 @@ BOOST_AUTO_TEST_CASE(CoordinatorUsesRsaWrappedEpochKeyAndWireBundle)
     BOOST_CHECK_EQUAL(decodedSegment.manifest.digest(), sealed.manifest.digest());
     BOOST_CHECK_EQUAL(decodedSegment.segments.front().dataName,
                       sealed.segments[index].dataName);
+
+    const auto compactWire = ProviderGroupCoordinator::encodeSegmentCompact(
+      sealed.manifest, sealed.segments[index]);
+    BOOST_CHECK_LT(compactWire.size(), ndn::MAX_NDN_PACKET_SIZE);
+    const auto compactDecoded = ProviderGroupCoordinator::decodeSegment(
+      compactWire, sealed.segments[index].dataName);
+    BOOST_REQUIRE_EQUAL(compactDecoded.segments.size(), 1U);
+    BOOST_CHECK(compactDecoded.manifest.externalSegmentDigests);
+    BOOST_CHECK_EQUAL(compactDecoded.manifest.transportManifestDigest,
+                      sealed.manifest.digest());
+    BOOST_CHECK_EQUAL(compactDecoded.segments.front().dataName,
+                      sealed.segments[index].dataName);
+    BOOST_CHECK_EQUAL(compactDecoded.segments.front().descriptor.segmentNo,
+                      sealed.segments[index].descriptor.segmentNo);
+
+    auto external = compactDecoded;
+    external.manifest.capabilityDigest = sealed.manifest.capabilityDigest;
+    external.manifest.epochKeyId = sealed.manifest.epochKeyId;
+    external.manifest.requestId = sealed.manifest.requestId;
+    external.manifest.attemptId = sealed.manifest.attemptId;
+    external.manifest.planDigest = sealed.manifest.planDigest;
+    external.manifest.groupId = sealed.manifest.groupId;
+    external.manifest.epoch = sealed.manifest.epoch;
+    external.manifest.operationIndex = sealed.manifest.operationIndex;
+    external.manifest.producerRank = sealed.manifest.producerRank;
+    external.manifest.operationKind = sealed.manifest.operationKind;
+    external.manifest.segmentCount = sealed.manifest.segmentCount;
+    external.manifest.totalBytes = sealed.manifest.totalBytes;
+    external.manifest.segmentSize = sealed.manifest.segmentSize;
+    external.manifest.sourceLayoutDigest = sealed.manifest.sourceLayoutDigest;
+    external.manifest.targetLayoutDigest = sealed.manifest.targetLayoutDigest;
+    external.manifest.tensorDigest = sealed.manifest.tensorDigest;
+    external.manifest.createdAtMs = sealed.manifest.createdAtMs;
+    external.manifest.noProgressMs = sealed.manifest.noProgressMs;
+    external.manifest.hardDeadlineMs = sealed.manifest.hardDeadlineMs;
+    auto& externalSegment = external.segments.front();
+    externalSegment.descriptor.requestId = sealed.segments[index].descriptor.requestId;
+    externalSegment.descriptor.attemptId = sealed.segments[index].descriptor.attemptId;
+    externalSegment.descriptor.planDigest = sealed.segments[index].descriptor.planDigest;
+    externalSegment.descriptor.groupId = sealed.segments[index].descriptor.groupId;
+    externalSegment.descriptor.epoch = sealed.segments[index].descriptor.epoch;
+    externalSegment.descriptor.operationKind = sealed.segments[index].descriptor.operationKind;
+    externalSegment.descriptor.tensorDigest = sealed.segments[index].descriptor.tensorDigest;
+    externalSegment.descriptor.operationIndex = sealed.segments[index].descriptor.operationIndex;
+    externalSegment.descriptor.producerRank = sealed.segments[index].descriptor.producerRank;
+    externalSegment.descriptor.segmentCount = sealed.segments[index].descriptor.segmentCount;
+    externalSegment.descriptor.totalBytes = sealed.segments[index].descriptor.totalBytes;
+    externalSegment.descriptor.segmentSize = sealed.segments[index].descriptor.segmentSize;
+    externalSegment.descriptor.noProgressMs = sealed.segments[index].descriptor.noProgressMs;
+    externalSegment.descriptor.hardDeadlineMs = sealed.segments[index].descriptor.hardDeadlineMs;
+    BOOST_CHECK(compactConsumer.acceptSegment(
+      external.manifest, externalSegment, externalSegment.dataName) ==
+      DataSegmentReplayWindow::Result::Accepted);
   }
   BOOST_CHECK(consumer.acceptSegment(decoded.manifest, decoded.segments[1]) ==
               DataSegmentReplayWindow::Result::Accepted);

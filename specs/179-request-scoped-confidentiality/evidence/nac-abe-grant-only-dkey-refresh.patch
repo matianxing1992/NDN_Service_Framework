@@ -1,0 +1,61 @@
+Spec179 dependency patch (applied only in the isolated NAC-ABE checkout)
+
+Purpose: make identity DKEY renewal safe for grant-only Controller updates and
+coalesce repeated refresh requests.
+
+src/consumer.hpp:
+
+    uint64_t m_cacheGeneration = 0;
+    uint64_t m_dkeyGeneration = 0;
+    bool m_dkeyFetchInFlight = false;
+    bool m_dkeyFetchPending = false;
+
+    void refreshDecryptionKey();
+
+src/consumer.cpp, Consumer::obtainDecryptionKey():
+
+* Return without publishing a second DKEY Interest when one fetch is already
+  in flight; remember a pending request instead.
+* Capture the DKEY-only generation at fetch start.
+* Decode a complete replacement DKEY into a local object and assign it only
+  after successful decode. A grant-only refresh therefore leaves the old key
+  usable until the replacement is complete.
+* Ignore a completion from an invalidated DKEY generation and issue at most one
+  follow-up fetch when a pending refresh was requested.
+* Clear in-flight/pending state on completion, error, or fetch-start failure.
+
+This patch does not rotate the ABE master secret or public parameters. The
+Controller's grant-only path replaces the target identity's complete policy;
+`refreshDecryptionKey()` advances a DKEY-only fence and the next DKEY Interest
+is generated from that policy by NAC-ABE. Withdrawal continues to use the
+separate global generation-rotation path.
+
+Build input: /home/tianxing/NDN/NAC-ABE, isolated build
+/tmp/nac-abe-spec179-exact-build, installed prefix
+/tmp/nac-abe-spec179-exact-prefix. No active NDNSF dependency checkout is
+modified by this evidence artifact.
+
+Verification: `make -C /tmp/nac-abe-spec179-exact-build nac-abe -j2` and
+`cmake --install /tmp/nac-abe-spec179-exact-build` completed successfully;
+the updated `consumer.cpp` also passes a direct GCC 9 C++17 source compile with
+`-DNAC_ABE_CMAKE_BUILD`. With that exact prefix, the NDNSF Waf target then
+completed successfully using:
+
+    ./waf build --out=build-spec179-grant-refresh --debug \
+      --targets=ndn-service-framework -j1
+
+The resulting shared library has an RPATH to the exact NAC-ABE prefix and its
+`ldd -r` closure has no unresolved symbols.  It resolves `libnac-abe.so` there,
+`libndnsd.so.0.1.0`, and Boost 1.71 system libraries; the earlier transient GCC
+internal-compiler-error/assembler-segfault attempts are not release evidence.
+
+Reproducibility hashes (2026-09-03):
+
+    git diff -- src/consumer.cpp src/consumer.hpp
+    SHA-256 fd36706d964c11d92bff77b56c4976b4abed421d97e22e8375093413d0e30783
+    libnac-abe.so
+    SHA-256 7c972e5285b124ac8152a3d834c895dc7f2e1c2ffc0149ec826744a4276a6d91
+    libndn-service-framework.so
+    SHA-256 b7c1e2153ae2dfcc4bc6d52b50975e709ca621558c676984fa7b1635f2efa34b
+    installed consumer.hpp
+    SHA-256 de0cabe1f3e79ba1242ed6179a111a974fb8d7af878ad075d9875a2b338a7448

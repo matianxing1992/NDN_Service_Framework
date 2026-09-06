@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import json
+import os
 from pathlib import Path
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -17,6 +20,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "Experiments/NDNSF_DI_StreamedGeneration_Minindn.py"
 PIPELINE_SCRIPT = ROOT / "Experiments/NDNSF_DI_LlmPipeline_Minindn.py"
+REPO_BOOTSTRAP_SCRIPT = ROOT / "Experiments/spec175_repo_bootstrap.py"
 USER_SCRIPT = ROOT / "examples/python/NDNSF-DistributedInference/llm_pipeline/user.py"
 G3_SCRIPT = ROOT / "scripts/spec175_g3_manifest.py"
 
@@ -40,6 +44,27 @@ def _pipeline_module():
 
 def _g3_module():
     spec = importlib.util.spec_from_file_location("spec175_g3_manifest", G3_SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_g3_parent_run_root_resolves_r1_r2_r3(tmp_path: Path):
+    g3 = _g3_module()
+    base = tmp_path / "M01"
+    for index in range(1, 4):
+        (base / f"r{index}").mkdir(parents=True)
+
+    assert [
+        g3.resolve_repetition_dir(base, index)
+        for index in range(1, 4)
+    ] == [base / "r1", base / "r2", base / "r3"]
+
+
+def _repo_bootstrap_module():
+    spec = importlib.util.spec_from_file_location(
+        "spec175_repo_bootstrap", REPO_BOOTSTRAP_SCRIPT)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -80,6 +105,7 @@ def test_clean_command_has_four_providers_and_disabled_admission(tmp_path: Path)
     assert command[command.index("--seed") + 1] == "1750001"
     assert "--tiny-onnx-fixture-root" in command
     assert "--admission-control" not in command
+    assert command[command.index("--initial-sync-settle-s") + 1] == "5"
     topology = Path(command[command.index("--topology-file") + 1]).resolve()
     assert topology == (
         ROOT / "Experiments/Topology/spec175-host-gate.conf").resolve()
@@ -116,6 +142,370 @@ def test_spec175_cases_enable_native_provider_timing_markers():
     assert 'base_env["NDNSF_DI_RUNTIME_TIMING"] = "1"' in source
 
 
+def test_spec175_uses_bounded_ndn_log_timeline_instead_of_global_trace():
+    source = PIPELINE_SCRIPT.read_text(encoding="utf-8")
+    assert 'base_env["NDNSF_CONTROL_TIMING"] = "1"' in source
+    assert 'base_env["NDNSF_TIMELINE_TRACE_SAMPLE_RATE"] = "1"' in source
+    assert '"*=WARN:"' in source
+    assert '"ndn_service_framework.TimelineTrace=WARN:"' in source
+    assert '"ndnsf.di.RuntimeEvidence=WARN"' in source
+    assert '"ndn_service_framework.ServiceProvider=INFO:"' not in source
+    assert '"ndn_service_framework.ServiceUser=INFO"' not in source
+    spec175_block = source[source.index("if args.spec175_case:"):]
+    assert 'base_env["NDN_LOG"] = "ndn_service_framework.*=TRACE"' not in \
+        spec175_block[:spec175_block.index("if args.spec107_diagnostic:")]
+
+
+def test_spec175_native_timing_records_use_one_ndn_log_sink():
+    root = PIPELINE_SCRIPT.parents[1]
+    runtime_header = (root / "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp")
+    runtime_source = (root / "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.cpp")
+    coordinator_source = (
+        root / "NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.cpp")
+    worker_source = (
+        root / "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.cpp")
+    provider_source = (
+        root / "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.cpp")
+    fault_source = (
+        root / "NDNSF-DistributedInference/cpp/ndnsf-di/NativeFaultInjection.cpp")
+    wait_source = (
+        root / "NDNSF-DistributedInference/cpp/ndnsf-di/DependencyWaitScheduler.cpp")
+    timeline_source = (
+        root / "NDNSF-DistributedInference/cpp/ndnsf-di/DiTimelineTrace.hpp")
+    dependency_source = (
+        root / "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.cpp")
+    onnx_source = (
+        root / "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.cpp")
+    header = runtime_header.read_text(encoding="utf-8")
+    sink = runtime_source.read_text(encoding="utf-8")
+    coordinator = coordinator_source.read_text(encoding="utf-8")
+    worker = worker_source.read_text(encoding="utf-8")
+    provider = provider_source.read_text(encoding="utf-8")
+    fault = fault_source.read_text(encoding="utf-8")
+    wait = wait_source.read_text(encoding="utf-8")
+    timeline = timeline_source.read_text(encoding="utf-8")
+    dependency = dependency_source.read_text(encoding="utf-8")
+    onnx = onnx_source.read_text(encoding="utf-8")
+
+    assert "logRuntimeEvidence(const std::string& record)" in header
+    for helper in ("logRuntimeTrace", "logRuntimeInfo", "logRuntimeWarn", "logRuntimeError"):
+        assert f"{helper}(const std::string& record)" in header
+    assert "NDN_LOG_INIT(ndnsf.di.RuntimeEvidence);" in sink
+    assert "NDN_LOG_WARN(record);" in sink
+    for source in (coordinator, worker, provider, fault, wait, timeline, dependency):
+        assert "std::cout" not in source
+        assert "std::cerr" not in source
+        assert "std::clog" not in source
+    assert "logRuntimeTrace(record.str());" in coordinator
+    assert "logRuntimeTrace(\"NDNSF_DI_WORKER event=enqueue_ready\")" in worker
+    assert "logRuntimeWarn(record.str());" in provider
+    assert "logRuntimeError(record.str());" in provider
+    assert "logRuntimeWarn(record.str());" in fault
+    assert wait.count("logRuntimeWarn(record.str());") >= 3
+    assert "logRuntimeEvidence(record.str());" in timeline
+    assert dependency.count("logRuntimeEvidence(record.str());") >= 2
+    for marker in (
+            "NDNSF_DI_PROVIDER_HANDLER_TIMING",
+            "NDNSF_DI_DEPENDENCY_INPUT_TIMING",
+            "NDNSF_DI_DEPENDENCY_OUTPUT_TIMING"):
+        assert marker in provider
+    assert provider.count("logRuntimeEvidence(record.str());") >= 4
+    assert "NDNSF_DI_ONNX_TIMING" in onnx
+    assert "logRuntimeEvidence(record.str());" in onnx
+
+
+def test_spec175_runtime_log_filter_is_verified_in_a_subprocess():
+    """The named component must honor severity filters in a real process."""
+    binary = ROOT / "build/unit-tests"
+    if not binary.exists():
+        pytest.fail("build/unit-tests is required for the logging subprocess gate")
+
+    test_name = "DiNativeRuntimeLogging/EmitsBoundedRecordsForFilterRegression"
+
+    def run_with_filter(filter_value: str) -> str:
+        env = dict(os.environ)
+        env["NDN_LOG"] = filter_value
+        result = subprocess.run(
+            [str(binary), f"--run_test={test_name}", "--log_level=nothing"],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        return result.stdout + result.stderr
+
+    warn_output = run_with_filter("*=ERROR:ndnsf.di.RuntimeEvidence=WARN")
+    assert "NDNSF_DI_LOG_FILTER_TEST level=WARN" in warn_output
+    assert "NDNSF_DI_LOG_FILTER_TEST level=ERROR" in warn_output
+    assert "NDNSF_DI_LOG_FILTER_TEST level=TRACE" not in warn_output
+    assert "NDNSF_DI_LOG_FILTER_TEST level=INFO" not in warn_output
+
+    trace_output = run_with_filter("*=WARN:ndnsf.di.RuntimeEvidence=TRACE")
+    for level in ("TRACE", "INFO", "WARN", "ERROR"):
+        assert f"NDNSF_DI_LOG_FILTER_TEST level={level}" in trace_output
+    marker_lines = [
+        line for line in trace_output.splitlines()
+        if "NDNSF_DI_LOG_FILTER_TEST" in line
+    ]
+    assert len(marker_lines) == 4
+    assert all(line.count("NDNSF_DI_LOG_FILTER_TEST") == 1
+               for line in marker_lines)
+
+
+def test_spec175_assignment_evidence_survives_bounded_warn_filter():
+    service_user = (
+        PIPELINE_SCRIPT.parents[1] / "ndn-service-framework/ServiceUser.cpp"
+    ).read_text(encoding="utf-8")
+    marker = service_user.index("NDNSF_COLLAB_ASSIGNMENT_SELECTED")
+    assert "NDN_LOG_WARN(" in service_user[marker - 80:marker]
+
+
+def test_spec175_lifecycle_evidence_is_sorted_and_redacts_sensitive_fields(
+        tmp_path: Path):
+    gate = _module()
+    (tmp_path / "provider.log").write_text(
+        "0 WARN NDNSF_CONTROL_TIMING role=provider event=ack_handler_done "
+        "steady_us=20 timestamp_us=200 requestId=/r status=true token=secret\n"
+        "0 WARN NDNSF_CONTROL_TIMING role=provider event=ack_handler_start "
+        "steady_us=10 timestamp_us=100 requestId=/r serviceName=/S\n",
+        encoding="utf-8",
+    )
+    summary = gate.write_request_lifecycle_evidence(tmp_path)
+    rows = [json.loads(line) for line in
+            (tmp_path / "spec175-request-lifecycle.jsonl").read_text().splitlines()]
+    assert summary["status"] == "PASS"
+    assert summary["eventCount"] == 2
+    assert summary["requestCount"] == 1
+    assert [row["event"] for row in rows] == [
+        "ack_handler_start", "ack_handler_done"]
+    assert rows[1]["fields"] == {"status": "true"}
+    assert "secret" not in json.dumps(rows)
+
+
+def test_spec175_lifecycle_evidence_redacts_prompt_answer_logits_and_state(
+        tmp_path: Path):
+    gate = _module()
+    (tmp_path / "provider.log").write_text(
+        "0 WARN NDNSF_CONTROL_TIMING role=provider event=bounded "
+        "steady_us=10 timestamp_us=100 requestId=/r "
+        "promptText=prompt-secret answerText=answer-secret logits=logit-secret "
+        "tokenKey=token-secret keyBytes=key-secret stateTensor=state-secret "
+        "tensorData=tensor-secret stateTensorBytesOnNdn=0 status=true\n",
+        encoding="utf-8",
+    )
+    summary = gate.write_request_lifecycle_evidence(tmp_path)
+    rows = [json.loads(line) for line in
+            (tmp_path / "spec175-request-lifecycle.jsonl").read_text().splitlines()]
+    assert summary["status"] == "PASS"
+    assert rows[0]["fields"] == {"stateTensorBytesOnNdn": "0", "status": "true"}
+    serialized = json.dumps(rows)
+    for value in ("prompt-secret", "answer-secret", "logit-secret", "token-secret",
+                  "key-secret", "state-secret", "tensor-secret"):
+        assert value not in serialized
+
+
+def test_spec175_requires_fib_snapshot_and_post_user_join_svs_settle():
+    source = PIPELINE_SCRIPT.read_text(encoding="utf-8")
+    user_source = USER_SCRIPT.read_text(encoding="utf-8")
+    repo_source = REPO_BOOTSTRAP_SCRIPT.read_text(encoding="utf-8")
+    assert "write_spec175_nfd_route_snapshot" in source
+    assert '"spec175-nfd-route-snapshot.json"' in source
+    assert "SPEC175_NFD_ROUTE_OR_STRATEGY_MISSING" in source
+    assert "install_spec175_svs_group_fanout" in source
+    assert 'rh.addOrigin(ndn.net.hosts, [GROUP_IDENTITY])' not in source
+    assert source.index("install_spec175_svs_group_fanout(", source.index(
+        "ndn.start()")) < source.index("write_spec175_nfd_route_snapshot(",
+                                       source.index("ndn.start()"))
+    assert source.index("write_spec175_nfd_route_snapshot(") < source.index(
+        "Provider process readiness complete") < source.index("user_log = OUT")
+    assert "--spec175-case requires --initial-sync-settle-s 5.0" in source
+    assert "--initial-sync-settle-s " in source
+    assert "NDNSF_DI_PROVIDER_SVS_SETTLED" not in source
+    assert "NDNSF_DI_USER_SVS_SETTLED" in user_source
+    assert 'base_env["NDNSF_SVS_PERIODIC_SYNC_MS"] = "1000"' in source
+    assert '"svsPeriodicSyncMs": int(' in source
+    assert '" --initial-sync-settle-s 5"' in source
+    assert "wait_for_initial_sync(args)" in repo_source
+    assert "NDNSF_DI_REPO_USER_SVS_SETTLED" in repo_source
+    client_start = user_source.index("client = APPClient.from_config(")
+    assert client_start < user_source.index(
+        "NDNSF_DI_USER_SVS_SETTLED", client_start) < user_source.index(
+            "_run_spec175_real_m11_case(", client_start)
+
+
+def test_spec175_nfd_snapshot_requires_group_routes_but_keeps_repo_diagnostic(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    gate = _pipeline_module()
+    nodes = [SimpleNamespace(name="p0"), SimpleNamespace(name="u")]
+    ndn = SimpleNamespace(net=SimpleNamespace(hosts=nodes))
+
+    def node_cmd(_node, command):
+        if "strategy list" in command:
+            return (
+                "/example/llm-pipeline multicast\n"
+                "/example/llm-pipeline/group multicast\n"
+            )
+        return "/example/llm-pipeline\n/example/llm-pipeline/group\n"
+
+    monkeypatch.setattr(gate.perf, "node_cmd", node_cmd)
+    path = tmp_path / "route-snapshot.json"
+    snapshot = gate.write_spec175_nfd_route_snapshot(
+        ndn,
+        path,
+        ("/example/llm-pipeline", "/example/llm-pipeline/group"),
+        ("/NDNSF/DistributedRepo",),
+    )
+    reference = gate.summarize_spec175_nfd_route_snapshot(snapshot, path)
+
+    assert snapshot["status"] == "PASS"
+    assert snapshot["missing"] == {}
+    assert all(
+        not node["prefixObserved"]["/NDNSF/DistributedRepo"]
+        for node in snapshot["nodes"].values()
+    )
+    assert reference["status"] == "PASS"
+    assert reference["path"] == str(path.resolve())
+    assert reference["sha256"] == (
+        "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest())
+    assert "nodes" not in reference
+
+
+def test_spec175_nfd_snapshot_fails_closed_when_group_route_is_missing(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    gate = _pipeline_module()
+    ndn = SimpleNamespace(net=SimpleNamespace(
+        hosts=[SimpleNamespace(name="p3")]))
+
+    def node_cmd(_node, command):
+        if "strategy list" in command:
+            return "/example/llm-pipeline multicast\n"
+        return "/example/llm-pipeline\n"
+
+    monkeypatch.setattr(gate.perf, "node_cmd", node_cmd)
+    path = tmp_path / "route-snapshot.json"
+    with pytest.raises(
+            RuntimeError, match="SPEC175_NFD_ROUTE_OR_STRATEGY_MISSING"):
+        gate.write_spec175_nfd_route_snapshot(
+            ndn,
+            path,
+            ("/example/llm-pipeline", "/example/llm-pipeline/group"),
+        )
+    snapshot = json.loads(path.read_text(encoding="utf-8"))
+    assert snapshot["status"] == "FAIL"
+    assert snapshot["missing"] == {
+        "p3": ["/example/llm-pipeline/group"]}
+
+
+def test_spec175_nfd_snapshot_rejects_incomplete_group_fanout(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    gate = _pipeline_module()
+    ndn = SimpleNamespace(net=SimpleNamespace(
+        hosts=[SimpleNamespace(name="a")]))
+
+    def node_cmd(_node, command):
+        if "strategy list" in command:
+            return (
+                "/example/llm-pipeline multicast\n"
+                "/example/llm-pipeline/group multicast\n"
+            )
+        if "fib list" in command:
+            return (
+                "/example/llm-pipeline nexthops={faceid=10 (cost=10)}\n"
+                "/example/llm-pipeline/group "
+                "nexthops={faceid=279 (cost=10)}\n"
+            )
+        return "/example/llm-pipeline\n/example/llm-pipeline/group\n"
+
+    monkeypatch.setattr(gate.perf, "node_cmd", node_cmd)
+    path = tmp_path / "route-snapshot.json"
+    with pytest.raises(
+            RuntimeError, match="SPEC175_NFD_ROUTE_OR_STRATEGY_MISSING"):
+        gate.write_spec175_nfd_route_snapshot(
+            ndn,
+            path,
+            ("/example/llm-pipeline", "/example/llm-pipeline/group"),
+            expected_next_hops={
+                "a": {"/example/llm-pipeline/group": ("279", "281")},
+            },
+        )
+    snapshot = json.loads(path.read_text(encoding="utf-8"))
+    assert snapshot["status"] == "FAIL"
+    assert snapshot["missing"] == {}
+    assert snapshot["missingNextHops"] == {
+        "a": {"/example/llm-pipeline/group": ["281"]}}
+
+
+def test_spec175_nfdc_mutation_retries_only_transient_authorization_rejection(
+        monkeypatch: pytest.MonkeyPatch):
+    gate = _pipeline_module()
+    outputs = iter([
+        "Error 403 when adding route: authorization rejected\n"
+        "__SPEC175_NFDC_RC__=1\n",
+        "route-add-accepted\n__SPEC175_NFDC_RC__=0\n",
+    ])
+    sleeps = []
+    monkeypatch.setattr(gate.perf, "node_cmd", lambda _node, _command: next(outputs))
+    monkeypatch.setattr(gate.time, "sleep", sleeps.append)
+
+    result = gate.run_spec175_nfdc_mutation(
+        SimpleNamespace(name="a"),
+        "nfdc route add /example/llm-pipeline/group 287 origin 255 cost 10",
+    )
+
+    assert result["status"] == "PASS"
+    assert result["attemptCount"] == 2
+    assert result["authorizationRetryCount"] == 1
+    assert [attempt["returnCode"] for attempt in result["attempts"]] == [1, 0]
+    assert sleeps == [gate.SPEC175_NFDC_RETRY_DELAY_S] * 2
+
+
+def test_spec175_nfdc_mutation_fails_closed_after_bounded_403_retries(
+        monkeypatch: pytest.MonkeyPatch):
+    gate = _pipeline_module()
+    calls = []
+
+    def node_cmd(_node, command):
+        calls.append(command)
+        return (
+            "Error 403 when adding route: authorization rejected\n"
+            "__SPEC175_NFDC_RC__=1\n"
+        )
+
+    monkeypatch.setattr(gate.perf, "node_cmd", node_cmd)
+    monkeypatch.setattr(gate.time, "sleep", lambda _delay: None)
+    result = gate.run_spec175_nfdc_mutation(
+        SimpleNamespace(name="a"), "nfdc route add /group 287")
+
+    assert result["status"] == "FAIL"
+    assert result["attemptCount"] == gate.SPEC175_NFDC_MAX_ATTEMPTS
+    assert result["authorizationRetryCount"] == \
+        gate.SPEC175_NFDC_MAX_ATTEMPTS - 1
+    assert len(calls) == gate.SPEC175_NFDC_MAX_ATTEMPTS
+
+
+def test_spec175_nfdc_mutation_does_not_retry_non_authorization_error(
+        monkeypatch: pytest.MonkeyPatch):
+    gate = _pipeline_module()
+    calls = []
+
+    def node_cmd(_node, command):
+        calls.append(command)
+        return "Error 404 when adding route: face not found\n__SPEC175_NFDC_RC__=1\n"
+
+    monkeypatch.setattr(gate.perf, "node_cmd", node_cmd)
+    monkeypatch.setattr(gate.time, "sleep", lambda _delay: None)
+    result = gate.run_spec175_nfdc_mutation(
+        SimpleNamespace(name="a"), "nfdc route add /group 999")
+
+    assert result["status"] == "FAIL"
+    assert result["attemptCount"] == 1
+    assert result["authorizationRetryCount"] == 0
+    assert len(calls) == 1
+
+
 def test_spec175_repo_fetches_start_before_waiting_for_any_fetch():
     source = PIPELINE_SCRIPT.read_text(encoding="utf-8")
     launch = source.index("fetch_jobs = []")
@@ -123,6 +513,161 @@ def test_spec175_repo_fetches_start_before_waiting_for_any_fetch():
     collect = source.index("fetched_artifacts = []", append)
     wait = source.index("fetch_proc.wait", collect)
     assert launch < append < collect < wait
+
+
+def test_spec175_repo_publisher_probes_same_identity_route_before_release(
+        tmp_path: Path):
+    repo = _repo_bootstrap_module()
+
+    class FakeResponse:
+        status = True
+        payload = b'{"repoNode":"/NDNSF/DistributedRepo/Node/0","schema":"repo"}'
+        error = ""
+        data_name = "/NDNSF/DistributedRepo/Node/0/NDNSF/RESPONSE/x"
+        signer_certificate = "/cert/repo"
+        wire_digest = "sha256:" + "a" * 64
+
+    class FakeUser:
+        def __init__(self):
+            self.calls = []
+
+        def request_service(self, *args, **kwargs):
+            self.calls.append((args, kwargs))
+            return FakeResponse()
+
+    service_user = FakeUser()
+    backend = SimpleNamespace(control=SimpleNamespace(service_user=service_user))
+    output = tmp_path / "probe.json"
+    args = SimpleNamespace(
+        user="/NDNSF/DistributedRepo/Publisher",
+        ack_timeout_ms=5000,
+        timeout_ms=60000,
+        probe_timeout_ms=None,
+        probe_output=str(output),
+    )
+    report = repo.run_live_service_probe(backend, args)
+    assert report["status"] == "PASS"
+    assert report["route"]["service"] == "/NDNSF/DistributedRepo/Object/v1/STATUS"
+    assert report["route"]["provider"] == "/NDNSF/DistributedRepo/Node/0"
+    assert report["request"]["nonMutating"] is True
+    assert service_user.calls[0][0][0] == report["route"]["service"]
+    assert json.loads(output.read_text()) == report
+
+
+def test_spec175_repo_route_probe_fails_closed_without_provider_response(
+        tmp_path: Path):
+    repo = _repo_bootstrap_module()
+
+    class FakeResponse:
+        status = False
+        payload = b""
+        error = "timeout"
+        data_name = ""
+        signer_certificate = ""
+        wire_digest = ""
+
+    class FakeUser:
+        def request_service(self, *args, **kwargs):
+            return FakeResponse()
+
+    args = SimpleNamespace(
+        user="/publisher", ack_timeout_ms=10, timeout_ms=20,
+        probe_timeout_ms=20, probe_output=str(tmp_path / "probe.json"),
+    )
+    report = repo.run_live_service_probe(
+        SimpleNamespace(control=SimpleNamespace(service_user=FakeUser())), args)
+    assert report["status"] == "FAIL"
+    assert report["failureReason"] == "REPO_SERVICE_ROUTE_NOT_READY"
+    assert json.loads(Path(args.probe_output).read_text())["status"] == "FAIL"
+
+
+def test_spec175_repo_route_probe_retries_transient_no_response(tmp_path: Path):
+    repo = _repo_bootstrap_module()
+
+    class FakeResponse:
+        payload = b'{"repoNode":"/NDNSF/DistributedRepo/Node/0","schema":"repo"}'
+        error = ""
+        data_name = "/NDNSF/DistributedRepo/Node/0/NDNSF/RESPONSE/x"
+        signer_certificate = "/cert/repo"
+        wire_digest = "sha256:" + "a" * 64
+
+        def __init__(self, status: bool):
+            self.status = status
+
+    class FakeUser:
+        def __init__(self):
+            self.calls = []
+
+        def request_service(self, *args, **kwargs):
+            self.calls.append((args, kwargs))
+            return FakeResponse(status=len(self.calls) > 1)
+
+    service_user = FakeUser()
+    args = SimpleNamespace(
+        user="/publisher", ack_timeout_ms=10, timeout_ms=20,
+        probe_timeout_ms=100, probe_attempt_timeout_ms=20,
+        probe_retries=2, probe_retry_backoff_ms=0,
+        probe_output=str(tmp_path / "probe.json"),
+    )
+    report = repo.run_live_service_probe(
+        SimpleNamespace(control=SimpleNamespace(service_user=service_user)),
+        args,
+    )
+    assert report["status"] == "PASS"
+    assert report["attemptCount"] == 2
+    assert len(report["attempts"]) == 2
+    assert len(service_user.calls) == 2
+    assert service_user.calls[0][1]["request_id"] != service_user.calls[1][1]["request_id"]
+
+
+def test_spec175_repo_route_probe_retry_exhaustion_remains_fail_closed(
+        tmp_path: Path):
+    repo = _repo_bootstrap_module()
+
+    class FakeResponse:
+        status = False
+        payload = b""
+        error = "timeout"
+        data_name = ""
+        signer_certificate = ""
+        wire_digest = ""
+
+    class FakeUser:
+        def __init__(self):
+            self.calls = 0
+
+        def request_service(self, *args, **kwargs):
+            self.calls += 1
+            return FakeResponse()
+
+    service_user = FakeUser()
+    args = SimpleNamespace(
+        user="/publisher", ack_timeout_ms=10, timeout_ms=20,
+        probe_timeout_ms=100, probe_attempt_timeout_ms=20,
+        probe_retries=2, probe_retry_backoff_ms=0,
+        probe_output=str(tmp_path / "probe.json"),
+    )
+    report = repo.run_live_service_probe(
+        SimpleNamespace(control=SimpleNamespace(service_user=service_user)),
+        args,
+    )
+    assert report["status"] == "FAIL"
+    assert report["failureReason"] == "REPO_SERVICE_ROUTE_NOT_READY"
+    assert report["attemptCount"] == 3
+    assert service_user.calls == 3
+
+
+def test_spec175_repo_route_probe_is_before_publication_barrier():
+    source = REPO_BOOTSTRAP_SCRIPT.read_text(encoding="utf-8")
+    probe = source.index("run_live_service_probe(backend, args)")
+    barrier = source.index("wait_for_publication_start(args)")
+    assert probe < barrier
+
+    pipeline = PIPELINE_SCRIPT.read_text(encoding="utf-8")
+    command = pipeline.index('" --probe-output "')
+    ready = pipeline.index("NDNSF_DI_SPEC175_REPO_ROUTE_PROBE_PASS", command)
+    release = pipeline.index("release_file_barrier(", ready)
+    assert command < ready < release
 
 
 def test_tiny_stream_uses_and_verifies_the_campaign_request_id():
@@ -191,6 +736,25 @@ def test_expected_terminal_stream_cleans_up_before_return_and_client_shutdown():
         'if getattr(result, "expected_terminal", False):')
     shutdown = source.index("client.shutdown(wait=True)", expected_return)
     assert shutdown < source.index("return 0", expected_return)
+
+
+def test_normal_stream_owner_has_synchronous_shutdown_finally():
+    """Normal completion must not leave native Face teardown to interpreter exit."""
+    source = USER_SCRIPT.read_text(encoding="utf-8")
+    normal_loop = source.index("    try:\n        while True:", source.index("def main"))
+    normal_finally = source.index("    finally:", normal_loop)
+    normal_shutdown = source.index("client.shutdown(wait=True)", normal_finally)
+    assert normal_shutdown < source.index("    return 0", normal_shutdown)
+    assert "_finish_deployment_workflow(client, deployment_workflow, args)" in source[normal_loop:normal_finally]
+
+
+def test_native_user_stop_releases_gil_while_joining_face_thread():
+    """Timeout cleanup must let an in-flight Python callback finish."""
+    source = (ROOT / "pythonWrapper/src/ndnsf/_ndnsf.cpp").read_text(
+        encoding="utf-8")
+    stop = source.index('.def("stop", &NativeServiceUser::stop,')
+    binding = source[stop:stop + 180]
+    assert "py::call_guard<py::gil_scoped_release>()" in binding
 
 
 def test_pre_network_expected_rejection_does_not_require_native_handle():
@@ -559,6 +1123,27 @@ def test_g3_manifest_requires_conversation_evidence_for_m11_to_m14(
         "userReturnCode": 0, "campaignId": "spec175-M11-1750001",
         "expectedTerminal": False, "providerRoleIndices": [0, 1, 2, 3],
         "requestId": "spec175-M11-1750001", "artifacts": [],
+        "svsGroupFanout": {
+            "status": "VERIFIED", "groupPrefix": "/example/llm-pipeline/group",
+            "routerNode": "a", "memberCount": 6,
+        },
+        "nfdRouteSnapshot": {
+            "status": "PASS", "missing": {}, "missingNextHops": {},
+            "expectedNextHops": {
+                "a": {"/example/llm-pipeline/group": [
+                    "281", "283", "285", "287", "289", "291"]},
+                **{member: {"/example/llm-pipeline/group": ["260"]}
+                   for member in ("u", "p0", "p1", "p2", "p3", "repo")},
+            },
+        },
+        "terminalEvidence": {
+            "schema": "ndnsf-di-spec175-terminal-evidence-v1",
+            "status": "PASS", "resultWrittenAfterProcessExit": True,
+            "abortObserved": False, "childExitCodes": {"user.log": 0},
+            "intentionalShutdownSignals": {},
+            "unexpectedSignalExits": {},
+            "survivingOwnedProcesses": [],
+        },
         "conversationEvidence": {
             "schema": "ndnsf-di-spec175-conversation-evidence-v1",
             "case": "M11", "status": "PASS", "networkRequests": 2,
@@ -577,6 +1162,18 @@ def test_g3_manifest_requires_conversation_evidence_for_m11_to_m14(
         __import__("json").dumps(result), encoding="utf-8")
     with pytest.raises(ValueError, match="missing conversation evidence"):
         g3.validate_run(run, "M11")
+    result["conversationEvidence"] = {
+        "schema": "ndnsf-di-spec175-conversation-evidence-v1",
+        "case": "M11", "status": "PASS", "networkRequests": 2,
+        "freshRequestIds": 2, "freshGenerationIds": 2,
+        "requestLocalEntriesAfterCleanup": 0, "conversationEntries": 8,
+        "stateTensorBytesOnNdn": 0, "runnerCallsAfterRejectedValidation": 0,
+    }
+    del result["svsGroupFanout"]
+    (run / "spec175-case-result.json").write_text(
+        __import__("json").dumps(result), encoding="utf-8")
+    with pytest.raises(ValueError, match="SVS group fanout is not verified"):
+        g3.validate_run(run, "M11")
 
 
 def test_g3_manifest_rejects_unrecorded_or_wrong_case_seed(
@@ -594,6 +1191,14 @@ def test_g3_manifest_rejects_unrecorded_or_wrong_case_seed(
         "userReturnCode": 0, "campaignId": "spec175-M01-1750001",
         "expectedTerminal": False, "providerRoleIndices": [0, 1, 2, 3],
         "requestId": "spec175-M01-1750001", "artifacts": [],
+        "terminalEvidence": {
+            "schema": "ndnsf-di-spec175-terminal-evidence-v1",
+            "status": "PASS", "resultWrittenAfterProcessExit": True,
+            "abortObserved": False, "childExitCodes": {"user.log": 0},
+            "intentionalShutdownSignals": {},
+            "unexpectedSignalExits": {},
+            "survivingOwnedProcesses": [],
+        },
     }
     path = run / "spec175-case-result.json"
     path.write_text(__import__("json").dumps(result), encoding="utf-8")

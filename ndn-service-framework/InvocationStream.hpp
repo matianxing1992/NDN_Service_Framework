@@ -2,6 +2,7 @@
 #define NDN_SERVICE_FRAMEWORK_INVOCATION_STREAM_HPP
 
 #include "common.hpp"
+#include "ControllerVersion.hpp"
 
 #include <array>
 #include <chrono>
@@ -80,6 +81,7 @@ enum : uint32_t {
   ConversationExpiresAtType = 0xF696,
   ConversationCommitStatusType = 0xF697,
   ConversationTurnCompletionType = 0xF698,
+  StreamControllerVersionType = 0xF699,
 };
 } // namespace tlv
 
@@ -393,6 +395,11 @@ struct StreamRequestOptions
   // Absolute deadline sealed into the request so both endpoints derive the
   // same StreamBindingV1 digest.
   uint64_t deadlineEpochMs = 0;
+  // The authenticated ControllerVersion is carried once in the stream
+  // invocation options and then included in the StreamBinding digest.  It is
+  // optional for legacy unprotected streams; request-scoped/revocable paths
+  // must populate it before validation.
+  std::optional<ControllerVersion> controllerVersion;
   // Exact HybridMessageEnvelope wire. It is allowed only for an explicit
   // selection-free Targeted request; combined Request validation owns that
   // transport-path decision.
@@ -778,6 +785,10 @@ struct StreamBinding
   StreamDigest eventKeyCommitment{};
   ndn::Buffer userToken;
   uint64_t policyEpoch = 0;
+  // If present, this is the exact Controller authority version used to
+  // authorize the invocation. It is included in canonicalBytes() so every
+  // event digest is version-bound without repeating the version per event.
+  std::optional<ControllerVersion> controllerVersion;
   uint64_t deadlineEpochMs = 0;
 
   void validate() const;
@@ -909,6 +920,10 @@ public:
   using CompletionCallback = std::function<void(const ResponseMessage&)>;
   using ErrorCallback = std::function<void(const StreamedInvocationError&)>;
   using RetryCallback = std::function<void(const ndn::Name&)>;
+  // Checked immediately before an event is handed to application code.  This
+  // closes the race between asynchronous Data validation/buffering and a
+  // Controller revocation update.
+  using AuthorizationCallback = std::function<bool()>;
   // Called only when the bounded retry state machine consumes retry budget.
   // Initial exact-interest prefetches use RetryCallback but must not be
   // reported as retransmissions.
@@ -935,6 +950,7 @@ public:
    * cannot be lost before the first inactivity timer fires.
    */
   void prefetchWindow();
+  void setAuthorizationCallback(AuthorizationCallback callback);
   bool accept(const ndn::Data& data);
   bool acceptResponse(const ResponseMessage& response);
   void onInactivityTimeout(std::chrono::steady_clock::time_point now);
@@ -978,6 +994,7 @@ private:
   ErrorCallback onError_;
   RetryCallback onRetry_;
   RetryAccountingCallback onRetryAccounting_;
+  AuthorizationCallback authorization_;
   BoundedStreamQueue<CallbackTask> callbackQueue_;
   std::thread callbackThread_;
   mutable std::mutex mutex_;

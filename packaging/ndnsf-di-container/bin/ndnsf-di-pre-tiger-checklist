@@ -19,6 +19,9 @@ SCHEMA = "ndnsf-itiger-pre-submit-checklist-v1"
 GATES = {"control", "stage-readiness", "functional", "performance"}
 COMMON_CHECKS = {
     "candidate-source-freshness",
+    "candidate-closure-manifest",
+    "candidate-invalidation-matrix",
+    "proven-baseline-exact-delta",
     "release-identity",
     "local-sif-route",
     "cluster-substrate",
@@ -37,6 +40,7 @@ COMMON_CHECKS = {
     "result-boundary-label",
     "promotion-hash-config-delta",
     "credential-secret-scan",
+    "predispatch-no-side-effects",
 }
 MODEL_CHECKS = {
     "current-sif-tiger-control",
@@ -48,6 +52,7 @@ MODEL_CHECKS = {
 }
 FUNCTIONAL_CHECKS = {
     "functional-bundle-identity-closure",
+    "repository-service-route-readiness",
 }
 
 

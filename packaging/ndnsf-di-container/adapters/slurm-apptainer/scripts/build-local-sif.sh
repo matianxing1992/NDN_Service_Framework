@@ -220,17 +220,24 @@ previous = json.loads(host_path.read_text(encoding="utf-8"))
 local_rows = {row["path"]: row.get("sha256") for row in local_source.get("files", [])}
 # The G0/G3 source seal covers the whole Spec175 qualification subject, while
 # workspace.tar intentionally contains only source needed to build/runtime the
-# SIF.  Tests, host preflights, and submission/checklist tooling are host-only;
-# the replay driver and workload are the explicit packaging-owned exceptions
-# that must remain in the archive.  Do not silently allow an omitted runtime
-# path: an unclassified omission is still a hard candidate failure.
+# SIF.  Tests, analysis/gate scripts, host preflights, and submission/checklist
+# tooling are host-only.  The replay driver, workload, and workload builder are
+# explicit exceptions that must remain in the archive.  Do not silently allow
+# an omitted runtime path: an unclassified omission is still a hard candidate
+# failure.
 host_only_prefixes = (
     "tests/",
     "packaging/ndnsf-di-container/",
+    "scripts/",
 )
 runtime_archive_paths = {
     "packaging/ndnsf-di-container/jobs/spec175/replay-exact-sif.py",
     "packaging/ndnsf-di-container/jobs/spec175/workload.json",
+    "scripts/build_spec175_workload.py",
+    # Spec180's remote supervisor enters the sealed image and invokes this
+    # candidate-bound shim.  It is deliberately archived as runtime code,
+    # while the release/validation scripts remain host-only.
+    "scripts/run_spec180_case.py",
 }
 for path, row in previous.get("dirtyFiles", {}).items():
     expected = row.get("sha256")

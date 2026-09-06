@@ -112,8 +112,23 @@ def main() -> int:
         ),
         "usesExactSif": "SPEC175_RUNTIME_SIF" in driver_text,
         "doesNotEmbedMiniNdn": "replay_root" not in driver_text,
-        "usesThreeRepetitions": "REPETITIONS = 3" in driver_text,
-        "requiresFortyTwoEntries": "len(entries) == EXPECTED_ENTRIES" in driver_text,
+        "usesManifestDrivenEntries": (
+            'host["entries"]' in driver_text and
+            'for index, registered in enumerate(host_entries)' in driver_text
+        ),
+        "doesNotRequireHistoricalMatrix": "EXPECTED_ENTRIES" not in driver_text,
+        "usesPerCaseWatchdog": (
+            "CASE_WATCHDOG_SECONDS" in driver_text and
+            "communicate(timeout=timeout)" in driver_text
+        ),
+        "requiresAllFourProviderReadiness": (
+            "allFourReady" in driver_text and
+            "readyCount" in driver_text
+        ),
+        "emitsNotRunRows": (
+            '"notRunEntries"' in driver_text and
+            '"NOT_RUN_AFTER_FIRST_INCOMPLETE"' in driver_text
+        ),
         "forwardsControllerCertificate": (
             'NDNSF_CONTROLLER_CERT_FILE="${NDNSF_CONTROLLER_CERT_FILE:-}"'
             in production_text

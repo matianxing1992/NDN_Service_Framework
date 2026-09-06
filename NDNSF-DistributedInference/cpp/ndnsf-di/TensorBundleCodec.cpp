@@ -613,7 +613,7 @@ validateNamedTensor(const NamedTensor& tensor)
       throw std::invalid_argument("tensor bundle tensor dimension must be bounded and non-negative");
     }
     const auto value = static_cast<std::uint64_t>(dim);
-    if (elements > std::numeric_limits<std::uint64_t>::max() / value) {
+    if (value != 0 && elements > std::numeric_limits<std::uint64_t>::max() / value) {
       throw std::invalid_argument("tensor bundle tensor shape overflows element count");
     }
     elements *= value;

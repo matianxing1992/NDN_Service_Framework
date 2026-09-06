@@ -355,6 +355,26 @@ authorization or replay resistance. When the cached token pool is exhausted,
 the next `RequestServiceTargeted(...)` call automatically uses the bootstrap
 flow again.
 
+### Request-scoped confidentiality
+
+For a runtime configured with a Controller and an installed, signed
+`ControllerVersion`, ordinary V2 requests use request-scoped confidentiality by
+default. NAC-ABE protects only the discovery descriptor before Provider
+selection. After selection, the User publishes an exact-name Input Data packet
+and the Provider returns inline or segmented Response Data encrypted with fresh
+request keys and bound to the requesting User, selected Provider, request,
+attempt, and ControllerVersion. A request-scoped Targeted call uses the bounded
+bootstrap/ACK/Selection path so it has a recipient-bound key envelope; the
+token-only Targeted fast path is retained for non-request-scoped compatibility
+traffic. The old service-wide response-key carrier and its temporary
+`NDNSF_REQUEST_SCOPED_COMPATIBILITY` rollback switch were removed after the
+cross-user confidentiality and ControllerVersion-revocation MiniNDN gates
+passed (Spec179 T012); the request-scoped path is the only V2 protected
+invocation mode on a configured Controller runtime, and a stale
+`NDNSF_REQUEST_SCOPED_COMPATIBILITY=1` environment variable is ignored.
+A large response without request-scoped invocation state now fails closed with
+a typed error instead of falling back to the removed service-wide carrier.
+
 ### Choosing the transfer API
 
 NDNSF separates continuous publication from exact-name object transfer:
@@ -725,7 +745,11 @@ The controller does not issue service invocation tokens. Service invocation uses
 
 This PermissionResponse encryption is not NAC-ABE.
 
-NAC-ABE remains the runtime encryption mechanism for NDNSF service request and response messages, future selection payloads, content keys, IMS, and SVS-backed runtime publication.
+For request-scoped V2 invocations, NAC-ABE is limited to service-level
+discovery authorization. Request input and results use the per-invocation
+AES-GCM keys described above. The older service-wide response-key carrier was
+removed after the migration MiniNDN gate passed; it is not an automatic
+fallback, and non-request-scoped large responses fail closed.
 
 Runtime certificate selection separates encryption from signing at startup.
 NAC-ABE and PermissionResponse unwrap currently require an RSA-capable identity

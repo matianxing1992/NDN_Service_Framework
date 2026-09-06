@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+import os
 from io import BytesIO
 from pathlib import Path
 import re
@@ -743,9 +744,10 @@ def _cached_session(model_path: str | Path) -> CachedSession:
         session = _SESSION_CACHE.get(key)
         if session is not None:
             return CachedSession(session, True, _elapsed_ms(start))
+    providers = ort_provider_chain()
     session = ort.InferenceSession(
         str(path),
-        providers=["CPUExecutionProvider"],
+        providers=providers,
     )
     with _SESSION_CACHE_LOCK:
         cached = _SESSION_CACHE.get(key)
@@ -753,6 +755,33 @@ def _cached_session(model_path: str | Path) -> CachedSession:
             _SESSION_CACHE[key] = session
             return CachedSession(session, False, _elapsed_ms(start))
         return CachedSession(cached, True, _elapsed_ms(start))
+
+
+def ort_provider_chain() -> list[str]:
+    """Return the allowlisted ONNX Runtime provider chain.
+
+    The Tiger functional gate maps the three model roles to CUDA device 0;
+    the local CPU ladder keeps the default CPU provider.  An explicit
+    ``NDNSF_ORT_PROVIDERS`` value selects the chain from the closed
+    allowlist; an unknown or unavailable provider fails before execution.
+    """
+    declared = os.environ.get("NDNSF_ORT_PROVIDERS", "").strip()
+    if not declared:
+        return ["CPUExecutionProvider"]
+    chain = [part.strip() for part in declared.split(",") if part.strip()]
+    if not chain:
+        raise ValueError("NDNSF_ORT_PROVIDERS must name at least one provider")
+    allowed = {"CPUExecutionProvider", "CUDAExecutionProvider"}
+    if any(provider not in allowed for provider in chain):
+        raise ValueError(
+            "NDNSF_ORT_PROVIDERS contains a provider outside the allowlist")
+    available = set(ort.get_available_providers())
+    missing = [provider for provider in chain if provider not in available]
+    if missing:
+        raise ValueError(
+            "NDNSF_ORT_PROVIDERS names unavailable providers: "
+            + ", ".join(missing))
+    return chain
 
 
 def _model_digest(path: Path, size: int, mtime_ns: int) -> str:

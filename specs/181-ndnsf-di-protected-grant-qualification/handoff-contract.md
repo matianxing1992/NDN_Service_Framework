@@ -24,6 +24,10 @@
 T009 生成 `evidence/development-delivery.json`，schema 为
 `spec181-development-delivery-v1`。以下为必填语义，不是当前交付实例。
 
+具体路径/函数、recipe、源码与证据校验契约见
+[Local Development Delivery Tool](contracts/development-delivery-tool.md)。
+工具的结构/完整性检查不能替代 T007 代码审查或 T008 实际执行。
+
 | Field | Required meaning |
 |---|---|
 | `sourceRevision` | 本地审计与 T008 实际验证的 40-hex commit；无未记录源码差异 |

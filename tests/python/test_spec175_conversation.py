@@ -886,6 +886,85 @@ def test_provider_manager_host_prefetch_is_single_flight_and_pinned():
     manager.unpin(item)
 
 
+def test_provider_manager_pause_to_host_materializes_distinct_host_state():
+    manager = ProviderConversationStateManager(
+        provider_identity="/p/0", provider_boot_id="boot-1",
+        gpu_byte_quota=1024, host_byte_quota=1024)
+    item = corrected_receipt("/LLM/Pipeline/Stage/0")
+    device_state = {"kv": object()}
+    manager.put_request_local(
+        "/request/offload", item.role_name, device_state, logical_bytes=128)
+    manager.promote_request_local(
+        request_id="/request/offload", role=item.role_name, receipt=item,
+        logical_bytes=128)
+
+    host_state = {"kv": bytearray(b"host-state")}
+    paused = manager.pause_to_host(
+        item, copy_state=lambda value: host_state if value is device_state else None)
+
+    assert paused.residency_tier is ResidencyTier.HOST_RESIDENT
+    assert paused.lifecycle is StateLifecycle.IDLE
+    assert paused.opaque_state is host_state
+    assert paused.opaque_state is not device_state
+    assert paused.transfer_bytes == 128
+
+
+def test_provider_manager_pause_copy_failure_restores_gpu_entry():
+    manager = ProviderConversationStateManager(
+        provider_identity="/p/0", provider_boot_id="boot-1",
+        gpu_byte_quota=1024, host_byte_quota=1024)
+    item = corrected_receipt("/LLM/Pipeline/Stage/0")
+    device_state = {"kv": object()}
+    manager.put_request_local(
+        "/request/offload-failure", item.role_name, device_state,
+        logical_bytes=128)
+    manager.promote_request_local(
+        request_id="/request/offload-failure", role=item.role_name,
+        receipt=item, logical_bytes=128)
+
+    with pytest.raises(RuntimeError, match="device-to-host failed"):
+        manager.pause_to_host(
+            item,
+            copy_state=lambda _value: (_ for _ in ()).throw(
+                RuntimeError("device-to-host failed")))
+
+    current = manager.lookup(item)
+    assert current is not None
+    assert current.residency_tier is ResidencyTier.GPU_RESIDENT
+    assert current.lifecycle is StateLifecycle.IDLE
+    assert current.opaque_state is device_state
+
+
+def test_provider_manager_acquire_uses_host_to_gpu_copy_callback():
+    manager = ProviderConversationStateManager(
+        provider_identity="/p/0", provider_boot_id="boot-1",
+        gpu_byte_quota=1024, host_byte_quota=1024)
+    item = corrected_receipt("/LLM/Pipeline/Stage/0")
+    host_state = {"kv": bytearray(b"host")}
+    manager.put_request_local(
+        "/request/parent", item.role_name, host_state, logical_bytes=128)
+    manager.promote_request_local(
+        request_id="/request/parent", role=item.role_name, receipt=item,
+        logical_bytes=128)
+    manager.pause_to_host(item)
+    continuation = ConversationContinuation(
+        item.conversation_id, ConversationInputMode.APPEND_DELTA,
+        parent_checkpoint=b"opaque-parent", expected_parent_context_epoch=1)
+    calls = []
+
+    acquired = manager.acquire_for_request(
+        continuation, request_id="/request/child", role=item.role_name,
+        receipt=item,
+        copy_state=lambda value: calls.append(value) or {"gpu": value})
+
+    assert calls == [host_state]
+    assert acquired.residency_tier is ResidencyTier.GPU_RESIDENT
+    assert acquired.opaque_state == {"gpu": host_state}
+    assert acquired.transfer_bytes == 128
+    manager.release_for_request(
+        continuation, request_id="/request/child", receipt=item)
+
+
 def test_provider_manager_prefetch_failure_restores_host_and_allows_retry():
     manager = ProviderConversationStateManager(
         provider_identity="/p/0", provider_boot_id="boot-1",
@@ -1072,6 +1151,56 @@ def test_provider_manager_provider_boot_invalidation_clears_all_state_views():
     assert manager.request_local_count() == 0
     assert manager.lookup(item) is None
     assert len(set(released)) == 2
+
+
+def test_provider_manager_exact_invalidation_preserves_other_conversations():
+    released = []
+
+    def zeroize(value):
+        released.append(value["conversation"])
+
+    manager = ProviderConversationStateManager(
+        provider_identity="/p/0", provider_boot_id="boot-1",
+        gpu_byte_quota=1024, host_byte_quota=1024,
+        zeroize_state=zeroize)
+    target = corrected_receipt(
+        "/LLM/Pipeline/Stage/0", conversation="target-conversation-0000000000000000",
+        request="/request/target")
+    survivor = corrected_receipt(
+        "/LLM/Pipeline/Stage/0", conversation="survivor-conversation-00000000000000",
+        request="/request/survivor")
+    for receipt, label in ((target, "target"), (survivor, "survivor")):
+        manager.put_request_local(
+            receipt.origin_request_id, receipt.role_name,
+            {"conversation": label}, logical_bytes=64)
+        manager.promote_request_local(
+            request_id=receipt.origin_request_id, role=receipt.role_name,
+            receipt=receipt, logical_bytes=64)
+
+    assert manager.invalidate_conversation_state(target) is True
+    assert manager.lookup(target) is None
+    assert manager.lookup(survivor) is not None
+    assert manager.provider_boot_id == "boot-1"
+    assert released == ["target"]
+    assert manager.invalidate_conversation_state(target) is False
+
+
+def test_provider_manager_exact_invalidation_rejects_pinned_state():
+    manager = ProviderConversationStateManager(
+        provider_identity="/p/0", provider_boot_id="boot-1",
+        gpu_byte_quota=1024, host_byte_quota=1024)
+    item = corrected_receipt("/LLM/Pipeline/Stage/0")
+    manager.put_request_local(
+        item.origin_request_id, item.role_name, {"kv": 1}, logical_bytes=64)
+    manager.promote_request_local(
+        request_id=item.origin_request_id, role=item.role_name,
+        receipt=item, logical_bytes=64)
+    manager.pin(item)
+
+    with pytest.raises(ConversationStateUnavailable, match="active"):
+        manager.invalidate_conversation_state(item)
+    manager.unpin(item)
+    assert manager.lookup(item) is not None
 
 
 def test_finalize_has_no_event_cursor_and_enforces_cap():

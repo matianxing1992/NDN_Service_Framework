@@ -492,6 +492,56 @@ namespace ndn_service_framework{
         }
 
         /**
+         * @brief Return the configured ndn-cxx validator used by the normal
+         *        trust-schema validation path.
+         *
+         * SegmentFetcher accepts ndn::security::Validator rather than the
+         * ndn-svs BaseValidator interface implemented by MessageValidator.
+         * Exposing this reference keeps segmented retrieval on the same
+         * configured trust schema instead of falling back to ValidatorNull.
+         */
+        ndn::security::Validator&
+        getConfiguredValidatorForSegmentFetcher() noexcept
+        {
+            return m_validator;
+        }
+
+        /**
+         * @brief Validate Data through the configured trust schema only.
+         *
+         * The normal SVS validator path has a local-certificate fast path for
+         * application Data.  Controller PolicyStatus is authority material,
+         * so it must not be accepted merely because a matching certificate is
+         * present in a local PIB.  This entry point deliberately bypasses the
+         * local signature shortcut and invokes ValidatorConfig, including its
+         * configured trust anchor and name rules.
+         */
+        void
+        validateWithConfiguredTrustSchema(
+          const ndn::Data& data,
+          const ndn::security::DataValidationSuccessCallback& successCb,
+          const ndn::security::DataValidationFailureCallback& failureCb)
+        {
+            if (m_callbackIo != nullptr) {
+                if (auto self = weak_from_this().lock()) {
+                    auto ownedData = data;
+                    auto ownedSuccessCb = successCb;
+                    auto ownedFailureCb = failureCb;
+                    boost::asio::post(
+                      *m_callbackIo,
+                      [self, data = std::move(ownedData),
+                       success = std::move(ownedSuccessCb),
+                       failure = std::move(ownedFailureCb)]() mutable {
+                        self->validateConfiguredDataOnFace(
+                          data, std::move(success), std::move(failure));
+                      });
+                    return;
+                }
+            }
+            validateConfiguredDataOnFace(data, successCb, failureCb);
+        }
+
+        /**
          * @brief Asynchronously validate @p data
          *
          * @note @p successCb and @p failureCb must not be nullptr
@@ -669,6 +719,32 @@ namespace ndn_service_framework{
         }
 
     private:
+        void
+        validateConfiguredDataOnFace(
+          const ndn::Data& data,
+          ndn::security::DataValidationSuccessCallback successCb,
+          ndn::security::DataValidationFailureCallback failureCb)
+        {
+            auto ownedSuccessCb = std::move(successCb);
+            auto ownedFailureCb = std::move(failureCb);
+            m_validator.validate(
+              data,
+              [success = std::move(ownedSuccessCb)](
+                const ndn::Data& validatedData) {
+                  if (success) {
+                      success(validatedData);
+                  }
+              },
+              [this, failure = std::move(ownedFailureCb)](
+                const ndn::Data& failedData,
+                const ndn::security::ValidationError& error) {
+                  ++m_failureCount;
+                  if (failure) {
+                      failure(failedData, error);
+                  }
+              });
+        }
+
         static std::unique_ptr<ndn::security::CertificateFetcher>
         makeCertificateFetcher(ndn::Face& fallbackFace, ndn::Face* callbackFace)
         {

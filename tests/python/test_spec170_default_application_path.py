@@ -11,9 +11,11 @@ from ndnsf_distributed_inference.adapters.qwen import (
     QWEN36_STAGE_ROLES, build_qwen_three_stage_adapter,
 )
 from ndnsf_distributed_inference.app_sdk.placement import (
-    AutomaticPlanningCoordinator, GenerationRequest, InferenceTaskRef,
-    MaterializedSplit, ModelRef, PublishedSplit, v3_provider_view_factory,
+    AutomaticPlanningCoordinator, CatalogSnapshotArtifactPublisher,
+    GenerationRequest, InferenceTaskRef, MaterializedSplit, ModelRef,
+    PublishedSplit, v3_provider_view_factory,
 )
+from ndnsf_distributed_inference.app_sdk.contracts import PreSplitCatalogSnapshot
 from ndnsf_distributed_inference.app_sdk.canonical_artifacts import (
     CanonicalArtifactBinding,
 )
@@ -124,6 +126,34 @@ class _PublisherThatMustNotRun:
         raise AssertionError("V3 requester must not resolve role artifacts")
 
 
+class _PreSplitPublisher:
+    """Return one exact publication for the explicit V3 catalog path."""
+
+    def __init__(self):
+        self.events = []
+
+    def publish(self, *args, **kwargs):  # pragma: no cover - pre-split only
+        raise AssertionError("pre-split V3 path must not publish a new split")
+
+    def resolve_existing(self, candidate, *, deadline_ms):
+        del deadline_ms
+        self.events.append("resolve-existing")
+        names = {}
+        digests = {}
+        for role in candidate.execution_plan.roles:
+            degree = int(candidate.tensor_degrees_by_role.get(role, 1))
+            values = tuple(candidate.artifacts_by_role[role])
+            for rank in range(degree):
+                key = role if degree == 1 else f"{role}#{rank}"
+                digests[key] = values[rank]
+                names[key] = f"/repo/exact/{key.replace('#', '/')}"
+        return PublishedSplit(
+            candidate_digest=candidate.candidate_digest,
+            artifact_digests_by_role=digests,
+            artifact_data_names_by_role=names,
+        )
+
+
 class _CanonicalEnsurer:
     def __init__(self):
         self.calls = []
@@ -208,7 +238,8 @@ class DefaultApplicationPathTest(unittest.TestCase):
         coordinator = AutomaticPlanningCoordinator(
             service_user=user, service_name="/inference",
             adapters={adapter.descriptor.name: adapter}, strategy=strategy,
-            provider_view_factory=v3_provider_view_factory(lambda offer: True),
+            provider_view_factory=v3_provider_view_factory(
+                lambda offer: True, require_ack_provenance=False),
             split_materializer=SimpleNamespace(materialize=lambda *a, **k: None),
             artifact_publisher=_PublisherThatMustNotRun(),
             budget=CandidateBudget(max_candidates=4, max_policy_ms=100),
@@ -288,63 +319,29 @@ class DefaultApplicationPathTest(unittest.TestCase):
             service_user=user, service_name="/inference",
             adapters={adapter.descriptor.name: adapter},
             strategy=PreSplitFirstStrategy(at_ms=1),
-            provider_view_factory=v3_provider_view_factory(lambda offer: True),
+            provider_view_factory=v3_provider_view_factory(
+                lambda offer: True, require_ack_provenance=False),
             split_materializer=SimpleNamespace(materialize=lambda *a, **k: None),
             artifact_publisher=_PublisherThatMustNotRun(),
             budget=CandidateBudget(max_candidates=4, max_policy_ms=100),
             ack_timeout_ms=100,
             group_epoch_key_wrapper=lambda _public_key, _epoch_key: b"wrapped",
         )
-        coordinator.request_streaming(
-            model=model, task=task, input=app_input, timeout_ms=5000,
-            request_id="spec170-v3-hybrid",
-            stream_options={
-                "mode": "Normal",
-                "allow_replacement": False,
-                "max_replacements": 0,
-                "generation_id": "a" * 32,
-            },
-            on_event=lambda _payload: None,
-            on_complete=lambda _payload: None,
-            on_error=lambda _error: None,
-        )
-        commit = user.collaboration.commits[0]
-        expected_roles = {
-            f"{QWEN36_STAGE_ROLES[0]}",
-            f"{QWEN36_STAGE_ROLES[1]}#0",
-            f"{QWEN36_STAGE_ROLES[1]}#1",
-            f"{QWEN36_STAGE_ROLES[2]}",
-        }
-        self.assertEqual(set(commit["role_provider_assignments"]), expected_roles)
-        self.assertEqual(set(commit["assignment_payloads_by_role"]), expected_roles)
-        self.assertEqual(set(commit["artifact_data_names"]), expected_roles)
-        self.assertEqual({role.role for role in commit["roles"]}, expected_roles)
-        self.assertEqual(
-            tuple(commit["dependencies"][0].producers),
-            (QWEN36_STAGE_ROLES[0],))
-        self.assertEqual(
-            tuple(commit["dependencies"][0].consumers),
-            (f"{QWEN36_STAGE_ROLES[1]}#0",
-             f"{QWEN36_STAGE_ROLES[1]}#1"))
-        projection = ProviderSelectionProjectionV3.from_bytes(
-            next(iter(commit["assignment_payloads_by_role"].values())))
-        self.assertEqual(
-            projection.dependencies[0]["redistributions"][0]["operation"],
-            "SCATTER")
-        self.assertEqual(
-            projection.dependencies[1]["redistributions"][0]["operation"],
-            "GATHER")
-        feedback = [
-            dependency for dependency in projection.dependencies
-            if dependency.get("operationKind") == "TOKEN_FEEDBACK"
-        ]
-        self.assertEqual(len(feedback), 1)
-        self.assertIsNotNone(projection.generation_contract)
-        self.assertEqual(
-            projection.generation_contract.streaming_operation_stride,
-            len(projection.dependencies),
-        )
-        self.assertEqual(projection.generation_contract.max_generated_tokens, 4)
+        with self.assertRaisesRegex(ValueError, "hybrid/TensorGroup"):
+            coordinator.request_streaming(
+                model=model, task=task, input=app_input, timeout_ms=5000,
+                request_id="spec170-v3-hybrid",
+                stream_options={
+                    "mode": "Normal",
+                    "allow_replacement": False,
+                    "max_replacements": 0,
+                    "generation_id": "a" * 32,
+                },
+                on_event=lambda _payload: None,
+                on_complete=lambda _payload: None,
+                on_error=lambda _error: None,
+            )
+        self.assertEqual(user.collaboration.commits, [])
 
     def test_default_presplit_strategy_uses_v3_and_provider_assembly(self):
         adapter = build_object_detection_adapter()
@@ -360,7 +357,8 @@ class DefaultApplicationPathTest(unittest.TestCase):
             service_name="/inference",
             adapters={adapter.descriptor.name: adapter},
             strategy=PreSplitFirstStrategy(at_ms=1),
-            provider_view_factory=v3_provider_view_factory(lambda offer: True),
+            provider_view_factory=v3_provider_view_factory(
+                lambda offer: True, require_ack_provenance=False),
             split_materializer=SimpleNamespace(materialize=lambda *a, **k: None),
             artifact_publisher=_PublisherThatMustNotRun(),
             budget=CandidateBudget(max_candidates=4, max_policy_ms=100),
@@ -387,6 +385,82 @@ class DefaultApplicationPathTest(unittest.TestCase):
         self.assertEqual(handle.decision.artifact_preparation.value,
                          "GENERATED")
 
+    def test_v3_explicit_catalog_resolves_artifacts_before_selection(self):
+        """A signed catalog must supply real role names before commit."""
+        adapter = build_object_detection_adapter()
+        task = InferenceTaskRef.from_adapter(adapter)
+        app_input = adapter.task.encode_input({"image_object": "/input/1"}, {})
+        model = ModelRef(
+            "example/detector", "sha256:" + "a" * 64,
+            "sha256:" + "b" * 64, source_revision="immutable-revision",
+        )
+        descriptor = adapter.describe_model(
+            model.model_name, model.content_digest, model.semantics_digest,
+            source_revision=model.source_revision)
+        graph = adapter.graph.inspect(descriptor)
+        candidates = tuple(adapter.splitter.enumerate_candidates(descriptor, graph))
+        snapshots = tuple(
+            PreSplitCatalogSnapshot(
+                alias=f"detector-{index}",
+                manifest_digest="sha256:" + format(index + 1, "064x"),
+                model_content_digest=model.content_digest,
+                semantics_digest=model.semantics_digest,
+                graph_digest=graph.graph_digest,
+                candidate_digest=candidate.candidate_digest,
+                backend="cpu",
+                precision=descriptor.precision,
+                artifact_data_names={
+                    role: (f"/repo/exact/{role}",)
+                    for role in candidate.execution_plan.roles
+                },
+                status="ACTIVE",
+                created_at_ms=index + 1,
+            )
+            for index, candidate in enumerate(candidates)
+        )
+        publisher = _PreSplitPublisher()
+        provider_calls = []
+
+        def catalog_provider():
+            provider_calls.append("catalog")
+            return snapshots
+
+        user = _V3ServiceUser()
+        coordinator = AutomaticPlanningCoordinator(
+            service_user=user,
+            service_name="/inference",
+            adapters={adapter.descriptor.name: adapter},
+            strategy=PreSplitFirstStrategy(at_ms=1),
+            provider_view_factory=v3_provider_view_factory(
+                lambda offer: True, require_ack_provenance=False),
+            split_materializer=SimpleNamespace(
+                materialize=lambda *a, **k: self.fail("must not materialize")),
+            artifact_publisher=publisher,
+            catalog_snapshot_provider=catalog_provider,
+            budget=CandidateBudget(max_candidates=4, max_policy_ms=100),
+            ack_timeout_ms=100,
+            group_epoch_key_wrapper=lambda _public_key, _epoch_key: b"wrapped",
+        )
+        handle = coordinator.generate(GenerationRequest(
+            model=model, task=task, input=app_input, timeout_ms=5000,
+            request_id="spec180-v3-catalog-preparation",
+        ))
+        self.assertEqual(publisher.events, ["resolve-existing"])
+        self.assertEqual(provider_calls, ["catalog"])
+        self.assertEqual(handle.decision.artifact_preparation.value, "PRE_SPLIT")
+        self.assertTrue(all(
+            value.startswith("/repo/exact/")
+            for value in user.collaboration.commits[0]["artifact_data_names"].values()))
+
+        bad_snapshots = tuple(
+            replace(snapshot, backend="unsupported-backend")
+            for snapshot in snapshots
+        )
+        bad_publisher = CatalogSnapshotArtifactPublisher(
+            lambda: bad_snapshots)
+        with self.assertRaisesRegex(ValueError, "backend mismatch"):
+            bad_publisher.resolve_existing(candidates[0], deadline_ms=10**15)
+
     def test_v3_ensures_canonical_artifacts_only_after_ack_closed(self):
         adapter = build_object_detection_adapter()
         task = InferenceTaskRef.from_adapter(adapter)
@@ -402,7 +476,8 @@ class DefaultApplicationPathTest(unittest.TestCase):
             service_name="/inference",
             adapters={adapter.descriptor.name: adapter},
             strategy=PreSplitFirstStrategy(at_ms=1),
-            provider_view_factory=v3_provider_view_factory(lambda offer: True),
+            provider_view_factory=v3_provider_view_factory(
+                lambda offer: True, require_ack_provenance=False),
             split_materializer=SimpleNamespace(materialize=lambda *a, **k: None),
             artifact_publisher=_PublisherThatMustNotRun(),
             canonical_artifact_ensurer=ensurer,
@@ -434,7 +509,8 @@ class DefaultApplicationPathTest(unittest.TestCase):
             service_user=user, service_name="/inference",
             adapters={adapter.descriptor.name: adapter},
             strategy=PreSplitFirstStrategy(at_ms=1),
-            provider_view_factory=v3_provider_view_factory(lambda offer: True),
+            provider_view_factory=v3_provider_view_factory(
+                lambda offer: True, require_ack_provenance=False),
             split_materializer=SimpleNamespace(materialize=lambda *a, **k: None),
             artifact_publisher=_PublisherThatMustNotRun(),
             canonical_artifact_ensurer=ensurer,
@@ -482,7 +558,8 @@ class DefaultApplicationPathTest(unittest.TestCase):
             service_user=user, service_name="/inference",
             adapters={adapter.descriptor.name: adapter},
             strategy=_CrossProviderStrategy(at_ms=1),
-            provider_view_factory=v3_provider_view_factory(lambda offer: True),
+            provider_view_factory=v3_provider_view_factory(
+                lambda offer: True, require_ack_provenance=False),
             split_materializer=SimpleNamespace(materialize=lambda *a, **k: None),
             artifact_publisher=_PublisherThatMustNotRun(),
             budget=CandidateBudget(max_candidates=4, max_policy_ms=100),
@@ -536,7 +613,8 @@ class DefaultApplicationPathTest(unittest.TestCase):
             service_user=user, service_name="/inference",
             adapters={adapter.descriptor.name: adapter},
             strategy=_CrossProviderStrategy(at_ms=1),
-            provider_view_factory=v3_provider_view_factory(lambda offer: True),
+            provider_view_factory=v3_provider_view_factory(
+                lambda offer: True, require_ack_provenance=False),
             split_materializer=SimpleNamespace(materialize=lambda *a, **k: None),
             artifact_publisher=_PublisherThatMustNotRun(),
             budget=CandidateBudget(max_candidates=4, max_policy_ms=100),

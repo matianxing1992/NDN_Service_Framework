@@ -2,10 +2,12 @@
 """Validate the Spec175 functional bundle before a Tiger allocation.
 
 The control bundle used by G4T is deliberately not a functional workload.  A
-functional submission must carry the Qwen ONNX command lines, the frozen
-three-stage workload identity, and six measured invocation records.  This
-small validator runs on the submit host and is intentionally independent of
-Apptainer, SSH, Slurm, and any operator-local installation.
+functional submission must carry the Qwen ONNX command lines and the frozen
+three-stage workload identity.  A formal bundle records the actual fresh
+Provider/User process groups and binds each group to its exact ordered campaign;
+an unexecuted list of claimed invocations is not evidence.
+This small validator runs on the submit host and is intentionally independent
+of Apptainer, SSH, Slurm, and any operator-local installation.
 """
 
 from __future__ import annotations
@@ -19,15 +21,25 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA = "ndnsf-di-spec175-functional-bundle-v1"
-EXPECTED_GATES = {"multi-provider", "conversation-residency", "performance"}
+SCHEMA_V1 = "ndnsf-di-spec175-functional-bundle-v1"
+SCHEMA_V2 = "ndnsf-di-spec175-functional-bundle-v2"
+SCHEMA = SCHEMA_V2
+EXPECTED_GATES = {
+    "diagnostic-multi-provider",
+    "multi-provider",
+    "conversation-residency",
+    "performance",
+}
 EXPECTED_REPOSITORY = "Qwen/Qwen3.6-27B"
 EXPECTED_REVISION = "6a9e13bd6fc8f0983b9b99948120bc37f49c13e9"
+EXPECTED_WORKLOAD_SHA256 = "420299721682c76ae6538e05583a9f891fb05be3264cf56d635a278b771aa90d"
 EXPECTED_ROLES = (
     "/LLM/Pipeline/Stage/0",
     "/LLM/Pipeline/Stage/1",
     "/LLM/Pipeline/Stage/2",
 )
+G6C_ORACLE_SCHEMA = "ndnsf-di-spec175-g6c-oracle-v1"
+G6C_CAMPAIGN_SCHEMA = "ndnsf-di-spec175-conversation-residency-campaign-v1"
 FORBIDDEN_KEYS = {
     "assignments",
     "placement",
@@ -179,6 +191,268 @@ def _validate_model_identity(path: Path, errors: list[str]) -> None:
         actual = (layer_range.get("start"), layer_range.get("endExclusive"))
         if actual != expected:
             errors.append(f"stage layer range {actual!r} does not equal {expected!r}")
+        metadata = item.get("metadata")
+        if not isinstance(metadata, dict):
+            errors.append("stage manifest entry lacks ONNX state metadata")
+            continue
+        if metadata.get("sequencePolicy") != "stateful-prefill-decode-v1":
+            errors.append(
+                "stage manifest sequencePolicy must be stateful-prefill-decode-v1")
+        expected_state_inputs = {
+            "attention_kv_in", "recurrent_state_in", "convolution_state_in"}
+        expected_state_outputs = {
+            "attention_kv_out", "recurrent_state_out", "convolution_state_out"}
+        if set(metadata.get("stateInputNames", ())) != expected_state_inputs:
+            errors.append("stage manifest stateInputNames are incomplete")
+        if set(metadata.get("stateOutputNames", ())) != expected_state_outputs:
+            errors.append("stage manifest stateOutputNames are incomplete")
+
+
+def _load_json(path: Path | None, label: str, errors: list[str]) -> dict[str, Any]:
+    if path is None:
+        return {}
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        errors.append(f"invalid JSON in {label}: {exc}")
+        return {}
+    if not isinstance(document, dict):
+        errors.append(f"{label}: root must be an object")
+        return {}
+    _reject_forbidden_keys(document, errors, label)
+    return document
+
+
+def _validate_workload(path: Path | None, errors: list[str]) -> dict[str, Any]:
+    document = _load_json(path, "workload", errors)
+    if path is None:
+        return document
+    if _sha256(path) != EXPECTED_WORKLOAD_SHA256:
+        errors.append(
+            "workload must equal the frozen Spec175 P1/P2 workload digest")
+    if document.get("schema") != "ndnsf-di-spec175-workload-v1":
+        errors.append("workload schema must be ndnsf-di-spec175-workload-v1")
+    model = document.get("model")
+    if not isinstance(model, dict) or model.get("repository") != EXPECTED_REPOSITORY \
+            or model.get("revision") != EXPECTED_REVISION \
+            or model.get("modality") != "text-only" \
+            or model.get("mtpEnabled") is not False:
+        errors.append("workload model identity does not match the frozen subject")
+    generation = document.get("generation")
+    expected_generation = {
+        "doSample": False,
+        "maxEvents": 65,
+        "maxGeneratedTokens": 64,
+        "requestDeadlineMs": 120000,
+        "samplingMode": "greedy",
+        "thinkingMode": "disabled",
+    }
+    if not isinstance(generation, dict):
+        errors.append("workload generation must be an object")
+    else:
+        for key, expected in expected_generation.items():
+            if generation.get(key) != expected:
+                errors.append(f"workload generation {key} must equal {expected!r}")
+        eos = generation.get("eosTokenIds")
+        if not isinstance(eos, list) or not eos or any(
+                isinstance(token, bool) or not isinstance(token, int) for token in eos):
+            errors.append("workload eosTokenIds must be a nonempty integer list")
+    prompts = document.get("prompts")
+    if not isinstance(prompts, list) or [
+            item.get("id") if isinstance(item, dict) else None for item in prompts
+    ] != ["P1", "P2"]:
+        errors.append("workload must contain the frozen P1 and P2 prompts")
+    return document
+
+
+def _validate_oracle(path: Path | None, workload_digest: str,
+                     errors: list[str]) -> dict[str, list[int]]:
+    document = _load_json(path, "g5Oracle", errors)
+    if not document:
+        return {}
+    if document.get("schemaVersion") != "ndnsf-di-spec175-g5-oracle-v1":
+        errors.append("G5 oracle schema must be ndnsf-di-spec175-g5-oracle-v1")
+    if _digest(document.get("workloadSha256")) != workload_digest:
+        errors.append("G5 oracle workload digest does not match the bound workload")
+    model = document.get("model")
+    if not isinstance(model, dict) or model.get("repository") != EXPECTED_REPOSITORY \
+            or model.get("revision") != EXPECTED_REVISION:
+        errors.append("G5 oracle model identity does not match the frozen subject")
+    prompts = document.get("prompts")
+    references: dict[str, list[int]] = {}
+    if not isinstance(prompts, list):
+        errors.append("G5 oracle prompts must be a list")
+        return references
+    for index, prompt in enumerate(prompts):
+        if not isinstance(prompt, dict):
+            errors.append(f"G5 oracle prompt {index} must be an object")
+            continue
+        prompt_id = str(prompt.get("promptId", ""))
+        tokens = prompt.get("referenceGeneratedTokenIds")
+        if prompt_id in references or prompt_id not in {"P1", "P2"}:
+            errors.append("G5 oracle must contain unique P1 and P2 records")
+            continue
+        if not isinstance(tokens, list) or not tokens or any(
+                isinstance(token, bool) or not isinstance(token, int) or token < 0
+                for token in tokens):
+            errors.append(f"G5 oracle {prompt_id} reference tokens are invalid")
+            continue
+        if not isinstance(prompt.get("decodedTextBytes"), int) \
+                or prompt.get("decodedTextBytes", 0) <= 0 \
+                or _digest(prompt.get("decodedTextSha256")) is None:
+            errors.append(f"G5 oracle {prompt_id} decoded transcript is empty or unbound")
+        references[prompt_id] = list(tokens)
+    if set(references) != {"P1", "P2"}:
+        errors.append("G5 oracle must contain exactly P1 and P2")
+    return references
+
+
+def _validate_campaign(
+    document: dict[str, Any],
+    *,
+    label: str,
+    workload: dict[str, Any],
+    workload_digest: str,
+    oracle_digest: str,
+    references: dict[str, list[int]],
+    errors: list[str],
+) -> list[tuple[str, str, int]]:
+    if document.get("schemaVersion") != "ndnsf-di-qwen-generation-campaign-v2":
+        errors.append(f"{label}: campaign schema must be v2")
+    if _digest(document.get("workloadSha256")) != workload_digest:
+        errors.append(f"{label}: workload digest does not match")
+    if _digest(document.get("oracleSha256")) != oracle_digest:
+        errors.append(f"{label}: G5 oracle digest does not match")
+    model = document.get("model")
+    if not isinstance(model, dict) or model.get("repository") != EXPECTED_REPOSITORY \
+            or model.get("revision") != EXPECTED_REVISION \
+            or model.get("modality") != "text-only" \
+            or model.get("mtpEnabled") is not False:
+        errors.append(f"{label}: model identity does not match the frozen subject")
+    generation = document.get("generation")
+    expected_generation = {
+        "strategy": "greedy",
+        "maxNewTokens": 64,
+        "maxEvents": 65,
+        "requestDeadlineMs": 120000,
+        "useCache": True,
+        "thinkingMode": "disabled",
+        "mtpEnabled": False,
+    }
+    if not isinstance(generation, dict):
+        errors.append(f"{label}: generation must be an object")
+    else:
+        for key, expected in expected_generation.items():
+            if generation.get(key) != expected:
+                rendered = "true" if expected is True else repr(expected)
+                errors.append(f"{label}: {key} must be {rendered}")
+        if not isinstance(generation.get("requireEos"), bool):
+            errors.append(f"{label}: requireEos must be boolean")
+    workload_prompts = {
+        str(item.get("id")): item
+        for item in workload.get("prompts", [])
+        if isinstance(item, dict)
+    }
+    eos = workload.get("generation", {}).get("eosTokenIds", [])
+    campaign_prompts: dict[str, dict[str, Any]] = {}
+    prompts = document.get("prompts")
+    if not isinstance(prompts, list) or not prompts:
+        errors.append(f"{label}: prompts must be a nonempty list")
+    else:
+        for index, prompt in enumerate(prompts):
+            if not isinstance(prompt, dict):
+                errors.append(f"{label}: prompt {index} must be an object")
+                continue
+            prompt_id = str(prompt.get("promptId", ""))
+            if prompt_id in campaign_prompts or prompt_id not in workload_prompts:
+                errors.append(f"{label}: prompt IDs must be unique frozen workload IDs")
+                continue
+            if prompt.get("formattedInputIds") != workload_prompts[prompt_id].get("inputTokenIds"):
+                errors.append(f"{label}: {prompt_id} input tokens differ from workload")
+            if prompt.get("referenceGeneratedTokenIds") != references.get(prompt_id):
+                errors.append(f"{label}: {prompt_id} reference tokens differ from G5 oracle")
+            if prompt.get("eosTokenIds") != eos:
+                errors.append(f"{label}: {prompt_id} EOS tokens differ from workload")
+            campaign_prompts[prompt_id] = prompt
+    schedule = document.get("schedule")
+    normalized: list[tuple[str, str, int]] = []
+    seen: set[tuple[str, str, int]] = set()
+    if not isinstance(schedule, list) or not schedule:
+        errors.append(f"{label}: schedule must be a nonempty list")
+        return normalized
+    for index, entry in enumerate(schedule):
+        if not isinstance(entry, dict):
+            errors.append(f"{label}: schedule entry {index} must be an object")
+            continue
+        prompt_id = str(entry.get("promptId", ""))
+        phase = str(entry.get("phase", ""))
+        repetition = entry.get("repetition")
+        if prompt_id not in campaign_prompts:
+            errors.append(f"{label}: schedule references an unbound prompt")
+            continue
+        if phase not in {"cold", "measured"}:
+            errors.append(f"{label}: formal schedule phase must be cold or measured")
+            continue
+        if isinstance(repetition, bool) or not isinstance(repetition, int) \
+                or repetition < 0:
+            errors.append(f"{label}: schedule repetition must be nonnegative")
+            continue
+        identity = (prompt_id, phase, repetition)
+        if identity in seen:
+            errors.append(f"{label}: schedule entries must be unique")
+            continue
+        seen.add(identity)
+        normalized.append(identity)
+    return normalized
+
+
+def _validate_g6c_campaign(
+    document: dict[str, Any],
+    oracle: dict[str, Any],
+    *,
+    label: str,
+    workload_digest: str,
+    g5_oracle_digest: str,
+    conversation_oracle_digest: str,
+    errors: list[str],
+) -> None:
+    if document.get("schemaVersion") != G6C_CAMPAIGN_SCHEMA:
+        errors.append(f"{label}: G6C campaign schema mismatch")
+    for field, expected in (
+        ("workloadSha256", workload_digest),
+        ("g5OracleSha256", g5_oracle_digest),
+        ("conversationOracleSha256", conversation_oracle_digest),
+    ):
+        if _digest(document.get(field)) != expected:
+            errors.append(f"{label}: {field} does not match")
+    model = document.get("model")
+    if not isinstance(model, dict) or model.get("repository") != EXPECTED_REPOSITORY \
+            or model.get("revision") != EXPECTED_REVISION:
+        errors.append(f"{label}: model identity mismatch")
+    for field in ("generation", "turnPairs", "unavailableRole"):
+        if document.get(field) != oracle.get(field):
+            errors.append(f"{label}: {field} differs from the sealed G6C oracle")
+    generation = document.get("generation")
+    if generation != {
+            "strategy": "greedy", "maxNewTokens": 8,
+            "maxEvents": 9, "requestDeadlineMs": 120000,
+            "useCache": True, "thinkingMode": "disabled",
+            "mtpEnabled": False}:
+        errors.append(f"{label}: G6C generation contract is not frozen")
+    pairs = document.get("turnPairs")
+    if (not isinstance(pairs, list) or len(pairs) != 2
+            or {str(item.get("caseId", "")) for item in pairs
+                if isinstance(item, dict)}
+            != {"two-turn", "paused-pressure"}):
+        errors.append(f"{label}: exactly two registered turn pairs are required")
+    unavailable = document.get("unavailableRole")
+    if (not isinstance(unavailable, dict)
+            or unavailable.get("role") not in EXPECTED_ROLES
+            or unavailable.get("expectedError")
+            != "CONVERSATION_STATE_UNAVAILABLE"
+            or not isinstance(unavailable.get("fallback"), dict)
+            or unavailable["fallback"].get("authorized") is not True):
+        errors.append(f"{label}: unavailable-role/fallback control is incomplete")
 
 
 def validate_bundle(bundle_path: Path, expected_gate: str) -> dict[str, Any]:
@@ -200,8 +474,12 @@ def validate_bundle(bundle_path: Path, expected_gate: str) -> dict[str, Any]:
     if not isinstance(manifest, dict):
         errors.append("functional manifest root must be an object")
         manifest = {}
-    if manifest.get("schemaVersion") != SCHEMA:
-        errors.append(f"functional manifest schema must equal {SCHEMA}")
+    schema_version = manifest.get("schemaVersion")
+    if schema_version not in {SCHEMA_V1, SCHEMA_V2}:
+        errors.append(
+            f"functional manifest schema must equal {SCHEMA_V1} or {SCHEMA_V2}")
+    if expected_gate != "diagnostic-multi-provider" and schema_version != SCHEMA_V2:
+        errors.append(f"formal gate requires {SCHEMA_V2}")
     if manifest.get("gate") != expected_gate:
         errors.append("functional manifest gate does not match submission gate")
     if not isinstance(manifest.get("candidateId"), str) or not manifest["candidateId"].strip():
@@ -222,29 +500,212 @@ def validate_bundle(bundle_path: Path, expected_gate: str) -> dict[str, Any]:
         _validate_model_identity(stage_path, errors)
     workload_path = _bound_bundle_file(bundle, manifest.get("workload"),
                                        "workload", errors)
-    campaign_path = _bound_bundle_file(bundle, manifest.get("generationCampaign"),
-                                       "generationCampaign", errors)
     planning_path = _bound_bundle_file(bundle, manifest.get("automaticPlanningManifest"),
                                        "automaticPlanningManifest", errors)
-    for path in (workload_path, campaign_path, planning_path):
-        if path is not None:
-            try:
-                json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as exc:
-                errors.append(f"invalid JSON in {path}: {exc}")
+    _load_json(planning_path, "automaticPlanningManifest", errors)
 
-    invocations = manifest.get("invocations")
-    if not isinstance(invocations, list) or len(invocations) != 6:
-        errors.append("functional manifest must contain exactly six invocations")
+    user_bindings: list[tuple[Path, Path | None, str]] = []
+    invocation_count = 0
+    process_group_count = 0
+    if schema_version == SCHEMA_V2:
+        workload = _validate_workload(workload_path, errors)
+        workload_digest = _sha256(workload_path) if workload_path is not None else ""
+        oracle_path = _bound_bundle_file(bundle, manifest.get("g5Oracle"),
+                                         "g5Oracle", errors)
+        oracle_digest = _sha256(oracle_path) if oracle_path is not None else ""
+        references = _validate_oracle(oracle_path, workload_digest, errors)
+        conversation_oracle: dict[str, Any] = {}
+        conversation_oracle_path = None
+        conversation_oracle_digest = ""
+        if expected_gate == "conversation-residency":
+            conversation_oracle_path = _bound_bundle_file(
+                bundle, manifest.get("conversationOracle"),
+                "conversationOracle", errors)
+            conversation_oracle = _load_json(
+                conversation_oracle_path, "conversationOracle", errors)
+            conversation_oracle_digest = (
+                _sha256(conversation_oracle_path)
+                if conversation_oracle_path is not None else "")
+            analyzer_path = _bound_bundle_file(
+                bundle, manifest.get("conversationAnalyzer"),
+                "conversationAnalyzer", errors)
+            if analyzer_path is not None:
+                try:
+                    analyzer_text = analyzer_path.read_text(encoding="utf-8")
+                except OSError as exc:
+                    errors.append(f"conversationAnalyzer cannot be read: {exc}")
+                else:
+                    if ("ndnsf-di-spec175-g6c-analysis-v1" not in analyzer_text
+                            or "LLM_PIPELINE_CONVERSATION_HOST_PAUSED"
+                            not in analyzer_text
+                            or "LLM_PIPELINE_CONVERSATION_PREFETCHED"
+                            not in analyzer_text):
+                        errors.append(
+                            "conversationAnalyzer lacks the frozen G6C oracle")
+            if conversation_oracle.get("schemaVersion") != G6C_ORACLE_SCHEMA:
+                errors.append("conversationOracle schema mismatch")
+            if _digest(conversation_oracle.get("workloadSha256")) \
+                    != workload_digest:
+                errors.append("conversationOracle workload binding mismatch")
+            if _digest(conversation_oracle.get("g5OracleSha256")) \
+                    != oracle_digest:
+                errors.append("conversationOracle G5 binding mismatch")
+        elif "conversationOracle" in manifest or "conversationAnalyzer" in manifest:
+            errors.append("conversation evidence helpers are allowed only for G6C")
+        if expected_gate == "performance":
+            analyzer_path = _bound_bundle_file(
+                bundle, manifest.get("performanceAnalyzer"),
+                "performanceAnalyzer", errors)
+            collector_path = _bound_bundle_file(
+                bundle, manifest.get("resourceCollector"),
+                "resourceCollector", errors)
+            if analyzer_path is not None:
+                try:
+                    analyzer_text = analyzer_path.read_text(encoding="utf-8")
+                except OSError as exc:
+                    errors.append(f"performanceAnalyzer cannot be read: {exc}")
+                else:
+                    for marker in (
+                            "ndnsf-di-spec175-g7-analysis-v1",
+                            "BOOTSTRAP_SEED = 1750003",
+                            "BOOTSTRAP_REPETITIONS = 10_000"):
+                        if marker not in analyzer_text:
+                            errors.append(
+                                "performanceAnalyzer lacks the frozen G7 contract")
+                            break
+            if collector_path is not None:
+                try:
+                    collector_text = collector_path.read_text(encoding="utf-8")
+                except OSError as exc:
+                    errors.append(f"resourceCollector cannot be read: {exc}")
+                else:
+                    if ("ndnsf-di-spec175-resource-sample-v1"
+                            not in collector_text or "nvidia-smi" not in collector_text):
+                        errors.append(
+                            "resourceCollector lacks the frozen GPU/process sampler")
+        elif "performanceAnalyzer" in manifest or "resourceCollector" in manifest:
+            errors.append("performance helpers are allowed only for G7")
+        groups = manifest.get("processGroups")
+        expected_groups = {
+            "diagnostic-multi-provider": 1,
+            "multi-provider": 7,
+            "conversation-residency": 1,
+            "performance": 3,
+        }[expected_gate]
+        if not isinstance(groups, list) or len(groups) != expected_groups:
+            errors.append(
+                f"functional manifest must contain exactly {expected_groups} "
+                "process group(s)")
+            groups = groups if isinstance(groups, list) else []
+        process_group_count = len(groups)
+        group_ids: list[str] = []
+        group_schedules: list[list[tuple[str, str, int]]] = []
+        for index, group in enumerate(groups):
+            label = f"processGroups[{index}]"
+            if not isinstance(group, dict):
+                errors.append(f"{label}: must be an object")
+                continue
+            group_id = str(group.get("id", ""))
+            if not re.fullmatch(r"[A-Za-z0-9._-]+", group_id):
+                errors.append(f"{label}: id must be a safe nonempty component")
+            group_ids.append(group_id)
+            campaign_key = (
+                "conversationCampaign"
+                if expected_gate == "conversation-residency"
+                else "generationCampaign")
+            campaign_path = _bound_bundle_file(
+                bundle, group.get(campaign_key),
+                f"{label}.{campaign_key}", errors)
+            user_path = _bound_bundle_file(
+                bundle, group.get("userArgs"), f"{label}.userArgs", errors)
+            campaign = _load_json(
+                campaign_path, f"{label}.{campaign_key}", errors)
+            if expected_gate == "conversation-residency":
+                _validate_g6c_campaign(
+                    campaign, conversation_oracle,
+                    label=f"{label}.{campaign_key}",
+                    workload_digest=workload_digest,
+                    g5_oracle_digest=oracle_digest,
+                    conversation_oracle_digest=conversation_oracle_digest,
+                    errors=errors)
+                schedule = []
+                invocation_count += 7
+            else:
+                schedule = _validate_campaign(
+                    campaign,
+                    label=f"{label}.{campaign_key}",
+                    workload=workload,
+                    workload_digest=workload_digest,
+                    oracle_digest=oracle_digest,
+                    references=references,
+                    errors=errors,
+                )
+                invocation_count += len(schedule)
+            group_schedules.append(schedule)
+            if user_path is not None:
+                user_bindings.append((user_path, campaign_path, group_id))
+        if len(set(group_ids)) != len(group_ids):
+            errors.append("process group IDs must be unique")
+        if "invocations" in manifest:
+            errors.append(
+                "formal v2 bundles must not claim invocations separately from processGroups")
+
+        if expected_gate == "multi-provider" and len(group_schedules) == 7:
+            if group_schedules[0] != [("P1", "cold", 0)]:
+                errors.append("G6 process group 0 must be the one excluded P1 cold run")
+            measured = [entry for schedule in group_schedules[1:] for entry in schedule]
+            expected_measured = [
+                (prompt_id, "measured", repetition)
+                for repetition in range(3)
+                for prompt_id in ("P1", "P2")
+            ]
+            if any(len(schedule) != 1 for schedule in group_schedules[1:]) \
+                    or sorted(measured) != sorted(expected_measured):
+                errors.append(
+                    "G6 requires six fresh one-sample measured process groups, "
+                    "three per P1/P2")
+        elif expected_gate == "performance" and len(group_schedules) == 3:
+            expected_schedule = [
+                ("P1", "cold", 0),
+                *[
+                    ("P1" if index % 2 == 0 else "P2", "measured", index // 2)
+                    for index in range(10)
+                ],
+            ]
+            if any(schedule != expected_schedule for schedule in group_schedules):
+                errors.append(
+                    "G7 requires three fresh processes with one cold P1 then "
+                    "ten alternating P1/P2 measured samples")
+        elif expected_gate == "conversation-residency":
+            if len(group_schedules) != 1:
+                errors.append("G6C requires exactly one persistent process group")
+        elif expected_gate == "diagnostic-multi-provider" \
+                and group_schedules and len(group_schedules[0]) != 1:
+            errors.append("diagnostic gate requires exactly one scheduled sample")
     else:
+        # Legacy v1 remains usable only for the explicitly non-qualifying
+        # diagnostic path.  It cannot establish process freshness for G6/G7.
+        campaign_path = _bound_bundle_file(bundle, manifest.get("generationCampaign"),
+                                           "generationCampaign", errors)
+        _load_json(workload_path, "workload", errors)
+        _load_json(campaign_path, "generationCampaign", errors)
+        invocations = manifest.get("invocations")
+        expected_invocations = 1
+        if not isinstance(invocations, list) or len(invocations) != expected_invocations:
+            errors.append(
+                "diagnostic v1 manifest must contain exactly 1 invocation(s)")
+            invocations = invocations if isinstance(invocations, list) else []
+        invocation_count = len(invocations)
         identifiers = [item.get("id") if isinstance(item, dict) else None
                        for item in invocations]
         if any(not isinstance(value, str) or not value.strip() for value in identifiers):
             errors.append("each invocation must have a nonempty id")
         if len(set(identifiers)) != len(identifiers):
             errors.append("invocation ids must be unique")
+        legacy_user = bundle / "user.args"
+        user_bindings.append((legacy_user, campaign_path, "legacy-diagnostic"))
 
-    required_files = ("nfd.conf", "controller.args", "user.args")
+    required_files = ("nfd.conf", "controller.args")
     for name in required_files:
         if not (bundle / name).is_file():
             errors.append(f"missing functional bundle file: {name}")
@@ -303,11 +764,38 @@ def validate_bundle(bundle_path: Path, expected_gate: str) -> dict[str, Any]:
                     )
                 if ready_offsets and start_offset >= 0 and min(ready_offsets) < start_offset:
                     errors.append("controller readiness marker precedes controller.start()")
+                if "app-envelope.key" not in controller_text:
+                    errors.append(
+                        "controller-wrapper.sh must create the request-envelope key")
     providers = sorted((bundle / "providers").glob("*.args")) if (bundle / "providers").is_dir() else []
     if len(providers) != 3:
         errors.append("functional bundle must contain exactly three provider .args files")
+    diagnostic_hardware = manifest.get("diagnosticHardware", {})
+    declared_device_map = diagnostic_hardware.get("providerDeviceMap", []) \
+        if isinstance(diagnostic_hardware, dict) else []
+    allow_shared_diagnostic_gpu = (
+        expected_gate == "diagnostic-multi-provider"
+        and diagnostic_hardware.get("gpuCount") == 1
+        and diagnostic_hardware.get("gpuType") == "h100_80gb"
+        and declared_device_map == ["cuda:0", "cuda:0", "cuda:0"]
+        and "not multi-GPU scaling evidence" in
+        str(diagnostic_hardware.get("claimBoundary", ""))
+    ) if isinstance(diagnostic_hardware, dict) else False
     seen_roles: set[str] = set()
     seen_devices: set[str] = set()
+    provider_devices: list[str] = []
+    g6c_pressure_id = ""
+    g6c_unavailable_id = ""
+    g6c_unavailable_role = ""
+    if expected_gate == "conversation-residency" and schema_version == SCHEMA_V2:
+        pairs = conversation_oracle.get("turnPairs", [])
+        pressure = next((item for item in pairs
+                         if isinstance(item, dict)
+                         and item.get("caseId") == "paused-pressure"), {})
+        unavailable = conversation_oracle.get("unavailableRole", {})
+        g6c_pressure_id = str(pressure.get("conversationId", ""))
+        g6c_unavailable_id = str(unavailable.get("conversationId", ""))
+        g6c_unavailable_role = str(unavailable.get("role", ""))
     for path in providers:
         values = _tokens(path, errors)
         command_values = _effective_command_tokens(values, errors, path)
@@ -315,21 +803,64 @@ def validate_bundle(bundle_path: Path, expected_gate: str) -> dict[str, Any]:
         role_values = _flag_values(command_values, "--roles")
         device_values = _flag_values(command_values, "--device")
         artifact_values = _flag_values(command_values, "--selection-local-artifact")
+        stage_manifest_values = _flag_values(
+            command_values, "--qwen-stage-manifest")
         if runtime != ["qwen-onnx"]:
             errors.append(f"{path}: provider runtime must be qwen-onnx")
+        if expected_gate != "diagnostic-multi-provider":
+            expected_stage_manifest = (
+                "/bundle/" + str(stage_path.relative_to(bundle))
+                if stage_path is not None else "")
+            if stage_manifest_values != [expected_stage_manifest]:
+                errors.append(
+                    f"{path}: Provider must bind the exact --qwen-stage-manifest")
         if role_values not in [[role] for role in EXPECTED_ROLES]:
             errors.append(f"{path}: provider must advertise one canonical stage role")
         elif role_values[0] in seen_roles:
             errors.append(f"duplicate Provider role: {role_values[0]}")
         else:
             seen_roles.add(role_values[0])
-        if len(device_values) != 1 or device_values[0] in seen_devices:
+        if len(device_values) != 1:
             errors.append(f"{path}: each Provider needs a unique CUDA device")
         else:
+            provider_devices.append(device_values[0])
+            if device_values[0] in seen_devices and not allow_shared_diagnostic_gpu:
+                errors.append(f"{path}: each Provider needs a unique CUDA device")
             seen_devices.add(device_values[0])
         for required in ("--require-cuda", "--require-onnx-runtime"):
             if required not in command_values:
                 errors.append(f"{path}: missing {required}")
+        for required in (
+            "--selection-dataflow-v3",
+            "--selection-model-type",
+            "--selection-gpu-capacity-mib",
+            "--selection-offered-gpu-mib",
+            "--selection-offer-lease-ms",
+            "--selection-max-prepare-ms",
+            "--selection-residency-ttl-ms",
+            "--selection-wal-path",
+            "--selection-storage-key-file",
+            "--selection-signing-key-file",
+            "--selection-residency-json",
+            "--selection-model-cache-dir",
+            "--repo-client-state-root",
+            "--selection-repo-registration",
+        ):
+            if required not in command_values:
+                errors.append(f"{path}: missing {required}")
+        if "--selection-dataflow-v2" in command_values:
+            errors.append(
+                f"{path}: --selection-dataflow-v2 is obsolete; "
+                "functional bundles must use --selection-dataflow-v3"
+            )
+        storage_keys = _flag_values(command_values, "--selection-storage-key-file")
+        signing_keys = _flag_values(command_values, "--selection-signing-key-file")
+        if len(storage_keys) != 1 or len(signing_keys) != 1 \
+                or storage_keys[0] == signing_keys[0]:
+            errors.append(f"{path}: selection storage and signing keys must be distinct")
+        if expected_gate == "diagnostic-multi-provider" \
+                and "--lazy-qwen-load" not in command_values:
+            errors.append(f"{path}: missing --lazy-qwen-load")
         if _flag_values(command_values, "--stages") != ["3"]:
             errors.append(f"{path}: --stages must be 3")
         if len(artifact_values) != 1:
@@ -339,28 +870,134 @@ def validate_bundle(bundle_path: Path, expected_gate: str) -> dict[str, Any]:
                 role_values[0] + "=/model/"):
             errors.append(
                 f"{path}: local stage artifact must be mounted below /model")
+        if expected_gate == "conversation-residency":
+            if "--spec175-host-tier-after-commit" not in command_values:
+                errors.append(f"{path}: G6C Provider must enable host-tier movement")
+            if _flag_values(
+                    command_values,
+                    "--spec175-host-tier-conversation-id") != [g6c_pressure_id]:
+                errors.append(f"{path}: G6C pressure conversation binding mismatch")
+            invalidation = _flag_values(
+                command_values, "--spec175-invalidate-conversation-id")
+            if role_values == [g6c_unavailable_role]:
+                if invalidation != [g6c_unavailable_id]:
+                    errors.append(
+                        f"{path}: unavailable role lacks its exact invalidation control")
+            elif invalidation:
+                errors.append(
+                    f"{path}: only the registered unavailable role may invalidate state")
 
-    user_values = _tokens(bundle / "user.args", errors) if (bundle / "user.args").is_file() else []
-    user_command_values = _effective_command_tokens(
-        user_values, errors, bundle / "user.args")
-    if _flag_values(user_command_values, "--runtime") != ["qwen-onnx"]:
-        errors.append("user.args: runtime must be qwen-onnx")
-    for required in ("--generation-campaign-manifest", "--automatic-planning-manifest",
-                     "--qwen-stage-manifest", "--stages"):
-        if required not in user_command_values:
-            errors.append(f"user.args: missing {required}")
-    if _flag_values(user_command_values, "--stages") != ["3"]:
-        errors.append("user.args: --stages must be 3")
-    tokenizer_values = _flag_values(user_command_values, "--qwen-tokenizer-dir")
-    stage_manifest_values = _flag_values(user_command_values, "--qwen-stage-manifest")
-    if len(tokenizer_values) != 1 or not tokenizer_values[0].startswith("/model/"):
-        errors.append("user.args: --qwen-tokenizer-dir must use the read-only /model mount")
-    if (len(stage_manifest_values) != 1
-            or not stage_manifest_values[0].startswith("/model/")):
-        errors.append("user.args: --qwen-stage-manifest must use the read-only /model mount")
-    if any(token in {"--provider-map", "--provider-role-map", "--placement"}
-           for token in user_command_values):
-        errors.append("user.args: caller-side Provider-role mapping is forbidden")
+    if diagnostic_hardware:
+        if expected_gate != "diagnostic-multi-provider":
+            errors.append("diagnosticHardware is forbidden for a formal gate")
+        if provider_devices != declared_device_map:
+            errors.append(
+                "diagnosticHardware providerDeviceMap does not match provider args")
+        if diagnostic_hardware.get("gpuCount") != len(set(provider_devices)):
+            errors.append(
+                "diagnosticHardware gpuCount does not match provider devices")
+
+    request_ids: list[str] = []
+    for user_path, campaign_path, group_id in user_bindings:
+        label = f"userArgs[{group_id}]"
+        if not user_path.is_file():
+            errors.append(f"{label}: missing argument file")
+            continue
+        user_values = _tokens(user_path, errors)
+        user_command_values = _effective_command_tokens(
+            user_values, errors, user_path)
+        if _flag_values(user_command_values, "--runtime") != ["qwen-onnx"]:
+            errors.append(f"{label}: runtime must be qwen-onnx")
+        campaign_required = (
+            ("--conversation-residency-manifest", "--conversation-evidence-json")
+            if expected_gate == "conversation-residency"
+            else ("--generation-campaign-manifest", "--generation-jsonl"))
+        for required in (
+            *campaign_required,
+            "--automatic-planning-manifest",
+            "--qwen-stage-manifest",
+            "--qwen-tokenizer-dir",
+            "--max-new-tokens",
+            "--stages",
+        ):
+            if required not in user_command_values:
+                errors.append(f"{label}: missing {required}")
+        if _flag_values(user_command_values, "--stages") != ["3"]:
+            errors.append(f"{label}: --stages must be 3")
+        if _flag_values(user_command_values, "--initial-sync-settle-s") != ["5"]:
+            errors.append(f"{label}: --initial-sync-settle-s must be 5")
+        if expected_gate == "diagnostic-multi-provider" \
+                and "/bundle/user-settle-wrapper.py" in user_command_values:
+            errors.append("diagnostic user must use the SIF-native settle option")
+        tokenizer_values = _flag_values(user_command_values, "--qwen-tokenizer-dir")
+        stage_manifest_values = _flag_values(user_command_values, "--qwen-stage-manifest")
+        if len(tokenizer_values) != 1 or not tokenizer_values[0].startswith("/model/"):
+            errors.append(
+                f"{label}: --qwen-tokenizer-dir must use the read-only /model mount")
+        if len(stage_manifest_values) != 1 \
+                or not stage_manifest_values[0].startswith("/model/"):
+            errors.append(
+                f"{label}: --qwen-stage-manifest must use the read-only /model mount")
+        if any(token in {"--provider-map", "--provider-role-map", "--placement"}
+               for token in user_command_values):
+            errors.append(f"{label}: caller-side Provider-role mapping is forbidden")
+        if schema_version == SCHEMA_V2:
+            expected_campaign_path = ""
+            if campaign_path is not None:
+                expected_campaign_path = "/bundle/" + str(
+                    campaign_path.relative_to(bundle)).replace("\\", "/")
+            if expected_gate == "conversation-residency":
+                if _flag_values(
+                        user_command_values,
+                        "--conversation-residency-manifest") \
+                        != [expected_campaign_path]:
+                    errors.append(
+                        f"{label}: conversation campaign path is not bound")
+                if _flag_values(
+                        user_command_values,
+                        "--conversation-evidence-json") \
+                        != ["/evidence/conversation-residency.json"]:
+                    errors.append(
+                        f"{label}: conversation evidence path is not frozen")
+                if any(flag in user_command_values for flag in (
+                        "--generation-campaign-manifest", "--generation-jsonl")):
+                    errors.append(
+                        f"{label}: G6C must not use the generation campaign path")
+                if _flag_values(user_command_values, "--max-new-tokens") != ["8"]:
+                    errors.append(f"{label}: G6C --max-new-tokens must be 8")
+            else:
+                generation_paths = _flag_values(
+                    user_command_values, "--generation-campaign-manifest")
+                if generation_paths != [expected_campaign_path]:
+                    errors.append(
+                        f"{label}: generation campaign path is not the bound group file")
+                if _flag_values(user_command_values, "--generation-jsonl") != [
+                        "/evidence/generation.jsonl"]:
+                    errors.append(
+                        f"{label}: --generation-jsonl must be /evidence/generation.jsonl")
+                if _flag_values(user_command_values, "--max-new-tokens") != ["64"]:
+                    errors.append(f"{label}: --max-new-tokens must be 64")
+            if _flag_values(user_command_values, "--timeout-ms") != ["120000"]:
+                errors.append(f"{label}: --timeout-ms must be 120000")
+            if "--diagnostic-token-loop" in user_command_values:
+                errors.append(f"{label}: per-token caller loop is forbidden")
+            group_request_ids = _flag_values(user_command_values, "--request-id")
+            if len(group_request_ids) != 1 or not group_request_ids[0].strip():
+                errors.append(f"{label}: requires one nonempty --request-id")
+            else:
+                request_ids.append(group_request_ids[0])
+        elif expected_gate == "diagnostic-multi-provider":
+            max_tokens = _flag_values(user_command_values, "--max-new-tokens")
+            if len(max_tokens) != 1 or not max_tokens[0].isdigit() \
+                    or not 1 <= int(max_tokens[0]) <= 4:
+                errors.append("diagnostic user must request between one and four tokens")
+    if schema_version == SCHEMA_V2 and len(set(request_ids)) != len(request_ids):
+        errors.append("each process group must use a unique request ID")
+
+    if expected_gate == "diagnostic-multi-provider" \
+            and not str(manifest.get("candidateId", "")).startswith(
+                "spec175-diagnostic-"):
+        errors.append("diagnostic candidateId must use spec175-diagnostic- prefix")
 
     return {
         "schemaVersion": SCHEMA,
@@ -369,7 +1006,8 @@ def validate_bundle(bundle_path: Path, expected_gate: str) -> dict[str, Any]:
         "bundle": str(bundle),
         "candidateId": manifest.get("candidateId"),
         "providerCount": len(providers),
-        "invocationCount": len(invocations) if isinstance(invocations, list) else 0,
+        "processGroupCount": process_group_count,
+        "invocationCount": invocation_count,
         "errors": errors,
     }
 

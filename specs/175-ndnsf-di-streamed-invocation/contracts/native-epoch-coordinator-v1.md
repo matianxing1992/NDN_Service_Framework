@@ -34,8 +34,8 @@ For every selected role, the coordinator retains only bounded local state:
 ```text
 requestId, attemptEpoch, planDigest, generationId, streamEpoch
 role, provider, inferenceEpoch, acceptedTokenEpoch
-committed DecodeStateBundleV1 (or no state before prefill)
-provider-local ProviderDecodeStateEntryV1 lease
+opaque adapter-owned committed state handle (or no state before prefill)
+provider-local ProviderDecodeStateEntryV1 transaction/lease
 ```
 
 `inferenceEpoch=0` is prefill. Epoch `e>0` consumes the exact feedback for
@@ -103,6 +103,12 @@ for one ONNX state transition. The multi-Provider coordinator does **not** call
 single-role token loop and cannot consume activation from another Provider at
 each epoch. `runStreamed()` remains a valid one-Provider compatibility seam.
 
+The per-epoch `run()` interface must therefore accept and return the same opaque
+device-state transaction used by the Provider store. It must not force a
+complete state serialization into a host `TensorBundle` between coordinator
+calls. The CPU control may materialize bytes explicitly and must label itself
+as such.
+
 Before invoking the runner, the Provider session supplies the exact committed
 local state and the current external input: the protected prompt at prefill,
 the new token at Stage 0 decode, or the current upstream activation at a later
@@ -126,7 +132,9 @@ The epoch sequence is:
    commitment, runs one state transition, and publishes one activation with the
    same authenticated logical lineage for its downstream role.
 3. The final role fetches the final activation, runs one state transition,
-   samples once, and constructs the token event.
+   executes the sealed sampler, advances the standalone incremental tokenizer,
+   and constructs the token event with both token ID and Unicode-safe text
+   delta.
 4. Core admits the external event through the existing bounded writer. Only
    after admission does the final role commit the token/prefix and publish the
    internal feedback object for the next epoch.
@@ -137,9 +145,10 @@ The epoch sequence is:
    verifies and forwards the marker without model execution, then terminates
    locally. This is bounded in-band drain control, not a new public Request or
    a broadcast edge.
-6. The final role admits End and the one final Response through the existing
-   terminal owner. No upstream role may publish an external event, End, or
-   Response. The final Response may be delivered after its terminal feedback
+6. The final role admits End and the one final Response, including complete
+   decoded text, token IDs, and finish reason, through the existing terminal
+   owner. No upstream role may publish an external event, End, or Response. The
+   final Response may be delivered after its terminal feedback
    publication while upstream roles finish the bounded drain.
 
 An execution or publication failure leaves the current local decode-state
@@ -152,6 +161,8 @@ buffers through persistent I/O binding. A per-token complete-state host
 materialization/re-upload is invalid even if token output is correct. Evidence
 records state residence, logical bytes, host-transfer bytes/time, and lifecycle
 counters without recording tensor contents.
+This evidence comes from the actual multi-role coordinator path for every role.
+The gate fails when only a direct adapter/single-runner path has zero copies.
 
 For every production runner call, evidence also records the actual new-input
 extent, logical prefix extent already represented by the committed state, and
@@ -217,6 +228,15 @@ runner or a Python oracle. It must expose machine-readable lineage for
 prefill, each role execution, activation fetch/publication, feedback, event,
 End, and Response. Sensitive prompt, answer, logits, keys, and state tensors
 remain absent from logs.
+
+These records use named `NDN_LOG` components and severity levels. Unbounded
+`std::cout` diagnostics are not a conforming evidence channel.
+
+Before `begin`, the production Provider preparation owner must have received a
+committed Selection, fetched the canonical artifact root and exact role recipe,
+verified their digests, assembled/cached the Provider-local role artifact, and
+loaded the runner. A startup-preassembled role or enabled V3 compatibility flag
+is allowed only in a separately labelled diagnostic path.
 
 The helper must reach the Provider-owned store from the same production call
 used by `executeRoleAsync`. A direct store-method test, a direct adapter loop,

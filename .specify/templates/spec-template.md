@@ -1,5 +1,14 @@
 # Feature Specification: [FEATURE NAME]
 
+<!--
+  DOCUMENT LANGUAGE POLICY (constitution 1.4.0, 2026-09-05):
+  中文写叙述性内容：用户故事描述、Why this priority、Edge Cases、修订历史、
+  审计发现、假设与范围说明的正文。
+  保持英文（机器门禁与跨文档对照依赖）：节标题、FR/SC 条目标题与 ID、
+  状态词（existing/planned/current/PASS/BLOCK）、契约 JSON、字段名、
+  文件路径、哈希、命令。旧 spec 不回译。
+-->
+
 **Feature Branch**: `[###-feature-name]`
 
 **Created**: [DATE]
@@ -9,6 +18,8 @@
 **Input**: User description: "$ARGUMENTS"
 
 ## User Scenarios & Testing *(mandatory)*
+
+<!-- 中文说明：用户故事标题与 Given/When/Then 骨架保留英文，故事叙述用中文。 -->
 
 <!--
   IMPORTANT: User stories should be PRIORITIZED as user journeys ordered by importance.
@@ -80,12 +91,31 @@
 
 ## Requirements *(mandatory)*
 
+<!-- 中文说明：FR-XXX 条目标题与 MUST 语义保留英文（门禁按英文解析），条目的补充叙述可用中文。 -->
+
 <!--
   ACTION REQUIRED: The content in this section represents placeholders.
   Fill them out with the right functional requirements.
 -->
 
 ### Functional Requirements
+
+<!--
+  EXPENSIVE EXECUTION RULE: If this feature uses large build artifacts,
+  containers, remote staging, GPU/cluster allocation, or a long campaign, add
+  testable requirements for the immutable candidate identity, change-plane
+  invalidation, executable no-side-effect closure gate, real-path readiness,
+  terminal process/result acceptance, and single active subject per
+  candidate/gate. Do not defer these decisions to implementation improvisation.
+
+  DESIGN-CODE CONVERGENCE RULE: Add testable requirements that make a
+  post-implementation code-aware audit mandatory before formal validation.
+  Require inspection of actual production call paths and effective
+  configuration, explicit gap severity/ownership/closing regressions, BLOCK on
+  unresolved semantic/architecture/security/wiring/evidence gaps, and re-audit
+  after behavior-affecting changes. Focused red/green tests remain part of
+  implementation; broad qualification and experiments require audit PASS.
+-->
 
 - **FR-001**: System MUST [specific capability, e.g., "allow users to create accounts"]
 - **FR-002**: System MUST [specific capability, e.g., "validate email addresses"]
@@ -104,6 +134,8 @@
 - **[Entity 2]**: [What it represents, relationships to other entities]
 
 ## Success Criteria *(mandatory)*
+
+<!-- 中文说明：SC-XXX 条目标题与可量化指标保留英文，解释性叙述可用中文。 -->
 
 <!--
   ACTION REQUIRED: Define measurable success criteria.

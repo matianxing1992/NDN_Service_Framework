@@ -9,6 +9,8 @@
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
+#include <cstdlib>
+#include <unistd.h>
 
 namespace ndnsf::di {
 namespace {
@@ -138,6 +140,25 @@ void ExecutionEvidence::validate() const
     throw std::invalid_argument(
       "execution evidence cannot warm before model load");
   }
+  if (executionCompleted && (processId == 0 || requestId.empty() ||
+                            attemptEpoch == 0 || exactForwardCacheHit)) {
+    throw std::invalid_argument("completed execution evidence lacks a fresh request observation");
+  }
+}
+
+void bindExecutionObservation(ExecutionEvidence& evidence,
+                              const std::string& requestId,
+                              std::uint64_t attemptEpoch, bool cacheHit)
+{
+  evidence.processId = static_cast<std::uint64_t>(getpid());
+  const auto* visible = std::getenv("CUDA_VISIBLE_DEVICES");
+  evidence.cudaVisibleDevices = visible == nullptr ? "" : visible;
+  evidence.requestId = requestId;
+  evidence.attemptEpoch = attemptEpoch;
+  evidence.exactForwardCacheHit = cacheHit;
+  // Legacy unbound calls remain usable but cannot claim qualified execution.
+  evidence.executionCompleted = !cacheHit && !requestId.empty() && attemptEpoch != 0;
+  evidence.validate();
 }
 
 std::string executionEvidenceToJson(const ExecutionEvidence& evidence)
@@ -181,6 +202,15 @@ std::string executionEvidenceToJson(const ExecutionEvidence& evidence)
   }
   root.put("providerProfilePath", evidence.providerProfilePath);
   root.put("createdAtMs", evidence.createdAtMs);
+  root.put("processId", evidence.processId);
+  root.put("cudaVisibleDevices", evidence.cudaVisibleDevices);
+  root.put("gpuIdentitySource", evidence.gpuIdentitySource);
+  root.put("requestId", evidence.requestId);
+  root.put("attemptEpoch", evidence.attemptEpoch);
+  root.put("executionCompleted", evidence.executionCompleted);
+  root.put("exactForwardCacheHit", evidence.exactForwardCacheHit);
+  root.put("profileRequestId", evidence.profileRequestId);
+  root.put("profileAttemptEpoch", evidence.profileAttemptEpoch);
   return writeJson(root);
 }
 
@@ -225,6 +255,15 @@ ExecutionEvidence executionEvidenceFromJson(const std::string& json)
   evidence.gpuUuids = readStringArray(root, "gpuUuids");
   evidence.providerProfilePath = root.get<std::string>("providerProfilePath", "");
   evidence.createdAtMs = root.get<std::uint64_t>("createdAtMs", 0);
+  evidence.processId = root.get<std::uint64_t>("processId", 0);
+  evidence.cudaVisibleDevices = root.get<std::string>("cudaVisibleDevices", "");
+  evidence.gpuIdentitySource = root.get<std::string>("gpuIdentitySource", "");
+  evidence.requestId = root.get<std::string>("requestId", "");
+  evidence.attemptEpoch = root.get<std::uint64_t>("attemptEpoch", 0);
+  evidence.executionCompleted = root.get<bool>("executionCompleted", false);
+  evidence.exactForwardCacheHit = root.get<bool>("exactForwardCacheHit", false);
+  evidence.profileRequestId = root.get<std::string>("profileRequestId", "");
+  evidence.profileAttemptEpoch = root.get<std::uint64_t>("profileAttemptEpoch", 0);
   evidence.validate();
   return evidence;
 }
@@ -250,7 +289,15 @@ applyOnnxRuntimeProviderProfile(ExecutionEvidence& evidence,
     }
     const auto provider = value.get<std::string>("args.provider", "");
     if (provider.empty()) {
+      const auto name = value.get<std::string>("name", "");
+      if (name.size() >= 12 && name.compare(name.size() - 12, 12, "_kernel_time") == 0) {
+        throw std::runtime_error("ONNX Runtime model-node event lacks provider identity");
+      }
       continue;
+    }
+    if (evidence.runnerKind == RunnerKind::OnnxRuntimeCuda &&
+        provider != "CUDAExecutionProvider") {
+      throw std::runtime_error("CUDA provider profile contains a non-CUDA model node");
     }
     assignments.push_back({role, value.get<std::string>("name", ""), provider, true});
   }
@@ -298,11 +345,9 @@ ExecutionEvidence executionEvidenceFromRunnerSpec(const NativeModelRunnerSpec& s
   evidence.roles = {spec.role};
   evidence.createdAtMs = static_cast<std::uint64_t>(
     std::stoull(metadata("evidence.createdAtMs").empty() ? "0" : metadata("evidence.createdAtMs")));
-  const auto gpuUuid = metadata("evidence.gpuUuid");
-  if (!gpuUuid.empty()) {
-    evidence.gpuUuid = gpuUuid;
-    evidence.gpuUuids = {gpuUuid};
-  }
+  evidence.processId = static_cast<std::uint64_t>(getpid());
+  const auto* visible = std::getenv("CUDA_VISIBLE_DEVICES");
+  evidence.cudaVisibleDevices = visible == nullptr ? "" : visible;
   evidence.validate();
   return evidence;
 }

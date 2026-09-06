@@ -137,6 +137,9 @@ public:
   std::map<std::string, TensorBundle>
   run(const RoleExecutionContext& ctx) final;
 
+  void
+  releaseSessionState(const std::string& sessionId) final;
+
   std::optional<std::map<std::string, TensorBundle>>
   runStreamed(const RoleExecutionContext& ctx) final;
 
@@ -145,6 +148,38 @@ public:
 
   std::optional<ExecutionEvidence>
   executionEvidenceSnapshot() const final;
+
+  std::optional<NativeRuntimeMetrics>
+  runtimeMetricsSnapshot() const final;
+
+  bool
+  supportsOpaqueStateHandles() const final;
+
+  std::optional<NativeOpaqueStateHandleV1>
+  stateHandleSnapshot(const std::string& sessionId) const final;
+
+  bool
+  supportsConversationStateTransfer() const final;
+
+  std::optional<NativeConversationStateHandleV1>
+  promoteSessionStateToConversation(const std::string& sessionId,
+                                    const std::string& conversationKey) final;
+
+  bool
+  restoreConversationState(const NativeConversationStateHandleV1& state,
+                           const std::string& sessionId) final;
+
+  bool
+  pauseConversationStateToHost(const NativeConversationStateHandleV1& state) final;
+
+  std::future<bool>
+  prefetchConversationStateToGpu(const NativeConversationStateHandleV1& state) final;
+
+  bool
+  cancelConversationStatePrefetch(const NativeConversationStateHandleV1& state) final;
+
+  bool
+  releaseConversationState(const NativeConversationStateHandleV1& state) final;
 
 private:
 #ifdef NDNSF_DI_ENABLE_ONNXRUNTIME_CPP

@@ -1,20 +1,44 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 
 #include <algorithm>
 #include <cstdlib>
-#include <iostream>
-#include <cstdlib>
 #include <chrono>
-#include <iostream>
 #include <map>
 #include <optional>
 #include <stdexcept>
+#include <sstream>
 #include <utility>
 #include <vector>
 
 namespace ndnsf::di {
 namespace {
+
+bool
+isCanonicalYoloMergeInput(const DependencyEdge& edge)
+{
+  return edge.consumerRole == "Merge" && edge.tensors.size() == 1 &&
+    edge.tensors.front().rfind("/model/model.23/one2one_", 0) == 0;
+}
+
+void
+validateCanonicalYoloMergeInput(const DependencyEdge& edge,
+                                const TensorBundle& bundle)
+{
+  if (!isCanonicalYoloMergeInput(edge)) {
+    return;
+  }
+  if (!isEncodedTensorBundle(bundle.payload)) {
+    throw std::runtime_error(
+      "YOLO_MERGE_DEPENDENCY_NOT_ENCODED: " + edge.tensors.front());
+  }
+  const auto tensors = decodeTensorBundle(bundle.payload);
+  if (tensors.size() != 1 || tensors.front().name != edge.tensors.front()) {
+    throw std::runtime_error(
+      "YOLO_MERGE_DEPENDENCY_TENSOR_SELECTION_MISMATCH: " + edge.tensors.front());
+  }
+}
 
 std::optional<ndn::Name>
 providerPrefixForRank(const GroupCapabilityV1& capability,
@@ -141,16 +165,17 @@ logDependencyObject(const std::string& sessionId,
   if (!dependencyObjectTraceEnabled()) {
     return;
   }
-  std::cout << "\nNDNSF_DI_DEPENDENCY_OBJECT"
-            << " session=" << sessionId
-            << " scope=" << edge.scope
-            << " producer=" << edge.producerRole
-            << " consumer=" << edge.consumerRole
-            << " direction=" << direction
-            << " payload_bytes=" << payloadBytes
-            << " planned_name=" << (edge.plannedDataName.empty() ? "none" : edge.plannedDataName)
-            << " status=" << status
-            << std::endl;
+  std::ostringstream record;
+  record << "NDNSF_DI_DEPENDENCY_OBJECT"
+         << " session=" << sessionId
+         << " scope=" << edge.scope
+         << " producer=" << edge.producerRole
+         << " consumer=" << edge.consumerRole
+         << " direction=" << direction
+         << " payload_bytes=" << payloadBytes
+         << " planned_name=" << (edge.plannedDataName.empty() ? "none" : edge.plannedDataName)
+         << " status=" << status;
+  logRuntimeEvidence(record.str());
 }
 
 } // namespace
@@ -429,8 +454,11 @@ NdnsfCollaborationDependencyIo::prefetchInput(const std::string& sessionId,
               edge.collectiveTargetLayoutDigest;
             decodedManifest.tensorDigest = edge.tensorDigest;
             decodedManifest.createdAtMs = manifest.createdAtMs;
-            decodedManifest.noProgressMs = edge.noProgressDeadlineMs;
-            decodedManifest.hardDeadlineMs = edge.hardDeadlineMs;
+            // sealOperation authenticates the inner segment with capability
+            // budgets. The Selection edge separately limits this fetch and
+            // may have a tighter deadline; it cannot rewrite authenticated AAD.
+            decodedManifest.noProgressMs = capability.noProgressMs;
+            decodedManifest.hardDeadlineMs = capability.hardDeadlineMs;
             decodedSegment.descriptor.requestId = capability.requestId;
             decodedSegment.descriptor.attemptId = capability.attemptId;
             decodedSegment.descriptor.planDigest = edge.planDigest;
@@ -444,8 +472,8 @@ NdnsfCollaborationDependencyIo::prefetchInput(const std::string& sessionId,
             decodedSegment.descriptor.segmentCount = decodedManifest.segmentCount;
             decodedSegment.descriptor.totalBytes = decodedManifest.totalBytes;
             decodedSegment.descriptor.segmentSize = decodedManifest.segmentSize;
-            decodedSegment.descriptor.noProgressMs = edge.noProgressDeadlineMs;
-            decodedSegment.descriptor.hardDeadlineMs = edge.hardDeadlineMs;
+            decodedSegment.descriptor.noProgressMs = decodedManifest.noProgressMs;
+            decodedSegment.descriptor.hardDeadlineMs = decodedManifest.hardDeadlineMs;
           }
           if (decodedManifest.requestId != capability.requestId ||
               decodedManifest.attemptId != capability.attemptId ||
@@ -494,6 +522,7 @@ NdnsfCollaborationDependencyIo::prefetchInput(const std::string& sessionId,
         }
         bundle.expectedSegments = manifest.segmentCount;
         bundle.expectedBytes = manifest.totalBytes;
+        validateCanonicalYoloMergeInput(edge, bundle);
         logDependencyObject(sessionId, edge, "fetch-exact-ndn",
                             bundle.payload.size(), "ok");
         return bundle;
@@ -627,18 +656,20 @@ NdnsfCollaborationDependencyIo::prefetchInput(const std::string& sessionId,
       if (!m_groupCoordinator->recordProgress(nowEpochMs())) {
         throw std::runtime_error("NDNSF_DATA_V1 group deadline or cancellation");
       }
+      validateCanonicalYoloMergeInput(edge, bundle);
       logDependencyObject(sessionId, edge, "fetch-ndnsf-data-v1",
                           bundle.payload.size(), "ok");
       return bundle;
     }
     if (const auto* trace = std::getenv("NDNSF_DI_RUNTIME_TIMING");
         trace != nullptr && *trace != '\0' && *trace != '0') {
-      std::cout << "NDNSF_DI_DEPENDENCY_FETCH_BEGIN session=" << sessionId
-                << " scope=" << edge.scope
-                << " key_scope=" << edge.transportScope
-                << " planned_name=" << edge.plannedDataName
-                << " use_data_v1=" << (edge.useNdnsfDataV1 ? 1 : 0)
-                << std::endl;
+      std::ostringstream record;
+      record << "NDNSF_DI_DEPENDENCY_FETCH_BEGIN session=" << sessionId
+             << " scope=" << edge.scope
+             << " key_scope=" << edge.transportScope
+             << " planned_name=" << edge.plannedDataName
+             << " use_data_v1=" << (edge.useNdnsfDataV1 ? 1 : 0);
+      logRuntimeEvidence(record.str());
     }
     auto payload = m_ctx.fetchLarge(
       ndn::Name(edge.plannedDataName),
@@ -655,6 +686,7 @@ NdnsfCollaborationDependencyIo::prefetchInput(const std::string& sessionId,
     bundle.payload.assign(payload->data(), payload->data() + payload->size());
     bundle.expectedSegments = edge.expectedSegments;
     bundle.expectedBytes = edge.expectedBytes;
+    validateCanonicalYoloMergeInput(edge, bundle);
     logDependencyObject(sessionId, edge, "fetch", bundle.payload.size(), "ok");
     return bundle;
   });

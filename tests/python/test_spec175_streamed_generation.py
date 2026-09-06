@@ -195,6 +195,10 @@ def test_stream_handle_timing_summary_uses_real_callbacks_without_payloads() -> 
     assert summary["ttftMs"] is not None
     assert len(summary["interTokenMs"]) == 1
     assert summary["completeTimestampUs"] is not None
+    for field in (
+            "replacementCount", "staleEventCount", "lineageRejectCount",
+            "gapRejectCount", "duplicateRejectCount", "callbackErrorCount"):
+        assert summary[field] == 0
     assert "tokenIds" not in summary
     assert "prompt" not in summary
 
@@ -218,6 +222,7 @@ def test_stream_handle_rejects_mismatched_wire_identity() -> None:
     assert handle.stream_error["code"] == "StreamEventLineageMismatch"
     assert len(errors) == 1
     assert handle.stream_events == ()
+    assert handle.timing_summary["lineageRejectCount"] == 1
 
 
 def test_stream_handle_callback_exception_is_terminal() -> None:
@@ -237,6 +242,7 @@ def test_stream_handle_callback_exception_is_terminal() -> None:
     }).encode())
     assert handle.stream_error["code"] == "StreamCallbackFailed"
     assert len(errors) == 1
+    assert handle.timing_summary["callbackErrorCount"] == 1
 
 
 def test_stream_handle_error_callback_exception_is_contained() -> None:

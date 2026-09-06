@@ -1,9 +1,12 @@
 #include "../shared/UavNames.hpp"
 #include <ndn-cxx/security/transform/public-key.hpp>
 #include <ndn-cxx/security/verification-helpers.hpp>
+#include <ndn-cxx/util/sha256.hpp>
 #include "../shared/UavProtocol.hpp"
 #include "../shared/UavVideoPipeline.hpp"
 #include "../shared/UavSensorStreams.hpp"
+#include "../shared/UavDiagnostics.hpp"
+#include "UavCollaborationParticipant.hpp"
 #include "ndnsf-distributed-repo/RepoCore.hpp"
 #include "ndn-service-framework/CertificatePublisher.hpp"
 #include "ndn-service-framework/ServiceContainer.hpp"
@@ -520,11 +523,20 @@ main(int argc, char** argv)
       return 0;
     }
 
+    std::cerr << "DRONE_RUNTIME_CONSTRUCT_BEGIN drone=" << droneId << std::endl;
     auto runtime = std::make_unique<DroneServiceContainer>(
       droneId, available, serveCertificates, config, videoPath,
       flightControllerBackend, mavlinkUdpHost, mavlinkUdpPort, mavlinkUdpListenPort,
       mavlinkSerialDevice, mavlinkSerialBaud, configurePx4SitlDemoParams,
       std::move(cameraOptions));
+    std::cerr << "DRONE_RUNTIME_CONSTRUCT_END drone=" << droneId << std::endl;
+    // Keep startup failures observable in headless MiniNDN/SITL runs.  The
+    // container already emits structured status messages; wire them to the
+    // process log before start() so a readiness timeout cannot hide the cause.
+    runtime->setStatusCallback([droneId] (std::string status) {
+      std::cerr << "DRONE_RUNTIME_STATUS drone=" << droneId
+                << " status=" << status << std::endl;
+    });
     runtime->start();
     if (!runtime->waitUntilReady(std::chrono::seconds(30))) {
       throw std::runtime_error("drone NDNSF runtime did not become ready");

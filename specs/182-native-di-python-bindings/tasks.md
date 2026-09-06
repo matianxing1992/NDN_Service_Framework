@@ -6,16 +6,15 @@
 
 ## Current Checkpoint
 
-2026-09-06：完成后续 Spec182 revision 2 审计与修正。Spec181 继续活动；本轮未编辑其任务或活动指针。
-本轮交付 spec/plan/CD/INV/PO/work units/traceability/checklist/audit/baseline；
-实现进度 **0/17**，未启动功能迁移、build、unit/integration/MiniNDN、SIF 或 Tiger。
-Revision 2 完成 full audit 与文档修正：补 CD-013/014、PO-013/014、取消/回退契约，
-修复 T014→T015→T016 的 harness 审计顺序；原 15 项重排为 17 项，仍全部未开始。
-历史 authoring 见 [design review](evidence/design-review.md)；本次证据见
-[audit revision 2](evidence/audit-revision2.md)。
-结构审计 PASS（16 FR / 8 SC / 17 tasks）；链接/依赖与差异检查结果记录于上述本次证据。
-设计状态 DRAFT：O-001--005 控制 implementation readiness；T001 冻结隔离设计，T014 验证其检错能力。
-文档创建完成不勾选实现任务。下一步继续 Spec181；关闭后再执行 T001。
+2026-09-06：合并后本地验证 **PASS**，等待创建合并 checkpoint 并按新基线修订本 Spec。
+
+- NAC-ABE full suite **46/46 PASS**；NDNSF full unit **759/759 PASS**、GDB full integration **154/154 PASS**。
+- Current Python compatibility profile **2171 passed / 22 skipped**；不等同历史全量 Python suite PASS。
+- 静态设计审查和测试后复审 **PASS**；MiniNDN user revocation、grant-only advance、provider revocation **3/3 PASS**。
+- Provider 撤销场景包含主动 SIGINT 后重启；旧 Provider exit -2，其余应用 exit0，重启后仍不能服务。
+- 原生迁移 **0/17 / NOT_STARTED**。本次合并验证不勾选 T001，不启动182功能开发。Spec181独立 qualification/seal 暂停，未完成责任待 revision3 明确转入182。
+
+完整范围、原始失败、复现命令和结果见 [integration evidence](evidence/integration-20260906.md)、[static review](evidence/static-review-20260906.md)、[validation record](evidence/merge-validation-20260906.json)。Revision2历史设计检查见 [audit revision2](evidence/audit-revision2.md)，旧冻结记录不回写。
 
 ## Validation Standard
 

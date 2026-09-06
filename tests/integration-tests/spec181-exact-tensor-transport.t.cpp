@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <map>
 
 namespace ndnsf::di::tests {
 using namespace ndn_service_framework;
@@ -88,10 +89,15 @@ runTransfer(const std::string& mode)
     return ProviderGroupBytes(wrapped.begin(), wrapped.end());
   };
   std::size_t packets = 0;
+  std::map<ndn::Name, ndn::Buffer> uniquePackets;
   std::size_t largestPacket = 0;
   auto observe = producerFace.onSendData.connect([&] (const ndn::Data& data) {
     if (data.getName().toUri().find("/NDNSF-DI/TENSOR/") != std::string::npos) {
       ++packets;
+      const auto& wire = data.wireEncode();
+      const ndn::Buffer bytes(wire.begin(), wire.end());
+      const auto inserted = uniquePackets.emplace(data.getName(), bytes);
+      BOOST_CHECK(inserted.second || inserted.first->second == bytes);
       largestPacket = std::max(largestPacket, data.wireEncode().size());
       BOOST_CHECK_LE(data.wireEncode().size(), ndn::MAX_NDN_PACKET_SIZE);
     }
@@ -323,7 +329,8 @@ runTransfer(const std::string& mode)
       original.payload.begin(), original.payload.end());
   BOOST_CHECK_EQUAL(reconstructed->expectedSegments, expectedSegments);
   BOOST_CHECK_EQUAL(reconstructed->expectedBytes, original.payload.size());
-  BOOST_CHECK_EQUAL(packets, expectedSegments + 1);
+  BOOST_CHECK_EQUAL(uniquePackets.size(), expectedSegments + 1);
+  BOOST_CHECK_GE(packets, uniquePackets.size());
   BOOST_CHECK_LE(largestPacket, ndn::MAX_NDN_PACKET_SIZE);
   BOOST_TEST_MESSAGE("Actual signed packets: " << packets << ", largest bytes: " << largestPacket);
 }

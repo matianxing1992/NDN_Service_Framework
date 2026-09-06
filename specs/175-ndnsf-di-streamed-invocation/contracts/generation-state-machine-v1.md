@@ -12,6 +12,11 @@
 - Tensor/rank groups are not valid plan objects in this streamed-generation
   contract. The existing Spec 174 TensorGroup/rank-role contract remains valid,
   unchanged, and outside Spec 175 validation.
+- The Spec175 streaming entry point accepts only an ordinary rank-0 V3 plan.
+  V2 compatibility plans, hybrid plans, tensor degree other than one, missing
+  roles, and duplicate Provider ownership fail before Selection. The registered
+  workload names `PreSplitFirstStrategy`; `LayerReuseFirstStrategy` is not a
+  formal Spec175 subject.
 
 The plan is committed through the same deferred collaboration Request that
 created the stream handle. `commitPlan(binding)` means the existing
@@ -196,6 +201,10 @@ V1. A
 separate deterministic unit suite fixes logits and seed for
 `SeededTopKTopP`; hardware-crossing exact token claims are not made for
 stochastic floating-point logits.
+The native final role executes these exact sealed values. A `samplingDigest`
+without the corresponding validated parameters and implementation is not a
+sampler; unsupported modes fail before the first token rather than silently
+falling back to Greedy.
 
 ## 8. Incremental tokenizer contract
 
@@ -213,6 +222,9 @@ and stop-matcher suffix bounded by the longest stop string. For each new token:
 The deployed adapter imports `tokenizers`, not `transformers`. Unit fixtures
 include leading-space pieces, multibyte Unicode, empty deltas, EOS, and stop
 strings crossing two and three token boundaries.
+The production native final-role owner loads that standalone tokenizer and
+owns this state. Token IDs with permanently empty `textDelta`, or a final
+payload without decoded text when the oracle is nonempty, are diagnostic-only.
 
 ## 9. Provider-local decode state and atomic update
 
@@ -286,6 +298,10 @@ complete state bundle on the host between epochs. CPU tests may use materialized
 `TensorBundle` bytes. Operational evidence records state identity, logical
 bytes, residence, host-transfer bytes/time, hit/miss/commit/eviction counts, and
 cleanup outcome, never tensor contents.
+The actual distributed coordinator and `ProviderRoleWorker` must retain the
+opaque adapter-owned device-state transaction across calls. Setting a
+single-runner-only flag or proving zero copies in `runStreamed()` does not prove
+this contract when the multi-Provider path invokes per-epoch `run()`.
 
 A reported hit is valid only when the production runner receives the exact
 committed predecessor plus the bounded new token/current activation and does not

@@ -1,0 +1,51 @@
+{
+  "schemaVersion": "spec180-qwen-reference-v1",
+  "status": "FROZEN_LOCAL_REFERENCE",
+  "sourceFeature": "175-ndnsf-di-streamed-invocation",
+  "sourceRevision": "286a0098b9bf0dfc2e0b77a320e9e75c38851dc7",
+  "sourceClosure": "specs/175-ndnsf-di-streamed-invocation/evidence/local-closure-current.md",
+  "sourceEvidence": "specs/175-ndnsf-di-streamed-invocation/evidence/t022-local-minindn-current-20260902.md",
+  "model": {
+    "family": "spec175-tiny-causal-lm-v1",
+    "fixtureRoot": "tests/fixtures/spec175/tiny-causal-lm-v1",
+    "manifestPath": "tests/fixtures/spec175/tiny-causal-lm-v1/manifest.json",
+    "manifestSha256": "sha256:b3d72cf67c9cfed2a3621208c1fd0bc9bb4689e535acd87ce68e9df5ddbf3e84",
+    "runtime": "onnxruntime-cpu",
+    "mtpEnabled": false,
+    "thinkingMode": "disabled"
+  },
+  "controls": {
+    "initialSvsSettleMs": 5000,
+    "ackTimeoutMs": 1500,
+    "requestTimeoutMs": 60000,
+    "samplingMode": "greedy",
+    "maxGeneratedTokens": 8,
+    "conversationState": "provider-local"
+  },
+  "cases": {
+    "Q-C": {
+      "sourceCase": "M01",
+      "seed": 175021,
+      "requestCount": 1,
+      "expectedTokens": [4, 5, 6, 7, 8, 9, 10, 2],
+      "terminalResponseCount": 1,
+      "requiresContinuation": false
+    },
+    "Q-W": {
+      "sourceCase": "M11",
+      "seed": 175022,
+      "requestCount": 2,
+      "validTurns": 2,
+      "mismatchNegativeAttempt": true,
+      "terminalResponseCount": 2,
+      "requiresContinuation": true
+    }
+  },
+  "evidencePolicy": {
+    "promptPayload": "digest-only",
+    "tokenPayload": "oracle-summary-only",
+    "qualifiesQwen27B": false,
+    "qualifiesTiger": false,
+    "inheritsSpec175Evidence": false
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "source": "generated-blue-suv-multiview-v1",
+  "synchronized": true,
+  "calibration": {
+    "intrinsics": "synthetic-not-calibrated",
+    "poses": "nominal-only"
+  },
+  "ground_truth": {
+    "type": "functional-class-label",
+    "label": "car"
+  },
+  "preprocessing_policy": "RGB decode; ImageOps.fit center crop and bilinear resize to 224x224 as fixed by vehicle-mvcnn-v1",
+  "sample_size_rationale": "One synchronized six-view fixture is sufficient for export and lifecycle qualification only; it is intentionally insufficient for a scientific vehicle-recognition claim.",
+  "scientific_accuracy_claim_allowed": false,
+  "samples": [
+    {
+      "sample_id": "synthetic-blue-suv-001",
+      "target_id": "synthetic-blue-suv-001",
+      "ground_truth_label": "car",
+      "views": [
+        {"view_id": "view-01", "file": "view-01-front-left-12m.png", "capture_time_ms": 100, "camera_pose": {"viewpoint": "oblique-front-left", "nominal_distance_m": 12}},
+        {"view_id": "view-02", "file": "view-02-front-right-22m.png", "capture_time_ms": 100, "camera_pose": {"viewpoint": "oblique-front-right", "nominal_distance_m": 22}},
+        {"view_id": "view-03", "file": "view-03-rear-left-10m.png", "capture_time_ms": 100, "camera_pose": {"viewpoint": "oblique-rear-left", "nominal_distance_m": 10}},
+        {"view_id": "view-04", "file": "view-04-rear-right-30m.png", "capture_time_ms": 100, "camera_pose": {"viewpoint": "oblique-rear-right", "nominal_distance_m": 30}},
+        {"view_id": "view-05", "file": "view-05-high-left-18m.png", "capture_time_ms": 100, "camera_pose": {"viewpoint": "high-oblique-left", "nominal_distance_m": 18}},
+        {"view_id": "view-06", "file": "view-06-right-profile-15m.png", "capture_time_ms": 100, "camera_pose": {"viewpoint": "right-profile", "nominal_distance_m": 15}}
+      ]
+    }
+  ]
+}

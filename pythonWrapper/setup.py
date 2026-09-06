@@ -51,10 +51,23 @@ def explicit_ndn_svs_pair():
     return source, build
 
 
+def explicit_nac_abe_prefix():
+    value = os.environ.get("NDNSF_NAC_ABE_PREFIX", "")
+    if not value:
+        return None
+    prefix = Path(value).expanduser().resolve()
+    for relative in ("include/nac-abe/consumer.hpp", "lib/libnac-abe.so"):
+        path = prefix / relative
+        if not path.is_file():
+            raise RuntimeError("NDNSF_NAC_ABE_PREFIX is missing required file: " + str(path))
+    return prefix
+
+
 def build_extension() -> Extension:
     import pybind11
 
     svs_pair = explicit_ndn_svs_pair()
+    nac_prefix = explicit_nac_abe_prefix()
     include_dirs, library_dirs, libraries, extra_link_args = pkg_config(
         "libndn-cxx",
         *([] if svs_pair else ["libndn-svs"]),
@@ -111,6 +124,15 @@ def build_extension() -> Extension:
         libraries = [name for name in libraries if name != "ndn-svs"]
         extra_link_args.insert(0, f"-Wl,-rpath,{build}")
 
+    nac_includes = []
+    nac_objects = []
+    if nac_prefix:
+        nac_includes = [str(nac_prefix / "include")]
+        library_dirs = list(dict.fromkeys([str(nac_prefix / "lib"), *library_dirs]))
+        libraries = [name for name in libraries if name != "nac-abe"]
+        nac_objects = [str(nac_prefix / "lib/libnac-abe.so")]
+        extra_link_args.append(f"-Wl,-rpath,{nac_prefix / 'lib'}")
+
     return Extension(
         "ndnsf._ndnsf",
         # NativeGrantVerifier is a DI-layer component (not part of the Core
@@ -121,6 +143,7 @@ def build_extension() -> Extension:
                 "NativeGrantVerifier.cpp"),
         ],
         include_dirs=[
+            *nac_includes,
             *svs_includes,
             pybind11.get_include(),
             str(ROOT),
@@ -130,7 +153,7 @@ def build_extension() -> Extension:
         ],
         library_dirs=library_dirs,
         libraries=["ndn-service-framework", *libraries],
-        extra_objects=svs_objects,
+        extra_objects=[*svs_objects, *nac_objects],
         extra_compile_args=["-std=c++17"],
         extra_link_args=extra_link_args,
         language="c++",

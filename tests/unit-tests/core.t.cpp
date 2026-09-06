@@ -120,6 +120,21 @@ BOOST_AUTO_TEST_CASE(ConfiguredPiggybackLimitOverridesSvsDefault)
   BOOST_CHECK_EQUAL(options.maxApplicationParametersSize, 5000);
 }
 
+BOOST_AUTO_TEST_CASE(ConfiguredPeriodicSyncAppliesBeforeSvsConstruction)
+{
+  ScopedEnvironmentVariable configuredPeriodicSync(
+    "NDNSF_SVS_PERIODIC_SYNC_MS", "1000");
+  ndn::svs::SVSPubSubOptions options;
+
+  configureSvsPubSubOptionsFromEnvironment(options);
+
+  BOOST_REQUIRE(options.syncProtocol.periodicTimeout.has_value());
+  BOOST_CHECK_EQUAL(*options.syncProtocol.periodicTimeout,
+                    ndn::time::milliseconds(1000));
+  BOOST_CHECK_EQUAL(options.syncProtocol.resolve().periodicTimeout,
+                    ndn::time::milliseconds(1000));
+}
+
 // BOOST_AUTO_TEST_CASE(mergeStateVector)
 // {
  

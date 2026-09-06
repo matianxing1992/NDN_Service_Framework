@@ -7,28 +7,39 @@ codebase.
 
 ## Start Here
 
-- [Architecture](architecture.md): framework layers, runtime flow, and major
-  module boundaries.
-- [Module Map](module-map.md): where the core, Python wrapper, DistributedRepo,
-  DistributedInference, UAV app, examples, and experiments live.
-- [Build And Test](build-and-test.md): install/build commands and validation
-  suites.
-- [Experiments](experiments.md): MiniNDN-first experiment workflow and evidence
-  conventions.
-- [Security Model](security-model.md): permissions, NAC-ABE routing, tokens,
-  Targeted invocation, and local invocation boundaries.
-- [Streaming Substrate](streaming-substrate.md): app-neutral C++ stream
-  session/chunk/FEC helpers and the UAV video mapping boundary.
+- [Architecture](architecture.md): **maintained** key architecture — framework
+  layers, V2 message flow, request-scoped confidentiality, ControllerVersion
+  authority, NAC-ABE routing, trust, and Core/App boundary. Agents load this
+  with every substantial task; keep it current in the same commit that
+  changes a boundary or flow.
+- [Failure Log](failure-log.md): **maintained** append-only engineering
+  failure record (symptom → root cause → fix → lesson). Agents read recent
+  entries at task start and append new failures at checkpoint commits.
 - [Core/App Boundary](ndnsf-core-app-boundary.md): which reusable mechanisms
   belong in NDNSF core and which semantics stay in Repo, UAV, and DI.
-- [Native DI Roadmap](native-di-roadmap.md): current NDNSF-DI native execution
-  status and next gates.
-- [Documentation Policy](documentation-policy.md): where to put docs, papers,
-  generated outputs, and result artifacts.
+- [NDNSF-DI Runtime Workflow](NDNSF-DI-runtime-workflow.md): DI scheduling
+  and deployment workflow.
 - [Development Branching Policy](DEVELOPMENT_BRANCHING_POLICY.md): temporary
   Spec branch lifecycle and the required `Experimental` → `main` merge path.
 - [Engineering Reports](reports/README.md): dated validation reports and
   supporting evidence that should not replace current project docs.
+
+Planned (create when a task first needs them, then un-comment):
+<!--
+- [Module Map](module-map.md) — where core, Python wrapper, Repo, DI, UAV
+  app, examples, and experiments live.
+- [Build And Test](build-and-test.md) — install/build commands and suites.
+- [Experiments](experiments.md) — MiniNDN-first workflow and evidence
+  conventions.
+- [Security Model](security-model.md) — permissions, NAC-ABE routing,
+  tokens, Targeted invocation, local invocation boundaries.
+- [Streaming Substrate](streaming-substrate.md) — app-neutral C++ stream
+  helpers and the UAV video mapping boundary.
+- [Native DI Roadmap](native-di-roadmap.md) — NDNSF-DI native execution
+  status and next gates.
+- [Documentation Policy](documentation-policy.md) — where docs, papers,
+  generated outputs, and result artifacts live.
+-->
 
 ## Current Engineering Direction
 

@@ -1,0 +1,69 @@
+{
+  "fixture_id": "generated-blue-suv-multiview-v1",
+  "created": "2026-08-28",
+  "target_id": "synthetic-blue-suv-001",
+  "purpose": "functional-pipeline-testing-only",
+  "scientific_accuracy_claim_allowed": false,
+  "limitations": [
+    "camera intrinsics and extrinsics are not calibrated",
+    "nominal distances and angles come from generation prompts",
+    "cross-view geometry and appearance are not guaranteed physically exact",
+    "the fixture must not be used to claim real-world or real-flight accuracy"
+  ],
+  "views": [
+    {
+      "view_id": "view-01",
+      "producer_identity": "/uav/A",
+      "file": "view-01-front-left-12m.png",
+      "viewpoint": "oblique-front-left",
+      "nominal_distance_m": 12,
+      "nominal_elevation_deg": 30,
+      "sha256": "9422fd09b1be5fcd329ade2f72c7386dd02bd02d888e2517162c80d57925fa9c"
+    },
+    {
+      "view_id": "view-02",
+      "producer_identity": "/uav/B",
+      "file": "view-02-front-right-22m.png",
+      "viewpoint": "oblique-front-right",
+      "nominal_distance_m": 22,
+      "nominal_elevation_deg": 25,
+      "sha256": "93f7ba658314b09bf8c1c1e0fafe290ce7c693d3d1b61e2498b1224f67117120"
+    },
+    {
+      "view_id": "view-03",
+      "producer_identity": "/uav/C",
+      "file": "view-03-rear-left-10m.png",
+      "viewpoint": "oblique-rear-left",
+      "nominal_distance_m": 10,
+      "nominal_elevation_deg": 35,
+      "sha256": "dbf31e52d2be3a82dcb3e8d17b9a285eb276c140cc819b1973e9f182bf653733"
+    },
+    {
+      "view_id": "view-04",
+      "producer_identity": "/uav/D",
+      "file": "view-04-rear-right-30m.png",
+      "viewpoint": "oblique-rear-right",
+      "nominal_distance_m": 30,
+      "nominal_elevation_deg": 30,
+      "sha256": "ba9665cc1ba33299e4245b4cd559793215cbb9e5234f7685612e88fbc167fe0b"
+    },
+    {
+      "view_id": "view-05",
+      "producer_identity": "/uav/A",
+      "file": "view-05-high-left-18m.png",
+      "viewpoint": "high-oblique-left",
+      "nominal_distance_m": 18,
+      "nominal_elevation_deg": 55,
+      "sha256": "0671311d20bd28ab71add88c4c36df814122cf240fbd4fd9345907c150c2a324"
+    },
+    {
+      "view_id": "view-06",
+      "producer_identity": "/uav/B",
+      "file": "view-06-right-profile-15m.png",
+      "viewpoint": "right-profile",
+      "nominal_distance_m": 15,
+      "nominal_elevation_deg": 18,
+      "sha256": "467103696f8992f57383b1c6adf8346912634829848f304a0c3e4a0aaaa7996f"
+    }
+  ]
+}

@@ -17,8 +17,6 @@
 
 namespace {
 
-NDN_LOG_INIT(ndn_service_framework.AppTextToImageUser);
-
 const ndn::Name GROUP_PREFIX("/example/hello/group");
 const ndn::Name CONTROLLER_PREFIX("/example/hello/controller");
 const ndn::Name USER_IDENTITY("/example/hello/user");

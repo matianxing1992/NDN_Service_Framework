@@ -5,6 +5,13 @@ description: "Task list template for feature implementation"
 
 # Tasks: [FEATURE NAME]
 
+<!--
+  DOCUMENT LANGUAGE POLICY (constitution 1.4.0, 2026-09-05):
+  中文写叙述性内容：Phase 的 Purpose/Goal/Checkpoint、任务边界说明的正文。
+  保持英文：任务 ID（T001）、[US1]/[P] 标签、`- [ ] T001 ...` 整行格式、
+  文件路径、状态词。旧 spec 不回译。
+-->
+
 **Input**: Design documents from `/specs/[###-feature-name]/`
 
 **Prerequisites**: plan.md (required), spec.md (required for user stories), research.md, data-model.md, contracts/
@@ -49,6 +56,37 @@ Example:
 # Prefer one cohesive behavioral task
 - [ ] T010 [US1] Enforce token expiry by adding the failing contract case, implementing the service behavior, and recording the passing focused gate in tests/contract/test_tokens.py, src/services/token_service.py, and evidence/token-expiry.md
 ```
+
+## Design-Code Convergence Gate
+
+Every durable feature MUST include one post-implementation, pre-qualification
+convergence task. It MUST freeze the accepted design authority, inspect the real
+production entry points/callers/wiring/effective configuration with CodeGraph
+and exact source verification, map every requirement to its implementation and
+focused regression, and write a severity-classified gap report. Checked boxes,
+helpers that are not called by production, isolated unit tests, and historical
+evidence are not proof of production conformance.
+
+Any controlling discrepancy reopens or creates a cohesive repair task with its
+focused failing test, implementation, and closing regression. The convergence
+task closes only after re-audit reports `PASS`. Every complete unit/integration
+suite, MiniNDN/system test, SIF/container qualification, cluster job, benchmark,
+and experiment task MUST depend on that PASS. Focused red/green and diagnostic
+tests remain allowed during implementation and repair.
+
+## Expensive Execution Closure Rule
+
+When a plan includes large artifacts, containers, remote staging, GPU/cluster
+allocation, or long campaigns, tasks MUST implement and mutation-test the
+candidate-closure gate before any task performs that expensive action. Keep the
+gate implementation and its focused mutation coverage in one cohesive task;
+keep the later immutable-candidate execution in a dependent task.
+
+The closure task MUST bind every candidate plane, compute the invalidation and
+restart gate, reject stale or cross-candidate evidence, and prove zero upload,
+remote mutation, staging, scheduler, or campaign calls on failure. The execution
+task MUST accept only that closed candidate and must require protocol, fresh
+result, child-exit, and cleanup agreement before recording PASS.
 
 ## Path Conventions
 

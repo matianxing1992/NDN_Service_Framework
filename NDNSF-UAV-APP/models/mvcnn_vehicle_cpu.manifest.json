@@ -1,0 +1,70 @@
+{
+  "algorithmId": "mvcnn-onnx-maxpool/v1",
+  "artifact": {
+    "digest": "sha256:14ec256fbc84e1c6d9d0cf593ca47ce151c641c5b3280535ca4dcbedd1a4c317",
+    "path": "/home/tianxing/NDN/ndn-service-framework/NDNSF-UAV-APP/models/mvcnn_vehicle_cpu.onnx"
+  },
+  "checkpoint": {
+    "digest": "sha256:6acdbf2c34c7a2cd2cc6f7c76d3ced2fcd4e99f71e3907131dbbc113bb25b279",
+    "path": "/home/tianxing/NDN/ndn-service-framework/NDNSF-UAV-APP/models/mvcnn_vehicle_cpu.pt"
+  },
+  "classMap": [
+    "car",
+    "truck",
+    "person"
+  ],
+  "expectedExecutionProvider": "CPUExecutionProvider",
+  "input": {
+    "dtype": "float32",
+    "name": "images",
+    "preprocessing": "rgb-resize-224-center-crop/v1",
+    "shape": [
+      1,
+      6,
+      3,
+      224,
+      224
+    ]
+  },
+  "license": "MIT",
+  "modelFamily": "MVCNN-family/shared-backbone-masked-max-pooling",
+  "modelId": "mvcnn-tiny-vehicle-v1",
+  "nativeQualification": {
+    "classMap": [
+      "car",
+      "truck",
+      "person"
+    ],
+    "nativeAccuracy": 1.0,
+    "nativeDatasetDigest": "766a797ad90c8d214004348d70c275e8c7068004bb30194044623c0dada541d7",
+    "sampleCount": 48,
+    "viewCount": 6
+  },
+  "onnxChecker": "passed",
+  "opset": 17,
+  "outputs": [
+    {
+      "dtype": "float32",
+      "name": "logits"
+    },
+    {
+      "dtype": "float32",
+      "name": "pooledFeatures"
+    }
+  ],
+  "runtime": {
+    "python": "3.8.10",
+    "torch": "2.4.1+cpu"
+  },
+  "schema": "ndnsf-uav-mvcnn-artifact-manifest/v1",
+  "sourceRevision": "local-source:sha256:4a8610c47ed89159293cf5b36939360ca257b9cf391b0691add652d45ce05a76",
+  "viewMask": {
+    "dtype": "bool",
+    "name": "viewMask",
+    "semantics": "true entries participate in symmetric max pooling",
+    "shape": [
+      1,
+      6
+    ]
+  }
+}

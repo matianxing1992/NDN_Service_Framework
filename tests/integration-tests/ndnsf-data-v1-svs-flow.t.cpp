@@ -395,6 +395,19 @@ BOOST_AUTO_TEST_CASE(ProductionProviderContextUsesSvsSegments)
   };
   const std::vector<std::pair<ndn::Name, ndn::Buffer>> publications = {
       makePublication(0), makePublication(1)};
+
+  // The installed SVS API does not provide historical catch-up when a
+  // producer was published before subscribeToProducer().  Start the
+  // production fetch first and pump once so its live subscription is
+  // installed before the publication stream begins.
+  auto fetched = std::async(std::launch::async, [&] {
+    return receiverContext.fetchDataV1Segments(
+        "/scope/provider-context", producerNode, operation.operationIndex,
+        "0", "tensor-provider-context", sealed.segments.size(),
+        operation.maxSegments, 3000);
+  });
+  pump({&producerFace, &receiverFace}, [] { return false; }, 20);
+
   producerPub->publish(
       staleSealed.segments[0].dataName,
       ProviderGroupCoordinator::encodeSegment(
@@ -413,18 +426,11 @@ BOOST_AUTO_TEST_CASE(ProductionProviderContextUsesSvsSegments)
   });
   BOOST_REQUIRE(publication.get());
 
-  // Reproduce the production ordering: both publications are synchronized
-  // before the downstream Provider posts its dependency subscription.
+  // Both publications are now synchronized on a live producer subscription;
+  // the downstream Provider can subsequently fetch the exact segments.
   pump({&producerFace, &receiverFace},
        [&] { return receiverObservedProducerState; });
   BOOST_REQUIRE(receiverObservedProducerState);
-
-  auto fetched = std::async(std::launch::async, [&] {
-    return receiverContext.fetchDataV1Segments(
-        "/scope/provider-context", producerNode, operation.operationIndex,
-        "0", "tensor-provider-context", sealed.segments.size(),
-        operation.maxSegments, 3000);
-  });
 
   pump({&producerFace, &receiverFace}, [&] {
     return fetched.wait_for(std::chrono::milliseconds(0)) ==

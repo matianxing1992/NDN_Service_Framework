@@ -69,6 +69,64 @@ def test_missing_binary_is_a_structured_blocker(tmp_path: Path) -> None:
     assert manifest["results"] == []
 
 
+def test_unit_binary_is_rejected_before_any_case_executes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gate = _load_gate()
+    binary = tmp_path / "unit-tests"
+    binary.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    binary.chmod(0o755)
+
+    def unexpected_run(*args, **kwargs):
+        raise AssertionError("G2 must reject the wrong binary before case runs")
+
+    monkeypatch.setattr(gate, "_run_case", unexpected_run)
+    manifest = gate.run_gate(
+        binary=binary, cases=("I01",), healthy_repeats=1, seed=1750001,
+        output=tmp_path / "g2.json", source_seal=_source_seal(tmp_path),
+    )
+    assert manifest["status"] == "BLOCKED_BINARY_KIND"
+    assert manifest["binaryProbe"]["actualName"] == "unit-tests"
+    assert manifest["results"] == []
+
+
+def test_integration_binary_registry_is_checked_before_case_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gate = _load_gate()
+    binary = tmp_path / "integration-tests"
+    binary.write_text("#!/bin/sh\nprintf 'unrelated\\n'\n", encoding="utf-8")
+    binary.chmod(0o755)
+
+    def unexpected_run(*args, **kwargs):
+        raise AssertionError("missing registrations must block before case runs")
+
+    monkeypatch.setattr(gate, "_run_case", unexpected_run)
+    manifest = gate.run_gate(
+        binary=binary, cases=("I01",), healthy_repeats=1, seed=1750001,
+        output=tmp_path / "g2.json", source_seal=_source_seal(tmp_path),
+    )
+    assert manifest["status"] == "BLOCKED_BINARY_REGISTRY"
+    assert manifest["binaryProbe"]["missingTests"]
+    assert manifest["results"] == []
+
+
+def test_integration_binary_probe_parses_boost_test_tree(
+    tmp_path: Path,
+) -> None:
+    gate = _load_gate()
+    binary = tmp_path / "integration-tests"
+    binary.write_text(
+        "#!/bin/sh\nprintf 'Spec170NdnsfDiCoreFlow*\\n'\n"
+        "printf '    Spec175NativeTinyOnnxI01OneProvider*\\n'\n",
+        encoding="utf-8",
+    )
+    binary.chmod(0o755)
+    probe = gate._probe_native_binary(binary, ("I01",))
+    assert probe["status"] == "PASS"
+    assert probe["missingTests"] == []
+
+
 def test_registered_cases_run_when_other_requested_cases_are_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -87,6 +145,10 @@ def test_registered_cases_run_when_other_requested_cases_are_missing(
         }
 
     monkeypatch.setattr(gate, "_run_case", fake_run)
+    monkeypatch.setattr(
+        gate, "_probe_native_binary",
+        lambda *args: {"status": "PASS", "missingTests": [], "command": []},
+    )
     binary = tmp_path / "integration-tests"
     binary.write_text("#!/bin/sh\nexit 0\n")
     binary.chmod(0o755)
@@ -162,6 +224,10 @@ def test_fault_cases_run_once_while_healthy_cases_repeat(
         }
 
     monkeypatch.setattr(gate, "_run_case", fake_run)
+    monkeypatch.setattr(
+        gate, "_probe_native_binary",
+        lambda *args: {"status": "PASS", "missingTests": [], "command": []},
+    )
     binary = tmp_path / "integration-tests"
     binary.write_text("#!/bin/sh\nexit 0\n")
     binary.chmod(0o755)

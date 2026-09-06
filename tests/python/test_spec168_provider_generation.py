@@ -176,7 +176,7 @@ class Spec168ProviderGenerationTest(unittest.TestCase):
             task={"name": "generation", "generation_mode": "TOKEN_STREAMING"},
         ).to_bytes()
 
-    def test_python_provider_rejects_native_streaming_contract(self) -> None:
+    def test_python_provider_requires_stateful_onnx_for_streaming_contract(self) -> None:
         with self.assertRaisesRegex(ValueError, "requires useCache=true"):
             self.pipeline_provider._qwen_generation_spec(
                 self._streaming_generation_envelope(use_cache=False))
@@ -185,8 +185,10 @@ class Spec168ProviderGenerationTest(unittest.TestCase):
         self.assertEqual(spec["generation_mode"], "TOKEN_STREAMING")
         self.assertTrue(spec["use_cache"])
         with self.assertRaisesRegex(
-                RuntimeError, "native stateful ONNX Provider runtime"):
+                RuntimeError, "device-resident stateful ONNX Provider runtime"):
             self.pipeline_provider._require_python_qwen_generation_mode(spec)
+        self.pipeline_provider._require_python_qwen_generation_mode(
+            spec, stateful_onnx=True)
 
     def test_final_response_mode_matches_delivery_mode(self) -> None:
         self.assertEqual(
@@ -310,6 +312,218 @@ class Spec168ProviderGenerationTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.pipeline_provider = load_pipeline_provider()
+
+    def test_qwen_onnx_full_generation_reuses_one_provider_owned_state(self) -> None:
+        class Session:
+            @staticmethod
+            def get_providers():
+                return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+
+        metadata = {
+            "stageIndex": 0,
+            "stageCount": 3,
+            "sequencePolicy": "stateful-prefill-decode-v1",
+            "stateInputNames": [
+                "attention_kv_in", "recurrent_state_in",
+                "convolution_state_in"],
+            "stateOutputNames": [
+                "attention_kv_out", "recurrent_state_out",
+                "convolution_state_out"],
+        }
+        request = self.pipeline_provider.encode_qwen_pipeline_context(
+            [[10, 11]], request_id="state-owned-by-provider",
+            session_id="generation-state-owned-by-provider",
+            generation={
+                "maxNewTokens": 2,
+                "eosTokenIds": [2],
+                "outputMode": "FULL",
+                "useCache": True,
+            },
+        )
+        context = SimpleNamespace(
+            execution=SimpleNamespace(
+                artifact_paths={"model": "/model/stage-0.onnx"}),
+            role="/LLM/Pipeline/Stage/0",
+            request=request,
+            request_id="state-owned-by-provider",
+        )
+        observed_states = []
+
+        def fake_stage_runner(_payload, **kwargs):
+            observed_states.append(kwargs.get("state"))
+            kwargs["state"]["epoch"] = len(observed_states)
+            return b"stage-output"
+
+        def fake_full_generation(_ctx, **kwargs):
+            kwargs["stage_runner"](b"prefill", 0.0)
+            kwargs["stage_runner"](b"decode", 0.0)
+            return {}
+
+        with mock.patch.object(
+                self.pipeline_provider, "run_qwen_onnx_stage",
+                side_effect=fake_stage_runner), mock.patch.object(
+                    self.pipeline_provider,
+                    "_handle_qwen_transformer_full_generation",
+                    side_effect=fake_full_generation):
+            self.pipeline_provider.handle_qwen_onnx_stage(
+                context,
+                stages=3,
+                session_cache={"/model/stage-0.onnx": Session()},
+                metadata_cache={"/model/stage-0.onnx": metadata},
+                compute_delay_ms=0.0,
+                device="cuda:0",
+                require_cuda=True,
+            )
+        self.assertEqual(len(observed_states), 2)
+        self.assertIsNotNone(observed_states[0])
+        self.assertIs(observed_states[0], observed_states[1])
+
+    def test_qwen_conversation_state_moves_device_host_device(self) -> None:
+        class DeviceOrtValue:
+            def __init__(self, value):
+                self.value = value
+                self.numpy_calls = 0
+
+            @staticmethod
+            def device_name():
+                return "cuda"
+
+            def numpy(self):
+                self.numpy_calls += 1
+                return self.value
+
+        import numpy as np
+
+        device_value = DeviceOrtValue(np.asarray([[1.0, 2.0]], dtype=np.float32))
+        state = {
+            "attention_kv_in": device_value,
+            "__ndnsf_prefix_token_count__": 2,
+        }
+        host = self.pipeline_provider._qwen_state_to_host(state)
+        self.assertEqual(device_value.numpy_calls, 1)
+        self.assertIsInstance(host["attention_kv_in"], np.ndarray)
+        self.assertIsNot(host["attention_kv_in"], device_value.value)
+        self.assertEqual(host["__ndnsf_prefix_token_count__"], 2)
+
+        gpu_value = object()
+        factory = mock.Mock(return_value=gpu_value)
+        restored = self.pipeline_provider._qwen_state_to_gpu(
+            host, device_id=0, ortvalue_factory=factory)
+        factory.assert_called_once()
+        self.assertIs(restored["attention_kv_in"], gpu_value)
+        self.assertEqual(restored["__ndnsf_prefix_token_count__"], 2)
+
+    def test_copy_onnx_state_keeps_opaque_device_buffers_but_copies_owner(self) -> None:
+        class DeviceOrtValue:
+            @staticmethod
+            def device_name():
+                return "cuda"
+
+        value = DeviceOrtValue()
+        source = {"attention_kv_in": value, "nested": [1, 2]}
+        copied = self.pipeline_provider._copy_onnx_state(source)
+        self.assertIsNot(copied, source)
+        self.assertIs(copied["attention_kv_in"], value)
+        self.assertIsNot(copied["nested"], source["nested"])
+
+    def test_qwen_onnx_generation_uses_conversation_manager_and_host_tier(self) -> None:
+        class Session:
+            @staticmethod
+            def get_providers():
+                return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+
+            @staticmethod
+            def io_binding():
+                return object()
+
+            @staticmethod
+            def run_with_iobinding(_binding):
+                return None
+
+        metadata = {
+            "stageIndex": 0,
+            "stageCount": 3,
+            "sequencePolicy": "stateful-prefill-decode-v1",
+            "stateInputNames": [
+                "attention_kv_in", "recurrent_state_in",
+                "convolution_state_in"],
+            "stateOutputNames": [
+                "attention_kv_out", "recurrent_state_out",
+                "convolution_state_out"],
+        }
+        request = self.pipeline_provider.encode_qwen_pipeline_context(
+            [[10, 11]], request_id="conversation-child",
+            session_id="conversation-provider-state",
+            generation={
+                "maxNewTokens": 1, "eosTokenIds": [2],
+                "outputMode": "FULL", "useCache": True,
+            })
+        context = SimpleNamespace(
+            execution=SimpleNamespace(
+                artifact_paths={"model": "/model/stage-0.onnx"},
+                spec=SimpleNamespace(metadata={"generationId": "g-child"})),
+            role="/LLM/Pipeline/Stage/0", request=request,
+            request_id="conversation-child",
+            stream_cancelled=lambda: False,
+        )
+        state_cache = {}
+        parent_state = {"attention_kv_in": object()}
+        binding = SimpleNamespace(conversation_id="conversation-provider-state")
+        continuation = SimpleNamespace(mode=SimpleNamespace(value="append-delta"))
+        parent_receipt = object()
+        final_receipt = SimpleNamespace(
+            conversation_id="conversation-provider-state",
+            successor_context_epoch=2)
+        manager = mock.Mock()
+        manager.pause_to_host.return_value = SimpleNamespace(
+            logical_bytes=64, transfer_bytes=64, transfer_latency_ms=1)
+
+        def fake_prepare(_ctx, **kwargs):
+            kwargs["state_cache"][("conversation-child", 0)] = parent_state.copy()
+            return binding, None, continuation, parent_receipt
+
+        observed = []
+
+        def fake_runner(_payload, **kwargs):
+            observed.append(kwargs["state"])
+            return b"output"
+
+        def fake_generation(_ctx, **kwargs):
+            kwargs["stage_runner"](b"prefill", 0.0)
+            kwargs["stage_runner"](b"decode", 0.0)
+            return {"input_token_ids": (10, 11), "generated_token_ids": (12,)}
+
+        with mock.patch.object(
+                self.pipeline_provider, "_conversation_prepare",
+                side_effect=fake_prepare) as prepare, mock.patch.object(
+                    self.pipeline_provider, "run_qwen_onnx_stage",
+                    side_effect=fake_runner), mock.patch.object(
+                        self.pipeline_provider,
+                        "_handle_qwen_transformer_full_generation",
+                        side_effect=fake_generation), mock.patch.object(
+                            self.pipeline_provider, "_conversation_finalize",
+                            return_value=final_receipt) as finalize:
+            self.pipeline_provider.handle_qwen_onnx_stage(
+                context, stages=3,
+                session_cache={"/model/stage-0.onnx": Session()},
+                metadata_cache={"/model/stage-0.onnx": metadata},
+                compute_delay_ms=0.0, device="cuda:0", require_cuda=True,
+                state_cache=state_cache, conversation_manager=manager,
+                conversation_receipts={}, conversation_prefixes={},
+                spec175_host_tier_after_commit=True)
+
+        self.assertEqual(len(observed), 2)
+        self.assertIs(observed[0], observed[1])
+        self.assertEqual(observed[0]["attention_kv_in"],
+                         parent_state["attention_kv_in"])
+        self.assertTrue(prepare.called)
+        self.assertTrue(finalize.called)
+        manager.pause_to_host.assert_called_once()
+        self.assertIs(
+            manager.pause_to_host.call_args.kwargs["copy_state"],
+            self.pipeline_provider._qwen_state_to_host)
+        manager.release_for_request.assert_called_once()
+        self.assertNotIn(("conversation-child", 0), state_cache)
 
     def _execution(self, root: Path) -> tuple[ExecutionContext, str]:
         payload = b"immutable-qwen-stage"
@@ -876,6 +1090,11 @@ class Spec168ProviderGenerationTest(unittest.TestCase):
             offset = source.index(f'"{marker}"')
             excerpt = source[offset:offset + 500]
             self.assertIn("monotonicMs=", excerpt, marker)
+        self.assertIn("LLM_PIPELINE_QWEN_EPOCH_DATAFLOW_TIMING", source)
+        self.assertIn("activationFetchMs=", source)
+        self.assertIn("feedbackPublishMs=", source)
+        self.assertIn("eventPublishMs=", source)
+        self.assertIn("LLM_PIPELINE_QWEN_REQUEST_STATE_CLEANUP", source)
 
 
 if __name__ == "__main__":

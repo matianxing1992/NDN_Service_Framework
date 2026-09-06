@@ -4111,6 +4111,111 @@ def run_qwen_transformer_stage(
         return payload
 
 
+_QWEN_STATEFUL_SEQUENCE_POLICY = "stateful-prefill-decode-v1"
+_QWEN_STATE_FAMILIES = (
+    "attention_kv", "recurrent_state", "convolution_state")
+_QWEN_PREFIX_TOKEN_COUNT = "__ndnsf_prefix_token_count__"
+
+
+def _qwen_stateful_names(metadata: dict[str, Any]) -> tuple[
+        tuple[str, ...], tuple[str, ...]]:
+    inputs = tuple(str(value) for value in metadata.get(
+        "stateInputNames", ()))
+    outputs = tuple(str(value) for value in metadata.get(
+        "stateOutputNames", ()))
+    required_inputs = tuple(f"{family}_in" for family in _QWEN_STATE_FAMILIES)
+    required_outputs = tuple(f"{family}_out" for family in _QWEN_STATE_FAMILIES)
+    if (metadata.get("sequencePolicy") != _QWEN_STATEFUL_SEQUENCE_POLICY
+            or any(value not in inputs for value in required_inputs)
+            or any(value not in outputs for value in required_outputs)
+            or len(inputs) != len(outputs)):
+        raise ValueError("QWEN_ONNX_STATEFUL_SEQUENCE_CONTRACT_REQUIRED")
+    return inputs, outputs
+
+
+def _qwen_initial_state(item: Any, contract: Mapping[str, Any], *,
+                        batch: int, np: Any) -> Any:
+    declared = list(contract.get("initialShape", ()))
+    if not declared:
+        declared = list(getattr(item, "shape", ()))
+    shape: list[int] = []
+    for index, dimension in enumerate(declared):
+        if isinstance(dimension, int) and dimension >= 0:
+            shape.append(int(dimension))
+        elif index == 0:
+            shape.append(int(batch))
+        elif any(marker in str(dimension).lower()
+                 for marker in ("past", "cache", "sequence", "seq")):
+            shape.append(0)
+        else:
+            raise ValueError(
+                f"state input {item.name} requires tensorContracts.initialShape")
+    if not shape:
+        raise ValueError(f"state input {item.name} has no initial shape")
+    return np.zeros(
+        tuple(shape),
+        dtype=_onnx_input_numpy_dtype(
+            getattr(item, "type", ""), np.float32),
+    )
+
+
+def _qwen_cuda_device_id(metadata: Mapping[str, Any]) -> int:
+    value = str(metadata.get("deviceId", "0") or "0").strip().lower()
+    if value.startswith("cuda:"):
+        value = value.split(":", 1)[1]
+    try:
+        device_id = int(value)
+    except ValueError as exc:
+        raise ValueError("Qwen ONNX deviceId must be a CUDA device index") from exc
+    if device_id < 0:
+        raise ValueError("Qwen ONNX deviceId must be non-negative")
+    return device_id
+
+
+def _qwen_is_device_ortvalue(value: Any) -> bool:
+    device_name = getattr(value, "device_name", None)
+    if not callable(device_name):
+        return False
+    return str(device_name()).lower() != "cpu"
+
+
+def _qwen_run_stateful_cuda_bound(
+        session: Any, feed: Mapping[str, Any], output_names: tuple[str, ...],
+        state_inputs: tuple[str, ...], state_outputs: tuple[str, ...],
+        *, device_id: int) -> dict[str, Any]:
+    """Execute one state transition while retaining opaque state OrtValues.
+
+    Application inputs and inter-Provider activations intentionally originate
+    on the host because they cross the NDN boundary.  Only the three declared
+    model-state families are rebound as CUDA OrtValues and allocated back onto
+    CUDA.  Primary activation/logit outputs are bound to CPU because those are
+    serialized onto NDN or sampled by the final Provider.
+    """
+
+    binding = session.io_binding()
+    for name, value in feed.items():
+        if name in state_inputs and _qwen_is_device_ortvalue(value):
+            binding.bind_ortvalue_input(name, value)
+        else:
+            binding.bind_cpu_input(name, value)
+    state_output_set = set(state_outputs)
+    for name in output_names:
+        if name in state_output_set:
+            binding.bind_output(name, device_type="cuda", device_id=device_id)
+        else:
+            binding.bind_output(name, device_type="cpu", device_id=0)
+    session.run_with_iobinding(binding)
+    values = list(binding.get_outputs())
+    if len(values) != len(output_names):
+        raise ValueError(
+            "Qwen ONNX I/O binding output metadata/value count mismatch: "
+            f"{len(output_names)} != {len(values)}")
+    outputs: dict[str, Any] = {}
+    for name, value in zip(output_names, values):
+        outputs[name] = value if name in state_output_set else value.numpy()
+    return outputs
+
+
 def run_qwen_onnx_stage(
     input_payload: bytes,
     *,
@@ -4120,6 +4225,7 @@ def run_qwen_onnx_stage(
     metadata: dict[str, Any],
     compute_delay_ms: float = 0.0,
     timing: dict[str, float | int | str] | None = None,
+    state: dict[str, Any] | None = None,
 ) -> bytes:
     import numpy as np
 
@@ -4143,10 +4249,18 @@ def run_qwen_onnx_stage(
     end = int(layer_range.get("endExclusive", 0))
     stage_count = int(metadata.get("stageCount", stages))
     context_length = int(metadata.get("contextLength", 0) or 0)
+    stateful = metadata.get("sequencePolicy") == _QWEN_STATEFUL_SEQUENCE_POLICY
+    if stateful and state is None:
+        raise ValueError("stateful Qwen ONNX execution requires Provider state")
+    state_inputs: tuple[str, ...] = ()
+    state_outputs: tuple[str, ...] = ()
+    if stateful:
+        state_inputs, state_outputs = _qwen_stateful_names(metadata)
     pad_token_id = metadata.get("padTokenId")
     if context_length < 0:
         raise ValueError("Qwen ONNX contextLength must be non-negative")
-    if context_length and (not isinstance(pad_token_id, int) or pad_token_id < 0):
+    if (context_length and not stateful
+            and (not isinstance(pad_token_id, int) or pad_token_id < 0)):
         raise ValueError("Qwen ONNX fixed-context metadata lacks padTokenId")
     hidden_size = 0
     request_id = ""
@@ -4155,12 +4269,35 @@ def run_qwen_onnx_stage(
     if stage_index == 0:
         try:
             input_doc = decode_qwen_pipeline_context(input_payload)
-            input_ids = np.asarray(input_doc["inputIds"], dtype=np.int64)
-            attention_mask = np.asarray(input_doc["attentionMask"], dtype=np.int64)
-            position_ids = np.asarray(input_doc["positionIds"], dtype=np.int64)
+            full_input_ids = np.asarray(input_doc["inputIds"], dtype=np.int64)
+            full_attention_mask = np.asarray(
+                input_doc["attentionMask"], dtype=np.int64)
             request_id = str(input_doc.get("requestId", ""))
             session_id = str(input_doc.get("sessionId", ""))
             context_epoch = int(input_doc.get("contextEpoch", 0) or 0)
+            if stateful:
+                prefix_count = int((state or {}).get(
+                    _QWEN_PREFIX_TOKEN_COUNT, 0) or 0)
+                active_length = int(full_attention_mask[0].sum())
+                if prefix_count < 0 or prefix_count >= active_length:
+                    raise ValueError(
+                        "Qwen ONNX state prefix does not precede new input")
+                input_ids = full_input_ids[:, prefix_count:active_length]
+                attention_mask = full_attention_mask[:, :active_length]
+                position_rows = np.arange(
+                    prefix_count, active_length, dtype=np.int64)
+                if model_type == "qwen3_5":
+                    position_ids = np.broadcast_to(
+                        position_rows.reshape(1, 1, -1),
+                        (4, int(input_ids.shape[0]), int(input_ids.shape[1])),
+                    )
+                else:
+                    position_ids = position_rows.reshape(1, -1)
+            else:
+                input_ids = full_input_ids
+                attention_mask = full_attention_mask
+                position_ids = np.asarray(
+                    input_doc["positionIds"], dtype=np.int64)
         except Exception:
             try:
                 input_doc = decode_payload(input_payload)
@@ -4208,6 +4345,12 @@ def run_qwen_onnx_stage(
         session_id = _safe_array_text(incoming.get("session_id", ""))
         context_epoch = int(incoming.get("context_epoch", np.asarray([0])).reshape(-1)[0])
 
+    # Legacy fixed-context graphs are padded to their export shape. Stateful
+    # Spec175 graphs instead receive the full attention prefix plus only the
+    # newly appended token chunk, exactly like the frozen G5 CUDA oracle.
+    # Padding a stateful graph would repeat the prefix and invalidate its KV/
+    # recurrent/convolution state transition.
+    #
     # Qwen3.5's exported hybrid linear-attention graph contains Python shape
     # branches (chunk padding and chunk count).  Dynamic ONNX axes do not
     # make those branches dynamic: exporting a 20-token sample specializes a
@@ -4217,7 +4360,13 @@ def run_qwen_onnx_stage(
     # This keeps every stage's internal shape stable while preserving the
     # logits at the last active token.
     active_length = int(attention_mask[0].sum()) if attention_mask.size else 0
-    if context_length:
+    if context_length and stateful:
+        if active_length <= 0 or active_length > context_length:
+            raise ValueError(
+                "Qwen ONNX active context exceeds declared contextLength")
+        if input_ids.ndim != 2 or input_ids.shape[1] <= 0:
+            raise ValueError("Qwen ONNX stateful token chunk is empty")
+    elif context_length:
         if input_ids.ndim != 2 or attention_mask.ndim != 2:
             raise ValueError("Qwen ONNX fixed-context tensors must be rank 2")
         if input_ids.shape[0] != attention_mask.shape[0]:
@@ -4282,23 +4431,77 @@ def run_qwen_onnx_stage(
         feed["position_ids"] = position_ids
     if "attention_mask" in available_inputs:
         feed["attention_mask"] = attention_mask
+    contracts = dict(metadata.get("tensorContracts", {}) or {})
     for item in session.get_inputs():
-        if not item.name.startswith(("past_key.", "past_value.")):
+        if item.name in feed:
             continue
-        shape = item.shape
-        if len(shape) != 4 or not isinstance(shape[1], int) or not isinstance(shape[3], int):
-            raise ValueError(f"unsupported Qwen KV input shape for {item.name}: {shape}")
-        feed[item.name] = np.empty(
-            (int(input_ids.shape[0]), int(shape[1]), 0, int(shape[3])),
-            dtype=_onnx_input_numpy_dtype(getattr(item, "type", ""), np.float32),
-        )
+        if stateful and item.name in state_inputs:
+            value = (state or {}).get(item.name)
+            if value is None:
+                value = _qwen_initial_state(
+                    item, dict(contracts.get(item.name, {}) or {}),
+                    batch=int(input_ids.shape[0]), np=np)
+            if _qwen_is_device_ortvalue(value):
+                feed[item.name] = value
+            else:
+                feed[item.name] = np.asarray(value).astype(
+                    _onnx_input_numpy_dtype(
+                        getattr(item, "type", ""), np.float32),
+                    copy=False,
+                )
+            continue
+        if item.name == "cache_position":
+            feed[item.name] = np.arange(
+                active_length - int(input_ids.shape[1]), active_length,
+                dtype=_onnx_input_numpy_dtype(
+                    getattr(item, "type", ""), np.int64),
+            )
+            continue
+        if item.name.startswith(("past_key.", "past_value.")):
+            shape = item.shape
+            if len(shape) != 4 or not isinstance(shape[1], int) or not isinstance(shape[3], int):
+                raise ValueError(f"unsupported Qwen KV input shape for {item.name}: {shape}")
+            feed[item.name] = np.empty(
+                (int(input_ids.shape[0]), int(shape[1]), 0, int(shape[3])),
+                dtype=_onnx_input_numpy_dtype(getattr(item, "type", ""), np.float32),
+            )
+            continue
+        raise ValueError(f"unrecognized Qwen ONNX input: {item.name}")
     output_names = tuple(item.name for item in session.get_outputs())
-    output_values = session.run(None, feed)
-    if len(output_names) != len(output_values):
-        raise ValueError(
-            "Qwen ONNX output metadata/value count mismatch: "
-            f"{len(output_names)} != {len(output_values)}")
-    outputs = dict(zip(output_names, output_values))
+    providers = tuple(session.get_providers()) \
+        if callable(getattr(session, "get_providers", None)) else ()
+    use_cuda_state_binding = bool(
+        stateful
+        and providers
+        and providers[0] == "CUDAExecutionProvider"
+        and callable(getattr(session, "io_binding", None))
+        and callable(getattr(session, "run_with_iobinding", None)))
+    if use_cuda_state_binding:
+        outputs = _qwen_run_stateful_cuda_bound(
+            session, feed, output_names, state_inputs, state_outputs,
+            device_id=_qwen_cuda_device_id(metadata))
+        record("state_storage", "device")
+        record("state_host_round_trip_bytes", 0)
+    else:
+        output_values = session.run(None, feed)
+        if len(output_names) != len(output_values):
+            raise ValueError(
+                "Qwen ONNX output metadata/value count mismatch: "
+                f"{len(output_names)} != {len(output_values)}")
+        outputs = dict(zip(output_names, output_values))
+        if stateful:
+            record("state_storage", "host")
+            record("state_host_round_trip_bytes", sum(
+                int(np.asarray(outputs[name]).nbytes)
+                for name in state_outputs if name in outputs))
+    if stateful:
+        assert state is not None
+        for input_name, output_name in zip(state_inputs, state_outputs):
+            if output_name not in outputs:
+                raise ValueError(
+                    f"Qwen ONNX stage omitted state output: {output_name}")
+            state[input_name] = outputs[output_name]
+        state[_QWEN_PREFIX_TOKEN_COUNT] = int(active_length)
     primary_name = (
         "logits" if stage_index == stage_count - 1 else "hidden_states_out")
     if primary_name not in outputs:
@@ -4324,7 +4527,10 @@ def run_qwen_onnx_stage(
         record("total_ms", (time.perf_counter() - total_start) * 1000.0)
         return payload
     logits = np.asarray(outputs[primary_name])
-    top_token = int(np.argmax(logits[:, active_length - 1, :], axis=-1)[0])
+    # Stateful decode logits have the token-chunk sequence dimension, not the
+    # full attention-prefix length.
+    logit_index = -1 if stateful else active_length - 1
+    top_token = int(np.argmax(logits[:, logit_index, :], axis=-1)[0])
     record("final_head_ms", 0.0)
     encode_start = time.perf_counter()
     payload = json.dumps({

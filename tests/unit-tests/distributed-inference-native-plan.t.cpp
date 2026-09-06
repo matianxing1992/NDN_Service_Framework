@@ -667,6 +667,102 @@ BOOST_AUTO_TEST_CASE(TensorObjectManifestCodecRoundTripsAndRejectsMutation)
                     std::invalid_argument);
 }
 
+BOOST_AUTO_TEST_CASE(TensorObjectManifestLegacyCodecPreservesManySegments)
+{
+  TensorObjectManifestV1 value;
+  value.capabilityDigest = digest('1');
+  value.epochKeyId = "epoch-key";
+  value.requester = "/requester/app";
+  value.requestId = "request/1";
+  value.attemptId = "1";
+  value.planDigest = digest('2');
+  value.groupId = "group-1";
+  value.epoch = "epoch-1";
+  value.operationKind = "PIPELINE";
+  value.producerRole = "BackboneNeck";
+  value.consumerRoles = {"DetectShard0"};
+  value.sourceLayoutDigest = digest('3');
+  value.targetLayoutDigest = digest('4');
+  value.tensorId = "/model/model.16/cv2/act/Mul_output_0";
+  value.tensorDigest = digest('5');
+  value.contentDigest = digest('6');
+  value.totalBytes = 235 * 7000;
+  value.segmentSize = 7000;
+  value.segmentCount = 235;
+  value.orderedSegmentDigests.assign(235, digest('7'));
+  value.createdAtMs = 1;
+  value.noProgressMs = 10000;
+  value.hardDeadlineMs = 30000;
+  value.endpointDigest = digest('8');
+  value.manifestContractDigest = digest('9');
+  value.producerSignature.assign(64, 0x42);
+  value.objectManifestDigest = value.digest();
+
+  const auto wire = encodeTensorObjectManifest(value);
+  // The legacy representation remains decodable, but large manifests use
+  // ContextCompact on the network (Spec181 exact-tensor-wire contract).
+  const auto decoded = decodeTensorObjectManifest(wire);
+  BOOST_CHECK(!decoded.compactContextRequired);
+  BOOST_CHECK_EQUAL(decoded.digest(), value.digest());
+  BOOST_CHECK_EQUAL_COLLECTIONS(decoded.producerSignature.begin(),
+                                decoded.producerSignature.end(),
+                                value.producerSignature.begin(),
+                                value.producerSignature.end());
+  BOOST_CHECK_EQUAL(decoded.segmentCount, value.segmentCount);
+  BOOST_CHECK_EQUAL_COLLECTIONS(decoded.orderedSegmentDigests.begin(),
+                                decoded.orderedSegmentDigests.end(),
+                                value.orderedSegmentDigests.begin(),
+                                value.orderedSegmentDigests.end());
+}
+
+BOOST_AUTO_TEST_CASE(TensorObjectManifestContextCompactFitsAndRoundTrips)
+{
+  TensorObjectManifestV1 value;
+  value.capabilityDigest = digest('1');
+  value.epochKeyId = "epoch-key";
+  value.requester = "/requester/app";
+  value.requestId = "request/1";
+  value.attemptId = "1";
+  value.planDigest = digest('2');
+  value.groupId = "group-1";
+  value.epoch = "1";
+  value.operationKind = "PIPELINE";
+  value.producerRole = "BackboneNeck";
+  value.consumerRoles = {"DetectShard0"};
+  value.sourceLayoutDigest = digest('3');
+  value.targetLayoutDigest = digest('4');
+  value.tensorId = "/model/model.16/cv2/act/Mul_output_0";
+  value.tensorDigest = digest('5');
+  value.contentDigest = digest('6');
+  value.totalBytes = 235 * 7400;
+  value.segmentSize = 7400;
+  value.segmentCount = 235;
+  value.orderedSegmentDigests.assign(235, digest('7'));
+  value.createdAtMs = 1;
+  value.noProgressMs = 10000;
+  value.hardDeadlineMs = 30000;
+  value.endpointDigest = digest('8');
+  value.manifestContractDigest = digest('9');
+  value.producerSignature.assign(64, 0x42);
+  value.objectManifestDigest = value.digest();
+
+  const auto wire = encodeTensorObjectManifestContextCompact(value);
+  BOOST_CHECK_LT(wire.size(), ndn::MAX_NDN_PACKET_SIZE);
+  const auto decoded = decodeTensorObjectManifest(wire);
+  BOOST_CHECK(decoded.compactContextRequired);
+  BOOST_CHECK_EQUAL(decoded.contentDigest, value.contentDigest);
+  BOOST_CHECK_EQUAL(decoded.totalBytes, value.totalBytes);
+  BOOST_CHECK_EQUAL(decoded.segmentCount, value.segmentCount);
+  std::vector<std::uint8_t> digestCommitmentInput;
+  for (const auto& digest : value.orderedSegmentDigests) {
+    digestCommitmentInput.insert(digestCommitmentInput.end(),
+                                 digest.begin(), digest.end());
+  }
+  BOOST_CHECK_EQUAL(decoded.compactSegmentDigestCommitment,
+                    sha256TensorBytes(digestCommitmentInput));
+  BOOST_CHECK(decoded.orderedSegmentDigests.empty());
+}
+
 BOOST_AUTO_TEST_CASE(NativeV3ProjectionSetRejectsDuplicateProviderOrRole)
 {
   auto duplicateProvider = validProjectionSet();

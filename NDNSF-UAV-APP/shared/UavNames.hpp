@@ -26,6 +26,7 @@ inline const ndn::Name SERVICE_MAVLINK_PARAMETER_EDIT_SUFFIX("/UAV/MAVLink/Param
 inline const ndn::Name SERVICE_MAVLINK_ANALYZE_SNAPSHOT_SUFFIX("/UAV/MAVLink/AnalyzeSnapshot");
 inline const ndn::Name SERVICE_PREFLIGHT_CHECKLIST_SUFFIX("/UAV/Preflight/Checklist");
 inline const ndn::Name SERVICE_GS_OBJECT_DETECTION("/UAV/GS/ObjectDetection");
+inline const ndn::Name SERVICE_INCIDENT_ANALYZE("/UAV/Incident/Analyze");
 inline const ndn::Name SERVICE_GS_OPERATOR_AUTHORITY_LEASE("/UAV/GS/OperatorAuthority/Lease");
 inline const ndn::Name SERVICE_GS_OPERATOR_AUTHORITY_REVOCATION("/UAV/GS/OperatorAuthority/Revocation");
 inline const ndn::Name SERVICE_GS_OPERATOR_AUTHORITY_AUDIT("/UAV/GS/OperatorAuthority/Audit");
@@ -51,6 +52,7 @@ struct UavRuntimeConfig
   ndn::Name serviceMavlinkAnalyzeSnapshotSuffix = SERVICE_MAVLINK_ANALYZE_SNAPSHOT_SUFFIX;
   ndn::Name servicePreflightChecklistSuffix = SERVICE_PREFLIGHT_CHECKLIST_SUFFIX;
   ndn::Name serviceGsObjectDetection = SERVICE_GS_OBJECT_DETECTION;
+  ndn::Name serviceIncidentAnalyze = SERVICE_INCIDENT_ANALYZE;
   ndn::Name serviceGsOperatorAuthorityLease = SERVICE_GS_OPERATOR_AUTHORITY_LEASE;
   ndn::Name serviceGsOperatorAuthorityRevocation = SERVICE_GS_OPERATOR_AUTHORITY_REVOCATION;
   ndn::Name serviceGsOperatorAuthorityAudit = SERVICE_GS_OPERATOR_AUTHORITY_AUDIT;
@@ -60,6 +62,61 @@ struct UavRuntimeConfig
 
 UavRuntimeConfig
 loadUavRuntimeConfig(const std::string& path);
+
+ndn::Name
+makeUavEvidenceName(const ndn::Name& producerIdentity,
+                    const std::string& missionId,
+                    const std::string& incidentId,
+                    const std::string& evidenceId,
+                    uint64_t version);
+
+ndn::Name
+makeUavReportName(const ndn::Name& producerIdentity,
+                  const std::string& missionId,
+                  const std::string& incidentId,
+                  const std::string& attemptId,
+                  uint64_t version);
+
+/** Provider-owned immutable outputs for a bounded multi-view recognition job. */
+ndn::Name
+makeUavMultiViewResultName(const ndn::Name& providerIdentity,
+                           const std::string& missionSessionId,
+                           const std::string& jobId,
+                           uint64_t attempt,
+                           uint64_t version);
+
+ndn::Name
+makeUavMultiViewAnnotationName(const ndn::Name& providerIdentity,
+                               const std::string& missionSessionId,
+                               const std::string& jobId,
+                               uint64_t attempt,
+                               const std::string& viewId,
+                               uint64_t version);
+
+bool
+isUavProviderMultiViewDataName(const ndn::Name& providerIdentity,
+                               const ndn::Name& objectName,
+                               const std::string& objectKind,
+                               const std::string& missionSessionId,
+                               const std::string& jobId);
+
+bool
+isUavProducerDataName(const ndn::Name& producerIdentity,
+                      const ndn::Name& objectName,
+                      const std::string& objectKind);
+
+/**
+ * Validate a producer-owned object name and bind its mission/incident
+ * components to the surrounding application record.  The generic helper
+ * above checks only the object grammar; this contextual form prevents a
+ * validly signed object from being attached to the wrong incident.
+ */
+bool
+isUavProducerDataNameForContext(const ndn::Name& producerIdentity,
+                                const ndn::Name& objectName,
+                                const std::string& objectKind,
+                                const std::string& missionId,
+                                const std::string& incidentId);
 
 ndn::Name
 droneIdentity(const std::string& droneId);

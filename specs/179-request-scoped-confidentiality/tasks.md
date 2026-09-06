@@ -1,0 +1,195 @@
+# Tasks: Request-Scoped Confidentiality and Epoch Revocation
+
+**Input**: Design documents from `specs/179-request-scoped-confidentiality/`
+
+**Prerequisites**: `spec.md`, `plan.md`, `research.md`, `data-model.md`, and
+`contracts/`
+
+**Tests**: Required. Preserve the order primitive contract → normal integration
+→ large/streaming → epoch/revocation → MiniNDN → migration audit.
+
+## Phase 1: Contract and cryptographic foundation
+
+- [x] T001 Freeze the request-scoped wire contract and canonical binding rules by adding golden vectors for `ControllerVersion`, `RequestSecurityBinding`, `SelectionKeyEnvelope`, `AeadEnvelope`, and `PolicyStatusData`; define the two uint64 version fields, comparison/zero rules, AES-256-GCM/RSA-OAEP-SHA256 parameters, nonce length, digest encoding, typed failure codes, and redacted telemetry in `ndn-service-framework/ControllerVersion.*`, `ndn-service-framework/RequestConfidentiality.*`, `ndn-service-framework/PolicyStatus.*`, `tests/unit-tests/request-scoped-confidentiality.t.cpp`, `specs/179-request-scoped-confidentiality/contracts/golden-vectors.md`, and `specs/179-request-scoped-confidentiality/contracts/`
+- [x] T002 Implement request-key generation, canonical AAD/Selection digest construction, RSA-OAEP envelope wrapping/unwrapping, AES-GCM encrypt/decrypt, per-invocation nonce registry, zeroization, and bounded expiry; close tamper, malformed, wrong-recipient, nonce-reuse, and canonicalization tests before runtime wiring in `ndn-service-framework/RequestConfidentiality.*` (including `NonceRegistry`) and the focused unit tests
+
+**Checkpoint**: Primitive vectors and failure behavior are deterministic; no User/Provider runtime uses the old service-wide response-key path yet.
+
+## Phase 2: User Stories 1–2 — Discovery boundary and selected-provider key delivery (P1)
+
+- [x] T003 [US1] Keep NAC-ABE limited to the discovery descriptor while extending Request/ACK metadata with the current non-zero ControllerVersion, User encryption-certificate name/digest, Provider encryption-certificate advertisement, validity, and supported envelope algorithm; bind both version fields to signatures and update serialization/round-trip tests in `ndn-service-framework/NDNSFMessages.*`, `ServiceUser.*`, `ServiceProvider.*`, and focused unit tests
+- [x] T004 [US2] Generate fresh `K_input`/`K_response` after selection, publish an exact named User-signed Input Data packet encrypted under `K_input`, carry that name plus both keys only in the selected Provider's RSA-OAEP Selection envelope, enforce certificate/ControllerVersion/selection binding, consume at most once, and add replay/conflict diagnostics in `ndn-service-framework/ServiceUser.*`, `ndn-service-framework/ServiceProvider.*`, `ndn-service-framework/NDNSFMessages.*`, and `tests/integration-tests/request-scoped-selection.t.cpp`. The focused component case now also replays the exact Selection after terminal completion and verifies no second execution.
+
+**Checkpoint**: The selected Provider can decrypt one valid input; unselected Providers and same-service Users cannot recover the request keys.
+
+## Phase 3: User Story 3 — User-only response confidentiality (P1)
+
+- [x] T005 [US3] Replace the large/normal Response service-DKEY wrapping path with `K_response` AES-GCM Content encryption, Provider-signed Data, User-side recipient verification, complete ControllerVersion-bound AAD, and typed decryption failures; cover cross-user, wrong-provider-certificate, modified-ciphertext, stale-version, and terminal-owner cases in `ndn-service-framework/ServiceProvider.*`, `ndn-service-framework/ServiceUser.*`, `ndn-service-framework/NDNSFMessages.*`, and `tests/integration-tests/request-scoped-response-confidentiality.t.cpp`. The current component slice in `request-scoped-selection.t.cpp` covers the large-response path, cross-user requester-name rejection, wrong-provider transport evidence, stale ControllerVersion, inline ciphertext tamper rejection, response-time revocation after Provider execution, and terminal replay. The dedicated response-confidentiality executable validates a retained signed segment through the configured trust schema and checks request-bound AAD/nonce behavior. **Closed 2026-09-04**: the normal/large User-side production runtime coverage was executed by `NormalResponseCompletesThroughProductionOnResponse` and `LargeResponseCompletesThroughProductionOnResponse` (with `LargeResponseUsesConfiguredTrustAndRequestBoundAead` and `RevokedUserCannotReceiveLargeResponseAfterProviderExecution`), `RequestScopedResponseConfidentiality` 4/4 green on the post-removal binary (`evidence/release-gate.md`, RV-I09/RV-I22 mapping).
+- [x] T006 [US3] Extend the same invocation binding to large-response, streaming, and Targeted paths: carry ControllerVersion once in the authenticated invocation/stream binding, bind every event to its version digest, allow one invocation response key but require unique per-segment/event nonces, replay tombstones, and cleanup at completion/timeout/cancellation in `ndn-service-framework/ServiceProvider.cpp`, `ndn-service-framework/ServiceUser.cpp`, streaming helpers, and `tests/integration-tests/request-scoped-streaming-confidentiality.t.cpp`. The stream wire/binding slice and LocalMock delivery-time revocation checks are implemented and covered by `invocation-stream-message.t.cpp` plus the 19-case `Spec175InvocationStream` regression; `TargetedStreamRevocationStopsBeforeBootstrap` and unit `RevokedUserCannotConsumeTargetedTokenOrStartRefill` cover the User-side Targeted discovery/token gate, `StreamEventAfterProviderRevocationIsRejectedAtPublication` covers the Provider Face commit boundary, and `RealTargetedProviderRejectsRevokedExecution` covers the Provider execution boundary. **Closed 2026-09-04**: configured-trust validation is executed by `LargeResponseUsesConfiguredTrustAndRequestBoundAead` and `ConfiguredTrustSchemaControlsControllerStatusValidation` (file trust anchor accept/untrusted reject; RV-I06/RV-I22), restart/rejoin propagation by MiniNDN `controller-restart` (15/15) and `offline-rejoin-epoch-skip` (8/8), per-event nonce/duplicate suppression by `NormalStreamSuppressesDuplicateEventData` and the stream message suite (RV-U08), Targeted token/refill handling by `RevokedUserCannotConsumeTargetedTokenOrStartRefill` plus MiniNDN `targeted-refill-invalidation` (14/14), and large-response revocation by `RevokedUserCannotReceiveLargeResponseAfterProviderExecution` plus MiniNDN `large-response-invalidation` (14/14) — `evidence/minindn-campaign-20260904.md`, RV-I09 network half.
+
+**Checkpoint**: Valid normal, large, and streaming responses decrypt only for the requesting User; the old `/PERMISSION/<service>` response-key carrier is absent from the default path.
+
+## Phase 4: User Story 4 — ControllerVersion, refresh, and revocation (P2)
+
+- [x] T007 [US4] Complete and execute the deterministic Controller authority boundary from RV-U01–RV-U05 and RV-U13–RV-U17 plus RV-U20–RV-U21: canonical ControllerVersion/status encoding; identity/certificate targets; attribute-specific `SERVICE_AUTHORIZATION(identity, service, authorizationAttribute)` targets using `/PERMISSION/<service>` or `/SERVICE/<service>`; exact signed status naming; attribute-aware User/Provider permission issuance filtering; a fresh global NAC-ABE master-secret/public-parameter generation for each authorization-reducing change; filtered DKEY reissuance to every still-authorized identity after withdrawal; grant-only ControllerVersion advancement with unchanged public parameters, target-policy replacement, and exactly one lazy complete-DKEY refresh for the granted identity; a DKEY-only refresh fence that rejects overlapping stale fetches while preserving the prior key until atomic replacement; atomic generation persistence; rollback on failed durable commit; clock rollback; single-writer fencing; restart restoration; validity boundaries; stale/equal-conflicting status refusal; no-status fail-closed decisions; redacted reasons; and the rule that a message hint is not authority. The current `RevocationTarget`, wire/persistence, `AuthorizationSubject`, permission builders, and live `KpAttributeAuthority` rotation/grant paths implement the scope and generation contract, with focused policy and Controller tests. **Closed 2026-09-04** (R179-H0A RESOLVED, `AUDIT.md`): a retained old DKEY is shown unable to decrypt new-generation ciphertext by the RV-U20 mixed-generation decrypt matrix in `ServiceControllerGrantOnlyKeepsAbeGenerationAndReplacesTargetPolicy` (`controller-revocation-flow.t.cpp:855-935`); grant-only issuance is counted as exactly one target-only refresh with zero fan-out by `GrantOnlyRefreshIssuesOneTargetFetchWithZeroFanOut` (`t.cpp:3041/3042/3050`); the mid-window denial-until-replacement-install is covered by the RV-U21 MiniNDN network half (`grant-only-advance` plus `targeted-refill-invalidation`/`stream-invalidation` denial windows); and `/PERMISSION/S` vs `/SERVICE/S` independence with a dual-role identity is proven by the dual-role blocks (`t.cpp:948-1000`) and MiniNDN `service-scoped-revocation-with-unaffected-control` (11/11). Runtime refresh, status installation, and message-path enforcement are in T008–T009.
+- [x] T008 [US4] Make Controller status and ABE-generation installation atomic in `ServiceUser.*`, `ServiceProvider.*`, `PolicyRefreshCoordinator.*`, `RevocationState.*`, and runtime caches. Keep exact per-service accepted-status lookup for authorization and hint scheduling, while allowing multiple grant-only ControllerVersions to bind the same exact public-parameter Data name/digest. For a withdrawal/global-generation change, stage and validate status, matching public parameters, and replacement DKEY before committing the new generation. For a grant-only same-generation change, preserve unaffected caches, stage the target's replacement DKEY on demand, advance a DKEY-only refresh fence, reject overlapping stale fetches, and enable the new grant only after that DKEY is validated and atomically installed. Preserve the prior authority and caches on rejection; reject mixed generations; schedule pre-expiry refresh; coalesce bounded higher hints; globally invalidate old NAC-ABE public-parameter/DKEY/CK caches only when the public-parameter identity changes, while retaining unaffected DKEYs across grant-only updates and invalidating `HybridMessageCrypto`, Targeted token/refill, Selection binding, nonce/replay, stream, collaboration, and incomplete-request state only where their service/binding is obsolete. Extend `controller-revocation-state.t.cpp`, `generic-dynamic-api-crypto-auth.t.cpp`, `generic-dynamic-api-targeted.t.cpp`, and `controller-version-refresh.t.cpp` with: cross-service status isolation, withdrawal-driven global ABE-generation convergence, grant-only same-generation retention, rejected-install rollback, retained-old-DKEY rejection against new ciphertext, missing/wrong public-parameter digest, affected/unaffected service recovery after rekey, duplicate idempotence, exact one-in-flight fetch, Controller/Provider/cache source equivalence, and unary/stream exactly-one terminal behavior. **Closed 2026-09-04** (R179-H0A/H0B RESOLVED, `AUDIT.md`): the blocking items are now executed — fresh `KpAttributeAuthority` generation convergence and generation-bound filtered DKEYs by the RV-U20/RV-U21 matrix (`ServiceControllerGrantOnlyKeepsAbeGenerationAndReplacesTargetPolicy`, `controller-revocation-flow.t.cpp:855-935`, `GrantOnlyRefreshIssuesOneTargetFetchWithZeroFanOut`), grant-only targeted fetch/installation with unchanged public-parameter name/digest by the same cases plus the MiniNDN `grant-only-advance` network half (`grantOnlyGateOk=true`, 41 target-only refresh attempts), and retained-old-DKEY exclusion by the mixed-generation decrypt matrix; the per-service isolation, rollback, source-equivalence, and exactly-one-terminal rows map to executed RV-I15–RV-I19/RV-I24–RV-I31 cases in `validation-matrix.md`. The three residual items recorded in the release gate (`evidence/release-gate.md` Unrun section) — NAC-ABE internal cache renewal, persistent runtime-cache restoration, and production live status installation under a configured file trust anchor — are documented deferred non-goals of this release, now listed in `spec.md` `## Out of Scope` with owner and reintroduction criteria; they are not normative RV-U/RV-I matrix rows.
+- [x] T009 [US4] Execute the remaining runtime revocation lifecycle across every distinct production enforcement owner and mode-specific state path: normal Request/ACK/Selection/execution/Response, large response, Targeted bootstrap/fast-path/refill, and active stream. Distribute User identity, Provider identity, certificate-only, User-`/PERMISSION`, and Provider-`/SERVICE` targets across these paths so every target-scope rule and every owner executes with a same-version unaffected control. Explicitly prove that `/PERMISSION/S` withdrawal blocks User Request/Selection and Provider input/execution, while `/SERVICE/S` withdrawal blocks Provider ACK/Selection/execution/publication and User ACK selection/delivery; include a dual-role identity whose other attribute survives. Repeat a combination only when it changes cache ownership, terminal ownership, at-most-once behavior, or restart/offline semantics. Cover signed permission-renewal denial, reauthorization, Controller unavailability, participant/Controller restart, offline epoch skipping, concurrent affected/unaffected traffic, execution/key-disclosure-before-enforcement, exactly one terminal result, and default-disabled post-Selection retry/reselection unless an idempotency/deduplication contract is supplied, in `controller-revocation-flow.t.cpp`, `controller-version-refresh.t.cpp`, `request-scoped-selection.t.cpp`, `request-scoped-response-confidentiality.t.cpp`, and `invocation-stream-flow.t.cpp`. Record each CI family as implemented, executed, or pending; component evidence does not close the MiniNDN cross-process gate.
+
+**Checkpoint**: Current-version non-revoked requests continue; restart cannot collide with an earlier generation; stale/revoked material cannot start a protected invocation; historical-key limitations remain explicit.
+
+## Phase 5: Security matrix and migration safety
+
+- [x] T010 Close the independently meaningful negative/security-observability gate for invalid certificates, wrong recipient, certificate digest mismatch, zero/stale/forged ControllerVersion, tampered AAD/tag/ciphertext, nonce reuse, duplicate/conflicting Selection, replayed keys/tokens, non-selected response, malformed segments, refresh/install failure, generation-state corruption, issuance/renewal denial, persistence rollback, writer fencing, and plaintext/key telemetry leakage. Map every security-critical branch to an executed unit or component case in `validation-matrix.md`; do not duplicate equivalent combinations merely to inflate the matrix.
+- [x] T011 [US4] Run the real MiniNDN gate defined in `validation-matrix.md` as a representative cross-process campaign: User identity and Provider identity revocation; User-`/PERMISSION` and Provider-`/SERVICE` service withdrawal with matched unaffected attribute/identity controls; retained-old-DKEY failure against new-generation ciphertext and successful filtered-DKEY recovery for retained identities; in-flight revocation; offline epoch skipping; Controller/Provider/cache status and public-parameter retrieval equivalence; Controller-unavailable expiry; Controller restart/version change; and one scenario for each large-response/Targeted/stream cache path. Retain redacted traces, hashes, execution counts, terminal owners/reasons, invalidated-cache counts, ABE-generation/version/fetch counters, and typed failure stages in `tests/minindn/run_request_scoped_confidentiality.py` and `specs/179-request-scoped-confidentiality/evidence/`. Deterministic malformed/tamper branches remain unit/component responsibilities. Existing privileged evidence closes only a normal User-identity path; this task remains open until the attribute-specific provision/use, cryptographic old-key exclusion, and remaining representative network paths produce valid evidence.
+  **Executed 2026-09-04**: all 14 campaign scenarios ran the real MiniNDN gate with `networkEvidence=true` and `gatePassed=true` (user/provider identity, service withdrawal with unaffected control, in-flight, offline epoch skip, controller/provider/cache retrieval, controller-unavailable, controller restart, large-response, Targeted token/refill, stream, hintless refresh, tamper/replay, grant-only advance).  The campaign exposed two real C++ admission defects — `RequestServiceTargeted` versionless requests (S9) and `requestServiceStreamingBytes` discarding the admission result so a denied stream start logged STARTED (S10) — both fixed in `ndn-service-framework/ServiceUser.cpp` and validated by rebuild + genuine rerun.  Per-scenario checks, redacted trace hashes, execution/refresh counters, and the full run matrix are retained in `results/spec179-minindn/<scenario>/` and summarized in `specs/179-request-scoped-confidentiality/evidence/minindn-campaign-20260904.md`.
+  The campaign MUST also include one grant-only change proving unchanged public-parameter name/digest, one lazy replacement-DKEY fetch and atomic installation by only the granted identity, zero unaffected-identity DKEY refreshes, denial of the new attribute before replacement installation, and successful use of existing unaffected DKEYs.
+- [x] T012 [US4] Make the new path the default, isolate any temporary compatibility switch with counters and mixed-mode rejection, update English/Chinese documentation and migration notes, and remove the old service-wide response-key carrier after the MiniNDN gate; record the NDNSF maintainer as compatibility owner and remove the switch once the cross-user confidentiality and ControllerVersion-revocation gates pass in the first release using this path, in `ndn-service-framework/ServiceProvider.cpp`, `ndn-service-framework/ServiceUser.cpp`, `README.md`, `README_ch.md`, and `specs/179-request-scoped-confidentiality/`
+  **Executed 2026-09-04**: the MiniNDN/streaming gates passed first (all 14 campaign scenarios `gatePassed=true`, `evidence/minindn-campaign-20260904.md`), then the request-scoped path was made the sole V2 protected mode and the old service-wide response-key carrier was removed. The temporary `NDNSF_REQUEST_SCOPED_COMPATIBILITY` switch, its mixed-mode rejection branch, and both compatibility counters/getters were deleted from `ServiceUser.cpp/.hpp`; the legacy provider response carrier (`makeResponseWithLargeDataOptimization`) and its declaration were deleted from `ServiceProvider.cpp/.hpp`; both legacy sites were replaced with fail-closed typed errors ("large response requires request-scoped confidentiality (service-wide response-key carrier removed)" / "large response reference without request-scoped key scope"), so a non-request-scoped large response can no longer fall back to plaintext or resurrect a service-wide ABE carrier. Request-scoped collaboration/token/hybrid-envelope HybridMessageCrypto uses are unaffected. The NDNSF maintainer is recorded as the compatibility-removal owner and the first-release removal threshold was met (cross-user confidentiality and ControllerVersion-revocation MiniNDN gates) — see `AUDIT.md` R179-M4 (RESOLVED). Regressions: `RequestScopedDefaultActivationWithConfiguredController` pins the default and proves a stale env value is inert (unit); the request-scoped large-response variants keep the per-segment AEAD inline/reference coverage; the three production `RequestScopedResponseConfidentiality` integration cases run on the post-removal binary (4/4 suite green). English/Chinese README, `quickstart.md`, and `evidence/response-runtime-green-20260904.md` were updated to post-removal text, and `validation-matrix.md` RV-U12 now records the executed removal instead of the removed counters. No MiniNDN rerun was needed after removal: no campaign scenario or launcher code references the switch or the removed carrier, every campaign scenario executes the request-scoped path whose branches were unchanged, and the removed code only ever ran off the gated path.
+
+## Phase 6: Final audit and release gate
+
+- [x] T013 Re-run gates in unit → integration → MiniNDN order, compare every FR/SC and every RV-U/RV-I row with code and evidence, verify affected failures and matched unaffected controls, audit every security-critical transition for a fail-open branch, verify no private key/plaintext leakage, record measured versus implemented versus unrun claims, and write `specs/179-request-scoped-confidentiality/traceability.md`, `specs/179-request-scoped-confidentiality/AUDIT.md`, and `specs/179-request-scoped-confidentiality/evidence/release-gate.md`; do not mark confidentiality or revocation complete while any normative matrix row is missing
+  **Executed 2026-09-04**: gates re-run in unit → integration order on the post-removal binary (unit suites `RequestScopedConfidentiality`/`ControllerRevocationPolicy`/`ControllerRevocationState`/`GenericDynamicApi` exit 0; integration `ControllerRevocationFlow` 38/38 + `ControllerVersionRefresh` 1/1 + `RequestScopedSelection` 3/3 + `RequestScopedResponseConfidentiality` 4/4 + `Spec175InvocationStream` 19/19); the MiniNDN campaign ran 14/14 scenarios `gatePassed=true` the same day before removal, and removal touched only branches the campaign never executes. Every FR-001–FR-038 and SC-001–SC-022 is traced in the rewritten `traceability.md`; every RV-U01–RV-U21 and RV-I01–RV-I31 row and every security-critical negative branch has an executed mapping in `validation-matrix.md`. Fail-open audit (T013): provider and user large-response handling fail closed with typed errors, no plaintext fallback and no resurrected service-wide carrier exists, no residual reference to removed symbols remains, and failures carry redacted typed reasons with no key/plaintext in telemetry or traces. Release audit written to `AUDIT.md` (verdict PASS, R179-H0A/H0B/H0C/M1 RESOLVED) and `evidence/release-gate.md` (implemented/executed/measured/unrun layers). Two documented non-goals remain: the pre-existing out-of-scope DI codec SIGFPE in the full monolithic unit target, and NAC-ABE internal cache/persistent-restart/production-trust-schema extensions beyond the executed rows — neither is a missing normative matrix row.
+
+## Phase 7: Runtime-hardening follow-ups (Amendment 2026-09-05, FR-039–FR-041)
+
+Re-introduced by the 2026-09-05 spec amendment. Each task names the failure
+mode it protects against in `spec.md` (`FR-039`–`FR-041`) and is satisfied by
+its listed executed evidence rows (`RV-U22`, `RV-U23`, `RV-I32`, `RV-I33`).
+Implementation order: T016 (smallest, no framework change) → T015
+(new durable store + restore path) → T014 (upstreaming, external gate).
+The 2026-09-04 release claim and its rows are unaffected.
+
+- [ ] T014 Promote the local NAC-ABE Spec179 dependency patches (DKEY
+  `FreshnessPeriod=0`, versioned exact public-params fetch, consumer cache
+  invalidation/DKEY-only refresh fence — local NAC-ABE `Experimental`
+  branch, base `b1c9c4f`, T019 repair `8b462d0` and T020 compatibility repair
+  `b3b43c8`, not pushed) into the upstream NAC-ABE
+  repository, then rebuild the NDNSF Spec179 prefix from the upstream commit
+  and re-run the RV-U20/RV-U21 gate on that rebuild. **FR-041**. Local
+  work: upstreaming package (split-PR description for the one-line
+  freshness fix vs the API-contract extension, mapping each patched symbol
+  to its Spec179 use), compile-contract evidence row RV-U22 (executed
+  2026-09-05, `evidence/nac-abe-unpatched-contract-20260905.md`).
+  Historical delivery/draft through85547eb is retained. Current local merge
+  c3aafa6 includes official UCLA-IRL master58f3948 and all local repairs;
+  Experimental is7 ahead/0 behind official master. T022 validates the merged
+  pair and a fresh standalone bundle in `evidence/nac-abe-official-merge-20260905.md`.
+  User requests no PR; external publication is not scheduled.
+  Acceptance: upstream maintainer merges the contract (external gate —
+  push/PR require the NDNSF maintainer's explicit go), then the rebuilt
+  prefix from the upstream commit passes RV-U20/RV-U21. Owner: NDNSF
+  maintainer.
+- [x] T015 [FR-039] Persistent runtime-cache restoration across process
+  restart, opt-in (`NDNSF_PERSIST_RUNTIME_STATE`): atomic store of accepted
+  per-service `PolicyStatusData` wire + bound public-parameter name/digest +
+  ControllerVersion; fail closed on missing/corrupt store (today's
+  `RuntimeRestartDropsControllerStatusAndFailsClosed` behavior remains the
+  default); restore only unexpired, never-superseded statuses; immediate
+  bounded online confirmation refresh whose Controller answer is authority;
+  restored status keeps deciding authorization while the Controller is
+  unreachable until expiry or a higher observed version; DKEY material never
+  persisted (online-material limitation recorded, not hidden). Files: new
+  `RuntimeStatusStore.*` (reuse `ControllerGenerationStore`'s fenced-writer,
+  magic+atomic-rename, corrupt-fail-closed pattern), `ServiceUser.cpp`,
+  `ServiceProvider.cpp`, `PolicyRefreshCoordinator.cpp`, focused tests.
+  Rows: RV-U23 (unit), RV-I32 (component restart recovery). Acceptance:
+  store round-trip/corrupt/permission negatives; restart recovery with
+  online-higher-version replacement and equal-version idempotence; expired
+  and superseded persisted statuses fail closed; disabled mode keeps today's
+  behavior pinned by `RuntimeRestartDropsControllerStatusAndFailsClosed`;
+  full unit/integration gate green. MiniNDN runtime-restart scenario is a
+  follow-up when the launcher can stop/start a runtime process; component
+  rows do not depend on it. Executed 2026-09-05: 71bbe311 (store + restore
+  path, RV-U23 unit suite green) and 2325781b (RV-I32 restart recovery case,
+  `ControllerRevocationFlow` 40/40 green).
+- [x] T016 [FR-040] Production live User/Provider status installation under
+  a hierarchical configured file trust anchor (anchor → intermediate CA →
+  Controller certificate), proving accept on the anchored chain and fail-closed
+  rejection of a chain-external signer at every status-installation path.
+  Failure mode: release executed trust-schema validation only for a directly
+  anchored Controller certificate, so hierarchical PKI deployments have no
+  executed evidence. Files: trust-schema fixture (root CA + intermediate +
+  Controller, NDNSF-named), test additions to `controller-revocation-flow.t.cpp`
+  (component, reuse the live-install LocalMock surface), no framework
+  change expected. Row: RV-I33. Acceptance: hierarchical accept; intermediate-
+  revoked or chain-external signer rejected before installation; the direct-
+  anchor tests stay green.
+
+## Online authorization audit follow-up (2026-09-05)
+
+- [x] T017 Close pending-rotation recovery across repeated-target revoke and grant in `ServiceController.cpp` and `controller-revocation-flow.t.cpp`: reproduce bypasses and same-version status mutation, retain fail-closed revocations on retry failure, recover with a fresh immutable ControllerVersion, and verify reauthorization never uses the pre-withdrawal ABE pair. Closed by 36/36 focused assertions, 182 unit and 70 integration cases, and MiniNDN `revocation-rotation-failure-retry` (14/14 checks; epoch 2 denial, same-target recovery to epoch 3, 16/16 unaffected post-recovery calls). Evidence: `evidence/online-authorization-audit-20260905.md`.
+- [x] T018 Validate grants after startup permission retries expire through explicit App-layer renewal in the HELLO examples and `tests/minindn/run_request_scoped_confidentiality.py`; remove the first-DKEY constructor wait in `ServiceUser.cpp` and `ServiceProvider.cpp` so application renewal is reachable, with a timed real-constructor/no-authority regression. Exercise denial before grant/renewal, successful use after replacement DKEY installation, one target-only refresh and no unaffected fan-out, then rerun the relevant revocation campaign. Fix any reproduced runtime or harness defects and record exact source/build provenance.
+- [x] T019 Fence every asynchronous NAC Consumer content/CK completion and error against cache invalidation, and report non-standard OpenABE decode errors through the standard algorithm error boundary. Reproduce late content reaching crypto after DKEY clearing, stale CK cache refill, and invalid CP/KP key error escape in the local NAC-ABE dependency. Rebuild/install the exact prefix, verify native dependency resolution and all expanded regression gates, then close a fresh full MiniNDN campaign. FR-019/023/024/036/041; final T018 network acceptance depends on this repair. Upstream publication remains T014.
+
+Final T018/T019 acceptance: `campaign-nac-final` completed16/16 with driver exit0
+on clean NDNSF `7e5ef367` and NAC-ABE `8b462d0`; all29 manifest artifact hashes
+match the current files. Normal grant target10/10/control24/24 and late grant
+target21/21/control60/60 have no failed terminal rows, with one target-only DKEY
+refresh each. Expanded gates: NDNSF unit182/182, integration72/72, NAC14/14
+(90 assertions), harness15/15. Evidence and retained negative runs:
+`evidence/online-authorization-audit-20260905.md`. T014 remains external.
+
+## Dependency compatibility review (2026-09-05)
+
+- [x] T020 Audit and repair the NAC-ABE Experimental dependency boundary in `src/consumer.cpp`, `src/param-fetcher.*`, `src/attribute-authority.cpp` and `src/algo/abe-support.*`: reproduce callback reentry, stale parameter installation, exact-name generation mismatch and cross-key cache reuse; preserve existing source entry points, explicitly document ABI rebuild requirements and cancellation/thread semantics, and verify the ordinary NAC suite plus rebuilt NDNSF integration and representative MiniNDN paths. Record findings, red/green evidence and migration guidance in `evidence/nac-abe-compatibility-review-20260905.md`. FR-019/023/024/036/041; upstream publication remains T014.
+
+Executed: NAC42/42; clean NDNSF unit182/182 and integration72/72; full16/16
+MiniNDN scenarios,161 assertions and dedicated User grant gates at de1eb508,
+33 identical artifact hashes verified. NAC repair b3b43c8, migration note85547eb.
+
+- [x] T021 Verify the user's clarified Controller permission scope on both roles: add explicit User/Provider grant-role selection to `examples/App_ServiceController.cpp`, mirror application-owned permission renewal in `examples/App_Provider.cpp`, and add real Provider first-grant and post-permission-exhaustion scenarios in `tests/minindn/run_request_scoped_confidentiality.py` and `spec179_scenario_checks.py`. Preserve default User grants; require no Provider service before authorization, target-only key refresh, successful service through the newly authorized Provider, zero unaffected-control failures, and exact late-renewal ordering. Add adversarial evaluator tests, rebuild the two Apps, verify the matching dependency closure, and execute the two new scenarios plus the existing User grant compatibility control. FR-017/019/024/036/041; use `evidence/provider-online-grant-20260905.md` for findings and results.
+
+Executed:28/28 launcher checks;183/183 unit cases (11998 assertions),72/72
+integration cases (1281 assertions); final18/18 MiniNDN scenarios with188
+assertions and both dedicated User grant gates at clean994018ac. All33 native
+artifact hashes match disk; driver and all scenario CLIs exit0. Both earlier
+Provider network failures are retained. T014 upstream publication remains external.
+
+## Dependencies and Execution Order
+
+- [x] T022 [FR-019/023/024/036/041] Merge official UCLA-IRL NAC-ABE master58f3948 into local Experimental, preserving all T019/T020 fixes and history. Add CP/KP non-default segment-size cold/warm-cache and Consumer object/segment-name regressions; reproduce the old size defect before merge. Build/install a separate matched prefix at-j2, run full NAC and expanded NDNSF native gates, then all18 MiniNDN authorization scenarios with artifact closure. Record exact merged revisions and red/green evidence in `evidence/nac-abe-official-merge-20260905.md`. No push/PR; local synchronization does not close T014's external acceptance.
+
+Executed: mergec3aafa6; red12/15 → green15/15; NAC46/46, installed26/26,
+native183/183 unit and74/74 integration, launcher28/28; MiniNDN18/18 with188
+assertions and both dedicated User grants at clean cdd8e55a.33 hashes match
+disk, driver/all CLIs exit0. Source-recovery bundle/fsck passes. T014 remains open.
+
+T021 live findings extend its bounded implementation to `examples/App_User.cpp`
+(benchmark explicit-provider routing), `ServiceUser::applyPermissionResponse`
+(service-level DKEY refresh detection), and the existing Controller grant
+integration test. Its final acceptance now requires all18 network scenarios
+after the full selected183-unit/72-integration gates, not only the three
+initial probes. Provider permission renewal can be triggered by a signed
+status advance before its App timer; verify the actual fetch and timer
+idempotence. First network reds remain in `provider-campaign-first/`.
+
+T018 additionally requires explicit initial-DKEY Request admission and preserved
+hybrid unwrap error callbacks: the normal grant probe reproduced publication
+before bootstrap completion and silent callback loss. Its real-constructor
+regression must pass before rebuilding and rerunning the native/network gates.
+
+```text
+T001 -> T002 -> T003 -> T004 -> T005 -> T006 --+
+                         T007 -> T008 -----------+-> T009 -> T010 -> T011 -> T012 -> T013
+```
+
+- T001–T002 are hard prerequisites for all runtime changes.
+- T003–T004 establish recipient-specific key delivery before response work.
+- T005–T006 cover normal and segmented result confidentiality.
+- T007 establishes authority and durable policy decisions before runtime revocation.
+- T008 establishes atomic per-service refresh and complete cache invalidation.
+- T009 begins only after both response/mode integration (T006) and runtime
+  authority installation (T008) exist; it validates every distinct target,
+  enforcement owner, cache/terminal path, and recovery class.
+- T009–T010 may begin after their respective runtime paths exist; T010 closes the
+  deterministic security-observability matrix and T011 is the final network gate.
+- T011–T012 are migration and release gates, not optional documentation work.
+
+## Task Cohesion Review
+
+Each task closes one behavioral outcome with its implementation, tests, and
+evidence boundary. Primitive contract, key delivery, response encryption,
+epoch lifecycle, security matrix, and migration are separated because they have
+different owners and independent acceptance gates; no task is split merely by
+file, test command, or documentation artifact.

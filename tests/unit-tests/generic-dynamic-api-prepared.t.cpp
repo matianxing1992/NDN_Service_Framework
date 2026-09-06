@@ -1,4 +1,5 @@
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
+#include "ndn-service-framework/PolicyStatus.hpp"
 
 namespace ndn_service_framework::test {
 
@@ -267,6 +268,10 @@ BOOST_AUTO_TEST_CASE(MultipleLargeDataObjectsUseOnePreparedRequestScope)
   BOOST_CHECK(image.encryptedDataName.toUri().find(ctx.requestId.toUri()) != std::string::npos);
   BOOST_CHECK(config.encryptedDataName.toUri().find(ctx.requestId.toUri()) != std::string::npos);
   BOOST_CHECK_NE(image.objectId, config.objectId);
+  BOOST_CHECK_EQUAL(image.contentDigest.substr(0, 7), "sha256:");
+  BOOST_CHECK_EQUAL(config.contentDigest.substr(0, 7), "sha256:");
+  BOOST_CHECK_EQUAL(image.contentDigest.find_first_of("ABCDEF"), std::string::npos);
+  BOOST_CHECK_EQUAL(config.contentDigest.find_first_of("ABCDEF"), std::string::npos);
   BOOST_CHECK(user.hasCachedDataForTest(image.encryptedDataName));
   BOOST_CHECK(user.hasCachedDataForTest(config.encryptedDataName));
   BOOST_CHECK_NE(user.getCachedDataContentForTest(image.encryptedDataName),
@@ -306,6 +311,7 @@ BOOST_AUTO_TEST_CASE(LargeDataReferencePayloadRoundTrips)
   reference.dataName = ndn::Name("/test/user/alice/NDNSF/LARGE-DATA/HELLO/request-1/image");
   reference.objectType = "image/tensor";
   reference.objectId = "image";
+  reference.keyScope = "request";
   reference.plaintextSize = 2048;
   reference.encrypted = true;
   reference.digest = "sha256:test";
@@ -317,9 +323,23 @@ BOOST_AUTO_TEST_CASE(LargeDataReferencePayloadRoundTrips)
   BOOST_CHECK_EQUAL(parsed->dataName, reference.dataName);
   BOOST_CHECK_EQUAL(parsed->objectType, reference.objectType);
   BOOST_CHECK_EQUAL(parsed->objectId, reference.objectId);
+  BOOST_CHECK_EQUAL(parsed->keyScope, reference.keyScope);
   BOOST_CHECK_EQUAL(parsed->plaintextSize, reference.plaintextSize);
   BOOST_CHECK(parsed->encrypted);
   BOOST_CHECK_EQUAL(parsed->digest, reference.digest);
+
+  // Legacy references omit key_scope and remain parseable.
+  reference.keyScope.clear();
+  const auto legacyPayload = encodeLargeDataReferencePayload(reference);
+  const auto legacyParsed = parseLargeDataReferencePayload(legacyPayload);
+  BOOST_REQUIRE(legacyParsed);
+  BOOST_CHECK(legacyParsed->keyScope.empty());
+
+  // An explicit scope that the runtime does not understand must not be
+  // treated as the legacy service-wide key path.
+  reference.keyScope = "unknown";
+  const auto unknownScopePayload = encodeLargeDataReferencePayload(reference);
+  BOOST_CHECK(!parseLargeDataReferencePayload(unknownScopePayload));
 }
 
 BOOST_AUTO_TEST_CASE(LargeDataOptimizationKeepsSmallPayloadInline)
@@ -401,12 +421,16 @@ BOOST_AUTO_TEST_CASE(ProviderResolveLargeDataReferenceLeavesInlinePayload)
                                 inlinePayload.begin(), inlinePayload.end());
 }
 
-BOOST_AUTO_TEST_CASE(LargeResponseOptimizationKeepsSmallPayloadInline)
+BOOST_AUTO_TEST_CASE(RequestScopedLargeResponseKeepsSmallPayloadInline)
 {
   ndn::security::KeyChain keyChain("pib-memory:large-response-inline",
                                    "tpm-memory:large-response-inline");
   ndn::DummyClientFace face(keyChain);
+  const ndn::Name requesterName("/test/user/alice");
   const ndn::Name providerName("/test/provider/camera");
+  const ndn::Name serviceName("/HELLO");
+  const ndn::Name requestId("/request-1");
+  auto userCert = makeRsaIdentity(keyChain, requesterName);
   auto providerCert = makeRsaIdentity(keyChain, providerName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-large-response-inline"));
   LocalServiceProvider provider(face,
@@ -415,6 +439,26 @@ BOOST_AUTO_TEST_CASE(LargeResponseOptimizationKeepsSmallPayloadInline)
                                 aaCert,
                                 "examples/trust-any.conf");
 
+  const auto userOffer = makeSelectionInputKeyOffer(userCert);
+  const auto providerOffer = makeSelectionInputKeyOffer(providerCert);
+  RequestSecurityBinding binding;
+  binding.serviceName = serviceName;
+  binding.requestId = requestId;
+  binding.attempt = 1;
+  binding.controllerVersion = ControllerVersion{1788285600123ULL, 7};
+  binding.userEncryptionCertName = userOffer.getField("recipientCertName");
+  binding.userEncryptionCertDigest = userOffer.getField("recipientCertDigest");
+  binding.providerEncryptionCertName = providerOffer.getField("recipientCertName");
+  binding.providerEncryptionCertDigest = providerOffer.getField("recipientCertDigest");
+  binding.selectionDigest = "sha256:" + std::string(64, '1');
+  binding.inputDataName = ndn::Name("/test/user/alice/NDNSF/INPUT/request-1");
+  binding.segmentOrEventId = "response";
+  BOOST_REQUIRE(binding.isValid());
+
+  const auto now = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch()).count());
+  const auto keys = generateRequestKeyBundle(now, now + 60000);
   const std::vector<uint8_t> smallPayload = {'o', 'k'};
   ndn::Buffer payload(smallPayload.data(), smallPayload.size());
   ResponseMessage response;
@@ -422,12 +466,9 @@ BOOST_AUTO_TEST_CASE(LargeResponseOptimizationKeepsSmallPayloadInline)
   response.setErrorInfo("No error");
   response.setPayload(payload, payload.size());
 
-  auto optimized = provider.makeResponseWithLargeDataOptimization(
-    ndn::Name("/test/user/alice"),
-    ndn::Name("/HELLO"),
-    ndn::Name("/request-1"),
-    response,
-    1024);
+  auto optimized = provider.makeRequestScopedResponseWithLargeDataOptimization(
+    requesterName, providerName, serviceName, requestId,
+    response, keys, binding, 1024);
 
   BOOST_REQUIRE(optimized.success);
   BOOST_CHECK(!optimized.usedLargeDataReference);
@@ -437,50 +478,70 @@ BOOST_AUTO_TEST_CASE(LargeResponseOptimizationKeepsSmallPayloadInline)
   BOOST_CHECK(!isLargeDataReferencePayload(optimizedPayload));
 }
 
-BOOST_AUTO_TEST_CASE(LargeResponseOptimizationPublishesReferenceForLargePayload)
+
+BOOST_AUTO_TEST_CASE(RequestScopedLargeResponseUsesPerSegmentAeadReference)
 {
-  ndn::security::KeyChain keyChain("pib-memory:large-response-reference",
-                                   "tpm-memory:large-response-reference");
+  ndn::security::KeyChain keyChain("pib-memory:request-scoped-large-response",
+                                   "tpm-memory:request-scoped-large-response");
   ndn::DummyClientFace face(keyChain);
+  const ndn::Name requesterName("/test/user/alice");
   const ndn::Name providerName("/test/provider/camera");
+  const ndn::Name serviceName("/HELLO");
+  const ndn::Name requestId("/request-large-1");
+  auto userCert = makeRsaIdentity(keyChain, requesterName);
   auto providerCert = makeRsaIdentity(keyChain, providerName);
-  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-large-response-reference"));
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-request-scoped-large-response"));
   LocalServiceProvider provider(face,
                                 ndn::Name("/test/group"),
                                 providerCert,
                                 aaCert,
                                 "examples/trust-any.conf");
+  // The request-scoped large-response path signs each encrypted segment with
+  // the Provider certificate.  LocalMock owns a separate in-memory keychain
+  // by default, so explicitly bind it to the fixture keychain before testing
+  // the production publication path.
+  provider.useSigningKeyChainForTest(keyChain);
 
-  const std::vector<uint8_t> largePayload(2048, static_cast<uint8_t>('r'));
+  const auto userOffer = makeSelectionInputKeyOffer(userCert);
+  const auto providerOffer = makeSelectionInputKeyOffer(providerCert);
+  RequestSecurityBinding binding;
+  binding.serviceName = serviceName;
+  binding.requestId = requestId;
+  binding.attempt = 1;
+  binding.controllerVersion = ControllerVersion{1788285600123ULL, 7};
+  binding.userEncryptionCertName = userOffer.getField("recipientCertName");
+  binding.userEncryptionCertDigest = userOffer.getField("recipientCertDigest");
+  binding.providerEncryptionCertName = providerOffer.getField("recipientCertName");
+  binding.providerEncryptionCertDigest = providerOffer.getField("recipientCertDigest");
+  binding.selectionDigest = "sha256:" + std::string(64, '1');
+  binding.inputDataName = ndn::Name("/test/user/alice/NDNSF/INPUT/request-large-1");
+  binding.segmentOrEventId = "response";
+  BOOST_REQUIRE(binding.isValid());
+
+  const auto now = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch()).count());
+  const auto keys = generateRequestKeyBundle(now, now + 60000);
+  const std::vector<uint8_t> largePayload(9000, static_cast<uint8_t>('x'));
   ndn::Buffer payload(largePayload.data(), largePayload.size());
   ResponseMessage response;
   response.setStatus(true);
-  response.setErrorInfo("No error");
   response.setPayload(payload, payload.size());
 
-  auto optimized = provider.makeResponseWithLargeDataOptimization(
-    ndn::Name("/test/user/alice"),
-    ndn::Name("/HELLO"),
-    ndn::Name("/request-1"),
-    response,
-    1024);
-  if (!optimized.success) {
-    BOOST_TEST_MESSAGE("large-response reference production unavailable in local mock: "
-                       << optimized.errorMessage);
-    BOOST_CHECK(!optimized.errorMessage.empty());
-    return;
-  }
-
-  BOOST_CHECK(optimized.usedLargeDataReference);
-  const auto referencePayload = optimized.responseMessage.getPayload();
-  const auto reference = parseLargeDataReferencePayload(referencePayload);
+  auto optimized = provider.makeRequestScopedResponseWithLargeDataOptimization(
+      requesterName, providerName, serviceName, requestId,
+      response, keys, binding, 1024);
+  BOOST_REQUIRE_MESSAGE(optimized.success, optimized.errorMessage);
+  BOOST_REQUIRE(optimized.usedLargeDataReference);
+  const auto reference = parseLargeDataReferencePayload(
+      optimized.responseMessage.getPayload());
   BOOST_REQUIRE(reference);
-  BOOST_CHECK_EQUAL(reference->dataName, optimized.largeData.encryptedDataName);
-  BOOST_CHECK_EQUAL(reference->objectType, "ndnsf-response");
+  BOOST_CHECK_EQUAL(reference->keyScope, "request");
   BOOST_CHECK_EQUAL(reference->plaintextSize, largePayload.size());
-  BOOST_CHECK(reference->encrypted);
   BOOST_CHECK_EQUAL(reference->digest, optimized.largeData.digest);
-  BOOST_CHECK_EQUAL(reference->digest.substr(0, 7), "sha256:");
+  BOOST_CHECK(optimized.responseMessage.hasControllerVersion());
+  BOOST_CHECK(!optimized.responseMessage.hasAeadEnvelope());
+  BOOST_CHECK_GT(optimized.largeData.encryptedDataName.size(), 0U);
 }
 
 BOOST_AUTO_TEST_CASE(V2RequestAndResponseNames)
@@ -558,6 +619,105 @@ BOOST_AUTO_TEST_CASE(AddHandlerRequestServiceDispatchResponseAndAck)
 
   runLocalFlow(user, provider, ndn::Name("/ObjectDetection/YOLOv8"), "local-image-bytes", 42);
   runLocalFlow(user, provider, ndn::Name("/LLM/Llama3/Prefill"), "prompt-tokens", 7);
+}
+
+namespace {
+
+PolicyStatusData
+currentStatusFor(const ndn::Name& serviceName, uint64_t epoch)
+{
+  const auto now = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch()).count());
+  PolicyStatusData status;
+  status.setServiceName(serviceName);
+  status.setControllerVersion(ControllerVersion{now, epoch});
+  status.setValidity(now - 1000, now + 120000);
+  status.setPolicyDigest("sha256:" + std::string(64, '0'));
+  status.setControllerCertificate(ndn::Name("/controller/spec179/compat"));
+  return status;
+}
+
+} // namespace
+
+// Spec179 T012: the temporary NDNSF_REQUEST_SCOPED_COMPATIBILITY switch and
+// its counters were removed together with the old service-wide response-key
+// carrier once the migration MiniNDN and streaming gates passed.  These
+// assertions pin the post-migration contract: on a configured Controller
+// runtime a plain V2 request is still auto-activated to the request-scoped
+// path, and a stale NDNSF_REQUEST_SCOPED_COMPATIBILITY=1 environment no
+// longer re-enables the removed old-path behavior.
+BOOST_AUTO_TEST_CASE(RequestScopedDefaultActivationWithConfiguredController)
+{
+  ndn::security::KeyChain keyChain("pib-memory:compat-switch",
+                                   "tpm-memory:compat-switch");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name requesterName("/test/user/compat");
+  const ndn::Name providerName("/test/provider/compat");
+  const ndn::Name serviceName("/HELLO");
+  auto userCert = makeRsaIdentity(keyChain, requesterName);
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-compat"));
+  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert,
+                        "examples/trust-any.conf");
+  installUserPermissions(user, requesterName, serviceName, {providerName});
+
+  // The request-scoped default only exists on a configured Controller runtime.
+  user.fetchPermissionsFromController(ndn::Name("/controller/test/compat"));
+  BOOST_REQUIRE(user.installControllerStatus(currentStatusFor(serviceName, 1)));
+
+  const std::string payloadText = "compat-switch-payload";
+  std::optional<RequestMessage> publishedRequest;
+  user.setRequestPublisher(
+    [&] (const ndn::Name&, const ndn::Name&, const std::vector<ndn::Name>&,
+         const ndn::Name&, const RequestMessage& requestMessage, size_t) {
+      publishedRequest = requestMessage;
+    });
+
+  // (a) Plain V2 request: the request-scoped capability is injected by the
+  // default path and the plaintext payload leaves the request.
+  {
+    RequestMessage request;
+    ndn::Buffer payload(reinterpret_cast<const uint8_t*>(payloadText.data()),
+                        payloadText.size());
+    request.setPayload(payload, payload.size());
+    const auto requestId = user.RequestService(
+        {providerName}, serviceName, request, 500,
+        ServiceUser::TimeoutHandler([] (const ndn::Name&) {}),
+        ServiceUser::ResponseHandler([] (const ResponseMessage&) {}),
+        tlv::FirstResponding);
+    BOOST_REQUIRE(!requestId.empty());
+    BOOST_REQUIRE(publishedRequest.has_value());
+    BOOST_CHECK(publishedRequest->getPayload().empty());
+    BOOST_REQUIRE(publishedRequest->hasRequestCapabilities());
+    BOOST_CHECK_EQUAL(
+        publishedRequest->getRequestCapabilities().getField(
+            "RequestScopedConfidentialityV1"), "required");
+    publishedRequest.reset();
+  }
+
+  // (b) A stale NDNSF_REQUEST_SCOPED_COMPATIBILITY=1 must be inert: the
+  // removed old-path behavior must not resurface through the environment.
+  ::setenv("NDNSF_REQUEST_SCOPED_COMPATIBILITY", "1", 1);
+  {
+    RequestMessage request;
+    ndn::Buffer payload(reinterpret_cast<const uint8_t*>(payloadText.data()),
+                        payloadText.size());
+    request.setPayload(payload, payload.size());
+    const auto requestId = user.RequestService(
+        {providerName}, serviceName, request, 500,
+        ServiceUser::TimeoutHandler([] (const ndn::Name&) {}),
+        ServiceUser::ResponseHandler([] (const ResponseMessage&) {}),
+        tlv::FirstResponding);
+    BOOST_REQUIRE(!requestId.empty());
+    BOOST_REQUIRE(publishedRequest.has_value());
+    BOOST_CHECK(publishedRequest->getPayload().empty());
+    BOOST_REQUIRE(publishedRequest->hasRequestCapabilities());
+    BOOST_CHECK_EQUAL(
+        publishedRequest->getRequestCapabilities().getField(
+            "RequestScopedConfidentialityV1"), "required");
+    publishedRequest.reset();
+  }
+  ::unsetenv("NDNSF_REQUEST_SCOPED_COMPATIBILITY");
 }
 
 
