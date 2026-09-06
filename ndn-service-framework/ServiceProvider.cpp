@@ -5794,6 +5794,13 @@ namespace ndn_service_framework
                 return false;
             }
         }
+        struct PreparedData
+        {
+            std::shared_ptr<ndn::Data> data;
+            std::size_t wireSize = 0;
+        };
+        std::vector<PreparedData> prepared;
+        prepared.reserve(objects.size());
         for (const auto& object : objects) {
             // ndn-cxx IMS retains Data through enable_shared_from_this; a
             // stack-allocated Data triggers std::bad_weak_ptr in insert().
@@ -5802,12 +5809,27 @@ namespace ndn_service_framework
             data->setContent(object.second);
             (m_testSigningKeyChain ? *m_testSigningKeyChain : m_keyChain)
                 .sign(*data, m_signingInfo);
-            insertDataIntoIMS(*data, freshness);
+            const auto wireSize = data->wireEncode().size();
+            if (wireSize > ndn::MAX_NDN_PACKET_SIZE) {
+                NDN_LOG_ERROR("Exact collaboration Data exceeds NDN wire limit"
+                              << " requestId=" << requestId.toUri()
+                              << " keyScope=" << keyScope
+                              << " dataName=" << object.first.toUri()
+                              << " contentBytes=" << object.second.size()
+                              << " wireBytes=" << wireSize
+                              << " limit=" << ndn::MAX_NDN_PACKET_SIZE);
+                return false;
+            }
+            prepared.push_back({std::move(data), wireSize});
+        }
+        for (const auto& item : prepared) {
+            insertDataIntoIMS(*item.data, freshness);
             NDN_LOG_DEBUG("NDNSF_DI_EXACT_DATA_PUBLISHED"
                           << " requestId=" << requestId.toUri()
                           << " keyScope=" << keyScope
-                          << " dataName=" << object.first.toUri()
-                          << " bytes=" << object.second.size());
+                          << " dataName=" << item.data->getName().toUri()
+                          << " bytes=" << item.data->getContent().value_size()
+                          << " wireBytes=" << item.wireSize);
         }
         return true;
     }

@@ -10,6 +10,10 @@ local gate 提交/源码身份修复为 `2628e3d2`。历史应用闭合审计对
 检出；维护 native identity 见 formal matrix 的 Backend Native Identity R1。
 **Layer**: proposed / implemented / wired / executed（限定在各记录的检查范围）。
 **Verdict**: **BLOCK**（R18 exact Data wire size）。
+Core 完整 signed Data 批量预校验定向修复已 PASS：同一真实
+Provider/IMS 测试从 R1 三项语义 RED 到 R2 21/21 断言通过。
+DI 紧凑表示、旧格式兼容和消费先验资源边界仍待修复；该局部
+PASS 不恢复矩阵许可。见 [wire repair](evidence/t005-exact-data-wire-repair-20260906.md)。
 R18 已验证实际 BackboneNeck CPU 执行并完成角色；首次响应
 Data 因 19,658 / 10,883 / 14,191 bytes 超出 8,800 上限失败。
 先审查共享紧凑传输和发布前大小检查，完成签名/承诺/兼容定向

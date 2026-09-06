@@ -19,6 +19,22 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 exact-wire Core R2 (2026-09-06): focused PASS.**
+Initial inventory rendering separately rejected the new evidence file's missing
+layer header; add the explicit scoped header before rerunning that document check.
+The production Core rebuild and unchanged Provider/IMS regression pass all
+21 assertions: 8,799/8,800-byte signed packets are readable; 8,801-byte packets
+reject and a late batch size failure exposes no earlier item. DI compact
+representation/consumer repair remains BLOCK before native refresh and matrix.
+See [wire repair](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-exact-data-wire-repair-20260906.md#core-repair-r2).
+
+**Spec181 exact-wire Core R1 (2026-09-06): semantic RED reproduced.**
+The real Provider/IMS pull regression passes 18/21 assertions but accepts an
+8,801-byte signed Data and leaves an earlier batch item readable after a late
+oversize item. Adopt full signed-wire prevalidation for the whole batch, then
+repeat the unchanged test in a fresh run. See
+[wire repair](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-exact-data-wire-repair-20260906.md#core-regression-r1).
+
 **Spec181 R18 diagnosis (2026-09-06): BLOCK at NDN Data wire size.**
 The first actual send boundary is now identified: BackboneNeck's exact
 MANIFEST Data encodes to 19,658 / 10,883 bytes and a SEG Data to 14,191,

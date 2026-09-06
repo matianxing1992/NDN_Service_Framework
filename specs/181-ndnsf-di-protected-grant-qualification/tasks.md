@@ -1,5 +1,22 @@
 # Tasks: NDNSF-DI Protected-Grant Local Development and Delivery
 
+**Core wire R2 (2026-09-06)**：生产 Core 重建并以同一测试完成
+21/21 断言 PASS，完整 signed Data 大小与拒绝批次的缓存可见性
+已修复。下一步 DI 紧凑表示/旧格式兼容与先验边界检查；整体 A05
+仍 BLOCK、T005 未完成，本机 6/10。见
+[Core R2](evidence/t005-exact-data-wire-repair-20260906.md#core-repair-r2)。
+
+**Core wire R1 (2026-09-06)**：真实 Provider/IMS 回归 18/21 断言通过；
+8,801-byte Data 和超限批次错误成功，前项缓存泄露，3 项语义 RED。
+下一步完整签名 wire 批量预校验并原样重跑，见
+[Core R1](evidence/t005-exact-data-wire-repair-20260906.md#core-regression-r1)。
+
+**Wire repair review (2026-09-06)**：候选紧凑消费存在旧格式字段覆盖及
+transport digest 比较错误，资源边界也需前置。先闭合 Core 完整
+signed Data 大小与拒绝批次的缓存可见性，再修复 DI 编解码/消费；
+详见 [wire repair](evidence/t005-exact-data-wire-repair-20260906.md)。
+A05 仍 BLOCK，T005 未完成，本机 6/10。
+
 **Latest diagnosis R18 (2026-09-06)**：首次发送失败已定位为完整
 NDN Data 超过 8,800 bytes：manifest 19,658 / 10,883，segment
 14,191；169 条事件循环异常。下一步审查并验证既有共享紧凑
