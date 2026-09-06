@@ -1,0 +1,74 @@
+#ifndef NDNSF_DISTRIBUTED_INFERENCE_NATIVE_CANONICAL_ONNX_ASSEMBLER_HPP
+#define NDNSF_DISTRIBUTED_INFERENCE_NATIVE_CANONICAL_ONNX_ASSEMBLER_HPP
+
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp"
+
+#include "ndn-service-framework/ServiceProvider.hpp"
+
+#include <functional>
+#include <optional>
+#include <string>
+
+namespace ndnsf::di {
+
+/**
+ * Options for the production post-Selection ONNX assembly bridge.
+ *
+ * The C++ Provider remains the owner of the authenticated assignment and
+ * cache.  The Python helper is only the adapter-format operation and is
+ * invoked with an exec'ed argument vector (never a shell command).  The
+ * helper must call the existing CertifiedOnnxAssemblyRecipe implementation.
+ */
+struct NativeCanonicalOnnxAssemblerOptions
+{
+  std::string cacheDir = "/tmp/ndnsf-di-native-artifacts";
+  std::string pythonExecutable = "python3";
+  std::string pythonModule =
+    "ndnsf_distributed_inference.native_assembly_helper";
+  std::string providerIdentity;
+  std::uint64_t helperTimeoutMs = 30000;
+  std::function<bool()> shouldCancel;
+  std::function<std::string(const std::string& manifestBytes)> signManifest;
+  std::shared_ptr<ProtectedRuntime> protectedRuntime;
+  std::string roleAssemblySpecDigest;
+};
+
+/**
+ * Provider-owned read ports used by the post-Selection assembler.  The
+ * production overload below binds these ports to CollaborationContext.  The
+ * explicit port type also lets a process-level fixture exercise the exact
+ * root/source/digest/cache path without replacing the assembler with a fake
+ * runner factory.
+ */
+struct NativeCanonicalOnnxFetchers
+{
+  std::function<std::optional<ndn::Buffer>(const ndn::Name&)> getArtifact;
+  std::function<std::optional<ndn::Buffer>(const ndn::Name&, const ndn::Name&)>
+    fetchEncryptedLargeData;
+};
+
+NativeModelRunnerSpec
+prepareNativeCanonicalOnnxRole(
+  const NativeCanonicalOnnxFetchers& fetchers,
+  const NativeSelectionProjectionV3& projection,
+  const NativeCanonicalOnnxAssemblerOptions& options);
+
+/**
+ * Fetch and assemble one exact role after Selection.
+ *
+ * The assignment-bound root is obtained from CollaborationContext, while the
+ * canonical ONNX source name is read from the signed root metadata and fetched
+ * through the Provider's encrypted large-Data path.  The returned runner spec
+ * points only to the newly activated content-addressed local model file.
+ */
+NativeModelRunnerSpec
+prepareNativeCanonicalOnnxRole(
+  ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
+  const NativeSelectionProjectionV3& projection,
+  const NativeCanonicalOnnxAssemblerOptions& options);
+
+} // namespace ndnsf::di
+
+#endif // NDNSF_DISTRIBUTED_INFERENCE_NATIVE_CANONICAL_ONNX_ASSEMBLER_HPP

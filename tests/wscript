@@ -16,6 +16,7 @@ def build(bld):
                        ]),
                 includes=['..', '../ndn-service-framework'],
                 use='ndn-service-framework NDN_CXX NDN_SVS NAC-ABE NDNSD BOOST OPENSSL DL',
+                rpath=[bld.bldnode.abspath()],
                 install_path=None)
 
     framework_sources = bld.path.parent.ant_glob([

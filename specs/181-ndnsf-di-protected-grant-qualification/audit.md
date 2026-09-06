@@ -86,8 +86,11 @@ T002 的 `ProtectedRuntime` 已接入真实 verifier 和受管内容密钥，
 18 项定向 C++ 用例通过，见 `evidence/t002-runtime-repair-20260905.md`；
 后续 native store 与私有目录清理已有实现，20 项 C++ 和 55 项 Python/
 跨语言存储检查通过，见 `evidence/t002-storage-repair-20260905.md`。
-生产 factory/装配接线仍在工作区验证中，真实网络与 ORT 生命周期
-仍未闭合，A01 未整体关闭；这些更新不改变本审计 BLOCK 裁决。
+后续真实 native Y-B 与 grant 负例已有定向证据；helper 的超时、
+并发取消、过期、输出限制及取消后目录重建问题已修复，27 项检查
+通过，见 [helper 生命周期](evidence/t002-helper-lifecycle-20260905.md)。
+factory/handler 源码闭包和全部生产验收仍未完成，A01 未整体关闭；
+这些更新不改变本审计 BLOCK 裁决。
 
 1. T001：在装配前完成独立绑定与授权；补注册表消费、模型/weights 密文
    读取及全错误路径清理，建立真实发布/获取的定向进程测试。

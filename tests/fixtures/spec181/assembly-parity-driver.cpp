@@ -4,6 +4,9 @@
 
 #include <boost/property_tree/json_parser.hpp>
 #include <filesystem>
+#include <chrono>
+#include <future>
+#include <thread>
 #include <iostream>
 #include <stdexcept>
 
@@ -36,6 +39,8 @@ std::vector<NativeAssemblyTensorContractV3> contracts(const ptree& values)
 int main(int argc, char** argv)
 {
   ptree result;
+  std::shared_ptr<ProtectedRuntime> runtime;
+  std::future<void> cancellation;
   try {
     if (argc != 4) throw std::runtime_error("usage: driver case.json cache python");
     ptree row;
@@ -92,8 +97,11 @@ int main(int argc, char** argv)
       -> std::optional<ndn::Buffer> {
       if (service.toUri() != projection.plan.serviceName)
         throw std::runtime_error("unexpected service fixture fetch");
-      if (name.toUri() == "/spec181/assembly/source")
+      if (name.toUri() == "/spec181/assembly/source") {
+        if (runtime && row.get<bool>("controls.cancelOnSourceFetch", false))
+          runtime->cancel("fixture cancellation during source fetch");
         return decodeHex(row.get<std::string>("canonicalModelHex"));
+      }
       if (name.toUri() == "/spec181/assembly/initializers")
         return decodeHex(row.get<std::string>("initializerHex"));
       throw std::runtime_error("unexpected canonical fixture fetch");
@@ -102,6 +110,58 @@ int main(int argc, char** argv)
     options.cacheDir = argv[2];
     options.pythonExecutable = argv[3];
     options.providerIdentity = projection.provider;
+    projection.deadlineMs = row.get<std::uint64_t>("controls.deadlineMs", 0);
+    options.helperTimeoutMs = row.get<std::uint64_t>("controls.helperTimeoutMs", 30000);
+    const auto start = std::chrono::steady_clock::now();
+    const auto cancelAfter = row.get<std::uint64_t>("controls.cancelAfterMs", 0);
+    options.shouldCancel = [start, cancelAfter] {
+      return cancelAfter != 0 && std::chrono::steady_clock::now() - start >=
+        std::chrono::milliseconds(cancelAfter);
+    };
+    if (const auto grant = row.get_child_optional("grant")) {
+      const auto now = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count());
+      ProtectedRuntimeBindingV1 binding;
+      binding.provider = projection.provider;
+      binding.role = role.role;
+      binding.requestId = projection.requestId;
+      binding.attempt = 1;
+      binding.planCoreDigest = grant->get<std::string>("planCoreDigest");
+      binding.planDigest = "sha256:" + std::string(64, 'a');
+      binding.securityPolicySnapshotDigest = "sha256:" + std::string(64, 'b');
+      binding.protectionEpoch = role.protectionEpoch;
+      binding.grantDigest = grant->get<std::string>("grantDigest");
+      binding.grantName = canonicalNativeGrantName("/spec181/requester", binding.provider,
+        binding.requestId, 1, binding.planCoreDigest, role.modelManifestDigest,
+        binding.protectionEpoch, binding.grantDigest);
+      binding.providerBootId = "fixture-boot";
+      binding.fencingToken = "fixture-fence";
+      binding.expiresAtMs = now + 10000;
+      NativeProtectedGrantConfig config;
+      config.authorityIdentity = "/spec181/authority";
+      const auto authority = decodeHex(grant->get<std::string>("authorityPublicKeyHex"));
+      config.authorityPublicKeyRaw.assign(authority.begin(), authority.end());
+      const auto recipient = decodeHex(grant->get<std::string>("recipientSeedHex"));
+      config.recipientKey.material.assign(recipient.begin(), recipient.end());
+      config.modelManifestDigest = role.modelManifestDigest;
+      config.shouldCancel = options.shouldCancel;
+      config.fetchGrant = [wire = grant->get<std::string>("wire"), name = binding.grantName]
+        (const std::string& requested) {
+        if (requested != name) throw std::runtime_error("unexpected grant fixture fetch");
+        return wire;
+      };
+      runtime = std::make_shared<ProtectedRuntime>(binding, std::move(config));
+      runtime->verifyGrant(binding, now);
+      options.protectedRuntime = runtime;
+      options.roleAssemblySpecDigest = "sha256:" + std::string(64, 'c');
+      const auto externalCancel = row.get<std::uint64_t>("controls.runtimeCancelAfterMs", 0);
+      if (externalCancel != 0) {
+        cancellation = std::async(std::launch::async, [runtime, externalCancel] {
+          std::this_thread::sleep_for(std::chrono::milliseconds(externalCancel));
+          runtime->cancel("fixture external cancellation");
+        });
+      }
+    }
     options.signManifest = [] (const std::string&) { return "fixture-signature"; };
     const auto prepared = prepareNativeCanonicalOnnxRole(fetchers, projection, options);
     result.put("status", "ASSEMBLED");
@@ -113,6 +173,7 @@ int main(int argc, char** argv)
   catch (const std::exception& error) {
     result.put("status", "REJECTED");
     result.put("reason", error.what());
+    if (runtime) result.put("runtimeState", static_cast<int>(runtime->state()));
     boost::property_tree::write_json(std::cout, result, false);
     return 2;
   }

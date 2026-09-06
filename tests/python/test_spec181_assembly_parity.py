@@ -53,11 +53,14 @@ def test_native_production_entry_matches_fixed_vector_and_python(case, tmp_path)
     request.write_text(json.dumps(case))
     cache = tmp_path / "cache"
     env = os.environ.copy()
+    env["LD_LIBRARY_PATH"] = os.pathsep.join([
+        str(Path(binary).resolve().parent), env.get("LD_LIBRARY_PATH", "")])
     env["PYTHONPATH"] = os.pathsep.join([str(ROOT / "NDNSF-DistributedInference"),
         str(ROOT / "pythonWrapper"), str(ROOT / "NDNSF-DistributedRepo/pythonWrapper"),
         env.get("PYTHONPATH", "")])
     completed = subprocess.run([binary, str(request), str(cache), sys.executable],
         cwd=ROOT, env=env, text=True, capture_output=True, timeout=30)
+    assert completed.stdout.strip(), completed.stderr
     result = json.loads(completed.stdout)
     if case["expected"]["accepted"]:
         assert completed.returncode == 0, result

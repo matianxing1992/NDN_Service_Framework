@@ -25,7 +25,7 @@ Spec 170 `artifact-assembly-v1` 契约。
 | Task | Implemented / executed | Remaining acceptance |
 |---|---|---|
 | T001 | grant 摘要、租约/存储修复；注册表策略/公钥/逻辑身份与最终 root 允许列表已接线；100 项定向 unit 通过，见 `evidence/t001-registry-repair-20260905.md` | 真实发布/获取；资源上界、全部封印绑定及取消/过期验收 |
-| T002 | runtime/store 修复；20 项当前 C++、55 项存储检查；统一构建和 3 rebuilt grant parity tests PASS；live-r7 真实受保护 native Y-B、3 ORT + native Merge、正常清理 exit 0，见 `evidence/t002-native-live-repair-20260905.md` | 生产负例、取消/过期及资源上界；factory/assembler/handler 工作区接线尚未形成独立提交 |
+| T002 | runtime/store 修复及真实 native Y-B 正负例已有证据；helper 超时/取消/过期、输出上界及 staging 重建竞态已修复，27 项定向检查 PASS，见 [helper 生命周期](evidence/t002-helper-lifecycle-20260905.md)；assembler/helper 纳入本轮源码检查点 | 最终 native 重建与新 Y-B 控制；全部生产验收、资源上界及 factory/handler 源码闭包仍待完成 |
 | T003 | PASS：3 项 grant parity 检查消费 9 个向量；8 个装配向量分别走 Python/C++ 生产入口，16 项检查通过，含实际 ORT CPU 结果和 initializer/recipe/ABI 拒绝，见 [装配证据](evidence/t003-assembly-parity-20260905.md) | 本任务定向验收已闭合；native 格式操作共用生产 Python helper，后续同源资格仍归 T005/T008 |
 | T004 | PASS：7 项 Python seam、6 项 Core 定向检查；重建后真实 Provider 等待约 83 ms、Controller 12.39 s 就绪、等待中取消约 2.3 ms 且无热转；全部线程/网络清理，见 [生命周期证据](evidence/t004-lifecycle-acceptance-20260905.md) | 本任务定向验收已闭合；后续同源正式资格仍归 T005/T008 |
 | T005 | 已停用旧自动重试入口，维护矩阵首个失败即停止并保留原始结果；118 项定向检查 PASS，见 [证据保留修复](evidence/t005-evidence-repair-20260905.md) | T007 PASS 后同源七子用例矩阵，保留所有失败 |
@@ -42,7 +42,10 @@ Spec 170 `artifact-assembly-v1` 契约。
 首个失败即停止；5 项新增回归先失败，修复后相关 118 项检查通过。
 T003 已补固定装配向量、C++ 生产入口 Waf target 和双侧字节检查；
 19 项 grant/assembly parity 通过，四个 native 正例实际 ORT CPU 推理
-结果符合固定数学预期。下一步继续 T001/T002 生产闭合；T007 仍为 BLOCK。
+结果符合固定数学预期。T002 helper 管理已补 8 项子进程/取消边界
+检查，连同 parity 共 27 PASS；修复了取消后重建明文目录的竞态。
+下一步重建最终 native 源并复验受保护 Y-B，继续 T001/T002 完整
+生产闭合；T007 仍为 BLOCK。
 
 历史 6/7、7/7 与 `CONDITIONAL PASS` 不再作为当前状态；以
 [audit.md](audit.md) 与 [修正证据](evidence/audit-repair-20260905.md) 为准。

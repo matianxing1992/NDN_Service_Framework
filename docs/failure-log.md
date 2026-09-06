@@ -19,6 +19,21 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 T002 helper lifecycle (2026-09-05): focused lifecycle defects CLOSED.**
+The native assembler waits synchronously for its helper, ignores request and
+operation deadlines during assembly, observes grant cancellation/expiry only
+after slow work, and can activate helper output beyond the role envelope.
+Six real-process regression failures are retained in
+`spec181-t002-helper-20260905-r1/red.log` in the ignored workspace temporary
+directory. R2 builds but 14 native checks stop at the loader: the old installed
+framework lacks `streamCancelled`. R3 binds the test executable and its
+environment to the current build library: 26 focused checks pass. A new
+source-fetch cancellation regression then proves that the parent recreates
+the erased plaintext directory. R4 serializes protected staging writes
+with runtime cleanup; 27 focused checks pass, including the new race. The
+new RED log is retained in r3. Full T002 acceptance remains in progress. See
+[T002 helper lifecycle](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t002-helper-lifecycle-20260905.md).
+
 **Spec181 T003 assembly parity (2026-09-05): focused build defects CLOSED.**
 The fixed-vector Python lane passes 8 cases; the native lane fails 8 checks
 because its required current-source test executable is not built yet. This
