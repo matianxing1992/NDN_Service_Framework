@@ -19,6 +19,36 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 exact-tensor R6 (2026-09-06): focused PASS.**
+Nine real DI/Provider/IMS cases pass 270 assertions: 1.4 MB compact transfer
+fits signed packets (maximum 8,477 bytes), legacy format reconstructs, and
+signature/commitment/context/bounds plus authenticated inner HMAC/index/legacy
+binding mutations reject at their named boundaries. Commit the shared repair,
+refresh full native identity and re-audit before a new formal matrix. See
+[wire repair](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-exact-data-wire-repair-20260906.md#tensor-repair-r5-and-authenticated-inner-rejections-r6).
+
+**Spec181 exact-tensor R4 (2026-09-06): legacy fixture exceeds packet limit.**
+Large compact transfer and four real verifier rejections pass (5/6 cases).
+The legacy fixture's 7,000-byte payload segment plus old metadata reaches
+10,555 signed bytes; Core correctly rejects before decoding. Use small legacy
+segments to test compatibility, retaining the unchanged 1.4 MB compact case.
+See [wire repair](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-exact-data-wire-repair-20260906.md#tensor-repair-r3-and-negative-probe-r4).
+
+**Spec181 exact-tensor R2 (2026-09-06): test bridge correction required.**
+Compact production transfer reconstructs the 1,400,017-byte object and all
+signed packets fit; 412/413 assertions pass. The sole failure counts 404
+packets versus 202 because both fixture peer bridges and manual bridges run.
+Disconnect fixture peer bridges before custom forwarding; keep the same
+packet-count, content and size assertions. See
+[wire repair](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-exact-data-wire-repair-20260906.md#tensor-probe-r2).
+
+**Spec181 exact-tensor R1 (2026-09-06): semantic RED at publication.**
+The real DI publishOutput of a 1,400,017-byte tensor creates a 17,546-byte
+signed manifest and correctly fails the repaired Core limit. Build passed;
+the failure is the remaining codec boundary. Apply compact exact encoding
+with authenticated reconstruction and legacy compatibility before retry.
+See [wire repair](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-exact-data-wire-repair-20260906.md#tensor-regression-r1).
+
 **Spec181 exact-wire Core R2 (2026-09-06): focused PASS.**
 Initial inventory rendering separately rejected the new evidence file's missing
 layer header; add the explicit scoped header before rerunning that document check.

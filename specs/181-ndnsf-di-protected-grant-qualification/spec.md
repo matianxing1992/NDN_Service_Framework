@@ -15,6 +15,9 @@ Spec 180 已按所有者决定关闭，其契约、冻结证据与失效声明�
 
 ## Goal
 
+R18 共享精确传输修复采用 [Exact Tensor Wire Representation](contracts/exact-tensor-wire.md)
+的紧凑 wire 契约；逻辑签名、绑定、内容及旧格式验证保持权威。
+
 Spec 180 的教训是：范围反复扩张、审计循环替代执行、负裁决假 PASS、
 seam-only 证据。本 spec 只做一件事——把 180 遗留的实现与本地验证工作
 按行为收口，并且给每一个任务强制三层测试标准（单元 + 集成 + MiniNDN

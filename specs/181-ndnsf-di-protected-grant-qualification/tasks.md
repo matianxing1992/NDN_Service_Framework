@@ -1,5 +1,27 @@
 # Tasks: NDNSF-DI Protected-Grant Local Development and Delivery
 
+**Tensor wire R6 (2026-09-06)**：9/9 真实生产用例、270/270 断言
+PASS；大 tensor 最大 signed Data 8,477 bytes，旧格式兼容和
+七种拒绝边界得到验证。下一步提交共享修复、完整 native identity
+刷新及复审；T005/T008 未完成，本机仍 6/10。见
+[R5/R6](evidence/t005-exact-data-wire-repair-20260906.md#tensor-repair-r5-and-authenticated-inner-rejections-r6)。
+
+**Tensor wire R3/R4 (2026-09-06)**：大 tensor 211/211 断言通过，
+实际 202 包、最大 8,477 bytes。四种真实拒绝均通过；legacy
+fixture 因旧元数据超包限制未到 decoder，先修正其分段大小再验证
+兼容。详见 [R3/R4](evidence/t005-exact-data-wire-repair-20260906.md#tensor-repair-r3-and-negative-probe-r4)。
+
+**Tensor wire R2 (2026-09-06)**：紧凑生产链成功重建大 tensor，
+全部 signed packet 大小通过；412/413 断言通过，唯一失败为测试
+重复转发造成包数翻倍。修正 fixture 转发后继续同判据及拒绝/兼容
+回归，见 [Tensor R2](evidence/t005-exact-data-wire-repair-20260906.md#tensor-probe-r2)。
+
+**Tensor wire R1 (2026-09-06)**：1,400,017-byte 真实生产 DI 回归的
+旧 manifest 编码成 17,546-byte signed Data，被 Core 正确拒绝。
+下一步按 [wire contract](contracts/exact-tensor-wire.md) 修复紧凑
+codec/消费并验证兼容和拒绝路径，见
+[Tensor R1](evidence/t005-exact-data-wire-repair-20260906.md#tensor-regression-r1)。
+
 **Core wire R2 (2026-09-06)**：生产 Core 重建并以同一测试完成
 21/21 断言 PASS，完整 signed Data 大小与拒绝批次的缓存可见性
 已修复。下一步 DI 紧凑表示/旧格式兼容与先验边界检查；整体 A05

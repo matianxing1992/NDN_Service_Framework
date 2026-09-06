@@ -254,11 +254,10 @@ NdnsfCollaborationDependencyIo::prefetchInput(const std::string& sessionId,
           return std::vector<std::uint8_t>(content->begin(), content->end());
         };
 
+        const auto expectedConsumers = edge.consumerRoles.empty()
+          ? std::vector<std::string>{edge.consumerRole} : edge.consumerRoles;
         const auto manifestWire = fetchExact(ndn::Name(edge.manifestDataName));
-        const auto manifest = decodeTensorObjectManifest(manifestWire);
-        const auto consumerPresent = std::find(
-          manifest.consumerRoles.begin(), manifest.consumerRoles.end(),
-          edge.consumerRole) != manifest.consumerRoles.end();
+        auto manifest = decodeTensorObjectManifest(manifestWire);
         std::size_t parsedProducerRank = 0;
         try {
           parsedProducerRank = static_cast<std::size_t>(
@@ -267,6 +266,38 @@ NdnsfCollaborationDependencyIo::prefetchInput(const std::string& sessionId,
         catch (const std::exception&) {
           throw std::runtime_error("V3 producer rank is not numeric");
         }
+        if (manifest.compactContextRequired) {
+          // The authenticated Selection edge and group capability are the
+          // authority for these bindings.  The context-compact wire only
+          // carries the content/segment commitment and producer signature;
+          // restore the signed manifest before normal validation below.
+          manifest.capabilityDigest = canonicalSha256(capability.capabilityDigest);
+          manifest.epochKeyId = capability.epochKeyId;
+          manifest.requester = m_ctx.requesterName().toUri();
+          manifest.requestId = edge.requestId;
+          manifest.attemptId = std::to_string(edge.attemptEpoch);
+          manifest.planDigest = edge.planDigest;
+          manifest.groupId = capability.groupId;
+          manifest.epoch = std::to_string(capability.epoch);
+          manifest.operationIndex = edge.collectiveOperationIndex;
+          manifest.round = edge.round;
+          manifest.operationKind = edge.operationKind;
+          manifest.producerRole = edge.producerRole;
+          manifest.producerRank = parsedProducerRank;
+          manifest.consumerRoles = expectedConsumers;
+          manifest.microbatch = edge.microbatch;
+          manifest.sourceLayoutDigest = edge.collectiveSourceLayoutDigest;
+          manifest.targetLayoutDigest = edge.collectiveTargetLayoutDigest;
+          manifest.tensorId = edge.tensors.empty() ? edge.scope : edge.tensors.front();
+          manifest.tensorDigest = edge.tensorDigest;
+          manifest.endpointDigest = edge.endpointDigest;
+          manifest.manifestContractDigest = edge.manifestContractDigest;
+          manifest.noProgressMs = edge.noProgressDeadlineMs;
+          manifest.hardDeadlineMs = edge.hardDeadlineMs;
+        }
+        const auto consumerPresent = std::find(
+          manifest.consumerRoles.begin(), manifest.consumerRoles.end(),
+          edge.consumerRole) != manifest.consumerRoles.end();
         if (manifest.capabilityDigest !=
               canonicalSha256(capability.capabilityDigest) ||
             manifest.epochKeyId != capability.epochKeyId ||
@@ -282,7 +313,7 @@ NdnsfCollaborationDependencyIo::prefetchInput(const std::string& sessionId,
             manifest.operationKind != edge.operationKind ||
             manifest.producerRole != edge.producerRole ||
             manifest.producerRank != parsedProducerRank ||
-            manifest.consumerRoles != edge.consumerRoles ||
+            manifest.consumerRoles != expectedConsumers ||
             !consumerPresent || manifest.microbatch != edge.microbatch ||
             manifest.sourceLayoutDigest != edge.collectiveSourceLayoutDigest ||
             manifest.targetLayoutDigest != edge.collectiveTargetLayoutDigest ||
@@ -290,44 +321,153 @@ NdnsfCollaborationDependencyIo::prefetchInput(const std::string& sessionId,
             manifest.tensorDigest != edge.tensorDigest ||
             manifest.segmentCount == 0 ||
             manifest.segmentCount > edge.maxSegments ||
+            manifest.segmentCount > operation.maxSegments ||
+            manifest.totalBytes > operation.maxBytes ||
+            manifest.totalBytes > capability.maxInflightBytes ||
+            manifest.segmentSize > ndn::MAX_NDN_PACKET_SIZE ||
             manifest.endpointDigest != edge.endpointDigest ||
             manifest.manifestContractDigest != edge.manifestContractDigest ||
             manifest.noProgressMs != edge.noProgressDeadlineMs ||
             manifest.hardDeadlineMs != edge.hardDeadlineMs ||
-            !m_groupCoordinator->verifyTensorObjectManifest(
-              manifest.signingBytes(), manifest.producerSignature)) {
+            (!manifest.compactContextRequired &&
+             !m_groupCoordinator->verifyTensorObjectManifest(
+               manifest.signingBytes(), manifest.producerSignature))) {
           throw std::runtime_error(
             "TensorObjectManifestV1 does not match mustFetch authority");
         }
 
-        std::map<std::uint64_t, std::vector<std::uint8_t>> plaintextBySegment;
+        std::vector<std::pair<ndn::Name, std::vector<std::uint8_t>>>
+          fetchedSegments;
+        fetchedSegments.reserve(manifest.segmentCount);
+        std::uint64_t fetchedBytes = 0;
+        std::vector<std::string> ciphertextDigests;
+        ciphertextDigests.reserve(manifest.segmentCount);
         for (std::size_t index = 0; index < manifest.segmentCount; ++index) {
           const auto dataName = exactTensorSegmentName(edge, index);
           const auto wire = fetchExact(dataName);
-          if (sha256TensorBytes(wire) != manifest.orderedSegmentDigests[index]) {
-            throw std::runtime_error(
-              "TensorObjectManifestV1 ciphertext segment digest mismatch");
+          if (wire.size() > capability.maxInflightBytes - fetchedBytes) {
+            throw std::runtime_error("exact tensor ciphertext exceeds inflight bound");
           }
-          const auto decoded = ProviderGroupCoordinator::decodeSegment(wire);
-          if (decoded.segments.size() != 1 ||
-              decoded.manifest.requestId != capability.requestId ||
-              decoded.manifest.attemptId != capability.attemptId ||
-              decoded.manifest.planDigest != capability.planDigest ||
-              decoded.manifest.groupId != capability.groupId ||
-              decoded.manifest.epoch != capability.epoch ||
-              decoded.manifest.operationIndex != edge.collectiveOperationIndex ||
-              decoded.manifest.producerRank != producerRank ||
-              decoded.manifest.sourceLayoutDigest !=
-                edge.collectiveSourceLayoutDigest ||
-              decoded.manifest.targetLayoutDigest !=
-                edge.collectiveTargetLayoutDigest ||
-              decoded.manifest.tensorDigest != edge.tensorDigest ||
-              decoded.manifest.segmentCount != manifest.segmentCount ||
-              decoded.manifest.totalBytes != manifest.totalBytes) {
+          fetchedBytes += wire.size();
+          const auto ciphertextDigest = sha256TensorBytes(wire);
+          if (!manifest.compactContextRequired) {
+            if (ciphertextDigest != manifest.orderedSegmentDigests[index]) {
+              throw std::runtime_error(
+                "TensorObjectManifestV1 ciphertext segment digest mismatch");
+            }
+          }
+          else {
+            ciphertextDigests.push_back(ciphertextDigest);
+          }
+          fetchedSegments.emplace_back(dataName, wire);
+        }
+        if (manifest.compactContextRequired) {
+          std::vector<std::uint8_t> digestCommitmentInput;
+          for (const auto& digest : ciphertextDigests) {
+            digestCommitmentInput.insert(
+              digestCommitmentInput.end(), digest.begin(), digest.end());
+          }
+          if (sha256TensorBytes(digestCommitmentInput) !=
+                manifest.compactSegmentDigestCommitment) {
+            throw std::runtime_error(
+              "TensorObjectManifestV1 ciphertext commitment mismatch");
+          }
+          manifest.orderedSegmentDigests = std::move(ciphertextDigests);
+          manifest.compactContextRequired = false;
+          manifest.objectManifestDigest = manifest.digest();
+          manifest.validate();
+          if (!m_groupCoordinator->verifyTensorObjectManifest(
+                manifest.signingBytes(), manifest.producerSignature)) {
+            throw std::runtime_error(
+              "TensorObjectManifestV1 producer signature mismatch");
+          }
+        }
+
+        std::map<std::uint64_t, std::vector<std::uint8_t>> plaintextBySegment;
+        for (std::size_t segmentIndex = 0;
+             segmentIndex < fetchedSegments.size(); ++segmentIndex) {
+          const auto& fetched = fetchedSegments[segmentIndex];
+          const auto& dataName = fetched.first;
+          const auto& wire = fetched.second;
+          // The outer signed TensorObject manifest is the authority for the
+          // complete ciphertext object. Compact inner segments therefore
+          // carry only the operation digest and crypto envelope; restore the
+          // non-wire edge bindings before passing them to the coordinator.
+          auto decoded = ProviderGroupCoordinator::decodeSegment(
+            wire, dataName.toUri());
+          if (decoded.segments.size() != 1) {
             throw std::runtime_error(
               "NDNSF_DATA_V1 segment inner manifest mismatch");
           }
-          const auto& segment = decoded.segments.front();
+          auto& decodedManifest = decoded.manifest;
+          auto& decodedSegment = decoded.segments.front();
+          const auto expectedBytes = segmentIndex + 1 == manifest.segmentCount
+            ? manifest.totalBytes - segmentIndex * manifest.segmentSize
+            : manifest.segmentSize;
+          if (decodedSegment.descriptor.segmentNo != segmentIndex ||
+              decodedSegment.descriptor.producerRank != producerRank ||
+              decodedSegment.ciphertext.size() != expectedBytes) {
+            throw std::runtime_error("exact tensor segment index/rank/size mismatch");
+          }
+          if (decodedManifest.externalSegmentDigests) {
+            decodedManifest.capabilityDigest = capability.capabilityDigest;
+            decodedManifest.epochKeyId = capability.epochKeyId;
+            decodedManifest.requestId = capability.requestId;
+            decodedManifest.attemptId = capability.attemptId;
+            decodedManifest.planDigest = capability.planDigest;
+            decodedManifest.groupId = capability.groupId;
+            decodedManifest.epoch = capability.epoch;
+            decodedManifest.operationIndex = edge.collectiveOperationIndex;
+            decodedManifest.producerRank = producerRank;
+            decodedManifest.operationKind = edge.operationKind;
+            decodedManifest.segmentCount = manifest.segmentCount;
+            decodedManifest.totalBytes = manifest.totalBytes;
+            decodedManifest.segmentSize = manifest.segmentSize;
+            decodedManifest.sourceLayoutDigest =
+              edge.collectiveSourceLayoutDigest;
+            decodedManifest.targetLayoutDigest =
+              edge.collectiveTargetLayoutDigest;
+            decodedManifest.tensorDigest = edge.tensorDigest;
+            decodedManifest.createdAtMs = manifest.createdAtMs;
+            decodedManifest.noProgressMs = edge.noProgressDeadlineMs;
+            decodedManifest.hardDeadlineMs = edge.hardDeadlineMs;
+            decodedSegment.descriptor.requestId = capability.requestId;
+            decodedSegment.descriptor.attemptId = capability.attemptId;
+            decodedSegment.descriptor.planDigest = edge.planDigest;
+            decodedSegment.descriptor.groupId = capability.groupId;
+            decodedSegment.descriptor.epoch = capability.epoch;
+            decodedSegment.descriptor.operationKind = edge.operationKind;
+            decodedSegment.descriptor.tensorDigest = edge.tensorDigest;
+            decodedSegment.descriptor.operationIndex =
+              decodedManifest.operationIndex;
+            decodedSegment.descriptor.producerRank = decodedManifest.producerRank;
+            decodedSegment.descriptor.segmentCount = decodedManifest.segmentCount;
+            decodedSegment.descriptor.totalBytes = decodedManifest.totalBytes;
+            decodedSegment.descriptor.segmentSize = decodedManifest.segmentSize;
+            decodedSegment.descriptor.noProgressMs = edge.noProgressDeadlineMs;
+            decodedSegment.descriptor.hardDeadlineMs = edge.hardDeadlineMs;
+          }
+          if (decodedManifest.requestId != capability.requestId ||
+              decodedManifest.attemptId != capability.attemptId ||
+              decodedManifest.planDigest != capability.planDigest ||
+              decodedManifest.groupId != capability.groupId ||
+              decodedManifest.epoch != capability.epoch ||
+              decodedManifest.operationIndex != edge.collectiveOperationIndex ||
+              decodedManifest.producerRank != producerRank ||
+              decodedManifest.sourceLayoutDigest !=
+                edge.collectiveSourceLayoutDigest ||
+              decodedManifest.targetLayoutDigest !=
+                edge.collectiveTargetLayoutDigest ||
+              decodedManifest.tensorDigest != edge.tensorDigest ||
+              decodedManifest.segmentCount != manifest.segmentCount ||
+              decodedManifest.totalBytes != manifest.totalBytes ||
+              (decodedManifest.externalSegmentDigests &&
+               decodedManifest.transportManifestDigest !=
+                 decodedSegment.descriptor.manifestDigest)) {
+            throw std::runtime_error(
+              "NDNSF_DATA_V1 segment inner manifest mismatch");
+          }
+          const auto& segment = decodedSegment;
           const auto accepted = m_groupCoordinator->acceptSegment(
             decoded.manifest, segment, dataName.toUri());
           (void)accepted; // identical duplicates remain readable/idempotent
@@ -585,7 +725,7 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
       std::vector<std::vector<std::uint8_t>> encodedSegments;
       encodedSegments.reserve(sealed.segments.size());
       for (const auto& segment : sealed.segments) {
-        encodedSegments.push_back(ProviderGroupCoordinator::encodeSegment(
+        encodedSegments.push_back(ProviderGroupCoordinator::encodeSegmentCompact(
           sealed.manifest, segment));
       }
 
@@ -635,7 +775,7 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
       manifest.producerSignature =
         m_groupCoordinator->signTensorObjectManifest(manifest.signingBytes());
       manifest.objectManifestDigest = manifest.digest();
-      const auto manifestWire = encodeTensorObjectManifest(manifest);
+      const auto manifestWire = encodeTensorObjectManifestContextCompact(manifest);
 
       std::vector<std::pair<ndn::Name, ndn::Buffer>> publications;
       publications.reserve(encodedSegments.size() + 1);

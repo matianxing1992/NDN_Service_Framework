@@ -6,14 +6,22 @@
 local gate 提交/源码身份修复为 `2628e3d2`。历史应用闭合审计对象为
 `6b9bb51c43a597bf36ca62f304fee5f71c17fa58` 的隔离源码和 R13 runtime；
 `8c231493` 仅补记证据，主工作区其余预存改动不在该审计对象内。
-当前受审源码为 `214df1d66019360394c93f364ee71976b25e1eba` 的隔离
-检出；维护 native identity 见 formal matrix 的 Backend Native Identity R1。
+当前受审源码为 `0c383f9d` 上的共享 wire 修复隔离投影，见本轮
+wire repair 的 R6；完整 native identity 刷新尚待执行。
+历史 backend native identity 见 formal matrix 的 Backend Native Identity R1。
 **Layer**: proposed / implemented / wired / executed（限定在各记录的检查范围）。
-**Verdict**: **BLOCK**（R18 exact Data wire size）。
+**Verdict**: **BLOCK**（shared wire repair full native identity pending）。
+DI R6 共享精确传输修复完成定向审查与 9/9 生产路径回归：实际
+1.4 MB 内容重建，signed Data 最大 8,477 bytes；旧格式兼容及
+签名/承诺/上下文/资源/HMAC/索引/旧字段拒绝均通过。旧默认 codec
+与 signingBytes 原文保留，只有紧凑格式恢复字段。下一步完整
+native identity 刷新，完成该 source/build 复审后才恢复矩阵。
+见 [wire repair](evidence/t005-exact-data-wire-repair-20260906.md#tensor-repair-r5-and-authenticated-inner-rejections-r6)。
 Core 完整 signed Data 批量预校验定向修复已 PASS：同一真实
 Provider/IMS 测试从 R1 三项语义 RED 到 R2 21/21 断言通过。
-DI 紧凑表示、旧格式兼容和消费先验资源边界仍待修复；该局部
-PASS 不恢复矩阵许可。见 [wire repair](evidence/t005-exact-data-wire-repair-20260906.md)。
+当时 DI 紧凑表示、旧格式兼容和消费先验资源边界仍待修复；
+这些代码边界现由 R6 定向验证，矩阵许可仍等待完整 native 刷新。
+见 [wire repair](evidence/t005-exact-data-wire-repair-20260906.md)。
 R18 已验证实际 BackboneNeck CPU 执行并完成角色；首次响应
 Data 因 19,658 / 10,883 / 14,191 bytes 超出 8,800 上限失败。
 先审查共享紧凑传输和发布前大小检查，完成签名/承诺/兼容定向
