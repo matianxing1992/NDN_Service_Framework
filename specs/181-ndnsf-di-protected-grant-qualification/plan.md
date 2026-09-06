@@ -68,6 +68,9 @@ T008 保留当前源身份与全部平面摘要；T009 只能封印这些相同�
    Ed25519 原始 seed 或有效 EC P-256 PEM，拒绝其他曲线/类型；
    两者保持相同公钥摘要、模型/纪元、身份映射及 0600 权限检查。
    凭据加载 unit 不替代真实 grant 发布/获取/解包验收。
+   requester 与 Python Provider 使用同样的 recipient 类型约定。
+   显式 `SPEC181_PROVIDER_RECIPIENT_KEY_MAP` 独立于 offer 签名密钥
+   映射；仅未配置时回退到原 offer-key map，不覆盖显式配置。
 4. **Protected storage**。`MODEL_PROTO` 与 `EXTERNAL_DATA` 均使用
    FR-013 既有 HKDF/AES-256-GCM 契约；暂存限定在 role workdir，
    明文全部登记租约，覆盖正常、取消和异常清理，保留 canonical 源。

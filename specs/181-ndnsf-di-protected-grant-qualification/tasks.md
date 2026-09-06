@@ -53,6 +53,10 @@ T003 已补固定装配向量、C++ 生产入口 Waf target 和双侧字节检�
 纳入源码检查点 `35e1c6d5`，plan/audit/traceability 已同步范围；
 下一步继续 T001/T002 完整生产验收与剩余
 handler 源码闭包，生产运行前刷新统一 native 构建；T007 仍为 BLOCK。
+P-256 生产入口追踪另修复 Python loader 类型限制、runner 覆盖专用
+收件人映射及生产 EC 临时密钥生成的 backend 兼容缺口；新增文件
+边界检查后相关 134 项 PASS。当前等待统一 native 重建与独立
+P-256 Y-B 控制，见 [P-256 生产链](evidence/t002-p256-production-20260905.md)。
 
 历史 6/7、7/7 与 `CONDITIONAL PASS` 不再作为当前状态；以
 [audit.md](audit.md) 与 [修正证据](evidence/audit-repair-20260905.md) 为准。

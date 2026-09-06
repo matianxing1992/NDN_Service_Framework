@@ -19,6 +19,20 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 T002 P-256 production path (2026-09-05): OPEN.**
+R1 proves the runner overwrites an explicitly configured recipient-key map
+with the Ed25519 offer-key map. Four other checks stop in fixture key
+generation because this cryptography installation requires an explicit backend;
+they do not prove a production refusal. R2 fixes the fixture: three actual
+entry regressions fail (requester loader, Python Provider loader, map override),
+and two wrong-curve rejection checks pass. R3 repairs those entries: 130 checks
+pass, but the positive P-256 case reaches the production envelope creator and
+fails because its EC key generation also omits the required backend argument.
+All three raw results are retained. R4 repairs the production key generation;
+134 focused checks pass, including bounded private-file rejection. Current
+native rebuild and the fresh P-256 network control remain pending.
+See [P-256 production path](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t002-p256-production-20260905.md).
+
 **Spec181 T002 recipient credentials (2026-09-05): focused defect CLOSED.**
 The production factory accepts only Ed25519 private keys although T002 and
 the native verifier also support EC P-256 envelopes. The rebuilt credential

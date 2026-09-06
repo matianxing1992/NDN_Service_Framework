@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import ed25519
+from cryptography.hazmat.primitives.asymmetric import ed25519, ec
 from cryptography.hazmat.backends import default_backend
 
 _DEFAULT_CONFIG_ROOT = Path.home() / ".config" / "ndnsf" / "spec180"
@@ -77,6 +77,28 @@ def load_ed25519_private_key(path: str | Path, *, raw_seed: bool = False):
     if not isinstance(key, ed25519.Ed25519PrivateKey):
         raise ValueError("private key is not Ed25519")
     return key
+
+
+def load_grant_recipient_private_key(path: str | Path):
+    """Load a bounded owner-only Ed25519 or EC P-256 recipient PEM."""
+    path = Path(path).expanduser()
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    with os.fdopen(fd, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600
+                or not 0 < info.st_size <= 65536):
+            raise ValueError("recipient key must be a bounded regular file with mode 0600")
+        payload = stream.read(65537)
+        if len(payload) != info.st_size:
+            raise ValueError("recipient key size changed during read")
+    key = serialization.load_pem_private_key(
+        payload, password=None, backend=default_backend())
+    if isinstance(key, ed25519.Ed25519PrivateKey):
+        return key
+    if (isinstance(key, ec.EllipticCurvePrivateKey)
+            and isinstance(key.curve, ec.SECP256R1)):
+        return key
+    raise ValueError("grant recipient private key must be Ed25519 or EC P-256")
 
 
 @dataclass(frozen=True)
@@ -135,7 +157,7 @@ def load_ed25519_public_key(path: str | Path) -> ed25519.Ed25519PublicKey:
 
 __all__ = [
     "ArtifactPolicyRegistry", "load_artifact_policy_authority_registry",
-    "load_ed25519_private_key",
+    "load_ed25519_private_key", "load_grant_recipient_private_key",
     "load_artifact_policy_authority_private_key",
     "load_ed25519_public_key",
 ]

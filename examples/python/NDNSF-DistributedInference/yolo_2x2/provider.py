@@ -277,14 +277,14 @@ def _load_grant_keys(provider_id: str = "", *, provider_prefix="/example/provide
     Returns (authority_public_key, recipient_private_key, authority_identity)
     under a protected epoch; (None, None, "") for plaintext-v1, where the grant path is never
     entered (spec181 T001 wiring).  The recipient key is this Provider's
-    own Ed25519 offer key, looked up by Provider identity in the shared
-    runner-supplied map.
+    own Ed25519 or EC P-256 key, looked up by Provider identity in the
+    runner-supplied recipient map independently of offer signing.
     """
     epoch = os.environ.get("SPEC181_PROTECTION_EPOCH", "").strip()
     if not epoch or epoch == "plaintext-v1":
         return None, None, ""
     from ndnsf_distributed_inference.security.registry_keys import (
-        load_artifact_policy_authority_registry, load_ed25519_private_key)
+        load_artifact_policy_authority_registry, load_grant_recipient_private_key)
     authority_pub_path = Path(os.environ["SPEC181_GRANT_AUTHORITY_PUBLIC_KEY"])
     policy = load_artifact_policy_authority_registry(
         authority_pub_path.with_name("trust-root-registry-v1.json"),
@@ -299,7 +299,7 @@ def _load_grant_keys(provider_id: str = "", *, provider_prefix="/example/provide
     if not recipient_priv_path:
         raise ValueError(
             f"no grant recipient key for Provider identity {identity}")
-    recipient_key = load_ed25519_private_key(recipient_priv_path)
+    recipient_key = load_grant_recipient_private_key(recipient_priv_path)
     return policy.public_key, recipient_key, policy.authority_id
 
 
