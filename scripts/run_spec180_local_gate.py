@@ -386,7 +386,14 @@ def _source_git(root: Path, *arguments: str) -> bytes:
         "GIT_CONFIG_GLOBAL": os.devnull, "GIT_OPTIONAL_LOCKS": "0",
         "GIT_NO_REPLACE_OBJECTS": "1",
     }
+    # MiniNDN runs under sudo while the selected checkout belongs to its
+    # invoking developer. Preserve Git's standard sudo ownership check only
+    # for that exact owner; keep all repository/config overrides stripped.
+    sudo_uid = os.environ.get("SUDO_UID", "")
     try:
+        if (os.geteuid() == 0 and sudo_uid.isdecimal()
+                and int(sudo_uid) == root.stat().st_uid):
+            environment["SUDO_UID"] = sudo_uid
         result = subprocess.run(
             ["git", "-C", str(root), *arguments], env=environment,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30,
