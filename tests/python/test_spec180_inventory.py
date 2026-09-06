@@ -212,6 +212,87 @@ def test_case_config_bytes_are_bound_even_before_that_case_runs(tmp_path, case):
         assert (before["inputs"][key] == after["inputs"][key]) == (name != case)
 
 
+@pytest.mark.parametrize("mutation", ["bytes", "mode", "target"])
+def test_input_identity_binds_declared_checkpoint(tmp_path, mutation):
+    module = load_inventory()
+    checkpoint = tmp_path / "checkpoint.pt"
+    checkpoint.write_bytes(b"fixed checkpoint fixture")
+    checkpoint.chmod(0o600)
+    alias = tmp_path / "selected.pt"
+    alias.symlink_to(checkpoint)
+    environment = {"SPEC180_YOLO_CHECKPOINT": str(alias)}
+    before = module.local_input_identity(tmp_path, environment)
+    if mutation == "bytes":
+        checkpoint.write_bytes(b"changed checkpoint fixture")
+    elif mutation == "mode":
+        checkpoint.chmod(0o644)
+    else:
+        other = tmp_path / "other.pt"
+        other.write_bytes(checkpoint.read_bytes())
+        other.chmod(0o600)
+        alias.unlink()
+        alias.symlink_to(other)
+    after = module.local_input_identity(tmp_path, environment)
+    assert before != after
+    assert "fixed checkpoint fixture" not in json.dumps(before)
+
+
+@pytest.mark.parametrize("layout", ["beside", "contracts", "spec-beside"])
+def test_input_identity_binds_registry_public_files_using_consumer_paths(tmp_path, layout):
+    module = load_inventory()
+    feature = tmp_path / "feature"
+    registry = feature / ("contracts/registry.json" if layout != "beside" else "registry.json")
+    registry.parent.mkdir(parents=True)
+    if layout == "spec-beside":
+        (registry.parent / "spec.md").write_text("fixture feature")
+    catalogue_root = registry.parent if layout != "contracts" else feature
+    catalogue_key = catalogue_root / "catalogue.pub"
+    catalogue_key.write_bytes(b"catalogue public fixture")
+    policy_key = registry.resolve().parent.parent / "policy.pub"
+    policy_key.write_bytes(b"policy public fixture")
+    model_key = catalogue_root / "model.pub"
+    model_key.write_bytes(b"model public fixture")
+    registry.write_text(json.dumps({
+        "catalogue": {"publicKeyPath": "catalogue.pub"},
+        "artifactPolicyAuthority": {"publicKeyPath": "policy.pub"},
+        "modelManifest": {"publicKeyPath": "model.pub"},
+    }))
+    environment = {"SPEC180_YOLO_CATALOGUE_REGISTRY": str(registry)}
+    before = module.local_input_identity(tmp_path, environment)
+    references = before["inputs"]["SPEC180_YOLO_CATALOGUE_REGISTRY"]["referencedFiles"]
+    assert set(references) == {"catalogue", "artifactPolicyAuthority", "modelManifest"}
+    for name, key in (("catalogue", catalogue_key), ("artifactPolicyAuthority", policy_key),
+                      ("modelManifest", model_key)):
+        assert references[name]["resolvedPath"] == str(key.resolve())
+        assert references[name]["sha256"] == module.digest_bytes(key.read_bytes())
+        key.write_bytes(key.read_bytes() + b" changed")
+        after = module.local_input_identity(tmp_path, environment)
+        assert after != before
+        before = after
+    assert "public fixture" not in json.dumps(before)
+
+
+@pytest.mark.parametrize("entry", [None, {}, {"publicKeyPath": ""}, {"publicKeyPath": []}])
+def test_input_identity_rejects_invalid_registry_reference(tmp_path, entry):
+    module = load_inventory()
+    registry = tmp_path / "registry.json"
+    registry.write_text(json.dumps({"catalogue": entry}))
+    with pytest.raises(module.InventoryError, match="INPUT_REGISTRY_INVALID"):
+        module.local_input_identity(tmp_path, {"SPEC180_YOLO_CATALOGUE_REGISTRY": str(registry)})
+
+
+@pytest.mark.parametrize("kind", ["checkpoint", "registry-key"])
+def test_input_identity_rejects_missing_checkpoint_or_registry_key(tmp_path, kind):
+    module = load_inventory()
+    environment = {"SPEC180_YOLO_CHECKPOINT": str(tmp_path / "missing.pt")}
+    if kind == "registry-key":
+        registry = tmp_path / "registry.json"
+        registry.write_text(json.dumps({"catalogue": {"publicKeyPath": "missing.pub"}}))
+        environment = {"SPEC180_YOLO_CATALOGUE_REGISTRY": str(registry)}
+    with pytest.raises(module.InventoryError, match="INPUT_IDENTITY_UNREADABLE"):
+        module.local_input_identity(tmp_path, environment)
+
+
 def test_input_identity_binds_protected_default_key_and_references_without_values(tmp_path):
     module = load_inventory()
     key = tmp_path / ".config/ndnsf/spec180/artifact-policy-authority.key"
