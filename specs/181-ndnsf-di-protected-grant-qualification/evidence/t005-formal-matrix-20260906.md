@@ -1,6 +1,6 @@
 # Formal Local Y-N Matrix
 
-**Status**: IN_PROGRESS (canonical binding/assembly repair PASS; formal matrix pending)
+**Status**: IN_PROGRESS (sealed plan repair PASS; formal matrix pending)
 **Evidence layer**: implemented / executed (formal network startup and focused regression)
 
 ## Subject and Launch R1
@@ -293,3 +293,40 @@ executor.py 的 component/external-initializer/shape 改动，以及
 canonical tests。其余预存改动（包括 CUDA provider-chain）留在工作区。
 隔离测试字节与选定提交字节逐文件核对；A05 受影响项复审 PASS，
 下一步以新提交恢复正式矩阵。T005 仍未完成。
+
+## Sealed Plan Boundary R14
+
+源码 `9da4d92c362a52c7fbd9d816a351f0c3239f3729`；原始目录
+`spec181-t005-formal-20260906-r14/`。User 进入 SealedCollaborationPlan
+构造时 TypeError：artifact_fetch_data_names 字段仍未纳入提交，
+但已提交 placement 会传递该映射。现有 plan.py 修改区分 canonical
+artifact identity 与 fetch transport reference，并纳入 plan_digest。
+CLI exit 2，Y-N-O CONTROL_NOT_PROVEN，源码/输入不变且 NFD 已清理。
+暂停矩阵、重开 A05；以计划封存/消费及摘要变异检查闭合此公共契约。
+
+## Sealed Plan Regression R1
+
+`spec181-plan-closure-20260906-r1/red.log`：**10 failed（1.72 s）**，
+均在实际 V3 SealedCollaborationPlan 构造表达式复现缺字段 TypeError。
+新增测试执行生产 sealing 与 commit_plan 表达式，捕获传递给 Core
+port 的 canonical/fetch 区分，另检查 digest 变异、不可变性、旧调用
+默认值和错误引用拒绝。先投影既有 plan 扩展，再检查其语义边界。
+
+## Sealed Plan Validation R2
+
+投影后 **5 passed / 5 failed（0.75 s）**：正常 transport/空引用、
+旧调用回退、角色覆盖与相对路径拒绝通过；None/False/0 及含换行/
+NUL 的引用被错误接受。下一步保留仅空字符串表示本地 preparation
+的约定，拒绝非字符串与控制字符，再回归实际 commit port。
+
+## Sealed Plan Repair R3
+
+`spec181-plan-closure-20260906-r3/`：隔离源码中 22 项直接表达式/
+候选回归 PASS（0.97 s），另 36 项既有 plan sealer、YOLO ACK
+planning 和 automatic collaboration plan 回归 PASS（0.77 s）。
+实际 V3 sealing → Core commit port 传递 fetch name，canonical
+identity 保留；外部 map 修改不改变已封存 digest，transport 变更
+改变 digest，非法 map 在 commit 前拒绝。保留 legacy 缺省回退和
+local preparation 的空字符串。无网络副作用，不构成 Core 传输证明。
+本次 plan.py 与新增测试的隔离/提交字节一致；A05 复审 PASS，
+新提交后恢复正式矩阵，T005 未完成。

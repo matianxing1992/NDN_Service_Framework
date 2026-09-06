@@ -19,6 +19,34 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 sealed-plan repair R3 (2026-09-06): focused PASS.**
+All 22 sealing/candidate checks (0.97 s) and 36 existing plan integration
+checks (0.77 s) pass in the isolated source. Fetch references remain separate
+from canonical identity, immutable and digest-bound; malformed values reject
+before commit, while legacy/local-preparation defaults remain compatible.
+Affected A05 review PASS; resume a new formal matrix after committing. See
+[formal matrix](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-formal-matrix-20260906.md#sealed-plan-repair-r3).
+
+**Spec181 sealed-plan validation R2 (2026-09-06): BLOCK at reference validation.**
+The projected field resolves sealing; five normal/legacy/coverage checks pass.
+Five malformed reference checks fail because non-string false values and
+control characters are accepted. Require strings and reject control chars,
+retaining the deliberate empty local-preparation reference. See
+[formal matrix](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-formal-matrix-20260906.md#sealed-plan-validation-r2).
+
+**Spec181 sealed-plan regression R1 (2026-09-06): RED reproduced.**
+Ten focused checks reproduce the missing field at the actual V3 sealing
+expression (1.72 s). Project the existing shared contract and validate
+transport forwarding, digest binding, legacy defaults and invalid references.
+See [formal matrix](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-formal-matrix-20260906.md#sealed-plan-regression-r1).
+
+**Spec181 T005 formal R14 (2026-09-06): BLOCK at sealed-plan reference closure.**
+The shared assembly repair permits request planning to reach plan sealing.
+The committed SealedCollaborationPlan lacks artifact_fetch_data_names,
+already consumed by placement. Review/adopt the existing field and digest
+binding, verify plan production/consumption, then re-audit. See
+[formal matrix](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-formal-matrix-20260906.md#sealed-plan-boundary-r14).
+
 **Spec181 canonical binding/assembly repair R6 (2026-09-06): focused PASS.**
 The isolated Waf parity target builds successfully; all 40 canonical,
 candidate and actual C++/Python assembly checks pass (12.91 s). Actual YOLO

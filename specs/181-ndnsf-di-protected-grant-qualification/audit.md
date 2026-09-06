@@ -7,7 +7,11 @@ local gate 提交/源码身份修复为 `2628e3d2`。最终审计对象为
 `6b9bb51c43a597bf36ca62f304fee5f71c17fa58` 的隔离源码和 R13 runtime；
 `8c231493` 仅补记证据，主工作区其余预存改动不在该审计对象内。
 **Layer**: proposed / implemented / wired / executed（限定在各记录的检查范围）。
-**Verdict**: **PASS**（R13 canonical binding/assembly closure re-audited）。
+**Verdict**: **PASS**（R14 sealed-plan fetch references re-audited）。
+封存计划补齐 fetch references，并拒绝非字符串/控制字符，保留
+空引用和旧调用回退；22 项直接生产表达式/候选回归及 36 项既有
+plan sealer/YOLO/automatic-plan 回归全部 PASS。计划身份/transport
+区分和 digest 变异已验证；受影响 A05 复审 PASS，提交后恢复矩阵。
 R13 暂停后在隔离源码闭合 canonical binding、公共发布 consumer
 及 CPU component/external-initializer 装配依赖，40 项检查 PASS
 （12.91 s），含真实 C++/Python 固定装配 parity。实际签名 YOLO

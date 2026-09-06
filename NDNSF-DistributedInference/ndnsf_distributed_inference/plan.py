@@ -562,6 +562,10 @@ class SealedCollaborationPlan:
     artifact_data_names: Mapping[str, str]
     scope_key_data_names: Mapping[str, str]
     assignment_payloads_by_role: Mapping[str, bytes]
+    # Transport references are intentionally distinct from the canonical
+    # assigned-artifact identities.  Older callers omit this field and retain
+    # the historical one-name behavior.
+    artifact_fetch_data_names: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         for name in (
@@ -604,6 +608,20 @@ class SealedCollaborationPlan:
                     str(key): str(item) for key, item in value.items()
                 }
             object.__setattr__(self, name, MappingProxyType(normalized))
+        fetch_names = dict(self.artifact_fetch_data_names or self.artifact_data_names)
+        # A Provider whose accepted offer declared preparation (or exact
+        # residency) materializes its role from validated local canonical
+        # material; its fetch reference is deliberately empty while the
+        # canonical artifact identity remains bound in artifact_data_names.
+        if set(fetch_names) != set(role_names) or any(
+                not isinstance(value, str)
+                or (value and not value.startswith("/"))
+                or any(char in value for char in ("\x00", "\n", "\r"))
+                for value in fetch_names.values()):
+            raise ValueError("sealed plan artifact fetch references do not cover roles")
+        object.__setattr__(self, "artifact_fetch_data_names",
+                           MappingProxyType({str(key): str(value)
+                                             for key, value in fetch_names.items()}))
 
     @property
     def plan_digest(self) -> str:
@@ -637,6 +655,7 @@ class SealedCollaborationPlan:
             },
             "providers_by_role": dict(self.providers_by_role),
             "artifact_data_names": dict(self.artifact_data_names),
+            "artifact_fetch_data_names": dict(self.artifact_fetch_data_names),
             "scope_key_data_names": dict(self.scope_key_data_names),
             "assignment_payloads": {
                 key: value.hex()

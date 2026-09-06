@@ -18,6 +18,14 @@ Spec 170 `artifact-assembly-v1` 契约。
 
 ## Current Checkpoint (revision 7)
 
+**Latest repair R3 (2026-09-06)**：SealedCollaborationPlan 引用扩展
+及严格值校验已完成隔离验证：22 + 36 项回归 PASS，A05 受影响项
+复审 PASS。提交后恢复正式矩阵；本机仍 6/10，T005 未勾选。
+
+**Latest attempt R14 (2026-09-06)**：共享绑定/装配闭合后请求到达计划
+封存；SealedCollaborationPlan 的 fetch references 字段未进入提交。
+当前修复公共计划契约的源码依赖，A05 暂 BLOCK；T005 未通过。
+
 **Latest repair R6 (2026-09-06)**：共享 canonical binding、公共发布
 与 CPU 装配依赖在隔离检出完成验证：40 项检查 PASS（12.91 s），
 含实际 C++/Python parity；真实 YOLO 两候选的配方/发布 port probe
