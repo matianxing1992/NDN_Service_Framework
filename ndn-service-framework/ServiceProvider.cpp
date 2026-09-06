@@ -443,7 +443,16 @@ namespace ndn_service_framework
                 digest << std::string(reinterpret_cast<const char*>(payload.data()),
                                       payload.size());
             }
-            return "sha256:" + digest.toString();
+            // Canonical NDNSF digest strings are lowercase.  ServiceUser's
+            // digest helper emits the same canonical form, so an uppercase
+            // hex value here breaks every cross-role comparison (for example
+            // the externalized collaboration-assignment digest check).
+            auto hex = digest.toString();
+            std::transform(hex.begin(), hex.end(), hex.begin(),
+                           [] (unsigned char value) {
+                               return static_cast<char>(std::tolower(value));
+                           });
+            return "sha256:" + hex;
         }
 
         void
