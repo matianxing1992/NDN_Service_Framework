@@ -19,6 +19,16 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 T002 recipient credentials (2026-09-05): focused defect CLOSED.**
+The production factory accepts only Ed25519 private keys although T002 and
+the native verifier also support EC P-256 envelopes. The rebuilt credential
+regression runs eight cases; only P-256 loading fails before grant acquisition
+with `provider recipient private key is not Ed25519`. The r1 build and RED
+logs are retained. R2 loads validated P-256 PEM through the production loader;
+all eight focused checks pass, including wrong-curve and permission rejection.
+P-256 network acceptance and full T002 closure remain open. See
+[recipient credentials](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t002-recipient-credentials-20260905.md).
+
 **Spec181 T002 helper lifecycle (2026-09-05): focused lifecycle defects CLOSED.**
 The native assembler waits synchronously for its helper, ignores request and
 operation deadlines during assembly, observes grant cancellation/expiry only
