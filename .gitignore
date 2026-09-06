@@ -1,4 +1,6 @@
 # Visual Studio Code
+# Isolated, matched NAC dependency for Spec179 official-merge qualification.
+.deps/nac-abe-spec179-official/
 .vscode/
 
 # Waf build system

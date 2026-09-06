@@ -49,6 +49,14 @@ native gates and the complete network campaign. Dependency publication is T014.
 
 ## Summary
 
+T022 authorized follow-up: merge official NAC58f3948 into Experimental while
+preserving local repairs. First add regression evidence for CacheProducer's
+ignored non-default segment limit; verify CP/KP cold and warm cache semantics
+and segmented Consumer object/exact-segment retrieval. Use a new build/prefix
+and clean NDNSF build at-j2, verify actual linkage, full NAC and expanded native
+gates, then the18-scenario MiniNDN campaign. No external publication. Keep
+the prior85547eb prefix and frozen evidence intact for matched rollback.
+
 Replace service-wide response-key wrapping with a request-scoped confidentiality
 path. NAC-ABE remains the pre-selection discovery gate. After ACK/Selection,
 the User creates `K_input` and `K_response`; Selection carries an RSA-OAEP

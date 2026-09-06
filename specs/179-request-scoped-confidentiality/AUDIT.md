@@ -1,5 +1,17 @@
 # Spec179 Audit — Controller Revocation Test Coverage
 
+## T022 pre-implementation gate — PASS for bounded official merge
+
+The user authorizes merging official58f3948 with local repairs and segmented/
+authorization regressions. Live ancestry and isolated previews establish a
+two-file merge without text conflicts. The changes remain within NAC ownership;
+no Controller policy or NDNSF wire change is required. Segment-size forwarding
+has an observable missing-contract regression; segment-name handling needs
+real transport/decrypt tests, not only static merge checks. Preserve callback
+fences/cache ownership, clean matched rebuilds and all18 network gates. The
+new T022 groups merge/tests/evidence as one behavioral qualification. Existing
+T014 upstream-publication acceptance remains open; no push/PR is authorized.
+
 ## 2026-09-05 T014 delivery package (local PASS; external acceptance pending)
 
 The current package pins all four NAC commits through85547eb, maps the authority

@@ -150,6 +150,8 @@ Provider network failures are retained. T014 upstream publication remains extern
 
 ## Dependencies and Execution Order
 
+- [ ] T022 [FR-019/023/024/036/041] Merge official UCLA-IRL NAC-ABE master58f3948 into local Experimental, preserving all T019/T020 fixes and history. Add CP/KP non-default segment-size cold/warm-cache and Consumer object/segment-name regressions; reproduce the old size defect before merge. Build/install a separate matched prefix at-j2, run full NAC and expanded NDNSF native gates, then all18 MiniNDN authorization scenarios with artifact closure. Record exact merged revisions and red/green evidence in `evidence/nac-abe-official-merge-20260905.md`. No push/PR; local synchronization does not close T014's external acceptance.
+
 T021 live findings extend its bounded implementation to `examples/App_User.cpp`
 (benchmark explicit-provider routing), `ServiceUser::applyPermissionResponse`
 (service-level DKEY refresh detection), and the existing Controller grant
