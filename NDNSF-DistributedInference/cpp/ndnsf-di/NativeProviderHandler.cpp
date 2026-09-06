@@ -1003,7 +1003,8 @@ executeLocalPlanAndFinalPayload(NativeProviderHandlerState& state,
                                 std::chrono::steady_clock::time_point submittedSteady,
                                 long long submittedEpoch,
                                 ProviderRoleWorker::NativeRunnerPreparation prepareRunner = {},
-                                RoleExecutionContext::StreamEventSink eventSink = {})
+                                RoleExecutionContext::StreamEventSink eventSink = {},
+                                std::function<void()> executionGuard = {})
 {
   auto io = std::make_shared<LocalDependencyIo>();
   std::vector<std::pair<std::string, std::future<ProviderRoleResult>>> futures;
@@ -1025,7 +1026,8 @@ executeLocalPlanAndFinalPayload(NativeProviderHandlerState& state,
         role,
         state.runtime.executePreparedRoleAsync(
           sessionId, roleSpec, io, prepareRunner, std::move(roleInputs),
-          roleSpec.outputs.empty() ? eventSink : RoleExecutionContext::StreamEventSink{}));
+          roleSpec.outputs.empty() ? eventSink : RoleExecutionContext::StreamEventSink{},
+          executionGuard));
     }
     else {
       futures.emplace_back(
@@ -1619,7 +1621,8 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           return;
         }
         if (!config.runnerPreparationFactory &&
-            !config.allowPreassembledV3Compatibility) {
+            (!config.allowPreassembledV3Compatibility ||
+             selectionProjection->selectedRole.protectionEpoch != "plaintext-v1")) {
           ctx.fail("DI_PROVIDER_ASSEMBLY_FACTORY_MISSING");
           return;
         }
@@ -1651,8 +1654,9 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         protectedRuntime = config.protectedRuntimeFactory(
           ctx, *selectionProjection, groupCoordinator);
         if (!protectedRuntime ||
-            protectedRuntime->state() == ProtectedRuntimeState::NoGrant ||
-            protectedRuntime->state() == ProtectedRuntimeState::FailedClosed) {
+            protectedRuntime->state() != ProtectedRuntimeState::GrantVerified) {
+          // Preparation requires a newly verified grant, not a drained runtime
+          // or a binding-only consistency result.
           ctx.fail("DI_PROTECTED_GRANT_NOT_VERIFIED");
           return;
         }
@@ -1927,6 +1931,12 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         ctx.assignment().selectionDigest + ":" + role + ":readiness";
       const auto executionOperationId =
         ctx.assignment().selectionDigest + ":" + role + ":execution";
+      std::function<void()> executionGuard;
+      if (protectedRuntime) {
+        executionGuard = [protectedRuntime] {
+          protectedRuntime->withContentKey(epochMs(), [] (const auto&) {});
+        };
+      }
       ProviderRoleWorker::NativeRunnerPreparation prepareRunner;
       if (config.executionPolicy == "DATA_DRIVEN_V2") {
         const auto expectedBackend = nativeProviderFieldValue(
@@ -1941,14 +1951,18 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           const auto preparationFactory = config.runnerPreparationFactory;
           const auto runnerFactory = state->runnerFactory;
           prepareRunner = [projection, preparationFactory, runnerFactory,
+                           executionGuard,
                            expectedBackend, expectedDevice, expectedArtifact,
                            role, reportStatus, readinessOperationId] {
+            if (executionGuard) executionGuard();
             auto spec = preparationFactory(projection);
             if (const auto error = validateNativePreparedRunnerSpec(
                   projection, spec)) {
               throw std::runtime_error(*error);
             }
+            if (executionGuard) executionGuard();
             auto runner = runnerFactory->create(spec);
+            if (executionGuard) executionGuard();
             const auto evidence = runner->executionEvidenceSnapshot();
             if (!evidence) {
               throw std::runtime_error("DI_RUNTIME_EVIDENCE_MISSING");
@@ -2313,7 +2327,8 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                                                        submittedSteady,
                                                        submittedEpoch,
                                                        prepareRunner,
-                                                       std::move(eventSink));
+                                                       std::move(eventSink),
+                                                       executionGuard);
         if (config.stageServiceTimeObserver && *config.stageServiceTimeObserver) {
           const auto elapsed = std::max(
             std::chrono::milliseconds(1),
@@ -2714,7 +2729,8 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                 executionSessionId, localRoleSpec, io, prepareRunner,
                 std::move(roleInputs),
                 localRoleSpec.outputs.empty()
-                  ? eventSink : RoleExecutionContext::StreamEventSink{}));
+                  ? eventSink : RoleExecutionContext::StreamEventSink{},
+                executionGuard));
           }
           else {
             localRoles.emplace_back(
@@ -2804,6 +2820,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                           "after_complete",
                           state->runtime.snapshot());
       if (protectedRuntime) {
+        executionGuard();
         protectedRuntime->complete();
       }
       if (executionAttempt && !state->attemptAuthority.complete(*executionAttempt)) {

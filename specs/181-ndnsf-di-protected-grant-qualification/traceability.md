@@ -52,7 +52,7 @@ Spec 180 的矩阵冻结为历史，未来证据路径不表示文件已存在�
 | Criterion | Tasks | Required evidence and current status |
 |---|---|---|
 | SC-001 | T001/T002/T003/T005/T006 | T001 Python 与 T003/T006 验收完成；T002 native 源码闭包及正式同源 MiniNDN 未闭合；撤销延期 |
-| SC-002 | T001/T002/T004/T005/T006/T007 | T001/T004/T006 的任务边界验收完成；T002 剩余源码/边界与 T007 审计仍开放 |
+| SC-002 | T001/T002/T004/T005/T006/T007 | T001/T004/T006 的任务边界验收完成；T002 worker 授权回归 51 cases / 280 assertions PASS，见 `evidence/t002-worker-authority-20260905.md`；剩余源码/边界与 T007 审计仍开放 |
 | SC-003 | T005/T008 | planned: `evidence/local-qualification.md`；同源 Y-A/Y-B/Y-N 与全部退出/清理 |
 | SC-004 | T007/T008 | `audit.md`、`evidence/post-implementation-audit.md` 当前 BLOCK；local-suite inventory 待执行 |
 | SC-005 | T009/T010/T011 | planned: SIF/replay/Tiger 证据；不得以 Python 诊断替代 native |

@@ -74,6 +74,10 @@ T008 保留当前源身份与全部平面摘要；T009 只能封印这些相同�
    承载 factory 和维护集成测试共用的生产凭据/精确名获取入口；测试
    不复制加载或网络算法。P-256 EC 引用、point、派生 context 使用
    RAII，验证成功不代表资源释放已通过，另以 ASAN 检查。
+   handler 通过请求级 `executionGuard` 把既有 `ProtectedRuntime`
+   检查传入准备 worker，覆盖实际计算、缓存消费、事件/依赖发布与
+   返回；取消或有效期失效在下一边界拒绝并清理，不承诺抢占模型。
+   该回调仅为本地执行上下文，不扩展协议；密码学与租约仍由 runtime 所有。
    requester 与 Python Provider 使用同样的 recipient 类型约定。
    显式 `SPEC181_PROVIDER_RECIPIENT_KEY_MAP` 独立于 offer 签名密钥
    映射；仅未配置时回退到原 offer-key map，不覆盖显式配置。

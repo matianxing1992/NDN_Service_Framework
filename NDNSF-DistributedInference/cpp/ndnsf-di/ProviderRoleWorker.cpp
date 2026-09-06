@@ -167,7 +167,8 @@ ProviderRoleWorker::executePreparedAsync(
   std::shared_ptr<DependencyIo> io,
   NativeRunnerPreparation prepareRunner,
   std::map<std::string, TensorBundle> initialInputsByScope,
-  RoleExecutionContext::StreamEventSink eventSink)
+  RoleExecutionContext::StreamEventSink eventSink,
+  std::function<void()> executionGuard)
 {
   return executeAsyncImpl(std::move(sessionId),
                           std::move(role),
@@ -176,7 +177,8 @@ ProviderRoleWorker::executePreparedAsync(
                           std::move(prepareRunner),
                           std::move(initialInputsByScope),
                           std::nullopt,
-                          std::move(eventSink));
+                          std::move(eventSink),
+                          std::move(executionGuard));
 }
 
 std::future<ProviderRoleResult>
@@ -228,7 +230,8 @@ ProviderRoleWorker::executeAsyncImpl(
   NativeRunnerPreparation prepareRunner,
   std::map<std::string, TensorBundle> initialInputsByScope,
   std::optional<CollectiveExecutionBinding> collective,
-  RoleExecutionContext::StreamEventSink eventSink)
+  RoleExecutionContext::StreamEventSink eventSink,
+  std::function<void()> executionGuard)
 {
   if (role.role.empty()) {
     throw std::invalid_argument("ProviderRoleWorker requires a non-empty role");
@@ -274,6 +277,7 @@ ProviderRoleWorker::executeAsyncImpl(
     promise,
     std::chrono::steady_clock::now(),
     std::move(collective),
+    std::move(executionGuard),
   };
 
   std::vector<PendingInput> pendingInputs;
@@ -753,6 +757,7 @@ ProviderRoleWorker::execute(const WorkItem& item)
 ProviderRoleResult
 ProviderRoleWorker::runReadyRole(const WorkItem& item)
 {
+  if (item.executionGuard) item.executionGuard();
   if (std::getenv("NDNSF_DI_RUNTIME_TIMING") != nullptr) {
     std::cout << "NDNSF_DI_WORKER event=run_ready role=" << item.role.role
               << std::endl;
@@ -794,6 +799,7 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
        {"attemptEpoch", std::to_string(item.role.attemptEpoch)}});
   }
 
+  if (item.executionGuard) item.executionGuard();
   ProviderRoleResult result;
   result.timing.role = item.role.role;
   result.timing.queuedAt = item.queuedAt;
@@ -827,6 +833,12 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
   }
   ctx.inputsByScope = inputsByScope;
   ctx.streamEventSink = item.eventSink;
+  if (item.eventSink && item.executionGuard) {
+    ctx.streamEventSink = [sink = item.eventSink, guard = item.executionGuard] (const auto& payload) {
+      guard();
+      return sink(payload);
+    };
+  }
   for (const auto& edge : item.role.inputs) {
     const auto input = ctx.inputsByScope.find(edge.scope);
     if (input == ctx.inputsByScope.end()) {
@@ -852,6 +864,7 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
   // outputs would suppress those events on a retry and could turn a complete
   // transcript into the legacy single-final-event fallback. Keep this cache
   // limited to pure dependency-producing executions.
+  if (item.executionGuard) item.executionGuard();
   const bool hasStreamSideEffect = static_cast<bool>(item.eventSink);
   if (!hasStreamSideEffect) {
     result.outputsByScope = getCachedOutputs(result.exactForwardCacheKey);
@@ -878,7 +891,9 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
         std::cout << "NDNSF_DI_WORKER event=runner_streamed role=" << item.role.role
                   << std::endl;
       }
+      if (item.executionGuard) item.executionGuard();
       const auto streamedOutputs = runner->runStreamed(ctx);
+      if (item.executionGuard) item.executionGuard();
       result.outputsByScope = streamedOutputs.has_value()
         ? *streamedOutputs : runner->run(ctx);
     }
@@ -887,6 +902,7 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
         std::cout << "NDNSF_DI_WORKER event=runner_run role=" << item.role.role
                   << std::endl;
       }
+      if (item.executionGuard) item.executionGuard();
       result.outputsByScope = runner->run(ctx);
     }
     if (std::getenv("NDNSF_DI_RUNTIME_TIMING") != nullptr) {
@@ -898,10 +914,12 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
       {{"sessionId", item.sessionId},
        {"role", item.role.role},
        {"attemptEpoch", std::to_string(item.role.attemptEpoch)}});
+    if (item.executionGuard) item.executionGuard();
     if (!hasStreamSideEffect) {
       putCachedOutputs(result.exactForwardCacheKey, result.outputsByScope);
     }
   }
+  if (item.executionGuard) item.executionGuard();
   result.executionEvidence = runner->executionEvidenceSnapshot();
 
   const auto outputReadyAt = std::chrono::steady_clock::now();
@@ -950,6 +968,7 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
        {"role", item.role.role},
        {"scope", edge.scope},
        {"attemptEpoch", std::to_string(item.role.attemptEpoch)}});
+    if (item.executionGuard) item.executionGuard();
     item.io->publishOutput(item.sessionId, edge, bundle);
     logDiTimelineTrace(
       "di-provider", "dependency_publish_done", requestId,
@@ -991,6 +1010,7 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
        {"rank", binding.rank},
        {"attemptEpoch", std::to_string(item.role.attemptEpoch)}});
   }
+  if (item.executionGuard) item.executionGuard();
   return result;
 }
 

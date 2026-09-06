@@ -19,6 +19,14 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 T002 native worker authority (2026-09-05): CLOSED (focused repair).** Four real-worker
+regressions show that cancellation/expiry after preparation or during compute
+still returns results and retains the registered plaintext lease. Grant
+verification is valid initially; the missing boundary is worker consumption.
+R1 is preserved. Request guards now fence preparation, compute, cached results,
+events, publication, and return; rebuilt focused checks pass 51 cases / 280 assertions.
+T002 source closure and unified production rebuild remain open; see [worker authority](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t002-worker-authority-20260905.md).
+
 **Spec181 T001 request lifecycle (2026-09-05): CLOSED.** Twelve registered-handler
 regressions show that cancellation or Selection deadline expiry before/during
 grant fetch or after preparation still reaches model execution. Grant expiry

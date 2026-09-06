@@ -74,6 +74,13 @@ T001 请求生命周期新增 12 项回归先失败：取消或 Selection 截止
 均已收集。T001 逐项验收已关闭，见 [请求生命周期](evidence/t001-request-lifecycle-20260905.md)。
 下一步完成 T002 的 native handler 源码闭包与剩余边界核对，完整
 生产控制前刷新统一 native 构建。当前 4/12，T007 BLOCK。
+T002 worker 边界新增 4 项回归先失败：初始 grant 有效，但准备后或
+计算期间取消/过期仍返回结果。修复由 handler 传入请求检查回调，
+覆盖准备、compute/fallback、缓存消费、事件/依赖发布与最终返回；
+补有效请求、实际缓存命中与取消后事件拒绝，重建后 **51 cases /
+280 assertions PASS**，见 [worker 授权](evidence/t002-worker-authority-20260905.md)。
+T002 仍待完整 handler/可执行文件源码闭包与统一生产构建更新；保持
+4/12、T007 BLOCK。
 
 历史 6/7、7/7 与 `CONDITIONAL PASS` 不再作为当前状态；以
 [audit.md](audit.md) 与 [修正证据](evidence/audit-repair-20260905.md) 为准。

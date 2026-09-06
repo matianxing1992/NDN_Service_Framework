@@ -98,6 +98,9 @@ factory 的 P-256 凭据入口缺口已由实际失败回归确认并修复，8 
 134 项检查及重建后的四收件人 P-256 Y-B 控制 PASS，见
 [P-256 生产链](evidence/t002-p256-production-20260905.md)。任务指定的
 维护 integration 与 P-256 ASAN 已通过，见 [维护进程集成](evidence/t001-t002-process-integration-20260905.md)。
+worker 另发现准备后或计算期间取消/过期仍成功返回；4 项失败回归
+修复后，加上缓存正例和流事件拒绝，共 51 cases / 280 assertions PASS，
+见 [worker 授权](evidence/t002-worker-authority-20260905.md)。
 剩余 native handler 源码闭包与边界核对仍未完成，A01 未整体关闭；
 这些更新不改变本审计 BLOCK 裁决。
 

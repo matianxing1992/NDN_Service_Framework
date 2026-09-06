@@ -1327,7 +1327,8 @@ NativeProviderRuntime::executePreparedRoleAsync(
   std::shared_ptr<DependencyIo> io,
   ProviderRoleWorker::NativeRunnerPreparation prepareRunner,
   std::map<std::string, TensorBundle> initialInputsByScope,
-  RoleExecutionContext::StreamEventSink eventSink)
+  RoleExecutionContext::StreamEventSink eventSink,
+  std::function<void()> executionGuard)
 {
   const auto timelineRequestId = role.requestId.empty()
     ? "/ndnsf-di/session/" + sessionId
@@ -1349,7 +1350,7 @@ NativeProviderRuntime::executePreparedRoleAsync(
   return m_worker.executePreparedAsync(
     std::move(sessionId), std::move(role), std::move(io),
     std::move(prepareRunner), std::move(initialInputsByScope),
-    std::move(eventSink));
+    std::move(eventSink), std::move(executionGuard));
 }
 
 ProviderRoleWorkerSnapshot
