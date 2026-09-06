@@ -1,8 +1,13 @@
-# Spec181 Traceability Matrix (revision 6)
+# Spec181 Traceability Matrix (revision 7)
 
 Spec 181 从 Spec 180（修订 125 关闭）继承未完成的实现与资格认证工作。
 本表是活动完成映射；当前 Status: BLOCK，完整裁决见 audit.md。
 Spec 180 的矩阵冻结为历史，未来证据路径不表示文件已存在或任务完成。
+
+**Scope update (2026-09-06)**：本机负责开发、本地验证与版本交付；
+T010/T011 移交实验机器，不计完成。本机活动 10 项中 5 项完成。
+原要求与外部 owner/验收的去向见 [handoff contract](handoff-contract.md)。
+Git 合并留到当前开发完成后另行讨论。
 
 **边界（2026-09-05 所有者决定）**：
 - 撤销子系统由另一分支开发（本 spec 不实现，`revocationSequence`
@@ -28,8 +33,8 @@ FR-015 由 T002（公共准备与 adapter 收口）、T007（共用路径和接�
 | FR-005 三层测试标准 | 全部任务 | 每个证据文件头部声明证据层 | tasks.md 标准章节 + 审计 |
 | FR-006 本地资格认证 | T005（矩阵）、T008（资格） | MiniNDN 小模型 CPU 全矩阵 | `evidence/t005-y-n-matrix-current.md`、`evidence/local-qualification.md` |
 | FR-007 收敛审计 | T007 | 审计 PASS + 四层分离 | `audit.md`、`evidence/post-implementation-audit.md` |
-| FR-008 候选与 SIF | T009, T010 | unit（封印）+ integration（SIF replay） | `evidence/t009-candidate-seal-current.md`、`evidence/t010-exact-sif-replay-current.md` |
-| FR-009 Tiger 一次提交 | T011 | MiniNDN 之后的一次真实提交 | `evidence/t011-tiger-submission-current.md` |
+| FR-008 开发交付封存 | T009 | unit（脏树/跨版本/摘要拒绝）+ 本地完整性检查 | `evidence/development-delivery.json`、`evidence/t009-candidate-seal-current.md`；原 SIF 条款转 T010 |
+| FR-009 实验交接与反馈 | T009, T012 | 本地核对复现材料、实验 owner、移交验收和反馈字段 | `handoff-contract.md`、交付清单与 closure；原 Tiger 执行转 T011 |
 | FR-010 声称边界 | T012 | 终局语言审计 | `evidence/closure-record.md` |
 | FR-011 就绪边界修复 | T004 | PASS：unit + rebuilt native integration（Provider 等待、真实 Controller 启动余量/取消/无热转） | `evidence/t004-readiness-boundary-current.md`、`evidence/t004-lifecycle-acceptance-20260905.md` |
 | FR-012 装配 parity | T003 | PASS：8 个固定向量双侧 16 项检查，含真实 C++ 入口/正常 helper、逐字节/摘要、ORT CPU 结果与变异拒绝 | `tests/fixtures/spec181/assembly-vectors-v1.json`、`tests/python/test_spec181_assembly_parity.py`、`evidence/t003-assembly-parity-20260905.md` |
@@ -46,7 +51,8 @@ FR-015 由 T002（公共准备与 adapter 收口）、T007（共用路径和接�
 | `cpp/ndnsf-di/NativeProviderHandler.cpp`、`NativeProtectedProvider.{hpp,cpp}`、`NativeProtectedGrantCredentials.cpp`、`NativeProtectedGrantTransport.cpp`、`ProtectedRuntime.{hpp,cpp}`、`NativeGrantVerifier.{hpp,cpp}`、`_ndnsf.cpp` | T002, T003 | PASS（T002 unit/integration 与公共准备/adapter 验收完成；`1ba99000` 的维护 native build 身份已刷新，仅适用于该提交）| `evidence/t002-acceptance-20260905.md`、`evidence/t007-native-plan-closure-20260906.md`；同源资格与剩余收敛审计仍归后续门 |
 | `ServiceUser.publish_signed_app_data` 发布路径 | T001 | existing（runner 目录发布已使用）| grant Data 经此路径发布并被 Provider 精确名获取 |
 | `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py` | T005, T006, T008 | existing（barriered runner + 语义判定已修复）| Y-N 全矩阵语义重跑 + Y-A/Y-B 资格 |
-| `scripts/spec180_*`、`packaging/.../jobs/spec180/*` | T009--T012 | existing（Spec 180 工具链，路径沿用）| 候选封印（提交哈希）+ SIF + Tiger 终局 |
+| `scripts/spec180_candidate.py` 与本地验证/交付工具 | T009/T012（本机） | existing 工具需按修订 7 限定本地平面，不要求 SIF 字节 | 开发封存、复现/交接完整性与本地 closure |
+| SIF/Tiger 工具及 `packaging/.../jobs/spec180/*` | T010/T011（实验机器） | TRANSFERRED，当前未取得实验验收 | 外部原 SIF/replay/Tiger 证据；不是本地关闭依赖 |
 | `tests/fixtures/spec181/grant-vectors-v1.json` | T003 | executed（重建后的 3 项 parity 检查消费 9 个 grant 向量 PASS）| grant 向量不代替独立 canonical ONNX 装配 parity |
 | `tests/fixtures/spec181/assembly-vectors-v1.json`、`assembly-parity-driver.cpp`、`tests/python/test_spec181_assembly_parity.py` | T003 | executed（16 项固定装配检查 PASS） | C++ 获取/序列化/缓存入口到正常 helper；不声称第二套 ONNX 算法 |
 | 撤销子系统（账本/网络服务/撤销校验） | **另一分支（所有者）** | deferred（本分支不实现） | 集成时插入撤销检查并解除 spec.md Out of Scope 延期标记 |
@@ -60,8 +66,8 @@ FR-015 由 T002（公共准备与 adapter 收口）、T007（共用路径和接�
 | SC-002 | T001/T002/T004/T005/T006/T007 | T001/T002/T004/T006 的任务边界验收完成；公共 generation worker 追加修复 48 cases / 366 assertions PASS；T007 剩余源码/配置审计与正式同源资格仍开放 |
 | SC-003 | T005/T008 | planned: `evidence/local-qualification.md`；同源 Y-A/Y-B/Y-N 与全部退出/清理 |
 | SC-004 | T007/T008 | `audit.md`、`evidence/post-implementation-audit.md` 当前 BLOCK；local-suite inventory 待执行 |
-| SC-005 | T009/T010/T011 | planned: SIF/replay/Tiger 证据；不得以 Python 诊断替代 native |
-| SC-006 | T012 | planned: `evidence/closure-record.md`；没有终局资格裁决 |
+| SC-005 | T009 | planned: 同源开发交付清单、复现命令、输入/证据摘要与移交契约；SIF/Tiger 验收转外部 |
+| SC-006 | T012 | planned: `evidence/closure-record.md` 的 LOCAL_DEVELOPMENT_PASS；未发出本地关闭裁决 |
 
 ## Evidence Levels
 

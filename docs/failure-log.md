@@ -19,12 +19,22 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 revision 7 (2026-09-06): BLOCK at local configuration identity.**
+Committed-source validation is closed in 2628e3d2 (39 focused checks and
+the configured checkout PASS). The remaining controlling work binds actual
+local configuration, build/runtime dependencies and development delivery.
+By owner decision, SIF/replay/Tiger move to the experiment machine and are
+not local closure prerequisites. Git merge is deferred until development ends.
+See [scope transfer](../specs/181-ndnsf-di-protected-grant-qualification/evidence/development-scope-transfer-20260906.md)
+and [current tasks](../specs/181-ndnsf-di-protected-grant-qualification/tasks.md).
+
 **Spec181 local gate identity R8 (2026-09-06): checkpoint hook rejection.**
 The local commit hook rejects assistant-directory references in production
 source validation. Remove those non-product exclusions and rerun the focused
 checks; do not bypass the hook. No checkpoint was created by the failed commit.
 R8 removes the exclusions: 39 focused checks PASS (4.46 s), and the actual
 configured checkout passes SOURCE_CHECKOUT_OK. The hook remains enabled.
+The retry checkpoint succeeds as 2628e3d2; this hook incident is closed.
 See [local gate identity](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t007-local-gate-identity-20260906.md#checkpoint-gate-r8).
 
 **Spec181 local gate identity R7 (2026-09-06): source unit CLOSED; configuration BLOCK.**

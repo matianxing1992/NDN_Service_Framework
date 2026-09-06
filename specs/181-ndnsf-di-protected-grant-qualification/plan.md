@@ -1,12 +1,14 @@
-# Implementation Plan: NDNSF-DI Protected-Grant and Qualification Closure
+# Implementation Plan: NDNSF-DI Protected-Grant Local Development and Delivery
 
-**Branch**: `Experimental` | **Date**: 2026-09-05 | **Revision**: 6
+**Branch**: `Experimental` | **Date**: 2026-09-06 | **Revision**: 7
 **Spec**: [spec.md](spec.md) | **Status**: `IN_PROGRESS / BLOCK`
 
 ## Summary
 
-继承 Spec180 的 ACK 规划、V3 投影、授权契约与发布工具链；目标仍是
-同一候选的本地 YOLO 功能资格、exact-SIF replay 与一次 Tiger Y-B。
+继承 Spec180 的 ACK 规划、V3 投影与授权契约；当前目标是同一提交
+的本地 YOLO 功能资格、可复现开发交付与本地关闭。按所有者确认，
+SIF/replay/Tiger 执行及其脚本/配置移交实验机器；本机继续承担开发、
+单元/集成与本地 MiniNDN，不按 Qwen/YOLO 划分长期 owner。
 G0 已完成，当前进入 G1/T007：Python/native 授权链已接线，native Ed25519/P-256
 定向正向控制和真实负例已有证据；维护的进程集成与 P-256 资源检查
 已通过。T001/T002 验收已关闭；T002 公共准备、adapter 迁移与 handler 接线
@@ -15,8 +17,10 @@ G0 已完成，当前进入 G1/T007：Python/native 授权链已接线，native 
 复现并修复，重建后 48 cases / 366 assertions PASS。后续 `1ba99000`
 干净 tracked checkout 的维护 native build 与实际扩展导入/依赖身份
 PASS，见 [native closure R3](evidence/t007-native-plan-closure-20260906.md#committed-native-build-r3)。
-此身份不覆盖主工作区其他未提交修改；T007 的 local gate 实际源码/
-配置与候选闭包尚未闭合，后续门保持关闭。
+此身份不覆盖主工作区其他未提交修改。`2628e3d2` 已关闭 local gate
+的提交/源码校验单元（最终 39 focused checks 与真实 checkout PASS）；
+T007 的实际本地配置与开发交付闭包尚未闭合，后续本地门保持关闭。Git 合并留到
+当前开发完成后另行讨论，本轮不分析或执行合并。
 
 ## Gate Order
 
@@ -25,19 +29,24 @@ R0 保持未实现路径失败关闭；历史诚实化修正由所属任务持�
  -> G0 T001/T002/T003/T004/T006：实现、真实生产链定向验证
  -> G1 T007：当前源/配置的收敛审计 PASS
  -> G2 T005 + T008：同源 MiniNDN 七子用例与本地资格清单
- -> G3 T009 -> T010：候选封印、新 SIF、exact-SIF Y-B replay
- -> G4 T011 -> T012：一次 Tiger Y-B、唯一终局记录
+ -> G3 T009：同源开发交付封存、可复现说明及实验移交材料
+ -> G4 T012：唯一 LOCAL_DEVELOPMENT_PASS 与本地关闭
+
+TRANSFERRED T010/T011：实验机器后续 SIF/replay/Tiger，不是本地关闭依赖
 ```
 
 T007 审查实现、有效配置、定向回归与后续验证设计；其 PASS 不依赖
 T005/T008 的未来结果。BLOCK 期间只允许为已命名问题运行最小定向
-测试，完整 unit/integration 套件、MiniNDN 全矩阵、SIF 与 Tiger 均须
-先获得新 PASS。任何行为、配置、构建或 oracle 变更使下游旧证据失效。
+测试，完整 unit/integration 套件、MiniNDN 全矩阵须先获得新 PASS。
+SIF/Tiger 由实验机器另行准入，不因本地审计而在本机启动。
+任何行为、配置、构建或 oracle 变更使下游旧证据失效。
 G0 任务以 unit/定向 integration 闭合；其后续 MiniNDN 覆盖归
 T005/T008，不构成 G0 的反向依赖。
 
-T008 保留当前源身份与全部平面摘要；T009 只能封印这些相同字节，
+T008 保留当前源身份与全部本地输入/证据摘要；T009 只能封印这些相同字节，
 发现源/配置漂移必须回到 T007。不得通过事后换候选把旧 PASS 晋升。
+实验机器后续构建身份可引用开发交付摘要，但不得重写本地证据身份；
+不要求预先生成最终 SIF 哈希或集群配置来关闭本机 T007/T009。
 
 ## Constitution Check
 
@@ -124,7 +133,12 @@ T008 保留当前源身份与全部平面摘要；T009 只能封印这些相同�
    冷装配的 DATA_V1 等待使用调用者请求预算，仍受 native fetch 上界、
    hard deadline 与取消限制，避免额外的固定短窗口先行误报。
 7. **CPU qualification**。MiniNDN 固定 canonical YOLO26n、640×640 输入
-   与 CPU；只有 Tiger 要求既定 CUDA 角色及 Merge CPU 证据。
+   与 CPU；后续 Tiger 的 CUDA 角色及 Merge CPU 证据归移交验收。
+8. **Development and experiment ownership**。本机交付明确 commit 和
+   可复现本地结果；实验机器维护 SIF/Tiger 脚本配置并返回绑定该版本
+   的日志/结果/复现条件。部署脚本变更以 commit 返回同一代码库。
+   交付就绪不声称远端已接收或实验成功。范围与字段见
+   [handoff contract](handoff-contract.md)。
 
 ## Ownership Matrix
 
@@ -139,7 +153,8 @@ native 路径相对 `NDNSF-DistributedInference/cpp/ndnsf-di/`。
 | native 授权与装配 | `ProtectedRuntime.*`、`NativeGrantVerifier.*`、`NativeProviderHandler.cpp`、`NativeCanonicalOnnxAssembler.*` | T002/T003 |
 | 就绪与取消 | `pythonWrapper/ndnsf/service.py`、`pythonWrapper/src/ndnsf/_ndnsf.cpp`、`ndn-service-framework/ServiceController.cpp`（仓库相对） | T004 |
 | 负例、监督与身份 | `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py`（仓库相对）；旧 retry driver 已停用 | T005/T006 |
-| 审计与晋升 | 本目录及现有 `scripts/spec180_*`、`packaging/ndnsf-di-container/jobs/spec180/*`（仓库相对） | T007--T012 |
+| 本地审计、验证与开发交付 | 本目录及本地 `scripts/spec180_*`，本机开发 owner | T007/T008/T009/T012 |
+| SIF/replay/Tiger 脚本、配置与实验 | 实验机器 owner；既有 `packaging/ndnsf-di-container/jobs/spec180/*` 与实验工具链 | T010/T011 TRANSFERRED |
 
 ## Shared Runtime Reuse
 
@@ -166,6 +181,9 @@ native 路径相对 `NDNSF-DistributedInference/cpp/ndnsf-di/`。
 
 ## Migration and Rollback
 
+- 修订 7 保留原任务 ID，T010/T011 转入交接登记，不改成 `[x]`；
+  本机活动任务共 10 个，已有 5 个完成。开发关闭后再讨论 Git 合并；
+  合并后的版本需要自身验证，后续实验不能冒用合并前 commit 的 PASS。
 - 保持 Spec180 契约与历史证据不变；本目录记录继承范围与新失效声明。
 - 每项定向修复形成独立 checkpoint；rollback 保持 protected 路径失败
   关闭，不能退回 plaintext 来通过保护用例。
@@ -177,6 +195,10 @@ native 路径相对 `NDNSF-DistributedInference/cpp/ndnsf-di/`。
 
 ## Revision History
 
+- **7 (2026-09-06)**：按所有者确认采用开发/实验分工；本地门到
+  T009 交付、T012 本地关闭，T010/T011 移交实验机器并保留验收。
+  FR-008/009、SC-005/006 的证据改为本地封存和交接材料；不降低
+  授权链、源码/配置身份、三层验证或同源 MiniNDN 的验收标准。
 - **6 (2026-09-05)**：按用户要求加入 FR-015，共用 Qwen/YOLO 已有
   执行机制；公共准备归一个 owner，模型算法归 adapter；T002/T007
   增加调用链与接口兼容性验收，保持 YOLO 资格范围和 12 个任务。

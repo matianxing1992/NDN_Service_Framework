@@ -1,10 +1,16 @@
 # Spec181 Design-code Convergence Audit
 
-**Date**: 2026-09-05 | **Revision**: 6 | **Task**: T007
+**Date**: 2026-09-06 | **Revision**: 7 | **Task**: T007
 **Source identity**: 初审基线 `67194dc2`；当前 G0 完成检查点 `453f6990`，
 公共准备与 worker 修复为 `0a3a79c3`、`cf15fa0c`。
+local gate 提交/源码身份修复为 `2628e3d2`。
 **Layer**: proposed / implemented / wired / executed（限定在各记录的检查范围）。
 **Verdict**: **BLOCK**。G0 已完成，T007 的 A05 源/配置闭包尚待核查。
+
+**Scope**：按所有者确认改为本机开发、本地验证与交付；T010/T011
+TRANSFERRED，实验机器负责 SIF/Tiger，不再作为本地审计/关闭依赖。
+本机 10 个活动任务中 5 个完成；Git 合并留待当前开发完成后另行讨论。
+原实验验收和反馈契约见 [handoff-contract.md](handoff-contract.md)。
 
 ## Findings
 
@@ -37,29 +43,29 @@ R = `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py`。
 - FR-012：T003 grant 与装配向量分别验收，装配经过 Python/C++ 生产入口与 ORT CPU，未以 grant parity 替代。
 - FR-014：R001/R002/R004 的未接线路径已由对应生产验收吸收，缺失授权仍失败关闭。R003 的当前完整清单显式限制每个历史文件的使用范围，不改冻结原文。
 - FR-015：公共准备只保留一个 context owner，YOLO 算法已归 adapter；生成和普通 worker 共用授权边界。[共享路径核对](evidence/shared-runtime-reuse-20260905.md) 列出差异 owner 和定向回归。
-- SC-003--006：本 Spec 尚无同源完整矩阵、local-suite inventory 执行、候选/SIF/Tiger 或唯一 closure。这些是 T007 PASS 后的任务，缺失后续资格结果本身不构成审计依赖环。
+- FR-008/009、SC-003--006：同源完整矩阵、local-suite inventory、开发交付清单与本地 closure 尚未完成；T009 核对交付/移交材料，T012 发出 LOCAL_DEVELOPMENT_PASS。原 SIF/Tiger 验收保留为外部 TRANSFERRED，既不冒充完成也不形成新的本地关闭依赖。
 - A05 剩余的是生产入口、构建源清单、有效配置和资格收集入口的同源闭包核查；T005 的正式网络矩阵不移入 T007。
-- local gate 的实际 Git 根/提交/index/源码字节及运行后变化校验已修复；R7 39 focused checks PASS，真实 `1ba99000` 构建 checkout 的只读源码核对 PASS。生成工具/runtime、外部 import 与实际配置摘要仍待绑定，见 [local gate identity](evidence/t007-local-gate-identity-20260906.md#focused-green-r7)。
+- local gate 的实际 Git 根/提交/index/源码字节及运行后变化校验已修复（`2628e3d2`）；最终 R8 39 focused checks PASS，真实 `1ba99000` 构建 checkout 的只读源码核对 PASS。生成的本地工具/runtime、外部 import 与实际配置摘要仍待绑定，见 [local gate identity](evidence/t007-local-gate-identity-20260906.md#checkpoint-gate-r8)。
 - A05 的干净编译核查暴露 framework 配套声明遗漏与 Provider 根元数据丢失；已在隔离源码修复并链接生产库，26 cases / 204 assertions PASS，见 [framework source closure](evidence/t007-framework-source-closure-20260906.md)。本轮关闭该 framework 单元；完整 native/candidate 源和有效配置仍须核查。
 - A05 的 native projection 声明缺口已补齐并通过一次明确差异源码的维护 native build；随后修复 COMPONENT_SET 后处理解析和双张量 scope，29 cases / 133 assertions PASS，见 [native plan closure](evidence/t007-native-plan-closure-20260906.md)。后续以该源码提交刷新 native 身份，继续候选与有效配置审查。
-- A05 的 `1ba99000` 提交 native 身份已刷新 PASS；local gate 却在无 Git HEAD 的 fixture 目录接受虚构 sourceRevision 并返回 PASS，见 [local gate identity](evidence/t007-local-gate-identity-20260906.md)。六个 fixture 子进程已收集；这确认实际源码身份绑定仍 BLOCK，不能晋升正式资格。
+- A05 最初的无 Git HEAD/虚构 sourceRevision probe 为历史失败证据，已由上述源码校验关闭；后续实际本地配置/交付身份审查仍 BLOCK，不能晋升正式资格。
 
 ## Readiness Scorecard
 
 | Principle | Status | Rationale |
 |---|---|---|
-| 1 Intent fidelity | PASS | 保留一个 YOLO 不可变候选、本地矩阵、exact-SIF 和一次 Tiger 功能请求；延期边界不变。 |
+| 1 Intent fidelity | PASS（修订 7 设计） | 本机开发、本地矩阵、同源交付；实验机器接管 SIF/Tiger，按开发/实验而非模型分工；既有安全延期边界保留。 |
 | 2 Necessity and scope | PASS | 复用公共协议和运行时；grant、parity、真实负例及资格阶段各有独立验收目的。 |
 | 3 Architecture and ownership | PASS（G0 检查范围） | requester 内逻辑权威、Core 生命周期、DI 授权/装配/worker、模型 adapter 所有权已有调用链及定向证据。 |
-| 4 Cross-artifact consistency | PASS（当前映射） | G0 5/12、G1/T007、FR-015、R safeguards 与资格依赖已同步。 |
+| 4 Cross-artifact consistency | PASS（当前映射） | 本机 5/10、2 TRANSFERRED、G1/T007、FR-008/009/015、SC-005/006 与交接/本地关闭依赖同步。 |
 | 5 Code reality | BLOCK | A05 的候选源/构建/有效配置完整闭包尚未核查，不能用工作区定向 PASS 替代。 |
 | 6 Security and distributed correctness | BLOCK（A05） | G0 的授权、绑定、取消/过期、存储和清理缺口已修复；候选实际配置与同源消费仍须闭包核查。 |
-| 7 Task executability | PASS | 12 个内聚任务，明确 owner、路径、前置门及验收；不机械拆分测试/实现/证据。 |
+| 7 Task executability | PASS | 10 个本机内聚任务和 2 个外部移交项；保留原 ID、owner 与验收，不把移交改为完成。 |
 | 8 Validation design | PASS（设计） | 先定向 RED/GREEN 与审计，再正式矩阵；维护矩阵首个失败即停，保留所有运行。 |
 | 9 Evidence integrity | PASS（清单范围） | 每文件层声明或历史缺口明确，旧 PASS 不晋升；清单检查覆盖集合、哈希和头部漂移，不判运行资格。 |
 | 10 Migration and rollback | PASS（已提交单元） | 明确临时门吸收条件，冻结文件未改，本地 checkpoint 只纳入已验证单元，其他预存修改保留。 |
 | 11 Performance and operations | PASS（功能范围） | 不作性能/扩展性结论；已记录启动、绝对截止、子进程退出、资源清理，后续资格继续绑定实际运行。 |
-| 12 Documentation quality | PASS（当前结构） | 15 FR、6 SC、4 stories、12 tasks、5 complete；完整清单替代省略表，文档健康不是资格证据。 |
+| 12 Documentation quality | PASS（当前结构） | 15 FR、6 SC、4 stories、10 active tasks、5 complete、2 TRANSFERRED；历史 ID 不重编号，文档健康不是资格证据。 |
 
 ## Evidence and Tool Limits
 
@@ -73,13 +79,13 @@ R = `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py`。
 
 ## Metrics and Task Cohesion
 
-4 user stories；15 FR；6 SC；12 T tasks（5 complete），另有 4 个先行 safeguards。
+4 user stories；15 FR；6 SC；10 active T tasks（5 complete）、2 TRANSFERRED，另有 4 个先行 safeguards。
 12 个发现（9 HIGH、3 MEDIUM），A05 PARTIAL，其余在表述的限定范围闭合。
 T001/T002 保留 Python/native owner 与验收边界；T003 保留跨入口 parity；
 T006 构造与生产拒绝，T005 执行同源矩阵。没有新增模型、网络权威服务或撤销任务。
 
 ## Next Actions
 
-1. 核对 A05 的生产源码、构建依赖、有效配置、候选封印与资格结果收集入口，必要时定向修复。
+1. 核对 A05 的实际本地构建依赖、有效配置、开发交付封存与验证结果收集入口，必要时定向修复；SIF/Tiger 特有身份由实验机器后续处理。
 2. 按实际变更刷新 source/native identity，更新本审计的逐项证据并作 T007 裁决；不是先跑正式矩阵再补审计。
-3. T007 PASS 后执行 T005/T008 同源完整本地资格，再按 T009→T010→T011→T012 晋升。
+3. T007 PASS 后执行 T005/T008 同源完整本地资格，再按 T009→T012 交付并关闭；之后另行讨论 Git 合并，T010/T011 按移交契约由实验机器执行。

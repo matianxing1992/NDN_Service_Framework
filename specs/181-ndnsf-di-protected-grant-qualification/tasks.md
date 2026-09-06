@@ -1,4 +1,4 @@
-# Tasks: NDNSF-DI Protected-Grant and Qualification Closure
+# Tasks: NDNSF-DI Protected-Grant Local Development and Delivery
 
 **Input**: [spec.md](spec.md), [plan.md](plan.md)，Spec 180 契约（继承）与
 Spec 170 `artifact-assembly-v1` 契约。
@@ -16,10 +16,10 @@ Spec 170 `artifact-assembly-v1` 契约。
   路径（main 分支的明文路径证明"无网络服务"可工作，本切片不新增
   网络角色与前缀）。集成条件见 spec.md Out of Scope。
 
-## Current Checkpoint (revision 6)
+## Current Checkpoint (revision 7)
 
 **Status**: `IN_PROGRESS / BLOCK`。2026-09-06 按当前提交与证据复核；
-T001/T002/T003/T004/T006 的任务验收已闭合并勾选（5/12）。其余任务仍按完整验收判断，
+T001/T002/T003/T004/T006 的任务验收已闭合并勾选（本机 5/10；另有 2 个 TRANSFERRED）。其余任务仍按完整验收判断，
 未勾选不抹去已实现的代码与 unit 结果。
 
 | Task | Implemented / executed | Remaining acceptance |
@@ -32,11 +32,12 @@ T001/T002/T003/T004/T006 的任务验收已闭合并勾选（5/12）。其余任
 | T006 | PASS：153 项 Python、22 项 C++、3 rebuilt parity checks；r11/r12/r13 三种实际 Provider 拒绝及 r10 受保护正向控制通过；每次清理后 exit 0，见 [生产修复](evidence/t006-production-repair-20260905.md) | 本任务定向验收已闭合；同源正式矩阵仍归 T005/T008 |
 | T007 | framework/native projection 源码单元与维护 native 构建已通过；见下方当前检查点 | BLOCK：local gate 实际源码/配置身份及候选闭包待修复和重审 |
 | T008 | native 受保护 Y-B 定向正向控制已有证据 | T007 PASS 后执行同源本地资格清单与 Y-A/Y-B/Y-N 正式矩阵 |
-| T009--T012 | 继承工具链 | 本 Spec 候选、SIF、Tiger、终局均未闭合 |
+| T009/T012 | 继承本地工具链，按修订 7 调整为开发交付/本地关闭 | 交付清单、复现/移交材料与 LOCAL_DEVELOPMENT_PASS 尚未完成 |
+| T010/T011 | TRANSFERRED：SIF/replay/Tiger 归实验机器 | 外部验收仍未执行；不计本机完成率或本地关闭依赖 |
 
-**Latest progress (2026-09-06)**：5/12 已完成，G0 已关闭；当前唯一活动门为
+**Latest progress (2026-09-06)**：本机 5/10 已完成，另 2 项 TRANSFERRED；G0 已关闭，当前唯一活动门为
 G1/T007。local gate 的提交/源码身份单元已通过，当前控制性缺口为实际配置/工具链身份；
-不得据此启动 T005/T008 正式矩阵或后续候选/SIF/Tiger 阶段。
+不得据此启动 T005/T008 正式矩阵；SIF/Tiger 已移交实验机器。
 
 | Closed unit | Current evidence |
 |---|---|
@@ -54,22 +55,24 @@ UNQUALIFIED，保留全部子项与清理证据。实际 `1ba99000` 隔离构建
 checkout 也通过只读源码校验。R1--R7 的失败和修复历史见上述链接。
 下一步核查 `effectiveConfigDigest` 的实际消费、生成构建工具与
 运行时/import 路径绑定；这些独立身份平面尚未闭合。T007 仍 BLOCK，
-未运行正式矩阵；本单元完成不改变 5/12。
+未运行正式矩阵；源码单元不新增已完成任务。
 源码 checkpoint 曾被本地 hook 拒绝，已删除产品脚本中的助手目录
 特例。R8 重验 39 项 PASS（4.46 s），真实 checkout 校验 PASS；
 原 hook 保持启用，配置/工具链身份仍待关闭。
 
 **Execution order**：T007 PASS → T005 七子用例同源矩阵 → T008 完整
-本地清单与 Y-A/Y-B/Y-N → T009 候选 → T010 exact-SIF → T011 单次
-Tiger Y-B → T012 终局。不得把定向测试或历史 PASS 代入这些未完成门。
+本地清单与 Y-A/Y-B/Y-N → T009 开发交付封存 → T012 本地关闭。
+T010/T011 按 [交接契约](handoff-contract.md) 移交；不是本地完成条件。
+Git 合并留到当前开发结束后另行讨论，不在本轮执行。
+不得把定向测试或历史 PASS 代入这些未完成门。
 
 **Shared runtime review (2026-09-06)**：已重新核对两种模型的 adapter
 构造、生产准备 factory 的公共上下文绑定、生成路径向共同 worker
 传递 guard；FR-015 已覆盖复用要求，保持现有模型差异 owner 与 YOLO
 资格范围。同步修正共享说明中的旧 manifest/4 complete 表述，见
 [当前源码核对](evidence/shared-runtime-reuse-20260905.md#current-review-2026-09-06)。
-本轮为文档与调用链复核，完成数仍 5/12；下一步仍是上述 A05 身份修复。
-验证：`audit_speckit_structure.py --strict` PASS（15 FR、6 SC、12 tasks、
+该复核发生于修订 6，完成数为 5/12；之后已按修订 7 分工调整活动分母。
+当时验证：`audit_speckit_structure.py --strict` PASS（15 FR、6 SC、12 tasks、
 5 complete、15 FR traced），`spec181_evidence_inventory.py --check` PASS，
 `git diff --check` PASS；未重跑未改变的模型或 native 测试。
 
@@ -79,6 +82,14 @@ Tiger Y-B → T012 终局。不得把定向测试或历史 PASS 代入这些未�
 [修正证据](evidence/audit-repair-20260905.md) 为准。
 本文件 `cpp/ndnsf-di/` 简写均相对 `NDNSF-DistributedInference/`；
 `security/`、`core/` 简写相对其 `ndnsf_distributed_inference/`。
+
+**Scope validation (revision 7)**：严格结构检查 PASS（15 FR、6 SC、
+4 stories、10 active tasks、5 complete、15 FR traced）；10 个活动 ID
+与 2 个 TRANSFERRED 的独立集合检查 PASS，修改文档链接均可解析。
+唯一结构 warning 是活动 ID 不连续，来自保留 T010/T011 原移交 ID，
+已明确说明，不重编号覆盖历史。范围调整没有关闭本地未完成任务。
+`spec181_evidence_inventory.py --check` 与 `git diff --check` 均 PASS；
+本轮范围文档变更未触发模型、SIF、Tiger 或 Git 合并操作。
 
 ## Validation Standard
 
@@ -114,7 +125,7 @@ wired/executed/measured）。
 ## Phase 0: Fail-closed Safeguards (Priority: P0)
 
 这些历史修正防止合成拒绝、状态冒充与明文路径冒充保护执行。R 项
-保留原 ID 与历史证据，不计入 T001--T012 的完成率。当前缺口由对应
+保留原 ID 与历史证据，不计入本机 10 个活动 T 任务的完成率。当前缺口由对应
 T 任务完成定向修复；在生产验收前保持失败关闭，并禁止晋升诊断结果。
 
 - **R001 Y-N-E Fail-closed Guard**（historical unit evidence；T006 负责生产验收）。在真实 grant 变异（T006 实现）之前，
@@ -291,7 +302,7 @@ T 任务完成定向修复；在生产验收前保持失败关闭，并禁止晋
 ## Phase 3: Convergence and Local Qualification (Priority: P2)
 
 - [ ] T007 [US3] **Design-code Convergence Audit**。按 12 审计原则对真实生产链
-  （进程内权威、grant 解包双侧、装配、runner、候选工具链）做
+  （进程内权威、grant 解包双侧、装配、runner、本地验证/交付工具链）做
   code-aware 审计，四层证据分离；BLOCK 项修复 + focused 回归 +
   重新审计至 PASS。文件：本目录 `audit.md`、`traceability.md`、
   `evidence/post-implementation-audit.md`。验收：审计 PASS 且每个
@@ -301,6 +312,8 @@ T 任务完成定向修复；在生产验收前保持失败关闭，并禁止晋
   FR-015：附 YOLO/Qwen 共用路径与差异 owner 映射，核查普通角色、
   缓存和可选生成 epoch 的公共授权/截止/清理边界；共享修复附
   受影响的 stateless/stateful 接口定向回归。Qwen 模型资格仍在范围外。
+  修订 7：继续验证实际本地源码/配置/依赖、构建与运行身份；最终
+  SIF 字节、Tiger 配置或实验结果不属于本机 T007 的关闭前置条件。
 
 - [ ] T008 [US3] **Local Qualification [MiniNDN]**。从 T007 PASS 的同一源
   身份（提交哈希）执行：单元/集成选择器清单（local-suite inventory，
@@ -311,22 +324,39 @@ T 任务完成定向修复；在生产验收前保持失败关闭，并禁止晋
   移交本任务）、`evidence/local-qualification.md`。验收：清单完整、
   Y-A/Y-B/Y-N 全通过、零未收集存活进程、CPU 后端声明。
 
-## Phase 4: Candidate, SIF and Tiger (Priority: P3)
+## Phase 4: Development Delivery and Local Closure (Priority: P3)
 
-- [ ] T009 [US4] **S1 Candidate Seal**。以提交哈希封印候选：源、契约、
-  注册表（含 `artifactPolicyAuthority` 公钥摘要）、模型工件摘要、
-  oracle、runner、测试清单与 parity 向量文件摘要。文件：
-  `scripts/spec180_candidate.py`（沿用）。验收：unit（脏树/跨候选
-  证据拒绝）；封印记录含提交哈希与全部平面摘要。证据
-  `evidence/t009-candidate-seal-current.md`。
+- [ ] T009 [US4] **Development Delivery Seal**。以 T008 已验证提交封存
+  开发交付：源、契约、注册表（含 `artifactPolicyAuthority` 公钥
+  摘要）、模型、oracle、runner、测试/parity、本地有效配置、构建/
+  依赖及全部验证证据摘要。附可复现命令、外部工件获取说明、已知
+  限制、未纳入交付的工作区修改说明，以及实验 owner 和反馈字段。
+  文件：`scripts/spec180_candidate.py`（沿用并限定本地交付平面）、
+  `handoff-contract.md`、`evidence/development-delivery.json`、
+  `evidence/t009-candidate-seal-current.md`。验收：unit（脏树、摘要漂移、
+  跨版本证据拒绝）+ 本地交付完整性检查；所有路径/摘要可解析，
+  无秘密入库。SIF 输入封印与远端接收回执均不作为本任务前置条件。
 
-- [ ] T010 [US4] **S4 Exact-SIF Y-B Replay**。在 T008
-  通过后的同一源上构建本地 SIF（含 rev-123 就绪修复后的运行时），
+- [ ] T012 [US4] **Local Development Closure Record**。同一交付身份下
+  映射全部活动 FR 到实现、三层验证或交接材料；T001--T009 全部
+  适用验收通过后，在 `evidence/closure-record.md` 发出唯一
+  `LOCAL_DEVELOPMENT_PASS`，交付状态为 `READY_FOR_EXPERIMENT_MACHINE`。
+  明确 T010/T011 TRANSFERRED，禁止声称 SIF/Tiger/GPU、Qwen 或
+  性能资格；不声称已发送版本或远端已接收。验收：FR/SC/任务/证据
+  映射完整、本地身份一致、移交责任可追踪，历史 PASS 不复用。
+
+## Transferred Experiment Work (External Owner)
+
+以下保留原 ID 与验收，owner 为实验机器，不纳入本机活动任务计数。
+TRANSFERRED 表示责任移交，不是实现/执行/验收完成；字段见交接契约。
+
+- **T010 — S4 Exact-SIF Y-B Replay — TRANSFERRED**。实验机器以本机
+  交付的明确 commit 构建 SIF（含 rev-123 就绪修复后的运行时），
   执行 exact-SIF Y-B replay：无源码/包覆盖、NFD 与全部子进程在镜像
   内、终端结果与 oracle 一致。验收：integration（SIF 边界验证 +
   replay 结果摘要）；证据 `evidence/t010-exact-sif-replay-current.md`。
 
-- [ ] T011 [US4] **S5 Single Tiger Y-B Submission**。通过 host-NFD node-local
+- **T011 — S5 Single Tiger Y-B Submission — TRANSFERRED**。实验机器通过 host-NFD node-local
   launcher（Spec 180 修订 122 暴露的设计缺口：Tiger 节点无 MiniNDN
   基底）提交一次 `yolo-functional`：一节点、一 RTX、四 Provider
   进程、一次 cold Y-B、三模型角色 CUDA 证据 + Merge CPU；无参数
@@ -336,12 +366,8 @@ T 任务完成定向修复；在生产验收前保持失败关闭，并禁止晋
   （协议/数值/设备/子进程退出/清理 oracle 全通过）；证据
   `evidence/t011-tiger-submission-current.md`。
 
-- [ ] T012 [US4] **Final Closure Record**。在单一候选身份下映射全部 FR 到代码、
-  三层测试与结构化证据，发出唯一功能裁决；声称边界语言审计（无
-  Qwen/多 GPU/性能声称）。文件：
-  `evidence/closure-record.md`（唯一裁决来源）。验收：closure 记录
-  中每个 FR 有映射行、每个 oracle 有摘要与 schema、无历史 PASS
-  复用。
+移交任务的 evidence 路径是接收端应维护的记录名称，不表示本机已
+生成或必须先生成；后续可在接收端 Spec 中登记实际位置并返回引用。
 
 ## Dependencies & Execution Order
 
@@ -350,10 +376,12 @@ R001/R002/R003/R004（历史 safeguard；对应任务持续定向回归）
 T001 -> T002 -> T003 -> T006
 T004 为独立修复，但同样是 T007 的前提
 T001/T002/T003/T004/T006 -> T007 PASS -> T005 -> T008
-T008 -> T009 -> T010 -> T011 -> T012
+T008 -> T009 -> T012
+T010/T011 = TRANSFERRED（外部实验工作，不是本地依赖）
 ```
 
 R0 的失败关闭语义在定向修复期间保持；不得因 helper 存在或常量翻转
 声称生产完成。只有第一个未关门是活动门；T007 未 PASS 前不运行完整
-矩阵或资格套件。G3/G4 昂贵动作在 G0--G2 全通过前禁止。
+矩阵或资格套件。本地 G3/G4 为交付与关闭，须在 G0--G2 全通过后执行。
+原 T010/T011 移交导致活动 ID 不连续；保持 ID 稳定，不重编号覆盖历史。
 任何行为影响面变更使下游证据失效并回到最早失效门。

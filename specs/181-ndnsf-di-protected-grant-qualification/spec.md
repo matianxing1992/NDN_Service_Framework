@@ -1,4 +1,4 @@
-# Feature Specification: NDNSF-DI Protected-Grant and Qualification Closure
+# Feature Specification: NDNSF-DI Protected-Grant Local Development and Delivery
 
 **Feature Branch**: `Experimental`
 
@@ -6,7 +6,7 @@
 
 **Created**: 2026-09-05
 
-**Status**: `IN_PROGRESS / BLOCK`（修订 6：共用运行时与 adapter 边界已收口，G0 已完成，当前为 G1/T007；
+**Status**: `IN_PROGRESS / BLOCK`（修订 7：本机开发、本地验证与版本交付；SIF/Tiger 移交实验机器。G0 已完成，当前为 G1/T007；
 Spec 180 已按所有者决定关闭，其契约、冻结证据与失效声明保持权威。）
 
 **Input**: Spec 180 修订 125 的迁移清单；Spec 170
@@ -16,18 +16,29 @@ Spec 180 已按所有者决定关闭，其契约、冻结证据与失效声明�
 ## Goal
 
 Spec 180 的教训是：范围反复扩张、审计循环替代执行、负裁决假 PASS、
-seam-only 证据。本 spec 只做一件事——把 180 遗留的实现与资格认证工作
+seam-only 证据。本 spec 只做一件事——把 180 遗留的实现与本地验证工作
 按行为收口，并且给每一个任务强制三层测试标准（单元 + 集成 + MiniNDN
 小模型 CPU），其中集成测试必须设计真实用例、走真实生产调用链，禁止
 "看起来通过"。
 
-完成目标只有一个：**一个不可变 YOLO 候选（提交哈希封印）在
+完成目标只有一个：**一个明确提交哈希的开发版本在
 MiniNDN 本地小模型 CPU 上通过 Y-A/Y-B/Y-N 全矩阵（含真实受保护工件
-grant 授权路径），通过设计-代码收敛审计与本地资格认证，随后一个
-SIF 通过 exact-SIF replay，并在 Tiger 上完成一次 cold Y-B 请求**。
+grant 授权路径），通过设计-代码收敛审计与本地资格认证，交付可复现的
+源码、配置/依赖身份、验证证据与实验交接说明**。
+
+2026-09-06 所有者明确采用长期开发/实验分工：本机负责代码开发、
+单元/集成验证及本地 MiniNDN；另一台机器接收明确 commit，负责 SIF
+构建、TigerCluster 脚本/配置、实验执行与反馈。Qwen/YOLO 不构成长
+期责任边界。原 T010/T011 标为 TRANSFERRED，保留外部验收责任，
+不计本机完成率、不作为本 Spec 关闭条件。交接契约见
+[Development and Experiment Handoff](handoff-contract.md)。
+
+Git 合并按所有者最新要求留到当前开发完成后另行讨论；本 Spec 不
+执行分支合并，也不以合并或实验机器接收回执作为本地关闭前置条件。
 
 不改变的技术路线：ACK 驱动规划、V3 选择投影、受保护工件授权契约、
-native Provider 运行时边界、Tiger 提交机制全部继承 180 的实现与契约；
+native Provider 运行时边界全部继承 180 的实现与契约；实验机器后续
+继承原有 SIF/Tiger 机制与约束，冻结的 Spec180 文档保持不变。
 本 spec 不引入新协议、新放置策略、新模型或新范围。
 
 ### Shared Runtime Boundary
@@ -58,10 +69,11 @@ Provider 在装配/加载前完成授权，并在成功、取消及失败时清�
 操作者先获得当前源与有效配置的收敛审计 PASS，再执行受监督的本地
 资格套件。审计验收不依赖随后产生的资格结果；对应 T007、T008。
 
-### User Story 4 - Immutable Release and One Tiger Request (Priority: P3)
+### User Story 4 - Reproducible Development Delivery (Priority: P3)
 
-操作者把同一源、候选及模型身份绑定至 SIF replay 与一次 Tiger 请求，
-保留失败和清理结果，最后只发出功能裁决；对应 T009--T012。
+开发者交付同一源、模型、配置与本地验证身份的明确 commit，提供
+实验机器可使用的构建/复现说明与反馈契约；最后只发出本地开发裁决。
+对应 T009/T012；SIF/replay/Tiger 结果由移交的 T010/T011 单独负责。
 
 ## Requirements *(mandatory)*
 
@@ -106,15 +118,20 @@ Provider 在装配/加载前完成授权，并在成功、取消及失败时清�
 - **FR-007** — **Design-code Convergence Audit**。正式资格认证前必须通过一次
   code-aware 收敛审计（12 原则、四层证据分离：文档声称/代码实现/
   测试执行/实验测量）；BLOCK 项修复并回归后才允许后续门。
-- **FR-008** — **Immutable Candidate and SIF**。S1 候选封印绑定提交哈希、契约、
-  注册表、权威公钥摘要、模型工件与 oracle；S4 的本地 SIF 哈希必须
-  通过 exact-SIF Y-B replay（rev-123 就绪修复之后的运行时）。
-- **FR-009** — **Single Tiger Functional Submission**。S5 通过 host-NFD node-local
-  launcher 提交一次 `yolo-functional`（一节点、一 RTX、四 Provider
-  进程、一次 cold Y-B），产出结构化终局证据。
+- **FR-008** — **Immutable Development Delivery**。交付清单绑定已验证的
+  提交哈希、契约、注册表、权威公钥摘要、模型工件、oracle、测试清单、
+  本地依赖/构建/有效配置与证据摘要。拒绝未记录的源码漂移和跨版本
+  PASS；SIF 构建输入/镜像身份由实验机器后续封印，不在本机伪造。
+- **FR-009** — **Experiment Handoff and Feedback**。交接记录明确实验机器
+  负责 SIF、exact-SIF replay、TigerCluster 脚本/配置与实验；提供
+  源 commit、复现命令、工件获取方式、已知限制与原 T010/T011 的
+  验收要求。反馈须携带实际 commit、配置、run-id、日志/结果及复现
+  条件；实验脚本变更以提交返回同一代码库。本 Spec 只验收交接材料
+  可用，不要求远端运行、接收回执或实验 PASS。
 - **FR-010** — **Claim Boundary**。最终报告不得声称 Qwen、多 GPU、吞吐、
   延迟、扩展或性能结论；不得复用任何 Spec 175/180 历史 PASS 作
-  本 spec 证据。
+  本 spec 证据。`LOCAL_DEVELOPMENT_PASS` 仅为本地开发/验证交付裁决，
+  不代表 SIF、Tiger 或 GPU 资格；TRANSFERRED 不等于 PASS。
 - **FR-011** — **Readiness Boundary**。Python `start()`/`start_background()`
   的就绪等待必须大于 Core 探针 deadline（建议 15000 ms 对 10 s）；
   `stop()` 在探针进行中不得热转事件循环至 deadline。
@@ -156,8 +173,8 @@ Provider 在装配/加载前完成授权，并在成功、取消及失败时清�
 - **KeyGrantV1**：权威签名、Provider 身份加密的内容密钥授权
   （规范编码见 Spec 180 提交 `d36438c2`）。
 - **GrantBindingV1**：进入最终 plan 的非秘密名称/摘要引用。
-- **Qualification candidate**：源（提交哈希）、契约、注册表、运行时、
-  模型工件、oracle 与证据模式的单一身份。
+- **Development delivery**：源（提交哈希）、契约、注册表、本地运行时/
+  配置、模型工件、oracle 与证据的单一交付身份；后续实验候选引用它。
 - **Y-N matrix**：固定七子用例（Y-N-O/C/P/R/I/E/L）的注册语义矩阵。
 
 ## Success Criteria *(mandatory)*
@@ -173,9 +190,12 @@ Provider 在装配/加载前完成授权，并在成功、取消及失败时清�
   进程退出收集，零未收集存活进程。
 - **SC-004** — **Audit and Inventory**：收敛审计 PASS + 本地资格认证清单（local-suite
   inventory）完整可复现。
-- **SC-005** — **Exact-SIF and Tiger**：一个 SIF 哈希通过 exact-SIF Y-B replay 与 Tiger Y-B。
-- **SC-006** — **Single Functional Verdict**：终局记录在单一候选身份下映射全部 FR 到代码、测试与
-  结构化证据，且只发出一个功能裁决。
+- **SC-005** — **Reproducible Development Handoff**：一个交付清单绑定已验证
+  commit 与所有本地输入/证据摘要，复现与交接材料通过本地完整性检查，
+  明确实验 owner、移交验收和反馈字段；不依赖 SIF/Tiger 结果。
+- **SC-006** — **Single Local Development Verdict**：终局记录在同一交付身份
+  下映射全部活动 FR 到代码、测试或交接材料，发出唯一
+  `LOCAL_DEVELOPMENT_PASS`；原 T010/T011 保持 TRANSFERRED。
 
 ## Assumptions
 
@@ -184,10 +204,17 @@ Provider 在装配/加载前完成授权，并在成功、取消及失败时清�
   相同）；YOLO 实现本身不等待它。
 - MiniNDN 小模型 CPU 测试使用 Spec 180 的 canonical YOLO26n 包与
   640×640 注册输入（外部工件，内容寻址）。
-- Tiger 可分配一节点一 RTX；模型工件在 SIF 外按摘要验证。
+- 实验机器负责后续平台资源与镜像构建；其资源可用性不阻塞本地开发
+  关闭，模型工件的获取说明与摘要必须包含在交付中。
 
 ## Out of Scope
 
+- **SIF/Tiger execution (TRANSFERRED)**：原 T010/T011 的构建、replay、
+  部署脚本/配置与集群执行归实验机器；具体责任及原验收见交接契约。
+  不执行远端操作，不用本地 PASS 代替实验结果。
+- **Branch merge**：当前开发完成后另行讨论双方分支及未提交工作，
+  不在本 Spec 执行 `UAV-Experimental` 合并。未来合并改变源码身份，
+  必须按影响范围验证合并后的版本，不能直接继承旧提交资格。
 - Qwen 模型执行资格、跨模型资格、多 GPU、性能/吞吐/延迟声称
   （延续 180 边界）。复用已有 Qwen 公共机制及其受影响接口的定向
   兼容性回归属于源码收口，不是新增模型资格。
@@ -208,3 +235,10 @@ Provider 在装配/加载前完成授权，并在成功、取消及失败时清�
   `spec180-yolo-protected-v1` 且不轮换。纪元轮换（rotation）、旧纪元
   拒收与缓存身份跨纪元失效的完整机制是生产延期项；本切片的绑定与
   缓存身份已携带纪元字段，轮换机制接入时不改变线编码。
+
+## Revision History
+
+- **7 (2026-09-06)**：所有者确认本机开发与本地验证、实验机器负责
+  SIF/Tiger 的长期分工；改写 Goal、US4、FR-008/009/010、SC-005/006，
+  T009/T012 负责交付与本地闭合，T010/T011 移交且不记为完成。
+  本地 MiniNDN 与授权/清理/同源验证要求保留；Git 合并留待开发结束。
