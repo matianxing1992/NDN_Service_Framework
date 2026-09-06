@@ -52,3 +52,19 @@ Experimental now contains every official master commit (7 ahead/0 behind).
 Launcher/guard/evaluator gate: pytest28/28 pass in6.81s (`launcher-pytest.log`).
 Two earlier unittest attempts are not acceptance: one has import errors, the
 other runs zero cases. The correct runner's count is explicitly checked.
+
+Merged source recovery bundle:
+`results/spec179-official-merge-20260905/nac-abe-experimental-c3aafa6.bundle`,
+SHA256 `6e844bb7e72c0999660effe869130f6ce43edb5e51a327dd203944aa84634b04`.
+Complete history verified; fresh clone has exactc3aafa6 head and tree
+`18b082e592379f40367b1f480fb7ef9516ade25e`, clean status and fsck exit0.
+The old85547eb bundle and build evidence remain historical and unchanged.
+
+## Clean NDNSF native checkpoint
+
+Build exit0 in28m9.720s at-j2 (`ndnsf-build.log`). `native-closure.log` confirms
+all six targets load the new installed NAC without LD_LIBRARY_PATH assistance,
+required dynamic symbols exist, and all20 source headers match installation.
+The expanded unit gate passes183/183 cases,11998 assertions (`ndnsf-unit.log`).
+Integration authorization/stream suites plus the two NdnsfDataV1SvsFlow segment
+cases are running. No network acceptance claim yet.
