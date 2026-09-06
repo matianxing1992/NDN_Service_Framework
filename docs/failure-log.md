@@ -19,6 +19,41 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 fixed-input closure repair (2026-09-06): focused PASS.**
+The existing PPM and provenance README are adopted without byte changes.
+All 22 numerical regression checks pass (7.97 s); the actual canonical
+package reference loader verifies the fixture digest and shapes. A05 is
+re-audited PASS; verify the committed fixture in the isolated checkout
+before resuming the formal matrix. See
+[formal matrix](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-formal-matrix-20260906.md#fixture-closure-repair).
+
+**Spec181 T005 formal R11 (2026-09-06): BLOCK at fixed fixture source closure.**
+The repaired lock permits Controller publication, Repo, and four native
+Providers to become ready. User startup fails because the isolated commit
+lacks tests/fixtures/spec180/yolo26n/fixed-fixture.ppm. The existing untracked
+162-byte fixture matches the manifest digest. Reopen A05, adopt the fixture
+and its provenance, validate the real reference loader, then re-audit before
+the next matrix. Source/input identities stayed unchanged; NFDs exited. See
+[formal matrix](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-formal-matrix-20260906.md#fixed-input-source-closure-r11).
+
+**Spec181 T005 formal R10 (2026-09-06): BLOCK at Controller publication initialization.**
+The explicit shell environment repaired process spawning. NFD readiness and
+Controller startup pass, but the co-located publication ServiceUser constructor
+throws `Failed to acquire file lock`. The maintained matrix exits 2 at Y-N-O;
+The focused syscall probe finds EACCES before flock: the UID-0 lock path is
+owned by UID 1000, with no kernel lock or fuser occupant. Preserve this stale
+file in R10 before letting the runtime recreate it; no Core change is needed.
+no protocol result is established. Source/input identities remain unchanged,
+and all NFD processes exited. See
+[formal matrix](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-formal-matrix-20260906.md#controller-publication-boundary-r10).
+
+**Spec181 T005 formal R9 (2026-09-06): BLOCK at explicit shell environment.**
+The new diagnostic identifies KeyError in Mininet node.py:419: shell=True reads
+os.environ['SHELL'], absent from the launch environment. Preserve the exact
+frame chain; set SHELL=/bin/bash explicitly for R10. No Controller was launched,
+all NFDs exited, and source/input identities stayed unchanged. See
+[formal matrix](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-formal-matrix-20260906.md#first-application-boundary-r9).
+
 **Spec181 spawn diagnostic repair R3 (2026-09-06): focused PASS.**
 All 93 runner/matrix checks pass. Partial-start cleanup and first-failure stop
 remain intact; the new exclusive diagnostic records type and frame locations

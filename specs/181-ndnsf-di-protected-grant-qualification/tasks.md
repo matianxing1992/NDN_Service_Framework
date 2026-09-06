@@ -18,6 +18,22 @@ Spec 170 `artifact-assembly-v1` 契约。
 
 ## Current Checkpoint (revision 7)
 
+**Latest repair (2026-09-06)**：既有固定 PPM/README 纳入源码，
+实际 canonical package 的 reference loader PASS，22 项数值
+回归 PASS（7.97 s），A05/T007 恢复 PASS。完成数仍 6/10；提交后
+先验证隔离检出的实际输入，再恢复 T005 正式矩阵。
+
+**Latest attempt R11 (2026-09-06)**：锁属主修复后 Controller 发布、
+Repo 与四 Provider 就绪；User 因提交缺少固定 PPM 输入而退出。
+A05/T007 对输入源码闭包重新 BLOCK；先纳入既有 fixture、定向
+验证实际 reference loader 并复审，再恢复矩阵。T005 未通过。
+
+**Latest attempt R10 (2026-09-06)**：NFD 与 Controller 启动通过，
+Controller 内 publication ServiceUser 初始化报文件锁冲突；Y-N-O
+CONTROL_NOT_PROVEN，矩阵 exit 2，源码/输入前后不变且已清理。
+先修复此应用初始化边界；本机仍 6/10，T005 未勾选。见
+[formal matrix](evidence/t005-formal-matrix-20260906.md#controller-publication-boundary-r10)。
+
 **Status**: `IN_PROGRESS`。2026-09-06 按当前提交与证据复核；
 T001/T002/T003/T004/T006/T007 的任务验收已闭合并勾选（本机 6/10；另有 2 个 TRANSFERRED）。其余任务仍按完整验收判断，
 未勾选不抹去已实现的代码与 unit 结果。
@@ -74,6 +90,9 @@ R8 NFD/路由/keychain 已通过，controller.log 创建后立即启动失败；
 诊断修复最终两文件 **93 passed**，部分启动清理与矩阵首失败停止
 仍通过；新增类型/frame 证据不含异常内容/locals。受影响审计 PASS，
 下一步提交并以新运行定位 spawn 根因；T005 仍未通过。
+R9 新诊断确定根因是 Mininet.popen(shell=True) 读取缺失的 SHELL，
+尚未真正启动 Controller。下一步 R10 显式设置 /bin/bash，保留
+原矩阵/清理逻辑；R9 source/input 不变且无 NFD 残留。
 
 | Closed unit | Current evidence |
 |---|---|

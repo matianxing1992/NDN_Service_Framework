@@ -7,7 +7,11 @@ local gate 提交/源码身份修复为 `2628e3d2`。最终审计对象为
 `6b9bb51c43a597bf36ca62f304fee5f71c17fa58` 的隔离源码和 R13 runtime；
 `8c231493` 仅补记证据，主工作区其余预存改动不在该审计对象内。
 **Layer**: proposed / implemented / wired / executed（限定在各记录的检查范围）。
-**Verdict**: **PASS**（T007 convergence audit；sudo source boundary re-audited）。
+**Verdict**: **PASS**（R11 fixed input closure re-audited）。
+R11 暂停矩阵后补齐既有固定 PPM 与来源说明；固定字节与候选
+manifest 完全匹配，实际 reference loader PASS、22 项数值回归
+PASS（7.97 s）。A05 的该项复审通过；提交后先在隔离检出复核实际
+loader，才恢复正式矩阵。详见 formal matrix 的 Fixture Closure Repair。
 首次正式 sudo 启动发现 _source_git 丢失 SUDO_UID，已按实际 owner
 限定保留并通过真实 sudo 正负例及既有 gate 的 51 项回归（8.68 s）；
 不接受 Git 配置/index/replacement 覆盖。R1/R2 失败均未联网，

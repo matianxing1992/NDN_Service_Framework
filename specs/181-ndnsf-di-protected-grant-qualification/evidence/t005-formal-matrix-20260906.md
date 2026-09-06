@@ -1,6 +1,6 @@
 # Formal Local Y-N Matrix
 
-**Status**: BLOCK (application spawn cause pending; focused diagnostic repair PASS)
+**Status**: IN_PROGRESS (fixture closure focused PASS; formal matrix pending)
 **Evidence layer**: implemented / executed (formal network startup and focused regression)
 
 ## Subject and Launch R1
@@ -135,3 +135,58 @@ process-start-failure.json 可定位原异常。新增断言要求异常类型�
 异常文本或 locals，使用独占文件创建保留首次证据。写入失败不
 替代原始运行异常。没有改矩阵 PASS/FAIL、重试或网络流程。
 本单元受影响审计 PASS；下一步提交后新 run 定位业务 spawn 失败。
+
+## First Application Boundary R9
+
+诊断修复提交 `18623480` 的 R9 捕获实际 KeyError：
+`mininet/node.py:419` 的 popen(shell=True) 读取 `os.environ['SHELL']`，
+临时显式启动环境遗漏该字段。调用链从 legacy.start → getPopen →
+Mininet.popen 已保存于 process-start-failure.json；不再把问题猜作
+Controller/NFD 协议失败。R9 清理后无 NFD，源码/输入均不变。
+下一步在新 R10 显式设置 SHELL=/bin/bash，不修改 Mininet 或协议。
+
+## Controller Publication Boundary R10
+
+源码 `1862348077426901de0e7856507b88d28714fc85`，原始目录
+ignored workspace temporary directory 下 `spec181-t005-formal-20260906-r10/`。补齐 SHELL 后 NFD、
+路由、keychain 与 Controller 进程启动通过；controller.log 记录
+`_publish_spec180_runtime` 创建 NativeServiceUser 时抛出
+`RuntimeError: Failed to acquire file lock`。维护 CLI exit 2，Y-N-O
+为 CONTROL_NOT_PROVEN，尚无协议结果。launch-result.json 确认
+sourceIdentityUnchanged/inputIdentityUnchanged 均 true；无 NFD 残留。
+下一步定位同进程 Controller 与 publication User 的锁/存储所有权，
+先定向复现修复，再恢复正式矩阵。T005 未通过。
+
+定向 syscall 复现修正诊断：`/tmp/ndnsf-svs-registration-0.lock`
+inode 2638760、owner 1000、mode 0664；root 的原始
+`open(O_CREAT|O_RDWR, 0666)` 返回 errno 13/EACCES，尚未执行 flock。
+`/proc/locks` 无对应 inode，sudo fuser exit 1 且无占用进程。
+这是历史残留文件属主错误，不是 Controller/User 互锁。下一步将
+原文件完整移入 R10 原始目录保留，随后由既有运行时创建 root 锁；
+不改变全局内核保护设置，不修改 Core 锁机制。
+诊断读取 `/proc/sys/fs/protected_regular` 被拒绝，未据此推断配置值。
+
+## Fixed Input Source Closure R11
+
+原始目录为 ignored workspace temporary directory 下 `spec181-t005-formal-20260906-r11/`，同源
+`18623480`。保留旧锁后运行时创建 owner 0 的新锁；Controller 完成
+APP 发布，Repo 与四个 native Provider 就绪。User 读取固定输入时
+FileNotFoundError：隔离提交缺少
+`tests/fixtures/spec180/yolo26n/fixed-fixture.ppm`。主工作区存在该
+未跟踪文件及 README，162 字节固定 PPM 的 SHA-256 与候选 manifest
+完全匹配。source/input 前后不变、CLI exit 2、Y-N-O 未通过，已清理。
+这是提交源码的数据依赖遗漏；A05/T007 对此边界重新 BLOCK，下一步
+将既有固定输入及说明纳入交付，定向验证实际 load_reference 和数值
+回归后重新审计。不能向隔离检出临时注入未跟踪 fixture 冒充同源。
+
+## Fixture Closure Repair
+
+原始目录为 ignored workspace temporary directory 下 `spec181-fixture-closure-20260906-r1/`。
+既有 `test_spec180_yolo_numerical.py` **22 passed（7.97 s）**，包括
+真实 User 输入编码、固定预处理、数值/摘要拒绝与结果记录；该测试
+本轮未修改。实际 canonical package 的生产 `load_reference` 通过，
+固定输入摘要为 `sha256:7edf1f524ef450be6ee2304b3c0b47b70c3d72610c18f2f2fa28157d7b8a113c`，
+输入 shape `[1,3,640,640]`、oracle shape `[1,50,6]`。将原有 PPM
+及其 README 原字节纳入提交，未替换 oracle 或模型。A05 受影响项
+复审 PASS；下一步在新提交的隔离检出重复实际 loader 检查后运行
+新矩阵。本记录仍不构成 T005 PASS。
