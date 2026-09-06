@@ -19,6 +19,13 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 T008 adoption C R1 (2026-09-06): unadopted GPU-source dependency.**
+Fifteen checks stop at fixture compilation on the absent CudaDeviceIdentity header; one
+source assertion exposes the old GPU metadata path. Inspection confirms this
+draft targets uncommitted CUDA/profile changes. Preserve it for T010/T011
+preparation, retain CPU-only local claims, and carry the concrete GPU evidence
+gap into delivery. No production source was changed. See [Batch C](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t008-local-suite-preflight-20260906.md#test-adoption-batch-c).
+
 **Spec181 T008 test adoption B R2 (2026-09-06): focused PASS.**
 All 19 application/Merge checks pass without skips using explicit signed
 canonical inputs. The stale timeout assertion follows the existing request

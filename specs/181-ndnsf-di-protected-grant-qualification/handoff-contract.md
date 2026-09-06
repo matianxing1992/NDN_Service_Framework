@@ -52,6 +52,18 @@ T009 生成 `evidence/development-delivery.json`，schema 为
 运行或签收才关闭 Spec181，也不能把 TRANSFERRED 项改为 PASS。
 Spec180 冻结的镜像构建/运行边界继续控制后续实验，原文不改写。
 
+## Known Experiment Preparation Gaps
+
+`4bd1998b` 的本地 CPU 源码尚未纳入主工作区 CUDA 身份/profile/运行后
+observation 改动。`test_spec180_native_evidence.py` 草稿在该源上有
+15 个 fixture 编译错误（缺 `CudaDeviceIdentity.hpp`）及一个旧 GPU
+元数据路径断言失败；见 [Batch C evidence](evidence/t008-local-suite-preflight-20260906.md#test-adoption-batch-c)。
+这是具体未完成的后续 GPU 准入工作，不只是“实验未运行”。本机开发
+owner 后续闭合代码与 helper 回归，实验机器 owner 再验证实际 CUDA
+provider、设备 UUID、profile/request 对应关系；环境提供的 UUID
+不能单独作为设备观测。T009 应在 limitations 中携带此条及未纳入
+草稿清单，不能把当前 CPU 结果晋升为 T011 PASS。
+
 ## Feedback Contract
 
 每次问题反馈至少携带：实际 `sourceRevision`、`deliveryDigest`、

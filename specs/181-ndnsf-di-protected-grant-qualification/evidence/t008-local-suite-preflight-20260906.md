@@ -220,7 +220,9 @@ Test Source Closure 的待处置项和完整构建清单限制，未启动完整
 
 以 `4bd1998b` 提交与主工作区预存未跟踪草稿作比较，余下 15 文件
 初审分为七项本地待纳入和八项保留移交/历史工具草稿；Batch B 后
-本地两项已验证纳入，尚余五项。此表不是删除测试
+本地两项已验证纳入；Batch C 核实 native evidence 草稿依赖尚未交付的
+GPU 实现，将其改归后续实验准备。当前尚余四项本地工作、九项保留
+草稿，变更理由与失败证据保留在 Batch C。此表不是删除测试
 或选择器豁免：已提交的继承测试仍由现有发现规则全量收集；本地
 待纳入项须先审查依赖、修正过期 fixture，再在隔离源码验证后提交。
 未交付草稿留在原工作区，T009 必须把它们列入未纳入交付的说明。
@@ -228,7 +230,7 @@ Test Source Closure 的待处置项和完整构建清单限制，未启动完整
 | Test file (tests/python/) | Disposition / owner | Evidence and required next action |
 | --- | --- | --- |
 | test_spec180_candidate.py | LOCAL_PENDING / T009 | 旧 helper 强制 SIF 等十平面；按已批准本地交付契约修订 helper 与测试，封印发生在 T008 后。 |
-| test_spec180_native_evidence.py | LOCAL_PENDING / T008 | 实际编译 ExecutionEvidence / CudaDeviceIdentity，模拟 CUDA 边界；保留证据诚实性回归，纳入两份 C++ fixture，修正已抽取公共准备 owner 的旧源码断言。不能视为 GPU 资格。 |
+| test_spec180_native_evidence.py | TRANSFERRED_DRAFT / T010-T011 preparation | Batch C 证明需要未交付 CUDA 身份/profile/observation 实现；本机开发 owner 后续提供代码修复，实验机器 owner 执行 GPU 验证。当前 CPU 验收不得升级为 GPU 资格。 |
 | test_spec180_yolo_adapter.py | LOCAL_PENDING / T008 | 真实 catalogue/候选/分区检查依赖 exporter；纳入并验证本地工具与显式 checkpoint 输入。 |
 | test_spec180_yolo_application.py | ADOPTED / T008 | Batch B R2 PASS；生产入口、输入和终端 owner，源码断言与实际函数检查分别限定证据范围。 |
 | test_spec180_yolo_equivalence.py | ADOPTED / T008 | Batch B R2 PASS；共享投影/原生 Merge/canonical 发布，显式 package/registry、真实签名与当前 adapter 路径。 |
@@ -302,3 +304,40 @@ equivalence 检查覆盖实际 catalogue/共享候选投影、Merge 无 ONNX 装
 canonical transport 与身份分离及 adapter 依赖约束。没有放宽验收或
 修改业务 deadline。当前提交准备纳入的 Python 发现文件数变为 39；
 余下五项本地依赖和八项保留草稿如表所列。完整 T008 仍未验收。
+
+## Test Adoption Batch C
+
+本批为 `test_spec180_native_evidence.py` 与两份 fixture
+`tests/fixtures/spec180/native-evidence-probe.cpp` / `fake-cuda-identity.cpp`。
+probe 实际编译 ExecutionEvidence 与 CudaDeviceIdentity；模拟 runtime
+ordinal→PCI→driver UUID，并注入查询失败和不完整 profile。临时库仅
+通过该测试子进程的 LD_LIBRARY_PATH 可见；不修改或加载生产 CUDA 库。
+源码接线断言跟随已抽取的 NativeRunnerPreparation owner，保留
+Provider/worker/adapter 接线检查。此静态检查不冒充实际 Provider 执行。
+
+运行环境仍为系统 Python/g++ 与隔离 `4bd1998b`，R1 原始目录为
+`spec181-test-adoption-c-20260906-r1/`。完整 C++ 构建
+并行保持 `-j2`；启动此有限 helper 编译前 MemAvailable 约 4.0 GiB。
+
+R1：**1 failed、15 setup errors，4.52 s，exit 1**。十五项同源错误
+来自 fixture 编译缺少尚未交付的 `CudaDeviceIdentity.hpp`，不是 GPU
+拒绝结果；另一个静态断言发现当前 executable 仍读取
+`NDNSF_DI_GPU_UUID`。准确源码核对还发现 ExecutionEvidence 的旧实现
+接受 `evidence.gpuUuid` 元数据，未包含草稿要求的新运行后 observation
+入口。主工作区相应 header 为 untracked，ExecutionEvidence、ONNX
+runner 与 executable 存在未提交的另一组更改。
+
+初审只按同名 owner 把此文件列为共享回归，现按实际依赖修正：其
+主要断言针对 CUDA UUID、CUDAExecutionProvider profile 与 GPU
+observed identity，不是当前 CPU 本地验证的已实现契约。依照已批准
+T010/T011 移交与 CPU-only 范围，保留此草稿及两 fixture，供本机后续
+开发修复与实验机器验证；不为迁就这份未提交测试而临时扩大 T008。
+撤回本轮对草稿的 owner 注释/断言调整，移除隔离临时投影，未改生产
+源码和已提交测试选择器。本记录不声明该缺口已修复或测试已通过。
+
+后续 GPU 准入必须先闭合 header、profile/observation 接线及本组
+真实 helper 回归，再进入 GPU 实验；当前本地交付不具备这项 GPU
+资格证据。T009 未纳入改动清单须携带这一具体缺口，而不是仅写
+“远端未运行”。本地剩余项为 candidate、YOLO adapter/export/numerical。
+R1 tests.log SHA-256：
+`e2e22e99c6200d21297f85341a58e1e036c3ca8fb1f23a67fe99f716fc03e8eb`。

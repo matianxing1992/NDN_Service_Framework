@@ -15,7 +15,8 @@ Native Identity R1 And Convergence Review。
 T005 的 ce6a4ba0 subject 已通过 R19 完整矩阵，验收独立保留；T008
 配置缺口已按设计修复，76 项定向回归与受影响代码复审 PASS。完整
 T008 的四组预存共享回归已通过 32 项检查，Batch B 两组应用/Merge
-回归已通过 19 项；来源审查保留八项实验/历史草稿，仍须完成五项
+回归已通过 19 项；Batch C 核实未交付 GPU 实现依赖后，来源审查保留
+九项实验/历史草稿（含实际失败与后续 GPU 准入条件），仍须完成四项
 本地测试/依赖纳入、产出完整二进制与三案例
 实际配置，再对最终 subject 复审。详见
 [T008 review](evidence/t008-local-suite-preflight-20260906.md#focused-configuration-r2-and-review)。
