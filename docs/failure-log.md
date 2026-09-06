@@ -29,8 +29,10 @@ and two wrong-curve rejection checks pass. R3 repairs those entries: 130 checks
 pass, but the positive P-256 case reaches the production envelope creator and
 fails because its EC key generation also omits the required backend argument.
 All three raw results are retained. R4 repairs the production key generation;
-134 focused checks pass, including bounded private-file rejection. Current
-native rebuild and the fresh P-256 network control remain pending.
+134 focused checks pass, including bounded private-file rejection. The unified
+native rebuild and a fresh four-recipient P-256 Y-B control pass: four native
+grant verifications, terminal numerical match, seven collected child exits,
+and empty staging. Full T001/T002 acceptance remains open.
 See [P-256 production path](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t002-p256-production-20260905.md).
 
 **Spec181 T002 recipient credentials (2026-09-05): focused defect CLOSED.**
