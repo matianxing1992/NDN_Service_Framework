@@ -1,5 +1,17 @@
 # Spec179 Audit — Controller Revocation Test Coverage
 
+## T022 current closure — PASS for merged official dependency
+
+NAC Experimentalc3aafa6 merges official58f3948 and retains repaired85547eb.
+New regressions reproduce ignored CP/KP segment limits and distinct CK-name
+cache collisions before merge; all15 targeted cases pass after merge. NAC46/46,
+installed26/26, clean NDNSF183/183 unit and74/74 integration (including two SVS
+segment cases), and launcher28/28 pass. Final18/18 MiniNDN scenarios pass188
+assertions and both User grant gates at clean cdd8e55a;33 matching hashes and
+driver/CLI exit0 verified. No new public header/layout changes in this merge.
+See `evidence/nac-abe-official-merge-20260905.md`. This supersedes pending T022
+checkpoints below. No push/PR; T014 external acceptance stays deferred.
+
 ## T022 pre-implementation gate — PASS for bounded official merge
 
 The user authorizes merging official58f3948 with local repairs and segmented/

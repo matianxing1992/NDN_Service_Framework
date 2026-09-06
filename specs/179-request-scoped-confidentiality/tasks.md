@@ -71,13 +71,11 @@ The 2026-09-04 release claim and its rows are unaffected.
   freshness fix vs the API-contract extension, mapping each patched symbol
   to its Spec179 use), compile-contract evidence row RV-U22 (executed
   2026-09-05, `evidence/nac-abe-unpatched-contract-20260905.md`).
-  Current delivery: `evidence/nac-abe-delivery-20260905.md` and
-  `evidence/nac-abe-pr-draft-20260905.md`; complete four-commit range through
-  `85547eb`, standalone bundle verified by fresh clone/tree comparison/fsck.
-  The tested `1cc17d9` base is personal fork master. Official UCLA-IRL master
-  is58f3948; fork master is2 ahead/3 behind, Experimental6 ahead/3 behind.
-  See `evidence/nac-abe-official-comparison-20260905.md`. User requests no PR;
-  local package/comparison complete, publication not scheduled.
+  Historical delivery/draft through85547eb is retained. Current local merge
+  c3aafa6 includes official UCLA-IRL master58f3948 and all local repairs;
+  Experimental is7 ahead/0 behind official master. T022 validates the merged
+  pair and a fresh standalone bundle in `evidence/nac-abe-official-merge-20260905.md`.
+  User requests no PR; external publication is not scheduled.
   Acceptance: upstream maintainer merges the contract (external gate —
   push/PR require the NDNSF maintainer's explicit go), then the rebuilt
   prefix from the upstream commit passes RV-U20/RV-U21. Owner: NDNSF
@@ -150,7 +148,12 @@ Provider network failures are retained. T014 upstream publication remains extern
 
 ## Dependencies and Execution Order
 
-- [ ] T022 [FR-019/023/024/036/041] Merge official UCLA-IRL NAC-ABE master58f3948 into local Experimental, preserving all T019/T020 fixes and history. Add CP/KP non-default segment-size cold/warm-cache and Consumer object/segment-name regressions; reproduce the old size defect before merge. Build/install a separate matched prefix at-j2, run full NAC and expanded NDNSF native gates, then all18 MiniNDN authorization scenarios with artifact closure. Record exact merged revisions and red/green evidence in `evidence/nac-abe-official-merge-20260905.md`. No push/PR; local synchronization does not close T014's external acceptance.
+- [x] T022 [FR-019/023/024/036/041] Merge official UCLA-IRL NAC-ABE master58f3948 into local Experimental, preserving all T019/T020 fixes and history. Add CP/KP non-default segment-size cold/warm-cache and Consumer object/segment-name regressions; reproduce the old size defect before merge. Build/install a separate matched prefix at-j2, run full NAC and expanded NDNSF native gates, then all18 MiniNDN authorization scenarios with artifact closure. Record exact merged revisions and red/green evidence in `evidence/nac-abe-official-merge-20260905.md`. No push/PR; local synchronization does not close T014's external acceptance.
+
+Executed: mergec3aafa6; red12/15 → green15/15; NAC46/46, installed26/26,
+native183/183 unit and74/74 integration, launcher28/28; MiniNDN18/18 with188
+assertions and both dedicated User grants at clean cdd8e55a.33 hashes match
+disk, driver/all CLIs exit0. Source-recovery bundle/fsck passes. T014 remains open.
 
 T021 live findings extend its bounded implementation to `examples/App_User.cpp`
 (benchmark explicit-provider routing), `ServiceUser::applyPermissionResponse`

@@ -708,7 +708,8 @@ executed evidence; none changes the 2026-09-04 release claim.
   maintainer review, and the NDNSF build prefix MUST then be rebuilt from the
   upstream commit with the RV-U20/RV-U21 gate re-run on that rebuild. Failure
   mode: the contract surface exists only on the local, unpushed NAC-ABE
-  `Experimental` branch (initial `b1c9c4f`, repaired through `85547eb`), so a
+  `Experimental` branch (initial `b1c9c4f`, repaired through `85547eb`, official
+  merge `c3aafa6` qualified by T022), so a
   clean environment using the unpatched fork base fails the NDNSF build
   (compile-contract evidence `RV-U22`,
   `evidence/nac-abe-unpatched-contract-20260905.md`). A verified local bundle

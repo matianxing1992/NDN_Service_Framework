@@ -163,3 +163,10 @@ remain evidence. See `evidence/provider-online-grant-20260905.md` for limits.
   uses it, and `measured` only after the named test/evidence artifact exists.
 - `validation-matrix.md` is normative: aggregate line coverage cannot replace a
   missing RV-U/RV-I row or a missing fail-closed transition.
+
+T022 follow-up trace: user's authorized official merge → FR-019/023/024/036/041
+→ complete CK-name/cache and segmentation contract with retained Controller
+authorization → RV-I42 → NAC46/46, installed26/26, NDNSF183/74 and MiniNDN18/18.
+Exact commits, red/green failures,33 artifact hashes and acceptance limits are
+in `evidence/nac-abe-official-merge-20260905.md`. T014 upstream acceptance is
+unchanged and deferred under the no-PR instruction.

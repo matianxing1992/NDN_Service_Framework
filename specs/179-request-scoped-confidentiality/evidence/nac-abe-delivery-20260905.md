@@ -1,5 +1,9 @@
 # T014 — verified NAC-ABE delivery
 
+> Historical85547eb package. The user subsequently authorized local official
+> synchronization; current mergedc3aafa6 and its full regression/recovery bundle
+> are recorded in [T022 acceptance](nac-abe-official-merge-20260905.md). No PR/push.
+
 Updated2026-09-05 CDT. Local package PASS; user explicitly requests no PR.
 Publication is not scheduled; upstream acceptance remains open. This supersedes the earlier
 split description, which omitted T019/T020 and mixed API changes into a purported

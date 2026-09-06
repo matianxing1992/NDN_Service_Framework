@@ -130,12 +130,20 @@ User                                Provider(s)                     Controller
 - Local NAC-ABE dependency patches (DKEY FreshnessPeriod=0, versioned
   exact public-params fetch, consumer cache invalidation and delayed-callback
   fencing) live on the NAC-ABE `Experimental` branch (base `b1c9c4f`, repair
-  `8b462d0`, compatibility repair `b3b43c8`, not pushed). These patches change
+  `8b462d0`, compatibility repair `b3b43c8`, official merge `c3aafa6`, not pushed). These patches change
   public class layouts: dependent C++ applications and language extensions
   require a matched header/library rebuild. The compatibility contract is in
   `specs/179-request-scoped-confidentiality/evidence/nac-abe-compatibility-review-20260905.md`.
   The T019 repair is also captured in
   `specs/179-request-scoped-confidentiality/evidence/nac-abe-late-callback-fence-20260905.patch`.
+- T022 merges official UCLA-IRL master58f3948 without adding public header or
+  layout changes beyond the existing repaired dependency. CacheProducer now
+  forwards non-default segment limits for new CK/content objects; cached CK
+  packetization persists until explicit clear. Consumer preserves complete CK
+  object names, including typed segment components, preventing cache aliasing.
+  The matched `.deps/nac-abe-spec179-official` / `build-clang-spec179-official`
+  pair passes NAC46, NDNSF183 unit/74 integration and all18 MiniNDN scenarios.
+  Evidence: `specs/179-request-scoped-confidentiality/evidence/nac-abe-official-merge-20260905.md`.
 
 ## NAC-ABE routing
 

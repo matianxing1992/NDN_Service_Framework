@@ -656,6 +656,15 @@ default status refresh timing or remote erasure of already disclosed keys.
 
 ## Completion Rules
 
+T022 requalification (RV-I42): FR-019/023/024/036/041; official NAC mergec3aafa6,
+non-default CP/KP cold/warm segment limits, full CK object-name isolation,
+object/exact-segment retrieval and retained authorization repairs. Executed:
+NAC46/46, installed26/26, NDNSF183/183 unit and74/74 integration (including
+NdnsfDataV1SvsFlow2/2), launcher28/28, full18/18 MiniNDN with188 assertions,
+both dedicated User grants and33 verified hashes at clean cdd8e55a. Driver/all
+CLIs exit0. `evidence/nac-abe-official-merge-20260905.md`. T014 publication is
+still external; this row does not claim our patches are accepted upstream.
+
 Revocation is not complete unless:
 
 1. every RV-U row and RV-I row has an executed result;

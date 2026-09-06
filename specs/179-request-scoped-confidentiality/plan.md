@@ -336,8 +336,10 @@ commits through85547eb, mandatory T019/T020 repairs and ABI migration guidance.
 The two sections are review descriptions, not independently qualified branches.
 The tested base is personal fork master; official UCLA-IRL master includes two
 further fixes plus their merge commit. `evidence/nac-abe-official-comparison-20260905.md`
-records ahead/behind counts and conflict-free static merge previews. User requests
-no PR; next is isolated merge qualification, with no publication scheduled.
+records historical ahead/behind counts and conflict-free static merge previews.
+T022 subsequently qualifies mergedc3aafa6 with NAC46, NDNSF183/74 and18 MiniNDN
+scenarios; see `evidence/nac-abe-official-merge-20260905.md`. User requests no PR;
+publication is not scheduled.
 A standalone bundle preserves the exact tested source/history.
 
 ### T021 — Controller grants for both runtime roles
