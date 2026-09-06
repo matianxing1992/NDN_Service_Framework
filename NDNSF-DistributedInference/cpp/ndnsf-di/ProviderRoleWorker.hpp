@@ -159,7 +159,8 @@ public:
     std::shared_ptr<DependencyIo> io,
     NativeRunnerPreparation prepareRunner,
     std::map<std::string, TensorBundle> initialInputsByScope = {},
-    RoleExecutionContext::StreamEventSink eventSink = {});
+    RoleExecutionContext::StreamEventSink eventSink = {},
+    std::function<void()> executionGuard = {});
 
   std::future<ProviderRoleResult>
   executeCollectiveAsync(std::string sessionId,
@@ -196,6 +197,7 @@ private:
     std::shared_ptr<std::promise<ProviderRoleResult>> promise;
     std::chrono::steady_clock::time_point queuedAt;
     std::optional<CollectiveExecutionBinding> collective;
+    std::function<void()> executionGuard;
   };
 
   struct PendingInput
@@ -213,7 +215,8 @@ private:
                    NativeRunnerPreparation prepareRunner,
                    std::map<std::string, TensorBundle> initialInputsByScope,
                    std::optional<CollectiveExecutionBinding> collective,
-                   RoleExecutionContext::StreamEventSink eventSink);
+                   RoleExecutionContext::StreamEventSink eventSink,
+                   std::function<void()> executionGuard = {});
 
   void
   workerLoop();

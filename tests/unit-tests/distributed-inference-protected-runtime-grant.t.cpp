@@ -1,6 +1,7 @@
 #include "tests/boost-test.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp"
 
 #include <boost/property_tree/json_parser.hpp>
 #include <fstream>
@@ -66,6 +67,123 @@ struct BoundGrantFixture
     };
   }
 };
+
+class NoDependencyIo final : public DependencyIo
+{
+public:
+  std::future<TensorBundle> prefetchInput(const std::string&, const DependencyEdge&) override
+  { throw std::logic_error("unexpected dependency fetch"); }
+  void publishOutput(const std::string&, const DependencyEdge&, const TensorBundle&) override
+  { throw std::logic_error("unexpected dependency publication"); }
+};
+
+void checkWorkerFence(BoundGrantFixture& fixture, bool duringRun, bool cancelRequest)
+{
+  bool cancelled = false;
+  bool cleared = false;
+  fixture.config.shouldCancel = [&] { return cancelled; };
+  ProtectedRuntime runtime(fixture.binding, fixture.config);
+  runtime.verifyGrant(fixture.binding, fixture.now);
+  runtime.registerHostPlaintextLease("model", [&] { cleared = true; });
+  int preparations = 0;
+  int executions = 0;
+  const auto invalidate = [&] {
+    if (cancelRequest) cancelled = true;
+    else fixture.now = fixture.binding.expiresAtMs;
+  };
+  ProviderRoleWorker worker(1);
+  RoleSpec role{"stage0", {}, {}};
+  auto future = worker.executePreparedAsync("protected-worker", role,
+    std::make_shared<NoDependencyIo>(), [&] {
+      runtime.withContentKey(fixture.now, [] (const auto&) {});
+      ++preparations;
+      auto runner = makeNativeModelRunner([&] (const RoleExecutionContext&) {
+        ++executions;
+        if (duringRun) invalidate();
+        return std::map<std::string, TensorBundle>{};
+      });
+      if (!duringRun) invalidate();
+      return runner;
+    }, {}, {}, [&] { runtime.withContentKey(fixture.now, [] (const auto&) {}); });
+  BOOST_REQUIRE(future.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+  BOOST_CHECK_EXCEPTION(future.get(), std::runtime_error, [] (const std::runtime_error& error) {
+    return std::string(error.what()).find("DI_PROTECTED_GRANT_REJECTED") != std::string::npos;
+  });
+  BOOST_CHECK_EQUAL(preparations, 1);
+  BOOST_CHECK_EQUAL(executions, duringRun ? 1 : 0);
+  BOOST_CHECK(cleared);
+  BOOST_CHECK(runtime.state() == ProtectedRuntimeState::Zeroized);
+}
+}
+
+BOOST_FIXTURE_TEST_CASE(ProtectedRuntimeWorkerRejectsExpiryAfterPreparation, BoundGrantFixture)
+{ checkWorkerFence(*this, false, false); }
+
+BOOST_FIXTURE_TEST_CASE(ProtectedRuntimeWorkerRejectsCancellationAfterPreparation, BoundGrantFixture)
+{ checkWorkerFence(*this, false, true); }
+
+BOOST_FIXTURE_TEST_CASE(ProtectedRuntimeWorkerRejectsExpiryDuringCompute, BoundGrantFixture)
+{ checkWorkerFence(*this, true, false); }
+
+BOOST_FIXTURE_TEST_CASE(ProtectedRuntimeWorkerRejectsCancellationDuringCompute, BoundGrantFixture)
+{ checkWorkerFence(*this, true, true); }
+
+BOOST_FIXTURE_TEST_CASE(ProtectedRuntimeWorkerAcceptsValidRequestAndCachedResult, BoundGrantFixture)
+{
+  bool cleared = false;
+  ProtectedRuntime runtime(binding, config);
+  runtime.verifyGrant(binding, now);
+  runtime.registerHostPlaintextLease("model", [&] { cleared = true; });
+  int executions = 0;
+  TensorBundle output;
+  output.payload = {1, 2, 3};
+  auto runner = makeNativeModelRunner([&] (const RoleExecutionContext&) {
+    ++executions;
+    return std::map<std::string, TensorBundle>{{"result", output}};
+  });
+  ProviderRoleWorker worker(1);
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    auto future = worker.executePreparedAsync("protected-worker", RoleSpec{"stage0", {}, {}},
+      std::make_shared<NoDependencyIo>(), [&] { return runner; }, {}, {},
+      [&] { runtime.withContentKey(now, [] (const auto&) {}); });
+    BOOST_REQUIRE(future.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+    const auto result = future.get();
+    BOOST_CHECK(result.outputsByScope.at("result").payload == output.payload);
+    BOOST_CHECK_EQUAL(result.exactForwardCacheHit, attempt == 1);
+    BOOST_CHECK(!cleared);
+  }
+  BOOST_CHECK_EQUAL(executions, 1);
+  runtime.complete();
+  BOOST_CHECK(cleared);
+  BOOST_CHECK(runtime.state() == ProtectedRuntimeState::Zeroized);
+}
+
+BOOST_FIXTURE_TEST_CASE(ProtectedRuntimeWorkerRejectsStreamEventAfterCancellation, BoundGrantFixture)
+{
+  bool cancelled = false;
+  bool cleared = false;
+  config.shouldCancel = [&] { return cancelled; };
+  ProtectedRuntime runtime(binding, config);
+  runtime.verifyGrant(binding, now);
+  runtime.registerHostPlaintextLease("model", [&] { cleared = true; });
+  int events = 0;
+  ProviderRoleWorker worker(1);
+  auto future = worker.executePreparedAsync("protected-stream", RoleSpec{"stage0", {}, {}},
+    std::make_shared<NoDependencyIo>(), [&] {
+      return makeNativeModelRunner([&] (const RoleExecutionContext& context) {
+        cancelled = true;
+        context.streamEventSink({1});
+        return std::map<std::string, TensorBundle>{};
+      });
+    }, {}, [&] (const auto&) { ++events; return true; },
+    [&] { runtime.withContentKey(now, [] (const auto&) {}); });
+  BOOST_REQUIRE(future.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+  BOOST_CHECK_EXCEPTION(future.get(), std::runtime_error, [] (const std::runtime_error& error) {
+    return std::string(error.what()).find("DI_PROTECTED_GRANT_REJECTED") != std::string::npos;
+  });
+  BOOST_CHECK_EQUAL(events, 0);
+  BOOST_CHECK(cleared);
+  BOOST_CHECK(runtime.state() == ProtectedRuntimeState::Zeroized);
 }
 
 BOOST_FIXTURE_TEST_CASE(ProtectedRuntimeAcceptsExistingGroupWireDigests, BoundGrantFixture)

@@ -351,7 +351,8 @@ public:
     std::shared_ptr<DependencyIo> io,
     ProviderRoleWorker::NativeRunnerPreparation prepareRunner,
     std::map<std::string, TensorBundle> initialInputsByScope = {},
-    RoleExecutionContext::StreamEventSink eventSink = {});
+    RoleExecutionContext::StreamEventSink eventSink = {},
+    std::function<void()> executionGuard = {});
 
   ProviderRoleWorkerSnapshot
   snapshot() const;
