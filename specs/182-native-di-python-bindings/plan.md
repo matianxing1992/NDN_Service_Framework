@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 2 | **Date**: 2026-09-06
+**Branch**: Experimental | **Revision**: 3 | **Date**: 2026-09-06
 **Status**: DRAFT / NOT_STARTED
 **Spec**: [spec.md](spec.md)
 
@@ -8,7 +8,7 @@
 
 本机建立完整 C++ DI，Python 只作同库绑定。保留现有 Core 协作/安全原语、
 Provider native runtime 和模型 adapter 边界；消除默认 Python 控制实现及 helper 依赖。
-本计划是后续规划，不激活 Spec182，不改变仍在执行的 Spec181。
+本计划基于正在修复的合并工作区。182为当前设计；本轮更新文档，不实施迁移。181完整旧资格不再是前置门，合并稳定基线和承接表仍必须确认。
 
 ## Technical Context
 
@@ -31,7 +31,7 @@ Provider native runtime 和模型 adapter 边界；消除默认 Python 控制实
 
 ## Gate Order
 
-1. G0 / T001：Spec181 关闭/交付后刷新 baseline，关闭 O-001--005，冻结类型/调用方/依赖锁，
+1. G0 / T001：确认合并修复与181承接后刷新 baseline，关闭 O-001--005，冻结类型/调用方/依赖锁，
    自审达到相关范围 READY_FOR_IMPLEMENTATION。当前尚不满足。
 2. G1 / T002--009：独立库、策略/sealer/grant、ONNX/tokenizer、请求准备/admission 和 Provider host；focused proof。
 3. G2 / T010--012：完整 C++ requester、会话/恢复与同库 Python binding；focused integration。
@@ -43,7 +43,7 @@ Provider native runtime 和模型 adapter 边界；消除默认 Python 控制实
 ### Dependencies
 
 ~~~text
-Spec181 local closure -> T001
+Merged baseline closure and Spec181 handoff -> T001
 T001 -> T002 -> T003 -> T004 -> T005
 T002 -> T006
 T002 -> T007
@@ -72,7 +72,7 @@ GUI、离线训练/导出与实验 Python 保留；其业务调用转向 binding
 
 | Changed plane | Invalidated evidence | Earliest gate |
 | --- | --- | --- |
-| 181 final source / capability baseline | CD inventory、迁移假设、下游全部 | G0 |
+| Merged source / inherited capability baseline | CD inventory、迁移假设、下游全部 | G0 |
 | strategy/sealer/contract | wire/placement + integration/qualification | 相关 G1 + G4 |
 | grant/assembly/tokenizer | 安全/字节/token oracle 对应结果 + 下游 | 相关 G1 + G4 |
 | lifecycle/binding/default routing | 状态/兼容/no-Python/下游 | G2 或 G3 + G4 |
@@ -96,4 +96,10 @@ T017 的 evidence/development-handoff.md 包含 exact commit、clean source clos
 
 设计 revision 2 已有范围、架构不变量、CD、工作边界和 PO；
 完整实现就绪受 O-001--005 控制；O-005 设计由 T001 关闭，T014 再实现隔离并证明检错能力。
-下一个执行动作是继续 Spec181；其关闭后从 T001 刷新/补齐设计开始。
+下一步待合并修复提交稳定后执行T001，核对源码漂移、关闭叶子schema/ABI与兼容清单，再开始原生迁移。
+
+## Symbol and Toolchain Gates
+
+FR-017/SC-009 的设计审查执行 [symbol contract](contracts/symbol-design.md) 与 [field contract](contracts/value-contracts.md)：任务逐项列 SymbolContracts、Documentation、Usage；公开接口注释和使用示例随同实现验收。局部实现细节只有不改变外部行为且无资源/安全/状态责任时才可列 LOCAL_DETAIL。
+
+后续原生构建使用已核对的 system compiler/binutils closure，匹配 Boost headers/libs、NAC-ABE prefix 与 NDN-SVS build；ABI变更后重建全部依赖对象和绑定，核对实际加载路径/hash。默认至多-j2，不并发操作同一Waf树。当前文档检查不触发任何构建；合并记录中的依赖PASS不能替代新库验收。

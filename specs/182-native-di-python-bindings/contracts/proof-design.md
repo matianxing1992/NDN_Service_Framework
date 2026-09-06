@@ -1,6 +1,6 @@
 # Proof Design
 
-**Revision**: 2 | **Status**: planned; behavioral verification NOT_RUN
+**Revision**: 3 | **Status**: planned; behavioral verification NOT_RUN
 本契约定义将来证明，不记录虚构测试结果。source review 不等于行为通过。
 
 ## Proof Obligations
@@ -123,3 +123,9 @@ DiffScope、RecoveryState、ImplementationStatus、VerificationStatus、Acceptan
 
 失败保留新 run-dir，更新 active Spec evidence/tasks 与 docs/failure-log.md，
 不得覆盖历史日志或提交 secrets/大原始输出。状态为 IMPLEMENTED 不自动等于 ACCEPTED。
+
+## Symbol Documentation Proof
+
+FR-017/SC-009：T001 对源码/设计执行双向清单核对（source symbol→contract→task→PO，以及新增契约→预期diff），覆盖重载、字段、配置、回调和关键局部状态。LOCAL_DETAIL只豁免无外部语义的循环计数等细节。T015 对实际声明、Doxygen/Python docstring和示例逐项审计；类/方法计数本身不能证明文字准确。
+
+成功用法在独立C++ consumer与绑定测试执行；错误例核对原生原因码及Python映射，取消例区分本地终态与远端清理。删除旧默认配置项要有实际caller迁移与拒绝/弃用行为，不能只更新示例。Core请求加密/版本刷新/撤销/持久状态的既有回归在迁移后重跑；如ControllerVersion变化或撤销使在途请求失效，不允许DI缓存的过时policy或observer恢复成功。

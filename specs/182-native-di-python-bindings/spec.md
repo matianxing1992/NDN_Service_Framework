@@ -3,14 +3,14 @@
 **Feature Branch**: `Experimental`
 **Feature Directory**: `182-native-di-python-bindings`
 **Created**: 2026-09-06
-**Revision**: 2
+**Revision**: 3
 **Status**: DRAFT
 **Execution Status**: NOT_STARTED
-**Activation**: planned successor; active feature remains Spec181
+**Activation**: active design; merged baseline stabilization in progress
 
 **Input**: 所有者要求 C++ 自身完成完整 NDNSF-DI 调用；Python 只作为可选兼容外壳。
 Python 可以传入原生策略对象或配置，但默认策略执行、切分决策、运行时装配和协作调用
-必须在原生实现中完成。Spec181 尚在进行，本轮仅编写 Spec182，不启动迁移、合并或实验。
+必须在原生实现中完成。当前已经进入合并修复阶段；本轮仅更新设计技能与182文档，不执行原生迁移或实验。
 
 ## Goal
 
@@ -24,14 +24,11 @@ ACK 驱动规划、选定 Provider 独立验证、受保护工件、按需装配
 
 ### Relationship to Spec181
 
-- Spec181 继续按其当前 tasks/evidence 推进；182 文档不宣布它完成、不接管它的修复。
-- 实现前 T001 必须读取 Spec181 最终本地交付/关闭记录及确定提交，刷新本设计 baseline。
-  若届时范围改变，由同一任务记录承接表；不得沿用旧 PASS 作为 182 验收。
-- 本次 authoring 保留 .specify/feature.json 和 AGENTS 的活动计划为 181。Spec Kit 通用
-  自动激活步骤在此按“提前设计后续 Spec、181 仍在执行”的用户范围跳过。
-- 将来显式开始 182 时再切换指针、更新 managed context、重建 file-backed authority 索引。
-- 本机负责代码、unit/integration/MiniNDN 与开发交付；实验机器负责 SIF/Tiger。
-  外部执行为 TRANSFERRED，不是本 Spec 本地完成门，也不等于实验 PASS。
+- 用户已调整顺序：先完成合并修复与必要基线检查，再开展182；不再要求先完成181全部旧资格实验。
+- 182 不宣布181完成。T001 记录已交付能力、保留回归、待迁移验证及外部实验的承接表，冻结合并后的源码与依赖身份。
+- 合并工作区的 unit/integration 仍有失败。文档可现在修订；实现从已确认的合并 checkpoint 和关闭的设计门开始。旧 PASS 不替代182验收。
+- 本机负责代码、unit/integration/MiniNDN 与开发交付；实验机器负责 SIF/Tiger，外部执行标 TRANSFERRED。
+- 当前 source-of-truth 与未提交合并身份见 [merged baseline](evidence/merged-source-baseline-r3.json)；活动指针已经指向182，旧 managed plan 需同步。
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -145,10 +142,11 @@ Python 绑定可选构建，禁止依赖主工作区未提交文件。
   MiniNDN 与可杀死错误实现的负例；正式本地验收前 code-aware audit PASS，故障先分类首边界。
 - **FR-014**: **Immutable Local Delivery**. System MUST 交付同一源、原生库、配置、工件、
   adapter、harness、依赖锁与证据身份；本地交付和外部 SIF/Tiger verdict 分开记录。
-- **FR-015**: **Controlled Successor Activation**. System MUST 在 Spec181 关闭并刷新 baseline
-  后才启动 182 实现；本次设计不得改变 181 状态、旧冻结证据或活动指针。
+- **FR-015**: **Controlled Successor Activation**. System MUST 在合并修复基线及181承接表确认、对应设计门关闭后启动182实现；不要求先完成181全部旧资格，不改写历史验收结果。
 - **FR-016**: **No Capability Reduction by Relocation**. System MUST 保留已支持生产能力的
   行为清单；禁止以提前离线固定切分、只验 warm path、只返回 tokens 或删除负例冒充完整原生化。
+
+- **FR-017**: **Symbol Documentation and Usage Closure**. System MUST 在每个实施单元开始前冻结受影响类、方法、字段和关键局部状态的职责、变更原因、签名、类型/单位/边界、所有权、失败/取消、调用方、注释及前后用法；新增/修改/复用/退出路径均可追踪，未决项阻塞对应实现。不得用堆砌符号名或转述方法名代替解释。
 
 ### Key Entities
 
@@ -181,6 +179,8 @@ Python 绑定可选构建，禁止依赖主工作区未提交文件。
 - **SC-008**: **Truthful Successor Delivery**. 181 状态不被本轮改写；182 每个 FR 有 CD/T/PO
   映射，本地 audit/验收/交付证据齐全才关闭，外部实验不借用本地 PASS。
 
+- **SC-009**: **Reviewable Symbol Contracts**. 每个变更符号有覆盖条目和任务/证明映射，所有非 LOCAL_DETAIL 字段有语义说明；公开 C++/Python 文档及使用示例经实际构建/运行验收。设计阶段只计文档检查，不计编译通过。
+
 ## Architecture Invariants
 
 | INV | Invariant | Source / authority | Enforcement |
@@ -193,7 +193,7 @@ Python 绑定可选构建，禁止依赖主工作区未提交文件。
 | INV-006 | 冷动态装配仍在 Selection 后；模型差异归 adapter | NativeCanonicalOnnxAssembler；现有 recipe | 冷缓存、多不同切分和权限先行 |
 | INV-007 | 运行时零 Python，不要求离线训练/导出或构建工具零 Python | 本次用户目标；Waf 为构建工具 | 生产进程树/动态库检查 |
 | INV-008 | 设计、实现、定向检查、本地验收、外部实验分离 | constitution V/VII/VIII；Spec181 handoff | audit + 同源证据 |
-| INV-009 | 本轮仅修改 182 文档，181 活动身份不变 | 本次用户授权 | 前后 hash / Git diff |
+| INV-009 | 本轮只更新设计技能/182文档和相关上下文；不干扰合并代码修复 | 本次用户授权 | 明确路径 diff 与工作区边界 |
 
 ## Code Design Index
 
@@ -255,12 +255,12 @@ Python 不成为 flow 中间的 planner、grant authority、每 token callback �
 - “完整”覆盖迁移清单中的现有生产能力及本 Spec 的 YOLO/Qwen 验收；不要求实现从未支持的新模型。
 - 离线 Python 导出和 Python 实验 harness 允许；被测 requester、Providers、授权及运行时依赖不允许 Python。
 - 181 修复的 Data wire-size 问题不被语言迁移自动解决，T001 必须核对其最终处置。
-- 撤销子系统、独立网络权威服务、UAV 分支合并和多 GPU/性能资格不因本 Spec 自动纳入。
+- 已合并 Core 的请求级加密/撤销/ControllerVersion/权限刷新与持久状态属于保留基线；DI 工件 grant 独立撤销扩展、独立网络权威服务及多GPU/性能资格不自动扩围。
 
 ## Design Readiness
 
 **DRAFT / BLOCK for implementation**。用户目标与职责选择已明确，公开 API/行为和证明框架见附件；
-O-001（181 最终基线）、O-002（ONNX 原生字节契约）、O-003（tokenizer 原生依赖 ABI）
+O-001（合并修复基线及181承接）、O-002（ONNX 原生字节契约）、O-003（tokenizer 原生依赖 ABI）
 、O-004（完整旧能力/调用方清单）与 O-005（隔离设计可行性）在 [code-design](contracts/code-design.md#open-questions)
 中保留有界关闭条件。不得把尚未冻结的叶子接口交给实现者临场补全。
 
@@ -270,7 +270,13 @@ O-001（181 最终基线）、O-002（ONNX 原生字节契约）、O-003（token
 [runtime boundaries](contracts/runtime-boundaries.md)、[work-units](contracts/work-units.md)、[plan](plan.md)、[tasks](tasks.md)、
 [traceability](traceability.md)、[audit](audit.md)、[checklist](checklists/requirements.md)。
 
+## Symbol Documentation Contract
+
+[Symbol design](contracts/symbol-design.md) 定义类/方法/状态/注释/用法；[value contracts](contracts/value-contracts.md) 对照合并源码的12类137字段，逐项解释含义；[coverage inventory](contracts/source-field-coverage.json) 保留机器可查来源。嵌套 schema、原生依赖 ABI、注册/取消接线等未决项必须在T001关闭，禁止跳过到实现。
+
 ## Revision History
+
+- Revision 3：依据合并工作区修正基线和承接门；保留新 Core 安全/撤销能力，纠正 CandidateBudget 字段；增加 FR-017/SC-009 及逐符号、字段、注释、用法契约。设计交付不代表迁移已完成。
 
 - Revision 2：完整审计后补 CD-013/014 与 PO-013/014；任务 15→17。
   原 T008--015 改为 T010--017；原 T001--007 不变。历史 revision 1 evidence 不回写。

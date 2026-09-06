@@ -1,28 +1,18 @@
 # Code Design Contract
 
-**Revision**: 2 | **Status**: DRAFT
+**Revision**: 3 | **Status**: DRAFT
 **Normative parent**: [spec.md](../spec.md)
-**Baseline**: [design-baseline.json](../evidence/design-baseline.json)（revision 1 历史快照）；revision 2 当前差异见 [audit evidence](../evidence/audit-revision2.md)。
+**Baseline**: [merged-source-baseline-r3.json](../evidence/merged-source-baseline-r3.json)；revision 1/2 evidence 只保留历史意义。
 
 ## Baseline and Evidence
 
-existing 仅表示主工作区存在；committed/workspace-existing 及每文件 SHA-256 由 baseline 区分。
-观察提交 b95b7e8462b1786be8307e41f2d1b308e3fcc871，Experimental；40 个设计相关路径，
-其中 17 个含未提交内容或未跟踪。不能据此假定干净编译或跨机可用。
+existing 表示合并工作区当前可见代码，不代表 qualification PASS。实际源码位于 `/home/tianxing/NDN/ndnsf-integration-182`，branch `integration/uav-182-20260906`；HEAD `d4a5e39ce5b4a023f6e55d2440c60aa998983f8f`，MERGE_HEAD `4391af81cd24ff5510aa52b48ab9cec0fdec1ebb`。文本冲突已解决，但合并尚未提交且有后续修复；不能仅用 HEAD 表示当前源内容。逐文件身份见 [merged source baseline](../evidence/merged-source-baseline-r3.json)，核对结果见 [revision 3 evidence](../evidence/skill-and-design-revision3.md)。
 
-- ServiceUser.cpp:5466 BeginCollaboration，:5586 CommitCollaborationPlan：existing Core。
-- app_sdk/placement.py:3019 _request_v3：existing Python 默认模型请求规划；
-  :3507 seal_core、:3550 grant callback、:3953 project、:4045 commit_plan。
-- planner/presplit_first.py:517 propose_v3：existing 能力/device/residency 排序。
-- NativeCanonicalOnnxAssembler.cpp:740 runPythonHelper：existing 生产冷装配依赖。
-- NativeStandaloneTokenizer.cpp:68--109 decoder callback：workspace-existing fork/exec Python。
-- NativeEpochCoordinator.hpp：existing 原生生成调度和 executionGuard；保持复用。
-- revision 1 引用的 R18 是历史 Data wire-size 失败；当前 failure index 已推进至
-  exact-tensor R6 focused PASS（270 assertions），尚不能当作正式 matrix/181 关闭。
+已核对 ServiceUser 的 BeginCollaboration / CommitCollaborationPlan、RequestConfidentiality / RevocationState / RuntimeStatusStore、现有 Provider runtime、Python requester/planner/DTO 及 ONNX/tokenizer helper。源码所在工作区无索引目录，因此按仓库规则跳过 CodeGraph，使用精确路径、头文件与 AST。主工作区 active Context Mode health 因 managed plan 仍指181失败；本轮以持久文档和源码为 authority，不使用自动记忆推断进度。
 
-CodeGraph 广义查询包含临时比较副本，全部排除；
-以精确主工作区路径和源码核对。Context Mode project query 曾返回空，
-未用作 authority；当前文档和源身份来自仓库。无历史 PASS 晋升。
+合并已带入请求级加密、ControllerVersion、撤销/权限刷新及持久运行状态。这些是 existing Core 机制，182 必须复用；原生 requester、无 Python 冷装配/分词仍 planned。集成记录中 unit R1 为747/751，integration R1 为60/92，均有失败；NAC-ABE 46/46 和 Context guard 45 PASS 只证明各自范围。未将既有失败重命名为182迁移失败，也未重跑或修改合并修复。
+
+[Symbol design](symbol-design.md) 和 [value contracts](value-contracts.md) 是本 CD 的规范性补充：逐类/逐方法/逐字段解释职责、注释、用法与未决边界。所有新签名均为 DESIGN_EXAMPLE / NOT_COMPILED；T001 必须冻结剩余叶子 schema/ABI 后才允许实现对应单元。
 
 ## CD-001 Public API
 
@@ -130,8 +120,9 @@ Python LayerSplit 等名字只是 native 类型绑定；不把 Python callable �
 
 **Inputs**：model/graph 来自认证目录与 canonical 工件；snapshot 仅包含一次 ACK_CLOSED 的
 认证 offers、其 digest、绝对 deadline 和不可变模型/图引用。
-budget 包含 maxCandidates、maxRoles、maxNodes 和当前请求 deadline；值由原生 config 校验，
-T001 迁移当前 CandidateBudget 的确切默认和上限，不另设任意更宽上限。
+budget 对应当前 core/ports.py::CandidateBudget：maxCandidates、maxPolicyMs（默认100毫秒）、maxReentries（默认1）。
+请求 deadline 属于 request control/snapshot，不是 CandidateBudget 字段；图节点/角色上限属于图与装配契约。
+T001 冻结整数范围及上限来源；不能把字段改名当成预算语义等价。见 value-contracts V04。
 strategy identity 是版本/参数规范摘要，不含可变全局缓存。
 
 **Behavior**：
@@ -191,7 +182,7 @@ grant binding → finalize 的顺序。NativeGrantClient 使用现有 ServiceUse
 不得引入新的网络 authority 服务作为迁移捷径。
 进程内 authority 仍为独立职责；requester 不可绕过 policy 签发，Provider 不可把“字段相等”当验证成功。
 key 只能经已有安全原语消费和零化；不自写替代密码算法。算法/字段复用 Spec170/181，
-撤销和独立 authority 服务范围保持原决定。
+合并 Core 的请求级撤销、ControllerVersion 校验与权限刷新必须保持；DI 工件 grant 的独立撤销扩展和独立网络 authority 部署不由本迁移自动增加，不能混写为全部撤销尚未实现。
 
 ## CD-005 Assembly
 
@@ -337,10 +328,10 @@ CD-013/014、取消/通知队列及旧路径回退完整定义于
 
 | Open ID | Unknown / impact | Bounded investigation and acceptable result | Owner / blocked units |
 | --- | --- | --- | --- |
-| O-001 | Spec181 最终交付和依赖修复尚未封存 | 读取最终 closure/handoff 与实际 commit，核对 R18 首边界处置；刷新 baseline 一次，不重跑旧实验以猜测 | T001；全部实现 |
+| O-001 | 合并修复最终源身份和承接表尚未封存 | 读取合并 closure/handoff、实际 merge commit 与逐文件哈希，核对当前 unit/integration 首边界；确认181遗留能力/验证迁入182，不要求先跑完181旧完整资格 | T001；全部实现 |
 | O-002 | 原生 ONNX extraction/checker/protobuf 是否复现既有精确字节 | 在固定 inline/external-data 与两种 role recipe 上比较；列出 native 调用、版本、许可、依赖和差异。精确相等或经明确版本化设计修订后才能关闭；最多两个候选方案 | T001；T002/T006 |
 | O-003 | 可复用 native tokenizer 库/ABI/线程安全尚未验证 | 固定 tokenizer.json 的 ASCII、Unicode、special/byte fallback 向量，比较完整 ids/text；证明无 Python。冻结一种 ABI/依赖及内存所有权；最多两个候选方案 | T001；T002/T007 |
-| O-004 | 所有旧公开 API/策略/会话持久化与调用方尚未穷举 | CodeGraph + AST/import/config inventory；按 runtime-boundaries 的 NATIVE_REQUIRED/BINDING_ONLY/OFFLINE_REFERENCE/UNSUPPORTED_EXTENSION 分类，补完整 types、状态、Core cancel/observer 接线和错误映射；不允许遗漏调用方或以未验证分支做基线 | T001；T002--T013 |
+| O-004 | 所有旧公开 API/策略/会话持久化与调用方尚未穷举 | 有索引时 CodeGraph，否则精确源码 + AST/import/config inventory；按 runtime-boundaries 的 NATIVE_REQUIRED/BINDING_ONLY/OFFLINE_REFERENCE/UNSUPPORTED_EXTENSION 分类，补完整 types、状态、Core cancel/observer 接线和错误映射；不允许遗漏调用方或以未验证分支做基线 | T001；T002--T013 |
 | O-005 | native runtime 隔离设计可行性 | 核对 Linux mount/process observation 能阻断解释器、libpython、旁路服务，同时允许 harness 在外部；T001 冻结工具、权限和白名单设计后关闭此 OPEN；T014 实现并用故意 helper 验证有效性 | T001 设计；T014 实现；T016 资格 |
 
 每项 OPEN 是具体设计边界，不能宣称 READY 后留给实现 improvisation。

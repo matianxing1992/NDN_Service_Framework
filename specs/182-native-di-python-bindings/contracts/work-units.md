@@ -1,6 +1,6 @@
 # Work Unit Contracts
 
-**Revision**: 2 | **Status**: planned, all implementation NOT_STARTED
+**Revision**: 3 | **Status**: planned, all implementation NOT_STARTED
 本表定义设计批次，不授权现在执行。O-001--005 关闭前全部实现 BLOCK。
 T001 必须把超过合理范围的批次再细分为有独立行为和验收的原子单元，并同步全部 ID 引用，
 才能标 READY_FOR_IMPLEMENTATION；不可把本表的大估算直接当无限实现授权。
@@ -31,10 +31,14 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 
 ## T001 Successor Baseline and Design Closure
 
+- **SymbolContracts**: C01--C21 / M01--M48 / V01--V12；以 [symbol design](symbol-design.md) 与 [value contracts](value-contracts.md) 中同CD的精确符号为准；未覆盖新增符号先补契约。
+- **Documentation**: 每个受影响声明补英文 Doxygen/docstring：职责/输入输出/单位/owner/失败/取消/线程/保密/调用顺序；字段注释说明非显然约束，旧字段删除同步配置和文档。
+- **Usage**: 修改前入口→修改后原生调用及 Python 映射；成功、边界失败、取消/关闭至少覆盖适用场景。设计片段标NOT_COMPILED，实现时用独立consumer/对应PO实际验证，不能以文档检查冒充通过。
+
 - **Owner**: 本机，Successor Baseline and Design Closure。
-- **Design**: FR-015,FR-016; CD-001--014; INV-001,INV-004,INV-008,INV-009; FLOW-001, FLOW-002。
-- **StartState**: Spec181 local closure；核对具体 source/design identity。
-- **EndState**: 冻结 181 交付、所有 schema/公开调用方/能力清单及原生依赖，关闭 O-001--005；修订叶子签名与任务至可执行。
+- **Design**: FR-015,FR-016,FR-017; CD-001--014; INV-001,INV-004,INV-008,INV-009; FLOW-001, FLOW-002。
+- **StartState**: Merged baseline closure and Spec181 handoff；核对具体 source/design identity。
+- **EndState**: 冻结合并基线与181承接表、所有 schema/公开调用方/能力清单及原生依赖，关闭 O-001--005；修订叶子签名与任务至可执行。
 - **ExactFiles / ExactSymbols**: [code-design](code-design.md) 的 CD-001--014 和 [proof inventory](proof-design.md#planned-test-and-build-inventory) 的 T001。
 - **DecisionBudget**: BOUNDED_DESIGN。
 - **AllowedDecisions**: 按 O-001--005 冻结现有语义；每个依赖最多两个候选的设计调查和隔离工具可行性核对。依赖/端口选择记录于 CD 后复审，不运行模型实验。
@@ -43,10 +47,14 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 - **ProofObligations**: PO-012。
 - **ExactCommands / VerificationLadder**: L0 source/design review；设计 probe 若另行执行必须独立记录，不能计实现；使用上述 planned command contract，未冻结 selectors 前 BLOCK。
 - **EscalationConditions**: 设计 READY 需要关闭每个影响接口/状态/依赖的 OPEN；同样适用 common boundary。
-- **RecoveryPoint**: 当前设计 commit；保留 181 authority。
+- **RecoveryPoint**: 当前设计 commit；保留历史181证据与当前182 authority。
 - **Evidence**: ../evidence/t001-completion.md（planned，当前不存在）。
 
 ## T002 Installable Native Library Contract
+
+- **SymbolContracts**: C01,C20 / public declarations / build variables；以 [symbol design](symbol-design.md) 与 [value contracts](value-contracts.md) 中同CD的精确符号为准；未覆盖新增符号先补契约。
+- **Documentation**: 每个受影响声明补英文 Doxygen/docstring：职责/输入输出/单位/owner/失败/取消/线程/保密/调用顺序；字段注释说明非显然约束，旧字段删除同步配置和文档。
+- **Usage**: 修改前入口→修改后原生调用及 Python 映射；成功、边界失败、取消/关闭至少覆盖适用场景。设计片段标NOT_COMPILED，实现时用独立consumer/对应PO实际验证，不能以文档检查冒充通过。
 
 - **Owner**: 本机，Installable Native Library Contract。
 - **Design**: FR-001,FR-012; CD-001,CD-009; INV-001,INV-002,INV-007; FLOW-001, FLOW-002。
@@ -65,6 +73,10 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 
 ## T003 Native Split and Placement Decisions
 
+- **SymbolContracts**: C04--C10 / M10--M18 / V01--V04,V09,V10；以 [symbol design](symbol-design.md) 与 [value contracts](value-contracts.md) 中同CD的精确符号为准；未覆盖新增符号先补契约。
+- **Documentation**: 每个受影响声明补英文 Doxygen/docstring：职责/输入输出/单位/owner/失败/取消/线程/保密/调用顺序；字段注释说明非显然约束，旧字段删除同步配置和文档。
+- **Usage**: 修改前入口→修改后原生调用及 Python 映射；成功、边界失败、取消/关闭至少覆盖适用场景。设计片段标NOT_COMPILED，实现时用独立consumer/对应PO实际验证，不能以文档检查冒充通过。
+
 - **Owner**: 本机，Native Split and Placement Decisions。
 - **Design**: FR-003,FR-009,FR-016; CD-002; INV-001,INV-002,INV-003,INV-004; FLOW-001, FLOW-002。
 - **StartState**: T002；核对具体 source/design identity。
@@ -81,6 +93,10 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 - **Evidence**: ../evidence/t003-completion.md（planned，当前不存在）。
 
 ## T004 Canonical Native Plan Sealing
+
+- **SymbolContracts**: C11 / M19--M23 / V10,V12；以 [symbol design](symbol-design.md) 与 [value contracts](value-contracts.md) 中同CD的精确符号为准；未覆盖新增符号先补契约。
+- **Documentation**: 每个受影响声明补英文 Doxygen/docstring：职责/输入输出/单位/owner/失败/取消/线程/保密/调用顺序；字段注释说明非显然约束，旧字段删除同步配置和文档。
+- **Usage**: 修改前入口→修改后原生调用及 Python 映射；成功、边界失败、取消/关闭至少覆盖适用场景。设计片段标NOT_COMPILED，实现时用独立consumer/对应PO实际验证，不能以文档检查冒充通过。
 
 - **Owner**: 本机，Canonical Native Plan Sealing。
 - **Design**: FR-002,FR-004; CD-003; INV-001,INV-003,INV-004; FLOW-001, FLOW-002。
@@ -99,6 +115,10 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 
 ## T005 Native Requester Grant Path
 
+- **SymbolContracts**: C12,C13 / M24--M25 / grant family；以 [symbol design](symbol-design.md) 与 [value contracts](value-contracts.md) 中同CD的精确符号为准；未覆盖新增符号先补契约。
+- **Documentation**: 每个受影响声明补英文 Doxygen/docstring：职责/输入输出/单位/owner/失败/取消/线程/保密/调用顺序；字段注释说明非显然约束，旧字段删除同步配置和文档。
+- **Usage**: 修改前入口→修改后原生调用及 Python 映射；成功、边界失败、取消/关闭至少覆盖适用场景。设计片段标NOT_COMPILED，实现时用独立consumer/对应PO实际验证，不能以文档检查冒充通过。
+
 - **Owner**: 本机，Native Requester Grant Path。
 - **Design**: FR-005; CD-004; INV-001,INV-003,INV-004,INV-005; FLOW-001, FLOW-002。
 - **StartState**: T004；核对具体 source/design identity。
@@ -115,6 +135,10 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 - **Evidence**: ../evidence/t005-completion.md（planned，当前不存在）。
 
 ## T006 Native Cold ONNX Assembly
+
+- **SymbolContracts**: C14 / M26--M28 / assembly options；以 [symbol design](symbol-design.md) 与 [value contracts](value-contracts.md) 中同CD的精确符号为准；未覆盖新增符号先补契约。
+- **Documentation**: 每个受影响声明补英文 Doxygen/docstring：职责/输入输出/单位/owner/失败/取消/线程/保密/调用顺序；字段注释说明非显然约束，旧字段删除同步配置和文档。
+- **Usage**: 修改前入口→修改后原生调用及 Python 映射；成功、边界失败、取消/关闭至少覆盖适用场景。设计片段标NOT_COMPILED，实现时用独立consumer/对应PO实际验证，不能以文档检查冒充通过。
 
 - **Owner**: 本机，Native Cold ONNX Assembly。
 - **Design**: FR-006,FR-016; CD-005; INV-003,INV-004,INV-006,INV-007; FLOW-001, FLOW-002。
@@ -133,6 +157,10 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 
 ## T007 Native Tokenizer Execution
 
+- **SymbolContracts**: C15 / M29--M33 / V11；以 [symbol design](symbol-design.md) 与 [value contracts](value-contracts.md) 中同CD的精确符号为准；未覆盖新增符号先补契约。
+- **Documentation**: 每个受影响声明补英文 Doxygen/docstring：职责/输入输出/单位/owner/失败/取消/线程/保密/调用顺序；字段注释说明非显然约束，旧字段删除同步配置和文档。
+- **Usage**: 修改前入口→修改后原生调用及 Python 映射；成功、边界失败、取消/关闭至少覆盖适用场景。设计片段标NOT_COMPILED，实现时用独立consumer/对应PO实际验证，不能以文档检查冒充通过。
+
 - **Owner**: 本机，Native Tokenizer Execution。
 - **Design**: FR-007; CD-006; INV-002,INV-006,INV-007; FLOW-001, FLOW-002。
 - **StartState**: T002；O-003 closed；核对具体 source/design identity。
@@ -149,6 +177,10 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 - **Evidence**: ../evidence/t007-completion.md（planned，当前不存在）。
 
 ## T008 Native Request Preparation and Admission
+
+- **SymbolContracts**: C09,C18,C19 / M16--M18,M40--M43 / V01,V02,V05,V06,V09；以 [symbol design](symbol-design.md) 与 [value contracts](value-contracts.md) 中同CD的精确符号为准；未覆盖新增符号先补契约。
+- **Documentation**: 每个受影响声明补英文 Doxygen/docstring：职责/输入输出/单位/owner/失败/取消/线程/保密/调用顺序；字段注释说明非显然约束，旧字段删除同步配置和文档。
+- **Usage**: 修改前入口→修改后原生调用及 Python 映射；成功、边界失败、取消/关闭至少覆盖适用场景。设计片段标NOT_COMPILED，实现时用独立consumer/对应PO实际验证，不能以文档检查冒充通过。
 
 - **Owner**: 本机；原生 request preparation / offer admission。
 - **Design**: FR-001,FR-002,FR-004,FR-009,FR-016; CD-013; INV-001,INV-002,INV-003,INV-004; FLOW-001。
@@ -168,6 +200,10 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 
 ## T009 Shared Native Provider Host
 
+- **SymbolContracts**: C20,C21 / M44--M48 / service family；以 [symbol design](symbol-design.md) 与 [value contracts](value-contracts.md) 中同CD的精确符号为准；未覆盖新增符号先补契约。
+- **Documentation**: 每个受影响声明补英文 Doxygen/docstring：职责/输入输出/单位/owner/失败/取消/线程/保密/调用顺序；字段注释说明非显然约束，旧字段删除同步配置和文档。
+- **Usage**: 修改前入口→修改后原生调用及 Python 映射；成功、边界失败、取消/关闭至少覆盖适用场景。设计片段标NOT_COMPILED，实现时用独立consumer/对应PO实际验证，不能以文档检查冒充通过。
+
 - **Owner**: 本机；Provider host 接线。
 - **Design**: FR-001,FR-009,FR-010,FR-012; CD-014; INV-001,INV-002,INV-003,INV-005; FLOW-001,FLOW-004。
 - **StartState**: T006/T007；O-004 已确认真实 Core registration/stop 接口。
@@ -184,6 +220,10 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 - **Evidence**: ../evidence/t009-completion.md（planned）。
 
 ## T010 Complete Native Request Lifecycle
+
+- **SymbolContracts**: C01--C03 / M01--M09 / request and result fields；以 [symbol design](symbol-design.md) 与 [value contracts](value-contracts.md) 中同CD的精确符号为准；未覆盖新增符号先补契约。
+- **Documentation**: 每个受影响声明补英文 Doxygen/docstring：职责/输入输出/单位/owner/失败/取消/线程/保密/调用顺序；字段注释说明非显然约束，旧字段删除同步配置和文档。
+- **Usage**: 修改前入口→修改后原生调用及 Python 映射；成功、边界失败、取消/关闭至少覆盖适用场景。设计片段标NOT_COMPILED，实现时用独立consumer/对应PO实际验证，不能以文档检查冒充通过。
 
 - **Owner**: 本机，Complete Native Request Lifecycle。
 - **Design**: FR-001,FR-002,FR-008; CD-001,CD-013,CD-014; INV-001,INV-002,INV-003,INV-005; FLOW-001, FLOW-002。
@@ -202,6 +242,10 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 
 ## T011 Native Conversation Continuation
 
+- **SymbolContracts**: C16 / M34--M38 / V07,V08,V11；以 [symbol design](symbol-design.md) 与 [value contracts](value-contracts.md) 中同CD的精确符号为准；未覆盖新增符号先补契约。
+- **Documentation**: 每个受影响声明补英文 Doxygen/docstring：职责/输入输出/单位/owner/失败/取消/线程/保密/调用顺序；字段注释说明非显然约束，旧字段删除同步配置和文档。
+- **Usage**: 修改前入口→修改后原生调用及 Python 映射；成功、边界失败、取消/关闭至少覆盖适用场景。设计片段标NOT_COMPILED，实现时用独立consumer/对应PO实际验证，不能以文档检查冒充通过。
+
 - **Owner**: 本机，Native Conversation Continuation。
 - **Design**: FR-008,FR-016; CD-007; INV-003,INV-004,INV-005; FLOW-001, FLOW-003。
 - **StartState**: T010；核对具体 source/design identity。
@@ -218,6 +262,10 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 - **Evidence**: ../evidence/t011-completion.md（planned，当前不存在）。
 
 ## T012 Thin Python Native Bindings
+
+- **SymbolContracts**: C17 / M39 / all exposed values；以 [symbol design](symbol-design.md) 与 [value contracts](value-contracts.md) 中同CD的精确符号为准；未覆盖新增符号先补契约。
+- **Documentation**: 每个受影响声明补英文 Doxygen/docstring：职责/输入输出/单位/owner/失败/取消/线程/保密/调用顺序；字段注释说明非显然约束，旧字段删除同步配置和文档。
+- **Usage**: 修改前入口→修改后原生调用及 Python 映射；成功、边界失败、取消/关闭至少覆盖适用场景。设计片段标NOT_COMPILED，实现时用独立consumer/对应PO实际验证，不能以文档检查冒充通过。
 
 - **Owner**: 本机，Thin Python Native Bindings。
 - **Design**: FR-010; CD-008,CD-009; INV-002,INV-004,INV-005,INV-007; FLOW-001, FLOW-004。
@@ -236,6 +284,10 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 
 ## T013 Default Route and Legacy Retirement
 
+- **SymbolContracts**: C17 / maintained caller and legacy inventory；以 [symbol design](symbol-design.md) 与 [value contracts](value-contracts.md) 中同CD的精确符号为准；未覆盖新增符号先补契约。
+- **Documentation**: 每个受影响声明补英文 Doxygen/docstring：职责/输入输出/单位/owner/失败/取消/线程/保密/调用顺序；字段注释说明非显然约束，旧字段删除同步配置和文档。
+- **Usage**: 修改前入口→修改后原生调用及 Python 映射；成功、边界失败、取消/关闭至少覆盖适用场景。设计片段标NOT_COMPILED，实现时用独立consumer/对应PO实际验证，不能以文档检查冒充通过。
+
 - **Owner**: 本机，Default Route and Legacy Retirement。
 - **Design**: FR-011,FR-016; CD-010; INV-002,INV-004,INV-005,INV-007; FLOW-001, FLOW-002。
 - **StartState**: T012；核对具体 source/design identity。
@@ -252,6 +304,10 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 - **Evidence**: ../evidence/t013-completion.md（planned，当前不存在）。
 
 ## T014 Runtime Dependency Exclusion Gate
+
+- **SymbolContracts**: runtime process/environment fields / CD-011；以 [symbol design](symbol-design.md) 与 [value contracts](value-contracts.md) 中同CD的精确符号为准；未覆盖新增符号先补契约。
+- **Documentation**: 每个受影响声明补英文 Doxygen/docstring：职责/输入输出/单位/owner/失败/取消/线程/保密/调用顺序；字段注释说明非显然约束，旧字段删除同步配置和文档。
+- **Usage**: 修改前入口→修改后原生调用及 Python 映射；成功、边界失败、取消/关闭至少覆盖适用场景。设计片段标NOT_COMPILED，实现时用独立consumer/对应PO实际验证，不能以文档检查冒充通过。
 
 - **Owner**: 本机，Runtime Dependency Exclusion Gate。
 - **Design**: FR-001,FR-011,FR-012,FR-014; CD-011; INV-002,INV-007,INV-008; FLOW-001, FLOW-002。
@@ -270,6 +326,10 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 
 ## T015 Design-code Convergence Audit
 
+- **SymbolContracts**: C01--C21 / M01--M48 / V01--V12；以 [symbol design](symbol-design.md) 与 [value contracts](value-contracts.md) 中同CD的精确符号为准；未覆盖新增符号先补契约。
+- **Documentation**: 每个受影响声明补英文 Doxygen/docstring：职责/输入输出/单位/owner/失败/取消/线程/保密/调用顺序；字段注释说明非显然约束，旧字段删除同步配置和文档。
+- **Usage**: 修改前入口→修改后原生调用及 Python 映射；成功、边界失败、取消/关闭至少覆盖适用场景。设计片段标NOT_COMPILED，实现时用独立consumer/对应PO实际验证，不能以文档检查冒充通过。
+
 - **Owner**: 本机，Design-code Convergence Audit。
 - **Design**: FR-013; CD-001--014; INV-001,INV-002,INV-003,INV-004,INV-005,INV-006,INV-007,INV-008; FLOW-001, FLOW-002。
 - **StartState**: T014；核对具体 source/design identity。
@@ -287,6 +347,10 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 
 ## T016 Local Native Qualification
 
+- **SymbolContracts**: all public usage and protocol oracle fields；以 [symbol design](symbol-design.md) 与 [value contracts](value-contracts.md) 中同CD的精确符号为准；未覆盖新增符号先补契约。
+- **Documentation**: 每个受影响声明补英文 Doxygen/docstring：职责/输入输出/单位/owner/失败/取消/线程/保密/调用顺序；字段注释说明非显然约束，旧字段删除同步配置和文档。
+- **Usage**: 修改前入口→修改后原生调用及 Python 映射；成功、边界失败、取消/关闭至少覆盖适用场景。设计片段标NOT_COMPILED，实现时用独立consumer/对应PO实际验证，不能以文档检查冒充通过。
+
 - **Owner**: 本机，Local Native Qualification。
 - **Design**: FR-001,FR-005,FR-006,FR-007,FR-008,FR-010,FR-011,FR-012,FR-013,FR-016; CD-011; INV-001,INV-002,INV-003,INV-004,INV-005,INV-006,INV-007,INV-008; FLOW-001, FLOW-002。
 - **StartState**: T015 PASS；核对具体 source/design identity。
@@ -303,6 +367,10 @@ T012/T013 涉及多个薄调用方，文件数大是入口迁移而非允许新�
 - **Evidence**: ../evidence/t016-completion.md（planned，当前不存在）。
 
 ## T017 Native Development Handoff
+
+- **SymbolContracts**: public API examples and deployment configuration；以 [symbol design](symbol-design.md) 与 [value contracts](value-contracts.md) 中同CD的精确符号为准；未覆盖新增符号先补契约。
+- **Documentation**: 每个受影响声明补英文 Doxygen/docstring：职责/输入输出/单位/owner/失败/取消/线程/保密/调用顺序；字段注释说明非显然约束，旧字段删除同步配置和文档。
+- **Usage**: 修改前入口→修改后原生调用及 Python 映射；成功、边界失败、取消/关闭至少覆盖适用场景。设计片段标NOT_COMPILED，实现时用独立consumer/对应PO实际验证，不能以文档检查冒充通过。
 
 - **Owner**: 本机，Native Development Handoff。
 - **Design**: FR-014,FR-015; CD-012; INV-001,INV-002,INV-007,INV-008,INV-009; FLOW-001, FLOW-002。

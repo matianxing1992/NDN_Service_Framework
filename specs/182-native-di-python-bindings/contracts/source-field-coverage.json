@@ -1,0 +1,662 @@
+{
+  "schema": "spec182-source-field-coverage-v1",
+  "status": "PARTIAL_NOT_ABI_READY",
+  "records": [
+    {
+      "source": "NDNSF-DistributedInference/ndnsf_distributed_inference/splitter.py",
+      "symbol": "ModelDescriptor",
+      "line": 142,
+      "fields": [
+        {
+          "name": "model_name",
+          "declaration": "model_name: str"
+        },
+        {
+          "name": "content_digest",
+          "declaration": "content_digest: str"
+        },
+        {
+          "name": "semantics_digest",
+          "declaration": "semantics_digest: str"
+        },
+        {
+          "name": "graph_digest",
+          "declaration": "graph_digest: str"
+        },
+        {
+          "name": "model_format",
+          "declaration": "model_format: str"
+        },
+        {
+          "name": "precision",
+          "declaration": "precision: str"
+        },
+        {
+          "name": "adapter",
+          "declaration": "adapter: AdapterDescriptor"
+        },
+        {
+          "name": "source_revision",
+          "declaration": "source_revision: str = \"\""
+        }
+      ],
+      "native_target": "NativeModelDescriptor",
+      "id": "V01"
+    },
+    {
+      "source": "NDNSF-DistributedInference/ndnsf_distributed_inference/splitter.py",
+      "symbol": "ModelGraphSnapshot",
+      "line": 211,
+      "fields": [
+        {
+          "name": "graph_digest",
+          "declaration": "graph_digest: str"
+        },
+        {
+          "name": "adapter",
+          "declaration": "adapter: AdapterDescriptor"
+        },
+        {
+          "name": "nodes",
+          "declaration": "nodes: tuple[GraphNodeView, ...]"
+        },
+        {
+          "name": "edges",
+          "declaration": "edges: tuple[TensorEdgeView, ...]"
+        },
+        {
+          "name": "topological_order",
+          "declaration": "topological_order: tuple[str, ...]"
+        },
+        {
+          "name": "legal_cut_edges",
+          "declaration": "legal_cut_edges: tuple[str, ...]"
+        },
+        {
+          "name": "model_inputs",
+          "declaration": "model_inputs: tuple[TensorContract, ...]"
+        },
+        {
+          "name": "model_outputs",
+          "declaration": "model_outputs: tuple[TensorContract, ...]"
+        }
+      ],
+      "native_target": "NativeGraphSnapshot",
+      "id": "V02"
+    },
+    {
+      "source": "NDNSF-DistributedInference/ndnsf_distributed_inference/splitter.py",
+      "symbol": "SplitCandidate",
+      "line": 341,
+      "fields": [
+        {
+          "name": "source",
+          "declaration": "source: SplitSource | str"
+        },
+        {
+          "name": "splitter",
+          "declaration": "splitter: SplitterDescriptor"
+        },
+        {
+          "name": "model",
+          "declaration": "model: ModelDescriptor"
+        },
+        {
+          "name": "graph_digest",
+          "declaration": "graph_digest: str"
+        },
+        {
+          "name": "execution_plan",
+          "declaration": "execution_plan: RoleExecutionPlan"
+        },
+        {
+          "name": "fragments_by_role",
+          "declaration": "fragments_by_role: Mapping[str, str]"
+        },
+        {
+          "name": "artifacts_by_role",
+          "declaration": "artifacts_by_role: Mapping[str, tuple[str, ...]]"
+        },
+        {
+          "name": "requirements_by_role",
+          "declaration": "requirements_by_role: Mapping[str, RoleResourceRequirement]"
+        },
+        {
+          "name": "cross_partition_tensors",
+          "declaration": "cross_partition_tensors: tuple[str, ...]"
+        },
+        {
+          "name": "estimated_costs",
+          "declaration": "estimated_costs: Mapping[str, int | float | None]"
+        },
+        {
+          "name": "tensor_degrees_by_role",
+          "declaration": "tensor_degrees_by_role: Mapping[str, int] = field(default_factory=dict)"
+        },
+        {
+          "name": "rank_artifact_digests_by_role",
+          "declaration": "rank_artifact_digests_by_role: Mapping[str, tuple[str, ...]] = field(\n        default_factory=dict)"
+        },
+        {
+          "name": "role_state_inputs_by_role",
+          "declaration": "role_state_inputs_by_role: Mapping[str, tuple[TensorContract, ...]] = field(\n        default_factory=dict)"
+        },
+        {
+          "name": "role_state_outputs_by_role",
+          "declaration": "role_state_outputs_by_role: Mapping[str, tuple[TensorContract, ...]] = field(\n        default_factory=dict)"
+        },
+        {
+          "name": "hybrid_plan",
+          "declaration": "hybrid_plan: Any | None = None"
+        },
+        {
+          "name": "selection_priority",
+          "declaration": "selection_priority: int = 0"
+        },
+        {
+          "name": "input_ingress_role",
+          "declaration": "input_ingress_role: str = \"\""
+        },
+        {
+          "name": "result_egress_role",
+          "declaration": "result_egress_role: str = \"\""
+        },
+        {
+          "name": "merge_kind",
+          "declaration": "merge_kind: str = \"\""
+        },
+        {
+          "name": "postprocessing",
+          "declaration": "postprocessing: Mapping[str, Any] = field(default_factory=dict)"
+        }
+      ],
+      "native_target": "NativeSplitCandidate",
+      "id": "V03"
+    },
+    {
+      "source": "NDNSF-DistributedInference/ndnsf_distributed_inference/core/ports.py",
+      "symbol": "CandidateBudget",
+      "line": 114,
+      "fields": [
+        {
+          "name": "max_candidates",
+          "declaration": "max_candidates: int"
+        },
+        {
+          "name": "max_policy_ms",
+          "declaration": "max_policy_ms: int = 100"
+        },
+        {
+          "name": "max_reentries",
+          "declaration": "max_reentries: int = 1"
+        }
+      ],
+      "native_target": "NativeCandidateBudget",
+      "id": "V04"
+    },
+    {
+      "source": "NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/base.py",
+      "symbol": "InferenceTaskDescriptor",
+      "line": 62,
+      "fields": [
+        {
+          "name": "task_name",
+          "declaration": "task_name: str"
+        },
+        {
+          "name": "input_schema_digest",
+          "declaration": "input_schema_digest: str"
+        },
+        {
+          "name": "options_schema_digest",
+          "declaration": "options_schema_digest: str"
+        },
+        {
+          "name": "result_schema_digest",
+          "declaration": "result_schema_digest: str"
+        }
+      ],
+      "native_target": "NativeRequestOptions.task",
+      "id": "V05"
+    },
+    {
+      "source": "NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/base.py",
+      "symbol": "ApplicationInput",
+      "line": 78,
+      "fields": [
+        {
+          "name": "task_name",
+          "declaration": "task_name: str"
+        },
+        {
+          "name": "input_schema_digest",
+          "declaration": "input_schema_digest: str"
+        },
+        {
+          "name": "options_schema_digest",
+          "declaration": "options_schema_digest: str"
+        },
+        {
+          "name": "payload",
+          "declaration": "payload: bytes"
+        },
+        {
+          "name": "options",
+          "declaration": "options: bytes"
+        },
+        {
+          "name": "metadata",
+          "declaration": "metadata: Mapping[str, str] = field(default_factory=dict)"
+        },
+        {
+          "name": "transport_mode",
+          "declaration": "transport_mode: InputTransportMode | str = InputTransportMode.INLINE"
+        },
+        {
+          "name": "repo_reference",
+          "declaration": "repo_reference: Mapping[str, Any] | None = None"
+        }
+      ],
+      "native_target": "NativeApplicationInput",
+      "id": "V06"
+    },
+    {
+      "source": "NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/base.py",
+      "symbol": "InferenceStateContract",
+      "line": 164,
+      "fields": [
+        {
+          "name": "profile",
+          "declaration": "profile: str"
+        },
+        {
+          "name": "state_class",
+          "declaration": "state_class: InferenceStateClass | str"
+        },
+        {
+          "name": "identity_schema_digest",
+          "declaration": "identity_schema_digest: str"
+        },
+        {
+          "name": "estimator_schema_digest",
+          "declaration": "estimator_schema_digest: str"
+        },
+        {
+          "name": "allowed_tiers",
+          "declaration": "allowed_tiers: tuple[str, ...]"
+        },
+        {
+          "name": "owner_scope",
+          "declaration": "owner_scope: str"
+        },
+        {
+          "name": "role_scope",
+          "declaration": "role_scope: str"
+        },
+        {
+          "name": "confidentiality",
+          "declaration": "confidentiality: str"
+        },
+        {
+          "name": "maximum_retention_ms",
+          "declaration": "maximum_retention_ms: int"
+        },
+        {
+          "name": "eviction_policy",
+          "declaration": "eviction_policy: str"
+        },
+        {
+          "name": "boot_epoch_bound",
+          "declaration": "boot_epoch_bound: bool"
+        },
+        {
+          "name": "cache_epoch_bound",
+          "declaration": "cache_epoch_bound: bool"
+        },
+        {
+          "name": "pin_required_for_reuse",
+          "declaration": "pin_required_for_reuse: bool"
+        },
+        {
+          "name": "migration_supported",
+          "declaration": "migration_supported: bool"
+        },
+        {
+          "name": "revalidation_rule",
+          "declaration": "revalidation_rule: str"
+        },
+        {
+          "name": "cleanup_rule",
+          "declaration": "cleanup_rule: str"
+        },
+        {
+          "name": "cross_security_domain",
+          "declaration": "cross_security_domain: bool = False"
+        }
+      ],
+      "native_target": "native state contract within prepared request",
+      "id": "V07"
+    },
+    {
+      "source": "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/placement.py",
+      "symbol": "GenerationRequest",
+      "line": 325,
+      "fields": [
+        {
+          "name": "model",
+          "declaration": "model: ModelRef"
+        },
+        {
+          "name": "task",
+          "declaration": "task: InferenceTaskRef"
+        },
+        {
+          "name": "input",
+          "declaration": "input: ApplicationInput"
+        },
+        {
+          "name": "timeout_ms",
+          "declaration": "timeout_ms: int"
+        },
+        {
+          "name": "options",
+          "declaration": "options: TaskOptions | None = None"
+        },
+        {
+          "name": "objective",
+          "declaration": "objective: Any = None"
+        },
+        {
+          "name": "constraints",
+          "declaration": "constraints: Mapping[str, Any] = field(default_factory=dict)"
+        },
+        {
+          "name": "request_id",
+          "declaration": "request_id: str = \"\""
+        },
+        {
+          "name": "output_mode",
+          "declaration": "output_mode: str = \"FULL\""
+        }
+      ],
+      "native_target": "NativeInferenceClient::request arguments / NativeRequestOptions",
+      "id": "V08"
+    },
+    {
+      "source": "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py",
+      "symbol": "ProviderPlanningViewV3",
+      "line": 789,
+      "fields": [
+        {
+          "name": "provider",
+          "declaration": "provider: str"
+        },
+        {
+          "name": "offer_digest",
+          "declaration": "offer_digest: str"
+        },
+        {
+          "name": "request_id",
+          "declaration": "request_id: str"
+        },
+        {
+          "name": "attempt",
+          "declaration": "attempt: int"
+        },
+        {
+          "name": "topology",
+          "declaration": "topology: DeviceTopologyProfile"
+        },
+        {
+          "name": "resources",
+          "declaration": "resources: Tuple[DeviceResourceSnapshot, ...]"
+        },
+        {
+          "name": "residency",
+          "declaration": "residency: Tuple[ResidencyProofV3, ...]"
+        },
+        {
+          "name": "accepted_roles",
+          "declaration": "accepted_roles: Tuple[str, ...]"
+        },
+        {
+          "name": "backends",
+          "declaration": "backends: Tuple[str, ...]"
+        },
+        {
+          "name": "execution_disposition",
+          "declaration": "execution_disposition: ExecutionDisposition"
+        },
+        {
+          "name": "preparation_accepted",
+          "declaration": "preparation_accepted: bool"
+        },
+        {
+          "name": "queue_depth",
+          "declaration": "queue_depth: int"
+        },
+        {
+          "name": "estimated_wait_ms",
+          "declaration": "estimated_wait_ms: float"
+        },
+        {
+          "name": "rtt_ms",
+          "declaration": "rtt_ms: float"
+        },
+        {
+          "name": "bandwidth_mbps",
+          "declaration": "bandwidth_mbps: float"
+        },
+        {
+          "name": "boot_epoch",
+          "declaration": "boot_epoch: str = \"\""
+        },
+        {
+          "name": "model_digest",
+          "declaration": "model_digest: str = \"\""
+        },
+        {
+          "name": "graph_digest",
+          "declaration": "graph_digest: str = \"\""
+        }
+      ],
+      "native_target": "NativeProviderPlanningView",
+      "id": "V09"
+    },
+    {
+      "source": "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py",
+      "symbol": "PlacementProposalV3",
+      "line": 1428,
+      "fields": [
+        {
+          "name": "request_id",
+          "declaration": "request_id: str"
+        },
+        {
+          "name": "attempt",
+          "declaration": "attempt: int"
+        },
+        {
+          "name": "model_digest",
+          "declaration": "model_digest: str"
+        },
+        {
+          "name": "graph_digest",
+          "declaration": "graph_digest: str"
+        },
+        {
+          "name": "roles",
+          "declaration": "roles: Tuple[RoleAssemblySpec, ...]"
+        },
+        {
+          "name": "provider_by_role",
+          "declaration": "provider_by_role: Mapping[str, str]"
+        },
+        {
+          "name": "dependencies",
+          "declaration": "dependencies: Tuple[Mapping[str, Any], ...] = ()"
+        },
+        {
+          "name": "candidate_digest",
+          "declaration": "candidate_digest: str = \"\""
+        },
+        {
+          "name": "strategy_name",
+          "declaration": "strategy_name: str = \"\""
+        },
+        {
+          "name": "strategy_version",
+          "declaration": "strategy_version: str = \"\""
+        },
+        {
+          "name": "strategy_state_digest",
+          "declaration": "strategy_state_digest: str = \"\""
+        }
+      ],
+      "native_target": "NativePlacementProposal",
+      "id": "V10"
+    },
+    {
+      "source": "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py",
+      "symbol": "GenerationExecutionContractV1",
+      "line": 1471,
+      "fields": [
+        {
+          "name": "mode",
+          "declaration": "mode: str"
+        },
+        {
+          "name": "max_generated_tokens",
+          "declaration": "max_generated_tokens: int"
+        },
+        {
+          "name": "token_input_name",
+          "declaration": "token_input_name: str"
+        },
+        {
+          "name": "state_input_names",
+          "declaration": "state_input_names: Tuple[str, ...]"
+        },
+        {
+          "name": "state_output_names",
+          "declaration": "state_output_names: Tuple[str, ...]"
+        },
+        {
+          "name": "eos_token_ids",
+          "declaration": "eos_token_ids: Tuple[int, ...]"
+        },
+        {
+          "name": "sampling_digest",
+          "declaration": "sampling_digest: str"
+        },
+        {
+          "name": "tokenizer_digest",
+          "declaration": "tokenizer_digest: str"
+        },
+        {
+          "name": "sampling_mode",
+          "declaration": "sampling_mode: str = \"Greedy\""
+        },
+        {
+          "name": "sampling_temperature",
+          "declaration": "sampling_temperature: float = 0.0"
+        },
+        {
+          "name": "sampling_top_k",
+          "declaration": "sampling_top_k: int = 1"
+        },
+        {
+          "name": "sampling_top_p",
+          "declaration": "sampling_top_p: float = 1.0"
+        },
+        {
+          "name": "sampling_repetition_penalty",
+          "declaration": "sampling_repetition_penalty: float = 1.0"
+        },
+        {
+          "name": "sampling_seed",
+          "declaration": "sampling_seed: int = 1_750_001"
+        },
+        {
+          "name": "stop_strings",
+          "declaration": "stop_strings: Tuple[str, ...] = ()"
+        },
+        {
+          "name": "generation_id",
+          "declaration": "generation_id: str = \"\""
+        },
+        {
+          "name": "committed_prefix_token_ids",
+          "declaration": "committed_prefix_token_ids: Tuple[int, ...] = ()"
+        },
+        {
+          "name": "streaming_operation_stride",
+          "declaration": "streaming_operation_stride: int = 0"
+        }
+      ],
+      "native_target": "NativeGenerationOptions / native generation contract",
+      "id": "V11"
+    },
+    {
+      "source": "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py",
+      "symbol": "PlacementPlanCoreV3",
+      "line": 1567,
+      "fields": [
+        {
+          "name": "request_id",
+          "declaration": "request_id: str"
+        },
+        {
+          "name": "attempt",
+          "declaration": "attempt: int"
+        },
+        {
+          "name": "model_digest",
+          "declaration": "model_digest: str"
+        },
+        {
+          "name": "graph_digest",
+          "declaration": "graph_digest: str"
+        },
+        {
+          "name": "roles",
+          "declaration": "roles: Tuple[RoleAssemblySpec, ...]"
+        },
+        {
+          "name": "provider_by_role",
+          "declaration": "provider_by_role: Mapping[str, str]"
+        },
+        {
+          "name": "dependencies",
+          "declaration": "dependencies: Tuple[Mapping[str, Any], ...]"
+        },
+        {
+          "name": "ack_closed_digest",
+          "declaration": "ack_closed_digest: str"
+        },
+        {
+          "name": "strategy_digest",
+          "declaration": "strategy_digest: str"
+        },
+        {
+          "name": "plan_core_digest",
+          "declaration": "plan_core_digest: str = \"\""
+        },
+        {
+          "name": "candidate_digest",
+          "declaration": "candidate_digest: str = \"\""
+        },
+        {
+          "name": "request_contract_digest",
+          "declaration": "request_contract_digest: str = \"\""
+        },
+        {
+          "name": "generation_contract",
+          "declaration": "generation_contract: GenerationExecutionContractV1 | None = None"
+        }
+      ],
+      "native_target": "NativePlacementPlanCore",
+      "id": "V12"
+    }
+  ]
+}

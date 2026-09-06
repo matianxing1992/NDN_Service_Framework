@@ -1,21 +1,16 @@
 # Tasks: Native NDNSF-DI with Optional Python Bindings
 
-**Revision**: 2 | **Status**: DRAFT / NOT_STARTED
+**Revision**: 3 | **Status**: DRAFT / NOT_STARTED
 **Input**: [spec](spec.md), [code design](contracts/code-design.md),
 [proof](contracts/proof-design.md), [work units](contracts/work-units.md)
 
 ## Current Checkpoint
 
-2026-09-06：完成后续 Spec182 revision 2 审计与修正。Spec181 继续活动；本轮未编辑其任务或活动指针。
-本轮交付 spec/plan/CD/INV/PO/work units/traceability/checklist/audit/baseline；
-实现进度 **0/17**，未启动功能迁移、build、unit/integration/MiniNDN、SIF 或 Tiger。
-Revision 2 完成 full audit 与文档修正：补 CD-013/014、PO-013/014、取消/回退契约，
-修复 T014→T015→T016 的 harness 审计顺序；原 15 项重排为 17 项，仍全部未开始。
-历史 authoring 见 [design review](evidence/design-review.md)；本次证据见
-[audit revision 2](evidence/audit-revision2.md)。
-结构审计 PASS（16 FR / 8 SC / 17 tasks）；链接/依赖与差异检查结果记录于上述本次证据。
-设计状态 DRAFT：O-001--005 控制 implementation readiness；T001 冻结隔离设计，T014 验证其检错能力。
-文档创建完成不勾选实现任务。下一步继续 Spec181；关闭后再执行 T001。
+2026-09-06 revision 3：依据用户最新要求先强化设计写作规则，再按合并工作区源码修正182。增加类/方法/字段/注释/用法契约，修正合并基线、Core安全继承及 CandidateBudget。实现进度 **0/17**；本轮未运行build、unit/integration/MiniNDN或外部实验。
+
+当前182为活动设计；不再要求先完成181全部旧资格。合并工作区尚有未提交修复，记录中的 unit R1 747/751、integration R1 60/92 不能称PASS。本轮只读取并区分这些已有失败，不修改其修复代码或索引。合并 closure、嵌套schema/兼容清单、原生ABI和隔离设计仍由 O-001--005 控制；本文不勾选T001。
+
+本轮文档检查与来源身份见 [revision 3 evidence](evidence/skill-and-design-revision3.md)；旧 authoring/audit 记录保留历史身份。下一步在合并修复稳定后执行T001，按新契约关闭具体未决项，再进入T002原生库实现。
 
 ## Validation Standard
 
@@ -24,8 +19,8 @@ Revision 2 完成 full audit 与文档修正：补 CD-013/014、PO-013/014、取
 
 ## Phase 1: Design and Native Components
 
-- [ ] T001 [US5] **Successor Baseline and Design Closure**。冻结 181 交付、所有 schema/公开调用方/能力清单及原生依赖，关闭 O-001--005；修订叶子签名与任务至可执行。Dependencies: Spec181 local closure。
-  Design: FR-015,FR-016; CD-001--014。Proof: PO-012。
+- [ ] T001 [US5] **Successor Baseline and Design Closure**。冻结合并基线与181承接表、所有 schema/公开调用方/能力清单及原生依赖，关闭 O-001--005；修订叶子签名与任务至可执行。Dependencies: Merged baseline closure and Spec181 handoff。
+  Design: FR-015,FR-016,FR-017; CD-001--014。Proof: PO-012。
   完整文件/符号、decision budget、预期 diff、命令、恢复点与证据：
   [T001 contract](contracts/work-units.md#t001-successor-baseline-and-design-closure)。
 
@@ -97,7 +92,7 @@ Revision 2 完成 full audit 与文档修正：补 CD-013/014、PO-013/014、取
   [T014 contract](contracts/work-units.md#t014-runtime-dependency-exclusion-gate)。
 
 - [ ] T015 [US5] **Design-code Convergence Audit**。逐 FR/CD/INV/PO 核对生产接线、effective config、依赖/源码身份，控制性发现清零。Dependencies: T014。
-  Design: FR-013; CD-001--014。Proof: PO-001--014。
+  Design: FR-013,FR-017; CD-001--014。Proof: PO-001--014。
   完整文件/符号、decision budget、预期 diff、命令、恢复点与证据：
   [T015 contract](contracts/work-units.md#t015-design-code-convergence-audit)。
 
@@ -113,7 +108,7 @@ Revision 2 完成 full audit 与文档修正：补 CD-013/014、PO-013/014、取
 
 ## Dependencies & Execution Order
 
-Spec181 closure → T001 → T002；T003/T004/T005 依次收口；
+Merged baseline closure and Spec181 handoff → T001 → T002；T003/T004/T005 依次收口；
 T006/T007 依赖 T002 和已关闭 native dependency design；
 T003/T006/T007 → T008；T006/T007 → T009；
 T003--009 → T010 → T011 → T012 → T013 → T014 → T015 PASS → T016 → T017。
