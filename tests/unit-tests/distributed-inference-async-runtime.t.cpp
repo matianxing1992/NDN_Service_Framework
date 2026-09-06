@@ -1333,6 +1333,7 @@ BOOST_AUTO_TEST_CASE(NativePreparedRunnerSpecBindsExactSealedAssembly)
     return "sha256:" + std::string(64, value);
   };
   NativeSelectionProjectionV3 projection;
+  projection.canonicalArtifactName = "/repo/canonical/root/v1";
   projection.assembly.selectedRole = "/Stage0";
   projection.assembly.backend = "onnxruntime-cpu";
   projection.assembly.artifactDigest = digest('a');
@@ -1380,6 +1381,12 @@ BOOST_AUTO_TEST_CASE(NativePreparedRunnerSpecBindsExactSealedAssembly)
     {"maxNodes", std::to_string(projection.assembly.maxNodes)},
   };
   BOOST_CHECK(!validateNativePreparedRunnerSpec(projection, spec));
+
+  auto missingRoot = projection;
+  missingRoot.canonicalArtifactName.clear();
+  BOOST_REQUIRE(validateNativePreparedRunnerSpec(missingRoot, spec));
+  BOOST_CHECK_EQUAL(*validateNativePreparedRunnerSpec(missingRoot, spec),
+                    "DI_PROVIDER_ASSEMBLY_ROOT_MISSING");
 
   auto wrongPath = spec;
   wrongPath.path = "../model.onnx";
@@ -6372,6 +6379,19 @@ BOOST_AUTO_TEST_CASE(NativeProviderRuntimeReadinessAcceptsCanonicalCpuDeviceId)
     evidence, "stage-0", "onnxruntime", "cpu:0", "sha256:stage0");
   BOOST_REQUIRE(mismatch);
   BOOST_CHECK_EQUAL(*mismatch, "DI_RUNTIME_DEVICE_MISMATCH");
+
+  evidence.runnerKind = RunnerKind::NativeYoloPostprocess;
+  evidence.realCompute = false;
+  evidence.loadCompleted = false;
+  evidence.warmupCompleted = false;
+  evidence.deviceKind = "cpu";
+  evidence.deviceId = "native";
+  BOOST_CHECK(!validateNativeProviderRuntimeReadiness(
+    evidence, "stage-0", "onnxruntime-cpu", "cpu:0", "sha256:stage0"));
+  BOOST_CHECK_EQUAL(
+    validateNativeProviderRuntimeReadiness(
+      evidence, "stage-0", "onnxruntime-cpu", "cuda:0", "sha256:stage0")
+      .value_or(""), "DI_RUNTIME_NATIVE_MERGE_ASSIGNMENT_MISMATCH");
 }
 
 BOOST_AUTO_TEST_CASE(ExecutionEvidenceRejectsMissingUnknownAndSecretFields)

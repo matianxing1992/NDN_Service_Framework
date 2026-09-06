@@ -30,7 +30,9 @@ struct NativeProviderHandlerConfig
       ndn_service_framework::ServiceProvider::CollaborationContext&,
       const std::map<std::string, std::string>&)>;
   using RunnerPreparationFactory = std::function<NativeModelRunnerSpec(
-    const NativeSelectionProjectionV3&)>;
+    ndn_service_framework::ServiceProvider::CollaborationContext&,
+    const NativeSelectionProjectionV3&,
+    const std::shared_ptr<ProtectedRuntime>&)>;
   using ProtectedRuntimeFactory = std::function<std::shared_ptr<ProtectedRuntime>(
     ndn_service_framework::ServiceProvider::CollaborationContext&,
     const NativeSelectionProjectionV3&,
@@ -53,6 +55,10 @@ struct NativeProviderHandlerConfig
   std::string localProviderName;
   std::string providerBootId;
   std::string planDigest;
+  // T011's Y-N-I mutation is injected at the native Provider boundary.  It
+  // is empty for every ordinary deployment and cannot alter the authenticated
+  // Selection projection or the production role assignment.
+  std::string spec180YnMutation;
   // Sealed NDNSF-DI execution contract. The default is per-role,
   // dependency-driven execution; V1 is rollback-only and must be paired with
   // both legacy activation switches plus an exact assignment field.

@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/DistributedExecutionConsistency.hpp"
@@ -23,6 +24,7 @@
 #include <limits>
 #include <map>
 #include <mutex>
+#include <openssl/evp.h>
 #include <openssl/sha.h>
 #include <set>
 #include <sstream>
@@ -50,9 +52,12 @@ parseNativeProviderAssignmentFields(const ndn::Buffer& payload,
       throw std::invalid_argument(
         std::string("malformed V3 Selection projection: ") + exc.what());
     }
-    if (root.get<std::string>("schema", "") != "ndnsf-di-selection-v3" ||
-        root.get<int>("schema_version", 0) != 3) {
-      throw std::invalid_argument("V3 Selection projection schema mismatch");
+    const auto schema = root.get<std::string>("schema", "");
+    const auto schemaVersion = root.get<int>("schema_version", 0);
+    if (schema != "ndnsf-di-selection-v3" || schemaVersion != 3) {
+      throw std::invalid_argument(
+        "V3 Selection projection schema mismatch: schema=" + schema +
+        " schema_version=" + std::to_string(schemaVersion));
     }
     std::istringstream projectionInput(text);
     const auto projection = nativeSelectionProjectionV3FromJson(
@@ -280,8 +285,8 @@ applyNativeProviderExecutionControl(
   }
   result.recognized = true;
   if (schema == "ndnsf-di-execution-control-v1") {
-    std::clog << "NDNSF_DI_LEGACY_IMPORT kind=execution-control-v1 count=1"
-              << std::endl;
+    logRuntimeInfo(
+      "NDNSF_DI_LEGACY_IMPORT kind=execution-control-v1 count=1");
   }
   const auto operation = nativeProviderFieldValue(fields, {"operation"});
   result.attempt.requestId = nativeProviderFieldValue(fields, {"requestId"});
@@ -504,18 +509,19 @@ logFragmentInventoryEvent(const char* event,
   if (!nativeTraceEnabled()) {
     return;
   }
-  std::cout << "\nNDNSF_DI_FRAGMENT_INVENTORY"
-            << " event=" << event
-            << " provider=" << (provider.empty() ? "unknown" : provider)
-            << " role=" << spec.role
-            << " fragmentDigest=" << fragmentDigestFor(spec)
-            << " backend=" << (spec.backend.empty() ? "unknown" : spec.backend)
-            << " path=" << (spec.path.empty() ? "none" : spec.path)
-            << " residency="
-            << (std::string(event) == "EVICTED" ||
-                std::string(event) == "DISK_RESIDENT" ? "DISK_RESIDENT" : loadedResidencyFor(spec))
-            << " epoch_ms=" << epochMs()
-            << std::endl;
+  std::ostringstream record;
+  record << "NDNSF_DI_FRAGMENT_INVENTORY"
+         << " event=" << event
+         << " provider=" << (provider.empty() ? "unknown" : provider)
+         << " role=" << spec.role
+         << " fragmentDigest=" << fragmentDigestFor(spec)
+         << " backend=" << (spec.backend.empty() ? "unknown" : spec.backend)
+         << " path=" << (spec.path.empty() ? "none" : spec.path)
+         << " residency="
+         << (std::string(event) == "EVICTED" ||
+             std::string(event) == "DISK_RESIDENT" ? "DISK_RESIDENT" : loadedResidencyFor(spec))
+         << " epoch_ms=" << epochMs();
+  logRuntimeInfo(record.str());
 }
 
 const NativeModelRunnerSpec*
@@ -676,7 +682,6 @@ logProviderTiming(const std::string& sessionId,
   if (!runtimeTimingEnabled()) {
     return;
   }
-  std::lock_guard<std::mutex> outputLock(runtimeTimingOutputMutex());
 
   const auto workerQueueWaitMs = durationMs(result.timing.queuedAt,
                                             result.timing.workerStartedAt);
@@ -694,37 +699,41 @@ logProviderTiming(const std::string& sessionId,
                                         result.timing.startedAt);
   const auto endEpoch = approxEpochMs(baseSteady, baseEpochMs, result.timing.finishedAt);
 
-  std::cout << std::fixed << std::setprecision(3)
-            << "\nNDNSF_DI_PROVIDER_HANDLER_TIMING"
-            << " event=start"
-            << " session=" << sessionId
-            << " role=" << role
-            << " submitted_epoch_ms=" << baseEpochMs
-            << " worker_start_epoch_ms=" << workerStartEpoch
-            << " start_epoch_ms=" << startEpoch
-            << " queue_wait_ms=" << workerQueueWaitMs
-            << " worker_queue_wait_ms=" << workerQueueWaitMs
-            << " input_fetch_wait_ms=" << inputFetchWaitMs
-            << " runner_publish_ms=0"
-            << " total_ms=0"
-            << " handler_ms=0"
-            << std::endl;
-  std::cout << std::fixed << std::setprecision(3)
-            << "\nNDNSF_DI_PROVIDER_HANDLER_TIMING"
-            << " event=end"
-            << " session=" << sessionId
-            << " role=" << role
-            << " submitted_epoch_ms=" << baseEpochMs
-            << " worker_start_epoch_ms=" << workerStartEpoch
-            << " start_epoch_ms=" << startEpoch
-            << " end_epoch_ms=" << endEpoch
-            << " queue_wait_ms=" << workerQueueWaitMs
-            << " worker_queue_wait_ms=" << workerQueueWaitMs
-            << " input_fetch_wait_ms=" << inputFetchWaitMs
-            << " runner_publish_ms=" << runnerPublishMs
-            << " total_ms=" << totalMs
-            << " handler_ms=" << handlerMs
-            << std::endl;
+  std::ostringstream record;
+  record << std::fixed << std::setprecision(3)
+         << "NDNSF_DI_PROVIDER_HANDLER_TIMING"
+         << " event=start"
+         << " session=" << sessionId
+         << " role=" << role
+         << " submitted_epoch_ms=" << baseEpochMs
+         << " worker_start_epoch_ms=" << workerStartEpoch
+         << " start_epoch_ms=" << startEpoch
+         << " queue_wait_ms=" << workerQueueWaitMs
+         << " worker_queue_wait_ms=" << workerQueueWaitMs
+         << " input_fetch_wait_ms=" << inputFetchWaitMs
+         << " runner_publish_ms=0"
+         << " total_ms=0"
+         << " handler_ms=0";
+  logRuntimeEvidence(record.str());
+
+  record.str({});
+  record.clear();
+  record << std::fixed << std::setprecision(3)
+         << "NDNSF_DI_PROVIDER_HANDLER_TIMING"
+         << " event=end"
+         << " session=" << sessionId
+         << " role=" << role
+         << " submitted_epoch_ms=" << baseEpochMs
+         << " worker_start_epoch_ms=" << workerStartEpoch
+         << " start_epoch_ms=" << startEpoch
+         << " end_epoch_ms=" << endEpoch
+         << " queue_wait_ms=" << workerQueueWaitMs
+         << " worker_queue_wait_ms=" << workerQueueWaitMs
+         << " input_fetch_wait_ms=" << inputFetchWaitMs
+         << " runner_publish_ms=" << runnerPublishMs
+         << " total_ms=" << totalMs
+         << " handler_ms=" << handlerMs;
+  logRuntimeEvidence(record.str());
 
   for (const auto& timing : result.inputTimings) {
     const auto fetchMs = durationMs(timing.prefetchStartedAt, timing.fetchCompletedAt);
@@ -732,55 +741,59 @@ logProviderTiming(const std::string& sessionId,
     const auto prefetchOverlapMs = std::max(
       0.0,
       durationMs(timing.prefetchStartedAt, result.timing.startedAt));
-    std::cout << std::fixed << std::setprecision(3)
-              << "\nNDNSF_DI_DEPENDENCY_INPUT_TIMING"
-              << " session=" << sessionId
-              << " role=" << role
-              << " producer=" << timing.producerRole
-              << " scope=" << timing.scope
-              << " future_wait_ms=" << fetchMs
-              << " ref_wait_ms=0"
-              << " fetch_ms=" << fetchMs
-              << " decode_ms=0"
-              << " prefetch_total_ms=" << prefetchTotalMs
-              << " prefetch_overlap_ms=" << prefetchOverlapMs
-              << " bytes=" << timing.bytes
-              << " expected_segments=" << timing.expectedSegments
-              << " expected_bytes=" << timing.expectedBytes
-              << " planned_segment_count=" << timing.plannedSegmentNames.size()
-              << " first_planned_segment="
-              << plannedSegmentOrFalse(timing.plannedSegmentNames)
-              << " last_planned_segment="
-              << plannedSegmentOrFalse(timing.plannedSegmentNames, true)
-              << " data_name=" << plannedNameOrFalse(timing.plannedDataName)
-              << " planned_name=" << plannedNameOrFalse(timing.plannedDataName)
-              << std::endl;
+    record.str({});
+    record.clear();
+    record << std::fixed << std::setprecision(3)
+           << "NDNSF_DI_DEPENDENCY_INPUT_TIMING"
+           << " session=" << sessionId
+           << " role=" << role
+           << " producer=" << timing.producerRole
+           << " scope=" << timing.scope
+           << " future_wait_ms=" << fetchMs
+           << " ref_wait_ms=0"
+           << " fetch_ms=" << fetchMs
+           << " decode_ms=0"
+           << " prefetch_total_ms=" << prefetchTotalMs
+           << " prefetch_overlap_ms=" << prefetchOverlapMs
+           << " bytes=" << timing.bytes
+           << " expected_segments=" << timing.expectedSegments
+           << " expected_bytes=" << timing.expectedBytes
+           << " planned_segment_count=" << timing.plannedSegmentNames.size()
+           << " first_planned_segment="
+           << plannedSegmentOrFalse(timing.plannedSegmentNames)
+           << " last_planned_segment="
+           << plannedSegmentOrFalse(timing.plannedSegmentNames, true)
+           << " data_name=" << plannedNameOrFalse(timing.plannedDataName)
+           << " planned_name=" << plannedNameOrFalse(timing.plannedDataName);
+    logRuntimeEvidence(record.str());
   }
 
   for (const auto& timing : result.outputTimings) {
     const auto publishMs = durationMs(timing.outputReadyAt, timing.publishDoneAt);
-    std::cout << std::fixed << std::setprecision(3)
-              << "\nNDNSF_DI_DEPENDENCY_OUTPUT_TIMING"
-              << " session=" << sessionId
-              << " role=" << role
-              << " producer=" << timing.producerRole
-              << " scope=" << timing.scope
-              << " publish_ms=" << publishMs
-              << " bytes=" << timing.bytes
-              << " expected_segments=" << timing.expectedSegments
-              << " expected_bytes=" << timing.expectedBytes
-              << " planned_segment_count=" << timing.plannedSegmentNames.size()
-              << " first_planned_segment="
-              << plannedSegmentOrFalse(timing.plannedSegmentNames)
-              << " last_planned_segment="
-              << plannedSegmentOrFalse(timing.plannedSegmentNames, true)
-              << " data_name=" << plannedNameOrFalse(timing.plannedDataName)
-              << " output_ready_epoch_ms="
-              << approxEpochMs(baseSteady, baseEpochMs, timing.outputReadyAt)
-              << " publish_done_epoch_ms="
-              << approxEpochMs(baseSteady, baseEpochMs, timing.publishDoneAt)
-              << " planned_name=" << plannedNameOrFalse(timing.plannedDataName)
-              << std::endl;
+    record.str({});
+    record.clear();
+    record << std::fixed << std::setprecision(3)
+           << "NDNSF_DI_DEPENDENCY_OUTPUT_TIMING"
+           << " session=" << sessionId
+           << " role=" << role
+           << " producer=" << timing.producerRole
+           << " scope=" << timing.scope
+           << " publish_ms=" << publishMs
+           << " bytes=" << timing.bytes
+           << " expected_segments=" << timing.expectedSegments
+           << " expected_bytes=" << timing.expectedBytes
+           << " planned_segment_count=" << timing.plannedSegmentNames.size()
+           << " first_planned_segment="
+           << plannedSegmentOrFalse(timing.plannedSegmentNames)
+           << " last_planned_segment="
+           << plannedSegmentOrFalse(timing.plannedSegmentNames, true)
+           << " data_name=" << plannedNameOrFalse(timing.plannedDataName)
+           << " output_ready_epoch_ms="
+           << approxEpochMs(baseSteady, baseEpochMs, timing.outputReadyAt)
+           << " publish_done_epoch_ms="
+           << approxEpochMs(baseSteady, baseEpochMs, timing.publishDoneAt)
+           << " planned_name=" << plannedNameOrFalse(timing.plannedDataName);
+    logRuntimeEvidence(record.str());
   }
 }
 
@@ -793,25 +806,32 @@ logProviderCapacity(const std::string& sessionId,
   if (!nativeTraceEnabled()) {
     return;
   }
-  std::lock_guard<std::mutex> outputLock(runtimeTimingOutputMutex());
-  std::cout << "\nNDNSF_DI_PROVIDER_CAPACITY"
-            << " event=" << event
-            << " session=" << sessionId
-            << " role=" << role
-            << " workers=" << snapshot.workerCount
-            << " active_workers=" << snapshot.activeWorkerCount
-            << " idle_workers=" << snapshot.idleWorkerCount()
-            << " ready_queue=" << snapshot.readyQueueDepth
-            << " waiting_inputs=" << snapshot.waitingForInputCount
-            << " pending_work=" << snapshot.pendingWorkCount()
-            << " stopping=" << (snapshot.stopping ? "true" : "false")
-            << std::endl;
+  std::ostringstream record;
+  record << "NDNSF_DI_PROVIDER_CAPACITY"
+         << " event=" << event
+         << " session=" << sessionId
+         << " role=" << role
+         << " workers=" << snapshot.workerCount
+         << " active_workers=" << snapshot.activeWorkerCount
+         << " idle_workers=" << snapshot.idleWorkerCount()
+         << " ready_queue=" << snapshot.readyQueueDepth
+         << " waiting_inputs=" << snapshot.waitingForInputCount
+         << " pending_work=" << snapshot.pendingWorkCount()
+         << " stopping=" << (snapshot.stopping ? "true" : "false");
+  logRuntimeInfo(record.str());
 }
 
 std::map<std::string, TensorBundle>
 initialInputsFromRequest(ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
-                         const ndn_service_framework::RequestMessage& request)
+                         const ndn_service_framework::RequestMessage& request,
+                         bool applicationInputAuthorized)
 {
+  // Apply the ownership check at the fetch boundary, before reading any
+  // request bytes or invoking the repository. Fault injection calls this
+  // same boundary; it must not manufacture a successful rejection marker.
+  if (!applicationInputAuthorized) {
+    throw std::invalid_argument("DI_INPUT_FETCH_ROLE_MISMATCH");
+  }
   auto payload = request.getPayload();
   if (const auto reference = ndn_service_framework::parseLargeDataReferencePayload(payload)) {
     auto fetched = ctx.fetchEncryptedLargeData(reference->dataName);
@@ -821,10 +841,82 @@ initialInputsFromRequest(ndn_service_framework::ServiceProvider::CollaborationCo
     }
     payload = *fetched;
   }
+  else {
+    const std::string wire(payload.begin(), payload.end());
+    const auto first = wire.find_first_not_of(" \t\r\n");
+    if (first != std::string::npos && wire[first] == '{') {
+      boost::property_tree::ptree root;
+      try {
+        std::istringstream input(wire);
+        boost::property_tree::read_json(input, root);
+      }
+      catch (const boost::property_tree::json_parser::json_parser_error& exc) {
+        throw std::invalid_argument(
+          std::string("malformed native DI request envelope: ") + exc.what());
+      }
+      if (root.get<std::string>("schema", "") == "ndnsf-di-request-envelope-v2") {
+        const auto transport = root.get<std::string>("input_transport", "");
+        if (transport == "REPO_REF") {
+          const auto dataName = root.get<std::string>("input_reference.dataName", "");
+          const auto plaintextSize = root.get<std::uint64_t>(
+            "input_reference.plaintextSize", 0);
+          if (dataName.empty() || dataName.front() != '/' || plaintextSize == 0) {
+            throw std::invalid_argument(
+              "native DI REPO_REF request has invalid input reference");
+          }
+          auto fetched = ctx.fetchEncryptedLargeData(ndn::Name(dataName));
+          if (!fetched) {
+            throw std::runtime_error(
+              "failed to fetch native DI request input reference: " + dataName);
+          }
+          if (fetched->size() != plaintextSize) {
+            throw std::runtime_error(
+              "native DI request input plaintext size mismatch");
+          }
+          payload = *fetched;
+        }
+        else if (transport == "INLINE") {
+          const auto encoded = root.get<std::string>("input_payload_b64", "");
+          if (encoded.empty()) {
+            payload = ndn::Buffer{};
+          }
+          else {
+            if (encoded.size() % 4 != 0) {
+              throw std::invalid_argument(
+                "native DI inline input is not canonical base64");
+            }
+            ndn::Buffer decoded(3 * (encoded.size() / 4));
+            const auto size = EVP_DecodeBlock(
+              decoded.data(),
+              reinterpret_cast<const unsigned char*>(encoded.data()),
+              static_cast<int>(encoded.size()));
+            if (size < 0) {
+              throw std::invalid_argument(
+                "native DI inline input is not canonical base64");
+            }
+            std::size_t padding = 0;
+            if (!encoded.empty() && encoded.back() == '=') ++padding;
+            if (encoded.size() > 1 && encoded[encoded.size() - 2] == '=') ++padding;
+            decoded.resize(static_cast<std::size_t>(size) - padding);
+            payload = std::move(decoded);
+          }
+        }
+        else {
+          throw std::invalid_argument(
+            "native DI request uses unsupported input transport");
+        }
+      }
+    }
+  }
 
   TensorBundle bundle;
   bundle.name = "request-input";
   bundle.payload = bufferToVector(payload);
+  // The request reference is one complete, already authenticated object.
+  // Give the V3 APPLICATION_INPUT edge a concrete single-object witness so
+  // ProviderRoleWorker can pre-satisfy that edge without issuing a second
+  // dependency Interest.
+  bundle.expectedSegments = 1;
   bundle.expectedBytes = bundle.payload.size();
   return {{"request-input", std::move(bundle)}};
 }
@@ -1138,6 +1230,46 @@ validateNativeProviderRuntimeReadiness(
       expectedDevice.empty() || expectedArtifactDigest.empty()) {
     return "DI_RUNTIME_ASSIGNMENT_INCOMPLETE";
   }
+  if (evidence.runnerKind == RunnerKind::NativeYoloPostprocess) {
+    // NATIVE_POSTPROCESS is a declared CPU dependency consumer, not a CPU
+    // model execution. Keep this branch explicit so a CPU ORT model-layer
+    // fallback cannot satisfy the Merge readiness contract.
+    const bool nativeMergeRequestsCpu = expectedBackend == "cpu" ||
+      (expectedBackend.size() > 4 &&
+       expectedBackend.compare(expectedBackend.size() - 4, 4, "-cpu") == 0);
+    const bool nativeMergeUsesCpuDevice = expectedDevice == "cpu" ||
+      (expectedDevice.size() > 4 &&
+       expectedDevice.compare(0, 4, "cpu:") == 0 &&
+       std::all_of(expectedDevice.begin() + 4, expectedDevice.end(),
+                   [] (unsigned char ch) { return std::isdigit(ch) != 0; }));
+    if (!nativeMergeRequestsCpu || !nativeMergeUsesCpuDevice) {
+      logRuntimeWarn(
+        "NDNSF_DI_NATIVE_MERGE_ASSIGNMENT_DIAG expected_backend=" +
+        expectedBackend + " expected_device=" + expectedDevice);
+      return "DI_RUNTIME_NATIVE_MERGE_ASSIGNMENT_MISMATCH";
+    }
+    try {
+      evidence.validate();
+    }
+    catch (const std::exception&) {
+      return "DI_RUNTIME_EVIDENCE_INVALID";
+    }
+    if (evidence.realCompute || evidence.cpuFallbackUsed ||
+        evidence.loadCompleted || evidence.warmupCompleted ||
+        evidence.deviceKind != "cpu") {
+      return "DI_RUNTIME_NATIVE_MERGE_MODEL_EXECUTION";
+    }
+    if (std::find(evidence.roles.begin(), evidence.roles.end(), expectedRole) ==
+        evidence.roles.end()) {
+      return "DI_RUNTIME_ROLE_MISMATCH";
+    }
+    const auto artifact = evidence.artifactDigests.find(expectedRole);
+    if (artifact == evidence.artifactDigests.end() ||
+        !nativeProviderDigestEquals(artifact->second, expectedArtifactDigest)) {
+      return "DI_RUNTIME_ARTIFACT_MISMATCH";
+    }
+    return std::nullopt;
+  }
   const bool deviceRequestsCuda = expectedDevice.rfind("cuda:", 0) == 0;
   const bool backendRequestsCuda = expectedBackend == "onnxruntime-cuda";
   const bool backendRequestsCpu = expectedBackend == "cpu" ||
@@ -1219,6 +1351,46 @@ validateNativePreparedRunnerSpec(
   const NativeModelRunnerSpec& spec)
 {
   const auto& assembly = projection.assembly;
+  if (assembly.mergeKind == "NATIVE_POSTPROCESS") {
+    if (assembly.expectedOutputs.size() != 1 ||
+        assembly.expectedOutputs.front().name != assembly.postprocessOutputName ||
+        assembly.expectedOutputs.front().dtype != "float32") {
+      return "DI_PROVIDER_NATIVE_MERGE_METADATA_MISMATCH";
+    }
+    std::string expectedOutputShape;
+    for (const auto& dimension : assembly.expectedOutputs.front().shape) {
+      if (!expectedOutputShape.empty()) expectedOutputShape += ',';
+      expectedOutputShape += dimension;
+    }
+    if (spec.role != assembly.selectedRole ||
+        spec.kind != "native-yolo-postprocess" ||
+        spec.backend != "native-yolo-postprocess" || !spec.path.empty()) {
+      return "DI_PROVIDER_NATIVE_MERGE_RUNNER_MISMATCH";
+    }
+    const auto matches = [&spec] (
+      std::initializer_list<const char*> keys, const std::string& expected) {
+      const auto actual = metadataValue(spec, keys);
+      return !actual.empty() && actual == expected;
+    };
+    if (!matches({"fragmentDigest", "fragment_digest"}, assembly.artifactDigest) ||
+        !matches({"recipeDigest", "recipe_digest"}, assembly.recipeDigest) ||
+        !matches({"mergeKind", "merge_kind"}, assembly.mergeKind) ||
+        !matches({"postprocessIdentity", "postprocess_identity"},
+                 assembly.postprocessIdentity) ||
+        !matches({"postprocessOutputName", "postprocess_output_name"},
+                 assembly.postprocessOutputName) ||
+        !matches({"postprocessSort", "postprocess_sort"}, assembly.postprocessSort) ||
+        !matches({"expectedOutputShape"}, expectedOutputShape) ||
+        !matches({"postprocessConfidenceThreshold",
+                  "postprocess_confidence_threshold"},
+                 std::to_string(assembly.postprocessConfidenceThreshold))) {
+      return "DI_PROVIDER_NATIVE_MERGE_METADATA_MISMATCH";
+    }
+    return std::nullopt;
+  }
+  if (projection.canonicalArtifactName.empty()) {
+    return "DI_PROVIDER_ASSEMBLY_ROOT_MISSING";
+  }
   if (assembly.modelManifestDigest.empty() ||
       assembly.artifactProfileDigest.empty() || assembly.graphDigest.empty() ||
       assembly.canonicalInitializerDigest.empty() ||
@@ -1426,6 +1598,14 @@ validateProtectedRuntimeBinding(
     mayPublishConsumers[endpoint.endpointDigest] = endpoint.consumerRole;
   }
   for (const auto& endpoint : projection.dataflow.mustFetch) {
+    // APPLICATION_INPUT is request-backed and has no Provider producer.  It
+    // is authenticated and pre-satisfied by initialInputsFromRequest at the
+    // selected ingress role, so it is not a protected inter-role dataflow
+    // endpoint and must not be converted into an empty producer binding.
+    if (endpoint.sourceKind == "APPLICATION_INPUT" ||
+        endpoint.operation == "APPLICATION_INPUT") {
+      continue;
+    }
     mustFetch.insert(endpoint.endpointDigest);
     mustFetchProducers[endpoint.endpointDigest] = endpoint.producerRole;
   }
@@ -1557,16 +1737,35 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
       activatedLeaseId.clear();
     };
     try {
-      const auto controlFields = parseNativeProviderAssignmentFields(request.getPayload());
+      // The request payload is normally the authenticated generic request
+      // envelope (JSON ndnsf-di-request-envelope-v2).  It is not an
+      // execution-control or Selection-assignment payload.  The old control
+      // probe reused the assignment parser, which treats every JSON object as
+      // a V3 Selection projection and consequently rejected the real request
+      // before the authenticated Selection projection was examined below.
+      // Execution-control messages remain the legacy semicolon field format;
+      // keep that probe scoped to non-JSON payloads and leave all JSON
+      // assignment validation fail-closed at the Selection boundary.
+      const auto requestPayloadText = std::string(
+        reinterpret_cast<const char*>(request.getPayload().data()),
+        request.getPayload().size());
+      const auto requestPayloadFirst = requestPayloadText.find_first_not_of(
+        " \t\r\n");
+      const auto controlFields =
+        (requestPayloadFirst != std::string::npos &&
+         requestPayloadText[requestPayloadFirst] == '{')
+          ? std::map<std::string, std::string>{}
+          : parseNativeProviderAssignmentFields(request.getPayload());
       const auto control = applyNativeProviderExecutionControl(
         controlFields, state->attemptAuthority);
       if (control.recognized) {
-        std::cout << "\nNDNSF_DI_EXECUTION_ATTEMPT"
-                  << " decision=" << (control.status ? "control-applied" : "control-rejected")
-                  << " reason=" << control.reason
-                  << " requestId=" << control.attempt.requestId
-                  << " attemptEpoch=" << control.attempt.attemptEpoch
-                  << std::endl;
+        std::ostringstream record;
+        record << "NDNSF_DI_EXECUTION_ATTEMPT"
+               << " decision=" << (control.status ? "control-applied" : "control-rejected")
+               << " reason=" << control.reason
+               << " requestId=" << control.attempt.requestId
+               << " attemptEpoch=" << control.attempt.attemptEpoch;
+        logRuntimeInfo(record.str());
         const auto response = std::string("schema=ndnsf-di-execution-control-v2;") +
           "status=" + (control.status ? "1;" : "0;") +
           "reason=" + control.reason + ";";
@@ -1626,6 +1825,20 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           ctx.fail("DI_PROVIDER_ASSEMBLY_FACTORY_MISSING");
           return;
         }
+        if (config.runnerPreparationFactory &&
+            ctx.assignment().assignedArtifact.empty()) {
+          ctx.fail("DI_PROVIDER_ASSEMBLY_ROOT_MISSING");
+          return;
+        }
+        if (!ctx.assignment().assignedArtifact.empty()) {
+          // The root comes from the authenticated assignment envelope, never
+          // from the opaque projection JSON.  Both the normal post-Selection
+          // preparation path and the explicit preassembled compatibility path
+          // need the same binding because decode-state authority validation is
+          // shared by both paths.
+          selectionProjection->canonicalArtifactName =
+            ctx.assignment().assignedArtifact.toUri();
+        }
         // Model/backend allow-lists remain Provider configuration.  The
         // request-scoped roles and dependency graph come only from the sealed
         // Selection projection, as required by Placement V3.
@@ -1657,12 +1870,11 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
             protectedRuntime->state() != ProtectedRuntimeState::GrantVerified) {
           // Preparation requires a newly verified grant, not a drained runtime
           // or a binding-only consistency result.
-          ctx.fail("DI_PROTECTED_GRANT_NOT_VERIFIED");
+          ctx.fail("DI_PROTECTED_GRANT_UNAVAILABLE");
           return;
         }
-        const auto fencingToken = nativeProviderFieldValue(
-          assignmentFields,
-          {"executionFencingToken", "fencingToken", "admissionFencingToken"});
+        const auto fencingToken = nativeProtectedFencingToken(
+          *selectionProjection, config.providerBootId, assignmentFields);
         if (const auto error = validateProtectedRuntimeBinding(
               *selectionProjection, *protectedRuntime, groupCoordinator,
               config.providerBootId, fencingToken)) {
@@ -1697,10 +1909,12 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           requestPlanDigest,
           state->attemptAuthority);
         if (!binding.status) {
-          std::cout << "\nNDNSF_DI_EXECUTION_ATTEMPT"
-                    << " decision=reject"
-                    << " reason=" << binding.reason
-                    << " role=" << role << std::endl;
+          std::ostringstream record;
+          record << "NDNSF_DI_EXECUTION_ATTEMPT"
+                 << " decision=reject"
+                 << " reason=" << binding.reason
+                 << " role=" << role;
+          logRuntimeWarn(record.str());
           ctx.fail(binding.reason);
           return;
         }
@@ -1783,11 +1997,12 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
             state->runnerSpecs, role, ctx.assignment().assignmentPayload);
       if (bindingError) {
         if (nativeTraceEnabled()) {
-          std::cout << "\nNDNSF_DI_RESOURCE_BINDING_REJECTED"
-                    << " session=" << ctx.sessionId()
-                    << " role=" << role
-                    << " reason=" << *bindingError
-                    << std::endl;
+          std::ostringstream record;
+          record << "NDNSF_DI_RESOURCE_BINDING_REJECTED"
+                 << " session=" << ctx.sessionId()
+                 << " role=" << role
+                 << " reason=" << *bindingError;
+          logRuntimeWarn(record.str());
         }
         completeExecutionLease();
         ctx.fail(*bindingError);
@@ -1879,16 +2094,17 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           ndn::Name("/ndnsf-di/conversation/ready"),
           ndn::Buffer(reinterpret_cast<const std::uint8_t*>(readyPayload.data()),
                       readyPayload.size()));
-        std::cout << "\nNDNSF_DI_CONVERSATION_STATE"
-                  << " event=state-ready-published"
-                  << " requestId=" << selectionProjection->requestId
-                  << " conversationId="
-                  << selectionProjection->conversationStateReference->conversationId
-                  << " contextEpoch="
-                  << selectionProjection->conversationStateReference->contextEpoch
-                  << " role="
-                  << selectionProjection->conversationStateReference->roleName
-                  << std::endl;
+        std::ostringstream record;
+        record << "NDNSF_DI_CONVERSATION_STATE"
+               << " event=state-ready-published"
+               << " requestId=" << selectionProjection->requestId
+               << " conversationId="
+               << selectionProjection->conversationStateReference->conversationId
+               << " contextEpoch="
+               << selectionProjection->conversationStateReference->contextEpoch
+               << " role="
+               << selectionProjection->conversationStateReference->roleName;
+        logRuntimeInfo(record.str());
       }
       const auto* readinessRunnerSpec = runnerSpecForRole(state->runnerSpecs, role);
       const auto deploymentRevision = nativeProviderFieldValue(
@@ -1950,12 +2166,12 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           const auto projection = *selectionProjection;
           const auto preparationFactory = config.runnerPreparationFactory;
           const auto runnerFactory = state->runnerFactory;
-          prepareRunner = [projection, preparationFactory, runnerFactory,
-                           executionGuard,
+          prepareRunner = [&ctx, projection, preparationFactory, runnerFactory,
+                           protectedRuntime, executionGuard,
                            expectedBackend, expectedDevice, expectedArtifact,
                            role, reportStatus, readinessOperationId] {
             if (executionGuard) executionGuard();
-            auto spec = preparationFactory(projection);
+            auto spec = preparationFactory(ctx, projection, protectedRuntime);
             if (const auto error = validateNativePreparedRunnerSpec(
                   projection, spec)) {
               throw std::runtime_error(*error);
@@ -2195,14 +2411,15 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           ctx.fail("DI_READINESS_BARRIER_TIMEOUT");
           return;
         }
-        std::cout << "\nNDNSF_DI_READINESS_BARRIER"
-                  << " status=ready"
-                  << " session=" << ctx.sessionId()
-                  << " role=" << ctx.role()
-                  << " observed_roles=" << observed.size()
-                  << " revision=" << effectiveRevision
-                  << " binding_digest=" << readinessBindingDigest
-                  << std::endl;
+        std::ostringstream record;
+        record << "NDNSF_DI_READINESS_BARRIER"
+               << " status=ready"
+               << " session=" << ctx.sessionId()
+               << " role=" << ctx.role()
+               << " observed_roles=" << observed.size()
+               << " revision=" << effectiveRevision
+               << " binding_digest=" << readinessBindingDigest;
+        logRuntimeInfo(record.str());
       }
       reportStatus(executionOperationId, "distributed-inference", "RUNNING", 1,
                    0.0, "EXECUTING");
@@ -2242,13 +2459,14 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         }
         if (kvMode == "cache-hit" || kvMode == "delta-only") {
           cachedKvState = config.kvStateStore->lookup(*kvBinding);
-          std::cout << "\nNDNSF_DI_KV_STATE event=lookup"
-                    << " session=" << kvBinding->sessionId
-                    << " role=" << role
-                    << " context_epoch=" << kvBinding->contextEpoch
-                    << " mode=" << kvMode
-                    << " status=" << (cachedKvState ? "hit" : "miss")
-                    << std::endl;
+          std::ostringstream record;
+          record << "NDNSF_DI_KV_STATE event=lookup"
+                 << " session=" << kvBinding->sessionId
+                 << " role=" << role
+                 << " context_epoch=" << kvBinding->contextEpoch
+                 << " mode=" << kvMode
+                 << " status=" << (cachedKvState ? "hit" : "miss");
+          logRuntimeInfo(record.str());
           if (!cachedKvState) {
             completeExecutionLease();
             ctx.fail(kvMode == "delta-only" ?
@@ -2276,7 +2494,64 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         io = std::make_shared<LocalDependencyIo>();
       }
       completedLocalPlan = localFullPlan;
-      auto initialInputs = initialInputsFromRequest(ctx, request);
+      std::map<std::string, TensorBundle> initialInputs;
+      const bool hasApplicationInput = selectionProjection &&
+        std::any_of(roleSpec.inputs.begin(), roleSpec.inputs.end(),
+                    [] (const auto& edge) {
+                      return edge.operationKind == "APPLICATION_INPUT";
+                    });
+      if (selectionProjection && !hasApplicationInput) {
+        if (config.spec180YnMutation == "Y-N-I") {
+          try {
+            initialInputsFromRequest(ctx, request, false);
+          }
+          catch (const std::invalid_argument& error) {
+            if (std::string(error.what()) != "DI_INPUT_FETCH_ROLE_MISMATCH") {
+              throw;
+            }
+            completeExecutionLease();
+            ctx.fail("DI_INPUT_FETCH_ROLE_MISMATCH");
+            std::cout << "SPEC180_YN_NEGATIVE_RESULT status=PASS"
+                    << " subcase=Y-N-I"
+                    << " boundary=PROVIDER_EXECUTION_STARTED"
+                    << " reason=NON_INGRESS_INPUT_REJECTED"
+                    << " requestId=" << selectionProjection->requestId
+                    << " attemptId=attempt-" << selectionProjection->attempt
+                    << " observedPhase=PROVIDER_EXECUTION_STARTED"
+                    << " provider=" << ctx.localProvider().toUri()
+                    << " planDigest=" << selectionProjection->planDigest
+                    << " errorCode=DI_INPUT_FETCH_ROLE_MISMATCH"
+                    << std::endl;
+            return;
+          }
+          completeExecutionLease();
+          ctx.fail("DI_INPUT_FETCH_ROLE_MISMATCH_ACCEPTED");
+          return;
+        }
+      }
+      else {
+        initialInputs = initialInputsFromRequest(
+          ctx, request, !selectionProjection || hasApplicationInput);
+        if (selectionProjection && hasApplicationInput) {
+          const auto requestInput = initialInputs.find("request-input");
+          if (requestInput == initialInputs.end()) {
+            completeExecutionLease();
+            ctx.fail("DI_INPUT_FETCH_ROLE_MISMATCH");
+            return;
+          }
+          for (const auto& edge : roleSpec.inputs) {
+            if (edge.operationKind != "APPLICATION_INPUT") {
+              continue;
+            }
+            auto applicationInput = requestInput->second;
+            applicationInput.name = edge.tensors.size() == 1
+              ? edge.tensors.front() : edge.scope;
+            applicationInput.expectedSegments = 1;
+            applicationInput.expectedBytes = applicationInput.payload.size();
+            initialInputs[edge.scope] = std::move(applicationInput);
+          }
+        }
+      }
       if (cachedKvState) {
         const auto* runnerSpec = runnerSpecForRole(state->runnerSpecs, role);
         try {
@@ -2508,14 +2783,15 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
             config.conversationStateKeyScope,
             std::move(receiptTopic),
             ndn::Buffer(receiptJson.begin(), receiptJson.end()));
-          std::cout << "\nNDNSF_DI_CONVERSATION_STATE"
-                    << " event=staged-receipt-published"
-                    << " requestId=" << ctx.sessionId()
-                    << " conversationId=" << turn.conversationId
-                    << " contextEpoch=" << turn.successorContextEpoch
-                    << " role=" << finalized.role
-                    << " receiptDigest=" << receipt.computedDigest()
-                    << std::endl;
+          std::ostringstream record;
+          record << "NDNSF_DI_CONVERSATION_STATE"
+                 << " event=staged-receipt-published"
+                 << " requestId=" << ctx.sessionId()
+                 << " conversationId=" << turn.conversationId
+                 << " contextEpoch=" << turn.successorContextEpoch
+                 << " role=" << finalized.role
+                 << " receiptDigest=" << receipt.computedDigest();
+          logRuntimeInfo(record.str());
 
           conversationPromotionStaged = true;
           rollbackConversationPromotion = [&] {
@@ -2632,14 +2908,15 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                     ndn::Name("/ndnsf-di/conversation/commit"),
                     ndn::Buffer(commitAckPayload.begin(),
                                 commitAckPayload.end()));
-                  std::cout << "\nNDNSF_DI_CONVERSATION_STATE"
-                            << " event=promotion-committed"
-                            << " requestId=" << ctx.sessionId()
-                            << " conversationId=" << turn.conversationId
-                            << " contextEpoch=" << turn.successorContextEpoch
-                            << " role=" << finalized.role
-                            << " checkpointDigest=" << control.checkpointDigest
-                            << std::endl;
+                  std::ostringstream record;
+                  record << "NDNSF_DI_CONVERSATION_STATE"
+                         << " event=promotion-committed"
+                         << " requestId=" << ctx.sessionId()
+                         << " conversationId=" << turn.conversationId
+                         << " contextEpoch=" << turn.successorContextEpoch
+                         << " role=" << finalized.role
+                         << " checkpointDigest=" << control.checkpointDigest;
+                  logRuntimeInfo(record.str());
                   return;
                 }
                 catch (const std::runtime_error&) {
@@ -2718,6 +2995,17 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         for (auto& localRoleSpec : localRoleSpecs) {
           auto roleInputs = localRoleSpec.inputs.empty()
             ? initialInputs : std::map<std::string, TensorBundle>{};
+          for (const auto& edge : localRoleSpec.inputs) {
+            if (edge.operationKind != "APPLICATION_INPUT") {
+              continue;
+            }
+            const auto input = initialInputs.find(edge.scope);
+            if (input == initialInputs.end()) {
+              throw std::runtime_error(
+                "V3 input-ingress role is missing its application input");
+            }
+            roleInputs.emplace(edge.scope, input->second);
+          }
           if (prepareRunner) {
             if (localRoleSpecs.size() != 1 || localRoleSpec.role != role) {
               throw std::runtime_error(
@@ -2787,13 +3075,14 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
               return;
             }
             if (kvOutput != result.outputsByScope.end()) {
-              std::cout << "\nNDNSF_DI_KV_STATE event=store"
-                        << " session=" << kvBinding->sessionId
-                        << " role=" << executedRoleSpec.role
-                        << " context_epoch="
-                        << (nextEpoch.empty() ? kvBinding->contextEpoch : std::stoull(nextEpoch))
-                        << " bytes=" << kvOutput->second.payload.size()
-                        << std::endl;
+              std::ostringstream record;
+              record << "NDNSF_DI_KV_STATE event=store"
+                     << " session=" << kvBinding->sessionId
+                     << " role=" << executedRoleSpec.role
+                     << " context_epoch="
+                     << (nextEpoch.empty() ? kvBinding->contextEpoch : std::stoull(nextEpoch))
+                     << " bytes=" << kvOutput->second.payload.size();
+              logRuntimeInfo(record.str());
             }
           }
           logProviderTiming(ctx.sessionId(), executedRoleSpec.role,
@@ -2824,12 +3113,13 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         protectedRuntime->complete();
       }
       if (executionAttempt && !state->attemptAuthority.complete(*executionAttempt)) {
-        std::cout << "\nNDNSF_DI_EXECUTION_ATTEMPT"
-                  << " decision=reject"
-                  << " reason=DI_ATTEMPT_DUPLICATE_TERMINAL"
-                  << " requestId=" << executionAttempt->requestId
-                  << " attemptEpoch=" << executionAttempt->attemptEpoch
-                  << std::endl;
+        std::ostringstream record;
+        record << "NDNSF_DI_EXECUTION_ATTEMPT"
+               << " decision=reject"
+               << " reason=DI_ATTEMPT_DUPLICATE_TERMINAL"
+               << " requestId=" << executionAttempt->requestId
+               << " attemptEpoch=" << executionAttempt->attemptEpoch;
+        logRuntimeWarn(record.str());
         completeExecutionLease();
         ctx.fail("DI_ATTEMPT_DUPLICATE_TERMINAL");
         return;
@@ -2838,16 +3128,16 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
       reportStatus(executionOperationId, "distributed-inference", "DONE", 2,
                    1.0, "EXECUTED");
       if (nativeTraceEnabled()) {
-        std::cout << "\nNDNSF_DI_NATIVE_FINAL_RESPONSE_DECISION"
-                  << " session=" << ctx.sessionId()
-                  << " role=" << role
-                  << " role_outputs=" << roleSpec.outputs.size()
-                  << " local_full_plan="
-                  << (localFullPlan ?
-                      "true" : "false")
-                  << " final_scope=" << config.finalResponseScope
-                  << " has_payload=" << (finalPayload ? "true" : "false");
-        std::cout << std::endl;
+        std::ostringstream record;
+        record << "NDNSF_DI_NATIVE_FINAL_RESPONSE_DECISION"
+               << " session=" << ctx.sessionId()
+               << " role=" << role
+               << " role_outputs=" << roleSpec.outputs.size()
+               << " local_full_plan="
+               << (localFullPlan ? "true" : "false")
+               << " final_scope=" << config.finalResponseScope
+               << " has_payload=" << (finalPayload ? "true" : "false");
+        logRuntimeInfo(record.str());
       }
       if (finalPayload) {
         if (ctx.isStreamed() &&
@@ -2911,9 +3201,11 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
 	        }
 	      }
 	      if (nativeTraceEnabled()) {
-	        std::cout << "\nNDNSF_DI_NATIVE_FAILURE session=" << ctx.sessionId()
-	                  << " role=" << ctx.role()
-	                  << " reason=" << exc.what() << std::endl;
+	        std::ostringstream record;
+	        record << "NDNSF_DI_NATIVE_FAILURE session=" << ctx.sessionId()
+	               << " role=" << ctx.role()
+	               << " reason=" << exc.what();
+	        logRuntimeError(record.str());
 	      }
 	      ctx.fail(exc.what());
 	    }

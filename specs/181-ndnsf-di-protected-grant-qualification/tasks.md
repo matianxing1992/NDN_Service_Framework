@@ -25,7 +25,7 @@ T001/T003/T004/T006 的定向验收已闭合并勾选。其余任务仍按完整
 | Task | Implemented / executed | Remaining acceptance |
 |---|---|---|
 | T001 | PASS：真实发布/消费与受保护装配、全部绑定、inline/external 清理及请求/排队生命周期；最终 151 项定向回归、6 个真实进程用例 PASS，见 [请求生命周期与完成审查](evidence/t001-request-lifecycle-20260905.md) | 本任务验收完成；正式 MiniNDN 归 T005/T008 |
-| T002 | native Ed25519/P-256 正向链和实际负例已有证据；维护进程集成、EC 泄漏修复及 10 次 ASAN 调用 PASS，见 [进程集成](evidence/t001-t002-process-integration-20260905.md) | 完整资源/异常路径验收及剩余 handler 源码闭包；完整生产运行前刷新统一构建 |
+| T002 | native Ed25519/P-256 正负链、进程集成与 EC 泄漏修复 PASS；公共准备/adapter 收口 12 cases / 76 assertions、统一构建及隔离 P-256 控制 PASS，见 [公共准备闭包](evidence/t002-shared-preparation-20260905.md) | 汇总全部验收和提交边界后作任务完成裁决；T007 generation worker 边界仍待修复 |
 | T003 | PASS：3 项 grant parity 检查消费 9 个向量；8 个装配向量分别走 Python/C++ 生产入口，16 项检查通过，含实际 ORT CPU 结果和 initializer/recipe/ABI 拒绝，见 [装配证据](evidence/t003-assembly-parity-20260905.md) | 本任务定向验收已闭合；native 格式操作共用生产 Python helper，后续同源资格仍归 T005/T008 |
 | T004 | PASS：7 项 Python seam、6 项 Core 定向检查；重建后真实 Provider 等待约 83 ms、Controller 12.39 s 就绪、等待中取消约 2.3 ms 且无热转；全部线程/网络清理，见 [生命周期证据](evidence/t004-lifecycle-acceptance-20260905.md) | 本任务定向验收已闭合；后续同源正式资格仍归 T005/T008 |
 | T005 | 已停用旧自动重试入口，维护矩阵首个失败即停止并保留原始结果；118 项定向检查 PASS，见 [证据保留修复](evidence/t005-evidence-repair-20260905.md) | T007 PASS 后同源七子用例矩阵，保留所有失败 |
@@ -97,6 +97,13 @@ handler 另发现准备 spec 的输出预算与 Selection 未比较，K=300→1
 FR-015 已纳入 spec/plan/T002/T007；共用基础与待收口项见
 [共享路径核对](evidence/shared-runtime-reuse-20260905.md)。文档结构检查
 PASS（15 FR、12 tasks、4 completed）；这是设计更新，不新增完成勾选。
+FR-015 公共准备已实现：ONNX/native postprocess 的观察初始化合并，
+YOLO 算法移入 adapter，12 cases / 76 assertions PASS（含既有生成
+取消/截止回归）。统一 native 构建与身份刷新已 PASS；隔离 P-256
+control R1 因启动脚本缺少空输出目录而在 preflight 失败，无协议
+结果，已保留原始记录。新 R2 已 PASS：4 Provider 验证 grant，数值
+匹配、7 个子进程退出已收集、无明文模型残留。generation 到 worker 的 guard 传递归 T007 后续
+定向修复。见 [公共准备闭包](evidence/t002-shared-preparation-20260905.md)。
 
 历史 6/7、7/7 与 `CONDITIONAL PASS` 不再作为当前状态；以
 [audit.md](audit.md) 与 [修正证据](evidence/audit-repair-20260905.md) 为准。

@@ -1,7 +1,7 @@
 # Shared Runtime Reuse Boundary
 
 **Status**: IN_PROGRESS
-**Evidence layer**: implemented / wired (source inspection only)
+**Evidence layer**: implemented / wired / executed (focused checks only)
 
 ## Decision
 
@@ -20,7 +20,7 @@ Spec181 源码收口，不把 Qwen 模型运行、跨模型资格或性能结论
 | Role execution / transport | `NativeProviderRuntime`、`ProviderRoleWorker`、`DependencyIo`、tensor codec / group runtime | existing：普通角色与生成 epoch 使用同一角色执行基础；角色名称、张量与依赖是契约输入 |
 | Model execution | `NativeModelRunner` / `RegistryNativeModelRunnerFactory`、`cpp/adapters/onnx/OnnxRuntimeModelRunner` | existing：ONNX 加载、设备选择与执行证据复用；按 adapter/backend 注册实际计算实现 |
 | Iterative generation | `NativeEpochCoordinator`、runner 的可选 streaming/state 接口 | existing：多轮调度基于同一 runtime；token 停止条件、tokenizer、KV/混合状态由 generation 与模型 adapter 提供，不要求无状态 YOLO 实现这些能力 |
-| YOLO semantics | Python `adapters/yolo`；当前 native `ndnsf-di/NativeYoloMergeRunner` | partial：图切分、图像前处理、框解码/筛选/排序和 oracle 为模型语义；native 后处理算法应归 `cpp/adapters/yolo`，通用 runtime 仅保留注册和接口 |
+| YOLO semantics | Python `adapters/yolo`；native `cpp/adapters/yolo/NativeYoloMergeRunner` | executed：算法已移入 adapter，旧 runtime 头文件只保留兼容 include；统一生产构建及隔离 P-256 正向控制 PASS |
 | Qwen semantics | Python `adapters/qwen`；`cpp/adapters/qwen/QwenGenerationSession` | existing：tokenizer、模型输入/输出、prefill/decode、完整 attention KV 与 recurrent/convolution 状态；具体状态内容归 adapter 所有 |
 
 本表的 native 路径均相对 `NDNSF-DistributedInference/cpp/`，Python
@@ -29,10 +29,10 @@ Spec181 源码收口，不把 Qwen 模型运行、跨模型资格或性能结论
 
 ## Closing Work
 
-1. T002：收拢现有 native 准备 factory，公共 grant/context、证据绑定、
+1. T002（implemented + focused PASS）：收拢现有 native 准备 factory，公共 grant/context、证据绑定、
    profile/资源生命周期初始化只保留一个 owner；模型分支只产生
    runner spec，不复制上述公共准备逻辑。
-2. T002：native YOLO 后处理算法归入 adapter，保留已有公开入口的
+2. T002（implemented + focused PASS）：native YOLO 后处理算法归入 adapter，保留已有公开入口的
    兼容性并同步 Waf 生产/定向测试源清单；不新建第二套 Provider。
 3. T007：复核普通执行、缓存及可选生成 epoch 都经过公共授权、
    取消/截止和清理边界；发现旁路时修复公共 owner，并用真实 runtime
@@ -45,6 +45,11 @@ Spec181 源码收口，不把 Qwen 模型运行、跨模型资格或性能结论
 语义一致的片段才提取小接口。
 
 ## Document Validation
+
+公共准备提取与 adapter 迁移的当前证据见
+[T002 shared preparation](t002-shared-preparation-20260905.md)。12 项
+定向检查、统一 native 构建和隔离 P-256 正向控制通过；generation
+worker 授权/取消传递审查尚未完成，T007 仍 BLOCK。
 
 `audit_speckit_structure.py --strict` PASS：15 FR、6 SC、4 user stories、
 12 tasks（4 complete）、15 FR traced。`git diff --check` PASS。

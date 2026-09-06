@@ -1,6 +1,11 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactMaterializer.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRunnerPreparation.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV3.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeYoloMergeRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionLeaseService.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderReadiness.hpp"
@@ -43,6 +48,8 @@
 #include <mutex>
 #include <numeric>
 #include <optional>
+#include <openssl/evp.h>
+#include <openssl/pem.h>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -53,6 +60,7 @@
 #include <tuple>
 #include <utility>
 #include <vector>
+#include <unistd.h>
 
 namespace {
 
@@ -102,10 +110,18 @@ struct Options
   bool disableTokens = false;
   bool wiringCheckOnly = false;
   bool tracerDeterministicRunner = false;
+  // Rollback-only check-mode switch.  A serving Provider must always use
+  // request-scoped canonical assembly after Selection.
+  bool allowPreassembledDiagnostic = false;
   bool enableAdmissionLease = false;
   bool requireExecutionLease = false;
   std::string executionPolicy;
   int admissionLeaseTtlMs = 60000;
+  std::string selectionOfferKeyFile;
+  std::string offerBackend = "onnxruntime-cpu";
+  std::vector<std::string> offerDevices;
+  bool offerCanProvision = false;
+  bool offerHasModel = false;
 };
 
 std::size_t
@@ -169,6 +185,115 @@ std::string
 bufferText(const ndn::Buffer& payload)
 {
   return std::string(reinterpret_cast<const char*>(payload.data()), payload.size());
+}
+
+struct NativeOfferSigner
+{
+  std::string keyId;
+  std::function<std::string(const std::string&)> sign;
+};
+
+std::string
+base64Encode(const std::vector<unsigned char>& value)
+{
+  if (value.empty()) {
+    return {};
+  }
+  std::string output(4 * ((value.size() + 2) / 3), '\0');
+  const auto size = EVP_EncodeBlock(
+    reinterpret_cast<unsigned char*>(&output[0]), value.data(),
+    static_cast<int>(value.size()));
+  if (size < 0) {
+    throw std::runtime_error("failed to base64-encode V3 Provider offer signature");
+  }
+  output.resize(static_cast<std::size_t>(size));
+  return output;
+}
+
+NativeOfferSigner
+loadNativeOfferSigner(const std::string& path)
+{
+  auto* rawBio = BIO_new_file(path.c_str(), "rb");
+  if (rawBio == nullptr) {
+    throw std::runtime_error("cannot open selection offer signing key: " + path);
+  }
+  std::unique_ptr<BIO, decltype(&BIO_free)> bio(rawBio, &BIO_free);
+  auto* rawKey = PEM_read_bio_PrivateKey(bio.get(), nullptr, nullptr, nullptr);
+  if (rawKey == nullptr) {
+    throw std::runtime_error("invalid selection offer signing key: " + path);
+  }
+  std::shared_ptr<EVP_PKEY> key(rawKey, &EVP_PKEY_free);
+  if (EVP_PKEY_base_id(key.get()) != EVP_PKEY_ED25519) {
+    throw std::runtime_error("selection offer signing key must be Ed25519");
+  }
+
+  std::size_t publicSize = 0;
+  if (EVP_PKEY_get_raw_public_key(key.get(), nullptr, &publicSize) != 1 ||
+      publicSize == 0) {
+    throw std::runtime_error("failed to derive selection offer public key");
+  }
+  std::vector<std::uint8_t> publicKey(publicSize);
+  if (EVP_PKEY_get_raw_public_key(key.get(), publicKey.data(), &publicSize) != 1) {
+    throw std::runtime_error("failed to read selection offer public key");
+  }
+  publicKey.resize(publicSize);
+  ndn::util::Sha256 publicDigest;
+  publicDigest.update(ndn::span<const std::uint8_t>(publicKey.data(), publicKey.size()));
+  auto keyId = publicDigest.toString();
+  std::transform(keyId.begin(), keyId.end(), keyId.begin(), [] (unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
+  });
+
+  NativeOfferSigner result;
+  result.keyId = "sha256:" + keyId;
+  result.sign = [key = std::move(key)] (const std::string& digest) {
+    auto* rawContext = EVP_MD_CTX_new();
+    if (rawContext == nullptr) {
+      throw std::runtime_error("failed to allocate V3 Provider offer signer");
+    }
+    std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)>
+      context(rawContext, &EVP_MD_CTX_free);
+    if (EVP_DigestSignInit(context.get(), nullptr, nullptr, nullptr, key.get()) != 1) {
+      throw std::runtime_error("failed to initialize V3 Provider offer signer");
+    }
+    std::size_t signatureSize = 0;
+    if (EVP_DigestSign(
+          context.get(), nullptr, &signatureSize,
+          reinterpret_cast<const unsigned char*>(digest.data()), digest.size()) != 1 ||
+        signatureSize == 0) {
+      throw std::runtime_error("failed to size V3 Provider offer signature");
+    }
+    std::vector<unsigned char> signature(signatureSize);
+    if (EVP_DigestSign(
+          context.get(), signature.data(), &signatureSize,
+          reinterpret_cast<const unsigned char*>(digest.data()), digest.size()) != 1) {
+      throw std::runtime_error("failed to sign V3 Provider offer");
+    }
+    signature.resize(signatureSize);
+    return base64Encode(signature);
+  };
+  return result;
+}
+
+std::string
+signNativeAssemblyManifest(ndn::KeyChain& keyChain,
+                           const ndn::security::Certificate& providerCert,
+                           const std::string& manifestBytes)
+{
+  ndn::Data signedManifest(ndn::Name("/NDNSF-DI/ASSEMBLY-MANIFEST"));
+  signedManifest.setContent(ndn::span<const std::uint8_t>(
+    reinterpret_cast<const std::uint8_t*>(manifestBytes.data()),
+    manifestBytes.size()));
+  keyChain.sign(
+    signedManifest,
+    ndn::security::signingByCertificate(providerCert));
+  const auto signature = signedManifest.getSignatureValue();
+  if (signature.value_size() == 0) {
+    return {};
+  }
+  return ndn_service_framework::selectionGatedHex(
+    ndn::span<const std::uint8_t>(
+      signature.value_begin(), signature.value_size()));
 }
 
 std::string
@@ -628,6 +753,9 @@ parseArgs(int argc, char** argv)
     else if (arg == "--tracer-deterministic-runner") {
       options.tracerDeterministicRunner = true;
     }
+    else if (arg == "--allow-preassembled-diagnostic") {
+      options.allowPreassembledDiagnostic = true;
+    }
     else if (arg == "--enable-admission-lease") {
       options.enableAdmissionLease = true;
     }
@@ -639,6 +767,21 @@ parseArgs(int argc, char** argv)
     }
     else if (arg == "--admission-lease-ttl-ms") {
       options.admissionLeaseTtlMs = parsePositiveInt(readValue(), "--admission-lease-ttl-ms");
+    }
+    else if (arg == "--selection-offer-key-file") {
+      options.selectionOfferKeyFile = readValue();
+    }
+    else if (arg == "--offer-backend") {
+      options.offerBackend = readValue();
+    }
+    else if (arg == "--offer-device") {
+      options.offerDevices.push_back(readValue());
+    }
+    else if (arg == "--offer-can-provision") {
+      options.offerCanProvision = true;
+    }
+    else if (arg == "--offer-has-model") {
+      options.offerHasModel = true;
     }
     else {
       throw std::invalid_argument("unknown argument: " + arg);
@@ -654,6 +797,10 @@ parseArgs(int argc, char** argv)
   if (options.wiringCheckOnly && !options.checkOnly) {
     throw std::invalid_argument("--wiring-check-only requires --check-only");
   }
+  if (options.allowPreassembledDiagnostic && !options.checkOnly) {
+    throw std::invalid_argument(
+      "--allow-preassembled-diagnostic is restricted to --check-only");
+  }
   if (!options.executionPolicy.empty() &&
       options.executionPolicy != "DATA_DRIVEN_V2" &&
       options.executionPolicy != "LEGACY_READY_SET_V1") {
@@ -663,6 +810,9 @@ parseArgs(int argc, char** argv)
       !options.requireExecutionLease) {
     throw std::invalid_argument(
       "LEGACY_READY_SET_V1 requires --require-execution-lease");
+  }
+  if (!options.selectionOfferKeyFile.empty() && options.offerBackend.empty()) {
+    throw std::invalid_argument("--offer-backend must not be empty");
   }
   return options;
 }
@@ -985,9 +1135,13 @@ printUsage(const char* program)
     << "[--repo-permission-wait-ms <ms>] [--wiring-check-only] "
     << "[--permission-wait-ms <ms>] "
     << "[--tracer-deterministic-runner] [--enable-admission-lease] "
+    << "[--allow-preassembled-diagnostic] "
     << "[--require-execution-lease] "
     << "[--execution-policy DATA_DRIVEN_V2|LEGACY_READY_SET_V1] "
-    << "[--admission-lease-ttl-ms <ms>]\n";
+    << "[--admission-lease-ttl-ms <ms>] "
+    << "[--selection-offer-key-file <ed25519.pem>] "
+    << "[--offer-backend <name>] [--offer-device <device>] "
+    << "[--offer-can-provision] [--offer-has-model]\n";
 }
 
 } // namespace
@@ -1020,10 +1174,68 @@ main(int argc, char** argv)
         "LEGACY_READY_SET_V1 plan requires --require-execution-lease");
     }
     const auto providerStartedAtMs = static_cast<std::uint64_t>(std::max<long long>(0, epochMs()));
-    const auto providerBootId = options.providerName + "@" + std::to_string(providerStartedAtMs);
+    auto providerBootId = options.providerName + "@" + std::to_string(providerStartedAtMs);
     auto specs = withExecutionEvidenceContext(loadManifestSpecs(options), options,
                                               providerBootId, providerStartedAtMs);
     const auto allowedRoles = allowedRolesForOptions(plan, options);
+    if (options.serve) {
+      // A request-scoped serving manifest intentionally carries role names but
+      // no preassembled artifact paths. Keep one metadata-only runner slot per
+      // advertised role so ordered registration can complete; the authenticated
+      // Selection projection replaces each slot with its certified ONNX or
+      // native postprocess runner before execution.
+      for (const auto& role : allowedRoles) {
+        if (specs.find(role) != specs.end()) {
+          continue;
+        }
+        NativeModelRunnerSpec spec;
+        spec.role = role;
+        spec.kind = role == "Merge" ? "native-yolo-postprocess" : "onnx-model";
+        spec.backend = role == "Merge" ? "native-yolo-postprocess" : options.offerBackend;
+        specs.emplace(role, std::move(spec));
+      }
+      specs = withExecutionEvidenceContext(
+        std::move(specs), options, providerBootId, providerStartedAtMs);
+    }
+    std::optional<NativeProviderOfferV3Config> nativeOfferConfig;
+    if (!options.selectionOfferKeyFile.empty()) {
+      auto signer = loadNativeOfferSigner(options.selectionOfferKeyFile);
+      NativeProviderOfferV3Config config;
+      config.provider = options.providerName;
+      config.service = options.serviceName;
+      config.bootEpoch = providerBootId;
+      config.signerKeyId = std::move(signer.keyId);
+      config.acceptedRoles = allowedRoles;
+      config.backends = {options.offerBackend};
+      config.devices = options.offerDevices;
+      config.canProvision = options.offerCanProvision;
+      config.hasModel = options.offerHasModel;
+      config.signDigest = std::move(signer.sign);
+      nativeOfferConfig = std::move(config);
+      std::cout << "NDNSF_DI_NATIVE_PROVIDER_V3_OFFER_SIGNER_READY"
+                << " provider=" << options.providerName
+                << " keyId=" << nativeOfferConfig->signerKeyId
+                << " backend=" << options.offerBackend
+                << " devices=" << joinRoles(options.offerDevices)
+                << std::endl;
+    }
+    if (options.serve) {
+      if (plan.executionPolicy != "DATA_DRIVEN_V2") {
+        throw std::invalid_argument(
+          "serving requires DATA_DRIVEN_V2 post-Selection assembly");
+      }
+      if (!options.artifactReferencesPath.empty()) {
+        throw std::invalid_argument(
+          "serving rejects preassembled --artifact-references; use canonical "
+          "artifact assignment");
+      }
+      for (const auto& item : specs) {
+        if (!item.second.path.empty()) {
+          throw std::invalid_argument(
+            "serving rejects ready-made role artifact for " + item.first);
+        }
+      }
+    }
 
     auto factory = std::make_shared<RegistryNativeModelRunnerFactory>();
     registerOnnxRuntimeBackend(*factory);
@@ -1104,6 +1316,16 @@ main(int argc, char** argv)
                                                       providerCert,
                                                       controllerCert,
                                                       options.trustSchema);
+      // The framework owns the Provider boot epoch carried by the ACK's
+      // encrypted key offer.  Bind every DI offer, assignment, and evidence
+      // record to that same epoch instead of inventing a second executable-
+      // local identifier that the User must reject.
+      providerBootId = provider.getProviderBootEpoch();
+      specs = withExecutionEvidenceContext(
+        std::move(specs), options, providerBootId, providerStartedAtMs);
+      if (nativeOfferConfig) {
+        nativeOfferConfig->bootEpoch = providerBootId;
+      }
       std::cout << "NDNSF_DI_NATIVE_PROVIDER_SERVICE_PROVIDER_READY"
                 << std::endl;
       provider.setUseTokens(!options.disableTokens);
@@ -1253,12 +1475,28 @@ main(int argc, char** argv)
          &provider,
          serviceName = ndn::Name(options.serviceName),
          providerName = ndn::Name(options.providerName),
+         nativeOfferConfig,
          enableAdmissionLease = options.enableAdmissionLease,
          admissionLeaseTtlMs = options.admissionLeaseTtlMs](
-          const ndn_service_framework::RequestMessage&) {
+          const ndn_service_framework::RequestMessage& request) {
           auto decision = provisioningState->makeAckDecision(rolesText,
                                                              providerName,
                                                              serviceName);
+          bool issuedV3Offer = false;
+          if (decision.status && nativeOfferConfig) {
+            const auto requestPayload = request.getPayload();
+            const auto offer = issueNativeProviderOfferV3(
+              std::vector<std::uint8_t>(requestPayload.begin(), requestPayload.end()),
+              *nativeOfferConfig,
+              static_cast<std::uint64_t>(std::max<long long>(0, epochMs())));
+            if (offer) {
+              issuedV3Offer = true;
+              decision.status = offer->status;
+              decision.message = offer->message;
+              decision.payload = textBuffer(offer->payload);
+              decision.pendingStateTtlMs = offer->pendingStateTtlMs;
+            }
+          }
           // Update NDNSD meta with live capacity from this ACK decision
           if (decision.status) {
             auto payloadText = bufferText(decision.payload);
@@ -1278,7 +1516,7 @@ main(int argc, char** argv)
               }
             }
           }
-          if (enableAdmissionLease && decision.status) {
+          if (enableAdmissionLease && decision.status && !issuedV3Offer) {
             ndn_service_framework::ServiceProvider::GenericAdmissionLease lease;
             lease.leaseId = nativeTracerLeaseId(providerName.toUri());
             lease.providerName = providerName;
@@ -1357,7 +1595,7 @@ main(int argc, char** argv)
          &provider] () mutable {
           try {
             provisioningState->markInstalling(
-              "fetching and materializing native model/runtime artifacts");
+              "waiting for authenticated post-Selection role assembly");
             // Tell other users via negative-ACK what's happening
             provisioningState->setProvisioningContext(
               options.providerName,      // deploymentId placeholder
@@ -1368,73 +1606,12 @@ main(int argc, char** argv)
                       << " cacheDir=" << options.artifactCacheDir
                       << std::endl;
 
-            std::map<std::string, NativeModelRunnerSpec> materializedSpecs;
-            if (options.artifactReferencesPath.empty()) {
-              materializedSpecs = specs;
-            }
-            else {
-              ndn::Face installFace;
-              std::cout << "NDNSF_DI_NATIVE_PROVIDER_REPO_USER_CREATING"
-                        << std::endl;
-              ndn_service_framework::ServiceUser repoUser(
-                installFace,
-                ndn::Name(options.groupName),
-                providerCert,
-                controllerCert,
-                options.trustSchema);
-              repoUser.setUseTokens(!options.disableTokens);
-              repoUser.fetchPermissionsFromController(controllerIdentity);
-              std::cout << "NDNSF_DI_NATIVE_PROVIDER_REPO_PERMISSION_FETCH_ISSUED controller="
-                        << controllerIdentity
-                        << " repoService=" << options.repoServiceName
-                        << std::endl;
-              if (!waitForUserPermission(repoUser,
-                                         installFace,
-                                         ndn::Name(options.repoServiceName),
-                                         options.repoPermissionWaitMs)) {
-                throw std::runtime_error(
-                  "native provider repo user permission not installed for " +
-                  options.repoServiceName);
-              }
-              std::cout << "NDNSF_DI_NATIVE_PROVIDER_REPO_PERMISSION_READY service="
-                        << options.repoServiceName
-                        << std::endl;
-              materializedSpecs = materializeManifestSpecs(
-                options,
-                specs,
-                [&repoUser, &installFace,
-                 repoService = ndn::Name(options.repoServiceName),
-                 ackTimeoutMs = options.repoAckTimeoutMs,
-                 timeoutMs = options.repoFetchTimeoutMs]
-                (const std::string& objectName, const std::string& repoManifestJson) {
-                  std::cout << "NDNSF_DI_NATIVE_PROVIDER_REPO_ARTIFACT_FETCH"
-                            << " objectName=" << objectName
-                            << " repoService=" << repoService
-                            << std::endl;
-                  const auto segmentPlan =
-                    repoSegmentFetchPlanFromManifestJson(repoManifestJson);
-                  if (segmentPlan) {
-                    std::cout << "NDNSF_DI_NATIVE_PROVIDER_REPO_SEGMENT_FETCH"
-                              << " objectName=" << objectName
-                              << " dataName=" << segmentPlan->dataName
-                              << " segmentCount=" << segmentPlan->segmentCount
-                              << " hints=" << segmentPlan->forwardingHints.size()
-                              << std::endl;
-                    return fetchSegmentedRepoObjectSync(installFace,
-                                                        *segmentPlan,
-                                                        timeoutMs);
-                  }
-                  return fetchRepoObjectSync(repoUser,
-                                            installFace,
-                                            repoService,
-                                            objectName,
-                                            ackTimeoutMs,
-                                            timeoutMs);
-                });
-            }
-
-            materializedSpecs = withExecutionEvidenceContext(
-              std::move(materializedSpecs), options, providerBootId, providerStartedAtMs);
+            // Formal serving never reads a ready-made role file at startup.
+            // The metadata-only specs are used only for the ordered role set;
+            // the exact model path is produced after Selection by the factory.
+            auto metadataSpecs = withExecutionEvidenceContext(
+              specs, options, providerBootId, providerStartedAtMs);
+            auto materializedSpecs = metadataSpecs;
             auto runners = orderedSpecs(plan, materializedSpecs, allowedRoles);
             std::cout << "NDNSF_DI_NATIVE_PROVIDER_PLAN_READY roles="
                       << plan.roles.size()
@@ -1450,14 +1627,52 @@ main(int argc, char** argv)
             config.runnerSpecs = std::move(runners);
             config.localProviderName = options.providerName;
             config.providerBootId = providerBootId;
+            installNativeProtectedGrantFactory(config);
             config.planDigest = sha256File(options.planPath);
+            if (const auto* mutation = std::getenv("SPEC180_YN_MUTATION")) {
+              config.spec180YnMutation = mutation;
+            }
             config.executionPolicy = plan.executionPolicy;
-            // The NativeTracer workload currently seals the V3 role payload
-            // against artifacts materialized before Provider startup. Keep
-            // this explicit rollback path enabled for that existing runner;
-            // request-scoped assembly remains the normal path whenever a
-            // runnerPreparationFactory is installed.
-            config.allowPreassembledV3Compatibility = true;
+            // Serving prepares a runner only after authenticated Selection.
+            // Model adapters supply a spec; observations are bound once below.
+            config.allowPreassembledV3Compatibility = false;
+            const auto assemblyCacheDir = options.artifactCacheDir;
+            const auto assemblyProviderIdentity = options.providerName;
+            config.runnerPreparationFactory =
+              [assemblyCacheDir,
+               assemblyProviderIdentity,
+               providerCert,
+               providerBootId,
+               providerStartedAtMs,
+               &keyChain] (
+                ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
+                const NativeSelectionProjectionV3& projection,
+                const std::shared_ptr<ProtectedRuntime>& protectedRuntime) {
+                NativeModelRunnerSpec spec;
+                if (projection.assembly.mergeKind == "NATIVE_POSTPROCESS") {
+                  spec = nativeYoloMergeRunnerSpecFromProjection(projection);
+                }
+                else {
+                  NativeCanonicalOnnxAssemblerOptions assemblyOptions;
+                  assemblyOptions.cacheDir = assemblyCacheDir;
+                  assemblyOptions.providerIdentity = assemblyProviderIdentity;
+                  assemblyOptions.protectedRuntime = protectedRuntime;
+                  if (protectedRuntime) {
+                    const auto& payload = ctx.assignment().assignmentPayload;
+                    assemblyOptions.roleAssemblySpecDigest = nativeAssemblyDigestFromCanonicalProjection(
+                      std::string(reinterpret_cast<const char*>(payload.data()), payload.size()));
+                  }
+                  assemblyOptions.signManifest =
+                    [&keyChain, providerCert](const std::string& manifestBytes) {
+                      return signNativeAssemblyManifest(
+                        keyChain, providerCert, manifestBytes);
+                    };
+                  spec = prepareNativeCanonicalOnnxRole(ctx, projection, assemblyOptions);
+                }
+                bindNativeRunnerPreparationContext(spec, projection,
+                  {assemblyProviderIdentity, providerBootId, providerStartedAtMs, assemblyCacheDir});
+                return spec;
+              };
             config.requireExecutionAttemptBinding = options.requireExecutionLease;
             // Execution leases bind the attempt and resources. They are not a
             // global ReadySet barrier: DATA_DRIVEN_V2 roles start after local
@@ -1558,17 +1773,29 @@ main(int argc, char** argv)
               telemetryCollector->recordStageServiceTime(duration);
             };
             telemetryCollector->refresh();
-            auto executionEvidence = aggregateExecutionEvidence(runtime.executionEvidence);
-            provisioningState->setExecutionEvidence(executionEvidence);
-            std::cout << "NDNSF_DI_EXECUTION_EVIDENCE "
-                      << executionEvidenceToJson(executionEvidence)
-                      << std::endl;
             auto executionEvidenceByRole = std::make_shared<
               std::map<std::string, ExecutionEvidence>>();
             for (const auto& item : runtime.executionEvidence) {
               for (const auto& role : item.roles) {
                 (*executionEvidenceByRole)[role] = item;
               }
+            }
+            if (!runtime.executionEvidence.empty()) {
+              auto executionEvidence = aggregateExecutionEvidence(
+                runtime.executionEvidence);
+              provisioningState->setExecutionEvidence(executionEvidence);
+              std::cout << "NDNSF_DI_EXECUTION_EVIDENCE "
+                        << executionEvidenceToJson(executionEvidence)
+                        << std::endl;
+            }
+            else {
+              // Canonical role assembly is deliberately deferred until an
+              // authenticated Selection.  Readiness is capability-only here;
+              // per-role execution evidence is published after ORT loads.
+              std::cout << "NDNSF_DI_EXECUTION_EVIDENCE_DEFERRED"
+                        << " reason=post-selection-assembly"
+                        << " roles=" << allowedRoles.size()
+                        << std::endl;
             }
             provisioningState->setExecutionEvidenceByRole(*executionEvidenceByRole);
             auto executionEvidenceMutex = std::make_shared<std::mutex>();
@@ -1589,6 +1816,9 @@ main(int argc, char** argv)
                 provisioningState->setExecutionEvidenceByRole(*executionEvidenceByRole);
                 std::cout << "NDNSF_DI_EXECUTION_EVIDENCE_UPDATE "
                           << executionEvidenceToJson(aggregate)
+                          << std::endl;
+                std::cout << "NDNSF_DI_EXECUTION_EVIDENCE_OBSERVED "
+                          << executionEvidenceToJson(observed)
                           << std::endl;
               };
             {
@@ -1618,7 +1848,8 @@ main(int argc, char** argv)
                       << " attemptAuthority=fresh"
                       << " kvState=fresh"
                       << std::endl;
-            provisioningState->markReady("native model/runtime artifacts ready");
+            provisioningState->markReady(
+              "native runtime ready; role assembly deferred until Selection");
             provider.updateNdnsdMeta("runtimeStatus", "ready");
             std::cout << "NDNSF_DI_NATIVE_PROVIDER_PROVISION_READY"
                       << " activeRoles=" << allowedRoles.size()

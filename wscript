@@ -389,6 +389,12 @@ def build(bld):
         includes=['.', 'ndn-service-framework'],
         use='NDN_CXX BOOST ONNXRUNTIME', cxxflags=['-fPIC'])
     bld.objects(
+        target='ndnsf-di-adapter-yolo-objects',
+        source=bld.path.ant_glob(
+            'NDNSF-DistributedInference/cpp/adapters/yolo/*.cpp'),
+        includes=['.', 'ndn-service-framework'],
+        use='NDN_CXX BOOST', cxxflags=['-fPIC'])
+    bld.objects(
         target='ndnsf-di-adapter-qwen-objects',
         source=bld.path.ant_glob(
             'NDNSF-DistributedInference/cpp/adapters/qwen/*.cpp'),
@@ -411,6 +417,9 @@ def build(bld):
     bld.install_files(
         '${INCLUDEDIR}/NDNSF-DistributedInference/cpp/adapters/onnx',
         bld.path.ant_glob('NDNSF-DistributedInference/cpp/adapters/onnx/*.hpp'))
+    bld.install_files(
+        '${INCLUDEDIR}/NDNSF-DistributedInference/cpp/adapters/yolo',
+        bld.path.ant_glob('NDNSF-DistributedInference/cpp/adapters/yolo/*.hpp'))
     bld.install_files(
         '${INCLUDEDIR}/NDNSF-DistributedInference/cpp/adapters/qwen',
         bld.path.ant_glob('NDNSF-DistributedInference/cpp/adapters/qwen/*.hpp'))

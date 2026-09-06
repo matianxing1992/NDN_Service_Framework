@@ -1,5 +1,6 @@
 #include "tests/boost-test.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeYoloMergeRunner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 
 #include <array>
@@ -8,7 +9,7 @@
 
 namespace ndnsf::di::test {
 namespace {
-NativeModelRunnerSpec mergeSpec()
+NativeSelectionProjectionV3 mergeProjection()
 {
   NativeSelectionProjectionV3 projection;
   auto& assembly = projection.assembly;
@@ -18,8 +19,15 @@ NativeModelRunnerSpec mergeSpec()
   assembly.postprocessOutputName = "predictions";
   assembly.postprocessConfidenceThreshold = .001;
   assembly.postprocessSort = "confidence-desc,class-asc,xyxy-asc";
+  assembly.artifactDigest = "sha256:" + std::string(64, 'c');
+  assembly.recipeDigest = "sha256:" + std::string(64, 'd');
   assembly.expectedOutputs = {{"predictions", "float32", {"1", "300", "6"}}};
-  auto spec = nativeYoloMergeRunnerSpecFromProjection(projection);
+  return projection;
+}
+
+NativeModelRunnerSpec mergeSpec()
+{
+  auto spec = nativeYoloMergeRunnerSpecFromProjection(mergeProjection());
   for (const auto& entry : std::map<std::string, std::string>{
          {"evidence.providerName", "/provider/merge"},
          {"evidence.providerBootId", "boot-1"},
@@ -127,6 +135,16 @@ BOOST_AUTO_TEST_CASE(NativeYoloMergeRejectsWrongOutputType)
   projection.assembly.postprocessOutputName = "predictions";
   projection.assembly.expectedOutputs = {{"predictions", "int64", {"1", "300", "6"}}};
   BOOST_CHECK_THROW(nativeYoloMergeRunnerSpecFromProjection(projection), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(NativeYoloMergeBindsPreparedOutputBudgetToSelection)
+{
+  const auto projection = mergeProjection();
+  auto spec = mergeSpec();
+  BOOST_REQUIRE(!validateNativePreparedRunnerSpec(projection, spec));
+  spec.metadata["expectedOutputShape"] = "1,1,6";
+  BOOST_CHECK_EQUAL(validateNativePreparedRunnerSpec(projection, spec).value_or(""),
+                    "DI_PROVIDER_NATIVE_MERGE_METADATA_MISMATCH");
 }
 
 BOOST_AUTO_TEST_CASE(NativeYoloMergeRejectsMissingOrMalformedDependency)

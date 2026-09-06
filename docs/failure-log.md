@@ -19,6 +19,13 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 shared preparation control R1 (2026-09-05): CLOSED as startup error; R2 focused PASS.**
+The isolated launcher omitted the empty output directory; `validate_inputs`
+raised `OUTPUT_ROOT_MISSING` before MiniNDN startup. No protocol result exists.
+The unified native build passed. R1 is preserved; fresh R2 passed the protected
+P-256 control with four verified Providers and seven collected child exits.
+See [shared preparation closure](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t002-shared-preparation-20260905.md).
+
 **Spec181 T002 native handler observation (2026-09-05): CLOSED; early result INVALID.** A focused test
 was started before the repair build completed and ran the previous binary.
 R2/green.log is preserved. The original build completed (59.612s), then the rebuilt
