@@ -19,6 +19,26 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 T001/T002 maintained process integration (2026-09-05): focused defects CLOSED.**
+R1 native fixtures build, but NFD's own management FIB registration fails
+because the test configuration omits management authorization. The requester
+then receives connection refused; no grant verification occurred. Preserve
+the r1 raw run. R2 fixes NFD but requester bootstrap requires a real Controller
+for NAC public parameters. Separately, ten successful P-256 runtime calls leak
+24560 bytes / 630 allocations under ASAN despite the Zeroized state. Both
+boundaries are recorded before repair. R3 fixes the EC ownership leak: ten
+P-256 calls pass ASAN. The real Controller becomes ready, but requester
+publication readiness times out before any Provider result; preserve r3
+before instrumenting that boundary. R4 NDN logs/stack locate the wait in
+ServiceUser construction (NAC decryption key): the fixture needs its own
+requester policy and certificate bootstrap. R5 passes five cases; Python's
+wrong-recipient rejection is correct, but the test incorrectly requires a
+Core wire prefix on an internal typed exception. Preserve r5 and correct
+the scoped assertion without synthesizing a Core response. R6 passes all 11
+checks (10 real-process cases plus ASAN), with all 40 child exits collected.
+T001/T002 full acceptance and T007 remain open. See
+[process integration](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t001-t002-process-integration-20260905.md).
+
 **Spec181 T002 P-256 production path (2026-09-05): focused defects CLOSED.**
 R1 proves the runner overwrites an explicitly configured recipient-key map
 with the Ed25519 offer-key map. Four other checks stop in fixture key

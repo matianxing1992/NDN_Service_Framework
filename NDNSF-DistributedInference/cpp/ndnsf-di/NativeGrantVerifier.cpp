@@ -14,6 +14,7 @@
 #include <cctype>
 #include <cstring>
 #include <map>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
 
@@ -355,43 +356,47 @@ ecP256SharedSecret(const std::string& privatePem,
   BIO_free(bio);
   EvpKey privateKey(rawKey);
   if (!privateKey.get()) throw std::runtime_error("EC private key parse failed");
-  EC_KEY* ecKey = EVP_PKEY_get1_EC_KEY(privateKey.get());
+  std::unique_ptr<EC_KEY, decltype(&EC_KEY_free)> ecKey(
+    EVP_PKEY_get1_EC_KEY(privateKey.get()), EC_KEY_free);
   if (!ecKey) throw std::runtime_error("EC key extraction failed");
-  const EC_GROUP* group = EC_KEY_get0_group(ecKey);
-  EC_POINT* point = EC_POINT_new(group);
+  const EC_GROUP* group = EC_KEY_get0_group(ecKey.get());
+  if (!group || EC_GROUP_get_curve_name(group) != NID_X9_62_prime256v1) {
+    throw std::runtime_error("EC recipient key must use P-256");
+  }
+  std::unique_ptr<EC_POINT, decltype(&EC_POINT_free)> point(
+    EC_POINT_new(group), EC_POINT_free);
   bool pointOk = point != nullptr &&
-    EC_POINT_oct2point(group, point,
+    EC_POINT_oct2point(group, point.get(),
                        reinterpret_cast<const unsigned char*>(
                          peerPublicRaw.data()),
-                       peerPublicRaw.size(), nullptr) == 1;
+                       peerPublicRaw.size(), nullptr) == 1 &&
+    EC_POINT_is_at_infinity(group, point.get()) == 0 &&
+    EC_POINT_is_on_curve(group, point.get(), nullptr) == 1;
   if (!pointOk) {
-    EC_POINT_free(point);
-    EC_KEY_free(ecKey);
     throw std::runtime_error("EC peer point parse failed");
   }
+  std::unique_ptr<EC_KEY, decltype(&EC_KEY_free)> peerEc(EC_KEY_new(), EC_KEY_free);
   EvpKey peerKey(EVP_PKEY_new());
-  bool assignOk = peerKey.get() != nullptr &&
-    EVP_PKEY_assign_EC_KEY(peerKey.get(), EC_KEY_new()) == 1;
-  if (!assignOk || !peerKey.get()) {
-    EC_POINT_free(point);
-    EC_KEY_free(ecKey);
+  if (!peerEc || !peerKey.get() ||
+      EC_KEY_set_group(peerEc.get(), group) != 1 ||
+      EC_KEY_set_public_key(peerEc.get(), point.get()) != 1 ||
+      EVP_PKEY_assign_EC_KEY(peerKey.get(), peerEc.get()) != 1) {
     throw std::runtime_error("EC peer key allocation failed");
   }
-  EC_KEY_set_group(EVP_PKEY_get1_EC_KEY(peerKey.get()), EC_GROUP_dup(group));
-  EC_KEY_set_public_key(EVP_PKEY_get1_EC_KEY(peerKey.get()), point);
-  EC_POINT_free(point);
-  EC_KEY_free(ecKey);
+  // EVP_PKEY owns the peer only after a successful assignment.
+  peerEc.release();
 
-  EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new(privateKey.get(), nullptr);
+  std::unique_ptr<EVP_PKEY_CTX, decltype(&EVP_PKEY_CTX_free)> ctx(
+    EVP_PKEY_CTX_new(privateKey.get(), nullptr), EVP_PKEY_CTX_free);
   if (!ctx) throw std::runtime_error("ECDH context allocation failed");
   std::string shared(32, '\0');
   std::size_t sharedLen = shared.size();
-  bool ok = EVP_PKEY_derive_init(ctx) == 1 &&
-            EVP_PKEY_derive_set_peer(ctx, peerKey.get()) == 1 &&
-            EVP_PKEY_derive(ctx, reinterpret_cast<unsigned char*>(&shared[0]),
+  bool ok = EVP_PKEY_derive_init(ctx.get()) == 1 &&
+            EVP_PKEY_derive_set_peer(ctx.get(), peerKey.get()) == 1 &&
+            EVP_PKEY_derive(ctx.get(), reinterpret_cast<unsigned char*>(&shared[0]),
                             &sharedLen) == 1;
-  EVP_PKEY_CTX_free(ctx);
   if (!ok || sharedLen != shared.size()) {
+    OPENSSL_cleanse(shared.data(), shared.size());
     throw std::runtime_error("ECDH derive failed");
   }
   return shared;

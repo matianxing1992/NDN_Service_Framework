@@ -3,6 +3,20 @@
 top = '..'
 
 def build(bld):
+    grant_sources = [bld.path.find_node('integration-tests/ndnsf-di-protected-grant.t.cpp')] + bld.path.parent.ant_glob([
+        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedGrantCredentials.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedGrantTransport.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.cpp',
+    ])
+    for target, sanitize in [('spec181-native-grant-integration', False),
+                             ('spec181-native-grant-asan', True)]:
+        flags = ['-fsanitize=address', '-fno-omit-frame-pointer'] if sanitize else []
+        bld.program(target='../' + target, name=target, source=grant_sources,
+                    includes=['..', '../ndn-service-framework'],
+                    use='NDN_CXX BOOST OPENSSL', cxxflags=flags,
+                    linkflags=flags, rpath=[bld.bldnode.abspath()], install_path=None)
+
     # Focused production-entry parity; use the configured native dependency
     # closure instead of maintaining a second hand-written compiler command.
     bld.program(target='../spec181-assembly-parity',
@@ -63,6 +77,8 @@ def build(bld):
         'NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollectiveControl.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedGrantCredentials.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedGrantTransport.cpp',
     ])
 
     bld.program(target='../unit-tests',

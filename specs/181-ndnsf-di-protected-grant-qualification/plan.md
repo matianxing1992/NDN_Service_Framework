@@ -7,8 +7,10 @@
 
 继承 Spec180 的 ACK 规划、V3 投影、授权契约与发布工具链；目标仍是
 同一候选的本地 YOLO 功能资格、exact-SIF replay 与一次 Tiger Y-B。
-当前停在 G0：Python 授权链只有部分接线与 unit 证据，native verifier
-尚未接入 native Provider 运行时；后续门保持关闭。
+当前停在 G0：Python/native 授权链已接线，native Ed25519/P-256
+定向正向控制和真实负例已有证据；维护的进程集成与 P-256 资源检查
+已通过。T001/T002 的全部异常/资源边界及 handler 源码闭包仍未完成，
+T007 保持 BLOCK，后续门保持关闭。
 
 ## Gate Order
 
@@ -68,6 +70,10 @@ T008 保留当前源身份与全部平面摘要；T009 只能封印这些相同�
    Ed25519 原始 seed 或有效 EC P-256 PEM，拒绝其他曲线/类型；
    两者保持相同公钥摘要、模型/纪元、身份映射及 0600 权限检查。
    凭据加载 unit 不替代真实 grant 发布/获取/解包验收。
+   `NativeProtectedGrantCredentials.cpp` 与 `NativeProtectedGrantTransport.cpp`
+   承载 factory 和维护集成测试共用的生产凭据/精确名获取入口；测试
+   不复制加载或网络算法。P-256 EC 引用、point、派生 context 使用
+   RAII，验证成功不代表资源释放已通过，另以 ASAN 检查。
    requester 与 Python Provider 使用同样的 recipient 类型约定。
    显式 `SPEC181_PROVIDER_RECIPIENT_KEY_MAP` 独立于 offer 签名密钥
    映射；仅未配置时回退到原 offer-key map，不覆盖显式配置。

@@ -1,7 +1,8 @@
 # Spec181 Design-code Convergence Audit
 
 **Date**: 2026-09-05 | **Revision**: 5 | **Task**: T007
-**Source identity**: 基线 `67194dc2`；定向修复 `ff7b5c3b`；本修订文档差异。
+**Source identity**: 初审基线 `67194dc2`；当前检查点父提交 `f2304ba9`
+与本轮进程集成/EC 资源修复差异。历史运行仅对应各自证据中的源/构建。
 **Layer**: proposed（设计）+ implemented（源码核查）+ executed（定向 unit / live control）。
 **Verdict**: **BLOCK**。本审查取代旧 `CONDITIONAL PASS / no HIGH` 结论。
 
@@ -14,8 +15,8 @@ R = `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py`。行号对应本轮源码�
 
 | ID | Severity | Location | Finding and evidence boundary | Disposition / closing action |
 |---|---|---|---|---|
-| A01 | HIGH | N/ProtectedRuntime.cpp；N/NativeProviderHandler.cpp；R；evidence/t002-p256-production-20260905.md | 初审发现 runtime 无条件拒绝、缺 factory、保护 Y-B 使用 Python Provider。现有 native Ed25519/P-256 正向链、T006 实际负例和 helper 生命周期修复证据。 | PARTIAL — T002 仍需维护 integration 测试、全部资源/异常路径验收及剩余 handler 源码闭包。 |
-| A02 | HIGH | P:1369、1445、1474、1485、1507、2559、2695、2734 | 先装配后授权；Merge 用 grant 自述 manifest 作预期值；落盘密文后直接解密内存对象；external weights 明文复制且未登记租约；准备阶段后续异常提前 return 可绕过 handler 的 finally。 | OPEN — T001 重排授权、绑定独立输入并覆盖全部加载/清理边界；错误密钥、磁盘密文变异、准备失败与取消测试。 |
+| A01 | HIGH | N/ProtectedRuntime.cpp；N/NativeProviderHandler.cpp；R；evidence/t001-t002-process-integration-20260905.md | 初审发现 runtime 无条件拒绝、缺 factory、保护 Y-B 使用 Python Provider。现有 native Ed25519/P-256 正向链、T006 实际负例、helper 生命周期修复，以及维护进程集成与 EC 泄漏修复的 ASAN 证据。 | PARTIAL — T002 仍需全部资源/异常路径验收及剩余 handler 源码闭包。 |
+| A02 | HIGH | P；evidence/t001-t002-process-integration-20260905.md | 初审发现授权顺序、独立模型绑定、磁盘读取及清理缺口。修复后生产授权先于装配，维护进程测试验证错误收件人提前拒绝、磁盘密文/错误内容密钥在 AEAD 层拒绝，Python 内容密钥零化且 canonical 保留。 | PARTIAL — 已有装配/存储修复与真实进程定向证据；全部 external-data、准备失败、取消/过期与资源上界仍需核查。 |
 | A03 | HIGH | P:1445；tests/python/test_spec181_provider_grant.py:445 | 原实现未核对 Selection grant 摘要，权威另签的同上下文 grant 可替换选中密钥。新回归实测 `ProtectedGrantRejected not raised`。 | CLOSED — `ff7b5c3b` 增加封印摘要比对；RED 1 failed，GREEN 34 passed，见专项证据。 |
 | A04 | HIGH | U；R；ProtectedRuntime.cpp；evidence/t006-production-repair-20260905.md | 初审发现 User 内部 probe 冒充 Provider 拒绝。现已移除该成功判据，记录并核对实际发布、Provider verifier、请求/attempt/Provider 与封印计划；三种真实变异和有效 grant 控制通过。 | CLOSED — T006 定向生产验收 PASS；正式同源矩阵仍归 T005/T008。 |
 | A05 | HIGH | scripts/run_spec181_y_n_matrix_retry.py；R；evidence/t005-evidence-repair-20260905.md | 旧 driver 删除 attempt、重试任意异常并取首个 PASS，已停用；维护矩阵改为首个失败即停止，保留原始结果。新增 5 项失败回归，修复后相关 118 项检查 PASS。 | PARTIAL — 证据覆盖/跨运行挑选入口已移除；完整源/构建/配置闭包审查仍归 T007，正式同源矩阵待 T005/T008。 |
@@ -27,10 +28,10 @@ R = `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py`。行号对应本轮源码�
 
 ## Traceability Gaps
 
-- FR-002/003/013：T001/T002 仍缺完整生产接线与错误路径清理证据。
-- FR-004：T006 的真实密码学 helper 不是 Provider 授权拒绝网络证据。
+- FR-002/003/013：T001/T002 已有真实 grant 接线、维护进程集成和定向清理证据，全部异常/资源边界及 handler 源码闭包仍开放。
+- FR-004：T006 实际 Provider 拒绝网络证据已关闭 A04；正式同源矩阵由 T005/T008 验收。
 - FR-012：T003 固定装配向量已完成双入口字节/摘要与 ORT CPU 检查，A07 CLOSED。
-- FR-005/011：现有 unit 不代替真实进程 integration；T004 不应被依赖图漏掉。
+- FR-005/011：T004 真实启动/取消验收已完成，依赖图保留；后续源变更需按影响重新验证。
 - SC-003--006：没有本 Spec 同源完整矩阵、local-suite inventory、SIF/Tiger
   或唯一 closure；未来 evidence 路径均明确标记 planned。
 - R003 的清单记录旧文件“无层声明”却给 PASS，不能解释为逐文件要求已
@@ -43,7 +44,7 @@ R = `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py`。行号对应本轮源码�
 |---|---|---|
 | 1 Intent fidelity | PASS（设计范围） | 保留 YOLO 功能闭环及既定延期，不扩展性能结论。 |
 | 2 Necessity and Occam | PASS（修复规划） | 复用既有机制，不新增协议；grant 与装配各自有验收价值。 |
-| 3 Architecture and ownership | BLOCK | 设计归属已澄清；native 生产路径与注册表消费未闭合。 |
+| 3 Architecture and ownership | BLOCK | native 生产链与注册表消费已接线并有定向证据，剩余 handler 源码闭包和完整异常验收未闭合。 |
 | 4 Cross-document consistency | PASS（修订后设计） | 统一权威、撤销边界、七子用例、验收依赖与映射。 |
 | 5 Code fact verification | BLOCK | A07 装配 parity 已验收；A01/A02 的完整生产闭包仍未完成。 |
 | 6 Security and distributed correctness | BLOCK | 摘要替换已修复；前置授权、存储、清理、策略仍有缺口。 |
