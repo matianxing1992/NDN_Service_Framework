@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 import re
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -373,6 +374,142 @@ def _validate_complete_inventory(inventory: Mapping[str, Any]) -> None:
         raise LocalGateError("PYTEST_SELECTOR_SET_EMPTY")
 
 
+def _source_git(root: Path, *arguments: str) -> bytes:
+    # Do not let the caller's GIT_DIR, index, replacement objects or global
+    # configuration substitute the checkout we are about to execute.
+    environment = {
+        "PATH": os.defpath, "LC_ALL": "C", "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull, "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_NO_REPLACE_OBJECTS": "1",
+    }
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), *arguments], env=environment,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30,
+            check=True)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise LocalGateError("SOURCE_CHECKOUT_UNAVAILABLE") from exc
+    return result.stdout
+
+
+def _validate_source_checkout(root: Path, revision: str) -> None:
+    """Bind T008 to committed source bytes; runtime/config seals are separate."""
+    if not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise LocalGateError("SOURCE_REVISION_NOT_COMMIT")
+    top = Path(os.fsdecode(_source_git(root, "rev-parse", "--show-toplevel")).strip())
+    if top.resolve() != root:
+        raise LocalGateError("SOURCE_CHECKOUT_ROOT_MISMATCH")
+    actual = _source_git(root, "rev-parse", "--verify", "HEAD^{commit}").decode().strip()
+    if actual != revision:
+        raise LocalGateError("SOURCE_REVISION_MISMATCH")
+    tree = {}
+    for record in _source_git(root, "ls-tree", "-rz", "--full-tree", "HEAD").split(b"\0"):
+        if record:
+            header, name = record.split(b"\t", 1)
+            mode, kind, object_id = header.split()
+            tree[name] = (mode, kind, object_id)
+    index = {}
+    for record in _source_git(root, "ls-files", "--stage", "-z").split(b"\0"):
+        if record:
+            header, name = record.split(b"\t", 1)
+            mode, object_id, stage = header.split()
+            if stage != b"0":
+                raise LocalGateError("SOURCE_INDEX_MISMATCH")
+            index[name] = (mode, object_id)
+    if index != {name: (mode, oid) for name, (mode, _kind, oid) in tree.items()}:
+        raise LocalGateError("SOURCE_INDEX_MISMATCH")
+    for name, (mode, kind, object_id) in tree.items():
+        path = root / os.fsdecode(name)
+        if kind == b"commit":
+            # An absent/empty optional submodule contributes no executable
+            # source. Any populated submodule must match its pinned commit.
+            if path.is_dir() and any(path.iterdir()):
+                _validate_source_checkout(path.resolve(), object_id.decode())
+            elif path.exists() and not path.is_dir():
+                raise LocalGateError("SOURCE_SUBMODULE_MISMATCH:" + os.fsdecode(name))
+            continue
+        try:
+            file_mode = path.lstat().st_mode
+            resolved = path.resolve()
+            try:
+                relative_target = resolved.relative_to(root)
+            except ValueError as exc:
+                raise LocalGateError("SOURCE_PATH_ESCAPES_CHECKOUT:" + os.fsdecode(name)) from exc
+            if mode == b"120000" and stat.S_ISLNK(file_mode):
+                target = os.fsencode(str(relative_target))
+                if target not in tree and not any(p.startswith(target + b"/") for p in tree):
+                    raise LocalGateError("SOURCE_LINK_TARGET_UNSEALED:" + os.fsdecode(name))
+                data = os.fsencode(os.readlink(path))
+                digest = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data)
+            elif mode in {b"100644", b"100755"} and stat.S_ISREG(file_mode):
+                if bool(file_mode & 0o111) != (mode == b"100755"):
+                    raise LocalGateError("SOURCE_TRACKED_MODE_MISMATCH:" + os.fsdecode(name))
+                size = path.stat().st_size
+                digest = hashlib.sha1(b"blob " + str(size).encode() + b"\0")
+                with path.open("rb") as source:
+                    for block in iter(lambda: source.read(1024 * 1024), b""):
+                        digest.update(block)
+            else:
+                raise LocalGateError("SOURCE_TRACKED_MODE_MISMATCH:" + os.fsdecode(name))
+        except (OSError, RuntimeError) as exc:
+            raise LocalGateError("SOURCE_TRACKED_BYTES_MISMATCH:" + os.fsdecode(name)) from exc
+        # Read bytes rather than trusting Git's cached stat or index flags.
+        if digest.hexdigest().encode() != object_id:
+            if mode not in {b"100644", b"100755"} or not _matches_lfs_pointer(
+                    root, object_id, path):
+                raise LocalGateError("SOURCE_TRACKED_BYTES_MISMATCH:" + os.fsdecode(name))
+    untracked = _source_git(root, "ls-files", "--others", "--exclude-standard", "-z",
+                            "--", ".", ":(exclude)build-system-j2").split(b"\0")
+    if any(untracked):
+        raise LocalGateError("SOURCE_UNTRACKED_INPUT:" + os.fsdecode(next(x for x in untracked if x)))
+    # Ignore rules may hide code just as index flags may hide tracked edits.
+    # Generated build/dependency/runtime bytes have their own identity planes;
+    # these directories must never be treated as commit-bound source overlays.
+    generated = (
+        "build", "build-system-j2",
+        "build-uav-static", "dist", "results", "third_party",
+        "Experiments/pythonEnv", "pythonWrapper/build",
+    )
+    ignored = _source_git(
+        root, "ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--", ".",
+        *(":(exclude)" + name for name in generated),
+        ":(glob,exclude)**/__pycache__/**", ":(glob,exclude)**/node_modules/**")
+    code_suffixes = {".py", ".pyi", ".pth", ".c", ".cc", ".cpp", ".cxx",
+                     ".h", ".hh", ".hpp", ".ipp", ".inl", ".inc", ".tcc",
+                     ".proto", ".sh", ".bash"}
+    for name in ignored.split(b"\0"):
+        if name:
+            path = Path(os.fsdecode(name))
+            if (b"waf" in tree and re.fullmatch(
+                    r"\.waf3?-\d+\.\d+\.\d+-[0-9a-f]{32}", path.parts[0])):
+                continue  # Extracted build tool; must be sealed in that plane.
+            if path.suffix in code_suffixes or path.name in {"waf", "wscript"}:
+                raise LocalGateError("SOURCE_IGNORED_CODE:" + str(path))
+
+
+def _matches_lfs_pointer(root: Path, object_id: bytes, path: Path) -> bool:
+    """Verify hydrated LFS bytes without executing filters or fetching data."""
+    oid = object_id.decode("ascii")
+    if int(_source_git(root, "cat-file", "-s", oid)) > 1024:
+        return False
+    pointer = _source_git(root, "cat-file", "blob", oid)
+    match = re.fullmatch(
+        rb"version https://git-lfs.github.com/spec/v1\n"
+        rb"oid sha256:([0-9a-f]{64})\nsize ([0-9]+)\n", pointer)
+    if match is None:
+        return False
+    try:
+        if path.stat().st_size != int(match[2]):
+            return False
+        digest = hashlib.sha256()
+        with path.open("rb") as source:
+            for block in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(block)
+        return digest.hexdigest().encode() == match[1]
+    except OSError:
+        return False
+
+
 def run_local_gate(inventory: Mapping[str, Any], *, root: Path | str,
                    output_root: Path | str,
                    environment: Mapping[str, str]) -> dict[str, Any]:
@@ -396,6 +533,7 @@ def run_local_gate(inventory: Mapping[str, Any], *, root: Path | str,
     for entry in inventory["entries"]:
         _validate_entry_command(root_path, entry)
         _entry_digest_matches(root_path, entry)
+    _validate_source_checkout(root_path, inventory["sourceRevision"])
     output_path.mkdir(parents=True, exist_ok=True)
     inventory_path = output_path / "inventory.json"
     inventory_file_digest = _write_json(inventory_path, inventory)
@@ -403,9 +541,15 @@ def run_local_gate(inventory: Mapping[str, Any], *, root: Path | str,
     for entry in inventory["entries"]:
         results.append(_run_entry(root_path, entry, output_path, environment))
     failed = [item for item in results if item["status"] != "PASS"]
+    source_identity = {"status": "PASS", "reason": "COMMITTED_SOURCE_MATCH"}
+    try:
+        _validate_source_checkout(root_path, inventory["sourceRevision"])
+    except LocalGateError as exc:
+        source_identity = {"status": "FAIL", "reason": str(exc)}
     result: dict[str, Any] = {
         "schema": RESULT_SCHEMA,
-        "status": "PASS" if not failed else "UNQUALIFIED",
+        "status": "PASS" if not failed and source_identity["status"] == "PASS" else "UNQUALIFIED",
+        "sourceIdentity": source_identity,
         "candidateId": inventory["candidateId"],
         "candidateDigest": inventory["candidateDigest"],
         "sourceRevision": inventory["sourceRevision"],
