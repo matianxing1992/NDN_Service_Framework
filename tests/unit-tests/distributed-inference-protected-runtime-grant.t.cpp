@@ -281,6 +281,61 @@ BOOST_FIXTURE_TEST_CASE(ProtectedRuntimeRejectsMalformedGroupWireDigests, BoundG
   BOOST_CHECK_THROW(candidate.validate(), std::invalid_argument);
 }
 
+BOOST_FIXTURE_TEST_CASE(ProtectedRuntimeRealGrantBoundsDataflowAndDrains, BoundGrantFixture)
+{
+  const auto publishEndpoint = "sha256:" + std::string(64, '1');
+  const auto fetchEndpoint = "sha256:" + std::string(64, '2');
+  binding.mayPublishEndpointDigests = {publishEndpoint};
+  binding.mustFetchEndpointDigests = {fetchEndpoint};
+  binding.mayPublishConsumerByEndpoint = {{publishEndpoint, "stage1"}};
+  binding.mustFetchProducerByEndpoint = {{fetchEndpoint, "stage-prev"}};
+  for (const auto direction : {ProtectedDataflowDirection::Publish,
+                               ProtectedDataflowDirection::Fetch}) {
+    for (int mutation = 0; mutation < 4; ++mutation) {
+      // Leased buffers must outlive runtime cleanup even on test failure.
+      std::string host = "host plaintext";
+      std::string device = "device plaintext";
+      ProtectedRuntime runtime(binding, config);
+      runtime.verifyGrant(binding, now);
+      BOOST_REQUIRE(runtime.state() == ProtectedRuntimeState::GrantVerified);
+      runtime.registerHostPlaintextLease("host", [&] {
+        std::fill(host.begin(), host.end(), 0);
+      });
+      runtime.registerDevicePlaintextLease("device", [&] {
+        std::fill(device.begin(), device.end(), 0);
+      });
+      auto endpoint = direction == ProtectedDataflowDirection::Publish
+        ? publishEndpoint : fetchEndpoint;
+      auto producer = direction == ProtectedDataflowDirection::Publish
+        ? binding.role : std::string("stage-prev");
+      auto consumer = direction == ProtectedDataflowDirection::Publish
+        ? std::string("stage1") : binding.role;
+      BOOST_CHECK_NO_THROW(runtime.authorizeDataflow(
+        direction, endpoint, producer, consumer, now));
+      if (mutation == 0) {
+        runtime.cancel("request cancelled");
+        BOOST_CHECK(runtime.state() == ProtectedRuntimeState::Zeroized);
+      }
+      else {
+        if (mutation == 1) endpoint = "sha256:" + std::string(64, '9');
+        if (mutation == 2) producer = "wrong-producer";
+        if (mutation == 3) consumer = "wrong-consumer";
+        BOOST_CHECK_EXCEPTION(runtime.authorizeDataflow(
+          direction, endpoint, producer, consumer, now), std::runtime_error,
+          [] (const std::runtime_error& error) {
+            return std::string(error.what()).find("protected dataflow is not authorized")
+              != std::string::npos;
+          });
+        BOOST_CHECK(runtime.state() == ProtectedRuntimeState::FailedClosed);
+      }
+      BOOST_CHECK(std::all_of(host.begin(), host.end(), [] (char c) { return c == 0; }));
+      BOOST_CHECK(std::all_of(device.begin(), device.end(), [] (char c) { return c == 0; }));
+      BOOST_CHECK_THROW(runtime.withContentKey(now, [] (const auto&) {}), std::runtime_error);
+    }
+  }
+  BOOST_CHECK_EQUAL(fetchCount, 8);
+}
+
 BOOST_FIXTURE_TEST_CASE(ProtectedRuntimeRealGrantOwnsKeyAndDrains, BoundGrantFixture)
 {
   ProtectedRuntime runtime(binding, config);
