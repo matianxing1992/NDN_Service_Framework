@@ -11,6 +11,7 @@ from typing import Mapping
 import warnings
 
 from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey, Ed25519PublicKey,
@@ -46,7 +47,8 @@ class ApplicationDefinitionSigner:
         root.mkdir(parents=True, exist_ok=True)
         path = root / "application-definition-signing-key.pem"
         if path.exists():
-            key = serialization.load_pem_private_key(path.read_bytes(), password=None)
+            key = serialization.load_pem_private_key(
+                path.read_bytes(), password=None, backend=default_backend())
             if not isinstance(key, Ed25519PrivateKey):
                 raise ValueError("Application definition key must be Ed25519")
             return cls(application_identity, key)
@@ -204,6 +206,7 @@ class InferenceApplication:
         model=None, input=None, generation: GenerationConfig | None = None,
         strategy=None, request_id: str = "",
         timeout=None, deadline=None, options: InferenceOptions | None = None,
+        task=None, task_options=None, timeout_ms: int | None = None,
     ):
         """Submit the request-first, post-ACK-planned public invocation.
 
@@ -223,11 +226,35 @@ class InferenceApplication:
             return self.request_preplanned(
                 legacy_deployment[0], input=input, timeout=timeout,
                 deadline=deadline, options=options)
-        if model is None or not isinstance(input, GenerationInput):
-            raise TypeError("request requires model and GenerationInput")
+        if model is None:
+            raise TypeError("request requires model")
         if not str(getattr(model, "source_revision", "") or ""):
             raise ValueError(
                 "public model requests require an immutable model revision")
+        # Generic model/task requests share the same coordinator owner as the
+        # Qwen convenience path.  The task and input are adapter-validated;
+        # Provider lists and role maps are intentionally not accepted here.
+        from ..adapters import ApplicationInput
+        if isinstance(input, ApplicationInput):
+            from .placement import InferenceTaskRef, TaskOptions
+            if not isinstance(task, InferenceTaskRef):
+                raise TypeError("generic request task must be InferenceTaskRef")
+            if task_options is not None and not isinstance(task_options, TaskOptions):
+                raise TypeError("generic request task_options must be TaskOptions")
+            if task is None:
+                raise TypeError("generic request requires an InferenceTaskRef")
+            if generation is not None or options is not None or deadline is not None:
+                raise TypeError(
+                    "generic request uses task_options and timeout_ms only")
+            effective_timeout_ms = timeout_ms if timeout_ms is not None else timeout
+            if effective_timeout_ms is None:
+                raise TypeError("generic request requires timeout_ms")
+            return self._client.request_task(
+                model=model, task=task, input=input,
+                timeout_ms=int(effective_timeout_ms), options=task_options,
+                strategy=strategy, request_id=request_id)
+        if not isinstance(input, GenerationInput):
+            raise TypeError("request requires GenerationInput or ApplicationInput")
         effective_generation = generation or GenerationConfig()
         if not isinstance(effective_generation, GenerationConfig):
             raise TypeError("generation must be GenerationConfig")

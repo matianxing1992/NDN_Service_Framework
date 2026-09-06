@@ -36,7 +36,7 @@ T001/T002/T003/T004/T006 的任务验收已闭合并勾选（本机 5/10；另�
 | T010/T011 | TRANSFERRED：SIF/replay/Tiger 归实验机器 | 外部验收仍未执行；不计本机完成率或本地关闭依赖 |
 
 **Latest progress (2026-09-06)**：本机 5/10 已完成，另 2 项 TRANSFERRED；G0 已关闭，当前唯一活动门为
-G1/T007。local gate 的提交/源码身份单元已通过，当前控制性缺口为实际配置/工具链身份；
+G1/T007。local gate 的源码/配置/输入身份单元已通过，当前为实际应用源码闭包与最终同源身份复核；
 不得据此启动 T005/T008 正式矩阵；SIF/Tiger 已移交实验机器。
 
 | Closed unit | Current evidence |
@@ -84,6 +84,48 @@ key 的实际字节由 inventory/gate 共同绑定；变化时保留已执行
 结果并阻止后续网络案例/资格通过。C++/Python 选择器发现也使用
 同一显式环境。R1--R3 历史保留；剩余为实际 import/runtime 核查
 与 native receipt 刷新，本轮未运行正式矩阵，完成数仍为 5/10。
+[维护 native refresh](evidence/t007-local-runtime-refresh-20260906.md)
+在干净 `a51f87b3` 检出已 PASS（exit 0，新 receipt 已保存）；真实
+应用 preflight 随后因缺少 `adapters.yolo.build_yolo26n_adapter`
+导入而 BLOCK，尚未到 native guard/网络。下一步补齐提交内 Python
+adapter 源闭包，保留 R1 再验；不能用工作区测试代替干净提交验证。
+R2 选入四个既有 YOLO 包文件后，真实 catalogue verify 通过；
+下一阻塞是隔离检出缺 `py_repoclient._py_repoclient` 构建。日志
+已保留，下一步检查 Repo 构建入口并验证同源扩展；仍无网络启动。
+R3 已启动 Repo 维护 setup 构建，显式选用与 framework receipt
+相同的 SVS 头文件/库和隔离 framework 目录；最终 exit 0。
+R3 Repo 构建/实际 import 已 PASS；随后公共 SplitCandidate 缺
+`selection_priority` 字段，导致真实 publication 构造失败。已保留
+日志，下一步关闭该共享契约依赖，不纳入无关工作区扩展。
+R4 候选构造已通过，SDK 导入阻塞在公共 adapter 缺少
+`MAX_INLINE_INPUT_BYTES`；已提交 coordinator 也依赖其
+`InputTransportMode`。下一步补齐公共输入契约与导出，验证实际
+应用路径；原始日志见 runtime refresh，T007 保持 BLOCK。
+R5 公共输入契约依赖未提交的 `LargeDataReference`；下一步补齐
+repo_reference.py 的 native publication 元数据绑定与引用校验。
+这是公共 Python 源依赖缺失，尚未到 native guard/网络；证据已保存。
+R6 SDK/Provider 导入通过，目录发布缺少公共
+`PreSplitCatalogSnapshot.from_mapping`；下一步补齐该类型的校验与
+双向转换。预检日志已保留，T007 BLOCK；未启动正式矩阵。
+R7 runtime publication 已通过；process_specs 缺 legacy helper 的
+显式 repo/py_dir 参数。下一步补齐本地 helper 配套参数化并验证；
+此轮无网络启动，原始失败已记录。
+R8 已通过实际 publication/process_specs/native guard；追加应用
+入口导入检查发现 SDK 缺 `ProviderOfferTrustVerifier` 公开导出。
+下一步补齐配套导出并复查全部入口；T007 BLOCK，未启动网络。
+R9 确认 verifier 实现本身也未提交；下一步审查并纳入 SDK
+provider.py 配套实现/公开生命周期入口，运行签名及公共 API 定向
+检查。失败日志已保存；不得将 R8 native guard 视为完整源码通过。
+R10 真实应用预检/四入口导入 PASS，无网络；六文件定向检查
+9 failed / 36 passed（1.38 s），缺 DIRequestEnvelopeV2 输入传输
+字段和 InferenceApplication 公共 task 参数。下一步补齐这两端
+契约并重验，T007 BLOCK；记录见 runtime refresh。
+R11 同一隔离源码的六文件定向检查 **45 passed（0.74 s）**，新增
+候选 digest/priority/角色边界回归 **12 passed（0.44 s）**；真实
+publication/process_specs/native guard/四个应用入口导入均 PASS。
+57 项检查关闭选入的 Python 源依赖单元，保留全部 R1–R10 失败；
+下一步在最终提交核对同源源码与 runtime，完成 T007 审查后才进入
+T005/T008。完成数仍 5/10；本轮没有网络、SIF/Tiger 或 Git 合并。
 
 **Execution order**：T007 PASS → T005 七子用例同源矩阵 → T008 完整
 本地清单与 Y-A/Y-B/Y-N → T009 开发交付封存 → T012 本地关闭。

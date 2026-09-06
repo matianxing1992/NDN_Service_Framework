@@ -357,9 +357,41 @@ class SplitCandidate:
     role_state_outputs_by_role: Mapping[str, tuple[TensorContract, ...]] = field(
         default_factory=dict)
     hybrid_plan: Any | None = None
+    # Adapter-signed preference among candidates that are already feasible.
+    # Zero is the neutral value used by legacy/model-neutral splitters; the
+    # coordinator never treats this field as a feasibility signal.
+    selection_priority: int = 0
+    # Request-scoped application ingress and terminal result ownership.  These
+    # are adapter-declared identities and therefore part of the candidate
+    # digest; the coordinator must not infer them from catalogue order or
+    # graph topology.
+    input_ingress_role: str = ""
+    result_egress_role: str = ""
+    # Adapter-declared terminal postprocessing. This is separate from
+    # model-layer execution so native Merge cannot become a CPU fallback.
+    merge_kind: str = ""
+    postprocessing: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "source", SplitSource(self.source))
+        object.__setattr__(self, "selection_priority", int(self.selection_priority))
+        if self.selection_priority < 0:
+            raise ValueError("split candidate selection priority must be non-negative")
+        input_role = str(self.input_ingress_role)
+        result_role = str(self.result_egress_role)
+        if bool(input_role) != bool(result_role):
+            raise ValueError(
+                "split candidate ingress and egress ownership must be paired")
+        object.__setattr__(self, "input_ingress_role", input_role)
+        object.__setattr__(self, "result_egress_role", result_role)
+        merge_kind = str(self.merge_kind)
+        if merge_kind not in {"", "NATIVE_POSTPROCESS", "ONNX_MERGE_GRAPH"}:
+            raise ValueError("split candidate merge kind is not allowlisted")
+        object.__setattr__(self, "merge_kind", merge_kind)
+        if not isinstance(self.postprocessing, Mapping):
+            raise ValueError("split candidate postprocessing must be a mapping")
+        object.__setattr__(self, "postprocessing", _frozen_mapping(
+            {str(key): value for key, value in self.postprocessing.items()}))
         object.__setattr__(
             self, "fragments_by_role", _frozen_mapping(self.fragments_by_role))
         object.__setattr__(
@@ -409,6 +441,13 @@ class SplitCandidate:
         )
         _require_digest(self.graph_digest, "candidate graph_digest")
         roles = set(self.execution_plan.roles)
+        if input_role and (input_role not in roles or result_role not in roles):
+            raise ValueError(
+                "split candidate ingress/egress role is outside execution plan")
+        if input_role and input_role == result_role:
+            # A unary candidate may legitimately own both ends.  Keep the
+            # identity explicit; no special-case inference is permitted.
+            pass
         if (set(self.fragments_by_role) != roles
                 or set(self.artifacts_by_role) != roles
                 or set(self.requirements_by_role) != roles):

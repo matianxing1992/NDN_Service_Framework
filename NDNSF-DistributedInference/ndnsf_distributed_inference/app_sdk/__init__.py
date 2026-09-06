@@ -26,7 +26,8 @@ try:
     from .presplit import *
     from .provider import (
         APPProvider, ProviderActionReceipt, ProviderEvidenceSigner,
-        ProviderEvidenceVerifier, ProviderReadiness,
+        ProviderEvidenceVerifier, ProviderOfferTrustVerifier,
+        ProviderReadiness,
     )
 except ModuleNotFoundError as exc:
     if exc.name not in {"ndnsf", "cryptography"}:

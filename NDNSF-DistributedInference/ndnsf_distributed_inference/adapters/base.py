@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+import hashlib
 import json
 from typing import Any, Mapping, Protocol
 
@@ -19,6 +20,15 @@ from ..splitter import (
     SplitCandidate,
     canonical_contract_digest,
 )
+from ..repo_reference import LargeDataReference
+
+
+MAX_INLINE_INPUT_BYTES = 4096
+
+
+class InputTransportMode(str, Enum):
+    INLINE = "INLINE"
+    REPO_REF = "REPO_REF"
 
 
 def _require_digest(value: str, name: str) -> None:
@@ -74,6 +84,8 @@ class ApplicationInput:
     payload: bytes
     options: bytes
     metadata: Mapping[str, str] = field(default_factory=dict)
+    transport_mode: InputTransportMode | str = InputTransportMode.INLINE
+    repo_reference: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if not self.task_name or not isinstance(self.payload, bytes) or not isinstance(
@@ -81,10 +93,63 @@ class ApplicationInput:
             raise ValueError("application input is incomplete")
         _require_digest(self.input_schema_digest, "input_schema_digest")
         _require_digest(self.options_schema_digest, "options_schema_digest")
+        mode = InputTransportMode(self.transport_mode)
+        if mode is InputTransportMode.INLINE:
+            if len(self.payload) > MAX_INLINE_INPUT_BYTES:
+                raise ValueError(
+                    f"inline application input exceeds {MAX_INLINE_INPUT_BYTES} bytes")
+            if self.repo_reference is not None:
+                raise ValueError("INLINE input cannot carry a repo reference")
+        else:
+            if self.payload:
+                raise ValueError("REPO_REF input cannot carry inline payload bytes")
+            reference = LargeDataReference.from_mapping(self.repo_reference or {})
+            object.__setattr__(self, "repo_reference", reference.to_dict())
+        object.__setattr__(self, "transport_mode", mode)
         object.__setattr__(
             self, "metadata",
             {str(key): str(value) for key, value in self.metadata.items()},
         )
+
+    @classmethod
+    def from_inline(cls, *, task_name: str, input_schema_digest: str,
+                    options_schema_digest: str, payload: bytes, options: bytes,
+                    metadata: Mapping[str, str] | None = None) -> "ApplicationInput":
+        return cls(
+            task_name=task_name,
+            input_schema_digest=input_schema_digest,
+            options_schema_digest=options_schema_digest,
+            payload=bytes(payload),
+            options=bytes(options),
+            metadata=metadata or {},
+            transport_mode=InputTransportMode.INLINE,
+        )
+
+    @classmethod
+    def from_repo_ref(cls, *, task_name: str, input_schema_digest: str,
+                      options_schema_digest: str, reference: Mapping[str, Any],
+                      options: bytes, metadata: Mapping[str, str] | None = None) -> "ApplicationInput":
+        return cls(
+            task_name=task_name,
+            input_schema_digest=input_schema_digest,
+            options_schema_digest=options_schema_digest,
+            payload=b"",
+            options=bytes(options),
+            metadata=metadata or {},
+            transport_mode=InputTransportMode.REPO_REF,
+            repo_reference=reference,
+        )
+
+    @property
+    def logical_input_digest(self) -> str:
+        """Digest input identity without exposing or copying plaintext."""
+        if self.transport_mode is InputTransportMode.INLINE:
+            raw = bytes(self.payload)
+        else:
+            raw = json.dumps(
+                self.repo_reference, sort_keys=True, separators=(",", ":"),
+            ).encode("utf-8")
+        return "sha256:" + hashlib.sha256(raw).hexdigest()
 
 
 class InferenceStateClass(str, Enum):

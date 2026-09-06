@@ -19,6 +19,79 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 source closure R11 (2026-09-06): focused failures resolved.**
+The same isolated selected source passes 45 existing checks and 12 new candidate
+binding checks. Actual application/native preflight and four application imports
+pass without network. R1–R10 remain below as historical first-boundary evidence.
+Final committed-source reconciliation and T007 audit remain open. See
+[runtime refresh](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t007-local-runtime-refresh-20260906.md#focused-closure-r11).
+
+**Spec181 focused source closure R10 (2026-09-06): BLOCK at request contract.**
+Actual application/native preflight passes without network. Six-file checks
+yield 9 failed / 36 passed (1.38 s): missing DIRequestEnvelopeV2 input transport
+fields and InferenceApplication task arguments. Preserve R10 and close the two
+request endpoints before retry. See [runtime refresh](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t007-local-runtime-refresh-20260906.md#application-preflight-and-focused-r10).
+
+**Spec181 application preflight R9 (2026-09-06): BLOCK at verifier implementation.**
+Export alone is insufficient: ProviderOfferTrustVerifier itself is absent from
+committed SDK provider.py. Preserve R9 and validate the implementation and its
+existing signature/ACK tests as part of source closure. No network ran. See
+[runtime refresh](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t007-local-runtime-refresh-20260906.md#application-preflight-r9).
+
+**Spec181 application preflight R8 (2026-09-06): BLOCK at public verifier export.**
+Actual publication/process_specs/native guard pass. The post-guard import probe
+then finds user.py requires ProviderOfferTrustVerifier missing from SDK exports.
+Preserve R8 and add the existing verifier export; no network ran. Native guard
+success alone does not prove application import closure. See
+[runtime refresh](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t007-local-runtime-refresh-20260906.md#application-preflight-r8).
+
+**Spec181 application preflight R7 (2026-09-06): BLOCK at local launch helper.**
+Runtime publication passes. Actual process_specs calls legacy python_cmd with
+repo/py_dir, which the committed helper lacks. Close the matching local helper
+parameterization, retaining default compatibility. Preserve R7; no network ran.
+See [runtime refresh](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t007-local-runtime-refresh-20260906.md#application-preflight-r7).
+
+**Spec181 application preflight R6 (2026-09-06): BLOCK at catalogue conversion.**
+SDK/Provider imports pass. Runtime publication requires the uncommitted
+PreSplitCatalogSnapshot.from_mapping contract. Preserve R6 and close the
+matching validation/serialization dependency before retry; no native guard or
+network ran. See [runtime refresh](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t007-local-runtime-refresh-20260906.md#application-preflight-r6).
+
+**Spec181 application preflight R5 (2026-09-06): BLOCK at Repo reference contract.**
+The selected ApplicationInput contract requires LargeDataReference, absent from
+committed repo_reference.py. Existing Provider/client/facades already consume
+this shared publication/reference owner. Preserve R5 and close that dependency;
+no network ran. See [runtime refresh](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t007-local-runtime-refresh-20260906.md#application-preflight-r5).
+
+**Spec181 application preflight R4 (2026-09-06): BLOCK at shared input contract.**
+Candidate construction now passes. SDK imports then fail because the committed
+Provider requires MAX_INLINE_INPUT_BYTES absent from adapters.base; the
+coordinator also requires InputTransportMode. Preserve R4 and close the shared
+input contract/export dependency before retry. No native guard/network ran.
+See [runtime refresh](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t007-local-runtime-refresh-20260906.md#application-preflight-r4).
+
+**Spec181 application preflight R3 (2026-09-06): BLOCK at shared candidate contract.**
+Repo's same-source build and import pass. Production YOLO publication then
+constructs SplitCandidate with selection_priority, absent from the committed
+contract, and fails before native guard/network. Preserve R3; close the exact
+shared contract dependency without mixing unrelated worktree changes. See
+[runtime refresh](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t007-local-runtime-refresh-20260906.md#application-preflight-r3).
+
+**Spec181 application preflight R2 (2026-09-06): BLOCK at Repo Python extension.**
+Adding four existing YOLO source files to the isolated checkout clears actual
+catalogue verification. Policy generation then cannot import
+py_repoclient._py_repoclient, which has not been built in that checkout.
+No native guard/network started. Preserve R2; use Repo's maintained build
+against the same source, not an unknown worktree binary. See
+[runtime refresh](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t007-local-runtime-refresh-20260906.md#application-preflight-r2).
+
+**Spec181 application preflight R1 (2026-09-06): BLOCK at committed Python adapter import.**
+The clean a51f87b3 native build passes and emits its new receipt. Actual runner
+validate_inputs then fails to import build_yolo26n_adapter from adapters.yolo,
+wrapped as CANONICAL_CATALOGUE_VERIFY_FAILED. No network or native guard was
+started. Preserve R1 and repair the committed adapter package closure before
+retry. See [local runtime refresh](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t007-local-runtime-refresh-20260906.md#application-preflight-r1).
+
 **Spec181 local input identity R3 (2026-09-06): BLOCK at new fixture import.**
 After R2 66 PASS, new input tests yield 3 failed / 69 passed (7.68 s): three
 tests reference json without importing it, before the identity owner runs.

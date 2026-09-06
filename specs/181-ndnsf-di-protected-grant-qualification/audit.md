@@ -53,6 +53,14 @@ R = `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py`。
 
 ## Readiness Scorecard
 
+A05 实际应用源码闭包的 R11 已通过：同一隔离源码 45 项公共请求/
+签名/目录/规划检查与 12 项候选绑定回归 PASS，真实 publication、
+process_specs、native guard 和四个应用入口导入 PASS。新增 native
+receipt 已由 a51f87b3 的维护构建生成，Repo 扩展也在同源树编译。
+见 [runtime refresh](evidence/t007-local-runtime-refresh-20260906.md)。
+R1–R10 暴露的缺失模块/字段/导出均保留；当前仅关闭此源差异单元，
+最终提交身份复核和 T007 整体审查仍待完成，正式矩阵没有执行。
+
 配置外部输入的清单/执行稳定性已修复：72 focused checks PASS
 （8.40 s），模型、映射及引用 key 变化会阻止资格通过并保留已有
 结果；C++/Python discovery 消费同一显式环境。见
