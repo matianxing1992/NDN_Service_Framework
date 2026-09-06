@@ -3,7 +3,10 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
+import shutil
+import subprocess
 import sys
 
 import pytest
@@ -36,6 +39,32 @@ def _digest(value) -> str:
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
+def _git(root: Path, *args: str) -> str:
+    environment = {key: value for key, value in os.environ.items()
+                   if not key.startswith("GIT_")}
+    environment.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+    return subprocess.check_output(
+        ["git", "-C", str(root), *args], env=environment, text=True,
+        stderr=subprocess.PIPE).strip()
+
+
+def _seal_fixture(root: Path, *extra_paths: str) -> str:
+    paths = [".gitignore", "support.py", "tests/python/test_spec180_fixture.py",
+             "Experiments/NDNSF_DI_YoloAckDriven_Minindn.py"]
+    _git(root, "add", "--", *paths, *extra_paths)
+    _git(root, "-c", "user.name=Spec181 fixture", "-c",
+         "user.email=spec181@example.invalid", "-c", "commit.gpgsign=false",
+         "commit", "-qm", "Seal local gate fixture")
+    return _git(root, "rev-parse", "HEAD")
+
+
+def _rebind_revision(module, inventory, revision: str) -> None:
+    inventory["sourceRevision"] = revision
+    for entry in inventory["entries"]:
+        entry["sourceRevision"] = revision
+    _refresh_inventory_digest(module, inventory)
+
+
 def _fixture_root(tmp_path: Path, inventory) -> Path:
     for relative in ("build/unit-tests", "build/integration-tests"):
         target = tmp_path / relative
@@ -56,6 +85,11 @@ def _fixture_root(tmp_path: Path, inventory) -> Path:
     test_file = tmp_path / "tests/python/test_spec180_fixture.py"
     test_file.parent.mkdir(parents=True, exist_ok=True)
     test_file.write_text("def test_fixture():\n    assert True\n", encoding="utf-8")
+    (tmp_path / "support.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (tmp_path / ".gitignore").write_text(
+        "build/\n__pycache__/\n.pytest_cache/\nevidence/\n", encoding="utf-8")
+    _git(tmp_path, "init", "-q")
+    _seal_fixture(tmp_path)
     return tmp_path
 
 
@@ -66,7 +100,7 @@ def _inventory(tmp_path: Path):
         root,
         candidate_id="candidate-test",
         candidate_digest="sha256:" + "a" * 64,
-        source_revision="b" * 40,
+        source_revision=_git(root, "rev-parse", "HEAD"),
         effective_config_digest="sha256:" + "c" * 64,
         integration_listing="Suite*\n    Test*\n",
         python_selectors=(
@@ -116,6 +150,135 @@ def test_source_digest_failure_has_no_child_or_output_side_effect(tmp_path: Path
     assert not output.exists()
 
 
+@pytest.mark.parametrize("mutation", [None, "bytes", "size"])
+def test_checkout_identity_verifies_materialized_lfs_pointer(tmp_path: Path, mutation):
+    _module, runner, root, _inventory_value = _inventory(tmp_path)
+    content = b"materialized release fixture\n"
+    target = root / "release.bin"
+    target.write_text(
+        "version https://git-lfs.github.com/spec/v1\n"
+        "oid sha256:" + hashlib.sha256(content).hexdigest() + "\n"
+        "size " + str(len(content)) + "\n", encoding="utf-8")
+    revision = _seal_fixture(root, "release.bin")
+    target.write_bytes(content if mutation is None else
+                       content.replace(b"release", b"RELEASE") if mutation == "bytes" else
+                       content + b"extra")
+    if mutation is None:
+        runner._validate_source_checkout(root, revision)
+    else:
+        with pytest.raises(runner.LocalGateError, match="SOURCE_TRACKED_BYTES_MISMATCH"):
+            runner._validate_source_checkout(root, revision)
+
+
+def test_checkout_identity_rejects_subdirectory_root(tmp_path: Path):
+    _module, runner, root, inventory = _inventory(tmp_path)
+    with pytest.raises(runner.LocalGateError, match="SOURCE_CHECKOUT_ROOT_MISMATCH"):
+        runner._validate_source_checkout(root / "tests", inventory["sourceRevision"])
+
+
+def test_checkout_identity_ignores_ambient_git_redirection(tmp_path: Path, monkeypatch):
+    _module, runner, root, inventory = _inventory(tmp_path)
+    monkeypatch.setenv("GIT_DIR", str(root / "not-the-repository"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(root / "tests"))
+    monkeypatch.setenv("GIT_INDEX_FILE", str(root / "not-the-index"))
+    runner._validate_source_checkout(root, inventory["sourceRevision"])
+
+
+def test_checkout_identity_keeps_generated_build_plane_separate(tmp_path: Path):
+    _module, runner, root, inventory = _inventory(tmp_path)
+    generated = root / "build-system-j2/c4che"
+    generated.mkdir(parents=True)
+    (generated / "_cache.py").write_text("CXX = ['/usr/bin/c++']\n", encoding="utf-8")
+    runner._validate_source_checkout(root, inventory["sourceRevision"])
+
+
+@pytest.mark.parametrize("generated", [True, False])
+def test_checkout_identity_recognizes_only_generated_waf_layout(tmp_path: Path, generated):
+    _module, runner, root, _inventory_value = _inventory(tmp_path)
+    (root / "waf").write_text("# tracked build tool fixture\n", encoding="utf-8")
+    revision = _seal_fixture(root, "waf")
+    name = ".waf3-2.0.24-" + "c" * 32 if generated else ".waf-unregistered"
+    directory = root / name / "waflib"
+    directory.mkdir(parents=True)
+    (directory / "Build.py").write_text("# generated tool fixture\n", encoding="utf-8")
+    (root / ".git/info/exclude").write_text(".waf*/\n", encoding="utf-8")
+    if generated:
+        runner._validate_source_checkout(root, revision)
+    else:
+        with pytest.raises(runner.LocalGateError, match="SOURCE_IGNORED_CODE"):
+            runner._validate_source_checkout(root, revision)
+
+
+@pytest.mark.parametrize("target", ["tracked", "external", "unsealed"])
+def test_checkout_identity_binds_symbolic_link_target(tmp_path: Path, target):
+    _module, runner, root, _inventory_value = _inventory(tmp_path / "checkout")
+    if target == "external":
+        destination = tmp_path / "external.py"
+        destination.write_text("VALUE = 1\n", encoding="utf-8")
+    elif target == "unsealed":
+        destination = root / "build/generated.py"
+        destination.write_text("VALUE = 1\n", encoding="utf-8")
+    else:
+        destination = root / "support.py"
+    (root / "linked.py").symlink_to(destination)
+    revision = _seal_fixture(root, "linked.py")
+    if target == "tracked":
+        runner._validate_source_checkout(root, revision)
+    else:
+        reason = "SOURCE_PATH_ESCAPES_CHECKOUT" if target == "external" else "SOURCE_LINK_TARGET_UNSEALED"
+        with pytest.raises(runner.LocalGateError, match=reason):
+            runner._validate_source_checkout(root, revision)
+
+
+def test_local_gate_retains_children_but_rejects_source_changed_during_execution(tmp_path: Path):
+    module, runner, root, inventory = _inventory(tmp_path)
+    path = "Experiments/NDNSF_DI_YoloAckDriven_Minindn.py"
+    source = root / path
+    source.write_text("from pathlib import Path\n"
+                      "Path('support.py').write_text('VALUE = 2\\n')\n" + source.read_text(),
+                      encoding="utf-8")
+    for entry in inventory["entries"]:
+        if entry["path"] == path:
+            entry["artifactSha256"] = _file_digest(module, source)
+    _rebind_revision(module, inventory, _seal_fixture(root))
+    result = runner.run_local_gate(inventory, root=root,
+                                   output_root=root / "evidence", environment={})
+    assert result["status"] == "UNQUALIFIED"
+    assert all(item["status"] == "PASS" for item in result["entries"])
+    assert result["cleanup"] == "PASS"
+    assert result["sourceIdentity"] == {
+        "status": "FAIL", "reason": "SOURCE_TRACKED_BYTES_MISMATCH:support.py"}
+
+
+@pytest.mark.parametrize("mutation", [None, "absent", "bytes", "head"])
+def test_checkout_identity_binds_populated_submodule(tmp_path: Path, mutation):
+    _module, runner, root, _inventory_value = _inventory(tmp_path)
+    submodule = root / "deps/library"
+    submodule.mkdir(parents=True)
+    _git(submodule, "init", "-q")
+    (submodule / "library.py").write_text("VALUE = 1\n", encoding="utf-8")
+    _git(submodule, "add", "--", "library.py")
+    def commit_submodule():
+        _git(submodule, "-c", "user.name=Spec181 fixture", "-c",
+             "user.email=spec181@example.invalid", "-c", "commit.gpgsign=false",
+             "commit", "-qm", "Seal submodule fixture")
+    commit_submodule()
+    revision = _seal_fixture(root, "deps/library")
+    if mutation == "absent":
+        shutil.rmtree(submodule)
+    elif mutation in {"bytes", "head"}:
+        (submodule / "library.py").write_text("VALUE = 2\n", encoding="utf-8")
+        if mutation == "head":
+            _git(submodule, "add", "--", "library.py")
+            commit_submodule()
+    if mutation in {None, "absent"}:
+        runner._validate_source_checkout(root, revision)
+    else:
+        reason = "SOURCE_REVISION_MISMATCH" if mutation == "head" else "SOURCE_TRACKED_BYTES_MISMATCH"
+        with pytest.raises(runner.LocalGateError, match=reason):
+            runner._validate_source_checkout(root, revision)
+
+
 def test_missing_case_oracle_is_unqualified(tmp_path: Path):
     _inventory_module, runner, root, inventory = _inventory(tmp_path)
     target = next(item for item in inventory["entries"] if item["id"] == "minindn-y-a")
@@ -129,7 +292,7 @@ def test_missing_case_oracle_is_unqualified(tmp_path: Path):
     for entry in inventory["entries"]:
         if entry["path"] == target["path"]:
             entry["artifactSha256"] = _file_digest(_inventory_module, source)
-    _refresh_inventory_digest(_inventory_module, inventory)
+    _rebind_revision(_inventory_module, inventory, _seal_fixture(root))
     result = runner.run_local_gate(
         inventory, root=root, output_root=tmp_path / "evidence",
         environment={"SPEC175_RUN_REAL_MININDN": "1"},
@@ -217,3 +380,47 @@ def test_qwen_wrapper_accepts_runner_owned_output_directory(monkeypatch,
     monkeypatch.setenv("SPEC180_CASE_OUTPUT_DIR", str(tmp_path / "q-c"))
     args = wrapper.build_parser().parse_args(["--case", "M01", "--seed", "1750001"])
     assert args.output_dir == str(tmp_path / "q-c")
+
+
+@pytest.mark.parametrize("mutation,reason", [
+    ("no-git", "SOURCE_CHECKOUT_UNAVAILABLE"),
+    ("wrong-revision", "SOURCE_REVISION_MISMATCH"),
+    ("dirty-revision", "SOURCE_REVISION_NOT_COMMIT"),
+    ("modified", "SOURCE_TRACKED_BYTES_MISMATCH"),
+    ("staged", "SOURCE_INDEX_MISMATCH"),
+    ("assume-unchanged", "SOURCE_TRACKED_BYTES_MISMATCH"),
+    ("untracked", "SOURCE_UNTRACKED_INPUT"),
+    ("ignored-source", "SOURCE_IGNORED_CODE"),
+    ("mode", "SOURCE_TRACKED_MODE_MISMATCH"),
+])
+def test_checkout_identity_rejects_before_qualification_children(
+        tmp_path: Path, monkeypatch, mutation: str, reason: str):
+    module, runner, root, inventory = _inventory(tmp_path)
+    source = root / "support.py"
+    if mutation == "no-git":
+        shutil.rmtree(root / ".git")
+    elif mutation == "wrong-revision":
+        _rebind_revision(module, inventory, "b" * 40)
+    elif mutation == "dirty-revision":
+        _rebind_revision(module, inventory, inventory["sourceRevision"] + "-dirty")
+    elif mutation in {"modified", "staged", "assume-unchanged"}:
+        if mutation == "assume-unchanged":
+            _git(root, "update-index", "--assume-unchanged", "support.py")
+        source.write_text("VALUE = 2\n", encoding="utf-8")
+        if mutation == "staged":
+            _git(root, "add", "--", "support.py")
+    elif mutation == "untracked":
+        (root / "override.py").write_text("VALUE = 2\n", encoding="utf-8")
+    elif mutation == "ignored-source":
+        hidden = root / "tests/python/hidden.py"
+        hidden.write_text("VALUE = 2\n", encoding="utf-8")
+        (root / ".git/info/exclude").write_text("hidden.py\n", encoding="utf-8")
+    elif mutation == "mode":
+        source.chmod(0o755)
+    output = root / "evidence"
+    def unexpected_child(*args, **kwargs):
+        pytest.fail("qualification child started before source identity rejection")
+    monkeypatch.setattr(runner, "_run_entry", unexpected_child)
+    with pytest.raises(runner.LocalGateError, match=reason):
+        runner.run_local_gate(inventory, root=root, output_root=output, environment={})
+    assert not output.exists()

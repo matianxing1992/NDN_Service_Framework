@@ -19,6 +19,41 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 local gate identity R8 (2026-09-06): checkpoint hook rejection.**
+The local commit hook rejects assistant-directory references in production
+source validation. Remove those non-product exclusions and rerun the focused
+checks; do not bypass the hook. No checkpoint was created by the failed commit.
+R8 removes the exclusions: 39 focused checks PASS (4.46 s), and the actual
+configured checkout passes SOURCE_CHECKOUT_OK. The hook remains enabled.
+See [local gate identity](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t007-local-gate-identity-20260906.md#checkpoint-gate-r8).
+
+**Spec181 local gate identity R7 (2026-09-06): source unit CLOSED; configuration BLOCK.**
+All 39 focused checks pass (3.44 s), and the configured 1ba99000 checkout
+passes exact source validation. Bad preflight identity has no qualification
+child/output side effects; mutation during fixture execution yields
+UNQUALIFIED while preserving child/cleanup records. Effective configuration,
+generated build-tool/runtime bytes and external import bindings remain open.
+See [local gate identity](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t007-local-gate-identity-20260906.md#focused-green-r7).
+
+**Spec181 local gate identity R6 (2026-09-06): BLOCK at Python compatibility.**
+New symbolic-link checks use Path.is_relative_to, absent from the maintained
+interpreter. Focused checks yield 23 failures / 16 passes; the subsequent
+read-only checkout probe hits the same AttributeError before qualification.
+Preserve R6; use relative_to with ValueError handling, then require focused
+success before the next checkout probe.
+See [local gate identity](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t007-local-gate-identity-20260906.md).
+
+**Spec181 local gate identity R4 (2026-09-06): BLOCK at Git LFS representation.**
+The configured 1ba99000 checkout is rejected because a committed 134-byte LFS
+pointer represents a materialized 240376592-byte release archive. Preserve
+R4 before adding exact pointer size/SHA-256 verification; do not classify this
+as source tampering or a protocol failure. No qualification child ran.
+See [local gate identity](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t007-local-gate-identity-20260906.md).
+R5 closes exact LFS-byte verification and passes 33 focused checks (2.51 s).
+The next configured-checkout rejection is generated Waf tool code; classify
+only its exact generated layout under the separate build-tool identity plane,
+whose byte binding remains an A05 obligation. Preserve both R5 logs.
+
 **Spec181 local gate identity R1 (2026-09-06): BLOCK at source authority.**
 The real local gate accepts a fixture root without a Git HEAD and an invented
 40-character sourceRevision, then reports PASS for six fixture children.
@@ -26,6 +61,13 @@ All six exits/cleanup records are collected; no network qualification ran.
 Validate actual checkout/source identity before any qualification child or
 output directory is created, then retain focused regressions for rejection.
 See [local gate identity](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t007-local-gate-identity-20260906.md).
+R2 adds real Git fixtures and nine identity mutations; all nine reach the
+forbidden child boundary instead of being rejected (9 failed, 0.63 s).
+No qualification child runs; preserve the RED log and source patch before
+adding checkout, index, tracked-byte and untracked-code checks.
+R3 passes all nine rejections and existing gate/inventory checks (23 PASS,
+2.39 s). Actual configured-checkout and submodule boundaries remain under
+focused review; configuration/candidate identity is not yet closed.
 
 **Spec181 native plan closure R1 (2026-09-06): BLOCK at projection behavior.**
 Twelve missing header lines close the maintained local native build, including
@@ -37,6 +79,8 @@ matrix or model run was started.
 R2 closes the parser/scope unit: 29 cases / 133 assertions PASS, including
 unchanged transport authorization groups. Refresh native identity from its
 source checkpoint before advancing the remaining A05 candidate/config audit.
+The 1ba99000 checkpoint subsequently passes the maintained native build,
+including a fresh extension import and runtime identity receipt (R3).
 See [native plan closure](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t007-native-plan-closure-20260906.md).
 
 **Spec181 native source diagnostic R3 (2026-09-06): BLOCK at DI projection declaration.**

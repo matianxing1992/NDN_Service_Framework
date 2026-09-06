@@ -35,7 +35,7 @@ T001/T002/T003/T004/T006 的任务验收已闭合并勾选（5/12）。其余任
 | T009--T012 | 继承工具链 | 本 Spec 候选、SIF、Tiger、终局均未闭合 |
 
 **Latest progress (2026-09-06)**：5/12 已完成，G0 已关闭；当前唯一活动门为
-G1/T007。当前控制性缺口是 local gate 未验证清单声明的实际源码身份；
+G1/T007。local gate 的提交/源码身份单元已通过，当前控制性缺口为实际配置/工具链身份；
 不得据此启动 T005/T008 正式矩阵或后续候选/SIF/Tiger 阶段。
 
 | Closed unit | Current evidence |
@@ -48,11 +48,16 @@ G1/T007。当前控制性缺口是 local gate 未验证清单声明的实际源�
 | Committed native build | `1ba99000cd6b03705ea96f0b176d6a77fbbe8a1d` 的 tracked tree 无修改，维护 native build 与实际扩展导入/依赖身份 PASS；R3 receipt 见上一行证据。此结论仅限 host-local 构建，不是正式资格 |
 
 **Current blocker**：[local gate identity](evidence/t007-local-gate-identity-20260906.md)
-已复现生产 gate 在无 Git HEAD 的 fixture 目录接受虚构 sourceRevision，
-执行六个小型 fixture 子进程后返回 PASS；所有退出/清理已收集，没有
-网络或模型资格结果。下一步补实际 checkout/提交与未提交源码校验，
-证明失败在子进程/输出目录创建前被拒绝，并核查有效配置的实际消费
-绑定及后续候选封印。完成这些修复及重新审计后才可判 T007 PASS。
+的源码单元 R7 已通过：39 项定向检查（3.44 s），错误 Git/源码
+身份在子进程与输出目录创建前拒绝；执行期间源码变化使最终结果
+UNQUALIFIED，保留全部子项与清理证据。实际 `1ba99000` 隔离构建
+checkout 也通过只读源码校验。R1--R7 的失败和修复历史见上述链接。
+下一步核查 `effectiveConfigDigest` 的实际消费、生成构建工具与
+运行时/import 路径绑定；这些独立身份平面尚未闭合。T007 仍 BLOCK，
+未运行正式矩阵；本单元完成不改变 5/12。
+源码 checkpoint 曾被本地 hook 拒绝，已删除产品脚本中的助手目录
+特例。R8 重验 39 项 PASS（4.46 s），真实 checkout 校验 PASS；
+原 hook 保持启用，配置/工具链身份仍待关闭。
 
 **Execution order**：T007 PASS → T005 七子用例同源矩阵 → T008 完整
 本地清单与 Y-A/Y-B/Y-N → T009 候选 → T010 exact-SIF → T011 单次
