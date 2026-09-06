@@ -40,6 +40,18 @@ T007 的 A05 Closure Matrix 与 12 原则裁决 PASS；`6b9bb51c` 最终源码/
 actual native/application 核对及 57 项应用回归证明一致。当前进入
 T005 七子用例同源矩阵，再执行 T008 完整本地清单。正式资格、
 T009 开发交付与 T012 关闭仍未完成。
+T005 正式运行 R1 已准备：维护 Y-N CLI、独立输出/state、显式环境
+与前后源码/输入核对，见 [正式矩阵记录](evidence/t005-formal-matrix-20260906.md)。
+运行结果待收集，任务保持未勾选。
+R1 在 launcher git rev-parse 处失败：清空环境丢失 SUDO_UID，
+Git 拒绝用户拥有的隔离检出。无网络启动；R2 保留真实 sudo 用户
+身份后重试新目录，原始失败已记录，不改生产 source gate。
+R2 暴露生产 `_source_git` 内部再次丢弃 SUDO_UID；在首次网络前
+失败。A05 的 sudo 源码检查边界暂时重开，T007 回归待完成；
+下一步真实 sudo 检出测试/定向修复后重新裁决，T005 未执行子用例。
+sudo 源码边界修复最终 **51 passed（8.68 s）**，包含真实 root/
+用户检出正负例、Git 覆盖隔离与既有 gate 回归。受影响 A05 复审
+PASS，T007 恢复 PASS，完成数仍 6/10；下一步新 R3 正式矩阵。
 
 | Closed unit | Current evidence |
 |---|---|

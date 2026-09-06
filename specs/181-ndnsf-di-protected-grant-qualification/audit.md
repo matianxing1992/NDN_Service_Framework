@@ -7,7 +7,11 @@ local gate 提交/源码身份修复为 `2628e3d2`。最终审计对象为
 `6b9bb51c43a597bf36ca62f304fee5f71c17fa58` 的隔离源码和 R13 runtime；
 `8c231493` 仅补记证据，主工作区其余预存改动不在该审计对象内。
 **Layer**: proposed / implemented / wired / executed（限定在各记录的检查范围）。
-**Verdict**: **PASS**（T007 convergence audit）。A05 的源码、有效配置、
+**Verdict**: **PASS**（T007 convergence audit；sudo source boundary re-audited）。
+首次正式 sudo 启动发现 _source_git 丢失 SUDO_UID，已按实际 owner
+限定保留并通过真实 sudo 正负例及既有 gate 的 51 项回归（8.68 s）；
+不接受 Git 配置/index/replacement 覆盖。R1/R2 失败均未联网，
+见 [正式矩阵与修复](evidence/t005-formal-matrix-20260906.md)。A05 的源码、有效配置、
 输入、构建工具与实际应用依赖核查已闭合；允许执行 T005/T008。
 本裁决不是本地资格、开发交付或最终关闭 PASS。
 

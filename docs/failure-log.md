@@ -19,6 +19,34 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 sudo source repair R2 (2026-09-06): PASS; formal R3 next.**
+The gate preserves SUDO_UID only for root plus the actual selected checkout
+owner. Real sudo positive/negative tests and existing local gate regressions
+pass: 51 checks (8.68 s), with Git overrides still stripped. A05 is re-audited
+PASS; T005 remains incomplete and will use a new run directory. See
+[formal matrix](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-formal-matrix-20260906.md#sudo-source-repair-r2).
+
+**Spec181 sudo source regression R1 (2026-09-06): RED reproduced.**
+Real sudo Git checks yield 1 failed / 1 passed: the legitimate owner is rejected,
+while the wrong UID remains rejected. The test also supplies hostile GIT_DIR
+and GIT_INDEX_FILE overrides. Preserve red.log and repair only the matching
+sudo-owner identity in the sanitized environment. See
+[formal matrix](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-formal-matrix-20260906.md#sudo-source-regression-r1).
+
+**Spec181 T005 formal R2 (2026-09-06): BLOCK at sanitized source Git.**
+Outer Git now accepts the actual sudo user, but production _source_git drops
+SUDO_UID again and fails before network. Reopen A05's sudo checkout boundary;
+add a real sudo regression and retain the UID only when it matches the selected
+checkout owner. All Git override variables remain stripped. See
+[formal matrix](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-formal-matrix-20260906.md#first-boundary-r2).
+
+**Spec181 T005 formal R1 (2026-09-06): BLOCK at launcher Git ownership.**
+The explicit environment dropped SUDO_UID; root Git rejects the user's checkout
+before invoking the maintained runner. Preserve R1. Retain the actual sudo
+caller UID in the explicit launch environment for R2; do not write global Git
+exceptions or weaken the source gate. No network started. See
+[formal matrix](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-formal-matrix-20260906.md#first-boundary-r1).
+
 **Spec181 T007 convergence (2026-09-06): PASS; T005 next.**
 A05's source/configuration/input/build/application boundaries now map to their
 focused regressions and final committed checks. A01–A12 are closed within their
