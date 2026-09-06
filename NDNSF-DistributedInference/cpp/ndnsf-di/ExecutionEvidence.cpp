@@ -93,6 +93,7 @@ std::string toString(RunnerKind kind)
     case RunnerKind::WiringOnly: return "wiring-only";
     case RunnerKind::OnnxRuntimeCpu: return "onnxruntime-cpu";
     case RunnerKind::OnnxRuntimeCuda: return "onnxruntime-cuda";
+    case RunnerKind::NativeYoloPostprocess: return "native-yolo-postprocess";
     case RunnerKind::Transformers: return "transformers";
     case RunnerKind::LlamaServer: return "llama-server";
     case RunnerKind::Unknown: return "unknown";
@@ -106,6 +107,7 @@ RunnerKind runnerKindFromString(const std::string& value)
   if (value == "wiring-only") return RunnerKind::WiringOnly;
   if (value == "onnxruntime-cpu") return RunnerKind::OnnxRuntimeCpu;
   if (value == "onnxruntime-cuda") return RunnerKind::OnnxRuntimeCuda;
+  if (value == "native-yolo-postprocess") return RunnerKind::NativeYoloPostprocess;
   if (value == "transformers") return RunnerKind::Transformers;
   if (value == "llama-server") return RunnerKind::LlamaServer;
   if (value == "unknown") return RunnerKind::Unknown;

@@ -19,6 +19,14 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 T002 native Merge contract (2026-09-05): CLOSED (focused repair).** Direct production-runner
+checks pass the numerical controls but expose four missed rejections: unknown
+postprocess identity, numeric suffix, trailing shape delimiter, and wrong output
+dtype. R1 is preserved (3/6 cases, 22/26 assertions passed). Rebuilt repairs pass
+6 cases / 26 assertions; related evidence/readiness checks total 10 cases / 69
+assertions. Handler source closure remains open; see
+[native Merge closure](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t002-native-merge-closure-20260905.md).
+
 **Spec181 T002 native worker authority (2026-09-05): CLOSED (focused repair).** Four real-worker
 regressions show that cancellation/expiry after preparation or during compute
 still returns results and retains the registered plaintext lease. Grant

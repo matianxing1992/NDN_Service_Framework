@@ -82,6 +82,13 @@ T002 worker 边界新增 4 项回归先失败：初始 grant 有效，但准备�
 T002 仍待完整 handler/可执行文件源码闭包与统一生产构建更新；保持
 4/12、T007 BLOCK。
 
+T002 源码闭包核对发现 native Merge 尚未入 Git；新增直接 runner
+回归中 3/6 cases PASS，错误 identity/数值文本/output dtype 漏检。
+修复后直接 6 cases / 26 assertions PASS，连同证据/就绪为 10 cases /
+69 assertions PASS；Merge 源码、backend 注册及类型转换纳入独立
+检查点，首轮失败保留。继续完成 handler 准备/输入接线及统一构建，
+见 [Merge 源码闭包](evidence/t002-native-merge-closure-20260905.md)。
+
 历史 6/7、7/7 与 `CONDITIONAL PASS` 不再作为当前状态；以
 [audit.md](audit.md) 与 [修正证据](evidence/audit-repair-20260905.md) 为准。
 本文件 `cpp/ndnsf-di/` 简写均相对 `NDNSF-DistributedInference/`；

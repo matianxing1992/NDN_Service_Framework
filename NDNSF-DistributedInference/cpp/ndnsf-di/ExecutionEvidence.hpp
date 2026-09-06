@@ -16,6 +16,7 @@ enum class RunnerKind
   WiringOnly,
   OnnxRuntimeCpu,
   OnnxRuntimeCuda,
+  NativeYoloPostprocess,
   Transformers,
   LlamaServer,
   Unknown,

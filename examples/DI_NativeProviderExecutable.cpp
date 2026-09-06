@@ -1,6 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactMaterializer.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeYoloMergeRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionLeaseService.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderReadiness.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.hpp"
@@ -1026,6 +1027,11 @@ main(int argc, char** argv)
 
     auto factory = std::make_shared<RegistryNativeModelRunnerFactory>();
     registerOnnxRuntimeBackend(*factory);
+    factory->registerBackend(
+      "native-yolo-postprocess",
+      [] (const NativeModelRunnerSpec& spec) {
+        return makeNativeYoloMergeRunner(spec);
+      });
     if (options.wiringCheckOnly || options.tracerDeterministicRunner) {
       factory->registerBackend(
         "onnxruntime",
