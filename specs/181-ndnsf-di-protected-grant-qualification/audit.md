@@ -14,7 +14,7 @@ R = `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py`。行号对应本轮源码�
 
 | ID | Severity | Location | Finding and evidence boundary | Disposition / closing action |
 |---|---|---|---|---|
-| A01 | HIGH | N/ProtectedRuntime.cpp；N/NativeProviderHandler.cpp；R；evidence/t002-native-live-repair-20260905.md | 初审发现 runtime 无条件拒绝、缺 factory、保护 Y-B 使用 Python Provider。修复 native 选择、group 摘要、grant 路由、装配 basename 和就绪等待竞态后，live-r7 真实受保护 native Y-B 与正常清理 exit 0。 | PARTIAL — 定向正例及文件清理已通过；T002 仍需生产负例、取消/过期、资源上界及工作区源码闭包。 |
+| A01 | HIGH | N/ProtectedRuntime.cpp；N/NativeProviderHandler.cpp；R；evidence/t002-p256-production-20260905.md | 初审发现 runtime 无条件拒绝、缺 factory、保护 Y-B 使用 Python Provider。现有 native Ed25519/P-256 正向链、T006 实际负例和 helper 生命周期修复证据。 | PARTIAL — T002 仍需维护 integration 测试、全部资源/异常路径验收及剩余 handler 源码闭包。 |
 | A02 | HIGH | P:1369、1445、1474、1485、1507、2559、2695、2734 | 先装配后授权；Merge 用 grant 自述 manifest 作预期值；落盘密文后直接解密内存对象；external weights 明文复制且未登记租约；准备阶段后续异常提前 return 可绕过 handler 的 finally。 | OPEN — T001 重排授权、绑定独立输入并覆盖全部加载/清理边界；错误密钥、磁盘密文变异、准备失败与取消测试。 |
 | A03 | HIGH | P:1445；tests/python/test_spec181_provider_grant.py:445 | 原实现未核对 Selection grant 摘要，权威另签的同上下文 grant 可替换选中密钥。新回归实测 `ProtectedGrantRejected not raised`。 | CLOSED — `ff7b5c3b` 增加封印摘要比对；RED 1 failed，GREEN 34 passed，见专项证据。 |
 | A04 | HIGH | U；R；ProtectedRuntime.cpp；evidence/t006-production-repair-20260905.md | 初审发现 User 内部 probe 冒充 Provider 拒绝。现已移除该成功判据，记录并核对实际发布、Provider verifier、请求/attempt/Provider 与封印计划；三种真实变异和有效 grant 控制通过。 | CLOSED — T006 定向生产验收 PASS；正式同源矩阵仍归 T005/T008。 |
@@ -91,15 +91,19 @@ T002 的 `ProtectedRuntime` 已接入真实 verifier 和受管内容密钥，
 通过，见 [helper 生命周期](evidence/t002-helper-lifecycle-20260905.md)。
 factory 的 P-256 凭据入口缺口已由实际失败回归确认并修复，8 项
 定向检查通过；factory/header 纳入 `35e1c6d5`，见
-[凭据入口](evidence/t002-recipient-credentials-20260905.md)。P-256 网络
-解包、剩余 handler 源码闭包和全部生产验收仍未完成，A01 未整体关闭；
+[凭据入口](evidence/t002-recipient-credentials-20260905.md)。后续
+`835f20f9` 修复 Python loader、recipient map 与实际 EC 信封创建，
+134 项检查及重建后的四收件人 P-256 Y-B 控制 PASS，见
+[P-256 生产链](evidence/t002-p256-production-20260905.md)。任务指定的
+维护 integration 测试、剩余 handler 源码闭包和全部资源/异常路径
+验收仍未完成，A01 未整体关闭；
 这些更新不改变本审计 BLOCK 裁决。
 
 1. T001：在装配前完成独立绑定与授权；补注册表消费、模型/weights 密文
    读取及全错误路径清理，建立真实发布/获取的定向进程测试。
-2. T002：native 授权与实际正负例已有证据，继续闭合 P-256 网络解包、
-   全部取消/过期和资源上界验收及剩余 handler 源码提交；新生产运行
-   前刷新统一 native 构建。T003 已完成 grant 与装配两组 parity。
+2. T002：native Ed25519/P-256 正向链与 T006 负例已有证据，继续
+   完成维护 integration 测试、全部取消/过期和资源上界验收及剩余
+   handler 源码提交。T003 已完成 grant 与装配两组 parity。
    T004 已补当前 build 的真实就绪/取消/无热转证据并完成定向验收，
    见 [生命周期验收](evidence/t004-lifecycle-acceptance-20260905.md)；
    此项关闭不改变整体 BLOCK 裁决。

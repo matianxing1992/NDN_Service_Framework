@@ -25,7 +25,7 @@ Spec 170 `artifact-assembly-v1` 契约。
 | Task | Implemented / executed | Remaining acceptance |
 |---|---|---|
 | T001 | grant 摘要、租约/存储修复；注册表策略/公钥/逻辑身份与最终 root 允许列表已接线；100 项定向 unit 通过，见 `evidence/t001-registry-repair-20260905.md` | 真实发布/获取；资源上界、全部封印绑定及取消/过期验收 |
-| T002 | runtime/store 修复及真实 native Y-B 正负例已有证据；helper 修复 27 项检查及重建后 Y-B 控制 PASS，见 [helper 生命周期](evidence/t002-helper-lifecycle-20260905.md)；factory/header 纳入源码，P-256 凭据入口修复后 8 项检查 PASS，见 [凭据入口](evidence/t002-recipient-credentials-20260905.md) | 全部生产验收、P-256 网络解包、资源上界及剩余 handler 源码闭包；下次生产验证前刷新统一 native 构建 |
+| T002 | runtime/store 及 helper 修复已有定向证据；factory/header 纳入源码，P-256 凭据入口 8 项检查 PASS；生产配置/信封修复 134 项检查、统一 native 重建及四个 P-256 收件人的真实 Y-B 控制 PASS，见 [P-256 生产链](evidence/t002-p256-production-20260905.md) | 任务指定的维护 integration 测试、完整资源/异常路径验收及剩余 handler 源码闭包 |
 | T003 | PASS：3 项 grant parity 检查消费 9 个向量；8 个装配向量分别走 Python/C++ 生产入口，16 项检查通过，含实际 ORT CPU 结果和 initializer/recipe/ABI 拒绝，见 [装配证据](evidence/t003-assembly-parity-20260905.md) | 本任务定向验收已闭合；native 格式操作共用生产 Python helper，后续同源资格仍归 T005/T008 |
 | T004 | PASS：7 项 Python seam、6 项 Core 定向检查；重建后真实 Provider 等待约 83 ms、Controller 12.39 s 就绪、等待中取消约 2.3 ms 且无热转；全部线程/网络清理，见 [生命周期证据](evidence/t004-lifecycle-acceptance-20260905.md) | 本任务定向验收已闭合；后续同源正式资格仍归 T005/T008 |
 | T005 | 已停用旧自动重试入口，维护矩阵首个失败即停止并保留原始结果；118 项定向检查 PASS，见 [证据保留修复](evidence/t005-evidence-repair-20260905.md) | T007 PASS 后同源七子用例矩阵，保留所有失败 |
@@ -55,8 +55,12 @@ T003 已补固定装配向量、C++ 生产入口 Waf target 和双侧字节检�
 handler 源码闭包，生产运行前刷新统一 native 构建；T007 仍为 BLOCK。
 P-256 生产入口追踪另修复 Python loader 类型限制、runner 覆盖专用
 收件人映射及生产 EC 临时密钥生成的 backend 兼容缺口；新增文件
-边界检查后相关 134 项 PASS。当前等待统一 native 重建与独立
-P-256 Y-B 控制，见 [P-256 生产链](evidence/t002-p256-production-20260905.md)。
+边界检查后相关 134 项 PASS。`835f20f9` 的统一 native 重建与独立
+P-256 Y-B 控制 PASS：四个真实 grant 验证、三 ORT CPU 与 native
+Merge、终端数值匹配、7 个子进程退出收集及空 staging，见
+[P-256 生产链](evidence/t002-p256-production-20260905.md)。下一步补
+任务指定的维护 integration 测试、完整资源/异常路径验收及剩余
+handler 源码闭包；整体仍 3/12，T007 BLOCK。
 
 历史 6/7、7/7 与 `CONDITIONAL PASS` 不再作为当前状态；以
 [audit.md](audit.md) 与 [修正证据](evidence/audit-repair-20260905.md) 为准。

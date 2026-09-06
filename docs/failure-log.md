@@ -19,7 +19,7 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
-**Spec181 T002 P-256 production path (2026-09-05): OPEN.**
+**Spec181 T002 P-256 production path (2026-09-05): focused defects CLOSED.**
 R1 proves the runner overwrites an explicitly configured recipient-key map
 with the Ed25519 offer-key map. Four other checks stop in fixture key
 generation because this cryptography installation requires an explicit backend;
